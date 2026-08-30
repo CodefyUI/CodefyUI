@@ -97,6 +97,33 @@ def test_the_node_is_not_cacheable():
     assert LMTokenizedDatasetNode.cacheable is False
 
 
+def test_the_description_warns_that_nothing_evicts_the_block_cache():
+    """#306: the cache is unbounded, so the node has to say so.
+
+    Somebody sweeping seq_len over three values leaves three full copies of
+    the packed stream on disk. The node is the only place that fact is in
+    front of them at the moment they make it happen, and the sentence is
+    useless without the command that undoes it.
+    """
+    text = LMTokenizedDatasetNode.DESCRIPTION
+    assert "cdui cache prune" in text
+    assert "evict" in text
+
+
+def test_the_cache_dir_param_prices_one_cache_entry():
+    """The arithmetic a learner needs: what makes a new entry, and its size."""
+    params = {p.name: p for p in LMTokenizedDatasetNode.define_params()}
+    text = params["cache_dir"].description
+    assert "8 bytes per token" in text
+    # The five inputs the key is a digest of -- change any one and the next
+    # run writes a whole second copy rather than reusing the first.
+    for key_part in ("corpus", "tokenizer", "seq_len", "append_eos",
+                     "max_tokens"):
+        assert key_part in text, key_part
+    assert "cdui cache list" in text
+    assert "cdui cache prune" in text
+
+
 # ── packing math ────────────────────────────────────────────────────────
 #
 # corpus = "ab", "cde"; ord()-per-character; eos_id = 0
@@ -361,6 +388,26 @@ def test_progress_reports_rows_done_out_of_total():
     # Tagged as a liveness frame so run_service does not mine "rows" and
     # "tokens" into chart series (see NON_METRIC_EVENTS).
     assert frames[0]["event"] == EVENT_BATCH
+
+
+def test_the_row_that_trips_max_tokens_still_reports_progress():
+    """#306: the cap used to break BEFORE the emit, so the last row vanished.
+
+    One row, and it fills the budget on its own -- so the only frame this run
+    can produce is the one the ``break`` was swallowing. The throttle always
+    lets the first frame through, which is what makes this deterministic.
+    """
+    frames: list[dict] = []
+    LMTokenizedDatasetNode().execute(
+        {"dataset": _rows("abcde"), "tokenizer": FakeTokenizer()},
+        {"seq_len": 2, "max_tokens": 3, "cache": False},
+        frames.append,
+    )
+    assert [f["rows"] for f in frames] == [1]
+    # And it counts the tokens the node KEEPS. The raw stream is 6 ids here
+    # (5 characters + EOS) and gets truncated to max_tokens, so a frame
+    # reporting len(stream) would replace the missing frame with a wrong one.
+    assert frames[0]["tokens"] == 3
 
 
 def test_a_stopped_run_returns_the_blocks_it_managed_and_does_not_raise(
