@@ -491,6 +491,25 @@ received — each links to the release it was published as.
   own message, `cdui update` and `cdui dev` stand down while a restart
   install is finishing, and two `cdui packs` prompts stop misreporting.
 
+- **Five student-visible canvas and gallery fixes.** The exported light-theme
+  diagram drew its `DATASET` and `TRANSFORM` wires in two ambers of identical
+  lightness, unreadable to a dichromat; `dataset` and `string` move to darker
+  ambers and the contrast gate now runs its hue-drift and lightness rules over
+  the type colours too, so the class stays caught ([#323]). A graph saved
+  before the amber change drew its `TRANSFORM` wires in the old hex beside
+  new-amber port dots; a one-time migration on load rewrites a stroke that
+  matches a known stale hex for the data type the edge still derives to
+  ([#325]). Opening a document clears the previous document's selection,
+  modal targets, dirty marks, output summaries and last run, so a new graph
+  that reuses a node id no longer shows the old graph's state ([#337]). The
+  canvas gallery card shows the whole example description on hover, and a
+  test now holds every heavy example to naming its GPU, download, pack or
+  network requirement inside the first 80 characters the card shows
+  ([#305]). The viewer-dialog `expanded` flags were NOT lifted into the
+  store: all six open a portal modal, and restoring one after viewport
+  culling would reopen it by itself, so #324 stays open with the real fix
+  recorded there.
+
 ## [2.4.1] — 2026-08-22
 
 Four fixes that landed on `main` in the hours after 2.4.0, and nothing else:
@@ -2543,6 +2562,10 @@ Release candidates before 1.0.0 are on the
 =======
 [#371]: https://github.com/CodefyUI/CodefyUI/pull/371
 [#372]: https://github.com/CodefyUI/CodefyUI/issues/372
+[#305]: https://github.com/CodefyUI/CodefyUI/issues/305
+[#323]: https://github.com/CodefyUI/CodefyUI/issues/323
+[#325]: https://github.com/CodefyUI/CodefyUI/issues/325
+[#337]: https://github.com/CodefyUI/CodefyUI/issues/337
 >>>>>>> origin/main
 [@oyea0801]: https://github.com/oyea0801
 [@latteine1217]: https://github.com/latteine1217
