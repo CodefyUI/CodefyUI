@@ -478,6 +478,18 @@ received — each links to the release it was published as.
   alone still works for clients written against the earlier contract and keeps
   its original meaning; `before_id` without `before` is a 422.
 
+- **A development venv built from the lock could not stop a model download
+  mid-file.** The Package Center's cancel path reaches for a private
+  `huggingface_hub` hook that first appears in 1.19, while `uv.lock` pinned
+  1.10.1 — CI resolved fresh and never noticed, but every `uv sync` venv
+  lacked the hook and three tests failed there. `pyproject.toml` now floors
+  `huggingface_hub` at 1.19 and `hf_xet` at 1.5.1, the lock moves to 1.29.0
+  and 1.6.0, and a missing hook fails exactly one loud guard test rather
+  than three ([#386]). One test walked every callable reachable from the
+  script sandbox and, from Python 3.13 on, reached `collections.abc.ABCMeta`
+  — a metaclass, which constructs classes and opens no files; the walk skips
+  metaclasses now, verified on 3.11 and on a real 3.14 venv ([#387]).
+
 - **A follow-up pass over the Package Center installer and its launcher**
   ([#380]). The catalog now validates what its tests had only assumed; the
   byte meter cannot freeze a bar or pass 100%; an asset's sentinel is
@@ -2559,6 +2571,8 @@ Release candidates before 1.0.0 are on the
 [#360]: https://github.com/CodefyUI/CodefyUI/issues/360
 <<<<<<< HEAD
 [#380]: https://github.com/CodefyUI/CodefyUI/issues/380
+[#386]: https://github.com/CodefyUI/CodefyUI/issues/386
+[#387]: https://github.com/CodefyUI/CodefyUI/issues/387
 =======
 [#371]: https://github.com/CodefyUI/CodefyUI/pull/371
 [#372]: https://github.com/CodefyUI/CodefyUI/issues/372

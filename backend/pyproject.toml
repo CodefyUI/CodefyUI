@@ -82,7 +82,24 @@ dependencies = [
     "pandas>=2.0",
     "tiktoken>=0.7.0",
     "tokenizers>=0.15.0",
-    "huggingface_hub>=0.20.0",
+    # 1.19 is the floor the code actually assumes. Cancelling a pack
+    # download calls the PRIVATE `huggingface_hub.utils._xet.
+    # abort_xet_session` to stop an hf_xet transfer mid-file -- that
+    # transport discards whatever the progress hook raises, so it is the
+    # only thing that works. The hook is absent at 1.18.0 and first ships in
+    # 1.19.0; below it, Stop silently degrades into "wait for the file in
+    # flight", up to ~470 MB of ignoring the user. See
+    # `app/core/packs/download.py::abort_xet_transfer`.
+    "huggingface_hub>=1.19",
+    # `abort_xet_session` drives `hf_xet.XetSession.sigint_abort`.
+    # `XetSession` first appears in hf_xet 1.5.0 (1.4.3, which the lock
+    # pinned before this floor existed, has only the process-wide
+    # `force_sigint_shutdown`), and huggingface_hub 1.19 itself requires
+    # >=1.5.1 -- so 1.5.1. The marker is a copy of the hub's own: hf_xet
+    # publishes wheels for these machines only, and an unconditional
+    # requirement would send every other platform to an sdist that needs a
+    # Rust toolchain.
+    'hf_xet>=1.5.1; platform_machine == "x86_64" or platform_machine == "amd64" or platform_machine == "AMD64" or platform_machine == "arm64" or platform_machine == "aarch64"',
     "scikit-learn>=1.3.0",
     "platformdirs>=4.0.0",
     # Cross-platform system metrics for `cdui status` (CPU / memory / disk /
