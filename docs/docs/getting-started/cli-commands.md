@@ -51,6 +51,19 @@ Exit codes, for scripts: `0` done, `1` the install failed or was declined at the
 
 **Installs that restart the server.** A server started with `cdui start` can install the GPU PyTorch pack — or any pack whose live install hits a resolver conflict — by going away and coming back: it writes down what to install, starts `cdui packs-run-pending` detached, and shuts down; that helper waits for the process to go, installs, records the outcome, and starts the server again with the arguments this `cdui start` was given. `packs-run-pending` is **internal** and deliberately absent from the help text — the file it is handed names a process to wait for, so running it by hand against a live server would wait two minutes and then stop it. `CODEFYUI_ENABLE_RESTART_INSTALL=0` turns the whole path off on a machine where the restart does not come back cleanly. While one is still *finishing* — the helper it recorded is alive, or its claim file is under sixty seconds old and no helper has stamped its pid in yet — `cdui start` will not start a second server into the venv that helper is rewriting: it says a restart install is finishing, points at `cdui status`, and returns. Once the helper is gone, or it never arrived and those sixty seconds have passed, the claim is *abandoned*: `cdui start` deletes it and starts normally. See **[Installs that restart the server](/usage/optional-packs#installs-that-restart-the-server)**.
 
+## Cache commands
+
+Some nodes write results they can rebuild, and until you delete them nothing else will. `LMTokenizedDataset` is the big one: it packs a whole corpus into one token stream under `<data>/cache/lm_blocks/`, one file per distinct corpus, tokenizer, `seq_len`, `append_eos` and `max_tokens`, at 8 bytes per token — around 800 MB per file for a 100M-token corpus, so sweeping `seq_len` over three values leaves three full copies behind. These commands cover derived caches only: downloaded models and assets are untouched (`cdui packs remove` deletes those), and so are run outputs, saved models and graphs.
+
+| Command | Description |
+|---------|-------------|
+| `cdui cache list` | Every derived cache: how many entries it holds, how much disk that is, and the directory it lives in. |
+| `cdui cache prune` | Delete those entries, after a `[y/N]` confirmation. `--older-than DAYS` keeps anything written more recently than that (last *written* — a read does not count, because a cache hit does not touch the file). `--yes` / `-y` skips the prompt, and is required when there is no terminal to confirm at. Refuses while a **background** server (`cdui start`) is running: a graph in it may be part-way through reading a block file. Only background — a foreground `cdui dev` or `cdui start -f` writes no pidfile, so nothing can detect it: stop one yourself first. |
+
+Both take `--project <dir>`, the same flag you started the server with: project mode keeps the cache in `<dir>/assets/cache/`, and without the flag these answer about this install's `<data>/cache` instead.
+
+Exit codes, for scripts: `0` done (including "there was nothing to delete"), `1` declined at the prompt or an entry could not be deleted, `2` refused before anything ran (a negative `--older-than`, no terminal to confirm at), `3` a background server is running — `cdui stop` first, `130` cancelled with `Ctrl+C`.
+
 ## Background vs foreground
 
 `cdui start` runs in the **background** by default — close the terminal and the server keeps running. Manage it with:

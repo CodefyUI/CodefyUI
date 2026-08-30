@@ -986,7 +986,7 @@ const zhTW: NodeTranslations = {
   },
   LMTokenizedDataset: {
     description:
-      '把文字列轉成固定長度的訓練區塊：先把每份文件 tokenize，用 end-of-text token 串接起來，再把整條 token 流切成 (input_ids, labels) 配對，其中 labels 就是 input_ids 往左位移一格 — 這就是「預測下一個 token」。輸出接到 DataLoader。打包好的 token 會存到磁碟快取，所以只有第一次執行需要付 tokenize 的時間。',
+      '把文字列轉成固定長度的訓練區塊：先把每份文件 tokenize，用 end-of-text token 串接起來，再把整條 token 流切成 (input_ids, labels) 配對，其中 labels 就是 input_ids 往左位移一格 — 這就是「預測下一個 token」。輸出接到 DataLoader。打包好的 token 會存到磁碟快取，所以只有第一次執行需要付 tokenize 的時間 — 這份快取不會自動清除，要清請用 `cdui cache prune`。',
     params: {
       seq_len:
         '每個訓練區塊有幾個 token — 也就是模型學習時看到的上下文長度。不能超過模型的 max_seq_len。越長，attention 的記憶體成本以平方成長。',
@@ -994,7 +994,8 @@ const zhTW: NodeTranslations = {
         '在每份文件後面加上 end-of-text token。建議保持開啟：少了它，模型會學到一個故事會直接接到下一個故事，生成時也永遠不會停。',
       max_tokens: '取到這麼多 token 就停（0 = 整份語料）。這是讓一個 epoch 能在一堂課內跑完最快的手段。',
       cache: '把打包好的 token 存到磁碟，語料與設定沒變時就直接重用。若你正在原地編輯語料檔，請關掉。',
-      cache_dir: '存放 token 快取檔的子目錄（留空 = 資料目錄下的共用快取）。',
+      cache_dir:
+        '存放 token 快取檔的子目錄（留空 = 資料目錄下的共用快取）。語料、tokenizer、seq_len、append_eos、max_tokens 每換一種組合就多一個檔案，每個 token 佔 8 bytes — 一億 token 的語料每個檔案約 800 MB，而且不會自動刪除。用 `cdui cache list` 看有哪些，用 `cdui cache prune` 清掉。',
     },
   },
   DataMixDataset: {
