@@ -74,17 +74,27 @@ def _install_qwen():
     return _install_hf("rag", "qwen2.5-0.5b-instruct")
 
 
+def _asset_sentinel(pack_id: str, item_id: str, *, url, path, sha256):
+    state.write_sentinel(pack_id, item_id, {
+        "schema": 1, "pack_id": pack_id, "item_id": item_id, "kind": "asset",
+        "url": url, "path": str(path), "bytes": 30, "sha256": sha256,
+        "at": "2026-08-28T00:00:00Z",
+    })
+
+
 def _install_glove():
-    """Make the word-vectors asset look downloaded. Returns the file path."""
+    """Make the word-vectors asset look downloaded. Returns the file path.
+
+    The digest recorded is the CATALOG's, which is what a real install
+    writes: ``download._finish_asset`` stores the digest it computed off the
+    bytes that arrived, and that download only succeeded because it matched.
+    """
     item = get_item(get_pack("word-vectors"), "glove-50d")
     path = asset_dir() / item.filename
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(b"not really a word vector table")
-    state.write_sentinel("word-vectors", item.item_id, {
-        "schema": 1, "pack_id": "word-vectors", "item_id": item.item_id,
-        "kind": "asset", "url": item.url, "path": str(path), "bytes": 30,
-        "sha256": None, "at": "2026-08-28T00:00:00Z",
-    })
+    _asset_sentinel("word-vectors", item.item_id, url=item.url, path=path,
+                    sha256=item.sha256)
     return path
 
 
@@ -191,6 +201,45 @@ def test_asset_item_points_at_the_file(user_data_dir):
     assert not state.item_state(pack, item).present
 
 
+def test_asset_sentinel_for_the_wrong_url_reads_as_missing(user_data_dir):
+    """An asset is re-checked against the catalog, exactly as an hf item is.
+
+    The catalog is allowed to move an asset to a new URL -- a rehosted
+    mirror, a new upstream release. Yesterday's bytes are then not this
+    item's file, however present they are on disk, and the file itself
+    cannot say so: unlike a hub snapshot it carries no record of where it
+    came from except this sentinel.
+    """
+    pack, item = get_pack("word-vectors"), get_item(get_pack("word-vectors"),
+                                                    "glove-50d")
+    path = _install_glove()
+    assert state.item_state(pack, item).present
+
+    _asset_sentinel(pack.pack_id, item.item_id, url="https://elsewhere/x.gz",
+                    path=path, sha256=item.sha256)
+
+    assert not state.item_state(pack, item).present
+
+
+def test_asset_sentinel_for_the_wrong_digest_reads_as_missing(user_data_dir):
+    """A digest the catalog now records and the download does not match is
+    the same fact: those are not the bytes this item names.
+
+    An install done BEFORE a digest was recorded is unaffected -- it wrote
+    the digest it computed off the bytes that arrived, which is the one the
+    catalog then records -- so adding a digest does not invalidate anything
+    already on disk.
+    """
+    pack, item = get_pack("word-vectors"), get_item(get_pack("word-vectors"),
+                                                    "glove-50d")
+    path = _install_glove()
+
+    _asset_sentinel(pack.pack_id, item.item_id, url=item.url, path=path,
+                    sha256="0" * 64)
+
+    assert not state.item_state(pack, item).present
+
+
 # ── writing and removing sentinels ───────────────────────────────────────
 
 
@@ -201,6 +250,24 @@ def test_write_sentinel_is_atomic_and_readable(user_data_dir):
     assert state.read_sentinel(path) == {"schema": 1}
     assert json.loads(path.read_text(encoding="utf-8")) == {"schema": 1}
     assert list(path.parent.iterdir()) == [path], "a .tmp file was left behind"
+
+
+def test_write_sentinel_uses_lf_endings(user_data_dir):
+    """One line ending on every platform.
+
+    ``write_text`` with no ``newline=`` translates ``json.dumps``'s ``\\n``
+    to ``os.linesep``, so the same sentinel is written differently on
+    Windows and on Linux. It round-trips either way -- this is cosmetic --
+    but ``write_constraints_file`` already pins LF for exactly this reason
+    and two files in one feature should not disagree about it.
+
+    RED ON WINDOWS ONLY. A green run on Linux proves nothing: there
+    ``os.linesep`` is already ``\\n``.
+    """
+    path = state.write_sentinel("rag", "qwen2.5-0.5b-instruct",
+                                {"schema": 1, "path": "x"})
+
+    assert b"\r\n" not in path.read_bytes()
 
 
 def test_remove_sentinel_reports_whether_there_was_one(user_data_dir):

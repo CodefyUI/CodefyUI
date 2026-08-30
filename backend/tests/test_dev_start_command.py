@@ -845,3 +845,125 @@ def test_a_failed_delete_does_not_stop_the_server_starting(started, monkeypatch,
     dev.start()
 
     assert started["popen"] is not None
+
+
+# ── the other two commands that run out of the venv a helper is rewriting ──
+#
+# `start` stands down at exit 0 -- the user asked for a running server and
+# one is on its way, so their request is being satisfied by somebody else.
+# Nobody else is going to run the user's `update`, so these two REFUSE, at
+# exit 1, matching `update`'s own "a server is running" refusal that scripts
+# already gate on.
+
+
+class _ReachedLaunch(Exception):
+    """Raised by a stubbed Popen: proof `dev()` got as far as launching."""
+
+
+def _update_argv(monkeypatch, *args):
+    monkeypatch.setattr(sys, "argv", ["cdui", "update", *args])
+
+
+def _updatable(monkeypatch, started) -> list:
+    """Stub everything `update()` does AFTER the preflight, and record the
+    call to `install` that ends it. `dev.run` is already a recorder, so the
+    git commands land in ``started["run"]``."""
+    (dev.ROOT / ".git").mkdir(parents=True, exist_ok=True)
+    installed: list = []
+    monkeypatch.setattr(dev, "_resolve_update_options",
+                        lambda argv: (None, False))
+    monkeypatch.setattr(dev, "install", lambda **kw: installed.append(kw))
+    monkeypatch.setattr(dev.shutil, "which", lambda name: "/fake/pnpm")
+    return installed
+
+
+def test_update_refuses_while_a_restart_is_finishing(started, monkeypatch,
+                                                     control, tmp_path,
+                                                     capsys):
+    """`update` hard-realigns the checkout, deletes frontend/dist and
+    rewrites the venv -- while a detached helper may be mid-`uv pip install`
+    into that same venv. Two writers in one site-packages, and the loser is
+    whichever finishes second."""
+    installed = _updatable(monkeypatch, started)
+    path = _write_pending(control, helper_pid=777)
+    monkeypatch.setattr(dev, "_pid_alive", lambda pid: pid == 777)
+    _update_argv(monkeypatch)
+
+    with pytest.raises(SystemExit) as leaving:
+        dev.update()
+
+    assert leaving.value.code == 1
+    assert started["run"] is None, "update reached git under a live install"
+    assert installed == []
+    assert path.exists(), "the helper still needs its own claim"
+    assert "cdui status" in capsys.readouterr().out
+    # The same sandbox guard as `test_the_sandbox_keeps_the_preflight_out_of
+    # _the_real_user_data`: the preflight DELETES what it finds, and a test
+    # that read the developer's own claim would delete that.
+    assert dev._pending_restart_file().is_relative_to(tmp_path)
+
+
+def test_update_proceeds_once_an_abandoned_claim_is_cleared(started,
+                                                            monkeypatch,
+                                                            control, tmp_path):
+    """The other half, or the fix would trade one wedge for another: a claim
+    nobody is acting on is cleared and the update runs."""
+    installed = _updatable(monkeypatch, started)
+    path = _write_pending(control, helper_pid=777,
+                          age_s=dev.STALE_PENDING_S + 60)
+    monkeypatch.setattr(dev, "_pid_alive", lambda pid: False)
+    _update_argv(monkeypatch)
+
+    dev.update()
+
+    assert not path.exists()
+    assert started["run"] is not None, "update never reached git"
+    assert installed == [{"gpu": None, "dev": False}]
+    assert dev._pending_restart_file().is_relative_to(tmp_path)
+
+
+def _devable(monkeypatch) -> None:
+    monkeypatch.setattr(dev.shutil, "which", lambda name: "/fake/pnpm")
+    monkeypatch.setattr(dev, "_install_frontend_deps_if_needed", lambda: None)
+    monkeypatch.setattr(sys, "argv", ["cdui", "dev"])
+
+
+def test_dev_refuses_while_a_restart_is_finishing(started, monkeypatch,
+                                                 control, tmp_path):
+    """`cdui dev` starts a `--reload` uvicorn out of the venv the helper is
+    replacing. It checked nothing at all before this."""
+    _devable(monkeypatch)
+    monkeypatch.setattr(dev.subprocess, "Popen",
+                        lambda cmd, **kw: pytest.fail(f"launched {cmd}"))
+    path = _write_pending(control, helper_pid=777)
+    monkeypatch.setattr(dev, "_pid_alive", lambda pid: pid == 777)
+
+    with pytest.raises(SystemExit) as leaving:
+        dev.dev()
+
+    assert leaving.value.code == 1
+    assert path.exists()
+    assert dev._pending_restart_file().is_relative_to(tmp_path)
+
+
+def test_dev_proceeds_once_an_abandoned_claim_is_cleared(started, monkeypatch,
+                                                         control, tmp_path):
+    """A dead claim is cleared and `cdui dev` launches."""
+    _devable(monkeypatch)
+    launched: list = []
+
+    def _reached(cmd, **kw):
+        launched.append(list(cmd))
+        raise _ReachedLaunch
+
+    monkeypatch.setattr(dev.subprocess, "Popen", _reached)
+    path = _write_pending(control, helper_pid=777,
+                          age_s=dev.STALE_PENDING_S + 60)
+    monkeypatch.setattr(dev, "_pid_alive", lambda pid: False)
+
+    with pytest.raises(_ReachedLaunch):
+        dev.dev()
+
+    assert launched and launched[0][0] == "/fake/uvicorn", launched
+    assert not path.exists()
+    assert dev._pending_restart_file().is_relative_to(tmp_path)

@@ -54,14 +54,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from . import runner, state
-from .catalog import Pack
+from .catalog import GPU_TORCH_PACK_ID, Pack
 from .errors import PackInstallError, PendingExists
 from .paths import job_log_dir, last_restart_file, pending_restart_file
 
 log = logging.getLogger(__name__)
-
-#: The pack whose install is a wheel swap rather than a download.
-_GPU_TORCH_PACK_ID = "gpu-torch"
 
 #: Kill switch. ``"0"`` refuses restart-mode installs even under
 #: ``cdui start``; anything else (including unset) leaves them on. A kill
@@ -371,7 +368,7 @@ def install_command_for(pack: Pack, variant: str | None = None) -> str:
         raise ValueError(
             f"unknown torch variant {variant!r}; expected one of "
             f"{', '.join(VARIANTS)}")
-    if pack.pack_id == _GPU_TORCH_PACK_ID:
+    if pack.pack_id == GPU_TORCH_PACK_ID:
         chosen = variant or gpu_info()["recommended_variant"]
         return f"cdui install --gpu {chosen}"
     return f"cdui packs install {pack.pack_id}"
@@ -824,14 +821,26 @@ def _read_pending(path: Path) -> "PendingRestart | None":
 
 
 def _age_seconds(pending: PendingRestart) -> "float | None":
-    """How long ago the claim was made, or None when it does not say."""
+    """How long ago the claim was made, or None when it does not say.
+
+    A stamp in the FUTURE does not say either. It gives a negative age,
+    which :func:`_is_stale` would read as "very young" -- so a clock that
+    stepped back would refuse every restart-mode install with "one is
+    already pending" until the wall clock caught up, with no deadline. Both
+    the writer and the reader are processes on this machine, so a future
+    stamp is a clock that moved rather than a claim that is young; None,
+    which the rules below already read as "old", and no skew tolerance.
+
+    Mirrored by ``dev._iso_age_seconds``.
+    """
     try:
         created = datetime.fromisoformat(pending.created_at)
     except ValueError:
         return None
     if created.tzinfo is None:
         created = created.replace(tzinfo=timezone.utc)
-    return (datetime.now(timezone.utc) - created).total_seconds()
+    age = (datetime.now(timezone.utc) - created).total_seconds()
+    return None if age < 0 else age
 
 
 def _is_stale(pending: PendingRestart) -> bool:

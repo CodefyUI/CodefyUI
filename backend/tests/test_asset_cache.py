@@ -1,13 +1,16 @@
 """The asset cache: bytes in, verified file out -- and now a progress report.
 
-Two properties are pinned here and nothing else in the suite pins them:
+Three properties are pinned here and nothing else in the suite pins them:
 
 * a caller can watch a download byte by byte (the Package Center draws a bar
   from it), and passing no callback leaves the old code path untouched;
 * a spec with NO recorded sha256 is UNVERIFIED, not verified. The GloVe table
   ships with ``sha256=None`` until a maintainer records the real digest, and
   the difference between "we could not check" and "we checked" must be an
-  explicit decision at the call site rather than a silently skipped ``if``.
+  explicit decision at the call site rather than a silently skipped ``if``;
+* cleaning up the abandoned ``.part`` cannot change what failed. The unlink
+  runs inside the handler for the exception it is tidying up after, so an
+  unlucky one of its own must not take that exception's place.
 
 Never touches the network: ``urllib.request.urlopen`` is replaced with a fake
 that serves bytes from memory.
@@ -17,7 +20,9 @@ from __future__ import annotations
 
 import hashlib
 import io
+import logging
 import urllib.request
+from pathlib import Path
 
 import pytest
 
@@ -177,3 +182,41 @@ def test_asset_cache_allow_fetch_false_still_refuses_to_download(served):
 
     with pytest.raises(AssetMissingError):
         resolve(_spec(), allow_fetch=False, progress_callback=lambda *_: None)
+
+
+def test_a_failed_cleanup_unlink_keeps_the_original_exception(served,
+                                                              monkeypatch,
+                                                              caplog):
+    """Deleting the abandoned ``.part`` cannot become the reported failure.
+
+    On Windows an ``unlink`` of a file another process holds open without
+    ``FILE_SHARE_DELETE`` -- an indexer, a backup agent, a scanner that
+    opened the growing file -- raises ``PermissionError``. That unlink runs
+    inside the ``except`` cleaning up after a cancel, so an unguarded one
+    propagates INSTEAD OF the ``PackCancelled`` (or ``KeyboardInterrupt``)
+    that was travelling: the user presses Stop and the job is reported
+    *failed* with ``[WinError 32]``, having also failed to delete anything.
+    The leftover is worth a warning naming it and nothing more.
+    """
+    served(PAYLOAD)
+    real_unlink = Path.unlink
+
+    def _unlink(self, *args, **kwargs):
+        if self.suffix == ".part":
+            raise PermissionError(32, "another process is using this file")
+        return real_unlink(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", _unlink)
+
+    class _Stopped(Exception):
+        """Stands in for the ``PackCancelled`` a real Stop raises."""
+
+    def _stop(done, total):
+        raise _Stopped("the user pressed Stop")
+
+    with caplog.at_level(logging.WARNING, logger="app.core.asset_cache"):
+        with pytest.raises(_Stopped):
+            resolve(_spec(), progress_callback=_stop)
+
+    assert any("thing.bin.part" in record.getMessage()
+               for record in caplog.records), caplog.text

@@ -1331,6 +1331,23 @@ def update() -> None:
     # this process already imported the old dev.py either way.
     gpu, dev = _resolve_update_options(sys.argv[2:])
 
+    # A restart-mode install is a detached helper running `uv pip install`
+    # into the very venv the lines below rewrite -- two writers in one
+    # site-packages, and the loser is whichever finishes second. Same claim
+    # file `cdui start` reads (`_packs_control_dir` resolves to one path for
+    # every command in one checkout), and it clears an abandoned one on the
+    # way, so a helper that died cannot wedge `update` either.
+    #
+    # Exit 1 where `start()` exits 0. `start()` stands down because the user
+    # asked for a running server and one is on its way -- their request is
+    # being satisfied by somebody else. Nobody else is going to run this
+    # user's update, so the honest answer is a refusal, and it matches the
+    # "a server is running" refusal immediately below that scripts already
+    # gate on. After option parsing, so `--help` still answers; before the
+    # git work, which is the first irreversible thing here.
+    if not _restart_preflight():
+        sys.exit(1)
+
     # Nothing below this line is survivable by a running server: the checkout
     # is hard-realigned under it, the frontend/dist it is serving is deleted,
     # and its dependencies are rewritten in the venv it imported from. The
@@ -1989,6 +2006,20 @@ RESTART_LOG_TAIL_LINES = 40
 #: How long a finished restart stays worth mentioning in `cdui status`.
 RESTART_NOTICE_S = 60 * 60
 
+#: Attempts at the `os.replace` that puts a control file in place, and the
+#: pause between them. On Windows CPython's `open()` does not request
+#: `FILE_SHARE_DELETE`, so replacing a file another process merely has OPEN
+#: raises `PermissionError` -- and the helper stamps its pid and then the
+#: installer's into the claim while a `cdui status` may be reading it. The
+#: window is sub-millisecond and the loser of that race is the claim itself:
+#: an unwritten `helper_pid` makes the next `cdui start` read a live restart
+#: as abandoned. A retry rather than a lock because a lock would need both
+#: sides to take it, and one of the two sides here is a user typing a
+#: command; total sleep is capped at a tenth of a second, which nobody waits
+#: on and a genuinely unwritable directory does not turn into a hang.
+ATOMIC_REPLACE_ATTEMPTS = 3
+ATOMIC_REPLACE_PAUSE_S = 0.05
+
 
 def _packs_control_dir() -> Path:
     """`<user data>/packs` -- what `app.core.packs.paths.control_dir()` returns.
@@ -2048,12 +2079,28 @@ def _write_json_atomic(path: Path, data: dict) -> bool:
 
     Never raises: the caller is on its way to starting a server again, and a
     record nobody could write is not a reason to skip that.
+
+    The `os.replace` is RETRIED, and it is the only part that is. On Windows
+    CPython's `open()` does not request `FILE_SHARE_DELETE`, so replacing a
+    file another process merely has open raises `PermissionError` -- and
+    both of this file's writers stamp into a claim a `cdui status` may be
+    reading at that instant. The window is sub-millisecond, so a couple of
+    attempts a twentieth of a second apart close it; a lock would need both
+    sides to take it and one of the two sides is a user typing a command.
+    The temp write is not retried: that file is this process's own.
     """
     tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         tmp.write_text(json.dumps(data, indent=2), encoding="utf-8")
-        os.replace(tmp, path)
+        for attempt in range(ATOMIC_REPLACE_ATTEMPTS):
+            try:
+                os.replace(tmp, path)
+                break
+            except OSError:
+                if attempt + 1 == ATOMIC_REPLACE_ATTEMPTS:
+                    raise
+                time.sleep(ATOMIC_REPLACE_PAUSE_S)
         return True
     except OSError:
         try:
@@ -2069,7 +2116,19 @@ def _iso_now() -> str:
 
 
 def _iso_age_seconds(stamp) -> "float | None":
-    """Seconds since an ISO-8601 timestamp, or None when it is not one."""
+    """Seconds since an ISO-8601 timestamp, or None when it is not one.
+
+    A stamp in the FUTURE is not one either. It gives a negative age, which
+    every rule below would read as "very young" -- so a clock that stepped
+    back would hold a dead claim alive until the wall clock caught up, with
+    no deadline. A `created_at` is written by a process on this machine and
+    read by another one on this machine: a stamp from the future is a clock
+    that moved, not a claim that is young. None, which every caller here
+    already reads as "old", and no skew tolerance -- that would be a number
+    with no correct value.
+
+    Mirrored by `app.core.packs.restart._age_seconds`.
+    """
     from datetime import datetime, timezone  # noqa: PLC0415 — only needed here
     if not isinstance(stamp, str):
         return None
@@ -2079,7 +2138,8 @@ def _iso_age_seconds(stamp) -> "float | None":
         return None
     if moment.tzinfo is None:
         moment = moment.replace(tzinfo=timezone.utc)
-    return (datetime.now(timezone.utc) - moment).total_seconds()
+    age = (datetime.now(timezone.utc) - moment).total_seconds()
+    return None if age < 0 else age
 
 
 def _pending_age_seconds(path: Path, data: "dict | None") -> "float | None":
@@ -2319,8 +2379,16 @@ def _is_plain_requirement(spec: str) -> bool:
     return not match.group("name").lower().endswith(_ARCHIVE_SUFFIXES)
 
 
-def _validate_pending(data: "dict | None") -> "str | None":
+def _validate_pending(data: "dict | None") -> "tuple[str, bool] | None":
     """Why this pending file must not be acted on, or None when it may be.
+
+    Returns `(problem, foreign)`. `foreign` is True for the three OWNERSHIP
+    refusals -- the launcher script, the launcher interpreter and
+    `venv_python` -- which do not say the file is malformed, they say
+    another installation wrote it. That distinction decides what
+    `_run_pending_steps` may do to the file afterwards, so it is answered
+    here, where the checks already are, rather than by a second function
+    re-running them: two readers of one rule drift.
 
     Every check answers one question: did THIS installation's server write
     this file? It names an interpreter to install into, a package index to
@@ -2332,26 +2400,28 @@ def _validate_pending(data: "dict | None") -> "str | None":
     starting one "back" would be starting a second one.
     """
     if data is None:
-        return "the pending file is missing, empty or unreadable"
+        return "the pending file is missing, empty or unreadable", False
 
     schema = data.get("schema")
     if isinstance(schema, bool) or schema != PENDING_SCHEMA:
-        return f"schema {schema!r} is not {PENDING_SCHEMA}"
+        return f"schema {schema!r} is not {PENDING_SCHEMA}", False
 
     kind = data.get("kind")
     if kind not in ("torch", "pip"):
-        return f"kind {kind!r} is not 'torch' or 'pip'"
+        return f"kind {kind!r} is not 'torch' or 'pip'", False
 
     launcher = data.get("launcher")
     if (not isinstance(launcher, list) or len(launcher) != 2
             or not all(isinstance(part, str) and part for part in launcher)):
-        return "launcher is not exactly an interpreter and a script"
+        # A SHAPE refusal, not an ownership one: nobody's launcher looks
+        # like this, so no live helper is acting on this file.
+        return "launcher is not exactly an interpreter and a script", False
     try:
         mine = Path(launcher[1]).resolve() == Path(__file__).resolve()
     except OSError:
         mine = False
     if not mine:
-        return f"launcher {launcher[1]!r} is not this installation's dev.py"
+        return f"launcher {launcher[1]!r} is not this installation's dev.py", True
     try:
         # THIS interpreter, not merely one that exists. `spawn_helper` starts
         # the helper as `[launcher[0], dev.py, packs-run-pending, <file>]`, so
@@ -2368,16 +2438,16 @@ def _validate_pending(data: "dict | None") -> "str | None":
         runnable = False
     if not runnable:
         return (f"launcher {launcher[0]!r} is not the interpreter this helper "
-                f"is running on")
+                f"is running on", True)
 
     relaunch = data.get("relaunch_argv")
     if (not isinstance(relaunch, list)
             or not all(isinstance(part, str) for part in relaunch)):
-        return "relaunch_argv is not a list of strings"
+        return "relaunch_argv is not a list of strings", False
 
     venv_python = data.get("venv_python")
     if not isinstance(venv_python, str) or not venv_python:
-        return "venv_python is not a path"
+        return "venv_python is not a path", False
     # The DIRECTORY is resolved and the leaf name is not. Resolving the whole
     # path would follow the interpreter itself, and on POSIX `uv venv`
     # symlinks `.venv/bin/python` straight at the uv-managed base interpreter
@@ -2393,27 +2463,27 @@ def _validate_pending(data: "dict | None") -> "str | None":
     except OSError:
         inside = False
     if not inside:
-        return f"venv_python {venv_python!r} is not inside {VENV}"
+        return f"venv_python {venv_python!r} is not inside {VENV}", True
 
     pid = data.get("server_pid")
     if isinstance(pid, bool) or not isinstance(pid, int) or pid <= 0:
-        return f"server_pid {pid!r} is not a process id"
+        return f"server_pid {pid!r} is not a process id", False
 
     if kind == "torch":
         index_url = data.get("index_url")
         if index_url is not None and index_url not in set(TORCH_INDEX_URLS.values()):
             return (f"index_url {index_url!r} is not one of the PyTorch wheel "
-                    f"indexes this launcher installs from")
+                    f"indexes this launcher installs from", False)
     else:
         specs = data.get("specs")
         if (not isinstance(specs, list)
                 or not all(isinstance(s, str) and s for s in specs)):
-            return "specs is not a list of package requirements"
+            return "specs is not a list of package requirements", False
         for spec in specs:
             if not _is_plain_requirement(spec):
                 return (f"spec {spec!r} is not a package requirement; only a "
                         f"name with an optional version range is installed "
-                        f"from here")
+                        f"from here", False)
     return None
 
 
@@ -2795,10 +2865,19 @@ def _run_pending_steps(pending_path: Path) -> int:
     down and has nothing to give back.
     """
     data = _read_json_file(pending_path)
-    problem = _validate_pending(data)
-    if problem is not None:
+    refusal = _validate_pending(data)
+    if refusal is not None:
+        problem, foreign = refusal
         err(f"拒絕執行這個重啟安裝：{problem}",
             f"refusing to run this restart install: {problem}")
+        if foreign:
+            # Not ours to write to. Both files below live in the control
+            # directory of the installation that WROTE this claim: its live
+            # helper may still be acting on the claim, and its outcome
+            # record is the last real report its user can read. A refusal
+            # that says "this is not mine" and then edits it anyway is the
+            # bug, not the fix. Printed and left exactly as found.
+            return 2
         if data is not None:
             # A file that could not even be parsed names no job, and writing
             # "refused" over `last_restart_job.json` would erase the report of
@@ -2852,9 +2931,16 @@ def _run_pending_steps(pending_path: Path) -> int:
     # Declared out here because the handler below is: an interrupt has to be
     # able to stop an installer that HAS started, from a phase that has not.
     installer: list = []
+    # Whether the wait for the old server ever ANSWERED. False only while an
+    # interrupt is inside it, and the `finally` needs to know: relaunching
+    # over a server that is still on its way out is how a user ends up with
+    # none. `alive` counts as answered -- that case is decided here, on
+    # purpose, and its pidfile is still true.
+    waited = False
 
     try:
         how = _wait_for_server_exit(data["server_pid"])
+        waited = True
         if how != "alive":
             _forget_stopped_server()
         if how == "exited":
@@ -2915,7 +3001,7 @@ def _run_pending_steps(pending_path: Path) -> int:
         _finish(status="failed", returncode=code,
                 message=f"the installer exited with {code}", log_tail=tail)
         return 1
-    except BaseException:
+    except BaseException as exc:
         # Ctrl-C, a SIGTERM (see `_raise_on_sigterm`), a closed console: this
         # process is going. It covers the WHOLE run, not just the install,
         # because `_raise_on_sigterm` does -- the server wait alone is up to
@@ -2926,14 +3012,40 @@ def _run_pending_steps(pending_path: Path) -> int:
         # status` will read it, and let the exception out: the `finally`
         # below still relaunches, and a server that comes back and reports
         # beats none at all.
+        #
+        # And it says WHICH of those happened. `BaseException` also catches a
+        # KeyError on a claim field, a MemoryError, any genuine traceback --
+        # all of which used to be written up as "interrupted", sending the
+        # user to look for a Ctrl-C they never typed.
         for proc in installer:
             _terminate_pid(proc.pid)
-        message = "the install was interrupted before it finished"
-        err("安裝被中斷，已停止安裝程式", message)
+        if isinstance(exc, (KeyboardInterrupt, SystemExit)):
+            message = "the install was interrupted before it finished"
+            err("安裝被中斷，已停止安裝程式", message)
+        else:
+            message = f"the restart helper failed: {exc!r}"
+            err(f"重啟安裝程式發生錯誤：{exc!r}", message)
         _finish(status="failed", returncode=None, message=message,
                 log_tail=[])
         raise
     finally:
+        if not waited:
+            # The wait never answered -- an interrupt landed inside it -- so
+            # the old server may well still be on its way out. Relaunching
+            # now would find its pidfile, print "already running", exit 0
+            # and record `relaunch: ok`; the old server would then finish
+            # exiting and leave nothing behind it. The SAME wait, not a
+            # shorter one: what it is waiting for has not changed, and a
+            # bespoke grace would be a second rule for one file.
+            #
+            # Wrapped, because this runs in a `finally` on the way out of an
+            # exception that is already travelling: an error here would
+            # replace it, and the user would be told about the wrong thing.
+            try:
+                if _wait_for_server_exit(data["server_pid"]) != "alive":
+                    _forget_stopped_server()
+            except BaseException:
+                pass
         pid = _relaunch_server(list(data["launcher"]),
                                list(data["relaunch_argv"]), log_path)
         if record:
@@ -3442,6 +3554,13 @@ def dev() -> None:
         sys.exit(1)
     _install_frontend_deps_if_needed()
     _apply_dev_env()
+    # After `_apply_dev_env`, which is what points `CODEFYUI_USER_DATA_DIR`
+    # at this checkout's `.codefyui_dev` -- the same claim file every other
+    # command here reads. `cdui dev` starts a `--reload` uvicorn out of the
+    # venv a restart helper may be mid-way through replacing; exit 1 for the
+    # same reason `update` does, and an abandoned claim is cleared on the way.
+    if not _restart_preflight():
+        sys.exit(1)
     project = _parse_project(sys.argv[2:])
     if project is not None:
         _activate_project(project)

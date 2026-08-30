@@ -51,7 +51,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
 from . import download, flows, restart, state
-from .catalog import ModelItem, Pack, get_item
+from .catalog import GPU_TORCH_PACK_ID, ModelItem, Pack, get_item
 from .errors import (
     PackCancelled,
     PackInstallError,
@@ -355,7 +355,7 @@ class PackService:
             self._cursor = 0
             self._broadcast = broadcast
             self._store({"type": "job_started", "pack_id": pack.pack_id,
-                         "items": list(job.items)})
+                         "items": list(job.items)}, job)
         # job_started is in the buffer before the flow can emit anything, so
         # a client that polls from cursor 0 always sees it first.
         self._task = asyncio.create_task(self._run(job, pack, loop, broadcast))
@@ -471,7 +471,7 @@ class PackService:
             self._cursor = 0
             self._broadcast = broadcast
             self._store({"type": "job_started", "pack_id": pack.pack_id,
-                         "items": []})
+                         "items": []}, job)
         # Terminal immediately, and under the lock like every other terminal
         # event: a client that sees ``needs_restart`` has already been handed
         # the event that names the command, the kind and the file.
@@ -491,10 +491,11 @@ class PackService:
         catalog to look the pack up in, so the decision is made here and
         written into the pending file.
 
-        ``restart._GPU_TORCH_PACK_ID`` rather than a second copy of the
-        literal: ``restart`` is already where "which pack is the wheel swap"
-        is decided (``install_command_for`` asks the same question), and one
-        pack id spelled in two files is one spelling too many.
+        ``catalog.GPU_TORCH_PACK_ID`` rather than a second copy of the
+        literal: the catalog is where "which pack is which" is decided, and
+        one pack id spelled in three files is two spellings too many.
+        ``restart.install_command_for`` and ``state.pack_state`` ask the same
+        question off the same constant.
 
         :raises ValueError: the pack has no packages to install. Stopping the
             server to install nothing is worse than refusing -- and it would
@@ -503,7 +504,7 @@ class PackService:
             case; this one runs first, before a job id has even been minted,
             so the client is answered by its own request.
         """
-        if pack.pack_id == restart._GPU_TORCH_PACK_ID:
+        if pack.pack_id == GPU_TORCH_PACK_ID:
             return "torch"
         if not pack.pip:
             raise ValueError(
@@ -555,7 +556,7 @@ class PackService:
         the job reaches a terminal state either way, which is the part that
         matters to anyone still watching it.
         """
-        emit = self._emitter(loop, broadcast)
+        emit = self._emitter(job, loop, broadcast)
         try:
             await asyncio.to_thread(
                 self._run_flow, pack, list(job.items),
@@ -604,12 +605,21 @@ class PackService:
             # dict drop.
             state.invalidate()
 
-    def _emitter(self, loop, broadcast: _Broadcast) -> Callable[[dict], None]:
-        """The ``emit`` the flow is handed. Called from the worker thread."""
+    def _emitter(self, job: PackJob, loop, broadcast: _Broadcast
+                 ) -> Callable[[dict], None]:
+        """The ``emit`` the flow is handed. Called from the worker thread.
+
+        Closes over the JOB as well as its generation's loop and broadcast,
+        so an event says which job produced it. A closure is the only thing
+        that can: the caller is a reader thread that may outlive the job --
+        ``runner._pump`` is a daemon thread joined with a timeout -- and by
+        the time its event reaches ``_store`` the service's idea of the
+        current job may already be somebody else's.
+        """
 
         def emit(event: dict) -> None:
             with self._lock:
-                self._store(event)
+                self._store(event, job)
             try:
                 loop.call_soon_threadsafe(broadcast.notify)
             except RuntimeError:
@@ -620,13 +630,22 @@ class PackService:
 
         return emit
 
-    def _store(self, event: dict) -> None:
-        """Stamp *event* and buffer it. CALLER HOLDS ``self._lock``."""
+    def _store(self, event: dict, job: PackJob | None) -> None:
+        """Stamp *event* and buffer it. CALLER HOLDS ``self._lock``.
+
+        *job* is the job that PRODUCED the event, which is not always the
+        current one: a finished job's reader thread can still be emitting.
+        Buffering is unconditional -- the buffer belongs to whatever job is
+        current, and a stray line in it is visible and harmless -- but the
+        step bookkeeping is not. ``current_step`` is what
+        ``GET /api/packs`` turns into an item's "downloading" badge, so a
+        late event stamping it on the next job would put that badge on an
+        item of a pack the old job never touched.
+        """
         self._cursor += 1
         self._events.append({**event, "cursor": self._cursor, "ts": _now_iso()})
 
-        job = self._job
-        if job is None:
+        if job is None or job is not self._job:
             return
         kind = event.get("type")
         if kind == "step_started":
@@ -654,7 +673,7 @@ class PackService:
         this is the only place its status is ever set.
         """
         with self._lock:
-            self._store(event)
+            self._store(event, job)
             job.status = status
             job.finished_at = time.time()
         self._broadcast.notify()

@@ -15,6 +15,10 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import dataclass
+# Path is used for one pure-string question -- "is this filename a single
+# component?" -- and never to touch the filesystem, which stays a later
+# layer's job.
+from pathlib import Path
 
 #: How a pack's install finishes. "live" packs are usable the moment the
 #: install ends; "restart" packs replace something already imported into the
@@ -219,6 +223,22 @@ def _validate(packs: Sequence[Pack]) -> None:
                     f"{item.item_id!r} in pack {pack.pack_id!r} and by {owner}")
             repo_owner[item.repo_id] = f"{pack.pack_id}/{item.item_id}"
 
+    # The same argument one layer down: an asset item's bytes are ONE file in
+    # ONE flat directory, named by ``filename`` alone, so two items naming one
+    # filename share a file -- removing either would delete the other's
+    # download while the other's sentinel went on claiming it was there.
+    file_owner: dict[str, str] = {}
+    for pack in packs:
+        for item in pack.items:
+            if item.kind != "asset" or not item.filename:
+                continue
+            owner = file_owner.get(item.filename)
+            if owner is not None:
+                raise ValueError(
+                    f"asset filename {item.filename!r} is used by item "
+                    f"{item.item_id!r} in pack {pack.pack_id!r} and by {owner}")
+            file_owner[item.filename] = f"{pack.pack_id}/{item.item_id}"
+
     for pack in packs:
         if pack.install_mode not in INSTALL_MODES:
             raise ValueError(
@@ -236,12 +256,38 @@ def _validate(packs: Sequence[Pack]) -> None:
                 raise ValueError(
                     f"item {item.item_id!r} has kind {item.kind!r}; "
                     f"expected one of {sorted(ITEM_KINDS)}")
+            # Every surface that offers this item quotes a size and a
+            # licence: the confirm prompt, ``packs list``, the disk precheck,
+            # the progress meter's fallback total. A zero size makes the
+            # precheck wave through a download it cannot hold and the meter
+            # divide by nothing; an empty licence ships a model with no
+            # terms attached.
+            if item.approx_bytes <= 0:
+                raise ValueError(
+                    f"item {item.item_id!r} in pack {pack.pack_id!r} has "
+                    f"approx_bytes {item.approx_bytes!r}; expected a "
+                    f"positive size")
+            if not item.license:
+                raise ValueError(
+                    f"item {item.item_id!r} in pack {pack.pack_id!r} has no "
+                    f"license")
             if item.kind == "hf" and not item.repo_id:
                 raise ValueError(f"hf item {item.item_id!r} has no repo_id")
             if item.kind == "asset" and not item.url:
                 raise ValueError(f"asset item {item.item_id!r} has no url")
             if item.kind == "asset" and not item.filename:
                 raise ValueError(f"asset item {item.item_id!r} has no filename")
+            # The rule ``flows._asset_removal_target`` enforces at DELETE
+            # time, stated here so the catalog cannot ship a filename the
+            # remover will refuse -- which would be a download nothing can
+            # ever free. ``".."`` is named explicitly because pathlib does
+            # not resolve it away: ``Path("..").name`` is ``".."``.
+            if (item.kind == "asset" and item.filename
+                    and (item.filename in {".", ".."}
+                         or Path(item.filename).name != item.filename)):
+                raise ValueError(
+                    f"asset item {item.item_id!r} has filename "
+                    f"{item.filename!r}; expected one plain path component")
 
         for dep in pack.depends_on:
             if dep == pack.pack_id:
@@ -304,5 +350,15 @@ def get_item(pack: Pack, item_id: str) -> ModelItem:
 
 
 PACK_IDS: frozenset[str] = frozenset(pack.pack_id for pack in CATALOG)
+
+#: The one pack three other modules have to recognise BY ID rather than by
+#: anything in its record. ``state`` asks it about the installed wheel
+#: instead of about downloaded files, ``restart`` builds it a
+#: ``cdui install --gpu`` line instead of a ``cdui packs install`` one, and
+#: ``service`` picks the helper's command shape from it. Named here, once,
+#: because a pack id spelled privately in three files is three chances for
+#: one of them to be renamed alone -- and because the catalog is where "which
+#: pack is which" is decided.
+GPU_TORCH_PACK_ID: str = "gpu-torch"
 
 _validate(CATALOG)

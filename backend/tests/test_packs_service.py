@@ -281,6 +281,62 @@ async def test_current_step_tracks_step_started_and_step_done():
     await drain(service, job.job_id)
 
 
+class CapturingFlow(ScriptedFlow):
+    """A ``ScriptedFlow`` that hands the test back the ``emit`` it was given.
+
+    That is the handle a reader thread outliving its job has: ``emit`` is a
+    closure over one job's generation, and ``runner._pump`` is a DAEMON
+    thread that ``_stop_process`` joins with a TIMEOUT -- so a cancelled
+    install's reader can still be holding one after the job is over.
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.emits: list = []
+
+    def __call__(self, pack: Pack, item_ids, *, emit, cancel_check):
+        self.emits.append(emit)
+        return super().__call__(pack, item_ids, emit=emit,
+                                cancel_check=cancel_check)
+
+
+async def test_a_late_event_from_a_finished_job_never_touches_the_next_one():
+    """A step stamped by whoever emitted it, not by whoever is current.
+
+    ``_store`` used to read ``self._job``, so an event arriving from a
+    finished job's reader thread set ``current_step`` on the job that had
+    replaced it -- and ``GET /api/packs`` then reported some item of the NEW
+    pack as "downloading" on the strength of the old one's log. The window
+    is real rather than theoretical: ``emit`` takes the same lock a submit
+    takes, so it can be blocked on it while the next job is being installed
+    into ``self._job``.
+
+    The event is still BUFFERED. The buffer belongs to whatever job is
+    current and a stray line in it is visible, explainable and harmless; a
+    wrong item badge is none of those.
+    """
+    flow = CapturingFlow()
+    flow.finish()
+    service = PackService(run_flow=flow)
+
+    first = await service.submit_install(get_pack(SENTENCE), [],
+                                         mode="live", variant=None)
+    await drain(service, first.job_id)
+    assert len(flow.emits) == 1, flow.emits
+    stale_emit = flow.emits[0]
+
+    second = await service.submit_install(get_pack("word-vectors"), [],
+                                          mode="live", variant=None)
+    stale_emit({"type": "step_started", "step": "download:ghost"})
+
+    assert service.current_job() is second
+    assert second.current_step is None
+    assert first.current_step is None
+
+    flow.finish()
+    await drain(service, second.job_id)
+
+
 # ── one job at a time, and the last one stays readable ────────────────────
 
 

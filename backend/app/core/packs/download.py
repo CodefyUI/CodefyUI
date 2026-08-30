@@ -148,8 +148,21 @@ class _ByteMeter:
         meter past the *base* the next file is handed; a ceiling under
         ``done`` would then clamp the bar BACKWARDS, and a progress bar that
         goes down reads as a restart rather than as arithmetic.
+
+        Such a file is UNCAPPED rather than pinned at ``done``. Pinning it
+        there also satisfies "never clamp backwards" -- and freezes the bar
+        for the whole of that file, because every byte it then adds is
+        clamped to the ceiling it was already at. The panel showed a stopped
+        bar for a download that was running. An uncapped file cannot pull
+        the bar down either, so the guarantee survives; what goes is the
+        freeze.
         """
-        self._ceiling = max(base + size, self.done) if size else None
+        if not size:
+            self._ceiling = None
+        elif base + size <= self.done:
+            self._ceiling = None
+        else:
+            self._ceiling = base + size
         self._initial_seen = False
 
     def note_initial(self, initial: int) -> None:
@@ -168,7 +181,14 @@ class _ByteMeter:
     def _payload(self) -> dict:
         percent = None
         if self.total:
-            percent = round(100.0 * self.done / self.total, 1)
+            # Clamped, unlike ``bytes_done``/``bytes_total`` beside it.
+            # Those are MEASUREMENTS and are reported as they are; the
+            # percentage is a claim about completeness, and ``advance_to``
+            # is deliberately outside the per-file ceiling, so ``done`` can
+            # pass an ``approx_bytes`` total that was only ever an estimate.
+            # A panel reading 103% is wrong in a way "449 MB / 476 MB" is
+            # not.
+            percent = round(min(100.0, 100.0 * self.done / self.total), 1)
         return {"type": "progress", "item": self._item_id,
                 "bytes_done": self.done, "bytes_total": self.total,
                 "percent": percent}
@@ -591,6 +611,14 @@ def check_disk(items: Iterable[ModelItem]) -> None:
     for GloVe that second file is bigger than the first. Budgeting the
     download alone would pass the check on a disk that then fills during the
     convert step -- with the download already spent.
+
+    ONE volume is measured for both kinds of item, and it is the right one:
+    ``hf_cache_dir()`` is ``cache_dir() / "hf"``, a child of the directory
+    asset items land in, and ``_measurable_dir`` walks up to the nearest
+    ancestor that exists -- so on a machine that has never installed a pack
+    this already measures ``cache_dir()`` itself. The one arrangement that
+    would make the two differ is a separate mount at ``<cache>/hf``, which
+    nothing here creates.
     """
     approx = sum(item.approx_bytes + item.derived_bytes for item in items)
     if approx <= 0:

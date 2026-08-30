@@ -489,6 +489,38 @@ def test_a_zero_size_file_cannot_drag_the_next_file_backwards():
     assert percents == sorted(percents), percents
 
 
+def test_a_file_after_an_unsized_one_still_moves_the_bar():
+    """Not clamping backwards must not mean not moving at all.
+
+    ``max(base + size, self.done)`` kept the bar from going down by pinning
+    the ceiling AT ``done`` -- which froze it there for the whole of the next
+    file, so the panel showed a stopped bar for a download that was running.
+    A file whose own ceiling is already below what has been counted is
+    uncapped instead: it cannot pull the bar down, and it can push it up.
+
+    The percentage is a separate claim from the byte counts. ``advance_to``
+    is deliberately outside the ceiling, so ``done`` can pass ``total`` and
+    the panel used to read over 100 per cent while the item still showed
+    449 MB of 476 MB.
+    """
+    events: list[dict] = []
+    meter = download._ByteMeter(emit=events.append, item_id="m", total=1000,
+                                min_interval_s=0.0)
+
+    meter.begin_file(0, 0)
+    meter.add(700)
+
+    meter.begin_file(0, 400)
+    meter.add(10)
+    meter.add(10)
+
+    assert meter.done > 700, "the bar froze for the whole of the next file"
+    meter.advance_to(5000)
+    meter.emit_now()
+    percents = [event["percent"] for event in _progress(events)]
+    assert all(percent <= 100.0 for percent in percents), percents
+
+
 # -- Hugging Face items ----------------------------------------------------
 
 
@@ -885,6 +917,28 @@ def test_download_asset_item_cancel_mid_download(served):
 
     assert not (cache_dir() / "thing.bin").exists()
     assert not state.item_state(pack, item).present
+
+
+def test_a_cancelled_asset_download_leaves_no_part_file(served):
+    """The abandoned ``.part`` goes with the cancelled download.
+
+    ``resolve`` writes into ``<name>.part`` and renames it into place at the
+    end; a cancel raises out of the middle, so the rename never happens and
+    nothing else was ever going to name that file. For GloVe that is up to
+    69 MB of cache nothing counts, nothing shows and ``cdui packs remove``
+    does not free -- the remover only knows the item's own filename.
+
+    It is not a resumable download either: the next attempt reopens the same
+    path with ``"wb"``, which truncates.
+    """
+    pack, item = _asset_pack(DIGEST)
+    served(PAYLOAD)
+
+    with pytest.raises(PackCancelled):
+        download.download_asset_item(pack, item, emit=lambda event: None,
+                                     cancel_check=lambda: True)
+
+    assert not (cache_dir() / "thing.bin.part").exists()
 
 
 # -- the disk precheck -----------------------------------------------------

@@ -41,7 +41,7 @@ import subprocess
 import sys
 import tempfile
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 from . import download, runner, state
@@ -603,6 +603,24 @@ def remove_item(pack: Pack, item_id: str) -> bool:
         target = _hf_removal_target(item)
     else:
         target = _asset_removal_target(item, recorded)
+        # The belt for a download abandoned BEFORE ``asset_cache.resolve``
+        # learned to take its own temp file with it. Nothing new lands here
+        # any more, but a cache that survived an interrupted install still
+        # holds one, and this is the only screen a user can reach it from.
+        # Named through the same helper -- with the ``.part`` filename
+        # standing in for the item's own -- rather than joined by hand, so
+        # the sibling gets exactly the checks the download itself gets and
+        # there is one answer to "which file may this delete". No
+        # ``recorded`` to compare against: the sentinel never named it.
+        part = _asset_removal_target(
+            replace(item, filename=f"{item.filename}.part"), None)
+        if part is not None:
+            try:
+                part.unlink()
+            except OSError:
+                log.warning("could not remove %s, an abandoned download of "
+                            "pack %s item %s; something is holding it open",
+                            part, pack.pack_id, item_id)
         # Before the download itself, because the sentinel that names these
         # goes away with it: a derived file left behind after its record has
         # been deleted is one nothing will ever find again.
