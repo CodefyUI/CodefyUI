@@ -227,6 +227,33 @@ describe('applyGraphOps — move_node', () => {
     expect(r.results[1].ok).toBe(true);
     expect(r.nodes[0].position).toEqual({ x: 12, y: 34 });
   });
+
+  it('re-derives the offset when the moved node IS the bound note', () => {
+    const { nodes, a } = seeded();
+    const r = run([{ op: 'move_node', node_id: 'note1', position: { x: 200, y: 100 } }], nodes);
+    const note = r.nodes.find((n) => n.id === 'note1')!;
+    expect(note.position).toEqual({ x: 200, y: 100 });
+    // `onNodesChange`'s FIRST pass: the offset follows the note that was moved.
+    expect(note.data.boundOffset).toEqual({ x: 200, y: 100 });
+
+    // The SECOND pass, replayed by hand -- what the store does on the next
+    // drag of the parent. A stale offset would snap the note back to where it
+    // sat before the plugin moved it, reading as if the edit had been undone.
+    const parent = r.nodes.find((n) => n.id === a.id)!;
+    const dragged = { x: parent.position.x + 40, y: parent.position.y + 15 };
+    const rederived = {
+      x: dragged.x + note.data.boundOffset!.x,
+      y: dragged.y + note.data.boundOffset!.y,
+    };
+    expect(rederived).toEqual({ x: 240, y: 115 });
+  });
+
+  it('leaves a plain node\'s data object untouched', () => {
+    const { nodes, a } = seeded();
+    const before = nodes.find((n) => n.id === a.id)!.data;
+    const r = run([{ op: 'move_node', node_id: a.id, position: { x: 7, y: 8 } }], nodes);
+    expect(r.nodes.find((n) => n.id === a.id)!.data).toBe(before);
+  });
 });
 
 describe('applyGraphOps — set_segment / remove_segment', () => {
@@ -307,5 +334,36 @@ describe('applyGraphOps — set_segment / remove_segment', () => {
     const groups: SegmentGroup[] = [{ id: 's1', headNodeId: a.id, tailNodeId: b.id }];
     const r = run([{ op: 'add_node', node_type: 'Source' }], nodes, edges, groups);
     expect(r.segmentGroups).toBe(groups);
+  });
+
+  it('remove_node drops the segments that named it, and only those', () => {
+    const { nodes, edges, a, b } = chain();
+    const groups: SegmentGroup[] = [
+      { id: 's1', headNodeId: a.id, tailNodeId: b.id },
+      { id: 's2', headNodeId: b.id, tailNodeId: b.id },
+    ];
+    const head = run([{ op: 'remove_node', node_id: a.id }], nodes, edges, groups);
+    expect(head.results[0].ok).toBe(true);
+    expect(head.segmentGroups).toEqual([{ id: 's2', headNodeId: b.id, tailNodeId: b.id }]);
+
+    // A delete that names no endpoint leaves the list alone -- by reference,
+    // so the autosave record is not rewritten for a list that did not move.
+    const note: Node<NodeData> = {
+      id: 'note1', type: 'noteNode', position: { x: 0, y: 0 },
+      data: { label: 'Note', type: 'note', params: {}, noteKind: 'text', noteContent: 'x', noteColor: '#3d3d1a', boundToNodeId: null, boundOffset: null, noteWidth: 200 },
+    };
+    const other = run([{ op: 'remove_node', node_id: 'note1' }], [...nodes, note], edges, groups);
+    expect(other.segmentGroups).toBe(groups);
+  });
+
+  it('clear_graph empties the segment list too', () => {
+    const { nodes, edges, a, b } = chain();
+    const groups: SegmentGroup[] = [{ id: 's1', headNodeId: a.id, tailNodeId: b.id }];
+    const r = run([{ op: 'clear_graph' }], nodes, edges, groups);
+    expect(r.results[0].ok).toBe(true);
+    expect(r.segmentGroups).toEqual([]);
+
+    const empty: SegmentGroup[] = [];
+    expect(run([{ op: 'clear_graph' }], nodes, edges, empty).segmentGroups).toBe(empty);
   });
 });

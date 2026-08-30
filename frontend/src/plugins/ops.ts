@@ -257,6 +257,13 @@ export function applyGraphOps(
               : n,
           );
         edges = edges.filter((e) => e.source !== id && e.target !== id);
+        // The rule the Delete key follows (tabStore.ts:2206-2237): a group
+        // whose head or tail has just been deleted renders nothing and would
+        // otherwise be written to the saved file for good.
+        const keptSegments = segmentGroups.filter(
+          (s) => s.headNodeId !== id && s.tailNodeId !== id,
+        );
+        if (keptSegments.length !== segmentGroups.length) segmentGroups = keptSegments;
         mutated = true;
         results.push({ index, ok: true });
         return;
@@ -284,6 +291,9 @@ export function applyGraphOps(
       case 'clear_graph': {
         nodes = [];
         edges = [];
+        // Every group named nodes that are gone. Guarded so an already-empty
+        // list comes back by reference.
+        if (segmentGroups.length > 0) segmentGroups = [];
         for (const k of Object.keys(refs)) delete refs[k];
         mutated = true;
         results.push({ index, ok: true });
@@ -312,7 +322,26 @@ export function applyGraphOps(
         const dx = target.x - moved.position.x;
         const dy = target.y - moved.position.y;
         nodes = nodes.map((n) => {
-          if (n.id === id) return { ...n, position: { x: target.x, y: target.y } };
+          if (n.id === id) {
+            const next = { ...n, position: { x: target.x, y: target.y } };
+            // Mirrors `onNodesChange`'s FIRST pass (tabStore.ts:2133-2150): a
+            // bound note that is itself moved re-derives its offset, or the
+            // next drag of its parent would snap it back to where it sat
+            // before -- reading as if the plugin's edit had been undone.
+            if (n.type === 'noteNode' && n.data.boundToNodeId && n.data.boundOffset) {
+              const parent = nodes.find((p) => p.id === n.data.boundToNodeId);
+              if (parent) {
+                next.data = {
+                  ...n.data,
+                  boundOffset: {
+                    x: target.x - parent.position.x,
+                    y: target.y - parent.position.y,
+                  },
+                };
+              }
+            }
+            return next;
+          }
           // Mirrors `onNodesChange`'s second pass (tabStore.ts:2152-2178): a
           // bound note follows its parent. By DELTA rather than by
           // re-deriving from `boundOffset`, so a note the user has nudged
