@@ -47,7 +47,7 @@ cdui packs install word-vectors --yes
 cdui packs remove word-vectors glove-50d
 ```
 
-`--items a,b` 只會下載指定的項目，預設則是補齊這個套件包缺的全部。`--yes` 會跳過下載大小的確認，在沒有終端可以確認的情況下（CI、把輸出接到管線）必須加上。只接受型錄裡的 id。給腳本用的離開碼列在 [套件包指令](../getting-started/cli-commands.md)。若你用的是開發用的 checkout，`uv pip install -e ".[llm-sentence]"` 裝的是和 `sentence-embeddings` 套件包完全相同的版本範圍；模型仍然要另外下載。
+`--items a,b` 只會下載指定的項目，預設則是補齊這個套件包缺的全部。`--yes` 會跳過下載大小的確認，在沒有終端可以確認的情況下（CI、把輸出接到管線）必須加上。只接受型錄裡的 id。給腳本用的離開碼列在 [套件包指令](../getting-started/cli-commands.md#套件包指令)。若你用的是開發用的 checkout，`uv pip install -e ".[llm-sentence]"` 裝的是和 `sentence-embeddings` 套件包完全相同的版本範圍；模型仍然要另外下載。
 
 **檔案會放在哪裡。** 放在 CodefyUI 的資產快取裡：Windows 是 `%LOCALAPPDATA%\codefyui\Cache`，macOS 是 `~/Library/Caches/codefyui`，Linux 是 `~/.cache/codefyui`。Hugging Face 的 snapshot 放在 `hf/` 底下（`hf/models--sentence-transformers--all-MiniLM-L6-v2/snapshots/<revision>/`），像 GloVe 詞向量表這種單一檔案則直接放在快取根目錄，另外每個項目會在 `packs/state/` 留一個小小的 JSON，記錄「這個下載真的完成了」—— 因為在磁碟上，一份只下載到一半的 snapshot 看起來和完整的一模一樣。設定 `CODEFYUI_USER_DATA_DIR` 會把這些全部搬走：快取變成 `<dir>/cache`，控制檔變成 `<dir>/packs`。這裡不會去讀或寫 `HF_HOME` —— 那是整台機器共用、和你其他工具共享的 Hugging Face 快取，它屬於它的主人。
 
@@ -172,7 +172,7 @@ DocumentLoader -> TextChunker -> TextEmbedding -> VectorStore -> Retriever -> Pr
 
 - **「reports installed but `sentence_transformers` cannot be imported」** —— 紀錄檔說套件包裝好了，直譯器卻不同意，這是安裝壞掉，而不是少下載。請從套件中心重新安裝，或執行 `cdui packs install sentence-embeddings --yes`。
 - **「Model ... is not downloaded」** —— Python 那一半在，但那一個模型不在。四個模型是互相替代的，裝了一個絕不會順便裝其他的：請在套件中心下載它，或執行 `cdui packs install sentence-embeddings --items multilingual-e5-small`。
-- **CPU 上的速度。** 這些都是小模型（22M 到 118M 參數），CPU 本來就是它們預期要跑的地方。一次工作階段裡的第一次編碼要花幾秒把權重從磁碟讀進來，之後幾句話的編碼遠低於一秒。GloVe 則要付一次性的轉檔成本：把下載回來的文字表轉成 npz，大約十秒，而且過程中會有一行進度說明；之後每個行程載入它大約一秒。
+- **CPU 上的速度。** 這些都是小模型（22M 到 118M 參數），CPU 本來就是它們預期要跑的地方。一次工作階段裡的第一次編碼要花幾秒把權重從磁碟讀進來，之後幾句話的編碼遠低於一秒。GloVe 則要付一次性的轉檔成本：把下載回來的文字表轉成 npz，大約幾秒鐘，而且過程中會有一行進度說明；之後每個行程載入它大約一秒。
 - **生成很慢。** `HFTextGenerate` 是一個 token 一個 token 解碼的，0.5B 的模型在筆電 CPU 上一秒只能吐出幾個，所以較長的答案可能要等上幾十秒，這裡沒有什麼壞掉的東西要修。可以動的地方，由便宜到貴：把 `max_new_tokens` 調小（它是「這個節點最久會跑多久」的上限，不是目標值）；把 `Retriever` 的 `top_k` 調小，或用 `PromptBuilder` 的 `max_context_chars` 設個上限，因為每一個檢索回來的字元都要先被讀過，模型才會寫出第一個 token；有 GPU 的話把 `device` 設成 `cuda`。把最後一棒換成 `LLMChat`，則是直接把生成整個移出這個行程。
 - **答案沒有理會上下文。** 先看 `Retriever` 的紀錄行再怪模型 —— 它會印出每一個命中的分數。最高分只有 0.3 左右，通常表示語料裡根本沒有這個答案，換什麼提示詞都救不回來。如果命中看起來是對的、答案卻在亂飄，就把 `top_k` 調大，好讓真正回答問題的那一段確實進到提示詞裡。如果什麼都沒回來，那是 `min_score` 濾掉的：這時 `PromptBuilder` 會寫進 `(no context retrieved)` 並發出警告，把門檻調低（0 表示全部保留）就會把切塊放回來。如果連分數本身都像是隨便給的，請檢查兩個 `TextEmbedding` 節點是不是指定了同一個模型 —— 這個錯誤產生的是聽起來很合理的胡說，而不是一個錯誤訊息。
 - **Windows 的路徑。** Hugging Face 的 snapshot 目錄層數很深。如果快取本來就位在一條很長的路徑底下，請開啟長路徑支援，或用 `CODEFYUI_USER_DATA_DIR` 把它指到淺一點的地方。另外在 Windows 上，移除有可能回報「紀錄已清除，但檔案還在磁碟上」，因為有程式正開著它們：請停掉伺服器，再手動刪掉那個目錄。

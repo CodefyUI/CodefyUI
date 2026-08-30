@@ -403,6 +403,35 @@ received — each links to the release it was published as.
   `ValueError` rules — so all of them were unreachable outside DEBUG, where a
   traceback happens to name the class in its last line. The message itself
   never carried it: `str(KeyError('tensor'))` is just `"'tensor'"`.
+- **Things the LLM nodes and the docs were saying wrong.** A `TextEmbedding`
+  param honoured the floor the editor declares and ignored the ceiling, so a
+  hand-edited `max_seq_length: 99999` was written straight onto a process-wide
+  cached encoder. An encoder with nothing to embed — a `WordVector` whose
+  `words` box is empty — arrived at `CosineSimilarity` as a 0-width tensor and
+  was reported as "queries D=0, keys D=384", a true sentence about a node the
+  learner had not touched; the message now names that empty input, or an
+  encoder stopped before its first batch, instead of the width mismatch
+  it used to report. `LLMChat` returned an empty string with nothing
+  anywhere to say that a reasoning model had spent the whole `max_tokens`
+  budget on hidden thinking. The Teaching Inspector's `normalize` step showed
+  the same rows as `encode` under a description promising a transformation; the
+  encoder normalises inside the forward pass, so the step now says so and
+  carries the mean row length that proves it. A `LIST` port summary cuts each
+  string at the same 200 characters a `STRING` port has always been cut at,
+  so a `DocumentLoader.texts` port stops putting whole documents into
+  every `node_status` frame — 26 KB for the five bundled RAG samples, megabytes
+  for a real folder, at which point the entry was elided wholesale and the
+  learner saw nothing at all. `error_type` now survives the last-resort elision
+  marker as well as the frame above it. And a GloVe `.gz` stamped in the future
+  — clock skew, an archive restored with its own timestamps — no longer leaves
+  every freshly converted table looking stale, which had `load_glove_50d`
+  silently re-parsing 400,000 lines on every graph run. In the docs: the
+  README's node table summed to 110 against its own "152 Built-in Nodes"
+  headline four lines from the top of the file and had no VLA row at all, and
+  now carries the registry's own figures with a test that fails the moment any
+  of the three node tables drifts from it; the zh-TW examples gallery caught up
+  with the English one, which itself was missing **Train a VLA on PushWorld**;
+  and `installation.md` stopped quoting `nodes_loaded: 94`.
 
 - **Paging through `GET /api/apps/{slug}/runs` no longer drops every run that
   shares a timestamp with the cursor** ([#372]). The `before` cursor carried

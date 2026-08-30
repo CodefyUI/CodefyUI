@@ -378,6 +378,14 @@ Concretely, once someone is through your SSO:
   `ANTHROPIC_API_KEY` in the environment, and Kaggle credentials all belong to
   the instance, not to a person -- one person signs in and everybody's graphs
   bill to them, with nothing recording who spent what.
+- The package-install log is an open read. `GET /api/packs/jobs/{id}/events`
+  takes no session token, exactly like `GET /api/runs/{id}/events` -- both are
+  reads, and the Package Center polls them to draw its progress bar. STARTING
+  an install is still guarded (the session token, plus a loopback bind unless
+  `CODEFYUI_ALLOW_REMOTE_PACK_INSTALL=1` opts back in), but the log the install
+  leaves behind names the interpreter it ran against -- the venv path in `uv`'s
+  argv -- and carries `uv`'s own output verbatim. On a LAN bind, anyone who can
+  reach the port can read it.
 
 [Shared Instances](./shared-instances) covers those credentials in detail,
 including the fallback order and where each is stored. Read it before you give a

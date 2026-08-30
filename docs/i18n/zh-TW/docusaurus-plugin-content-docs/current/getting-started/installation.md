@@ -75,7 +75,7 @@ cdui start
 curl http://127.0.0.1:8000/api/health
 ```
 
-這應該會回傳類似 `{"status":"ok","nodes_loaded":94,"presets_loaded":3}` 的內容（`nodes_loaded` 數量會隨每個版本增加 —— 確認非 0 即可）。
+這應該會回傳類似 `{"status":"ok","nodes_loaded":152,"presets_loaded":3}` 的內容（`nodes_loaded` 數量會隨每個版本增加 —— 確認非 0 即可）。
 
 接著開啟前端，載入 **Train CNN on MNIST** 範例並點擊 **執行**。你應該會在下方面板看到訓練進度出現。
 

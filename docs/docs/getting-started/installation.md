@@ -75,7 +75,7 @@ The steps above install a personal instance on `127.0.0.1`. If several people ar
 curl http://127.0.0.1:8000/api/health
 ```
 
-This should return something like `{"status":"ok","nodes_loaded":94,"presets_loaded":3}` (the `nodes_loaded` count grows with each release — just confirm it's non-zero).
+This should return something like `{"status":"ok","nodes_loaded":152,"presets_loaded":3}` (the `nodes_loaded` count grows with each release — just confirm it's non-zero).
 
 Then open the frontend, load the **Train CNN on MNIST** example, and click **Run**. You should see training progress appear in the bottom panel.
 
