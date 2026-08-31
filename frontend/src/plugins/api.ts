@@ -287,8 +287,11 @@ function tabInfoOf(tab: TabState, activeTabId: string): WorkspaceTabInfo {
  * knob a plugin can reach: the workspace path refuses outright, and the legacy
  * path keeps writing the open canvas because that is what it has always done
  * and moving an installed plugin's writes out from under it is not a change to
- * make silently (see `commitGraphOperations`). Its one carve-out is the two
- * segment ops, which are not canvas writes at all -- see the branch below.
+ * make silently (see `commitGraphOperations`). "The open canvas" is the whole
+ * of it, though: inside a block the legacy path refuses the two segment ops
+ * and drops the reducer's segment outcome, because `segmentGroups` is the
+ * GRAPH's list from in there and no legacy op ever wrote it before v5. Both
+ * halves are below.
  */
 function commitToTab(
   pluginId: string,
@@ -311,7 +314,10 @@ function commitToTab(
     return { ...empty, ...counts, tabId, revision: tab.revision,
              committed: false, conflict: 'read_only' };
   }
-  if (tab.subgraphStack.length > 0) {
+  // Read again at the commit below. Past the branch this opens, a non-empty
+  // stack can only be the legacy path: the workspace path has returned.
+  const insideBlock = tab.subgraphStack.length > 0;
+  if (insideBlock) {
     // While a block is open, `tab.nodes` / `tab.edges` are the BLOCK's
     // contents, and `snapshot()` answers with the flushed top level -- so a
     // workspace write here would land somewhere the plugin never read.
@@ -381,7 +387,18 @@ function commitToTab(
   store.commitDocument(tabId, {
     nodes: outcome.nodes,
     edges: outcome.edges,
-    segmentGroups: outcome.segmentGroups,
+    // The legacy path inside a block writes the open canvas and NOTHING else,
+    // which is what it did before v5 -- back then it wrote only nodes and
+    // edges, and the reducer's segments fell on the floor. They have to keep
+    // falling: `segmentGroups` is the GRAPH's list while a block is open
+    // (`enterSubgraph` captures it rather than swapping it), so committing
+    // the outcome would let `clear_graph` wipe every overlay on a canvas the
+    // user is not looking at, and `remove_node` prune one whose endpoint id
+    // an inner node happens to reuse. Neither is a canvas write, and both
+    // reach the next save. The two ops that mean to write segments are
+    // refused outright above; this is the same bar for the ops that would
+    // have done it by accident.
+    segmentGroups: insideBlock ? tab.segmentGroups : outcome.segmentGroups,
     dirtyIds: outcome.dirtyIds,
     origin: { pluginId },
   });

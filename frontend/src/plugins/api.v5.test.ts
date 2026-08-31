@@ -569,6 +569,81 @@ describe('workspace.applyOperations while the user is inside a block', () => {
     expect(store().getTab(tabId)!.segmentGroups).toHaveLength(1);
     expect(store().getTab(tabId)!.nodes).toHaveLength(3);
   });
+
+  /**
+   * A graph with a real top-level overlay, standing inside a block.
+   *
+   * The overlay is installed through the real write path rather than pushed
+   * into the store by hand, so what the tests below assert against is a
+   * segment the editor itself produced.
+   */
+  function enterBlockOverSegmentedGraph() {
+    store().setNodes([
+      { id: 'a', type: 'baseNode', position: { x: 0, y: 0 },
+        data: { label: 'a', type: 'Source', params: {} } } as never,
+      { id: 'b', type: 'baseNode', position: { x: 200, y: 0 },
+        data: { label: 'b', type: 'Sink', params: {} } } as never,
+      { id: 'inst', type: 'baseNode', position: { x: 400, y: 0 },
+        data: { label: 'Encoder', type: 'subgraph:blk', params: {} } } as never,
+    ]);
+    store().setEdges([
+      { id: 'e1', source: 'a', target: 'b', sourceHandle: 'out', targetHandle: 'x' },
+    ]);
+    store().setSubgraphs([{
+      id: 'blk', name: 'Encoder', description: '',
+      nodes: [{ id: 'in1', type: 'Source', position: { x: 0, y: 0 }, data: { params: {} } }],
+      edges: [],
+      interface: { inputs: [], outputs: [], triggerTargets: [] },
+    } as never]);
+
+    const seeded = freshApi().workspace.applyOperations({
+      operations: [
+        { op: 'set_segment', segment_id: 's-top', head_node_id: 'a', tail_node_id: 'b' },
+      ],
+    });
+    expect(seeded.committed).toBe(true);
+    expect(store().getActiveTab().segmentGroups).toHaveLength(1);
+    expect(store().enterSubgraph('inst')).toBe(true);
+  }
+
+  it('a legacy clear_graph in a block leaves the TOP LEVEL overlays alone', () => {
+    // `clear_graph` empties the reducer's segment list, and while a block is
+    // open that list is the GRAPH's, not the block's -- so committing the
+    // outcome wholesale would delete every overlay on a canvas the user is not
+    // even looking at, and the next save would write the loss to disk. Before
+    // v5 the legacy commit never touched segments at all; from inside a block
+    // it still does not.
+    const api = freshApi();
+    enterBlockOverSegmentedGraph();
+    // The block's own canvas: one node, and no segments of its own.
+    expect(store().getActiveTab().nodes).toHaveLength(1);
+    expect(store().getActiveTab().segmentGroups).toHaveLength(1);
+
+    const result = api.graph.applyOperations([{ op: 'clear_graph' }]);
+    expect(result.results[0].ok).toBe(true);
+
+    // Emptied the block, exactly as before (api.view.test.ts pins this too).
+    expect(store().getActiveTab().nodes).toEqual([]);
+    // ...and left the graph's overlay standing, through the exit and into
+    // what the next save would write.
+    expect(store().getActiveTab().segmentGroups).toHaveLength(1);
+    store().exitSubgraph();
+    expect(store().getActiveTab().segmentGroups).toHaveLength(1);
+    expect(api.graph.getGraph().segmentGroups).toHaveLength(1);
+  });
+
+  it('the same clear_graph at the TOP level still empties the overlays', () => {
+    // The companion: nothing about the legacy path spares segments as such.
+    // Being inside a block is the whole of the difference.
+    const api = freshApi();
+    enterBlockOverSegmentedGraph();
+    store().exitSubgraph();
+    expect(store().getActiveTab().segmentGroups).toHaveLength(1);
+
+    api.graph.applyOperations([{ op: 'clear_graph' }]);
+    expect(store().getActiveTab().segmentGroups).toEqual([]);
+    expect(store().getActiveTab().nodes).toEqual([]);
+  });
 });
 
 describe('workspace.onChanged', () => {
