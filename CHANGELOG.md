@@ -580,12 +580,71 @@ received — each links to the release it was published as.
   serializes byte-for-byte as before. Start needed one line more: its branch
   of the reader hardcoded `Start` rather than reading the key, which was
   harmless only while nothing wrote it.
+- **…and keeps it when it is collapsed into a block** ([#400]). The serializer
+  that writes a node INTO a block never learned the rule above, so collapsing
+  a renamed node reverted it to its type name — permanently, because the
+  original node is gone and the definition is the only record of the name
+  left. The inner writer now follows the same rule clause for clause, and both
+  readers of a definition — entering a block, expanding one — already restore
+  the key. A block nobody has renamed anything inside still serializes
+  byte-for-byte as before.
+- **Typing in a note can be undone** ([#400]). `updateNoteData` pushed no undo
+  snapshot, so a note's text was the one thing a user could write onto a graph
+  and not take back — while the same edit made by a plugin's `update_note`
+  could be. Every caller commits at a boundary (blurring the note, picking a
+  colour from the context menu, choosing an image), never per keystroke, so
+  one snapshot is one undo step per finished edit. An edit that changes
+  nothing records none: blurring a note commits whether or not anything was
+  typed, and an undo step that restores the state you were already in would
+  push real history off a capped stack.
 - **The Delete key prunes the segment overlays naming the node it deleted**
   ([#341]). The context menu's Delete already did; React Flow's Delete key
   goes through a different path that unbound notes and closed modals but left
   the segments alone. A segment whose head or tail is gone can never resolve
   a path, so it drew nothing on the canvas while staying in the tab — and
   getting written to the file on the next save.
+- **A discarded `atomic` batch reports the graph that is still there, and the
+  v5 reference stops overstating two more things** ([#396]). `node_count` and
+  `edge_count` were built from the reducer outcome, so a three-op atomic batch
+  with one failure answered `node_count = tab + 2` for a tab it had just
+  committed nothing to — a plugin logging the counts was told the size of a
+  graph that no longer exists anywhere. Every return that writes nothing now
+  reports the tab as it stands, which is what the four conflict refusals
+  already did. Two documentation claims go with it: `origin` is stamped on
+  BOTH plugin write paths, not only `workspace.applyOperations` — they share
+  one commit — so a plugin filtering on it can ignore its own legacy writes
+  too, now pinned by a test; and `OpResult.node_id` comes from the ops that
+  create or edit a node, not from "every op that names one", `remove_node`
+  being the op that names one and returns none.
+
+### Internal
+
+- **Three apiVersion 5 guards passed even when the thing they guarded was
+  broken** ([#398]). All three came with the workspace work above, and all
+  three had the same shape: the assertion was real, and what it pointed at
+  was not.
+
+  `workspace.onChanged` fans a transition out as added tabs, then document
+  changes, then the activation, then closes — an order a consumer relies on
+  to process a batch in one pass. It was only ever asserted ACROSS
+  transitions, one event in each, so reversing the four loops that build the
+  batch left the suite green. It is now pinned against a single transition
+  that does all four at once.
+
+  The transient-tab reload case restated the reader's "fall back to the first
+  record" rule inside the test instead of calling the readers, so a
+  regression in either real one would have failed nothing. It now drives the
+  autosave for real and asks both tiers that have to survive an active tab
+  which was never persisted: `loadTabs` for localStorage and `readSnapshot`
+  for IndexedDB.
+
+  And the cross-side check on `WorkspaceSnapshot` used `Exclude` to isolate
+  the `{ error: 'unknown_tab' }` branch — which isolates it by dropping the
+  graph-bearing branch, so a host-only field added next to `graph` was
+  compared against nothing. Both branches are now compared member for member
+  through a distributive omit: `Omit` applied to each union member
+  separately, which plain `Omit` cannot do, because `keyof` a union is the
+  intersection of its branches' keys and collapses this one to `{}`.
 
 ## [2.4.1] — 2026-08-22
 
@@ -2645,6 +2704,9 @@ Release candidates before 1.0.0 are on the
 [#337]: https://github.com/CodefyUI/CodefyUI/issues/337
 [#341]: https://github.com/CodefyUI/CodefyUI/issues/341
 [#342]: https://github.com/CodefyUI/CodefyUI/issues/342
+[#400]: https://github.com/CodefyUI/CodefyUI/issues/400
+[#396]: https://github.com/CodefyUI/CodefyUI/issues/396
+[#398]: https://github.com/CodefyUI/CodefyUI/issues/398
 [@oyea0801]: https://github.com/oyea0801
 [@latteine1217]: https://github.com/latteine1217
 [Unreleased]: https://github.com/CodefyUI/CodefyUI/compare/2.4.1...main

@@ -9,8 +9,11 @@
  * behaviour an installed plugin can notice (#341 section 4.6).
  */
 import { describe, it, expect, beforeEach, vi } from 'vitest';
-import { useTabStore, _persistedTabsForTesting } from '../store/tabStore';
+import { IDBFactory, IDBKeyRange } from 'fake-indexeddb';
+import { useTabStore, type PersistedTab } from '../store/tabStore';
 import { useNodeDefStore } from '../store/nodeDefStore';
+import { useProjectStore } from '../store/projectStore';
+import { _resetIdbForTests } from '../utils/idb';
 import { buildPluginAPI } from './api';
 import type { NodeDefinition } from '../types';
 
@@ -58,6 +61,9 @@ function candidateGraph(name = 'candidate') {
 }
 
 beforeEach(() => {
+  // Reset FIRST: a case that opened a project would otherwise leave the
+  // autosave scoped to it for every case after.
+  useProjectStore.setState({ projectDir: null, projectName: null, loaded: false });
   useTabStore.setState({ tabs: [], activeTabId: null as unknown as string, clipboard: null });
   store().addTab('live');
   useNodeDefStore.setState({ definitions: DEFS, presets: [] } as never);
@@ -197,26 +203,64 @@ describe('workspace.openGraphs', () => {
     expect(store().getTab((kept as { tabId: string }).tabId)!.transient).toBe(false);
   });
 
-  it('an ACTIVATED transient tab leaves the next reload on a real tab', () => {
-    // The one state where the persisted pointer names a tab that will not come
-    // back: `saveTabs` writes the unfiltered `activeTabId` alongside records
-    // `persistedTabsFor` has dropped the transient tab from. The reader's
-    // fallback -- `tabs[0]` when no record carries the id (`loadTabs`) -- is
-    // what keeps that from being a crash, so it is asserted here against the
-    // records this state really produces.
+  it('an ACTIVATED transient tab leaves the next reload on a real tab', async () => {
+    // The one state where the persisted pointer names a tab that will not
+    // come back: `saveTabs` writes the unfiltered `activeTabId` alongside
+    // records `persistedTabsFor` has dropped the transient tab from. Two
+    // readers have to survive that -- `loadTabs` for the localStorage tier
+    // and `readSnapshot` for the IndexedDB one -- and BOTH are driven here
+    // rather than restated, so a regression in either fails this test (#398).
+    const PROJECT = '/proj';
+    const scope = `codefyui-tabs::${PROJECT}`;
+    useProjectStore.getState().setProject(PROJECT);
     const api = freshApi();
     const live = store().activeTabId;
-    const [opened] = api.workspace.openGraphs(
-      [{ title: 'Candidate', graph: candidateGraph() }], { activate: 'first' });
-    const { tabId } = opened as { tabId: string };
-    expect(store().activeTabId).toBe(tabId);
 
-    const records = _persistedTabsForTesting(store().tabs);
-    expect(records.map((r) => r.id)).not.toContain(tabId);
-    const restored = records.some((r) => r.id === store().activeTabId)
-      ? store().activeTabId
-      : records[0].id;
-    expect(restored).toBe(live);
+    let tabId!: string;
+    let saved!: { activeTabId: string; tabs: PersistedTab[] };
+    vi.useFakeTimers();
+    try {
+      const [opened] = api.workspace.openGraphs(
+        [{ title: 'Candidate', graph: candidateGraph() }], { activate: 'first' });
+      ({ tabId } = opened as { tabId: string });
+      expect(store().activeTabId).toBe(tabId);
+      // The real autosave, on its real trailing-edge debounce.
+      vi.advanceTimersByTime(300);
+      saved = JSON.parse(localStorage.getItem(scope)!);
+    } finally {
+      vi.useRealTimers();
+    }
+    // The hazard, as the writer really leaves it on disk.
+    expect(saved.activeTabId).toBe(tabId);
+    expect(saved.tabs.map((r) => r.id)).toEqual([live]);
+
+    // Reader 1: `loadTabs`, through the action a resolved project calls it
+    // from. A reload lands on the surviving tab, not on the pointer.
+    store().rehydrateForProject(PROJECT);
+    expect(store().tabs.map((t) => t.id)).toEqual([live]);
+    expect(store().activeTabId).toBe(live);
+
+    // Reader 2: `readSnapshot`, the tier that is the store of record since
+    // #125. This file mocks that module for the store's own use, so the real
+    // one is imported here and driven against a real IDB state machine.
+    const persistence = await vi.importActual<typeof import('../store/tabPersistence')>(
+      '../store/tabPersistence',
+    );
+    vi.stubGlobal('indexedDB', new IDBFactory());
+    vi.stubGlobal('IDBKeyRange', IDBKeyRange);
+    _resetIdbForTests();
+    persistence._resetTabPersistenceForTests();
+    try {
+      await persistence.writeSnapshot(scope, saved.tabs, tabId);
+      persistence._resetTabPersistenceForTests(); // a fresh page load
+      const snapshot = await persistence.readSnapshot(scope);
+      expect(snapshot!.tabs.map((t) => t.id)).toEqual([live]);
+      expect(snapshot!.activeTabId).toBe(live);
+    } finally {
+      vi.unstubAllGlobals();
+      _resetIdbForTests();
+      persistence._resetTabPersistenceForTests();
+    }
   });
 });
 
@@ -364,6 +408,32 @@ describe('workspace.applyOperations', () => {
     expect(result.results.map((r) => r.ok)).toEqual([true, false, true]);
     expect(result.revision).toBe(before);
     expect(store().getTab(tabId)!.nodes).toHaveLength(2);
+  });
+
+  it('atomic: the counts on a discarded batch describe the TAB, not the outcome', () => {
+    const { api, tabId } = openEditable();
+    const before = store().getTab(tabId)!;
+    expect(before.nodes).toHaveLength(2);
+    expect(before.edges).toHaveLength(1);
+
+    const result = api.workspace.applyOperations({
+      tabId,
+      atomic: true,
+      operations: [
+        { op: 'remove_edge', source: 'a', target: 'b' },
+        { op: 'add_node', node_type: 'Ghost' },
+        { op: 'add_node', node_type: 'Sink' },
+      ],
+    });
+
+    // Nothing was written, so the counts a plugin logs have to be the graph it
+    // can still see -- the same promise the four conflict refusals keep. The
+    // discarded outcome would have said 3 nodes and 0 edges (#396).
+    expect(result.committed).toBe(false);
+    expect(result.node_count).toBe(2);
+    expect(result.edge_count).toBe(1);
+    expect(store().getTab(tabId)!.nodes).toHaveLength(2);
+    expect(store().getTab(tabId)!.edges).toHaveLength(1);
   });
 
   it('non-atomic still commits the ops that worked', () => {
@@ -669,6 +739,57 @@ describe('workspace.onChanged', () => {
     off();
   });
 
+  it('orders added, changed, activated and removed WITHIN one transition', () => {
+    // The sibling above only ever sees one event per store transition, so it
+    // pins the order ACROSS transitions: reordering the four loops in
+    // `subscribeWorkspaceChanged` leaves it green (#398). The SECOND
+    // assertion here is the half with teeth -- one transition carrying all
+    // four kinds at once, which is the only shape that constrains the loop
+    // order. The `openGraphs` assertion first is the sequence a consumer has
+    // to process in one pass; it spans several commits, so it does not.
+    const api = freshApi();
+    const seen: string[] = [];
+    const off = api.workspace.onChanged((e) =>
+      seen.push(e.type === 'tabs'
+        ? `tabs${e.removed ? '-' : '+'}:${e.tabId}`
+        : `${e.type}:${e.tabId}`),
+    );
+    const live = store().activeTabId;
+
+    // Two entries in ONE call. `openGraphs` creates each tab and fills it in
+    // separate commits and activates once at the end, so the whole call is a
+    // fixed five-event sequence with nothing interleaved.
+    const opened = api.workspace.openGraphs([
+      { title: 'One', graph: candidateGraph() },
+      { title: 'Two', graph: candidateGraph() },
+    ], { activate: 'last' });
+    const [first, second] = opened.map((r) => (r as { tabId: string }).tabId);
+    expect(seen).toEqual([
+      `tabs+:${first}`, `graph:${first}`,
+      `tabs+:${second}`, `graph:${second}`,
+      `active-tab:${second}`,
+    ]);
+
+    // And one transition that does all four at once. `setState` rather than
+    // an action because no single action does: this is the commit shape
+    // `hydrateTabsFromPersistence` makes when a reload comes back with a
+    // different tab set -- one tab gone, one back, a survivor on a new
+    // revision, the user landed elsewhere.
+    const secondTab = store().getTab(second)!;
+    store().removeTab(second);
+    const liveTab = store().getTab(live)!;
+    seen.length = 0;
+    useTabStore.setState({
+      tabs: [{ ...liveTab, revision: liveTab.revision + 1 }, secondTab],
+      activeTabId: second,
+    });
+    expect(seen).toEqual([
+      `tabs+:${second}`, `graph:${live}`, `active-tab:${second}`, `tabs-:${first}`,
+    ]);
+
+    off();
+  });
+
   it('carries the tabId and the new revision on a graph event', () => {
     const api = freshApi();
     const events: Array<{ type: string; tabId: string; revision: number }> = [];
@@ -696,6 +817,22 @@ describe('workspace.onChanged', () => {
     origins.length = 0;
     store().addNote('text', { x: 0, y: 0 });
     expect(origins).toEqual([undefined]);
+    off();
+  });
+
+  it('attaches origin to the LEGACY write path too, not just the workspace one', () => {
+    // Both paths run through the same `commitToTab`, so both stamp `origin`.
+    // Pinned because the reference used to name only `workspace.applyOperations`
+    // (#396): a plugin filtering on `origin` must be able to ignore its own
+    // legacy writes as well, or it hears its own echo.
+    const api = freshApi('graph-copilot');
+    const origins: Array<{ pluginId: string } | undefined> = [];
+    const off = api.workspace.onChanged((e) => {
+      if (e.type === 'graph') origins.push(e.origin);
+    });
+
+    api.graph.applyOperations([{ op: 'add_node', node_type: 'Source' }]);
+    expect(origins).toEqual([{ pluginId: 'graph-copilot' }]);
     off();
   });
 

@@ -110,3 +110,42 @@ describe('label serialization — the Start node', () => {
     expect(resolved[0].data.type).toBe('Start');
   });
 });
+
+/**
+ * The name has to survive being collapsed into a block, too (#400).
+ *
+ * Collapse is the one place where losing it is PERMANENT: the renamed node
+ * leaves the canvas and the definition becomes the only record of it, so a
+ * name dropped by `serializeInnerNode` cannot be recovered by any later edit.
+ * The whole round trip is exercised here rather than in the pure unit tests
+ * because it takes both halves -- the inner serializer writing the key and
+ * `resolveSerializedNodes` reading it back on entry -- for the user to see
+ * their own name again.
+ */
+describe('label serialization — a node collapsed into a block', () => {
+  it('keeps a renamed node named through collapse, save and re-entry', () => {
+    store().addNode(DEF, { x: 0, y: 0 });
+    store().addNode(DEF, { x: 200, y: 0 });
+    const [first, second] = store().getActiveTab().nodes;
+    store().renameNode(first.id, 'Training set');
+    store().setNodes(
+      store().getActiveTab().nodes.map((n) => ({ ...n, selected: true })),
+    );
+    expect(store().collapseSelectionToSubgraph('Block').ok).toBe(true);
+
+    // The saved FILE carries the key -- and only for the renamed node.
+    const serialized = store().getSerializedGraph();
+    const inner = serialized.subgraphs[0].nodes as any[];
+    expect(inner.find((n) => n.id === first.id).data.label).toBe('Training set');
+    expect(inner.find((n) => n.id === second.id).data).not.toHaveProperty('label');
+
+    // ...and the name is on screen again when the user opens the block.
+    const instance = store()
+      .getActiveTab()
+      .nodes.find((n) => String(n.data.type).startsWith('subgraph:'))!;
+    expect(store().enterSubgraph(instance.id)).toBe(true);
+    const opened = store().getActiveTab().nodes;
+    expect(opened.find((n) => n.id === first.id)!.data.label).toBe('Training set');
+    expect(opened.find((n) => n.id === second.id)!.data.label).toBe('Dataset');
+  });
+});

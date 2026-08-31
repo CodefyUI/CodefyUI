@@ -480,8 +480,9 @@ export interface WorkspaceApplyResult extends ApplyResult {
  *
  * Delivered synchronously, in the order `tabs` (added), `graph`,
  * `active-tab`, `tabs` (removed), so a burst can be processed in one pass. A
- * `graph` event carries `origin` when the change came from a plugin's
- * `workspace.applyOperations`, which is how you ignore your own writes.
+ * `graph` event carries `origin` when the change came from a plugin write —
+ * either `workspace.applyOperations` or the legacy `graph.applyOperations`,
+ * both of which stamp it — which is how you ignore your own writes.
  *
  * If your callback throws, the editor logs it and unsubscribes you: a plugin
  * cannot be allowed to break the editor's own state.

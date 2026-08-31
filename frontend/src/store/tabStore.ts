@@ -3355,6 +3355,32 @@ export const useTabStore = create<TabStoreState>((rawSet, get) => {
   },
 
   updateNoteData: (nodeId, updates) => {
+    // A note edit is undoable (#400). It was the one text the user could type
+    // into a graph and not take back -- while the SAME edit made by a
+    // plugin's `update_note` went through the ops batch and could be.
+    //
+    // One snapshot per call is one undo step per finished edit, the shape
+    // `renameNode` has: every caller commits at a boundary (blur, the
+    // unmount rescue in NoteNode, a colour picked from the context menu, an
+    // image chosen), never per keystroke, so there is nothing to coalesce.
+    //
+    // Guarded on the edit actually changing something, which the callers do
+    // NOT guarantee: blur commits whether or not anything was typed, so
+    // double-clicking a note to read it and clicking away would otherwise
+    // spend an undo slot on a step that restores the state it was already in
+    // -- and the stack is capped, so dead frames push real history out.
+    // Shallow comparison: only `boundOffset` is an object, and no caller
+    // passes it through here; a fresh one would compare unequal and take the
+    // snapshot, which is the safe side to err on.
+    {
+      const note = get().getActiveTab().nodes.find((n) => n.id === nodeId);
+      const changed =
+        !!note
+        && (Object.keys(updates) as (keyof typeof updates)[]).some(
+          (key) => note.data[key] !== updates[key],
+        );
+      if (changed) get().pushUndoSnapshot();
+    }
     set({
       tabs: updateTab(get().tabs, get().activeTabId, (tab) => ({
         nodes: tab.nodes.map((n) =>

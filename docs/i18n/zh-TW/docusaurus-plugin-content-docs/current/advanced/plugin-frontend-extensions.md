@@ -215,7 +215,7 @@ interface OpResult {
   index: number;      // 操作在批次中的位置
   ok: boolean;        // 此操作是否套用成功
   error?: string;     // ok 為 false 時的失敗原因
-  node_id?: string;   // 解析出的節點 id，凡是指名或建立節點的操作都會帶
+  node_id?: string;   // 解析出的節點 id，凡是建立或修改節點的操作都會帶；remove_node 不帶
   segment_id?: string; // apiVersion 5：set_segment 建立或取代的那個 id
 }
 
@@ -389,7 +389,7 @@ if (result.conflict === "revision_mismatch") {
 6. 使用 `atomic: true` 時，只要有任何一個操作失敗就什麼都不寫：`committed: false`、`revision` 不變，而且回傳**完整長度**的 `results`，讓你看得出是哪個操作錯了。
 7. 否則，若有東西改變：一個撤銷快照、一次寫入、`committed: true`，以及新的 `revision`。什麼都沒改變的批次，不會寫入，也不會推入撤銷步驟。
 
-被拒絕時，`node_count` 與 `edge_count` 仍然描述該分頁當下的樣子，所以會把它們記進 log 的外掛，不會被告知圖表是空的而其實不是。`unknown_tab` 是例外：根本沒有分頁可數。
+只要這次呼叫什麼都沒提交——被拒絕、`atomic` 前置檢查失敗、批次什麼都沒改——`node_count` 與 `edge_count` 就描述該分頁當下的樣子，所以會把它們記進 log 的外掛，拿到的絕不會是一份已經被丟掉的圖表的數字。`unknown_tab` 是例外：根本沒有分頁可數。
 
 衝突是**回傳的，永遠不會拋出**。一個批次仍然是一個撤銷步驟，而每個操作的語義與 `api.graph.applyOperations` 相同：沒有 `atomic` 時，失敗的操作會被跳過並回報，其餘照樣套用。若提交後的圖表已經沒有詳細資料視窗或畫布選取所指的那個節點，兩者都會被清掉，這樣還原該節點的撤銷就不會讓視窗自己彈回來。
 
@@ -421,7 +421,7 @@ type WorkspaceEvent =
   | { type: "active-tab"; tabId: string; revision: number };
 ```
 
-事件在變更之後同步送達，順序固定：先是新增的分頁，接著是變更的文件，然後是作用中分頁，最後是移除的分頁。`origin` 只有在變更來自某個外掛的 `workspace.applyOperations` 時才會出現在 `graph` 事件上，這就是你分辨自己的寫入與使用者的寫入的方法。
+事件在變更之後同步送達，順序固定：先是新增的分頁，接著是變更的文件，然後是作用中分頁，最後是移除的分頁。`origin` 只有在變更來自外掛的寫入時才會出現在 `graph` 事件上——`workspace.applyOperations` 與舊有的 `graph.applyOperations` 兩條路徑都會蓋上它——這就是你分辨自己的寫入與使用者的寫入的方法。
 
 如果你的回呼拋錯，編輯器會記錄它並把你取消訂閱——外掛不能有能力弄壞分頁儲存。`api.graph.onGraphChanged` 不變：仍然是作用中分頁，仍然不帶任何內容。
 

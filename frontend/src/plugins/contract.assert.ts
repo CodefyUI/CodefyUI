@@ -89,6 +89,19 @@ type Extends<A, B> = A extends B ? true : false;
 type Mutual<A, B> = Extends<A, B> extends true ? Extends<B, A> : false;
 /** Compile error unless the argument resolves to exactly `true`. */
 type Expect<T extends true> = T;
+/**
+ * `Omit`, applied to each member of a union SEPARATELY.
+ *
+ * A conditional type over a naked type parameter distributes, so every branch
+ * is omitted from on its own and the union is put back together with all of
+ * them still in it. Plain `Omit` cannot do that on a union: `keyof (A | B)` is
+ * the INTERSECTION of the two key sets, so `Omit<A | B, K>` keeps only the
+ * keys A and B share — `never` for a union whose branches have nothing in
+ * common, which collapses the whole thing to `{}` and compares nothing at all.
+ */
+type DistributiveOmit<T, K extends PropertyKey> = T extends unknown
+  ? Omit<T, K>
+  : never;
 
 // ── data contracts: must match the host structurally, both directions ──
 // (ParamDefinition.default is `any` on the host and `unknown` in the contract;
@@ -138,16 +151,21 @@ export type _WorkspaceEvent = Expect<Mutual<HWorkspaceEvent, CWorkspaceEvent>>;
 export type _WorkspaceOpenEntryMeta = Expect<
   Mutual<Omit<HWorkspaceOpenEntry, 'graph'>, Omit<CWorkspaceOpenEntry, 'graph'>>
 >;
-// The same carve-out, one level in. `Exclude` drops the graph-bearing branch —
-// whose other half `_WorkspaceTabInfo` already compares — and leaves
-// `{ error: 'unknown_tab' }`, which nothing else reaches: `_WorkspaceKeys`
-// compares the key NAMES of `workspace`, never the return type of `snapshot`,
-// so a re-typed error branch would drift in silence. `Omit` cannot stand in
-// here the way it does above: `keyof` a union is the INTERSECTION of its
-// branches' keys, which is `never` for this one, so `Omit<..., 'graph'>`
-// collapses to `{}` and would compare nothing at all.
+// The same carve-out, one level in — and applied to BOTH branches of the
+// union, which is the part `Exclude` could not do (#398). Nothing else
+// reaches either branch: `_WorkspaceKeys` compares the key NAMES of
+// `workspace`, never the return type of `snapshot`. `Exclude<..., { graph:
+// unknown }>` closed the `{ error: 'unknown_tab' }` half by isolating it, but
+// it isolates by DROPPING the graph-bearing half, so a host-only field added
+// next to `graph` was compared against nothing at all. Omitting `graph` from
+// each branch separately leaves both of them in the comparison, member for
+// member. (`graph` itself stays out for the reason above: the host's
+// `SerializedGraph` and the contract's are the one deliberate divergence.)
 export type _WorkspaceSnapshotMeta = Expect<
-  Mutual<Exclude<HWorkspaceSnapshot, { graph: unknown }>, Exclude<CWorkspaceSnapshot, { graph: unknown }>>
+  Mutual<
+    DistributiveOmit<HWorkspaceSnapshot, 'graph'>,
+    DistributiveOmit<CWorkspaceSnapshot, 'graph'>
+  >
 >;
 export type _WorkspaceKeys = Expect<
   Mutual<keyof HApi['workspace'], keyof CApi['workspace']>
