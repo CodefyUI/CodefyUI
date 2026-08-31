@@ -290,7 +290,18 @@ async def create_sweep(body: CreateSweepRequest, request: Request):
             status_code=400,
             detail="options.seed is owned by the sweep; set sweep_spec.seed "
                    "and seed_variants instead")
-    if raw_options.get("lane") == LANE_INTERACTIVE:
+    # The STRIPPED value, not the raw one: normalize_options strips
+    # `lane` (run_service.py:596), so a padded " interactive " would pass
+    # a raw comparison, normalise INTO the interactive lane, and be caught
+    # only by submit's own guard inside the loop -- a 500 plus a permanent
+    # `failed` sweeps row, where this rule promises a 400 and no rows at
+    # all. NOT lowercased, because normalize_options does not lowercase
+    # either: lanes are case-sensitive labels and an unrecognised one
+    # QUEUES rather than bypassing (run_service.py:242-244), so
+    # "Interactive" is an ordinary queued lane and refusing it here would
+    # refuse a legal sweep.
+    raw_lane = raw_options.get("lane")
+    if isinstance(raw_lane, str) and raw_lane.strip() == LANE_INTERACTIVE:
         raise HTTPException(
             status_code=400,
             detail="a sweep cannot use the interactive lane; interactive "
@@ -361,6 +372,20 @@ async def create_sweep(body: CreateSweepRequest, request: Request):
                 variant.graph, options=variant_options, name=name,
                 provenance=provenance, sweep_id=sweep.id,
                 sweep_variant=variant.index)
+            # Patched once per variant, not once at the end: a single
+            # patch at the end would lose every id if the loop broke
+            # half-way, which is precisely the case RULING 2 says must
+            # stay visible.
+            #
+            # INSIDE the guard, not after it. The duty is that every path
+            # out of this loop either fills in every run id or marks the
+            # sweep failed, and a store fault here would otherwise take a
+            # third path: a transient fault can fail one write and allow
+            # the next, so it would exit with neither -- leaving a
+            # `running` row that no harvest seam can ever settle, because
+            # a run_id-None variant is not terminal (spec 4.3).
+            await store.set_variant_run(sweep.id, variant.index,
+                                        run_id=result.run_id, seed=seed)
         except Exception as exc:
             # The children already created are LEFT ALONE. They are real
             # queued runs and shutdown/startup recovery retires them as
@@ -375,11 +400,9 @@ async def create_sweep(body: CreateSweepRequest, request: Request):
                 detail=(f"{exc}; sweep {sweep.id} was created with "
                         f"{len(submitted)} of {len(compiled.variants)} "
                         "variants and is marked failed")) from exc
-        # Patched once per variant, not once at the end: a single patch at
-        # the end would lose every id if the loop broke half-way, which is
-        # precisely the case RULING 2 says must stay visible.
-        await store.set_variant_run(sweep.id, variant.index,
-                                    run_id=result.run_id, seed=seed)
+        # Appended only once the patch landed, so `len(submitted)` in the
+        # message above counts variants FULLY recorded on the row. A child
+        # whose patch failed is still findable by exec_runs.sweep_id.
         submitted.append({
             "index": variant.index, "domain_index": variant.domain_index,
             "run_id": result.run_id, "status": result.status, "seed": seed,

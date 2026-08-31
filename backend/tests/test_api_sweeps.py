@@ -16,6 +16,7 @@ independent.
 from __future__ import annotations
 
 import asyncio
+import sqlite3
 import threading
 import time
 from typing import Any
@@ -430,23 +431,24 @@ async def test_the_route_captures_provenance_once_for_the_whole_sweep(
     assert {c.git_commit for c in children} == {"sweep-sentinel"}
 
 
-def _raise_on_nth(real: Any, *, n: int) -> Any:
-    """Wrap ``RunService.submit`` so its *n*th call raises instead.
+def _raise_on_nth(real: Any, *, n: int,
+                  error: BaseException | None = None) -> Any:
+    """Wrap an async method so its *n*th call raises instead of running.
 
-    Calls before *n* run the REAL submit, so they create genuine queued rows
-    -- the point of the test is what happens to children that already
-    exist.
+    Calls before *n* run the REAL method, so they land genuine rows -- what
+    both callers are about is the work that already succeeded.
     """
     calls = 0
 
-    async def _submit(self: RunService, *args: Any, **kwargs: Any) -> Any:
+    async def _wrapped(self: Any, *args: Any, **kwargs: Any) -> Any:
         nonlocal calls
         calls += 1
         if calls == n:
-            raise RunServiceUnavailable("run service is shutting down")
+            raise (error if error is not None else
+                   RunServiceUnavailable("run service is shutting down"))
         return await real(self, *args, **kwargs)
 
-    return _submit
+    return _wrapped
 
 
 async def test_the_submit_loop_failing_part_way_leaves_a_failed_sweep(
@@ -506,6 +508,44 @@ async def test_the_submit_loop_failing_part_way_leaves_a_failed_sweep(
         release_filler.set()
 
 
+async def test_a_store_failure_while_patching_a_run_id_still_fails_the_sweep(
+        client, store, sweep_store, db, monkeypatch):
+    """The patch is the loop's THIRD exit, and it needs the same duty.
+
+    `set_variant_run` runs AFTER its variant's child was created, so a store
+    fault there used to leave the loop having neither filled in every run id
+    nor marked the sweep failed -- and a run_id-None variant is not terminal
+    (spec 4.3), so the row sat at `running` with no seam able to settle it.
+    A transient fault is real here: one write can fail and the next succeed.
+    """
+    monkeypatch.setattr(
+        SweepStore, "set_variant_run",
+        _raise_on_nth(SweepStore.set_variant_run, n=2,
+                      error=sqlite3.OperationalError("database is locked")))
+    response = await client.post("/api/sweeps", json=_body(
+        _values("lr", [0.001, 0.002, 0.003])))
+    assert response.status_code == 500, response.text   # not RunService-shaped
+    detail = response.json()["detail"]
+    assert "1 of 3 variants" in detail
+
+    rows = db._conn.execute("SELECT id FROM sweeps").fetchall()
+    assert len(rows) == 1
+    sweep_id = rows[0][0]
+    assert sweep_id in detail
+
+    record = await sweep_store.get_sweep(sweep_id)
+    assert record is not None
+    assert record.state == "failed"          # NOT still "running"
+    assert record.error
+    assert record.finished_at is not None
+    # Variant 1's PATCH is what failed, so the row under-reports it ...
+    assert [v.run_id is not None for v in record.variants] == [
+        True, False, False]
+    # ... while its child still exists and stays findable by sweep_id.
+    children = await store.list_runs_by_sweep(sweep_id)
+    assert [c.sweep_variant for c in children] == [0, 1]
+
+
 async def test_seed_variants_off_leaves_every_variant_unseeded(client, store):
     """RULING 1: an unseeded run takes the SHARED exclusion and overlaps up
     to the device limit. A seeded one takes a process-wide exclusive lock."""
@@ -553,6 +593,39 @@ async def test_the_interactive_lane_is_refused(client, db):
     assert response.status_code == 400
     assert "interactive lane" in response.json()["detail"]
     assert db._conn.execute("SELECT COUNT(*) FROM sweeps").fetchone()[0] == 0
+
+
+async def test_a_padded_interactive_lane_is_refused_before_any_row(client, db):
+    """normalize_options STRIPS `lane`, so comparing the RAW string lets
+    " interactive " walk past this rule, normalise INTO the interactive lane
+    and be refused only by submit's own guard inside the loop -- a 500 plus a
+    permanent `failed` sweeps row, where the rule promises a 400 and no rows
+    at all. Nothing in v1 deletes a sweeps row, so that one is forever.
+    """
+    response = await client.post("/api/sweeps", json=_body(
+        _values("lr", [0.1]),
+        options={"device": "cpu", "lane": " interactive "}))
+    assert response.status_code == 400, response.text
+    assert "interactive lane" in response.json()["detail"]
+    assert db._conn.execute("SELECT COUNT(*) FROM sweeps").fetchone()[0] == 0
+    assert db._conn.execute(
+        "SELECT COUNT(*) FROM exec_runs").fetchone()[0] == 0
+
+
+async def test_an_unrecognised_lane_label_queues_instead_of_being_refused(
+        client, store):
+    """The rule strips but must NOT lowercase, because normalize_options does
+    not lowercase either: an unrecognised lane label QUEUES rather than
+    bypassing (run_service.py:242-244), so "Interactive" is an ordinary
+    queued sweep and refusing it would refuse a legal one. Here to stop the
+    strip from being "fixed" into a casefold.
+    """
+    response = await client.post("/api/sweeps", json=_body(
+        _values("lr", [0.1]),
+        options={"device": "cpu", "lane": "Interactive"}))
+    assert response.status_code == 201, response.text
+    children = await store.list_runs_by_sweep(response.json()["sweep_id"])
+    assert [c.options["lane"] for c in children] == ["Interactive"]
 
 
 async def test_seed_variants_without_a_seed_is_refused(client, db):
