@@ -56,6 +56,7 @@ from .api import (
     routes_plugins,
     routes_presets,
     routes_runs,
+    routes_sweeps,
     routes_system,
     ws_execution,
 )
@@ -91,6 +92,7 @@ from .core.preset_registry import preset_registry
 from .core.run_output_store import RunOutputStore
 from .core.run_service import RunService
 from .core.run_store import RunStore
+from .core.sweep_store import SweepStore
 
 logger = logging.getLogger(__name__)
 
@@ -350,6 +352,11 @@ async def lifespan(app: FastAPI):
         retention_keep_last=settings.RUN_RETENTION_KEEP_LAST,
     )
     app.state.run_service = run_service
+    # Sweeps (#140) read and write their own table through the same
+    # Database. Built here, next to the run service, only so the routes can
+    # 503 honestly when it is absent -- the lifespan does not run under
+    # httpx's ASGITransport, and tests set app.state directly.
+    app.state.sweep_store = SweepStore(db)
     # Order matters. Recovery FIRST: nothing resumes a `running` row after a
     # restart, and retention never deletes an active run — so an abandoned
     # one would keep its events and metrics forever. Retiring it is what
@@ -563,6 +570,7 @@ app.include_router(routes_data_files.router)
 app.include_router(routes_execution_outputs.router)
 app.include_router(routes_execution_state.router)
 app.include_router(routes_runs.router)
+app.include_router(routes_sweeps.router)
 app.include_router(routes_packs.router)
 app.include_router(routes_system.router)
 app.include_router(routes_llm.router)

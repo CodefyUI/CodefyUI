@@ -106,7 +106,7 @@ ARTIFACT_KIND_TENSORBOARD = "tensorboard"
 
 _RUN_COLUMNS = (
     "id, name, options, status, error, queue_key, created_at, started_at, "
-    "finished_at, git_commit, git_dirty, plugin_pins"
+    "finished_at, git_commit, git_dirty, plugin_pins, sweep_id, sweep_variant"
 )
 _METRIC_COLUMNS = "run_id, node_id, name, step, value, ts"
 _EVENT_COLUMNS = "run_id, cursor, type, payload, ts"
@@ -209,6 +209,16 @@ class RunRecord:
     git_commit: str | None
     git_dirty: bool | None
     plugin_pins: dict[str, Any] | None
+    #: The parent sweep (#140), or None for an ordinary run. Written
+    #: together by ``create_run``, but they do NOT stay a pair: the FK's
+    #: ``ON DELETE SET NULL`` clears ``sweep_id`` alone when a ``sweeps``
+    #: row is deleted and leaves ``sweep_variant`` behind, so ``sweep_id``
+    #: is the only field that answers "is this run part of a sweep". They
+    #: flow onto every run payload for free, because ``_run_payload`` is
+    #: ``dataclasses.asdict(record)`` plus four keys, which is what lets the
+    #: Runs panel group a sweep's children without a new endpoint.
+    sweep_id: str | None = None
+    sweep_variant: int | None = None
 
     @classmethod
     def from_row(cls, row: sqlite3.Row) -> "RunRecord":
@@ -232,6 +242,8 @@ class RunRecord:
             git_commit=row["git_commit"],
             git_dirty=_tri_state(row["git_dirty"]),
             plugin_pins=_loads(row["plugin_pins"]),
+            sweep_id=row["sweep_id"],
+            sweep_variant=row["sweep_variant"],
         )
 
 
@@ -402,6 +414,8 @@ class RunStore:
         queue_key: str | None = None,
         run_id: str | None = None,
         provenance: RunProvenance | None = None,
+        sweep_id: str | None = None,
+        sweep_variant: int | None = None,
     ) -> RunRecord:
         """Insert a run and return its row.
 
@@ -413,6 +427,12 @@ class RunStore:
         *provenance* defaults to a fresh ``RunProvenance.capture()`` in a
         worker thread. Pass an explicit one (even an empty
         ``RunProvenance()``) to skip the git/lockfile work.
+
+        *sweep_id* / *sweep_variant* link the run to a sweep (#140). Pass
+        both or neither: the FK is enforced (``PRAGMA foreign_keys=ON``), so
+        the ``sweeps`` row must already exist. They are a pair only at
+        INSERT time — ``ON DELETE SET NULL`` later clears ``sweep_id`` alone
+        and leaves ``sweep_variant`` behind on the orphaned row.
         """
         if status not in RUN_STATUSES:
             raise ValueError(
@@ -441,6 +461,8 @@ class RunStore:
             git_commit=provenance.git_commit,
             git_dirty=provenance.git_dirty,
             plugin_pins=_json_safe(provenance.plugin_pins),
+            sweep_id=sweep_id,
+            sweep_variant=sweep_variant,
         )
         params = (
             record.id, record.name, _dumps(graph_snapshot),
@@ -448,13 +470,15 @@ class RunStore:
             record.created_at, record.git_commit,
             None if record.git_dirty is None else int(record.git_dirty),
             None if record.plugin_pins is None else _dumps(record.plugin_pins),
+            record.sweep_id, record.sweep_variant,
         )
 
         def _insert(conn: sqlite3.Connection) -> None:
             conn.execute(
                 "INSERT INTO exec_runs (id, name, graph_snapshot, options, "
                 "status, queue_key, created_at, git_commit, git_dirty, "
-                "plugin_pins) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "plugin_pins, sweep_id, sweep_variant) VALUES "
+                "(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 params,
             )
 
@@ -470,6 +494,25 @@ class RunStore:
 
         row = await self.db.run(_select)
         return None if row is None else RunRecord.from_row(row)
+
+    async def list_runs_by_sweep(self, sweep_id: str) -> list[RunRecord]:
+        """Every child of one sweep, in variant order (#140).
+
+        A NEW method rather than a composition of ``list_runs``:
+        ``_status_filter`` is the only WHERE builder ``list_runs`` has, and
+        calling one store method from inside another's ``fn(conn)`` closure
+        deadlocks on the non-reentrant lock (see the module docstring).
+
+        Served by ``idx_exec_runs_sweep (sweep_id, sweep_variant)``, so the
+        whole sweep is one index range and the ORDER BY needs no sort.
+        """
+        def _select(conn: sqlite3.Connection) -> list[sqlite3.Row]:
+            return conn.execute(
+                f"SELECT {_RUN_COLUMNS} FROM exec_runs WHERE sweep_id = ? "
+                "ORDER BY sweep_variant", (sweep_id,),
+            ).fetchall()
+
+        return [RunRecord.from_row(row) for row in await self.db.run(_select)]
 
     async def get_graph_snapshot(self, run_id: str) -> dict[str, Any] | None:
         """The submitted graph, fetched on demand (not part of ``RunRecord``).
@@ -1203,6 +1246,42 @@ class RunStore:
                         (ARTIFACT_KIND_TENSORBOARD, *params),
                     ).fetchall()
                 ]
+                # A sweep's results must outlive its children (#140,
+                # RULING 4). Deferred import, in the method body, for the
+                # reason the checkpoint and tensorboard imports below
+                # already are -- plus a real cycle: sweep_store imports
+                # TERMINAL_STATUSES from this module, which is bound AFTER
+                # this module's own imports run, so a module-level import
+                # here would find a partially-initialised module and raise
+                # ImportError depending on which one loaded first.
+                from .sweep_store import harvest_doomed
+
+                # Best-effort FROM RETENTION'S POINT OF VIEW, and only
+                # from there. Retention is unattended, irreversible and
+                # irreplaceable -- it is the only thing bounding this
+                # table, its cascaded children, checkpoint files and
+                # TensorBoard logdirs -- and it runs behind the run task's
+                # blanket `except Exception`, so an exception raised in
+                # here would abort the prune for EVERY run, on every later
+                # pass, and surface as one log line rather than a failed
+                # request. One unreadable `sweeps.variants` cell must not
+                # fill the user's disk. Same shape, and the same log level,
+                # as `unlink_checkpoint`/`remove_logdir` swallowing a file
+                # they could not remove: the row goes either way.
+                #
+                # This is the BACKSTOP, not the isolation. `harvest_doomed`
+                # already catches per sweep, so one bad row costs only its
+                # own sweep its results; what is left for this to catch is
+                # the work outside that loop (the doomed SELECT and the
+                # grouping), where there is no single sweep to blame.
+                try:
+                    harvest_doomed(conn, where_clause, params)
+                except Exception:
+                    logger.warning(
+                        "retention: could not harvest the sweep objectives "
+                        "of the runs about to be deleted; their variants "
+                        "keep whatever was harvested before and the delete "
+                        "proceeds", exc_info=True)
                 deleted = conn.execute(
                     f"DELETE FROM exec_runs WHERE {where_clause}", params,
                 ).rowcount

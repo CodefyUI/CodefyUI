@@ -155,6 +155,7 @@ from .run_store import (
     STATUS_SUCCEEDED,
     EventRecord,
     MetricPoint,
+    RunProvenance,
     RunStore,
     json_safe,
 )
@@ -1402,6 +1403,9 @@ class RunService:
         options: Any = None,
         name: str | None = None,
         session: InteractiveSession | None = None,
+        provenance: RunProvenance | None = None,
+        sweep_id: str | None = None,
+        sweep_variant: int | None = None,
     ) -> SubmitResult:
         """Persist a run, then SCHEDULE it. Raises ``RunSubmitError`` on input.
 
@@ -1427,6 +1431,14 @@ class RunService:
         :class:`InteractiveSession`. Passing one on any other lane is a
         submit error rather than a silent no-op: it would mean a run that
         behaves statefully while its stored row says ``queued``.
+
+        *provenance*, *sweep_id* and *sweep_variant* are passed straight
+        through to ``create_run``, and read here only by the lane check
+        below — which is *sweep_id*'s single other use (#140). A sweep
+        captures ONE ``RunProvenance`` and hands the same object to all N
+        variants: the default capture shells out to git twice per run in
+        project mode, and thirty-two of those is thirty-two times the cost
+        for one answer.
         """
         if self._shutting_down:
             raise RunServiceUnavailable("run service is shutting down")
@@ -1438,6 +1450,15 @@ class RunService:
             raise RunSubmitError(
                 f"an interactive session requires lane={LANE_INTERACTIVE!r}, "
                 f"got {lane!r}")
+        if sweep_id is not None and lane == LANE_INTERACTIVE:
+            # Refused for the same reason a session on the wrong lane is:
+            # _submit_interactive admits against RUN_INTERACTIVE_MAX_CONCURRENT
+            # and REFUSES past it rather than queuing, so a 32-variant
+            # interactive sweep would be two runs and thirty 503s.
+            raise RunSubmitError(
+                f"a sweep cannot use lane={LANE_INTERACTIVE!r}; its variants "
+                "are queued, and the interactive lane refuses past its cap "
+                "instead of queuing")
         queue_key = canonical_queue_key(
             resolve_device(normalized_options.get("device")))
 
@@ -1456,6 +1477,9 @@ class RunService:
             name=normalized_name,
             status=STATUS_QUEUED,
             queue_key=queue_key,
+            provenance=provenance,
+            sweep_id=sweep_id,
+            sweep_variant=sweep_variant,
         )
         if self._shutting_down:
             # The same re-check ``_start`` makes, for the same reason and at

@@ -53,6 +53,18 @@ class RunOutputStore:
         self._writes = 0
         self._lock = asyncio.Lock()
 
+    @property
+    def max_runs(self) -> int:
+        """The run-count bound, read-only.
+
+        A sweep refuses ``record_outputs`` when it would compile more
+        variants than this (#140, spec 8.3), read from the LIVE store rather
+        than from a literal 20 -- so raising the bound raises that limit with
+        it. Already surfaced in ``stats()``; this is the same number without
+        the async hop.
+        """
+        return self._max_runs
+
     async def put(self, run_id: str, node_id: str, port: str, value: Any) -> None:
         # Measured OUTSIDE the lock: walking a captured value is pure
         # reading, and doing it under the lock would serialise every

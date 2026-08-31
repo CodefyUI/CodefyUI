@@ -50,6 +50,7 @@ from app.core.run_service import (
     QueueLimits,
     RunService,
     RunServiceUnavailable,
+    RunSubmitError,
     canonical_queue_key,
     parse_queue_overrides,
 )
@@ -1082,3 +1083,69 @@ async def test_a_restart_retires_rows_a_hard_kill_left_queued(make_service,
     row = await store.get_run(orphan.id)
     assert row.status == STATUS_INTERRUPTED
     assert row.started_at is None
+
+
+# ── submit's sweep plumbing (#140) ────────────────────────────────────────
+
+
+async def test_submit_writes_the_sweep_columns_onto_the_row(db, store,
+                                                            service):
+    """The cheapest direct guard for the plumbing: submit is what a route
+    calls, and it is the only thing that can route the two columns from the
+    request into create_run."""
+    now = "2026-01-01T00:00:00.000000Z"
+    db._conn.execute(
+        "INSERT INTO sweeps (id, state, method, seed_variants, spec, "
+        "objective, variants, created_at) VALUES ('s1', 'running', 'grid', "
+        "0, '{}', '{}', '[]', ?)", (now,))
+    result = await service.submit(_graph("v2"), options={"device": "cpu"},
+                                  sweep_id="s1", sweep_variant=2)
+    record = await store.get_run(result.run_id)
+    assert record.sweep_id == "s1"
+    assert record.sweep_variant == 2
+
+
+async def test_submit_refuses_a_sweep_id_on_the_interactive_lane(service):
+    """A sweep never uses that lane: _submit_interactive admits against
+    RUN_INTERACTIVE_MAX_CONCURRENT and REFUSES past it rather than queuing,
+    so a 32-variant interactive sweep would be two runs and thirty 503s."""
+    with pytest.raises(RunSubmitError, match="interactive"):
+        await service.submit(_graph("x"),
+                             options={"device": "cpu",
+                                      "lane": LANE_INTERACTIVE},
+                             sweep_id="s1", sweep_variant=0)
+
+
+async def test_submit_hands_the_callers_provenance_to_create_run(
+        service, store, monkeypatch):
+    """The third plumbed parameter, and the ONLY test that would notice it
+    being dropped.
+
+    Asserting the row merely "has provenance" would prove nothing: without
+    the pass-through, create_run's `provenance is None` fallback captures
+    its own and writes an equally valid-looking row. So this asserts
+    IDENTITY -- a commit string capture() cannot produce -- and then that
+    capture() was not called at all, which is the property #140 actually
+    buys: one git shell-out per SWEEP, not one per variant.
+
+    `capture` is replaced with a fresh recorder per test (monkeypatch undoes
+    it), never wrapped, so nothing carries over into another test.
+    """
+    captures: list[tuple] = []
+
+    def _record_capture(*args, **kwargs) -> RunProvenance:
+        captures.append(args)
+        return RunProvenance()
+
+    monkeypatch.setattr(RunProvenance, "capture", _record_capture)
+    pinned = RunProvenance(git_commit="beefcafe" * 5, git_dirty=True,
+                           plugin_pins={"c1": {"sha": "0ff1ce"}})
+
+    result = await service.submit(_graph("prov"), options={"device": "cpu"},
+                                  provenance=pinned)
+
+    record = await store.get_run(result.run_id)
+    assert record.git_commit == "beefcafe" * 5
+    assert record.git_dirty is True
+    assert record.plugin_pins == {"c1": {"sha": "0ff1ce"}}
+    assert captures == []       # not once -- let alone once per variant

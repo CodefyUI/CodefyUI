@@ -26,19 +26,20 @@ def test_connect_migrates_empty_file(tmp_path):
     db.connect()
     try:
         assert db._conn.execute("PRAGMA user_version").fetchone()[0] \
-            == len(MIGRATIONS) == 3
+            == len(MIGRATIONS) == 4
         names = {
             r[0] for r in db._conn.execute(
                 "SELECT name FROM sqlite_master WHERE type = 'table'"
             ).fetchall()
         }
-        # Publish (001/002) plus the Run Service store (003). The literal
-        # count above is a deliberate tripwire: adding a migration should
-        # make someone extend this set too. Per-table schema assertions
-        # live with each subsystem (test_provenance / test_run_store).
+        # Publish (001/002), the Run Service store (003) and sweeps (004).
+        # The literal count above is a deliberate tripwire: adding a
+        # migration should make someone extend this set too. Per-table
+        # schema assertions live with each subsystem (test_provenance /
+        # test_run_store).
         assert {"apps", "app_versions", "api_keys", "runs"} <= names
         assert {"exec_runs", "exec_run_metrics", "exec_run_events",
-                "exec_run_artifacts"} <= names
+                "exec_run_artifacts", "sweeps"} <= names
     finally:
         db.close()
 

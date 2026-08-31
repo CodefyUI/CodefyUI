@@ -130,9 +130,12 @@ async def _make_run(store: RunStore, **kwargs) -> RunRecord:
 # ── 1. migrations ─────────────────────────────────────────────────────────
 
 
-def test_fresh_install_creates_the_four_exec_tables(db):
-    assert _user_version(db) == len(MIGRATIONS) == 3
+def test_fresh_install_creates_the_exec_tables_and_sweeps(db):
+    assert _user_version(db) == len(MIGRATIONS) == 4
     assert EXEC_TABLES <= _tables(db)
+    # NOT in EXEC_TABLES: that set is the `exec_`-prefixed namespace and
+    # `sweeps` is not in it.
+    assert "sweeps" in _tables(db)
 
 
 def test_fresh_install_keeps_the_publish_tables_untouched(db):
@@ -152,6 +155,9 @@ def test_exec_runs_has_the_full_column_list(db):
         "id", "name", "graph_snapshot", "options", "status", "error",
         "queue_key", "created_at", "started_at", "finished_at",
         "git_commit", "git_dirty", "plugin_pins",
+        # Appended by MIGRATION_004's ALTERs, in ALTER order -- SQLite puts
+        # an added column at the end of the table.
+        "sweep_id", "sweep_variant",
     ]
 
 
@@ -171,6 +177,18 @@ def test_required_indexes_exist(db):
     names = _index_names(db)
     assert "idx_exec_runs_created" in names
     assert "idx_exec_runs_status_created" in names
+    # MIGRATION_004's two (#140). Nothing else under backend/ names either
+    # index, so without these a dropped CREATE INDEX line -- lost in a
+    # rebase, or dropped by a later migration -- leaves the whole suite
+    # green, and the index is then gone forever behind the append-only
+    # rule while list_runs_by_sweep full-scans exec_runs. The name check
+    # catches a deletion; the column tuples below catch a reshape, e.g.
+    # narrowing the sweep index to (sweep_id) alone, which still answers
+    # the filter but no longer orders by variant.
+    assert "idx_sweeps_created" in names
+    assert "idx_exec_runs_sweep" in names
+    assert ("created_at",) in _indexed_columns(db, "sweeps")
+    assert ("sweep_id", "sweep_variant") in _indexed_columns(db, "exec_runs")
 
 
 def test_upgrade_from_shipped_v2_db_preserves_publish_data(tmp_path, monkeypatch):
@@ -199,7 +217,7 @@ def test_upgrade_from_shipped_v2_db_preserves_publish_data(tmp_path, monkeypatch
     new = Database(tmp_path / "u.db")
     new.connect()
     try:
-        assert _user_version(new) == 3
+        assert _user_version(new) == len(MIGRATIONS)
         assert EXEC_TABLES <= _tables(new)
         row = new._conn.execute(
             "SELECT status, created_at FROM runs WHERE run_id = 'legacy-invoke'"
@@ -212,7 +230,102 @@ def test_upgrade_from_shipped_v2_db_preserves_publish_data(tmp_path, monkeypatch
         new.close()
 
 
-def test_reconnecting_a_v3_db_is_a_noop(tmp_path):
+def test_migration_004_upgrades_a_v3_db(tmp_path, monkeypatch):
+    """The sweep schema lands on a populated v3 database in place.
+
+    Pre-migration rows must survive the ALTER and read back with BOTH new
+    columns NULL (unknown) -- never 0, False or '': `sweep_variant = 0`
+    would tell every pre-existing run it is variant 0 of nothing.
+    """
+    from app.core import db as dbmod
+    from app.core.migrations import (
+        MIGRATION_001,
+        MIGRATION_002,
+        MIGRATION_003,
+    )
+
+    old_list = [MIGRATION_001, MIGRATION_002, MIGRATION_003]
+    monkeypatch.setattr(dbmod, "MIGRATIONS", old_list)
+    old = Database(tmp_path / "s.db")
+    old.connect()
+    assert _user_version(old) == 3
+    assert "sweep_id" not in _columns(old, "exec_runs")
+    assert "sweeps" not in _tables(old)
+
+    now = "2026-01-01T00:00:00.000000Z"
+    old._conn.execute(
+        "INSERT INTO exec_runs (id, name, graph_snapshot, options, status, "
+        "created_at) VALUES ('legacy-run', 'pre-sweep', '{}', '{}', "
+        "'succeeded', ?)", (now,),
+    )
+    old._conn.execute(
+        "INSERT INTO exec_run_metrics (run_id, name, step, value, ts) "
+        "VALUES ('legacy-run', 'train_loss', 0, 0.5, ?)", (now,),
+    )
+    old.close()
+
+    monkeypatch.setattr(dbmod, "MIGRATIONS", list(MIGRATIONS))
+    new = Database(tmp_path / "s.db")
+    new.connect()
+    try:
+        assert _user_version(new) == 4
+        assert "sweeps" in _tables(new)
+        assert EXEC_TABLES <= _tables(new)
+        columns = _columns(new, "exec_runs")
+        assert "sweep_id" in columns and "sweep_variant" in columns
+
+        row = new._conn.execute(
+            "SELECT name, status, created_at, sweep_id, sweep_variant "
+            "FROM exec_runs WHERE id = 'legacy-run'").fetchone()
+        assert row["name"] == "pre-sweep"          # old data byte-intact
+        assert row["status"] == "succeeded"
+        assert row["created_at"] == now
+        assert row["sweep_id"] is None             # NULL = not part of a sweep
+        assert row["sweep_variant"] is None
+        assert new._conn.execute(
+            "SELECT COUNT(*) FROM exec_run_metrics").fetchone()[0] == 1
+        assert new._conn.execute(
+            "SELECT COUNT(*) FROM sweeps").fetchone()[0] == 0
+    finally:
+        new.close()
+
+
+def test_creating_a_child_before_its_sweep_is_refused(db):
+    """The FK clause added by ALTER TABLE is resolved at DML time and is
+    live under PRAGMA foreign_keys=ON (db.py:106), so a child row cannot
+    name a sweep that does not exist. Says nothing about statement order
+    inside the migration -- spec 4.1 measured both orders working, so a
+    test asserting CREATE-before-ALTER would fail."""
+    with pytest.raises(sqlite3.IntegrityError, match="FOREIGN KEY"):
+        db._conn.execute(
+            "INSERT INTO exec_runs (id, graph_snapshot, options, status, "
+            "created_at, sweep_id, sweep_variant) VALUES ('orphan', '{}', "
+            "'{}', 'queued', '2026-01-01T00:00:00.000000Z', 'nope', 0)")
+
+
+def test_deleting_a_sweep_row_nulls_its_children(db):
+    """ON DELETE SET NULL, not CASCADE: deleting a sweep row must never
+    delete run history. v1 exposes no route that deletes one (spec 10.2), so
+    this exercises the clause with direct SQL."""
+    now = "2026-01-01T00:00:00.000000Z"
+    db._conn.execute(
+        "INSERT INTO sweeps (id, state, method, seed_variants, spec, "
+        "objective, variants, created_at) VALUES ('s1', 'running', 'grid', "
+        "0, '{}', '{}', '[]', ?)", (now,))
+    db._conn.execute(
+        "INSERT INTO exec_runs (id, graph_snapshot, options, status, "
+        "created_at, sweep_id, sweep_variant) VALUES ('child', '{}', '{}', "
+        "'queued', ?, 's1', 0)", (now,))
+    db._conn.execute("DELETE FROM sweeps WHERE id = 's1'")
+    row = db._conn.execute(
+        "SELECT status, sweep_id, sweep_variant FROM exec_runs "
+        "WHERE id = 'child'").fetchone()
+    assert row["status"] == "queued"            # history survives
+    assert row["sweep_id"] is None
+    assert row["sweep_variant"] == 0            # only the FK column is nulled
+
+
+def test_reconnecting_a_migrated_db_is_a_noop(tmp_path):
     first = Database(tmp_path / "idem.db")
     first.connect()
     first.close()
@@ -301,11 +414,48 @@ def test_status_vocabulary_is_not_pinned_in_sql(db):
     assert "CHECK" not in ddl.upper()
 
 
-def test_schema_stays_additive_for_the_sweep_column(db):
-    """#140 will add `sweep_id` -- prove a plain ALTER TABLE ADD COLUMN is
-    enough (no table rebuild, no data migration)."""
-    db._conn.execute("ALTER TABLE exec_runs ADD COLUMN sweep_id TEXT")
-    assert "sweep_id" in _columns(db, "exec_runs")
+def test_the_sweep_columns_arrived_without_a_table_rebuild(db):
+    """#140 added `sweep_id`/`sweep_variant` with a plain ALTER TABLE ADD
+    COLUMN. This test used to perform that ALTER itself, as a stand-in for
+    "the sweep column arrives without a table rebuild"; now that
+    MIGRATION_004 ships it, it asserts what the stand-in was a proxy for."""
+    from app.core.migrations import MIGRATION_003, iter_statements
+
+    assert _columns(db, "exec_runs")[-2:] == ["sweep_id", "sweep_variant"]
+    ddl = db._conn.execute(
+        "SELECT sql FROM sqlite_master WHERE name = 'exec_runs'").fetchone()[0]
+    # THE rebuild detector, and it has to be structural rather than a
+    # comment match. A 12-step rebuild is normally written by copy-pasting
+    # migration 003's CREATE body out of this repo, so every comment in it
+    # survives the rebuild and any single comment string still matches --
+    # measured. What a rebuild cannot reproduce is the byte-for-byte
+    # PREFIX: adding columns to a hand-written CREATE means putting a comma
+    # after `plugin_pins TEXT`, and CREATE-new/RENAME-back re-quotes the
+    # table name to `CREATE TABLE "exec_runs"`. ADD COLUMN instead drops the
+    # stored text's final `)` and re-appends it after the new column
+    # definitions, leaving every byte before it untouched.
+    #
+    # Derived from MIGRATION_003 rather than duplicated from it, so it
+    # cannot drift, and so an edit to a shipped migration is reported as
+    # what it is instead of being misdiagnosed as a table rebuild.
+    create = next(s for s in iter_statements(MIGRATION_003)
+                  if s.lstrip().upper().startswith("CREATE TABLE EXEC_RUNS"))
+    create = create.strip().rstrip(";").strip()
+    body = create[:create.rindex(")")]
+    assert ddl.startswith(body)
+    appended = ddl[len(body):]
+    assert "sweep_id" in appended and "sweep_variant" in appended
+    # A row written without the sweep columns reads back NULL in both, not
+    # 0/''; ADD COLUMN with no DEFAULT is what makes that true for new rows
+    # as well as for the ones that predate the migration.
+    db._conn.execute(
+        "INSERT INTO exec_runs (id, graph_snapshot, options, status, "
+        "created_at) VALUES ('solo', '{}', '{}', 'queued', "
+        "'2026-01-01T00:00:00.000000Z')")
+    row = db._conn.execute(
+        "SELECT sweep_id, sweep_variant FROM exec_runs "
+        "WHERE id = 'solo'").fetchone()
+    assert row["sweep_id"] is None and row["sweep_variant"] is None
 
 
 # ── 2. run CRUD ───────────────────────────────────────────────────────────
@@ -553,6 +703,29 @@ def test_status_constants_partition_the_vocabulary():
     assert not (ACTIVE_STATUSES & TERMINAL_STATUSES)
     assert RUN_STATUSES == {"queued", "running", "succeeded", "failed",
                             "cancelled", "interrupted"}
+
+
+async def test_sweep_id_is_null_for_a_run_created_outside_a_sweep(store):
+    created = await _make_run(store)
+    assert created.sweep_id is None and created.sweep_variant is None
+    fetched = await store.get_run(created.id)
+    assert fetched.sweep_id is None and fetched.sweep_variant is None
+
+
+async def test_list_runs_by_sweep_returns_the_children_in_variant_order(
+        db, store):
+    now = "2026-01-01T00:00:00.000000Z"
+    db._conn.execute(
+        "INSERT INTO sweeps (id, state, method, seed_variants, spec, "
+        "objective, variants, created_at) VALUES ('s1', 'running', 'grid', "
+        "0, '{}', '{}', '[]', ?)", (now,))
+    for variant in (2, 0, 1):
+        await _make_run(store, sweep_id="s1", sweep_variant=variant)
+    await _make_run(store)                       # not part of the sweep
+    children = await store.list_runs_by_sweep("s1")
+    assert [c.sweep_variant for c in children] == [0, 1, 2]
+    assert {c.sweep_id for c in children} == {"s1"}
+    assert await store.list_runs_by_sweep("nope") == []
 
 
 # ── 3. events: the gapless cursor ─────────────────────────────────────────
