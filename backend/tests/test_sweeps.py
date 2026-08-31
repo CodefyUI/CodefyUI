@@ -22,6 +22,7 @@ from app.core.node_base import (
     PortDefinition,
 )
 from app.core.node_registry import registry
+from app.core.run_store import MetricPoint, RunProvenance, RunStore
 from app.core.sweep_compiler import (
     SweepCompileError,
     compile_sweep,
@@ -31,9 +32,13 @@ from app.core.sweep_compiler import (
 from app.core.sweep_store import (
     SWEEP_STATE_CANCELLING,
     SWEEP_STATE_FAILED,
+    SWEEP_STATE_FINISHED,
     SWEEP_STATE_RUNNING,
+    HarvestEntry,
     SweepStore,
     SweepVariant,
+    rank_variants,
+    variant_is_terminal,
 )
 
 
@@ -706,3 +711,168 @@ async def test_an_unknown_sweep_state_is_refused(sweeps):
     created = await _new_sweep(sweeps)
     with pytest.raises(ValueError, match="unknown sweep state"):
         await sweeps.set_state(created.id, "cancelled")
+
+
+# ── harvest + ranking (spec 6.3, 6.4, 9.7) ────────────────────────────────
+
+
+async def _child(store: RunStore, sweep_id: str, index: int, *,
+                 status: str = "succeeded",
+                 metrics: dict[str, float] | None = None) -> str:
+    record = await store.create_run(
+        graph_snapshot={"nodes": [], "edges": []}, options={},
+        provenance=RunProvenance(), sweep_id=sweep_id, sweep_variant=index)
+    for name, value in (metrics or {}).items():
+        await store.log_metrics(record.id, [MetricPoint(name, value, 0)])
+    if status != "queued":
+        await store.mark_finished(record.id, status)
+    return record.id
+
+
+def test_rank_variants_sorts_by_objective_and_keeps_the_unrankable():
+    variants = [_variant(0, objective=0.5), _variant(1, objective=None),
+                _variant(2, objective=0.2), _variant(3, objective=0.5)]
+    ranked = rank_variants(variants, direction="minimize")
+    assert [(v.index, rank) for v, rank in ranked] == [
+        (2, 1), (0, 2), (3, 3),      # ties break on index ASCENDING
+        (1, None),                   # unrankable, appended, never dropped
+    ]
+
+
+def test_rank_variants_maximize_still_breaks_ties_on_index_ascending():
+    variants = [_variant(0, objective=0.5), _variant(1, objective=0.9),
+                _variant(2, objective=0.5)]
+    ranked = rank_variants(variants, direction="maximize")
+    assert [(v.index, rank) for v, rank in ranked] == [(1, 1), (0, 2), (2, 3)]
+
+
+def test_a_failed_variant_that_logged_the_objective_is_still_ranked():
+    """#140 acceptance criterion 3: hiding a real number because the run
+    ended badly is exactly the silent disappearance it forbids."""
+    variants = [_variant(0, objective=0.3, status="failed"),
+                _variant(1, objective=0.9, status="succeeded")]
+    ranked = rank_variants(variants, direction="minimize")
+    assert [(v.index, rank) for v, rank in ranked] == [(0, 1), (1, 2)]
+
+
+def test_variant_is_terminal_covers_a_variant_with_no_reachable_run():
+    """Without this clause a variant whose run someone deleted by hand
+    would keep a sweep at `running` forever."""
+    assert variant_is_terminal(_variant(0, run_id=None), None,
+                               child_exists=False)
+    assert variant_is_terminal(_variant(0, run_id="r", status="succeeded"),
+                               None, child_exists=False)
+    assert variant_is_terminal(_variant(0, run_id="r"), None,
+                               child_exists=False)      # gone -> "missing"
+    assert variant_is_terminal(_variant(0, run_id="r"), "succeeded",
+                               child_exists=True)
+    assert not variant_is_terminal(_variant(0, run_id="r"), "running",
+                                   child_exists=True)
+
+
+async def test_harvest_is_idempotent_and_records_an_absent_objective(sweeps):
+    created = await _new_sweep(sweeps, count=2)
+    await sweeps.set_variant_run(created.id, 0, run_id="r0", seed=None)
+    await sweeps.set_variant_run(created.id, 1, run_id="r1", seed=None)
+
+    first = await sweeps.harvest(
+        created.id,
+        entries={0: HarvestEntry(objective=0.25, status="succeeded"),
+                 1: HarvestEntry(objective=None, status="failed")},
+        finished=True)
+    assert first.state == SWEEP_STATE_FINISHED
+    assert first.finished_at is not None
+    assert first.variants[0].objective == 0.25
+    assert first.variants[1].objective is None
+    assert first.variants[1].status == "failed"
+    assert first.variants[1].harvested_at is not None
+
+    # "harvested, no value" is a recorded fact, not a retry.
+    second = await sweeps.harvest(
+        created.id, entries={1: HarvestEntry(objective=9.9, status="failed")},
+        finished=True)
+    assert second.variants[1].objective is None
+    assert second.finished_at == first.finished_at    # stamped once
+
+    # A sweep that is gone answers None rather than inventing a row.
+    assert await sweeps.harvest("nope", entries={}, finished=True) is None
+
+
+async def test_concurrent_harvests_do_not_lose_each_other(sweeps):
+    """The single-closure rule again, for the SECOND writer of the blob.
+
+    ``set_variant_run``'s own atomicity test cannot cover ``harvest``: they
+    are different methods, and the tidy-looking refactor -- read with
+    ``get_sweep``, patch in Python, write with a second ``Database.run`` --
+    is available to each of them separately. Split that way, all four calls
+    below read the same blob before any of them writes, every one still
+    returns a full record, and only the last patch survives.
+
+    Spec 6.3 runs a harvest on every GET and every cancel, so several are
+    genuinely in flight at once whenever a sweep is being polled; a lost
+    update there silently discards a harvested objective and, because
+    ``harvested_at`` was written for it, nothing ever retries.
+    """
+    created = await _new_sweep(sweeps, count=4)
+    for index in range(4):
+        await sweeps.set_variant_run(created.id, index, run_id=f"r{index}",
+                                     seed=None)
+    patched = await asyncio.gather(*(
+        sweeps.harvest(created.id,
+                       entries={index: HarvestEntry(objective=float(index),
+                                                    status="succeeded")},
+                       finished=False)
+        for index in range(4)))
+    assert all(record is not None for record in patched)
+    fetched = await sweeps.get_sweep(created.id)
+    assert [v.index for v in fetched.variants] == [0, 1, 2, 3]   # order kept
+    assert [v.objective for v in fetched.variants] == [0.0, 1.0, 2.0, 3.0]
+
+
+async def test_the_objective_is_harvested_before_the_delete(db, sweeps):
+    """RULING 4, seam B: prune with NO prior read, and the value survives."""
+    store = RunStore(db)
+    created = await _new_sweep(sweeps, count=2)
+    for index in range(2):
+        run_id = await _child(store, created.id, index,
+                              metrics={"val_loss": 0.4 - 0.1 * index})
+        await sweeps.set_variant_run(created.id, index, run_id=run_id,
+                                     seed=None)
+
+    assert await store.prune(keep_last=0) == 2
+    fetched = await sweeps.get_sweep(created.id)
+    assert [v.objective for v in fetched.variants] == [0.4, 0.30000000000000004]
+    assert [v.status for v in fetched.variants] == ["succeeded", "succeeded"]
+    assert all(v.harvested_at is not None for v in fetched.variants)
+
+
+async def test_the_sweep_finishes_through_seam_b_without_a_read(db, sweeps):
+    """Catches a seam-B harvest that copies values but forgets the state."""
+    store = RunStore(db)
+    created = await _new_sweep(sweeps, count=2)
+    for index in range(2):
+        run_id = await _child(store, created.id, index,
+                              metrics={"val_loss": 0.5})
+        await sweeps.set_variant_run(created.id, index, run_id=run_id,
+                                     seed=None)
+    await store.prune(keep_last=0)
+    fetched = await sweeps.get_sweep(created.id)
+    assert fetched.state == SWEEP_STATE_FINISHED
+    assert fetched.finished_at is not None
+
+
+async def test_a_diverged_variant_is_unranked(db, sweeps):
+    """A non-finite last point is stored as SQL NULL and omitted from the
+    series map, so a diverged loss must not render as a suspiciously good
+    one -- it is unranked, never ranked at 0.0."""
+    store = RunStore(db)
+    created = await _new_sweep(sweeps, count=1)
+    run_id = await _child(store, created.id, 0,
+                          metrics={"val_loss": float("nan")})
+    await sweeps.set_variant_run(created.id, 0, run_id=run_id, seed=None)
+    await store.prune(keep_last=0)
+    fetched = await sweeps.get_sweep(created.id)
+    assert fetched.variants[0].objective is None
+    assert fetched.variants[0].status == "succeeded"
+    assert rank_variants(fetched.variants, direction="minimize") == \
+        [(fetched.variants[0], None)]

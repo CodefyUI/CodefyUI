@@ -27,10 +27,11 @@ from __future__ import annotations
 import json
 import sqlite3
 from dataclasses import dataclass, replace
-from typing import Any, Sequence
+from typing import Any, Mapping, Sequence
 from uuid import uuid4
 
 from .db import Database, transaction, utc_now_iso
+from .run_store import TERMINAL_STATUSES
 
 # ── state vocabulary ──────────────────────────────────────────────────────
 #
@@ -309,3 +310,209 @@ class SweepStore:
                 (state, sweep_id, SWEEP_STATE_FAILED)).rowcount
 
         return await self.db.run(_update) > 0
+
+    async def harvest(self, sweep_id: str, *,
+                      entries: Mapping[int, HarvestEntry],
+                      finished: bool) -> SweepRecord | None:
+        """Seam A: patch harvested objectives in and settle the state.
+
+        SELECT-patch-UPDATE inside ONE ``fn(conn)``, which is atomic against
+        every other database operation in the process. Returns the row as it
+        now stands, so a caller never needs a second read.
+
+        Safe against a race with a finishing run because of ``_finalize``'s
+        documented ordering: metrics are flushed with ``force=True`` BEFORE
+        the terminal event and before ``mark_finished``, so by the time a
+        row reads terminal its series are durable.
+        """
+        stamp = utc_now_iso()
+
+        def _patch(conn: sqlite3.Connection) -> SweepRecord | None:
+            with transaction(conn):
+                record = _select_sweep(conn, sweep_id)
+                if record is None:
+                    return None
+                _write_variants(
+                    conn, record,
+                    _apply_entries(record.variants, entries, stamp),
+                    finished=finished, stamp=stamp)
+                return _select_sweep(conn, sweep_id)
+
+        return await self.db.run(_patch)
+
+
+# ── the harvest (spec 6.3) ────────────────────────────────────────────────
+
+
+@dataclass(frozen=True)
+class HarvestEntry:
+    """What one terminal child contributes to its sweep row."""
+
+    objective: float | None
+    status: str
+
+
+def variant_is_terminal(variant: SweepVariant, child_status: str | None, *,
+                        child_exists: bool) -> bool:
+    """Spec 4.3's "terminal outcome", defined ONCE and used by both seams.
+
+    True when the variant has **no reachable run** (``run_id`` is None — the
+    failed-submit-loop case — or its row is gone and it was never
+    harvested), or it carries a harvested terminal status, or its live child
+    row is terminal.
+
+    The no-reachable-run clause is load-bearing: without it a variant whose
+    run someone deleted by hand would keep its sweep at ``running`` forever.
+    """
+    if variant.run_id is None:
+        return True
+    if variant.status is not None:
+        return True
+    if not child_exists:
+        return True
+    return child_status in TERMINAL_STATUSES
+
+
+def rank_variants(
+    variants: Sequence[SweepVariant], *, direction: str,
+) -> list[tuple[SweepVariant, int | None]]:
+    """``(variant, rank)`` in DISPLAY order — best first, then the rest.
+
+    Rankable means ``objective is not None``. Note the important
+    NON-exclusion: a **failed** variant that did log the objective before it
+    died IS ranked, on the value it reached — hiding a real number because
+    the run ended badly is the silent disappearance #140's third acceptance
+    criterion forbids.
+
+    Ties break on ``index`` **ascending** in both directions, so the order is
+    total and the table does not reshuffle between polls. Unrankable
+    variants keep their row with ``rank`` None and are appended in ``index``
+    order — never dropped, and never sorted as if None were a number.
+    """
+    sign = -1 if direction == "maximize" else 1
+    rankable = sorted((v for v in variants if v.objective is not None),
+                      key=lambda v: (sign * v.objective, v.index))
+    unranked = sorted((v for v in variants if v.objective is None),
+                      key=lambda v: v.index)
+    return ([(variant, i + 1) for i, variant in enumerate(rankable)]
+            + [(variant, None) for variant in unranked])
+
+
+def _apply_entries(variants: Sequence[SweepVariant],
+                   entries: Mapping[int, HarvestEntry],
+                   stamp: str) -> list[SweepVariant]:
+    """Patch harvested values in. Already-harvested variants are left alone,
+    which is what makes both seams idempotent."""
+    return [
+        replace(variant, objective=entries[variant.index].objective,
+                status=entries[variant.index].status, harvested_at=stamp)
+        if variant.index in entries and variant.harvested_at is None
+        else variant
+        for variant in variants
+    ]
+
+
+def _write_variants(conn: sqlite3.Connection, record: SweepRecord,
+                    variants: Sequence[SweepVariant], *, finished: bool,
+                    stamp: str) -> None:
+    """One UPDATE: the patched blob plus, when the sweep has just become
+    finished, its terminal state.
+
+    ``failed`` is NEVER overwritten, ``finished`` is never re-stamped, and a
+    sweep in ``cancelling`` lands on ``finished`` — the cancel is over once
+    nothing is active.
+    """
+    state = record.state
+    finished_at = record.finished_at
+    if finished and state not in (SWEEP_STATE_FAILED, SWEEP_STATE_FINISHED):
+        state = SWEEP_STATE_FINISHED
+        finished_at = finished_at or stamp
+    conn.execute(
+        "UPDATE sweeps SET variants = ?, state = ?, finished_at = ? "
+        "WHERE id = ?",
+        (_dumps([v.as_json() for v in variants]), state, finished_at,
+         record.id))
+
+
+def _last_metric_value(conn: sqlite3.Connection, run_id: str,
+                       name: str | None) -> float | None:
+    """The LAST point of one series.
+
+    ``ORDER BY step DESC, id DESC LIMIT 1`` is the identical rule
+    ``RunStore.latest_metrics`` uses (``_LATEST_METRICS_SQL``), so seam A
+    and seam B can never disagree about a variant's objective. Covered by
+    ``idx_exec_run_metrics_series``, so this is one seek per doomed child.
+
+    A NULL value is a non-finite point (a diverged loss) and reads back as
+    None — exactly as ``latest_metrics`` omits that series.
+    """
+    if not name:
+        return None
+    row = conn.execute(
+        "SELECT value FROM exec_run_metrics WHERE run_id = ? AND name = ? "
+        "ORDER BY step DESC, id DESC LIMIT 1", (run_id, name)).fetchone()
+    return None if row is None else row["value"]
+
+
+def harvest_doomed(conn: sqlite3.Connection, where_clause: str,
+                   params: tuple) -> int:
+    """Seam B: copy the final objective + status of every run about to be
+    deleted into its sweep row. Returns how many variants were harvested.
+
+    Runs INSIDE the caller's transaction and takes a CONNECTION, never a
+    ``Database``: a second ``Database.run`` here would deadlock on the
+    non-reentrant lock (``run_store``'s module docstring). A function
+    operating on an already-open connection does not violate that rule.
+
+    *where_clause* and *params* are ``RunStore.prune``'s own, verbatim, and
+    this runs immediately before its DELETE — the same discipline the
+    checkpoint-path read already uses, so a row cannot become eligible
+    between the two statements and be seen by one and deleted by the other.
+    **Retention cannot delete a child its sweep has not already harvested.**
+
+    Covers retention ONLY. ``DELETE /api/runs/{id}`` calls ``delete_run``,
+    not ``prune``, so a hand-deleted child that no read had harvested loses
+    its objective; the design then reports that variant honestly as
+    ``missing`` with a null objective (spec 10.12 files the fix).
+    """
+    doomed = conn.execute(
+        "SELECT id, sweep_id, sweep_variant, status FROM exec_runs "
+        f"WHERE {where_clause} AND sweep_id IS NOT NULL", params).fetchall()
+    if not doomed:
+        return 0
+
+    doomed_ids = {row["id"] for row in doomed}
+    by_sweep: dict[str, list[sqlite3.Row]] = {}
+    for row in doomed:
+        by_sweep.setdefault(row["sweep_id"], []).append(row)
+
+    stamp = utc_now_iso()
+    harvested = 0
+    for sweep_id, rows in by_sweep.items():
+        record = _select_sweep(conn, sweep_id)
+        if record is None:
+            continue
+        metric = record.objective.get("metric")
+        entries = {
+            row["sweep_variant"]: HarvestEntry(
+                objective=_last_metric_value(conn, row["id"], metric),
+                status=row["status"])
+            for row in rows if row["sweep_variant"] is not None
+        }
+        patched = _apply_entries(record.variants, entries, stamp)
+        # Every child that will STILL EXIST after the DELETE. The doomed
+        # ones are excluded on purpose: they are terminal by definition
+        # (prune never deletes an active run) and they have just been
+        # harvested, so `variant.status is not None` already answers for
+        # them.
+        live = {row["id"]: row["status"] for row in conn.execute(
+            "SELECT id, status FROM exec_runs WHERE sweep_id = ?",
+            (sweep_id,)) if row["id"] not in doomed_ids}
+        finished = all(
+            variant_is_terminal(variant, live.get(variant.run_id),
+                                child_exists=variant.run_id in live)
+            for variant in patched)
+        _write_variants(conn, record, patched, finished=finished,
+                        stamp=stamp)
+        harvested += len(entries)
+    return harvested

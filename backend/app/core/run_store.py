@@ -1246,6 +1246,17 @@ class RunStore:
                         (ARTIFACT_KIND_TENSORBOARD, *params),
                     ).fetchall()
                 ]
+                # A sweep's results must outlive its children (#140,
+                # RULING 4). Deferred import, in the method body, for the
+                # reason the checkpoint and tensorboard imports below
+                # already are -- plus a real cycle: sweep_store imports
+                # TERMINAL_STATUSES from this module, which is bound AFTER
+                # this module's own imports run, so a module-level import
+                # here would find a partially-initialised module and raise
+                # ImportError depending on which one loaded first.
+                from .sweep_store import harvest_doomed
+
+                harvest_doomed(conn, where_clause, params)
                 deleted = conn.execute(
                     f"DELETE FROM exec_runs WHERE {where_clause}", params,
                 ).rowcount
