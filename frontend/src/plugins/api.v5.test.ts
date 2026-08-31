@@ -742,9 +742,11 @@ describe('workspace.onChanged', () => {
   it('orders added, changed, activated and removed WITHIN one transition', () => {
     // The sibling above only ever sees one event per store transition, so it
     // pins the order ACROSS transitions: reordering the four loops in
-    // `subscribeWorkspaceChanged` leaves it green (#398). These two
-    // assertions are the other half -- the sequence a consumer actually has
-    // to be able to process in one pass.
+    // `subscribeWorkspaceChanged` leaves it green (#398). The SECOND
+    // assertion here is the half with teeth -- one transition carrying all
+    // four kinds at once, which is the only shape that constrains the loop
+    // order. The `openGraphs` assertion first is the sequence a consumer has
+    // to process in one pass; it spans several commits, so it does not.
     const api = freshApi();
     const seen: string[] = [];
     const off = api.workspace.onChanged((e) =>
