@@ -132,6 +132,13 @@ class CompiledSweep:
     variants: tuple[CompiledVariant, ...]
     #: prod(len(p.domain)). May exceed len(variants) for a random sweep.
     total_combinations: int
+    #: The PLANNER seed, exactly as ``_validate_seed`` accepted it: the seed
+    #: that drove the sampling for a ``random`` sweep, whatever the caller
+    #: sent for a ``grid``, and None when a grid sent nothing. RULING 1
+    #: records it either way, and the route fills ``sweeps.seed`` from HERE
+    #: rather than re-reading ``spec["seed"]`` -- so the seed the sampler
+    #: used and the seed the row stores cannot drift apart.
+    seed: int | None
 
 
 def _round_half_away_from_zero(value: float) -> int:
@@ -616,4 +623,4 @@ def compile_sweep(base_graph: dict[str, Any], spec: dict[str, Any], *,
     variants = tuple(_build_variant(base_graph, params, i, domain_index)
                      for i, domain_index in enumerate(domain_indices))
     return CompiledSweep(params=params, variants=variants,
-                         total_combinations=total)
+                         total_combinations=total, seed=seed)

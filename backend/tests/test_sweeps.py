@@ -202,6 +202,51 @@ def test_samples_above_the_space_is_refused():
     assert "9" in message and "3" in message
 
 
+# ── the recorded planner seed (RULING 1, spec 2.2) ────────────────────────
+
+
+def test_the_compiled_sweep_records_the_planner_seed():
+    """The route fills sweeps.seed from the compiled object rather than
+    re-reading and re-validating spec['seed'], so the seed the sampler used
+    and the seed the row records cannot drift apart."""
+    compiled = _compile({"method": "random", "seed": 20260831, "samples": 3,
+                         "params": [_values("epochs", [1, 2, 3])]})
+    assert compiled.seed == 20260831
+
+
+def test_a_grid_without_a_seed_records_none():
+    """A grid enumerates everything, so it consumes no seed. None is the
+    honest record of 'the caller asked for nothing' -- not 0, which is a
+    real seed a caller may have meant."""
+    assert _compile(_grid(_values("epochs", [1, 2]))).seed is None
+
+
+def test_a_grid_with_a_seed_records_it():
+    """RULING 1: the seed is still recorded even though the planner never
+    draws with it, because it is the base for per-variant execution seeds
+    and because a stored spec should say what was asked for."""
+    spec = _grid(_values("epochs", [1, 2]))
+    spec["seed"] = 7
+    assert _compile(spec).seed == 7
+
+
+def test_the_recorded_seed_agrees_with_the_variant_list_it_produced():
+    """The one with teeth: re-draw the ranks from the RECORDED seed with the
+    public sampler and demand the compiler's own variant order back. A
+    compiler that recorded one seed and sampled with another passes every
+    other test in this section and fails this one."""
+    spec = {"method": "random", "seed": 123456789, "samples": 6,
+            "params": [_values("lr", [0.1, 0.01, 0.001, 0.0001, 0.5]),
+                       _values("epochs", [1, 2])]}
+    first = _compile(spec)
+    second = _compile(spec)
+    assert first.seed == second.seed == 123456789
+    assert [v.assignment for v in first.variants] == \
+           [v.assignment for v in second.variants]
+    assert [v.domain_index for v in first.variants] == \
+        sample_unique_ranks(first.total_combinations, 6, first.seed)
+
+
 # ── grid shape (spec 3.1, 9.3) ────────────────────────────────────────────
 
 
