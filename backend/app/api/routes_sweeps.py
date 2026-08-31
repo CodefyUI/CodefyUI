@@ -1,9 +1,9 @@
 """REST surface for parameter sweeps (#140).
 
     POST   /api/sweeps                compile + queue N variants  -> 201
+    GET    /api/sweeps/{id}           the ranked table, JSON or CSV
 
-``GET /api/sweeps/{id}`` (the ranked comparison table, JSON or CSV) and
-``POST /api/sweeps/{id}/cancel`` land in their own commits. The conventions
+``POST /api/sweeps/{id}/cancel`` lands in its own commit. The conventions
 below are the module's rather than one route's, so they are stated once here.
 
 Conventions are ``routes_runs.py``'s, deliberately: plain ``dict`` returns
@@ -37,12 +37,15 @@ variants, and a caller who wants live progress long-polls each child's
 from __future__ import annotations
 
 import asyncio
+import csv
+import io
 import logging
 import sys
 from typing import Any, Literal
 from uuid import uuid4
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi.responses import Response
 from pydantic import (
     BaseModel,
     ConfigDict,
@@ -68,14 +71,29 @@ from ..core.run_service import (
     # that already uses it.
     _swallow_task_result,
 )
-from ..core.run_store import RunProvenance
+from ..core.run_store import TERMINAL_STATUSES, RunProvenance, RunRecord
 from ..core.sweep_compiler import (
     CompiledSweep,
     CompiledVariant,
     SweepCompileError,
     compile_sweep,
 )
-from ..core.sweep_store import SweepRecord, SweepStore, SweepVariant
+from ..core.sweep_store import (
+    SWEEP_STATE_FAILED,
+    SWEEP_STATE_FINISHED,
+    HarvestEntry,
+    SweepRecord,
+    SweepStore,
+    SweepVariant,
+    rank_variants,
+    variant_is_terminal,
+)
+# The CSV helpers are REUSED, not re-derived: one BOM decision and one
+# formula-injection guard for the whole product. Importing a sibling
+# router's private helper is the house pattern (`routes_graph_run.py:47`
+# takes `_graph_path` and `_sanitize_name` from `routes_graph`), and there
+# is no cycle -- `routes_runs` imports nothing from here.
+from .routes_runs import _CSV_BOM, _csv_text_cell
 
 logger = logging.getLogger(__name__)
 
@@ -518,3 +536,251 @@ async def create_sweep(body: CreateSweepRequest, request: Request):
         "params": _spec_param_payload(sweep),
         "variants": submitted,
     }
+
+
+# ── the read side ─────────────────────────────────────────────────────────
+
+#: States a harvest must never re-write. ``failed`` is the submit loop's
+#: own record of what went wrong and outranks any later observation;
+#: ``finished`` is stamped once, so re-stamping it would move
+#: ``finished_at`` on every poll. ``SweepStore._write_variants`` enforces
+#: both itself -- this set is what lets the read side skip the write
+#: ENTIRELY when there is nothing else to say, which is the difference
+#: between three database round trips and four on every poll of a settled
+#: sweep.
+_SETTLED_STATES = frozenset({SWEEP_STATE_FINISHED, SWEEP_STATE_FAILED})
+
+
+async def _harvested_sweep(
+    service: RunService, store: SweepStore, sweep_id: str,
+) -> tuple[SweepRecord, dict[str, RunRecord], dict[str, dict[str, float]]]:
+    """Seam A: harvest, then hand back everything a read needs.
+
+    Exactly three database round trips regardless of variant count — the
+    sweep row, its children in one indexed range, and ONE grouped
+    ``latest_metrics`` call — plus a fourth only when the harvest has
+    something to write.
+
+    A variant is harvested when it has not been harvested before, its child
+    row still exists, and that row is terminal. Writing rather than merely
+    computing is RULING 4: retention deletes finished runs, and a value
+    computed for one response is gone with it.
+    """
+    sweep = await store.get_sweep(sweep_id)
+    if sweep is None:
+        raise HTTPException(status_code=404,
+                            detail=f"sweep '{sweep_id}' not found")
+    children = {record.id: record
+                for record in await service.store.list_runs_by_sweep(sweep_id)}
+    metrics = await service.store.latest_metrics(list(children))
+
+    metric = sweep.objective.get("metric")
+    entries: dict[int, HarvestEntry] = {}
+    for variant in sweep.variants:
+        if variant.harvested_at is not None or variant.run_id is None:
+            continue
+        child = children.get(variant.run_id)
+        if child is None or child.status not in TERMINAL_STATUSES:
+            continue
+        entries[variant.index] = HarvestEntry(
+            objective=metrics.get(variant.run_id, {}).get(metric),
+            status=child.status)
+
+    # `variant.index in entries` stands in for the patched variant's
+    # harvested status, so the terminal check sees the post-harvest world
+    # without materialising it.
+    finished = all(
+        variant.index in entries
+        or variant_is_terminal(
+            variant,
+            children[variant.run_id].status
+            if variant.run_id in children else None,
+            child_exists=variant.run_id in children)
+        for variant in sweep.variants)
+
+    if entries or (finished and sweep.state not in _SETTLED_STATES):
+        # ONE closure, so the read-modify-write of the variants blob is
+        # atomic against every other database operation in the process.
+        # Splitting it into a read here and a write there would silently
+        # drop a concurrent harvest -- a finishing run's, or a second
+        # poller's -- while still reporting success.
+        updated = await store.harvest(sweep.id, entries=entries,
+                                      finished=finished)
+        if updated is not None:
+            sweep = updated
+    return sweep, children, metrics
+
+
+_COUNT_KEYS = ("queued", "running", "succeeded", "failed", "cancelled",
+               "interrupted", _STATUS_MISSING)
+
+
+def _variant_payload(variant: SweepVariant, rank: int | None,
+                     children: dict[str, RunRecord],
+                     metrics: dict[str, dict[str, float]]) -> dict[str, Any]:
+    child = children.get(variant.run_id) if variant.run_id else None
+    payload: dict[str, Any] = {
+        "index": variant.index,
+        "domain_index": variant.domain_index,
+        "run_id": variant.run_id,
+        # The LIVE status wins, then the harvested one, then the literal
+        # "missing" -- what a client sees for a variant whose run was
+        # pruned or hand-deleted before any read harvested it.
+        "status": (child.status if child is not None
+                   else variant.status or _STATUS_MISSING),
+        "params": variant.params,
+        "seed": variant.seed,
+        "objective": variant.objective,
+        "rank": rank,
+        # RULING 4: the run id stays as a link that MAY BE DEAD, and this is
+        # how a client knows not to follow it.
+        "run_exists": child is not None,
+    }
+    if child is not None:
+        # OMITTED entirely, not {}, when the row is gone: an empty map reads
+        # as "this run recorded nothing" rather than "this run is no longer
+        # here".
+        payload["final_metrics"] = metrics.get(variant.run_id, {})
+    return payload
+
+
+def _counts(payloads: list[dict[str, Any]]) -> dict[str, int]:
+    """Per-status tallies that always sum to the variant count."""
+    counts = {key: 0 for key in _COUNT_KEYS}
+    for payload in payloads:
+        status = payload["status"]
+        counts[status if status in counts else _STATUS_MISSING] += 1
+    return counts
+
+
+def _objective_warning(sweep: SweepRecord,
+                       payloads: list[dict[str, Any]]) -> str | None:
+    """Absent when at least one variant ranked.
+
+    Otherwise it turns the single most likely user error — asking for
+    ``val_loss`` from a graph with no validation loader — into a message
+    that names the fix, instead of a table of empty cells. The series list
+    is the union of ``final_metrics`` keys across the children that still
+    exist, sorted so the message is the same twice, and omitted when none
+    of them do.
+    """
+    if any(payload["rank"] is not None for payload in payloads):
+        return None
+    names = sorted({name for payload in payloads
+                    for name in payload.get("final_metrics", {})})
+    warning = ("no variant recorded a metric named "
+               f"'{sweep.objective.get('metric')}'")
+    if names:
+        warning += ("; the series recorded across this sweep were: "
+                    + ", ".join(names))
+    return warning
+
+
+_CSV_COLUMNS = ("rank", "variant_index", "domain_index", "run_id", "status",
+                "objective")
+
+
+def _comparison_csv(sweep: SweepRecord,
+                    payloads: list[dict[str, Any]]) -> str:
+    """One row per variant — #140's fourth acceptance criterion.
+
+    ``rank``, ``variant_index``, ``domain_index`` and ``objective`` are
+    NUMERIC cells and are deliberately not routed through
+    ``_csv_text_cell``: a negative value leads with ``-`` by nature, and
+    quoting it would turn the column into text and break every chart built
+    on the export (``routes_runs.py:473-475``). ``run_id``, ``status`` and
+    every param cell ARE text cells — a ``select`` or ``string`` param's
+    value is caller-supplied. So is a node id, which is why the per-param
+    HEADER cells go through the same guard: ``=cmd.lr`` is a formula wearing
+    a column name.
+
+    An absent ``objective`` or ``rank`` is an EMPTY cell, which is what
+    every spreadsheet reads as a gap; ``"None"`` would read as text and
+    poison the column's type. An unranked variant still gets its row.
+    """
+    addresses = [(entry["node_id"], entry["param"])
+                 for entry in _spec_param_payload(sweep)]
+    buffer = io.StringIO(newline="")
+    # Explicit lineterminator: csv defaults to \r\n, and newline="" means
+    # that would survive verbatim into the body.
+    writer = csv.writer(buffer, lineterminator="\n")
+    writer.writerow([*_CSV_COLUMNS,
+                     *(_csv_text_cell(f"{node_id}.{param}")
+                       for node_id, param in addresses)])
+    for payload in payloads:
+        values = {(entry["node_id"], entry["param"]): entry["value"]
+                  for entry in payload["params"]}
+        writer.writerow([
+            "" if payload["rank"] is None else payload["rank"],
+            payload["index"],
+            payload["domain_index"],
+            _csv_text_cell(payload["run_id"] or ""),
+            _csv_text_cell(payload["status"]),
+            "" if payload["objective"] is None else payload["objective"],
+            *(_csv_text_cell(values.get(address, ""))
+              for address in addresses),
+        ])
+    return _CSV_BOM + buffer.getvalue()
+
+
+def _csv_filename(sweep_id: str) -> str:
+    """A filename that cannot break out of the header.
+
+    Sweep ids are our own uuid4 hex, but this endpoint's id comes off the
+    URL, so the value is whitelisted rather than trusted.
+    """
+    safe = "".join(c for c in sweep_id if c.isalnum() or c in "-_")[:64]
+    return f"sweep-{safe}-comparison.csv" if safe else "sweep-comparison.csv"
+
+
+@router.get("/{sweep_id}")
+async def get_sweep(
+    sweep_id: str,
+    request: Request,
+    format: str = Query(default="json", pattern="^(json|csv)$"),
+):
+    """The ranked comparison table, as JSON or as a spreadsheet download.
+
+    ``variants`` comes back in RANK order, best first, so a table renders it
+    without sorting and the best row is row one. The pre-rank identity is
+    never lost: ``index`` is the compiled variant number and
+    ``domain_index`` the cartesian cell, so a client can re-sort back to
+    submission order.
+
+    Harvests before answering, so a freshly-finished variant's objective is
+    STORED, not merely computed for this one response.
+    """
+    service = _get_service(request)
+    store = _get_sweep_store(request)
+    sweep, children, metrics = await _harvested_sweep(service, store,
+                                                      sweep_id)
+    ranked = rank_variants(
+        sweep.variants,
+        direction=sweep.objective.get("direction", "minimize"))
+    payloads = [_variant_payload(variant, rank, children, metrics)
+                for variant, rank in ranked]
+
+    if format == "csv":
+        return Response(
+            content=_comparison_csv(sweep, payloads),
+            media_type="text/csv; charset=utf-8",
+            headers={"Content-Disposition":
+                     f'attachment; filename="{_csv_filename(sweep_id)}"'})
+
+    best = next((payload for payload in payloads if payload["rank"] == 1),
+                None)
+    body: dict[str, Any] = {
+        "sweep_id": sweep.id, "name": sweep.name, "state": sweep.state,
+        "method": sweep.method, "seed": sweep.seed,
+        "seed_variants": sweep.seed_variants, "objective": sweep.objective,
+        "created_at": sweep.created_at, "finished_at": sweep.finished_at,
+        "error": sweep.error, "counts": _counts(payloads),
+        "params": _spec_param_payload(sweep), "variants": payloads,
+        "best": None if best is None else {
+            "index": best["index"], "run_id": best["run_id"],
+            "objective": best["objective"]},
+    }
+    warning = _objective_warning(sweep, payloads)
+    if warning is not None:
+        body["objective_warning"] = warning
+    return body

@@ -16,6 +16,8 @@ independent.
 from __future__ import annotations
 
 import asyncio
+import csv
+import io
 import sqlite3
 import threading
 import time
@@ -24,6 +26,7 @@ from typing import Any
 import pytest
 from httpx import ASGITransport, AsyncClient
 
+from app.api.routes_runs import _CSV_BOM
 from app.config import settings
 from app.core import run_service as run_service_module
 from app.core.auth import TOKEN_HEADER, session_token
@@ -37,7 +40,7 @@ from app.core.node_base import (
 )
 from app.core.node_registry import registry
 from app.core.run_service import QueueLimits, RunService, RunServiceUnavailable
-from app.core.run_store import RunProvenance, RunStore
+from app.core.run_store import TERMINAL_STATUSES, RunProvenance, RunStore
 from app.core.sweep_store import SweepStore
 from app.main import app
 
@@ -359,12 +362,14 @@ def test_sweeps_routes_are_not_under_an_auth_exempt_prefix():
 
 
 def test_sweeps_routes_appear_in_the_openapi_document():
-    # `/api/sweeps/{sweep_id}` and `/api/sweeps/{sweep_id}/cancel` are
-    # asserted by the tasks that add them; a route this module does not
-    # serve yet cannot be pinned here without leaving the tree red.
+    # `/api/sweeps/{sweep_id}/cancel` is asserted by the task that adds it;
+    # a route this module does not serve yet cannot be pinned here without
+    # leaving the tree red.
     paths = app.openapi()["paths"]
     assert "/api/sweeps" in paths
     assert set(paths["/api/sweeps"]) == {"post"}
+    assert "/api/sweeps/{sweep_id}" in paths
+    assert set(paths["/api/sweeps/{sweep_id}"]) == {"get"}
 
 
 async def test_a_mutating_sweep_route_without_a_token_is_403(service):
@@ -379,8 +384,13 @@ async def test_a_mutating_sweep_route_without_a_token_is_403(service):
         # a handler yet.
         cancelled = await http.post("/api/sweeps/abc/cancel")
         assert cancelled.status_code == 403
-        # The GET is open, like every other GET in the app.
-        assert (await http.get("/api/sweeps/abc")).status_code == 404
+        # The GET is open, like every other GET in the app. The DETAIL is
+        # asserted, not just the code: an unauthenticated GET must reach the
+        # handler and be told the sweep does not exist, where a routing 404
+        # would look identical from the outside.
+        unknown = await http.get("/api/sweeps/abc")
+        assert unknown.status_code == 404
+        assert unknown.json()["detail"] == "sweep 'abc' not found"
 
 
 # ── submit (spec 5.2, 9.7) ────────────────────────────────────────────────
@@ -470,15 +480,16 @@ def _raise_on_nth(real: Any, *, n: int,
     return _wrapped
 
 
-async def test_the_submit_loop_failing_part_way_leaves_a_failed_sweep(
+async def test_the_submit_loop_failing_part_way_leaves_a_failed_sweep_and_intact_children(
         make_service, store, sweep_store, db, probe, monkeypatch):
-    """A sweep leaves `running` only if every variant got a run_id or the
+    """Spec 9.7.2, in full.
+
+    A sweep leaves `running` only if every variant got a run_id or the
     route marked it failed (spec 4.3, 5.2). A variant with run_id null is
     NOT terminal, so a loop that breaks and does neither would leave the row
-    at `running` forever, with no seam able to settle it.
-
-    §9.7.2's last assertion is a GET, which arrives with that route; the
-    rest of it is here, where the failure path is written.
+    at `running` forever, with no seam able to settle it. Nothing else fails
+    if an implementer forgets the row patch or the `k of n` suffix, both of
+    which are pure design.
 
     The queue is saturated first, or the assertion that the two created
     children are still `queued` could never pass: the default cpu cap is 2
@@ -522,6 +533,19 @@ async def test_the_submit_loop_failing_part_way_leaves_a_failed_sweep(
         children = await store.list_runs_by_sweep(sweep_id)
         assert [c.sweep_variant for c in children] == [0, 1]
         assert [c.status for c in children] == ["queued", "queued"]
+
+        # §9.7.2's last assertion: the partial sweep is READABLE, and the
+        # four variants that never got a run report `missing` rather than
+        # vanishing from the table.
+        async with AsyncClient(
+                transport=ASGITransport(app=app), base_url=BASE_URL,
+                headers={TOKEN_HEADER: session_token()}) as http:
+            readback = await http.get(f"/api/sweeps/{sweep_id}")
+        assert readback.status_code == 200, readback.text
+        body = readback.json()
+        assert len(body["variants"]) == 6
+        assert body["counts"]["missing"] == 4
+        assert body["state"] == "failed"      # never overwritten by a harvest
     finally:
         # Held gates make the fixture's drain wait out shutdown_grace_s.
         release_filler.set()
@@ -805,3 +829,296 @@ async def test_a_cancel_while_the_sweep_row_is_written_still_settles_it(
             "SELECT COUNT(*) FROM exec_runs").fetchone()[0] == 0
     finally:
         let_go.set()
+
+
+# ── the ranked table (spec 5.3, 9.7) ──────────────────────────────────────
+
+
+async def _run_sweep(http: AsyncClient, store: RunStore,
+                     *params: dict[str, Any], **overrides: Any) -> str:
+    """POST a sweep and wait for every child to reach a terminal status."""
+    response = await http.post("/api/sweeps", json=_body(*params,
+                                                         **overrides))
+    assert response.status_code == 201, response.text
+    sweep_id = response.json()["sweep_id"]
+    for child in await store.list_runs_by_sweep(sweep_id):
+        await _await_terminal(store, child.id)
+    return sweep_id
+
+
+async def test_every_variant_completes_unattended_and_the_table_ranks_them(
+        client, store):
+    """#140 acceptance criterion 1: 3x2 completes unattended and the table
+    ranks by final val_loss. val_loss = lr * 10 + weight_decay, so the
+    winner is knowable in advance rather than merely "some ordering"."""
+    sweep_id = await _run_sweep(client, store,
+                                _values("lr", [0.003, 0.001, 0.002]),
+                                _values("weight_decay", [0.5, 0.0]))
+    body = (await client.get(f"/api/sweeps/{sweep_id}")).json()
+    assert body["state"] == "finished"
+    assert body["counts"]["succeeded"] == 6
+    assert [v["rank"] for v in body["variants"]] == [1, 2, 3, 4, 5, 6]
+    assert body["variants"][0]["objective"] == pytest.approx(0.01)
+    assert body["variants"][0]["params"] == [
+        {"node_id": "probe", "param": "lr", "value": 0.001},
+        {"node_id": "probe", "param": "weight_decay", "value": 0.0}]
+    assert body["best"]["index"] == body["variants"][0]["index"]
+    assert body["variants"][0]["final_metrics"]["train_loss"] == \
+        pytest.approx(0.02)
+    assert all(v["run_exists"] for v in body["variants"])
+    assert "objective_warning" not in body
+    # The pre-rank identity survives the sort, so a client can put the table
+    # back into submission order (spec 5.3).
+    assert sorted(v["index"] for v in body["variants"]) == [0, 1, 2, 3, 4, 5]
+
+
+async def test_the_ranked_order_is_stable_across_polls(client, store):
+    """A polled table must not reshuffle between reads.
+
+    Two variants are given the SAME objective on purpose -- val_loss is
+    lr * 10 + weight_decay, so (0.1, 0.0) and (0.05, 0.5) both land on 1.0 --
+    because a tie is the only case where a sort with no total order can
+    legally return either. Ties break on `index`, so the two reads below are
+    identical rather than merely sorted.
+    """
+    sweep_id = await _run_sweep(client, store,
+                                _values("lr", [0.1, 0.05]),
+                                _values("weight_decay", [0.0, 0.5]))
+    first = (await client.get(f"/api/sweeps/{sweep_id}")).json()
+    second = (await client.get(f"/api/sweeps/{sweep_id}")).json()
+    assert [v["index"] for v in first["variants"]] == \
+        [v["index"] for v in second["variants"]]
+    tied = [v["index"] for v in first["variants"]
+            if v["objective"] == pytest.approx(1.0)]
+    assert tied == sorted(tied) and len(tied) == 2
+
+
+async def test_a_failed_variant_that_logged_the_objective_is_still_ranked(
+        client, store):
+    """The HTTP sibling of test_sweeps.py's unit version. AC 3: hiding a
+    real number because the run ended badly is the silent disappearance
+    that criterion forbids."""
+    sweep_id = await _run_sweep(
+        client, store, _values("lr", [0.1]),
+        graph=_graph(fail=True))
+    body = (await client.get(f"/api/sweeps/{sweep_id}")).json()
+    variant = body["variants"][0]
+    assert variant["status"] == "failed"
+    assert variant["objective"] == pytest.approx(1.0)
+    assert variant["rank"] == 1
+    assert body["counts"]["failed"] == 1
+    assert body["state"] == "finished"      # a container, not a run
+
+
+async def test_a_variant_with_no_objective_is_unranked_but_present(
+        client, store):
+    sweep_id = await _run_sweep(
+        client, store, _values("lr", [0.1]), graph=_graph(silent=True))
+    body = (await client.get(f"/api/sweeps/{sweep_id}")).json()
+    assert body["variants"][0]["objective"] is None
+    assert body["variants"][0]["rank"] is None
+    assert body["best"] is None
+    csv_body = (await client.get(
+        f"/api/sweeps/{sweep_id}?format=csv")).text
+    rows = list(csv.reader(io.StringIO(csv_body.lstrip(_CSV_BOM))))
+    assert len(rows) == 2                    # header + the unranked row
+
+
+async def test_a_diverged_variant_is_unranked(client, store):
+    """A non-finite last point is stored as SQL NULL and omitted from the
+    series map: a diverged loss must not render as a suspiciously good
+    one. The HTTP sibling of test_sweeps.py's unit version."""
+    sweep_id = await _run_sweep(
+        client, store, _values("lr", [0.1]), graph=_graph(diverge=True))
+    body = (await client.get(f"/api/sweeps/{sweep_id}")).json()
+    assert body["variants"][0]["status"] == "succeeded"
+    assert body["variants"][0]["objective"] is None
+    assert body["variants"][0]["rank"] is None
+
+
+async def test_no_variant_produced_the_objective(client, store):
+    """The single most likely user error -- asking for val_loss from a
+    graph that never logs it -- becomes a message naming the fix instead of
+    a table of empty cells."""
+    sweep_id = await _run_sweep(
+        client, store, _values("lr", [0.1, 0.2]),
+        objective={"metric": "accuracy", "direction": "maximize"})
+    body = (await client.get(f"/api/sweeps/{sweep_id}")).json()
+    assert body["best"] is None
+    assert all(v["rank"] is None for v in body["variants"])
+    warning = body["objective_warning"]
+    assert "accuracy" in warning
+    assert "train_loss" in warning and "val_loss" in warning
+
+
+async def test_the_objective_survives_its_child_being_pruned(client, store):
+    """RULING 4: the run id stays as a link that may be dead, and the
+    numbers stay."""
+    sweep_id = await _run_sweep(client, store, _values("lr", [0.1, 0.2]))
+    before = (await client.get(f"/api/sweeps/{sweep_id}")).json()
+    assert before["variants"][0]["objective"] == pytest.approx(1.0)
+
+    assert await store.prune(keep_last=0) == 2
+    after = (await client.get(f"/api/sweeps/{sweep_id}")).json()
+    assert after["variants"][0]["objective"] == pytest.approx(1.0)
+    assert after["variants"][0]["status"] == "succeeded"   # the harvested one
+    assert after["variants"][0]["run_exists"] is False
+    assert "final_metrics" not in after["variants"][0]
+    assert after["variants"][0]["run_id"] is not None      # a dead link
+
+
+async def test_a_child_deleted_before_any_read_is_missing_not_a_wedged_sweep(
+        client, store, sweep_store):
+    """Spec 6.3's accepted hole, reported honestly rather than hidden.
+
+    `DELETE /api/runs/{id}` goes through `delete_run`, not `prune`, so seam
+    B's inside-the-transaction guarantee does not cover it: a child deleted
+    before any GET harvested it loses its objective permanently. What must
+    NOT happen is the sweep wedging at `running` forever with no seam able
+    to settle it -- which is exactly what the "row is gone" clause of
+    `variant_is_terminal` prevents, and this is the only place it fires.
+    """
+    sweep_id = await _run_sweep(client, store, _values("lr", [0.1]))
+    child = (await store.list_runs_by_sweep(sweep_id))[0]
+    # No GET yet, so nothing has been harvested.
+    assert (await sweep_store.get_sweep(sweep_id)).variants[0].status is None
+    assert await store.delete_run(child.id) is True
+
+    body = (await client.get(f"/api/sweeps/{sweep_id}")).json()
+    variant = body["variants"][0]
+    assert variant["status"] == "missing"
+    assert variant["objective"] is None
+    assert variant["rank"] is None
+    assert variant["run_exists"] is False
+    assert "final_metrics" not in variant
+    assert body["counts"]["missing"] == 1
+    assert body["state"] == "finished"      # NOT wedged at "running"
+    assert (await sweep_store.get_sweep(sweep_id)).state == "finished"
+
+
+async def test_the_sweep_finishes_through_seam_a(client, store, sweep_store):
+    sweep_id = await _run_sweep(client, store, _values("lr", [0.1, 0.2]))
+    first = (await client.get(f"/api/sweeps/{sweep_id}")).json()
+    assert first["state"] == "finished"
+    assert first["finished_at"] is not None
+    # The STORED row, not just the response: read repair means nothing else
+    # would ever write it.
+    stored = await sweep_store.get_sweep(sweep_id)
+    assert stored.state == "finished"
+    assert stored.finished_at == first["finished_at"]
+
+    second = (await client.get(f"/api/sweeps/{sweep_id}")).json()
+    assert second["finished_at"] == first["finished_at"]   # stamped once
+
+
+async def test_a_restart_leaves_variants_interrupted_and_the_sweep_inspectable(
+        make_service, store, probe):
+    """RULING 2. `recover_interrupted` is a STARTUP call and raises when
+    runs are in flight, so this uses spec 9.7.1 recipe (a): a graceful
+    shutdown, whose phase 0 files every WAITING run `interrupted` -- the
+    same status and the same rows a restart would write.
+    """
+    service = make_service(cpu=1)
+    release = probe.hold(_label(0.1))
+    async with AsyncClient(transport=ASGITransport(app=app),
+                           base_url=BASE_URL,
+                           headers={TOKEN_HEADER: session_token()}) as http:
+        response = await http.post("/api/sweeps", json=_body(
+            _values("lr", [0.1, 0.2, 0.3, 0.4])))
+        sweep_id = response.json()["sweep_id"]
+        await probe.wait_entered(_label(0.1))
+
+        # Release the RUNNING child, then shut down with NO await in
+        # between. The probe blocks on a threading.Event, not on a
+        # context.should_stop() poll, so shutdown's cooperative phase cannot
+        # reach a HELD node: it would sit there until phase 2 hard-cancels
+        # it after shutdown_grace_s, and shutdown's own docstring says that
+        # leaves the row reading `running`.
+        #
+        # The missing `await` between the two lines is the load-bearing
+        # part, not a shortcut. `shutdown` sets `_shutting_down` and empties
+        # both pending indexes BEFORE its first await
+        # (run_service.py:2637, :2674-2680), and entering a coroutine does
+        # not yield -- so the event loop cannot promote a queued child into
+        # the slot the released one just freed. Awaiting the released child
+        # to terminal first, as the obvious reading of the recipe suggests,
+        # hands the loop exactly that chance and makes "three children never
+        # started" a race instead of a fact.
+        release.set()
+        await service.shutdown()
+
+        statuses = {c.sweep_variant: c.status
+                    for c in await store.list_runs_by_sweep(sweep_id)}
+        # Variant 0 was drained by shutdown's phase 1, so it is terminal --
+        # `succeeded` normally, `interrupted` if the stop reason won the
+        # race with the node's own return. Either is a real restart outcome;
+        # what RULING 2 is about is the three that never started.
+        assert statuses[0] in TERMINAL_STATUSES, statuses
+        assert all(statuses[i] == "interrupted" for i in (1, 2, 3)), statuses
+
+        body = (await http.get(f"/api/sweeps/{sweep_id}")).json()
+        assert len(body["variants"]) == 4
+        assert sum(body["counts"].values()) == 4
+        assert body["counts"]["interrupted"] >= 3
+        assert body["state"] == "finished"     # every variant is terminal
+        # The harvest keeps whatever a stopped child had logged: variant 0
+        # logged val_loss before the gate released it, and _finalize flushes
+        # metrics with force=True whatever the outcome.
+        by_index = {v["index"]: v for v in body["variants"]}
+        assert by_index[0]["objective"] == pytest.approx(1.0)
+        assert all(by_index[i]["objective"] is None for i in (1, 2, 3))
+
+
+# ── the comparison CSV (spec 5.3, 9.8) ────────────────────────────────────
+
+
+async def test_the_comparison_csv_has_one_row_per_variant(client, store):
+    """#140 acceptance criterion 4. `note` is swept with a value that looks
+    like a FORMULA, because Excel, LibreOffice and Sheets all evaluate a
+    cell whose first character is '=' and a string param's value is
+    caller-supplied."""
+    sweep_id = await _run_sweep(
+        client, store,
+        _values("lr", [0.1, 0.2]),
+        _values("note", ["=HYPERLINK(1)", "ok"]),
+        graph=_graph(silent=True))          # unranked rows, on purpose
+    response = await client.get(f"/api/sweeps/{sweep_id}?format=csv")
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/csv")
+    disposition = response.headers["content-disposition"]
+    assert "attachment" in disposition
+    assert f"sweep-{sweep_id}-comparison.csv" in disposition
+
+    text = response.text
+    # U+FEFF: text/csv; charset=utf-8 is not enough for Excel on Windows,
+    # which reads a BOM-less CSV in the ANSI codepage -- in a product that
+    # ships zh-TW.
+    assert text.startswith(_CSV_BOM)
+    rows = list(csv.reader(io.StringIO(text.lstrip(_CSV_BOM))))
+    assert rows[0] == ["rank", "variant_index", "domain_index", "run_id",
+                       "status", "objective", "probe.lr", "probe.note"]
+    assert len(rows) == 5                    # header + 4 variants
+    # Every variant is silent, so every rank and objective cell is EMPTY --
+    # not "None", which would read as text and poison the column's type --
+    # and no row disappears for being unranked.
+    assert all(row[0] == "" and row[5] == "" for row in rows[1:])
+    assert sorted(row[1] for row in rows[1:]) == ["0", "1", "2", "3"]
+    assert all(row[3] and row[4] == "succeeded" for row in rows[1:])
+    # The formula guard: a leading apostrophe, the convention every
+    # spreadsheet understands as "this is text".
+    assert {row[7] for row in rows[1:]} == {"'=HYPERLINK(1)", "ok"}
+    # Numeric cells are NOT quoted into text: a chart built on the export
+    # would break.
+    assert {row[6] for row in rows[1:]} == {"0.1", "0.2"}
+
+
+async def test_an_unknown_sweep_is_a_404(client):
+    response = await client.get("/api/sweeps/nope")
+    assert response.status_code == 404
+    assert response.json()["detail"] == "sweep 'nope' not found"
+
+
+async def test_an_unknown_format_is_a_422(client, store):
+    sweep_id = await _run_sweep(client, store, _values("lr", [0.1]))
+    assert (await client.get(
+        f"/api/sweeps/{sweep_id}?format=xlsx")).status_code == 422
