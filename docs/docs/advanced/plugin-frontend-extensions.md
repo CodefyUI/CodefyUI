@@ -338,7 +338,7 @@ Each entry is validated in this order, and a failure produces a result with an `
 1. `title` must be a non-empty string — `invalid_graph`.
 2. `graph` must survive `JSON.stringify` — `invalid_graph`.
 3. That JSON must be at most 8 MiB — `too_large`.
-4. The graph must read through the editor's document reader, the same one opening a gallery example uses: node params are merged onto their definition's presets, unknown top-level keys are ignored, `subgraphs`, `segmentGroups` and `presets` are honoured, and a `format_version` newer than this editor opens the tab read-only exactly as a file would. A reader failure is `invalid_graph`, with the reader's own message.
+4. The graph must read through the editor's document reader, the same one opening a gallery example uses: a node's `params` are taken exactly as the entry wrote them, and nothing is filled in from its definition or its preset — a param you leave out stays out; unknown top-level keys are ignored, `subgraphs`, `segmentGroups` and `presets` are honoured, and a `format_version` newer than this editor opens the tab read-only exactly as a file would. A reader failure is `invalid_graph`, with the reader's own message.
 5. Opening must not take the editor past 32 tabs — `too_many_tabs`.
 
 The tab count is checked last, against the live count, so two entries in one call cannot both slip under a limit only one of them fits. The cost of that order is that an entry refused with `too_many_tabs` has already been read: presets it carries that this server has never seen are merged into the palette even though no tab was opened.

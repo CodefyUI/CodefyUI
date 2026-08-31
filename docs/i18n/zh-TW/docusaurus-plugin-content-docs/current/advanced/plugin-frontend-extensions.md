@@ -338,7 +338,7 @@ for (const [i, result] of opened.entries()) {
 1. `title` 必須是非空字串——`invalid_graph`。
 2. `graph` 必須能通過 `JSON.stringify`——`invalid_graph`。
 3. 該 JSON 最多 8 MiB——`too_large`。
-4. 圖表必須能通過編輯器的文件讀取器，也就是開啟藝廊範例所用的同一個：節點參數會與其定義的 preset 合併、未知的最上層鍵會被忽略、`subgraphs`、`segmentGroups` 與 `presets` 都會被採用，而 `format_version` 比這個編輯器新時，分頁會以唯讀開啟，和開檔案一模一樣。讀取器失敗是 `invalid_graph`，訊息就是讀取器自己的訊息。
+4. 圖表必須能通過編輯器的文件讀取器，也就是開啟藝廊範例所用的同一個：節點的 `params` 完全照該項目寫下來的樣子讀取，不會從它的定義或 preset 補進任何東西——你沒寫的參數就是沒有；未知的最上層鍵會被忽略、`subgraphs`、`segmentGroups` 與 `presets` 都會被採用，而 `format_version` 比這個編輯器新時，分頁會以唯讀開啟，和開檔案一模一樣。讀取器失敗是 `invalid_graph`，訊息就是讀取器自己的訊息。
 5. 開啟後不得讓編輯器超過 32 個分頁——`too_many_tabs`。
 
 分頁數是**最後**才檢查的，而且比對的是當下的即時數量，所以同一次呼叫裡的兩筆項目，不會一起擠進只夠一筆的額度。這個順序的代價是：一筆被 `too_many_tabs` 拒絕的項目其實已經被讀過了——它帶來而這台伺服器沒看過的 preset 已經併進節點面板，即使沒有任何分頁被開出來。
