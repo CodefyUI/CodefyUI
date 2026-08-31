@@ -53,6 +53,19 @@ SWEEP_STATES: frozenset[str] = frozenset({
     SWEEP_STATE_FINISHED, SWEEP_STATE_FAILED,
 })
 
+# The objective's ranking direction, enforced the same way and in the same
+# place, so a route validating the submitted field imports this rather than
+# re-spelling the two strings. There is no default and none is inferred:
+# spec 6.2 requires the field because `val_loss` and `val_accuracy` are both
+# plausible objectives and rank in OPPOSITE directions, and guessing from a
+# user-chosen series name is exactly the heuristic that would be wrong
+# silently.
+SWEEP_DIRECTION_MINIMIZE = "minimize"
+SWEEP_DIRECTION_MAXIMIZE = "maximize"
+SWEEP_DIRECTIONS: frozenset[str] = frozenset({
+    SWEEP_DIRECTION_MINIMIZE, SWEEP_DIRECTION_MAXIMIZE,
+})
+
 _SWEEP_COLUMNS = (
     "id, name, state, method, seed, seed_variants, spec, objective, "
     "variants, error, created_at, finished_at"
@@ -356,18 +369,31 @@ def variant_is_terminal(variant: SweepVariant, child_status: str | None, *,
                         child_exists: bool) -> bool:
     """Spec 4.3's "terminal outcome", defined ONCE and used by both seams.
 
-    True when the variant has **no reachable run** (``run_id`` is None — the
-    failed-submit-loop case — or its row is gone and it was never
-    harvested), or it carries a harvested terminal status, or its live child
-    row is terminal.
+    True when the variant carries a harvested terminal status, or its run
+    row is **gone** (spec 5.3's ``missing``), or its live child row is
+    terminal. The gone-row clause is load-bearing: without it a variant
+    whose run someone deleted by hand would keep its sweep at ``running``
+    forever.
 
-    The no-reachable-run clause is load-bearing: without it a variant whose
-    run someone deleted by hand would keep its sweep at ``running`` forever.
+    **A variant with no ``run_id`` at all is NOT terminal**, and that is a
+    deliberate narrowing of spec 4.3, whose "no reachable run" wording also
+    covered it. During ``POST /api/sweeps`` the later variants legitimately
+    carry ``run_id: null`` until the submit loop reaches them, and a prune
+    fires on the same event loop after every run finishes — so counting
+    them as done stamps a sweep ``finished`` on its first child, and
+    ``_write_variants`` never re-stamps a sweep that already reads
+    ``finished``. The wrong answer would be permanent. The submit loop
+    BREAKING is the other case, and it does not need this clause: spec 5.2
+    has the route call :meth:`SweepStore.mark_failed` itself, and neither
+    seam ever overwrites ``failed``.
+
+    The harvested-status check comes FIRST so a variant seam B harvested by
+    ``sweep_variant`` before its ``set_variant_run`` landed still counts.
     """
-    if variant.run_id is None:
-        return True
     if variant.status is not None:
         return True
+    if variant.run_id is None:
+        return False
     if not child_exists:
         return True
     return child_status in TERMINAL_STATUSES
@@ -388,8 +414,16 @@ def rank_variants(
     total and the table does not reshuffle between polls. Unrankable
     variants keep their row with ``rank`` None and are appended in ``index``
     order — never dropped, and never sorted as if None were a number.
+
+    An unrecognised *direction* RAISES, as ``set_state`` does for its own
+    vocabulary. Falling back to minimize would present the worst variant of
+    a ``maximize`` sweep as the best one, with nothing on screen to say so.
     """
-    sign = -1 if direction == "maximize" else 1
+    if direction not in SWEEP_DIRECTIONS:
+        raise ValueError(
+            f"unknown sweep direction {direction!r}; expected one of "
+            f"{sorted(SWEEP_DIRECTIONS)}")
+    sign = -1 if direction == SWEEP_DIRECTION_MAXIMIZE else 1
     rankable = sorted((v for v in variants if v.objective is not None),
                       key=lambda v: (sign * v.objective, v.index))
     unranked = sorted((v for v in variants if v.objective is None),

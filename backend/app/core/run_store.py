@@ -1256,7 +1256,26 @@ class RunStore:
                 # ImportError depending on which one loaded first.
                 from .sweep_store import harvest_doomed
 
-                harvest_doomed(conn, where_clause, params)
+                # Best-effort FROM RETENTION'S POINT OF VIEW, and only
+                # from there. Retention is unattended, irreversible and
+                # irreplaceable -- it is the only thing bounding this
+                # table, its cascaded children, checkpoint files and
+                # TensorBoard logdirs -- and it runs behind the run task's
+                # blanket `except Exception`, so an exception raised in
+                # here would abort the prune for EVERY run, on every later
+                # pass, and surface as one log line rather than a failed
+                # request. One unreadable `sweeps.variants` cell must not
+                # fill the user's disk. Same shape, and the same log level,
+                # as `unlink_checkpoint`/`remove_logdir` swallowing a file
+                # they could not remove: the row goes either way.
+                try:
+                    harvest_doomed(conn, where_clause, params)
+                except Exception:
+                    logger.warning(
+                        "retention: could not harvest the sweep objectives "
+                        "of the runs about to be deleted; their variants "
+                        "keep whatever was harvested before and the delete "
+                        "proceeds", exc_info=True)
                 deleted = conn.execute(
                     f"DELETE FROM exec_runs WHERE {where_clause}", params,
                 ).rowcount

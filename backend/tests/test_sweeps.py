@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import copy
+import logging
 from typing import Any
 
 import pytest
@@ -730,20 +731,49 @@ async def _child(store: RunStore, sweep_id: str, index: int, *,
 
 
 def test_rank_variants_sorts_by_objective_and_keeps_the_unrankable():
-    variants = [_variant(0, objective=0.5), _variant(1, objective=None),
-                _variant(2, objective=0.2), _variant(3, objective=0.5)]
+    """Fed OUT of index order on purpose, both halves of the list.
+
+    ``sorted`` is stable, so an input that already arrives index-ordered
+    lets a key with NO ``index`` component agree with a correct one by
+    accident -- and then nothing pins the tiebreak that makes the ordering
+    total. Variants 0 and 3 tie at 0.5 and arrive 3-before-0; the unranked
+    4 and 1 arrive 4-before-1.
+    """
+    variants = [_variant(3, objective=0.5), _variant(4, objective=None),
+                _variant(0, objective=0.5), _variant(1, objective=None),
+                _variant(2, objective=0.2)]
     ranked = rank_variants(variants, direction="minimize")
     assert [(v.index, rank) for v, rank in ranked] == [
         (2, 1), (0, 2), (3, 3),      # ties break on index ASCENDING
-        (1, None),                   # unrankable, appended, never dropped
+        (1, None), (4, None),        # unrankable, appended in index order
     ]
 
 
 def test_rank_variants_maximize_still_breaks_ties_on_index_ascending():
-    variants = [_variant(0, objective=0.5), _variant(1, objective=0.9),
-                _variant(2, objective=0.5)]
+    """The tie arrives 2-before-0, so this pins the tiebreak and not just
+    the direction. ``sorted(..., reverse=True)`` is documented STABLE and
+    does not reverse equal elements, so a ``reverse=True`` implementation
+    with no index key answers [(1,1),(2,2),(0,3)] here and fails.
+    """
+    variants = [_variant(2, objective=0.5), _variant(1, objective=0.9),
+                _variant(0, objective=0.5)]
     ranked = rank_variants(variants, direction="maximize")
     assert [(v.index, rank) for v, rank in ranked] == [(1, 1), (0, 2), (2, 3)]
+
+
+def test_an_unknown_rank_direction_is_refused():
+    """``set_state`` raises on ITS unknown vocabulary; this matches it.
+
+    Silently minimizing on ``"Maximize"``, ``"max"`` or ``""`` would present
+    the WORST variant as `best` -- a confidently inverted answer, which is
+    worse than an error. Spec 6.2 makes `direction` required precisely
+    because inferring it would be a heuristic on a user-chosen string; the
+    route validates it too, and this is the half that does not depend on a
+    caller getting it right.
+    """
+    for bad in ("Maximize", "max", ""):
+        with pytest.raises(ValueError, match="unknown sweep direction"):
+            rank_variants([_variant(0, objective=0.5)], direction=bad)
 
 
 def test_a_failed_variant_that_logged_the_objective_is_still_ranked():
@@ -755,15 +785,33 @@ def test_a_failed_variant_that_logged_the_objective_is_still_ranked():
     assert [(v.index, rank) for v, rank in ranked] == [(0, 1), (1, 2)]
 
 
-def test_variant_is_terminal_covers_a_variant_with_no_reachable_run():
-    """Without this clause a variant whose run someone deleted by hand
-    would keep a sweep at `running` forever."""
-    assert variant_is_terminal(_variant(0, run_id=None), None,
-                               child_exists=False)
+def test_variant_is_terminal_answers_each_clause_with_a_LIVE_child_row():
+    """Every clause, exercised where ``child_exists=True``.
+
+    Asserting only ``child_exists=False`` cases lets the row-is-gone clause
+    answer all of them, and then the function can be collapsed to
+    ``not child_exists or child_status in TERMINAL_STATUSES`` with nothing
+    noticing. Seam B never reaches the earlier clauses -- it removes the
+    doomed ids from ``live`` first -- so Task 7's seam A, where the child
+    row is still there, is the only caller that will, which is exactly why
+    they need pinning now rather than then.
+    """
+    # A harvested status is the answer even while the child row is alive
+    # and says something else. This is what a `missing` variant relies on.
+    assert variant_is_terminal(_variant(0, run_id="r", status="succeeded"),
+                               "running", child_exists=True)
     assert variant_is_terminal(_variant(0, run_id="r", status="succeeded"),
                                None, child_exists=False)
+    # No run at all is NOT terminal -- see the sweep-level test below.
+    assert not variant_is_terminal(_variant(0, run_id=None), "running",
+                                   child_exists=True)
+    assert not variant_is_terminal(_variant(0, run_id=None), None,
+                                   child_exists=False)
+    # The row is gone and nothing harvested it: spec 5.3's "missing", and
+    # the clause that stops a hand-deleted child wedging a sweep forever.
     assert variant_is_terminal(_variant(0, run_id="r"), None,
-                               child_exists=False)      # gone -> "missing"
+                               child_exists=False)
+    # A live child answers on its own status.
     assert variant_is_terminal(_variant(0, run_id="r"), "succeeded",
                                child_exists=True)
     assert not variant_is_terminal(_variant(0, run_id="r"), "running",
@@ -844,6 +892,66 @@ async def test_the_objective_is_harvested_before_the_delete(db, sweeps):
     assert [v.objective for v in fetched.variants] == [0.4, 0.30000000000000004]
     assert [v.status for v in fetched.variants] == ["succeeded", "succeeded"]
     assert all(v.harvested_at is not None for v in fetched.variants)
+
+
+async def test_a_sweep_mid_submit_loop_is_never_stamped_finished(db, sweeps):
+    """A variant with NO run yet is not a variant that is done.
+
+    ``prune_retention()`` runs after every ``_finalize``, on the same event
+    loop that ``POST /api/sweeps`` is still submitting on, so the first
+    child of a sweep can finish and be pruned while the later variants
+    legitimately still carry ``run_id: null``. Counting those as terminal
+    stamps the sweep ``finished`` on its FIRST child -- at
+    ``RUN_RETENTION_KEEP_LAST = 0``, a documented setting, every time and
+    not as a race. It never recovers, because ``_write_variants`` refuses
+    to re-stamp a sweep that already reads ``finished``, so a polling table
+    would stop polling and a half-empty comparison table would be read as
+    the sweep's answer.
+
+    The submit loop BREAKING is a different case and does not need this:
+    spec 5.2 has the route call ``mark_failed`` itself, and neither seam
+    ever overwrites ``failed``.
+    """
+    store = RunStore(db)
+    created = await _new_sweep(sweeps, count=3)
+    run_id = await _child(store, created.id, 0, metrics={"val_loss": 0.4})
+    await sweeps.set_variant_run(created.id, 0, run_id=run_id, seed=None)
+
+    assert await store.prune(keep_last=0) == 1
+    fetched = await sweeps.get_sweep(created.id)
+    assert fetched.variants[0].objective == 0.4      # harvested all the same
+    assert fetched.state == SWEEP_STATE_RUNNING      # ... but NOT finished
+    assert fetched.finished_at is None
+
+
+async def test_a_failing_harvest_does_not_stop_retention(db, caplog,
+                                                         monkeypatch):
+    """Retention is unattended and irreplaceable; the harvest is not.
+
+    ``prune`` is the only thing bounding ``exec_runs``, its cascaded
+    children, checkpoint files and TensorBoard logdirs, and it runs behind
+    the run task's blanket ``except Exception`` -- so an exception raised
+    inside its transaction aborts retention for EVERY run, on every later
+    pass, permanently, and surfaces as one log line rather than a failed
+    request. One unreadable ``sweeps.variants`` cell must not fill the
+    user's disk.
+    """
+    store = RunStore(db)
+    record = await store.create_run(
+        graph_snapshot={"nodes": [], "edges": []}, options={},
+        provenance=RunProvenance())
+    await store.mark_finished(record.id, "succeeded")
+
+    def _boom(conn, where_clause, params):
+        raise ValueError("sweeps.variants for sweep 'x' is dict, expected "
+                         "a JSON array")
+
+    monkeypatch.setattr("app.core.sweep_store.harvest_doomed", _boom)
+    with caplog.at_level(logging.WARNING, logger="app.core.run_store"):
+        assert await store.prune(keep_last=0) == 1
+    assert await store.get_run(record.id) is None
+    assert "harvest" in caplog.text
+    assert "sweeps.variants" in caplog.text      # the cause, not just "oops"
 
 
 async def test_the_sweep_finishes_through_seam_b_without_a_read(db, sweeps):
