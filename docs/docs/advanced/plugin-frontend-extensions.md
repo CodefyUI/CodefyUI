@@ -215,7 +215,7 @@ interface OpResult {
   index: number;      // the op's position in the batch
   ok: boolean;        // whether this op applied
   error?: string;     // failure reason when ok is false
-  node_id?: string;   // resolved node id, from every op that names or creates one
+  node_id?: string;   // resolved node id, from ops that create or edit one; not remove_node
   segment_id?: string; // apiVersion 5: the id set_segment created or replaced
 }
 
@@ -389,7 +389,7 @@ The checks run in this order, and each one returns without changing anything:
 6. With `atomic: true`, if any op failed, nothing is written: `committed: false`, `revision` unchanged, and the **full-length** `results` so you can see which op was wrong.
 7. Otherwise, if anything changed: one undo snapshot, one write, `committed: true`, and the new `revision`. A batch that changes nothing writes nothing and pushes no undo step.
 
-On a refusal `node_count` and `edge_count` still describe the tab as it stands, so a plugin that logs them is not told the graph is empty when it is not. `unknown_tab` is the exception: there is no tab to count.
+Whenever a call commits nothing — a refusal, a failed `atomic` preflight, a batch that changed nothing — `node_count` and `edge_count` describe the tab as it stands, so a plugin that logs them is never handed the counts of a graph that was thrown away. `unknown_tab` is the exception: there is no tab to count.
 
 Conflicts are **returned, never thrown**. A batch is still one undo step, and per-op semantics are unchanged from `api.graph.applyOperations`: without `atomic`, a failing op is skipped and reported while the rest apply. A commit that leaves the graph without the node a detail modal or the canvas selection names clears both, so an undo restoring that node cannot pop the modal open by itself.
 
@@ -421,7 +421,7 @@ type WorkspaceEvent =
   | { type: "active-tab"; tabId: string; revision: number };
 ```
 
-Events arrive synchronously after the change, in a fixed order: tabs added, then documents changed, then the active tab, then tabs removed. `origin` is present on a `graph` event only when the change came from a plugin's `workspace.applyOperations`, which is how you tell your own writes from the user's.
+Events arrive synchronously after the change, in a fixed order: tabs added, then documents changed, then the active tab, then tabs removed. `origin` is present on a `graph` event only when the change came from a plugin write — either `workspace.applyOperations` or the legacy `graph.applyOperations`, both of which stamp it — which is how you tell your own writes from the user's.
 
 If your callback throws, the editor logs it and unsubscribes you — a plugin must not be able to break the tab store. `api.graph.onGraphChanged` is unchanged: still the active tab, still no payload.
 

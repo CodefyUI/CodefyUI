@@ -603,6 +603,19 @@ received — each links to the release it was published as.
   the segments alone. A segment whose head or tail is gone can never resolve
   a path, so it drew nothing on the canvas while staying in the tab — and
   getting written to the file on the next save.
+- **A discarded `atomic` batch reports the graph that is still there, and the
+  v5 reference stops overstating two more things** ([#396]). `node_count` and
+  `edge_count` were built from the reducer outcome, so a three-op atomic batch
+  with one failure answered `node_count = tab + 2` for a tab it had just
+  committed nothing to — a plugin logging the counts was told the size of a
+  graph that no longer exists anywhere. Every return that writes nothing now
+  reports the tab as it stands, which is what the four conflict refusals
+  already did. Two documentation claims go with it: `origin` is stamped on
+  BOTH plugin write paths, not only `workspace.applyOperations` — they share
+  one commit — so a plugin filtering on it can ignore its own legacy writes
+  too, now pinned by a test; and `OpResult.node_id` comes from the ops that
+  create or edit a node, not from "every op that names one", `remove_node`
+  being the op that names one and returns none.
 
 ## [2.4.1] — 2026-08-22
 
@@ -2663,6 +2676,7 @@ Release candidates before 1.0.0 are on the
 [#341]: https://github.com/CodefyUI/CodefyUI/issues/341
 [#342]: https://github.com/CodefyUI/CodefyUI/issues/342
 [#400]: https://github.com/CodefyUI/CodefyUI/issues/400
+[#396]: https://github.com/CodefyUI/CodefyUI/issues/396
 [@oyea0801]: https://github.com/oyea0801
 [@latteine1217]: https://github.com/latteine1217
 [Unreleased]: https://github.com/CodefyUI/CodefyUI/compare/2.4.1...main

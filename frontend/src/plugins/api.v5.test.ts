@@ -366,6 +366,32 @@ describe('workspace.applyOperations', () => {
     expect(store().getTab(tabId)!.nodes).toHaveLength(2);
   });
 
+  it('atomic: the counts on a discarded batch describe the TAB, not the outcome', () => {
+    const { api, tabId } = openEditable();
+    const before = store().getTab(tabId)!;
+    expect(before.nodes).toHaveLength(2);
+    expect(before.edges).toHaveLength(1);
+
+    const result = api.workspace.applyOperations({
+      tabId,
+      atomic: true,
+      operations: [
+        { op: 'remove_edge', source: 'a', target: 'b' },
+        { op: 'add_node', node_type: 'Ghost' },
+        { op: 'add_node', node_type: 'Sink' },
+      ],
+    });
+
+    // Nothing was written, so the counts a plugin logs have to be the graph it
+    // can still see -- the same promise the four conflict refusals keep. The
+    // discarded outcome would have said 3 nodes and 0 edges (#396).
+    expect(result.committed).toBe(false);
+    expect(result.node_count).toBe(2);
+    expect(result.edge_count).toBe(1);
+    expect(store().getTab(tabId)!.nodes).toHaveLength(2);
+    expect(store().getTab(tabId)!.edges).toHaveLength(1);
+  });
+
   it('non-atomic still commits the ops that worked', () => {
     const { api, tabId } = openEditable();
     const result = api.workspace.applyOperations({
@@ -696,6 +722,22 @@ describe('workspace.onChanged', () => {
     origins.length = 0;
     store().addNote('text', { x: 0, y: 0 });
     expect(origins).toEqual([undefined]);
+    off();
+  });
+
+  it('attaches origin to the LEGACY write path too, not just the workspace one', () => {
+    // Both paths run through the same `commitToTab`, so both stamp `origin`.
+    // Pinned because the reference used to name only `workspace.applyOperations`
+    // (#396): a plugin filtering on `origin` must be able to ignore its own
+    // legacy writes as well, or it hears its own echo.
+    const api = freshApi('graph-copilot');
+    const origins: Array<{ pluginId: string } | undefined> = [];
+    const off = api.workspace.onChanged((e) => {
+      if (e.type === 'graph') origins.push(e.origin);
+    });
+
+    api.graph.applyOperations([{ op: 'add_node', node_type: 'Source' }]);
+    expect(origins).toEqual([{ pluginId: 'graph-copilot' }]);
     off();
   });
 

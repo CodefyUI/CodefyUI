@@ -374,12 +374,15 @@ function commitToTab(
 
   // The preflight `atomic` buys: the reducer already works on copies, so
   // "discard the outcome" is the whole implementation. The results are still
-  // returned in full so the model can see WHICH op it got wrong.
+  // returned in full so the model can see WHICH op it got wrong -- but the
+  // COUNTS come from the tab, because the outcome they would describe is the
+  // one being thrown away (#396). Every return that commits nothing now says
+  // the same thing the four refusals above say: the graph as it stands.
   if (request.atomic && outcome.results.some((r) => !r.ok)) {
-    return { ...applied, revision: tab.revision, committed: false };
+    return { ...applied, ...counts, revision: tab.revision, committed: false };
   }
   if (!outcome.mutated) {
-    return { ...applied, revision: tab.revision, committed: false };
+    return { ...applied, ...counts, revision: tab.revision, committed: false };
   }
 
   // One snapshot, then one write: that is what makes a batch one Ctrl+Z.
