@@ -954,6 +954,74 @@ async def test_a_failing_harvest_does_not_stop_retention(db, caplog,
     assert "sweeps.variants" in caplog.text      # the cause, not just "oops"
 
 
+async def _corrupt_variants(db: Database, sweep_id: str) -> None:
+    """Make one ``sweeps`` row unreadable — a JSON object where the blob
+    must be an array, which ``SweepRecord.from_row`` deliberately refuses
+    to paper over rather than turning into a plausible empty sweep."""
+    await db.run(lambda conn: conn.execute(
+        "UPDATE sweeps SET variants = ? WHERE id = ?",
+        ('{"not": "a list"}', sweep_id)))
+
+
+async def test_one_unharvestable_sweep_does_not_cost_the_others_their_results(
+        db, sweeps):
+    """Per-sweep isolation: one bad row costs only its OWN sweep.
+
+    Catching around the whole harvest keeps retention alive but unwinds the
+    loop, so every other sweep in the same pass loses its harvested numbers
+    too. ``prune`` sweeps the entire table in one call, so those sweeps are
+    unrelated to the broken one — a single corrupt row would quietly cost a
+    healthy sweep the results RULING 4 exists to preserve, and the children
+    holding them are deleted in the same transaction.
+    """
+    store = RunStore(db)
+    broken = await _new_sweep(sweeps, count=1, name="broken")
+    healthy = await _new_sweep(sweeps, count=1, name="healthy")
+    # Children created in this order so the doomed SELECT — a table scan,
+    # therefore rowid order — hands the broken sweep to the loop FIRST, and
+    # the healthy one is harvested strictly after the failure.
+    for sweep, value in ((broken, 0.7), (healthy, 0.25)):
+        run_id = await _child(store, sweep.id, 0, metrics={"val_loss": value})
+        await sweeps.set_variant_run(sweep.id, 0, run_id=run_id, seed=None)
+    await _corrupt_variants(db, broken.id)
+
+    assert await store.prune(keep_last=0) == 2
+    fetched = await sweeps.get_sweep(healthy.id)
+    assert fetched.variants[0].objective == 0.25
+    assert fetched.variants[0].status == "succeeded"
+    assert fetched.state == SWEEP_STATE_FINISHED
+
+
+async def test_an_unharvestable_sweep_is_logged_with_its_id(db, sweeps,
+                                                            caplog):
+    """A swallowed failure nobody can trace is barely better than a silent
+    one: the id is what makes the row findable afterwards."""
+    store = RunStore(db)
+    broken = await _new_sweep(sweeps, count=1)
+    run_id = await _child(store, broken.id, 0, metrics={"val_loss": 0.7})
+    await sweeps.set_variant_run(broken.id, 0, run_id=run_id, seed=None)
+    await _corrupt_variants(db, broken.id)
+
+    with caplog.at_level(logging.WARNING):
+        assert await store.prune(keep_last=0) == 1
+
+    # Asserted on the RECORD, not on caplog.text: the outer backstop in
+    # prune logs `exc_info=True`, and the ValueError's own message already
+    # names the sweep, so a substring check over the rendered traceback
+    # would pass with no per-sweep isolation at all.
+    isolated = [record for record in caplog.records
+                if record.name == "app.core.sweep_store"
+                and record.levelno >= logging.WARNING]
+    assert len(isolated) == 1
+    assert broken.id in isolated[0].getMessage()     # findable, not "a sweep"
+    assert "expected a JSON array" in str(isolated[0].exc_info[1])
+    # The blanket catch one level up never had to fire.
+    assert not [record for record in caplog.records
+                if record.name == "app.core.run_store"
+                and "could not harvest" in record.getMessage()]
+    assert await store.get_run(run_id) is None       # the delete proceeded
+
+
 async def test_the_sweep_finishes_through_seam_b_without_a_read(db, sweeps):
     """Catches a seam-B harvest that copies values but forgets the state."""
     store = RunStore(db)

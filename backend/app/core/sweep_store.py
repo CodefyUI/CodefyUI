@@ -25,6 +25,7 @@ atomic against every other database operation in the process.
 from __future__ import annotations
 
 import json
+import logging
 import sqlite3
 from dataclasses import dataclass, replace
 from typing import Any, Mapping, Sequence
@@ -32,6 +33,8 @@ from uuid import uuid4
 
 from .db import Database, transaction, utc_now_iso
 from .run_store import TERMINAL_STATUSES
+
+logger = logging.getLogger(__name__)
 
 # ── state vocabulary ──────────────────────────────────────────────────────
 #
@@ -375,17 +378,19 @@ def variant_is_terminal(variant: SweepVariant, child_status: str | None, *,
     whose run someone deleted by hand would keep its sweep at ``running``
     forever.
 
-    **A variant with no ``run_id`` at all is NOT terminal**, and that is a
-    deliberate narrowing of spec 4.3, whose "no reachable run" wording also
-    covered it. During ``POST /api/sweeps`` the later variants legitimately
-    carry ``run_id: null`` until the submit loop reaches them, and a prune
-    fires on the same event loop after every run finishes — so counting
-    them as done stamps a sweep ``finished`` on its first child, and
-    ``_write_variants`` never re-stamps a sweep that already reads
-    ``finished``. The wrong answer would be permanent. The submit loop
-    BREAKING is the other case, and it does not need this clause: spec 5.2
-    has the route call :meth:`SweepStore.mark_failed` itself, and neither
-    seam ever overwrites ``failed``.
+    **A variant with no ``run_id`` at all is NOT terminal** (spec 4.3, as
+    corrected during this task — the earlier "no reachable run" wording
+    covered it and that was a real bug). During ``POST /api/sweeps`` the
+    later variants legitimately carry ``run_id: null`` until the submit loop
+    reaches them, and a prune fires on the same event loop after every run
+    finishes — so counting them as done stamps a sweep ``finished`` on its
+    first child, and ``_write_variants`` never re-stamps a sweep that
+    already reads ``finished``. The wrong answer would be permanent. The
+    submit loop BREAKING is the other case, and it does not need this
+    clause: spec 5.2 has the route call :meth:`SweepStore.mark_failed`
+    itself, and neither seam ever overwrites ``failed``. That makes it a
+    DUTY on the route — a submit loop that neither fills in every ``run_id``
+    nor calls ``mark_failed`` leaves its sweep at ``running`` for good.
 
     The harvested-status check comes FIRST so a variant seam B harvested by
     ``sweep_variant`` before its ``set_variant_run`` landed still counts.
@@ -523,30 +528,58 @@ def harvest_doomed(conn: sqlite3.Connection, where_clause: str,
     stamp = utc_now_iso()
     harvested = 0
     for sweep_id, rows in by_sweep.items():
-        record = _select_sweep(conn, sweep_id)
-        if record is None:
-            continue
-        metric = record.objective.get("metric")
-        entries = {
-            row["sweep_variant"]: HarvestEntry(
-                objective=_last_metric_value(conn, row["id"], metric),
-                status=row["status"])
-            for row in rows if row["sweep_variant"] is not None
-        }
-        patched = _apply_entries(record.variants, entries, stamp)
-        # Every child that will STILL EXIST after the DELETE. The doomed
-        # ones are excluded on purpose: they are terminal by definition
-        # (prune never deletes an active run) and they have just been
-        # harvested, so `variant.status is not None` already answers for
-        # them.
-        live = {row["id"]: row["status"] for row in conn.execute(
-            "SELECT id, status FROM exec_runs WHERE sweep_id = ?",
-            (sweep_id,)) if row["id"] not in doomed_ids}
-        finished = all(
-            variant_is_terminal(variant, live.get(variant.run_id),
-                                child_exists=variant.run_id in live)
-            for variant in patched)
-        _write_variants(conn, record, patched, finished=finished,
-                        stamp=stamp)
-        harvested += len(entries)
+        # ISOLATED PER SWEEP. `prune` sweeps the whole table in one pass, so
+        # the sweeps in this loop have nothing to do with one another: one
+        # unreadable `variants` cell must cost its own sweep its results and
+        # NOTHING ELSE. Catching one level up instead would keep retention
+        # alive but unwind the loop, and every healthy sweep in the pass
+        # would lose the numbers RULING 4 exists to preserve while its
+        # children were deleted in the same transaction. The DELETE proceeds
+        # either way: retention is unattended and irreplaceable, and must
+        # never be blocked by bookkeeping.
+        try:
+            harvested += _harvest_one_sweep(conn, sweep_id, rows, doomed_ids,
+                                            stamp)
+        except Exception:
+            logger.warning(
+                "retention: could not harvest sweep %s, so its variants keep "
+                "whatever was harvested before; every other sweep in this "
+                "pass is unaffected and the delete proceeds", sweep_id,
+                exc_info=True)
     return harvested
+
+
+def _harvest_one_sweep(conn: sqlite3.Connection, sweep_id: str,
+                       rows: Sequence[sqlite3.Row], doomed_ids: set[str],
+                       stamp: str) -> int:
+    """One sweep's share of seam B; returns how many entries it harvested.
+
+    Split out so :func:`harvest_doomed` can isolate a failure to the sweep
+    that caused it. The only write is the single ``_write_variants`` UPDATE
+    at the end, so a sweep that raises anywhere above leaves its row exactly
+    as it was rather than half-patched.
+    """
+    record = _select_sweep(conn, sweep_id)
+    if record is None:
+        return 0
+    metric = record.objective.get("metric")
+    entries = {
+        row["sweep_variant"]: HarvestEntry(
+            objective=_last_metric_value(conn, row["id"], metric),
+            status=row["status"])
+        for row in rows if row["sweep_variant"] is not None
+    }
+    patched = _apply_entries(record.variants, entries, stamp)
+    # Every child that will STILL EXIST after the DELETE. The doomed ones
+    # are excluded on purpose: they are terminal by definition (prune never
+    # deletes an active run) and they have just been harvested, so
+    # `variant.status is not None` already answers for them.
+    live = {row["id"]: row["status"] for row in conn.execute(
+        "SELECT id, status FROM exec_runs WHERE sweep_id = ?",
+        (sweep_id,)) if row["id"] not in doomed_ids}
+    finished = all(
+        variant_is_terminal(variant, live.get(variant.run_id),
+                            child_exists=variant.run_id in live)
+        for variant in patched)
+    _write_variants(conn, record, patched, finished=finished, stamp=stamp)
+    return len(entries)

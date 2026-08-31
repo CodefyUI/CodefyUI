@@ -1268,6 +1268,12 @@ class RunStore:
                 # fill the user's disk. Same shape, and the same log level,
                 # as `unlink_checkpoint`/`remove_logdir` swallowing a file
                 # they could not remove: the row goes either way.
+                #
+                # This is the BACKSTOP, not the isolation. `harvest_doomed`
+                # already catches per sweep, so one bad row costs only its
+                # own sweep its results; what is left for this to catch is
+                # the work outside that loop (the doomed SELECT and the
+                # grouping), where there is no single sweep to blame.
                 try:
                     harvest_doomed(conn, where_clause, params)
                 except Exception:
