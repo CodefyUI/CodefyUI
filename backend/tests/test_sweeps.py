@@ -352,6 +352,41 @@ def test_non_finite_range_bounds_are_refused():
     assert "bounds must be finite" in message
 
 
+def test_a_huge_integer_in_values_is_refused_not_an_overflow():
+    """Python ints are UNBOUNDED, so json.loads happily parses a 400-digit
+    integer literal and `math.isfinite` RAISES OverflowError on it instead
+    of returning False. Uncaught, that is a 500 from one crafted body on a
+    surface whose whole contract is that a bad spec is a 400 -- the integer
+    sibling of the json.loads("1e999") case, and the same defect class as
+    test_a_non_dict_node_entry_is_a_400_not_a_500.
+
+    Both an INT and a FLOAT param, because the value never reaches the
+    param's type at all: the envelope refuses it before any address is
+    resolved."""
+    for param in ("epochs", "weight_decay"):
+        message = _refusal(_grid(_values(param, [1, 10 ** 400])))
+        assert "values[1]" in message and "finite" in message
+
+
+def test_a_huge_integer_range_bound_is_refused_not_an_overflow():
+    """Same hazard through the other door: range bounds are checked for
+    finiteness before anything else in the range envelope."""
+    message = _refusal(_grid(_range("weight_decay", min=1, max=10 ** 400,
+                                    count=3, scale="linear", type="float")))
+    assert "bounds must be finite" in message
+
+
+def test_a_large_but_representable_number_still_compiles():
+    """The guard refuses what cannot become a float AT ALL, not what is
+    merely large -- otherwise it would be a blanket size limit nobody asked
+    for. 10**300 and 1e308 are both ordinary finite floats and a sweep may
+    use them."""
+    compiled = _compile(_grid(_values("epochs", [1, 10 ** 300]),
+                              _values("weight_decay", [1e308])))
+    assert compiled.params[0].domain == (1, 10 ** 300)
+    assert compiled.params[1].domain == (1e308,)
+
+
 # ── the type-acceptance matrix (spec 3.4.1, 9.3) ──────────────────────────
 
 

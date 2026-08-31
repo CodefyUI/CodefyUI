@@ -187,6 +187,31 @@ def _expand_range(lo: float, hi: float, count: int, scale: str,
     return out
 
 
+def _is_finite_number(value: Any) -> bool:
+    """Is this number usable at all -- a finite float, or an int a float can
+    hold?
+
+    ``math.isfinite`` alone is not enough, and the gap is reachable from an
+    ordinary JSON body. Python ints are UNBOUNDED, so ``json.loads`` parses a
+    400-digit integer literal into an ``int`` no float can represent, and
+    ``math.isfinite`` then RAISES ``OverflowError: int too large to convert
+    to float`` rather than returning False. On an in-request compiler that is
+    an uncaught 500 on a surface whose whole contract is that a bad spec is a
+    400 -- the integer sibling of the ``json.loads("1e999")`` case spec 2.7
+    already refuses by design, and the same class as a non-dict node entry.
+
+    Callers refuse with the SPEC'S EXISTING non-finite message rather than a
+    dedicated "too large" one: a caller does not need to know whether their
+    number was too big or not a number, only that it cannot be used. This is
+    the single finiteness predicate for the module, so every entry point --
+    both envelope checks and the type matrix -- is covered by construction.
+    """
+    try:
+        return math.isfinite(value)
+    except OverflowError:
+        return False
+
+
 def _coerce(value: Any, param_type: ParamType) -> Any | None:
     """Spec 3.4.1's matrix. The coerced value, or None when unacceptable.
 
@@ -205,12 +230,14 @@ def _coerce(value: Any, param_type: ParamType) -> Any | None:
     if param_type is ParamType.INT:
         if isinstance(value, int):
             return int(value)
-        if (isinstance(value, float) and math.isfinite(value)
+        if (isinstance(value, float) and _is_finite_number(value)
                 and value.is_integer()):
             return int(value)
         return None
     if param_type is ParamType.FLOAT:
-        if isinstance(value, (int, float)) and math.isfinite(value):
+        # _is_finite_number, not math.isfinite: this is also what stops the
+        # float(value) below raising OverflowError on an unbounded int.
+        if isinstance(value, (int, float)) and _is_finite_number(value):
             return float(value)
         return None
     return None
@@ -268,7 +295,7 @@ def _validated_range(i: int, spec: Any, *, max_domain: int) -> list[Any]:
             f"sweep_spec.params[{i}] needs either 'values' or 'range'")
     lo, hi = spec.get("min"), spec.get("max")
     if not all(isinstance(v, (int, float)) and not isinstance(v, bool)
-               and math.isfinite(v) for v in (lo, hi)):
+               and _is_finite_number(v) for v in (lo, hi)):
         raise SweepCompileError(
             f"sweep_spec.params[{i}].range bounds must be finite numbers")
     count = spec.get("count")
@@ -325,7 +352,7 @@ def _raw_domain(i: int, entry: dict[str, Any], *,
             raise SweepCompileError(
                 f"sweep_spec.params[{i}].values must contain only numbers, "
                 "booleans or strings")
-        if isinstance(value, (int, float)) and not math.isfinite(value):
+        if isinstance(value, (int, float)) and not _is_finite_number(value):
             # A non-finite passes every other check and then corrupts things
             # quietly: RunStore._dumps rewrites it to null in the stored
             # snapshot, and Starlette's JSONResponse renders with
