@@ -12,6 +12,7 @@ from typing import Any
 
 import pytest
 
+from app.core.db import Database
 from app.core.node_base import (
     BaseNode,
     DataType,
@@ -25,6 +26,13 @@ from app.core.sweep_compiler import (
     compile_sweep,
     planner_prng,
     sample_unique_ranks,
+)
+from app.core.sweep_store import (
+    SWEEP_STATE_CANCELLING,
+    SWEEP_STATE_FAILED,
+    SWEEP_STATE_RUNNING,
+    SweepStore,
+    SweepVariant,
 )
 
 
@@ -526,3 +534,114 @@ def test_select_value_not_in_options_is_refused():
 def test_wrong_scalar_type_for_an_int_param_is_refused():
     assert "int param but the domain contains 0.5" in \
         _refusal(_grid(_values("epochs", [1, 0.5])))
+
+
+# ── SweepStore (spec 4.2, 4.3) ────────────────────────────────────────────
+
+
+@pytest.fixture
+def db(tmp_path):
+    database = Database(tmp_path / "codefyui.db")
+    database.connect()
+    try:
+        yield database
+    finally:
+        database.close()
+
+
+@pytest.fixture
+def sweeps(db):
+    return SweepStore(db)
+
+
+def _variant(index: int, **overrides) -> SweepVariant:
+    fields = {"index": index, "domain_index": index, "run_id": None,
+              "params": [{"node_id": "probe", "param": "lr",
+                          "value": 0.1 * (index + 1)}],
+              "seed": None, "objective": None, "status": None,
+              "harvested_at": None}
+    fields.update(overrides)
+    return SweepVariant(**fields)
+
+
+async def _new_sweep(store: SweepStore, count: int = 2, **overrides):
+    fields = {"method": "grid", "seed": 123456789, "seed_variants": False,
+              "spec": {"method": "grid", "params": []},
+              "objective": {"metric": "val_loss", "direction": "minimize"},
+              "variants": [_variant(i) for i in range(count)],
+              "name": "lr sweep"}
+    fields.update(overrides)
+    return await store.create_sweep(**fields)
+
+
+async def test_create_and_get_a_sweep_round_trip(sweeps):
+    created = await _new_sweep(sweeps)
+    assert created.state == SWEEP_STATE_RUNNING
+    assert created.finished_at is None and created.error is None
+    fetched = await sweeps.get_sweep(created.id)
+    assert fetched == created
+    assert fetched.seed_variants is False        # 0/1 comes back as a bool
+    assert [v.index for v in fetched.variants] == [0, 1]
+    assert fetched.variants[0].run_id is None
+    assert await sweeps.get_sweep("nope") is None
+
+
+async def test_create_sweep_assigns_each_variant_index_exactly_once(sweeps):
+    """The store is the ONLY thing that can guarantee this.
+
+    ``(sweep_id, sweep_variant)`` is an INDEX, not a constraint -- SQLite
+    cannot add a UNIQUE column via ``ADD COLUMN`` (MIGRATION_004) -- so the
+    database accepts two variant 3s without complaint, and every later
+    reader of the sweep would then see one of them twice. ``index`` IS the
+    entry's position in the list (spec 4.2), so the writer derives it and
+    never trusts what it was handed; ``domain_index``, which is the
+    caller's own datum, is left exactly as given.
+    """
+    created = await _new_sweep(sweeps, variants=[
+        _variant(3, domain_index=7), _variant(3, domain_index=2),
+        _variant(0, domain_index=5)])
+    assert [v.index for v in created.variants] == [0, 1, 2]
+    fetched = await sweeps.get_sweep(created.id)
+    assert fetched.variants == created.variants   # returned == stored
+    assert [v.domain_index for v in fetched.variants] == [7, 2, 5]
+    # With a duplicate index in the blob this patch would have hit two
+    # entries, and two children would claim the same sweep_variant.
+    assert await sweeps.set_variant_run(created.id, 1, run_id="r1", seed=None)
+    patched = await sweeps.get_sweep(created.id)
+    assert [v.run_id for v in patched.variants] == [None, "r1", None]
+
+
+async def test_set_variant_run_patches_one_entry_and_leaves_the_rest(sweeps):
+    created = await _new_sweep(sweeps, count=3)
+    assert await sweeps.set_variant_run(created.id, 1, run_id="r1", seed=42)
+    fetched = await sweeps.get_sweep(created.id)
+    assert fetched.variants[1].run_id == "r1"
+    assert fetched.variants[1].seed == 42
+    assert fetched.variants[0].run_id is None
+    assert fetched.variants[2].run_id is None
+    assert not await sweeps.set_variant_run(created.id, 9, run_id="x",
+                                            seed=None)
+
+
+async def test_mark_failed_records_the_error_and_stamps_finished_at(sweeps):
+    created = await _new_sweep(sweeps)
+    assert await sweeps.mark_failed(created.id, "run service is shutting down")
+    fetched = await sweeps.get_sweep(created.id)
+    assert fetched.state == SWEEP_STATE_FAILED
+    assert fetched.error == "run service is shutting down"
+    assert fetched.finished_at is not None
+
+
+async def test_set_state_never_overwrites_failed(sweeps):
+    """`failed` on a sweep means something went wrong with the SWEEP, not
+    with the training, and a later cancel must not paper over it."""
+    created = await _new_sweep(sweeps)
+    await sweeps.mark_failed(created.id, "boom")
+    assert not await sweeps.set_state(created.id, SWEEP_STATE_CANCELLING)
+    assert (await sweeps.get_sweep(created.id)).state == SWEEP_STATE_FAILED
+
+
+async def test_an_unknown_sweep_state_is_refused(sweeps):
+    created = await _new_sweep(sweeps)
+    with pytest.raises(ValueError, match="unknown sweep state"):
+        await sweeps.set_state(created.id, "cancelled")
