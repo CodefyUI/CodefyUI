@@ -617,6 +617,35 @@ received — each links to the release it was published as.
   create or edit a node, not from "every op that names one", `remove_node`
   being the op that names one and returns none.
 
+### Internal
+
+- **Three apiVersion 5 guards passed even when the thing they guarded was
+  broken** ([#398]). All three came with the workspace work above, and all
+  three had the same shape: the assertion was real, and what it pointed at
+  was not.
+
+  `workspace.onChanged` fans a transition out as added tabs, then document
+  changes, then the activation, then closes — an order a consumer relies on
+  to process a batch in one pass. It was only ever asserted ACROSS
+  transitions, one event in each, so reversing the four loops that build the
+  batch left the suite green. It is now pinned against a single transition
+  that does all four at once.
+
+  The transient-tab reload case restated the reader's "fall back to the first
+  record" rule inside the test instead of calling the readers, so a
+  regression in either real one would have failed nothing. It now drives the
+  autosave for real and asks both tiers that have to survive an active tab
+  which was never persisted: `loadTabs` for localStorage and `readSnapshot`
+  for IndexedDB.
+
+  And the cross-side check on `WorkspaceSnapshot` used `Exclude` to isolate
+  the `{ error: 'unknown_tab' }` branch — which isolates it by dropping the
+  graph-bearing branch, so a host-only field added next to `graph` was
+  compared against nothing. Both branches are now compared member for member
+  through a distributive omit: `Omit` applied to each union member
+  separately, which plain `Omit` cannot do, because `keyof` a union is the
+  intersection of its branches' keys and collapses this one to `{}`.
+
 ## [2.4.1] — 2026-08-22
 
 Four fixes that landed on `main` in the hours after 2.4.0, and nothing else:
@@ -2677,6 +2706,7 @@ Release candidates before 1.0.0 are on the
 [#342]: https://github.com/CodefyUI/CodefyUI/issues/342
 [#400]: https://github.com/CodefyUI/CodefyUI/issues/400
 [#396]: https://github.com/CodefyUI/CodefyUI/issues/396
+[#398]: https://github.com/CodefyUI/CodefyUI/issues/398
 [@oyea0801]: https://github.com/oyea0801
 [@latteine1217]: https://github.com/latteine1217
 [Unreleased]: https://github.com/CodefyUI/CodefyUI/compare/2.4.1...main
