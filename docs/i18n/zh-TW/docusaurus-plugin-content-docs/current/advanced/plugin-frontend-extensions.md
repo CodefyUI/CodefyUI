@@ -11,12 +11,12 @@ description: 隨外掛包附上一個 JavaScript bundle，讓外掛能新增 UI 
 :::note 可用性
 前端擴充功能自 CodefyUI **1.3.0** 起內建。請執行 `cdui --version` 確認；若顯示更舊的版本，請執行 `cdui update`。
 
-停靠面板、工具列按鈕、執行事件與 runs 門面需要 **apiVersion 3**（CodefyUI 2.0.0 起）；`graph.getView` 需要 **apiVersion 4**（CodefyUI 2.3.0 起）。使用前請先檢查版本——參見 [API 版本](#api-版本)。
+停靠面板、工具列按鈕、執行事件與 runs 門面需要 **apiVersion 3**（CodefyUI 2.0.0 起）；`graph.getView` 需要 **apiVersion 4**（CodefyUI 2.3.0 起）；`api.workspace` 與六個代理畫布操作需要 **apiVersion 5**（*下一個版本（尚未發布）* {/* stamp-on-release */} 起）。使用前請先檢查版本——參見 [API 版本](#api-版本)。
 :::
 
 ## API 版本
 
-`api.apiVersion` 是一個只增不減的數字，而目前每一次改版都是**純粹新增**：舊版能用的東西，沒有被移除過，也沒有被改過形狀。為 apiVersion 2 撰寫的外掛，在 apiVersion 4 的編輯器上不必改任何一行就能繼續運作。
+`api.apiVersion` 是一個只增不減的數字，而目前每一次改版在形狀上都是**純粹新增**：舊版能用的東西，沒有被移除過，簽名也沒有被改過。為 apiVersion 2 撰寫的外掛，在 apiVersion 5 的編輯器上不必改任何一行就能繼續運作，只有一個例外由 apiVersion 5 引入，而且完整寫在下面——[唯讀分頁現在會拒絕寫入](#apiversion-5-之前的外掛要注意的一件事)。
 
 | `apiVersion` | CodefyUI | 新增內容 |
 |--------------|----------|----------|
@@ -24,6 +24,7 @@ description: 隨外掛包附上一個 JavaScript bundle，讓外掛能新增 UI 
 | 2 | 1.3.0 | `nodes.registerRenderer` |
 | 3 | 2.0.0 | `ui.addPanel` / `removePanel`、`ui.addToolbarButton` / `removeToolbarButton`、`events.onExecution`、`runs.*` |
 | 4 | 2.3.0 | `graph.getView`——使用者正在看圖表的哪一層 |
+| 5 | *下一個版本（尚未發布）* {/* stamp-on-release */} | `workspace.*`——分頁、快照與比較後寫入；`move_node`、`set_segment` / `remove_segment`、`add_note` / `update_note`、`set_node_meta` |
 
 在使用比你所要求的版本更新的功能之前先檢查它，而且是降級處理，不是直接拋錯：
 
@@ -200,6 +201,12 @@ const remove = api.ui.addToolbarButton({
 | `"remove_edge"` | `source: string`、`target: string`、`source_handle?: string`、`target_handle?: string` | 中斷兩節點間相符的邊。 |
 | `"clear_graph"` | *（無）* | 移除所有節點與邊。 |
 | `"auto_layout"` | *（無）* | 重新執行自動圖表佈局。 |
+| `"move_node"` | `node_id: string`、`position: { x: number; y: number }` | **apiVersion 5。** 把一個節點放到精確的位置。綁在該節點上的便箋會一起移動，就跟使用者拖曳該節點時一樣。 |
+| `"set_segment"` | `segment_id?: string`、`head_node_id: string`、`tail_node_id: string` | **apiVersion 5。** 建立或取代一個區段標示——編輯器在從頭到尾的資料路徑上，為每個節點畫出的那個泡泡。省略 `segment_id` 就是建立；傳入既有的 id 就是移動它。不論哪一種，結果都會在 `segment_id` 帶回該 id。頭尾之間沒有資料邊路徑時會失敗，任一端是便箋時也會失敗。 |
+| `"remove_segment"` | `segment_id: string` | **apiVersion 5。** 移除一個區段標示。 |
+| `"add_note"` | `ref?: string`、`text: string`、`position?: { x: number; y: number }`、`color?: string`、`bind_to?: string` | **apiVersion 5。** 新增一張文字便箋。`text` 為 1 到 4000 個字元，可含換行與 tab，但不可含其他控制字元；`color` 為 `#rrggbb`；`bind_to` 把便箋綁到某個節點，使它跟著該節點移動，並預設把位置放在它旁邊。便箋永遠不會被執行、匯出或驗證。 |
+| `"update_note"` | `node_id: string`、`text?: string`、`color?: string` | **apiVersion 5。** 改寫既有的便箋。`text` 與 `color` 至少要有一個，而 `text` 只適用於文字便箋——圖片便箋的內容是它的 data URL。 |
+| `"set_node_meta"` | `node_id: string`、`label: string` | **apiVersion 5。** 為節點命名。1 到 120 個字元，單行，前後空白會被去除。標籤存放在 `params` 旁邊，永遠不會存進 `params` 裡面，而且現在存檔重新載入後也還在。 |
 
 #### ApplyResult 形狀
 
@@ -208,7 +215,8 @@ interface OpResult {
   index: number;      // 操作在批次中的位置
   ok: boolean;        // 此操作是否套用成功
   error?: string;     // ok 為 false 時的失敗原因
-  node_id?: string;   // 解析出的節點 id（add_node / set_params）
+  node_id?: string;   // 解析出的節點 id，凡是指名或建立節點的操作都會帶
+  segment_id?: string; // apiVersion 5：set_segment 建立或取代的那個 id
 }
 
 interface ApplyResult {
@@ -262,6 +270,166 @@ api.graph.applyOperations(ops);
 這個 view 是**唯讀**的，而且是即時讀取：每次呼叫都是當下的新答案；而且我們刻意沒有提供任何讓外掛帶著使用者跳到別層的方法。使用者走進或走出區塊時 `onGraphChanged` 會觸發（畢竟畫布真的換了），所以想顯示「我會寫到哪裡」的面板，可以在那個回呼裡重新讀一次 `getView()`。
 
 寫入會落在哪一層，是編輯器一直以來的行為，這次是把它寫下來，而不是把它改掉。未來的改版可能會讓操作自己指名目標層級；那也會是用「新增一個東西」的方式做到，而不是悄悄改寫既有外掛已經在做的那些寫入。
+
+### `api.workspace` — 分頁與比較後寫入
+
+需要 `api.apiVersion >= 5`。在更舊的編輯器上 `api.workspace` 會是 `undefined`——它不會被塞成一組會拋錯的方法，所以 `typeof api.workspace?.openGraphs === "function"` 是一個誠實的檢查。
+
+`api.graph` 看見的是一張圖表：使用者眼前的那一張。`api.workspace` 看見的是整條分頁列。它的存在，是為了讓外掛能把一個提案放到使用者可以去看、但又不會動到他手邊工作的地方，並且只在使用者這段期間沒有改過它時才寫回去。
+
+| 方法 | 簽名 | 說明 |
+|------|------|------|
+| `openGraphs` | `(entries, options?) => WorkspaceOpenResult[]` | 把一張或多張圖表開成編輯器分頁。結果是**依位置對應**的：`result[i]` 描述的就是 `entries[i]`，而且一筆壞掉的項目永遠不會影響另一筆。 |
+| `tabs` | `() => WorkspaceTabInfo[]` | 依分頁列順序列出每個分頁，使用者正在看的那一個帶有 `active`。 |
+| `snapshot` | `(tabId?) => WorkspaceSnapshot` | 一個分頁的身分，加上它的整張圖表。不給 id 就是作用中分頁。id 不存在時回傳 `{ error: "unknown_tab" }`，而不是拋錯。 |
+| `applyOperations` | `(request) => WorkspaceApplyResult` | 對指定分頁套用一個批次，可選擇只在版本號仍相符時才寫入，也可選擇全有全無。 |
+| `onChanged` | `(callback) => () => void` | 訂閱所有分頁的分頁與文件變更。回傳一個取消訂閱函式。 |
+
+#### 版本號
+
+每個分頁都帶著一個 `revision`：從 1 開始，每當該分頁的文件變更就加一。拖曳節點會讓它變。撤銷與重做也會——它們還原的是舊內容，那仍然是一次變更。重新命名分頁、切換到它、選取節點、平移畫布與標示區段都不會；執行也不會，因為執行畫在節點上的狀態、錯誤與進度從來不會寫進存檔。所以一次比較後寫入，不會在模型訓練時每秒過期好幾次。
+
+這個數字只增不減，而且會跟著分頁一起存起來，所以你在重新載入之前記下的版本號，載入之後仍然有意義。這正是重點：拿著一個版本號，離開去想個兩分鐘，然後連同你的寫入一起交回來。
+
+```ts
+interface WorkspaceTabInfo {
+  tabId: string;
+  title: string;
+  revision: number;
+  readOnly: boolean;
+  transient: boolean;               // gone after a reload
+  source: WorkspaceSource | null;   // who opened it
+  active: boolean;
+}
+
+interface WorkspaceSource {
+  kind: string;         // your own label, e.g. "agent-variant"
+  pluginId: string;
+  jobId?: string;
+  variantId?: string;
+  [key: string]: unknown;   // opaque to the editor, handed back verbatim
+}
+```
+
+#### 開啟圖表
+
+```ts
+const opened = api.workspace.openGraphs(
+  candidates.map((c) => ({
+    title: `${hypothesis} — ${c.label}`,
+    graph: c.graph,                 // the shape getGraph() answers with
+    readOnly: true,
+    source: { kind: "agent-variant", pluginId: api.pluginId, variantId: c.id },
+  })),
+  { activate: "first" },
+);
+
+for (const [i, result] of opened.entries()) {
+  if ("error" in result) {
+    api.ui.toast(`Candidate ${i + 1} not opened: ${result.error}`, "error");
+    continue;
+  }
+  remember(result.tabId, result.revision);
+}
+```
+
+每一筆項目依此順序驗證，失敗時產生一筆帶有 `error` 句子與 `code` 的結果：
+
+1. `title` 必須是非空字串——`invalid_graph`。
+2. `graph` 必須能通過 `JSON.stringify`——`invalid_graph`。
+3. 該 JSON 最多 8 MiB——`too_large`。
+4. 圖表必須能通過編輯器的文件讀取器，也就是開啟藝廊範例所用的同一個：節點的 `params` 完全照該項目寫下來的樣子讀取，不會從它的定義或 preset 補進任何東西——你沒寫的參數就是沒有；未知的最上層鍵會被忽略、`subgraphs`、`segmentGroups` 與 `presets` 都會被採用，而 `format_version` 比這個編輯器新時，分頁會以唯讀開啟，和開檔案一模一樣。讀取器失敗是 `invalid_graph`，訊息就是讀取器自己的訊息。
+5. 開啟後不得讓編輯器超過 32 個分頁——`too_many_tabs`。
+
+分頁數是**最後**才檢查的，而且比對的是當下的即時數量，所以同一次呼叫裡的兩筆項目，不會一起擠進只夠一筆的額度。這個順序的代價是：一筆被 `too_many_tabs` 拒絕的項目其實已經被讀過了——它帶來而這台伺服器沒看過的 preset 已經併進節點面板，即使沒有任何分頁被開出來。
+
+`options.activate` 可以是 `"first"`（預設）、`"last"`，或 `"none"` 讓使用者留在原地。
+
+開出來的分頁之後就是一個普通分頁。使用者可以重新命名、關掉它，或另存成一個真正的圖表檔案——而開啟那個檔案，會照平常的方式得到一個可編輯的分頁。`readOnly` 屬於分頁本身，直到分頁被關掉為止。
+
+你開的分頁預設是**暫時的**：它們不會被寫進編輯器的自動存檔，所以重新載入之後就不見了。如果某個候選方案應該撐過一次重新載入，請傳 `persist: true`。這裡刻意沒有 `closeTab`：使用者正在看的分頁，要關要留由他決定。
+
+#### 在比較後寫入
+
+```ts
+const before = api.workspace.snapshot();          // the active tab
+const armed = { tabId: before.tabId, revision: before.revision };
+
+// ...minutes pass, experiments run...
+
+const result = api.workspace.applyOperations({
+  tabId: armed.tabId,
+  expectedRevision: armed.revision,
+  operations: winner.operations,
+  atomic: true,
+});
+
+if (result.conflict === "revision_mismatch") {
+  // result.revision is the CURRENT one, so you can re-arm without re-reading.
+  api.ui.toast("The graph changed while the study was running.", "warning");
+} else if (result.conflict === "read_only") {
+  api.ui.toast("That tab is read-only — promote into an editable one.", "warning");
+} else if (result.conflict === "editing_subgraph") {
+  api.ui.toast("Step out of the block first — the write is waiting.", "warning");
+} else if (!result.committed) {
+  const failed = result.results.filter((r) => !r.ok);
+  api.ui.toast(`Nothing applied: ${failed.map((r) => r.error).join("; ")}`, "error");
+} else {
+  armed.revision = result.revision;                // continue the chain
+}
+```
+
+檢查依此順序進行，而且每一項都是「什麼都不改」地回傳：
+
+1. `tabId`（或作用中分頁）必須找得到，否則 `conflict: "unknown_tab"`、`results: []`、`committed: false`、`revision: 0`。
+2. 分頁不能是唯讀的，否則 `conflict: "read_only"`、`results: []`、`committed: false`，以及該分頁當下的 `revision`。
+3. 分頁不能正顯示某個區塊的內部，否則 `conflict: "editing_subgraph"`。區塊打開時，畫布上的是那個區塊的內容，而不是 `snapshot()` 所描述的文件，所以這時寫入會落在你從沒讀過的地方；等使用者走出來再重試。
+4. 若你有傳 `expectedRevision`，它必須等於分頁的 `revision`，否則 `conflict: "revision_mismatch"`，並回傳**當下**的版本號，讓你不必再讀一次就能重新持有。
+5. 批次會套用在一份副本上。
+6. 使用 `atomic: true` 時，只要有任何一個操作失敗就什麼都不寫：`committed: false`、`revision` 不變，而且回傳**完整長度**的 `results`，讓你看得出是哪個操作錯了。
+7. 否則，若有東西改變：一個撤銷快照、一次寫入、`committed: true`，以及新的 `revision`。什麼都沒改變的批次，不會寫入，也不會推入撤銷步驟。
+
+被拒絕時，`node_count` 與 `edge_count` 仍然描述該分頁當下的樣子，所以會把它們記進 log 的外掛，不會被告知圖表是空的而其實不是。`unknown_tab` 是例外：根本沒有分頁可數。
+
+衝突是**回傳的，永遠不會拋出**。一個批次仍然是一個撤銷步驟，而每個操作的語義與 `api.graph.applyOperations` 相同：沒有 `atomic` 時，失敗的操作會被跳過並回報，其餘照樣套用。若提交後的圖表已經沒有詳細資料視窗或畫布選取所指的那個節點，兩者都會被清掉，這樣還原該節點的撤銷就不會讓視窗自己彈回來。
+
+```ts
+type WorkspaceConflict =
+  "revision_mismatch" | "read_only" | "unknown_tab" | "editing_subgraph";
+
+interface WorkspaceApplyResult extends ApplyResult {
+  tabId: string;
+  revision: number;        // AFTER this call; unchanged on a conflict or a preflight failure
+  committed: boolean;
+  conflict?: WorkspaceConflict;
+}
+```
+
+#### 監看所有分頁
+
+```ts
+const off = api.workspace.onChanged((event) => {
+  if (event.type === "graph" && event.origin?.pluginId === api.pluginId) return;  // your own write
+  if (event.type === "tabs" && event.removed) forget(event.tabId);
+});
+```
+
+```ts
+type WorkspaceEvent =
+  | { type: "graph"; tabId: string; revision: number; origin?: { pluginId: string } }
+  | { type: "tabs"; tabId: string; revision: number; removed: boolean }
+  | { type: "active-tab"; tabId: string; revision: number };
+```
+
+事件在變更之後同步送達，順序固定：先是新增的分頁，接著是變更的文件，然後是作用中分頁，最後是移除的分頁。`origin` 只有在變更來自某個外掛的 `workspace.applyOperations` 時才會出現在 `graph` 事件上，這就是你分辨自己的寫入與使用者的寫入的方法。
+
+如果你的回呼拋錯，編輯器會記錄它並把你取消訂閱——外掛不能有能力弄壞分頁儲存。`api.graph.onGraphChanged` 不變：仍然是作用中分頁，仍然不帶任何內容。
+
+#### apiVersion 5 之前的外掛要注意的一件事
+
+唯讀分頁現在連 `api.graph.applyOperations` 也會拒絕。每個操作都會回傳 `{ ok: false, error: "tab is read-only" }`，而且什麼都不會寫入。apiVersion 5 之前這個寫入是會過的：`readOnly` 只是一個 UI 上的表現，外掛的寫入路徑從來不看它。如果你的外掛是往使用者眼前那個分頁寫，請先檢查 `api.workspace.snapshot().readOnly`，或是讀一讀你本來就會拿到的 `ok` 旗標。
+
+還有一個拒絕是新增的而不是變更的，因為它所指的兩個操作都是 apiVersion 5 才有的：使用者在區塊裡面時，含有 `set_segment` 或 `remove_segment` 的舊路徑批次會被整批拒絕，每個操作都回報 `set_segment and remove_segment cannot apply while a block is open`。區段是最上層的狀態，所以從區塊裡面提交一個區段，會寫出一個指名該區塊內部節點 id 的標示——它會進到存檔、畫不出任何東西，而使用者也刪不掉一個從來不會顯示的東西。其餘所有操作在區塊裡面仍然照樣寫入打開的那張畫布，跟以前一樣。
 
 ### `api.nodes` — 自訂 node 渲染
 

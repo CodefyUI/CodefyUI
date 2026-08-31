@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import type { Node, Edge } from '@xyflow/react';
-import type { NodeData, NodeDefinition } from '../types';
+import type { NodeData, NodeDefinition, SegmentGroup } from '../types';
 import { applyGraphOps, type GraphOp } from './ops';
 import { buildFlowNode } from '../utils';
 
@@ -32,8 +32,13 @@ const DEFS: NodeDefinition[] = [
   }),
 ];
 
-function run(ops: GraphOp[], nodes: Node<NodeData>[] = [], edges: Edge[] = []) {
-  return applyGraphOps({ nodes, edges }, DEFS, ops);
+function run(
+  ops: GraphOp[],
+  nodes: Node<NodeData>[] = [],
+  edges: Edge[] = [],
+  segmentGroups: SegmentGroup[] = [],
+) {
+  return applyGraphOps({ nodes, edges, segmentGroups }, DEFS, ops);
 }
 
 describe('applyGraphOps — add_node', () => {
@@ -169,5 +174,325 @@ describe('applyGraphOps — set_params / remove_node / remove_edge / clear / lay
     const laid = run([{ op: 'auto_layout' }], nodes, edges);
     expect(laid.results[0].ok).toBe(true);
     expect(laid.nodes).toHaveLength(2);
+  });
+});
+
+describe('applyGraphOps — move_node', () => {
+  function seeded() {
+    const a = buildFlowNode(DEFS[0], { x: 0, y: 0 });
+    const note: Node<NodeData> = {
+      id: 'note1', type: 'noteNode', position: { x: 30, y: 40 },
+      data: {
+        label: 'Note', type: 'note', params: {},
+        noteKind: 'text', noteContent: 'hi', noteColor: '#3d3d1a',
+        boundToNodeId: a.id, boundOffset: { x: 30, y: 40 },
+        noteWidth: 200,
+      },
+    };
+    const loose: Node<NodeData> = { ...note, id: 'note2', data: { ...note.data, boundToNodeId: null, boundOffset: null } };
+    return { nodes: [a, note, loose], a };
+  }
+
+  it('moves a node to an exact position', () => {
+    const { nodes, a } = seeded();
+    const r = run([{ op: 'move_node', node_id: a.id, position: { x: 500, y: 250 } }], nodes);
+    expect(r.results[0]).toMatchObject({ ok: true, node_id: a.id });
+    expect(r.nodes.find((n) => n.id === a.id)!.position).toEqual({ x: 500, y: 250 });
+    expect(r.mutated).toBe(true);
+  });
+
+  it('carries a bound note along by the same delta, and leaves a loose one', () => {
+    const { nodes, a } = seeded();
+    const r = run([{ op: 'move_node', node_id: a.id, position: { x: 100, y: 60 } }], nodes);
+    expect(r.nodes.find((n) => n.id === 'note1')!.position).toEqual({ x: 130, y: 100 });
+    expect(r.nodes.find((n) => n.id === 'note2')!.position).toEqual({ x: 30, y: 40 });
+  });
+
+  it('rejects an unknown node and a non-finite position', () => {
+    const { nodes, a } = seeded();
+    const ghost = run([{ op: 'move_node', node_id: 'nope', position: { x: 0, y: 0 } }], nodes);
+    expect(ghost.results[0].ok).toBe(false);
+    expect(ghost.mutated).toBe(false);
+
+    const nan = run([{ op: 'move_node', node_id: a.id, position: { x: Number.NaN, y: 0 } }], nodes);
+    expect(nan.results[0].ok).toBe(false);
+    expect(nan.results[0].error).toContain('finite');
+  });
+
+  it('accepts a same-batch ref', () => {
+    const r = run([
+      { op: 'add_node', node_type: 'Source', ref: 's' },
+      { op: 'move_node', node_id: 's', position: { x: 12, y: 34 } },
+    ]);
+    expect(r.results[1].ok).toBe(true);
+    expect(r.nodes[0].position).toEqual({ x: 12, y: 34 });
+  });
+
+  it('re-derives the offset when the moved node IS the bound note', () => {
+    const { nodes, a } = seeded();
+    const r = run([{ op: 'move_node', node_id: 'note1', position: { x: 200, y: 100 } }], nodes);
+    const note = r.nodes.find((n) => n.id === 'note1')!;
+    expect(note.position).toEqual({ x: 200, y: 100 });
+    // `onNodesChange`'s FIRST pass: the offset follows the note that was moved.
+    expect(note.data.boundOffset).toEqual({ x: 200, y: 100 });
+
+    // The SECOND pass, replayed by hand -- what the store does on the next
+    // drag of the parent. A stale offset would snap the note back to where it
+    // sat before the plugin moved it, reading as if the edit had been undone.
+    const parent = r.nodes.find((n) => n.id === a.id)!;
+    const dragged = { x: parent.position.x + 40, y: parent.position.y + 15 };
+    const rederived = {
+      x: dragged.x + note.data.boundOffset!.x,
+      y: dragged.y + note.data.boundOffset!.y,
+    };
+    expect(rederived).toEqual({ x: 240, y: 115 });
+  });
+
+  it('leaves a plain node\'s data object untouched', () => {
+    const { nodes, a } = seeded();
+    const before = nodes.find((n) => n.id === a.id)!.data;
+    const r = run([{ op: 'move_node', node_id: a.id, position: { x: 7, y: 8 } }], nodes);
+    expect(r.nodes.find((n) => n.id === a.id)!.data).toBe(before);
+  });
+});
+
+describe('applyGraphOps — set_segment / remove_segment', () => {
+  function chain() {
+    const a = buildFlowNode(DEFS[0], { x: 0, y: 0 });
+    const b = buildFlowNode(DEFS[1], { x: 100, y: 0 });
+    const e: Edge = { id: 'e1', source: a.id, target: b.id, sourceHandle: 'out', targetHandle: 'x' };
+    return { nodes: [a, b], edges: [e], a, b };
+  }
+
+  it('appends a segment and reports the id it generated', () => {
+    const { nodes, edges, a, b } = chain();
+    const r = run([{ op: 'set_segment', head_node_id: a.id, tail_node_id: b.id }], nodes, edges);
+    expect(r.results[0].ok).toBe(true);
+    expect(typeof r.results[0].segment_id).toBe('string');
+    expect(r.segmentGroups).toEqual([
+      { id: r.results[0].segment_id, headNodeId: a.id, tailNodeId: b.id },
+    ]);
+  });
+
+  it('replaces by id rather than duplicating', () => {
+    const { nodes, edges, a, b } = chain();
+    const r = run(
+      [{ op: 'set_segment', segment_id: 's1', head_node_id: b.id, tail_node_id: b.id }],
+      nodes, edges,
+      [{ id: 's1', headNodeId: a.id, tailNodeId: b.id }],
+    );
+    expect(r.segmentGroups).toHaveLength(1);
+    expect(r.segmentGroups[0]).toEqual({ id: 's1', headNodeId: b.id, tailNodeId: b.id });
+  });
+
+  it('refuses head and tail with no data-edge path between them', () => {
+    const { nodes, edges, a, b } = chain();
+    const backwards = run(
+      [{ op: 'set_segment', head_node_id: b.id, tail_node_id: a.id }],
+      nodes, edges,
+    );
+    expect(backwards.results[0].ok).toBe(false);
+    expect(backwards.results[0].error).toContain('no data-edge path');
+    expect(backwards.segmentGroups).toHaveLength(0);
+    expect(backwards.mutated).toBe(false);
+  });
+
+  it('refuses a note as an endpoint and an unknown node', () => {
+    const { nodes, edges, a } = chain();
+    const note: Node<NodeData> = {
+      id: 'note1', type: 'noteNode', position: { x: 0, y: 0 },
+      data: { label: 'Note', type: 'note', params: {}, noteKind: 'text', noteContent: 'x', noteColor: '#3d3d1a', boundToNodeId: null, boundOffset: null, noteWidth: 200 },
+    };
+    const withNote = run(
+      [{ op: 'set_segment', head_node_id: a.id, tail_node_id: 'note1' }],
+      [...nodes, note], edges,
+    );
+    expect(withNote.results[0].ok).toBe(false);
+    expect(withNote.results[0].error).toContain('note');
+
+    const ghost = run([{ op: 'set_segment', head_node_id: a.id, tail_node_id: 'nope' }], nodes, edges);
+    expect(ghost.results[0].ok).toBe(false);
+  });
+
+  it('remove_segment drops a known id and reports an unknown one', () => {
+    const { nodes, edges, a, b } = chain();
+    const groups: SegmentGroup[] = [{ id: 's1', headNodeId: a.id, tailNodeId: b.id }];
+    const ok = run([{ op: 'remove_segment', segment_id: 's1' }], nodes, edges, groups);
+    expect(ok.results[0].ok).toBe(true);
+    expect(ok.segmentGroups).toHaveLength(0);
+
+    const miss = run([{ op: 'remove_segment', segment_id: 'nope' }], nodes, edges, groups);
+    expect(miss.results[0].ok).toBe(false);
+    expect(miss.mutated).toBe(false);
+  });
+
+  it('hands back the SAME segmentGroups array when no op touched it', () => {
+    // The persistence record cache compares this array by reference, so a
+    // batch of add_node that handed back a fresh (identical) segment list
+    // would rewrite the tab's IndexedDB record for nothing.
+    const { nodes, edges, a, b } = chain();
+    const groups: SegmentGroup[] = [{ id: 's1', headNodeId: a.id, tailNodeId: b.id }];
+    const r = run([{ op: 'add_node', node_type: 'Source' }], nodes, edges, groups);
+    expect(r.segmentGroups).toBe(groups);
+  });
+
+  it('remove_node drops the segments that named it, and only those', () => {
+    const { nodes, edges, a, b } = chain();
+    const groups: SegmentGroup[] = [
+      { id: 's1', headNodeId: a.id, tailNodeId: b.id },
+      { id: 's2', headNodeId: b.id, tailNodeId: b.id },
+    ];
+    const head = run([{ op: 'remove_node', node_id: a.id }], nodes, edges, groups);
+    expect(head.results[0].ok).toBe(true);
+    expect(head.segmentGroups).toEqual([{ id: 's2', headNodeId: b.id, tailNodeId: b.id }]);
+
+    // A delete that names no endpoint leaves the list alone -- by reference,
+    // so the autosave record is not rewritten for a list that did not move.
+    const note: Node<NodeData> = {
+      id: 'note1', type: 'noteNode', position: { x: 0, y: 0 },
+      data: { label: 'Note', type: 'note', params: {}, noteKind: 'text', noteContent: 'x', noteColor: '#3d3d1a', boundToNodeId: null, boundOffset: null, noteWidth: 200 },
+    };
+    const other = run([{ op: 'remove_node', node_id: 'note1' }], [...nodes, note], edges, groups);
+    expect(other.segmentGroups).toBe(groups);
+  });
+
+  it('clear_graph empties the segment list too', () => {
+    const { nodes, edges, a, b } = chain();
+    const groups: SegmentGroup[] = [{ id: 's1', headNodeId: a.id, tailNodeId: b.id }];
+    const r = run([{ op: 'clear_graph' }], nodes, edges, groups);
+    expect(r.results[0].ok).toBe(true);
+    expect(r.segmentGroups).toEqual([]);
+
+    const empty: SegmentGroup[] = [];
+    expect(run([{ op: 'clear_graph' }], nodes, edges, empty).segmentGroups).toBe(empty);
+  });
+});
+
+describe('applyGraphOps — add_note / update_note', () => {
+  function seeded() {
+    const a = buildFlowNode(DEFS[0], { x: 200, y: 100 });
+    return { nodes: [a], a };
+  }
+
+  it('adds a text note the canvas can already render', () => {
+    const r = run([{ op: 'add_note', text: 'branch B = ablation', ref: 'n' }]);
+    expect(r.results[0].ok).toBe(true);
+    const id = r.results[0].node_id!;
+    expect(r.refs.n).toBe(id);
+    const note = r.nodes.find((n) => n.id === id)!;
+    expect(note.type).toBe('noteNode');
+    expect(note.data).toMatchObject({
+      type: 'note', noteKind: 'text', noteContent: 'branch B = ablation',
+      noteColor: '#3d3d1a', boundToNodeId: null, boundOffset: null, noteWidth: 200,
+    });
+  });
+
+  it('binds to a node and records the offset that binding implies', () => {
+    const { nodes, a } = seeded();
+    const r = run([{ op: 'add_note', text: 'why', bind_to: a.id, position: { x: 260, y: 60 } }], nodes);
+    const note = r.nodes.find((n) => n.type === 'noteNode')!;
+    expect(note.data.boundToNodeId).toBe(a.id);
+    expect(note.data.boundOffset).toEqual({ x: 60, y: -40 });
+  });
+
+  it('places an unpositioned bound note beside its node', () => {
+    const { nodes, a } = seeded();
+    const r = run([{ op: 'add_note', text: 'why', bind_to: a.id }], nodes);
+    const note = r.nodes.find((n) => n.type === 'noteNode')!;
+    expect(note.position.x).toBeGreaterThan(a.position.x);
+  });
+
+  it('rejects empty text, over-long text, control characters and a bad colour', () => {
+    const long = 'x'.repeat(4001);
+    for (const op of [
+      { op: 'add_note', text: '' } as GraphOp,
+      { op: 'add_note', text: long } as GraphOp,
+      // A real NUL, built rather than typed: a literal escape in a test is
+      // the one thing that can silently stop being what it claims to be.
+      { op: 'add_note', text: `a${String.fromCharCode(0)}b` } as GraphOp,
+      { op: 'add_note', text: 'ok', color: 'red' } as GraphOp,
+      { op: 'add_note', text: 'ok', color: '#fff' } as GraphOp,
+    ]) {
+      const r = run([op]);
+      expect(r.results[0].ok, JSON.stringify(op)).toBe(false);
+      expect(r.nodes).toHaveLength(0);
+      expect(r.mutated).toBe(false);
+    }
+  });
+
+  it('accepts newlines and tabs, and every colour from the canvas palette', () => {
+    const r = run([
+      { op: 'add_note', text: 'line one\nline two\tindented' },
+      { op: 'add_note', text: 'blue', color: '#1a2d3d' },
+    ]);
+    expect(r.results.map((x) => x.ok)).toEqual([true, true]);
+  });
+
+  it('refuses to bind a note to another note', () => {
+    const r = run([
+      { op: 'add_note', text: 'first', ref: 'n1' },
+      { op: 'add_note', text: 'second', bind_to: 'n1' },
+    ]);
+    expect(r.results[1].ok).toBe(false);
+    expect(r.results[1].error).toContain('note');
+  });
+
+  it('update_note rewrites text and colour, and refuses a non-note', () => {
+    const { nodes, a } = seeded();
+    const added = run([{ op: 'add_note', text: 'draft' }], nodes);
+    const noteId = added.results[0].node_id!;
+
+    const r = run(
+      [{ op: 'update_note', node_id: noteId, text: 'final', color: '#1a3d1a' }],
+      added.nodes,
+    );
+    const note = r.nodes.find((n) => n.id === noteId)!;
+    expect(note.data.noteContent).toBe('final');
+    expect(note.data.noteColor).toBe('#1a3d1a');
+
+    const wrong = run([{ op: 'update_note', node_id: a.id, text: 'x' }], added.nodes);
+    expect(wrong.results[0].ok).toBe(false);
+    expect(wrong.results[0].error).toContain('not a note');
+  });
+
+  it('update_note with nothing to change is an error, not a silent no-op', () => {
+    const added = run([{ op: 'add_note', text: 'draft' }]);
+    const noteId = added.results[0].node_id!;
+    const r = run([{ op: 'update_note', node_id: noteId }], added.nodes);
+    expect(r.results[0].ok).toBe(false);
+    expect(r.mutated).toBe(false);
+  });
+});
+
+describe('applyGraphOps — set_node_meta', () => {
+  function seeded() {
+    const a = buildFlowNode(DEFS[0], { x: 0, y: 0 });
+    return { nodes: [a], a };
+  }
+
+  it('names a node', () => {
+    const { nodes, a } = seeded();
+    const r = run([{ op: 'set_node_meta', node_id: a.id, label: '  Encoder input  ' }], nodes);
+    expect(r.results[0]).toMatchObject({ ok: true, node_id: a.id });
+    expect(r.nodes[0].data.label).toBe('Encoder input');
+    // The label is metadata, not a param: an agent naming a node must not
+    // look to a consumer like a parameter change.
+    expect(r.nodes[0].data.params).toEqual(a.data.params);
+  });
+
+  it('rejects a blank, multi-line or over-long label and a note target', () => {
+    const { nodes, a } = seeded();
+    const added = run([{ op: 'add_note', text: 'n' }], nodes);
+    const noteId = added.results[0].node_id!;
+    for (const op of [
+      { op: 'set_node_meta', node_id: a.id, label: '   ' } as GraphOp,
+      { op: 'set_node_meta', node_id: a.id, label: 'a\nb' } as GraphOp,
+      { op: 'set_node_meta', node_id: a.id, label: 'x'.repeat(121) } as GraphOp,
+      { op: 'set_node_meta', node_id: noteId, label: 'Note name' } as GraphOp,
+    ]) {
+      const r = run([op], added.nodes);
+      expect(r.results[0].ok, JSON.stringify(op)).toBe(false);
+      expect(r.mutated).toBe(false);
+    }
   });
 });

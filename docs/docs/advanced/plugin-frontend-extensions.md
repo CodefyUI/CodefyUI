@@ -11,12 +11,12 @@ A plugin pack can ship a JavaScript bundle alongside its Python nodes. When the 
 :::note Availability
 Frontend extensions are in CodefyUI **1.3.0** and later. Check `cdui --version`; if it reports an older version, run `cdui update`.
 
-Dock panels, toolbar buttons, execution events and the runs facade need **apiVersion 3** (CodefyUI 2.0.0 and later); `graph.getView` needs **apiVersion 4** (CodefyUI 2.3.0 and later). Feature-check before you use them — see [API versions](#api-versions).
+Dock panels, toolbar buttons, execution events and the runs facade need **apiVersion 3** (CodefyUI 2.0.0 and later); `graph.getView` needs **apiVersion 4** (CodefyUI 2.3.0 and later); `api.workspace` and the six agent canvas operations need **apiVersion 5** (*next release (unreleased)* {/* stamp-on-release */} and later). Feature-check before you use them — see [API versions](#api-versions).
 :::
 
 ## API versions
 
-`api.apiVersion` is a number that only ever grows, and every release so far has been **purely additive**: nothing that worked at an older version has been removed or changed shape. A plugin written for apiVersion 2 keeps working on an apiVersion 4 editor with no changes at all.
+`api.apiVersion` is a number that only ever grows, and every release has been **additive in shape**: nothing that worked at an older version has been removed or changed signature. A plugin written for apiVersion 2 keeps working on an apiVersion 5 editor with no changes at all, with one exception that apiVersion 5 introduces and that is written down in full below — [a read-only tab now refuses a write](#one-change-for-plugins-written-before-apiversion-5).
 
 | `apiVersion` | CodefyUI | Added |
 |--------------|----------|-------|
@@ -24,6 +24,7 @@ Dock panels, toolbar buttons, execution events and the runs facade need **apiVer
 | 2 | 1.3.0 | `nodes.registerRenderer` |
 | 3 | 2.0.0 | `ui.addPanel` / `removePanel`, `ui.addToolbarButton` / `removeToolbarButton`, `events.onExecution`, `runs.*` |
 | 4 | 2.3.0 | `graph.getView` — which level of the graph the user is looking at |
+| 5 | *next release (unreleased)* {/* stamp-on-release */} | `workspace.*` — tabs, snapshots and compare-and-swap writes; `move_node`, `set_segment` / `remove_segment`, `add_note` / `update_note`, `set_node_meta` |
 
 Check it before reaching for anything newer than the version you require, and degrade rather than throw:
 
@@ -189,7 +190,7 @@ Re-adding an id replaces the button. The remove function you get back belongs to
 
 #### GraphOp table
 
-All seven operation types share the property `op` (the discriminant string). Field names below are exact.
+All thirteen operation types share the property `op` (the discriminant string). Field names below are exact.
 
 | `op` | Fields | Description |
 |------|--------|-------------|
@@ -200,6 +201,12 @@ All seven operation types share the property `op` (the discriminant string). Fie
 | `"remove_edge"` | `source: string`, `target: string`, `source_handle?: string`, `target_handle?: string` | Disconnect matching edge(s) between two nodes. |
 | `"clear_graph"` | *(none)* | Remove all nodes and edges. |
 | `"auto_layout"` | *(none)* | Re-run the automatic graph layout. |
+| `"move_node"` | `node_id: string`, `position: { x: number; y: number }` | **apiVersion 5.** Put one node at an exact position. Any note bound to that node moves with it, exactly as it does when the user drags the node. |
+| `"set_segment"` | `segment_id?: string`, `head_node_id: string`, `tail_node_id: string` | **apiVersion 5.** Create or replace a segment overlay — the bubble the editor draws around every node on a data path from head to tail. Omit `segment_id` to create; pass an existing one to move it. The result carries the id either way, in `segment_id`. Fails when no data-edge path joins the two, and when either end is a note. |
+| `"remove_segment"` | `segment_id: string` | **apiVersion 5.** Remove a segment overlay. |
+| `"add_note"` | `ref?: string`, `text: string`, `position?: { x: number; y: number }`, `color?: string`, `bind_to?: string` | **apiVersion 5.** Add a text note. `text` is 1 to 4000 characters and may hold newlines and tabs but no other control characters; `color` is `#rrggbb`; `bind_to` attaches the note to a node so it follows that node, and defaults its position beside it. Notes are never executed, exported or validated. |
+| `"update_note"` | `node_id: string`, `text?: string`, `color?: string` | **apiVersion 5.** Rewrite an existing note. At least one of `text` and `color` is required, and `text` applies to a text note only — an image note's content is its data URL. |
+| `"set_node_meta"` | `node_id: string`, `label: string` | **apiVersion 5.** Name a node. 1 to 120 characters on one line, trimmed. The label is stored beside `params`, never inside it, and now survives save and reload. |
 
 #### ApplyResult shape
 
@@ -208,7 +215,8 @@ interface OpResult {
   index: number;      // the op's position in the batch
   ok: boolean;        // whether this op applied
   error?: string;     // failure reason when ok is false
-  node_id?: string;   // resolved node id (add_node / set_params)
+  node_id?: string;   // resolved node id, from every op that names or creates one
+  segment_id?: string; // apiVersion 5: the id set_segment created or replaced
 }
 
 interface ApplyResult {
@@ -262,6 +270,166 @@ Refusing is not the only honest answer — waiting, or scoping the edit to somet
 The view is **read-only**, and read live: each call is a fresh answer, and there is deliberately no way to navigate somebody's editor from a plugin. `onGraphChanged` fires when the user steps into or out of a block (the canvas changed, after all), so a panel that displays where it would write can re-read `getView()` from that callback.
 
 Where a write lands is the editor's long-standing behaviour, now written down rather than changed. A later revision may let an op name its target level explicitly; it will do that by adding something, not by quietly redirecting the writes that installed plugins already make.
+
+### `api.workspace` — tabs and compare-and-swap writes
+
+Requires `api.apiVersion >= 5`. On an older editor `api.workspace` is `undefined` — it is never stubbed with methods that throw, so `typeof api.workspace?.openGraphs === "function"` is an honest check.
+
+`api.graph` sees one graph: the one in front of the user. `api.workspace` sees the tab strip. It exists for the plugin that wants to put a proposal somewhere the user can look at it without touching what they were doing, and to write back only if they have not changed it meanwhile.
+
+| Method | Signature | Description |
+|--------|-----------|-------------|
+| `openGraphs` | `(entries, options?) => WorkspaceOpenResult[]` | Open one or more graphs as editor tabs. The result is **positional**: `result[i]` describes `entries[i]`, and one bad entry never affects another. |
+| `tabs` | `() => WorkspaceTabInfo[]` | Every tab, in strip order, with `active` on the one the user is looking at. |
+| `snapshot` | `(tabId?) => WorkspaceSnapshot` | A tab's identity plus its whole graph. No id means the active tab. An unknown id returns `{ error: "unknown_tab" }` rather than throwing. |
+| `applyOperations` | `(request) => WorkspaceApplyResult` | Apply a batch to a named tab, optionally only if its revision still matches, optionally all-or-nothing. |
+| `onChanged` | `(callback) => () => void` | Subscribe to tab and document changes across every tab. Returns an unsubscribe function. |
+
+#### Revisions
+
+Every tab carries a `revision`: a number that starts at 1 and goes up by one every time the tab's document changes. Dragging a node changes it. So do undo and redo — they restore older content, which is still a change. Renaming the tab, switching to it, selecting a node, panning the canvas and highlighting a segment do not — and neither does a run, whose per-node status, error and progress are painted on the canvas but never written to the saved file. A compare-and-swap therefore does not expire several times a second while a model trains.
+
+The number only ever climbs, and it is saved with the tab, so a revision you stored before a reload still means something afterwards. That is the whole point: hold a revision, go away and think for two minutes, and hand it back with your write.
+
+```ts
+interface WorkspaceTabInfo {
+  tabId: string;
+  title: string;
+  revision: number;
+  readOnly: boolean;
+  transient: boolean;               // gone after a reload
+  source: WorkspaceSource | null;   // who opened it
+  active: boolean;
+}
+
+interface WorkspaceSource {
+  kind: string;         // your own label, e.g. "agent-variant"
+  pluginId: string;
+  jobId?: string;
+  variantId?: string;
+  [key: string]: unknown;   // opaque to the editor, handed back verbatim
+}
+```
+
+#### Opening graphs
+
+```ts
+const opened = api.workspace.openGraphs(
+  candidates.map((c) => ({
+    title: `${hypothesis} — ${c.label}`,
+    graph: c.graph,                 // the shape getGraph() answers with
+    readOnly: true,
+    source: { kind: "agent-variant", pluginId: api.pluginId, variantId: c.id },
+  })),
+  { activate: "first" },
+);
+
+for (const [i, result] of opened.entries()) {
+  if ("error" in result) {
+    api.ui.toast(`Candidate ${i + 1} not opened: ${result.error}`, "error");
+    continue;
+  }
+  remember(result.tabId, result.revision);
+}
+```
+
+Each entry is validated in this order, and a failure produces a result with an `error` sentence and a `code`:
+
+1. `title` must be a non-empty string — `invalid_graph`.
+2. `graph` must survive `JSON.stringify` — `invalid_graph`.
+3. That JSON must be at most 8 MiB — `too_large`.
+4. The graph must read through the editor's document reader, the same one opening a gallery example uses: a node's `params` are taken exactly as the entry wrote them, and nothing is filled in from its definition or its preset — a param you leave out stays out; unknown top-level keys are ignored, `subgraphs`, `segmentGroups` and `presets` are honoured, and a `format_version` newer than this editor opens the tab read-only exactly as a file would. A reader failure is `invalid_graph`, with the reader's own message.
+5. Opening must not take the editor past 32 tabs — `too_many_tabs`.
+
+The tab count is checked last, against the live count, so two entries in one call cannot both slip under a limit only one of them fits. The cost of that order is that an entry refused with `too_many_tabs` has already been read: presets it carries that this server has never seen are merged into the palette even though no tab was opened.
+
+`options.activate` is `"first"` (the default), `"last"`, or `"none"` to leave the user where they are.
+
+An opened tab is an ordinary tab afterwards. The user can rename it, close it, or Save As into a real graph file — and opening that file gives them an editable tab the usual way. `readOnly` belongs to the tab and lasts until the tab is closed.
+
+Tabs you open are **transient** by default: they are not written to the editor's autosave, so they are gone after a reload. Pass `persist: true` if a candidate is meant to survive one. There is deliberately no `closeTab`: a tab the user is looking at is theirs to close.
+
+#### Writing under a compare-and-swap
+
+```ts
+const before = api.workspace.snapshot();          // the active tab
+const armed = { tabId: before.tabId, revision: before.revision };
+
+// ...minutes pass, experiments run...
+
+const result = api.workspace.applyOperations({
+  tabId: armed.tabId,
+  expectedRevision: armed.revision,
+  operations: winner.operations,
+  atomic: true,
+});
+
+if (result.conflict === "revision_mismatch") {
+  // result.revision is the CURRENT one, so you can re-arm without re-reading.
+  api.ui.toast("The graph changed while the study was running.", "warning");
+} else if (result.conflict === "read_only") {
+  api.ui.toast("That tab is read-only — promote into an editable one.", "warning");
+} else if (result.conflict === "editing_subgraph") {
+  api.ui.toast("Step out of the block first — the write is waiting.", "warning");
+} else if (!result.committed) {
+  const failed = result.results.filter((r) => !r.ok);
+  api.ui.toast(`Nothing applied: ${failed.map((r) => r.error).join("; ")}`, "error");
+} else {
+  armed.revision = result.revision;                // continue the chain
+}
+```
+
+The checks run in this order, and each one returns without changing anything:
+
+1. `tabId` (or the active tab) must resolve, else `conflict: "unknown_tab"`, `results: []`, `committed: false`, `revision: 0`.
+2. The tab must not be read-only, else `conflict: "read_only"`, `results: []`, `committed: false`, and the tab's current `revision`.
+3. The tab must not be showing the inside of a block, else `conflict: "editing_subgraph"`. While a block is open the canvas holds that block's contents rather than the document `snapshot()` describes, so a write would land somewhere you never read; retry once the user steps back out.
+4. `expectedRevision`, if you passed one, must equal the tab's `revision`, else `conflict: "revision_mismatch"` and the **current** revision, so you can re-arm without a second read.
+5. The batch is applied to a copy.
+6. With `atomic: true`, if any op failed, nothing is written: `committed: false`, `revision` unchanged, and the **full-length** `results` so you can see which op was wrong.
+7. Otherwise, if anything changed: one undo snapshot, one write, `committed: true`, and the new `revision`. A batch that changes nothing writes nothing and pushes no undo step.
+
+On a refusal `node_count` and `edge_count` still describe the tab as it stands, so a plugin that logs them is not told the graph is empty when it is not. `unknown_tab` is the exception: there is no tab to count.
+
+Conflicts are **returned, never thrown**. A batch is still one undo step, and per-op semantics are unchanged from `api.graph.applyOperations`: without `atomic`, a failing op is skipped and reported while the rest apply. A commit that leaves the graph without the node a detail modal or the canvas selection names clears both, so an undo restoring that node cannot pop the modal open by itself.
+
+```ts
+type WorkspaceConflict =
+  "revision_mismatch" | "read_only" | "unknown_tab" | "editing_subgraph";
+
+interface WorkspaceApplyResult extends ApplyResult {
+  tabId: string;
+  revision: number;        // AFTER this call; unchanged on a conflict or a preflight failure
+  committed: boolean;
+  conflict?: WorkspaceConflict;
+}
+```
+
+#### Watching every tab
+
+```ts
+const off = api.workspace.onChanged((event) => {
+  if (event.type === "graph" && event.origin?.pluginId === api.pluginId) return;  // your own write
+  if (event.type === "tabs" && event.removed) forget(event.tabId);
+});
+```
+
+```ts
+type WorkspaceEvent =
+  | { type: "graph"; tabId: string; revision: number; origin?: { pluginId: string } }
+  | { type: "tabs"; tabId: string; revision: number; removed: boolean }
+  | { type: "active-tab"; tabId: string; revision: number };
+```
+
+Events arrive synchronously after the change, in a fixed order: tabs added, then documents changed, then the active tab, then tabs removed. `origin` is present on a `graph` event only when the change came from a plugin's `workspace.applyOperations`, which is how you tell your own writes from the user's.
+
+If your callback throws, the editor logs it and unsubscribes you — a plugin must not be able to break the tab store. `api.graph.onGraphChanged` is unchanged: still the active tab, still no payload.
+
+#### One change for plugins written before apiVersion 5
+
+A read-only tab now refuses `api.graph.applyOperations` too. Every op comes back `{ ok: false, error: "tab is read-only" }` and nothing is written. Before apiVersion 5 the write went through: `readOnly` was a UI affordance that the plugin write path did not consult. If your plugin writes to whatever tab is in front of the user, check `api.workspace.snapshot().readOnly` first, or read the `ok` flags you were already getting back.
+
+One further refusal is new rather than changed, because both ops it names are new in apiVersion 5: while the user is inside a block, a legacy batch containing `set_segment` or `remove_segment` is refused whole-batch, every op reporting `set_segment and remove_segment cannot apply while a block is open`. Segments are top-level state, so committing one from in there would write an overlay naming the block's inner node ids — it reaches the saved file, draws nothing, and the user cannot delete what never renders. Every other op still writes the open canvas from inside a block, exactly as before.
 
 ### `api.nodes` — custom node renderers
 

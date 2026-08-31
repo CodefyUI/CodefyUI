@@ -40,6 +40,21 @@
   white-space: nowrap;
 }
 
+/* Read-only badge (#341). Density from padding; the 2xs size is the token
+   reserved for badges. Never shrinks to zero: an ellipsised "Read-o" would
+   read as a truncated name rather than as a state. */
+.badge {
+  flex-shrink: 0;
+  padding: var(--sp-1) var(--sp-2);
+  border-radius: var(--radius-sm);
+  background: var(--surface-input);
+  color: var(--text-muted);
+  font-size: var(--fs-2xs);
+  font-weight: var(--fw-semibold);
+  line-height: var(--lh-tight);
+  white-space: nowrap;
+}
+
 /* Edit input inside tab */
 .editInput {
   background: var(--surface-input);

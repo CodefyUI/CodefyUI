@@ -83,6 +83,12 @@ export function TabBar() {
           const isActive = tab.id === activeTabId;
           const isRunning = tab.status === 'running';
           const isEditing = editingId === tab.id;
+          // A plugin-opened tab says so on hover rather than in the strip:
+          // the tab is 180px wide and already carries a name, a running dot
+          // and a close button.
+          const sourceTitle = tab.source
+            ? t('tabBar.sourceTitle', { plugin: tab.source.pluginId })
+            : undefined;
 
           return (
             <div
@@ -90,6 +96,7 @@ export function TabBar() {
               onClick={() => setActiveTab(tab.id)}
               onDoubleClick={() => startRename(tab.id, tab.name)}
               className={styles.tab}
+              title={sourceTitle}
               style={{
                 background: isActive ? 'var(--surface-raised)' : 'transparent',
                 borderBottom: isActive ? '2px solid var(--accent)' : '2px solid transparent',
@@ -131,6 +138,15 @@ export function TabBar() {
                 />
               ) : (
                 <span className={styles.tabName}>{tab.name}</span>
+              )}
+
+              {/* Read-only badge (#341). One word, after the name, so the
+                  name is what gets the room and the badge is what gets
+                  clipped last. `readOnly` means Save is refused and plugin
+                  writes are refused -- it does not mean the tab is frozen,
+                  so rename and close are untouched. */}
+              {tab.readOnly && (
+                <span className={styles.badge}>{t('tabBar.readOnly')}</span>
               )}
 
               {/* Close button */}

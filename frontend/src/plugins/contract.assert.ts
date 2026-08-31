@@ -15,6 +15,16 @@ import type {
   GraphView as HGraphView,
   GraphViewLevel as HGraphViewLevel,
   RunListOptions as HRunListOptions,
+  WorkspaceApplyRequest as HWorkspaceApplyRequest,
+  WorkspaceApplyResult as HWorkspaceApplyResult,
+  WorkspaceConflict as HWorkspaceConflict,
+  WorkspaceEvent as HWorkspaceEvent,
+  WorkspaceGraphInput as HWorkspaceGraphInput,
+  WorkspaceOpenEntry as HWorkspaceOpenEntry,
+  WorkspaceOpenResult as HWorkspaceOpenResult,
+  WorkspaceSnapshot as HWorkspaceSnapshot,
+  WorkspaceSource as HWorkspaceSource,
+  WorkspaceTabInfo as HWorkspaceTabInfo,
 } from './api';
 import type {
   NodeDefinition as HNodeDef,
@@ -62,6 +72,16 @@ import type {
   RunMetrics as CRunMetrics,
   RunStatus as CRunStatus,
   RunSummary as CRunSummary,
+  WorkspaceApplyRequest as CWorkspaceApplyRequest,
+  WorkspaceApplyResult as CWorkspaceApplyResult,
+  WorkspaceConflict as CWorkspaceConflict,
+  WorkspaceEvent as CWorkspaceEvent,
+  WorkspaceGraphInput as CWorkspaceGraphInput,
+  WorkspaceOpenEntry as CWorkspaceOpenEntry,
+  WorkspaceOpenResult as CWorkspaceOpenResult,
+  WorkspaceSnapshot as CWorkspaceSnapshot,
+  WorkspaceSource as CWorkspaceSource,
+  WorkspaceTabInfo as CWorkspaceTabInfo,
 } from './contract';
 
 type Extends<A, B> = A extends B ? true : false;
@@ -100,8 +120,41 @@ export type _RunMetrics = Expect<Mutual<HRunMetrics, CRunMetrics>>;
 export type _GraphViewLevel = Expect<Mutual<HGraphViewLevel, CGraphViewLevel>>;
 export type _GraphView = Expect<Mutual<HGraphView, CGraphView>>;
 
+// ── apiVersion 5 additions (#341, #342) ───────────────────────────────────
+export type _WorkspaceSource = Expect<Mutual<HWorkspaceSource, CWorkspaceSource>>;
+export type _WorkspaceGraphInput = Expect<Mutual<HWorkspaceGraphInput, CWorkspaceGraphInput>>;
+export type _WorkspaceOpenResult = Expect<Mutual<HWorkspaceOpenResult, CWorkspaceOpenResult>>;
+export type _WorkspaceTabInfo = Expect<Mutual<HWorkspaceTabInfo, CWorkspaceTabInfo>>;
+export type _WorkspaceApplyRequest = Expect<Mutual<HWorkspaceApplyRequest, CWorkspaceApplyRequest>>;
+export type _WorkspaceApplyResult = Expect<Mutual<HWorkspaceApplyResult, CWorkspaceApplyResult>>;
+export type _WorkspaceConflict = Expect<Mutual<HWorkspaceConflict, CWorkspaceConflict>>;
+export type _WorkspaceEvent = Expect<Mutual<HWorkspaceEvent, CWorkspaceEvent>>;
+// `WorkspaceOpenEntry.graph` is the ONE field deliberately not compared: the
+// host takes the loose `WorkspaceGraphInput` a plugin can actually build,
+// while the contract shows a plugin the `SerializedGraph` it read. `Omit`
+// keeps the rest of the entry honest — which is where a renamed or dropped
+// field would otherwise hide. Same carve-out `SerializedGraph` itself has had
+// since v1, and for the same reason.
+export type _WorkspaceOpenEntryMeta = Expect<
+  Mutual<Omit<HWorkspaceOpenEntry, 'graph'>, Omit<CWorkspaceOpenEntry, 'graph'>>
+>;
+// The same carve-out, one level in. `Exclude` drops the graph-bearing branch —
+// whose other half `_WorkspaceTabInfo` already compares — and leaves
+// `{ error: 'unknown_tab' }`, which nothing else reaches: `_WorkspaceKeys`
+// compares the key NAMES of `workspace`, never the return type of `snapshot`,
+// so a re-typed error branch would drift in silence. `Omit` cannot stand in
+// here the way it does above: `keyof` a union is the INTERSECTION of its
+// branches' keys, which is `never` for this one, so `Omit<..., 'graph'>`
+// collapses to `{}` and would compare nothing at all.
+export type _WorkspaceSnapshotMeta = Expect<
+  Mutual<Exclude<HWorkspaceSnapshot, { graph: unknown }>, Exclude<CWorkspaceSnapshot, { graph: unknown }>>
+>;
+export type _WorkspaceKeys = Expect<
+  Mutual<keyof HApi['workspace'], keyof CApi['workspace']>
+>;
+
 // ── API surface: same top-level sections; apiVersion is intentionally widened
-// from the host's literal `4` to `number` so plugins can defensively check it. ──
+// from the host's literal `5` to `number` so plugins can defensively check it. ──
 export type _ApiKeys = Expect<Mutual<keyof HApi, keyof CApi>>;
 export type _ApiVersion = Expect<Extends<HApi['apiVersion'], CApi['apiVersion']>>;
 export type _UiKeys = Expect<Mutual<keyof HApi['ui'], keyof CApi['ui']>>;

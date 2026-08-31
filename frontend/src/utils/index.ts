@@ -485,7 +485,11 @@ export function resolveSerializedNodes(
         type: 'start',
         position,
         data: {
-          label: 'Start',
+          // Same fallback the regular branch uses (`:505`). Start has its own
+          // branch, and hardcoding the name here was the one node class where
+          // a saved rename did not survive a reload -- the serializer wrote
+          // `data.label` (#342) and this read straight past it.
+          label: raw.data?.label ?? 'Start',
           type: 'Start',
           params,
           definition: defMap.get('Start') ?? { node_name: 'Start', category: 'Control', description: '', inputs: [], outputs: [{ name: 'trigger', data_type: 'TRIGGER', description: '', optional: false }], params: [] },
@@ -639,6 +643,61 @@ export function buildFlowNode(
       params: defaultParams,
       definition,
       executionStatus: 'idle',
+    },
+  };
+}
+
+/** The canvas's default note colour, and the size a fresh note is given. */
+export const DEFAULT_NOTE_COLOR = '#3d3d1a';
+export const DEFAULT_NOTE_WIDTH = 200;
+export const DEFAULT_IMAGE_NOTE_HEIGHT = 150;
+
+export interface BuildNoteNodeOptions {
+  /** Omit to generate one. */
+  id?: string;
+  kind?: 'text' | 'image';
+  text?: string;
+  position: { x: number; y: number };
+  color?: string;
+  boundToNodeId?: string | null;
+  boundOffset?: { x: number; y: number } | null;
+}
+
+/**
+ * One note node, built the same way whoever asks for it (#342).
+ *
+ * A note bypasses `buildFlowNode` entirely -- it has no NodeDefinition, no
+ * ports and no params -- so before this there was exactly one literal that
+ * knew its shape, inside the store's `addNote`. The ops reducer cannot call
+ * that action (it pushes its own undo snapshot, which would turn one batch
+ * into N undo steps), so it needed the same literal; two copies of a shape
+ * that the serializer, the deserializer and the renderer all agree on is two
+ * copies that drift.
+ */
+export function buildNoteNode({
+  id,
+  kind = 'text',
+  text = '',
+  position,
+  color = DEFAULT_NOTE_COLOR,
+  boundToNodeId = null,
+  boundOffset = null,
+}: BuildNoteNodeOptions): Node<NodeData> {
+  return {
+    id: id ?? generateId(),
+    type: 'noteNode',
+    position,
+    data: {
+      label: 'Note',
+      type: 'note',
+      params: {},
+      noteKind: kind,
+      noteContent: text,
+      noteColor: color,
+      boundToNodeId,
+      boundOffset,
+      noteWidth: DEFAULT_NOTE_WIDTH,
+      noteHeight: kind === 'image' ? DEFAULT_IMAGE_NOTE_HEIGHT : undefined,
     },
   };
 }

@@ -277,17 +277,21 @@ describe('read/write asymmetry the view exists to expose', () => {
   });
 });
 
-describe('apiVersion 4', () => {
-  it('reports 4 and offers getView', () => {
+describe('apiVersion 5', () => {
+  it('reports 5 and offers the workspace namespace', () => {
+    // The exact number is pinned in ONE place per version, and this is the
+    // file that owns it -- `api.v3.test.ts:59-64` records why: a `toBe(N)`
+    // left behind in an older version's file fails every later additive
+    // release in a suite that is testing something else.
     const api = freshApi();
-    expect(api.apiVersion).toBe(4);
-    expect(typeof api.graph.getView).toBe('function');
+    expect(api.apiVersion).toBe(5);
+    expect(typeof api.workspace.openGraphs).toBe('function');
   });
 
   it('leaves every earlier graph member in place', () => {
-    // Additive: a v2/v3 plugin reaches for these four and nothing else.
+    // Additive: a v2/v3 plugin reaches for these four, a v4 one for getView.
     const api = freshApi();
-    for (const member of ['getGraph', 'getNodeDefinitions', 'applyOperations', 'onGraphChanged']) {
+    for (const member of ['getGraph', 'getNodeDefinitions', 'applyOperations', 'onGraphChanged', 'getView']) {
       expect(
         typeof (api.graph as unknown as Record<string, unknown>)[member],
         `graph.${member}`,

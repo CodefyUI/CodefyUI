@@ -1,17 +1,46 @@
-// CodefyUI plugin SDK — type contract (mirrors the host's plugin API).
-// Generated from CodefyUI's frontend/src/plugins/contract.ts — do not edit
-// by hand; refresh it when you target a newer CodefyUI release.
+/**
+ * Frozen snapshot of the apiVersion 4 contract, and a compile-time proof that
+ * the host still satisfies it.
+ *
+ * apiVersion 5 (#341, #342) adds `api.workspace`, six `GraphOp` members and
+ * `OpResult.segment_id`, and the claim that it adds nothing else is worth
+ * exactly as much as the guard behind it -- the argument `contract.v3.assert.ts`
+ * makes one version down. v3 does not cover the v4-only surface
+ * (`graph.getView`, `GraphView`, `GraphViewLevel`, and the `option_packs` /
+ * `requires_pack` fields the node catalog grew alongside it), so without this
+ * file the members added in 2.3.0 had nothing frozen watching them:
+ * `contract.assert.ts` compares the host against the CURRENT contract, and a
+ * change that edits both drifts silently.
+ *
+ * Every plugin scaffolded by `cdui plugin new` since 2.3.0 vendored the
+ * contract below as its own `ui/src/sdk/types.ts` and declares
+ * `activate(api: CodefyUIPluginAPI)` against it. Those plugins keep working
+ * exactly as long as the host's real API object stays ASSIGNABLE to the
+ * interface below, which is what this file asserts.
+ *
+ * The body is `contract.ts` as it stood at apiVersion 4, verbatim. It is a
+ * historical record: DO NOT edit it to make a change compile. If a change
+ * makes this file fail, that change is breaking for every installed v4 plugin
+ * and needs an apiVersion bump and a migration note, not a patched snapshot.
+ */
+import type { CodefyUIPluginAPI as HostApi } from './api';
 
-export type ToastType = 'success' | 'error' | 'info' | 'warning';
+/** Compile error unless the argument resolves to exactly `true`. */
+type Expect<T extends true> = T;
+type Extends<A, B> = A extends B ? true : false;
 
-export interface PortDefinition {
+/* ── BEGIN frozen apiVersion 4 contract ─────────────────────────────── */
+
+type ToastType = 'success' | 'error' | 'info' | 'warning';
+
+interface PortDefinition {
   name: string;
   data_type: string;
   description: string;
   optional: boolean;
 }
 
-export interface ParamDefinition {
+interface ParamDefinition {
   name: string;
   param_type:
     | 'int' | 'float' | 'string' | 'bool'
@@ -31,7 +60,7 @@ export interface ParamDefinition {
   option_packs?: Record<string, string> | null;
 }
 
-export interface NodeDefinition {
+interface NodeDefinition {
   node_name: string;
   category: string;
   description: string;
@@ -44,7 +73,7 @@ export interface NodeDefinition {
 }
 
 /** A batch operation accepted by `api.graph.applyOperations`. Field names are exact. */
-export type GraphOp =
+type GraphOp =
   | { op: 'add_node'; node_type: string; ref?: string;
       params?: Record<string, unknown>; position?: { x: number; y: number } }
   | { op: 'connect'; source: string; source_handle: string;
@@ -54,58 +83,30 @@ export type GraphOp =
   | { op: 'remove_edge'; source: string; target: string;
       source_handle?: string; target_handle?: string }
   | { op: 'clear_graph' }
-  | { op: 'auto_layout' }
-  /* ── requires apiVersion >= 5 ─────────────────────────────────────────── */
-  /** Put one node at an exact position. Notes bound to it move with it. */
-  | { op: 'move_node'; node_id: string; position: { x: number; y: number } }
-  /**
-   * Create or replace a segment overlay -- the orange bubble the canvas draws
-   * around every node on a data path from head to tail. Omit `segment_id` to
-   * create one; pass an existing id to move it. The result carries the id
-   * either way. Head and tail must be joined by data edges.
-   */
-  | { op: 'set_segment'; segment_id?: string; head_node_id: string; tail_node_id: string }
-  | { op: 'remove_segment'; segment_id: string }
-  /**
-   * Add a text note to the canvas — the sticky the editor already draws.
-   * `bind_to` attaches it to a node so it follows when that node moves.
-   * `text` is 1..4000 characters; `color` is `#rrggbb`.
-   */
-  | { op: 'add_note'; ref?: string; text: string;
-      position?: { x: number; y: number }; color?: string; bind_to?: string }
-  /** Rewrite an existing note's text and/or colour. Text notes only. */
-  | { op: 'update_note'; node_id: string; text?: string; color?: string }
-  /**
-   * Name one node — `data.label`, 1..120 characters on a single line. The
-   * label sits beside `params`, never inside it, so naming a node is not a
-   * parameter change to anything reading the graph.
-   */
-  | { op: 'set_node_meta'; node_id: string; label: string };
+  | { op: 'auto_layout' };
 
-export interface OpResult {
+interface OpResult {
   index: number;
   ok: boolean;
   error?: string;
   node_id?: string;
-  /** Set by `set_segment` — apiVersion 5. */
-  segment_id?: string;
 }
 
-export interface ApplyResult {
+interface ApplyResult {
   results: OpResult[];
   refs: Record<string, string>;
   node_count: number;
   edge_count: number;
 }
 
-export interface SerializedGraphNode {
+interface SerializedGraphNode {
   id: string;
   type: string;
   position: { x: number; y: number };
   data: { params: Record<string, unknown>; [key: string]: unknown };
 }
 
-export interface SerializedGraphEdge {
+interface SerializedGraphEdge {
   id: string;
   source: string;
   target: string;
@@ -113,7 +114,7 @@ export interface SerializedGraphEdge {
   targetHandle: string;
 }
 
-export interface SerializedGraph {
+interface SerializedGraph {
   nodes: SerializedGraphNode[];
   edges: SerializedGraphEdge[];
   presets?: unknown[];
@@ -126,7 +127,7 @@ export interface SerializedGraph {
 /* ── view context (read-only) — requires apiVersion >= 4 ─────────────────── */
 
 /** One opened block on the path from the graph to the canvas the user sees. */
-export interface GraphViewLevel {
+interface GraphViewLevel {
   /** The block definition's id — stable, and what `getGraph()` refers to it by. */
   subgraphId: string;
   /** The block's name, exactly as the editor's breadcrumb bar shows it. */
@@ -146,7 +147,7 @@ export interface GraphViewLevel {
  * somebody's editor under them is not something a plugin should be able to do
  * quietly.
  */
-export interface GraphView {
+interface GraphView {
   /** 0 at the top level, 1 inside a block, 2 inside a block inside a block. */
   depth: number;
   /** The opened blocks, outermost first. Empty at the top level. */
@@ -155,7 +156,7 @@ export interface GraphView {
   atTopLevel: boolean;
 }
 
-export interface NodeRenderContext {
+interface NodeRenderContext {
   node: {
     id: string;
     type: string;
@@ -169,7 +170,7 @@ export interface NodeRenderContext {
  * adapts a React component to this shape; the host calls mount once, update on
  * param changes, and unmount when the node is removed.
  */
-export interface PluginNodeRenderer {
+interface PluginNodeRenderer {
   mount(container: HTMLElement, ctx: NodeRenderContext): void;
   update?(container: HTMLElement, ctx: NodeRenderContext): void;
   unmount?(container: HTMLElement): void;
@@ -178,9 +179,9 @@ export interface PluginNodeRenderer {
 /* ── panels, toolbar buttons — requires apiVersion >= 3 ─────────────────── */
 
 /** Where a panel lives: a tab in the bottom dock, or a right-hand section. */
-export type PluginPanelDock = 'bottom' | 'right';
+type PluginPanelDock = 'bottom' | 'right';
 
-export interface PluginPanelOptions {
+interface PluginPanelOptions {
   /** Unique within your plugin. The host namespaces it with your plugin id. */
   id: string;
   /** Tab label (bottom dock) or section heading (right dock). */
@@ -198,7 +199,7 @@ export interface PluginPanelOptions {
   onHide?: () => void;
 }
 
-export interface PluginToolbarButtonOptions {
+interface PluginToolbarButtonOptions {
   /** Unique within your plugin. */
   id: string;
   /** Short glyph — the toolbar has room for a glyph, not a sentence. */
@@ -217,7 +218,7 @@ export interface PluginToolbarButtonOptions {
  * `metric` event below, and `runs.metrics()` further down. One type for one
  * concept is the whole reason a dashboard can share a fold between them.
  */
-export interface RunMetricPoint {
+interface RunMetricPoint {
   node_id: string | null;
   name: string;
   step: number;
@@ -235,7 +236,7 @@ export interface RunMetricPoint {
 }
 
 /** Terminal state of a run. */
-export type ExecutionFinishStatus =
+type ExecutionFinishStatus =
   | 'succeeded' | 'failed' | 'cancelled' | 'interrupted';
 
 /**
@@ -273,7 +274,7 @@ export type ExecutionFinishStatus =
  * Events and their `points` are frozen: they are shared between every
  * subscriber, so one plugin cannot mutate what another receives.
  */
-export type ExecutionEvent =
+type ExecutionEvent =
   | { type: 'run_started'; run_id: string; cursor: number; seq: number }
   | {
       type: 'node_status'; run_id: string; cursor: number; seq: number;
@@ -290,12 +291,12 @@ export type ExecutionEvent =
 
 /* ── runs (read-only) — requires apiVersion >= 3 ────────────────────────── */
 
-export type RunStatus =
+type RunStatus =
   | 'queued' | 'running' | 'succeeded'
   | 'failed' | 'cancelled' | 'interrupted';
 
 /** One row of the run history. Timestamps are ISO-8601 UTC with a `Z`. */
-export interface RunSummary {
+interface RunSummary {
   id: string;
   name: string | null;
   status: RunStatus;
@@ -317,12 +318,12 @@ export interface RunSummary {
   active: boolean;
 }
 
-export interface RunInfo extends RunSummary {
+interface RunInfo extends RunSummary {
   /** Highest event cursor issued so far — where a follower should resume. */
   last_cursor: number;
 }
 
-export interface RunListPage {
+interface RunListPage {
   runs: RunSummary[];
   /** Unpaged count for the active filter, so a table can size itself. */
   total: number;
@@ -330,153 +331,21 @@ export interface RunListPage {
   offset: number;
 }
 
-export interface RunListOptions {
+interface RunListOptions {
   status?: readonly RunStatus[];
   limit?: number;
   offset?: number;
 }
 
-export interface RunMetrics {
+interface RunMetrics {
   run_id: string;
   /** Every series name in the run, so a legend needs no scan of the points. */
   names: string[];
   metrics: RunMetricPoint[];
 }
 
-/* ── workspace tabs — requires apiVersion >= 5 ───────────────────────────── */
-
-/**
- * Who opened a tab, and why. Opaque to the editor: whatever you put here
- * comes back verbatim on `tabs()` and `snapshot()`, and persists with the tab
- * when you open it with `persist: true`.
- */
-export interface WorkspaceSource {
-  /** A short kind of your own choosing, e.g. `'agent-variant'`. */
-  kind: string;
-  pluginId: string;
-  jobId?: string;
-  variantId?: string;
-  [key: string]: unknown;
-}
-
-/**
- * The loosest shape `openGraphs` accepts for a graph document.
- *
- * `WorkspaceOpenEntry.graph` is declared as `SerializedGraph` below, because
- * the graph you hand over usually came from `getGraph()`. This type is what
- * the editor really reads: two required lists and a bag it walks defensively,
- * so a document you composed yourself is accepted on the same terms as a
- * file. Unknown top-level keys are ignored.
- */
-export interface WorkspaceGraphInput {
-  nodes: unknown[];
-  edges: unknown[];
-  presets?: unknown[];
-  segmentGroups?: unknown[];
-  subgraphs?: unknown[];
-  name?: string;
-  description?: string;
-  format_version?: unknown;
-  [key: string]: unknown;
-}
-
-export interface WorkspaceOpenEntry {
-  /** Shown on the tab. Stored whole; the tab bar ellipsises what will not fit. */
-  title: string;
-  /**
-   * The document to open, normalised the way a file load normalises one:
-   * `subgraphs`, `segmentGroups` and `presets` are honoured, and a
-   * `format_version` newer than the editor opens the tab read-only.
-   */
-  graph: SerializedGraph;
-  /** Default false. A read-only tab refuses writes on BOTH write paths. */
-  readOnly?: boolean;
-  source?: WorkspaceSource;
-  /** Default false: the tab is transient and is gone after a reload. */
-  persist?: boolean;
-}
-
-/**
- * One entry's outcome. Results are POSITIONAL — `result[i]` describes
- * `entries[i]` — so one bad candidate never sinks the others.
- */
-export type WorkspaceOpenResult =
-  | { tabId: string; revision: number }
-  | { error: string; code: 'invalid_graph' | 'too_many_tabs' | 'too_large' };
-
-export interface WorkspaceTabInfo {
-  tabId: string;
-  title: string;
-  /**
-   * The tab's compare-and-swap token. It starts at 1 and advances by one
-   * whenever the tab's document changes — from your writes, the user's edits,
-   * an undo, or a redo. Hand it back as `expectedRevision` to write only if
-   * nothing has moved since you read.
-   */
-  revision: number;
-  readOnly: boolean;
-  /** True for a tab that will not survive a reload (opened without `persist`). */
-  transient: boolean;
-  source: WorkspaceSource | null;
-  active: boolean;
-}
-
-export type WorkspaceSnapshot =
-  | (WorkspaceTabInfo & { graph: SerializedGraph })
-  | { error: 'unknown_tab' };
-
-export interface WorkspaceApplyRequest {
-  /** Defaults to the active tab. */
-  tabId?: string;
-  /** Omitted: no compare. Present and stale: nothing is written. */
-  expectedRevision?: number;
-  operations: GraphOp[];
-  /** Default false. True: any failing op means nothing is committed. */
-  atomic?: boolean;
-}
-
-/**
- * Why a write was refused. Each is returned, never thrown, and each leaves
- * the tab exactly as it was.
- *
- * `editing_subgraph` means the user has stepped inside a block, so the canvas
- * arrays are that block's contents rather than the document `snapshot()`
- * describes. Retry once they step back out — `graph.getView().atTopLevel`
- * says when.
- */
-export type WorkspaceConflict =
-  | 'revision_mismatch' | 'read_only' | 'unknown_tab' | 'editing_subgraph';
-
-export interface WorkspaceApplyResult extends ApplyResult {
-  tabId: string;
-  /**
-   * The tab's revision AFTER this call, and on `revision_mismatch` the
-   * CURRENT one — so you can re-arm without a second read that races the
-   * same way. Unchanged by a conflict or a failed `atomic` preflight.
-   */
-  revision: number;
-  committed: boolean;
-  conflict?: WorkspaceConflict;
-}
-
-/**
- * One workspace change, as `workspace.onChanged` delivers it.
- *
- * Delivered synchronously, in the order `tabs` (added), `graph`,
- * `active-tab`, `tabs` (removed), so a burst can be processed in one pass. A
- * `graph` event carries `origin` when the change came from a plugin's
- * `workspace.applyOperations`, which is how you ignore your own writes.
- *
- * If your callback throws, the editor logs it and unsubscribes you: a plugin
- * cannot be allowed to break the editor's own state.
- */
-export type WorkspaceEvent =
-  | { type: 'graph'; tabId: string; revision: number; origin?: { pluginId: string } }
-  | { type: 'tabs'; tabId: string; revision: number; removed: boolean }
-  | { type: 'active-tab'; tabId: string; revision: number };
-
 /** The object the editor hands every plugin frontend at activation. */
-export interface CodefyUIPluginAPI {
+interface CodefyUIPluginAPI {
   apiVersion: number;
   pluginId: string;
   ui: {
@@ -564,55 +433,6 @@ export interface CodefyUIPluginAPI {
      */
     getView(): GraphView;
   };
-  /**
-   * Tabs, snapshots and compare-and-swap writes — requires apiVersion >= 5.
-   *
-   * This is the half of the API that does not assume the user is looking at
-   * what you are working on. You can open a candidate graph in its own
-   * labelled tab without moving anybody, read a tab that is not on screen,
-   * write to a tab only if it has not changed since you read it, and be told
-   * when any of that happens.
-   *
-   * On an older editor the whole member is `undefined` rather than a stub
-   * that throws, so `typeof api.workspace?.openGraphs === 'function'` is an
-   * honest feature check (`api.apiVersion >= 5` works too).
-   */
-  workspace: {
-    /**
-     * Open one tab per entry. Nothing is activated when `activate` is
-     * `'none'`; `'first'` (the default) and `'last'` activate one of the tabs
-     * that actually opened.
-     *
-     * Limits: 8 MiB of serialized JSON per graph, 32 tabs in the editor.
-     * A tab opened here is an ordinary tab afterwards — the user can rename
-     * it, close it, or Save As into a real graph file.
-     */
-    openGraphs(
-      entries: WorkspaceOpenEntry[],
-      options?: { activate?: 'first' | 'last' | 'none' },
-    ): WorkspaceOpenResult[];
-    /** Every tab, in tab-bar order. */
-    tabs(): WorkspaceTabInfo[];
-    /**
-     * A tab's info plus its WHOLE graph, flattened the way `getGraph()`
-     * flattens the active one. Defaults to the active tab. An unknown id
-     * answers `{ error: 'unknown_tab' }` rather than throwing.
-     */
-    snapshot(tabId?: string): WorkspaceSnapshot;
-    /**
-     * Apply a batch to a named tab, as one undo step, under an optional
-     * compare-and-swap.
-     *
-     * Checked in a fixed order, each refusal leaving the tab untouched:
-     * unknown tab, read-only tab, the user is inside a block, stale
-     * `expectedRevision`. Then the batch runs; with `atomic: true` a single
-     * failing op means nothing is committed, and `results` still comes back
-     * full-length so you can see which op was wrong.
-     */
-    applyOperations(request: WorkspaceApplyRequest): WorkspaceApplyResult;
-    /** Subscribe to workspace changes. Returns an unsubscribe function. */
-    onChanged(cb: (event: WorkspaceEvent) => void): () => void;
-  };
   /** Custom node renderers — requires apiVersion >= 2. */
   nodes: {
     registerRenderer(nodeType: string, renderer: PluginNodeRenderer): () => void;
@@ -656,4 +476,21 @@ export interface CodefyUIPluginAPI {
 }
 
 /** The default-export contract: the editor calls this once with the API. */
-export type ActivateFn = (api: CodefyUIPluginAPI) => void;
+type ActivateFn = (api: CodefyUIPluginAPI) => void;
+
+/* ── END frozen apiVersion 4 contract ───────────────────────────────── */
+
+/**
+ * The host's real API object still satisfies the v4 interface -- every member
+ * a v4 plugin can reach is present, with a compatible type.
+ */
+export type _V4SurfaceIntact = Expect<Extends<HostApi, CodefyUIPluginAPI>>;
+
+/**
+ * ...so a v4 plugin's exported `activate` is still callable with what the host
+ * hands it, which is the thing that actually has to keep working. (Parameters
+ * are contravariant, so this direction models the real call.)
+ */
+export type _V4ActivateStillCallable = Expect<
+  Extends<ActivateFn, (api: HostApi) => void>
+>;

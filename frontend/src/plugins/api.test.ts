@@ -116,6 +116,17 @@ describe('graph surface', () => {
     expect(calls).toBe(1);
   });
 
+  it('applyOperations still answers with an ApplyResult and nothing more', () => {
+    // The legacy path now runs through the workspace commit, which knows
+    // about tab ids, revisions and conflicts. None of that may leak out
+    // here: an installed v1 plugin reads these four keys and no others.
+    const api = freshApi();
+    const result = api.graph.applyOperations([{ op: 'add_node', node_type: 'Source' }]);
+    expect(Object.keys(result).sort()).toEqual(
+      ['edge_count', 'node_count', 'refs', 'results'],
+    );
+  });
+
   it('onGraphChanged registers its unsubscribe with trackCleanup', () => {
     const tracked: Array<() => void> = [];
     const api = buildPluginAPI(

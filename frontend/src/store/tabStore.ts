@@ -1,9 +1,10 @@
-import { create } from 'zustand';
+import { create, type StateCreator } from 'zustand';
 import { applyNodeChanges, applyEdgeChanges } from '@xyflow/react';
 import type { Node, Edge, NodeChange, EdgeChange, Connection } from '@xyflow/react';
 import {
   generateId,
   buildFlowNode,
+  buildNoteNode,
   isBypassable,
   resolveDynamicInputs,
   resolveDynamicOutputs,
@@ -16,7 +17,7 @@ import { forgetViewport } from '../utils/viewportMemory';
 import { idbAvailable } from '../utils/idb';
 import { readSnapshot, writeSnapshot } from './tabPersistence';
 import { autoLayout, autoLayoutWithTargets, nodesBoundingBox, type LayoutMode } from '../utils/autoLayout';
-import type { NodeData, NodeDefinition, PresetDefinition, ExecutionStatus, OutputSummary, NodeProgress, SegmentGroup, SubgraphDefinition } from '../types';
+import type { NodeData, NodeDefinition, PresetDefinition, ExecutionStatus, OutputSummary, NodeProgress, SegmentGroup, SubgraphDefinition, WorkspaceSource } from '../types';
 import {
   collapseSelection,
   definitionFromCanvas,
@@ -28,6 +29,7 @@ import {
   refreshInstances,
   sameSubgraphs,
   subgraphIdOf,
+  SUBGRAPH_TYPE_PREFIX,
   type CollapseResult,
 } from '../utils/subgraph';
 import { ExecutionWebSocket } from '../api/ws';
@@ -251,6 +253,39 @@ export interface TabState {
   // refuses to write it -- so an older CodefyUI build can never
   // destructively down-save a newer file.
   readOnly: boolean;
+  /**
+   * Compare-and-swap token for this tab's document (#341).
+   *
+   * Starts at 1 and only ever climbs. It advances by exactly one whenever a
+   * `set` changes this tab's `nodes`, `edges`, `subgraphs` or `segmentGroups`
+   * -- four of the five fields an undo frame captures, which is to say "the
+   * document". `activeSegment`, the fifth, is deliberately excluded: it is a
+   * view choice about which stretch of the graph is highlighted, not the
+   * document. Undo and redo advance it too: they restore older CONTENT, and
+   * a plugin holding a revision from before the undo must not be told nothing
+   * happened.
+   *
+   * "Changes" is by CONTENT, not by array reference, and that distinction is
+   * the whole difficulty -- see `documentChanged`. React Flow rewrites the
+   * nodes array for selection and for remeasuring a card, neither of which is
+   * a document change, and a counter that climbed for those would expire a
+   * plugin's compare-and-swap every time the user panned the canvas.
+   *
+   * No action sets this by hand. The store's `set` is wrapped once, in
+   * `create()` below, so a mutating action added later cannot forget it. The
+   * one exception is the persistence loader, which restores the number a tab
+   * was saved with -- see `withRevisions`.
+   */
+  revision: number;
+  /**
+   * True for a tab a plugin opened without asking for it to survive a reload
+   * (#341 section 4.8). Never persisted: `persistedTabsFor` skips the whole
+   * record, and a tab that came BACK from storage is by definition not
+   * transient.
+   */
+  transient: boolean;
+  /** Who opened this tab, or null for one the user opened. */
+  source: WorkspaceSource | null;
   // flow
   nodes: Node<NodeData>[];
   edges: Edge[];
@@ -347,6 +382,9 @@ function createTabState(id: string, name: string): TabState {
     currentGraphFile: null,
     projectOrigin: null,
     readOnly: false,
+    revision: 1,
+    transient: false,
+    source: null,
     nodes: [],
     edges: [],
     subgraphs: [],
@@ -475,11 +513,34 @@ export interface GraphDocument {
   formatVersion?: unknown;
 }
 
+/** One document write, as `commitDocument` applies it. */
+export interface DocumentCommit {
+  nodes: Node<NodeData>[];
+  edges: Edge[];
+  segmentGroups: SegmentGroup[];
+  /** Node ids to add to the tab's partial-re-execution set. */
+  dirtyIds: string[];
+  /**
+   * The plugin this write came from, for `workspace.onChanged`'s `origin`.
+   * Lives only for the duration of this transition's listener fan-out.
+   */
+  origin?: { pluginId: string } | null;
+}
+
 interface TabStoreState {
   tabs: TabState[];
   activeTabId: string;
 
   // tab management
+  /**
+   * Create a tab and RETURN its id (#341).
+   *
+   * `addTab` delegates here and stays the UI's door: it always activates,
+   * because clicking `+` and landing somewhere else would be a bug. A plugin
+   * opening a candidate for review passes `activate: false` and gets the id
+   * back, which `addTab`'s `void` return could never give it.
+   */
+  createTab: (options?: { title?: string; activate?: boolean }) => string;
   addTab: (name?: string) => void;
   removeTab: (id: string) => void;
   setActiveTab: (id: string) => void;
@@ -530,6 +591,8 @@ interface TabStoreState {
     segmentGroups: SegmentGroup[];
     subgraphs: SubgraphDefinition[];
   };
+  /** The serializer as a pure function of a tab. `getSerializedGraph()` calls it with the active one. */
+  getSerializedGraphOf: (tab: TabState) => ReturnType<TabStoreState['getSerializedGraph']>;
   /**
    * Collapse the canvas selection into one subgraph instance (core#137).
    *
@@ -551,6 +614,8 @@ interface TabStoreState {
    * item 9). See the field's own note for why it is required.
    */
   loadGraphDocument: (doc: GraphDocument) => boolean;
+  /** `loadGraphDocument`, addressed by tab id. The active-tab wrapper calls this. */
+  loadGraphDocumentInto: (tabId: string, doc: GraphDocument) => boolean;
   collapseSelectionToSubgraph: (name?: string) => CollapseResult;
   /** Put an instance's definition back on the canvas. One undo step. */
   expandSubgraphInstance: (nodeId: string) => boolean;
@@ -614,6 +679,7 @@ interface TabStoreState {
 
   // undo/redo
   pushUndoSnapshot: () => void;
+  pushUndoSnapshotFor: (tabId: string) => void;
   undo: () => void;
   redo: () => void;
 
@@ -645,6 +711,18 @@ interface TabStoreState {
   // helpers
   getActiveTab: () => TabState;
   getTab: (id: string) => TabState | undefined;
+  /**
+   * The plugin write path: nodes, edges, segments and dirty marks in ONE
+   * transition, so the revision advances once and no subscriber ever sees
+   * nodes and edges disagree. The caller pushes its own undo snapshot first
+   * (`pushUndoSnapshotFor`) -- that is what makes a batch one undo step.
+   */
+  commitDocument: (tabId: string, patch: DocumentCommit) => void;
+  /** Set any subset of a tab's provenance flags. Absent keys are left alone. */
+  setTabMeta: (
+    tabId: string,
+    meta: { readOnly?: boolean; source?: WorkspaceSource | null; transient?: boolean },
+  ) => void;
 
   // execution actions for specific tab (used by WS handlers)
   applyTabNodeUpdates: (updates: PendingNodeUpdates) => void;
@@ -1246,6 +1324,15 @@ export interface PersistedTab {
   currentGraphFile?: string | null;
   projectOrigin?: string | null;
   readOnly?: boolean;
+  /**
+   * The tab's compare-and-swap counter (#341). Absent on a record written
+   * before this feature; such a record restores as 1, which is exactly what
+   * a fresh tab has, so a plugin's stored `expectedRevision` from a previous
+   * session fails closed rather than matching by accident.
+   */
+  revision?: number;
+  /** Provenance for a tab a plugin opened and asked to keep (#341). */
+  source?: WorkspaceSource;
   nodes: Node<NodeData>[];
   edges: Edge[];
   segmentGroups?: SegmentGroup[];
@@ -1303,6 +1390,9 @@ function buildPersistedTab(input: TabState): PersistedTab {
   return {
     id: t.id,
     name: t.name,
+    revision: t.revision,
+    // Only when set, so a tab the user opened persists byte-identically.
+    ...(t.source ? { source: t.source } : {}),
     description: t.description,
     currentGraphFile: t.currentGraphFile,
     // Only persisted when set, so non-project localStorage is byte-identical.
@@ -1381,12 +1471,18 @@ function scalarSignature(t: TabState): string {
     t.autoBackward ? '1' : '0',
     t.seed ?? '',
     t.deterministic ? '1' : '0',
+    String(t.revision),
+    t.source ? JSON.stringify(t.source) : '',
   ]);
 }
 
 function persistedTabsFor(tabs: TabState[]): PersistedTab[] {
   const next = new Map<string, TabRecordCacheEntry>();
-  const records = tabs.map((t) => {
+  // A transient tab is skipped whole (#341 section 4.8): an agent's candidate
+  // is a proposal, and a proposal that quietly becomes a tab in tomorrow's
+  // workspace is worse than one that vanishes. It also keeps a materialized
+  // candidate carrying resolved secrets out of IndexedDB.
+  const records = tabs.filter((t) => !t.transient).map((t) => {
     const scalars = scalarSignature(t);
     const cached = _recordCache.get(t.id);
     const entry: TabRecordCacheEntry =
@@ -1490,6 +1586,12 @@ function tabFromPersisted(t: PersistedTab, base: TabState): TabState {
     currentGraphFile: t.currentGraphFile ?? null,
     projectOrigin: t.projectOrigin ?? null,
     readOnly: t.readOnly ?? false,
+    // A record without the field is pre-#341: restore as 1 rather than as
+    // whatever the placeholder tab happened to be carrying.
+    revision: typeof t.revision === 'number' ? t.revision : 1,
+    source: t.source ?? null,
+    // A restored tab is, by definition, one that persisted.
+    transient: false,
     nodes,
     // Autosave stores each edge object as it stands, baked stroke and all, so
     // this is the one door a wire painted by an older palette comes back
@@ -1521,6 +1623,11 @@ function tabFromPersisted(t: PersistedTab, base: TabState): TabState {
   };
 }
 
+/** Test seams: the persistence record round-trip, without the debounce. */
+export const _buildPersistedTabForTesting = buildPersistedTab;
+export const _tabFromPersistedForTesting = tabFromPersisted;
+export const _persistedTabsForTesting = persistedTabsFor;
+
 function loadTabs(): { tabs: TabState[]; activeTabId: string } {
   try {
     const raw = localStorage.getItem(_storageKey());
@@ -1543,21 +1650,332 @@ function loadTabs(): { tabs: TabState[]; activeTabId: string } {
   return { tabs: [createTabState(id, 'Tab 1')], activeTabId: id };
 }
 
+/** The `set` a zustand state creator is handed, named so it can be wrapped. */
+type TabSet = Parameters<StateCreator<TabStoreState>>[0];
+
+/**
+ * Test seam: the store's WRAPPED `set`, assigned once inside `create()`.
+ *
+ * `useTabStore.setState` is the RAW setter and skips the revision bump
+ * entirely, so it cannot stand in for this. Exported as a `let` because the
+ * value does not exist until the factory runs.
+ */
+export let _setForTesting: TabSet = () => {
+  throw new Error('useTabStore has not been created yet');
+};
+
+/**
+ * The plugin whose `applyOperations` produced the transition currently being
+ * notified, or null (#341 section 4.5).
+ *
+ * Module-level rather than a store field because it is not state: it exists
+ * for the duration of one `set`'s synchronous listener fan-out and is cleared
+ * by the wrapper the moment that fan-out returns, so `workspace.onChanged`
+ * can attach `origin` to a `graph` event without a plugin's write leaving a
+ * trace anybody can read afterwards.
+ */
+let _lastCommitOrigin: { pluginId: string } | null = null;
+
+export function lastCommitOrigin(): { pluginId: string } | null {
+  return _lastCommitOrigin;
+}
+
+/** Test seam: pretend a commit came from `origin` for the next notification. */
+export function _setCommitOriginForTesting(
+  origin: { pluginId: string } | null,
+): void {
+  _lastCommitOrigin = origin;
+}
+
+/**
+ * Node `data` keys that describe a RUN, not the document (#341, spec rule 3).
+ *
+ * `getSerializedGraph` writes each node's `data` field by field -- `params`,
+ * `internalParams` for a preset, `bypassed` when muted, and the note fields
+ * for a note -- so none of these three reaches a saved file, an export or a
+ * plugin's `getGraph`. They exist only to paint a card while a run is in
+ * flight, and they are written by the hottest path in the store:
+ * `applyTabNodeUpdates` rebuilds `data` for every node named in every
+ * batched WebSocket frame.
+ *
+ * Without this list, "revision changes when the document changes" would mean
+ * "revision changes several times a second while training runs" -- every
+ * plugin's compare-and-swap would expire on a graph the user never touched,
+ * which is the same failure that made the comparison content-based in the
+ * first place, one field deeper.
+ */
+const RUN_STATE_DATA_KEYS: ReadonlySet<string> = new Set([
+  'executionStatus',
+  'error',
+  'progress',
+]);
+
+/**
+ * Do two node `data` objects differ in anything the DOCUMENT keeps? (#341)
+ *
+ * Reached only when the two references differ, which is why it can afford to
+ * walk keys: `data` is replaced wholesale by every writer in this store, so
+ * the reference is still the fast path and this is the slow one.
+ *
+ * Shallow and reference-wise per key, exactly as the whole-object comparison
+ * was: `params` is a fresh object on every param edit, `definition` and
+ * `presetDefinition` are swapped rather than mutated. The only judgement here
+ * is which keys to skip, and that list is `RUN_STATE_DATA_KEYS`.
+ *
+ * Key sets must otherwise match, so adding or removing a real field counts.
+ * `setNodeExecutionStatus` writes `error` unconditionally -- `undefined` when
+ * the node did not fail -- which ADDS an own `error` key to a node that never
+ * had one; that is exactly why `error` is on the skip list rather than merely
+ * compared.
+ */
+function nodeDataChanged(
+  a: NodeData | undefined,
+  b: NodeData | undefined,
+): boolean {
+  // A node reconstructed from a hand-edited localStorage record -- or built
+  // by a test double -- can be missing `data` altogether. This runs inside
+  // every `set`, so it coerces rather than throws: the same choice
+  // `tabFromPersisted` makes one layer up, and for the same reason.
+  if (a == null || b == null) return a !== b;
+  let aKeys = 0;
+  for (const key of Object.keys(a)) {
+    if (RUN_STATE_DATA_KEYS.has(key)) continue;
+    aKeys += 1;
+    if (!Object.prototype.hasOwnProperty.call(b, key)) return true;
+    if (a[key] !== b[key]) return true;
+  }
+  let bKeys = 0;
+  for (const key of Object.keys(b)) {
+    if (!RUN_STATE_DATA_KEYS.has(key)) bKeys += 1;
+  }
+  return aKeys !== bKeys;
+}
+
+/**
+ * Did this tab's DOCUMENT change between two states? (#341)
+ *
+ * Four of the five fields an undo frame captures are the document --
+ * `activeSegment`, the fifth, is a view choice about which stretch of the
+ * graph is highlighted and is deliberately excluded, so a Teaching Inspector
+ * focus click does not expire a plugin's compare-and-swap. But their array
+ * references are not a usable signal, because React Flow rewrites `nodes` for
+ * things that are not the document at all:
+ *
+ *   - selection -- `applyChange`'s `'select'` case sets `node.selected` on a
+ *     fresh shallow copy of the node;
+ *   - remeasuring -- a card culled by `onlyRenderVisibleElements` remounts
+ *     when it scrolls back into view and reports its size as a `'dimensions'`
+ *     change, which writes `measured`, `width` and `height`.
+ *
+ * A reference-comparing counter would therefore climb while the user simply
+ * PANNED THE CANVAS, and every plugin's compare-and-swap would expire against
+ * a graph nobody had touched. So this reads content.
+ *
+ * What it compares, and why each is safe (verified in @xyflow/react 12.10.1,
+ * `applyChanges` / `applyChange`, dist/esm/index.mjs:583-696):
+ *
+ *   - `position` BY VALUE. A `'position'` change assigns the object React
+ *     Flow built, so the reference always moves -- even for a drag that ends
+ *     where it started, and even on the drag-start change that carries no
+ *     coordinates at all.
+ *   - `data` BY REFERENCE FIRST. No change type touches `data`, and every
+ *     writer in this store replaces it (`{...n.data, ...}`), so an unchanged
+ *     reference is proof of an unchanged document and a pointer move costs
+ *     nothing. When the reference HAS moved, `nodeDataChanged` decides,
+ *     because "the reference moved" is not the same question as "the
+ *     document changed": a run rewrites `data` on every node it touches to
+ *     paint status and progress, and none of that is saved with the graph.
+ *   - `id`, `type`, `parentId` by value -- structural, and never touched by a
+ *     change.
+ *   - `selected`, `dragging`, `measured`, `width`, `height`, `resizing`,
+ *     `zIndex` are deliberately ABSENT. They are the viewport's opinion about
+ *     a node, not the graph's.
+ *
+ * Index-wise behind a length guard: `applyChanges` walks the array in place,
+ * so `select`, `position` and `dimensions` never reorder; only `add` and
+ * `remove` move anything, and both change the length or the ids at an index.
+ * A genuine reorder that preserved every id counts as a change, which is the
+ * conservative direction -- serialization writes nodes in array order.
+ */
+function documentChanged(prev: TabState, next: TabState): boolean {
+  if (prev === next) return false;
+
+  if (prev.nodes !== next.nodes) {
+    if (prev.nodes.length !== next.nodes.length) return true;
+    for (let i = 0; i < next.nodes.length; i += 1) {
+      const a = prev.nodes[i];
+      const b = next.nodes[i];
+      if (a === b) continue;
+      if (
+        a.id !== b.id
+        || a.type !== b.type
+        || a.parentId !== b.parentId
+        // Optional-chained for the same reason `nodeDataChanged` tolerates a
+        // missing `data`: a node out of a hand-edited record may have no
+        // `position`, and a comparison that runs on every `set` must not be
+        // the thing that takes the workspace down. Absent on both sides
+        // compares equal; absent on one is a change.
+        || a.position?.x !== b.position?.x
+        || a.position?.y !== b.position?.y
+      ) {
+        return true;
+      }
+      // Cheap scalars first; the key walk runs only for a node whose `data`
+      // was actually replaced, and then only to ask whether a run wrote it.
+      if (a.data !== b.data && nodeDataChanged(a.data, b.data)) return true;
+    }
+  }
+
+  if (prev.edges !== next.edges) {
+    if (prev.edges.length !== next.edges.length) return true;
+    for (let i = 0; i < next.edges.length; i += 1) {
+      const a = prev.edges[i];
+      const b = next.edges[i];
+      if (a === b) continue;
+      if (
+        a.id !== b.id
+        || a.source !== b.source
+        || a.target !== b.target
+        || a.sourceHandle !== b.sourceHandle
+        || a.targetHandle !== b.targetHandle
+        || a.type !== b.type
+        || a.data !== b.data
+        || a.style !== b.style
+      ) {
+        return true;
+      }
+    }
+  }
+
+  // Definitions already have a by-value comparator, written for the undo
+  // frame (#200 item 2); a second one here would be the same drift risk this
+  // whole function exists to avoid.
+  if (prev.subgraphs !== next.subgraphs && !sameSubgraphs(prev.subgraphs, next.subgraphs)) {
+    return true;
+  }
+
+  if (prev.segmentGroups !== next.segmentGroups) {
+    if (prev.segmentGroups.length !== next.segmentGroups.length) return true;
+    for (let i = 0; i < next.segmentGroups.length; i += 1) {
+      const a = prev.segmentGroups[i];
+      const b = next.segmentGroups[i];
+      if (a === b) continue;
+      if (
+        a.id !== b.id
+        || a.headNodeId !== b.headNodeId
+        || a.tailNodeId !== b.tailNodeId
+      ) {
+        return true;
+      }
+    }
+  }
+
+  return false;
+}
+
+/** Test seam: the bump rule, without having to drive a store transition. */
+export const _documentChangedForTesting = documentChanged;
+
+/**
+ * Advance `revision` on every tab whose document changed in this transition.
+ *
+ * ONE chokepoint rather than a bump in each of this file's dozens of mutating
+ * actions: a counter maintained by hand in fifty places is a counter that is
+ * wrong in one of them, and the one it is wrong in is the one a plugin's
+ * compare-and-swap silently trusts. Bumping inside the same `set` also closes
+ * the window a subscription-based bump would open, where subscribers briefly
+ * see new content carrying the old number.
+ *
+ * The reference guards are what keep this cheap: `documentChanged` returns on
+ * `prev === next` immediately, and each of the four field comparisons is
+ * skipped entirely unless that field's array was replaced. A drag frame
+ * therefore costs one pass over the nodes with six scalar compares each, on a
+ * path that was already allocating a whole new array.
+ *
+ * A tab whose `revision` the transition ITSELF changed is left alone. That is
+ * how the persistence loader states a restored tab's number
+ * (`rehydrateForProject` installs tabs rebuilt by `tabFromPersisted`, whose
+ * ids can collide with the ones already on screen) without the wrapper
+ * overwriting it with `previous + 1`.
+ */
+function withRevisions(
+  prev: TabStoreState,
+  next: Partial<TabStoreState>,
+): Partial<TabStoreState> {
+  const tabs = next.tabs;
+  if (!tabs || tabs === prev.tabs) return next;
+  const before = new Map(prev.tabs.map((t) => [t.id, t] as const));
+  let bumped = false;
+  const withBumps = tabs.map((t) => {
+    const was = before.get(t.id);
+    // A brand-new tab keeps the number `createTabState` gave it.
+    if (!was) return t;
+    // The loader spoke; do not argue with it.
+    if (t.revision !== was.revision) return t;
+    if (!documentChanged(was, t)) return t;
+    bumped = true;
+    return { ...t, revision: was.revision + 1 };
+  });
+  return bumped ? { ...next, tabs: withBumps } : next;
+}
+
 const initialState = loadTabs();
 
-export const useTabStore = create<TabStoreState>((set, get) => ({
+export const useTabStore = create<TabStoreState>((rawSet, get) => {
+  // Every `set` in the body below is this one.
+  //
+  // `replace` is FORWARDED rather than dropped. `TabSet` is zustand's
+  // two-overload setter, so `set(x, true)` type-checks at every call site
+  // whether or not this wrapper honours it; a wrapper that quietly ignored
+  // the flag would turn "replace the state, dropping these keys" into a
+  // merge that keeps them, with nothing failing to say so. Nothing in this
+  // store passes it today -- the point is that the day something does, it
+  // works. `withRevisions` needs no special case: it only ever rewrites
+  // `tabs`, and a replace partial is by type the whole state, so the
+  // comparison sees the same before/after tab lists either way.
+  const set: TabSet = (partial, replace) => {
+    const next = (state: TabStoreState) =>
+      withRevisions(
+        state,
+        typeof partial === 'function' ? partial(state) : partial,
+      );
+    if (replace === true) {
+      rawSet(next as (state: TabStoreState) => TabStoreState, true);
+    } else {
+      rawSet(next);
+    }
+    // Cleared AFTER `rawSet` returns, i.e. after zustand has finished
+    // notifying synchronously -- which is the only window a subscriber can
+    // read it in.
+    _lastCommitOrigin = null;
+  };
+  // The wrapper is reachable from nowhere else: every action closes over it,
+  // and none of them passes `replace`. Handing it to the test is the only way
+  // to prove the flag survives the wrapping.
+  _setForTesting = set;
+
+  return {
   tabs: initialState.tabs,
   activeTabId: initialState.activeTabId,
 
   // ── Tab management ──
 
-  addTab: (name) => {
+  createTab: (options) => {
     const id = generateId();
     const tabCount = get().tabs.length;
     set({
-      tabs: [...get().tabs, createTabState(id, name ?? `Tab ${tabCount + 1}`)],
-      activeTabId: id,
+      tabs: [
+        ...get().tabs,
+        createTabState(id, options?.title ?? `Tab ${tabCount + 1}`),
+      ],
+      // `activate` defaults to true so `addTab` keeps its behaviour exactly.
+      ...(options?.activate === false ? {} : { activeTabId: id }),
     });
+    return id;
+  },
+
+  addTab: (name) => {
+    get().createTab({ title: name, activate: true });
   },
 
   removeTab: (id) => {
@@ -1615,6 +2033,69 @@ export const useTabStore = create<TabStoreState>((set, get) => ({
   },
 
   getTab: (id) => get().tabs.find((t) => t.id === id),
+
+  setTabMeta: (tabId, meta) =>
+    set({
+      tabs: updateTab(get().tabs, tabId, () => ({
+        ...(meta.readOnly !== undefined ? { readOnly: meta.readOnly } : {}),
+        ...(meta.source !== undefined ? { source: meta.source } : {}),
+        ...(meta.transient !== undefined ? { transient: meta.transient } : {}),
+      })),
+    }),
+
+  commitDocument: (tabId, patch) => {
+    // Set BEFORE the `set`, read by subscribers during its synchronous
+    // fan-out, cleared by the `set` wrapper the moment that returns.
+    _lastCommitOrigin = patch.origin ?? null;
+    set({
+      tabs: updateTab(get().tabs, tabId, (tab) => {
+        const dirtyNodeIds = new Set(tab.dirtyNodeIds);
+        for (const id of patch.dirtyIds) dirtyNodeIds.add(id);
+        // A detail modal or a selection naming a node this commit dropped is
+        // the same desync the Delete key exposed, one write path over
+        // (`onNodesChange`'s remove branch, #167): harmless while it renders
+        // nothing, and a modal that pops back open by itself the moment an
+        // undo restores the node. Decided by PRESENCE in the committed
+        // document rather than against a list of removals, because a batch can
+        // lose a node several ways -- `remove_node`, `clear_graph` -- and the
+        // document is the one answer that covers all of them.
+        const stillThere = (id: string | null) =>
+          id !== null && patch.nodes.some((n) => n.id === id);
+        return {
+          nodes: patch.nodes,
+          nodeDetailNodeId: stillThere(tab.nodeDetailNodeId)
+            ? tab.nodeDetailNodeId
+            : null,
+          selectedNodeId: stillThere(tab.selectedNodeId)
+            ? tab.selectedNodeId
+            : null,
+          edges: patch.edges,
+          segmentGroups: patch.segmentGroups,
+          dirtyNodeIds,
+          // The same rule `removeSegmentGroup` follows: a highlight that
+          // points into a list it is no longer in draws a bubble around
+          // nothing.
+          activeSegment:
+            tab.activeSegment
+            && !patch.segmentGroups.some((s) => s.id === tab.activeSegment!.id)
+              ? null
+              : tab.activeSegment,
+        };
+      }),
+    });
+  },
+
+  pushUndoSnapshotFor: (tabId) => {
+    const tab = get().getTab(tabId);
+    if (!tab) return;
+    const snapshot = undoFrameOf(tab);
+    set({
+      tabs: updateTab(get().tabs, tabId, (t) => ({
+        undoStack: [...t.undoStack.slice(-(MAX_UNDO - 1)), snapshot],
+        redoStack: [],
+      })),
+    });
+  },
 
   // ── Flow actions (active tab) ──
 
@@ -1733,6 +2214,15 @@ export const useTabStore = create<TabStoreState>((set, get) => ({
         // — nothing is `.selected` once its node is gone.
         let nodeDetailNodeId = tab.nodeDetailNodeId;
         let selectedNodeId = tab.selectedNodeId;
+        // A segment whose head or tail is gone can never resolve a path, so
+        // `deleteNode` drops it. React Flow's own Delete key never reaches
+        // that action -- it emits a `remove` change straight into this
+        // reducer -- so until now the primary delete gesture left a dangling
+        // group behind, rendering nothing and still being written to the file
+        // on the next save. Same pruning, same place the notes are unbound
+        // (#341 section 5.5).
+        let segmentGroups = tab.segmentGroups;
+        let activeSegment = tab.activeSegment;
         if (hasRemove) {
           const removedIds = new Set(
             changes.filter((c) => c.type === 'remove').map((c) => c.id)
@@ -1748,9 +2238,23 @@ export const useTabStore = create<TabStoreState>((set, get) => ({
           if (selectedNodeId !== null && removedIds.has(selectedNodeId)) {
             selectedNodeId = null;
           }
+          const kept = tab.segmentGroups.filter(
+            (s) => !removedIds.has(s.headNodeId) && !removedIds.has(s.tailNodeId),
+          );
+          // A delete that touches no segment hands back the SAME array. The
+          // revision counter compares segments by value and would not be
+          // fooled either way, but the persistence record cache compares
+          // references -- so a fresh array here is a rewritten IndexedDB
+          // record on every Delete keystroke, for nothing.
+          if (kept.length !== tab.segmentGroups.length) {
+            segmentGroups = kept;
+            if (activeSegment && !kept.some((s) => s.id === activeSegment!.id)) {
+              activeSegment = null;
+            }
+          }
         }
 
-        return { nodes: updatedNodes, nodeDetailNodeId, selectedNodeId };
+        return { nodes: updatedNodes, nodeDetailNodeId, selectedNodeId, segmentGroups, activeSegment };
       }),
     });
   },
@@ -2078,11 +2582,16 @@ export const useTabStore = create<TabStoreState>((set, get) => ({
     });
   },
 
-  getSerializedGraph: () => {
+  getSerializedGraph: () => get().getSerializedGraphOf(get().getActiveTab()),
+
+  getSerializedGraphOf: (input) => {
     // A tab whose canvas is showing a subgraph's insides still SAVES and
     // RUNS the whole graph: flatten the editing stack first, so what is
     // serialized never depends on where the user happens to be standing.
-    const tab = flushSubgraphEditing(get().getActiveTab());
+    // Taking the tab as an argument rather than reading the active one is
+    // what lets a plugin snapshot a background tab (#341 section 4.3) -- and
+    // it costs nothing, because `flushSubgraphEditing` was already pure.
+    const tab = flushSubgraphEditing(input);
     // Computed AFTER the flush, so a block the user is editing right now --
     // whose instance is back on the canvas only because the flush put it
     // there -- is never mistaken for an orphan and dropped mid-edit.
@@ -2136,6 +2645,31 @@ export const useTabStore = create<TabStoreState>((set, get) => ({
           // Written only when muted (core#128), so a graph nobody has
           // bypassed anything in serializes byte-identically to before.
           ...(n.data.bypassed ? { bypassed: true } : {}),
+          // Written only when the user (or an agent, via set_node_meta) has
+          // actually renamed the node (#342). `n.data.type` is exactly what
+          // the reader falls back to -- `label: raw.data?.label ?? nodeType`,
+          // utils/index.ts:505 -- so comparing against it both guarantees the
+          // round-trip and keeps an unrenamed graph's bytes unchanged.
+          //
+          // Deliberately skipped for a subgraph instance and a preset, whose
+          // labels come from the definition each time they are read and whose
+          // `data.type` therefore never equals the label: emitting for them
+          // would rewrite existing files to say something the reader ignores.
+          //
+          // `typeof n.data.type === 'string'` is not belt-and-braces: a node
+          // can reach here with no `type` at all (the field above writes it
+          // through unchecked), and serialization -- which every Run goes
+          // through -- is the last place that should throw over a missing
+          // optional. Such a node has no fallback for the reader to restore
+          // from either, so it is left exactly as it serialized before.
+          ...(!n.data.isPreset
+            && typeof n.data.type === 'string'
+            && !n.data.type.startsWith(SUBGRAPH_TYPE_PREFIX)
+            && typeof n.data.label === 'string'
+            && n.data.label !== ''
+            && n.data.label !== n.data.type
+            ? { label: n.data.label }
+            : {}),
         },
       };
     });
@@ -2307,7 +2841,9 @@ export const useTabStore = create<TabStoreState>((set, get) => ({
   // a frame still carries no `description`, no `readOnly` and no tab name, and
   // an undo that restored the previous graph's nodes under the new graph's
   // description would be a worse lie than not offering the step at all.
-  loadGraphDocument: (doc) => {
+  loadGraphDocument: (doc) => get().loadGraphDocumentInto(get().activeTabId, doc),
+
+  loadGraphDocumentInto: (tabId, doc) => {
     // Computed here, not by the caller: a reader that forgets the gate is
     // exactly the bug this action closes, and `formatVersion` is untrusted
     // input off a file, so a missing or non-numeric field reads as current.
@@ -2315,7 +2851,7 @@ export const useTabStore = create<TabStoreState>((set, get) => ({
     const name =
       typeof doc.name === 'string' && doc.name.trim() ? doc.name.trim() : null;
     set({
-      tabs: updateTab(get().tabs, get().activeTabId, (tab) => ({
+      tabs: updateTab(get().tabs, tabId, (tab) => ({
         nodes: doc.nodes,
         edges: doc.edges,
         // Normalized on the way in, as `setSubgraphs` does: every reader
@@ -2810,23 +3346,7 @@ export const useTabStore = create<TabStoreState>((set, get) => ({
 
   addNote: (kind, position) => {
     get().pushUndoSnapshot();
-    const node: Node<NodeData> = {
-      id: generateId(),
-      type: 'noteNode',
-      position,
-      data: {
-        label: 'Note',
-        type: 'note',
-        params: {},
-        noteKind: kind,
-        noteContent: '',
-        noteColor: '#3d3d1a',
-        boundToNodeId: null,
-        boundOffset: null,
-        noteWidth: 200,
-        noteHeight: kind === 'image' ? 150 : undefined,
-      },
-    };
+    const node = buildNoteNode({ kind, position });
     set({
       tabs: updateTab(get().tabs, get().activeTabId, (tab) => ({
         nodes: [...tab.nodes, node],
@@ -2980,13 +3500,7 @@ export const useTabStore = create<TabStoreState>((set, get) => ({
   // snapshot's array to being the live one and a copy costs a pointer memcpy.
 
   pushUndoSnapshot: () => {
-    const snapshot = undoFrameOf(get().getActiveTab());
-    set({
-      tabs: updateTab(get().tabs, get().activeTabId, (t) => ({
-        undoStack: [...t.undoStack.slice(-(MAX_UNDO - 1)), snapshot],
-        redoStack: [],
-      })),
-    });
+    get().pushUndoSnapshotFor(get().activeTabId);
   },
 
   // Both consumers SPREAD the frame rather than listing its fields (#200
@@ -3391,7 +3905,8 @@ export const useTabStore = create<TabStoreState>((set, get) => ({
         deterministic: !tab.deterministic,
       })),
     }),
-}));
+  };
+});
 
 // ── Loading the IndexedDB tier ──
 //

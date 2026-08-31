@@ -134,6 +134,29 @@ describe('tab autosave - IndexedDB migration on first load', () => {
     expect(state.activeTabId).toBe('y');
   });
 
+  it('restores each tab revision, and a pre-#341 record as 1', async () => {
+    // The hydration path installs `tabFromPersisted` results through the RAW
+    // `useTabStore.setState`, so it never passes the revision wrapper -- this
+    // is the one place the stored number is proved to survive end to end
+    // rather than at the function boundary.
+    const first = await loadStore();
+    await first.persistence.writeSnapshot(
+      LEGACY_KEY,
+      [
+        { id: 'kept', name: 'Kept', nodes: [], edges: [], revision: 7 },
+        // Written before the counter existed: no `revision` key at all.
+        { id: 'old', name: 'Old', nodes: [], edges: [] },
+      ],
+      'kept',
+    );
+
+    const second = await loadStore();
+    expect(await second.store.whenTabsHydrated()).toBe('loaded');
+    const tabs = second.store.useTabStore.getState().tabs;
+    expect(tabs.find((t) => t.id === 'kept')!.revision).toBe(7);
+    expect(tabs.find((t) => t.id === 'old')!.revision).toBe(1);
+  });
+
   it('keeps the live socket of a tab the hydrate also names', async () => {
     localStorage.setItem(
       LEGACY_KEY,
