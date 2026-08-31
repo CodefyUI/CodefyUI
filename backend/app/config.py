@@ -150,6 +150,21 @@ class Settings(BaseSettings):
     # user in front of it who can retry, and a silently queued click looks
     # exactly like a hang.
     RUN_INTERACTIVE_MAX_CONCURRENT: int = 2
+    # ── Sweeps (#140) ──────────────────────────────────────────────────
+    # Hard ceiling on the variants ONE sweep may compile. A sweep is queued
+    # unattended, and every variant is a full graph snapshot plus a real
+    # training run: 32 is what a classroom machine can work through in a
+    # session without the queue outliving the lesson. A spec that compiles
+    # more is REFUSED, never truncated -- a silently shortened grid is a
+    # comparison table with invisible missing rows.
+    MAX_SWEEP_RUNS: int = 32
+    # Most params one sweep may vary. Four is Graph Copilot's own limit
+    # (MAX_OPTIMIZER_BINDINGS) and it is also the width past which a
+    # comparison table stops fitting on a laptop screen.
+    MAX_SWEEP_PARAMS: int = 4
+    # Most values in ONE param's domain, after range expansion and dedup.
+    # Mirrors MAX_OPTIMIZER_DOMAIN_VALUES.
+    MAX_SWEEP_DOMAIN: int = 32
     # Comma-separated extra Host-whitelist entries, e.g.
     # "192.168.1.20:8000,mybox:8000". A str, not list[str]: pydantic list
     # env vars demand JSON-in-env quote hell; split in init_allowed_hosts.
