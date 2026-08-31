@@ -216,32 +216,67 @@ MIGRATION_004 = """
 CREATE TABLE sweeps (
   id            TEXT PRIMARY KEY,   -- uuid4().hex, same shape as exec_runs.id
   name          TEXT,               -- user label. NULL = unnamed, per normalize_name
-  state         TEXT NOT NULL,      -- running|cancelling|finished|failed
+  state         TEXT NOT NULL,      -- running|cancelling|finished|failed. READ-REPAIRED,
+                                    -- never pushed: nothing wakes up to advance it, so a
+                                    -- sweep that finished while nobody was looking still
+                                    -- reads 'running' HERE until the next read, cancel or
+                                    -- prune runs the harvest. And 'failed' means the SWEEP
+                                    -- broke (the submit loop gave some variant no run at
+                                    -- all), never that the training did: a sweep whose
+                                    -- variants all failed is 'finished'. Per-variant
+                                    -- outcomes live in `variants`, not here.
   method        TEXT NOT NULL,      -- grid|random
-  seed          INTEGER,            -- the sweep's OWN planner seed. NULL only for a
-                                    -- grid sweep that sent none
-  seed_variants INTEGER NOT NULL,   -- 0/1. Per-variant EXECUTION seeds, opt-in
+  seed          INTEGER,            -- the sweep's own PLANNER seed: it selects WHICH
+                                    -- COMBINATIONS EXIST and is not by itself what seeds
+                                    -- a graph. Required for random; optional for grid,
+                                    -- which enumerates everything and so consumes none.
+                                    -- NULL only for a grid sweep that sent none -- RULING
+                                    -- 1 records it whenever there is one, because it is
+                                    -- also the base the per-variant execution seeds below
+                                    -- are derived from.
+  seed_variants INTEGER NOT NULL,   -- 0/1. Per-variant EXECUTION seeds -- the kind that
+                                    -- reach a run and seed the graph itself -- opt-in and
+                                    -- default OFF (RULING 1): seeding every variant would
+                                    -- serialise the whole sweep and stall interactive runs
+                                    -- alongside it.
   spec          TEXT NOT NULL,      -- JSON. the compiled, normalised sweep_spec
-  objective     TEXT NOT NULL,      -- JSON {"metric": str, "direction": str}
-  variants      TEXT NOT NULL,      -- JSON list, one entry per variant
+  objective     TEXT NOT NULL,      -- JSON {"metric": str, "direction": "minimize"|"maximize"}.
+                                    -- Both keys required at submit; there is NO default
+                                    -- metric and no inferred direction, and the pair is
+                                    -- immutable in v1 (re-ranking would need child series
+                                    -- that retention may already have deleted).
+  variants      TEXT NOT NULL,      -- JSON list, one entry per variant, holding that
+                                    -- variant's chosen params and its harvested objective.
+                                    -- RULING 4: this is what keeps the sweep answerable
+                                    -- after retention has deleted its children, which is
+                                    -- also why the run id inside an entry is a link that
+                                    -- MAY BE DEAD rather than a foreign key.
   error         TEXT,               -- failure summary. NULL unless state = 'failed'
   created_at    TEXT NOT NULL,      -- submit time; the list ordering key
-  finished_at   TEXT                -- NULL until state is finished or failed
+  finished_at   TEXT                -- NULL until state is finished or failed, and written
+                                    -- by the same read repair that moves `state`
 );
 -- ASC deliberately, for the reason spelled out above idx_exec_runs_created:
 -- a (created_at DESC, rowid DESC) read is served by scanning an ASC index
 -- backwards. Do not "fix" this to DESC.
 CREATE INDEX idx_sweeps_created ON sweeps(created_at);
 
--- Both columns are nullable and NULL together: NULL means "not part of a
--- sweep", the same tri-state convention git_commit / git_dirty use. A
--- `sweep_variant INTEGER NOT NULL DEFAULT 0` would be legal SQLite and
--- would tell every pre-existing run it is variant 0 of nothing.
+-- Both columns are nullable, and a writer sets both or neither: NULL means
+-- "not part of a sweep", the same NULL-is-unknown convention git_commit /
+-- git_dirty already use. A `sweep_variant INTEGER NOT NULL DEFAULT 0` would
+-- be legal SQLite and would tell every pre-existing run it is variant 0 of
+-- nothing.
+--
+-- They are NOT always NULL together once written, and a reader must not
+-- assume it: ON DELETE SET NULL clears `sweep_id` alone, so a run whose
+-- sweep row was deleted keeps its `sweep_variant`. Find a sweep's children
+-- by `sweep_id IS NOT NULL`, never by `sweep_variant IS NOT NULL`.
 --
 -- ON DELETE SET NULL, never CASCADE: deleting a sweep row must not delete
 -- run history. SQLite cannot add a UNIQUE column via ADD COLUMN, so the
 -- (sweep_id, sweep_variant) pairing is a read index, not a constraint;
--- uniqueness is the writer's job (one create_sweep assigns each index once).
+-- uniqueness is the writer's job -- the submit loop that creates a sweep's
+-- children is the only assigner, and gives out each index exactly once.
 ALTER TABLE exec_runs ADD COLUMN sweep_id TEXT
   REFERENCES sweeps(id) ON DELETE SET NULL;
 ALTER TABLE exec_runs ADD COLUMN sweep_variant INTEGER;
