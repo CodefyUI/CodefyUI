@@ -721,18 +721,24 @@ async def _child(store: RunStore, sweep_id: str, index: int, *,
                  status: str = "succeeded",
                  metrics: dict[str, float] | None = None,
                  series: dict[str, list[tuple[int, float]]] | None = None,
+                 points: list[MetricPoint] | None = None,
                  ) -> str:
     """One child run. *metrics* logs a single point per series at step 0;
     *series* logs a whole ``[(step, value), ...]`` in the order given, so a
-    test can pin which point of a series the harvest actually reads."""
+    test can pin which point of a series the harvest actually reads;
+    *points* logs raw ``MetricPoint``s one at a time, for the cases that
+    need a ``node_id`` or two points sharing a step (write order is the
+    tie-break, so they must not be batched into one flush)."""
     record = await store.create_run(
         graph_snapshot={"nodes": [], "edges": []}, options={},
         provenance=RunProvenance(), sweep_id=sweep_id, sweep_variant=index)
     for name, value in (metrics or {}).items():
         await store.log_metrics(record.id, [MetricPoint(name, value, 0)])
-    for name, points in (series or {}).items():
-        for step, value in points:
+    for name, series_points in (series or {}).items():
+        for step, value in series_points:
             await store.log_metrics(record.id, [MetricPoint(name, value, step)])
+    for point in (points or []):
+        await store.log_metrics(record.id, [point])
     if status != "queued":
         await store.mark_finished(record.id, status)
     return record.id
@@ -919,6 +925,120 @@ async def test_seam_b_harvests_the_LAST_point_of_the_objective_series(
     fetched = await sweeps.get_sweep(created.id)
     assert fetched.variants[0].objective == 0.5
     assert fetched.variants[0].harvested_at is not None
+
+
+async def test_seam_b_records_no_objective_when_the_series_was_never_logged(
+        db, sweeps):
+    """The child logged something — just not the sweep's objective.
+
+    A regression here does not LOSE a number, it INVENTS one, and that is
+    strictly worse: under ``minimize`` a fabricated ``0.0`` ranks BEST, so
+    the sweep would present a variant that never reported the metric as its
+    winner. RULING 4 makes it permanent — the child is gone and nothing
+    recomputes it. Same failure §6.1 guards against with "a diverged loss
+    must not render as a suspiciously good one", reached by another door.
+
+    test_api_sweeps.py's ``test_no_variant_produced_the_objective`` only
+    LOOKS like coverage for this: it asks for an unlogged metric over seam
+    A (a GET, so ``latest_metrics``) and never prunes.
+    """
+    store = RunStore(db)
+    created = await _new_sweep(sweeps, count=1)        # objective: val_loss
+    run_id = await _child(store, created.id, 0, metrics={"train_loss": 0.9})
+    await sweeps.set_variant_run(created.id, 0, run_id=run_id, seed=None)
+
+    assert await store.prune(keep_last=0) == 1
+    fetched = await sweeps.get_sweep(created.id)
+    assert fetched.variants[0].objective is None
+    assert fetched.variants[0].status == "succeeded"   # harvested, no value
+    assert fetched.variants[0].harvested_at is not None
+    # Unrankable, and emphatically not rank 1.
+    assert rank_variants(fetched.variants, direction="minimize") == \
+        [(fetched.variants[0], None)]
+
+
+async def test_seam_b_records_no_objective_when_the_sweep_names_no_metric(
+        db, sweeps):
+    """A ``sweeps`` row whose ``objective`` carries no usable ``metric``.
+
+    Defence in depth rather than a live path — the route requires a
+    non-empty metric — but the sweeps row is DURABLE (RULING 4) and
+    outlives the validation that wrote it, while ``harvest_doomed`` reads
+    ``objective.get("metric")`` off whatever the column happens to hold.
+    Inventing a number here would be the same permanent, best-ranked
+    fabrication as above. The child DOES log ``val_loss``, so a fallback
+    that guessed a metric name would be caught too, not just a bare 0.0.
+    """
+    store = RunStore(db)
+    for objective in ({"direction": "minimize"},                  # no key
+                      {"metric": "", "direction": "minimize"}):   # empty
+        created = await _new_sweep(sweeps, count=1, objective=objective)
+        run_id = await _child(store, created.id, 0,
+                              metrics={"val_loss": 0.4})
+        await sweeps.set_variant_run(created.id, 0, run_id=run_id, seed=None)
+
+        assert await store.prune(keep_last=0) == 1
+        fetched = await sweeps.get_sweep(created.id)
+        assert fetched.variants[0].objective is None
+        assert fetched.variants[0].status == "succeeded"
+
+
+async def test_seam_b_breaks_a_step_tie_by_write_order(db, sweeps):
+    """Two producers, one series name, one step — a decision, not luck.
+
+    §6.1 documents that the last-point rule collapses one name logged by
+    several nodes into a SINGLE number, and ``id DESC`` is what decides
+    which: the last one written. Without the tie-break sqlite may return
+    either row, so a sweep's PERMANENT objective would depend on the query
+    plan. ``latest_metrics`` pins this for seam A
+    (``test_latest_metrics_breaks_a_step_tie_by_write_order``); this is
+    seam B's half, so the two implementations cannot drift apart on exactly
+    the case §6.1 calls out.
+    """
+    store = RunStore(db)
+    created = await _new_sweep(sweeps, count=1)
+    run_id = await _child(store, created.id, 0, points=[
+        MetricPoint("val_loss", 9.0, 1, "node-a"),
+        MetricPoint("val_loss", 1.0, 1, "node-b"),   # written last, wins
+    ])
+    await sweeps.set_variant_run(created.id, 0, run_id=run_id, seed=None)
+
+    assert await store.prune(keep_last=0) == 1
+    fetched = await sweeps.get_sweep(created.id)
+    assert fetched.variants[0].objective == 1.0
+
+
+async def test_both_seams_read_the_same_objective_from_one_series(db, sweeps):
+    """§6.1's cross-seam guarantee, asserted instead of assumed.
+
+    ``latest_metrics`` (seam A — a recursive CTE in run_store) and
+    ``_last_metric_value`` (seam B — one seek in sweep_store) are two
+    implementations of ONE rule, and nothing held them to the same answer.
+    That is how seam B's ordering drifted out of coverage in the first
+    place: every test fed it a single-point series, on which every
+    plausible implementation agrees by accident.
+
+    So the series here is built to DISTINGUISH them: five points, steps
+    arriving out of order, the best value at neither end, and a tie on the
+    last step. Both seams must say 0.5 — the later-written of the two
+    points at step 3. The literal is asserted as well as the equality, so
+    the test cannot pass by both seams being wrong the same way.
+    """
+    store = RunStore(db)
+    created = await _new_sweep(sweeps, count=1)
+    run_id = await _child(store, created.id, 0, points=[
+        MetricPoint("val_loss", 0.9, 1),
+        MetricPoint("val_loss", 0.1, 3, "node-a"),   # best, and NOT the last
+        MetricPoint("val_loss", 0.7, 0),
+        MetricPoint("val_loss", 0.5, 3, "node-b"),   # same step, written later
+        MetricPoint("val_loss", 0.3, 2),
+    ])
+    await sweeps.set_variant_run(created.id, 0, run_id=run_id, seed=None)
+
+    seam_a = (await store.latest_metrics([run_id]))[run_id]["val_loss"]
+    assert await store.prune(keep_last=0) == 1   # seam B, with no prior GET
+    seam_b = (await sweeps.get_sweep(created.id)).variants[0].objective
+    assert seam_b == seam_a == 0.5
 
 
 async def test_the_objective_is_harvested_before_the_delete(db, sweeps):
