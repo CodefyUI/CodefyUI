@@ -177,6 +177,18 @@ def test_required_indexes_exist(db):
     names = _index_names(db)
     assert "idx_exec_runs_created" in names
     assert "idx_exec_runs_status_created" in names
+    # MIGRATION_004's two (#140). Nothing else under backend/ names either
+    # index, so without these a dropped CREATE INDEX line -- lost in a
+    # rebase, or dropped by a later migration -- leaves the whole suite
+    # green, and the index is then gone forever behind the append-only
+    # rule while list_runs_by_sweep full-scans exec_runs. The name check
+    # catches a deletion; the column tuples below catch a reshape, e.g.
+    # narrowing the sweep index to (sweep_id) alone, which still answers
+    # the filter but no longer orders by variant.
+    assert "idx_sweeps_created" in names
+    assert "idx_exec_runs_sweep" in names
+    assert ("created_at",) in _indexed_columns(db, "sweeps")
+    assert ("sweep_id", "sweep_variant") in _indexed_columns(db, "exec_runs")
 
 
 def test_upgrade_from_shipped_v2_db_preserves_publish_data(tmp_path, monkeypatch):
@@ -407,14 +419,32 @@ def test_the_sweep_columns_arrived_without_a_table_rebuild(db):
     COLUMN. This test used to perform that ALTER itself, as a stand-in for
     "the sweep column arrives without a table rebuild"; now that
     MIGRATION_004 ships it, it asserts what the stand-in was a proxy for."""
+    from app.core.migrations import MIGRATION_003, iter_statements
+
     assert _columns(db, "exec_runs")[-2:] == ["sweep_id", "sweep_variant"]
     ddl = db._conn.execute(
         "SELECT sql FROM sqlite_master WHERE name = 'exec_runs'").fetchone()[0]
-    # ADD COLUMN appends to the stored CREATE TABLE text and leaves
-    # migration 003's own body -- aligned comments and all -- byte-intact. A
-    # 12-step table rebuild would have replaced it with freshly written DDL.
-    assert "-- uuid4().hex, like runs.run_id" in ddl
-    assert "sweep_id" in ddl and "sweep_variant" in ddl
+    # THE rebuild detector, and it has to be structural rather than a
+    # comment match. A 12-step rebuild is normally written by copy-pasting
+    # migration 003's CREATE body out of this repo, so every comment in it
+    # survives the rebuild and any single comment string still matches --
+    # measured. What a rebuild cannot reproduce is the byte-for-byte
+    # PREFIX: adding columns to a hand-written CREATE means putting a comma
+    # after `plugin_pins TEXT`, and CREATE-new/RENAME-back re-quotes the
+    # table name to `CREATE TABLE "exec_runs"`. ADD COLUMN instead drops the
+    # stored text's final `)` and re-appends it after the new column
+    # definitions, leaving every byte before it untouched.
+    #
+    # Derived from MIGRATION_003 rather than duplicated from it, so it
+    # cannot drift, and so an edit to a shipped migration is reported as
+    # what it is instead of being misdiagnosed as a table rebuild.
+    create = next(s for s in iter_statements(MIGRATION_003)
+                  if s.lstrip().upper().startswith("CREATE TABLE EXEC_RUNS"))
+    create = create.strip().rstrip(";").strip()
+    body = create[:create.rindex(")")]
+    assert ddl.startswith(body)
+    appended = ddl[len(body):]
+    assert "sweep_id" in appended and "sweep_variant" in appended
     # A row written without the sweep columns reads back NULL in both, not
     # 0/''; ADD COLUMN with no DEFAULT is what makes that true for new rows
     # as well as for the ones that predate the migration.
