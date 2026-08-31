@@ -1085,7 +1085,7 @@ async def test_a_restart_retires_rows_a_hard_kill_left_queued(make_service,
     assert row.started_at is None
 
 
-# ── the sweep columns (#140) ──────────────────────────────────────────────
+# ── submit's sweep plumbing (#140) ────────────────────────────────────────
 
 
 async def test_submit_writes_the_sweep_columns_onto_the_row(db, store,
@@ -1114,3 +1114,38 @@ async def test_submit_refuses_a_sweep_id_on_the_interactive_lane(service):
                              options={"device": "cpu",
                                       "lane": LANE_INTERACTIVE},
                              sweep_id="s1", sweep_variant=0)
+
+
+async def test_submit_hands_the_callers_provenance_to_create_run(
+        service, store, monkeypatch):
+    """The third plumbed parameter, and the ONLY test that would notice it
+    being dropped.
+
+    Asserting the row merely "has provenance" would prove nothing: without
+    the pass-through, create_run's `provenance is None` fallback captures
+    its own and writes an equally valid-looking row. So this asserts
+    IDENTITY -- a commit string capture() cannot produce -- and then that
+    capture() was not called at all, which is the property #140 actually
+    buys: one git shell-out per SWEEP, not one per variant.
+
+    `capture` is replaced with a fresh recorder per test (monkeypatch undoes
+    it), never wrapped, so nothing carries over into another test.
+    """
+    captures: list[tuple] = []
+
+    def _record_capture(*args, **kwargs) -> RunProvenance:
+        captures.append(args)
+        return RunProvenance()
+
+    monkeypatch.setattr(RunProvenance, "capture", _record_capture)
+    pinned = RunProvenance(git_commit="beefcafe" * 5, git_dirty=True,
+                           plugin_pins={"c1": {"sha": "0ff1ce"}})
+
+    result = await service.submit(_graph("prov"), options={"device": "cpu"},
+                                  provenance=pinned)
+
+    record = await store.get_run(result.run_id)
+    assert record.git_commit == "beefcafe" * 5
+    assert record.git_dirty is True
+    assert record.plugin_pins == {"c1": {"sha": "0ff1ce"}}
+    assert captures == []       # not once -- let alone once per variant

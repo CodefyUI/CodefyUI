@@ -1433,11 +1433,12 @@ class RunService:
         behaves statefully while its stored row says ``queued``.
 
         *provenance*, *sweep_id* and *sweep_variant* are passed straight
-        through to ``create_run`` and interpreted nowhere else (#140). A
-        sweep captures ONE ``RunProvenance`` and hands the same object to
-        all N variants: the default capture shells out to git twice per run
-        in project mode, and thirty-two of those is thirty-two times the
-        cost for one answer.
+        through to ``create_run``, and read here only by the lane check
+        below — which is *sweep_id*'s single other use (#140). A sweep
+        captures ONE ``RunProvenance`` and hands the same object to all N
+        variants: the default capture shells out to git twice per run in
+        project mode, and thirty-two of those is thirty-two times the cost
+        for one answer.
         """
         if self._shutting_down:
             raise RunServiceUnavailable("run service is shutting down")
