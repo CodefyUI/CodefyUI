@@ -705,6 +705,29 @@ def test_status_constants_partition_the_vocabulary():
                             "cancelled", "interrupted"}
 
 
+async def test_sweep_id_is_null_for_a_run_created_outside_a_sweep(store):
+    created = await _make_run(store)
+    assert created.sweep_id is None and created.sweep_variant is None
+    fetched = await store.get_run(created.id)
+    assert fetched.sweep_id is None and fetched.sweep_variant is None
+
+
+async def test_list_runs_by_sweep_returns_the_children_in_variant_order(
+        db, store):
+    now = "2026-01-01T00:00:00.000000Z"
+    db._conn.execute(
+        "INSERT INTO sweeps (id, state, method, seed_variants, spec, "
+        "objective, variants, created_at) VALUES ('s1', 'running', 'grid', "
+        "0, '{}', '{}', '[]', ?)", (now,))
+    for variant in (2, 0, 1):
+        await _make_run(store, sweep_id="s1", sweep_variant=variant)
+    await _make_run(store)                       # not part of the sweep
+    children = await store.list_runs_by_sweep("s1")
+    assert [c.sweep_variant for c in children] == [0, 1, 2]
+    assert {c.sweep_id for c in children} == {"s1"}
+    assert await store.list_runs_by_sweep("nope") == []
+
+
 # ── 3. events: the gapless cursor ─────────────────────────────────────────
 
 
