@@ -612,6 +612,24 @@ function serializeInnerNode(
         ? { internalParams: node.data.internalParams ?? {} }
         : {}),
       ...(node.data.bypassed ? { bypassed: true } : {}),
+      // The name the user (or an agent's `set_node_meta`) gave the node, on
+      // exactly the terms the TOP-LEVEL serializer writes it (#342, and
+      // `getSerializedGraphOf` in the store, where every clause of this rule
+      // is spelled out). Dropping it here was #400: a collapsed node leaves
+      // the canvas, so the definition is the only record of its name left and
+      // losing it is permanent.
+      //
+      // Read back by `resolveSerializedNodes`, which both readers of a
+      // definition go through -- `enterSubgraph` and `expandInstance` -- so
+      // the key restores the name on screen with no reader change.
+      ...(!node.data.isPreset
+        && typeof node.data.type === 'string'
+        && !node.data.type.startsWith(SUBGRAPH_TYPE_PREFIX)
+        && typeof node.data.label === 'string'
+        && node.data.label !== ''
+        && node.data.label !== node.data.type
+        ? { label: node.data.label }
+        : {}),
     },
   };
 }

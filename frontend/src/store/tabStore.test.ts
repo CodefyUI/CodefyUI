@@ -1533,6 +1533,41 @@ describe('notes', () => {
     expect(activeTab().nodes[0].data.noteContent).toBe('');
   });
 
+  // ── Note edits are undoable (#400) ──
+  //
+  // `updateNoteData` pushed no snapshot, so text typed into a note could not
+  // be undone -- while the same edit made by a plugin's `update_note` could.
+  // The note's editor commits on blur (and on the unmount rescue), never per
+  // keystroke, so one snapshot per call is one undo step per finished edit,
+  // exactly the shape `renameNode` has.
+  it('updateNoteData records one undo step per committed edit', () => {
+    store().addNote('text', { x: 0, y: 0 });
+    const id = activeTab().nodes[0].id;
+    const before = activeTab().undoStack.length;
+
+    store().updateNoteData(id, { noteContent: 'hello' });
+    expect(activeTab().undoStack.length).toBe(before + 1);
+
+    store().undo();
+    expect(activeTab().nodes[0].data.noteContent).toBe('');
+  });
+
+  it('updateNoteData records nothing when the edit changes nothing', () => {
+    // Blurring a note commits whether or not anything was typed, so without
+    // this a double-click and a click away would spend an undo slot on a
+    // step that restores the state it was already in.
+    store().addNote('text', { x: 0, y: 0 });
+    const id = activeTab().nodes[0].id;
+    store().updateNoteData(id, { noteContent: 'hello' });
+    const after = activeTab().undoStack.length;
+
+    store().updateNoteData(id, { noteContent: 'hello' });
+    expect(activeTab().undoStack.length).toBe(after);
+
+    store().updateNoteData('nope', { noteContent: 'x' });
+    expect(activeTab().undoStack.length).toBe(after);
+  });
+
   it('bindNoteToNode stores the relative offset', () => {
     store().setNodes([
       { id: 'comp', type: 'baseNode', position: { x: 10, y: 20 }, data: { label: 'C', type: 'C', params: {} } },

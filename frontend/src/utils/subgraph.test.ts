@@ -399,6 +399,83 @@ describe('definitionFromCanvas', () => {
   });
 });
 
+// ── Inner-node labels (#400) ────────────────────────────────────────────
+
+/**
+ * A renamed node keeps its name when it is collapsed into a block.
+ *
+ * #395 made `data.label` survive a save at the TOP level: the serializer
+ * writes it when it differs from the node's type, and the reader restores it
+ * (`label: raw.data?.label ?? nodeType`). `serializeInnerNode` never learned
+ * the rule, so collapsing a renamed node threw its name away for good -- the
+ * original node is gone, and the definition is the only record left of it.
+ *
+ * The rule is copied rather than loosened. Emitting a label that EQUALS the
+ * type would make every existing definition grow a key the reader would have
+ * defaulted to anyway; emitting one for a preset or a nested block would
+ * write a name the reader ignores, since those two read their label off their
+ * definition on every load.
+ */
+describe('inner nodes keep the name the user gave them', () => {
+  const renamed = (id: string, type: string, label: string, x = 0) =>
+    node(id, type, { x, y: 0 }, { label });
+
+  const block: SubgraphDefinition = {
+    id: 'sg',
+    name: 'Block',
+    description: '',
+    nodes: [{ id: 'x', type: 'X', position: { x: 0, y: 0 }, data: { params: {} } }],
+    edges: [],
+    interface: { inputs: [], outputs: [], triggerTargets: [] },
+  };
+
+  it('collapse writes a renamed member into the definition', () => {
+    const nodes = [renamed('b', 'B', 'Encoder'), renamed('c', 'C', 'C', 100)];
+    const result = collapseSelection(nodes, [edge('e', 'b', 'c')], [], ['b', 'c'], {
+      id: 'sg1', instanceId: 'inst',
+    });
+    if (!result.ok) throw new Error('expected collapse to succeed');
+    const inner = result.definition.nodes as any[];
+    expect(inner.find((n) => n.id === 'b').data.label).toBe('Encoder');
+    // ...and leaves the member nobody renamed byte-identical to before.
+    expect(inner.find((n) => n.id === 'c').data).not.toHaveProperty('label');
+  });
+
+  it('carries a rename made INSIDE the block back into the definition', () => {
+    const next = definitionFromCanvas(block, [renamed('x', 'X', 'Latent')], []);
+    expect((next.nodes[0] as any).data.label).toBe('Latent');
+  });
+
+  it('writes no label for a preset or a nested block', () => {
+    // Both read their name off their own definition every time they are
+    // resolved, so `data.type` never equals the label and an unguarded rule
+    // would emit for every one of them -- a key the reader then ignores.
+    const preset = renamed('p', 'preset:KeyedChat', 'KeyedChat');
+    const nodes = [
+      { ...preset, type: 'presetNode', data: { ...preset.data, isPreset: true } },
+      renamed('g', 'subgraph:inner', 'Inner Block', 100),
+    ];
+    const result = collapseSelection(nodes, [edge('e', 'p', 'g')], [], ['p', 'g'], {
+      id: 'sg1', instanceId: 'inst',
+    });
+    if (!result.ok) throw new Error('expected collapse to succeed');
+    for (const inner of result.definition.nodes as any[]) {
+      expect(inner.data).not.toHaveProperty('label');
+    }
+  });
+
+  it('writes no label for an inner node that has no type to compare against', () => {
+    // Serialization is on the path of every Run and every save, so a node
+    // that reached the canvas without a `data.type` must not throw here --
+    // and it has no fallback for the reader to restore from either.
+    const typeless = node('t', 'T', { x: 0, y: 0 }, {
+      label: 'Named', type: undefined as unknown as string,
+    });
+    const next = definitionFromCanvas(block, [typeless], []);
+    expect((next.nodes[0] as any).data).not.toHaveProperty('label');
+  });
+});
+
 describe('refreshInstances', () => {
   it('rewrites every instance of the definition, and nothing else', () => {
     const definition: SubgraphDefinition = {
