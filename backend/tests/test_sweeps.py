@@ -7,6 +7,7 @@ test_run_queue.py's, so test modules stay independent.
 
 from __future__ import annotations
 
+import asyncio
 import copy
 from typing import Any
 
@@ -611,6 +612,25 @@ async def test_create_sweep_assigns_each_variant_index_exactly_once(sweeps):
     assert [v.run_id for v in patched.variants] == [None, "r1", None]
 
 
+async def test_a_non_finite_objective_never_reaches_the_blob(sweeps):
+    """``_dumps``' ``allow_nan=False``, and why it must never be relaxed.
+
+    Python's json emits the bare tokens ``NaN`` / ``Infinity``, which are a
+    CPython extension and not JSON. Starlette renders every response with
+    ``allow_nan=False``, so one of those inside the durable blob is a 500 on
+    EVERY later read of the sweep -- permanently, because retention deletes
+    finished runs but never a sweeps row. Refusing at the door costs one
+    loud failure on the write instead, and the write is a single autocommit
+    INSERT, so nothing is stored.
+    """
+    for bad, unwritten in ((float("nan"), "nan-sweep"),
+                           (float("inf"), "inf-sweep")):
+        with pytest.raises(ValueError, match="not JSON compliant"):
+            await _new_sweep(sweeps, sweep_id=unwritten,
+                             variants=[_variant(0, objective=bad)])
+        assert await sweeps.get_sweep(unwritten) is None
+
+
 async def test_set_variant_run_patches_one_entry_and_leaves_the_rest(sweeps):
     created = await _new_sweep(sweeps, count=3)
     assert await sweeps.set_variant_run(created.id, 1, run_id="r1", seed=42)
@@ -623,6 +643,33 @@ async def test_set_variant_run_patches_one_entry_and_leaves_the_rest(sweeps):
                                             seed=None)
 
 
+async def test_concurrent_variant_patches_do_not_lose_each_other(sweeps):
+    """The single-closure rule, asserted rather than merely documented.
+
+    ``set_variant_run`` is the only read-modify-write in this module, and it
+    is safe ONLY because its SELECT, its patch and its UPDATE all live in
+    one ``fn(conn)``. Split into a ``Database.run`` read plus a separate
+    ``Database.run`` write -- the tidy-looking refactor a maintainer reaches
+    for when they notice ``get_sweep`` already does the read -- every call
+    still returns True and every patch but the last is silently lost, because
+    all of them read the same blob before any of them writes.
+
+    Spec 5.2's submit loop patches one variant per submit, so a real sweep can
+    have several of these in flight at once; a lost update there is a
+    sweep-to-child link gone for good, reported as ``status: "missing"``
+    forever while the child run sits in ``exec_runs`` with a correct
+    ``sweep_id``.
+    """
+    created = await _new_sweep(sweeps, count=4)
+    patched = await asyncio.gather(*(
+        sweeps.set_variant_run(created.id, i, run_id=f"r{i}", seed=i)
+        for i in range(4)))
+    assert all(patched)
+    fetched = await sweeps.get_sweep(created.id)
+    assert [v.run_id for v in fetched.variants] == ["r0", "r1", "r2", "r3"]
+    assert [v.seed for v in fetched.variants] == [0, 1, 2, 3]
+
+
 async def test_mark_failed_records_the_error_and_stamps_finished_at(sweeps):
     created = await _new_sweep(sweeps)
     assert await sweeps.mark_failed(created.id, "run service is shutting down")
@@ -630,6 +677,20 @@ async def test_mark_failed_records_the_error_and_stamps_finished_at(sweeps):
     assert fetched.state == SWEEP_STATE_FAILED
     assert fetched.error == "run service is shutting down"
     assert fetched.finished_at is not None
+
+
+async def test_set_state_moves_a_running_sweep(sweeps):
+    """The positive half, which the two negative tests never observe.
+
+    Spec 7.3's cancel is built entirely on this call, so a ``set_state`` that
+    quietly moves nothing would surface a task later as a cancelled sweep
+    that keeps reporting ``running`` to the panel.
+    """
+    created = await _new_sweep(sweeps)
+    assert await sweeps.set_state(created.id, SWEEP_STATE_CANCELLING)
+    fetched = await sweeps.get_sweep(created.id)
+    assert fetched.state == SWEEP_STATE_CANCELLING
+    assert not await sweeps.set_state("nope", SWEEP_STATE_CANCELLING)
 
 
 async def test_set_state_never_overwrites_failed(sweeps):
