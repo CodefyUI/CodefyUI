@@ -719,12 +719,20 @@ async def test_an_unknown_sweep_state_is_refused(sweeps):
 
 async def _child(store: RunStore, sweep_id: str, index: int, *,
                  status: str = "succeeded",
-                 metrics: dict[str, float] | None = None) -> str:
+                 metrics: dict[str, float] | None = None,
+                 series: dict[str, list[tuple[int, float]]] | None = None,
+                 ) -> str:
+    """One child run. *metrics* logs a single point per series at step 0;
+    *series* logs a whole ``[(step, value), ...]`` in the order given, so a
+    test can pin which point of a series the harvest actually reads."""
     record = await store.create_run(
         graph_snapshot={"nodes": [], "edges": []}, options={},
         provenance=RunProvenance(), sweep_id=sweep_id, sweep_variant=index)
     for name, value in (metrics or {}).items():
         await store.log_metrics(record.id, [MetricPoint(name, value, 0)])
+    for name, points in (series or {}).items():
+        for step, value in points:
+            await store.log_metrics(record.id, [MetricPoint(name, value, step)])
     if status != "queued":
         await store.mark_finished(record.id, status)
     return record.id
@@ -875,6 +883,42 @@ async def test_concurrent_harvests_do_not_lose_each_other(sweeps):
     fetched = await sweeps.get_sweep(created.id)
     assert [v.index for v in fetched.variants] == [0, 1, 2, 3]   # order kept
     assert [v.objective for v in fetched.variants] == [0.0, 1.0, 2.0, 3.0]
+
+
+async def test_seam_b_harvests_the_LAST_point_of_the_objective_series(
+        db, sweeps):
+    """Spec 6.1: the objective is the series' LAST point by ``step``.
+
+    Not the first, not the best epoch, and not the last one WRITTEN. Every
+    other sweep test logs exactly one point per series, so the ordering in
+    ``_last_metric_value`` changes none of their answers and its
+    ``ORDER BY step DESC, id DESC`` could be flipped with nothing noticing.
+    Seam B is a SECOND implementation of the rule ``latest_metrics``
+    already implements -- that one is pinned in test_run_store.py, this one
+    was not -- and spec 6.1 requires the two to agree.
+
+    The blast radius is why this matters more here than in a chart: a sweep
+    pruned before its first GET is harvested only by seam B, and RULING 4
+    makes whatever it stored the PERMANENT answer. The children are gone
+    and nothing recomputes it.
+
+    Three points, arriving out of step order, give four implementations
+    four different answers: last-by-step 0.5 (correct), first-by-step 0.9,
+    best 0.1, last-WRITTEN 0.9. A run that overfits after its best epoch
+    therefore ranks on where it ended up, which is the honest reading of
+    #140's "final metric".
+    """
+    store = RunStore(db)
+    created = await _new_sweep(sweeps, count=1)
+    run_id = await _child(store, created.id, 0, series={
+        "val_loss": [(1, 0.1), (2, 0.5), (0, 0.9)]})
+    await sweeps.set_variant_run(created.id, 0, run_id=run_id, seed=None)
+
+    # No GET first, so seam A never runs and seam B is the only path.
+    assert await store.prune(keep_last=0) == 1
+    fetched = await sweeps.get_sweep(created.id)
+    assert fetched.variants[0].objective == 0.5
+    assert fetched.variants[0].harvested_at is not None
 
 
 async def test_the_objective_is_harvested_before_the_delete(db, sweeps):
