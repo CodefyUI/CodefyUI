@@ -37,7 +37,10 @@ variants, and a caller who wants live progress long-polls each child's
 from __future__ import annotations
 
 import asyncio
+import logging
+import sys
 from typing import Any, Literal
+from uuid import uuid4
 
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import (
@@ -59,6 +62,11 @@ from ..core.run_service import (
     normalize_graph,
     normalize_name,
     normalize_options,
+    # Private, and imported on purpose: retrieving a detached task's outcome
+    # so asyncio does not log it is ONE two-line implementation, and
+    # `_mark_failed_on_the_way_out` below is modelled on the RunGate release
+    # that already uses it.
+    _swallow_task_result,
 )
 from ..core.run_store import RunProvenance
 from ..core.sweep_compiler import (
@@ -68,6 +76,8 @@ from ..core.sweep_compiler import (
     compile_sweep,
 )
 from ..core.sweep_store import SweepRecord, SweepStore, SweepVariant
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/sweeps", tags=["sweeps"])
 
@@ -233,6 +243,58 @@ def _spec_param_payload(sweep: SweepRecord) -> list[dict[str, Any]]:
             for entry in sweep.spec.get("params", [])]
 
 
+#: Strong references to the detached writes fired by
+#: ``_mark_failed_on_the_way_out``. asyncio holds only a WEAK reference to a
+#: running task, so without this a settle fired while the request is being
+#: cancelled could be garbage-collected mid-flight. Mirrors ``RunGate``'s own
+#: ``self._wakes`` (``run_service.py:1038-1040``).
+_PENDING_MARKS: set[asyncio.Task[Any]] = set()
+
+
+async def _mark_failed_on_the_way_out(store: SweepStore, sweep_id: str,
+                                      error: str) -> None:
+    """Settle the sweep row while this request may itself be cancelled.
+
+    Shaped exactly like ``RunGate._release``'s notification
+    (``run_service.py:1029-1049``) and for the same reason: a bare
+    ``await store.mark_failed(...)`` inside a ``finally`` IS a cancellation
+    point, and Starlette runs a handler inside an anyio cancel scope where
+    every checkpoint after a cancel raises again -- so the write would never
+    be reached. Firing it as its OWN task and shielding the wait lets the
+    cancel take this await while the write runs on to completion.
+
+    Two properties, both required:
+
+    * **the CancelledError still propagates.** ``shield`` re-raises the
+      cancel that landed on this await, and ``except Exception`` does not
+      catch a ``BaseException``, so the request still ends cancelled. This
+      write is a side effect on the way out, never a recovery.
+    * **a failure here never replaces the exception on its way out.** This
+      runs in a ``finally``, so a raise would substitute itself for whatever
+      the handler was already failing with and the original would be gone.
+      Swallowing costs nothing that was not already lost -- the row is
+      unsettled either way -- while losing the caller's own error is new
+      damage.
+
+    Not durable against the loop itself going away: a process-wide shutdown
+    cancels every task and can take the detached write with it. Recovering a
+    sweep across a restart is RULING 2's explicit hand-off to #343.
+    """
+    try:
+        task = asyncio.ensure_future(store.mark_failed(sweep_id, error))
+    except RuntimeError:  # pragma: no cover - the loop is already gone
+        return
+    _PENDING_MARKS.add(task)
+    task.add_done_callback(_PENDING_MARKS.discard)
+    task.add_done_callback(_swallow_task_result)
+    try:
+        await asyncio.shield(task)
+    except Exception:  # noqa: BLE001 - see above; CancelledError is a
+        # BaseException and so still propagates, which is required.
+        logger.warning("sweep %s: settling it as failed on the way out of "
+                       "the submit loop failed", sweep_id, exc_info=True)
+
+
 def _refuse_unrecordable_outputs(request: Request, options: dict[str, Any],
                                  variant_count: int) -> None:
     """RULE 5 of spec 5.2 -- the only one that needs the compiled count.
@@ -336,77 +398,117 @@ async def create_sweep(body: CreateSweepRequest, request: Request):
     # answer. tests/test_run_store.py:123-127 skips it the same way.
     provenance = await asyncio.to_thread(RunProvenance.capture)
 
-    # The sweep row goes FIRST: exec_runs.sweep_id has an enforced foreign
-    # key, so inserting a child before its parent exists fails.
-    #
-    # The seed comes off the COMPILED sweep, not off `spec`: CompiledSweep
-    # .seed is the planner seed the sampler actually used, and reading it
-    # from there is what stops the stored seed and the sampled variant list
-    # from ever drifting apart (sweep_compiler.CompiledSweep.seed says so).
-    sweep = await store.create_sweep(
-        method=spec["method"], seed=compiled.seed,
-        seed_variants=body.seed_variants,
-        spec=_compiled_spec(spec, compiled),
-        objective=body.objective.model_dump(),
-        variants=[_placeholder_variant(compiled, variant)
-                  for variant in compiled.variants],
-        name=name)
-
+    # Minted HERE rather than left to create_sweep, so the settle-on-the-way-
+    # out `finally` below knows the id even when this frame never sees the
+    # record: Database.run finishes its worker before re-raising a
+    # cancellation (db.py:225-243), so a cancel delivered at create_sweep's
+    # own await leaves the row written and this coroutine unwinding past it.
+    sweep_id = uuid4().hex
     submitted: list[dict[str, Any]] = []
-    for variant in compiled.variants:
-        variant_options = dict(options)
-        seed: int | None = None
-        if body.seed_variants:
-            # The modulo is mandatory: normalize_options rejects a seed
-            # above MAX_SEED, so a base seed near the top of the range would
-            # make late variants fail submission with an error the caller
-            # never wrote. `compiled.seed` is not None here -- rule 3 above
-            # refused that case, and the compiler records the seed verbatim.
-            # When seed_variants is off the seed stays None -- the unseeded
-            # case, which takes the SHARED exclusion and lets variants
-            # overlap up to the device's concurrency limit.
-            seed = (compiled.seed + variant.index) % (MAX_SEED + 1)
-            variant_options["seed"] = seed
-        try:
-            result = await service.submit(
-                variant.graph, options=variant_options, name=name,
-                provenance=provenance, sweep_id=sweep.id,
-                sweep_variant=variant.index)
-            # Patched once per variant, not once at the end: a single
-            # patch at the end would lose every id if the loop broke
-            # half-way, which is precisely the case RULING 2 says must
-            # stay visible.
-            #
-            # INSIDE the guard, not after it. The duty is that every path
-            # out of this loop either fills in every run id or marks the
-            # sweep failed, and a store fault here would otherwise take a
-            # third path: a transient fault can fail one write and allow
-            # the next, so it would exit with neither -- leaving a
-            # `running` row that no harvest seam can ever settle, because
-            # a run_id-None variant is not terminal (spec 4.3).
-            await store.set_variant_run(sweep.id, variant.index,
-                                        run_id=result.run_id, seed=seed)
-        except Exception as exc:
-            # The children already created are LEFT ALONE. They are real
-            # queued runs and shutdown/startup recovery retires them as
-            # `interrupted` -- visible, not vanished, per RULING 2. The
-            # sweep id goes in the body so nothing is unfindable, and the
-            # row leaves `running`: a variant with run_id None is not
-            # terminal, so without this the sweep would never settle.
-            await store.mark_failed(sweep.id, str(exc))
-            status = 503 if isinstance(exc, RunServiceUnavailable) else 500
-            raise HTTPException(
-                status_code=status,
-                detail=(f"{exc}; sweep {sweep.id} was created with "
-                        f"{len(submitted)} of {len(compiled.variants)} "
-                        "variants and is marked failed")) from exc
-        # Appended only once the patch landed, so `len(submitted)` in the
-        # message above counts variants FULLY recorded on the row. A child
-        # whose patch failed is still findable by exec_runs.sweep_id.
-        submitted.append({
-            "index": variant.index, "domain_index": variant.domain_index,
-            "run_id": result.run_id, "status": result.status, "seed": seed,
-            "params": _variant_params(compiled, variant)})
+    marked_failed = False
+    try:
+        # The sweep row goes FIRST: exec_runs.sweep_id has an enforced
+        # foreign key, so inserting a child before its parent exists fails.
+        #
+        # The seed comes off the COMPILED sweep, not off `spec`:
+        # CompiledSweep.seed is the planner seed the sampler actually used,
+        # and reading it from there is what stops the stored seed and the
+        # sampled variant list from ever drifting apart
+        # (sweep_compiler.CompiledSweep.seed says so).
+        sweep = await store.create_sweep(
+            sweep_id=sweep_id,
+            method=spec["method"], seed=compiled.seed,
+            seed_variants=body.seed_variants,
+            spec=_compiled_spec(spec, compiled),
+            objective=body.objective.model_dump(),
+            variants=[_placeholder_variant(compiled, variant)
+                      for variant in compiled.variants],
+            name=name)
+
+        for variant in compiled.variants:
+            variant_options = dict(options)
+            seed: int | None = None
+            if body.seed_variants:
+                # The modulo is mandatory: normalize_options rejects a seed
+                # above MAX_SEED, so a base seed near the top of the range
+                # would make late variants fail submission with an error the
+                # caller never wrote. `compiled.seed` is not None here --
+                # rule 3 above refused that case, and the compiler records
+                # the seed verbatim. When seed_variants is off the seed
+                # stays None -- the unseeded case, which takes the SHARED
+                # exclusion and lets variants overlap up to the device's
+                # concurrency limit.
+                seed = (compiled.seed + variant.index) % (MAX_SEED + 1)
+                variant_options["seed"] = seed
+            try:
+                result = await service.submit(
+                    variant.graph, options=variant_options, name=name,
+                    provenance=provenance, sweep_id=sweep.id,
+                    sweep_variant=variant.index)
+                # Patched once per variant, not once at the end: a single
+                # patch at the end would lose every id if the loop broke
+                # half-way, which is precisely the case RULING 2 says must
+                # stay visible.
+                #
+                # INSIDE the guard, not after it. The duty is that every
+                # path out of this loop either fills in every run id or
+                # marks the sweep failed, and a store fault here would
+                # otherwise take a third path: a transient fault can fail
+                # one write and allow the next, so it would exit with
+                # neither -- leaving a `running` row that no harvest seam
+                # can ever settle, because a run_id-None variant is not
+                # terminal (spec 4.3).
+                await store.set_variant_run(sweep.id, variant.index,
+                                            run_id=result.run_id, seed=seed)
+            except Exception as exc:
+                # The children already created are LEFT ALONE. They are real
+                # queued runs and shutdown/startup recovery retires them as
+                # `interrupted` -- visible, not vanished, per RULING 2. The
+                # sweep id goes in the body so nothing is unfindable, and
+                # the row leaves `running`: a variant with run_id None is
+                # not terminal, so without this the sweep would never
+                # settle.
+                await store.mark_failed(sweep.id, str(exc))
+                marked_failed = True
+                status = (503 if isinstance(exc, RunServiceUnavailable)
+                          else 500)
+                raise HTTPException(
+                    status_code=status,
+                    detail=(f"{exc}; sweep {sweep.id} was created with "
+                            f"{len(submitted)} of {len(compiled.variants)} "
+                            "variants and is marked failed")) from exc
+            # Appended only once the patch landed, so `len(submitted)` in
+            # the message above counts variants FULLY recorded on the row. A
+            # child whose patch failed is still findable by
+            # exec_runs.sweep_id.
+            submitted.append({
+                "index": variant.index, "domain_index": variant.domain_index,
+                "run_id": result.run_id, "status": result.status,
+                "seed": seed, "params": _variant_params(compiled, variant)})
+    finally:
+        # EVERY other way out of the block above. There is no `return`,
+        # `break` or `continue` in it, so "every other way" means an
+        # exception this handler did not raise itself -- and the `except
+        # Exception` above cannot see the BaseException ones. The important
+        # one is not exotic: a browser tab closing during a 32-variant
+        # submit cancels the request task, which lands a CancelledError
+        # between two submits.
+        #
+        # `failed` is the honest end state then, and it is the spec's own
+        # words for it (4.3: "the submit loop broke part-way and some
+        # variants have no run at all"). Without this the row keeps
+        # `running` forever -- a variant holding a null run id is not
+        # terminal, so no harvest seam can ever settle it -- while the
+        # children already submitted keep running and stay inspectable,
+        # which is RULING 2's promise.
+        if not marked_failed and len(submitted) < len(compiled.variants):
+            cause = sys.exc_info()[1]
+            cause_name = "no error" if cause is None else type(cause).__name__
+            await _mark_failed_on_the_way_out(
+                store, sweep_id,
+                f"the submit loop did not finish ({cause_name}); "
+                f"{len(submitted)} of {len(compiled.variants)} variants "
+                "were created")
 
     return {
         "sweep_id": sweep.id, "state": sweep.state, "method": sweep.method,

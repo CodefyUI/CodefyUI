@@ -311,6 +311,25 @@ def _body(*params: dict[str, Any], graph: dict[str, Any] | None = None,
     return body
 
 
+async def _await_sweep_state(sweep_store: SweepStore, sweep_id: str,
+                             state: str, *, timeout: float = 5.0):
+    """Wait for a DETACHED settle to land.
+
+    `_mark_failed_on_the_way_out` fires its write as its own task, precisely
+    so a cancelled request cannot take the write with it -- which means the
+    row settles a tick or two after the handler has already unwound. A
+    bounded wait on an observed fact, never a sleep.
+    """
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        record = await sweep_store.get_sweep(sweep_id)
+        if record is not None and record.state == state:
+            return record
+        await asyncio.sleep(0.02)
+    raise AssertionError(
+        f"sweep {sweep_id} never reached state {state!r} within {timeout}s")
+
+
 async def _await_terminal(store: RunStore, run_id: str, *,
                           timeout: float = 15.0):
     """Poll the STORE (never the in-process registry) until the row is
@@ -678,3 +697,111 @@ async def test_non_finite_values_are_refused(client, db):
     assert response.status_code == 400
     assert "finite" in response.json()["detail"]
     assert db._conn.execute("SELECT COUNT(*) FROM sweeps").fetchone()[0] == 0
+
+
+async def test_a_cancelled_submit_loop_still_settles_the_sweep(
+        make_service, store, sweep_store, db, probe, monkeypatch):
+    """A browser tab closing mid-POST cancels the request task, landing a
+    CancelledError between two submits. `except Exception` cannot see a
+    BaseException, so without the loop's `finally` the row keeps `running`
+    forever: a variant holding a null run id is not terminal, so no harvest
+    seam can ever settle it.
+
+    `failed` is the spec's own end state for exactly this (4.3: "the submit
+    loop broke part-way and some variants have no run at all"), and the
+    children already submitted keep running and stay inspectable (RULING 2).
+    """
+    service = make_service(cpu=1)
+    release_filler = probe.hold(_label(0.9))
+    await service.submit(_graph(lr=0.9), options={"device": "cpu"})
+    await probe.wait_entered(_label(0.9))
+
+    reached_third = asyncio.Event()
+    let_go = asyncio.Event()
+    real_submit = RunService.submit
+    calls = 0
+
+    async def _hang_on_the_third(self: Any, *args: Any, **kwargs: Any) -> Any:
+        nonlocal calls
+        calls += 1
+        if calls == 3:
+            # A gate, not a sleep: the cancel lands provably INSIDE the loop,
+            # with variants 0 and 1 already submitted and patched.
+            reached_third.set()
+            await let_go.wait()
+        return await real_submit(self, *args, **kwargs)
+
+    monkeypatch.setattr(RunService, "submit", _hang_on_the_third)
+    try:
+        async with AsyncClient(
+                transport=ASGITransport(app=app), base_url=BASE_URL,
+                headers={TOKEN_HEADER: session_token()}) as http:
+            posting = asyncio.ensure_future(http.post(
+                "/api/sweeps", json=_body(
+                    _values("lr", [0.001, 0.002, 0.003]),
+                    _values("weight_decay", [0.0, 0.5]))))
+            await asyncio.wait_for(reached_third.wait(), timeout=5.0)
+            posting.cancel()
+            # The cancellation must still propagate: the settle is a side
+            # effect on the way out, not a recovery.
+            with pytest.raises(asyncio.CancelledError):
+                await posting
+
+        rows = db._conn.execute("SELECT id FROM sweeps").fetchall()
+        assert len(rows) == 1
+        sweep_id = rows[0][0]
+        record = await _await_sweep_state(sweep_store, sweep_id, "failed")
+        assert record.error and "CancelledError" in record.error
+        assert record.finished_at is not None
+        assert [v.run_id is not None for v in record.variants] == [
+            True, True, False, False, False, False]
+
+        # The two children already submitted are untouched and still theirs.
+        children = await store.list_runs_by_sweep(sweep_id)
+        assert [c.sweep_variant for c in children] == [0, 1]
+        assert all(child.status in {"queued", "running"}
+                   for child in children), [c.status for c in children]
+    finally:
+        let_go.set()
+        release_filler.set()
+
+
+async def test_a_cancel_while_the_sweep_row_is_written_still_settles_it(
+        client, sweep_store, db, monkeypatch):
+    """The one window outside the loop, closed by the same guard.
+
+    `Database.run` finishes its worker before re-raising a cancellation
+    (db.py:225-243), so a cancel delivered at `create_sweep`'s own await
+    leaves the row WRITTEN while this handler unwinds straight past it,
+    never holding the record. The route therefore mints the sweep id itself,
+    so the `finally` knows which row to settle even then.
+    """
+    real_create = SweepStore.create_sweep
+    written = asyncio.Event()
+    let_go = asyncio.Event()
+
+    async def _write_then_hang(self: Any, **kwargs: Any) -> Any:
+        record = await real_create(self, **kwargs)
+        written.set()
+        await let_go.wait()      # the cancel lands here, row already in
+        return record
+
+    monkeypatch.setattr(SweepStore, "create_sweep", _write_then_hang)
+    try:
+        posting = asyncio.ensure_future(client.post(
+            "/api/sweeps", json=_body(_values("lr", [0.1, 0.2]))))
+        await asyncio.wait_for(written.wait(), timeout=5.0)
+        posting.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await posting
+
+        rows = db._conn.execute("SELECT id FROM sweeps").fetchall()
+        assert len(rows) == 1
+        record = await _await_sweep_state(sweep_store, rows[0][0], "failed")
+        assert record.finished_at is not None
+        assert [v.run_id for v in record.variants] == [None, None]
+        # Nothing was submitted, so nothing is left running either.
+        assert db._conn.execute(
+            "SELECT COUNT(*) FROM exec_runs").fetchone()[0] == 0
+    finally:
+        let_go.set()
