@@ -362,14 +362,19 @@ def test_sweeps_routes_are_not_under_an_auth_exempt_prefix():
 
 
 def test_sweeps_routes_appear_in_the_openapi_document():
-    # `/api/sweeps/{sweep_id}/cancel` is asserted by the task that adds it;
-    # a route this module does not serve yet cannot be pinned here without
-    # leaving the tree red.
+    """All three of spec 5's routes, and only the verb each one serves.
+
+    The verb sets are asserted, not just the paths: a `get` appearing on
+    `/api/sweeps/{sweep_id}/cancel` would be a route that mutates on a
+    method every crawler and prefetcher issues unasked.
+    """
     paths = app.openapi()["paths"]
     assert "/api/sweeps" in paths
     assert set(paths["/api/sweeps"]) == {"post"}
     assert "/api/sweeps/{sweep_id}" in paths
     assert set(paths["/api/sweeps/{sweep_id}"]) == {"get"}
+    assert "/api/sweeps/{sweep_id}/cancel" in paths
+    assert set(paths["/api/sweeps/{sweep_id}/cancel"]) == {"post"}
 
 
 async def test_a_mutating_sweep_route_without_a_token_is_403(service):
@@ -384,6 +389,11 @@ async def test_a_mutating_sweep_route_without_a_token_is_403(service):
         # a handler yet.
         cancelled = await http.post("/api/sweeps/abc/cancel")
         assert cancelled.status_code == 403
+        assert TOKEN_HEADER in cancelled.json()["detail"]
+        # Now that cancel HAS a handler, 403-not-404 is the load-bearing
+        # part: the handler would answer "sweep 'abc' not found", so a 403
+        # proves auth_guard ran ahead of it rather than the route simply
+        # being absent.
         # The GET is open, like every other GET in the app. The DETAIL is
         # asserted, not just the code: an unauthenticated GET must reach the
         # handler and be told the sweep does not exist, where a routing 404
@@ -1122,3 +1132,165 @@ async def test_an_unknown_format_is_a_422(client, store):
     sweep_id = await _run_sweep(client, store, _values("lr", [0.1]))
     assert (await client.get(
         f"/api/sweeps/{sweep_id}?format=xlsx")).status_code == 422
+
+
+# ── cancel (spec 5.4, 7, 9.7) ─────────────────────────────────────────────
+
+
+async def test_cancelling_a_sweep_stops_queued_and_running_children(
+        make_service, store, probe):
+    """#140 acceptance criterion 3: the stragglers stop and the partial
+    results stay inspectable."""
+    make_service(cpu=1)
+    release = probe.hold(_label(0.1))
+    async with AsyncClient(transport=ASGITransport(app=app),
+                           base_url=BASE_URL,
+                           headers={TOKEN_HEADER: session_token()}) as http:
+        created = await http.post("/api/sweeps", json=_body(
+            _values("lr", [0.1, 0.2, 0.3, 0.4, 0.5])))
+        sweep_id = created.json()["sweep_id"]
+        await probe.wait_entered(_label(0.1))
+
+        response = await http.post(f"/api/sweeps/{sweep_id}/cancel")
+        assert response.status_code == 200, response.text
+        body = response.json()
+        # index order, not rank order: a cancel is about the submission.
+        assert [v["index"] for v in body["variants"]] == [0, 1, 2, 3, 4]
+        assert body["cancelled"] == 5
+        assert body["already_finished"] == 0
+        assert body["state"] == "cancelling"
+        # The running child's reply is an ACKNOWLEDGEMENT: cooperative
+        # cancellation sets a flag, and the row flips when it unwinds.
+        assert body["variants"][0]["status"] == "running"
+        assert body["variants"][0]["cancelled"] is True
+        assert all(v["status"] == "cancelled" for v in body["variants"][1:])
+
+        release.set()
+        for child in await store.list_runs_by_sweep(sweep_id):
+            await _await_terminal(store, child.id)
+        # A cancelled child that already logged points KEEPS them: its
+        # series are flushed by _finalize like any other terminal run.
+        after = (await http.get(f"/api/sweeps/{sweep_id}")).json()
+        assert after["variants"][0]["index"] == 0
+        assert after["variants"][0]["objective"] == pytest.approx(1.0)
+        assert after["variants"][0]["rank"] == 1
+        assert after["variants"][0]["final_metrics"]["train_loss"] == \
+            pytest.approx(2.0)
+        # ALL FIVE, including the one that was still `running` in the reply:
+        # spec 7.2's acknowledgement flips on the row when the run unwinds,
+        # and the engine's post-last-level checkpoint catches a stop that
+        # arrived while the final node was working. The partial result
+        # survives the flip -- that is acceptance criterion 3, and it is why
+        # a cancelled variant is ranked rather than blanked.
+        assert after["counts"] == {"queued": 0, "running": 0, "succeeded": 0,
+                                   "failed": 0, "cancelled": 5,
+                                   "interrupted": 0, "missing": 0}
+        # A container, never a run: `cancelled` is not a sweep state.
+        assert after["state"] == "finished"
+
+
+async def test_a_second_cancel_is_a_200_no_op(client, store):
+    """Asking twice is not an error, and a cancel that raced a completion
+    is normal -- the user hits Stop as the last epoch lands."""
+    sweep_id = await _run_sweep(client, store, _values("lr", [0.1, 0.2]))
+    first = (await client.post(f"/api/sweeps/{sweep_id}/cancel")).json()
+    assert first["cancelled"] == 0
+    assert first["already_finished"] == 2
+    state = first["state"]
+
+    second = await client.post(f"/api/sweeps/{sweep_id}/cancel")
+    assert second.status_code == 200
+    body = second.json()
+    assert body["cancelled"] == 0
+    assert body["already_finished"] == 2
+    assert body["state"] == state
+
+
+async def test_cancelling_flips_the_sweep_to_finished_at_the_next_harvest(
+        make_service, store, sweep_store, probe):
+    """Spec 7.3: a sweep is a container, not a run. It is NEVER set to
+    `cancelled` -- a sweep where most variants finished and two were
+    stopped is not a cancelled sweep."""
+    make_service(cpu=1)
+    release = probe.hold(_label(0.1))
+    async with AsyncClient(transport=ASGITransport(app=app),
+                           base_url=BASE_URL,
+                           headers={TOKEN_HEADER: session_token()}) as http:
+        created = await http.post("/api/sweeps", json=_body(
+            _values("lr", [0.1, 0.2])))
+        sweep_id = created.json()["sweep_id"]
+        await probe.wait_entered(_label(0.1))
+
+        await http.post(f"/api/sweeps/{sweep_id}/cancel")
+        assert (await sweep_store.get_sweep(sweep_id)).state == "cancelling"
+
+        release.set()
+        for child in await store.list_runs_by_sweep(sweep_id):
+            await _await_terminal(store, child.id)
+        body = (await http.get(f"/api/sweeps/{sweep_id}")).json()
+        assert body["state"] == "finished"
+        assert body["finished_at"] is not None
+        stored = await sweep_store.get_sweep(sweep_id)
+        assert stored.state == "finished"
+
+
+async def test_cancelling_a_failed_sweep_keeps_failed_and_skips_null_runs(
+        make_service, store, sweep_store, db, probe, monkeypatch):
+    """Spec 7.3's last line and 7.4's last paragraph, neither of which any
+    other test reaches.
+
+    `failed` is the submit loop's own record of what went wrong and outranks
+    a later cancel, so `set_state` is guarded on it -- a cancel that
+    downgraded a failed sweep to `cancelling` would erase the only
+    explanation the user has. And a variant that never got a run is
+    `missing` with nothing to cancel: it is counted in NEITHER tally, so
+    `cancelled + already_finished` is the number of variants that had a run,
+    not the variant count.
+    """
+    service = make_service(cpu=1)
+    release_filler = probe.hold(_label(0.9))
+    await service.submit(_graph(lr=0.9), options={"device": "cpu"})
+    await probe.wait_entered(_label(0.9))     # the one cpu slot is occupied
+    # Installed only NOW, so the filler's own submit is not counted: call 1
+    # is variant 0 and call 2 raises. Exactly one variant gets a run and two
+    # are left at run_id null.
+    monkeypatch.setattr(RunService, "submit",
+                        _raise_on_nth(RunService.submit, n=2))
+    try:
+        async with AsyncClient(
+                transport=ASGITransport(app=app), base_url=BASE_URL,
+                headers={TOKEN_HEADER: session_token()}) as http:
+            created = await http.post("/api/sweeps", json=_body(
+                _values("lr", [0.001, 0.002, 0.003])))
+            assert created.status_code == 503, created.text
+            sweep_id = db._conn.execute(
+                "SELECT id FROM sweeps").fetchone()[0]
+            assert (await sweep_store.get_sweep(sweep_id)).state == "failed"
+
+            body = (await http.post(
+                f"/api/sweeps/{sweep_id}/cancel")).json()
+
+        assert body["state"] == "failed"     # NOT downgraded to cancelling
+        assert body["cancelled"] == 1        # the one queued child
+        assert body["already_finished"] == 0  # a null run is neither
+        assert body["variants"] == [
+            {"index": 0, "run_id": body["variants"][0]["run_id"],
+             "status": "cancelled", "cancelled": True},
+            {"index": 1, "run_id": None, "status": "missing",
+             "cancelled": False},
+            {"index": 2, "run_id": None, "status": "missing",
+             "cancelled": False}]
+        assert body["variants"][0]["run_id"] is not None
+        # The harvest the cancel ran did not overwrite it either.
+        assert (await sweep_store.get_sweep(sweep_id)).state == "failed"
+        child = (await store.list_runs_by_sweep(sweep_id))[0]
+        assert (await store.get_run(child.id)).status == "cancelled"
+    finally:
+        # Held gates make the fixture's drain wait out shutdown_grace_s.
+        release_filler.set()
+
+
+async def test_cancelling_an_unknown_sweep_is_a_404(client):
+    response = await client.post("/api/sweeps/nope/cancel")
+    assert response.status_code == 404
+    assert response.json()["detail"] == "sweep 'nope' not found"

@@ -24,6 +24,27 @@ received — each links to the release it was published as.
 
 ### Added
 
+- **Sweeps: search a parameter space in one request instead of babysitting
+  thirty runs.** Hand CodefyUI one graph and the values you want to try —
+  learning rates, weight decays, layer widths, anything a node parameter can
+  hold — and it builds a complete graph per combination, queues every one of
+  them on the device queue you already use, and gives you back a single table
+  ranked by whichever metric you said to optimise ([#140]). A grid tries every
+  combination; a random search takes a seeded sample of them, and the same seed
+  always produces the same list, so a result you report is a result someone else
+  can reproduce — the search runs on your own machine, with no model deciding
+  anything. Up to 32 variants over at most 4 parameters at a time, so a typo in
+  a range cannot fill a disk. Download the table as a spreadsheet with one row
+  per variant to compare, chart or hand in. Ask a sweep to stop and its queued
+  and running variants stop, keeping whatever numbers they had already recorded,
+  so a search you cut short is still a search you can read. Each variant is an
+  ordinary run you can open and inspect — and its score stays on the table even
+  after retention deletes that run, which is the difference between a comparison
+  you keep and one that quietly empties. A parameter the sweep cannot actually
+  reach is refused up front and named, rather than run as a batch of identical
+  variants that all silently ignored it. The Runs panel for driving this from
+  the canvas is still to come; for now it is the HTTP API.
+
 - **Plugin frontend contract apiVersion 5: a plugin gets the tab strip, and
   an agent gets four more kinds of edit.** `api.workspace` lets a plugin open
   a graph as a labelled, optionally read-only editor tab without moving the
@@ -2707,6 +2728,7 @@ Release candidates before 1.0.0 are on the
 [#400]: https://github.com/CodefyUI/CodefyUI/issues/400
 [#396]: https://github.com/CodefyUI/CodefyUI/issues/396
 [#398]: https://github.com/CodefyUI/CodefyUI/issues/398
+[#140]: https://github.com/CodefyUI/CodefyUI/issues/140
 [@oyea0801]: https://github.com/oyea0801
 [@latteine1217]: https://github.com/latteine1217
 [Unreleased]: https://github.com/CodefyUI/CodefyUI/compare/2.4.1...main

@@ -2,9 +2,10 @@
 
     POST   /api/sweeps                compile + queue N variants  -> 201
     GET    /api/sweeps/{id}           the ranked table, JSON or CSV
+    POST   /api/sweeps/{id}/cancel    stop the queued and running children
 
-``POST /api/sweeps/{id}/cancel`` lands in its own commit. The conventions
-below are the module's rather than one route's, so they are stated once here.
+The conventions below are the module's rather than one route's, so they are
+stated once here.
 
 Conventions are ``routes_runs.py``'s, deliberately: plain ``dict`` returns
 and no ``response_model``, request models declared locally with
@@ -79,6 +80,7 @@ from ..core.sweep_compiler import (
     compile_sweep,
 )
 from ..core.sweep_store import (
+    SWEEP_STATE_CANCELLING,
     SWEEP_STATE_FAILED,
     SWEEP_STATE_FINISHED,
     HarvestEntry,
@@ -784,3 +786,85 @@ async def get_sweep(
     if warning is not None:
         body["objective_warning"] = warning
     return body
+
+
+# ── cancel (spec 7) ───────────────────────────────────────────────────────
+
+
+@router.post("/{sweep_id}/cancel")
+async def cancel_sweep(sweep_id: str, request: Request):
+    """Ask every queued and running child of a sweep to stop.
+
+    There is no bulk cancel in ``RunService`` — ``CancelOutcome`` is
+    single-run — so this is N awaited cancels, each with its own database
+    write. NO transaction spans them, so a partially-cancelled sweep is a
+    reachable state and the response reports per-variant outcomes rather
+    than one boolean.
+
+    ``variants`` comes back in INDEX order, not rank order: a cancel is
+    about the submission, and the caller is matching rows against what they
+    just sent. Each entry mirrors ``POST /api/runs/{id}/cancel``'s own three
+    keys, which is what makes ``status: "running"`` with ``cancelled: true``
+    readable — cancellation is cooperative, so the reply is an
+    acknowledgement and the outcome is observed later on the row.
+
+    Asking twice is a 200, not an error: ``RunService.cancel`` re-reads the
+    row and reports ``cancelled=False`` for anything already terminal, so
+    the second call is ``cancelled: 0`` with the state unchanged. A cancel
+    racing a completion is normal (the user hits Stop as the last epoch
+    lands).
+    """
+    service = _get_service(request)
+    store = _get_sweep_store(request)
+    sweep = await store.get_sweep(sweep_id)
+    if sweep is None:
+        raise HTTPException(status_code=404,
+                            detail=f"sweep '{sweep_id}' not found")
+
+    results: list[dict[str, Any]] = []
+    cancelled = 0
+    already_finished = 0
+    for variant in sorted(sweep.variants, key=lambda entry: entry.index):
+        if variant.run_id is None:
+            # The failed-submit-loop case: there is nothing to cancel, and
+            # nothing FINISHED either, so it is counted in neither tally
+            # (spec 5.4: `already_finished` counts the rest that had a run).
+            results.append({"index": variant.index, "run_id": None,
+                            "status": _STATUS_MISSING, "cancelled": False})
+            continue
+        outcome = await service.cancel(variant.run_id)
+        if outcome is None:
+            # The row is gone -- pruned, or DELETE /api/runs/{id}. It had a
+            # run, so it counts as already finished.
+            results.append({"index": variant.index, "run_id": variant.run_id,
+                            "status": variant.status or _STATUS_MISSING,
+                            "cancelled": False})
+            already_finished += 1
+            continue
+        results.append({"index": variant.index, "run_id": variant.run_id,
+                        "status": outcome.status,
+                        "cancelled": outcome.cancelled})
+        if outcome.cancelled:
+            cancelled += 1
+        else:
+            already_finished += 1
+
+    if cancelled:
+        # `cancelling` ONLY when at least one child was still active. If
+        # every child was already terminal the state is left as it is, and
+        # it is never set to `cancelled`: a sweep where 30 of 32 variants
+        # finished and 2 were stopped is not a cancelled sweep, and
+        # per-variant status carries that truth. set_state refuses to
+        # overwrite `failed`.
+        await store.set_state(sweep.id, SWEEP_STATE_CANCELLING)
+
+    # Harvest before answering, so the sweep's own state is current rather
+    # than one request stale -- a queued child cancelled a moment ago is
+    # already terminal. It is also what keeps a cancel from LOSING results:
+    # whatever a stopped child had logged is copied onto the sweep row here
+    # rather than waiting for a read that may never come.
+    sweep, _children, _metrics = await _harvested_sweep(service, store,
+                                                        sweep_id)
+    return {"sweep_id": sweep.id, "state": sweep.state,
+            "cancelled": cancelled, "already_finished": already_finished,
+            "variants": results}
