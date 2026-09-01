@@ -428,6 +428,42 @@ operations. `Conv2dKernel` is retired; `Conv2dExplicit` picks its own kernel.
   restoring the node popped the modal back open by itself — and drops a
   segment highlight pointing at an overlay that is no longer in the list.
 
+- **Contributors are credited permanently and owe no royalty** ([#266]).
+  Every place the licensing story is told now states the maintainer's
+  contributor-terms ruling: contributors keep their copyright and their credit,
+  the inbound dual-license grant is voluntary and royalty-free, so no royalty or
+  revenue share is owed when a commercial license is sold, and a contributor who
+  considers a contribution outstanding can discuss recognition or separate terms
+  with the maintainers. Anything beyond those defaults needs explicit written
+  agreement.
+
+### Removed
+
+- **`Conv2dKernel` is retired; `Conv2dExplicit` picks its own kernel**
+  ([#362], contributed by [@oyea0801]). Applying one textbook filter used to
+  take two nodes and an edge — `Conv2dKernel` emitted a 3x3 matrix and
+  `Conv2dExplicit` convolved with it. Nothing else in the registry consumed a
+  kernel, so the split bought nothing and cost canvas in the one lesson whose
+  point is "look what this matrix does to an image". `Conv2dExplicit` now takes
+  a single `tensor` input and a `preset` param (EdgeDetection3x3 / Sharpen3x3 /
+  VerticalEdge3x3, or `Custom` with a hand-authored NxN grid), reading in the
+  order the decision is made: which filter, then how it is swept. The
+  convolution itself is unchanged — still depthwise with `groups=C` — and the
+  weight is now built on the input's device from the start, since the engine
+  aligns what arrives on a wire but cannot see what a node conjures inside
+  `execute` ([#359]).
+
+  **Breaking.** A saved graph containing `Conv2dKernel`, or an edge into
+  `Conv2dExplicit`'s `kernel` port, still opens on the canvas and keeps its
+  param values, but is stopped at Run by `validate_graph` with
+  `Unknown node type: Conv2dKernel` / `Invalid input port 'kernel' on
+  Conv2dExplicit`. Delete the `Conv2dKernel` node and pick the filter on
+  `Conv2dExplicit` instead. No example, plugin or gallery graph here or in
+  CodefyUI-Examples / CodefyUI-Plugin-Official / CodefyUI-Self-Learning used
+  either node, so only user-authored graphs are affected; this repository has
+  no node-type migration or alias facility, and one was not built for a single
+  node.
+
 ### Fixed
 
 - **The engine puts a node's inputs on the device that node runs on**
@@ -647,6 +683,25 @@ operations. `Conv2dKernel` is retired; `Conv2dExplicit` picks its own kernel.
   too, now pinned by a test; and `OpResult.node_id` comes from the ops that
   create or edit a node, not from "every op that names one", `remove_node`
   being the op that names one and returns none.
+
+- **Four gallery examples stop teaching the wrong thing** ([#369]).
+  `DQN-Atari-RL` and `PPO-Robotics-RL` each fed `optimizer-1.model` from two
+  places — the agent's own `model` output and a `SequentialModel` sitting off to
+  one side. The engine resolves a doubled input port by last-writer-wins and
+  says nothing, so a Deep-Q-Network example may well have been handing its
+  optimizer a detached feed-forward stack instead of the DQN: it validated, it
+  ran, it printed plausible numbers. The duplicate edges are gone, the
+  Mixture-of-Experts example shows its mixture, and four descriptions that
+  described something other than the graph beneath them were corrected.
+
+- **The kernel grid writes back the shape it is showing** ([#365], [#366],
+  [#367]). `TensorGridEditor` reshaped the value for display and stopped there,
+  so raising `Conv2dExplicit`'s `kernel_size` from 3 to 5 drew a filled 5x5 grid
+  over a param still holding 9 numbers and the run failed with "`weights` has 9
+  elements but kernel_size=5 expects 25". The reshape is now committed through
+  `onChange`; widening pads with zeros and keeps the numbers already typed. The
+  C1-3 kernel-effects example gets the figure it was demonstrating with, and
+  `Conv2dExplicit` gets its zh-TW entry.
 
 ### Internal
 
@@ -2734,6 +2789,12 @@ Release candidates before 1.0.0 are on the
 [#325]: https://github.com/CodefyUI/CodefyUI/issues/325
 [#337]: https://github.com/CodefyUI/CodefyUI/issues/337
 [#341]: https://github.com/CodefyUI/CodefyUI/issues/341
+[#266]: https://github.com/CodefyUI/CodefyUI/issues/266
+[#362]: https://github.com/CodefyUI/CodefyUI/pull/362
+[#365]: https://github.com/CodefyUI/CodefyUI/issues/365
+[#366]: https://github.com/CodefyUI/CodefyUI/issues/366
+[#367]: https://github.com/CodefyUI/CodefyUI/issues/367
+[#369]: https://github.com/CodefyUI/CodefyUI/pull/369
 [#342]: https://github.com/CodefyUI/CodefyUI/issues/342
 [#400]: https://github.com/CodefyUI/CodefyUI/issues/400
 [#396]: https://github.com/CodefyUI/CodefyUI/issues/396
