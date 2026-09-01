@@ -22,6 +22,16 @@ received — each links to the release it was published as.
 
 ## [Unreleased]
 
+## [2.5.0] — 2026-09-01
+
+Twenty-four commits since 2.4.1, around three themes. The Package Center
+installs the optional four hundred megabytes a lesson needs from inside the
+app, and the LLM, embedding and RAG nodes that need those megabytes arrive with
+it. Sweeps search a parameter space in one request and hand back a ranked table.
+The plugin frontend contract reaches `apiVersion 5`, where a plugin gets the tab
+strip, whole-tab snapshots, compare-and-swap writes and six more agent canvas
+operations. `Conv2dKernel` is retired; `Conv2dExplicit` picks its own kernel.
+
 ### Added
 
 - **Sweeps: search a parameter space in one request instead of babysitting
@@ -2731,7 +2741,8 @@ Release candidates before 1.0.0 are on the
 [#140]: https://github.com/CodefyUI/CodefyUI/issues/140
 [@oyea0801]: https://github.com/oyea0801
 [@latteine1217]: https://github.com/latteine1217
-[Unreleased]: https://github.com/CodefyUI/CodefyUI/compare/2.4.1...main
+[Unreleased]: https://github.com/CodefyUI/CodefyUI/compare/2.5.0...main
+[2.5.0]: https://github.com/CodefyUI/CodefyUI/compare/2.4.1...2.5.0
 [2.4.1]: https://github.com/CodefyUI/CodefyUI/compare/2.4.0...2.4.1
 [2.4.0]: https://github.com/CodefyUI/CodefyUI/compare/2.3.0...2.4.0
 [2.3.0]: https://github.com/CodefyUI/CodefyUI/compare/2.2.0...2.3.0

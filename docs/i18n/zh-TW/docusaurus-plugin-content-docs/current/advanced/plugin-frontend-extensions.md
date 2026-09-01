@@ -11,7 +11,7 @@ description: 隨外掛包附上一個 JavaScript bundle，讓外掛能新增 UI 
 :::note 可用性
 前端擴充功能自 CodefyUI **1.3.0** 起內建。請執行 `cdui --version` 確認；若顯示更舊的版本，請執行 `cdui update`。
 
-停靠面板、工具列按鈕、執行事件與 runs 門面需要 **apiVersion 3**（CodefyUI 2.0.0 起）；`graph.getView` 需要 **apiVersion 4**（CodefyUI 2.3.0 起）；`api.workspace` 與六個代理畫布操作需要 **apiVersion 5**（*下一個版本（尚未發布）* {/* stamp-on-release */} 起）。使用前請先檢查版本——參見 [API 版本](#api-版本)。
+停靠面板、工具列按鈕、執行事件與 runs 門面需要 **apiVersion 3**（CodefyUI 2.0.0 起）；`graph.getView` 需要 **apiVersion 4**（CodefyUI 2.3.0 起）；`api.workspace` 與六個代理畫布操作需要 **apiVersion 5**（CodefyUI 2.5.0 起）。使用前請先檢查版本——參見 [API 版本](#api-版本)。
 :::
 
 ## API 版本
@@ -24,7 +24,7 @@ description: 隨外掛包附上一個 JavaScript bundle，讓外掛能新增 UI 
 | 2 | 1.3.0 | `nodes.registerRenderer` |
 | 3 | 2.0.0 | `ui.addPanel` / `removePanel`、`ui.addToolbarButton` / `removeToolbarButton`、`events.onExecution`、`runs.*` |
 | 4 | 2.3.0 | `graph.getView`——使用者正在看圖表的哪一層 |
-| 5 | *下一個版本（尚未發布）* {/* stamp-on-release */} | `workspace.*`——分頁、快照與比較後寫入；`move_node`、`set_segment` / `remove_segment`、`add_note` / `update_note`、`set_node_meta` |
+| 5 | 2.5.0 | `workspace.*`——分頁、快照與比較後寫入；`move_node`、`set_segment` / `remove_segment`、`add_note` / `update_note`、`set_node_meta` |
 
 在使用比你所要求的版本更新的功能之前先檢查它，而且是降級處理，不是直接拋錯：
 
