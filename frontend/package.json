@@ -1,7 +1,7 @@
 {
   "name": "codefyui-frontend",
   "private": true,
-  "version": "2.4.1",
+  "version": "2.5.0",
   "license": "AGPL-3.0-only",
   "author": "CodefyUI (https://github.com/CodefyUI)",
   "packageManager": "pnpm@9.15.0",
