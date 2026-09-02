@@ -42,6 +42,7 @@ from .manifest import (
     manifest_has_frontend,
     manifest_python_deps,
 )
+from .sources import parse_github_url
 
 #: How a node announces its name. The same expression the catalog-honesty
 #: test scans packs with, deliberately: what the Plugin Center promises a
@@ -205,18 +206,27 @@ def catalog_id_for(
 ) -> str | None:
     """The catalog row an installed plugin came from, or ``None``.
 
-    The recorded ``catalog_id`` wins: ``cdui plugin install <name>`` writes
-    it precisely so a later reader can tell the catalog's own pack from free
-    text that happens to carry the same id. A built-in install records none
-    (its ``source`` IS the catalog id), so the id is matched against the
-    catalog instead -- which is safe because the reserved-id rule refuses an
-    install that claims a catalog id from anywhere but the repository the
-    catalog names.
+    Matching the id against the catalog says only that this row LINES UP with
+    that entry -- it is not a reserved-id rule, because the ids of the
+    catalog's ``github`` rows deliberately are not reserved (see
+    :func:`is_official`), so a pack fetched from anywhere at all can arrive
+    carrying ``id = "self-learning"``. Answering ``self-learning`` for that
+    one would point the panel at a catalog card describing different code.
+
+    So the id is reported only when the install can be tied to the row. The
+    recorded ``catalog_id`` wins: ``cdui plugin install <name>`` writes it
+    precisely so a later reader can tell the catalog's own pack from free
+    text that happens to carry the same id. Failing that, the id is reported
+    when the same provenance check the badge uses says this really is the
+    thing the catalog named -- which is what covers the built-in install that
+    records no ``catalog_id`` (its ``source`` IS the catalog id) and the
+    free-text install of the catalog's own repository. A foreign pack under a
+    catalog id gets ``None``.
     """
     recorded = (entry or {}).get("catalog_id")
     if isinstance(recorded, str) and recorded:
         return recorded
-    return plugin_id if plugin_id in catalog else None
+    return plugin_id if is_official(catalog.get(plugin_id), entry) else None
 
 
 def declared_capabilities(
@@ -533,20 +543,23 @@ def _repo_of(entry: dict[str, Any] | None) -> str | None:
     """``owner/repo`` as a lockfile entry recorded it, or ``None``.
 
     Derived from what the install wrote down, and only when it really is that
-    shape: the ``url`` first, because ``https://github.com/alice/extras`` can
-    only be read one way, then ``source``, which is ``alice/extras@v1`` for a
-    repository install and an absolute path for a linked directory -- and an
-    absolute path is not ``owner/repo`` in either operating system's
-    spelling. Anything else answers ``None`` rather than a guess.
+    shape: the ``url`` first, read by the same GitHub pattern the installer
+    parses a typed source with
+    (:func:`~app.core.plugins.sources.parse_github_url`), because the host is
+    half of what makes a URL that repository -- taking the last two path
+    segments of any URL at all would read
+    ``https://evil.example.com/CodefyUI/CodefyUI-Plugin-Self-Learning`` as
+    the repository the catalog vouches for. Then ``source``, which is
+    ``alice/extras@v1`` for a repository install and an absolute path for a
+    linked directory -- and an absolute path is not ``owner/repo`` in either
+    operating system's spelling. Anything else answers ``None`` rather than a
+    guess.
     """
     if entry is None:
         return None
-    url = _text(entry.get("url"))
-    if url:
-        tail = url.rstrip("/").removesuffix(".git")
-        owner_repo = "/".join(tail.split("/")[-2:])
-        if REPO_RE.match(owner_repo):
-            return owner_repo
+    owner_repo = parse_github_url(_text(entry.get("url")))
+    if owner_repo is not None:
+        return "/".join(owner_repo)
     source = _text(entry.get("source")).split("@", 1)[0]
     return source if REPO_RE.match(source) else None
 

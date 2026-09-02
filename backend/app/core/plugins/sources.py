@@ -59,6 +59,26 @@ class ParsedSource(NamedTuple):
     ref: str
 
 
+def parse_github_url(url: str) -> tuple[str, str] | None:
+    """``(owner, repo)`` when *url* is a GitHub repository URL, else ``None``.
+
+    The same pattern :func:`parse_source` reaches for, exported because a
+    second reader asks a narrower question -- a lockfile wrote a ``url`` down,
+    and something wants to know which repository it names -- with no catalog
+    lookup, no short form and no refusal to catch.
+
+    The HOST is half of the answer, which is why this exists at all rather
+    than a caller taking the last two path segments:
+    ``https://evil.example.com/CodefyUI/CodefyUI-Plugin-Self-Learning`` ends
+    in the owner and repository of a plugin CodefyUI vouches for, and is not
+    that plugin. Nothing here is lower-cased -- GitHub names are not
+    case-sensitive, but this reports what was recorded and leaves the
+    comparison to the caller.
+    """
+    m = _GITHUB_URL.match(url)
+    return (m.group(1), m.group(2)) if m else None
+
+
 def parse_source(
     spec: str,
     *,

@@ -47,7 +47,7 @@ from app.core.plugins.manifest import (
     read_manifest,
     validate_manifest,
 )
-from app.core.plugins.sources import ParsedSource, parse_source
+from app.core.plugins.sources import ParsedSource, parse_github_url, parse_source
 
 CATALOG_LOGGER = "app.core.plugins.catalog"
 
@@ -144,6 +144,30 @@ def test_the_github_shapes_all_reach_the_same_owner_and_repo(spec, expected):
     """One field, four spellings: a person with a plugin in mind should not
     have to know which of them the installer prefers."""
     assert parse_source(spec) == expected
+
+
+@pytest.mark.parametrize(
+    "url, expected",
+    [
+        ("https://github.com/alice/extras", ("alice", "extras")),
+        ("https://github.com/alice/extras.git", ("alice", "extras")),
+        ("https://github.com/alice/extras/", ("alice", "extras")),
+        ("http://www.github.com/alice/extras", ("alice", "extras")),
+        ("https://github.com/alice/extras@v2", ("alice", "extras")),
+        # The host is half of the answer. The path of this one ends in the
+        # owner and repository of a plugin the catalog vouches for.
+        ("https://evil.example.com/CodefyUI/CodefyUI-Plugin-Self-Learning", None),
+        ("https://gitlab.com/alice/extras", None),
+        ("https://github.com.evil.example/alice/extras", None),
+        ("alice/extras", None),   # a short form is not a URL
+        ("", None),
+    ],
+)
+def test_a_recorded_url_names_a_repository_only_when_it_is_on_github(url, expected):
+    """What a lockfile reader needs and what a source parser needs are the
+    same question with the catalog taken out: which repository is this, and
+    is it one at all."""
+    assert parse_github_url(url) == expected
 
 
 def test_an_unknown_bare_word_names_the_catalog_it_was_not_in():

@@ -381,13 +381,18 @@ def test_a_recorded_empty_grant_is_not_a_miss():
     assert listing.declared_capabilities(None, manifest) == ["network"]
 
 
-def _install_claiming(user_root: Path, plugin_id: str, repo: str) -> None:
+def _install_claiming(
+    user_root: Path, plugin_id: str, repo: str, url: str | None = None
+) -> None:
     """Put *plugin_id* in the lockfile as a URL install of *repo*.
 
     No ``catalog_id``: this is the free-text ``cdui plugin install
     owner/repo`` path, which is the one that can claim an id the catalog also
     uses -- deliberately, since it is how the author of an official plugin
     installs their own repository.
+
+    *url* overrides the recorded URL, for the entry a hand-edited lockfile
+    can hold: one whose URL is not on GitHub at all.
     """
     plugin_dir = user_root / plugin_id
     plugin_dir.mkdir(parents=True, exist_ok=True)
@@ -400,7 +405,7 @@ def _install_claiming(user_root: Path, plugin_id: str, repo: str) -> None:
     lockfile["plugins"][plugin_id] = {
         "source_kind": "github_url",
         "source": repo,
-        "url": f"https://github.com/{repo}",
+        "url": url if url is not None else f"https://github.com/{repo}",
         "ref": "",
         "installed_at": "2026-06-04T00:00:00Z",
         "manifest": {"id": plugin_id, "version": "0.0.1"},
@@ -425,7 +430,30 @@ async def test_a_foreign_repository_cannot_wear_the_catalogs_badge(
 
     listed = {p["id"]: p for p in (await anon_client.get("/api/plugins")).json()}
     assert listed["self-learning"]["official"] is False
-    assert listed["self-learning"]["catalog_id"] == "self-learning"
+    # Nor may it borrow the catalog row's identity by another name: a
+    # ``catalog_id`` is a claim that THIS is the pack that card describes,
+    # and a link to a page about different code is the same lie in smaller
+    # print.
+    assert listed["self-learning"]["catalog_id"] is None
+
+
+async def test_a_lookalike_url_on_another_host_is_not_that_repository(
+        anon_client, center_lockfile):
+    """``https://evil.example.com/CodefyUI/CodefyUI-Plugin-Self-Learning``
+    ends in the owner and repository of a plugin CodefyUI vouches for. Any
+    reading of a recorded URL that ignores the host hands the badge over for
+    the price of a domain name."""
+    lookalike = "https://evil.example.com/CodefyUI/CodefyUI-Plugin-Self-Learning"
+    _install_claiming(center_lockfile, "self-learning", lookalike, url=lookalike)
+
+    row = (await rows(anon_client))["self-learning"]
+    assert row["status"] == "installed"
+    assert row["url"] == lookalike
+    assert row["official"] is False
+
+    listed = {p["id"]: p for p in (await anon_client.get("/api/plugins")).json()}
+    assert listed["self-learning"]["official"] is False
+    assert listed["self-learning"]["catalog_id"] is None
 
 
 async def test_the_catalogs_own_repository_is_official_by_any_road(
@@ -443,6 +471,9 @@ async def test_the_catalogs_own_repository_is_official_by_any_road(
 
     listed = {p["id"]: p for p in (await anon_client.get("/api/plugins")).json()}
     assert listed["self-learning"]["official"] is True
+    # And this one really is the pack that catalog row describes, even
+    # though the install recorded no ``catalog_id`` to say so.
+    assert listed["self-learning"]["catalog_id"] == "self-learning"
 
 
 def test_official_is_a_question_about_provenance_not_about_the_id():
