@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import argparse
+import io
+import tarfile
 from pathlib import Path
 from textwrap import dedent
 
@@ -11,6 +13,7 @@ import pytest
 import plugins as plugin_cli
 from app.core import plugin_loader
 from app.core.plugin_validator import PluginValidationError
+from app.core.plugins import catalog as core_catalog
 
 
 # ── parse_source ───────────────────────────────────────────────────────────
@@ -862,3 +865,355 @@ def test_dev_parser_wired():
     assert a._func is plugin_cli.cmd_dev and a.path == "/p" and a.once is False
     a = parser.parse_args(["dev", "/p", "--once", "--interval", "0.5"])
     assert a.once is True and a.interval == 0.5
+
+
+# ── the official GitHub packs in the catalog ───────────────────────────────
+#
+# `registry.json` advertises three repositories the CodefyUI org publishes.
+# They are catalog names like any other -- `cdui plugin install graph-copilot`
+# -- but everything behind the name is different: the pack is downloaded
+# rather than activated in place, so the install is a consent decision and
+# `cdui plugin sync` must never make it on the user's behalf.
+
+OFFICIAL_GITHUB_PACKS = {
+    "graph-copilot": "CodefyUI/CodefyUI-Plugin-Graph-Copilot",
+    "self-learning": "CodefyUI/CodefyUI-Plugin-Self-Learning",
+    "official-template": "CodefyUI/CodefyUI-Plugin-Official",
+}
+
+_TEMPLATE_MANIFEST = dedent("""\
+    [plugin]
+    id = "official-template"
+    name = "Official Template"
+    version = "0.1.0"
+    schema_version = 1
+    """)
+
+
+def _out(capsys) -> str:
+    captured = capsys.readouterr()
+    return captured.out + captured.err
+
+
+def _tarball_of(root_name: str, files: dict[str, str], dest: Path) -> None:
+    """Pack ``{relative path: text}`` under one top-level directory -- the
+    shape ``_install_github`` expects from a GitHub codeload tarball."""
+    with tarfile.open(dest, "w:gz") as tf:
+        for rel, text in files.items():
+            data = text.encode("utf-8")
+            member = tarfile.TarInfo(f"{root_name}/{rel}")
+            member.size = len(data)
+            tf.addfile(member, io.BytesIO(data))
+
+
+@pytest.fixture
+def fake_github(monkeypatch):
+    """Serve a synthetic tarball instead of reaching GitHub.
+
+    Patches this module's OWN ``resolve_sha`` / ``download_tarball``, which is
+    what ``_install_github`` calls: ``scripts/plugins.py`` re-exports the core
+    client under those names precisely so a test can replace them, and
+    patching the core module instead would leave the CLI bound to the real
+    network client.
+    """
+    def _make(files: dict[str, str] | None = None) -> None:
+        payload = {"cdui.plugin.toml": _TEMPLATE_MANIFEST} if files is None else files
+        monkeypatch.setattr(plugin_cli, "resolve_sha", lambda o, r, ref: "0" * 40)
+        monkeypatch.setattr(
+            plugin_cli,
+            "download_tarball",
+            lambda owner, repo, sha, dest: _tarball_of(f"{repo}-main", payload, dest),
+        )
+
+    return _make
+
+
+def _install_args(**overrides) -> argparse.Namespace:
+    base = dict(
+        force=False,
+        no_confirm=True,
+        trust_author=False,
+        accept_capabilities=False,
+        prior_capabilities=[],
+    )
+    base.update(overrides)
+    return argparse.Namespace(**base)
+
+
+def _cmd_install_args(*sources: str) -> argparse.Namespace:
+    return argparse.Namespace(
+        source=list(sources),
+        force=False,
+        no_confirm=True,
+        trust_author=False,
+        accept_capabilities=False,
+    )
+
+
+def _manifest_declaring(plugin_id: str) -> str:
+    return dedent(f"""\
+        [plugin]
+        id = "{plugin_id}"
+        name = "Claimed"
+        version = "0.1.0"
+        schema_version = 1
+        """)
+
+
+def test_a_github_catalog_id_parses_as_a_catalog_name():
+    """The whole point of the row: the id is a name a person can type."""
+    for pack_id in OFFICIAL_GITHUB_PACKS:
+        assert plugin_cli.parse_source(pack_id) == ("catalog", pack_id, "", "")
+    # Case-insensitive, like every other catalog name.
+    assert plugin_cli.parse_source("Graph-Copilot") == (
+        "catalog", "graph-copilot", "", "",
+    )
+
+
+def test_the_catalog_carries_the_repository_of_each_official_pack():
+    for pack_id, repo in OFFICIAL_GITHUB_PACKS.items():
+        entry = plugin_cli.catalog_entry(pack_id)
+        assert entry is not None, f"{pack_id} was dropped by validate_catalog"
+        assert entry.kind == "github"
+        assert entry.repo == repo
+        assert entry.ref == ""      # no tags yet: the default branch
+        assert entry.official is True
+
+
+def test_cmd_install_sends_a_github_catalog_entry_to_the_repository_installer(
+    isolated_lockfile, monkeypatch
+):
+    """`install graph-copilot` has to fetch the repository the catalog names.
+    Before the dispatch existed, every catalog name went to the built-in
+    installer, which looked for a directory this release does not ship."""
+    calls: list[tuple] = []
+
+    def _record(owner, repo, ref, args, lockfile, *, catalog_id=None):
+        calls.append((owner, repo, ref, catalog_id))
+        return 0
+
+    def _never(*_a, **_k):  # pragma: no cover - only runs on a bug
+        raise AssertionError("a github row must not take the built-in path")
+
+    monkeypatch.setattr(plugin_cli, "_install_github", _record)
+    monkeypatch.setattr(plugin_cli, "_install_catalog", _never)
+
+    assert plugin_cli.cmd_install(_cmd_install_args("graph-copilot")) == 0
+    assert calls == [
+        ("CodefyUI", "CodefyUI-Plugin-Graph-Copilot", "", "graph-copilot")
+    ]
+
+
+def test_cmd_install_still_activates_a_builtin_catalog_entry_in_place(
+    isolated_lockfile, monkeypatch
+):
+    """The other half of the same dispatch, unchanged: a builtin row must not
+    start downloading anything."""
+    seen: list[str] = []
+
+    def _record(plugin_id, args, lockfile):
+        seen.append(plugin_id)
+        return 0
+
+    def _never(*_a, **_k):  # pragma: no cover - only runs on a bug
+        raise AssertionError("a builtin pack is activated in place, not fetched")
+
+    monkeypatch.setattr(plugin_cli, "_install_catalog", _record)
+    monkeypatch.setattr(plugin_cli, "_install_github", _never)
+
+    assert plugin_cli.cmd_install(_cmd_install_args("stats")) == 0
+    assert seen == ["stats"]
+
+
+def test_install_github_keeps_the_positional_arguments_project_restore_uses():
+    """``scripts/project.py`` restores a project's pins with
+    ``_install_github(owner, repo, ref, inst_args, lockfile)``. ``catalog_id``
+    was added after those five and keyword-only so that call stays valid."""
+    import inspect
+
+    params = list(inspect.signature(plugin_cli._install_github).parameters.values())
+    assert [p.name for p in params[:5]] == [
+        "owner", "repo", "ref", "args", "lockfile",
+    ]
+    assert all(p.kind is inspect.Parameter.POSITIONAL_OR_KEYWORD for p in params[:5])
+    assert params[5].name == "catalog_id"
+    assert params[5].kind is inspect.Parameter.KEYWORD_ONLY
+    assert params[5].default is None
+
+
+def test_the_repository_the_catalog_names_may_claim_its_catalog_id(
+    isolated_lockfile, fake_github
+):
+    """The refusal this rule replaced would have made the official pack the
+    one thing the catalog advertises and nobody can install: its manifest
+    declares the id the catalog lists it under, which used to be enough to
+    refuse it."""
+    fake_github({
+        "cdui.plugin.toml": _TEMPLATE_MANIFEST,
+        "nodes/hello.py": "VALUE = 1\n",
+    })
+    rc = plugin_cli._install_github(
+        "CodefyUI", "CodefyUI-Plugin-Official", "",
+        _install_args(), plugin_loader.load_lockfile(),
+    )
+    assert rc == 0
+    entry = plugin_loader.load_lockfile()["plugins"]["official-template"]
+    assert entry["source_kind"] == "github_url"
+    # This call did not come from the catalog, so it claims no catalog row --
+    # the key is absent rather than null, which is the shape every free-text
+    # install has always written.
+    assert "catalog_id" not in entry
+
+
+def test_a_fork_may_not_claim_the_catalog_id_of_the_pack_it_forked(
+    isolated_lockfile, fake_github, capsys
+):
+    """Same manifest, a different repository. The id is what the lockfile,
+    the catalog card and the ``/api/plugins/<id>`` route all key on, so a fork
+    installing under it would quietly take the official pack's place."""
+    fake_github({
+        "cdui.plugin.toml": _TEMPLATE_MANIFEST,
+        "nodes/hello.py": "VALUE = 1\n",
+    })
+    rc = plugin_cli._install_github(
+        "someone", "fork", "", _install_args(), plugin_loader.load_lockfile()
+    )
+    assert rc == 1
+    assert plugin_loader.load_lockfile()["plugins"] == {}
+    assert not (isolated_lockfile / "official-template").exists()
+    # The refusal names the repository that may use the id, because "reserved"
+    # on its own leaves the reader with nothing to do about it.
+    assert "CodefyUI/CodefyUI-Plugin-Official" in _out(capsys)
+
+
+@pytest.mark.parametrize(
+    ("plugin_id", "why"),
+    [
+        ("stats", "a pack that ships with CodefyUI"),
+        ("install", "a route under /api/plugins/"),
+    ],
+)
+def test_a_repository_may_not_claim_a_shipped_pack_or_a_route_name(
+    isolated_lockfile, fake_github, capsys, monkeypatch, plugin_id, why
+):
+    """Neither of these is negotiable by repository: the built-in directory
+    would decide which pack loaded, and the router would decide which
+    ``/api/plugins/install`` answered. Asked of the repository that IS
+    allowed to claim its own catalog id, so what is being refused here is the
+    id rather than the owner."""
+    monkeypatch.setenv("CODEFYUI_LANG", "en")
+    fake_github({"cdui.plugin.toml": _manifest_declaring(plugin_id)})
+    rc = plugin_cli._install_github(
+        "CodefyUI", "CodefyUI-Plugin-Official", "",
+        _install_args(), plugin_loader.load_lockfile(),
+    )
+    assert rc == 1
+    assert plugin_loader.load_lockfile()["plugins"] == {}
+    printed = _out(capsys)
+    assert plugin_id in printed
+    assert why in printed
+
+
+def test_an_install_from_the_catalog_records_which_row_it_came_from(
+    isolated_lockfile, fake_github
+):
+    """``catalog_id`` is how a later reader tells the catalog's own pack from
+    free text that happens to carry the same id."""
+    fake_github({
+        "cdui.plugin.toml": _TEMPLATE_MANIFEST,
+        "nodes/hello.py": "VALUE = 1\n",
+    })
+    rc = plugin_cli._install_github(
+        "CodefyUI", "CodefyUI-Plugin-Official", "",
+        _install_args(), plugin_loader.load_lockfile(),
+        catalog_id="official-template",
+    )
+    assert rc == 0
+    entry = plugin_loader.load_lockfile()["plugins"]["official-template"]
+    assert entry["catalog_id"] == "official-template"
+
+
+def test_search_lists_the_github_packs_and_marks_them_official(
+    isolated_lockfile, capsys
+):
+    assert plugin_cli.cmd_search(argparse.Namespace(query=None)) == 0
+    printed = _out(capsys)
+
+    def _line_for(pack_id: str) -> str:
+        return next(
+            line for line in printed.splitlines()
+            if line.strip().startswith(pack_id)
+        )
+
+    for pack_id in OFFICIAL_GITHUB_PACKS:
+        assert "[github, official]" in _line_for(pack_id), pack_id
+    # A built-in pack is not a download and must not be labelled as one.
+    assert "[github" not in _line_for("stats")
+
+
+def test_search_finds_a_github_pack_by_its_repository_name(
+    isolated_lockfile, capsys
+):
+    """Someone with the GitHub page open has the repository name in front of
+    them and no reason to guess the id the catalog files it under."""
+    assert plugin_cli.cmd_search(
+        argparse.Namespace(query="CodefyUI-Plugin-Self-Learning")
+    ) == 0
+    printed = _out(capsys)
+    assert "self-learning" in printed
+    assert "graph-copilot" not in printed
+
+
+def test_info_prints_the_catalog_row_and_then_the_live_repository(
+    isolated_lockfile, monkeypatch, capsys
+):
+    monkeypatch.setattr(plugin_cli, "resolve_sha", lambda o, r, ref: "c" * 40)
+    monkeypatch.setattr(
+        "app.core.plugins.github.fetch_manifest_text",
+        lambda o, r, sha: _manifest_declaring("graph-copilot"),
+    )
+    assert plugin_cli.cmd_info(
+        argparse.Namespace(source_or_id="graph-copilot")
+    ) == 0
+    printed = _out(capsys)
+    assert "CodefyUI/CodefyUI-Plugin-Graph-Copilot" in printed
+    assert "https://github.com/CodefyUI/CodefyUI-Plugin-Graph-Copilot" in printed
+    assert "copilot, llm, agent" in printed          # the catalog's tags
+    assert "official" in printed
+    assert "cccccccccccc" in printed                 # the live sha
+
+
+def test_info_still_answers_from_the_catalog_when_github_is_unreachable(
+    isolated_lockfile, monkeypatch, capsys
+):
+    """The catalog half is printed first for exactly this case: a student on
+    a school network still learns what the pack is and where it comes from."""
+    def _boom(*_a, **_k):
+        raise RuntimeError("GitHub API 403: rate limited")
+
+    monkeypatch.setattr(plugin_cli, "resolve_sha", _boom)
+    assert plugin_cli.cmd_info(
+        argparse.Namespace(source_or_id="self-learning")
+    ) == 1
+    printed = _out(capsys)
+    assert "CodefyUI/CodefyUI-Plugin-Self-Learning" in printed
+    assert "rate limited" in printed
+
+
+def test_sync_never_proposes_a_github_catalog_entry(isolated_lockfile, capsys):
+    """#175's line, held: sync activates what the release already put on
+    disk. Downloading someone else's repository is a consent decision, and
+    nothing that installs without being asked may make it."""
+    pending = core_catalog.available_builtin_packs(
+        plugin_cli.load_catalog(), {"plugins": {}}
+    )
+    pending_ids = {pack_id for pack_id, _ in pending}
+    assert pending_ids, "the built-in packs are still pending on an empty lockfile"
+    assert not (pending_ids & set(OFFICIAL_GITHUB_PACKS))
+
+    assert plugin_cli.cmd_sync(
+        argparse.Namespace(dry_run=True, prune=False, yes=False)
+    ) == 0
+    printed = _out(capsys)
+    for pack_id in OFFICIAL_GITHUB_PACKS:
+        assert pack_id not in printed
