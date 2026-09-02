@@ -200,7 +200,7 @@ cdui plugin install CodefyUI/CodefyUI-Plugin-Official
 cdui plugin install your-username/your-fork
 ```
 
-A pack ships any of: a `nodes/` directory (auto-discovered), a `presets/` directory, an `examples/` directory, and an `assets/` directory (mounted at `/plugins/<id>/assets/<file>`). A `cdui.plugin.toml` manifest declares the id, version, `requires_codefyui`, content directories, lesson metadata, and — only if you need them — the `[security]` declarations described under [Security](#security--three-tiers). Delete that section if your nodes are pure computation; most are.
+A pack ships any of: a `nodes/` directory (auto-discovered), a `presets/` directory, an `examples/` directory, and an `assets/` directory (served at `/plugins/<id>/assets/<file>`). A `cdui.plugin.toml` manifest declares the id, version, `requires_codefyui`, content directories, lesson metadata, and — only if you need them — the `[security]` declarations described under [Security](#security--three-tiers). Delete that section if your nodes are pure computation; most are.
 
 :::warning Breaking change (v0.3)
 The chapter packs `c1`–`c6` were repackaged into three direction packs `foundations` / `deep` / `rl`, and every Edu node's type id gained a dash (`EduKNN` → `Edu-KNN`). Saved graphs referencing the old `cN:EduFoo` types must be updated to `<pack>:Edu-Foo` and the packs reinstalled with `cdui plugin install foundations deep rl`.

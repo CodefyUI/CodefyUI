@@ -191,7 +191,7 @@ cdui plugin install CodefyUI/CodefyUI-Plugin-Official
 cdui plugin install your-username/your-fork
 ```
 
-一個外掛包可隨附下列任意內容：一個 `nodes/` 目錄（自動探索）、一個 `presets/` 目錄、一個 `examples/` 目錄，以及一個 `assets/` 目錄（掛載於 `/plugins/<id>/assets/<file>`）。一份 `cdui.plugin.toml` 資訊清單宣告 id、版本、`requires_codefyui`、內容目錄、課程 metadata，以及——只在你需要時——[安全性](#安全性三個層級)一節描述的 `[security]` 宣告。若你的節點只做純運算，直接刪掉那一段就好；大多數外掛都是如此。
+一個外掛包可隨附下列任意內容：一個 `nodes/` 目錄（自動探索）、一個 `presets/` 目錄、一個 `examples/` 目錄，以及一個 `assets/` 目錄（於 `/plugins/<id>/assets/<file>` 提供）。一份 `cdui.plugin.toml` 資訊清單宣告 id、版本、`requires_codefyui`、內容目錄、課程 metadata，以及——只在你需要時——[安全性](#安全性三個層級)一節描述的 `[security]` 宣告。若你的節點只做純運算，直接刪掉那一段就好；大多數外掛都是如此。
 
 :::warning 破壞性變更（v0.3）
 章節外掛包 `c1`–`c6` 已重新封裝為三個方向外掛包 `foundations` / `deep` / `rl`，而且每個 Edu 節點的型別 id 都加上了一個破折號（`EduKNN` → `Edu-KNN`）。引用舊有 `cN:EduFoo` 型別的已儲存圖必須更新為 `<pack>:Edu-Foo`，並以 `cdui plugin install foundations deep rl` 重新安裝這些外掛包。

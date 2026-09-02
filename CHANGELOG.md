@@ -22,6 +22,77 @@ received — each links to the release it was published as.
 
 ## [Unreleased]
 
+### Added
+
+- **`GET /api/plugins/catalog` — everything you can install and everything
+  you have installed, in one listing.** The read half of the Plugin Center.
+  Two documents that do not know about each other answer half the question
+  each — the catalog this build ships says what can be installed by name, the
+  lockfile says what this install actually did — so they are merged once, on
+  the server, into one row per plugin with every field on every row: a card
+  never has to ask whether a key is there this time. A row says which state
+  it is in, including the two that used to be invisible: a pack you removed
+  on purpose reads `removed` rather than looking like one you have never had,
+  and an entry whose files are gone reads `missing_files` rather than drawing
+  as a normal installed row whose nodes have all silently vanished. It also
+  says what nodes the pack would add before you install it — read as text off
+  the sources, never by importing them, because importing a pack to find out
+  what is in it is exactly what installing it means. Open, like
+  `GET /api/packs`: it is a read the editor draws a panel from, and it
+  touches no network.
+
+- **Three official plugins install by name.** `graph-copilot`,
+  `self-learning` and `official-template` are in the catalog, so
+  `cdui plugin search` lists them and `cdui plugin install self-learning`
+  fetches the repository the catalog names instead of asking anyone to
+  remember `CodefyUI/CodefyUI-Plugin-Self-Learning`. The badge saying
+  CodefyUI vouches for a plugin is earned by where the files came FROM, not
+  by the id on its manifest: those ids are deliberately not reserved — an
+  official plugin's own author has to be able to install their own
+  repository under its own id — so a pack fetched from anywhere else that
+  claims `self-learning` is listed as exactly what it is.
+
+- **`CODEFYUI_GITHUB_TOKEN` and `CODEFYUI_ALLOW_REMOTE_PLUGIN_INSTALL`.**
+  Unauthenticated GitHub allows sixty requests an hour per IP, which a
+  classroom behind one NAT can exhaust in a morning; export a token and the
+  plugin installer's GitHub calls use it. It is read per call, so a token
+  exported after the server started still works, and no copy of it is kept.
+  The second is the same loopback gate the Package Center has, for the
+  install routes landing next: installing a plugin puts third-party code
+  where this process will import it, so the answer to "who may install one"
+  is "whoever is sitting at this machine" unless a deliberate classroom or
+  lab server opts back in with `CODEFYUI_ALLOW_REMOTE_PLUGIN_INSTALL=1`.
+
+### Changed
+
+- **The plugin rules the CLI owned now live in the backend.** What a manifest
+  may say, what `owner/repo@ref` means, which packs the catalog ships, which
+  imports the sandbox gate refuses — all of it lived in `scripts/plugins.py`,
+  which the server cannot import, so a Plugin Center in the browser would
+  have had to grow a second copy of every one of those rules, and a second
+  copy of a security rule is the kind that drifts quietly. They moved to
+  `backend/app/core/plugins/` and `cdui plugin` became a front end over them:
+  same commands, same output, same refusals, and every test the CLI already
+  had still passes untouched, which is what says so.
+
+- **The Package Center's job runner is shared code.** The one-job-at-a-time
+  runner with a cursor and a long poll that `backend/app/core/packs/` had is
+  now `app.core.jobs`, so the plugin installer landing next runs under the
+  same lock rules rather than a second copy of them. Nothing about installing
+  a pack changes.
+
+### Fixed
+
+- **A plugin installed while the server was running served 404 for its
+  `assets/` until a restart.** Every installed plugin's `assets/` directory
+  was attached to the server once, at startup, so a pack that arrived
+  afterwards — which is the entire premise of installing one from inside the
+  app — had a URL for each CSV and image it shipped and nothing behind it
+  until someone restarted. `/plugins/<id>/assets/<file>` is now served by a
+  route that looks the plugin up per request: the same URL and the same
+  files, but a pack is servable the moment it is installed, and a pack you
+  disable stops serving its files at once rather than at the next restart.
+
 ## [2.5.0] — 2026-09-01
 
 Twenty-four commits since 2.4.1, around three themes. The Package Center
