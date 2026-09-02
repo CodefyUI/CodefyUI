@@ -14,6 +14,7 @@ import plugins as plugin_cli
 from app.core import plugin_loader
 from app.core.plugin_validator import PluginValidationError
 from app.core.plugins import catalog as core_catalog
+from app.core.plugins import lifecycle
 
 
 # ── parse_source ───────────────────────────────────────────────────────────
@@ -840,6 +841,76 @@ def test_cmd_unlink_refuses_non_local_entry(isolated_lockfile):
 
 def test_cmd_unlink_missing_plugin_errors(isolated_lockfile):
     assert plugin_cli.cmd_unlink(argparse.Namespace(plugin_id="nope")) == 1
+
+
+# ── uninstall: the files go first, or nothing goes ─────────────────────────
+
+def test_a_downloaded_pack_whose_files_survive_stays_installed(
+    isolated_lockfile, monkeypatch, capsys
+):
+    """A failed delete abandons the uninstall instead of half-doing it.
+
+    Windows holds open files, so this is the ordinary failure, not an exotic
+    one. Popping the lockfile entry anyway would claim the pack is gone while
+    its directory keeps sitting in the user data dir -- and with nothing left
+    pointing at it, nothing would ever clean it up or load it again on
+    purpose. So the entry stays, and the command says why and fails.
+    """
+    plugin_dir = isolated_lockfile / "ghost"
+    _write_plugin_dir(plugin_dir, "ghost")
+    lockfile = plugin_loader.load_lockfile()
+    lockfile.setdefault("plugins", {})["ghost"] = {
+        "source_kind": "github_url",
+        "source": "alice/ghost",
+        "url": "https://github.com/alice/ghost",
+        "enabled": True,
+    }
+    plugin_loader.save_lockfile(lockfile)
+
+    def _refuse(*_args, **_kwargs):
+        raise OSError(13, "used by another process")
+
+    monkeypatch.setattr(lifecycle.shutil, "rmtree", _refuse)
+
+    outcome = lifecycle.uninstall_plugin("ghost")
+    assert outcome is not None
+    assert outcome.removed is False
+    assert outcome.tombstoned is False
+    assert outcome.files_removed is False
+    assert "used by another process" in outcome.error
+    assert "ghost" in plugin_loader.load_lockfile()["plugins"]
+    assert plugin_dir.is_dir()
+
+    # And the CLI reports it the way it always has: the failing path, the
+    # reason, and a non-zero exit code.
+    capsys.readouterr()
+    assert plugin_cli.main(["uninstall", "ghost"]) == 1
+    reported = capsys.readouterr().err
+    assert f"Failed to remove {plugin_dir}" in reported
+    assert "used by another process" in reported
+    assert "ghost" in plugin_loader.load_lockfile()["plugins"]
+
+
+def test_a_downloaded_pack_is_uninstalled_when_its_files_do_go(
+    isolated_lockfile, capsys
+):
+    """The other half of the rule, so the guard above cannot pass by
+    refusing every uninstall."""
+    plugin_dir = isolated_lockfile / "ghost"
+    _write_plugin_dir(plugin_dir, "ghost")
+    lockfile = plugin_loader.load_lockfile()
+    lockfile.setdefault("plugins", {})["ghost"] = {
+        "source_kind": "github_url",
+        "source": "alice/ghost",
+        "enabled": True,
+    }
+    plugin_loader.save_lockfile(lockfile)
+
+    assert plugin_cli.main(["uninstall", "ghost"]) == 0
+    assert "ghost" not in plugin_loader.load_lockfile()["plugins"]
+    assert not plugin_dir.exists()
+    # Not a built-in pack, so no tombstone: nothing re-adds a URL install.
+    assert plugin_loader.removed_ids(plugin_loader.load_lockfile()) == set()
 
 
 def test_cmd_reload_no_server_returns_zero(isolated_lockfile):

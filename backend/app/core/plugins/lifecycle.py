@@ -76,16 +76,18 @@ class UninstallOutcome:
     """What an uninstall did, and what it deliberately left behind."""
 
     plugin_id: str
-    #: The lockfile entry is gone. Always true in a returned outcome -- the
-    #: field exists so a caller can say it rather than assume it.
+    #: The lockfile entry is gone, i.e. the plugin is uninstalled. ``False``
+    #: means the uninstall was ABANDONED and the plugin is still installed --
+    #: see ``error`` for why. There is no half state: nothing is popped
+    #: unless the files this install downloaded are actually gone.
     removed: bool
     #: A ``removed`` record was written, so ``cdui plugin sync`` will not
     #: re-add this pack. Only built-in packs get one (#175).
     tombstoned: bool
     #: ``True`` the downloaded directory is gone, ``False`` it could not be
-    #: deleted and is still there, ``None`` there was never a copy of ours to
-    #: delete (a built-in pack is repo code; a linked one is the author's own
-    #: working tree).
+    #: deleted (and then ``removed`` is ``False`` too), ``None`` there was
+    #: never a copy of ours to delete (a built-in pack is repo code; a linked
+    #: one is the author's own working tree).
     files_removed: bool | None
     #: ``[python_deps]`` names this plugin asked for, which are still
     #: installed in the interpreter. See the module docstring for why nothing
@@ -96,6 +98,10 @@ class UninstallOutcome:
     uninstall_command: str | None
     #: How to get this plugin back.
     reinstall_hint: str
+    #: Why the uninstall was abandoned, in one line, or ``None`` when it was
+    #: not. Text rather than the exception: the caller says it in its own
+    #: language and its own envelope, and neither wants a traceback.
+    error: str | None = None
 
 
 def uninstall_plugin(
@@ -106,12 +112,17 @@ def uninstall_plugin(
     """Remove a plugin from this install. ``None`` when it was not installed.
 
     The order is load-bearing. The manifest is read while the files are still
-    there, the modules are dropped from ``sys.modules`` before anything moves
-    (a re-install of the same id would otherwise reload the OLD path a cached
-    module remembers), the files go, and only then is the lockfile written --
-    so an interrupted uninstall leaves an entry pointing at a directory that
-    is gone, which every reader already handles, rather than a directory no
-    entry mentions, which nothing would ever clean up.
+    there; the modules are dropped from ``sys.modules`` next, both because a
+    re-install of the same id would otherwise reload the OLD path a cached
+    module remembers and because an imported module is one of the things that
+    can hold a file open on Windows; the files go; and only then is the
+    lockfile written.
+
+    That last step is the reason the delete comes first: if it fails, the
+    entry stays, the plugin stays installed, and the caller is told why
+    (``removed=False`` with an ``error``). The alternative -- popping the
+    entry anyway -- would leave a directory no lockfile mentions, which
+    nothing in this system would ever look at again, let alone clean up.
 
     *builtin_ids* overrides which ids count as built-in packs for the
     tombstone rule. It exists for ``scripts/plugins.py``, whose tests fake
@@ -129,7 +140,12 @@ def uninstall_plugin(
 
     files_removed: bool | None = None
     if entry.get("source_kind") == "github_url":
-        files_removed = _remove_downloaded_files(plugin_id)
+        files_removed, failure = _remove_downloaded_files(plugin_id)
+        if not files_removed:
+            return _outcome(
+                plugin_id, removed=False, tombstoned=False,
+                files_removed=False, deps=deps, error=failure,
+            )
 
     lockfile["plugins"].pop(plugin_id, None)
 
@@ -150,9 +166,31 @@ def uninstall_plugin(
         )
     plugin_loader.save_lockfile(lockfile)
 
+    return _outcome(
+        plugin_id, removed=True, tombstoned=tombstoned,
+        files_removed=files_removed, deps=deps, error=None,
+    )
+
+
+def _outcome(
+    plugin_id: str,
+    *,
+    removed: bool,
+    tombstoned: bool,
+    files_removed: bool | None,
+    deps: tuple[str, ...],
+    error: str | None,
+) -> UninstallOutcome:
+    """One :class:`UninstallOutcome`, so the two exits agree on the fields
+    that describe the PLUGIN rather than the attempt.
+
+    The dependency facts are reported either way: they are true of the plugin
+    whether or not this call removed it, and a caller showing "and these
+    packages stay installed" must not have to ask which exit it came from.
+    """
     return UninstallOutcome(
         plugin_id=plugin_id,
-        removed=True,
+        removed=removed,
         tombstoned=tombstoned,
         files_removed=files_removed,
         python_deps_left=deps,
@@ -162,6 +200,7 @@ def uninstall_plugin(
             else None
         ),
         reinstall_hint=f"cdui plugin install {plugin_id}",
+        error=error,
     )
 
 
@@ -199,8 +238,8 @@ def installed_dir(plugin_id: str, lockfile: dict[str, Any]) -> Path | None:
     return None
 
 
-def _remove_downloaded_files(plugin_id: str) -> bool:
-    """Delete ``<user root>/<plugin_id>/``; report whether it is gone.
+def _remove_downloaded_files(plugin_id: str) -> tuple[bool, str | None]:
+    """Delete ``<user root>/<plugin_id>/``. Answers ``(gone, why not)``.
 
     The containment check is the point: this is the one place in the plugin
     system that runs ``rmtree`` on a path built from an id, so the resolved
@@ -209,9 +248,18 @@ def _remove_downloaded_files(plugin_id: str) -> bool:
     or a symlinked user root, which is what a temp directory is on macOS --
     answer the question about the real target.
 
-    A failure is reported, not raised: the entry is removed either way, so a
-    pack whose files Windows is holding open stops claiming to be installed
-    instead of becoming impossible to uninstall.
+    A failure is reported rather than raised, and the caller stops on it: a
+    pack whose files are still there is a pack that will load again on the
+    next start, so calling it uninstalled would be a lie the lockfile then
+    tells forever. An ABSENT directory is success -- there is nothing of ours
+    left, which is all "removed" ever meant.
+
+    Only the containment refusal is also LOGGED. Every failure here is
+    returned, and the caller says it -- logging the ordinary one (a file
+    Windows is holding open) would print the same sentence twice in the same
+    terminal. A path that resolves outside the user root is not an ordinary
+    failure and not a user mistake, so the record of it should exist
+    somewhere other than one line the user may have already scrolled past.
     """
     user_root = plugin_loader.plugins_user_root()
     target = user_root / plugin_id
@@ -219,8 +267,7 @@ def _remove_downloaded_files(plugin_id: str) -> bool:
         resolved = target.resolve()
         root = user_root.resolve()
     except OSError as exc:  # pragma: no cover - resolve() rarely fails
-        logger.warning("plugin uninstall: cannot resolve %s: %s", target, exc)
-        return False
+        return False, str(exc)
     if resolved.parent != root:
         logger.warning(
             "plugin uninstall: refusing to delete %s -- it is not directly "
@@ -228,12 +275,11 @@ def _remove_downloaded_files(plugin_id: str) -> bool:
             resolved,
             root,
         )
-        return False
+        return False, f"{resolved} is not directly inside {root}"
     if not resolved.exists():
-        return True
+        return True, None
     try:
         shutil.rmtree(resolved)
     except OSError as exc:
-        logger.warning("plugin uninstall: failed to delete %s: %s", resolved, exc)
-        return False
-    return True
+        return False, str(exc)
+    return True, None

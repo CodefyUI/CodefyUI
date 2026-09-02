@@ -1398,15 +1398,17 @@ def cmd_uninstall(args: argparse.Namespace) -> int:
         err(f"找不到外掛 {plugin_id}", f"Plugin '{plugin_id}' is not installed")
         return 1
 
-    if outcome.files_removed is False:
-        # The entry is gone either way, so the plugin stops loading; what is
-        # left is a directory nobody will look at again. Windows holding a
-        # file open is the usual cause, exactly as in `cdui packs remove`.
-        warn(
-            f"檔案未能刪除，請手動移除：{plugins_user_root() / plugin_id}",
-            f"Could not delete the plugin files; remove them by hand: "
-            f"{plugins_user_root() / plugin_id}",
+    if not outcome.removed:
+        # The files are still there, so the plugin would load again on the
+        # next start: nothing was uninstalled, and saying otherwise would be
+        # a lie the lockfile then tells forever. Windows holding a file open
+        # is the usual cause.
+        plugin_dir = plugins_user_root() / plugin_id
+        err(
+            f"刪除失敗：{outcome.error}",
+            f"Failed to remove {plugin_dir}: {outcome.error}",
         )
+        return 1
 
     if _backend_reload():
         ok("熱重載完成", "Hot-reloaded backend")
