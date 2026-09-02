@@ -133,12 +133,12 @@ def available_builtin_packs(
     a reader that raises is swallowed like every other failure here.
     """
     try:
-        catalog = builtin_catalog_packs(
-            (load_catalog if read_catalog is None else read_catalog)()
-        )
-        lockfile = (
+        catalog_reader = load_catalog if read_catalog is None else read_catalog
+        lockfile_reader = (
             plugin_loader.load_lockfile if read_lockfile is None else read_lockfile
-        )()
+        )
+        catalog = builtin_catalog_packs(catalog_reader())
+        lockfile = lockfile_reader()
         installed = lockfile.get("plugins", {})
         tombstoned = plugin_loader.removed_ids(lockfile)
     except Exception:  # never let discoverability break a caller
@@ -244,7 +244,7 @@ def validate_catalog(data: Any) -> dict[str, CatalogEntry]:
             if not isinstance(repo, str) or not _REPO_RE.match(repo):
                 logger.warning(
                     "plugin catalog: dropping %r -- a github entry needs "
-                    "repo = \"owner/repo\", got %r",
+                    "repo = 'owner/repo', got %r",
                     plugin_id,
                     repo,
                 )

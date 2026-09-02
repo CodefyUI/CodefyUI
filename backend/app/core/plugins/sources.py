@@ -72,9 +72,8 @@ def parse_source(
     CLI's own ``load_catalog``: without them this would reach past that patch
     and answer from the real ``registry.json``.
     """
-    plugins = (
-        catalog_module.load_catalog() if catalog is None else catalog
-    ).get("plugins", {})
+    data = catalog_module.load_catalog() if catalog is None else catalog
+    plugins = data.get("plugins", {})
 
     if spec.lower() in plugins:
         return ParsedSource("catalog", spec.lower(), "", "")
