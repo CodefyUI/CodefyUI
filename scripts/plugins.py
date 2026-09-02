@@ -870,10 +870,13 @@ def _install_github(
 
     *catalog_id* is the catalog row this install came from, when it came from
     one; it is recorded in the lockfile so a later reader can tell the
-    catalog's own pack from free text that happens to carry the same id.
-    Keyword-only and last so the five positional arguments stay what they
-    were -- ``scripts/project.py`` restores a project's pins through this
-    function positionally.
+    catalog's own pack from free text that happens to carry the same id. It
+    is also checked against the manifest that arrives -- a row whose
+    repository declares a different id is describing one pack and fetching
+    another -- and the install is refused when they disagree. Keyword-only
+    and last so the five positional arguments stay what they were --
+    ``scripts/project.py`` restores a project's pins through this function
+    positionally.
     """
     url = f"https://github.com/{owner}/{repo}"
     info(f"來源：{url}", f"Source: {url}")
@@ -933,6 +936,27 @@ def _install_github(
             err(str(e), str(e))
             return 1
 
+        plugin_id = manifest["plugin"]["id"]
+
+        # The catalog said this row installs `catalog_id`; the repository's
+        # own manifest says which id it installs under. When those disagree
+        # the catalog is describing one pack and fetching another, and every
+        # card, lockfile key and /api/plugins/<id> URL after this point would
+        # use the manifest's id while the user was reading the catalog's.
+        # Refused here, before anything is staged or written -- the temp
+        # directory goes with the `with` block, like the other early
+        # refusals. A row that has drifted is a bug in the catalog, and one
+        # naming both ids is what gets it fixed.
+        if catalog_id is not None and plugin_id != catalog_id:
+            err(
+                f"目錄項目 {catalog_id} 指向的儲存庫宣告的 id 是 {plugin_id}，"
+                f"兩者不一致，已中止安裝。",
+                f"The catalog lists this pack as '{catalog_id}', but the "
+                f"repository it names declares id '{plugin_id}'. Nothing was "
+                f"installed.",
+            )
+            return 1
+
         if _manifest_has_frontend(manifest):
             warn(
                 "此外掛包含前端 UI 程式碼（JavaScript），安裝後將在您的瀏覽器中"
@@ -942,7 +966,6 @@ def _install_github(
                 " Only install plugins you trust.",
             )
 
-        plugin_id = manifest["plugin"]["id"]
         allowed = manifest.get("security", {}).get("allowed_modules") or []
         try:
             core_consent.check_trust(allowed, trust_author=args.trust_author)

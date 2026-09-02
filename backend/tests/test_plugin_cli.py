@@ -1249,6 +1249,35 @@ def test_an_install_from_the_catalog_records_which_row_it_came_from(
     assert entry["catalog_id"] == "official-template"
 
 
+def test_a_catalog_row_whose_repository_declares_another_id_is_refused(
+    isolated_lockfile, fake_github, capsys, monkeypatch
+):
+    """The catalog names an id AND a repository; the repository's manifest
+    names an id too. When they drift apart the catalog is describing one pack
+    and fetching another -- and every card, lockfile key and
+    ``/api/plugins/<id>`` URL afterwards would use the manifest's id while
+    the user was reading the catalog's card. Nothing is written and the
+    refusal names both ids, because this is a bug in the catalog and the two
+    ids are what gets it fixed."""
+    monkeypatch.setenv("CODEFYUI_LANG", "en")
+    fake_github({
+        "cdui.plugin.toml": _manifest_declaring("renamed-plugin"),
+        "nodes/hello.py": "VALUE = 1\n",
+    })
+    rc = plugin_cli._install_github(
+        "CodefyUI", "CodefyUI-Plugin-Official", "",
+        _install_args(), plugin_loader.load_lockfile(),
+        catalog_id="official-template",
+    )
+    assert rc == 1
+    assert plugin_loader.load_lockfile()["plugins"] == {}
+    assert not (isolated_lockfile / "renamed-plugin").exists()
+    assert not (isolated_lockfile / "official-template").exists()
+    assert not (isolated_lockfile / ".staging").exists()
+    printed = _out(capsys)
+    assert "official-template" in printed and "renamed-plugin" in printed
+
+
 def test_search_lists_the_github_packs_and_marks_them_official(
     isolated_lockfile, capsys
 ):
