@@ -36,9 +36,9 @@ from .errors import ConsentRequired
 class Decision:
     """What a capability request comes to, given what is already agreed.
 
-    ``granted`` and ``missing`` partition the request, both in the order the
-    manifest asked -- a dialog lists them next to the manifest and a list
-    that has been re-sorted reads as a different request.
+    ``granted`` and ``missing`` partition the request, both in the order it
+    was made -- a dialog lists them beside the plugin's own declaration,
+    and a list re-ordered on the way reads as a different request.
 
     ``reused_prior`` is true when at least one capability is granted only
     because of an earlier install. It is the difference between "you already
