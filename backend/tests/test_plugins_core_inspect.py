@@ -360,6 +360,64 @@ def test_an_installed_plugin_is_re_inspected_from_its_recorded_source(
     assert found.mode == "update"
     assert found.url == "https://github.com/alice/extras"
     assert found.sha == "e" * 40
+    # A repository the catalog never heard of stays what it is.
+    assert found.catalog_id is None and found.official is False
+
+
+SELF_LEARNING_REPO = "CodefyUI/CodefyUI-Plugin-Self-Learning"
+SELF_LEARNING_MANIFEST = dedent("""\
+    [plugin]
+    id = "self-learning"
+    name = "Self-Learning"
+    version = "1.1.0"
+    schema_version = 1
+    """)
+
+
+def _installed_official(**overrides) -> dict:
+    entry = {
+        "source_kind": "github_url",
+        "source": SELF_LEARNING_REPO,
+        "url": f"https://github.com/{SELF_LEARNING_REPO}",
+        "ref": "",
+        "sha": "b" * 40,
+        "manifest": {"id": "self-learning", "version": "1.0.0"},
+        "capabilities": [],
+        "trusted_modules": [],
+        "enabled": True,
+    }
+    entry.update(overrides)
+    return {"plugins": {"self-learning": entry}}
+
+
+def test_an_update_of_a_catalog_pack_still_knows_it_is_the_catalog_pack(
+    fake_github,
+):
+    """The recorded ``catalog_id`` is what ``cdui plugin install <name>``
+    wrote down precisely so a later reader can tell the catalog's own pack
+    from free text carrying the same id. Dropping it on re-inspection made
+    every update of an official plugin read as third-party."""
+    fake_github(SELF_LEARNING_MANIFEST, sha="f" * 40)
+    found = plugin_inspect.inspect_installed(
+        "self-learning", lockfile=_installed_official(catalog_id="self-learning")
+    )
+    assert found.mode == "update"
+    assert found.catalog_id == "self-learning"
+    assert found.official is True
+
+
+def test_the_badge_is_re_derived_when_the_install_recorded_no_catalog_id(
+    fake_github,
+):
+    """Installed by URL rather than by name -- the same code from the same
+    repository by a longer road, and ``is_official``'s repository match is
+    what says so. The panel's badge and this dialog must not disagree."""
+    fake_github(SELF_LEARNING_MANIFEST, sha="f" * 40)
+    found = plugin_inspect.inspect_installed(
+        "self-learning", lockfile=_installed_official()
+    )
+    assert found.catalog_id is None, "nothing was recorded, so nothing is claimed"
+    assert found.official is True
 
 
 @pytest.mark.parametrize(

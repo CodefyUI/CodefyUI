@@ -43,7 +43,7 @@ from typing import Any, Literal
 from app.core import plugin_loader
 
 from . import catalog as catalog_module
-from . import github, sources
+from . import github, listing, sources
 from .errors import PluginInstallError
 from .manifest import (
     manifest_allowed_modules,
@@ -367,6 +367,15 @@ def inspect_installed(plugin_id: str, *, lockfile: dict[str, Any]) -> Inspection
     Only ``github_url`` plugins have an update to look for: a built-in pack
     updates with CodefyUI itself, and a linked development directory is
     whatever is on the developer's disk right now.
+
+    Provenance is carried forward rather than dropped. Re-inspecting is the
+    same plugin seen a second time, so an update dialog must be able to say
+    "this is the catalog's own pack" exactly where the install did: the
+    recorded ``catalog_id`` is passed straight through, and ``official`` is
+    :func:`~.listing.is_official` -- the same rule the Plugin Center's badge
+    uses, so a row cannot be official in the panel and unofficial in the
+    dialog that updates it. Without this, every update of an official plugin
+    read as third-party free text.
     """
     entry = _lockfile_entry(lockfile, plugin_id)
     if entry is None:
@@ -384,9 +393,12 @@ def inspect_installed(plugin_id: str, *, lockfile: dict[str, Any]) -> Inspection
             f"Cannot tell which repository {plugin_id!r} came from.",
             hint=f"url={entry.get('url')!r} source={entry.get('source')!r}",
         )
+    recorded_catalog_id = _text(entry.get("catalog_id")) or None
     return inspect_github(
         match.group(1),
         match.group(2),
         _text(entry.get("ref")),
         lockfile=lockfile,
+        catalog_id=recorded_catalog_id,
+        official=listing.is_official(catalog_module.catalog_entry(plugin_id), entry),
     )
