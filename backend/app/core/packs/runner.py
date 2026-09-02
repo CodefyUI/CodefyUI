@@ -208,6 +208,10 @@ def _stop_process(proc) -> None:
         proc.kill()
 
 
+# Shared by every subprocess the app starts.
+stop_process = _stop_process
+
+
 def _close_output(proc) -> None:
     """Shut the pipe the reader thread is holding.
 
