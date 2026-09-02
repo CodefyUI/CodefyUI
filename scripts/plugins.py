@@ -754,14 +754,13 @@ def _install_catalog(plugin_id: str, args, lockfile) -> int:
 def _reserved_id_refusal(
     plugin_id: str, owner: str, repo: str
 ) -> tuple[str, str] | None:
-    """The bilingual refusal for an id ``{owner}/{repo}`` may not install
-    under, or ``None`` when it may.
+    """The bilingual refusal for an id ``owner/repo`` may not use, else ``None``.
 
-    Three ids are refused, and the third is the one worth spelling out. An id
-    is taken if it names a route under ``/api/plugins/`` (the router, not the
-    plugin, would decide which one answers) or a pack that ships with
-    CodefyUI (the built-in directory would decide). A ``github`` catalog id
-    is different: that row IS a repository, so refusing it outright would
+    Three kinds of id are refused, and the third is the one worth spelling
+    out. An id is taken if it names a route under ``/api/plugins/`` (the
+    router, not the plugin, would decide which one answers) or a pack that
+    ships with CodefyUI (the built-in directory would decide). A ``github``
+    catalog id is different: that row IS a repository, so refusing it would
     make the official pack the catalog advertises the one thing nobody can
     install. So it is refused only for a DIFFERENT repository -- the id is
     what the lockfile, the catalog card and the route all key on, and a fork
