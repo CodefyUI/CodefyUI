@@ -29,6 +29,7 @@ that does nothing for a minute and a progress bar with two frames.
 
 from __future__ import annotations
 
+import http.client
 import json
 import os
 import tarfile
@@ -125,6 +126,14 @@ def _gh_get(url: str, timeout: float = 30.0) -> bytes:
 
     Every request in this module goes through here, so the token, the user
     agent and the two shapes of failure are decided once.
+
+    ``http.client.HTTPException`` is caught alongside the OSError family
+    because it is NOT one: ``InvalidURL`` -- what a ref with a space or a
+    control character in it becomes by the time ``putrequest`` sees the URL
+    -- would otherwise travel out of here as itself, past every caller that
+    catches ``GitHubError`` and past the CLI's ``except RuntimeError``, and
+    turn a bad ref into a traceback. It never reached GitHub, so it has no
+    status, which is exactly what ``None`` says.
     """
     req = urllib.request.Request(url, headers=_headers())
     try:
@@ -132,7 +141,7 @@ def _gh_get(url: str, timeout: float = 30.0) -> bytes:
             return resp.read()
     except HTTPError as exc:
         raise _from_http_error(exc) from exc
-    except (URLError, TimeoutError) as exc:
+    except (URLError, TimeoutError, http.client.HTTPException) as exc:
         raise _from_url_error(exc) from exc
 
 
@@ -144,11 +153,18 @@ def resolve_sha(owner: str, repo: str, ref: str) -> str:
     loud: it is the repo, the ref, or the spelling of either, and only the
     caller's sentence can say which three things to check. The ``status``
     rides along unchanged.
+
+    A 200 that is not JSON is a failure too, and its own one: a captive
+    portal, a school proxy's block page or a transparent MITM all answer
+    "200 OK" with HTML. That is a ``json.JSONDecodeError`` -- a ``ValueError``
+    that no caller of this function catches -- so it becomes a
+    :class:`~.errors.GitHubError` with no status, because whatever answered
+    was not GitHub.
     """
     target = ref or "HEAD"
     url = f"https://api.github.com/repos/{owner}/{repo}/commits/{target}"
     try:
-        data = json.loads(_gh_get(url))
+        body = _gh_get(url)
     except GitHubError as exc:
         if exc.status is None:
             raise GitHubError(
@@ -157,6 +173,14 @@ def resolve_sha(owner: str, repo: str, ref: str) -> str:
         raise GitHubError(
             f"GitHub API returned {exc.status} for {owner}/{repo}@{target}: {exc}",
             status=exc.status,
+        ) from exc
+    try:
+        data = json.loads(body)
+    except ValueError as exc:
+        raise GitHubError(
+            f"GitHub API request for {owner}/{repo}@{target} did not return "
+            f"JSON; something on the way answered instead of GitHub",
+            status=None,
         ) from exc
     sha = data.get("sha") if isinstance(data, dict) else None
     if not sha:

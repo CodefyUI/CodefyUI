@@ -27,16 +27,21 @@ from typing import Any, Literal, NamedTuple
 
 from . import catalog as catalog_module
 from .errors import UnknownCatalogName, UnparseableSource
-from .manifest import REPO_SEGMENT
+from .manifest import REF_SEGMENT, REPO_SEGMENT
 
 # Accepts owner/repo or owner/repo@ref, in the same characters the catalog
 # accepts in an entry's ``repo`` -- one shape rule, spelled once in
 # :data:`~app.core.plugins.manifest.REPO_SEGMENT`, because a source this build
 # takes from the catalog and refuses when typed is indefensible either way.
-_GITHUB_SHORT = re.compile(rf"^({REPO_SEGMENT}+)/({REPO_SEGMENT}+?)(?:@([\w./-]+))?$")
+# The ref half is :data:`~app.core.plugins.manifest.REF_SEGMENT` for the same
+# reason: the URL form used to end in ``(?:@(.+))?``, so the same ref was a
+# legal source through a URL and an illegal one through the short form.
+_GITHUB_SHORT = re.compile(
+    rf"^({REPO_SEGMENT}+)/({REPO_SEGMENT}+?)(?:@({REF_SEGMENT}+))?$"
+)
 _GITHUB_URL = re.compile(
     rf"^https?://(?:www\.)?github\.com/({REPO_SEGMENT}+)/({REPO_SEGMENT}+?)"
-    r"(?:\.git)?/?(?:@(.+))?$"
+    rf"(?:\.git)?/?(?:@({REF_SEGMENT}+))?$"
 )
 # One word, no slash and no scheme: the only thing it can have been meant as is
 # a catalog name. See UnknownCatalogName for why that deserves its own error.
@@ -79,6 +84,19 @@ def parse_github_url(url: str) -> tuple[str, str] | None:
     return (m.group(1), m.group(2)) if m else None
 
 
+def _walks_up(ref: str) -> bool:
+    """Does *ref* contain ``..`` as a PATH SEGMENT?
+
+    A ref is interpolated into URL paths --
+    ``api.github.com/repos/<o>/<r>/commits/<ref>`` and, at the resolved sha,
+    ``raw.githubusercontent.com/...`` -- so a ``..`` segment climbs out of
+    the endpoint the caller meant to ask about. Segment-wise rather than a
+    substring test, because ``v1..2`` is a legal tag name and only ``..``
+    standing alone between slashes is the traversal.
+    """
+    return ".." in ref.split("/")
+
+
 def parse_source(
     spec: str,
     *,
@@ -94,6 +112,10 @@ def parse_source(
     ``scripts/plugins.py``, whose tests fake the catalog by patching the CLI's
     own ``load_catalog``: without it this would reach past that patch and
     answer from the real ``registry.json``.
+
+    A ref that walks up (see :func:`_walks_up`) is unparseable rather than
+    passed on, because there is nothing a caller could usefully do with it
+    except refuse it later, further from the string that was typed.
     """
     data = catalog_module.load_catalog() if catalog is None else catalog
     plugins = data.get("plugins", {})
@@ -101,13 +123,12 @@ def parse_source(
     if spec.lower() in plugins:
         return ParsedSource("catalog", spec.lower(), "", "")
 
-    m = _GITHUB_URL.match(spec)
+    m = _GITHUB_URL.match(spec) or _GITHUB_SHORT.match(spec)
     if m:
-        return ParsedSource("github", m.group(1), m.group(2), m.group(3) or "")
-
-    m = _GITHUB_SHORT.match(spec)
-    if m:
-        return ParsedSource("github", m.group(1), m.group(2), m.group(3) or "")
+        ref = m.group(3) or ""
+        if _walks_up(ref):
+            raise UnparseableSource(spec)
+        return ParsedSource("github", m.group(1), m.group(2), ref)
 
     if _BARE_NAME.match(spec):
         raise UnknownCatalogName(spec, sorted(plugins), catalog_module.catalog_path())

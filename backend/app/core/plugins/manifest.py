@@ -54,6 +54,18 @@ REPO_SEGMENT = r"[\w.-]"
 #: ``owner/repo``, in the characters GitHub allows in either half.
 REPO_RE = re.compile(rf"^{REPO_SEGMENT}+/{REPO_SEGMENT}+$")
 
+#: The characters a git ref may use, as a fragment for the same reason
+#: :data:`REPO_SEGMENT` is one: the two source patterns capture the ref in
+#: different positions and used to spell its grammar twice, once as
+#: ``[\w./-]+`` and once as ``.+``. The loose half accepted a ref with a
+#: space or a control character in it -- which reaches ``http.client`` as an
+#: invalid URL -- and one with ``..`` in it, which walks up the URL path the
+#: ref is interpolated into. A slash is in the set because ``feat/x`` is an
+#: ordinary branch name; the ``..`` refusal is separate (see
+#: :func:`~app.core.plugins.sources.parse_source`) because no character class
+#: can express "not this sequence".
+REF_SEGMENT = r"[\w./-]"
+
 #: The one ``[plugin].schema_version`` this build knows how to install.
 SUPPORTED_SCHEMA = 1
 

@@ -147,6 +147,50 @@ def test_the_github_shapes_all_reach_the_same_owner_and_repo(spec, expected):
 
 
 @pytest.mark.parametrize(
+    "spec, expected_ref",
+    [
+        ("alice/extras@v1.2", "v1.2"),
+        ("https://github.com/alice/extras@v1.2", "v1.2"),
+        ("alice/extras@feat/x", "feat/x"),
+        ("https://github.com/alice/extras@feat/x", "feat/x"),
+        ("alice/extras@0.1.0-rc.1", "0.1.0-rc.1"),
+    ],
+)
+def test_the_two_source_shapes_read_the_same_refs(spec, expected_ref):
+    """One grammar for the ref, whichever door the source came in: the URL
+    form used to end in ``(?:@(.+))?`` and the short form in ``[\\w./-]+``, so
+    the same ref was legal typed one way and unparseable typed the other."""
+    assert parse_source(spec).ref == expected_ref
+
+
+@pytest.mark.parametrize(
+    "spec",
+    [
+        "https://github.com/alice/extras@a b",     # a space: InvalidURL later
+        "https://github.com/alice/extras@v1\tx",   # a control character
+        "alice/extras@../../x",
+        "https://github.com/alice/extras@../../x",
+        "alice/extras@..",
+        "alice/extras@feat/../../x",
+        "alice/extras@feat/..",
+    ],
+)
+def test_a_ref_that_walks_up_or_cannot_be_sent_is_unparseable(spec):
+    """A ref is interpolated into ``/repos/<o>/<r>/commits/<ref>``, so a
+    ``..`` segment asks a different endpoint than the one the user named --
+    and a ref with a space in it never reaches GitHub at all. Both are
+    refused at the string the user typed rather than three modules later."""
+    with pytest.raises(UnparseableSource):
+        parse_source(spec)
+
+
+def test_a_ref_with_two_dots_inside_a_word_is_still_a_ref():
+    """Only ``..`` standing alone between slashes is the traversal; ``v1..2``
+    is a legal tag name and refusing it would be a rule about spelling."""
+    assert parse_source("alice/extras@v1..2").ref == "v1..2"
+
+
+@pytest.mark.parametrize(
     "url, expected",
     [
         ("https://github.com/alice/extras", ("alice", "extras")),

@@ -16,6 +16,7 @@ somebody else's CI run.
 
 from __future__ import annotations
 
+import http.client
 import io
 import tarfile
 from pathlib import Path
@@ -440,6 +441,32 @@ def test_a_request_that_never_reached_github_has_no_status(fake_urlopen):
         github.resolve_sha("alice", "extras", "")
     assert excinfo.value.status is None
     assert "getaddrinfo failed" in str(excinfo.value)
+
+
+def test_a_200_that_is_not_json_is_a_github_failure_with_no_status(fake_urlopen):
+    """A captive portal, a school proxy's block page and a transparent MITM
+    all answer "200 OK" with HTML. ``json.loads`` raises a ``ValueError`` for
+    that, which no caller of ``resolve_sha`` catches -- the CLI's
+    ``except RuntimeError`` included -- so it would have been a traceback on
+    the first school network that intercepts GitHub."""
+    fake_urlopen(lambda: _FakeResponse([b"<html>Access denied</html>"]))
+    with pytest.raises(GitHubError) as excinfo:
+        github.resolve_sha("alice", "extras", "v1")
+    assert excinfo.value.status is None, "whatever answered was not GitHub"
+    assert "did not return JSON" in str(excinfo.value)
+    assert "alice/extras@v1" in str(excinfo.value)
+
+
+def test_a_url_http_client_will_not_send_is_a_github_failure(fake_urlopen):
+    """``InvalidURL`` is an ``http.client.HTTPException``, which is not an
+    ``OSError`` and so not a ``URLError`` -- it escaped the whole translation
+    layer. It is what a ref with a space or a control character in it becomes
+    by the time ``putrequest`` sees the URL."""
+    fake_urlopen(http.client.InvalidURL("URL can't contain control characters"))
+    with pytest.raises(GitHubError) as excinfo:
+        github.resolve_sha("alice", "extras", "v 1")
+    assert excinfo.value.status is None
+    assert "control characters" in str(excinfo.value)
 
 
 def test_a_commit_response_without_a_sha_is_refused(fake_urlopen):
