@@ -1,9 +1,23 @@
-"""API routes for inspecting installed CodefyUI plugins.
+"""API routes for the Plugin Center: what is installed, and what could be.
 
-Read-only listing endpoints plus a hot-reload trigger that mirrors
-``POST /api/nodes/reload``. Actual install/uninstall happens in the
-``cdui plugin`` CLI (writes the lockfile + files on disk, then POSTs
-to ``/api/plugins/reload``).
+    GET  /api/plugins             every INSTALLED plugin, enabled or not
+    GET  /api/plugins/catalog     the same rows merged with what this build
+                                  can install by name -- what the panel draws
+    GET  /api/plugins/generation  the reload counter the editor polls
+    POST /api/plugins/reload      re-discover nodes, presets and packs
+    GET  /api/plugins/{id}        one plugin's manifest, nodes and README
+    POST /api/plugins/{id}/enable|disable
+
+Every fixed path is declared before ``/{plugin_id}``; see the comment above
+that route for why the order is load-bearing rather than tidy.
+
+Reads are open GETs, like every other read the editor polls. Installing is
+not here yet: it still happens in the ``cdui plugin`` CLI, which writes the
+lockfile and the files and then POSTs to ``/api/plugins/reload``. What IS
+here is the gate the install routes will hang off --
+``_require_local_plugin_install`` -- because installing a plugin puts
+third-party code where this process will import it, and that is not a thing
+a stranger on the LAN gets to start.
 """
 
 from __future__ import annotations
@@ -13,6 +27,8 @@ from typing import Any
 
 from fastapi import APIRouter, HTTPException
 
+from ..config import settings
+from ..core.auth import bound_to_loopback
 from ..core.node_registry import registry
 from ..core import plugin_loader
 from ..core.plugin_loader import (
@@ -22,26 +38,45 @@ from ..core.plugin_loader import (
     load_lockfile,
 )
 from ..core.plugins import lifecycle
+from ..core.plugins.catalog import catalog_entries
+from ..core.plugins.listing import (
+    catalog_listing,
+    installed_facts,
+    nodes_for_plugin,
+)
 from ..core.plugins.reload import rediscover_now
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/plugins", tags=["plugins"])
 
+_REMOTE_REFUSAL = (
+    "Installing plugins is only allowed from the computer that runs the "
+    "server. Set CODEFYUI_ALLOW_REMOTE_PLUGIN_INSTALL=1 to override.")
 
-def _provider_token(plugin_id: str) -> str:
-    """The ``cdui_plugins.<X>`` slot, kebab → snake."""
-    return plugin_id.replace("-", "_")
+
+def remote_plugin_install_allowed() -> bool:
+    """May a request install a plugin at all, given how the server is bound?
+
+    Installing a plugin puts third-party code where this process will import
+    it, so the audience for that is "whoever is at this machine" rather than
+    "whoever can reach the port" -- the same rule ``/api/packs`` applies to
+    starting a package install, asked through the same helper so the two
+    cannot drift apart.
+    """
+    return bound_to_loopback() or bool(settings.ALLOW_REMOTE_PLUGIN_INSTALL)
 
 
-def _nodes_for_plugin(plugin_id: str) -> list[str]:
-    token = _provider_token(plugin_id)
-    prefix = f"cdui_plugins.{token}."
-    return sorted(
-        cls.NODE_NAME
-        for cls in registry.nodes.values()
-        if (cls.__module__ or "").startswith(prefix)
-    )
+async def _require_local_plugin_install() -> None:
+    """Dependency for every route that installs or removes a plugin.
+
+    Not attached to anything yet: this PR adds the read half of the Plugin
+    Center. It is defined and tested here so the install routes cannot land
+    without it -- a gate written in the same PR as the route it guards is a
+    gate a reviewer reads as boilerplate.
+    """
+    if not remote_plugin_install_allowed():
+        raise HTTPException(status_code=403, detail=_REMOTE_REFUSAL)
 
 
 @router.get("")
@@ -54,6 +89,7 @@ async def list_plugins() -> list[dict[str, Any]]:
     because they are not in the registry.
     """
     lockfile = load_lockfile()
+    catalog = catalog_entries()
     out: list[dict[str, Any]] = []
     for plugin_id, plugin_dir in iter_plugin_dirs(
         plugin_loader.plugins_builtin_root(),
@@ -84,10 +120,36 @@ async def list_plugins() -> list[dict[str, Any]]:
             "homepage": plugin_meta.get("homepage", ""),
             "chapters": lessons_meta.get("chapters", []),
             "lessons": lessons_meta.get("lessons", []),
-            "nodes": _nodes_for_plugin(plugin_id),
+            "nodes": nodes_for_plugin(plugin_id, registry),
             "frontend_entry": frontend_entry,
+            # Additive (the six fields the Plugin Center needs on a row it
+            # can act on), computed by the same rules /catalog uses.
+            **installed_facts(plugin_id, entry, manifest, catalog),
         })
     return out
+
+
+@router.get("/catalog")
+async def plugin_catalog() -> dict[str, Any]:
+    """Every plugin this build can install, and everything installed.
+
+    The one route the Plugin Center polls, and the reason it is a GET: like
+    ``GET /api/packs`` it is a read the editor draws a panel from, so it
+    carries no session token. Declared before ``/{plugin_id}`` -- ``catalog``
+    is a reserved plugin id precisely because a pack with that name would
+    otherwise sit where this route lives, and the router, not the pack, would
+    decide which one wins.
+
+    ``active_job`` is ``None`` until the install routes land; the field is
+    here now so the panel is written against the final shape.
+    """
+    return catalog_listing(
+        load_lockfile(),
+        registry=registry,
+        active_job=None,
+        remote_install_allowed=remote_plugin_install_allowed(),
+        generation=plugin_loader.reload_generation(),
+    )
 
 
 @router.get("/generation")
@@ -100,6 +162,20 @@ async def plugins_generation() -> dict[str, int]:
     it needs no session token.
     """
     return {"generation": plugin_loader.reload_generation()}
+
+
+@router.post("/reload")
+async def reload_plugins() -> dict[str, int]:
+    """Clear and re-discover everything (builtin + custom + plugins + presets)."""
+    return rediscover_now()
+
+
+# Everything above this line has a FIXED path; everything below takes a
+# ``{plugin_id}``. Keeping the split in that order is not a style choice --
+# Starlette matches in registration order, so a fixed path declared after
+# ``/{plugin_id}`` is reachable only because no pack is allowed to be called
+# ``reload`` (see RESERVED_PLUGIN_IDS). A structural test pins the order so
+# the next route added here cannot quietly depend on that.
 
 
 @router.get("/{plugin_id}")
@@ -125,7 +201,7 @@ async def get_plugin(plugin_id: str) -> dict[str, Any]:
             "id": plugin_id,
             "manifest": manifest,
             "lockfile_entry": lockfile["plugins"][plugin_id],
-            "nodes": _nodes_for_plugin(plugin_id),
+            "nodes": nodes_for_plugin(plugin_id, registry),
             "readme": readme,
         }
 
@@ -133,12 +209,6 @@ async def get_plugin(plugin_id: str) -> dict[str, Any]:
         status_code=404,
         detail=f"Plugin '{plugin_id}' is in the lockfile but its files are missing",
     )
-
-
-@router.post("/reload")
-async def reload_plugins() -> dict[str, int]:
-    """Clear and re-discover everything (builtin + custom + plugins + presets)."""
-    return rediscover_now()
 
 
 def _set_plugin_enabled(plugin_id: str, enabled: bool) -> dict[str, Any]:
