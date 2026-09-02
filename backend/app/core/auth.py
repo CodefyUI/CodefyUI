@@ -39,10 +39,36 @@ from typing import Iterable
 
 from platformdirs import user_data_dir
 
+from ..config import settings
+
 logger = logging.getLogger(__name__)
 
 TOKEN_HEADER = "X-CodefyUI-Token"
 TOKEN_QUERY_PARAM = "token"  # WebSocket can't set custom headers from browser
+
+#: Bind addresses that mean "this machine only". ``0.0.0.0`` and ``::`` are
+#: deliberately absent: they are wildcards, reachable from the LAN, and a
+#: server on one of them is exactly the case the install gates exist for.
+LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
+
+
+def bound_to_loopback() -> bool:
+    """Is this server reachable only from the machine it runs on?
+
+    The question the two install gates ask before they let a request run a
+    package manager (``ALLOW_REMOTE_PACK_INSTALL``) or install a plugin whose
+    code this process will import (``ALLOW_REMOTE_PLUGIN_INSTALL``). It lives
+    here, beside the other "who is allowed to do this" rules, because it was
+    about to be the second copy of a five-line answer in a second router --
+    and two copies of a security default drift in the direction nobody
+    notices, which is open.
+
+    ``settings.HOST`` is read at CALL time so a test (and a reconfigured
+    server) sees the host it set, not the one that was in the file at import.
+    The brackets come off first: an IPv6 literal is written ``[::1]`` in a
+    bind address and ``::1`` in this set.
+    """
+    return settings.HOST.strip().strip("[]").lower() in LOOPBACK_HOSTS
 
 # We generate the token at import time. The server process keeps it in memory;
 # every restart rotates the token, which is the desired behaviour (no stale

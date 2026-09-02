@@ -44,6 +44,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, field_validator
 
 from ..config import settings
+from ..core.auth import bound_to_loopback
 from ..core.packs import catalog, flows, restart, state
 from ..core.packs.catalog import ModelItem, Pack
 from ..core.packs.errors import (
@@ -61,11 +62,6 @@ from ..core.packs.service import (
 from ..core.packs.state import ItemState, PackState
 
 router = APIRouter(prefix="/api/packs", tags=["packs"])
-
-#: Bind addresses that mean "this machine only". ``0.0.0.0`` and ``::`` are
-#: deliberately absent: they are wildcards, reachable from the LAN, and a
-#: server on one of them is exactly the case this gate exists for.
-_LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
 
 _REMOTE_REFUSAL = (
     "Installing packs is only allowed from the computer that runs the "
@@ -112,8 +108,7 @@ class InstallRequest(BaseModel):
 
 def remote_install_allowed() -> bool:
     """May a request start an install at all, given how the server is bound?"""
-    host = settings.HOST.strip().strip("[]").lower()
-    return host in _LOOPBACK_HOSTS or bool(settings.ALLOW_REMOTE_PACK_INSTALL)
+    return bound_to_loopback() or bool(settings.ALLOW_REMOTE_PACK_INSTALL)
 
 
 def _require_local_install() -> None:
