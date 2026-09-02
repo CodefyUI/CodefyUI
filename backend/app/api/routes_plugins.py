@@ -32,7 +32,6 @@ from ..core.auth import bound_to_loopback
 from ..core.node_registry import registry
 from ..core import plugin_loader
 from ..core.plugin_loader import (
-    frontend_entry_rel,
     is_enabled,
     iter_plugin_dirs,
     load_lockfile,
@@ -41,6 +40,7 @@ from ..core.plugins import lifecycle
 from ..core.plugins.catalog import catalog_entries
 from ..core.plugins.listing import (
     catalog_listing,
+    frontend_entry_url,
     installed_facts,
     nodes_for_plugin,
 )
@@ -102,10 +102,6 @@ async def list_plugins() -> list[dict[str, Any]]:
         plugin_meta = manifest.get("plugin", {})
         lessons_meta = manifest.get("lessons", {})
         enabled = is_enabled(entry)
-        entry_rel = frontend_entry_rel(manifest)
-        frontend_entry = None
-        if enabled and entry_rel and (plugin_dir / entry_rel).is_file():
-            frontend_entry = f"/plugins/{plugin_id}/{entry_rel}"
         out.append({
             "id": plugin_id,
             "name": plugin_meta.get("name", plugin_id),
@@ -121,7 +117,9 @@ async def list_plugins() -> list[dict[str, Any]]:
             "chapters": lessons_meta.get("chapters", []),
             "lessons": lessons_meta.get("lessons", []),
             "nodes": nodes_for_plugin(plugin_id, registry),
-            "frontend_entry": frontend_entry,
+            "frontend_entry": frontend_entry_url(
+                plugin_id, plugin_dir, manifest, enabled=enabled
+            ),
             # Additive (the six fields the Plugin Center needs on a row it
             # can act on), computed by the same rules /catalog uses.
             **installed_facts(plugin_id, entry, manifest, catalog),
