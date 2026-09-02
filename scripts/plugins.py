@@ -734,7 +734,13 @@ def _install_github(owner: str, repo: str, ref: str, args, lockfile) -> int:
         tar = Path(tmpd) / "src.tar.gz"
         try:
             download_tarball(owner, repo, sha, tar)
-        except (HTTPError, URLError, OSError, RuntimeError) as e:
+        # What the core client actually raises: GitHubError for anything the
+        # network answered (or did not), PluginInstallError for the size cap,
+        # OSError for the disk it is being written to. Named rather than
+        # caught through their base classes -- the first two are RuntimeError
+        # subclasses only by an inheritance choice made three modules away,
+        # and a failed install that becomes a traceback is not a small bug.
+        except (GitHubError, PluginInstallError, OSError) as e:
             err(f"下載失敗：{e}", f"Download failed: {e}")
             return 1
 
