@@ -85,6 +85,61 @@ def test_save_then_load_roundtrip(isolated_lockfile):
     assert plugin_loader.load_lockfile() == payload
 
 
+def test_save_leaves_no_temp_file_behind(isolated_lockfile):
+    """The write goes through a temp file; a successful one is renamed, not
+    left beside the lockfile for the next reader to wonder about."""
+    plugin_loader.save_lockfile({"schema": 1, "plugins": {}})
+    assert [p.name for p in isolated_lockfile.iterdir()] == ["installed.json"]
+
+
+def test_a_failed_save_keeps_the_lockfile_that_was_there(isolated_lockfile,
+                                                         monkeypatch):
+    """The reason the write is atomic. This file is the only record of what
+    is installed, so a write that dies partway must not be able to replace it
+    with half a JSON document -- which ``load_lockfile`` reads as "you have
+    no plugins" while every one of their directories is still on disk."""
+    good = {"schema": 1, "plugins": {"c2": {"source_kind": "builtin"}}}
+    plugin_loader.save_lockfile(good)
+
+    def _refuse(*_args, **_kwargs):
+        raise OSError(13, "denied")
+
+    monkeypatch.setattr(plugin_loader.os, "replace", _refuse)
+    with pytest.raises(OSError):
+        plugin_loader.save_lockfile({"schema": 1, "plugins": {}})
+
+    assert plugin_loader.load_lockfile() == good
+    assert [p.name for p in isolated_lockfile.iterdir()] == ["installed.json"], \
+        "the temp file goes with the failure"
+
+
+# ──────────────────────────────────────────────────────────────────────
+# read_manifest_safe
+# ──────────────────────────────────────────────────────────────────────
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        b"\xff\xfe not utf-8 at all",          # UnicodeDecodeError
+        b"this is not = = toml",               # TOMLDecodeError
+    ],
+)
+def test_read_manifest_safe_answers_empty_for_a_manifest_it_cannot_read(
+    tmp_path, content
+):
+    """Every caller of this is on its way to drawing a list -- the two plugin
+    listings and ``cdui plugin list`` -- so one unreadable pack must cost its
+    own metadata, not the whole list."""
+    plugin_dir = tmp_path / "broken"
+    plugin_dir.mkdir()
+    (plugin_dir / "cdui.plugin.toml").write_bytes(content)
+    assert plugin_loader.read_manifest_safe(plugin_dir) == {}
+
+
+def test_read_manifest_safe_answers_empty_when_there_is_no_manifest(tmp_path):
+    assert plugin_loader.read_manifest_safe(tmp_path / "nothing-here") == {}
+
+
 # ──────────────────────────────────────────────────────────────────────
 # install_plugin_finder
 # ──────────────────────────────────────────────────────────────────────
