@@ -649,16 +649,18 @@ def _install_by_catalog_name(plugin_id: str, args, lockfile) -> int:
     have the same id.
     """
     entry = catalog_entry(plugin_id)
-    if entry is not None and entry.kind == "github":
+    if entry is None:
+        # Named by the raw catalog and dropped by the validator: not a
+        # built-in pack, whatever it was meant to be. Falling through to the
+        # built-in installer would report "no manifest on disk" for a row
+        # whose actual problem is a missing ``repo`` two lines away.
+        err(*_malformed_catalog_row(plugin_id))
+        return 1
+    if entry.kind == "github":
         owner, _, repo = (entry.repo or "").partition("/")
         return _install_github(
             owner, repo, entry.ref, args, lockfile, catalog_id=entry.id
         )
-    # Either a builtin row or one ``validate_catalog`` dropped. The second is
-    # deliberately not a separate refusal: the builtin path already stops on a
-    # pack with no manifest on disk, which is exactly what a malformed row
-    # leaves behind, and a corrupt catalog must not grow its own vocabulary of
-    # errors that only a hand-edited registry.json can reach.
     return _install_catalog(plugin_id, args, lockfile)
 
 
@@ -751,34 +753,75 @@ def _install_catalog(plugin_id: str, args, lockfile) -> int:
     return 0
 
 
+def _locally_reserved_reason(plugin_id: str) -> tuple[str, str] | None:
+    """What this build owns *plugin_id* with, or ``None`` when nothing does.
+
+    The half of the reserved-id rule that does not depend on where the code
+    came from: a route under ``/api/plugins/`` is decided by the router and a
+    shipped pack by the built-in directory, so no source -- a repository, a
+    local checkout -- can be given one of those ids.
+
+    A ``github`` catalog id is deliberately NOT here, because the answer
+    depends on the source: :func:`_reserved_id_refusal` allows only the
+    repository the catalog names, while :func:`_link_local` allows any
+    directory, since a link is the developer's own copy of that repository.
+
+    Returns the bilingual noun phrase naming the holder, so each caller can
+    keep its own sentence around it.
+    """
+    if plugin_id in core_catalog.RESERVED_PLUGIN_IDS:
+        return ("/api/plugins/ 底下的路由", "a route under /api/plugins/")
+    entry = catalog_entry(plugin_id)
+    if entry is not None and entry.kind == "builtin":
+        return ("CodefyUI 內建的外掛包", "a pack that ships with CodefyUI")
+    return None
+
+
+def _malformed_catalog_row(plugin_id: str) -> tuple[str, str]:
+    """The bilingual refusal for a catalog row ``validate_catalog`` dropped.
+
+    Reachable because the two readers disagree on purpose: ``parse_source``
+    matches the raw ``registry.json`` (so a name the file lists is never
+    "unknown"), while the installer dispatches on a VALIDATED row (so a
+    ``github`` entry really does carry an ``owner/repo``). A row that is in
+    one and not the other is named but not installable, and saying which of
+    those it is beats either half on its own.
+
+    Not silently treated as a built-in pack: the two kinds install by
+    completely different code, and guessing which one a malformed row meant
+    is the question :mod:`app.core.plugins.catalog` refuses to answer.
+    """
+    return (
+        f"目錄項目 {plugin_id} 格式有誤，這份安裝無法使用它。"
+        f"上面的 catalog 警告訊息會指出是哪個欄位；該項目位於 {_catalog_path()}",
+        f"The catalog entry for '{plugin_id}' is malformed, so this install "
+        f"cannot use it. The catalog reader logs which field is wrong; the "
+        f"row is in {_catalog_path()}",
+    )
+
+
 def _reserved_id_refusal(
     plugin_id: str, owner: str, repo: str
 ) -> tuple[str, str] | None:
     """The bilingual refusal for an id ``owner/repo`` may not use, else ``None``.
 
     Three kinds of id are refused, and the third is the one worth spelling
-    out. An id is taken if it names a route under ``/api/plugins/`` (the
-    router, not the plugin, would decide which one answers) or a pack that
-    ships with CodefyUI (the built-in directory would decide). A ``github``
-    catalog id is different: that row IS a repository, so refusing it would
-    make the official pack the catalog advertises the one thing nobody can
-    install. So it is refused only for a DIFFERENT repository -- the id is
-    what the lockfile, the catalog card and the route all key on, and a fork
-    claiming it would quietly take the official pack's place.
+    out. Two of them belong to this build whoever is installing (see
+    :func:`_locally_reserved_reason`). A ``github`` catalog id is different:
+    that row IS a repository, so refusing it would make the official pack the
+    catalog advertises the one thing nobody can install. So it is refused
+    only for a DIFFERENT repository -- the id is what the lockfile, the
+    catalog card and the route all key on, and a fork claiming it would
+    quietly take the official pack's place.
     """
+    reason = _locally_reserved_reason(plugin_id)
+    if reason is not None:
+        zh, en = reason
+        return (
+            f"外掛 id {plugin_id} 是保留名稱（{zh}），不能安裝。",
+            f"Plugin id '{plugin_id}' is reserved by this build ({en}).",
+        )
     entry = catalog_entry(plugin_id)
-    if plugin_id in core_catalog.RESERVED_PLUGIN_IDS:
-        return (
-            f"外掛 id {plugin_id} 是保留名稱（/api/plugins/ 底下的路由），不能安裝。",
-            f"Plugin id '{plugin_id}' is reserved by this build "
-            f"(a route under /api/plugins/).",
-        )
-    if entry is not None and entry.kind == "builtin":
-        return (
-            f"外掛 id {plugin_id} 是保留名稱（CodefyUI 內建的外掛包），不能安裝。",
-            f"Plugin id '{plugin_id}' is reserved by this build "
-            f"(a pack that ships with CodefyUI).",
-        )
     if (
         entry is not None
         and entry.kind == "github"
@@ -1414,10 +1457,19 @@ def _link_local(root: Path, *, force: bool) -> int:
 
     plugin_id = manifest["plugin"]["id"]
 
-    if plugin_id in load_catalog().get("plugins", {}):
+    # Only the ids this build owns outright. A ``github`` catalog id is NOT
+    # one of them here: linking is how the author of an official plugin works
+    # on it, so `cdui plugin link ./CodefyUI-Plugin-Official` has to be able
+    # to carry the id the catalog lists that repository under. There is no
+    # repository to compare a local directory against, and none is wanted --
+    # a link points at the developer's own working tree, and nothing is
+    # downloaded or trusted on the strength of the name.
+    reason = _locally_reserved_reason(plugin_id)
+    if reason is not None:
+        zh, en = reason
         err(
-            f"id '{plugin_id}' 與內建套件衝突，請在 manifest 改用其他 id",
-            f"id '{plugin_id}' collides with a built-in pack — rename it in the manifest",
+            f"id '{plugin_id}' 與{zh}衝突，請在 manifest 改用其他 id",
+            f"id '{plugin_id}' collides with {en} — rename it in the manifest",
         )
         return 1
 
@@ -1650,7 +1702,13 @@ def cmd_info(args: argparse.Namespace) -> int:
     owner, repo = a, b
     if kind == "catalog":
         catalog_row = catalog_entry(a)
-        if catalog_row is not None and catalog_row.kind == "github":
+        if catalog_row is None:
+            # Same disagreement between the two readers as in the installer,
+            # and the same answer: a row this build cannot install is not a
+            # row it can describe either.
+            err(*_malformed_catalog_row(a))
+            return 1
+        if catalog_row.kind == "github":
             # The catalog's own words first, then the live repository. In that
             # order because the catalog answers "is this the pack I meant, and
             # does CodefyUI vouch for it" even when the network half below

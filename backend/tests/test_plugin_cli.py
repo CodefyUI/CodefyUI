@@ -760,6 +760,51 @@ def test_cmd_link_rejects_catalog_id_collision(isolated_lockfile, tmp_path):
     assert "foundations" not in plugin_loader.load_lockfile()["plugins"]
 
 
+def test_cmd_link_accepts_a_github_catalog_id(isolated_lockfile, tmp_path):
+    """Linking is how the author of an official plugin works on it.
+
+    The catalog lists CodefyUI-Plugin-Official under ``official-template``,
+    and a clone of that repository carries exactly that id in its manifest --
+    so a refusal keyed on "is this id in the catalog" would have made
+    ``cdui plugin link ./CodefyUI-Plugin-Official``, the documented dev loop,
+    impossible the moment the pack entered the catalog. There is no
+    repository to compare a local directory against and none is wanted: a
+    link points at the developer's own working tree, and nothing is
+    downloaded or trusted on the strength of the name.
+    """
+    work = tmp_path / "CodefyUI-Plugin-Official"
+    _write_plugin_dir(work, "official-template")
+    rc = plugin_cli.cmd_link(argparse.Namespace(path=str(work), force=False))
+    assert rc == 0
+    entry = plugin_loader.load_lockfile()["plugins"]["official-template"]
+    assert entry["source_kind"] == "local"
+    assert Path(entry["path"]) == work.resolve()
+
+
+@pytest.mark.parametrize(
+    ("plugin_id", "why"),
+    [
+        ("stats", "a pack that ships with CodefyUI"),
+        ("catalog", "a route under /api/plugins/"),
+    ],
+)
+def test_cmd_link_still_rejects_an_id_this_build_owns(
+    isolated_lockfile, tmp_path, capsys, monkeypatch, plugin_id, why
+):
+    """The half of the rule a local link does not get to bend: a built-in
+    pack's files ship in this repository and are activated in place, and a
+    route name is answered by the router, so in both cases something other
+    than the lockfile would decide what the id meant."""
+    monkeypatch.setenv("CODEFYUI_LANG", "en")
+    work = tmp_path / f"shadow-{plugin_id}"
+    _write_plugin_dir(work, plugin_id)
+    rc = plugin_cli.cmd_link(argparse.Namespace(path=str(work), force=False))
+    assert rc == 1
+    assert plugin_loader.load_lockfile()["plugins"] == {}
+    printed = capsys.readouterr()
+    assert why in printed.out + printed.err
+
+
 def test_cmd_link_existing_id_requires_force(isolated_lockfile, tmp_path):
     work = tmp_path / "dup"
     _write_plugin_dir(work, "dup-plugin")
@@ -1198,6 +1243,37 @@ def test_info_still_answers_from_the_catalog_when_github_is_unreachable(
     printed = _out(capsys)
     assert "CodefyUI/CodefyUI-Plugin-Self-Learning" in printed
     assert "rate limited" in printed
+
+
+def test_a_catalog_row_the_validator_dropped_is_refused_by_name(
+    isolated_lockfile, monkeypatch, capsys
+):
+    """The two readers disagree on purpose, and the gap has to be spoken.
+
+    ``parse_source`` matches the RAW registry, so a name the file lists is
+    never "unknown"; the installer dispatches on a VALIDATED row, so a github
+    entry it acts on really does carry an ``owner/repo``. A row in one and
+    not the other is named but not installable. Falling through to the
+    built-in installer -- which is what "not a github row" used to mean --
+    would report "no manifest on disk" for an entry whose actual problem is a
+    missing ``repo`` field two lines away.
+    """
+    monkeypatch.setenv("CODEFYUI_LANG", "en")
+    monkeypatch.setattr(plugin_cli, "load_catalog", lambda: {
+        "schema": 1,
+        "plugins": {"broken": {"kind": "github", "name": "Broken"}},   # no repo
+    })
+    # The premise: the name still parses as a catalog source.
+    assert plugin_cli.parse_source("broken") == ("catalog", "broken", "", "")
+    assert plugin_cli.catalog_entry("broken") is None
+
+    assert plugin_cli.cmd_install(_cmd_install_args("broken")) == 1
+    assert plugin_loader.load_lockfile()["plugins"] == {}
+    printed = _out(capsys)
+    assert "broken" in printed and "malformed" in printed
+
+    assert plugin_cli.cmd_info(argparse.Namespace(source_or_id="broken")) == 1
+    assert "malformed" in _out(capsys)
 
 
 def test_sync_never_proposes_a_github_catalog_entry(isolated_lockfile, capsys):
