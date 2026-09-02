@@ -119,7 +119,15 @@ async def serve_plugin_frontend(plugin_id: str, resource_path: str) -> FileRespo
     raise HTTPException(status_code=404, detail="Plugin frontend resource not found")
 
 
-@router.get("/{plugin_id}/assets/{resource_path:path}")
+#: Declared twice below rather than as one two-method route: FastAPI derives
+#: one operation id per ROUTE, so ``methods=["GET", "HEAD"]`` puts the same id
+#: on two OpenAPI operations -- a warning at schema build, and generated
+#: clients that collide on it.
+_ASSET_PATH = "/{plugin_id}/assets/{resource_path:path}"
+
+
+@router.get(_ASSET_PATH)
+@router.head(_ASSET_PATH)
 async def serve_plugin_asset(plugin_id: str, resource_path: str) -> FileResponse:
     """A file out of an enabled plugin's ``assets/`` directory.
 
@@ -129,6 +137,12 @@ async def serve_plugin_asset(plugin_id: str, resource_path: str) -> FileResponse
     ``application/octet-stream`` when it says nothing -- a pack may ship a
     ``.npz`` or a ``.pt`` as readily as a ``.png``, and a browser downloading
     an unknown type is right where guessing would not be.
+
+    ``HEAD`` is declared because this URL was a ``StaticFiles`` mount, which
+    answered it, and replacing the mount is not supposed to take anything
+    away: something that asks how big a dataset is before downloading it must
+    keep getting an answer. (The bundle route above never had a mount behind
+    it and stays a plain ``GET``.)
     """
     plugin_dir = _enabled_plugin_dir(plugin_id)
     if plugin_dir is not None:

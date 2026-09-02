@@ -213,6 +213,17 @@ def test_an_asset_of_an_unknown_type_downloads_rather_than_guesses(fe_client):
     assert r.headers["content-type"] == "application/octet-stream"
 
 
+def test_head_answers_the_headers_without_the_body(fe_client):
+    """The mount this route replaced answered HEAD, so this one does too --
+    something sizing a dataset before it downloads it still gets an answer."""
+    head = fe_client.head("/plugins/fe-pack/assets/data.csv")
+    get = fe_client.get("/plugins/fe-pack/assets/data.csv")
+    assert head.status_code == 200
+    assert head.content == b""
+    assert head.headers["content-length"] == get.headers["content-length"]
+    assert head.headers["content-type"] == get.headers["content-type"]
+
+
 def test_assets_are_revalidated_like_bundles(fe_client):
     # `cdui plugin update` replaces a pack's data files under their existing
     # names, so a heuristically cached CSV outlives the update that changed it.
