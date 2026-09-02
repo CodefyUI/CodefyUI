@@ -140,6 +140,29 @@ _SAMPLES = [
     pytest.param(
         "fatal: bad revision 'refs/heads/gone'\n",
         "not_found", id="bad-revision"),
+    # The next four are git 2.53's own words for the G1 read operations,
+    # copied off a real run: opening a file at a ref where it does not
+    # exist is the most ordinary miss the tab can produce, and none of the
+    # phrases above it says so.
+    pytest.param(
+        "fatal: path 'no/such/file' does not exist in 'HEAD'\n",
+        "not_found", id="missing-path-at-a-ref"),
+    pytest.param(
+        "fatal: path 'no/such/file' does not exist (neither on disk nor in "
+        "the index)\n",
+        "not_found", id="missing-path-in-the-index"),
+    pytest.param(
+        "fatal: invalid object name 'nosuchref'.\n",
+        "not_found", id="unknown-ref"),
+    pytest.param(
+        "fatal: Needed a single revision\n",
+        "not_found", id="unverifiable-sha"),
+    pytest.param(
+        "error: No such remote 'nope'\n",
+        "not_found", id="unknown-remote"),
+    pytest.param(
+        "error: stash@{9} is not a valid reference\n",
+        "not_found", id="unknown-stash"),
     pytest.param(
         "error: could not lock config file .git/config: File exists\n",
         "git_failed", id="unrecognised"),

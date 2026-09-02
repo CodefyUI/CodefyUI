@@ -250,6 +250,11 @@ _RULES: tuple[tuple[str, int, tuple[_Pattern, ...]], ...] = (
         "gpg failed to sign",
         "error: gpg",
     )),
+    # The last row before the fallback, so these can only take a failure
+    # away from ``git_failed``. Every phrase was read off git 2.53 running
+    # the G1 read operations against a missing path, ref or stash -- a file
+    # the user opens at a ref where it does not exist is the most ordinary
+    # request the tab makes, and a 500 for it would be plainly wrong.
     ("not_found", 404, (
         "not found",
         "did not match any",
@@ -257,6 +262,12 @@ _RULES: tuple[tuple[str, int, tuple[_Pattern, ...]], ...] = (
         "bad revision",
         "No such remote",
         "is not a valid reference",
+        # cat-file blob <ref>:<path> / :0:<path>
+        "does not exist",
+        # cat-file blob <unknown ref>:<path>
+        "invalid object name",
+        # rev-parse --verify <unknown sha>, without --quiet
+        "Needed a single revision",
     )),
 )
 
