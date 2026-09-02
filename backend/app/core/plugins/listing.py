@@ -50,13 +50,16 @@ from .sources import parse_github_url
 #: same list, or one of them is lying to a student whose palette is empty.
 _NODE_NAME_RE = re.compile(r"""NODE_NAME\s*=\s*["']([^"']+)["']""")
 
-#: Scanned node names, keyed by ``(directory, newest mtime in it)``. The key
-#: carries the mtime rather than a timestamp of its own so an edited pack is
-#: a MISS instead of a stale hit -- which is what a plugin author reloading
-#: their own pack needs. Small on purpose: this only ever holds the packs
-#: this build ships, and it is cleared wholesale rather than evicted, because
-#: an LRU for eight entries is more code than the scan it saves.
-_NODE_SCAN_CACHE: dict[tuple[str, float], tuple[str, ...]] = {}
+#: Scanned node names, keyed by ``(directory, file count, newest mtime)``.
+#: The key carries the mtime rather than a timestamp of its own so an edited
+#: pack is a MISS instead of a stale hit -- which is what a plugin author
+#: reloading their own pack needs -- and the COUNT because deleting a file
+#: does not move any other file's mtime: without it, removing the newest
+#: ``.py`` from a pack would keep serving the names it used to declare.
+#: Small on purpose: this only ever holds the packs this build ships, and it
+#: is cleared wholesale rather than evicted, because an LRU for eight entries
+#: is more code than the scan it saves.
+_NODE_SCAN_CACHE: dict[tuple[str, int, float], tuple[str, ...]] = {}
 _NODE_SCAN_LIMIT = 32
 
 
@@ -103,7 +106,7 @@ def scan_node_names(nodes_dir: Path) -> list[str]:
     except OSError:
         return []
 
-    key = (str(nodes_dir), newest)
+    key = (str(nodes_dir), len(files), newest)
     cached = _NODE_SCAN_CACHE.get(key)
     if cached is not None:
         return list(cached)
@@ -384,6 +387,15 @@ def _entry_payload(
     # "" is the default branch on both sides, so an empty recorded ref is an
     # answer rather than a miss.
     ref = _text(entry.get("ref")) if entry is not None else (row.ref if row else "")
+    # Presence, not truthiness: a manifest that says ``chapters = []`` has
+    # answered -- this pack teaches no chapter -- and falling through to the
+    # catalog there would put the row's list on a pack that dropped it.
+    declared_chapters = lessons_meta.get("chapters")
+    chapters = (
+        _strings(declared_chapters)
+        if isinstance(declared_chapters, list)
+        else list(row.chapters if row else ())
+    )
 
     return {
         "id": plugin_id,
@@ -409,10 +421,7 @@ def _entry_payload(
         "version": _text(plugin_meta.get("version")) or None,
         "installed_at": _recorded(entry, "installed_at"),
         "enabled": enabled,
-        "chapters": (
-            _strings(lessons_meta.get("chapters"))
-            or list(row.chapters if row else ())
-        ),
+        "chapters": chapters,
         "lessons": _strings(lessons_meta.get("lessons")),
         "tags": list(row.tags) if row else [],
         "nodes": nodes,
@@ -514,26 +523,39 @@ def _source(
 
 
 def _repo(*, row: CatalogEntry | None, entry: dict[str, Any] | None) -> str | None:
-    """``owner/repo``: what this install came from, else what the catalog says.
+    """``owner/repo``: what THIS install came from, or what the catalog offers.
 
-    In that order, and the same order :func:`_url` uses, so the two fields
-    cannot describe two different repositories on one row. They do disagree
-    in real lockfiles -- a plugin installed from a fork, or from an owner the
-    project has since moved away from -- and when they do, the repository the
-    files actually came from is the one worth showing.
+    Which of those two it is depends on one thing only -- whether anything is
+    installed under the id -- and the catalog is never consulted when
+    something is. An installed row describes an install, so ``None`` there
+    means "nothing recorded says which repository this is", which is the
+    honest answer for a plugin linked from a local directory and for one
+    installed from a URL on a host that is not GitHub. Falling through to the
+    catalog for those printed the OFFICIAL repository beside a pack that had
+    never been near it: the id of a ``github`` catalog row is deliberately
+    not reserved (see :func:`is_official`), so anything at all can be
+    installed under one.
+
+    :func:`_url` splits the same way, so the two fields on a row always
+    describe the same install rather than one each.
     """
-    installed = _repo_of(entry)
-    if installed is not None:
-        return installed
+    if entry is not None:
+        return _repo_of(entry)
     return row.repo if row is not None and row.kind == "github" else None
 
 
 def _url(
     *, row: CatalogEntry | None, entry: dict[str, Any] | None
 ) -> str | None:
-    """The repository this came from, when it came from one."""
-    if entry is not None and _text(entry.get("url")):
-        return _text(entry.get("url"))
+    """The repository this came from, when it came from one.
+
+    The install's own recorded URL wins outright, including when it recorded
+    none: a link to the catalog's GitHub page beside a plugin that came from
+    somewhere else is the same lie :func:`_repo` refuses, in the form a
+    reader is most likely to click.
+    """
+    if entry is not None:
+        return _text(entry.get("url")) or None
     if row is not None and row.kind == "github" and row.repo:
         return f"https://github.com/{row.repo}"
     return None

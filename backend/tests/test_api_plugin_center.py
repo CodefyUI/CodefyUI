@@ -30,6 +30,7 @@ changes place is a diff worth seeing.
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -368,6 +369,51 @@ async def test_what_was_installed_beats_what_the_catalog_pins(
     assert by_id["ghost-pack"]["ref"] == ""
 
 
+def test_a_manifest_that_declares_no_chapters_shows_none(tmp_path):
+    """Presence, not truthiness. ``chapters = []`` is a pack saying it
+    teaches no chapter, and the catalog's list is what a row shows when the
+    pack has not said -- not what it shows when the pack said "none"."""
+    plugin_dir = tmp_path / "teaches-nothing"
+    plugin_dir.mkdir()
+    (plugin_dir / "cdui.plugin.toml").write_text(
+        '[plugin]\nid = "teaches-nothing"\nversion = "1.0"\n'
+        "schema_version = 1\n\n[lessons]\nchapters = []\n",
+        encoding="utf-8",
+    )
+    row = CatalogEntry(
+        id="teaches-nothing", name="T", description="", kind="github",
+        repo="alice/t", chapters=("C1", "C2"),
+    )
+
+    payload = listing._entry_payload(
+        "teaches-nothing",
+        row=row,
+        entry={"source_kind": "github_url", "enabled": True},
+        plugin_dir=plugin_dir,
+        tombstoned=False,
+        registry=registry,
+        active_job=None,
+    )
+    assert payload["chapters"] == []
+
+
+def test_a_deleted_node_file_is_a_cache_miss(tmp_path):
+    """The scan cache is keyed on the newest mtime, and deleting a file moves
+    no other file's mtime -- so without the file COUNT in the key, removing a
+    node from a pack would keep advertising it. Mtimes are set explicitly so
+    the deleted file is provably not the newest one."""
+    nodes = tmp_path / "nodes"
+    nodes.mkdir()
+    (nodes / "old.py").write_text('NODE_NAME = "Old"\n', encoding="utf-8")
+    (nodes / "new.py").write_text('NODE_NAME = "New"\n', encoding="utf-8")
+    os.utime(nodes / "old.py", (1_000_000, 1_000_000))
+    os.utime(nodes / "new.py", (2_000_000, 2_000_000))
+
+    assert listing.scan_node_names(nodes) == ["New", "Old"]
+    (nodes / "old.py").unlink()
+    assert listing.scan_node_names(nodes) == ["New"]
+
+
 def test_a_recorded_empty_grant_is_not_a_miss():
     """"You granted this plugin nothing" is an answer. Falling through to
     the manifest there would show an ungranted capability as agreed to."""
@@ -450,10 +496,51 @@ async def test_a_lookalike_url_on_another_host_is_not_that_repository(
     assert row["status"] == "installed"
     assert row["url"] == lookalike
     assert row["official"] is False
+    # Nothing recorded says which repository this is, and ``None`` is that
+    # answer. Falling through to the catalog printed the official
+    # ``owner/repo`` on a row whose files came off another host entirely --
+    # the badge withheld in one field and handed over in the next.
+    assert row["repo"] is None
 
     listed = {p["id"]: p for p in (await anon_client.get("/api/plugins")).json()}
     assert listed["self-learning"]["official"] is False
     assert listed["self-learning"]["catalog_id"] is None
+
+
+async def test_a_local_link_under_a_catalog_id_points_at_no_repository(
+        anon_client, center_lockfile, tmp_path):
+    """``cdui plugin link`` records the author's own working tree, which is
+    how the author of an official plugin works on it -- so a catalog id over
+    a local link is an ordinary state, not an attack. It is also a state
+    where nothing at all is known about a repository: a working tree is
+    whatever is in it right now. The row says so in both fields rather than
+    borrowing the catalog's repository and its GitHub link."""
+    work = tmp_path / "work" / "self-learning"
+    work.mkdir(parents=True)
+    (work / "cdui.plugin.toml").write_text(
+        '[plugin]\nid = "self-learning"\nname = "My Fork"\n'
+        'version = "0.0.1"\nschema_version = 1\n',
+        encoding="utf-8",
+    )
+    lockfile = plugin_loader.load_lockfile()
+    lockfile["plugins"]["self-learning"] = {
+        "source_kind": "local",
+        "source": str(work),
+        "path": str(work),
+        "installed_at": "2026-06-05T00:00:00Z",
+        "manifest": {"id": "self-learning", "version": "0.0.1"},
+        "trusted_modules": [],
+        "capabilities": [],
+        "enabled": True,
+    }
+    plugin_loader.save_lockfile(lockfile)
+
+    row = (await rows(anon_client))["self-learning"]
+    assert row["status"] == "installed"
+    assert row["source_kind"] == "local"
+    assert row["repo"] is None
+    assert row["url"] is None
+    assert row["official"] is False
 
 
 async def test_the_catalogs_own_repository_is_official_by_any_road(
