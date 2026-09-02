@@ -20,8 +20,8 @@ from ..core.plugin_loader import (
     is_enabled,
     iter_plugin_dirs,
     load_lockfile,
-    save_lockfile,
 )
+from ..core.plugins import lifecycle
 from ..core.plugins.reload import rediscover_now
 
 logger = logging.getLogger(__name__)
@@ -144,20 +144,17 @@ async def reload_plugins() -> dict[str, int]:
 def _set_plugin_enabled(plugin_id: str, enabled: bool) -> dict[str, Any]:
     """Shared implementation behind the two toggle endpoints.
 
-    Returns the new lockfile entry on success; raises HTTPException 404
-    when the plugin is not installed. Hot-reloads the registry so the
-    change is immediately visible without restarting the server.
+    Returns the new state on success; raises HTTPException 404 when the
+    plugin is not installed. Hot-reloads the registry so the change is
+    immediately visible without restarting the server -- including when the
+    flag was already in the requested state, because a client that asks
+    twice is usually a client whose registry disagrees with the lockfile.
     """
-    lockfile = load_lockfile()
-    entry = lockfile.get("plugins", {}).get(plugin_id)
-    if not entry:
+    if lifecycle.set_enabled(plugin_id, enabled) is None:
         raise HTTPException(
             status_code=404,
             detail=f"Plugin '{plugin_id}' is not installed",
         )
-
-    entry["enabled"] = enabled
-    save_lockfile(lockfile)
 
     rediscover_now()
     return {"id": plugin_id, "enabled": enabled}

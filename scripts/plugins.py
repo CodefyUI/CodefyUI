@@ -43,7 +43,6 @@ from app.core.plugin_loader import (
     MANIFEST_FILENAME,
     clear_removed,
     load_lockfile,
-    mark_removed,
     plugins_builtin_root,
     plugins_user_root,
     removed_ids,
@@ -53,6 +52,7 @@ from app.core.plugins import catalog as core_catalog
 from app.core.plugins import consent as core_consent
 from app.core.plugins import deps as core_deps
 from app.core.plugins import github as core_github
+from app.core.plugins import lifecycle as core_lifecycle
 from app.core.plugins import sources as core_sources
 from app.core.plugins.errors import (
     ConsentRequired,
@@ -1337,29 +1337,28 @@ def _set_enabled(plugin_id: str, enabled: bool) -> int:
 
     Flips the ``enabled`` field on the lockfile entry, persists, and asks
     the running server to hot-reload its registry. Returns CLI exit code.
+
+    The write itself is :func:`core_lifecycle.set_enabled`, which the
+    ``/enable`` and ``/disable`` routes call too; what stays here is the
+    saying-so, in both languages.
     """
     verb_zh = "啟用" if enabled else "停用"
     verb_en = "Enabling" if enabled else "Disabling"
     section(f"{verb_zh}外掛：{plugin_id}", f"{verb_en} plugin: {plugin_id}")
 
-    lockfile = load_lockfile()
-    entry = lockfile.get("plugins", {}).get(plugin_id)
-    if not entry:
+    flipped = core_lifecycle.set_enabled(plugin_id, enabled)
+    if flipped is None:
         err(
             f"找不到外掛 {plugin_id}（請先 install）",
             f"Plugin '{plugin_id}' is not installed (run install first)",
         )
         return 1
 
-    current = entry.get("enabled", True)
-    if current == enabled:
+    if flipped is False:
         state_zh = "已啟用" if enabled else "已停用"
         state_en = "already enabled" if enabled else "already disabled"
         info(f"{plugin_id} {state_zh}（無動作）", f"{plugin_id} is {state_en} (no-op)")
         return 0
-
-    entry["enabled"] = enabled
-    save_lockfile(lockfile)
 
     if _backend_reload():
         ok("熱重載完成", "Hot-reloaded backend")
@@ -1381,39 +1380,33 @@ def cmd_disable(args: argparse.Namespace) -> int:
 
 
 def cmd_uninstall(args: argparse.Namespace) -> int:
+    """Remove a plugin from this install and say what that did.
+
+    The lockfile edit, the ``rmtree`` and the tombstone rule are
+    :func:`core_lifecycle.uninstall_plugin`, so the Plugin Center's delete
+    button and this command remove a plugin in exactly one way. The catalog
+    is read HERE and handed over, because this module's tests fake it by
+    patching ``plugins_builtin_root`` on this module.
+    """
     plugin_id = args.plugin_id.lower()
     section(f"移除外掛：{plugin_id}", f"Uninstalling plugin: {plugin_id}")
 
-    lockfile = load_lockfile()
-    entry = lockfile.get("plugins", {}).get(plugin_id)
-    if not entry:
+    outcome = core_lifecycle.uninstall_plugin(
+        plugin_id, builtin_ids=set(builtin_catalog_packs())
+    )
+    if outcome is None:
         err(f"找不到外掛 {plugin_id}", f"Plugin '{plugin_id}' is not installed")
         return 1
 
-    if entry.get("source_kind") == "github_url":
-        plugin_dir = plugins_user_root() / plugin_id
-        if plugin_dir.exists():
-            try:
-                shutil.rmtree(plugin_dir)
-            except OSError as e:
-                err(f"刪除失敗：{e}", f"Failed to remove {plugin_dir}: {e}")
-                return 1
-
-    lockfile["plugins"].pop(plugin_id, None)
-
-    # Remember the decision instead of merely forgetting the pack (#175).
-    # Popping the entry made "never installed" and "removed on purpose" the
-    # same state, so `cdui plugin sync` would have to either re-install what the
-    # user just threw away or nag about it forever. Only built-in packs are
-    # tombstoned: they are the only ones sync can put back uninvited, and a
-    # tombstone nothing reads is dead data the user would still have to explain.
-    is_builtin = (
-        entry.get("source_kind") == "builtin"
-        or plugin_id in builtin_catalog_packs()
-    )
-    if is_builtin:
-        mark_removed(lockfile, plugin_id, source_kind=entry.get("source_kind"))
-    save_lockfile(lockfile)
+    if outcome.files_removed is False:
+        # The entry is gone either way, so the plugin stops loading; what is
+        # left is a directory nobody will look at again. Windows holding a
+        # file open is the usual cause, exactly as in `cdui packs remove`.
+        warn(
+            f"檔案未能刪除，請手動移除：{plugins_user_root() / plugin_id}",
+            f"Could not delete the plugin files; remove them by hand: "
+            f"{plugins_user_root() / plugin_id}",
+        )
 
     if _backend_reload():
         ok("熱重載完成", "Hot-reloaded backend")
@@ -1421,12 +1414,12 @@ def cmd_uninstall(args: argparse.Namespace) -> int:
         info("伺服器未運行", "Server not running")
 
     ok(f"已移除 {plugin_id}", f"Removed {plugin_id}")
-    if is_builtin:
+    if outcome.tombstoned:
         info(
             f"cdui plugin sync 不會再把 {plugin_id} 裝回來；"
-            f"要拿回它請執行 cdui plugin install {plugin_id}",
+            f"要拿回它請執行 {outcome.reinstall_hint}",
             f"`cdui plugin sync` will not bring {plugin_id} back. When you want "
-            f"it again, run `cdui plugin install {plugin_id}`.",
+            f"it again, run `{outcome.reinstall_hint}`.",
         )
     return 0
 
