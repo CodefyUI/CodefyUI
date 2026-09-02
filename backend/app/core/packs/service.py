@@ -1,23 +1,20 @@
 """One pack install at a time, off the event loop, readable from anywhere.
 
 ``flows.install_pack_live`` is synchronous and blocks its thread for minutes.
-This module is the seam between that and an HTTP server that must keep
-answering while it runs:
+``app.core.jobs.JobRunner`` is the seam between that and an HTTP server that
+must keep answering while it runs: the worker thread, the lock rules, the
+cursor, the ring buffer and the long poll are all its, and the reasoning
+behind each of them is in that module.
 
-* the flow runs in ``asyncio.to_thread`` inside a background task, so the
-  loop is never blocked by pip or by a 470 MB download;
-* its ``emit`` callback is called from THAT thread, so every event is
-  appended under a ``threading.Lock`` and the loop is woken through
-  ``call_soon_threadsafe`` -- the same hand-off ``execution_context`` uses;
-* every stored event gets a ``cursor`` and a ``ts``, so a client that
-  reconnects (or opens a second tab) replays from where it left off rather
-  than from nothing.
+What is HERE is everything the runner deliberately does not know: which packs
+may be installed at all, what the failure shapes of ``packs.errors`` mean for
+a job (``_terminal_for``), and the restart handshake below.
 
-ONE JOB AT A TIME, deliberately. Two concurrent ``uv pip install`` runs share
-one site-packages and one cache lock, and the honest outcomes are a corrupt
-environment or a deadlock. A second submit is refused with the id of the job
-already running, which is what the UI needs to show "an install is already
-in progress" and offer to follow it.
+ONE INSTALL AT A TIME, deliberately. Two concurrent ``uv pip install`` runs
+share one site-packages and one cache lock, and the honest outcomes are a
+corrupt environment or a deadlock. A second submit is refused with the id of
+the job already running, which is what the UI needs to show "an install is
+already in progress" and offer to follow it.
 
 A RESTART-MODE install has no flow and no thread at all. It cannot run inside
 this process -- it would replace packages this process has already imported --
@@ -28,28 +25,35 @@ follow as for a live install: one id, one event stream, one terminal event
 saying what happens next. What it follows afterwards is the server coming
 back.
 
-The finished job STAYS. The last thing a client asks for is the tail of a job
-that just ended -- the failure message, the final log lines -- so the job and
-its events live until the next submit replaces them.
-
-Terminal events are appended BEFORE the status flips, under the same lock, so
-a reader that sees ``status != "running"`` has already been given the event
-that says why. The other order loses the last event of every job to whoever
-polls at the wrong moment.
+The finished job STAYS -- the last thing a client asks for is the tail of a
+job that has just ended -- and every terminal event is readable before the
+status that explains it flips. Both are the runner's doing.
 """
 
 from __future__ import annotations
 
 import asyncio
 import logging
-import threading
-import time
 import uuid
-from collections import deque
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from dataclasses import dataclass
 
+from ..jobs import (
+    MAX_EVENTS,
+    SHUTDOWN_TIMEOUT_S,
+    STATUS_CANCELLED,
+    STATUS_DONE,
+    STATUS_FAILED,
+    STATUS_NEEDS_RESTART,
+    STATUS_RUNNING,
+    CancelCheck,
+    Emit,
+    Job,
+    JobBusy,
+    JobRunner,
+    UnknownJob,
+    Work,
+)
 from . import download, flows, restart, state
 from .catalog import GPU_TORCH_PACK_ID, ModelItem, Pack, get_item
 from .errors import (
@@ -62,36 +66,38 @@ from .errors import (
 
 log = logging.getLogger(__name__)
 
-#: Events kept for the current job. A pip run over a slow link emits a few
-#: hundred lines and a download a few hundred progress frames; four thousand
-#: holds a whole noisy install, and dropping the oldest is the right loss --
-#: a client that has fallen four thousand events behind is not reading them.
-MAX_EVENTS = 4000
+#: This module's public surface, spelled out because half of it is imported
+#: from ``app.core.jobs`` and re-exported. ``routes_packs``, the CLI and the
+#: tests have always read these names from here, and moving the runner out
+#: must not move them: a linter that cannot see a re-export would report the
+#: imports above as unused, and deleting them would be an API break.
+__all__ = [
+    "MAX_EVENTS",
+    "SHUTDOWN_TIMEOUT_S",
+    "STATUS_CANCELLED",
+    "STATUS_DONE",
+    "STATUS_FAILED",
+    "STATUS_NEEDS_RESTART",
+    "STATUS_RUNNING",
+    "PackBusy",
+    "PackJob",
+    "PackService",
+    "RestartUnavailable",
+    "UnknownJob",
+]
 
-#: How long ``shutdown`` waits for a cancelled job to unwind before it stops
-#: waiting. The flow checks for cancellation four times a second, so ten
-#: seconds is "something is stuck", not "this machine is slow" -- and the
-#: server has to come down either way.
-SHUTDOWN_TIMEOUT_S = 10.0
 
-#: The four states a job can end in, plus the one it starts in.
-STATUS_RUNNING = "running"
-STATUS_DONE = "done"
-STATUS_FAILED = "failed"
-STATUS_CANCELLED = "cancelled"
-STATUS_NEEDS_RESTART = "needs_restart"
+class PackBusy(JobBusy):
+    """An install is already running. ``job_id`` is the one to follow.
 
-
-class PackBusy(Exception):
-    """An install is already running. ``job_id`` is the one to follow."""
+    A :class:`~app.core.jobs.JobBusy` with the installer's wording: the
+    runner refuses a second claim in its own generic terms, and this is what
+    that refusal is called when the job is a pack install.
+    """
 
     def __init__(self, job_id: str):
-        self.job_id = job_id
-        super().__init__(f"a pack install is already running (job {job_id})")
-
-
-class UnknownJob(KeyError):
-    """No job with this id. Only the most recent job is kept."""
+        super().__init__(
+            job_id, f"a pack install is already running (job {job_id})")
 
 
 class RestartUnavailable(Exception):
@@ -102,66 +108,16 @@ class RestartUnavailable(Exception):
         super().__init__(message)
 
 
-class _Broadcast:
-    """Edge-triggered wake-up for long pollers. No busy waiting anywhere.
-
-    Copied from ``app.core.run_service._Broadcast`` rather than imported: it
-    is private to that module, and a fifteen-line copy is cheaper than a
-    cross-module dependency on somebody else's internals.
-
-    ``asyncio.Event`` is level-triggered and single-shot; a shared one would
-    have to be cleared, and whoever clears it races everyone who has not
-    woken yet. Instead each ``notify`` SETS the current event and installs a
-    fresh one for the next generation. A waiter captures the event object
-    BEFORE it reads the buffer, so a notification that lands during that read
-    still wakes it -- the lost-wakeup window is closed by ordering, not by a
-    timeout.
-    """
-
-    __slots__ = ("_event",)
-
-    def __init__(self) -> None:
-        self._event = asyncio.Event()
-
-    def waiter(self) -> asyncio.Event:
-        """The generation to wait on. Capture it before reading the buffer."""
-        return self._event
-
-    def notify(self) -> None:
-        event, self._event = self._event, asyncio.Event()
-        event.set()
-
-
-@dataclass
-class PackJob:
+@dataclass(kw_only=True)
+class PackJob(Job):
     """One install, from submit to terminal event."""
 
-    job_id: str
     pack_id: str
     #: The items this job will fetch, resolved at submit time (see
     #: ``PackService._targets``) -- never the caller's ``None``.
     items: tuple[str, ...]
     mode: str
-    status: str = STATUS_RUNNING
-    #: The flow's current step name (``"pip"``, ``"download:<item>"``, ...),
-    #: which is how ``GET /api/packs`` knows which model is downloading.
-    current_step: str | None = None
-    created_at: float = field(default_factory=time.time)
-    finished_at: float | None = None
-    #: Set by ``cancel`` and read by the flow's own ``cancel_check``. A
-    #: threading primitive because the flow reads it from its worker thread.
-    cancel_event: threading.Event = field(default_factory=threading.Event)
-    error: dict | None = None
     restart_command: str | None = None
-
-    @property
-    def terminal(self) -> bool:
-        return self.status != STATUS_RUNNING
-
-
-def _now_iso() -> str:
-    """An ISO-8601 UTC timestamp, so two clients can order one job's log."""
-    return datetime.now(timezone.utc).isoformat()
 
 
 class PackService:
@@ -188,29 +144,35 @@ class PackService:
         # whose run service has not been built yet.
         self._runs_active = runs_active if runs_active is not None else (
             lambda: False)
-        self._shutdown_timeout_s = shutdown_timeout_s
-        # Guards the buffer, the cursor and every mutation of the current
-        # job's status. Held by both the loop and the flow's worker thread,
-        # so it is a threading.Lock and never an asyncio one.
-        self._lock = threading.Lock()
-        self._job: PackJob | None = None
-        self._events: "deque[dict]" = deque(maxlen=MAX_EVENTS)
-        self._cursor = 0
-        self._task: "asyncio.Task | None" = None
-        self._broadcast = _Broadcast()
+        # The single job slot: the lock, the buffer, the cursor, the long
+        # poll and the worker task. ``_terminal_for`` is the seam back --
+        # the runner asks it what an exception out of the flow did to the
+        # job, because knowing that is this module's business and not its.
+        self._runner = JobRunner(terminal_for=self._terminal_for,
+                                 label="pack install job",
+                                 shutdown_timeout_s=shutdown_timeout_s)
+
+    @property
+    def _task(self) -> "asyncio.Task | None":
+        """The worker task of the current job, or None when it has none.
+
+        The restart-mode path never starts one, and a claim drops the
+        previous job's. Exposed because ``shutdown`` used to own it here and
+        the service's tests still read it.
+        """
+        return self._runner._task
 
     # ── reading ───────────────────────────────────────────────────────────
 
     def current_job(self) -> PackJob | None:
         """The most recent job, running or not. None before the first submit."""
-        return self._job
+        # Every job the runner has ever held was made by this class, so
+        # every one of them is a PackJob.
+        return self._runner.current_job()
 
     def get_job(self, job_id: str) -> PackJob:
         """The job with this id. Raises :class:`UnknownJob` for any other."""
-        job = self._job
-        if job is None or job.job_id != job_id:
-            raise UnknownJob(job_id)
-        return job
+        return self._runner.get_job(job_id)
 
     async def wait_for_events(
         self,
@@ -222,49 +184,22 @@ class PackService:
     ) -> tuple[list[dict], int, str]:
         """Events after *after_cursor*, optionally long-polling for the next.
 
-        Returns ``(events, cursor, status)``. The cursor tracks what was
-        actually RETURNED, so an empty page never moves a follower forward
-        past events it did not receive.
-
-        Order is load-bearing: the wake-up generation is captured BEFORE the
-        buffer is read, so an event that lands during the read still
-        satisfies the wait instead of being missed until the next one.
-
-        Returns immediately -- possibly empty -- once the job is terminal. A
-        long poll on a finished job must never hang for its full timeout.
+        Returns ``(events, cursor, status)``. The cursor rules and the
+        lost-wakeup ordering that make the long poll safe belong to
+        :meth:`app.core.jobs.JobRunner.wait_for_events`.
         """
-        job = self.get_job(job_id)
-        waiter = self._broadcast.waiter()
-        events, cursor, status = self._read(job, after_cursor, limit)
-        if events or status != STATUS_RUNNING or wait <= 0:
-            return events, cursor, status
-
-        try:
-            await asyncio.wait_for(waiter.wait(), wait)
-        except asyncio.TimeoutError:
-            pass
-        return self._read(job, after_cursor, limit)
+        return await self._runner.wait_for_events(
+            job_id, after_cursor=after_cursor, limit=limit, wait=wait)
 
     def _read(self, job: PackJob, after_cursor: int, limit: int
               ) -> tuple[list[dict], int, str]:
         """One consistent look at the buffer AND the job's status.
 
-        Both under the same lock hold, which is what makes "terminal status
-        implies the terminal event is already readable" true for a caller.
-
-        The identity check closes a narrow window in ``wait_for_events``: a
-        poll parked on a job that finishes, followed by a submit that clears
-        the buffer, would otherwise resume and hand the NEW job's events back
-        under the OLD job's id. There are no events for that job any more, so
-        the honest answer is the same one an id we never had gets.
+        A pass-through to the runner, kept here because it is what a test
+        reaches for to reproduce the replaced-job window: an interleaving the
+        public API cannot be made to produce on demand.
         """
-        with self._lock:
-            if self._job is not job:
-                raise UnknownJob(job.job_id)
-            page = [event for event in self._events
-                    if event["cursor"] > after_cursor][:limit]
-            status = job.status
-        return page, (page[-1]["cursor"] if page else after_cursor), status
+        return self._runner._read(job, after_cursor, limit)
 
     # ── submitting ────────────────────────────────────────────────────────
 
@@ -286,7 +221,7 @@ class PackService:
 
         Only one thing here is awaited, and it is the branch that hands over
         to :meth:`_submit_restart` -- which returns or raises. Everything on
-        the live path from the busy check to the ``self._job`` assignment
+        the live path from the busy check to the runner's ``claim``
         therefore runs without a suspension point between them, which is the
         whole of what makes "one install at a time" true: two requests cannot
         both pass the check before either takes the slot.
@@ -308,7 +243,11 @@ class PackService:
         :raises ValueError: an item id this pack does not have, or a
             restart-mode install with no packages to install.
         """
-        running = self._job
+        # The runner refuses a second claim too, in its own words. This check
+        # is the one that answers the CLIENT: it happens before anything is
+        # resolved or disk-checked, and it raises the refusal the routes map
+        # to a 409 naming the install to follow.
+        running = self.current_job()
         if running is not None and not running.terminal:
             raise PackBusy(running.job_id)
 
@@ -346,19 +285,13 @@ class PackService:
 
         job = PackJob(job_id=uuid.uuid4().hex, pack_id=pack.pack_id,
                       items=tuple(item.item_id for item in targets), mode=mode)
-        loop = asyncio.get_running_loop()
-        broadcast = _Broadcast()
-
-        with self._lock:
-            self._job = job
-            self._events.clear()
-            self._cursor = 0
-            self._broadcast = broadcast
-            self._store({"type": "job_started", "pack_id": pack.pack_id,
-                         "items": list(job.items)}, job)
         # job_started is in the buffer before the flow can emit anything, so
         # a client that polls from cursor 0 always sees it first.
-        self._task = asyncio.create_task(self._run(job, pack, loop, broadcast))
+        self._runner.claim(job, {"type": "job_started",
+                                 "pack_id": pack.pack_id,
+                                 "items": list(job.items)})
+        self._runner.start(job, self._flow_work(job, pack),
+                           on_settled=self._settled)
         return job
 
     async def _submit_restart(self, pack: Pack, variant: str | None) -> PackJob:
@@ -409,12 +342,12 @@ class PackService:
         kind = self._restart_kind(pack)
 
         # Nothing from here to the end of the method awaits, so the checks
-        # below and the assignment of ``self._job`` cannot be interleaved
-        # with another submit -- the same property that makes "one job at a
-        # time" hold in ``submit_install``. The busy check is repeated
-        # because the probe above IS a suspension point: a live install may
-        # have started during it, and stopping the server would kill it.
-        running = self._job
+        # below and the runner's claim cannot be interleaved with another
+        # submit -- the same property that makes "one job at a time" hold in
+        # ``submit_install``. The busy check is repeated because the probe
+        # above IS a suspension point: a live install may have started during
+        # it, and stopping the server would kill it.
+        running = self.current_job()
         if running is not None and not running.terminal:
             raise PackBusy(running.job_id)
 
@@ -459,25 +392,15 @@ class PackService:
         log.info("restart-mode install of %s handed to helper pid %s (job %s)",
                  pack.pack_id, helper_pid, job.job_id)
         job.restart_command = command
-        # There is no task for this job. Leaving the previous job's finished
-        # one in place would have ``shutdown`` await something that belongs
-        # to a job nobody can read any more.
-        self._task = None
 
-        broadcast = _Broadcast()
-        with self._lock:
-            self._job = job
-            self._events.clear()
-            self._cursor = 0
-            self._broadcast = broadcast
-            self._store({"type": "job_started", "pack_id": pack.pack_id,
-                         "items": []}, job)
+        self._runner.claim(job, {"type": "job_started",
+                                 "pack_id": pack.pack_id, "items": []})
         # Terminal immediately, and under the lock like every other terminal
         # event: a client that sees ``needs_restart`` has already been handed
         # the event that names the command, the kind and the file.
-        self._finish(job, STATUS_NEEDS_RESTART,
-                     {"type": "needs_restart", "command": command,
-                      "kind": kind, "pending_path": str(pending_path)})
+        self._runner.finish(job, STATUS_NEEDS_RESTART,
+                            {"type": "needs_restart", "command": command,
+                             "kind": kind, "pending_path": str(pending_path)})
 
         restart.schedule_self_shutdown(loop)
         return job
@@ -542,28 +465,48 @@ class PackService:
 
     # ── running ───────────────────────────────────────────────────────────
 
-    async def _run(self, job: PackJob, pack: Pack, loop, broadcast: _Broadcast
-                   ) -> None:
-        """Run the flow on a worker thread and record how it ended.
+    def _flow_work(self, job: PackJob, pack: Pack) -> Work:
+        """The unit of work the runner hands to ``asyncio.to_thread``.
 
-        Swallows every ``Exception``: this is a bare task nobody awaits
-        except ``shutdown``, and an escaping one would be reported as "task
-        exception was never retrieved" long after the job disappeared from
-        the UI.
+        A closure rather than a partial: ``run_flow`` is injectable and the
+        runner knows nothing about packs, so this is the one place the flow's
+        own argument shape -- ``(pack, item_ids, emit=, cancel_check=)`` --
+        is spelled out.
 
-        A ``BaseException`` -- KeyboardInterrupt, SystemExit, CancelledError
-        -- is recorded and then RE-RAISED. Those are not ours to swallow, and
-        the job reaches a terminal state either way, which is the part that
-        matters to anyone still watching it.
+        ``list(job.items)`` and not the tuple, because that is the type the
+        flow has always been handed and what a scripted test flow records.
         """
-        emit = self._emitter(job, loop, broadcast)
-        try:
-            await asyncio.to_thread(
-                self._run_flow, pack, list(job.items),
-                emit=emit, cancel_check=job.cancel_event.is_set)
-        except PackCancelled:
-            self._finish(job, STATUS_CANCELLED, {"type": "job_cancelled"})
-        except PackNeedsRestart as exc:
+
+        def work(emit: Emit, cancel_check: CancelCheck) -> None:
+            self._run_flow(pack, list(job.items),
+                           emit=emit, cancel_check=cancel_check)
+
+        return work
+
+    def _terminal_for(self, exc: BaseException) -> tuple[str, dict] | None:
+        """What an exception out of the flow did to the job, and what to say.
+
+        Handed to the runner at construction. The runner owns the lock
+        discipline, the buffer and the cursor; this owns the failure shapes
+        of ``packs.errors`` and what each of them tells the person watching
+        -- which is the whole reason the runner takes a callback instead of
+        importing this module.
+
+        The job it is about is :meth:`current_job`. The runner only asks
+        while the CURRENT job's worker thread is unwinding, and a submit is
+        refused until that job is terminal -- which is what the answer to
+        this call is about to make it -- so the job that raised is still the
+        one in the slot.
+
+        ``None`` means "not one of ours": KeyboardInterrupt, SystemExit,
+        CancelledError. The runner records the job as failed and re-raises
+        it, which is what those deserve; the warning is logged here because
+        this is what knows what to call the job.
+        """
+        job = self.current_job()
+        if isinstance(exc, PackCancelled):
+            return STATUS_CANCELLED, {"type": "job_cancelled"}
+        if isinstance(exc, PackNeedsRestart):
             # Checked before PackInstallError: it is a subclass, and "not
             # while the server is running" is not a failure.
             job.restart_command = exc.command
@@ -576,112 +519,36 @@ class PackService:
                 # the client's question is "is retry_mode set?" and not "is
                 # it set and also not null".
                 event["retry_mode"] = "restart"
-            self._finish(job, STATUS_NEEDS_RESTART, event)
-        except PackInstallError as exc:
-            self._fail(job, str(exc), exc.hint)
-        except Exception as exc:
+            return STATUS_NEEDS_RESTART, event
+        if isinstance(exc, PackInstallError):
+            return STATUS_FAILED, {"type": "job_failed",
+                                   "message": str(exc), "hint": exc.hint}
+        if isinstance(exc, Exception):
             # Not a failure shape anybody designed, so it goes to the log in
             # full and to the user as its repr -- str() of a bare KeyError is
             # just a quoted key and says nothing about what broke.
             log.exception("pack install job %s raised", job.job_id)
-            self._fail(job, repr(exc), None)
-        except BaseException as exc:
-            # KeyboardInterrupt, SystemExit, CancelledError. The job is over
-            # either way, and a job left saying "running" forever is worse
-            # than one that says why it stopped -- the panel would offer a
-            # Stop button for a thread that no longer exists, and no submit
-            # would ever be accepted again. Record, then let it travel: these
-            # are not ours to swallow.
-            log.warning("pack install job %s ended on %s", job.job_id,
-                        type(exc).__name__)
-            self._fail(job, repr(exc), None)
-            raise
-        else:
-            self._finish(job, STATUS_DONE, {"type": "job_done"})
-        finally:
-            # Finished, failed or cancelled, the disk is not what it was and
-            # the next status poll has to see that. The flow invalidates too;
-            # doing it here as well covers an injected flow and costs one
-            # dict drop.
-            state.invalidate()
+            return STATUS_FAILED, {"type": "job_failed",
+                                   "message": repr(exc), "hint": None}
+        # KeyboardInterrupt, SystemExit, CancelledError. The job is over
+        # either way, and a job left saying "running" forever is worse than
+        # one that says why it stopped -- the panel would offer a Stop button
+        # for a thread that no longer exists, and no submit would ever be
+        # accepted again. The runner records it, then lets it travel: these
+        # are not ours to swallow.
+        log.warning("pack install job %s ended on %s", job.job_id,
+                    type(exc).__name__)
+        return None
 
-    def _emitter(self, job: PackJob, loop, broadcast: _Broadcast
-                 ) -> Callable[[dict], None]:
-        """The ``emit`` the flow is handed. Called from the worker thread.
+    @staticmethod
+    def _settled() -> None:
+        """Drop the probe cache once the job is terminal, however it ended.
 
-        Closes over the JOB as well as its generation's loop and broadcast,
-        so an event says which job produced it. A closure is the only thing
-        that can: the caller is a reader thread that may outlive the job --
-        ``runner._pump`` is a daemon thread joined with a timeout -- and by
-        the time its event reaches ``_store`` the service's idea of the
-        current job may already be somebody else's.
+        Finished, failed or cancelled, the disk is not what it was and the
+        next status poll has to see that. The flow invalidates too; doing it
+        here as well covers an injected flow and costs one dict drop.
         """
-
-        def emit(event: dict) -> None:
-            with self._lock:
-                self._store(event, job)
-            try:
-                loop.call_soon_threadsafe(broadcast.notify)
-            except RuntimeError:
-                # The loop is closed (the server is going down, or a test
-                # ended while the thread was still unwinding). Nobody is left
-                # to wake; the event is stored either way.
-                pass
-
-        return emit
-
-    def _store(self, event: dict, job: PackJob | None) -> None:
-        """Stamp *event* and buffer it. CALLER HOLDS ``self._lock``.
-
-        *job* is the job that PRODUCED the event, which is not always the
-        current one: a finished job's reader thread can still be emitting.
-        Buffering is unconditional -- the buffer belongs to whatever job is
-        current, and a stray line in it is visible and harmless -- but the
-        step bookkeeping is not. ``current_step`` is what
-        ``GET /api/packs`` turns into an item's "downloading" badge, so a
-        late event stamping it on the next job would put that badge on an
-        item of a pack the old job never touched.
-        """
-        self._cursor += 1
-        self._events.append({**event, "cursor": self._cursor, "ts": _now_iso()})
-
-        if job is None or job is not self._job:
-            return
-        kind = event.get("type")
-        if kind == "step_started":
-            job.current_step = event.get("step")
-        elif kind == "step_done" and job.current_step == event.get("step"):
-            job.current_step = None
-
-    def _finish(self, job: PackJob, status: str, event: dict) -> None:
-        """Record the terminal event and the status, atomically.
-
-        The event goes in FIRST and the status flips under the same lock, so
-        a poller that sees a terminal status has already been handed the
-        event explaining it.
-
-        Called from ``_run``, which runs ON the loop, so the wake-up needs no
-        thread hand-off. ``self._broadcast`` is still this job's generation:
-        only a submit replaces it, and a submit is refused until the current
-        job is terminal -- which is what this method is about to make true.
-
-        The other caller is ``_submit_restart``, where that argument runs the
-        other way round and still holds: the generation was replaced by the
-        submit itself, moments earlier and under the same lock, and this job
-        was terminal on arrival. It has no ``_run`` and no worker thread --
-        the install happens in another process, after this one is gone -- so
-        this is the only place its status is ever set.
-        """
-        with self._lock:
-            self._store(event, job)
-            job.status = status
-            job.finished_at = time.time()
-        self._broadcast.notify()
-
-    def _fail(self, job: PackJob, message: str, hint: str | None) -> None:
-        job.error = {"message": message, "hint": hint}
-        self._finish(job, STATUS_FAILED,
-                     {"type": "job_failed", "message": message, "hint": hint})
+        state.invalidate()
 
     # ── stopping ──────────────────────────────────────────────────────────
 
@@ -692,43 +559,14 @@ class PackService:
         and it is the FLOW that ends the job, so the status may still say
         running when this returns. Asking twice is not an error.
         """
-        job = self.get_job(job_id)
-        if job.terminal:
-            return False
-        job.cancel_event.set()
-        return True
+        return await self._runner.cancel(job_id)
 
     async def shutdown(self) -> None:
         """Stop a running install and wait for it, bounded.
 
         Bounded because the server is coming down either way: a flow that
         ignores its cancel check must not be able to hold the process open.
-        The task is SHIELDED from the timeout -- cancelling it would not stop
-        the worker thread anyway, and would leave the job with no terminal
-        event at all.
-
-        Nothing the awaited task raises escapes. ``_run`` swallows every
-        ``Exception`` itself but deliberately RE-RAISES a ``BaseException``
-        (KeyboardInterrupt, SystemExit, CancelledError) after recording the
-        job, and this is the one place that await happens -- inside the
-        lifespan shutdown hook. Letting one through would turn "the server
-        is coming down" into a traceback on the way out, of an install that
-        has already reached a terminal state and told everyone watching.
+        See :meth:`app.core.jobs.JobRunner.shutdown` for what the bound
+        protects and why nothing the job raised escapes here.
         """
-        job, task = self._job, self._task
-        if job is not None and not job.terminal:
-            job.cancel_event.set()
-        if task is None or task.done():
-            return
-        try:
-            await asyncio.wait_for(asyncio.shield(task),
-                                   self._shutdown_timeout_s)
-        except asyncio.TimeoutError:
-            log.warning("pack install job did not stop within %.0fs; "
-                        "leaving it to the interpreter",
-                        self._shutdown_timeout_s)
-        except BaseException:
-            # BaseException, not Exception: _run re-raises those on purpose
-            # (see the docstring), so ``except Exception`` here catches only
-            # the cases _run already handled and misses the ones it forwards.
-            log.exception("pack install job failed during shutdown")
+        await self._runner.shutdown()

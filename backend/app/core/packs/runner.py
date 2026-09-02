@@ -208,6 +208,11 @@ def _stop_process(proc) -> None:
         proc.kill()
 
 
+#: The public name for it: ending a child process the way the OS requires is
+#: shared by every subprocess the app starts, not only by pip.
+stop_process = _stop_process
+
+
 def _close_output(proc) -> None:
     """Shut the pipe the reader thread is holding.
 
