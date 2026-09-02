@@ -97,6 +97,29 @@ def _from_http_error(exc: HTTPError) -> GitHubError:
     return GitHubError(message or str(exc.reason), status=exc.code)
 
 
+def _from_url_error(exc: BaseException) -> GitHubError:
+    """A :class:`~.errors.GitHubError` for a request that never got a status.
+
+    DNS, TLS, a refused connection, a timeout: no HTTP status exists, and
+    ``None`` is what tells the caller to talk about the network rather than
+    about the repository name.
+    """
+    return GitHubError(str(getattr(exc, "reason", exc)), status=None)
+
+
+def _discard(path: Path) -> None:
+    """Delete a partial download, never raising over it.
+
+    Cleanup runs while another exception is in flight, and a file the
+    filesystem will not let go of must not replace the failure that is
+    actually worth reporting.
+    """
+    try:
+        path.unlink(missing_ok=True)
+    except OSError:
+        pass
+
+
 def _gh_get(url: str, timeout: float = 30.0) -> bytes:
     """GET *url* from GitHub, or raise :class:`~.errors.GitHubError`.
 
@@ -110,8 +133,7 @@ def _gh_get(url: str, timeout: float = 30.0) -> bytes:
     except HTTPError as exc:
         raise _from_http_error(exc) from exc
     except (URLError, TimeoutError) as exc:
-        reason = getattr(exc, "reason", exc)
-        raise GitHubError(str(reason), status=None) from exc
+        raise _from_url_error(exc) from exc
 
 
 def resolve_sha(owner: str, repo: str, ref: str) -> str:
@@ -246,14 +268,15 @@ def download_tarball(
                 _report(force=False)
             _report(force=True)
     except HTTPError as exc:
-        dest.unlink(missing_ok=True)
+        _discard(dest)
         raise _from_http_error(exc) from exc
     except (URLError, TimeoutError) as exc:
-        dest.unlink(missing_ok=True)
-        reason = getattr(exc, "reason", exc)
-        raise GitHubError(str(reason), status=None) from exc
+        _discard(dest)
+        raise _from_url_error(exc) from exc
     except BaseException:
-        dest.unlink(missing_ok=True)
+        # Everything else -- the cap, a cancel, a disk error, Ctrl-C -- leaves
+        # the same rule behind it: no half a tarball where a caller looks.
+        _discard(dest)
         raise
 
 

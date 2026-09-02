@@ -16,7 +16,10 @@ prose or prints -- the CLI's zh/en pairs stay in the CLI, the routes'
 envelopes stay in the routes, and both read the same structured answer.
 
 The submodules, in dependency order: :mod:`errors` (stdlib only),
-:mod:`manifest`, :mod:`catalog`, :mod:`sources`, :mod:`gate`.
+:mod:`deps`, :mod:`consent`, :mod:`manifest`, :mod:`catalog`, :mod:`sources`,
+:mod:`github`, :mod:`gate`, and :mod:`inspect`, which is the one that reads
+a source through several of the others and answers "what would installing
+this do?" in a single value.
 
 Only the error classes are re-exported here, so ``from app.core.plugins
 import ManifestError`` stays a cheap import that pulls in neither the AST
