@@ -280,6 +280,27 @@ def test_reserved_ids_are_the_fixed_segments_under_api_plugins():
     assert isinstance(RESERVED_PLUGIN_IDS, frozenset)
 
 
+def test_every_fixed_route_segment_is_a_reserved_id():
+    """Read off the ROUTER, not restated from the literal above.
+
+    The set exists because Starlette matches in registration order: a fixed
+    path declared after ``/{plugin_id}`` is reachable only while no pack may
+    be called that. Restating the six names proves they were typed twice; the
+    proof that matters is that the router has no seventh -- which is what the
+    next route added under this prefix would quietly introduce."""
+    from app.api import routes_plugins
+
+    prefix = routes_plugins.router.prefix + "/"
+    segments = {
+        route.path[len(prefix):].split("/")[0]
+        for route in routes_plugins.router.routes
+        if route.path.startswith(prefix)
+    }
+    fixed = {segment for segment in segments if "{" not in segment}
+    assert fixed, "no fixed path under /api/plugins/ -- the scan is broken"
+    assert fixed <= RESERVED_PLUGIN_IDS, sorted(fixed - RESERVED_PLUGIN_IDS)
+
+
 def test_no_pack_this_build_ships_claims_a_reserved_id():
     """The point of the set: a pack called ``install`` would sit where the
     install route already lives, and the router would decide which wins."""
@@ -311,10 +332,23 @@ def test_a_real_entry_is_carried_across_field_by_field():
     assert entries["edu"].chapters == ("I1", "I2")
 
 
+def test_github_catalog_packs_lists_the_official_plugins_this_build_ships():
+    """The rows that cost a download and a consent decision. Asserted by id
+    against the real registry, because a fourth one appearing here without a
+    test noticing is a pack that installs itself into the Plugin Center's
+    list of things CodefyUI vouches for."""
+    packs = github_catalog_packs()
+    assert [entry.id for entry in packs] == [
+        "graph-copilot", "official-template", "self-learning",
+    ]
+    assert all(entry.kind == "github" and entry.official for entry in packs)
+    assert all(entry.repo and entry.repo.startswith("CodefyUI/") for entry in packs)
+
+
 def test_github_catalog_packs_lists_the_repository_entries_sorted_by_id(monkeypatch):
-    """The shape is in the schema so a Plugin Center never has to invent it,
-    and nothing ships through it today -- which is exactly why it is tested
-    against a catalog that does."""
+    """The sort is by id, whatever order the file writes them in -- shown
+    against an injected catalog so the assertion is about the ordering rather
+    than about what this build happens to ship."""
     monkeypatch.setattr("app.core.plugins.catalog.load_catalog", lambda: {
         "schema": 1,
         "plugins": {
@@ -369,6 +403,10 @@ def test_a_github_entry_keeps_its_repo_ref_and_flags():
         ("trailing-", GOOD_BUILTIN, "not a valid plugin id"),
         ("pack", "not a table", "entry is not a table"),
         ("pack", {"kind": "svn", "path": "p"}, "unknown kind"),
+        # Unhashable: ``[] in a_frozenset`` is a TypeError, so these used to
+        # take down the reader that promises to drop rows rather than raise.
+        ("pack", {"kind": [], "path": "p"}, "unknown kind"),
+        ("pack", {"kind": {}, "path": "p"}, "unknown kind"),
         ("pack", {"kind": "builtin", "name": "P"}, "a builtin entry needs a path"),
         ("pack", {"kind": "builtin", "path": ""}, "a builtin entry needs a path"),
         ("pack", {"kind": "github", "name": "P"}, "a github entry needs"),

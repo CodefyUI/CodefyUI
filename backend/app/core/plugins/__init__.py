@@ -19,7 +19,10 @@ The submodules, in dependency order: :mod:`errors` (stdlib only),
 :mod:`deps`, :mod:`consent`, :mod:`manifest`, :mod:`catalog`, :mod:`sources`,
 :mod:`github`, :mod:`gate`, and :mod:`inspect`, which is the one that reads
 a source through several of the others and answers "what would installing
-this do?" in a single value.
+this do?" in a single value. Three more answer about an install that already
+happened: :mod:`lifecycle` (enable, disable, uninstall -- the writes),
+:mod:`listing` (one row per plugin, installed or not, for the Plugin Center)
+and :mod:`reload` (the one re-discovery call every caller shares).
 
 Only the error classes are re-exported here, so ``from app.core.plugins
 import ManifestError`` stays a cheap import that pulls in neither the AST

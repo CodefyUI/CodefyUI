@@ -210,7 +210,11 @@ def validate_catalog(data: Any) -> dict[str, CatalogEntry]:
             )
             continue
         kind = entry.get("kind")
-        if kind not in _KINDS:
+        # ``isinstance`` first, and not for tidiness: ``[] in a_frozenset``
+        # raises TypeError for an unhashable value, so ``kind = []`` in a
+        # hand-edited registry took down the reader whose whole promise is
+        # that it drops bad rows instead of raising over them.
+        if not isinstance(kind, str) or kind not in _KINDS:
             logger.warning(
                 "plugin catalog: dropping %r -- unknown kind %r", plugin_id, kind
             )
@@ -265,9 +269,12 @@ def catalog_entries() -> dict[str, CatalogEntry]:
 def github_catalog_packs() -> list[CatalogEntry]:
     """The catalog's ``kind = "github"`` entries, sorted by id.
 
-    Empty in a stock build: the catalog ships only in-repo packs today. It is
-    here because the shape is already in the schema, and a Plugin Center that
-    lists third-party packs must not have to re-derive what one looks like.
+    Three of them ship in a stock build -- ``graph-copilot``,
+    ``official-template`` and ``self-learning``, the plugins CodefyUI
+    publishes in their own repositories -- and the sort is by id because that
+    is what a person types. These are the rows that cost a download and a
+    consent decision, which is why asking for them separately is worth a
+    function: nothing may install one without being asked.
     """
     return sorted(
         (entry for entry in catalog_entries().values() if entry.kind == "github"),
