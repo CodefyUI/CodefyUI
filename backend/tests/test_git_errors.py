@@ -207,6 +207,8 @@ def test_the_ssh_split_is_the_row_order():
     "fatal: Authentication failed for 'https://github.com/a/b/'",
     "remote: HTTP Basic: Access denied",
     "remote: Invalid username or password.",
+    "remote: Invalid username or token. Password authentication is not "
+    "supported for Git operations.",
     # No "Could not read from remote repository" line under it: the phrase
     # has to be enough on its own, because a wrapper (or a future git) may
     # not print git's own summary line.
@@ -218,6 +220,16 @@ def test_the_ssh_split_is_the_row_order():
 def test_a_credential_phrase_is_enough_on_its_own(line):
     """Each phrase classifies by itself -- the row is an OR, not a recipe."""
     assert classify_failure(_ARGV, 128, line + "\n").code == "auth_required"
+
+
+@pytest.mark.parametrize("line", [
+    # git says this one on STDOUT, which is why classify_failure takes text
+    # and not a GitResult: the commit caller joins both streams.
+    "nothing to commit, working tree clean",
+    'no changes added to commit (use "git add" and/or "git commit -a")',
+])
+def test_either_way_of_saying_nothing_to_commit_is_enough(line):
+    assert classify_failure(_ARGV, 1, line + "\n").code == "nothing_to_commit"
 
 
 def test_a_local_permission_error_is_not_a_login_problem():
@@ -244,11 +256,69 @@ def test_an_unrecognised_failure_keeps_the_tail_of_stderr():
         f"line {n}" for n in range(50 - LAST_STDERR_LINES, 50)]
 
 
-def test_a_classified_failure_does_not_leak_stderr():
-    """A code the frontend can translate needs no raw English attached."""
+def test_a_classified_failure_keeps_the_evidence_too():
+    """A code is a CLAIM about what went wrong, and a claim with nothing
+    under it cannot be argued with.
+
+    This test used to assert the opposite -- that a translated code needs no
+    raw English attached -- and that premise was the defect: when the
+    classification is wrong (a hook's output caught by an ordinary English
+    phrase, say) the user got a confident wrong answer AND the sentence that
+    would have explained it was gone. What a route puts in the response body
+    is still the route's decision.
+    """
     error = classify_failure(_ARGV, 128, "fatal: Authentication failed for 'x'\n")
 
-    assert error.stderr is None
+    assert error.code == "auth_required"
+    assert error.stderr == "fatal: Authentication failed for 'x'"
+
+
+def test_stderr_that_says_nothing_is_reported_as_nothing():
+    """``rev-parse --verify --quiet`` fails silently by design. An empty tail
+    is the honest answer -- git failed and said nothing -- and it is still a
+    string, so a route never has to tell None and "" apart."""
+    error = classify_failure(_ARGV, 1, "")
+
+    assert error.code == "git_failed"
+    assert error.stderr == ""
+
+
+# --- hook output is not git output -----------------------------------------
+
+
+@pytest.mark.parametrize("stderr", [
+    pytest.param("ruff: command not found\n", id="linter-not-installed"),
+    pytest.param("node_modules/.bin/eslint: not found\n", id="tool-not-found"),
+    pytest.param("error: pre-commit hook: .venv does not exist\n",
+                 id="hook-missing-venv"),
+    pytest.param("error: cannot lock ref: reference already exists\n",
+                 id="not-a-branch-that-exists"),
+])
+def test_a_failing_hook_is_not_a_missing_object(stderr):
+    """``commit`` runs the user's hooks, and their output lands on this same
+    stream. "not found" from a lint hook must not become "git found no such
+    object or path" -- an answer that is wrong, confident, and (before the
+    tail was kept) unaccompanied by the line that explains it.
+
+    ``error: `` is deliberately not one of the prefixes that anchors a
+    phrase: git uses it for what it can carry on past, and a hook uses it
+    for everything.
+    """
+    error = classify_failure(_ARGV, 1, stderr)
+
+    assert error.code == "git_failed"
+    assert error.stderr == stderr.strip()
+
+
+@pytest.mark.parametrize("stderr,code", [
+    ("fatal: path 'x' does not exist in 'HEAD'\n", "not_found"),
+    ("fatal: repository 'https://github.com/a/b.git' not found\n", "not_found"),
+    ("remote: Repository not found.\n", "not_found"),
+    ("fatal: a branch named 'feat' already exists\n", "branch_exists"),
+])
+def test_an_anchored_phrase_still_catches_git_saying_it(stderr, code):
+    """The anchor narrows WHO is speaking, not what git means."""
+    assert classify_failure(_ARGV, 128, stderr).code == code
 
 
 def test_the_failing_subcommand_is_named():

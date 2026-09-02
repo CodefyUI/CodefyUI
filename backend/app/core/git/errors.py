@@ -6,9 +6,19 @@ sentence to display: every failure carries a ``code`` from a closed
 vocabulary (:data:`CODES`), and the frontend owns the wording. The
 ``message`` is for logs and for a developer reading a 500; ``hint`` is the
 one extra fact a code cannot carry (which branch, which file); ``stderr``
-is the raw tail, and only the "we do not know what this is" code sets it.
+is the last :data:`LAST_STDERR_LINES` lines of what git actually said, and
+EVERY failure carries it.
 
-Three decisions here are not stylistic:
+That last part is deliberate and was once the other way round. A code the
+frontend can translate looks like it needs no raw text attached -- until
+the classification is wrong, and then the user is told something confident
+and false with nothing left to explain it. The commit route runs the
+user's own hooks, whose output lands on this same stream, so a
+misclassification is not hypothetical. Keeping the tail on every failure
+costs a few hundred bytes and makes every wrong answer diagnosable; what
+reaches the browser is the route's decision, not this module's.
+
+Four decisions here are not stylistic:
 
 * **one exception type, not fifteen.** A route needs the HTTP status and a
   string the frontend can switch on; a caller further up needs to catch
@@ -29,6 +39,13 @@ Three decisions here are not stylistic:
   phrases and sits ABOVE the network row: "Permission denied", "publickey"
   or "Host key" anywhere in the same stderr means the connection worked and
   the credentials did not.
+* **three phrases are anchored to git's own voice.** "not found", "already
+  exists" and "does not exist" are ordinary English, and this stream is not
+  only git's: ``commit`` runs the user's hooks and prints whatever they
+  print. ``ruff: command not found`` from a failing lint hook must not be
+  answered with "git found no such object or path". :class:`Anchored` says
+  the phrase only counts on a line that opens with one of
+  :data:`GIT_MESSAGE_PREFIXES`.
 
 Matching is case-insensitive substring matching, deliberately: git's own
 wording is stable under ``LC_ALL=C``, but the ``remote:`` lines a forge
@@ -42,6 +59,7 @@ never drags the subprocess machinery in with it.
 from __future__ import annotations
 
 from collections.abc import Sequence
+from dataclasses import dataclass
 
 #: How much of git's stderr an unclassified failure keeps. Enough to hold a
 #: hook's whole complaint, short enough to put in a toast.
@@ -115,8 +133,10 @@ class GitError(Exception):
     ``code`` is the closed-vocabulary string the frontend switches on,
     ``status`` the HTTP status the route returns, ``message`` a plain-ASCII
     English sentence for logs, ``hint`` the one fact the code cannot carry,
-    and ``stderr`` the raw tail of git's own output -- set only for
-    ``git_failed``, where there is nothing else to go on.
+    and ``stderr`` the tail of git's own output -- present on every failure
+    :func:`classify_failure` produces, so that a wrong code is still a
+    diagnosable one (see the module docstring). What a route puts in a
+    response body is the route's decision.
     """
 
     def __init__(self, code: str, status: int, message: str | None = None,
@@ -149,11 +169,43 @@ class GitBusy(GitError):
         self.op = op
 
 
-#: A pattern is either a string ("this text appears in stderr") or a tuple of
-#: strings ("all of these appear"). Rows are tried in order and the first row
-#: with a matching pattern wins, so a row that must beat a later one goes
-#: above it.
-_Pattern = str | tuple[str, ...]
+#: The openings git puts on its own sentences. Matched at the START of a
+#: line, and the set is short on purpose.
+#:
+#: ``error: `` is NOT here, and that is the whole point of anchoring: git
+#: uses it for the problems it can carry on past, and it is also the most
+#: common opening in the output of a failing hook (``error: pre-commit
+#: hook: .venv does not exist``). Every sentence in which git ITSELF says
+#: "not found", "already exists" or "does not exist" about an object,
+#: path or ref opens with ``fatal: `` or comes back from the far side as
+#: ``remote: ``.
+#:
+#: The cost is known and accepted: ``git remote add`` says "error: remote
+#: origin already exists." for a duplicate, which now falls through to
+#: ``git_failed`` -- with git's own sentence attached, which is what makes
+#: that acceptable. G3 owns remotes and can add a precise row for it.
+GIT_MESSAGE_PREFIXES: tuple[str, ...] = ("fatal: ", "remote: ")
+
+
+@dataclass(frozen=True)
+class Anchored:
+    """A phrase that only counts when git is the one saying it.
+
+    Wraps a phrase so ordinary that finding it anywhere in the stream means
+    nothing -- "not found", "already exists" -- and requires it to sit on a
+    line opening with one of :data:`GIT_MESSAGE_PREFIXES`. The hooks a
+    commit runs write to the same stderr, and their prose must not be read
+    as git's.
+    """
+
+    phrase: str
+
+
+#: A pattern is a string ("this text appears in stderr"), an
+#: :class:`Anchored` phrase ("git itself said this"), or a tuple of strings
+#: ("all of these appear"). Rows are tried in order and the first row with a
+#: matching pattern wins, so a row that must beat a later one goes above it.
+_Pattern = str | Anchored | tuple[str, ...]
 
 #: stderr phrase -> (code, status). ORDER IS PART OF THE MEANING.
 #:
@@ -241,7 +293,7 @@ _RULES: tuple[tuple[str, int, tuple[_Pattern, ...]], ...] = (
     # Above ``not_found``: "a branch named 'x' already exists" would
     # otherwise be reported as a missing one by the "not found" phrase.
     ("branch_exists", 409, (
-        "already exists",
+        Anchored("already exists"),
     )),
     ("branch_not_merged", 409, (
         "is not fully merged",
@@ -256,14 +308,17 @@ _RULES: tuple[tuple[str, int, tuple[_Pattern, ...]], ...] = (
     # the user opens at a ref where it does not exist is the most ordinary
     # request the tab makes, and a 500 for it would be plainly wrong.
     ("not_found", 404, (
-        "not found",
+        # Anchored: two words of ordinary English that a failing lint hook
+        # prints as readily as git does ("ruff: command not found").
+        Anchored("not found"),
         "did not match any",
         "unknown revision",
         "bad revision",
         "No such remote",
         "is not a valid reference",
-        # cat-file blob <ref>:<path> / :0:<path>
-        "does not exist",
+        # cat-file blob <ref>:<path> / :0:<path>. Anchored for the same
+        # reason: "does not exist" is a sentence anything can write.
+        Anchored("does not exist"),
         # cat-file blob <unknown ref>:<path>
         "invalid object name",
         # rev-parse --verify <unknown sha>, without --quiet
@@ -272,13 +327,18 @@ _RULES: tuple[tuple[str, int, tuple[_Pattern, ...]], ...] = (
 )
 
 
-def _matches(pattern: _Pattern, haystack: str) -> bool:
-    """Is *pattern* (a phrase, or all of a tuple of phrases) in *haystack*?
+def _matches(pattern: _Pattern, haystack: str, lines: Sequence[str]) -> bool:
+    """Does *pattern* match this stderr?
 
-    *haystack* is already lower-cased by the caller; the patterns are
+    *haystack* is the whole stream and *lines* its lines, both already
+    lower-cased and the lines left-stripped by the caller; the patterns are
     written in git's own casing so the table stays readable next to real
     output, and are lowered here.
     """
+    if isinstance(pattern, Anchored):
+        phrase = pattern.phrase.lower()
+        return any(line.startswith(GIT_MESSAGE_PREFIXES) and phrase in line
+                   for line in lines)
     if isinstance(pattern, str):
         return pattern.lower() in haystack
     return all(part.lower() in haystack for part in pattern)
@@ -328,16 +388,21 @@ def classify_failure(argv: Sequence[str], returncode: int,
     decision belongs to ``run_git``'s ``ok_codes``, because only the caller
     knows that ``diff`` exits 1 for "there are differences".
 
-    Unrecognised output is ``git_failed`` (500) carrying the last
-    :data:`LAST_STDERR_LINES` lines -- the one code that hands the raw text
-    on, because there is nothing else to say about it.
+    Unrecognised output is ``git_failed`` (500). Every result -- recognised
+    or not -- carries the last :data:`LAST_STDERR_LINES` lines in
+    ``.stderr``, because a code is a claim about what went wrong and a
+    wrong claim with no evidence under it cannot be argued with. Empty
+    stderr gives an empty tail, which is itself the honest answer: git
+    failed and said nothing (``--quiet`` does that).
     """
     haystack = stderr.lower()
+    lines = [line.lstrip() for line in haystack.splitlines()]
+    tail = stderr_tail(stderr)
     for code, status, patterns in _RULES:
-        if any(_matches(pattern, haystack) for pattern in patterns):
-            return GitError(code, status)
+        if any(_matches(pattern, haystack, lines) for pattern in patterns):
+            return GitError(code, status, stderr=tail)
     label = f"git {_subcommand(argv)}".strip()
     return GitError(
         "git_failed", CODES["git_failed"][0],
         f"{label} failed (exit {returncode})",
-        stderr=stderr_tail(stderr))
+        stderr=tail)
