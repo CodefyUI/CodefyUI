@@ -1,0 +1,50 @@
+"""Plugin logic the server and the CLI both need, with neither one inside it.
+
+Everything about a plugin used to live in ``scripts/plugins.py``: what a
+manifest may say, what ``owner/repo@ref`` means, which packs the catalog
+ships, and which files the AST gate will refuse. None of it was reachable
+from the FastAPI app -- ``scripts/`` is only on ``sys.path`` when the CLI or
+the test suite puts it there -- so a Plugin Center in the browser would have
+had to grow a second copy of every one of those rules, and a second copy of a
+SECURITY rule is the kind that drifts quietly.
+
+So the rules moved here and ``cdui plugin`` became a front end over them. The
+split is by ANSWER, not by caller: this package decides what is true (is this
+manifest valid, what does this spec name, may this file be imported), and the
+caller decides how to say it. That is why nothing in here formats bilingual
+prose or prints -- the CLI's zh/en pairs stay in the CLI, the routes'
+envelopes stay in the routes, and both read the same structured answer.
+
+The submodules, in dependency order: :mod:`errors` (stdlib only),
+:mod:`manifest`, :mod:`catalog`, :mod:`sources`, :mod:`gate`.
+
+Only the error classes are re-exported here, so ``from app.core.plugins
+import ManifestError`` stays a cheap import that pulls in neither the AST
+validator nor the filesystem.
+"""
+
+from __future__ import annotations
+
+from .errors import (
+    ConsentRequired,
+    GitHubError,
+    ManifestError,
+    PluginCancelled,
+    PluginInstallError,
+    PluginNeedsRestart,
+    SourceError,
+    UnknownCatalogName,
+    UnparseableSource,
+)
+
+__all__ = [
+    "ConsentRequired",
+    "GitHubError",
+    "ManifestError",
+    "PluginCancelled",
+    "PluginInstallError",
+    "PluginNeedsRestart",
+    "SourceError",
+    "UnknownCatalogName",
+    "UnparseableSource",
+]
