@@ -13,7 +13,6 @@ from typing import Any
 
 from fastapi import APIRouter, HTTPException
 
-from ..config import settings
 from ..core.node_registry import registry
 from ..core import plugin_loader
 from ..core.plugin_loader import (
@@ -21,10 +20,9 @@ from ..core.plugin_loader import (
     is_enabled,
     iter_plugin_dirs,
     load_lockfile,
-    rediscover_all,
     save_lockfile,
 )
-from ..core.preset_registry import preset_registry
+from ..core.plugins.reload import rediscover_now
 
 logger = logging.getLogger(__name__)
 
@@ -140,15 +138,7 @@ async def get_plugin(plugin_id: str) -> dict[str, Any]:
 @router.post("/reload")
 async def reload_plugins() -> dict[str, int]:
     """Clear and re-discover everything (builtin + custom + plugins + presets)."""
-    return rediscover_all(
-        registry,
-        preset_registry,
-        nodes_dir=settings.NODES_DIR,
-        custom_nodes_dir=settings.CUSTOM_NODES_DIR,
-        presets_dir=settings.PRESETS_DIR,
-        builtin_root=plugin_loader.plugins_builtin_root(),
-        user_root=plugin_loader.plugins_user_root(),
-    )
+    return rediscover_now()
 
 
 def _set_plugin_enabled(plugin_id: str, enabled: bool) -> dict[str, Any]:
@@ -169,15 +159,7 @@ def _set_plugin_enabled(plugin_id: str, enabled: bool) -> dict[str, Any]:
     entry["enabled"] = enabled
     save_lockfile(lockfile)
 
-    rediscover_all(
-        registry,
-        preset_registry,
-        nodes_dir=settings.NODES_DIR,
-        custom_nodes_dir=settings.CUSTOM_NODES_DIR,
-        presets_dir=settings.PRESETS_DIR,
-        builtin_root=plugin_loader.plugins_builtin_root(),
-        user_root=plugin_loader.plugins_user_root(),
-    )
+    rediscover_now()
     return {"id": plugin_id, "enabled": enabled}
 
 
