@@ -45,6 +45,7 @@ from app.core.plugins.manifest import (
     manifest_has_frontend,
     manifest_python_deps,
     read_manifest,
+    validate_manifest,
 )
 from app.core.plugins.sources import ParsedSource, parse_source
 
@@ -319,9 +320,11 @@ def test_a_malformed_entry_is_dropped_with_one_log_line(
     down with it. The log line is how the bad row gets fixed."""
     with caplog.at_level(logging.WARNING, logger=CATALOG_LOGGER):
         assert validate_catalog(_one(entry, plugin_id)) == {}
-    messages = [record.getMessage() for record in caplog.records]
-    assert any(because in message for message in messages), messages
-    assert any(repr(plugin_id) in message for message in messages), messages
+    dropped = [r for r in caplog.records if r.name == CATALOG_LOGGER]
+    assert len(dropped) == 1, [r.getMessage() for r in dropped]
+    message = dropped[0].getMessage()
+    assert because in message, message
+    assert repr(plugin_id) in message, message
 
 
 def test_one_bad_entry_never_takes_the_good_ones_with_it(caplog):
@@ -388,6 +391,44 @@ def test_a_manifest_that_asks_for_everything_is_read_back_in_full():
     assert manifest_allowed_modules(manifest) == ["subprocess", "socket"]
     assert manifest_python_deps(manifest) == {"requests": ">=2", "rich": ""}
     assert manifest_has_frontend(manifest) is True
+
+
+@pytest.mark.parametrize(
+    "manifest, because",
+    [
+        ({}, "[plugin]"),
+        ({"plugin": "greedy"}, "[plugin]"),
+        ({"plugin": {"id": "greedy"}}, "schema_version"),
+        ({"plugin": {"id": "greedy", "schema_version": 2}}, "schema_version"),
+        ({"plugin": {"id": "Greedy", "schema_version": 1}}, "Invalid plugin id"),
+        (
+            {"plugin": {"id": "greedy", "schema_version": 1}, "security": "os"},
+            "[security] must be a table",
+        ),
+        (
+            {
+                "plugin": {"id": "greedy", "schema_version": 1},
+                "security": {"allowed_modules": "os"},
+            },
+            "must be a list of strings",
+        ),
+        (
+            {
+                "plugin": {"id": "greedy", "schema_version": 1},
+                "security": {"capabilities": ["telepathy"]},
+            },
+            "Unknown capability",
+        ),
+    ],
+)
+def test_a_manifest_this_build_will_not_install_is_refused_by_name(manifest, because):
+    """The refusal names the offending key. A manifest is hand-written by
+    somebody who cannot see the installer, so "invalid manifest" costs them a
+    guessing game -- and ``allowed_modules = "os"`` is the shape that proved
+    it, granting ``{"o", "s"}`` and failing much later somewhere else."""
+    with pytest.raises(ManifestError) as excinfo:
+        validate_manifest(manifest)
+    assert because in str(excinfo.value)
 
 
 @pytest.mark.parametrize(

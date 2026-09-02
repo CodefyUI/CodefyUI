@@ -44,6 +44,16 @@ else:
 #: component all at once, so it is deliberately narrower than any of them.
 PLUGIN_ID_RE = re.compile(r"^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$")
 
+#: The characters one half of ``owner/repo`` may use, as a fragment rather
+#: than a pattern: the catalog validates a whole ``owner/repo`` string while
+#: the source parser has to capture the halves separately, and the two used
+#: to spell the same rule twice. One of them drifting is a source this build
+#: accepts and refuses depending on which door it came in.
+REPO_SEGMENT = r"[\w.-]"
+
+#: ``owner/repo``, in the characters GitHub allows in either half.
+REPO_RE = re.compile(rf"^{REPO_SEGMENT}+/{REPO_SEGMENT}+$")
+
 #: The one ``[plugin].schema_version`` this build knows how to install.
 SUPPORTED_SCHEMA = 1
 

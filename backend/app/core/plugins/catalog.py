@@ -27,15 +27,13 @@ from __future__ import annotations
 
 import json
 import logging
-import re
-from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from app.core import plugin_loader
 
-from .manifest import PLUGIN_ID_RE
+from .manifest import PLUGIN_ID_RE, REPO_RE
 
 logger = logging.getLogger(__name__)
 
@@ -47,9 +45,6 @@ logger = logging.getLogger(__name__)
 RESERVED_PLUGIN_IDS = frozenset({
     "catalog", "inspect", "install", "jobs", "generation", "reload",
 })
-
-#: ``owner/repo``, in the characters GitHub allows in either half.
-_REPO_RE = re.compile(r"^[\w.-]+/[\w.-]+$")
 
 #: The two things a catalog entry can be. Anything else is a newer catalog
 #: read by an older build, and an entry this build cannot install is worse
@@ -108,9 +103,7 @@ def builtin_catalog_packs(
 
 
 def available_builtin_packs(
-    *,
-    read_catalog: Callable[[], dict[str, Any]] | None = None,
-    read_lockfile: Callable[[], dict[str, Any]] | None = None,
+    catalog: dict[str, Any], lockfile: dict[str, Any]
 ) -> list[tuple[str, str]]:
     """Built-in packs shipped on disk that this install has made no decision about.
 
@@ -127,24 +120,16 @@ def available_builtin_packs(
 
     Returns ``(id, display name)`` pairs, sorted, so callers can name them.
 
-    The two readers are injectable because this is the one function the CLI
-    re-exports whose inputs its tests fake by patching ``plugins.load_catalog``
-    / ``plugins.load_lockfile``. They are resolved INSIDE the guard below, so
-    a reader that raises is swallowed like every other failure here.
+    Takes both documents rather than reading either: this answer is wanted by
+    a CLI notice, by ``cdui plugin sync`` and by a route, and each of those
+    already has the catalog and the lockfile in hand. Whether a failure to
+    READ one of them is fatal is likewise the caller's call -- the CLI
+    swallows it, because a notice must never take the command down with it.
     """
-    try:
-        catalog_reader = load_catalog if read_catalog is None else read_catalog
-        lockfile_reader = (
-            plugin_loader.load_lockfile if read_lockfile is None else read_lockfile
-        )
-        catalog = builtin_catalog_packs(catalog_reader())
-        lockfile = lockfile_reader()
-        installed = lockfile.get("plugins", {})
-        tombstoned = plugin_loader.removed_ids(lockfile)
-    except Exception:  # never let discoverability break a caller
-        return []
+    installed = lockfile.get("plugins", {})
+    tombstoned = plugin_loader.removed_ids(lockfile)
     out: list[tuple[str, str]] = []
-    for pack_id, entry in catalog.items():
+    for pack_id, entry in builtin_catalog_packs(catalog).items():
         if pack_id in installed or pack_id in tombstoned:
             continue
         out.append((pack_id, str(entry.get("name") or pack_id)))
@@ -166,7 +151,7 @@ class CatalogEntry:
     id: str
     name: str
     description: str
-    kind: str                        # "builtin" | "github"
+    kind: Literal["builtin", "github"]
     path: str | None = None          # builtin: repo-relative pack directory
     repo: str | None = None          # github: "owner/repo"
     ref: str = ""                    # github: tag/branch; "" = default branch
@@ -241,7 +226,7 @@ def validate_catalog(data: Any) -> dict[str, CatalogEntry]:
                 continue
             repo = None
         else:
-            if not isinstance(repo, str) or not _REPO_RE.match(repo):
+            if not isinstance(repo, str) or not REPO_RE.match(repo):
                 logger.warning(
                     "plugin catalog: dropping %r -- a github entry needs "
                     "repo = 'owner/repo', got %r",

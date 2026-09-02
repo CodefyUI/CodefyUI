@@ -23,16 +23,20 @@ which language, belongs to the caller.
 from __future__ import annotations
 
 import re
-from pathlib import Path
 from typing import Any, Literal, NamedTuple
 
 from . import catalog as catalog_module
 from .errors import UnknownCatalogName, UnparseableSource
+from .manifest import REPO_SEGMENT
 
-# Accepts owner/repo or owner/repo@ref; owner/repo names are GitHub-permissible.
-_GITHUB_SHORT = re.compile(r"^([\w.-]+)/([\w.-]+?)(?:@([\w./-]+))?$")
+# Accepts owner/repo or owner/repo@ref, in the same characters the catalog
+# accepts in an entry's ``repo`` -- one shape rule, spelled once in
+# :data:`~app.core.plugins.manifest.REPO_SEGMENT`, because a source this build
+# takes from the catalog and refuses when typed is indefensible either way.
+_GITHUB_SHORT = re.compile(rf"^({REPO_SEGMENT}+)/({REPO_SEGMENT}+?)(?:@([\w./-]+))?$")
 _GITHUB_URL = re.compile(
-    r"^https?://(?:www\.)?github\.com/([\w.-]+)/([\w.-]+?)(?:\.git)?/?(?:@(.+))?$"
+    rf"^https?://(?:www\.)?github\.com/({REPO_SEGMENT}+)/({REPO_SEGMENT}+?)"
+    r"(?:\.git)?/?(?:@(.+))?$"
 )
 # One word, no slash and no scheme: the only thing it can have been meant as is
 # a catalog name. See UnknownCatalogName for why that deserves its own error.
@@ -59,7 +63,6 @@ def parse_source(
     spec: str,
     *,
     catalog: dict[str, Any] | None = None,
-    catalog_path: Path | None = None,
 ) -> ParsedSource:
     """Resolve *spec* to a :class:`ParsedSource`, or raise a
     :class:`~.errors.SourceError`.
@@ -67,10 +70,10 @@ def parse_source(
     Catalog lookup is case-insensitive; the id in the result is lower-cased,
     because that is the directory name the pack lives under.
 
-    *catalog* and *catalog_path* override what is read from disk. They exist
-    for ``scripts/plugins.py``, whose tests fake the catalog by patching the
-    CLI's own ``load_catalog``: without them this would reach past that patch
-    and answer from the real ``registry.json``.
+    *catalog* overrides what is read from disk. It exists for
+    ``scripts/plugins.py``, whose tests fake the catalog by patching the CLI's
+    own ``load_catalog``: without it this would reach past that patch and
+    answer from the real ``registry.json``.
     """
     data = catalog_module.load_catalog() if catalog is None else catalog
     plugins = data.get("plugins", {})
@@ -87,10 +90,6 @@ def parse_source(
         return ParsedSource("github", m.group(1), m.group(2), m.group(3) or "")
 
     if _BARE_NAME.match(spec):
-        raise UnknownCatalogName(
-            spec,
-            sorted(plugins),
-            catalog_module.catalog_path() if catalog_path is None else catalog_path,
-        )
+        raise UnknownCatalogName(spec, sorted(plugins), catalog_module.catalog_path())
 
     raise UnparseableSource(spec)

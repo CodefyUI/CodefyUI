@@ -228,11 +228,16 @@ def available_builtin_packs() -> list[tuple[str, str]]:
     """Built-in packs shipped on disk that this install has made no decision about.
 
     See :func:`app.core.plugins.catalog.available_builtin_packs` — the rule,
-    and why a pack the user uninstalled is not "available", live there.
+    and why a pack the user uninstalled is not "available", live there. What
+    is here is the reading: both documents come from this module's own
+    loaders (so a test that fakes them is what gets read), and a failure to
+    read either is swallowed, because every caller is on its way to printing
+    a notice and a notice must never take the command down with it.
     """
-    return core_catalog.available_builtin_packs(
-        read_catalog=load_catalog, read_lockfile=load_lockfile
-    )
+    try:
+        return core_catalog.available_builtin_packs(load_catalog(), load_lockfile())
+    except Exception:  # never let discoverability break a caller
+        return []
 
 
 # ── source parsing ─────────────────────────────────────────────────────────
@@ -287,9 +292,7 @@ def parse_source(spec: str) -> tuple[str, str, str, str]:
     """
     catalog = load_catalog()
     try:
-        parsed = core_sources.parse_source(
-            spec, catalog=catalog, catalog_path=_catalog_path()
-        )
+        parsed = core_sources.parse_source(spec, catalog=catalog)
     except UnknownCatalogName as e:
         raise _unknown_catalog_name(spec, list(e.known)) from None
     except UnparseableSource:
