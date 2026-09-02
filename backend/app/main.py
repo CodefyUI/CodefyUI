@@ -289,19 +289,6 @@ async def lifespan(app: FastAPI):
                 "{ url = \"...\", ref = \"...\", sha = \"...\" }",
                 ", ".join(malformed))
 
-    # Mount each installed plugin's assets/ dir so the frontend can fetch
-    # plugin-shipped CSVs / images at /plugins/<id>/assets/<file>.
-    for plugin_id, plugin_dir in iter_plugin_dirs(
-        plugin_loader.plugins_builtin_root(), plugin_loader.plugins_user_root(), lockfile
-    ):
-        assets = plugin_dir / "assets"
-        if assets.is_dir():
-            app.mount(
-                f"/plugins/{plugin_id}/assets",
-                StaticFiles(directory=assets),
-                name=f"plugin_{plugin_id}_assets",
-            )
-
     # In-memory store for captured per-run node outputs (Teaching Inspector).
     # Bounded by runs AND by bytes (#135) — twenty runs of MNIST batches and
     # twenty runs of 4K feature maps are three orders of magnitude apart.
