@@ -500,8 +500,8 @@ class PackService:
 
         ``None`` means "not one of ours": KeyboardInterrupt, SystemExit,
         CancelledError. The runner records the job as failed and re-raises
-        it, which is what those deserve; the warning is logged here because
-        this is what knows what to call the job.
+        it, which is what those deserve; the warning is logged here rather
+        than in the runner, because this is where a job has a name.
         """
         job = self.current_job()
         if isinstance(exc, PackCancelled):

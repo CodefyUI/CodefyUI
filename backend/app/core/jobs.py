@@ -317,8 +317,8 @@ class JobRunner:
 
         Call it straight after :meth:`claim`, with no ``await`` in between:
         the generation the emitter closes over is read from ``self`` here,
-        and it is the one that claim installed only if nothing has claimed
-        the slot since.
+        and a claim that landed in between would have replaced it -- this
+        job's events would then wake the pollers parked on somebody else's.
 
         *on_settled* is called on the loop once the job is terminal, however
         it ended -- including the re-raised ``BaseException`` path. A domain
@@ -417,13 +417,14 @@ class JobRunner:
             job.current_step = None
 
     def finish(self, job: Job, status: str, event: dict) -> None:
-        """Finish a job the runner is not running: the public :meth:`_finish`.
+        """Record the terminal state of a job whose work is not ours to run.
 
-        For work that is not this process's to do -- an install that happens
-        after this server exits, in a helper it just started. The job is
-        claimed so that a client has the same thing to follow as for any
-        other (one id, one event stream, one terminal event saying what
-        happens next), and it is terminal from the moment it is made.
+        For an install that happens after this server exits, in a helper it
+        just started: there is no worker thread and no task, so nothing will
+        ever reach :meth:`_finish` for it on its own. The job is claimed
+        anyway, so that a client has the same thing to follow as for any
+        other -- one id, one event stream, one terminal event saying what
+        happens next -- and it is terminal from the moment it is made.
         """
         self._finish(job, status, event)
 
