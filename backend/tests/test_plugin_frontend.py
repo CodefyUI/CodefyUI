@@ -287,6 +287,27 @@ def test_the_traversal_check_refuses_a_parent_segment_unencoded(
     ) is None
 
 
+@pytest.mark.parametrize(
+    "path, detail",
+    [
+        ("/plugins/fe-pack/frontend/index%00.js", "Plugin frontend resource not found"),
+        ("/plugins/fe-pack/assets/data%00.csv", "Plugin asset not found"),
+    ],
+)
+def test_a_nul_byte_in_the_path_is_a_404_on_both_routes(fe_client, path, detail):
+    """``%00`` is a refusal, not a traceback.
+
+    Starlette hands the decoded path through, so the NUL reaches
+    ``Path.resolve``, which raises ``ValueError`` rather than answering about
+    a file. Uncaught, that is a 500 with a stack trace in the log -- on the
+    assets route, which takes no session token, so anyone who can reach the
+    port can produce one. The ``StaticFiles`` mount this route replaced
+    answered 404, and so does this."""
+    r = fe_client.get(path)
+    assert r.status_code == 404
+    assert r.json()["detail"] == detail
+
+
 def test_404_for_an_asset_of_a_disabled_plugin(fe_client):
     assert fe_client.get("/plugins/fe-disabled/assets/data.csv").status_code == 404
 

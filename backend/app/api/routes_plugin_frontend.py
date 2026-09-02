@@ -88,9 +88,21 @@ def _file_under(directory: Path, resource_path: str) -> Path | None:
     there, it is a directory -- because from outside they are all one answer:
     404. Distinguishing them in the response would tell a caller which paths
     exist above the plugin's own directory.
+
+    ``resolve`` is where a path stops being a string, and it is the one call
+    here that can refuse the string outright: an embedded NUL (``%00`` over
+    the wire, on an OPEN route) raises ``ValueError``, and a path the
+    operating system will not look up raises ``OSError``. Both are caught for
+    the same reason the checks below exist -- "there is no such file" is the
+    honest answer, and letting either escape turns a 404 into a 500 with a
+    traceback in the server's log for anyone who can reach the port. The
+    ``StaticFiles`` mount this replaced answered 404 for it.
     """
-    base = directory.resolve()
-    target = (base / resource_path).resolve()
+    try:
+        base = directory.resolve()
+        target = (base / resource_path).resolve()
+    except (OSError, ValueError):
+        return None
     if not target.is_relative_to(base) or not target.is_file():
         return None
     return target
