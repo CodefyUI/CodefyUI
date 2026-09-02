@@ -282,6 +282,70 @@ def github_catalog_packs() -> list[CatalogEntry]:
     )
 
 
+#: What owns a reserved id, in the words :func:`reserved_id_holder` answers
+#: with. Constants rather than literals at each site because two callers turn
+#: them into sentences -- the CLI into a bilingual pair, the installer into a
+#: hint -- and a reason spelled differently in two places reads as two rules.
+RESERVED_BY_ROUTE = "a route under /api/plugins/"
+RESERVED_BY_BUILTIN_PACK = "a pack that ships with CodefyUI"
+
+
+def reserved_id_holder(
+    plugin_id: str,
+    *,
+    owner: str | None = None,
+    repo: str | None = None,
+    catalog: dict[str, CatalogEntry] | None = None,
+) -> str | None:
+    """What already owns *plugin_id*, or ``None`` when nothing does.
+
+    The whole reserved-id decision, in one function, because it decides which
+    code a plugin id resolves to: the CLI had three clauses and the
+    inspection had two, which is the shape a rule takes just before the
+    looser copy becomes the one an installer happens to call.
+
+    Three clauses, in order of who owns the name:
+
+    * a fixed path segment under ``/api/plugins/``
+      (:data:`RESERVED_PLUGIN_IDS`) -- the router would decide which of the
+      two answered, not the install;
+    * a ``builtin`` catalog row -- that id names a directory this release
+      ships, and the filesystem would decide which pack loaded;
+    * a ``github`` catalog row whose repository is not the one being
+      installed. That id is NOT reserved outright, and cannot be: the author
+      of an official plugin has to be able to install their own repository
+      under the id the catalog lists it by. It is reserved AGAINST everyone
+      else, because the id is what the lockfile, the catalog card and
+      ``/api/plugins/{id}`` all key on, so a fork claiming it takes the
+      official pack's place quietly. Reached only when both *owner* and
+      *repo* are given: a caller with no repository in hand (``link``,
+      ``new``) is asking the first two questions only, and for those a
+      github catalog id is free.
+
+    The answer is an English noun phrase for the caller to wrap in its own
+    sentence -- ``ConsentRequired``-style structure would be nicer and is not
+    worth it for three cases that every caller renders as prose anyway.
+
+    *catalog* overrides the rows this reads, for ``scripts/plugins.py``,
+    whose tests fake the catalog by patching the CLI's own loader. The rows
+    are the VALIDATED ones either way, which is the view the installer
+    dispatches on: a row too malformed to install from is a row this build
+    cannot claim an id with either.
+    """
+    if plugin_id in RESERVED_PLUGIN_IDS:
+        return RESERVED_BY_ROUTE
+    entries = catalog_entries() if catalog is None else catalog
+    entry = entries.get(plugin_id.lower())
+    if entry is None:
+        return None
+    if entry.kind == "builtin":
+        return RESERVED_BY_BUILTIN_PACK
+    if owner and repo and entry.repo:
+        if f"{owner}/{repo}".lower() != entry.repo.lower():
+            return f"the repository {entry.repo}"
+    return None
+
+
 def catalog_entry(plugin_id: str) -> CatalogEntry | None:
     """One entry by id, case-insensitively, or ``None``.
 

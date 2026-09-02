@@ -279,11 +279,13 @@ def inspect_github(
     restore, where re-resolving a tag that has since moved would defeat the
     pin.
 
-    Refuses an id this build reserves: the ids under ``/api/plugins/`` that
-    are routes rather than packs, and the ids the built-in catalog already
-    owns. It does NOT refuse every catalog id -- a catalog ``github`` entry
-    IS a repository, and refusing its own id would make an official
-    third-party pack uninstallable.
+    Refuses an id this build reserves, and the decision is
+    :func:`~.catalog.reserved_id_holder`'s rather than this function's: a
+    route name, a pack that ships here, or a ``github`` catalog row belonging
+    to a DIFFERENT repository. That last clause is why the repository is
+    passed in at all -- a catalog ``github`` id is not reserved outright,
+    because refusing it would make the official pack the one thing nobody can
+    install, but a fork may not take its place.
 
     Raises :class:`~.errors.GitHubError`, ``tomllib.TOMLDecodeError``,
     :class:`~.errors.ManifestError` or :class:`~.errors.PluginInstallError`.
@@ -293,13 +295,8 @@ def inspect_github(
     validate_manifest(manifest)
     plugin_id = manifest["plugin"]["id"]
 
-    if plugin_id in catalog_module.RESERVED_PLUGIN_IDS:
-        taken_by = "a route under /api/plugins/"
-    elif plugin_id in catalog_module.builtin_catalog_packs():
-        taken_by = "a pack that ships with CodefyUI"
-    else:
-        taken_by = ""
-    if taken_by:
+    taken_by = catalog_module.reserved_id_holder(plugin_id, owner=owner, repo=repo)
+    if taken_by is not None:
         raise PluginInstallError(
             f"Plugin id {plugin_id!r} is reserved by this build.",
             hint=(

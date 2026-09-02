@@ -243,6 +243,40 @@ def test_a_repository_may_not_claim_a_reserved_id(plugin_id, fake_github):
     assert plugin_id in str(excinfo.value)
 
 
+def test_a_fork_may_not_claim_the_catalog_id_of_an_official_plugin(fake_github):
+    """The third clause of the reserved-id rule, which the CLI enforced and
+    this did not. ``self-learning`` is a ``github`` catalog row: its id is
+    not reserved outright -- its own author installs the repository under it
+    -- so an id-only check passes ``mallory/evil`` straight through, and the
+    id is what the lockfile, the catalog card and ``/api/plugins/{id}`` all
+    key on."""
+    fake_github(
+        '[plugin]\nid = "self-learning"\nversion = "1"\nschema_version = 1\n'
+    )
+    with pytest.raises(PluginInstallError) as excinfo:
+        plugin_inspect.inspect_github("mallory", "evil", "", lockfile={})
+    hint = excinfo.value.hint or ""
+    assert "CodefyUI/CodefyUI-Plugin-Self-Learning" in hint
+    assert "mallory/evil" in hint
+
+
+def test_the_repository_the_catalog_names_may_claim_its_own_id(fake_github):
+    """The other half, and the reason the clause is about the repository
+    rather than the id: refusing every catalog id would make the official
+    pack the one thing the catalog advertises and nobody can install."""
+    fake_github(
+        '[plugin]\nid = "self-learning"\nversion = "1"\nschema_version = 1\n'
+    )
+    found = plugin_inspect.inspect_github(
+        "CodefyUI", "CodefyUI-Plugin-Self-Learning", "", lockfile={}
+    )
+    assert found.plugin_id == "self-learning"
+    # Case-insensitively, because GitHub owners and repositories are.
+    assert plugin_inspect.inspect_github(
+        "codefyui", "codefyui-plugin-self-learning", "", lockfile={}
+    ).plugin_id == "self-learning"
+
+
 # ── an update compared against what was consented to ───────────────────────
 
 def test_an_update_names_the_capability_this_version_added(fake_github):

@@ -753,28 +753,41 @@ def _install_catalog(plugin_id: str, args, lockfile) -> int:
     return 0
 
 
+#: The zh-TW half of each reason :func:`core_catalog.reserved_id_holder`
+#: gives. The DECISION is the core function's -- one owner, so the CLI and
+#: the install routes cannot come to disagree about which ids are taken --
+#: and what is here is this module's other language for it. A reason with no
+#: translation falls back to the English rather than to silence.
+_RESERVED_ZH = {
+    core_catalog.RESERVED_BY_ROUTE: "/api/plugins/ 底下的路由",
+    core_catalog.RESERVED_BY_BUILTIN_PACK: "CodefyUI 內建的外掛包",
+}
+
+
 def _locally_reserved_reason(plugin_id: str) -> tuple[str, str] | None:
     """What this build owns *plugin_id* with, or ``None`` when nothing does.
 
     The half of the reserved-id rule that does not depend on where the code
     came from: a route under ``/api/plugins/`` is decided by the router and a
     shipped pack by the built-in directory, so no source -- a repository, a
-    local checkout -- can be given one of those ids.
+    local checkout, a scaffold -- can be given one of those ids. Asked by
+    passing no repository, which is what makes
+    :func:`core_catalog.reserved_id_holder` stop after those two clauses.
 
     A ``github`` catalog id is deliberately NOT here, because the answer
     depends on the source: :func:`_reserved_id_refusal` allows only the
-    repository the catalog names, while :func:`_link_local` allows any
-    directory, since a link is the developer's own copy of that repository.
+    repository the catalog names, while :func:`_link_local` and ``new`` allow
+    it outright -- a link is the developer's own copy of that repository, and
+    a scaffold is a new directory that has not been installed anywhere.
 
     Returns the bilingual noun phrase naming the holder, so each caller can
-    keep its own sentence around it.
+    keep its own sentence around it. The catalog is passed in from this
+    module's own reader, because the CLI's tests fake it there.
     """
-    if plugin_id in core_catalog.RESERVED_PLUGIN_IDS:
-        return ("/api/plugins/ 底下的路由", "a route under /api/plugins/")
-    entry = catalog_entry(plugin_id)
-    if entry is not None and entry.kind == "builtin":
-        return ("CodefyUI 內建的外掛包", "a pack that ships with CodefyUI")
-    return None
+    reason = core_catalog.reserved_id_holder(plugin_id, catalog=catalog_entries())
+    if reason is None:
+        return None
+    return (_RESERVED_ZH.get(reason, reason), reason)
 
 
 def _malformed_catalog_row(plugin_id: str) -> tuple[str, str]:
@@ -813,6 +826,11 @@ def _reserved_id_refusal(
     only for a DIFFERENT repository -- the id is what the lockfile, the
     catalog card and the route all key on, and a fork claiming it would
     quietly take the official pack's place.
+
+    Every one of those three comparisons is
+    :func:`core_catalog.reserved_id_holder`'s; this function asks it twice --
+    once without a repository for the sentence the first two share, once with
+    -- and writes the sentences. Nothing here decides.
     """
     reason = _locally_reserved_reason(plugin_id)
     if reason is not None:
@@ -821,20 +839,22 @@ def _reserved_id_refusal(
             f"外掛 id {plugin_id} 是保留名稱（{zh}），不能安裝。",
             f"Plugin id '{plugin_id}' is reserved by this build ({en}).",
         )
+    if core_catalog.reserved_id_holder(
+        plugin_id, owner=owner, repo=repo, catalog=catalog_entries()
+    ) is None:
+        return None
+    # Nothing local owns the id and the answer is still "reserved", so the
+    # remaining clause is the ``github`` row's -- and the repository it names
+    # is what the sentence is about.
     entry = catalog_entry(plugin_id)
-    if (
-        entry is not None
-        and entry.kind == "github"
-        and f"{owner}/{repo}".lower() != (entry.repo or "").lower()
-    ):
-        return (
-            f"外掛 id {plugin_id} 在目錄中屬於 {entry.repo}；"
-            f"只有該儲存庫可以用這個 id 安裝，{owner}/{repo} 不行。",
-            f"Plugin id '{plugin_id}' belongs to {entry.repo} in this "
-            f"install's catalog; only that repository may install under it, "
-            f"not {owner}/{repo}.",
-        )
-    return None
+    holder = entry.repo if entry is not None else ""
+    return (
+        f"外掛 id {plugin_id} 在目錄中屬於 {holder}；"
+        f"只有該儲存庫可以用這個 id 安裝，{owner}/{repo} 不行。",
+        f"Plugin id '{plugin_id}' belongs to {holder} in this "
+        f"install's catalog; only that repository may install under it, "
+        f"not {owner}/{repo}.",
+    )
 
 
 def _install_github(
@@ -2046,10 +2066,18 @@ def cmd_new(args: argparse.Namespace) -> int:
             f"Invalid plugin id {plugin_id!r} (must match {PLUGIN_ID_RE.pattern})",
         )
         return 2
-    if plugin_id in load_catalog().get("plugins", {}):
+    # The same two clauses ``link`` refuses, and for the same reason: a route
+    # name and a pack that ships here are decided by the router and the
+    # built-in directory, so a plugin scaffolded under one could never be
+    # installed. A ``github`` catalog id is allowed -- that is the id the
+    # author of an official plugin scaffolds their own repository under, and
+    # `new` puts a directory on this disk rather than claiming anything.
+    reason = _locally_reserved_reason(plugin_id)
+    if reason is not None:
+        zh, en = reason
         err(
-            f"id '{plugin_id}' 與內建套件保留名稱衝突，請換一個",
-            f"id '{plugin_id}' is reserved by the built-in catalog — pick another",
+            f"id '{plugin_id}' 與{zh}衝突，請換一個",
+            f"id '{plugin_id}' collides with {en} — pick another",
         )
         return 2
     if not _TEMPLATE_ROOT.is_dir():
