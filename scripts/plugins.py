@@ -349,9 +349,10 @@ def parse_source(spec: str) -> tuple[str, str, str, str]:
 # Plain re-exports, not wrappers: the request rules (the token header, the two
 # shapes of failure, the size cap) live in ``app.core.plugins.github`` so the
 # server obeys them too. These three keep their names here because they are
-# what this module CALLS, and the install tests replace them to stay off the
-# network -- patching ``plugins.resolve_sha`` has to be what
-# ``_install_github`` calls. Anything else in that module is reached through
+# READ here: the two functions through this module's own attributes, so that
+# the install tests replace what ``_install_github`` calls by patching
+# ``plugins.resolve_sha``, and ``USER_AGENT`` by ``_backend_reload`` and by
+# ``scripts/project.py``. Anything else in that module is reached through
 # ``core_github``: a re-export nobody reads is a second name for one rule.
 
 USER_AGENT = core_github.USER_AGENT

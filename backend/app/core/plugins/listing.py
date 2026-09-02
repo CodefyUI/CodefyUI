@@ -152,14 +152,17 @@ def is_official(row: CatalogEntry | None, entry: dict[str, Any] | None) -> bool:
     """Does CodefyUI vouch for THIS plugin -- not just for this id?
 
     The badge is a claim about provenance, so matching the catalog by id is
-    not enough to earn it. An id is only reserved against a foreign install
-    when this build owns it outright (a route, or a pack that ships here);
-    the ids of the catalog's ``github`` rows are deliberately NOT reserved,
-    because the author of an official plugin has to be able to install their
-    own repository under its own id. That leaves a hole an id-only rule falls
-    straight into: install ``mallory/evil``, whose manifest says
-    ``id = "self-learning"``, and the row would wear the official badge over
-    a ``repo`` field reading ``mallory/evil``.
+    not enough to earn it. An id is only reserved OUTRIGHT when this build
+    owns it (a route, or a pack that ships here); the id of a catalog
+    ``github`` row is reserved to the repository the catalog names it with
+    (:func:`~app.core.plugins.catalog.reserved_id_holder`), because the
+    author of an official plugin has to be able to install their own
+    repository under its own id -- and that is a rule the INSTALLER applies,
+    not a fact about the lockfile in front of us. A lockfile can hold
+    ``id = "self-learning"`` over ``mallory/evil`` anyway: written by a build
+    older than the rule, hand-edited, or linked from a local working tree,
+    which is allowed under any catalog id. An id-only badge would light up
+    for all three, over a ``repo`` field reading ``mallory/evil``.
 
     So a row is official when the catalog vouches for it AND the install in
     front of us really is the thing the catalog named:
@@ -210,11 +213,12 @@ def catalog_id_for(
     """The catalog row an installed plugin came from, or ``None``.
 
     Matching the id against the catalog says only that this row LINES UP with
-    that entry -- it is not a reserved-id rule, because the ids of the
-    catalog's ``github`` rows deliberately are not reserved (see
-    :func:`is_official`), so a pack fetched from anywhere at all can arrive
-    carrying ``id = "self-learning"``. Answering ``self-learning`` for that
-    one would point the panel at a catalog card describing different code.
+    that entry. It is not the reserved-id rule: that one is applied by the
+    INSTALLER (see :func:`is_official`), and this reads a lockfile, which can
+    hold ``id = "self-learning"`` over anything at all -- a local link, a
+    hand-edited entry, an install older than the rule. Answering
+    ``self-learning`` for one of those would point the panel at a catalog
+    card describing different code.
 
     So the id is reported only when the install can be tied to the row. The
     recorded ``catalog_id`` wins: ``cdui plugin install <name>`` writes it
@@ -532,9 +536,9 @@ def _repo(*, row: CatalogEntry | None, entry: dict[str, Any] | None) -> str | No
     honest answer for a plugin linked from a local directory and for one
     installed from a URL on a host that is not GitHub. Falling through to the
     catalog for those printed the OFFICIAL repository beside a pack that had
-    never been near it: the id of a ``github`` catalog row is deliberately
-    not reserved (see :func:`is_official`), so anything at all can be
-    installed under one.
+    never been near it: a lockfile can hold anything at all under a catalog
+    ``github`` id (see :func:`is_official`), so the row's own repository is
+    never an answer about what is installed.
 
     :func:`_url` splits the same way, so the two fields on a row always
     describe the same install rather than one each.
