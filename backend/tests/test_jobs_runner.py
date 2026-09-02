@@ -25,6 +25,7 @@ file with the pack argument shape taken out.
 from __future__ import annotations
 
 import asyncio
+import logging
 import queue
 import threading
 import time
@@ -124,8 +125,12 @@ class ScriptedWork:
 
     #: How long the worker thread waits for its next instruction before it
     #: gives up. A test that forgets to finish a job fails here with a clear
-    #: message instead of hanging the suite.
-    STARVED_AFTER_S = 20.0
+    #: message instead of hanging the suite. Half of ``drain``'s timeout on
+    #: purpose: at 20.0 the two expired together and the failure a reader saw
+    #: was whichever won the race -- ``drain``'s "job never finished", which
+    #: says nothing about the cause. Giving up first makes the message that
+    #: names the cause the one that arrives.
+    STARVED_AFTER_S = 10.0
 
     def __init__(self) -> None:
         self._steps: "queue.Queue[tuple[str, object]]" = queue.Queue()
@@ -680,8 +685,16 @@ async def test_shutdown_survives_work_that_raised_a_base_exception():
     assert "_OutOfBand" in job.error["message"]
 
 
-async def test_shutdown_is_bounded_when_the_work_ignores_cancellation():
-    """Server shutdown must not be held hostage by stubborn work."""
+async def test_shutdown_is_bounded_when_the_work_ignores_cancellation(caplog):
+    """Server shutdown must not be held hostage by stubborn work.
+
+    The log line is asserted as RENDERED, not as a format string: it is the
+    only trace a job abandoned at shutdown leaves, and ``label`` is the only
+    thing in it that says WHICH runner gave up -- two of them come down in
+    the same lifespan hook. A runner constructed without a label would still
+    log, still pass every other assertion here, and leave that line reading
+    "job did not stop".
+    """
     release = threading.Event()
 
     def deaf(emit: Emit, cancel_check: CancelCheck) -> None:
@@ -694,9 +707,12 @@ async def test_shutdown_is_bounded_when_the_work_ignores_cancellation():
 
     started = time.monotonic()
     try:
-        await runner.shutdown()
+        with caplog.at_level(logging.WARNING, logger="app.core.jobs"):
+            await runner.shutdown()
         assert time.monotonic() - started < 5.0
         assert job.cancel_event.is_set()
+        assert [r.getMessage() for r in caplog.records if r.name == "app.core.jobs"] \
+            == ["demo job did not stop within 0s; leaving it to the interpreter"]
     finally:
         # Let the stubborn work finish so no task outlives the test loop.
         release.set()
