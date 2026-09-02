@@ -98,6 +98,14 @@ class UninstallOutcome:
     uninstall_command: str | None
     #: How to get this plugin back.
     reinstall_hint: str
+    #: The directory this uninstall deleted, or tried to; ``None`` when there
+    #: was never a copy of ours to delete. Reported rather than left for the
+    #: caller to rebuild from the id and the user root: that rebuild is this
+    #: module's own rule about where a pack's files live, and a caller
+    #: repeating it would name the wrong path the day the rule changes --
+    #: while what a failed uninstall has to tell the user is exactly WHICH
+    #: directory is still there.
+    directory: Path | None = None
     #: Why the uninstall was abandoned, in one line, or ``None`` when it was
     #: not. Text rather than the exception: the caller says it in its own
     #: language and its own envelope, and neither wants a traceback.
@@ -142,12 +150,14 @@ def uninstall_plugin(
     deps = tuple(sorted(_declared_python_deps(plugin_id, lockfile)))
 
     files_removed: bool | None = None
+    directory: Path | None = None
     if entry.get("source_kind") == "github_url":
-        files_removed, failure = _remove_downloaded_files(plugin_id)
+        files_removed, failure, directory = _remove_downloaded_files(plugin_id)
         if not files_removed:
             return _outcome(
                 plugin_id, removed=False, tombstoned=False,
                 files_removed=False, deps=deps, error=failure,
+                directory=directory,
             )
 
     lockfile["plugins"].pop(plugin_id, None)
@@ -172,6 +182,7 @@ def uninstall_plugin(
     return _outcome(
         plugin_id, removed=True, tombstoned=tombstoned,
         files_removed=files_removed, deps=deps, error=None,
+        directory=directory,
     )
 
 
@@ -183,6 +194,7 @@ def _outcome(
     files_removed: bool | None,
     deps: tuple[str, ...],
     error: str | None,
+    directory: Path | None = None,
 ) -> UninstallOutcome:
     """One :class:`UninstallOutcome`, so the two exits agree on the fields
     that describe the PLUGIN rather than the attempt.
@@ -203,6 +215,7 @@ def _outcome(
             else None
         ),
         reinstall_hint=f"cdui plugin install {plugin_id}",
+        directory=directory,
         error=error,
     )
 
@@ -241,8 +254,12 @@ def installed_dir(plugin_id: str, lockfile: dict[str, Any]) -> Path | None:
     return None
 
 
-def _remove_downloaded_files(plugin_id: str) -> tuple[bool, str | None]:
-    """Delete ``<user root>/<plugin_id>/``. Answers ``(gone, why not)``.
+def _remove_downloaded_files(plugin_id: str) -> tuple[bool, str | None, Path]:
+    """Delete ``<user root>/<plugin_id>/``. Answers ``(gone, why not, where)``.
+
+    The directory is returned rather than left to be rebuilt by a caller,
+    because building it is this function's own rule (see below) and a caller
+    repeating it is a second copy that can name a different path.
 
     The containment check is the point: this is the one place in the plugin
     system that runs ``rmtree`` on a path built from an id, so the resolved
@@ -270,7 +287,7 @@ def _remove_downloaded_files(plugin_id: str) -> tuple[bool, str | None]:
         resolved = target.resolve()
         root = user_root.resolve()
     except OSError as exc:  # pragma: no cover - resolve() rarely fails
-        return False, str(exc)
+        return False, str(exc), target
     if resolved.parent != root:
         logger.warning(
             "plugin uninstall: refusing to delete %s -- it is not directly "
@@ -278,11 +295,11 @@ def _remove_downloaded_files(plugin_id: str) -> tuple[bool, str | None]:
             resolved,
             root,
         )
-        return False, f"{resolved} is not directly inside {root}"
+        return False, f"{resolved} is not directly inside {root}", target
     if not resolved.exists():
-        return True, None
+        return True, None, target
     try:
         shutil.rmtree(resolved)
     except OSError as exc:
-        return False, str(exc)
-    return True, None
+        return False, str(exc), target
+    return True, None, target

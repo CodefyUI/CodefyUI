@@ -91,7 +91,9 @@ def test_parse_source_bare_name_error_is_localized(monkeypatch):
     monkeypatch.setenv("CODEFYUI_LANG", "zh")
     with pytest.raises(ValueError) as excinfo:
         plugin_cli.parse_source("edo")
-    assert "內建包" in str(excinfo.value)
+    # Not 「內建包」: the list under this heading is the whole catalog, and
+    # three of its entries are repositories rather than packs shipped here.
+    assert "目前可裝的套件" in str(excinfo.value)
 
 
 def test_parse_source_accepts_every_catalog_pack():
@@ -878,6 +880,10 @@ def test_a_downloaded_pack_whose_files_survive_stays_installed(
     assert outcome.tombstoned is False
     assert outcome.files_removed is False
     assert "used by another process" in outcome.error
+    # The directory it tried to delete travels with the outcome, so the CLI
+    # line below prints where the files still are instead of rebuilding the
+    # path from the id.
+    assert outcome.directory == plugin_dir
     assert "ghost" in plugin_loader.load_lockfile()["plugins"]
     assert plugin_dir.is_dir()
 
