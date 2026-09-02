@@ -291,6 +291,23 @@ def test_ssh_probe_failure_is_not_fatal(monkeypatch):
     assert runner.git_env()["GIT_SSH_COMMAND"] == "ssh -oBatchMode=yes"
 
 
+def test_a_probe_that_could_not_run_is_not_remembered(monkeypatch):
+    """A guess must not outlive the thing that caused it.
+
+    If git was missing when the question was first asked, the fallback is
+    right for that moment -- and wrong forever after, because it would go on
+    overriding a ``core.sshCommand`` the user really has.
+    """
+    monkeypatch.setattr(runner, "git_executable", lambda: None)
+    monkeypatch.delenv("GIT_SSH_COMMAND", raising=False)
+    assert runner.git_env()["GIT_SSH_COMMAND"] == "ssh -oBatchMode=yes"
+
+    monkeypatch.setattr(runner, "git_executable", lambda: _GIT)
+    _fake_popen(monkeypatch, _FakeProc(stdout=b"ssh -i C:/keys/id_ed25519\n"))
+
+    assert "GIT_SSH_COMMAND" not in runner.git_env()
+
+
 def test_read_only_skips_the_index_lock(monkeypatch, fake_git):
     """A status poll must not fight a real operation for the index lock."""
     assert "GIT_OPTIONAL_LOCKS" not in runner.git_env()

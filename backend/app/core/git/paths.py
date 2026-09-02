@@ -310,7 +310,7 @@ def validate_sha(sha: str) -> str:
     return text
 
 
-def is_env_secret_path(path: str) -> bool:
+def is_env_secret_path(path: str | os.PathLike[str]) -> bool:
     """Is *path* a dotenv file -- i.e. a file that probably holds secrets?
 
     ``.env`` and ``.env.<anything>`` are, ``.env.example`` is not (it exists

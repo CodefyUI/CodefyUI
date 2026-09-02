@@ -249,7 +249,10 @@ def _ssh_command_configured() -> bool:
     Any failure counts as "no": git missing, a timeout, a config file the
     user cannot read. The consequence of guessing wrong here is one ssh run
     in batch mode instead of theirs, which fails fast; the consequence of
-    raising would be that a config problem broke every git command.
+    raising would be that a config problem broke every git command. A
+    failure is NOT remembered, though -- a guess must not outlive the
+    condition that produced it and go on overriding a setting the user
+    made.
     """
     global _ssh_configured
 
@@ -260,7 +263,6 @@ def _ssh_command_configured() -> bool:
                       timeout=SSH_PROBE_TIMEOUT_S, env=_base_git_env(),
                       ok_codes=(0, 1))
     except GitError:
-        _ssh_configured = False
         return False
     _ssh_configured = result.returncode == 0 and bool(result.out.strip())
     return _ssh_configured
