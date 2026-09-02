@@ -35,6 +35,36 @@
       "kind": "builtin",
       "path": "plugins/rl",
       "chapters": ["C5"]
+    },
+    "graph-copilot": {
+      "name": "Graph Copilot — Agent Workbench",
+      "description": "AI chat assistant that builds and edits node graphs by conversation, runs approved isolated experiments and parameter searches, and keeps portable evidence. Frontend extension; needs an LLM provider (Codex, Ollama, OpenAI or Anthropic).",
+      "kind": "github",
+      "repo": "CodefyUI/CodefyUI-Plugin-Graph-Copilot",
+      "ref": "",
+      "homepage": "https://github.com/CodefyUI/CodefyUI-Plugin-Graph-Copilot",
+      "tags": ["copilot", "llm", "agent"],
+      "official": true
+    },
+    "self-learning": {
+      "name": "Self-Learning — 自學教材產生器",
+      "description": "Turns a free-form machine-learning problem into a step-by-step lesson: an LLM builds a working graph on the canvas and proves it runs, then the plugin derives the teaching steps, screenshots each one, and emits a Traditional-Chinese Markdown lesson, a printable page, the graph and a starter exercise. Frontend extension.",
+      "kind": "github",
+      "repo": "CodefyUI/CodefyUI-Plugin-Self-Learning",
+      "ref": "",
+      "homepage": "https://github.com/CodefyUI/CodefyUI-Plugin-Self-Learning",
+      "tags": ["lesson", "llm", "teaching"],
+      "official": true
+    },
+    "official-template": {
+      "name": "CodefyUI Plugin — Official Template",
+      "description": "Working starter template for plugin authors: two example nodes (HelloPlugin, MovingAverage), a preset, an example workflow, an asset file, a sample test suite and a React tool panel. Install it to see what a plugin can do, fork it to write your own.",
+      "kind": "github",
+      "repo": "CodefyUI/CodefyUI-Plugin-Official",
+      "ref": "",
+      "homepage": "https://github.com/CodefyUI/CodefyUI-Plugin-Official",
+      "tags": ["template", "example"],
+      "official": true
     }
   }
 }
