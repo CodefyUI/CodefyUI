@@ -41,6 +41,8 @@ from app.api import routes_plugins
 from app.config import settings
 from app.core import plugin_loader
 from app.core.node_registry import registry
+from app.core.plugins import listing
+from app.core.plugins.catalog import CatalogEntry
 from app.core.plugins.listing import catalog_listing
 from app.core.plugins.reload import rediscover_now
 from app.main import app
@@ -59,6 +61,9 @@ ENTRY_KEYS = [
 
 TOP_KEYS = {"entries", "active_job", "remote_install_allowed", "generation"}
 
+#: Deliberately asks for MORE than the lockfile entry below was granted: a
+#: plugin that rewrites its own manifest after install must not be able to
+#: show the new list as though the user had agreed to it.
 EXTERNAL_MANIFEST = """\
 [plugin]
 id = "demo-external"
@@ -66,6 +71,10 @@ name = "Demo External"
 version = "2.0.0"
 description = "Installed from a URL nobody put in the catalog."
 schema_version = 1
+
+[security]
+capabilities = ["network", "filesystem"]
+allowed_modules = ["requests", "pathlib"]
 
 [python_deps]
 tabulate = ">=0.9"
@@ -278,8 +287,10 @@ async def test_a_plugin_the_catalog_never_heard_of_is_external(anon_client):
     assert row["ref"] == "v1.2.3"
     assert row["sha"] == "0" * 40
     assert row["tags"] == []
-    # The lockfile records what was consented to; the manifest says what the
-    # plugin would install.
+    # The lockfile records what was consented to, and its manifest has since
+    # started asking for more -- which must not show as though it had been
+    # agreed to. What the plugin WOULD install is a different question, and
+    # the manifest is the only place that can answer it.
     assert row["capabilities"] == ["network"]
     assert row["trusted_modules"] == ["requests"]
     assert row["python_deps"] == {"tabulate": ">=0.9"}
@@ -319,6 +330,54 @@ async def test_a_running_job_marks_only_its_own_row(center_lockfile):
                                      "current_step": "deps"}
     assert by_id["foundations"]["status"] == "installed"
     assert by_id["foundations"]["job"] is None
+
+
+async def test_what_was_installed_beats_what_the_catalog_pins(
+        center_lockfile, monkeypatch):
+    """A row can be backed by a catalog entry AND by an install that
+    disagrees with it -- a fork, a moved owner, an older tag. The catalog
+    still says whether the plugin is official; where the FILES came from is
+    the install's own answer."""
+    pinned = {
+        plugin_id: CatalogEntry(
+            id=plugin_id, name="Demo", description="", kind="github",
+            repo="carol/demo", ref="v9.9.9", official=True,
+        )
+        for plugin_id in ("demo-external", "ghost-pack")
+    }
+    monkeypatch.setattr(listing, "catalog_entries", lambda: pinned)
+
+    listed = listing.catalog_listing(
+        plugin_loader.load_lockfile(),
+        registry=registry,
+        remote_install_allowed=True,
+        generation=0,
+    )
+    by_id = {e["id"]: e for e in listed["entries"]}
+    entry = by_id["demo-external"]
+
+    assert entry["kind"] == "github"
+    assert entry["official"] is True
+    assert entry["ref"] == "v1.2.3"
+    assert entry["repo"] == "alice/extras"
+    assert entry["url"] == "https://github.com/alice/extras"
+    # "" is the default branch, and it is what this install used -- the
+    # catalog's tag is where a REinstall would go, not where these files
+    # came from.
+    assert by_id["ghost-pack"]["ref"] == ""
+
+
+def test_a_recorded_empty_grant_is_not_a_miss():
+    """"You granted this plugin nothing" is an answer. Falling through to
+    the manifest there would show an ungranted capability as agreed to."""
+    manifest = {"security": {"capabilities": ["network"],
+                             "allowed_modules": ["requests"]}}
+    assert listing.declared_capabilities({"capabilities": []}, manifest) == []
+    assert listing.declared_trusted_modules({"trusted_modules": []}, manifest) == []
+    # A lockfile written before either field existed still asks the manifest.
+    assert listing.declared_capabilities({}, manifest) == ["network"]
+    assert listing.declared_trusted_modules({}, manifest) == ["requests"]
+    assert listing.declared_capabilities(None, manifest) == ["network"]
 
 
 # -- the router ------------------------------------------------------------

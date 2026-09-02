@@ -188,12 +188,15 @@ def declared_capabilities(
     shown as though the new list were consented to. The manifest is the
     fallback for a plugin nobody has installed yet -- and for a lockfile
     written before capabilities were recorded at all.
+
+    A RECORDED empty list is an answer, not a miss: "you granted this plugin
+    nothing" is exactly what an empty grant means, and falling through to the
+    manifest there would show an ungranted capability as though it had been
+    agreed to. Only a missing (or malformed) field asks the manifest.
     """
     granted = (entry or {}).get("capabilities")
     if isinstance(granted, list):
-        recorded = [item for item in granted if isinstance(item, str)]
-        if recorded:
-            return recorded
+        return [item for item in granted if isinstance(item, str)]
     return list(manifest_capabilities(manifest))
 
 
@@ -201,12 +204,11 @@ def declared_trusted_modules(
     entry: dict[str, Any] | None, manifest: dict[str, Any]
 ) -> list[str]:
     """The imports the AST gate was told to allow. Same rule as the
-    capabilities above: the lockfile's record first, the manifest second."""
+    capabilities above: a recorded list wins, empty or not; only a missing
+    one asks the manifest."""
     trusted = (entry or {}).get("trusted_modules")
     if isinstance(trusted, list):
-        recorded = [item for item in trusted if isinstance(item, str)]
-        if recorded:
-            return recorded
+        return [item for item in trusted if isinstance(item, str)]
     return manifest_allowed_modules(manifest)
 
 
@@ -326,7 +328,11 @@ def _entry_payload(
     job = _job_for(plugin_id, active_job)
     enabled = plugin_loader.is_enabled(entry) if entry is not None else False
     nodes = _nodes(plugin_id, row=row, entry=entry, registry=registry)
-    ref = _recorded(entry, "ref")
+    # What was installed beats what the catalog pins: a plugin installed off
+    # the default branch must not report the tag the catalog has moved on to.
+    # "" is the default branch on both sides, so an empty recorded ref is an
+    # answer rather than a miss.
+    ref = _text(entry.get("ref")) if entry is not None else (row.ref if row else "")
 
     return {
         "id": plugin_id,
@@ -343,7 +349,7 @@ def _entry_payload(
         "source_kind": _recorded(entry, "source_kind"),
         "source": _source(plugin_id, row=row, entry=entry),
         "repo": _repo(row=row, entry=entry),
-        "ref": ref if ref is not None else (row.ref if row else ""),
+        "ref": ref,
         "sha": _recorded(entry, "sha"),
         "url": _url(row=row, entry=entry),
         "homepage": (
@@ -536,9 +542,10 @@ def _job_for(
 def _recorded(entry: dict[str, Any] | None, key: str) -> str | None:
     """What the lockfile wrote down under *key*, or ``None``.
 
-    One spelling for the four fields that only an installed plugin has, so
-    that "not installed" and "installed but the field is empty" arrive as the
-    same ``None`` instead of as ``None`` in one field and ``""`` in the next.
+    One spelling for the three fields only an installed plugin has, so that
+    "not installed" and "installed but the field is empty" arrive as the same
+    ``None`` instead of as ``None`` in one field and ``""`` in the next. Not
+    used for ``ref``, where ``""`` is a real answer -- the default branch.
     """
     if entry is None:
         return None
