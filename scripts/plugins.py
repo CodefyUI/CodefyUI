@@ -231,6 +231,28 @@ def builtin_catalog_packs() -> dict[str, dict[str, Any]]:
     return core_catalog.builtin_catalog_packs(load_catalog())
 
 
+def catalog_entries() -> dict[str, core_catalog.CatalogEntry]:
+    """Every well-formed catalog row, in the shape the installer dispatches on.
+
+    The raw dict is what most of this module reads, because that is what its
+    tests fake; this is the same document run through
+    :func:`~app.core.plugins.catalog.validate_catalog`, which is what turns
+    ``kind`` into a promise -- a ``github`` row that reached here really does
+    carry an ``owner/repo`` and really does not carry a ``path``.
+    """
+    return core_catalog.validate_catalog(load_catalog())
+
+
+def catalog_entry(plugin_id: str) -> core_catalog.CatalogEntry | None:
+    """One catalog row by id, case-insensitively, or ``None``.
+
+    ``None`` means either "no such id" or "that row is malformed" -- the
+    callers here treat both the same way, because a row the validator dropped
+    is a row this build cannot install either.
+    """
+    return catalog_entries().get(plugin_id.lower())
+
+
 def available_builtin_packs() -> list[tuple[str, str]]:
     """Built-in packs shipped on disk that this install has made no decision about.
 
@@ -601,7 +623,7 @@ def cmd_install(args: argparse.Namespace) -> int:
 
         lockfile = load_lockfile()
         rc = (
-            _install_catalog(a, args, lockfile)
+            _install_by_catalog_name(a, args, lockfile)
             if kind == "catalog"
             else _install_github(a, b, ref, args, lockfile)
         )
@@ -609,6 +631,35 @@ def cmd_install(args: argparse.Namespace) -> int:
             return rc
         overall = rc
     return overall
+
+
+def _install_by_catalog_name(plugin_id: str, args, lockfile) -> int:
+    """Install the pack the catalog calls *plugin_id*, whichever kind it is.
+
+    ``parse_source`` answers "catalog" for any id in ``registry.json``, and
+    the two kinds behind that word are installed by completely different
+    code: a ``builtin`` pack is activated in place from the release's own
+    files, a ``github`` pack is fetched from the repository the catalog
+    names. Deciding here rather than in ``cmd_install`` keeps the two
+    branches side by side, where the difference is the whole point.
+
+    The catalog id is carried into the repository install so the lockfile can
+    record which row the pack came from -- that is what lets a Plugin Center
+    show it as the catalog's pack rather than as free text that happens to
+    have the same id.
+    """
+    entry = catalog_entry(plugin_id)
+    if entry is not None and entry.kind == "github":
+        owner, _, repo = (entry.repo or "").partition("/")
+        return _install_github(
+            owner, repo, entry.ref, args, lockfile, catalog_id=entry.id
+        )
+    # Either a builtin row or one ``validate_catalog`` dropped. The second is
+    # deliberately not a separate refusal: the builtin path already stops on a
+    # pack with no manifest on disk, which is exactly what a malformed row
+    # leaves behind, and a corrupt catalog must not grow its own vocabulary of
+    # errors that only a hand-edited registry.json can reach.
+    return _install_catalog(plugin_id, args, lockfile)
 
 
 def _install_catalog(plugin_id: str, args, lockfile) -> int:
@@ -700,7 +751,68 @@ def _install_catalog(plugin_id: str, args, lockfile) -> int:
     return 0
 
 
-def _install_github(owner: str, repo: str, ref: str, args, lockfile) -> int:
+def _reserved_id_refusal(
+    plugin_id: str, owner: str, repo: str
+) -> tuple[str, str] | None:
+    """The bilingual refusal for an id ``{owner}/{repo}`` may not install
+    under, or ``None`` when it may.
+
+    Three ids are refused, and the third is the one worth spelling out. An id
+    is taken if it names a route under ``/api/plugins/`` (the router, not the
+    plugin, would decide which one answers) or a pack that ships with
+    CodefyUI (the built-in directory would decide). A ``github`` catalog id
+    is different: that row IS a repository, so refusing it outright would
+    make the official pack the catalog advertises the one thing nobody can
+    install. So it is refused only for a DIFFERENT repository -- the id is
+    what the lockfile, the catalog card and the route all key on, and a fork
+    claiming it would quietly take the official pack's place.
+    """
+    entry = catalog_entry(plugin_id)
+    if plugin_id in core_catalog.RESERVED_PLUGIN_IDS:
+        return (
+            f"外掛 id {plugin_id} 是保留名稱（/api/plugins/ 底下的路由），不能安裝。",
+            f"Plugin id '{plugin_id}' is reserved by this build "
+            f"(a route under /api/plugins/).",
+        )
+    if entry is not None and entry.kind == "builtin":
+        return (
+            f"外掛 id {plugin_id} 是保留名稱（CodefyUI 內建的外掛包），不能安裝。",
+            f"Plugin id '{plugin_id}' is reserved by this build "
+            f"(a pack that ships with CodefyUI).",
+        )
+    if (
+        entry is not None
+        and entry.kind == "github"
+        and f"{owner}/{repo}".lower() != (entry.repo or "").lower()
+    ):
+        return (
+            f"外掛 id {plugin_id} 在目錄中屬於 {entry.repo}；"
+            f"只有該儲存庫可以用這個 id 安裝，{owner}/{repo} 不行。",
+            f"Plugin id '{plugin_id}' belongs to {entry.repo} in this "
+            f"install's catalog; only that repository may install under it, "
+            f"not {owner}/{repo}.",
+        )
+    return None
+
+
+def _install_github(
+    owner: str,
+    repo: str,
+    ref: str,
+    args,
+    lockfile,
+    *,
+    catalog_id: str | None = None,
+) -> int:
+    """Install the pack in ``{owner}/{repo}`` at *ref*.
+
+    *catalog_id* is the catalog row this install came from, when it came from
+    one; it is recorded in the lockfile so a later reader can tell the
+    catalog's own pack from free text that happens to carry the same id.
+    Keyword-only and last so the five positional arguments stay what they
+    were -- ``scripts/project.py`` restores a project's pins through this
+    function positionally.
+    """
     url = f"https://github.com/{owner}/{repo}"
     info(f"來源：{url}", f"Source: {url}")
     pinned_sha = getattr(args, "pinned_sha", None)
@@ -798,12 +910,12 @@ def _install_github(owner: str, repo: str, ref: str, args, lockfile) -> int:
             err(str(e), str(e))
             return 1
 
-        # Reserved ids: anything matching a catalog-builtin slot.
-        if plugin_id in load_catalog().get("plugins", {}):
-            err(
-                f"外掛 id {plugin_id} 與內建保留名稱衝突",
-                f"Plugin id '{plugin_id}' is reserved by the built-in catalog",
-            )
+        # Reserved ids: a route, a pack that ships here, or another
+        # repository's catalog row. See _reserved_id_refusal for why the third
+        # is about which repo rather than about the id alone.
+        refusal = _reserved_id_refusal(plugin_id, owner, repo)
+        if refusal is not None:
+            err(*refusal)
             return 1
 
         final = plugins_user_root() / plugin_id
@@ -845,7 +957,7 @@ def _install_github(owner: str, repo: str, ref: str, args, lockfile) -> int:
                     backup.rename(final)
                 return rc
 
-        lockfile.setdefault("plugins", {})[plugin_id] = {
+        record: dict[str, Any] = {
             "source_kind": "github_url",
             "source": f"{owner}/{repo}" + (f"@{ref}" if ref else ""),
             "url": url,
@@ -857,6 +969,13 @@ def _install_github(owner: str, repo: str, ref: str, args, lockfile) -> int:
             "capabilities": list(capabilities),
             "enabled": True,
         }
+        if catalog_id is not None:
+            # Only when there really was a catalog row. Writing the key
+            # unconditionally would have every free-text install claim a
+            # catalog identity it does not have, and "installed from the
+            # catalog" is exactly the claim a reader wants to trust.
+            record["catalog_id"] = catalog_id
+        lockfile.setdefault("plugins", {})[plugin_id] = record
         save_lockfile(lockfile)
 
         if backup is not None:
@@ -1529,22 +1648,33 @@ def cmd_info(args: argparse.Namespace) -> int:
         err(str(e), str(e))
         return 2
 
+    owner, repo = a, b
     if kind == "catalog":
-        catalog_entry = load_catalog()["plugins"][a]
-        plugin_dir = plugins_builtin_root() / a
-        try:
-            manifest = read_manifest(plugin_dir)
-        except FileNotFoundError:
-            manifest = {"plugin": {"name": catalog_entry.get("name", a)}}
-        synthetic_entry = {
-            "source_kind": "builtin",
-            "source": a,
-            "manifest": manifest.get("plugin", {}),
-        }
-        _print_info(a, manifest, synthetic_entry, plugin_dir, installed=False)
-        return 0
+        catalog_row = catalog_entry(a)
+        if catalog_row is not None and catalog_row.kind == "github":
+            # The catalog's own words first, then the live repository. In that
+            # order because the catalog answers "is this the pack I meant, and
+            # does CodefyUI vouch for it" even when the network half below
+            # cannot be reached, and because `official` is a claim only the
+            # catalog is entitled to make.
+            _print_catalog_row(catalog_row)
+            owner, _, repo = (catalog_row.repo or "").partition("/")
+            ref = catalog_row.ref
+        else:
+            raw_row = load_catalog()["plugins"][a]
+            plugin_dir = plugins_builtin_root() / a
+            try:
+                manifest = read_manifest(plugin_dir)
+            except FileNotFoundError:
+                manifest = {"plugin": {"name": raw_row.get("name", a)}}
+            synthetic_entry = {
+                "source_kind": "builtin",
+                "source": a,
+                "manifest": manifest.get("plugin", {}),
+            }
+            _print_info(a, manifest, synthetic_entry, plugin_dir, installed=False)
+            return 0
 
-    owner, repo, ref = a, b, ref
     try:
         sha = resolve_sha(owner, repo, ref)
     except RuntimeError as e:
@@ -1566,6 +1696,40 @@ def cmd_info(args: argparse.Namespace) -> int:
     }
     _print_info(manifest.get("plugin", {}).get("id", "(unnamed)"), manifest, synthetic_entry, None, installed=False)
     return 0
+
+
+def _print_catalog_row(entry: core_catalog.CatalogEntry) -> None:
+    """What this install's catalog says about a repository pack.
+
+    Everything here is the catalog's claim, not the repository's: the name a
+    student saw in ``cdui plugin search``, the repo the installer will
+    actually fetch, and whether CodefyUI vouches for it. A manifest fetched
+    from the repository can say anything at all, so ``official`` in
+    particular has to come from this side of the line.
+
+    The field layout matches :func:`_print_info`, which prints the live
+    details straight after, so the two blocks read as one answer.
+    """
+    section(f"目錄項目：{entry.id}", f"Catalog entry: {entry.id}")
+    fields: list[tuple[str, str]] = [("name", entry.name)]
+    if entry.description:
+        fields.append(("description", entry.description))
+    if entry.repo:
+        fields.append(("repo", entry.repo))
+    if entry.homepage:
+        fields.append(("homepage", entry.homepage))
+    if entry.tags:
+        fields.append(("tags", ", ".join(entry.tags)))
+    fields.append((
+        "official",
+        t("是，由 CodefyUI 發布", "yes, published by CodefyUI")
+        if entry.official
+        else t("否（第三方外掛）", "no (third-party plugin)"),
+    ))
+
+    width = max(len(k) for k, _ in fields) + 2
+    for k, v in fields:
+        print(f"  {DIM}{(k + ':').ljust(width)}{RESET} {v}")
 
 
 def _print_info(
@@ -1744,6 +1908,10 @@ def cmd_search(args: argparse.Namespace) -> int:
             plugin_id,
             entry.get("name", ""),
             entry.get("description", ""),
+            # The repository is searchable too: someone who has the GitHub
+            # page open has "CodefyUI-Plugin-Graph-Copilot" in front of them
+            # and no reason to guess that the catalog calls it graph-copilot.
+            entry.get("repo", "") or "",
             " ".join(entry.get("chapters", []) or []),
             " ".join(entry.get("tags", []) or []),
         ]).lower()
@@ -1761,9 +1929,16 @@ def cmd_search(args: argparse.Namespace) -> int:
     width = max(len(pid) for pid, _ in matches) + 2
     for plugin_id, entry in sorted(matches):
         marker = f"{GREEN}{MARK_INSTALLED}{RESET}" if plugin_id in lockfile_ids else " "
+        # Say where a pack comes from. Installing a github entry downloads and
+        # runs someone else's code, which activating a built-in pack does not,
+        # and "official" is the catalog saying whose code it is.
+        if entry.get("kind") == "github":
+            tag = " [github, official]" if entry.get("official") else " [github]"
+        else:
+            tag = ""
         print(
             f"  {marker} {BOLD}{plugin_id.ljust(width)}{RESET}"
-            f"{entry.get('name', plugin_id)}"
+            f"{entry.get('name', plugin_id)}{DIM}{tag}{RESET}"
         )
         desc = entry.get("description", "")
         if desc:
