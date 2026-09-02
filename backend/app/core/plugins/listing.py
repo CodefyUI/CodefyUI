@@ -144,17 +144,58 @@ def frontend_entry_url(
     return f"/plugins/{plugin_id}/{entry_rel}"
 
 
-def is_official(row: CatalogEntry | None) -> bool:
-    """Does CodefyUI vouch for this plugin?
+def is_official(row: CatalogEntry | None, entry: dict[str, Any] | None) -> bool:
+    """Does CodefyUI vouch for THIS plugin -- not just for this id?
 
-    True for anything the catalog ships as ``builtin`` -- a pack that arrived
-    with the release, through a pull request in this repository, is first
-    party by construction, which is the same reasoning
-    :func:`~app.core.plugins.inspect.inspect_builtin` states -- and for a
-    ``github`` row the catalog explicitly marks ``official``. Everything
-    else, including a plugin installed from a URL, is not.
+    The badge is a claim about provenance, so matching the catalog by id is
+    not enough to earn it. An id is only reserved against a foreign install
+    when this build owns it outright (a route, or a pack that ships here);
+    the ids of the catalog's ``github`` rows are deliberately NOT reserved,
+    because the author of an official plugin has to be able to install their
+    own repository under its own id. That leaves a hole an id-only rule falls
+    straight into: install ``mallory/evil``, whose manifest says
+    ``id = "self-learning"``, and the row would wear the official badge over
+    a ``repo`` field reading ``mallory/evil``.
+
+    So a row is official when the catalog vouches for it AND the install in
+    front of us really is the thing the catalog named:
+
+    * nothing installed under the id -- the row IS the catalog's, so the
+      badge describes what installing it would get you;
+    * a ``builtin`` row installed as ``source_kind = "builtin"`` -- activated
+      in place from this release's own files, which is the only way a
+      built-in pack can arrive;
+    * a ``github`` row installed with the recorded ``catalog_id``, which
+      ``cdui plugin install <name>`` writes only when the install really came
+      from that row;
+    * a ``github`` row whose repository is the one the install recorded --
+      case-insensitively, because GitHub owners and repositories are. This is
+      the free-text install of the catalog's own repository
+      (``cdui plugin install CodefyUI/CodefyUI-Plugin-Self-Learning``), which
+      is the same code by a longer road.
+
+    Everything else is false, including every ``external`` row, and including
+    a plugin LINKED from a local directory under a catalog id: a working tree
+    is whatever the author has in it right now, and nothing about it can be
+    checked against the repository the catalog names.
     """
-    return row is not None and (row.kind == "builtin" or row.official)
+    if row is None:
+        return False
+    # A ``github`` row the catalog does not mark ``official`` is a third
+    # party the catalog merely lists -- it never earns the badge, however it
+    # was installed.
+    if not (row.kind == "builtin" or row.official):
+        return False
+    if entry is None:
+        return True
+    if row.kind == "builtin":
+        return entry.get("source_kind") == "builtin"
+    if _text(entry.get("catalog_id")) == row.id:
+        return True
+    installed = _repo_of(entry)
+    return bool(row.repo) and installed is not None and (
+        installed.lower() == row.repo.lower()
+    )
 
 
 def catalog_id_for(
@@ -226,7 +267,7 @@ def installed_facts(
     route and unofficial on the other.
     """
     return {
-        "official": is_official(catalog.get(plugin_id)),
+        "official": is_official(catalog.get(plugin_id), entry),
         "catalog_id": catalog_id_for(plugin_id, entry, catalog),
         "capabilities": declared_capabilities(entry, manifest),
         "trusted_modules": declared_trusted_modules(entry, manifest),
@@ -342,7 +383,7 @@ def _entry_payload(
             or (row.description if row else "")
         ),
         "kind": row.kind if row else "external",
-        "official": is_official(row),
+        "official": is_official(row, entry),
         "status": _status(
             entry=entry, plugin_dir=plugin_dir, tombstoned=tombstoned, job=job
         ),

@@ -111,18 +111,22 @@ def uninstall_plugin(
 ) -> UninstallOutcome | None:
     """Remove a plugin from this install. ``None`` when it was not installed.
 
-    The order is load-bearing. The manifest is read while the files are still
-    there; the modules are dropped from ``sys.modules`` next, both because a
-    re-install of the same id would otherwise reload the OLD path a cached
-    module remembers and because an imported module is one of the things that
-    can hold a file open on Windows; the files go; and only then is the
-    lockfile written.
+    The order is load-bearing: the manifest is read while the files are still
+    there, the files go next, and only then is the lockfile written. That is
+    the reason the delete comes first -- if it fails, the entry stays, the
+    plugin stays installed, and the caller is told why (``removed=False``
+    with an ``error``). The alternative, popping the entry anyway, would
+    leave a directory no lockfile mentions, which nothing in this system
+    would ever look at again, let alone clean up.
 
-    That last step is the reason the delete comes first: if it fails, the
-    entry stays, the plugin stays installed, and the caller is told why
-    (``removed=False`` with an ``error``). The alternative -- popping the
-    entry anyway -- would leave a directory no lockfile mentions, which
-    nothing in this system would ever look at again, let alone clean up.
+    Nothing here touches ``sys.modules``. The CLI runs in its own process and
+    never imported the plugin, so there would be nothing to drop; and the
+    in-process caller -- the DELETE route -- purges the plugin's modules
+    itself, immediately before ``rediscover_now()``, which is where the
+    namespace finder is re-created for everything still installed. Purging
+    from in here would put the two half a call apart with no reload between
+    them, and a namespace dropped without being rebuilt is a plugin nothing
+    can import until the next full re-discovery.
 
     *builtin_ids* overrides which ids count as built-in packs for the
     tombstone rule. It exists for ``scripts/plugins.py``, whose tests fake
@@ -136,7 +140,6 @@ def uninstall_plugin(
         return None
 
     deps = tuple(sorted(_declared_python_deps(plugin_id, lockfile)))
-    plugin_loader.purge_plugin_modules(plugin_id)
 
     files_removed: bool | None = None
     if entry.get("source_kind") == "github_url":

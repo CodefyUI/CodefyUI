@@ -335,9 +335,10 @@ async def test_a_running_job_marks_only_its_own_row(center_lockfile):
 async def test_what_was_installed_beats_what_the_catalog_pins(
         center_lockfile, monkeypatch):
     """A row can be backed by a catalog entry AND by an install that
-    disagrees with it -- a fork, a moved owner, an older tag. The catalog
-    still says whether the plugin is official; where the FILES came from is
-    the install's own answer."""
+    disagrees with it -- a fork, a moved owner, an older tag. Where the FILES
+    came from is the install's own answer, and it is also what decides the
+    badge: a row whose repository is not the catalog's is not official, no
+    matter which id it claims."""
     pinned = {
         plugin_id: CatalogEntry(
             id=plugin_id, name="Demo", description="", kind="github",
@@ -357,7 +358,7 @@ async def test_what_was_installed_beats_what_the_catalog_pins(
     entry = by_id["demo-external"]
 
     assert entry["kind"] == "github"
-    assert entry["official"] is True
+    assert entry["official"] is False   # alice/extras is not carol/demo
     assert entry["ref"] == "v1.2.3"
     assert entry["repo"] == "alice/extras"
     assert entry["url"] == "https://github.com/alice/extras"
@@ -378,6 +379,118 @@ def test_a_recorded_empty_grant_is_not_a_miss():
     assert listing.declared_capabilities({}, manifest) == ["network"]
     assert listing.declared_trusted_modules({}, manifest) == ["requests"]
     assert listing.declared_capabilities(None, manifest) == ["network"]
+
+
+def _install_claiming(user_root: Path, plugin_id: str, repo: str) -> None:
+    """Put *plugin_id* in the lockfile as a URL install of *repo*.
+
+    No ``catalog_id``: this is the free-text ``cdui plugin install
+    owner/repo`` path, which is the one that can claim an id the catalog also
+    uses -- deliberately, since it is how the author of an official plugin
+    installs their own repository.
+    """
+    plugin_dir = user_root / plugin_id
+    plugin_dir.mkdir(parents=True, exist_ok=True)
+    (plugin_dir / "cdui.plugin.toml").write_text(
+        f'[plugin]\nid = "{plugin_id}"\nname = "Claimed"\n'
+        f'version = "0.0.1"\nschema_version = 1\n',
+        encoding="utf-8",
+    )
+    lockfile = plugin_loader.load_lockfile()
+    lockfile["plugins"][plugin_id] = {
+        "source_kind": "github_url",
+        "source": repo,
+        "url": f"https://github.com/{repo}",
+        "ref": "",
+        "installed_at": "2026-06-04T00:00:00Z",
+        "manifest": {"id": plugin_id, "version": "0.0.1"},
+        "trusted_modules": [],
+        "capabilities": [],
+        "enabled": True,
+    }
+    plugin_loader.save_lockfile(lockfile)
+
+
+async def test_a_foreign_repository_cannot_wear_the_catalogs_badge(
+        anon_client, center_lockfile):
+    """The id of a ``github`` catalog row is NOT reserved -- it cannot be,
+    because the plugin's own author installs it by repository. So the badge
+    has to be earned by the repository, not by the name on the manifest."""
+    _install_claiming(center_lockfile, "self-learning", "mallory/evil")
+
+    row = (await rows(anon_client))["self-learning"]
+    assert row["status"] == "installed"
+    assert row["repo"] == "mallory/evil"
+    assert row["official"] is False
+
+    listed = {p["id"]: p for p in (await anon_client.get("/api/plugins")).json()}
+    assert listed["self-learning"]["official"] is False
+    assert listed["self-learning"]["catalog_id"] == "self-learning"
+
+
+async def test_the_catalogs_own_repository_is_official_by_any_road(
+        anon_client, center_lockfile):
+    """Installed by name or by URL, it is the same code from the same
+    repository -- so the badge must not depend on which command was typed."""
+    _install_claiming(
+        center_lockfile, "self-learning", "CodefyUI/CodefyUI-Plugin-Self-Learning"
+    )
+
+    row = (await rows(anon_client))["self-learning"]
+    assert row["status"] == "installed"
+    assert row["repo"] == "CodefyUI/CodefyUI-Plugin-Self-Learning"
+    assert row["official"] is True
+
+    listed = {p["id"]: p for p in (await anon_client.get("/api/plugins")).json()}
+    assert listed["self-learning"]["official"] is True
+
+
+def test_official_is_a_question_about_provenance_not_about_the_id():
+    """Every branch of the rule, in one place."""
+    builtin = CatalogEntry(id="stats", name="Stats", description="",
+                           kind="builtin", path="plugins/stats")
+    official_repo = CatalogEntry(
+        id="self-learning", name="SL", description="", kind="github",
+        repo="CodefyUI/CodefyUI-Plugin-Self-Learning", official=True,
+    )
+    listed_third_party = CatalogEntry(
+        id="third", name="Third", description="", kind="github",
+        repo="carol/third", official=False,
+    )
+
+    # Nothing installed: the row itself is what the badge describes.
+    assert listing.is_official(builtin, None) is True
+    assert listing.is_official(official_repo, None) is True
+    # A row the catalog merely LISTS never earns it, installed or not.
+    assert listing.is_official(listed_third_party, None) is False
+    assert listing.is_official(None, None) is False
+
+    # A built-in pack can only arrive by being activated in place.
+    assert listing.is_official(builtin, {"source_kind": "builtin"}) is True
+    assert listing.is_official(
+        builtin, {"source_kind": "local", "source": "/home/me/stats"}) is False
+    assert listing.is_official(
+        builtin, {"source_kind": "github_url", "source": "mallory/stats",
+                  "url": "https://github.com/mallory/stats"}) is False
+
+    # A repository row: the recorded catalog id, or the repository itself.
+    assert listing.is_official(
+        official_repo,
+        {"source_kind": "github_url", "catalog_id": "self-learning",
+         "source": "CodefyUI/CodefyUI-Plugin-Self-Learning"}) is True
+    assert listing.is_official(
+        official_repo,
+        {"source_kind": "github_url",
+         "url": "https://github.com/codefyui/codefyui-plugin-self-learning"}
+    ) is True                                   # GitHub names are not case-sensitive
+    assert listing.is_official(
+        official_repo,
+        {"source_kind": "github_url", "source": "mallory/evil",
+         "url": "https://github.com/mallory/evil"}) is False
+    # A linked working tree cannot be checked against anything.
+    assert listing.is_official(
+        official_repo,
+        {"source_kind": "local", "source": "/home/me/self-learning"}) is False
 
 
 # -- the router ------------------------------------------------------------
