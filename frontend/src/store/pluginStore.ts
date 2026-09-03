@@ -367,8 +367,13 @@ function stopFollowing(): void {
  *
  * The idempotence is what lets `refresh()` adopt `active_job` on every poll
  * without restarting the follower — and without the double-follow that would
- * apply every event twice. Asked here as well as inside `start` so the plugin
- * id is not rewritten under a loop already running on another job.
+ * apply every event twice.
+ *
+ * Asked here as well as inside `start` because the two module slots below are
+ * not the follower's to guard: a second call for the job ALREADY being
+ * followed keeps the first call's plugin id and kind, and does not restart
+ * the loop. A call naming a different job replaces both, and the loop with
+ * them.
  */
 function startFollowing(
   jobId: string, pluginId: string, kind: PluginJobKind, cursor: number,
