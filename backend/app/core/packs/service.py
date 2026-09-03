@@ -100,21 +100,23 @@ class PackBusy(JobBusy):
     runner refuses a second claim in its own generic terms, and this is what
     that refusal is called when the job is a pack install.
 
-    ``reason`` is set only when the job in the way is NOT one of ours -- a
-    plugin install, running in the same interpreter. The client is told
-    which, because "follow the install you already started" and "wait for
-    somebody else's" are different offers to make, and an id alone does not
-    say which of the two this is. An ordinary busy refusal leaves it
-    ``None``, and the route then leaves the key out altogether: that body
-    has been two keys since the panel was written.
+    ``reason`` and ``message`` are the base class's, and only their DEFAULTS
+    are this class's business: an ordinary busy refusal is a pack install in
+    the way of another, so it says so and carries no reason. Both are set
+    when the job in the way is NOT one of ours -- a plugin install, running
+    in the same interpreter -- because "follow the install you already
+    started" and "wait for somebody else's" are different offers to make,
+    and an id alone does not say which of the two this is. The route leaves
+    a ``None`` reason out of the body altogether: that body has been two
+    keys since the panel was written.
     """
 
     def __init__(self, job_id: str, *, reason: str | None = None,
                  message: str | None = None):
-        self.reason = reason
         super().__init__(
             job_id,
-            message or f"a pack install is already running (job {job_id})")
+            message or f"a pack install is already running (job {job_id})",
+            reason=reason)
 
 
 class RestartUnavailable(Exception):
