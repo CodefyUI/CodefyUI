@@ -29,7 +29,7 @@ from __future__ import annotations
 from collections.abc import Iterable
 from dataclasses import dataclass
 
-from .errors import ConsentRequired
+from .errors import TrustAuthorRequired
 
 
 @dataclass(frozen=True)
@@ -113,9 +113,15 @@ def check_trust(
     ``allowed_modules`` is the switch that stops the AST gate refusing the
     named imports, so there is no partial answer: either the author is
     trusted for all of them or the install does not happen. That is why this
-    returns nothing and raises :class:`~.errors.ConsentRequired` carrying the
-    whole list -- the caller's next move is to show the list and ask, and a
-    boolean would leave it to re-derive what to show.
+    returns nothing and raises :class:`~.errors.TrustAuthorRequired` carrying
+    the whole list -- the caller's next move is to show the list and ask, and
+    a boolean would leave it to re-derive what to show.
+
+    That class is a :class:`~.errors.ConsentRequired`, so every caller that
+    catches the base -- the CLI, the flow -- is untouched; what the name buys
+    is a caller that has to answer the two halves of consent with different
+    controls, and would otherwise tell them apart by guessing which tuple is
+    populated.
 
     A plugin that asks for nothing needs no trust, and an update whose module
     list is covered by what the user already trusted is not a second
@@ -127,7 +133,7 @@ def check_trust(
     already = set(prior_trusted or ())
     if all(module in already for module in modules):
         return
-    raise ConsentRequired(
+    raise TrustAuthorRequired(
         "Plugin requests modules outside the default allowlist: "
         f"{', '.join(modules)}.",
         missing_capabilities=(),
