@@ -369,7 +369,7 @@ export function reducePackEvents(job: PackJob, page: JobEventsPage): PackJob {
 let settledJobId: string | null = null;
 
 /**
- * The pack the running follower is installing.
+ * The pack the running follower is installing, and the job it was named for.
  *
  * The follower is keyed by job id and knows nothing about packs, but every
  * ending it reports is about one: which catalog row carries the fallback
@@ -377,8 +377,18 @@ let settledJobId: string | null = null;
  * Set immediately before each `start`, and safe as a single slot because
  * starting a different job replaces it and abandons the old loop in the same
  * breath — a stale loop never gets to read it.
+ *
+ * The job id travels with the pack id so that "the ending being reported is
+ * the job this slot was written for" is CHECKED rather than assumed. It costs
+ * a comparison, and it is what keeps an `await` slipped between the
+ * assignment and `follower.start` from naming the wrong row on the toast.
  */
-let followingPackId: string | null = null;
+let following: { jobId: string; packId: string } | null = null;
+
+/** The pack *jobId* is installing, or '' if it is not the one being followed. */
+function followedPack(jobId: string): string {
+  return following !== null && following.jobId === jobId ? following.packId : '';
+}
 
 /** Bumped by every `restartFlow` and by the test reset; a stale loop exits. */
 let restartGeneration = 0;
@@ -420,7 +430,7 @@ const follower = createJobFollower<PackJob>({
   patchJob,
   reduce: reducePackEvents,
   onSettled: (jobId, status) => {
-    onJobSettled(jobId, followingPackId ?? '', status);
+    onJobSettled(jobId, followedPack(jobId), status);
   },
   onGiveUp: (jobId, error, open) => {
     // A RESTART-mode job is the one case where the endpoint going quiet is
@@ -443,7 +453,7 @@ const follower = createJobFollower<PackJob>({
     if (error instanceof PackApiError || open === null || open.mode !== 'restart') {
       return false;
     }
-    const packId = followingPackId ?? '';
+    const packId = followedPack(jobId);
     // No `needs_restart` event ever arrived, so nothing carried the command
     // — and both give-up screens name one ("Run this command, then
     // reload:"). The catalog has it: `install_command` is what the panel's
@@ -474,7 +484,7 @@ function stopFollowing(): void {
  */
 function startFollowing(jobId: string, packId: string, cursor: number): void {
   if (follower.followingJobId() === jobId) return;
-  followingPackId = packId;
+  following = { jobId, packId };
   follower.start(jobId, cursor);
 }
 
@@ -1018,7 +1028,7 @@ export function _resetPackStoreForTesting(): void {
   follower.stop();
   restartGeneration += 1;
   settledJobId = null;
-  followingPackId = null;
+  following = null;
   inProgressChecked = false;
   lastRestartRecord = null;
   usePackStore.setState({
