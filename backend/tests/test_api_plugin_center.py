@@ -1,5 +1,6 @@
-"""``GET /api/plugins/catalog``: the one route the Plugin Center draws from.
+"""The Plugin Center's REST surface: the catalog it draws, and the install.
 
+Part 1 is ``GET /api/plugins/catalog``, the one route the panel draws from.
 The panel merges two documents that do not know about each other -- the
 catalog this build ships and the lockfile this install wrote -- so the tests
 here are mostly about the SEAM. Each state a plugin can be in gets a row of
@@ -25,12 +26,21 @@ has to tell apart.
 The key list is asserted as an ORDERED list rather than a set: the payload
 is what a TypeScript type will be written against, and a field that quietly
 changes place is a diff worth seeing.
+
+Part 2 is the install path -- ``POST /inspect``, ``POST /install`` and the
+two job routes -- and it is a different kind of test: a real ``PluginService``
+on ``app.state`` with a flow driven from the test thread, and assertions
+about status codes and the ``detail.code`` a panel branches on. Nothing there
+installs anything or opens a socket; GitHub is faked at
+``app.core.plugins.github``, one call at a time.
 """
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
+import time
 from pathlib import Path
 
 import pytest
@@ -40,13 +50,32 @@ from httpx import ASGITransport, AsyncClient
 
 from app.api import routes_plugins
 from app.config import settings
+from app.core.auth import TOKEN_HEADER, init_allowed_hosts, session_token
 from app.core import plugin_loader
 from app.core.node_registry import registry
+from app.core.plugins import catalog as catalog_module
+from app.core.plugins import github
+from app.core.plugins import inspect as inspect_module
 from app.core.plugins import listing
 from app.core.plugins.catalog import CatalogEntry
+from app.core.plugins.errors import (
+    GitHubError,
+    PluginInstallError,
+    PluginNeedsRestart,
+)
+from app.core.plugins.inspect import ALLOWED_MODULES_WARNING, FRONTEND_WARNING
 from app.core.plugins.listing import catalog_listing
 from app.core.plugins.reload import rediscover_now
+from app.core.plugins.service import PluginService
 from app.main import app
+from app import main
+
+from tests.test_plugin_service import (
+    ScriptedFlow,
+    Sources,
+    types_of,
+    wait_started,
+)
 
 BASE_URL = f"http://127.0.0.1:{settings.PORT}"
 
@@ -626,6 +655,18 @@ def test_every_fixed_path_is_declared_before_the_plugin_id_route():
         if "{" not in path:
             assert index < first_dynamic, f"{path} is declared too late"
 
+    # The install path, named rather than derived: three of its paths carry
+    # no ``{`` and are covered by the loop above, and the two job routes do
+    # carry one -- which is exactly why they need saying out loud. Their
+    # first segment (``jobs``) is fixed, and it is only a reserved plugin id
+    # that keeps a pack from claiming it.
+    for path in ("/api/plugins/inspect",
+                 "/api/plugins/install",
+                 "/api/plugins/jobs/{job_id}/events",
+                 "/api/plugins/jobs/{job_id}/cancel"):
+        assert path in paths, f"{path} is not registered"
+        assert paths.index(path) < first_dynamic, f"{path} is declared too late"
+
 
 # -- the install gate ------------------------------------------------------
 
@@ -668,6 +709,95 @@ async def test_the_catalog_says_when_installing_is_refused(anon_client,
     assert body["remote_install_allowed"] is False
 
 
+# -- the running install ---------------------------------------------------
+
+
+class _StubInstaller:
+    """Stands in for ``PluginService`` on ``app.state``: one question asked.
+
+    The route's whole job here is to ask the service what is running and pass
+    the answer on, so a stub that answers is a truer test of the route than a
+    real service with a scripted flow behind it -- which would be testing
+    ``PluginService`` again, in the file that is about the payload.
+    """
+
+    def __init__(self, payload):
+        self.payload = payload
+
+    def active_job_payload(self):
+        return self.payload
+
+
+async def test_the_catalog_reports_the_install_that_is_running(
+        anon_client, monkeypatch):
+    """How a panel opened mid-install -- a second tab, a reload -- finds the
+    job it should be following, and which row is busy."""
+    job = {"job_id": "j1", "plugin_id": "stats", "kind": "install",
+           "status": "running", "current_step": "deps"}
+    monkeypatch.setattr(app.state, "plugin_service",
+                        _StubInstaller(job), raising=False)
+
+    body = (await anon_client.get("/api/plugins/catalog")).json()
+    by_id = {entry["id"]: entry for entry in body["entries"]}
+
+    assert body["active_job"] == job
+    assert by_id["stats"]["status"] == "installing"
+    assert by_id["stats"]["job"] == {"job_id": "j1", "status": "running",
+                                     "current_step": "deps"}
+    assert by_id["foundations"]["job"] is None
+
+
+async def test_the_catalog_is_readable_with_no_installer_behind_it(
+        anon_client, monkeypatch):
+    """A read, not an install: a server whose installer never started can
+    still say what is installed. Nothing running answers the same way."""
+    monkeypatch.setattr(app.state, "plugin_service",
+                        _StubInstaller(None), raising=False)
+    assert (await anon_client.get("/api/plugins/catalog")).json()[
+        "active_job"] is None
+
+    monkeypatch.delattr(app.state, "plugin_service",
+                        raising=False)
+    body = (await anon_client.get("/api/plugins/catalog")).json()
+    assert body["active_job"] is None
+    assert body["entries"]
+
+
+async def test_the_lifespan_wires_the_two_installers_to_each_other(
+        tmp_path, monkeypatch):
+    """They install into one interpreter, so each has to be able to see the
+    other's running job. Built one after the other and wired through
+    ``app.state``, because whichever is built first cannot hold the other."""
+    monkeypatch.setenv("CODEFYUI_USER_DATA_DIR", str(tmp_path / "userdata"))
+    # The real one clears the root logger's handlers, which is not something
+    # a test in the middle of a suite should do to everybody else.
+    monkeypatch.setattr(main, "setup_logging", lambda **kwargs: None)
+    # No project: the lifespan would otherwise load the developer's own
+    # project .env INTO os.environ (a raw assignment monkeypatch cannot
+    # undo) and warn about its plugin pins. ``test_main_lifespan.py`` gives
+    # itself a throwaway project for that; this test is not about it.
+    monkeypatch.setattr(settings, "PROJECT_DIR", None)
+
+    async with main.lifespan(app):
+        plugins, packs = app.state.plugin_service, app.state.pack_service
+        assert isinstance(plugins, PluginService)
+        assert plugins.current_job_id() is None
+
+        # Each closure must reach the OTHER service -- crossed wires would
+        # have each installer refusing itself and nothing refusing anybody.
+        monkeypatch.setattr(packs, "current_job_id", lambda: "pack-9")
+        monkeypatch.setattr(plugins, "current_job_id", lambda: "plugin-9")
+        assert plugins._busy_elsewhere() == "pack-9"
+        assert packs._busy_elsewhere() == "plugin-9"
+
+    assert app.state.plugin_service is None
+    assert app.state.pack_service is None
+    # The lifespan re-ran init_allowed_hosts with the CORS origins added --
+    # harmless, but it is process-wide state, so the conftest-seeded
+    # whitelist is put back for whoever runs next.
+    init_allowed_hosts(settings.HOST, settings.PORT)
+
+
 # -- the shared reload -----------------------------------------------------
 
 
@@ -683,3 +813,924 @@ async def test_rediscover_now_answers_what_the_reload_route_answers(
     assert direct == over_http
     assert direct["total"] == (direct["builtin"] + direct["custom"]
                                + direct["plugins"])
+
+
+# ==========================================================================
+# part 2: the install path
+# ==========================================================================
+#
+# A real ``PluginService`` behind the routes, because what is being tested is
+# how the service's refusals look on the wire. Nothing here installs
+# anything: the flow is scripted from the test thread and the two GitHub
+# calls an inspection makes are answered from memory.
+
+A_SHA = "a" * 40
+
+#: Every key ``POST /api/plugins/inspect`` answers with, in order. The
+#: TypeScript ``PluginInspection`` in ``frontend/src/api/rest.ts`` is written
+#: against this list. ``owner`` and ``repo`` are deliberately absent: they
+#: exist on the ``Inspection`` the service holds, for the install to download
+#: from, and the wire contract does not carry them.
+INSPECTION_KEYS = [
+    "inspection_id", "expires_at", "kind", "mode", "plugin_id", "catalog_id",
+    "official", "source", "url", "ref", "sha", "name", "version",
+    "description", "homepage", "manifest", "capabilities", "allowed_modules",
+    "python_deps", "has_frontend", "chapters", "lessons", "consent_required",
+    "installed", "up_to_date", "capabilities_added", "allowed_modules_added",
+    "warnings",
+]
+
+#: A repository plugin that asks for everything a consent screen has to draw:
+#: a capability, a module the gate would otherwise refuse, a Python package
+#: and browser code.
+REPO_MANIFEST = """\
+[plugin]
+id = "extras"
+name = "Extras"
+version = "1.2.0"
+description = "Nodes somebody wrote."
+homepage = "https://example.com/extras"
+schema_version = 1
+
+[security]
+capabilities = ["network"]
+allowed_modules = ["requests"]
+
+[python_deps]
+tabulate = ">=0.9"
+
+[frontend]
+entry = "web/index.js"
+
+[lessons]
+chapters = ["C7"]
+lessons = ["intro"]
+"""
+
+
+def a_manifest(plugin_id: str = "extras", **plugin_fields: object) -> str:
+    """The smallest manifest this build will install, plus *plugin_fields*."""
+    lines = [f'id = "{plugin_id}"', "schema_version = 1", 'version = "1.0.0"']
+    lines += [f'{key} = "{value}"' for key, value in plugin_fields.items()]
+    return "[plugin]\n" + "\n".join(lines) + "\n"
+
+
+class FakeGitHub:
+    """The two calls an INSPECTION makes, answered without a socket.
+
+    Not the tarball: the install half of ``core.plugins.github`` is never
+    reached from these tests, because the flow that would download one is
+    scripted. Patched on the module rather than on ``inspect`` so the real
+    ``inspect_github`` runs -- the sha, the manifest read, the validation and
+    the reserved-id refusal are all the production ones.
+    """
+
+    def __init__(self, monkeypatch) -> None:
+        self._monkeypatch = monkeypatch
+        #: Every ``(owner, repo, ref)`` a resolve was asked for.
+        self.resolved: list[tuple[str, str, str]] = []
+
+    def answers(self, manifest: str, *, sha: str = A_SHA) -> None:
+        def resolve(owner: str, repo: str, ref: str) -> str:
+            self.resolved.append((owner, repo, ref))
+            return sha
+
+        self._monkeypatch.setattr(github, "resolve_sha", resolve)
+        self._monkeypatch.setattr(github, "fetch_manifest_text",
+                                  lambda owner, repo, at: manifest)
+
+    def answers_bytes(self, raw: bytes, *, sha: str = A_SHA) -> None:
+        """Serve *raw* as the manifest FILE, with the real decode in the path.
+
+        ``fetch_manifest_text`` lets a ``UnicodeDecodeError`` out on purpose
+        -- a manifest that is not text is a disk answer, not a network one --
+        so a test about how the route maps it must not fake the function that
+        raises it. Faked at ``_gh_get``, which the module's own docstring
+        names as the one place every request goes through.
+        """
+        self._monkeypatch.setattr(github, "resolve_sha",
+                                  lambda owner, repo, ref: sha)
+        self._monkeypatch.setattr(github, "_gh_get",
+                                  lambda url, *args, **kwargs: raw)
+
+    def raises(self, exc: BaseException) -> None:
+        def boom(*args, **kwargs):
+            raise exc
+
+        self._monkeypatch.setattr(github, "resolve_sha", boom)
+        self._monkeypatch.setattr(github, "fetch_manifest_text", boom)
+
+
+@pytest.fixture
+def fake_github(monkeypatch) -> FakeGitHub:
+    return FakeGitHub(monkeypatch)
+
+
+@pytest.fixture
+def flow() -> ScriptedFlow:
+    return ScriptedFlow()
+
+
+@pytest.fixture
+async def plugin_service(flow, center_lockfile):
+    """A ``PluginService`` on ``app.state``, installed and removed by hand.
+
+    The lifespan does not run under httpx's ASGITransport (the
+    ``pack_service`` precedent in ``test_api_packs.py``), so the service these
+    routes reach for is put there by this fixture. ``reload`` is a stub on
+    purpose: the real one clears the node registry every other test in the
+    session shares, and none of these tests is about re-discovery.
+
+    ``center_lockfile`` comes with it, so every inspection here compares
+    against a throwaway lockfile rather than the developer's own.
+    """
+    service = PluginService(run_flow=flow, reload=lambda: {})
+    previous = getattr(app.state, "plugin_service", None)
+    app.state.plugin_service = service
+    try:
+        yield service
+    finally:
+        await service.shutdown()
+        if previous is None:
+            if hasattr(app.state, "plugin_service"):
+                delattr(app.state, "plugin_service")
+        else:
+            app.state.plugin_service = previous
+
+
+@pytest.fixture
+async def client(plugin_service):
+    """A client carrying the session token, over that service."""
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url=BASE_URL,
+        headers={TOKEN_HEADER: session_token()},
+    ) as http:
+        yield http
+
+
+@pytest.fixture
+async def uninstalled_client(center_lockfile, monkeypatch):
+    """A client with the token, over a server whose installer never started.
+
+    Not merely "no service in this test": the attribute is REMOVED, which is
+    the state ``app.state`` is in when the lifespan has not run at all.
+    """
+    monkeypatch.delattr(app.state, "plugin_service", raising=False)
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url=BASE_URL,
+        headers={TOKEN_HEADER: session_token()},
+    ) as http:
+        yield http
+
+
+async def inspected(client, source: str) -> dict:
+    """POST /inspect and return the body, asserting it was answered."""
+    response = await client.post("/api/plugins/inspect",
+                                 json={"source": source})
+    assert response.status_code == 200, response.text
+    return response.json()
+
+
+async def start_install(client, source: str = "alice/extras",
+                        **answers) -> str:
+    """Inspect *source*, install what came back, return the job id.
+
+    Both turns, because that is the only way to reach ``/install``: the id it
+    takes is minted by ``/inspect`` and never by a client.
+    """
+    inspection = await inspected(client, source)
+    response = await client.post(
+        "/api/plugins/install",
+        json={"inspection_id": inspection["inspection_id"], **answers})
+    assert response.status_code == 202, response.text
+    return response.json()["job_id"]
+
+
+async def drain(client, job_id: str, *, timeout: float = 20.0
+                ) -> tuple[list[dict], str]:
+    """Every event of a job over HTTP, waiting for it to finish."""
+    limit = 500
+    events: list[dict] = []
+    cursor, status = 0, "running"
+    deadline = time.monotonic() + timeout
+    while True:
+        if time.monotonic() > deadline:
+            raise AssertionError(f"job {job_id} never finished ({status})")
+        response = await client.get(f"/api/plugins/jobs/{job_id}/events",
+                                    params={"cursor": cursor, "wait": 1.0,
+                                            "limit": limit})
+        assert response.status_code == 200, response.text
+        body = response.json()
+        assert body["job_id"] == job_id
+        events.extend(body["events"])
+        cursor, status = body["cursor"], body["status"]
+        # A page cut short by ``limit`` can carry a terminal status without
+        # the terminal event, so both have to be true before we stop.
+        if status != "running" and len(body["events"]) < limit:
+            return events, status
+
+
+# -- POST /api/plugins/inspect ---------------------------------------------
+
+
+async def test_inspecting_a_builtin_answers_the_whole_consent_screen(client):
+    """A pack that ships in this release goes through inspect too, so the
+    panel has ONE flow -- and comes back with nobody to be asked about."""
+    body = await inspected(client, "stats")
+
+    assert list(body) == INSPECTION_KEYS
+    assert len(body["inspection_id"]) == 32
+    # ISO-8601 UTC: "expires_at: 1731.9" means nothing in a browser.
+    assert body["expires_at"].endswith("+00:00")
+    assert body["kind"] == "builtin"
+    assert body["mode"] == "install"
+    assert body["plugin_id"] == "stats"
+    assert body["catalog_id"] == "stats"
+    assert body["official"] is True
+    assert body["source"] == "stats"
+    assert body["version"] == "0.1.0"
+    # Nothing was resolved and nothing was downloaded: the files are here.
+    assert body["url"] is None
+    assert body["ref"] is None
+    assert body["sha"] is None
+    assert body["consent_required"] is False
+    assert body["warnings"] == []
+    assert body["capabilities"] == []
+    assert body["allowed_modules"] == []
+    assert body["installed"] is None
+    assert body["up_to_date"] is False
+
+
+async def test_inspecting_a_repository_says_what_installing_would_cost(
+        client, fake_github):
+    """Every field the consent screen draws, from the real ``inspect_github``
+    over a manifest read at a resolved sha."""
+    fake_github.answers(REPO_MANIFEST)
+
+    body = await inspected(client, "alice/extras")
+
+    assert list(body) == INSPECTION_KEYS
+    assert body["kind"] == "github"
+    assert body["mode"] == "install"
+    assert body["plugin_id"] == "extras"
+    assert body["catalog_id"] is None
+    # "official" is a claim only the catalog is entitled to make.
+    assert body["official"] is False
+    assert body["source"] == "alice/extras"
+    assert body["url"] == "https://github.com/alice/extras"
+    assert body["sha"] == A_SHA
+    assert body["name"] == "Extras"
+    assert body["version"] == "1.2.0"
+    assert body["homepage"] == "https://example.com/extras"
+    assert body["capabilities"] == ["network"]
+    assert body["allowed_modules"] == ["requests"]
+    assert body["python_deps"] == {"tabulate": ">=0.9"}
+    assert body["has_frontend"] is True
+    assert body["chapters"] == ["C7"]
+    assert body["lessons"] == ["intro"]
+    assert body["consent_required"] is True
+    assert body["manifest"]["plugin"]["id"] == "extras"
+    # Both sentences, because they are two different decisions: browser code
+    # runs in the editor with everything the editor can reach, and an
+    # allowed module is the AST gate switched off by name.
+    assert FRONTEND_WARNING in body["warnings"]
+    assert ALLOWED_MODULES_WARNING.format(modules="requests") in body["warnings"]
+    # The repository is SPLIT on the inspection the service keeps, because
+    # ``download_tarball`` takes an owner and a repo. The wire contract does
+    # not carry it, and a response built by dumping the dataclass would.
+    assert "owner" not in body
+    assert "repo" not in body
+    # Read AT the sha, not at the ref: what the user is shown and what an
+    # install would fetch have to be the same commit.
+    assert fake_github.resolved == [("alice", "extras", "")]
+
+
+async def test_an_update_shows_the_difference_not_the_total(
+        client, fake_github):
+    """``demo-external`` is installed having been granted one capability and
+    one module; the repository now asks for more. What the user has to decide
+    about is the DELTA, so it travels in its own fields."""
+    fake_github.answers("""\
+[plugin]
+id = "demo-external"
+name = "Demo External"
+version = "3.0.0"
+schema_version = 1
+
+[security]
+capabilities = ["network", "filesystem"]
+allowed_modules = ["requests", "os"]
+""")
+
+    body = await inspected(client, "alice/extras")
+
+    assert body["mode"] == "update"
+    assert body["up_to_date"] is False
+    assert body["installed"] == {
+        "sha": "0" * 40, "version": "2.0.0", "capabilities": ["network"],
+        "trusted_modules": ["requests"], "enabled": True,
+        "source_kind": "github_url",
+    }
+    assert body["capabilities_added"] == ["filesystem"]
+    assert body["allowed_modules_added"] == ["os"]
+
+
+async def test_the_same_commit_that_is_installed_is_up_to_date(
+        client, fake_github):
+    fake_github.answers(a_manifest("demo-external"), sha="0" * 40)
+
+    body = await inspected(client, "alice/extras")
+
+    assert body["mode"] == "update"
+    assert body["up_to_date"] is True
+    assert body["capabilities_added"] == []
+
+
+@pytest.mark.parametrize("body", [
+    {},
+    {"source": ""},
+    {"source": "   "},
+    {"source": "alice/extras", "sha": "deadbeef"},
+    {"source": ["alice/extras"]},
+])
+async def test_a_request_the_schema_will_not_take_is_422(client, body):
+    """``extra="forbid"`` is what makes "the client cannot hand the server a
+    sha of its own" a property of the schema rather than of the handler."""
+    response = await client.post("/api/plugins/inspect", json=body)
+    assert response.status_code == 422, response.text
+
+
+async def test_a_pasted_source_arrives_trimmed(client, fake_github):
+    fake_github.answers(REPO_MANIFEST)
+    body = await inspected(client, "  alice/extras\n")
+    assert body["source"] == "alice/extras"
+
+
+async def test_a_name_the_catalog_does_not_have_offers_the_ones_it_does(
+        client):
+    """The user did type a name; what they cannot see is which names this
+    build has, so the refusal carries them."""
+    response = await client.post("/api/plugins/inspect",
+                                 json={"source": "no-such-pack"})
+    assert response.status_code == 400, response.text
+    detail = response.json()["detail"]
+
+    assert detail["code"] == "unknown_catalog_name"
+    assert "stats" in detail["known"]
+
+
+async def test_a_string_that_names_nothing_installable_is_unparseable(client):
+    response = await client.post(
+        "/api/plugins/inspect",
+        json={"source": "https://evil.example.com/alice/extras"})
+    assert response.status_code == 400, response.text
+    assert response.json()["detail"] == {"code": "unparseable_source"}
+
+
+async def test_a_manifest_this_build_will_not_install_is_a_400(
+        client, fake_github):
+    fake_github.answers('[plugin]\nid = "extras"\nschema_version = 99\n')
+
+    response = await client.post("/api/plugins/inspect",
+                                 json={"source": "alice/extras"})
+    assert response.status_code == 400, response.text
+    assert response.json()["detail"] == {"code": "invalid_manifest"}
+
+
+async def test_a_manifest_that_is_not_even_toml_is_a_400_not_a_500(
+        client, fake_github):
+    """A captive portal, a proxy's block page, or a repository whose manifest
+    somebody broke: the read never gets as far as validation."""
+    fake_github.answers("<!doctype html>\n<html>not a manifest</html>\n")
+
+    response = await client.post("/api/plugins/inspect",
+                                 json={"source": "alice/extras"})
+    assert response.status_code == 400, response.text
+    assert response.json()["detail"] == {"code": "invalid_manifest"}
+
+
+async def test_a_manifest_that_is_not_utf8_is_a_400_not_a_500(
+        client, fake_github):
+    """A repository whose ``cdui.plugin.toml`` is UTF-16, or a binary file
+    under that name. ``fetch_manifest_text`` lets the ``UnicodeDecodeError``
+    out on purpose, and it is a ``ValueError`` that is neither a
+    ``ManifestError`` nor a ``SourceError`` -- so this reached the client as
+    a crash until the route named it."""
+    fake_github.answers_bytes("[plugin]\nid = 'extras'\n".encode("utf-16"))
+
+    response = await client.post("/api/plugins/inspect",
+                                 json={"source": "alice/extras"})
+    assert response.status_code == 400, response.text
+    assert response.json()["detail"] == {"code": "invalid_manifest"}
+
+
+async def test_a_builtin_whose_manifest_is_gone_is_a_400_not_a_500(
+        client, tmp_path, monkeypatch):
+    """A release that shipped a catalog row and lost the directory behind it,
+    or a pack somebody deleted by hand. ``read_manifest`` raises
+    ``FileNotFoundError`` -- an ``OSError``, unrelated to every class the
+    other clauses catch -- and the disk saying the source is not there is the
+    same answer as a manifest that cannot be read."""
+    builtin_root = tmp_path / "builtin"
+    builtin_root.mkdir()
+    (builtin_root / "registry.json").write_text(
+        json.dumps({"schema": 1, "plugins": {"ghost": {
+            "kind": "builtin", "name": "Ghost", "path": "plugins/ghost"}}}),
+        encoding="utf-8")
+    monkeypatch.setattr(plugin_loader, "plugins_builtin_root",
+                        lambda: builtin_root)
+
+    response = await client.post("/api/plugins/inspect",
+                                 json={"source": "ghost"})
+    assert response.status_code == 400, response.text
+    assert response.json()["detail"] == {"code": "invalid_manifest"}
+
+
+async def test_an_id_this_build_owns_is_refused_with_the_id(
+        client, fake_github):
+    """``/api/plugins/catalog`` is a route, so no plugin may be called
+    ``catalog``. The panel has to say WHICH id clashed, and the exception
+    does not carry one -- this is what pins the route's reading of it."""
+    fake_github.answers(a_manifest("catalog"))
+
+    response = await client.post("/api/plugins/inspect",
+                                 json={"source": "alice/extras"})
+    assert response.status_code == 400, response.text
+    assert response.json()["detail"] == {"code": "reserved_id",
+                                         "id": "catalog"}
+
+
+async def test_a_catalog_row_too_broken_to_install_is_not_a_500(
+        client, monkeypatch):
+    """The name parses (the raw registry has it) and the validated catalog
+    does not: a row this build cannot install from. Named but unusable is
+    still the source's problem, not the server's."""
+    monkeypatch.setattr(catalog_module, "load_catalog",
+                        lambda: {"plugins": {"broken": {"kind": "builtin"}}})
+    monkeypatch.setattr(catalog_module, "catalog_entries", dict)
+
+    response = await client.post("/api/plugins/inspect",
+                                 json={"source": "broken"})
+    assert response.status_code == 400, response.text
+    assert response.json()["detail"] == {"code": "invalid_manifest"}
+
+
+@pytest.mark.parametrize("status, expected, code", [
+    (404, 404, "not_found"),
+    (403, 502, "github_rate_limited"),
+    (429, 502, "github_rate_limited"),
+    (500, 502, "github_unreachable"),
+    (None, 502, "github_unreachable"),
+])
+async def test_a_github_failure_is_split_by_what_it_means(
+        client, fake_github, status, expected, code):
+    """A typo is the caller's to fix and travels as a 404; everything else
+    happened between this server and GitHub, and "wait" and "check the
+    network" are different waits."""
+    fake_github.raises(GitHubError("no", status=status))
+
+    response = await client.post("/api/plugins/inspect",
+                                 json={"source": "alice/extras"})
+    assert response.status_code == expected, response.text
+    assert response.json()["detail"] == {"code": code}
+
+
+async def test_only_one_source_is_read_at_a_time(client, monkeypatch):
+    """Refused rather than queued: a panel that inspects per keystroke would
+    otherwise open a socket per keystroke, and an answer that arrives after
+    the person has typed something else answers nothing."""
+    sources = Sources()
+    monkeypatch.setattr(inspect_module, "inspect_source", sources)
+    sources.answer("alice/extras", inspect_module.inspect_builtin(
+        "stats", lockfile=plugin_loader.load_lockfile()))
+    sources.blocked.set()
+
+    first = asyncio.create_task(
+        client.post("/api/plugins/inspect", json={"source": "alice/extras"}))
+    deadline = time.monotonic() + 10.0
+    while not sources.entered.is_set():
+        assert time.monotonic() < deadline, "the inspection never started"
+        await asyncio.sleep(0.01)
+
+    refused = await client.post("/api/plugins/inspect",
+                                json={"source": "bob/other"})
+    assert refused.status_code == 409, refused.text
+    assert refused.json()["detail"] == {"code": "inspect_busy"}
+
+    sources.blocked.clear()
+    assert (await first).status_code == 200
+
+
+# -- POST /api/plugins/install ---------------------------------------------
+
+
+async def test_installing_runs_a_job_that_ends_by_reloading_the_editor(
+        client, flow, fake_github):
+    """The whole event order the panel is written against, with the registry
+    re-discovery as the last step -- on the loop, after the flow's thread and
+    before the terminal event, so ``job_done`` can say what is now in the
+    palette."""
+    fake_github.answers(a_manifest("extras"))
+
+    job_id = await start_install(client)
+    await wait_started(flow)
+    flow.send({"type": "step_started", "step": "download",
+               "label": "Downloading extras"})
+    flow.send({"type": "step_done", "step": "download"})
+    flow.finish()
+
+    events, status = await drain(client, job_id)
+
+    assert status == "done"
+    assert types_of(events) == ["job_started", "step_started", "step_done",
+                               "step_started", "step_done", "job_done"]
+    started = events[0]
+    assert started["plugin_id"] == "extras"
+    assert started["kind"] == "github"
+    assert started["mode"] == "install"
+    assert started["source"] == "alice/extras"
+    assert events[3]["step"] == "reload"
+    assert events[4]["step"] == "reload"
+    done = events[-1]
+    assert done["plugin_id"] == "extras"
+    assert done["sha"] == A_SHA
+    # Nothing was really installed, so nothing is in the palette -- but the
+    # keys are what a panel reads to know that without asking again.
+    assert done["nodes"] == []
+    assert done["generation"] == plugin_loader.reload_generation()
+
+
+async def test_a_failed_install_carries_its_message_and_its_hint(
+        client, flow, fake_github):
+    """And does NOT reload: the registry is rebuilt after a flow that
+    returned, never after one that raised."""
+    fake_github.answers(a_manifest("extras"))
+    job_id = await start_install(client)
+    await wait_started(flow)
+    flow.fail(PluginInstallError("extras was refused by the security scan.",
+                                 hint="nodes/evil.py imports os"))
+
+    events, status = await drain(client, job_id)
+
+    assert status == "failed"
+    assert types_of(events) == ["job_started", "job_failed"]
+    assert events[-1]["message"] == "extras was refused by the security scan."
+    assert events[-1]["hint"] == "nodes/evil.py imports os"
+
+
+async def test_an_install_that_cannot_finish_in_here_says_what_to_run(
+        client, flow, fake_github):
+    fake_github.answers(a_manifest("extras"))
+    job_id = await start_install(client)
+    await wait_started(flow)
+    flow.fail(PluginNeedsRestart(
+        "extras needs packages this server cannot install into itself.",
+        command="cdui plugin install alice/extras",
+        hint="uv could not resolve them add-only"))
+
+    events, status = await drain(client, job_id)
+
+    assert status == "needs_restart"
+    assert events[-1]["type"] == "needs_restart"
+    assert events[-1]["command"] == "cdui plugin install alice/extras"
+    assert events[-1]["hint"] == "uv could not resolve them add-only"
+
+
+@pytest.mark.parametrize("body", [
+    {},
+    {"inspection_id": "x", "sha": "deadbeef"},
+    {"inspection_id": "x", "accept_capabilities": True},
+    {"inspection_id": "x", "accept_capabilities": "network"},
+])
+async def test_an_install_body_the_schema_will_not_take_is_422(client, body):
+    """``accept_capabilities`` is a LIST, and ``true`` is not a shorter way
+    of saying it: a blanket yes cannot be checked against a manifest that has
+    since grown a capability."""
+    response = await client.post("/api/plugins/install", json=body)
+    assert response.status_code == 422, response.text
+
+
+async def test_a_capability_nobody_ticked_is_refused_with_the_list(
+        client, fake_github):
+    fake_github.answers(REPO_MANIFEST)
+    inspection = await inspected(client, "alice/extras")
+
+    response = await client.post(
+        "/api/plugins/install",
+        json={"inspection_id": inspection["inspection_id"]})
+
+    assert response.status_code == 400, response.text
+    assert response.json()["detail"] == {"code": "consent_required",
+                                         "missing_capabilities": ["network"]}
+
+
+async def test_trusting_the_author_is_a_second_question_with_its_own_answer(
+        client, fake_github):
+    """Ticking "network" is not agreeing to let the plugin import
+    ``requests``: the two are different decisions with different controls, so
+    they are different codes -- and ``TrustAuthorRequired`` is a
+    ``ConsentRequired``, which is why the route's catch order matters."""
+    fake_github.answers(REPO_MANIFEST)
+    inspection = await inspected(client, "alice/extras")
+
+    response = await client.post(
+        "/api/plugins/install",
+        json={"inspection_id": inspection["inspection_id"],
+              "accept_capabilities": ["network"]})
+
+    assert response.status_code == 400, response.text
+    assert response.json()["detail"] == {"code": "trust_author_required",
+                                         "allowed_modules": ["requests"]}
+
+
+async def test_both_halves_answered_starts_the_job(client, flow, fake_github):
+    fake_github.answers(REPO_MANIFEST)
+
+    job_id = await start_install(client, accept_capabilities=["network"],
+                                 trust_author=True)
+    await wait_started(flow)
+    flow.finish()
+    events, status = await drain(client, job_id)
+
+    assert status == "done"
+    # What consent decided, as the install itself sees it.
+    assert flow.plans[0].granted_capabilities == ("network",)
+    assert flow.plans[0].trust_author is True
+    assert types_of(events)[0] == "job_started"
+
+
+async def test_an_inspection_this_server_does_not_remember_is_a_404(client):
+    """Used, evicted or timed out are one answer, because the next move is
+    the same for all three: inspect the source again."""
+    response = await client.post("/api/plugins/install",
+                                 json={"inspection_id": "no-such-id"})
+
+    assert response.status_code == 404, response.text
+    assert response.json()["detail"] == {"code": "inspection_expired",
+                                         "inspection_id": "no-such-id"}
+
+
+async def test_an_inspection_is_spent_by_the_install_it_starts(
+        client, flow, fake_github):
+    """One consent screen cannot start two installs."""
+    fake_github.answers(a_manifest("extras"))
+    inspection = await inspected(client, "alice/extras")
+    body = {"inspection_id": inspection["inspection_id"]}
+
+    first = await client.post("/api/plugins/install", json=body)
+    assert first.status_code == 202, first.text
+    again = await client.post("/api/plugins/install", json=body)
+
+    assert again.status_code == 404, again.text
+    assert again.json()["detail"]["code"] == "inspection_expired"
+
+    flow.finish()
+    await drain(client, first.json()["job_id"])
+
+
+async def test_a_plugin_that_is_already_here_is_an_offer_not_a_job(
+        client, flow, fake_github):
+    """``demo-external`` is in the lockfile. Replacing it is a decision the
+    user makes, so the refusal names the plugin -- and leaves the inspection
+    spendable, which is what makes "Reinstall" one click rather than two."""
+    fake_github.answers(a_manifest("demo-external"))
+    inspection = await inspected(client, "alice/extras")
+    body = {"inspection_id": inspection["inspection_id"]}
+
+    refused = await client.post("/api/plugins/install", json=body)
+    assert refused.status_code == 409, refused.text
+    assert refused.json()["detail"] == {"code": "already_installed",
+                                        "plugin_id": "demo-external"}
+
+    forced = await client.post("/api/plugins/install",
+                               json={**body, "force": True})
+    assert forced.status_code == 202, forced.text
+    flow.finish()
+    await drain(client, forced.json()["job_id"])
+
+
+async def test_one_install_at_a_time_and_the_refusal_names_the_job(
+        client, flow, fake_github):
+    fake_github.answers(a_manifest("extras"))
+    job_id = await start_install(client)
+    await wait_started(flow)
+
+    fake_github.answers(a_manifest("other"))
+    second = await inspected(client, "bob/other")
+    refused = await client.post(
+        "/api/plugins/install",
+        json={"inspection_id": second["inspection_id"]})
+
+    assert refused.status_code == 409, refused.text
+    # No ``reason``: this is our own job, and the id is one the panel can
+    # follow rather than something to wait for.
+    assert refused.json()["detail"] == {"code": "busy", "job_id": job_id}
+
+    flow.finish()
+    await drain(client, job_id)
+
+
+async def test_a_pack_install_in_the_other_center_is_its_own_refusal(
+        client, plugin_service, fake_github, monkeypatch):
+    """They install into one interpreter, so each installer refuses while the
+    other is running -- and the code says whose job the id belongs to,
+    because "follow your install" and "wait for somebody else's" are
+    different offers."""
+    monkeypatch.setattr(plugin_service, "_busy_elsewhere", lambda: "pack-7")
+    fake_github.answers(a_manifest("extras"))
+    inspection = await inspected(client, "alice/extras")
+
+    refused = await client.post(
+        "/api/plugins/install",
+        json={"inspection_id": inspection["inspection_id"]})
+
+    assert refused.status_code == 409, refused.text
+    assert refused.json()["detail"] == {"code": "pack_install_running",
+                                        "job_id": "pack-7"}
+
+
+async def test_the_catalog_reports_the_job_a_second_tab_would_follow(
+        client, flow):
+    """A built-in install, so the row and the job are the same id: how a
+    panel opened mid-install finds what to follow and which row is busy."""
+    job_id = await start_install(client, "stats")
+    await wait_started(flow)
+
+    body = (await client.get("/api/plugins/catalog")).json()
+    by_id = {entry["id"]: entry for entry in body["entries"]}
+
+    # ``kind`` here is the job's MODE: what the panel decides between
+    # "installed" and "updated" with. A job's own kind is builtin/github.
+    assert body["active_job"] == {"job_id": job_id, "plugin_id": "stats",
+                                  "kind": "install", "status": "running",
+                                  "current_step": None}
+    assert by_id["stats"]["status"] == "installing"
+    assert by_id["stats"]["job"] == {"job_id": job_id, "status": "running",
+                                     "current_step": None}
+    assert by_id["foundations"]["job"] is None
+
+    flow.finish()
+    await drain(client, job_id)
+    # A FINISHED job is not what the panel calls active: a row still carrying
+    # one would spin until the next install.
+    assert (await client.get("/api/plugins/catalog")).json()["active_job"] is None
+
+
+# -- the job routes --------------------------------------------------------
+
+
+async def test_the_events_route_answers_at_once_when_nothing_is_waiting(
+        client, flow, fake_github):
+    """``wait=0`` is the poll a panel makes when it is not following: it must
+    not park, and an empty tail is a normal answer."""
+    fake_github.answers(a_manifest("extras"))
+    job_id = await start_install(client)
+    await wait_started(flow)
+
+    started_at = time.monotonic()
+    first = await client.get(f"/api/plugins/jobs/{job_id}/events",
+                             params={"cursor": 0, "wait": 0})
+    assert first.status_code == 200, first.text
+    page = first.json()
+    assert set(page) == {"job_id", "status", "events", "cursor"}
+    assert page["job_id"] == job_id
+    assert page["status"] == "running"
+    assert types_of(page["events"]) == ["job_started"]
+    assert page["cursor"] == 1
+
+    tail = await client.get(f"/api/plugins/jobs/{job_id}/events",
+                            params={"cursor": page["cursor"], "wait": 0})
+    assert tail.json()["events"] == []
+    assert tail.json()["cursor"] == page["cursor"], "the cursor moved backwards"
+    assert time.monotonic() - started_at < 3.0, "wait=0 parked"
+
+    flow.finish()
+    await drain(client, job_id)
+
+
+@pytest.mark.parametrize("params", [
+    {"wait": 61}, {"wait": -1}, {"cursor": -1}, {"limit": 0}, {"limit": 2001},
+])
+async def test_the_events_route_bounds_are_the_packs_route_bounds(
+        client, flow, fake_github, params):
+    """One panel draws both centers; a long poll that took a different range
+    on one of them would be a bug found only in the half nobody watches."""
+    fake_github.answers(a_manifest("extras"))
+    job_id = await start_install(client)
+    flow.finish()
+    await drain(client, job_id)
+
+    response = await client.get(f"/api/plugins/jobs/{job_id}/events",
+                                params=params)
+    assert response.status_code == 422, response.text
+
+
+async def test_a_job_this_server_never_had_is_a_404_on_both_job_routes(
+        client):
+    """Only the most recent job is kept, so "gone" and "never existed" are
+    the same answer -- and the client's next move is the same either way."""
+    events = await client.get("/api/plugins/jobs/nope/events")
+    assert events.status_code == 404, events.text
+    assert events.json()["detail"] == {"code": "unknown_job", "job_id": "nope"}
+
+    cancel = await client.post("/api/plugins/jobs/nope/cancel")
+    assert cancel.status_code == 404, cancel.text
+    assert cancel.json()["detail"] == {"code": "unknown_job", "job_id": "nope"}
+
+
+async def test_cancelling_ends_the_job_and_asking_twice_is_not_an_error(
+        client, flow, fake_github):
+    fake_github.answers(a_manifest("extras"))
+    job_id = await start_install(client)
+    await wait_started(flow)
+
+    first = await client.post(f"/api/plugins/jobs/{job_id}/cancel")
+    assert first.status_code == 200, first.text
+    assert first.json() == {"job_id": job_id, "cancelled": True}
+
+    events, status = await drain(client, job_id)
+    assert status == "cancelled"
+    assert types_of(events)[-1] == "job_cancelled"
+
+    again = await client.post(f"/api/plugins/jobs/{job_id}/cancel")
+    assert again.status_code == 200, again.text
+    assert again.json() == {"job_id": job_id, "cancelled": False}
+
+
+# -- what guards the install path ------------------------------------------
+
+#: Every route of the install path that CHANGES something, with a body the
+#: schema accepts. Deliberately not a walk of the router: ``/reload`` and
+#: ``/{id}/enable|disable`` are mutating too and are token-only on purpose,
+#: because they act on code this machine already has.
+MUTATING = [
+    ("POST", "/api/plugins/inspect", {"source": "stats"}),
+    ("POST", "/api/plugins/install", {"inspection_id": "no-such-id"}),
+    ("POST", "/api/plugins/jobs/no-such-job/cancel", None),
+]
+
+
+@pytest.mark.parametrize("method, path, body", MUTATING)
+async def test_every_route_that_installs_needs_the_session_token(
+        anon_client, method, path, body):
+    response = await anon_client.request(method, path, json=body)
+    assert response.status_code == 403, f"{method} {path}"
+    assert TOKEN_HEADER in response.json()["detail"]
+
+
+@pytest.mark.parametrize("method, path, body", MUTATING)
+async def test_a_remote_bind_may_not_install_unless_it_opts_in(
+        client, monkeypatch, method, path, body):
+    """A stranger on the LAN does not get to put third-party code where this
+    process will import it. A classroom or office server that deliberately
+    serves the LAN opts back in with one variable, which the refusal names."""
+    monkeypatch.setattr(settings, "HOST", "192.168.1.20")
+    monkeypatch.setattr(settings, "ALLOW_REMOTE_PLUGIN_INSTALL", False)
+
+    refused = await client.request(method, path, json=body)
+    assert refused.status_code == 403, f"{method} {path}"
+    assert refused.json()["detail"] == (
+        "Installing plugins is only allowed from the computer that runs the "
+        "server. Set CODEFYUI_ALLOW_REMOTE_PLUGIN_INSTALL=1 to override.")
+
+    monkeypatch.setattr(settings, "ALLOW_REMOTE_PLUGIN_INSTALL", True)
+    allowed = await client.request(method, path, json=body)
+    # Past the gate: whatever these ids and bodies deserve, not a 403.
+    assert allowed.status_code != 403, f"{method} {path}"
+
+
+@pytest.mark.parametrize("method, path, body", MUTATING + [
+    # The events route too, which is otherwise open: it is the Package
+    # Center's route body verbatim, and "this server has no installer" is a
+    # truer answer to a follower than "that job never existed".
+    ("GET", "/api/plugins/jobs/no-such-job/events", None),
+])
+async def test_a_server_with_no_installer_says_so_rather_than_guessing(
+        uninstalled_client, method, path, body):
+    response = await uninstalled_client.request(method, path, json=body)
+    assert response.status_code == 503, f"{method} {path}"
+    assert response.json()["detail"] == {"code": "unavailable"}
+
+
+def test_the_request_models_do_not_rename_another_routers_schema():
+    """Two routers with a model of the same name is not an error -- it is
+    worse. FastAPI falls back to the module-qualified component name for BOTH
+    of them, so declaring an ``InstallRequest`` here would quietly rename the
+    Package Center's in ``/docs`` and in every client generated from
+    ``/openapi.json``. The names are chosen so nothing moves."""
+    schemas = app.openapi()["components"]["schemas"]
+
+    assert "PluginInspectRequest" in schemas
+    assert "PluginInstallRequest" in schemas
+    assert "InstallRequest" in schemas, "the packs model was renamed"
+
+
+async def test_the_catalog_still_answers_without_an_installer(
+        uninstalled_client):
+    """The contrast that makes the 503 above a decision: ``/catalog`` is a
+    READ, and a server whose installer failed to start can still say what is
+    installed."""
+    response = await uninstalled_client.get("/api/plugins/catalog")
+    assert response.status_code == 200, response.text
+    assert response.json()["active_job"] is None
+    assert response.json()["entries"]

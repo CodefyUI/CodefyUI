@@ -53,6 +53,27 @@ received — each links to the release it was published as.
   session token every other mutating call needs; reading is open, like every
   other read in the app.
 
+- **The Plugin Center can read a plugin before you install it, and then
+  install it.** Four routes, and the shape of them is the point: `POST
+  /api/plugins/inspect` reads one source — a catalog name, an `owner/repo`,
+  a URL — and answers with everything a person needs in order to decide,
+  read from the manifest at ONE resolved commit and not from the repository
+  it lives in. What the plugin is, what it would add to your Python
+  environment, which capabilities it declares, which modules it asks to have
+  the security scan turned off for, whether it ships JavaScript that will run
+  in your editor, and — the half only this install can answer — whether you
+  already have it, and what is new since the version you agreed to last time.
+  `POST /api/plugins/install` then installs the manifest that was inspected,
+  at that same commit: consent to a manifest that is not the manifest being
+  installed is not consent, so a tarball that grew a capability, changed its
+  id, or added a module to its allowlist between the two is refused rather
+  than installed. `GET /api/plugins/jobs/{id}/events` follows the install
+  step by step with a download bar, and `POST /api/plugins/jobs/{id}/cancel`
+  stops one, cleanly enough that nothing half-written is left behind.
+  Installing needs the session token and, unless a lab server deliberately
+  opts out, the browser to be on the machine running the server; following an
+  install is open, like the Package Center's.
+
 - **`GET /api/plugins/catalog` — everything you can install and everything
   you have installed, in one listing.** The read half of the Plugin Center.
   Two documents that do not know about each other answer half the question
@@ -97,6 +118,38 @@ received — each links to the release it was published as.
   lab server opts back in with `CODEFYUI_ALLOW_REMOTE_PLUGIN_INSTALL=1`.
 
 ### Changed
+
+- **`cdui plugin install` shows you the plugin before it downloads it, and
+  installs it the same way the panel does.** The command used to fetch the
+  whole repository, unpack it, and only then print what it asks for, ask
+  whether that was acceptable, and notice that the plugin was already
+  installed or that its id is one this build reserves. Now the manifest is
+  read first — one small file, at the commit the install would use — and
+  everything that can be decided from the manifest refuses the install there,
+  before a byte of the repository moves. (Two refusals still cannot be: the
+  security scan reads the code, and the check that the downloaded manifest is
+  the one you agreed to needs the download to compare against.) What follows
+  is exactly the install the Plugin Center runs: one implementation, so the
+  console and the panel cannot come to disagree about what an install does or
+  what a failure is called. One consequence to know about: "already
+  installed" is now decided by your lockfile rather than by whether the
+  directory is there, so re-installing over a plugin whose files were deleted,
+  or over one you have linked with `cdui plugin link`, asks for `--force`
+  where it used to go ahead silently. Installing a built-in pack also records
+  which catalog entry it came from.
+
+- **A plugin's Python packages install add-only, and say so when they
+  cannot.** They now go through the Package Center's constraints file, which
+  pins every package the running server has already loaded — so a plugin
+  asking for `numpy<2` can no longer quietly downgrade the numpy your session
+  is holding open, under a learner who only wanted one more node. When the
+  resolver says that cannot be done, the answer is not "the plugin is broken"
+  but "not while the server is running", and the exact command to run with it
+  stopped is printed. `cdui plugin install` exits 3 for that — its own code,
+  because retrying it will fail the same way until the server stops — and 130
+  for a Ctrl-C, which now stops the install cleanly rather than leaving a
+  half-written download behind. `cdui plugin link` installs a linked plugin's
+  packages by the same rules.
 
 - **The plugin rules the CLI owned now live in the backend.** What a manifest
   may say, what `owner/repo@ref` means, which packs the catalog ships, which

@@ -591,6 +591,49 @@ async def test_an_unknown_item_id_is_a_value_error():
     assert service.current_job() is None
 
 
+async def test_an_install_running_in_the_other_center_is_refused():
+    """One interpreter, two installers, and only one of them may write.
+
+    A pack install and a plugin install both run ``uv pip install`` into the
+    same site-packages under the same constraints freeze; two at once end in
+    a corrupt environment or a deadlock, exactly as two pack installs would.
+    The other service's job is INJECTED for the same reason ``runs_active``
+    is -- the answer belongs to it, and this class must not hold it to ask.
+
+    The refusal is this domain's own (``PackBusy``, so the route maps it
+    without learning a new type), and ``reason`` is what tells a panel it is
+    about to offer Follow on somebody else's job.
+    """
+    flow = ScriptedFlow()
+    service = PackService(run_flow=flow,
+                          busy_elsewhere=lambda: "plugin-job-1")
+
+    with pytest.raises(PackBusy) as excinfo:
+        await service.submit_install(get_pack(SENTENCE), [], mode="live",
+                                     variant=None)
+    assert excinfo.value.job_id == "plugin-job-1"
+    assert excinfo.value.reason == "plugin_install_running"
+    assert "plugin install" in str(excinfo.value), (
+        "the sentence a user reads must name the install that is actually "
+        "running, not this service's own kind")
+    # Refused before anything was claimed: no job, no events, nothing to
+    # clean up, and the next submit is not refused as busy.
+    assert service.current_job() is None
+    assert not flow.started.is_set()
+
+
+async def test_nothing_running_elsewhere_leaves_the_install_alone():
+    """The default answer, and the one every existing caller gives."""
+    flow = ScriptedFlow().script({"type": "log", "line": "one"})
+    service = PackService(run_flow=flow, busy_elsewhere=lambda: None)
+    job = await service.submit_install(get_pack(SENTENCE), [], mode="live",
+                                       variant=None)
+    events, status = await drain(service, job.job_id)
+
+    assert status == "done"
+    assert types_of(events) == ["job_started", "log", "job_done"]
+
+
 # ── the restart handshake ─────────────────────────────────────────────────
 
 
@@ -763,6 +806,55 @@ async def test_a_live_install_that_lands_during_the_probe_beats_the_restart(
     flow.finish()
     events, status = await drain(service, live.job_id)
     assert status == "done", "the install the user was already watching"
+
+
+async def test_a_plugin_install_that_lands_during_the_probe_stops_the_restart(
+        monkeypatch, available):
+    """The same re-check, for the install this service cannot see coming.
+
+    ``install_command_for`` runs on a thread, and every suspension point is a
+    chance for another request to land. The one that lands here is a PLUGIN
+    install: pip writing into the interpreter this method is about to stop.
+    So the other service is asked again on the far side of the await, and the
+    restart is refused rather than the install that is already running.
+    """
+    probing = threading.Event()
+    release = threading.Event()
+    real_command = restart.install_command_for
+    elsewhere: list[str] = []
+
+    def _parked(pack, variant=None):
+        probing.set()
+        assert release.wait(10), "the probe was never released"
+        return real_command(pack, variant)
+
+    monkeypatch.setattr(restart, "install_command_for", _parked)
+    monkeypatch.setattr(restart, "spawn_helper", lambda path: pytest.fail(
+        "a helper was started while a plugin install was running"))
+    monkeypatch.setattr(restart, "schedule_self_shutdown",
+                        lambda loop, delay=0.5: pytest.fail(
+                            "the server was stopped out from under a plugin "
+                            "install"))
+    service = PackService(
+        run_flow=ScriptedFlow(),
+        busy_elsewhere=lambda: elsewhere[0] if elsewhere else None)
+
+    restarting = asyncio.create_task(service.submit_install(
+        get_pack("gpu-torch"), None, mode="restart", variant="cu128"))
+    while not probing.is_set():
+        await asyncio.sleep(0.01)   # parked on its own thread, loop free
+
+    elsewhere.append("plugin-job-2")
+    release.set()
+
+    with pytest.raises(PackBusy) as excinfo:
+        await restarting
+    assert excinfo.value.job_id == "plugin-job-2", (
+        "the refusal has to name the job that is actually running")
+    assert excinfo.value.reason == "plugin_install_running"
+    assert not pending_restart_file().exists(), (
+        "a claim was written over a plugin install")
+    assert service.current_job() is None
 
 
 async def test_a_spawn_that_fails_withdraws_the_claim_and_starts_no_job(

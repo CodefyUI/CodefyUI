@@ -422,6 +422,41 @@ async def test_one_job_at_a_time_409(client, flow):
     await drain(client, job_id)
 
 
+async def test_the_busy_409_says_whose_install_it_is(client, pack_service,
+                                                     flow, monkeypatch):
+    """One status code, two refusals, and a body that stays flat for both.
+
+    A pack install running HERE answers exactly what it always has -- two
+    keys -- because every client already reads that shape and a null
+    ``reason`` added to it would be a change for the benefit of none. A
+    PLUGIN install running in the other service answers the same 409 plus
+    ``reason``, at the TOP level: pack error bodies carry no ``code`` key
+    anywhere in this router, and the panel reads ``job_id``/``reason`` off
+    the body itself.
+
+    The other service is injected into ``PackService`` at construction (that
+    seam is covered in ``test_packs_service.py``); here it is reached
+    directly, because what is under test is the response and not the wiring.
+    """
+    job_id = await start_install(client)
+    await wait_started(flow)
+    mine = await client.post("/api/packs/word-vectors/install", json={})
+    assert mine.status_code == 409
+    assert set(mine.json()) == {"detail", "job_id"}
+    flow.finish()
+    await drain(client, job_id)
+
+    monkeypatch.setattr(pack_service, "_busy_elsewhere",
+                        lambda: "plugin-job-9")
+    theirs = await client.post(f"/api/packs/{SENTENCE}/install", json={})
+    assert theirs.status_code == 409
+    body = theirs.json()
+    assert set(body) == {"detail", "job_id", "reason"}
+    assert body["job_id"] == "plugin-job-9"
+    assert body["reason"] == "plugin_install_running"
+    assert "plugin install" in body["detail"]
+
+
 async def test_insufficient_disk_is_507(client, monkeypatch):
     def _no_room(items):
         raise PackInsufficientDisk("not enough free disk space: 700 MB needed",

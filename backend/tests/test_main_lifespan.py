@@ -134,3 +134,17 @@ async def test_lifespan_clears_a_stale_pending_and_wires_runs_active(
                 main_mod.app.state.run_service = previous
             assert excinfo.value.reason == "a graph is running"
             assert not pending.exists(), "a refusal wrote a claim"
+
+
+def test_no_installer_is_no_job_rather_than_an_attribute_error():
+    """The shutdown window, and the first moment of startup.
+
+    ``_installer_job_id`` is what each of the two package installers is
+    handed as its ``busy_elsewhere``, read through ``app.state`` at CALL
+    time -- so it is asked with ``None`` twice in every process's life: while
+    the first service is being built and the second does not exist yet, and
+    on the way down, where one is cleared while the other may still be
+    unwinding. "There is no other installer" has to answer "no job", not
+    raise into whichever install is running at the time.
+    """
+    assert main_mod._installer_job_id(None) is None

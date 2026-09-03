@@ -244,13 +244,31 @@ def _tarball_of(root_name: str, files: dict[str, str], dest: Path) -> None:
 
 @pytest.fixture
 def fake_github(monkeypatch):
-    """Serve a synthetic tarball instead of reaching GitHub."""
+    """Serve a synthetic tarball instead of reaching GitHub.
+
+    Three names, in two modules, because an install reads GitHub twice. The
+    ref and the manifest are read by ``inspect_github`` -- the half that
+    happens BEFORE the download, so the user can be shown what they are
+    agreeing to -- and it lives in ``app.core.plugins.github``. The tarball
+    is still fetched through ``plugin_cli.download_tarball``: the flow takes a
+    GitHub client and the CLI hands over its own module, which is what keeps
+    this patch load-bearing. ``**_kw`` absorbs the ``cancel_check`` and
+    ``progress`` keywords the flow passes.
+    """
     def _make(files: dict[str, str]) -> None:
-        monkeypatch.setattr(plugin_cli, "resolve_sha", lambda o, r, ref: "0" * 40)
+        monkeypatch.setattr(
+            "app.core.plugins.github.resolve_sha", lambda o, r, ref: "0" * 40
+        )
+        monkeypatch.setattr(
+            "app.core.plugins.github.fetch_manifest_text",
+            lambda o, r, sha: files["cdui.plugin.toml"],
+        )
         monkeypatch.setattr(
             plugin_cli,
             "download_tarball",
-            lambda owner, repo, sha, dest: _tarball_of(f"{repo}-main", files, dest),
+            lambda owner, repo, sha, dest, **_kw: _tarball_of(
+                f"{repo}-main", files, dest
+            ),
         )
 
     return _make
@@ -492,9 +510,25 @@ def test_a_download_that_fails_is_reported_rather_than_raised(
     No tarball is served: the point is the failure. The install has to end at
     the same "Download failed" line and the same exit code either way, with
     nothing written to the lockfile.
+
+    The ref and the manifest are served through ``app.core.plugins.github``
+    because that is where the inspection reads them, and the inspection is
+    what has to SUCCEED here for the download to be reached at all.
     """
     monkeypatch.setenv("CODEFYUI_LANG", "en")
-    monkeypatch.setattr(plugin_cli, "resolve_sha", lambda o, r, ref: "0" * 40)
+    monkeypatch.setattr(
+        "app.core.plugins.github.resolve_sha", lambda o, r, ref: "0" * 40
+    )
+    monkeypatch.setattr(
+        "app.core.plugins.github.fetch_manifest_text",
+        lambda o, r, sha: dedent("""\
+            [plugin]
+            id = "extras"
+            name = "Extras"
+            version = "0.1.0"
+            schema_version = 1
+            """),
+    )
 
     def _fail(owner, repo, sha, dest, **kwargs):
         raise failure

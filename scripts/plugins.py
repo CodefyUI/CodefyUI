@@ -16,19 +16,38 @@ nothing is copied. Third-party packs are downloaded to
 The lockfile at ``<USER_DATA>/plugins/installed.json`` tracks every
 install: source kind, SHA pin (for URL packs), declared manifest, and
 which ``security.allowed_modules`` the user accepted.
+
+Installing itself is NOT written here. ``cdui plugin install`` and the
+Plugin Center in the browser are two front ends over one function,
+``app.core.plugins.flows.install_plugin_live``, so the order of an install,
+what counts as a failure and what a failure is called are decided once and
+both get the same answers. What stays in this file is the conversation: the
+preview a person reads before agreeing, the prompts, and turning the flow's
+events into lines on a console and its exceptions into exit codes.
+
+Exit codes, because scripts and CI read them:
+
+* 0   -- done, or you declined "Proceed?"
+* 1   -- the install failed, or a capability / module-list request was
+         refused
+* 2   -- refused before anything ran: an unparseable source, or no source
+* 3   -- the plugin's Python packages cannot be installed while the server
+         is running; the command to type instead is printed
+* 130 -- cancelled with Ctrl-C, the shell convention for SIGINT
 """
 
 from __future__ import annotations
 
 import argparse
+import contextlib
 import os
-import shutil
-import subprocess
+import re
+import signal
 import sys
-import tarfile
-import tempfile
+import threading
 import time
 import urllib.request
+from collections.abc import Callable, Iterator
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -51,13 +70,18 @@ from app.core.plugin_loader import (
 from app.core.plugins import catalog as core_catalog
 from app.core.plugins import consent as core_consent
 from app.core.plugins import deps as core_deps
+from app.core.plugins import flows as core_flows
 from app.core.plugins import github as core_github
+from app.core.plugins import inspect as core_inspect
 from app.core.plugins import lifecycle as core_lifecycle
 from app.core.plugins import sources as core_sources
 from app.core.plugins.errors import (
+    AlreadyInstalled,
     ConsentRequired,
     GitHubError,
+    PluginCancelled,
     PluginInstallError,
+    PluginNeedsRestart,
     UnknownCatalogName,
     UnparseableSource,
 )
@@ -69,10 +93,10 @@ from app.core.plugins.errors import (
 from app.core.plugins.gate import (
     LOADER_SUFFIXES as LOADER_SUFFIXES,
     SCANNABLE_SUFFIXES as SCANNABLE_SUFFIXES,
-    PluginValidationError,
+    PluginValidationError as PluginValidationError,
     loader_suffix as loader_suffix,
     validate_nodes_dir as validate_nodes_dir,
-    validate_plugin_dir,
+    validate_plugin_dir as validate_plugin_dir,
 )
 from app.core.plugins.manifest import (
     PLUGIN_ID_RE,
@@ -173,6 +197,41 @@ def err(zh: str, en: str) -> None:
 
 def ok(zh: str, en: str) -> None:
     print(f"  {GREEN}{MARK_OK} {t(zh, en)}{RESET}")
+
+
+def raw_err(message: str) -> None:
+    """Report a message that is already written.
+
+    An install failure comes out of ``app.core.plugins`` carrying its own
+    words, and translating them here would put the installer's vocabulary in
+    two places -- which is the whole thing the shared flow removes.
+    """
+    print(f"  {RED}{MARK_ERR} {message}{RESET}", file=sys.stderr)
+
+
+def _print_hint(hint: str | None) -> None:
+    """The operator-facing tail of a failure -- what to paste into an issue.
+
+    Separate from the message on purpose: the message is one line a learner
+    reads, and the hint is uv's output or the security gate's file-by-file
+    verdict, which is the half a maintainer needs and the half nobody wants
+    in the middle of a sentence.
+    """
+    if not hint:
+        return
+    for line in str(hint).splitlines():
+        if line.strip():
+            print(f"      {DIM}{line}{RESET}", file=sys.stderr)
+
+
+def _mb(num_bytes: int | float | None) -> str:
+    """Bytes as megabytes, the way the rest of the app counts them.
+
+    Decimal MB -- the number on a download page, not the one in Explorer.
+    Copied from ``scripts/packs.py`` beside the progress bar that reads it,
+    so the two commands render one download the same way.
+    """
+    return f"{(num_bytes or 0) / 1_000_000:.1f}"
 
 
 # ── declared capabilities (core#133) ───────────────────────────────────────
@@ -349,11 +408,18 @@ def parse_source(spec: str) -> tuple[str, str, str, str]:
 # Plain re-exports, not wrappers: the request rules (the token header, the two
 # shapes of failure, the size cap) live in ``app.core.plugins.github`` so the
 # server obeys them too. These three keep their names here because they are
-# READ here: the two functions through this module's own attributes, so that
-# the install tests replace what ``_install_github`` calls by patching
-# ``plugins.resolve_sha``, and ``USER_AGENT`` by ``_backend_reload`` and by
-# ``scripts/project.py``. Anything else in that module is reached through
-# ``core_github``: a re-export nobody reads is a second name for one rule.
+# READ here. ``USER_AGENT`` by ``_backend_reload`` and by ``scripts/project.py``;
+# ``resolve_sha`` by ``cmd_info`` and ``cmd_update``, which ask what a ref points
+# at without inspecting or installing anything.
+#
+# ``download_tarball`` is the one the INSTALL still reaches through this
+# module's own attribute, and it does so from the other end: the flow takes a
+# GitHub client (``install_plugin_live(..., github=...)``) and this module hands
+# over itself, so replacing ``plugins.download_tarball`` replaces what an
+# install fetches -- which is what keeps a test offline. The other half of an
+# install's network use, the manifest read that happens BEFORE the download,
+# belongs to ``inspect_github`` and goes through ``app.core.plugins.github``:
+# one commit, read once, by whoever is asking.
 
 USER_AGENT = core_github.USER_AGENT
 resolve_sha = core_github.resolve_sha
@@ -445,38 +511,412 @@ def _backend_reload() -> bool:
         return False
 
 
+# ── one install, rendered on a console ─────────────────────────────────────
+#
+# ``app.core.plugins.flows.install_plugin_live`` runs the install and says
+# what it is doing through an ``emit`` callback; everything below turns that
+# into terminal output, a Ctrl-C the flow can act on, and an exit code. The
+# same three pieces exist in ``scripts/packs.py`` over the other installer,
+# and ``_ConsoleReporter`` is deliberately the same class: one download drawn
+# two ways would be two bugs waiting to differ.
+
+
+class _ConsoleReporter:
+    """Turns install events into terminal output.
+
+    Progress redraws ONE line (carriage return) instead of scrolling: a 470 MB
+    download emits a frame every few hundred milliseconds, and a thousand
+    lines of bar would bury the log lines that matter. Everything else prints
+    normally, and any open bar is closed first so the two never collide.
+    """
+
+    BAR_WIDTH = 10
+
+    def __init__(self) -> None:
+        self._open = False
+        self._width = 0
+
+    def __call__(self, payload: dict) -> None:
+        kind = payload.get("type")
+        if kind == "progress":
+            self._progress(payload)
+            return
+        self.close()
+        if kind == "step_started":
+            print(f"  {payload.get('label') or payload.get('step') or ''}")
+        elif kind == "log":
+            line = str(payload.get("line", "")).rstrip()
+            if line:
+                print(f"      {DIM}{line}{RESET}")
+        # step_done needs no line of its own: closing the bar above is what
+        # it means on a console.
+
+    def close(self) -> None:
+        """End the current progress line, if there is one."""
+        if self._open:
+            sys.stdout.write("\n")
+            sys.stdout.flush()
+            self._open = False
+            self._width = 0
+
+    def _progress(self, payload: dict) -> None:
+        done = payload.get("bytes_done") or 0
+        total = payload.get("bytes_total") or 0
+        percent = payload.get("percent")
+        if percent is None and total:
+            percent = 100.0 * done / total
+
+        if percent is None:
+            bar = "?" * self.BAR_WIDTH
+            pct = "  ?%"
+        else:
+            clamped = max(0.0, min(100.0, float(percent)))
+            filled = int(round(self.BAR_WIDTH * clamped / 100.0))
+            bar = "#" * filled + "." * (self.BAR_WIDTH - filled)
+            pct = f"{clamped:>3.0f}%"
+
+        # A frame that describes itself is not counting bytes. The GloVe
+        # conversion counts LINES, and rendering 400,000 of those as
+        # "0.4/0.4 MB" is not a rounding error -- it is a different quantity
+        # with somebody else's unit on it. Such a frame gets its own words,
+        # and only a frame without them gets the megabytes.
+        text = str(payload.get("text") or "").strip()
+        if text:
+            tail = text
+        else:
+            sizes = (f"{_mb(done)}/{_mb(total)} MB" if total
+                     else f"{_mb(done)} MB")
+            tail = f"{sizes} {payload.get('item') or ''}"
+        line = f"    [{bar}] {pct} {tail}".rstrip()
+        # Pad to the previous width: a carriage return moves the cursor back
+        # but leaves whatever was longer on the line behind it.
+        sys.stdout.write("\r" + line + " " * max(0, self._width - len(line)))
+        sys.stdout.flush()
+        self._width = len(line)
+        self._open = True
+
+
+@contextlib.contextmanager
+def _cancel_on_sigint(
+    reporter: _ConsoleReporter,
+) -> Iterator[Callable[[], bool]]:
+    """Make Ctrl-C something the install can act on, and put SIGINT back after.
+
+    Yields the ``cancel_check`` the flow polls. The handler SETS A FLAG and
+    never raises: the flow checks it between its steps and inside the
+    download and the pip run, and unwinds through its own cancellation path,
+    which removes the half-written download and the staging copy. A
+    ``KeyboardInterrupt`` thrown out of the handler would skip all of that
+    and print a traceback where "Cancelled" belongs.
+
+    A :class:`threading.Event` rather than a plain flag because the flag is
+    written by a signal handler and read by the install; the Event is the
+    one that says so.
+
+    The previous handler is restored whatever happens, so a ``cdui plugin
+    sync`` installing five packs does not end up with five nested handlers,
+    and a Ctrl-C after the last one behaves the way it did before the first.
+    Installing it can fail -- a non-main thread, a platform without SIGINT --
+    and that is not an error: Ctrl-C simply keeps whatever behaviour it
+    already had.
+    """
+    cancelled = threading.Event()
+
+    def _on_sigint(signum, frame) -> None:
+        cancelled.set()
+        # End the progress line first: this fires mid-download, and the
+        # message would otherwise land on top of the bar.
+        reporter.close()
+        warn(
+            "正在取消……（等目前的步驟收尾）",
+            "Cancelling... (finishing the current step)",
+        )
+
+    previous = None
+    owns_sigint = False
+    try:
+        previous = signal.signal(signal.SIGINT, _on_sigint)
+        owns_sigint = True
+    except (AttributeError, OSError, ValueError):
+        pass
+
+    try:
+        yield cancelled.is_set
+    finally:
+        if owns_sigint:
+            signal.signal(
+                signal.SIGINT,
+                previous if previous is not None else signal.SIG_DFL,
+            )
+
+
+def _report_needs_restart(exc: PluginNeedsRestart) -> int:
+    """Say that this cannot be done here, and what to type instead. Exit 3.
+
+    Its own exit code because it is not a failed install: nothing is wrong
+    with the plugin, and re-running the same command will fail the same way
+    until the server is stopped. A script that retries on 1 would retry this
+    forever.
+    """
+    raw_err(str(exc))
+    info(
+        f"請先停止伺服器，再執行：{exc.command}",
+        f"Stop the server, then run: {exc.command}",
+    )
+    _print_hint(exc.hint)
+    return 3
+
+
+#: The step whose failures do not name themselves. ``download_tarball``
+#: raises GitHub's own words ("Not Found"), which say nothing about what was
+#: being fetched; every other step raises a whole sentence, and prefixing
+#: those would say "Extraction failed: <file> could not be unpacked."
+_DOWNLOAD_STEP = "download"
+
+
+def _run_install_flow(
+    plan: core_flows.InstallPlan,
+) -> tuple[int, core_flows.InstallOutcome | None]:
+    """Run *plan* through the one install path. Returns ``(exit code, outcome)``.
+
+    Every way an install can end is answered here, once, for both kinds of
+    source -- which is the point of the flow being shared: the console and
+    the Plugin Center refuse the same things for the same reasons, and only
+    the rendering differs.
+    """
+    reporter = _ConsoleReporter()
+    # Which step is running, for the one failure whose message needs the
+    # context. Tracked out here rather than inside the reporter so that class
+    # stays byte-identical to the Package Center's.
+    step = ""
+
+    def emit(payload: dict) -> None:
+        nonlocal step
+        if payload.get("type") == "step_started":
+            step = str(payload.get("step") or "")
+        reporter(payload)
+
+    try:
+        with _cancel_on_sigint(reporter) as cancel_check:
+            outcome = core_flows.install_plugin_live(
+                plan,
+                emit=emit,
+                cancel_check=cancel_check,
+                # This module, as the GitHub client. ``download_tarball`` is
+                # re-exported here precisely so a test can replace it, and a
+                # flow reaching past that would leave the patch pointing at a
+                # name nothing calls -- a suite that passes while downloading
+                # from the real internet.
+                github=sys.modules[__name__],
+            )
+    except PluginCancelled:
+        reporter.close()
+        warn("已取消（沒有安裝任何東西）", "Cancelled (nothing was installed)")
+        return (130, None)
+    except PluginNeedsRestart as exc:
+        reporter.close()
+        return (_report_needs_restart(exc), None)
+    except AlreadyInstalled as exc:
+        reporter.close()
+        err(
+            f"外掛 {exc.plugin_id} 已安裝。加 --force 重新安裝。",
+            f"Plugin '{exc.plugin_id}' already installed. Use --force to overwrite.",
+        )
+        return (1, None)
+    except (PluginInstallError, GitHubError, OSError) as exc:
+        reporter.close()
+        if step == _DOWNLOAD_STEP:
+            err(f"下載失敗：{exc}", f"Download failed: {exc}")
+        else:
+            raw_err(str(exc))
+        _print_hint(getattr(exc, "hint", None))
+        return (1, None)
+    finally:
+        reporter.close()
+
+    if outcome.tombstone_cleared:
+        # Said out loud rather than silently, because the state it clears is
+        # invisible: nothing else would tell the user that `cdui plugin sync`
+        # has started counting this pack again (#175).
+        info(
+            f"已清除先前的移除記錄（cdui plugin sync 之後會把 "
+            f"{outcome.plugin_id} 一併納入）",
+            f"Cleared the earlier uninstall record — `cdui plugin sync` counts "
+            f"{outcome.plugin_id} again from now on",
+        )
+    return (0, outcome)
+
+
+def _report_reload() -> None:
+    """Ask the running server to pick the plugin up, and say what happened.
+
+    Not a step of the install: the flow finishes on disk, and whether a
+    server happens to be running is a separate question with its own answer
+    ("next `cdui start` will pick this up") rather than a failure.
+    """
+    if _backend_reload():
+        ok("熱重載完成", "Hot-reloaded backend")
+    else:
+        info(
+            "伺服器未運行，下次 cdui start 會自動載入",
+            "Server not running; next `cdui start` will pick this up.",
+        )
+
+
+def _print_python_deps(found: core_inspect.Inspection) -> None:
+    """Name the Python packages this install would add to the venv.
+
+    Read off the manifest at the commit being inspected, so it is printed
+    before anything is fetched -- somebody on a metered connection or a
+    locked-down machine is entitled to know that agreeing to a plugin also
+    means agreeing to ``uv pip install``.
+    """
+    if not found.python_deps:
+        return
+    # Both halves are the manifest author's, and this prints on the consent
+    # screen: a spec is `name` + `spec` concatenated, so a version constraint
+    # carrying an escape sequence redraws the question just as a description
+    # would. Cleaned per spec rather than after the join, so one hostile
+    # entry cannot eat the comma that separates it from the next.
+    listed = ", ".join(
+        _plain(f"{name}{spec}" if spec else name, limit=80)
+        for name, spec in found.python_deps.items()
+    )
+    info(f"Python 套件：{listed}", f"Python packages: {listed}")
+
+
+#: Everything a terminal ACTS on instead of showing: the C0 range (escape,
+#: carriage return, newline, backspace), DEL, and the C1 range a UTF-8
+#: terminal decodes as its own control codes.
+_CONTROL_RUN = re.compile(r"[\x00-\x1f\x7f-\x9f]+")
+_WHITESPACE_RUN = re.compile(r"\s+")
+
+
+def _plain(text: object, limit: int = 200) -> str:
+    """One line of somebody else's text, with nothing a terminal obeys left in.
+
+    ``name``, ``version`` and ``description`` are written by whoever wrote
+    the plugin, and they are printed on the screen a person reads BEFORE
+    agreeing to install it. A description carrying ESC-bracket-2-J does not
+    describe a plugin: it clears the consent screen. A bare carriage return
+    redraws the line above it. Either way the answer somebody gives is an
+    answer about text that is no longer on the screen -- which is the whole
+    of what the preview is for.
+
+    A run of control characters becomes ONE space rather than nothing, so a
+    description written over two lines does not run its words together. The
+    result is capped as well: a "description" the height of the terminal
+    scrolls the preview away just as effectively as an escape sequence does.
+    """
+    if not isinstance(text, str):
+        return ""
+    cleaned = _WHITESPACE_RUN.sub(" ", _CONTROL_RUN.sub(" ", text)).strip()
+    if len(cleaned) <= limit:
+        return cleaned
+    return cleaned[:limit].rstrip() + "..."
+
+
+def _print_preview(found: core_inspect.Inspection) -> None:
+    """Say what this plugin IS, before a byte of it is downloaded.
+
+    The whole reason the manifest is read from ``raw.githubusercontent.com``
+    at a pinned commit: "install this?" is a question nobody can answer from
+    an ``owner/repo``, and the CLI used to ask it with nothing on the screen
+    but a URL -- then fetch the repository, and only afterwards print what it
+    had just spent a minute downloading.
+
+    The capability request is deliberately NOT here. It is a decision rather
+    than a description, :func:`capability_gate` owns the conversation, and
+    listing the names twice would put the same fact on the screen in two
+    voices.
+
+    Every string on this screen is the author's -- the name, the version, the
+    description, the module names it asks the gate to be turned off for, and
+    the package specs it would install -- so every one of them goes through
+    :func:`_plain` first. This is the one screen where text that can redraw
+    itself would be redrawing the question.
+    """
+    name = _plain(found.name)
+    version = _plain(found.version)
+    version = f" {version}" if version else ""
+    description = _plain(found.description)
+    print(f"  {BOLD}{name}{version}{RESET}")
+    if description:
+        info(description, description)
+    if found.allowed_modules:
+        # A module name is author-written too, and this is the line that asks
+        # for the AST gate to be switched off -- the last one on the screen
+        # that should be able to rewrite itself.
+        asked = ", ".join(
+            _plain(module, limit=80) for module in found.allowed_modules
+        )
+        warn(
+            f"此外掛要求關閉白名單以匯入：{asked}（需要 --trust-author）",
+            f"This plugin asks to import, outside the allowlist: {asked} "
+            f"(needs --trust-author)",
+        )
+    _print_python_deps(found)
+    if found.has_frontend:
+        warn(
+            "此外掛包含前端 UI 程式碼（JavaScript），安裝後將在您的瀏覽器中"
+            "以完整編輯器存取權限執行。請僅安裝您信任的外掛。",
+            "This plugin ships frontend UI code (JavaScript). After install it"
+            " runs in your browser inside CodefyUI with full editor access."
+            " Only install plugins you trust.",
+        )
+
+
 def _install_deps(deps: dict[str, str]) -> int:
-    """Install ``python_deps`` via ``uv pip`` into the codefyui venv.
+    """Install a manifest's ``[python_deps]`` into the codefyui venv.
 
-    The vetting that keeps a manifest's ``[python_deps]`` from becoming
+    A thin front end over :func:`app.core.plugins.deps.install_deps_step`,
+    which is the same step an install through the flow runs -- so a linked
+    plugin's packages arrive by the same rules as a downloaded one's. Two of
+    those rules are worth naming here, because this function used to have
+    neither:
+
+    * the install is ADD-ONLY, under a constraints file that pins every
+      distribution this interpreter has already imported, so a plugin asking
+      for ``numpy<2`` can no longer downgrade the numpy a running server is
+      holding open;
+    * when the resolver says that cannot be done, the answer is not "the
+      plugin is broken" but "not while the server is running", and exit code
+      3 carries the command to run instead.
+
+    The vetting that keeps ``[python_deps]`` from becoming
     ``uv pip install git+https://attacker.example/evil`` is
-    :func:`app.core.plugins.deps.dep_specs`; every spec this command runs
-    comes back through it.
-
-    Targets the current interpreter explicitly with ``--python sys.executable``.
-    ``cdui``/``dev.py`` re-exec into ``backend/.venv`` before running plugin
-    commands, so ``sys.executable`` is the codefyui venv — but a bare
-    ``uv pip install`` would look for a ``.venv`` relative to the *cwd* (the
-    repo root, where the user invoked ``.\\cdui``), not ``backend/.venv``, and
-    fail with "No virtual environment found". Pinning ``--python`` removes the
-    cwd dependency.
+    :func:`app.core.plugins.deps.dep_specs`; every spec this runs comes back
+    through it.
     """
     try:
         specs = core_deps.dep_specs(deps)
     except PluginInstallError as e:
         err(str(e), str(e))
         return 1
-    cmd = ["uv", "pip", "install", "--python", sys.executable, *specs]
-    info(
-        f"執行：{' '.join(cmd)}",
-        f"Running: {' '.join(cmd)}",
-    )
+    if not specs:
+        return 0
+
+    reporter = _ConsoleReporter()
     try:
-        r = subprocess.run(cmd, check=False)
-    except FileNotFoundError:
-        err("找不到 uv 指令", "Could not find `uv` on PATH")
+        with _cancel_on_sigint(reporter) as cancel_check:
+            core_deps.install_deps_step(
+                specs, emit=reporter, cancel_check=cancel_check
+            )
+    except PluginCancelled:
+        reporter.close()
+        warn("已取消", "Cancelled")
+        return 130
+    except PluginNeedsRestart as exc:
+        reporter.close()
+        return _report_needs_restart(exc)
+    except PluginInstallError as exc:
+        reporter.close()
+        raw_err(str(exc))
+        _print_hint(exc.hint)
         return 1
-    return r.returncode
+    finally:
+        reporter.close()
+    return 0
 
 
 # ── the capability prompt (core#133, tier 1) ───────────────────────────────
@@ -671,6 +1111,15 @@ def _install_by_catalog_name(plugin_id: str, args, lockfile) -> int:
 
 
 def _install_catalog(plugin_id: str, args, lockfile) -> int:
+    """Activate the built-in pack the catalog calls *plugin_id*.
+
+    The same road a repository plugin takes -- inspect, decide, then
+    :func:`~app.core.plugins.flows.install_plugin_live` -- with most of it
+    missing, because the files already shipped in this release: nothing to
+    resolve, nothing to download, and nobody outside this repository to be
+    asked about. What is left is the pack's dependencies and the lockfile
+    entry that makes it load.
+    """
     catalog = load_catalog()
     entry = catalog["plugins"][plugin_id]
     plugin_dir = plugins_builtin_root() / plugin_id
@@ -683,13 +1132,15 @@ def _install_catalog(plugin_id: str, args, lockfile) -> int:
         return 1
 
     try:
-        manifest = read_manifest(plugin_dir)
-        validate_manifest(manifest)
+        found = core_inspect.inspect_builtin(plugin_id, lockfile=lockfile)
     except (ValueError, FileNotFoundError) as e:
         err(str(e), str(e))
         return 1
 
-    if plugin_id in lockfile.get("plugins", {}) and not args.force:
+    # Asked here rather than left to the flow: "you already have this" is an
+    # OFFER -- reactivate it with --force -- and an offer belongs in the
+    # answer to the command, not in the middle of an install's output.
+    if found.installed is not None and not args.force:
         err(
             f"外掛 {plugin_id} 已安裝。加 --force 重新啟用。",
             f"Plugin '{plugin_id}' is already installed. Use --force to reactivate.",
@@ -701,60 +1152,28 @@ def _install_catalog(plugin_id: str, args, lockfile) -> int:
     # Catalog packs ship inside the CodefyUI repo and are reviewed via PR —
     # the AST gate exists for the in-app .py-upload path (where untrusted
     # users supply the code) and the third-party URL path, not for code
-    # we already trust. Skipping here avoids false-positives on legitimate
-    # patterns like `getattr(context, "verbose", False)`.
-    allowed = manifest.get("security", {}).get("allowed_modules") or []
-
+    # we already trust. Skipping it avoids false-positives on legitimate
+    # patterns like `getattr(context, "verbose", False)`, and the flow says
+    # so out loud (``built-in pack: gate skipped``) rather than drawing a
+    # verify step that scanned nothing.
+    #
     # Same reasoning for the capability prompt: a pack that ships inside this
     # repo is not a third party asking for permission, and prompting while
     # skipping the gate entirely would be theatre. What it does get is a
-    # RECORD -- printed here, written to the lockfile below -- so that
+    # RECORD -- printed here, written to the lockfile by the flow -- so that
     # `cdui plugin list` answers "which of my plugins reaches the network"
     # for every pack, wherever it came from.
-    capabilities = manifest_capabilities(manifest)
-    for capability in capabilities:
+    for capability in found.capabilities:
         line = _capability_line(capability)
         info(f"能力：{line}", f"Capability: {line}")
+    _print_python_deps(found)
 
-    deps = manifest.get("python_deps", {})
-    if deps:
-        info(
-            f"安裝 python_deps：{', '.join(deps)}",
-            f"Installing python_deps: {', '.join(deps)}",
-        )
-        rc = _install_deps(deps)
-        if rc != 0:
-            return rc
+    plan = core_flows.plan_from_inspection(found, force=bool(args.force))
+    rc, _outcome = _run_install_flow(plan)
+    if rc != 0:
+        return rc
 
-    # Installing a pack by name is how you undo having uninstalled it, so the
-    # tombstone goes with it (#175). Said out loud rather than silently, because
-    # the state it clears is invisible: nothing else would tell the user that
-    # `cdui plugin sync` has started counting this pack again.
-    if clear_removed(lockfile, plugin_id):
-        info(
-            f"已清除先前的移除記錄（cdui plugin sync 之後會把 {plugin_id} 一併納入）",
-            f"Cleared the earlier uninstall record — `cdui plugin sync` counts "
-            f"{plugin_id} again from now on",
-        )
-
-    lockfile.setdefault("plugins", {})[plugin_id] = {
-        "source_kind": "builtin",
-        "source": plugin_id,
-        "installed_at": now_iso(),
-        "manifest": manifest.get("plugin", {}),
-        "trusted_modules": list(allowed),
-        "capabilities": list(capabilities),
-        "enabled": True,
-    }
-    save_lockfile(lockfile)
-
-    if _backend_reload():
-        ok("熱重載完成", "Hot-reloaded backend")
-    else:
-        info(
-            "伺服器未運行，下次 cdui start 會自動載入",
-            "Server not running; next `cdui start` will pick this up.",
-        )
+    _report_reload()
     ok(f"安裝完成：{plugin_id}", f"Installed: {plugin_id}")
     return 0
 
@@ -781,10 +1200,12 @@ def _locally_reserved_reason(plugin_id: str) -> tuple[str, str] | None:
     :func:`core_catalog.reserved_id_holder` stop after those two clauses.
 
     A ``github`` catalog id is deliberately NOT here, because the answer
-    depends on the source: :func:`_reserved_id_refusal` allows only the
-    repository the catalog names, while :func:`_link_local` and ``new`` allow
-    it outright -- a link is the developer's own copy of that repository, and
-    a scaffold is a new directory that has not been installed anywhere.
+    depends on the source: an install allows only the repository the catalog
+    names (:func:`~app.core.plugins.inspect.inspect_github` asks the third
+    clause, with the repository in hand), while :func:`_link_local` and
+    ``new`` allow it outright -- a link is the developer's own copy of that
+    repository, and a scaffold is a new directory that has not been installed
+    anywhere.
 
     Returns the bilingual noun phrase naming the holder, so each caller can
     keep its own sentence around it. The catalog is passed in from this
@@ -819,48 +1240,14 @@ def _malformed_catalog_row(plugin_id: str) -> tuple[str, str]:
     )
 
 
-def _reserved_id_refusal(
-    plugin_id: str, owner: str, repo: str
-) -> tuple[str, str] | None:
-    """The bilingual refusal for an id ``owner/repo`` may not use, else ``None``.
-
-    Three kinds of id are refused, and the third is the one worth spelling
-    out. Two of them belong to this build whoever is installing (see
-    :func:`_locally_reserved_reason`). A ``github`` catalog id is different:
-    that row IS a repository, so refusing it would make the official pack the
-    catalog advertises the one thing nobody can install. So it is refused
-    only for a DIFFERENT repository -- the id is what the lockfile, the
-    catalog card and the route all key on, and a fork claiming it would
-    quietly take the official pack's place.
-
-    Every one of those three comparisons is
-    :func:`core_catalog.reserved_id_holder`'s; this function asks it twice --
-    once without a repository for the sentence the first two share, once with
-    -- and writes the sentences. Nothing here decides.
-    """
-    reason = _locally_reserved_reason(plugin_id)
-    if reason is not None:
-        zh, en = reason
-        return (
-            f"外掛 id {plugin_id} 是保留名稱（{zh}），不能安裝。",
-            f"Plugin id '{plugin_id}' is reserved by this build ({en}).",
-        )
-    if core_catalog.reserved_id_holder(
-        plugin_id, owner=owner, repo=repo, catalog=catalog_entries()
-    ) is None:
-        return None
-    # Nothing local owns the id and the answer is still "reserved", so the
-    # remaining clause is the ``github`` row's -- and the repository it names
-    # is what the sentence is about.
-    entry = catalog_entry(plugin_id)
-    holder = entry.repo if entry is not None else ""
-    return (
-        f"外掛 id {plugin_id} 在目錄中屬於 {holder}；"
-        f"只有該儲存庫可以用這個 id 安裝，{owner}/{repo} 不行。",
-        f"Plugin id '{plugin_id}' belongs to {holder} in this "
-        f"install's catalog; only that repository may install under it, "
-        f"not {owner}/{repo}.",
-    )
+# A repository install used to ask its own version of the reserved-id
+# question here, in this module's two languages. It no longer does, and the
+# function is gone rather than left beside the one that answers now: the
+# decision is ``catalog.reserved_id_holder``'s, ``inspect_github`` refuses on
+# it before a byte is fetched, and a second copy of a rule about which code
+# an id resolves to is the copy that drifts. What the CLI prints is that
+# refusal's own message and hint -- which name the id, what holds it, and
+# which repository may use it.
 
 
 def _install_github(
@@ -874,6 +1261,16 @@ def _install_github(
 ) -> int:
     """Install the pack in ``{owner}/{repo}`` at *ref*.
 
+    Reads the manifest at one commit FIRST -- one small file from
+    ``raw.githubusercontent.com``, not the repository -- and shows it, so
+    every question this asks is a question about something the user can see.
+    Then the answers become an
+    :class:`~app.core.plugins.flows.InstallPlan` and the install itself is
+    :func:`~app.core.plugins.flows.install_plugin_live`, the same function
+    the Plugin Center runs. The order of the install, what counts as a
+    failure and what a failure is called are all decided there; what is here
+    is the conversation and the exit code.
+
     *catalog_id* is the catalog row this install came from, when it came from
     one; it is recorded in the lockfile so a later reader can tell the
     catalog's own pack from free text that happens to carry the same id. It
@@ -886,23 +1283,68 @@ def _install_github(
     """
     url = f"https://github.com/{owner}/{repo}"
     info(f"來源：{url}", f"Source: {url}")
-    pinned_sha = getattr(args, "pinned_sha", None)
-    if pinned_sha:
-        # Restore path (spec ID11): install BY the pinned sha -- never re-resolve
-        # a possibly-moved tag. Using the pinned value verifies resolved==pinned.
-        sha = pinned_sha
-    else:
-        try:
-            sha = resolve_sha(owner, repo, ref)
-        except RuntimeError as e:
-            err(str(e), str(e))
-            return 1
 
-    short_sha = sha[:7]
+    try:
+        found = core_inspect.inspect_github(
+            owner,
+            repo,
+            ref,
+            lockfile=lockfile,
+            # Restore path (spec ID11): read BY the pinned sha -- never
+            # re-resolve a possibly-moved tag.
+            pinned_sha=getattr(args, "pinned_sha", None),
+            catalog_id=catalog_id,
+        )
+    # What reading one commit's manifest can raise: GitHubError for anything
+    # the network answered (or did not), a TOML or manifest error for what
+    # came back, PluginInstallError for an id this build reserves. Two
+    # ValueError families and two RuntimeError ones -- caught by their bases
+    # because the point here is that every one of them is "this source is not
+    # installable", said in the words whoever raised it chose.
+    except (ValueError, RuntimeError) as e:
+        raw_err(str(e))
+        _print_hint(getattr(e, "hint", None))
+        return 1
+
+    plugin_id = found.plugin_id
+    short_sha = (found.sha or "")[:7]
     info(
         f"版本：{ref or 'default branch'} ({short_sha})",
         f"Ref: {ref or 'default branch'} ({short_sha})",
     )
+
+    # The catalog said this row installs `catalog_id`; the repository's own
+    # manifest says which id it installs under. When those disagree the
+    # catalog is describing one pack and fetching another, and every card,
+    # lockfile key and /api/plugins/<id> URL after this point would use the
+    # manifest's id while the user was reading the catalog's. Asked here
+    # because neither the inspection nor the flow asks it: the inspection
+    # RECORDS which row it came from, and only the caller that looked the row
+    # up knows what it was looking for. A row that has drifted is a bug in
+    # the catalog, and one naming both ids is what gets it fixed.
+    if catalog_id is not None and plugin_id != catalog_id:
+        err(
+            f"目錄項目 {catalog_id} 指向的儲存庫宣告的 id 是 {plugin_id}，"
+            f"兩者不一致，已中止安裝。",
+            f"The catalog lists this pack as '{catalog_id}', but the "
+            f"repository it names declares id '{plugin_id}'. Nothing was "
+            f"installed.",
+        )
+        return 1
+
+    # Before the prompts, not after: asking somebody to consent to
+    # capabilities for an install that was always going to be refused wastes
+    # their answer.
+    if (
+        found.installed is not None or (plugins_user_root() / plugin_id).exists()
+    ) and not args.force:
+        err(
+            f"外掛 {plugin_id} 已安裝。加 --force 重新安裝。",
+            f"Plugin '{plugin_id}' already installed. Use --force to overwrite.",
+        )
+        return 1
+
+    _print_preview(found)
 
     if not args.no_confirm:
         try:
@@ -913,173 +1355,47 @@ def _install_github(
             warn("已取消", "Cancelled")
             return 0
 
-    with tempfile.TemporaryDirectory() as tmpd:
-        tar = Path(tmpd) / "src.tar.gz"
-        try:
-            download_tarball(owner, repo, sha, tar)
-        # What the core client actually raises: GitHubError for anything the
-        # network answered (or did not), PluginInstallError for the size cap,
-        # OSError for the disk it is being written to. Named rather than
-        # caught through their base classes -- the first two are RuntimeError
-        # subclasses only by an inheritance choice made three modules away,
-        # and a failed install that becomes a traceback is not a small bug.
-        except (GitHubError, PluginInstallError, OSError) as e:
-            err(f"下載失敗：{e}", f"Download failed: {e}")
-            return 1
-
-        extracted = Path(tmpd) / "extracted"
-        extracted.mkdir()
-        try:
-            root = core_github.extract_tarball(tar, extracted)
-        except (tarfile.TarError, PluginInstallError) as e:
-            err(f"解壓失敗：{e}", f"Extraction failed: {e}")
-            return 1
-
-        try:
-            manifest = read_manifest(root)
-            validate_manifest(manifest)
-        except (ValueError, FileNotFoundError) as e:
-            err(str(e), str(e))
-            return 1
-
-        plugin_id = manifest["plugin"]["id"]
-
-        # The catalog said this row installs `catalog_id`; the repository's
-        # own manifest says which id it installs under. When those disagree
-        # the catalog is describing one pack and fetching another, and every
-        # card, lockfile key and /api/plugins/<id> URL after this point would
-        # use the manifest's id while the user was reading the catalog's.
-        # Refused here, before anything is staged or written -- the temp
-        # directory goes with the `with` block, like the other early
-        # refusals. A row that has drifted is a bug in the catalog, and one
-        # naming both ids is what gets it fixed.
-        if catalog_id is not None and plugin_id != catalog_id:
-            err(
-                f"目錄項目 {catalog_id} 指向的儲存庫宣告的 id 是 {plugin_id}，"
-                f"兩者不一致，已中止安裝。",
-                f"The catalog lists this pack as '{catalog_id}', but the "
-                f"repository it names declares id '{plugin_id}'. Nothing was "
-                f"installed.",
-            )
-            return 1
-
-        if _manifest_has_frontend(manifest):
-            warn(
-                "此外掛包含前端 UI 程式碼（JavaScript），安裝後將在您的瀏覽器中"
-                "以完整編輯器存取權限執行。請僅安裝您信任的外掛。",
-                "This plugin ships frontend UI code (JavaScript). After install it"
-                " runs in your browser inside CodefyUI with full editor access."
-                " Only install plugins you trust.",
-            )
-
-        allowed = manifest.get("security", {}).get("allowed_modules") or []
-        try:
-            core_consent.check_trust(allowed, trust_author=args.trust_author)
-        except ConsentRequired as e:
-            asked = ", ".join(e.allowed_modules)
-            err(
-                f"外掛要求白名單以外的模組：{asked}。加 --trust-author 同意。",
-                f"Plugin requests non-default modules: {asked}. "
-                f"Pass --trust-author to accept.",
-            )
-            return 1
-
-        # Tier 1. Asked BEFORE anything is copied out of the temp directory,
-        # so a "no" leaves nothing behind but the tarball the context manager
-        # is about to delete.
-        capabilities = capability_gate(manifest, args)
-        if capabilities is CAPABILITIES_REFUSED:
-            return 1
-
-        try:
-            # Validate the *entire* extracted tarball, not just nodes/. The
-            # plugin loader exposes the plugin root as a namespace package so
-            # ``from .. import helper`` from a node would otherwise import
-            # unscanned helpers.
-            validate_plugin_dir(root, allowed, capabilities)
-        except PluginValidationError as e:
-            err(str(e), str(e))
-            return 1
-
-        # Reserved ids: a route, a pack that ships here, or another
-        # repository's catalog row. See _reserved_id_refusal for why the third
-        # is about which repo rather than about the id alone.
-        refusal = _reserved_id_refusal(plugin_id, owner, repo)
-        if refusal is not None:
-            err(*refusal)
-            return 1
-
-        final = plugins_user_root() / plugin_id
-        if final.exists() and not args.force:
-            err(
-                f"外掛 {plugin_id} 已安裝。加 --force 重新安裝。",
-                f"Plugin '{plugin_id}' already installed. Use --force to overwrite.",
-            )
-            return 1
-
-        staging = plugins_user_root() / ".staging" / f"{plugin_id}-{short_sha}"
-        staging.parent.mkdir(parents=True, exist_ok=True)
-        if staging.exists():
-            shutil.rmtree(staging)
-        shutil.copytree(root, staging)
-
-        backup: Path | None = None
-        if final.exists():
-            backup = final.with_name(f"{plugin_id}.old-{int(time.time())}")
-            final.rename(backup)
-        try:
-            staging.rename(final)
-        except OSError as e:
-            if backup is not None:
-                backup.rename(final)
-            err(f"安裝失敗：{e}", f"Install failed: {e}")
-            return 1
-
-        deps = manifest.get("python_deps", {})
-        if deps:
-            info(
-                f"安裝 python_deps：{', '.join(deps)}",
-                f"Installing python_deps: {', '.join(deps)}",
-            )
-            rc = _install_deps(deps)
-            if rc != 0:
-                shutil.rmtree(final, ignore_errors=True)
-                if backup is not None:
-                    backup.rename(final)
-                return rc
-
-        record: dict[str, Any] = {
-            "source_kind": "github_url",
-            "source": f"{owner}/{repo}" + (f"@{ref}" if ref else ""),
-            "url": url,
-            "ref": ref,
-            "sha": sha,
-            "installed_at": now_iso(),
-            "manifest": manifest.get("plugin", {}),
-            "trusted_modules": list(allowed),
-            "capabilities": list(capabilities),
-            "enabled": True,
-        }
-        if catalog_id is not None:
-            # Only when there really was a catalog row. Writing the key
-            # unconditionally would have every free-text install claim a
-            # catalog identity it does not have, and "installed from the
-            # catalog" is exactly the claim a reader wants to trust.
-            record["catalog_id"] = catalog_id
-        lockfile.setdefault("plugins", {})[plugin_id] = record
-        save_lockfile(lockfile)
-
-        if backup is not None:
-            shutil.rmtree(backup, ignore_errors=True)
-
-    if _backend_reload():
-        ok("熱重載完成", "Hot-reloaded backend")
-    else:
-        info(
-            "伺服器未運行，下次 cdui start 會自動載入",
-            "Server not running; next `cdui start` will pick this up.",
+    allowed = list(found.allowed_modules)
+    try:
+        core_consent.check_trust(allowed, trust_author=args.trust_author)
+    except ConsentRequired as e:
+        # Cleaned for the same reason the preview above it is: this refusal
+        # prints the module names straight back, on the same screen, and
+        # `[security].allowed_modules` is validated as "a list of strings"
+        # and nothing more -- so any string at all can reach here.
+        asked = ", ".join(_plain(module, limit=80) for module in e.allowed_modules)
+        err(
+            f"外掛要求白名單以外的模組：{asked}。加 --trust-author 同意。",
+            f"Plugin requests non-default modules: {asked}. "
+            f"Pass --trust-author to accept.",
         )
+        return 1
 
+    # Tier 1. Asked BEFORE anything is downloaded, so a "no" costs nothing
+    # but the manifest that was already read to ask the question.
+    capabilities = capability_gate(found.manifest, args)
+    if capabilities is CAPABILITIES_REFUSED:
+        return 1
+
+    try:
+        plan = core_flows.plan_from_inspection(
+            found,
+            accept_capabilities=capabilities,
+            trust_author=args.trust_author,
+            force=bool(args.force),
+        )
+    except ConsentRequired as e:
+        # Belt and braces: the two gates above have already asked both
+        # halves, so reaching this means the plan disagreed with the
+        # conversation -- which is worth saying rather than raising.
+        raw_err(str(e))
+        return 1
+
+    rc, _outcome = _run_install_flow(plan)
+    if rc != 0:
+        return rc
+
+    _report_reload()
     ok(
         f"安裝完成：{plugin_id} ({short_sha})",
         f"Installed: {plugin_id} ({short_sha})",
@@ -1342,9 +1658,9 @@ def cmd_sync(args: argparse.Namespace) -> int:
     done: list[str] = []
     failed: list[str] = []
     for pack_id, _name in pending:
-        # Re-read per pack: _install_catalog saves the lockfile object it is
-        # handed, so carrying one copy across the loop would write the state
-        # from before the previous pack straight back over it.
+        # Re-read per pack: the inspection _install_catalog runs has to see
+        # the pack installed by the previous turn of this loop, and the
+        # lockfile it compares against is this object.
         lockfile = load_lockfile()
         rc = _install_catalog(
             pack_id,
@@ -1360,6 +1676,17 @@ def cmd_sync(args: argparse.Namespace) -> int:
         if rc == 0:
             done.append(pack_id)
             continue
+        if rc == 130:
+            # Ctrl-C during one pack's `uv pip install` is an answer about
+            # the whole command, not about that pack. Treated as an ordinary
+            # failure it meant "continuing with the rest" -- the next pack
+            # starting the download the user had just interrupted.
+            warn(
+                f"已中斷，尚未處理的外掛不會安裝（已完成 {len(done)} 個）",
+                f"Stopped; the remaining pack(s) were not installed "
+                f"({len(done)} done)",
+            )
+            return 130
         failed.append(pack_id)
         warn(
             f"{pack_id} 安裝失敗，繼續處理其餘外掛",
@@ -1850,13 +2177,22 @@ def _print_info(
     status_en = "INSTALLED" if installed else "AVAILABLE"
     print(f"\n{BOLD}{plugin_id}{RESET}  {DIM}[{t(status_zh, status_en)}]{RESET}")
 
+    # The same three author-written fields the preview shows, through the
+    # same filter: `cdui plugin info <owner/repo>` reads a manifest off a
+    # repository nobody has agreed to install, and an installed plugin's
+    # manifest is whatever it rewrote itself to say after the install.
+    # The RAW value decides whether the line is printed and `_plain` only
+    # decides how it is spelt: a manifest may write `version = 1.0`, which
+    # TOML hands over as a float, and asking `_plain` first would have
+    # dropped the line entirely -- a field this command exists to show,
+    # silently missing because of the filter in front of it.
     fields: list[tuple[str, str]] = []
     if plugin_meta.get("name"):
-        fields.append(("name", plugin_meta["name"]))
+        fields.append(("name", _plain(str(plugin_meta["name"]))))
     if plugin_meta.get("version"):
-        fields.append(("version", plugin_meta["version"]))
+        fields.append(("version", _plain(str(plugin_meta["version"]))))
     if plugin_meta.get("description"):
-        fields.append(("description", plugin_meta["description"]))
+        fields.append(("description", _plain(str(plugin_meta["description"]))))
     if entry.get("source_kind"):
         fields.append(("source", f"{entry['source_kind']}:{entry.get('source', '')}"))
     if entry.get("sha"):

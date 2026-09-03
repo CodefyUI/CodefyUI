@@ -5,27 +5,52 @@
                                   can install by name -- what the panel draws
     GET  /api/plugins/generation  the reload counter the editor polls
     POST /api/plugins/reload      re-discover nodes, presets and packs
+    POST /api/plugins/inspect     read a source and say what installing it
+                                  would cost -- installs nothing
+    POST /api/plugins/install     install what an inspection described,
+                                  as a job -> 202 {job_id}
+    GET  /api/plugins/jobs/{id}/events   that job's log, replayed after a
+                                  cursor, with an optional long poll
+    POST /api/plugins/jobs/{id}/cancel   ask it to stop
     GET  /api/plugins/{id}        one plugin's manifest, nodes and README
     POST /api/plugins/{id}/enable|disable
 
 Every fixed path is declared before ``/{plugin_id}``; see the comment above
 that route for why the order is load-bearing rather than tidy.
 
-Reads are open GETs, like every other read the editor polls. Installing is
-not here yet: it still happens in the ``cdui plugin`` CLI, which writes the
-lockfile and the files and then POSTs to ``/api/plugins/reload``. What IS
-here is the gate the install routes will hang off --
-``_require_local_plugin_install`` -- because installing a plugin puts
-third-party code where this process will import it, and that is not a thing
-a stranger on the LAN gets to start.
+Installing is a conversation with two turns. ``/inspect`` reads the source
+and answers with what it found and what it would cost; ``/install`` acts on
+THAT answer, by its id. So the user agrees to the manifest they were shown
+rather than to whatever the branch holds a minute later, and the server never
+takes a manifest, a sha or a capability list from a request body. Built-in
+packs go through both turns too, so the panel has one flow rather than two.
+
+Reads are open GETs, like every other read the editor polls -- including a
+job's events, which is what a second tab that opened mid-install follows.
+Everything else here takes the session token (the global ``auth_guard``) and
+is additionally refused unless the server is bound to loopback
+(``_require_local_plugin_install``): installing a plugin puts third-party
+code where this process will import it, and inspecting reaches out to GitHub
+on the caller's word. Neither is a thing a stranger on the LAN gets to start.
+``cdui plugin install`` still does the same job from a terminal, through the
+same flow.
+
+Refusals from the install path carry a CODE rather than a sentence --
+``HTTPException(status, detail={"code": ...})`` -- because the panel draws a
+different control for each of them (fix the name, tick the capability,
+inspect again), and choosing one by matching on prose breaks the day the
+prose is translated.
 """
 
 from __future__ import annotations
 
 import logging
+import re
+import sys
 from typing import Any
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from pydantic import BaseModel, ConfigDict, field_validator
 
 from ..config import settings
 from ..core.auth import bound_to_loopback
@@ -36,8 +61,22 @@ from ..core.plugin_loader import (
     iter_plugin_dirs,
     load_lockfile,
 )
+from ..core.jobs import JobBusy
 from ..core.plugins import lifecycle
 from ..core.plugins.catalog import catalog_entries
+from ..core.plugins.errors import (
+    AlreadyInstalled,
+    ConsentRequired,
+    GitHubError,
+    InspectBusy,
+    InspectionExpired,
+    ManifestError,
+    PluginBusy,
+    PluginInstallError,
+    SourceError,
+    TrustAuthorRequired,
+    UnknownCatalogName,
+)
 from ..core.plugins.listing import (
     catalog_listing,
     frontend_entry_url,
@@ -45,6 +84,12 @@ from ..core.plugins.listing import (
     nodes_for_plugin,
 )
 from ..core.plugins.reload import rediscover_now
+from ..core.plugins.service import PluginService, StoredInspection, UnknownJob
+
+if sys.version_info >= (3, 11):
+    import tomllib
+else:
+    import tomli as tomllib  # 3.10 backport -- same API.
 
 logger = logging.getLogger(__name__)
 
@@ -53,6 +98,206 @@ router = APIRouter(prefix="/api/plugins", tags=["plugins"])
 _REMOTE_REFUSAL = (
     "Installing plugins is only allowed from the computer that runs the "
     "server. Set CODEFYUI_ALLOW_REMOTE_PLUGIN_INSTALL=1 to override.")
+
+#: GitHub statuses that mean "ask again later" rather than "that is not
+#: there". 403 is how the API answers an exhausted rate limit -- its JSON
+#: body says so while the reason phrase only says "Forbidden" -- and 429 is
+#: the same fact from whatever sits in front of it.
+_RATE_LIMITED = frozenset({403, 429})
+
+#: The message ``inspect.inspect_github`` refuses a reserved id with. Matched
+#: rather than caught by class because the id is not on the exception and the
+#: panel has to name it; see :func:`_inspect_refusal`.
+_RESERVED_ID = re.compile(r"^Plugin id '(?P<id>[^']+)' is reserved")
+
+
+class PluginInspectRequest(BaseModel):
+    """What to read. One field, and ``extra="forbid"`` keeps it one.
+
+    A source is a catalog name, ``owner/repo`` or a GitHub URL -- never a
+    manifest, a sha or a capability list. Everything an install later acts
+    on is read by the SERVER from that source and kept under an inspection
+    id, so there is no field here for a client to smuggle a decision through.
+
+    Named for its domain, like its sibling below: see
+    :class:`PluginInstallRequest` for why that is not decoration.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    source: str
+
+    @field_validator("source")
+    @classmethod
+    def _not_blank(cls, value: str) -> str:
+        """Refuse whitespace; hand the rest on trimmed.
+
+        A box submitted empty is a 422 rather than a round trip for
+        ``parse_source`` to call it unparseable, and the trim is here
+        because a pasted URL usually arrives with one on the end -- the
+        cheapest place to lose it is before anything looks it up.
+        """
+        source = value.strip()
+        if not source:
+            raise ValueError("a source to inspect, not an empty string")
+        return source
+
+
+class PluginInstallRequest(BaseModel):
+    """An inspection, and the answers to what it asked. ``extra="forbid"``.
+
+    Prefixed rather than called ``InstallRequest``, which would read better
+    in this file and cost something outside it: ``routes_packs`` already has
+    a model of that name, and FastAPI resolves a collision by falling back to
+    the module-qualified component name for BOTH -- silently renaming the
+    Package Center's schema in ``/docs`` and in anything generated from
+    ``/openapi.json``. It is also the name the frontend's own type carries
+    (``PluginInstallRequest`` in ``api/rest.ts``).
+
+    Everything an install acts on -- the repository, the commit, the manifest
+    -- comes from the inspection named here, never from this body. What IS
+    here is what only the user can say.
+
+    ``accept_capabilities`` is a LIST of capability ids and never a boolean.
+    "Yes to everything" has to be the client enumerating what it is saying
+    yes to, because that is the only form still meaningful when the manifest
+    asks for one capability more than the dialog was drawn from -- a schema
+    that took ``true`` would turn a stale dialog into a blanket grant.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    inspection_id: str
+    accept_capabilities: list[str] | None = None
+    #: The other half of consent: agreeing to the modules the manifest asks
+    #: to import, which is a decision about the AUTHOR rather than the code.
+    trust_author: bool = False
+    #: Replace what is already installed. What it lifts is an OFFER
+    #: (Reinstall, ``--force``), not a failure.
+    force: bool = False
+
+
+def _coded(status_code: int, code: str, **fields: Any) -> HTTPException:
+    """A refusal the panel can act on: ``detail`` is a dict with a ``code``.
+
+    ``/api/packs`` answers with flat prose, and it is right to: one panel,
+    one sentence, one button. Here the client has to choose between several
+    different controls -- fix the name, tick the capability, trust the
+    author, follow the job that is in the way, inspect again -- and picking
+    one by matching on a sentence breaks the day the sentence is translated.
+    The fields beside the code (``known``, ``missing_capabilities``,
+    ``allowed_modules``, ``job_id``, ``id``) are what those controls are
+    drawn from. Deliberately no ``message``: prose about a coded refusal
+    belongs to whoever is talking to the user, in their language.
+    """
+    return HTTPException(status_code=status_code,
+                         detail={"code": code, **fields})
+
+
+def _installer(request: Request) -> PluginService | None:
+    """The service the lifespan built, or ``None``.
+
+    Optional on ``app.state`` for the same reason every other store is: the
+    lifespan does not run under httpx's ASGITransport, so a test reaches
+    these routes with nothing there unless it installs one.
+    """
+    return getattr(request.app.state, "plugin_service", None)
+
+
+def _service(request: Request) -> PluginService:
+    """The service, or 503 -- for every route that needs one to answer.
+
+    ``GET /catalog`` deliberately does NOT go through here: it is a read,
+    and a server whose installer failed to start can still say what is
+    installed.
+    """
+    service = _installer(request)
+    if service is None:
+        raise _coded(503, "unavailable")
+    return service
+
+
+def _github_refusal(exc: GitHubError) -> HTTPException:
+    """One GitHub failure, split three ways for three different next steps.
+
+    A 404 is the caller's -- a typo in the owner, the repository or the ref
+    -- so it travels as a 404 they can act on. Everything else happened
+    between this server and GitHub, which is a 502 whether it was a rate
+    limit, a 500 or a name that never resolved; the code says which, because
+    "wait" and "check the network" are different waits.
+    """
+    if exc.status == 404:
+        return _coded(404, "not_found")
+    if exc.status in _RATE_LIMITED:
+        return _coded(502, "github_rate_limited")
+    return _coded(502, "github_unreachable")
+
+
+def _inspect_refusal(exc: PluginInstallError) -> HTTPException:
+    """The ``PluginInstallError``s an INSPECTION can raise, coded.
+
+    Neither is a failed install -- nothing was installed -- so both are 400s
+    about the source. ``inspect_github`` refuses an id this build owns (a
+    route under ``/api/plugins/``, a pack that ships here, another
+    repository's catalog row) and ``inspect_source`` refuses a catalog row
+    too malformed to install from. They are told apart by the message
+    because the id is not on the exception and the panel has to say WHICH id
+    clashed; both couplings are pinned by tests that drive the real
+    ``inspect`` into them.
+    """
+    match = _RESERVED_ID.match(str(exc))
+    if match is None:
+        return _coded(400, "invalid_manifest")
+    return _coded(400, "reserved_id", id=match.group("id"))
+
+
+def _job_not_found(job_id: str) -> HTTPException:
+    """Only the most recent job is kept, so "gone" and "never existed" are
+    the same answer -- and the client's next move is the same either way."""
+    return _coded(404, "unknown_job", job_id=job_id)
+
+
+def _inspection_payload(stored: StoredInspection) -> dict[str, Any]:
+    """One inspection, in the fields the Plugin Center is written against.
+
+    Selected field by field rather than dumped: an ``Inspection`` also
+    carries ``owner`` and ``repo``, which the install path needs and the
+    wire contract does not have, and a response built by serialising the
+    dataclass would publish whatever the next field added to it happens to
+    be. The order is the contract's, so a diff of this list is a diff of the
+    TypeScript type beside it.
+    """
+    found = stored.inspection
+    return {
+        "inspection_id": stored.inspection_id,
+        "expires_at": stored.expires_at,
+        "kind": found.kind,
+        "mode": found.mode,
+        "plugin_id": found.plugin_id,
+        "catalog_id": found.catalog_id,
+        "official": found.official,
+        "source": found.source,
+        "url": found.url,
+        "ref": found.ref,
+        "sha": found.sha,
+        "name": found.name,
+        "version": found.version,
+        "description": found.description,
+        "homepage": found.homepage,
+        "manifest": found.manifest,
+        "capabilities": list(found.capabilities),
+        "allowed_modules": list(found.allowed_modules),
+        "python_deps": dict(found.python_deps),
+        "has_frontend": found.has_frontend,
+        "chapters": list(found.chapters),
+        "lessons": list(found.lessons),
+        "consent_required": found.consent_required,
+        "installed": found.installed,
+        "up_to_date": found.up_to_date,
+        "capabilities_added": list(found.capabilities_added),
+        "allowed_modules_added": list(found.allowed_modules_added),
+        "warnings": list(found.warnings),
+    }
 
 
 def remote_plugin_install_allowed() -> bool:
@@ -68,12 +313,12 @@ def remote_plugin_install_allowed() -> bool:
 
 
 async def _require_local_plugin_install() -> None:
-    """Dependency for every route that installs or removes a plugin.
+    """Dependency for every route that installs, inspects or removes.
 
-    Not attached to anything yet: this PR adds the read half of the Plugin
-    Center. It is defined and tested here so the install routes cannot land
-    without it -- a gate written in the same PR as the route it guards is a
-    gate a reviewer reads as boilerplate.
+    Inspecting is guarded too, and deliberately: it is a request this server
+    makes to GitHub on the caller's word, and the answer it stores is what
+    an install is later authorised by. A read of what is already here needs
+    no such gate, which is why ``GET /catalog`` does not carry one.
     """
     if not remote_plugin_install_allowed():
         raise HTTPException(status_code=403, detail=_REMOTE_REFUSAL)
@@ -128,7 +373,7 @@ async def list_plugins() -> list[dict[str, Any]]:
 
 
 @router.get("/catalog")
-async def plugin_catalog() -> dict[str, Any]:
+async def plugin_catalog(request: Request) -> dict[str, Any]:
     """Every plugin this build can install, and everything installed.
 
     The one route the Plugin Center polls, and the reason it is a GET: like
@@ -138,13 +383,18 @@ async def plugin_catalog() -> dict[str, Any]:
     otherwise sit where this route lives, and the router, not the pack, would
     decide which one wins.
 
-    ``active_job`` is ``None`` until the install routes land; the field is
-    here now so the panel is written against the final shape.
+    ``active_job`` is the install running right now, which is how a panel
+    that has just been opened -- a second tab, a reload mid-install -- finds
+    the job it should be following. It is ``None`` when nothing is running
+    AND when there is no service at all: this is a READ, and a server whose
+    installer failed to start can still say what is installed. The routes
+    that would actually install something answer 503 instead.
     """
+    service = _installer(request)
     return catalog_listing(
         load_lockfile(),
         registry=registry,
-        active_job=None,
+        active_job=None if service is None else service.active_job_payload(),
         remote_install_allowed=remote_plugin_install_allowed(),
         generation=plugin_loader.reload_generation(),
     )
@@ -166,6 +416,188 @@ async def plugins_generation() -> dict[str, int]:
 async def reload_plugins() -> dict[str, int]:
     """Clear and re-discover everything (builtin + custom + plugins + presets)."""
     return rediscover_now()
+
+
+@router.post("/inspect", dependencies=[Depends(_require_local_plugin_install)])
+async def inspect_plugin_source(
+    body: PluginInspectRequest, request: Request
+) -> dict[str, Any]:
+    """Read a source and report what installing it would cost. Installs
+    nothing, downloads no tarball, and runs no code from it.
+
+    The first of the two turns every install goes through -- built-in packs
+    included, so the panel has one flow rather than two. The answer is kept
+    server-side under an ``inspection_id``; the second turn (``/install``)
+    names that id, which is what makes the user's "yes" an answer about the
+    manifest they were SHOWN rather than about whatever the branch holds a
+    minute later.
+
+    Every refusal here is about the source and nothing has been written, so
+    all of them are 4xx or 502 with a code the panel can draw a control for:
+    a name the catalog does not have arrives with the names it does
+    (``known``), an id this build owns arrives with the id (``id``), and a
+    GitHub failure is split by what it means (see :func:`_github_refusal`).
+    """
+    service = _service(request)
+    try:
+        stored = await service.inspect(body.source)
+    except InspectBusy:
+        # Before ``PluginInstallError``: it is a subclass, and it is not a
+        # refusal about the source at all -- asking again works.
+        raise _coded(409, "inspect_busy") from None
+    except UnknownCatalogName as exc:
+        # The one source failure with something to offer: the user typed a
+        # NAME, and what they cannot see is which names this build has.
+        raise _coded(400, "unknown_catalog_name",
+                     known=list(exc.known)) from None
+    except SourceError:
+        # ``UnparseableSource`` and anything else ``parse_source`` grows:
+        # the string names nothing installable, and there is nothing true to
+        # add to that beyond what the client already sent.
+        raise _coded(400, "unparseable_source") from None
+    except (ManifestError, tomllib.TOMLDecodeError, UnicodeDecodeError):
+        # A manifest this build will not install, the broken TOML that never
+        # got as far as being validated, and a file that is not text at all --
+        # ``fetch_manifest_text`` lets ``UnicodeDecodeError`` out on purpose,
+        # and it is neither a ``ManifestError`` nor a ``SourceError``, so it
+        # used to leave here as a 500. One code for the three: they all mean
+        # "the thing at that source is not a plugin this can install", and
+        # none of them is anything the caller can fix from here.
+        raise _coded(400, "invalid_manifest") from None
+    except OSError:
+        # The DISK, and only the disk: a builtin whose manifest file is gone,
+        # where ``read_manifest`` raises ``FileNotFoundError`` and nothing
+        # above catches it. Every network ``OSError`` -- including one raised
+        # while the response body is being read -- is turned into a
+        # ``GitHubError`` by the GitHub client and answered below, which is
+        # what keeps this clause from reporting a dropped connection as a
+        # manifest that is not a manifest.
+        raise _coded(400, "invalid_manifest") from None
+    except GitHubError as exc:
+        raise _github_refusal(exc) from None
+    except PluginInstallError as exc:
+        raise _inspect_refusal(exc) from None
+    return _inspection_payload(stored)
+
+
+@router.post("/install", status_code=202,
+             dependencies=[Depends(_require_local_plugin_install)])
+async def install_plugin(
+    body: PluginInstallRequest, request: Request
+) -> dict[str, str]:
+    """Install what an inspection described. 202, and a ``job_id`` to follow.
+
+    The second turn of the conversation ``/inspect`` began: the plugin, the
+    commit and the manifest all come from the stored inspection, and this
+    body carries only what the user had to decide.
+
+    Everything that can be known before the install starts is refused HERE
+    rather than reported as a failed job half a minute later -- an inspection
+    that has expired, a plugin that is already installed, a capability nobody
+    ticked, a module list nobody trusted, and an install already running in
+    either center (they share one interpreter). A 202 means the job exists
+    and its first event is already in the buffer.
+
+    The order of the clauses below is load-bearing, not tidy:
+    ``TrustAuthorRequired`` is a ``ConsentRequired`` and would otherwise be
+    answered as one, which asks the user to tick a capability list that has
+    nothing wrong with it -- and ``PluginBusy`` is a ``JobBusy``, so the one
+    that can say WHOSE job is in the way has to be caught first.
+    """
+    service = _service(request)
+    try:
+        job = await service.submit_install(
+            body.inspection_id,
+            accept_capabilities=body.accept_capabilities,
+            trust_author=body.trust_author,
+            force=body.force)
+    except InspectionExpired as exc:
+        # Built from the attribute: this one is a KeyError, whose ``str`` is
+        # the id in quotes rather than a sentence.
+        raise _coded(404, "inspection_expired",
+                     inspection_id=exc.inspection_id) from None
+    except AlreadyInstalled as exc:
+        # Not a failure of anything: an offer, which the client accepts by
+        # asking again with ``force``.
+        raise _coded(409, "already_installed",
+                     plugin_id=exc.plugin_id) from None
+    except TrustAuthorRequired as exc:
+        raise _coded(400, "trust_author_required",
+                     allowed_modules=list(exc.allowed_modules)) from None
+    except ConsentRequired as exc:
+        raise _coded(400, "consent_required",
+                     missing_capabilities=list(
+                         exc.missing_capabilities)) from None
+    except PluginBusy as exc:
+        # ``reason`` says whose job is in the way: ours (``None`` -> "busy",
+        # and the id is one this client can follow) or the Package Center's
+        # (``pack_install_running``, which is somebody else's to wait for).
+        raise _coded(409, exc.reason or "busy", job_id=exc.job_id) from None
+    except JobBusy as exc:
+        # Unreachable today: the service pre-checks both installers and
+        # raises ``PluginBusy`` above, so the runner's own claim never loses
+        # the race. Here because the runner is what actually owns "one at a
+        # time" -- if that pre-check is ever dropped or raced, this is a 409
+        # the panel already knows how to draw rather than a 500.
+        raise _coded(409, "busy", job_id=exc.job_id) from None
+    return {"job_id": job.job_id}
+
+
+@router.get("/jobs/{job_id}/events")
+async def plugin_job_events(
+    job_id: str,
+    request: Request,
+    cursor: int = Query(default=0, ge=0),
+    wait: float = Query(default=0.0, ge=0.0, le=60.0),
+    limit: int = Query(default=500, ge=1, le=2000),
+) -> dict[str, Any]:
+    """Events strictly after *cursor*, oldest first.
+
+    The Package Center's route, over the other installer, down to the bounds
+    -- one panel draws both, and a long poll that behaved differently on the
+    two would be a bug found only in the half nobody was watching.
+
+    ``wait`` seconds of long polling when the tail is empty: the request
+    parks on an in-process wake-up (never a retry loop) and returns the
+    moment an event lands, the job ends, or the deadline passes. A finished
+    job answers immediately regardless of ``wait``, and its events stay
+    readable until the next install replaces them -- which is what makes the
+    last page of a failed install fetchable at all.
+
+    An open GET, like every other read the editor polls: a second tab that
+    opened mid-install follows the job it found in ``/catalog``.
+
+    The returned ``cursor`` is where to resume, and never moves backwards.
+    """
+    service = _service(request)
+    try:
+        events, next_cursor, status = await service.wait_for_events(
+            job_id, after_cursor=cursor, limit=limit, wait=wait)
+    except UnknownJob:
+        # Also reachable AFTER the park: a job that ends while a poll is
+        # waiting on it, followed by a new install, takes its events with it.
+        raise _job_not_found(job_id) from None
+    return {"job_id": job_id, "status": status, "events": events,
+            "cursor": next_cursor}
+
+
+@router.post("/jobs/{job_id}/cancel",
+             dependencies=[Depends(_require_local_plugin_install)])
+async def cancel_plugin_job(job_id: str, request: Request) -> dict[str, Any]:
+    """Ask the running install to stop.
+
+    ``cancelled`` reports whether the request did anything: False for a job
+    that had already finished. Both are 200 -- asking twice is not an error,
+    and a cancel that raced the last step is normal. Cooperative, so the
+    status may still say ``running`` when this returns: it is the FLOW that
+    ends the job, between steps or inside a download.
+    """
+    service = _service(request)
+    try:
+        cancelled = await service.cancel(job_id)
+    except UnknownJob:
+        raise _job_not_found(job_id) from None
+    return {"job_id": job_id, "cancelled": cancelled}
 
 
 # Everything above this line has a FIXED path; everything below takes a

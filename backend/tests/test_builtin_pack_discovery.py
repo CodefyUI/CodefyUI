@@ -247,6 +247,14 @@ def fake_packs(tmp_path, monkeypatch):
 
     monkeypatch.setattr(plugin_loader, "plugins_user_root", lambda: user_root)
     monkeypatch.setattr(plugin_cli, "plugins_user_root", lambda: user_root)
+    # Both roots are patched in BOTH modules, for the same reason: the CLI
+    # holds its own reference (`from app.core.plugin_loader import ...`) and
+    # reads the catalog through it, while the shared install path -- the
+    # inspection and `flows.install_plugin_live`, which `_install_catalog`
+    # now runs -- reads `plugin_loader`'s. Patching one of the two would have
+    # sync list these three fake packs and then read the real repository's
+    # manifests to install them.
+    monkeypatch.setattr(plugin_loader, "plugins_builtin_root", lambda: builtin_root)
     monkeypatch.setattr(plugin_cli, "plugins_builtin_root", lambda: builtin_root)
     monkeypatch.setattr(plugin_cli, "_backend_reload", lambda: False)
     return SimpleNamespace(user_root=user_root, builtin_root=builtin_root)

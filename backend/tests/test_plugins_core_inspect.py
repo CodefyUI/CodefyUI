@@ -19,6 +19,7 @@ from __future__ import annotations
 import http.client
 import io
 import tarfile
+import urllib.request
 from pathlib import Path
 from textwrap import dedent
 from urllib.error import HTTPError, URLError
@@ -188,6 +189,22 @@ def test_a_repository_is_read_at_the_resolved_sha(fake_github):
     assert found.consent_required is True
     assert found.catalog_id is None and found.official is False
     assert found.installed is None and found.up_to_date is False
+
+
+def test_an_inspection_keeps_the_repository_apart_from_the_url(fake_github):
+    """An install takes an owner and a repo; ``source`` and ``url`` are
+    formatted strings. Recovering the pair by re-parsing one of those is how
+    two spellings of the same repository start to drift apart."""
+    fake_github(PLAIN_MANIFEST)
+    found = plugin_inspect.inspect_github("alice", "extras", "v1.2.0", lockfile={})
+    assert (found.owner, found.repo) == ("alice", "extras")
+
+
+def test_a_pack_that_ships_here_names_no_repository():
+    """``None`` because there is nothing to resolve or download, not because
+    the field was forgotten."""
+    found = plugin_inspect.inspect_builtin("stats", lockfile={})
+    assert found.owner is None and found.repo is None
 
 
 def test_a_pinned_sha_is_never_re_resolved(monkeypatch, fake_github):
@@ -452,6 +469,29 @@ class _FakeResponse:
         return False
 
 
+class _BrokenResponse:
+    """A response that dies while its body is being read.
+
+    The one shape ``urlopen``'s own translation cannot cover: the request
+    succeeded, so nothing raised at ``urlopen`` time, and the connection
+    breaks afterwards -- which is what a reset peer, a TLS error mid-stream
+    and a read timeout all look like from here.
+    """
+
+    def __init__(self, exc: BaseException):
+        self._exc = exc
+        self.headers: dict = {}
+
+    def read(self, size: int = -1) -> bytes:
+        raise self._exc
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_exc):
+        return False
+
+
 def _http_error(code: int, body: bytes = b"", reason: str = "Some Reason"):
     return HTTPError(
         "https://api.github.com/x", code, reason, {}, io.BytesIO(body)
@@ -490,6 +530,81 @@ def test_the_token_is_sent_only_when_the_environment_has_one(
     monkeypatch.setenv("CODEFYUI_GITHUB_TOKEN", "ghp_secret")
     github._gh_get("https://api.github.com/x")
     assert seen[-1].get_header("Authorization") == "Bearer ghp_secret"
+
+
+def test_the_token_does_not_follow_a_redirect_to_another_host(monkeypatch):
+    """``codeload.github.com`` redirects a tarball to
+    ``objects.githubusercontent.com`` as a matter of course, and urllib's
+    redirect handler rebuilds the next request out of ``req.headers``
+    verbatim -- Python 3.11 strips no credentials. Sent as an UNREDIRECTED
+    header, the token goes on THIS request and on nothing built out of it.
+
+    Driven through urllib's own ``HTTPRedirectHandler`` rather than a mock of
+    it: the thing being pinned is what the library does with the request this
+    module hands it.
+    """
+    monkeypatch.setenv("CODEFYUI_GITHUB_TOKEN", "ghp_secret")
+    req = github._request("https://codeload.github.com/alice/extras/tar.gz/f")
+
+    # The first request carries it: unredirected headers are still sent.
+    assert req.get_header("Authorization") == "Bearer ghp_secret"
+    assert req.unredirected_hdrs["Authorization"] == "Bearer ghp_secret"
+
+    forwarded = urllib.request.HTTPRedirectHandler().redirect_request(
+        req, None, 302, "Found", {},
+        "https://objects.githubusercontent.com/somewhere-else",
+    )
+    assert forwarded.get_header("Authorization") is None
+    assert "ghp_secret" not in str(forwarded.headers)
+    assert "ghp_secret" not in str(forwarded.unredirected_hdrs)
+    # The user agent is not a credential and still travels.
+    assert forwarded.get_header("User-agent") == github.USER_AGENT
+
+
+@pytest.mark.parametrize("broken", [
+    ConnectionResetError(104, "Connection reset by peer"),
+    OSError(5, "Input/output error"),
+    TimeoutError("timed out"),
+])
+def test_a_connection_that_breaks_mid_body_is_a_transport_failure(
+    fake_urlopen, broken
+):
+    """``urlopen`` returned, so its own translation is behind us: the read is
+    where a reset peer, a TLS error and a stream timeout arrive, as a bare
+    ``OSError``. Uncaught, one of those left this module as itself and
+    reached callers that read an ``OSError`` as "the file is not there" --
+    the Plugin Center's ``/inspect`` answers 400 `invalid_manifest` for one,
+    which reports a dropped connection as a manifest that is not a manifest.
+    """
+    fake_urlopen(lambda: _BrokenResponse(broken))
+
+    with pytest.raises(GitHubError) as excinfo:
+        github._gh_get("https://api.github.com/x")
+    assert excinfo.value.status is None, "it never got an HTTP status"
+
+    # And through the capped read, which is the one an inspection makes.
+    fake_urlopen(lambda: _BrokenResponse(broken))
+    with pytest.raises(GitHubError):
+        github.fetch_manifest_text("alice", "extras", "f" * 40)
+
+
+def test_a_manifest_larger_than_the_cap_is_refused_rather_than_read(
+    monkeypatch, fake_urlopen
+):
+    """The manifest is read before anybody has agreed to anything, and the
+    server keeps a whole one per stored inspection -- so an unbounded read
+    lets the file at the other end decide how much memory a repository
+    nobody trusts occupies, once per inspection."""
+    monkeypatch.setattr(github, "MAX_MANIFEST_BYTES", 8)
+    fake_urlopen(lambda: _FakeResponse([b"[plugin]\nid = 'extras'\n"]))
+
+    with pytest.raises(ManifestError) as excinfo:
+        github.fetch_manifest_text("alice", "extras", "f" * 40)
+    assert "larger than" in str(excinfo.value)
+
+    monkeypatch.setattr(github, "MAX_MANIFEST_BYTES", 1024)
+    fake_urlopen(lambda: _FakeResponse([PLAIN_MANIFEST.encode("utf-8")]))
+    assert github.fetch_manifest_text("alice", "extras", "f" * 40) == PLAIN_MANIFEST
 
 
 def test_a_missing_repository_and_a_broken_github_are_different_answers(
@@ -691,6 +806,65 @@ def test_a_tarball_whose_root_cannot_be_guessed_is_refused(files, tmp_path):
     dest.mkdir()
     with pytest.raises(PluginInstallError):
         github.extract_tarball(tar, dest)
+
+
+def test_a_tarball_that_cannot_be_read_is_an_install_failure(tmp_path):
+    """A truncated download and a file that is not a gzip both arrive as
+    ``TarError`` -- a class no caller of an installer catches, which is how
+    one used to travel all the way out to a traceback."""
+    tar = tmp_path / "src.tar.gz"
+    tar.write_bytes(b"this is not a gzip stream")
+    dest = tmp_path / "out"
+    dest.mkdir()
+    with pytest.raises(PluginInstallError) as excinfo:
+        github.extract_tarball(tar, dest)
+    assert "src.tar.gz" in str(excinfo.value)
+    assert "retry" in (excinfo.value.hint or "")
+
+
+def test_a_tarball_caught_escaping_is_not_reported_as_a_read_failure(tmp_path):
+    """``tarfile.FilterError`` IS a ``TarError``, so a hostile tarball used to
+    come out of here as "tarfile could not read it; retry the install" -- and
+    retrying is the one thing nobody should do about an archive that was
+    caught trying to write outside the directory it was unpacked into."""
+    tar = tmp_path / "src.tar.gz"
+    with tarfile.open(tar, "w:gz") as tf:
+        data = PLAIN_MANIFEST.encode("utf-8")
+        member = tarfile.TarInfo("extras-main/cdui.plugin.toml")
+        member.size = len(data)
+        tf.addfile(member, io.BytesIO(data))
+        link = tarfile.TarInfo("extras-main/passwd")
+        link.type = tarfile.SYMTYPE
+        link.linkname = "/etc/passwd"
+        tf.addfile(link)
+    dest = tmp_path / "out"
+    dest.mkdir()
+
+    with pytest.raises(PluginInstallError) as excinfo:
+        github.extract_tarball(tar, dest)
+
+    said = str(excinfo.value) + (excinfo.value.hint or "")
+    assert "src.tar.gz" in said
+    assert "outside the directory it is unpacked into" in said
+    assert "retry" not in said.lower(), "nothing about this is transient"
+
+
+def test_a_tarball_that_unpacks_past_the_cap_is_refused_before_it_is_written(
+    monkeypatch, tmp_path
+):
+    """The download cap is on the COMPRESSED stream, and gzip of a file of
+    zeroes runs about 1000:1 -- so it says nothing about what lands on the
+    disk, which is where the space runs out."""
+    monkeypatch.setattr(github, "MAX_EXTRACTED_BYTES", 1024 * 1024)
+    tar = tmp_path / "src.tar.gz"
+    _tarball_of({"extras-main/big.bin": "x" * (2 * 1024 * 1024)}, tar)
+    dest = tmp_path / "out"
+    dest.mkdir()
+
+    with pytest.raises(PluginInstallError) as excinfo:
+        github.extract_tarball(tar, dest)
+    assert "1 MB" in str(excinfo.value)
+    assert list(dest.iterdir()) == [], "the sum is checked before extractall"
 
 
 # ── the consent arithmetic ─────────────────────────────────────────────────

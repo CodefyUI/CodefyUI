@@ -19,15 +19,21 @@ because ``validate_manifest`` and ``parse_source`` have always raised
 ``ValueError`` and their callers still catch it; ``PluginInstallError`` is a
 ``RuntimeError`` for the same reason on the install side.
 
-Stdlib only, and imported by ``plugins/__init__.py``: a caller that only
-wants to catch a plugin failure never has to drag the installer, the AST gate
-or the network in to do it.
+Stdlib and ``app.core.jobs``, and imported by ``plugins/__init__.py``: a
+caller that only wants to catch a plugin failure never has to drag the
+installer, the AST gate or the network in to do it. The one import that is
+not the standard library is the job runner's own ``JobBusy``, which is
+itself domain-free and stdlib-only -- and a refusal to START an install is a
+refusal about a JOB, so a client that catches one installer's busy answer
+must be able to catch the other's with the same clause.
 """
 
 from __future__ import annotations
 
 from collections.abc import Iterable
 from pathlib import Path
+
+from ..jobs import JobBusy
 
 
 class PluginInstallError(RuntimeError):
@@ -92,6 +98,90 @@ class ConsentRequired(PluginInstallError):
         super().__init__(message, hint=hint)
         self.missing_capabilities = tuple(missing_capabilities)
         self.allowed_modules = tuple(allowed_modules)
+
+
+class TrustAuthorRequired(ConsentRequired):
+    """The user has not agreed to this plugin's ``allowed_modules``.
+
+    A subclass rather than a second class, because every caller that already
+    catches :class:`ConsentRequired` -- the CLI's ``_install_github``, the
+    flow -- is asking the same question and must keep getting the same
+    answer. What it adds is a NAME for the half of consent that is not about
+    capabilities: the two are refused with different words and answered with
+    different controls (a list of checkboxes against a single "I trust this
+    author"), and a caller that has to tell them apart by asking which tuple
+    happens to be populated is one bad ``if`` away from showing the wrong
+    dialog.
+    """
+
+
+class InspectBusy(PluginInstallError):
+    """Something else is being inspected right now. Try again in a moment.
+
+    Reading a source means a network round trip or a manifest off the disk,
+    and one at a time is the whole design: a panel that fires an inspection
+    per keystroke would otherwise open a socket per keystroke. NOT queued --
+    a caller that waited would get its answer long after the person had
+    typed something else -- so this is refused immediately and the caller
+    asks again.
+    """
+
+
+class InspectionExpired(KeyError):
+    """No inspection with this id: it was used, evicted, or timed out.
+
+    A ``KeyError`` because that is what a lookup that finds nothing raises,
+    and every one of those three endings is the same fact to the caller: the
+    consent screen it is holding describes a source this server no longer
+    remembers reading, so the answer is to inspect it again rather than to
+    install from a manifest nobody can now produce.
+    """
+
+    def __init__(self, inspection_id: str):
+        self.inspection_id = inspection_id
+        super().__init__(inspection_id)
+
+
+class PluginBusy(JobBusy):
+    """An install is already running. ``job_id`` is the one to follow.
+
+    The Plugin Center's wording for :class:`~app.core.jobs.JobBusy`, and the
+    twin of ``packs.service.PackBusy``: the two installers share one
+    interpreter, so each of them refuses while the OTHER is running as well
+    as while its own job is. ``reason`` is what says which of the two this
+    is -- ``None`` for our own job (the id already implies it) and
+    ``"pack_install_running"`` when the job in the way belongs to the
+    Package Center, because "follow the install you started" and "wait for
+    somebody else's" are different offers for a panel to make.
+    """
+
+    def __init__(self, job_id: str, *, reason: str | None = None,
+                 message: str | None = None):
+        super().__init__(
+            job_id,
+            message or f"a plugin install is already running (job {job_id})",
+            reason=reason)
+
+
+class AlreadyInstalled(PluginInstallError):
+    """This plugin is here already, and nobody asked to replace it.
+
+    Its own class because it is the one install failure that is not a
+    failure of the plugin: nothing is wrong with the source, the answer is
+    "you already have it", and the caller's next move is an offer -- a
+    ``--force`` in the terminal, a Reinstall button in the panel -- rather
+    than a message about what went wrong. A route turns this into 409 where
+    every other install error is a 500, which is a distinction no ``except
+    PluginInstallError`` can make by reading the sentence.
+
+    ``plugin_id`` travels with it because the offer has to name the plugin,
+    and a caller holding an id it parsed back out of the message is a caller
+    that breaks the day the message is translated.
+    """
+
+    def __init__(self, message: str, *, plugin_id: str, hint: str | None = None):
+        super().__init__(message, hint=hint)
+        self.plugin_id = plugin_id
 
 
 class SourceError(ValueError):
