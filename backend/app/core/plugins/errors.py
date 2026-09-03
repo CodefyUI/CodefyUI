@@ -184,6 +184,45 @@ class AlreadyInstalled(PluginInstallError):
         self.plugin_id = plugin_id
 
 
+class NotInstalled(PluginInstallError):
+    """There is no lockfile entry under that id, so there is nothing to act on.
+
+    Its own class because "you do not have that plugin" is the one refusal
+    here that is about the REQUEST rather than about a source: the caller's
+    next move is to install it, and a route that has to answer 404 for this
+    and 400 for everything else cannot tell them apart by reading the
+    sentence. ``plugin_id`` travels for the reason it does on
+    :class:`AlreadyInstalled` -- whoever says this to a person has to name
+    the plugin, and an id parsed back out of English breaks the day the
+    English is translated.
+    """
+
+    def __init__(self, message: str, *, plugin_id: str,
+                 hint: str | None = None):
+        super().__init__(message, hint=hint)
+        self.plugin_id = plugin_id
+
+
+class NotUpdatable(PluginInstallError):
+    """This plugin is installed and has no repository to update from.
+
+    ``source_kind`` is what it has instead: ``builtin`` for a pack that ships
+    in this release (it updates with CodefyUI itself), ``local`` for a linked
+    development directory (it is whatever is on its author's disk right now),
+    and ``github_url`` for a record whose repository can no longer be worked
+    out. One class for the three because the answer to all of them is "there
+    is nothing here to fetch", and the ``hint`` says what to do instead --
+    which is different in each case, and is prose, so a client that has to
+    branch reads the attribute rather than the sentence.
+    """
+
+    def __init__(self, message: str, *, plugin_id: str, source_kind: str,
+                 hint: str | None = None):
+        super().__init__(message, hint=hint)
+        self.plugin_id = plugin_id
+        self.source_kind = source_kind
+
+
 class ReservedPluginId(PluginInstallError):
     """The manifest declares an id something in this build already owns.
 

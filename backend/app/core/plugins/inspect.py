@@ -44,7 +44,12 @@ from app.core import plugin_loader
 
 from . import catalog as catalog_module
 from . import github, listing, sources
-from .errors import PluginInstallError, ReservedPluginId
+from .errors import (
+    NotInstalled,
+    NotUpdatable,
+    PluginInstallError,
+    ReservedPluginId,
+)
 from .manifest import (
     manifest_allowed_modules,
     manifest_capabilities,
@@ -74,6 +79,20 @@ ALLOWED_MODULES_WARNING = (
     "This plugin asks to import: {modules}. "
     "Installing requires trusting the author."
 )
+
+#: What to do instead, per ``source_kind`` that has no update to look for.
+#: English and one sentence each, like the warnings above: a caller speaking
+#: another language branches on :attr:`~.errors.NotUpdatable.source_kind`.
+NO_UPDATE_HINTS = {
+    "builtin": (
+        "A pack that ships in this release updates with CodefyUI itself: "
+        "run cdui update."
+    ),
+    "local": (
+        "A linked directory is whatever is on its author's disk right now; "
+        "there is nothing to fetch."
+    ),
+}
 
 
 @dataclass(frozen=True)
@@ -383,16 +402,50 @@ def inspect_source(spec: str, *, lockfile: dict[str, Any]) -> Inspection:
     )
 
 
+def updatable_entry(plugin_id: str, *, lockfile: dict[str, Any]) -> dict[str, Any]:
+    """This install's record for a plugin that CAN be updated. Reads nothing.
+
+    Only ``github_url`` plugins have an update to look for: a built-in pack
+    updates with CodefyUI itself, and a linked development directory is
+    whatever is on the developer's disk right now.
+
+    Public because the question is asked at two different moments.
+    :func:`inspect_installed` asks it on the worker thread that is about to
+    read GitHub; ``PluginService.update`` asks it on the event loop, BEFORE
+    it claims the inspection slot -- "you do not have that plugin" and "a
+    built-in pack updates with CodefyUI" are true without a network, and
+    neither should have to queue behind somebody else's read to be said. One
+    function, so which plugins have an update at all is decided once.
+
+    :raises NotInstalled: no lockfile entry under that id.
+    :raises NotUpdatable: it is installed, from something that cannot be
+        re-fetched. ``hint`` says what to do instead.
+    """
+    entry = _lockfile_entry(lockfile, plugin_id)
+    if entry is None:
+        raise NotInstalled(
+            f"Plugin {plugin_id!r} is not installed.", plugin_id=plugin_id
+        )
+    source_kind = _text(entry.get("source_kind"))
+    if source_kind != "github_url":
+        raise NotUpdatable(
+            f"Plugin {plugin_id!r} does not update from a repository.",
+            plugin_id=plugin_id,
+            source_kind=source_kind,
+            hint=NO_UPDATE_HINTS.get(
+                source_kind, f"Its source_kind is {source_kind!r}."
+            ),
+        )
+    return entry
+
+
 def inspect_installed(plugin_id: str, *, lockfile: dict[str, Any]) -> Inspection:
     """Describe the update available for an installed repository plugin.
 
     The source is taken from the lockfile rather than re-typed, which is what
     makes ``cdui plugin update`` and the Plugin Center's update button follow
     the same repository and the same ref the user originally agreed to.
-
-    Only ``github_url`` plugins have an update to look for: a built-in pack
-    updates with CodefyUI itself, and a linked development directory is
-    whatever is on the developer's disk right now.
+    :func:`updatable_entry` decides whether there is one to follow.
 
     Provenance is carried forward rather than dropped. Re-inspecting is the
     same plugin seen a second time, so an update dialog must be able to say
@@ -403,20 +456,19 @@ def inspect_installed(plugin_id: str, *, lockfile: dict[str, Any]) -> Inspection
     dialog that updates it. Without this, every update of an official plugin
     read as third-party free text.
     """
-    entry = _lockfile_entry(lockfile, plugin_id)
-    if entry is None:
-        raise PluginInstallError(f"Plugin {plugin_id!r} is not installed.")
-    source_kind = entry.get("source_kind")
-    if source_kind != "github_url":
-        raise PluginInstallError(
-            f"Plugin {plugin_id!r} does not update from a repository.",
-            hint=f"Its source_kind is {source_kind!r}.",
-        )
+    entry = updatable_entry(plugin_id, lockfile=lockfile)
     url = _text(entry.get("url"))
     match = _GITHUB_URL.match(url) or _GITHUB_SHORT.match(_text(entry.get("source")))
     if match is None:
-        raise PluginInstallError(
+        # Installed from a repository whose name is no longer in the record:
+        # a hand-edited lockfile, or one written by a build that spelled the
+        # url differently. Still "nothing to fetch", so it is the same
+        # refusal -- with the two fields that were looked at, because this
+        # one is a bug report rather than a decision.
+        raise NotUpdatable(
             f"Cannot tell which repository {plugin_id!r} came from.",
+            plugin_id=plugin_id,
+            source_kind="github_url",
             hint=f"url={entry.get('url')!r} source={entry.get('source')!r}",
         )
     recorded_catalog_id = _text(entry.get("catalog_id")) or None
