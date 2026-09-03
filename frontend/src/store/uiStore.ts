@@ -63,9 +63,11 @@ interface UIState {
   pluginCenterOpen: boolean;
   pluginCenterFocusPluginId: string | null;
   openPluginCenter: (pluginId?: string) => void;
-  /** Point the open panel at another plugin — or clear the request once it
-   * has been honoured, which is what keeps the highlight from firing again on
-   * every subsequent render. */
+  /**
+   * Point the open panel at another plugin — or clear the request once it has
+   * been honoured, which is what keeps the highlight from firing again on
+   * every subsequent render.
+   */
   setPluginCenterFocus: (pluginId: string | null) => void;
   closePluginCenter: () => void;
   draggingSourceType: string | null;
