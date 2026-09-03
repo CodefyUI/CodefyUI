@@ -223,6 +223,13 @@ def check_ref_format(root: Path, name: str) -> str:
     ``validate_branch_name``) runs FIRST and is what stops that one; git
     then rejects what it alone knows about, with exit 1.
 
+    Every non-zero exit is the same answer. ``check-ref-format`` documents 1
+    for "not a valid ref name" and uses 128 for a call it could not make
+    sense of at all (a missing argument, an option it does not know), and
+    the second is still "git will not take this name" as far as a browser is
+    concerned -- reporting it as a 500 would be a server error for a
+    question the user asked wrongly.
+
     Nothing calls this yet. Branches are G3's; the check belongs with the
     service that will make them, and it is here now so that it is written
     once and tested against a real git rather than invented in a hurry
@@ -230,7 +237,7 @@ def check_ref_format(root: Path, name: str) -> str:
     """
     validate_branch_name(name)
     result = run_git(["check-ref-format", f"refs/heads/{name}"], cwd=root,
-                     timeout=T_STATUS, ok_codes=(0, 1), read_only=True)
+                     timeout=T_STATUS, ok_codes=(0, 1, 128), read_only=True)
     if result.returncode != 0:
         raise GitError("invalid_ref", 400, f"git will not accept {name!r} "
                                            f"as a branch name")

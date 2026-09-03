@@ -38,7 +38,7 @@ from ..project import PROJECT_GITATTRIBUTES, PROJECT_GITIGNORE
 from .errors import GitError
 from .models import ConfigScope, GitStatus, Identity
 from .paths import validate_identity, validate_sha
-from .runner import T_LOCAL, T_STATUS, run_git
+from .runner import T_LOCAL, T_READ, T_STATUS, run_git
 from .status import parse_porcelain_v2
 
 #: The line ``.gitignore`` has to contain for the project's secrets to stay
@@ -355,13 +355,18 @@ def _in_progress(root: Path) -> tuple[bool, bool]:
     absolute path replaces the root.
 
     Fewer than three lines means a git that answered something this does not
-    understand. "No merge in progress" is the safe answer to that -- it
-    leaves the buttons enabled and lets git itself refuse -- and a status
-    read must not fail over a flag.
+    understand, and a FAILURE means one that could not answer at all (a
+    repository being rewritten under us, a ``rev-parse`` that timed out
+    behind a lock). "No merge in progress" is the safe answer to both -- it
+    leaves the buttons enabled and lets git itself refuse the operation --
+    and the status the whole tab is drawn from must not die over a flag.
     """
-    result = run_git(["rev-parse", *(arg for path in IN_PROGRESS_PATHS
-                                     for arg in ("--git-path", path))],
-                     cwd=root, timeout=T_STATUS, read_only=True)
+    try:
+        result = run_git(["rev-parse", *(arg for path in IN_PROGRESS_PATHS
+                                         for arg in ("--git-path", path))],
+                         cwd=root, timeout=T_STATUS, read_only=True)
+    except GitError:
+        return False, False
     lines = result.out.splitlines()
     if len(lines) < len(IN_PROGRESS_PATHS):
         return False, False
@@ -391,7 +396,7 @@ def index_entries(root: Path, paths: Sequence[str]) -> list[tuple[str, str]]:
     compare a SET of the names for that reason.
     """
     result = run_git(["ls-files", "--stage", "-z", "--", *paths], cwd=root,
-                     timeout=T_STATUS, read_only=True)
+                     timeout=T_READ, read_only=True)
     entries: list[tuple[str, str]] = []
     for line in result.out.split("\x00"):
         if not line:
@@ -437,7 +442,7 @@ def _config_value(root: Path, key: str) -> tuple[str | None, ConfigScope | None]
     not a failure -- hence ``ok_codes``.
     """
     result = run_git(["config", "--show-origin", "--get", key], cwd=root,
-                     timeout=T_STATUS, ok_codes=(0, 1), read_only=True)
+                     timeout=T_READ, ok_codes=(0, 1), read_only=True)
     if result.returncode != 0:
         return None, None
     origin, _, value = result.out.rstrip("\n").partition("\t")
@@ -538,7 +543,7 @@ def resolve_commit(root: Path, sha: str) -> str:
     """
     clean = validate_sha(sha)
     result = run_git(["rev-parse", "--verify", "--quiet", f"{clean}^{{commit}}"],
-                     cwd=root, timeout=T_STATUS, ok_codes=(0, 1),
+                     cwd=root, timeout=T_READ, ok_codes=(0, 1),
                      read_only=True)
     full = result.out.strip()
     if result.returncode != 0 or not full:
@@ -558,7 +563,7 @@ def first_parent(root: Path, commit: str) -> str | None:
     is one extra process and is exactly right on every version.
     """
     result = run_git(["rev-parse", "--verify", "--quiet", f"{commit}^"],
-                     cwd=root, timeout=T_STATUS, ok_codes=(0, 1),
+                     cwd=root, timeout=T_READ, ok_codes=(0, 1),
                      read_only=True)
     parent = result.out.strip()
     return parent if result.returncode == 0 and parent else None
