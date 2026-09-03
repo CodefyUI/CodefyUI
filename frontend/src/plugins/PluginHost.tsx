@@ -278,10 +278,12 @@ export async function reloadPluginFrontends(
 
 /**
  * Dev-only: if a linked (local) plugin is installed, poll the reload
- * generation and re-activate plugin frontends whenever it bumps. The bundle is
- * re-imported with a `?v=<generation>` cache-buster (the browser keeps the ESM
- * module registry keyed by URL, so the query bump is required even though the
- * server already sends Cache-Control: no-cache). No-ops in production.
+ * generation and re-activate plugin frontends whenever it bumps, so a linked
+ * plugin's frontend edits land without a browser refresh. The re-activation
+ * (and its cache-buster) is `reloadPluginFrontends` above.
+ *
+ * Armed once, at boot, from the plugin list as it was then: a machine with no
+ * linked plugin never polls, which is every production install.
  */
 async function maybeStartDevHotReload(): Promise<void> {
   if (pollTimer !== null) return;
