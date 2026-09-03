@@ -83,6 +83,8 @@ from app import main
 from tests.test_plugin_service import (
     ScriptedFlow,
     Sources,
+    an_inspection,
+    installed_record,
     types_of,
     wait_started,
 )
@@ -2243,6 +2245,108 @@ async def test_a_github_failure_on_an_update_is_split_the_same_way(
 
     assert response.status_code == expected, response.text
     assert response.json()["detail"] == {"code": code}
+
+
+async def test_a_repository_that_renamed_the_plugin_is_not_an_update(
+        client, flow, fake_github, center_lockfile):
+    """The address is the same and the plugin is not. Updating into it would
+    install something the user never chose, under a name they did."""
+    fake_github.answers(a_manifest("something-else"), sha="c" * 40)
+
+    response = await client.post("/api/plugins/demo-external/update")
+
+    assert response.status_code == 400, response.text
+    detail = response.json()["detail"]
+    assert detail["code"] == "not_updatable"
+    # Both ids, because "install the new one deliberately" is the offer.
+    assert "something-else" in detail["hint"]
+    assert not flow.started.is_set()
+    plugins = lockfile_of(center_lockfile)["plugins"]
+    assert "something-else" not in plugins
+    assert plugins["demo-external"]["sha"] == "0" * 40
+
+
+async def test_a_rename_onto_another_installed_plugin_is_refused_too(
+        client, flow, fake_github, center_lockfile):
+    """The dangerous half of the same bug, and the reason it is not merely
+    untidy: an update carries ``force``, and the lockfile row an inspection
+    compares against is the one keyed by the MANIFEST's id. So a repository
+    that renames itself onto a pack the user also has would replace THAT
+    pack, measured against the capabilities IT was granted -- here
+    ``filesystem``, which nobody ever granted ``demo-external`` -- and the
+    consent screen would never appear."""
+    data = lockfile_of(center_lockfile)
+    data["plugins"]["ghost-pack"]["capabilities"] = ["network", "filesystem"]
+    (center_lockfile / "installed.json").write_text(json.dumps(data),
+                                                    encoding="utf-8")
+    before = lockfile_of(center_lockfile)["plugins"]["ghost-pack"]
+    fake_github.answers("""\
+[plugin]
+id = "ghost-pack"
+name = "Ghost Pack"
+version = "9.9.9"
+schema_version = 1
+
+[security]
+capabilities = ["network", "filesystem"]
+""", sha="c" * 40)
+
+    response = await client.post("/api/plugins/demo-external/update")
+
+    assert response.status_code == 400, response.text
+    assert response.json()["detail"]["code"] == "not_updatable"
+    assert not flow.started.is_set()
+    after = lockfile_of(center_lockfile)["plugins"]
+    assert after["ghost-pack"] == before, "the other plugin was touched"
+    assert after["demo-external"]["sha"] == "0" * 40
+
+
+async def test_an_update_waits_for_the_package_center_too(
+        client, plugin_service, fake_github, monkeypatch):
+    """Two installers, one interpreter and one site-packages. ``reason`` is
+    what tells the panel it is about to offer Follow on somebody else's job.
+
+    The attribute is what the constructor's ``busy_elsewhere=`` sets; this
+    service is built by a fixture every other test here shares.
+    """
+    monkeypatch.setattr(plugin_service, "_busy_elsewhere", lambda: "pack-1")
+
+    refused = await client.post("/api/plugins/demo-external/update")
+
+    assert refused.status_code == 409, refused.text
+    assert refused.json()["detail"] == {"code": "pack_install_running",
+                                        "job_id": "pack-1"}
+    assert fake_github.resolved == [], "GitHub was asked anyway"
+
+
+async def test_an_update_holds_the_read_slot_against_an_inspect(
+        client, monkeypatch):
+    """The other direction of the one-read-at-a-time rule: an update is an
+    inspection, so a source box that fires while one is running is refused
+    exactly as a second ``/inspect`` would be."""
+    updates = Sources()
+    monkeypatch.setattr(inspect_module, "inspect_installed", updates)
+    updates.answer("demo-external", an_inspection(
+        plugin_id="demo-external", mode="update", up_to_date=True,
+        sha="0" * 40, installed=installed_record(sha="0" * 40)))
+    updates.blocked.set()
+    updating = asyncio.create_task(
+        client.post("/api/plugins/demo-external/update"))
+    deadline = time.monotonic() + 10.0
+    while not updates.entered.is_set():
+        assert time.monotonic() < deadline, "the update never started"
+        await asyncio.sleep(0.01)
+
+    refused = await client.post("/api/plugins/inspect",
+                                json={"source": "stats"})
+
+    assert refused.status_code == 409, refused.text
+    assert refused.json()["detail"] == {"code": "inspect_busy"}
+
+    updates.blocked.clear()
+    answered = await updating
+    assert answered.status_code == 200, answered.text
+    assert answered.json() == {"status": "up_to_date", "sha": "0" * 40}
 
 
 async def test_a_repository_that_now_declares_a_reserved_id_is_refused(

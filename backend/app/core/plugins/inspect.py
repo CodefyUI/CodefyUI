@@ -426,14 +426,19 @@ def updatable_entry(plugin_id: str, *, lockfile: dict[str, Any]) -> dict[str, An
         raise NotInstalled(
             f"Plugin {plugin_id!r} is not installed.", plugin_id=plugin_id
         )
-    source_kind = _text(entry.get("source_kind"))
+    recorded = entry.get("source_kind")
+    source_kind = _text(recorded)
     if source_kind != "github_url":
         raise NotUpdatable(
             f"Plugin {plugin_id!r} does not update from a repository.",
             plugin_id=plugin_id,
             source_kind=source_kind,
+            # The fallback quotes what the entry ACTUALLY says, not the
+            # normalised copy: an entry with no ``source_kind`` at all is a
+            # different bug from one that says ``""``, and this branch exists
+            # for the reader of a lockfile nobody expected.
             hint=NO_UPDATE_HINTS.get(
-                source_kind, f"Its source_kind is {source_kind!r}."
+                source_kind, f"Its source_kind is {recorded!r}."
             ),
         )
     return entry
@@ -455,6 +460,15 @@ def inspect_installed(plugin_id: str, *, lockfile: dict[str, Any]) -> Inspection
     uses, so a row cannot be official in the panel and unofficial in the
     dialog that updates it. Without this, every update of an official plugin
     read as third-party free text.
+
+    And the manifest that comes back has to still declare the id it was
+    installed under. A repository that renames its plugin is describing a
+    DIFFERENT plugin at the same address: updating into it would install
+    something the user never chose under a name they did choose, and -- when
+    the new name belongs to another installed pack -- would replace that one
+    instead, inheriting the capabilities IT was granted without a consent
+    screen anywhere. So the rename is refused as "nothing here to update",
+    and installing the new plugin is left as the deliberate act it is.
     """
     entry = updatable_entry(plugin_id, lockfile=lockfile)
     url = _text(entry.get("url"))
@@ -472,7 +486,7 @@ def inspect_installed(plugin_id: str, *, lockfile: dict[str, Any]) -> Inspection
             hint=f"url={entry.get('url')!r} source={entry.get('source')!r}",
         )
     recorded_catalog_id = _text(entry.get("catalog_id")) or None
-    return inspect_github(
+    found = inspect_github(
         match.group(1),
         match.group(2),
         _text(entry.get("ref")),
@@ -480,3 +494,19 @@ def inspect_installed(plugin_id: str, *, lockfile: dict[str, Any]) -> Inspection
         catalog_id=recorded_catalog_id,
         official=listing.is_official(catalog_module.catalog_entry(plugin_id), entry),
     )
+    if found.plugin_id != plugin_id:
+        # The provenance above was read off the row for *plugin_id*, so it is
+        # a claim about the plugin that was asked for. Nothing carrying it
+        # leaves this function unless the manifest agrees about which plugin
+        # that is.
+        raise NotUpdatable(
+            f"{plugin_id!r} now installs as {found.plugin_id!r}.",
+            plugin_id=plugin_id,
+            source_kind="github_url",
+            hint=(
+                f"Its repository renamed the plugin. Install "
+                f"{found.plugin_id!r} as a new plugin if that is what you "
+                f"want."
+            ),
+        )
+    return found
