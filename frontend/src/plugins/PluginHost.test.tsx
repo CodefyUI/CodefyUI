@@ -384,13 +384,17 @@ describe('reloadPluginFrontends', () => {
   afterEach(reset);
 
   it('cache-busts the import with the reload generation', async () => {
-    mockPluginHostFetch({ pluginPayloads: [[A]], generation: 7 });
+    const { calls } = mockPluginHostFetch({ pluginPayloads: [[A]], generation: 7 });
     const activate = vi.fn();
     const importer = vi.fn(async () => ({ default: activate }));
 
     expect(await reloadPluginFrontends(container, importer)).toEqual(['a']);
     expect(importer).toHaveBeenCalledTimes(1);
     expect(importer).toHaveBeenCalledWith('/plugins/a/frontend/index.js?v=7');
+    // The list is read ONCE and activated from that same answer. A second
+    // read would be a second truth: a plugin uninstalled between the two
+    // would be torn down and then activated again from the older list.
+    expect(calls.filter((url) => url === '/api/plugins')).toHaveLength(1);
   });
 
   it('busts with a timestamp when the server has no generation route', async () => {
@@ -560,6 +564,39 @@ describe('reloadPluginFrontends', () => {
     expect(executionEventSubscriberCount()).toBe(1);
     expect(getPluginPanels()).toHaveLength(1);
     expect(getPluginToolbarButtons()).toHaveLength(1);
+  });
+
+  it('does not stack the boot on a load that threw part way through', async () => {
+    // The half-activation: the plugin registered its panel, its button and
+    // its subscription and THEN threw, so it never joined `activatedIds`
+    // while its cleanups stayed on the list. A boot that asked only about
+    // the ids would find "nothing activated here" and stack a second copy
+    // of all three on top of the first.
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      mockPluginHostFetch({ pluginPayloads: [[A]], generation: 2 });
+      const halfway = vi.fn((api: CodefyUIPluginAPI) => {
+        smallPlugin(api);
+        throw new Error('activate exploded');
+      });
+
+      expect(await startPluginFrontends(
+        container, vi.fn(async () => ({ default: halfway })),
+      )).toEqual([]);
+      expect(executionEventSubscriberCount()).toBe(1);
+
+      await startPluginFrontends(
+        container, vi.fn(async () => ({ default: smallPlugin })),
+      );
+
+      // The subscription is the one that cannot hide a duplicate: two
+      // registrations of the same panel id replace each other.
+      expect(executionEventSubscriberCount()).toBe(1);
+      expect(getPluginPanels()).toHaveLength(1);
+      expect(getPluginToolbarButtons()).toHaveLength(1);
+    } finally {
+      warn.mockRestore();
+    }
   });
 
   it('keeps serving later callers after an activation rejects', async () => {

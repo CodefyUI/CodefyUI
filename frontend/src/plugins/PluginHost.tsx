@@ -288,7 +288,11 @@ export async function startPluginFrontends(
   importer: Importer = dynamicImporter,
 ): Promise<string[]> {
   return serialized(() => {
-    if (activatedIds.length > 0) unloadPluginFrontends();
+    // `cleanups` as well as `activatedIds`: a load that threw part way
+    // through registered its cleanups and never got to record the ids, so
+    // reading only the ids would leave that half-activation in place and
+    // stack a second copy of every panel on top of it.
+    if (cleanups.length > 0 || activatedIds.length > 0) unloadPluginFrontends();
     return loadPluginFrontends(getContainer, importer);
   });
 }
