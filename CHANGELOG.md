@@ -42,13 +42,16 @@ received — each links to the release it was published as.
   git says on the way out is scanned for a credential — a token inside a remote
   URL is masked while the host and the path stay, because which remote failed
   is the half of that sentence worth reading. A path that goes through a
-  symbolic link or a Windows junction is refused rather than followed, in both
-  directions: reading one would serve the file at the other end of it, and
-  discarding one would delete that file. The limit of that guard is worth
-  stating plainly — a hard link is indistinguishable from the file itself, and
-  making one on the server already takes the local write access that would let
-  somebody copy the file anyway. Writing needs the session token every other
-  mutating call needs; reading is open, like every other read in the app.
+  symbolic link or a Windows junction is refused rather than followed —
+  reading one would serve the file at the other end of it, and discarding one
+  would delete that file — and the whole-tree buttons hold to the same rule:
+  they skip whatever a link redirects and say what they skipped, rather than
+  quietly staging a folder that is not part of the project. The limit of that
+  guard is worth stating plainly — a hard link is indistinguishable from the
+  file itself, and making one on the server already takes the local write
+  access that would let somebody copy the file anyway. Writing needs the
+  session token every other mutating call needs; reading is open, like every
+  other read in the app.
 
 ### Changed
 

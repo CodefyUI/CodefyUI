@@ -39,7 +39,7 @@ from __future__ import annotations
 
 import asyncio
 import os
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterable, Sequence
 from pathlib import Path
 from typing import Any, TypeVar
 
@@ -90,6 +90,12 @@ MIN_GIT_VERSION = (2, 23, 0)
 #: The states in which no git command can be run at all -- as opposed to
 #: ``not_repo``, which ``init`` exists to fix.
 _UNUSABLE_STATES = ("no_project", "git_missing", "git_too_old")
+
+#: How many paths one git process is given by the whole-tree writes, which
+#: name every file they touch (see :func:`_run_over`). Windows stops a
+#: command line at about 32,000 characters; 200 paths is a few kilobytes
+#: with room for the longest name anybody has.
+PATHS_PER_PROCESS = 200
 
 
 # --- the repository --------------------------------------------------------
@@ -257,7 +263,7 @@ def _selection(paths: Sequence[str] | None, all_paths: bool
 def _writable_paths(root: Path, paths: Sequence[str]) -> list[str]:
     """The paths of one write, validated and checked for a link in the way.
 
-    Every named path a mutation acts on goes through here, and nowhere else
+    Every NAMED path a mutation acts on goes through here, and nowhere else
     does: ``validate_rel_path`` allows a link (it must -- see
     ``repo.refuse_link_parents``), and a path whose PARENT is a link or a
     Windows junction resolves inside the project and passes every other
@@ -265,9 +271,15 @@ def _writable_paths(root: Path, paths: Sequence[str]) -> list[str]:
     theoretical: it is how ``discard`` once deleted the file a gitignored
     folder held.
 
-    The whole-tree form (``all``) does not come through here and does not
-    need to: git scopes ``-- .`` to the repository itself, and does not
-    follow a link out of it.
+    The whole-tree forms ask the same question through
+    :func:`_tree_selection`, and they have to: git DOES descend a junction.
+    Measured on Windows -- with ``proj/notes`` a junction to a folder
+    outside the project, ``git status`` lists the files under it as
+    untracked and ``git add -A -- .`` stages them into this repository,
+    which is the same write the per-path guard refuses. The destructive
+    half of ``discard`` is the exception and stays a whole-tree ``clean -fd
+    -- .``: git removes the LINK, never what it points at (measured, in
+    both the junction and the symlink shape).
     """
     clean = validate_rel_paths(root, paths)
     for path in clean:
@@ -275,17 +287,79 @@ def _writable_paths(root: Path, paths: Sequence[str]) -> list[str]:
     return clean
 
 
+def _tree_selection(root: Path, paths: Iterable[str]
+                    ) -> tuple[list[str], list[str]]:
+    """Split a whole-tree write into ``(what to do, what to leave alone)``.
+
+    The paths come from a fresh status -- git's own spelling of every file
+    it would touch -- and each of them meets the SAME guard a named path
+    does, because "all" is not a different kind of consent. Without it,
+    ``git add -A -- .`` staged files from outside the project through a
+    junction while ``stage(["notes/keys.txt"])`` was refused: the same
+    write, allowed or not depending on which button the user pressed.
+
+    A refused path is SKIPPED and reported, not fatal. One link in a
+    project must not make "stage everything" impossible, and the caller
+    puts the skipped list in ``detail`` so the tab can say what it left
+    alone rather than quietly doing less than it claimed.
+
+    Sorted and deduplicated: a file can be in two groups of one status
+    (``MM`` is staged and unstaged), and a stable order makes the argv --
+    and the skipped list the tab shows -- reproducible.
+    """
+    kept: list[str] = []
+    skipped: list[str] = []
+    for path in sorted(set(paths)):
+        if repo.link_parent_refusal(root, path) is None:
+            kept.append(path)
+        else:
+            skipped.append(path)
+    return kept, skipped
+
+
+def _run_over(root: Path, args: Sequence[str], paths: Sequence[str], *,
+              timeout: float) -> None:
+    """Run ``git <args> -- <paths>``, in chunks a command line can hold.
+
+    A working tree can hold more paths than Windows allows in one command
+    line (about 32,000 characters), and a whole-tree write names every one
+    of them. :data:`PATHS_PER_PROCESS` at a time is a few kilobytes per
+    process, which git spends longer working on than it costs to start.
+
+    An empty list runs NOTHING, which is the point rather than an edge
+    case: every command these arguments spell treats an absent pathspec as
+    "the whole tree", so "nothing to do" must never reach git as "do it
+    all".
+    """
+    for start in range(0, len(paths), PATHS_PER_PROCESS):
+        chunk = paths[start:start + PATHS_PER_PROCESS]
+        run_git([*args, "--", *chunk], cwd=root, timeout=timeout)
+
+
 def stage_paths(root: Path, paths: Sequence[str] | None = None
                 ) -> dict[str, Any]:
-    """Stage *paths*, or the whole tree when *paths* is None.
+    """Stage *paths*, or everything a fresh status names when *paths* is None.
 
     ``add -A`` for both forms, because "stage this file" has to include
     staging its DELETION -- a file the user deleted is a change like any
     other, and plain ``add`` would silently skip it.
+
+    The whole-tree form is the status's own three groups -- unstaged,
+    untracked and conflicted -- named one by one instead of ``.``, so that
+    a path reaching out of the project through a link is skipped and said
+    so (:func:`_tree_selection`). A conflicted path is in the list because
+    ``add`` is how a resolution is marked, which is what "Stage All" means
+    in the middle of a merge.
     """
     if paths is None:
-        run_git(["add", "-A", "--", "."], cwd=root, timeout=T_LOCAL)
-        return {"all": True}
+        status = repo.read_status(root)
+        kept, skipped = _tree_selection(
+            root, (entry.path
+                   for group in (status.unstaged, status.untracked,
+                                 status.conflicted)
+                   for entry in group))
+        _run_over(root, ["add", "-A"], kept, timeout=T_LOCAL)
+        return {"all": True, "skipped": skipped}
     clean = _writable_paths(root, paths)
     run_git(["add", "-A", "--", *clean], cwd=root, timeout=T_LOCAL)
     return {"paths": clean}
@@ -300,13 +374,22 @@ def unstage_paths(root: Path, paths: Sequence[str] | None = None
     HEAD yet, so the answer for a repository whose first commit has not
     happened is ``rm --cached`` -- remove it from the index, leave it on
     disk. Which state we are in is read, not guessed.
+
+    The whole-tree form names the staged files rather than running a bare
+    ``reset``, for the reason in :func:`_tree_selection`; the same list goes
+    to whichever of the two commands this repository's HEAD allows. A
+    conflicted path is NOT in it: it is not staged, and taking it out of
+    the index would throw away the three versions a merge tool needs.
     """
-    unborn = repo.read_status(root).unborn
+    status = repo.read_status(root)
+    unborn = status.unborn
     if paths is None:
-        args = (["rm", "--cached", "-r", "-q", "--", "."] if unborn
-                else ["reset", "-q"])
-        run_git(args, cwd=root, timeout=T_LOCAL)
-        return {"all": True}
+        kept, skipped = _tree_selection(
+            root, (entry.path for entry in status.staged))
+        args = (["rm", "--cached", "-r", "-q"] if unborn
+                else ["restore", "--staged"])
+        _run_over(root, args, kept, timeout=T_LOCAL)
+        return {"all": True, "skipped": skipped}
 
     clean = _writable_paths(root, paths)
     args = (["rm", "--cached", "-r", "-q", "--", *clean] if unborn
@@ -348,7 +431,11 @@ def discard_paths(root: Path, paths: Sequence[str] | None = None
     """
     if paths is None:
         # The whole-tree restore NAMES its files rather than passing ``.``,
-        # and both reasons are measured on git 2.53.
+        # and there are three reasons, all measured on git 2.53.
+        #
+        # A path that reaches its file through a link or a junction is
+        # skipped and reported, like the other two whole-tree writes -- see
+        # ``_tree_selection``.
         #
         # ``restore --worktree -- .`` exits 1 with "error: path 'a.txt' is
         # unmerged" as soon as one conflicted file sits beside an ordinary
@@ -363,12 +450,17 @@ def discard_paths(root: Path, paths: Sequence[str] | None = None
         # initialised -- and the clean would then never run. An empty list
         # skips the process instead of tolerating a failure it cannot tell
         # apart from a real one.
-        restore = [entry.path for entry in repo.read_status(root).unstaged]
-        if restore:
-            run_git(["restore", "--worktree", "--", *restore], cwd=root,
-                    timeout=T_LOCAL)
+        restore, skipped = _tree_selection(
+            root, (entry.path for entry in repo.read_status(root).unstaged))
+        _run_over(root, ["restore", "--worktree"], restore, timeout=T_LOCAL)
+        # The one whole-tree ``.`` that stays, because it is the safe half:
+        # ``clean -fd`` removes the LINK itself and never what it points at
+        # (measured, both shapes -- the junction went, the folder outside
+        # the project it pointed at was untouched). Naming the untracked
+        # files instead would leave every dangling link in place, which is
+        # not what "discard everything" means.
         run_git(["clean", "-fd", "--", "."], cwd=root, timeout=T_LOCAL)
-        return {"all": True}
+        return {"all": True, "skipped": skipped}
 
     clean = _writable_paths(root, paths)
     submodules = repo.submodule_paths(root, clean)

@@ -547,6 +547,24 @@ async def test_stage_all_takes_the_whole_tree(repo):
     assert sorted(entry.path for entry in result.status.staged) == [
         "a.txt", "dir/new.txt"]
     assert result.status.unstaged == []
+    # Present even when nothing was left out, so the tab reads one shape.
+    assert result.detail["skipped"] == []
+
+
+async def test_stage_all_marks_a_resolved_conflict(repo):
+    """"Stage All" in the middle of a merge means "these are resolved".
+
+    A conflicted path is in the list the whole-tree form builds because
+    ``add`` is how a resolution is marked; leaving it out would make the
+    button do nothing on the one file the user is actually working on.
+    """
+    _conflicted(repo)
+    repo.write("a.txt", "resolved by hand\n")
+
+    result = await repo.service.stage(all_paths=True)
+
+    assert result.status.conflicted == []
+    assert [entry.path for entry in result.status.staged] == ["a.txt"]
 
 
 async def test_stage_includes_a_deletion(repo):
@@ -1385,16 +1403,34 @@ async def test_reading_a_folder_at_a_ref_is_a_400_not_a_500(repo):
 # --- a link is a path to somewhere else -------------------------------------
 
 
-def _link(target: Path, link: Path) -> None:
+def _link(target: Path, link: Path, *, directory: bool = False) -> None:
     """Make a symlink, or skip the test on a machine that will not.
 
     Windows needs Developer Mode or an elevated process to create one; Linux
     CI always can, so the tests below run there whatever this box says.
+    ``directory`` is Windows' distinction: a link to a folder has to be
+    created as one, and POSIX ignores the flag.
     """
     try:
-        os.symlink(target, link)
+        os.symlink(target, link, target_is_directory=directory)
     except (OSError, NotImplementedError) as exc:
         pytest.skip(f"this OS would not create a symbolic link: {exc}")
+
+
+def _junction_or_skip(link: Path, target: Path) -> None:
+    """Make a Windows junction, or skip: not every box allows one."""
+    made = subprocess.run(["cmd", "/c", "mklink", "/J", str(link), str(target)],
+                          capture_output=True)
+    if made.returncode != 0:
+        pytest.skip("this box would not create a junction")
+
+
+def _folder_outside(tmp_path: Path) -> Path:
+    """A folder with a secret in it that is NOT part of the project."""
+    outside = tmp_path / "outside"
+    outside.mkdir(exist_ok=True)
+    (outside / "keys.txt").write_text(f"{SECRET}\n", encoding="utf-8")
+    return outside
 
 
 async def test_a_worktree_read_never_follows_a_symbolic_link(repo):
@@ -1584,6 +1620,99 @@ async def test_the_other_two_writes_refuse_a_linked_parent_too(repo, write):
         await getattr(repo.service, write)(["notes/keys.txt"])
 
     assert _error(excinfo).code == "invalid_path"
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="junctions are Windows'")
+async def test_stage_all_skips_what_a_junction_reaches_and_says_so(repo,
+                                                                   tmp_path):
+    """"All" is not a different kind of consent from naming the file.
+
+    Measured on Windows: with ``notes`` a junction to a folder OUTSIDE the
+    project, ``git status --untracked-files=all`` lists ``notes/keys.txt``
+    and ``git add -A -- .`` stages it -- somebody else's file, in this
+    repository's index, from the one button whose per-path form refuses
+    exactly that write. The whole-tree form now names what it stages, so
+    the same guard sees it; what it leaves out it reports.
+    """
+    outside = _folder_outside(tmp_path)
+    _junction_or_skip(repo.root / "notes", outside)
+
+    result = await repo.service.stage(all_paths=True)
+
+    assert result.status.staged == []
+    assert result.detail["skipped"] == ["notes/keys.txt"]
+    assert (outside / "keys.txt").read_text(encoding="utf-8") == f"{SECRET}\n"
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="junctions are Windows'")
+async def test_discard_all_removes_a_junction_and_leaves_its_target(repo,
+                                                                    tmp_path):
+    """The destructive half stays a whole-tree ``clean -fd -- .``.
+
+    That is safe in a way ``add`` is not: git removes the LINK and never
+    what it points at (measured, both shapes). Naming the untracked files
+    instead would leave every dangling junction where it was, which is not
+    what "discard everything" means.
+    """
+    outside = _folder_outside(tmp_path)
+    _junction_or_skip(repo.root / "notes", outside)
+
+    await repo.service.discard(all_paths=True)
+
+    assert not (repo.root / "notes").exists()
+    assert (outside / "keys.txt").read_text(encoding="utf-8") == f"{SECRET}\n"
+
+
+async def test_stage_all_stages_a_symlinked_folder_but_nothing_under_it(
+        repo, tmp_path):
+    """The other shape, and it needs no skipping: git does not descend one.
+
+    A symbolic link to a directory is listed as ONE untracked entry and
+    stored as a blob holding the path it points at, so "stage everything"
+    stages the link and never the files at the other end of it. Nothing is
+    skipped because nothing under it was ever offered -- which is why the
+    junction, where git DOES descend, is the shape the filter exists for.
+    """
+    outside = _folder_outside(tmp_path)
+    _link(outside, repo.root / "notes", directory=True)
+
+    result = await repo.service.stage(all_paths=True)
+
+    staged = [entry.path for entry in result.status.staged]
+    assert staged == ["notes"]
+    assert not any(path.startswith("notes/") for path in staged)
+    assert (outside / "keys.txt").read_text(encoding="utf-8") == f"{SECRET}\n"
+
+
+async def test_discard_all_removes_a_symlinked_folder_and_keeps_its_target(
+        repo, tmp_path):
+    outside = _folder_outside(tmp_path)
+    _link(outside, repo.root / "notes", directory=True)
+
+    await repo.service.discard(all_paths=True)
+
+    assert not os.path.lexists(repo.root / "notes")
+    assert (outside / "keys.txt").read_text(encoding="utf-8") == f"{SECRET}\n"
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="junctions are Windows'")
+async def test_unstage_all_leaves_what_a_junction_reaches_alone(repo,
+                                                                tmp_path):
+    """The same filter on the third whole-tree write.
+
+    ``notes/keys.txt`` is in the index only because it was staged before
+    the guard existed (git will do it: ``update-index --add`` names the
+    path git itself reported). Unstaging it would be a write through the
+    junction like any other, so it is skipped and reported.
+    """
+    outside = _folder_outside(tmp_path)
+    _junction_or_skip(repo.root / "notes", outside)
+    repo.git("add", "-A", "--", ".")
+
+    result = await repo.service.unstage(all_paths=True)
+
+    assert result.detail["skipped"] == ["notes/keys.txt"]
+    assert [entry.path for entry in result.status.staged] == ["notes/keys.txt"]
 
 
 async def test_discarding_a_tracked_symlink_file_itself_still_works(repo):

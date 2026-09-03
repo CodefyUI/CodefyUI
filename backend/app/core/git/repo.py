@@ -263,6 +263,40 @@ def path_redirects(root: Path, segments: Sequence[str]) -> bool:
     return os.path.normcase(str(actual)) != os.path.normcase(str(lexical))
 
 
+def link_parent_refusal(root: Path, path: str) -> GitError | None:
+    """The refusal *path* earns for reaching its file through a link; or None.
+
+    The same question :func:`refuse_link_parents` asks, as a value rather
+    than as an exception, because the whole-tree writes have to SKIP what
+    the per-path guard refuses instead of failing over it -- and "what the
+    per-path guard refuses" must be one answer, not a second opinion that
+    can drift from the first.
+
+    Both checks, for the same reason the read side runs both: ``is_symlink``
+    sees a symbolic link at any depth and cannot see a junction;
+    :func:`path_redirects` sees either. A path that cannot be RESOLVED at
+    all (a symlink cycle) hands back its own refusal: it cannot be shown to
+    stay where it says it is either.
+    """
+    parents = path.split("/")[:-1]
+    current = root
+    for segment in parents:
+        current = current / segment
+        if current.is_symlink():
+            return GitError("invalid_path", 400,
+                            f"{path} goes through a symbolic link",
+                            hint=LINK_PARENT_HINT)
+    try:
+        redirected = path_redirects(root, parents)
+    except GitError as exc:
+        return exc
+    if redirected:
+        return GitError("invalid_path", 400,
+                        f"{path} does not stay where it says it is",
+                        hint=LINK_PARENT_HINT)
+    return None
+
+
 def refuse_link_parents(root: Path, path: str) -> None:
     """Refuse a WRITE whose path goes through a link or a junction.
 
@@ -281,22 +315,12 @@ def refuse_link_parents(root: Path, path: str) -> None:
     a path, where the redirection is not the thing being operated on but the
     way to something else.
 
-    Both checks, for the same reason the read side runs both: ``is_symlink``
-    sees a symbolic link at any depth and cannot see a junction;
-    :func:`path_redirects` sees either.
+    :func:`link_parent_refusal` is the same question asked without raising,
+    for the whole-tree writes.
     """
-    parents = path.split("/")[:-1]
-    current = root
-    for segment in parents:
-        current = current / segment
-        if current.is_symlink():
-            raise GitError("invalid_path", 400,
-                           f"{path} goes through a symbolic link",
-                           hint=LINK_PARENT_HINT)
-    if path_redirects(root, parents):
-        raise GitError("invalid_path", 400,
-                       f"{path} does not stay where it says it is",
-                       hint=LINK_PARENT_HINT)
+    refusal = link_parent_refusal(root, path)
+    if refusal is not None:
+        raise refusal
 
 
 # --- reading the state -----------------------------------------------------
