@@ -53,6 +53,21 @@ interface UIState {
    */
   setPackCenterFocus: (packId: string | null) => void;
   closePackCenter: () => void;
+  /**
+   * Plugin Center modal. The Package Center's rules, one for one: workspace
+   * -global, never persisted, and `pluginCenterFocusPluginId` is the row the
+   * panel should scroll to when the modal was opened FROM something that
+   * needs a specific plugin (a toast about an install, a node whose plugin is
+   * disabled) rather than from the menu.
+   */
+  pluginCenterOpen: boolean;
+  pluginCenterFocusPluginId: string | null;
+  openPluginCenter: (pluginId?: string) => void;
+  /** Point the open panel at another plugin — or clear the request once it
+   * has been honoured, which is what keeps the highlight from firing again on
+   * every subsequent render. */
+  setPluginCenterFocus: (pluginId: string | null) => void;
+  closePluginCenter: () => void;
   draggingSourceType: string | null;
   setDraggingSourceType: (type: string | null) => void;
   /** Endpoint of the edge currently being detached during an edge-reconnect
@@ -182,6 +197,13 @@ export const useUIStore = create<UIState>((set) => ({
   setPackCenterFocus: (packId) => set({ packCenterFocusPackId: packId }),
   closePackCenter: () =>
     set({ packCenterOpen: false, packCenterFocusPackId: null }),
+  pluginCenterOpen: false,
+  pluginCenterFocusPluginId: null,
+  openPluginCenter: (pluginId) =>
+    set({ pluginCenterOpen: true, pluginCenterFocusPluginId: pluginId ?? null }),
+  setPluginCenterFocus: (pluginId) => set({ pluginCenterFocusPluginId: pluginId }),
+  closePluginCenter: () =>
+    set({ pluginCenterOpen: false, pluginCenterFocusPluginId: null }),
   draggingSourceType: null,
   setDraggingSourceType: (type) => set({ draggingSourceType: type }),
   reconnectingHandle: null,

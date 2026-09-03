@@ -31,6 +31,8 @@ describe('useUIStore', () => {
       shortcutsModalOpen: false,
       packCenterOpen: false,
       packCenterFocusPackId: null,
+      pluginCenterOpen: false,
+      pluginCenterFocusPluginId: null,
       draggingSourceType: null,
       reconnectingHandle: null,
       beginnerMode: false,
@@ -169,6 +171,62 @@ describe('useUIStore', () => {
       // render does not scroll the list out from under the reader again.
       useUIStore.getState().setPackCenterFocus(null);
       expect(useUIStore.getState().packCenterFocusPackId).toBeNull();
+      expect(useUIStore.getState().packCenterOpen).toBe(true);
+    });
+  });
+
+  describe('openPluginCenter / closePluginCenter', () => {
+    it('records the focus plugin and closePluginCenter clears it', () => {
+      expect(useUIStore.getState().pluginCenterOpen).toBe(false);
+      expect(useUIStore.getState().pluginCenterFocusPluginId).toBeNull();
+
+      // Opened from a toast about an install that failed: the panel scrolls
+      // to that plugin, where its log is.
+      useUIStore.getState().openPluginCenter('demo');
+      expect(useUIStore.getState().pluginCenterOpen).toBe(true);
+      expect(useUIStore.getState().pluginCenterFocusPluginId).toBe('demo');
+
+      useUIStore.getState().closePluginCenter();
+      expect(useUIStore.getState().pluginCenterOpen).toBe(false);
+      expect(useUIStore.getState().pluginCenterFocusPluginId).toBeNull();
+    });
+
+    it('opens with no focus when reached from the menu', () => {
+      useUIStore.getState().openPluginCenter('demo');
+      useUIStore.getState().closePluginCenter();
+      useUIStore.getState().openPluginCenter();
+      expect(useUIStore.getState().pluginCenterOpen).toBe(true);
+      expect(useUIStore.getState().pluginCenterFocusPluginId).toBeNull();
+    });
+
+    it('is transient — writes nothing to localStorage', () => {
+      useUIStore.getState().openPluginCenter('demo');
+      expect(localStorage.length).toBe(0);
+      useUIStore.getState().closePluginCenter();
+      expect(localStorage.length).toBe(0);
+    });
+
+    it('setPluginCenterFocus re-points the open panel without closing it', () => {
+      useUIStore.getState().openPluginCenter();
+
+      useUIStore.getState().setPluginCenterFocus('c1');
+      expect(useUIStore.getState().pluginCenterFocusPluginId).toBe('c1');
+      expect(useUIStore.getState().pluginCenterOpen).toBe(true);
+
+      useUIStore.getState().setPluginCenterFocus(null);
+      expect(useUIStore.getState().pluginCenterFocusPluginId).toBeNull();
+      expect(useUIStore.getState().pluginCenterOpen).toBe(true);
+    });
+
+    it('is a separate modal from the Package Center', () => {
+      // Two panels, two flags: opening one must not close or focus the other.
+      useUIStore.getState().openPackCenter('word-vectors');
+      useUIStore.getState().openPluginCenter('demo');
+
+      expect(useUIStore.getState().packCenterOpen).toBe(true);
+      expect(useUIStore.getState().packCenterFocusPackId).toBe('word-vectors');
+
+      useUIStore.getState().closePluginCenter();
       expect(useUIStore.getState().packCenterOpen).toBe(true);
     });
   });
