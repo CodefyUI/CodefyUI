@@ -30,7 +30,7 @@ import pytest
 
 from app.core import plugin_loader
 from app.core.packs import runner as packs_runner
-from app.core.plugins import flows, github
+from app.core.plugins import deps, flows, github
 from app.core.plugins import inspect as plugin_inspect
 from app.core.plugins.errors import (
     AlreadyInstalled,
@@ -503,6 +503,48 @@ def test_any_other_pip_failure_keeps_uvs_last_lines(fake_github, fake_pip):
     assert "could not download tinylib" in (excinfo.value.hint or "")
 
 
+@pytest.fixture
+def flushes(monkeypatch) -> list[bool]:
+    """Record every ``importlib.invalidate_caches()`` the deps step makes.
+
+    The pattern is ``test_packs_state.py``'s. Recorded rather than asserted
+    inline because the interesting part is the COUNT on each way out: the
+    flush is in a ``finally``, and the failing path is the one where leaving
+    it out is invisible until a later import answers from a directory listing
+    taken before the install.
+    """
+    seen: list[bool] = []
+    monkeypatch.setattr(deps.importlib, "invalidate_caches",
+                        lambda: seen.append(True))
+    return seen
+
+
+def test_a_finished_dependency_install_flushes_the_import_system(
+    fake_github, fake_pip, flushes
+):
+    """A package written a second ago is on disk but not in the directory
+    listings Python cached before uv ran, so the very next import in this
+    process would answer from a picture taken before the install."""
+    fake_github({"cdui.plugin.toml": WITH_DEPS})
+    fake_pip()
+    _install(_github_plan())
+    assert flushes == [True]
+
+
+def test_a_failed_dependency_install_flushes_it_too(
+    fake_github, fake_pip, flushes
+):
+    """The path where forgetting is invisible: uv installs in dependency
+    order and stops at the first failure, so a run that failed has usually
+    written some of the packages anyway."""
+    fake_github({"cdui.plugin.toml": WITH_DEPS})
+    fake_pip(returncode=2, output=("error: could not download tinylib",))
+
+    with pytest.raises(PluginInstallError):
+        _install(_github_plan())
+    assert flushes == [True]
+
+
 # ── stopping ───────────────────────────────────────────────────────────────
 
 def test_a_cancel_during_the_download_leaves_nothing_behind(
@@ -832,6 +874,23 @@ def test_a_plan_that_names_no_commit_is_refused(user_root):
     with pytest.raises(PluginInstallError) as excinfo:
         _install(_bare_plan(sha=None))
     assert "names no commit" in str(excinfo.value)
+
+
+@pytest.mark.parametrize("plugin_id", ["../x", "a/b", "", "Extras", ".."])
+def test_a_plan_whose_id_is_not_a_plugin_id_never_reaches_a_step(
+    user_root, plugin_id
+):
+    """Three writes are built out of ``plan.plugin_id`` -- the staging
+    directory, the install directory and the lockfile key -- and the two that
+    are paths join it to a root, so ``../x`` writes outside the plugin
+    directory entirely. Refused at the flow's own door, which is the one
+    every caller goes through."""
+    events: list[dict] = []
+    with pytest.raises(PluginInstallError) as excinfo:
+        _install(_bare_plan(plugin_id=plugin_id), emit=events.append)
+    assert "not a plugin id" in str(excinfo.value)
+    assert events == [], "refused before the first step was announced"
+    assert list(user_root.iterdir()) == []
 
 
 def test_a_reserved_id_is_refused_before_anything_is_downloaded(user_root):

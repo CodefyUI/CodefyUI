@@ -72,6 +72,7 @@ from .errors import (
 )
 from .inspect import Inspection
 from .manifest import (
+    PLUGIN_ID_RE,
     manifest_allowed_modules,
     manifest_capabilities,
     manifest_python_deps,
@@ -256,6 +257,20 @@ def install_plugin_live(
     only some of the names falls back to the core one per name, which is
     what lets the CLI hand over its own module unchanged.
     """
+    # At the door, before anything is dispatched. Three writes are built out
+    # of ``plan.plugin_id`` -- the staging directory, the install directory
+    # and the lockfile key -- and the two that are paths join it to a root, so
+    # a plan carrying ``../x`` writes outside the plugin directory entirely.
+    # Every plan from ``plan_from_inspection`` carries an id whose manifest
+    # already had to satisfy this pattern to declare it, which is exactly why
+    # the check belongs here as well: this function is public and takes a
+    # plan, and uninstall does the same thing at its own door rather than
+    # trusting the string it was handed (it resolves and checks the parent).
+    if not PLUGIN_ID_RE.fullmatch(plan.plugin_id):
+        raise PluginInstallError(
+            f"{plan.plugin_id!r} is not a plugin id this build will install.",
+            hint=f"A plugin id has to match {PLUGIN_ID_RE.pattern}.",
+        )
     if plan.kind == "builtin":
         return _install_builtin(plan, emit=emit, cancel_check=cancel_check)
     if plan.kind == "github":
@@ -603,6 +618,15 @@ def _refuse_a_changed_manifest(
             f"consented to"
         )
     elif allowed_modules and not plan.trust_author:
+        # Defence in depth, and reachable only from a plan built by hand.
+        # ``plan_from_inspection`` sets ``trust_author`` to
+        # ``bool(inspection.allowed_modules)``, and the plan's manifest IS the
+        # inspection's -- so a downloaded list that added nothing to
+        # ``consented`` means ``consented`` is not empty, which means
+        # ``trust_author`` is True and this branch is not taken. It stays
+        # because it is the coarser refusal underneath the comparison: a
+        # module list nobody was asked about at all, for any caller that
+        # reaches this function with a plan of its own making.
         reasons.append(
             f"it asks to import {', '.join(allowed_modules)}, which needs the "
             f"author trusted"
