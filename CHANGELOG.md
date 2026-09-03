@@ -153,7 +153,7 @@ received — each links to the release it was published as.
   plugin installer's GitHub calls use it. It is read per call, so a token
   exported after the server started still works, and no copy of it is kept.
   The second is the same loopback gate the Package Center has, for the
-  install routes landing next: installing a plugin puts third-party code
+  install routes above: installing a plugin puts third-party code
   where this process will import it, so the answer to "who may install one"
   is "whoever is sitting at this machine" unless a deliberate classroom or
   lab server opts back in with `CODEFYUI_ALLOW_REMOTE_PLUGIN_INSTALL=1`.

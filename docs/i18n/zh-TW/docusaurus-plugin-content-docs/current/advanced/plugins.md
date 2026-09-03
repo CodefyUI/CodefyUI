@@ -25,7 +25,7 @@ cdui plugin uninstall deep                 # 會被記住：sync 不會再把它
 | `foundations` | I1 Data Representation · I2 Classical ML | Edu-ColumnStats、Edu-KNN、Edu-LinearRegression、Edu-LogisticRegression、Edu-TokenEmbedding、Edu-FFN |
 | `deep` | I3 Vision · I4 Sequences | Edu-CrossAttention、Edu-ResBlock、Edu-SelfAttention、Edu-MultiHeadAttention、Edu-Patchify |
 | `rl` | I5 Reinforcement Learning | Edu-PolicyGradient |
-| `edu` | I1 Data Representation · I2 Classical ML（動手實作 labs） | FilterRows、SlidingWindow2D、SentenceEmbedding、Classifier、AdvancedClassifier、FFNLayer、ActivationLayer、TrainAndEvaluate |
+| `edu` | I1 Data Representation · I2 Classical ML（動手實作） | FilterRows、SlidingWindow2D、SentenceEmbedding、Classifier、AdvancedClassifier、FFNLayer、ActivationLayer、TrainAndEvaluate |
 | `stats` | —（任何資料集） | Stats-Describe、Stats-GroupByAggregate、Stats-Histogram、Stats-Percentile、Stats-Correlation、Stats-ConfusionMatrix、Stats-TableView、Stats-ChartView |
 
 `stats` 是這裡的例外：它不是教科書的配套，而是給第三方外掛作者的實作範例。它只用 numpy 與 torch，以[第 0 級](#安全性三個層級)安裝且**整份 manifest 沒有 `[security]` 區段**；它的 [README](https://github.com/CodefyUI/CodefyUI/blob/main/plugins/stats/README.md) 正式記載了資料類外掛需要的兩份契約——表格如何在連接埠之間傳遞，以及 `chart` 輸出如何宣告與繪製。
@@ -116,6 +116,8 @@ capabilities = ["network"]
 
 ```console
 $ cdui plugin install alice/metric-logger
+
+> 安裝外掛：alice/metric-logger
   來源：https://github.com/alice/metric-logger
   版本：default branch (a1b2c3d)
   Metric Logger 0.4.0
@@ -124,7 +126,7 @@ $ cdui plugin install alice/metric-logger
   繼續？ [y/N]: y
 
 > 此外掛要求下列能力
-    network → 連線網路——可與任何主機收發資料，並把下載到的內容寫入磁碟（requests、urllib、http、socket）
+    network -> 連線網路——可與任何主機收發資料，並把下載到的內容寫入磁碟（requests、urllib、http、socket）
   能力是宣告，不是沙箱：授權後外掛就能使用該類模組，CodefyUI 不會再逐一攔截。
   要授權嗎？ [y/N]: y
   Resolving alice/metric-logger
@@ -197,13 +199,13 @@ $ cdui plugin install alice/metric-logger
 
 ## 外掛中心
 
-**在應用程式裡安裝外掛，跑的就是終端機那一套安裝。** `cdui plugin install` 與外掛中心是同一個函式（在 `backend/app/core/plugins/`）的兩個前端，所以一次安裝的順序、什麼算失敗、失敗又叫什麼名字，都只決定一次——主控台與面板不可能在這三件事上互相矛盾。下面這些端點就是它的全部：編輯器裡的面板是其中一個用戶端，`cdui plugin install` 是另一個。
+**在應用程式裡安裝外掛，跑的就是終端機那一套安裝。** `cdui plugin install` 與外掛中心是同一個函式（在 `backend/app/core/plugins/`）的兩個前端，所以一次安裝的順序、什麼算失敗、失敗又叫什麼名字，都只決定一次——主控台與面板不可能在這三件事上互相矛盾。下面這些端點就是它今天的全部：`cdui plugin install` 是目前在用它們的用戶端，而編輯器裡的面板會隨著外掛中心 UI 一起到來。
 
 **它是一場有兩個回合的對話。** `POST /api/plugins/inspect` 讀取一個來源——型錄名稱、`owner/repo`，或一個網址——並回答一個人要做決定所需要的一切：這個外掛是什麼、它會往你的 Python 環境加什麼、它宣告了哪些能力、它要求對哪些模組關閉安全掃描、它有沒有附帶會在你的編輯器裡執行的 JavaScript，以及你是不是已經裝了它。過程中不下載任何東西，也不安裝任何東西；manifest 只在「單一個」已解析的 commit 上讀取，答案則存放在一個 `inspection_id` 底下。接著 `POST /api/plugins/install` 依 id 安裝「那一份」檢查結果，並帶上只有人能給的答案（`accept_capabilities`、`trust_author`，以及用來蓋過既有安裝的 `force`）。伺服器永遠不會從請求內容裡拿 manifest、commit 或能力清單——所以你同意的那份 manifest 就是被安裝的那份，而一個在兩個回合之間多要了一項能力、換了 id 或往白名單加了模組的 tarball，會被拒絕而不是被安裝。安裝以工作（job）的形式執行：`202` 加一個 `job_id`，接著 `GET /api/plugins/jobs/{job_id}/events` 會從指定 cursor 重播這個工作的記錄並長輪詢後續，`POST /api/plugins/jobs/{job_id}/cancel` 則會把它停下來，而且乾淨到不會留下任何寫到一半的東西。
 
-**確認畫面就是那三個層級，一一對應。**[第 0 級](#安全性三個層級)沒有東西要問。第 1 級就是檢查結果裡的 `capabilities`——一項一列，用字與主控台印出來的完全相同——第 2 級則是它的 `allowed_modules`，那是一個關於**作者**的獨立決定，以 `trust_author` 傳遞。兩者都不是沙箱：能力一旦授權，外掛就能匯入那一組模組，CodefyUI 不會再逐一攔截；這也正是為什麼授權之前該讀的是[這不是什麼](#這不是什麼)。
+**確認畫面就是那三個層級，一一對應。**[第 0 級](#安全性三個層級)沒有東西要問。第 1 級就是檢查結果裡的 `capabilities`——一項一列——第 2 級則是它的 `allowed_modules`，那是一個關於**作者**的獨立決定，以 `trust_author` 傳遞。兩者都不是沙箱：能力一旦授權，外掛就能匯入那一組模組，CodefyUI 不會再逐一攔截；這也正是為什麼授權之前該讀的是[這不是什麼](#這不是什麼)。
 
-**安裝只能從本機操作。** 每一個會改變「這台機器上有什麼程式碼」的端點——inspect、install、cancel、update、delete——都同時需要工作階段 token **以及**伺服器綁定在回送（loopback）位址：安裝外掛等於把別人的程式碼放到這個行程即將匯入的地方，檢查來源等於憑呼叫端一句話去連 GitHub，而刪除則是把別人的外掛拿走。刻意對區網提供服務的教室或實驗室環境，可用 `CODEFYUI_ALLOW_REMOTE_PLUGIN_INSTALL=1` 重新開放。reload 與 enable／disable 需要 token 但不受回送位址限制——它們處理的是這台機器已經有、而且你已經同意過的程式碼；讀取則一律開放，包括某個工作的事件記錄，那正是一個在安裝途中才打開的第二個分頁用來跟進度的東西。
+**安裝只能從本機操作。** 每一個會安裝、檢查或移除的端點——inspect、install、cancel、update、delete——都同時需要工作階段 token **以及**伺服器綁定在回送（loopback）位址：安裝外掛等於把別人的程式碼放到這個行程即將匯入的地方，檢查來源等於憑呼叫端一句話去連 GitHub，而刪除則是把別人的外掛拿走。刻意對區網提供服務的教室或實驗室環境，可用 `CODEFYUI_ALLOW_REMOTE_PLUGIN_INSTALL=1` 重新開放。reload 與 enable／disable 需要 token 但不受回送位址限制——它們處理的是這台機器已經有、而且你已經同意過的程式碼；讀取則一律開放，包括某個工作的事件記錄，那正是一個在安裝途中才打開的第二個分頁用來跟進度的東西。
 
 **步驟與失敗訊息是英文的。**`Resolving …`、`Downloading …`、`Unpacking …`、`Scanning … for unsafe code`、`Installing packages: …`、`Installing …`、`Recording …`，以及一次被拒絕或失敗的安裝所帶的每一句話，都出自共用的安裝流程；它只有一套用字，而不是每個前端各一套。它們周圍的介面有翻譯，這些沒有。
 

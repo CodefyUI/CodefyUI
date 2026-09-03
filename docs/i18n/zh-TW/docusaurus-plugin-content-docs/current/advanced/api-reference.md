@@ -77,7 +77,7 @@ description: CodefyUI 後端的 REST 與 WebSocket 端點——節點、預設�
 :::
 
 :::note 安裝外掛同樣只能從本機操作
-會改變「這台機器上有哪些外掛程式碼」的端點——`inspect`、`install`、工作的 `cancel`、`update` 與 `DELETE`——都需要工作階段 token，而且在伺服器不是綁定在回送（loopback）位址時一律拒絕：安裝外掛等於把別人的程式碼放到這個行程即將匯入的地方，而檢查來源等於憑呼叫端一句話去連 GitHub。刻意對區網提供服務的教室或實驗室環境，可用 `CODEFYUI_ALLOW_REMOTE_PLUGIN_INSTALL=1` 重新開放。`reload` 與 `enable`／`disable` 需要 token 但不受回送位址限制——它們處理的是這台機器已經有的程式碼。步驟名稱與失敗訊息來自共用的安裝流程，在每個用戶端都是英文。詳見 **[外掛中心](/advanced/plugins#外掛中心)**。
+會安裝、檢查或移除的端點——`inspect`、`install`、工作的 `cancel`、`update` 與 `DELETE`——都需要工作階段 token，而且在伺服器不是綁定在回送（loopback）位址時一律拒絕：安裝外掛等於把別人的程式碼放到這個行程即將匯入的地方，而檢查來源等於憑呼叫端一句話去連 GitHub。刻意對區網提供服務的教室或實驗室環境，可用 `CODEFYUI_ALLOW_REMOTE_PLUGIN_INSTALL=1` 重新開放。`reload` 與 `enable`／`disable` 需要 token 但不受回送位址限制——它們處理的是這台機器已經有的程式碼。步驟名稱與失敗訊息來自共用的安裝流程，在每個用戶端都是英文。詳見 **[外掛中心](/advanced/plugins#外掛中心)**。
 :::
 
 :::note 節點清單裡的選用套件包

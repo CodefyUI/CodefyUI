@@ -77,7 +77,7 @@ Every mutating `/api/packs` route is refused unless the server is bound to loopb
 :::
 
 :::note Installing a plugin is a local-only operation too
-The routes that change what plugin code is on this machine — `inspect`, `install`, the job's `cancel`, `update` and `DELETE` — take the session token *and* refuse unless the server is bound to loopback: installing a plugin puts a stranger's code where this process will import it, and inspecting reaches out to GitHub on the caller's word. `CODEFYUI_ALLOW_REMOTE_PLUGIN_INSTALL=1` opts a deliberate classroom or lab server back in. `reload` and `enable` / `disable` take the token but not the loopback gate — they act on code this machine already has. Step labels and failure messages come from the shared install path and are English in every client. See **[Plugin Center](/advanced/plugins#plugin-center)**.
+The routes that install, inspect or remove — `inspect`, `install`, the job's `cancel`, `update` and `DELETE` — take the session token *and* refuse unless the server is bound to loopback: installing a plugin puts a stranger's code where this process will import it, and inspecting reaches out to GitHub on the caller's word. `CODEFYUI_ALLOW_REMOTE_PLUGIN_INSTALL=1` opts a deliberate classroom or lab server back in. `reload` and `enable` / `disable` take the token but not the loopback gate — they act on code this machine already has. Step labels and failure messages come from the shared install path and are English in every client. See **[Plugin Center](/advanced/plugins#plugin-center)**.
 :::
 
 :::note Optional packs in the node list
