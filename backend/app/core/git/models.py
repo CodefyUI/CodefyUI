@@ -235,10 +235,21 @@ class DiffResponse(BaseModel):
 
 
 class FileAtRef(BaseModel):
-    """``GET /api/git/file``: one file's content at one ref."""
+    """``GET /api/git/file``: one file's content at one ref.
 
-    #: Empty for a binary file -- and for an empty one, which is why
-    #: ``binary`` is a field of its own rather than something to infer.
+    ``truncated`` does not promise a prefix. A file read from DISK is cut
+    at the cap and ``text`` holds what came before the cut; a file read out
+    of the object database is not read at all once its size is known to be
+    over it, and ``text`` is then empty beside a real ``size``. The tab
+    draws the same "too big to show" panel for both, and the alternative
+    -- streaming a megabyte nobody will look at, or buffering a 200 MB blob
+    to throw most of it away -- costs the server more than the answer is
+    worth.
+    """
+
+    #: Empty for a binary file, for an empty one, and for a file past the
+    #: cap that was never read -- which is why ``binary`` and ``truncated``
+    #: are fields of their own rather than something to infer.
     text: str
     #: A NUL in the first bytes: the tab shows a placeholder, not mojibake.
     binary: bool = False

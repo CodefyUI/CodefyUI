@@ -18,10 +18,14 @@ After that the shape of both functions is the same three questions:
   ``/dev/null``, which git for Windows understands as well as any POSIX
   git.
 * **how much of it to hand over.** A patch is capped at
-  :data:`MAX_PATCH_BYTES` and a file at :data:`MAX_FILE_BYTES`, both cut in
+  :data:`MAX_PATCH_BYTES` and a file at :data:`MAX_FILE_BYTES`, cut in
   BYTES and then decoded, so a multi-byte character split by the cut costs
   one replacement character instead of an exception. ``truncated`` says it
-  happened; ``size`` is what git had before the cut.
+  happened; ``size`` is what git had before the cut. A file read out of the
+  OBJECT DATABASE is not cut but refused: its size is asked for first, and
+  past the cap the answer carries the size and no text at all, because
+  ``cat-file blob`` would have buffered the whole object in this process
+  before anything here could cut it (see :func:`_from_object`).
 
 ``--no-ext-diff`` is on every one of these commands, including the
 ``--no-index`` one. Without it a repository whose config sets
@@ -430,13 +434,28 @@ def file_at_ref(root: Path, path: str, ref: str) -> FileAtRef:
 def _from_object(root: Path, spec: str) -> FileAtRef:
     """Read a blob out of the object database (``<ref>:<path>``).
 
-    ``cat-file`` exits 128 for every kind of "there is nothing there": the
-    path is not in that tree, the ref is not an object, HEAD is unborn. All
-    of those are a 404 for a file view -- the phrases are in
+    The SIZE is asked for first, and a blob over :data:`MAX_FILE_BYTES` is
+    never read. ``cat-file blob`` writes the whole object down a pipe and
+    this process buffers all of it before a cap applied afterwards can cut
+    anything -- a repository holding a 231 MB file (measured) made an open
+    GET allocate 231 MB, which is a way to take the server down from a
+    route that needs no token. So the answer past the cap is the size and
+    ``truncated``, with no text: the promise this endpoint makes is a cap,
+    not a prefix, and the tab draws "too big to show" either way.
+
+    A ``cat-file -s`` that FAILS is not interpreted here -- it falls
+    through to the read below, whose failure is already mapped in one
+    place. ``cat-file`` exits 128 for every kind of "there is nothing
+    there": the path is not in that tree, the ref is not an object, HEAD is
+    unborn. All of those are a 404 for a file view -- the phrases are in
     :data:`_MISSING_BLOB_PHRASES`, read off git 2.53 -- and anything else
     that exits 128 is classified like any other git failure, so a corrupt
     object database is not reported as a missing file.
     """
+    size = _object_size(root, spec)
+    if size is not None and size > MAX_FILE_BYTES:
+        return FileAtRef(text="", binary=False, size=size, truncated=True)
+
     result = run_git(["cat-file", "blob", spec], cwd=root, timeout=T_READ,
                      ok_codes=(0, 128), read_only=True)
     if result.returncode != 0:
@@ -458,6 +477,30 @@ def _from_object(root: Path, spec: str) -> FileAtRef:
                            stderr=result.err.strip())
         raise classify_failure(result.argv, result.returncode, result.err)
     return _content(result.stdout, len(result.stdout))
+
+
+def _object_size(root: Path, spec: str) -> int | None:
+    """How many bytes the object at ``<rev>:<path>`` holds; None if unknown.
+
+    One cheap process -- git reads the object header and stops -- so that
+    the read after it can be skipped when the answer is "too big". None
+    covers every way this can fail to be a number: the object is not there,
+    the ref is not one, a future git answers something else. The caller
+    then reads as it always did, which is where those failures are already
+    turned into the right status code.
+
+    A TREE also has a size, and a tree over the cap would be reported like
+    an over-large file instead of the 400 ``cat-file blob`` earns it. That
+    needs one directory holding tens of thousands of entries, and the
+    answer still carries no content -- the one thing that must never come
+    back for a path that is not a file.
+    """
+    result = run_git(["cat-file", "-s", spec], cwd=root, timeout=T_READ,
+                     ok_codes=(0, 128), read_only=True)
+    if result.returncode != 0:
+        return None
+    text = result.out.strip()
+    return int(text) if text.isdigit() else None
 
 
 def _from_worktree(root: Path, path: str) -> FileAtRef:

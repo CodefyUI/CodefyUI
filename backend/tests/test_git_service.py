@@ -1783,20 +1783,78 @@ async def test_a_binary_file_comes_back_as_a_flag_not_as_mojibake(repo):
     assert content.size == len(data)
 
 
-async def test_a_file_past_the_cap_is_cut_and_says_how_big_it_was(
+async def test_a_file_on_disk_past_the_cap_is_cut_and_says_how_big_it_was(
         repo, monkeypatch):
     """``size`` is what git HAD, before the cut -- so a truncated response
     can still say what it truncated. The cap is patched down rather than fed
     two megabytes, which tests the same three lines in a tenth of a second.
+
+    The WORKTREE ref, because that is the read that still cuts: it opens the
+    file and stops one byte past the cap, so the prefix costs nothing. The
+    object-database read does not cut at all -- see the test below.
     """
     monkeypatch.setattr(diff_ops, "MAX_FILE_BYTES", 8)
     repo.commit("a long file", {"long.txt": "0123456789abcdef\n"})
 
-    content = await repo.service.file_at_ref("long.txt", "HEAD")
+    content = await repo.service.file_at_ref("long.txt", "worktree")
 
     assert content.truncated is True
     assert content.text == "01234567"
     assert content.size == 17
+
+
+async def test_a_blob_past_the_cap_is_never_read_at_all(repo, monkeypatch):
+    """The cap has to be applied BEFORE the read, not to its result.
+
+    ``cat-file blob`` writes the whole object down a pipe and this process
+    buffers all of it, so a repository holding a 231 MB file (measured) made
+    an open GET allocate 231 MB before a single byte could be thrown away --
+    a way to take the server down from a route that needs no token. Asking
+    ``cat-file -s`` first costs one cheap process and answers with the size
+    and the flag instead.
+
+    The assertion that matters is the negative one: the blob was never
+    asked for. ``size`` and ``truncated`` could be right by accident; a
+    recorded argv could not.
+    """
+    big = "x" * (diff_ops.MAX_FILE_BYTES + 1024)
+    repo.commit("a file nobody should read", {"big.txt": big})
+    asked: list[list[str]] = []
+    real_run_git = diff_ops.run_git
+
+    def recording(args, **kwargs):
+        asked.append(list(args))
+        return real_run_git(args, **kwargs)
+
+    monkeypatch.setattr(diff_ops, "run_git", recording)
+
+    content = await repo.service.file_at_ref("big.txt", "HEAD")
+
+    assert content.size == len(big)
+    assert content.truncated is True
+    assert content.text == ""
+    assert content.binary is False
+    assert ["cat-file", "-s", "HEAD:big.txt"] in asked
+    assert not any(args[:2] == ["cat-file", "blob"] for args in asked)
+
+
+async def test_a_diff_reports_an_over_large_side_rather_than_reading_it(
+        repo, monkeypatch):
+    """``blobs=True`` goes through the same reader, so it inherits the cap.
+
+    The patch itself is git's and is capped separately; what this pins is
+    that the side-by-side view of a huge file does not become the read the
+    cap exists to prevent.
+    """
+    monkeypatch.setattr(diff_ops, "MAX_FILE_BYTES", 8)
+    repo.commit("a long file", {"long.txt": "0123456789abcdef\n"})
+    repo.write("long.txt", "edited\n")
+
+    response = await repo.service.diff("long.txt", "worktree", blobs=True)
+
+    assert response.old_text == ""
+    assert response.old_missing is False
+    assert response.new_text == "edited\n"
 
 
 async def test_a_worktree_read_of_an_untracked_file_is_allowed(repo):
