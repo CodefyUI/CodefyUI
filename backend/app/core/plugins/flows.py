@@ -745,6 +745,12 @@ def _lockfile_record(
     next update: the granted list is what a re-grant is measured against, and
     a manifest read back off the disk would be whatever the plugin says about
     itself now.
+
+    ``enabled`` follows the entry being REPLACED, and only a fresh install is
+    entitled to write True. Updating is a decision about which version is on
+    disk, never about whether the plugin runs: somebody who disabled a pack
+    and then updated it would otherwise find it back in the palette, with
+    nothing in the conversation having said so.
     """
     plugin_meta = manifest.get("plugin")
     record: dict[str, Any] = {
@@ -763,7 +769,9 @@ def _lockfile_record(
     record["manifest"] = plugin_meta if isinstance(plugin_meta, dict) else {}
     record["trusted_modules"] = list(allowed_modules)
     record["capabilities"] = list(plan.granted_capabilities)
-    record["enabled"] = True
+    record["enabled"] = (
+        bool(plan.prior.get("enabled", True)) if plan.prior else True
+    )
     if plan.catalog_id is not None:
         # Only when there really was a catalog row. Writing the key
         # unconditionally would have every free-text install claim a catalog
