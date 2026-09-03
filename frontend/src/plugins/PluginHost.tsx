@@ -2,7 +2,7 @@
  * Loads installed plugins' frontend bundles and hosts their floating
  * widgets in a fixed bottom-right stack.
  *
- * Boot activation is once per page load (module-level guard — React
+ * Boot activation is once per page load (module-level guard -- React
  * StrictMode double-mounts effects in dev). A plugin that throws during import
  * or activate() is reported and skipped; it cannot break the app or other
  * plugins.
@@ -151,21 +151,43 @@ async function waitForNodeDefinitions(timeoutMs = 15000): Promise<void> {
   }
 }
 
-export async function loadPluginFrontends(
-  getContainer: GetContainer = widgetContainer,
-  importer: Importer = dynamicImporter,
-): Promise<string[]> {
-  let plugins: unknown;
+/**
+ * The installed plugin list, or `null` when the server did not give us one.
+ *
+ * The distinction is the whole reason this is separate: `[]` is the server
+ * saying nothing is installed, `null` is us not knowing. A reload that tore
+ * down on `null` would wipe every plugin panel, button and widget over a
+ * transient 503, and the window right after an install or update, when the
+ * backend has just re-imported its modules, is exactly when a reload runs.
+ *
+ * A 2xx body that is not an array counts as `null` for the same reason: a
+ * body we cannot read is not a statement that nothing is installed. The
+ * elements themselves are NOT validated here; `activateFrontends` filters
+ * them, because a server can put anything in that array.
+ */
+async function fetchPluginList(): Promise<PluginListItem[] | null> {
   try {
     const res = await fetch('/api/plugins');
-    if (!res.ok) return [];
-    plugins = await res.json();
+    if (!res.ok) return null;
+    const data: unknown = await res.json();
+    return Array.isArray(data) ? (data as PluginListItem[]) : null;
   } catch {
-    return [];
+    return null;
   }
+}
 
-  if (!Array.isArray(plugins)) return [];
-
+/**
+ * Activate every entry of an already-fetched list.
+ *
+ * Split from `loadPluginFrontends` so the reload can decide what to do about
+ * an unreachable server BEFORE it tears the current frontends down, and then
+ * activate from that same answer instead of asking the server twice.
+ */
+async function activateFrontends(
+  plugins: PluginListItem[],
+  getContainer: GetContainer,
+  importer: Importer,
+): Promise<string[]> {
   const activatable = plugins.filter(
     (p): p is ActivatablePlugin =>
       !!p && typeof p === 'object'
@@ -200,6 +222,10 @@ export async function loadPluginFrontends(
       activated.push(p.id);
     } catch (err) {
       console.warn(`[plugins] failed to activate '${p.id}' frontend:`, err);
+      // Deliberately unguarded: a throw from the toast store propagates out
+      // of the activation and rejects the queued task, which is how the
+      // host's own test drives a rejected task through `serialized`. Wrapping
+      // this in a try/catch would gut that test without failing it.
       useToastStore.getState().addToast(
         useI18n.getState().t('pluginCenter.toast.frontendFailed', { plugin: p.id }),
         'error',
@@ -208,6 +234,18 @@ export async function loadPluginFrontends(
   }
   activatedIds = activated;
   return activated;
+}
+
+export async function loadPluginFrontends(
+  getContainer: GetContainer = widgetContainer,
+  importer: Importer = dynamicImporter,
+): Promise<string[]> {
+  const plugins = await fetchPluginList();
+  // An unreachable server costs nothing here: this path has activated
+  // nothing yet, so there is nothing to protect. The reload is where the
+  // difference between "no plugins" and "no answer" matters.
+  if (plugins === null) return [];
+  return activateFrontends(plugins, getContainer, importer);
 }
 
 /**
@@ -232,10 +270,15 @@ async function fetchGeneration(): Promise<number | null> {
 }
 
 /**
- * The boot activation: one load, on the chain, with nothing torn down first
- * (nothing is up yet). Kept separate from `reloadPluginFrontends` because boot
- * must not cache-bust: the very first import of a bundle should hit the HTTP
- * cache like any other module.
+ * The boot activation: one load, on the chain. Kept separate from
+ * `reloadPluginFrontends` because boot must not cache-bust: the very first
+ * import of a bundle should hit the HTTP cache like any other module.
+ *
+ * "Nothing is up yet" is nearly always true and not worth assuming: the
+ * Plugin Center can act from a page whose host has not mounted, so a reload
+ * can win the queue before this ever runs. If it did, its activations are
+ * live and the boot has to replace them rather than stack a second copy on
+ * top.
  *
  * The parameters exist so the host's tests can drive the boot path the mount
  * effect drives; production always calls it with none.
@@ -244,7 +287,10 @@ export async function startPluginFrontends(
   getContainer: GetContainer = widgetContainer,
   importer: Importer = dynamicImporter,
 ): Promise<string[]> {
-  return serialized(() => loadPluginFrontends(getContainer, importer));
+  return serialized(() => {
+    if (activatedIds.length > 0) unloadPluginFrontends();
+    return loadPluginFrontends(getContainer, importer);
+  });
 }
 
 /**
@@ -263,16 +309,35 @@ export async function startPluginFrontends(
  * Whatever the next /api/plugins answer omits (uninstalled, or disabled) is
  * simply not activated again; its panels, buttons and widgets went with the
  * teardown.
+ *
+ * A server that cannot answer at all is the one case where nothing happens:
+ * see `fetchPluginList`. Tearing down what we cannot restore would leave the
+ * editor with no plugin UI whatever until the user happened to trigger
+ * another reload, and in production nothing polls.
  */
 export async function reloadPluginFrontends(
   getContainer: GetContainer = widgetContainer,
   importer: Importer = dynamicImporter,
 ): Promise<string[]> {
   return serialized(async () => {
+    // The list comes FIRST, before anything is torn down.
+    const plugins = await fetchPluginList();
+    if (plugins === null) {
+      // No toast: the caller (the Plugin Center's own refresh) is already
+      // showing the user that the server is not answering, and a second
+      // message about it would be the same fact twice.
+      console.warn(
+        '[plugins] reload skipped: could not read the plugin list; '
+        + 'keeping the frontends already activated',
+      );
+      return [...activatedIds];
+    }
     unloadPluginFrontends();
     const gen = await fetchGeneration();
     const version = gen ?? Date.now();
-    return loadPluginFrontends(getContainer, (url) => importer(`${url}?v=${version}`));
+    return activateFrontends(
+      plugins, getContainer, (url) => importer(`${url}?v=${version}`),
+    );
   });
 }
 
@@ -288,16 +353,8 @@ export async function reloadPluginFrontends(
 async function maybeStartDevHotReload(): Promise<void> {
   if (pollTimer !== null) return;
 
-  let plugins: PluginListItem[];
-  try {
-    const res = await fetch('/api/plugins');
-    if (!res.ok) return;
-    const data = await res.json();
-    if (!Array.isArray(data)) return;
-    plugins = data;
-  } catch {
-    return;
-  }
+  const plugins = await fetchPluginList();
+  if (plugins === null) return;
 
   const hasLocal = plugins.some(
     (p) => p && p.source_kind === 'local' && p.enabled === true,

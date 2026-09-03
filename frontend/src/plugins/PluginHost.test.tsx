@@ -513,6 +513,55 @@ describe('reloadPluginFrontends', () => {
     }
   });
 
+  /**
+   * The failure that would hurt most: a reload runs right after an install,
+   * which is exactly when the backend may be mid re-import and answer 503 (or
+   * not at all). Tearing down first would leave the editor with no plugin UI
+   * whatever, and nothing polls in production to put it back.
+   */
+  it('keeps the current activations when the plugin list cannot be read', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      mockPluginHostFetch({ pluginPayloads: [[A]], generation: 3 });
+      const activate = vi.fn(smallPlugin);
+      const importer = vi.fn(async () => ({ default: activate }));
+      expect(await reloadPluginFrontends(container, importer)).toEqual(['a']);
+
+      for (const [reason, failing] of [
+        ['a 503', vi.fn(async () => ({ ok: false, status: 503, json: async () => ({}) }))],
+        ['a dead socket', vi.fn(async () => { throw new Error('net'); })],
+      ] as const) {
+        vi.stubGlobal('fetch', failing as unknown as typeof fetch);
+
+        expect(await reloadPluginFrontends(container, importer), reason).toEqual(['a']);
+        expect(activate, reason).toHaveBeenCalledTimes(1);
+        expect(getPluginPanels(), reason).toHaveLength(1);
+        expect(getPluginToolbarButtons(), reason).toHaveLength(1);
+        expect(executionEventSubscriberCount(), reason).toBe(1);
+        // The store's own refresh already tells the user the server is down.
+        expect(useToastStore.getState().toasts, reason).toHaveLength(0);
+      }
+      expect(warn).toHaveBeenCalled();
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('does not stack the boot on frontends a reload activated first', async () => {
+    mockPluginHostFetch({ pluginPayloads: [[A]], generation: 8 });
+    const activate = vi.fn(smallPlugin);
+    const importer = vi.fn(async () => ({ default: activate }));
+
+    // The Plugin Center can act from a page whose host has not mounted yet.
+    await reloadPluginFrontends(container, importer);
+    await startPluginFrontends(container, importer);
+
+    expect(activate).toHaveBeenCalledTimes(2);
+    expect(executionEventSubscriberCount()).toBe(1);
+    expect(getPluginPanels()).toHaveLength(1);
+    expect(getPluginToolbarButtons()).toHaveLength(1);
+  });
+
   it('keeps serving later callers after an activation rejects', async () => {
     // The queue is shared with the boot and the dev poller, so a task that
     // throws must not be the end of it. Driven through the one call the host
