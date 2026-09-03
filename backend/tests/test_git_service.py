@@ -964,6 +964,22 @@ async def test_the_added_side_of_a_diff_is_missing_not_empty(repo):
     assert response.new_text == "new\n"
 
 
+async def test_an_index_diff_before_the_first_commit_shows_the_file_as_added(
+        make_repo):
+    """The first thing a user does in a fresh repository: stage a file and
+    click it. There is no HEAD to compare against, so git compares the index
+    with the empty tree -- and the old side is missing rather than empty."""
+    repo = make_repo(first_commit=False)
+    repo.write("a.txt", "one\n")
+    repo.git("add", "-A", "--", "a.txt")
+
+    response = await repo.service.diff("a.txt", "index", blobs=True)
+
+    assert "+one" in response.patch
+    assert response.old_missing is True and response.old_text is None
+    assert response.new_text == "one\n"
+
+
 async def test_an_unknown_diff_scope_is_refused(repo):
     with pytest.raises(GitError) as excinfo:
         await repo.service.diff("a.txt", "everything")
