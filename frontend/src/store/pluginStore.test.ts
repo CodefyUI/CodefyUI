@@ -518,19 +518,22 @@ describe('pluginStore — inspect', () => {
   });
 
   it('keeps the code and the body a refused inspection carried', async () => {
-    // `{code: reserved_id, id: edu}` has no message at all: reduced to a
-    // string the card would show the raw token and could not name the id
-    // that is already taken.
-    api.inspectPluginSource.mockRejectedValue(
-      refused(400, 'reserved_id', { id: 'edu' }),
-    );
+    // Built by hand rather than through `refused`, whose message IS the
+    // code: the message and the code have to be told apart here, because
+    // the card switches on one and shows the other.
+    api.inspectPluginSource.mockRejectedValue(new ApiError(
+      400, 'that id is reserved', { detail: { code: 'reserved_id', id: 'edu' } },
+    ));
 
     await usePluginStore.getState().inspect('edu');
 
     const state = usePluginStore.getState();
     expect(state.inspection.phase).toBe('error');
     if (state.inspection.phase !== 'error') throw new Error('not an error phase');
+    expect(state.inspection.failure.message).toBe('that id is reserved');
     expect(state.inspection.failure.code).toBe('reserved_id');
+    // The id that is taken: nothing else carries it, and the card cannot
+    // name it without this.
     expect(state.inspection.failure.detail).toEqual({ code: 'reserved_id', id: 'edu' });
   });
 
