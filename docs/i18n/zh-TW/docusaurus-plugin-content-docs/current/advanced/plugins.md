@@ -29,6 +29,14 @@ cdui plugin uninstall deep                 # 會被記住：sync 不會再把它
 
 `stats` 是這裡的例外：它不是教科書的配套，而是給第三方外掛作者的實作範例。它只用 numpy 與 torch，以[第 0 級](#安全性三個層級)安裝且**整份 manifest 沒有 `[security]` 區段**；它的 [README](https://github.com/CodefyUI/CodefyUI/blob/main/plugins/stats/README.md) 正式記載了資料類外掛需要的兩份契約——表格如何在連接埠之間傳遞，以及 `chart` 輸出如何宣告與繪製。
 
+另外有三個官方外掛放在各自的儲存庫裡。它們一樣可以用目錄中的名稱安裝，但和上面的外掛包不同：它們是從 GitHub 下載的，所以安裝時會請你確認。
+
+| 外掛 | 這是什麼 | 安裝 |
+|------|------------------|-----------|
+| `graph-copilot` | AI 對話助手：以對話建立與修改節點圖，執行你核准的隔離實驗與參數搜尋，並保留可攜的實驗紀錄。需要一個 LLM 供應者（Codex、Ollama、OpenAI 或 Anthropic）。 | `cdui plugin install graph-copilot` |
+| `self-learning` | 把一個自由描述的機器學習問題變成逐步教材：先由 LLM 在畫布上建出可實際執行的圖並驗證它跑得起來，再由外掛擷取每一步的截圖，產出繁體中文 Markdown 教材、可列印頁面、圖檔與一份入門練習。 | `cdui plugin install self-learning` |
+| `official-template` | 給外掛作者的可運作起始模板：兩個範例節點、一個 preset、一張範例流程圖、一個資產檔、一套範例測試，以及一個 React 工具面板。裝起來看外掛能做什麼，Fork 它來寫自己的。 | `cdui plugin install official-template` |
+
 每個 Edu 節點都把單一課程概念分解成一連串具名步驟，由 [Teaching Inspector](/usage/teaching-inspector) 一次渲染一列——`Edu-ColumnStats` 將母體標準差公式呈現為 `sum → divide → deviations² → variance → sqrt`；`Edu-PolicyGradient` 暴露 `softmax → gather → log → baseline → loss`；`Edu-Patchify` 讓 `unfold → permute → flatten` 變得可見。在 Settings popover 中開啟 **Verbose mode** 即可擷取它們。
 
 ## 外掛包如何儲存
@@ -181,17 +189,17 @@ cdui plugin new my-plugin --ui     # 另含一個接好 SDK 的 React 前端
 
 它會產生 manifest、一個範例節點、一個測試（內含 `cdui_plugins.<id>` 命名空間 shim，讓本地 `pytest` 可直接執行），並在加上 `--ui` 時產生一個 Vite + React 的 `ui/`，其 `src/sdk/` 即為型別化的外掛 SDK。外掛會建立在 `./my-plugin/`；用下方的 `cdui plugin dev` 連結後即可開始編輯。
 
-若需更完整的參考，可 Fork **[官方外掛模板](https://github.com/CodefyUI/CodefyUI-Plugin-Official)**——一個可運作、採 MIT 授權的外掛，包含兩個範例節點、一張範例圖、一套測試，以及一份完整註解的資訊清單 (manifest)。它的 README 逐欄解說每個欄位與 AST 安全閘門。
+若需更完整的參考，可 Fork **[官方外掛模板](https://github.com/CodefyUI/CodefyUI-Plugin-Official)**——一個可運作、採 MIT 授權的外掛，包含兩個範例節點、一張範例圖、一套測試，以及一份完整註解的資訊清單 (manifest)。它的 README 逐欄解說每個欄位與 AST 安全閘門。它在目錄中的名稱是 `official-template`，可以直接用名稱安裝。
 
 ```bash
 # Install the template itself to see the pattern live
-cdui plugin install CodefyUI/CodefyUI-Plugin-Official
+cdui plugin install official-template
 
-# After forking
+# After forking — any repository, by owner/repo or by URL
 cdui plugin install your-username/your-fork
 ```
 
-一個外掛包可隨附下列任意內容：一個 `nodes/` 目錄（自動探索）、一個 `presets/` 目錄、一個 `examples/` 目錄，以及一個 `assets/` 目錄（掛載於 `/plugins/<id>/assets/<file>`）。一份 `cdui.plugin.toml` 資訊清單宣告 id、版本、`requires_codefyui`、內容目錄、課程 metadata，以及——只在你需要時——[安全性](#安全性三個層級)一節描述的 `[security]` 宣告。若你的節點只做純運算，直接刪掉那一段就好；大多數外掛都是如此。
+一個外掛包可隨附下列任意內容：一個 `nodes/` 目錄（自動探索）、一個 `presets/` 目錄、一個 `examples/` 目錄，以及一個 `assets/` 目錄（於 `/plugins/<id>/assets/<file>` 提供）。一份 `cdui.plugin.toml` 資訊清單宣告 id、版本、`requires_codefyui`、內容目錄、課程 metadata，以及——只在你需要時——[安全性](#安全性三個層級)一節描述的 `[security]` 宣告。若你的節點只做純運算，直接刪掉那一段就好；大多數外掛都是如此。
 
 :::warning 破壞性變更（v0.3）
 章節外掛包 `c1`–`c6` 已重新封裝為三個方向外掛包 `foundations` / `deep` / `rl`，而且每個 Edu 節點的型別 id 都加上了一個破折號（`EduKNN` → `Edu-KNN`）。引用舊有 `cN:EduFoo` 型別的已儲存圖必須更新為 `<pack>:Edu-Foo`，並以 `cdui plugin install foundations deep rl` 重新安裝這些外掛包。

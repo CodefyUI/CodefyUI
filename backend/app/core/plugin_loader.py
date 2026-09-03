@@ -90,18 +90,56 @@ def load_lockfile() -> dict[str, Any]:
 
 
 def save_lockfile(data: dict[str, Any]) -> None:
+    """Write the lockfile, atomically.
+
+    A temp file in the SAME directory and then ``os.replace``, because this
+    file is the only record of what is installed: a crash, a full disk or a
+    killed process partway through a ``write_text`` leaves half a JSON
+    document, and half a JSON document is an empty lockfile to
+    :func:`load_lockfile` -- every plugin the user has, gone, with their
+    files still on disk. ``os.replace`` is atomic on both platforms and
+    overwrites an existing file on Windows too, so a reader sees either the
+    old document or the new one and never the write in progress.
+
+    The temp name carries the pid so two processes writing at once (the CLI
+    and the server both do) cannot land on each other's partial file. That is
+    not a substitute for a lock -- two writers can still lose one edit
+    between a read and a write -- but it does mean neither of them can ever
+    read a torn file.
+    """
     p = lockfile_path()
     p.parent.mkdir(parents=True, exist_ok=True)
-    p.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
+    tmp = p.with_suffix(f"{p.suffix}.tmp-{os.getpid()}")
+    try:
+        tmp.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
+        os.replace(tmp, p)
+    except BaseException:
+        # Whatever went wrong, the caller's failure is the one worth
+        # reporting -- and a temp file left in the plugins directory would
+        # outlive it silently.
+        try:
+            tmp.unlink(missing_ok=True)
+        except OSError:
+            pass
+        raise
 
 
 def read_manifest_safe(plugin_dir: Path) -> dict[str, Any]:
-    """Parse a plugin's manifest, returning {} on any read/parse failure."""
+    """Parse a plugin's manifest, returning {} on any read/parse failure.
+
+    ``ValueError`` covers two of those failures rather than one:
+    ``TOMLDecodeError`` is a subclass, and so is the ``UnicodeDecodeError``
+    that a manifest with a byte that is not UTF-8 raises out of
+    ``read_text``. That one used to escape, and every reader here is a
+    listing -- ``GET /api/plugins``, ``GET /api/plugins/catalog``,
+    ``cdui plugin list`` -- so one unreadable pack took the whole list down
+    with it instead of appearing as a pack with no metadata.
+    """
     try:
         return tomllib.loads(
             (plugin_dir / MANIFEST_FILENAME).read_text(encoding="utf-8")
         )
-    except (OSError, tomllib.TOMLDecodeError):
+    except (OSError, ValueError):
         return {}
 
 

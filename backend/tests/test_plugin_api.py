@@ -96,6 +96,31 @@ def test_list_plugins_populates_node_names(client):
     assert "Edu-PolicyGradient" in by_id["rl"]["nodes"]
 
 
+def test_list_plugins_carries_the_plugin_center_fields(client):
+    """The six fields a row the panel can ACT on needs, on the installed
+    listing as well as on ``/catalog`` -- computed by the same functions, so
+    a plugin cannot be official on one route and unofficial on the other."""
+    by_id = {p["id"]: p for p in client.get("/api/plugins").json()}
+    row = by_id["foundations"]
+
+    assert {"official", "catalog_id", "capabilities", "trusted_modules",
+            "python_deps", "has_frontend"} <= set(row)
+    # A pack that ships in this release arrived through a pull request here.
+    assert row["official"] is True
+    assert row["catalog_id"] == "foundations"
+    assert row["capabilities"] == []
+    assert row["trusted_modules"] == []
+    assert isinstance(row["python_deps"], dict)
+    assert row["has_frontend"] is False
+
+    catalog = {e["id"]: e for e in client.get("/api/plugins/catalog").json()["entries"]}
+    for pid in ("foundations", "deep", "rl"):
+        assert catalog[pid]["official"] is by_id[pid]["official"]
+        assert catalog[pid]["capabilities"] == by_id[pid]["capabilities"]
+        assert catalog[pid]["python_deps"] == by_id[pid]["python_deps"]
+        assert catalog[pid]["has_frontend"] is by_id[pid]["has_frontend"]
+
+
 def test_get_plugin_returns_manifest(client):
     r = client.get("/api/plugins/foundations")
     assert r.status_code == 200

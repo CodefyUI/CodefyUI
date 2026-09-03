@@ -53,7 +53,71 @@ received — each links to the release it was published as.
   session token every other mutating call needs; reading is open, like every
   other read in the app.
 
+- **`GET /api/plugins/catalog` — everything you can install and everything
+  you have installed, in one listing.** The read half of the Plugin Center.
+  Two documents that do not know about each other answer half the question
+  each — the catalog this build ships says what can be installed by name, the
+  lockfile says what this install actually did — so they are merged once, on
+  the server, into one row per plugin with every field on every row: a card
+  never has to ask whether a key is there this time. A row says which state
+  it is in, including the two that used to be invisible: a pack you removed
+  on purpose reads `removed` rather than looking like one you have never had,
+  and an entry whose files are gone reads `missing_files` rather than drawing
+  as a normal installed row whose nodes have all silently vanished. It also
+  says what nodes the pack would add before you install it — read as text off
+  the sources, never by importing them, because importing a pack to find out
+  what is in it is exactly what installing it means. Open, like
+  `GET /api/packs`: it is a read the editor draws a panel from, and it
+  touches no network.
+
+- **Three official plugins install by name.** `graph-copilot`,
+  `self-learning` and `official-template` are in the catalog, so
+  `cdui plugin search` lists them and `cdui plugin install self-learning`
+  fetches the repository the catalog names instead of asking anyone to
+  remember `CodefyUI/CodefyUI-Plugin-Self-Learning`. Each of those ids is
+  reserved *to* the repository the catalog names it with: the plugin's own
+  author can still install their own repository under its own id, and a fork
+  claiming `self-learning` is refused instead of quietly taking the official
+  pack's place. Installing by name also checks that the repository's manifest
+  declares the id the catalog advertised, so a card can never describe one
+  pack while the install fetches another. And the badge saying CodefyUI
+  vouches for a plugin is earned by where the files came FROM, not by the id
+  on a manifest, so a pack installed from anywhere else is listed as exactly
+  what it is.
+
+- **`CODEFYUI_GITHUB_TOKEN` and `CODEFYUI_ALLOW_REMOTE_PLUGIN_INSTALL`.**
+  Unauthenticated GitHub allows sixty requests an hour per IP, which a
+  classroom behind one NAT can exhaust in a morning; export a token and the
+  plugin installer's GitHub calls use it. It is read per call, so a token
+  exported after the server started still works, and no copy of it is kept.
+  The second is the same loopback gate the Package Center has, for the
+  install routes landing next: installing a plugin puts third-party code
+  where this process will import it, so the answer to "who may install one"
+  is "whoever is sitting at this machine" unless a deliberate classroom or
+  lab server opts back in with `CODEFYUI_ALLOW_REMOTE_PLUGIN_INSTALL=1`.
+
 ### Changed
+
+- **The plugin rules the CLI owned now live in the backend.** What a manifest
+  may say, what `owner/repo@ref` means, which packs the catalog ships, which
+  imports the sandbox gate refuses — all of it lived in `scripts/plugins.py`,
+  which the server cannot import, so a Plugin Center in the browser would
+  have had to grow a second copy of every one of those rules, and a second
+  copy of a security rule is the kind that drifts quietly. They moved to
+  `backend/app/core/plugins/` and `cdui plugin` became a front end over them:
+  the same commands and the same output wherever a test asserted it — every
+  test the CLI already had still passes untouched, which is what says so —
+  plus a few refusals that got sharper. `cdui plugin link` and
+  `cdui plugin new` now refuse an id that names a route under
+  `/api/plugins/`, which is an id no plugin could ever be reached under; and
+  a downloaded tarball holding more than one top-level directory is refused
+  rather than installed from whichever one the filesystem listed first.
+
+- **The Package Center's job runner is shared code.** The one-job-at-a-time
+  runner with a cursor and a long poll that `backend/app/core/packs/` had is
+  now `app.core.jobs`, so the plugin installer landing next runs under the
+  same lock rules rather than a second copy of them. Nothing about installing
+  a pack changes.
 
 - **`cdui project init` pins `*.json` to LF.** The scaffold's `.gitattributes`
   gains `*.json text eol=lf`. A project's graphs and layouts are its source,
@@ -62,6 +126,36 @@ received — each links to the release it was published as.
   line, and a one-node change was reviewed as a whole-file diff. An existing
   `.gitattributes` is never rewritten, so this reaches projects scaffolded from
   here on.
+
+### Fixed
+
+- **A plugin's `assets/` were served from a mount built at startup — and in a
+  released build, never served at all.** Every installed plugin's `assets/`
+  directory was attached to the server once, while the startup lifespan ran,
+  so a pack that arrived afterwards — which is the entire premise of
+  installing one from inside the app — had a URL for each CSV and image it
+  shipped and nothing behind it until someone restarted. In a released build
+  it was worse than that everywhere: the single-page-app catch-all is
+  registered when the app module is imported and those mounts only when the
+  lifespan runs, and routes match in registration order, so every
+  `/plugins/<id>/assets/<file>` was answered by the catch-all with the
+  editor's own `index.html` and a 200 — a node reading its pack's CSV was
+  handed a web page. `/plugins/<id>/assets/<file>` is now served by a route
+  that looks the plugin up per request: the same URL and the same files, but
+  a pack is servable the moment it is installed, and a pack you disable stops
+  serving its files at once rather than at the next restart.
+
+- **One unreadable manifest emptied the plugin list, and the lockfile was
+  written in place.** A `cdui.plugin.toml` with a byte that is not UTF-8
+  raised out of the reader that promises to answer "no metadata", so a single
+  malformed pack took `GET /api/plugins` and `cdui plugin list` down with it
+  instead of showing up as a pack with nothing to say. And the lockfile — the
+  only record of what you have installed — was rewritten in place, so a
+  crash, a full disk or a killed process partway through left half a JSON
+  document, which reads back as *no plugins at all* while every one of their
+  directories is still on disk. It is now written beside itself and renamed
+  atomically, so a reader sees the old file or the new one and never the
+  write in progress.
 
 ## [2.5.0] — 2026-09-01
 

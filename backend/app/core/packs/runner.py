@@ -208,7 +208,8 @@ def _stop_process(proc) -> None:
         proc.kill()
 
 
-# Shared by every subprocess the app starts.
+#: The public name for it: ending a child process the way the OS requires is
+#: shared by every subprocess the app starts, not only by pip.
 stop_process = _stop_process
 
 

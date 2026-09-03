@@ -1,0 +1,160 @@
+"""What can go wrong between a typed source and an installed plugin.
+
+The CLI answers each of these with two lines of bilingual prose and an exit
+code, because a terminal has nowhere else to put the detail. A GUI cannot do
+that: "install failed" with a pip log folded into the sentence is a dead end
+in a dialog, and re-deriving what happened by matching on message text is how
+a translated string turns into a broken button.
+
+So the REASON is carried in attributes and the PROSE stays with whoever is
+talking to the user. ``UnknownCatalogName`` knows the spec, the ids this
+install really has and where its catalog file lives; the CLI turns that into
+the same four-line bilingual message it has always printed, and a route can
+turn the identical exception into a list the frontend renders. Neither one
+has to parse the other's sentence.
+
+The base classes are chosen so that no existing ``except`` clause has to
+change. ``ManifestError`` and ``SourceError`` are ``ValueError`` subclasses
+because ``validate_manifest`` and ``parse_source`` have always raised
+``ValueError`` and their callers still catch it; ``PluginInstallError`` is a
+``RuntimeError`` for the same reason on the install side.
+
+Stdlib only, and imported by ``plugins/__init__.py``: a caller that only
+wants to catch a plugin failure never has to drag the installer, the AST gate
+or the network in to do it.
+"""
+
+from __future__ import annotations
+
+from collections.abc import Iterable
+from pathlib import Path
+
+
+class PluginInstallError(RuntimeError):
+    """Installing a plugin failed. ``hint`` is the operator-facing detail.
+
+    The hint is the last lines of whatever went wrong -- pip's output, a
+    tarball error -- which is what a learner pastes into an issue and what a
+    teacher reads first. It is deliberately separate from the message so a
+    UI can show one line and keep the other behind a disclosure.
+    """
+
+    def __init__(self, message: str, *, hint: str | None = None):
+        super().__init__(message)
+        self.hint = hint
+
+
+class PluginCancelled(Exception):
+    """The install was cancelled. NOT a failure.
+
+    It is the system doing as it was told, so it deliberately does not
+    inherit from :class:`PluginInstallError`: no ``except PluginInstallError``
+    may report a cancel as something that went wrong.
+    """
+
+
+class PluginNeedsRestart(PluginInstallError):
+    """This install cannot finish inside the running server.
+
+    ``command`` is what to run instead, spelled out in full: a message that
+    says "restart required" without saying what to type leaves the user to
+    guess at a CLI they have never run.
+    """
+
+    def __init__(self, message: str, *, command: str, hint: str | None = None):
+        super().__init__(message, hint=hint)
+        self.command = command
+
+
+class ConsentRequired(PluginInstallError):
+    """The install stopped at a decision only the user can make.
+
+    Two shapes of consent, one exception, because the caller's next move is
+    the same for both: show what is being asked for and ask. The CLI asks at
+    a prompt (``capability_gate``, ``--trust-author``); a GUI has to ask in a
+    dialog, and it can only build that dialog from a list -- which is why
+    ``missing_capabilities`` and ``allowed_modules`` are tuples of names
+    rather than a sentence naming them.
+
+    An install error rather than a sibling of :class:`PluginCancelled`: the
+    install did not complete, and a caller that only knows "install errors"
+    must not silently treat an ungranted capability as success.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        missing_capabilities: Iterable[str] = (),
+        allowed_modules: Iterable[str] = (),
+        hint: str | None = None,
+    ):
+        super().__init__(message, hint=hint)
+        self.missing_capabilities = tuple(missing_capabilities)
+        self.allowed_modules = tuple(allowed_modules)
+
+
+class SourceError(ValueError):
+    """What the user typed cannot be turned into something to install.
+
+    A ``ValueError`` on purpose: ``parse_source`` has raised one since it
+    existed and every caller -- ``cmd_install``, ``cmd_info``,
+    ``scripts/project.py`` -- still catches ``ValueError`` around it. Making
+    the structured version a subclass means those keep working untouched.
+    """
+
+
+class UnknownCatalogName(SourceError):
+    """A bare word this install's catalog has never heard of.
+
+    Its own class because the generic "expected a catalog name, owner/repo or
+    a URL" is a dead end here: the user *did* type a catalog name, and what
+    they cannot see is that their copy of ``registry.json`` does not have it
+    (usually an install old enough to predate the pack). Answering that needs
+    the ids this install really has and the file they were read from, so both
+    travel with the exception instead of being re-derived by each caller.
+    """
+
+    def __init__(self, spec: str, known: Iterable[str], catalog_path: Path):
+        self.spec = spec
+        self.known = tuple(known)
+        self.catalog_path = catalog_path
+        super().__init__(
+            f"no plugin pack named {spec!r} in the catalog at {catalog_path}"
+        )
+
+
+class UnparseableSource(SourceError):
+    """Not a catalog name, not ``owner/repo``, not a GitHub URL.
+
+    Carries only the spec: there is nothing else true to say about it, and
+    the suggestion of what to type instead depends on the catalog the caller
+    is showing, not on this failure.
+    """
+
+    def __init__(self, spec: str):
+        self.spec = spec
+        super().__init__(f"could not parse plugin source {spec!r}")
+
+
+class GitHubError(RuntimeError):
+    """Resolving or downloading from GitHub failed.
+
+    ``status`` is the HTTP status when there was one and ``None`` when the
+    request never got that far (DNS, TLS, a timeout). The difference is the
+    user's next step -- a 404 is a typo in the repo name, a missing status is
+    the network -- and it is not recoverable from the message text.
+    """
+
+    def __init__(self, message: str, *, status: int | None = None):
+        super().__init__(message)
+        self.status = status
+
+
+class ManifestError(ValueError):
+    """A ``cdui.plugin.toml`` this build will not install.
+
+    A ``ValueError`` for the same reason :class:`SourceError` is: every
+    ``except ValueError`` around ``validate_manifest`` -- in the CLI and in
+    the tests -- predates this class and keeps working.
+    """

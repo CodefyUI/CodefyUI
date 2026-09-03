@@ -131,6 +131,26 @@ def test_new_scaffold_rejects_invalid_id(tmp_path):
     assert not (tmp_path / "Bad_Id").exists()
 
 
+def test_new_scaffold_refuses_a_route_name(tmp_path, capsys):
+    """``new``, ``link`` and ``install`` agree about which ids this build
+    owns, because they ask the same function. ``install`` is a fixed path
+    under /api/plugins/, so a plugin scaffolded under it could never be
+    installed -- the router would decide which one answered."""
+    assert plugin_cli.main(["new", "install", "--dir", str(tmp_path)]) == 2
+    assert not (tmp_path / "install").exists()
+    printed = capsys.readouterr()
+    assert "install" in printed.out + printed.err
+
+
+def test_new_scaffold_allows_the_id_of_an_official_github_pack(tmp_path):
+    """The other side of the same rule: a ``github`` catalog id is not
+    reserved, because it is the id the author of an official plugin
+    scaffolds and installs their own repository under. Refusing it here was
+    refusing the author their own name."""
+    assert plugin_cli.main(["new", "official-template", "--dir", str(tmp_path)]) == 0
+    assert (tmp_path / "official-template" / "cdui.plugin.toml").is_file()
+
+
 def test_new_scaffold_refuses_existing_nonempty(tmp_path):
     existing = tmp_path / "dupe"
     existing.mkdir()

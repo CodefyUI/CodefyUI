@@ -88,8 +88,8 @@ from .core.plugin_loader import (
     discover_plugin_nodes,
     iter_plugin_dirs,
     load_lockfile,
-    rediscover_all,
 )
+from .core.plugins.reload import rediscover_now
 from .core.preset_registry import preset_registry
 from .core.run_output_store import RunOutputStore
 from .core.run_service import RunService
@@ -290,19 +290,6 @@ async def lifespan(app: FastAPI):
                 "each pin must be a table like "
                 "{ url = \"...\", ref = \"...\", sha = \"...\" }",
                 ", ".join(malformed))
-
-    # Mount each installed plugin's assets/ dir so the frontend can fetch
-    # plugin-shipped CSVs / images at /plugins/<id>/assets/<file>.
-    for plugin_id, plugin_dir in iter_plugin_dirs(
-        plugin_loader.plugins_builtin_root(), plugin_loader.plugins_user_root(), lockfile
-    ):
-        assets = plugin_dir / "assets"
-        if assets.is_dir():
-            app.mount(
-                f"/plugins/{plugin_id}/assets",
-                StaticFiles(directory=assets),
-                name=f"plugin_{plugin_id}_assets",
-            )
 
     # In-memory store for captured per-run node outputs (Teaching Inspector).
     # Bounded by runs AND by bytes (#135) — twenty runs of MNIST batches and
@@ -662,17 +649,9 @@ async def auth_bootstrap():
 async def reload_nodes():
     # Built-ins are immutable for the server lifetime — no point in paying
     # the reload tax. Custom nodes and plugins, however, may have been
-    # edited on disk since the last load, so :func:`rediscover_all` force-
-    # reloads them to pick up the changes. Plugin presets are also re-scanned.
-    return rediscover_all(
-        registry,
-        preset_registry,
-        nodes_dir=settings.NODES_DIR,
-        custom_nodes_dir=settings.CUSTOM_NODES_DIR,
-        presets_dir=settings.PRESETS_DIR,
-        builtin_root=plugin_loader.plugins_builtin_root(),
-        user_root=plugin_loader.plugins_user_root(),
-    )
+    # edited on disk since the last load, so the re-discovery force-reloads
+    # them to pick up the changes. Plugin presets are also re-scanned.
+    return rediscover_now()
 
 
 # Production mode: serve the pre-built frontend bundle. Skipped silently in
