@@ -1251,3 +1251,456 @@ export async function removePackItem(
   if (!res.ok) throw await packApiError(res);
   return res.json();
 }
+
+// ── Plugin Center ────────────────────────────────────────────────────────
+
+/** Where an INSTALLED plugin's files came from. */
+export type PluginSourceKind = 'builtin' | 'github_url' | 'local';
+
+/**
+ * Where a catalog entry stands right now. `removed` is a builtin the user
+ * uninstalled (tombstoned, so it does not come back on the next reload);
+ * `missing_files` is a plugin the registry knows about whose directory is
+ * gone.
+ */
+export type PluginStatus =
+  | 'installed'
+  | 'disabled'
+  | 'available'
+  | 'removed'
+  | 'installing'
+  | 'missing_files';
+
+/**
+ * What a catalog entry IS. `builtin` ships with CodefyUI, `github` is
+ * installable from a repository, `external` is already on disk and has no
+ * source this client could re-fetch.
+ */
+export type PluginKind = 'builtin' | 'github' | 'external';
+
+/** The two things a plugin job can be doing. */
+export type PluginJobKind = 'install' | 'update';
+
+/**
+ * The install or update running right now, across the whole server. A
+ * FINISHED job keeps its events but is not reported here.
+ */
+export interface PluginJobRef {
+  job_id: string;
+  plugin_id: string;
+  kind: PluginJobKind;
+  status?: JobStatus;
+  current_step?: string | null;
+}
+
+/** One row of `GET /api/plugins/catalog`: installed, installable, or gone. */
+export interface PluginCatalogEntry {
+  id: string;
+  name: string;
+  description: string;
+  kind: PluginKind;
+  /** Published by the CodefyUI project rather than by a third party. */
+  official: boolean;
+  status: PluginStatus;
+  /** null for an entry that is not installed. */
+  source_kind: PluginSourceKind | null;
+  /** What a user would type to install this: a name, a repo, or a path. */
+  source: string;
+  repo: string | null;
+  ref: string | null;
+  sha: string | null;
+  url: string | null;
+  homepage: string;
+  version: string | null;
+  installed_at: string | null;
+  enabled: boolean;
+  chapters: string[];
+  lessons: string[];
+  tags: string[];
+  /** The node types this plugin registers. Empty while it is disabled. */
+  nodes: string[];
+  /** How many nodes it registers WHEN enabled -- `nodes.length` is not it. */
+  node_count: number;
+  capabilities: string[];
+  trusted_modules: string[];
+  python_deps: Record<string, string>;
+  has_frontend: boolean;
+  /** The install needs the user to accept capabilities before it can run. */
+  consent_required: boolean;
+  frontend_entry: string | null;
+  /** The job targeting THIS plugin, if any -- narrower than `active_job`. */
+  job: { job_id: string; status: JobStatus; current_step: string | null } | null;
+}
+
+export interface PluginCatalog {
+  entries: PluginCatalogEntry[];
+  active_job: PluginJobRef | null;
+  remote_install_allowed: boolean;
+  /**
+   * Bumped every time the node registry reloads. The panel compares it with
+   * what it last saw to know that an install actually landed.
+   */
+  generation: number;
+}
+
+/**
+ * What `POST /api/plugins/inspect` found at a source, and what installing it
+ * would cost -- the whole consent screen in one object.
+ */
+export interface PluginInspection {
+  /** Hand this back to `installPlugin`; the server forgets it after
+   *  `expires_at`, which is a 404 `inspection_expired`. */
+  inspection_id: string;
+  expires_at: string;
+  /** An `external` plugin has no source to inspect, so it never appears. */
+  kind: 'builtin' | 'github';
+  /** The same two values as a job's kind: a fresh install, or an update. */
+  mode: PluginJobKind;
+  plugin_id: string;
+  /** The builtin catalog name this resolved to, when it was one. */
+  catalog_id: string | null;
+  official: boolean;
+  source: string;
+  url: string | null;
+  ref: string | null;
+  sha: string | null;
+  name: string;
+  version: string;
+  description: string;
+  homepage: string;
+  /** The manifest as read, echoed whole: this client only shows it. */
+  manifest: Record<string, unknown>;
+  capabilities: string[];
+  allowed_modules: string[];
+  python_deps: Record<string, string>;
+  has_frontend: boolean;
+  chapters: string[];
+  lessons: string[];
+  consent_required: boolean;
+  /** What is on disk today, for an update; null for a fresh install. */
+  installed: {
+    sha: string;
+    version: string;
+    capabilities: string[];
+    trusted_modules: string[];
+    enabled: boolean;
+    source_kind: PluginSourceKind;
+  } | null;
+  up_to_date: boolean;
+  /** What this version asks for that the installed one did not: the ONLY
+   *  thing an update has to ask the user about. */
+  capabilities_added: string[];
+  allowed_modules_added: string[];
+  warnings: string[];
+}
+
+/**
+ * The body of `POST /api/plugins/install`.
+ *
+ * `accept_capabilities` echoes back exactly what the user ticked -- the
+ * server refuses with `consent_required` if anything is missing rather than
+ * trusting a blanket yes.
+ */
+export interface PluginInstallRequest {
+  inspection_id: string;
+  accept_capabilities?: string[];
+  trust_author?: boolean;
+  force?: boolean;
+}
+
+export interface PluginUninstallResult {
+  id: string;
+  /**
+   * Typed `boolean` rather than the literal `true` the route always answers
+   * with: a client that hand-mirrors a contract should still let its caller
+   * check, not be told by the compiler that there is nothing to check.
+   */
+  removed: boolean;
+  /** A builtin's files stay; a marker keeps it from coming back on reload. */
+  tombstoned: boolean;
+  /** null when the server could not tell -- Windows keeps an open file. */
+  files_removed: boolean | null;
+  /** Nothing uninstalls a plugin's pip packages; these are what it left. */
+  python_deps_left: string[];
+  uninstall_command: string | null;
+  reinstall_hint: string;
+}
+
+/**
+ * The three answers `POST /api/plugins/{id}/update` can give, told apart by
+ * HTTP status first (202 started a job) and then by the 200 body's `status`.
+ */
+export type PluginUpdateResult =
+  | { kind: 'job'; job_id: string }
+  | { kind: 'up_to_date'; sha: string }
+  | {
+      kind: 'needs_consent';
+      inspection: PluginInspection;
+      capabilities_added: string[];
+      allowed_modules_added: string[];
+    };
+
+/**
+ * A catalog entry as it ARRIVES: every key optional, and the enum-ish ones
+ * widened to `string`, because deciding what an absent or unrecognised value
+ * means is exactly what normalising is.
+ */
+type RawCatalogEntry = Omit<
+  Partial<PluginCatalogEntry>,
+  'status' | 'kind' | 'source_kind'
+> & {
+  status?: string;
+  kind?: string;
+  source_kind?: string | null;
+};
+
+type RawCatalog = {
+  entries?: RawCatalogEntry[];
+  active_job?: PluginJobRef | null;
+  remote_install_allowed?: boolean;
+  generation?: number;
+};
+
+const PLUGIN_STATUSES: readonly string[] = [
+  'installed',
+  'disabled',
+  'available',
+  'removed',
+  'installing',
+  'missing_files',
+];
+const PLUGIN_KINDS: readonly string[] = ['builtin', 'github', 'external'];
+const PLUGIN_SOURCE_KINDS: readonly string[] = ['builtin', 'github_url', 'local'];
+
+/**
+ * One catalog row, field by field.
+ *
+ * Normalised rather than passed through for the same reason `listPacks` is:
+ * the panel maps over `chapters`, `nodes` and `capabilities` on every
+ * repaint, so an absent key has to arrive as an empty list rather than as a
+ * crash mid-render. A value outside its union becomes the safe member --
+ * `available` is a plugin the user can install, `external` is one with no
+ * source to re-fetch -- so a newer server's vocabulary degrades instead of
+ * rendering as an unhandled case.
+ */
+function normalizePluginEntry(raw: RawCatalogEntry): PluginCatalogEntry {
+  const status: PluginStatus = PLUGIN_STATUSES.includes(raw.status ?? '')
+    ? (raw.status as PluginStatus)
+    : 'available';
+  return {
+    id: raw.id ?? '',
+    name: raw.name ?? '',
+    description: raw.description ?? '',
+    kind: PLUGIN_KINDS.includes(raw.kind ?? '')
+      ? (raw.kind as PluginKind)
+      : 'external',
+    official: raw.official ?? false,
+    status,
+    source_kind: PLUGIN_SOURCE_KINDS.includes(raw.source_kind ?? '')
+      ? (raw.source_kind as PluginSourceKind)
+      : null,
+    source: raw.source ?? '',
+    repo: raw.repo ?? null,
+    ref: raw.ref ?? null,
+    sha: raw.sha ?? null,
+    url: raw.url ?? null,
+    homepage: raw.homepage ?? '',
+    version: raw.version ?? null,
+    installed_at: raw.installed_at ?? null,
+    // A server that does not say reports the only thing its status can mean:
+    // `installed` is enabled, and every other status is not.
+    enabled: raw.enabled ?? status === 'installed',
+    chapters: raw.chapters ?? [],
+    lessons: raw.lessons ?? [],
+    tags: raw.tags ?? [],
+    nodes: raw.nodes ?? [],
+    node_count: raw.node_count ?? 0,
+    capabilities: raw.capabilities ?? [],
+    trusted_modules: raw.trusted_modules ?? [],
+    python_deps: raw.python_deps ?? {},
+    has_frontend: raw.has_frontend ?? false,
+    consent_required: raw.consent_required ?? false,
+    frontend_entry: raw.frontend_entry ?? null,
+    job: raw.job ?? null,
+  };
+}
+
+/**
+ * Every plugin this server knows about: installed, installable, and gone.
+ * The one route the Plugin Center polls.
+ *
+ * A 404 here is a server too old to have the route at all, which the store
+ * reads as "no Plugin Center" rather than as a failure to report.
+ * `remote_install_allowed` defaults to ALLOWED for the same reason it does in
+ * `listPacks`: the server is what refuses a remote install, with a 403 this
+ * then reports, so a missing key must not hide a button that works.
+ */
+export async function listPluginCatalog(): Promise<PluginCatalog> {
+  const res = await fetch(`${BASE_URL}/plugins/catalog`);
+  if (!res.ok) throw await apiError(res);
+  const data = (await res.json()) as RawCatalog;
+  return {
+    entries: (data.entries ?? []).map(normalizePluginEntry),
+    active_job: data.active_job ?? null,
+    remote_install_allowed: data.remote_install_allowed ?? true,
+    generation: data.generation ?? 0,
+  };
+}
+
+/**
+ * Resolve a source -- a builtin name, a GitHub URL, a local path -- and
+ * report what installing it would mean, WITHOUT installing anything.
+ *
+ * The `inspection_id` it hands back is what `installPlugin` acts on, so the
+ * user consents to exactly the manifest that was read rather than to whatever
+ * the source holds by the time the install starts.
+ */
+export async function inspectPluginSource(source: string): Promise<PluginInspection> {
+  const res = await apiFetch(`${BASE_URL}/plugins/inspect`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ source }),
+  });
+  if (!res.ok) throw await apiError(res);
+  return res.json();
+}
+
+/**
+ * Start installing an inspected plugin. 202 and a `job_id` to follow with
+ * `getPluginJobEvents`.
+ *
+ * `JSON.stringify` drops undefined values, so a caller spreading a partly
+ * filled request sends only the keys it actually set -- which matters because
+ * the backend's request model forbids anything it did not declare.
+ */
+export async function installPlugin(
+  body: PluginInstallRequest,
+): Promise<{ job_id: string }> {
+  const res = await apiFetch(`${BASE_URL}/plugins/install`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) throw await apiError(res);
+  return res.json();
+}
+
+/** The 200 and 202 bodies of `/update`, before they are told apart. */
+type RawUpdateResponse = {
+  job_id?: string;
+  status?: string;
+  sha?: string;
+  inspection?: PluginInspection;
+  capabilities_added?: string[];
+  allowed_modules_added?: string[];
+};
+
+/**
+ * Update an installed plugin to its source's newest commit.
+ *
+ * Three answers, so a union rather than a shape the caller has to re-derive:
+ * a job started (202), there was nothing to do, or the new version asks for
+ * capabilities the user has not accepted and the panel must ask first.
+ */
+export async function updatePlugin(pluginId: string): Promise<PluginUpdateResult> {
+  const res = await apiFetch(
+    `${BASE_URL}/plugins/${encodeURIComponent(pluginId)}/update`,
+    { method: 'POST' },
+  );
+  if (!res.ok) throw await apiError(res);
+  const data = (await res.json()) as RawUpdateResponse;
+  // 202 is the ONLY status that means a job started; both 200s carry a
+  // `status` that says which of the other two answers this is.
+  if (res.status === 202) return { kind: 'job', job_id: data.job_id ?? '' };
+  if (data.status === 'up_to_date') return { kind: 'up_to_date', sha: data.sha ?? '' };
+  if (data.status === 'needs_consent' && data.inspection !== undefined) {
+    return {
+      kind: 'needs_consent',
+      inspection: data.inspection,
+      capabilities_added: data.capabilities_added ?? [],
+      allowed_modules_added: data.allowed_modules_added ?? [],
+    };
+  }
+  // Neither 200 shape. Reported rather than guessed at: both guesses ("there
+  // was nothing to do", "a job is running") would leave the panel telling the
+  // user something that did not happen.
+  throw new ApiError(
+    res.status,
+    `Unexpected update response: ${String(data.status)}`,
+    data,
+  );
+}
+
+/**
+ * Remove a plugin. A builtin cannot be deleted, only tombstoned so it does
+ * not come back on the next reload -- `tombstoned` says which happened.
+ *
+ * Nothing removes a plugin's pip packages, here or anywhere:
+ * `python_deps_left` and `uninstall_command` are what the panel shows instead.
+ */
+export async function uninstallPlugin(
+  pluginId: string,
+): Promise<PluginUninstallResult> {
+  const res = await apiFetch(`${BASE_URL}/plugins/${encodeURIComponent(pluginId)}`, {
+    method: 'DELETE',
+  });
+  if (!res.ok) throw await apiError(res);
+  return res.json();
+}
+
+/**
+ * Enable or disable an installed plugin. Two routes rather than a body, which
+ * is what the backend has offered since the plugin system shipped.
+ */
+export async function setPluginEnabled(
+  pluginId: string,
+  enabled: boolean,
+): Promise<{ id: string; enabled: boolean }> {
+  const res = await apiFetch(
+    `${BASE_URL}/plugins/${encodeURIComponent(pluginId)}/${enabled ? 'enable' : 'disable'}`,
+    { method: 'POST' },
+  );
+  if (!res.ok) throw await apiError(res);
+  return res.json();
+}
+
+/**
+ * A plugin job's events strictly after `cursor`, oldest first.
+ *
+ * `wait` turns this into a long poll exactly as it does for a pack job: the
+ * request parks server-side and returns the moment an event lands, the job
+ * ends, or the deadline passes. Pass a `signal` so a closing panel can
+ * abandon a parked request instead of holding a connection open.
+ */
+export async function getPluginJobEvents(
+  jobId: string,
+  opts: { cursor?: number; wait?: number; limit?: number; signal?: AbortSignal } = {},
+): Promise<JobEventsPage> {
+  const params = new URLSearchParams();
+  if (opts.cursor !== undefined) params.set('cursor', String(opts.cursor));
+  if (opts.wait !== undefined) params.set('wait', String(opts.wait));
+  if (opts.limit !== undefined) params.set('limit', String(opts.limit));
+  const query = params.toString();
+  const res = await fetch(
+    `${BASE_URL}/plugins/jobs/${encodeURIComponent(jobId)}/events${query ? `?${query}` : ''}`,
+    { signal: opts.signal },
+  );
+  if (!res.ok) throw await apiError(res);
+  return res.json();
+}
+
+/**
+ * Ask the running plugin job to stop. `cancelled` reports whether the request
+ * did anything -- false for a job that had already finished, which is a
+ * normal answer rather than an error.
+ */
+export async function cancelPluginJob(
+  jobId: string,
+): Promise<{ job_id: string; cancelled: boolean }> {
+  const res = await apiFetch(
+    `${BASE_URL}/plugins/jobs/${encodeURIComponent(jobId)}/cancel`,
+    { method: 'POST' },
+  );
+  if (!res.ok) throw await apiError(res);
+  return res.json();
+}
