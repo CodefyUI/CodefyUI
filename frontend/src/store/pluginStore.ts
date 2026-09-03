@@ -63,6 +63,27 @@ export type PluginSourceRef =
   | { kind: 'catalog'; id: string };
 
 /**
+ * Why an inspection or an install was refused, in the three parts a review
+ * card needs.
+ *
+ * Not a string, because the backend's 400 bodies carry no message at all --
+ * `{code: reserved_id, id}`, `{code: unknown_catalog_name, known}`,
+ * `{code: consent_required, missing_capabilities}`, `{code:
+ * trust_author_required, allowed_modules}`. Reduced to `err.message` those
+ * become the raw token `consent_required` on screen, and the keys that say
+ * WHICH id is taken, which names exist, or which box is still unticked are
+ * gone by the time the card is rendered.
+ *
+ * `message` is what to show when nothing better is known, `code` is what a
+ * card switches on, and `detail` is the rest of that body.
+ */
+export interface InspectionFailure {
+  message: string;
+  code: string | null;
+  detail: Record<string, unknown> | null;
+}
+
+/**
  * The install review, as a little state machine.
  *
  * An inspection is not an install: it reads the manifest at a source and
@@ -86,9 +107,9 @@ export type InspectionState =
        * is a tick box on the card in front of the user rather than a new
        * inspection.
        */
-      error: string | null;
+      error: InspectionFailure | null;
     }
-  | { phase: 'error'; source: string; message: string };
+  | { phase: 'error'; source: string; failure: InspectionFailure };
 
 interface PluginState {
   plugins: PluginCatalogEntry[];
@@ -238,6 +259,25 @@ function openCenterAction(pluginId: string): ToastAction {
  */
 function refusalCode(err: unknown): string | null {
   return str(errorDetail(err)?.code);
+}
+
+/**
+ * Everything a thrown refusal carried, in the shape the review card reads.
+ *
+ * One builder rather than a shape assembled at each catch, so no caller can
+ * be the one that keeps only the message -- which is the state this replaces.
+ */
+function inspectionFailure(err: unknown): InspectionFailure {
+  return {
+    // 403 is the one status whose own message says nothing a user can act
+    // on ("Forbidden"): it is the server refusing to install from anywhere
+    // but the machine it runs on, which only this key explains.
+    message: err instanceof ApiError && err.status === 403
+      ? useI18n.getState().t('packs.remoteDisabled')
+      : errorMessage(err),
+    code: refusalCode(err),
+    detail: errorDetail(err),
+  };
 }
 
 /** A plugin's display name for a toast, falling back to its id. */
@@ -494,7 +534,13 @@ async function runInspect(
     // of on its own.
     usePluginStore.setState({
       inspection: {
-        phase: 'error', source: spec, message: t('pluginCenter.source.invalid'),
+        phase: 'error',
+        source: spec,
+        // No code: nothing was refused, this build simply knows the shape is
+        // not one the server could resolve.
+        failure: {
+          message: t('pluginCenter.source.invalid'), code: null, detail: null,
+        },
       },
     });
     return null;
@@ -511,7 +557,7 @@ async function runInspect(
     return data;
   } catch (err) {
     usePluginStore.setState({
-      inspection: { phase: 'error', source: spec, message: errorMessage(err) },
+      inspection: { phase: 'error', source: spec, failure: inspectionFailure(err) },
     });
     return null;
   }
@@ -553,11 +599,12 @@ async function startInstall(
     const code = refusalCode(err);
     if (code === 'consent_required' || code === 'trust_author_required') {
       // Recoverable, and recoverable on the card the user is already looking
-      // at: the inspection stays ready and grows a message, so the review can
-      // say which box is still unticked instead of starting over.
+      // at: the inspection stays ready and grows a failure, so the review can
+      // say which box is still unticked -- the refusal names the capabilities
+      // or the modules -- instead of starting over.
       usePluginStore.setState((state) => (
         state.inspection.phase === 'ready'
-          ? { inspection: { ...state.inspection, error: errorMessage(err) } }
+          ? { inspection: { ...state.inspection, error: inspectionFailure(err) } }
           : {}
       ));
     } else if (err instanceof ApiError && err.status === 409) {

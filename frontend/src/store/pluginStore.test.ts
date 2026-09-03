@@ -433,7 +433,14 @@ describe('pluginStore — install', () => {
     // Ticking a box IS the fix here, so the card the user never asked for is
     // exactly what they now need.
     expect(usePluginStore.getState().inspection).toMatchObject({
-      phase: 'ready', forPluginId: 'c1', error: 'consent_required',
+      phase: 'ready',
+      forPluginId: 'c1',
+      error: {
+        code: 'consent_required',
+        // Which box is unticked: the card cannot ask for the right one
+        // without the list the refusal named.
+        detail: { missing_capabilities: ['net'] },
+      },
     });
   });
 
@@ -471,7 +478,13 @@ describe('pluginStore — inspect', () => {
     expect(usePluginStore.getState().inspection).toEqual({
       phase: 'error',
       source: 'not a source!',
-      message: 'Enter a catalog name, owner/repo[@ref] or a GitHub URL.',
+      // Nothing was refused, so there is no code to carry: this build knows
+      // on its own that the shape is not one the server could resolve.
+      failure: {
+        message: 'Enter a catalog name, owner/repo[@ref] or a GitHub URL.',
+        code: null,
+        detail: null,
+      },
     });
   });
 
@@ -494,8 +507,45 @@ describe('pluginStore — inspect', () => {
     await usePluginStore.getState().inspect('owner/demo');
 
     expect(usePluginStore.getState().inspection).toEqual({
-      phase: 'error', source: 'owner/demo', message: 'unparseable_source',
+      phase: 'error',
+      source: 'owner/demo',
+      failure: {
+        message: 'unparseable_source',
+        code: 'unparseable_source',
+        detail: { code: 'unparseable_source' },
+      },
     });
+  });
+
+  it('keeps the code and the body a refused inspection carried', async () => {
+    // `{code: reserved_id, id: edu}` has no message at all: reduced to a
+    // string the card would show the raw token and could not name the id
+    // that is already taken.
+    api.inspectPluginSource.mockRejectedValue(
+      refused(400, 'reserved_id', { id: 'edu' }),
+    );
+
+    await usePluginStore.getState().inspect('edu');
+
+    const state = usePluginStore.getState();
+    expect(state.inspection.phase).toBe('error');
+    if (state.inspection.phase !== 'error') throw new Error('not an error phase');
+    expect(state.inspection.failure.code).toBe('reserved_id');
+    expect(state.inspection.failure.detail).toEqual({ code: 'reserved_id', id: 'edu' });
+  });
+
+  it('carries the names a catalog miss listed', async () => {
+    // The hint the source box shows is `known`, and it only exists in the
+    // body: the message is the bare code.
+    api.inspectPluginSource.mockRejectedValue(
+      refused(400, 'unknown_catalog_name', { known: ['c1', 'c2'] }),
+    );
+
+    await usePluginStore.getState().inspect('c9');
+
+    const state = usePluginStore.getState();
+    if (state.inspection.phase !== 'error') throw new Error('not an error phase');
+    expect(state.inspection.failure.detail).toMatchObject({ known: ['c1', 'c2'] });
   });
 
   it('clears the review on request', async () => {
@@ -583,9 +633,15 @@ describe('pluginStore — installInspected', () => {
 
     const state = usePluginStore.getState();
     // The fix is a tick box on the card in front of the user, not a new
-    // inspection: the review stays, and grows a message.
+    // inspection: the review stays, and grows a failure.
     expect(state.inspection).toMatchObject({
-      phase: 'ready', forPluginId: null, error: 'consent_required',
+      phase: 'ready', forPluginId: null, error: { code: 'consent_required' },
+    });
+    // WHICH box: the capabilities the server said were missing, not just the
+    // fact that some were.
+    if (state.inspection.phase !== 'ready') throw new Error('not a ready review');
+    expect(state.inspection.error?.detail).toMatchObject({
+      missing_capabilities: ['net'],
     });
     expect(state.job).toBeNull();
   });
@@ -601,7 +657,11 @@ describe('pluginStore — installInspected', () => {
     });
 
     expect(usePluginStore.getState().inspection).toMatchObject({
-      phase: 'ready', error: 'trust_author_required',
+      phase: 'ready',
+      error: {
+        code: 'trust_author_required',
+        detail: { allowed_modules: ['requests'] },
+      },
     });
   });
 
