@@ -125,10 +125,18 @@ received — each links to the release it was published as.
   whether that was acceptable, and notice that the plugin was already
   installed or that its id is one this build reserves. Now the manifest is
   read first — one small file, at the commit the install would use — and
-  everything that could refuse the install refuses it there, before a byte of
-  the repository moves. What follows is exactly the install the Plugin Center
-  runs: one implementation, so the console and the panel cannot come to
-  disagree about what an install does or what a failure is called.
+  everything that can be decided from the manifest refuses the install there,
+  before a byte of the repository moves. (Two refusals still cannot be: the
+  security scan reads the code, and the check that the downloaded manifest is
+  the one you agreed to needs the download to compare against.) What follows
+  is exactly the install the Plugin Center runs: one implementation, so the
+  console and the panel cannot come to disagree about what an install does or
+  what a failure is called. One consequence to know about: "already
+  installed" is now decided by your lockfile rather than by whether the
+  directory is there, so re-installing over a plugin whose files were deleted,
+  or over one you have linked with `cdui plugin link`, asks for `--force`
+  where it used to go ahead silently. Installing a built-in pack also records
+  which catalog entry it came from.
 
 - **A plugin's Python packages install add-only, and say so when they
   cannot.** They now go through the Package Center's constraints file, which
