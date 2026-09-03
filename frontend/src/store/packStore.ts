@@ -7,6 +7,7 @@ import {
   installPack,
   listPacks,
   removePackItem,
+  type JobEvent,
   type LaunchMode,
   type PackCatalog,
   type PackGpuInfo,
@@ -15,6 +16,21 @@ import {
   type PackJobStatus,
   type PackSummary,
 } from '../api/rest';
+import {
+  EVENT_WAIT_S,
+  FOLLOW_IDLE_MS,
+  FOLLOW_RETRY_MS,
+  MAX_FOLLOW_FAILURES,
+  MAX_LOG_LINES,
+  createJobFollower,
+  emptyJob,
+  reduceJobEvents,
+  type ItemProgress,
+  type Job,
+  type JobPhase,
+  type JobStep,
+  type LogLine,
+} from './jobFollower';
 import { confirm } from '../utils/dialog';
 import { localizedPackTitle } from '../utils/packAvailability';
 import { useToastStore, type ToastAction } from './toastStore';
@@ -53,35 +69,16 @@ import { useI18n, type TranslationKey } from '../i18n';
  * `sessionStorage` so the reloaded page can report how it went.
  */
 
-/** Long-poll parking time for the job follower, in SECONDS (server caps it). */
-export const EVENT_WAIT_S = 25;
-
 /**
- * Floor between follower turns that made no progress.
- *
- * The long poll is supposed to park server-side, so an unadvanced page
- * normally means its deadline passed and 500 ms of extra latency is noise. It
- * is also the thing standing between this loop and a busy-wait if a server
- * ever answers instantly without moving the cursor.
+ * The follower's own constants, re-exported under the names this panel and
+ * its tests have always used. `jobFollower` owns the values because the
+ * plugin center parks on the same endpoint shape with the same deadlines;
+ * a second copy here would be two numbers to keep in step.
  */
-export const FOLLOW_IDLE_MS = 500;
-
-/** Wait between retries after a failed events request. */
-export const FOLLOW_RETRY_MS = 2000;
-
-/**
- * Consecutive failures before the job is declared `lost` — or, for a
- * restart-mode job, settled as the `needs_restart` it was heading for.
- *
- * Five retries across ten seconds outlast a restarting dev server and a
- * flaky Wi-Fi hop, which are the two things that interrupt an install on a
- * developer's machine. Beyond that the honest thing to say is that we no
- * longer know what the download is doing.
- */
-export const MAX_FOLLOW_FAILURES = 5;
+export { EVENT_WAIT_S, FOLLOW_IDLE_MS, FOLLOW_RETRY_MS, MAX_FOLLOW_FAILURES };
 
 /** Ring-buffer bound on the rendered install log. */
-export const MAX_PACK_LOG_LINES = 400;
+export const MAX_PACK_LOG_LINES = MAX_LOG_LINES;
 
 /**
  * How much of a failed restart's `log_tail` a toast is allowed to carry.
@@ -138,48 +135,20 @@ const REFUSAL_TOASTS = new Map<string, TranslationKey>([
 ]);
 
 /**
- * One line of an install job's log.
+ * The generic job model under this panel's own names.
  *
- * `text` is the server's own message (English, and often a pip line), kept
- * verbatim rather than translated: it is a transcript of what ran, and the
- * step LABELS the UI translates come from `PackJobStep.step` ids instead.
+ * Aliases rather than copies: a pack job's log lines, per-item bars, steps
+ * and phases are the shared ones, and a second declaration would be a second
+ * thing to keep in step with the reducer that produces them. The names stay
+ * because the panel, the cards and their tests all read in packs.
  */
-export interface PackLogLine {
-  /** Unique, ascending, and stable — the React key for the line. */
-  seq: number;
-  ts: string | null;
-  kind: 'step' | 'log' | 'error';
-  text: string;
-}
+export type PackLogLine = LogLine;
+export type PackItemProgress = ItemProgress;
+export type PackJobStep = JobStep;
+export type PackJobPhase = JobPhase;
 
-/** How far one item has downloaded. */
-export interface PackItemProgress {
-  bytesDone: number;
-  /** null when the server never learned the size (a chunked response). */
-  bytesTotal: number | null;
-  /** 0..100, or null when there is no total to divide by. */
-  percent: number | null;
-}
-
-export interface PackJobStep {
-  /** The server's step id (`pip`, `download:<item>`, `verify`). */
-  step: string;
-  /** The server's English label — a fallback for a step the UI cannot name. */
-  label: string;
-  state: 'running' | 'done';
-}
-
-/**
- * A job's status as the UI knows it.
- *
- * `lost` is ours, not the server's: after enough failed polls we no longer
- * know what the job is doing, and saying "running" about a job nobody is
- * watching is the one answer that is definitely wrong.
- */
-export type PackJobPhase = PackJobStatus | 'lost';
-
-export interface PackJob {
-  jobId: string;
+/** A pack install job: the generic job plus what makes it a PACK's. */
+export interface PackJob extends Job {
   packId: string;
   /**
    * How this job was launched.
@@ -190,16 +159,6 @@ export interface PackJob {
    * the user to run a command. Only the first is a restart anybody asked for.
    */
   mode: PackInstallMode;
-  status: PackJobPhase;
-  steps: PackJobStep[];
-  /** Keyed by item id, so a replayed frame overwrites instead of appending. */
-  items: Record<string, PackItemProgress>;
-  log: PackLogLine[];
-  /** Highest event cursor applied — where the follower resumes. */
-  cursor: number;
-  error: { message: string; hint: string | null } | null;
-  /** Set by a `needs_restart` event: what to run when we cannot restart. */
-  restartCommand: string | null;
   /**
    * Set by a `needs_restart` event on a LIVE install the resolver stopped:
    * the mode that CAN finish it, when the server is able to offer one.
@@ -210,7 +169,6 @@ export interface PackJob {
    * build cannot follow.
    */
   retryMode: PackInstallMode | null;
-  startedAt: number;
 }
 
 export type RestartPhase = 'idle' | 'waiting' | 'notStarted' | 'timeout';
@@ -284,20 +242,7 @@ export function emptyPackJob(
   packId: string,
   mode: PackInstallMode = 'live',
 ): PackJob {
-  return {
-    jobId,
-    packId,
-    mode,
-    status: 'running',
-    steps: [],
-    items: {},
-    log: [],
-    cursor: 0,
-    error: null,
-    restartCommand: null,
-    retryMode: null,
-    startedAt: Date.now(),
-  };
+  return { ...emptyJob(jobId), packId, mode, retryMode: null };
 }
 
 function errorMessage(err: unknown): string {
@@ -327,14 +272,6 @@ function openCenterAction(packId: string): ToastAction {
 
 function str(value: unknown): string | null {
   return typeof value === 'string' ? value : null;
-}
-
-function num(value: unknown): number | null {
-  return typeof value === 'number' && Number.isFinite(value) ? value : null;
-}
-
-function clampPercent(value: number): number {
-  return Math.min(100, Math.max(0, value));
 }
 
 function sleep(ms: number): Promise<void> {
@@ -389,148 +326,54 @@ function isTerminalPhase(status: PackJobPhase): boolean {
 }
 
 /**
- * Fold one page of events into a job.
+ * What a pack reads out of an event that the generic reducer does not.
+ *
+ * One key today, and it is genuinely pack-shaped: `retry_mode` is the
+ * server's offer to finish a LIVE install that its resolver stopped, and
+ * only this panel has a button that can take it up.
+ */
+function packExtras(event: JobEvent, draft: PackJob): void {
+  if (event.type !== 'needs_restart') return;
+  // Only the one mode this build knows how to post. The key is absent
+  // unless the server can actually restart itself, so reading anything
+  // else as a retry would offer a button whose request nothing here
+  // knows how to make.
+  draft.retryMode = str(event.retry_mode) === 'restart' ? 'restart' : null;
+}
+
+/**
+ * Fold one page of events into a pack job.
  *
  * Pure and exported so the interesting part — what each event type does to
  * the steps, the per-item bars and the log — is testable without a server, a
- * timer or a React tree.
- *
- * A `progress` event NEVER becomes a log line. A 2 GB download emits
- * thousands of them; one line each would bury every message that actually
- * says something, and the bytes already have a bar of their own.
+ * timer or a React tree. The fold itself is `jobFollower`'s, shared with the
+ * plugin center; only `retry_mode` is ours.
  */
 export function reducePackEvents(job: PackJob, page: PackJobEventsPage): PackJob {
-  let steps = job.steps;
-  let items = job.items;
-  let error = job.error;
-  let restartCommand = job.restartCommand;
-  let retryMode = job.retryMode;
-  const lines: PackLogLine[] = [];
-
-  // Log keys have to be unique for React and ascending for the reader. Event
-  // cursors are both, so they are used as-is; a frame that arrived without
-  // one (a hand-written double, an older backend) gets the next number after
-  // everything seen so far rather than a colliding zero.
-  let lastSeq = job.log.length > 0 ? job.log[job.log.length - 1].seq : 0;
-  if (job.cursor > lastSeq) lastSeq = job.cursor;
-
-  const line = (
-    seq: number, ts: string | null, kind: PackLogLine['kind'], text: string,
-  ) => lines.push({ seq, ts, kind, text });
-
-  const markStepDone = (predicate: (step: PackJobStep) => boolean) => {
-    if (!steps.some((step) => step.state === 'running' && predicate(step))) return;
-    steps = steps.map((step) => (
-      step.state === 'running' && predicate(step) ? { ...step, state: 'done' } : step
-    ));
-  };
-
-  for (const event of page.events) {
-    const cursor = num(event.cursor);
-    // Idempotent by cursor. `/events` returns events strictly AFTER the
-    // cursor we sent, so this only fires on a replay — but a replayed log
-    // line would be a duplicate React key as well as a duplicate line, and
-    // the reducer is cheaper to make safe than every caller is.
-    if (cursor !== null && cursor <= job.cursor) continue;
-    const seq = cursor !== null ? Math.max(cursor, lastSeq + 1) : lastSeq + 1;
-    lastSeq = seq;
-    const ts = str(event.ts);
-
-    switch (event.type) {
-      case 'step_started': {
-        const step = str(event.step);
-        if (step === null) break;
-        const label = str(event.label) ?? step;
-        // The server emits `step_done` for every step it finishes, but a step
-        // that ended by raising never gets one; closing the previous step
-        // here keeps the list from showing two spinners at once.
-        markStepDone(() => true);
-        steps = [...steps, { step, label, state: 'running' }];
-        line(seq, ts, 'step', label);
-        break;
-      }
-      case 'step_done': {
-        const step = str(event.step);
-        if (step === null) break;
-        markStepDone((entry) => entry.step === step);
-        break;
-      }
-      case 'log': {
-        const text = str(event.line);
-        // Blank lines are real in pip output and are nothing to render.
-        if (text === null || text.trim() === '') break;
-        line(seq, ts, 'log', text);
-        break;
-      }
-      case 'progress': {
-        const item = str(event.item);
-        if (item === null) break;
-        const bytesDone = num(event.bytes_done) ?? 0;
-        const bytesTotal = num(event.bytes_total);
-        const reported = num(event.percent);
-        const percent = reported !== null
-          ? clampPercent(reported)
-          : bytesTotal !== null && bytesTotal > 0
-            ? clampPercent((100 * bytesDone) / bytesTotal)
-            : null;
-        items = { ...items, [item]: { bytesDone, bytesTotal, percent } };
-        break;
-      }
-      case 'job_done':
-        markStepDone(() => true);
-        line(seq, ts, 'step', 'done');
-        break;
-      case 'job_failed': {
-        const message = str(event.message) ?? '';
-        error = { message, hint: str(event.hint) };
-        line(seq, ts, 'error', message);
-        break;
-      }
-      case 'needs_restart':
-        restartCommand = str(event.command);
-        // Only the one mode this build knows how to post. The key is absent
-        // unless the server can actually restart itself, so reading anything
-        // else as a retry would offer a button whose request nothing here
-        // knows how to make.
-        retryMode = str(event.retry_mode) === 'restart' ? 'restart' : null;
-        break;
-      default:
-        // An unknown type from a newer backend is skipped, never rendered as
-        // a mystery line — the log is a transcript, not a protocol dump.
-        break;
-    }
-  }
-
-  const log = lines.length > 0
-    ? [...job.log, ...lines].slice(-MAX_PACK_LOG_LINES)
-    : job.log;
-
-  return {
-    ...job,
-    status: page.status,
-    steps,
-    items,
-    log,
-    error,
-    restartCommand,
-    retryMode,
-    // Never moves backwards: an empty page returns the cursor we sent.
-    cursor: Math.max(job.cursor, page.cursor),
-  };
+  return reduceJobEvents(job, page, packExtras);
 }
 
 // ── module-scope schedulers ──────────────────────────────────────────────
 // In-flight requests and timers are process state, not store state: putting
 // them in the store would make every turn of the loop a re-render for
-// subscribers that only care about the data.
+// subscribers that only care about the data. The follower's half of that now
+// lives inside the closure `createJobFollower` returns; what is left here is
+// the restart handshake's.
 
-/** Bumped by every `stopFollowing`; a follower whose generation is stale exits. */
-let followGeneration = 0;
-let followAbort: AbortController | null = null;
-/** The job a follower is currently on, or null. Makes adoption idempotent. */
-let followingJobId: string | null = null;
 /** The last job `onJobSettled` fired for — its side effects run exactly once. */
 let settledJobId: string | null = null;
+
+/**
+ * The pack the running follower is installing.
+ *
+ * The follower is keyed by job id and knows nothing about packs, but every
+ * ending it reports is about one: which catalog row carries the fallback
+ * command, which name a toast says, which pack the reloaded page reports on.
+ * Set immediately before each `start`, and safe as a single slot because
+ * starting a different job replaces it and abandons the old loop in the same
+ * breath — a stale loop never gets to read it.
+ */
+let followingPackId: string | null = null;
 
 /** Bumped by every `restartFlow` and by the test reset; a stale loop exits. */
 let restartGeneration = 0;
@@ -547,131 +390,87 @@ let inProgressChecked = false;
  */
 let lastRestartRecord: Record<string, unknown> | null = null;
 
+/** Record on the open job — never on a job the user has moved on from. */
+function patchJob(jobId: string, next: PackJob): void {
+  usePackStore.setState((state) => (
+    state.job && state.job.jobId === jobId ? { job: next } : {}
+  ));
+}
+
 /**
- * Abandon the current follower, if any.
+ * The one follower this store runs.
  *
- * Two mechanisms, and both are needed. `abort()` releases the parked HTTP
- * request immediately — a 25 s long poll left dangling holds a connection
- * open on a server with a small pool. The generation bump is what stops the
- * LOOP: an abort only rejects the request in flight, and without it the
- * follower would simply issue the next one.
+ * Everything about HOW a job is tailed — the long poll, the generation
+ * guard, the retry budget, the "terminal AND the cursor did not move" stop
+ * condition — is `jobFollower`'s, and is shared with the plugin center.
+ * What is left here is the three things that are about PACKS: which endpoint
+ * to ask, what an ending means, and what to read into the endpoint going
+ * quiet.
  */
+const follower = createJobFollower<PackJob>({
+  fetchPage: (jobId, cursor, signal, wait) => (
+    getPackJobEvents(jobId, { cursor, wait, signal })
+  ),
+  getOpenJob: () => usePackStore.getState().job,
+  patchJob,
+  onExtra: packExtras,
+  onSettled: (jobId, status) => {
+    onJobSettled(jobId, followingPackId ?? '', status);
+  },
+  onGiveUp: (jobId, error, open) => {
+    // A RESTART-mode job is the one case where the endpoint going quiet is
+    // the expected ending rather than a lost connection: the server stops
+    // accepting half a second after the 202 and then exits, and a LAN client
+    // or a tab the browser had throttled can miss that half second entirely.
+    // `lost` would leave the user in front of a "we no longer know" banner
+    // while the wheel swap runs — no overlay, and worse, no breadcrumb, so
+    // the page that comes back could not report how the install went.
+    // Settling it as the ending it almost certainly reached runs the same
+    // handshake the last page would have started; if it turns out the server
+    // never went, the overlay's own thirty-second grace says so.
+    //
+    // Only for a connection that DROPPED, though. A `PackApiError` is the
+    // server answering — a 404 for a job that aged out, a 500 — and an
+    // answer is proof it is still there. Settling on those raised the
+    // blocking overlay over a live server, which is the bug the note in
+    // `onJobSettled` records as fixed. Every other ending declines here and
+    // takes the follower's own `lost`.
+    if (error instanceof PackApiError || open === null || open.mode !== 'restart') {
+      return false;
+    }
+    const packId = followingPackId ?? '';
+    // No `needs_restart` event ever arrived, so nothing carried the command
+    // — and both give-up screens name one ("Run this command, then
+    // reload:"). The catalog has it: `install_command` is what the panel's
+    // own button would have run for this pack.
+    const command = usePackStore.getState().byId[packId]?.install_command ?? null;
+    patchJob(jobId, {
+      ...open,
+      status: 'needs_restart',
+      restartCommand: open.restartCommand ?? command,
+    });
+    onJobSettled(jobId, packId, 'needs_restart');
+    return true;
+  },
+});
+
+/** Abandon the current follower, if any. */
 function stopFollowing(): void {
-  followGeneration += 1;
-  followAbort?.abort();
-  followAbort = null;
-  followingJobId = null;
+  follower.stop();
 }
 
 /**
  * Follow *jobId* from *cursor*, unless it is already being followed.
  *
  * The idempotence is what lets `refresh()` adopt `active_job` on every poll
- * without restarting the follower — and without the double-follow that would
- * apply every event twice.
+ * without restarting the follower — and without the double-follow that
+ * would apply every event twice. Asked here as well as inside `start` so the
+ * pack id is not rewritten under a loop already running on another job.
  */
 function startFollowing(jobId: string, packId: string, cursor: number): void {
-  if (followingJobId === jobId) return;
-  stopFollowing();
-  followingJobId = jobId;
-  void follow(jobId, packId, cursor, followGeneration);
-}
-
-/** Record on the open job — never on a job the user has moved on from. */
-function patchJob(jobId: string, patch: (job: PackJob) => PackJob): void {
-  usePackStore.setState((state) => (
-    state.job && state.job.jobId === jobId ? { job: patch(state.job) } : {}
-  ));
-}
-
-/**
- * Tail one install job until it can produce no more.
- *
- * The stop condition is "terminal AND the cursor did not move", which is the
- * only one that is actually true: a finished job with a backlog still has
- * pages to hand over, and a running job that returned nothing is simply
- * between events. Phrasing it in terms of the CURSOR rather than
- * `events.length` also makes a server that answers without making progress a
- * bounded loop instead of a busy-wait.
- */
-async function follow(
-  jobId: string, packId: string, startCursor: number, generation: number,
-): Promise<void> {
-  let cursor = startCursor;
-  let failures = 0;
-
-  while (generation === followGeneration) {
-    const controller = new AbortController();
-    followAbort = controller;
-    let page: PackJobEventsPage;
-    try {
-      page = await getPackJobEvents(jobId, {
-        cursor,
-        wait: EVENT_WAIT_S,
-        signal: controller.signal,
-      });
-    } catch (error) {
-      // A deliberate abort bumped the generation; anything else is the
-      // network, which an install is entitled to survive — the download
-      // itself is happening server-side and does not care that we blinked.
-      if (generation !== followGeneration) return;
-      failures += 1;
-      if (failures >= MAX_FOLLOW_FAILURES) {
-        if (followingJobId === jobId) followingJobId = null;
-        // A RESTART-mode job is the one case where the endpoint going quiet
-        // is the expected ending rather than a lost connection: the server
-        // stops accepting half a second after the 202 and then exits, and a
-        // LAN client or a tab the browser had throttled can miss that half
-        // second entirely. `lost` would leave the user in
-        // front of a "we no longer know" banner while the wheel swap runs —
-        // no overlay, and worse, no breadcrumb, so the page that comes back
-        // could not report how the install went. Settling it as the ending
-        // it almost certainly reached runs the same handshake the last page
-        // would have started; if it turns out the server never went, the
-        // overlay's own thirty-second grace says so.
-        //
-        // Only for a connection that DROPPED, though. A `PackApiError` is
-        // the server answering — a 404 for a job that aged out, a 500 — and
-        // an answer is proof it is still there. Settling on those raised the
-        // blocking overlay over a live server, which is the bug the note in
-        // `onJobSettled` records as fixed.
-        const store = usePackStore.getState();
-        const open = store.job;
-        if (!(error instanceof PackApiError)
-            && open?.jobId === jobId && open.mode === 'restart') {
-          // No `needs_restart` event ever arrived, so nothing carried the
-          // command — and both give-up screens name one ("Run this command,
-          // then reload:"). The catalog has it: `install_command` is what the
-          // panel's own button would have run for this pack.
-          const command = store.byId[packId]?.install_command ?? null;
-          patchJob(jobId, (job) => ({
-            ...job,
-            status: 'needs_restart',
-            restartCommand: job.restartCommand ?? command,
-          }));
-          onJobSettled(jobId, packId, 'needs_restart');
-        } else {
-          patchJob(jobId, (job) => ({ ...job, status: 'lost' }));
-        }
-        return;
-      }
-      await sleep(FOLLOW_RETRY_MS);
-      continue;
-    }
-    if (generation !== followGeneration) return;
-    failures = 0;
-
-    patchJob(jobId, (job) => reducePackEvents(job, page));
-
-    const advanced = page.cursor > cursor;
-    cursor = Math.max(cursor, page.cursor);
-    if (page.status !== 'running' && !advanced) {
-      if (followingJobId === jobId) followingJobId = null;
-      onJobSettled(jobId, packId, page.status);
-      return;
-    }
-    if (!advanced) await sleep(FOLLOW_IDLE_MS);
-  }
+  if (follower.followingJobId() === jobId) return;
+  followingPackId = packId;
+  follower.start(jobId, cursor);
 }
 
 /**
@@ -872,7 +671,7 @@ export const usePackStore = create<PackState>((set, get) => ({
       // follower's next page settles it as done/failed/cancelled. Marking it
       // `lost` from here is a race that turns a successful install into a
       // "lost contact with the server" banner.
-      && followingJobId !== job.jobId
+      && follower.followingJobId() !== job.jobId
     ) {
       // The server has no record of a job we think is running: it restarted,
       // or the job aged out. Saying "running" would be the one answer that
@@ -1143,7 +942,7 @@ export const usePackStore = create<PackState>((set, get) => ({
 
     // A download the user started before reloading is still going, and the
     // Package Center is closed. This toast is the only thing that says so.
-    if (followingJobId !== null) {
+    if (follower.followingJobId() !== null) {
       toast(t('packs.toast.inProgress'), 'info');
     }
 
@@ -1211,9 +1010,10 @@ function setPackStatus(packId: string, status: PackSummary['status']): void {
 
 /** Test-only: reset the module-scope schedulers and the store between cases. */
 export function _resetPackStoreForTesting(): void {
-  stopFollowing();
+  follower.stop();
   restartGeneration += 1;
   settledJobId = null;
+  followingPackId = null;
   inProgressChecked = false;
   lastRestartRecord = null;
   usePackStore.setState({
