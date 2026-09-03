@@ -1661,6 +1661,19 @@ async def test_a_server_with_no_installer_says_so_rather_than_guessing(
     assert response.json()["detail"] == {"code": "unavailable"}
 
 
+def test_the_request_models_do_not_rename_another_routers_schema():
+    """Two routers with a model of the same name is not an error -- it is
+    worse. FastAPI falls back to the module-qualified component name for BOTH
+    of them, so declaring an ``InstallRequest`` here would quietly rename the
+    Package Center's in ``/docs`` and in every client generated from
+    ``/openapi.json``. The names are chosen so nothing moves."""
+    schemas = app.openapi()["components"]["schemas"]
+
+    assert "PluginInspectRequest" in schemas
+    assert "PluginInstallRequest" in schemas
+    assert "InstallRequest" in schemas, "the packs model was renamed"
+
+
 async def test_the_catalog_still_answers_without_an_installer(
         uninstalled_client):
     """The contrast that makes the 503 above a decision: ``/catalog`` is a

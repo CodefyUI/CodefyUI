@@ -110,13 +110,16 @@ _RATE_LIMITED = frozenset({403, 429})
 _RESERVED_ID = re.compile(r"^Plugin id '(?P<id>[^']+)' is reserved")
 
 
-class InspectRequest(BaseModel):
+class PluginInspectRequest(BaseModel):
     """What to read. One field, and ``extra="forbid"`` keeps it one.
 
     A source is a catalog name, ``owner/repo`` or a GitHub URL -- never a
     manifest, a sha or a capability list. Everything an install later acts
     on is read by the SERVER from that source and kept under an inspection
     id, so there is no field here for a client to smuggle a decision through.
+
+    Named for its domain, like its sibling below: see
+    :class:`PluginInstallRequest` for why that is not decoration.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -139,8 +142,16 @@ class InspectRequest(BaseModel):
         return source
 
 
-class InstallRequest(BaseModel):
+class PluginInstallRequest(BaseModel):
     """An inspection, and the answers to what it asked. ``extra="forbid"``.
+
+    Prefixed rather than called ``InstallRequest``, which would read better
+    in this file and cost something outside it: ``routes_packs`` already has
+    a model of that name, and FastAPI resolves a collision by falling back to
+    the module-qualified component name for BOTH -- silently renaming the
+    Package Center's schema in ``/docs`` and in anything generated from
+    ``/openapi.json``. It is also the name the frontend's own type carries
+    (``PluginInstallRequest`` in ``api/rest.ts``).
 
     Everything an install acts on -- the repository, the commit, the manifest
     -- comes from the inspection named here, never from this body. What IS
@@ -408,7 +419,7 @@ async def reload_plugins() -> dict[str, int]:
 
 @router.post("/inspect", dependencies=[Depends(_require_local_plugin_install)])
 async def inspect_plugin_source(
-    body: InspectRequest, request: Request
+    body: PluginInspectRequest, request: Request
 ) -> dict[str, Any]:
     """Read a source and report what installing it would cost. Installs
     nothing, downloads no tarball, and runs no code from it.
@@ -459,7 +470,7 @@ async def inspect_plugin_source(
 @router.post("/install", status_code=202,
              dependencies=[Depends(_require_local_plugin_install)])
 async def install_plugin(
-    body: InstallRequest, request: Request
+    body: PluginInstallRequest, request: Request
 ) -> dict[str, str]:
     """Install what an inspection described. 202, and a ``job_id`` to follow.
 
