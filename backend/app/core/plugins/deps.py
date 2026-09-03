@@ -170,35 +170,28 @@ def install_deps_step(
       plugin install would reach a job runner whose terminal mapping has
       never heard of it -- a stopped install reported as a crash.
 
-    ``importlib.invalidate_caches()`` last, and inside the step: the
-    directory listings Python cached before this ran do not have the package
-    that was just written in them, so the very next ``import`` in this
-    process would answer from a picture taken before the install.
+    ``importlib.invalidate_caches()`` runs on every one of those ways out,
+    not only the successful one: the directory listings Python cached before
+    this ran do not have the packages that were just written in them, and uv
+    installs in dependency order and stops at the first failure -- so a run
+    that failed, or one the user stopped, has usually written some of them
+    anyway. Skipping it there would leave this process importing from a
+    picture taken before the install.
     """
     emit({"type": "step_started", "step": "deps",
           "label": f"Installing packages: {', '.join(specs)}"})
 
     tail: list[str] = []
-    with tempfile.TemporaryDirectory(prefix="codefyui-plugin-deps-") as workdir:
-        # uv runs in the throwaway directory the constraints file lives in.
-        # A plugin's dependencies are not this project's, so the cwd must not
-        # let uv discover the backend as a project to read configuration
-        # from; the specs are vetted names and versions, so nothing in them
-        # resolves relative to a directory anyway, and an empty one is the
-        # single cwd that cannot mean something.
-        workdir_path = Path(workdir)
-        constraints_path = write_constraints_file(workdir_path)
-        try:
-            returncode = packs_runner.run_pip(
-                specs,
-                constraints_path=constraints_path,
-                emit=emit,
-                cancel_check=cancel_check,
-                cwd=workdir_path,
-                tail=tail,
-            )
-        except PackCancelled as exc:
-            raise PluginCancelled(str(exc)) from exc
+    try:
+        returncode = _run_uv(specs, emit=emit, cancel_check=cancel_check, tail=tail)
+    finally:
+        # Whatever happened. uv installs in dependency order and stops at the
+        # first failure, so a run that failed -- or one the user stopped --
+        # has usually written some of these packages already, and the
+        # directory listings Python cached before it ran do not have them in.
+        # The very next import in this process would answer from a picture
+        # taken before the install.
+        importlib.invalidate_caches()
 
     if returncode != 0:
         detail = "\n".join(tail).strip()
@@ -217,5 +210,39 @@ def install_deps_step(
             hint=detail,
         )
 
-    importlib.invalidate_caches()
     emit({"type": "step_done", "step": "deps"})
+
+
+def _run_uv(
+    specs: Sequence[str],
+    *,
+    emit: Callable[[dict], None],
+    cancel_check: Callable[[], bool],
+    tail: list[str],
+) -> int:
+    """Run uv under a constraints file written for this call, and only this one.
+
+    The file describes THIS interpreter at THIS moment, so caching it would
+    pin an install to a machine state that has since changed -- which is why
+    it is written into a directory that goes away with the call.
+    """
+    with tempfile.TemporaryDirectory(prefix="codefyui-plugin-deps-") as workdir:
+        # uv runs in the throwaway directory the constraints file lives in.
+        # A plugin's dependencies are not this project's, so the cwd must not
+        # let uv discover the backend as a project to read configuration
+        # from; the specs are vetted names and versions, so nothing in them
+        # resolves relative to a directory anyway, and an empty one is the
+        # single cwd that cannot mean something.
+        workdir_path = Path(workdir)
+        constraints_path = write_constraints_file(workdir_path)
+        try:
+            return packs_runner.run_pip(
+                specs,
+                constraints_path=constraints_path,
+                emit=emit,
+                cancel_check=cancel_check,
+                cwd=workdir_path,
+                tail=tail,
+            )
+        except PackCancelled as exc:
+            raise PluginCancelled(str(exc)) from exc
