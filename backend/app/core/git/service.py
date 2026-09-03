@@ -254,6 +254,27 @@ def _selection(paths: Sequence[str] | None, all_paths: bool
     return list(paths)
 
 
+def _writable_paths(root: Path, paths: Sequence[str]) -> list[str]:
+    """The paths of one write, validated and checked for a link in the way.
+
+    Every named path a mutation acts on goes through here, and nowhere else
+    does: ``validate_rel_path`` allows a link (it must -- see
+    ``repo.refuse_link_parents``), and a path whose PARENT is a link or a
+    Windows junction resolves inside the project and passes every other
+    check while naming a file somewhere else entirely. That is measured, not
+    theoretical: it is how ``discard`` once deleted the file a gitignored
+    folder held.
+
+    The whole-tree form (``all``) does not come through here and does not
+    need to: git scopes ``-- .`` to the repository itself, and does not
+    follow a link out of it.
+    """
+    clean = validate_rel_paths(root, paths)
+    for path in clean:
+        repo.refuse_link_parents(root, path)
+    return clean
+
+
 def stage_paths(root: Path, paths: Sequence[str] | None = None
                 ) -> dict[str, Any]:
     """Stage *paths*, or the whole tree when *paths* is None.
@@ -265,7 +286,7 @@ def stage_paths(root: Path, paths: Sequence[str] | None = None
     if paths is None:
         run_git(["add", "-A", "--", "."], cwd=root, timeout=T_LOCAL)
         return {"all": True}
-    clean = validate_rel_paths(root, paths)
+    clean = _writable_paths(root, paths)
     run_git(["add", "-A", "--", *clean], cwd=root, timeout=T_LOCAL)
     return {"paths": clean}
 
@@ -287,7 +308,7 @@ def unstage_paths(root: Path, paths: Sequence[str] | None = None
         run_git(args, cwd=root, timeout=T_LOCAL)
         return {"all": True}
 
-    clean = validate_rel_paths(root, paths)
+    clean = _writable_paths(root, paths)
     args = (["rm", "--cached", "-r", "-q", "--", *clean] if unborn
             else ["restore", "--staged", "--", *clean])
     run_git(args, cwd=root, timeout=T_LOCAL)
@@ -311,6 +332,10 @@ def discard_paths(root: Path, paths: Sequence[str] | None = None
       "discard" can mean for a file that has no other copy.
     * a path in neither list is a 400. It is either already clean or gone,
       and the request was built from a status that has since changed.
+    * a path THROUGH a link or a junction is refused before anything runs
+      (:func:`_writable_paths`): ``clean -f`` down one deletes the file at
+      the other end of it, which is how this operation once emptied a
+      gitignored folder of secrets.
     * a SUBMODULE is refused. ``restore --worktree`` on a gitlink succeeds
       and does nothing at all (measured on git 2.53), so the tab would
       report a discard that did not happen; the changes are in the other
@@ -337,7 +362,7 @@ def discard_paths(root: Path, paths: Sequence[str] | None = None
         run_git(["clean", "-fd", "--", "."], cwd=root, timeout=T_LOCAL)
         return {"all": True}
 
-    clean = validate_rel_paths(root, paths)
+    clean = _writable_paths(root, paths)
     submodules = repo.submodule_paths(root, clean)
     if submodules:
         raise GitError("invalid_path", 400,

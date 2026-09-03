@@ -58,6 +58,7 @@ never drags the subprocess machinery in with it.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Sequence
 from dataclasses import dataclass
 
@@ -379,6 +380,55 @@ def stderr_tail(stderr: str, limit: int = LAST_STDERR_LINES) -> str:
     """
     lines = stderr.rstrip().splitlines()
     return "\n".join(lines[-limit:])
+
+
+#: The userinfo of any URL: everything between ``://`` and the ``@`` that
+#: ends it. Whatever it holds goes, because a password is not recognisable
+#: on sight -- ``https://alice:hunter2@host/`` and
+#: ``https://x-access-token:ghs_...@host/`` are the same shape.
+_USERINFO_RE = re.compile(r"://[^/\s@]*@")
+
+#: The GitHub App installation token, which also appears OUTSIDE a URL --
+#: in an ``Authorization`` line a forge echoes back, or in a hook's own
+#: output. The prefix is kept so the sentence still reads.
+_ACCESS_TOKEN_RE = re.compile(r"(?i)(x-access-token:)[^\s@/]+")
+
+#: The token shapes whose prefixes their issuers publish. A word starting
+#: with one of these is a credential and nothing else.
+_TOKEN_WORD_RE = re.compile(
+    r"(?i)\b(?:github_pat_|ghp_|gho_|ghs_|ghu_|glpat-)[A-Za-z0-9_-]+")
+
+
+def redact(text: str) -> str:
+    """Mask the credentials a git failure can be carrying.
+
+    ``auth_required`` is the failure most likely to reach a screen, and it
+    is also the one whose stderr can hold a working password: git names the
+    remote it could not reach, and a URL somebody once pasted into ``git
+    remote add`` may carry ``https://user:ghp_xxx@github.com/owner/repo``
+    inside it. Unredacted, that token is then drawn in the tab, pasted into
+    a bug report and left in whatever the browser logs.
+
+    Three shapes, all applied, because one line can carry more than one:
+    the userinfo of a URL, the ``x-access-token:<value>`` a GitHub App
+    installation token is spelled as, and the token WORDS whose prefixes
+    are published (``ghp_``, ``github_pat_``, ``gho_``, ``ghs_``, ``ghu_``,
+    ``glpat-``).
+
+    What is deliberately KEPT is everything else -- the scheme, the host,
+    the path and git's own sentence. Masking the whole URL would take the
+    one fact that makes the error actionable ("which remote?") with it, and
+    a user who cannot see which repository failed will paste the raw
+    command into a terminal instead, which is worse in every way.
+
+    This is a last line of defence and not the first: the app stores no
+    credentials, passes none, and runs git with the prompts turned off. A
+    token shape nobody has published is not recognisable here, so a route
+    still owes the same care to anything else it echoes back.
+    """
+    masked = _USERINFO_RE.sub("://***@", text)
+    masked = _ACCESS_TOKEN_RE.sub(r"\1***", masked)
+    return _TOKEN_WORD_RE.sub("***", masked)
 
 
 def classify_failure(argv: Sequence[str], returncode: int,

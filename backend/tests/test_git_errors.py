@@ -24,6 +24,7 @@ from app.core.git.errors import (
     GitError,
     classify_failure,
     default_message,
+    redact,
     stderr_tail,
 )
 
@@ -419,3 +420,76 @@ def test_git_busy_names_the_operation_that_holds_the_lock():
     assert (busy.code, busy.status) == ("busy", 409)
     assert busy.op == "commit"
     assert "commit" in busy.message
+
+
+# --- what leaves the server -------------------------------------------------
+
+
+#: A token that is obviously one, so a failing assertion below says which
+#: string escaped rather than pointing at a plausible-looking word.
+TOKEN = "ghp_16C7e42F292c6912E7710c838347Ae178B4a"
+
+
+@pytest.mark.parametrize("text", [
+    pytest.param(
+        f"fatal: unable to access 'https://octocat:{TOKEN}@github.com/o/r/': "
+        "The requested URL returned error: 403\n",
+        id="password-in-a-url"),
+    pytest.param(
+        f"fatal: could not read Username for 'https://x-access-token:{TOKEN}"
+        "@github.com': terminal prompts disabled\n",
+        id="installation-token-in-a-url"),
+    pytest.param(
+        f"remote: HTTP Basic: Access denied for token {TOKEN}\n",
+        id="token-on-its-own"),
+    pytest.param(
+        f"x-access-token:{TOKEN}\n", id="header-form-without-a-url"),
+])
+def test_a_credential_never_survives_redaction(text):
+    """Every shape the same token can arrive in, masked."""
+    assert TOKEN not in redact(text)
+
+
+def test_redaction_keeps_the_fact_that_makes_the_error_actionable():
+    """The host and the path stay: "which remote failed" is the answer."""
+    masked = redact(
+        f"fatal: unable to access 'https://octocat:{TOKEN}@github.com/o/r/': "
+        "The requested URL returned error: 403\n")
+
+    assert "github.com/o/r/" in masked
+    assert "https://***@github.com/o/r/" in masked
+    assert "The requested URL returned error: 403" in masked
+
+
+@pytest.mark.parametrize("prefix", ["ghp_", "github_pat_", "gho_", "ghs_",
+                                    "ghu_", "glpat-"])
+def test_every_published_token_prefix_is_masked(prefix):
+    """One row per issuer prefix: a new one must be added deliberately."""
+    assert redact(f"remote: rejected {prefix}AbC123_def-456 here") == (
+        "remote: rejected *** here")
+
+
+def test_redaction_leaves_ordinary_git_output_alone():
+    """It runs on EVERY error, so it may not damage the other 28 codes.
+
+    The two shapes that look like a credential and are not: an ssh remote
+    (``git@host:path`` -- a username, and the only thing that says which
+    host) and an email address, which the identity errors are about.
+    """
+    plain = ("fatal: repository 'git@github.com:owner/repo.git' not found\n"
+             "Author identity unknown: author@example.com\n")
+
+    assert redact(plain) == plain
+
+
+def test_redaction_masks_more_than_one_credential_in_one_line():
+    """A push failure prints the URL twice, and a mask that stops at the
+    first one is a leak with a plausible-looking body."""
+    masked = redact(f"https://a:{TOKEN}@h/x https://b:{TOKEN}@h/y")
+
+    assert masked == "https://***@h/x https://***@h/y"
+
+
+def test_redaction_survives_the_empty_string():
+    """It runs unconditionally on a message that a code may not have set."""
+    assert redact("") == ""

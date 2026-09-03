@@ -32,7 +32,6 @@ never typed and this process would then wait for.
 
 from __future__ import annotations
 
-import os
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -43,6 +42,7 @@ from .repo import (
     GITLINK_MODE,
     first_parent,
     index_entries,
+    path_redirects,
     read_status,
     resolve_commit,
 )
@@ -516,21 +516,26 @@ def _refuse_a_link(root: Path, path: str) -> None:
 
     Two checks, because they catch different things. Every component is
     tested with ``is_symlink`` (so a link anywhere in the chain counts, not
-    only the last one), and the resolved path is compared with the lexically
-    joined one -- which also catches a Windows junction, a redirection that
-    is not a symbolic link and that ``is_symlink`` answers False for. The
-    root's own links cancel out: both sides start from ``root.resolve()``.
+    only the last one), and ``repo.path_redirects`` compares the resolved
+    path with the lexically joined one -- which also catches a Windows
+    junction, a redirection that is not a symbolic link and that
+    ``is_symlink`` answers False for.
+
+    The WHOLE path, last segment included, which is where this parts
+    company with ``repo.refuse_link_parents``: the write side may act on a
+    link because git tracks one as an ordinary blob, and this side may not
+    because it would open it. Same comparison underneath, two different
+    questions asked with it.
     """
+    segments = path.split("/")
     current = root
-    for segment in path.split("/"):
+    for segment in segments:
         current = current / segment
         if current.is_symlink():
             raise GitError("invalid_path", 400,
                            f"{path} is or goes through a symbolic link",
                            hint=LINK_HINT)
-    resolved_root = root.resolve()
-    if (os.path.normcase(str((root / path).resolve()))
-            != os.path.normcase(str(resolved_root.joinpath(*path.split("/"))))):
+    if path_redirects(root, segments):
         raise GitError("invalid_path", 400,
                        f"{path} does not stay where it says it is",
                        hint=LINK_HINT)

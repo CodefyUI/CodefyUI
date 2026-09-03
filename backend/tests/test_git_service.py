@@ -403,6 +403,49 @@ async def test_init_leaves_a_gitignore_that_already_hides_env_alone(tmp_path):
     assert (root / ".gitignore").read_bytes() == b"# mine\n.env\n*.log\n"
 
 
+@pytest.mark.parametrize("existing", [
+    pytest.param("/.env\n", id="anchored-to-the-root"),
+    pytest.param(".env/\n", id="written-as-a-directory"),
+    pytest.param(".env   \n", id="trailing-spaces"),
+    pytest.param(".env  # secrets\n", id="trailing-comment"),
+    pytest.param("*.pyc\n/.env/   # keys\n", id="all-of-it-at-once"),
+])
+async def test_init_reads_the_other_ways_people_write_the_env_line(
+        tmp_path, existing):
+    """A second ``.env`` under somebody's own reads as a bug in the tab.
+
+    Two of these spellings do not really ignore a FILE called ``.env`` --
+    git matches ``.env/`` against directories only, and ``#`` opens a
+    comment just in the first column. They still count, because the promise
+    here is not to touch a file whose author has already written about
+    ``.env`` in it.
+    """
+    root = tmp_path / "fresh"
+    root.mkdir()
+    (root / ".gitignore").write_bytes(existing.encode("utf-8"))
+
+    result = await GitService(project_dir=lambda: root).init()
+
+    assert (root / ".gitignore").read_bytes() == existing.encode("utf-8")
+    assert result.detail["scaffold"] == [".gitattributes"]
+
+
+async def test_init_still_hides_env_next_to_an_un_ignore_rule(tmp_path):
+    """``!.env`` is the one spelling that must NOT count as present.
+
+    It is a rule to COMMIT the file this whole scaffold exists to keep out
+    of history, and the appended line comes after it, which is what makes it
+    win.
+    """
+    root = tmp_path / "fresh"
+    root.mkdir()
+    (root / ".gitignore").write_bytes(b"!.env\n")
+
+    await GitService(project_dir=lambda: root).init()
+
+    assert (root / ".gitignore").read_bytes() == b"!.env\n\n.env\n"
+
+
 async def test_init_never_rewrites_an_existing_gitattributes(tmp_path):
     """Its rules decide how git stores every file; ours are a default, not
     a correction."""
@@ -1394,6 +1437,88 @@ async def test_an_ordinary_file_beside_a_link_still_reads(repo):
 
     assert (await repo.service.file_at_ref("plain.txt",
                                            "worktree")).text == "ordinary\n"
+
+
+async def test_a_discard_through_a_linked_folder_leaves_the_real_file(repo):
+    """Measured, and the reason the write side has a guard at all.
+
+    Every check before it passes and is right to: ``notes/keys.txt`` is
+    relative, holds no ``..``, and RESOLVES inside the project -- which is
+    exactly what a link to another folder of the same project does. ``clean
+    -f`` down it then deleted the real file, and the request that did it
+    looked like an ordinary discard of an untracked file.
+    """
+    repo.write("secrets/keys.txt", f"{SECRET}\n")
+    _link(repo.root / "secrets", repo.root / "notes")
+
+    with pytest.raises(GitError) as excinfo:
+        await repo.service.discard(["notes/keys.txt"])
+
+    assert _error(excinfo).code == "invalid_path"
+    assert "link" in (_error(excinfo).hint or "")
+    assert (repo.root / "secrets" / "keys.txt").read_text(
+        encoding="utf-8") == f"{SECRET}\n"
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="junctions are Windows'")
+async def test_a_discard_through_a_junction_leaves_the_real_file(repo):
+    """The Windows half: ``is_symlink`` answers False for a junction, so
+    only the resolved-against-lexical comparison sees this one."""
+    repo.write("secrets/keys.txt", f"{SECRET}\n")
+    made = subprocess.run(
+        ["cmd", "/c", "mklink", "/J", str(repo.root / "notes"),
+         str(repo.root / "secrets")], capture_output=True)
+    if made.returncode != 0:
+        pytest.skip("this box would not create a junction")
+
+    with pytest.raises(GitError) as excinfo:
+        await repo.service.discard(["notes/keys.txt"])
+
+    assert _error(excinfo).code == "invalid_path"
+    assert (repo.root / "secrets" / "keys.txt").read_text(
+        encoding="utf-8") == f"{SECRET}\n"
+
+
+@pytest.mark.parametrize("write", ["stage", "unstage"])
+async def test_the_other_two_writes_refuse_a_linked_parent_too(repo, write):
+    """One guard, all three writes: ``add -A`` and ``rm --cached`` down a
+    link put somebody else's file in this repository's index."""
+    repo.write("secrets/keys.txt", f"{SECRET}\n")
+    _link(repo.root / "secrets", repo.root / "notes")
+
+    with pytest.raises(GitError) as excinfo:
+        await getattr(repo.service, write)(["notes/keys.txt"])
+
+    assert _error(excinfo).code == "invalid_path"
+
+
+async def test_discarding_a_tracked_symlink_file_itself_still_works(repo):
+    """The FINAL component may be a link, and refusing it would be a bug.
+
+    git stores a symlink as an ordinary blob holding the path it points at,
+    so restoring one is not a read THROUGH it -- and a tab that cannot
+    discard a change to a link cannot manage a repository that has one.
+    """
+    repo.write("a.txt", "one\n")
+    repo.write("b.txt", "two\n")
+    _link(repo.root / "a.txt", repo.root / "link.txt")
+    repo.commit("track the link")
+    (repo.root / "link.txt").unlink()
+    _link(repo.root / "b.txt", repo.root / "link.txt")
+
+    result = await repo.service.discard(["link.txt"])
+
+    assert result.detail["restored"] == 1
+    assert repo.git("status", "--porcelain", "--", "link.txt").strip() == ""
+
+
+async def test_a_write_to_a_path_under_an_ordinary_folder_is_not_refused(repo):
+    """The positive control: a parent that is a real directory is fine."""
+    repo.write("sub/new.txt", "new\n")
+
+    result = await repo.service.stage(["sub/new.txt"])
+
+    assert result.detail["paths"] == ["sub/new.txt"]
 
 
 # --- a file in a conflict is still a file ------------------------------------

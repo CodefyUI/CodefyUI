@@ -29,6 +29,7 @@ about one file or one commit's contents:
 
 from __future__ import annotations
 
+import os
 import re
 from collections.abc import Sequence
 from pathlib import Path
@@ -44,6 +45,18 @@ from .status import parse_porcelain_v2
 #: out of history. Compared exactly: ``.env*`` also hides ``.env.example``,
 #: which is meant to be committed.
 ENV_IGNORE_LINE = ".env"
+
+#: A trailing comment as a PERSON writes one: whitespace, then ``#``. git
+#: reads a comment only in the first column, so this is stripped because of
+#: what the author meant, not because of what git does -- see
+#: :func:`_ignores_env`.
+_TRAILING_COMMENT_RE = re.compile(r"\s+#.*$")
+
+#: What to tell somebody whose stage / unstage / discard went through a
+#: link. Worded differently from the read side's "symbolic links are not
+#: served" on purpose: nothing was served, and what was refused was a WRITE
+#: aimed through somebody else's directory.
+LINK_PARENT_HINT = "paths through a link are not managed here"
 
 #: The status read, in full. ``--untracked-files=all`` lists FILES rather
 #: than the directories the default collapses them into, which is what lets
@@ -134,7 +147,29 @@ def ensure_scaffold(root: Path) -> list[str]:
 
 
 def _ignores_env(path: Path) -> bool:
-    """Is there already a line that is exactly ``.env``?
+    """Is ``.env`` already ignored -- in any of the ways people write it?
+
+    Four spellings mean the same thing to whoever typed them: ``.env``,
+    ``/.env`` (the same rule, anchored to the repository root), ``.env/``
+    and either of those with trailing spaces or a trailing comment after
+    it. Reading only the first made :func:`ensure_scaffold` append a SECOND
+    ``.env`` to a file that plainly already had one, which reads as a bug in
+    the tab and leaves the user's own file worse than it found it.
+
+    Two of those spellings do not, by git's own rules, ignore a FILE called
+    ``.env``: ``.env/`` matches a directory only, and ``#`` starts a comment
+    just in the first column, so ``.env  # secrets`` is a pattern with a
+    comment inside it. They still count here, and that is the deliberate
+    half of this function. ``ensure_scaffold`` never rewrites a file the
+    user already has, and a line naming ``.env`` is the author's own
+    decision about it; appending a rule beside their near-miss would leave
+    two lines about ``.env`` -- one of which does nothing -- rather than
+    telling anybody the first one was wrong.
+
+    An un-ignore rule is the one spelling that must NOT count, which is why
+    :func:`_ignore_rule` leaves the leading ``!`` where it is: this file
+    holds the user's API keys, and the tab is not the place where "commit my
+    secrets" is honoured by accident.
 
     Decoded with ``errors="replace"`` because this only ever asks a question
     about ASCII: a ``.gitignore`` in some other encoding must not make this
@@ -144,7 +179,99 @@ def _ignores_env(path: Path) -> bool:
         text = path.read_bytes().decode("utf-8", errors="replace")
     except OSError:
         return False
-    return any(line.strip() == ENV_IGNORE_LINE for line in text.splitlines())
+    return any(_ignore_rule(line) == ENV_IGNORE_LINE
+               for line in text.splitlines())
+
+
+def _ignore_rule(line: str) -> str:
+    """The path one ``.gitignore`` line is about, near enough to compare.
+
+    Not a gitignore parser and not trying to be -- no globs, no negation
+    semantics, no directory matching. It removes the four things a person
+    writes AROUND a rule (surrounding whitespace, a trailing comment, the
+    leading ``/`` that anchors it to the root, the trailing ``/`` that
+    restricts it to a directory) and hands back what is left; a whole-line
+    comment comes back empty. Everything it cannot account for -- ``*.env``,
+    a pattern with a glob in it -- simply does not compare equal, which
+    means the scaffold appends its own line, which is the safe direction to
+    be wrong in.
+    """
+    text = line.strip()
+    if text.startswith("#"):
+        return ""
+    text = _TRAILING_COMMENT_RE.sub("", text).strip()
+    if text.endswith("/"):
+        text = text[:-1]
+    if text.startswith("/"):
+        text = text[1:]
+    return text
+
+
+# --- a path that does not stay where it says it is --------------------------
+
+
+def path_redirects(root: Path, segments: Sequence[str]) -> bool:
+    """Does *root* joined with *segments* land somewhere other than it says?
+
+    The check that catches a Windows JUNCTION -- the redirection ``mklink
+    /J`` makes, which ``Path.is_symlink`` answers False for and which git
+    walks through like any other directory. Resolving both sides and
+    comparing is what sees one: the lexical path is what the request NAMED,
+    the resolved path is where the filesystem actually goes, and a
+    difference between them means something in the chain redirected.
+
+    The root's own links cancel out, because both sides start from
+    ``root.resolve()``: a project directory that is itself reached through a
+    link -- ``/tmp`` on macOS is one -- does not make every path in it a
+    refusal. Compared with ``normcase``, because ``resolve`` hands back the
+    case the filesystem stores and the request carries the case the user
+    typed.
+
+    Takes SEGMENTS rather than a path so that the two callers can ask about
+    different parts of the same path: the read side asks about all of it
+    (``diff._refuse_a_link``), the write side about its parents only
+    (:func:`refuse_link_parents`). The comparison itself is subtle enough
+    that it must exist once.
+    """
+    lexical = root.resolve().joinpath(*segments)
+    actual = root.joinpath(*segments).resolve()
+    return os.path.normcase(str(actual)) != os.path.normcase(str(lexical))
+
+
+def refuse_link_parents(root: Path, path: str) -> None:
+    """Refuse a WRITE whose path goes through a link or a junction.
+
+    Measured, and the reason this exists: with ``notes`` a junction to a
+    gitignored ``secrets`` folder, discarding ``notes/keys.txt`` deleted the
+    real ``secrets/keys.txt``. Every check before this one passed and was
+    right to -- the path is relative, holds no ``..``, and RESOLVES inside
+    the project, which is exactly what a link to another folder of the same
+    project does. git then cleaned the file at the other end of it.
+
+    The FINAL component may be a link, and that is not an oversight. To git
+    a symlink is an ordinary tracked file (a blob holding the path it points
+    at), so staging one, or restoring one somebody deleted, is a legitimate
+    operation, and refusing it would leave the tab unable to manage a
+    repository that contains one. What is refused is a link in the MIDDLE of
+    a path, where the redirection is not the thing being operated on but the
+    way to something else.
+
+    Both checks, for the same reason the read side runs both: ``is_symlink``
+    sees a symbolic link at any depth and cannot see a junction;
+    :func:`path_redirects` sees either.
+    """
+    parents = path.split("/")[:-1]
+    current = root
+    for segment in parents:
+        current = current / segment
+        if current.is_symlink():
+            raise GitError("invalid_path", 400,
+                           f"{path} goes through a symbolic link",
+                           hint=LINK_PARENT_HINT)
+    if path_redirects(root, parents):
+        raise GitError("invalid_path", 400,
+                       f"{path} does not stay where it says it is",
+                       hint=LINK_PARENT_HINT)
 
 
 # --- reading the state -----------------------------------------------------
