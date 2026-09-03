@@ -490,6 +490,30 @@ def test_redaction_masks_more_than_one_credential_in_one_line():
     assert masked == "https://***@h/x https://***@h/y"
 
 
+def test_an_unencoded_at_sign_in_a_password_does_not_end_the_mask():
+    """A URL splits its authority at the LAST ``@``, so the mask must too.
+
+    ``https://user:p@ss@github.com/o/r`` is a URL git accepts and prints
+    back verbatim. A mask that stopped at the FIRST ``@`` left
+    ``https://***@ss@github.com/o/r`` -- half the password, in a string
+    that still looks redacted, which is worse than not masking at all.
+    """
+    assert redact("https://user:p@ss@github.com/o/r") == (
+        "https://***@github.com/o/r")
+
+
+def test_the_mask_never_runs_past_the_authority():
+    """Greedy to the last ``@`` before a slash or a space, and no further.
+
+    The pin for the class that made the test above pass: it may not swallow
+    a path segment containing an ``@``, and it may not join two URLs on one
+    line into a single match.
+    """
+    assert redact("https://a:pw@h/x@y") == "https://***@h/x@y"
+    assert redact("https://a:p@w@h/x https://b:p@w@h/y") == (
+        "https://***@h/x https://***@h/y")
+
+
 def test_redaction_survives_the_empty_string():
     """It runs unconditionally on a message that a code may not have set."""
     assert redact("") == ""

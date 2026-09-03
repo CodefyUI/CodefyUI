@@ -430,6 +430,8 @@ async def test_init_reads_the_other_ways_of_really_ignoring_env(
 @pytest.mark.parametrize("existing", [
     pytest.param(".env/\n", id="directory-only-pattern"),
     pytest.param(".env  # secrets\n", id="what-looks-like-a-comment"),
+    pytest.param("  .env\n", id="indented-with-spaces"),
+    pytest.param("\t.env\n", id="indented-with-a-tab"),
     pytest.param("*.pyc\n/.env/   # keys\n", id="both-mistakes-at-once"),
     # ``!.env`` has its own test below: it is a near-miss for a different
     # reason, and the reason is what makes it worth naming.
@@ -441,9 +443,12 @@ async def test_init_appends_when_the_line_only_looks_like_it_ignores_env(
 
     ``.env/`` matches a DIRECTORY and never a file; ``.gitignore`` has no
     trailing comments, so ``.env  # secrets`` is a pattern matching a file
-    with that whole name. Whoever wrote either believes their secrets are
-    ignored and they are not -- and a duplicate line costs nothing, while a
-    missing one is the API keys this scaffold exists to keep out.
+    with that whole name; and git keeps LEADING whitespace, so ``  .env``
+    is a pattern for a file whose name starts with two spaces (measured:
+    ``git check-ignore -v -- .env`` exits 1 against it). Whoever wrote any
+    of them believes their secrets are ignored and they are not -- and a
+    duplicate line costs nothing, while a missing one is the API keys this
+    scaffold exists to keep out.
     """
     root = tmp_path / "fresh"
     root.mkdir()

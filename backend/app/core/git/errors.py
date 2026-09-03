@@ -386,7 +386,16 @@ def stderr_tail(stderr: str, limit: int = LAST_STDERR_LINES) -> str:
 #: ends it. Whatever it holds goes, because a password is not recognisable
 #: on sight -- ``https://alice:hunter2@host/`` and
 #: ``https://x-access-token:ghs_...@host/`` are the same shape.
-_USERINFO_RE = re.compile(r"://[^/\s@]*@")
+#:
+#: ``@`` is deliberately NOT excluded from the class, so the match runs
+#: greedily to the LAST ``@`` before a slash or a space. A URL parser splits
+#: the authority at the last one too, which means an unencoded ``@`` inside
+#: the password is a URL git accepts -- and a class that stopped at the
+#: first one turned ``https://user:p@ss@github.com/o/r`` into
+#: ``https://***@ss@github.com/o/r``: half the password, in a string that
+#: still looks redacted. The class cannot cross a ``/`` or whitespace, so it
+#: can never run past the authority into a path or a second URL.
+_USERINFO_RE = re.compile(r"://[^/\s]*@")
 
 #: The GitHub App installation token, which also appears OUTSIDE a URL --
 #: in an ``Authorization`` line a forge echoes back, or in a hook's own
