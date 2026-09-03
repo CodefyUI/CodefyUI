@@ -582,14 +582,18 @@ def test_identity_request_refuses_a_key_nobody_defined():
         IdentityRequest(name="me", scope="global")
 
 
-def test_a_mutation_result_must_say_what_the_status_is():
-    """Required and nullable: a write that succeeded and could not be read
-    back is a real outcome, and the service has to say so on purpose rather
-    than by leaving a field out."""
+def test_a_mutation_result_must_carry_the_fresh_status():
+    """Present AND not null. The frontend is typed from these models, so a
+    nullable status here would be a branch it has to handle and the service
+    is required never to produce; a write that cannot be read back
+    afterwards is a failed request, not a result with a hole in it."""
     with pytest.raises(ValidationError):
         MutationResult()
 
-    assert MutationResult(status=None).changed_paths == []
+    with pytest.raises(ValidationError):
+        MutationResult(status=None)
+
+    assert MutationResult(status=GitStatus()).changed_paths == []
 
 
 def test_an_empty_git_status_is_a_clean_repository():

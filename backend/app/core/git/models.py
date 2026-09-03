@@ -267,14 +267,15 @@ class MutationResult(BaseModel):
 
     Every mutation answers with a fresh ``status``, so the tab never has to
     ask twice and can never draw a stale panel after a stage or a commit.
-    ``status`` is required and nullable rather than optional: a mutation
-    that succeeded and then could not be read back is a real (if rare)
-    outcome, and reporting it as a failure would be a lie about what
-    happened to the repository -- so the service has to make that call
-    explicitly instead of leaving the field out.
+    Required and NOT nullable, because that is the contract: the frontend is
+    typed from this file, and a nullable field here would ship it a branch
+    it has to handle and the service is required never to produce. A write
+    that succeeds and then cannot be read back is a FAILED request -- an
+    error with a code, which the tab already knows what to do with -- not a
+    result with a hole in it.
     """
 
-    status: GitStatus | None
+    status: GitStatus
     #: Paths whose state this operation changed, for the tab to highlight or
     #: to reload in an open editor.
     changed_paths: list[str] = Field(default_factory=list)
