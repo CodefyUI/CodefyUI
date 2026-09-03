@@ -25,6 +25,42 @@ else:
 
 FORMAT_VERSION = 1
 
+#: The ``.gitignore`` a project directory starts with.
+#:
+#: Here rather than in ``scripts/project.py`` because there are now two ways
+#: a project becomes a repository -- ``cdui project init`` at the command
+#: line, and the Source Control tab's "Initialize Repository" button -- and
+#: the file they write has to be the same file. The first line is the one
+#: that matters most: ``.env`` holds the user's API keys, and the tab
+#: refuses to serve it at any ref precisely because it must never be
+#: committed in the first place.
+PROJECT_GITIGNORE = """.env
+*.pt
+*.pth
+*.safetensors
+*.onnx
+*.ckpt
+*.pkl
+__pycache__/
+*.db
+.DS_Store
+# interrupted atomic writes
+*.tmp-*
+"""
+
+#: The ``.gitattributes`` a project directory starts with.
+#:
+#: ``*.json text eol=lf`` is the load-bearing line: a project's graph and
+#: layout files ARE its source, they are written by the server with ``\n``
+#: endings, and a Windows checkout with ``core.autocrlf=true`` would
+#: otherwise hand them back with ``\r\n`` -- so every save would rewrite
+#: every line of a file nobody edited, and a review of a one-node change
+#: would show the whole graph. ``linguist-generated`` keeps the layout half
+#: of the pair collapsed in a GitHub diff, where it is noise.
+PROJECT_GITATTRIBUTES = """*.json text eol=lf
+layout/*.layout.json linguist-generated=true
+"""
+
 # Note-node data keys that are canvas GEOMETRY (spec 6.2): extracted into the
 # layout file so a re-bind / resize never dirties the reviewable logic file.
 _NOTE_LAYOUT_KEYS = ("boundToNodeId", "boundOffset", "noteWidth", "noteHeight")
