@@ -265,17 +265,25 @@ describe('reduceJobEvents', () => {
   });
 
   it('does not let onExtra clobber the fields the reducer owns', () => {
+    const job = makeJob({ tag: null });
     const next = reduceJobEvents<TestJob>(
-      makeJob({ tag: null }),
+      job,
       page({ cursor: 1, events: [{ type: 'log', cursor: 1, ts: 't', line: 'kept' }] }),
       (_event, draft) => {
         draft.log = [];
         draft.cursor = -5;
+        // The identity fields too: the follower matches every page against
+        // `jobId`, so a fold that renamed the job would strand it — nothing
+        // would patch it again and nothing would settle it.
+        draft.jobId = 'hijacked';
+        draft.startedAt = 0;
       },
     );
 
     expect(next.log.map((entry) => entry.text)).toEqual(['kept']);
     expect(next.cursor).toBe(1);
+    expect(next.jobId).toBe('j1');
+    expect(next.startedAt).toBe(job.startedAt);
   });
 
   it('skips an onExtra call for an event the cursor guard dropped', () => {
@@ -394,6 +402,26 @@ describe('createJobFollower', () => {
     expect(app.fetchPage).toHaveBeenCalledTimes(3);
   });
 
+  it('folds with the reducer the domain passed instead of the default', async () => {
+    // How a center that reads keys of its own gets them read on a LIVE page
+    // and not only in its unit tests: one composed reducer, passed once.
+    const reduce = vi.fn((job: TestJob, folded: JobEventsPage): TestJob => ({
+      ...reduceJobEvents(job, folded), tag: 'domain',
+    }));
+    const app = bench({ reduce });
+    app.fetchPage.mockResolvedValue(page({
+      status: 'done', cursor: 1,
+      events: [{ type: 'log', cursor: 1, ts: 't', line: 'one' }],
+    }));
+
+    app.follower.start('j1', 0);
+    await settle();
+
+    expect(reduce).toHaveBeenCalled();
+    expect(app.job()!.tag).toBe('domain');
+    expect(app.job()!.log.map((entry) => entry.text)).toEqual(['one']);
+  });
+
   it('resumes each request from the cursor already applied, parking for waitS', async () => {
     const app = bench();
     app.fetchPage.mockResolvedValue(page({
@@ -498,6 +526,26 @@ describe('createJobFollower', () => {
     await vi.advanceTimersByTimeAsync(FOLLOW_RETRY_MS * MAX_FOLLOW_FAILURES);
 
     expect(app.job()!.status).toBe('lost');
+  });
+
+  it('keeps what a declining onGiveUp wrote to the job', async () => {
+    // Declining is about the ENDING, not about the job: a callback is
+    // entitled to record what it learned (a hint, a command it recovered
+    // elsewhere) and still leave `lost` to the follower. Building the patch
+    // from the snapshot taken before the callback ran would undo that write.
+    const onGiveUp = vi.fn(() => false);
+    const app = bench({ onGiveUp });
+    onGiveUp.mockImplementation(() => {
+      app.setJob({ ...app.job()!, tag: 'noted' });
+      return false;
+    });
+    app.fetchPage.mockRejectedValue(new Error('Failed to fetch'));
+
+    app.follower.start('j1', 0);
+    await settle();
+    await vi.advanceTimersByTimeAsync(FOLLOW_RETRY_MS * MAX_FOLLOW_FAILURES);
+
+    expect(app.job()).toMatchObject({ status: 'lost', tag: 'noted' });
   });
 
   it('honours the timing overrides instead of the defaults', async () => {
@@ -614,6 +662,39 @@ describe('createJobFollower', () => {
     await settle();
 
     expect(app.onSettled).toHaveBeenCalledWith('j1', 'failed', null);
+  });
+
+  it('starts from the beginning when the caller passes no cursor', async () => {
+    const app = bench();
+
+    app.follower.start('j1');
+    await settle();
+
+    expect(app.cursors()[0]).toBe(0);
+  });
+
+  it('does nothing when stopped before it was ever started', () => {
+    // `_reset...ForTesting` and an unmount both call `stop()` unconditionally.
+    const app = bench();
+
+    expect(() => app.follower.stop()).not.toThrow();
+    expect(app.follower.followingJobId()).toBeNull();
+    expect(app.fetchPage).not.toHaveBeenCalled();
+  });
+
+  it('counts a fetchPage that throws synchronously as a failed turn', async () => {
+    // A client that rejects before it ever awaits — a URL that will not
+    // build, a mock a test forgot to make async — must not escape the retry
+    // budget as an unhandled throw out of the loop.
+    const app = bench({ retryMs: 10, maxFailures: 2 });
+    app.fetchPage.mockImplementation(() => { throw new Error('boom'); });
+
+    app.follower.start('j1', 0);
+    await settle();
+    await vi.advanceTimersByTimeAsync(15);
+
+    expect(app.fetchPage).toHaveBeenCalledTimes(2);
+    expect(app.job()!.status).toBe('lost');
   });
 
   it('keeps polling a terminal job while its backlog is still arriving', async () => {

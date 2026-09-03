@@ -8,11 +8,11 @@ import {
   listPacks,
   removePackItem,
   type JobEvent,
+  type JobEventsPage,
   type LaunchMode,
   type PackCatalog,
   type PackGpuInfo,
   type PackInstallMode,
-  type PackJobEventsPage,
   type PackJobStatus,
   type PackSummary,
 } from '../api/rest';
@@ -348,8 +348,13 @@ function packExtras(event: JobEvent, draft: PackJob): void {
  * the steps, the per-item bars and the log — is testable without a server, a
  * timer or a React tree. The fold itself is `jobFollower`'s, shared with the
  * plugin center; only `retry_mode` is ours.
+ *
+ * The follower below runs THIS function rather than being handed `packExtras`
+ * separately, so what the tests exercise and what a live install folds are one
+ * thing. Its page is the generic `JobEventsPage`: a `PackJobEventsPage` is one
+ * of those, and the extra keys are read off the index signature anyway.
  */
-export function reducePackEvents(job: PackJob, page: PackJobEventsPage): PackJob {
+export function reducePackEvents(job: PackJob, page: JobEventsPage): PackJob {
   return reduceJobEvents(job, page, packExtras);
 }
 
@@ -413,7 +418,7 @@ const follower = createJobFollower<PackJob>({
   ),
   getOpenJob: () => usePackStore.getState().job,
   patchJob,
-  onExtra: packExtras,
+  reduce: reducePackEvents,
   onSettled: (jobId, status) => {
     onJobSettled(jobId, followingPackId ?? '', status);
   },

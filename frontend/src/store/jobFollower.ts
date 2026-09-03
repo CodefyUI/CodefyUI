@@ -152,8 +152,9 @@ function sleep(ms: number): Promise<void> {
  * *onExtra* is how a domain reads the keys this reducer has no opinion about
  * (a pack's `retry_mode`, a plugin's `sha`): it runs once per applied event,
  * after the switch, on a shallow copy of the job whose DOMAIN fields it may
- * write. The generic fields are written back afterwards from this function's
- * own locals, so a careless callback cannot corrupt the log or the cursor.
+ * write. EVERY generic field is written back afterwards from this function's
+ * own locals, so a careless callback cannot corrupt the log, the cursor, or
+ * the identity the follower patches this job by.
  */
 export function reduceJobEvents<J extends Job>(
   job: J,
@@ -264,12 +265,18 @@ export function reduceJobEvents<J extends Job>(
 
   return {
     ...draft,
+    // `jobId` and `startedAt` are restated for the same reason the rest are:
+    // `draft` is the object `onExtra` was handed, and these two are what the
+    // follower matches a page against and what a "running for 4 min" label
+    // counts from. A callback that wrote either would re-key a job mid-fold.
+    jobId: job.jobId,
     status: page.status,
     steps,
     items,
     log,
     error,
     restartCommand,
+    startedAt: job.startedAt,
     // Never moves backwards: an empty page returns the cursor we sent.
     cursor: Math.max(job.cursor, page.cursor),
   };
@@ -309,10 +316,22 @@ export interface JobFollowerOptions<J extends Job> {
    * callback out, and the follower marks the job `lost`. *error* is the last
    * rejection, and the difference between a dropped connection and a server
    * that answered with a status code is usually the whole decision.
+   *
+   * A callback that writes to the job AND returns false keeps its write: the
+   * `lost` patch is built from a fresh `getOpenJob()` read taken after this
+   * returns, not from the *job* snapshot handed in above.
    */
   onGiveUp?: (jobId: string, error: unknown, job: J | null) => boolean;
-  /** Passed straight to `reduceJobEvents` on every page. */
-  onExtra?: (event: JobEvent, draft: J) => void;
+  /**
+   * Fold a page into the job. Defaults to `reduceJobEvents`.
+   *
+   * A domain that reads keys of its own composes ONE reducer — `packStore`'s
+   * `reducePackEvents` is `reduceJobEvents` with its `retry_mode` extras
+   * bound — and passes it here, so the panel's exported reducer and the one
+   * the follower runs are the same function rather than two wirings that can
+   * drift.
+   */
+  reduce?: (job: J, page: JobEventsPage) => J;
   waitS?: number;
   idleMs?: number;
   retryMs?: number;
@@ -346,12 +365,17 @@ export function createJobFollower<J extends Job>(
   options: JobFollowerOptions<J>,
 ): JobFollower {
   const {
-    fetchPage, getOpenJob, patchJob, onSettled, onGiveUp, onExtra,
+    fetchPage, getOpenJob, patchJob, onSettled, onGiveUp,
     waitS = EVENT_WAIT_S,
     idleMs = FOLLOW_IDLE_MS,
     retryMs = FOLLOW_RETRY_MS,
     maxFailures = MAX_FOLLOW_FAILURES,
   } = options;
+
+  // Annotated rather than defaulted in the destructuring above, which would
+  // leave `reduce` a union with the still-generic `reduceJobEvents` and fold
+  // a `J` into a `Job | J`. Written once here, the loop keeps its `J`.
+  const reduce: (job: J, page: JobEventsPage) => J = options.reduce ?? reduceJobEvents;
 
   /** Bumped by every `stop`; a loop whose generation is stale exits. */
   let generation = 0;
@@ -407,8 +431,15 @@ export function createJobFollower<J extends Job>(
           const open = getOpenJob();
           const held = open !== null && open.jobId === jobId ? open : null;
           const handled = onGiveUp?.(jobId, error, held) === true;
-          if (!handled && held !== null) {
-            patchJob(jobId, { ...held, status: 'lost' });
+          if (!handled) {
+            // Re-read rather than patch `held`: a callback that declined the
+            // ending may still have written something to the job (a hint, a
+            // command it recovered from elsewhere), and building the patch
+            // from the snapshot taken BEFORE it ran would silently undo that.
+            const latest = getOpenJob();
+            if (latest !== null && latest.jobId === jobId) {
+              patchJob(jobId, { ...latest, status: 'lost' });
+            }
           }
           return;
         }
@@ -421,7 +452,7 @@ export function createJobFollower<J extends Job>(
       let folded: J | null = null;
       const open = getOpenJob();
       if (open !== null && open.jobId === jobId) {
-        folded = reduceJobEvents(open, page, onExtra);
+        folded = reduce(open, page);
         patchJob(jobId, folded);
       }
 
