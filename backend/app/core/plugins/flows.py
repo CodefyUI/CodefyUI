@@ -52,7 +52,7 @@ import http.client
 import shutil
 import tempfile
 import time
-from collections.abc import Callable, Iterable, Sequence
+from collections.abc import Callable, Iterable, Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -413,6 +413,11 @@ def _install_from_github(
                 root, staging, plugin_dir, plan=plan, cancel_check=cancel_check
             )
 
+    # No cancel between here and the lockfile write, deliberately. The files
+    # are already in place, so stopping now would not undo an install -- it
+    # would leave one on the disk that no lockfile mentions, which is the one
+    # state nothing in this system ever looks at again. Past the rename, the
+    # only way out is to finish.
     with _step(emit, "lock", f"Recording {plan.plugin_id}"):
         cleared = _write_lockfile_entry(
             plan, _lockfile_record(plan, manifest, allowed_modules)
@@ -438,7 +443,9 @@ def _install_from_github(
 # ── the steps' shared parts ────────────────────────────────────────────────
 
 @contextmanager
-def _step(emit: Callable[[dict], None], step: str, label: str):
+def _step(
+    emit: Callable[[dict], None], step: str, label: str
+) -> Iterator[None]:
     """Emit ``step_started`` now and ``step_done`` only if the body finished.
 
     A step that raised is not a step that is done, and the client draws its
@@ -564,9 +571,16 @@ def _refuse_a_changed_manifest(
 
     Three ways they can differ, all fatal: a different id (the lockfile key,
     the card and the ``/api/plugins/{id}`` URL would all be somebody else's),
-    a capability nobody granted, and an ``allowed_modules`` list on an
-    install whose author was never trusted -- which is the AST gate being
-    switched off by a file the user never saw.
+    a capability nobody granted, and an ``allowed_modules`` list that is not
+    the one the user read.
+
+    That last one is a comparison and not a flag. ``trust_author`` says the
+    user agreed to a LIST -- the list the inspection showed them -- so a
+    tarball that ships ``["subprocess", "os"]`` where the preview said
+    ``["subprocess"]`` has taken an answer about one module list as
+    permission for another, and every extra name is another door the AST
+    gate is told to leave open. The untrusted case stays underneath it as
+    the coarser refusal: a module list nobody was asked about at all.
     """
     reasons: list[str] = []
     found_id = _manifest_id(manifest)
@@ -579,7 +593,16 @@ def _refuse_a_changed_manifest(
     )
     if grew:
         reasons.append(f"it asks for {', '.join(grew)}, which was not granted")
-    if allowed_modules and not plan.trust_author:
+    consented = set(manifest_allowed_modules(plan.manifest))
+    grew_modules = tuple(
+        module for module in allowed_modules if module not in consented
+    )
+    if grew_modules:
+        reasons.append(
+            f"it asks to import {', '.join(grew_modules)}, which was not "
+            f"consented to"
+        )
+    elif allowed_modules and not plan.trust_author:
         reasons.append(
             f"it asks to import {', '.join(allowed_modules)}, which needs the "
             f"author trusted"
@@ -609,23 +632,39 @@ def _stage(
 
     A rename that fails puts the backup straight back, because the window
     between the two renames is the only moment in an install when the user
-    has no plugin at all. Whatever goes wrong, the staging copy goes with
-    it: a ``.staging`` directory nothing points at is invisible, permanent,
-    and the same size as the plugin.
+    has no plugin at all. Whatever goes wrong -- including halfway through
+    the copy -- the staging copy goes with it: a ``.staging`` directory
+    nothing points at is invisible, permanent, and the same size as the
+    plugin.
+
+    Both renames are translated. On Windows a file the editor, an antivirus
+    or a running server still has open makes either one a raw
+    ``PermissionError``, and an install that ends in one has told the user
+    nothing about which plugin it was or what to close.
     """
     staging.parent.mkdir(parents=True, exist_ok=True)
     if staging.exists():
         shutil.rmtree(staging)
-    shutil.copytree(source, staging)
 
     backup: Path | None = None
     try:
+        shutil.copytree(source, staging)
         _stop_if_cancelled(plan, cancel_check)
         if plugin_dir.exists():
             backup = plugin_dir.with_name(
                 f"{plan.plugin_id}.old-{int(time.time())}"
             )
-            plugin_dir.rename(backup)
+            try:
+                plugin_dir.rename(backup)
+            except OSError as exc:
+                # Nothing has moved yet, so there is nothing to put back --
+                # only the staging copy to throw away, which the handler
+                # below does.
+                backup = None
+                raise PluginInstallError(
+                    f"Could not move the previous {plan.plugin_id} aside.",
+                    hint=str(exc),
+                ) from exc
         try:
             staging.rename(plugin_dir)
         except OSError as exc:

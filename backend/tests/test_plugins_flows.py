@@ -407,6 +407,29 @@ def test_a_tarball_that_grew_an_allowed_modules_list_is_refused(fake_github):
     assert "subprocess" in (excinfo.value.hint or "")
 
 
+def test_trusting_the_author_is_an_answer_about_a_LIST_not_a_flag(fake_github):
+    """The user read ["subprocess"] and said yes to that. A tarball shipping
+    ["subprocess", "os"] has taken that answer as permission for a list they
+    never saw, and every extra name is another door the gate leaves open."""
+    fake_github({"cdui.plugin.toml": WITH_MODULES})
+    plan = _github_plan(trust_author=True)
+    fake_github({"cdui.plugin.toml": WITH_MODULES.replace(
+        '["subprocess"]', '["subprocess", "os"]')})
+
+    with pytest.raises(PluginInstallError) as excinfo:
+        _install(plan)
+    assert "differs from the one you consented to" in str(excinfo.value)
+    assert "os" in (excinfo.value.hint or "")
+    assert "not consented to" in (excinfo.value.hint or "")
+
+
+def test_the_module_list_that_was_consented_to_installs(fake_github):
+    """The other side of it: the same list, trusted, goes through."""
+    fake_github({"cdui.plugin.toml": WITH_MODULES})
+    _install(_github_plan(trust_author=True))
+    assert _entry("extras")["trusted_modules"] == ["subprocess"]
+
+
 def test_the_manifest_that_was_consented_to_installs(fake_github, user_root):
     """The other side of the check: a capability that WAS granted, and a
     module list the author is trusted for, go through untouched."""
@@ -561,6 +584,55 @@ def test_a_rename_that_fails_puts_the_previous_install_back(
     assert list((user_root / flows.STAGING_DIRNAME).iterdir()) == []
 
 
+def test_a_previous_install_that_will_not_move_aside_is_a_plugin_failure(
+    monkeypatch, user_root, fake_github
+):
+    """On Windows a directory the editor or a running server still has open
+    refuses to be renamed. A raw PermissionError out of an install names
+    neither the plugin nor what to close."""
+    installed = user_root / "extras"
+    installed.mkdir()
+    (installed / "marker.txt").write_text("the copy that was here", encoding="utf-8")
+
+    real_rename = Path.rename
+
+    def _rename(self, target):
+        if self.name == "extras":
+            raise PermissionError(13, "used by another process")
+        return real_rename(self, target)
+
+    monkeypatch.setattr(Path, "rename", _rename)
+    fake_github({"cdui.plugin.toml": PLAIN})
+
+    with pytest.raises(PluginInstallError) as excinfo:
+        _install(_github_plan(force=True))
+
+    assert "move the previous extras aside" in str(excinfo.value)
+    assert "used by another process" in (excinfo.value.hint or "")
+    assert (installed / "marker.txt").read_text(encoding="utf-8") == (
+        "the copy that was here")
+    assert list((user_root / flows.STAGING_DIRNAME).iterdir()) == []
+    assert _entry("extras") is None
+
+
+def test_a_copy_that_fails_halfway_leaves_no_staging_directory(
+    monkeypatch, user_root, fake_github
+):
+    """A .staging directory nothing points at is invisible, permanent, and
+    the same size as however far the copy got."""
+    def _half_a_copy(source, dest, *a, **kw):
+        Path(dest).mkdir(parents=True)
+        (Path(dest) / "half.txt").write_text("as far as it got", encoding="utf-8")
+        raise OSError(28, "no space left on device")
+
+    monkeypatch.setattr(flows.shutil, "copytree", _half_a_copy)
+    fake_github({"cdui.plugin.toml": PLAIN})
+
+    with pytest.raises(OSError):
+        _install(_github_plan())
+    assert list((user_root / flows.STAGING_DIRNAME).iterdir()) == []
+
+
 def test_force_replaces_an_installed_plugin_and_takes_the_backup_with_it(
     user_root, fake_github
 ):
@@ -636,6 +708,24 @@ def test_the_lockfile_entry_of_a_repository_install(user_root, fake_github):
     assert entry["manifest"]["version"] == "1.2.0"
     assert entry["capabilities"] == ["network"]
     assert entry["trusted_modules"] == []
+    assert entry["enabled"] is True
+
+
+def test_the_lockfile_entry_of_a_builtin_install(builtin_root):
+    """The same keys minus the three a repository has and a pack does not.
+    ``catalog_id`` is present because a built-in pack IS a catalog row."""
+    _write_builtin(builtin_root, BUILTIN)
+    _install(_builtin_plan())
+
+    entry = _entry("demo-pack")
+    assert list(entry) == [
+        "source_kind", "source", "installed_at", "manifest",
+        "trusted_modules", "capabilities", "enabled", "catalog_id",
+    ]
+    assert entry["source_kind"] == "builtin"
+    assert entry["source"] == "demo-pack"
+    assert entry["catalog_id"] == "demo-pack"
+    assert entry["manifest"]["version"] == "0.1.0"
     assert entry["enabled"] is True
 
 
