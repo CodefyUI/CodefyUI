@@ -130,6 +130,27 @@ SSH_PROBE_TIMEOUT_S = 5.0
 #: How long a killed process gets to hand back its pipes.
 DRAIN_TIMEOUT_S = 3.0
 
+#: How long each class of git command may take, in seconds. Every call in
+#: this package passes one of these, and ``service.py`` re-exports them so a
+#: route can name a timeout without importing the process layer.
+#:
+#: They live HERE, next to the ``timeout`` they are passed to, because every
+#: module that runs git needs them and the service imports all of those --
+#: the other way round would be a cycle.
+#:
+#: A status read is polled while the tab is open, so it is the shortest: ten
+#: seconds is already "something is holding the index lock". A local write
+#: (commit, checkout) runs the user's hooks, which can be a whole test
+#: suite, so it gets thirty. A read that walks history or a big blob gets
+#: twenty. Anything that talks to a remote is G3's and gets two minutes,
+#: which is a slow clone rather than a hung one -- the non-interactive
+#: environment turns a missing credential into an immediate failure, so a
+#: network call that is still running at two minutes is transferring.
+T_STATUS = 10
+T_LOCAL = 30
+T_READ = 20
+T_NETWORK = 120
+
 #: ``git version 2.53.0.windows.2`` -- the vendor suffix is deliberately not
 #: captured. Git for Windows and Apple's git both append their own build
 #: numbering, and a version check that tried to order those would be
