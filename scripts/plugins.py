@@ -27,8 +27,9 @@ events into lines on a console and its exceptions into exit codes.
 
 Exit codes, because scripts and CI read them:
 
-* 0   -- done
-* 1   -- the install failed, or the person said no
+* 0   -- done, or you declined "Proceed?"
+* 1   -- the install failed, or a capability / module-list request was
+         refused
 * 2   -- refused before anything ran: an unparseable source, or no source
 * 3   -- the plugin's Python packages cannot be installed while the server
          is running; the command to type instead is printed
@@ -40,6 +41,7 @@ from __future__ import annotations
 import argparse
 import contextlib
 import os
+import re
 import signal
 import sys
 import threading
@@ -778,6 +780,37 @@ def _print_python_deps(found: core_inspect.Inspection) -> None:
     info(f"Python 套件：{listed}", f"Python packages: {listed}")
 
 
+#: Everything a terminal ACTS on instead of showing: the C0 range (escape,
+#: carriage return, newline, backspace), DEL, and the C1 range a UTF-8
+#: terminal decodes as its own control codes.
+_CONTROL_RUN = re.compile(r"[\x00-\x1f\x7f-\x9f]+")
+_WHITESPACE_RUN = re.compile(r"\s+")
+
+
+def _plain(text: object, limit: int = 200) -> str:
+    """One line of somebody else's text, with nothing a terminal obeys left in.
+
+    ``name``, ``version`` and ``description`` are written by whoever wrote
+    the plugin, and they are printed on the screen a person reads BEFORE
+    agreeing to install it. A description carrying ESC-bracket-2-J does not
+    describe a plugin: it clears the consent screen. A bare carriage return
+    redraws the line above it. Either way the answer somebody gives is an
+    answer about text that is no longer on the screen -- which is the whole
+    of what the preview is for.
+
+    A run of control characters becomes ONE space rather than nothing, so a
+    description written over two lines does not run its words together. The
+    result is capped as well: a "description" the height of the terminal
+    scrolls the preview away just as effectively as an escape sequence does.
+    """
+    if not isinstance(text, str):
+        return ""
+    cleaned = _WHITESPACE_RUN.sub(" ", _CONTROL_RUN.sub(" ", text)).strip()
+    if len(cleaned) <= limit:
+        return cleaned
+    return cleaned[:limit].rstrip() + "..."
+
+
 def _print_preview(found: core_inspect.Inspection) -> None:
     """Say what this plugin IS, before a byte of it is downloaded.
 
@@ -791,11 +824,18 @@ def _print_preview(found: core_inspect.Inspection) -> None:
     than a description, :func:`capability_gate` owns the conversation, and
     listing the names twice would put the same fact on the screen in two
     voices.
+
+    Every field here is the author's, so every field goes through
+    :func:`_plain` first: this is the one screen where text that can redraw
+    itself would be redrawing the question.
     """
-    version = f" {found.version}" if found.version else ""
-    print(f"  {BOLD}{found.name}{version}{RESET}")
-    if found.description:
-        info(found.description, found.description)
+    name = _plain(found.name)
+    version = _plain(found.version)
+    version = f" {version}" if version else ""
+    description = _plain(found.description)
+    print(f"  {BOLD}{name}{version}{RESET}")
+    if description:
+        info(description, description)
     if found.allowed_modules:
         asked = ", ".join(found.allowed_modules)
         warn(
@@ -1602,9 +1642,9 @@ def cmd_sync(args: argparse.Namespace) -> int:
     done: list[str] = []
     failed: list[str] = []
     for pack_id, _name in pending:
-        # Re-read per pack: _install_catalog saves the lockfile object it is
-        # handed, so carrying one copy across the loop would write the state
-        # from before the previous pack straight back over it.
+        # Re-read per pack: the inspection _install_catalog runs has to see
+        # the pack installed by the previous turn of this loop, and the
+        # lockfile it compares against is this object.
         lockfile = load_lockfile()
         rc = _install_catalog(
             pack_id,
@@ -1620,6 +1660,17 @@ def cmd_sync(args: argparse.Namespace) -> int:
         if rc == 0:
             done.append(pack_id)
             continue
+        if rc == 130:
+            # Ctrl-C during one pack's `uv pip install` is an answer about
+            # the whole command, not about that pack. Treated as an ordinary
+            # failure it meant "continuing with the rest" -- the next pack
+            # starting the download the user had just interrupted.
+            warn(
+                f"已中斷，尚未處理的外掛不會安裝（已完成 {len(done)} 個）",
+                f"Stopped; the remaining pack(s) were not installed "
+                f"({len(done)} done)",
+            )
+            return 130
         failed.append(pack_id)
         warn(
             f"{pack_id} 安裝失敗，繼續處理其餘外掛",
@@ -2110,13 +2161,17 @@ def _print_info(
     status_en = "INSTALLED" if installed else "AVAILABLE"
     print(f"\n{BOLD}{plugin_id}{RESET}  {DIM}[{t(status_zh, status_en)}]{RESET}")
 
+    # The same three author-written fields the preview shows, through the
+    # same filter: `cdui plugin info <owner/repo>` reads a manifest off a
+    # repository nobody has agreed to install, and an installed plugin's
+    # manifest is whatever it rewrote itself to say after the install.
     fields: list[tuple[str, str]] = []
-    if plugin_meta.get("name"):
-        fields.append(("name", plugin_meta["name"]))
-    if plugin_meta.get("version"):
-        fields.append(("version", plugin_meta["version"]))
-    if plugin_meta.get("description"):
-        fields.append(("description", plugin_meta["description"]))
+    if _plain(plugin_meta.get("name")):
+        fields.append(("name", _plain(plugin_meta["name"])))
+    if _plain(plugin_meta.get("version")):
+        fields.append(("version", _plain(plugin_meta["version"])))
+    if _plain(plugin_meta.get("description")):
+        fields.append(("description", _plain(plugin_meta["description"])))
     if entry.get("source_kind"):
         fields.append(("source", f"{entry['source_kind']}:{entry.get('source', '')}"))
     if entry.get("sha"):

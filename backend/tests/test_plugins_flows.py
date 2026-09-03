@@ -503,6 +503,28 @@ def test_any_other_pip_failure_keeps_uvs_last_lines(fake_github, fake_pip):
     assert "could not download tinylib" in (excinfo.value.hint or "")
 
 
+def test_a_missing_uv_says_so_in_the_hint_rather_than_nothing(
+    monkeypatch, fake_github, user_root
+):
+    """``run_pip`` returns 127 without starting a process, so nothing is ever
+    pumped into ``tail`` -- and the one line that says why went out as a log
+    event and nowhere else, leaving the failure hint empty exactly where it
+    had something to say."""
+    def _no_uv(specs, *, constraints_path, emit, cancel_check, cwd, tail=None):
+        emit({"type": "log",
+              "line": "uv was not found on PATH; install uv and try again"})
+        return 127
+
+    monkeypatch.setattr(packs_runner, "run_pip", _no_uv)
+    fake_github({"cdui.plugin.toml": WITH_DEPS})
+
+    with pytest.raises(PluginInstallError) as excinfo:
+        _install(_github_plan())
+    assert "uv exited 127" in str(excinfo.value)
+    assert "uv was not found on PATH" in (excinfo.value.hint or "")
+    assert _entry("extras") is None
+
+
 @pytest.fixture
 def flushes(monkeypatch) -> list[bool]:
     """Record every ``importlib.invalidate_caches()`` the deps step makes.

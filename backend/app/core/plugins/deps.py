@@ -164,7 +164,10 @@ def install_deps_step(
       command to run with the server stopped;
     * any other non-zero exit is a :class:`~.errors.PluginInstallError` with
       uv's last lines as the ``hint``, which is what a learner pastes into
-      an issue;
+      an issue -- and when there are none, the last lines this step LOGGED,
+      because the one failure that pumps no output (uv is not on PATH, so
+      there is no process at all) is also the one whose cause is a single
+      sentence;
     * a cancel becomes :class:`~.errors.PluginCancelled`. The runner raises
       the Package Center's ``PackCancelled``, and letting THAT out of a
       plugin install would reach a job runner whose terminal mapping has
@@ -182,8 +185,23 @@ def install_deps_step(
           "label": f"Installing packages: {', '.join(specs)}"})
 
     tail: list[str] = []
+    logged: list[str] = []
+
+    def _watched(event: dict) -> None:
+        # The failure with the most nameable cause is the one that filled
+        # ``tail`` least: when uv is not on PATH there is no process, so
+        # nothing is ever pumped into ``tail`` -- and the one line that says
+        # what happened went out through ``emit`` and nowhere else, leaving
+        # the hint empty exactly where it had something to say.
+        if event.get("type") == "log" and isinstance(event.get("line"), str):
+            logged.append(event["line"])
+            del logged[:-packs_runner.TAIL_LINES]
+        emit(event)
+
     try:
-        returncode = _run_uv(specs, emit=emit, cancel_check=cancel_check, tail=tail)
+        returncode = _run_uv(
+            specs, emit=_watched, cancel_check=cancel_check, tail=tail
+        )
     finally:
         # Whatever happened. uv installs in dependency order and stops at the
         # first failure, so a run that failed -- or one the user stopped --
@@ -194,7 +212,7 @@ def install_deps_step(
         importlib.invalidate_caches()
 
     if returncode != 0:
-        detail = "\n".join(tail).strip()
+        detail = "\n".join(tail).strip() or "\n".join(logged).strip()
         if packs_runner.looks_like_resolver_conflict(tail):
             command = manual_install_command(specs)
             raise PluginNeedsRestart(

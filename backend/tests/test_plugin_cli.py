@@ -6,6 +6,7 @@ import argparse
 import io
 import signal
 import tarfile
+import tomllib
 from pathlib import Path
 from textwrap import dedent
 
@@ -1600,6 +1601,149 @@ def test_a_plugin_you_already_have_is_refused_before_it_is_fetched(
     # And the entry that was there is the entry that is still there.
     assert plugin_loader.load_lockfile()[
         "plugins"]["official-template"]["installed_at"] == installed_at
+
+
+def test_declining_the_prompt_is_exit_0_and_downloads_nothing(
+    isolated_lockfile, fake_github, monkeypatch, capsys
+):
+    """"No" is a complete answer, not a failure to carry out the command --
+    the same rule ``cdui plugin sync`` follows for its own prompt. This is
+    what the exit-code table promises, and what a script wrapping the CLI
+    branches on: a 1 here would read as "the install broke"."""
+    monkeypatch.setenv("CODEFYUI_LANG", "en")
+    fake_github(_PREVIEW_FILES)
+    monkeypatch.setattr("builtins.input", lambda _prompt: "n")
+
+    def _never(*_a, **_k):  # pragma: no cover - only runs on a bug
+        raise AssertionError("a declined install must not download anything")
+
+    monkeypatch.setattr(plugin_cli, "download_tarball", _never)
+
+    assert _official(_install_args(no_confirm=False)) == 0
+    printed = _out(capsys)
+    assert "Cancelled" in printed
+    # It was asked AFTER the preview and before anything moved.
+    assert "Preview Pack" in printed
+    assert plugin_loader.load_lockfile()["plugins"] == {}
+    assert not (isolated_lockfile / "official-template").exists()
+
+
+def _records_reload(monkeypatch) -> list[str]:
+    """Replace ``isolated_lockfile``'s reload stub with a counting one.
+
+    The fixture's stub answers "no server" and records nothing, so deleting
+    the call after a successful install kept the whole suite green -- and a
+    plugin that installs without the running server being told about it does
+    not appear until the next `cdui start`.
+    """
+    asked: list[str] = []
+
+    def _reload() -> bool:
+        asked.append("reload")
+        return False
+
+    monkeypatch.setattr(plugin_cli, "_backend_reload", _reload)
+    return asked
+
+
+def test_a_finished_install_asks_the_server_to_pick_the_plugin_up(
+    isolated_lockfile, fake_github, monkeypatch, capsys
+):
+    """Not a step of the install -- the flow finishes on disk -- but the
+    difference between a plugin you can use now and one that appears at the
+    next `cdui start`."""
+    monkeypatch.setenv("CODEFYUI_LANG", "en")
+    fake_github({"cdui.plugin.toml": _TEMPLATE_MANIFEST,
+                 "nodes/hello.py": "VALUE = 1\n"})
+    asked = _records_reload(monkeypatch)
+
+    assert _official(_install_args()) == 0
+    assert asked == ["reload"]
+    # No server, so the answer is the offer rather than a failure.
+    assert "next `cdui start`" in _out(capsys)
+
+
+def test_a_refused_install_does_not_ask_the_server_for_anything(
+    isolated_lockfile, fake_github, monkeypatch, capsys
+):
+    """Nothing was installed, so there is nothing to pick up: a reload here
+    would bump the generation the editor polls over an install that did not
+    happen."""
+    monkeypatch.setenv("CODEFYUI_LANG", "en")
+    fake_github(_PREVIEW_FILES)
+    asked = _records_reload(monkeypatch)
+
+    assert _official(_install_args(accept_capabilities=True)) == 1
+    assert asked == []
+
+
+def test_the_preview_shows_no_character_a_terminal_would_obey(
+    isolated_lockfile, fake_github, monkeypatch, capsys
+):
+    """The consent screen is the one place author text must not be able to
+    redraw itself: a description carrying a clear-screen sequence or a bare
+    carriage return erases the question it was printed under, and the answer
+    somebody gives is then an answer about text they cannot see."""
+    monkeypatch.setenv("CODEFYUI_LANG", "en")
+    # Written as TOML escapes, which is the only way a manifest can carry
+    # them: a raw control byte in a basic string is a TOML parse error, so
+    # this is the shape a real hostile manifest has to take.
+    hostile = dedent("""\
+        [plugin]
+        id = "official-template"
+        name = "Innocent\\u001B[31m"
+        version = "1.0.0"
+        description = "Harmless.\\u001B[2J\\rInstalling: nothing at all"
+        schema_version = 1
+        """)
+    assert "\x1b" in tomllib.loads(hostile)["plugin"]["description"]
+    fake_github({"cdui.plugin.toml": hostile, "nodes/hello.py": "VALUE = 1\n"})
+
+    assert _official(_install_args()) == 0
+
+    printed = _out(capsys)
+    assert "\x1b[2J" not in printed and "\x1b[31m" not in printed
+    assert "\r" not in printed
+    # The words survive; only what a terminal acts on is gone.
+    assert "Innocent" in printed and "Harmless." in printed
+
+
+def test_a_long_description_cannot_scroll_the_preview_away(monkeypatch):
+    """Same screen, the other way to clear it. Capped rather than wrapped:
+    a preview whose description is the height of the terminal has pushed
+    everything a person needs to read off the top of it."""
+    assert plugin_cli._plain("x" * 500).endswith("...")
+    assert len(plugin_cli._plain("x" * 500)) == 203
+    assert plugin_cli._plain("two\nlines") == "two lines", "no run-on words"
+    assert plugin_cli._plain(None) == ""
+
+
+def test_ctrl_c_during_one_pack_stops_sync_rather_than_starting_the_next(
+    isolated_lockfile, monkeypatch, capsys
+):
+    """A 130 is an answer about the whole command. Treated as an ordinary
+    failure it meant "continuing with the rest", so Ctrl-C during one pack's
+    `uv pip install` started the next pack's download."""
+    monkeypatch.setenv("CODEFYUI_LANG", "en")
+    asked: list[str] = []
+
+    def _interrupted(plugin_id, args, lockfile):
+        asked.append(plugin_id)
+        return 130
+
+    monkeypatch.setattr(plugin_cli, "_install_catalog", _interrupted)
+
+    pending = core_catalog.available_builtin_packs(
+        plugin_cli.load_catalog(), {"plugins": {}}
+    )
+    assert len(pending) >= 2, "the premise: there is a second pack to ask about"
+
+    rc = plugin_cli.cmd_sync(
+        argparse.Namespace(dry_run=False, prune=False, yes=True)
+    )
+    assert rc == 130
+    assert len(asked) == 1, "the second pack was never asked about"
+    assert "Stopped" in _out(capsys)
 
 
 def test_packages_that_cannot_be_installed_here_are_exit_3_with_the_command(
