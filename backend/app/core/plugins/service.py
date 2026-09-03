@@ -640,6 +640,14 @@ class PluginService:
         stored = self._remember(inspection, force=True)
         try:
             job = await self.submit_install(stored.inspection_id)
+        except PluginBusy:
+            # An install claimed the slot between this method's own check and
+            # the one at the claim. The record goes with the request that
+            # made it: nobody was shown this inspection, nothing will ever
+            # name its id, and a record that can replace what is on disk is
+            # not one to leave lying in the store for its whole TTL.
+            self._inspections.pop(stored.inspection_id, None)
+            raise
         except ConsentRequired:
             # Capability creep, or a module list that grew: the one thing an
             # update has to ask about. ``TrustAuthorRequired`` is a

@@ -889,6 +889,41 @@ async def test_an_update_waits_for_the_install_that_is_running(sources,
     await drain(service, running.job_id)
 
 
+async def test_a_record_orphaned_by_a_race_does_not_outlive_the_request(
+        sources, updates):
+    """The one gap the pre-check cannot close: a job claims the slot while
+    this update is still reading GitHub. The record made for it can replace
+    what is on disk without being asked again, nobody was ever shown it, and
+    its id left with the exception -- so it is spent rather than left in the
+    store for its whole TTL.
+    """
+    flow = ScriptedFlow()
+    service = a_service(run_flow=flow)
+    a_lockfile(extras=a_github_entry())
+    other_id = await remembered(service, sources, an_inspection(
+        source="bob/other", plugin_id="other"))
+    updates.answer("extras", an_inspection(
+        mode="update", sha=SHA, installed=installed_record(sha="b" * 40)))
+    updates.blocked.set()
+    updating = asyncio.create_task(service.update("extras"))
+    while not updates.entered.is_set():
+        await asyncio.sleep(0.01)
+    running = await service.submit_install(other_id)
+    await wait_started(flow)
+    updates.blocked.clear()
+
+    with pytest.raises(PluginBusy) as excinfo:
+        await updating
+
+    assert excinfo.value.job_id == running.job_id
+    # White-box on purpose: an orphan has no id anybody can ask for, so the
+    # only thing that can observe it is the store itself.
+    assert service._inspections == {}
+
+    flow.finish()
+    await drain(service, running.job_id)
+
+
 async def test_an_update_waits_for_the_package_center_too(updates):
     """The same interpreter and the same site-packages: an update installs
     Python packages exactly as a fresh install does."""
