@@ -40,6 +40,8 @@ from app.core.plugin_loader import (
     load_lockfile,
 )
 from app.core.project import (
+    PROJECT_GITATTRIBUTES,
+    PROJECT_GITIGNORE,
     GraphAmbiguityError,
     check_pin_issues,
     collect_graph_files,
@@ -61,22 +63,6 @@ requires_codefyui = ">=1.4"   # advisory metadata; NOT enforced
 # slug = "my-service"
 # record_io = true
 """
-
-_GITIGNORE = """.env
-*.pt
-*.pth
-*.safetensors
-*.onnx
-*.ckpt
-*.pkl
-__pycache__/
-*.db
-.DS_Store
-# interrupted atomic writes
-*.tmp-*
-"""
-
-_GITATTRIBUTES = "layout/*.layout.json linguist-generated=true\n"
 
 _ENV_EXAMPLE = """# CodefyUI project secrets (runtime only). Copy to .env and fill in.
 # .env is gitignored; this .env.example is committed as the required-keys template.
@@ -178,8 +164,10 @@ def cmd_init(args: argparse.Namespace) -> int:
     # Scaffold files (never clobber an existing manifest/README under --force).
     name = target.name
     _write_if_absent(target / MANIFEST_FILENAME, _PROJECT_TOML.format(name=name))
-    _write_if_absent(target / ".gitignore", _GITIGNORE)
-    _write_if_absent(target / ".gitattributes", _GITATTRIBUTES)
+    # Shared with the Source Control tab's own "Initialize Repository", which
+    # writes the same two files from the same constants (app.core.project).
+    _write_if_absent(target / ".gitignore", PROJECT_GITIGNORE)
+    _write_if_absent(target / ".gitattributes", PROJECT_GITATTRIBUTES)
     _write_if_absent(target / ".env.example", _ENV_EXAMPLE)
     _write_if_absent(target / "README.md", _README.format(name=name))
 

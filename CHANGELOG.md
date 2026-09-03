@@ -24,6 +24,35 @@ received — each links to the release it was published as.
 
 ### Added
 
+- **Source control from the editor, part 1 — the git service and the read and
+  commit routes.** `/api/git` runs the host's own `git`, with the host's own
+  credentials, against the open project directory and nothing else — never the
+  CodefyUI checkout, and never a repository the project happens to sit inside,
+  which is reported as its own state rather than quietly operated on. Every
+  call is non-interactive: a missing credential comes back as a fast, named
+  error instead of a server hung on a password prompt nobody can see. Every
+  path, ref, name and message is checked against a closed grammar before it
+  reaches an argument list, and there is no shell in between. This first part
+  ships status, stage / unstage / discard, commit and amend, init (with the
+  same `.gitignore` and `.gitattributes` `cdui project init` writes, whose
+  first line is `.env`), the commit identity and where it is configured, the
+  log, the files of one commit, and diffs; branches, remotes, stashes and the
+  sidebar tab itself follow. A dotenv file is refused at every ref, so a secret
+  committed once is still never served back through an open read, and anything
+  git says on the way out is scanned for a credential — a token inside a remote
+  URL is masked while the host and the path stay, because which remote failed
+  is the half of that sentence worth reading. A path that goes through a
+  symbolic link or a Windows junction is refused rather than followed —
+  reading one would serve the file at the other end of it, and discarding one
+  would delete that file — and the whole-tree buttons hold to the same rule:
+  they skip whatever a link redirects and say what they skipped, rather than
+  quietly staging a folder that is not part of the project. The limit of that
+  guard is worth stating plainly — a hard link is indistinguishable from the
+  file itself, and making one on the server already takes the local write
+  access that would let somebody copy the file anyway. Writing needs the
+  session token every other mutating call needs; reading is open, like every
+  other read in the app.
+
 - **`GET /api/plugins/catalog` — everything you can install and everything
   you have installed, in one listing.** The read half of the Plugin Center.
   Two documents that do not know about each other answer half the question
@@ -89,6 +118,14 @@ received — each links to the release it was published as.
   now `app.core.jobs`, so the plugin installer landing next runs under the
   same lock rules rather than a second copy of them. Nothing about installing
   a pack changes.
+
+- **`cdui project init` pins `*.json` to LF.** The scaffold's `.gitattributes`
+  gains `*.json text eol=lf`. A project's graphs and layouts are its source,
+  the server writes them with LF endings, and a Windows checkout with
+  `core.autocrlf=true` handed them back as CRLF — so every save rewrote every
+  line, and a one-node change was reviewed as a whole-file diff. An existing
+  `.gitattributes` is never rewritten, so this reaches projects scaffolded from
+  here on.
 
 ### Fixed
 
