@@ -94,6 +94,27 @@ class ConsentRequired(PluginInstallError):
         self.allowed_modules = tuple(allowed_modules)
 
 
+class AlreadyInstalled(PluginInstallError):
+    """This plugin is here already, and nobody asked to replace it.
+
+    Its own class because it is the one install failure that is not a
+    failure of the plugin: nothing is wrong with the source, the answer is
+    "you already have it", and the caller's next move is an offer -- a
+    ``--force`` in the terminal, a Reinstall button in the panel -- rather
+    than a message about what went wrong. A route turns this into 409 where
+    every other install error is a 500, which is a distinction no ``except
+    PluginInstallError`` can make by reading the sentence.
+
+    ``plugin_id`` travels with it because the offer has to name the plugin,
+    and a caller holding an id it parsed back out of the message is a caller
+    that breaks the day the message is translated.
+    """
+
+    def __init__(self, message: str, *, plugin_id: str, hint: str | None = None):
+        super().__init__(message, hint=hint)
+        self.plugin_id = plugin_id
+
+
 class SourceError(ValueError):
     """What the user typed cannot be turned into something to install.
 

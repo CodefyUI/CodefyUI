@@ -32,6 +32,7 @@ validator nor the filesystem.
 from __future__ import annotations
 
 from .errors import (
+    AlreadyInstalled,
     ConsentRequired,
     GitHubError,
     ManifestError,
@@ -44,6 +45,7 @@ from .errors import (
 )
 
 __all__ = [
+    "AlreadyInstalled",
     "ConsentRequired",
     "GitHubError",
     "ManifestError",
