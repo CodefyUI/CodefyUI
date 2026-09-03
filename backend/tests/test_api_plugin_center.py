@@ -1924,6 +1924,22 @@ async def test_unlinking_a_local_plugin_leaves_the_authors_checkout_alone(
     assert plugin_loader.removed_ids(after) == {"rl"}
 
 
+async def test_a_row_whose_files_are_already_gone_can_still_be_removed(
+        client, center_lockfile, forgetting):
+    """``ghost-pack`` is the ``missing_files`` state part 1 draws: an entry
+    whose directory is not there any more. An absent directory is SUCCESS --
+    nothing of ours is left, which is all "removed" ever meant -- so the
+    panel's Remove button clears the row instead of reporting a conflict
+    about files nobody can find."""
+    assert not (center_lockfile / "ghost-pack").exists()
+
+    response = await client.delete("/api/plugins/ghost-pack")
+    assert response.status_code == 200, response.text
+    assert response.json()["files_removed"] is True
+    assert response.json()["python_deps_left"] == []
+    assert "ghost-pack" not in lockfile_of(center_lockfile)["plugins"]
+
+
 async def test_deleting_something_that_is_not_installed_is_a_404(
         client, forgetting):
     response = await client.delete("/api/plugins/no-such-plugin")
