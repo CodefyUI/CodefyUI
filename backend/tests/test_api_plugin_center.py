@@ -899,6 +899,20 @@ class FakeGitHub:
         self._monkeypatch.setattr(github, "fetch_manifest_text",
                                   lambda owner, repo, at: manifest)
 
+    def answers_bytes(self, raw: bytes, *, sha: str = A_SHA) -> None:
+        """Serve *raw* as the manifest FILE, with the real decode in the path.
+
+        ``fetch_manifest_text`` lets a ``UnicodeDecodeError`` out on purpose
+        -- a manifest that is not text is a disk answer, not a network one --
+        so a test about how the route maps it must not fake the function that
+        raises it. Faked at ``_gh_get``, which the module's own docstring
+        names as the one place every request goes through.
+        """
+        self._monkeypatch.setattr(github, "resolve_sha",
+                                  lambda owner, repo, ref: sha)
+        self._monkeypatch.setattr(github, "_gh_get",
+                                  lambda url, *args, **kwargs: raw)
+
     def raises(self, exc: BaseException) -> None:
         def boom(*args, **kwargs):
             raise exc
@@ -1191,6 +1205,43 @@ async def test_a_manifest_that_is_not_even_toml_is_a_400_not_a_500(
 
     response = await client.post("/api/plugins/inspect",
                                  json={"source": "alice/extras"})
+    assert response.status_code == 400, response.text
+    assert response.json()["detail"] == {"code": "invalid_manifest"}
+
+
+async def test_a_manifest_that_is_not_utf8_is_a_400_not_a_500(
+        client, fake_github):
+    """A repository whose ``cdui.plugin.toml`` is UTF-16, or a binary file
+    under that name. ``fetch_manifest_text`` lets the ``UnicodeDecodeError``
+    out on purpose, and it is a ``ValueError`` that is neither a
+    ``ManifestError`` nor a ``SourceError`` -- so this reached the client as
+    a crash until the route named it."""
+    fake_github.answers_bytes("[plugin]\nid = 'extras'\n".encode("utf-16"))
+
+    response = await client.post("/api/plugins/inspect",
+                                 json={"source": "alice/extras"})
+    assert response.status_code == 400, response.text
+    assert response.json()["detail"] == {"code": "invalid_manifest"}
+
+
+async def test_a_builtin_whose_manifest_is_gone_is_a_400_not_a_500(
+        client, tmp_path, monkeypatch):
+    """A release that shipped a catalog row and lost the directory behind it,
+    or a pack somebody deleted by hand. ``read_manifest`` raises
+    ``FileNotFoundError`` -- an ``OSError``, unrelated to every class the
+    other clauses catch -- and the disk saying the source is not there is the
+    same answer as a manifest that cannot be read."""
+    builtin_root = tmp_path / "builtin"
+    builtin_root.mkdir()
+    (builtin_root / "registry.json").write_text(
+        json.dumps({"schema": 1, "plugins": {"ghost": {
+            "kind": "builtin", "name": "Ghost", "path": "plugins/ghost"}}}),
+        encoding="utf-8")
+    monkeypatch.setattr(plugin_loader, "plugins_builtin_root",
+                        lambda: builtin_root)
+
+    response = await client.post("/api/plugins/inspect",
+                                 json={"source": "ghost"})
     assert response.status_code == 400, response.text
     assert response.json()["detail"] == {"code": "invalid_manifest"}
 

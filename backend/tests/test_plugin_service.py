@@ -77,16 +77,28 @@ def no_real_rediscovery(monkeypatch):
     which CLEARS the registry every other test in the session shares (the
     suite survives that only because conftest repairs it before each test)
     and bumps the generation the editor polls. Every service here injects a
-    fake instead; this is what turns "we remembered to" into a rule, and it
-    fails at the call rather than three files later.
+    fake instead; this is what turns "we remembered to" into a rule.
+
+    The hit is RECORDED and asserted after the test rather than raised at the
+    call site alone. ``reload`` runs inside the runner's ``after_work``, which
+    catches what its callback raises and reports it as a failed job -- so an
+    ``AssertionError`` thrown in there was swallowed, the guard said nothing,
+    and the test went on to assert about a job that failed for the reason the
+    guard was trying to announce.
     """
+    hits: list[str] = []
 
     def refuse(*args, **kwargs):
+        hits.append("rediscover_all")
         raise AssertionError(
             "this test ran a real registry re-discovery -- build the service "
             "through a_service(), or pass your own reload=")
 
     monkeypatch.setattr(plugin_loader, "rediscover_all", refuse)
+    yield
+    assert hits == [], (
+        "this test ran a real registry re-discovery -- build the service "
+        "through a_service(), or pass your own reload=")
 
 
 def a_service(**kwargs: Any) -> PluginService:

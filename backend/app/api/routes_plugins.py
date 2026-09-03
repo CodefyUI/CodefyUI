@@ -61,6 +61,7 @@ from ..core.plugin_loader import (
     iter_plugin_dirs,
     load_lockfile,
 )
+from ..core.jobs import JobBusy
 from ..core.plugins import lifecycle
 from ..core.plugins.catalog import catalog_entries
 from ..core.plugins.errors import (
@@ -454,11 +455,22 @@ async def inspect_plugin_source(
         # the string names nothing installable, and there is nothing true to
         # add to that beyond what the client already sent.
         raise _coded(400, "unparseable_source") from None
-    except (ManifestError, tomllib.TOMLDecodeError):
-        # A manifest this build will not install, and the broken TOML that
-        # never got as far as being validated. One code: both mean "the
-        # thing at that source is not a plugin this can install", and
-        # neither is anything the caller can fix from here.
+    except (ManifestError, tomllib.TOMLDecodeError, UnicodeDecodeError):
+        # A manifest this build will not install, the broken TOML that never
+        # got as far as being validated, and a file that is not text at all --
+        # ``fetch_manifest_text`` lets ``UnicodeDecodeError`` out on purpose,
+        # and it is neither a ``ManifestError`` nor a ``SourceError``, so it
+        # used to leave here as a 500. One code for the three: they all mean
+        # "the thing at that source is not a plugin this can install", and
+        # none of them is anything the caller can fix from here.
+        raise _coded(400, "invalid_manifest") from None
+    except OSError:
+        # A builtin whose manifest file is gone: ``read_manifest`` raises
+        # ``FileNotFoundError`` and nothing above catches it. Unrelated to
+        # every class in this chain (a network ``OSError`` never gets this
+        # far -- the GitHub client turns those into ``GitHubError``), so it
+        # is the disk saying the source is not there, which is the same
+        # answer as a manifest that cannot be read.
         raise _coded(400, "invalid_manifest") from None
     except GitHubError as exc:
         raise _github_refusal(exc) from None
@@ -488,7 +500,8 @@ async def install_plugin(
     The order of the clauses below is load-bearing, not tidy:
     ``TrustAuthorRequired`` is a ``ConsentRequired`` and would otherwise be
     answered as one, which asks the user to tick a capability list that has
-    nothing wrong with it.
+    nothing wrong with it -- and ``PluginBusy`` is a ``JobBusy``, so the one
+    that can say WHOSE job is in the way has to be caught first.
     """
     service = _service(request)
     try:
@@ -519,6 +532,13 @@ async def install_plugin(
         # and the id is one this client can follow) or the Package Center's
         # (``pack_install_running``, which is somebody else's to wait for).
         raise _coded(409, exc.reason or "busy", job_id=exc.job_id) from None
+    except JobBusy as exc:
+        # Unreachable today: the service pre-checks both installers and
+        # raises ``PluginBusy`` above, so the runner's own claim never loses
+        # the race. Here because the runner is what actually owns "one at a
+        # time" -- if that pre-check is ever dropped or raced, this is a 409
+        # the panel already knows how to draw rather than a 500.
+        raise _coded(409, "busy", job_id=exc.job_id) from None
     return {"job_id": job.job_id}
 
 

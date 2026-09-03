@@ -315,6 +315,13 @@ class PluginService:
         install), and reading it on the loop for the sake of the keyword
         would put a file read on the thread that is answering everybody else.
 
+        Cancelling the awaiting task -- a client that hangs up mid-read --
+        releases the semaphore while the worker thread is still inside
+        ``inspect_source``, so the next caller can start a second one over
+        the top of it. Not reachable from the shipped client (nothing
+        cancels an inspection), and bounded anyway: the threads come from the
+        default executor's pool, and each one only reads a manifest.
+
         :raises InspectBusy: another inspection is already running.
         :raises SourceError: what the user typed names nothing installable.
         :raises ManifestError: the manifest at that source is not one this
