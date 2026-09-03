@@ -2184,6 +2184,25 @@ async def test_an_update_waits_for_the_install_that_is_running(
     await drain(client, job_id)
 
 
+async def test_an_update_of_the_plugin_that_is_installing_is_refused_too(
+        client, flow, fake_github):
+    """The other half of the guard the lifecycle routes carry: the lockfile
+    entry this update would rewrite is the one that flow is about to write.
+    Here it needs no separate check -- one install at a time already covers
+    the plugin's own job -- and the answer is the same 409 either way."""
+    fake_github.answers(a_manifest("demo-external"), sha="b" * 40)
+    job_id = await start_install(client, force=True)
+    await wait_started(flow)
+
+    refused = await client.post("/api/plugins/demo-external/update")
+
+    assert refused.status_code == 409, refused.text
+    assert refused.json()["detail"] == {"code": "busy", "job_id": job_id}
+
+    flow.finish()
+    await drain(client, job_id)
+
+
 async def test_an_update_is_refused_while_another_source_is_being_read(
         client, monkeypatch):
     """An update IS an inspection -- of a source the server looked up instead
