@@ -42,6 +42,8 @@ from app.core.plugins.errors import (
     GitHubError,
     InspectBusy,
     InspectionExpired,
+    NotInstalled,
+    NotUpdatable,
     PluginBusy,
     PluginCancelled,
     PluginInstallError,
@@ -146,8 +148,37 @@ def installed_record(capabilities=(), trusted_modules=(), sha=None) -> dict:
             "source_kind": "github_url"}
 
 
+def a_github_entry(**overrides: Any) -> dict:
+    """A lockfile ROW for a plugin installed from a repository.
+
+    The half of an update that is on disk: it is what decides there is
+    something to fetch at all. What comes back from the fetch is whatever the
+    ``updates`` table answers, so the two only have to agree about the id.
+    """
+    entry: dict[str, Any] = {
+        "source_kind": "github_url", "source": SOURCE,
+        "url": "https://github.com/alice/extras", "ref": "main",
+        "sha": "b" * 40, "installed_at": "2026-06-01T00:00:00Z",
+        "manifest": {"id": "extras", "version": "0.9.0"},
+        "capabilities": [], "trusted_modules": [], "enabled": True,
+    }
+    entry.update(overrides)
+    return entry
+
+
+def a_lockfile(**plugins: dict) -> None:
+    """Write *plugins* as the installed.json this service reads.
+
+    Really written, into the throwaway root ``isolated_user_root`` redirects
+    to: ``update`` reads the lockfile itself, and a fake that answered from
+    memory would not be testing the read.
+    """
+    plugin_loader.save_lockfile({"schema": 1, "plugins": plugins})
+
+
 class Sources:
-    """What ``inspect_source`` answers, per spec, with no network anywhere."""
+    """What ``inspect_source`` or ``inspect_installed`` answers, per key,
+    with no network anywhere."""
 
     def __init__(self) -> None:
         self.answers: dict[str, Any] = {}
@@ -181,6 +212,19 @@ class Sources:
 def sources(monkeypatch) -> Sources:
     table = Sources()
     monkeypatch.setattr(inspect_module, "inspect_source", table)
+    return table
+
+
+@pytest.fixture
+def updates(monkeypatch) -> Sources:
+    """What ``inspect_installed`` answers, keyed by plugin id.
+
+    The same table as ``sources`` on purpose: both are a blocking read of one
+    string that must never reach the network here, and both take the SAME
+    slot in the service -- a property two different fakes could hide.
+    """
+    table = Sources()
+    monkeypatch.setattr(inspect_module, "inspect_installed", table)
     return table
 
 
@@ -666,6 +710,233 @@ async def test_the_other_installer_is_told_about_a_running_job_and_no_other(
     await drain(service, job.job_id)
     assert service.current_job_id() is None
     assert service.current_job() is job
+
+
+# ── updating what is already here ─────────────────────────────────────────
+#
+# ``update`` is the two turns of an install collapsed for a plugin the
+# lockfile already describes. What each test below is really about is WHICH
+# of the three answers comes back, and how much the service did before it
+# could say so: the refusals that need no network must not spend one.
+
+
+async def test_updating_a_plugin_this_install_does_not_have(updates):
+    service = a_service(run_flow=ScriptedFlow())
+
+    with pytest.raises(NotInstalled) as excinfo:
+        await service.update("extras")
+
+    assert excinfo.value.plugin_id == "extras"
+    assert updates.calls == [], "nothing to fetch, so nothing was fetched"
+
+
+@pytest.mark.parametrize("source_kind", ["builtin", "local"])
+async def test_a_plugin_with_no_repository_behind_it_is_refused_unread(
+        updates, source_kind):
+    """A built-in pack updates with CodefyUI itself and a linked directory is
+    whatever is on its author's disk. Both are answered off the lockfile, so
+    neither costs a round trip."""
+    a_lockfile(extras=a_github_entry(source_kind=source_kind))
+    service = a_service(run_flow=ScriptedFlow())
+
+    with pytest.raises(NotUpdatable) as excinfo:
+        await service.update("extras")
+
+    assert excinfo.value.source_kind == source_kind
+    assert updates.calls == []
+
+
+async def test_the_commit_that_is_installed_is_nothing_to_do(updates):
+    """The ref still points at the commit on disk. Nothing is fetched,
+    nothing is asked, and no inspection is stored -- an id nobody can install
+    from is an id nobody needs."""
+    flow = ScriptedFlow()
+    service = a_service(run_flow=flow)
+    a_lockfile(extras=a_github_entry(sha=SHA))
+    updates.answer("extras", an_inspection(
+        mode="update", sha=SHA, up_to_date=True,
+        installed=installed_record(sha=SHA)))
+
+    outcome = await service.update("extras")
+
+    assert outcome.kind == "up_to_date"
+    assert outcome.sha == SHA
+    assert outcome.inspection is None and outcome.job is None
+    assert service.current_job() is None
+    assert not flow.started.is_set()
+
+
+async def test_an_update_the_previous_grant_covers_starts_a_job(updates):
+    """The ordinary update: a new commit asking for nothing the user has not
+    already agreed to. One click, one job -- and the job REPLACES what is on
+    disk, which is what pressing Update meant and what ``force`` on the plan
+    carries down to the flow."""
+    flow = ScriptedFlow().script()
+    service = a_service(run_flow=flow)
+    a_lockfile(extras=a_github_entry(capabilities=["network"],
+                                     trusted_modules=["requests"]))
+    updates.answer("extras", an_inspection(
+        mode="update", sha=SHA,
+        capabilities=("network",), allowed_modules=("requests",),
+        installed=installed_record(capabilities=("network",),
+                                   trusted_modules=("requests",),
+                                   sha="b" * 40)))
+
+    outcome = await service.update("extras")
+
+    assert outcome.kind == "job"
+    assert outcome.inspection is None
+    assert updates.calls == ["extras"]
+    events, status = await drain(service, outcome.job.job_id)
+    assert status == "done"
+    assert types_of(events)[0] == "job_started"
+    assert events[0]["mode"] == "update"
+    plan = flow.plans[0]
+    assert plan.mode == "update"
+    assert plan.force is True, (
+        "an update replaces the copy that is there; without this the install "
+        "is refused for a plugin the user asked to update")
+    # Granted by the PREVIOUS install, not by this request: nobody was asked
+    # anything, and the capability still travels down to the plan.
+    assert plan.granted_capabilities == ("network",)
+
+
+@pytest.mark.parametrize("grown, expected", [
+    ({"capabilities": ("network", "filesystem")}, "filesystem"),
+    ({"allowed_modules": ("requests", "os")}, "os"),
+])
+async def test_a_version_that_asks_for_more_stops_at_the_consent_screen(
+        updates, grown, expected):
+    """Capability creep across an update is the supply-chain shape a plugin
+    manager can actually catch, and the module list is the other half of the
+    same question. Either one comes back as the screen to show -- stored, so
+    the client can complete it by id."""
+    flow = ScriptedFlow()
+    service = a_service(run_flow=flow)
+    a_lockfile(extras=a_github_entry(capabilities=["network"],
+                                     trusted_modules=["requests"]))
+    fields: dict[str, Any] = {"capabilities": ("network",),
+                              "allowed_modules": ("requests",)}
+    fields.update(grown)
+    updates.answer("extras", an_inspection(
+        mode="update", sha=SHA,
+        installed=installed_record(capabilities=("network",),
+                                   trusted_modules=("requests",),
+                                   sha="b" * 40),
+        **fields))
+
+    outcome = await service.update("extras")
+
+    assert outcome.kind == "needs_consent"
+    assert outcome.job is None
+    assert not flow.started.is_set(), "nothing may be installed unasked"
+    assert service.current_job() is None
+    stored = outcome.inspection
+    assert service.get_inspection(stored.inspection_id) is stored
+    assert expected in (stored.inspection.capabilities
+                        + stored.inspection.allowed_modules)
+
+
+async def test_the_stored_update_installs_without_being_forced_again(updates):
+    """The second turn of the conversation ``update`` began. The client sends
+    the id and the answers to what it was asked -- and NOT a force: replacing
+    the copy on disk is what pressing Update already meant, and the client
+    only ever sends an id, so the decision travels on the record the server
+    kept rather than on the wire."""
+    flow = ScriptedFlow().script()
+    service = a_service(run_flow=flow)
+    a_lockfile(extras=a_github_entry(capabilities=["network"]))
+    updates.answer("extras", an_inspection(
+        mode="update", sha=SHA, capabilities=("network", "filesystem"),
+        installed=installed_record(capabilities=("network",), sha="b" * 40)))
+    outcome = await service.update("extras")
+    assert outcome.kind == "needs_consent"
+
+    job = await service.submit_install(
+        outcome.inspection.inspection_id,
+        accept_capabilities=["network", "filesystem"])
+
+    assert job.mode == "update"
+    _, status = await drain(service, job.job_id)
+    assert status == "done"
+    assert flow.plans[0].force is True
+    assert flow.plans[0].granted_capabilities == ("network", "filesystem")
+
+
+async def test_an_update_waits_for_the_install_that_is_running(sources,
+                                                               updates):
+    """Wider than the lifecycle routes' guard, and deliberately: a delete
+    waits only for THAT plugin's job, because two plugins are two
+    directories -- but only one install may run at a time, so an update of
+    anything waits for all of them. Refused before the network, because the
+    round trip would end at this same refusal."""
+    flow = ScriptedFlow()
+    service = a_service(run_flow=flow)
+    a_lockfile(extras=a_github_entry())
+    other_id = await remembered(service, sources, an_inspection(
+        source="bob/other", plugin_id="other"))
+    running = await service.submit_install(other_id)
+    await wait_started(flow)
+
+    with pytest.raises(PluginBusy) as excinfo:
+        await service.update("extras")
+
+    assert excinfo.value.job_id == running.job_id
+    assert excinfo.value.reason is None
+    assert updates.calls == []
+
+    flow.finish()
+    await drain(service, running.job_id)
+
+
+async def test_an_update_waits_for_the_package_center_too(updates):
+    """The same interpreter and the same site-packages: an update installs
+    Python packages exactly as a fresh install does."""
+    service = a_service(run_flow=ScriptedFlow(),
+                        busy_elsewhere=lambda: "pack-job-1")
+    a_lockfile(extras=a_github_entry())
+
+    with pytest.raises(PluginBusy) as excinfo:
+        await service.update("extras")
+
+    assert excinfo.value.job_id == "pack-job-1"
+    assert excinfo.value.reason == "pack_install_running"
+    assert "pack install" in str(excinfo.value)
+    assert updates.calls == []
+
+
+async def test_an_update_takes_the_same_slot_as_an_inspection(sources,
+                                                              updates):
+    """One read at a time, whichever route asked for it: an update IS an
+    inspection, of a source the server looked up instead of the user."""
+    service = a_service(run_flow=ScriptedFlow())
+    a_lockfile(extras=a_github_entry())
+    sources.answer(SOURCE, an_inspection())
+    sources.blocked.set()
+    reading = asyncio.create_task(service.inspect(SOURCE))
+    while not sources.entered.is_set():
+        await asyncio.sleep(0.01)
+
+    with pytest.raises(InspectBusy):
+        await service.update("extras")
+
+    sources.blocked.clear()
+    await reading
+    assert updates.calls == []
+
+
+async def test_a_repository_that_cannot_be_read_travels_out_untranslated(
+        updates):
+    """The route maps these; the service must not turn one into a job."""
+    service = a_service(run_flow=ScriptedFlow())
+    a_lockfile(extras=a_github_entry())
+    updates.answer("extras", GitHubError("no such repository", status=404))
+
+    with pytest.raises(GitHubError) as excinfo:
+        await service.update("extras")
+
+    assert excinfo.value.status == 404
+    assert service.current_job() is None
 
 
 # ── the job itself ────────────────────────────────────────────────────────

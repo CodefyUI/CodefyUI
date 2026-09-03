@@ -19,6 +19,12 @@ What is HERE is everything the runner does not know:
   describes a branch that has moved on, and there are at most
   :data:`MAX_INSPECTIONS` of them because each one holds a whole manifest
   and nothing ever asks the server to forget one.
+* **Updates, as one call.** :meth:`PluginService.update` is those two turns
+  collapsed for a plugin that is already here: it reads the repository the
+  lockfile recorded and answers with one of three things -- there is nothing
+  to fetch, a job the grants from last time already cover, or the consent
+  screen for what this version asks for BEYOND them. Only the last one is a
+  question, which is what keeps an ordinary update one click.
 * **Consent enforcement, BEFORE a job exists.** A refusal that arrives as a
   failed job is a refusal the user has to go and read events about; a
   refusal raised here is the answer to their own request, and nothing has
@@ -52,7 +58,7 @@ from collections import OrderedDict
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from typing import Any
+from typing import Any, Literal
 
 from app.core import plugin_loader
 from app.core.node_registry import registry
@@ -102,6 +108,7 @@ __all__ = [
     "PluginService",
     "StoredInspection",
     "UnknownJob",
+    "UpdateOutcome",
 ]
 
 #: How long an inspection is worth installing from. Fifteen minutes is
@@ -148,6 +155,14 @@ class StoredInspection:
     inspection: Inspection
     expires_at: str
     deadline: float
+    #: Whether installing from THIS record replaces what is on disk without
+    #: being asked again. Only :meth:`PluginService.update` sets it, and it
+    #: is the offer the user already accepted by pressing Update. It lives on
+    #: the stored record rather than on the inspection because
+    #: ``mode == "update"`` is true of every inspection of an installed
+    #: plugin -- a plain ``/inspect`` of one included, and that one must
+    #: still be answered with "you already have this".
+    force: bool = False
 
 
 @dataclass(kw_only=True)
@@ -174,9 +189,56 @@ class PluginJob(Job):
     restart_command: str | None = None
 
 
+@dataclass(frozen=True)
+class UpdateOutcome:
+    """What asking to update one plugin came to. Three shapes, one value.
+
+    ``kind`` says which, and exactly one of the fields beside it is
+    populated: ``up_to_date`` carries the ``sha`` that is both installed and
+    current, ``needs_consent`` carries the stored ``inspection`` the caller
+    must show and can then install by id, and ``job`` carries the install
+    that is already running.
+
+    One value rather than three methods because the caller cannot know which
+    it will get -- that is the answer, not the question -- and a union it
+    branches on once is a route handler that cannot forget a case.
+    """
+
+    kind: Literal["up_to_date", "needs_consent", "job"]
+    sha: str | None = None
+    inspection: StoredInspection | None = None
+    job: PluginJob | None = None
+
+
 def _expires_at(ttl_s: float) -> str:
     """The wall-clock instant *ttl_s* from now, ISO-8601 UTC."""
     return (datetime.now(timezone.utc) + timedelta(seconds=ttl_s)).isoformat()
+
+
+def _inspect_busy() -> InspectBusy:
+    """The refusal when a source is already being read.
+
+    A factory rather than the sentence written twice: :meth:`inspect` and
+    :meth:`update` both take the same slot, and a caller that told them apart
+    by their prose would be reading the wrong difference.
+    """
+    return InspectBusy("Another source is being read right now.",
+                       hint="Try again in a moment.")
+
+
+def _pack_install_busy(job_id: str) -> PluginBusy:
+    """The refusal when the Package Center's install is the one in the way.
+
+    Outside the class and returning the exception rather than raising it, so
+    that :meth:`submit_install` can raise it inside the stretch that must not
+    ``await`` -- see the comment there -- while :meth:`update` raises the same
+    refusal a network round trip earlier.
+    """
+    return PluginBusy(
+        job_id, reason=PACK_INSTALL_RUNNING,
+        message=f"a pack install is already running (job {job_id}); it "
+                f"installs into the same interpreter, so this has to wait "
+                f"for it")
 
 
 class PluginService:
@@ -332,9 +394,7 @@ class PluginService:
             that validated away.
         """
         if self._inspecting.locked():
-            raise InspectBusy(
-                "Another source is being read right now.",
-                hint="Try again in a moment.")
+            raise _inspect_busy()
         async with self._inspecting:
             inspection = await asyncio.to_thread(_read_source, source)
         return self._remember(inspection)
@@ -355,8 +415,14 @@ class PluginService:
         self._inspections.move_to_end(inspection_id)
         return stored
 
-    def _remember(self, inspection: Inspection) -> StoredInspection:
-        """Store *inspection* under a fresh id, evicting what has to go."""
+    def _remember(self, inspection: Inspection, *,
+                  force: bool = False) -> StoredInspection:
+        """Store *inspection* under a fresh id, evicting what has to go.
+
+        *force* marks a record an install may replace what is on disk from --
+        see :class:`StoredInspection`. It is a keyword this class sets and
+        never a value that arrives from outside.
+        """
         self._drop_expired()
         while len(self._inspections) >= self._max_inspections:
             self._inspections.popitem(last=False)
@@ -367,7 +433,8 @@ class PluginService:
             inspection_id=secrets.token_hex(16),
             inspection=inspection,
             expires_at=_expires_at(self._inspection_ttl_s),
-            deadline=monotonic() + self._inspection_ttl_s)
+            deadline=monotonic() + self._inspection_ttl_s,
+            force=force)
         self._inspections[stored.inspection_id] = stored
         return stored
 
@@ -409,7 +476,8 @@ class PluginService:
         :raises InspectionExpired: no such inspection, or it has timed out.
         :raises AlreadyInstalled: the plugin is here and *force* was not
             given. Both kinds, and updates too: replacing what is on disk is
-            an offer for the user to accept, not a default.
+            an offer for the user to accept, not a default -- an inspection
+            stored by :meth:`update` carries that acceptance with it.
         :raises ConsentRequired: a capability the manifest asks for is not in
             *accept_capabilities* (nor already granted by a previous install).
         :raises TrustAuthorRequired: the manifest declares ``allowed_modules``
@@ -420,6 +488,15 @@ class PluginService:
         """
         stored = self.get_inspection(inspection_id)
         inspection = stored.inspection
+        # An update brings its own force. :meth:`update` stores the
+        # inspection it read, and pressing Update IS the offer to replace
+        # what is on disk -- so the client finishes that conversation with
+        # the id and its consent answers, and is not refused for a decision
+        # it has already made. Read off the STORED record and never off the
+        # inspection: ``mode == "update"`` is true of every inspection of an
+        # installed plugin, a plain ``/inspect`` of one included, and that
+        # one must still be answered with "you already have this".
+        force = force or stored.force
 
         # Asked HERE and not only in the flow, which cannot answer it in
         # time: by then a job exists, and for a repository plugin the flow's
@@ -456,11 +533,7 @@ class PluginService:
         # ── no ``await`` from here to the claim ───────────────────────────
         other = self._busy_elsewhere()
         if other is not None:
-            raise PluginBusy(
-                other, reason=PACK_INSTALL_RUNNING,
-                message=f"a pack install is already running (job {other}); "
-                        f"it installs into the same interpreter, so this has "
-                        f"to wait for it")
+            raise _pack_install_busy(other)
         running = self.current_job()
         if running is not None and not running.terminal:
             # The runner refuses a second claim too, in its own words. This
@@ -487,6 +560,94 @@ class PluginService:
         self._runner.start(job, self._flow_work(job, plan),
                            after_work=self._reload_step)
         return job
+
+    async def update(self, plugin_id: str) -> UpdateOutcome:
+        """Fetch what *plugin_id*'s own repository has now. Three answers.
+
+        The two turns of an install collapsed into one call, because for a
+        plugin that is already here the server knows both halves: WHICH
+        repository (the lockfile recorded it) and WHAT was agreed to last
+        time. So the ordinary update -- a new commit asking for nothing new
+        -- is a job started from one click, and the consent screen comes back
+        only for what this version asks for BEYOND the previous grant. That
+        comparison is the whole reason an update is worth inspecting:
+        capability creep between the version somebody consented to and the
+        one about to replace it is the supply-chain shape a plugin manager
+        can actually catch.
+
+        The order of the checks is what the answers are made of:
+
+        1. the lockfile, on the loop -- "you do not have that" and "a
+           built-in pack updates with CodefyUI" are true without a network
+           and must not have to queue behind somebody else's read;
+        2. the install slot, still before the network -- this is a request to
+           START a job, and the service runs one at a time across both
+           installers, so reading GitHub for a job that cannot be claimed
+           spends a round trip to reach the same refusal;
+        3. the inspection itself, one at a time and off the loop, exactly as
+           :meth:`inspect` does it;
+        4. consent, which is :meth:`submit_install`'s to enforce -- asked
+           through it rather than re-implemented here, so an update and an
+           install cannot disagree about what counts as already granted.
+
+        A refusal at (4) leaves the inspection STORED, which is what makes
+        the consent screen it hands back completable: the client answers with
+        that id, and the replacement it already agreed to by pressing Update
+        travels on the stored record rather than on the wire.
+
+        :raises NotInstalled: no lockfile entry under that id.
+        :raises NotUpdatable: it is installed, from something with no
+            repository to re-fetch (a built-in pack, a linked directory).
+        :raises PluginBusy: an install is already running, here or in the
+            Package Center.
+        :raises InspectBusy: another source is being read right now.
+        :raises GitHubError: the repository could not be read.
+        :raises PluginInstallError: what the repository now declares cannot
+            be installed under that id -- a reserved id, a manifest this
+            build will not take.
+        """
+        lockfile = plugin_loader.load_lockfile()
+        # Raises before anything else happens. The entry itself is not needed
+        # here -- ``inspect_installed`` reads it again on the thread, from the
+        # same lockfile -- but its VERDICT is, and it is free.
+        inspect_module.updatable_entry(plugin_id, lockfile=lockfile)
+
+        running = self.current_job_id()
+        if running is not None:
+            # The one refusal that is deliberately wider than the lifecycle
+            # routes': a delete or a toggle only waits for THIS plugin's job,
+            # because two plugins are two directories -- but only one install
+            # can run at a time, so an update of anything waits for all of
+            # them. ``submit_install`` asks again at the claim, which is
+            # where "one at a time" is actually made true.
+            raise PluginBusy(running)
+        other = self._busy_elsewhere()
+        if other is not None:
+            raise _pack_install_busy(other)
+
+        if self._inspecting.locked():
+            raise _inspect_busy()
+        async with self._inspecting:
+            inspection = await asyncio.to_thread(
+                _read_installed, plugin_id, lockfile)
+
+        if inspection.up_to_date:
+            # The commit on disk is the commit the ref still points at. There
+            # is nothing to consent to and nothing to fetch, so no inspection
+            # is stored: an id nobody can install from is an id nobody needs.
+            return UpdateOutcome(kind="up_to_date", sha=inspection.sha)
+
+        stored = self._remember(inspection, force=True)
+        try:
+            job = await self.submit_install(stored.inspection_id)
+        except ConsentRequired:
+            # Capability creep, or a module list that grew: the one thing an
+            # update has to ask about. ``TrustAuthorRequired`` is a
+            # ``ConsentRequired`` and arrives here too -- which half of
+            # consent is outstanding is a question for whoever draws the
+            # screen, and both are answered by showing this inspection.
+            return UpdateOutcome(kind="needs_consent", inspection=stored)
+        return UpdateOutcome(kind="job", job=job)
 
     # ── running ───────────────────────────────────────────────────────────
 
@@ -645,3 +806,15 @@ def _read_source(source: str) -> Inspection:
     """
     return inspect_module.inspect_source(
         source, lockfile=plugin_loader.load_lockfile())
+
+
+def _read_installed(plugin_id: str, lockfile: dict[str, Any]) -> Inspection:
+    """Read what *plugin_id*'s recorded repository has now. BLOCKING.
+
+    Beside :func:`_read_source` and reached the same way, so a test can
+    answer an update without a network. The lockfile is passed IN rather than
+    loaded here: :meth:`PluginService.update` has already read it to decide
+    whether this plugin has a repository at all, and reading it twice would
+    let the two halves of one answer be about two different files.
+    """
+    return inspect_module.inspect_installed(plugin_id, lockfile=lockfile)
