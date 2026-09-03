@@ -632,7 +632,9 @@ def _stage(
 
     A rename that fails puts the backup straight back, because the window
     between the two renames is the only moment in an install when the user
-    has no plugin at all. Whatever goes wrong -- including halfway through
+    has no plugin at all -- and when putting it back fails too, the failure
+    names the directory it was left in, which is by then the only copy of
+    what was there. Whatever goes wrong -- including halfway through
     the copy -- the staging copy goes with it: a ``.staging`` directory
     nothing points at is invisible, permanent, and the same size as the
     plugin.
@@ -668,11 +670,26 @@ def _stage(
         try:
             staging.rename(plugin_dir)
         except OSError as exc:
+            detail = str(exc)
             if backup is not None:
-                backup.rename(plugin_dir)
+                try:
+                    backup.rename(plugin_dir)
+                except OSError as restore_exc:
+                    # The usual Windows cause -- something holds the
+                    # destination open -- breaks BOTH renames, so the restore
+                    # is the failure most likely to happen here rather than
+                    # the one that never does. Unguarded, its raw OSError
+                    # replaced the translated one on the way out and nobody
+                    # was told that the previous install is still on the disk
+                    # under another name, which is the only fact that makes
+                    # this recoverable by hand.
+                    detail = (
+                        f"{exc}; the previous install could not be put back "
+                        f"({restore_exc}) and is at {backup.name}"
+                    )
             raise PluginInstallError(
                 f"Could not put {plan.plugin_id} in place.",
-                hint=str(exc),
+                hint=detail,
             ) from exc
     except BaseException:
         shutil.rmtree(staging, ignore_errors=True)

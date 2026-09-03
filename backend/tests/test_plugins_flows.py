@@ -584,6 +584,44 @@ def test_a_rename_that_fails_puts_the_previous_install_back(
     assert list((user_root / flows.STAGING_DIRNAME).iterdir()) == []
 
 
+def test_a_restore_that_fails_too_says_where_the_previous_install_is(
+    monkeypatch, user_root, fake_github
+):
+    """One Windows cause -- something holding the destination open -- breaks
+    both renames, so the restore is the failure most likely to happen here.
+    Unguarded, its raw OSError replaced the translated one and nobody was
+    told that the previous install is still on the disk under another name."""
+    installed = user_root / "extras"
+    installed.mkdir()
+    (installed / "marker.txt").write_text("the copy that was here", encoding="utf-8")
+
+    real_rename = Path.rename
+
+    def _rename(self, target):
+        if self.parent.name == flows.STAGING_DIRNAME:
+            raise OSError(13, "used by another process")
+        if self.name.startswith("extras.old-"):
+            raise OSError(13, "and the backup will not move back either")
+        return real_rename(self, target)
+
+    monkeypatch.setattr(Path, "rename", _rename)
+    fake_github({"cdui.plugin.toml": PLAIN})
+
+    with pytest.raises(PluginInstallError) as excinfo:
+        _install(_github_plan(force=True))
+
+    hint = excinfo.value.hint or ""
+    assert "used by another process" in hint, "the failure that started it"
+    assert "and the backup will not move back either" in hint
+    # The one fact that makes this recoverable by hand.
+    backups = [p for p in user_root.glob("extras.old-*")]
+    assert len(backups) == 1
+    assert backups[0].name in hint
+    assert (backups[0] / "marker.txt").read_text(encoding="utf-8") == (
+        "the copy that was here")
+    assert list((user_root / flows.STAGING_DIRNAME).iterdir()) == []
+
+
 def test_a_previous_install_that_will_not_move_aside_is_a_plugin_failure(
     monkeypatch, user_root, fake_github
 ):
