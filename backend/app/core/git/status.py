@@ -13,11 +13,13 @@ Why this format, and why these rules:
   rename from a copy WITH its similarity score, and marks submodules. It is
   also the format git documents as stable for scripts, which matters for a
   parser that ships to users who upgrade git without asking us.
-* **NUL, not newline.** A filename may legally contain a newline, and under
-  ``-z`` git stops quoting entirely (with ``core.quotepath=false`` it also
-  stops octal-escaping non-ASCII), so a CJK path arrives as itself. That
-  means the ONLY safe record separator is the NUL, and splitting this input
-  into "lines" would be a bug waiting for the first odd filename.
+* **NUL, not newline.** A filename may legally contain a newline. ``-z`` is
+  what makes that safe: git stops quoting and escaping paths altogether --
+  a CJK path arrives as its own bytes -- and terminates every record with a
+  NUL instead. Which means the NUL is also the only safe thing to split on,
+  and reading this input as "lines" would be a bug waiting for the first odd
+  filename. (The runner's ``core.quotepath=false`` says the same thing for
+  the commands that are not ``-z``.)
 * **The first N fields, then the rest is the path.** Each record has a fixed
   number of space-separated fields before its path, so the split is
   ``split(" ", N)`` -- single-space, with a maximum -- and never a generic
@@ -140,11 +142,11 @@ def parse_porcelain_v2(
     """Parse one ``--porcelain=v2 --branch --show-stash -z`` payload.
 
     *data* is git's raw stdout. Each NUL-separated token is decoded on its
-    own as UTF-8 with ``errors="replace"``: with ``core.quotepath=false``
-    git prints the bytes of a filename exactly as the filesystem holds them,
-    and on Windows or a repository made on another machine those bytes are
-    not always valid UTF-8. One unreadable name must cost that name a few
-    replacement characters, not cost the user their whole status panel.
+    own as UTF-8 with ``errors="replace"``: under ``-z`` git prints the
+    bytes of a filename exactly as the filesystem holds them, and on Windows
+    or in a repository made on another machine those bytes are not always
+    valid UTF-8. One unreadable name must cost that name a few replacement
+    characters, not cost the user their whole status panel.
 
     The two in-progress flags are passed straight through; see the module
     docstring for why they are not read here.

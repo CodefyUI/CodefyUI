@@ -12,15 +12,14 @@ model:
 * **Responses default to the empty answer; requests do not.** Every field of
   a response that can be absent has the default that means "git did not
   say" -- None, ``False``, ``0``, an empty list -- so a producer never has to
-  spell out an absence, and ``GitStatus()`` is exactly the status of a clean
-  repository. What a response exists to CARRY stays required (a patch, a
+  spell out an absence, and an unfilled ``GitStatus()`` claims nothing about
+  the repository. What a response exists to CARRY stays required (a patch, a
   file's text and size, a commit's sha), so it cannot be left out by
-  accident. Requests are the opposite again: they carry ``extra="forbid"``,
-  so a body with a key nobody defined is a 422 rather than a silently
-  ignored instruction.
-  That is the same reasoning ``routes_packs.InstallRequest`` gives -- the
-  schema, not the handler, is what makes "the client cannot smuggle in an
-  argument" a guarantee.
+  accident. Requests are the opposite: they carry ``extra="forbid"``, so a
+  body with a key nobody defined is a 422 rather than a silently ignored
+  instruction -- the same reasoning ``routes_packs.InstallRequest`` gives,
+  where the schema rather than the handler is what makes "the client cannot
+  smuggle in an argument" a guarantee.
 * **``kind`` and ``xy`` are both kept, and they are not redundant.** ``kind``
   is the summary the UI draws an icon from; ``xy`` is git's own two letters,
   which say strictly more. ``DU`` and ``UU`` are both ``kind="conflict"``
@@ -112,9 +111,10 @@ class GitFile(BaseModel):
 class GitStatus(BaseModel):
     """Everything one ``git status --porcelain=v2 --branch`` call said.
 
-    Constructed with no arguments this is the status of a clean repository
-    on an unborn branch, which is the honest default: every field means
-    "git did not mention it".
+    Constructed with no arguments, every field means "git did not mention
+    it": no branch, no commit, nothing changed. That is the honest default
+    rather than a pretend one -- a status object nobody filled in claims
+    nothing about the repository.
     """
 
     #: The current branch, or ``None`` when HEAD is detached.
