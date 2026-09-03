@@ -381,6 +381,13 @@ def _in_progress(root: Path) -> tuple[bool, bool]:
 #: this tab offers would be about the wrong one.
 GITLINK_MODE = "160000"
 
+#: What to tell somebody who named one. ONE sentence for every refusal in
+#: every module -- a diff, a file read and a discard all mean the same thing
+#: by it -- because two wordings of one rule are two rules as far as the
+#: person reading them is concerned.
+SUBMODULE_HINT = ("submodules are not managed here; open that repository "
+                  "instead")
+
 
 def index_entries(root: Path, paths: Sequence[str]) -> list[tuple[str, str]]:
     """``(mode, path)`` for every index entry matching *paths*.
@@ -550,6 +557,22 @@ def resolve_commit(root: Path, sha: str) -> str:
         raise GitError("not_found", 404, f"no commit {clean} in this repository",
                        hint="the history may have been rewritten; reload the log")
     return full
+
+
+def commit_trees(root: Path, sha: str) -> tuple[str, str | None, list[str]]:
+    """The commit *sha* names, its first parent, and the trees to diff.
+
+    One owner for a rule that was written out twice and has to mean the same
+    thing in both places: a commit is compared with its FIRST PARENT, and a
+    root commit -- which has none -- with the empty tree, which is what git
+    spells ``--root``. ``log.commit_files`` and ``diff``'s commit scope both
+    need all three values, and a helper that returned only the trees would
+    make each of them resolve the commit a second time.
+    """
+    commit = resolve_commit(root, sha)
+    parent = first_parent(root, commit)
+    trees = [parent, commit] if parent is not None else ["--root", commit]
+    return commit, parent, trees
 
 
 def first_parent(root: Path, commit: str) -> str | None:

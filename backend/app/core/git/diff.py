@@ -44,11 +44,11 @@ from .models import DiffResponse, FileAtRef, GitStatus
 from .paths import is_env_secret_path, validate_rel_path, validate_sha
 from .repo import (
     GITLINK_MODE,
-    first_parent,
+    SUBMODULE_HINT,
+    commit_trees,
     index_entries,
     path_redirects,
     read_status,
-    resolve_commit,
 )
 from .runner import T_READ, run_git
 
@@ -96,10 +96,6 @@ ONE_FILE_HINT = "diff one file at a time"
 #: What to tell somebody whose path goes through a link. The tab reads files
 #: of the project, and a link is a path to somewhere else.
 LINK_HINT = "symbolic links are not served"
-
-#: The same sentence ``discard`` uses, so one refusal is one answer.
-SUBMODULE_HINT = ("submodules are not managed here; open that repository "
-                  "instead")
 
 #: ``cat-file`` on the stage-0 entry of an UNMERGED path: "fatal: path
 #: 'a.txt' is in the index, but not at stage 0" (measured on git 2.53).
@@ -249,10 +245,8 @@ def _plan(root: Path, path: str, scope: str, sha: str | None) -> _Plan:
     # ``diff-tree`` to one parent (git 2.53 prints one patch per parent), so
     # the tab would show the same file twice with two different diffs. A
     # root commit has no parent and is diffed against the empty tree.
-    commit = resolve_commit(root, sha)
-    parent = first_parent(root, commit)
+    commit, parent, trees = commit_trees(root, sha)
     _require_one_blob(root, path, commit, parent)
-    trees = [parent, commit] if parent is not None else ["--root", commit]
     return _Plan(["diff-tree", "-M", "-p", "--no-color", "--no-ext-diff",
                   "--no-commit-id", *trees, "--", path],
                  f"{commit}^" if parent is not None else None,

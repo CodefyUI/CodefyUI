@@ -474,8 +474,7 @@ def discard_paths(root: Path, paths: Sequence[str] | None = None
     if submodules:
         raise GitError("invalid_path", 400,
                        f"{submodules[0]} is a submodule",
-                       hint="submodules are not managed here; open that "
-                            "repository to discard its changes")
+                       hint=repo.SUBMODULE_HINT)
 
     status = repo.read_status(root)
     tracked = {entry.path for entry in status.unstaged}

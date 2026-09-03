@@ -31,7 +31,7 @@ from pathlib import Path
 
 from .errors import GitError
 from .models import CommitInfo, FileKind, GitFile, LogResponse
-from .repo import first_parent, resolve_commit
+from .repo import commit_trees
 from .runner import T_READ, run_git
 from .status import kind_from_letter
 
@@ -58,7 +58,7 @@ FIELD_SEP = "\x1f"
 #:
 #: ``%x1f`` -- NOT ``%1f``, which git prints literally (measured on 2.53) --
 #: is a literal byte in git's pretty format.
-LOG_FORMAT = ("%H%x1f%h%x1f%P%x1f%an%x1f%ae%x1f%at%x1f%D%x1f%s%x1f%b")
+LOG_FORMAT = "%H%x1f%h%x1f%P%x1f%an%x1f%ae%x1f%at%x1f%D%x1f%s%x1f%b"
 
 #: How many fields the format above produces.
 LOG_FIELDS = 9
@@ -170,9 +170,7 @@ def commit_files(root: Path, sha: str) -> list[GitFile]:
     copy" -- so the frontend can read a commit's file the same way it reads
     a status entry.
     """
-    commit = resolve_commit(root, sha)
-    parent = first_parent(root, commit)
-    trees = [parent, commit] if parent is not None else ["--root", commit]
+    _, _, trees = commit_trees(root, sha)
     result = run_git(["diff-tree", "-r", "-M", "-z", "--name-status",
                       "--no-commit-id", *trees, "--"],
                      cwd=root, timeout=T_READ, read_only=True)
