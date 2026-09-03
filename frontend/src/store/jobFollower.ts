@@ -155,6 +155,12 @@ function sleep(ms: number): Promise<void> {
  * write. EVERY generic field is written back afterwards from this function's
  * own locals, so a careless callback cannot corrupt the log, the cursor, or
  * the identity the follower patches this job by.
+ *
+ * The other half of that: the generic fields a callback READS off the draft
+ * (`log`, `steps`, `items`, `cursor`, `status`, `error`) are the values as of
+ * ENTRY to this fold -- the draft is `{...job}`, captured before the loop --
+ * not the ones the events in this page are building. A callback that needs
+ * what an earlier event in the SAME page did has to track it itself.
  */
 export function reduceJobEvents<J extends Job>(
   job: J,
@@ -330,6 +336,10 @@ export interface JobFollowerOptions<J extends Job> {
    * bound — and passes it here, so the panel's exported reducer and the one
    * the follower runs are the same function rather than two wirings that can
    * drift.
+   *
+   * What the bound `onExtra` sees of the generic fields is `reduceJobEvents`'s
+   * to document: they are the values as of entry to the fold, not the ones
+   * the page being folded is building.
    */
   reduce?: (job: J, page: JobEventsPage) => J;
   waitS?: number;
