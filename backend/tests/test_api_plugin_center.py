@@ -40,6 +40,7 @@ from httpx import ASGITransport, AsyncClient
 
 from app.api import routes_plugins
 from app.config import settings
+from app.core.auth import init_allowed_hosts
 from app.core import plugin_loader
 from app.core.node_registry import registry
 from app.core.plugins import listing
@@ -733,6 +734,11 @@ async def test_the_lifespan_wires_the_two_installers_to_each_other(
     # The real one clears the root logger's handlers, which is not something
     # a test in the middle of a suite should do to everybody else.
     monkeypatch.setattr(main, "setup_logging", lambda **kwargs: None)
+    # No project: the lifespan would otherwise load the developer's own
+    # project .env INTO os.environ (a raw assignment monkeypatch cannot
+    # undo) and warn about its plugin pins. ``test_main_lifespan.py`` gives
+    # itself a throwaway project for that; this test is not about it.
+    monkeypatch.setattr(settings, "PROJECT_DIR", None)
 
     async with main.lifespan(app):
         plugins, packs = app.state.plugin_service, app.state.pack_service
@@ -748,6 +754,10 @@ async def test_the_lifespan_wires_the_two_installers_to_each_other(
 
     assert app.state.plugin_service is None
     assert app.state.pack_service is None
+    # The lifespan re-ran init_allowed_hosts with the CORS origins added --
+    # harmless, but it is process-wide state, so the conftest-seeded
+    # whitelist is put back for whoever runs next.
+    init_allowed_hosts(settings.HOST, settings.PORT)
 
 
 # -- the shared reload -----------------------------------------------------

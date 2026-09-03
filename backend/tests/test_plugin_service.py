@@ -14,11 +14,13 @@ things the runner underneath it deliberately does not:
 * **one install at a time across BOTH installers**, and the registry reload
   on the loop -- after the flow's thread, before ``job_done``.
 
-Nothing here installs anything, and nothing here reaches the network: every
-test injects its own flow through ``PluginService(run_flow=...)`` (driven
-step by step from the test thread -- see :class:`ScriptedFlow`), its own
-reload through ``reload=``, and its own source table over
-``inspect.inspect_source``.
+Nothing here installs anything, reaches the network, or rebuilds the node
+registry: every service is built through :func:`a_service`, which injects a
+flow driven step by step from the test thread (:class:`ScriptedFlow`) and a
+fake reload, over a source table monkeypatched onto ``inspect.inspect_source``.
+The four tests that are ABOUT the reload pass their own ``reload=`` and say
+so at the construction site; :func:`no_real_rediscovery` is what keeps that a
+rule rather than a habit.
 """
 
 from __future__ import annotations
@@ -65,6 +67,36 @@ def isolated_user_root(tmp_path, monkeypatch):
     """
     monkeypatch.setenv("CODEFYUI_USER_DATA_DIR", str(tmp_path))
     return tmp_path / "plugins"
+
+
+@pytest.fixture(autouse=True)
+def no_real_rediscovery(monkeypatch):
+    """Nothing here may rebuild the process-wide node registry.
+
+    ``PluginService``'s default ``reload`` is the real ``rediscover_now``,
+    which CLEARS the registry every other test in the session shares (the
+    suite survives that only because conftest repairs it before each test)
+    and bumps the generation the editor polls. Every service here injects a
+    fake instead; this is what turns "we remembered to" into a rule, and it
+    fails at the call rather than three files later.
+    """
+
+    def refuse(*args, **kwargs):
+        raise AssertionError(
+            "this test ran a real registry re-discovery -- build the service "
+            "through a_service(), or pass your own reload=")
+
+    monkeypatch.setattr(plugin_loader, "rediscover_all", refuse)
+
+
+def a_service(**kwargs: Any) -> PluginService:
+    """A service whose reload is a stub, for every test not about reloading.
+
+    The four that ARE about it pass their own ``reload=`` at the
+    construction site, where a reader of that test can see it.
+    """
+    kwargs.setdefault("reload", lambda: {"total": 0})
+    return PluginService(**kwargs)
 
 
 def an_inspection(**overrides: Any) -> Inspection:
@@ -263,7 +295,7 @@ async def remembered(service: PluginService, sources: Sources,
 
 
 async def test_an_inspection_is_stored_under_an_id_with_an_expiry(sources):
-    service = PluginService(run_flow=ScriptedFlow())
+    service = a_service(run_flow=ScriptedFlow())
     sources.answer(SOURCE, an_inspection())
 
     stored = await service.inspect(SOURCE)
@@ -282,7 +314,7 @@ async def test_an_inspection_is_stored_under_an_id_with_an_expiry(sources):
 async def test_a_second_inspection_while_one_is_running_is_refused(sources):
     """Refused, not queued: an answer that arrives after the person has
     typed something else is an answer to a question nobody is asking."""
-    service = PluginService(run_flow=ScriptedFlow())
+    service = a_service(run_flow=ScriptedFlow())
     sources.answer(SOURCE, an_inspection())
     sources.answer("bob/other", an_inspection(source="bob/other"))
     sources.blocked.set()
@@ -305,7 +337,7 @@ async def test_a_second_inspection_while_one_is_running_is_refused(sources):
 
 async def test_a_source_that_cannot_be_read_travels_out_untranslated(sources):
     """The route maps these; the service must not turn one into a job."""
-    service = PluginService(run_flow=ScriptedFlow())
+    service = a_service(run_flow=ScriptedFlow())
     sources.answer(SOURCE, GitHubError("no such repository", status=404))
 
     with pytest.raises(GitHubError) as excinfo:
@@ -318,7 +350,7 @@ async def test_an_inspection_that_timed_out_is_gone(sources, monkeypatch):
     """A consent screen left open overnight describes a branch that moved."""
     clock = [1000.0]
     monkeypatch.setattr(service_module, "monotonic", lambda: clock[0])
-    service = PluginService(run_flow=ScriptedFlow(), inspection_ttl_s=900.0)
+    service = a_service(run_flow=ScriptedFlow(), inspection_ttl_s=900.0)
     inspection_id = await remembered(service, sources, an_inspection())
 
     clock[0] += 899.0
@@ -331,7 +363,7 @@ async def test_an_inspection_that_timed_out_is_gone(sources, monkeypatch):
 
 
 async def test_the_oldest_inspection_goes_when_the_store_is_full(sources):
-    service = PluginService(run_flow=ScriptedFlow(), max_inspections=2)
+    service = a_service(run_flow=ScriptedFlow(), max_inspections=2)
     first = await remembered(service, sources, an_inspection(source="one"))
     second = await remembered(service, sources, an_inspection(source="two"))
     third = await remembered(service, sources, an_inspection(source="three"))
@@ -345,7 +377,7 @@ async def test_the_oldest_inspection_goes_when_the_store_is_full(sources):
 async def test_reading_an_inspection_keeps_it_alive(sources):
     """LRU and not FIFO: the consent screen somebody is still looking at is
     the last one that should be thrown away."""
-    service = PluginService(run_flow=ScriptedFlow(), max_inspections=2)
+    service = a_service(run_flow=ScriptedFlow(), max_inspections=2)
     first = await remembered(service, sources, an_inspection(source="one"))
     second = await remembered(service, sources, an_inspection(source="two"))
 
@@ -359,7 +391,7 @@ async def test_reading_an_inspection_keeps_it_alive(sources):
 
 
 async def test_an_id_nobody_ever_issued_reads_the_same_as_an_expired_one():
-    service = PluginService(run_flow=ScriptedFlow())
+    service = a_service(run_flow=ScriptedFlow())
     with pytest.raises(InspectionExpired):
         service.get_inspection("not-an-id")
 
@@ -369,7 +401,7 @@ async def test_an_id_nobody_ever_issued_reads_the_same_as_an_expired_one():
 
 async def test_a_capability_nobody_granted_refuses_before_any_job(sources):
     flow = ScriptedFlow()
-    service = PluginService(run_flow=flow)
+    service = a_service(run_flow=flow)
     inspection_id = await remembered(
         service, sources,
         an_inspection(capabilities=("network", "filesystem")))
@@ -397,7 +429,7 @@ async def test_a_capability_nobody_granted_refuses_before_any_job(sources):
 async def test_a_module_list_needs_the_author_trusted(sources):
     """The other half of consent, and it has a name of its own: the two are
     answered with different controls."""
-    service = PluginService(run_flow=ScriptedFlow())
+    service = a_service(run_flow=ScriptedFlow())
     inspection_id = await remembered(
         service, sources, an_inspection(allowed_modules=("subprocess", "os")))
 
@@ -415,7 +447,7 @@ async def test_a_module_list_needs_the_author_trusted(sources):
 async def test_what_a_previous_install_granted_is_not_asked_again(sources):
     """An update the user already answered for is not a second decision."""
     flow = ScriptedFlow().script()
-    service = PluginService(run_flow=flow)
+    service = a_service(run_flow=flow)
     inspection_id = await remembered(service, sources, an_inspection(
         mode="update",
         capabilities=("network",), allowed_modules=("subprocess",),
@@ -434,7 +466,7 @@ async def test_what_a_previous_install_granted_is_not_asked_again(sources):
 async def test_a_capability_that_grew_since_the_install_is_a_new_decision(
         sources):
     flow = ScriptedFlow()
-    service = PluginService(run_flow=flow)
+    service = a_service(run_flow=flow)
     inspection_id = await remembered(service, sources, an_inspection(
         mode="update", capabilities=("network", "filesystem"),
         capabilities_added=("filesystem",),
@@ -454,7 +486,7 @@ async def test_a_builtin_pack_is_not_asked_about_capabilities(sources):
     still RECORDED -- ``cdui plugin list`` answers "which of my plugins
     reaches the network" for every pack, wherever it came from."""
     flow = ScriptedFlow().script()
-    service = PluginService(run_flow=flow)
+    service = a_service(run_flow=flow)
     inspection_id = await remembered(
         service, sources,
         a_builtin_inspection(capabilities=("filesystem",),
@@ -475,7 +507,7 @@ async def test_a_plugin_that_is_already_here_is_an_offer_not_a_job(sources):
     something installed is an UPDATE, which the flow's own copy lets through.
     """
     flow = ScriptedFlow()
-    service = PluginService(run_flow=flow)
+    service = a_service(run_flow=flow)
     inspection_id = await remembered(service, sources, an_inspection(
         mode="update", installed=installed_record(sha="b" * 40)))
 
@@ -489,7 +521,8 @@ async def test_a_plugin_that_is_already_here_is_an_offer_not_a_job(sources):
 
 
 async def test_a_builtin_that_is_already_here_is_refused_the_same_way(sources):
-    service = PluginService(run_flow=ScriptedFlow())
+    flow = ScriptedFlow()
+    service = a_service(run_flow=flow)
     inspection_id = await remembered(service, sources, a_builtin_inspection(
         mode="update", installed=installed_record()))
 
@@ -497,10 +530,13 @@ async def test_a_builtin_that_is_already_here_is_refused_the_same_way(sources):
         await service.submit_install(inspection_id, accept_capabilities=None,
                                      trust_author=False, force=False)
 
+    assert service.current_job() is None
+    assert not flow.started.is_set()
+
 
 async def test_force_replaces_what_is_there(sources):
     flow = ScriptedFlow().script()
-    service = PluginService(run_flow=flow)
+    service = a_service(run_flow=flow)
     inspection_id = await remembered(service, sources, an_inspection(
         mode="update", installed=installed_record(sha="b" * 40)))
 
@@ -516,7 +552,7 @@ async def test_force_replaces_what_is_there(sources):
 async def test_an_expired_inspection_cannot_be_installed(sources, monkeypatch):
     clock = [0.0]
     monkeypatch.setattr(service_module, "monotonic", lambda: clock[0])
-    service = PluginService(run_flow=ScriptedFlow(), inspection_ttl_s=10.0)
+    service = a_service(run_flow=ScriptedFlow(), inspection_ttl_s=10.0)
     inspection_id = await remembered(service, sources, an_inspection())
 
     clock[0] += 11.0
@@ -530,7 +566,7 @@ async def test_an_inspection_is_spent_by_the_install_it_started(sources):
     """One consent screen, one install. The refusals above deliberately do
     not spend it; a successful claim does."""
     flow = ScriptedFlow()
-    service = PluginService(run_flow=flow)
+    service = a_service(run_flow=flow)
     inspection_id = await remembered(service, sources, an_inspection())
 
     job = await service.submit_install(inspection_id, accept_capabilities=None,
@@ -557,7 +593,7 @@ async def test_an_install_running_in_the_other_center_is_refused(sources):
     else's job.
     """
     flow = ScriptedFlow()
-    service = PluginService(run_flow=flow,
+    service = a_service(run_flow=flow,
                             busy_elsewhere=lambda: "pack-job-1")
     inspection_id = await remembered(service, sources, an_inspection())
 
@@ -579,7 +615,7 @@ async def test_an_install_running_in_the_other_center_is_refused(sources):
 
 async def test_a_second_install_is_refused_with_the_id_to_follow(sources):
     flow = ScriptedFlow()
-    service = PluginService(run_flow=flow)
+    service = a_service(run_flow=flow)
     first_id = await remembered(service, sources, an_inspection())
     second_id = await remembered(service, sources,
                                  an_inspection(source="bob/other"))
@@ -605,7 +641,7 @@ async def test_the_other_installer_is_told_about_a_running_job_and_no_other(
     in nobody's way -- it stays readable here, but reporting it would refuse
     every pack install until somebody started another plugin one."""
     flow = ScriptedFlow()
-    service = PluginService(run_flow=flow)
+    service = a_service(run_flow=flow)
     inspection_id = await remembered(service, sources, an_inspection())
     assert service.current_job_id() is None
 
@@ -626,7 +662,7 @@ async def test_the_other_installer_is_told_about_a_running_job_and_no_other(
 async def test_job_started_names_the_plugin_the_kind_the_source_and_the_mode(
         sources):
     flow = ScriptedFlow().script()
-    service = PluginService(run_flow=flow)
+    service = a_service(run_flow=flow)
     inspection_id = await remembered(service, sources, an_inspection())
 
     job = await service.submit_install(inspection_id, accept_capabilities=None,
@@ -735,7 +771,7 @@ async def test_the_active_job_is_the_running_one_and_nothing_else(sources):
     without reading its status, so a finished job here would leave that row
     spinning until the next install."""
     flow = ScriptedFlow()
-    service = PluginService(run_flow=flow)
+    service = a_service(run_flow=flow)
     inspection_id = await remembered(service, sources, an_inspection())
     assert service.active_job_payload() is None
 
@@ -759,7 +795,7 @@ async def test_the_active_job_is_the_running_one_and_nothing_else(sources):
 
 async def test_a_cancel_ends_the_job_as_cancelled_not_as_failed(sources):
     flow = ScriptedFlow()
-    service = PluginService(run_flow=flow)
+    service = a_service(run_flow=flow)
     inspection_id = await remembered(service, sources, an_inspection())
     job = await service.submit_install(inspection_id, accept_capabilities=None,
                                        trust_author=False, force=False)
@@ -777,7 +813,7 @@ async def test_a_cancel_ends_the_job_as_cancelled_not_as_failed(sources):
 async def test_packages_that_cannot_be_installed_here_ask_for_a_restart(
         sources):
     flow = ScriptedFlow()
-    service = PluginService(run_flow=flow)
+    service = a_service(run_flow=flow)
     inspection_id = await remembered(service, sources, an_inspection())
     job = await service.submit_install(inspection_id, accept_capabilities=None,
                                        trust_author=False, force=False)
@@ -799,7 +835,7 @@ async def test_packages_that_cannot_be_installed_here_ask_for_a_restart(
 
 async def test_an_install_failure_carries_its_message_and_its_hint(sources):
     flow = ScriptedFlow()
-    service = PluginService(run_flow=flow)
+    service = a_service(run_flow=flow)
     inspection_id = await remembered(service, sources, an_inspection())
     job = await service.submit_install(inspection_id, accept_capabilities=None,
                                        trust_author=False, force=False)
@@ -820,7 +856,7 @@ async def test_a_github_failure_says_what_github_answered(sources):
     """It escapes the download step untranslated, and the status is the
     user's next move: a 404 is a typo in the repo name."""
     flow = ScriptedFlow()
-    service = PluginService(run_flow=flow)
+    service = a_service(run_flow=flow)
     inspection_id = await remembered(service, sources, an_inspection())
     job = await service.submit_install(inspection_id, accept_capabilities=None,
                                        trust_author=False, force=False)
@@ -839,7 +875,7 @@ async def test_an_exception_nobody_designed_still_ends_the_job(sources):
     cannot install: not a shape anybody wrote a message for, and still not
     allowed to leave a job saying running forever."""
     flow = ScriptedFlow()
-    service = PluginService(run_flow=flow)
+    service = a_service(run_flow=flow)
     inspection_id = await remembered(service, sources, an_inspection())
     job = await service.submit_install(inspection_id, accept_capabilities=None,
                                        trust_author=False, force=False)
@@ -857,7 +893,7 @@ async def test_a_finished_job_stays_readable(sources):
     """The last thing a client asks for is the tail of a job that just
     ended, so the job and its events live until the next claim."""
     flow = ScriptedFlow().script({"type": "log", "line": "done"})
-    service = PluginService(run_flow=flow)
+    service = a_service(run_flow=flow)
     inspection_id = await remembered(service, sources, an_inspection())
     job = await service.submit_install(inspection_id, accept_capabilities=None,
                                        trust_author=False, force=False)
@@ -876,7 +912,7 @@ async def test_a_finished_job_stays_readable(sources):
 
 async def test_shutdown_cancels_a_running_install(sources):
     flow = ScriptedFlow()
-    service = PluginService(run_flow=flow)
+    service = a_service(run_flow=flow)
     inspection_id = await remembered(service, sources, an_inspection())
     job = await service.submit_install(inspection_id, accept_capabilities=None,
                                        trust_author=False, force=False)
@@ -889,7 +925,7 @@ async def test_shutdown_cancels_a_running_install(sources):
 
 
 async def test_shutdown_with_no_job_is_a_no_op():
-    service = PluginService(run_flow=ScriptedFlow())
+    service = a_service(run_flow=ScriptedFlow())
     await service.shutdown()
     assert service.current_job() is None
 

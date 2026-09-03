@@ -213,7 +213,11 @@ class PluginService:
         self._busy_elsewhere = (busy_elsewhere if busy_elsewhere is not None
                                 else (lambda: None))
         self._inspection_ttl_s = inspection_ttl_s
-        self._max_inspections = max_inspections
+        # At least one, whatever was asked for. The store has to hold the
+        # inspection it has just made -- an install refers to it by id
+        # moments later -- so "keep none" is not a state this can be in, and
+        # a zero would leave the eviction loop popping an empty store.
+        self._max_inspections = max(1, max_inspections)
         # Insertion-ordered, so the oldest entry is the first one -- which is
         # the eviction rule -- and ``move_to_end`` on every read makes that
         # "least recently used" rather than "oldest read".
@@ -316,6 +320,9 @@ class PluginService:
         :raises ManifestError: the manifest at that source is not one this
             build installs.
         :raises GitHubError: the repository could not be read.
+        :raises PluginInstallError: the source names something that cannot be
+            installed under that id -- a reserved plugin id, or a catalog row
+            that validated away.
         """
         if self._inspecting.locked():
             raise InspectBusy(
