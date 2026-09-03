@@ -69,6 +69,7 @@ from .errors import (
     GitHubError,
     PluginCancelled,
     PluginInstallError,
+    ReservedPluginId,
 )
 from .inspect import Inspection
 from .manifest import (
@@ -360,8 +361,14 @@ def _install_from_github(
             plan.plugin_id, owner=plan.owner, repo=plan.repo
         )
         if taken_by is not None:
-            raise PluginInstallError(
+            # The same class the inspection refuses with, so a caller that
+            # has to say WHICH id clashed gets the same answer whichever of
+            # the two producers it reached -- the sentence is identical, and
+            # an id recovered from it would be recovered from prose.
+            raise ReservedPluginId(
                 f"Plugin id {plan.plugin_id!r} is reserved by this build.",
+                plugin_id=plan.plugin_id,
+                taken_by=taken_by,
                 hint=(
                     f"{origin} declares an id that names {taken_by}; it "
                     f"cannot be installed under that id."

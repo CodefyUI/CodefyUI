@@ -38,6 +38,7 @@ from app.core.plugins.errors import (
     PluginCancelled,
     PluginInstallError,
     PluginNeedsRestart,
+    ReservedPluginId,
 )
 
 
@@ -921,6 +922,12 @@ def test_a_reserved_id_is_refused_before_anything_is_downloaded(user_root):
     with pytest.raises(PluginInstallError) as excinfo:
         _install(_bare_plan(plugin_id="install"))
     assert "reserved" in str(excinfo.value)
+    # The same class the inspection refuses with, carrying the same two facts:
+    # this is the second producer of that sentence, and a client that had to
+    # tell them apart by reading it would be parsing English.
+    assert isinstance(excinfo.value, ReservedPluginId)
+    assert excinfo.value.plugin_id == "install"
+    assert excinfo.value.taken_by == "a route under /api/plugins/"
 
 
 # ── progress ───────────────────────────────────────────────────────────────
