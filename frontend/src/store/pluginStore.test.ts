@@ -534,6 +534,20 @@ describe('pluginStore — inspect', () => {
     expect(state.inspection.failure.detail).toEqual({ code: 'reserved_id', id: 'edu' });
   });
 
+  it('says why a remote inspect was refused instead of showing Forbidden', async () => {
+    // The source box is where a LAN user first meets the gate, and the
+    // status text alone ("Forbidden") says nothing about where to install.
+    api.inspectPluginSource.mockRejectedValue(new ApiError(403, 'Forbidden'));
+
+    await usePluginStore.getState().inspect('owner/demo');
+
+    const state = usePluginStore.getState();
+    if (state.inspection.phase !== 'error') throw new Error('not an error phase');
+    expect(state.inspection.failure.message).toBe(
+      'Installing is only allowed from the computer that runs the server.',
+    );
+  });
+
   it('carries the names a catalog miss listed', async () => {
     // The hint the source box shows is `known`, and it only exists in the
     // body: the message is the bare code.
@@ -820,6 +834,19 @@ describe('pluginStore — uninstall', () => {
       'Could not remove Demo plugin: Close the app that is holding the file.',
     );
     expect(lastToast().type).toBe('warning');
+  });
+
+  it('says so when the server refuses a remote uninstall', async () => {
+    // The same gate as an install. Wrapped in "Could not remove Demo
+    // plugin", `Forbidden` tells a LAN user nothing about where to do it.
+    api.uninstallPlugin.mockRejectedValue(new ApiError(403, 'Forbidden'));
+
+    await usePluginStore.getState().uninstall('demo');
+
+    expect(lastToast().message).toBe(
+      'Installing is only allowed from the computer that runs the server.',
+    );
+    expect(lastToast().type).toBe('error');
   });
 
   it('reports any other refusal against the plugin name', async () => {

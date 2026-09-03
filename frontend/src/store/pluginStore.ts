@@ -862,6 +862,12 @@ export const usePluginStore = create<PluginState>((set, get) => ({
       } else if (err instanceof ApiError && err.status === 409) {
         toast(t('packs.toast.busy'), 'warning');
         await get().refresh();
+      } else if (err instanceof ApiError && err.status === 403) {
+        // Same gate as an install, and the same answer: the server only
+        // takes a change like this from the machine it runs on. Wrapping
+        // `Forbidden` in "Could not remove Demo plugin" would tell a LAN
+        // user that something went wrong rather than where to do it.
+        toast(t('packs.remoteDisabled'), 'error');
       } else {
         toast(
           t('pluginCenter.toast.removeFailed', {
