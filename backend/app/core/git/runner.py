@@ -18,8 +18,11 @@ back to the command that caused it.
   ask for a password does not get an answer -- it gets a request that never
   returns and a worker that never comes back. :data:`NON_INTERACTIVE_ENV`
   plus ``-c core.askPass=`` turn every prompt into an immediate failure,
-  which the classifier then reports as ``auth_required``. ``GIT_EDITOR=:``
-  does the same for the editor a merge or a commit would otherwise open.
+  which the classifier then reports as ``auth_required``. That environment
+  also EMPTIES ``GIT_ASKPASS``, because the variable beats the config and
+  an inherited one would otherwise put a dialog on the server's own screen
+  (VS Code exports one into every terminal it opens). ``GIT_EDITOR=:`` does
+  the same for the editor a merge or a commit would otherwise open.
 * **Binary pipes.** Diff output is bytes: it carries the file's own CRLF
   line endings, and on a repository with mixed encodings it is not valid
   UTF-8 at all. ``text=True`` would rewrite the first and crash on the
@@ -96,7 +99,8 @@ GIT_PREFIX_ARGS: tuple[str, ...] = (
 #: The environment every call runs under.
 #:
 #: ``GIT_TERMINAL_PROMPT=0`` and ``GCM_INTERACTIVE=never`` make git and Git
-#: Credential Manager fail instead of asking; ``SSH_ASKPASS_REQUIRE=never``
+#: Credential Manager fail instead of asking; ``GIT_ASKPASS`` is set to the
+#: EMPTY STRING (not dropped -- see below); ``SSH_ASKPASS_REQUIRE=never``
 #: stops ssh reaching for a GUI passphrase prompt; ``GIT_EDITOR`` and
 #: ``GIT_SEQUENCE_EDITOR`` are ``:`` (the no-op command) so a merge commit
 #: message or a rebase todo is accepted as-is instead of opening an editor
@@ -104,9 +108,21 @@ GIT_PREFIX_ARGS: tuple[str, ...] = (
 #: ``GIT_ALLOW_PROTOCOL`` is an allowlist: it disables ``ext::`` -- the
 #: transport whose "URL" is a command line to run -- along with every other
 #: helper the validators do not accept.
+#:
+#: ``GIT_ASKPASS`` is EMPTIED rather than dropped, and it is not redundant
+#: with the ``-c core.askPass=`` in :data:`GIT_PREFIX_ARGS`: git reads the
+#: variable FIRST and never looks at the config when it is set, so an
+#: inherited one wins outright -- and VS Code exports one into every
+#: terminal it opens, which is where a developer starts this server. The
+#: value has to be the empty string because dropping it would let the next
+#: link in the chain answer instead; an empty one ends the chain there
+#: (``SSH_ASKPASS`` included) and the prompt becomes the immediate failure
+#: ``GIT_TERMINAL_PROMPT=0`` promises rather than a dialog on a screen
+#: nobody is watching, with the request hung until somebody clicks it.
 NON_INTERACTIVE_ENV: dict[str, str] = {
     "GIT_TERMINAL_PROMPT": "0",
     "GCM_INTERACTIVE": "never",
+    "GIT_ASKPASS": "",
     "SSH_ASKPASS_REQUIRE": "never",
     "GIT_EDITOR": ":",
     "GIT_SEQUENCE_EDITOR": ":",

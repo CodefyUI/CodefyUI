@@ -202,11 +202,27 @@ def test_env_is_non_interactive(monkeypatch, fake_git):
 
     assert env["GIT_TERMINAL_PROMPT"] == "0"
     assert env["GCM_INTERACTIVE"] == "never"
+    assert env["GIT_ASKPASS"] == ""
     assert env["SSH_ASKPASS_REQUIRE"] == "never"
     assert env["GIT_EDITOR"] == ":"
     assert env["GIT_SEQUENCE_EDITOR"] == ":"
     assert env["LC_ALL"] == "C"
     assert env["GIT_ALLOW_PROTOCOL"] == "https:ssh:file"
+
+
+def test_an_inherited_askpass_helper_is_emptied(monkeypatch, fake_git):
+    """The variable beats ``-c core.askPass=``, so it has to be overwritten.
+
+    VS Code exports a ``GIT_ASKPASS`` into every terminal it opens, which is
+    where a developer starts this server; git reads the variable before the
+    config and never looks at the config when it is set. Inherited, it would
+    open a dialog on the server's own screen and hold the request until
+    somebody clicked it. Empty is git's own spelling of "no helper", and it
+    ends the chain rather than passing the question to ``SSH_ASKPASS``.
+    """
+    monkeypatch.setenv("GIT_ASKPASS", "C:/Program Files/VSCode/askpass.sh")
+
+    assert runner.git_env()["GIT_ASKPASS"] == ""
 
 
 @pytest.mark.parametrize("name", runner.REPOSITORY_ENV_VARS)
