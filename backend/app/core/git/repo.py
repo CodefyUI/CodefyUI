@@ -244,9 +244,22 @@ def path_redirects(root: Path, segments: Sequence[str]) -> bool:
     (``diff._refuse_a_link``), the write side about its parents only
     (:func:`refuse_link_parents`). The comparison itself is subtle enough
     that it must exist once.
+
+    A resolve that RAISES is a refusal, not a crash. On Python 3.11 -- the
+    runtime this ships on -- a symlink cycle (``a -> b -> a``) raises
+    ``RuntimeError("Symlink loop")``; 3.13 no longer does, which is exactly
+    the kind of difference that turns into a 500 on somebody else's
+    machine. A path whose real location cannot be established is one this
+    API refuses.
     """
-    lexical = root.resolve().joinpath(*segments)
-    actual = root.joinpath(*segments).resolve()
+    try:
+        root_resolved = root.resolve()
+        actual = root.joinpath(*segments).resolve()
+    except (OSError, RuntimeError):
+        raise GitError("invalid_path", 400,
+                       f"{'/'.join(segments)} could not be resolved",
+                       hint="the path could not be resolved") from None
+    lexical = root_resolved.joinpath(*segments)
     return os.path.normcase(str(actual)) != os.path.normcase(str(lexical))
 
 

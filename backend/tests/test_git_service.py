@@ -1461,6 +1461,33 @@ async def test_a_diff_that_would_read_a_link_is_refused_too(repo):
     assert _error(excinfo).code == "invalid_path"
 
 
+async def test_a_link_that_points_at_itself_is_a_400_and_not_a_crash(repo):
+    """``Path.resolve`` RAISES on a cycle, on the runtime this ships on.
+
+    ``loop_a -> loop_b -> loop_a`` makes Python 3.11 raise
+    ``RuntimeError("Symlink loop")`` rather than give up quietly (3.13 no
+    longer does, which is how a bug like this survives a newer developer
+    machine). Every route that names a path resolves it -- to check
+    containment, or to see whether something redirected -- so unhandled it
+    was an unexpected exception on an open GET, from a link anybody with
+    write access to the project can make.
+    """
+    _link(repo.root / "loop_b", repo.root / "loop_a")
+    _link(repo.root / "loop_a", repo.root / "loop_b")
+    service = repo.service
+
+    with pytest.raises(GitError) as read:
+        await service.file_at_ref("loop_a", "worktree")
+    with pytest.raises(GitError) as patch:
+        await service.diff("loop_a", "worktree")
+    with pytest.raises(GitError) as write:
+        await service.discard(["loop_a"])
+
+    for excinfo in (read, patch, write):
+        assert _error(excinfo).code == "invalid_path"
+        assert _error(excinfo).status == 400
+
+
 async def test_a_link_at_a_ref_is_its_target_path_not_its_target(repo):
     """Reading a link from the OBJECT database leaks nothing and stays
     allowed: git stores a symlink as a blob holding the path it points at."""

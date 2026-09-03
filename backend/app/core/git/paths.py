@@ -153,11 +153,33 @@ def validate_rel_path(root: Path, path: str) -> str:
     if normalised.startswith("-"):
         _refuse("invalid_path", "a path may not start with '-'")
 
-    root_resolved = Path(os.path.normcase(str(root.resolve())))
-    resolved = Path(os.path.normcase(str((root / normalised).resolve())))
+    root_resolved = _resolved(root, normalised)
+    resolved = _resolved(root / normalised, normalised)
     if resolved == root_resolved or not resolved.is_relative_to(root_resolved):
         _refuse("invalid_path", "a path must stay inside the project")
     return normalised
+
+
+def _resolved(target: Path, path: str) -> Path:
+    """``target.resolve()``, case-folded -- or a 400 when it cannot be.
+
+    ``Path.resolve`` is not string arithmetic: it walks the filesystem, and
+    it can fail. On Python 3.11 -- the runtime this ships on -- a SYMLINK
+    CYCLE (``a -> b -> a``) raises ``RuntimeError("Symlink loop")`` instead
+    of giving up quietly, which 3.13 does; an ``OSError`` is the same kind
+    of answer for a different reason (a name the filesystem will not
+    answer for, a device that is not there).
+
+    Either way the containment check cannot be made, and a path whose real
+    location cannot be established is one this API refuses. Unhandled, that
+    was an unexpected exception -- a 500 on an open GET, from a link
+    anybody with write access to the project can create.
+    """
+    try:
+        return Path(os.path.normcase(str(target.resolve())))
+    except (OSError, RuntimeError):
+        _refuse("invalid_path", f"{path} could not be resolved",
+                hint="the path could not be resolved")
 
 
 def validate_rel_paths(root: Path, paths: Sequence[str]) -> list[str]:
