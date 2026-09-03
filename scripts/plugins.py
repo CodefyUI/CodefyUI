@@ -773,8 +773,13 @@ def _print_python_deps(found: core_inspect.Inspection) -> None:
     """
     if not found.python_deps:
         return
+    # Both halves are the manifest author's, and this prints on the consent
+    # screen: a spec is `name` + `spec` concatenated, so a version constraint
+    # carrying an escape sequence redraws the question just as a description
+    # would. Cleaned per spec rather than after the join, so one hostile
+    # entry cannot eat the comma that separates it from the next.
     listed = ", ".join(
-        f"{name}{spec}" if spec else name
+        _plain(f"{name}{spec}" if spec else name, limit=80)
         for name, spec in found.python_deps.items()
     )
     info(f"Python 套件：{listed}", f"Python packages: {listed}")
@@ -825,8 +830,10 @@ def _print_preview(found: core_inspect.Inspection) -> None:
     listing the names twice would put the same fact on the screen in two
     voices.
 
-    Every field here is the author's, so every field goes through
-    :func:`_plain` first: this is the one screen where text that can redraw
+    Every string on this screen is the author's -- the name, the version, the
+    description, the module names it asks the gate to be turned off for, and
+    the package specs it would install -- so every one of them goes through
+    :func:`_plain` first. This is the one screen where text that can redraw
     itself would be redrawing the question.
     """
     name = _plain(found.name)
@@ -837,7 +844,12 @@ def _print_preview(found: core_inspect.Inspection) -> None:
     if description:
         info(description, description)
     if found.allowed_modules:
-        asked = ", ".join(found.allowed_modules)
+        # A module name is author-written too, and this is the line that asks
+        # for the AST gate to be switched off -- the last one on the screen
+        # that should be able to rewrite itself.
+        asked = ", ".join(
+            _plain(module, limit=80) for module in found.allowed_modules
+        )
         warn(
             f"此外掛要求關閉白名單以匯入：{asked}（需要 --trust-author）",
             f"This plugin asks to import, outside the allowlist: {asked} "
@@ -1347,7 +1359,11 @@ def _install_github(
     try:
         core_consent.check_trust(allowed, trust_author=args.trust_author)
     except ConsentRequired as e:
-        asked = ", ".join(e.allowed_modules)
+        # Cleaned for the same reason the preview above it is: this refusal
+        # prints the module names straight back, on the same screen, and
+        # `[security].allowed_modules` is validated as "a list of strings"
+        # and nothing more -- so any string at all can reach here.
+        asked = ", ".join(_plain(module, limit=80) for module in e.allowed_modules)
         err(
             f"外掛要求白名單以外的模組：{asked}。加 --trust-author 同意。",
             f"Plugin requests non-default modules: {asked}. "
@@ -2165,13 +2181,18 @@ def _print_info(
     # same filter: `cdui plugin info <owner/repo>` reads a manifest off a
     # repository nobody has agreed to install, and an installed plugin's
     # manifest is whatever it rewrote itself to say after the install.
+    # The RAW value decides whether the line is printed and `_plain` only
+    # decides how it is spelt: a manifest may write `version = 1.0`, which
+    # TOML hands over as a float, and asking `_plain` first would have
+    # dropped the line entirely -- a field this command exists to show,
+    # silently missing because of the filter in front of it.
     fields: list[tuple[str, str]] = []
-    if _plain(plugin_meta.get("name")):
-        fields.append(("name", _plain(plugin_meta["name"])))
-    if _plain(plugin_meta.get("version")):
-        fields.append(("version", _plain(plugin_meta["version"])))
-    if _plain(plugin_meta.get("description")):
-        fields.append(("description", _plain(plugin_meta["description"])))
+    if plugin_meta.get("name"):
+        fields.append(("name", _plain(str(plugin_meta["name"]))))
+    if plugin_meta.get("version"):
+        fields.append(("version", _plain(str(plugin_meta["version"]))))
+    if plugin_meta.get("description"):
+        fields.append(("description", _plain(str(plugin_meta["description"]))))
     if entry.get("source_kind"):
         fields.append(("source", f"{entry['source_kind']}:{entry.get('source', '')}"))
     if entry.get("sha"):

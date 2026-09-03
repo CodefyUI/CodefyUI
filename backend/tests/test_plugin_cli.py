@@ -1695,17 +1695,36 @@ def test_the_preview_shows_no_character_a_terminal_would_obey(
         version = "1.0.0"
         description = "Harmless.\\u001B[2J\\rInstalling: nothing at all"
         schema_version = 1
+
+        [python_deps]
+        tabulate = ">=0.9\\u001B[31m"
+
+        [security]
+        allowed_modules = ["os\\u001B[2J"]
         """)
     assert "\x1b" in tomllib.loads(hostile)["plugin"]["description"]
     fake_github({"cdui.plugin.toml": hostile, "nodes/hello.py": "VALUE = 1\n"})
 
-    assert _official(_install_args()) == 0
+    def _never(*_a, **_k):  # pragma: no cover - only runs on a bug
+        raise AssertionError("a refused install must not download anything")
+
+    monkeypatch.setattr(plugin_cli, "download_tarball", _never)
+
+    # Refused at the trust gate, which runs AFTER the whole preview has been
+    # printed -- so this is the screen, in full, of a plugin nobody has said
+    # yes to yet. That is the moment the escape sequences would have to work.
+    assert _official(_install_args()) == 1
 
     printed = _out(capsys)
-    assert "\x1b[2J" not in printed and "\x1b[31m" not in printed
+    assert "\x1b" not in printed, "nothing a terminal acts on reached the screen"
     assert "\r" not in printed
-    # The words survive; only what a terminal acts on is gone.
+    # The words survive; only what a terminal acts on is gone. Every line the
+    # consent screen draws from the manifest is here: the name, the
+    # description, the module list the AST gate would be turned off for, and
+    # the package this install would add to the venv.
     assert "Innocent" in printed and "Harmless." in printed
+    assert "os" in printed and "--trust-author" in printed
+    assert "tabulate>=0.9" in printed
 
 
 def test_a_long_description_cannot_scroll_the_preview_away(monkeypatch):
@@ -1716,6 +1735,23 @@ def test_a_long_description_cannot_scroll_the_preview_away(monkeypatch):
     assert len(plugin_cli._plain("x" * 500)) == 203
     assert plugin_cli._plain("two\nlines") == "two lines", "no run-on words"
     assert plugin_cli._plain(None) == ""
+
+
+def test_a_version_that_is_not_a_string_still_gets_a_line(capsys):
+    """TOML hands `version = 1.0` over as a float, and `_plain` answers ""
+    for anything that is not a string -- so asking it whether to print the
+    line dropped a field this command exists to show. The raw value decides
+    that; the filter only decides how it is spelt."""
+    plugin_cli._print_info(
+        "extras",
+        {"plugin": {"name": "Extras", "version": 1.0, "description": 2}},
+        {"source_kind": "github_url", "source": "alice/extras"},
+        None,
+        installed=False,
+    )
+    printed = _out(capsys)
+    assert "version" in printed and "1.0" in printed
+    assert "description" in printed and "2" in printed
 
 
 def test_ctrl_c_during_one_pack_stops_sync_rather_than_starting_the_next(
