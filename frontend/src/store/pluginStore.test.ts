@@ -1173,7 +1173,9 @@ describe('pluginStore — checkInProgress', () => {
     api.getPluginJobEvents.mockImplementation(parked);
 
     await usePluginStore.getState().checkInProgress();
-    lastToast().action!.onClick();
+    const openCenter = lastToast().action;
+    expect(openCenter).toBeDefined();
+    openCenter?.onClick();
 
     expect(useUIStore.getState().pluginCenterOpen).toBe(true);
     expect(useUIStore.getState().pluginCenterFocusPluginId).toBeNull();
