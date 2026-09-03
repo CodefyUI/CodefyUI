@@ -58,7 +58,11 @@ from app.core.plugins import github
 from app.core.plugins import inspect as inspect_module
 from app.core.plugins import listing
 from app.core.plugins.catalog import CatalogEntry
-from app.core.plugins.errors import GitHubError
+from app.core.plugins.errors import (
+    GitHubError,
+    PluginInstallError,
+    PluginNeedsRestart,
+)
 from app.core.plugins.inspect import ALLOWED_MODULES_WARNING, FRONTEND_WARNING
 from app.core.plugins.listing import catalog_listing
 from app.core.plugins.reload import rediscover_now
@@ -66,7 +70,12 @@ from app.core.plugins.service import PluginService
 from app.main import app
 from app import main
 
-from tests.test_plugin_service import ScriptedFlow, Sources
+from tests.test_plugin_service import (
+    ScriptedFlow,
+    Sources,
+    types_of,
+    wait_started,
+)
 
 BASE_URL = f"http://127.0.0.1:{settings.PORT}"
 
@@ -646,6 +655,18 @@ def test_every_fixed_path_is_declared_before_the_plugin_id_route():
         if "{" not in path:
             assert index < first_dynamic, f"{path} is declared too late"
 
+    # The install path, named rather than derived: three of its paths carry
+    # no ``{`` and are covered by the loop above, and the two job routes do
+    # carry one -- which is exactly why they need saying out loud. Their
+    # first segment (``jobs``) is fixed, and it is only a reserved plugin id
+    # that keeps a pack from claiming it.
+    for path in ("/api/plugins/inspect",
+                 "/api/plugins/install",
+                 "/api/plugins/jobs/{job_id}/events",
+                 "/api/plugins/jobs/{job_id}/cancel"):
+        assert path in paths, f"{path} is not registered"
+        assert paths.index(path) < first_dynamic, f"{path} is declared too late"
+
 
 # -- the install gate ------------------------------------------------------
 
@@ -933,12 +954,66 @@ async def client(plugin_service):
         yield http
 
 
+@pytest.fixture
+async def uninstalled_client(center_lockfile, monkeypatch):
+    """A client with the token, over a server whose installer never started.
+
+    Not merely "no service in this test": the attribute is REMOVED, which is
+    the state ``app.state`` is in when the lifespan has not run at all.
+    """
+    monkeypatch.delattr(app.state, "plugin_service", raising=False)
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url=BASE_URL,
+        headers={TOKEN_HEADER: session_token()},
+    ) as http:
+        yield http
+
+
 async def inspected(client, source: str) -> dict:
     """POST /inspect and return the body, asserting it was answered."""
     response = await client.post("/api/plugins/inspect",
                                  json={"source": source})
     assert response.status_code == 200, response.text
     return response.json()
+
+
+async def start_install(client, source: str = "alice/extras",
+                        **answers) -> str:
+    """Inspect *source*, install what came back, return the job id.
+
+    Both turns, because that is the only way to reach ``/install``: the id it
+    takes is minted by ``/inspect`` and never by a client.
+    """
+    inspection = await inspected(client, source)
+    response = await client.post(
+        "/api/plugins/install",
+        json={"inspection_id": inspection["inspection_id"], **answers})
+    assert response.status_code == 202, response.text
+    return response.json()["job_id"]
+
+
+async def drain(client, job_id: str, *, timeout: float = 20.0
+                ) -> tuple[list[dict], str]:
+    """Every event of a job over HTTP, waiting for it to finish."""
+    limit = 500
+    events: list[dict] = []
+    cursor, status = 0, "running"
+    deadline = time.monotonic() + timeout
+    while True:
+        if time.monotonic() > deadline:
+            raise AssertionError(f"job {job_id} never finished ({status})")
+        response = await client.get(f"/api/plugins/jobs/{job_id}/events",
+                                    params={"cursor": cursor, "wait": 1.0,
+                                            "limit": limit})
+        assert response.status_code == 200, response.text
+        body = response.json()
+        assert body["job_id"] == job_id
+        events.extend(body["events"])
+        cursor, status = body["cursor"], body["status"]
+        # A page cut short by ``limit`` can carry a terminal status without
+        # the terminal event, so both have to be true before we stop.
+        if status != "running" and len(body["events"]) < limit:
+            return events, status
 
 
 # -- POST /api/plugins/inspect ---------------------------------------------
@@ -1193,3 +1268,405 @@ async def test_only_one_source_is_read_at_a_time(client, monkeypatch):
 
     sources.blocked.clear()
     assert (await first).status_code == 200
+
+
+# -- POST /api/plugins/install ---------------------------------------------
+
+
+async def test_installing_runs_a_job_that_ends_by_reloading_the_editor(
+        client, flow, fake_github):
+    """The whole event order the panel is written against, with the registry
+    re-discovery as the last step -- on the loop, after the flow's thread and
+    before the terminal event, so ``job_done`` can say what is now in the
+    palette."""
+    fake_github.answers(a_manifest("extras"))
+
+    job_id = await start_install(client)
+    await wait_started(flow)
+    flow.send({"type": "step_started", "step": "download",
+               "label": "Downloading extras"})
+    flow.send({"type": "step_done", "step": "download"})
+    flow.finish()
+
+    events, status = await drain(client, job_id)
+
+    assert status == "done"
+    assert types_of(events) == ["job_started", "step_started", "step_done",
+                               "step_started", "step_done", "job_done"]
+    started = events[0]
+    assert started["plugin_id"] == "extras"
+    assert started["kind"] == "github"
+    assert started["mode"] == "install"
+    assert started["source"] == "alice/extras"
+    assert events[3]["step"] == "reload"
+    assert events[4]["step"] == "reload"
+    done = events[-1]
+    assert done["plugin_id"] == "extras"
+    assert done["sha"] == A_SHA
+    # Nothing was really installed, so nothing is in the palette -- but the
+    # keys are what a panel reads to know that without asking again.
+    assert done["nodes"] == []
+    assert done["generation"] == plugin_loader.reload_generation()
+
+
+async def test_a_failed_install_carries_its_message_and_its_hint(
+        client, flow, fake_github):
+    """And does NOT reload: the registry is rebuilt after a flow that
+    returned, never after one that raised."""
+    fake_github.answers(a_manifest("extras"))
+    job_id = await start_install(client)
+    await wait_started(flow)
+    flow.fail(PluginInstallError("extras was refused by the security scan.",
+                                 hint="nodes/evil.py imports os"))
+
+    events, status = await drain(client, job_id)
+
+    assert status == "failed"
+    assert types_of(events) == ["job_started", "job_failed"]
+    assert events[-1]["message"] == "extras was refused by the security scan."
+    assert events[-1]["hint"] == "nodes/evil.py imports os"
+
+
+async def test_an_install_that_cannot_finish_in_here_says_what_to_run(
+        client, flow, fake_github):
+    fake_github.answers(a_manifest("extras"))
+    job_id = await start_install(client)
+    await wait_started(flow)
+    flow.fail(PluginNeedsRestart(
+        "extras needs packages this server cannot install into itself.",
+        command="cdui plugin install alice/extras",
+        hint="uv could not resolve them add-only"))
+
+    events, status = await drain(client, job_id)
+
+    assert status == "needs_restart"
+    assert events[-1]["type"] == "needs_restart"
+    assert events[-1]["command"] == "cdui plugin install alice/extras"
+    assert events[-1]["hint"] == "uv could not resolve them add-only"
+
+
+@pytest.mark.parametrize("body", [
+    {},
+    {"inspection_id": "x", "sha": "deadbeef"},
+    {"inspection_id": "x", "accept_capabilities": True},
+    {"inspection_id": "x", "accept_capabilities": "network"},
+])
+async def test_an_install_body_the_schema_will_not_take_is_422(client, body):
+    """``accept_capabilities`` is a LIST, and ``true`` is not a shorter way
+    of saying it: a blanket yes cannot be checked against a manifest that has
+    since grown a capability."""
+    response = await client.post("/api/plugins/install", json=body)
+    assert response.status_code == 422, response.text
+
+
+async def test_a_capability_nobody_ticked_is_refused_with_the_list(
+        client, fake_github):
+    fake_github.answers(REPO_MANIFEST)
+    inspection = await inspected(client, "alice/extras")
+
+    response = await client.post(
+        "/api/plugins/install",
+        json={"inspection_id": inspection["inspection_id"]})
+
+    assert response.status_code == 400, response.text
+    assert response.json()["detail"] == {"code": "consent_required",
+                                         "missing_capabilities": ["network"]}
+
+
+async def test_trusting_the_author_is_a_second_question_with_its_own_answer(
+        client, fake_github):
+    """Ticking "network" is not agreeing to let the plugin import
+    ``requests``: the two are different decisions with different controls, so
+    they are different codes -- and ``TrustAuthorRequired`` is a
+    ``ConsentRequired``, which is why the route's catch order matters."""
+    fake_github.answers(REPO_MANIFEST)
+    inspection = await inspected(client, "alice/extras")
+
+    response = await client.post(
+        "/api/plugins/install",
+        json={"inspection_id": inspection["inspection_id"],
+              "accept_capabilities": ["network"]})
+
+    assert response.status_code == 400, response.text
+    assert response.json()["detail"] == {"code": "trust_author_required",
+                                         "allowed_modules": ["requests"]}
+
+
+async def test_both_halves_answered_starts_the_job(client, flow, fake_github):
+    fake_github.answers(REPO_MANIFEST)
+
+    job_id = await start_install(client, accept_capabilities=["network"],
+                                 trust_author=True)
+    await wait_started(flow)
+    flow.finish()
+    events, status = await drain(client, job_id)
+
+    assert status == "done"
+    # What consent decided, as the install itself sees it.
+    assert flow.plans[0].granted_capabilities == ("network",)
+    assert flow.plans[0].trust_author is True
+    assert types_of(events)[0] == "job_started"
+
+
+async def test_an_inspection_this_server_does_not_remember_is_a_404(client):
+    """Used, evicted or timed out are one answer, because the next move is
+    the same for all three: inspect the source again."""
+    response = await client.post("/api/plugins/install",
+                                 json={"inspection_id": "no-such-id"})
+
+    assert response.status_code == 404, response.text
+    assert response.json()["detail"] == {"code": "inspection_expired",
+                                         "inspection_id": "no-such-id"}
+
+
+async def test_an_inspection_is_spent_by_the_install_it_starts(
+        client, flow, fake_github):
+    """One consent screen cannot start two installs."""
+    fake_github.answers(a_manifest("extras"))
+    inspection = await inspected(client, "alice/extras")
+    body = {"inspection_id": inspection["inspection_id"]}
+
+    first = await client.post("/api/plugins/install", json=body)
+    assert first.status_code == 202, first.text
+    again = await client.post("/api/plugins/install", json=body)
+
+    assert again.status_code == 404, again.text
+    assert again.json()["detail"]["code"] == "inspection_expired"
+
+    flow.finish()
+    await drain(client, first.json()["job_id"])
+
+
+async def test_a_plugin_that_is_already_here_is_an_offer_not_a_job(
+        client, flow, fake_github):
+    """``demo-external`` is in the lockfile. Replacing it is a decision the
+    user makes, so the refusal names the plugin -- and leaves the inspection
+    spendable, which is what makes "Reinstall" one click rather than two."""
+    fake_github.answers(a_manifest("demo-external"))
+    inspection = await inspected(client, "alice/extras")
+    body = {"inspection_id": inspection["inspection_id"]}
+
+    refused = await client.post("/api/plugins/install", json=body)
+    assert refused.status_code == 409, refused.text
+    assert refused.json()["detail"] == {"code": "already_installed",
+                                        "plugin_id": "demo-external"}
+
+    forced = await client.post("/api/plugins/install",
+                               json={**body, "force": True})
+    assert forced.status_code == 202, forced.text
+    flow.finish()
+    await drain(client, forced.json()["job_id"])
+
+
+async def test_one_install_at_a_time_and_the_refusal_names_the_job(
+        client, flow, fake_github):
+    fake_github.answers(a_manifest("extras"))
+    job_id = await start_install(client)
+    await wait_started(flow)
+
+    fake_github.answers(a_manifest("other"))
+    second = await inspected(client, "bob/other")
+    refused = await client.post(
+        "/api/plugins/install",
+        json={"inspection_id": second["inspection_id"]})
+
+    assert refused.status_code == 409, refused.text
+    # No ``reason``: this is our own job, and the id is one the panel can
+    # follow rather than something to wait for.
+    assert refused.json()["detail"] == {"code": "busy", "job_id": job_id}
+
+    flow.finish()
+    await drain(client, job_id)
+
+
+async def test_a_pack_install_in_the_other_center_is_its_own_refusal(
+        client, plugin_service, fake_github, monkeypatch):
+    """They install into one interpreter, so each installer refuses while the
+    other is running -- and the code says whose job the id belongs to,
+    because "follow your install" and "wait for somebody else's" are
+    different offers."""
+    monkeypatch.setattr(plugin_service, "_busy_elsewhere", lambda: "pack-7")
+    fake_github.answers(a_manifest("extras"))
+    inspection = await inspected(client, "alice/extras")
+
+    refused = await client.post(
+        "/api/plugins/install",
+        json={"inspection_id": inspection["inspection_id"]})
+
+    assert refused.status_code == 409, refused.text
+    assert refused.json()["detail"] == {"code": "pack_install_running",
+                                        "job_id": "pack-7"}
+
+
+async def test_the_catalog_reports_the_job_a_second_tab_would_follow(
+        client, flow):
+    """A built-in install, so the row and the job are the same id: how a
+    panel opened mid-install finds what to follow and which row is busy."""
+    job_id = await start_install(client, "stats")
+    await wait_started(flow)
+
+    body = (await client.get("/api/plugins/catalog")).json()
+    by_id = {entry["id"]: entry for entry in body["entries"]}
+
+    # ``kind`` here is the job's MODE: what the panel decides between
+    # "installed" and "updated" with. A job's own kind is builtin/github.
+    assert body["active_job"] == {"job_id": job_id, "plugin_id": "stats",
+                                  "kind": "install", "status": "running",
+                                  "current_step": None}
+    assert by_id["stats"]["status"] == "installing"
+    assert by_id["stats"]["job"] == {"job_id": job_id, "status": "running",
+                                     "current_step": None}
+    assert by_id["foundations"]["job"] is None
+
+    flow.finish()
+    await drain(client, job_id)
+    # A FINISHED job is not what the panel calls active: a row still carrying
+    # one would spin until the next install.
+    assert (await client.get("/api/plugins/catalog")).json()["active_job"] is None
+
+
+# -- the job routes --------------------------------------------------------
+
+
+async def test_the_events_route_answers_at_once_when_nothing_is_waiting(
+        client, flow, fake_github):
+    """``wait=0`` is the poll a panel makes when it is not following: it must
+    not park, and an empty tail is a normal answer."""
+    fake_github.answers(a_manifest("extras"))
+    job_id = await start_install(client)
+    await wait_started(flow)
+
+    started_at = time.monotonic()
+    first = await client.get(f"/api/plugins/jobs/{job_id}/events",
+                             params={"cursor": 0, "wait": 0})
+    assert first.status_code == 200, first.text
+    page = first.json()
+    assert set(page) == {"job_id", "status", "events", "cursor"}
+    assert page["job_id"] == job_id
+    assert page["status"] == "running"
+    assert types_of(page["events"]) == ["job_started"]
+    assert page["cursor"] == 1
+
+    tail = await client.get(f"/api/plugins/jobs/{job_id}/events",
+                            params={"cursor": page["cursor"], "wait": 0})
+    assert tail.json()["events"] == []
+    assert tail.json()["cursor"] == page["cursor"], "the cursor moved backwards"
+    assert time.monotonic() - started_at < 3.0, "wait=0 parked"
+
+    flow.finish()
+    await drain(client, job_id)
+
+
+@pytest.mark.parametrize("params", [
+    {"wait": 61}, {"wait": -1}, {"cursor": -1}, {"limit": 0}, {"limit": 2001},
+])
+async def test_the_events_route_bounds_are_the_packs_route_bounds(
+        client, flow, fake_github, params):
+    """One panel draws both centers; a long poll that took a different range
+    on one of them would be a bug found only in the half nobody watches."""
+    fake_github.answers(a_manifest("extras"))
+    job_id = await start_install(client)
+    flow.finish()
+    await drain(client, job_id)
+
+    response = await client.get(f"/api/plugins/jobs/{job_id}/events",
+                                params=params)
+    assert response.status_code == 422, response.text
+
+
+async def test_a_job_this_server_never_had_is_a_404_on_both_job_routes(
+        client):
+    """Only the most recent job is kept, so "gone" and "never existed" are
+    the same answer -- and the client's next move is the same either way."""
+    events = await client.get("/api/plugins/jobs/nope/events")
+    assert events.status_code == 404, events.text
+    assert events.json()["detail"] == {"code": "unknown_job", "job_id": "nope"}
+
+    cancel = await client.post("/api/plugins/jobs/nope/cancel")
+    assert cancel.status_code == 404, cancel.text
+    assert cancel.json()["detail"] == {"code": "unknown_job", "job_id": "nope"}
+
+
+async def test_cancelling_ends_the_job_and_asking_twice_is_not_an_error(
+        client, flow, fake_github):
+    fake_github.answers(a_manifest("extras"))
+    job_id = await start_install(client)
+    await wait_started(flow)
+
+    first = await client.post(f"/api/plugins/jobs/{job_id}/cancel")
+    assert first.status_code == 200, first.text
+    assert first.json() == {"job_id": job_id, "cancelled": True}
+
+    events, status = await drain(client, job_id)
+    assert status == "cancelled"
+    assert types_of(events)[-1] == "job_cancelled"
+
+    again = await client.post(f"/api/plugins/jobs/{job_id}/cancel")
+    assert again.status_code == 200, again.text
+    assert again.json() == {"job_id": job_id, "cancelled": False}
+
+
+# -- what guards the install path ------------------------------------------
+
+#: Every route of the install path that CHANGES something, with a body the
+#: schema accepts. Deliberately not a walk of the router: ``/reload`` and
+#: ``/{id}/enable|disable`` are mutating too and are token-only on purpose,
+#: because they act on code this machine already has.
+MUTATING = [
+    ("POST", "/api/plugins/inspect", {"source": "stats"}),
+    ("POST", "/api/plugins/install", {"inspection_id": "no-such-id"}),
+    ("POST", "/api/plugins/jobs/no-such-job/cancel", None),
+]
+
+
+@pytest.mark.parametrize("method, path, body", MUTATING)
+async def test_every_route_that_installs_needs_the_session_token(
+        anon_client, method, path, body):
+    response = await anon_client.request(method, path, json=body)
+    assert response.status_code == 403, f"{method} {path}"
+    assert TOKEN_HEADER in response.json()["detail"]
+
+
+@pytest.mark.parametrize("method, path, body", MUTATING)
+async def test_a_remote_bind_may_not_install_unless_it_opts_in(
+        client, monkeypatch, method, path, body):
+    """A stranger on the LAN does not get to put third-party code where this
+    process will import it. A classroom or office server that deliberately
+    serves the LAN opts back in with one variable, which the refusal names."""
+    monkeypatch.setattr(settings, "HOST", "192.168.1.20")
+    monkeypatch.setattr(settings, "ALLOW_REMOTE_PLUGIN_INSTALL", False)
+
+    refused = await client.request(method, path, json=body)
+    assert refused.status_code == 403, f"{method} {path}"
+    assert refused.json()["detail"] == (
+        "Installing plugins is only allowed from the computer that runs the "
+        "server. Set CODEFYUI_ALLOW_REMOTE_PLUGIN_INSTALL=1 to override.")
+
+    monkeypatch.setattr(settings, "ALLOW_REMOTE_PLUGIN_INSTALL", True)
+    allowed = await client.request(method, path, json=body)
+    # Past the gate: whatever these ids and bodies deserve, not a 403.
+    assert allowed.status_code != 403, f"{method} {path}"
+
+
+@pytest.mark.parametrize("method, path, body", MUTATING + [
+    # The events route too, which is otherwise open: it is the Package
+    # Center's route body verbatim, and "this server has no installer" is a
+    # truer answer to a follower than "that job never existed".
+    ("GET", "/api/plugins/jobs/no-such-job/events", None),
+])
+async def test_a_server_with_no_installer_says_so_rather_than_guessing(
+        uninstalled_client, method, path, body):
+    response = await uninstalled_client.request(method, path, json=body)
+    assert response.status_code == 503, f"{method} {path}"
+    assert response.json()["detail"] == {"code": "unavailable"}
+
+
+async def test_the_catalog_still_answers_without_an_installer(
+        uninstalled_client):
+    """The contrast that makes the 503 above a decision: ``/catalog`` is a
+    READ, and a server whose installer failed to start can still say what is
+    installed."""
+    response = await uninstalled_client.get("/api/plugins/catalog")
+    assert response.status_code == 200, response.text
+    assert response.json()["active_job"] is None
+    assert response.json()["entries"]
