@@ -993,6 +993,25 @@ export interface JobEventsPage {
   cursor: number;
 }
 
+/**
+ * Where a job-events poll goes. One builder for both centers: the two routes
+ * differ by a single path segment and their query does not differ at all, so
+ * a second copy could only ever drift -- an omitted `limit` on one side, an
+ * unencoded id on the other.
+ */
+function jobEventsUrl(
+  base: string,
+  jobId: string,
+  opts: { cursor?: number; wait?: number; limit?: number },
+): string {
+  const params = new URLSearchParams();
+  if (opts.cursor !== undefined) params.set('cursor', String(opts.cursor));
+  if (opts.wait !== undefined) params.set('wait', String(opts.wait));
+  if (opts.limit !== undefined) params.set('limit', String(opts.limit));
+  const query = params.toString();
+  return `${base}/jobs/${encodeURIComponent(jobId)}/events${query ? `?${query}` : ''}`;
+}
+
 // ── Optional packs / Package Center ──────────────────────────────────────
 
 /**
@@ -1250,14 +1269,8 @@ export async function getPackJobEvents(
   jobId: string,
   opts: { cursor?: number; wait?: number; limit?: number; signal?: AbortSignal } = {},
 ): Promise<PackJobEventsPage> {
-  const params = new URLSearchParams();
-  if (opts.cursor !== undefined) params.set('cursor', String(opts.cursor));
-  if (opts.wait !== undefined) params.set('wait', String(opts.wait));
-  if (opts.limit !== undefined) params.set('limit', String(opts.limit));
-  const query = params.toString();
   const res = await fetch(
-    `${BASE_URL}/packs/jobs/${encodeURIComponent(jobId)}/events${query ? `?${query}` : ''}`,
-    { signal: opts.signal },
+    jobEventsUrl(`${BASE_URL}/packs`, jobId, opts), { signal: opts.signal },
   );
   if (!res.ok) throw await packApiError(res);
   return res.json();
@@ -1716,14 +1729,8 @@ export async function getPluginJobEvents(
   jobId: string,
   opts: { cursor?: number; wait?: number; limit?: number; signal?: AbortSignal } = {},
 ): Promise<JobEventsPage> {
-  const params = new URLSearchParams();
-  if (opts.cursor !== undefined) params.set('cursor', String(opts.cursor));
-  if (opts.wait !== undefined) params.set('wait', String(opts.wait));
-  if (opts.limit !== undefined) params.set('limit', String(opts.limit));
-  const query = params.toString();
   const res = await fetch(
-    `${BASE_URL}/plugins/jobs/${encodeURIComponent(jobId)}/events${query ? `?${query}` : ''}`,
-    { signal: opts.signal },
+    jobEventsUrl(`${BASE_URL}/plugins`, jobId, opts), { signal: opts.signal },
   );
   if (!res.ok) throw await apiError(res);
   return res.json();
