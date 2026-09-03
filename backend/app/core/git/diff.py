@@ -511,10 +511,15 @@ def _from_worktree(root: Path, path: str) -> FileAtRef:
     # QUESTION and returns no content, and the read below is a plain
     # filesystem read of the literal path -- so a pattern cannot make this
     # hand back another file, only refuse one that would have 404'd on the
-    # next line. And pathspec MAGIC cannot reach it at all: every form of it
-    # (``:(glob)``, ``:!``, ``:/``) begins with a colon, and
-    # ``validate_rel_path`` refuses a colon anywhere in a path. That rule
-    # must not be relaxed while this exemption exists.
+    # next line.
+    #
+    # And pathspec MAGIC cannot reach it at all: every form of it
+    # (``:(glob)``, ``:!``, ``:/``, ``:(icase)``) begins with a COLON, and
+    # ``validate_rel_path`` refuses a colon anywhere in a path -- which
+    # ``_readable_path`` has already run on this string, several lines above
+    # this call, before anything was decided about it. That colon rule is
+    # what makes this exemption safe, not only a Windows alternate-data-
+    # stream defence, and it must not be relaxed while the exemption exists.
     ignored = run_git(["check-ignore", "-q", "--", path], cwd=root,
                       timeout=T_READ, ok_codes=(0, 1), read_only=True,
                       literal_pathspecs=False)

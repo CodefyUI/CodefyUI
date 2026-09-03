@@ -30,11 +30,19 @@ back to the command that caused it.
   :attr:`GitResult.out` / :attr:`GitResult.err`'s job -- utf-8 with
   ``errors="replace"``, which is what ``core/project.py`` has always done
   for git output on a cp950 machine.
-* **A killable process tree.** ``creation_flags()`` gives the child its own
-  Windows process group so that a timeout can reach ``git`` AND the
-  ``ssh``/``curl`` it spawned; ``stop_process()`` is the same kill the
-  Package Center uses. A git that hangs on a network read holds an index
-  lock, so leaving one behind breaks the NEXT request too.
+* **A killable process tree -- on Windows.** ``creation_flags()`` gives the
+  child its own Windows process group and ``stop_process()`` ends it with
+  ``taskkill /T``, so a timeout reaches ``git`` AND the ``ssh``/``curl`` it
+  spawned; it is the same kill the Package Center uses. On POSIX it is NOT
+  a tree: ``creation_flags()`` is 0 there and ``stop_process()`` calls
+  ``terminate()`` on the child alone, so a git killed mid-fetch can leave
+  an ``ssh`` behind. That is stated rather than glossed because it is only
+  survivable while nothing here talks to a network: every G1 command is
+  local, and a local git has no long-lived children. G3 adds the ones that
+  do, and owes this module a process group of its own on POSIX
+  (``start_new_session=True`` and a kill aimed at the group) before it
+  ships them. A git that hangs on a network read holds an index lock, so
+  leaving one behind breaks the NEXT request too.
 * **An environment scrubbed of the caller's repository.** ``GIT_DIR`` and
   its five friends (:data:`REPOSITORY_ENV_VARS`) name a repository; if the
   server was started from a shell inside a git hook, every command here
@@ -510,12 +518,23 @@ def run_git(args: Sequence[str], *, cwd: Path, timeout: float,
     taking the index lock (see :func:`git_env`).
 
     *literal_pathspecs* is True everywhere except ``check-ignore``, which is
-    the one command that rejects :data:`LITERAL_PATHSPECS` outright. Leaving
-    it off there is safe because that command answers a QUESTION -- is this
-    path ignored -- and never returns content: the worst a pattern can do is
-    have the answer come back about a file other than the one asked for,
-    which refuses a read that would otherwise have been refused a step later
-    for not existing. Every command that hands back a file's bytes keeps it.
+    the one command that rejects :data:`LITERAL_PATHSPECS` outright ("pathspec
+    magic not supported by this command: 'literal'", exit 128). Leaving it
+    off there rests on two facts, and the second is the load-bearing one:
+
+    * that command answers a QUESTION -- is this path ignored -- and never
+      returns content, so the worst a pattern could do is have the answer
+      come back about a file other than the one asked for, which refuses a
+      read that would otherwise have been refused a step later for not
+      existing;
+    * pathspec MAGIC cannot reach it at all, because every form of it
+      (``:(glob)``, ``:!``, ``:/``, ``:(icase)``) begins with a COLON, and
+      ``paths.validate_rel_path`` -- which every caller runs first -- refuses
+      a colon anywhere in a path. That rule is not only about Windows
+      alternate data streams; it is what makes this exemption safe, and it
+      must not be relaxed while the exemption exists.
+
+    Every command that hands back a file's bytes keeps the option.
     """
     return _run(args, cwd=cwd, timeout=timeout,
                 env=git_env(read_only=read_only),
