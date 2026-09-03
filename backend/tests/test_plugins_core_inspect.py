@@ -35,6 +35,7 @@ from app.core.plugins.errors import (
     ManifestError,
     PluginCancelled,
     PluginInstallError,
+    ReservedPluginId,
 )
 
 
@@ -258,6 +259,32 @@ def test_a_repository_may_not_claim_a_reserved_id(plugin_id, fake_github):
     with pytest.raises(PluginInstallError) as excinfo:
         plugin_inspect.inspect_github("alice", "extras", "", lockfile={})
     assert plugin_id in str(excinfo.value)
+
+
+def test_the_reserved_id_refusal_carries_the_id_and_what_holds_it(fake_github):
+    """Two audiences, one exception. The CLI prints the sentence and the hint,
+    so both are asserted here word for word -- they are what a terminal user
+    reads. A panel cannot show a sentence and draw a control from it, so the
+    id and its holder travel as ATTRIBUTES: the route used to recover the id
+    with a regular expression over the message, which made this wording part
+    of the HTTP contract and would have turned every reserved id into
+    ``invalid_manifest`` the day somebody rephrased it."""
+    fake_github('[plugin]\nid = "catalog"\nversion = "1"\nschema_version = 1\n')
+
+    with pytest.raises(ReservedPluginId) as excinfo:
+        plugin_inspect.inspect_github("alice", "extras", "", lockfile={})
+    refusal = excinfo.value
+
+    assert refusal.plugin_id == "catalog"
+    assert refusal.taken_by == catalog_module.RESERVED_BY_ROUTE
+    assert str(refusal) == "Plugin id 'catalog' is reserved by this build."
+    assert refusal.hint == (
+        "alice/extras declares an id that names a route under /api/plugins/; "
+        "it cannot be installed under that id."
+    )
+    # Still the base class every existing caller catches -- ``_install_github``
+    # catches ``RuntimeError`` around this call and prints what it gets.
+    assert isinstance(refusal, PluginInstallError)
 
 
 def test_a_fork_may_not_claim_the_catalog_id_of_an_official_plugin(fake_github):

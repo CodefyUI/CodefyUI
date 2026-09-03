@@ -184,6 +184,32 @@ class AlreadyInstalled(PluginInstallError):
         self.plugin_id = plugin_id
 
 
+class ReservedPluginId(PluginInstallError):
+    """The manifest declares an id something in this build already owns.
+
+    A route under ``/api/plugins/``, a pack that ships in this release, or
+    another repository's catalog row -- :func:`~.catalog.reserved_id_holder`
+    decides which, and ``taken_by`` is the noun phrase it answered with. The
+    id is what the lockfile, the catalog card and ``/api/plugins/{id}`` all
+    key on, so installing a second thing under it would not be a conflict the
+    user could see; it would be one pack quietly standing where another was.
+
+    Its own class for the reason :class:`AlreadyInstalled` has one: the two
+    things a caller has to say -- WHICH id clashed and WHAT holds it -- are
+    the two things a caller cannot recover from the sentence. The route used
+    to match a regular expression against the message to find the id, which
+    made the wording of an English sentence part of the wire contract; the
+    CLI prints that sentence, so the sentence and the attributes now travel
+    together and neither is derived from the other.
+    """
+
+    def __init__(self, message: str, *, plugin_id: str, taken_by: str,
+                 hint: str | None = None):
+        super().__init__(message, hint=hint)
+        self.plugin_id = plugin_id
+        self.taken_by = taken_by
+
+
 class SourceError(ValueError):
     """What the user typed cannot be turned into something to install.
 

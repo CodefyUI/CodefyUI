@@ -44,7 +44,7 @@ from app.core import plugin_loader
 
 from . import catalog as catalog_module
 from . import github, listing, sources
-from .errors import PluginInstallError
+from .errors import PluginInstallError, ReservedPluginId
 from .manifest import (
     manifest_allowed_modules,
     manifest_capabilities,
@@ -304,7 +304,9 @@ def inspect_github(
     install, but a fork may not take its place.
 
     Raises :class:`~.errors.GitHubError`, ``tomllib.TOMLDecodeError``,
-    :class:`~.errors.ManifestError` or :class:`~.errors.PluginInstallError`.
+    :class:`~.errors.ManifestError` or :class:`~.errors.ReservedPluginId`
+    (a :class:`~.errors.PluginInstallError`, so every caller that already
+    catches the base keeps catching this).
     """
     sha = pinned_sha or github.resolve_sha(owner, repo, ref)
     manifest = tomllib.loads(github.fetch_manifest_text(owner, repo, sha))
@@ -313,8 +315,14 @@ def inspect_github(
 
     taken_by = catalog_module.reserved_id_holder(plugin_id, owner=owner, repo=repo)
     if taken_by is not None:
-        raise PluginInstallError(
+        # The message and the hint are what the CLI prints, word for word;
+        # the attributes are what a panel draws a control from. Both, rather
+        # than either -- a reader of the terminal needs the sentence, and a
+        # client that had to recover the id from it would be parsing English.
+        raise ReservedPluginId(
             f"Plugin id {plugin_id!r} is reserved by this build.",
+            plugin_id=plugin_id,
+            taken_by=taken_by,
             hint=(
                 f"{owner}/{repo} declares an id that names {taken_by}; it "
                 f"cannot be installed under that id."
