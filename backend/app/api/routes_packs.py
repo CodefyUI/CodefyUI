@@ -333,8 +333,16 @@ async def install_pack(pack_id: str, request: Request,
             pack, payload.items, mode=payload.mode or "live",
             variant=payload.variant)
     except PackBusy as exc:
-        return JSONResponse(status_code=409,
-                            content={"detail": str(exc), "job_id": exc.job_id})
+        # ``reason`` only when there IS one -- the job in the way is a plugin
+        # install rather than a pack one. The two-key body is what every
+        # client has read since the panel was written, and a null key added
+        # to it would be a change for the benefit of nobody. Flat, like every
+        # other refusal in this router: the panel reads ``job_id`` and
+        # ``reason`` off the body itself, not out of a nested ``detail``.
+        busy = {"detail": str(exc), "job_id": exc.job_id}
+        if exc.reason is not None:
+            busy["reason"] = exc.reason
+        return JSONResponse(status_code=409, content=busy)
     except RestartUnavailable as exc:
         return JSONResponse(status_code=409,
                             content={"detail": str(exc),

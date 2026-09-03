@@ -79,12 +79,18 @@ __all__ = [
     "STATUS_FAILED",
     "STATUS_NEEDS_RESTART",
     "STATUS_RUNNING",
+    "PLUGIN_INSTALL_RUNNING",
     "PackBusy",
     "PackJob",
     "PackService",
     "RestartUnavailable",
     "UnknownJob",
 ]
+
+#: The ``reason`` a :class:`PackBusy` carries when the job in the way is the
+#: Plugin Center's rather than this one's. A machine-readable string because
+#: the SPA branches on it -- the sentence beside it is for the person.
+PLUGIN_INSTALL_RUNNING = "plugin_install_running"
 
 
 class PackBusy(JobBusy):
@@ -93,11 +99,22 @@ class PackBusy(JobBusy):
     A :class:`~app.core.jobs.JobBusy` with the installer's wording: the
     runner refuses a second claim in its own generic terms, and this is what
     that refusal is called when the job is a pack install.
+
+    ``reason`` is set only when the job in the way is NOT one of ours -- a
+    plugin install, running in the same interpreter. The client is told
+    which, because "follow the install you already started" and "wait for
+    somebody else's" are different offers to make, and an id alone does not
+    say which of the two this is. An ordinary busy refusal leaves it
+    ``None``, and the route then leaves the key out altogether: that body
+    has been two keys since the panel was written.
     """
 
-    def __init__(self, job_id: str):
+    def __init__(self, job_id: str, *, reason: str | None = None,
+                 message: str | None = None):
+        self.reason = reason
         super().__init__(
-            job_id, f"a pack install is already running (job {job_id})")
+            job_id,
+            message or f"a pack install is already running (job {job_id})")
 
 
 class RestartUnavailable(Exception):
@@ -128,6 +145,7 @@ class PackService:
         *,
         run_flow: Callable[..., object] = flows.install_pack_live,
         runs_active: Callable[[], bool] | None = None,
+        busy_elsewhere: Callable[[], str | None] | None = None,
         shutdown_timeout_s: float = SHUTDOWN_TIMEOUT_S,
     ) -> None:
         # Injectable so tests never run a real install, and so the CLI could
@@ -144,6 +162,18 @@ class PackService:
         # whose run service has not been built yet.
         self._runs_active = runs_active if runs_active is not None else (
             lambda: False)
+        # "Is the OTHER installer running?", answered with its job id. The
+        # Plugin Center installs Python packages into the same site-packages
+        # under the same constraints freeze, so two of them at once end the
+        # way two pack installs would -- a corrupt environment or a deadlock
+        # -- and the one-job-at-a-time rule has to span both runners.
+        # INJECTED for the reason ``runs_active`` is: the answer belongs to
+        # that service, and this class must not hold it to ask. Left out, the
+        # answer is "nothing is running elsewhere", which is what a service
+        # with no second installer behind it -- every test here, and every
+        # server built before there was one -- is honestly entitled to say.
+        self._busy_elsewhere = (busy_elsewhere if busy_elsewhere is not None
+                                else (lambda: None))
         # The single job slot: the lock, the buffer, the cursor, the long
         # poll and the worker task. ``_terminal_for`` is the seam back --
         # the runner asks it what an exception out of the flow did to the
@@ -203,6 +233,33 @@ class PackService:
 
     # ── submitting ────────────────────────────────────────────────────────
 
+    def _refuse_if_busy_elsewhere(self) -> None:
+        """Refuse while the OTHER installer holds this interpreter.
+
+        Asked HERE and not inside ``JobRunner.claim``: the runner owns one
+        slot and knows nothing about a second one, and teaching it about the
+        other service would make it exactly the domain-aware thing its own
+        module docstring says it must not become. So each service asks the
+        other, in its own pre-claim section, and the refusal is spelled in
+        its own vocabulary.
+
+        Re-asked after every suspension point, for the reason the local busy
+        check is: the answer can change while this coroutine is parked, and
+        the only check that decides anything is the last one before the
+        claim.
+
+        :raises PackBusy: with the OTHER job's id, and ``reason`` saying it
+            is not one of ours -- the client is about to offer "follow it",
+            and following somebody else's install is a different offer.
+        """
+        other = self._busy_elsewhere()
+        if other is not None:
+            raise PackBusy(
+                other, reason=PLUGIN_INSTALL_RUNNING,
+                message=f"a plugin install is already running (job {other}); "
+                        f"it installs into the same interpreter, so this has "
+                        f"to wait for it")
+
     async def submit_install(
         self,
         pack: Pack,
@@ -226,7 +283,9 @@ class PackService:
         whole of what makes "one install at a time" true: two requests cannot
         both pass the check before either takes the slot.
 
-        :raises PackBusy: an install is already running.
+        :raises PackBusy: an install is already running -- this service's
+            own, or the Plugin Center's in the same interpreter, which
+            carries ``reason`` so the client knows whose job it is naming.
         :raises RestartUnavailable: a restart-mode install on a server that
             cannot restart itself. ``command`` is what to type instead.
         :raises RestartRefused: a restart this server COULD do, but not right
@@ -250,6 +309,9 @@ class PackService:
         running = self.current_job()
         if running is not None and not running.terminal:
             raise PackBusy(running.job_id)
+        # ...and the same question of the OTHER installer, which shares this
+        # interpreter with us and has a slot of its own.
+        self._refuse_if_busy_elsewhere()
 
         # The pack's OWN mode decides as much as the request does. A pack
         # marked restart-mode is one whose install replaces something this
@@ -344,12 +406,14 @@ class PackService:
         # Nothing from here to the end of the method awaits, so the checks
         # below and the runner's claim cannot be interleaved with another
         # submit -- the same property that makes "one job at a time" hold in
-        # ``submit_install``. The busy check is repeated because the probe
-        # above IS a suspension point: a live install may have started during
-        # it, and stopping the server would kill it.
+        # ``submit_install``. Both busy checks are repeated because the probe
+        # above IS a suspension point: a live install -- ours or the Plugin
+        # Center's -- may have started during it, and stopping the server
+        # would kill it.
         running = self.current_job()
         if running is not None and not running.terminal:
             raise PackBusy(running.job_id)
+        self._refuse_if_busy_elsewhere()
 
         if self._runs_active():
             raise RestartRefused(
