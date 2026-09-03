@@ -1254,6 +1254,47 @@ def test_install_github_keeps_the_positional_arguments_project_restore_uses():
     assert params[5].default is None
 
 
+@pytest.mark.parametrize("recorded", ["graph-copilot", None])
+def test_an_update_keeps_the_catalog_row_the_install_recorded(
+    isolated_lockfile, monkeypatch, recorded
+):
+    """``cdui plugin install <name>`` writes down which catalog row a pack
+    came from so a later reader can tell the catalog's own pack from free
+    text carrying the same id. ``update`` re-installs from the repository and
+    rewrites that entry -- and dropped the row on the way, quietly demoting
+    every official plugin to third-party at its first update.
+
+    Nothing recorded stays nothing claimed: "official" is a claim only the
+    catalog is entitled to make, and an update must not invent one.
+    """
+    calls: list[tuple] = []
+
+    def _record(owner, repo, ref, args, lockfile, *, catalog_id=None):
+        calls.append((owner, repo, ref, catalog_id))
+        return 0
+
+    monkeypatch.setattr(plugin_cli, "_install_github", _record)
+    # The one network call ``cmd_update`` makes before it hands over.
+    monkeypatch.setattr(plugin_cli, "resolve_sha", lambda o, r, ref: "b" * 40)
+    entry = {
+        "source_kind": "github_url",
+        "source": "CodefyUI/CodefyUI-Plugin-Graph-Copilot",
+        "url": "https://github.com/CodefyUI/CodefyUI-Plugin-Graph-Copilot",
+        "ref": "", "sha": "a" * 40, "capabilities": [],
+        "trusted_modules": [], "enabled": True,
+    }
+    if recorded is not None:
+        entry["catalog_id"] = recorded
+    plugin_cli.save_lockfile({"schema": 1, "plugins": {"graph-copilot": entry}})
+
+    rc = plugin_cli.cmd_update(argparse.Namespace(plugin_id="graph-copilot"))
+
+    assert rc == 0
+    assert calls == [
+        ("CodefyUI", "CodefyUI-Plugin-Graph-Copilot", "", recorded)
+    ]
+
+
 def test_the_repository_the_catalog_names_may_claim_its_catalog_id(
     isolated_lockfile, fake_github
 ):

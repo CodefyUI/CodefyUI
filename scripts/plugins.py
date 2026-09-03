@@ -2317,7 +2317,16 @@ def cmd_update(args: argparse.Namespace) -> int:
             accept_capabilities=False,
             prior_capabilities=list(entry.get("capabilities") or []),
         )
-        rc = _install_github(owner, repo, ref, synthetic_args, lockfile)
+        # The row this pack came from, carried forward rather than dropped.
+        # It is what a later reader uses to tell the catalog's own pack from
+        # free text that happens to declare the same id -- the badge in the
+        # Plugin Center, and `cdui plugin list`'s "official" -- and an update
+        # that left it out quietly demoted every official plugin to
+        # third-party. ``_install_github`` also checks it against the
+        # manifest that arrives, which is what catches a repository that has
+        # renamed itself onto a different id since the install.
+        rc = _install_github(owner, repo, ref, synthetic_args, lockfile,
+                             catalog_id=entry.get("catalog_id") or None)
         if rc != 0:
             return rc
         updated += 1
