@@ -1,5 +1,6 @@
-"""``GET /api/plugins/catalog``: the one route the Plugin Center draws from.
+"""The Plugin Center's REST surface: the catalog it draws, and the install.
 
+Part 1 is ``GET /api/plugins/catalog``, the one route the panel draws from.
 The panel merges two documents that do not know about each other -- the
 catalog this build ships and the lockfile this install wrote -- so the tests
 here are mostly about the SEAM. Each state a plugin can be in gets a row of
@@ -25,12 +26,21 @@ has to tell apart.
 The key list is asserted as an ORDERED list rather than a set: the payload
 is what a TypeScript type will be written against, and a field that quietly
 changes place is a diff worth seeing.
+
+Part 2 is the install path -- ``POST /inspect``, ``POST /install`` and the
+two job routes -- and it is a different kind of test: a real ``PluginService``
+on ``app.state`` with a flow driven from the test thread, and assertions
+about status codes and the ``detail.code`` a panel branches on. Nothing there
+installs anything or opens a socket; GitHub is faked at
+``app.core.plugins.github``, one call at a time.
 """
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
+import time
 from pathlib import Path
 
 import pytest
@@ -40,16 +50,23 @@ from httpx import ASGITransport, AsyncClient
 
 from app.api import routes_plugins
 from app.config import settings
-from app.core.auth import init_allowed_hosts
+from app.core.auth import TOKEN_HEADER, init_allowed_hosts, session_token
 from app.core import plugin_loader
 from app.core.node_registry import registry
+from app.core.plugins import catalog as catalog_module
+from app.core.plugins import github
+from app.core.plugins import inspect as inspect_module
 from app.core.plugins import listing
 from app.core.plugins.catalog import CatalogEntry
+from app.core.plugins.errors import GitHubError
+from app.core.plugins.inspect import ALLOWED_MODULES_WARNING, FRONTEND_WARNING
 from app.core.plugins.listing import catalog_listing
 from app.core.plugins.reload import rediscover_now
 from app.core.plugins.service import PluginService
 from app.main import app
 from app import main
+
+from tests.test_plugin_service import ScriptedFlow, Sources
 
 BASE_URL = f"http://127.0.0.1:{settings.PORT}"
 
@@ -775,3 +792,404 @@ async def test_rediscover_now_answers_what_the_reload_route_answers(
     assert direct == over_http
     assert direct["total"] == (direct["builtin"] + direct["custom"]
                                + direct["plugins"])
+
+
+# ==========================================================================
+# part 2: the install path
+# ==========================================================================
+#
+# A real ``PluginService`` behind the routes, because what is being tested is
+# how the service's refusals look on the wire. Nothing here installs
+# anything: the flow is scripted from the test thread and the two GitHub
+# calls an inspection makes are answered from memory.
+
+A_SHA = "a" * 40
+
+#: Every key ``POST /api/plugins/inspect`` answers with, in order. The
+#: TypeScript ``PluginInspection`` in ``frontend/src/api/rest.ts`` is written
+#: against this list. ``owner`` and ``repo`` are deliberately absent: they
+#: exist on the ``Inspection`` the service holds, for the install to download
+#: from, and the wire contract does not carry them.
+INSPECTION_KEYS = [
+    "inspection_id", "expires_at", "kind", "mode", "plugin_id", "catalog_id",
+    "official", "source", "url", "ref", "sha", "name", "version",
+    "description", "homepage", "manifest", "capabilities", "allowed_modules",
+    "python_deps", "has_frontend", "chapters", "lessons", "consent_required",
+    "installed", "up_to_date", "capabilities_added", "allowed_modules_added",
+    "warnings",
+]
+
+#: A repository plugin that asks for everything a consent screen has to draw:
+#: a capability, a module the gate would otherwise refuse, a Python package
+#: and browser code.
+REPO_MANIFEST = """\
+[plugin]
+id = "extras"
+name = "Extras"
+version = "1.2.0"
+description = "Nodes somebody wrote."
+homepage = "https://example.com/extras"
+schema_version = 1
+
+[security]
+capabilities = ["network"]
+allowed_modules = ["requests"]
+
+[python_deps]
+tabulate = ">=0.9"
+
+[frontend]
+entry = "web/index.js"
+
+[lessons]
+chapters = ["C7"]
+lessons = ["intro"]
+"""
+
+
+def a_manifest(plugin_id: str = "extras", **plugin_fields: object) -> str:
+    """The smallest manifest this build will install, plus *plugin_fields*."""
+    lines = [f'id = "{plugin_id}"', "schema_version = 1", 'version = "1.0.0"']
+    lines += [f'{key} = "{value}"' for key, value in plugin_fields.items()]
+    return "[plugin]\n" + "\n".join(lines) + "\n"
+
+
+class FakeGitHub:
+    """The two calls an INSPECTION makes, answered without a socket.
+
+    Not the tarball: the install half of ``core.plugins.github`` is never
+    reached from these tests, because the flow that would download one is
+    scripted. Patched on the module rather than on ``inspect`` so the real
+    ``inspect_github`` runs -- the sha, the manifest read, the validation and
+    the reserved-id refusal are all the production ones.
+    """
+
+    def __init__(self, monkeypatch) -> None:
+        self._monkeypatch = monkeypatch
+        #: Every ``(owner, repo, ref)`` a resolve was asked for.
+        self.resolved: list[tuple[str, str, str]] = []
+
+    def answers(self, manifest: str, *, sha: str = A_SHA) -> None:
+        def resolve(owner: str, repo: str, ref: str) -> str:
+            self.resolved.append((owner, repo, ref))
+            return sha
+
+        self._monkeypatch.setattr(github, "resolve_sha", resolve)
+        self._monkeypatch.setattr(github, "fetch_manifest_text",
+                                  lambda owner, repo, at: manifest)
+
+    def raises(self, exc: BaseException) -> None:
+        def boom(*args, **kwargs):
+            raise exc
+
+        self._monkeypatch.setattr(github, "resolve_sha", boom)
+        self._monkeypatch.setattr(github, "fetch_manifest_text", boom)
+
+
+@pytest.fixture
+def fake_github(monkeypatch) -> FakeGitHub:
+    return FakeGitHub(monkeypatch)
+
+
+@pytest.fixture
+def flow() -> ScriptedFlow:
+    return ScriptedFlow()
+
+
+@pytest.fixture
+async def plugin_service(flow, center_lockfile):
+    """A ``PluginService`` on ``app.state``, installed and removed by hand.
+
+    The lifespan does not run under httpx's ASGITransport (the
+    ``pack_service`` precedent in ``test_api_packs.py``), so the service these
+    routes reach for is put there by this fixture. ``reload`` is a stub on
+    purpose: the real one clears the node registry every other test in the
+    session shares, and none of these tests is about re-discovery.
+
+    ``center_lockfile`` comes with it, so every inspection here compares
+    against a throwaway lockfile rather than the developer's own.
+    """
+    service = PluginService(run_flow=flow, reload=lambda: {})
+    previous = getattr(app.state, "plugin_service", None)
+    app.state.plugin_service = service
+    try:
+        yield service
+    finally:
+        await service.shutdown()
+        if previous is None:
+            if hasattr(app.state, "plugin_service"):
+                delattr(app.state, "plugin_service")
+        else:
+            app.state.plugin_service = previous
+
+
+@pytest.fixture
+async def client(plugin_service):
+    """A client carrying the session token, over that service."""
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url=BASE_URL,
+        headers={TOKEN_HEADER: session_token()},
+    ) as http:
+        yield http
+
+
+async def inspected(client, source: str) -> dict:
+    """POST /inspect and return the body, asserting it was answered."""
+    response = await client.post("/api/plugins/inspect",
+                                 json={"source": source})
+    assert response.status_code == 200, response.text
+    return response.json()
+
+
+# -- POST /api/plugins/inspect ---------------------------------------------
+
+
+async def test_inspecting_a_builtin_answers_the_whole_consent_screen(client):
+    """A pack that ships in this release goes through inspect too, so the
+    panel has ONE flow -- and comes back with nobody to be asked about."""
+    body = await inspected(client, "stats")
+
+    assert list(body) == INSPECTION_KEYS
+    assert len(body["inspection_id"]) == 32
+    # ISO-8601 UTC: "expires_at: 1731.9" means nothing in a browser.
+    assert body["expires_at"].endswith("+00:00")
+    assert body["kind"] == "builtin"
+    assert body["mode"] == "install"
+    assert body["plugin_id"] == "stats"
+    assert body["catalog_id"] == "stats"
+    assert body["official"] is True
+    assert body["source"] == "stats"
+    assert body["version"] == "0.1.0"
+    # Nothing was resolved and nothing was downloaded: the files are here.
+    assert body["url"] is None
+    assert body["ref"] is None
+    assert body["sha"] is None
+    assert body["consent_required"] is False
+    assert body["warnings"] == []
+    assert body["capabilities"] == []
+    assert body["allowed_modules"] == []
+    assert body["installed"] is None
+    assert body["up_to_date"] is False
+
+
+async def test_inspecting_a_repository_says_what_installing_would_cost(
+        client, fake_github):
+    """Every field the consent screen draws, from the real ``inspect_github``
+    over a manifest read at a resolved sha."""
+    fake_github.answers(REPO_MANIFEST)
+
+    body = await inspected(client, "alice/extras")
+
+    assert list(body) == INSPECTION_KEYS
+    assert body["kind"] == "github"
+    assert body["mode"] == "install"
+    assert body["plugin_id"] == "extras"
+    assert body["catalog_id"] is None
+    # "official" is a claim only the catalog is entitled to make.
+    assert body["official"] is False
+    assert body["source"] == "alice/extras"
+    assert body["url"] == "https://github.com/alice/extras"
+    assert body["sha"] == A_SHA
+    assert body["name"] == "Extras"
+    assert body["version"] == "1.2.0"
+    assert body["homepage"] == "https://example.com/extras"
+    assert body["capabilities"] == ["network"]
+    assert body["allowed_modules"] == ["requests"]
+    assert body["python_deps"] == {"tabulate": ">=0.9"}
+    assert body["has_frontend"] is True
+    assert body["chapters"] == ["C7"]
+    assert body["lessons"] == ["intro"]
+    assert body["consent_required"] is True
+    assert body["manifest"]["plugin"]["id"] == "extras"
+    # Both sentences, because they are two different decisions: browser code
+    # runs in the editor with everything the editor can reach, and an
+    # allowed module is the AST gate switched off by name.
+    assert FRONTEND_WARNING in body["warnings"]
+    assert ALLOWED_MODULES_WARNING.format(modules="requests") in body["warnings"]
+    # The repository is SPLIT on the inspection the service keeps, because
+    # ``download_tarball`` takes an owner and a repo. The wire contract does
+    # not carry it, and a response built by dumping the dataclass would.
+    assert "owner" not in body
+    assert "repo" not in body
+    # Read AT the sha, not at the ref: what the user is shown and what an
+    # install would fetch have to be the same commit.
+    assert fake_github.resolved == [("alice", "extras", "")]
+
+
+async def test_an_update_shows_the_difference_not_the_total(
+        client, fake_github):
+    """``demo-external`` is installed having been granted one capability and
+    one module; the repository now asks for more. What the user has to decide
+    about is the DELTA, so it travels in its own fields."""
+    fake_github.answers("""\
+[plugin]
+id = "demo-external"
+name = "Demo External"
+version = "3.0.0"
+schema_version = 1
+
+[security]
+capabilities = ["network", "filesystem"]
+allowed_modules = ["requests", "os"]
+""")
+
+    body = await inspected(client, "alice/extras")
+
+    assert body["mode"] == "update"
+    assert body["up_to_date"] is False
+    assert body["installed"] == {
+        "sha": "0" * 40, "version": "2.0.0", "capabilities": ["network"],
+        "trusted_modules": ["requests"], "enabled": True,
+        "source_kind": "github_url",
+    }
+    assert body["capabilities_added"] == ["filesystem"]
+    assert body["allowed_modules_added"] == ["os"]
+
+
+async def test_the_same_commit_that_is_installed_is_up_to_date(
+        client, fake_github):
+    fake_github.answers(a_manifest("demo-external"), sha="0" * 40)
+
+    body = await inspected(client, "alice/extras")
+
+    assert body["mode"] == "update"
+    assert body["up_to_date"] is True
+    assert body["capabilities_added"] == []
+
+
+@pytest.mark.parametrize("body", [
+    {},
+    {"source": ""},
+    {"source": "   "},
+    {"source": "alice/extras", "sha": "deadbeef"},
+    {"source": ["alice/extras"]},
+])
+async def test_a_request_the_schema_will_not_take_is_422(client, body):
+    """``extra="forbid"`` is what makes "the client cannot hand the server a
+    sha of its own" a property of the schema rather than of the handler."""
+    response = await client.post("/api/plugins/inspect", json=body)
+    assert response.status_code == 422, response.text
+
+
+async def test_a_pasted_source_arrives_trimmed(client, fake_github):
+    fake_github.answers(REPO_MANIFEST)
+    body = await inspected(client, "  alice/extras\n")
+    assert body["source"] == "alice/extras"
+
+
+async def test_a_name_the_catalog_does_not_have_offers_the_ones_it_does(
+        client):
+    """The user did type a name; what they cannot see is which names this
+    build has, so the refusal carries them."""
+    response = await client.post("/api/plugins/inspect",
+                                 json={"source": "no-such-pack"})
+    assert response.status_code == 400, response.text
+    detail = response.json()["detail"]
+
+    assert detail["code"] == "unknown_catalog_name"
+    assert "stats" in detail["known"]
+
+
+async def test_a_string_that_names_nothing_installable_is_unparseable(client):
+    response = await client.post(
+        "/api/plugins/inspect",
+        json={"source": "https://evil.example.com/alice/extras"})
+    assert response.status_code == 400, response.text
+    assert response.json()["detail"] == {"code": "unparseable_source"}
+
+
+async def test_a_manifest_this_build_will_not_install_is_a_400(
+        client, fake_github):
+    fake_github.answers('[plugin]\nid = "extras"\nschema_version = 99\n')
+
+    response = await client.post("/api/plugins/inspect",
+                                 json={"source": "alice/extras"})
+    assert response.status_code == 400, response.text
+    assert response.json()["detail"] == {"code": "invalid_manifest"}
+
+
+async def test_a_manifest_that_is_not_even_toml_is_a_400_not_a_500(
+        client, fake_github):
+    """A captive portal, a proxy's block page, or a repository whose manifest
+    somebody broke: the read never gets as far as validation."""
+    fake_github.answers("<!doctype html>\n<html>not a manifest</html>\n")
+
+    response = await client.post("/api/plugins/inspect",
+                                 json={"source": "alice/extras"})
+    assert response.status_code == 400, response.text
+    assert response.json()["detail"] == {"code": "invalid_manifest"}
+
+
+async def test_an_id_this_build_owns_is_refused_with_the_id(
+        client, fake_github):
+    """``/api/plugins/catalog`` is a route, so no plugin may be called
+    ``catalog``. The panel has to say WHICH id clashed, and the exception
+    does not carry one -- this is what pins the route's reading of it."""
+    fake_github.answers(a_manifest("catalog"))
+
+    response = await client.post("/api/plugins/inspect",
+                                 json={"source": "alice/extras"})
+    assert response.status_code == 400, response.text
+    assert response.json()["detail"] == {"code": "reserved_id",
+                                         "id": "catalog"}
+
+
+async def test_a_catalog_row_too_broken_to_install_is_not_a_500(
+        client, monkeypatch):
+    """The name parses (the raw registry has it) and the validated catalog
+    does not: a row this build cannot install from. Named but unusable is
+    still the source's problem, not the server's."""
+    monkeypatch.setattr(catalog_module, "load_catalog",
+                        lambda: {"plugins": {"broken": {"kind": "builtin"}}})
+    monkeypatch.setattr(catalog_module, "catalog_entries", dict)
+
+    response = await client.post("/api/plugins/inspect",
+                                 json={"source": "broken"})
+    assert response.status_code == 400, response.text
+    assert response.json()["detail"] == {"code": "invalid_manifest"}
+
+
+@pytest.mark.parametrize("status, expected, code", [
+    (404, 404, "not_found"),
+    (403, 502, "github_rate_limited"),
+    (429, 502, "github_rate_limited"),
+    (500, 502, "github_unreachable"),
+    (None, 502, "github_unreachable"),
+])
+async def test_a_github_failure_is_split_by_what_it_means(
+        client, fake_github, status, expected, code):
+    """A typo is the caller's to fix and travels as a 404; everything else
+    happened between this server and GitHub, and "wait" and "check the
+    network" are different waits."""
+    fake_github.raises(GitHubError("no", status=status))
+
+    response = await client.post("/api/plugins/inspect",
+                                 json={"source": "alice/extras"})
+    assert response.status_code == expected, response.text
+    assert response.json()["detail"] == {"code": code}
+
+
+async def test_only_one_source_is_read_at_a_time(client, monkeypatch):
+    """Refused rather than queued: a panel that inspects per keystroke would
+    otherwise open a socket per keystroke, and an answer that arrives after
+    the person has typed something else answers nothing."""
+    sources = Sources()
+    monkeypatch.setattr(inspect_module, "inspect_source", sources)
+    sources.answer("alice/extras", inspect_module.inspect_builtin(
+        "stats", lockfile=plugin_loader.load_lockfile()))
+    sources.blocked.set()
+
+    first = asyncio.create_task(
+        client.post("/api/plugins/inspect", json={"source": "alice/extras"}))
+    deadline = time.monotonic() + 10.0
+    while not sources.entered.is_set():
+        assert time.monotonic() < deadline, "the inspection never started"
+        await asyncio.sleep(0.01)
+
+    refused = await client.post("/api/plugins/inspect",
+                                json={"source": "bob/other"})
+    assert refused.status_code == 409, refused.text
+    assert refused.json()["detail"] == {"code": "inspect_busy"}
+
+    sources.blocked.clear()
+    assert (await first).status_code == 200
