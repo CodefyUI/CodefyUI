@@ -732,6 +732,30 @@ async def test_discard_all_before_the_first_commit_restores_a_staged_edit(
     assert result.status.unstaged == []
 
 
+async def test_discard_all_during_a_conflict_restores_what_it_can(repo):
+    """One unmerged file used to make "discard everything" do nothing.
+
+    ``restore --worktree -- .`` exits 1 with "error: path 'a.txt' is
+    unmerged" the moment a conflict sits beside an ordinary modification
+    (measured on git 2.53) -- and it restores NOTHING before it does, so
+    the whole request answered 500 with every change still in place. The
+    pathspec cannot say "all but the unmerged ones", so the restore names
+    the unstaged files instead; an unmerged path is not one of them.
+    """
+    repo.commit("a second tracked file", {"b.txt": "b\n"})
+    _conflicted(repo)
+    repo.write("b.txt", "modified\n")
+
+    result = await repo.service.discard(all_paths=True)
+
+    assert repo.read("b.txt") == "b\n"
+    # The conflict is left exactly as it was: resolving it is the user's
+    # job, and a discard that silently picked a side would be the worst
+    # possible help.
+    assert [entry.path for entry in result.status.conflicted] == ["a.txt"]
+    assert "<<<<<<<" in repo.read("a.txt")
+
+
 async def test_discard_refuses_a_submodule(repo):
     """``restore --worktree`` on a gitlink succeeds and does nothing at all
     (measured on git 2.53), so the tab would report a discard that did not

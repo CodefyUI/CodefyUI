@@ -341,23 +341,31 @@ def discard_paths(root: Path, paths: Sequence[str] | None = None
       report a discard that did not happen; the changes are in the other
       repository, where this tab does not go.
 
-    The whole-tree form is ``restore --worktree -- .`` then ``clean -fd``,
-    and never ``-x``: ignored files are the user's ``.env``, their virtual
-    environment and their model weights, and "discard my changes" has never
-    meant "delete those".
+    The whole-tree form restores the unstaged files by NAME and then runs
+    ``clean -fd``, never ``-x``: ignored files are the user's ``.env``,
+    their virtual environment and their model weights, and "discard my
+    changes" has never meant "delete those".
     """
     if paths is None:
-        # ``restore --worktree -- .`` fails outright -- exit 1, "pathspec '.'
-        # did not match any file(s) known to git", which the classifier reads
-        # as a 404 -- when the INDEX is empty, and the index is empty in the
-        # most ordinary state there is: a repository somebody has just
-        # initialised. The clean would then never run at all. Nothing is
-        # tracked to restore in that case anyway, and the same is true
-        # whenever the unstaged group is empty, so the restore is skipped
-        # rather than made to tolerate a failure it cannot tell apart from a
-        # real one.
-        if repo.read_status(root).unstaged:
-            run_git(["restore", "--worktree", "--", "."], cwd=root,
+        # The whole-tree restore NAMES its files rather than passing ``.``,
+        # and both reasons are measured on git 2.53.
+        #
+        # ``restore --worktree -- .`` exits 1 with "error: path 'a.txt' is
+        # unmerged" as soon as one conflicted file sits beside an ordinary
+        # modification -- and it restores NOTHING, so "discard everything"
+        # during a conflict answered 500 and left every change in place.
+        # The pathspec cannot express "all but the unmerged ones"; the
+        # unstaged group already is that list, because an unmerged path is
+        # a ``u`` record and is not in it.
+        #
+        # It also exits 1 for "pathspec '.' did not match any file(s) known
+        # to git" when the INDEX is empty -- a repository somebody has just
+        # initialised -- and the clean would then never run. An empty list
+        # skips the process instead of tolerating a failure it cannot tell
+        # apart from a real one.
+        restore = [entry.path for entry in repo.read_status(root).unstaged]
+        if restore:
+            run_git(["restore", "--worktree", "--", *restore], cwd=root,
                     timeout=T_LOCAL)
         run_git(["clean", "-fd", "--", "."], cwd=root, timeout=T_LOCAL)
         return {"all": True}
