@@ -280,6 +280,27 @@ function inspectionFailure(err: unknown): InspectionFailure {
   };
 }
 
+/**
+ * Run *fn* with *pluginId* marked busy, and unmark it however *fn* ends.
+ *
+ * Every action that acts on one plugin disables that row for the length of
+ * the request, and every one of them has to release it on a throw as well as
+ * on a return. Five copies of the same `finally` are five chances to leave a
+ * row disabled with nothing running behind it.
+ */
+async function withBusy<T>(pluginId: string, fn: () => Promise<T>): Promise<T> {
+  usePluginStore.setState((s) => ({ busy: { ...s.busy, [pluginId]: true } }));
+  try {
+    return await fn();
+  } finally {
+    usePluginStore.setState((s) => {
+      const busy = { ...s.busy };
+      delete busy[pluginId];
+      return { busy };
+    });
+  }
+}
+
 /** A plugin's display name for a toast, falling back to its id. */
 function pluginName(pluginId: string): string {
   return usePluginStore.getState().byId[pluginId]?.name || pluginId;
@@ -714,8 +735,7 @@ export const usePluginStore = create<PluginState>((set, get) => ({
       return;
     }
 
-    set((s) => ({ busy: { ...s.busy, [pluginId]: true } }));
-    try {
+    await withBusy(pluginId, async () => {
       const data = await runInspect(pluginId, pluginId);
       if (data === null) return;
       if (data.consent_required) {
@@ -732,19 +752,13 @@ export const usePluginStore = create<PluginState>((set, get) => ({
       // install failed for something a review cannot fix — busy, refused,
       // offline — putting the card up now would answer a toast with a form
       // nobody asked for. A consent refusal is the exception: it left a
-      // message on the review precisely because ticking a box is the fix.
+      // failure on the review precisely because ticking a box is the fix.
       const after = get().inspection;
       if (after.phase === 'ready' && after.error === null
           && after.forPluginId === pluginId) {
         set({ inspection: { phase: 'idle' } });
       }
-    } finally {
-      set((s) => {
-        const busy = { ...s.busy };
-        delete busy[pluginId];
-        return { busy };
-      });
-    }
+    });
   },
 
   inspect: async (source) => {
@@ -759,16 +773,7 @@ export const usePluginStore = create<PluginState>((set, get) => ({
     const pluginId = inspection.data.plugin_id;
     if (get().busy[pluginId]) return;
 
-    set((s) => ({ busy: { ...s.busy, [pluginId]: true } }));
-    try {
-      await startInstall(inspection.data, opts);
-    } finally {
-      set((s) => {
-        const busy = { ...s.busy };
-        delete busy[pluginId];
-        return { busy };
-      });
-    }
+    await withBusy(pluginId, () => startInstall(inspection.data, opts));
   },
 
   clearInspection: () => set({ inspection: { phase: 'idle' } }),
@@ -783,48 +788,45 @@ export const usePluginStore = create<PluginState>((set, get) => ({
       return;
     }
 
-    set((s) => ({ busy: { ...s.busy, [pluginId]: true } }));
-    try {
-      const result = await updatePlugin(pluginId);
-      if (result.kind === 'up_to_date') {
-        toast(t('pluginCenter.toast.upToDate', { plugin: pluginName(pluginId) }), 'info');
-        return;
+    await withBusy(pluginId, async () => {
+      try {
+        const result = await updatePlugin(pluginId);
+        if (result.kind === 'up_to_date') {
+          toast(
+            t('pluginCenter.toast.upToDate', { plugin: pluginName(pluginId) }), 'info',
+          );
+          return;
+        }
+        if (result.kind === 'needs_consent') {
+          // The new version asks for something the installed one did not. Same
+          // review card as a fresh install, with `capabilities_added` the only
+          // part that is actually new.
+          set({
+            inspection: {
+              phase: 'ready',
+              data: result.inspection,
+              source: pluginId,
+              forPluginId: pluginId,
+              kind: 'update',
+              error: null,
+            },
+          });
+          return;
+        }
+        set({ job: emptyPluginJob(result.job_id, pluginId, 'update') });
+        setPluginStatus(pluginId, 'installing');
+        startFollowing(result.job_id, pluginId, 'update', 0);
+      } catch (err) {
+        if (err instanceof ApiError && err.status === 409) {
+          toast(t('packs.toast.busy'), 'warning');
+          await get().refresh();
+        } else if (err instanceof ApiError && err.status === 403) {
+          toast(t('packs.remoteDisabled'), 'error');
+        } else {
+          toast(t('pluginCenter.updateFailed', { message: errorMessage(err) }), 'error');
+        }
       }
-      if (result.kind === 'needs_consent') {
-        // The new version asks for something the installed one did not. Same
-        // review card as a fresh install, with `capabilities_added` the only
-        // part that is actually new.
-        set({
-          inspection: {
-            phase: 'ready',
-            data: result.inspection,
-            source: pluginId,
-            forPluginId: pluginId,
-            kind: 'update',
-            error: null,
-          },
-        });
-        return;
-      }
-      set({ job: emptyPluginJob(result.job_id, pluginId, 'update') });
-      setPluginStatus(pluginId, 'installing');
-      startFollowing(result.job_id, pluginId, 'update', 0);
-    } catch (err) {
-      if (err instanceof ApiError && err.status === 409) {
-        toast(t('packs.toast.busy'), 'warning');
-        await get().refresh();
-      } else if (err instanceof ApiError && err.status === 403) {
-        toast(t('packs.remoteDisabled'), 'error');
-      } else {
-        toast(t('pluginCenter.updateFailed', { message: errorMessage(err) }), 'error');
-      }
-    } finally {
-      set((s) => {
-        const busy = { ...s.busy };
-        delete busy[pluginId];
-        return { busy };
-      });
-    }
+    });
   },
 
   uninstall: async (pluginId) => {
@@ -843,51 +845,46 @@ export const usePluginStore = create<PluginState>((set, get) => ({
     });
     if (!ok) return;
 
-    set((s) => ({ busy: { ...s.busy, [pluginId]: true } }));
-    try {
-      await uninstallPlugin(pluginId);
-      // Its nodes are gone from the registry and its bundle is still
-      // activated in this page: all three steps, or the canvas keeps offering
-      // nodes the server will refuse to run.
-      await refreshEverything();
-      toast(t('pluginCenter.toast.removed', { plugin: name }), 'success');
-    } catch (err) {
-      const hint = str(errorDetail(err)?.hint);
-      if (refusalCode(err) === 'files_locked') {
-        // Windows keeps an open file: the plugin is deregistered but its
-        // directory is still there. The server's hint is the only thing that
-        // says what to do about it, so it is what the toast carries.
-        toast(
-          t('pluginCenter.toast.removeFailed', {
-            plugin: name, message: hint ?? errorMessage(err),
-          }),
-          'warning',
-        );
+    await withBusy(pluginId, async () => {
+      try {
+        await uninstallPlugin(pluginId);
+        // Its nodes are gone from the registry and its bundle is still
+        // activated in this page: all three steps, or the canvas keeps
+        // offering nodes the server will refuse to run.
         await refreshEverything();
-      } else if (err instanceof ApiError && err.status === 409) {
-        toast(t('packs.toast.busy'), 'warning');
-        await get().refresh();
-      } else if (err instanceof ApiError && err.status === 403) {
-        // Same gate as an install, and the same answer: the server only
-        // takes a change like this from the machine it runs on. Wrapping
-        // `Forbidden` in "Could not remove Demo plugin" would tell a LAN
-        // user that something went wrong rather than where to do it.
-        toast(t('packs.remoteDisabled'), 'error');
-      } else {
-        toast(
-          t('pluginCenter.toast.removeFailed', {
-            plugin: name, message: errorMessage(err),
-          }),
-          'error',
-        );
+        toast(t('pluginCenter.toast.removed', { plugin: name }), 'success');
+      } catch (err) {
+        const hint = str(errorDetail(err)?.hint);
+        if (refusalCode(err) === 'files_locked') {
+          // Windows keeps an open file: the plugin is deregistered but its
+          // directory is still there. The server's hint is the only thing that
+          // says what to do about it, so it is what the toast carries.
+          toast(
+            t('pluginCenter.toast.removeFailed', {
+              plugin: name, message: hint ?? errorMessage(err),
+            }),
+            'warning',
+          );
+          await refreshEverything();
+        } else if (err instanceof ApiError && err.status === 409) {
+          toast(t('packs.toast.busy'), 'warning');
+          await get().refresh();
+        } else if (err instanceof ApiError && err.status === 403) {
+          // Same gate as an install, and the same answer: the server only
+          // takes a change like this from the machine it runs on. Wrapping
+          // `Forbidden` in "Could not remove Demo plugin" would tell a LAN
+          // user that something went wrong rather than where to do it.
+          toast(t('packs.remoteDisabled'), 'error');
+        } else {
+          toast(
+            t('pluginCenter.toast.removeFailed', {
+              plugin: name, message: errorMessage(err),
+            }),
+            'error',
+          );
+        }
       }
-    } finally {
-      set((s) => {
-        const busy = { ...s.busy };
-        delete busy[pluginId];
-        return { busy };
-      });
-    }
+    });
   },
 
   setEnabled: async (pluginId, enabled) => {
@@ -895,31 +892,26 @@ export const usePluginStore = create<PluginState>((set, get) => ({
     if (get().busy[pluginId]) return;
     const name = pluginName(pluginId);
 
-    set((s) => ({ busy: { ...s.busy, [pluginId]: true } }));
-    try {
-      await setPluginEnabled(pluginId, enabled);
-      // Enabling registers nodes and activates a frontend; disabling takes
-      // both away. Either way the same three things are now stale.
-      await refreshEverything();
-      toast(
-        t(enabled ? 'pluginCenter.toast.enabled' : 'pluginCenter.toast.disabled',
-          { plugin: name }),
-        'success',
-      );
-    } catch (err) {
-      toast(
-        t('pluginCenter.toast.toggleFailed', {
-          plugin: name, message: errorMessage(err),
-        }),
-        'error',
-      );
-    } finally {
-      set((s) => {
-        const busy = { ...s.busy };
-        delete busy[pluginId];
-        return { busy };
-      });
-    }
+    await withBusy(pluginId, async () => {
+      try {
+        await setPluginEnabled(pluginId, enabled);
+        // Enabling registers nodes and activates a frontend; disabling takes
+        // both away. Either way the same three things are now stale.
+        await refreshEverything();
+        toast(
+          t(enabled ? 'pluginCenter.toast.enabled' : 'pluginCenter.toast.disabled',
+            { plugin: name }),
+          'success',
+        );
+      } catch (err) {
+        toast(
+          t('pluginCenter.toast.toggleFailed', {
+            plugin: name, message: errorMessage(err),
+          }),
+          'error',
+        );
+      }
+    });
   },
 
   cancel: async () => {
