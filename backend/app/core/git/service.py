@@ -338,7 +338,7 @@ def discard_paths(root: Path, paths: Sequence[str] | None = None
         return {"all": True}
 
     clean = validate_rel_paths(root, paths)
-    submodules = _submodule_paths(root, clean)
+    submodules = repo.submodule_paths(root, clean)
     if submodules:
         raise GitError("invalid_path", 400,
                        f"{submodules[0]} is a submodule",
@@ -366,30 +366,6 @@ def discard_paths(root: Path, paths: Sequence[str] | None = None
     if remove:
         run_git(["clean", "-f", "--", *remove], cwd=root, timeout=T_LOCAL)
     return {"paths": clean, "restored": len(restore), "removed": len(remove)}
-
-
-#: The index mode of a gitlink -- a submodule's entry in its parent.
-_GITLINK_MODE = "160000"
-
-
-def _submodule_paths(root: Path, paths: Sequence[str]) -> list[str]:
-    """Which of *paths* are submodules, as the index sees them.
-
-    Asked of ``ls-files --stage`` rather than of the status parser, which
-    does not keep porcelain v2's submodule field, and of the INDEX rather
-    than of the disk, because that is where the answer is unambiguous: mode
-    160000 is a gitlink and nothing else is.
-    """
-    result = run_git(["ls-files", "--stage", "-z", "--", *paths], cwd=root,
-                     timeout=T_READ, read_only=True)
-    found: list[str] = []
-    for entry in result.out.split("\x00"):
-        if not entry.startswith(_GITLINK_MODE + " "):
-            continue
-        _, _, path = entry.partition("\t")
-        if path:
-            found.append(path)
-    return found
 
 
 def commit_changes(root: Path, message: str, *, all_paths: bool = False,

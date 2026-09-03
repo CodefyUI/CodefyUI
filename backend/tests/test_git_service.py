@@ -25,6 +25,7 @@ import asyncio
 import os
 import shutil
 import subprocess
+import sys
 import threading
 from pathlib import Path
 
@@ -1302,16 +1303,61 @@ async def test_a_worktree_read_never_follows_a_symbolic_link(repo):
 
 
 async def test_a_worktree_read_through_a_linked_folder_is_refused(repo):
-    """A link ANYWHERE in the path counts, not only as its last segment."""
-    secrets = repo.root.parent / "outside"
-    secrets.mkdir()
-    (secrets / "keys.txt").write_text(f"{SECRET}\n", encoding="utf-8")
-    _link(secrets, repo.root / "linked")
-    repo.write("keep.txt", "keep\n")
-    repo.commit("a link to a folder")
+    """A link ANYWHERE in the path counts, not only as its last segment.
+
+    The link points INSIDE the repository on purpose. A link that pointed
+    out of it would be refused by ``validate_rel_path``'s containment check
+    -- which is a different rule, and would leave this one untested.
+    """
+    repo.write("sub/keys.txt", f"{SECRET}\n")
+    _link(repo.root / "sub", repo.root / "linked")
+    repo.commit("a link to a folder inside the project")
 
     with pytest.raises(GitError) as excinfo:
         await repo.service.file_at_ref("linked/keys.txt", "worktree")
+
+    assert _error(excinfo).code == "invalid_path"
+    assert "symbolic link" in (_error(excinfo).hint or "")
+
+
+@pytest.mark.parametrize("blobs", [False, True])
+async def test_a_worktree_diff_through_a_linked_folder_is_refused(repo, blobs):
+    """The diff reads the file on disk too -- both branches of it.
+
+    An untracked path becomes ``diff --no-index -- /dev/null <path>``, which
+    prints the WHOLE file; a tracked one is read to be diffed. Guarding only
+    ``file_at_ref`` left this route serving what the link pointed at.
+    """
+    repo.write("sub/keys.txt", f"{SECRET}\n")
+    _link(repo.root / "sub", repo.root / "linked")
+
+    with pytest.raises(GitError) as excinfo:
+        await repo.service.diff("linked/keys.txt", "worktree", blobs=blobs)
+
+    assert _error(excinfo).code == "invalid_path"
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="junctions are Windows'")
+@pytest.mark.parametrize("blobs", [False, True])
+async def test_a_worktree_diff_through_a_junction_is_refused(repo, blobs):
+    """A junction is a redirection that is NOT a symbolic link.
+
+    ``Path.is_symlink`` answers False for one and git follows it like any
+    directory, so the per-component walk cannot see it -- the
+    resolved-against-lexical comparison is what does. Measured on this box:
+    ``mklink /J`` over a folder of secrets made ``diff`` serve them.
+    """
+    repo.write("secrets/keys.txt", f"{SECRET}\n")
+    made = subprocess.run(
+        ["cmd", "/c", "mklink", "/J", str(repo.root / "notes"),
+         str(repo.root / "secrets")], capture_output=True)
+    if made.returncode != 0:
+        pytest.skip("this box would not create a junction")
+    assert not (repo.root / "notes").is_symlink(), (
+        "a junction that is_symlink CAN see needs no second check")
+
+    with pytest.raises(GitError) as excinfo:
+        await repo.service.diff("notes/keys.txt", "worktree", blobs=blobs)
 
     assert _error(excinfo).code == "invalid_path"
 
@@ -1348,6 +1394,154 @@ async def test_an_ordinary_file_beside_a_link_still_reads(repo):
 
     assert (await repo.service.file_at_ref("plain.txt",
                                            "worktree")).text == "ordinary\n"
+
+
+# --- a file in a conflict is still a file ------------------------------------
+
+
+def _conflicted(repo: Repo) -> Repo:
+    """Leave *repo* mid-merge, with ``a.txt`` unmerged in the index."""
+    repo.commit("base", {"a.txt": "base\n"})
+    repo.git("checkout", "-q", "-b", "side")
+    repo.commit("side", {"a.txt": "side\n"})
+    repo.git("checkout", "-q", "main")
+    repo.commit("main", {"a.txt": "main\n"})
+    failed = subprocess.run(
+        ["git", "-C", str(repo.root), "merge", "--no-ff", "-m", "merge",
+         "side"], capture_output=True)
+    assert failed.returncode != 0, "the fixture was meant to conflict"
+    return repo
+
+
+async def test_a_conflicted_file_still_diffs_in_the_worktree(repo):
+    """The regression this round is about.
+
+    An unmerged path has no stage-0 entry and is listed once PER STAGE, so a
+    check that refused "more than one index entry for this path" called the
+    file a directory -- and a conflicted file is the one a user most wants
+    to look at.
+    """
+    _conflicted(repo)
+
+    response = await repo.service.diff("a.txt", "worktree")
+
+    assert "<<<<<<<" in response.patch
+    assert response.binary is False
+
+
+async def test_a_conflicted_file_still_diffs_in_the_index(repo):
+    """git's own answer for this one is a single line, and it is the truth:
+    the index has three versions and no staged one."""
+    _conflicted(repo)
+
+    response = await repo.service.diff("a.txt", "index")
+
+    assert "Unmerged path a.txt" in response.patch
+
+
+async def test_a_conflicted_file_read_from_the_index_is_a_409(repo):
+    """"The index version" is a question with no answer during a conflict --
+    there are three of them -- so it is a state to report, not a missing
+    object (which is what the 500 before this said)."""
+    _conflicted(repo)
+
+    with pytest.raises(GitError) as excinfo:
+        await repo.service.file_at_ref("a.txt", "index")
+
+    assert _error(excinfo).code == "conflict"
+    assert _error(excinfo).status == 409
+
+
+async def test_a_conflicted_diff_with_blobs_says_why_it_cannot(repo):
+    """The documented choice: ``blobs=True`` on a conflicted file is the
+    same 409, not a patch with two empty sides. A side-by-side view has no
+    two sides here, and the tab can ask again without the blobs."""
+    _conflicted(repo)
+
+    with pytest.raises(GitError) as excinfo:
+        await repo.service.diff("a.txt", "worktree", blobs=True)
+
+    assert _error(excinfo).code == "conflict"
+
+
+async def test_a_conflict_does_not_disturb_the_log_or_a_commits_files(repo):
+    """The read paths that never look at the index at all."""
+    _conflicted(repo)
+
+    page = await repo.service.log(limit=5)
+    files = await repo.service.commit_files(page.commits[0].sha)
+
+    assert page.commits[0].subject == "main"
+    assert [entry.path for entry in files] == ["a.txt"]
+
+
+@pytest.mark.parametrize("scope", ["worktree", "index"])
+async def test_a_directory_and_file_conflict_is_still_refused(repo, scope):
+    """The shape the loosened rule must NOT let through.
+
+    One branch makes ``sub`` a file, the other a folder of secrets; the
+    merge conflicts. The set comparison is what refuses it -- the entries
+    the pathspec matches are ``{sub/keys.txt}``, which is not ``{sub}`` --
+    and in the worktree scope the directory on disk answers first.
+
+    (git 2.53 does not leave both names in the index: it moves the file side
+    aside as ``sub~HEAD``. So the shape that reaches this check is "entries
+    UNDER the path and none at it", which is the one that leaks if allowed.)
+    """
+    repo.git("checkout", "-q", "-b", "folder-side")
+    repo.commit("sub is a folder", {"sub/keys.txt": f"{SECRET}\n"})
+    repo.git("checkout", "-q", "main")
+    repo.commit("sub is a file", {"sub": "plain\n"})
+    failed = subprocess.run(
+        ["git", "-C", str(repo.root), "merge", "--no-ff", "-m", "merge",
+         "folder-side"], capture_output=True)
+    assert failed.returncode != 0, "the fixture was meant to conflict"
+
+    with pytest.raises(GitError) as excinfo:
+        await repo.service.diff("sub", scope, blobs=True)
+
+    assert _error(excinfo).code == "invalid_path"
+
+
+# --- a submodule is another repository --------------------------------------
+
+
+def _with_gitlink(repo: Repo) -> Repo:
+    """Register ``sub`` as a gitlink whose commit this repository HAS.
+
+    A real submodule's commit lives in the other repository's object store,
+    which this one cannot read; using a local commit keeps the test about
+    the refusal rather than about a missing object.
+    """
+    sha = repo.head()
+    repo.git("update-index", "--add", "--cacheinfo", f"160000,{sha},sub")
+    return repo
+
+
+@pytest.mark.parametrize("scope", ["worktree", "index"])
+async def test_a_submodule_is_refused_by_name(repo, scope):
+    """Deliberately, and with the same sentence ``discard`` uses: what is at
+    that path is another repository, and every answer this tab could give
+    would be about the wrong one. It used to be refused by accident, as "a
+    directory in the index"."""
+    _with_gitlink(repo)
+
+    with pytest.raises(GitError) as excinfo:
+        await repo.service.diff("sub", scope)
+
+    assert _error(excinfo).code == "invalid_path"
+    assert "submodule" in (_error(excinfo).hint or "")
+
+
+async def test_a_submodule_is_refused_in_a_commit_too(repo):
+    _with_gitlink(repo)
+    repo.git("commit", "-q", "-m", "add the gitlink")
+
+    with pytest.raises(GitError) as excinfo:
+        await repo.service.diff("sub", "commit", sha=repo.head())
+
+    assert _error(excinfo).code == "invalid_path"
+    assert "submodule" in (_error(excinfo).hint or "")
 
 
 async def test_an_unknown_diff_scope_is_refused(repo):

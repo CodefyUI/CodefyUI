@@ -39,7 +39,13 @@ from pathlib import Path
 from .errors import GitError, classify_failure
 from .models import DiffResponse, FileAtRef, GitStatus
 from .paths import is_env_secret_path, validate_rel_path, validate_sha
-from .repo import first_parent, read_status, resolve_commit
+from .repo import (
+    GITLINK_MODE,
+    first_parent,
+    index_entries,
+    read_status,
+    resolve_commit,
+)
 from .runner import T_READ, run_git
 
 #: The most patch text one response carries. A diff past a megabyte is not
@@ -74,6 +80,9 @@ _BINARY_MARKER = "Binary files "
 #: spells them.
 BLOB = "blob"
 TREE = "tree"
+#: What ``cat-file -t`` calls a gitlink: the object a submodule's entry
+#: points at is a COMMIT, of another repository.
+GITLINK = "commit"
 
 #: What to tell somebody who asked for a directory. One sentence, used by
 #: every refusal that means "that is not a file", so the three of them
@@ -83,6 +92,16 @@ ONE_FILE_HINT = "diff one file at a time"
 #: What to tell somebody whose path goes through a link. The tab reads files
 #: of the project, and a link is a path to somewhere else.
 LINK_HINT = "symbolic links are not served"
+
+#: The same sentence ``discard`` uses, so one refusal is one answer.
+SUBMODULE_HINT = ("submodules are not managed here; open that repository "
+                  "instead")
+
+#: ``cat-file`` on the stage-0 entry of an UNMERGED path: "fatal: path
+#: 'a.txt' is in the index, but not at stage 0" (measured on git 2.53).
+#: There is no single "index version" of a file in a conflict -- there are
+#: three -- so this is a state to report, not an object that is missing.
+_UNMERGED_PHRASE = "but not at stage 0"
 
 #: ``cat-file blob`` on a path that is a TREE at that ref: "fatal: git
 #: cat-file HEAD:sub: bad file" (measured on git 2.53). The object is there
@@ -192,6 +211,14 @@ def _plan(root: Path, path: str, scope: str, sha: str | None) -> _Plan:
     name, and git answered about a tree.
     """
     if scope in ("worktree", "index"):
+        if scope == "worktree":
+            # BEFORE any git call. This scope reads the file on disk -- the
+            # ``--no-index`` branch below hands the whole file back, and the
+            # tracked branch reads it to diff it -- so a path that goes
+            # through a link or a junction must be refused here as well as
+            # in ``file_at_ref``. The index scope compares two trees and
+            # never touches the working copy.
+            _refuse_a_link(root, path)
         status = read_status(root)
         _require_one_file(root, path, status, scope=scope)
         # An UNTRACKED file has no index side, and ``git diff`` says nothing
@@ -261,21 +288,40 @@ def _require_one_file(root: Path, path: str, status: GitStatus, *,
         raise GitError("invalid_path", 400,
                        f"{path} is a directory on one side of this diff",
                        hint=ONE_FILE_HINT)
+    if GITLINK in (head_kind, index_kind):
+        raise _submodule_error(path)
 
     if index_kind is None:
-        # A blob in HEAD does not settle it. The INDEX cannot answer "tree"
-        # -- ``:0:<dir>`` is not an object -- so a directory there looks
-        # like nothing at all until its entries are asked for by name, and
-        # the pathspec would still match every one of them. This is the
-        # mirror of the case above: a file in HEAD, a folder staged over it.
-        result = run_git(["ls-files", "-z", "--", path], cwd=root,
-                         timeout=T_READ, read_only=True)
-        if [name for name in result.out.split("\x00") if name]:
+        # A blob in HEAD does not settle it, and neither does nothing at
+        # all. The INDEX cannot answer "tree" -- ``:0:<dir>`` is not an
+        # object -- so a directory there looks like nothing until its
+        # entries are asked for by name, while the pathspec would match
+        # every one of them.
+        #
+        # The comparison is a SET, because an UNMERGED path is listed once
+        # per stage: three entries, all called ``a.txt``, which is one file
+        # in a conflict and not a directory. Refusing that was a regression
+        # -- a conflicted file is the one a user most wants to look at.
+        entries = index_entries(root, [path])
+        names = {name for _, name in entries}
+        if any(mode == GITLINK_MODE for mode, _ in entries):
+            raise _submodule_error(path)
+        if names and names != {path}:
             raise GitError("invalid_path", 400,
                            f"{path} is a directory in the index",
                            hint=ONE_FILE_HINT)
-        if head_kind is None:
+        if not names and head_kind is None:
             raise GitError("not_found", 404, f"git does not know {path}")
+
+
+def _submodule_error(path: str) -> GitError:
+    """A gitlink is not a file: what is at that path is another repository.
+
+    Refused the same way ``discard`` refuses one, and for the same reason --
+    every answer the tab could give would be about the wrong repository.
+    """
+    return GitError("invalid_path", 400, f"{path} is a submodule",
+                    hint=SUBMODULE_HINT)
 
 
 def _require_one_blob(root: Path, path: str, commit: str,
@@ -300,6 +346,8 @@ def _require_one_blob(root: Path, path: str, commit: str,
         raise GitError("invalid_path", 400,
                        f"{path} is a directory in {commit[:7]} or its parent",
                        hint=ONE_FILE_HINT)
+    if GITLINK in kinds:
+        raise _submodule_error(path)
     if BLOB in kinds:
         return
     raise GitError("not_found", 404, f"no {path} in {commit[:7]}")
@@ -393,6 +441,13 @@ def _from_object(root: Path, spec: str) -> FileAtRef:
                      ok_codes=(0, 128), read_only=True)
     if result.returncode != 0:
         message = result.err.lower()
+        # A conflict is a STATE, not a missing object: the index holds three
+        # versions of this path and no stage-0 one, so "the index version"
+        # is a question with no answer until the conflict is resolved.
+        if _UNMERGED_PHRASE in message:
+            raise GitError("conflict", 409, f"{spec} is in a conflict",
+                           hint="resolve the conflict first",
+                           stderr=result.err.strip())
         # Checked first: something IS there and it is not a file, which is
         # the caller's mistake (a 400) rather than a missing object (404).
         if _NOT_A_BLOB_PHRASE in message:

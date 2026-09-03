@@ -30,6 +30,7 @@ about one file or one commit's contents:
 from __future__ import annotations
 
 import re
+from collections.abc import Sequence
 from pathlib import Path
 
 from ..project import PROJECT_GITATTRIBUTES, PROJECT_GITIGNORE
@@ -190,6 +191,51 @@ def _in_progress(root: Path) -> tuple[bool, bool]:
         return False, False
     merge_head, rebase_merge, rebase_apply = (root / line for line in lines[:3])
     return merge_head.exists(), rebase_merge.exists() or rebase_apply.exists()
+
+
+# --- the index -------------------------------------------------------------
+
+#: The index mode of a gitlink -- a submodule's entry in its parent. Not a
+#: file: what is at that path is another repository, and every operation
+#: this tab offers would be about the wrong one.
+GITLINK_MODE = "160000"
+
+
+def index_entries(root: Path, paths: Sequence[str]) -> list[tuple[str, str]]:
+    """``(mode, path)`` for every index entry matching *paths*.
+
+    One reader for the two questions the index answers that no other command
+    does: which paths are SUBMODULES (mode :data:`GITLINK_MODE`, which the
+    status parser does not carry), and which names a pathspec actually
+    matches -- ``sub`` matching ``sub/.env`` is how a request for one file
+    becomes a diff of a whole directory.
+
+    An UNMERGED path appears once per stage, all three with the same name;
+    the caller that cares about "exactly this path and nothing else" should
+    compare a SET of the names for that reason.
+    """
+    result = run_git(["ls-files", "--stage", "-z", "--", *paths], cwd=root,
+                     timeout=T_STATUS, read_only=True)
+    entries: list[tuple[str, str]] = []
+    for line in result.out.split("\x00"):
+        if not line:
+            continue
+        # ``<mode> <sha> <stage>\t<path>``
+        head, _, path = line.partition("\t")
+        mode = head.split(" ", 1)[0]
+        if path:
+            entries.append((mode, path))
+    return entries
+
+
+def submodule_paths(root: Path, paths: Sequence[str]) -> list[str]:
+    """Which of *paths* the index holds as submodules.
+
+    Asked of the INDEX rather than of the disk, because that is where the
+    answer is unambiguous: mode 160000 is a gitlink and nothing else is.
+    """
+    return [path for mode, path in index_entries(root, paths)
+            if mode == GITLINK_MODE]
 
 
 # --- who commits -----------------------------------------------------------
