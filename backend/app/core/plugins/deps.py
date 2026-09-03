@@ -59,6 +59,23 @@ class _UnsafeDepSpec(ValueError):
     distribution name + version constraint."""
 
 
+def is_safe_dep_name(name: object) -> bool:
+    """Whether *name* is a distribution name this build will put on a
+    command line at all.
+
+    Public because the rule has a second reader. An uninstall reports the
+    packages a plugin left behind and hands over the ``uv pip uninstall``
+    line for them (``lifecycle._declared_python_deps``), and that name comes
+    out of the same untrusted manifest table :func:`dep_specs` vets -- so a
+    name that could never have been INSTALLED must not be able to reach a
+    command the user is invited to paste into a shell either. One predicate
+    rather than two copies of the pattern: an install and an uninstall
+    disagreeing about what counts as a name is exactly the drift the regex
+    exists to prevent.
+    """
+    return isinstance(name, str) and _SAFE_DEP_NAME.match(name) is not None
+
+
 def _build_dep_spec(name: str, ver: str) -> str:
     """Turn a (name, version) pair into a vetted ``foo==1.2.3``-style string.
 
@@ -68,7 +85,7 @@ def _build_dep_spec(name: str, ver: str) -> str:
     shell -- but ``uv`` itself would happily fetch ``git+`` URLs given the
     chance, and that's exactly what we're blocking here.
     """
-    if not isinstance(name, str) or not _SAFE_DEP_NAME.match(name):
+    if not is_safe_dep_name(name):
         raise _UnsafeDepSpec(
             f"Invalid python_deps name {name!r} -- must match {_SAFE_DEP_NAME.pattern!r}"
         )

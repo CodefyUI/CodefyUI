@@ -41,6 +41,7 @@ from typing import Any
 from app.core import plugin_loader
 
 from .catalog import builtin_catalog_packs
+from .deps import is_safe_dep_name
 from .manifest import manifest_python_deps
 
 logger = logging.getLogger(__name__)
@@ -226,12 +227,21 @@ def _declared_python_deps(plugin_id: str, lockfile: dict[str, Any]) -> list[str]
     Read off the disk rather than out of the lockfile because the lockfile
     records the ``[plugin]`` table only -- and read BEFORE the files go,
     which is the whole reason this is a separate step.
+
+    Vetted by :func:`~.deps.is_safe_dep_name`, the rule an INSTALL applies to
+    the same table. A manifest is untrusted text and these names end up in
+    ``uninstall_command``, which is a line the user is invited to paste into
+    a shell: ``evil @ git+https://attacker.example/evil`` as a key would
+    otherwise travel from a manifest, through a REST response, into somebody's
+    terminal. A name that could never have been installed cannot have left a
+    package behind either, so nothing true is lost by dropping it.
     """
     plugin_dir = installed_dir(plugin_id, lockfile)
     if plugin_dir is None:
         return []
     manifest = plugin_loader.read_manifest_safe(plugin_dir)
-    return [name for name in manifest_python_deps(manifest) if isinstance(name, str)]
+    return [name for name in manifest_python_deps(manifest)
+            if is_safe_dep_name(name)]
 
 
 def installed_dir(plugin_id: str, lockfile: dict[str, Any]) -> Path | None:
