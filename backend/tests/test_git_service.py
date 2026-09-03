@@ -405,20 +405,17 @@ async def test_init_leaves_a_gitignore_that_already_hides_env_alone(tmp_path):
 
 @pytest.mark.parametrize("existing", [
     pytest.param("/.env\n", id="anchored-to-the-root"),
-    pytest.param(".env/\n", id="written-as-a-directory"),
     pytest.param(".env   \n", id="trailing-spaces"),
-    pytest.param(".env  # secrets\n", id="trailing-comment"),
-    pytest.param("*.pyc\n/.env/   # keys\n", id="all-of-it-at-once"),
+    pytest.param("*.pyc\n/.env  \n", id="among-other-rules"),
 ])
-async def test_init_reads_the_other_ways_people_write_the_env_line(
+async def test_init_reads_the_other_ways_of_really_ignoring_env(
         tmp_path, existing):
-    """A second ``.env`` under somebody's own reads as a bug in the tab.
+    """A second ``.env`` under a line that already does the job is a bug.
 
-    Two of these spellings do not really ignore a FILE called ``.env`` --
-    git matches ``.env/`` against directories only, and ``#`` opens a
-    comment just in the first column. They still count, because the promise
-    here is not to touch a file whose author has already written about
-    ``.env`` in it.
+    ``/.env`` is the same rule anchored to the repository root, and git
+    drops trailing whitespace before matching -- so both of these keep the
+    file out, and appending beside them would only make the user's own file
+    harder to read.
     """
     root = tmp_path / "fresh"
     root.mkdir()
@@ -428,6 +425,35 @@ async def test_init_reads_the_other_ways_people_write_the_env_line(
 
     assert (root / ".gitignore").read_bytes() == existing.encode("utf-8")
     assert result.detail["scaffold"] == [".gitattributes"]
+
+
+@pytest.mark.parametrize("existing", [
+    pytest.param(".env/\n", id="directory-only-pattern"),
+    pytest.param(".env  # secrets\n", id="what-looks-like-a-comment"),
+    pytest.param("*.pyc\n/.env/   # keys\n", id="both-mistakes-at-once"),
+    # ``!.env`` has its own test below: it is a near-miss for a different
+    # reason, and the reason is what makes it worth naming.
+    pytest.param(".env.example\n", id="a-different-file"),
+])
+async def test_init_appends_when_the_line_only_looks_like_it_ignores_env(
+        tmp_path, existing):
+    """A near-miss is not a rule, and the append is the safe direction.
+
+    ``.env/`` matches a DIRECTORY and never a file; ``.gitignore`` has no
+    trailing comments, so ``.env  # secrets`` is a pattern matching a file
+    with that whole name. Whoever wrote either believes their secrets are
+    ignored and they are not -- and a duplicate line costs nothing, while a
+    missing one is the API keys this scaffold exists to keep out.
+    """
+    root = tmp_path / "fresh"
+    root.mkdir()
+    (root / ".gitignore").write_bytes(existing.encode("utf-8"))
+
+    result = await GitService(project_dir=lambda: root).init()
+
+    assert (root / ".gitignore").read_bytes() == (
+        existing.encode("utf-8") + b"\n.env\n")
+    assert ".gitignore" in result.detail["scaffold"]
 
 
 async def test_init_still_hides_env_next_to_an_un_ignore_rule(tmp_path):

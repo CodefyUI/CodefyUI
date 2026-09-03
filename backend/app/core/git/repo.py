@@ -46,12 +46,6 @@ from .status import parse_porcelain_v2
 #: which is meant to be committed.
 ENV_IGNORE_LINE = ".env"
 
-#: A trailing comment as a PERSON writes one: whitespace, then ``#``. git
-#: reads a comment only in the first column, so this is stripped because of
-#: what the author meant, not because of what git does -- see
-#: :func:`_ignores_env`.
-_TRAILING_COMMENT_RE = re.compile(r"\s+#.*$")
-
 #: What to tell somebody whose stage / unstage / discard went through a
 #: link. Worded differently from the read side's "symbolic links are not
 #: served" on purpose: nothing was served, and what was refused was a WRITE
@@ -147,29 +141,29 @@ def ensure_scaffold(root: Path) -> list[str]:
 
 
 def _ignores_env(path: Path) -> bool:
-    """Is ``.env`` already ignored -- in any of the ways people write it?
+    """Would this ``.gitignore`` already keep a FILE called ``.env`` out?
 
-    Four spellings mean the same thing to whoever typed them: ``.env``,
-    ``/.env`` (the same rule, anchored to the repository root), ``.env/``
-    and either of those with trailing spaces or a trailing comment after
-    it. Reading only the first made :func:`ensure_scaffold` append a SECOND
-    ``.env`` to a file that plainly already had one, which reads as a bug in
-    the tab and leaves the user's own file worse than it found it.
+    The question is git's, not the author's. Two spellings answer yes --
+    ``.env`` and ``/.env``, either of them with trailing whitespace, which
+    git drops before matching -- and reading only the first made
+    :func:`ensure_scaffold` append a second ``.env`` under a line that
+    plainly already did the job.
 
-    Two of those spellings do not, by git's own rules, ignore a FILE called
-    ``.env``: ``.env/`` matches a directory only, and ``#`` starts a comment
-    just in the first column, so ``.env  # secrets`` is a pattern with a
-    comment inside it. They still count here, and that is the deliberate
-    half of this function. ``ensure_scaffold`` never rewrites a file the
-    user already has, and a line naming ``.env`` is the author's own
-    decision about it; appending a rule beside their near-miss would leave
-    two lines about ``.env`` -- one of which does nothing -- rather than
-    telling anybody the first one was wrong.
+    Everything else answers NO, including the two near-misses that look like
+    they should count. ``.env/`` is a directory-only pattern and does not
+    match a file; ``.env  # secrets`` is not a rule with a comment on it,
+    because ``.gitignore`` has no trailing comments -- it is a pattern
+    matching a file with that entire name. Somebody who wrote either of
+    those believes their secrets are ignored and they are not, so the line
+    goes in. A duplicate rule is harmless; a missing one is the leak this
+    whole scaffold exists to prevent, and that asymmetry is what decides
+    every uncertain case here.
 
-    An un-ignore rule is the one spelling that must NOT count, which is why
-    :func:`_ignore_rule` leaves the leading ``!`` where it is: this file
-    holds the user's API keys, and the tab is not the place where "commit my
-    secrets" is honoured by accident.
+    An un-ignore rule is the same call for a different reason: ``!.env``
+    does not count, the appended rule goes in after it, and the last
+    matching rule is the one git obeys. This file holds the user's API keys,
+    and the tab is not the place where "commit my secrets" is honoured by
+    accident.
 
     Decoded with ``errors="replace"`` because this only ever asks a question
     about ASCII: a ``.gitignore`` in some other encoding must not make this
@@ -184,24 +178,25 @@ def _ignores_env(path: Path) -> bool:
 
 
 def _ignore_rule(line: str) -> str:
-    """The path one ``.gitignore`` line is about, near enough to compare.
+    """The file one ``.gitignore`` line matches, as far as this check goes.
 
     Not a gitignore parser and not trying to be -- no globs, no negation
-    semantics, no directory matching. It removes the four things a person
-    writes AROUND a rule (surrounding whitespace, a trailing comment, the
-    leading ``/`` that anchors it to the root, the trailing ``/`` that
-    restricts it to a directory) and hands back what is left; a whole-line
-    comment comes back empty. Everything it cannot account for -- ``*.env``,
-    a pattern with a glob in it -- simply does not compare equal, which
-    means the scaffold appends its own line, which is the safe direction to
-    be wrong in.
+    semantics, no directory matching. It removes the only two things git
+    itself removes from a line before matching it against a file at the top
+    level: surrounding whitespace (git drops trailing spaces unless they are
+    escaped), and the leading ``/`` that anchors a rule to the repository
+    root, which for a root-level file changes nothing about what it matches.
+
+    Everything else is left exactly as written, so it simply does not
+    compare equal: a glob (``*.env``), a directory-only rule (``.env/``), a
+    line with what its author took for a comment on the end (``.env  #
+    secrets`` -- git has no trailing comments, so that pattern matches a
+    file with that whole name), and an un-ignore rule (``!.env``). Every one
+    of those makes the scaffold append its own line, which is the safe
+    direction to be wrong in: a duplicate rule does nothing, and a missing
+    one is the user's API keys in a public repository.
     """
     text = line.strip()
-    if text.startswith("#"):
-        return ""
-    text = _TRAILING_COMMENT_RE.sub("", text).strip()
-    if text.endswith("/"):
-        text = text[:-1]
     if text.startswith("/"):
         text = text[1:]
     return text
