@@ -389,6 +389,37 @@ describe('pluginStore — install', () => {
     expect(usePluginStore.getState().plugins[0].status).toBe('installing');
   });
 
+  it('leaves no review behind when an auto-install is refused', async () => {
+    api.inspectPluginSource.mockResolvedValue(inspection({
+      plugin_id: 'c1', consent_required: false,
+    }));
+    api.installPlugin.mockRejectedValue(refused(409, 'busy', { job_id: 'j2' }));
+
+    await usePluginStore.getState().install('c1');
+
+    // The user never saw a review; answering the failure toast with a form
+    // they did not ask for is not the fix for "another install is running".
+    expect(usePluginStore.getState().inspection).toEqual({ phase: 'idle' });
+    expect(lastToast().message).toBe('Another install is already running.');
+  });
+
+  it('keeps the review when an auto-install turns out to need consent', async () => {
+    api.inspectPluginSource.mockResolvedValue(inspection({
+      plugin_id: 'c1', consent_required: false, capabilities: ['net'],
+    }));
+    api.installPlugin.mockRejectedValue(
+      refused(400, 'consent_required', { missing_capabilities: ['net'] }),
+    );
+
+    await usePluginStore.getState().install('c1');
+
+    // Ticking a box IS the fix here, so the card the user never asked for is
+    // exactly what they now need.
+    expect(usePluginStore.getState().inspection).toMatchObject({
+      phase: 'ready', forPluginId: 'c1', error: 'consent_required',
+    });
+  });
+
   it('refuses a second install while a job is running', async () => {
     usePluginStore.setState({ job: emptyPluginJob('j1', 'other') });
 

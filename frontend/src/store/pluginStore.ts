@@ -656,6 +656,17 @@ export const usePluginStore = create<PluginState>((set, get) => ({
       // is yes. `trustAuthor` stays false for the same reason: an install
       // with no `allowed_modules` has no author to trust.
       await startInstall(data, { acceptCapabilities: true, trustAuthor: false });
+
+      // The review this install passed through was never on screen. If the
+      // install failed for something a review cannot fix — busy, refused,
+      // offline — putting the card up now would answer a toast with a form
+      // nobody asked for. A consent refusal is the exception: it left a
+      // message on the review precisely because ticking a box is the fix.
+      const after = get().inspection;
+      if (after.phase === 'ready' && after.error === null
+          && after.forPluginId === pluginId) {
+        set({ inspection: { phase: 'idle' } });
+      }
     } finally {
       set((s) => {
         const busy = { ...s.busy };
