@@ -263,10 +263,20 @@ _RULES: tuple[tuple[str, int, tuple[_Pattern, ...]], ...] = (
     )),
     # ``stash pop`` reports its conflicts with the same "CONFLICT (" line
     # ``merge`` does, so it needs no row of its own.
+    #
+    # The last two phrases are a different moment: ``git commit`` REFUSING
+    # to run while the index still holds an unmerged path. It says "error:
+    # Committing is not possible because you have unmerged files." and
+    # "fatal: Exiting because of an unresolved conflict." (measured on git
+    # 2.53, exit 128), which share no words with the merge-time lines above
+    # -- so without them the most ordinary click there is during a conflict,
+    # the commit button, was a 500.
     ("conflict", 409, (
         "CONFLICT (",
         "Automatic merge failed",
         "fix conflicts and then commit",
+        "you have unmerged files",
+        "unresolved conflict",
     )),
     ("dirty_tree", 409, (
         "would be overwritten by",

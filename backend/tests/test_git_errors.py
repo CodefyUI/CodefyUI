@@ -99,6 +99,20 @@ _SAMPLES = [
         "Auto-merging a.txt\nCONFLICT (content): Merge conflict in a.txt\n"
         "Automatic merge failed; fix conflicts and then commit the result.\n",
         "conflict", id="merge-conflict"),
+    # The OTHER moment a conflict is reported: ``git commit`` refusing to
+    # run while the index still holds an unmerged path. Copied off git 2.53
+    # (exit 128); it shares no phrase with the merge-time lines above.
+    pytest.param(
+        "error: Committing is not possible because you have unmerged files.\n"
+        "hint: Fix them up in the work tree, and then use 'git add/rm <file>'\n"
+        "hint: as appropriate to mark resolution and make a commit.\n"
+        "fatal: Exiting because of an unresolved conflict.\n",
+        "conflict", id="commit-blocked-by-a-conflict"),
+    pytest.param(
+        # The fatal line on its own: a wrapper (or a future git) may print
+        # only its own summary, so each phrase has to be enough by itself.
+        "fatal: Exiting because of an unresolved conflict.\n",
+        "conflict", id="unresolved-conflict-alone"),
     pytest.param(
         "error: Your local changes to the following files would be "
         "overwritten by merge:\n\ta.txt\n"

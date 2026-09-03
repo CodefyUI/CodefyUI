@@ -1608,6 +1608,24 @@ async def test_a_conflicted_file_read_from_the_index_is_a_409(repo):
     assert _error(excinfo).status == 409
 
 
+async def test_a_commit_during_a_conflict_is_a_409_and_not_a_500(repo):
+    """The commit button is the most ordinary click there is in this state.
+
+    git refuses it in words no other row knows: "error: Committing is not
+    possible because you have unmerged files." and "fatal: Exiting because
+    of an unresolved conflict." (measured on 2.53, exit 128, on stderr).
+    Neither shares a phrase with the merge-time conflict lines, so this used
+    to be a 500 -- and 500 is the one answer the tab cannot act on.
+    """
+    _conflicted(repo)
+
+    with pytest.raises(GitError) as excinfo:
+        await repo.service.commit("commit while a.txt is unmerged")
+
+    assert _error(excinfo).code == "conflict"
+    assert _error(excinfo).status == 409
+
+
 async def test_a_conflicted_diff_with_blobs_says_why_it_cannot(repo):
     """The documented choice: ``blobs=True`` on a conflicted file is the
     same 409, not a patch with two empty sides. A side-by-side view has no
