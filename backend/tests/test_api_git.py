@@ -582,10 +582,33 @@ async def test_the_page_size_bounds_themselves_are_allowed(test_client,
         assert response.status_code == 200, response.text
 
 
-async def test_a_negative_skip_is_422(test_client, project):
-    response = await test_client.get("/api/git/log", params={"skip": -1})
+@pytest.mark.parametrize("skip", [
+    pytest.param(-1, id="negative"),
+    pytest.param(2**31, id="past-what-git-parses"),
+    pytest.param(10**20, id="absurd"),
+])
+async def test_a_skip_outside_the_range_is_422(test_client, project, skip):
+    """A page past the end of a history is empty; a ``skip`` past what git
+    parses is a FAILURE.
+
+    ``--skip=`` is a signed 32-bit integer to git, and one more than that is
+    "fatal: '2147483648': not an integer", exit 128 (measured on 2.53) --
+    which arrived as a 500 from a GET that needs no token. The bound is in
+    the signature, so it costs no process and no code here.
+    """
+    response = await test_client.get("/api/git/log", params={"skip": skip})
 
     assert response.status_code == 422
+
+
+async def test_the_largest_skip_git_accepts_is_still_a_page(test_client,
+                                                            project):
+    """The bound is git's own, so its edge has to be a 200 and not a 500."""
+    response = await test_client.get("/api/git/log",
+                                     params={"skip": 2**31 - 1})
+
+    assert response.status_code == 200, response.text
+    assert response.json()["commits"] == []
 
 
 async def test_a_commit_diff_without_a_commit_is_400_invalid_value(test_client,

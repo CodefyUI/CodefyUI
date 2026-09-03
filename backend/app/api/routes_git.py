@@ -41,12 +41,14 @@ one.
 * **A missing service is a 503, not a traceback.** The lifespan builds the
   service; a test client does not run the lifespan, and a server whose
   startup failed has no repository to talk about either.
-* **What the query string may say is a closed set.** ``limit`` is 1..100 and
-  ``scope`` is one of three words, both enforced by the signature, so an
-  out-of-range page is a 422 before any code here runs. Everything with a
-  meaning -- a path, a ref, a sha, a message -- is validated by
-  ``core/git/paths.py`` instead, which answers with a ``code`` the frontend
-  can translate rather than with pydantic's English.
+* **What the query string may say is a closed set.** ``limit`` is 1..100,
+  ``skip`` is 0..2**31-1 (git's own parser stops there, and one past it is
+  a failure rather than an empty page) and ``scope`` is one of three words
+  -- all three enforced by the signature, so an out-of-range page is a 422
+  before any code here runs. Everything with a meaning -- a path, a ref, a
+  sha, a message -- is validated by ``core/git/paths.py`` instead, which
+  answers with a ``code`` the frontend can translate rather than with
+  pydantic's English.
 """
 
 from __future__ import annotations
@@ -57,6 +59,7 @@ from typing import Literal, TypeVar
 from fastapi import APIRouter, HTTPException, Query, Request
 
 from ..core.git.errors import GitBusy, GitError, redact
+from ..core.git.log import DEFAULT_LOG_LIMIT, MAX_LOG_LIMIT
 from ..core.git.models import (
     CommitRequest,
     DiffResponse,
@@ -80,12 +83,12 @@ _T = TypeVar("_T")
 #: a string this module has to check.
 DiffScope = Literal["worktree", "index", "commit"]
 
-#: How many commits one page of the history holds by default, and the most
-#: it may hold. The cap is not about the server -- ``git log`` is cheap --
-#: but about the tab: a page is a scroll position, and a client asking for
-#: ten thousand commits has a paging bug, not a big repository.
-DEFAULT_LOG_LIMIT = 30
-MAX_LOG_LIMIT = 100
+#: The largest ``skip`` git will take. ``--skip=`` is parsed as a signed
+#: 32-bit integer, and one past it is not "an empty page" but a failure:
+#: ``fatal: '2147483648': not an integer``, exit 128 (measured on git 2.53),
+#: which reached the browser as a 500 from a GET that needs no token.
+#: Bounded in the signature, so it is a 422 before a process starts.
+MAX_LOG_SKIP = 2**31 - 1
 
 #: What a request gets when the lifespan never built a service. Deliberately
 #: NOT a member of ``errors.CODES``: that table is the vocabulary of things
@@ -176,7 +179,7 @@ async def read_status(request: Request) -> StatusResponse:
 @router.get("/log")
 async def read_log(
     request: Request,
-    skip: int = Query(0, ge=0),
+    skip: int = Query(0, ge=0, le=MAX_LOG_SKIP),
     limit: int = Query(DEFAULT_LOG_LIMIT, ge=1, le=MAX_LOG_LIMIT),
 ) -> LogResponse:
     """One page of history, newest first.
@@ -184,6 +187,10 @@ async def read_log(
     ``has_more`` comes from asking git for one commit more than the page
     and dropping it, so "is there another page" costs nothing extra and an
     unborn branch answers with an empty page rather than an error.
+
+    Both numbers are bounded here: a page past the end of the history is an
+    empty page, but a ``skip`` past what git's own parser accepts is a
+    failure with nothing to say to the user.
     """
     return await _answer(_service(request).log(skip=skip, limit=limit))
 

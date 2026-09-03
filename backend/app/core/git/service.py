@@ -640,7 +640,8 @@ class GitService:
         """``user.name`` / ``user.email``, and where each comes from."""
         return await self._read(repo.read_identity)
 
-    async def log(self, *, skip: int = 0, limit: int = 20) -> LogResponse:
+    async def log(self, *, skip: int = 0,
+                  limit: int = log_ops.DEFAULT_LOG_LIMIT) -> LogResponse:
         """One page of history, newest first."""
         return await self._read(
             lambda root: log_ops.log(root, skip=skip, limit=limit))

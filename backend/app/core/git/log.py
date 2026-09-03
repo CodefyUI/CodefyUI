@@ -35,9 +35,16 @@ from .repo import first_parent, resolve_commit
 from .runner import T_READ, run_git
 from .status import kind_from_letter
 
-#: The most commits one request may ask for. A page the tab draws is twenty
-#: or fifty; a hundred is the ceiling that keeps one request from being a
-#: whole history.
+#: How many commits one page holds unless the caller says otherwise, and
+#: the most it may hold. The cap is not about the server -- ``git log`` is
+#: cheap -- but about the tab: a page is a scroll position, and a client
+#: asking for ten thousand commits has a paging bug, not a big repository.
+#:
+#: Both live HERE and the route imports them, so there is one owner. They
+#: were two numbers once (a route that defaulted to 30 in front of a service
+#: that defaulted to 20), which is the kind of disagreement nothing fails
+#: over and everybody eventually trips on.
+DEFAULT_LOG_LIMIT = 30
 MAX_LOG_LIMIT = 100
 
 #: ASCII unit separator: the one character a commit message is least likely
@@ -63,7 +70,8 @@ REF_SEP = ", "
 _TWO_PATH_LETTERS = ("R", "C")
 
 
-def log(root: Path, *, skip: int = 0, limit: int = 20) -> LogResponse:
+def log(root: Path, *, skip: int = 0,
+        limit: int = DEFAULT_LOG_LIMIT) -> LogResponse:
     """One page of *root*'s history, newest first.
 
     *skip* and *limit* are the page; the routes clamp them, and they are
