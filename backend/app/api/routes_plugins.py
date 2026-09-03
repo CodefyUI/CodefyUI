@@ -688,16 +688,18 @@ async def uninstall_plugin(plugin_id: str, request: Request) -> dict[str, Any]:
 
     What is removed is decided by ``lifecycle.uninstall_plugin`` -- the same
     call ``cdui plugin uninstall`` makes, so the terminal and the panel cannot
-    disagree about which files go: a downloaded pack's directory is deleted, a
-    built-in one is deactivated and tombstoned (#175) with the repo's own
-    files untouched, and a linked development directory is left exactly where
-    its author put it.
+    disagree about which files go: a downloaded pack's directory is deleted,
+    a built-in one loses its lockfile entry and gains a ``removed`` record
+    (#175) with the repo's own files untouched, and a linked development
+    directory is left exactly where its author put it.
 
     What is NOT removed is the plugin's Python dependencies. Uninstalling
     packages from inside the process that imported them is how you get a
     half-loaded interpreter serving requests, so they are reported instead:
     ``python_deps_left`` and the ``uninstall_command`` to run by hand with the
-    server stopped. The panel shows both; nothing here pretends they went.
+    server stopped. They are in the answer because whatever draws this has to
+    SAY so -- an uninstall that silently leaves packages behind is the half of
+    the story the user finds out about from a disk that never got smaller.
 
     Then this process forgets the plugin, in this order: its modules leave
     ``sys.modules`` and only THEN is the registry re-discovered. Nothing else
@@ -718,13 +720,13 @@ async def uninstall_plugin(plugin_id: str, request: Request) -> dict[str, Any]:
         # plugin is still installed. Reported as a conflict rather than a
         # 500: nothing is broken, something is in the way. ``error`` is the
         # operating system's own sentence and ``hint`` is what to do about
-        # it, which is what the panel puts in front of the user.
+        # it -- the half a client can put in front of the user.
         raise _coded(
             409, "files_locked",
             error=outcome.error,
             hint=(f"{outcome.directory} is still there. Close whatever is "
-                  f"using those files -- or stop the server -- and remove "
-                  f"the plugin again."))
+                  "using those files -- or stop the server -- and remove "
+                  "the plugin again."))
 
     plugin_loader.purge_plugin_modules(plugin_id)
     rediscover_now()

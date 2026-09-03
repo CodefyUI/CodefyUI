@@ -1744,6 +1744,23 @@ async def test_the_catalog_still_answers_without_an_installer(
     assert response.json()["entries"]
 
 
+async def test_a_plugin_can_be_removed_without_an_installer(
+        uninstalled_client, center_lockfile, forgetting):
+    """The other half of that decision, and the reason the delete route asks
+    ``_installer`` rather than ``_service``.
+
+    Removing a plugin is a lockfile edit, a purge and a re-discovery; none of
+    the three belongs to the installer, and no installer means no job to be
+    in the way. A 503 here would refuse to uninstall a plugin BECAUSE the
+    thing that installs plugins had failed to start -- which is the state you
+    would most want to get out of.
+    """
+    response = await uninstalled_client.delete("/api/plugins/demo-external")
+    assert response.status_code == 200, response.text
+    assert response.json()["removed"] is True
+    assert "demo-external" not in lockfile_of(center_lockfile)["plugins"]
+
+
 # ==========================================================================
 # part 3: the lifecycle
 # ==========================================================================
@@ -2055,10 +2072,14 @@ async def test_a_toggle_waits_for_that_plugins_own_install(
 
 
 def test_the_delete_route_is_declared_with_the_other_plugin_id_routes():
-    """A different METHOD on ``/{plugin_id}`` is not a different path to
-    Starlette: it matches in registration order and only then looks at the
-    method. So a fixed path declared after this one is unreachable for
-    exactly the reason it is unreachable after the GET."""
+    """The same invariant as the GET's, one method along.
+
+    A path that matches with the wrong method is a PARTIAL match, and the
+    router keeps scanning for a full one -- so what a late fixed path loses
+    to ``/{plugin_id}`` here is narrower than it is for the GET: only a fixed
+    path that ALSO answers DELETE would be shadowed. The order is asserted
+    anyway rather than reasoned about per method, because the next route
+    added below this line is the one nobody re-derives it for."""
     api_routes = [route for route in routes_plugins.router.routes
                   if isinstance(route, APIRoute)]
     deleting = [index for index, route in enumerate(api_routes)
