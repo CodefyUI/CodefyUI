@@ -86,6 +86,13 @@ class Inspection:
     catalog_id: str | None
     official: bool
     source: str
+    #: The repository this was read from, split, and ``None`` for a kind
+    #: that has none. Kept apart from ``source``/``url`` because an install
+    #: needs the pair back -- ``download_tarball`` takes an owner and a repo,
+    #: not a URL -- and re-parsing a formatted string to recover what the
+    #: caller already had is how the two spellings drift apart.
+    owner: str | None
+    repo: str | None
     url: str | None
     ref: str | None
     sha: str | None
@@ -155,6 +162,8 @@ def _inspection(
     manifest: dict[str, Any],
     lockfile: dict[str, Any],
     source: str,
+    owner: str | None = None,
+    repo: str | None = None,
     url: str | None = None,
     ref: str | None = None,
     sha: str | None = None,
@@ -208,6 +217,8 @@ def _inspection(
         catalog_id=catalog_id,
         official=official,
         source=source,
+        owner=owner,
+        repo=repo,
         url=url,
         ref=ref,
         sha=sha,
@@ -254,6 +265,11 @@ def inspect_builtin(plugin_id: str, *, lockfile: dict[str, Any]) -> Inspection:
         manifest=manifest,
         lockfile=lockfile,
         source=plugin_id,
+        # A pack that ships in this release has no repository to name: its
+        # files are already on disk, and an install neither resolves nor
+        # downloads anything.
+        owner=None,
+        repo=None,
         catalog_id=plugin_id,
         official=True,
         consent_required=False,
@@ -311,6 +327,8 @@ def inspect_github(
         manifest=manifest,
         lockfile=lockfile,
         source=f"{owner}/{repo}" + (f"@{ref}" if ref else ""),
+        owner=owner,
+        repo=repo,
         url=f"https://github.com/{owner}/{repo}",
         ref=ref,
         sha=sha,

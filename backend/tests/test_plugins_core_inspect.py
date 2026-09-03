@@ -190,6 +190,22 @@ def test_a_repository_is_read_at_the_resolved_sha(fake_github):
     assert found.installed is None and found.up_to_date is False
 
 
+def test_an_inspection_keeps_the_repository_apart_from_the_url(fake_github):
+    """An install takes an owner and a repo; ``source`` and ``url`` are
+    formatted strings. Recovering the pair by re-parsing one of those is how
+    two spellings of the same repository start to drift apart."""
+    fake_github(PLAIN_MANIFEST)
+    found = plugin_inspect.inspect_github("alice", "extras", "v1.2.0", lockfile={})
+    assert (found.owner, found.repo) == ("alice", "extras")
+
+
+def test_a_pack_that_ships_here_names_no_repository():
+    """``None`` because there is nothing to resolve or download, not because
+    the field was forgotten."""
+    found = plugin_inspect.inspect_builtin("stats", lockfile={})
+    assert found.owner is None and found.repo is None
+
+
 def test_a_pinned_sha_is_never_re_resolved(monkeypatch, fake_github):
     """The restore path: re-resolving a tag that has since moved would
     install something other than what was pinned."""
