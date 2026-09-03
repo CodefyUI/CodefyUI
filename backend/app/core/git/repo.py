@@ -144,21 +144,24 @@ def _ignores_env(path: Path) -> bool:
     """Would this ``.gitignore`` already keep a FILE called ``.env`` out?
 
     The question is git's, not the author's. Two spellings answer yes --
-    ``.env`` and ``/.env``, either of them with trailing whitespace, which
-    git drops before matching -- and reading only the first made
+    ``.env`` and ``/.env``, either of them with trailing SPACES, which git
+    drops before matching -- and reading only the first made
     :func:`ensure_scaffold` append a second ``.env`` under a line that
     plainly already did the job.
 
-    Everything else answers NO, including the three near-misses that look
-    like they should count. ``.env/`` is a directory-only pattern and does
-    not match a file; ``.env  # secrets`` is not a rule with a comment on
-    it, because ``.gitignore`` has no trailing comments -- it is a pattern
-    matching a file with that entire name; and ``  .env`` keeps its leading
-    spaces, so it matches a file whose name starts with two of them.
-    Whoever wrote any of the three believes their secrets are ignored and
-    they are not, so the line goes in. A duplicate rule is harmless; a
-    missing one is the leak this whole scaffold exists to prevent, and that
-    asymmetry is what decides every uncertain case here.
+    Everything else answers NO, including the near-misses that look like
+    they should count. ``.env/`` is a directory-only pattern and does not
+    match a file; ``.env  # secrets`` is not a rule with a comment on it,
+    because ``.gitignore`` has no trailing comments -- it is a pattern
+    matching a file with that entire name; ``  .env`` keeps its leading
+    spaces, so it matches a file whose name starts with two of them; and
+    ``.env\\t`` keeps its trailing TAB, because spaces are the only trailing
+    whitespace git drops (measured: ``git status`` lists ``.env`` as
+    untracked against every one of them). Whoever wrote any of them
+    believes their secrets are ignored and they are not, so the line goes
+    in. A duplicate rule is harmless; a missing one is the leak this whole
+    scaffold exists to prevent, and that asymmetry is what decides every
+    uncertain case here.
 
     An un-ignore rule is the same call for a different reason: ``!.env``
     does not count, the appended rule goes in after it, and the last
@@ -184,17 +187,22 @@ def _ignore_rule(line: str) -> str:
     Not a gitignore parser and not trying to be -- no globs, no negation
     semantics, no directory matching. It removes the only two things git
     itself removes from a line before matching it against a file at the top
-    level: TRAILING whitespace, which git drops unless it is escaped, and
+    level: trailing SPACES, which git drops unless they are escaped, and
     the leading ``/`` that anchors a rule to the repository root, which for
     a root-level file changes nothing about what it matches.
 
-    LEADING whitespace is NOT removed, and the difference is not pedantry.
-    git keeps it: a line reading ``  .env`` is a pattern for a file whose
-    name begins with two spaces, and a ``.gitignore`` saying that does not
-    ignore ``.env`` at all -- measured, ``git check-ignore -v -- .env``
-    exits 1 against it and the file shows as ``?? .env``. Stripping it here
-    would read an indented line as the rule already being present and leave
-    the working one unwritten, which is the leak direction.
+    SPACES ONLY, and that is the whole reason this is a function rather
+    than a ``strip()``. ``str.rstrip()`` with no argument also eats a TAB
+    and a non-breaking space, and git keeps both: measured on git 2.53,
+    ``.env\\t``, ``.env\\t ``, ``.env\\xa0`` and ``/.env\\t`` all leave the
+    file listed as ``?? .env``. Reading one of those as the rule already
+    being present would leave the working line unwritten -- the leak
+    direction.
+
+    LEADING whitespace is NOT removed either, for the same reason: a line
+    reading ``  .env`` is a pattern for a file whose name begins with two
+    spaces, and a ``.gitignore`` saying that does not ignore ``.env`` at
+    all.
 
     Everything else is left exactly as written, so it simply does not
     compare equal: a glob (``*.env``), a directory-only rule (``.env/``), a
@@ -205,7 +213,7 @@ def _ignore_rule(line: str) -> str:
     direction to be wrong in: a duplicate rule does nothing, and a missing
     one is the user's API keys in a public repository.
     """
-    text = line.rstrip()
+    text = line.rstrip(" ")
     if text.startswith("/"):
         text = text[1:]
     return text
