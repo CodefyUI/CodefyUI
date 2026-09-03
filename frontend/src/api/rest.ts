@@ -897,10 +897,11 @@ export class ApiError extends Error {
     body: Record<string, unknown> | null = null,
   ) {
     super(message);
-    // `new.target` is the class actually being constructed, so `PackApiError`
-    // reports its own name -- unchanged from before it had a base class --
-    // without restating this line.
-    this.name = new.target.name;
+    // Spelled out rather than taken from `new.target.name`, which is the
+    // MINIFIED identifier in a built bundle: what the console shows a user
+    // reporting a bug has to be the name in this file, not `e2`. A subclass
+    // restates its own (see `PackApiError`).
+    this.name = 'ApiError';
     this.body = body;
   }
 }
@@ -1132,10 +1133,15 @@ export interface PackJobEventsPage extends JobEventsPage {
  *
  * Its own class rather than a bare `ApiError` so that the pack store's
  * `err instanceof PackApiError` keeps meaning "a PACK call refused" now that
- * the Plugin Center throws the same base error, and so that `err.name` still
- * reads `PackApiError` in a console.
+ * the Plugin Center throws the same base error.
+ *
+ * The name is a field rather than a line in a constructor this class does not
+ * otherwise need: a field initializer runs after `super()`, so it wins over
+ * the base's own assignment.
  */
-export class PackApiError extends ApiError {}
+export class PackApiError extends ApiError {
+  override name = 'PackApiError';
+}
 
 /** Build the error for a refused pack request, body and all. */
 async function packApiError(res: Response): Promise<PackApiError> {
