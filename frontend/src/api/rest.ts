@@ -1507,7 +1507,7 @@ function normalizePluginEntry(raw: RawCatalogEntry): PluginCatalogEntry {
     homepage: raw.homepage ?? '',
     version: raw.version ?? null,
     installed_at: raw.installed_at ?? null,
-    // A server that does not say reports the only thing its status can mean:
+    // A server that does not say gets the only answer its status supports:
     // `installed` is enabled, and every other status is not.
     enabled: raw.enabled ?? status === 'installed',
     chapters: raw.chapters ?? [],
