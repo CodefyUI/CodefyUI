@@ -976,7 +976,7 @@ const zhTW: Record<TranslationKey, string> = {
   'pluginCenter.uninstall': '解除安裝',
   'pluginCenter.uninstallConfirm':
     '要解除安裝「{plugin}」嗎？使用它節點的圖將無法執行；它安裝的 Python 套件會保留。',
-  'pluginCenter.source.invalid': '請輸入目錄名稱、owner/repo[@ref] 或 GitHub URL。',
+  'pluginCenter.source.invalid': '請輸入內建套件名稱、owner/repo[@ref] 或 GitHub URL。',
 };
 
 export default zhTW;
