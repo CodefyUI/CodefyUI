@@ -381,7 +381,7 @@ async function maybeStartDevHotReload(): Promise<void> {
       useToastStore.getState().addToast(
         useI18n.getState().t('pluginCenter.toast.frontendsReloaded'), 'info',
       );
-    })();
+    })().catch(console.warn);
   }, DEV_POLL_MS);
 }
 
@@ -392,7 +392,12 @@ export function PluginHost() {
     stackEl = ref.current;
     if (hostStarted) return;
     hostStarted = true;
-    void startPluginFrontends().then(() => maybeStartDevHotReload());
+    // Caught, not swallowed: a rejection here (an activation that reached the
+    // toast store and threw, a queued task that rejected) would otherwise
+    // surface as an unhandled rejection in a console the user never opens.
+    void startPluginFrontends()
+      .then(() => maybeStartDevHotReload())
+      .catch(console.warn);
     return () => { stackEl = null; };
   }, []);
 
