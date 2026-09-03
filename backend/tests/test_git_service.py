@@ -1053,6 +1053,21 @@ async def test_a_worktree_read_of_an_ignored_file_is_refused(repo):
     assert _error(excinfo).status == 403
 
 
+async def test_a_tracked_file_that_matches_an_ignore_rule_is_still_served(repo):
+    """The common case that the ignore check must not break: a file that was
+    committed before the rule existed. ``check-ignore`` consults the index
+    unless it is told not to, so it answers "not ignored" for a tracked path
+    (measured on git 2.53) -- which is why the tracked check does not have to
+    run first."""
+    repo.write("app.log", "kept\n")
+    repo.git("add", "-f", "--", "app.log")
+    repo.commit("track a log file", {".gitignore": "*.log\n"})
+
+    content = await repo.service.file_at_ref("app.log", "worktree")
+
+    assert content.text == "kept\n"
+
+
 async def test_a_worktree_read_of_a_file_git_has_never_heard_of_is_a_404(repo):
     """Not tracked, not in the status: there is nothing to serve."""
     with pytest.raises(GitError) as excinfo:
