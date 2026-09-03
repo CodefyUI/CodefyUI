@@ -866,6 +866,108 @@ export async function downloadImageFile(filename: string) {
   URL.revokeObjectURL(url);
 }
 
+// ── Shared: refused requests, and jobs to follow ─────────────────────────
+
+/**
+ * An `/api` call the server refused, with the status AND the parsed body kept.
+ *
+ * The Package Center and the Plugin Center both answer with a status-coded
+ * error vocabulary -- 403 remote, 404 gone, 409 busy, 507 out of disk -- and
+ * each status carries extra keys the panel shows (`job_id`, `command`,
+ * `blocked_by`, `missing_capabilities`). `body` is the parsed JSON, so none of
+ * that has to be recovered from the message.
+ */
+export class ApiError extends Error {
+  /**
+   * The parsed error body, or null when it was not JSON.
+   *
+   * Assignable rather than `readonly`: a caller (a test building a refusal to
+   * hand a store, say) constructs the error first and attaches the body it
+   * should carry second.
+   */
+  body: Record<string, unknown> | null;
+
+  constructor(
+    public readonly status: number,
+    message: string,
+    body: Record<string, unknown> | null = null,
+  ) {
+    super(message);
+    // `new.target` is the class actually being constructed, so `PackApiError`
+    // reports its own name -- unchanged from before it had a base class --
+    // without restating this line.
+    this.name = new.target.name;
+    this.body = body;
+  }
+}
+
+/**
+ * Read a refused response once, for every error factory below.
+ *
+ * The two bodies the backend sends are `{detail: "text"}` and `{detail:
+ * {code, ...}}`. `code` is what a panel switches on, so a coded detail with
+ * no `message` still yields something worth showing rather than a bare
+ * "Conflict".
+ */
+async function readApiError(
+  res: Response,
+): Promise<{ message: string; body: Record<string, unknown> | null }> {
+  const raw = await res.json().catch(() => null);
+  const body =
+    raw !== null && typeof raw === 'object' ? (raw as Record<string, unknown>) : null;
+  const detail = body?.detail;
+  if (typeof detail === 'string') return { message: detail, body };
+  if (detail !== null && typeof detail === 'object') {
+    const coded = detail as Record<string, unknown>;
+    const message = coded.message ?? coded.code;
+    if (typeof message === 'string') return { message, body };
+  }
+  return { message: res.statusText, body };
+}
+
+/** Build the error for a refused request, body and all. */
+export async function apiError(res: Response): Promise<ApiError> {
+  const { message, body } = await readApiError(res);
+  return new ApiError(res.status, message, body);
+}
+
+/**
+ * Where a background job -- a pack install, a plugin install or update -- has
+ * got to. `needs_restart` is a job that finished everything it could do from
+ * inside the running server.
+ */
+export type JobStatus =
+  | 'running'
+  | 'done'
+  | 'failed'
+  | 'cancelled'
+  | 'needs_restart';
+
+/**
+ * One line of a job's log.
+ *
+ * Deliberately open rather than a union: the payload keys differ per `type`
+ * (`log{line}`, `progress{item, bytes_done, ...}`, `job_done{sha, nodes}`),
+ * and a closed union would have to be edited every time the backend grows a
+ * step. Consumers narrow on `type`.
+ */
+export interface JobEvent {
+  type: string;
+  /** 1-based and monotonic. Resume from the PAGE's cursor, not from this. */
+  cursor?: number;
+  ts?: string;
+  [k: string]: unknown;
+}
+
+/** One page of a job's events, oldest first. */
+export interface JobEventsPage {
+  job_id: string;
+  status: JobStatus;
+  events: JobEvent[];
+  /** Where to resume; never moves backwards on an empty page. */
+  cursor: number;
+}
+
 // ── Optional packs / Package Center ──────────────────────────────────────
 
 /**
@@ -884,12 +986,11 @@ export type PackStatus =
 
 export type PackItemStatus = 'missing' | 'present' | 'downloading';
 
-export type PackJobStatus =
-  | 'running'
-  | 'done'
-  | 'failed'
-  | 'cancelled'
-  | 'needs_restart';
+/**
+ * The pack panel's name for `JobStatus`. One alias rather than a second copy
+ * of the union, so the two centers cannot drift apart.
+ */
+export type PackJobStatus = JobStatus;
 
 /**
  * How the server was launched (`CODEFYUI_MANAGED`). `unknown` is a bare
@@ -976,18 +1077,10 @@ export interface PackCatalog {
 }
 
 /**
- * One line of an install job's log.
- *
- * Deliberately open rather than a union: the payload keys differ per `type`
- * (`log{line}`, `progress{item, bytes_done, ...}`, `needs_restart{command}`),
- * and a closed union would have to be edited every time the backend grows a
- * step. Consumers narrow on `type`.
+ * One line of a pack install job's log: a `JobEvent` plus the two keys the
+ * restart contract adds.
  */
-export interface PackJobEvent {
-  type: string;
-  /** 1-based and monotonic. Resume from the PAGE's cursor, not from this. */
-  cursor?: number;
-  ts?: string;
+export interface PackJobEvent extends JobEvent {
   /**
    * `needs_restart` only: which helper finishes the install (`torch`, `pip`).
    *
@@ -1003,47 +1096,27 @@ export interface PackJobEvent {
    * the server cannot restart itself, so its presence is the whole check.
    */
   retry_mode?: string;
-  [k: string]: unknown;
 }
 
-export interface PackJobEventsPage {
-  job_id: string;
-  status: PackJobStatus;
+/** A page of pack events -- `JobEventsPage` narrowed to `PackJobEvent`. */
+export interface PackJobEventsPage extends JobEventsPage {
   events: PackJobEvent[];
-  /** Where to resume; never moves backwards on an empty page. */
-  cursor: number;
 }
 
 /**
- * A `/api/packs` call the server refused, with the status kept.
+ * A `/api/packs` call the server refused.
  *
- * The Package Center's error vocabulary is status-coded -- 403 remote, 409
- * busy or restart-refused, 507 out of disk -- and each carries extra keys the
- * panel shows (`job_id`, `command`, `blocked_by`, `needed`/`free`). `body` is
- * the parsed JSON, so none of that has to be recovered from the message.
+ * Its own class rather than a bare `ApiError` so that the pack store's
+ * `err instanceof PackApiError` keeps meaning "a PACK call refused" now that
+ * the Plugin Center throws the same base error, and so that `err.name` still
+ * reads `PackApiError` in a console.
  */
-export class PackApiError extends Error {
-  /** The parsed error body, or null when it was not JSON. */
-  body: Record<string, unknown> | null = null;
-
-  constructor(public readonly status: number, message: string) {
-    super(message);
-    this.name = 'PackApiError';
-  }
-}
+export class PackApiError extends ApiError {}
 
 /** Build the error for a refused pack request, body and all. */
 async function packApiError(res: Response): Promise<PackApiError> {
-  const raw = await res.json().catch(() => null);
-  const body =
-    raw !== null && typeof raw === 'object' ? (raw as Record<string, unknown>) : null;
-  const detail = body?.detail;
-  const err = new PackApiError(
-    res.status,
-    typeof detail === 'string' ? detail : res.statusText,
-  );
-  err.body = body;
-  return err;
+  const { message, body } = await readApiError(res);
+  return new PackApiError(res.status, message, body);
 }
 
 /**
