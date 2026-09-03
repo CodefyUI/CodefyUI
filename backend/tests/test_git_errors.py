@@ -181,6 +181,12 @@ _SAMPLES = [
     pytest.param(
         "error: could not lock config file .git/config: File exists\n",
         "git_failed", id="unrecognised"),
+    pytest.param(
+        # INDENTED, so it is not git's own sentence: git never indents a
+        # ``fatal:``, and a hook that pretty-prints its output would
+        # otherwise get to choose the code the user is shown.
+        "    fatal: config not found\n",
+        "git_failed", id="an-indented-fatal-is-hook-prose"),
 ]
 
 _ARGV = ["git", "-C", "/p", "-c", "core.quotepath=false", "-c",
@@ -526,6 +532,26 @@ def test_the_mask_never_runs_past_the_authority():
     assert redact("https://a:pw@h/x@y") == "https://***@h/x@y"
     assert redact("https://a:p@w@h/x https://b:p@w@h/y") == (
         "https://***@h/x https://***@h/y")
+
+
+def test_a_classified_failure_is_already_redacted():
+    """The mask runs here too, not only on the way out of a route.
+
+    A route is still what decides what reaches a browser -- but a credential
+    that was never put INTO the exception cannot escape through a log line,
+    a test fixture, or the next caller somebody writes. Redaction is
+    idempotent, so the second pass at the route costs nothing.
+    """
+    error = classify_failure(
+        _ARGV, 128,
+        f"fatal: unable to access 'https://octocat:{TOKEN}@github.com/o/r/': "
+        "The requested URL returned error: 403\n")
+
+    assert error.code == "auth_required"
+    assert error.stderr is not None
+    assert TOKEN not in error.stderr
+    # And the half that makes it actionable is still there.
+    assert "github.com/o/r/" in error.stderr
 
 
 def test_redaction_survives_the_empty_string():

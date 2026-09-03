@@ -170,8 +170,10 @@ class GitBusy(GitError):
         self.op = op
 
 
-#: The openings git puts on its own sentences. Matched at the START of a
-#: line, and the set is short on purpose.
+#: The openings git puts on its own sentences. Matched at the very START of
+#: a line -- an INDENTED ``fatal:`` is not git's, because git never indents
+#: its own, and a hook that pretty-prints its output must not be able to
+#: pick the code the user is shown -- and the set is short on purpose.
 #:
 #: ``error: `` is NOT here, and that is the whole point of anchoring: git
 #: uses it for the problems it can carry on past, and it is also the most
@@ -348,14 +350,19 @@ def _matches(pattern: _Pattern, haystack: str, lines: Sequence[str]) -> bool:
     """Does *pattern* match this stderr?
 
     *haystack* is the whole stream and *lines* its lines, both already
-    lower-cased and the lines left-stripped by the caller; the patterns are
-    written in git's own casing so the table stays readable next to real
-    output, and are lowered here.
+    lower-cased by the caller; the patterns are written in git's own casing
+    so the table stays readable next to real output, and are lowered here.
+
+    The lines are NOT stripped, and that is the anchor doing its job. git
+    puts its own ``fatal: `` at the very start of a line; a line that opens
+    with whitespace and then ``fatal:`` is something a hook printed, and
+    reading it as git's would let a script's prose pick the code the user
+    is shown.
     """
     if isinstance(pattern, Anchored):
         phrase = pattern.phrase.lower()
         return any(line.startswith(GIT_MESSAGE_PREFIXES) and phrase in line
-                   for line in lines)
+                   for line in lines)  # the line's FIRST characters
     if isinstance(pattern, str):
         return pattern.lower() in haystack
     return all(part.lower() in haystack for part in pattern)
@@ -469,10 +476,17 @@ def classify_failure(argv: Sequence[str], returncode: int,
     wrong claim with no evidence under it cannot be argued with. Empty
     stderr gives an empty tail, which is itself the honest answer: git
     failed and said nothing (``--quiet`` does that).
+
+    That tail is :func:`redact`ed HERE as well as at the route. The route is
+    still the place that decides what reaches a browser, but a credential
+    that is never put into the exception cannot escape through a log line, a
+    test fixture or the next caller somebody writes -- and redaction is
+    idempotent, so doing it twice costs nothing and forgetting it once
+    costs a token.
     """
     haystack = stderr.lower()
-    lines = [line.lstrip() for line in haystack.splitlines()]
-    tail = stderr_tail(stderr)
+    lines = haystack.splitlines()
+    tail = redact(stderr_tail(stderr))
     for code, status, patterns in _RULES:
         if any(_matches(pattern, haystack, lines) for pattern in patterns):
             return GitError(code, status, stderr=tail)
