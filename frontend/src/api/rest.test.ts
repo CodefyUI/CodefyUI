@@ -1271,8 +1271,8 @@ describe('plugin center endpoints', () => {
       plugin_id: 'c1-tokenizer',
       catalog_id: null,
       official: true,
-      source: 'treeleaves30760/CodefyUI-Plugin-C1',
-      url: 'https://github.com/treeleaves30760/CodefyUI-Plugin-C1',
+      source: 'CodefyUI/CodefyUI-Plugin-C1',
+      url: 'https://github.com/CodefyUI/CodefyUI-Plugin-C1',
       ref: 'main',
       sha: 'abc123',
       name: 'Chapter 1',
@@ -1416,7 +1416,7 @@ describe('plugin center endpoints', () => {
           name: 'Chapter 1',
           description: 'Tokenizer nodes',
           kind: 'github',
-          source: 'treeleaves30760/CodefyUI-Plugin-C1',
+          source: 'CodefyUI/CodefyUI-Plugin-C1',
           homepage: 'https://example.invalid/c1',
         }],
       });
@@ -1432,7 +1432,7 @@ describe('plugin center endpoints', () => {
           // No status at all is a plugin nothing has installed.
           status: 'available',
           source_kind: null,
-          source: 'treeleaves30760/CodefyUI-Plugin-C1',
+          source: 'CodefyUI/CodefyUI-Plugin-C1',
           repo: null,
           ref: null,
           sha: null,
@@ -1500,11 +1500,11 @@ describe('plugin center endpoints', () => {
         official: true,
         status: 'installed',
         source_kind: 'github_url',
-        source: 'treeleaves30760/CodefyUI-Plugin-C1',
-        repo: 'treeleaves30760/CodefyUI-Plugin-C1',
+        source: 'CodefyUI/CodefyUI-Plugin-C1',
+        repo: 'CodefyUI/CodefyUI-Plugin-C1',
         ref: 'main',
         sha: 'abc123',
-        url: 'https://github.com/treeleaves30760/CodefyUI-Plugin-C1',
+        url: 'https://github.com/CodefyUI/CodefyUI-Plugin-C1',
         homepage: 'https://example.invalid/c1',
         version: '1.0.0',
         installed_at: '2026-09-01T10:00:00Z',
@@ -1545,14 +1545,14 @@ describe('plugin center endpoints', () => {
   describe('inspectPluginSource', () => {
     it('POSTs the source with the session token', async () => {
       const fetchMock = mockFetch(200, inspection());
-      const out = await inspectPluginSource('treeleaves30760/CodefyUI-Plugin-C1');
+      const out = await inspectPluginSource('CodefyUI/CodefyUI-Plugin-C1');
       expect(out).toEqual(inspection());
       const [url, init] = fetchMock.mock.calls[0];
       expect(url).toBe('/api/plugins/inspect');
       expect(init.method).toBe('POST');
       expect(new Headers(init.headers).get('X-CodefyUI-Token')).toBe('test-token');
       expect(JSON.parse(init.body)).toEqual({
-        source: 'treeleaves30760/CodefyUI-Plugin-C1',
+        source: 'CodefyUI/CodefyUI-Plugin-C1',
       });
     });
 
