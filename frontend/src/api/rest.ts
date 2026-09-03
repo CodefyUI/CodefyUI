@@ -873,9 +873,13 @@ export async function downloadImageFile(filename: string) {
  *
  * The Package Center and the Plugin Center both answer with a status-coded
  * error vocabulary -- 403 remote, 404 gone, 409 busy, 507 out of disk -- and
- * each status carries extra keys the panel shows (`job_id`, `command`,
- * `blocked_by`, `missing_capabilities`). `body` is the parsed JSON, so none of
- * that has to be recovered from the message.
+ * each status carries extra keys the panel shows. `body` is the parsed JSON,
+ * so none of that has to be recovered from the message -- but the two centers
+ * put those keys in different places, and reading the wrong one gets
+ * `undefined` rather than an error: a pack route answers a FLAT body
+ * (`{detail: "...", command, blocked_by}`), a plugin route nests everything
+ * under `detail` (`{detail: {code, missing_capabilities}}`), which is what
+ * `errorDetail()` below reads.
  */
 export class ApiError extends Error {
   /**
@@ -929,6 +933,26 @@ async function readApiError(
 export async function apiError(res: Response): Promise<ApiError> {
   const { message, body } = await readApiError(res);
   return new ApiError(res.status, message, body);
+}
+
+/**
+ * The coded object out of a refusal: the keys a plugin route puts under
+ * `detail`, or null when there are none.
+ *
+ * Here rather than in each store because the nesting is the trap. `detail` is
+ * a plain object only for a coded refusal -- `{detail: {code:
+ * consent_required, missing_capabilities: [...]}}` -- and is the whole message
+ * for a plain one (`{detail: "Not Found"}`), so a caller that reached for
+ * `err.body?.missing_capabilities` the way the pack routes allow would read
+ * one level too high and get `undefined` with no error to say why.
+ */
+export function errorDetail(err: unknown): Record<string, unknown> | null {
+  if (!(err instanceof ApiError) || err.body === null) return null;
+  const detail = err.body.detail;
+  if (detail === null || typeof detail !== 'object' || Array.isArray(detail)) {
+    return null;
+  }
+  return detail as Record<string, unknown>;
 }
 
 /**

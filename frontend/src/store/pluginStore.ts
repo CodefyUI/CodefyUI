@@ -2,6 +2,7 @@ import { create } from 'zustand';
 import {
   ApiError,
   cancelPluginJob,
+  errorDetail,
   getPluginJobEvents,
   inspectPluginSource,
   installPlugin,
@@ -229,23 +230,14 @@ function openCenterAction(pluginId: string): ToastAction {
 }
 
 /**
- * The coded object out of a refusal, wherever the server put it.
+ * The code a refusal was refused with, or null.
  *
- * FastAPI nests it under `detail`; a plain `{code: ...}` body (or a proxy that
- * unwrapped the detail) is the same information one level up. Reading only one
- * of the two would silently lose the code that decides which toast this is.
+ * `errorDetail` is the api client's, not a copy: every plugin route nests its
+ * keys under `detail`, and one unwrapper shared with the panel is what keeps a
+ * caller from reading `err.body.code` and finding nothing there.
  */
-function refusal(err: unknown): Record<string, unknown> | null {
-  if (!(err instanceof ApiError) || err.body === null) return null;
-  const detail = err.body.detail;
-  if (detail !== null && typeof detail === 'object') {
-    return detail as Record<string, unknown>;
-  }
-  return err.body;
-}
-
 function refusalCode(err: unknown): string | null {
-  return str(refusal(err)?.code);
+  return str(errorDetail(err)?.code);
 }
 
 /** A plugin's display name for a toast, falling back to its id. */
@@ -808,7 +800,7 @@ export const usePluginStore = create<PluginState>((set, get) => ({
       await refreshEverything();
       toast(t('pluginCenter.toast.removed', { plugin: name }), 'success');
     } catch (err) {
-      const hint = str(refusal(err)?.hint);
+      const hint = str(errorDetail(err)?.hint);
       if (refusalCode(err) === 'files_locked') {
         // Windows keeps an open file: the plugin is deregistered but its
         // directory is still there. The server's hint is the only thing that

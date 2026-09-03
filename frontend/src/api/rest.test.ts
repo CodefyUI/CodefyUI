@@ -47,6 +47,7 @@ import {
   removePackItem,
   PackApiError,
   ApiError,
+  errorDetail,
   listPluginCatalog,
   inspectPluginSource,
   installPlugin,
@@ -1358,6 +1359,49 @@ describe('plugin center endpoints', () => {
       const pluginErr = await apiErr(listPluginCatalog());
       expect(pluginErr).not.toBeInstanceOf(PackApiError);
       expect(pluginErr.name).toBe('ApiError');
+    });
+  });
+
+  // The unwrapper every plugin caller shares. A pack route answers a flat
+  // body and is read with `err.body?.command`; a plugin route nests the same
+  // kind of keys one level down, where that read finds nothing.
+  describe('errorDetail', () => {
+    it('hands back the coded object a plugin refusal nests', async () => {
+      mockFetch(400, {
+        detail: { code: 'consent_required', missing_capabilities: ['network'] },
+      });
+      const err = await apiErr(installPlugin({ inspection_id: 'insp-1' }));
+      expect(errorDetail(err)).toEqual({
+        code: 'consent_required', missing_capabilities: ['network'],
+      });
+    });
+
+    it('answers null for a plain-text detail', async () => {
+      // `{detail: "Not Found"}` carries no keys to read: the message is the
+      // whole of it, and a caller must not get a string where it asked for a
+      // record.
+      mockFetch(404, { detail: 'Not Found' });
+      expect(errorDetail(await apiErr(listPluginCatalog()))).toBeNull();
+    });
+
+    it('answers null for a body with no detail at all', async () => {
+      // A pack-shaped body reaching a plugin caller: flat, so there is
+      // nothing nested to return.
+      const err = new ApiError(409, 'busy', { command: 'cdui update', job_id: 'j1' });
+      expect(errorDetail(err)).toBeNull();
+    });
+
+    it('answers null for a list detail', async () => {
+      // FastAPI's 422 puts a LIST under `detail`. It is an object by
+      // `typeof`, and reading `.code` off it would be a silent undefined.
+      const err = new ApiError(422, 'invalid', { detail: [{ loc: ['body'] }] });
+      expect(errorDetail(err)).toBeNull();
+    });
+
+    it('answers null for anything that is not an ApiError', () => {
+      expect(errorDetail(new Error('Failed to fetch'))).toBeNull();
+      expect(errorDetail('consent_required')).toBeNull();
+      expect(errorDetail(null)).toBeNull();
     });
   });
 
