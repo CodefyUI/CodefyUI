@@ -14,6 +14,8 @@
     POST /api/plugins/jobs/{id}/cancel   ask it to stop
     GET  /api/plugins/{id}        one plugin's manifest, nodes and README
     DELETE /api/plugins/{id}      uninstall it, and say what that left behind
+    POST /api/plugins/{id}/update fetch what its own repository has now --
+                                  202 {job_id}, or a 200 saying why not
     POST /api/plugins/{id}/enable|disable
 
 Every fixed path is declared before ``/{plugin_id}``; see the comment above
@@ -30,12 +32,12 @@ Reads are open GETs, like every other read the editor polls -- including a
 job's events, which is what a second tab that opened mid-install follows.
 Everything else here takes the session token (the global ``auth_guard``).
 The routes that change what code is on this machine -- inspect, install,
-cancel, delete -- are additionally refused unless the server is bound to
-loopback (``_require_local_plugin_install``): installing a plugin puts
+update, cancel, delete -- are additionally refused unless the server is bound
+to loopback (``_require_local_plugin_install``): installing a plugin puts
 third-party code where this process will import it, inspecting reaches out
-to GitHub on the caller's word, and deleting takes somebody's plugin away
-(cancel is in that set because it stops the install they started). None of
-them is a thing a stranger on the LAN gets to do.
+to GitHub on the caller's word, updating does both, and deleting takes
+somebody's plugin away (cancel is in that set because it stops the install
+they started). None of them is a thing a stranger on the LAN gets to do.
 ``cdui plugin install`` still does the same job from a terminal, through the
 same flow. ``/reload`` and ``/{id}/enable|disable`` stay token-only on
 purpose: they act on code this machine already has and the user already
@@ -54,7 +56,7 @@ import logging
 import sys
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from pydantic import BaseModel, ConfigDict, field_validator
 
 from ..config import settings
@@ -76,6 +78,8 @@ from ..core.plugins.errors import (
     InspectBusy,
     InspectionExpired,
     ManifestError,
+    NotInstalled,
+    NotUpdatable,
     PluginBusy,
     PluginInstallError,
     ReservedPluginId,
@@ -743,6 +747,99 @@ async def uninstall_plugin(plugin_id: str, request: Request) -> dict[str, Any]:
         "uninstall_command": outcome.uninstall_command,
         "reinstall_hint": outcome.reinstall_hint,
     }
+
+
+@router.post("/{plugin_id}/update",
+             dependencies=[Depends(_require_local_plugin_install)])
+async def update_plugin(plugin_id: str, request: Request,
+                        response: Response) -> dict[str, Any]:
+    """Fetch what this plugin's own repository has now. Three answers.
+
+    | 202 | ``{job_id}``                                   | it is running |
+    | 200 | ``{status: "up_to_date", sha}``                 | nothing to do |
+    | 200 | ``{status: "needs_consent", inspection, ...}``  | ask first     |
+
+    The status code is the first thing the client branches on and the body's
+    ``status`` the second, because only one of the three started anything --
+    and a job that is running is a different kind of answer from a report
+    about a job that is not.
+
+    Behind both gates the install path carries (the session token and a
+    loopback bind): this reads a repository on the caller's word and then
+    puts what it finds where this process will import it, which is the
+    install question asked about a plugin that is already here.
+
+    Which of the three, and every refusal on the way, is
+    :meth:`~app.core.plugins.service.PluginService.update`'s to decide -- the
+    order of its checks is the order of the codes below, and this handler is
+    the translation. ``needs_consent`` echoes ``capabilities_added`` and
+    ``allowed_modules_added`` beside the inspection that already carries
+    them: they are the whole content of an update's consent screen (what this
+    version asks for beyond the last one), and reading them off the payload
+    rather than off the inspection is what keeps the two copies from ever
+    disagreeing.
+
+    The refusals: 404 ``not_installed``, 400 ``not_updatable`` (with the hint
+    that says what to do instead -- a built-in pack updates with
+    ``cdui update``), 409 ``busy`` / ``pack_install_running`` /
+    ``inspect_busy``, 404 or 502 for GitHub, 400 ``reserved_id`` or
+    ``invalid_manifest`` for what the repository now declares, and 503 when
+    this server has no installer at all.
+    """
+    service = _service(request)
+    try:
+        outcome = await service.update(plugin_id)
+    except NotInstalled:
+        # The one refusal here that is not about the update: there is nothing
+        # under that id to update. The panel's row goes away on the next
+        # ``/catalog``, which is what a client does with this.
+        raise _coded(404, "not_installed") from None
+    except NotUpdatable as exc:
+        # Installed, and nothing to fetch: a built-in pack, a linked
+        # directory, or a record whose repository is no longer in it. The
+        # hint is the only part that differs, and it is what a person reads.
+        raise _coded(400, "not_updatable", hint=exc.hint) from None
+    except InspectBusy:
+        # Before ``PluginInstallError``: it is a subclass, and asking again
+        # in a moment works.
+        raise _coded(409, "inspect_busy") from None
+    except PluginBusy as exc:
+        # An update starts an install, and one runs at a time across both
+        # centers -- ``reason`` says whose job the client is being asked to
+        # wait for.
+        raise _coded(409, exc.reason or "busy", job_id=exc.job_id) from None
+    except JobBusy as exc:
+        # Unreachable for the same reason it is on ``/install``, and here for
+        # the same reason: the runner owns "one at a time", and losing that
+        # race should be a 409 the panel can draw rather than a 500.
+        raise _coded(409, "busy", job_id=exc.job_id) from None
+    except (ManifestError, tomllib.TOMLDecodeError, UnicodeDecodeError):
+        # The repository has a manifest this build will not install, or one
+        # that is not a manifest at all. Not this install's fault and not
+        # something the caller can fix from here -- one code for the three.
+        raise _coded(400, "invalid_manifest") from None
+    except GitHubError as exc:
+        raise _github_refusal(exc) from None
+    except PluginInstallError as exc:
+        # An id this build reserves (the repository renamed itself into one),
+        # and whatever else the inspection path refuses a source with.
+        raise _inspect_refusal(exc) from None
+
+    if outcome.kind == "up_to_date":
+        return {"status": "up_to_date", "sha": outcome.sha}
+    if outcome.kind == "needs_consent":
+        inspection = _inspection_payload(outcome.inspection)
+        return {
+            "status": "needs_consent",
+            "inspection": inspection,
+            "capabilities_added": inspection["capabilities_added"],
+            "allowed_modules_added": inspection["allowed_modules_added"],
+        }
+    # Set rather than declared: this is the only one of the three that
+    # started a job, and a route with a fixed 202 would have to answer the
+    # other two with a lie or with a second route.
+    response.status_code = 202
+    return {"job_id": outcome.job.job_id}
 
 
 def _set_plugin_enabled(plugin_id: str, enabled: bool) -> dict[str, Any]:

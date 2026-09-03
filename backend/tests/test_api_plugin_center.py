@@ -34,11 +34,13 @@ about status codes and the ``detail.code`` a panel branches on. Nothing there
 installs anything or opens a socket; GitHub is faked at
 ``app.core.plugins.github``, one call at a time.
 
-Part 3 is the lifecycle -- ``DELETE /api/plugins/{id}`` and the two toggles
--- over the same fixtures: the uninstall really does edit that throwaway
-lockfile and really does delete out of that throwaway user root, because the
-answer the panel draws (what was removed, what was left behind, what is still
-installed) is only worth asserting against a lockfile something wrote.
+Part 3 is the lifecycle -- ``DELETE /api/plugins/{id}``, ``POST /{id}/update``
+and the two toggles -- over the same fixtures: the uninstall really does edit
+that throwaway lockfile and really does delete out of that throwaway user
+root, because the answer the panel draws (what was removed, what was left
+behind, what is still installed) is only worth asserting against a lockfile
+something wrote. The update reads that lockfile too, which is what makes
+"follow the repository the user actually installed from" testable at all.
 """
 
 from __future__ import annotations
@@ -1671,10 +1673,16 @@ async def test_cancelling_ends_the_job_and_asking_twice_is_not_an_error(
 #: schema accepts. Deliberately not a walk of the router: ``/reload`` and
 #: ``/{id}/enable|disable`` are mutating too and are token-only on purpose,
 #: because they act on code this machine already has.
+#:
+#: ``/update`` names ``foundations`` -- a built-in pack -- so that the walk
+#: which lifts the loopback refusal stops at ``not_updatable`` instead of
+#: driving a real inspection into the real network: this file fakes GitHub
+#: per test, and a walk has no fixture of its own.
 MUTATING = [
     ("POST", "/api/plugins/inspect", {"source": "stats"}),
     ("POST", "/api/plugins/install", {"inspection_id": "no-such-id"}),
     ("POST", "/api/plugins/jobs/no-such-job/cancel", None),
+    ("POST", "/api/plugins/foundations/update", None),
 ]
 
 
@@ -1993,6 +2001,253 @@ async def test_files_that_will_not_delete_keep_the_plugin_installed(
     assert "demo-external" in lockfile_of(center_lockfile)["plugins"]
     assert (center_lockfile / "demo-external").is_dir()
     assert forgetting == []
+
+
+# -- POST /api/plugins/{id}/update -----------------------------------------
+#
+# ``demo-external`` is the row this section works on: a ``github_url`` entry
+# recording one capability, one trusted module and the commit ``0`` * 40 at
+# ``alice/extras@v1.2.3``. What the repository answers is faked per test, so
+# each of the three outcomes is one manifest away from the others.
+
+#: What the repository has grown into by the next commit, asking for exactly
+#: what the lockfile already records. The ordinary update: a new sha and
+#: nothing new to decide.
+SAME_TERMS_MANIFEST = """\
+[plugin]
+id = "demo-external"
+name = "Demo External"
+version = "2.1.0"
+schema_version = 1
+
+[security]
+capabilities = ["network"]
+allowed_modules = ["requests"]
+"""
+
+
+async def test_the_commit_that_is_installed_leaves_nothing_to_do(
+        client, flow, fake_github):
+    """And the repository it asked is the one the LOCKFILE recorded, at the
+    ref recorded with it -- an update follows what the user installed from,
+    not something re-typed."""
+    fake_github.answers(a_manifest("demo-external"), sha="0" * 40)
+
+    response = await client.post("/api/plugins/demo-external/update")
+
+    assert response.status_code == 200, response.text
+    assert response.json() == {"status": "up_to_date", "sha": "0" * 40}
+    assert fake_github.resolved == [("alice", "extras", "v1.2.3")]
+    assert not flow.started.is_set()
+
+
+async def test_an_update_the_user_already_consented_to_starts_a_job(
+        client, flow, fake_github):
+    """One click, one job. The plan carries ``force`` because pressing Update
+    IS the offer to replace the copy on disk -- without it the install this
+    route just started would be refused for being already installed."""
+    fake_github.answers(SAME_TERMS_MANIFEST, sha="c" * 40)
+
+    response = await client.post("/api/plugins/demo-external/update")
+
+    assert response.status_code == 202, response.text
+    assert list(response.json()) == ["job_id"]
+    job_id = response.json()["job_id"]
+    await wait_started(flow)
+    plan = flow.plans[0]
+    assert plan.mode == "update"
+    assert plan.force is True
+    assert plan.sha == "c" * 40
+    # Granted by the previous install rather than by this request: nobody was
+    # asked anything, and the capability still reaches the plan.
+    assert plan.granted_capabilities == ("network",)
+
+    flow.finish()
+    events, status = await drain(client, job_id)
+    assert status == "done"
+    assert events[0]["mode"] == "update"
+
+
+async def test_a_version_that_asks_for_more_comes_back_as_a_consent_screen(
+        client, flow, fake_github):
+    """The delta is the whole content of an update's dialog, so it travels
+    twice: inside the inspection and beside it, from the same payload.
+
+    Then the second turn, which is the point of storing it: the client sends
+    the id and the answers to what it was asked and NOTHING else -- no force
+    -- and is not refused for the replacement it already agreed to.
+    """
+    fake_github.answers(EXTERNAL_MANIFEST, sha="c" * 40)
+
+    response = await client.post("/api/plugins/demo-external/update")
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert list(body) == ["status", "inspection", "capabilities_added",
+                          "allowed_modules_added"]
+    assert body["status"] == "needs_consent"
+    assert list(body["inspection"]) == INSPECTION_KEYS
+    assert body["inspection"]["mode"] == "update"
+    assert body["inspection"]["installed"]["sha"] == "0" * 40
+    assert body["capabilities_added"] == ["filesystem"]
+    assert body["allowed_modules_added"] == ["pathlib"]
+    assert not flow.started.is_set(), "nothing may be installed unasked"
+
+    accepted = await client.post("/api/plugins/install", json={
+        "inspection_id": body["inspection"]["inspection_id"],
+        "accept_capabilities": ["network", "filesystem"],
+        "trust_author": True})
+
+    assert accepted.status_code == 202, accepted.text
+    await wait_started(flow)
+    assert flow.plans[0].force is True
+    flow.finish()
+    _, status = await drain(client, accepted.json()["job_id"])
+    assert status == "done"
+
+
+async def test_an_update_keeps_the_catalog_row_the_install_recorded(
+        client, flow, fake_github, center_lockfile):
+    """``cdui plugin install <name>`` writes down which catalog row a plugin
+    came from precisely so a later reader can tell the catalog's own pack
+    from free text carrying the same id. An update is the same plugin seen
+    again, so the row travels with it -- dropping it here made every update
+    of an official plugin read as third-party."""
+    data = lockfile_of(center_lockfile)
+    data["plugins"]["demo-external"]["catalog_id"] = "demo-external"
+    (center_lockfile / "installed.json").write_text(json.dumps(data),
+                                                    encoding="utf-8")
+    fake_github.answers(SAME_TERMS_MANIFEST, sha="c" * 40)
+
+    response = await client.post("/api/plugins/demo-external/update")
+
+    assert response.status_code == 202, response.text
+    await wait_started(flow)
+    assert flow.plans[0].catalog_id == "demo-external"
+
+    flow.finish()
+    await drain(client, response.json()["job_id"])
+
+
+async def test_a_builtin_pack_updates_with_codefyui_itself(client):
+    """It updates -- just not from here, and the hint is the only part of
+    this refusal a person can act on."""
+    response = await client.post("/api/plugins/foundations/update")
+
+    assert response.status_code == 400, response.text
+    detail = response.json()["detail"]
+    assert detail["code"] == "not_updatable"
+    assert "cdui update" in detail["hint"]
+
+
+async def test_a_linked_directory_has_nothing_to_fetch(
+        client, center_lockfile, tmp_path):
+    """``cdui plugin link`` records a path into somebody's working tree: what
+    is there is whatever its author saved a moment ago."""
+    work = tmp_path / "work" / "my-pack"
+    data = lockfile_of(center_lockfile)
+    data["plugins"]["my-pack"] = {"source_kind": "local", "source": str(work),
+                                  "path": str(work), "enabled": True}
+    (center_lockfile / "installed.json").write_text(json.dumps(data),
+                                                    encoding="utf-8")
+
+    response = await client.post("/api/plugins/my-pack/update")
+
+    assert response.status_code == 400, response.text
+    assert response.json()["detail"]["code"] == "not_updatable"
+
+
+async def test_updating_something_that_is_not_installed_is_a_404(client):
+    response = await client.post("/api/plugins/no-such-plugin/update")
+
+    assert response.status_code == 404, response.text
+    assert response.json()["detail"] == {"code": "not_installed"}
+
+
+async def test_an_update_waits_for_the_install_that_is_running(
+        client, flow, fake_github):
+    """Wider than the delete's guard, and deliberately: only one install runs
+    at a time, so an update of ANY plugin waits for it. Refused before the
+    network, because the round trip would end at this same 409."""
+    fake_github.answers(a_manifest("extras"))
+    job_id = await start_install(client)
+    await wait_started(flow)
+    reads = len(fake_github.resolved)
+
+    refused = await client.post("/api/plugins/demo-external/update")
+
+    assert refused.status_code == 409, refused.text
+    assert refused.json()["detail"] == {"code": "busy", "job_id": job_id}
+    assert len(fake_github.resolved) == reads, "GitHub was asked anyway"
+
+    flow.finish()
+    await drain(client, job_id)
+
+
+async def test_an_update_is_refused_while_another_source_is_being_read(
+        client, monkeypatch):
+    """An update IS an inspection -- of a source the server looked up instead
+    of the user -- so it takes the same one-at-a-time slot."""
+    sources = Sources()
+    monkeypatch.setattr(inspect_module, "inspect_source", sources)
+    sources.answer("alice/extras", inspect_module.inspect_builtin(
+        "stats", lockfile=plugin_loader.load_lockfile()))
+    sources.blocked.set()
+    reading = asyncio.create_task(
+        client.post("/api/plugins/inspect", json={"source": "alice/extras"}))
+    deadline = time.monotonic() + 10.0
+    while not sources.entered.is_set():
+        assert time.monotonic() < deadline, "the inspection never started"
+        await asyncio.sleep(0.01)
+
+    refused = await client.post("/api/plugins/demo-external/update")
+
+    assert refused.status_code == 409, refused.text
+    assert refused.json()["detail"] == {"code": "inspect_busy"}
+
+    sources.blocked.clear()
+    assert (await reading).status_code == 200
+
+
+@pytest.mark.parametrize("status, expected, code", [
+    (404, 404, "not_found"),
+    (403, 502, "github_rate_limited"),
+    (500, 502, "github_unreachable"),
+])
+async def test_a_github_failure_on_an_update_is_split_the_same_way(
+        client, fake_github, status, expected, code):
+    """The repository behind an installed plugin can be renamed, made private
+    or simply be unreachable, and the three are different waits."""
+    fake_github.raises(GitHubError("no", status=status))
+
+    response = await client.post("/api/plugins/demo-external/update")
+
+    assert response.status_code == expected, response.text
+    assert response.json()["detail"] == {"code": code}
+
+
+async def test_a_repository_that_now_declares_a_reserved_id_is_refused(
+        client, fake_github):
+    """The plugin was installed as ``demo-external`` and its repository has
+    since renamed itself onto an id this build owns. Nothing is fetched, and
+    the panel is told which id clashed."""
+    fake_github.answers(a_manifest("catalog"), sha="c" * 40)
+
+    response = await client.post("/api/plugins/demo-external/update")
+
+    assert response.status_code == 400, response.text
+    assert response.json()["detail"] == {"code": "reserved_id",
+                                         "id": "catalog"}
+
+
+async def test_an_update_of_a_row_whose_manifest_is_not_one_is_a_400(
+        client, fake_github):
+    fake_github.answers("<!doctype html>\n<html>not a manifest</html>\n")
+
+    response = await client.post("/api/plugins/demo-external/update")
+
+    assert response.status_code == 400, response.text
+    assert response.json()["detail"] == {"code": "invalid_manifest"}
 
 
 # -- the busy guard --------------------------------------------------------
