@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import io
+import signal
 import tarfile
 from pathlib import Path
 from textwrap import dedent
@@ -693,6 +694,31 @@ def test_install_deps_builds_correct_pip_specs(monkeypatch):
     assert "bar==2.3.4" in specs
     assert "baz==1.0.0" in specs
     assert "qux" in specs
+
+
+def test_install_deps_reports_a_resolver_conflict_as_exit_3(monkeypatch, capsys):
+    """`cdui plugin link` is the live caller, and it propagates this code.
+
+    A linked plugin's packages go through the same add-only step a
+    downloaded one's do, so they hit the same wall: uv would have to replace
+    a package this process is holding open. That is "not while the server is
+    running", not "the plugin is broken", and the command to run instead is
+    printed rather than described.
+    """
+    monkeypatch.setenv("CODEFYUI_LANG", "en")
+
+    def _conflicted(specs, *, constraints_path, emit, cancel_check, cwd,
+                    tail=None):
+        if tail is not None:
+            tail.append("  x No solution found when resolving dependencies:")
+        return 1
+
+    monkeypatch.setattr("app.core.packs.runner.run_pip", _conflicted)
+
+    assert plugin_cli._install_deps({"tabulate": ">=0.9"}) == 3
+    printed = _out(capsys)
+    assert "uv pip install" in printed
+    assert "tabulate>=0.9" in printed
 
 
 # ── _manifest_has_frontend ────────────────────────────────────────────────
@@ -1421,3 +1447,230 @@ def test_sync_never_proposes_a_github_catalog_entry(isolated_lockfile, capsys):
     printed = _out(capsys)
     for pack_id in OFFICIAL_GITHUB_PACKS:
         assert pack_id not in printed
+
+
+# ── the install, run through the shared flow ───────────────────────────────
+#
+# `cdui plugin install` and the Plugin Center are two front ends over
+# `app.core.plugins.flows.install_plugin_live`. What is tested here is the
+# half that stays in the CLI: what a person is shown BEFORE agreeing, which
+# refusals happen before a byte is fetched, and what the flow's three
+# non-ordinary endings look like from a shell -- an exit code each.
+
+_PREVIEW_MANIFEST = dedent("""\
+    [plugin]
+    id = "official-template"
+    name = "Preview Pack"
+    version = "0.4.2"
+    description = "Everything a card would show."
+    schema_version = 1
+
+    [frontend]
+    entry = "frontend/index.js"
+
+    [python_deps]
+    tabulate = ">=0.9"
+
+    [security]
+    capabilities = ["network"]
+    allowed_modules = ["subprocess"]
+    """)
+
+_PREVIEW_FILES = {
+    "cdui.plugin.toml": _PREVIEW_MANIFEST,
+    "nodes/hello.py": "VALUE = 1\n",
+    "frontend/index.js": "export default {};\n",
+}
+
+
+def _official(args, lockfile=None) -> int:
+    """Install the repository the catalog names, under its own id."""
+    return plugin_cli._install_github(
+        "CodefyUI", "CodefyUI-Plugin-Official", "", args,
+        plugin_loader.load_lockfile() if lockfile is None else lockfile,
+    )
+
+
+def _pip_succeeds(monkeypatch) -> list[list[str]]:
+    """Fake ``run_pip``: record the specs, install nothing, exit 0."""
+    seen: list[list[str]] = []
+
+    def _run_pip(specs, *, constraints_path, emit, cancel_check, cwd, tail=None):
+        seen.append(list(specs))
+        return 0
+
+    monkeypatch.setattr("app.core.packs.runner.run_pip", _run_pip)
+    return seen
+
+
+def test_the_preview_is_printed_before_anything_is_downloaded(
+    isolated_lockfile, fake_github, monkeypatch, capsys
+):
+    """The reason the manifest is read at a pinned commit first.
+
+    "Install this?" is a question nobody can answer from an ``owner/repo``,
+    and this command used to ask it with a URL on the screen and nothing
+    else -- then fetch the repository, and only afterwards print what it had
+    already spent a minute downloading. Every fact a person needs to answer
+    has to be on the screen before the download starts, so the fake download
+    announces itself into the same stream and every fact is asserted to come
+    before it.
+    """
+    monkeypatch.setenv("CODEFYUI_LANG", "en")
+    fake_github(_PREVIEW_FILES)
+    _pip_succeeds(monkeypatch)
+    served = plugin_cli.download_tarball
+
+    def _announced(owner, repo, sha, dest, **kwargs):
+        print("<<fetching the repository>>")
+        served(owner, repo, sha, dest, **kwargs)
+
+    monkeypatch.setattr(plugin_cli, "download_tarball", _announced)
+
+    assert _official(_install_args(
+        accept_capabilities=True, trust_author=True)) == 0
+
+    printed = capsys.readouterr().out
+    fetched = printed.index("<<fetching the repository>>")
+    for fact in (
+        "Preview Pack",                  # what it is
+        "0.4.2",                         # which version
+        "Everything a card would show.",
+        "subprocess",                    # the modules it wants the gate off for
+        "tabulate>=0.9",                 # what it would add to the venv
+        "JavaScript",                    # ... and that it runs code in the browser
+        "network",                       # the capability being granted
+    ):
+        assert 0 <= printed.index(fact) < fetched, fact
+
+
+def test_no_confirm_does_not_buy_the_module_list_the_manifest_asks_for(
+    isolated_lockfile, fake_github, monkeypatch, capsys
+):
+    """``-y`` answers "install this". ``allowed_modules`` is a second question.
+
+    It switches the AST gate off by name, which is a decision about the
+    AUTHOR rather than about the code, and it is refused before the
+    repository is fetched -- so a plugin nobody agreed to costs no bandwidth
+    at all.
+    """
+    monkeypatch.setenv("CODEFYUI_LANG", "en")
+    fake_github(_PREVIEW_FILES)
+
+    def _never(*_a, **_k):  # pragma: no cover - only runs on a bug
+        raise AssertionError("a refused install must not download anything")
+
+    monkeypatch.setattr(plugin_cli, "download_tarball", _never)
+
+    assert _official(_install_args(
+        no_confirm=True, accept_capabilities=True)) == 1
+    printed = _out(capsys)
+    assert "subprocess" in printed
+    assert "--trust-author" in printed
+    assert plugin_loader.load_lockfile()["plugins"] == {}
+
+
+def test_a_plugin_you_already_have_is_refused_before_it_is_fetched(
+    isolated_lockfile, fake_github, monkeypatch, capsys
+):
+    """The offer is "reinstall it with --force", and it costs nothing to make.
+
+    This refusal used to arrive after the download, the unpack and the
+    security scan -- a minute of somebody's connection spent on an install
+    that was never going to happen.
+    """
+    monkeypatch.setenv("CODEFYUI_LANG", "en")
+    fake_github({
+        "cdui.plugin.toml": _TEMPLATE_MANIFEST,
+        "nodes/hello.py": "VALUE = 1\n",
+    })
+    assert _official(_install_args()) == 0
+    installed_at = plugin_loader.load_lockfile()[
+        "plugins"]["official-template"]["installed_at"]
+    capsys.readouterr()
+
+    def _never(*_a, **_k):  # pragma: no cover - only runs on a bug
+        raise AssertionError("an install that is refused must not download")
+
+    monkeypatch.setattr(plugin_cli, "download_tarball", _never)
+
+    assert _official(_install_args()) == 1
+    printed = _out(capsys)
+    assert "official-template" in printed and "--force" in printed
+    # And the entry that was there is the entry that is still there.
+    assert plugin_loader.load_lockfile()[
+        "plugins"]["official-template"]["installed_at"] == installed_at
+
+
+def test_packages_that_cannot_be_installed_here_are_exit_3_with_the_command(
+    isolated_lockfile, fake_github, monkeypatch, capsys
+):
+    """A resolver conflict is not a broken plugin.
+
+    The constraints file pins every distribution this interpreter has
+    already imported, so "no solution found" means the packages would have
+    to replace one the server is holding open -- which is true until the
+    server stops, and would be true again on every retry. Its own exit code,
+    so a script that retries on 1 does not retry this forever, and the line
+    to type is printed rather than described.
+    """
+    monkeypatch.setenv("CODEFYUI_LANG", "en")
+    fake_github(_PREVIEW_FILES)
+
+    def _conflicted(specs, *, constraints_path, emit, cancel_check, cwd,
+                    tail=None):
+        if tail is not None:
+            tail.append("  x No solution found when resolving dependencies:")
+        return 1
+
+    monkeypatch.setattr("app.core.packs.runner.run_pip", _conflicted)
+
+    assert _official(_install_args(
+        accept_capabilities=True, trust_author=True)) == 3
+    printed = _out(capsys)
+    assert "uv pip install" in printed
+    assert "tabulate>=0.9" in printed
+    # Dependencies run BEFORE anything is staged, so a conflict leaves
+    # nothing on disk and nothing in the lockfile to undo.
+    assert plugin_loader.load_lockfile()["plugins"] == {}
+    assert not (isolated_lockfile / "official-template").exists()
+    assert not (isolated_lockfile / ".staging").exists()
+
+
+def test_ctrl_c_stops_the_install_at_130_and_writes_nothing(
+    isolated_lockfile, fake_github, monkeypatch, capsys
+):
+    """SIGINT sets a flag the install polls; it never raises through it.
+
+    A ``KeyboardInterrupt`` thrown out of the handler would skip the flow's
+    own cancellation path -- the one that removes the half-written download
+    and the staging copy -- and print a traceback where "Cancelled" belongs.
+    So the handler the CLI installed is called from inside the download,
+    exactly as the OS would call it, and what is asserted is the exit code,
+    the empty lockfile and the handler being put back afterwards.
+    """
+    monkeypatch.setenv("CODEFYUI_LANG", "en")
+    fake_github({
+        "cdui.plugin.toml": _TEMPLATE_MANIFEST,
+        "nodes/hello.py": "VALUE = 1\n",
+    })
+    served = plugin_cli.download_tarball
+    before = signal.getsignal(signal.SIGINT)
+
+    def _interrupted(owner, repo, sha, dest, **kwargs):
+        handler = signal.getsignal(signal.SIGINT)
+        assert callable(handler), "the install installs its own SIGINT handler"
+        assert handler is not before
+        handler(signal.SIGINT, None)
+        served(owner, repo, sha, dest, **kwargs)
+
+    monkeypatch.setattr(plugin_cli, "download_tarball", _interrupted)
+
+    assert _official(_install_args()) == 130
+    assert "Cancelled" in _out(capsys)
+    assert plugin_loader.load_lockfile()["plugins"] == {}
+    assert not (isolated_lockfile / "official-template").exists()
+    assert not (isolated_lockfile / ".staging").exists()
+    # Restored, so a `cdui plugin sync` installing five packs does not end
+    # up with five nested handlers.
+    assert signal.getsignal(signal.SIGINT) is before
