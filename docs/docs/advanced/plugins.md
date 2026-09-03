@@ -45,7 +45,7 @@ Each Edu node decomposes a single lesson concept into a chain of named steps tha
 
 - **Built-in direction packs** live in `plugins/<id>/` inside the repo and are activated in place (no copies).
 - **Third-party packs** are downloaded as a pinned-SHA tarball into `<USER_DATA>/plugins/<id>/` and **AST-validated** before install (see [Security](#security--three-tiers)).
-- A lockfile at `<USER_DATA>/plugins/installed.json` records every install — including which capabilities you granted — so `cdui start` rediscovers them on the next launch.
+- A lockfile at `<USER_DATA>/plugins/installed.json` records every install — including which capabilities you granted — so `cdui start` rediscovers them on the next launch. It is also what "already installed" means: re-installing over a pack whose directory was deleted by hand, or over one you linked with `cdui plugin link`, asks for `--force` rather than overwriting silently, because replacing either is a decision for the person at the keyboard.
 
 Plugin nodes are namespaced to avoid collisions and to self-document graphs — built-in nodes use a bare name like `Conv2d`, while plugin nodes are qualified like `foundations:Edu-KNN`.
 
@@ -119,13 +119,29 @@ capabilities = ["network"]
 $ cdui plugin install alice/metric-logger
   Source: https://github.com/alice/metric-logger
   Ref: default branch (a1b2c3d)
+  Metric Logger 0.4.0
+  Ships each run's metrics to a collector.
+  Python packages: httpx>=0.27
+  Proceed? [y/N]: y
 
 > This plugin requests the following capabilities
     network -> reach the network -- send and receive data from any host, and write what it downloads to disk (requests, urllib, http, socket, ssl)
   A capability is a declaration, not a sandbox: once granted, the plugin may
   use that group of modules and CodefyUI stops asking.
-  Grant these? [y/N]:
+  Grant these? [y/N]: y
+  Resolving alice/metric-logger
+  Downloading alice/metric-logger@a1b2c3d
+    [##########] 100% 0.1/0.1 MB
+  Unpacking metric-logger
+  Scanning metric-logger for unsafe code
+  Installing packages: httpx>=0.27
+  Installing metric-logger
+  Recording metric-logger
+  + Hot-reloaded backend
+  + Installed: metric-logger (a1b2c3d)
 ```
+
+Everything above the first `y` is read from the manifest alone, at the one commit the install would use — what the plugin is, the packages it would add to your venv, the modules it asks to import outside the allowlist, and whether it ships JavaScript. So both questions are asked, and can be answered `no`, before a byte of the repository is fetched. What follows the second `y` is the install itself, step by step; those step lines are the shared install path's own, which is why they read the same here as they do in the [Plugin Center](#plugin-center).
 
 - **Without a terminal** (a script, CI, a piped install) the answer is **no**, and the message names `--accept-capabilities`, which grants the declared set without the prompt. `-y` / `--no-confirm` does *not* imply it: that flag skips the "install from this URL?" question, and consenting to code that reaches the network is a different question.
 - **What was granted is recorded** in `<USER_DATA>/plugins/installed.json` and shown by `cdui plugin list` and `cdui plugin info`.
@@ -187,6 +203,36 @@ attacker-supplied `__pycache__/payload.pyc` **can** be named, and is refused.
 
 Nothing to do. A lockfile entry written before capabilities existed has no `capabilities` key, which reads as "none granted" — exactly the behaviour it had. Existing packs revalidate unchanged.
 
+## Plugin Center
+
+**Installing a plugin from inside the app is the same install the terminal runs.** `cdui plugin install` and the Plugin Center are two front ends over one function in `backend/app/core/plugins/`, so the order of an install, what counts as a failure and what a failure is called are decided once — the console and the panel cannot come to disagree about any of the three. The routes below are the whole of it: the editor's panel is one client, and `cdui plugin install` is another.
+
+**It is a conversation with two turns.** `POST /api/plugins/inspect` reads one source — a catalog name, an `owner/repo`, a URL — and answers with everything a person needs in order to decide: what the plugin is, what it would add to your Python environment, which capabilities it declares, which modules it asks to have the security scan turned off for, whether it ships JavaScript that will run in your editor, and whether you already have it. Nothing is downloaded and nothing is installed; the manifest is read at ONE resolved commit, and the answer is kept under an `inspection_id`. `POST /api/plugins/install` then installs *that* inspection, by its id, with the answers only a person can give (`accept_capabilities`, `trust_author`, and `force` to replace what is already there). The server never takes a manifest, a commit or a capability list from a request body — so the manifest you agreed to is the manifest that is installed, and a tarball that grew a capability, changed its id or added a module to its allowlist between the two turns is refused rather than installed. The install runs as a job: `202` with a `job_id`, then `GET /api/plugins/jobs/{job_id}/events` replays that job's log from a cursor and long-polls for the rest, and `POST /api/plugins/jobs/{job_id}/cancel` stops it cleanly enough that nothing half-written is left behind.
+
+**A review screen is the three tiers, one for one.** [Tier 0](#security--three-tiers) has nothing to ask. Tier 1 is the inspection's `capabilities` — one row each, in the same words the console prints — and Tier 2 is its `allowed_modules`, which is a separate decision about the *author* and travels as `trust_author`. Neither is a sandbox: once a capability is granted the plugin may import that group of modules and CodefyUI stops asking, which is why [What this is not](#what-this-is-not) is the paragraph to read before granting one.
+
+**Installing is a local-only operation.** Every route that changes what code is on this machine — inspect, install, cancel, update, delete — needs the session token *and* the server to be bound to loopback: installing a plugin puts a stranger's code where this process will import it, inspecting reaches out to GitHub on the caller's word, and deleting takes somebody's plugin away. A classroom or lab server that deliberately serves the LAN opts back in with `CODEFYUI_ALLOW_REMOTE_PLUGIN_INSTALL=1`. Reload, enable and disable take the token but not the loopback gate — they act on code this machine already has and you already agreed to — and reads are open, including a job's events, which is what a second tab that opened mid-install follows.
+
+**The steps and the failure messages are English.** `Resolving …`, `Downloading …`, `Unpacking …`, `Scanning … for unsafe code`, `Installing packages: …`, `Installing …`, `Recording …`, and every sentence a refused or failed install carries, come out of the shared install path, which has one set of words rather than one per front end. The interface around them is translated; these are not.
+
+**An install can end in `needs_restart`, which is not a failure.** A plugin's `[python_deps]` install add-only, under a constraints file that pins every package the running server has already loaded, so nothing a plugin asks for can downgrade what your session is holding open. When the resolver says that cannot be done live, the job ends `needs_restart` and carries the exact `command` to run with the server stopped. Nothing is wrong with the plugin, and asking the same server again will end the same way. (`cdui plugin install` prints that command too, and exits `3`.)
+
+**Uninstalling removes what this install downloaded, and nothing else.** `DELETE /api/plugins/{id}` deletes a downloaded pack's directory; a built-in pack keeps its files — they belong to the release — and is remembered as removed, so `cdui plugin sync` leaves it alone until you install it by name again; a directory you linked with `cdui plugin link` stays exactly where its author put it. What it never removes is the plugin's Python packages: uninstalling packages from inside the process that imported them is how you get a half-loaded interpreter serving requests. So the answer says so instead — `python_deps_left` names them and `uninstall_command` is the line to run once the server is stopped:
+
+```bash
+uv pip uninstall --python <the CodefyUI venv's python> httpx
+```
+
+If the directory cannot be deleted — something holding a file open, the ordinary cause on Windows — nothing is removed at all: the lockfile entry stays, the plugin stays installed, and the answer is `409` `files_locked`, carrying the operating system's own sentence and the directory that is still there. Close whatever is using it, or stop the server, and remove the plugin again.
+
+**Updating asks the plugin's own repository, and answers one of three ways.** `POST /api/plugins/{id}/update` re-reads the manifest at whatever commit that repository has now. `200` `{"status": "up_to_date", "sha": …}` — the commit you have is the commit that is there. `202` with a `job_id` — the new version asks for nothing you have not already granted, so it is already being installed. `200` `{"status": "needs_consent", …}` — it asks for more, and the body carries the same inspection `/inspect` returns plus `capabilities_added` and `allowed_modules_added`, which are the whole content of an update's review screen. You finish that one by posting the inspection back to `POST /api/plugins/install` with `inspection_id`, `accept_capabilities` and `trust_author` — and no `force`: the server recorded that this inspection came from the update button, so it does not make you say "yes, replace it" about a plugin you asked it to replace.
+
+Two things an update will not do. It never installs a *different* plugin: a repository whose manifest now declares another id is refused with `400` `not_updatable` rather than fetched, because updating `metric-logger` and ending up with `metric-logger-ng` — possibly on top of a plugin of that name you already had — is not an update. If a renamed repository is what you want, install it as the new plugin it now is. And an update keeps the plugin switched off if you had switched it off: coming back enabled is a decision, and re-installing the same plugin from the same repository is not where it belongs.
+
+A built-in pack and a linked directory answer `400` `not_updatable` too, with the hint that says what to do about it: a pack that ships in this release updates with `cdui update`, and a linked directory is already whatever is on its author's disk.
+
+**One install at a time, across both centers.** Starting an install — or an update, which is an install — while one is already running answers `409` with the `job_id` to follow, and so does uninstalling, enabling or disabling *that* plugin while its own install is in flight: a lockfile entry rewritten halfway through is how a plugin ends up on disk with nothing pointing at it. Another plugin's install blocks none of the three, because two plugins are two directories and two lockfile keys.
+
 ## Writing your own plugin
 
 The fastest start is **`cdui plugin new`**, which scaffolds a ready-to-edit plugin in one command:
@@ -235,14 +281,28 @@ Run the server in another terminal (`cdui start` or `cdui dev`). `dev` polls the
 
 `link` reads the id from your `cdui.plugin.toml` and records the directory's absolute path in the lockfile as `source_kind = "local"`, so discovery walks your working tree directly. The AST security gate is skipped for linked plugins (it's your own code, and a warning says so); `unlink` drops only the lockfile entry, never your files. After editing Python nodes, `cdui plugin reload` (or `cdui plugin dev`) reloads them. **Frontend edits to a linked plugin reload automatically too** — while a linked plugin is installed the editor watches for reloads and re-mounts the plugin's UI in place, no browser refresh needed.
 
+A linked plugin's `[python_deps]` are installed by the same rules a downloaded pack's are: add-only, under the constraints file that pins every package the running server already loaded. So `cdui plugin link` has the install path's exit codes as well — `3` when a package it asks for cannot go into a live server (the command to run with the server stopped is printed), and `130` for a `Ctrl+C` — where it used to hand back whatever the package manager returned.
+
 :::tip Dev data isolation
 Running plugin commands through `scripts/dev.py` — or setting `CODEFYUI_USER_DATA_DIR` — keeps a clone's lockfile inside the repo (`.codefyui_dev/`) instead of the machine-wide user-data dir, so multiple clones don't clobber each other.
 :::
 
 ## REST API
 
-| Endpoint | Method | Description |
-|----------|--------|-------------|
-| `/api/plugins` | GET | List installed plugin packs. |
-| `/api/plugins/{id}` | GET | Get a plugin's manifest + README. |
-| `/api/plugins/reload` | POST | Hot-reload all node and preset sources. |
+| Endpoint | Method | Auth | Description |
+|----------|--------|------|-------------|
+| `/api/plugins` | GET | open | Every installed plugin pack, enabled or not. |
+| `/api/plugins/catalog` | GET | open | What this build can install by name, merged with what you have installed — one row per plugin, each saying which state it is in. |
+| `/api/plugins/generation` | GET | open | The reload counter the editor polls to notice the palette changed. |
+| `/api/plugins/{id}` | GET | open | One plugin's manifest, nodes and README. |
+| `/api/plugins/jobs/{job_id}/events` | GET | open | An install job's log and progress after `?cursor=`; `?wait=` long-polls for the rest. |
+| `/api/plugins/reload` | POST | token | Re-discover nodes, presets and packs. |
+| `/api/plugins/{id}/enable` | POST | token | Turn an installed plugin on. |
+| `/api/plugins/{id}/disable` | POST | token | Turn it off without uninstalling it. |
+| `/api/plugins/inspect` | POST | token + loopback | Read one source at one commit and say what installing it would cost. Installs nothing. |
+| `/api/plugins/install` | POST | token + loopback | Install what an inspection described — `202` with a `job_id`. |
+| `/api/plugins/jobs/{job_id}/cancel` | POST | token + loopback | Ask the running install to stop. |
+| `/api/plugins/{id}/update` | POST | token + loopback | Fetch what the plugin's own repository has now. Three answers: `202` `{job_id}`, `200` `{status: "up_to_date", sha}`, or `200` `{status: "needs_consent", inspection, capabilities_added, allowed_modules_added}` — which the client finishes with `POST /install {inspection_id, accept_capabilities, trust_author}`, no `force`. |
+| `/api/plugins/{id}` | DELETE | token + loopback | Uninstall it, and say what that left behind. |
+
+**open** is a read the editor polls, like every other read in the app. **token** is the session header every mutating call takes. **token + loopback** additionally refuses unless the server is bound to loopback, unless `CODEFYUI_ALLOW_REMOTE_PLUGIN_INSTALL=1` says otherwise — see [Plugin Center](#plugin-center) for why the line falls where it does.

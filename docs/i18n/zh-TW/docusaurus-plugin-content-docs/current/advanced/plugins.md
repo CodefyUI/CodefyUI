@@ -43,7 +43,7 @@ cdui plugin uninstall deep                 # 會被記住：sync 不會再把它
 
 - **內建方向外掛包**位於 repo 內的 `plugins/<id>/`，並就地啟用（不複製）。
 - **第三方外掛包**會以固定 SHA 的 tarball 下載到 `<USER_DATA>/plugins/<id>/`，並在安裝前經過 **AST 驗證**（見[安全性](#安全性三個層級)）。
-- 位於 `<USER_DATA>/plugins/installed.json` 的 lockfile 會記錄每一次安裝——包含你授權了哪些能力——因此 `cdui start` 會在下次啟動時重新探索它們。
+- 位於 `<USER_DATA>/plugins/installed.json` 的 lockfile 會記錄每一次安裝——包含你授權了哪些能力——因此 `cdui start` 會在下次啟動時重新探索它們。它同時也是「已安裝」的定義：要蓋過一個目錄被手動刪掉的外掛包，或蓋過一個你用 `cdui plugin link` 連結的外掛，都必須加上 `--force`，不會再默默覆寫——換掉這兩者都是該由鍵盤前的人來做的決定。
 
 外掛節點會加上命名空間，以避免衝突並讓圖能自我說明——內建節點使用像 `Conv2d` 這樣的裸名稱，而外掛節點則會像 `foundations:Edu-KNN` 這樣加上限定。
 
@@ -115,14 +115,30 @@ capabilities = ["network"]
 
 ```console
 $ cdui plugin install alice/metric-logger
-  Source: https://github.com/alice/metric-logger
-  Ref: default branch (a1b2c3d)
+  來源：https://github.com/alice/metric-logger
+  版本：default branch (a1b2c3d)
+  Metric Logger 0.4.0
+  Ships each run's metrics to a collector.
+  Python 套件：httpx>=0.27
+  繼續？ [y/N]: y
 
 > 此外掛要求下列能力
     network → 連線網路——可與任何主機收發資料，並把下載到的內容寫入磁碟（requests、urllib、http、socket）
   能力是宣告，不是沙箱：授權後外掛就能使用該類模組，CodefyUI 不會再逐一攔截。
-  要授權嗎？ [y/N]:
+  要授權嗎？ [y/N]: y
+  Resolving alice/metric-logger
+  Downloading alice/metric-logger@a1b2c3d
+    [##########] 100% 0.1/0.1 MB
+  Unpacking metric-logger
+  Scanning metric-logger for unsafe code
+  Installing packages: httpx>=0.27
+  Installing metric-logger
+  Recording metric-logger
+  + 熱重載完成
+  + 安裝完成：metric-logger (a1b2c3d)
 ```
+
+第一個 `y` 以上的所有內容，都只讀自 manifest，而且讀的是這次安裝將使用的那一個 commit——這個外掛是什麼、會往你的 venv 裡加哪些套件、它要求在白名單之外匯入哪些模組，以及它有沒有附帶 JavaScript。所以這兩個問題都是在儲存庫還沒下載半個位元組之前就問完的，也都可以回答「不要」。第二個 `y` 之後才是安裝本身，一步一步進行；那些步驟行來自共用的安裝流程，所以它們在[外掛中心](#外掛中心)裡讀起來也完全一樣。
 
 - **沒有終端機時**（腳本、CI、以管線輸入的安裝）答案一律是**否**，訊息會指出 `--accept-capabilities`——它會直接授予 manifest 宣告的那一組而不詢問。`-y` / `--no-confirm` **不會**連帶授權：那個旗標跳過的是「要從這個 URL 安裝嗎？」，而同意一段會連線網路的程式碼是另一個問題。
 - **授權內容會被記錄**在 `<USER_DATA>/plugins/installed.json`，並由 `cdui plugin list` 與 `cdui plugin info` 顯示。
@@ -178,6 +194,36 @@ $ cdui plugin install alice/metric-logger
 
 不需要做任何事。在能力機制出現之前寫入的 lockfile 條目沒有 `capabilities` 欄位，讀起來就是「未授權任何能力」——與它原本的行為完全一致。既有的外掛包重新驗證後行為不變。
 
+## 外掛中心
+
+**在應用程式裡安裝外掛，跑的就是終端機那一套安裝。** `cdui plugin install` 與外掛中心是同一個函式（在 `backend/app/core/plugins/`）的兩個前端，所以一次安裝的順序、什麼算失敗、失敗又叫什麼名字，都只決定一次——主控台與面板不可能在這三件事上互相矛盾。下面這些端點就是它的全部：編輯器裡的面板是其中一個用戶端，`cdui plugin install` 是另一個。
+
+**它是一場有兩個回合的對話。** `POST /api/plugins/inspect` 讀取一個來源——型錄名稱、`owner/repo`，或一個網址——並回答一個人要做決定所需要的一切：這個外掛是什麼、它會往你的 Python 環境加什麼、它宣告了哪些能力、它要求對哪些模組關閉安全掃描、它有沒有附帶會在你的編輯器裡執行的 JavaScript，以及你是不是已經裝了它。過程中不下載任何東西，也不安裝任何東西；manifest 只在「單一個」已解析的 commit 上讀取，答案則存放在一個 `inspection_id` 底下。接著 `POST /api/plugins/install` 依 id 安裝「那一份」檢查結果，並帶上只有人能給的答案（`accept_capabilities`、`trust_author`，以及用來蓋過既有安裝的 `force`）。伺服器永遠不會從請求內容裡拿 manifest、commit 或能力清單——所以你同意的那份 manifest 就是被安裝的那份，而一個在兩個回合之間多要了一項能力、換了 id 或往白名單加了模組的 tarball，會被拒絕而不是被安裝。安裝以工作（job）的形式執行：`202` 加一個 `job_id`，接著 `GET /api/plugins/jobs/{job_id}/events` 會從指定 cursor 重播這個工作的記錄並長輪詢後續，`POST /api/plugins/jobs/{job_id}/cancel` 則會把它停下來，而且乾淨到不會留下任何寫到一半的東西。
+
+**確認畫面就是那三個層級，一一對應。**[第 0 級](#安全性三個層級)沒有東西要問。第 1 級就是檢查結果裡的 `capabilities`——一項一列，用字與主控台印出來的完全相同——第 2 級則是它的 `allowed_modules`，那是一個關於**作者**的獨立決定，以 `trust_author` 傳遞。兩者都不是沙箱：能力一旦授權，外掛就能匯入那一組模組，CodefyUI 不會再逐一攔截；這也正是為什麼授權之前該讀的是[這不是什麼](#這不是什麼)。
+
+**安裝只能從本機操作。** 每一個會改變「這台機器上有什麼程式碼」的端點——inspect、install、cancel、update、delete——都同時需要工作階段 token **以及**伺服器綁定在回送（loopback）位址：安裝外掛等於把別人的程式碼放到這個行程即將匯入的地方，檢查來源等於憑呼叫端一句話去連 GitHub，而刪除則是把別人的外掛拿走。刻意對區網提供服務的教室或實驗室環境，可用 `CODEFYUI_ALLOW_REMOTE_PLUGIN_INSTALL=1` 重新開放。reload 與 enable／disable 需要 token 但不受回送位址限制——它們處理的是這台機器已經有、而且你已經同意過的程式碼；讀取則一律開放，包括某個工作的事件記錄，那正是一個在安裝途中才打開的第二個分頁用來跟進度的東西。
+
+**步驟與失敗訊息是英文的。**`Resolving …`、`Downloading …`、`Unpacking …`、`Scanning … for unsafe code`、`Installing packages: …`、`Installing …`、`Recording …`，以及一次被拒絕或失敗的安裝所帶的每一句話，都出自共用的安裝流程；它只有一套用字，而不是每個前端各一套。它們周圍的介面有翻譯，這些沒有。
+
+**一次安裝可能以 `needs_restart` 收尾，那不是失敗。** 外掛的 `[python_deps]` 以「只增不改」的方式安裝，並套用一份把執行中伺服器已載入的每個套件都釘住的 constraints 檔，所以外掛要什麼都不可能降級你這個工作階段正握著的東西。當解析器說這件事沒辦法在線上完成時，這個工作會以 `needs_restart` 結束，並附上要在伺服器停掉後執行的那一行 `command`。這個外掛本身沒有任何問題，而且對同一台執行中的伺服器再問一次也只會得到同樣的結果。（`cdui plugin install` 同樣會印出那行指令，並以 `3` 離開。）
+
+**移除只會刪掉這次安裝下載過的東西，不會多刪。**`DELETE /api/plugins/{id}` 會刪掉下載型外掛包的目錄；內建外掛包的檔案會保留——那是發行版的一部分——並且會被記住已移除，所以 `cdui plugin sync` 不會再理它，直到你再次以名稱安裝為止；而你用 `cdui plugin link` 連結的目錄，會原封不動留在作者放它的地方。它絕對不會移除的，是這個外掛的 Python 套件：從「已經匯入這些套件的那個行程」裡面反安裝它們，正是讓直譯器載入到一半還在服務請求的方法。所以回應會把這件事說出來——`python_deps_left` 列出它們，`uninstall_command` 則是伺服器停掉之後可以執行的那一行：
+
+```bash
+uv pip uninstall --python <CodefyUI venv 的 python> httpx
+```
+
+如果目錄刪不掉——在 Windows 上最常見的原因是有東西正開著其中的檔案——那就什麼都不會被移除：lockfile 條目留著，外掛仍然是已安裝狀態，而回應是 `409` `files_locked`，帶著作業系統自己的那句話，以及還留在那裡的目錄。關掉正在使用它的東西，或把伺服器停掉，然後再移除一次。
+
+**更新會去問外掛自己的儲存庫，並以三種方式之一回答。**`POST /api/plugins/{id}/update` 會在該儲存庫目前的 commit 上重新讀一次 manifest。`200` `{"status": "up_to_date", "sha": …}`——你手上的 commit 就是那邊的 commit。`202` 加一個 `job_id`——新版本要的東西你都已經授權過了，所以它已經在安裝了。`200` `{"status": "needs_consent", …}`——它多要了東西，回應內容會帶著 `/inspect` 回傳的同一份檢查結果，外加 `capabilities_added` 與 `allowed_modules_added`，那就是一次更新的確認畫面的全部內容。要完成這一種，把那份檢查結果以 `inspection_id`、`accept_capabilities` 與 `trust_author` 送回 `POST /api/plugins/install` 即可——而且不用帶 `force`：伺服器已經記下這份檢查結果來自更新按鈕，不會再要求你對「你自己要求換掉的外掛」說一次「對，換掉它」。
+
+有兩件事更新不會做。它絕不會裝上一個**不同的**外掛：如果某個儲存庫的 manifest 現在宣告的是另一個 id，它會以 `400` `not_updatable` 被拒絕而不是被抓下來——因為更新 `metric-logger` 卻拿到 `metric-logger-ng`（甚至可能蓋掉你原本就有的同名外掛），那不叫更新。如果你要的就是那個改過名字的儲存庫，請把它當成一個新外掛安裝。另外，如果你先前把這個外掛停用了，更新之後它仍然是停用的：重新啟用是一個決定，而「從同一個儲存庫重裝同一個外掛」不是做這個決定的地方。
+
+內建外掛包與連結的目錄同樣回答 `400` `not_updatable`，並附上該怎麼做的提示：隨這個版本發行的外掛包要用 `cdui update` 更新，而連結的目錄本來就是作者磁碟上此刻的樣子。
+
+**同一時間只有一次安裝，而且跨兩個中心都算。** 在已經有一個安裝在跑的時候再啟動一次安裝——或一次更新，那也是安裝——會得到 `409` 與可以跟進的 `job_id`；在某個外掛自己的安裝還在進行時去移除、啟用或停用**那個**外掛，也是一樣：lockfile 條目在安裝途中被改寫，正是一個外掛最後留在磁碟上卻沒有任何東西指向它的原因。別的外掛的安裝則不會擋住這三件事，因為兩個外掛是兩個目錄、兩把 lockfile 鑰匙。
+
 ## 撰寫你自己的外掛
 
 最快的起手式是 **`cdui plugin new`**，一個指令就能產生可直接編輯的外掛骨架：
@@ -226,14 +272,28 @@ cdui plugin dev ./my-plugin      # 連結＋監看；每次變更自動重載
 
 `link` 會從你的 `cdui.plugin.toml` 讀取 id，並把該目錄的絕對路徑以 `source_kind = "local"` 記入 lockfile，因此探索會直接走訪你的工作目錄。連結的外掛會跳過 AST 安全閘門（這是你自己的程式碼，並會印出警告）；`unlink` 只移除 lockfile 條目，絕不刪除你的檔案。編輯 Python 節點後，執行 `cdui plugin reload`（或 `cdui plugin dev`）即可重載。**連結中的外掛，前端變更也會自動重載**——只要安裝著連結的外掛，編輯器就會偵測重載並就地重新掛載外掛 UI，不需手動重新整理瀏覽器。
 
+連結外掛的 `[python_deps]` 會依照與下載型外掛包相同的規則安裝：只增不改，並套用那份把執行中伺服器已載入的每個套件都釘住的 constraints 檔。因此 `cdui plugin link` 也帶有安裝路徑的離開碼——`3` 表示它要求的某個套件無法裝進執行中的伺服器（會印出停掉伺服器後要執行的指令），`130` 表示 `Ctrl+C`——而不再是把套件管理程式的原始離開碼直接丟回來。
+
 :::tip 開發資料隔離
 透過 `scripts/dev.py` 執行外掛指令——或設定 `CODEFYUI_USER_DATA_DIR`——可讓某個 clone 的 lockfile 留在 repo 內（`.codefyui_dev/`），而非全機共用的 user-data 目錄，避免多個 clone 互相覆蓋。
 :::
 
 ## REST API
 
-| 端點 | 方法 | 說明 |
-|----------|--------|-------------|
-| `/api/plugins` | GET | 列出已安裝的外掛包。 |
-| `/api/plugins/{id}` | GET | 取得某外掛的資訊清單 (manifest) 與 README。 |
-| `/api/plugins/reload` | POST | 熱重載所有節點與預設模組來源。 |
+| 端點 | 方法 | 驗證 | 說明 |
+|----------|--------|------|-------------|
+| `/api/plugins` | GET | 開放 | 列出每一個已安裝的外掛包，不論啟用與否。 |
+| `/api/plugins/catalog` | GET | 開放 | 把「這個版本可用名稱安裝的東西」與「你已經安裝的東西」合併——每個外掛一列，每列都說明它處於哪個狀態。 |
+| `/api/plugins/generation` | GET | 開放 | 編輯器輪詢用的重載計數器，用來得知節點面板變了。 |
+| `/api/plugins/{id}` | GET | 開放 | 取得某外掛的資訊清單 (manifest)、節點與 README。 |
+| `/api/plugins/jobs/{job_id}/events` | GET | 開放 | 某個安裝工作在 `?cursor=` 之後的記錄與進度；加上 `?wait=` 可長輪詢後續。 |
+| `/api/plugins/reload` | POST | token | 重新探索節點、預設模組與外掛包。 |
+| `/api/plugins/{id}/enable` | POST | token | 啟用一個已安裝的外掛。 |
+| `/api/plugins/{id}/disable` | POST | token | 停用它，但不移除。 |
+| `/api/plugins/inspect` | POST | token + 回送位址 | 在單一 commit 上讀取一個來源，並說明安裝它的代價。不會安裝任何東西。 |
+| `/api/plugins/install` | POST | token + 回送位址 | 安裝某次檢查所描述的內容——回傳 `202` 與 `job_id`。 |
+| `/api/plugins/jobs/{job_id}/cancel` | POST | token + 回送位址 | 要求執行中的安裝停下來。 |
+| `/api/plugins/{id}/update` | POST | token + 回送位址 | 取得該外掛自己的儲存庫現在有什麼。三種答案：`202` `{job_id}`、`200` `{status: "up_to_date", sha}`，或 `200` `{status: "needs_consent", inspection, capabilities_added, allowed_modules_added}`——最後這一種由用戶端以 `POST /install {inspection_id, accept_capabilities, trust_author}` 完成，不必帶 `force`。 |
+| `/api/plugins/{id}` | DELETE | token + 回送位址 | 移除它，並說明這樣做留下了什麼。 |
+
+**開放**是編輯器會輪詢的讀取，和這個 app 裡其他讀取一樣。**token** 是每個會造成變更的呼叫都要帶的工作階段標頭。**token + 回送位址**則是在此之上，只要伺服器沒有綁定在回送（loopback）位址就一律拒絕，除非 `CODEFYUI_ALLOW_REMOTE_PLUGIN_INSTALL=1` 另有指示——這條線為什麼畫在這裡，見[外掛中心](#外掛中心)。
