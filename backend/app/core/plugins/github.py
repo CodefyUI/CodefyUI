@@ -19,7 +19,8 @@ a rate-limited install say so.
 import: a server process that gains a token must not have to restart to use
 it. It is attached as a bearer header and never logged, echoed, or put in an
 exception -- this module logs nothing at all, which is the cheapest way to
-be sure.
+be sure -- and never carried across a redirect, which is the one way it
+could leave GitHub's own hosts (see :func:`_request`).
 
 The download is streamed rather than read whole, and takes a *cancel_check*
 and a *progress* callback, because the caller may be a job the user can stop
@@ -41,7 +42,12 @@ from urllib.error import HTTPError, URLError
 
 from app.core.plugin_loader import MANIFEST_FILENAME
 
-from .errors import GitHubError, PluginCancelled, PluginInstallError
+from .errors import (
+    GitHubError,
+    ManifestError,
+    PluginCancelled,
+    PluginInstallError,
+)
 
 USER_AGENT = "cdui-plugin-installer/0.1"
 MAX_TARBALL_BYTES = 100 * 1024 * 1024  # 100 MB
@@ -53,6 +59,13 @@ MAX_TARBALL_BYTES = 100 * 1024 * 1024  # 100 MB
 #: object. Five times the download cap is generous for real source (a
 #: repository of text compresses maybe 4:1) and nowhere near a bomb.
 MAX_EXTRACTED_BYTES = 500 * 1024 * 1024  # 500 MB
+
+#: How much of a manifest this build will read. A ``cdui.plugin.toml`` that
+#: describes a plugin is a few hundred bytes and the largest one in this
+#: repository is under 2 KB; a megabyte is "somebody generated it" and still
+#: nowhere near a file whose only purpose is to be read into memory by a
+#: server that has not agreed to install anything yet.
+MAX_MANIFEST_BYTES = 1 * 1024 * 1024  # 1 MB
 
 #: Read size for the tarball stream. Small enough that a cancel is felt
 #: immediately on a slow link, large enough that a 100 MB download is not
@@ -67,20 +80,37 @@ CHUNK_BYTES = 64 * 1024
 PROGRESS_MIN_INTERVAL_S = 0.25
 
 
-def _headers() -> dict[str, str]:
-    """Request headers, with the token when the environment has one.
+def _request(url: str) -> urllib.request.Request:
+    """The request every call here sends, token and all.
 
     Unauthenticated GitHub allows 60 requests an hour per IP, which a
     classroom behind one NAT exhausts in a morning -- ``CODEFYUI_GITHUB_TOKEN``
     is how a school raises that. Read here, per request, so a token exported
-    after the server started still works; returned rather than cached so no
-    copy of it outlives the call.
+    after the server started still works; nothing caches it, so no copy of it
+    outlives the call.
+
+    The token goes in as an UNREDIRECTED header, which is what stops it
+    following a 30x to somebody else's host. ``urllib``'s redirect handler
+    builds the next request out of ``req.headers`` verbatim (Python 3.11 does
+    not strip credentials), and ``codeload.github.com`` redirects a tarball to
+    ``objects.githubusercontent.com`` as a matter of course -- so the default
+    behaviour is to hand a school's GitHub token to whatever host a redirect
+    names. ``add_unredirected_header`` is ``urllib``'s own answer to "this one
+    must not survive a redirect": it is sent on THIS request and dropped from
+    every request built out of it.
+
+    Stricter than comparing hosts, deliberately: a same-host redirect (the
+    301 a renamed repository answers with) also loses the token and retries
+    without it, which costs the rate limit on a public repo. Keeping it for
+    that case would mean this module owning a ``urllib`` opener -- a
+    process-wide object a library has no business installing -- to save an
+    authenticated retry nobody has asked for.
     """
-    headers = {"User-Agent": USER_AGENT}
+    req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
     token = os.environ.get("CODEFYUI_GITHUB_TOKEN")
     if token:
-        headers["Authorization"] = f"Bearer {token}"
-    return headers
+        req.add_unredirected_header("Authorization", f"Bearer {token}")
+    return req
 
 
 def _from_http_error(exc: HTTPError) -> GitHubError:
@@ -129,7 +159,9 @@ def _discard(path: Path) -> None:
         pass
 
 
-def _gh_get(url: str, timeout: float = 30.0) -> bytes:
+def _gh_get(
+    url: str, timeout: float = 30.0, *, max_bytes: int | None = None
+) -> bytes:
     """GET *url* from GitHub, or raise :class:`~.errors.GitHubError`.
 
     Every request in this module goes through here, so the token, the user
@@ -142,11 +174,27 @@ def _gh_get(url: str, timeout: float = 30.0) -> bytes:
     catches ``GitHubError`` and past the CLI's ``except RuntimeError``, and
     turn a bad ref into a traceback. It never reached GitHub, so it has no
     status, which is exactly what ``None`` says.
+
+    *max_bytes* caps the body. ``None`` -- what the API calls use -- reads it
+    whole, because a commit object is whatever GitHub decides it is; a caller
+    that knows how big its answer may legitimately be passes the cap in and
+    gets a :class:`~.errors.ManifestError` rather than a read that a hostile
+    repository decides the length of.
     """
-    req = urllib.request.Request(url, headers=_headers())
+    req = _request(url)
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
-            return resp.read()
+            if max_bytes is None:
+                return resp.read()
+            # One byte past the cap: enough to know it was exceeded, and the
+            # rest of the response is never pulled off the socket.
+            body = resp.read(max_bytes + 1)
+            if len(body) > max_bytes:
+                raise ManifestError(
+                    f"The file at {url} is larger than "
+                    f"{max_bytes // 1024} KB."
+                )
+            return body
     except HTTPError as exc:
         raise _from_http_error(exc) from exc
     except (URLError, TimeoutError, http.client.HTTPException) as exc:
@@ -211,9 +259,15 @@ def fetch_manifest_text(owner: str, repo: str, sha: str) -> str:
     ``UnicodeDecodeError`` for a file that is not UTF-8 -- a manifest that
     is not text is a disk answer, not a network one, and its caller can say
     something better than "request failed".
+
+    Capped at :data:`MAX_MANIFEST_BYTES`. A manifest is read on the way to a
+    consent screen, before anybody has agreed to anything, and the server
+    keeps a whole one per stored inspection: an unbounded read means the file
+    at the other end decides how much of this process's memory a repository
+    nobody trusts gets to occupy, thirty-two times over.
     """
     url = f"https://raw.githubusercontent.com/{owner}/{repo}/{sha}/{MANIFEST_FILENAME}"
-    return _gh_get(url).decode("utf-8")
+    return _gh_get(url, max_bytes=MAX_MANIFEST_BYTES).decode("utf-8")
 
 
 def _content_length(resp: object) -> int | None:
@@ -256,7 +310,7 @@ def download_tarball(
     *dest*, so no caller can mistake half a tarball for a file it may open.
     """
     url = f"https://codeload.github.com/{owner}/{repo}/tar.gz/{sha}"
-    req = urllib.request.Request(url, headers=_headers())
+    req = _request(url)
     bytes_read = 0
     total: int | None = None
     last_report = 0.0
@@ -337,7 +391,9 @@ def extract_tarball(tar_path: Path, dest_dir: Path) -> Path:
     A truncated download and a file that is not a gzip at all both arrive
     here as ``TarError``, which is a class no caller of an installer has any
     reason to know about -- and one that travelled past every ``except`` on
-    the way out to a traceback.
+    the way out to a traceback. A tarball the data filter REFUSED is told
+    apart from those two, because "retry the install" is exactly the wrong
+    advice to give about one that tried to escape.
     """
     try:
         with tarfile.open(tar_path, "r:gz") as tf:
@@ -354,6 +410,22 @@ def extract_tarball(tar_path: Path, dest_dir: Path) -> Path:
                     ),
                 )
             tf.extractall(dest_dir, filter="data", members=members)
+    except tarfile.FilterError as exc:
+        # FIRST, because ``FilterError`` IS a ``TarError``: an absolute path,
+        # a link pointing out of the destination, a device node -- every
+        # refusal ``filter="data"`` makes -- would otherwise be reported by
+        # the clause below as a transient read failure, and the user told to
+        # RETRY a tarball that was caught trying to write outside the
+        # directory it was unpacked into. Nothing about that is transient,
+        # and retrying it is the one thing nobody should do.
+        raise PluginInstallError(
+            f"{tar_path.name} holds a member this build will not unpack.",
+            hint=(
+                f"A plugin tarball may not write outside the directory it is "
+                f"unpacked into, and may not carry links or device files: "
+                f"{exc}"
+            ),
+        ) from exc
     except tarfile.TarError as exc:
         raise PluginInstallError(
             f"{tar_path.name} could not be unpacked.",
