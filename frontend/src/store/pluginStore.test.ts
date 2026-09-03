@@ -1159,6 +1159,23 @@ describe('pluginStore — checkInProgress', () => {
     expect(usePluginStore.getState().job!.jobId).toBe('j9');
   });
 
+  it('opens the center unfocused when the adopted job names no plugin', async () => {
+    // A job adopted from another tab can settle before any catalog read has
+    // said whose it was. Scrolling the panel to a row called '' is worse
+    // than not scrolling at all, so the empty id has to reach
+    // `openPluginCenter` as undefined.
+    serveCatalog(catalog({
+      active_job: { job_id: 'j9', plugin_id: '', kind: 'install' },
+    }));
+    api.getPluginJobEvents.mockImplementation(parked);
+
+    await usePluginStore.getState().checkInProgress();
+    lastToast().action!.onClick();
+
+    expect(useUIStore.getState().pluginCenterOpen).toBe(true);
+    expect(useUIStore.getState().pluginCenterFocusPluginId).toBeNull();
+  });
+
   it('says nothing when there was no job to adopt', async () => {
     await usePluginStore.getState().checkInProgress();
 
