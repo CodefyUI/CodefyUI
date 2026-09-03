@@ -131,6 +131,16 @@ export interface NodeDefinition {
    * before the Package Center sends no such key.
    */
   requires_pack?: string | null;
+  /**
+   * Plugin Center. Who registered this node: the base install, a custom node
+   * dropped in by hand, or `plugin:<id>` for one a plugin brought.
+   *
+   * What lets the sidebar group a plugin's nodes and grey them out the moment
+   * the plugin is disabled, without asking the server which nodes were whose.
+   * Optional: a server built before the Plugin Center sends no such key, and
+   * the caller then knows only that the node exists.
+   */
+  provider?: 'builtin' | 'custom' | `plugin:${string}`;
 }
 
 export interface PresetDefinition {
