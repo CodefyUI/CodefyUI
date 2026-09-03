@@ -469,6 +469,29 @@ class _FakeResponse:
         return False
 
 
+class _BrokenResponse:
+    """A response that dies while its body is being read.
+
+    The one shape ``urlopen``'s own translation cannot cover: the request
+    succeeded, so nothing raised at ``urlopen`` time, and the connection
+    breaks afterwards -- which is what a reset peer, a TLS error mid-stream
+    and a read timeout all look like from here.
+    """
+
+    def __init__(self, exc: BaseException):
+        self._exc = exc
+        self.headers: dict = {}
+
+    def read(self, size: int = -1) -> bytes:
+        raise self._exc
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_exc):
+        return False
+
+
 def _http_error(code: int, body: bytes = b"", reason: str = "Some Reason"):
     return HTTPError(
         "https://api.github.com/x", code, reason, {}, io.BytesIO(body)
@@ -536,6 +559,33 @@ def test_the_token_does_not_follow_a_redirect_to_another_host(monkeypatch):
     assert "ghp_secret" not in str(forwarded.unredirected_hdrs)
     # The user agent is not a credential and still travels.
     assert forwarded.get_header("User-agent") == github.USER_AGENT
+
+
+@pytest.mark.parametrize("broken", [
+    ConnectionResetError(104, "Connection reset by peer"),
+    OSError(5, "Input/output error"),
+    TimeoutError("timed out"),
+])
+def test_a_connection_that_breaks_mid_body_is_a_transport_failure(
+    fake_urlopen, broken
+):
+    """``urlopen`` returned, so its own translation is behind us: the read is
+    where a reset peer, a TLS error and a stream timeout arrive, as a bare
+    ``OSError``. Uncaught, one of those left this module as itself and
+    reached callers that read an ``OSError`` as "the file is not there" --
+    the Plugin Center's ``/inspect`` answers 400 `invalid_manifest` for one,
+    which reports a dropped connection as a manifest that is not a manifest.
+    """
+    fake_urlopen(lambda: _BrokenResponse(broken))
+
+    with pytest.raises(GitHubError) as excinfo:
+        github._gh_get("https://api.github.com/x")
+    assert excinfo.value.status is None, "it never got an HTTP status"
+
+    # And through the capped read, which is the one an inspection makes.
+    fake_urlopen(lambda: _BrokenResponse(broken))
+    with pytest.raises(GitHubError):
+        github.fetch_manifest_text("alice", "extras", "f" * 40)
 
 
 def test_a_manifest_larger_than_the_cap_is_refused_rather_than_read(

@@ -167,13 +167,21 @@ def _gh_get(
     Every request in this module goes through here, so the token, the user
     agent and the two shapes of failure are decided once.
 
-    ``http.client.HTTPException`` is caught alongside the OSError family
-    because it is NOT one: ``InvalidURL`` -- what a ref with a space or a
-    control character in it becomes by the time ``putrequest`` sees the URL
-    -- would otherwise travel out of here as itself, past every caller that
-    catches ``GitHubError`` and past the CLI's ``except RuntimeError``, and
-    turn a bad ref into a traceback. It never reached GitHub, so it has no
-    status, which is exactly what ``None`` says.
+    The whole ``OSError`` family is caught, not just ``URLError``: the
+    connection is still open while the body is being read, so a reset peer,
+    a TLS error or a timeout DURING ``resp.read()`` arrives as a bare
+    ``OSError`` rather than through ``urlopen``'s translation. Left uncaught,
+    those left this module as themselves and reached callers that read an
+    ``OSError`` as "the file is not there" -- a dropped connection reported
+    as a manifest that is not a manifest. Every one of them is a transport
+    failure with no HTTP status, which is exactly what ``None`` says.
+
+    ``http.client.HTTPException`` is caught alongside them because it is NOT
+    an ``OSError``: ``InvalidURL`` -- what a ref with a space or a control
+    character in it becomes by the time ``putrequest`` sees the URL -- would
+    otherwise travel out of here as itself, past every caller that catches
+    ``GitHubError`` and past the CLI's ``except RuntimeError``, and turn a
+    bad ref into a traceback.
 
     *max_bytes* caps the body. ``None`` -- what the API calls use -- reads it
     whole, because a commit object is whatever GitHub decides it is; a caller
@@ -197,7 +205,7 @@ def _gh_get(
             return body
     except HTTPError as exc:
         raise _from_http_error(exc) from exc
-    except (URLError, TimeoutError, http.client.HTTPException) as exc:
+    except (OSError, http.client.HTTPException) as exc:
         raise _from_url_error(exc) from exc
 
 
@@ -422,8 +430,8 @@ def extract_tarball(tar_path: Path, dest_dir: Path) -> Path:
             f"{tar_path.name} holds a member this build will not unpack.",
             hint=(
                 f"A plugin tarball may not write outside the directory it is "
-                f"unpacked into, and may not carry links or device files: "
-                f"{exc}"
+                f"unpacked into, and may not carry links that point outside "
+                f"it, or device files: {exc}"
             ),
         ) from exc
     except tarfile.TarError as exc:

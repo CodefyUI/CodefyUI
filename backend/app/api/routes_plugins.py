@@ -465,12 +465,13 @@ async def inspect_plugin_source(
         # none of them is anything the caller can fix from here.
         raise _coded(400, "invalid_manifest") from None
     except OSError:
-        # A builtin whose manifest file is gone: ``read_manifest`` raises
-        # ``FileNotFoundError`` and nothing above catches it. Unrelated to
-        # every class in this chain (a network ``OSError`` never gets this
-        # far -- the GitHub client turns those into ``GitHubError``), so it
-        # is the disk saying the source is not there, which is the same
-        # answer as a manifest that cannot be read.
+        # The DISK, and only the disk: a builtin whose manifest file is gone,
+        # where ``read_manifest`` raises ``FileNotFoundError`` and nothing
+        # above catches it. Every network ``OSError`` -- including one raised
+        # while the response body is being read -- is turned into a
+        # ``GitHubError`` by the GitHub client and answered below, which is
+        # what keeps this clause from reporting a dropped connection as a
+        # manifest that is not a manifest.
         raise _coded(400, "invalid_manifest") from None
     except GitHubError as exc:
         raise _github_refusal(exc) from None
