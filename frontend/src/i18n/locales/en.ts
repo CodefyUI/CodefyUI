@@ -1048,6 +1048,12 @@ const en = {
   'node.needsPack.title': 'Needs the {pack} pack. Click to open the Package Center.',
   'node.paramNeedsPack': 'needs pack',
   'error.missingPack': 'This node needs the {pack} pack. Install it from the Package Center.',
+
+  // Plugin Center. Only the plugin HOST's own toasts so far: one for a plugin
+  // whose UI bundle would not load, one for the dev hot-reload. The panel's
+  // copy arrives with the panel.
+  'pluginCenter.toast.frontendFailed': 'The UI of plugin "{plugin}" failed to load.',
+  'pluginCenter.toast.frontendsReloaded': 'Plugin UI reloaded.',
 } as const;
 
 export type TranslationKey = keyof typeof en;

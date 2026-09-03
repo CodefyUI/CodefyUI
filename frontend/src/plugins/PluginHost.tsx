@@ -14,6 +14,7 @@
  * installs (no linked plugin) never poll.
  */
 import { useEffect, useRef } from 'react';
+import { useI18n } from '../i18n';
 import { useNodeDefStore } from '../store/nodeDefStore';
 import { useToastStore } from '../store/toastStore';
 import { buildPluginAPI } from './api';
@@ -167,7 +168,8 @@ export async function loadPluginFrontends(
     } catch (err) {
       console.warn(`[plugins] failed to activate '${p.id}' frontend:`, err);
       useToastStore.getState().addToast(
-        `Plugin "${p.id}" UI failed to load`, 'error',
+        useI18n.getState().t('pluginCenter.toast.frontendFailed', { plugin: p.id }),
+        'error',
       );
     }
   }
@@ -235,7 +237,9 @@ async function maybeStartDevHotReload(): Promise<void> {
         widgetContainer,
         (url) => import(/* @vite-ignore */ `${url}?v=${gen}`),
       );
-      useToastStore.getState().addToast('Plugin frontends reloaded', 'info');
+      useToastStore.getState().addToast(
+        useI18n.getState().t('pluginCenter.toast.frontendsReloaded'), 'info',
+      );
     })();
   }, DEV_POLL_MS);
 }

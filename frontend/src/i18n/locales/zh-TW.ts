@@ -955,6 +955,10 @@ const zhTW: Record<TranslationKey, string> = {
   'node.needsPack.title': '需要 {pack} 套件。點一下開啟套件中心。',
   'node.paramNeedsPack': '需套件',
   'error.missingPack': '這個節點需要 {pack} 套件，請到套件中心安裝。',
+
+  // Plugin Center.
+  'pluginCenter.toast.frontendFailed': '外掛「{plugin}」的介面載入失敗。',
+  'pluginCenter.toast.frontendsReloaded': '已重新載入外掛介面。',
 };
 
 export default zhTW;
