@@ -6,11 +6,8 @@ from pathlib import Path
 from fastapi import APIRouter, HTTPException, UploadFile
 
 from ..config import settings
-from ..core.node_registry import registry
-from ..core import plugin_loader
-from ..core.plugin_loader import rediscover_all
 from ..core.plugin_validator import PluginValidationError, validate_python_source
-from ..core.preset_registry import preset_registry
+from ..core.plugins.reload import rediscover_now
 from ..core.script_policy import TIER0_DENIED_ATTRS
 
 logger = logging.getLogger(__name__)
@@ -153,16 +150,8 @@ async def delete_custom_node(filename: str):
 def _reload_all():
     """Re-discover all nodes and presets after a custom node change.
 
-    Delegates to :func:`rediscover_all` so plugins stay registered when a
-    custom node is added/toggled (otherwise ``registry.clear()`` would
-    silently drop them from the palette).
+    Delegates to :func:`~app.core.plugins.reload.rediscover_now` so plugins
+    stay registered when a custom node is added/toggled (otherwise
+    ``registry.clear()`` would silently drop them from the palette).
     """
-    rediscover_all(
-        registry,
-        preset_registry,
-        nodes_dir=settings.NODES_DIR,
-        custom_nodes_dir=settings.CUSTOM_NODES_DIR,
-        presets_dir=settings.PRESETS_DIR,
-        builtin_root=plugin_loader.plugins_builtin_root(),
-        user_root=plugin_loader.plugins_user_root(),
-    )
+    rediscover_now()

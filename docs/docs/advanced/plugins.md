@@ -31,6 +31,14 @@ cdui plugin uninstall deep                 # remembered: sync will not re-add it
 
 `stats` is the odd one out: not a textbook companion but a working reference for third-party pack authors. It is pure numpy + torch, installs at [Tier 0](#security--three-tiers) with **no `[security]` section at all**, and its [README](https://github.com/CodefyUI/CodefyUI/blob/main/plugins/stats/README.md) is the normative write-up of the two contracts a data pack needs — how a table travels between ports, and how a `chart` output is declared and drawn.
 
+Three more official plugins live in their own repositories. They install by the same name the catalog lists them under, and — unlike the packs above — each one is downloaded from GitHub, so installing it is a decision you are asked to confirm.
+
+| Plugin | What it is | Install |
+|------|------------------|-----------|
+| `graph-copilot` | AI chat assistant that builds and edits node graphs by conversation, runs approved isolated experiments and parameter searches, and keeps portable evidence. Needs an LLM provider (Codex, Ollama, OpenAI or Anthropic). | `cdui plugin install graph-copilot` |
+| `self-learning` | Turns a free-form machine-learning problem into a step-by-step lesson: an LLM builds a working graph and proves it runs, then the plugin screenshots each step and emits a Traditional-Chinese Markdown lesson, a printable page, the graph and a starter exercise. | `cdui plugin install self-learning` |
+| `official-template` | Working starter template for plugin authors: two example nodes, a preset, an example workflow, an asset file, a sample test suite and a React tool panel. Install it to see what a plugin can do, fork it to write your own. | `cdui plugin install official-template` |
+
 Each Edu node decomposes a single lesson concept into a chain of named steps that the [Teaching Inspector](/usage/teaching-inspector) renders one row at a time — `Edu-ColumnStats` shows the population-std formula as `sum → divide → deviations² → variance → sqrt`; `Edu-PolicyGradient` exposes `softmax → gather → log → baseline → loss`; `Edu-Patchify` makes `unfold → permute → flatten` visible. Switch on **Verbose mode** in the Settings popover to capture them.
 
 ## How packs are stored
@@ -190,17 +198,17 @@ cdui plugin new my-plugin --ui     # also a React frontend wired to the SDK
 
 It generates a manifest, an example node, a test (with the `cdui_plugins.<id>` namespace shim so `pytest` works locally), and — with `--ui` — a Vite + React `ui/` whose `src/sdk/` is the typed plugin SDK. The plugin lands in `./my-plugin/`; link it with `cdui plugin dev` (below) and start editing.
 
-For a richer reference, fork the **[Official Plugin Template](https://github.com/CodefyUI/CodefyUI-Plugin-Official)** — a working, MIT-licensed plugin with two example nodes, a sample example graph, a test suite, and a fully-commented manifest. Its README walks through every field and the AST security gate.
+For a richer reference, fork the **[Official Plugin Template](https://github.com/CodefyUI/CodefyUI-Plugin-Official)** — a working, MIT-licensed plugin with two example nodes, a sample example graph, a test suite, and a fully-commented manifest. Its README walks through every field and the AST security gate. The catalog lists it as `official-template`, so you can install it by name.
 
 ```bash
 # Install the template itself to see the pattern live
-cdui plugin install CodefyUI/CodefyUI-Plugin-Official
+cdui plugin install official-template
 
-# After forking
+# After forking — any repository, by owner/repo or by URL
 cdui plugin install your-username/your-fork
 ```
 
-A pack ships any of: a `nodes/` directory (auto-discovered), a `presets/` directory, an `examples/` directory, and an `assets/` directory (mounted at `/plugins/<id>/assets/<file>`). A `cdui.plugin.toml` manifest declares the id, version, `requires_codefyui`, content directories, lesson metadata, and — only if you need them — the `[security]` declarations described under [Security](#security--three-tiers). Delete that section if your nodes are pure computation; most are.
+A pack ships any of: a `nodes/` directory (auto-discovered), a `presets/` directory, an `examples/` directory, and an `assets/` directory (served at `/plugins/<id>/assets/<file>`). A `cdui.plugin.toml` manifest declares the id, version, `requires_codefyui`, content directories, lesson metadata, and — only if you need them — the `[security]` declarations described under [Security](#security--three-tiers). Delete that section if your nodes are pure computation; most are.
 
 :::warning Breaking change (v0.3)
 The chapter packs `c1`–`c6` were repackaged into three direction packs `foundations` / `deep` / `rl`, and every Edu node's type id gained a dash (`EduKNN` → `Edu-KNN`). Saved graphs referencing the old `cN:EduFoo` types must be updated to `<pack>:Edu-Foo` and the packs reinstalled with `cdui plugin install foundations deep rl`.

@@ -182,6 +182,20 @@ class Settings(BaseSettings):
     # since every mutating pack route already needs the session token.
     ALLOW_REMOTE_PACK_INSTALL: bool = False
 
+    # ── Plugin Center ──────────────────────────────────────────────────
+    # Let a request from another machine install a plugin. OFF by default,
+    # and this is the most privileged thing the app does: installing a plugin
+    # puts third-party code where this process will import it, and may run a
+    # package manager against the interpreter serving the request. So the
+    # answer to "who may install a plugin" is "whoever is sitting at this
+    # machine", not "whoever can reach the port". With HOST on loopback (the
+    # shipped default) the question never arises -- the gate only binds when
+    # the server was deliberately put on 0.0.0.0 or a LAN address. A
+    # classroom or lab server that serves the LAN on purpose opts back in
+    # with CODEFYUI_ALLOW_REMOTE_PLUGIN_INSTALL=1; it changes nothing else,
+    # since every mutating plugin route already needs the session token.
+    ALLOW_REMOTE_PLUGIN_INSTALL: bool = False
+
     # ── Port statistics (#129) ─────────────────────────────────────────
     # GET /api/execution/outputs/{run}/{node}/{port}/stats summarises a
     # captured value instead of shipping it. Above this element count the
