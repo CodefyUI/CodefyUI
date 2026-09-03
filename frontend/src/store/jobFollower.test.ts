@@ -582,6 +582,33 @@ describe('createJobFollower', () => {
     expect(app.fetchPage).toHaveBeenCalledTimes(1);
   });
 
+  it('stops one follower without touching another on its own job', async () => {
+    // Two centers follow two jobs at once -- a pack install and a plugin
+    // install -- from two instances of this factory. The generation counter
+    // that ends a loop is per instance, closure state rather than module
+    // state, and this is what says so: a shared counter would have the Pack
+    // Center's `stop()` silently end the Plugin Center's poll.
+    const packs = bench();
+    const plugins = bench();
+    plugins.setJob(makeJob({ jobId: 'j2' }));
+
+    packs.follower.start('j1', 0);
+    plugins.follower.start('j2', 0);
+    await settle();
+    expect(packs.fetchPage).toHaveBeenCalledTimes(1);
+    expect(plugins.fetchPage).toHaveBeenCalledTimes(1);
+
+    packs.follower.stop();
+    await vi.advanceTimersByTimeAsync(FOLLOW_IDLE_MS + 10);
+
+    expect(packs.fetchPage, 'the stopped follower').toHaveBeenCalledTimes(1);
+    expect(plugins.fetchPage, 'the untouched follower').toHaveBeenCalledTimes(2);
+    expect(packs.follower.followingJobId()).toBeNull();
+    expect(plugins.follower.followingJobId()).toBe('j2');
+
+    plugins.follower.stop();
+  });
+
   it('ends a stale loop whose page arrives after the generation moved on', async () => {
     // The abort only rejects the request in flight; on a fetch that ignores
     // the signal (or answers in the same tick it was aborted) the generation
