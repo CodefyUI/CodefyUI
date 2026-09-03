@@ -36,7 +36,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .errors import GitError, classify_failure
-from .models import DiffResponse, FileAtRef
+from .models import DiffResponse, FileAtRef, GitStatus
 from .paths import is_env_secret_path, validate_rel_path, validate_sha
 from .repo import first_parent, read_status, resolve_commit
 from .runner import T_READ, run_git
@@ -88,9 +88,14 @@ def _readable_path(root: Path, path: str) -> str:
 
     The guard is not about the working copy: a ``.env`` that was committed
     once is in every later tree, and both of these functions can read one.
+
+    EVERY segment is checked, not only the last: ``.env/x`` and
+    ``config/.env/y`` name something inside a dotenv path, and a directory
+    called ``.env`` is exactly where somebody keeps one file of secrets per
+    environment.
     """
     clean = validate_rel_path(root, path)
-    if is_env_secret_path(clean):
+    if any(is_env_secret_path(segment) for segment in clean.split("/")):
         raise GitError("ignored", 403, f"{clean} is not served",
                        hint="dotenv files hold secrets and are never read "
                             "through this API")
@@ -158,20 +163,28 @@ class _Plan:
 
 
 def _plan(root: Path, path: str, scope: str, sha: str | None) -> _Plan:
-    """The command and the two sides for *scope*."""
-    if scope == "worktree":
+    """The command and the two sides for *scope*.
+
+    Every branch first makes git agree that *path* is ONE FILE. A pathspec
+    that matches a directory diffs everything under it, which is how a
+    request for ``sub`` comes back holding ``sub/.env``: the guard checked a
+    name, and git answered about a tree.
+    """
+    if scope in ("worktree", "index"):
+        status = read_status(root)
+        _require_one_file(root, path, status)
         # An UNTRACKED file has no index side, and ``git diff`` says nothing
         # at all about one -- an empty patch for a file the user can see is
         # the most confusing possible answer. ``--no-index`` against
         # ``/dev/null`` gives the patch that shows it as added, which it is.
-        if path in {entry.path for entry in read_status(root).untracked}:
-            return _Plan(["diff", "--no-index", "--no-color", "--no-ext-diff",
-                          "--", DEV_NULL, path],
-                         "index", "worktree", None, "worktree")
-        return _Plan(["diff", "--no-color", "--no-ext-diff", "-M", "--", path],
-                     "index", "worktree", "index", "worktree")
-
-    if scope == "index":
+        if scope == "worktree":
+            if path in {entry.path for entry in status.untracked}:
+                return _Plan(["diff", "--no-index", "--no-color",
+                              "--no-ext-diff", "--", DEV_NULL, path],
+                             "index", "worktree", None, "worktree")
+            return _Plan(["diff", "--no-color", "--no-ext-diff", "-M", "--",
+                          path],
+                         "index", "worktree", "index", "worktree")
         return _Plan(["diff", "--cached", "--no-color", "--no-ext-diff", "-M",
                       "--", path],
                      "HEAD", "index", "HEAD", "index")
@@ -186,11 +199,85 @@ def _plan(root: Path, path: str, scope: str, sha: str | None) -> _Plan:
     # root commit has no parent and is diffed against the empty tree.
     commit = resolve_commit(root, sha)
     parent = first_parent(root, commit)
+    _require_one_blob(root, path, commit, parent)
     trees = [parent, commit] if parent is not None else ["--root", commit]
     return _Plan(["diff-tree", "-M", "-p", "--no-color", "--no-ext-diff",
                   "--no-commit-id", *trees, "--", path],
                  f"{commit}^" if parent is not None else None,
                  commit, parent, commit)
+
+
+def _require_one_file(root: Path, path: str, status: GitStatus) -> None:
+    """Refuse anything that is not exactly one file of this repository.
+
+    A pathspec that names a DIRECTORY is a diff of everything under it, so
+    ``sub`` would answer with ``sub/.env`` -- the guard would have checked
+    the string ``sub`` and git would have opened somebody's secrets. The
+    same is true of a name that only LOOKS like a directory to the index (a
+    tree, a path that is gone from disk but still has entries under it).
+
+    Three answers, in the order that gives the most useful one first: a
+    directory on disk is a 400 that says to ask for one file; a path the
+    status already lists is a file by construction (``--untracked-files=all``
+    lists files, never the folders they are in); anything else is asked of
+    the index, where matching exactly itself means a tracked file, matching
+    something else means a tree, and matching nothing means there is nothing
+    to diff.
+    """
+    if (root / path).is_dir():
+        raise GitError("invalid_path", 400, f"{path} is a directory",
+                       hint="diff one file at a time")
+    known = {entry.path
+             for group in (status.staged, status.unstaged, status.untracked,
+                           status.conflicted)
+             for entry in group}
+    if path in known:
+        return
+
+    result = run_git(["ls-files", "-z", "--", path], cwd=root, timeout=T_READ,
+                     read_only=True)
+    names = [name for name in result.out.split("\x00") if name]
+    if not names:
+        raise GitError("not_found", 404, f"git does not know {path}")
+    if names != [path]:
+        raise GitError("invalid_path", 400,
+                       f"{path} is a directory in the index",
+                       hint="diff one file at a time")
+
+
+def _require_one_blob(root: Path, path: str, commit: str,
+                      parent: str | None) -> None:
+    """Refuse a commit diff of anything but a file, in either of its trees.
+
+    BOTH sides are asked, because a diff of a DELETED file is an ordinary
+    request: the path is gone from the commit and present in its parent.
+    Either side being a blob is enough; a tree on either side is the
+    directory case again, and nothing on either side is a 404.
+    """
+    kinds = {kind for kind in
+             (_object_type(root, f"{commit}:{path}"),
+              _object_type(root, f"{parent}:{path}") if parent else None)
+             if kind is not None}
+    if "blob" in kinds:
+        return
+    if "tree" in kinds:
+        raise GitError("invalid_path", 400,
+                       f"{path} is a directory in {commit[:7]}",
+                       hint="diff one file at a time")
+    raise GitError("not_found", 404, f"no {path} in {commit[:7]}")
+
+
+def _object_type(root: Path, spec: str) -> str | None:
+    """``blob`` / ``tree`` / ... for ``<rev>:<path>``, or None if it is gone.
+
+    ``<rev>:<path>`` is an object NAME rather than a pathspec, so no glob
+    magic reaches it and this answers about exactly the path asked for.
+    """
+    result = run_git(["cat-file", "-t", spec], cwd=root, timeout=T_READ,
+                     ok_codes=(0, 128), read_only=True)
+    if result.returncode != 0:
+        return None
+    return result.out.strip() or None
 
 
 def _is_binary_patch(patch: str) -> bool:
@@ -277,8 +364,14 @@ def _from_object(root: Path, spec: str) -> FileAtRef:
 
 def _from_worktree(root: Path, path: str) -> FileAtRef:
     """Read the file on disk, once git agrees it is part of the project."""
+    # The one command that refuses ``--literal-pathspecs`` ("pathspec magic
+    # not supported by this command"). Safe here: it answers a question and
+    # returns no content, and the read below is a plain filesystem read of
+    # the literal path, so a pattern cannot make this hand back another
+    # file -- only refuse one that would have 404'd on the next line.
     ignored = run_git(["check-ignore", "-q", "--", path], cwd=root,
-                      timeout=T_READ, ok_codes=(0, 1), read_only=True)
+                      timeout=T_READ, ok_codes=(0, 1), read_only=True,
+                      literal_pathspecs=False)
     if ignored.returncode == 0:
         raise GitError("ignored", 403, f"{path} is ignored by this repository",
                        hint="ignored files are not part of the project and "

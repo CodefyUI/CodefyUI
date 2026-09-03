@@ -110,12 +110,17 @@ def test_argv_is_the_fixed_prefix_then_the_callers_arguments(
     ``core.askPass=`` is the one that is easy to lose and impossible to
     notice: without it, a machine with a credential helper configured opens
     a dialog on the SERVER and the request hangs until someone answers it.
+
+    ``--literal-pathspecs`` is the one that is easy to lose and DANGEROUS:
+    without it the paths after ``--`` are patterns, so a request naming
+    ``[.]env`` or ``*`` gets a file nobody validated.
     """
     _, seen = _run(monkeypatch, _FakeProc(),
                    ("add", "-A", "--", "src/a.txt", "b.txt"), cwd=tmp_path)
 
     assert seen["argv"] == [
         _GIT, "-C", str(tmp_path.resolve()),
+        "--literal-pathspecs",
         "-c", "core.quotepath=false",
         "-c", "core.askPass=",
         "-c", "color.ui=never",

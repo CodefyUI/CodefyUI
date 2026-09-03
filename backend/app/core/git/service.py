@@ -322,7 +322,18 @@ def discard_paths(root: Path, paths: Sequence[str] | None = None
     meant "delete those".
     """
     if paths is None:
-        run_git(["restore", "--worktree", "--", "."], cwd=root, timeout=T_LOCAL)
+        # ``restore --worktree -- .`` fails outright -- exit 1, "pathspec '.'
+        # did not match any file(s) known to git", which the classifier reads
+        # as a 404 -- when the INDEX is empty, and the index is empty in the
+        # most ordinary state there is: a repository somebody has just
+        # initialised. The clean would then never run at all. Nothing is
+        # tracked to restore in that case anyway, and the same is true
+        # whenever the unstaged group is empty, so the restore is skipped
+        # rather than made to tolerate a failure it cannot tell apart from a
+        # real one.
+        if repo.read_status(root).unstaged:
+            run_git(["restore", "--worktree", "--", "."], cwd=root,
+                    timeout=T_LOCAL)
         run_git(["clean", "-fd", "--", "."], cwd=root, timeout=T_LOCAL)
         return {"all": True}
 

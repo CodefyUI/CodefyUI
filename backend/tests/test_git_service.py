@@ -607,6 +607,43 @@ async def test_discard_all_never_deletes_an_ignored_env(repo):
     assert result.status.unstaged == [] and result.status.untracked == []
 
 
+async def test_discard_all_before_the_first_commit_still_cleans(tmp_path):
+    """The state every new repository starts in.
+
+    ``restore --worktree -- .`` fails on an empty index -- "pathspec '.' did
+    not match any file(s) known to git", which reads as a 404 -- and the
+    clean after it never ran, so "discard everything" answered with an error
+    and left the files where they were.
+    """
+    root = tmp_path / "fresh"
+    root.mkdir()
+    service = GitService(project_dir=lambda: root)
+    await service.init()
+    (root / "scratch.txt").write_text("temporary\n", encoding="utf-8")
+
+    result = await service.discard(all_paths=True)
+
+    assert not (root / "scratch.txt").exists()
+    assert result.status.untracked == []
+    assert result.status.unstaged == []
+    assert result.status.unborn is True
+
+
+async def test_discard_all_before_the_first_commit_restores_a_staged_edit(
+        make_repo):
+    """...and the restore still happens when there IS something in the index:
+    an unborn branch can have a file staged and then edited again."""
+    repo = make_repo(first_commit=False)
+    repo.write("x.txt", "staged\n")
+    repo.git("add", "-A", "--", "x.txt")
+    repo.write("x.txt", "edited after staging\n")
+
+    result = await repo.service.discard(all_paths=True)
+
+    assert repo.read("x.txt") == "staged\n"
+    assert result.status.unstaged == []
+
+
 async def test_discard_refuses_a_submodule(repo):
     """``restore --worktree`` on a gitlink succeeds and does nothing at all
     (measured on git 2.53), so the tab would report a discard that did not
@@ -978,6 +1015,129 @@ async def test_an_index_diff_before_the_first_commit_shows_the_file_as_added(
     assert "+one" in response.patch
     assert response.old_missing is True and response.old_text is None
     assert response.new_text == "one\n"
+
+
+# --- a path is one file, never a pattern and never a directory --------------
+
+#: What must never come back through a read route, whatever was asked for.
+SECRET = "OPENAI_API_KEY=sk-DO-NOT-LEAK"
+
+
+@pytest.fixture
+def secretive(make_repo) -> Repo:
+    """A repository with a committed ``.env`` at the root and one in a folder.
+
+    Committed deliberately -- ``.gitignore`` is emptied first -- because that
+    is the case the guard exists for: a secret that was committed once is in
+    every later tree, and no later ignore rule takes it back out.
+    """
+    repo = make_repo()
+    repo.write(".gitignore", "# nothing is ignored here\n")
+    repo.commit("commit the secrets", {
+        ".env": f"{SECRET}\n",
+        "sub/.env": f"{SECRET}\n",
+        "sub/notes.txt": "public\n"})
+    # A worktree edit, so a worktree diff would have something to show.
+    repo.write(".env", f"{SECRET}-NEWER\n")
+    repo.write("sub/.env", f"{SECRET}-NEWER\n")
+    return repo
+
+
+@pytest.mark.parametrize("scope", ["worktree", "index", "commit"])
+@pytest.mark.parametrize("path", [
+    pytest.param("sub", id="a-directory"),
+    pytest.param("sub/", id="a-directory-with-a-slash"),
+    pytest.param("*", id="everything"),
+    pytest.param("*env", id="glob-suffix"),
+    pytest.param(".en?", id="glob-single-character"),
+    pytest.param("[.]env", id="glob-character-class"),
+    pytest.param(".", id="the-root"),
+])
+async def test_a_pathspec_that_is_not_one_file_never_returns_a_secret(
+        secretive, path, scope):
+    """The guard checks a NAME; git used to be free to expand it.
+
+    Every string here is a pathspec that matches ``.env`` or a directory
+    containing one, while passing a check on its own final segment --
+    ``[.]env`` is not a dotenv filename, it is a pattern that matches one.
+    Two things now stop it: ``--literal-pathspecs`` in the runner's fixed
+    prefix (a path is a name), and the requirement that a diff names exactly
+    one file in the scope it asks about.
+
+    Refused, or a 200 that does not contain the secret. Nothing else.
+    """
+    sha = secretive.head() if scope == "commit" else None
+
+    try:
+        response = await secretive.service.diff(path, scope, sha=sha,
+                                                blobs=True)
+    except GitError as exc:
+        assert exc.code in ("invalid_path", "not_found", "ignored")
+        return
+
+    assert SECRET not in response.patch
+    assert SECRET not in (response.old_text or "")
+    assert SECRET not in (response.new_text or "")
+
+
+@pytest.mark.parametrize("scope", ["worktree", "index", "commit"])
+async def test_a_directory_diff_says_to_ask_for_one_file(secretive, scope):
+    """The specific answer for the specific mistake, in every scope."""
+    sha = secretive.head() if scope == "commit" else None
+
+    with pytest.raises(GitError) as excinfo:
+        await secretive.service.diff("sub", scope, sha=sha)
+
+    assert _error(excinfo).code == "invalid_path"
+    assert "one file" in (_error(excinfo).hint or "")
+
+
+async def test_an_ordinary_file_in_a_folder_still_diffs(secretive):
+    """The positive control: the single-file rule must not refuse real work."""
+    secretive.write("sub/notes.txt", "public\nedited\n")
+
+    response = await secretive.service.diff("sub/notes.txt", "worktree")
+
+    assert "+edited" in response.patch
+
+
+@pytest.mark.parametrize("path", [".env/x", "sub/.env/y", ".env.local/x"])
+async def test_a_path_inside_a_dotenv_directory_is_refused(repo, path):
+    """One file of secrets per environment is a directory called ``.env``,
+    so the guard reads EVERY segment and not only the last."""
+    with pytest.raises(GitError) as excinfo:
+        await repo.service.file_at_ref(path, "worktree")
+
+    assert _error(excinfo).code == "ignored"
+    assert _error(excinfo).status == 403
+
+
+async def test_a_glob_never_stages_more_than_the_file_it_names(repo):
+    """``a[1].txt`` is a character class matching ``a1.txt``.
+
+    The same property as ``git add -- '*'`` meaning the whole tree, in the
+    only spelling that can be tested on every platform: Windows cannot hold
+    a file named ``*``, but ``[`` and ``]`` are ordinary characters there.
+    """
+    repo.write("a1.txt", "matched by the pattern\n")
+    repo.write("a[1].txt", "the file that was asked for\n")
+
+    result = await repo.service.stage(["a[1].txt"])
+
+    assert [entry.path for entry in result.status.staged] == ["a[1].txt"]
+    assert [entry.path for entry in result.status.untracked] == ["a1.txt"]
+
+
+async def test_staging_a_star_is_not_staging_everything(repo):
+    """``git add -A -- '*'`` without ``--literal-pathspecs`` is "stage the
+    whole tree" wearing a pathspec's clothes."""
+    repo.write("new.txt", "new\n")
+
+    with pytest.raises(GitError) as excinfo:
+        await repo.service.stage(["*"])
+
+    assert _error(excinfo).code == "not_found"
+    assert (await repo.service.status()).status.staged == []
 
 
 async def test_an_unknown_diff_scope_is_refused(repo):

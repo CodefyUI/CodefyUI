@@ -5,11 +5,15 @@ on purpose: a second call site is a second chance to forget one of the five
 things below, and every one of them fails in a way that is hard to trace
 back to the command that caused it.
 
-* **Never a shell, and never user input as an option.** Every argument is a
-  list element, every path and ref is validated against a closed grammar in
-  ``paths.py``, and the caller puts them after ``--`` wherever git accepts
-  it. A branch called ``--upload-pack=rm -rf /`` is then a branch name that
-  does not exist, not a command.
+* **Never a shell, never user input as an option, and never a pattern.**
+  Every argument is a list element, every path and ref is validated against
+  a closed grammar in ``paths.py``, and the caller puts them after ``--``
+  wherever git accepts it. A branch called ``--upload-pack=rm -rf /`` is
+  then a branch name that does not exist, not a command. And because the
+  prefix carries ``--literal-pathspecs`` (:data:`GIT_PREFIX_ARGS`), a path
+  is the file with that name rather than a glob: without it ``*`` means
+  every file in the repository and ``[.]env`` means ``.env``, so validating
+  the name the browser sent would say nothing about the file git opens.
 * **Never interactive.** A server has no terminal, so a git that decides to
   ask for a password does not get an answer -- it gets a request that never
   returns and a worker that never comes back. :data:`NON_INTERACTIVE_ENV`
@@ -59,6 +63,20 @@ from pathlib import Path
 from ..packs.runner import creation_flags, pip_env, stop_process
 from .errors import GitError, classify_failure
 
+#: The option that turns every path this package passes into a NAME rather
+#: than a pattern. Without it ``*`` is every file in the repository,
+#: ``[.]env`` is ``.env`` and ``.en?`` is too -- so a validator that checked
+#: the string the browser sent would have said nothing about the file git
+#: opens. With it, ``git add -- '*'`` stages a file literally called ``*``
+#: or fails, and a diff of ``[.]env`` cannot come back holding the user's
+#: API keys. (git >= 1.9; the argument form of ``GIT_LITERAL_PATHSPECS=1``.)
+#:
+#: ``git check-ignore`` is the one command that REFUSES it -- "pathspec
+#: magic not supported by this command: 'literal'", exit 128 -- so
+#: :func:`run_git` takes a flag to leave it off for that one call. See there
+#: for why that is safe.
+LITERAL_PATHSPECS = "--literal-pathspecs"
+
 #: The options every call carries, between the executable and the caller's
 #: arguments (the ``-C <cwd>`` that precedes them is per call).
 #:
@@ -68,7 +86,8 @@ from .errors import GitError, classify_failure
 #: without it, a machine with Git Credential Manager configured pops a
 #: dialog on the SERVER and the request hangs until it is answered.
 #: ``color.ui=never`` keeps ANSI escapes out of output that is parsed.
-GIT_CONFIG_ARGS: tuple[str, ...] = (
+GIT_PREFIX_ARGS: tuple[str, ...] = (
+    LITERAL_PATHSPECS,
     "-c", "core.quotepath=false",
     "-c", "core.askPass=",
     "-c", "color.ui=never",
@@ -358,13 +377,22 @@ class GitResult:
         return self.stderr.decode("utf-8", errors="replace")
 
 
-def _argv(git: str, cwd: Path, args: Sequence[str]) -> list[str]:
+def _argv(git: str, cwd: Path, args: Sequence[str], *,
+          literal_pathspecs: bool = True) -> list[str]:
     """The full command line: executable, ``-C <cwd>``, fixed options, *args*.
 
     *cwd* is resolved, so the ``-C`` git is handed is an absolute path with
     no ``..`` in it even when the caller kept a relative one.
+
+    *literal_pathspecs* is only ever False for ``check-ignore``, which is the
+    one command that REJECTS the option: it answers "pathspec magic not
+    supported by this command: 'literal'" and exits 128. See
+    :func:`run_git`.
     """
-    return [git, "-C", str(cwd.resolve()), *GIT_CONFIG_ARGS, *args]
+    prefix = (GIT_PREFIX_ARGS if literal_pathspecs
+              else tuple(arg for arg in GIT_PREFIX_ARGS
+                         if arg != LITERAL_PATHSPECS))
+    return [git, "-C", str(cwd.resolve()), *prefix, *args]
 
 
 def _drain(proc: subprocess.Popen) -> None:
@@ -382,7 +410,8 @@ def _drain(proc: subprocess.Popen) -> None:
 
 def _run(args: Sequence[str], *, cwd: Path, timeout: float,
          env: dict[str, str], input_bytes: bytes | None = None,
-         ok_codes: Container[int] = (0,)) -> GitResult:
+         ok_codes: Container[int] = (0,),
+         literal_pathspecs: bool = True) -> GitResult:
     """Run one git command with a PREBUILT environment.
 
     Private because the environment is not the caller's business:
@@ -394,7 +423,7 @@ def _run(args: Sequence[str], *, cwd: Path, timeout: float,
     if git is None:
         raise GitError("git_missing", 503,
                        hint="install git and make sure it is on PATH")
-    argv = _argv(git, cwd, args)
+    argv = _argv(git, cwd, args, literal_pathspecs=literal_pathspecs)
 
     try:
         proc = subprocess.Popen(
@@ -439,7 +468,8 @@ def _run(args: Sequence[str], *, cwd: Path, timeout: float,
 def run_git(args: Sequence[str], *, cwd: Path, timeout: float,
             input_bytes: bytes | None = None,
             ok_codes: Container[int] = (0,),
-            read_only: bool = False) -> GitResult:
+            read_only: bool = False,
+            literal_pathspecs: bool = True) -> GitResult:
     """Run ``git <args>`` in *cwd* and return what it said.
 
     *args* is everything after the fixed prefix -- the subcommand and its
@@ -462,7 +492,16 @@ def run_git(args: Sequence[str], *, cwd: Path, timeout: float,
 
     *read_only* marks a command that only reads, so it can run without
     taking the index lock (see :func:`git_env`).
+
+    *literal_pathspecs* is True everywhere except ``check-ignore``, which is
+    the one command that rejects :data:`LITERAL_PATHSPECS` outright. Leaving
+    it off there is safe because that command answers a QUESTION -- is this
+    path ignored -- and never returns content: the worst a pattern can do is
+    have the answer come back about a file other than the one asked for,
+    which refuses a read that would otherwise have been refused a step later
+    for not existing. Every command that hands back a file's bytes keeps it.
     """
     return _run(args, cwd=cwd, timeout=timeout,
                 env=git_env(read_only=read_only),
-                input_bytes=input_bytes, ok_codes=ok_codes)
+                input_bytes=input_bytes, ok_codes=ok_codes,
+                literal_pathspecs=literal_pathspecs)
