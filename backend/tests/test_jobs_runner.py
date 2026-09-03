@@ -550,6 +550,221 @@ async def test_on_settled_runs_however_the_job_ended():
     assert isinstance(runner._task.exception(), _Abort)
 
 
+# ── the two seams a domain hangs its own code off ─────────────────────────
+
+
+async def test_after_work_merges_its_answer_into_job_done():
+    """The step that cannot run on the worker thread, and what it found out.
+
+    A plugin install re-discovers the node registry once the files are on
+    disk, and that has to happen on the LOOP -- the registry is read there by
+    every other request. It also learns things the terminal event has to
+    carry (how many nodes appeared, which generation the registry is on), so
+    what it returns is MERGED into ``job_done`` rather than dropped: a client
+    that has just been told the job is done must not have to ask a second
+    question to find out what it did.
+    """
+    runner = make_runner()
+    work = ScriptedWork().script({"type": "log", "line": "installed"})
+    job = DemoJob(job_id=uuid.uuid4().hex, name="reloaded")
+    runner.claim(job, {"type": "job_started", "name": job.name})
+    runner.start(job, work, after_work=lambda: {"nodes": 3, "generation": 7})
+    events, status = await drain(runner, job.job_id)
+
+    assert status == STATUS_DONE
+    assert types_of(events) == ["job_started", "log", "job_done"]
+    done = events[-1]
+    assert (done["nodes"], done["generation"]) == (3, 7)
+
+
+async def test_after_work_is_awaited_and_runs_on_the_loop_thread():
+    """On the loop, not on the worker thread -- which is the whole point.
+
+    The work runs in ``asyncio.to_thread``; anything that touches structures
+    the loop reads (a registry dict, an app state) cannot run there. So
+    ``after_work`` is called from the task itself, and awaited when it hands
+    back an awaitable, so a domain may write it as ``async def`` without
+    building its own bridge back to the loop.
+    """
+    runner = make_runner()
+    loop = asyncio.get_running_loop()
+    seen: dict = {}
+
+    async def rediscover() -> dict:
+        seen["loop"] = asyncio.get_running_loop()
+        seen["thread"] = threading.get_ident()
+        return {"generation": 2}
+
+    work = ScriptedWork().script()
+    job = DemoJob(job_id=uuid.uuid4().hex, name="async-after")
+    runner.claim(job, {"type": "job_started", "name": job.name})
+    runner.start(job, work, after_work=rediscover)
+    events, status = await drain(runner, job.job_id)
+
+    assert status == STATUS_DONE
+    assert events[-1]["generation"] == 2
+    assert seen["loop"] is loop
+    assert seen["thread"] == threading.get_ident(), (
+        "after_work ran on a worker thread, where the loop's own structures "
+        "are not safe to touch")
+
+
+async def test_after_work_runs_between_the_work_and_the_terminal_event():
+    """The ordering the whole seam exists for, read from inside it.
+
+    The work has already returned -- its last event is in the buffer -- and
+    the terminal event has not been stored yet, so the job still says
+    running. A domain that reloaded a registry here can be sure no client saw
+    ``job_done`` before the reload happened.
+    """
+    runner = make_runner()
+    captured: list[tuple[str, list[str]]] = []
+
+    def note() -> dict:
+        page, _, status = runner._read(job, 0, 500)
+        captured.append((status, types_of(page)))
+        return {"nodes": 1}
+
+    work = ScriptedWork().script({"type": "log", "line": "staged"})
+    job = DemoJob(job_id=uuid.uuid4().hex, name="ordered")
+    runner.claim(job, {"type": "job_started", "name": job.name})
+    runner.start(job, work, after_work=note)
+    events, status = await drain(runner, job.job_id)
+
+    assert status == STATUS_DONE
+    assert captured == [(STATUS_RUNNING, ["job_started", "log"])]
+    assert events[-1]["nodes"] == 1
+
+
+async def test_a_raising_after_work_fails_the_job_and_still_settles():
+    """A job whose last step failed is a FAILED job, not a done one.
+
+    The files are on disk and the work returned cleanly, but the domain has
+    just said the job did not finish -- and it is the only one that can say
+    so. Reporting ``done`` here would leave a Plugin Center showing a plugin
+    it cannot load. ``on_settled`` still runs, because the caches a finished
+    job invalidated are stale however it ended.
+    """
+    runner = make_runner()
+    settled: list[str] = []
+
+    def broken() -> dict:
+        raise RuntimeError("the registry could not be re-read")
+
+    work = ScriptedWork().script()
+    job = DemoJob(job_id=uuid.uuid4().hex, name="half-installed")
+    runner.claim(job, {"type": "job_started", "name": job.name})
+    runner.start(job, work, after_work=broken,
+                 on_settled=lambda: settled.append("settled"))
+    events, status = await drain(runner, job.job_id)
+
+    assert status == STATUS_FAILED
+    assert types_of(events) == ["job_started", "job_failed"]
+    assert events[-1]["message"] == "the registry could not be re-read"
+    assert events[-1]["hint"] is None
+    assert job.error == {"message": "the registry could not be re-read",
+                         "hint": None}
+    assert job.finished_at is not None
+    assert settled == ["settled"]
+    # Swallowed, like every other failure a domain can explain: nobody
+    # awaits this task except shutdown.
+    assert runner._task.exception() is None
+
+
+async def test_an_after_work_base_exception_is_recorded_and_then_travels_on():
+    """The module's rule, applied to the second seam as well.
+
+    KeyboardInterrupt, SystemExit and CancelledError are not the runner's to
+    swallow -- but a job left saying "running" forever is worse than one that
+    says why it stopped, so it is recorded FIRST and re-raised after.
+    """
+    runner = make_runner()
+
+    def torn_out() -> dict:
+        raise _Abort("interrupted")
+
+    work = ScriptedWork().script()
+    job = DemoJob(job_id=uuid.uuid4().hex, name="torn-out")
+    runner.claim(job, {"type": "job_started", "name": job.name})
+    runner.start(job, work, after_work=torn_out)
+    events, status = await drain(runner, job.job_id)
+
+    assert status == STATUS_FAILED
+    assert events[-1]["message"] == "interrupted"
+    assert job.finished_at is not None
+    assert isinstance(runner._task.exception(), _Abort)
+
+
+async def test_a_terminal_for_that_raises_still_ends_the_job():
+    """The translator is domain code too, and domain code has bugs.
+
+    It is called from inside the ``except`` block that is the job's last
+    chance to reach a terminal state, so an exception out of it used to
+    escape ``_run`` with the status still on ``running`` -- a panel offering
+    Stop for a thread that no longer exists, and no claim ever accepted
+    again. The failure recorded is the TRANSLATOR's, because that is the bug
+    somebody has to fix; the work's own exception is the hint, because that
+    is what the person watching was actually waiting for.
+    """
+    def broken_terminal_for(exc: BaseException) -> tuple[str, dict] | None:
+        raise KeyError("no rule for this one")
+
+    runner = JobRunner(terminal_for=broken_terminal_for, label="demo job")
+    work = ScriptedWork()
+    work.fail(Failed("it did not work", hint="the last lines"))
+    job = DemoJob(job_id=uuid.uuid4().hex, name="untranslatable")
+    runner.claim(job, {"type": "job_started", "name": job.name})
+    task = runner.start(job, work)
+    events, status = await drain(runner, job.job_id)
+
+    assert status == STATUS_FAILED
+    assert job.status == STATUS_FAILED, "the job was left running"
+    assert types_of(events) == ["job_started", "job_failed"]
+    assert "KeyError" in events[-1]["message"]
+    assert "it did not work" in events[-1]["hint"]
+
+    done, _ = await asyncio.wait([task], timeout=5.0)
+    assert done, "the runner task never finished"
+    assert task.exception() is None, (
+        "a broken translator must not take the runner task down with it -- "
+        "the recorded job IS the report, and shutdown awaits this task")
+
+
+async def test_a_two_parameter_terminal_for_is_handed_the_job_itself():
+    """The second shape a domain may declare, chosen once at construction.
+
+    ``PackService._terminal_for`` finds its job through ``current_job()``,
+    which is true only because a submit is refused until the current job is
+    terminal. A domain that would rather be TOLD -- one whose translator may
+    also be called for a job that is no longer the current one -- declares
+    the job as its first parameter instead, and the runner counts the
+    parameters once, when it is built, rather than guessing per exception.
+    """
+    seen: list[tuple[object, BaseException]] = []
+
+    def terminal_for_with_job(job: Job, exc: BaseException
+                              ) -> tuple[str, dict] | None:
+        seen.append((job, exc))
+        return STATUS_FAILED, {"type": "job_failed",
+                               "message": str(exc), "hint": None}
+
+    runner = JobRunner(terminal_for=terminal_for_with_job, label="demo job")
+    work = ScriptedWork()
+    failure = Failed("it did not work")
+    work.fail(failure)
+    job = DemoJob(job_id=uuid.uuid4().hex, name="told")
+    runner.claim(job, {"type": "job_started", "name": job.name})
+    runner.start(job, work)
+    events, status = await drain(runner, job.job_id)
+
+    assert status == STATUS_FAILED
+    assert len(seen) == 1
+    got_job, got_exc = seen[0]
+    assert got_job is job, "the translator was handed a different job"
+    assert got_exc is failure
+    assert events[-1]["message"] == "it did not work"
+
+
 # ── the long poll ─────────────────────────────────────────────────────────
 
 

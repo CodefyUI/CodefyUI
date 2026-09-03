@@ -46,11 +46,12 @@ both, and a redesign of the run queue is not what an install needs.
 from __future__ import annotations
 
 import asyncio
+import inspect
 import logging
 import threading
 import time
 from collections import deque
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
@@ -84,10 +85,26 @@ CancelCheck = Callable[[], bool]
 #: says how it went through its events and its status, not through a value.
 Work = Callable[[Emit, CancelCheck], None]
 
+#: The last step of a job that CANNOT run on the worker thread -- a registry
+#: the loop reads, an app state -- run on the loop once the work has returned.
+#: What it hands back is merged into the terminal ``job_done`` event, so the
+#: client learns what that step found out without asking a second question.
+AfterWork = Callable[[], Awaitable[dict] | dict]
+
 #: How a domain reads an exception out of its own work: ``(status, event)``
 #: for an outcome it recognises, ``None`` for one it does not (see
 #: :meth:`JobRunner._run`).
-TerminalFor = Callable[[BaseException], tuple[str, dict] | None]
+#:
+#: TWO shapes, and the runner picks between them ONCE, at construction (see
+#: :func:`_wants_the_job`). A translator that finds its job through
+#: ``current_job()`` -- true for a domain whose submit is refused until the
+#: current job is terminal -- declares just the exception, which is what
+#: every caller before the Plugin Center did. One that would rather be told
+#: declares the job first. ``Job`` is quoted because it is defined below
+#: this block, and ``from __future__ import annotations`` defers ANNOTATIONS,
+#: not the right-hand side of an assignment.
+TerminalFor = (Callable[[BaseException], tuple[str, dict] | None]
+               | Callable[["Job", BaseException], tuple[str, dict] | None])
 
 
 class JobBusy(Exception):
@@ -172,6 +189,35 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _wants_the_job(terminal_for: TerminalFor) -> bool:
+    """Does this translator take ``(job, exc)`` rather than just ``(exc)``?
+
+    Read ONCE, when the runner is built, and never again: the answer cannot
+    change, and asking it inside the ``except`` block that is a job's last
+    chance to reach a terminal state would put a reflection call on the one
+    path that must not fail.
+
+    Only POSITIONAL parameters count, because those are the ones the runner
+    passes. A bound method's ``self`` is already gone by the time
+    :func:`inspect.signature` answers, so ``PackService._terminal_for(exc)``
+    reads as one -- which is what it is from here.
+
+    Anything whose signature cannot be read at all (a builtin, a C callable,
+    a ``*args`` catch-all) is treated as the one-argument form: that is the
+    shape every caller had before this second one existed, and guessing the
+    other way would break them with a ``TypeError`` raised from inside the
+    failure path.
+    """
+    try:
+        parameters = inspect.signature(terminal_for).parameters.values()
+    except (TypeError, ValueError):
+        return False
+    positional = [p for p in parameters
+                  if p.kind in (inspect.Parameter.POSITIONAL_ONLY,
+                                inspect.Parameter.POSITIONAL_OR_KEYWORD)]
+    return len(positional) >= 2
+
+
 class JobRunner:
     """The single job slot: one at a time, with a replayable event stream.
 
@@ -192,6 +238,9 @@ class JobRunner:
         # the runner must not know one domain's error classes from another's
         # -- see :meth:`_run` for what a ``None`` answer means.
         self._terminal_for = terminal_for
+        # Which of the two shapes it declared. Settled here, so the failure
+        # path never has to ask.
+        self._terminal_for_wants_the_job = _wants_the_job(terminal_for)
         # What to call a job in the log. The runner's own two lines are about
         # a job nobody is watching any more (a shutdown that timed out, a
         # shutdown that caught something), so they have to say WHICH runner
@@ -312,6 +361,7 @@ class JobRunner:
             self._store(first_event, job)
 
     def start(self, job: Job, work: Work, *,
+              after_work: AfterWork | None = None,
               on_settled: Callable[[], None] | None = None) -> asyncio.Task:
         """Run *work* on a worker thread, in a task that records how it ended.
 
@@ -320,19 +370,27 @@ class JobRunner:
         and a claim that landed in between would have replaced it -- this
         job's events would then wake the pollers parked on somebody else's.
 
-        *on_settled* is called on the loop once the job is terminal, however
-        it ended -- including the re-raised ``BaseException`` path. A domain
-        that has caches to drop after a job (the disk is not what it was)
-        drops them there.
+        Three hooks, in the order they happen, and the order matters:
+
+        1. *work*, on a worker thread, for minutes;
+        2. *after_work*, ON THE LOOP, once the work has returned normally --
+           the last step of the job for anything the worker thread may not
+           touch. Its answer is merged into the terminal event;
+        3. *on_settled*, on the loop, once the job is terminal HOWEVER it
+           ended -- including the re-raised ``BaseException`` path. A domain
+           that has caches to drop after a job (the disk is not what it was)
+           drops them there.
         """
         loop = asyncio.get_running_loop()
         self._task = asyncio.create_task(
-            self._run(job, work, loop, self._broadcast, on_settled))
+            self._run(job, work, loop, self._broadcast, on_settled,
+                      after_work))
         return self._task
 
     async def _run(self, job: Job, work: Work,
                    loop: asyncio.AbstractEventLoop, broadcast: Broadcast,
-                   on_settled: Callable[[], None] | None) -> None:
+                   on_settled: Callable[[], None] | None,
+                   after_work: AfterWork | None = None) -> None:
         """Run the work on a worker thread and record how it ended.
 
         Swallows every exception ``terminal_for`` recognises: this is a bare
@@ -351,19 +409,67 @@ class JobRunner:
         accepted again.
 
         ``terminal_for`` is called from inside the ``except`` block, so it
-        may use ``log.exception`` and it sees the live exception context.
+        may use ``log.exception`` and it sees the live exception context. It
+        is DOMAIN code, though, and domain code has bugs: one that raises
+        used to escape from here with the status still on ``running``. It is
+        wrapped for that reason, and the job fails on the translator's own
+        exception -- that is the bug somebody has to fix -- with the work's
+        exception as the hint, since that is what the person watching was
+        actually waiting for. The translator's exception is then SWALLOWED:
+        the recorded job IS the report, and letting it travel would only
+        take down the task ``shutdown`` awaits.
+
+        The whole ordering, in one place, because every part of it is
+        load-bearing::
+
+            work (worker thread)
+              -> after_work (this loop)
+                -> terminal event stored, THEN the status flips (one lock)
+                  -> on_settled
+
+        ``after_work`` is the seam for a step that must not run on the worker
+        thread -- re-discovering a node registry the loop reads. It runs only
+        when the work returned NORMALLY, its dict answer is merged into
+        ``job_done``, and if it raises the job is FAILED rather than done: it
+        is the domain saying the job did not finish, and reporting success
+        there would leave a panel showing something that cannot be loaded.
         """
         emit = self._emitter(job, loop, broadcast)
         try:
             await asyncio.to_thread(work, emit, job.cancel_event.is_set)
         except BaseException as exc:
-            outcome = self._terminal_for(exc)
+            try:
+                outcome = (self._terminal_for(job, exc)
+                           if self._terminal_for_wants_the_job
+                           else self._terminal_for(exc))
+            except BaseException as translator_exc:
+                log.exception("%s: terminal_for raised while recording how "
+                              "job %s ended", self._label, job.job_id)
+                self._fail(job, repr(translator_exc), repr(exc))
+                return
             if outcome is None:
                 self._fail(job, repr(exc), None)
                 raise
             self._finish(job, *outcome)
         else:
-            self._finish(job, STATUS_DONE, {"type": "job_done"})
+            done = {"type": "job_done"}
+            if after_work is not None:
+                try:
+                    result = after_work()
+                    if inspect.isawaitable(result):
+                        result = await result
+                    # The runner's key wins: a client that has been promised
+                    # ``job_done`` on success must get it, whatever a domain
+                    # happens to put in the dict it hands back.
+                    done = {**(result or {}), "type": "job_done"}
+                except BaseException as exc:
+                    self._fail(job, str(exc) or repr(exc), None)
+                    if not isinstance(exc, Exception):
+                        # Not ours to swallow -- the same rule as above, and
+                        # the job has already been recorded either way.
+                        raise
+                    return
+            self._finish(job, STATUS_DONE, done)
         finally:
             if on_settled is not None:
                 on_settled()
