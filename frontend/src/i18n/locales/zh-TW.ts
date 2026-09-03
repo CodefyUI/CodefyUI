@@ -959,6 +959,22 @@ const zhTW: Record<TranslationKey, string> = {
   // Plugin Center.
   'pluginCenter.toast.frontendFailed': '外掛「{plugin}」的介面載入失敗。',
   'pluginCenter.toast.frontendsReloaded': '已重新載入外掛介面。',
+  'pluginCenter.toast.installed': '已安裝 {plugin}。',
+  'pluginCenter.toast.updated': '已更新 {plugin}。',
+  'pluginCenter.toast.upToDate': '{plugin} 已是最新。',
+  'pluginCenter.toast.removed': '已解除安裝 {plugin}。',
+  'pluginCenter.toast.removeFailed': '無法解除安裝 {plugin}：{message}',
+  'pluginCenter.toast.enabled': '已啟用 {plugin}。',
+  'pluginCenter.toast.disabled': '已停用 {plugin}。',
+  'pluginCenter.toast.toggleFailed': '無法變更 {plugin}：{message}',
+  'pluginCenter.toast.needsRestart': '請重新啟動伺服器以載入 {plugin}。',
+  'pluginCenter.toast.inProgress': '有外掛仍在安裝中，可在外掛中心查看進度。',
+  'pluginCenter.toast.openCenter': '開啟外掛中心',
+  'pluginCenter.updateFailed': '更新失敗：{message}',
+  'pluginCenter.uninstall': '解除安裝',
+  'pluginCenter.uninstallConfirm':
+    '要解除安裝「{plugin}」嗎？使用它節點的圖將無法執行；它安裝的 Python 套件會保留。',
+  'pluginCenter.source.invalid': '請輸入 owner/repo[@ref] 或 GitHub URL。',
 };
 
 export default zhTW;

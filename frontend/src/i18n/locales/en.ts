@@ -1049,11 +1049,34 @@ const en = {
   'node.paramNeedsPack': 'needs pack',
   'error.missingPack': 'This node needs the {pack} pack. Install it from the Package Center.',
 
-  // Plugin Center. Only the plugin HOST's own toasts so far: one for a plugin
-  // whose UI bundle would not load, one for the dev hot-reload. The panel's
-  // copy arrives with the panel.
+  // Plugin Center. The host's own two toasts (a UI bundle that would not
+  // load, the dev hot-reload) and everything the store says about an install,
+  // an update, a removal or a switch. The panel's own copy arrives with the
+  // panel.
   'pluginCenter.toast.frontendFailed': 'The UI of plugin "{plugin}" failed to load.',
   'pluginCenter.toast.frontendsReloaded': 'Plugin UI reloaded.',
+  'pluginCenter.toast.installed': '{plugin} installed.',
+  'pluginCenter.toast.updated': '{plugin} updated.',
+  'pluginCenter.toast.upToDate': '{plugin} is up to date.',
+  'pluginCenter.toast.removed': '{plugin} uninstalled.',
+  'pluginCenter.toast.removeFailed': 'Could not remove {plugin}: {message}',
+  'pluginCenter.toast.enabled': '{plugin} enabled.',
+  'pluginCenter.toast.disabled': '{plugin} disabled.',
+  'pluginCenter.toast.toggleFailed': 'Could not change {plugin}: {message}',
+  // The files are in place; the running server could not pick them up.
+  'pluginCenter.toast.needsRestart': 'Restart the server to load {plugin}.',
+  'pluginCenter.toast.inProgress':
+    'A plugin is still installing. Open the Plugin Center to watch it.',
+  'pluginCenter.toast.openCenter': 'Open Plugin Center',
+  'pluginCenter.updateFailed': 'Update failed: {message}',
+  'pluginCenter.uninstall': 'Uninstall',
+  // Says what is lost AND what is not: nothing uninstalls a plugin's pip
+  // packages, and a user who expects the disk space back should hear so here
+  // rather than after saying yes.
+  'pluginCenter.uninstallConfirm':
+    'Uninstall {plugin}? Graphs that use its nodes will stop running. '
+    + 'Its Python packages stay installed.',
+  'pluginCenter.source.invalid': 'Enter owner/repo[@ref] or a GitHub URL.',
 } as const;
 
 export type TranslationKey = keyof typeof en;
