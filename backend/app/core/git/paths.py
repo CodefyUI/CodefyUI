@@ -20,7 +20,9 @@ Three of them are about more than syntax:
   repository pointing out of it. Backslashes are refused outright rather
   than translated: the frontend sends POSIX paths because git speaks POSIX
   paths, and accepting ``a\b`` would mean guessing whether that is a
-  Windows separator or a filename a Linux user is entitled to create.
+  Windows separator or a filename a Linux user is entitled to create. A
+  colon is refused anywhere, for the reason a drive letter is: on Windows it
+  opens an alternate data stream instead of the file it appears to name.
 * **an empty path list is refused**, because ``git add -A --`` with no
   pathspec stages the WHOLE tree. "Nothing selected" must never be able to
   arrive as "everything".
@@ -130,6 +132,14 @@ def validate_rel_path(root: Path, path: str) -> str:
         _refuse("invalid_path", "a path must use / as its separator")
     if path.startswith("/") or _DRIVE_RE.match(path):
         _refuse("invalid_path", "a path must be relative to the project")
+    # ANY colon, not only a drive letter. On Windows ``ab:c.txt`` names the
+    # ALTERNATE DATA STREAM ``c.txt`` of the file ``ab`` -- a second, hidden
+    # fork of a file, which is not the file it appears to name and is not
+    # what a diff of ``ab:c.txt`` would show. git cannot check such a name
+    # out on Windows either, so no path git ever prints in a status contains
+    # one, and a request naming it is asking for something else.
+    if ":" in path:
+        _refuse("invalid_path", "a path may not contain ':'")
 
     pure = PurePosixPath(path)
     if ".." in pure.parts:

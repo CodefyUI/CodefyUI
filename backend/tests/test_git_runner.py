@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import subprocess
 import sys
+import tempfile
 import types
 from pathlib import Path
 
@@ -289,6 +290,59 @@ def test_ssh_probe_failure_is_not_fatal(monkeypatch):
     monkeypatch.setattr(runner, "git_executable", lambda: None)
 
     assert runner.git_env()["GIT_SSH_COMMAND"] == "ssh -oBatchMode=yes"
+
+
+def test_the_probe_never_asks_the_servers_own_repository(monkeypatch, tmp_path):
+    """The probe runs from the temp directory, not from ``Path.cwd()``.
+
+    The server's working directory is its own checkout -- a repository with
+    its own config, and one the Source Control tab must never consult. A
+    ``core.sshCommand`` set THERE would otherwise decide how the user's
+    project reaches its remotes.
+    """
+    monkeypatch.setattr(runner, "git_executable", lambda: _GIT)
+    monkeypatch.delenv("GIT_SSH_COMMAND", raising=False)
+    # A repository, standing in for the checkout the server runs from.
+    (tmp_path / ".git").mkdir()
+    monkeypatch.chdir(tmp_path)
+    seen = _fake_popen(monkeypatch, _FakeProc(returncode=1))
+
+    runner.git_env()
+
+    assert seen["argv"][1:3] == [
+        "-C", str(Path(tempfile.gettempdir()).resolve())]
+    assert str(tmp_path) not in seen["argv"]
+
+
+def test_a_probe_that_failed_is_not_repeated_on_every_command(monkeypatch):
+    """A host whose config cannot be read pays one probe per interval.
+
+    ``git_env`` is called once per git command and the tab polls the status
+    endpoint while it is open, so a probe that is retried on failure is a
+    whole process per request, forever. The failure is remembered exactly as
+    long as a missing binary is.
+    """
+    clock = [1000.0]
+    calls: list[list[str]] = []
+    monkeypatch.setattr(runner, "git_executable", lambda: _GIT)
+    monkeypatch.delenv("GIT_SSH_COMMAND", raising=False)
+    monkeypatch.setattr(runner, "time",
+                        types.SimpleNamespace(monotonic=lambda: clock[0]))
+
+    def _popen(argv, **kwargs):
+        calls.append(argv)
+        # git is there and answering; reading the config is what fails.
+        return _FakeProc(returncode=128, stderr=b"fatal: bad config line 1\n")
+
+    monkeypatch.setattr(subprocess, "Popen", _popen)
+
+    for _ in range(4):
+        assert runner.git_env()["GIT_SSH_COMMAND"] == "ssh -oBatchMode=yes"
+    assert len(calls) == 1, "a broken host paid a process per command"
+
+    clock[0] += runner.MISSING_RECHECK_S + 1
+    assert runner.git_env()["GIT_SSH_COMMAND"] == "ssh -oBatchMode=yes"
+    assert len(calls) == 2, "the failure was never rechecked"
 
 
 def test_a_probe_that_could_not_run_is_not_remembered(monkeypatch):

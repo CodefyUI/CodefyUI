@@ -35,11 +35,12 @@ back to the command that caused it.
   base is ``packs.runner.pip_env()``, which already drops the variables
   that relocate a Python interpreter.
 
-``git_executable`` and ``git_version`` cache, and the shape of the caching
-is deliberate: a POSITIVE answer lasts for the life of the process (git does
-not move), a NEGATIVE one for :data:`MISSING_RECHECK_S` seconds, so a
-machine without git does not run ``shutil.which`` on every poll of the
-status endpoint -- and still notices an install a minute later without a
+``git_executable``, ``git_version`` and the ``core.sshCommand`` probe cache,
+and the shape of the caching is deliberate: a POSITIVE answer lasts for the
+life of the process (git does not move), a NEGATIVE one for
+:data:`MISSING_RECHECK_S` seconds, so a machine without git -- or with a git
+whose config cannot be read -- does not spawn a process on every poll of the
+status endpoint, and still notices a repair a minute later without a
 restart. ``_reset_for_tests`` exists because that cache would otherwise make
 the second test in a file depend on the first.
 """
@@ -142,6 +143,7 @@ _missing_until: float | None = None
 _version: tuple[int, int, int] | None = None
 _version_probed_at: float | None = None
 _ssh_configured: bool | None = None
+_ssh_probe_failed_at: float | None = None
 
 
 def _reset_for_tests() -> None:
@@ -152,12 +154,13 @@ def _reset_for_tests() -> None:
     a process would depend on which test ran first.
     """
     global _executable, _missing_until, _version, _version_probed_at
-    global _ssh_configured
+    global _ssh_configured, _ssh_probe_failed_at
     _executable = None
     _missing_until = None
     _version = None
     _version_probed_at = None
     _ssh_configured = None
+    _ssh_probe_failed_at = None
 
 
 def git_executable() -> str | None:
@@ -178,17 +181,22 @@ def git_executable() -> str | None:
 
 
 def _probe_cwd() -> Path:
-    """A directory that exists, for the calls that are not about a repository.
+    """A directory to run the calls that are not about a repository from.
 
-    ``git --version`` still goes through the fixed prefix, and ``-C`` needs
-    somewhere real to point at. The current directory normally is; a server
-    whose working directory has been deleted underneath it would otherwise
-    turn a version check into an ``OSError``.
+    ``git --version`` and the ``core.sshCommand`` probe still go through the
+    fixed prefix, and ``-C`` needs somewhere real to point at.
+
+    The temporary directory, and NEVER ``Path.cwd()``: the server's working
+    directory is its own checkout, which is a git repository the Source
+    Control tab must never consult. A ``core.sshCommand`` in THAT
+    repository's config would otherwise decide how the user's PROJECT
+    reaches its remotes -- a setting from a repository nobody asked about,
+    silently applied to another one. Only the global and system config can
+    answer this question, and the temp directory is the cheapest place to
+    stand where neither a repository nor a deleted working directory can
+    interfere.
     """
-    try:
-        return Path.cwd()
-    except OSError:
-        return Path(tempfile.gettempdir())
+    return Path(tempfile.gettempdir())
 
 
 def git_version() -> tuple[int, int, int] | None:
@@ -249,20 +257,37 @@ def _ssh_command_configured() -> bool:
     Any failure counts as "no": git missing, a timeout, a config file the
     user cannot read. The consequence of guessing wrong here is one ssh run
     in batch mode instead of theirs, which fails fast; the consequence of
-    raising would be that a config problem broke every git command. A
-    failure is NOT remembered, though -- a guess must not outlive the
-    condition that produced it and go on overriding a setting the user
-    made.
+    raising would be that a config problem broke every git command.
+
+    A failure is not remembered as an ANSWER -- a guess must not outlive the
+    condition that produced it and go on overriding a setting the user made
+    -- but it is remembered as a failure, for :data:`MISSING_RECHECK_S`
+    seconds. A host whose config genuinely cannot be read (an unreadable
+    ``.gitconfig``, a git that exits 128 on every ``config --get``) would
+    otherwise pay a whole process for this question on every single command,
+    forever: ``git_env`` is called once per git call, and the status
+    endpoint is polled while the tab is open. One probe per interval is the
+    same bargain :func:`git_executable` strikes for a missing binary.
+
+    A missing git is the exception, and is deliberately NOT remembered here:
+    nothing was probed, and ``git_executable`` already has its own recheck
+    window for exactly that case.
     """
-    global _ssh_configured
+    global _ssh_configured, _ssh_probe_failed_at
 
     if _ssh_configured is not None:
         return _ssh_configured
+    now = time.monotonic()
+    if (_ssh_probe_failed_at is not None
+            and now - _ssh_probe_failed_at < MISSING_RECHECK_S):
+        return False
     try:
         result = _run(["config", "--get", "core.sshCommand"], cwd=_probe_cwd(),
                       timeout=SSH_PROBE_TIMEOUT_S, env=_base_git_env(),
                       ok_codes=(0, 1))
-    except GitError:
+    except GitError as exc:
+        if exc.code != "git_missing":
+            _ssh_probe_failed_at = now
         return False
     _ssh_configured = result.returncode == 0 and bool(result.out.strip())
     return _ssh_configured

@@ -76,6 +76,11 @@ def test_a_path_need_not_exist(tmp_path):
     pytest.param("/etc/passwd", id="absolute"),
     pytest.param("//server/share/x", id="unc"),
     pytest.param("C:/Windows/System32/drivers/etc/hosts", id="drive-letter"),
+    # A colon anywhere, not only as a drive letter: on Windows ``ab:c.txt``
+    # is the alternate data stream ``c.txt`` of the file ``ab``, which is not
+    # the file the path appears to name.
+    pytest.param("ab:c.txt", id="alternate-data-stream"),
+    pytest.param("sub/a:b", id="colon-in-a-segment"),
     pytest.param("src\\main.py", id="backslash"),
     pytest.param("-rf", id="looks-like-an-option"),
     pytest.param("./-rf", id="looks-like-an-option-after-normalising"),
