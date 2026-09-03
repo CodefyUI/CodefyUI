@@ -72,8 +72,14 @@ def is_safe_dep_name(name: object) -> bool:
     rather than two copies of the pattern: an install and an uninstall
     disagreeing about what counts as a name is exactly the drift the regex
     exists to prevent.
+
+    ``fullmatch``, not ``match``: ``$`` also matches just BEFORE a final
+    newline, so ``"tabulate\\n"`` passed a pattern anchored at both ends.
+    A name is a manifest key, and one carrying a newline is a second line in
+    every place a name is printed -- including ``uninstall_command``, where
+    the shell reads the tail as a command of its own.
     """
-    return isinstance(name, str) and _SAFE_DEP_NAME.match(name) is not None
+    return isinstance(name, str) and _SAFE_DEP_NAME.fullmatch(name) is not None
 
 
 def _build_dep_spec(name: str, ver: str) -> str:
