@@ -89,7 +89,14 @@ Work = Callable[[Emit, CancelCheck], None]
 #: the loop reads, an app state -- run on the loop once the work has returned.
 #: What it hands back is merged into the terminal ``job_done`` event, so the
 #: client learns what that step found out without asking a second question.
-AfterWork = Callable[[], Awaitable[dict] | dict]
+#:
+#: It is handed the SAME ``emit`` the work had, because it is a step like any
+#: other and has to say so on the wire: a reload that takes a second is a
+#: second in which the panel would otherwise show a job with no current step
+#: and no log line, and then jump straight to done. Its
+#: ``step_started``/``step_done`` land in the same buffer, in order, ahead of
+#: the terminal event.
+AfterWork = Callable[[Emit], Awaitable[dict] | dict]
 
 #: How a domain reads an exception out of its own work: ``(status, event)``
 #: for an outcome it recognises, ``None`` for one it does not (see
@@ -114,10 +121,20 @@ class JobBusy(Exception):
     domain's words ("a pack install is already running"): the id a client
     has to follow is the part that must not vary, and the sentence around it
     is the part that should.
+
+    *reason* is the machine-readable half of the same answer, and it is here
+    rather than in one domain because the domains refuse EACH OTHER: two
+    installers sharing one interpreter each have to say "the job in your way
+    is not one of mine", and a client that branches on it should not have to
+    learn a different key per runner. ``None`` -- the default, and every
+    refusal a runner raises on its own behalf -- means the job in the way is
+    this domain's own, which is what the id alone already implies.
     """
 
-    def __init__(self, job_id: str, message: str | None = None):
+    def __init__(self, job_id: str, message: str | None = None, *,
+                 reason: str | None = None):
         self.job_id = job_id
+        self.reason = reason
         super().__init__(message
                          or f"a job is already running (job {job_id})")
 
@@ -375,7 +392,9 @@ class JobRunner:
         1. *work*, on a worker thread, for minutes;
         2. *after_work*, ON THE LOOP, once the work has returned normally --
            the last step of the job for anything the worker thread may not
-           touch. Its answer is merged into the terminal event;
+           touch. It is handed the same ``emit`` the work was, so it can
+           report itself as a step like any other, and its answer is merged
+           into the terminal event;
         3. *on_settled*, on the loop, once the job is terminal HOWEVER it
            ended -- including the re-raised ``BaseException`` path. A domain
            that has caches to drop after a job (the disk is not what it was)
@@ -429,10 +448,12 @@ class JobRunner:
 
         ``after_work`` is the seam for a step that must not run on the worker
         thread -- re-discovering a node registry the loop reads. It runs only
-        when the work returned NORMALLY, its dict answer is merged into
-        ``job_done``, and if it raises the job is FAILED rather than done: it
-        is the domain saying the job did not finish, and reporting success
-        there would leave a panel showing something that cannot be loaded.
+        when the work returned NORMALLY, it is handed the work's own ``emit``
+        so its ``step_started``/``step_done`` reach the buffer before the
+        terminal event does, its dict answer is merged into ``job_done``, and
+        if it raises the job is FAILED rather than done: it is the domain
+        saying the job did not finish, and reporting success there would
+        leave a panel showing something that cannot be loaded.
         """
         emit = self._emitter(job, loop, broadcast)
         try:
@@ -455,7 +476,7 @@ class JobRunner:
             done = {"type": "job_done"}
             if after_work is not None:
                 try:
-                    result = after_work()
+                    result = after_work(emit)
                     if inspect.isawaitable(result):
                         result = await result
                     # The runner's key wins: a client that has been promised

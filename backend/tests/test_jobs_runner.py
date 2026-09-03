@@ -568,7 +568,8 @@ async def test_after_work_merges_its_answer_into_job_done():
     work = ScriptedWork().script({"type": "log", "line": "installed"})
     job = DemoJob(job_id=uuid.uuid4().hex, name="reloaded")
     runner.claim(job, {"type": "job_started", "name": job.name})
-    runner.start(job, work, after_work=lambda: {"nodes": 3, "generation": 7})
+    runner.start(job, work,
+                 after_work=lambda emit: {"nodes": 3, "generation": 7})
     events, status = await drain(runner, job.job_id)
 
     assert status == STATUS_DONE
@@ -590,7 +591,7 @@ async def test_after_work_is_awaited_and_runs_on_the_loop_thread():
     loop = asyncio.get_running_loop()
     seen: dict = {}
 
-    async def rediscover() -> dict:
+    async def rediscover(emit: Emit) -> dict:
         seen["loop"] = asyncio.get_running_loop()
         seen["thread"] = threading.get_ident()
         return {"generation": 2}
@@ -609,31 +610,45 @@ async def test_after_work_is_awaited_and_runs_on_the_loop_thread():
         "are not safe to touch")
 
 
-async def test_after_work_runs_between_the_work_and_the_terminal_event():
+async def test_after_work_emits_its_own_steps_before_the_terminal_event():
     """The ordering the whole seam exists for, read from inside it.
 
-    The work has already returned -- its last event is in the buffer -- and
-    the terminal event has not been stored yet, so the job still says
-    running. A domain that reloaded a registry here can be sure no client saw
-    ``job_done`` before the reload happened.
+    ``after_work`` is a STEP, not a hidden hook, so it is handed the work's
+    own ``emit`` and says so on the wire: a reload that takes a second is a
+    second in which the panel would otherwise show a job with no current
+    step and no log line, and then jump straight to done.
+
+    Read from inside: the work has already returned -- its last event is in
+    the buffer -- and the terminal event has not been stored yet, so the job
+    still says running. A domain that reloaded a registry here can be sure
+    no client saw ``job_done`` before the reload happened.
     """
     runner = make_runner()
-    captured: list[tuple[str, list[str]]] = []
+    captured: list[tuple[str, list[str], str | None]] = []
 
-    def note() -> dict:
+    def reload_registry(emit: Emit) -> dict:
+        emit({"type": "step_started", "step": "reload",
+              "label": "Reloading the nodes"})
         page, _, status = runner._read(job, 0, 500)
-        captured.append((status, types_of(page)))
+        captured.append((status, types_of(page), job.current_step))
+        emit({"type": "step_done", "step": "reload"})
         return {"nodes": 1}
 
     work = ScriptedWork().script({"type": "log", "line": "staged"})
     job = DemoJob(job_id=uuid.uuid4().hex, name="ordered")
     runner.claim(job, {"type": "job_started", "name": job.name})
-    runner.start(job, work, after_work=note)
+    runner.start(job, work, after_work=reload_registry)
     events, status = await drain(runner, job.job_id)
 
     assert status == STATUS_DONE
-    assert captured == [(STATUS_RUNNING, ["job_started", "log"])]
+    assert types_of(events) == ["job_started", "log", "step_started",
+                                "step_done", "job_done"]
     assert events[-1]["nodes"] == 1
+    # The same buffer and the same step bookkeeping the work's events get:
+    # a client polling during the reload sees "reload" as the current step.
+    assert captured == [(STATUS_RUNNING,
+                         ["job_started", "log", "step_started"], "reload")]
+    assert job.current_step is None
 
 
 async def test_a_raising_after_work_fails_the_job_and_still_settles():
@@ -648,7 +663,7 @@ async def test_a_raising_after_work_fails_the_job_and_still_settles():
     runner = make_runner()
     settled: list[str] = []
 
-    def broken() -> dict:
+    def broken(emit: Emit) -> dict:
         raise RuntimeError("the registry could not be re-read")
 
     work = ScriptedWork().script()
@@ -680,7 +695,7 @@ async def test_an_after_work_base_exception_is_recorded_and_then_travels_on():
     """
     runner = make_runner()
 
-    def torn_out() -> dict:
+    def torn_out(emit: Emit) -> dict:
         raise _Abort("interrupted")
 
     work = ScriptedWork().script()
