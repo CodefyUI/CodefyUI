@@ -1639,10 +1639,27 @@ export async function updatePlugin(pluginId: string): Promise<PluginUpdateResult
   );
   if (!res.ok) throw await apiError(res);
   const data = (await res.json()) as RawUpdateResponse;
+  // An answer this client cannot act on. Reported rather than guessed at:
+  // every guess ("there was nothing to do", "a job is running", "follow the
+  // job with no id") would leave the panel telling the user something that
+  // did not happen.
+  const unexpected = (detail: string) => new ApiError(
+    res.status, `Unexpected update response: ${detail}`, data,
+  );
+
   // 202 is the ONLY status that means a job started; both 200s carry a
   // `status` that says which of the other two answers this is.
-  if (res.status === 202) return { kind: 'job', job_id: data.job_id ?? '' };
-  if (data.status === 'up_to_date') return { kind: 'up_to_date', sha: data.sha ?? '' };
+  if (res.status === 202) {
+    // An empty id is worse than no answer: it would seed a follower on
+    // `/api/plugins/jobs//events`, which burns its whole retry budget before
+    // ending the install nobody started as `lost`.
+    if (!data.job_id) throw unexpected('202 without job_id');
+    return { kind: 'job', job_id: data.job_id };
+  }
+  if (data.status === 'up_to_date') {
+    if (!data.sha) throw unexpected('up_to_date without sha');
+    return { kind: 'up_to_date', sha: data.sha };
+  }
   if (data.status === 'needs_consent' && data.inspection !== undefined) {
     return {
       kind: 'needs_consent',
@@ -1651,14 +1668,7 @@ export async function updatePlugin(pluginId: string): Promise<PluginUpdateResult
       allowed_modules_added: data.allowed_modules_added ?? [],
     };
   }
-  // Neither 200 shape. Reported rather than guessed at: both guesses ("there
-  // was nothing to do", "a job is running") would leave the panel telling the
-  // user something that did not happen.
-  throw new ApiError(
-    res.status,
-    `Unexpected update response: ${String(data.status)}`,
-    data,
-  );
+  throw unexpected(String(data.status));
 }
 
 /**

@@ -1651,6 +1651,22 @@ describe('plugin center endpoints', () => {
       expect(err.body).toEqual({ status: 'moved' });
     });
 
+    it('throws on a 202 with no job to follow', async () => {
+      // Falling back to '' would start a follower on `/jobs//events`, which
+      // spends its retry budget and then reports the install as lost.
+      mockFetch(202, {});
+      const err = await apiErr(updatePlugin('c1-tokenizer'));
+      expect(err.status).toBe(202);
+      expect(err.message).toContain('job_id');
+    });
+
+    it('throws on an up_to_date with no sha', async () => {
+      // "Up to date at ''" is a version the panel would show as fact.
+      mockFetch(200, { status: 'up_to_date' });
+      const err = await apiErr(updatePlugin('c1-tokenizer'));
+      expect(err.message).toContain('sha');
+    });
+
     it('encodes an id that needs it', async () => {
       const fetchMock = mockFetch(202, { job_id: 'j2' });
       await updatePlugin('scope/name');
