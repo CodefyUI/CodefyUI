@@ -254,6 +254,37 @@ async def test_a_file_at_a_ref_is_file_at_ref_shaped(test_client, project):
     assert body["binary"] is False
 
 
+@pytest.mark.parametrize("ref", ["HEAD", "index", "worktree"])
+async def test_a_file_reads_at_every_named_ref(test_client, project, ref):
+    """Three readers underneath -- the object database twice and the
+    filesystem once -- behind one route and one shape."""
+    response = await test_client.get("/api/git/file",
+                                     params={"path": "a.txt", "ref": ref})
+
+    assert response.status_code == 200, response.text
+    assert response.json()["text"] == "one\ntwo\n"
+
+
+async def test_a_file_reads_at_a_commit_id(test_client, project):
+    """The fourth form of ``ref``: not a name, a sha."""
+    response = await test_client.get(
+        "/api/git/file", params={"path": "a.txt", "ref": project.head()})
+
+    assert response.status_code == 200, response.text
+    assert response.json()["text"] == "one\ntwo\n"
+
+
+async def test_a_ref_that_is_neither_a_name_nor_a_sha_is_400(test_client,
+                                                             project):
+    """``HEAD~3`` and ``--output=x`` are the same refusal: the grammar is
+    closed, and a ref never reaches an argument list unchecked."""
+    response = await test_client.get("/api/git/file",
+                                     params={"path": "a.txt", "ref": "banana"})
+
+    assert response.status_code == 400
+    assert (await _detail(response))["code"] == "invalid_ref"
+
+
 async def test_a_write_answers_with_the_status_it_left_behind(test_client,
                                                               project):
     """Every mutation carries a fresh status, so the tab never draws a
@@ -308,6 +339,19 @@ async def test_the_identity_reads_and_writes_with_its_scope(test_client,
     # machine's global config from a web request.
     assert body["name_scope"] == "local"
     assert body["email_scope"] == "local"
+
+
+async def test_an_identity_write_may_set_one_half(test_client, project):
+    """A name without an email means what it says, and the answer is the
+    identity as it now READS -- half of it still unset."""
+    response = await test_client.put("/api/git/config", json={"name": "Ada"})
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["name"] == "Ada"
+    assert body["name_scope"] == "local"
+    assert body["email"] is None
+    assert body["email_scope"] is None
 
 
 # --- "no project open" is a screen, not an error -----------------------------
@@ -697,6 +741,15 @@ async def test_a_discard_through_a_junction_is_refused_end_to_end(test_client,
 
 
 # --- the whole thing, once ---------------------------------------------------
+
+
+async def test_init_needs_no_body_at_all(test_client, empty_project):
+    """There is nothing to choose, so there is nothing to send -- and a
+    client that sends an empty object anyway is not corrected for it."""
+    response = await test_client.post("/api/git/init")
+
+    assert response.status_code == 200, response.text
+    assert (empty_project / ".git").is_dir()
 
 
 async def test_init_stage_commit_log_and_diff_over_http(test_client,
