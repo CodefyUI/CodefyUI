@@ -24,6 +24,7 @@ import pytest
 
 import plugins as plugin_cli
 from app.core import plugin_loader
+from app.core.plugins.errors import GitHubError, PluginInstallError
 
 
 # ── fixtures ───────────────────────────────────────────────────────────────
@@ -465,3 +466,46 @@ def test_no_shipped_pack_declares_a_capability():
         manifest = plugin_loader.read_manifest_safe(manifest_path.parent)
         assert plugin_cli.manifest_capabilities(manifest) == (), manifest_path
         plugin_cli.validate_manifest(manifest)
+
+
+# ── the install path around the prompt ─────────────────────────────────────
+
+@pytest.mark.parametrize(
+    "failure",
+    [
+        GitHubError("Not Found", status=404),
+        PluginInstallError("Tarball exceeds 100 MB limit.", hint="alice/extras"),
+    ],
+    ids=["github-said-no", "over-the-size-cap"],
+)
+def test_a_download_that_fails_is_reported_rather_than_raised(
+    failure, isolated_lockfile, monkeypatch, capsys
+):
+    """The download handler has to name what ``download_tarball`` raises.
+
+    Both of these reach it as ``RuntimeError`` subclasses, which is an
+    inheritance choice made three modules away in ``plugins/errors.py`` that
+    nothing at the call site states. A cancel is deliberately NOT a
+    ``RuntimeError``, so the day one is wired into this path a catch that
+    leaned on the base class turns a failed install into a traceback.
+
+    No tarball is served: the point is the failure. The install has to end at
+    the same "Download failed" line and the same exit code either way, with
+    nothing written to the lockfile.
+    """
+    monkeypatch.setenv("CODEFYUI_LANG", "en")
+    monkeypatch.setattr(plugin_cli, "resolve_sha", lambda o, r, ref: "0" * 40)
+
+    def _fail(owner, repo, sha, dest, **kwargs):
+        raise failure
+
+    monkeypatch.setattr(plugin_cli, "download_tarball", _fail)
+
+    rc = plugin_cli._install_github(
+        "alice", "extras", "", _install_args(), plugin_loader.load_lockfile()
+    )
+    assert rc == 1
+    printed = _out(capsys)
+    assert "Download failed" in printed
+    assert str(failure) in printed
+    assert plugin_loader.load_lockfile()["plugins"] == {}
