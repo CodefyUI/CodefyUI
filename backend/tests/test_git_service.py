@@ -516,12 +516,21 @@ async def test_init_works_inside_another_repository(make_repo):
 
 
 async def test_init_on_a_missing_directory_is_a_404(tmp_path):
+    """One code, not "either of these two".
+
+    ``init`` is the write that runs when there is no repository, so the
+    state check lets it through and ``repo.init`` is what notices the
+    directory itself is not there. Accepting ``not_repo`` as well would let
+    that order change without anybody noticing -- and a 409 for a project
+    directory that does not exist is a different screen from a 404.
+    """
     service = GitService(project_dir=lambda: tmp_path / "not-there")
 
     with pytest.raises(GitError) as excinfo:
         await service.init()
 
-    assert _error(excinfo).code in ("not_found", "not_repo")
+    assert _error(excinfo).code == "not_found"
+    assert _error(excinfo).status == 404
 
 
 # --- stage / unstage --------------------------------------------------------

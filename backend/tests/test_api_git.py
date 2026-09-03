@@ -32,7 +32,9 @@ git config is kept out of it by the fixture imported below.
 
 from __future__ import annotations
 
+import asyncio
 import os
+import shutil
 import sys
 
 import pytest
@@ -55,6 +57,12 @@ from tests.test_git_service import (  # noqa: F401
     isolated_git,
     make_repo,
 )
+
+#: Every test here drives a real repository, so a machine without git has
+#: nothing to say about these routes. The service tests carry the same mark,
+#: for the same reason.
+pytestmark = pytest.mark.skipif(shutil.which("git") is None,
+                                reason="the host has no git")
 
 BASE_URL = f"http://127.0.0.1:{settings.PORT}"
 
@@ -88,17 +96,20 @@ MUTATION_KEYS = {"status", "changed_paths", "head", "detail"}
 ERROR_KEYS = {"code", "message", "hint", "stderr"}
 
 
-def _install(root) -> GitService:
-    """Point a service at *root* and put it on ``app.state``, as main.py does.
+def _git_service() -> GitService:
+    """A service that finds the project the way the one in ``main.py`` does.
 
-    Both halves matter and neither is enough: the service reads the project
-    directory through a closure over ``settings``, so the monkeypatched
-    setting is what makes it look at this repository -- and the lifespan
-    that would have built it does not run under an ASGI transport.
+    It reads the directory through a closure over ``settings``, so the
+    monkeypatched setting is what points it at a repository -- and it is
+    built by hand because the lifespan that would have built it does not run
+    under an ASGI transport.
+
+    Installing it is the CALLER's job, through ``monkeypatch.setattr``:
+    putting it on ``app.state`` in here would mean the state was already
+    changed by the time monkeypatch read the value it is meant to put back,
+    and the fixture's service would outlive its test.
     """
-    service = GitService(project_dir=lambda: settings.PROJECT_DIR)
-    app.state.git_service = service
-    return service
+    return GitService(project_dir=lambda: settings.PROJECT_DIR)
 
 
 @pytest.fixture
@@ -110,16 +121,9 @@ def project(make_repo, monkeypatch) -> Repo:  # noqa: F811
     """
     repo = make_repo()
     monkeypatch.setattr(settings, "PROJECT_DIR", repo.root)
-    previous = getattr(app.state, "git_service", None)
-    _install(repo.root)
-    try:
-        yield repo
-    finally:
-        if previous is None:
-            if hasattr(app.state, "git_service"):
-                delattr(app.state, "git_service")
-        else:
-            app.state.git_service = previous
+    monkeypatch.setattr(app.state, "git_service", _git_service(),
+                        raising=False)
+    return repo
 
 
 @pytest.fixture
@@ -128,16 +132,9 @@ def empty_project(tmp_path, monkeypatch):
     root = tmp_path / "fresh"
     root.mkdir()
     monkeypatch.setattr(settings, "PROJECT_DIR", root)
-    previous = getattr(app.state, "git_service", None)
-    _install(root)
-    try:
-        yield root
-    finally:
-        if previous is None:
-            if hasattr(app.state, "git_service"):
-                delattr(app.state, "git_service")
-        else:
-            app.state.git_service = previous
+    monkeypatch.setattr(app.state, "git_service", _git_service(),
+                        raising=False)
+    return root
 
 
 @pytest.fixture
@@ -362,7 +359,7 @@ async def test_status_without_a_project_is_a_200_with_a_state(test_client,
     """The first screen most people see. A 409 here would draw an error
     toast on a machine where nothing at all is wrong."""
     monkeypatch.setattr(settings, "PROJECT_DIR", None)
-    monkeypatch.setattr(app.state, "git_service", _install(None),
+    monkeypatch.setattr(app.state, "git_service", _git_service(),
                         raising=False)
 
     response = await test_client.get("/api/git/status")
@@ -378,7 +375,7 @@ async def test_a_write_without_a_project_is_a_409_with_a_code(test_client,
                                                               monkeypatch):
     """Every OTHER route has to fail, and with a code the tab translates."""
     monkeypatch.setattr(settings, "PROJECT_DIR", None)
-    monkeypatch.setattr(app.state, "git_service", _install(None),
+    monkeypatch.setattr(app.state, "git_service", _git_service(),
                         raising=False)
 
     response = await test_client.post("/api/git/stage", json={"all": True})
@@ -509,11 +506,20 @@ async def test_a_dotenv_diff_is_403_ignored(test_client, project, path):
     assert detail["hint"]
 
 
-async def test_a_dotenv_file_read_is_403_at_head_too(test_client, project):
-    project.write(".env", f"{SECRET}\n")
+@pytest.mark.parametrize("ref", ["HEAD", "index", "worktree"])
+async def test_a_dotenv_file_read_is_403_at_every_ref(test_client, project,
+                                                      ref):
+    """The secret is COMMITTED first, so every ref really holds one.
+
+    That is the case the guard exists for: ``.gitignore`` does not un-commit
+    a file, so a ``.env`` that was committed once is in HEAD, in the index
+    and on disk -- and this is an open GET.
+    """
+    project.write(".gitignore", "# nothing is ignored here\n")
+    project.commit("commit the secret", {".env": f"{SECRET}\n"})
 
     response = await test_client.get(
-        "/api/git/file", params={"path": ".env", "ref": "worktree"})
+        "/api/git/file", params={"path": ".env", "ref": ref})
 
     assert response.status_code == 403
     assert (await _detail(response))["code"] == "ignored"
@@ -537,11 +543,17 @@ async def test_a_second_write_while_one_runs_is_409_busy(test_client, project):
 
 async def test_a_read_does_not_queue_behind_a_running_write(test_client,
                                                             project):
-    """A status poll must not stall while a commit runs the user's hooks."""
+    """A status poll must not stall while a commit runs the user's hooks.
+
+    The timeout is the assertion, really: a read that DID take the mutation
+    lock would block forever here, and a test that hangs is one somebody
+    kills rather than reads.
+    """
     service = app.state.git_service
     async with service.lock:
         service.current_op = "commit"
-        response = await test_client.get("/api/git/status")
+        response = await asyncio.wait_for(test_client.get("/api/git/status"),
+                                          timeout=5)
     service.current_op = None
 
     assert response.status_code == 200, response.text
