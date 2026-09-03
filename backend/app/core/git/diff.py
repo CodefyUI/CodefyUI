@@ -32,6 +32,7 @@ never typed and this process would then wait for.
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -68,6 +69,26 @@ DEV_NULL = "/dev/null"
 
 #: git's way of saying there is no patch to show.
 _BINARY_MARKER = "Binary files "
+
+#: The two object types this module has an opinion about, as ``cat-file -t``
+#: spells them.
+BLOB = "blob"
+TREE = "tree"
+
+#: What to tell somebody who asked for a directory. One sentence, used by
+#: every refusal that means "that is not a file", so the three of them
+#: cannot drift apart.
+ONE_FILE_HINT = "diff one file at a time"
+
+#: What to tell somebody whose path goes through a link. The tab reads files
+#: of the project, and a link is a path to somewhere else.
+LINK_HINT = "symbolic links are not served"
+
+#: ``cat-file blob`` on a path that is a TREE at that ref: "fatal: git
+#: cat-file HEAD:sub: bad file" (measured on git 2.53). The object is there
+#: and is not a file, which is a different answer from "there is nothing
+#: here" -- a 400 rather than a 404.
+_NOT_A_BLOB_PHRASE = ": bad file"
 
 #: What ``cat-file`` says when the blob is not there. Anything else that
 #: exits 128 is a repository problem, not a missing file, and is classified
@@ -172,7 +193,7 @@ def _plan(root: Path, path: str, scope: str, sha: str | None) -> _Plan:
     """
     if scope in ("worktree", "index"):
         status = read_status(root)
-        _require_one_file(root, path, status)
+        _require_one_file(root, path, status, scope=scope)
         # An UNTRACKED file has no index side, and ``git diff`` says nothing
         # at all about one -- an empty patch for a file the user can see is
         # the most confusing possible answer. ``--no-index`` against
@@ -207,63 +228,80 @@ def _plan(root: Path, path: str, scope: str, sha: str | None) -> _Plan:
                  commit, parent, commit)
 
 
-def _require_one_file(root: Path, path: str, status: GitStatus) -> None:
-    """Refuse anything that is not exactly one file of this repository.
+def _require_one_file(root: Path, path: str, status: GitStatus, *,
+                      scope: str) -> None:
+    """Refuse anything that is not one FILE on both sides of this diff.
 
-    A pathspec that names a DIRECTORY is a diff of everything under it, so
-    ``sub`` would answer with ``sub/.env`` -- the guard would have checked
-    the string ``sub`` and git would have opened somebody's secrets. The
-    same is true of a name that only LOOKS like a directory to the index (a
-    tree, a path that is gone from disk but still has entries under it).
+    A pathspec that names a directory diffs everything under it, so ``sub``
+    would answer with ``sub/.env``: the guard would have checked the string
+    ``sub`` and git would have opened somebody's secrets. Being a file in
+    one place is not enough, because the two sides of a diff are two
+    different trees -- a path can be a plain file in the index and a
+    DIRECTORY in HEAD (delete ``sub/``, write a file called ``sub``, stage
+    it), and ``diff --cached -- sub`` then prints the removal of everything
+    that used to be under it, ``sub/.env`` included. Measured on git 2.53;
+    it is the reason this asks both sides rather than one.
 
-    Three answers, in the order that gives the most useful one first: a
-    directory on disk is a 400 that says to ask for one file; a path the
-    status already lists is a file by construction (``--untracked-files=all``
-    lists files, never the folders they are in); anything else is asked of
-    the index, where matching exactly itself means a tracked file, matching
-    something else means a tree, and matching nothing means there is nothing
-    to diff.
+    So: an untracked path is a file by construction (git lists files, never
+    the folders they are in, and it is in neither tree); a directory on disk
+    ends a worktree diff; and otherwise both sides are asked what they hold.
+    A ``tree`` on either side is a 400 -- including the shape the index
+    cannot express as a tree, which is entries UNDER the path and nothing
+    AT it. Only when neither side has anything is it a 404.
     """
-    if (root / path).is_dir():
-        raise GitError("invalid_path", 400, f"{path} is a directory",
-                       hint="diff one file at a time")
-    known = {entry.path
-             for group in (status.staged, status.unstaged, status.untracked,
-                           status.conflicted)
-             for entry in group}
-    if path in known:
+    if path in {entry.path for entry in status.untracked}:
         return
+    if scope == "worktree" and (root / path).is_dir():
+        raise GitError("invalid_path", 400, f"{path} is a directory",
+                       hint=ONE_FILE_HINT)
 
-    result = run_git(["ls-files", "-z", "--", path], cwd=root, timeout=T_READ,
-                     read_only=True)
-    names = [name for name in result.out.split("\x00") if name]
-    if not names:
-        raise GitError("not_found", 404, f"git does not know {path}")
-    if names != [path]:
+    head_kind = _object_type(root, f"HEAD:{path}")
+    index_kind = _object_type(root, f":0:{path}")
+    if TREE in (head_kind, index_kind):
         raise GitError("invalid_path", 400,
-                       f"{path} is a directory in the index",
-                       hint="diff one file at a time")
+                       f"{path} is a directory on one side of this diff",
+                       hint=ONE_FILE_HINT)
+
+    if index_kind is None:
+        # A blob in HEAD does not settle it. The INDEX cannot answer "tree"
+        # -- ``:0:<dir>`` is not an object -- so a directory there looks
+        # like nothing at all until its entries are asked for by name, and
+        # the pathspec would still match every one of them. This is the
+        # mirror of the case above: a file in HEAD, a folder staged over it.
+        result = run_git(["ls-files", "-z", "--", path], cwd=root,
+                         timeout=T_READ, read_only=True)
+        if [name for name in result.out.split("\x00") if name]:
+            raise GitError("invalid_path", 400,
+                           f"{path} is a directory in the index",
+                           hint=ONE_FILE_HINT)
+        if head_kind is None:
+            raise GitError("not_found", 404, f"git does not know {path}")
 
 
 def _require_one_blob(root: Path, path: str, commit: str,
                       parent: str | None) -> None:
-    """Refuse a commit diff of anything but a file, in either of its trees.
+    """Refuse a commit diff of anything but a file, in EITHER of its trees.
 
-    BOTH sides are asked, because a diff of a DELETED file is an ordinary
-    request: the path is gone from the commit and present in its parent.
-    Either side being a blob is enough; a tree on either side is the
-    directory case again, and nothing on either side is a 404.
+    Both sides are asked, and a ``tree`` on either one wins over a ``blob``
+    on the other. That order is the whole point: a commit that replaces a
+    directory with a file of the same name (or the reverse) has a blob on
+    one side and a tree on the other, and answering "blob, fine" there
+    prints the removal of every file that used to be under it -- which is
+    how ``diff("sub", "commit")`` came back holding ``sub/.env``.
+
+    A file DELETED by the commit still diffs: it is absent on one side and a
+    blob on the other, which no rule here refuses.
     """
     kinds = {kind for kind in
              (_object_type(root, f"{commit}:{path}"),
               _object_type(root, f"{parent}:{path}") if parent else None)
              if kind is not None}
-    if "blob" in kinds:
-        return
-    if "tree" in kinds:
+    if TREE in kinds:
         raise GitError("invalid_path", 400,
-                       f"{path} is a directory in {commit[:7]}",
-                       hint="diff one file at a time")
+                       f"{path} is a directory in {commit[:7]} or its parent",
+                       hint=ONE_FILE_HINT)
+    if BLOB in kinds:
+        return
     raise GitError("not_found", 404, f"no {path} in {commit[:7]}")
 
 
@@ -355,6 +393,11 @@ def _from_object(root: Path, spec: str) -> FileAtRef:
                      ok_codes=(0, 128), read_only=True)
     if result.returncode != 0:
         message = result.err.lower()
+        # Checked first: something IS there and it is not a file, which is
+        # the caller's mistake (a 400) rather than a missing object (404).
+        if _NOT_A_BLOB_PHRASE in message:
+            raise GitError("invalid_path", 400, f"{spec} is not a file",
+                           hint=ONE_FILE_HINT, stderr=result.err.strip())
         if any(phrase in message for phrase in _MISSING_BLOB_PHRASES):
             raise GitError("not_found", 404, f"no {spec} in this repository",
                            stderr=result.err.strip())
@@ -364,11 +407,16 @@ def _from_object(root: Path, spec: str) -> FileAtRef:
 
 def _from_worktree(root: Path, path: str) -> FileAtRef:
     """Read the file on disk, once git agrees it is part of the project."""
+    _refuse_a_link(root, path)
     # The one command that refuses ``--literal-pathspecs`` ("pathspec magic
-    # not supported by this command"). Safe here: it answers a question and
-    # returns no content, and the read below is a plain filesystem read of
-    # the literal path, so a pattern cannot make this hand back another
-    # file -- only refuse one that would have 404'd on the next line.
+    # not supported by this command"). Safe here on two counts. It answers a
+    # QUESTION and returns no content, and the read below is a plain
+    # filesystem read of the literal path -- so a pattern cannot make this
+    # hand back another file, only refuse one that would have 404'd on the
+    # next line. And pathspec MAGIC cannot reach it at all: every form of it
+    # (``:(glob)``, ``:!``, ``:/``) begins with a colon, and
+    # ``validate_rel_path`` refuses a colon anywhere in a path. That rule
+    # must not be relaxed while this exemption exists.
     ignored = run_git(["check-ignore", "-q", "--", path], cwd=root,
                       timeout=T_READ, ok_codes=(0, 1), read_only=True,
                       literal_pathspecs=False)
@@ -394,6 +442,43 @@ def _from_worktree(root: Path, path: str) -> FileAtRef:
         raise GitError("not_found", 404, f"{path} could not be read",
                        stderr=str(exc)) from None
     return _content(raw, size)
+
+
+def _refuse_a_link(root: Path, path: str) -> None:
+    """Refuse a worktree read through a symbolic link.
+
+    This is the one read that follows the FILESYSTEM rather than the object
+    database, and a link is the filesystem's own redirection: a tracked
+    ``notes.txt`` that points at ``.env`` is, to every check above,
+    an ordinary tracked file with an ordinary name -- ``check-ignore`` is
+    asked about ``notes.txt``, and ``.gitignore`` says nothing about that.
+    Opening it then serves the secret ``.gitignore`` was hiding.
+
+    ``validate_rel_path`` does not refuse links and must not: staging one is
+    a perfectly ordinary git operation, and the object database stores it as
+    what it is -- a blob holding the TARGET'S PATH, which is why reading a
+    link at ``HEAD`` or in the index leaks nothing and needs no check.
+
+    Two checks, because they catch different things. Every component is
+    tested with ``is_symlink`` (so a link anywhere in the chain counts, not
+    only the last one), and the resolved path is compared with the lexically
+    joined one -- which also catches a Windows junction, a redirection that
+    is not a symbolic link and that ``is_symlink`` answers False for. The
+    root's own links cancel out: both sides start from ``root.resolve()``.
+    """
+    current = root
+    for segment in path.split("/"):
+        current = current / segment
+        if current.is_symlink():
+            raise GitError("invalid_path", 400,
+                           f"{path} is or goes through a symbolic link",
+                           hint=LINK_HINT)
+    resolved_root = root.resolve()
+    if (os.path.normcase(str((root / path).resolve()))
+            != os.path.normcase(str(resolved_root.joinpath(*path.split("/"))))):
+        raise GitError("invalid_path", 400,
+                       f"{path} does not stay where it says it is",
+                       hint=LINK_HINT)
 
 
 def _content(raw: bytes, size: int) -> FileAtRef:

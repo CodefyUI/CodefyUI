@@ -22,6 +22,7 @@ directory as an injected callable.
 from __future__ import annotations
 
 import asyncio
+import os
 import shutil
 import subprocess
 import threading
@@ -1138,6 +1139,215 @@ async def test_staging_a_star_is_not_staging_everything(repo):
 
     assert _error(excinfo).code == "not_found"
     assert (await repo.service.status()).status.staged == []
+
+
+# --- one name, two trees: a file on one side and a folder on the other ------
+
+
+def _swap_to_a_folder(repo: Repo) -> str:
+    """Commit a FILE called ``sub``, then replace it with a folder of secrets.
+
+    The shape that defeats a one-sided check: at the second commit ``sub`` is
+    a tree, at the first it is a blob, and a diff of the pathspec ``sub``
+    prints everything that arrived under it.
+    """
+    repo.commit("sub is a file", {"sub": "just a file\n"})
+    (repo.root / "sub").unlink()
+    repo.commit("sub is a folder", {"sub/.env": f"{SECRET}\n",
+                                    "sub/keep.txt": "keep\n"})
+    return repo.head()
+
+
+def _swap_to_a_file(repo: Repo) -> str:
+    """The reverse: a folder of secrets, then a plain file with its name."""
+    repo.commit("sub is a folder", {"sub/.env": f"{SECRET}\n",
+                                    "sub/keep.txt": "keep\n"})
+    shutil.rmtree(repo.root / "sub")
+    repo.commit("sub is a file", {"sub": "just a file\n"})
+    return repo.head()
+
+
+@pytest.mark.parametrize("blobs", [False, True])
+@pytest.mark.parametrize("build", [_swap_to_a_folder, _swap_to_a_file],
+                         ids=["file-became-a-folder", "folder-became-a-file"])
+async def test_a_commit_that_swaps_a_file_for_a_folder_is_refused(
+        repo, build, blobs):
+    """A blob on one side and a tree on the other is still a tree.
+
+    Answering "one side is a blob, fine" printed the removal (or the
+    arrival) of every file under the folder -- ``sub/.env`` included -- from
+    a route that needs no token. With ``blobs=True`` it was worse: a 500,
+    because ``cat-file blob <tree>`` is not a phrase the missing-object list
+    knows.
+    """
+    sha = build(repo)
+
+    with pytest.raises(GitError) as excinfo:
+        await repo.service.diff("sub", "commit", sha=sha, blobs=blobs)
+
+    assert _error(excinfo).code == "invalid_path"
+    assert _error(excinfo).status == 400
+    assert "one file" in (_error(excinfo).hint or "")
+
+
+async def test_a_file_staged_over_a_folder_is_refused(repo):
+    """A path can be a file in the INDEX and a folder in HEAD.
+
+    ``diff --cached -- sub`` then prints the removal of everything that used
+    to be under it. The status short-circuit used to accept this: ``sub`` is
+    a perfectly ordinary staged file, in the index, by that name.
+    """
+    repo.commit("sub is a folder", {"sub/.env": f"{SECRET}\n",
+                                    "sub/keep.txt": "keep\n"})
+    shutil.rmtree(repo.root / "sub")
+    repo.write("sub", "just a file\n")
+    repo.git("add", "-A", "--", ".")
+
+    with pytest.raises(GitError) as excinfo:
+        await repo.service.diff("sub", "index")
+
+    assert _error(excinfo).code == "invalid_path"
+    assert _error(excinfo).status == 400
+
+
+async def test_a_folder_staged_over_a_file_is_refused(repo):
+    """The mirror image, which the index cannot report as a tree at all:
+    ``:0:sub`` is not an object when the index holds ``sub/...`` entries, so
+    the only way to see it is to ask which names the pathspec matches."""
+    repo.commit("sub is a file", {"sub": "just a file\n"})
+    (repo.root / "sub").unlink()
+    repo.write("sub/.env", f"{SECRET}\n")
+    repo.write("sub/keep.txt", "keep\n")
+    repo.git("add", "-A", "--", ".")
+
+    with pytest.raises(GitError) as excinfo:
+        await repo.service.diff("sub", "index")
+
+    assert _error(excinfo).code == "invalid_path"
+    assert _error(excinfo).status == 400
+
+
+@pytest.mark.parametrize("scope", ["worktree", "index", "commit"])
+async def test_no_swap_shape_returns_the_secret_in_any_scope(repo, scope):
+    """The catch-all: whatever the answer is, it does not contain the key."""
+    sha = _swap_to_a_folder(repo)
+
+    try:
+        response = await repo.service.diff(
+            "sub", scope, sha=sha if scope == "commit" else None, blobs=True)
+    except GitError as exc:
+        assert exc.code in ("invalid_path", "not_found", "ignored")
+        return
+
+    assert SECRET not in response.patch
+    assert SECRET not in (response.old_text or "")
+    assert SECRET not in (response.new_text or "")
+
+
+async def test_a_deleted_file_still_diffs(repo):
+    """The case the tree check must NOT catch: absent on one side, a blob on
+    the other, which is every deletion in the history."""
+    repo.commit("add it", {"gone.txt": "here\n"})
+    (repo.root / "gone.txt").unlink()
+    sha = repo.commit("delete it")
+
+    response = await repo.service.diff("gone.txt", "commit", sha=sha,
+                                       blobs=True)
+
+    assert "-here" in response.patch
+    assert response.new_missing is True
+    assert response.old_text == "here\n"
+
+
+async def test_reading_a_folder_at_a_ref_is_a_400_not_a_500(repo):
+    """``cat-file blob HEAD:sub`` answers "bad file" -- the object is there
+    and is not a file, which is the caller's mistake and not a server one."""
+    repo.commit("a folder", {"sub/keep.txt": "keep\n"})
+
+    with pytest.raises(GitError) as excinfo:
+        await repo.service.file_at_ref("sub", "HEAD")
+
+    assert _error(excinfo).code == "invalid_path"
+    assert _error(excinfo).status == 400
+
+
+# --- a link is a path to somewhere else -------------------------------------
+
+
+def _link(target: Path, link: Path) -> None:
+    """Make a symlink, or skip the test on a machine that will not.
+
+    Windows needs Developer Mode or an elevated process to create one; Linux
+    CI always can, so the tests below run there whatever this box says.
+    """
+    try:
+        os.symlink(target, link)
+    except (OSError, NotImplementedError) as exc:
+        pytest.skip(f"this OS would not create a symbolic link: {exc}")
+
+
+async def test_a_worktree_read_never_follows_a_symbolic_link(repo):
+    """The link is the filesystem's own redirection, and every check above
+    it passes: ``notes.txt`` is tracked, is not ignored, and is a perfectly
+    ordinary name -- while ``.gitignore`` hides what it points AT."""
+    repo.write(".env", f"{SECRET}\n")
+    _link(repo.root / ".env", repo.root / "notes.txt")
+    repo.commit("track the link")
+
+    with pytest.raises(GitError) as excinfo:
+        await repo.service.file_at_ref("notes.txt", "worktree")
+
+    assert _error(excinfo).code == "invalid_path"
+    assert "symbolic link" in (_error(excinfo).hint or "")
+
+
+async def test_a_worktree_read_through_a_linked_folder_is_refused(repo):
+    """A link ANYWHERE in the path counts, not only as its last segment."""
+    secrets = repo.root.parent / "outside"
+    secrets.mkdir()
+    (secrets / "keys.txt").write_text(f"{SECRET}\n", encoding="utf-8")
+    _link(secrets, repo.root / "linked")
+    repo.write("keep.txt", "keep\n")
+    repo.commit("a link to a folder")
+
+    with pytest.raises(GitError) as excinfo:
+        await repo.service.file_at_ref("linked/keys.txt", "worktree")
+
+    assert _error(excinfo).code == "invalid_path"
+
+
+async def test_a_diff_that_would_read_a_link_is_refused_too(repo):
+    """``blobs=True`` reads the worktree side through the same function."""
+    repo.write(".env", f"{SECRET}\n")
+    _link(repo.root / ".env", repo.root / "notes.txt")
+    repo.commit("track the link")
+    repo.write("other.txt", "so there is something to diff\n")
+
+    with pytest.raises(GitError) as excinfo:
+        await repo.service.diff("notes.txt", "worktree", blobs=True)
+
+    assert _error(excinfo).code == "invalid_path"
+
+
+async def test_a_link_at_a_ref_is_its_target_path_not_its_target(repo):
+    """Reading a link from the OBJECT database leaks nothing and stays
+    allowed: git stores a symlink as a blob holding the path it points at."""
+    repo.write(".env", f"{SECRET}\n")
+    _link(repo.root / ".env", repo.root / "notes.txt")
+    repo.commit("track the link")
+
+    content = await repo.service.file_at_ref("notes.txt", "HEAD")
+
+    assert SECRET not in content.text
+    assert content.text.endswith(".env")
+
+
+async def test_an_ordinary_file_beside_a_link_still_reads(repo):
+    """The positive control for the link rule."""
+    repo.write("plain.txt", "ordinary\n")
+
+    assert (await repo.service.file_at_ref("plain.txt",
+                                           "worktree")).text == "ordinary\n"
 
 
 async def test_an_unknown_diff_scope_is_refused(repo):
