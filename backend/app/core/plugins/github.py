@@ -46,6 +46,14 @@ from .errors import GitHubError, PluginCancelled, PluginInstallError
 USER_AGENT = "cdui-plugin-installer/0.1"
 MAX_TARBALL_BYTES = 100 * 1024 * 1024  # 100 MB
 
+#: How much a tarball may unpack to. :data:`MAX_TARBALL_BYTES` caps the
+#: COMPRESSED stream, and gzip of a file of zeroes runs to about 1000:1 --
+#: so 100 MB off the wire is tens of gigabytes on the disk, written into the
+#: user's plugin directory before anything downstream gets a chance to
+#: object. Five times the download cap is generous for real source (a
+#: repository of text compresses maybe 4:1) and nowhere near a bomb.
+MAX_EXTRACTED_BYTES = 500 * 1024 * 1024  # 500 MB
+
 #: Read size for the tarball stream. Small enough that a cancel is felt
 #: immediately on a slow link, large enough that a 100 MB download is not
 #: 1600 syscalls.
@@ -311,14 +319,46 @@ def extract_tarball(tar_path: Path, dest_dir: Path) -> Path:
     write outside *dest_dir* through ``../`` members, absolute paths, links
     and device nodes -- and this one comes off the internet.
 
+    The unpacked size is added up BEFORE a single member is written, because
+    the alternative is finding out at the point where the disk is already
+    full: ``filter="data"`` says where the bytes may go and nothing says how
+    many there may be, and the ratio between the two caps is gzip's, not the
+    author's. The index has to be read to do it, which for a gzip stream
+    means decompressing it once more than a bare ``extractall`` would --
+    paid on every install, in exchange for a cap that cannot be reached.
+
     Exactly one top-level directory, or nothing is installed. A GitHub
     codeload tarball is always ``<repo>-<ref>/...`` and that root is what the
     manifest is read from; a tarball with two of them is not a plugin whose
     root can be guessed, and guessing would mean installing whichever one the
     filesystem happened to list first.
+
+    Every ``tarfile`` failure becomes a :class:`~.errors.PluginInstallError`.
+    A truncated download and a file that is not a gzip at all both arrive
+    here as ``TarError``, which is a class no caller of an installer has any
+    reason to know about -- and one that travelled past every ``except`` on
+    the way out to a traceback.
     """
-    with tarfile.open(tar_path, "r:gz") as tf:
-        tf.extractall(dest_dir, filter="data")
+    try:
+        with tarfile.open(tar_path, "r:gz") as tf:
+            members = tf.getmembers()
+            unpacked = sum(member.size for member in members)
+            if unpacked > MAX_EXTRACTED_BYTES:
+                cap_mb = MAX_EXTRACTED_BYTES // (1024 * 1024)
+                raise PluginInstallError(
+                    f"{tar_path.name} unpacks to more than {cap_mb} MB.",
+                    hint=(
+                        f"Its members add up to {unpacked // (1024 * 1024)} MB, "
+                        f"which is past the {cap_mb} MB this build will write; "
+                        f"nothing was unpacked."
+                    ),
+                )
+            tf.extractall(dest_dir, filter="data", members=members)
+    except tarfile.TarError as exc:
+        raise PluginInstallError(
+            f"{tar_path.name} could not be unpacked.",
+            hint=f"tarfile could not read it ({exc}); retry the install.",
+        ) from exc
     roots = [p for p in sorted(dest_dir.iterdir()) if p.is_dir()]
     if len(roots) != 1:
         raise PluginInstallError(

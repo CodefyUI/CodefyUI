@@ -709,6 +709,38 @@ def test_a_tarball_whose_root_cannot_be_guessed_is_refused(files, tmp_path):
         github.extract_tarball(tar, dest)
 
 
+def test_a_tarball_that_cannot_be_read_is_an_install_failure(tmp_path):
+    """A truncated download and a file that is not a gzip both arrive as
+    ``TarError`` -- a class no caller of an installer catches, which is how
+    one used to travel all the way out to a traceback."""
+    tar = tmp_path / "src.tar.gz"
+    tar.write_bytes(b"this is not a gzip stream")
+    dest = tmp_path / "out"
+    dest.mkdir()
+    with pytest.raises(PluginInstallError) as excinfo:
+        github.extract_tarball(tar, dest)
+    assert "src.tar.gz" in str(excinfo.value)
+    assert "retry" in (excinfo.value.hint or "")
+
+
+def test_a_tarball_that_unpacks_past_the_cap_is_refused_before_it_is_written(
+    monkeypatch, tmp_path
+):
+    """The download cap is on the COMPRESSED stream, and gzip of a file of
+    zeroes runs about 1000:1 -- so it says nothing about what lands on the
+    disk, which is where the space runs out."""
+    monkeypatch.setattr(github, "MAX_EXTRACTED_BYTES", 1024 * 1024)
+    tar = tmp_path / "src.tar.gz"
+    _tarball_of({"extras-main/big.bin": "x" * (2 * 1024 * 1024)}, tar)
+    dest = tmp_path / "out"
+    dest.mkdir()
+
+    with pytest.raises(PluginInstallError) as excinfo:
+        github.extract_tarball(tar, dest)
+    assert "1 MB" in str(excinfo.value)
+    assert list(dest.iterdir()) == [], "the sum is checked before extractall"
+
+
 # ── the consent arithmetic ─────────────────────────────────────────────────
 
 def test_what_this_answer_covers_and_what_is_still_outstanding():
