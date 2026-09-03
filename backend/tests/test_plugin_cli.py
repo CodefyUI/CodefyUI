@@ -995,6 +995,41 @@ def test_a_dep_name_no_install_would_accept_stays_out_of_the_command(
     assert "git+" not in outcome.uninstall_command
 
 
+def test_a_dep_name_carrying_a_newline_is_not_a_dep_name(isolated_lockfile):
+    """The one a pattern anchored at both ends still let through: ``$`` also
+    matches just before a final newline, so ``"tabulate\\n"`` read as a valid
+    distribution name. In ``uninstall_command`` that is a line break in the
+    middle of a command somebody was told to paste, and everything after it
+    is a command of its own to the shell."""
+    plugin_dir = isolated_lockfile / "ghost"
+    _write_plugin_dir(plugin_dir, "ghost")
+    (plugin_dir / "cdui.plugin.toml").write_text(
+        dedent("""\
+            [plugin]
+            id = "ghost"
+            name = "Local ghost"
+            version = "0.1.0"
+            schema_version = 1
+
+            [python_deps]
+            "tabulate\\n" = ">=0.9"
+            """),
+        encoding="utf-8",
+    )
+    lockfile = plugin_loader.load_lockfile()
+    lockfile.setdefault("plugins", {})["ghost"] = {
+        "source_kind": "github_url", "source": "alice/ghost", "enabled": True,
+    }
+    plugin_loader.save_lockfile(lockfile)
+
+    outcome = lifecycle.uninstall_plugin("ghost")
+    assert outcome is not None
+    assert outcome.python_deps_left == ()
+    # No names left means no command at all, rather than one ending in a
+    # dangling newline.
+    assert outcome.uninstall_command is None
+
+
 def test_cmd_reload_no_server_returns_zero(isolated_lockfile):
     # _backend_reload stubbed to False (no server) — reload is a graceful no-op.
     assert plugin_cli.cmd_reload(argparse.Namespace()) == 0
@@ -1327,6 +1362,51 @@ def test_an_update_whose_repository_renamed_the_plugin_is_refused(
     assert "something-else" in _out(capsys)
     assert plugin_cli.load_lockfile() == before
     assert not (isolated_lockfile / "something-else").exists()
+
+
+def test_an_update_of_a_disabled_plugin_says_it_is_still_disabled(
+    isolated_lockfile, fake_github, monkeypatch, capsys
+):
+    """``enabled`` follows the entry an update replaces, so a pack the user
+    disabled stays disabled -- deliberately: updating decides which version
+    is on disk, not whether the plugin runs. But "Installed: graph-copilot
+    (0000000)" with no nodes in the palette afterwards reads as an install
+    that silently failed, and the next thing that happens is a bug report."""
+    monkeypatch.setenv("CODEFYUI_LANG", "en")
+    fake_github({"cdui.plugin.toml": _manifest_declaring("graph-copilot"),
+                 "nodes/hello.py": "VALUE = 1\n"})
+    monkeypatch.setattr(plugin_cli, "resolve_sha", lambda o, r, ref: "b" * 40)
+    plugin_cli.save_lockfile({"schema": 1, "plugins": {"graph-copilot": {
+        "source_kind": "github_url",
+        "source": "CodefyUI/CodefyUI-Plugin-Graph-Copilot",
+        "url": "https://github.com/CodefyUI/CodefyUI-Plugin-Graph-Copilot",
+        "ref": "", "sha": "a" * 40, "capabilities": [],
+        "trusted_modules": [], "enabled": False,
+    }}})
+
+    rc = plugin_cli.cmd_update(argparse.Namespace(plugin_id="graph-copilot"))
+
+    assert rc == 0
+    entry = plugin_cli.load_lockfile()["plugins"]["graph-copilot"]
+    assert entry["enabled"] is False
+    printed = _out(capsys)
+    assert "Still disabled" in printed
+    # The line names the command that lifts it -- "disabled" on its own
+    # leaves the reader looking for the switch.
+    assert "cdui plugin enable graph-copilot" in printed
+
+
+def test_a_fresh_install_does_not_say_it_is_disabled(
+    isolated_lockfile, capsys
+):
+    """The other half, so the line above cannot be printed unconditionally:
+    a fresh install writes ``enabled: true`` and the pack is in the palette
+    when the command returns."""
+    assert plugin_cli.main(["install", "foundations", "--no-confirm"]) == 0
+
+    printed = _out(capsys)
+    assert "cdui plugin enable" not in printed
+    assert plugin_cli.load_lockfile()["plugins"]["foundations"]["enabled"] is True
 
 
 def test_the_repository_the_catalog_names_may_claim_its_catalog_id(

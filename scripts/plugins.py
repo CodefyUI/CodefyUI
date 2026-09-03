@@ -61,6 +61,7 @@ else:
 from app.core.plugin_loader import (
     MANIFEST_FILENAME,
     clear_removed,
+    is_enabled,
     load_lockfile,
     plugins_builtin_root,
     plugins_user_root,
@@ -763,6 +764,30 @@ def _report_reload() -> None:
         )
 
 
+def _report_still_disabled(plugin_id: str) -> None:
+    """Say so when what was just installed is not going to run.
+
+    ``enabled`` follows the entry an install REPLACES
+    (``flows._lockfile_record``): updating a pack, or reinstalling it with
+    ``--force``, decides which version is on disk and never whether the
+    plugin runs -- somebody who disabled a pack and then updated it must not
+    find it back in the palette with nothing having said so.
+
+    Which leaves the other half to say out loud. Without this line the
+    command ends on "Installed: x", the nodes stay out of the palette, and
+    the honest reading of that pair is that the install failed. One line,
+    after the success line because it is a caveat about a success, and it
+    names the command that lifts it.
+    """
+    entry = load_lockfile().get("plugins", {}).get(plugin_id)
+    if not isinstance(entry, dict) or is_enabled(entry):
+        return
+    warn(
+        f"此外掛目前仍是停用狀態；用 cdui plugin enable {plugin_id} 啟用",
+        f"Still disabled -- enable it with `cdui plugin enable {plugin_id}`",
+    )
+
+
 def _print_python_deps(found: core_inspect.Inspection) -> None:
     """Name the Python packages this install would add to the venv.
 
@@ -1175,6 +1200,7 @@ def _install_catalog(plugin_id: str, args, lockfile) -> int:
 
     _report_reload()
     ok(f"安裝完成：{plugin_id}", f"Installed: {plugin_id}")
+    _report_still_disabled(plugin_id)
     return 0
 
 
@@ -1422,6 +1448,7 @@ def _install_github(
         f"安裝完成：{plugin_id} ({short_sha})",
         f"Installed: {plugin_id} ({short_sha})",
     )
+    _report_still_disabled(plugin_id)
     return 0
 
 
