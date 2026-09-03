@@ -404,11 +404,44 @@ def index_entries(root: Path, paths: Sequence[str]) -> list[tuple[str, str]]:
     """
     result = run_git(["ls-files", "--stage", "-z", "--", *paths], cwd=root,
                      timeout=T_READ, read_only=True)
+    return _mode_entries(result.out)
+
+
+def tree_entries(root: Path, rev: str,
+                 paths: Sequence[str]) -> list[tuple[str, str]]:
+    """``(mode, path)`` for every entry of *rev*'s tree matching *paths*.
+
+    What :func:`index_entries` asks of the index, asked of a commit, and it
+    exists for the same reason: mode :data:`GITLINK_MODE` is the only thing
+    that says SUBMODULE. ``cat-file -t`` cannot say it for a real one -- the
+    commit a gitlink names lives in the OTHER repository, so this one
+    answers "git cat-file: could not get object info", exit 128 (measured on
+    git 2.53), and the path reads as missing. The tree knows anyway, because
+    the entry is in it whether the object it points at is here or not.
+
+    An empty list for a rev that cannot be read: the caller is deciding
+    between two refusals, and "not a submodule" is the answer that leaves
+    the other one in place.
+    """
+    result = run_git(["ls-tree", "-z", rev, "--", *paths], cwd=root,
+                     timeout=T_READ, ok_codes=(0, 128), read_only=True)
+    if result.returncode != 0:
+        return []
+    return _mode_entries(result.out)
+
+
+def _mode_entries(out: str) -> list[tuple[str, str]]:
+    """Parse the ``<mode> ...<TAB><path>`` lines ``ls-files``/``ls-tree`` print.
+
+    Both formats put the mode first and the path after a TAB (``<mode> <sha>
+    <stage>`` for the index, ``<mode> <type> <sha>`` for a tree), and the
+    two callers want exactly those two fields -- so the split is written
+    once rather than twice with one of them subtly wrong.
+    """
     entries: list[tuple[str, str]] = []
-    for line in result.out.split("\x00"):
+    for line in out.split("\x00"):
         if not line:
             continue
-        # ``<mode> <sha> <stage>\t<path>``
         head, _, path = line.partition("\t")
         mode = head.split(" ", 1)[0]
         if path:

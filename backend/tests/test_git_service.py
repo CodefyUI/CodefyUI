@@ -1910,6 +1910,29 @@ async def test_a_submodule_is_refused_in_a_commit_too(repo):
     assert "submodule" in (_error(excinfo).hint or "")
 
 
+async def test_a_real_submodule_is_refused_in_a_commit_too(repo):
+    """The fixture above has an advantage a real submodule does not.
+
+    ``_with_gitlink`` points at a commit THIS repository holds, so
+    ``cat-file -t`` can answer "commit" for it. A real submodule's objects
+    live in the other repository: ``cat-file -t`` exits 128 with "could not
+    get object info" (measured on git 2.53) and the path read as missing --
+    a 404 for the one shape the refusal exists for, while the worktree and
+    index scopes named it. The tree still knows: mode 160000 is in the
+    entry, whether or not the object it points at is here.
+    """
+    repo.git("update-index", "--add", "--cacheinfo",
+             f"160000,{'0' * 39}1,sub")
+    repo.git("commit", "-q", "-m", "a submodule this repository cannot read")
+
+    with pytest.raises(GitError) as excinfo:
+        await repo.service.diff("sub", "commit", sha=repo.head())
+
+    assert _error(excinfo).code == "invalid_path"
+    assert _error(excinfo).status == 400
+    assert "submodule" in (_error(excinfo).hint or "")
+
+
 async def test_an_unknown_diff_scope_is_refused(repo):
     with pytest.raises(GitError) as excinfo:
         await repo.service.diff("a.txt", "everything")

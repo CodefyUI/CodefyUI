@@ -49,6 +49,7 @@ from .repo import (
     index_entries,
     path_redirects,
     read_status,
+    tree_entries,
 )
 from .runner import T_READ, run_git
 
@@ -348,7 +349,28 @@ def _require_one_blob(root: Path, path: str, commit: str,
         raise _submodule_error(path)
     if BLOB in kinds:
         return
+    if _is_gitlink(root, path, commit, parent):
+        raise _submodule_error(path)
     raise GitError("not_found", 404, f"no {path} in {commit[:7]}")
+
+
+def _is_gitlink(root: Path, path: str, commit: str,
+                parent: str | None) -> bool:
+    """Is *path* a SUBMODULE in either tree? Asked of the trees themselves.
+
+    ``cat-file -t`` answers "commit" for a gitlink only when this repository
+    happens to HAVE that commit -- which it does in a test fixture and does
+    not for a real submodule, whose objects live in the other repository.
+    There it exits 128 and the path reads as missing, so the one shape this
+    check exists for was answered "no such file in that commit" while the
+    other two scopes refused it by name. ``ls-tree`` reports the ENTRY, and
+    its mode says gitlink without the object being here.
+
+    Asked only on the way to a 404, so an ordinary diff pays nothing for it.
+    """
+    return any(mode == GITLINK_MODE
+               for rev in (commit, parent) if rev is not None
+               for mode, _ in tree_entries(root, rev, [path]))
 
 
 def _object_type(root: Path, spec: str) -> str | None:
