@@ -660,16 +660,25 @@ def test_load_catalog_returns_three_direction_packs():
 # ── _install_deps spec construction ───────────────────────────────────────
 
 def test_install_deps_builds_correct_pip_specs(monkeypatch):
+    """The specs are captured from the runner the install actually uses.
+
+    ``_install_deps`` is a front end over ``deps.install_deps_step``, which
+    runs ``packs.runner.run_pip`` under a constraints file rather than
+    shelling out to ``uv`` itself -- so the fake is that runner, and it is
+    also what keeps this test from installing four packages.
+    """
     captured: list[list[str]] = []
 
-    def fake_run(cmd, check=False):
-        captured.append(cmd)
-        class _R:
-            returncode = 0
-        return _R()
+    def fake_run_pip(specs, *, constraints_path, emit, cancel_check, cwd,
+                     tail=None):
+        captured.append(list(specs))
+        # The step reads this to decide whether the install worked; the
+        # constraints file is a real one written for this call, which is the
+        # part that makes the install add-only.
+        assert constraints_path.exists()
+        return 0
 
-    import subprocess
-    monkeypatch.setattr(subprocess, "run", fake_run)
+    monkeypatch.setattr("app.core.packs.runner.run_pip", fake_run_pip)
 
     rc = plugin_cli._install_deps({
         "foo": ">=1.0",         # version constraint passes through
@@ -679,9 +688,7 @@ def test_install_deps_builds_correct_pip_specs(monkeypatch):
     })
     assert rc == 0
     assert captured, "uv pip install should have been invoked"
-    cmd = captured[0]
-    assert cmd[:3] == ["uv", "pip", "install"]
-    specs = cmd[3:]
+    specs = captured[0]
     assert "foo>=1.0" in specs
     assert "bar==2.3.4" in specs
     assert "baz==1.0.0" in specs
@@ -1032,19 +1039,34 @@ def _tarball_of(root_name: str, files: dict[str, str], dest: Path) -> None:
 def fake_github(monkeypatch):
     """Serve a synthetic tarball instead of reaching GitHub.
 
-    Patches this module's OWN ``resolve_sha`` / ``download_tarball``, which is
-    what ``_install_github`` calls: ``scripts/plugins.py`` re-exports the core
-    client under those names precisely so a test can replace them, and
-    patching the core module instead would leave the CLI bound to the real
-    network client.
+    An install now reaches GitHub twice, through two different modules, and
+    the fixture has to answer both:
+
+    * ``inspect_github`` resolves the ref and reads the manifest at that
+      commit -- both through ``app.core.plugins.github``, which is where the
+      inspection lives, so those two are patched THERE. (They used to be
+      patched on ``plugin_cli``, and that patch is now on a name nothing
+      calls: the CLI reads the manifest through the shared inspection.)
+    * the download is still ``plugin_cli.download_tarball``. The flow takes a
+      GitHub client and the CLI hands it this module, precisely so that
+      replacing the name here replaces what an install fetches. It is called
+      with ``cancel_check`` and ``progress`` keywords, hence ``**_kw``.
     """
     def _make(files: dict[str, str] | None = None) -> None:
         payload = {"cdui.plugin.toml": _TEMPLATE_MANIFEST} if files is None else files
-        monkeypatch.setattr(plugin_cli, "resolve_sha", lambda o, r, ref: "0" * 40)
+        monkeypatch.setattr(
+            "app.core.plugins.github.resolve_sha", lambda o, r, ref: "0" * 40
+        )
+        monkeypatch.setattr(
+            "app.core.plugins.github.fetch_manifest_text",
+            lambda o, r, sha: payload["cdui.plugin.toml"],
+        )
         monkeypatch.setattr(
             plugin_cli,
             "download_tarball",
-            lambda owner, repo, sha, dest: _tarball_of(f"{repo}-main", payload, dest),
+            lambda owner, repo, sha, dest, **_kw: _tarball_of(
+                f"{repo}-main", payload, dest
+            ),
         )
 
     return _make
