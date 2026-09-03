@@ -1269,8 +1269,9 @@ def test_an_update_keeps_the_catalog_row_the_install_recorded(
     """
     calls: list[tuple] = []
 
-    def _record(owner, repo, ref, args, lockfile, *, catalog_id=None):
-        calls.append((owner, repo, ref, catalog_id))
+    def _record(owner, repo, ref, args, lockfile, *, catalog_id=None,
+                expected_id=None):
+        calls.append((owner, repo, ref, catalog_id, expected_id))
         return 0
 
     monkeypatch.setattr(plugin_cli, "_install_github", _record)
@@ -1290,9 +1291,42 @@ def test_an_update_keeps_the_catalog_row_the_install_recorded(
     rc = plugin_cli.cmd_update(argparse.Namespace(plugin_id="graph-copilot"))
 
     assert rc == 0
+    # ``expected_id`` is the lockfile key, always: it is what refuses a
+    # repository that has renamed its plugin since the install.
     assert calls == [
-        ("CodefyUI", "CodefyUI-Plugin-Graph-Copilot", "", recorded)
+        ("CodefyUI", "CodefyUI-Plugin-Graph-Copilot", "", recorded,
+         "graph-copilot")
     ]
+
+
+def test_an_update_whose_repository_renamed_the_plugin_is_refused(
+    isolated_lockfile, fake_github, monkeypatch, capsys
+):
+    """``update`` carries ``--force``, so a repository that has renamed its
+    plugin would install a DIFFERENT pack under a command the user read as
+    "update this one" -- and if the new name belongs to a pack they also
+    have, replace that one and inherit the capabilities IT was granted.
+
+    Refused instead, with both ids named. Installing the new plugin stays
+    available as the deliberate act it is.
+    """
+    fake_github({"cdui.plugin.toml": _manifest_declaring("something-else")})
+    monkeypatch.setattr(plugin_cli, "resolve_sha", lambda o, r, ref: "b" * 40)
+    before = {"schema": 1, "plugins": {"graph-copilot": {
+        "source_kind": "github_url",
+        "source": "CodefyUI/CodefyUI-Plugin-Graph-Copilot",
+        "url": "https://github.com/CodefyUI/CodefyUI-Plugin-Graph-Copilot",
+        "ref": "", "sha": "a" * 40, "capabilities": ["network"],
+        "trusted_modules": [], "enabled": True,
+    }}}
+    plugin_cli.save_lockfile(before)
+
+    rc = plugin_cli.cmd_update(argparse.Namespace(plugin_id="graph-copilot"))
+
+    assert rc == 1
+    assert "something-else" in _out(capsys)
+    assert plugin_cli.load_lockfile() == before
+    assert not (isolated_lockfile / "something-else").exists()
 
 
 def test_the_repository_the_catalog_names_may_claim_its_catalog_id(

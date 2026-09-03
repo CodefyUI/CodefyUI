@@ -1258,6 +1258,7 @@ def _install_github(
     lockfile,
     *,
     catalog_id: str | None = None,
+    expected_id: str | None = None,
 ) -> int:
     """Install the pack in ``{owner}/{repo}`` at *ref*.
 
@@ -1276,10 +1277,19 @@ def _install_github(
     catalog's own pack from free text that happens to carry the same id. It
     is also checked against the manifest that arrives -- a row whose
     repository declares a different id is describing one pack and fetching
-    another -- and the install is refused when they disagree. Keyword-only
-    and last so the five positional arguments stay what they were --
-    ``scripts/project.py`` restores a project's pins through this function
-    positionally.
+    another -- and the install is refused when they disagree.
+
+    *expected_id* is the same check with the expectation from somewhere else:
+    ``cdui plugin update`` passes the lockfile key it is replacing, because a
+    repository that has renamed its plugin would otherwise update one plugin
+    into another -- and, when the new name belongs to a pack that is also
+    installed, replace THAT one with ``--force`` behind a command the user
+    read as "update". It wins over *catalog_id* when both are given (they
+    agree in every install that recorded one).
+
+    Both are keyword-only and last so the five positional arguments stay what
+    they were -- ``scripts/project.py`` restores a project's pins through
+    this function positionally.
     """
     url = f"https://github.com/{owner}/{repo}"
     info(f"來源：{url}", f"Source: {url}")
@@ -1313,23 +1323,35 @@ def _install_github(
         f"Ref: {ref or 'default branch'} ({short_sha})",
     )
 
-    # The catalog said this row installs `catalog_id`; the repository's own
-    # manifest says which id it installs under. When those disagree the
-    # catalog is describing one pack and fetching another, and every card,
+    # The caller said this install ends up under `expected`; the repository's
+    # own manifest says which id it installs under. When those disagree the
+    # caller is describing one pack and fetching another, and every card,
     # lockfile key and /api/plugins/<id> URL after this point would use the
-    # manifest's id while the user was reading the catalog's. Asked here
+    # manifest's id while the user was reading the other one. Asked here
     # because neither the inspection nor the flow asks it: the inspection
-    # RECORDS which row it came from, and only the caller that looked the row
-    # up knows what it was looking for. A row that has drifted is a bug in
-    # the catalog, and one naming both ids is what gets it fixed.
-    if catalog_id is not None and plugin_id != catalog_id:
-        err(
-            f"目錄項目 {catalog_id} 指向的儲存庫宣告的 id 是 {plugin_id}，"
-            f"兩者不一致，已中止安裝。",
-            f"The catalog lists this pack as '{catalog_id}', but the "
-            f"repository it names declares id '{plugin_id}'. Nothing was "
-            f"installed.",
-        )
+    # RECORDS which row it came from, and only the caller knows what it was
+    # looking for. A catalog row that has drifted is a bug in the catalog and
+    # a message naming both ids is what gets it fixed; a repository that
+    # renamed its plugin under an UPDATE is worse -- the id it now declares
+    # may belong to a pack the user has, which this call would then replace.
+    expected = expected_id if expected_id is not None else catalog_id
+    if expected is not None and plugin_id != expected:
+        if expected_id is not None:
+            err(
+                f"{expected} 安裝時的 id 與其儲存庫現在宣告的 id "
+                f"{plugin_id} 不一致，已中止更新。",
+                f"This plugin is installed as '{expected}', but the "
+                f"repository it came from now declares id '{plugin_id}'. "
+                f"Nothing was installed.",
+            )
+        else:
+            err(
+                f"目錄項目 {expected} 指向的儲存庫宣告的 id 是 {plugin_id}，"
+                f"兩者不一致，已中止安裝。",
+                f"The catalog lists this pack as '{expected}', but the "
+                f"repository it names declares id '{plugin_id}'. Nothing was "
+                f"installed.",
+            )
         return 1
 
     # Before the prompts, not after: asking somebody to consent to
@@ -2325,8 +2347,12 @@ def cmd_update(args: argparse.Namespace) -> int:
         # third-party. ``_install_github`` also checks it against the
         # manifest that arrives, which is what catches a repository that has
         # renamed itself onto a different id since the install.
+        # ``expected_id`` is the lockfile key being replaced: a repository
+        # that has renamed its plugin since the install is a different pack
+        # at the same address, and this call carries --force.
         rc = _install_github(owner, repo, ref, synthetic_args, lockfile,
-                             catalog_id=entry.get("catalog_id") or None)
+                             catalog_id=entry.get("catalog_id") or None,
+                             expected_id=plugin_id)
         if rc != 0:
             return rc
         updated += 1
