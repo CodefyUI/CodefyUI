@@ -43,6 +43,7 @@ from .api import (
     routes_data_files,
     routes_execution_outputs,
     routes_execution_state,
+    routes_git,
     routes_graph,
     routes_graph_run,
     routes_images,
@@ -74,6 +75,7 @@ from .core.auth import (
 from .core.body_limit import BodySizeLimitMiddleware, RequestBodyTooLarge
 from .core.cache import execution_cache_stats
 from .core.db import Database
+from .core.git.service import GitService
 from .core.logging_config import setup_logging
 from .core.node_registry import registry
 from .core.node_state_store import NodeStateStore
@@ -390,6 +392,15 @@ async def lifespan(app: FastAPI):
         runs_active=lambda: pack_restart.runs_active(app))
     app.state.pack_service = pack_service
 
+    # ── Source Control: the host's own git, in the open project ────────
+    # Nothing to start and nothing to drain -- it owns no task and no
+    # thread of its own, only a lock and the project directory, which it
+    # reads through a closure rather than at startup: `--project` can be
+    # set after this process has booted, and a service holding the value
+    # from now would keep pointing at wherever it was then.
+    app.state.git_service = GitService(
+        project_dir=lambda: settings.PROJECT_DIR)
+
     yield
 
     # An install in flight when the server stops is cancelled and waited for
@@ -397,6 +408,7 @@ async def lifespan(app: FastAPI):
     # after the process that started it has gone.
     await pack_service.shutdown()
     app.state.pack_service = None
+    app.state.git_service = None
 
     # Drain in-flight runs BEFORE the handle goes away. Their tasks are the
     # only database work in the process that nobody is awaiting, and
@@ -572,6 +584,7 @@ app.include_router(routes_execution_state.router)
 app.include_router(routes_runs.router)
 app.include_router(routes_sweeps.router)
 app.include_router(routes_packs.router)
+app.include_router(routes_git.router)
 app.include_router(routes_system.router)
 app.include_router(routes_llm.router)
 app.include_router(routes_apps.router)
