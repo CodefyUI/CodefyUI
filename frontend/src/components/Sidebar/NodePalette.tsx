@@ -8,6 +8,7 @@ import {
 import { useI18n } from '../../i18n';
 import { useNodeDefinitionsBootstrap } from '../../hooks/useNodeDefinitionsBootstrap';
 import { usePackCatalogBootstrap } from '../../hooks/usePackCatalogBootstrap';
+import { usePluginCatalogBootstrap } from '../../hooks/usePluginCatalogBootstrap';
 import { SidebarRail } from './SidebarRail';
 import { NodesTab } from './NodesTab';
 import { PresetsTab } from './PresetsTab';
@@ -60,6 +61,10 @@ export function NodePalette() {
   // Same shell, same reason: the pack catalog decides which LLM nodes are
   // usable, so it cannot hang off a tab that may never be opened.
   usePackCatalogBootstrap();
+  // And the plugin catalog, which says which plugins this server has and
+  // whether an install is still running from before this page load. A server
+  // without the route answers 404 and the store goes quiet.
+  usePluginCatalogBootstrap();
 
   // Ends an in-flight resize drag: set while dragging, null otherwise.
   const endDragRef = useRef<(() => void) | null>(null);

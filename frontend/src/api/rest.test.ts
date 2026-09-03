@@ -46,6 +46,18 @@ import {
   getPackJobEvents,
   removePackItem,
   PackApiError,
+  ApiError,
+  errorDetail,
+  listPluginCatalog,
+  inspectPluginSource,
+  installPlugin,
+  updatePlugin,
+  uninstallPlugin,
+  setPluginEnabled,
+  getPluginJobEvents,
+  cancelPluginJob,
+  type PluginCatalogEntry,
+  type PluginInspection,
 } from './rest';
 import { _setSessionTokenForTesting } from './_auth';
 
@@ -1235,6 +1247,529 @@ describe('pack endpoints', () => {
       const err = await packError(removePackItem('word-vectors', 'glove-6b-100d'));
       expect(err.status).toBe(409);
       expect(err.body).toEqual({ detail: 'an install is running', job_id: 'j1' });
+    });
+  });
+});
+
+// ── Plugin Center ────────────────────────────────────────────────────────
+
+describe('plugin center endpoints', () => {
+  /** Await a call that must fail, and hand back the ApiError it threw. */
+  async function apiErr(call: Promise<unknown>): Promise<ApiError> {
+    const err = await call.then(() => null, (e: unknown) => e);
+    expect(err).toBeInstanceOf(ApiError);
+    return err as ApiError;
+  }
+
+  /** A complete inspection, so a test only states the field it is about. */
+  function inspection(overrides: Partial<PluginInspection> = {}): PluginInspection {
+    return {
+      inspection_id: 'insp-1',
+      expires_at: '2026-09-03T12:00:00Z',
+      kind: 'github',
+      mode: 'install',
+      plugin_id: 'c1-tokenizer',
+      catalog_id: null,
+      official: true,
+      source: 'CodefyUI/CodefyUI-Plugin-C1',
+      url: 'https://github.com/CodefyUI/CodefyUI-Plugin-C1',
+      ref: 'main',
+      sha: 'abc123',
+      name: 'Chapter 1',
+      version: '1.0.0',
+      description: 'Tokenizer nodes',
+      homepage: 'https://example.invalid/c1',
+      manifest: { id: 'c1-tokenizer', api_version: 5 },
+      capabilities: ['network'],
+      allowed_modules: ['requests'],
+      python_deps: { requests: '>=2' },
+      has_frontend: true,
+      chapters: ['C1'],
+      lessons: [],
+      consent_required: true,
+      installed: null,
+      up_to_date: false,
+      capabilities_added: ['network'],
+      allowed_modules_added: ['requests'],
+      warnings: [],
+      ...overrides,
+    };
+  }
+
+  describe('ApiError', () => {
+    it('keeps the status and the parsed body of a coded refusal', async () => {
+      const body = { detail: { code: 'busy', job_id: 'j-running' } };
+      mockFetch(409, body);
+      const err = await apiErr(installPlugin({ inspection_id: 'insp-1' }));
+      expect(err.status).toBe(409);
+      // No `message` in the detail, so the code is the readable half of it.
+      expect(err.message).toBe('busy');
+      // The panel offers "follow that job instead", which needs its id.
+      expect(err.body).toEqual(body);
+    });
+
+    it('prefers a coded detail\'s message over its code', async () => {
+      mockFetch(409, {
+        detail: { code: 'files_locked', message: 'a file is open', hint: 'close it' },
+      });
+      const err = await apiErr(uninstallPlugin('c1-tokenizer'));
+      expect(err.message).toBe('a file is open');
+    });
+
+    it('reads a string detail as the message', async () => {
+      // What a server with no `/api/plugins/catalog` route answers: FastAPI's
+      // own not-found body. The ONE status the store reads as "this build
+      // predates the Plugin Center".
+      mockFetch(404, { detail: 'Not Found' });
+      const err = await apiErr(listPluginCatalog());
+      expect(err.status).toBe(404);
+      expect(err.message).toBe('Not Found');
+    });
+
+    it('falls back to the status text when the body is not JSON', async () => {
+      mockFetchJsonThrows(503);
+      const err = await apiErr(listPluginCatalog());
+      expect(err.status).toBe(503);
+      expect(err.message).toBe('mock');
+      expect(err.body).toBeNull();
+    });
+
+    it('falls back to the status text for a detail with neither key', async () => {
+      // `400 {code: unknown_catalog_name, known: [...]}` without a code is not
+      // a shape the backend sends, but a body this client cannot read must
+      // still leave a message rather than "undefined".
+      mockFetch(400, { detail: { known: ['c1-tokenizer'] } });
+      const err = await apiErr(listPluginCatalog());
+      expect(err.message).toBe('mock');
+      expect(err.body).toEqual({ detail: { known: ['c1-tokenizer'] } });
+    });
+
+    // PackApiError is now a SUBCLASS of ApiError rather than the same class,
+    // so packStore's `err instanceof PackApiError` narrowing keeps meaning
+    // "a PACK call refused" instead of widening to every center at once.
+    it('is what a pack refusal extends, and not the other way round', async () => {
+      mockFetch(404, { detail: 'Not Found' });
+      const packErr = await listPacks().then(() => null, (e: unknown) => e);
+      expect(packErr).toBeInstanceOf(PackApiError);
+      expect(packErr).toBeInstanceOf(ApiError);
+      // Unchanged from before there was a base class.
+      expect((packErr as Error).name).toBe('PackApiError');
+
+      mockFetch(404, { detail: 'Not Found' });
+      const pluginErr = await apiErr(listPluginCatalog());
+      expect(pluginErr).not.toBeInstanceOf(PackApiError);
+      expect(pluginErr.name).toBe('ApiError');
+    });
+  });
+
+  // The unwrapper every plugin caller shares. A pack route answers a flat
+  // body and is read with `err.body?.command`; a plugin route nests the same
+  // kind of keys one level down, where that read finds nothing.
+  describe('errorDetail', () => {
+    it('hands back the coded object a plugin refusal nests', async () => {
+      mockFetch(400, {
+        detail: { code: 'consent_required', missing_capabilities: ['network'] },
+      });
+      const err = await apiErr(installPlugin({ inspection_id: 'insp-1' }));
+      expect(errorDetail(err)).toEqual({
+        code: 'consent_required', missing_capabilities: ['network'],
+      });
+    });
+
+    it('answers null for a plain-text detail', async () => {
+      // `{detail: "Not Found"}` carries no keys to read: the message is the
+      // whole of it, and a caller must not get a string where it asked for a
+      // record.
+      mockFetch(404, { detail: 'Not Found' });
+      expect(errorDetail(await apiErr(listPluginCatalog()))).toBeNull();
+    });
+
+    it('answers null for a body with no detail at all', async () => {
+      // A pack-shaped body reaching a plugin caller: flat, so there is
+      // nothing nested to return.
+      const err = new ApiError(409, 'busy', { command: 'cdui update', job_id: 'j1' });
+      expect(errorDetail(err)).toBeNull();
+    });
+
+    it('answers null for a list detail', async () => {
+      // FastAPI's 422 puts a LIST under `detail`. It is an object by
+      // `typeof`, and reading `.code` off it would be a silent undefined.
+      const err = new ApiError(422, 'invalid', { detail: [{ loc: ['body'] }] });
+      expect(errorDetail(err)).toBeNull();
+    });
+
+    it('answers null for anything that is not an ApiError', () => {
+      expect(errorDetail(new Error('Failed to fetch'))).toBeNull();
+      expect(errorDetail('consent_required')).toBeNull();
+      expect(errorDetail(null)).toBeNull();
+    });
+  });
+
+  describe('listPluginCatalog', () => {
+    // The panel maps over `chapters`, `nodes` and `capabilities` on every
+    // render, so an absent key has to arrive as an empty list rather than as
+    // a crash halfway through a repaint.
+    it('normalizes a sparse payload', async () => {
+      const fetchMock = mockFetch(200, {
+        entries: [{
+          id: 'c1-tokenizer',
+          name: 'Chapter 1',
+          description: 'Tokenizer nodes',
+          kind: 'github',
+          source: 'CodefyUI/CodefyUI-Plugin-C1',
+          homepage: 'https://example.invalid/c1',
+        }],
+      });
+      const out = await listPluginCatalog();
+      expect(fetchMock).toHaveBeenCalledWith('/api/plugins/catalog');
+      expect(out).toEqual({
+        entries: [{
+          id: 'c1-tokenizer',
+          name: 'Chapter 1',
+          description: 'Tokenizer nodes',
+          kind: 'github',
+          official: false,
+          // No status at all is a plugin nothing has installed.
+          status: 'available',
+          source_kind: null,
+          source: 'CodefyUI/CodefyUI-Plugin-C1',
+          repo: null,
+          ref: null,
+          sha: null,
+          url: null,
+          homepage: 'https://example.invalid/c1',
+          version: null,
+          installed_at: null,
+          enabled: false,
+          chapters: [],
+          lessons: [],
+          tags: [],
+          nodes: [],
+          node_count: 0,
+          capabilities: [],
+          trusted_modules: [],
+          python_deps: {},
+          has_frontend: false,
+          consent_required: false,
+          frontend_entry: null,
+          job: null,
+        }],
+        active_job: null,
+        // Absent is read as "allowed": the server is what actually refuses a
+        // remote install, with a 403 the panel then reports.
+        remote_install_allowed: true,
+        generation: 0,
+      });
+    });
+
+    it('derives enabled from the status when the server omits it', async () => {
+      mockFetch(200, {
+        entries: [
+          { id: 'a', status: 'installed' },
+          { id: 'b', status: 'disabled' },
+          // An explicit false survives: only an ABSENT key is derived.
+          { id: 'c', status: 'installed', enabled: false },
+        ],
+      });
+      const out = await listPluginCatalog();
+      expect(out.entries.map((e) => e.enabled)).toEqual([true, false, false]);
+    });
+
+    it('reads a value outside its union as the safe member', async () => {
+      // A newer server's vocabulary must degrade to something the panel can
+      // render, not arrive as an unhandled case: an unknown status is a
+      // plugin the user may install, and an unknown kind has no source this
+      // client could re-fetch.
+      mockFetch(200, {
+        entries: [{ id: 'a', status: 'quarantined', kind: 'sideloaded', source_kind: 'ftp' }],
+      });
+      const [entry] = (await listPluginCatalog()).entries;
+      expect(entry.status).toBe('available');
+      expect(entry.kind).toBe('external');
+      expect(entry.source_kind).toBeNull();
+    });
+
+    // The other half of normalizing: a mapped payload is also a payload a
+    // forgotten key can silently vanish from.
+    it('carries a full payload through unchanged', async () => {
+      const entry: PluginCatalogEntry = {
+        id: 'c1-tokenizer',
+        name: 'Chapter 1',
+        description: 'Tokenizer nodes',
+        kind: 'github',
+        official: true,
+        status: 'installed',
+        source_kind: 'github_url',
+        source: 'CodefyUI/CodefyUI-Plugin-C1',
+        repo: 'CodefyUI/CodefyUI-Plugin-C1',
+        ref: 'main',
+        sha: 'abc123',
+        url: 'https://github.com/CodefyUI/CodefyUI-Plugin-C1',
+        homepage: 'https://example.invalid/c1',
+        version: '1.0.0',
+        installed_at: '2026-09-01T10:00:00Z',
+        enabled: true,
+        chapters: ['C1'],
+        lessons: ['C1L1'],
+        tags: ['edu'],
+        nodes: ['Tokenizer'],
+        node_count: 3,
+        capabilities: ['network'],
+        trusted_modules: ['requests'],
+        python_deps: { requests: '>=2' },
+        has_frontend: true,
+        consent_required: false,
+        frontend_entry: 'index.js',
+        job: { job_id: 'j1', status: 'running', current_step: 'download' },
+      };
+      mockFetch(200, {
+        entries: [entry],
+        active_job: {
+          job_id: 'j1', plugin_id: 'c1-tokenizer', kind: 'install',
+          status: 'running', current_step: 'download',
+        },
+        remote_install_allowed: false,
+        generation: 7,
+      });
+      const out = await listPluginCatalog();
+      expect(out.entries).toEqual([entry]);
+      expect(out.active_job).toEqual({
+        job_id: 'j1', plugin_id: 'c1-tokenizer', kind: 'install',
+        status: 'running', current_step: 'download',
+      });
+      expect(out.remote_install_allowed).toBe(false);
+      expect(out.generation).toBe(7);
+    });
+  });
+
+  describe('inspectPluginSource', () => {
+    it('POSTs the source with the session token', async () => {
+      const fetchMock = mockFetch(200, inspection());
+      const out = await inspectPluginSource('CodefyUI/CodefyUI-Plugin-C1');
+      expect(out).toEqual(inspection());
+      const [url, init] = fetchMock.mock.calls[0];
+      expect(url).toBe('/api/plugins/inspect');
+      expect(init.method).toBe('POST');
+      expect(new Headers(init.headers).get('X-CodefyUI-Token')).toBe('test-token');
+      expect(JSON.parse(init.body)).toEqual({
+        source: 'CodefyUI/CodefyUI-Plugin-C1',
+      });
+    });
+
+    it('surfaces the 400 a source it could not parse answers', async () => {
+      const body = { detail: { code: 'unknown_catalog_name', known: ['c1-tokenizer'] } };
+      mockFetch(400, body);
+      const err = await apiErr(inspectPluginSource('c1-tokeniser'));
+      expect(err.status).toBe(400);
+      expect(err.message).toBe('unknown_catalog_name');
+      expect(err.body).toEqual(body);
+    });
+  });
+
+  describe('installPlugin', () => {
+    it('posts the request and omits undefined keys', async () => {
+      const fetchMock = mockFetch(202, { job_id: 'j1' });
+      // `trust_author: undefined` is what a caller spreading a partly filled
+      // request sends; it must not reach the wire as `trust_author: null`.
+      expect(
+        await installPlugin({
+          inspection_id: 'insp-1',
+          accept_capabilities: ['network'],
+          trust_author: undefined,
+          force: undefined,
+        }),
+      ).toEqual({ job_id: 'j1' });
+      const [url, init] = fetchMock.mock.calls[0];
+      expect(url).toBe('/api/plugins/install');
+      expect(init.method).toBe('POST');
+      expect(new Headers(init.headers).get('X-CodefyUI-Token')).toBe('test-token');
+      expect(JSON.parse(init.body)).toEqual({
+        inspection_id: 'insp-1',
+        accept_capabilities: ['network'],
+      });
+    });
+
+    it('sends only the inspection id when the caller accepts nothing', async () => {
+      const fetchMock = mockFetch(202, { job_id: 'j1' });
+      await installPlugin({ inspection_id: 'insp-1' });
+      expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({
+        inspection_id: 'insp-1',
+      });
+    });
+
+    it('surfaces the consent refusal with what is missing', async () => {
+      const body = {
+        detail: { code: 'consent_required', missing_capabilities: ['network'] },
+      };
+      mockFetch(400, body);
+      const err = await apiErr(installPlugin({ inspection_id: 'insp-1' }));
+      expect(err.status).toBe(400);
+      expect(err.body).toEqual(body);
+    });
+  });
+
+  describe('updatePlugin', () => {
+    it('reads a 202 as a job to follow', async () => {
+      const fetchMock = mockFetch(202, { job_id: 'j2' });
+      expect(await updatePlugin('c1-tokenizer')).toEqual({ kind: 'job', job_id: 'j2' });
+      const [url, init] = fetchMock.mock.calls[0];
+      expect(url).toBe('/api/plugins/c1-tokenizer/update');
+      expect(init.method).toBe('POST');
+      expect(new Headers(init.headers).get('X-CodefyUI-Token')).toBe('test-token');
+    });
+
+    it('reads a 200 up_to_date as nothing to do', async () => {
+      mockFetch(200, { status: 'up_to_date', sha: 'abc123' });
+      expect(await updatePlugin('c1-tokenizer')).toEqual({
+        kind: 'up_to_date', sha: 'abc123',
+      });
+    });
+
+    it('reads a 200 needs_consent as the inspection to show', async () => {
+      const insp = inspection({ mode: 'update', up_to_date: false });
+      mockFetch(200, {
+        status: 'needs_consent',
+        inspection: insp,
+        capabilities_added: ['network'],
+        allowed_modules_added: ['requests'],
+      });
+      expect(await updatePlugin('c1-tokenizer')).toEqual({
+        kind: 'needs_consent',
+        inspection: insp,
+        capabilities_added: ['network'],
+        allowed_modules_added: ['requests'],
+      });
+    });
+
+    it('throws rather than guessing at a 200 that is neither shape', async () => {
+      // Both guesses -- "there was nothing to do", "a job is running" -- would
+      // leave the panel telling the user something that did not happen.
+      mockFetch(200, { status: 'moved' });
+      const err = await apiErr(updatePlugin('c1-tokenizer'));
+      expect(err.status).toBe(200);
+      expect(err.message).toContain('moved');
+      expect(err.body).toEqual({ status: 'moved' });
+    });
+
+    it('throws on a 202 with no job to follow', async () => {
+      // Falling back to '' would start a follower on `/jobs//events`, which
+      // spends its retry budget and then reports the install as lost.
+      mockFetch(202, {});
+      const err = await apiErr(updatePlugin('c1-tokenizer'));
+      expect(err.status).toBe(202);
+      expect(err.message).toContain('job_id');
+    });
+
+    it('throws on an up_to_date with no sha', async () => {
+      // "Up to date at ''" is a version the panel would show as fact.
+      mockFetch(200, { status: 'up_to_date' });
+      const err = await apiErr(updatePlugin('c1-tokenizer'));
+      expect(err.message).toContain('sha');
+    });
+
+    it('encodes an id that needs it', async () => {
+      const fetchMock = mockFetch(202, { job_id: 'j2' });
+      await updatePlugin('scope/name');
+      expect(fetchMock.mock.calls[0][0]).toBe('/api/plugins/scope%2Fname/update');
+    });
+  });
+
+  describe('uninstallPlugin', () => {
+    it('issues DELETE and reports what it left behind', async () => {
+      const result = {
+        id: 'c1-tokenizer',
+        removed: true,
+        tombstoned: false,
+        files_removed: true,
+        python_deps_left: ['requests'],
+        uninstall_command: 'uv pip uninstall requests',
+        reinstall_hint: 'cdui plugin install c1-tokenizer',
+      };
+      const fetchMock = mockFetch(200, result);
+      expect(await uninstallPlugin('c1-tokenizer')).toEqual(result);
+      const [url, init] = fetchMock.mock.calls[0];
+      expect(url).toBe('/api/plugins/c1-tokenizer');
+      expect(init.method).toBe('DELETE');
+      expect(new Headers(init.headers).get('X-CodefyUI-Token')).toBe('test-token');
+    });
+
+    it('surfaces the 409 sent while a job targets the plugin', async () => {
+      const body = { detail: { code: 'busy', job_id: 'j1' } };
+      mockFetch(409, body);
+      const err = await apiErr(uninstallPlugin('c1-tokenizer'));
+      expect(err.status).toBe(409);
+      expect(err.body).toEqual(body);
+    });
+  });
+
+  describe('setPluginEnabled', () => {
+    it('POSTs enable with the session token', async () => {
+      const fetchMock = mockFetch(200, { id: 'c1-tokenizer', enabled: true });
+      expect(await setPluginEnabled('c1-tokenizer', true)).toEqual({
+        id: 'c1-tokenizer', enabled: true,
+      });
+      const [url, init] = fetchMock.mock.calls[0];
+      expect(url).toBe('/api/plugins/c1-tokenizer/enable');
+      expect(init.method).toBe('POST');
+      expect(new Headers(init.headers).get('X-CodefyUI-Token')).toBe('test-token');
+    });
+
+    it('POSTs disable for the other half', async () => {
+      const fetchMock = mockFetch(200, { id: 'c1-tokenizer', enabled: false });
+      await setPluginEnabled('c1-tokenizer', false);
+      expect(fetchMock.mock.calls[0][0]).toBe('/api/plugins/c1-tokenizer/disable');
+    });
+  });
+
+  describe('getPluginJobEvents', () => {
+    it('passes cursor, wait, limit and the signal', async () => {
+      const fetchMock = mockFetch(200, {
+        job_id: 'j1', status: 'running', events: [], cursor: 7,
+      });
+      const controller = new AbortController();
+      await getPluginJobEvents('j1', {
+        cursor: 7, wait: 25, limit: 100, signal: controller.signal,
+      });
+      expect(fetchMock).toHaveBeenCalledWith(
+        '/api/plugins/jobs/j1/events?cursor=7&wait=25&limit=100',
+        { signal: controller.signal },
+      );
+    });
+
+    it('sends no query when following from the beginning', async () => {
+      const fetchMock = mockFetch(200, {
+        job_id: 'j1',
+        status: 'needs_restart',
+        events: [{ type: 'needs_restart', cursor: 1, command: 'cdui start' }],
+        cursor: 1,
+      });
+      const page = await getPluginJobEvents('j1');
+      expect(fetchMock).toHaveBeenCalledWith('/api/plugins/jobs/j1/events', {
+        signal: undefined,
+      });
+      expect(page.status).toBe('needs_restart');
+      expect(page.events[0].command).toBe('cdui start');
+    });
+
+    it('throws when the job is gone mid-follow', async () => {
+      mockFetch(404, { detail: "job 'j1' not found" });
+      expect((await apiErr(getPluginJobEvents('j1'))).status).toBe(404);
+    });
+  });
+
+  describe('cancelPluginJob', () => {
+    it('POSTs to the job with the session token', async () => {
+      const fetchMock = mockFetch(200, { job_id: 'j1', cancelled: true });
+      expect(await cancelPluginJob('j1')).toEqual({ job_id: 'j1', cancelled: true });
+      const [url, init] = fetchMock.mock.calls[0];
+      expect(url).toBe('/api/plugins/jobs/j1/cancel');
+      expect(init.method).toBe('POST');
+      expect(new Headers(init.headers).get('X-CodefyUI-Token')).toBe('test-token');
+    });
+
+    it('throws when the job is already forgotten', async () => {
+      mockFetch(404, { detail: "job 'j1' not found" });
+      expect((await apiErr(cancelPluginJob('j1'))).status).toBe(404);
     });
   });
 });

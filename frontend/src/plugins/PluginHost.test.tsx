@@ -1,5 +1,12 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { loadPluginFrontends, unloadPluginFrontends } from './PluginHost';
+import { render } from '@testing-library/react';
+import {
+  PluginHost, _resetPluginHostForTesting, loadPluginFrontends,
+  reloadPluginFrontends, startPluginFrontends, unloadPluginFrontends,
+} from './PluginHost';
+import { useI18n } from '../i18n';
+import en from '../i18n/locales/en';
+import zhTW from '../i18n/locales/zh-TW';
 import { useNodeDefStore } from '../store/nodeDefStore';
 import { useToastStore } from '../store/toastStore';
 import { useTabStore } from '../store/tabStore';
@@ -303,5 +310,394 @@ describe('plugin unload leaves nothing behind', () => {
     unloadPluginFrontends();
     expect(() => unloadPluginFrontends()).not.toThrow();
     expect(residue()).toEqual(EMPTY);
+  });
+});
+
+/** One node definition, in the shape `waitForNodeDefinitions` counts. */
+const ONE_DEFINITION = [{
+  node_name: 'X', category: 'c', description: '',
+  inputs: [], outputs: [], params: [],
+}];
+
+/**
+ * A fetch that answers the two URLs the host asks for.
+ *
+ * `/api/plugins` walks the payload list, one per call, and repeats the last
+ * one -- that is how "the second answer no longer lists this plugin" is set
+ * up. `/api/plugins/generation` answers `generation`, or 404s when it is null
+ * (a server too old to have the route).
+ */
+function mockPluginHostFetch(options: {
+  pluginPayloads: unknown[];
+  generation: number | null;
+}) {
+  const calls: string[] = [];
+  let index = 0;
+  const fetchMock = vi.fn(async (url: string) => {
+    calls.push(url);
+    if (url === '/api/plugins/generation') {
+      return options.generation === null
+        ? { ok: false, json: async () => ({}) }
+        : { ok: true, json: async () => ({ generation: options.generation }) };
+    }
+    const payload = options.pluginPayloads[
+      Math.min(index, options.pluginPayloads.length - 1)
+    ];
+    index += 1;
+    return { ok: true, json: async () => payload };
+  });
+  vi.stubGlobal('fetch', fetchMock as unknown as typeof fetch);
+  return { calls };
+}
+
+/**
+ * Re-activation without a page reload: the Plugin Center installs, enables or
+ * removes a plugin and the editor has to show the result at once, without
+ * ever running two activations over the same module-level registries.
+ */
+describe('reloadPluginFrontends', () => {
+  const A = { id: 'a', enabled: true, frontend_entry: '/plugins/a/frontend/index.js' };
+  const B = { id: 'b', enabled: true, frontend_entry: '/plugins/b/frontend/index.js' };
+
+  const container = () => document.createElement('div');
+
+  /**
+   * A plugin that registers one of everything a reload has to clear first.
+   * The execution subscriber is the one that cannot hide a duplicate: two
+   * registrations of the same panel id replace each other, two subscriptions
+   * stack.
+   */
+  function smallPlugin(api: CodefyUIPluginAPI) {
+    api.ui.addPanel({ id: 'dock', title: 'Dock' });
+    api.ui.addToolbarButton({ id: 'go', icon: '*', tooltip: 'Go', onClick: () => {} });
+    api.events.onExecution(() => {});
+  }
+
+  function reset() {
+    _resetPluginHostForTesting();
+    _clearPluginPanels();
+    _clearPluginToolbarButtons();
+    _resetExecutionEvents();
+  }
+
+  beforeEach(reset);
+  afterEach(reset);
+
+  it('cache-busts the import with the reload generation', async () => {
+    const { calls } = mockPluginHostFetch({ pluginPayloads: [[A]], generation: 7 });
+    const activate = vi.fn();
+    const importer = vi.fn(async () => ({ default: activate }));
+
+    expect(await reloadPluginFrontends(container, importer)).toEqual(['a']);
+    expect(importer).toHaveBeenCalledTimes(1);
+    expect(importer).toHaveBeenCalledWith('/plugins/a/frontend/index.js?v=7');
+    // The list is read ONCE and activated from that same answer. A second
+    // read would be a second truth: a plugin uninstalled between the two
+    // would be torn down and then activated again from the older list.
+    expect(calls.filter((url) => url === '/api/plugins')).toHaveLength(1);
+  });
+
+  it('busts with a timestamp when the server has no generation route', async () => {
+    mockPluginHostFetch({ pluginPayloads: [[A]], generation: null });
+    const urls: string[] = [];
+    const importer = vi.fn(async (url: string) => {
+      urls.push(url);
+      return { default: vi.fn() };
+    });
+
+    const before = Date.now();
+    await reloadPluginFrontends(container, importer);
+    const url = urls[0] ?? '';
+
+    expect(url).toMatch(/^\/plugins\/a\/frontend\/index\.js\?v=\d+$/);
+    const stamp = Number(url.split('?v=')[1]);
+    expect(stamp).toBeGreaterThanOrEqual(before);
+    expect(stamp).toBeLessThanOrEqual(Date.now());
+  });
+
+  it('tears the old frontends down before activating the new ones', async () => {
+    mockPluginHostFetch({ pluginPayloads: [[A]], generation: 3 });
+    await loadPluginFrontends(container, vi.fn(async () => ({ default: smallPlugin })));
+    expect(getPluginPanels()).toHaveLength(1);
+    expect(getPluginToolbarButtons()).toHaveLength(1);
+
+    // What the registries hold at the moment the new bundle arrives: if the
+    // unload ran, nothing.
+    const whenImported: number[] = [];
+    const importer = vi.fn(async () => {
+      whenImported.push(getPluginPanels().length, getPluginToolbarButtons().length);
+      return { default: smallPlugin };
+    });
+
+    await reloadPluginFrontends(container, importer);
+
+    expect(whenImported).toEqual([0, 0]);
+    // One copy of each, not two.
+    expect(getPluginPanels()).toHaveLength(1);
+    expect(getPluginToolbarButtons()).toHaveLength(1);
+    expect(executionEventSubscriberCount()).toBe(1);
+  });
+
+  it('does not re-activate a plugin the server no longer lists', async () => {
+    mockPluginHostFetch({ pluginPayloads: [[A, B], [A]], generation: 4 });
+    const importer = vi.fn(async () => ({ default: smallPlugin }));
+
+    await loadPluginFrontends(container, importer);
+    expect(getPluginPanels().map((p) => p.pluginId)).toEqual(['a', 'b']);
+
+    // 'b' was uninstalled (or disabled) between the two answers.
+    expect(await reloadPluginFrontends(container, importer)).toEqual(['a']);
+    expect(getPluginPanels().map((p) => p.pluginId)).toEqual(['a']);
+    expect(getPluginToolbarButtons().map((b) => b.pluginId)).toEqual(['a']);
+  });
+
+  it('hosts widgets in the document body when the stack is not mounted', async () => {
+    mockPluginHostFetch({ pluginPayloads: [[A]], generation: 5 });
+    const importer = vi.fn(async () => ({
+      default: (api: CodefyUIPluginAPI) => { api.ui.addFloatingWidget({ id: 'fab' }); },
+    }));
+
+    // No <PluginHost /> has mounted: a reload fired from the Plugin Center
+    // before the stack exists must still activate.
+    await reloadPluginFrontends(undefined, importer);
+
+    const widget = document.getElementById('plugin-widget-a-fab');
+    expect(widget?.parentElement).toBe(document.body);
+    widget?.remove();
+  });
+
+  /**
+   * The race the promise chain exists for: an install settles while the boot
+   * load is still parked in `waitForNodeDefinitions()`. Unserialised, the
+   * reload would tear down nothing (the boot has registered nothing yet) and
+   * both loads would then activate every plugin.
+   */
+  it('queues a reload issued during the boot load behind it', async () => {
+    vi.useFakeTimers();
+    try {
+      useNodeDefStore.setState({ definitions: [] });
+      mockPluginHostFetch({ pluginPayloads: [[A]], generation: 9 });
+
+      const order: string[] = [];
+      const activate = vi.fn((api: CodefyUIPluginAPI) => {
+        order.push('activate');
+        smallPlugin(api);
+      });
+      const importer = vi.fn(async (url: string) => {
+        order.push(url);
+        return { default: activate };
+      });
+
+      const boot = startPluginFrontends(container, importer);
+      const reload = reloadPluginFrontends(container, importer);
+
+      await vi.advanceTimersByTimeAsync(300);
+      expect(importer, 'the boot is still waiting for node definitions')
+        .not.toHaveBeenCalled();
+
+      useNodeDefStore.setState({ definitions: ONE_DEFINITION });
+      await vi.advanceTimersByTimeAsync(300);
+
+      expect(await boot).toEqual(['a']);
+      expect(await reload).toEqual(['a']);
+      expect(activate).toHaveBeenCalledTimes(2);
+      expect(order).toEqual([
+        '/plugins/a/frontend/index.js', 'activate',
+        '/plugins/a/frontend/index.js?v=9', 'activate',
+      ]);
+      // Twice activated, once registered: the reload's teardown ran between
+      // the two passes. Unserialised, the reload would have torn down an
+      // empty registry before the boot filled it, and both passes would have
+      // stacked -- two of every subscription, panel and button.
+      expect(executionEventSubscriberCount()).toBe(1);
+      expect(getPluginPanels()).toHaveLength(1);
+      expect(getPluginToolbarButtons()).toHaveLength(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  /**
+   * The failure that would hurt most: a reload runs right after an install,
+   * which is exactly when the backend may be mid re-import and answer 503 (or
+   * not at all). Tearing down first would leave the editor with no plugin UI
+   * whatever, and nothing polls in production to put it back.
+   */
+  it('keeps the current activations when the plugin list cannot be read', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      mockPluginHostFetch({ pluginPayloads: [[A]], generation: 3 });
+      const activate = vi.fn(smallPlugin);
+      const importer = vi.fn(async () => ({ default: activate }));
+      expect(await reloadPluginFrontends(container, importer)).toEqual(['a']);
+
+      for (const [reason, failing] of [
+        ['a 503', vi.fn(async () => ({ ok: false, status: 503, json: async () => ({}) }))],
+        ['a dead socket', vi.fn(async () => { throw new Error('net'); })],
+      ] as const) {
+        vi.stubGlobal('fetch', failing as unknown as typeof fetch);
+
+        expect(await reloadPluginFrontends(container, importer), reason).toEqual(['a']);
+        expect(activate, reason).toHaveBeenCalledTimes(1);
+        expect(getPluginPanels(), reason).toHaveLength(1);
+        expect(getPluginToolbarButtons(), reason).toHaveLength(1);
+        expect(executionEventSubscriberCount(), reason).toBe(1);
+        // The store's own refresh already tells the user the server is down.
+        expect(useToastStore.getState().toasts, reason).toHaveLength(0);
+      }
+      expect(warn).toHaveBeenCalled();
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('does not stack the boot on frontends a reload activated first', async () => {
+    mockPluginHostFetch({ pluginPayloads: [[A]], generation: 8 });
+    const activate = vi.fn(smallPlugin);
+    const importer = vi.fn(async () => ({ default: activate }));
+
+    // The Plugin Center can act from a page whose host has not mounted yet.
+    await reloadPluginFrontends(container, importer);
+    await startPluginFrontends(container, importer);
+
+    expect(activate).toHaveBeenCalledTimes(2);
+    expect(executionEventSubscriberCount()).toBe(1);
+    expect(getPluginPanels()).toHaveLength(1);
+    expect(getPluginToolbarButtons()).toHaveLength(1);
+  });
+
+  it('does not stack the boot on a load that threw part way through', async () => {
+    // The half-activation: the plugin registered its panel, its button and
+    // its subscription and THEN threw, so it never joined `activatedIds`
+    // while its cleanups stayed on the list. A boot that asked only about
+    // the ids would find "nothing activated here" and stack a second copy
+    // of all three on top of the first.
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      mockPluginHostFetch({ pluginPayloads: [[A]], generation: 2 });
+      const halfway = vi.fn((api: CodefyUIPluginAPI) => {
+        smallPlugin(api);
+        throw new Error('activate exploded');
+      });
+
+      expect(await startPluginFrontends(
+        container, vi.fn(async () => ({ default: halfway })),
+      )).toEqual([]);
+      expect(executionEventSubscriberCount()).toBe(1);
+
+      await startPluginFrontends(
+        container, vi.fn(async () => ({ default: smallPlugin })),
+      );
+
+      // The subscription is the one that cannot hide a duplicate: two
+      // registrations of the same panel id replace each other.
+      expect(executionEventSubscriberCount()).toBe(1);
+      expect(getPluginPanels()).toHaveLength(1);
+      expect(getPluginToolbarButtons()).toHaveLength(1);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('keeps serving later callers after an activation rejects', async () => {
+    // The queue is shared with the boot and the dev poller, so a task that
+    // throws must not be the end of it. Driven through the one call the host
+    // does not guard: the toast it fires for a plugin that failed to load.
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const realAddToast = useToastStore.getState().addToast;
+    mockPluginHostFetch({ pluginPayloads: [[A]], generation: 6 });
+    try {
+      useToastStore.setState({
+        addToast: () => { throw new Error('toast exploded'); },
+      });
+      await expect(
+        reloadPluginFrontends(container, vi.fn(async () => { throw new Error('boom'); })),
+      ).rejects.toThrow('toast exploded');
+    } finally {
+      useToastStore.setState({ addToast: realAddToast });
+      warn.mockRestore();
+    }
+
+    expect(
+      await reloadPluginFrontends(container, vi.fn(async () => ({ default: vi.fn() }))),
+    ).toEqual(['a']);
+  });
+});
+
+describe('plugin host toasts', () => {
+  beforeEach(_resetPluginHostForTesting);
+  afterEach(_resetPluginHostForTesting);
+
+  it('names a plugin whose UI failed in the reader language', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const locale = useI18n.getState().locale;
+    try {
+      mockPluginsResponse([
+        { id: 'a', enabled: true, frontend_entry: '/plugins/a/frontend/index.js' },
+      ]);
+      useI18n.setState({ locale: 'zh-TW' });
+      await loadPluginFrontends(
+        () => document.createElement('div'),
+        vi.fn(async () => { throw new Error('boom'); }),
+      );
+
+      const [toast] = useToastStore.getState().toasts;
+      expect(toast.type).toBe('error');
+      expect(toast.message).toBe(
+        zhTW['pluginCenter.toast.frontendFailed'].replace('{plugin}', 'a'),
+      );
+      expect(toast.message).not.toContain('{plugin}');
+    } finally {
+      useI18n.setState({ locale });
+      warn.mockRestore();
+    }
+  });
+});
+
+/**
+ * The dev-only hot reload: still armed by a linked plugin at boot, still
+ * triggered by a generation bump, now going through the same reload the
+ * Plugin Center uses.
+ */
+describe('dev hot-reload poller', () => {
+  beforeEach(_resetPluginHostForTesting);
+  afterEach(_resetPluginHostForTesting);
+
+  it('reloads the frontends when the generation bumps', async () => {
+    vi.useFakeTimers();
+    try {
+      let generation = 1;
+      const calls: string[] = [];
+      // A linked plugin with no frontend bundle: enough to arm the poller,
+      // and nothing for the reload to import.
+      const linked = [{
+        id: 'linked', enabled: true, source_kind: 'local', frontend_entry: null,
+      }];
+      vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+        calls.push(url);
+        return url === '/api/plugins/generation'
+          ? { ok: true, json: async () => ({ generation }) }
+          : { ok: true, json: async () => linked };
+      }) as unknown as typeof fetch);
+
+      render(<PluginHost />);
+      await vi.advanceTimersByTimeAsync(10);
+      expect(calls, 'the poller read the generation at boot')
+        .toContain('/api/plugins/generation');
+
+      await vi.advanceTimersByTimeAsync(1600);
+      expect(useToastStore.getState().toasts, 'no bump, no reload').toHaveLength(0);
+
+      generation = 2;
+      const before = calls.length;
+      await vi.advanceTimersByTimeAsync(1600);
+
+      expect(calls.slice(before), 'the reload re-read the plugin list')
+        .toContain('/api/plugins');
+      expect(useToastStore.getState().toasts.map((t) => t.message))
+        .toEqual([en['pluginCenter.toast.frontendsReloaded']]);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

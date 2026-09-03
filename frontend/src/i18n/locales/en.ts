@@ -1048,6 +1048,42 @@ const en = {
   'node.needsPack.title': 'Needs the {pack} pack. Click to open the Package Center.',
   'node.paramNeedsPack': 'needs pack',
   'error.missingPack': 'This node needs the {pack} pack. Install it from the Package Center.',
+
+  // Plugin Center. The host's own two toasts (a UI bundle that would not
+  // load, the dev hot-reload) and everything the store says about an install,
+  // an update, a removal or a switch. The panel's own copy arrives with the
+  // panel.
+  'pluginCenter.toast.frontendFailed': 'The UI of plugin "{plugin}" failed to load.',
+  'pluginCenter.toast.frontendsReloaded': 'Plugin UI reloaded.',
+  'pluginCenter.toast.installed': '{plugin} installed.',
+  'pluginCenter.toast.updated': '{plugin} updated.',
+  'pluginCenter.toast.upToDate': '{plugin} is up to date.',
+  'pluginCenter.toast.removed': '{plugin} uninstalled.',
+  'pluginCenter.toast.removeFailed': 'Could not remove {plugin}: {message}',
+  'pluginCenter.toast.enabled': '{plugin} enabled.',
+  'pluginCenter.toast.disabled': '{plugin} disabled.',
+  'pluginCenter.toast.toggleFailed': 'Could not change {plugin}: {message}',
+  // The change itself landed; re-reading the catalog, the node definitions
+  // or the plugin UIs did not. Its own sentence, because saying "install
+  // failed" about a successful uninstall is the one reading that is flatly
+  // wrong.
+  'pluginCenter.toast.refreshFailed':
+    'Could not refresh the editor after the change: {message}',
+  // The files are in place; the running server could not pick them up.
+  'pluginCenter.toast.needsRestart': 'Restart the server to load {plugin}.',
+  'pluginCenter.toast.inProgress':
+    'A plugin is still installing. Open the Plugin Center to watch it.',
+  'pluginCenter.toast.openCenter': 'Open Plugin Center',
+  'pluginCenter.updateFailed': 'Update failed: {message}',
+  'pluginCenter.uninstall': 'Uninstall',
+  // Says what is lost AND what is not: nothing uninstalls a plugin's pip
+  // packages, and a user who expects the disk space back should hear so here
+  // rather than after saying yes.
+  'pluginCenter.uninstallConfirm':
+    'Uninstall {plugin}? Graphs that use its nodes will stop running. '
+    + 'Its Python packages stay installed.',
+  'pluginCenter.source.invalid':
+    'Enter a catalog name, owner/repo[@ref] or a GitHub URL.',
 } as const;
 
 export type TranslationKey = keyof typeof en;
