@@ -156,8 +156,15 @@ export function emptyPluginJob(
 const GITHUB_URL =
   /^https?:\/\/(?:www\.)?github\.com\/([\w.-]+)\/([\w.-]+?)(?:\.git)?\/?(?:@(.+))?$/;
 const GITHUB_SHORT = /^([\w.-]+)\/([\w.-]+?)(?:@([\w./-]+))?$/;
-/** One word, no slash and no scheme: it can only be a catalog name. */
-const CATALOG_NAME = /^[a-z0-9][a-z0-9-]*$/;
+/**
+ * One word, no slash and no scheme: it can only be a catalog name.
+ *
+ * The CLI's own class, character for character, because refusing here means
+ * refusing WITHOUT asking the server: a narrower rule would turn `EDU` or
+ * `C1` into "that is not a source" when the catalog has them. The lookup is
+ * case-insensitive there (`spec.lower()`), so the id is lower-cased to match.
+ */
+const CATALOG_NAME = /^[A-Za-z0-9][\w.-]*$/;
 
 /**
  * Read a plugin source the way the CLI reads one, or answer null.
@@ -177,7 +184,10 @@ export function parseGitHubSource(input: string): PluginSourceRef | null {
   if (short !== null) {
     return { kind: 'github', owner: short[1], repo: short[2], ref: short[3] ?? null };
   }
-  if (CATALOG_NAME.test(spec)) return { kind: 'catalog', id: spec };
+  // Lower-cased, not echoed: the server looks a catalog name up in lower
+  // case, so `EDU` and `edu` are the same pack and the panel should not show
+  // them as two.
+  if (CATALOG_NAME.test(spec)) return { kind: 'catalog', id: spec.toLowerCase() };
   return null;
 }
 
@@ -295,7 +305,18 @@ const follower = createJobFollower<PluginJob>({
   getOpenJob: () => usePluginStore.getState().job,
   patchJob,
   onSettled: (jobId, status) => {
-    void onJobSettled(jobId, followingPluginId ?? '', followingKind, status);
+    // Nothing awaits this, so a throw between its awaits would surface as an
+    // unhandled rejection in a console the user never opens. Every step of the
+    // refresh is already guarded; this is the net under the rest of it.
+    void onJobSettled(jobId, followingPluginId ?? '', followingKind, status)
+      .catch((err: unknown) => {
+        toast(
+          useI18n.getState().t(
+            'pluginCenter.toast.refreshFailed', { message: errorMessage(err) },
+          ),
+          'error',
+        );
+      });
   },
   // Nothing here restarts the server, so an events endpoint that stops
   // answering is exactly what it looks like: we no longer know what the job is
@@ -349,8 +370,14 @@ async function refreshEverything(): Promise<void> {
     try {
       await step();
     } catch (err) {
+      // Its own key, not `installFailed`: this runs after an uninstall and
+      // after a disable too, and "install failed" beside "demo uninstalled."
+      // describes something that did not happen. What DID happen is that the
+      // change landed and the editor could not be brought up to date.
       toast(
-        useI18n.getState().t('packs.toast.installFailed', { message: errorMessage(err) }),
+        useI18n.getState().t(
+          'pluginCenter.toast.refreshFailed', { message: errorMessage(err) },
+        ),
         'error',
       );
     }

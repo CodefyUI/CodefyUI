@@ -257,8 +257,25 @@ describe('parseGitHubSource', () => {
     expect(parseGitHubSource('  c1  ')).toEqual({ kind: 'catalog', id: 'c1' });
   });
 
+  it('takes every catalog name the CLI takes, lower-cased', () => {
+    // The class is the CLI's (`scripts/plugins.py: _BARE_NAME`) because
+    // refusing here means refusing WITHOUT asking the server: `EDU` and `C1`
+    // are real packs, and an underscore is a legal name. The server looks
+    // them up in lower case, so the parse says what it will resolve to.
+    for (const [typed, id] of [
+      ['EDU', 'edu'],
+      ['C1', 'c1'],
+      ['Foundations', 'foundations'],
+      ['my_plugin', 'my_plugin'],
+    ] as const) {
+      expect(parseGitHubSource(typed), typed).toEqual({ kind: 'catalog', id });
+    }
+  });
+
   it('refuses anything that is neither', () => {
-    for (const bad of ['', '   ', 'Not A Source', 'https://gitlab.com/o/r', 'owner/']) {
+    for (const bad of [
+      '', '   ', 'Not A Source', 'https://gitlab.com/o/r', 'owner/', 'o/r/extra',
+    ]) {
       expect(parseGitHubSource(bad), bad).toBeNull();
     }
   });
@@ -454,7 +471,7 @@ describe('pluginStore — inspect', () => {
     expect(usePluginStore.getState().inspection).toEqual({
       phase: 'error',
       source: 'not a source!',
-      message: 'Enter owner/repo[@ref] or a GitHub URL.',
+      message: 'Enter a catalog name, owner/repo[@ref] or a GitHub URL.',
     });
   });
 
@@ -794,11 +811,33 @@ describe('pluginStore — setEnabled', () => {
 
     await usePluginStore.getState().setEnabled('demo', true);
 
-    // The definitions were still fetched, and the failure was reported.
+    // The definitions were still fetched, and the failure was reported — as a
+    // failed REFRESH. "Install failed" beside "demo enabled." would describe
+    // something that did not happen.
     expect(order).toEqual(['catalog', 'definitions']);
     expect(useToastStore.getState().toasts.map((toast) => toast.message)).toContain(
-      'Install failed: bundle gone',
+      'Could not refresh the editor after the change: bundle gone',
     );
+  });
+
+  it('runs the steps after one that threw, not just the ones before it', async () => {
+    // The middle step, so this can only pass if each step is guarded on its
+    // own: a single try around the three would lose the frontends here.
+    useNodeDefStore.setState({
+      fetchDefinitions: vi.fn(async () => {
+        order.push('definitions');
+        throw new Error('definitions gone');
+      }),
+    });
+
+    await usePluginStore.getState().setEnabled('demo', true);
+
+    expect(order).toEqual(['catalog', 'definitions', 'frontends']);
+    expect(useToastStore.getState().toasts.map((toast) => toast.message)).toContain(
+      'Could not refresh the editor after the change: definitions gone',
+    );
+    // And the change itself is still reported as the success it was.
+    expect(lastToast().message).toBe('Demo plugin enabled.');
   });
 });
 

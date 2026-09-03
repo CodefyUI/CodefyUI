@@ -1063,6 +1063,12 @@ const en = {
   'pluginCenter.toast.enabled': '{plugin} enabled.',
   'pluginCenter.toast.disabled': '{plugin} disabled.',
   'pluginCenter.toast.toggleFailed': 'Could not change {plugin}: {message}',
+  // The change itself landed; re-reading the catalog, the node definitions
+  // or the plugin UIs did not. Its own sentence, because saying "install
+  // failed" about a successful uninstall is the one reading that is flatly
+  // wrong.
+  'pluginCenter.toast.refreshFailed':
+    'Could not refresh the editor after the change: {message}',
   // The files are in place; the running server could not pick them up.
   'pluginCenter.toast.needsRestart': 'Restart the server to load {plugin}.',
   'pluginCenter.toast.inProgress':
@@ -1076,7 +1082,8 @@ const en = {
   'pluginCenter.uninstallConfirm':
     'Uninstall {plugin}? Graphs that use its nodes will stop running. '
     + 'Its Python packages stay installed.',
-  'pluginCenter.source.invalid': 'Enter owner/repo[@ref] or a GitHub URL.',
+  'pluginCenter.source.invalid':
+    'Enter a catalog name, owner/repo[@ref] or a GitHub URL.',
 } as const;
 
 export type TranslationKey = keyof typeof en;
