@@ -202,6 +202,19 @@ class PackService:
         # every one of them is a PackJob.
         return self._runner.current_job()
 
+    def current_job_id(self) -> str | None:
+        """The id of the install running NOW, or None when nothing is.
+
+        What the Plugin Center is handed as its ``busy_elsewhere``, and the
+        twin of ``PluginService.current_job_id``. A FINISHED job is in
+        nobody's way -- it stays readable here, but reporting it would refuse
+        every plugin install for as long as nobody started another pack one
+        -- so the terminal check belongs here rather than in the closure the
+        lifespan writes.
+        """
+        job = self._runner.current_job()
+        return job.job_id if job is not None and not job.terminal else None
+
     def get_job(self, job_id: str) -> PackJob:
         """The job with this id. Raises :class:`UnknownJob` for any other."""
         return self._runner.get_job(job_id)

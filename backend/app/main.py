@@ -90,6 +90,7 @@ from .core.plugin_loader import (
     load_lockfile,
 )
 from .core.plugins.reload import rediscover_now
+from .core.plugins.service import PluginService
 from .core.preset_registry import preset_registry
 from .core.run_output_store import RunOutputStore
 from .core.run_service import RunService
@@ -183,6 +184,22 @@ def _reachable_urls() -> list[str]:
     return sorted(
         f"http://{h}" for h in allowed_hosts() if _has_port(h)
     )
+
+
+def _installer_job_id(
+        installer: PackService | PluginService | None) -> str | None:
+    """The id of the install *installer* is running now, or None.
+
+    What each of the two package installers is handed as its
+    ``busy_elsewhere``: they write into the same site-packages under the same
+    constraints freeze, so the one-job-at-a-time rule has to span both of
+    them. Read through ``app.state`` at CALL time rather than captured at
+    construction, because each service wants the OTHER -- one of the two
+    cannot exist yet when the first one is built -- and ``getattr`` with a
+    default because a service is cleared on the way down while the other may
+    still be unwinding.
+    """
+    return None if installer is None else installer.current_job_id()
 
 
 @asynccontextmanager
@@ -375,9 +392,26 @@ async def lifespan(app: FastAPI):
     # graph run dies with the server, and that is minutes or hours of
     # somebody's training thrown away. Passed as a closure so the service
     # asks the question without holding the application.
+    #
+    # `busy_elsewhere` is the same shape of question asked of the OTHER
+    # installer. The two are built one after the other and wired through
+    # `app.state`, because each wants the one that does not exist yet when
+    # it is constructed.
     pack_service = PackService(
-        runs_active=lambda: pack_restart.runs_active(app))
+        runs_active=lambda: pack_restart.runs_active(app),
+        busy_elsewhere=lambda: _installer_job_id(
+            getattr(app.state, "plugin_service", None)))
     app.state.pack_service = pack_service
+
+    # ── Plugin Center: one plugin install at a time ────────────────────
+    # The same lifetime rules, and the same interpreter: a plugin install
+    # runs `uv pip install` into the site-packages the Package Center is
+    # installing into, so the two refuse each other rather than corrupting
+    # one environment between them.
+    plugin_service = PluginService(
+        busy_elsewhere=lambda: _installer_job_id(
+            getattr(app.state, "pack_service", None)))
+    app.state.plugin_service = plugin_service
 
     # ── Source Control: the host's own git, in the open project ────────
     # Nothing to start and nothing to drain -- it owns no task and no
@@ -393,6 +427,13 @@ async def lifespan(app: FastAPI):
     # An install in flight when the server stops is cancelled and waited for
     # (bounded), so a pip subprocess is not left writing into site-packages
     # after the process that started it has gone.
+    #
+    # The plugin install goes FIRST because it borrows the Package Center's
+    # machinery to install its dependencies -- the constraints freeze and the
+    # uv runner -- and stopping the lender while the borrower is still
+    # unwinding is the one order that could matter.
+    await plugin_service.shutdown()
+    app.state.plugin_service = None
     await pack_service.shutdown()
     app.state.pack_service = None
     app.state.git_service = None

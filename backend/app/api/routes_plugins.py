@@ -25,7 +25,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 
 from ..config import settings
 from ..core.auth import bound_to_loopback
@@ -128,7 +128,7 @@ async def list_plugins() -> list[dict[str, Any]]:
 
 
 @router.get("/catalog")
-async def plugin_catalog() -> dict[str, Any]:
+async def plugin_catalog(request: Request) -> dict[str, Any]:
     """Every plugin this build can install, and everything installed.
 
     The one route the Plugin Center polls, and the reason it is a GET: like
@@ -138,13 +138,18 @@ async def plugin_catalog() -> dict[str, Any]:
     otherwise sit where this route lives, and the router, not the pack, would
     decide which one wins.
 
-    ``active_job`` is ``None`` until the install routes land; the field is
-    here now so the panel is written against the final shape.
+    ``active_job`` is the install running right now, which is how a panel
+    that has just been opened -- a second tab, a reload mid-install -- finds
+    the job it should be following. It is ``None`` when nothing is running
+    AND when there is no service at all: this is a READ, and a server whose
+    installer failed to start can still say what is installed. The routes
+    that would actually install something answer 503 instead.
     """
+    service = getattr(request.app.state, "plugin_service", None)
     return catalog_listing(
         load_lockfile(),
         registry=registry,
-        active_job=None,
+        active_job=None if service is None else service.active_job_payload(),
         remote_install_allowed=remote_plugin_install_allowed(),
         generation=plugin_loader.reload_generation(),
     )

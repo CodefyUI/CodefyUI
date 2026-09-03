@@ -46,7 +46,9 @@ from app.core.plugins import listing
 from app.core.plugins.catalog import CatalogEntry
 from app.core.plugins.listing import catalog_listing
 from app.core.plugins.reload import rediscover_now
+from app.core.plugins.service import PluginService
 from app.main import app
+from app import main
 
 BASE_URL = f"http://127.0.0.1:{settings.PORT}"
 
@@ -666,6 +668,86 @@ async def test_the_catalog_says_when_installing_is_refused(anon_client,
     monkeypatch.setattr(settings, "ALLOW_REMOTE_PLUGIN_INSTALL", False)
     body = (await anon_client.get("/api/plugins/catalog")).json()
     assert body["remote_install_allowed"] is False
+
+
+# -- the running install ---------------------------------------------------
+
+
+class _StubInstaller:
+    """Stands in for ``PluginService`` on ``app.state``: one question asked.
+
+    The route's whole job here is to ask the service what is running and pass
+    the answer on, so a stub that answers is a truer test of the route than a
+    real service with a scripted flow behind it -- which would be testing
+    ``PluginService`` again, in the file that is about the payload.
+    """
+
+    def __init__(self, payload):
+        self.payload = payload
+
+    def active_job_payload(self):
+        return self.payload
+
+
+async def test_the_catalog_reports_the_install_that_is_running(
+        anon_client, monkeypatch):
+    """How a panel opened mid-install -- a second tab, a reload -- finds the
+    job it should be following, and which row is busy."""
+    job = {"job_id": "j1", "plugin_id": "stats", "kind": "install",
+           "status": "running", "current_step": "deps"}
+    monkeypatch.setattr(app.state, "plugin_service",
+                        _StubInstaller(job), raising=False)
+
+    body = (await anon_client.get("/api/plugins/catalog")).json()
+    by_id = {entry["id"]: entry for entry in body["entries"]}
+
+    assert body["active_job"] == job
+    assert by_id["stats"]["status"] == "installing"
+    assert by_id["stats"]["job"] == {"job_id": "j1", "status": "running",
+                                     "current_step": "deps"}
+    assert by_id["foundations"]["job"] is None
+
+
+async def test_the_catalog_is_readable_with_no_installer_behind_it(
+        anon_client, monkeypatch):
+    """A read, not an install: a server whose installer never started can
+    still say what is installed. Nothing running answers the same way."""
+    monkeypatch.setattr(app.state, "plugin_service",
+                        _StubInstaller(None), raising=False)
+    assert (await anon_client.get("/api/plugins/catalog")).json()[
+        "active_job"] is None
+
+    monkeypatch.delattr(app.state, "plugin_service",
+                        raising=False)
+    body = (await anon_client.get("/api/plugins/catalog")).json()
+    assert body["active_job"] is None
+    assert body["entries"]
+
+
+async def test_the_lifespan_wires_the_two_installers_to_each_other(
+        tmp_path, monkeypatch):
+    """They install into one interpreter, so each has to be able to see the
+    other's running job. Built one after the other and wired through
+    ``app.state``, because whichever is built first cannot hold the other."""
+    monkeypatch.setenv("CODEFYUI_USER_DATA_DIR", str(tmp_path / "userdata"))
+    # The real one clears the root logger's handlers, which is not something
+    # a test in the middle of a suite should do to everybody else.
+    monkeypatch.setattr(main, "setup_logging", lambda **kwargs: None)
+
+    async with main.lifespan(app):
+        plugins, packs = app.state.plugin_service, app.state.pack_service
+        assert isinstance(plugins, PluginService)
+        assert plugins.current_job_id() is None
+
+        # Each closure must reach the OTHER service -- crossed wires would
+        # have each installer refusing itself and nothing refusing anybody.
+        monkeypatch.setattr(packs, "current_job_id", lambda: "pack-9")
+        monkeypatch.setattr(plugins, "current_job_id", lambda: "plugin-9")
+        assert plugins._busy_elsewhere() == "pack-9"
+        assert packs._busy_elsewhere() == "plugin-9"
+
+    assert app.state.plugin_service is None
+    assert app.state.pack_service is None
 
 
 # -- the shared reload -----------------------------------------------------
