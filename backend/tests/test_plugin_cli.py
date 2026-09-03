@@ -6,11 +6,15 @@ import argparse
 import io
 import signal
 import tarfile
-import tomllib
 from pathlib import Path
 from textwrap import dedent
 
 import pytest
+
+try:
+    import tomllib
+except ModuleNotFoundError:  # pragma: no cover - exercised only on the 3.10 CI lane
+    import tomli as tomllib  # 3.10 backport -- same API.
 
 import plugins as plugin_cli
 from app.core import plugin_loader
