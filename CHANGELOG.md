@@ -109,10 +109,13 @@ received — each links to the release it was published as.
   repository whose manifest now declares another id is refused rather than
   fetched, because updating one plugin and ending up with another, possibly
   on top of one of that name you already had, is not an update; and it leaves
-  a plugin you had switched off switched off. A pack that ships in this
-  release and a directory you linked for development are refused with the
-  reason rather than fetched too: the first updates with `cdui update`, and
-  the second is already whatever is on its author's disk right now.
+  a plugin you had switched off switched off — which the console now says out
+  loud after the success line, so an update that ends with the plugin's nodes
+  still missing from the palette does not read as one that failed. A pack that
+  ships in this release and a directory you linked for development are refused
+  with the reason rather than fetched too: the first updates with
+  `cdui update`, and the second is already whatever is on its author's disk
+  right now.
 
 - **`GET /api/plugins/catalog` — everything you can install and everything
   you have installed, in one listing.** The read half of the Plugin Center.
