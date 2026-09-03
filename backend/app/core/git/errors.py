@@ -275,12 +275,18 @@ _RULES: tuple[tuple[str, int, tuple[_Pattern, ...]], ...] = (
         "has no upstream branch",
         "There is no tracking information",
     )),
-    # git says both of these on STDOUT, not stderr. A caller that runs
+    # git says all three of these on STDOUT, not stderr. A caller that runs
     # ``commit`` therefore has to hand the stdout text in as well -- see
     # :func:`classify_failure`.
+    #
+    # The third is the one a repository with nothing but new files answers
+    # with, and it shares no phrase with the other two ("nothing ADDED to
+    # commit"): without it, the most ordinary empty commit there is -- a
+    # first commit where nobody staged anything -- would be a 500.
     ("nothing_to_commit", 409, (
         "nothing to commit",
         "no changes added to commit",
+        "nothing added to commit but untracked files present",
     )),
     ("identity_missing", 409, (
         "Please tell me who you are",

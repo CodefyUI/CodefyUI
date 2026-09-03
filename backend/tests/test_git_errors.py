@@ -232,6 +232,27 @@ def test_either_way_of_saying_nothing_to_commit_is_enough(line):
     assert classify_failure(_ARGV, 1, line + "\n").code == "nothing_to_commit"
 
 
+def test_untracked_files_only_is_also_nothing_to_commit():
+    """git's third phrasing, and the one it shares no words with the others.
+
+    A repository whose only changes are new files answers a commit with
+    "nothing ADDED to commit" -- which contains neither "nothing to commit"
+    nor "no changes added to commit". It is the most ordinary empty commit
+    there is (a first commit where nobody staged anything), and without its
+    own phrase it was a 500. Measured against git 2.53, on stdout, exit 1.
+    """
+    stdout = (
+        "On branch main\n"
+        "Untracked files:\n"
+        '  (use "git add <file>..." to include in what will be committed)\n'
+        "\tnew.py\n"
+        "\n"
+        'nothing added to commit but untracked files present (use "git add" '
+        "to track)\n")
+
+    assert classify_failure(_ARGV, 1, stdout).code == "nothing_to_commit"
+
+
 def test_a_local_permission_error_is_not_a_login_problem():
     """"Permission denied" on a lock file is not "your key was refused" --
     the auth row pairs it with the remote-read line for exactly this."""
@@ -293,6 +314,14 @@ def test_stderr_that_says_nothing_is_reported_as_nothing():
                  id="hook-missing-venv"),
     pytest.param("error: cannot lock ref: reference already exists\n",
                  id="not-a-branch-that-exists"),
+    # TWO lines, and the anchored one comes first: this is what a real
+    # failing hook looks like, and it pins the anchor to the LINE rather
+    # than to the stream. A matcher that searched the whole text would find
+    # "not found" on the second line, next to a "fatal: " on the first, and
+    # answer "git found no such object" for a missing linter.
+    pytest.param("fatal: cannot run .git/hooks/pre-commit: No such file or "
+                 "directory\nruff: command not found\n",
+                 id="hook-that-could-not-be-run"),
 ])
 def test_a_failing_hook_is_not_a_missing_object(stderr):
     """``commit`` runs the user's hooks, and their output lands on this same
