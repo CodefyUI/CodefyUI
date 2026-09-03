@@ -25,6 +25,7 @@ cdui plugin uninstall deep                 # 會被記住：sync 不會再把它
 | `foundations` | I1 Data Representation · I2 Classical ML | Edu-ColumnStats、Edu-KNN、Edu-LinearRegression、Edu-LogisticRegression、Edu-TokenEmbedding、Edu-FFN |
 | `deep` | I3 Vision · I4 Sequences | Edu-CrossAttention、Edu-ResBlock、Edu-SelfAttention、Edu-MultiHeadAttention、Edu-Patchify |
 | `rl` | I5 Reinforcement Learning | Edu-PolicyGradient |
+| `edu` | I1 Data Representation · I2 Classical ML（動手實作 labs） | FilterRows、SlidingWindow2D、SentenceEmbedding、Classifier、AdvancedClassifier、FFNLayer、ActivationLayer、TrainAndEvaluate |
 | `stats` | —（任何資料集） | Stats-Describe、Stats-GroupByAggregate、Stats-Histogram、Stats-Percentile、Stats-Correlation、Stats-ConfusionMatrix、Stats-TableView、Stats-ChartView |
 
 `stats` 是這裡的例外：它不是教科書的配套，而是給第三方外掛作者的實作範例。它只用 numpy 與 torch，以[第 0 級](#安全性三個層級)安裝且**整份 manifest 沒有 `[security]` 區段**；它的 [README](https://github.com/CodefyUI/CodefyUI/blob/main/plugins/stats/README.md) 正式記載了資料類外掛需要的兩份契約——表格如何在連接埠之間傳遞，以及 `chart` 輸出如何宣告與繪製。
