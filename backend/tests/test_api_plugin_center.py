@@ -55,6 +55,7 @@ from pathlib import Path
 import pytest
 from fastapi import HTTPException
 from fastapi.routing import APIRoute
+from starlette.routing import Match
 from httpx import ASGITransport, AsyncClient
 
 from app.api import routes_plugins
@@ -1795,6 +1796,18 @@ UNINSTALL_KEYS = ["id", "removed", "tombstoned", "files_removed",
 #: edit and a re-discovery, neither of which the installer owns.
 LIFECYCLE = [("DELETE", "/api/plugins/demo-external", None)]
 
+#: The mutating routes that are token-only ON PURPOSE, by path TEMPLATE --
+#: they change something and carry no loopback gate, because all three act on
+#: code this machine already has and the user already agreed to. A list rather
+#: than a comment so that the structural test below can say every mutating
+#: route is in exactly one of the three buckets: a new route that lands in
+#: none of them is the one that would otherwise ship ungated in silence.
+TOKEN_ONLY = [
+    "/api/plugins/reload",
+    "/api/plugins/{plugin_id}/enable",
+    "/api/plugins/{plugin_id}/disable",
+]
+
 
 def lockfile_of(user_root: Path) -> dict:
     """The lockfile as it is ON DISK, not as some cache remembers it."""
@@ -2511,6 +2524,74 @@ async def test_the_toggles_stay_token_only(client, monkeypatch, forgetting):
     response = await client.post("/api/plugins/deep/enable")
     assert response.status_code == 200, response.text
     assert response.json() == {"id": "deep", "enabled": True}
+
+
+def _template_of(method: str, path: str) -> str:
+    """The registered path the router would serve ``method path`` from.
+
+    The walk lists post to CONCRETE ids -- ``/api/plugins/demo-external``,
+    ``/api/plugins/no-such-job/cancel`` -- and the router registers
+    templates. Rather than write the templates down a second time (a list
+    that can drift from the walks it claims to describe), the mapping is
+    asked of Starlette's own matcher, in registration order, exactly as a
+    request is resolved. A walk entry no route answers fails here, which is
+    itself worth catching.
+    """
+    scope = {"type": "http", "method": method, "path": path,
+             "root_path": "", "headers": []}
+    for route in routes_plugins.router.routes:
+        if isinstance(route, APIRoute) and route.matches(scope)[0] is Match.FULL:
+            return route.path
+    raise AssertionError(f"no route answers {method} {path}")
+
+
+def test_every_mutating_route_is_in_exactly_one_gate_bucket():
+    """No route under ``/api/plugins`` may change something without saying
+    which gate it is behind.
+
+    The three buckets are the three answers this router gives: ``MUTATING``
+    (token + loopback, and 503 without an installer), ``LIFECYCLE`` (token +
+    loopback, answered without one) and ``TOKEN_ONLY``. Each of them is
+    walked by tests above; what is missing until here is the question none of
+    those walks can ask -- whether the router has a route that NO walk
+    covers. A route added below the ones already here would be tested by
+    nothing, and the way that ships is silently.
+
+    The loopback dependency is read off the route as well, so a bucket cannot
+    be a label somebody typed: a path listed with the install path but
+    declared without ``_require_local_plugin_install`` fails here rather than
+    on a LAN.
+    """
+    buckets = {
+        "MUTATING": {_template_of(method, path) for method, path, _ in MUTATING},
+        "LIFECYCLE": {_template_of(method, path) for method, path, _ in LIFECYCLE},
+        "TOKEN_ONLY": set(TOKEN_ONLY),
+    }
+    mutating_methods = {"POST", "PUT", "PATCH", "DELETE"}
+
+    listed: set[str] = set()
+    for route in routes_plugins.router.routes:
+        if not isinstance(route, APIRoute):
+            continue
+        if not route.methods & mutating_methods:
+            continue
+        named = [name for name, paths in buckets.items()
+                 if route.path in paths]
+        assert len(named) == 1, (
+            f"{sorted(route.methods)} {route.path} is in {named or 'no'} "
+            f"bucket; add it to one (and to that bucket's walk)")
+        listed.add(route.path)
+
+        gated = any(
+            dependency.call is routes_plugins._require_local_plugin_install
+            for dependency in route.dependant.dependencies)
+        assert gated is (named[0] != "TOKEN_ONLY"), (
+            f"{route.path} is listed as {named[0]} but "
+            f"{'declares' if gated else 'does not declare'} the loopback gate")
+
+    # And nothing in a bucket that the router does not have: a walk left
+    # behind by a deleted route passes vacuously otherwise.
+    assert set().union(*buckets.values()) == listed
 
 
 # -- the reserved id, off the exception ------------------------------------
