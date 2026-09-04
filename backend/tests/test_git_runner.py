@@ -20,6 +20,8 @@ fake, following ``test_packs_runner.py``.
 
 from __future__ import annotations
 
+import os
+import signal
 import subprocess
 import sys
 import tempfile
@@ -41,14 +43,17 @@ class _FakeProc:
     """A finished (or hung) git process, without the process."""
 
     def __init__(self, *, stdout: bytes = b"", stderr: bytes = b"",
-                 returncode: int = 0, hangs: bool = False):
+                 returncode: int = 0, hangs: bool = False,
+                 ignores_sigterm: bool = False):
         self._stdout = stdout
         self._stderr = stderr
         self._returncode = returncode
         self._hangs = hangs
+        self._ignores_sigterm = ignores_sigterm
         self.pid = 4242
         self.returncode: int | None = None
         self.communicate_calls: list[tuple] = []
+        self.wait_calls: list[float | None] = []
 
     def communicate(self, data=None, timeout=None):
         self.communicate_calls.append((data, timeout))
@@ -56,6 +61,14 @@ class _FakeProc:
             raise subprocess.TimeoutExpired(cmd="git", timeout=timeout or 0)
         self.returncode = self._returncode
         return self._stdout, self._stderr
+
+    def wait(self, timeout=None):
+        """What the POSIX kill path waits on between its two signals."""
+        self.wait_calls.append(timeout)
+        if self._ignores_sigterm:
+            raise subprocess.TimeoutExpired(cmd="git", timeout=timeout or 0)
+        self.returncode = -15
+        return self.returncode
 
 
 def _fake_popen(monkeypatch, proc: _FakeProc) -> dict:
@@ -77,6 +90,20 @@ def _fresh_caches():
     runner._reset_for_tests()
     yield
     runner._reset_for_tests()
+
+
+@pytest.fixture(autouse=True)
+def _no_inherited_ssh_setting(monkeypatch):
+    """No test here inherits the developer's own ssh configuration.
+
+    BOTH variables, because either one answers the question ``git_env``
+    asks: a machine that exports ``GIT_SSH`` -- which a corporate setup
+    really does -- would otherwise skip the probe and turn every assertion
+    below about batch mode into a pass for the wrong reason. The tests that
+    are ABOUT one of them set it back.
+    """
+    for name in runner.SSH_ENV_VARS:
+        monkeypatch.delenv(name, raising=False)
 
 
 @pytest.fixture
@@ -292,6 +319,31 @@ def test_env_keeps_the_users_own_ssh_command(monkeypatch):
     assert probes == []
 
 
+def test_env_keeps_the_legacy_git_ssh_variable(monkeypatch):
+    """``GIT_SSH`` is a setting too, and ours would REPLACE it silently.
+
+    It is the old spelling -- it names an ssh BINARY rather than a command
+    line -- and git reads ``GIT_SSH_COMMAND`` in preference to it. So a
+    default written into the modern variable does not sit beside a
+    ``GIT_SSH``, it overrides it: the wrapper script a corporate setup puts
+    there (a key, a jump host, a smartcard) would never run, and the user
+    would have no way to tell from the failure.
+
+    The probe must not run either: the environment has already answered.
+    """
+    monkeypatch.setattr(runner, "git_executable", lambda: _GIT)
+    monkeypatch.setenv("GIT_SSH", "C:/corp/ssh-wrapper.exe")
+    probes: list[int] = []
+    monkeypatch.setattr(runner, "_ssh_command_configured",
+                        lambda: probes.append(1) or False)
+
+    env = runner.git_env()
+
+    assert "GIT_SSH_COMMAND" not in env
+    assert env["GIT_SSH"] == "C:/corp/ssh-wrapper.exe"
+    assert probes == []
+
+
 def test_env_adds_batch_mode_when_nothing_is_configured(monkeypatch):
     """No env var and no ``core.sshCommand``: ssh must fail fast, not ask.
 
@@ -299,7 +351,8 @@ def test_env_adds_batch_mode_when_nothing_is_configured(monkeypatch):
     confirmation on a server that has no terminal to answer it.
     """
     monkeypatch.setattr(runner, "git_executable", lambda: _GIT)
-    monkeypatch.delenv("GIT_SSH_COMMAND", raising=False)
+    for name in runner.SSH_ENV_VARS:
+        monkeypatch.delenv(name, raising=False)
     # ``git config --get`` exits 1 for "unset", which is an ok_code here.
     _fake_popen(monkeypatch, _FakeProc(returncode=1))
 
@@ -309,7 +362,6 @@ def test_env_adds_batch_mode_when_nothing_is_configured(monkeypatch):
 def test_env_leaves_ssh_alone_when_core_sshcommand_is_set(monkeypatch):
     """A user who configured ssh in git config gets their configuration."""
     monkeypatch.setattr(runner, "git_executable", lambda: _GIT)
-    monkeypatch.delenv("GIT_SSH_COMMAND", raising=False)
     _fake_popen(monkeypatch, _FakeProc(stdout=b"ssh -i C:/keys/id_ed25519\n"))
 
     assert "GIT_SSH_COMMAND" not in runner.git_env()
@@ -318,7 +370,6 @@ def test_env_leaves_ssh_alone_when_core_sshcommand_is_set(monkeypatch):
 def test_ssh_probe_runs_once_per_process(monkeypatch):
     """The answer cannot change often enough to be worth a process a poll."""
     monkeypatch.setattr(runner, "git_executable", lambda: _GIT)
-    monkeypatch.delenv("GIT_SSH_COMMAND", raising=False)
     calls: list[list[str]] = []
 
     def _popen(argv, **kwargs):
@@ -350,7 +401,6 @@ def test_the_probe_never_asks_the_servers_own_repository(monkeypatch, tmp_path):
     project reaches its remotes.
     """
     monkeypatch.setattr(runner, "git_executable", lambda: _GIT)
-    monkeypatch.delenv("GIT_SSH_COMMAND", raising=False)
     # A repository, standing in for the checkout the server runs from.
     (tmp_path / ".git").mkdir()
     monkeypatch.chdir(tmp_path)
@@ -374,7 +424,6 @@ def test_a_probe_that_failed_is_not_repeated_on_every_command(monkeypatch):
     clock = [1000.0]
     calls: list[list[str]] = []
     monkeypatch.setattr(runner, "git_executable", lambda: _GIT)
-    monkeypatch.delenv("GIT_SSH_COMMAND", raising=False)
     monkeypatch.setattr(runner, "time",
                         types.SimpleNamespace(monotonic=lambda: clock[0]))
 
@@ -402,7 +451,6 @@ def test_a_probe_that_could_not_run_is_not_remembered(monkeypatch):
     overriding a ``core.sshCommand`` the user really has.
     """
     monkeypatch.setattr(runner, "git_executable", lambda: None)
-    monkeypatch.delenv("GIT_SSH_COMMAND", raising=False)
     assert runner.git_env()["GIT_SSH_COMMAND"] == "ssh -oBatchMode=yes"
 
     monkeypatch.setattr(runner, "git_executable", lambda: _GIT)
@@ -447,15 +495,68 @@ def test_posix_creationflags_are_zero(monkeypatch, fake_git):
     assert seen["kwargs"]["creationflags"] == 0
 
 
+def test_a_posix_child_gets_a_session_of_its_own(monkeypatch, fake_git):
+    """``start_new_session`` is the whole POSIX kill story in one kwarg.
+
+    Without it, git and the ``ssh`` it starts sit in the SERVER's process
+    group, and the only thing a timeout can reach is git itself -- so the
+    ssh that is actually blocked on the network survives, holding the index
+    lock the next request needs. With it, the child is its own session
+    leader and its pid IS the group id.
+    """
+    monkeypatch.setattr(sys, "platform", "linux")
+
+    _, seen = _run(monkeypatch, _FakeProc())
+
+    assert seen["kwargs"]["start_new_session"] is True
+
+
+def test_a_windows_child_is_started_exactly_as_before(monkeypatch, fake_git):
+    """Windows takes its group from ``creationflags`` and ignores the kwarg.
+
+    Passing it anyway would be a no-op that reads like a promise, and the
+    kill there is ``taskkill /F /T`` -- which walks the tree from the pid
+    and needs nothing from the way the child was started.
+    """
+    monkeypatch.setattr(sys, "platform", "win32")
+
+    _, seen = _run(monkeypatch, _FakeProc())
+
+    assert "start_new_session" not in seen["kwargs"]
+
+
 # --- failures --------------------------------------------------------------
+
+
+def _posix_kill(monkeypatch) -> list[tuple[int, int]]:
+    """Fake the POSIX group-kill calls; returns what was signalled.
+
+    ``os.killpg``, ``os.getpgid`` and ``signal.SIGKILL`` do not exist on
+    Windows, which is where this suite usually runs -- so all three are
+    installed with ``raising=False``. On Linux, where they do exist, the
+    fakes replace the real ones for the length of the test, which is the
+    point: no test in this file may signal anything.
+    """
+    sent: list[tuple[int, int]] = []
+    monkeypatch.setattr(sys, "platform", "linux")
+    monkeypatch.setattr(signal, "SIGKILL", 9, raising=False)
+    monkeypatch.setattr(os, "getpgid", lambda pid: pid, raising=False)
+    monkeypatch.setattr(
+        os, "killpg", lambda pgid, sig: sent.append((pgid, sig)),
+        raising=False)
+    return sent
 
 
 def test_timeout_kills_the_tree_and_reports_504(monkeypatch, fake_git):
     """A hung git is killed with its children, and says so as a 504.
 
     Killing the TREE matters: what hangs is usually the ssh or curl git
-    started, and it holds the index lock the next request needs.
+    started, and it holds the index lock the next request needs. On Windows
+    that is ``taskkill /F /T`` from the pid, which is ``stop_process`` --
+    the platform is stated because the POSIX path below is a different kill
+    entirely.
     """
+    monkeypatch.setattr(sys, "platform", "win32")
     proc = _FakeProc(hangs=True)
     stopped: list = []
     monkeypatch.setattr(runner, "stop_process", stopped.append)
@@ -469,6 +570,69 @@ def test_timeout_kills_the_tree_and_reports_504(monkeypatch, fake_git):
     assert stopped == [proc]
     # The pipes are collected afterwards, so no zombie and no warning.
     assert len(proc.communicate_calls) == 2
+
+
+def test_a_timeout_on_posix_signals_the_whole_group(monkeypatch, fake_git):
+    """``SIGTERM`` to the GROUP, not ``terminate()`` to the child alone.
+
+    ``stop_process`` on POSIX is ``proc.terminate()``, which reaches git and
+    nothing it started -- so the ssh blocked on a network read survives its
+    parent. The signal goes to the negative-pid group instead, and a child
+    that stops on the first one is never sent the second.
+    """
+    sent = _posix_kill(monkeypatch)
+    proc = _FakeProc(hangs=True)
+    monkeypatch.setattr(runner, "stop_process",
+                        lambda _proc: pytest.fail("the Windows kill ran"))
+    _fake_popen(monkeypatch, proc)
+
+    with pytest.raises(GitError) as excinfo:
+        runner.run_git(["fetch"], cwd=Path.cwd(), timeout=10)
+
+    assert excinfo.value.code == "timeout"
+    assert sent == [(proc.pid, signal.SIGTERM)]
+    assert proc.wait_calls == [runner.DRAIN_TIMEOUT_S]
+    assert len(proc.communicate_calls) == 2
+
+
+def test_a_posix_child_that_ignores_sigterm_is_killed(monkeypatch, fake_git):
+    """A credential helper that will not stop is not allowed to hold on.
+
+    It holds the pipes, and the index lock behind them, for as long as it
+    likes -- so the second signal is the one that cannot be ignored, sent
+    after the same grace ``_drain`` gives.
+    """
+    sent = _posix_kill(monkeypatch)
+    proc = _FakeProc(hangs=True, ignores_sigterm=True)
+    _fake_popen(monkeypatch, proc)
+
+    with pytest.raises(GitError):
+        runner.run_git(["fetch"], cwd=Path.cwd(), timeout=10)
+
+    assert sent == [(proc.pid, signal.SIGTERM), (proc.pid, signal.SIGKILL)]
+
+
+def test_a_posix_group_that_is_already_gone_is_not_an_error(monkeypatch,
+                                                            fake_git):
+    """A child that exited between the timeout and the signal is the
+    outcome being asked for, not a second failure on top of the 504."""
+    monkeypatch.setattr(sys, "platform", "linux")
+    monkeypatch.setattr(signal, "SIGKILL", 9, raising=False)
+
+    def _gone(pid):
+        raise ProcessLookupError(3, "No such process")
+
+    monkeypatch.setattr(os, "getpgid", _gone, raising=False)
+    monkeypatch.setattr(
+        os, "killpg",
+        lambda pgid, sig: pytest.fail("signalled a group that is gone"),
+        raising=False)
+    _fake_popen(monkeypatch, _FakeProc(hangs=True))
+
+    with pytest.raises(GitError) as excinfo:
+        runner.run_git(["fetch"], cwd=Path.cwd(), timeout=10)
+
+    assert excinfo.value.code == "timeout"
 
 
 def test_missing_git_never_spawns(monkeypatch):

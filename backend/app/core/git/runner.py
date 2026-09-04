@@ -30,19 +30,20 @@ back to the command that caused it.
   :attr:`GitResult.out` / :attr:`GitResult.err`'s job -- utf-8 with
   ``errors="replace"``, which is what ``core/project.py`` has always done
   for git output on a cp950 machine.
-* **A killable process tree -- on Windows.** ``creation_flags()`` gives the
-  child its own Windows process group and ``stop_process()`` ends it with
-  ``taskkill /T``, so a timeout reaches ``git`` AND the ``ssh``/``curl`` it
-  spawned; it is the same kill the Package Center uses. On POSIX it is NOT
-  a tree: ``creation_flags()`` is 0 there and ``stop_process()`` calls
-  ``terminate()`` on the child alone, so a git killed mid-fetch can leave
-  an ``ssh`` behind. That is stated rather than glossed because it is only
-  survivable while nothing here talks to a network: every G1 command is
-  local, and a local git has no long-lived children. G3 adds the ones that
-  do, and owes this module a process group of its own on POSIX
-  (``start_new_session=True`` and a kill aimed at the group) before it
-  ships them. A git that hangs on a network read holds an index lock, so
-  leaving one behind breaks the NEXT request too.
+* **A killable process tree, on both platforms.** A timeout has to reach
+  ``git`` AND the ``ssh``/``curl``/credential helper it started: those are
+  what actually block on a network, and the git waiting for them holds an
+  index lock the NEXT request needs. On Windows ``creation_flags()`` gives
+  the child its own process group and ``stop_process()`` ends it with
+  ``taskkill /T`` -- the same kill the Package Center uses. On POSIX
+  :func:`_run` asks for a session of its own (``start_new_session=True``)
+  and :func:`_kill_group` aims the signals at the whole group: ``SIGTERM``
+  first, then ``SIGKILL`` :data:`DRAIN_TIMEOUT_S` later for a child that
+  ignored it. ``stop_process`` alone is NOT enough there -- it calls
+  ``terminate()`` on the child, which leaves the ssh behind -- and until G3
+  added the commands that talk to a network there was nothing here for it
+  to leave: every G1 command is local, and a local git has no long-lived
+  children.
 * **An environment scrubbed of the caller's repository.** ``GIT_DIR`` and
   its five friends (:data:`REPOSITORY_ENV_VARS`) name a repository; if the
   server was started from a shell inside a git hook, every command here
@@ -62,9 +63,12 @@ the second test in a file depend on the first.
 
 from __future__ import annotations
 
+import os
 import re
 import shutil
+import signal
 import subprocess
+import sys
 import tempfile
 import time
 from collections.abc import Container, Sequence
@@ -160,6 +164,16 @@ REPOSITORY_ENV_VARS: tuple[str, ...] = (
 #: may name a key, a jump host or a Windows OpenSSH binary that ours does
 #: not know about.
 DEFAULT_GIT_SSH_COMMAND = "ssh -oBatchMode=yes"
+
+#: The three ways a user says how ssh should be run, in git's own order of
+#: precedence. Two of them are environment variables and the third is
+#: config; :func:`git_env` leaves ALL of them alone (see its docstring).
+#:
+#: ``GIT_SSH`` is the legacy one and names a BINARY rather than a command
+#: line, which is why it cannot simply be copied into ``GIT_SSH_COMMAND``
+#: -- and why it has to be looked for: ``GIT_SSH_COMMAND`` WINS over it, so
+#: injecting a default would quietly discard a setting the user made.
+SSH_ENV_VARS: tuple[str, ...] = ("GIT_SSH_COMMAND", "GIT_SSH")
 
 #: How long a NEGATIVE answer about git is trusted. Long enough that a
 #: status poll does not re-scan PATH, short enough that installing git does
@@ -367,9 +381,19 @@ def git_env(*, read_only: bool = False) -> dict[str, str]:
     index lock to refresh its cache, and a status poll every two seconds
     that fights a real operation for that lock is worse than a status that
     is occasionally a little stale.
+
+    The default :data:`DEFAULT_GIT_SSH_COMMAND` is injected only when the
+    user's setup has NO opinion about ssh -- neither of
+    :data:`SSH_ENV_VARS` is set and ``core.sshCommand`` is not configured.
+    The legacy ``GIT_SSH`` is checked as carefully as the modern variable
+    because ``GIT_SSH_COMMAND`` takes PRECEDENCE over it: writing ours would
+    not sit beside theirs, it would replace it -- and theirs is usually the
+    only thing that knows about a key, a jump host or a corporate wrapper
+    script. Batch mode is a good guess and a bad override.
     """
     env = _base_git_env()
-    if not env.get("GIT_SSH_COMMAND") and not _ssh_command_configured():
+    if (not any(env.get(name) for name in SSH_ENV_VARS)
+            and not _ssh_command_configured()):
         env["GIT_SSH_COMMAND"] = DEFAULT_GIT_SSH_COMMAND
     if read_only:
         env["GIT_OPTIONAL_LOCKS"] = "0"
@@ -436,6 +460,70 @@ def _drain(proc: subprocess.Popen) -> None:
         pass
 
 
+def _session_kwargs() -> dict[str, bool]:
+    """``start_new_session=True``, on the platform where it means something.
+
+    It is what puts git and everything it starts into ONE process group,
+    which is the only handle :func:`_kill_group` can aim a signal at. Passed
+    on POSIX alone: Windows ignores the argument (the group there comes from
+    ``creation_flags()``), and a kwarg that does nothing is a kwarg somebody
+    later reads as doing something.
+    """
+    return {} if sys.platform == "win32" else {"start_new_session": True}
+
+
+def _stop(proc: subprocess.Popen) -> None:
+    """End a git that timed out, and everything it started.
+
+    Two implementations because the two platforms hand back two different
+    handles. Windows: ``stop_process`` runs ``taskkill /F /T``, which walks
+    the tree from the pid -- the Package Center's own kill, unchanged.
+    POSIX: the child is the leader of its own session (see
+    :func:`_session_kwargs`), so the group id IS the pid and one signal
+    reaches every descendant.
+    """
+    if sys.platform == "win32":
+        stop_process(proc)
+        return
+    _kill_group(proc)
+
+
+def _kill_group(proc: subprocess.Popen) -> None:
+    """POSIX: ``SIGTERM`` the whole group, then ``SIGKILL`` what survives.
+
+    ``SIGTERM`` first because an ssh that is asked to stop closes its
+    connection and its pty; ``SIGKILL`` after :data:`DRAIN_TIMEOUT_S`
+    because a credential helper that ignores the first signal would
+    otherwise hold the pipes -- and the index lock -- open for as long as it
+    liked.
+
+    Every failure here means the group is already gone, which is the
+    outcome being asked for: a race with a child that exited on its own must
+    not turn into a 500 on top of the 504 the caller is about to raise.
+    """
+    try:
+        pgid = os.getpgid(proc.pid)
+    except OSError:
+        return
+    if not _signal_group(pgid, signal.SIGTERM):
+        return
+    try:
+        proc.wait(timeout=DRAIN_TIMEOUT_S)
+        return
+    except subprocess.TimeoutExpired:
+        pass
+    _signal_group(pgid, signal.SIGKILL)
+
+
+def _signal_group(pgid: int, sig: int) -> bool:
+    """Signal one process group; False when there was nothing left to signal."""
+    try:
+        os.killpg(pgid, sig)
+    except OSError:
+        return False
+    return True
+
+
 def _run(args: Sequence[str], *, cwd: Path, timeout: float,
          env: dict[str, str], input_bytes: bytes | None = None,
          ok_codes: Container[int] = (0,),
@@ -464,6 +552,10 @@ def _run(args: Sequence[str], *, cwd: Path, timeout: float,
             stderr=subprocess.PIPE,
             env=env,
             creationflags=creation_flags(),
+            # POSIX only, and only worth anything for the commands that
+            # start an ssh: it is what makes the timeout below able to kill
+            # the children too. See ``_session_kwargs``.
+            **_session_kwargs(),
         )
     except FileNotFoundError:
         raise GitError("git_missing", 503,
@@ -481,7 +573,7 @@ def _run(args: Sequence[str], *, cwd: Path, timeout: float,
         # Kill the TREE: git's own children (ssh, curl, a credential
         # helper) are what tend to be blocked, and they hold the index lock
         # that the next request needs.
-        stop_process(proc)
+        _stop(proc)
         _drain(proc)
         raise GitError("timeout", 504,
                        f"git took longer than {timeout:g}s and was stopped")
