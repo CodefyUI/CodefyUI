@@ -387,12 +387,21 @@ def unstage_paths(root: Path, paths: Sequence[str] | None = None
     to whichever of the two commands this repository's HEAD allows. A
     conflicted path is NOT in it: it is not staged, and taking it out of
     the index would throw away the three versions a merge tool needs.
+
+    A staged RENAME is two paths and one entry. porcelain v2 reports it as
+    a single ``2`` record carrying the new name and the old one, so a list
+    built from ``entry.path`` alone names only half of it -- and restoring
+    half a rename leaves the other half staged: ``restore --staged b.txt``
+    after ``git mv a.txt b.txt`` leaves ``a.txt`` staged as a DELETION
+    (measured on git 2.53), so "unstage everything" left the index dirty
+    and the panel showed a deletion nobody asked for. Both names go in.
     """
     status = repo.read_status(root)
     unborn = status.unborn
     if paths is None:
         kept, skipped = _tree_selection(
-            root, (entry.path for entry in status.staged))
+            root, (name for entry in status.staged
+                   for name in (entry.path, entry.orig_path) if name))
         args = (["rm", "--cached", "-r", "-q"] if unborn
                 else ["restore", "--staged"])
         _run_over(root, args, kept, timeout=T_LOCAL)

@@ -632,6 +632,25 @@ async def test_unstage_all_empties_the_index(repo):
     assert [entry.path for entry in result.status.untracked] == ["new.txt"]
 
 
+async def test_unstage_all_clears_both_halves_of_a_staged_rename(repo):
+    """A rename is one status entry and TWO paths.
+
+    ``git mv a.txt b.txt`` is a single porcelain-v2 ``2`` record naming
+    ``b.txt`` with ``a.txt`` beside it, so a whole-tree unstage built from
+    the new names alone runs ``restore --staged b.txt`` and leaves ``a.txt``
+    staged as a deletion -- an index that "unstage everything" claimed to
+    have emptied, showing a deletion the user never made.
+    """
+    repo.git("mv", "a.txt", "b.txt")
+    staged = (await repo.service.status()).status.staged
+    assert [entry.orig_path for entry in staged] == ["a.txt"]
+
+    result = await repo.service.unstage(all_paths=True)
+
+    assert result.status.staged == []
+    assert "b.txt" in [entry.path for entry in result.status.untracked]
+
+
 async def test_unstage_on_an_unborn_branch_uses_rm_cached(make_repo):
     """There is no HEAD to restore from yet, so ``restore --staged`` and
     ``reset`` both fail; ``rm --cached`` is the spelling that works."""
