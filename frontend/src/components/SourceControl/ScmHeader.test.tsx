@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { act, render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { ScmHeader } from './ScmHeader';
 import { refSectionIds } from './RefSection';
 import { useI18n } from '../../i18n';
@@ -307,6 +307,34 @@ describe('ScmHeader: Sync, Publish and the remote picker', () => {
     expect(refreshRefs).toHaveBeenCalledTimes(1);
   });
 
+  it('asks again on the next status the server answers, when the read failed', async () => {
+    // A failed refs read leaves `remotes` null, so a read that is never retried
+    // hides Publish for as long as the panel stays open. Every status the poll
+    // brings back is evidence the server is answering, and another chance.
+    render(<ScmHeader />);
+    await waitFor(() => expect(refreshRefs).toHaveBeenCalledTimes(1));
+    act(() => {
+      useGitStore.setState({ status: status() });
+    });
+    await waitFor(() => expect(refreshRefs).toHaveBeenCalledTimes(2));
+  });
+
+  it('gives up after three refused reads rather than asking once a poll forever', async () => {
+    // Nobody pressed anything, so a read that keeps being refused would rewrite
+    // the error line every fifteen seconds for the life of the tab.
+    render(<ScmHeader />);
+    for (let i = 0; i < 5; i += 1) {
+      act(() => {
+        useGitStore.setState({ status: status() });
+      });
+    }
+    await waitFor(() => expect(refreshRefs).toHaveBeenCalledTimes(3));
+    act(() => {
+      useGitStore.setState({ status: status() });
+    });
+    expect(refreshRefs).toHaveBeenCalledTimes(3);
+  });
+
   it('offers Sync on a branch that has an upstream', () => {
     useGitStore.setState({ status: published(), remotes: [remote('origin')] });
     render(<ScmHeader />);
@@ -396,8 +424,11 @@ describe('ScmHeader: what the git actions are refused for', () => {
   });
 
   it('refuses everything but Fetch on a detached HEAD', () => {
+    // A detached HEAD has no branch, so no upstream either -- and the reason
+    // the rows give is the detachment, which is checked before the missing
+    // upstream and is the one a reader can act on.
     useGitStore.setState({
-      status: status({ branch: null, detached: true, upstream: 'origin/main' }),
+      status: status({ branch: null, detached: true }),
       remotes: [remote('origin')],
     });
     render(<ScmHeader />);
@@ -434,6 +465,30 @@ describe('ScmHeader: what the git actions are refused for', () => {
     expect(refusal('Stash Changes...')).toBe(
       'Merge in progress: resolve each file, then commit.',
     );
+  });
+
+  it('drops Publish where the branch line is already offering the picker', () => {
+    // With several remotes the row could only send a publish naming none of
+    // them, which the server refuses with a 400 -- and the picker that answers
+    // that refusal is on the branch line before the row is ever pressed.
+    useGitStore.setState({ remotes: [remote('origin'), remote('backup')] });
+    render(<ScmHeader />);
+    openMore();
+    expect(screen.queryByRole('menuitem', { name: 'Publish Branch' })).toBeNull();
+    expect(refusal('Fetch')).toBeNull();
+  });
+
+  it('drops Publish on a branch that already has an upstream', () => {
+    // The branch line hides Publish there and offers Sync instead; a row that
+    // disagreed would push with --set-upstream on a branch that tracks one.
+    useGitStore.setState({
+      status: status({ upstream: 'origin/main', ahead: 0, behind: 0 }),
+      remotes: [remote('origin')],
+    });
+    render(<ScmHeader />);
+    openMore();
+    expect(screen.queryByRole('menuitem', { name: 'Publish Branch' })).toBeNull();
+    expect(refusal('Push')).toBeNull();
   });
 
   it('leaves a refused row focusable, so the reason can be reached', () => {

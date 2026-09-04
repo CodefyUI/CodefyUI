@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useId, useState } from 'react';
+import { useCallback, useEffect, useId, useRef, useState } from 'react';
 import { isLayoutFile, useGitStore } from '../../store/gitStore';
 import { useI18n } from '../../i18n';
 import { docsUrl } from '../../utils/docsUrl';
@@ -50,6 +50,17 @@ export function focusScmFallback(): void {
 
 /** The four overflow rows that talk to a remote, in the order they are drawn. */
 type RemoteAction = 'fetch' | 'pull' | 'push' | 'publish';
+
+/**
+ * How many times one panel asks for the remote list before it gives up.
+ *
+ * The read is automatic -- nobody pressed anything -- so a server that keeps
+ * refusing it would otherwise put a fresh error line on screen every fifteen
+ * seconds for as long as the tab is open. Three attempts covers a server that
+ * was restarting while the panel opened; past that the list is read again by
+ * anything that opens the Remotes section, writes a remote, or reopens the tab.
+ */
+const REMOTES_READ_TRIES = 3;
 
 /**
  * The tab's title row, the branch line, the busy bar and the error line.
@@ -110,14 +121,30 @@ export function ScmHeader() {
     && status.untracked.length === 0
     && status.conflicted.length === 0;
 
+  // Attempts spent on the remote list, for the life of this panel.
+  const remoteTries = useRef(0);
+
   useEffect(() => {
     // The Sync / Publish / neither decision needs to know whether there IS a
     // remote, and nothing else in the tab asks until a section is opened. One
-    // read per panel: every write that can change the list refreshes it after
-    // that, and a failure leaves `remotes` null, which this effect does not
-    // re-enter because its dependencies have not moved.
-    if (repoState === 'ready' && remotes === null) void refreshRefs('remotes');
-  }, [refreshRefs, remotes, repoState]);
+    // read is normally all it takes: every write that can change the list
+    // refreshes it afterwards.
+    //
+    // A read that FAILS leaves `remotes` null, and null hides Publish -- so
+    // `status` is a dependency here, as a clock rather than a value: each
+    // status the poll brings back is both evidence that the server is
+    // answering and another chance at the read that was not. Without it, one
+    // refused read hid Publish for the life of the panel.
+    if (repoState !== 'ready') {
+      // Another repository, or none: the next one gets a fresh budget.
+      remoteTries.current = 0;
+      return;
+    }
+    if (status === null || remotes !== null) return;
+    if (remoteTries.current >= REMOTES_READ_TRIES) return;
+    remoteTries.current += 1;
+    void refreshRefs('remotes');
+  }, [refreshRefs, remotes, repoState, status]);
 
   /**
    * Publish this branch, resolving WHICH remote first.
@@ -125,11 +152,16 @@ export function ScmHeader() {
    * `remotes` is null until something reads it, and a publish that names no
    * remote is refused with a 400 whenever there is more than one to choose
    * between -- so the list is read before the decision rather than after the
-   * refusal. Exactly one remote publishes straight to it; several leave the
-   * choice to the picker the button turns into (and, from the overflow menu
-   * where there is no picker, to the server's refusal and the follow-up
-   * beside it); none sends nothing at all, which is what keeps a repository
-   * with no remote from asking the same refused question twice.
+   * refusal. Exactly one remote publishes straight to it; none sends nothing
+   * at all, which is what keeps a repository with no remote from asking the
+   * same refused question twice.
+   *
+   * Several remotes are the picker's business, and every control that offers
+   * Publish with a list already in hand IS the picker. The last line is what
+   * is left for the one case that cannot be: a button pressed in the moment
+   * before the list landed, on a repository that turns out to have several. It
+   * sends the publish the server will refuse, because the refusal carries the
+   * follow-up -- which, by the time it is drawn, is that picker.
    */
   const publishBranch = useCallback(async () => {
     let list = useGitStore.getState().remotes;
@@ -172,6 +204,19 @@ export function ScmHeader() {
     return null;
   };
 
+  /**
+   * Whether the overflow menu carries a Publish row at all.
+   *
+   * It offers Publish where the branch line offers it, and nowhere else. Two
+   * states where the line does not: a branch that already tracks an upstream
+   * has nothing to publish (the line shows Sync), and a repository with
+   * several remotes is answered by the picker the line's own button opens --
+   * a row here could only send a publish naming no remote, which the server
+   * refuses with a 400. Where the row is dropped, the control that replaces it
+   * is already on screen.
+   */
+  const publishInMenu = !hasUpstream && !(remotes !== null && remotes.length > 1);
+
   const stashRefusedBecause = status?.merge_in_progress === true
     ? t('git.merge.banner')
     : clean
@@ -210,9 +255,13 @@ export function ScmHeader() {
         gitRow('push', t('git.action.push'), refusedBecause('push'), () => {
           void runPush();
         }),
-        gitRow('publish', t('git.action.publish'), refusedBecause('publish'), () => {
-          void publishBranch();
-        }),
+        ...(publishInMenu
+          ? [
+            gitRow('publish', t('git.action.publish'), refusedBecause('publish'), () => {
+              void publishBranch();
+            }),
+          ]
+          : []),
         gitRow('stash', t('git.action.stash'), stashRefusedBecause, () => {
           void askThenStash();
         }),
