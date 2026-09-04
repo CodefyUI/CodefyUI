@@ -223,24 +223,34 @@ export function ScmHeader() {
       {(lastError !== null || loadError !== null) && (
         <div className={styles.error}>
           {/*
+            ONE sentence, and the operation's is the one that wins. A stopped
+            server fails the write and the poll behind it with the same words,
+            and the panel showed both: "Could not read repository status:
+            Failed to fetch" with "git failed: Failed to fetch" underneath it.
+            `lastError` is the half that carries the hint and the Details
+            toggle, so it is the half worth keeping -- and Dismiss still takes
+            it down, after which the read's line is there again on the next
+            poll that fails.
+
             `role="alert"` wraps the SENTENCE and nothing else. An alert
             re-announces whenever its subtree changes, so putting the Details
             toggle and the `<pre>` inside it would read the whole refusal out
             again every time somebody opened or closed the stderr.
           */}
           <div role="alert">
-            {loadError !== null && (
-              <div className={styles.errorMessage}>
-                {t('git.error.loadFail', { error: loadError })}
-              </div>
-            )}
-            {lastError !== null && (
+            {lastError !== null ? (
               <>
                 <div className={styles.errorMessage}>{errorSentence(lastError, t)}</div>
                 {lastError.hint !== null && (
                   <div className={styles.errorHint}>{lastError.hint}</div>
                 )}
               </>
+            ) : (
+              loadError !== null && (
+                <div className={styles.errorMessage}>
+                  {t('git.error.loadFail', { error: loadError })}
+                </div>
+              )
             )}
           </div>
           {lastError !== null && (

@@ -311,6 +311,35 @@ describe('ScmHeader: the error line', () => {
     expect(screen.queryByRole('button', { name: 'Dismiss' })).toBeNull();
   });
 
+  it('says it once when a write and the read behind it failed together', () => {
+    // A stopped server refuses both with the same words, and the panel used to
+    // print both of them, one under the other. The operation's sentence is the
+    // one carrying the hint and the Details toggle, so it is the one kept.
+    useGitStore.setState({
+      loadError: 'Failed to fetch',
+      lastError: {
+        code: 'unknown',
+        message: 'Failed to fetch',
+        hint: null,
+        stderr: null,
+      },
+    });
+    const view = render(<ScmHeader />);
+    const alert = screen.getByRole('alert');
+    expect(alert.textContent).toContain('git failed: Failed to fetch');
+    expect(alert.textContent).not.toContain('Could not read repository status');
+    expect(screen.getByRole('button', { name: 'Dismiss' })).toBeTruthy();
+
+    // Nothing is suppressed for good: the read's own line is what Dismiss
+    // leaves behind, and what the next failed poll shows again.
+    view.unmount();
+    useGitStore.setState({ lastError: null });
+    render(<ScmHeader />);
+    expect(screen.getByRole('alert').textContent).toContain(
+      'Could not read repository status: Failed to fetch',
+    );
+  });
+
   it('has no error line when there is nothing wrong', () => {
     render(<ScmHeader />);
     expect(screen.queryByRole('alert')).toBeNull();
