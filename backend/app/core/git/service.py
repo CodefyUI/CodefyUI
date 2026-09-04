@@ -22,6 +22,17 @@ that cannot be made per operation:
   what makes "one at a time" true rather than likely. READS never take the
   lock: a status poll must not queue behind a commit that is running the
   user's hooks.
+* **TWO locks, because a fetch is not a commit.** A network operation can
+  run for a minute and touches no file in the working tree, so putting it
+  on the mutation lock would refuse every commit for as long as somebody's
+  push was transferring -- a panel that goes dead while the thing it is
+  doing works fine. :attr:`GitService.network_lock` is its own queue: one
+  network operation at a time (two pushes to the same branch is a race
+  nobody wins), local writes untouched. A ``pull`` is the operation that
+  needs both, one after the other, and it is written out as two steps for
+  exactly that reason -- the fetch under the network lock, the merge under
+  the mutation one. Nothing here ever takes the mutation lock and THEN the
+  network lock, which is what keeps two locks from being a deadlock.
 * **EVERY write answers with the status it left behind.** ``mutate`` reads a
   fresh status after the operation and returns it with the result, so the
   tab never draws a panel one operation out of date, and computes
@@ -39,13 +50,14 @@ from __future__ import annotations
 
 import asyncio
 import os
-from collections.abc import Callable, Iterable, Sequence
+from collections.abc import Awaitable, Callable, Iterable, Sequence
 from pathlib import Path
 from typing import Any, Literal, TypeVar
 
 from ...config import settings
 from . import diff as diff_ops
 from . import log as log_ops
+from . import network as network_ops
 from . import refs as refs_ops
 from . import repo
 from . import stash as stash_ops
@@ -73,10 +85,10 @@ from .paths import (
 from .refs import check_ref_format  # noqa: F401
 from .runner import (
     T_LOCAL,
-    # Re-exported: the network timeout belongs to the operations G3 adds
-    # here, and a route should be able to name one without importing the
-    # process layer. The four live in ``runner`` because every module that
-    # runs git needs them and this one imports all of those.
+    # Re-exported: the network timeout is passed by ``network.py`` now, and
+    # this is still the name a caller outside the package would look for it
+    # under. The four live in ``runner`` because every module that runs git
+    # needs them and this one imports all of those.
     T_NETWORK,  # noqa: F401
     T_READ,
     T_STATUS,
@@ -662,6 +674,12 @@ class GitService:
         self.lock = asyncio.Lock()
         #: What the lock is being held FOR, so a refusal can name it.
         self.current_op: str | None = None
+        #: Held for the length of one NETWORK operation, which is a
+        #: different queue: a fetch may run for a minute and moves no file,
+        #: so a commit must not wait behind it (see the module docstring).
+        self.network_lock = asyncio.Lock()
+        #: What the network lock is being held FOR.
+        self.current_network_op: str | None = None
 
     # --- reads (never take the lock) ------------------------------------
 
@@ -892,6 +910,130 @@ class GitService:
         return await self.mutate(
             "resolve", lambda root: resolve(root, path, side), worktree=True)
 
+    # --- talking to a remote (the other lock) -----------------------------
+    #
+    # Four operations, and only two shapes underneath them. ``fetch`` and
+    # ``push`` are one command under the NETWORK lock. ``pull`` and
+    # ``sync`` are those steps run in order, each taking and releasing its
+    # own lock, because an ``asyncio.Lock`` is not reentrant and because
+    # holding the network lock across the local merge would refuse other
+    # people's fetches for no reason.
+    #
+    # Every step of a pull says ``pull`` and every step of a sync says
+    # ``sync``, on whichever lock it takes: a 409 names the operation the
+    # USER started, not the command it happens to be on. That is also what
+    # the tab's busy bar shows.
+
+    async def fetch(self, remote: str | None = None) -> MutationResult:
+        """Bring the remote's refs up to date, and prune what is gone."""
+        return await self._fetch("fetch", remote)
+
+    async def pull(self, strategy: network_ops.PullStrategy = "ff-only"
+                   ) -> MutationResult:
+        """Fetch, then merge the upstream into the branch HEAD is on.
+
+        Two steps and two locks (R1), never ``git pull``: the slow half is
+        the one that must not hold the mutation lock, and the fast half is
+        the one that must. The answer is the MERGE's result -- the status
+        it left, the files it replaced -- with the fetch's remote folded
+        into the detail, because "which remote did this come from" is a
+        fact only the first step has.
+        """
+        fetched = await self._step("fetch", self._fetch("pull", None))
+        merged = await self._step("merge",
+                                  self._merge_upstream("pull", strategy))
+        return merged.model_copy(update={
+            "detail": {**merged.detail,
+                       "remote": fetched.detail.get("remote")}})
+
+    async def push(self, remote: str | None = None, *,
+                   set_upstream: bool = False) -> MutationResult:
+        """Send this branch; ``set_upstream`` is Publish rather than Push."""
+        return await self._push("publish" if set_upstream else "push",
+                                remote, set_upstream=set_upstream)
+
+    async def sync(self) -> MutationResult:
+        """Pull, then push -- or publish, for a branch that has neither.
+
+        One button for "make the two sides the same", and which steps that
+        takes is decided from the status rather than asked for: a branch
+        with a live upstream is fetch, merge, push; a branch with no
+        upstream -- or one whose upstream has been deleted and pruned -- has
+        nothing to pull FROM, so it is a publish, which is the same thing
+        the header offers for both of those states (R14).
+
+        It stops at the first failure, and every step that ran has already
+        happened: a sync whose push is refused has still merged, and the
+        result the caller never sees is the reason the store refreshes the
+        status after a failure as well as after a success.
+
+        ``changed_paths`` is the union over the steps, not the last one's.
+        The merge is the step that replaces files and the push is the one
+        that answers, so returning the push's list alone would tell an open
+        editor that nothing had changed under it.
+        """
+        status = await self._read(repo.read_status)
+        if status.upstream and not status.upstream_gone:
+            fetched = await self._step("fetch", self._fetch("sync", None))
+            merged = await self._step("merge",
+                                      self._merge_upstream("sync", "ff-only"))
+            last = await self._step(
+                "push", self._push("sync", None, set_upstream=False))
+            steps = ["fetch", "merge", "push"]
+            results = [fetched, merged, last]
+            head_moved = bool(merged.detail.get("head_moved"))
+        else:
+            last = await self._step(
+                "publish", self._push("sync", None, set_upstream=True))
+            steps = ["publish"]
+            results = [last]
+            head_moved = False
+
+        return last.model_copy(update={
+            "changed_paths": sorted({path for result in results
+                                     for path in result.changed_paths}),
+            "detail": {"steps": steps, "head_moved": head_moved,
+                       "published": bool(last.detail.get("published")),
+                       "remote": last.detail.get("remote"),
+                       "branch": last.detail.get("branch")}})
+
+    async def _fetch(self, op: str, remote: str | None) -> MutationResult:
+        """One fetch, under the network lock, named by whoever asked for it."""
+        return await self.network(
+            op, lambda root: network_ops.fetch(root, remote))
+
+    async def _merge_upstream(self, op: str,
+                              strategy: network_ops.PullStrategy
+                              ) -> MutationResult:
+        """The local half of a pull: the MUTATION lock, and a worktree op."""
+        return await self.mutate(
+            op, lambda root: network_ops.merge_upstream(root, strategy),
+            worktree=True)
+
+    async def _push(self, op: str, remote: str | None, *,
+                    set_upstream: bool) -> MutationResult:
+        """One push or publish, under the network lock."""
+        return await self.network(
+            op, lambda root: network_ops.push(root, remote=remote,
+                                              set_upstream=set_upstream))
+
+    async def _step(self, step: str, call: Awaitable[_T]) -> _T:
+        """Await one step of a pull or a sync, naming it if it fails.
+
+        A failure raises, so the ``detail`` that would have said which step
+        this was never reaches the caller -- and "the push was refused" and
+        "the fetch never got there" are different things to do next. The
+        step goes in the ``hint``, and only when git left that slot empty:
+        ``classify_failure`` never sets one, so this fills a gap rather than
+        overwriting the one useful sentence a refusal came with.
+        """
+        try:
+            return await call
+        except GitError as exc:
+            if exc.hint is None:
+                exc.hint = f"the {step} step failed"
+            raise
+
     async def mutate(self, op: str,
                      fn: Callable[[Path], dict[str, Any] | None], *,
                      worktree: bool, require_repo: bool = True
@@ -926,6 +1068,42 @@ class GitService:
                     require_repo=require_repo)
             finally:
                 self.current_op = None
+
+    async def network(self, op: str,
+                      fn: Callable[[Path], dict[str, Any] | None]
+                      ) -> MutationResult:
+        """Run one NETWORK operation and answer with the status it left.
+
+        :meth:`mutate`'s twin, on the other lock and with one flag fewer.
+        Everything after the lock is the same transaction on the same
+        worker thread, so a fetch answers with a fresh status exactly as a
+        commit does -- which is the whole point of it being a
+        ``MutationResult``: what a fetch changes is the ahead/behind the
+        header draws.
+
+        ``worktree`` is not a parameter because there is nothing to decide:
+        fetch, push and publish move refs and never a file, so there is no
+        BEFORE status worth reading. The one network operation that does
+        move files is a pull's merge half, and that runs through
+        :meth:`mutate` like every other local write.
+
+        :raises GitBusy: another network operation holds the lock -- with
+            ``op`` naming it, so the tab can say "wait for the push" rather
+            than "wait". A LOCAL write is not blocked by this lock and must
+            not be: the point of the second lock is that a commit made
+            during somebody's fetch still works.
+        """
+        # Check then acquire, with no await between them -- see ``mutate``.
+        if self.network_lock.locked():
+            raise GitBusy(self.current_network_op or op)
+        async with self.network_lock:
+            self.current_network_op = op
+            try:
+                return await asyncio.to_thread(self._mutate, fn,
+                                               worktree=False,
+                                               require_repo=True)
+            finally:
+                self.current_network_op = None
 
     def _mutate(self, fn: Callable[[Path], dict[str, Any] | None], *,
                 worktree: bool, require_repo: bool) -> MutationResult:

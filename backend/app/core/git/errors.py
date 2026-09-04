@@ -201,6 +201,15 @@ GIT_MESSAGE_PREFIXES: tuple[str, ...] = ("fatal: ", "remote: ")
 #: "error: remote " would be writing git's sentence on purpose.
 REMOTE_EXISTS_PREFIXES: tuple[str, ...] = ("error: remote ",)
 
+#: The other opening that is git's own and is in neither set above: a
+#: ``git merge`` refusing a ref it cannot resolve says "merge: <ref> - not
+#: something we can merge" -- no ``fatal: ``, no ``error: ``, exit 1
+#: (measured on git 2.53). The only ref this package ever merges is the
+#: fixed literal ``@{u}``, so the phrase it anchors is the whole
+#: ``@{u} - not something we can merge``: a sentence a hook would have to
+#: be imitating on purpose.
+MERGE_REFUSED_PREFIXES: tuple[str, ...] = ("merge: ",)
+
 
 @dataclass(frozen=True)
 class Anchored:
@@ -322,9 +331,27 @@ _RULES: tuple[tuple[str, int, tuple[_Pattern, ...]], ...] = (
         # regenerates a file answered "there is nothing to commit".
         "already exists, no checkout",
     )),
+    # The last two are the PULL's two ways of saying the same thing, both
+    # measured on git 2.53 against ``merge --ff-only @{u}`` and both a 500
+    # before G3 added them. A branch with no upstream at all gets "fatal: no
+    # upstream configured for branch 'main'" (exit 128) -- git's own voice,
+    # in words that share no phrase with the two above. A branch whose
+    # upstream has been DELETED and pruned gets "merge: @{u} - not something
+    # we can merge" (exit 1), because ``@{u}`` still resolves in the config
+    # and no longer resolves to a commit.
+    #
+    # Both are ``no_upstream`` and not ``not_found``, and the difference is
+    # what the user does next: the tab draws the same Publish button for a
+    # branch that never had an upstream and for one whose upstream is gone
+    # (a re-publish re-creates it), and this is the code that button hangs
+    # off. ``GitStatus.upstream_gone`` keeps the two apart where the panel
+    # needs them apart.
     ("no_upstream", 409, (
         "has no upstream branch",
         "There is no tracking information",
+        Anchored("no upstream configured for"),
+        Anchored("@{u} - not something we can merge",
+                 prefixes=MERGE_REFUSED_PREFIXES),
     )),
     # git says all three of these on STDOUT, not stderr. A caller that runs
     # ``commit`` therefore has to hand the stdout text in as well -- see

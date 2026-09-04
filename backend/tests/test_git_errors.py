@@ -158,6 +158,30 @@ _SAMPLES = [
     pytest.param(
         "There is no tracking information for the current branch.\n",
         "no_upstream", id="no-tracking"),
+    # G3's two, both off ``merge --ff-only @{u}`` -- the local half of a
+    # pull -- and both a 500 before the row learned them. The first is a
+    # branch that was never published; the second is one whose upstream was
+    # deleted and pruned, where ``@{u}`` still resolves in the config and no
+    # longer resolves to a commit. Note the opening of the second: it is
+    # neither ``fatal: `` nor ``error: ``.
+    pytest.param(
+        "fatal: no upstream configured for branch 'main'\n",
+        "no_upstream", id="pull-with-no-upstream"),
+    pytest.param(
+        "merge: @{u} - not something we can merge\n",
+        "no_upstream", id="pull-whose-upstream-is-gone"),
+    # A remote NAME that is not configured, which git reports as a
+    # connection problem: "'nope' does not appear to be a git repository"
+    # then "Could not read from remote repository" (measured, exit 128).
+    # ``network`` is the honest reading of that text, and it is why
+    # ``network.resolve_remote`` checks the name against the remote list
+    # first -- a stale panel is a 404, not "check your connection".
+    pytest.param(
+        "fatal: 'nope' does not appear to be a git repository\n"
+        "fatal: Could not read from remote repository.\n\n"
+        "Please make sure you have the correct access rights\n"
+        "and the repository exists.\n",
+        "network", id="fetch-a-remote-that-is-not-a-repository"),
     pytest.param(
         'no changes added to commit (use "git add" and/or "git commit -a")\n',
         "nothing_to_commit", id="nothing-staged"),
@@ -432,6 +456,25 @@ def test_only_gits_own_duplicate_remote_sentence_is_remote_exists(stderr):
     """The anchor is the whole opening ``error: remote ``, because
     ``error: `` alone belongs to every failing hook. Anything a hook could
     plausibly print stays ``git_failed`` -- with git's own tail attached."""
+    assert classify_failure(_ARGV, 1, stderr).code == "git_failed"
+
+
+@pytest.mark.parametrize("stderr", [
+    pytest.param("    merge: @{u} - not something we can merge\n",
+                 id="indented"),
+    pytest.param("hint: merge: @{u} - not something we can merge\n",
+                 id="quoted-by-a-hook"),
+    pytest.param("merge: feat - not something we can merge\n",
+                 id="another-ref"),
+])
+def test_only_a_merge_of_the_upstream_itself_is_no_upstream(stderr):
+    """The anchor is ``merge: `` plus the whole ``@{u}`` phrase.
+
+    ``@{u}`` is the one ref this package ever merges, so a line about any
+    OTHER ref did not come from here -- and a hook quoting the sentence
+    back is not git saying it. Both stay ``git_failed``, with git's own
+    tail attached, which is the answer for output nobody can place.
+    """
     assert classify_failure(_ARGV, 1, stderr).code == "git_failed"
 
 

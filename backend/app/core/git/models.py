@@ -41,8 +41,11 @@ translates, not as pydantic's English prose in a 422.
 G3 adds the refs: ``BranchInfo`` / ``RemoteBranchInfo`` / ``BranchesResponse``
 / ``RemoteInfo`` and the requests that create, switch, rename and delete
 them; then ``StashInfo`` with ``StashCreateRequest`` and ``ResolveRequest``,
-which is work set aside and a merge finished. The network requests are the
-rest of G3.
+which is work set aside and a merge finished; and finally ``FetchRequest``,
+``PullRequest`` and ``PushRequest`` -- the three bodies that talk to a
+remote. Those three have no response model of their own: what a network
+operation answers with is the ``MutationResult`` every write answers with,
+and which one ran is in its ``detail``.
 
 No subprocess and no runner import: the parser and the tests can build a
 status without a git on PATH.
@@ -584,6 +587,65 @@ class StashCreateRequest(BaseModel):
 
     message: str | None = None
     include_untracked: bool = True
+
+
+class FetchRequest(BaseModel):
+    """The body of ``POST /fetch``: which remote, or let the server decide.
+
+    ``remote`` is ``None`` in every request the tab makes. Which remote a
+    fetch talks to is a question with an answer already -- the upstream's
+    remote, or the only one there is -- and a client that guessed would be
+    guessing from a panel that is up to fifteen seconds old. It exists for
+    a repository with several remotes and a caller that means one of them.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    remote: str | None = None
+
+
+class PullRequest(BaseModel):
+    """The body of ``POST /pull``: how to bring the remote's work in.
+
+    ``ff-only`` is the default because it is the one that cannot surprise:
+    it either moves the branch forward or refuses, and it never writes a
+    commit nobody asked for. When it refuses, the failure is ``diverged``
+    and the tab offers "Merge remote changes", which is this same request
+    with ``strategy: "merge"`` -- a real merge, with a real chance of
+    conflicts, made once the user has said so.
+
+    There is deliberately no ``rebase``: rewriting commits that may already
+    be pushed is not something a panel should offer behind one button.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    strategy: Literal["ff-only", "merge"] = "ff-only"
+
+
+class PushRequest(BaseModel):
+    """The body of ``POST /push``: send this branch, and maybe adopt it.
+
+    One route for two buttons, because they are one command with one flag.
+    ``set_upstream: false`` is Push: the branch already has an upstream and
+    git knows where its commits go. ``set_upstream: true`` is Publish: the
+    branch has never been sent anywhere, so a remote has to be named (or
+    resolved) and ``-u`` records it for every later push.
+
+    ``remote`` therefore belongs to Publish alone, and a plain push that
+    carries one is refused rather than obeyed-or-ignored: git's plain
+    ``push`` takes its destination from the upstream, so honouring a remote
+    here would send the commits somewhere the branch is not tracking -- and
+    the ahead/behind the panel draws would go on counting against the old
+    one, which is the sort of "it worked" nobody can debug.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    #: Only for a publish; the only remote is used when it is ``None``.
+    remote: str | None = None
+    #: Publish: ``push -u``, which records the upstream.
+    set_upstream: bool = False
 
 
 class ResolveRequest(BaseModel):
