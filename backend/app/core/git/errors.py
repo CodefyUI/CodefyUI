@@ -93,8 +93,10 @@ CODES: dict[str, tuple[int, str]] = {
     "auth_required": (409, "git needs credentials this server cannot supply"),
     "network": (409, "git could not reach the remote"),
     "non_fast_forward": (409, "the remote has commits this branch does not"),
+    "remote_rejected": (409, "the remote refused the push"),
     "diverged": (409, "the local and the remote branch have diverged"),
     "no_upstream": (409, "this branch has no upstream branch"),
+    "remote_exists": (409, "a remote with that name already exists"),
     # The working tree.
     "conflict": (409, "the merge left conflicts to resolve"),
     "dirty_tree": (409, "uncommitted changes would be overwritten"),
@@ -183,11 +185,21 @@ class GitBusy(GitError):
 #: path or ref opens with ``fatal: `` or comes back from the far side as
 #: ``remote: ``.
 #:
-#: The cost is known and accepted: ``git remote add`` says "error: remote
-#: origin already exists." for a duplicate, which now falls through to
-#: ``git_failed`` -- with git's own sentence attached, which is what makes
-#: that acceptable. G3 owns remotes and can add a precise row for it.
+#: The one sentence this cost, and how it was paid: ``git remote add`` says
+#: "error: remote origin already exists." for a duplicate (measured on git
+#: 2.53, exit 3), which is git's own voice under an opening this set will
+#: not take. It is anchored to that whole opening instead -- see
+#: :data:`REMOTE_EXISTS_PREFIXES` and the ``remote_exists`` row.
 GIT_MESSAGE_PREFIXES: tuple[str, ...] = ("fatal: ", "remote: ")
+
+#: The anchor for the one ``error: `` sentence that IS git's: the duplicate
+#: a ``git remote add`` refuses. Anchoring to ``error: `` alone would hand
+#: the vocabulary to every failing hook (see :data:`GIT_MESSAGE_PREFIXES`),
+#: so the anchor is the whole opening ``error: remote ``, which a hook
+#: cannot produce: everything the far side says arrives through git already
+#: prefixed with ``remote: ``, and a LOCAL hook that opened a line with
+#: "error: remote " would be writing git's sentence on purpose.
+REMOTE_EXISTS_PREFIXES: tuple[str, ...] = ("error: remote ",)
 
 
 @dataclass(frozen=True)
@@ -199,9 +211,15 @@ class Anchored:
     line opening with one of :data:`GIT_MESSAGE_PREFIXES`. The hooks a
     commit runs write to the same stderr, and their prose must not be read
     as git's.
+
+    *prefixes* is the openings that count, and it is a field rather than a
+    constant because one row needs a different one: git says the duplicate a
+    ``remote add`` refuses with ``error: remote ...``, which the default set
+    deliberately excludes. Everything else uses the default.
     """
 
     phrase: str
+    prefixes: tuple[str, ...] = GIT_MESSAGE_PREFIXES
 
 
 #: A pattern is a string ("this text appears in stderr"), an
@@ -252,6 +270,16 @@ _RULES: tuple[tuple[str, int, tuple[_Pattern, ...]], ...] = (
         "Connection refused",
         # Reached only when no credential phrase matched above.
         "Could not read from remote repository",
+    )),
+    # ABOVE ``non_fast_forward``, and the two do not overlap by accident:
+    # git writes a server-side refusal as ``! [remote rejected] main -> main
+    # (pre-receive hook declined)`` (measured on git 2.53 against a bare
+    # repository with a refusing hook), which does not contain the
+    # ``[rejected]`` of the row below -- the character before "rejected" is
+    # a space. The order is here for the push that reports BOTH, one ref
+    # each: "the server said no" is the half a pull cannot fix.
+    ("remote_rejected", 409, (
+        "[remote rejected]",
     )),
     ("non_fast_forward", 409, (
         ("[rejected]", "non-fast-forward"),
@@ -314,6 +342,15 @@ _RULES: tuple[tuple[str, int, tuple[_Pattern, ...]], ...] = (
     ("branch_exists", 409, (
         Anchored("already exists"),
     )),
+    # BELOW ``branch_exists``, so that row keeps everything it means today:
+    # it is git's own voice about a ref, anchored to ``fatal: ``/``remote:
+    # ``, and a forge that says "already exists" through a push must go on
+    # meaning that. This row is the other opening -- ``error: remote origin
+    # already exists.``, which ``git remote add`` prints for a duplicate and
+    # which nothing above can reach.
+    ("remote_exists", 409, (
+        Anchored("already exists", prefixes=REMOTE_EXISTS_PREFIXES),
+    )),
     ("branch_not_merged", 409, (
         "is not fully merged",
     )),
@@ -326,6 +363,13 @@ _RULES: tuple[tuple[str, int, tuple[_Pattern, ...]], ...] = (
     # the G1 read operations against a missing path, ref or stash -- a file
     # the user opens at a ref where it does not exist is the most ordinary
     # request the tab makes, and a 500 for it would be plainly wrong.
+    #
+    # The last two are G3's, and the same argument: the branch list is a
+    # panel that is up to fifteen seconds old, so switching to a branch
+    # somebody deleted meanwhile ("fatal: invalid reference: feat") and
+    # branching from a start point that has gone ("fatal: not a valid object
+    # name: 'deadbee'") are races the tab loses in the ordinary course of
+    # things, not server errors.
     ("not_found", 404, (
         # Anchored: two words of ordinary English that a failing lint hook
         # prints as readily as git does ("ruff: command not found").
@@ -342,6 +386,11 @@ _RULES: tuple[tuple[str, int, tuple[_Pattern, ...]], ...] = (
         "invalid object name",
         # rev-parse --verify <unknown sha>, without --quiet
         "Needed a single revision",
+        # switch <a branch that is gone>. Anchored like its neighbours: two
+        # ordinary words that a hook could print about anything.
+        Anchored("invalid reference"),
+        # branch <name> <a start point that is gone>
+        Anchored("not a valid object name"),
     )),
 )
 
@@ -361,7 +410,7 @@ def _matches(pattern: _Pattern, haystack: str, lines: Sequence[str]) -> bool:
     """
     if isinstance(pattern, Anchored):
         phrase = pattern.phrase.lower()
-        return any(line.startswith(GIT_MESSAGE_PREFIXES) and phrase in line
+        return any(line.startswith(pattern.prefixes) and phrase in line
                    for line in lines)  # the line's FIRST characters
     if isinstance(pattern, str):
         return pattern.lower() in haystack

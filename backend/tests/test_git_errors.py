@@ -39,6 +39,9 @@ _PLANNED_CODES = {
     "branch_not_merged", "signing_failed", "not_found", "invalid_path",
     "invalid_ref", "invalid_url", "invalid_value", "path_not_in_status",
     "ignored", "git_failed",
+    # G3's two, from the plan's own ruling: a duplicate ``git remote add``,
+    # and a push a server-side rule refused.
+    "remote_exists", "remote_rejected",
 }
 
 #: One representative stderr per classified row, as git prints it under
@@ -89,6 +92,22 @@ _SAMPLES = [
     pytest.param(
         " ! [rejected]        main -> main (non-fast-forward)\n",
         "non_fast_forward", id="push-non-ff"),
+    # A server-side rule said no: a pre-receive hook, or a protected branch.
+    # Copied off git 2.53 pushing to a bare repository whose pre-receive
+    # hook exits 1. Note that it does NOT contain the ``[rejected]`` of the
+    # rows above -- the character before "rejected" is a space.
+    pytest.param(
+        "remote: this branch is protected\n"
+        "To file:///srv/mirrors/repo.git\n"
+        " ! [remote rejected] main -> main (pre-receive hook declined)\n"
+        "error: failed to push some refs to 'file:///srv/mirrors/repo.git'\n",
+        "remote_rejected", id="push-refused-by-the-server"),
+    # ``git remote add`` on a name that is taken (measured, exit 3). git's
+    # own voice under an ``error: `` opening, which is why its row anchors
+    # to the whole ``error: remote `` rather than to the prefix set.
+    pytest.param(
+        "error: remote origin already exists.\n",
+        "remote_exists", id="duplicate-remote"),
     pytest.param(
         "fatal: Need to specify how to reconcile divergent branches.\n",
         "diverged", id="pull-divergent"),
@@ -178,6 +197,15 @@ _SAMPLES = [
     pytest.param(
         "error: stash@{9} is not a valid reference\n",
         "not_found", id="unknown-stash"),
+    # The two G3 added to the ``not_found`` row: switching to a branch and
+    # branching from a start point that were both there when the panel was
+    # drawn and are not there now.
+    pytest.param(
+        "fatal: invalid reference: feat\n",
+        "not_found", id="branch-gone"),
+    pytest.param(
+        "fatal: not a valid object name: 'deadbee'\n",
+        "not_found", id="start-point-gone"),
     pytest.param(
         "error: could not lock config file .git/config: File exists\n",
         "git_failed", id="unrecognised"),
@@ -369,6 +397,38 @@ def test_a_failing_hook_is_not_a_missing_object(stderr):
 def test_an_anchored_phrase_still_catches_git_saying_it(stderr, code):
     """The anchor narrows WHO is speaking, not what git means."""
     assert classify_failure(_ARGV, 128, stderr).code == code
+
+
+def test_a_forge_saying_already_exists_is_still_branch_exists():
+    """``remote_exists`` sits BELOW ``branch_exists`` so that row keeps
+    everything it means today: a phrase arriving through ``remote: `` is
+    the far side talking about a ref, and answering it with "a remote with
+    that name already exists" would be a confident lie."""
+    stderr = "remote: error: refusing to create the tag: it already exists\n"
+
+    assert classify_failure(_ARGV, 1, stderr).code == "branch_exists"
+
+
+@pytest.mark.parametrize("stderr", [
+    pytest.param("    error: remote origin already exists.\n", id="indented"),
+    pytest.param("error: the remote origin already exists.\n", id="mid-line"),
+    pytest.param("error: remote origin is not there.\n", id="another-sentence"),
+])
+def test_only_gits_own_duplicate_remote_sentence_is_remote_exists(stderr):
+    """The anchor is the whole opening ``error: remote ``, because
+    ``error: `` alone belongs to every failing hook. Anything a hook could
+    plausibly print stays ``git_failed`` -- with git's own tail attached."""
+    assert classify_failure(_ARGV, 1, stderr).code == "git_failed"
+
+
+def test_a_server_refusal_beats_a_non_fast_forward():
+    """One push can report both, one ref each. "The server said no" is the
+    half a pull cannot fix, so it is the answer the user gets."""
+    stderr = (" ! [rejected]        old -> old (non-fast-forward)\n"
+              " ! [remote rejected] main -> main (protected branch hook "
+              "declined)\n")
+
+    assert classify_failure(_ARGV, 1, stderr).code == "remote_rejected"
 
 
 def test_the_failing_subcommand_is_named():
