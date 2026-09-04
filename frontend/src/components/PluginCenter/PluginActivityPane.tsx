@@ -1,6 +1,6 @@
 import { useMemo } from 'react';
 import type { PluginCatalogEntry } from '../../api/rest';
-import type { ItemProgress, JobPhase, JobStep } from '../../store/jobFollower';
+import type { JobPhase } from '../../store/jobFollower';
 import type { PluginJob } from '../../store/pluginStore';
 import { useI18n } from '../../i18n';
 import { ProgressBar } from '../shared/ProgressBar';
@@ -9,81 +9,14 @@ import { ProgressBar } from '../shared/ProgressBar';
 // windows, and two of each would drift the day one is fixed.
 import { CommandBlock } from '../PackCenter/CommandBlock';
 import { PackLogTail } from '../PackCenter/PackLogTail';
-import { cliInstallCommand, stepLabel, type Translate } from './pluginStatus';
+import {
+  cliInstallCommand,
+  currentStep,
+  jobOverallPercent,
+  stepLabel,
+  type Translate,
+} from './pluginStatus';
 import styles from '../PackCenter/PackCenterModal.module.css';
-
-/**
- * The one item a plugin job reports bytes for: the repository tarball
- * (`backend/app/core/plugins/flows.py: _tarball_progress`).
- *
- * A plugin install has exactly one download, so this is a NAME rather than a
- * set to sum -- which is the difference between this pane's bar and the pack
- * panel's, where a job fetches several models of very different sizes.
- */
-export const TARBALL_ITEM = 'tarball';
-
-/**
- * How many steps a full install has: `resolve download extract verify deps
- * stage lock reload`.
- *
- * The denominator is this constant and NOT `job.steps.length`, because the
- * server announces a step as it starts: the array holds the steps so far, so
- * "one of the two we have heard of is done" would read as 50 % during the
- * second step of eight. A catalog install, which skips the four steps a
- * download needs, therefore tops out around half a bar before it ends -- an
- * understated bar, which is the honest way round for a job whose remaining
- * steps are unknowable from here.
- */
-export const PLUGIN_STEP_COUNT = 8;
-
-function clamp(value: number): number {
-  return Math.min(100, Math.max(0, value));
-}
-
-/**
- * How far the whole job has got, 0..100, or null when nobody can say yet.
- *
- * The tarball's bytes when the server sent a size, and the step count
- * otherwise. `codeload` streams a tarball it generates on demand and usually
- * sends no `Content-Length` at all, so the step count is the ordinary case
- * and the bytes are the refinement a server that DOES state a size buys.
- *
- * Null (indeterminate) rather than 0 for a job with no steps yet: 0 % about a
- * job that is clearly working is a wrong number rather than no number, and
- * the seconds between "the install was accepted" and the first step event are
- * exactly that job.
- */
-export function jobOverallPercent(job: PluginJob | null): number | null {
-  if (job === null) return null;
-
-  const tarball: ItemProgress | undefined = job.items[TARBALL_ITEM];
-  const total = tarball?.bytesTotal ?? null;
-  if (tarball && total !== null && Number.isFinite(total) && total > 0) {
-    // A server that reports more bytes than it promised must not push the bar
-    // past full.
-    return clamp((Math.max(0, tarball.bytesDone) / total) * 100);
-  }
-
-  if (job.steps.length === 0) return null;
-  const finished = job.steps.filter((step) => step.state === 'done').length;
-  return clamp((finished / PLUGIN_STEP_COUNT) * 100);
-}
-
-/**
- * The step the pane should be showing: the one still running, or the last one
- * to have finished while the next has not been announced yet.
- *
- * Takes the STEPS rather than the job, so it says what it needs and stays
- * usable for any job shape. (The pack panel's equivalent takes a `PackJob`,
- * which a `PluginJob` is not; widening it there is a change to the Package
- * Center, and this task changes none.)
- */
-function currentStep(steps: JobStep[]): { index: number; step: JobStep } | null {
-  if (steps.length === 0) return null;
-  const running = steps.findIndex((step) => step.state === 'running');
-  const index = running === -1 ? steps.length - 1 : running;
-  return { index: index + 1, step: steps[index] };
-}
 
 type BannerTone = 'success' | 'warning' | 'error' | 'neutral';
 
@@ -143,7 +76,9 @@ export function PluginActivityPane({
 }: PluginActivityPaneProps) {
   const { t, locale } = useI18n();
 
-  const percent = jobOverallPercent(job);
+  // The row as well as the job: how many steps an install takes depends on
+  // where it comes from, and a built-in pack has no download at all.
+  const percent = jobOverallPercent(job, entry);
   const current = job === null ? null : currentStep(job.steps);
   // The catalog row's name, falling back to the id -- the store's own rule
   // (`pluginStore.ts: pluginName`), so a toast and this pane call a plugin
@@ -316,8 +251,12 @@ function ResultBanner({
           job did is a question only the catalog can answer. */}
       {job.status === 'lost' && (
         <div className={styles.cardActions}>
+          {/* "Refresh", not `pluginCenter.refresh`: the sentence above the
+              button already ends in "Refresh to check the plugin status", and
+              that key is also the header icon's name -- two controls with one
+              name, one of them repeating the line it sits under. */}
           <button type="button" className={styles.primaryBtn} onClick={onRefresh}>
-            {t('pluginCenter.refresh')}
+            {t('sidebar.refresh')}
           </button>
         </div>
       )}

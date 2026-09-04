@@ -1,5 +1,7 @@
 import type { PluginCatalogEntry, PluginStatus } from '../../api/rest';
 import type { TranslationKey } from '../../i18n/locales/en';
+import type { ItemProgress, JobStep } from '../../store/jobFollower';
+import type { PluginJob } from '../../store/pluginStore';
 import type { Translate } from '../PackCenter/packStatus';
 import type { PillTone } from '../shared/Pill';
 
@@ -154,6 +156,104 @@ export function stepLabel(t: Translate, step: string, label: string): string {
   const kind = separator === -1 ? step : step.slice(0, separator);
   const key = STEP_KEY[kind];
   return key === undefined ? label || step : t(key);
+}
+
+// ── how far a job has got ────────────────────────────────────────────────
+
+/**
+ * The one item a plugin job reports bytes for: the repository tarball
+ * (`backend/app/core/plugins/flows.py: _tarball_progress`).
+ *
+ * A plugin install has exactly one download, so this is a NAME rather than a
+ * set to sum -- which is the difference between this pane's bar and the pack
+ * panel's, where a job fetches several models of very different sizes.
+ */
+const TARBALL_ITEM = 'tarball';
+
+/**
+ * How many steps a job of each shape has.
+ *
+ * A GitHub install emits `resolve download extract verify deps stage lock`
+ * plus the `reload` the service adds; a built-in pack has nothing to
+ * download and emits `resolve [deps] lock reload`, where `deps` depends on
+ * its manifest. A denominator, not a promise: the server announces a step as
+ * it STARTS, so `job.steps.length` is the steps heard of so far and dividing
+ * by it would read as 50 % during the second step of eight.
+ */
+const GITHUB_STEP_COUNT = 8;
+const BUILTIN_STEP_COUNT = 4;
+
+/**
+ * How many steps *entry*'s install is expected to take.
+ *
+ * A row the catalog does not have is counted as a GitHub install, which is
+ * both the likely truth (a first install from a typed repository has no row
+ * yet) and the safe guess: the longer shape understates the bar rather than
+ * parking it at full.
+ */
+function expectedSteps(entry: PluginCatalogEntry | undefined): number {
+  return entry?.kind === 'builtin' ? BUILTIN_STEP_COUNT : GITHUB_STEP_COUNT;
+}
+
+function clamp(value: number): number {
+  return Math.min(100, Math.max(0, value));
+}
+
+/**
+ * How far the whole job has got, 0..100, or null when nobody can say yet.
+ *
+ * Finished steps out of the steps this shape of install takes -- and never
+ * fewer than the steps already announced, so a server that adds one cannot
+ * push the bar past full. The tarball's bytes refine the step that is
+ * downloading and nothing else: they are ONE step's worth, and the bar that
+ * read 100 % the moment a download ended then sat there through `deps`
+ * (minutes of uv), `stage`, `lock` and `reload` was saying the install was
+ * over at the point where the slow part starts.
+ *
+ * Null (indeterminate) rather than 0 for a job with no steps yet: 0 % about a
+ * job that is clearly working is a wrong number rather than no number, and
+ * the seconds between "the install was accepted" and the first step event are
+ * exactly that job.
+ */
+export function jobOverallPercent(
+  job: PluginJob | null, entry: PluginCatalogEntry | undefined,
+): number | null {
+  if (job === null || job.steps.length === 0) return null;
+
+  const denominator = Math.max(expectedSteps(entry), job.steps.length);
+  const finished = job.steps.filter((step) => step.state === 'done').length;
+
+  const tarball: ItemProgress | undefined = job.items[TARBALL_ITEM];
+  const total = tarball?.bytesTotal ?? null;
+  const downloading = job.steps.some(
+    (step) => step.step === 'download' && step.state === 'running',
+  );
+  // `codeload` streams a tarball it generates on demand and usually sends no
+  // `Content-Length` at all, so no fraction is the ordinary case and the
+  // bytes are the refinement a server that DOES state a size buys. A server
+  // that reports more bytes than it promised is worth no more than one step.
+  const partial = downloading && tarball !== undefined
+    && total !== null && Number.isFinite(total) && total > 0
+    ? Math.min(1, Math.max(0, tarball.bytesDone) / total)
+    : 0;
+
+  return clamp(((finished + partial) / denominator) * 100);
+}
+
+/**
+ * The step the pane should be showing: the one still running, or the last one
+ * to have finished while the next has not been announced yet.
+ *
+ * Takes the STEPS rather than the job, so it says what it needs and stays
+ * usable for any job shape. (The pack panel's equivalent takes a `PackJob`,
+ * which a `PluginJob` is not; widening it there is a change to the Package
+ * Center, which this panel makes none of.)
+ */
+export function currentStep(steps: JobStep[]): { index: number; step: JobStep } | null {
+  if (steps.length === 0) return null;
+  const running = steps.findIndex((step) => step.state === 'running');
+  const index = running === -1 ? steps.length - 1 : running;
+  return { index: index + 1, step: steps[index] };
 }
 
 /**

@@ -1076,7 +1076,9 @@ describe('PluginCenterModal — the activity pane', () => {
     open();
     render(<PluginCenterModal />);
 
-    fireEvent.click(pane().getByRole('button', { name: 'Refresh plugin status' }));
+    // Scoped to the pane: the header's icon button is the one still called
+    // "Refresh plugin status", and this banner's says only "Refresh".
+    fireEvent.click(pane().getByRole('button', { name: 'Refresh' }));
     // Once on open, once for this button.
     expect(actions.refresh).toHaveBeenCalledTimes(2);
   });

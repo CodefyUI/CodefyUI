@@ -3,7 +3,8 @@ import { render, screen, fireEvent, within } from '@testing-library/react';
 import type { PluginCatalogEntry } from '../../api/rest';
 import { emptyPluginJob, type PluginJob } from '../../store/pluginStore';
 import { useI18n } from '../../i18n';
-import { PluginActivityPane, jobOverallPercent } from './PluginActivityPane';
+import { PluginActivityPane } from './PluginActivityPane';
+import { jobOverallPercent } from './pluginStatus';
 
 function entry(over: Partial<PluginCatalogEntry> & { id: string }): PluginCatalogEntry {
   return {
@@ -219,17 +220,37 @@ describe('PluginActivityPane — a running job', () => {
 // ── The overall bar ─────────────────────────────────────────────────────────
 
 describe('PluginActivityPane — the overall bar', () => {
-  it('weights the bar by the tarball bytes when the server sent a size', () => {
+  it('lets the tarball bytes refine the step that is downloading', () => {
+    // A quarter of the download, which is one step of eight: a quarter of
+    // that step, on top of the one that is done.
     const bytes = downloading({
       items: { tarball: { bytesDone: 300, bytesTotal: 1200, percent: 25 } },
     });
-    expect(jobOverallPercent(bytes)).toBe(25);
+    expect(jobOverallPercent(bytes, demo)).toBe(15.625);
 
     paint({ job: bytes, entry: demo });
-    expect(progressBar()).toHaveAttribute('aria-valuenow', '25');
+    expect(progressBar()).toHaveAttribute('aria-valuenow', '15.625');
   });
 
-  it('counts finished steps out of the eight an install has, when no size came', () => {
+  it('stops reading full through the steps after the download', () => {
+    // The bytes are ONE step's worth. Counted as the whole job, a finished
+    // download parked the bar at 100 % through `deps` -- minutes of uv --
+    // and everything after it.
+    const unpacking = job({
+      steps: [
+        { step: 'resolve', label: 'Resolving owner/demo', state: 'done' },
+        { step: 'download', label: 'Downloading', state: 'done' },
+        { step: 'extract', label: 'Unpacking demo', state: 'done' },
+        { step: 'verify', label: 'Scanning demo for unsafe code', state: 'done' },
+        { step: 'deps', label: 'Installing packages', state: 'running' },
+      ],
+      items: { tarball: { bytesDone: 1000, bytesTotal: 1000, percent: 100 } },
+    });
+
+    expect(jobOverallPercent(unpacking, demo)).toBe(50);
+  });
+
+  it('counts finished steps out of the eight a GitHub install has', () => {
     // Out of EIGHT and not out of the steps announced so far: the server
     // announces a step as it starts, so "one of the two we know about" would
     // read as half a bar during the second step of eight.
@@ -241,11 +262,28 @@ describe('PluginActivityPane — the overall bar', () => {
         { step: 'verify', label: 'Scanning demo for unsafe code', state: 'running' },
       ],
     });
-    expect(jobOverallPercent(steps)).toBe(37.5);
+    expect(jobOverallPercent(steps, demo)).toBe(37.5);
 
     paint({ job: steps, entry: demo });
     expect(progressBar()).toHaveAttribute('aria-valuenow', '37.5');
     expect(screen.getByText('Step 4: Checking the code')).toBeInTheDocument();
+  });
+
+  it('lets a built-in pack reach the end of its own four steps', () => {
+    // A built-in has nothing to download: `resolve [deps] lock reload`. Out
+    // of eight it topped out at half a bar and was replaced by the banner
+    // there, which reads as an install that stopped halfway.
+    const builtin = job({
+      pluginId: 'stats',
+      steps: [
+        { step: 'resolve', label: 'Resolving stats', state: 'done' },
+        { step: 'deps', label: 'Installing packages', state: 'done' },
+        { step: 'lock', label: 'Recording the install', state: 'done' },
+        { step: 'reload', label: 'Loading the nodes', state: 'done' },
+      ],
+    });
+
+    expect(jobOverallPercent(builtin, stats)).toBe(100);
   });
 
   it('falls back to the steps when the download never learned its size', () => {
@@ -256,23 +294,31 @@ describe('PluginActivityPane — the overall bar', () => {
         downloading({
           items: { tarball: { bytesDone: 4096, bytesTotal: null, percent: null } },
         }),
+        demo,
       ),
     ).toBe(12.5);
   });
 
-  it('never reads past full, whatever the server says it downloaded', () => {
+  it('counts no more than one step of bytes, whatever the server says', () => {
     expect(
       jobOverallPercent(
         downloading({
           items: { tarball: { bytesDone: 1500, bytesTotal: 1000, percent: 100 } },
         }),
+        demo,
       ),
-    ).toBe(100);
+    ).toBe(25);
+  });
+
+  it('counts a row the catalog has not got as the longer install', () => {
+    // A first install from a typed repository has no row at all, and eight
+    // steps is both the likely truth and the understated guess.
+    expect(jobOverallPercent(downloading(), undefined)).toBe(12.5);
   });
 
   it('has no answer at all for no job and no steps', () => {
-    expect(jobOverallPercent(null)).toBeNull();
-    expect(jobOverallPercent(job())).toBeNull();
+    expect(jobOverallPercent(null, demo)).toBeNull();
+    expect(jobOverallPercent(job(), demo)).toBeNull();
   });
 });
 
@@ -407,8 +453,15 @@ describe('PluginActivityPane — how a job ended', () => {
       ),
     ).toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole('button', { name: 'Refresh plugin status' }));
+    // "Refresh", not the header icon's "Refresh plugin status": the sentence
+    // above it already says what refreshing is for, and the dialog would
+    // otherwise offer two controls with one name.
+    fireEvent.click(screen.getByRole('button', { name: 'Refresh' }));
     expect(handlers.onRefresh).toHaveBeenCalledTimes(1);
+
+    // A job nobody can report is still a job to put away.
+    fireEvent.click(screen.getByRole('button', { name: 'Dismiss' }));
+    expect(handlers.onDismiss).toHaveBeenCalledTimes(1);
   });
 
   it('hands Dismiss to the store, and offers no cancel', () => {
@@ -437,5 +490,18 @@ describe('PluginActivityPane — how a job ended', () => {
       />,
     );
     expect(live()).toHaveTextContent('Install cancelled.');
+  });
+
+  it('announces the job by its id while the catalog has no row for it', () => {
+    // Before the first step event there is no step sentence and no
+    // percentage, so the headline is all the region has -- and a job adopted
+    // from another tab is named by its plugin id until the catalog answers.
+    const { container } = paint({
+      job: job({ pluginId: 'owner-demo' }), entry: undefined,
+    });
+
+    expect(container.querySelector('[aria-atomic="true"]')).toHaveTextContent(
+      'Installing owner-demo',
+    );
   });
 });
