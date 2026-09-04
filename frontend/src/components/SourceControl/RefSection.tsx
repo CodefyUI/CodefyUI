@@ -48,7 +48,6 @@ export interface RefSectionProps {
   /** The `<li>` rows. */
   children?: ReactNode;
   sectionId?: string;
-  listId?: string;
 }
 
 /**
@@ -75,16 +74,16 @@ export function RefSection({
   actions,
   children,
   sectionId,
-  listId,
 }: RefSectionProps) {
   const ids = refSectionIds(kind);
   const section = sectionId ?? ids.sectionId;
-  // The heading id is a function of the KIND and nothing else. The header's
-  // branch button scrolls to `refSectionIds('branches').headingId` from
-  // outside this component, so a heading that moved with an overridden
-  // `sectionId` would take that scroll target with it, silently.
+  // The heading and the list are a function of the KIND and nothing else. Both
+  // are pointed at from OUTSIDE this component -- the header's branch button
+  // scrolls to `refSectionIds('branches').headingId` and hangs its
+  // `aria-controls` off that kind's `listId` -- so an id that could be
+  // overridden per instance would take one of those with it, silently.
   const headingId = ids.headingId;
-  const list = listId ?? ids.listId;
+  const list = ids.listId;
 
   return (
     <section

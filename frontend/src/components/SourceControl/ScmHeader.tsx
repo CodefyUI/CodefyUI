@@ -82,10 +82,11 @@ type RemoteAction = 'fetch' | 'pull' | 'push' | 'publish';
  * How many times one panel asks for the remote list before it gives up.
  *
  * The read is automatic -- nobody pressed anything -- so a server that keeps
- * refusing it would otherwise put a fresh error line on screen every fifteen
- * seconds for as long as the tab is open. Three attempts covers a server that
- * was restarting while the panel opened; past that the list is read again by
- * anything that opens the Remotes section, writes a remote, or reopens the tab.
+ * refusing it would otherwise be asked again every fifteen seconds, for as
+ * long as the tab is open, for an answer it has already refused three times.
+ * Three attempts covers a server that was restarting while the panel opened;
+ * past that the list is read again by anything that opens the Remotes section,
+ * writes a remote, presses Publish, or reopens the tab.
  */
 const REMOTES_READ_TRIES = 3;
 

@@ -320,8 +320,9 @@ describe('ScmHeader: Sync, Publish and the remote picker', () => {
   });
 
   it('gives up after three refused reads rather than asking once a poll forever', async () => {
-    // Nobody pressed anything, so a read that keeps being refused would rewrite
-    // the error line every fifteen seconds for the life of the tab.
+    // Nobody pressed anything, so a read that keeps being refused would be
+    // asked again on every poll, for the life of the tab, for an answer the
+    // server has already refused three times.
     render(<ScmHeader />);
     for (let i = 0; i < 5; i += 1) {
       act(() => {

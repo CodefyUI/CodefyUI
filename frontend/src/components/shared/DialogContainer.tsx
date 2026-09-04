@@ -27,7 +27,7 @@ export function DialogContainer() {
   const [validationError, setValidationError] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement | null>(null);
   const confirmBtnRef = useRef<HTMLButtonElement | null>(null);
-  // The question labels the box, and the refusal describes it — so both have
+  // The question labels the box, and the refusal describes it -- so both have
   // to be addressable rather than merely nearby.
   const domId = useId();
   const titleId = `${domId}-title`;
