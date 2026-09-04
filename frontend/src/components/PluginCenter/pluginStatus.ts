@@ -101,6 +101,26 @@ export function matchesFilter(filter: PluginFilter, status: PluginStatus): boole
 }
 
 /**
+ * Whether a plugin is INSTALLED: its files are on disk and the lockfile has
+ * it, whether or not the user has it switched on.
+ *
+ * Deliberately NOT `!isAvailableStatus`, and the two must not be folded
+ * together. The filter above partitions the catalog so that every row lands
+ * in exactly one half; this answers a different question -- "is this plugin
+ * here" -- for the two places that COUNT and LIST plugins outside the panel:
+ * the sidebar's Plugins section and the settings row. `installing` is a
+ * download in progress and `missing_files` is a lockfile entry whose
+ * directory is gone; neither is something to list as installed, and neither
+ * is something the user can install either, so both sit outside both counts.
+ *
+ * This is also exactly what `GET /api/plugins` used to answer, which is what
+ * the sidebar listed before the catalog replaced that call.
+ */
+export function isInstalledStatus(status: PluginStatus): boolean {
+  return status === 'installed' || status === 'disabled';
+}
+
+/**
  * The eight step ids a plugin job emits, as sentences.
  *
  * `deps` is pip, which the pack panel already has a sentence for -- the same

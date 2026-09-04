@@ -7,6 +7,7 @@ import {
   depSpec,
   httpUrl,
   isAvailableStatus,
+  isInstalledStatus,
   manifestAuthor,
   matchesFilter,
   originLabel,
@@ -135,6 +136,32 @@ describe('isAvailableStatus', () => {
   it('puts a status this build has never heard of on the installed side', () => {
     // Written as the narrow half and negated for the other, so no filter can
     // make a row disappear from both tabs.
+    expect(isAvailableStatus('quarantined' as PluginStatus)).toBe(false);
+  });
+});
+
+describe('isInstalledStatus', () => {
+  it('calls a plugin installed when its files are here, switched on or not', () => {
+    expect(isInstalledStatus('installed')).toBe(true);
+    expect(isInstalledStatus('disabled')).toBe(true);
+    expect(isInstalledStatus('available')).toBe(false);
+    expect(isInstalledStatus('removed')).toBe(false);
+  });
+
+  it('is NOT the filter negated: two statuses are in neither count', () => {
+    // The sidebar list and the settings summary answer "what have I got" and
+    // "what can I get". A download in flight is neither, and a lockfile entry
+    // with no directory is neither -- while the FILTER has to put both
+    // somewhere, so that no row vanishes from both of its tabs.
+    for (const status of ['installing', 'missing_files'] as PluginStatus[]) {
+      expect(isInstalledStatus(status)).toBe(false);
+      expect(isAvailableStatus(status)).toBe(false);
+      expect(isInstalledStatus(status)).not.toBe(!isAvailableStatus(status));
+    }
+  });
+
+  it('leaves a status this build has never heard of out of both counts', () => {
+    expect(isInstalledStatus('quarantined' as PluginStatus)).toBe(false);
     expect(isAvailableStatus('quarantined' as PluginStatus)).toBe(false);
   });
 });

@@ -15,15 +15,23 @@ import {
   logoutCodex,
   fetchHealth,
   listPacks,
+  listPluginCatalog,
   PackApiError,
   type PackCatalog,
   type PackSummary,
+  type PluginCatalog,
+  type PluginCatalogEntry,
 } from '../../api/rest';
 import {
   _resetPackStoreForTesting,
   emptyPackJob,
   usePackStore,
 } from '../../store/packStore';
+import {
+  _resetPluginStoreForTesting,
+  emptyPluginJob,
+  usePluginStore,
+} from '../../store/pluginStore';
 import { computeSegmentNodes } from '../../utils/segmentPath';
 
 vi.mock('../../api/rest', async (importOriginal) => ({
@@ -32,6 +40,8 @@ vi.mock('../../api/rest', async (importOriginal) => ({
   // makes that line throw a TypeError instead of reporting the 404 an older
   // server answers with.
   PackApiError: (await importOriginal<typeof import('../../api/rest')>()).PackApiError,
+  // `pluginStore.refresh()` narrows the same way, on the shared class.
+  ApiError: (await importOriginal<typeof import('../../api/rest')>()).ApiError,
   resetWeights: vi.fn(),
   // The "This Server" section reads /api/health when the popover opens
   // (#193 item 2); its own behaviour is covered in HealthSection.test.tsx.
@@ -58,6 +68,8 @@ vi.mock('../../api/rest', async (importOriginal) => ({
   // this call. Stubbed so the one case that lets the popover bootstrap it
   // has something to resolve with, and so the rest never touch the network.
   listPacks: vi.fn(),
+  // The plugins row, and its store, the same way.
+  listPluginCatalog: vi.fn(),
 }));
 
 vi.mock('../../utils/segmentPath', () => ({
@@ -70,6 +82,7 @@ const mockedStartCodexLogin = vi.mocked(startCodexLogin);
 const mockedLogoutCodex = vi.mocked(logoutCodex);
 const mockedComputeSegment = vi.mocked(computeSegmentNodes);
 const mockedListPacks = vi.mocked(listPacks);
+const mockedListPluginCatalog = vi.mocked(listPluginCatalog);
 
 const EMPTY_CATALOG: PackCatalog = {
   packs: [],
@@ -79,6 +92,13 @@ const EMPTY_CATALOG: PackCatalog = {
   launch_mode: 'start',
   restart_available: false,
   gpu: null,
+};
+
+const EMPTY_PLUGIN_CATALOG: PluginCatalog = {
+  entries: [],
+  active_job: null,
+  remote_install_allowed: true,
+  generation: 0,
 };
 
 function packSummary(overrides: Partial<PackSummary> = {}): PackSummary {
@@ -109,6 +129,53 @@ function seedPacks(
     loaded: true,
     packs,
     byId: Object.fromEntries(packs.map((pack) => [pack.id, pack])),
+    ...extra,
+  });
+}
+
+/** One catalog row. Only the fields the settings row reads are interesting. */
+function pluginEntry(over: Partial<PluginCatalogEntry> & { id: string }): PluginCatalogEntry {
+  return {
+    name: over.id,
+    description: '',
+    kind: 'builtin',
+    official: true,
+    status: 'available',
+    source_kind: null,
+    source: over.id,
+    repo: null,
+    ref: null,
+    sha: null,
+    url: null,
+    homepage: '',
+    version: null,
+    installed_at: null,
+    enabled: false,
+    chapters: [],
+    lessons: [],
+    tags: [],
+    nodes: [],
+    node_count: 0,
+    capabilities: [],
+    trusted_modules: [],
+    python_deps: {},
+    has_frontend: false,
+    consent_required: false,
+    frontend_entry: null,
+    job: null,
+    ...over,
+  };
+}
+
+/** The same for the plugin catalog. */
+function seedPlugins(
+  plugins: PluginCatalogEntry[],
+  extra: Partial<ReturnType<typeof usePluginStore.getState>> = {},
+) {
+  usePluginStore.setState({
+    loaded: true,
+    plugins,
+    byId: Object.fromEntries(plugins.map((entry) => [entry.id, entry])),
     ...extra,
   });
 }
@@ -167,13 +234,19 @@ describe('SettingsPopover', () => {
       edgeStyle: 'circuit',
       packCenterOpen: false,
       packCenterFocusPackId: null,
+      pluginCenterOpen: false,
+      pluginCenterFocusPluginId: null,
     });
     _resetPackStoreForTesting();
+    _resetPluginStoreForTesting();
     mockedListPacks.mockReset();
     mockedListPacks.mockResolvedValue(EMPTY_CATALOG);
+    mockedListPluginCatalog.mockReset();
+    mockedListPluginCatalog.mockResolvedValue(EMPTY_PLUGIN_CATALOG);
     // An empty catalog that has already ARRIVED: the popover only bootstraps
     // one nobody has read yet, so every case but that one stays offline.
     seedPacks([]);
+    seedPlugins([]);
     vi.mocked(fetchHealth).mockReset();
     vi.mocked(fetchHealth).mockResolvedValue({
       status: 'ok', version: '2.2.0', nodes_loaded: 137, presets_loaded: 12,
@@ -381,6 +454,104 @@ describe('SettingsPopover', () => {
     usePackStore.setState({ loading: true });
     render(<SettingsPopover open onClose={vi.fn()} triggerRef={makeTriggerRef()} />);
     expect(mockedListPacks).not.toHaveBeenCalled();
+  });
+
+  // ── Plugins (the Plugin Center entry point) ───────────────────────
+
+  it('counts what is installed and what is installable, and opens the Plugin Center', () => {
+    seedPlugins([
+      pluginEntry({ id: 'edu', status: 'installed', enabled: true }),
+      pluginEntry({ id: 'c1', status: 'disabled' }),
+      pluginEntry({ id: 'stats', status: 'available' }),
+      pluginEntry({ id: 'gone', status: 'removed' }),
+      // Neither half: an install in flight is not something the reader has,
+      // and a lockfile entry with no files is not something they can install.
+      pluginEntry({ id: 'busy', status: 'installing' }),
+      pluginEntry({ id: 'broken', status: 'missing_files' }),
+    ]);
+    const onClose = vi.fn();
+    render(<SettingsPopover open onClose={onClose} triggerRef={makeTriggerRef()} />);
+
+    expect(screen.getByText('Plugins')).toBeInTheDocument();
+    expect(screen.getByText('Plugin Center')).toBeInTheDocument();
+    expect(screen.getByText('2 installed, 2 available')).toBeInTheDocument();
+    // A view of the store: a catalog already here is never re-read.
+    expect(mockedListPluginCatalog).not.toHaveBeenCalled();
+
+    // Named for what it opens, because "Open" is now the visible word on two
+    // buttons in this panel and says nothing on its own in a list of controls.
+    fireEvent.click(screen.getByRole('button', { name: 'Plugin Center' }));
+
+    expect(onClose).toHaveBeenCalledTimes(1);
+    expect(useUIStore.getState().pluginCenterOpen).toBe(true);
+    // No plugin is focused: this is the "show me everything" entry point, and
+    // the click handler must not pass its event through as a plugin id.
+    expect(useUIStore.getState().pluginCenterFocusPluginId).toBeNull();
+  });
+
+  it('leaves the Package Center button findable by its own visible word', () => {
+    // Two rows, two buttons, one visible label between them. The pack button
+    // keeps the plain accessible name it has always had.
+    render(<SettingsPopover open onClose={vi.fn()} triggerRef={makeTriggerRef()} />);
+    expect(screen.getByRole('button', { name: 'Open' })).toBeInTheDocument();
+    expect(screen.getAllByText('Open')).toHaveLength(2);
+  });
+
+  it('says unsupported on a server with no Plugin Center', () => {
+    seedPlugins([], { unsupported: true });
+    render(<SettingsPopover open onClose={vi.fn()} triggerRef={makeTriggerRef()} />);
+
+    // Scoped to the row: the packs row reuses this same sentence about its
+    // own server, and the two verdicts are independent.
+    const row = screen.getByText('Plugin Center').parentElement!;
+    expect(within(row).getByText('Not available on this server')).toBeInTheDocument();
+    expect(screen.queryByText('0 installed, 0 available')).toBeNull();
+  });
+
+  it('shows the installing summary while a job runs, naming the row', () => {
+    seedPlugins([pluginEntry({ id: 'edu', name: 'EDU teaching nodes', status: 'installing' })], {
+      job: emptyPluginJob('job-1', 'edu'),
+    });
+    render(<SettingsPopover open onClose={vi.fn()} triggerRef={makeTriggerRef()} />);
+
+    expect(screen.getByText('Installing EDU teaching nodes...')).toBeInTheDocument();
+  });
+
+  it('falls back to the plugin id when the catalog in hand does not list it', () => {
+    // A job adopted from another tab can name a plugin this catalog read
+    // missed; the id is still a usable sentence.
+    seedPlugins([], { job: emptyPluginJob('job-2', 'mystery-plugin') });
+    render(<SettingsPopover open onClose={vi.fn()} triggerRef={makeTriggerRef()} />);
+
+    expect(screen.getByText('Installing mystery-plugin...')).toBeInTheDocument();
+  });
+
+  it('ignores a plugin job that is no longer running', () => {
+    seedPlugins([pluginEntry({ id: 'edu', status: 'installed', enabled: true })], {
+      job: { ...emptyPluginJob('job-3', 'edu'), status: 'done' },
+    });
+    render(<SettingsPopover open onClose={vi.fn()} triggerRef={makeTriggerRef()} />);
+
+    expect(screen.getByText('1 installed, 0 available')).toBeInTheDocument();
+  });
+
+  it('reads the plugin catalog when the popover opens, and not while it is closed', async () => {
+    _resetPluginStoreForTesting();
+    const triggerRef = makeTriggerRef();
+    const { rerender } = render(
+      <SettingsPopover open={false} onClose={vi.fn()} triggerRef={triggerRef} />,
+    );
+    expect(mockedListPluginCatalog).not.toHaveBeenCalled();
+    // Nothing has answered yet, so the row explains itself instead of
+    // claiming "0 installed, 0 available".
+    rerender(<SettingsPopover open onClose={vi.fn()} triggerRef={triggerRef} />);
+    expect(
+      screen.getByText('Install teaching node packs and plugins from GitHub.'),
+    ).toBeInTheDocument();
+
+    await waitFor(() => expect(usePluginStore.getState().loaded).toBe(true));
+    expect(mockedListPluginCatalog).toHaveBeenCalledTimes(1);
+    expect(await screen.findByText('0 installed, 0 available')).toBeInTheDocument();
   });
 
   // ── Execution: global device selector ─────────────────────────────

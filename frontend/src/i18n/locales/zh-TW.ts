@@ -139,9 +139,10 @@ const zhTW: Record<TranslationKey, string> = {
   'customTab.section.nodes': '自訂節點',
   'customTab.section.plugins': '外掛',
   'customTab.manage': '管理...',
+  'customTab.plugins.open': '外掛中心...',
   'customTab.nodes.empty': '尚未有自訂節點',
   'customTab.plugins.empty': '尚未安裝外掛',
-  'customTab.plugins.hint': '使用 cdui plugin 指令安裝外掛套件',
+  'customTab.plugins.hint': '外掛可在外掛中心安裝',
   'customTab.loadFail': '載入失敗：{error}',
 
   // Config Panel
@@ -1068,6 +1069,13 @@ const zhTW: Record<TranslationKey, string> = {
   'pluginCenter.error.githubRateLimited':
     '已達 GitHub 請求上限，請稍後再試，或在伺服器設定 CODEFYUI_GITHUB_TOKEN。',
   'pluginCenter.error.githubUnreachable': '無法連線到 GitHub。',
+
+  // Where the Plugin Center is opened from: the settings popover's own row.
+  'toolbar.settings.section.plugins': '外掛',
+  'settings.plugins.name': '外掛中心',
+  'settings.plugins.desc': '安裝教學節點套件與 GitHub 上的外掛。',
+  'settings.plugins.summary': '已安裝 {installed} 個，可安裝 {available} 個',
+  'settings.plugins.summaryInstalling': '正在安裝 {plugin}...',
 
   // Source Control (the sidebar's fifth tab).
   'git.action.more': '更多動作',

@@ -146,9 +146,10 @@ const en = {
   'customTab.section.nodes': 'Custom Nodes',
   'customTab.section.plugins': 'Plugins',
   'customTab.manage': 'Manage...',
+  'customTab.plugins.open': 'Plugin Center...',
   'customTab.nodes.empty': 'No custom nodes yet',
   'customTab.plugins.empty': 'No plugins installed',
-  'customTab.plugins.hint': 'Install packs with the cdui plugin CLI',
+  'customTab.plugins.hint': 'Install plugins from the Plugin Center',
   'customTab.loadFail': 'Failed to load: {error}',
 
   // Config Panel
@@ -1208,6 +1209,18 @@ const en = {
     "GitHub's request limit was reached. Try again later, or set "
     + 'CODEFYUI_GITHUB_TOKEN on the server.',
   'pluginCenter.error.githubUnreachable': 'Could not reach GitHub.',
+
+  // Where the Plugin Center is opened from: the settings popover's own row.
+  // The sidebar's entry point is up with the rest of the Custom & Plugins
+  // tab. `settings.packs.unsupported` and `settings.packs.action` are reused
+  // as they are -- "Not available on this server" and "Open" say the same
+  // thing about either center, and a second translation of each is a second
+  // string to keep in step.
+  'toolbar.settings.section.plugins': 'Plugins',
+  'settings.plugins.name': 'Plugin Center',
+  'settings.plugins.desc': 'Install teaching node packs and plugins from GitHub.',
+  'settings.plugins.summary': '{installed} installed, {available} available',
+  'settings.plugins.summaryInstalling': 'Installing {plugin}...',
 
   // Source Control (the sidebar's fifth tab). Part 2 of the track: status,
   // stage / unstage / discard, commit, init and the commit identity. Branches,

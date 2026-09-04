@@ -3,6 +3,7 @@ import { useTabStore } from '../../store/tabStore';
 import { useUIStore } from '../../store/uiStore';
 import { useToastStore } from '../../store/toastStore';
 import { usePackStore } from '../../store/packStore';
+import { usePluginStore } from '../../store/pluginStore';
 import { useI18n } from '../../i18n';
 import {
   resetWeights,
@@ -13,11 +14,13 @@ import {
   type CodexAuthStatus,
   type DeviceInfo,
   type PackSummary,
+  type PluginCatalogEntry,
 } from '../../api/rest';
 import { computeSegmentNodes } from '../../utils/segmentPath';
 import { generateId } from '../../utils';
 import { confirm } from '../../utils/dialog';
 import { localizedPackTitle, type PackIndex } from '../../utils/packAvailability';
+import { isAvailableStatus, isInstalledStatus } from '../PluginCenter/pluginStatus';
 import { HealthSection } from './HealthSection';
 import { SettingsRow as Row } from './SettingsRow';
 import styles from './SettingsPopover.module.css';
@@ -29,6 +32,8 @@ interface Props {
 }
 
 type PackStoreState = ReturnType<typeof usePackStore.getState>;
+type PluginStoreState = ReturnType<typeof usePluginStore.getState>;
+type PluginIndex = Record<string, PluginCatalogEntry>;
 
 // Module-scope selectors, so each subscription compares the SAME function's
 // output frame to frame. The job is narrowed to the one thing this row says
@@ -43,6 +48,15 @@ const selectPacksLoaded = (state: PackStoreState): boolean => state.loaded;
 const selectPacksUnsupported = (state: PackStoreState): boolean => state.unsupported;
 const selectInstallingPackId = (state: PackStoreState): string | null =>
   state.job !== null && state.job.status === 'running' ? state.job.packId : null;
+
+// The plugin row reads the same five things about its own store, for the same
+// reasons. A plugin install streams its steps too.
+const selectPlugins = (state: PluginStoreState): PluginCatalogEntry[] => state.plugins;
+const selectPluginsById = (state: PluginStoreState): PluginIndex => state.byId;
+const selectPluginsLoaded = (state: PluginStoreState): boolean => state.loaded;
+const selectPluginsUnsupported = (state: PluginStoreState): boolean => state.unsupported;
+const selectInstallingPluginId = (state: PluginStoreState): string | null =>
+  state.job !== null && state.job.status === 'running' ? state.job.pluginId : null;
 
 export function SettingsPopover({ open, onClose, triggerRef }: Props) {
   const ref = useRef<HTMLDivElement>(null);
@@ -122,6 +136,22 @@ export function SettingsPopover({ open, onClose, triggerRef }: Props) {
   useEffect(() => {
     if (!open) return;
     const state = usePackStore.getState();
+    if (!state.loaded && !state.loading) void state.refresh();
+  }, [open]);
+
+  // Plugins, read the same way and bootstrapped under the same guard: the
+  // sidebar shell reads this catalog at boot, and this is the retry for a
+  // read that never arrived.
+  const openPluginCenter = useUIStore((s) => s.openPluginCenter);
+  const plugins = usePluginStore(selectPlugins);
+  const pluginsById = usePluginStore(selectPluginsById);
+  const pluginsLoaded = usePluginStore(selectPluginsLoaded);
+  const pluginsUnsupported = usePluginStore(selectPluginsUnsupported);
+  const installingPluginId = usePluginStore(selectInstallingPluginId);
+
+  useEffect(() => {
+    if (!open) return;
+    const state = usePluginStore.getState();
     if (!state.loaded && !state.loading) void state.refresh();
   }, [open]);
 
@@ -292,6 +322,39 @@ export function SettingsPopover({ open, onClose, triggerRef }: Props) {
           // Package Center is for instead.
           t('settings.packs.desc');
 
+  /**
+   * What to call a plugin: the catalog's own name, and the id when the
+   * catalog in hand does not list it. Unlike a pack, a plugin has no shipped
+   * copy in this build to prefer — a plugin off GitHub is named by its own
+   * manifest, and that name arrives with the row.
+   *
+   * `hasOwnProperty` rather than a bare index: `byId` is built from parsed
+   * JSON, so a plugin id of `constructor` would otherwise answer with a
+   * function and print `Object` as its name.
+   */
+  const pluginName = (pluginId: string): string => {
+    const entry = Object.prototype.hasOwnProperty.call(pluginsById, pluginId)
+      ? pluginsById[pluginId]
+      : undefined;
+    return entry?.name || pluginId;
+  };
+
+  // Deliberately two counts rather than "n of m": a plugin catalog lists what
+  // could be installed as well as what is, and most of it will never be. The
+  // two halves are also not each other's complement — an install in flight
+  // and a lockfile entry whose files are gone are in neither, because neither
+  // is a plugin the reader has, and neither is one they can install.
+  const pluginsDesc = pluginsUnsupported
+    ? t('settings.packs.unsupported')
+    : installingPluginId !== null
+      ? t('settings.plugins.summaryInstalling', { plugin: pluginName(installingPluginId) })
+      : pluginsLoaded
+        ? t('settings.plugins.summary', {
+            installed: plugins.filter((plugin) => isInstalledStatus(plugin.status)).length,
+            available: plugins.filter((plugin) => isAvailableStatus(plugin.status)).length,
+          })
+        : t('settings.plugins.desc');
+
   const compareLabel = canCreateSegment
     ? t('settings.compare.actionCreate')
     : canClearSegment
@@ -409,6 +472,38 @@ export function SettingsPopover({ open, onClose, triggerRef }: Props) {
                   // named after a React synthetic event.
                   openPackCenter();
                 }}
+                className={styles.action}
+              >
+                {t('settings.packs.action')}
+              </button>
+            }
+          />
+        </section>
+
+        {/* ── Plugins ────────────────────────────────────────────── */}
+        <section className={styles.section}>
+          <div className={styles.sectionTitle}>
+            {t('toolbar.settings.section.plugins')}
+          </div>
+
+          <Row
+            name={t('settings.plugins.name')}
+            desc={pluginsDesc}
+            ctrl={
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onClose();
+                  // No argument, for the same reason the pack button passes
+                  // none: this entry point opens the whole catalog.
+                  openPluginCenter();
+                }}
+                // "Open" reads fine beside its own row and says nothing at
+                // all in a list of controls, where it is now the second one
+                // with that label. The visible word stays; the accessible
+                // name says which center it opens.
+                aria-label={t('settings.plugins.name')}
                 className={styles.action}
               >
                 {t('settings.packs.action')}

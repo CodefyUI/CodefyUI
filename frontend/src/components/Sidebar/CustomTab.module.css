@@ -109,21 +109,7 @@
   margin-top: var(--sp-2);
 }
 
-.chipOn,
-.chipOff {
-  font-size: var(--fs-2xs);
-  padding: var(--sp-1) var(--sp-2);
-  border-radius: var(--radius-sm);
-  font-weight: var(--fw-semibold);
-  flex-shrink: 0;
-}
-
-.chipOn {
-  background: rgba(94, 194, 105, 0.13);
-  color: var(--status-success);
-}
-
-.chipOff {
-  background: rgba(158, 158, 158, 0.13);
-  color: var(--status-skipped);
-}
+/* The enabled/disabled chip on a custom-node or plugin row is the shared
+   `Pill` (`components/shared/Pill.tsx`), not a stylesheet of its own: the
+   washes it used to hard-code were the only literal rgba left in this tab,
+   and a status has to read the same here as it does in either center. */
