@@ -4,7 +4,7 @@ import { SidebarRail } from './SidebarRail';
 import { useUIStore, SIDEBAR_DEFAULT_WIDTH } from '../../store/uiStore';
 import { useI18n } from '../../i18n';
 
-const TAB_LABELS = ['Nodes', 'Presets', 'Templates', 'Custom & Plugins'];
+const TAB_LABELS = ['Nodes', 'Presets', 'Templates', 'Custom & Plugins', 'Source Control'];
 
 function tab(name: string) {
   return screen.getByRole('tab', { name });
@@ -74,6 +74,17 @@ describe('SidebarRail', () => {
     expect(tab('Templates').getAttribute('aria-selected')).toBe('true');
   });
 
+  // The fifth tab arrived after the other four and sits at the end of the rail,
+  // which is what lets a persisted 'custom' (or anything else) keep working
+  // with no migration.
+  it('opens Source Control from the rail and persists it', () => {
+    render(<SidebarRail />);
+    fireEvent.click(tab('Source Control'));
+    expect(useUIStore.getState().sidebarTab).toBe('git');
+    expect(localStorage.getItem('codefyui-sidebar-tab')).toBe('git');
+    expect(tab('Source Control').getAttribute('aria-selected')).toBe('true');
+  });
+
   it('clicking the already-open tab collapses the sidebar', () => {
     render(<SidebarRail />);
     fireEvent.click(tab('Nodes'));
@@ -111,7 +122,7 @@ describe('SidebarRail', () => {
   it('only points aria-controls at a panel that exists', () => {
     const { rerender } = render(<SidebarRail />);
     expect(tab('Nodes').getAttribute('aria-controls')).toBe('sidebar-panel-nodes');
-    for (const label of ['Presets', 'Templates', 'Custom & Plugins']) {
+    for (const label of ['Presets', 'Templates', 'Custom & Plugins', 'Source Control']) {
       expect(tab(label).getAttribute('aria-controls')).toBeNull();
     }
 
@@ -140,14 +151,14 @@ describe('SidebarRail', () => {
   it('ArrowUp wraps from the first tab to the last', () => {
     render(<SidebarRail />);
     fireEvent.keyDown(tab('Nodes'), { key: 'ArrowUp' });
-    expect(useUIStore.getState().sidebarTab).toBe('custom');
-    expect(document.activeElement).toBe(tab('Custom & Plugins'));
+    expect(useUIStore.getState().sidebarTab).toBe('git');
+    expect(document.activeElement).toBe(tab('Source Control'));
   });
 
   it('ArrowDown wraps from the last tab back to the first', () => {
-    useUIStore.setState({ sidebarTab: 'custom' });
+    useUIStore.setState({ sidebarTab: 'git' });
     render(<SidebarRail />);
-    fireEvent.keyDown(tab('Custom & Plugins'), { key: 'ArrowDown' });
+    fireEvent.keyDown(tab('Source Control'), { key: 'ArrowDown' });
     expect(useUIStore.getState().sidebarTab).toBe('nodes');
   });
 
@@ -155,9 +166,9 @@ describe('SidebarRail', () => {
     useUIStore.setState({ sidebarTab: 'presets' });
     render(<SidebarRail />);
     fireEvent.keyDown(tab('Presets'), { key: 'End' });
-    expect(useUIStore.getState().sidebarTab).toBe('custom');
+    expect(useUIStore.getState().sidebarTab).toBe('git');
 
-    fireEvent.keyDown(tab('Custom & Plugins'), { key: 'Home' });
+    fireEvent.keyDown(tab('Source Control'), { key: 'Home' });
     expect(useUIStore.getState().sidebarTab).toBe('nodes');
   });
 
@@ -208,6 +219,7 @@ describe('SidebarRail', () => {
     render(<SidebarRail />);
     expect(screen.getByRole('tab', { name: '節點' })).toBeTruthy();
     expect(screen.getByRole('tab', { name: '自訂與外掛' })).toBeTruthy();
+    expect(screen.getByRole('tab', { name: '版本控制' })).toBeTruthy();
     expect(screen.getByRole('button', { name: '收合側邊欄' })).toBeTruthy();
   });
 });

@@ -31,6 +31,29 @@ vi.mock('../../api/rest', async (importOriginal) => {
   };
 });
 
+/*
+ * The Source Control tab reads `GET /api/git/status` when it mounts, so the
+ * shell test has to stub it or opening the fifth tab would issue a real fetch.
+ * A partial mock: `GitApiError` is a real class the tab narrows on, and only
+ * the read is replaced. It answers "no project open", the state that draws a
+ * static screen and asks for nothing else.
+ */
+vi.mock('../../api/git', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../api/git')>();
+  return {
+    ...actual,
+    getGitStatus: vi.fn(async () => ({
+      repo: {
+        state: 'no_project' as const,
+        project_dir: null,
+        git_version: '2.45.0',
+        nested_toplevel: null,
+      },
+      status: null,
+    })),
+  };
+});
+
 const mockedRest = vi.mocked(rest);
 
 function def(node_name: string, category: string): NodeDefinition {
@@ -146,6 +169,17 @@ describe('NodePalette (sidebar shell)', () => {
 
     fireEvent.click(screen.getByRole('tab', { name: 'Nodes' }));
     expect(screen.getByText('Conv2d')).toBeTruthy();
+  });
+
+  it('mounts the Source Control panel when the fifth tab is opened', () => {
+    render(<NodePalette />);
+    fireEvent.click(screen.getByRole('tab', { name: 'Source Control' }));
+    expect(panel()?.id).toBe('sidebar-panel-git');
+    expect(panel()?.getAttribute('aria-labelledby')).toBe('sidebar-tab-git');
+    // The panel's own heading; the rail button beside it is an icon with no
+    // text of its own.
+    expect(screen.getByText('Source Control')).toBeTruthy();
+    expect(screen.queryByText('Conv2d')).toBeNull();
   });
 
   it('a tab is only fetched when it is opened', () => {

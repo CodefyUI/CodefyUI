@@ -4,10 +4,10 @@ export type FontSize = 'small' | 'default' | 'large';
 export type EdgeStyle = 'circuit' | 'curve';
 
 /** Which section the left sidebar's icon rail has open (#126). */
-export type SidebarTab = 'nodes' | 'presets' | 'templates' | 'custom';
+export type SidebarTab = 'nodes' | 'presets' | 'templates' | 'custom' | 'git';
 
 /** Rail order — also the arrow-key navigation order. */
-export const SIDEBAR_TABS = ['nodes', 'presets', 'templates', 'custom'] as const;
+export const SIDEBAR_TABS = ['nodes', 'presets', 'templates', 'custom', 'git'] as const;
 
 /** Content-panel width bounds. The rail's own ~44px sits outside these. */
 export const SIDEBAR_MIN_WIDTH = 180;
