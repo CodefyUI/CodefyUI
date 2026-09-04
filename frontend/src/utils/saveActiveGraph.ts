@@ -4,6 +4,7 @@ import { useProjectStore } from '../store/projectStore';
 import { useToastStore } from '../store/toastStore';
 import { useI18n } from '../i18n';
 import { confirm, prompt } from './dialog';
+import { announceWorktreeWrite } from './worktreeWrite';
 import { sanitizeGraphName, findGraphNameCollision } from './index';
 
 /**
@@ -83,7 +84,15 @@ export async function saveActiveGraph(opts: { saveAs?: boolean } = {}): Promise<
       description: tab.description ?? '', presets, segmentGroups, subgraphs,
     });
     store.setCurrentGraphFile(sanitizeGraphName(targetName));
-    if (projectMode) store.stampActiveTabProject(projectDir);
+    if (projectMode) {
+      store.stampActiveTabProject(projectDir);
+      // A project save writes two files into the repository, and the Source
+      // Control tab polls on a fifteen-second interval. This is what makes
+      // them appear under Changes while the hand is still on the keyboard.
+      // Nothing is listening unless that tab is open, which is why this file
+      // needs no knowledge of it -- see `utils/worktreeWrite.ts`.
+      announceWorktreeWrite();
+    }
     addToast(t('toolbar.save.success', { name: targetName }), 'success');
   } catch (e) {
     addToast(t('toolbar.save.fail', { error: (e as Error).message }), 'error');

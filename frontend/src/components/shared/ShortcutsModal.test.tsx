@@ -23,9 +23,10 @@ describe('ShortcutsModal', () => {
     useUIStore.setState({ shortcutsModalOpen: true });
     render(<ShortcutsModal />);
     expect(screen.getByText(useI18n.getState().t('shortcuts.title'))).toBeTruthy();
-    // 11 shortcut rows → 11 <kbd> elements. (core#128 added the bypass row
-    // and the unconditional sidebar chord alongside the context-sensitive one.)
-    expect(document.querySelectorAll('kbd').length).toBe(11);
+    // 12 shortcut rows → 12 <kbd> elements. (core#128 added the bypass row
+    // and the unconditional sidebar chord alongside the context-sensitive one;
+    // the Source Control commit chord is the twelfth.)
+    expect(document.querySelectorAll('kbd').length).toBe(12);
     // A platform-prefixed combo is present (Cmd+Z or Ctrl+Z).
     expect(screen.getByText(/(Cmd|Ctrl)\+Z$/)).toBeTruthy();
     expect(screen.getByText('Delete')).toBeTruthy();
@@ -44,6 +45,18 @@ describe('ShortcutsModal', () => {
     // ...plus the unconditional sidebar chord.
     expect(screen.getByText(/(Cmd|Ctrl)\+Shift\+B$/)).toBeTruthy();
     expect(screen.getByText(t('shortcuts.toggleSidebarAlways'))).toBeTruthy();
+  });
+
+  // The one chord in the list that belongs to a text box rather than the
+  // canvas: the global handler skips every textarea, so it is only reachable
+  // from the Source Control message box and the row has to say which box.
+  it('lists the Source Control commit chord', () => {
+    useUIStore.setState({ shortcutsModalOpen: true });
+    render(<ShortcutsModal />);
+    expect(screen.getByText(/(Cmd|Ctrl)\+Enter$/)).toBeTruthy();
+    expect(
+      screen.getByText(useI18n.getState().t('shortcuts.commit')),
+    ).toBeTruthy();
   });
 
   it('clicking the overlay toggles (closes) the modal', () => {

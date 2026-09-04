@@ -1,7 +1,7 @@
 ---
 sidebar_position: 6
 title: 快捷鍵
-description: CodefyUI 畫布的鍵盤與滑鼠快捷鍵。
+description: CodefyUI 編輯器的鍵盤與滑鼠快捷鍵。
 ---
 
 # 快捷鍵
@@ -18,6 +18,7 @@ description: CodefyUI 畫布的鍵盤與滑鼠快捷鍵。
 | 複製節點 | `Ctrl/Cmd` + `C` |
 | 貼上節點 | `Ctrl/Cmd` + `V` |
 | 自動排版 | `Shift` + `L` |
+| 提交（版本控制訊息框） | `Ctrl/Cmd` + `Enter` |
 | 顯示快捷鍵 | `?` |
 
 :::tip

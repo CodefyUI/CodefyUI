@@ -1,7 +1,7 @@
 ---
 sidebar_position: 6
 title: Key Bindings
-description: Keyboard and mouse shortcuts for the CodefyUI canvas.
+description: Keyboard and mouse shortcuts for the CodefyUI editor.
 ---
 
 # Key Bindings
@@ -18,6 +18,7 @@ description: Keyboard and mouse shortcuts for the CodefyUI canvas.
 | Copy nodes | `Ctrl/Cmd` + `C` |
 | Paste nodes | `Ctrl/Cmd` + `V` |
 | Auto Layout | `Shift` + `L` |
+| Commit (Source Control message box) | `Ctrl/Cmd` + `Enter` |
 | Show shortcuts | `?` |
 
 :::tip

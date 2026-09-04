@@ -27,8 +27,8 @@ export function ToastContainer() {
               onClick={() => {
                 toast.action?.onClick();
                 // Dismiss after running, not instead of it. An action toast
-                // is an error one, so it never times out; leaving it up would
-                // offer to open a panel that is already on screen.
+                // never times out (it is an error, or sticky); leaving it up
+                // would offer to open a panel that is already on screen.
                 removeToast(toast.id);
               }}
             >

@@ -86,6 +86,56 @@ describe('useToastStore', () => {
       expect(useToastStore.getState().toasts).toHaveLength(0);
     });
 
+    it('a sticky toast outlives the auto-dismiss timer', () => {
+      // The Source Control tab's "an open graph changed on disk" warning:
+      // it carries a Reload button, so it has to still be there when the
+      // user looks back at the screen.
+      useToastStore.getState().addToast('changed on disk', 'warning', {
+        sticky: true,
+        action: { label: 'Reload', onClick: vi.fn() },
+      });
+      vi.advanceTimersByTime(60000);
+      const toasts = useToastStore.getState().toasts;
+      expect(toasts).toHaveLength(1);
+      expect(toasts[0].type).toBe('warning');
+      expect(toasts[0].action?.label).toBe('Reload');
+    });
+
+    it('a sticky toast is still dismissible by hand', () => {
+      useToastStore.getState().addToast('stays', 'info', { sticky: true });
+      const id = useToastStore.getState().toasts[0].id;
+      vi.advanceTimersByTime(10000);
+      expect(useToastStore.getState().toasts).toHaveLength(1);
+      useToastStore.getState().removeToast(id);
+      expect(useToastStore.getState().toasts).toHaveLength(0);
+    });
+
+    it('hands back the id, so the caller can take its own sticky toast down', () => {
+      // A sticky toast has no timer to end it: whoever raised it needs a
+      // handle to dismiss it, or to replace it with the next one instead of
+      // stacking a second copy.
+      const first = useToastStore.getState().addToast('one open graph', 'warning', {
+        sticky: true,
+      });
+      const second = useToastStore.getState().addToast('two open graphs', 'warning', {
+        sticky: true,
+      });
+      expect(typeof first).toBe('string');
+      expect(second).not.toBe(first);
+
+      useToastStore.getState().removeToast(first);
+      const remaining = useToastStore.getState().toasts;
+      expect(remaining).toHaveLength(1);
+      expect(remaining[0].id).toBe(second);
+      expect(remaining[0].message).toBe('two open graphs');
+    });
+
+    it('sticky:false is the ordinary timed toast, not merely "some options"', () => {
+      useToastStore.getState().addToast('temporary', 'info', { sticky: false });
+      vi.advanceTimersByTime(4000);
+      expect(useToastStore.getState().toasts).toHaveLength(0);
+    });
+
     it('the auto-dismiss timer only removes its own toast', () => {
       // Add a non-error (timed) toast, then an error (untimed) toast.
       useToastStore.getState().addToast('vanishes', 'success');

@@ -1,0 +1,290 @@
+import { useId, useState } from 'react';
+import type { GitErrorCode } from '../../api/git';
+import {
+  gitOpKey,
+  isLayoutFile,
+  useGitStore,
+  type GitStoreError,
+} from '../../store/gitStore';
+import { useI18n, type TranslationKey } from '../../i18n';
+import { docsUrl } from '../../utils/docsUrl';
+import { MoreHorizontalIcon, RefreshIcon } from '../shared/Icons';
+import { ActionMenu, type ActionMenuItem } from '../shared/ActionMenu';
+import { ProgressBar } from '../shared/ProgressBar';
+import shell from '../Sidebar/NodePalette.module.css';
+import styles from './SourceControl.module.css';
+
+/**
+ * The documentation page the Setup guide link and menu row point at.
+ *
+ * Project directories, not a source-control page: the tab's own page is
+ * written in the part of this track that adds history and diffs, and a link
+ * to it now would 404. This one exists, and it is the right answer for the
+ * screen the link matters most on -- "Source control needs a project
+ * directory", whose two commands are that page's subject. It moves to the
+ * tab's page when that page lands.
+ */
+export const SCM_DOCS_PATH = '/usage/project-directories';
+
+/**
+ * The two places focus can be parked when the row that held it is gone.
+ *
+ * A `data-` attribute rather than a ref threaded through four components: the
+ * thing that loses focus (a file row) and the thing that catches it (the
+ * message box, or failing that the panel title) are in different subtrees, and
+ * the panel is a singleton — the sidebar mounts exactly one open tab.
+ */
+export const SCM_FOCUS = { commit: 'commit', title: 'title' } as const;
+
+/**
+ * Put focus back somewhere sensible in the panel.
+ *
+ * Called when a group heading has been unmounted by the very action that was
+ * pressed — discarding the last change empties the panel — so that focus lands
+ * on the message box rather than falling to the document body, where the next
+ * Tab starts from the top of the page.
+ */
+export function focusScmFallback(): void {
+  const target = document.querySelector<HTMLElement>(
+    `[data-scm-focus="${SCM_FOCUS.commit}"]`,
+  ) ?? document.querySelector<HTMLElement>(`[data-scm-focus="${SCM_FOCUS.title}"]`);
+  target?.focus();
+}
+
+/** Translate, with the store's own signature. */
+type Translate = (key: TranslationKey, vars?: Record<string, string | number>) => string;
+
+/**
+ * The codes that have a sentence of their own.
+ *
+ * Everything absent from this map falls to `git.error.generic`, which shows
+ * git's own words -- and that is deliberately where `invalid` (FastAPI's 422),
+ * `unknown` (a code from a newer server, or a body that was not the git
+ * envelope) and `git_service_unavailable` land: a fixed sentence for those
+ * would replace the only description of the problem that exists.
+ */
+const ERROR_KEY: Partial<Record<GitErrorCode, TranslationKey>> = {
+  busy: 'git.error.busy',
+  nothing_to_commit: 'git.error.nothingToCommit',
+  identity_missing: 'git.error.identityMissing',
+  detached_head: 'git.error.detachedHead',
+  merge_in_progress: 'git.error.mergeInProgress',
+  not_repo: 'git.error.notRepo',
+  invalid_value: 'git.error.invalid',
+};
+
+/**
+ * The sentence for one refusal.
+ *
+ * `timeout` is the exception that is not a lookup: the 504 body carries a code
+ * and nothing else, so the store has already written the finished sentence
+ * (it is the only place that knows which of the three deadlines applied) and
+ * re-mapping the code here would throw that number away.
+ */
+export function errorSentence(err: GitStoreError, t: Translate): string {
+  if (err.code === 'timeout') return err.message;
+  if (err.code === 'not_found') return t('git.error.notFound', { what: err.message });
+  const key = ERROR_KEY[err.code];
+  return key === undefined ? t('git.error.generic', { message: err.message }) : t(key);
+}
+
+/**
+ * The tab's title row, the branch line, the busy bar and the error line.
+ *
+ * Drawn in EVERY repository state, not only in `ready`. Two reasons: the title
+ * row is the shell the other four sidebar tabs share, so dropping it would
+ * leave the fifth tab's header a few pixels off everyone else's; and a server
+ * that stops answering after a good first read has to be able to say so, which
+ * means the error line cannot live inside the branch of a switch that a
+ * failed read never reaches.
+ */
+export function ScmHeader() {
+  const { t } = useI18n();
+  const repoState = useGitStore((s) => s.repoState);
+  const status = useGitStore((s) => s.status);
+  const busyOp = useGitStore((s) => s.busyOp);
+  const lastError = useGitStore((s) => s.lastError);
+  const loadError = useGitStore((s) => s.loadError);
+  const hideLayout = useGitStore((s) => s.hideLayout);
+  const refresh = useGitStore((s) => s.refresh);
+  const setHideLayout = useGitStore((s) => s.setHideLayout);
+  const openIdentityForm = useGitStore((s) => s.openIdentityForm);
+  const dismissError = useGitStore((s) => s.dismissError);
+  const [detailsOpen, setDetailsOpen] = useState(false);
+  // The Details toggle names what it opens, so the reader it was announced to
+  // can go straight there instead of hunting for what changed.
+  const stderrId = useId();
+
+  // What the filter is swallowing RIGHT NOW: zero while it is off, so the
+  // count appears as it is switched on and the menu stays open to show it.
+  const hiddenCount = hideLayout
+    ? [...(status?.unstaged ?? []), ...(status?.untracked ?? [])].filter((file) =>
+      isLayoutFile(file.path),
+    ).length
+    : 0;
+
+  const items: ActionMenuItem[] = [
+    {
+      id: 'hideLayout',
+      label:
+        hiddenCount > 0
+          ? `${t('git.menu.hideLayout')} ${t('git.menu.hiddenCount', { count: hiddenCount })}`
+          : t('git.menu.hideLayout'),
+      checked: hideLayout,
+      onSelect: () => setHideLayout(!hideLayout),
+    },
+    {
+      id: 'identity',
+      label: t('git.action.identity'),
+      // Reading the config needs a repository: every other state answers
+      // `GET /config` with its own refusal, so the row would open an empty
+      // form above an error line. `repoState` moves only when the repository
+      // itself does, never on a poll of an unchanged one.
+      disabled: repoState !== 'ready',
+      onSelect: () => openIdentityForm(),
+    },
+    {
+      id: 'docs',
+      label: t('git.action.docs'),
+      onSelect: () => window.open(docsUrl(SCM_DOCS_PATH), '_blank', 'noopener,noreferrer'),
+    },
+  ];
+
+  const branchText = status === null
+    ? null
+    : status.detached
+      ? t('git.detached')
+      : status.unborn
+        ? t('git.unborn')
+        : t('git.branch.label', { name: status.branch ?? '' });
+
+  // A branch with no commits has nothing to push and no upstream to lack, so
+  // it gets no tracking half at all rather than "Not published" beside "No
+  // commits yet", which says the same thing twice.
+  const trackingText = status === null || status.unborn
+    ? null
+    : status.upstream_gone
+      ? t('git.upstreamGone')
+      : status.upstream === null
+        ? t('git.noUpstream')
+        : t('git.aheadBehind', { ahead: status.ahead ?? 0, behind: status.behind ?? 0 });
+
+  const stderr = lastError?.stderr ?? null;
+
+  return (
+    <div className={`${shell.header} ${styles.header}`}>
+      <div className={shell.headerRow}>
+        <div
+          className={shell.headerTitle}
+          data-scm-focus={SCM_FOCUS.title}
+          tabIndex={-1}
+        >
+          {t('sidebar.tab.git')}
+        </div>
+        <button
+          type="button"
+          className={shell.toolbarButton}
+          onClick={() => void refresh()}
+          aria-label={t('sidebar.refresh')}
+          title={t('sidebar.refresh')}
+        >
+          <RefreshIcon size={13} />
+        </button>
+        <ActionMenu
+          label={t('git.action.more')}
+          items={items}
+          align="end"
+          className={shell.toolbarButton}
+        >
+          <MoreHorizontalIcon size={13} />
+        </ActionMenu>
+      </div>
+      {branchText !== null && (
+        <div className={styles.branchRow}>
+          <span className={styles.branchName} title={branchText}>
+            {branchText}
+          </span>
+          {trackingText !== null && (
+            <span className={styles.tracking} title={trackingText}>
+              {trackingText}
+            </span>
+          )}
+        </div>
+      )}
+      {busyOp !== null && (
+        <div className={styles.busy}>
+          <ProgressBar
+            value={null}
+            size="sm"
+            label={t('git.busy', { op: t(gitOpKey(busyOp)) })}
+          />
+        </div>
+      )}
+      {(lastError !== null || loadError !== null) && (
+        <div className={styles.error}>
+          {/*
+            ONE sentence, and the operation's is the one that wins. A stopped
+            server fails the write and the poll behind it with the same words,
+            and the panel showed both: "Could not read repository status:
+            Failed to fetch" with "git failed: Failed to fetch" underneath it.
+            `lastError` is the half that carries the hint and the Details
+            toggle, so it is the half worth keeping -- and Dismiss still takes
+            it down, after which the read's line is there again on the next
+            poll that fails.
+
+            `role="alert"` wraps the SENTENCE and nothing else. An alert
+            re-announces whenever its subtree changes, so putting the Details
+            toggle and the `<pre>` inside it would read the whole refusal out
+            again every time somebody opened or closed the stderr.
+          */}
+          <div role="alert">
+            {lastError !== null ? (
+              <>
+                <div className={styles.errorMessage}>{errorSentence(lastError, t)}</div>
+                {lastError.hint !== null && (
+                  <div className={styles.errorHint}>{lastError.hint}</div>
+                )}
+              </>
+            ) : (
+              loadError !== null && (
+                <div className={styles.errorMessage}>
+                  {t('git.error.loadFail', { error: loadError })}
+                </div>
+              )
+            )}
+          </div>
+          {lastError !== null && (
+            <>
+              <div className={styles.errorActions}>
+                {stderr !== null && stderr !== '' && (
+                  <button
+                    type="button"
+                    className={styles.linkButton}
+                    aria-expanded={detailsOpen}
+                    aria-controls={stderrId}
+                    onClick={() => setDetailsOpen((was) => !was)}
+                  >
+                    {t('git.error.details')}
+                  </button>
+                )}
+                <button
+                  type="button"
+                  className={styles.linkButton}
+                  onClick={() => {
+                    setDetailsOpen(false);
+                    dismissError();
+                  }}
+                >
+                  {t('git.error.dismiss')}
+                </button>
+              </div>
+              {detailsOpen && stderr !== null && stderr !== '' && (
+                <pre className={styles.errorStderr} id={stderrId}>{stderr}</pre>
+              )}
+            </>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}

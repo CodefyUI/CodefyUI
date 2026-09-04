@@ -11,15 +11,11 @@ import { subgraphIdOf } from '../../utils/subgraph';
 import { graphToSvg, svgToPngBlob } from '../../utils/exportDiagram';
 import { confirm, prompt } from '../../utils/dialog';
 import { saveActiveGraph } from '../../utils/saveActiveGraph';
+import { resolveSavedGraph } from '../../utils/openSavedGraph';
 import { CustomNodeManager } from '../CustomNodeManager/CustomNodeManager';
 import { useToastStore } from '../../store/toastStore';
 import { useProjectStore } from '../../store/projectStore';
-import { autoLayout, stackUnboundNotes, type LayoutMode } from '../../utils/autoLayout';
-// Aliased: this file already casts DOM MouseEvent targets to the ambient
-// lib.dom `Node` type (see the mousedown handlers below) -- importing
-// @xyflow/react's `Node` unaliased would shadow that global and break them.
-import type { Node as FlowNode } from '@xyflow/react';
-import type { NodeData } from '../../types';
+import type { LayoutMode } from '../../utils/autoLayout';
 import { SettingsPopover } from './SettingsPopover';
 import { PluginToolbarButtons } from './PluginToolbarButtons';
 import { FontSizeMenu } from './FontSizeMenu';
@@ -419,62 +415,44 @@ export function Toolbar() {
         if (!ok) return;
       }
       try {
-        const graphData = await loadGraph(name);
-        const rawNodes = graphData.nodes ?? [];
-        const rawEdges = graphData.edges ?? [];
-        const store = useNodeDefStore.getState();
-        const savedPresets = Array.isArray(graphData.presets) ? graphData.presets : [];
-        const mergedPresets = [...store.presets];
-        for (const p of savedPresets) {
-          if (!mergedPresets.some((ep) => ep.preset_name === p.preset_name)) {
-            mergedPresets.push(p);
-          }
-        }
-        const loadedSubgraphs = Array.isArray(graphData.subgraphs) ? graphData.subgraphs : [];
-        const resolvedNodes = resolveSerializedNodes(rawNodes, store.definitions, mergedPresets, loadedSubgraphs);
-        const resolvedEdges = resolveSerializedEdges(rawEdges, resolvedNodes);
-        // Missing/incomplete layout (project mode): dagre-lay-out ALL nodes
-        // directly -- NOT via applyLayout, which pushes an undo snapshot and a
-        // toast -- then deterministically place unbound notes. The next save
-        // persists the computed layout (spec 6.3). Laid out BEFORE the
-        // install, so the graph reaches the canvas already positioned.
-        const laidOutNodes = graphData.layout_missing
-          ? (stackUnboundNotes(
-              autoLayout(resolvedNodes, resolvedEdges, 'all'),
-            ) as FlowNode<NodeData>[])
-          : resolvedNodes;
+        // Everything between the response and the install lives in
+        // `utils/openSavedGraph.ts` since the Source Control tab needed the
+        // same forty lines: it re-reads an open graph from disk after a
+        // discard, and a second copy of the preset merge, the subgraph
+        // resolution and the missing-layout pass would be two readers to
+        // keep in step. The FETCH stays here -- `loadGraph` is the call this
+        // menu has always made -- and what moved is what happens to what it
+        // returns.
+        //
+        // `name` is the sanitized file stem, and `bind` adopts it so a later
+        // Save overwrites the file in place with no overwrite warning;
+        // `canvas` deliberately does not, which is what makes it safe to
+        // drop a saved graph onto a canvas you are still working in -- the
+        // next Save asks for a name instead of eating the original. The
+        // binding is part of installing the document (#200 item 9), not a
+        // line after it: it says which file the graph on screen writes to,
+        // so the two must never be set apart.
+        const doc = resolveSavedGraph(
+          await loadGraph(name),
+          target === 'bind' ? name : null,
+        );
         // One call, not six (#200 items 4 and 8): the whole document lands in
         // a single store update, so no subscriber sees the new nodes beside
         // the old definitions, and the read-only gate is now the action's own
         // return value rather than a line each reader has to remember --
         // which is what the third reader of a document, `openExample`, did
         // not.
-        const tooNew = loadGraphDocument({
-          nodes: laidOutNodes,
-          edges: resolvedEdges,
-          // `name` is the sanitized file stem — bind the tab to it so
-          // re-saving under the same name doesn't trigger the overwrite
-          // warning. Part of the document install since #200 item 9, not a
-          // line after it: the binding says which file the graph on screen
-          // writes to, so the two must never be set apart.
-          // `bind` adopts the file, so a later Save overwrites it in place;
-          // `canvas` deliberately does not, which is what makes it safe to
-          // drop a saved graph onto a canvas you are still working in --
-          // the next Save asks for a name instead of eating the original.
-          boundFile: target === 'bind' ? name : null,
-          subgraphs: loadedSubgraphs,
-          segmentGroups: Array.isArray(graphData.segmentGroups) ? graphData.segmentGroups : [],
-          description: typeof graphData.description === 'string' ? graphData.description : '',
-          formatVersion: graphData.format_version,
-        });
+        const tooNew = loadGraphDocument(doc);
         if (tooNew) {
-          addToast(t('project.readOnly.loadNotice', { version: graphData.format_version }), 'warning');
+          addToast(
+            t('project.readOnly.loadNotice', {
+              version: doc.formatVersion as string | number,
+            }),
+            'warning',
+          );
         }
         const projectDir = useProjectStore.getState().projectDir;
         if (projectDir !== null) useTabStore.getState().stampActiveTabProject(projectDir);
-        if (savedPresets.length > 0) {
-          useNodeDefStore.setState({ presets: mergedPresets });
-        }
       } catch (e) {
         addToast(t('toolbar.load.fail', { error: (e as Error).message }), 'error');
       }

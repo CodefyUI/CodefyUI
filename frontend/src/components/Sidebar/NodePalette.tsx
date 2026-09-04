@@ -14,6 +14,7 @@ import { NodesTab } from './NodesTab';
 import { PresetsTab } from './PresetsTab';
 import { TemplatesTab } from './TemplatesTab';
 import { CustomTab } from './CustomTab';
+import { SourceControlTab } from '../SourceControl/SourceControlTab';
 import styles from './NodePalette.module.css';
 
 const TAB_PANELS: Record<SidebarTab, ComponentType> = {
@@ -21,6 +22,7 @@ const TAB_PANELS: Record<SidebarTab, ComponentType> = {
   presets: PresetsTab,
   templates: TemplatesTab,
   custom: CustomTab,
+  git: SourceControlTab,
 };
 
 /** Pixels a single arrow-key press moves the splitter. */

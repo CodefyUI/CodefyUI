@@ -346,7 +346,7 @@ describe('useUIStore', () => {
 
   describe('setSidebarTab', () => {
     it('persists and updates each rail tab', () => {
-      for (const tab of ['presets', 'templates', 'custom', 'nodes'] as const) {
+      for (const tab of ['presets', 'templates', 'custom', 'git', 'nodes'] as const) {
         useUIStore.getState().setSidebarTab(tab);
         expect(useUIStore.getState().sidebarTab).toBe(tab);
         expect(localStorage.getItem(KEYS.SIDEBAR_TAB)).toBe(tab);
@@ -506,7 +506,7 @@ describe('useUIStore', () => {
     });
 
     it('sidebarTab loads each persisted valid tab', async () => {
-      for (const tab of ['presets', 'templates', 'custom', 'nodes']) {
+      for (const tab of ['presets', 'templates', 'custom', 'git', 'nodes']) {
         vi.resetModules();
         localStorage.setItem(KEYS.SIDEBAR_TAB, tab);
         const mod = await import('./uiStore');
