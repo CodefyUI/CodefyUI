@@ -1043,6 +1043,7 @@ const zhTW: Record<TranslationKey, string> = {
   'pluginCenter.review.trust': '我信任這位作者。允許使用：{modules}',
   'pluginCenter.review.frontend': '包含會在編輯器中以完整權限執行的 JavaScript。',
   'pluginCenter.review.idConflict': '「{id}」是內建套件保留的 id。',
+  'pluginCenter.review.alreadyInstalled': '{plugin} 已安裝。重新安裝會以這個版本取代現有的安裝。',
 
   // One line per declared capability, each saying what granting it costs.
   'pluginCenter.cap.network': 'network：可連線任何主機，並把下載內容寫入磁碟',

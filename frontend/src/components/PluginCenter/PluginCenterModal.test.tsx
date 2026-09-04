@@ -937,6 +937,14 @@ describe('PluginCenterModal — the review', () => {
     open();
     render(<PluginCenterModal />);
 
+    // Said out loud, not just implied by a button changing its word.
+    expect(
+      within(card()).getByText(
+        'Demo plugin is already installed. Reinstall replaces the installed copy '
+        + 'with this one.',
+      ),
+    ).toBeInTheDocument();
+
     // The 409 was an offer, not a failure: the review is still spendable and
     // the button is what accepts it.
     fireEvent.click(within(card()).getByRole('button', { name: 'Reinstall' }));

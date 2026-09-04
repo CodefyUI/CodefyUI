@@ -21,9 +21,14 @@ import styles from './PluginCenterModal.module.css';
  * branch holds a minute later. Nothing is sent until every box the manifest
  * asks for is ticked.
  *
- * Rendered only while the review is `ready`. A built-in pack that asks for
- * nothing never gets here at all -- the store installs it straight from the
- * inspection, because a dialog whose only answer is yes is not a question.
+ * The PANEL decides when this is on screen, and it is not the phase alone:
+ * `PluginCenterModal` renders it while a review is ready AND it is a source
+ * somebody typed (`forPluginId === null`), or the manifest asks for
+ * something, or a refusal a control here can answer came back. That gate is
+ * what keeps a built-in pack -- which asks for nothing and is installed
+ * straight from its own inspection -- from flashing a consent card between
+ * the two round trips; the STORE deliberately leaves the review ready
+ * through that window, so nothing here may be deleted as redundant.
  */
 
 /** The review, once the server has answered. */
@@ -208,6 +213,19 @@ export function PluginReviewCard({
       {data.has_frontend && (
         <div className={packStyles.resultBanner} data-tone="warning">
           {t('pluginCenter.review.frontend')}
+        </div>
+      )}
+
+      {/* The offer said out loud. Without it, pressing Install greys the
+          buttons for a moment and the primary one comes back reading
+          "Reinstall" -- one word changing, as the entire account of what the
+          server answered. The code itself is not showable: it arrives as the
+          bare token `already_installed`. */}
+      {reinstall && (
+        <div className={packStyles.resultBanner} data-tone="warning">
+          {t('pluginCenter.review.alreadyInstalled', {
+            plugin: data.name || data.plugin_id,
+          })}
         </div>
       )}
 

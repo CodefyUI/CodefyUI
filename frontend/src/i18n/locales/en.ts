@@ -1184,6 +1184,11 @@ const en = {
   'pluginCenter.review.frontend':
     'Ships JavaScript that runs in this editor with full access.',
   'pluginCenter.review.idConflict': 'The id "{id}" is reserved for a built-in pack.',
+  // The 409 the store treats as an OFFER, said out loud: without it the only
+  // sign is the Install button coming back as Reinstall.
+  'pluginCenter.review.alreadyInstalled':
+    '{plugin} is already installed. Reinstall replaces the installed copy '
+    + 'with this one.',
 
   // One line per declared capability, each saying what granting it COSTS
   // rather than what it is called. An id this build has no line for is
