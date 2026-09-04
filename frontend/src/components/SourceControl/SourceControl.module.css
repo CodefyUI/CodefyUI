@@ -361,14 +361,23 @@
   font-variant-numeric: tabular-nums;
 }
 
-/* Hidden by opacity, not by `visibility` or `display`: the buttons stay in the
-   tab order, so a keyboard user reveals them by reaching them. */
+/* Hidden by opacity AND collapsed to zero width. Faded alone, the buttons
+   still hold their column -- two 24px squares and a gap, about 52px of a
+   250px panel -- and that space is taken from the file name beside them, so
+   `graphs/api-demo.graph.json` truncated while a shorter path did not.
+   Clipping a zero-width box gives the room back without taking the buttons
+   out of the tab order the way `display: none` or `visibility: hidden` would:
+   a keyboard user still reaches them, and the `:focus-within` half of the
+   rule below opens the space as focus arrives. Only the opacity is animated;
+   an easing width would drag the count along with it on every hover. */
 .groupActions,
 .rowActions {
   display: flex;
   align-items: center;
   gap: var(--sp-1);
   flex: 0 0 auto;
+  width: 0;
+  overflow: hidden;
   opacity: 0;
   transition: opacity var(--transition-fast);
 }
@@ -377,6 +386,8 @@
 .groupHeader:focus-within > .groupActions,
 .row:hover > .rowActions,
 .row:focus-within > .rowActions {
+  width: auto;
+  overflow: visible;
   opacity: 1;
 }
 
@@ -461,9 +472,14 @@
   color: var(--text-secondary);
 }
 
-/* The directory is context, not the name: dimmer, and the first thing to go. */
+/* The directory is context, not the name: dimmer, and the first thing to go.
+   It still takes the leftover space (`flex-grow: 1`, which is what keeps the
+   name left-aligned), but it gives that space up eight times faster than the
+   name resists (`flex-shrink: 8`) -- the same arrangement the branch line
+   makes above, so a narrow panel ellipsises `graphs/deep` rather than eating
+   into `api-demo.graph.json` at the same time. */
 .rowDir {
-  flex: 1 1 auto;
+  flex: 1 8 auto;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;

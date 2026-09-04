@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor, within } from '@testing-library/react';
 import { FileRow, type ChangeGroupKind } from './FileRow';
 import { useI18n } from '../../i18n';
 import { _resetGitStoreForTesting, useGitStore } from '../../store/gitStore';
@@ -141,6 +141,31 @@ describe('FileRow: the actions a group allows', () => {
     expect(screen.queryByRole('button', { name: 'Unstage model.py' })).toBeNull();
     fireEvent.click(screen.getByRole('button', { name: 'Stage model.py' }));
     expect(stage).toHaveBeenCalledWith(['src/model.py']);
+  });
+});
+
+describe('FileRow: the collapsed actions stay focusable', () => {
+  it('holds its buttons in a rowActions box that nothing takes out of the tab order', () => {
+    // The focusability contract behind the CSS. `.rowActions` is collapsed to
+    // zero width so the file name gets that column back, and the ONLY things
+    // that open it again are `:hover` and `:focus-within` -- so focus has to
+    // be able to arrive in the first place. jsdom has no layout, so what is
+    // pinned here is the half that is not layout: the class that does the
+    // collapsing, and buttons that a keyboard can still reach.
+    draw(file(), 'changes');
+    const actions = screen.getByRole('button', { name: 'Stage model.py' }).parentElement;
+    expect(actions).not.toBeNull();
+    expect(actions?.className).toContain('rowActions');
+
+    const buttons = within(actions as HTMLElement).getAllByRole('button');
+    expect(buttons).toHaveLength(2);
+    for (const button of buttons) {
+      expect(button.tagName).toBe('BUTTON');
+      expect(button).not.toBeDisabled();
+      expect(button.hasAttribute('hidden')).toBe(false);
+      expect(button.getAttribute('tabindex')).toBeNull();
+      expect(button.getAttribute('aria-hidden')).toBeNull();
+    }
   });
 });
 
