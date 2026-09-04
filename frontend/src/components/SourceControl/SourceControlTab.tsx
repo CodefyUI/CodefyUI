@@ -1,11 +1,11 @@
 import { useEffect, useMemo, useState, type ReactNode } from 'react';
-import { gitOpKey, useGitStore } from '../../store/gitStore';
+import { gitOpKey, isLayoutFile, useGitStore } from '../../store/gitStore';
 import { useI18n } from '../../i18n';
 import { ChangeGroup } from './ChangeGroup';
 import { CommitBox } from './CommitBox';
 import { EmptyStates } from './EmptyStates';
 import { IdentityForm } from './IdentityForm';
-import { ScmHeader, isLayoutFile } from './ScmHeader';
+import { ScmHeader } from './ScmHeader';
 import shell from '../Sidebar/NodePalette.module.css';
 import styles from './SourceControl.module.css';
 

@@ -1,6 +1,11 @@
 import { useId, useState } from 'react';
 import type { GitErrorCode } from '../../api/git';
-import { gitOpKey, useGitStore, type GitStoreError } from '../../store/gitStore';
+import {
+  gitOpKey,
+  isLayoutFile,
+  useGitStore,
+  type GitStoreError,
+} from '../../store/gitStore';
 import { useI18n, type TranslationKey } from '../../i18n';
 import { docsUrl } from '../../utils/docsUrl';
 import { MoreHorizontalIcon, RefreshIcon } from '../shared/Icons';
@@ -44,17 +49,6 @@ export function focusScmFallback(): void {
     `[data-scm-focus="${SCM_FOCUS.commit}"]`,
   ) ?? document.querySelector<HTMLElement>(`[data-scm-focus="${SCM_FOCUS.title}"]`);
   target?.focus();
-}
-
-/**
- * A layout file: the half of a saved graph that holds positions and notes.
- *
- * One Save writes a PAIR (`graphs/<name>.graph.json` and
- * `layout/<name>.layout.json`), and only the first of the two is a change
- * anybody reviews -- which is what the "Hide layout files" filter is for.
- */
-export function isLayoutFile(path: string): boolean {
-  return /^layout\/.+\.layout\.json$/.test(path);
 }
 
 /** Translate, with the store's own signature. */

@@ -161,6 +161,24 @@ function errorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
+/* ── The layout-file filter ─────────────────────────────────────────── */
+
+/**
+ * A layout file: the half of a saved graph that holds positions and notes.
+ *
+ * One Save writes a PAIR (`graphs/<name>.graph.json` and
+ * `layout/<name>.layout.json`), and only the first of the two is a change
+ * anybody reviews -- which is what the "Hide layout files" filter is for.
+ *
+ * It lives here rather than beside the panel that draws the list because both
+ * sides of the filter have to agree on what it hides: the Changes group drops
+ * these rows, and the sentence the live region announces after a write counts
+ * what that group is showing. One definition, both callers.
+ */
+export function isLayoutFile(path: string): boolean {
+  return /^layout\/.+\.layout\.json$/.test(path);
+}
+
 /* ── Persistence ────────────────────────────────────────────────────── */
 
 /** "Hide layout files" survives a reload; nothing else in this store does. */
@@ -371,9 +389,18 @@ function commitSha(result: MutationResult): string {
  * screen says by moving rows between groups, which no screen reader
  * announces. Built from the headings the panel already shows rather than
  * from a sentence of its own, so there is nothing here to translate twice.
+ *
+ * Which means the counts on SCREEN, not the ones in the status: with "Hide
+ * layout files" on, the Changes group is missing the layout half of every
+ * save, and a sentence built from the raw status announced 11 beside a
+ * heading that said 10. The staged group hides nothing, so it is not
+ * filtered here either -- which is `SourceControlTab` exactly.
  */
 function groupCounts(status: GitStatus): string {
-  const changes = status.unstaged.length + status.untracked.length;
+  const changed = [...status.unstaged, ...status.untracked];
+  const changes = useGitStore.getState().hideLayout
+    ? changed.filter((file) => !isLayoutFile(file.path)).length
+    : changed.length;
   return `${t('git.group.staged')} ${status.staged.length}, `
     + `${t('git.group.changes')} ${changes}`;
 }

@@ -602,6 +602,30 @@ describe('writes', () => {
     expect(git().liveMessage).toBe('git.group.staged 2, git.group.changes 2');
   });
 
+  it('announces the counts the panel is showing, not the ones it hides', async () => {
+    // "Hide layout files" takes the layout half of every save out of the
+    // Changes group, and the sentence has to say what the heading beside it
+    // says -- 1, not the 3 that are in the status.
+    git().setHideLayout(true);
+    api.gitStage.mockResolvedValue(
+      mutation({
+        status: status({
+          staged: [gitFile('graphs/a.graph.json', 'added')],
+          unstaged: [gitFile('graphs/b.graph.json'), gitFile('layout/b.layout.json')],
+          untracked: [gitFile('layout/c.layout.json', 'untracked')],
+        }),
+      }),
+    );
+    await git().stage(['graphs/a.graph.json']);
+    expect(git().liveMessage).toBe('git.group.staged 1, git.group.changes 1');
+
+    // The counterfactual: the same status with the filter off counts all
+    // three, which is what the panel draws then too.
+    git().setHideLayout(false);
+    await git().stage(['graphs/a.graph.json']);
+    expect(git().liveMessage).toBe('git.group.staged 1, git.group.changes 3');
+  });
+
   it('lets a component say something the writes never would', () => {
     // The commit chord's refusal never reaches the server, so nothing in
     // `runOp` can announce it.
