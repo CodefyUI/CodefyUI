@@ -27,7 +27,14 @@
   border: 0;
 }
 
-/* ── Header: the branch line under the title row ───────────────────────── */
+/* ── Header ──────────────────────────────────────────────────────────────
+   Layered beside the shell's own `.header`, only to give the busy bar
+   something to be positioned against. */
+.header {
+  position: relative;
+}
+
+/* The branch line under the title row. */
 .branchRow {
   display: flex;
   align-items: baseline;
@@ -38,7 +45,12 @@
   line-height: var(--lh-tight);
 }
 
-/* The branch name gives way first: it is the half a reader already knows. */
+/* The tracking half is the one that gives way. At a 180px panel the two of
+   them want about 165px of a 156px row, and the branch name is the identity
+   while "2 to push, 3 to pull" is derived from it -- so the name takes any
+   leftover space (`flex-grow: 1`) and shrinks reluctantly, while the tracking
+   text neither grows nor resists (`flex-shrink: 8`) and ellipsises first.
+   Both carry a `title` with their text in full. */
 .branchName {
   flex: 1 1 auto;
   min-width: 0;
@@ -50,15 +62,24 @@
 }
 
 .tracking {
-  flex: 0 1 auto;
+  flex: 0 8 auto;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
+/* Drawn ON the header's bottom border rather than in the flow above it: a bar
+   that took 12px of layout would push the whole panel down and back up again
+   on every stage, unstage and commit -- once a second while somebody works.
+   The header is a sibling of `.panelBody`, not a child, so the "nothing
+   absolutely positioned inside the panel body" rule is untouched. */
 .busy {
-  margin-top: var(--sp-3);
+  position: absolute;
+  bottom: -1px;
+  left: 0;
+  right: 0;
+  margin: 0;
 }
 
 /* ── The error line ──────────────────────────────────────────────────────
@@ -218,12 +239,14 @@
   font-weight: var(--fw-semibold);
 }
 
-.commitButton:hover:not(:disabled) {
+.commitButton:hover:not([aria-disabled='true']) {
   background: var(--accent);
   border-color: var(--accent);
 }
 
-.commitButton:disabled {
+/* `aria-disabled`, not `:disabled` — the button stays hoverable and focusable
+   so the `title` explaining why can actually open. */
+.commitButton[aria-disabled='true'] {
   background: var(--surface-input);
   border-color: var(--border-strong);
   color: var(--text-disabled);
@@ -602,6 +625,52 @@
   gap: var(--sp-2);
 }
 
-.identityActions .primaryButton {
-  align-self: auto;
+/* The dialog convention: the action that commits is filled, the one that walks
+   away is a ghost. Same geometry so the pair sits on one baseline. */
+.filledButton,
+.ghostButton {
+  height: var(--h-control-sm);
+  padding: 0 var(--sp-4);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  font-family: inherit;
+  font-size: var(--fs-sm);
+  white-space: nowrap;
+}
+
+.filledButton {
+  background: var(--accent-deep);
+  border: 1px solid var(--accent-deep);
+  color: var(--text-on-accent);
+  font-weight: var(--fw-semibold);
+}
+
+.filledButton:hover:not([aria-disabled='true']) {
+  background: var(--accent);
+  border-color: var(--accent);
+}
+
+/* See `.commitButton`: `aria-disabled` keeps it focusable and hoverable. */
+.filledButton[aria-disabled='true'] {
+  background: var(--surface-input);
+  border-color: var(--border-strong);
+  color: var(--text-disabled);
+  cursor: default;
+}
+
+.ghostButton {
+  background: transparent;
+  border: 1px solid var(--border-strong);
+  color: var(--text-secondary);
+}
+
+.ghostButton:hover {
+  background: var(--surface-hover);
+  color: var(--text-primary);
+}
+
+.filledButton:focus-visible,
+.ghostButton:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
 }

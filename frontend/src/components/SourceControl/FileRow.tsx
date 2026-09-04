@@ -124,7 +124,10 @@ export function FileRow({ file, group, onActed }: FileRowProps) {
   }, [discard, file.kind, file.path, run, t]);
 
   return (
-    <li className={styles.row}>
+    // The path lives on the ROW, not on the button inside it: a `title` on a
+    // disabled element never opens in Chrome, and a truncated name is exactly
+    // when the reader needs it.
+    <li className={styles.row} title={shown}>
       <span
         className={styles.chip}
         data-kind={file.kind}
@@ -138,10 +141,9 @@ export function FileRow({ file, group, onActed }: FileRowProps) {
         The row's own button. Disabled: opening the change is the diff view's
         job and that is not in this build, and a button that looks live and
         does nothing is worse than one that says it cannot yet. It carries no
-        tooltip of its own beyond the path, which is the fact a truncated row
-        is actually missing.
+        tooltip of its own -- the row above it holds the path.
       */}
-      <button type="button" className={styles.openButton} title={shown} disabled>
+      <button type="button" className={styles.openButton} disabled>
         <span className={styles.rowName}>{label}</span>
         {dir !== '' && <span className={styles.rowDir}>{dir}</span>}
       </button>

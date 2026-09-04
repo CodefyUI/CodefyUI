@@ -134,6 +134,18 @@ describe('ScmHeader: the title row', () => {
     expect(openIdentityForm).toHaveBeenCalledTimes(1);
   });
 
+  it('cannot open the identity form where there is no repository to read', () => {
+    // `GET /config` needs a repository; every other state answers it with a
+    // refusal, so the row would open an empty form above an error line.
+    useGitStore.setState({ repoState: 'not_repo', status: null });
+    render(<ScmHeader />);
+    openMore();
+    const row = screen.getByRole('menuitem', { name: 'Commit identity...' });
+    expect(row).toBeDisabled();
+    fireEvent.click(row);
+    expect(openIdentityForm).not.toHaveBeenCalled();
+  });
+
   it('opens the setup guide in a new tab', () => {
     const open = vi.spyOn(window, 'open').mockReturnValue(null);
     render(<ScmHeader />);

@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { render, screen, fireEvent, waitFor, within } from '@testing-library/react';
 import { ChangeGroup } from './ChangeGroup';
+import { SCM_FOCUS } from './ScmHeader';
 import { useI18n } from '../../i18n';
 import { _resetGitStoreForTesting, useGitStore } from '../../store/gitStore';
 import { confirm } from '../../utils/dialog';
@@ -173,4 +174,39 @@ describe('ChangeGroup: focus after a row leaves', () => {
       ),
     );
   });
+
+  it('falls back to the message box when the heading itself is gone', async () => {
+    // Discarding the last change empties the panel down to "No changes", so
+    // the group that owns the heading unmounts in the same beat. Without a
+    // fallback focus lands on the document body and the next Tab starts from
+    // the top of the page.
+    useGitStore.setState({
+      status: status({ unstaged: [file('a.py')] }),
+      discard: vi.fn(async () => {
+        useGitStore.setState({ status: status() });
+        return true;
+      }),
+    });
+    render(<Panel files={[file('a.py')]} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Discard Changes' }));
+    await waitFor(() =>
+      expect(document.activeElement).toBe(screen.getByLabelText('message')),
+    );
+  });
 });
+
+/**
+ * The panel in miniature: the Changes group is drawn only while there is
+ * something in it, which is exactly how `SourceControlTab` draws it.
+ */
+function Panel({ files }: { files: GitFile[] }) {
+  const current = useGitStore((s) => s.status);
+  const empty =
+    (current?.unstaged.length ?? 0) + (current?.untracked.length ?? 0) === 0;
+  return (
+    <>
+      <textarea data-scm-focus={SCM_FOCUS.commit} aria-label="message" />
+      {!empty && <ChangeGroup kind="changes" files={files} />}
+    </>
+  );
+}

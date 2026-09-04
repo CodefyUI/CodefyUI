@@ -86,19 +86,39 @@ describe('CommitBox: when Commit can be pressed', () => {
   it('refuses an empty message and says which half is missing', () => {
     useGitStore.setState({ commitMessage: '   ' });
     render(<CommitBox />);
-    expect(commitButton()).toBeDisabled();
+    // `aria-disabled`, not `disabled`: a disabled button opens no tooltip in
+    // Chrome, so the button with a reason to give could not give it.
+    expect(commitButton()).toHaveAttribute('aria-disabled', 'true');
+    expect(commitButton()).not.toBeDisabled();
     expect(commitButton().getAttribute('title')).toBe('Enter a message');
   });
 
   it('refuses an empty index and says so', () => {
     useGitStore.setState({ status: status({ unstaged: [file('a.py')] }) });
     render(<CommitBox />);
-    expect(commitButton()).toBeDisabled();
+    expect(commitButton()).toHaveAttribute('aria-disabled', 'true');
     expect(commitButton().getAttribute('title')).toBe('Nothing staged');
+  });
+
+  it('does nothing when the refused button is pressed anyway', () => {
+    useGitStore.setState({ commitMessage: '' });
+    render(<CommitBox />);
+    fireEvent.click(commitButton());
+    expect(commit).not.toHaveBeenCalled();
+  });
+
+  it('lets an amend through with nothing staged: it is rewriting a message', () => {
+    useGitStore.setState({ amend: true, status: status() });
+    render(<CommitBox />);
+    expect(commitButton()).toHaveAttribute('aria-disabled', 'false');
+    expect(commitButton().getAttribute('title')).toBeNull();
+    fireEvent.click(commitButton());
+    expect(commit).toHaveBeenCalledWith({ all: false });
   });
 
   it('carries no reason once there is nothing wrong', () => {
     render(<CommitBox />);
+    expect(commitButton()).toHaveAttribute('aria-disabled', 'false');
     expect(commitButton().getAttribute('title')).toBeNull();
   });
 });
@@ -138,7 +158,7 @@ describe('CommitBox: the options menu', () => {
     render(<CommitBox />);
     // The button is off (nothing staged) and Commit All is still on: staging
     // is what it does.
-    expect(commitButton()).toBeDisabled();
+    expect(commitButton()).toHaveAttribute('aria-disabled', 'true');
     openOptions();
     fireEvent.click(
       screen.getByRole('menuitem', {

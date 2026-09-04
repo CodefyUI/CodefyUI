@@ -13,6 +13,31 @@ import styles from './SourceControl.module.css';
 export const SCM_DOCS_PATH = '/usage/source-control';
 
 /**
+ * The two places focus can be parked when the row that held it is gone.
+ *
+ * A `data-` attribute rather than a ref threaded through four components: the
+ * thing that loses focus (a file row) and the thing that catches it (the
+ * message box, or failing that the panel title) are in different subtrees, and
+ * the panel is a singleton — the sidebar mounts exactly one open tab.
+ */
+export const SCM_FOCUS = { commit: 'commit', title: 'title' } as const;
+
+/**
+ * Put focus back somewhere sensible in the panel.
+ *
+ * Called when a group heading has been unmounted by the very action that was
+ * pressed — discarding the last change empties the panel — so that focus lands
+ * on the message box rather than falling to the document body, where the next
+ * Tab starts from the top of the page.
+ */
+export function focusScmFallback(): void {
+  const target = document.querySelector<HTMLElement>(
+    `[data-scm-focus="${SCM_FOCUS.commit}"]`,
+  ) ?? document.querySelector<HTMLElement>(`[data-scm-focus="${SCM_FOCUS.title}"]`);
+  target?.focus();
+}
+
+/**
  * A layout file: the half of a saved graph that holds positions and notes.
  *
  * One Save writes a PAIR (`graphs/<name>.graph.json` and
@@ -72,6 +97,7 @@ export function errorSentence(err: GitStoreError, t: Translate): string {
  */
 export function ScmHeader() {
   const { t } = useI18n();
+  const repoState = useGitStore((s) => s.repoState);
   const status = useGitStore((s) => s.status);
   const busyOp = useGitStore((s) => s.busyOp);
   const lastError = useGitStore((s) => s.lastError);
@@ -104,6 +130,11 @@ export function ScmHeader() {
     {
       id: 'identity',
       label: t('git.action.identity'),
+      // Reading the config needs a repository: every other state answers
+      // `GET /config` with its own refusal, so the row would open an empty
+      // form above an error line. `repoState` moves only when the repository
+      // itself does, never on a poll of an unchanged one.
+      disabled: repoState !== 'ready',
       onSelect: () => openIdentityForm(),
     },
     {
@@ -135,9 +166,15 @@ export function ScmHeader() {
   const stderr = lastError?.stderr ?? null;
 
   return (
-    <div className={shell.header}>
+    <div className={`${shell.header} ${styles.header}`}>
       <div className={shell.headerRow}>
-        <div className={shell.headerTitle}>{t('sidebar.tab.git')}</div>
+        <div
+          className={shell.headerTitle}
+          data-scm-focus={SCM_FOCUS.title}
+          tabIndex={-1}
+        >
+          {t('sidebar.tab.git')}
+        </div>
         <button
           type="button"
           className={shell.toolbarButton}
@@ -178,18 +215,30 @@ export function ScmHeader() {
         </div>
       )}
       {(lastError !== null || loadError !== null) && (
-        <div className={styles.error} role="alert">
-          {loadError !== null && (
-            <div className={styles.errorMessage}>
-              {t('git.error.loadFail', { error: loadError })}
-            </div>
-          )}
+        <div className={styles.error}>
+          {/*
+            `role="alert"` wraps the SENTENCE and nothing else. An alert
+            re-announces whenever its subtree changes, so putting the Details
+            toggle and the `<pre>` inside it would read the whole refusal out
+            again every time somebody opened or closed the stderr.
+          */}
+          <div role="alert">
+            {loadError !== null && (
+              <div className={styles.errorMessage}>
+                {t('git.error.loadFail', { error: loadError })}
+              </div>
+            )}
+            {lastError !== null && (
+              <>
+                <div className={styles.errorMessage}>{errorSentence(lastError, t)}</div>
+                {lastError.hint !== null && (
+                  <div className={styles.errorHint}>{lastError.hint}</div>
+                )}
+              </>
+            )}
+          </div>
           {lastError !== null && (
             <>
-              <div className={styles.errorMessage}>{errorSentence(lastError, t)}</div>
-              {lastError.hint !== null && (
-                <div className={styles.errorHint}>{lastError.hint}</div>
-              )}
               <div className={styles.errorActions}>
                 {stderr !== null && stderr !== '' && (
                   <button

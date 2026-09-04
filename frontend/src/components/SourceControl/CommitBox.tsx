@@ -4,6 +4,7 @@ import { useI18n } from '../../i18n';
 import { MOD_LABEL } from '../../utils/platform';
 import { ChevronDownIcon } from '../shared/Icons';
 import { ActionMenu, type ActionMenuItem } from '../shared/ActionMenu';
+import { SCM_FOCUS } from './ScmHeader';
 import styles from './SourceControl.module.css';
 
 /**
@@ -30,23 +31,15 @@ export function CommitBox() {
 
   // Grows with the text up to the `max-height` in the stylesheet, then
   // scrolls. Reset to `auto` first, or the box could only ever get taller.
+  // `scrollHeight` is the CONTENT box and the element is `border-box`, so the
+  // border and padding have to be added back or the box lands two pixels
+  // short and scrolls a line early.
   useLayoutEffect(() => {
     const el = inputRef.current;
     if (el === null) return;
     el.style.height = 'auto';
-    el.style.height = `${el.scrollHeight}px`;
+    el.style.height = `${el.scrollHeight + el.offsetHeight - el.clientHeight}px`;
   }, [message]);
-
-  const hasMessage = message.trim() !== '';
-  const stagedCount = status?.staged.length ?? 0;
-  const canCommit = hasMessage && stagedCount > 0;
-  // One reason, the first one that applies: a box with no message and nothing
-  // staged has one thing to do next, not two.
-  const blockedBecause = !hasMessage
-    ? t('git.commit.needMessage')
-    : stagedCount === 0
-      ? t('git.commit.nothingStaged')
-      : undefined;
 
   // git refuses `--amend` before it runs when the branch has no commit yet,
   // and rewriting a commit that is already on a remote is the mistake that
@@ -54,6 +47,20 @@ export function CommitBox() {
   const unborn = status?.unborn === true;
   const alreadyPushed = status?.upstream != null && status.ahead === 0;
   const amendBlocked = unborn || alreadyPushed;
+
+  const hasMessage = message.trim() !== '';
+  const stagedCount = status?.staged.length ?? 0;
+  // An amend with an empty index is a real commit: it rewrites the last one's
+  // MESSAGE, which is the commonest reason to amend at all, and the backend
+  // takes it. So "nothing staged" only blocks a new commit.
+  const canCommit = hasMessage && (stagedCount > 0 || amend);
+  // One reason, the first one that applies: a box with no message and nothing
+  // staged has one thing to do next, not two.
+  const blockedBecause = !hasMessage
+    ? t('git.commit.needMessage')
+    : stagedCount === 0 && !amend
+      ? t('git.commit.nothingStaged')
+      : undefined;
 
   const runCommit = useCallback(
     (all: boolean) => {
@@ -96,6 +103,7 @@ export function CommitBox() {
       <textarea
         ref={inputRef}
         className={styles.commitInput}
+        data-scm-focus={SCM_FOCUS.commit}
         rows={1}
         value={message}
         placeholder={t('git.commit.placeholder', { mod: MOD_LABEL })}
@@ -104,12 +112,22 @@ export function CommitBox() {
       />
       <div className={styles.commitRow}>
         {amend && <span className={styles.amendChip}>{t('git.commit.amending')}</span>}
+        {/*
+          `aria-disabled`, not `disabled`. A disabled button opens no tooltip
+          in Chrome and takes no focus, so the very button that has a reason to
+          give would be the one that could not give it. This one is hoverable,
+          focusable and announced as unavailable, and the press is refused in
+          the handler.
+        */}
         <button
           type="button"
           className={styles.commitButton}
-          disabled={!canCommit}
+          aria-disabled={!canCommit}
           title={blockedBecause}
-          onClick={() => runCommit(false)}
+          onClick={() => {
+            if (!canCommit) return;
+            runCommit(false);
+          }}
         >
           {t('git.commit.button')}
         </button>

@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { act, render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { IdentityForm } from './IdentityForm';
 import { useI18n } from '../../i18n';
 import { _resetGitStoreForTesting, useGitStore } from '../../store/gitStore';
@@ -96,6 +96,40 @@ describe('IdentityForm', () => {
     fireEvent.change(emailBox(), { target: { value: 'ada@example.com' } });
     fireEvent.click(screen.getByRole('button', { name: 'Save' }));
     expect(saveIdentity).toHaveBeenCalledWith({ name: '', email: 'ada@example.com' });
+  });
+
+  it('does not put a second config read over what is being typed', async () => {
+    render(<IdentityForm />);
+    act(() => {
+      useGitStore.setState({ identity: identity({ name: 'Ada', name_scope: 'global' }) });
+    });
+    await waitFor(() => expect(nameBox()).toHaveValue('Ada'));
+    fireEvent.change(nameBox(), { target: { value: 'Ada Lovelace' } });
+
+    // A commit refused a second time for a missing identity reopens the form
+    // and reads the config again. The seed is once only, or that answer would
+    // land in the middle of the sentence being typed.
+    act(() => {
+      useGitStore.setState({ identity: identity({ name: 'Ada', name_scope: 'global' }) });
+    });
+    expect(nameBox()).toHaveValue('Ada Lovelace');
+  });
+
+  it('has nothing to save while both halves are blank', () => {
+    render(<IdentityForm />);
+    const save = screen.getByRole('button', { name: 'Save' });
+    expect(save).toHaveAttribute('aria-disabled', 'true');
+    fireEvent.click(save);
+    expect(saveIdentity).not.toHaveBeenCalled();
+  });
+
+  it('turns Save on as soon as either half is filled', () => {
+    render(<IdentityForm />);
+    fireEvent.change(emailBox(), { target: { value: 'ada@example.com' } });
+    expect(screen.getByRole('button', { name: 'Save' })).toHaveAttribute(
+      'aria-disabled',
+      'false',
+    );
   });
 
   it('closes without writing anything', () => {

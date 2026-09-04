@@ -1,4 +1,4 @@
-import { useEffect, useId, useState, type FormEvent } from 'react';
+import { useEffect, useId, useRef, useState, type FormEvent } from 'react';
 import type { ConfigScope } from '../../api/git';
 import { useGitStore } from '../../store/gitStore';
 import { useI18n, type TranslationKey } from '../../i18n';
@@ -35,20 +35,30 @@ export function IdentityForm() {
   const closeIdentityForm = useGitStore((s) => s.closeIdentityForm);
   const [name, setName] = useState('');
   const [email, setEmail] = useState('');
+  const seeded = useRef(false);
   const domId = useId();
   const nameId = `${domId}-name`;
   const emailId = `${domId}-email`;
 
   // The config read is async and starts when the form opens, so the fields are
   // empty for a frame or two and fill in when it lands.
+  //
+  // ONCE. `identity` is replaced by every config read and by every successful
+  // write, and a second one -- a commit refused again for a missing identity,
+  // the form reopened from the menu -- would otherwise land in the middle of
+  // typing and put the old values back over what was being written.
   useEffect(() => {
-    if (identity === null) return;
+    if (identity === null || seeded.current) return;
+    seeded.current = true;
     setName(identity.name ?? '');
     setEmail(identity.email ?? '');
   }, [identity]);
 
+  const nothingToSave = name.trim() === '' && email.trim() === '';
+
   const onSubmit = (e: FormEvent<HTMLFormElement>) => {
     e.preventDefault();
+    if (nothingToSave) return;
     // The store closes the form on success and leaves it open on a refusal,
     // with the reason in the header's error line.
     void saveIdentity({ name, email });
@@ -86,13 +96,27 @@ export function IdentityForm() {
           {t(scopeKey(identity?.email_scope ?? null, identity?.email ?? null))}
         </span>
       </div>
+      {/*
+        Save filled and Cancel ghosted, which is the order and the weighting
+        `DialogContainer` already uses everywhere else in the app. Save is off
+        while both halves are blank because that is the ONE request
+        `PUT /config` cannot do anything with -- it answers 400 `invalid_value`
+        -- and the store refuses it before the wire anyway.
+      */}
       <div className={styles.identityActions}>
-        <button type="submit" className={styles.primaryButton}>
+        <button
+          type="submit"
+          className={styles.filledButton}
+          aria-disabled={nothingToSave}
+          onClick={(e) => {
+            if (nothingToSave) e.preventDefault();
+          }}
+        >
           {t('git.identity.save')}
         </button>
         <button
           type="button"
-          className={styles.primaryButton}
+          className={styles.ghostButton}
           onClick={() => closeIdentityForm()}
         >
           {t('dialog.cancel')}

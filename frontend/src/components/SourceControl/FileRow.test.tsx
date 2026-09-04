@@ -79,8 +79,10 @@ describe('FileRow: what the row says', () => {
     draw(file({ path: 'graphs/deep/cnn.graph.json' }), 'changes');
     expect(screen.getByText('cnn.graph.json')).toBeTruthy();
     expect(screen.getByText('graphs/deep')).toBeTruthy();
-    const open = screen.getByRole('button', { name: /cnn\.graph\.json/ });
-    expect(open.getAttribute('title')).toBe('graphs/deep/cnn.graph.json');
+    // On the ROW: a `title` on the disabled button inside it would never open.
+    expect(screen.getByRole('listitem').getAttribute('title')).toBe(
+      'graphs/deep/cnn.graph.json',
+    );
   });
 
   it('shows a file at the repository root with no directory half', () => {
@@ -94,15 +96,19 @@ describe('FileRow: what the row says', () => {
       'staged',
     );
     expect(screen.getByText('net.py -> model.py')).toBeTruthy();
-    const open = screen.getByRole('button', { name: /net\.py -> model\.py/ });
-    expect(open.getAttribute('title')).toBe('src/net.py -> src/model.py');
+    expect(screen.getByRole('listitem').getAttribute('title')).toBe(
+      'src/net.py -> src/model.py',
+    );
   });
 
-  it('leaves the row button inert, and untooltipped, until the diff view exists', () => {
+  it('leaves the row button inert, carrying only the full path', () => {
     draw(file(), 'changes');
     const open = screen.getByRole('button', { name: /model\.py/ });
     expect(open).toBeDisabled();
-    expect(open.getAttribute('title')).toBe('src/model.py');
+    // The button carries no tooltip of its own -- a disabled element opens
+    // none in Chrome, so the path is the row's.
+    expect(open.getAttribute('title')).toBeNull();
+    expect(screen.getByRole('listitem').getAttribute('title')).toBe('src/model.py');
   });
 });
 

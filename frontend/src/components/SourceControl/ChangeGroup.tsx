@@ -5,6 +5,7 @@ import { useI18n, type TranslationKey } from '../../i18n';
 import { confirm } from '../../utils/dialog';
 import { ChevronDownIcon, DiscardIcon, MinusIcon, PlusIcon } from '../shared/Icons';
 import { FileRow, type ChangeGroupKind } from './FileRow';
+import { focusScmFallback } from './ScmHeader';
 import styles from './SourceControl.module.css';
 
 const TITLE_KEY: Record<ChangeGroupKind, TranslationKey> = {
@@ -47,7 +48,22 @@ export function ChangeGroup({ kind, files }: ChangeGroupProps) {
 
   // A row that was staged, unstaged or discarded is no longer in this list, so
   // the button that did it is gone and focus would land on the document body.
-  const returnFocus = useCallback(() => toggleRef.current?.focus(), []);
+  //
+  // On the next frame, not now: the store's update has been applied but React
+  // has not necessarily re-rendered, and the whole GROUP can be what
+  // disappears -- discarding the last change empties the panel down to "No
+  // changes". Asking for the heading before that repaint would focus an
+  // element about to be removed, and focus would fall to the body anyway.
+  const returnFocus = useCallback(() => {
+    requestAnimationFrame(() => {
+      const toggle = toggleRef.current;
+      if (toggle !== null && toggle.isConnected) {
+        toggle.focus();
+        return;
+      }
+      focusScmFallback();
+    });
+  }, []);
 
   const askThenDiscardAll = useCallback(async () => {
     const ok = await confirm({
