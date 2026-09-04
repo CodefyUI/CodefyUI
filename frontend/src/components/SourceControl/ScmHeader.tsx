@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useId, useState } from 'react';
 import type { GitErrorCode } from '../../api/git';
 import { gitOpKey, useGitStore, type GitStoreError } from '../../store/gitStore';
 import { useI18n, type TranslationKey } from '../../i18n';
@@ -117,6 +117,9 @@ export function ScmHeader() {
   const openIdentityForm = useGitStore((s) => s.openIdentityForm);
   const dismissError = useGitStore((s) => s.dismissError);
   const [detailsOpen, setDetailsOpen] = useState(false);
+  // The Details toggle names what it opens, so the reader it was announced to
+  // can go straight there instead of hunting for what changed.
+  const stderrId = useId();
 
   // What the filter is swallowing RIGHT NOW: zero while it is off, so the
   // count appears as it is switched on and the menu stays open to show it.
@@ -254,6 +257,7 @@ export function ScmHeader() {
                     type="button"
                     className={styles.linkButton}
                     aria-expanded={detailsOpen}
+                    aria-controls={stderrId}
                     onClick={() => setDetailsOpen((was) => !was)}
                   >
                     {t('git.error.details')}
@@ -271,7 +275,7 @@ export function ScmHeader() {
                 </button>
               </div>
               {detailsOpen && stderr !== null && stderr !== '' && (
-                <pre className={styles.errorStderr}>{stderr}</pre>
+                <pre className={styles.errorStderr} id={stderrId}>{stderr}</pre>
               )}
             </>
           )}

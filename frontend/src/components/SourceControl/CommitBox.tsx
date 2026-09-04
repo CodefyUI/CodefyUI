@@ -46,7 +46,7 @@ export function CommitBox() {
   // and rewriting a commit that is already on a remote is the mistake that
   // costs somebody else a forced pull.
   const unborn = status?.unborn === true;
-  const alreadyPushed = status?.upstream != null && status.ahead === 0;
+  const alreadyPushed = status !== null && status.upstream !== null && status.ahead === 0;
   const amendBlocked = unborn || alreadyPushed;
 
   const hasMessage = message.trim() !== '';

@@ -243,8 +243,12 @@ describe('ScmHeader: the error line', () => {
     const details = screen.getByRole('button', { name: 'Details' });
     expect(details.getAttribute('aria-expanded')).toBe('false');
     fireEvent.click(details);
-    expect(screen.getByText('nothing added to commit')).toBeTruthy();
+    const opened = screen.getByText('nothing added to commit');
     expect(details.getAttribute('aria-expanded')).toBe('true');
+    // The toggle names what it opens, so the reader it was just announced to
+    // can go straight there rather than hunting for what changed.
+    expect(opened.id).not.toBe('');
+    expect(details.getAttribute('aria-controls')).toBe(opened.id);
   });
 
   it('offers no Details when git said nothing on stderr', () => {
