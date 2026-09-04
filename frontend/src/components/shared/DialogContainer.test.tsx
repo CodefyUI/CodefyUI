@@ -82,14 +82,17 @@ describe('DialogContainer', () => {
   it('renders prompt with input pre-filled with defaultValue', async () => {
     render(<DialogContainer />);
     prompt({ title: 'Rename', defaultValue: 'untitled' });
-    const input = (await screen.findByLabelText('Dialog input')) as HTMLInputElement;
+    // The prompt's own question names the box: one dialog asks for a branch
+    // name and the next for a remote URL, and "Dialog input" told a reader
+    // which of those they had landed in exactly never.
+    const input = (await screen.findByRole('textbox', { name: 'Rename' })) as HTMLInputElement;
     expect(input.value).toBe('untitled');
   });
 
   it('typing + clicking confirm resolves with input value', async () => {
     render(<DialogContainer />);
     const p = prompt({ title: 'Name?', confirmText: 'OK' });
-    const input = (await screen.findByLabelText('Dialog input')) as HTMLInputElement;
+    const input = (await screen.findByRole('textbox', { name: 'Name?' })) as HTMLInputElement;
     fireEvent.change(input, { target: { value: 'alice' } });
     fireEvent.click(screen.getByText('OK'));
     await expect(p).resolves.toBe('alice');
@@ -118,10 +121,35 @@ describe('DialogContainer', () => {
     fireEvent.click(await screen.findByText('OK'));
     expect(await screen.findByText('Required')).toBeTruthy();
     // Promise is not yet resolved — fix the input and retry.
-    const input = (await screen.findByLabelText('Dialog input')) as HTMLInputElement;
+    const input = (await screen.findByRole('textbox', { name: 'Name?' })) as HTMLInputElement;
     fireEvent.change(input, { target: { value: 'fine' } });
     fireEvent.click(screen.getByText('OK'));
     await expect(p).resolves.toBe('fine');
+  });
+
+  it('reports the refusal ON the box that was refused', async () => {
+    // A message sitting under the input with nothing tying it to the input is
+    // a message a screen reader reads only if the user happens to walk into
+    // it. It is the input's description, and the input says it is invalid.
+    render(<DialogContainer />);
+    prompt({ title: 'Branch name', validate: () => 'Not a valid branch name' });
+    const input = (await screen.findByRole('textbox', {
+      name: 'Branch name',
+    })) as HTMLInputElement;
+    expect(input.getAttribute('aria-invalid')).toBe('false');
+    expect(input.getAttribute('aria-describedby')).toBeNull();
+
+    fireEvent.click(screen.getByText('OK'));
+    const said = await screen.findByText('Not a valid branch name');
+    expect(said.id).not.toBe('');
+    expect(input.getAttribute('aria-invalid')).toBe('true');
+    expect(input.getAttribute('aria-describedby')).toBe(said.id);
+
+    // Typing again clears both halves, so the description does not outlive
+    // the value it was about.
+    fireEvent.change(input, { target: { value: 'main' } });
+    expect(input.getAttribute('aria-invalid')).toBe('false');
+    expect(input.getAttribute('aria-describedby')).toBeNull();
   });
 
   // ── Locale-aware fallback labels (#160) ─────────────────────────────────
