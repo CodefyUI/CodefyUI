@@ -1,0 +1,607 @@
+/* =========================================================
+   SourceControl.module.css — the sidebar's fifth tab.
+
+   The shell (`.header`, `.headerRow`, `.headerTitle`, `.panelBody`) comes from
+   `NodePalette.module.css`, so the tab's title row lines up with the other
+   four. Everything below is this tab's own: the branch line, the commit box,
+   the three change groups and their rows.
+
+   Every colour, size and space is a token. The panel is 180-520px wide and is
+   `overflow: hidden`, so every row here is a flex line with one `min-width: 0`
+   child that ellipsises — nothing may push the panel wider than it is.
+   ========================================================= */
+
+/* ── The announcement region ─────────────────────────────────────────────
+   Off screen rather than `display: none`, which assistive tech ignores. Its
+   sentence is also on screen (the group headings and their counts), so making
+   it visible would say everything twice. */
+.live {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* ── Header: the branch line under the title row ───────────────────────── */
+.branchRow {
+  display: flex;
+  align-items: baseline;
+  gap: var(--sp-3);
+  min-width: 0;
+  font-size: var(--fs-2xs);
+  color: var(--text-muted);
+  line-height: var(--lh-tight);
+}
+
+/* The branch name gives way first: it is the half a reader already knows. */
+.branchName {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-secondary);
+  font-weight: var(--fw-medium);
+}
+
+.tracking {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.busy {
+  margin-top: var(--sp-3);
+}
+
+/* ── The error line ──────────────────────────────────────────────────────
+   A refusal is prose the server wrote, in a 180px column: a Windows path or a
+   git ref has no break opportunity of its own. */
+.error {
+  margin-top: var(--sp-3);
+  padding: var(--sp-3);
+  border: 1px solid var(--status-error);
+  border-radius: var(--radius-sm);
+  background: var(--danger-wash);
+  font-size: var(--fs-xs);
+  line-height: var(--lh-normal);
+  overflow-wrap: anywhere;
+}
+
+.errorMessage {
+  color: var(--status-error);
+}
+
+.errorHint {
+  margin-top: var(--sp-2);
+  color: var(--text-secondary);
+}
+
+.errorActions {
+  display: flex;
+  gap: var(--sp-3);
+  margin-top: var(--sp-2);
+}
+
+/* A text button, so the two words under an error are not two more boxes. */
+.linkButton {
+  padding: 0;
+  background: transparent;
+  border: 0;
+  border-radius: var(--radius-sm);
+  color: var(--text-muted);
+  cursor: pointer;
+  font-family: inherit;
+  font-size: var(--fs-xs);
+  text-decoration: underline;
+}
+
+.linkButton:hover {
+  color: var(--text-primary);
+}
+
+.linkButton:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+}
+
+.errorStderr {
+  margin: var(--sp-2) 0 0;
+  padding: var(--sp-2);
+  max-height: 8rem;
+  overflow: auto;
+  background: var(--surface-code);
+  border-radius: var(--radius-sm);
+  color: var(--code-text);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: var(--fs-2xs);
+  line-height: var(--lh-snug);
+  white-space: pre-wrap;
+}
+
+/* ── The scrolling body ──────────────────────────────────────────────────
+   The one scroll container in the tab. `.panelBody` is a column flex box with
+   `overflow: hidden`, so this needs `min-height: 0` or it would never scroll. */
+.scroll {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.stateMessage {
+  padding: var(--sp-6) var(--sp-4);
+  text-align: center;
+  color: var(--text-muted);
+  font-size: var(--fs-md);
+}
+
+/* ── Commit box ──────────────────────────────────────────────────────────── */
+/* Never squeezed: a short panel takes the height out of the file list, which
+   scrolls, rather than out of the box the message is being typed into. */
+.commitBox {
+  flex-shrink: 0;
+  padding: var(--sp-4) var(--sp-4) var(--sp-3);
+  border-bottom: 1px solid var(--border-base);
+}
+
+.commitInput {
+  display: block;
+  width: 100%;
+  box-sizing: border-box;
+  min-height: var(--h-control-lg);
+  /* Grows with the message up to about six lines, then scrolls: a commit body
+     is welcome, but not at the price of the file list below it. */
+  max-height: 9rem;
+  padding: var(--sp-3);
+  resize: none;
+  background: var(--surface-input);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  color: var(--text-primary);
+  font-family: inherit;
+  font-size: var(--fs-sm);
+  line-height: var(--lh-snug);
+  outline: none;
+}
+
+.commitInput::placeholder {
+  color: var(--text-disabled);
+}
+
+.commitInput:focus {
+  border-color: var(--accent-dim);
+}
+
+.commitRow {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  margin-top: var(--sp-3);
+}
+
+.amendChip {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  padding: var(--sp-1) var(--sp-2);
+  border-radius: var(--radius-sm);
+  background: var(--warning-wash);
+  color: var(--status-warning);
+  font-size: var(--fs-2xs);
+  font-weight: var(--fw-semibold);
+}
+
+.commitButton {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  height: var(--h-control-sm);
+  padding: 0 var(--sp-3);
+  background: var(--accent-deep);
+  border: 1px solid var(--accent-deep);
+  border-radius: var(--radius-sm);
+  color: var(--text-on-accent);
+  cursor: pointer;
+  font-family: inherit;
+  font-size: var(--fs-sm);
+  font-weight: var(--fw-semibold);
+}
+
+.commitButton:hover:not(:disabled) {
+  background: var(--accent);
+  border-color: var(--accent);
+}
+
+.commitButton:disabled {
+  background: var(--surface-input);
+  border-color: var(--border-strong);
+  color: var(--text-disabled);
+  cursor: default;
+}
+
+.commitButton:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+}
+
+/* The split button's second half. Square, so the pair reads as one control. */
+.commitChevron {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  width: var(--h-control-sm);
+  height: var(--h-control-sm);
+  padding: 0;
+  background: var(--surface-input);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+
+.commitChevron:hover:not(:disabled) {
+  background: var(--surface-hover);
+  color: var(--text-primary);
+}
+
+.commitChevron:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+}
+
+/* ── Merge banner (read-only in this build) ──────────────────────────────── */
+.banner {
+  margin: var(--sp-3) var(--sp-4) 0;
+  padding: var(--sp-3);
+  border-radius: var(--radius-sm);
+  background: var(--warning-wash);
+  color: var(--status-warning);
+  font-size: var(--fs-xs);
+  line-height: var(--lh-normal);
+}
+
+/* ── A change group ──────────────────────────────────────────────────────── */
+.group {
+  margin-top: var(--sp-2);
+}
+
+.groupHeader {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: var(--sp-2) var(--sp-3) var(--sp-2) var(--sp-2);
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.groupToggle {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: var(--sp-1) var(--sp-1);
+  background: transparent;
+  border: 0;
+  border-radius: var(--radius-sm);
+  color: var(--text-muted);
+  cursor: pointer;
+  font-family: inherit;
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-bold);
+  letter-spacing: 0.08em;
+  text-align: left;
+  text-transform: uppercase;
+}
+
+.groupToggle:hover {
+  color: var(--text-secondary);
+}
+
+.groupToggle:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+}
+
+.groupTitle {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.chevron {
+  flex: 0 0 auto;
+  display: inline-flex;
+  transition: transform var(--transition-fast);
+}
+
+.chevronCollapsed {
+  transform: rotate(-90deg);
+}
+
+.groupCount {
+  flex: 0 0 auto;
+  color: var(--text-muted);
+  font-size: var(--fs-2xs);
+  font-variant-numeric: tabular-nums;
+}
+
+/* Hidden by opacity, not by `visibility` or `display`: the buttons stay in the
+   tab order, so a keyboard user reveals them by reaching them. */
+.groupActions,
+.rowActions {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-1);
+  flex: 0 0 auto;
+  opacity: 0;
+  transition: opacity var(--transition-fast);
+}
+
+.group:hover > .groupHeader > .groupActions,
+.groupHeader:focus-within > .groupActions,
+.row:hover > .rowActions,
+.row:focus-within > .rowActions {
+  opacity: 1;
+}
+
+.iconButton {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: var(--h-control-xs);
+  height: var(--h-control-xs);
+  padding: 0;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+.iconButton:hover:not(:disabled) {
+  background: var(--surface-hover);
+  border-color: var(--border-base);
+  color: var(--text-primary);
+}
+
+.iconButton:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+}
+
+.dangerButton:hover:not(:disabled) {
+  background: var(--danger-wash);
+  border-color: var(--status-error);
+  color: var(--status-error);
+}
+
+.list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+/* ── One file ────────────────────────────────────────────────────────────── */
+.row {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: 0 var(--sp-3) 0 var(--sp-2);
+  min-height: var(--h-control-sm);
+}
+
+.row:hover {
+  background: var(--surface-hover);
+}
+
+/* The whole name is one button — inert here, and the diff view's target
+   later. `min-width: 0` is what lets the name inside it ellipsise. */
+.openButton {
+  display: flex;
+  align-items: baseline;
+  gap: var(--sp-2);
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: var(--sp-2) var(--sp-1);
+  background: transparent;
+  border: 0;
+  color: var(--text-secondary);
+  cursor: pointer;
+  font-family: inherit;
+  font-size: var(--fs-sm);
+  text-align: left;
+}
+
+.openButton:disabled {
+  cursor: default;
+}
+
+.rowName {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-secondary);
+}
+
+/* The directory is context, not the name: dimmer, and the first thing to go. */
+.rowDir {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-muted);
+  font-size: var(--fs-2xs);
+}
+
+/* One letter, tinted by what happened to the file. Fixed width so the names
+   below each other start on one edge. */
+.chip {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  width: var(--sp-5);
+  height: var(--sp-5);
+  border-radius: var(--radius-sm);
+  font-size: var(--fs-2xs);
+  font-weight: var(--fw-bold);
+  line-height: 1.25;
+  background: var(--surface-input);
+  color: var(--text-muted);
+}
+
+.chip[data-kind='modified'],
+.chip[data-kind='typechange'] {
+  background: var(--warning-wash);
+  color: var(--status-warning);
+}
+
+.chip[data-kind='added'],
+.chip[data-kind='untracked'],
+.chip[data-kind='copied'] {
+  background: var(--success-wash);
+  color: var(--status-success);
+}
+
+.chip[data-kind='deleted'],
+.chip[data-kind='conflict'] {
+  background: var(--danger-wash);
+  color: var(--status-error);
+}
+
+.chip[data-kind='renamed'] {
+  background: var(--info-wash);
+  color: var(--status-info);
+}
+
+/* ── Empty screens ───────────────────────────────────────────────────────── */
+.emptyBody {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+  padding: var(--sp-5) var(--sp-4);
+}
+
+.emptyText {
+  color: var(--text-secondary);
+  font-size: var(--fs-sm);
+  line-height: var(--lh-normal);
+}
+
+.emptyHint {
+  color: var(--text-muted);
+  font-size: var(--fs-xs);
+  line-height: var(--lh-normal);
+  overflow-wrap: anywhere;
+}
+
+.primaryButton {
+  align-self: flex-start;
+  max-width: 100%;
+  height: var(--h-control-sm);
+  padding: 0 var(--sp-4);
+  background: var(--surface-input);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  color: var(--text-secondary);
+  cursor: pointer;
+  font-family: inherit;
+  font-size: var(--fs-sm);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.primaryButton:hover:not(:disabled) {
+  border-color: var(--accent-dim);
+  color: var(--accent);
+}
+
+.primaryButton:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+}
+
+.docsLink {
+  align-self: flex-start;
+  color: var(--accent);
+  font-size: var(--fs-xs);
+}
+
+/* ── Commit identity form ────────────────────────────────────────────────── */
+.identityForm {
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+  padding: var(--sp-4);
+  border-bottom: 1px solid var(--border-base);
+  background: var(--surface-app);
+}
+
+.identityTitle {
+  color: var(--text-muted);
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-bold);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+}
+
+.fieldLabel {
+  color: var(--text-secondary);
+  font-size: var(--fs-xs);
+}
+
+.fieldInput {
+  width: 100%;
+  box-sizing: border-box;
+  height: var(--h-control-sm);
+  padding: 0 var(--sp-3);
+  background: var(--surface-input);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  color: var(--text-primary);
+  font-family: inherit;
+  font-size: var(--fs-sm);
+  outline: none;
+}
+
+.fieldInput:focus {
+  border-color: var(--accent-dim);
+}
+
+.scope {
+  color: var(--text-muted);
+  font-size: var(--fs-2xs);
+}
+
+.identityActions {
+  display: flex;
+  gap: var(--sp-2);
+}
+
+.identityActions .primaryButton {
+  align-self: auto;
+}
