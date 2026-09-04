@@ -31,6 +31,7 @@ import pytest
 from app.core.git import stash
 from app.core.git.errors import GitError
 from app.core.git.models import GitStatus, MutationResult
+from app.core.git.runner import LITERAL_PATHSPECS
 
 # Fixtures, used by NAME rather than by reference -- what pytest wants and
 # what ruff cannot see. ``_conflicted`` is a helper, not a fixture: it takes
@@ -324,6 +325,27 @@ async def test_a_message_that_is_an_option_is_still_a_message(repo):
     assert stash.list_stashes(repo.root)[0].message == "-upload-pack=whoami"
 
 
+async def test_a_message_that_is_gits_nothing_to_stash_sentence_still_stashes(
+        repo):
+    """The stdout twin of the ``WIP on ...`` spoof.
+
+    git echoes the message into stdout (``Saved working directory and index
+    state On main: <message>``), so a SUBSTRING test for "No local changes
+    to save" reports 400 "there is nothing to stash" for a push that set
+    the work aside and reset the tree -- measured against this module
+    before the test became ``startswith``. git prints that sentence as the
+    whole of stdout when it means it; its warnings go to stderr.
+    """
+    repo.write("a.txt", "two\n")
+
+    result = await repo.service.stash_push("No local changes to save")
+
+    assert result.detail["stash"] == 0
+    assert repo.read("a.txt") == "one\ntwo\n"
+    entry = stash.list_stashes(repo.root)[0]
+    assert entry.message == "No local changes to save"
+
+
 async def test_stashing_a_clean_tree_is_refused_rather_than_silent(repo):
     """git exits 0 and says so on stdout, so without this the tab reports a
     stash that does not exist. The menu item is disabled when the tree is
@@ -359,6 +381,57 @@ async def test_stashing_before_the_first_commit_is_404_not_500(make_repo):  # no
     assert excinfo.value.code == "not_found"
     assert excinfo.value.status == 404
     assert excinfo.value.hint == "this branch has no commits yet"
+
+
+async def test_stashing_across_an_unfinished_merge_is_refused(repo):
+    """git exits 1 with "could not write index" here, which matches no
+    rule -- and the merge must survive being asked."""
+    _conflicted(repo)
+
+    with pytest.raises(GitError) as excinfo:
+        await repo.service.stash_push("mid merge")
+
+    assert excinfo.value.code == "merge_in_progress"
+    assert excinfo.value.status == 409
+    assert (repo.root / ".git" / "MERGE_HEAD").exists()
+    assert stash.list_stashes(repo.root) == []
+
+
+async def test_stashing_across_a_resolved_merge_is_refused_too(repo):
+    """The dangerous half, and the one this guard exists for: with every
+    conflict staged git exits **0** and DELETES ``MERGE_HEAD`` (measured on
+    git 2.53). The merge is gone, popping the stash back does not bring it
+    back, and the panel says "stashed"."""
+    _conflicted(repo)
+    await repo.service.resolve("a.txt", "theirs")
+
+    with pytest.raises(GitError) as excinfo:
+        await repo.service.stash_push("mid merge")
+
+    assert excinfo.value.code == "merge_in_progress"
+    assert excinfo.value.status == 409
+    assert (repo.root / ".git" / "MERGE_HEAD").exists()
+    assert repo.read("a.txt") == "side\n"
+    assert stash.list_stashes(repo.root) == []
+
+
+async def test_stashing_with_an_unmerged_index_and_no_merge_is_refused(repo):
+    """The sibling state, which ``merge_in_progress`` does not reach: a
+    conflicting ``stash pop`` leaves unmerged paths and no ``MERGE_HEAD``,
+    and the tab draws a merge group with Stash Changes in the same menu."""
+    repo.write("a.txt", "stashed\n")
+    await repo.service.stash_push("mine")
+    repo.commit("on top", {"a.txt": "committed\n"})
+    with pytest.raises(GitError):
+        await repo.service.stash_pop(0)
+    assert not (repo.root / ".git" / "MERGE_HEAD").exists()
+
+    with pytest.raises(GitError) as excinfo:
+        await repo.service.stash_push("after the conflict")
+
+    assert excinfo.value.code == "conflict"
+    assert excinfo.value.status == 409
+    assert len(stash.list_stashes(repo.root)) == 1
 
 
 # --- popping, applying, dropping ---------------------------------------------
@@ -476,6 +549,68 @@ async def test_a_pop_blocked_by_a_local_edit_says_dirty_tree(repo):
     assert len(stash.list_stashes(repo.root)) == 1
 
 
+async def test_a_pop_blocked_by_a_recreated_file_says_dirty_tree(repo):
+    """A project directory that regenerates a file is an ordinary flow, and
+    the answer used to be "there is nothing to commit".
+
+    ``stash pop`` prints a whole ``git status`` on stdout whose last line
+    is one of the ``nothing_to_commit`` phrases, so joining the streams --
+    which is what makes a real conflict classifiable at all -- put this
+    failure on the wrong row until git's own "already exists, no checkout"
+    was added to ``dirty_tree``.
+    """
+    repo.write("n.txt", "generated\n")
+    await repo.service.stash_push("with untracked")
+    repo.write("n.txt", "generated again\n")
+
+    with pytest.raises(GitError) as excinfo:
+        await repo.service.stash_pop(0)
+
+    assert excinfo.value.code == "dirty_tree"
+    assert excinfo.value.status == 409
+    assert len(stash.list_stashes(repo.root)) == 1
+    assert repo.read("n.txt") == "generated again\n"
+
+
+async def test_only_the_push_runs_without_literal_pathspecs(repo, monkeypatch):
+    """The exemption pinned at the ARGV, not through its symptom.
+
+    ``test_push_takes_untracked_files_with_it`` does fail today when the
+    exemption is reverted, but it is a behavioural pin: on a git that fixed
+    the bug it would pass either way and the exemption could be deleted
+    without a test noticing. Every other stash command keeps the option --
+    ``pop`` and ``apply`` take a ``stash@{N}``, not a pathspec, and are
+    measurably fine with it.
+    """
+    seen: list[list[str]] = []
+    real = stash.run_git
+
+    def record(args, **kwargs):
+        result = real(args, **kwargs)
+        seen.append(list(result.argv))
+        return result
+
+    monkeypatch.setattr(stash, "run_git", record)
+    repo.write("a.txt", "two\n")
+    await repo.service.stash_push("mine")
+    await repo.service.stash_pop(0)
+    await repo.service.stash_push("again")
+    await repo.service.stash_apply(0)
+    await repo.service.stash_drop(0)
+
+    def argvs_for(*words: str) -> list[list[str]]:
+        matched = [argv for argv in seen
+                   if all(word in argv for word in words)]
+        assert matched, (words, seen)
+        return matched
+
+    for argv in argvs_for("stash", "push"):
+        assert LITERAL_PATHSPECS not in argv, argv
+    for command in ("list", "pop", "apply", "drop"):
+        for argv in argvs_for("stash", command):
+            assert LITERAL_PATHSPECS in argv, argv
+
+
 # --- resolving a merge -------------------------------------------------------
 
 
@@ -530,19 +665,40 @@ async def test_a_resolved_merge_commits_as_a_merge(repo):
     assert len(parents) == 3, "a merge commit has two parents"
 
 
-async def test_resolving_a_file_that_is_not_conflicted_is_refused(repo):
-    """``git checkout --ours`` on a merely MODIFIED file exits 0 and throws
-    the modification away (measured), so this refusal is the only thing
-    between a stale panel and a lost edit."""
+async def test_resolving_a_tracked_file_that_is_not_conflicted_is_refused(repo):
+    """The shape the refusal actually exists for: a TRACKED file with an
+    uncommitted edit.
+
+    On an untracked path git refuses anyway ("did not match any file(s)
+    known to git"), so a test written that way passes for the wrong
+    reason. Here ``git checkout --ours -- b.txt`` exits 0 and silently
+    restores b.txt from HEAD (measured on git 2.53) -- the edit is gone,
+    with no error and nothing to undo from -- which makes this refusal the
+    only thing between a stale panel and a lost edit.
+    """
+    repo.commit("add b", {"b.txt": "committed\n"})
     _conflicted(repo)
-    repo.write("b.txt", "an unrelated edit\n")
+    repo.write("b.txt", "edited by the user\n")
 
     with pytest.raises(GitError) as excinfo:
         await repo.service.resolve("b.txt", "ours")
 
     assert excinfo.value.code == "path_not_in_status"
     assert excinfo.value.status == 400
-    assert repo.read("b.txt") == "an unrelated edit\n"
+    assert repo.read("b.txt") == "edited by the user\n"
+
+
+async def test_resolving_a_file_git_has_never_heard_of_is_refused(repo):
+    """The other half, which git would also refuse -- but with a 404 and a
+    sentence about pathspecs rather than one about this panel."""
+    _conflicted(repo)
+    repo.write("b.txt", "an untracked file\n")
+
+    with pytest.raises(GitError) as excinfo:
+        await repo.service.resolve("b.txt", "theirs")
+
+    assert excinfo.value.code == "path_not_in_status"
+    assert repo.read("b.txt") == "an untracked file\n"
 
 
 async def test_resolving_a_file_with_no_merge_at_all_is_refused(repo):

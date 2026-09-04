@@ -578,6 +578,21 @@ async def test_a_stash_index_that_is_not_an_index_is_422(test_client, project,
     assert response.status_code == 422, response.text
 
 
+async def test_an_empty_stash_message_is_400_not_no_message(test_client,
+                                                            project):
+    """Pinned because Task 4's ``prompt()`` can return ``""`` for a prompt
+    somebody submitted empty, and the client must send ``null`` instead:
+    ``validate_stash_message`` refuses an empty string, so the stash would
+    not happen and the toast would say the value was not allowed."""
+    project.write("a.txt", "two\n")
+
+    response = await test_client.post("/api/git/stashes", json={"message": ""})
+
+    assert response.status_code == 400
+    assert (await _detail(response))["code"] == "invalid_value"
+    assert (await test_client.get("/api/git/stashes")).json() == []
+
+
 async def test_a_stash_body_with_an_unknown_key_is_422(test_client, project):
     project.write("a.txt", "two\n")
 
@@ -605,17 +620,39 @@ async def test_the_resolve_route_settles_one_file(test_client, project):
 
 async def test_resolving_a_file_that_is_not_conflicted_is_400(test_client,
                                                               project):
-    """``git checkout --ours`` on a merely modified file exits 0 and throws
-    the modification away, so a stale row must never reach it."""
+    """A TRACKED file with an uncommitted edit, which is the shape that
+    matters: ``git checkout --ours -- b.txt`` exits 0 there and silently
+    restores it from HEAD. On an untracked path git would refuse anyway, so
+    a test written that way passes for the wrong reason."""
+    project.commit("add b", {"b.txt": "committed\n"})
     _conflicted(project)
-    project.write("b.txt", "an unrelated edit\n")
+    project.write("b.txt", "edited by the user\n")
 
     response = await test_client.post("/api/git/resolve",
                                       json={"path": "b.txt", "side": "ours"})
 
     assert response.status_code == 400
     assert (await _detail(response))["code"] == "path_not_in_status"
-    assert project.read("b.txt") == "an unrelated edit\n"
+    assert project.read("b.txt") == "edited by the user\n"
+
+
+async def test_stashing_during_a_merge_is_409_and_keeps_the_merge(test_client,
+                                                                  project):
+    """With every conflict staged git exits 0 and deletes MERGE_HEAD, so
+    this route has to refuse before it runs."""
+    _conflicted(project)
+    resolved = await test_client.post("/api/git/resolve",
+                                      json={"path": "a.txt",
+                                            "side": "theirs"})
+    assert resolved.status_code == 200, resolved.text
+
+    response = await test_client.post("/api/git/stashes", json={})
+
+    assert response.status_code == 409
+    detail = await _detail(response)
+    assert detail["code"] == "merge_in_progress"
+    assert (project.root / ".git" / "MERGE_HEAD").exists()
+    assert (await test_client.get("/api/git/stashes")).json() == []
 
 
 @pytest.mark.parametrize("body", [

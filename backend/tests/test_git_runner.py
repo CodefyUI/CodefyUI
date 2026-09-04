@@ -128,6 +128,34 @@ def test_argv_is_the_fixed_prefix_then_the_callers_arguments(
     ]
 
 
+def test_dropping_literal_pathspecs_drops_only_that_one(
+        monkeypatch, fake_git, tmp_path):
+    """The exemption, pinned at the argv rather than through a symptom.
+
+    Two callers ask for it and neither can be tested for it behaviourally
+    in a way that survives git changing its mind: ``check-ignore`` REFUSES
+    the option outright, and ``stash push`` accepts it and then leaves the
+    untracked file it just stashed sitting in the working tree. A git that
+    fixed the second would make its behavioural test pass either way, and
+    the exemption could then be deleted in silence.
+
+    The other three options are not optional, and this says so: dropping
+    ``core.askPass=`` by accident here would hang a request on a machine
+    with a credential helper.
+    """
+    _, seen = _run(monkeypatch, _FakeProc(), ("stash", "push"), cwd=tmp_path,
+                   literal_pathspecs=False)
+
+    assert seen["argv"] == [
+        _GIT, "-C", str(tmp_path.resolve()),
+        "-c", "core.quotepath=false",
+        "-c", "core.askPass=",
+        "-c", "color.ui=never",
+        "stash", "push",
+    ]
+    assert runner.LITERAL_PATHSPECS not in seen["argv"]
+
+
 def test_argv_carries_the_resolved_cwd(monkeypatch, fake_git, tmp_path):
     """``-C`` is an absolute path with no ``..`` left in it."""
     sub = tmp_path / "sub"

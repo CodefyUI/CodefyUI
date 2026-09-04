@@ -82,10 +82,12 @@ from .errors import GitError, classify_failure
 #: or fails, and a diff of ``[.]env`` cannot come back holding the user's
 #: API keys. (git >= 1.9; the argument form of ``GIT_LITERAL_PATHSPECS=1``.)
 #:
-#: ``git check-ignore`` is the one command that REFUSES it -- "pathspec
-#: magic not supported by this command: 'literal'", exit 128 -- so
-#: :func:`run_git` takes a flag to leave it off for that one call. See there
-#: for why that is safe.
+#: Two commands go without it, and :func:`run_git` takes a flag to leave it
+#: off for them. ``git check-ignore`` REFUSES it -- "pathspec magic not
+#: supported by this command: 'literal'", exit 128 -- and ``git stash push``
+#: is quietly WRONG with it, storing an untracked file and leaving it in the
+#: working tree. Neither of those argv carries a pathspec the caller chose,
+#: which is what makes leaving it off safe; see :func:`run_git`.
 LITERAL_PATHSPECS = "--literal-pathspecs"
 
 #: The options every call carries, between the executable and the caller's
@@ -408,10 +410,12 @@ def _argv(git: str, cwd: Path, args: Sequence[str], *,
     *cwd* is resolved, so the ``-C`` git is handed is an absolute path with
     no ``..`` in it even when the caller kept a relative one.
 
-    *literal_pathspecs* is only ever False for ``check-ignore``, which is the
-    one command that REJECTS the option: it answers "pathspec magic not
-    supported by this command: 'literal'" and exits 128. See
-    :func:`run_git`.
+    *literal_pathspecs* is False for exactly two callers: ``check-ignore``,
+    which REJECTS the option ("pathspec magic not supported by this
+    command: 'literal'", exit 128), and ``stash push``, which accepts it
+    and then stores an untracked file without removing it from the working
+    tree. Both argv are pathspec-free, which is the reason it is safe to
+    drop; see :func:`run_git`.
     """
     prefix = (GIT_PREFIX_ARGS if literal_pathspecs
               else tuple(arg for arg in GIT_PREFIX_ARGS

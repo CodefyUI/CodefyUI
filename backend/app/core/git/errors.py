@@ -311,6 +311,16 @@ _RULES: tuple[tuple[str, int, tuple[_Pattern, ...]], ...] = (
     ("dirty_tree", 409, (
         "would be overwritten by",
         "Please commit your changes or stash them",
+        # ``stash pop`` restoring an untracked file onto one that is back on
+        # disk: "n.txt already exists, no checkout", followed by "error:
+        # could not restore untracked files from stash" (measured on git
+        # 2.53, exit 1). The same answer as the row's other two phrases --
+        # move what is in the way and try again -- and it has to be HERE,
+        # above ``nothing_to_commit``, because a stash pop prints a whole
+        # ``git status`` on stdout whose last line is one of that row's
+        # phrases. Without this row the ordinary case of a project that
+        # regenerates a file answered "there is nothing to commit".
+        "already exists, no checkout",
     )),
     ("no_upstream", 409, (
         "has no upstream branch",

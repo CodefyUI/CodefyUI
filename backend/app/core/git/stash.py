@@ -40,6 +40,7 @@ import re
 from pathlib import Path
 from typing import Any, Literal
 
+from . import repo
 from .errors import GitError, classify_failure
 from .models import StashInfo
 from .paths import validate_stash_message
@@ -195,9 +196,10 @@ def stash_push(root: Path, *, message: str | None = None,
     second argument, so a message that begins with ``-`` is a message and
     not an option (measured: ``--message=-x`` makes a stash called ``-x``).
 
-    **This is the one command in the package that runs WITHOUT
-    ``--literal-pathspecs``, and the option does not refuse it -- it
-    corrupts it.** Measured on git 2.53: with the option,
+    **This is one of the two commands in the package that run WITHOUT
+    ``--literal-pathspecs``, and the only one anywhere that the option
+    makes WRONG rather than refuses** (``check-ignore`` is the other, and
+    it rejects the option outright). Measured on git 2.53: with the option,
     ``--include-untracked`` puts the untracked file in the stash and LEAVES
     IT in the working tree, exit 0 and no warning, so the tab reports a
     stash that did half of what it says -- and the next pop of that entry
@@ -209,18 +211,37 @@ def stash_push(root: Path, *, message: str | None = None,
     option value, and nothing the caller sent is positional -- so there is
     nothing for pathspec magic to be read out of, whatever the option says.
 
-    Two answers that are not failures to git and are refusals here. A stash
-    with NOTHING to save is exit 0 and a sentence on stdout -- not a 409
-    ``nothing_to_commit``, which is a different sentence about a different
-    button, but a 400 saying there is nothing to stash; the tab disables the
-    menu item when the tree is clean, so what this really guards is the race
-    between a fifteen-second-old panel and a click. And a stash in a
-    repository with no commits at all is git's "You do not have the initial
-    commit yet" -- a 500 without this, and the state every new repository
-    starts in. It is answered the way ``commit_changes`` answers an amend
-    with nothing to amend: a 404 whose hint is the fact.
+    **An unfinished merge is refused before anything runs, and that guard
+    is the difference between a button and a data loss.** Measured on git
+    2.53, both halves: mid-merge with conflicts still unresolved, ``stash
+    push`` exits 1 with "a.txt: needs merge" and "error: could not write
+    index", which matches no rule and was a 500; mid-merge with every
+    conflict RESOLVED it exits **0 and deletes MERGE_HEAD** -- the user's
+    merge is gone, popping the stash back does not restore it, and the
+    panel says "stashed". An unmerged index with NO ``MERGE_HEAD`` (what a
+    conflicting ``stash pop`` leaves behind) is the sibling state, and the
+    same 500. Both are decided here, from the one status the flags the tab
+    is drawn from come out of, so the answer can never disagree with what
+    the person clicking can see.
+
+    Two more answers that are not failures to git and are refusals here. A
+    stash with NOTHING to save is exit 0 and a sentence on stdout -- not a
+    409 ``nothing_to_commit``, which is a different sentence about a
+    different button, but a 400 saying there is nothing to stash; the tab
+    disables the menu item when the tree is clean, so what this really
+    guards is the race between a fifteen-second-old panel and a click. The
+    test is ``startswith`` and not ``in``, because that sentence is the
+    WHOLE of stdout when git means it (warnings go to stderr, measured) and
+    a user whose message happens to be "No local changes to save" would
+    otherwise have their work set aside and be told nothing happened. It is
+    the same trap :func:`_subject` is careful about, one stream further on.
+    And a stash in a repository with no commits at all is git's "You do not
+    have the initial commit yet" -- a 500 without this, and the state every
+    new repository starts in. It is answered the way ``commit_changes``
+    answers an amend with nothing to amend: a 404 whose hint is the fact.
     """
     text = validate_stash_message(message) if message is not None else None
+    _refuse_a_half_finished_merge(root)
     args = ["stash", "push"]
     if include_untracked:
         args.append("--include-untracked")
@@ -236,12 +257,38 @@ def stash_push(root: Path, *, message: str | None = None,
                            hint="this branch has no commits yet")
         raise classify_failure(result.argv, result.returncode,
                                f"{result.out}\n{result.err}")
-    if NOTHING_TO_STASH in result.out:
+    if result.out.startswith(NOTHING_TO_STASH):
         raise GitError("invalid_value", 400, "there is nothing to stash",
                        hint="nothing to stash")
     # The stack's newest entry, which is where a push always lands.
     return {"stash": 0, "message": text,
             "include_untracked": include_untracked}
+
+
+def _refuse_a_half_finished_merge(root: Path) -> None:
+    """Refuse a push that would take a merge, or its leftovers, with it.
+
+    One status read, two refusals, and they are different states rather
+    than one written twice. ``merge_in_progress`` is ``MERGE_HEAD`` on
+    disk: git will happily stash across it once every conflict is staged,
+    and doing so DELETES the merge. ``conflicted`` without it is what a
+    conflicting ``stash pop`` leaves -- an unmerged index and no merge to
+    finish -- where git refuses with "could not write index" in words no
+    classification rule knows.
+
+    Both codes already exist and both say what happened
+    (:data:`~app.core.git.errors.CODES`), so this adds no vocabulary. The
+    order is the more specific answer first: with a ``MERGE_HEAD`` there
+    is a merge to finish or abort, which is a thing the tab has buttons
+    for; without one there are only files to resolve.
+    """
+    status = repo.read_status(root)
+    if status.merge_in_progress:
+        raise GitError("merge_in_progress", 409, "a merge is in progress",
+                       hint="finish or abort the merge first")
+    if status.conflicted:
+        raise GitError("conflict", 409, "there are unresolved conflicts",
+                       hint="resolve the conflicts first")
 
 
 def stash_pop(root: Path, index: int) -> dict[str, Any]:

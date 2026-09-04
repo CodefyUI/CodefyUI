@@ -139,6 +139,20 @@ _SAMPLES = [
         "Aborting\n",
         "dirty_tree", id="dirty-tree"),
     pytest.param(
+        # ``stash pop`` restoring an untracked file onto one that is back on
+        # disk. The WHOLE of what the caller classifies is both streams
+        # joined, and the stdout half is a ``git status`` whose last line is
+        # a ``nothing_to_commit`` phrase -- so this sample carries both, and
+        # it is the row ORDER that makes the answer "move it out of the
+        # way" rather than "there is nothing to commit".
+        "Already up to date.\nOn branch main\nUntracked files:\n\tn.txt\n\n"
+        "nothing added to commit but untracked files present "
+        '(use "git add" to track)\n'
+        "The stash entry is kept in case you need it again.\n"
+        "\nn.txt already exists, no checkout\n"
+        "error: could not restore untracked files from stash\n",
+        "dirty_tree", id="stash-pop-onto-a-recreated-file"),
+    pytest.param(
         "fatal: The current branch feat has no upstream branch.\n",
         "no_upstream", id="no-upstream"),
     pytest.param(
