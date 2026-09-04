@@ -36,6 +36,12 @@ vi.mock('../../api/git', async (importOriginal) => {
     ...actual,
     getGitStatus: vi.fn(),
     getGitConfig: vi.fn(),
+    // The three reference reads: the header asks for the remotes as soon as a
+    // repository answers, because "Publish or Sync" cannot be decided from a
+    // list nobody has fetched.
+    getGitBranches: vi.fn(),
+    getGitRemotes: vi.fn(),
+    getGitStashes: vi.fn(),
     gitInit: vi.fn(),
     gitStage: vi.fn(),
     gitUnstage: vi.fn(),
@@ -224,6 +230,16 @@ beforeEach(() => {
 
   api.getGitStatus.mockImplementation(async () => statusAnswer());
   api.getGitConfig.mockImplementation(async () => identity());
+  // A repository with no remote, no other branch and no stash: what the
+  // everyday flow below is about is the working tree, not the references.
+  api.getGitBranches.mockImplementation(async () => ({
+    current: 'main',
+    detached: false,
+    local: [],
+    remote: [],
+  }));
+  api.getGitRemotes.mockImplementation(async () => []);
+  api.getGitStashes.mockImplementation(async () => []);
   api.setGitConfig.mockImplementation(async () => identity());
   api.gitStage.mockImplementation(async (paths) => {
     const moved = takeFromWorktree(paths);

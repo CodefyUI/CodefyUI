@@ -1,9 +1,20 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { render, screen, fireEvent } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { ScmHeader } from './ScmHeader';
+import { refSectionIds } from './RefSection';
 import { useI18n } from '../../i18n';
 import { _resetGitStoreForTesting, useGitStore } from '../../store/gitStore';
-import type { FileKind, GitFile, GitStatus } from '../../api/git';
+import type { FileKind, GitFile, GitStatus, RemoteInfo } from '../../api/git';
+import { prompt } from '../../utils/dialog';
+
+// The stash message is asked for through the in-app prompt, which is a promise
+// driven by a modal the header does not draw.
+vi.mock('../../utils/dialog', () => ({
+  confirm: vi.fn(async () => true),
+  prompt: vi.fn(async () => null),
+}));
+
+const asked = vi.mocked(prompt);
 
 /*
  * The tab's header: the title row, the branch line, the busy bar and the error
@@ -40,6 +51,14 @@ function status(over: Partial<GitStatus> = {}): GitStatus {
   };
 }
 
+function remote(name: string): RemoteInfo {
+  return {
+    name,
+    fetch_url: `https://example.invalid/${name}.git`,
+    push_url: `https://example.invalid/${name}.git`,
+  };
+}
+
 /** The store's own action types, so a fake cannot drift from the real one. */
 type GitActions = ReturnType<typeof useGitStore.getState>;
 
@@ -47,14 +66,32 @@ let refresh: ReturnType<typeof vi.fn<GitActions['refresh']>>;
 let setHideLayout: ReturnType<typeof vi.fn<GitActions['setHideLayout']>>;
 let openIdentityForm: ReturnType<typeof vi.fn<GitActions['openIdentityForm']>>;
 let dismissError: ReturnType<typeof vi.fn<GitActions['dismissError']>>;
+let refreshRefs: ReturnType<typeof vi.fn<GitActions['refreshRefs']>>;
+let setSectionOpen: ReturnType<typeof vi.fn<GitActions['setSectionOpen']>>;
+let doFetch: ReturnType<typeof vi.fn<GitActions['fetch']>>;
+let pull: ReturnType<typeof vi.fn<GitActions['pull']>>;
+let push: ReturnType<typeof vi.fn<GitActions['push']>>;
+let sync: ReturnType<typeof vi.fn<GitActions['sync']>>;
+let publish: ReturnType<typeof vi.fn<GitActions['publish']>>;
+let stashPush: ReturnType<typeof vi.fn<GitActions['stashPush']>>;
 
 beforeEach(() => {
   useI18n.setState({ locale: 'en' });
   _resetGitStoreForTesting();
+  asked.mockReset();
+  asked.mockResolvedValue(null);
   refresh = vi.fn(async () => {});
   setHideLayout = vi.fn();
   openIdentityForm = vi.fn();
   dismissError = vi.fn();
+  refreshRefs = vi.fn(async () => {});
+  setSectionOpen = vi.fn();
+  doFetch = vi.fn(async () => true);
+  pull = vi.fn(async () => true);
+  push = vi.fn(async () => true);
+  sync = vi.fn(async () => true);
+  publish = vi.fn(async () => true);
+  stashPush = vi.fn(async () => true);
   useGitStore.setState({
     repoState: 'ready',
     status: status(),
@@ -62,6 +99,14 @@ beforeEach(() => {
     setHideLayout,
     openIdentityForm,
     dismissError,
+    refreshRefs,
+    setSectionOpen,
+    fetch: doFetch,
+    pull,
+    push,
+    sync,
+    publish,
+    stashPush,
   });
 });
 
@@ -76,6 +121,9 @@ function openMore() {
   return screen.getByRole('menu', { name: 'More actions' });
 }
 
+/** One overflow row, by the label it shows. */
+const menuRow = (name: string) => screen.getByRole('menuitem', { name });
+
 describe('ScmHeader: the title row', () => {
   it('shows the tab title and a refresh button that reads the status', () => {
     render(<ScmHeader />);
@@ -84,14 +132,32 @@ describe('ScmHeader: the title row', () => {
     expect(refresh).toHaveBeenCalledTimes(1);
   });
 
-  it('offers exactly the three overflow actions', () => {
+  it('offers the five git actions above the three panel ones', () => {
+    render(<ScmHeader />);
+    const menu = openMore();
+    const rows = menu.querySelectorAll('[role="menuitem"], [role="menuitemcheckbox"]');
+    expect(rows).toHaveLength(8);
+    // What git can be asked to do first, what the panel itself does after.
+    expect([...rows].map((row) => row.getAttribute('aria-label') ?? row.textContent))
+      .toEqual([
+        'Fetch',
+        'Pull',
+        'Push',
+        'Publish Branch',
+        'Stash Changes...',
+        'Hide layout files',
+        'Commit identity...',
+        'Setup guide',
+      ]);
+  });
+
+  it('drops the git actions where there is no repository to ask', () => {
+    useGitStore.setState({ repoState: 'not_repo', status: null });
     render(<ScmHeader />);
     const menu = openMore();
     const rows = menu.querySelectorAll('[role="menuitem"], [role="menuitemcheckbox"]');
     expect(rows).toHaveLength(3);
-    expect(rows[0]).toHaveAccessibleName('Hide layout files');
-    expect(rows[1]).toHaveAccessibleName('Commit identity...');
-    expect(rows[2]).toHaveAccessibleName('Setup guide');
+    expect(screen.queryByRole('menuitem', { name: 'Fetch' })).toBeNull();
   });
 
   it('Hide layout files is a checkbox that reports and flips the setting', () => {
@@ -204,6 +270,320 @@ describe('ScmHeader: the branch line', () => {
   });
 });
 
+describe('ScmHeader: the branch name is what opens the branch list', () => {
+  const branchButton = () => screen.getByRole('button', { name: 'Branch: main' });
+
+  it('says what it controls and whether that is open', () => {
+    render(<ScmHeader />);
+    expect(branchButton().getAttribute('aria-expanded')).toBe('false');
+    // The list it names is drawn by another component, which is why the ids
+    // are fixed per kind rather than coming from a `useId`.
+    expect(branchButton().getAttribute('aria-controls')).toBe(
+      refSectionIds('branches').listId,
+    );
+  });
+
+  it('opens the Branches section through the store, which remembers it', () => {
+    render(<ScmHeader />);
+    fireEvent.click(branchButton());
+    expect(setSectionOpen).toHaveBeenCalledWith('branches', true);
+  });
+
+  it('closes it again, so the state it reports is one it can undo', () => {
+    useGitStore.setState({ sections: { branches: true, remotes: false, stashes: false } });
+    render(<ScmHeader />);
+    expect(branchButton().getAttribute('aria-expanded')).toBe('true');
+    fireEvent.click(branchButton());
+    expect(setSectionOpen).toHaveBeenCalledWith('branches', false);
+  });
+});
+
+describe('ScmHeader: Sync, Publish and the remote picker', () => {
+  const published = () => status({ upstream: 'origin/main', ahead: 1, behind: 0 });
+
+  it('reads the remote list once, because null is not "no remotes"', async () => {
+    render(<ScmHeader />);
+    await waitFor(() => expect(refreshRefs).toHaveBeenCalledWith('remotes'));
+    expect(refreshRefs).toHaveBeenCalledTimes(1);
+  });
+
+  it('offers Sync on a branch that has an upstream', () => {
+    useGitStore.setState({ status: published(), remotes: [remote('origin')] });
+    render(<ScmHeader />);
+    fireEvent.click(screen.getByRole('button', { name: 'Sync (pull, then push)' }));
+    expect(sync).toHaveBeenCalledTimes(1);
+    expect(screen.queryByRole('button', { name: 'Publish Branch' })).toBeNull();
+  });
+
+  it('publishes straight to the only remote, and says it once', async () => {
+    useGitStore.setState({ remotes: [remote('origin')] });
+    render(<ScmHeader />);
+    // "Not published" and "Publish Branch" are the same fact; the button is
+    // the half that can be acted on.
+    expect(screen.queryByText('Not published')).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Publish Branch' }));
+    await waitFor(() => expect(publish).toHaveBeenCalledWith('origin'));
+  });
+
+  it('asks which remote when there are several', () => {
+    useGitStore.setState({ remotes: [remote('origin'), remote('backup')] });
+    render(<ScmHeader />);
+    fireEvent.click(screen.getByRole('button', { name: 'Publish Branch' }));
+    expect(screen.getByRole('menu', { name: 'Publish Branch' })).toBeTruthy();
+    fireEvent.click(screen.getByRole('menuitem', { name: 'backup' }));
+    expect(publish).toHaveBeenCalledWith('backup');
+  });
+
+  it('shows nothing to publish to on a repository with no remote', () => {
+    useGitStore.setState({ remotes: [] });
+    render(<ScmHeader />);
+    expect(screen.queryByRole('button', { name: 'Publish Branch' })).toBeNull();
+    // The line says the state instead: adding a remote lives under Remotes.
+    expect(screen.getByText('Not published')).toBeTruthy();
+  });
+
+  it('waits for the list rather than guessing while it is unread', () => {
+    render(<ScmHeader />);
+    expect(screen.queryByRole('button', { name: 'Publish Branch' })).toBeNull();
+    expect(screen.getByText('Not published')).toBeTruthy();
+  });
+
+  it('offers neither on a detached HEAD or a branch with no commits', () => {
+    useGitStore.setState({
+      status: status({ branch: null, detached: true, upstream: 'origin/main' }),
+      remotes: [remote('origin')],
+    });
+    const view = render(<ScmHeader />);
+    expect(screen.queryByRole('button', { name: 'Sync (pull, then push)' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Publish Branch' })).toBeNull();
+
+    view.unmount();
+    useGitStore.setState({ status: status({ unborn: true, head: null }) });
+    render(<ScmHeader />);
+    expect(screen.queryByRole('button', { name: 'Publish Branch' })).toBeNull();
+  });
+});
+
+describe('ScmHeader: what the git actions are refused for', () => {
+  /** The reason a row gives for being refused, or null when it can be pressed. */
+  function refusal(name: string): string | null {
+    const row = menuRow(name);
+    return row.getAttribute('aria-disabled') === 'true'
+      ? (row.getAttribute('aria-describedby') === null
+        ? ''
+        : document.getElementById(row.getAttribute('aria-describedby') as string)
+          ?.textContent ?? '')
+      : null;
+  }
+
+  it('refuses all four remote actions with one reason on a repository with no remote', () => {
+    useGitStore.setState({ remotes: [] });
+    render(<ScmHeader />);
+    openMore();
+    for (const name of ['Fetch', 'Pull', 'Push', 'Publish Branch']) {
+      expect(refusal(name)).toBe('No remote yet.');
+    }
+  });
+
+  it('refuses Pull and Push on a branch that is not published, leaving Publish', () => {
+    useGitStore.setState({ remotes: [remote('origin')] });
+    render(<ScmHeader />);
+    openMore();
+    expect(refusal('Fetch')).toBeNull();
+    expect(refusal('Pull')).toBe('Not published');
+    expect(refusal('Push')).toBe('Not published');
+    expect(refusal('Publish Branch')).toBeNull();
+  });
+
+  it('refuses everything but Fetch on a detached HEAD', () => {
+    useGitStore.setState({
+      status: status({ branch: null, detached: true, upstream: 'origin/main' }),
+      remotes: [remote('origin')],
+    });
+    render(<ScmHeader />);
+    openMore();
+    expect(refusal('Fetch')).toBeNull();
+    for (const name of ['Pull', 'Push', 'Publish Branch']) {
+      expect(refusal(name)).toBe('Detached HEAD');
+    }
+  });
+
+  it('refuses every remote action on a branch with no commits', () => {
+    useGitStore.setState({ status: status({ unborn: true, head: null }), remotes: [] });
+    render(<ScmHeader />);
+    openMore();
+    for (const name of ['Fetch', 'Pull', 'Push', 'Publish Branch']) {
+      expect(refusal(name)).toBe('No commits yet');
+    }
+  });
+
+  it('refuses Stash on a clean tree, and while a merge is in progress', () => {
+    const view = render(<ScmHeader />);
+    openMore();
+    expect(refusal('Stash Changes...')).toBe('No changes');
+    view.unmount();
+
+    useGitStore.setState({
+      status: status({
+        merge_in_progress: true,
+        conflicted: [file('src/train.py', 'conflict')],
+      }),
+    });
+    render(<ScmHeader />);
+    openMore();
+    expect(refusal('Stash Changes...')).toBe(
+      'Merge in progress: resolve each file, then commit.',
+    );
+  });
+
+  it('leaves a refused row focusable, so the reason can be reached', () => {
+    useGitStore.setState({ remotes: [] });
+    render(<ScmHeader />);
+    openMore();
+    expect(menuRow('Fetch')).not.toBeDisabled();
+    fireEvent.click(menuRow('Fetch'));
+    expect(doFetch).not.toHaveBeenCalled();
+  });
+});
+
+describe('ScmHeader: running a git action from the menu', () => {
+  beforeEach(() => {
+    useGitStore.setState({
+      status: status({
+        upstream: 'origin/main',
+        ahead: 1,
+        behind: 1,
+        unstaged: [file('src/train.py')],
+      }),
+      remotes: [remote('origin')],
+    });
+  });
+
+  it('fetches, pulls and pushes', () => {
+    render(<ScmHeader />);
+    openMore();
+    fireEvent.click(menuRow('Fetch'));
+    expect(doFetch).toHaveBeenCalledTimes(1);
+
+    openMore();
+    fireEvent.click(menuRow('Pull'));
+    // Fast-forward: the merge is what the `diverged` refusal offers next.
+    expect(pull).toHaveBeenCalledWith('ff-only');
+
+    openMore();
+    fireEvent.click(menuRow('Push'));
+    expect(push).toHaveBeenCalledTimes(1);
+  });
+
+  it('stashes under the message the prompt asked for, untracked files included', async () => {
+    asked.mockResolvedValue('before the demo');
+    render(<ScmHeader />);
+    openMore();
+    fireEvent.click(menuRow('Stash Changes...'));
+    await waitFor(() =>
+      expect(stashPush).toHaveBeenCalledWith('before the demo', true),
+    );
+    expect(asked).toHaveBeenCalledWith({ title: 'Stash message (optional)' });
+  });
+
+  it('stashes nothing when the prompt was dismissed', async () => {
+    render(<ScmHeader />);
+    openMore();
+    fireEvent.click(menuRow('Stash Changes...'));
+    await waitFor(() => expect(asked).toHaveBeenCalledTimes(1));
+    expect(stashPush).not.toHaveBeenCalled();
+  });
+});
+
+describe('ScmHeader: the follow-up beside a refusal', () => {
+  const diverged = {
+    code: 'diverged' as const,
+    message: 'diverged',
+    hint: null,
+    stderr: null,
+    op: 'pull' as const,
+  };
+  const noUpstream = {
+    code: 'no_upstream' as const,
+    message: 'no upstream',
+    hint: null,
+    stderr: null,
+    op: 'push' as const,
+  };
+
+  it('offers the merge retry after a diverged pull', () => {
+    useGitStore.setState({ lastError: diverged });
+    render(<ScmHeader />);
+    fireEvent.click(screen.getByRole('button', { name: 'Merge remote changes' }));
+    expect(pull).toHaveBeenCalledWith('merge');
+  });
+
+  it('keeps the follow-up out of the alert it belongs to', () => {
+    // An alert re-announces its whole subtree whenever it changes, so a button
+    // inside one is read out again on every repaint of the panel behind it.
+    useGitStore.setState({ lastError: diverged });
+    render(<ScmHeader />);
+    const alert = screen.getByRole('alert');
+    const button = screen.getByRole('button', { name: 'Merge remote changes' });
+    expect(alert.contains(button)).toBe(false);
+    expect(alert.textContent).toContain('Local and remote branches have diverged.');
+  });
+
+  it('offers Publish after an unpublished-branch refusal', async () => {
+    useGitStore.setState({ lastError: noUpstream, remotes: [remote('origin')] });
+    render(<ScmHeader />);
+    fireEvent.click(screen.getByRole('button', { name: 'Publish Branch' }));
+    await waitFor(() => expect(publish).toHaveBeenCalledWith('origin'));
+  });
+
+  it('is the only Publish on screen while it is showing', () => {
+    useGitStore.setState({ lastError: noUpstream, remotes: [remote('origin')] });
+    render(<ScmHeader />);
+    expect(screen.getAllByRole('button', { name: 'Publish Branch' })).toHaveLength(1);
+  });
+
+  it('opens the same remote picker when there are several', () => {
+    useGitStore.setState({
+      lastError: noUpstream,
+      remotes: [remote('origin'), remote('backup')],
+    });
+    render(<ScmHeader />);
+    fireEvent.click(screen.getByRole('button', { name: 'Publish Branch' }));
+    fireEvent.click(screen.getByRole('menuitem', { name: 'origin' }));
+    expect(publish).toHaveBeenCalledWith('origin');
+  });
+
+  it('reads the remote list first when the refusal arrived before it did', async () => {
+    // The button must never send back the identical remote-less publish the
+    // server just refused, so it resolves the list before it decides.
+    refreshRefs = vi.fn(async () => {
+      useGitStore.setState({ remotes: [remote('origin')] });
+    });
+    useGitStore.setState({ lastError: noUpstream, remotes: null, refreshRefs });
+    render(<ScmHeader />);
+    fireEvent.click(screen.getByRole('button', { name: 'Publish Branch' }));
+    await waitFor(() => expect(publish).toHaveBeenCalledWith('origin'));
+  });
+
+  it('offers nothing to publish to on a repository with no remote', () => {
+    useGitStore.setState({ lastError: noUpstream, remotes: [] });
+    render(<ScmHeader />);
+    expect(screen.queryByRole('button', { name: 'Publish Branch' })).toBeNull();
+    expect(screen.getByRole('alert').textContent).toContain(
+      'This branch is not published yet.',
+    );
+  });
+
+  it('offers nothing for a refusal with no way out of its own', () => {
+    useGitStore.setState({
+      lastError: { code: 'auth_required', message: 'no', hint: null, stderr: null },
+    });
+    render(<ScmHeader />);
+    expect(screen.queryByRole('button', { name: 'Merge remote changes' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Publish Branch' })).toBeNull();
+  });
+});
+
 describe('ScmHeader: the busy bar', () => {
   it('names the running operation', () => {
     useGitStore.setState({ busyOp: 'commit' });
@@ -216,6 +596,21 @@ describe('ScmHeader: the busy bar', () => {
     useGitStore.setState({ busyOp: 'discard' });
     render(<ScmHeader />);
     expect(screen.getByRole('progressbar', { name: '正在執行 捨棄...' })).toBeTruthy();
+  });
+
+  it('names a network operation too, which holds the other lane', () => {
+    // Local writes and network operations run in two independent lanes; a bar
+    // that watched only the local one left a long fetch looking like nothing
+    // was happening.
+    useGitStore.setState({ netOp: 'fetch' });
+    render(<ScmHeader />);
+    expect(screen.getByRole('progressbar', { name: 'Running fetch...' })).toBeTruthy();
+  });
+
+  it('names the local operation when both lanes are busy', () => {
+    useGitStore.setState({ busyOp: 'stage', netOp: 'pull' });
+    render(<ScmHeader />);
+    expect(screen.getByRole('progressbar', { name: 'Running stage...' })).toBeTruthy();
   });
 
   it('has no bar while nothing is running', () => {

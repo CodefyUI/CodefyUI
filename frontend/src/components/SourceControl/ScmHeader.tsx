@@ -1,13 +1,15 @@
-import { useId, useState } from 'react';
+import { useCallback, useEffect, useId, useState } from 'react';
 import { isLayoutFile, useGitStore } from '../../store/gitStore';
 import { useI18n } from '../../i18n';
 import { docsUrl } from '../../utils/docsUrl';
-import { MoreHorizontalIcon, RefreshIcon } from '../shared/Icons';
+import { prompt } from '../../utils/dialog';
+import { MoreHorizontalIcon, RefreshIcon, SyncIcon } from '../shared/Icons';
 import { ActionMenu, type ActionMenuItem } from '../shared/ActionMenu';
 import { ProgressBar } from '../shared/ProgressBar';
 import shell from '../Sidebar/NodePalette.module.css';
 import styles from './SourceControl.module.css';
-import { errorSentence, gitOpKey } from './scm';
+import { refSectionIds } from './RefSection';
+import { errorSentence, followUpFor, gitOpKey } from './scm';
 
 /**
  * The documentation page the Setup guide link and menu row point at.
@@ -46,6 +48,9 @@ export function focusScmFallback(): void {
   target?.focus();
 }
 
+/** The four overflow rows that talk to a remote, in the order they are drawn. */
+type RemoteAction = 'fetch' | 'pull' | 'push' | 'publish';
+
 /**
  * The tab's title row, the branch line, the busy bar and the error line.
  *
@@ -61,13 +66,24 @@ export function ScmHeader() {
   const repoState = useGitStore((s) => s.repoState);
   const status = useGitStore((s) => s.status);
   const busyOp = useGitStore((s) => s.busyOp);
+  const netOp = useGitStore((s) => s.netOp);
+  const remotes = useGitStore((s) => s.remotes);
+  const branchesOpen = useGitStore((s) => s.sections.branches);
   const lastError = useGitStore((s) => s.lastError);
   const loadError = useGitStore((s) => s.loadError);
   const hideLayout = useGitStore((s) => s.hideLayout);
   const refresh = useGitStore((s) => s.refresh);
+  const refreshRefs = useGitStore((s) => s.refreshRefs);
+  const setSectionOpen = useGitStore((s) => s.setSectionOpen);
   const setHideLayout = useGitStore((s) => s.setHideLayout);
   const openIdentityForm = useGitStore((s) => s.openIdentityForm);
   const dismissError = useGitStore((s) => s.dismissError);
+  const runFetch = useGitStore((s) => s.fetch);
+  const runPull = useGitStore((s) => s.pull);
+  const runPush = useGitStore((s) => s.push);
+  const runSync = useGitStore((s) => s.sync);
+  const runPublish = useGitStore((s) => s.publish);
+  const runStash = useGitStore((s) => s.stashPush);
   const [detailsOpen, setDetailsOpen] = useState(false);
   // The Details toggle names what it opens, so the reader it was announced to
   // can go straight there instead of hunting for what changed.
@@ -81,7 +97,127 @@ export function ScmHeader() {
     ).length
     : 0;
 
+  const ready = repoState === 'ready' && status !== null;
+  const detached = status?.detached === true;
+  const unborn = status?.unborn === true;
+  const hasUpstream = status !== null && status.upstream !== null;
+  // `null` is "not read yet" and NEVER "none": treating it as none would hide
+  // Publish on a repository that has a remote.
+  const noRemotes = remotes !== null && remotes.length === 0;
+  const clean = status !== null
+    && status.staged.length === 0
+    && status.unstaged.length === 0
+    && status.untracked.length === 0
+    && status.conflicted.length === 0;
+
+  useEffect(() => {
+    // The Sync / Publish / neither decision needs to know whether there IS a
+    // remote, and nothing else in the tab asks until a section is opened. One
+    // read per panel: every write that can change the list refreshes it after
+    // that, and a failure leaves `remotes` null, which this effect does not
+    // re-enter because its dependencies have not moved.
+    if (repoState === 'ready' && remotes === null) void refreshRefs('remotes');
+  }, [refreshRefs, remotes, repoState]);
+
+  /**
+   * Publish this branch, resolving WHICH remote first.
+   *
+   * `remotes` is null until something reads it, and a publish that names no
+   * remote is refused with a 400 whenever there is more than one to choose
+   * between -- so the list is read before the decision rather than after the
+   * refusal. Exactly one remote publishes straight to it; several leave the
+   * choice to the picker the button turns into (and, from the overflow menu
+   * where there is no picker, to the server's refusal and the follow-up
+   * beside it); none sends nothing at all, which is what keeps a repository
+   * with no remote from asking the same refused question twice.
+   */
+  const publishBranch = useCallback(async () => {
+    let list = useGitStore.getState().remotes;
+    if (list === null) {
+      await refreshRefs('remotes');
+      list = useGitStore.getState().remotes;
+    }
+    if (list === null || list.length === 0) return;
+    if (list.length === 1) {
+      await runPublish(list[0].name);
+      return;
+    }
+    await runPublish();
+  }, [refreshRefs, runPublish]);
+
+  const askThenStash = useCallback(async () => {
+    const message = await prompt({ title: t('git.stash.messagePrompt') });
+    if (message === null) return;
+    // Untracked files go with it. A stash that left a new graph file behind
+    // would not free the tree for the checkout the stash was made for.
+    await runStash(message, true);
+  }, [runStash, t]);
+
+  /**
+   * Why a remote row is refused, or null when it can be pressed.
+   *
+   * First match wins, weakest state first: a branch with no commits has
+   * nothing to send anywhere, then a repository with no remote has nowhere to
+   * send it, then a detached HEAD has no branch to send (a fetch still does),
+   * and last a branch with no upstream has nothing to pull from or push to --
+   * which is exactly what Publish is for, so Publish stays on.
+   */
+  const refusedBecause = (action: RemoteAction): string | null => {
+    if (unborn) return t('git.unborn');
+    if (noRemotes) return t('git.remote.empty');
+    if (detached && action !== 'fetch') return t('git.detached');
+    if (!hasUpstream && (action === 'pull' || action === 'push')) {
+      return t('git.noUpstream');
+    }
+    return null;
+  };
+
+  const stashRefusedBecause = status?.merge_in_progress === true
+    ? t('git.merge.banner')
+    : clean
+      ? t('git.empty.clean')
+      : null;
+
+  /** One overflow row for a git action, refused with its reason or live. */
+  const gitRow = (
+    id: string,
+    label: string,
+    reason: string | null,
+    onSelect: () => void,
+  ): ActionMenuItem => ({
+    id,
+    label,
+    disabled: reason !== null,
+    hint: reason ?? undefined,
+    onSelect,
+  });
+
   const items: ActionMenuItem[] = [
+    // What git can be asked to do, above what the panel itself does. Only
+    // where there IS a repository: every other state answers these with a
+    // refusal, and a row greyed out for a reason no key describes says less
+    // than no row at all.
+    ...(ready
+      ? [
+        gitRow('fetch', t('git.action.fetch'), refusedBecause('fetch'), () => {
+          void runFetch();
+        }),
+        gitRow('pull', t('git.action.pull'), refusedBecause('pull'), () => {
+          // Fast-forward: an explicit merge is what the `diverged` refusal
+          // offers next, so it is a decision rather than a default.
+          void runPull('ff-only');
+        }),
+        gitRow('push', t('git.action.push'), refusedBecause('push'), () => {
+          void runPush();
+        }),
+        gitRow('publish', t('git.action.publish'), refusedBecause('publish'), () => {
+          void publishBranch();
+        }),
+        gitRow('stash', t('git.action.stash'), stashRefusedBecause, () => {
+          void askThenStash();
+        }),
+      ]
+      : []),
     {
       id: 'hideLayout',
       label:
@@ -116,18 +252,76 @@ export function ScmHeader() {
         ? t('git.unborn')
         : t('git.branch.label', { name: status.branch ?? '' });
 
+  const branchIds = refSectionIds('branches');
+
+  const toggleBranches = () => {
+    const next = !branchesOpen;
+    setSectionOpen('branches', next);
+    if (!next) return;
+    // On the next frame: the section is drawn by another component, and the
+    // store's update has been applied but not necessarily rendered yet.
+    // `scrollIntoView` is absent in jsdom, hence the optional call.
+    requestAnimationFrame(() => {
+      document.getElementById(branchIds.headingId)?.scrollIntoView?.({ block: 'nearest' });
+    });
+  };
+
+  // The one refusal with a way out, and which way that is.
+  const followUp = lastError === null
+    ? null
+    : followUpFor(lastError.code, lastError.op);
+  // Publishing needs a branch to publish and somewhere to put it.
+  const publishable = ready && !unborn && !detached && !hasUpstream && !noRemotes;
+  const followUpPublish = followUp === 'publish' && publishable;
+  // ONE control, never two: while the refusal is offering Publish, the branch
+  // line does not offer it as well.
+  const headerPublish = publishable && remotes !== null && !followUpPublish;
+  const publishOffered = headerPublish || followUpPublish;
+
   // A branch with no commits has nothing to push and no upstream to lack, so
   // it gets no tracking half at all rather than "Not published" beside "No
-  // commits yet", which says the same thing twice.
+  // commits yet", which says the same thing twice. "Not published" goes the
+  // same way when the Publish button is on screen: the button says it, and
+  // says what to do about it.
   const trackingText = status === null || status.unborn
     ? null
     : status.upstream_gone
       ? t('git.upstreamGone')
       : status.upstream === null
-        ? t('git.noUpstream')
+        ? (publishOffered ? null : t('git.noUpstream'))
         : t('git.aheadBehind', { ahead: status.ahead ?? 0, behind: status.behind ?? 0 });
 
   const stderr = lastError?.stderr ?? null;
+  // The lanes are independent, so either one running is something happening.
+  // The local one wins the label: it is the one the user pressed a button for.
+  const runningOp = busyOp ?? netOp;
+
+  /** The Publish control, as a button or as the picker several remotes need. */
+  const publishControl = (className: string) =>
+    (remotes !== null && remotes.length > 1 ? (
+      <ActionMenu
+        label={t('git.action.publish')}
+        items={remotes.map((entry) => ({
+          id: entry.name,
+          // The remote's own name, which is data and needs no translation.
+          label: entry.name,
+          onSelect: () => void runPublish(entry.name),
+        }))}
+        align="end"
+        className={className}
+      >
+        {t('git.action.publish')}
+      </ActionMenu>
+    ) : (
+      <button
+        type="button"
+        className={className}
+        title={t('git.action.publish')}
+        onClick={() => void publishBranch()}
+      >
+        {t('git.action.publish')}
+      </button>
+    ));
 
   return (
     <div className={`${shell.header} ${styles.header}`}>
@@ -159,22 +353,46 @@ export function ScmHeader() {
       </div>
       {branchText !== null && (
         <div className={styles.branchRow}>
-          <span className={styles.branchName} title={branchText}>
+          {/*
+            The name is the button that opens the branch list, which is the
+            list it names. Styled as the text it replaced: the affordance is
+            the section it expands, not a box drawn around a branch name.
+          */}
+          <button
+            type="button"
+            className={`${styles.branchName} ${styles.branchButton}`}
+            aria-expanded={branchesOpen}
+            aria-controls={branchIds.listId}
+            title={branchText}
+            onClick={toggleBranches}
+          >
             {branchText}
-          </span>
+          </button>
           {trackingText !== null && (
             <span className={styles.tracking} title={trackingText}>
               {trackingText}
             </span>
           )}
+          {ready && !unborn && !detached && hasUpstream && (
+            <button
+              type="button"
+              className={styles.iconButton}
+              aria-label={t('git.action.sync')}
+              title={t('git.action.sync')}
+              onClick={() => void runSync()}
+            >
+              <SyncIcon size={13} />
+            </button>
+          )}
+          {headerPublish && publishControl(styles.publishButton)}
         </div>
       )}
-      {busyOp !== null && (
+      {runningOp !== null && (
         <div className={styles.busy}>
           <ProgressBar
             value={null}
             size="sm"
-            label={t('git.busy', { op: t(gitOpKey(busyOp)) })}
+            label={t('git.busy', { op: t(gitOpKey(runningOp)) })}
           />
         </div>
       )}
@@ -192,8 +410,10 @@ export function ScmHeader() {
 
             `role="alert"` wraps the SENTENCE and nothing else. An alert
             re-announces whenever its subtree changes, so putting the Details
-            toggle and the `<pre>` inside it would read the whole refusal out
-            again every time somebody opened or closed the stderr.
+            toggle, the follow-up button and the `<pre>` inside it would read
+            the whole refusal out again every time somebody opened or closed
+            the stderr -- or every time the remote list came back and turned
+            the follow-up into a picker.
           */}
           <div role="alert">
             {lastError !== null ? (
@@ -214,6 +434,16 @@ export function ScmHeader() {
           {lastError !== null && (
             <>
               <div className={styles.errorActions}>
+                {followUp === 'mergeRemote' && (
+                  <button
+                    type="button"
+                    className={styles.linkButton}
+                    onClick={() => void runPull('merge')}
+                  >
+                    {t('git.action.mergeRemote')}
+                  </button>
+                )}
+                {followUpPublish && publishControl(styles.linkButton)}
                 {stderr !== null && stderr !== '' && (
                   <button
                     type="button"

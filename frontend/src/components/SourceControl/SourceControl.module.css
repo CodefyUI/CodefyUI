@@ -61,12 +61,71 @@
   font-weight: var(--fw-medium);
 }
 
+/* The name is the button that opens the Branches section, and it is drawn as
+   the text it replaced: a box around a branch name would compete with the
+   commit button two rows below it for the eye. What says it is pressable is
+   the chevron on the section it expands, plus the hover and the focus ring. */
+.branchButton {
+  padding: 0;
+  background: transparent;
+  border: 0;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  font-family: inherit;
+  /* `.branchRow`'s own step, spelled out: the panel takes every size from the
+     scale, so a button that inherited one would be the file's only line a
+     reader could not check against it. */
+  font-size: var(--fs-2xs);
+  line-height: inherit;
+  text-align: left;
+}
+
+.branchButton:hover {
+  color: var(--text-primary);
+}
+
+.branchButton:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+}
+
 .tracking {
   flex: 0 8 auto;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* Publish is text, not an icon: it is the one action in this row that has no
+   glyph anybody would read without a legend, and it takes the place of the
+   "Not published" line rather than sitting beside it. It gives up width
+   before the branch name does, and keeps its name in a `title`. */
+.publishButton {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  height: var(--h-control-xs);
+  padding: 0 var(--sp-2);
+  background: transparent;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  color: var(--text-secondary);
+  cursor: pointer;
+  font-family: inherit;
+  font-size: var(--fs-2xs);
+}
+
+.publishButton:hover {
+  border-color: var(--accent-dim);
+  color: var(--accent);
+}
+
+.publishButton:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
 }
 
 /* Drawn ON the header's bottom border rather than in the flow above it: a bar
