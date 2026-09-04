@@ -260,6 +260,68 @@ def test_daemon_path_appends_the_forwarded_args(started, monkeypatch):
     assert dev.SERVER_ADDRFILE.read_text() == "127.0.0.1:8000"
 
 
+@pytest.mark.parametrize("platform", ["win32", "linux"])
+def test_the_daemon_gets_no_console_window_of_its_own(started, monkeypatch,
+                                                      platform):
+    """`cdui start` must put NO window on the user's desktop (core#420).
+
+    It used to put one there, and the window killed the server. The flags
+    were `DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP`, which reads as
+    exactly right -- no console to inherit, no console to be Ctrl-C'd
+    through -- and is wrong for one reason nothing in the call says: the
+    thing being spawned is `backend/.venv/Scripts/uvicorn.exe`, and in a
+    uv-built venv that is a launcher shim, not a program. It spawns the real
+    interpreter as a CHILD of itself. A detached parent has no console to
+    hand that child, so Windows creates a brand-new VISIBLE one for it: an
+    empty black window, titled with the shim's own path, sitting over the
+    desktop for as long as the server runs.
+
+    Users close windows they did not ask for. Closing that one sends
+    CTRL_CLOSE_EVENT to everything attached to it, and the server they had
+    just started went away -- which is how this was reported.
+
+    `CREATE_NO_WINDOW` gives the whole shim chain one console that has no
+    window at all. The isolation the daemon actually needs is unchanged: the
+    server is on its own console, so the CTRL_CLOSE_EVENT of the terminal
+    that launched it never reaches it, and its own process group keeps
+    Ctrl-C away.
+
+    Both platforms are faked rather than branched on, so Linux CI checks the
+    Windows answer too.
+    """
+    monkeypatch.setattr(sys, "platform", platform)
+    # POSIX has neither constant, and a `win32` fake sends this whole call
+    # down the branch that reaches for both. Dropped first and then declared,
+    # so nothing here is inherited from the machine running the suite.
+    for name in ("CREATE_NO_WINDOW", "CREATE_NEW_PROCESS_GROUP"):
+        monkeypatch.delattr(dev.subprocess, name, raising=False)
+    monkeypatch.setattr(dev.subprocess, "CREATE_NO_WINDOW", 0x08000000,
+                        raising=False)
+    monkeypatch.setattr(dev.subprocess, "CREATE_NEW_PROCESS_GROUP",
+                        0x00000200, raising=False)
+    _argv(monkeypatch)
+
+    dev.start()
+
+    kwargs = started["popen_kwargs"]
+    if platform == "win32":
+        flags = kwargs["creationflags"]
+        assert flags & dev.subprocess.CREATE_NO_WINDOW, (
+            "the server would get a console window a user can close")
+        assert flags & dev.subprocess.CREATE_NEW_PROCESS_GROUP, (
+            "Ctrl-C in the launching terminal would reach the server")
+        assert not flags & 0x00000008, (
+            "DETACHED_PROCESS is what put the window there: a console-less "
+            "parent's child gets a VISIBLE console of its own")
+        assert "start_new_session" not in kwargs, (
+            "start_new_session is a POSIX-only kwarg")
+    else:
+        assert kwargs["start_new_session"] is True, (
+            "SIGHUP on terminal close would reach the server")
+        assert "creationflags" not in kwargs, (
+            "a Windows creation flag would be rejected off Windows")
+
+
 def test_foreground_path_appends_the_forwarded_args(started, monkeypatch):
     _argv(monkeypatch, "-f", "--", "--root-path", "/codefyui")
     dev.start()

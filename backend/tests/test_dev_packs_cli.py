@@ -1574,14 +1574,44 @@ def test_terminating_a_process_does_not_flash_a_console_window(monkeypatch,
 # ── the relaunch ──────────────────────────────────────────────────────────
 
 
-def test_the_relaunch_is_detached_and_logged(helper):
+@pytest.mark.parametrize("platform", ["win32", "linux"])
+def test_the_relaunch_is_detached_and_logged(helper, monkeypatch, platform):
+    """The server comes back the way `cdui start` daemonises one, and on
+    Windows that means a console with no WINDOW on it -- never
+    `DETACHED_PROCESS`.
+
+    A relaunch is the one start nobody is watching: it happens after the
+    Package Center swapped the venv's torch out, with the user looking at an
+    editor that has lost its server. Handing it `DETACHED_PROCESS` puts an
+    empty black window on their desktop instead (core#420) -- uv's
+    `Scripts\\*.exe` launcher shims spawn the real interpreter as a child,
+    and Windows gives a console-less parent's child a visible console of its
+    own. Closing that window kills the server that just came back.
+
+    Both platforms are faked rather than branched on, so Linux CI checks the
+    Windows answer too. The constants are dropped first and then declared:
+    nothing on this path may be inherited from the machine running the suite.
+    """
+    monkeypatch.setattr(sys, "platform", platform)
+    for name in ("CREATE_NO_WINDOW", "CREATE_NEW_PROCESS_GROUP"):
+        monkeypatch.delattr(dev.subprocess, name, raising=False)
+    monkeypatch.setattr(dev.subprocess, "CREATE_NO_WINDOW", 0x08000000,
+                        raising=False)
+    monkeypatch.setattr(dev.subprocess, "CREATE_NEW_PROCESS_GROUP",
+                        0x00000200, raising=False)
+
     dev._run_pending_job(_pending(helper))
     kwargs = helper["relaunch_kwargs"]
-    if sys.platform == "win32":
-        assert kwargs["creationflags"] & 0x00000008          # DETACHED_PROCESS
+    if platform == "win32":
+        assert kwargs["creationflags"] & dev.subprocess.CREATE_NO_WINDOW
         assert kwargs["creationflags"] & dev.subprocess.CREATE_NEW_PROCESS_GROUP
+        assert not kwargs["creationflags"] & 0x00000008   # DETACHED_PROCESS
+        assert "start_new_session" not in kwargs, (
+            "start_new_session is a POSIX-only kwarg")
     else:
         assert kwargs["start_new_session"] is True
+        assert "creationflags" not in kwargs, (
+            "a Windows creation flag would be rejected off Windows")
     # Never a pipe: this process is about to exit, and a pipe with nobody
     # left to read it fills up and blocks the server mid-start.
     assert kwargs["stdout"] is not dev.subprocess.PIPE
