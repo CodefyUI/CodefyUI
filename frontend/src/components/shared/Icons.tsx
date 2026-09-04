@@ -205,3 +205,71 @@ export function CopyIcon({ size }: { size?: number }) {
     </Icon>
   );
 }
+
+// ── Source Control (git) ─────────────────────────────────────────────────────
+
+/** The Source Control rail tab: a commit line with a branch leaving it. */
+export function GitBranchIcon({ size }: { size?: number }) {
+  return (
+    <Icon size={size}>
+      <line x1={6} y1={3} x2={6} y2={15} />
+      <circle cx={18} cy={6} r={3} />
+      <circle cx={6} cy={18} r={3} />
+      <path d="M18 9a9 9 0 0 1-9 9" />
+    </Icon>
+  );
+}
+
+/** "More actions" — the overflow menu trigger. Three dots in a row, which is
+ *  what every editor's kebab/meatball button looks like. */
+export function MoreHorizontalIcon({ size }: { size?: number }) {
+  return (
+    <Icon size={size}>
+      <circle cx={12} cy={12} r={1} />
+      <circle cx={19} cy={12} r={1} />
+      <circle cx={5} cy={12} r={1} />
+    </Icon>
+  );
+}
+
+/** Stage a change (add it to the next commit). */
+export function PlusIcon({ size }: { size?: number }) {
+  return (
+    <Icon size={size}>
+      <line x1={12} y1={5} x2={12} y2={19} />
+      <line x1={5} y1={12} x2={19} y2={12} />
+    </Icon>
+  );
+}
+
+/** Unstage a change — the exact inverse of {@link PlusIcon}, so the pair reads
+ *  as one reversible action rather than two unrelated ones. */
+export function MinusIcon({ size }: { size?: number }) {
+  return (
+    <Icon size={size}>
+      <line x1={5} y1={12} x2={19} y2={12} />
+    </Icon>
+  );
+}
+
+/** Discard a change: a counter-clockwise arrow, i.e. "put this file back".
+ *  Deliberately not a bin — the file is not deleted, it is reverted — and
+ *  deliberately not RefreshIcon's two-arrow cycle, which means "re-read". */
+export function DiscardIcon({ size }: { size?: number }) {
+  return (
+    <Icon size={size}>
+      <polyline points="1 4 1 10 7 10" />
+      <path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10" />
+    </Icon>
+  );
+}
+
+/** Opens a menu attached to the control beside it (the Commit split button)
+ *  or expands a section. One chevron, so it never reads as ExpandAllIcon. */
+export function ChevronDownIcon({ size }: { size?: number }) {
+  return (
+    <Icon size={size}>
+      <polyline points="6 9 12 15 18 9" />
+    </Icon>
+  );
+}
