@@ -32,7 +32,7 @@ Three of them are about more than syntax:
   ``.gitignore`` does not un-commit it.
 
 Deliberately subprocess-free. Branch names get a regex pre-check here and
-the real ``git check-ref-format`` in the service, so this module stays
+the real ``git check-ref-format`` in ``refs.py``, so this module stays
 importable, instant and testable without a git on PATH.
 """
 
@@ -69,10 +69,10 @@ MAX_REMOTE_URL = 2048
 
 #: A branch name, pre-check only: no leading whitespace / ``@`` / ``-``, and
 #: no whitespace or control character anywhere. ``git check-ref-format``
-#: (the service) is the authority on the rest -- trailing ``.lock``, ``..``,
-#: ``~``, ``^``, ``:`` -- and this exists so an obviously wrong name is a
-#: 400 with a reason rather than a subprocess. Exported because Task 3's
-#: service and its tests need the same rule.
+#: (``refs.check_ref_format``) is the authority on the rest -- trailing
+#: ``.lock``, ``..``, ``~``, ``^``, ``:`` -- and this exists so an obviously
+#: wrong name is a 400 with a reason rather than a subprocess. Exported
+#: because the branch operations and their tests need the same rule.
 BRANCH_NAME_RE = re.compile(r"^[^\s@-][^\s\x00-\x1f]*$")
 
 #: A remote name. git allows more than this; the tab does not need it.
@@ -213,11 +213,12 @@ def validate_rel_paths(root: Path, paths: Sequence[str]) -> list[str]:
 def validate_branch_name(name: str) -> str:
     """Check *name* looks like a branch name. Returns it unchanged.
 
-    A pre-check only -- ``git check-ref-format refs/heads/<name>`` in the
-    service is what actually decides -- so this refuses the cases that must
-    never reach a command line at all: a leading ``-`` (an option), and
-    ``@{`` (the reflog syntax, which would make ``main@{yesterday}`` a
-    perfectly valid ref that is not the branch the user named).
+    A pre-check only -- ``git check-ref-format refs/heads/<name>``, in
+    ``refs.check_ref_format``, is what actually decides -- so this refuses
+    the cases that must never reach a command line at all: a leading ``-``
+    (an option), and ``@{`` (the reflog syntax, which would make
+    ``main@{yesterday}`` a perfectly valid ref that is not the branch the
+    user named).
     """
     if not name:
         _refuse("invalid_ref", "a branch name is required")
