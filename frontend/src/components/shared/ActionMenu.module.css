@@ -86,7 +86,7 @@
   transition: background var(--transition-fast), color var(--transition-fast);
 }
 
-.item:hover:not(:disabled) {
+.item:hover:not([aria-disabled='true']) {
   background: var(--surface-hover);
   color: var(--text-primary);
 }
@@ -98,9 +98,17 @@
   box-shadow: var(--focus-ring);
 }
 
-.item:disabled {
+/* `aria-disabled`, not `:disabled` — the row stays focusable so the hint under
+   it can be reached and read. */
+.item[aria-disabled='true'] {
   color: var(--text-disabled);
   cursor: default;
+}
+
+/* A refused row has two lines, so the tick column and the label line up with
+   the top of the text rather than with the middle of the block. */
+.item:has(.hint) {
+  align-items: flex-start;
 }
 
 /* A fixed tick column, present on every row of a menu that has any checkbox in
@@ -112,7 +120,26 @@
   color: var(--accent);
 }
 
-.label {
+/* The label and its reason, stacked. The column is what takes the leftover
+   width, so `min-width: 0` here is what lets a long hint wrap instead of
+   pushing the panel wider than its `max-width`. */
+.text {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
   flex: 1;
   min-width: 0;
+}
+
+.label {
+  min-width: 0;
+}
+
+/* Dimmer and one step down: the reason is read after the name, never instead
+   of it. It wraps rather than ellipsises — half a sentence explains nothing. */
+.hint {
+  min-width: 0;
+  color: var(--text-muted);
+  font-size: var(--fs-sm);
+  line-height: var(--lh-snug);
 }

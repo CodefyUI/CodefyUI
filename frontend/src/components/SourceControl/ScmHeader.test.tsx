@@ -141,7 +141,7 @@ describe('ScmHeader: the title row', () => {
     render(<ScmHeader />);
     openMore();
     const row = screen.getByRole('menuitem', { name: 'Commit identity...' });
-    expect(row).toBeDisabled();
+    expect(row).toHaveAttribute('aria-disabled', 'true');
     fireEvent.click(row);
     expect(openIdentityForm).not.toHaveBeenCalled();
   });

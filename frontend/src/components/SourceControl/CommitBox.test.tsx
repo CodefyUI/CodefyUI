@@ -198,11 +198,13 @@ describe('CommitBox: the options menu', () => {
     useGitStore.setState({ commitMessage: '' });
     render(<CommitBox />);
     openOptions();
+    // `aria-disabled`, not the native attribute: a menu row that is refused
+    // stays focusable so the reason on it can be reached.
     expect(
       screen.getByRole('menuitem', {
         name: 'Commit All (stages every change, including new files)',
       }),
-    ).toBeDisabled();
+    ).toHaveAttribute('aria-disabled', 'true');
   });
 
   it('turns amend on through the store, as a checkbox', () => {
@@ -223,7 +225,7 @@ describe('CommitBox: the options menu', () => {
     const row = screen.getByRole('menuitemcheckbox', {
       name: 'Cannot amend: the last commit is already pushed',
     });
-    expect(row).toBeDisabled();
+    expect(row).toHaveAttribute('aria-disabled', 'true');
     expect(screen.queryByRole('menuitemcheckbox', { name: 'Amend Last Commit' })).toBeNull();
   });
 
@@ -235,7 +237,7 @@ describe('CommitBox: the options menu', () => {
     openOptions();
     expect(
       screen.getByRole('menuitemcheckbox', { name: 'Amend Last Commit' }),
-    ).toBeDisabled();
+    ).toHaveAttribute('aria-disabled', 'true');
   });
 
   it('amends freely while the branch is ahead of its upstream', () => {
@@ -246,7 +248,7 @@ describe('CommitBox: the options menu', () => {
     openOptions();
     expect(
       screen.getByRole('menuitemcheckbox', { name: 'Amend Last Commit' }),
-    ).not.toBeDisabled();
+    ).toHaveAttribute('aria-disabled', 'false');
   });
 });
 
