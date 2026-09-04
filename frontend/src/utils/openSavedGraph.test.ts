@@ -169,6 +169,10 @@ describe('readSavedGraphDocument', () => {
 describe('reloadTabFromDisk', () => {
   it('installs into the named tab, not the active one, and keeps it bound', async () => {
     const stale = tabs()[0].id;
+    // Stamped while it is still the active tab: `projectOrigin` is what the
+    // git store's affected-tab filter reads, so a reload that dropped it would
+    // quietly take the tab out of every future offer.
+    useTabStore.getState().stampActiveTabProject('D:/work/demo');
     useTabStore.getState().addTab('Tab 2');
     const active = useTabStore.getState().activeTabId;
     expect(active).not.toBe(stale);
@@ -179,8 +183,10 @@ describe('reloadTabFromDisk', () => {
     const reloaded = tabs().find((t) => t.id === stale)!;
     expect(reloaded.nodes.map((n) => n.id)).toEqual(['fromDisk']);
     expect(reloaded.currentGraphFile).toBe('alpha');
-    // The tab keeps the label the user is looking at.
+    // The tab keeps the label the user is looking at, and the project it
+    // belongs to.
     expect(reloaded.name).toBe('Tab 1');
+    expect(reloaded.projectOrigin).toBe('D:/work/demo');
     // And the tab in front of the user is untouched.
     expect(useTabStore.getState().activeTabId).toBe(active);
     expect(tabs().find((t) => t.id === active)!.nodes).toEqual([]);
