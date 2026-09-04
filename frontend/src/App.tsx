@@ -13,6 +13,7 @@ import { NodeDetailModal } from './components/NodeDetailModal/NodeDetailModal';
 import { VizViewerModal } from './components/Nodes/VizViewerModal';
 import { TemplateGalleryModal } from './components/TemplateGallery/TemplateGalleryModal';
 import { PackCenterModal } from './components/PackCenter/PackCenterModal';
+import { PluginCenterModal } from './components/PluginCenter/PluginCenterModal';
 import { RestartOverlay } from './components/PackCenter/RestartOverlay';
 import { ToastContainer } from './components/shared/Toast';
 import { ShortcutsModal } from './components/shared/ShortcutsModal';
@@ -162,6 +163,7 @@ function App() {
       <VizViewerModal />
       <TemplateGalleryModal />
       <PackCenterModal />
+      <PluginCenterModal />
       <ToastContainer />
       <ShortcutsModal />
       <DialogContainer />

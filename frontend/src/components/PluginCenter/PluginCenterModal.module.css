@@ -1,0 +1,86 @@
+/* PluginCenterModal.module.css — the two things the Plugin Center has that the
+   Package Center has not: the box you type a repository into, and the filter
+   over the list.
+
+   Everything else — the backdrop, the modal, the header, the list, the cards,
+   the activity pane, the 860 px stack — comes from
+   `../PackCenter/PackCenterModal.module.css`, imported by the components
+   themselves. Two panels that are the same object cannot drift; two panels
+   that merely look alike do. Colour, type and spacing are tokens only. */
+
+/* ── The source box ─────────────────────────────────────────────────────── */
+
+/* Installing something the catalog does not list: a label, a field and the
+   Review button on one row, wrapping rather than shrinking the field into
+   uselessness. Rendered by `PluginSourceForm`. */
+.sourceForm {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  flex-wrap: wrap;
+  padding: var(--sp-3) var(--sp-4);
+  background: var(--surface-panel);
+  border: 1px solid var(--border-base);
+  border-radius: var(--radius-lg);
+  color: var(--text-secondary);
+  font-size: var(--fs-sm);
+}
+
+.sourceForm input {
+  flex: 1;
+  /* Below this the field no longer shows a whole `owner/repo@ref`, which is
+     the one thing it exists to show; the row wraps instead. */
+  min-width: 220px;
+  height: var(--h-control);
+  padding: 0 var(--sp-3);
+  background: var(--surface-input);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  color: var(--text-primary);
+  font-size: var(--fs-sm);
+}
+
+.sourceForm input::placeholder {
+  color: var(--text-disabled);
+}
+
+.sourceForm input:focus {
+  outline: none;
+  border-color: var(--accent-deep);
+}
+
+/* ── The filter ─────────────────────────────────────────────────────────── */
+
+/* All | Installed | Available. The pressed one is styled through
+   `aria-pressed` rather than a second class, so what a screen reader is told
+   and what the eye is shown cannot disagree. */
+.filterBar {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  flex-wrap: wrap;
+}
+
+.filterBar button {
+  padding: var(--sp-2) var(--sp-3);
+  border-radius: var(--radius-pill);
+  border: 1px solid var(--border-strong);
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: var(--fs-sm);
+  line-height: var(--lh-tight);
+  cursor: pointer;
+  transition: background var(--transition-fast), border-color var(--transition-fast),
+    color var(--transition-fast);
+}
+
+.filterBar button:hover {
+  border-color: var(--accent-deep);
+  color: var(--accent);
+}
+
+.filterBar button[aria-pressed='true'] {
+  background: var(--accent-wash);
+  border-color: var(--accent-deep);
+  color: var(--accent);
+}
