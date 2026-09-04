@@ -187,6 +187,31 @@ received — each links to the release it was published as.
   is "whoever is sitting at this machine" unless a deliberate classroom or
   lab server opts back in with `CODEFYUI_ALLOW_REMOTE_PLUGIN_INSTALL=1`.
 
+- **The Plugin Center: teaching packs and GitHub plugins, installed from the
+  editor.** Until now the only way to add a chapter's nodes was a terminal and
+  `cdui plugin install`, which is a different window, a different skill and,
+  in a classroom, a different person. The panel opens from the sidebar's
+  Custom & Plugins tab and from Settings, and lists what this server has
+  alongside what it can fetch: every built-in teaching pack, every plugin
+  already on disk, and anything on GitHub you name as `owner/repo`, with an
+  optional `@tag`. Naming a repository does not install it — it downloads the
+  manifest and shows you what you would be agreeing to: who wrote it, which
+  nodes it brings, which Python packages it wants, whether it ships a UI that
+  will run inside the editor, and each capability it asks for spelled out as
+  the sentence it actually means rather than as a word like `filesystem`.
+  Install stays disabled until you say you have read it. From then on the row
+  is the whole lifecycle: enable, disable, update to the latest commit on its
+  ref, and uninstall, which asks first and says the two things that follow —
+  graphs using its nodes stop running, and the Python packages it pulled in
+  stay. An install reports itself while it runs, step by step, and its nodes
+  appear in the palette when it lands, without a page reload; disabling takes
+  them straight back out. Nothing here is a second implementation of the CLI:
+  the panel and `cdui plugin install` run the same flow on the server, an
+  install started in one is visible in the other, and when a job cannot
+  finish, the panel hands you the exact command to finish it in a terminal.
+  Installing is gated to whoever is at the machine, like the Package Center;
+  on a shared server the buttons say so instead of failing when pressed.
+
 ### Changed
 
 - **A plugin cannot be switched on, off or removed while its own install is
@@ -313,6 +338,14 @@ received — each links to the release it was published as.
   contrast gate now simulates both deficiencies for every export palette and
   holds the light cards to the same lightness-parting rule as the wires, so
   the class cannot come back.
+
+- **The Custom & Plugins tab's enabled/disabled chip follows the theme
+  again.** Its green and grey washes were written as literal `rgba()` values
+  rather than taken from the token layer, so they were mixed for one theme and
+  carried unchanged into the other, and the same "Enabled" that the Package
+  Center draws from tokens was a slightly different colour one panel away. The
+  chip is now the shared pill both centers use, which leaves no hard-coded
+  colour anywhere in that tab.
 
 ## [2.5.0] — 2026-09-01
 
