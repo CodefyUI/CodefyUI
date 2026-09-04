@@ -33,8 +33,11 @@ from app.core.plugins.errors import (
     ConsentRequired,
     GitHubError,
     ManifestError,
+    NotInstalled,
+    NotUpdatable,
     PluginCancelled,
     PluginInstallError,
+    ReservedPluginId,
 )
 
 
@@ -260,6 +263,32 @@ def test_a_repository_may_not_claim_a_reserved_id(plugin_id, fake_github):
     assert plugin_id in str(excinfo.value)
 
 
+def test_the_reserved_id_refusal_carries_the_id_and_what_holds_it(fake_github):
+    """Two audiences, one exception. The CLI prints the sentence and the hint,
+    so both are asserted here word for word -- they are what a terminal user
+    reads. A panel cannot show a sentence and draw a control from it, so the
+    id and its holder travel as ATTRIBUTES: the route used to recover the id
+    with a regular expression over the message, which made this wording part
+    of the HTTP contract and would have turned every reserved id into
+    ``invalid_manifest`` the day somebody rephrased it."""
+    fake_github('[plugin]\nid = "catalog"\nversion = "1"\nschema_version = 1\n')
+
+    with pytest.raises(ReservedPluginId) as excinfo:
+        plugin_inspect.inspect_github("alice", "extras", "", lockfile={})
+    refusal = excinfo.value
+
+    assert refusal.plugin_id == "catalog"
+    assert refusal.taken_by == catalog_module.RESERVED_BY_ROUTE
+    assert str(refusal) == "Plugin id 'catalog' is reserved by this build."
+    assert refusal.hint == (
+        "alice/extras declares an id that names a route under /api/plugins/; "
+        "it cannot be installed under that id."
+    )
+    # Still the base class every existing caller catches -- ``_install_github``
+    # catches ``RuntimeError`` around this call and prints what it gets.
+    assert isinstance(refusal, PluginInstallError)
+
+
 def test_a_fork_may_not_claim_the_catalog_id_of_an_official_plugin(fake_github):
     """The third clause of the reserved-id rule, which the CLI enforced and
     this did not. ``self-learning`` is a ``github`` catalog row: its id is
@@ -448,6 +477,49 @@ def test_the_badge_is_re_derived_when_the_install_recorded_no_catalog_id(
 def test_a_plugin_with_no_repository_to_update_from_says_so(plugin_id, lockfile):
     with pytest.raises(PluginInstallError):
         plugin_inspect.inspect_installed(plugin_id, lockfile=lockfile)
+
+
+def test_a_plugin_nobody_has_is_a_different_refusal_from_one_that_cannot_update():
+    """Two facts, two classes. A route answers them with different statuses
+    -- 404 for a plugin this install does not have, 400 for one that has no
+    repository behind it -- and both used to arrive as a bare
+    ``PluginInstallError``, which left the caller choosing a status code by
+    matching on an English sentence."""
+    with pytest.raises(NotInstalled) as missing:
+        plugin_inspect.inspect_installed("nothing", lockfile={"plugins": {}})
+    assert missing.value.plugin_id == "nothing"
+
+    with pytest.raises(NotUpdatable) as builtin:
+        plugin_inspect.inspect_installed(
+            "extras", lockfile={"plugins": {"extras": {"source_kind": "builtin"}}}
+        )
+    assert builtin.value.source_kind == "builtin"
+    # The hint is the whole answer for a built-in pack: it updates, just not
+    # from here.
+    assert "cdui update" in builtin.value.hint
+
+    with pytest.raises(NotUpdatable) as linked:
+        plugin_inspect.inspect_installed(
+            "extras", lockfile={"plugins": {"extras": {"source_kind": "local"}}}
+        )
+    assert linked.value.source_kind == "local"
+
+    with pytest.raises(NotUpdatable) as nameless:
+        plugin_inspect.inspect_installed(
+            "extras", lockfile={"plugins": {"extras": {"source_kind": "github_url"}}}
+        )
+    # Installed from a repository, and the record no longer says which.
+    assert nameless.value.source_kind == "github_url"
+
+
+def test_updatable_entry_hands_back_the_record_it_approved():
+    """What ``PluginService.update`` asks before it goes anywhere near the
+    network -- the same rule ``inspect_installed`` applies on the thread."""
+    entry = {"source_kind": "github_url", "url": "https://github.com/alice/extras"}
+    approved = plugin_inspect.updatable_entry(
+        "extras", lockfile={"plugins": {"extras": entry}}
+    )
+    assert approved is entry
 
 
 # ── the GitHub client ──────────────────────────────────────────────────────

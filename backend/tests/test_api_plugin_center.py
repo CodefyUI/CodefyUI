@@ -33,6 +33,14 @@ on ``app.state`` with a flow driven from the test thread, and assertions
 about status codes and the ``detail.code`` a panel branches on. Nothing there
 installs anything or opens a socket; GitHub is faked at
 ``app.core.plugins.github``, one call at a time.
+
+Part 3 is the lifecycle -- ``DELETE /api/plugins/{id}``, ``POST /{id}/update``
+and the two toggles -- over the same fixtures: the uninstall really does edit
+that throwaway lockfile and really does delete out of that throwaway user
+root, because the answer the panel draws (what was removed, what was left
+behind, what is still installed) is only worth asserting against a lockfile
+something wrote. The update reads that lockfile too, which is what makes
+"follow the repository the user actually installed from" testable at all.
 """
 
 from __future__ import annotations
@@ -40,12 +48,14 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import shutil
 import time
 from pathlib import Path
 
 import pytest
 from fastapi import HTTPException
 from fastapi.routing import APIRoute
+from starlette.routing import Match
 from httpx import ASGITransport, AsyncClient
 
 from app.api import routes_plugins
@@ -62,6 +72,7 @@ from app.core.plugins.errors import (
     GitHubError,
     PluginInstallError,
     PluginNeedsRestart,
+    ReservedPluginId,
 )
 from app.core.plugins.inspect import ALLOWED_MODULES_WARNING, FRONTEND_WARNING
 from app.core.plugins.listing import catalog_listing
@@ -73,6 +84,8 @@ from app import main
 from tests.test_plugin_service import (
     ScriptedFlow,
     Sources,
+    an_inspection,
+    installed_record,
     types_of,
     wait_started,
 )
@@ -1663,10 +1676,16 @@ async def test_cancelling_ends_the_job_and_asking_twice_is_not_an_error(
 #: schema accepts. Deliberately not a walk of the router: ``/reload`` and
 #: ``/{id}/enable|disable`` are mutating too and are token-only on purpose,
 #: because they act on code this machine already has.
+#:
+#: ``/update`` names ``foundations`` -- a built-in pack -- so that the walk
+#: which lifts the loopback refusal stops at ``not_updatable`` instead of
+#: driving a real inspection into the real network: this file fakes GitHub
+#: per test, and a walk has no fixture of its own.
 MUTATING = [
     ("POST", "/api/plugins/inspect", {"source": "stats"}),
     ("POST", "/api/plugins/install", {"inspection_id": "no-such-id"}),
     ("POST", "/api/plugins/jobs/no-such-job/cancel", None),
+    ("POST", "/api/plugins/foundations/update", None),
 ]
 
 
@@ -1734,3 +1753,865 @@ async def test_the_catalog_still_answers_without_an_installer(
     assert response.status_code == 200, response.text
     assert response.json()["active_job"] is None
     assert response.json()["entries"]
+
+
+async def test_a_plugin_can_be_removed_without_an_installer(
+        uninstalled_client, center_lockfile, forgetting):
+    """The other half of that decision, and the reason the delete route asks
+    ``_installer`` rather than ``_service``.
+
+    Removing a plugin is a lockfile edit, a purge and a re-discovery; none of
+    the three belongs to the installer, and no installer means no job to be
+    in the way. A 503 here would refuse to uninstall a plugin BECAUSE the
+    thing that installs plugins had failed to start -- which is the state you
+    would most want to get out of.
+    """
+    response = await uninstalled_client.delete("/api/plugins/demo-external")
+    assert response.status_code == 200, response.text
+    assert response.json()["removed"] is True
+    assert "demo-external" not in lockfile_of(center_lockfile)["plugins"]
+
+
+# ==========================================================================
+# part 3: the lifecycle
+# ==========================================================================
+#
+# ``DELETE /api/plugins/{id}`` and the two toggles, over the same lockfile
+# part 1 draws its rows from. WHICH files an uninstall may touch is
+# ``lifecycle.uninstall_plugin``'s rule and is pinned against the CLI in
+# ``test_plugin_uninstall_builtin.py``; what is tested here is the route --
+# the payload the panel is written against, the refusals, and the two calls
+# that make this process forget a plugin it has already imported.
+
+#: Every key ``DELETE /api/plugins/{id}`` answers with, in order. The
+#: TypeScript ``PluginUninstallResult`` in ``frontend/src/api/rest.ts`` is
+#: written against this list.
+UNINSTALL_KEYS = ["id", "removed", "tombstoned", "files_removed",
+                  "python_deps_left", "uninstall_command", "reinstall_hint"]
+
+#: The lifecycle routes, behind the same two gates as the install path. Its
+#: own list rather than three more entries in ``MUTATING``: the third walk
+#: over that one asserts 503 when no installer is on ``app.state``, and a
+#: delete deliberately does not need one -- removing a plugin is a lockfile
+#: edit and a re-discovery, neither of which the installer owns.
+LIFECYCLE = [("DELETE", "/api/plugins/demo-external", None)]
+
+#: The mutating routes that are token-only ON PURPOSE, by path TEMPLATE --
+#: they change something and carry no loopback gate, because all three act on
+#: code this machine already has and the user already agreed to. A list rather
+#: than a comment so that the structural test below can say every mutating
+#: route is in exactly one of the three buckets: a new route that lands in
+#: none of them is the one that would otherwise ship ungated in silence.
+TOKEN_ONLY = [
+    "/api/plugins/reload",
+    "/api/plugins/{plugin_id}/enable",
+    "/api/plugins/{plugin_id}/disable",
+]
+
+
+def lockfile_of(user_root: Path) -> dict:
+    """The lockfile as it is ON DISK, not as some cache remembers it."""
+    return json.loads(
+        (user_root / "installed.json").read_text(encoding="utf-8"))
+
+
+@pytest.fixture
+def forgetting(monkeypatch) -> list[str]:
+    """Record the two calls that make this process forget a plugin.
+
+    Patched rather than run: the real ``rediscover_now`` clears the node
+    registry every other test in this session shares (``conftest`` repairs
+    it, at a cost), and what these tests are about is that the route makes
+    both calls, in one order rather than the other. One test below
+    deliberately does NOT take this fixture, so the real pair is exercised
+    once -- a recorder can only prove the calls happen, not that they work.
+    """
+    calls: list[str] = []
+
+    def purge(plugin_id: str) -> None:
+        calls.append(f"purge:{plugin_id}")
+
+    def rediscover() -> dict[str, int]:
+        calls.append("rediscover")
+        return {}
+
+    monkeypatch.setattr(plugin_loader, "purge_plugin_modules", purge)
+    # Bound into the route's module at import time, so that is where it has
+    # to be replaced -- and ``_set_plugin_enabled`` reads the same name, so
+    # the toggles stop re-discovering too.
+    monkeypatch.setattr(routes_plugins, "rediscover_now", rediscover)
+    return calls
+
+
+# -- DELETE /api/plugins/{id} ----------------------------------------------
+
+
+async def test_deleting_a_downloaded_plugin_takes_its_files_and_its_entry(
+        client, center_lockfile):
+    """A ``github_url`` plugin is a copy this install downloaded, so the copy
+    goes with it. Its Python packages do NOT: uninstalling those from inside
+    the process that imported them is how a running server ends up half
+    loaded, so the answer names them and hands over the command instead.
+
+    The one delete here that lets the REAL purge and re-discovery run -- a
+    recorder can prove the calls happen, not that they work. This is the
+    plugin to do it with: nothing has ever imported ``demo-external``, so the
+    purge cannot take a namespace the rest of the session shares, and the
+    generation asserted below is what a real re-discovery bumps.
+    """
+    assert (center_lockfile / "demo-external").is_dir()
+    generation = plugin_loader.reload_generation()
+
+    response = await client.delete("/api/plugins/demo-external")
+    assert response.status_code == 200, response.text
+    body = response.json()
+
+    assert list(body) == UNINSTALL_KEYS
+    assert body["id"] == "demo-external"
+    assert body["removed"] is True
+    # Nothing re-adds a plugin nobody's catalog lists, so there is nothing
+    # for a tombstone to prevent.
+    assert body["tombstoned"] is False
+    assert body["files_removed"] is True
+    assert body["python_deps_left"] == ["tabulate"]
+    assert body["uninstall_command"].startswith("uv pip uninstall --python ")
+    assert body["uninstall_command"].endswith(" tabulate")
+    assert body["reinstall_hint"] == "cdui plugin install demo-external"
+
+    assert not (center_lockfile / "demo-external").exists()
+    assert "demo-external" not in lockfile_of(center_lockfile)["plugins"]
+    # The editor polls this counter to learn that the palette moved, and only
+    # a real re-discovery bumps it.
+    assert plugin_loader.reload_generation() > generation
+
+
+async def test_the_plugin_is_forgotten_before_the_palette_is_rebuilt(
+        client, forgetting):
+    """Its modules leave ``sys.modules`` and only THEN is the registry
+    re-discovered.
+
+    Nothing else ever drops those modules: a re-discovery rebuilds the
+    namespaces of the plugins the lockfile still lists, and the one just
+    deleted is not among them. And the re-discovery is what bumps the
+    generation the editor polls -- so purging after it would announce a new
+    palette at the one moment a client is guaranteed to come back and read,
+    while the pack that has just been deleted was still importable here.
+    """
+    assert (await client.delete("/api/plugins/demo-external")
+            ).status_code == 200
+    assert forgetting == ["purge:demo-external", "rediscover"]
+
+
+async def test_deleting_a_builtin_pack_keeps_its_files_and_tombstones_it(
+        client, center_lockfile, forgetting):
+    """A pack that ships in this release is repo code, not a download: the
+    directory stays exactly where the release put it, and the removal is
+    RECORDED so ``cdui plugin sync`` does not put back what the user just
+    threw away (#175).
+
+    Forgetting is recorded rather than done, and here that is not only about
+    speed: ``conftest`` binds ``cdui_plugins.foundations`` for the whole
+    session, so a real purge of THIS id would take the namespace every later
+    pack test imports through -- the trap ``test_stats_pack`` avoids by
+    installing its copy under a different id.
+    """
+    repo_dir = plugin_loader.plugins_builtin_root() / "foundations"
+
+    response = await client.delete("/api/plugins/foundations")
+    assert response.status_code == 200, response.text
+    body = response.json()
+
+    assert body["removed"] is True
+    assert body["tombstoned"] is True
+    # ``None``, not ``False``: there was never a copy of ours to delete,
+    # which is a different thing from having tried and failed.
+    assert body["files_removed"] is None
+    assert body["python_deps_left"] == []
+    assert body["uninstall_command"] is None
+
+    assert repo_dir.is_dir()
+    assert (repo_dir / "cdui.plugin.toml").is_file()
+    data = lockfile_of(center_lockfile)
+    assert "foundations" not in data["plugins"]
+    assert plugin_loader.removed_ids(data) == {"rl", "foundations"}
+    assert forgetting == ["purge:foundations", "rediscover"]
+
+
+async def test_unlinking_a_local_plugin_leaves_the_authors_checkout_alone(
+        client, center_lockfile, tmp_path, forgetting):
+    """``cdui plugin link`` records a path into somebody's working tree. The
+    link goes; the tree is not ours to delete, and no tombstone is left --
+    nothing re-adds a link uninvited."""
+    work = tmp_path / "work" / "my-pack"
+    (work / "nodes").mkdir(parents=True)
+    (work / "cdui.plugin.toml").write_text(
+        '[plugin]\nid = "my-pack"\nname = "Mine"\nversion = "0.1.0"\n'
+        'schema_version = 1\n', encoding="utf-8")
+    data = lockfile_of(center_lockfile)
+    data["plugins"]["my-pack"] = {"source_kind": "local", "source": str(work),
+                                  "path": str(work), "enabled": True}
+    (center_lockfile / "installed.json").write_text(json.dumps(data),
+                                                    encoding="utf-8")
+
+    response = await client.delete("/api/plugins/my-pack")
+    assert response.status_code == 200, response.text
+    assert response.json()["files_removed"] is None
+    assert response.json()["tombstoned"] is False
+
+    assert (work / "cdui.plugin.toml").is_file()
+    after = lockfile_of(center_lockfile)
+    assert "my-pack" not in after["plugins"]
+    assert plugin_loader.removed_ids(after) == {"rl"}
+
+
+async def test_a_row_whose_files_are_already_gone_can_still_be_removed(
+        client, center_lockfile, forgetting):
+    """``ghost-pack`` is the ``missing_files`` state part 1 draws: an entry
+    whose directory is not there any more. An absent directory is SUCCESS --
+    nothing of ours is left, which is all "removed" ever meant -- so the
+    panel's Remove button clears the row instead of reporting a conflict
+    about files nobody can find."""
+    assert not (center_lockfile / "ghost-pack").exists()
+
+    response = await client.delete("/api/plugins/ghost-pack")
+    assert response.status_code == 200, response.text
+    assert response.json()["files_removed"] is True
+    assert response.json()["python_deps_left"] == []
+    assert "ghost-pack" not in lockfile_of(center_lockfile)["plugins"]
+
+
+async def test_deleting_something_that_is_not_installed_is_a_404(
+        client, forgetting):
+    response = await client.delete("/api/plugins/no-such-plugin")
+    assert response.status_code == 404, response.text
+    assert response.json()["detail"] == {"code": "not_installed"}
+    assert forgetting == []
+
+
+async def test_files_that_will_not_delete_keep_the_plugin_installed(
+        client, center_lockfile, monkeypatch, forgetting):
+    """Windows holding one node file open is the ordinary cause. The lockfile
+    entry is left alone, because a pack whose files are still there loads
+    again on the next start -- calling it uninstalled would be a lie the
+    lockfile then tells forever -- and this process is not told to forget it.
+
+    ``error`` is the operating system's own sentence and ``hint`` names the
+    directory that is still there, which is the half the user can act on.
+    """
+    def refuse(*args, **kwargs):
+        raise OSError(32, "The process cannot access the file")
+
+    # The one ``rmtree`` in the plugin system is ``lifecycle``'s, and it
+    # reaches it through this module object.
+    monkeypatch.setattr(shutil, "rmtree", refuse)
+
+    response = await client.delete("/api/plugins/demo-external")
+    assert response.status_code == 409, response.text
+    detail = response.json()["detail"]
+
+    assert detail["code"] == "files_locked"
+    assert "cannot access the file" in detail["error"]
+    assert str(center_lockfile / "demo-external") in detail["hint"]
+
+    assert "demo-external" in lockfile_of(center_lockfile)["plugins"]
+    assert (center_lockfile / "demo-external").is_dir()
+    assert forgetting == []
+
+
+# -- POST /api/plugins/{id}/update -----------------------------------------
+#
+# ``demo-external`` is the row this section works on: a ``github_url`` entry
+# recording one capability, one trusted module and the commit ``0`` * 40 at
+# ``alice/extras@v1.2.3``. What the repository answers is faked per test, so
+# each of the three outcomes is one manifest away from the others.
+
+#: What the repository has grown into by the next commit, asking for exactly
+#: what the lockfile already records. The ordinary update: a new sha and
+#: nothing new to decide.
+SAME_TERMS_MANIFEST = """\
+[plugin]
+id = "demo-external"
+name = "Demo External"
+version = "2.1.0"
+schema_version = 1
+
+[security]
+capabilities = ["network"]
+allowed_modules = ["requests"]
+"""
+
+
+async def test_the_commit_that_is_installed_leaves_nothing_to_do(
+        client, flow, fake_github):
+    """And the repository it asked is the one the LOCKFILE recorded, at the
+    ref recorded with it -- an update follows what the user installed from,
+    not something re-typed."""
+    fake_github.answers(a_manifest("demo-external"), sha="0" * 40)
+
+    response = await client.post("/api/plugins/demo-external/update")
+
+    assert response.status_code == 200, response.text
+    assert response.json() == {"status": "up_to_date", "sha": "0" * 40}
+    assert fake_github.resolved == [("alice", "extras", "v1.2.3")]
+    assert not flow.started.is_set()
+
+
+async def test_an_update_the_user_already_consented_to_starts_a_job(
+        client, flow, fake_github):
+    """One click, one job. The plan carries ``force`` because pressing Update
+    IS the offer to replace the copy on disk -- without it the install this
+    route just started would be refused for being already installed."""
+    fake_github.answers(SAME_TERMS_MANIFEST, sha="c" * 40)
+
+    response = await client.post("/api/plugins/demo-external/update")
+
+    assert response.status_code == 202, response.text
+    assert list(response.json()) == ["job_id"]
+    job_id = response.json()["job_id"]
+    await wait_started(flow)
+    plan = flow.plans[0]
+    assert plan.mode == "update"
+    assert plan.force is True
+    assert plan.sha == "c" * 40
+    # Granted by the previous install rather than by this request: nobody was
+    # asked anything, and the capability still reaches the plan.
+    assert plan.granted_capabilities == ("network",)
+
+    flow.finish()
+    events, status = await drain(client, job_id)
+    assert status == "done"
+    assert events[0]["mode"] == "update"
+
+
+async def test_a_version_that_asks_for_more_comes_back_as_a_consent_screen(
+        client, flow, fake_github):
+    """The delta is the whole content of an update's dialog, so it travels
+    twice: inside the inspection and beside it, from the same payload.
+
+    Then the second turn, which is the point of storing it: the client sends
+    the id and the answers to what it was asked and NOTHING else -- no force
+    -- and is not refused for the replacement it already agreed to.
+    """
+    fake_github.answers(EXTERNAL_MANIFEST, sha="c" * 40)
+
+    response = await client.post("/api/plugins/demo-external/update")
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert list(body) == ["status", "inspection", "capabilities_added",
+                          "allowed_modules_added"]
+    assert body["status"] == "needs_consent"
+    assert list(body["inspection"]) == INSPECTION_KEYS
+    assert body["inspection"]["mode"] == "update"
+    assert body["inspection"]["installed"]["sha"] == "0" * 40
+    assert body["capabilities_added"] == ["filesystem"]
+    assert body["allowed_modules_added"] == ["pathlib"]
+    assert not flow.started.is_set(), "nothing may be installed unasked"
+
+    accepted = await client.post("/api/plugins/install", json={
+        "inspection_id": body["inspection"]["inspection_id"],
+        "accept_capabilities": ["network", "filesystem"],
+        "trust_author": True})
+
+    assert accepted.status_code == 202, accepted.text
+    await wait_started(flow)
+    assert flow.plans[0].force is True
+    flow.finish()
+    _, status = await drain(client, accepted.json()["job_id"])
+    assert status == "done"
+
+
+async def test_an_update_keeps_the_catalog_row_the_install_recorded(
+        client, flow, fake_github, center_lockfile):
+    """``cdui plugin install <name>`` writes down which catalog row a plugin
+    came from precisely so a later reader can tell the catalog's own pack
+    from free text carrying the same id. An update is the same plugin seen
+    again, so the row travels with it -- dropping it here made every update
+    of an official plugin read as third-party."""
+    data = lockfile_of(center_lockfile)
+    data["plugins"]["demo-external"]["catalog_id"] = "demo-external"
+    (center_lockfile / "installed.json").write_text(json.dumps(data),
+                                                    encoding="utf-8")
+    fake_github.answers(SAME_TERMS_MANIFEST, sha="c" * 40)
+
+    response = await client.post("/api/plugins/demo-external/update")
+
+    assert response.status_code == 202, response.text
+    await wait_started(flow)
+    assert flow.plans[0].catalog_id == "demo-external"
+
+    flow.finish()
+    await drain(client, response.json()["job_id"])
+
+
+async def test_a_builtin_pack_updates_with_codefyui_itself(client):
+    """It updates -- just not from here, and the hint is the only part of
+    this refusal a person can act on."""
+    response = await client.post("/api/plugins/foundations/update")
+
+    assert response.status_code == 400, response.text
+    detail = response.json()["detail"]
+    assert detail["code"] == "not_updatable"
+    assert "cdui update" in detail["hint"]
+
+
+async def test_a_linked_directory_has_nothing_to_fetch(
+        client, center_lockfile, tmp_path):
+    """``cdui plugin link`` records a path into somebody's working tree: what
+    is there is whatever its author saved a moment ago."""
+    work = tmp_path / "work" / "my-pack"
+    data = lockfile_of(center_lockfile)
+    data["plugins"]["my-pack"] = {"source_kind": "local", "source": str(work),
+                                  "path": str(work), "enabled": True}
+    (center_lockfile / "installed.json").write_text(json.dumps(data),
+                                                    encoding="utf-8")
+
+    response = await client.post("/api/plugins/my-pack/update")
+
+    assert response.status_code == 400, response.text
+    assert response.json()["detail"]["code"] == "not_updatable"
+
+
+async def test_updating_something_that_is_not_installed_is_a_404(client):
+    response = await client.post("/api/plugins/no-such-plugin/update")
+
+    assert response.status_code == 404, response.text
+    assert response.json()["detail"] == {"code": "not_installed"}
+
+
+async def test_an_update_waits_for_the_install_that_is_running(
+        client, flow, fake_github):
+    """Wider than the delete's guard, and deliberately: only one install runs
+    at a time, so an update of ANY plugin waits for it. Refused before the
+    network, because the round trip would end at this same 409."""
+    fake_github.answers(a_manifest("extras"))
+    job_id = await start_install(client)
+    await wait_started(flow)
+    reads = len(fake_github.resolved)
+
+    refused = await client.post("/api/plugins/demo-external/update")
+
+    assert refused.status_code == 409, refused.text
+    assert refused.json()["detail"] == {"code": "busy", "job_id": job_id}
+    assert len(fake_github.resolved) == reads, "GitHub was asked anyway"
+
+    flow.finish()
+    await drain(client, job_id)
+
+
+async def test_an_update_of_the_plugin_that_is_installing_is_refused_too(
+        client, flow, fake_github):
+    """The other half of the guard the lifecycle routes carry: the lockfile
+    entry this update would rewrite is the one that flow is about to write.
+    Here it needs no separate check -- one install at a time already covers
+    the plugin's own job -- and the answer is the same 409 either way."""
+    fake_github.answers(a_manifest("demo-external"), sha="b" * 40)
+    job_id = await start_install(client, force=True)
+    await wait_started(flow)
+
+    refused = await client.post("/api/plugins/demo-external/update")
+
+    assert refused.status_code == 409, refused.text
+    assert refused.json()["detail"] == {"code": "busy", "job_id": job_id}
+
+    flow.finish()
+    await drain(client, job_id)
+
+
+async def test_an_update_is_refused_while_another_source_is_being_read(
+        client, monkeypatch):
+    """An update IS an inspection -- of a source the server looked up instead
+    of the user -- so it takes the same one-at-a-time slot."""
+    sources = Sources()
+    monkeypatch.setattr(inspect_module, "inspect_source", sources)
+    sources.answer("alice/extras", inspect_module.inspect_builtin(
+        "stats", lockfile=plugin_loader.load_lockfile()))
+    sources.blocked.set()
+    reading = asyncio.create_task(
+        client.post("/api/plugins/inspect", json={"source": "alice/extras"}))
+    deadline = time.monotonic() + 10.0
+    while not sources.entered.is_set():
+        assert time.monotonic() < deadline, "the inspection never started"
+        await asyncio.sleep(0.01)
+
+    refused = await client.post("/api/plugins/demo-external/update")
+
+    assert refused.status_code == 409, refused.text
+    assert refused.json()["detail"] == {"code": "inspect_busy"}
+
+    sources.blocked.clear()
+    assert (await reading).status_code == 200
+
+
+@pytest.mark.parametrize("status, expected, code", [
+    (404, 404, "not_found"),
+    (403, 502, "github_rate_limited"),
+    (500, 502, "github_unreachable"),
+])
+async def test_a_github_failure_on_an_update_is_split_the_same_way(
+        client, fake_github, status, expected, code):
+    """The repository behind an installed plugin can be renamed, made private
+    or simply be unreachable, and the three are different waits."""
+    fake_github.raises(GitHubError("no", status=status))
+
+    response = await client.post("/api/plugins/demo-external/update")
+
+    assert response.status_code == expected, response.text
+    assert response.json()["detail"] == {"code": code}
+
+
+async def test_a_repository_that_renamed_the_plugin_is_not_an_update(
+        client, flow, fake_github, center_lockfile):
+    """The address is the same and the plugin is not. Updating into it would
+    install something the user never chose, under a name they did."""
+    fake_github.answers(a_manifest("something-else"), sha="c" * 40)
+
+    response = await client.post("/api/plugins/demo-external/update")
+
+    assert response.status_code == 400, response.text
+    detail = response.json()["detail"]
+    assert detail["code"] == "not_updatable"
+    # Both ids, because "install the new one deliberately" is the offer.
+    assert "something-else" in detail["hint"]
+    assert not flow.started.is_set()
+    plugins = lockfile_of(center_lockfile)["plugins"]
+    assert "something-else" not in plugins
+    assert plugins["demo-external"]["sha"] == "0" * 40
+
+
+async def test_a_rename_onto_another_installed_plugin_is_refused_too(
+        client, flow, fake_github, center_lockfile):
+    """The dangerous half of the same bug, and the reason it is not merely
+    untidy: an update carries ``force``, and the lockfile row an inspection
+    compares against is the one keyed by the MANIFEST's id. So a repository
+    that renames itself onto a pack the user also has would replace THAT
+    pack, measured against the capabilities IT was granted -- here
+    ``filesystem``, which nobody ever granted ``demo-external`` -- and the
+    consent screen would never appear."""
+    data = lockfile_of(center_lockfile)
+    data["plugins"]["ghost-pack"]["capabilities"] = ["network", "filesystem"]
+    (center_lockfile / "installed.json").write_text(json.dumps(data),
+                                                    encoding="utf-8")
+    before = lockfile_of(center_lockfile)["plugins"]["ghost-pack"]
+    fake_github.answers("""\
+[plugin]
+id = "ghost-pack"
+name = "Ghost Pack"
+version = "9.9.9"
+schema_version = 1
+
+[security]
+capabilities = ["network", "filesystem"]
+""", sha="c" * 40)
+
+    response = await client.post("/api/plugins/demo-external/update")
+
+    assert response.status_code == 400, response.text
+    assert response.json()["detail"]["code"] == "not_updatable"
+    assert not flow.started.is_set()
+    after = lockfile_of(center_lockfile)["plugins"]
+    assert after["ghost-pack"] == before, "the other plugin was touched"
+    assert after["demo-external"]["sha"] == "0" * 40
+
+
+async def test_an_update_waits_for_the_package_center_too(
+        client, plugin_service, fake_github, monkeypatch):
+    """Two installers, one interpreter and one site-packages. ``reason`` is
+    what tells the panel it is about to offer Follow on somebody else's job.
+
+    The attribute is what the constructor's ``busy_elsewhere=`` sets; this
+    service is built by a fixture every other test here shares.
+    """
+    monkeypatch.setattr(plugin_service, "_busy_elsewhere", lambda: "pack-1")
+
+    refused = await client.post("/api/plugins/demo-external/update")
+
+    assert refused.status_code == 409, refused.text
+    assert refused.json()["detail"] == {"code": "pack_install_running",
+                                        "job_id": "pack-1"}
+    assert fake_github.resolved == [], "GitHub was asked anyway"
+
+
+async def test_an_update_holds_the_read_slot_against_an_inspect(
+        client, monkeypatch):
+    """The other direction of the one-read-at-a-time rule: an update is an
+    inspection, so a source box that fires while one is running is refused
+    exactly as a second ``/inspect`` would be."""
+    updates = Sources()
+    monkeypatch.setattr(inspect_module, "inspect_installed", updates)
+    updates.answer("demo-external", an_inspection(
+        plugin_id="demo-external", mode="update", up_to_date=True,
+        sha="0" * 40, installed=installed_record(sha="0" * 40)))
+    updates.blocked.set()
+    updating = asyncio.create_task(
+        client.post("/api/plugins/demo-external/update"))
+    deadline = time.monotonic() + 10.0
+    while not updates.entered.is_set():
+        assert time.monotonic() < deadline, "the update never started"
+        await asyncio.sleep(0.01)
+
+    refused = await client.post("/api/plugins/inspect",
+                                json={"source": "stats"})
+
+    assert refused.status_code == 409, refused.text
+    assert refused.json()["detail"] == {"code": "inspect_busy"}
+
+    updates.blocked.clear()
+    answered = await updating
+    assert answered.status_code == 200, answered.text
+    assert answered.json() == {"status": "up_to_date", "sha": "0" * 40}
+
+
+async def test_a_repository_that_now_declares_a_reserved_id_is_refused(
+        client, fake_github):
+    """The plugin was installed as ``demo-external`` and its repository has
+    since renamed itself onto an id this build owns. Nothing is fetched, and
+    the panel is told which id clashed."""
+    fake_github.answers(a_manifest("catalog"), sha="c" * 40)
+
+    response = await client.post("/api/plugins/demo-external/update")
+
+    assert response.status_code == 400, response.text
+    assert response.json()["detail"] == {"code": "reserved_id",
+                                         "id": "catalog"}
+
+
+async def test_an_update_of_a_row_whose_manifest_is_not_one_is_a_400(
+        client, fake_github):
+    fake_github.answers("<!doctype html>\n<html>not a manifest</html>\n")
+
+    response = await client.post("/api/plugins/demo-external/update")
+
+    assert response.status_code == 400, response.text
+    assert response.json()["detail"] == {"code": "invalid_manifest"}
+
+
+# -- the busy guard --------------------------------------------------------
+
+
+async def test_a_delete_waits_for_that_plugins_own_install(
+        client, flow, fake_github, forgetting):
+    """An install writes the plugin's directory and the lockfile entry beside
+    it; a delete removes both. Refused while that flow runs, and refused
+    BEFORE "not installed" is considered -- the pack being written is not in
+    the lockfile yet, and "wait for job X" is the answer to "remove it" that
+    a user can act on, where "you do not have it" invites them to press the
+    button again into the same race."""
+    fake_github.answers(a_manifest("extras"))
+    job_id = await start_install(client)
+    await wait_started(flow)
+
+    refused = await client.delete("/api/plugins/extras")
+    assert refused.status_code == 409, refused.text
+    assert refused.json()["detail"] == {"code": "busy", "job_id": job_id}
+    assert forgetting == []
+
+    flow.finish()
+    await drain(client, job_id)
+
+    # The job is terminal, so the guard is open again -- and the scripted
+    # flow wrote nothing, so what is left is the honest 404.
+    assert (await client.delete("/api/plugins/extras")).status_code == 404
+
+
+async def test_another_plugins_install_does_not_block_the_lifecycle(
+        client, flow, fake_github, center_lockfile, forgetting):
+    """One install at a time is a rule about the INSTALLER -- two ``uv pip
+    install`` runs share one site-packages -- not about the lockfile. Two
+    plugins are two directories and two keys, so a long download of one must
+    not freeze every other row in the panel."""
+    fake_github.answers(a_manifest("extras"))
+    job_id = await start_install(client)
+    await wait_started(flow)
+
+    removed = await client.delete("/api/plugins/demo-external")
+    assert removed.status_code == 200, removed.text
+    assert "demo-external" not in lockfile_of(center_lockfile)["plugins"]
+
+    toggled = await client.post("/api/plugins/deep/enable")
+    assert toggled.status_code == 200, toggled.text
+
+    flow.finish()
+    await drain(client, job_id)
+
+
+@pytest.mark.parametrize("action, enabled", [("enable", True),
+                                             ("disable", False)])
+async def test_a_toggle_waits_for_that_plugins_own_install(
+        client, flow, fake_github, forgetting, action, enabled):
+    """``enable`` and ``disable`` rewrite the very entry the flow is about to
+    write. They stay token-only -- flipping a flag on code this machine
+    already has, and the user already agreed to, is not the question the
+    loopback gate asks -- but they do not get to race the install."""
+    fake_github.answers(a_manifest("demo-external"), sha="b" * 40)
+    job_id = await start_install(client, force=True)
+    await wait_started(flow)
+
+    refused = await client.post(f"/api/plugins/demo-external/{action}")
+    assert refused.status_code == 409, refused.text
+    assert refused.json()["detail"] == {"code": "busy", "job_id": job_id}
+
+    flow.finish()
+    await drain(client, job_id)
+
+    allowed = await client.post(f"/api/plugins/demo-external/{action}")
+    assert allowed.status_code == 200, allowed.text
+    assert allowed.json() == {"id": "demo-external", "enabled": enabled}
+
+
+# -- what guards the lifecycle path ----------------------------------------
+
+
+def test_the_delete_route_is_declared_with_the_other_plugin_id_routes():
+    """The same invariant as the GET's, one method along.
+
+    A path that matches with the wrong method is a PARTIAL match, and the
+    router keeps scanning for a full one -- so what a late fixed path loses
+    to ``/{plugin_id}`` here is narrower than it is for the GET: only a fixed
+    path that ALSO answers DELETE would be shadowed. The order is asserted
+    anyway rather than reasoned about per method, because the next route
+    added below this line is the one nobody re-derives it for."""
+    api_routes = [route for route in routes_plugins.router.routes
+                  if isinstance(route, APIRoute)]
+    deleting = [index for index, route in enumerate(api_routes)
+                if "DELETE" in route.methods]
+
+    assert [api_routes[i].path for i in deleting] == [
+        "/api/plugins/{plugin_id}"]
+    for index, route in enumerate(api_routes):
+        if "{" not in route.path:
+            assert index < deleting[0], f"{route.path} is declared too late"
+
+
+@pytest.mark.parametrize("method, path, body", LIFECYCLE)
+async def test_every_lifecycle_route_needs_the_session_token(
+        anon_client, method, path, body):
+    response = await anon_client.request(method, path, json=body)
+    assert response.status_code == 403, f"{method} {path}"
+    assert TOKEN_HEADER in response.json()["detail"]
+
+
+@pytest.mark.parametrize("method, path, body", LIFECYCLE)
+async def test_a_remote_bind_may_not_change_what_is_installed(
+        client, monkeypatch, forgetting, method, path, body):
+    """Taking somebody's plugin away is the same question as putting one
+    there: the server only takes it from the machine it runs on, and a
+    classroom or office server that deliberately serves the LAN opts back in
+    with the one variable the refusal names."""
+    monkeypatch.setattr(settings, "HOST", "192.168.1.20")
+    monkeypatch.setattr(settings, "ALLOW_REMOTE_PLUGIN_INSTALL", False)
+
+    refused = await client.request(method, path, json=body)
+    assert refused.status_code == 403, f"{method} {path}"
+    assert refused.json()["detail"] == (
+        "Installing plugins is only allowed from the computer that runs the "
+        "server. Set CODEFYUI_ALLOW_REMOTE_PLUGIN_INSTALL=1 to override.")
+
+    monkeypatch.setattr(settings, "ALLOW_REMOTE_PLUGIN_INSTALL", True)
+    allowed = await client.request(method, path, json=body)
+    # Past the gate: whatever this route deserves, not a 403.
+    assert allowed.status_code != 403, f"{method} {path}"
+
+
+async def test_the_toggles_stay_token_only(client, monkeypatch, forgetting):
+    """The contrast that makes the gate above a decision. Enabling a plugin
+    runs code that is already here and was already consented to, so a server
+    deliberately bound to a LAN keeps answering -- the same reason
+    ``/reload`` carries no loopback gate either."""
+    monkeypatch.setattr(settings, "HOST", "192.168.1.20")
+    monkeypatch.setattr(settings, "ALLOW_REMOTE_PLUGIN_INSTALL", False)
+
+    response = await client.post("/api/plugins/deep/enable")
+    assert response.status_code == 200, response.text
+    assert response.json() == {"id": "deep", "enabled": True}
+
+
+def _template_of(method: str, path: str) -> str:
+    """The registered path the router would serve ``method path`` from.
+
+    The walk lists post to CONCRETE ids -- ``/api/plugins/demo-external``,
+    ``/api/plugins/no-such-job/cancel`` -- and the router registers
+    templates. Rather than write the templates down a second time (a list
+    that can drift from the walks it claims to describe), the mapping is
+    asked of Starlette's own matcher, in registration order, exactly as a
+    request is resolved. A walk entry no route answers fails here, which is
+    itself worth catching.
+    """
+    scope = {"type": "http", "method": method, "path": path,
+             "root_path": "", "headers": []}
+    for route in routes_plugins.router.routes:
+        if isinstance(route, APIRoute) and route.matches(scope)[0] is Match.FULL:
+            return route.path
+    raise AssertionError(f"no route answers {method} {path}")
+
+
+def test_every_mutating_route_is_in_exactly_one_gate_bucket():
+    """No route under ``/api/plugins`` may change something without saying
+    which gate it is behind.
+
+    The three buckets are the three answers this router gives: ``MUTATING``
+    (token + loopback, and 503 without an installer), ``LIFECYCLE`` (token +
+    loopback, answered without one) and ``TOKEN_ONLY``. Each of them is
+    walked by tests above; what is missing until here is the question none of
+    those walks can ask -- whether the router has a route that NO walk
+    covers. A route added below the ones already here would be tested by
+    nothing, and the way that ships is silently.
+
+    The loopback dependency is read off the route as well, so a bucket cannot
+    be a label somebody typed: a path listed with the install path but
+    declared without ``_require_local_plugin_install`` fails here rather than
+    on a LAN.
+    """
+    buckets = {
+        "MUTATING": {_template_of(method, path) for method, path, _ in MUTATING},
+        "LIFECYCLE": {_template_of(method, path) for method, path, _ in LIFECYCLE},
+        "TOKEN_ONLY": set(TOKEN_ONLY),
+    }
+    mutating_methods = {"POST", "PUT", "PATCH", "DELETE"}
+
+    listed: set[str] = set()
+    for route in routes_plugins.router.routes:
+        if not isinstance(route, APIRoute):
+            continue
+        if not route.methods & mutating_methods:
+            continue
+        named = [name for name, paths in buckets.items()
+                 if route.path in paths]
+        assert len(named) == 1, (
+            f"{sorted(route.methods)} {route.path} is in {named or 'no'} "
+            f"bucket; add it to one (and to that bucket's walk)")
+        listed.add(route.path)
+
+        gated = any(
+            dependency.call is routes_plugins._require_local_plugin_install
+            for dependency in route.dependant.dependencies)
+        assert gated is (named[0] != "TOKEN_ONLY"), (
+            f"{route.path} is listed as {named[0]} but "
+            f"{'declares' if gated else 'does not declare'} the loopback gate")
+
+    # And nothing in a bucket that the router does not have: a walk left
+    # behind by a deleted route passes vacuously otherwise.
+    assert set().union(*buckets.values()) == listed
+
+
+# -- the reserved id, off the exception ------------------------------------
+
+
+async def test_a_reserved_id_is_read_off_the_exception_not_its_message(
+        client, monkeypatch):
+    """The route used to recover the id with a regular expression over the
+    message, which quietly made the wording of an English sentence part of
+    this wire contract. Raised here with a message that names nothing, so
+    only the attribute can answer -- the regex reading would fall through to
+    ``invalid_manifest`` and leave the panel with no id to show."""
+    def refuse(spec: str, *, lockfile: dict):
+        raise ReservedPluginId("that name is taken.", plugin_id="catalog",
+                               taken_by="a route under /api/plugins/")
+
+    monkeypatch.setattr(inspect_module, "inspect_source", refuse)
+
+    response = await client.post("/api/plugins/inspect",
+                                 json={"source": "alice/extras"})
+    assert response.status_code == 400, response.text
+    assert response.json()["detail"] == {"code": "reserved_id",
+                                         "id": "catalog"}

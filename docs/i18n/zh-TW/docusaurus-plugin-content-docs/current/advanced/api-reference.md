@@ -29,8 +29,18 @@ description: CodefyUI 後端的 REST 與 WebSocket 端點——節點、預設�
 | `/api/custom-nodes/toggle` | POST | 啟用/停用一個自訂節點。 |
 | `/api/custom-nodes/{filename}` | DELETE | 刪除一個自訂節點。 |
 | `/api/plugins` | GET | 列出已安裝的外掛包。 |
+| `/api/plugins/catalog` | GET | 把「這個版本可用名稱安裝的每個外掛」與「已經安裝的東西」合併——每個外掛一列，每列都帶著它所處的狀態（已安裝、已停用、刻意移除、檔案不見了）。 |
+| `/api/plugins/generation` | GET | 編輯器輪詢用的重載計數器，用來得知節點面板變了。 |
 | `/api/plugins/{id}` | GET | 取得某外掛的資訊清單 (manifest) 與 README。 |
 | `/api/plugins/reload` | POST | 熱重載所有節點與預設模組來源。 |
+| `/api/plugins/inspect` | POST | 在單一個已解析的 commit 上讀取一個來源——型錄名稱、`owner/repo`，或一個網址——並說明安裝它的代價。不會安裝任何東西；答案存放在一個 `inspection_id` 底下。 |
+| `/api/plugins/install` | POST | 依 `inspection_id` 安裝某次檢查所描述的那份 manifest——回傳 `202` 與 `job_id`。安裝什麼完全不取自請求內容。 |
+| `/api/plugins/jobs/{job_id}/events` | GET | 某個安裝工作在 `?cursor=` 之後的記錄與進度；加上 `?wait=` 最多可長輪詢 60 秒，而這個工作也可能以 `needs_restart` 結束，並附上要在伺服器停掉後執行的指令。 |
+| `/api/plugins/jobs/{job_id}/cancel` | POST | 要求執行中的安裝停下來，而且乾淨到不會留下任何寫到一半的東西。 |
+| `/api/plugins/{id}/update` | POST | 重新讀取該外掛自己的儲存庫——`202 {"job_id"}`、`200 {"status": "up_to_date", "sha"}`，或在這個版本比你上次授權的要得更多時回傳 `200 {"status": "needs_consent", "inspection", "capabilities_added", "allowed_modules_added"}`，最後這一種由用戶端以 `POST /api/plugins/install {"inspection_id", "accept_capabilities", "trust_author"}` 完成，不必帶 `force`。更新會保留外掛原本的啟用／停用狀態。內建或連結的外掛——以及 manifest 現在宣告了不同外掛 id 的儲存庫——則回答 `400 not_updatable`。 |
+| `/api/plugins/{id}` | DELETE | 移除一個外掛，並回報這樣做留下了什麼。內建外掛包會保留檔案並被記住已移除；連結的目錄不會被動到；外掛的 Python 套件永遠不會被移除，而能移除它們的指令會一併回傳。 |
+| `/api/plugins/{id}/enable` | POST | 啟用一個已安裝的外掛並重新探索。 |
+| `/api/plugins/{id}/disable` | POST | 停用它，但不移除。 |
 | `/api/packs` | GET | 列出每一個選用套件包，包含已安裝的部分、下載要花多少空間，以及這台機器能不能裝。 |
 | `/api/packs/{id}/install` | POST | 啟動一個安裝工作——回傳 `202` 與 `job_id`。同一時間只會有一個工作在跑。 |
 | `/api/packs/jobs/{job_id}/cancel` | POST | 要求執行中的工作停下來。下載會在檔案途中就中斷，不是等這個檔下完——這也會一併中斷執行中的圖在那一刻正在進行的任何 Hugging Face 下載（例如資料集或斷詞器），因為兩者共用同一個傳輸層。 |
@@ -64,6 +74,10 @@ description: CodefyUI 後端的 REST 與 WebSocket 端點——節點、預設�
 
 :::note 安裝套件包只能從本機操作
 所有會造成變更的 `/api/packs` 端點，在伺服器不是綁定在回送（loopback）位址時一律拒絕：啟動安裝等於對「正在服務這個請求的那一個直譯器」執行套件管理程式，而「任何連得上這個埠的人」不是適合做這件事的對象。刻意對區網提供服務的教室或公司環境，可用 `CODEFYUI_ALLOW_REMOTE_PACK_INSTALL=1` 重新開放。不論開不開，能被要求的東西都只限於型錄中列出的項目——請求內容裡的 pip 安裝字串、repo id 或網址永遠不會進到子行程。
+:::
+
+:::note 安裝外掛同樣只能從本機操作
+會安裝、檢查或移除的端點——`inspect`、`install`、工作的 `cancel`、`update` 與 `DELETE`——都需要工作階段 token，而且在伺服器不是綁定在回送（loopback）位址時一律拒絕：安裝外掛等於把別人的程式碼放到這個行程即將匯入的地方，而檢查來源等於憑呼叫端一句話去連 GitHub。刻意對區網提供服務的教室或實驗室環境，可用 `CODEFYUI_ALLOW_REMOTE_PLUGIN_INSTALL=1` 重新開放。`reload` 與 `enable`／`disable` 需要 token 但不受回送位址限制——它們處理的是這台機器已經有的程式碼。步驟名稱與失敗訊息來自共用的安裝流程，在每個用戶端都是英文。詳見 **[外掛中心](/advanced/plugins#外掛中心)**。
 :::
 
 :::note 節點清單裡的選用套件包

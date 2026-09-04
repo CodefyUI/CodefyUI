@@ -74,6 +74,49 @@ received — each links to the release it was published as.
   opts out, the browser to be on the machine running the server; following an
   install is open, like the Package Center's.
 
+- **A plugin can be removed from inside the app, and you are told what
+  removing it left behind.** `DELETE /api/plugins/{id}` takes away exactly
+  what this install downloaded and nothing else: a pack fetched from GitHub
+  loses its directory, a pack that ships in this release keeps its files —
+  they belong to the release — and is remembered as removed, so
+  `cdui plugin sync` leaves it alone until you ask for it by name again, and
+  a directory you linked with `cdui plugin link` stays exactly where you put
+  it. What no uninstall touches is the plugin's Python packages: removing
+  packages from inside the interpreter that imported them is how you end up
+  with a half-loaded server still answering requests. So the answer names
+  them instead, with the `uv pip uninstall` line to run once the server is
+  stopped — an uninstall that silently leaves packages behind is the half of
+  the story you would otherwise find out about from a disk that never got
+  smaller. And when the directory will not delete, which on Windows usually
+  means something is holding a file open, nothing is removed at all: the
+  plugin stays installed and the refusal names the directory that is still
+  there, rather than dropping the only record of files that are still on
+  disk. Behind the same two gates an install is — the session token, and the
+  browser being on the machine that runs the server.
+
+- **A plugin can be updated from its own repository, and asks again only when
+  it starts asking for more.** `POST /api/plugins/{id}/update` re-reads the
+  manifest at whatever commit that repository has now, and answers one of
+  three ways: the commit you have is the one that is there, so there is
+  nothing to do; the new version wants nothing beyond what you granted last
+  time, so it is already installing and you get the job to follow; or it
+  wants more, and you get the review screen an install shows plus exactly
+  what grew — the capabilities and the modules this version adds to the ones
+  you agreed to. Only that last case stops to ask, because a version that
+  quietly starts wanting the network is the supply-chain shape an update can
+  actually catch. Two things an update will not do, in the panel and in
+  `cdui plugin update` alike: it never installs a *different* plugin — a
+  repository whose manifest now declares another id is refused rather than
+  fetched, because updating one plugin and ending up with another, possibly
+  on top of one of that name you already had, is not an update; and it leaves
+  a plugin you had switched off switched off — which the console now says out
+  loud after the success line, so an update that ends with the plugin's nodes
+  still missing from the palette does not read as one that failed. A pack that
+  ships in this release and a directory you linked for development are refused
+  with the reason rather than fetched too: the first updates with
+  `cdui update`, and the second is already whatever is on its author's disk
+  right now.
+
 - **`GET /api/plugins/catalog` — everything you can install and everything
   you have installed, in one listing.** The read half of the Plugin Center.
   Two documents that do not know about each other answer half the question
@@ -104,7 +147,8 @@ received — each links to the release it was published as.
   pack while the install fetches another. And the badge saying CodefyUI
   vouches for a plugin is earned by where the files came FROM, not by the id
   on a manifest, so a pack installed from anywhere else is listed as exactly
-  what it is.
+  what it is. `cdui plugin update` keeps that record too, so a pack installed
+  by name still reads as the official one after its first update.
 
 - **`CODEFYUI_GITHUB_TOKEN` and `CODEFYUI_ALLOW_REMOTE_PLUGIN_INSTALL`.**
   Unauthenticated GitHub allows sixty requests an hour per IP, which a
@@ -112,12 +156,22 @@ received — each links to the release it was published as.
   plugin installer's GitHub calls use it. It is read per call, so a token
   exported after the server started still works, and no copy of it is kept.
   The second is the same loopback gate the Package Center has, for the
-  install routes landing next: installing a plugin puts third-party code
+  install routes above: installing a plugin puts third-party code
   where this process will import it, so the answer to "who may install one"
   is "whoever is sitting at this machine" unless a deliberate classroom or
   lab server opts back in with `CODEFYUI_ALLOW_REMOTE_PLUGIN_INSTALL=1`.
 
 ### Changed
+
+- **A plugin cannot be switched on, off or removed while its own install is
+  running.** `POST /api/plugins/{id}/enable`, `/disable` and the delete
+  answer with the id of the job to wait for, instead of rewriting a lockfile
+  entry the install is halfway through writing — which is how a plugin ends up
+  on disk with nothing pointing at it, or with an entry pointing at a
+  directory that was just taken away. Another plugin's install blocks none of
+  the three: two plugins are two directories and two lockfile keys, and a long
+  download of one pack has no business freezing the switches on all the
+  others.
 
 - **`cdui plugin install` shows you the plugin before it downloads it, and
   installs it the same way the panel does.** The command used to fetch the

@@ -38,6 +38,7 @@ from app.core.plugins.errors import (
     PluginCancelled,
     PluginInstallError,
     PluginNeedsRestart,
+    ReservedPluginId,
 )
 
 
@@ -831,6 +832,33 @@ def test_the_lockfile_entry_of_a_builtin_install(builtin_root):
     assert entry["enabled"] is True
 
 
+def test_an_update_keeps_the_flag_the_user_set(user_root, fake_github):
+    """Installing a new version decides which code is on disk, never whether
+    the plugin runs. A pack somebody disabled and then updated came back
+    switched on and in the palette, with nothing in the conversation having
+    said so -- and the entry the update replaces is the only record of that
+    decision."""
+    plugin_loader.save_lockfile({"schema": 1, "plugins": {"extras": {
+        "source_kind": "github_url", "source": "alice/extras@v1",
+        "url": "https://github.com/alice/extras", "ref": "v1",
+        "sha": "b" * 40, "manifest": {"id": "extras", "version": "1.0.0"},
+        "capabilities": ["network"], "trusted_modules": [], "enabled": False,
+    }}})
+    fake_github({"cdui.plugin.toml": WITH_CAPABILITY})
+
+    _install(_github_plan(accept_capabilities=["network"], force=True))
+
+    assert _entry("extras")["enabled"] is False
+
+    # And a FRESH install is still the one entitled to say True: same
+    # manifest, same plan, nothing to inherit a decision from.
+    plugin_loader.save_lockfile({"schema": 1, "plugins": {}})
+    fake_github({"cdui.plugin.toml": WITH_CAPABILITY})
+    _install(_github_plan(accept_capabilities=["network"], force=True))
+
+    assert _entry("extras")["enabled"] is True
+
+
 def test_a_catalog_row_is_recorded_and_free_text_is_not(fake_github):
     """"Installed from the catalog" is a claim a reader wants to trust, so
     the key is absent rather than null when there was no row."""
@@ -921,6 +949,12 @@ def test_a_reserved_id_is_refused_before_anything_is_downloaded(user_root):
     with pytest.raises(PluginInstallError) as excinfo:
         _install(_bare_plan(plugin_id="install"))
     assert "reserved" in str(excinfo.value)
+    # The same class the inspection refuses with, carrying the same two facts:
+    # this is the second producer of that sentence, and a client that had to
+    # tell them apart by reading it would be parsing English.
+    assert isinstance(excinfo.value, ReservedPluginId)
+    assert excinfo.value.plugin_id == "install"
+    assert excinfo.value.taken_by == "a route under /api/plugins/"
 
 
 # ── progress ───────────────────────────────────────────────────────────────

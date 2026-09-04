@@ -29,8 +29,18 @@ The backend serves a REST API plus a WebSocket for execution. All endpoints are 
 | `/api/custom-nodes/toggle` | POST | Enable/disable a custom node. |
 | `/api/custom-nodes/{filename}` | DELETE | Delete a custom node. |
 | `/api/plugins` | GET | List installed plugin packs. |
+| `/api/plugins/catalog` | GET | Every plugin this build can install by name, merged with what is installed — one row per plugin, each carrying the state it is in (installed, disabled, removed on purpose, files gone). |
+| `/api/plugins/generation` | GET | The reload counter the editor polls to notice the palette changed. |
 | `/api/plugins/{id}` | GET | Get a plugin's manifest + README. |
 | `/api/plugins/reload` | POST | Hot-reload all node and preset sources. |
+| `/api/plugins/inspect` | POST | Read one source — a catalog name, `owner/repo`, or a URL — at one resolved commit and say what installing it would cost. Installs nothing; the answer is kept under an `inspection_id`. |
+| `/api/plugins/install` | POST | Install the manifest an inspection described, by its `inspection_id` — `202` with a `job_id`. Nothing about what gets installed comes from the request body. |
+| `/api/plugins/jobs/{job_id}/events` | GET | An install job's log and progress after `?cursor=`; `?wait=` long-polls for up to 60s, and the job may end `needs_restart` with the command to run with the server stopped. |
+| `/api/plugins/jobs/{job_id}/cancel` | POST | Ask the running install to stop, cleanly enough that nothing half-written is left behind. |
+| `/api/plugins/{id}/update` | POST | Re-read the plugin's own repository — `202 {"job_id"}`, `200 {"status": "up_to_date", "sha"}`, or `200 {"status": "needs_consent", "inspection", "capabilities_added", "allowed_modules_added"}` when this version asks for more than you granted last time, which the client finishes with `POST /api/plugins/install {"inspection_id", "accept_capabilities", "trust_author"}` and no `force`. The update keeps the plugin's enabled state. A built-in or linked plugin — or a repository whose manifest now declares a different plugin id — answers `400 not_updatable`. |
+| `/api/plugins/{id}` | DELETE | Uninstall a plugin and report what that left behind. A built-in pack keeps its files and is remembered as removed; a linked directory is untouched; the plugin's Python packages are never removed and the command that would remove them is returned. |
+| `/api/plugins/{id}/enable` | POST | Turn an installed plugin on and re-discover. |
+| `/api/plugins/{id}/disable` | POST | Turn it off without uninstalling it. |
 | `/api/packs` | GET | List every optional pack with what is installed, what a download would cost, and whether this machine can install it. |
 | `/api/packs/{id}/install` | POST | Start an install job — `202` with a `job_id`. One job runs at a time. |
 | `/api/packs/jobs/{job_id}/cancel` | POST | Ask the running job to stop. A download is aborted mid-file, not at the end of it — which also interrupts any Hugging Face download a running graph happens to be doing at that moment (a dataset or tokenizer fetch), because the two share one transfer session. |
@@ -64,6 +74,10 @@ The execution WebSocket takes its session token as a query parameter, since brow
 
 :::note Installing a pack is a local-only operation
 Every mutating `/api/packs` route is refused unless the server is bound to loopback: starting an install runs a package manager against the interpreter that is serving the request, and "whoever can reach the port" is the wrong audience for that. A classroom or office instance that deliberately serves the LAN opts back in with `CODEFYUI_ALLOW_REMOTE_PACK_INSTALL=1`. What may be asked for is bounded by the catalog either way — no pip spec, repo id or URL from a request body ever reaches a subprocess.
+:::
+
+:::note Installing a plugin is a local-only operation too
+The routes that install, inspect or remove — `inspect`, `install`, the job's `cancel`, `update` and `DELETE` — take the session token *and* refuse unless the server is bound to loopback: installing a plugin puts a stranger's code where this process will import it, and inspecting reaches out to GitHub on the caller's word. `CODEFYUI_ALLOW_REMOTE_PLUGIN_INSTALL=1` opts a deliberate classroom or lab server back in. `reload` and `enable` / `disable` take the token but not the loopback gate — they act on code this machine already has. Step labels and failure messages come from the shared install path and are English in every client. See **[Plugin Center](/advanced/plugins#plugin-center)**.
 :::
 
 :::note Optional packs in the node list

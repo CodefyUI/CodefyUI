@@ -44,7 +44,12 @@ from app.core import plugin_loader
 
 from . import catalog as catalog_module
 from . import github, listing, sources
-from .errors import PluginInstallError
+from .errors import (
+    NotInstalled,
+    NotUpdatable,
+    PluginInstallError,
+    ReservedPluginId,
+)
 from .manifest import (
     manifest_allowed_modules,
     manifest_capabilities,
@@ -74,6 +79,20 @@ ALLOWED_MODULES_WARNING = (
     "This plugin asks to import: {modules}. "
     "Installing requires trusting the author."
 )
+
+#: What to do instead, per ``source_kind`` that has no update to look for.
+#: English and one sentence each, like the warnings above: a caller speaking
+#: another language branches on :attr:`~.errors.NotUpdatable.source_kind`.
+NO_UPDATE_HINTS = {
+    "builtin": (
+        "A pack that ships in this release updates with CodefyUI itself: "
+        "run cdui update."
+    ),
+    "local": (
+        "A linked directory is whatever is on its author's disk right now; "
+        "there is nothing to fetch."
+    ),
+}
 
 
 @dataclass(frozen=True)
@@ -304,7 +323,9 @@ def inspect_github(
     install, but a fork may not take its place.
 
     Raises :class:`~.errors.GitHubError`, ``tomllib.TOMLDecodeError``,
-    :class:`~.errors.ManifestError` or :class:`~.errors.PluginInstallError`.
+    :class:`~.errors.ManifestError` or :class:`~.errors.ReservedPluginId`
+    (a :class:`~.errors.PluginInstallError`, so every caller that already
+    catches the base keeps catching this).
     """
     sha = pinned_sha or github.resolve_sha(owner, repo, ref)
     manifest = tomllib.loads(github.fetch_manifest_text(owner, repo, sha))
@@ -313,8 +334,14 @@ def inspect_github(
 
     taken_by = catalog_module.reserved_id_holder(plugin_id, owner=owner, repo=repo)
     if taken_by is not None:
-        raise PluginInstallError(
+        # The message and the hint are what the CLI prints, word for word;
+        # the attributes are what a panel draws a control from. Both, rather
+        # than either -- a reader of the terminal needs the sentence, and a
+        # client that had to recover the id from it would be parsing English.
+        raise ReservedPluginId(
             f"Plugin id {plugin_id!r} is reserved by this build.",
+            plugin_id=plugin_id,
+            taken_by=taken_by,
             hint=(
                 f"{owner}/{repo} declares an id that names {taken_by}; it "
                 f"cannot be installed under that id."
@@ -375,16 +402,55 @@ def inspect_source(spec: str, *, lockfile: dict[str, Any]) -> Inspection:
     )
 
 
+def updatable_entry(plugin_id: str, *, lockfile: dict[str, Any]) -> dict[str, Any]:
+    """This install's record for a plugin that CAN be updated. Reads nothing.
+
+    Only ``github_url`` plugins have an update to look for: a built-in pack
+    updates with CodefyUI itself, and a linked development directory is
+    whatever is on the developer's disk right now.
+
+    Public because the question is asked at two different moments.
+    :func:`inspect_installed` asks it on the worker thread that is about to
+    read GitHub; ``PluginService.update`` asks it on the event loop, BEFORE
+    it claims the inspection slot -- "you do not have that plugin" and "a
+    built-in pack updates with CodefyUI" are true without a network, and
+    neither should have to queue behind somebody else's read to be said. One
+    function, so which plugins have an update at all is decided once.
+
+    :raises NotInstalled: no lockfile entry under that id.
+    :raises NotUpdatable: it is installed, from something that cannot be
+        re-fetched. ``hint`` says what to do instead.
+    """
+    entry = _lockfile_entry(lockfile, plugin_id)
+    if entry is None:
+        raise NotInstalled(
+            f"Plugin {plugin_id!r} is not installed.", plugin_id=plugin_id
+        )
+    recorded = entry.get("source_kind")
+    source_kind = _text(recorded)
+    if source_kind != "github_url":
+        raise NotUpdatable(
+            f"Plugin {plugin_id!r} does not update from a repository.",
+            plugin_id=plugin_id,
+            source_kind=source_kind,
+            # The fallback quotes what the entry ACTUALLY says, not the
+            # normalised copy: an entry with no ``source_kind`` at all is a
+            # different bug from one that says ``""``, and this branch exists
+            # for the reader of a lockfile nobody expected.
+            hint=NO_UPDATE_HINTS.get(
+                source_kind, f"Its source_kind is {recorded!r}."
+            ),
+        )
+    return entry
+
+
 def inspect_installed(plugin_id: str, *, lockfile: dict[str, Any]) -> Inspection:
     """Describe the update available for an installed repository plugin.
 
     The source is taken from the lockfile rather than re-typed, which is what
     makes ``cdui plugin update`` and the Plugin Center's update button follow
     the same repository and the same ref the user originally agreed to.
-
-    Only ``github_url`` plugins have an update to look for: a built-in pack
-    updates with CodefyUI itself, and a linked development directory is
-    whatever is on the developer's disk right now.
+    :func:`updatable_entry` decides whether there is one to follow.
 
     Provenance is carried forward rather than dropped. Re-inspecting is the
     same plugin seen a second time, so an update dialog must be able to say
@@ -394,25 +460,33 @@ def inspect_installed(plugin_id: str, *, lockfile: dict[str, Any]) -> Inspection
     uses, so a row cannot be official in the panel and unofficial in the
     dialog that updates it. Without this, every update of an official plugin
     read as third-party free text.
+
+    And the manifest that comes back has to still declare the id it was
+    installed under. A repository that renames its plugin is describing a
+    DIFFERENT plugin at the same address: updating into it would install
+    something the user never chose under a name they did choose, and -- when
+    the new name belongs to another installed pack -- would replace that one
+    instead, inheriting the capabilities IT was granted without a consent
+    screen anywhere. So the rename is refused as "nothing here to update",
+    and installing the new plugin is left as the deliberate act it is.
     """
-    entry = _lockfile_entry(lockfile, plugin_id)
-    if entry is None:
-        raise PluginInstallError(f"Plugin {plugin_id!r} is not installed.")
-    source_kind = entry.get("source_kind")
-    if source_kind != "github_url":
-        raise PluginInstallError(
-            f"Plugin {plugin_id!r} does not update from a repository.",
-            hint=f"Its source_kind is {source_kind!r}.",
-        )
+    entry = updatable_entry(plugin_id, lockfile=lockfile)
     url = _text(entry.get("url"))
     match = _GITHUB_URL.match(url) or _GITHUB_SHORT.match(_text(entry.get("source")))
     if match is None:
-        raise PluginInstallError(
+        # Installed from a repository whose name is no longer in the record:
+        # a hand-edited lockfile, or one written by a build that spelled the
+        # url differently. Still "nothing to fetch", so it is the same
+        # refusal -- with the two fields that were looked at, because this
+        # one is a bug report rather than a decision.
+        raise NotUpdatable(
             f"Cannot tell which repository {plugin_id!r} came from.",
+            plugin_id=plugin_id,
+            source_kind="github_url",
             hint=f"url={entry.get('url')!r} source={entry.get('source')!r}",
         )
     recorded_catalog_id = _text(entry.get("catalog_id")) or None
-    return inspect_github(
+    found = inspect_github(
         match.group(1),
         match.group(2),
         _text(entry.get("ref")),
@@ -420,3 +494,19 @@ def inspect_installed(plugin_id: str, *, lockfile: dict[str, Any]) -> Inspection
         catalog_id=recorded_catalog_id,
         official=listing.is_official(catalog_module.catalog_entry(plugin_id), entry),
     )
+    if found.plugin_id != plugin_id:
+        # The provenance above was read off the row for *plugin_id*, so it is
+        # a claim about the plugin that was asked for. Nothing carrying it
+        # leaves this function unless the manifest agrees about which plugin
+        # that is.
+        raise NotUpdatable(
+            f"{plugin_id!r} now installs as {found.plugin_id!r}.",
+            plugin_id=plugin_id,
+            source_kind="github_url",
+            hint=(
+                f"Its repository renamed the plugin. Install "
+                f"{found.plugin_id!r} as a new plugin if that is what you "
+                f"want."
+            ),
+        )
+    return found

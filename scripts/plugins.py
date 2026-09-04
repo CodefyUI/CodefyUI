@@ -61,6 +61,7 @@ else:
 from app.core.plugin_loader import (
     MANIFEST_FILENAME,
     clear_removed,
+    is_enabled,
     load_lockfile,
     plugins_builtin_root,
     plugins_user_root,
@@ -763,6 +764,30 @@ def _report_reload() -> None:
         )
 
 
+def _report_still_disabled(plugin_id: str) -> None:
+    """Say so when what was just installed is not going to run.
+
+    ``enabled`` follows the entry an install REPLACES
+    (``flows._lockfile_record``): updating a pack, or reinstalling it with
+    ``--force``, decides which version is on disk and never whether the
+    plugin runs -- somebody who disabled a pack and then updated it must not
+    find it back in the palette with nothing having said so.
+
+    Which leaves the other half to say out loud. Without this line the
+    command ends on "Installed: x", the nodes stay out of the palette, and
+    the honest reading of that pair is that the install failed. One line,
+    after the success line because it is a caveat about a success, and it
+    names the command that lifts it.
+    """
+    entry = load_lockfile().get("plugins", {}).get(plugin_id)
+    if not isinstance(entry, dict) or is_enabled(entry):
+        return
+    warn(
+        f"此外掛目前仍是停用狀態；用 cdui plugin enable {plugin_id} 啟用",
+        f"Still disabled -- enable it with `cdui plugin enable {plugin_id}`",
+    )
+
+
 def _print_python_deps(found: core_inspect.Inspection) -> None:
     """Name the Python packages this install would add to the venv.
 
@@ -1175,6 +1200,7 @@ def _install_catalog(plugin_id: str, args, lockfile) -> int:
 
     _report_reload()
     ok(f"安裝完成：{plugin_id}", f"Installed: {plugin_id}")
+    _report_still_disabled(plugin_id)
     return 0
 
 
@@ -1258,6 +1284,7 @@ def _install_github(
     lockfile,
     *,
     catalog_id: str | None = None,
+    expected_id: str | None = None,
 ) -> int:
     """Install the pack in ``{owner}/{repo}`` at *ref*.
 
@@ -1276,10 +1303,19 @@ def _install_github(
     catalog's own pack from free text that happens to carry the same id. It
     is also checked against the manifest that arrives -- a row whose
     repository declares a different id is describing one pack and fetching
-    another -- and the install is refused when they disagree. Keyword-only
-    and last so the five positional arguments stay what they were --
-    ``scripts/project.py`` restores a project's pins through this function
-    positionally.
+    another -- and the install is refused when they disagree.
+
+    *expected_id* is the same check with the expectation from somewhere else:
+    ``cdui plugin update`` passes the lockfile key it is replacing, because a
+    repository that has renamed its plugin would otherwise update one plugin
+    into another -- and, when the new name belongs to a pack that is also
+    installed, replace THAT one with ``--force`` behind a command the user
+    read as "update". It wins over *catalog_id* when both are given (they
+    agree in every install that recorded one).
+
+    Both are keyword-only and last so the five positional arguments stay what
+    they were -- ``scripts/project.py`` restores a project's pins through
+    this function positionally.
     """
     url = f"https://github.com/{owner}/{repo}"
     info(f"來源：{url}", f"Source: {url}")
@@ -1313,23 +1349,35 @@ def _install_github(
         f"Ref: {ref or 'default branch'} ({short_sha})",
     )
 
-    # The catalog said this row installs `catalog_id`; the repository's own
-    # manifest says which id it installs under. When those disagree the
-    # catalog is describing one pack and fetching another, and every card,
+    # The caller said this install ends up under `expected`; the repository's
+    # own manifest says which id it installs under. When those disagree the
+    # caller is describing one pack and fetching another, and every card,
     # lockfile key and /api/plugins/<id> URL after this point would use the
-    # manifest's id while the user was reading the catalog's. Asked here
+    # manifest's id while the user was reading the other one. Asked here
     # because neither the inspection nor the flow asks it: the inspection
-    # RECORDS which row it came from, and only the caller that looked the row
-    # up knows what it was looking for. A row that has drifted is a bug in
-    # the catalog, and one naming both ids is what gets it fixed.
-    if catalog_id is not None and plugin_id != catalog_id:
-        err(
-            f"目錄項目 {catalog_id} 指向的儲存庫宣告的 id 是 {plugin_id}，"
-            f"兩者不一致，已中止安裝。",
-            f"The catalog lists this pack as '{catalog_id}', but the "
-            f"repository it names declares id '{plugin_id}'. Nothing was "
-            f"installed.",
-        )
+    # RECORDS which row it came from, and only the caller knows what it was
+    # looking for. A catalog row that has drifted is a bug in the catalog and
+    # a message naming both ids is what gets it fixed; a repository that
+    # renamed its plugin under an UPDATE is worse -- the id it now declares
+    # may belong to a pack the user has, which this call would then replace.
+    expected = expected_id if expected_id is not None else catalog_id
+    if expected is not None and plugin_id != expected:
+        if expected_id is not None:
+            err(
+                f"{expected} 安裝時的 id 與其儲存庫現在宣告的 id "
+                f"{plugin_id} 不一致，已中止更新。",
+                f"This plugin is installed as '{expected}', but the "
+                f"repository it came from now declares id '{plugin_id}'. "
+                f"Nothing was installed.",
+            )
+        else:
+            err(
+                f"目錄項目 {expected} 指向的儲存庫宣告的 id 是 {plugin_id}，"
+                f"兩者不一致，已中止安裝。",
+                f"The catalog lists this pack as '{expected}', but the "
+                f"repository it names declares id '{plugin_id}'. Nothing was "
+                f"installed.",
+            )
         return 1
 
     # Before the prompts, not after: asking somebody to consent to
@@ -1400,6 +1448,7 @@ def _install_github(
         f"安裝完成：{plugin_id} ({short_sha})",
         f"Installed: {plugin_id} ({short_sha})",
     )
+    _report_still_disabled(plugin_id)
     return 0
 
 
@@ -2317,7 +2366,20 @@ def cmd_update(args: argparse.Namespace) -> int:
             accept_capabilities=False,
             prior_capabilities=list(entry.get("capabilities") or []),
         )
-        rc = _install_github(owner, repo, ref, synthetic_args, lockfile)
+        # The row this pack came from, carried forward rather than dropped.
+        # It is what a later reader uses to tell the catalog's own pack from
+        # free text that happens to declare the same id -- the badge in the
+        # Plugin Center, and `cdui plugin list`'s "official" -- and an update
+        # that left it out quietly demoted every official plugin to
+        # third-party. ``_install_github`` also checks it against the
+        # manifest that arrives, which is what catches a repository that has
+        # renamed itself onto a different id since the install.
+        # ``expected_id`` is the lockfile key being replaced: a repository
+        # that has renamed its plugin since the install is a different pack
+        # at the same address, and this call carries --force.
+        rc = _install_github(owner, repo, ref, synthetic_args, lockfile,
+                             catalog_id=entry.get("catalog_id") or None,
+                             expected_id=plugin_id)
         if rc != 0:
             return rc
         updated += 1

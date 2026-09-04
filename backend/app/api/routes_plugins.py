@@ -13,6 +13,9 @@
                                   cursor, with an optional long poll
     POST /api/plugins/jobs/{id}/cancel   ask it to stop
     GET  /api/plugins/{id}        one plugin's manifest, nodes and README
+    DELETE /api/plugins/{id}      uninstall it, and say what that left behind
+    POST /api/plugins/{id}/update fetch what its own repository has now --
+                                  202 {job_id}, or a 200 saying why not
     POST /api/plugins/{id}/enable|disable
 
 Every fixed path is declared before ``/{plugin_id}``; see the comment above
@@ -27,13 +30,18 @@ packs go through both turns too, so the panel has one flow rather than two.
 
 Reads are open GETs, like every other read the editor polls -- including a
 job's events, which is what a second tab that opened mid-install follows.
-Everything else here takes the session token (the global ``auth_guard``) and
-is additionally refused unless the server is bound to loopback
-(``_require_local_plugin_install``): installing a plugin puts third-party
-code where this process will import it, and inspecting reaches out to GitHub
-on the caller's word. Neither is a thing a stranger on the LAN gets to start.
+Everything else here takes the session token (the global ``auth_guard``).
+The routes that change what code is on this machine -- inspect, install,
+update, cancel, delete -- are additionally refused unless the server is bound
+to loopback (``_require_local_plugin_install``): installing a plugin puts
+third-party code where this process will import it, inspecting reaches out
+to GitHub on the caller's word, updating does both, and deleting takes
+somebody's plugin away (cancel is in that set because it stops the install
+they started). None of them is a thing a stranger on the LAN gets to do.
 ``cdui plugin install`` still does the same job from a terminal, through the
-same flow.
+same flow. ``/reload`` and ``/{id}/enable|disable`` stay token-only on
+purpose: they act on code this machine already has and the user already
+agreed to.
 
 Refusals from the install path carry a CODE rather than a sentence --
 ``HTTPException(status, detail={"code": ...})`` -- because the panel draws a
@@ -45,11 +53,10 @@ prose is translated.
 from __future__ import annotations
 
 import logging
-import re
 import sys
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from pydantic import BaseModel, ConfigDict, field_validator
 
 from ..config import settings
@@ -71,8 +78,11 @@ from ..core.plugins.errors import (
     InspectBusy,
     InspectionExpired,
     ManifestError,
+    NotInstalled,
+    NotUpdatable,
     PluginBusy,
     PluginInstallError,
+    ReservedPluginId,
     SourceError,
     TrustAuthorRequired,
     UnknownCatalogName,
@@ -104,11 +114,6 @@ _REMOTE_REFUSAL = (
 #: body says so while the reason phrase only says "Forbidden" -- and 429 is
 #: the same fact from whatever sits in front of it.
 _RATE_LIMITED = frozenset({403, 429})
-
-#: The message ``inspect.inspect_github`` refuses a reserved id with. Matched
-#: rather than caught by class because the id is not on the exception and the
-#: panel has to name it; see :func:`_inspect_refusal`.
-_RESERVED_ID = re.compile(r"^Plugin id '(?P<id>[^']+)' is reserved")
 
 
 class PluginInspectRequest(BaseModel):
@@ -240,21 +245,56 @@ def _inspect_refusal(exc: PluginInstallError) -> HTTPException:
     about the source. ``inspect_github`` refuses an id this build owns (a
     route under ``/api/plugins/``, a pack that ships here, another
     repository's catalog row) and ``inspect_source`` refuses a catalog row
-    too malformed to install from. They are told apart by the message
-    because the id is not on the exception and the panel has to say WHICH id
-    clashed; both couplings are pinned by tests that drive the real
-    ``inspect`` into them.
+    too malformed to install from.
+
+    Told apart by CLASS, and the id comes off the exception. It used to be a
+    regular expression over the message, because the id was not carried
+    anywhere else -- which quietly made the wording of an English sentence
+    part of this wire contract: rephrasing that refusal, or translating it,
+    would have turned every reserved id into ``invalid_manifest``.
     """
-    match = _RESERVED_ID.match(str(exc))
-    if match is None:
-        return _coded(400, "invalid_manifest")
-    return _coded(400, "reserved_id", id=match.group("id"))
+    if isinstance(exc, ReservedPluginId):
+        return _coded(400, "reserved_id", id=exc.plugin_id)
+    return _coded(400, "invalid_manifest")
 
 
 def _job_not_found(job_id: str) -> HTTPException:
     """Only the most recent job is kept, so "gone" and "never existed" are
     the same answer -- and the client's next move is the same either way."""
     return _coded(404, "unknown_job", job_id=job_id)
+
+
+def _refuse_while_busy(request: Request, plugin_id: str) -> None:
+    """409 while THIS plugin's own install is running. Silent otherwise.
+
+    An install writes ``plugins/<id>/`` and the lockfile entry beside it; a
+    delete removes both, and enable/disable rewrites the entry. Doing either
+    while the flow is halfway through is how a plugin ends up on disk with no
+    entry, or with an entry pointing at a directory the delete took away --
+    and the flow runs on a worker thread, so nothing else would notice.
+
+    Only THAT plugin's job, deliberately. The service runs one install at a
+    time across the whole process, so refusing on any running job would make
+    a long install of one pack block every lifecycle action on all the
+    others, for a conflict that cannot exist: two different plugins are two
+    different directories and two different lockfile keys.
+
+    The service is ASKED FOR rather than required (``_installer``, not
+    ``_service``): removing a plugin or flipping its flag is a lockfile edit
+    and a re-discovery, and a server whose installer never started can still
+    do both. No installer means no job, which is the honest answer to "is
+    this plugin busy" -- a 503 here would refuse to uninstall a plugin
+    because the thing that installs plugins is not running.
+    """
+    service = _installer(request)
+    if service is None:
+        return
+    job = service.current_job()
+    # A FINISHED job is not in anybody's way: it stays readable so a panel can
+    # fetch its tail, and nothing is writing the plugin's files any more.
+    if job is None or job.terminal or job.plugin_id != plugin_id:
+        return
+    raise _coded(409, "busy", job_id=job.job_id)
 
 
 def _inspection_payload(stored: StoredInspection) -> dict[str, Any]:
@@ -641,6 +681,167 @@ async def get_plugin(plugin_id: str) -> dict[str, Any]:
     )
 
 
+@router.delete("/{plugin_id}",
+               dependencies=[Depends(_require_local_plugin_install)])
+async def uninstall_plugin(plugin_id: str, request: Request) -> dict[str, Any]:
+    """Remove an installed plugin, and say what removing it left behind.
+
+    Behind the same two gates as an install (the session token and a loopback
+    bind): deleting somebody's plugin is not a thing a stranger on the LAN
+    gets to do either.
+
+    What is removed is decided by ``lifecycle.uninstall_plugin`` -- the same
+    call ``cdui plugin uninstall`` makes, so the terminal and the panel cannot
+    disagree about which files go: a downloaded pack's directory is deleted,
+    a built-in one loses its lockfile entry and gains a ``removed`` record
+    (#175) with the repo's own files untouched, and a linked development
+    directory is left exactly where its author put it.
+
+    What is NOT removed is the plugin's Python dependencies. Uninstalling
+    packages from inside the process that imported them is how you get a
+    half-loaded interpreter serving requests, so they are reported instead:
+    ``python_deps_left`` and the ``uninstall_command`` to run by hand with the
+    server stopped. They are in the answer because whatever draws this has to
+    SAY so -- an uninstall that silently leaves packages behind is the half of
+    the story the user finds out about from a disk that never got smaller.
+
+    Then this process forgets the plugin, in this order: its modules leave
+    ``sys.modules`` and only THEN is the registry re-discovered. Nothing else
+    ever drops those modules -- a re-discovery only rebuilds the namespaces of
+    plugins the lockfile still lists -- and the re-discovery is what bumps the
+    generation the editor polls. Purging afterwards would publish "the palette
+    changed" while the deleted pack was still importable in this interpreter,
+    which is the one moment a client is guaranteed to come back and read.
+    """
+    _refuse_while_busy(request, plugin_id)
+
+    outcome = lifecycle.uninstall_plugin(plugin_id)
+    if outcome is None:
+        raise _coded(404, "not_installed")
+    if not outcome.removed:
+        # The files could not be deleted -- Windows holding one open is the
+        # ordinary cause -- so the lockfile entry was left alone and the
+        # plugin is still installed. Reported as a conflict rather than a
+        # 500: nothing is broken, something is in the way. ``error`` is the
+        # operating system's own sentence and ``hint`` is what to do about
+        # it -- the half a client can put in front of the user.
+        raise _coded(
+            409, "files_locked",
+            error=outcome.error,
+            hint=(f"{outcome.directory} is still there. Close whatever is "
+                  "using those files -- or stop the server -- and remove "
+                  "the plugin again."))
+
+    plugin_loader.purge_plugin_modules(plugin_id)
+    rediscover_now()
+
+    return {
+        "id": plugin_id,
+        # Read off the outcome rather than written as ``True``: it is true by
+        # construction here (the other exit is the 409 above), and reading it
+        # keeps that an observation of what the lifecycle did.
+        "removed": outcome.removed,
+        "tombstoned": outcome.tombstoned,
+        "files_removed": outcome.files_removed,
+        "python_deps_left": list(outcome.python_deps_left),
+        "uninstall_command": outcome.uninstall_command,
+        "reinstall_hint": outcome.reinstall_hint,
+    }
+
+
+@router.post("/{plugin_id}/update",
+             dependencies=[Depends(_require_local_plugin_install)])
+async def update_plugin(plugin_id: str, request: Request,
+                        response: Response) -> dict[str, Any]:
+    """Fetch what this plugin's own repository has now. Three answers.
+
+    | 202 | ``{job_id}``                                   | it is running |
+    | 200 | ``{status: "up_to_date", sha}``                 | nothing to do |
+    | 200 | ``{status: "needs_consent", inspection, ...}``  | ask first     |
+
+    The status code is the first thing the client branches on and the body's
+    ``status`` the second, because only one of the three started anything --
+    and a job that is running is a different kind of answer from a report
+    about a job that is not.
+
+    Behind both gates the install path carries (the session token and a
+    loopback bind): this reads a repository on the caller's word and then
+    puts what it finds where this process will import it, which is the
+    install question asked about a plugin that is already here.
+
+    Which of the three, and every refusal on the way, is
+    :meth:`~app.core.plugins.service.PluginService.update`'s to decide -- the
+    order of its checks is the order of the codes below, and this handler is
+    the translation. ``needs_consent`` echoes ``capabilities_added`` and
+    ``allowed_modules_added`` beside the inspection that already carries
+    them: they are the whole content of an update's consent screen (what this
+    version asks for beyond the last one), and reading them off the payload
+    rather than off the inspection is what keeps the two copies from ever
+    disagreeing.
+
+    The refusals: 404 ``not_installed``, 400 ``not_updatable`` (with the hint
+    that says what to do instead -- a built-in pack updates with
+    ``cdui update``), 409 ``busy`` / ``pack_install_running`` /
+    ``inspect_busy``, 404 or 502 for GitHub, 400 ``reserved_id`` or
+    ``invalid_manifest`` for what the repository now declares, and 503 when
+    this server has no installer at all.
+    """
+    service = _service(request)
+    try:
+        outcome = await service.update(plugin_id)
+    except NotInstalled:
+        # The one refusal here that is not about the update: there is nothing
+        # under that id to update. The panel's row goes away on the next
+        # ``/catalog``, which is what a client does with this.
+        raise _coded(404, "not_installed") from None
+    except NotUpdatable as exc:
+        # Installed, and nothing to fetch: a built-in pack, a linked
+        # directory, or a record whose repository is no longer in it. The
+        # hint is the only part that differs, and it is what a person reads.
+        raise _coded(400, "not_updatable", hint=exc.hint) from None
+    except InspectBusy:
+        # Before ``PluginInstallError``: it is a subclass, and asking again
+        # in a moment works.
+        raise _coded(409, "inspect_busy") from None
+    except PluginBusy as exc:
+        # An update starts an install, and one runs at a time across both
+        # centers -- ``reason`` says whose job the client is being asked to
+        # wait for.
+        raise _coded(409, exc.reason or "busy", job_id=exc.job_id) from None
+    except JobBusy as exc:
+        # Unreachable for the same reason it is on ``/install``, and here for
+        # the same reason: the runner owns "one at a time", and losing that
+        # race should be a 409 the panel can draw rather than a 500.
+        raise _coded(409, "busy", job_id=exc.job_id) from None
+    except (ManifestError, tomllib.TOMLDecodeError, UnicodeDecodeError):
+        # The repository has a manifest this build will not install, or one
+        # that is not a manifest at all. Not this install's fault and not
+        # something the caller can fix from here -- one code for the three.
+        raise _coded(400, "invalid_manifest") from None
+    except GitHubError as exc:
+        raise _github_refusal(exc) from None
+    except PluginInstallError as exc:
+        # An id this build reserves (the repository renamed itself into one),
+        # and whatever else the inspection path refuses a source with.
+        raise _inspect_refusal(exc) from None
+
+    if outcome.kind == "up_to_date":
+        return {"status": "up_to_date", "sha": outcome.sha}
+    if outcome.kind == "needs_consent":
+        inspection = _inspection_payload(outcome.inspection)
+        return {
+            "status": "needs_consent",
+            "inspection": inspection,
+            "capabilities_added": inspection["capabilities_added"],
+            "allowed_modules_added": inspection["allowed_modules_added"],
+        }
+    # Set rather than declared: this is the only one of the three that
+    # started a job, and a route with a fixed 202 would have to answer the
+    # other two with a lie or with a second route.
+    response.status_code = 202
+    return {"job_id": outcome.job.job_id}
+
+
 def _set_plugin_enabled(plugin_id: str, enabled: bool) -> dict[str, Any]:
     """Shared implementation behind the two toggle endpoints.
 
@@ -661,22 +862,33 @@ def _set_plugin_enabled(plugin_id: str, enabled: bool) -> dict[str, Any]:
 
 
 @router.post("/{plugin_id}/enable")
-async def enable_plugin(plugin_id: str) -> dict[str, Any]:
+async def enable_plugin(plugin_id: str, request: Request) -> dict[str, Any]:
     """Activate a previously-installed plugin without re-downloading.
 
     The lockfile entry stays put; only the ``enabled`` flag flips. After
     the call the plugin's nodes are in the registry, its examples appear
     in ``GET /api/examples/list``, and any ``assets/`` route is mounted.
+
+    Token-only, with no loopback gate: this activates code the user already
+    consented to and this machine already has, which is a different question
+    from putting new code here. It IS refused while this plugin's own install
+    is running (:func:`_refuse_while_busy`) -- the flag lives in the entry the
+    flow is about to rewrite.
     """
+    _refuse_while_busy(request, plugin_id)
     return _set_plugin_enabled(plugin_id, True)
 
 
 @router.post("/{plugin_id}/disable")
-async def disable_plugin(plugin_id: str) -> dict[str, Any]:
+async def disable_plugin(plugin_id: str, request: Request) -> dict[str, Any]:
     """Deactivate a plugin without uninstalling — its files stay on disk.
 
     The plugin's nodes are dropped from the registry, examples and assets
     are hidden, but a follow-up ``/enable`` re-activates instantly with no
     re-download (useful for large third-party packs).
+
+    Token-only and refused while that plugin installs, for the reasons on
+    :func:`enable_plugin`.
     """
+    _refuse_while_busy(request, plugin_id)
     return _set_plugin_enabled(plugin_id, False)
