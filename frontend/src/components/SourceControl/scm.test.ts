@@ -75,7 +75,7 @@ describe('SCM error copy', () => {
     );
   });
 
-  it.each(['fetch', 'pull', 'push', 'sync'] as const)(
+  it.each(['fetch', 'pull', 'sync', 'publish'] as const)(
     'reads an ambiguous remote refusal from %s as an unpublished branch',
     (op) => {
       expect(errorSentence(err('invalid_value', { op }), translator())).toBe(
@@ -85,7 +85,7 @@ describe('SCM error copy', () => {
   );
 
   it.each([
-    { name: 'publish, which named its remote', op: 'publish' as const },
+    { name: 'a plain push, which sends no remote to be ambiguous', op: 'push' as const },
     { name: 'a local write', op: 'create_branch' as const },
     { name: 'no operation at all', op: null },
   ])('keeps the plain invalid sentence for $name', ({ op }) => {
@@ -136,7 +136,7 @@ describe('SCM operation labels and follow-ups', () => {
     expect(followUpFor('unknown')).toBeNull();
   });
 
-  it.each(['fetch', 'pull', 'push', 'sync'] as const)(
+  it.each(['fetch', 'pull', 'sync', 'publish'] as const)(
     'offers Publish after an ambiguous remote refusal from %s',
     (op) => {
       expect(followUpFor('invalid_value', op)).toBe('publish');
@@ -144,7 +144,7 @@ describe('SCM operation labels and follow-ups', () => {
   );
 
   it.each([
-    { name: 'publish itself, which would be a loop', op: 'publish' as const },
+    { name: 'a plain push, which goes where the upstream says', op: 'push' as const },
     { name: 'a local write', op: 'add_remote' as const },
     { name: 'a caller holding only a code', op: null },
   ])('offers nothing after an invalid value from $name', ({ op }) => {

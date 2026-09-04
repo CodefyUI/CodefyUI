@@ -682,6 +682,24 @@ describe('writes', () => {
     expect(git().liveMessage).toBe(say('git.toast.initialized'));
   });
 
+  // A commit is the one local write that certainly moves the current branch,
+  // and an open Branches section shows that branch's sha, subject and ahead
+  // count. Without this the header would say "1 to push" (which comes from the
+  // status) beside a row that still said 0 until the fifteen-second poll.
+  it('refreshes the branch list after a commit and after an init', async () => {
+    git().setCommitMessage('a message');
+    api.getGitBranches.mockResolvedValue(branches('after-commit'));
+
+    expect(await git().commit()).toBe(true);
+    expect(git().branches?.current).toBe('after-commit');
+
+    api.getGitBranches.mockClear();
+    api.getGitBranches.mockResolvedValue(branches('after-init'));
+    expect(await git().init()).toBe(true);
+    expect(api.getGitBranches).toHaveBeenCalledTimes(1);
+    expect(git().branches?.current).toBe('after-init');
+  });
+
   it('says how many files a whole-tree write skipped', async () => {
     api.gitStage.mockResolvedValue(
       mutation({ detail: { skipped: ['notes/a.txt', 'notes/b.txt'] } }),
@@ -957,6 +975,40 @@ describe('network operations', () => {
     );
     await git().publish('upstream');
     expect(toasts()[0].message).toBe(say('git.toast.pushed'));
+  });
+
+  // The publish that sends NO remote is the one request in the tab that can
+  // come back 400 `invalid_value` for "several remotes and no upstream", and
+  // both halves of it are reachable from the header: the list is `null` until
+  // something reads it, and a repository with two remotes leaves nothing to
+  // pick from without asking. `scm.ts` reads that pair as "not published yet"
+  // and offers the button whose picker answers the question.
+  it.each([
+    { name: 'the remote list has never been read', loaded: null },
+    {
+      name: 'several remotes leave nothing to resolve',
+      loaded: [...remotes('origin'), ...remotes('upstream')],
+    },
+  ])('publish lets the server resolve the remote when $name', async ({ loaded }) => {
+    useGitStore.setState({ remotes: loaded });
+    api.gitPush.mockResolvedValue(
+      mutation({ detail: { branch: 'topic', remote: 'origin', published: true } }),
+    );
+
+    expect(await git().publish()).toBe(true);
+
+    expect(api.gitPush).toHaveBeenCalledWith({ setUpstream: true });
+  });
+
+  it('records publish as the op behind an ambiguous remote refusal', async () => {
+    useGitStore.setState({ remotes: [...remotes('origin'), ...remotes('upstream')] });
+    api.gitPush.mockRejectedValueOnce(await coded(400, 'invalid_value'));
+
+    expect(await git().publish()).toBe(false);
+
+    expect(api.gitPush).toHaveBeenCalledWith({ setUpstream: true });
+    expect(git().lastError?.code).toBe('invalid_value');
+    expect(git().lastError?.op).toBe('publish');
   });
 
   it('allows one local and one network operation, but refuses a second network operation', async () => {

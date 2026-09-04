@@ -108,8 +108,11 @@ afterEach(() => {
 
 describe('GIT_TIMEOUTS_S', () => {
   // The server sends a 504 with a code and no number, so these four are the
-  // only place the sentence's "{seconds}" can come from. They mirror
-  // backend/app/core/git/runner.py's T_STATUS / T_LOCAL / T_READ / T_NETWORK.
+  // only place the sentence's "{seconds}" can come from. The first three are
+  // backend/app/core/git/runner.py's T_STATUS / T_LOCAL / T_READ exactly; the
+  // fourth is T_NETWORK (120) plus a ten-second browser-facing grace, because
+  // a network operation is several git processes and one request rather than
+  // the single process that deadline is applied to. 130 is not a typo.
   it('mirrors the four server-side deadlines', () => {
     expect(GIT_TIMEOUTS_S.status).toBe(10);
     expect(GIT_TIMEOUTS_S.mutation).toBe(30);

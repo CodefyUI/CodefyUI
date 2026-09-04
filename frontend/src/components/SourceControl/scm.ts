@@ -79,23 +79,34 @@ export function errorHint(
 /**
  * The operations whose 400 `invalid_value` means "which remote?".
  *
- * `fetch`, `pull`, `push` and `sync` never send a remote name: the server
- * resolves one from the upstream, or from the single configured remote, and
- * refuses with 400 `invalid_value` when a branch with no upstream leaves
- * several to choose between (backend `network.resolve_remote`). What the user
- * is looking at in that moment is the state `no_upstream` describes -- this
- * branch is not published -- and the way out is the same button, whose remote
- * picker is exactly the choice the server could not make on its own.
+ * These four reach `resolve_remote` (backend `network.py`) with no remote
+ * name: the server takes the one the upstream says, or the only one there is,
+ * and refuses with 400 `invalid_value` when a branch with no upstream leaves
+ * several to choose between. `fetch` and `pull` (whose first step is a fetch)
+ * always send none; `sync` sends none and publishes when there is nothing to
+ * pull from; `publish` sends none whenever the caller did not pick one and the
+ * remote list is not exactly one long -- which includes the list not having
+ * been read yet. What the user is looking at in that moment is the state
+ * `no_upstream` describes -- this branch is not published -- and the way out is
+ * the same button, whose remote picker is exactly the choice the server could
+ * not make on its own.
  *
- * `publish` is NOT in the set. It always names its remote (or there is only
- * one), so an `invalid_value` from it is a real refusal of what was sent, and
- * answering it with the Publish button would be a loop.
+ * A PLAIN push is NOT in the set, and cannot be: it names no remote either,
+ * but Git's own `%(push:remotename)` resolver answers for it
+ * (`network._tracked_remote`), which has no ambiguous case -- nothing
+ * configured is `no_remote`, and everything else is a destination. The one
+ * `invalid_value` the push route raises is for a request that named a remote
+ * WITHOUT asking to publish, which this store never sends.
+ *
+ * Publish is in the set even though it can name a remote, because the refusal
+ * a named one gets is a malformed name, and the picker the button opens is
+ * what replaces it. So there is no loop either way.
  */
 const REMOTE_AMBIGUITY_OPS: ReadonlySet<string> = new Set([
   'fetch',
   'pull',
-  'push',
   'sync',
+  'publish',
 ]);
 
 /** Whether this refusal is that ambiguity rather than a bad value. */

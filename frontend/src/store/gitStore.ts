@@ -580,7 +580,7 @@ interface RunOpOptions {
   worktree?: boolean;
   /** The reference lists this write can have changed. */
   refs?: GitRefKind[];
-  /** Whether a refusal still needs a fresh status -- see `stepsMayHaveRun`. */
+  /** Whether a refusal still needs a fresh status -- see `alwaysRefresh`. */
   refreshStatusOnError?: (err: unknown) => boolean;
   /**
    * Fallbacks for the success sentence.
@@ -797,21 +797,23 @@ function emptySelection(paths: GitPathSelection): boolean {
 }
 
 /**
- * Whether a refusal may have left the repository changed anyway.
+ * A fresh status after ANY refusal, which is what a sequence needs.
  *
  * `pull` and `sync` are sequences: a pull fetches and then merges, and a sync
  * fetches, merges and then pushes. A refusal from the second or third step
  * does not undo the first -- a conflicted merge leaves markers on disk and the
  * merge in progress, and a fetch that succeeded has already moved the tracking
- * refs and with them the ahead/behind counts on screen. So every refusal but
- * `busy` -- the one that means the request never started -- is followed by a
- * fresh status read. A pre-flight refusal (no upstream, a detached HEAD) buys
- * one wasted read; the alternative is a panel describing a repository that
- * stopped existing a second ago.
+ * refs and with them the ahead/behind counts on screen. A pre-flight refusal
+ * (no upstream, a detached HEAD) buys one wasted read; the alternative is a
+ * panel describing a repository that stopped existing a second ago.
+ *
+ * Unconditional rather than "every refusal but `busy`", which is what this
+ * said when it was a predicate: the `busy` refusal -- the one that means the
+ * request never started -- returns from `runOp` before this is consulted,
+ * whether it came from the server's 409 or from this store's own same-lane
+ * guard. Excluding it here was a branch no caller could reach.
  */
-function stepsMayHaveRun(err: unknown): boolean {
-  return !(err instanceof GitApiError && err.code === 'busy');
-}
+const alwaysRefresh = (): boolean => true;
 
 /* ── Worktree changes under open tabs ───────────────────────────────── */
 
@@ -1165,13 +1167,20 @@ export const useGitStore = create<GitState>((set, get) => ({
    * keyboard shortcut reaches this without passing the button at all.
    * `amend` is cleared with the message on success -- it describes the
    * commit that was just made, not the next one.
+   *
+   * `refs: ['branches']` because a commit MOVES the current branch: its sha,
+   * its subject and its ahead count are all in the branch list, and the
+   * header's own ahead count comes from the status and updates at once.
+   * Without this the two would disagree for up to fifteen seconds.
    */
   commit: async (opts = {}) => {
     const message = get().commitMessage.trim();
     if (message === '') return false;
     const amend = get().amend;
-    const ok = await runOp('commit', () =>
-      gitCommit({ message, all: opts.all ?? false, amend }),
+    const ok = await runOp(
+      'commit',
+      () => gitCommit({ message, all: opts.all ?? false, amend }),
+      { refs: ['branches'] },
     );
     if (ok) set({ commitMessage: '', amend: false });
     return ok;
@@ -1184,10 +1193,11 @@ export const useGitStore = create<GitState>((set, get) => ({
    * `MutationResult` carries the status but not the `repo`, and `repoState`
    * is what decides whether the tab draws the Initialize screen or the
    * panel. Without the refresh the button would work and the screen would
-   * not move.
+   * not move. The branch list is the other half a repository that did not
+   * exist a second ago needs, and `null` there is "not read yet".
    */
   init: async () => {
-    const ok = await runOp('init', () => gitInit());
+    const ok = await runOp('init', () => gitInit(), { refs: ['branches'] });
     if (ok) await get().refresh();
     return ok;
   },
@@ -1239,7 +1249,7 @@ export const useGitStore = create<GitState>((set, get) => ({
     runOp('pull', () => gitPull({ strategy }), {
       worktree: true,
       refs: ['branches'],
-      refreshStatusOnError: stepsMayHaveRun,
+      refreshStatusOnError: alwaysRefresh,
     }),
 
   /**
@@ -1259,7 +1269,7 @@ export const useGitStore = create<GitState>((set, get) => ({
     runOp('sync', () => gitSync(), {
       worktree: true,
       refs: ['branches'],
-      refreshStatusOnError: stepsMayHaveRun,
+      refreshStatusOnError: alwaysRefresh,
     }),
 
   /**

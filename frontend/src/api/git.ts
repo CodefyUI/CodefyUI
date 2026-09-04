@@ -275,13 +275,20 @@ const GIT_ERROR_CODE_SET: ReadonlySet<string> = new Set(GIT_ERROR_CODES);
 
 /**
  * How long the server gives one git process before it stops it, in seconds
- * (`backend/app/core/git/runner.py`: `T_STATUS` / `T_LOCAL` / `T_READ`).
+ * (`backend/app/core/git/runner.py`: `T_STATUS` / `T_LOCAL` / `T_READ` /
+ * `T_NETWORK`).
  *
  * Held here because a 504 arrives as `{code: "timeout"}` and NOTHING else:
  * the number is not in the body, so the sentence the tab shows has to supply
  * it. This client does not abort on these — the server already enforces
  * them, and a second deadline in the browser would answer a slow commit with
  * an `AbortError` that has no code to translate.
+ *
+ * Three of the four are the server's number exactly. The network one is
+ * `T_NETWORK` (120) plus a ten-second grace, and that is deliberate: a
+ * network operation is two or three git processes plus the request itself, so
+ * the deadline the USER experienced is longer than the one any single process
+ * was given. Do not "correct" it to 120.
  */
 export const GIT_TIMEOUTS_S = {
   /** `GET /status` — the poll. */
@@ -290,7 +297,7 @@ export const GIT_TIMEOUTS_S = {
   mutation: 30,
   /** The other reads: log, diff, file, config, refs and stashes. */
   read: 20,
-  /** A remote operation, including the browser-facing grace above git's 120 s. */
+  /** A remote operation: git's own `T_NETWORK` 120 s, plus the grace above. */
   network: 130,
 } as const;
 
