@@ -53,6 +53,32 @@ received — each links to the release it was published as.
   session token every other mutating call needs; reading is open, like every
   other read in the app.
 
+- **Source control from the editor, part 2 — the tab.** The sidebar's fifth
+  tab is the working tree: what has changed since the last commit, staged in
+  one group and everything else in another, every row one press from being
+  staged, unstaged or thrown away, and a message box that commits the index —
+  `Ctrl/Cmd+Enter` commits without your hands leaving it. Behind the commit
+  button are the two that need a decision: commit everything, and replace the
+  last commit, which takes an amend that changes nothing but the message. A
+  project that is not a repository yet gets an Initialize button rather than
+  an empty panel, and a commit git refuses because it does not know who you
+  are opens the name and email form in place, above the box you were typing
+  in, showing which of the two is already set and where it came from. Saving
+  a graph does not wait for the next poll: the panel is told, so the two files
+  a Save writes — the graph and its layout — are under Changes about half a
+  second later, and the layout half can be folded away and counted rather than
+  listed, because it is the half nobody reviews. The one thing the tab does
+  that reaches back out of itself is worth knowing about: discarding changes
+  can put an older version of a graph under a tab you have open, so it says
+  how many and offers to reload them rather than reloading them behind you —
+  and that offer stays on screen until you answer it, because a warning that
+  vanishes after four seconds is a warning nobody who looked away will ever
+  see. Branches, remotes, history and the diff view are the parts after this
+  one, and nothing in this tab reaches a network, because there is nothing
+  here — no fetch, no pull, no push — to reach one with. Everything in the
+  panel that writes carries the session token: staging, committing,
+  initializing, saving your identity. The status behind them is an open read.
+
 - **The Plugin Center can read a plugin before you install it, and then
   install it.** Four routes, and the shape of them is the point: `POST
   /api/plugins/inspect` reads one source — a catalog name, an `owner/repo`,
