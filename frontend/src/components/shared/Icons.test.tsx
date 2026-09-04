@@ -23,6 +23,7 @@ import {
   PanelLeftOpenIcon,
   PlusIcon,
   RefreshIcon,
+  SyncIcon,
   ZoomInIcon,
   ZoomOutIcon,
 } from './Icons';
@@ -55,6 +56,7 @@ const icons = [
   ['MinusIcon', MinusIcon],
   ['DiscardIcon', DiscardIcon],
   ['ChevronDownIcon', ChevronDownIcon],
+  ['SyncIcon', SyncIcon],
 ] as const;
 
 describe('Icons', () => {
