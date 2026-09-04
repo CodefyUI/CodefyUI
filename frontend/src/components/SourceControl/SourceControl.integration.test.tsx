@@ -318,7 +318,11 @@ describe('Source Control: a save, a stage and a commit', () => {
     tree.unstaged.push(gitFile(GRAPH), gitFile(LAYOUT));
     await openPanel();
 
-    fireEvent.click(within(row('demo.graph.json')).getByRole('button', { name: 'Stage' }));
+    fireEvent.click(
+      within(row('demo.graph.json')).getByRole('button', {
+        name: 'Stage demo.graph.json',
+      }),
+    );
     await settle(A_FRAME);
 
     expect(api.gitStage).toHaveBeenCalledWith([GRAPH]);
@@ -386,7 +390,9 @@ describe('Source Control: a save, a stage and a commit', () => {
 describe('Source Control: a discard under an open graph', () => {
   async function discardTheGraph(): Promise<void> {
     fireEvent.click(
-      within(row('demo.graph.json')).getByRole('button', { name: 'Discard Changes' }),
+      within(row('demo.graph.json')).getByRole('button', {
+        name: 'Discard Changes demo.graph.json',
+      }),
     );
     await settle(A_FRAME);
   }
@@ -463,7 +469,7 @@ describe('Source Control: a discard under an open graph', () => {
     await openPanel();
 
     fireEvent.click(
-      within(row('train.py')).getByRole('button', { name: 'Discard Changes' }),
+      within(row('train.py')).getByRole('button', { name: 'Discard Changes train.py' }),
     );
     await settle(A_FRAME);
 
@@ -514,7 +520,11 @@ describe('Source Control: refusals', () => {
     api.gitStage.mockRejectedValue(await coded(409, 'busy', 'a commit is running'));
     await openPanel();
 
-    fireEvent.click(within(row('demo.graph.json')).getByRole('button', { name: 'Stage' }));
+    fireEvent.click(
+      within(row('demo.graph.json')).getByRole('button', {
+        name: 'Stage demo.graph.json',
+      }),
+    );
     await settle(A_FRAME);
 
     expect(toasts()).toHaveLength(1);
@@ -530,7 +540,11 @@ describe('Source Control: refusals', () => {
     api.gitStage.mockRejectedValue(await coded(504, 'timeout', 'git took too long'));
     await openPanel();
 
-    fireEvent.click(within(row('demo.graph.json')).getByRole('button', { name: 'Stage' }));
+    fireEvent.click(
+      within(row('demo.graph.json')).getByRole('button', {
+        name: 'Stage demo.graph.json',
+      }),
+    );
     await settle(A_FRAME);
 
     // The 504 body carries a code and nothing else, so the number is the

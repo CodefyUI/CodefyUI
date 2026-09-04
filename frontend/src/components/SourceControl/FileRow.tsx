@@ -147,12 +147,21 @@ export function FileRow({ file, group, onActed }: FileRowProps) {
         <span className={styles.rowName}>{label}</span>
         {dir !== '' && <span className={styles.rowDir}>{dir}</span>}
       </button>
+      {/*
+        The verb NAMES the file it acts on, and only the tooltip is the bare
+        word. A panel is twenty rows deep and every one of them carries a
+        Stage button: a reader moving through them by keyboard would otherwise
+        hear "Stage, Stage, Stage" with nothing to tell them apart, and the
+        row's `title` is not part of any of those names. The composed label is
+        the displayed name -- the basename, or `old -> new` for a rename --
+        because that is the string on screen beside the button.
+      */}
       <div className={styles.rowActions}>
         {canStage && (
           <button
             type="button"
             className={styles.iconButton}
-            aria-label={t('git.file.stage')}
+            aria-label={`${t('git.file.stage')} ${label}`}
             title={t('git.file.stage')}
             onClick={() => void run(() => stage([file.path]))}
           >
@@ -163,7 +172,7 @@ export function FileRow({ file, group, onActed }: FileRowProps) {
           <button
             type="button"
             className={styles.iconButton}
-            aria-label={t('git.file.unstage')}
+            aria-label={`${t('git.file.unstage')} ${label}`}
             title={t('git.file.unstage')}
             onClick={() => void run(() => unstage([file.path]))}
           >
@@ -174,7 +183,7 @@ export function FileRow({ file, group, onActed }: FileRowProps) {
           <button
             type="button"
             className={`${styles.iconButton} ${styles.dangerButton}`}
-            aria-label={t('git.file.discard')}
+            aria-label={`${t('git.file.discard')} ${label}`}
             title={t('git.file.discard')}
             onClick={() => void askThenDiscard()}
           >

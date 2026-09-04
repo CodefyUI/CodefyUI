@@ -159,7 +159,8 @@ describe('ChangeGroup: the group actions', () => {
 describe('ChangeGroup: focus after a row leaves', () => {
   it('moves focus to the heading when a row action lands', async () => {
     render(<ChangeGroup kind="changes" files={[file('a.py')]} />);
-    fireEvent.click(screen.getByRole('button', { name: 'Stage' }));
+    // A row action names its file; the group's own is "Stage All".
+    fireEvent.click(screen.getByRole('button', { name: 'Stage a.py' }));
     await waitFor(() =>
       expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Changes' })),
     );
@@ -188,7 +189,7 @@ describe('ChangeGroup: focus after a row leaves', () => {
       }),
     });
     render(<Panel files={[file('a.py')]} />);
-    fireEvent.click(screen.getByRole('button', { name: 'Discard Changes' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Discard Changes a.py' }));
     await waitFor(() =>
       expect(document.activeElement).toBe(screen.getByLabelText('message')),
     );
