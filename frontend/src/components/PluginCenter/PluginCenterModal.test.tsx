@@ -145,6 +145,8 @@ function makeActions() {
     update: vi.fn(async () => {}),
     uninstall: vi.fn(async () => {}),
     setEnabled: vi.fn(async () => {}),
+    cancel: vi.fn(async () => {}),
+    dismissJob: vi.fn(() => {}),
   };
 }
 
@@ -993,6 +995,90 @@ describe('PluginCenterModal — the review', () => {
     expect(within(card()).getByRole('button', { name: 'Install' })).toBeDisabled();
     // Putting the review away is not an install, and never was refused.
     expect(within(card()).getByRole('button', { name: 'Cancel' })).toBeEnabled();
+  });
+});
+
+// ── The activity pane ───────────────────────────────────────────────────────
+
+describe('PluginCenterModal — the activity pane', () => {
+  /** The pane, scoped: the header has a Refresh button of its own. */
+  const pane = () =>
+    within(screen.getByRole('complementary', { name: 'Install activity' }));
+
+  it('says nothing is installing when no job is', () => {
+    seed({ plugins: [demo] });
+    open();
+    render(<PluginCenterModal />);
+
+    expect(pane().getByText('Nothing is installing right now.')).toBeInTheDocument();
+  });
+
+  it('follows the running job, named from its catalog row', () => {
+    seed({
+      plugins: [demo],
+      job: job({
+        pluginId: 'demo',
+        steps: [{ step: 'download', label: 'Downloading owner/demo', state: 'running' }],
+      }),
+    });
+    open();
+    render(<PluginCenterModal />);
+
+    expect(pane().getByText('Installing Demo plugin')).toBeInTheDocument();
+    expect(pane().getByText('Step 1: Downloading')).toBeInTheDocument();
+  });
+
+  it('hands Cancel to the store', () => {
+    seed({ plugins: [demo], job: job({ pluginId: 'demo' }) });
+    open();
+    render(<PluginCenterModal />);
+
+    fireEvent.click(pane().getByRole('button', { name: 'Cancel install' }));
+    expect(actions.cancel).toHaveBeenCalledTimes(1);
+  });
+
+  it('says so while a cancel is in flight', () => {
+    seed({ plugins: [demo], job: job({ pluginId: 'demo' }), cancelling: true });
+    open();
+    render(<PluginCenterModal />);
+
+    expect(pane().getByRole('button', { name: 'Cancelling...' })).toBeDisabled();
+  });
+
+  it('hands Dismiss to the store once the job has stopped', () => {
+    seed({ plugins: [demo], job: job({ pluginId: 'demo', status: 'done' }) });
+    open();
+    render(<PluginCenterModal />);
+
+    fireEvent.click(pane().getByRole('button', { name: 'Dismiss' }));
+    expect(actions.dismissJob).toHaveBeenCalledTimes(1);
+  });
+
+  it('offers a failed install the terminal command for its own row', () => {
+    // The pane is handed the catalog row for the JOB's plugin, which is where
+    // the repository and the ref in that command come from.
+    seed({
+      plugins: [demo],
+      job: job({
+        pluginId: 'demo',
+        status: 'failed',
+        error: { message: 'HTTP 404', hint: null },
+      }),
+    });
+    open();
+    render(<PluginCenterModal />);
+
+    expect(pane().getByText('cdui plugin install owner/demo@v1.2.0')).toBeInTheDocument();
+  });
+
+  it('re-reads the catalog from the banner that lost contact', () => {
+    seed({ plugins: [demo], job: job({ pluginId: 'demo', status: 'lost' }) });
+    open();
+    render(<PluginCenterModal />);
+
+    fireEvent.click(pane().getByRole('button', { name: 'Refresh plugin status' }));
+    // Once on open, once for this button.
+    expect(actions.refresh).toHaveBeenCalledTimes(2);
   });
 });
 

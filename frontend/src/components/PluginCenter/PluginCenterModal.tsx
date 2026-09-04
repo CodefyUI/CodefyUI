@@ -9,6 +9,7 @@ import { RefreshIcon } from '../shared/Icons';
 // The pack panel's, not a copy: one duration for "this is the row you asked
 // for" across both windows, and one place to change it.
 import { HIGHLIGHT_MS } from '../PackCenter/PackCenterModal';
+import { PluginActivityPane } from './PluginActivityPane';
 import { PluginCard } from './PluginCard';
 import { PluginFilterBar } from './PluginFilterBar';
 import { PluginReviewCard } from './PluginReviewCard';
@@ -36,16 +37,23 @@ export function PluginCenterModal() {
 }
 
 /**
- * The node types *pluginId* registers, as the catalog last said.
+ * The catalog row for *pluginId*, or undefined.
  *
  * Own keys only: `byId` is a bare object built from parsed JSON, so a plugin
- * called `constructor` would otherwise hand back a function and `.nodes`
- * would be undefined on it.
+ * called `constructor` would otherwise hand back a FUNCTION — truthy, with no
+ * `nodes` and no `name` on it.
  */
-function ownNodes(byId: Record<string, PluginCatalogEntry>, pluginId: string): string[] {
+function ownEntry(
+  byId: Record<string, PluginCatalogEntry>, pluginId: string,
+): PluginCatalogEntry | undefined {
   return Object.prototype.hasOwnProperty.call(byId, pluginId)
-    ? byId[pluginId].nodes
-    : [];
+    ? byId[pluginId]
+    : undefined;
+}
+
+/** The node types *pluginId* registers, as the catalog last said. */
+function ownNodes(byId: Record<string, PluginCatalogEntry>, pluginId: string): string[] {
+  return ownEntry(byId, pluginId)?.nodes ?? [];
 }
 
 function PluginCenterBody() {
@@ -62,8 +70,11 @@ function PluginCenterBody() {
   const remoteInstallAllowed = usePluginStore((s) => s.remoteInstallAllowed);
   const job = usePluginStore((s) => s.job);
   const busy = usePluginStore((s) => s.busy);
+  const cancelling = usePluginStore((s) => s.cancelling);
   const inspection = usePluginStore((s) => s.inspection);
   const refresh = usePluginStore((s) => s.refresh);
+  const cancel = usePluginStore((s) => s.cancel);
+  const dismissJob = usePluginStore((s) => s.dismissJob);
   const install = usePluginStore((s) => s.install);
   const inspect = usePluginStore((s) => s.inspect);
   const installInspected = usePluginStore((s) => s.installInspected);
@@ -168,6 +179,10 @@ function PluginCenterBody() {
   }, [highlighted]);
 
   const visible = plugins.filter((entry) => matchesFilter(filter, entry.status));
+  // The row the job is about, for the name it is titled with and the terminal
+  // command a failure offers. Undefined for a plugin the catalog does not
+  // list, which the pane is written to expect.
+  const jobEntry = job === null ? undefined : ownEntry(byId, job.pluginId);
 
   return createPortal(
     <div
@@ -315,10 +330,19 @@ function PluginCenterBody() {
             ))}
           </section>
 
-          {/* The activity pane lands here: what is installing, how far it has
-              got, and how it ended. Its own element already, so that arrival
-              is a swap rather than a second aside. */}
-          <aside className={styles.activity} aria-label={t('packs.activity')} />
+          {/* What is installing, how far it has got, and how it ended. A pure
+              view of the store's job: closing this window cannot interrupt an
+              install, and reopening it picks the same job back up. */}
+          <aside className={styles.activity} aria-label={t('packs.activity')}>
+            <PluginActivityPane
+              job={job}
+              entry={jobEntry}
+              cancelling={cancelling}
+              onCancel={() => void cancel()}
+              onDismiss={dismissJob}
+              onRefresh={() => void refresh()}
+            />
+          </aside>
         </div>
 
         {!remoteInstallAllowed && (
