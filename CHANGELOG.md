@@ -22,6 +22,20 @@ received — each links to the release it was published as.
 
 ## [Unreleased]
 
+## [2.6.0] — 2026-09-05
+
+Two things that used to need a terminal now happen in the editor: putting a
+project under version control, and installing a plugin. Neither is a button
+that shells out — the first is a git service that runs the host's own git
+against the open project directory and nothing else, the second a Plugin
+Center that reads a plugin's manifest and shows you what it asks for before a
+byte of the repository moves. The plugin rules the CLI privately owned moved
+into the backend to make the second one possible, which is why `cdui plugin`
+and the panel are now two front ends over one implementation rather than two
+implementations that would have drifted. Also here: the Windows fix for a
+black window that appeared beside every `cdui start` and stopped the server
+when it was closed.
+
 ### Added
 
 - **Source control from the editor, part 1 — the git service and the read and
@@ -3155,7 +3169,8 @@ Release candidates before 1.0.0 are on the
 [#420]: https://github.com/CodefyUI/CodefyUI/issues/420
 [@oyea0801]: https://github.com/oyea0801
 [@latteine1217]: https://github.com/latteine1217
-[Unreleased]: https://github.com/CodefyUI/CodefyUI/compare/2.5.0...main
+[Unreleased]: https://github.com/CodefyUI/CodefyUI/compare/2.6.0...main
+[2.6.0]: https://github.com/CodefyUI/CodefyUI/compare/2.5.0...2.6.0
 [2.5.0]: https://github.com/CodefyUI/CodefyUI/compare/2.4.1...2.5.0
 [2.4.1]: https://github.com/CodefyUI/CodefyUI/compare/2.4.0...2.4.1
 [2.4.0]: https://github.com/CodefyUI/CodefyUI/compare/2.3.0...2.4.0
