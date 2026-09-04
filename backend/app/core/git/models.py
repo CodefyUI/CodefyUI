@@ -344,6 +344,16 @@ class RemoteInfo(BaseModel):
     Both URLs are strings and never null: a remote whose push URL is not
     configured separately reports the fetch URL in both, which is what git
     itself prints and what actually happens on a push.
+
+    **Both URLs are for DISPLAY ONLY.** They arrive REDACTED -- the
+    userinfo of ``https://alice:ghp_xxx@github.com/owner/repo.git`` is
+    masked to ``***`` before it leaves ``refs.list_remotes``, because this
+    model is served by an open, unauthenticated GET. So the string here is
+    not the string git holds, and a UI must never round-trip it: a "Change
+    URL" prompt pre-filled from this field and submitted unchanged would
+    write ``https://***@github.com/...`` into the config and destroy the
+    credential the user had. The prompt starts empty, or from what the user
+    types; nothing reads a URL back out of this API.
     """
 
     name: str

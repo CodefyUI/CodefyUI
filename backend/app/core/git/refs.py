@@ -28,15 +28,25 @@ here, rather than per operation:
   is what separates them, and stripping it is more predictable than git's
   own shortening rules.
 
-Nothing here puts a user's string on a command line without a validator in
-front of it. ``git switch`` and ``git remote add`` have no ``--`` to hide
-behind (measured: ``branch`` does, ``switch`` and ``remote`` do not), so the
-guarantee is the grammar instead: a branch name goes through
-:func:`check_ref_format`, a remote name and a URL through
-``paths.validate_remote_name`` / ``validate_remote_url``, and a start point
-through ``validate_sha`` when it looks like a commit id. Every one of them
-refuses a leading ``-``, which is the whole attack -- ``--upload-pack=`` is
-a branch name to a shell that is not there and a command to git.
+**Nothing here puts a user's string on a command line without a validator
+in front of it, and the VALIDATOR is the guarantee -- not ``--``.** A
+branch name goes through :func:`check_ref_format`, a remote name and a URL
+through ``paths.validate_remote_name`` / ``validate_remote_url``, and a
+start point through ``validate_sha`` when it looks like a commit id. Every
+one of them refuses a leading ``-``, which is the whole attack:
+``--upload-pack=`` is a branch name to a shell that is not there and a
+command to git.
+
+``--`` is not what stops it, and the argv below (R9's, verbatim) does not
+lean on it. Measured on git 2.53: ``switch``, ``switch -c``, ``switch
+--track``, ``remote add``, ``remote set-url`` and ``remote remove`` all
+ACCEPT a ``--``, and it buys less than it looks like. ``git remote add --
+-y <url>`` exits 0 and creates a remote genuinely called ``-y``: the
+separator made the option-shaped name legal rather than harmless. ``git
+branch -- -x`` refuses with "'-x' is not a valid branch name" -- the NAME
+grammar, again, not the separator. So a future operation added to this
+module may put a ``--`` in its argv for tidiness, but it owes the same
+validator either way.
 
 Two failures are decided HERE rather than by the classifier, for the reason
 ``commit_changes`` decides "nothing to amend" itself: git reports them with
@@ -51,7 +61,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Literal
 
-from .errors import GitError
+from .errors import GitError, redact
 from .models import BranchesResponse, BranchInfo, RemoteBranchInfo, RemoteInfo
 from .paths import (
     SHA_RE,
@@ -111,8 +121,9 @@ def check_ref_format(root: Path, name: str) -> str:
 
     This is the gate in front of every branch name that reaches a command
     line, including the ones that only NAME an existing branch (a rename's
-    old name, a checkout's target): ``switch`` has no ``--`` to put a name
-    safely after, so the grammar is the whole guarantee.
+    old name, a checkout's target). It is the grammar and not a ``--``
+    separator that makes those safe -- see the module docstring: ``switch``
+    does take one, and taking one is not the same as being protected by it.
     """
     validate_branch_name(name)
     result = run_git(["check-ref-format", f"refs/heads/{name}"], cwd=root,
@@ -248,6 +259,27 @@ def list_remotes(root: Path) -> list[RemoteInfo]:
     ``remote.<name>.pushurl`` -- and the split takes the LAST space rather
     than the first, so a URL that somehow contains one keeps it and only the
     ``(fetch)`` / ``(push)`` marker is taken off the end.
+
+    **Both URLs are redacted before they leave this function**, and that is
+    not defence in depth -- it is the only thing standing between a token
+    and the network. ``GET /api/git/remotes`` is an open, unauthenticated
+    read like every other GET in this app, this server is deliberately
+    servable to a LAN (issue #247), and
+    ``https://alice:ghp_xxx@github.com/owner/repo.git`` is a remote URL git
+    accepts and people really do paste into ``git remote add`` --
+    ``validate_remote_url`` accepts it too, on purpose, because refusing it
+    would only mean the user configures it from a terminal instead.
+    :func:`~app.core.git.errors.redact` is the function this package
+    already has for this exact string, and its own docstring says a route
+    "still owes the same care to anything else it echoes back".
+
+    What survives is the scheme, the host and the path -- the part that
+    makes the row worth showing -- so what the tab draws is a URL the user
+    recognises and cannot copy a credential out of. The cost is that a
+    harmless ``ssh://git@host/...`` loses its username to the same mask;
+    that is the right trade for a string nobody can tell apart from a
+    password on sight, and it is why :class:`RemoteInfo` says these values
+    are for DISPLAY and must never be written back.
     """
     result = run_git(["remote", "-v"], cwd=root, timeout=T_READ,
                      read_only=True)
@@ -265,8 +297,8 @@ def list_remotes(root: Path) -> list[RemoteInfo]:
         elif marker == "(fetch)":
             urls["fetch"] = url
     return [RemoteInfo(name=name,
-                       fetch_url=urls.get("fetch", ""),
-                       push_url=urls.get("push", ""))
+                       fetch_url=redact(urls.get("fetch", "")),
+                       push_url=redact(urls.get("push", "")))
             for name, urls in found.items()]
 
 

@@ -32,12 +32,15 @@ from app.core.git import refs
 from app.core.git.errors import GitError
 
 # Fixtures, used by NAME rather than by reference -- what pytest wants and
-# what ruff cannot see. ``Repo`` is the two-line repository helper.
+# what ruff cannot see. ``Repo`` is the two-line repository helper;
+# ``make_repo`` is the shared factory, so the two files cannot drift apart.
+# The one-commit ``repo`` fixture is rebuilt below rather than imported:
+# importing it would make every test signature a redefinition of an import,
+# which is forty-two suppression comments for a three-line function.
 from tests.test_git_service import (  # noqa: F401
     Repo,
     isolated_git,
     make_repo,
-    repo,
 )
 
 pytestmark = pytest.mark.skipif(shutil.which("git") is None,
@@ -51,7 +54,13 @@ pytestmark = pytest.mark.skipif(shutil.which("git") is None,
 FAR_AWAY = "file:///nowhere/mirror.git"
 
 
-def _remote_branch(repo: Repo, ref: str = "origin/main",  # noqa: F811
+@pytest.fixture
+def repo(make_repo) -> Repo:  # noqa: F811
+    """A repository with the project scaffold and one commit."""
+    return make_repo()
+
+
+def _remote_branch(repo: Repo, ref: str = "origin/main",
                    sha: str | None = None) -> str:
     """Write ``refs/remotes/<ref>`` by hand; returns the sha it points at.
 
@@ -81,7 +90,7 @@ def _named(branches, name: str):
 # --- listing branches --------------------------------------------------------
 
 
-def test_a_fresh_repository_lists_the_branch_it_is_on(repo):  # noqa: F811
+def test_a_fresh_repository_lists_the_branch_it_is_on(repo):
     answer = refs.list_branches(repo.root)
 
     assert answer.current == "main"
@@ -94,7 +103,7 @@ def test_a_fresh_repository_lists_the_branch_it_is_on(repo):  # noqa: F811
     assert main.committed_at > 0
 
 
-def test_only_the_branch_head_is_on_is_marked_current(repo):  # noqa: F811
+def test_only_the_branch_head_is_on_is_marked_current(repo):
     repo.git("branch", "feat")
 
     answer = refs.list_branches(repo.root)
@@ -104,7 +113,7 @@ def test_only_the_branch_head_is_on_is_marked_current(repo):  # noqa: F811
     assert _named(answer.local, "main").current is True
 
 
-def test_a_branch_ahead_of_its_upstream_says_by_how_much(repo):  # noqa: F811
+def test_a_branch_ahead_of_its_upstream_says_by_how_much(repo):
     behind_sha = repo.head()
     repo.commit("second", {"a.txt": "one\ntwo\nthree\n"})
     repo.git("remote", "add", "origin", FAR_AWAY)
@@ -118,7 +127,7 @@ def test_a_branch_ahead_of_its_upstream_says_by_how_much(repo):  # noqa: F811
     assert main.gone is False
 
 
-def test_a_branch_level_with_its_upstream_is_zero_and_not_null(repo):  # noqa: F811
+def test_a_branch_level_with_its_upstream_is_zero_and_not_null(repo):
     """git prints an EMPTY ``%(upstream:track)`` both for "in step" and for
     "there is no upstream", and those are different rows in the panel."""
     repo.git("remote", "add", "origin", FAR_AWAY)
@@ -131,7 +140,7 @@ def test_a_branch_level_with_its_upstream_is_zero_and_not_null(repo):  # noqa: F
     assert (main.ahead, main.behind) == (0, 0)
 
 
-def test_a_branch_with_no_upstream_has_no_numbers(repo):  # noqa: F811
+def test_a_branch_with_no_upstream_has_no_numbers(repo):
     repo.git("branch", "feat")
 
     feat = _named(refs.list_branches(repo.root).local, "feat")
@@ -140,7 +149,39 @@ def test_a_branch_with_no_upstream_has_no_numbers(repo):  # noqa: F811
     assert (feat.ahead, feat.behind, feat.gone) == (None, None, False)
 
 
-def test_an_upstream_that_no_longer_exists_is_gone(repo):  # noqa: F811
+@pytest.mark.parametrize("track,expected", [
+    pytest.param("", (0, 0, False), id="level"),
+    pytest.param("[ahead 1]", (1, 0, False), id="ahead-only"),
+    pytest.param("[behind 2]", (0, 2, False), id="behind-only"),
+    pytest.param("[ahead 1, behind 2]", (1, 2, False), id="diverged"),
+    pytest.param("[gone]", (None, None, True), id="gone"),
+    # A form no git prints, to pin what the parser does with one: it keeps
+    # the halves it understood rather than raising on a branch list.
+    pytest.param("[sideways 3]", (0, 0, False), id="unknown-word"),
+])
+def test_every_form_of_the_tracking_field_parses(track, expected):
+    """The five spellings ``%(upstream:track)`` has. The comma form is the
+    only one that has to split, and it is the one a diverged branch --
+    the state the whole Pull button exists for -- reports with."""
+    assert refs._track(track, True) == expected
+
+
+def test_a_branch_behind_its_upstream_says_so_end_to_end(repo):
+    """The comma branch, through a real repository rather than the parser:
+    two commits on the remote-tracking ref, one of them local."""
+    repo.commit("second", {"b.txt": "two\n"})
+    ahead_sha = repo.head()
+    repo.git("remote", "add", "origin", FAR_AWAY)
+    _remote_branch(repo, "origin/main", ahead_sha)
+    repo.git("branch", "-u", "origin/main", "main")
+    repo.git("reset", "-q", "--hard", "HEAD~1")
+
+    main = _named(refs.list_branches(repo.root).local, "main")
+
+    assert (main.ahead, main.behind, main.gone) == (0, 1, False)
+
+
+def test_an_upstream_that_no_longer_exists_is_gone(repo):
     """The branch on the remote was deleted and pruned: git says ``[gone]``,
     and there is nothing to count in either direction."""
     repo.git("remote", "add", "origin", FAR_AWAY)
@@ -155,7 +196,7 @@ def test_an_upstream_that_no_longer_exists_is_gone(repo):  # noqa: F811
     assert (feat.ahead, feat.behind) == (None, None)
 
 
-def test_a_remote_tracking_branch_is_split_into_remote_and_name(repo):  # noqa: F811
+def test_a_remote_tracking_branch_is_split_into_remote_and_name(repo):
     _remote_branch(repo, "origin/feat/deep")
 
     answer = refs.list_branches(repo.root)
@@ -167,7 +208,7 @@ def test_a_remote_tracking_branch_is_split_into_remote_and_name(repo):  # noqa: 
     assert tracked.subject == "first"
 
 
-def test_the_pointer_at_a_remotes_default_branch_is_not_a_branch(repo):  # noqa: F811
+def test_the_pointer_at_a_remotes_default_branch_is_not_a_branch(repo):
     """``refs/remotes/origin/HEAD`` is the symbolic ref ``git clone`` leaves
     behind. ``%(refname:short)`` renders it as the bare word ``origin``, so
     listing it would draw a remote branch with an empty name."""
@@ -181,7 +222,7 @@ def test_the_pointer_at_a_remotes_default_branch_is_not_a_branch(repo):  # noqa:
         ("origin", "main")]
 
 
-def test_a_detached_head_has_no_current_branch(repo):  # noqa: F811
+def test_a_detached_head_has_no_current_branch(repo):
     repo.git("checkout", "-q", "--detach")
 
     answer = refs.list_branches(repo.root)
@@ -204,7 +245,7 @@ def test_an_unborn_branch_still_has_a_name(make_repo):  # noqa: F811
     assert answer.local == []
 
 
-def test_a_separator_inside_a_subject_stays_in_the_subject(repo):  # noqa: F811
+def test_a_separator_inside_a_subject_stays_in_the_subject(repo):
     """The subject is the LAST field for the reason the log's body is: it is
     arbitrary text, and the unit separator is not impossible in it."""
     repo.write("a.txt", "changed\n")
@@ -219,11 +260,11 @@ def test_a_separator_inside_a_subject_stays_in_the_subject(repo):  # noqa: F811
 # --- listing remotes ---------------------------------------------------------
 
 
-def test_a_repository_with_no_remote_lists_none(repo):  # noqa: F811
+def test_a_repository_with_no_remote_lists_none(repo):
     assert refs.list_remotes(repo.root) == []
 
 
-def test_a_remote_is_listed_with_both_urls(repo):  # noqa: F811
+def test_a_remote_is_listed_with_both_urls(repo):
     repo.git("remote", "add", "origin", "https://example.com/owner/repo.git")
 
     listed = refs.list_remotes(repo.root)
@@ -233,7 +274,10 @@ def test_a_remote_is_listed_with_both_urls(repo):  # noqa: F811
     assert listed[0].push_url == listed[0].fetch_url
 
 
-def test_a_push_url_of_its_own_is_reported(repo):  # noqa: F811
+def test_a_push_url_of_its_own_is_reported(repo):
+    """The two halves are read separately, and the ssh one shows the mask's
+    price: ``git@`` is a username and not a secret, and it goes anyway --
+    nothing can tell the two apart on sight."""
     repo.git("remote", "add", "origin", "https://example.com/owner/repo.git")
     repo.git("remote", "set-url", "--push", "origin",
              "ssh://git@example.com/owner/repo.git")
@@ -241,13 +285,36 @@ def test_a_push_url_of_its_own_is_reported(repo):  # noqa: F811
     listed = refs.list_remotes(repo.root)
 
     assert listed[0].fetch_url == "https://example.com/owner/repo.git"
-    assert listed[0].push_url == "ssh://git@example.com/owner/repo.git"
+    assert listed[0].push_url == "ssh://***@example.com/owner/repo.git"
+
+
+def test_a_token_in_a_remote_url_is_never_listed(repo):
+    """``GET /api/git/remotes`` is an open, unauthenticated read on a server
+    that is deliberately servable to a LAN, and a remote URL is one of the
+    two strings in this subsystem that can carry a live credential.
+
+    What is MASKED is the userinfo; what survives is the scheme, the host
+    and the path -- the part that makes the row worth showing at all, and
+    the part a user needs to recognise which remote failed.
+    """
+    token = "ghp_16C7e42F292c6912E7710c838347Ae178B4a"
+    repo.git("remote", "add", "origin",
+             f"https://alice:{token}@github.com/owner/repo.git")
+
+    listed = refs.list_remotes(repo.root)
+
+    assert listed[0].fetch_url == "https://***@github.com/owner/repo.git"
+    assert listed[0].push_url == "https://***@github.com/owner/repo.git"
+    assert token not in listed[0].model_dump_json()
+    assert "alice" not in listed[0].model_dump_json()
+    # git still has the real thing; only what LEAVES the server is masked.
+    assert token in repo.git("remote", "get-url", "origin")
 
 
 # --- creating a branch -------------------------------------------------------
 
 
-async def test_create_switches_to_the_new_branch(repo):  # noqa: F811
+async def test_create_switches_to_the_new_branch(repo):
     result = await repo.service.create_branch("feat")
 
     assert result.status.branch == "feat"
@@ -255,14 +322,14 @@ async def test_create_switches_to_the_new_branch(repo):  # noqa: F811
     assert refs.list_branches(repo.root).current == "feat"
 
 
-async def test_create_without_checkout_leaves_you_where_you_are(repo):  # noqa: F811
+async def test_create_without_checkout_leaves_you_where_you_are(repo):
     result = await repo.service.create_branch("feat", checkout=False)
 
     assert result.status.branch == "main"
     assert _named(refs.list_branches(repo.root).local, "feat").current is False
 
 
-async def test_create_from_a_branch_starts_there(repo):  # noqa: F811
+async def test_create_from_a_branch_starts_there(repo):
     first = repo.head()
     repo.commit("second", {"b.txt": "two\n"})
     repo.git("branch", "old", first)
@@ -272,7 +339,7 @@ async def test_create_from_a_branch_starts_there(repo):  # noqa: F811
     assert repo.head() == first
 
 
-async def test_create_from_a_commit_id_starts_there(repo):  # noqa: F811
+async def test_create_from_a_commit_id_starts_there(repo):
     """A start point that is a sha never reaches ``check-ref-format``: it is
     checked by shape, and whether the object exists is git's answer."""
     first = repo.head()
@@ -283,7 +350,7 @@ async def test_create_from_a_commit_id_starts_there(repo):  # noqa: F811
     assert repo.head() == first
 
 
-async def test_create_with_a_name_that_exists_is_branch_exists(repo):  # noqa: F811
+async def test_create_with_a_name_that_exists_is_branch_exists(repo):
     repo.git("branch", "feat")
 
     with pytest.raises(GitError) as excinfo:
@@ -300,7 +367,7 @@ async def test_create_with_a_name_that_exists_is_branch_exists(repo):  # noqa: F
     pytest.param("feat.lock", id="dot-lock"),
     pytest.param("main@{1}", id="reflog-syntax"),
 ])
-async def test_a_name_git_will_not_take_is_refused_before_it_runs(repo, name):  # noqa: F811
+async def test_a_name_git_will_not_take_is_refused_before_it_runs(repo, name):
     with pytest.raises(GitError) as excinfo:
         await repo.service.create_branch(name)
 
@@ -308,7 +375,7 @@ async def test_a_name_git_will_not_take_is_refused_before_it_runs(repo, name):  
     assert excinfo.value.status == 400
 
 
-async def test_create_from_a_start_point_that_is_gone_is_404(repo):  # noqa: F811
+async def test_create_from_a_start_point_that_is_gone_is_404(repo):
     """The branch list a click comes from is up to fifteen seconds old."""
     with pytest.raises(GitError) as excinfo:
         await repo.service.create_branch("feat", start_point="deadbee")
@@ -320,7 +387,7 @@ async def test_create_from_a_start_point_that_is_gone_is_404(repo):  # noqa: F81
 # --- switching ---------------------------------------------------------------
 
 
-async def test_switching_says_which_files_it_replaced(repo):  # noqa: F811
+async def test_switching_says_which_files_it_replaced(repo):
     """A checkout is a worktree operation, and ``changed_paths`` is what an
     open editor reloads from."""
     repo.git("switch", "-q", "-c", "feat")
@@ -334,7 +401,7 @@ async def test_switching_says_which_files_it_replaced(repo):  # noqa: F811
     assert repo.read("a.txt") == "feat\n"
 
 
-async def test_switching_to_a_remote_branch_creates_a_tracking_branch(repo):  # noqa: F811
+async def test_switching_to_a_remote_branch_creates_a_tracking_branch(repo):
     repo.git("remote", "add", "origin", FAR_AWAY)
     _remote_branch(repo, "origin/feat")
 
@@ -347,7 +414,7 @@ async def test_switching_to_a_remote_branch_creates_a_tracking_branch(repo):  # 
                   "feat").upstream == "origin/feat"
 
 
-async def test_a_dirty_tree_blocks_a_switch(repo):  # noqa: F811
+async def test_a_dirty_tree_blocks_a_switch(repo):
     """git compares what WOULD be overwritten against what has changed,
     which is a finer answer than "there are modifications"."""
     repo.git("switch", "-q", "-c", "feat")
@@ -362,14 +429,14 @@ async def test_a_dirty_tree_blocks_a_switch(repo):  # noqa: F811
     assert repo.read("a.txt") == "mine\n"
 
 
-async def test_switching_to_a_branch_that_is_gone_is_404(repo):  # noqa: F811
+async def test_switching_to_a_branch_that_is_gone_is_404(repo):
     with pytest.raises(GitError) as excinfo:
         await repo.service.checkout("feat", kind="local")
 
     assert excinfo.value.code == "not_found"
 
 
-async def test_a_remote_target_without_a_remote_half_is_400(repo):  # noqa: F811
+async def test_a_remote_target_without_a_remote_half_is_400(repo):
     with pytest.raises(GitError) as excinfo:
         await repo.service.checkout("feat", kind="remote")
 
@@ -380,7 +447,7 @@ async def test_a_remote_target_without_a_remote_half_is_400(repo):  # noqa: F811
 # --- renaming ----------------------------------------------------------------
 
 
-async def test_rename_keeps_the_commits_and_the_upstream(repo):  # noqa: F811
+async def test_rename_keeps_the_commits_and_the_upstream(repo):
     repo.git("remote", "add", "origin", FAR_AWAY)
     _remote_branch(repo)
     repo.git("branch", "-u", "origin/main", "main")
@@ -395,7 +462,7 @@ async def test_rename_keeps_the_commits_and_the_upstream(repo):  # noqa: F811
     assert repo.head() == head
 
 
-async def test_renaming_onto_a_name_that_exists_is_branch_exists(repo):  # noqa: F811
+async def test_renaming_onto_a_name_that_exists_is_branch_exists(repo):
     repo.git("branch", "feat")
 
     with pytest.raises(GitError) as excinfo:
@@ -404,7 +471,7 @@ async def test_renaming_onto_a_name_that_exists_is_branch_exists(repo):  # noqa:
     assert excinfo.value.code == "branch_exists"
 
 
-async def test_renaming_a_branch_that_is_gone_is_404(repo):  # noqa: F811
+async def test_renaming_a_branch_that_is_gone_is_404(repo):
     """git says "fatal: no branch named 'feat'", which no rule knows: the
     check is here so it is a 404 rather than a 500."""
     with pytest.raises(GitError) as excinfo:
@@ -417,7 +484,7 @@ async def test_renaming_a_branch_that_is_gone_is_404(repo):  # noqa: F811
 # --- deleting ----------------------------------------------------------------
 
 
-async def test_deleting_the_branch_you_are_on_is_refused(repo):  # noqa: F811
+async def test_deleting_the_branch_you_are_on_is_refused(repo):
     """git's own answer names the worktree's path and classifies as nothing
     at all, so this one is decided before a process starts."""
     with pytest.raises(GitError) as excinfo:
@@ -428,7 +495,7 @@ async def test_deleting_the_branch_you_are_on_is_refused(repo):  # noqa: F811
     assert _named(refs.list_branches(repo.root).local, "main").current is True
 
 
-async def test_deleting_a_merged_branch_needs_no_force(repo):  # noqa: F811
+async def test_deleting_a_merged_branch_needs_no_force(repo):
     repo.git("branch", "feat")
 
     result = await repo.service.delete_branch("feat")
@@ -438,7 +505,7 @@ async def test_deleting_a_merged_branch_needs_no_force(repo):  # noqa: F811
         "main"]
 
 
-async def test_deleting_an_unmerged_branch_needs_force(repo):  # noqa: F811
+async def test_deleting_an_unmerged_branch_needs_force(repo):
     repo.git("switch", "-q", "-c", "feat")
     repo.commit("only on feat", {"b.txt": "two\n"})
     repo.git("switch", "-q", "main")
@@ -456,7 +523,7 @@ async def test_deleting_an_unmerged_branch_needs_force(repo):  # noqa: F811
         "main"]
 
 
-async def test_deleting_a_branch_that_is_gone_is_404(repo):  # noqa: F811
+async def test_deleting_a_branch_that_is_gone_is_404(repo):
     with pytest.raises(GitError) as excinfo:
         await repo.service.delete_branch("feat")
 
@@ -464,7 +531,7 @@ async def test_deleting_a_branch_that_is_gone_is_404(repo):  # noqa: F811
     assert excinfo.value.status == 404
 
 
-async def test_a_branch_name_with_a_slash_survives_every_operation(repo):  # noqa: F811
+async def test_a_branch_name_with_a_slash_survives_every_operation(repo):
     """Half the branches anybody has are called ``feat/something``."""
     await repo.service.create_branch("feat/source-control")
     assert refs.list_branches(repo.root).current == "feat/source-control"
@@ -480,7 +547,7 @@ async def test_a_branch_name_with_a_slash_survives_every_operation(repo):  # noq
 # --- remotes -----------------------------------------------------------------
 
 
-async def test_add_lists_the_new_remote(repo):  # noqa: F811
+async def test_add_lists_the_new_remote(repo):
     result = await repo.service.add_remote(
         "origin", "https://example.com/owner/repo.git")
 
@@ -491,7 +558,7 @@ async def test_add_lists_the_new_remote(repo):  # noqa: F811
     assert listed[0].fetch_url == "https://example.com/owner/repo.git"
 
 
-async def test_adding_a_remote_twice_is_remote_exists(repo):  # noqa: F811
+async def test_adding_a_remote_twice_is_remote_exists(repo):
     """git says "error: remote origin already exists." -- its own voice
     under an opening the classifier will not take from a hook, so the row
     for it is anchored to that whole opening."""
@@ -506,7 +573,7 @@ async def test_adding_a_remote_twice_is_remote_exists(repo):  # noqa: F811
         "https://example.com/a.git"
 
 
-async def test_set_url_points_it_somewhere_else(repo):  # noqa: F811
+async def test_set_url_points_it_somewhere_else(repo):
     await repo.service.add_remote("origin", "https://example.com/a.git")
 
     await repo.service.set_remote_url("origin", "https://example.com/b.git")
@@ -515,7 +582,7 @@ async def test_set_url_points_it_somewhere_else(repo):  # noqa: F811
         "https://example.com/b.git"
 
 
-async def test_remove_forgets_it(repo):  # noqa: F811
+async def test_remove_forgets_it(repo):
     await repo.service.add_remote("origin", "https://example.com/a.git")
 
     result = await repo.service.remove_remote("origin")
@@ -525,7 +592,7 @@ async def test_remove_forgets_it(repo):  # noqa: F811
 
 
 @pytest.mark.parametrize("call", ["set_remote_url", "remove_remote"])
-async def test_touching_a_remote_that_is_not_there_is_404(repo, call):  # noqa: F811
+async def test_touching_a_remote_that_is_not_there_is_404(repo, call):
     args = ["nope"] + (["https://example.com/a.git"]
                        if call == "set_remote_url" else [])
 
@@ -542,7 +609,7 @@ async def test_touching_a_remote_that_is_not_there_is_404(repo, call):  # noqa: 
     pytest.param("git@github.com:-upload-pack=whoami", id="option-path"),
     pytest.param("http://example.com/a.git", id="plaintext-http"),
 ])
-async def test_a_url_this_server_will_not_hand_to_git_is_400(repo, url):  # noqa: F811
+async def test_a_url_this_server_will_not_hand_to_git_is_400(repo, url):
     with pytest.raises(GitError) as excinfo:
         await repo.service.add_remote("origin", url)
 
@@ -551,7 +618,7 @@ async def test_a_url_this_server_will_not_hand_to_git_is_400(repo, url):  # noqa
     assert refs.list_remotes(repo.root) == []
 
 
-async def test_a_remote_name_that_is_an_option_is_refused(repo):  # noqa: F811
+async def test_a_remote_name_that_is_an_option_is_refused(repo):
     with pytest.raises(GitError) as excinfo:
         await repo.service.add_remote("-f", "https://example.com/a.git")
 

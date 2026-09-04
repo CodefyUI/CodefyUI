@@ -354,6 +354,23 @@ async def test_remotes_carry_exactly_the_documented_keys(test_client, project):
     assert body[0]["fetch_url"] == "https://example.com/owner/repo.git"
 
 
+async def test_the_remotes_read_never_serves_a_credential(anon_client, project):
+    """This GET needs no token -- like every read in the app, and on a
+    server that is deliberately servable to a LAN. A remote URL is one of
+    the two strings here that can carry a live one, so it is masked before
+    it is serialised; the host and the path stay, because a row nobody can
+    place is a row nobody can act on."""
+    project.git("remote", "add", "origin",
+                f"https://alice:{TOKEN}@github.com/owner/repo.git")
+
+    response = await anon_client.get("/api/git/remotes")
+
+    assert response.status_code == 200, response.text
+    assert TOKEN not in response.text
+    assert response.json()[0]["fetch_url"] == \
+        "https://***@github.com/owner/repo.git"
+
+
 async def test_a_branch_write_answers_with_a_mutation_result(test_client,
                                                              project):
     """Every write in this router answers with the same four keys, so the
