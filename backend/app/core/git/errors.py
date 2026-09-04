@@ -97,6 +97,8 @@ CODES: dict[str, tuple[int, str]] = {
     "diverged": (409, "the local and the remote branch have diverged"),
     "no_upstream": (409, "this branch has no upstream branch"),
     "remote_exists": (409, "a remote with that name already exists"),
+    "push_config": (409,
+                    "this repository's push configuration refuses a plain push"),
     # The working tree.
     "conflict": (409, "the merge left conflicts to resolve"),
     "dirty_tree": (409, "uncommitted changes would be overwritten"),
@@ -116,6 +118,24 @@ CODES: dict[str, tuple[int, str]] = {
     "ignored": (403, "that file is ignored and is not served"),
     # Everything else.
     "git_failed": (500, "git failed"),
+}
+
+
+#: The codes whose ``hint`` cannot be derived from anything in the failure.
+#:
+#: Almost every hint in this package is written at the ``raise`` -- it names
+#: a branch, a file or the click that fixes the state, and only the caller
+#: knows those. A CLASSIFIED failure has no caller to ask, so the few codes
+#: whose remedy is the same sentence every time carry it here.
+#:
+#: ``push_config`` is the one row that needs it. Its two states are the
+#: user's own configuration and NEITHER is visible in the tab: the header
+#: shows a branch that is published and up to date, and the refusal is about
+#: how git was told to push it. Without this the person is left with a code
+#: and no place to look.
+CODE_HINTS: dict[str, str] = {
+    "push_config": "check push.default and the upstream branch name "
+                   "(git branch -vv)",
 }
 
 
@@ -365,7 +385,21 @@ _RULES: tuple[tuple[str, int, tuple[_Pattern, ...]], ...] = (
     # Both sentences are fatal refusals from ``git push`` rather than server
     # faults: ``nothing`` deliberately supplies no refspec, while ``simple``
     # refuses an upstream whose branch name differs from the local one.
-    ("invalid_value", 400, (
+    #
+    # A code of their OWN, and not ``invalid_value``, because of what the tab
+    # does with the answer. It rewrites every ``invalid_value`` from a
+    # ``push`` or a ``sync`` into ``no_upstream`` -- that rewrite is right for
+    # the state it was written for (``resolve_remote`` refusing a branch with
+    # several remotes to choose between) and wrong for these two: it draws
+    # "this branch is not published yet" over a branch that is published and
+    # up to date, and offers the Publish button, whose ``push -u -- origin
+    # main`` creates a second remote branch and repoints
+    # ``branch.main.merge`` at it. A remedy that mutates the user's config to
+    # answer a question about their config is worse than no button, and a
+    # code the frontend does not know falls through to the generic sentence
+    # with no button at all. 409 like the rest of the "the repository is not
+    # in a state for this" family; the hint is in :data:`CODE_HINTS`.
+    ("push_config", 409, (
         'push.default is "nothing"',
         "The upstream branch of your current branch does not match",
     )),
@@ -585,6 +619,11 @@ def classify_failure(argv: Sequence[str], returncode: int,
     decision belongs to ``run_git``'s ``ok_codes``, because only the caller
     knows that ``diff`` exits 1 for "there are differences".
 
+    A recognised row carries a ``hint`` when its code is in
+    :data:`CODE_HINTS` -- the few whose remedy is the same sentence every
+    time, since a classified failure has no caller to ask for a branch or a
+    file name.
+
     Unrecognised output is ``git_failed`` (500). Every result -- recognised
     or not -- carries the last :data:`LAST_STDERR_LINES` lines in
     ``.stderr``, because a code is a claim about what went wrong and a
@@ -604,7 +643,8 @@ def classify_failure(argv: Sequence[str], returncode: int,
     tail = redact(stderr_tail(stderr))
     for code, status, patterns in _RULES:
         if any(_matches(pattern, haystack, lines) for pattern in patterns):
-            return GitError(code, status, stderr=tail)
+            return GitError(code, status, hint=CODE_HINTS.get(code),
+                            stderr=tail)
     label = f"git {_subcommand(argv)}".strip()
     return GitError(
         "git_failed", CODES["git_failed"][0],

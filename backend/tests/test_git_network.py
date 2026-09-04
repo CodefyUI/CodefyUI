@@ -607,7 +607,13 @@ async def test_a_plain_push_reports_the_effective_remote(repo, bare_remote):
 
 
 async def test_push_default_nothing_is_a_user_error(repo, bare_remote):
-    """A host config that disables plain push is actionable, not a 500."""
+    """A host config that disables plain push is actionable, not a 500.
+
+    ``push_config`` and NOT ``invalid_value``: the tab rewrites an
+    ``invalid_value`` from a push into ``no_upstream``, which draws "this
+    branch is not published yet" over a branch that plainly is, and offers
+    a Publish button whose ``push -u`` would repoint the user's upstream.
+    """
     _publish(repo, bare_remote)
     repo.commit("not pushed", {"local.txt": "local\n"})
     repo.git("config", "push.default", "nothing")
@@ -615,13 +621,20 @@ async def test_push_default_nothing_is_a_user_error(repo, bare_remote):
     with pytest.raises(GitError) as excinfo:
         await repo.service.push()
 
-    assert excinfo.value.code == "invalid_value"
-    assert excinfo.value.status == 400
+    assert excinfo.value.code == "push_config"
+    assert excinfo.value.status == 409
+    assert excinfo.value.hint
 
 
 async def test_simple_push_with_a_differently_named_upstream_is_a_user_error(
         repo, bare_remote):
-    """Simple mode's name guard is host configuration, not a server fault."""
+    """Simple mode's name guard is host configuration, not a server fault.
+
+    The other half of ``push_config``, and the one with the sharper edge:
+    this branch HAS an upstream, it is just called something else, so a
+    Publish button offered here would create a second remote branch and
+    rewrite ``branch.main.merge`` to point at it.
+    """
     _publish(repo, bare_remote)
     repo.git("push", "-q", "-u", "origin", "main:other")
     repo.commit("not pushed", {"local.txt": "local\n"})
@@ -630,8 +643,9 @@ async def test_simple_push_with_a_differently_named_upstream_is_a_user_error(
     with pytest.raises(GitError) as excinfo:
         await repo.service.push()
 
-    assert excinfo.value.code == "invalid_value"
-    assert excinfo.value.status == 400
+    assert excinfo.value.code == "push_config"
+    assert excinfo.value.status == 409
+    assert excinfo.value.hint
 
 
 async def test_a_push_the_remote_is_ahead_of_is_refused(repo, bare_remote,

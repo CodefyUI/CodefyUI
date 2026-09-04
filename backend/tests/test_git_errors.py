@@ -42,6 +42,12 @@ _PLANNED_CODES = {
     # G3's two, from the plan's own ruling: a duplicate ``git remote add``,
     # and a push a server-side rule refused.
     "remote_exists", "remote_rejected",
+    # And G3's third: the HOST's own push configuration refusing a plain
+    # push. Its own code rather than ``invalid_value`` because the tab reads
+    # an ``invalid_value`` from a push as "this branch is not published yet"
+    # and offers a Publish button -- which for these two states is both
+    # untrue and a write that repoints the user's upstream.
+    "push_config",
 }
 
 #: One representative stderr per classified row, as git prints it under
@@ -183,7 +189,7 @@ _SAMPLES = [
     pytest.param(
         "fatal: You didn't specify any refspecs to push, and push.default is "
         '"nothing".\n',
-        "invalid_value", id="push-default-nothing"),
+        "push_config", id="push-default-nothing"),
     pytest.param(
         "fatal: The upstream branch of your current branch does not match\n"
         "the name of your current branch.  To push to the upstream branch\n"
@@ -191,7 +197,7 @@ _SAMPLES = [
         "    git push origin HEAD:other\n\n"
         "To push to the branch of the same name on the remote, use\n\n"
         "    git push origin HEAD\n",
-        "invalid_value", id="push-simple-upstream-name-mismatch"),
+        "push_config", id="push-simple-upstream-name-mismatch"),
     # A remote NAME that is not configured, which git reports as a
     # connection problem: "'nope' does not appear to be a git repository"
     # then "Could not read from remote repository" (measured, exit 128).
@@ -288,6 +294,27 @@ def test_classification(stderr, code):
 
     assert error.code == code
     assert error.status == CODES[code][0]
+
+
+def test_a_push_configuration_refusal_says_where_to_look():
+    """``push_config`` is the one classified code that carries a hint.
+
+    Its two states are the user's OWN configuration -- ``push.default`` and
+    the upstream branch's name -- and neither is visible in the tab: the
+    header shows a branch that is published and up to date, and the
+    refusal is about how git was told to push it. The code alone leaves
+    nobody anywhere to go, so this row names the two settings and the
+    command that prints them.
+    """
+    error = classify_failure(
+        _ARGV, 128,
+        'fatal: You didn\'t specify any refspecs to push, and push.default '
+        'is "nothing".\n')
+
+    assert error.code == "push_config"
+    assert error.status == 409
+    assert "push.default" in (error.hint or "")
+    assert "git branch -vv" in (error.hint or "")
 
 
 def test_the_ssh_split_is_the_row_order():
