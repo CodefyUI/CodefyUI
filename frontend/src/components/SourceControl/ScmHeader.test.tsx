@@ -376,6 +376,40 @@ describe('ScmHeader: Sync, Publish and the remote picker', () => {
     expect(screen.getByText('Not published')).toBeTruthy();
   });
 
+  it('opens the Remotes section rather than doing nothing at all', async () => {
+    // `remotes` null hides the header button but NOT the menu row, which is
+    // drawn enabled -- and a Publish that resolved no remote used to return in
+    // silence, forever, on a server that keeps refusing the read. The section
+    // holding that refusal is opened instead, which also reads the list again
+    // on the way in.
+    render(<ScmHeader />);
+    openMore();
+    fireEvent.click(menuRow('Publish Branch'));
+    await waitFor(() => expect(setSectionOpen).toHaveBeenCalledWith('remotes', true));
+    expect(publish).not.toHaveBeenCalled();
+  });
+
+  it('does the same when the read answers that there is nowhere to publish to', async () => {
+    // The row was pressed in the moment before the list landed, and the answer
+    // is an empty one. Sending the publish anyway is the 400 the panel must
+    // never ask for twice; the Remotes section says why, and carries the Add
+    // Remote... that fixes it.
+    // The panel's own read on mount leaves the list unread -- which is what
+    // keeps the row enabled; the read this press makes is the one that
+    // answers, and answers empty.
+    let reads = 0;
+    refreshRefs = vi.fn(async () => {
+      reads += 1;
+      if (reads > 1) useGitStore.setState({ remotes: [] });
+    });
+    useGitStore.setState({ refreshRefs });
+    render(<ScmHeader />);
+    openMore();
+    fireEvent.click(menuRow('Publish Branch'));
+    await waitFor(() => expect(setSectionOpen).toHaveBeenCalledWith('remotes', true));
+    expect(publish).not.toHaveBeenCalled();
+  });
+
   it('offers neither on a detached HEAD or a branch with no commits', () => {
     useGitStore.setState({
       status: status({ branch: null, detached: true, upstream: 'origin/main' }),

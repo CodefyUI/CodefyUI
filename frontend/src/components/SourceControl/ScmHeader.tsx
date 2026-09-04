@@ -189,6 +189,14 @@ export function ScmHeader() {
    * before the list landed, on a repository that turns out to have several. It
    * sends the publish the server will refuse, because the refusal carries the
    * follow-up -- which, by the time it is drawn, is that picker.
+   *
+   * When the list resolves to NEITHER a remote nor an answer, nothing is sent
+   * -- and something is still said. A refused refs read writes `refsError`,
+   * which is only drawn inside its section, so a bare return left the More
+   * menu's Publish doing nothing at all with nothing on screen to explain it.
+   * Opening the Remotes section puts that line where it can be read, reads the
+   * list once more on the way in, and lands on the Add Remote... that answers
+   * the other half of it.
    */
   const publishBranch = useCallback(async () => {
     let list = useGitStore.getState().remotes;
@@ -196,13 +204,16 @@ export function ScmHeader() {
       await refreshRefs('remotes');
       list = useGitStore.getState().remotes;
     }
-    if (list === null || list.length === 0) return;
+    if (list === null || list.length === 0) {
+      setSectionOpen('remotes', true);
+      return;
+    }
     if (list.length === 1) {
       await runPublish(list[0].name);
       return;
     }
     await runPublish();
-  }, [refreshRefs, runPublish]);
+  }, [refreshRefs, runPublish, setSectionOpen]);
 
   const askThenStash = useCallback(async () => {
     const message = await prompt({ title: t('git.stash.messagePrompt') });
