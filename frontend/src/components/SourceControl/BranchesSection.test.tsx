@@ -352,6 +352,12 @@ describe('BranchesSection: deleting', () => {
     fireEvent.click(screen.getByRole('button', { name: 'More actions work' }));
     const menu = screen.getByRole('menu', { name: 'More actions work' });
     expect(within(menu).getByRole('menuitem', { name: 'Rename' })).toBeTruthy();
+    // The destructive one is still marked as such in here, which is where a
+    // 180px panel does all of its choosing.
+    expect(within(menu).getByRole('menuitem', { name: 'Delete' }).className)
+      .toMatch(/danger/);
+    expect(within(menu).getByRole('menuitem', { name: 'Rename' }).className)
+      .not.toMatch(/danger/);
     fireEvent.click(within(menu).getByRole('menuitem', { name: 'Delete' }));
     await waitFor(() => expect(deleteBranch).toHaveBeenCalledWith('work', false));
   });

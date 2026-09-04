@@ -134,6 +134,9 @@ export function RefRow({ name, action, identity, badge, meta, actions }: RefRowP
               items={actions.map((one) => ({
                 id: one.id,
                 label: one.label,
+                // The destructive one keeps its cue in here too: below 380px
+                // this menu is the only shape of a row's actions on screen.
+                danger: one.danger,
                 onSelect: one.onSelect,
               }))}
               align="end"

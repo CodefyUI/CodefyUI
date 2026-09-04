@@ -321,6 +321,20 @@ describe('ActionMenu', () => {
     expect(item('Alpha')).not.toHaveAccessibleDescription();
   });
 
+  it('marks the destructive row, which is the only shape a narrow panel draws', () => {
+    // Below 380px a reference row's verbs ARE this menu, so a Delete that
+    // looked exactly like a Rename here would keep its cue only on the wide
+    // panels and lose it on the 180 / 250 / 300px ones.
+    render(
+      <ActionMenu label="More actions" items={items([{}, { danger: true }])}>
+        dots
+      </ActionMenu>,
+    );
+    fireEvent.click(trigger());
+    expect(item('Bravo').className).toMatch(/danger/);
+    expect(item('Alpha').className).not.toMatch(/danger/);
+  });
+
   // `items` belongs to the caller, so the row holding focus can change under it
   // — a write starts and the row goes inert, or the list shortens. Focus has to
   // stay inside the menu either way, because a menu with focus on <body> no

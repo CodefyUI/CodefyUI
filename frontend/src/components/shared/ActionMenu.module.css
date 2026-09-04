@@ -105,6 +105,18 @@
   cursor: default;
 }
 
+/* The destructive row, in the palette the inline `.dangerAction` buttons use
+   for the same job -- coloured where the pointer or the keyboard is, so it is
+   the row being CHOSEN that turns red rather than a permanent red line sitting
+   in a list of ordinary verbs. Never on a refused row: there is no press there
+   to warn about, and the reason it gives is already the whole answer. It takes
+   the colour from the hover and focus rules above and leaves their background
+   and ring alone. */
+.item.danger:hover:not([aria-disabled='true']),
+.item.danger:focus-visible:not([aria-disabled='true']) {
+  color: var(--status-error);
+}
+
 /* A refused row has two lines, so the tick column and the label line up with
    the top of the text rather than with the middle of the block. */
 .item:has(.hint) {

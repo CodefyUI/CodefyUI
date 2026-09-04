@@ -31,6 +31,15 @@ export interface ActionMenuItem {
    */
   disabled?: boolean;
   /**
+   * The destructive one, drawn the way the inline `.dangerAction` buttons are.
+   *
+   * A compact menu is the ONLY shape a narrow panel draws -- a reference row's
+   * verbs collapse into one below 380px -- so a Delete that looked exactly
+   * like a Rename in here would keep its cue on the wide panels and lose it on
+   * the 180 / 250 / 300px ones, which is where most of the choosing happens.
+   */
+  danger?: boolean;
+  /**
    * Why the row is refused, shown and announced only while `disabled` is true.
    *
    * The accessible DESCRIPTION rather than part of the name, so the row is
@@ -303,7 +312,9 @@ export function ActionMenu({
                   ref={(el) => {
                     itemRefs.current[index] = el;
                   }}
-                  className={styles.item}
+                  className={
+                    item.danger === true ? `${styles.item} ${styles.danger}` : styles.item
+                  }
                   role={item.checked === undefined ? 'menuitem' : 'menuitemcheckbox'}
                   aria-checked={item.checked}
                   aria-disabled={item.disabled === true}
