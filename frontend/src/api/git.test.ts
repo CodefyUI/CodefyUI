@@ -126,6 +126,14 @@ describe('GIT_ERROR_CODES', () => {
     expect(GIT_ERROR_CODES).toContain('remote_exists');
     expect(GIT_ERROR_CODES).toContain('remote_rejected');
   });
+
+  // A code this list does not know degrades to `unknown`, and `unknown` shows
+  // git's own words -- which for this refusal is a sentence about
+  // `push.default` that only somebody who already knew the setting could act
+  // on. Knowing the code is what lets the tab say it in the reader's language.
+  it('recognises a push refused by the host git configuration', () => {
+    expect(GIT_ERROR_CODES).toContain('push_config');
+  });
 });
 
 describe('getGitStatus', () => {

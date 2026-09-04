@@ -50,6 +50,10 @@ export const ERROR_KEY: Partial<Record<GitErrorCode, TranslationKey>> = {
   signing_failed: 'git.error.signingFailed',
   remote_exists: 'git.error.remoteExists',
   remote_rejected: 'git.error.remoteRejected',
+  // No follow-up button: nothing the tab can press changes `push.default` on
+  // the server's machine, and git's own sentence -- which the Details
+  // disclosure shows -- is the one that names the setting.
+  push_config: 'git.error.pushConfig',
 };
 
 /**

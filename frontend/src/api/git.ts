@@ -242,6 +242,9 @@ export const GIT_ERROR_CODES = [
   'remote_rejected',
   'diverged',
   'no_upstream',
+  // The host's own git configuration refuses a plain push: `push.default`, or
+  // an upstream branch whose name is not this branch's.
+  'push_config',
   'remote_exists',
   // The working tree.
   'conflict',

@@ -1425,6 +1425,8 @@ const en = {
   'git.error.signingFailed': 'Commit signing is not supported from the app.',
   'git.error.remoteExists': 'A remote with that name already exists.',
   'git.error.remoteRejected': 'The remote refused the push (a protected branch or a server rule).',
+  'git.error.pushConfig':
+    'Your git push configuration refuses this push (push.default or the upstream branch name).',
   'git.error.notFound': 'Not found: {what}',
   'git.error.invalid': 'Invalid value.',
   'git.error.notRepo': 'Not a git repository.',

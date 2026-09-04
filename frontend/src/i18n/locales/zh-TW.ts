@@ -1244,6 +1244,7 @@ const zhTW: Record<TranslationKey, string> = {
   'git.error.signingFailed': '應用程式不支援提交簽章。',
   'git.error.remoteExists': '同名遠端已存在。',
   'git.error.remoteRejected': '遠端拒絕了這次推送（受保護的分支或伺服器規則）。',
+  'git.error.pushConfig': 'git 的推送設定拒絕了這次推送（push.default 或上游分支名稱）。',
   'git.error.notFound': '找不到：{what}',
   'git.error.invalid': '值無效。',
   'git.error.notRepo': '不是 git 儲存庫。',

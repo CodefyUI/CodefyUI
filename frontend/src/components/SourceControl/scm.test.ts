@@ -1,5 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { GitErrorCode } from '../../api/git';
+import en from '../../i18n/locales/en';
+import zhTW from '../../i18n/locales/zh-TW';
 import type { GitAnyOp, GitStoreError } from '../../store/gitStore';
 import {
   ERROR_HINT_KEY,
@@ -29,6 +31,7 @@ const mappedErrors: Array<[GitErrorCode, string]> = [
   ['signing_failed', 'git.error.signingFailed'],
   ['remote_exists', 'git.error.remoteExists'],
   ['remote_rejected', 'git.error.remoteRejected'],
+  ['push_config', 'git.error.pushConfig'],
 ];
 
 /** A translate that shows its key and its arguments, so both are assertable. */
@@ -58,6 +61,22 @@ describe('SCM error copy', () => {
 
   it('provides the actionable credential setup hint for auth_required', () => {
     expect(ERROR_HINT_KEY.auth_required).toBe('git.error.authRequiredHint');
+  });
+
+  it('carries the push-configuration sentence in both locales, translated', () => {
+    // zh-TW is typed `Record<TranslationKey, string>`, so a missing key is a
+    // build error rather than a test failure; what a test can still catch is
+    // the key left as a copy of the English.
+    expect(en['git.error.pushConfig']).toContain('push.default');
+    expect(zhTW['git.error.pushConfig']).toContain('push.default');
+    expect(zhTW['git.error.pushConfig']).not.toBe(en['git.error.pushConfig']);
+  });
+
+  it('offers no recovery button for a push the host configuration refuses', () => {
+    // Nothing the tab can press fixes `push.default`: the way out is git's own
+    // sentence, which the Details disclosure already shows.
+    expect(followUpFor('push_config')).toBeNull();
+    expect(followUpFor('push_config', 'push')).toBeNull();
   });
 
   it('uses mapped, timeout, not-found, and generic sentences without losing details', () => {
