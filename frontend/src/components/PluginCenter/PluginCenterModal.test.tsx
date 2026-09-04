@@ -314,6 +314,19 @@ describe('PluginCenterModal — the plugin list', () => {
     expect(screen.getByText('Loading plugins...')).toBeInTheDocument();
   });
 
+  it('says nothing about loading while a refresh runs over rows it has', () => {
+    // The direction that matters: the rule is `loading && plugins.length ===
+    // 0`, and a case seeded with an empty list passes with the second half
+    // deleted. A re-read must not put "Loading plugins..." over a catalog
+    // that is already on screen.
+    seed({ plugins: [edu], loading: true });
+    open();
+    render(<PluginCenterModal />);
+
+    expect(screen.queryByText('Loading plugins...')).toBeNull();
+    expect(cardFor('edu')).not.toBeNull();
+  });
+
   it('reports a failed read and offers to try again', () => {
     seed({ loaded: false, error: 'connection refused', plugins: [] });
     open();
