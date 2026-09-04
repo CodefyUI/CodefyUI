@@ -52,29 +52,37 @@ export const CATEGORY_VARS: Record<string, string> = {
  * card the SVG exporter draws by default, those hues measured 2.15:1 to
  * 3.09:1 as a border and every one of them failed the 4.5:1 the exporter also
  * needs from them as the card's title text (core#227). Each value below is its
- * counterpart above converted to OKLCH, hue held, chroma pushed to the gamut
- * edge and lightness lowered until it clears the bar — so the hue a reader
- * knows from the app survives while the measurement changes. Drift is at most
- * 1.8 degrees of CIE Lab hue angle, which is what the contrast gate measures.
+ * counterpart above converted to OKLCH, hue held within 8 degrees of CIE Lab
+ * hue angle and chroma held near the canvas value — so the hue a reader knows
+ * from the app survives while the measurement changes.
+ *
+ * Lightness is set per category (core#390). Lowering every hue just until it
+ * cleared 4.5:1 had put all fourteen at one lightness, and a red-green
+ * colour-blind reader keeps little besides lightness: RNN and Tensor
+ * Operations sat 0.01 L* apart, and the palette's closest pair under a
+ * deuteranopia simulation was 2.13 dE00. Five categories now sit darker (LLM,
+ * Classical, Data Flow, Utility, Tensor Operations) so that every pair a
+ * dichromat cannot part by hue is parted by lightness; the closest pair is
+ * 6.7 dE00 under both deuteranopia and protanopia.
  *
  * Mirrors the `--diagram-light-*` tokens; `theme.test.ts` asserts the match,
  * and `scripts/check-contrast.mjs` re-derives every measurement above.
  */
 export const CATEGORY_COLORS_ON_LIGHT: Record<string, string> = {
-  CNN: '#1a8626',
-  RNN: '#0077c8',
-  Transformer: '#9f58ab',
-  LLM: '#7f61cc',
-  Diffusion: '#c93d86',
-  Classical: '#7e4e00',
-  RL: '#a96300',
-  Data: '#018091',
-  Training: '#d14039',
-  IO: '#866f66',
-  'Data Flow': '#ad4900',
-  Utility: '#617782',
+  CNN: '#298340',
+  RNN: '#0075d6',
+  Transformer: '#a458b0',
+  LLM: '#5327b0',
+  Diffusion: '#de1181',
+  Classical: '#693e00',
+  RL: '#a56100',
+  Data: '#007d8d',
+  Training: '#d83a41',
+  IO: '#877065',
+  'Data Flow': '#995020',
+  Utility: '#476370',
   Normalization: '#008278',
-  'Tensor Operations': '#6570ad',
+  'Tensor Operations': '#4b549f',
 };
 
 /** `--diagram-light-*` variable name for each category. */

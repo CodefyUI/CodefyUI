@@ -209,6 +209,24 @@ describe('commitDocument + pushUndoSnapshotFor', () => {
     expect(activeTab().selectedNodeId).toBeNull();
   });
 
+  it('closes a viz viewer the commit removed the node for, and keeps one it kept (core#324)', () => {
+    const live = store().activeTabId;
+    store().loadGraphDocumentInto(live, {
+      nodes: [node('a'), node('b', 200)], edges: [], boundFile: null,
+    });
+    store().openVizModal('b');
+
+    store().commitDocument(live, {
+      nodes: [node('a'), node('b', 200)], edges: [], segmentGroups: [], dirtyIds: [],
+    });
+    expect(activeTab().vizModalNodeId).toBe('b');
+
+    store().commitDocument(live, {
+      nodes: [node('a')], edges: [], segmentGroups: [], dirtyIds: [],
+    });
+    expect(activeTab().vizModalNodeId).toBeNull();
+  });
+
   it('leaves both alone when the committed document still has the node', () => {
     const live = store().activeTabId;
     store().loadGraphDocumentInto(live, {

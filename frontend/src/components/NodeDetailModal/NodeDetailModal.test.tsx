@@ -280,6 +280,11 @@ describe('NodeDetailModal — open paths', () => {
     fireEvent.keyDown(document, { key: 'Enter' });
     expect(activeTab().nodeDetailNodeId).toBeNull();
 
+    // A viz card's full-size viewer is a modal too (core#324).
+    seedTab({ nodes: [node('n1')], selectedNodeId: 'n1', vizModalNodeId: 'n1' });
+    fireEvent.keyDown(document, { key: 'Enter' });
+    expect(activeTab().nodeDetailNodeId).toBeNull();
+
     seedTab({ nodes: [node('n1')], selectedNodeId: 'n1', nodeDetailNodeId: 'n1' });
     const before = activeTab().nodes;
     fireEvent.keyDown(document, { key: 'Enter' });

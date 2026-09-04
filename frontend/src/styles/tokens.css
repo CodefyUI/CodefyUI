@@ -381,12 +381,21 @@
    rather than borrowing the dark one (core#227).
 
    The light hues are not hand-picked. Each is its dark counterpart converted
-   to OKLCH, hue held fixed, chroma pushed to the sRGB gamut edge, and
-   lightness lowered until it clears the bar on a white card. Hue drift is at
-   most 1.8 degrees of CIE Lab hue angle, so a green category stays the same
-   green a reader knows from the app. Two are marked: Classical and RL are 3.71
-   CIEDE2000 apart in the dark palette — its closest pair by a wide margin —
-   and splitting them on lightness costs nothing on paper.
+   to OKLCH, hue held (within 8 degrees of CIE Lab hue angle, so a green
+   category stays the same green a reader knows from the app), chroma held
+   near the canvas value, and lightness set per category. The first cut put
+   all fourteen at the same lightness — each lowered just until it cleared
+   4.5:1 — which left rnn and tensorops 0.01 L* apart and the palette's
+   closest pair under a deuteranopia simulation at 2.13 dE00 (core#390): a
+   red-green colour-blind reader keeps lightness and the blue-yellow axis and
+   little else, so fourteen hues at one lightness collapse into a handful.
+   The lightness of each category is now chosen so that every pair a
+   dichromat cannot part by hue is parted by lightness instead: the closest
+   pair is 6.7 dE00 under both deuteranopia and protanopia, 9.9 with normal
+   vision, and every same-family pair is at least 4 L* apart — the rule the
+   wire palette below already obeys. Five categories sit darker than the
+   rest to make that room (LLM, Classical, Data Flow, Utility and Tensor
+   Operations); each is still its canvas hue, darkened.
 
    Nothing in CSS references these; they are consumed by the SVG exporter
    through the `styles/theme.ts` mirror, because an exported file is
@@ -420,21 +429,28 @@
 
   /* Light category hues. Each clears 4.5:1 on the white card, which covers
      both roles the hue plays there: the card border (1.4.11, 3:1) and the
-     card title, which is drawn in the same colour (1.4.3, 4.5:1). */
-  --diagram-light-cnn: #1a8626; /* 4.69 */
-  --diagram-light-rnn: #0077c8; /* 4.70 */
-  --diagram-light-transformer: #9f58ab; /* 4.71 */
-  --diagram-light-llm: #7f61cc; /* 4.68 */
-  --diagram-light-diffusion: #c93d86; /* 4.67 */
-  --diagram-light-classical: #7e4e00; /* 7.05 — darkened past the bar to part it from RL */
-  --diagram-light-rl: #a96300; /* 4.70 */
-  --diagram-light-data: #018091; /* 4.67 */
-  --diagram-light-training: #d14039; /* 4.66 */
-  --diagram-light-io: #866f66; /* 4.69 */
-  --diagram-light-dataflow: #ad4900; /* 5.63 — likewise parted from RL */
-  --diagram-light-utility: #617782; /* 4.70 */
-  --diagram-light-normalization: #008278; /* 4.70 */
-  --diagram-light-tensorops: #6570ad; /* 4.69 */
+     card title, which is drawn in the same colour (1.4.3, 4.5:1). The second
+     number is CIE L*: the lightness tiers are the design (see above), and
+     `check-contrast.mjs` rules 11c and 11d are what hold them. */
+  --diagram-light-cnn: #298340; /* 4.76, L* 48 */
+  --diagram-light-rnn: #0075d6; /* 4.65, L* 49 */
+  --diagram-light-transformer: #a458b0; /* 4.56, L* 49 */
+  /* 9.19, L* 31 — the blue tier's dark member. At one lightness with RNN it
+     was 2.13 dE00 from it under deuteranopia, the palette's worst pair. */
+  --diagram-light-llm: #5327b0;
+  --diagram-light-diffusion: #de1181; /* 4.66, L* 49 */
+  /* 9.17, L* 31 — the amber tier's dark member, parted from RL and Data Flow
+     (2.61 dE00 from Data Flow under protanopia before). */
+  --diagram-light-classical: #693e00;
+  --diagram-light-rl: #a56100; /* 4.87, L* 48 */
+  --diagram-light-data: #007d8d; /* 4.86, L* 48 */
+  --diagram-light-training: #d83a41; /* 4.56, L* 49 */
+  --diagram-light-io: #877065; /* 4.63, L* 49 */
+  --diagram-light-dataflow: #995020; /* 5.96, L* 42 — the amber tier's middle */
+  --diagram-light-utility: #476370; /* 6.39, L* 40 — parted from Normalization and Data */
+  --diagram-light-normalization: #008278; /* 4.70, L* 49 */
+  /* 6.84, L* 38 — the blue tier's middle: was 0.01 L* from RNN. */
+  --diagram-light-tensorops: #4b549f;
 
   /* Light data-type hues. These paint the wires, and a wire has to be visible
      as a line before its colour can mean anything — LIST measured 1.51:1 and

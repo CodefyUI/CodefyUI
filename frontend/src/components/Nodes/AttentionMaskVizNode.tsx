@@ -1,35 +1,23 @@
-import { memo, useMemo, useState } from 'react';
+import { memo, useMemo } from 'react';
 import type { NodeProps } from '@xyflow/react';
 import type { AppNode } from '../../types';
 import { useTabStore } from '../../store/tabStore';
 import { useI18n } from '../../i18n';
 import { HeatmapPlot } from '../shared/HeatmapPlot';
-import { HeatmapModal } from '../shared/HeatmapModal';
 import { BaseNodeBody } from './BaseNode';
+import { maskMatrix } from './vizViewers';
 import styles from './AttentionVizNode.module.css';
 
 function AttentionMaskVizNode(props: NodeProps<AppNode>) {
-  const { id, data } = props;
+  const { id } = props;
   const { t } = useI18n();
   const summaries = useTabStore((s) => {
     const tab = s.tabs.find((tt) => tt.id === s.activeTabId);
     return tab?.outputSummaries?.[id];
   });
-  const runId = useTabStore((s) => {
-    const tab = s.tabs.find((tt) => tt.id === s.activeTabId);
-    return tab?.lastRunId ?? null;
-  });
+  const openVizModal = useTabStore((s) => s.openVizModal);
 
-  const [expanded, setExpanded] = useState(false);
-
-  const matrix = useMemo<number[][] | null>(() => {
-    const v = summaries?.mask?.values;
-    if (!Array.isArray(v) || v.length === 0) return null;
-    const rows = v as unknown[];
-    return rows.map((row) =>
-      Array.isArray(row) ? row.map((x) => (x ? 1 : 0)) : [],
-    );
-  }, [summaries]);
+  const matrix = useMemo(() => maskMatrix(summaries?.mask?.values), [summaries]);
 
   const hasShape = !!summaries?.mask;
 
@@ -44,7 +32,7 @@ function AttentionMaskVizNode(props: NodeProps<AppNode>) {
           <button
             type="button"
             className={styles.expandLink}
-            onClick={() => setExpanded(true)}
+            onClick={() => openVizModal(id)}
           >
             {t('attention.viewFull')} →
           </button>
@@ -57,21 +45,9 @@ function AttentionMaskVizNode(props: NodeProps<AppNode>) {
           panelWidth={180}
           panelHeight={180}
           detectCausalMask={false}
-          onExpand={() => setExpanded(true)}
+          onExpand={() => openVizModal(id)}
         />
       )}
-      <HeatmapModal
-        isOpen={expanded}
-        onClose={() => setExpanded(false)}
-        title={`AttentionMask · ${data.label ?? id}`}
-        inlineData={matrix}
-        colormap="RdBu"
-        detectCausalMask={false}
-        runId={runId}
-        nodeId={id}
-        port="mask"
-        variant="mask"
-      />
     </div>
   );
 

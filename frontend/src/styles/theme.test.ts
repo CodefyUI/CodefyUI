@@ -281,6 +281,62 @@ describe('tokens.css / diagram export palette agreement', () => {
     return pairs;
   };
 
+  /**
+   * The light CARD palette under the same rule (core#390). It had been exempt
+   * — fourteen hues lowered to one lightness — which left RNN and Tensor
+   * Operations 0.01 L* apart and Transformer/LLM at 0.16. The palette now
+   * carries its own lightness tiers; this restates gate rule 11c over the
+   * categories so that flattening any one of them back fails a unit test as
+   * well as `pnpm build`. The dichromat simulation itself (gate rule 11d)
+   * stays in the gate: it needs a colour-vision model this file has no
+   * business duplicating.
+   */
+  const lightCategoryFamilyPairs = (): [string, string][] => {
+    const names = Object.keys(CATEGORY_COLORS_ON_LIGHT).sort();
+    const pairs: [string, string][] = [];
+    for (let i = 0; i < names.length; i++) {
+      for (let j = i + 1; j < names.length; j++) {
+        const [a, b] = [CATEGORY_COLORS_ON_LIGHT[names[i]], CATEGORY_COLORS_ON_LIGHT[names[j]]];
+        if (chroma(a) < FAMILY_MIN_CHROMA || chroma(b) < FAMILY_MIN_CHROMA) continue;
+        if (hueGap(a, b) > FAMILY_HUE_DEGREES) continue;
+        pairs.push([names[i], names[j]]);
+      }
+    }
+    return pairs;
+  };
+
+  it('has same-family light card pairs to hold apart at all', () => {
+    // The blue-violet run (RNN, Tensor Operations, LLM, Transformer) and the
+    // amber run (Classical, RL, Data Flow) both sit inside the window.
+    expect(lightCategoryFamilyPairs().length).toBeGreaterThan(0);
+  });
+
+  it.each(lightCategoryFamilyPairs())(
+    'parts the light card colours %s and %s in lightness, not only in hue',
+    (first, second) => {
+      const gap = Math.abs(
+        lstar(CATEGORY_COLORS_ON_LIGHT[first]) - lstar(CATEGORY_COLORS_ON_LIGHT[second]),
+      );
+      expect(gap).toBeGreaterThanOrEqual(FAMILY_MIN_LIGHTNESS);
+    },
+  );
+
+  it('keeps the exported RNN and Tensor Operations blues apart in lightness', () => {
+    // The reported pair (core#390): 0.01 L* apart before the repaint. Tensor
+    // Operations is the half that moved, to the middle of the blue tier.
+    const gap =
+      lstar(CATEGORY_COLORS_ON_LIGHT.RNN) - lstar(CATEGORY_COLORS_ON_LIGHT['Tensor Operations']);
+    expect(gap).toBeGreaterThan(FAMILY_MIN_LIGHTNESS);
+  });
+
+  it('keeps every light card colour darker than its canvas twin', () => {
+    // Every floor the palette is held to is a contrast against a white page,
+    // which only a darker colour can clear; gate rule 11b measures the same.
+    for (const name of Object.keys(CATEGORY_COLORS_ON_LIGHT)) {
+      expect(lstar(CATEGORY_COLORS_ON_LIGHT[name]), name).toBeLessThan(lstar(CATEGORY_COLORS[name]));
+    }
+  });
+
   it('has same-family light wire pairs to hold apart at all', () => {
     // A sweep that matches nothing passes for the wrong reason. Four pairs
     // sit inside the window today (dataset/transform, image/optimizer,

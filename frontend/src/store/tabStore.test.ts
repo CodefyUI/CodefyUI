@@ -1281,6 +1281,43 @@ describe('onNodesChange', () => {
     expect(activeTab().nodeDetailNodeId).toBe('n1');
   });
 
+  // ── the viz viewer id (core#324) ──────────────────────────────────────────
+
+  it('openVizModal / closeVizModal set and clear the viewer id on the active tab', () => {
+    expect(activeTab().vizModalNodeId).toBeNull();
+    store().openVizModal('n1');
+    expect(activeTab().vizModalNodeId).toBe('n1');
+    store().closeVizModal();
+    expect(activeTab().vizModalNodeId).toBeNull();
+  });
+
+  it('closes the viz viewer when React Flow removes its node, and leaves it for another node', () => {
+    // Same reason as the detail modal above: the Delete key emits a `remove`
+    // change straight into the reducer, and a stale id would reopen the viewer
+    // on its own the moment an undo restores the node.
+    store().setNodes([
+      { id: 'n1', type: 'attentionHeatmapNode', position: { x: 0, y: 0 }, data: { label: 'A', type: 'A', params: {} } },
+      { id: 'n2', type: 'baseNode', position: { x: 0, y: 0 }, data: { label: 'B', type: 'B', params: {} } },
+    ] as any);
+    store().openVizModal('n1');
+    store().onNodesChange([{ id: 'n2', type: 'remove' }]);
+    expect(activeTab().vizModalNodeId).toBe('n1');
+    store().onNodesChange([{ id: 'n1', type: 'remove' }]);
+    expect(activeTab().vizModalNodeId).toBeNull();
+  });
+
+  it('deleteNode closes the viz viewer showing that node', () => {
+    store().setNodes([
+      { id: 'n1', type: 'attentionHeatmapNode', position: { x: 0, y: 0 }, data: { label: 'A', type: 'A', params: {} } },
+      { id: 'n2', type: 'baseNode', position: { x: 0, y: 0 }, data: { label: 'B', type: 'B', params: {} } },
+    ] as any);
+    store().openVizModal('n1');
+    store().deleteNode('n2');
+    expect(activeTab().vizModalNodeId).toBe('n1');
+    store().deleteNode('n1');
+    expect(activeTab().vizModalNodeId).toBeNull();
+  });
+
   // ── deep-linking a tab and a port (#129) ──────────────────────────────────
 
   it('opens the detail modal with no tab or port requested by default', () => {

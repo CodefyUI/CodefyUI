@@ -264,6 +264,30 @@ received — each links to the release it was published as.
   atomically, so a reader sees the old file or the new one and never the
   write in progress.
 
+- **The full-size attention and embedding viewers survive the card that
+  opened them scrolling out of view** ([#324]). Since [#321] the canvas
+  renders only the cards inside the viewport, and each viz card kept its
+  "View full" heatmap or scatter viewer as its own local state — so a window
+  resize, a browser zoom, Shift+L or Ctrl+Z while the viewer was up unmounted
+  the card and took the viewer down with it. The viewer is now one component
+  at the app root, driven by the tab the way the node-detail, preset and
+  layers modals already are: a card only asks for its viewer, and the host
+  reads the node's output from the store and stays up until you close it.
+  Deleting the node, collapsing it into a block or opening another document
+  closes it, and Enter no longer opens the node-detail modal over it.
+
+- **Light-theme diagram exports: the card colours differ in lightness, so a
+  red-green colour-blind reader can tell the categories apart** ([#390]).
+  [#323] parted the wire ambers; the fourteen card hues still sat at one
+  lightness, so RNN and Tensor Operations were 0.01 L* apart and the closest
+  pair under a deuteranopia simulation measured 2.13 dE00 — one colour. Each
+  category now has its own lightness tier (LLM, Classical, Data Flow, Utility
+  and Tensor Operations sit darker; every hue stays its canvas hue), and the
+  closest pair is 6.7 dE00 under both deuteranopia and protanopia. The
+  contrast gate now simulates both deficiencies for every export palette and
+  holds the light cards to the same lightness-parting rule as the wires, so
+  the class cannot come back.
+
 ## [2.5.0] — 2026-09-01
 
 Twenty-four commits since 2.4.1, around three themes. The Package Center
@@ -3024,10 +3048,12 @@ Release candidates before 1.0.0 are on the
 [#380]: https://github.com/CodefyUI/CodefyUI/issues/380
 [#386]: https://github.com/CodefyUI/CodefyUI/issues/386
 [#387]: https://github.com/CodefyUI/CodefyUI/issues/387
+[#390]: https://github.com/CodefyUI/CodefyUI/issues/390
 [#371]: https://github.com/CodefyUI/CodefyUI/pull/371
 [#372]: https://github.com/CodefyUI/CodefyUI/issues/372
 [#305]: https://github.com/CodefyUI/CodefyUI/issues/305
 [#323]: https://github.com/CodefyUI/CodefyUI/issues/323
+[#324]: https://github.com/CodefyUI/CodefyUI/issues/324
 [#325]: https://github.com/CodefyUI/CodefyUI/issues/325
 [#337]: https://github.com/CodefyUI/CodefyUI/issues/337
 [#341]: https://github.com/CodefyUI/CodefyUI/issues/341

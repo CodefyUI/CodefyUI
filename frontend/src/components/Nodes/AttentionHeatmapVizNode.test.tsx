@@ -5,6 +5,7 @@ import { useI18n } from '../../i18n';
 import { useTabStore } from '../../store/tabStore';
 import type { NodeData, NodeDefinition, OutputSummary } from '../../types';
 import AttentionHeatmapVizNode from './AttentionHeatmapVizNode';
+import { VizViewerModal } from './VizViewerModal';
 
 const flowProps = {
   zIndex: 0,
@@ -52,6 +53,8 @@ function seed(summary: Record<string, OutputSummary> | undefined, runId: string 
         name: 'Tab',
         nodes: [],
         edges: [],
+        // A viewer left open by the previous test must not carry over.
+        vizModalNodeId: null,
         lastRunId: runId,
         outputSummaries: summary ? { [NODE_ID]: summary } : ({} as Record<string, Record<string, OutputSummary>>),
       },
@@ -60,8 +63,21 @@ function seed(summary: Record<string, OutputSummary> | undefined, runId: string 
 }
 
 function renderNode(d: NodeData = data()) {
+  // The "View full" viewer is the store-driven host at the app root
+  // (core#324), which reads the node off the tab -- so the tab has to hold
+  // the node the card is rendered for, and the host renders beside the card.
+  useTabStore.setState((s) => ({
+    tabs: s.tabs.map((t) =>
+      t.id === s.activeTabId
+        ? { ...t, nodes: [{ id: NODE_ID, type: 'attentionHeatmapNode', position: { x: 0, y: 0 }, data: d }] }
+        : t,
+    ),
+  }));
   return renderWithFlow(
-    <AttentionHeatmapVizNode id={NODE_ID} type="attentionHeatmapNode" data={d} selected={false} {...flowProps} />,
+    <>
+      <AttentionHeatmapVizNode id={NODE_ID} type="attentionHeatmapNode" data={d} selected={false} {...flowProps} />
+      <VizViewerModal />
+    </>,
   );
 }
 

@@ -47,6 +47,9 @@ vi.mock('./components/LayersEditor/LayersEditorModal', () => ({
 vi.mock('./components/NodeDetailModal/NodeDetailModal', () => ({
   NodeDetailModal: () => <div data-testid="node-detail-modal" />,
 }));
+vi.mock('./components/Nodes/VizViewerModal', () => ({
+  VizViewerModal: () => <div data-testid="viz-viewer-modal" />,
+}));
 vi.mock('./components/shared/Toast', () => ({
   ToastContainer: () => <div data-testid="toast-container" />,
 }));
@@ -124,6 +127,7 @@ describe('App', () => {
     expect(screen.getByTestId('preset-modal')).toBeTruthy();
     expect(screen.getByTestId('layers-editor-modal')).toBeTruthy();
     expect(screen.getByTestId('node-detail-modal')).toBeTruthy();
+    expect(screen.getByTestId('viz-viewer-modal')).toBeTruthy();
     expect(screen.getByTestId('toast-container')).toBeTruthy();
     expect(screen.getByTestId('shortcuts-modal')).toBeTruthy();
     expect(screen.getByTestId('dialog-container')).toBeTruthy();

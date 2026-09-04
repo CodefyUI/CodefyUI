@@ -1089,6 +1089,23 @@ describe('expandSubgraphInstance cleans up after the instance it removes', () =>
     expect(tab().nodes.find((n) => n.id === 'note')!.data.boundToNodeId).toBeNull();
     expect(tab().nodeDetailNodeId).toBeNull();
   });
+
+  it('closes a viz viewer that named the instance, and keeps one that named another node (core#324)', () => {
+    seedChain();
+    select('b', 'c');
+    store().collapseSelectionToSubgraph('Block');
+    const instanceId = tab().nodes.find((n) => subgraphIdOf(n.data.type))!.id;
+
+    store().openVizModal('a');
+    expect(store().expandSubgraphInstance(instanceId)).toBe(true);
+    expect(tab().vizModalNodeId).toBe('a');
+
+    store().undo();
+    const again = tab().nodes.find((n) => subgraphIdOf(n.data.type))!.id;
+    store().openVizModal(again);
+    expect(store().expandSubgraphInstance(again)).toBe(true);
+    expect(tab().vizModalNodeId).toBeNull();
+  });
 });
 
 describe('collapseSelectionToSubgraph closes a detail modal it swallowed', () => {
@@ -1099,6 +1116,20 @@ describe('collapseSelectionToSubgraph closes a detail modal it swallowed', () =>
     expect(store().collapseSelectionToSubgraph('Block').ok).toBe(true);
     expect(tab().nodes.some((n) => n.id === 'b')).toBe(false);
     expect(tab().nodeDetailNodeId).toBeNull();
+  });
+
+  it('clears vizModalNodeId when the node moved into the block, and keeps one that stayed outside (core#324)', () => {
+    seedChain();
+    store().openVizModal('a');
+    select('b', 'c');
+    expect(store().collapseSelectionToSubgraph('Block').ok).toBe(true);
+    expect(tab().vizModalNodeId).toBe('a');
+
+    store().undo();
+    store().openVizModal('b');
+    select('b', 'c');
+    expect(store().collapseSelectionToSubgraph('Block').ok).toBe(true);
+    expect(tab().vizModalNodeId).toBeNull();
   });
 });
 

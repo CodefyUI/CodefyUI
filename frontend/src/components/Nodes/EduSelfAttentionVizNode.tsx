@@ -1,11 +1,11 @@
-import { memo, useMemo, useState } from 'react';
+import { memo, useMemo } from 'react';
 import type { NodeProps } from '@xyflow/react';
 import type { AppNode } from '../../types';
 import { useTabStore } from '../../store/tabStore';
 import { useI18n } from '../../i18n';
 import { HeatmapPlot } from '../shared/HeatmapPlot';
-import { HeatmapModal } from '../shared/HeatmapModal';
 import { BaseNodeBody } from './BaseNode';
+import { labelList, selfAttentionWeights } from './vizViewers';
 import styles from './AttentionVizNode.module.css';
 
 /**
@@ -13,8 +13,9 @@ import styles from './AttentionVizNode.module.css';
  *
  * The backend's `_summarize_single` only embeds tensor values when
  * numel ≤ 256. For longer sequences we still get the shape summary, just
- * without the cell values — the modal then REST-fetches the full tensor
- * (max_elements=4096) so users can still see it at a larger size.
+ * without the cell values — the viewer (`VizViewerModal`, core#324) then
+ * REST-fetches the full tensor (max_elements=4096) so users can still see
+ * it at a larger size.
  */
 function EduSelfAttentionVizNode(props: NodeProps<AppNode>) {
   const { id, data } = props;
@@ -23,27 +24,10 @@ function EduSelfAttentionVizNode(props: NodeProps<AppNode>) {
     const tab = s.tabs.find((tt) => tt.id === s.activeTabId);
     return tab?.outputSummaries?.[id];
   });
-  const runId = useTabStore((s) => {
-    const tab = s.tabs.find((tt) => tt.id === s.activeTabId);
-    return tab?.lastRunId ?? null;
-  });
+  const openVizModal = useTabStore((s) => s.openVizModal);
 
-  const [expanded, setExpanded] = useState(false);
-
-  const matrix = useMemo<number[][] | null>(() => {
-    const v = summaries?.weights?.values;
-    if (!Array.isArray(v) || v.length === 0) return null;
-    if (Array.isArray(v[0]) && Array.isArray((v[0] as unknown[])[0])) {
-      return (v as unknown as number[][][])[0];
-    }
-    return v as number[][];
-  }, [summaries]);
-
-  const labels = useMemo<string[] | undefined>(() => {
-    const lv = summaries?.labels?.values;
-    if (!Array.isArray(lv) || lv.length === 0) return undefined;
-    return lv.map((s) => String(s));
-  }, [summaries]);
+  const matrix = useMemo(() => selfAttentionWeights(summaries?.weights?.values), [summaries]);
+  const labels = useMemo(() => labelList(summaries?.labels?.values), [summaries]);
 
   const causal = String(data.params?.causal) === 'true';
   const hasShape = !!summaries?.weights;
@@ -59,7 +43,7 @@ function EduSelfAttentionVizNode(props: NodeProps<AppNode>) {
           <button
             type="button"
             className={styles.expandLink}
-            onClick={() => setExpanded(true)}
+            onClick={() => openVizModal(id)}
           >
             {t('attention.viewFull')} →
           </button>
@@ -72,7 +56,7 @@ function EduSelfAttentionVizNode(props: NodeProps<AppNode>) {
             rowLabels={labels}
             panelWidth={220}
             panelHeight={220}
-            onExpand={() => setExpanded(true)}
+            onExpand={() => openVizModal(id)}
             normalizePerRow
           />
           {causal && (
@@ -83,18 +67,6 @@ function EduSelfAttentionVizNode(props: NodeProps<AppNode>) {
           )}
         </>
       )}
-      <HeatmapModal
-        isOpen={expanded}
-        onClose={() => setExpanded(false)}
-        title={`EduSelfAttention · ${data.label ?? id}`}
-        inlineData={matrix}
-        rowLabels={labels}
-        runId={runId}
-        nodeId={id}
-        port="weights"
-        detectCausalMask
-        normalizePerRow
-      />
     </div>
   );
 

@@ -131,6 +131,42 @@ const deltaE2000Lab = ([L1, a1, b1], [L2, a2, b2]) => {
 };
 const deltaE2000 = (a, b) => deltaE2000Lab(lab(a), lab(b));
 
+/** Linear-light sRGB, the space the dichromacy matrices below act in. */
+const linearRgb = (colour) =>
+  toRgb(colour).map((v) => {
+    const c = v / 255;
+    return c <= 0.04045 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4);
+  });
+const fromLinear = (lin) =>
+  `#${lin
+    .map((c) => {
+      const clamped = Math.min(1, Math.max(0, c));
+      const v = clamped <= 0.0031308 ? 12.92 * clamped : 1.055 * Math.pow(clamped, 1 / 2.4) - 0.055;
+      return Math.round(v * 255).toString(16).padStart(2, '0');
+    })
+    .join('')}`;
+
+/** Machado, Oliveira and Fernandes (2009), "A Physiologically-based Model
+ *  for Simulation of Color Vision Deficiency", at full severity. Rows act on
+ *  linear RGB and each sums to one, so a grey stays the same grey and only
+ *  hue is lost — which is the point: a palette that separates two hues on
+ *  the red-green axis alone measures fine in dE00 and collapses here. */
+const DEUTERANOPIA = [
+  [0.367322, 0.860646, -0.227968],
+  [0.280085, 0.672501, 0.047413],
+  [-0.01182, 0.04294, 0.968881],
+];
+const PROTANOPIA = [
+  [0.152286, 1.052583, -0.204868],
+  [0.114503, 0.786281, 0.099216],
+  [-0.003882, -0.048116, 1.051998],
+];
+/** The colour a dichromat with the given deficiency sees for `colour`. */
+const simulate = (colour, matrix) => {
+  const lin = linearRgb(colour);
+  return fromLinear(matrix.map((row) => row[0] * lin[0] + row[1] * lin[1] + row[2] * lin[2]));
+};
+
 /** Smallest CIEDE2000 distance between any two members of a palette, with the
  *  pair that produced it — that pair is the one a reader has to tell apart. */
 const closestPair = (entries) => {
@@ -186,6 +222,17 @@ const selfTests = [
     0.0001,
   ],
   ['dE00 of a colour with itself', deltaE2000('#4caf50', '#4caf50'), 0, 1e-9],
+  // The dichromacy matrices: a grey must come back as itself (rows sum to
+  // one), and a red beside a green — 86 dE00 apart to everyone else — must
+  // land within a few dE00 for a deuteranope, or the simulation is not one.
+  ['deuteranopia keeps white white', deltaE2000(simulate('#ffffff', DEUTERANOPIA), '#ffffff'), 0, 0.5],
+  ['protanopia keeps mid-grey grey', deltaE2000(simulate('#808080', PROTANOPIA), '#808080'), 0, 0.5],
+  [
+    'deuteranopia collapses red onto green',
+    deltaE2000(simulate('#ff0000', DEUTERANOPIA), simulate('#00a000', DEUTERANOPIA)),
+    0,
+    6,
+  ],
   // Lab of pure white is (100, 0, 0) — proves the sRGB -> Lab leg, which the
   // reference pairs above skip because they start in Lab.
   ['L* of #ffffff via lab()', lab('#ffffff')[0], 100, 0.001],
@@ -624,12 +671,16 @@ for (const [slugs, canvas, light] of LIGHT_TWINS) {
         reader calls "the ambers" — and the axis every viewer keeps is
         lightness, so a same-family pair has to be parted there.
 
-        Wires only. A wire is a bare coloured line with nothing written on it,
-        so its hue is the whole message; a category hue is drawn as a card's
-        border AND its title, in a box with the node's name inside it. (The
-        light card palette is iso-lightness by construction — fourteen hues all
-        at 4.7:1 on white — so holding it to this would be a repaint, not a
-        token edit.) */
+        Wires in both themes, and the light theme's cards too (core#390). The
+        light card palette used to be exempt — fourteen hues all at 4.7:1 on
+        white, iso-lightness by construction, so rnn and tensorops sat 0.01 L*
+        apart — and was repainted so that it no longer needs to be: each
+        category now has its own lightness, chosen so that two hues a
+        dichromat cannot tell apart differ in the one axis they can see (11d
+        below measures that directly). The dark theme's cards are the canvas
+        palette itself, whose classical/rl ambers are 1.5 L* apart; repainting
+        the app is a separate change, and `minSeparation` above records that
+        state. */
 const FAMILY_HUE_DEGREES = 20;
 const FAMILY_MIN_CHROMA = MIN_HUE_CHROMA;
 /* The floor, in L*, and where the number came from: optimizer/image is the
@@ -643,12 +694,11 @@ const FAMILY_MIN_CHROMA = MIN_HUE_CHROMA;
    buys separation the eye reads as "that colour again, dimmer". Move the hues
    apart instead and the pair leaves the 20-degree window on its own. */
 const FAMILY_MIN_LIGHTNESS = 4;
-for (const theme of DIAGRAM_THEMES) {
-  const wires = DIAGRAM_TYPES.map((slug) => [slug, t(theme.type(slug))]);
-  for (let i = 0; i < wires.length; i++) {
-    for (let j = i + 1; j < wires.length; j++) {
-      const [aSlug, a] = wires[i];
-      const [bSlug, b] = wires[j];
+const partedInLightness = (label, kind, entries) => {
+  for (let i = 0; i < entries.length; i++) {
+    for (let j = i + 1; j < entries.length; j++) {
+      const [aSlug, a] = entries[i];
+      const [bSlug, b] = entries[j];
       if (chroma(a) < FAMILY_MIN_CHROMA || chroma(b) < FAMILY_MIN_CHROMA) continue;
       const apart = hueGap(a, b);
       if (apart > FAMILY_HUE_DEGREES) continue;
@@ -656,12 +706,64 @@ for (const theme of DIAGRAM_THEMES) {
       const gap = Math.abs(lstar(a) - lstar(b));
       if (gap < FAMILY_MIN_LIGHTNESS) {
         failures.push(
-          `diagram/${theme.name}: wire types ${aSlug} and ${bSlug} are ${apart.toFixed(1)} degrees ` +
+          `${label}: ${kind} ${aSlug} and ${bSlug} are ${apart.toFixed(1)} degrees ` +
             `of hue apart — one colour family — and only ${gap.toFixed(2)} L* apart (needs ` +
             `${FAMILY_MIN_LIGHTNESS}); darken one of them past its contrast floor, the way ` +
             `--diagram-light-classical was parted from --diagram-light-rl`
         );
       }
+    }
+  }
+};
+for (const theme of DIAGRAM_THEMES) {
+  partedInLightness(
+    `diagram/${theme.name}`,
+    'wire types',
+    DIAGRAM_TYPES.map((slug) => [slug, t(theme.type(slug))]),
+  );
+  if (theme.name === 'light') {
+    partedInLightness(
+      `diagram/${theme.name}`,
+      'categories',
+      DIAGRAM_CATEGORIES.map((slug) => [slug, t(theme.category(slug))]),
+    );
+  }
+}
+
+/* 11d. The rule 11c approximates, measured directly: run each palette through
+        a dichromat and take its closest pair there. 11c only sees pairs inside
+        one hue family; a deuteranope also merges a blue with a violet and a
+        red with a green, so the light cards measured 2.13 dE00 at their
+        closest under deuteranopia (rnn/llm) while every normal-vision floor
+        above passed with room to spare (core#390).
+
+        One floor per palette. The light cards were repainted against this
+        rule and are held to a real floor: 6 dE00 is one notch under what the
+        repaint achieves under both deficiencies and about three times where
+        it started. The other three palettes were never designed for it, so
+        their floors record where they stand, which stops a token edit from
+        lowering them: the wire palettes' closest pairs (list/transform in both
+        themes) and the canvas cards' (classical/rl) are the same pairs 11 and
+        11c already name as the ones to part next. */
+const DICHROMACIES = [
+  ['deuteranopia', DEUTERANOPIA],
+  ['protanopia', PROTANOPIA],
+];
+const DICHROMAT_FLOORS = [
+  { label: 'diagram/light categories', theme: DIAGRAM_THEMES[0], palette: 'category', slugs: DIAGRAM_CATEGORIES, min: 6 },
+  { label: 'diagram/light wire types', theme: DIAGRAM_THEMES[0], palette: 'type', slugs: DIAGRAM_TYPES, min: 1.4 },
+  { label: 'diagram/dark categories', theme: DIAGRAM_THEMES[1], palette: 'category', slugs: DIAGRAM_CATEGORIES, min: 0.5 },
+  { label: 'diagram/dark wire types', theme: DIAGRAM_THEMES[1], palette: 'type', slugs: DIAGRAM_TYPES, min: 2.5 },
+];
+for (const { label, theme, palette, slugs, min } of DICHROMAT_FLOORS) {
+  for (const [deficiency, matrix] of DICHROMACIES) {
+    const seen = closestPair(slugs.map((slug) => [slug, simulate(t(theme[palette](slug)), matrix)]));
+    checked += 1;
+    if (seen.min < min) {
+      failures.push(
+        `${label}: under ${deficiency}, ${seen.pair.join(' and ')} are only ${seen.min.toFixed(2)} dE00 ` +
+          `apart (needs ${min}) — one colour to a red-green colour-blind reader; part them in lightness`
+      );
     }
   }
 }

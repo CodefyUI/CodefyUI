@@ -156,7 +156,8 @@ export function useKeyboardShortcuts() {
         if (
           activeTab.nodeDetailNodeId ||
           activeTab.presetModalNodeId ||
-          activeTab.layersModalNodeId
+          activeTab.layersModalNodeId ||
+          activeTab.vizModalNodeId
         ) {
           return;
         }
