@@ -713,6 +713,37 @@ async def test_a_plain_push_names_the_remote_git_fell_back_to(repo,
         "the other remote was pushed to as well"
 
 
+async def test_a_sole_remote_is_not_the_answer_when_the_push_went_elsewhere(
+        repo, bare_remote, tmp_path):
+    """The sole-remote guess is a last resort, under the destination match.
+
+    One remote, and a ``remote.pushDefault`` that is a bare PATH: git takes
+    it -- a push destination may be a URL or a path and not only a name --
+    and the commit lands in that repository rather than in ``origin``.
+    Ref-filter repeats the path, which is not a target ``detail.remote``
+    will echo, so the configured target reaches ``_pushed_remote`` as None:
+    the SAME None a ref-filter that reported nothing at all produces.
+    Answering that None with "the only remote there is" would name a
+    repository this push never opened, in a field whose whole job is to say
+    where the work went. The ``To`` line settles it first -- it matches no
+    configured remote's push URL, so the answer is the display form, and for
+    a path that is nothing.
+    """
+    second = make_bare_remote(tmp_path, "second.git")
+    repo.git("remote", "add", "origin", remote_url(bare_remote))
+    repo.git("config", "remote.pushDefault", second.as_posix())
+    repo.git("config", "push.default", "current")
+
+    result = await repo.service.push()
+
+    assert result.detail == {"remote": None, "branch": "main",
+                             "published": False}
+    assert Repo(second).git("rev-parse", "refs/heads/main").strip() \
+        == repo.head()
+    assert Repo(bare_remote).git("for-each-ref", "refs/heads").strip() == "", \
+        "origin was pushed to as well"
+
+
 async def test_push_default_nothing_is_a_user_error(repo, bare_remote):
     """A host config that disables plain push is actionable, not a 500.
 

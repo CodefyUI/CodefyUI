@@ -208,11 +208,23 @@ def _pushed_remote(stdout: str, configured: str | None,
     ``git push --porcelain`` writes one ``To <destination>`` line per target.
     The first is deterministic and, unlike human stderr, part of Git's
     machine-readable output. A target Git identified as a named remote stays
-    that name; an implicit sole-remote fallback becomes its name; a
-    destination that matches exactly one configured remote's push URL becomes
-    THAT name -- which is the answer for the ordinary two-remotes-and-no-
-    upstream repository, where ref-filter reports nothing and git falls back
-    to ``origin``.
+    that name; a destination that matches exactly one configured remote's
+    push URL becomes THAT name -- which is the answer for the ordinary
+    two-remotes-and-no-upstream repository, where ref-filter reports nothing
+    and git falls back to ``origin``; and a push that named no destination at
+    all, in a repository with exactly one remote, becomes that remote's name.
+
+    **What the push ACTUALLY opened outranks any guess about it**, which is
+    why the sole-remote fallback is last. *configured* being None says two
+    different things -- ref-filter reported nothing, or it reported a target
+    :func:`_display_target` will not echo (a bare path, arbitrary config
+    text) -- and this function cannot tell them apart. So a ``To`` line that
+    is present and matches no configured remote is answered from the ``To``
+    line: the display form, which for a path is nothing. Guessing "the only
+    remote there is" there would name a repository the push never opened,
+    which is a well-formed wrong answer in the one field whose job is to say
+    where the work went. Only a push that named NO destination is left for
+    the guess, and then one remote really is the only answer it can be.
 
     The URL is matched in display form, because that is the form
     ``refs.list_remotes`` reports; only what is RETURNED has to survive
@@ -229,14 +241,14 @@ def _pushed_remote(stdout: str, configured: str | None,
         return validate_remote_name(configured)
     if configured is not None:
         return shown or configured
-    if len(remotes) == 1:
-        return validate_remote_name(remotes[0].name)
     if destination is not None:
         matching = {remote.name for remote in remotes
                     if remote.push_url == destination}
         if len(matching) == 1:
             return validate_remote_name(matching.pop())
         return shown
+    if len(remotes) == 1:
+        return validate_remote_name(remotes[0].name)
     return None
 
 
