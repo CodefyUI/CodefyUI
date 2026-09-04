@@ -206,6 +206,28 @@ describe('IdentityForm: what a save is allowed to write', () => {
     expect(saveIdentity).not.toHaveBeenCalled();
   });
 
+  it('measures a change against the first read, not a later one', async () => {
+    await opened();
+    fireEvent.change(nameBox(), { target: { value: 'Grace' } });
+
+    // A commit refused a second time reads the config again. The fields
+    // already ignore that answer; so must the comparison behind Save, or a
+    // typed value that happens to match the new read stops being sent -- the
+    // half of "seed once" that is not the text in the boxes.
+    act(() => {
+      useGitStore.setState({
+        identity: identity({
+          name: 'Grace',
+          email: 'ada@example.com',
+          name_scope: 'global',
+          email_scope: 'global',
+        }),
+      });
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    expect(saveIdentity).toHaveBeenCalledWith({ name: 'Grace', email: '' });
+  });
+
   it('still reads a half the user cleared as leave that one alone', async () => {
     await opened();
     fireEvent.change(nameBox(), { target: { value: '' } });

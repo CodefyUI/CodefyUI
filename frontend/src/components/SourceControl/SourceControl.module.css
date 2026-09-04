@@ -365,11 +365,18 @@
    still hold their column -- two 24px squares and a gap, about 52px of a
    250px panel -- and that space is taken from the file name beside them, so
    `graphs/api-demo.graph.json` truncated while a shorter path did not.
-   Clipping a zero-width box gives the room back without taking the buttons
-   out of the tab order the way `display: none` or `visibility: hidden` would:
-   a keyboard user still reaches them, and the `:focus-within` half of the
-   rule below opens the space as focus arrives. Only the opacity is animated;
-   an easing width would drag the count along with it on every hover. */
+
+   `overflow: hidden` is what makes `width: 0` real, not decoration: a flex
+   item's automatic minimum size is its CONTENT (`min-width: auto`, which is
+   those same ~50px of buttons), so the width alone would collapse nothing.
+   A scroll container's automatic minimum is zero, and clipping is what turns
+   this box into one. It is still neither `display: none` nor
+   `visibility: hidden`, so the buttons stay in the tab order and the
+   `:focus-within` half of the rule below opens the space as focus arrives.
+
+   Only the opacity is animated. A width that eased would relayout the row
+   on every frame of the transition, re-ellipsising the file name (or the
+   group title) a dozen times per hover. */
 .groupActions,
 .rowActions {
   display: flex;
@@ -475,9 +482,10 @@
 /* The directory is context, not the name: dimmer, and the first thing to go.
    It still takes the leftover space (`flex-grow: 1`, which is what keeps the
    name left-aligned), but it gives that space up eight times faster than the
-   name resists (`flex-shrink: 8`) -- the same arrangement the branch line
-   makes above, so a narrow panel ellipsises `graphs/deep` rather than eating
-   into `api-demo.graph.json` at the same time. */
+   name resists (`flex-shrink: 8`) -- the same shrink factor the branch line
+   uses above, though there the growing half is the primary one and here it is
+   this secondary. So a narrow panel ellipsises `graphs/deep` away before it
+   starts cutting into `api-demo.graph.json`. */
 .rowDir {
   flex: 1 8 auto;
   min-width: 0;

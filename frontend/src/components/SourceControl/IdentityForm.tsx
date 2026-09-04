@@ -40,7 +40,8 @@ export function IdentityForm() {
   const closeIdentityForm = useGitStore((s) => s.closeIdentityForm);
   const [name, setName] = useState('');
   const [email, setEmail] = useState('');
-  const seeded = useRef(false);
+  // Null until the config read lands; the values it landed with after that.
+  const seeds = useRef<{ name: string; email: string } | null>(null);
   const nameRef = useRef<HTMLInputElement>(null);
   const domId = useId();
   const nameId = `${domId}-name`;
@@ -70,18 +71,23 @@ export function IdentityForm() {
   // write, and a second one -- a commit refused again for a missing identity,
   // the form reopened from the menu -- would otherwise land in the middle of
   // typing and put the old values back over what was being written.
+  //
+  // The seeds are KEPT rather than read back off the store below, so the two
+  // halves of "once" cannot drift apart: a second read that the fields ignore
+  // must not quietly become the thing a change is measured against, or a
+  // typed value that happens to match it would stop being sent.
   useEffect(() => {
-    if (identity === null || seeded.current) return;
-    seeded.current = true;
-    setName(identity.name ?? '');
-    setEmail(identity.email ?? '');
+    if (identity === null || seeds.current !== null) return;
+    seeds.current = { name: identity.name ?? '', email: identity.email ?? '' };
+    setName(seeds.current.name);
+    setEmail(seeds.current.email);
   }, [identity]);
 
   // What the fields were seeded with, and so what a half has to differ from
   // to be worth writing. A half that is blank, or back to the value it was
   // seeded with, is one this repository has no reason to be given.
-  const seededName = identity?.name ?? '';
-  const seededEmail = identity?.email ?? '';
+  const seededName = seeds.current?.name ?? '';
+  const seededEmail = seeds.current?.email ?? '';
   const nameChanged = name.trim() !== '' && name.trim() !== seededName;
   const emailChanged = email.trim() !== '' && email.trim() !== seededEmail;
   const nothingToSave = !nameChanged && !emailChanged;
