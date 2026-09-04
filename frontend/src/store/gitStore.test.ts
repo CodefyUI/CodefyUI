@@ -64,8 +64,7 @@ import { confirm } from '../utils/dialog';
 import { useProjectStore } from './projectStore';
 import { useTabStore } from './tabStore';
 import { useToastStore } from './toastStore';
-import { useI18n } from '../i18n';
-import type { TranslationKey } from '../i18n/locales/en';
+import { useI18n, type TranslationKey } from '../i18n';
 
 const api = vi.mocked(gitApi);
 const confirmMock = vi.mocked(confirm);
@@ -782,6 +781,13 @@ describe('applyWorktreeChange', () => {
     expect(toasts()[0].message).toBe(say('git.toast.changedOnDisk', { count: 1 }));
     expect(toasts()[0].type).toBe('warning');
     expect(toasts()[0].action?.label).toBe(say('git.toast.reload'));
+
+    // Sticky: a warning that vanishes after four seconds is a warning nobody
+    // who looked away will ever see, and this one is the only thing standing
+    // between an open tab and a silently older graph.
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(toasts()).toHaveLength(1);
+    expect(toasts()[0].action?.label).toBe(say('git.toast.reload'));
   });
 
   it('never offers after a commit, whose changed_paths are already on screen', async () => {
@@ -967,9 +973,38 @@ describe('the identity form', () => {
     expect(git().lastError?.code).toBe('invalid_value');
   });
 
+  it('sends only the half that was filled in', async () => {
+    // An absent key means "leave that one alone"; an empty string is a value
+    // the route refuses with a 400. Setting only the email -- because the
+    // name is already global -- must not drag `name: ""` along with it.
+    await git().saveIdentity({ name: '', email: 'ada@example.com' });
+    expect(api.setGitConfig).toHaveBeenLastCalledWith({ email: 'ada@example.com' });
+
+    await git().saveIdentity({ name: 'Ada', email: '   ' });
+    expect(api.setGitConfig).toHaveBeenLastCalledWith({ name: 'Ada' });
+  });
+
   it('sends nothing when both halves are empty', async () => {
     expect(await git().saveIdentity({ name: '  ', email: '' })).toBe(false);
     expect(api.setGitConfig).not.toHaveBeenCalled();
+  });
+
+  it('a slow config read cannot put the old identity back after a save', async () => {
+    const slow = deferred<Identity>();
+    api.getGitConfig.mockReturnValueOnce(slow.promise);
+    git().openIdentityForm();
+
+    api.setGitConfig.mockResolvedValue(
+      identity({ name: 'Grace', email: 'grace@example.com', name_scope: 'local' }),
+    );
+    await git().saveIdentity({ name: 'Grace', email: 'grace@example.com' });
+    expect(git().identity?.name).toBe('Grace');
+
+    // The read was started by the form opening, before the write existed.
+    slow.resolve(identity({ name: 'Ada', email: 'ada@example.com' }));
+    await settle();
+    expect(git().identity?.name).toBe('Grace');
+    expect(git().identity?.name_scope).toBe('local');
   });
 
   it('closeIdentityForm closes it', () => {

@@ -24,8 +24,7 @@ import { confirm } from '../utils/dialog';
 import { useProjectStore } from './projectStore';
 import { useTabStore } from './tabStore';
 import { useToastStore, type ToastAction, type ToastType } from './toastStore';
-import { useI18n } from '../i18n';
-import type { TranslationKey } from '../i18n/locales/en';
+import { useI18n, type TranslationKey } from '../i18n';
 
 /**
  * Everything the Source Control tab knows and everything it does.
@@ -240,6 +239,14 @@ let listening = false;
  */
 let readSeq = 0;
 
+/**
+ * The generation of the newest identity read or write, for the same reason
+ * `readSeq` exists: a config read that was slow enough to outlive the write
+ * that replaced it would otherwise put the OLD name and email back into a
+ * form the user has just saved. Bumped by both, applied only by the newest.
+ */
+let identitySeq = 0;
+
 /** The sticky "changed on disk" toast, so the next one replaces it. */
 let changedToastId: string | null = null;
 
@@ -314,9 +321,15 @@ function cancelWriteDebounce(): void {
  * commit was refused for the lack of one.
  */
 async function loadIdentity(): Promise<void> {
+  const seq = (identitySeq += 1);
   try {
-    useGitStore.setState({ identity: await getGitConfig() });
+    const answer = await getGitConfig();
+    // A read that a write has already overtaken describes an identity that
+    // no longer exists -- see `identitySeq`.
+    if (seq !== identitySeq) return;
+    useGitStore.setState({ identity: answer });
   } catch (err) {
+    if (seq !== identitySeq) return;
     // Reported rather than swallowed: the form is on screen because the user
     // asked for it, and a form that stays blank with no reason given is worse
     // than an error line above it.
@@ -432,6 +445,8 @@ async function runOp(
         toast(t('git.group.skipped', { count: skipped.length }), 'info');
       }
     } else {
+      // Newer than any config read still in flight -- see `identitySeq`.
+      identitySeq += 1;
       useGitStore.setState({ identity: result });
     }
     const said = announcement(op, result);
@@ -741,14 +756,22 @@ export const useGitStore = create<GitState>((set, get) => ({
    * Trimmed, because a trailing space in an email is a bug git will keep
    * forever; refused when both halves are empty, because that is the one
    * request `PUT /config` cannot do anything with.
+   *
+   * A half that was left blank is OMITTED rather than sent empty. The two
+   * are different requests: an absent key means "leave that one alone", and
+   * an empty string is a value the model refuses with a 400 `invalid_value`.
+   * A user filling in only the email -- because the name is already set
+   * globally -- is the common case, and sending `name: ""` beside it would
+   * refuse the whole write.
    */
   saveIdentity: async ({ name, email }) => {
     const cleanName = name.trim();
     const cleanEmail = email.trim();
     if (cleanName === '' && cleanEmail === '') return false;
-    const ok = await runOp('identity', () =>
-      setGitConfig({ name: cleanName, email: cleanEmail }),
-    );
+    const payload: { name?: string; email?: string } = {};
+    if (cleanName !== '') payload.name = cleanName;
+    if (cleanEmail !== '') payload.email = cleanEmail;
+    const ok = await runOp('identity', () => setGitConfig(payload));
     if (ok) set({ identityFormOpen: false });
     return ok;
   },
@@ -819,6 +842,7 @@ export function _resetGitStoreForTesting(): void {
   cancelWriteDebounce();
   attachCount = 0;
   readSeq = 0;
+  identitySeq = 0;
   changedToastId = null;
   useGitStore.setState({
     repoState: 'unknown',
