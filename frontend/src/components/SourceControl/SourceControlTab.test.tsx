@@ -103,6 +103,16 @@ describe('SourceControlTab: one screen per repository state', () => {
     expect(screen.queryByText('Running status...')).toBeNull();
   });
 
+  it('keeps waiting when a ready repository has answered no status yet', () => {
+    // The route sends the repository and its status together, so this is
+    // either a first read still in flight or a server that broke its own
+    // contract. Both are a wait; neither is a header above an empty body.
+    useGitStore.setState({ repoState: 'ready', repo: repo(), status: null });
+    render(<SourceControlTab />);
+    expect(screen.getByText('Running status...')).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Commit' })).toBeNull();
+  });
+
   it('asks for a project directory with the two commands that make one', () => {
     useGitStore.setState({ repoState: 'no_project', repo: repo({ state: 'no_project' }) });
     render(<SourceControlTab />);

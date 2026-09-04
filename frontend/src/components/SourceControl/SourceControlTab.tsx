@@ -76,8 +76,15 @@ export function SourceControlTab() {
     return hideLayout ? all.filter((file) => !isLayoutFile(file.path)) : all;
   }, [status, hideLayout]);
 
+  // Nothing to draw a panel from yet. `unknown` is the obvious half; the
+  // other is a `ready` repository with no status beside it, which the route
+  // never sends -- the two travel together -- and which would otherwise fall
+  // past all three branches and leave a header above an empty body. A wait is
+  // both truer than that and something the reader can act on.
+  const waiting = repoState === 'unknown' || (repoState === 'ready' && status === null);
+
   let body: ReactNode = null;
-  if (repoState === 'unknown') {
+  if (waiting) {
     // Nothing has answered yet. A failed first read has already put the
     // reason in the header, so this line is only for the wait itself.
     body = loadError === null
