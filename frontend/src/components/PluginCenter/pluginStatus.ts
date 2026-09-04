@@ -171,6 +171,48 @@ export function capabilityKey(id: string): TranslationKey | null {
   return CAPABILITY_KEY[id] ?? null;
 }
 
+// ── provenance and contents ──────────────────────────────────────────────
+
+/**
+ * The commit a row is pinned to, as one phrase -- or null when it has none.
+ *
+ * `{ref} @ {sha7}` when both halves say something, and the commit alone when
+ * the ref does not:
+ *
+ * - `''` is the server's way of saying "the default branch", an answer rather
+ *   than a miss, so a bare `@` is never printed;
+ * - a ref that IS the version reads as the version twice, because a card
+ *   prints `v{version}` in its header -- `v1.2.0 @ 4f0a1c9` under a heading
+ *   that already says `v1.2.0`. The tag and the bare number are both matched:
+ *   `v1.2.0` and `1.2.0` are the same release named two ways.
+ *
+ * `sha` is `''` for a built-in in some lockfiles, which is not a commit
+ * either: `''.slice(0, 7)` would put an empty phrase on the meta line.
+ */
+export function provenancePin(
+  ref: string | null, sha: string | null, version: string | null,
+): string | null {
+  if (sha === null || sha === '') return null;
+  const sha7 = sha.slice(0, 7);
+  if (ref === null || ref === '') return sha7;
+  const named = version !== null && version !== ''
+    && (ref === version || ref === `v${version}`);
+  return named ? sha7 : `${ref} @ ${sha7}`;
+}
+
+/**
+ * One `name>=version` the way the installer would write it.
+ *
+ * Mirrors `backend/app/core/plugins/deps.py: _build_dep_spec`: a constraint
+ * that starts with an operator is used as written, a bare version is pinned.
+ * What a card prints is then what `uv pip install` would be given, rather
+ * than a prettier string that means something slightly different.
+ */
+export function depSpec(name: string, constraint: string): string {
+  if (constraint === '') return name;
+  return /^[<>=~!]/.test(constraint) ? `${name}${constraint}` : `${name}==${constraint}`;
+}
+
 /**
  * The `cdui plugin install ...` line for *entry*, for the terminal fallback
  * the activity pane offers when a job fails.

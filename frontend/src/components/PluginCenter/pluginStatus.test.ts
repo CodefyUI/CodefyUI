@@ -4,9 +4,11 @@ import { useI18n } from '../../i18n';
 import {
   capabilityKey,
   cliInstallCommand,
+  depSpec,
   isAvailableStatus,
   matchesFilter,
   originLabel,
+  provenancePin,
   parseGitHubSource,
   statusKey,
   statusTone,
@@ -245,6 +247,53 @@ describe('originLabel', () => {
     // What is actually being loaded is the folder on disk, whoever wrote it.
     expect(originLabel(entry({ id: 'demo', official: true, source_kind: 'local' })))
       .toBe('pluginCenter.origin.local');
+  });
+});
+
+describe('provenancePin', () => {
+  it('names the ref and the seven characters of the commit', () => {
+    expect(provenancePin('main', 'abcdef1234567890', '1.2.0')).toBe('main @ abcdef1');
+  });
+
+  it('says the commit alone for a default-branch install', () => {
+    // '' is the server saying "the default branch", not a missing value: a
+    // bare `@` would read as a pin that lost half of itself.
+    expect(provenancePin('', 'abcdef1234567890', '1.2.0')).toBe('abcdef1');
+    expect(provenancePin(null, 'abcdef1234567890', null)).toBe('abcdef1');
+  });
+
+  it('drops a ref that only repeats the version the header prints', () => {
+    // A card's header says `v1.2.0`. `v1.2.0 @ abcdef1` under it is one
+    // release wearing two rows -- and the tag and the bare number are the
+    // same release named two ways.
+    expect(provenancePin('v1.2.0', 'abcdef1234567890', '1.2.0')).toBe('abcdef1');
+    expect(provenancePin('1.2.0', 'abcdef1234567890', '1.2.0')).toBe('abcdef1');
+    // A ref that says something else keeps its half.
+    expect(provenancePin('v1.3.0', 'abcdef1234567890', '1.2.0')).toBe('v1.3.0 @ abcdef1');
+  });
+
+  it('has nothing to pin without a commit', () => {
+    expect(provenancePin('main', null, '1.2.0')).toBeNull();
+    // A lockfile entry for a built-in records `''` rather than null, and
+    // `''.slice(0, 7)` is an empty phrase on the meta line.
+    expect(provenancePin('main', '', '1.2.0')).toBeNull();
+  });
+});
+
+describe('depSpec', () => {
+  it('uses an operator-led constraint exactly as the manifest wrote it', () => {
+    expect(depSpec('model2vec', '>=0.8.0')).toBe('model2vec>=0.8.0');
+    expect(depSpec('numpy', '~=1.24')).toBe('numpy~=1.24');
+  });
+
+  it('pins a bare version, the way the installer would', () => {
+    // `torch = "2.1.0"` in a manifest means that version, and `uv pip install
+    // torch2.1.0` is not a spec. `_build_dep_spec` adds the `==`; so does this.
+    expect(depSpec('torch', '2.1.0')).toBe('torch==2.1.0');
+  });
+
+  it('leaves a name alone when nothing is constrained', () => {
+    expect(depSpec('requests', '')).toBe('requests');
   });
 });
 

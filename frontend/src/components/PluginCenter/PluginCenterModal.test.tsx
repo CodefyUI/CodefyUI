@@ -57,7 +57,9 @@ const edu = entry({
   version: '0.1.0',
   chapters: ['I1', 'I2'],
   node_count: 8,
-  python_deps: { model2vec: '>=0.8.0' },
+  // Both shapes a manifest writes: a constraint that leads with an operator,
+  // and a bare version the installer has to pin with `==`.
+  python_deps: { model2vec: '>=0.8.0', torch: '2.1.0' },
 });
 
 /** A third-party plugin off GitHub, installed and pinned. */
@@ -213,9 +215,11 @@ describe('PluginCenterModal — the plugin list', () => {
     expect(card.getByText('Built-in')).toBeInTheDocument();
     expect(card.getByText('Lessons: I1, I2')).toBeInTheDocument();
     expect(card.getByText('8 nodes')).toBeInTheDocument();
-    // The spec as the installer would write it, not a prettier string that
+    // The specs as the installer would write them, not prettier strings that
     // would install something else.
-    expect(card.getByText('Python packages: model2vec>=0.8.0')).toBeInTheDocument();
+    expect(
+      card.getByText('Python packages: model2vec>=0.8.0, torch==2.1.0'),
+    ).toBeInTheDocument();
   });
 
   it('links a GitHub plugin to its repository and says which commit is here', () => {
@@ -226,12 +230,23 @@ describe('PluginCenterModal — the plugin list', () => {
     const card = within(cardFor('demo'));
     const link = card.getByRole('link', { name: 'owner/demo' });
     expect(link).toHaveAttribute('href', 'https://github.com/owner/demo');
-    // Seven characters of the sha, and the ref it was taken from: enough to
-    // check against a repository, short enough to sit on a meta line.
-    expect(card.getByText('v1.2.0 @ abcdef1')).toBeInTheDocument();
+    // Seven characters of the sha: enough to check against a repository,
+    // short enough to sit on a meta line. The ref is `v1.2.0` and the header
+    // already says `v1.2.0`, so the pin drops it rather than printing one
+    // release twice down one card.
+    expect(card.getByText('abcdef1')).toBeInTheDocument();
+    expect(card.getAllByText('v1.2.0')).toHaveLength(1);
     // A plain third-party repository wears no origin chip — the row already
     // prints owner/repo, and "GitHub" over a GitHub link says it twice.
     expect(card.queryByText('Official')).toBeNull();
+  });
+
+  it('keeps the ref on a plugin pinned to something other than its version', () => {
+    seed({ plugins: [entry({ ...demo, ref: 'main' })] });
+    open();
+    render(<PluginCenterModal />);
+
+    expect(within(cardFor('demo')).getByText('main @ abcdef1')).toBeInTheDocument();
   });
 
   it('says it is loading before the first answer', () => {

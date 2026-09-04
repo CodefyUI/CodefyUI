@@ -3,7 +3,7 @@ import type { PluginCatalogEntry } from '../../api/rest';
 import type { PluginJob } from '../../store/pluginStore';
 import { useI18n } from '../../i18n';
 import { Pill } from '../shared/Pill';
-import { originLabel, statusKey, statusTone } from './pluginStatus';
+import { depSpec, originLabel, provenancePin, statusKey, statusTone } from './pluginStatus';
 import styles from '../PackCenter/PackCenterModal.module.css';
 
 /**
@@ -34,19 +34,6 @@ function MetaLine({ facts }: { facts: Fact[] }) {
       ))}
     </div>
   );
-}
-
-/**
- * One `name>=version` the way the installer would write it.
- *
- * Mirrors `backend/app/core/plugins/deps.py: _build_dep_spec`: a constraint
- * that starts with an operator is used as written, a bare version is pinned.
- * What the card prints is then what `uv pip install` would be given, rather
- * than a prettier string that means something slightly different.
- */
-function depSpec(name: string, constraint: string): string {
-  if (constraint === '') return name;
-  return /^[<>=~!]/.test(constraint) ? `${name}${constraint}` : `${name}==${constraint}`;
 }
 
 export interface PluginCardProps {
@@ -121,10 +108,9 @@ export function PluginCard({
 
   const origin = originLabel(entry);
   const repo = entry.repo ?? '';
-  const sha7 = entry.sha === null ? null : entry.sha.slice(0, 7);
-  // `ref` is `''` for a default-branch install — an answer, not a miss — so a
-  // row pinned to no branch says the commit alone rather than a bare `@`.
-  const pin = sha7 === null ? null : entry.ref ? `${entry.ref} @ ${sha7}` : sha7;
+  // The version is passed in because the header prints it: a pin that repeats
+  // it is the same release named twice down one card.
+  const pin = provenancePin(entry.ref, entry.sha, entry.version);
 
   const provenance: Fact[] = [];
   if (origin !== null) provenance.push({ key: 'origin', node: <span>{t(origin)}</span> });
