@@ -81,6 +81,7 @@ export function PluginSourceForm({
 }: PluginSourceFormProps) {
   const { t } = useI18n();
   const inputId = useId();
+  const errorId = useId();
   const [source, setSource] = useState('');
   // Typed something that is not a source. Local, because nothing was sent:
   // the store has no state for a request that was never made.
@@ -121,8 +122,17 @@ export function PluginSourceForm({
         type="text"
         value={source}
         placeholder={t('pluginCenter.source.placeholder')}
-        onChange={(event) => setSource(event.target.value)}
+        onChange={(event) => {
+          setSource(event.target.value);
+          // Withdrawn on the keystroke, because it was earned on one: this
+          // build judged the STRING, so the moment the string changes the
+          // judgement is about something that is no longer in the box.
+          setInvalid(false);
+        }}
         aria-invalid={invalid || undefined}
+        // `role="alert"` announces a refusal when it arrives; this is what
+        // says it again to somebody who tabs back into the field.
+        aria-describedby={refusal === null ? undefined : errorId}
         autoComplete="off"
         spellCheck={false}
       />
@@ -138,7 +148,7 @@ export function PluginSourceForm({
       </button>
 
       {refusal !== null && (
-        <div className={styles.sourceError} role="alert">
+        <div id={errorId} className={styles.sourceError} role="alert">
           <div>{refusal.message}</div>
           {/* The names that WOULD have worked are an offer, not part of the
               complaint, so they keep the block and drop its colour. */}

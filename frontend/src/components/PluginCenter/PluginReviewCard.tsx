@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type ReactNode } from 'react';
+import { useEffect, useId, useRef, useState, type ReactNode } from 'react';
 import type { InspectionState } from '../../store/pluginStore';
 import { useI18n, type TranslationKey } from '../../i18n';
 import {
@@ -37,12 +37,16 @@ interface Fact {
 export interface PluginReviewCardProps {
   inspection: ReadyInspection;
   /**
-   * The node types this plugin already registers, when the catalog knows it.
+   * The node types the catalog says are registered under this plugin id.
    *
-   * An inspection cannot say: naming a plugin's nodes means importing it, and
-   * nothing here runs a line of the code under review. So the line appears
-   * for an update -- where the catalog has the installed row -- and is left
-   * off a first install, where nobody can honestly answer it yet.
+   * An inspection cannot say what a source WOULD register: naming a plugin's
+   * nodes means importing it, and nothing on this path runs a line of the
+   * code under review. So this is what is here now, from a different source
+   * of truth -- and the card prints it only for a fresh install, where the
+   * two cannot disagree. On an update, "what is registered today" is the
+   * version being REPLACED, and this is the one screen whose whole job is
+   * saying what is about to arrive: a plugin that adds a node in the version
+   * under review would have its old set stated as fact.
    */
   nodes: string[];
   /** This plugin has a request in flight. */
@@ -65,6 +69,7 @@ export function PluginReviewCard({
 
   const [granted, setGranted] = useState(false);
   const [trusted, setTrusted] = useState(false);
+  const titleId = useId();
   const cardRef = useRef<HTMLElement | null>(null);
 
   // A review can be raised by the Install button on a row far down the list,
@@ -103,7 +108,9 @@ export function PluginReviewCard({
   if (author !== null) {
     facts.push({ key: 'author', node: t('pluginCenter.review.author', { author }) });
   }
-  if (nodes.length > 0) {
+  // Only for a fresh install: see the prop's docblock. On an update this
+  // would state the outgoing version's nodes as a fact about the incoming one.
+  if (inspection.kind === 'install' && nodes.length > 0) {
     facts.push({
       key: 'nodes', node: t('pluginCenter.review.nodes', { nodes: nodes.join(', ') }),
     });
@@ -129,10 +136,17 @@ export function PluginReviewCard({
       // The accent ring the panel puts on a row somebody asked for: this is
       // the one card on screen that is waiting for an answer.
       className={`${packStyles.card} ${packStyles.cardHighlighted}`}
-      aria-label={t('pluginCenter.review.title')}
+      // Labelled BY the eyebrow rather than with a copy of it: an `aria-label`
+      // saying what the next line already says is the region announced twice.
+      aria-labelledby={titleId}
+      // Which plugin this review is about, for a caller that has to find it:
+      // `forPluginId` never reaches this component, so on a card raised by a
+      // row's button this is the only thing tying the two together.
       data-review-for={data.plugin_id}
     >
-      <div className={packStyles.cardMeta}>{t('pluginCenter.review.title')}</div>
+      <div id={titleId} className={packStyles.cardMeta}>
+        {t('pluginCenter.review.title')}
+      </div>
 
       <div className={packStyles.cardHeader}>
         <span className={packStyles.cardTitle}>{data.name || data.plugin_id}</span>

@@ -88,8 +88,14 @@
 
 /* A 14 px box against a 13 px line at 1.55: aligned to the top of the line
    box it sits a hair above the text it labels, which is what this token is
-   for. */
+   for.
+
+   `flex-shrink: 0` because the sentence beside it is interpolated — a trust
+   line names every module the manifest asked for — and this is the first
+   FLEX use of that box: the pack panel's rows are a grid with an `auto`
+   track, so the box has never had to defend its own width before. */
 .consentCheck input {
+  flex-shrink: 0;
   margin-top: var(--sp-1);
 }
 

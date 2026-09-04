@@ -125,10 +125,12 @@ function inspection(over: Partial<PluginInspection> = {}): PluginInspection {
  */
 function ready(
   over: Partial<PluginInspection> = {},
+  /** The row whose button raised it; null for a source somebody typed. */
+  forPluginId: string | null = null,
 ): Extract<InspectionState, { phase: 'ready' }> {
   const data = inspection(over);
   return {
-    phase: 'ready', data, source: data.source, forPluginId: null, kind: data.mode, error: null,
+    phase: 'ready', data, source: data.source, forPluginId, kind: data.mode, error: null,
   };
 }
 
@@ -586,6 +588,24 @@ describe('PluginCenterModal — the source box', () => {
     expect(screen.getByRole('button', { name: 'Downloading...' })).toBeDisabled();
   });
 
+  it('withdraws the inline refusal as soon as the box changes', () => {
+    seed();
+    open();
+    render(<PluginCenterModal />);
+
+    review('not a repo!');
+    const input = screen.getByLabelText('Install from GitHub');
+    expect(input).toHaveAttribute('aria-invalid', 'true');
+
+    // The refusal was earned by the STRING, so it is withdrawn by the
+    // keystroke that changes it rather than by another press of Review.
+    fireEvent.change(input, { target: { value: 'owner/demo' } });
+    expect(
+      screen.queryByText('Enter a catalog name, owner/repo[@ref] or a GitHub URL.'),
+    ).toBeNull();
+    expect(input).not.toHaveAttribute('aria-invalid');
+  });
+
   it('reports a source the server could not read', () => {
     // The store has already turned the code into a sentence; what is left is
     // naming the source it was about.
@@ -602,6 +622,45 @@ describe('PluginCenterModal — the source box', () => {
     expect(
       screen.getByText('Could not fetch owner/demo: Could not reach GitHub.'),
     ).toBeInTheDocument();
+    // `role="alert"` says it once when it arrives; this is what says it again
+    // to somebody who tabs back into the field.
+    expect(screen.getByLabelText('Install from GitHub')).toHaveAttribute(
+      'aria-describedby', screen.getByRole('alert').id,
+    );
+  });
+
+  it('does not carry a refusal over into the next time the panel is opened', () => {
+    seed({
+      inspection: {
+        phase: 'error',
+        source: 'owner/demo',
+        failure: { message: 'Could not reach GitHub.', code: 'github_unreachable', detail: null },
+      },
+    });
+    open();
+    render(<PluginCenterModal />);
+
+    act(() => {
+      useUIStore.setState({ pluginCenterOpen: false });
+    });
+
+    // A refusal belongs to the box it was typed into; reopening the panel
+    // over it would explain a request nobody made.
+    expect(actions.clearInspection).toHaveBeenCalled();
+  });
+
+  it('keeps a review that is still waiting for an answer', () => {
+    seed({ inspection: ready() });
+    open();
+    render(<PluginCenterModal />);
+
+    act(() => {
+      useUIStore.setState({ pluginCenterOpen: false });
+    });
+
+    // A decision, not a complaint: the install it leads to outlives the
+    // window, so the card that offers it does too.
+    expect(actions.clearInspection).not.toHaveBeenCalled();
   });
 
   it('names the id a reserved-id refusal was about', () => {
@@ -681,6 +740,54 @@ describe('PluginCenterModal — the review', () => {
     // Nothing has been read yet, and the button already says so: an empty
     // card here would be the same fact twice and a second layout jump.
     expect(screen.queryByRole('region', { name: 'Review before installing' })).toBeNull();
+  });
+
+  it('stays away from an install a row started that asks for nothing', () => {
+    // `install()` inspects before it installs, and the review is READY
+    // between those two round trips. Without this, pressing Install on a
+    // built-in pack — the commonest thing in this panel — would flash a
+    // consent card at the top of the list and scroll away from the row that
+    // was clicked, for as long as the install request takes.
+    seed({
+      plugins: [edu],
+      inspection: ready({ plugin_id: 'edu', consent_required: false }, 'edu'),
+    });
+    open();
+    render(<PluginCenterModal />);
+
+    expect(screen.queryByRole('region', { name: 'Review before installing' })).toBeNull();
+  });
+
+  it('answers a row whose plugin does ask for something', () => {
+    seed({
+      plugins: [demo],
+      inspection: ready(
+        { plugin_id: 'demo', consent_required: true, capabilities: ['network'] }, 'demo',
+      ),
+    });
+    open();
+    render(<PluginCenterModal />);
+
+    // Which row it is about: the store's `forPluginId` never reaches the
+    // card, so this attribute is the only thing tying the two together.
+    expect(card()).toHaveAttribute('data-review-for', 'demo');
+  });
+
+  it('comes back for a row when the server refused the install', () => {
+    // `already_installed` leaves `consent_required` false — the refusal is
+    // the whole reason there is a card, and Reinstall is what answers it.
+    seed({
+      inspection: {
+        ...ready({ plugin_id: 'demo', consent_required: false }, 'demo'),
+        error: {
+          message: 'already_installed', code: 'already_installed', detail: null,
+        },
+      },
+    });
+    open();
+    render(<PluginCenterModal />);
+
+    expect(within(card()).getByRole('button', { name: 'Reinstall' })).toBeInTheDocument();
   });
 
   it('brings itself into view, however far down the row that asked was', () => {
@@ -842,6 +949,20 @@ describe('PluginCenterModal — the review', () => {
     render(<PluginCenterModal />);
 
     expect(within(card()).getByRole('button', { name: 'Update' })).toBeInTheDocument();
+  });
+
+  it('will not state the installed nodes on a card about the next version', () => {
+    // The catalog knows what is registered TODAY, which on an update is the
+    // version being replaced — and this is the one screen whose whole job is
+    // saying what is about to arrive.
+    seed({
+      plugins: [entry({ id: 'demo', nodes: ['demo:Split', 'demo:Join'] })],
+      inspection: ready({ plugin_id: 'demo', mode: 'update' }),
+    });
+    open();
+    render(<PluginCenterModal />);
+
+    expect(within(card()).queryByText(/^Nodes:/)).toBeNull();
   });
 
   it('puts the review away when it is cancelled', () => {

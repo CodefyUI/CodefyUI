@@ -84,6 +84,15 @@ function PluginCenterBody() {
     void refresh();
   }, [refresh]);
 
+  // A refusal belongs to the box it was typed into, and does not outlive the
+  // window that box was in: reopening the panel over "Could not fetch
+  // owner/demo: ..." would explain a request nobody here made. A REVIEW
+  // survives a close on purpose — it is a decision still waiting for an
+  // answer, and the store keeps the install job running behind it either way.
+  useEffect(() => () => {
+    if (usePluginStore.getState().inspection.phase === 'error') clearInspection();
+  }, [clearInspection]);
+
   // Focus starts inside the panel and goes back where it came from. Not a
   // focus trap — Tab still walks out into the page underneath, exactly as it
   // does in the Package Center and the template gallery. Trapping is worth
@@ -214,10 +223,26 @@ function PluginCenterBody() {
               />
             )}
 
-            {/* Keyed on the inspection: a second Review answers a different
+            {/* Not on the phase alone. `install()` inspects before it
+                installs, and `runInspect` leaves the review READY between
+                those two round trips — so a built-in pack, which asks for
+                nothing and is installed straight from that inspection, would
+                flash a consent card at the top of the list and scroll to it
+                for as long as the install request takes.
+
+                The card is rendered for the question it answers instead: a
+                source somebody typed (`forPluginId === null`), a plugin that
+                asks for something, or a refusal a control on this card is the
+                fix for. The window the store passes through on its way to an
+                automatic install is the only thing this drops.
+
+                Keyed on the inspection: a second Review answers a different
                 manifest, and the boxes ticked for the first one must not
                 carry over to it. */}
-            {!unsupported && inspection.phase === 'ready' && (
+            {!unsupported && inspection.phase === 'ready'
+              && (inspection.forPluginId === null
+                || inspection.data.consent_required
+                || inspection.error !== null) && (
               <PluginReviewCard
                 key={inspection.data.inspection_id}
                 inspection={inspection}
