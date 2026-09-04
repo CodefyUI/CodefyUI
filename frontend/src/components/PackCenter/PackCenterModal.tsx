@@ -95,6 +95,12 @@ function PackCenterBody() {
       // shortcuts window nobody can see.
       if (useDialogStore.getState().active !== null) return;
       if (useUIStore.getState().shortcutsModalOpen) return;
+      // The Plugin Center is a second window with a second Escape handler on
+      // the same key, and it defers to this one for exactly the same reason.
+      // Both can be open at once — a toast from either store offers to open
+      // the other — and without this, one press would close the window the
+      // user is NOT looking at and leave the one they are.
+      if (useUIStore.getState().pluginCenterOpen) return;
       if (!closable()) return;
       e.preventDefault();
       close();
