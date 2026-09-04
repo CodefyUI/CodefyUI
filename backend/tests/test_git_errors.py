@@ -180,6 +180,18 @@ _SAMPLES = [
         "repository using\n\n    git remote add <name> <url>\n\n"
         "and then push using the remote name\n\n    git push <name>\n",
         "no_upstream", id="push-with-no-destination"),
+    pytest.param(
+        "fatal: You didn't specify any refspecs to push, and push.default is "
+        '"nothing".\n',
+        "invalid_value", id="push-default-nothing"),
+    pytest.param(
+        "fatal: The upstream branch of your current branch does not match\n"
+        "the name of your current branch.  To push to the upstream branch\n"
+        "on the remote, use\n\n"
+        "    git push origin HEAD:other\n\n"
+        "To push to the branch of the same name on the remote, use\n\n"
+        "    git push origin HEAD\n",
+        "invalid_value", id="push-simple-upstream-name-mismatch"),
     # A remote NAME that is not configured, which git reports as a
     # connection problem: "'nope' does not appear to be a git repository"
     # then "Could not read from remote repository" (measured, exit 128).

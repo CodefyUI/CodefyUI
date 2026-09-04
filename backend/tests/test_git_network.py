@@ -484,7 +484,7 @@ async def test_a_plain_push_with_several_remotes_and_no_upstream_is_gits_own(
     assert excinfo.value.status == 409
 
 
-async def test_a_plain_push_with_no_remote_is_refused_before_git_runs(
+async def test_a_plain_push_with_no_remote_is_refused_before_push_runs(
         repo, monkeypatch):
     """The one state a plain push still refuses on its own.
 
@@ -492,10 +492,17 @@ async def test_a_plain_push_with_no_remote_is_refused_before_git_runs(
     one it prints for several remotes with no ``origin`` among them, so
     the classifier cannot tell "add a remote" from "publish". The answer is
     the one every other operation gives for no remote at all -- and the
-    one the header hides its button for.
+    one the header hides its button for. Metadata reads may run, but the
+    mutating push must not.
     """
-    monkeypatch.setattr(network, "run_git",
-                        lambda *args, **kwargs: pytest.fail("git ran"))
+    real_run_git = network.run_git
+
+    def _no_push(args, **kwargs):
+        if args and args[0] == "push":
+            pytest.fail("push ran")
+        return real_run_git(args, **kwargs)
+
+    monkeypatch.setattr(network, "run_git", _no_push)
 
     with pytest.raises(GitError) as excinfo:
         await repo.service.push()
@@ -505,24 +512,126 @@ async def test_a_plain_push_with_no_remote_is_refused_before_git_runs(
     assert excinfo.value.hint
 
 
-async def test_a_plain_push_git_sent_on_its_own_names_no_remote(repo,
-                                                                bare_remote):
-    """``detail.remote`` is read from the upstream, never guessed.
+async def test_plain_push_uses_a_direct_remote_push_default(repo, bare_remote):
+    """A URL can be Git's push destination without being a named remote."""
+    target = remote_url(bare_remote)
+    repo.git("config", "remote.pushDefault", target)
+    repo.git("config", "push.default", "current")
+    assert repo.git("remote").strip() == ""
 
-    With ``push.default=current`` git pushes a branch that has no upstream
-    to the only remote (measured), from config this package does not read.
-    The push is real, and the answer says nothing about where it went
-    rather than something that might be wrong.
+    result = await repo.service.push()
+
+    assert result.detail == {"remote": target, "branch": "main",
+                             "published": False}
+    assert Repo(bare_remote).git("rev-parse", "refs/heads/main").strip() \
+        == repo.head()
+
+
+async def test_plain_push_never_reports_credentials(repo, monkeypatch):
+    """A direct push destination is display-safe before it reaches detail."""
+    token = "ghp_16C7e42F292c6912E7710c838347Ae178B4a"
+    target = f"https://alice:{token}@example.invalid/repo.git"
+    repo.git("config", "remote.pushDefault", target)
+    repo.git("config", "push.default", "current")
+    real_run_git = network.run_git
+
+    def _successful_push(args, **kwargs):
+        if args == ["push", "--porcelain"]:
+            return GitResult(argv=["git", "push", "--porcelain"],
+                             returncode=0,
+                             stdout=f"To {target}\nDone\n".encode(),
+                             stderr=b"")
+        return real_run_git(args, **kwargs)
+
+    monkeypatch.setattr(network, "run_git", _successful_push)
+
+    result = await repo.service.push()
+
+    assert token not in result.detail["remote"]
+    assert result.detail["remote"] == (
+        "https://alice:***@example.invalid/repo.git")
+
+
+async def test_branch_push_remote_overrides_the_upstream(repo, bare_remote,
+                                                         tmp_path):
+    """Git prefers ``branch.<name>.pushRemote`` to the upstream remote."""
+    _publish(repo, bare_remote)
+    backup = make_bare_remote(tmp_path, "backup.git")
+    repo.git("remote", "add", "backup", remote_url(backup))
+    origin_head = Repo(bare_remote).git("rev-parse", "refs/heads/main").strip()
+    repo.commit("for backup", {"backup.txt": "backup\n"})
+    repo.git("config", "branch.main.pushRemote", "backup")
+
+    result = await repo.service.push()
+
+    assert result.detail["remote"] == "backup"
+    assert Repo(backup).git("rev-parse", "refs/heads/main").strip() == repo.head()
+    assert Repo(bare_remote).git("rev-parse", "refs/heads/main").strip() \
+        == origin_head
+
+
+async def test_remote_push_default_overrides_the_upstream(repo, bare_remote,
+                                                          tmp_path):
+    """Git prefers ``remote.pushDefault`` to the upstream remote."""
+    _publish(repo, bare_remote)
+    backup = make_bare_remote(tmp_path, "backup.git")
+    repo.git("remote", "add", "backup", remote_url(backup))
+    origin_head = Repo(bare_remote).git("rev-parse", "refs/heads/main").strip()
+    repo.commit("for backup", {"backup.txt": "backup\n"})
+    repo.git("config", "remote.pushDefault", "backup")
+
+    result = await repo.service.push()
+
+    assert result.detail["remote"] == "backup"
+    assert Repo(backup).git("rev-parse", "refs/heads/main").strip() == repo.head()
+    assert Repo(bare_remote).git("rev-parse", "refs/heads/main").strip() \
+        == origin_head
+
+
+async def test_a_plain_push_reports_the_effective_remote(repo, bare_remote):
+    """``detail.remote`` is Git's effective destination, not a guess.
+
+    With ``push.default=current`` Git pushes a branch that has no upstream
+    to the only remote. The push is real, and the answer names the remote
+    Git selected even though no upstream exists yet.
     """
     repo.git("remote", "add", "elsewhere", remote_url(bare_remote))
     repo.git("config", "push.default", "current")
 
     result = await repo.service.push()
 
-    assert result.detail == {"remote": None, "branch": "main",
+    assert result.detail == {"remote": "elsewhere", "branch": "main",
                              "published": False}
     assert Repo(bare_remote).git("rev-parse", "refs/heads/main").strip() \
         == repo.head()
+
+
+async def test_push_default_nothing_is_a_user_error(repo, bare_remote):
+    """A host config that disables plain push is actionable, not a 500."""
+    _publish(repo, bare_remote)
+    repo.commit("not pushed", {"local.txt": "local\n"})
+    repo.git("config", "push.default", "nothing")
+
+    with pytest.raises(GitError) as excinfo:
+        await repo.service.push()
+
+    assert excinfo.value.code == "invalid_value"
+    assert excinfo.value.status == 400
+
+
+async def test_simple_push_with_a_differently_named_upstream_is_a_user_error(
+        repo, bare_remote):
+    """Simple mode's name guard is host configuration, not a server fault."""
+    _publish(repo, bare_remote)
+    repo.git("push", "-q", "-u", "origin", "main:other")
+    repo.commit("not pushed", {"local.txt": "local\n"})
+    repo.git("config", "push.default", "simple")
+
+    with pytest.raises(GitError) as excinfo:
+        await repo.service.push()
+
+    assert excinfo.value.code == "invalid_value"
+    assert excinfo.value.status == 400
 
 
 async def test_a_push_the_remote_is_ahead_of_is_refused(repo, bare_remote,
@@ -897,5 +1006,5 @@ async def test_every_network_command_keeps_literal_pathspecs(
 
     assert [argv for argv in seen if LITERAL_PATHSPECS not in argv] == []
     # ...and that the list above really is every command this module runs.
-    assert {_subcommand(argv) for argv in seen} == {"fetch", "rev-parse",
-                                                    "merge", "push"}
+    assert {_subcommand(argv) for argv in seen} == {
+        "fetch", "for-each-ref", "rev-parse", "merge", "push"}

@@ -25,16 +25,16 @@ difference is not only that they are slower.
   exactly one; otherwise a refusal that says which of the two problems it
   is -- no remote at all, or several and no way to choose. The tab never
   sends a remote except when publishing, so this is the answer nearly every
-  request gets. A PLAIN push is the exception: its argv names no remote,
-  git takes the destination from the upstream, and this module only reads
-  that decision back (:func:`_tracked_remote`) rather than making one git
-  would not.
-* **Two of these commands are ``run_git``'s ordinary shape and one is
-  not.** ``fetch`` and ``push`` report everything on stderr, so the runner's
-  own classification is right for them. ``merge`` reports a CONFLICT on
-  STDOUT with an empty stderr (measured on git 2.53), which is
-  ``stash pop``'s trap exactly -- so the merge joins both streams before it
-  classifies, or the commonest outcome a pull has would be a 500.
+  request gets. A PLAIN push is the exception: its argv names no remote, so
+  Git's own ``%(push:remotename)`` resolver reports the effective destination
+  after applying ``branch.*.pushRemote``, ``remote.pushDefault`` and its
+  ordinary upstream/fallback rules (:func:`_tracked_remote`).
+* **Classification follows the stream each command actually uses.** ``fetch``
+  reports failures on stderr, so the runner's ordinary classification is
+  right. ``merge`` reports a CONFLICT on stdout with an empty stderr
+  (measured on Git 2.53), and plain ``push --porcelain`` puts per-ref
+  rejections on stdout, so those two join both streams before classifying or
+  ordinary failures would become 500s.
 
 None of these commands takes a pathspec, so ``--literal-pathspecs`` (which
 every call here keeps) has nothing to act on, and none of them runs ``git
@@ -52,7 +52,7 @@ from typing import Any, Literal
 from . import refs, repo
 from .errors import GitError, classify_failure
 from .models import GitStatus
-from .paths import validate_remote_name
+from .paths import display_url, validate_remote_name
 from .runner import T_LOCAL, T_NETWORK, T_STATUS, run_git
 
 #: How a pull brings the remote's work in. ``ff-only`` moves the branch or
@@ -141,37 +141,67 @@ def _no_remote() -> GitError:
                     hint="add a remote before pushing or fetching")
 
 
-def _tracked_remote(root: Path, status: GitStatus) -> str | None:
-    """Where a PLAIN push goes: git's decision, read here rather than made.
+def _tracked_remote(root: Path, branch: str) -> str | None:
+    """Git's configured destination for a PLAIN push, safe for display.
 
-    A plain push is the one operation here that does not go through
-    :func:`resolve_remote`, because its argv names no remote: git sends
-    the branch to the remote its upstream records, and its answer for a
-    branch that has none -- "The current branch main has no upstream
-    branch", ``no_upstream`` (measured) -- is the code the Publish button
-    hangs off. Resolving the remote the way a fetch does answered that
-    same state ``invalid_value`` whenever several remotes existed, before
-    git could speak, and R10 has no button for that code.
+    ``%(push:remotename)`` is Git's own resolver. It applies
+    ``branch.<name>.pushRemote``, then ``remote.pushDefault``, then the
+    branch/upstream rules used by a plain ``git push``. Repeating those rules
+    here would drift from Git -- and would miss that either of the first two
+    settings may itself be a URL or path rather than a named remote.
 
-    So the upstream's remote when there is one, and None when there is
-    not. git may still push then: ``push.default=current`` sends the
-    branch to the only remote, or to ``origin`` among several (measured),
-    from config this package does not read -- and a remote it did not
-    choose would be a guess dressed as an answer.
-
-    One state IS refused first. With no remote at all git says "No
-    configured push destination", the same sentence it prints when
-    several remotes exist and none is called ``origin`` -- so no
-    classifier row can tell "add a remote" from "publish the branch", and
-    ``no_remote`` is what every other operation here answers for the
-    state (R14 hides the button for it). It costs one ``remote -v``, only
-    on a branch with no upstream, where git was about to refuse anyway.
+    A named remote stays a name. A direct URL or path is returned in display
+    form, with credentials masked by :func:`~app.core.git.paths.display_url`. Ref-filter
+    leaves some implicit fallbacks empty (notably one remote plus
+    ``push.default=current``); :func:`_pushed_remote` fills those from the
+    successful command's porcelain output. No configured target and no named
+    remotes remains the pre-flight ``no_remote`` answer.
     """
-    upstream = _upstream_remote(status)
-    if upstream is not None:
-        return upstream
-    if not refs.list_remotes(root):
+    result = run_git(
+        ["for-each-ref", "--format=%(push:remotename)", "--",
+         f"refs/heads/{branch}"],
+        cwd=root, timeout=T_STATUS, read_only=True)
+    target = result.out.rstrip("\r\n")
+    remotes = refs.list_remotes(root)
+    if target in {remote.name for remote in remotes}:
+        return validate_remote_name(target)
+    if target:
+        return display_url(target)
+    if not remotes:
         raise _no_remote()
+    return None
+
+
+def _pushed_remote(root: Path, stdout: str,
+                   configured: str | None) -> str | None:
+    """The successful push's effective target, under the detail contract.
+
+    ``git push --porcelain`` writes one ``To <destination>`` line per target.
+    The first is deterministic and, unlike human stderr, part of Git's
+    machine-readable output. A target Git identified as a named remote stays
+    that name; an implicit sole-remote fallback becomes its name; otherwise
+    the displayed URL/path from the successful command is returned. Every URL
+    goes through :func:`~app.core.git.paths.display_url` before it can reach the response.
+    """
+    destinations = [display_url(line.removeprefix("To "))
+                    for line in stdout.splitlines()
+                    if line.startswith("To ")]
+    destination = destinations[0] if destinations else None
+    remotes = refs.list_remotes(root)
+    names = {remote.name for remote in remotes}
+
+    if configured in names:
+        return validate_remote_name(configured)
+    if configured is not None:
+        return destination or configured
+    if len(remotes) == 1:
+        return validate_remote_name(remotes[0].name)
+    if destination is not None:
+        matching = {remote.name for remote in remotes
+                    if remote.push_url == destination}
+        if len(matching) == 1:
+            return validate_remote_name(matching.pop())
+        return destination
     return None
 
 
@@ -266,13 +296,12 @@ def push(root: Path, *, remote: str | None = None,
     Two argv, and the difference is a branch that has been sent somewhere
     before.
 
-    A PLAIN push has no positional arguments at all: git sends the current
-    branch to the ref its upstream names, which is the only destination
-    that keeps the ahead/behind in the panel meaning anything. A branch
-    with no upstream is git's own refusal ("The current branch main has no
-    upstream branch", ``no_upstream``), and the tab answers it with the
-    Publish button rather than by guessing -- so no remote is resolved for
-    it here, only read back for the answer (:func:`_tracked_remote`).
+    A PLAIN push has no positional arguments at all: Git applies the user's
+    own push destination and refspec configuration. A branch with no usable
+    destination is Git's own refusal, and the tab answers it with the Publish
+    button rather than by guessing. ``detail.remote`` comes from Git's own
+    push-remote resolver and is display-redacted when that target is a direct
+    URL or path (:func:`_tracked_remote`).
 
     A PUBLISH is ``push -u -- <remote> <branch>``: a remote that was named
     or resolved, the branch HEAD is on, and ``-u`` to record the pairing so
@@ -308,8 +337,13 @@ def push(root: Path, *, remote: str | None = None,
     status = repo.read_status(root)
     branch = _pushable_branch(status)
     if not set_upstream:
-        name = _tracked_remote(root, status)
-        run_git(["push"], cwd=root, timeout=T_NETWORK)
+        configured = _tracked_remote(root, branch)
+        result = run_git(["push", "--porcelain"], cwd=root, timeout=T_NETWORK,
+                         ok_codes=(0, 1, 128))
+        if result.returncode != 0:
+            raise classify_failure(result.argv, result.returncode,
+                                   f"{result.out}\n{result.err}")
+        name = _pushed_remote(root, result.out, configured)
         return {"remote": name, "branch": branch, "published": False}
 
     name = resolve_remote(root, status, remote)

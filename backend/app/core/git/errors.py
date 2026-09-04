@@ -361,6 +361,14 @@ _RULES: tuple[tuple[str, int, tuple[_Pattern, ...]], ...] = (
                  prefixes=MERGE_REFUSED_PREFIXES),
         Anchored("No configured push destination"),
     )),
+    # A plain push can also be disabled by the user's own Git configuration.
+    # Both sentences are fatal refusals from ``git push`` rather than server
+    # faults: ``nothing`` deliberately supplies no refspec, while ``simple``
+    # refuses an upstream whose branch name differs from the local one.
+    ("invalid_value", 400, (
+        'push.default is "nothing"',
+        "The upstream branch of your current branch does not match",
+    )),
     # git says all three of these on STDOUT, not stderr. A caller that runs
     # ``commit`` therefore has to hand the stdout text in as well -- see
     # :func:`classify_failure`.
