@@ -17,6 +17,10 @@ export function ShortcutsModal() {
     { keys: `${mod}+C`, action: t('shortcuts.copy') },
     { keys: `${mod}+V`, action: t('shortcuts.paste') },
     { keys: 'Delete', action: t('shortcuts.delete') },
+    // Belongs to the Source Control message box rather than the canvas, and
+    // says so: the global handler skips every textarea, so this chord only
+    // exists while that box has focus.
+    { keys: `${mod}+Enter`, action: t('shortcuts.commit') },
     // Ctrl+B is context-sensitive (core#128), so both halves are listed —
     // and the unconditional sidebar chord right after them, because a user
     // who only ever wanted the sidebar needs to know it still exists.
