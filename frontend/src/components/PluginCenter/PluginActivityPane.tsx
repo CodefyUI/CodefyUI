@@ -32,13 +32,15 @@ const BANNER_TONE: Record<JobPhase, BannerTone> = {
 export interface PluginActivityPaneProps {
   job: PluginJob | null;
   /**
-   * The catalog row for `job.pluginId`: its name, and the source the terminal
-   * fallback would install from.
+   * The catalog row for `job.pluginId`: its name, the source the terminal
+   * fallback would install from, and how long an install of it should take
+   * (a built-in pack has no download and four steps; a repository has eight).
    *
    * Undefined when the catalog has no row for this job -- a plugin installed
    * from a URL this registry does not list, or a job adopted before the first
-   * catalog read answers. The pane then names the job by its plugin id and
-   * offers no command, rather than guessing at either.
+   * catalog read answers. The pane then names the job by its plugin id,
+   * offers no command, and counts it as the longer install, rather than
+   * guessing at any of the three.
    */
   entry: PluginCatalogEntry | undefined;
   /** A cancel request is in flight: the button says so and takes no second press. */
