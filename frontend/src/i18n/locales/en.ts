@@ -1190,6 +1190,18 @@ const en = {
     'This server has no Plugin Center. Update CodefyUI and restart it.',
   'pluginCenter.error.inspectionExpired': 'The review expired. Review the source again.',
   'pluginCenter.error.unknownJob': 'That install is no longer tracked. Refresh.',
+  // One review at a time, server-side: this one is not about the source at
+  // all, which is why it says "again" rather than anything about the repo.
+  'pluginCenter.error.inspectBusy': 'Another review is still running. Try again in a moment.',
+  // The three ways a source can turn out not to be a plugin this build
+  // installs: the manifest, a repository or ref that is not there, and
+  // GitHub itself.
+  'pluginCenter.error.invalidManifest': "The plugin's manifest is invalid.",
+  'pluginCenter.error.notFound': 'GitHub has no such repository or ref.',
+  'pluginCenter.error.githubRateLimited':
+    "GitHub's request limit was reached. Try again later, or set "
+    + 'CODEFYUI_GITHUB_TOKEN on the server.',
+  'pluginCenter.error.githubUnreachable': 'Could not reach GitHub.',
 
   // Source Control (the sidebar's fifth tab). Part 2 of the track: status,
   // stage / unstage / discard, commit, init and the commit identity. Branches,

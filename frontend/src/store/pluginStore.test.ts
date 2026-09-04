@@ -406,6 +406,37 @@ describe('pluginStore — install', () => {
     expect(usePluginStore.getState().plugins[0].status).toBe('installing');
   });
 
+  it('installs an external plugin from the source its own row records', async () => {
+    // The row is in the lockfile and its directory is gone, so the card
+    // offers Install. Its id is not a catalog name and never was -- it came
+    // from a repository this build does not list -- so inspecting the ID
+    // would be a 400 `unknown_catalog_name` under a button that looks fine.
+    serveCatalog(catalog({
+      entries: [entry({
+        id: 'demo', kind: 'external', status: 'missing_files', source: 'owner/demo',
+      })],
+    }));
+    await usePluginStore.getState().refresh();
+
+    await usePluginStore.getState().install('demo');
+
+    expect(api.inspectPluginSource).toHaveBeenCalledWith('owner/demo');
+    // The review is still the ROW's, whatever string was inspected: it is
+    // what puts the card beside that row and what clears it afterwards.
+    expect(api.installPlugin).toHaveBeenCalled();
+  });
+
+  it('falls back to the id when the row records no source', async () => {
+    // A builtin resolves by name, and the catalog sends `''` rather than null
+    // for a row that has nothing to record.
+    serveCatalog(catalog({ entries: [entry({ id: 'c1', source: '' })] }));
+    await usePluginStore.getState().refresh();
+
+    await usePluginStore.getState().install('c1');
+
+    expect(api.inspectPluginSource).toHaveBeenCalledWith('c1');
+  });
+
   it('leaves no review behind when an auto-install is refused', async () => {
     api.inspectPluginSource.mockResolvedValue(inspection({
       plugin_id: 'c1', consent_required: false,
@@ -492,6 +523,21 @@ describe('pluginStore — install', () => {
 });
 
 describe('pluginStore — inspect', () => {
+  /**
+   * The sentence a refused inspect leaves on the review.
+   *
+   * Every refusal below is a bare `{code}` with no message, so what this
+   * returns is exactly what the panel would print: the mapped sentence, or
+   * the raw token when nothing maps it.
+   */
+  async function failureMessage(err: unknown, source = 'owner/demo'): Promise<string> {
+    api.inspectPluginSource.mockRejectedValue(err);
+    await usePluginStore.getState().inspect(source);
+    const state = usePluginStore.getState();
+    if (state.inspection.phase !== 'error') throw new Error('not an error phase');
+    return state.inspection.failure.message;
+  }
+
   it('refuses an unparseable source without asking the server', async () => {
     await usePluginStore.getState().inspect('not a source!');
 
@@ -520,18 +566,23 @@ describe('pluginStore — inspect', () => {
     });
   });
 
-  it('keeps the server refusal as the review error', async () => {
+  it('keeps the server refusal as the review error, in words', async () => {
+    // `owner/demo@..` passes this build's parser and is refused by the
+    // server's, which will not walk a ref up the URL path. One sentence for
+    // the two refusals, because the fix is the same: type a source that is
+    // one. The code and the body survive the rewrite -- the panel switches on
+    // one and prints the other.
     api.inspectPluginSource.mockRejectedValue(
       refused(400, 'unparseable_source'),
     );
 
-    await usePluginStore.getState().inspect('owner/demo');
+    await usePluginStore.getState().inspect('owner/demo@..');
 
     expect(usePluginStore.getState().inspection).toEqual({
       phase: 'error',
-      source: 'owner/demo',
+      source: 'owner/demo@..',
       failure: {
-        message: 'unparseable_source',
+        message: 'Enter a catalog name, owner/repo[@ref] or a GitHub URL.',
         code: 'unparseable_source',
         detail: { code: 'unparseable_source' },
       },
@@ -588,6 +639,41 @@ describe('pluginStore — inspect', () => {
     // The code survives the rewrite: the card switches on one and shows the
     // other.
     expect(state.inspection.failure.code).toBe('unavailable');
+  });
+
+  it('says another review is running instead of showing inspect_busy', async () => {
+    // One inspection at a time, server-side. Not about the source at all,
+    // which is why the sentence says "again" and nothing about the repo.
+    expect(await failureMessage(refused(409, 'inspect_busy'))).toBe(
+      'Another review is still running. Try again in a moment.',
+    );
+  });
+
+  it('says the manifest is invalid instead of showing invalid_manifest', async () => {
+    expect(await failureMessage(refused(400, 'invalid_manifest'))).toBe(
+      "The plugin's manifest is invalid.",
+    );
+  });
+
+  it('says GitHub has no such repository instead of showing not_found', async () => {
+    expect(await failureMessage(refused(404, 'not_found'))).toBe(
+      'GitHub has no such repository or ref.',
+    );
+  });
+
+  it('names the token to set instead of showing github_rate_limited', async () => {
+    // The one refusal here with a server-side fix, so the sentence carries
+    // the variable rather than leaving "try later" as the only advice.
+    expect(await failureMessage(refused(502, 'github_rate_limited'))).toBe(
+      "GitHub's request limit was reached. Try again later, or set "
+      + 'CODEFYUI_GITHUB_TOKEN on the server.',
+    );
+  });
+
+  it('says it could not reach GitHub instead of showing github_unreachable', async () => {
+    expect(await failureMessage(refused(502, 'github_unreachable'))).toBe(
+      'Could not reach GitHub.',
+    );
   });
 
   it('carries the names a catalog miss listed', async () => {

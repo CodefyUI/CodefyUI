@@ -1060,6 +1060,12 @@ const zhTW: Record<TranslationKey, string> = {
   'pluginCenter.error.unavailable': '這台伺服器不支援外掛中心。請更新 CodefyUI 後重新啟動。',
   'pluginCenter.error.inspectionExpired': '檢視已過期，請重新檢視來源。',
   'pluginCenter.error.unknownJob': '找不到這個安裝，請重新整理。',
+  'pluginCenter.error.inspectBusy': '另一個檢視仍在進行，請稍後再試。',
+  'pluginCenter.error.invalidManifest': '外掛的 manifest 無效。',
+  'pluginCenter.error.notFound': 'GitHub 上找不到這個 repository 或 ref。',
+  'pluginCenter.error.githubRateLimited':
+    '已達 GitHub 請求上限，請稍後再試，或在伺服器設定 CODEFYUI_GITHUB_TOKEN。',
+  'pluginCenter.error.githubUnreachable': '無法連線到 GitHub。',
 
   // Source Control (the sidebar's fifth tab).
   'git.action.more': '更多動作',

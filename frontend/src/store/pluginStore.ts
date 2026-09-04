@@ -246,16 +246,32 @@ function refusalCode(err: unknown): string | null {
  * The refusals whose code IS the whole message, and what to say instead.
  *
  * Every route here answers `HTTPException(status, detail={"code": ...})` with
- * deliberately no `message`, so `readApiError` falls back to the code and
- * `err.message` is the raw token: a student is shown `inspection_expired`.
- * These three are the ones with a fix worth naming; `already_installed` is
- * not here because it is answered with a button rather than a sentence, and
- * everything else keeps the server's own message, which is at least true.
+ * deliberately no `message` -- "prose about a coded refusal belongs to whoever
+ * is talking to the user, in their language" -- so `readApiError` falls back to
+ * the code and `err.message` is the raw token: a student is shown
+ * `inspection_expired`. Every code that can reach a sentence is therefore
+ * mapped here.
+ *
+ * The three that are NOT are the three a control answers instead of a
+ * sentence: `already_installed` grows a Reinstall button, `consent_required` a
+ * tick box, `trust_author_required` a second one. `reserved_id` and
+ * `unknown_catalog_name` are mapped nowhere either, because each has a line of
+ * its own on the panel built from the body it carried (`id`, `known`) --
+ * a sentence here would be the same refusal said twice.
  */
 const REFUSAL_KEY: Record<string, TranslationKey | undefined> = {
   unavailable: 'pluginCenter.error.unavailable',
   inspection_expired: 'pluginCenter.error.inspectionExpired',
   unknown_job: 'pluginCenter.error.unknownJob',
+  inspect_busy: 'pluginCenter.error.inspectBusy',
+  // The same sentence the source box shows before it asks at all: the server
+  // and this build read a source by the same grammar, so a string that got
+  // past the client parser and was still refused is answered the same way.
+  unparseable_source: 'pluginCenter.source.invalid',
+  invalid_manifest: 'pluginCenter.error.invalidManifest',
+  not_found: 'pluginCenter.error.notFound',
+  github_rate_limited: 'pluginCenter.error.githubRateLimited',
+  github_unreachable: 'pluginCenter.error.githubUnreachable',
 };
 
 /** What a refusal should read as, once its code has had its say. */
@@ -761,8 +777,25 @@ export const usePluginStore = create<PluginState>((set, get) => ({
       return;
     }
 
+    // What the row says it was installed FROM, not its id. The two are the
+    // same for every catalog row -- a builtin resolves by name -- but an
+    // EXTERNAL plugin, one installed from a repository this build's catalog
+    // does not list, has an id that resolves to no source at all: its Install
+    // button ended in a 400 `unknown_catalog_name` with nothing on screen to
+    // say so. `source` is documented as "what a user would type to install
+    // this", which is exactly what this button is typing on their behalf.
+    //
+    // Own keys only: `byId` is built from parsed JSON, so a plugin called
+    // `constructor` would otherwise hand back a function rather than a row.
+    const row = Object.prototype.hasOwnProperty.call(state.byId, pluginId)
+      ? state.byId[pluginId]
+      : undefined;
+    // `||`, not `??`: the catalog sends `''` for a row with no source, and an
+    // empty source is not a source. The id is the better guess.
+    const source = row?.source || pluginId;
+
     await withBusy(pluginId, async () => {
-      const data = await runInspect(pluginId, pluginId);
+      const data = await runInspect(source, pluginId);
       if (data === null) return;
       if (data.consent_required) {
         // Capabilities to grant, or an author to trust. The review card takes
@@ -777,8 +810,11 @@ export const usePluginStore = create<PluginState>((set, get) => ({
       // The review this install passed through was never on screen. If the
       // install failed for something a review cannot fix — busy, refused,
       // offline — putting the card up now would answer a toast with a form
-      // nobody asked for. A consent refusal is the exception: it left a
-      // failure on the review precisely because ticking a box is the fix.
+      // nobody asked for. The three refusals a control CAN answer are the
+      // exceptions: an unticked capability, an untrusted author and a plugin
+      // that is already here all leave a failure on the review, precisely
+      // because a box or a button on that card is the fix. The clause below
+      // spares them by looking for `error === null`.
       const after = get().inspection;
       if (after.phase === 'ready' && after.error === null
           && after.forPluginId === pluginId) {
