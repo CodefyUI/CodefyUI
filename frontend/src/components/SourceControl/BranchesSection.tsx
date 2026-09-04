@@ -90,6 +90,7 @@ export function BranchesSection() {
         focusRefSection('branches');
         return;
       }
+      // Read AFTER the write, which is what put the refusal there.
       const { lastError, dismissError } = useGitStore.getState();
       if (lastError?.code !== 'branch_not_merged') return;
       dismissError();
@@ -99,9 +100,7 @@ export function BranchesSection() {
         variant: 'danger',
       });
       if (!forced) return;
-      if (await useGitStore.getState().deleteBranch(name, true)) {
-        focusRefSection('branches');
-      }
+      if (await deleteBranch(name, true)) focusRefSection('branches');
     },
     [deleteBranch, t],
   );
