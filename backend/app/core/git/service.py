@@ -41,14 +41,16 @@ import asyncio
 import os
 from collections.abc import Callable, Iterable, Sequence
 from pathlib import Path
-from typing import Any, TypeVar
+from typing import Any, Literal, TypeVar
 
 from ...config import settings
 from . import diff as diff_ops
 from . import log as log_ops
+from . import refs as refs_ops
 from . import repo
 from .errors import GitBusy, GitError, classify_failure
 from .models import (
+    BranchesResponse,
     DiffResponse,
     FileAtRef,
     GitFile,
@@ -56,14 +58,17 @@ from .models import (
     Identity,
     LogResponse,
     MutationResult,
+    RemoteInfo,
     RepoInfo,
     StatusResponse,
 )
 from .paths import (
-    validate_branch_name,
     validate_commit_message,
     validate_rel_paths,
 )
+# Re-exported: the branch-name gate moved to ``refs`` with the operations
+# that need it, and this is still the name every caller learned it under.
+from .refs import check_ref_format  # noqa: F401
 from .runner import (
     T_LOCAL,
     # Re-exported: the network timeout belongs to the operations G3 adds
@@ -209,39 +214,6 @@ def _state_error(info: RepoInfo) -> GitError:
                  f"directory is not; initialise one here to use this tab")
     return GitError("not_repo", 409,
                     hint="initialise a repository in the project directory")
-
-
-def check_ref_format(root: Path, name: str) -> str:
-    """Would git accept *name* as a branch name? Returns it, or raises 400.
-
-    Two checks, and the ORDER is the point. ``git check-ref-format`` is the
-    authority on the rules that are git's (a trailing ``.lock``, ``..``, a
-    control character) and knows nothing about ours: it accepts
-    ``refs/heads/-x`` quite happily -- measured, exit 0 -- and ``-x`` on a
-    command line is an option, not a branch. So the regex
-    (:data:`~app.core.git.paths.BRANCH_NAME_RE`, via
-    ``validate_branch_name``) runs FIRST and is what stops that one; git
-    then rejects what it alone knows about, with exit 1.
-
-    Every non-zero exit is the same answer. ``check-ref-format`` documents 1
-    for "not a valid ref name" and uses 128 for a call it could not make
-    sense of at all (a missing argument, an option it does not know), and
-    the second is still "git will not take this name" as far as a browser is
-    concerned -- reporting it as a 500 would be a server error for a
-    question the user asked wrongly.
-
-    Nothing calls this yet. Branches are G3's; the check belongs with the
-    service that will make them, and it is here now so that it is written
-    once and tested against a real git rather than invented in a hurry
-    alongside the routes.
-    """
-    validate_branch_name(name)
-    result = run_git(["check-ref-format", f"refs/heads/{name}"], cwd=root,
-                     timeout=T_STATUS, ok_codes=(0, 1, 128), read_only=True)
-    if result.returncode != 0:
-        raise GitError("invalid_ref", 400, f"git will not accept {name!r} "
-                                           f"as a branch name")
-    return name
 
 
 # --- the operations, as functions of a root --------------------------------
@@ -677,6 +649,14 @@ class GitService:
         return await self._read(
             lambda root: diff_ops.file_at_ref(root, path, ref))
 
+    async def branches(self) -> BranchesResponse:
+        """Every branch, local and remote-tracking, and what HEAD is on."""
+        return await self._read(refs_ops.list_branches)
+
+    async def remotes(self) -> list[RemoteInfo]:
+        """Every configured remote, with its fetch and push URLs."""
+        return await self._read(refs_ops.list_remotes)
+
     async def _read(self, fn: Callable[[Path], _T]) -> _T:
         """Run *fn* against the ready repository, off the loop, without the lock.
 
@@ -731,6 +711,68 @@ class GitService:
         """Write ``user.name`` / ``user.email`` into THIS repository."""
         return await self.mutate(
             "set_identity", lambda root: repo.write_identity(root, name, email),
+            worktree=False)
+
+    # --- the refs (branches and remotes) ----------------------------------
+    #
+    # ``worktree`` is the one thing these have to get right, and it is not
+    # decorative: it is what makes ``changed_paths`` be read, and
+    # ``changed_paths`` is what tells an open editor that the file under it
+    # has been replaced. A checkout replaces files; creating a branch you
+    # do not go to replaces nothing; renaming one moves no file at all. A
+    # write that claimed the wrong one would either cost a status read per
+    # click or leave the canvas showing a graph that is no longer on disk.
+
+    async def create_branch(self, name: str, *, checkout: bool = True,
+                            start_point: str | None = None) -> MutationResult:
+        """Make a branch; go to it unless ``checkout`` says otherwise."""
+        return await self.mutate(
+            "create_branch",
+            lambda root: refs_ops.create_branch(root, name, checkout=checkout,
+                                                start_point=start_point),
+            worktree=checkout)
+
+    async def checkout(self, target: str, *,
+                       kind: Literal["local", "remote"] = "local"
+                       ) -> MutationResult:
+        """Go to a local branch, or to a new one tracking a remote's."""
+        return await self.mutate(
+            "checkout",
+            lambda root: refs_ops.checkout(root, target, kind=kind),
+            worktree=True)
+
+    async def rename_branch(self, name: str, new_name: str) -> MutationResult:
+        """Give a branch another name."""
+        return await self.mutate(
+            "rename_branch",
+            lambda root: refs_ops.rename_branch(root, name, new_name),
+            worktree=False)
+
+    async def delete_branch(self, name: str, *,
+                            force: bool = False) -> MutationResult:
+        """Delete a branch; ``force`` deletes one that is not merged."""
+        return await self.mutate(
+            "delete_branch",
+            lambda root: refs_ops.delete_branch(root, name, force=force),
+            worktree=False)
+
+    async def add_remote(self, name: str, url: str) -> MutationResult:
+        """Point a name at a repository somewhere else."""
+        return await self.mutate(
+            "add_remote", lambda root: refs_ops.add_remote(root, name, url),
+            worktree=False)
+
+    async def set_remote_url(self, name: str, url: str) -> MutationResult:
+        """Point an existing remote somewhere else."""
+        return await self.mutate(
+            "set_remote_url",
+            lambda root: refs_ops.set_remote_url(root, name, url),
+            worktree=False)
+
+    async def remove_remote(self, name: str) -> MutationResult:
+        """Forget a remote."""
+        return await self.mutate(
+            "remove_remote", lambda root: refs_ops.remove_remote(root, name),
             worktree=False)
 
     async def mutate(self, op: str,

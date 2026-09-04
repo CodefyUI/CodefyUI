@@ -38,8 +38,9 @@ a message is too long, whether an email looks like an email -- that is
 back as a :class:`~app.core.git.errors.GitError` with a code the frontend
 translates, not as pydantic's English prose in a 422.
 
-G3 adds ``BranchInfo`` / ``RemoteInfo`` / ``StashInfo`` and the requests for
-branches, remotes and stashes; this file is the G1 subset.
+G3 adds the refs: ``BranchInfo`` / ``RemoteBranchInfo`` / ``BranchesResponse``
+/ ``RemoteInfo`` and the requests that create, switch, rename and delete
+them. ``StashInfo`` and the stash and network requests are the rest of G3.
 
 No subprocess and no runner import: the parser and the tests can build a
 status without a git on PATH.
@@ -273,6 +274,83 @@ class Identity(BaseModel):
     email_scope: ConfigScope | None = None
 
 
+class BranchInfo(BaseModel):
+    """One local branch, as the Branches section draws a row of it.
+
+    ``ahead`` / ``behind`` follow :class:`GitStatus`'s reading exactly, so
+    the tab has one rule and not two: both are ``None`` when the branch has
+    no upstream AND when the upstream is ``gone``, and a branch that is in
+    step with a live upstream is ``0`` / ``0`` rather than null. git prints
+    only the non-zero half (``[ahead 1]``), so the other one is filled in
+    here -- an absent number would otherwise mean "no upstream" and
+    "nothing to push" at the same time.
+    """
+
+    #: Without ``refs/heads/``: ``main``, ``feat/source-control``.
+    name: str
+    #: The tip, abbreviated the way git abbreviates it here.
+    sha: str
+    #: HEAD is on this branch.
+    current: bool = False
+    #: The upstream as git names it (``origin/main``), if configured.
+    upstream: str | None = None
+    ahead: int | None = None
+    behind: int | None = None
+    #: An upstream is configured and its ref no longer exists.
+    gone: bool = False
+    #: The tip commit's subject and commit date, for the row's second line.
+    #: Both carry git's "did not say" default rather than being required:
+    #: they are decoration, and a branch is worth listing without them.
+    subject: str = ""
+    committed_at: int = 0
+
+
+class RemoteBranchInfo(BaseModel):
+    """One remote-tracking branch: ``origin/main`` split into its two parts.
+
+    Split, rather than shipped as one string, because the tab needs both
+    halves separately -- the remote groups the list, the name is what a
+    Switch creates locally -- and splitting a name that may itself contain
+    slashes (``origin/feat/x``) is a rule better applied once here than in
+    every component that renders one.
+    """
+
+    #: The branch on the remote, without the remote's name: ``main``.
+    name: str
+    #: The remote it lives on: ``origin``.
+    remote: str
+    sha: str
+    subject: str = ""
+    committed_at: int = 0
+
+
+class BranchesResponse(BaseModel):
+    """``GET /api/git/branches``: every branch, local and remote-tracking.
+
+    ``current`` is the branch HEAD is on -- which exists on an UNBORN
+    branch, where ``local`` is empty and there is still a name to show --
+    and is ``None`` exactly when ``detached`` is true.
+    """
+
+    current: str | None = None
+    detached: bool = False
+    local: list[BranchInfo] = Field(default_factory=list)
+    remote: list[RemoteBranchInfo] = Field(default_factory=list)
+
+
+class RemoteInfo(BaseModel):
+    """One configured remote, and the two URLs it may have.
+
+    Both URLs are strings and never null: a remote whose push URL is not
+    configured separately reports the fetch URL in both, which is what git
+    itself prints and what actually happens on a push.
+    """
+
+    name: str
+    fetch_url: str = ""
+    push_url: str = ""
+
+
 class MutationResult(BaseModel):
     """What one write left behind.
 
@@ -364,3 +442,68 @@ class IdentityRequest(BaseModel):
 
     name: str | None = None
     email: str | None = None
+
+
+class BranchCreateRequest(BaseModel):
+    """The body of ``POST /branches``: a new branch, and whether to go to it.
+
+    ``checkout`` defaults to true because that is what the button says --
+    "Create Branch" in every editor that has one leaves you ON it -- and it
+    is also the field that decides whether this write can move files, which
+    is why the service reads it rather than assuming either answer.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str
+    checkout: bool = True
+    #: A branch name or a commit id to start from; ``None`` means HEAD.
+    start_point: str | None = None
+
+
+class CheckoutRequest(BaseModel):
+    """The body of ``POST /checkout``: which branch, and which kind it is.
+
+    ``kind`` is REQUIRED and not defaulted, because the two are different
+    commands: a local switch moves HEAD to a branch that exists, and a
+    remote one creates a new local branch tracking ``origin/<name>``. A
+    default would make "the client forgot to say" indistinguishable from
+    "the user picked local", and the wrong one of those creates a branch
+    nobody asked for.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    #: ``main`` for a local branch, ``origin/main`` for a remote one.
+    target: str
+    kind: Literal["local", "remote"]
+
+
+class BranchRenameRequest(BaseModel):
+    """The body of ``PUT /branches/{name}``: what to call it instead."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    new_name: str
+
+
+class RemoteCreateRequest(BaseModel):
+    """The body of ``POST /remotes``: a name and where it points."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str
+    url: str
+
+
+class RemoteUrlRequest(BaseModel):
+    """The body of ``PUT /remotes/{name}``: where it points instead.
+
+    Only the URL: renaming a remote is not offered, because a rename
+    rewrites every ``branch.<name>.remote`` in the config and the tab has
+    no way to show what that changed.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    url: str
