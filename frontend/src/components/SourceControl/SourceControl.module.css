@@ -97,6 +97,26 @@
   white-space: nowrap;
 }
 
+/* The row holds two kinds of thing. The name and the tracking half are text and
+   sit on one baseline, which is what `align-items: baseline` above is for. Sync
+   and Publish are boxes: a flex item whose content has no baseline of its own is
+   aligned by its BOTTOM MARGIN EDGE, so the Sync glyph would sit on the branch
+   name's baseline rather than on its optical centre -- about three pixels of it
+   above the text, with the row grown to the full control height underneath.
+   They are centred against the row instead. Publish keeps its own `flex` from
+   below: it is the control that gives up width first. */
+.branchRow > .iconButton,
+.branchRow > .publishButton {
+  align-self: center;
+}
+
+/* A square glyph has nothing to give: it is already the smallest control height
+   in the scale, and the two text halves beside it ellipsise long before it
+   would need to. */
+.branchRow > .iconButton {
+  flex-shrink: 0;
+}
+
 /* Publish is text, not an icon: it is the one action in this row that has no
    glyph anybody would read without a legend, and it takes the place of the
    "Not published" line rather than sitting beside it. It gives up width

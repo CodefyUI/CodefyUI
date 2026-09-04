@@ -61,7 +61,7 @@
   box-shadow: var(--shadow-popover);
 }
 
-/* The panel only takes focus when every row is disabled, and a ring around the
+/* The panel only takes focus when there is no row at all, and a ring around the
    whole panel would read as a selection it does not have. */
 .menu:focus {
   outline: none;
@@ -135,11 +135,15 @@
   min-width: 0;
 }
 
-/* Dimmer and one step down: the reason is read after the name, never instead
-   of it. It wraps rather than ellipsises — half a sentence explains nothing. */
+/* One step down in SIZE, and no colour of its own: the reason is read after the
+   name, never instead of it. A hint painted `--text-muted` did the opposite --
+   the row it sits in is refused, so its label is `--text-disabled`, and the
+   explanation came out brighter than the action it explains. Inheriting also
+   keeps the two lines together when the row takes focus and the whole of it
+   goes `--text-primary`. It wraps rather than ellipsises: half a sentence
+   explains nothing. */
 .hint {
   min-width: 0;
-  color: var(--text-muted);
   font-size: var(--fs-sm);
   line-height: var(--lh-snug);
 }
