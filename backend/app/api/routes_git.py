@@ -26,6 +26,10 @@
     DELETE /api/git/stashes/{i}            throw one away
     POST   /api/git/merge/abort            undo a half-finished merge
     POST   /api/git/resolve                settle one conflicted file
+    POST   /api/git/fetch                  bring the remote's refs in
+    POST   /api/git/pull                   fetch, then merge the upstream
+    POST   /api/git/push                   send this branch (publish with -u)
+    POST   /api/git/sync                   pull then push, in one click
 
 Every route is three lines long, and that is the design rather than an
 accident: the service on ``app.state`` owns the repository, the lock, the
@@ -92,6 +96,7 @@ from ..core.git.models import (
     CheckoutRequest,
     CommitRequest,
     DiffResponse,
+    FetchRequest,
     FileAtRef,
     GitFile,
     Identity,
@@ -99,6 +104,8 @@ from ..core.git.models import (
     LogResponse,
     MutationResult,
     PathsRequest,
+    PullRequest,
+    PushRequest,
     RemoteCreateRequest,
     RemoteInfo,
     RemoteUrlRequest,
@@ -570,3 +577,66 @@ async def resolve(request: Request,
     """
     service = _service(request)
     return await _answer(service.resolve(payload.path, payload.side))
+
+
+# --- the network (the OTHER lock) -------------------------------------------
+#
+# These four are writes like the rest -- they change what the repository
+# knows and they answer with a fresh status -- but they queue separately.
+# A fetch can run for a minute and moves no file, so it takes the service's
+# NETWORK lock and leaves the mutation lock free: a commit made while
+# somebody's push is transferring still works, and a second network request
+# is the one that gets 409 ``busy``. See ``GitService.network``.
+
+
+@router.post("/fetch")
+async def fetch(request: Request, payload: FetchRequest) -> MutationResult:
+    """Bring the remote's refs up to date, and prune what is gone.
+
+    ``remote`` is optional and the tab never sends one: which remote a
+    fetch talks to is answered by the branch's upstream, or by there being
+    only one. An empty body (``{}``) is the ordinary request.
+    """
+    return await _answer(_service(request).fetch(payload.remote))
+
+
+@router.post("/pull")
+async def pull(request: Request, payload: PullRequest) -> MutationResult:
+    """Fetch, then merge the upstream into the branch HEAD is on.
+
+    Two steps, never ``git pull``, and the failure says which one it got
+    to. ``ff-only`` (the default) refuses a diverged branch with
+    ``diverged`` rather than writing a merge nobody asked for; the tab
+    answers that with a button that sends ``strategy: "merge"``, and a
+    merge that conflicts is a 409 ``conflict`` with the merge left IN
+    PROGRESS -- the markers are on disk and the panel draws its merge
+    group from ``status.merge_in_progress``.
+    """
+    return await _answer(_service(request).pull(payload.strategy))
+
+
+@router.post("/push")
+async def push(request: Request, payload: PushRequest) -> MutationResult:
+    """Send this branch. ``set_upstream: true`` is Publish, not Push.
+
+    One route for the two buttons because they are one command and a flag.
+    A plain push goes where the upstream says (no upstream is a 409
+    ``no_upstream``, which is how the tab knows to offer Publish); a
+    publish is ``push -u`` to a remote that was named or resolved, and
+    ``detail.published`` says which of the two happened.
+    """
+    service = _service(request)
+    return await _answer(service.push(payload.remote,
+                                      set_upstream=payload.set_upstream))
+
+
+@router.post("/sync")
+async def sync(request: Request) -> MutationResult:
+    """Pull and then push, or publish a branch that has neither.
+
+    No body: there is nothing to choose. Which steps ran is
+    ``detail.steps``, and the operation stops at the first failure -- so a
+    sync whose push was refused has already merged, and the panel has to
+    read the status again either way.
+    """
+    return await _answer(_service(request).sync())
