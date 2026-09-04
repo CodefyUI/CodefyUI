@@ -346,12 +346,20 @@ _RULES: tuple[tuple[str, int, tuple[_Pattern, ...]], ...] = (
     # (a re-publish re-creates it), and this is the code that button hangs
     # off. ``GitStatus.upstream_gone`` keeps the two apart where the panel
     # needs them apart.
+    #
+    # The last is a PLAIN ``push`` on a branch with no upstream when no
+    # remote is called ``origin``: git has no default to fall back on and
+    # says "fatal: No configured push destination." (exit 128, measured on
+    # git 2.53). It prints the same sentence with no remote at all, which
+    # ``network.push`` refuses first as ``no_remote`` -- so what reaches
+    # this row is the state whose remedy is the Publish click.
     ("no_upstream", 409, (
         "has no upstream branch",
         "There is no tracking information",
         Anchored("no upstream configured for"),
         Anchored("@{u} - not something we can merge",
                  prefixes=MERGE_REFUSED_PREFIXES),
+        Anchored("No configured push destination"),
     )),
     # git says all three of these on STDOUT, not stderr. A caller that runs
     # ``commit`` therefore has to hand the stdout text in as well -- see

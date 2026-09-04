@@ -456,6 +456,75 @@ async def test_pushing_a_branch_with_no_upstream_says_so(repo, bare_remote):
     assert excinfo.value.status == 409
 
 
+@pytest.mark.parametrize("names", [("origin", "backup"), ("alpha", "beta")],
+                         ids=["one-is-origin", "none-is-origin"])
+async def test_a_plain_push_with_several_remotes_and_no_upstream_is_gits_own(
+        repo, bare_remote, tmp_path, names):
+    """``no_upstream`` -- git's answer, not a choice made for it.
+
+    A plain push names no remote, so several of them is not a question the
+    server has to settle before git runs. Settling it the way a fetch does
+    answered this state ``invalid_value``, a code R10 has no button for,
+    where git's own answer is the one the Publish button hangs off. git
+    says it in two voices, both measured: "The current branch main has no
+    upstream branch" when one of the remotes is ``origin``, and "No
+    configured push destination" when none is -- it has no default to fall
+    back on -- which the ``no_upstream`` row learned for this test.
+    """
+    second = tmp_path / "second.git"
+    second.mkdir()
+    Repo(second).git("init", "--bare", "-q")
+    repo.git("remote", "add", names[0], remote_url(bare_remote))
+    repo.git("remote", "add", names[1], remote_url(second))
+
+    with pytest.raises(GitError) as excinfo:
+        await repo.service.push()
+
+    assert excinfo.value.code == "no_upstream"
+    assert excinfo.value.status == 409
+
+
+async def test_a_plain_push_with_no_remote_is_refused_before_git_runs(
+        repo, monkeypatch):
+    """The one state a plain push still refuses on its own.
+
+    git's sentence for it, "No configured push destination", is the same
+    one it prints for several remotes with no ``origin`` among them, so
+    the classifier cannot tell "add a remote" from "publish". The answer is
+    the one every other operation gives for no remote at all -- and the
+    one the header hides its button for.
+    """
+    monkeypatch.setattr(network, "run_git",
+                        lambda *args, **kwargs: pytest.fail("git ran"))
+
+    with pytest.raises(GitError) as excinfo:
+        await repo.service.push()
+
+    assert excinfo.value.code == "no_remote"
+    assert excinfo.value.status == 409
+    assert excinfo.value.hint
+
+
+async def test_a_plain_push_git_sent_on_its_own_names_no_remote(repo,
+                                                                bare_remote):
+    """``detail.remote`` is read from the upstream, never guessed.
+
+    With ``push.default=current`` git pushes a branch that has no upstream
+    to the only remote (measured), from config this package does not read.
+    The push is real, and the answer says nothing about where it went
+    rather than something that might be wrong.
+    """
+    repo.git("remote", "add", "elsewhere", remote_url(bare_remote))
+    repo.git("config", "push.default", "current")
+
+    result = await repo.service.push()
+
+    assert result.detail == {"remote": None, "branch": "main",
+                             "published": False}
+    assert Repo(bare_remote).git("rev-parse", "refs/heads/main").strip() \
+        == repo.head()
+
+
 async def test_a_push_the_remote_is_ahead_of_is_refused(repo, bare_remote,
                                                         clone_of):
     """Somebody else pushed first: ``non_fast_forward``, and nothing here

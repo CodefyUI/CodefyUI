@@ -25,7 +25,10 @@ difference is not only that they are slower.
   exactly one; otherwise a refusal that says which of the two problems it
   is -- no remote at all, or several and no way to choose. The tab never
   sends a remote except when publishing, so this is the answer nearly every
-  request gets.
+  request gets. A PLAIN push is the exception: its argv names no remote,
+  git takes the destination from the upstream, and this module only reads
+  that decision back (:func:`_tracked_remote`) rather than making one git
+  would not.
 * **Two of these commands are ``run_git``'s ordinary shape and one is
   not.** ``fetch`` and ``push`` report everything on stderr, so the runner's
   own classification is right for them. ``merge`` reports a CONFLICT on
@@ -106,21 +109,70 @@ def resolve_remote(root: Path, status: GitStatus,
     """
     if requested is not None:
         return _known_remote(root, requested)
-    if status.upstream:
-        # Defensive even though it came out of git's own config: a remote
-        # name that reached a command line unchecked is the one shape this
-        # module is not allowed to have.
-        return validate_remote_name(status.upstream.partition("/")[0])
+    upstream = _upstream_remote(status)
+    if upstream is not None:
+        return upstream
 
     remotes = refs.list_remotes(root)
     if not remotes:
-        raise GitError("no_remote", 409, "this repository has no remote",
-                       hint="add a remote before pushing or fetching")
+        raise _no_remote()
     if len(remotes) > 1:
         raise GitError("invalid_value", 400,
                        "this branch does not say which remote it belongs to",
                        hint="several remotes -- publish the branch first")
     return validate_remote_name(remotes[0].name)
+
+
+def _upstream_remote(status: GitStatus) -> str | None:
+    """The remote the upstream names, or None when there is no upstream.
+
+    Validated even though it came out of git's own config: a remote name
+    that reached a command line unchecked is the one shape this module is
+    not allowed to have.
+    """
+    if not status.upstream:
+        return None
+    return validate_remote_name(status.upstream.partition("/")[0])
+
+
+def _no_remote() -> GitError:
+    """The refusal for a repository with nothing configured to talk to."""
+    return GitError("no_remote", 409, "this repository has no remote",
+                    hint="add a remote before pushing or fetching")
+
+
+def _tracked_remote(root: Path, status: GitStatus) -> str | None:
+    """Where a PLAIN push goes: git's decision, read here rather than made.
+
+    A plain push is the one operation here that does not go through
+    :func:`resolve_remote`, because its argv names no remote: git sends
+    the branch to the remote its upstream records, and its answer for a
+    branch that has none -- "The current branch main has no upstream
+    branch", ``no_upstream`` (measured) -- is the code the Publish button
+    hangs off. Resolving the remote the way a fetch does answered that
+    same state ``invalid_value`` whenever several remotes existed, before
+    git could speak, and R10 has no button for that code.
+
+    So the upstream's remote when there is one, and None when there is
+    not. git may still push then: ``push.default=current`` sends the
+    branch to the only remote, or to ``origin`` among several (measured),
+    from config this package does not read -- and a remote it did not
+    choose would be a guess dressed as an answer.
+
+    One state IS refused first. With no remote at all git says "No
+    configured push destination", the same sentence it prints when
+    several remotes exist and none is called ``origin`` -- so no
+    classifier row can tell "add a remote" from "publish the branch", and
+    ``no_remote`` is what every other operation here answers for the
+    state (R14 hides the button for it). It costs one ``remote -v``, only
+    on a branch with no upstream, where git was about to refuse anyway.
+    """
+    upstream = _upstream_remote(status)
+    if upstream is not None:
+        return upstream
+    if not refs.list_remotes(root):
+        raise _no_remote()
+    return None
 
 
 def _known_remote(root: Path, name: str) -> str:
@@ -219,7 +271,8 @@ def push(root: Path, *, remote: str | None = None,
     that keeps the ahead/behind in the panel meaning anything. A branch
     with no upstream is git's own refusal ("The current branch main has no
     upstream branch", ``no_upstream``), and the tab answers it with the
-    Publish button rather than by guessing.
+    Publish button rather than by guessing -- so no remote is resolved for
+    it here, only read back for the answer (:func:`_tracked_remote`).
 
     A PUBLISH is ``push -u -- <remote> <branch>``: a remote that was named
     or resolved, the branch HEAD is on, and ``-u`` to record the pairing so
@@ -255,7 +308,7 @@ def push(root: Path, *, remote: str | None = None,
     status = repo.read_status(root)
     branch = _pushable_branch(status)
     if not set_upstream:
-        name = resolve_remote(root, status)
+        name = _tracked_remote(root, status)
         run_git(["push"], cwd=root, timeout=T_NETWORK)
         return {"remote": name, "branch": branch, "published": False}
 

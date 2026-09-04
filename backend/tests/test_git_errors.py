@@ -170,6 +170,16 @@ _SAMPLES = [
     pytest.param(
         "merge: @{u} - not something we can merge\n",
         "no_upstream", id="pull-whose-upstream-is-gone"),
+    # A plain ``push`` with no upstream and no remote called ``origin``:
+    # git has no default destination and says so (exit 128, measured). The
+    # same sentence with NO remote at all never reaches the classifier --
+    # ``network.push`` answers that state ``no_remote`` before git runs.
+    pytest.param(
+        "fatal: No configured push destination.\n"
+        "Either specify the URL from the command-line or configure a remote "
+        "repository using\n\n    git remote add <name> <url>\n\n"
+        "and then push using the remote name\n\n    git push <name>\n",
+        "no_upstream", id="push-with-no-destination"),
     # A remote NAME that is not configured, which git reports as a
     # connection problem: "'nope' does not appear to be a git repository"
     # then "Could not read from remote repository" (measured, exit 128).
