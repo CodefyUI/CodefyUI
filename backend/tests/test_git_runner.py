@@ -44,12 +44,15 @@ class _FakeProc:
 
     def __init__(self, *, stdout: bytes = b"", stderr: bytes = b"",
                  returncode: int = 0, hangs: bool = False,
-                 ignores_sigterm: bool = False):
+                 ignores_sigterm: bool = False, on_wait=None):
         self._stdout = stdout
         self._stderr = stderr
         self._returncode = returncode
         self._hangs = hangs
         self._ignores_sigterm = ignores_sigterm
+        #: Called from ``wait``, for a test that needs waiting to COST
+        #: something on its fake clock. Real waiting does.
+        self._on_wait = on_wait
         self.pid = 4242
         self.returncode: int | None = None
         self.communicate_calls: list[tuple] = []
@@ -58,8 +61,14 @@ class _FakeProc:
         #: first signal. Says nothing about the group it was in.
         self.stopped = False
 
-    def communicate(self, data=None, timeout=None):
-        self.communicate_calls.append((data, timeout))
+    def communicate(self, input=None, timeout=None):  # noqa: A002
+        """``Popen.communicate``'s own signature, shadowed builtin and all.
+
+        The stdlib names this parameter ``input``; a fake that called it
+        something else would accept a call real git refuses, which is the
+        one direction a fake must not be wrong in.
+        """
+        self.communicate_calls.append((input, timeout))
         if self._hangs and len(self.communicate_calls) == 1:
             raise subprocess.TimeoutExpired(cmd="git", timeout=timeout or 0)
         self.returncode = self._returncode
@@ -68,6 +77,8 @@ class _FakeProc:
     def wait(self, timeout=None):
         """What the POSIX kill path waits on between its two signals."""
         self.wait_calls.append(timeout)
+        if self._on_wait is not None:
+            self._on_wait()
         if self._ignores_sigterm:
             raise subprocess.TimeoutExpired(cmd="git", timeout=timeout or 0)
         self.stopped = True
@@ -488,9 +499,27 @@ def test_read_only_reaches_the_process(monkeypatch, fake_git):
 # --- the platform ----------------------------------------------------------
 
 
+def _windows_platform(monkeypatch) -> None:
+    """Windows, with a tripwire on the POSIX signal the branch must not send.
+
+    The mirror of the ``runner.stop_process`` guard the POSIX timeout test
+    uses, and it is about the direction this box cannot see: a win32 branch
+    that ever leaked into ``_kill_group`` raises ``AttributeError`` HERE (no
+    ``os.killpg`` on Windows) but on a Linux runner would signal whatever
+    process group happens to own ``_FakeProc.pid``. ``raising=False``
+    because the attribute does not exist on this platform to replace.
+    """
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(
+        os, "killpg",
+        lambda pgid, sig: pytest.fail("a POSIX signal was sent from the "
+                                      "Windows path"),
+        raising=False)
+
+
 def test_windows_creationflags(monkeypatch, fake_git):
     """No console window over the editor, and a killable process GROUP."""
-    monkeypatch.setattr(sys, "platform", "win32")
+    _windows_platform(monkeypatch)
 
     _, seen = _run(monkeypatch, _FakeProc())
 
@@ -531,7 +560,7 @@ def test_a_windows_child_is_started_exactly_as_before(monkeypatch, fake_git):
     kill there is ``taskkill /F /T`` -- which walks the tree from the pid
     and needs nothing from the way the child was started.
     """
-    monkeypatch.setattr(sys, "platform", "win32")
+    _windows_platform(monkeypatch)
 
     _, seen = _run(monkeypatch, _FakeProc())
 
@@ -571,10 +600,10 @@ def _posix_kill(monkeypatch, *,
                 gone_after_sigterm: bool = False) -> list[tuple[int, int]]:
     """Fake the POSIX group-kill calls and clock; return actual signals.
 
-    ``os.killpg`` and ``os.getpgid`` do not exist on Windows either, so they
-    go in with ``raising=False`` too. On Linux, where they do exist, the
-    fakes replace the real ones for the length of the test, which is the
-    point: no test in this file may signal anything.
+    ``os.killpg`` does not exist on Windows either, so it goes in with
+    ``raising=False`` too. On Linux, where it does exist, the fake replaces
+    the real one for the length of the test, which is the point: no test in
+    this file may signal anything.
 
     *gone_after_sigterm* models a group whose every member stopped on the
     first signal: its first signal-0 liveness probe meets ``ESRCH``, the way a
@@ -582,7 +611,6 @@ def _posix_kill(monkeypatch, *,
     """
     sent: list[tuple[int, int]] = []
     _posix_clock(monkeypatch)
-    monkeypatch.setattr(os, "getpgid", lambda pid: pid, raising=False)
 
     def _killpg(pgid, sig):
         if sig == 0:
@@ -606,7 +634,7 @@ def test_timeout_kills_the_tree_and_reports_504(monkeypatch, fake_git):
     the platform is stated because the POSIX path below is a different kill
     entirely.
     """
-    monkeypatch.setattr(sys, "platform", "win32")
+    _windows_platform(monkeypatch)
     proc = _FakeProc(hangs=True)
     stopped: list = []
 
@@ -639,7 +667,7 @@ def test_a_windows_kill_that_did_not_land_is_a_server_failure(monkeypatch,
     stopped while git and its children are still holding the index lock,
     which is the one thing the next request cannot recover from on its own.
     """
-    monkeypatch.setattr(sys, "platform", "win32")
+    _windows_platform(monkeypatch)
     proc = _FakeProc(hangs=True)
     # ``taskkill`` ran and the process outlived it: no exit status.
     monkeypatch.setattr(runner, "stop_process", lambda _proc: None)
@@ -712,6 +740,13 @@ def test_a_posix_descendant_gets_the_full_grace_after_git_exits(
     group stays alive throughout this fake clock's grace, so ``SIGKILL`` must
     not follow the leader's exit immediately: it is the floor at the group
     deadline, after liveness probes gave the helper time to stop cleanly.
+
+    The grace is ONE :data:`~app.core.git.runner.DRAIN_TIMEOUT_S` and not
+    two, which is why waiting here costs fake seconds: git takes 2 of the 3
+    to die, and the helper gets the 1 that is left rather than a fresh 3. A
+    deadline computed after ``proc.wait`` instead of before it would put this
+    ``SIGKILL`` at ``started_at + 5.0`` and double the worst-case cleanup on
+    a request that is already past its timeout.
     """
     started_at = 1000.0
     clock = [started_at]
@@ -720,7 +755,6 @@ def test_a_posix_descendant_gets_the_full_grace_after_git_exits(
     sleeps: list[float] = []
     monkeypatch.setattr(sys, "platform", "linux")
     monkeypatch.setattr(signal, "SIGKILL", 9, raising=False)
-    monkeypatch.setattr(os, "getpgid", lambda pid: pid, raising=False)
 
     def _killpg(pgid, sig):
         if sig == 0:
@@ -737,7 +771,9 @@ def test_a_posix_descendant_gets_the_full_grace_after_git_exits(
         runner, "time",
         types.SimpleNamespace(monotonic=lambda: clock[0], sleep=_sleep),
     )
-    proc = _FakeProc(hangs=True)
+    # Dying takes git two thirds of the grace, as it does in life.
+    proc = _FakeProc(hangs=True,
+                     on_wait=lambda: clock.__setitem__(0, clock[0] + 2.0))
     _fake_popen(monkeypatch, proc)
 
     with pytest.raises(GitError):
@@ -798,13 +834,24 @@ def test_a_posix_group_that_is_already_gone_is_not_an_error(monkeypatch,
     The signal attempt and liveness probe both meet ``ESRCH``. The direct
     leader is still reaped, but no clock time is spent and no ``SIGKILL`` is
     needed before the deadline.
+
+    The group id is ``proc.pid`` and is NOT looked up: the child is its own
+    session leader, so the two are the same number, and by the time the kill
+    path runs ``os.getpgid`` may be answering about a leader that has already
+    exited. This test states that by making the lookup raise -- which is what
+    it would really do for a group in this state, and which nothing here may
+    depend on.
     """
     clock = [1000.0]
     sleeps: list[float] = []
     sent: list[tuple[int, int]] = []
     monkeypatch.setattr(sys, "platform", "linux")
     monkeypatch.setattr(signal, "SIGKILL", 9, raising=False)
-    monkeypatch.setattr(os, "getpgid", lambda pid: pid, raising=False)
+
+    def _no_such_group(pid):
+        raise ProcessLookupError(3, "No such process")
+
+    monkeypatch.setattr(os, "getpgid", _no_such_group, raising=False)
 
     def _gone(pgid, sig):
         if sig != 0:
@@ -830,6 +877,39 @@ def test_a_posix_group_that_is_already_gone_is_not_an_error(monkeypatch,
     assert proc.stopped is True
     assert sent == [(proc.pid, signal.SIGTERM)]
     assert sleeps == []
+
+
+def test_a_posix_group_this_server_cannot_probe_is_not_counted_as_empty(
+        monkeypatch, fake_git):
+    """``EPERM`` from the liveness probe means alive, not gone.
+
+    Signal 0 answers "is this group signalable by me", so a group holding a
+    member this server has no permission over -- a setuid credential helper,
+    a container's user mapping -- answers ``EPERM`` forever. Only ``ESRCH``
+    proves a group is empty, and reading anything else as empty would end the
+    grace early and skip the ``SIGKILL`` floor: the same hole this path
+    exists to close, reached from the other side.
+    """
+    clock = _posix_clock(monkeypatch)
+    started_at = clock[0]
+    sent: list[tuple[int, int]] = []
+
+    def _killpg(pgid, sig):
+        if sig == 0:
+            raise PermissionError(1, "Operation not permitted")
+        sent.append((pgid, sig))
+
+    monkeypatch.setattr(os, "killpg", _killpg, raising=False)
+    proc = _FakeProc(hangs=True)
+    _fake_popen(monkeypatch, proc)
+
+    with pytest.raises(GitError) as excinfo:
+        runner.run_git(["fetch"], cwd=Path.cwd(), timeout=10)
+
+    assert excinfo.value.code == "timeout"
+    assert sent == [(proc.pid, signal.SIGTERM), (proc.pid, signal.SIGKILL)]
+    assert clock[0] == pytest.approx(started_at + runner.DRAIN_TIMEOUT_S), \
+        "the grace ended before the deadline"
 
 
 def test_a_posix_kill_that_was_refused_is_a_server_failure(monkeypatch,
