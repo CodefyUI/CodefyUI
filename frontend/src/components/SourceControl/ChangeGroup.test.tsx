@@ -81,6 +81,24 @@ describe('ChangeGroup: structure', () => {
     expect(header.parentElement?.textContent).toContain('1');
   });
 
+  it('draws the count after the actions, so every group ends on it', () => {
+    render(<ChangeGroup kind="changes" files={[file('a.py')]} />);
+    const header = screen.getByRole('button', { name: 'Changes' })
+      .parentElement as HTMLElement;
+    const actions = within(header).getByRole('button', { name: 'Stage All' })
+      .parentElement as HTMLElement;
+    const count = within(header).getByText('1');
+
+    // Between the title and the actions, a count sits wherever that group's
+    // actions left it -- and Changes has two of them where Staged Changes has
+    // one, which was 23px of daylight between two counts in the same panel.
+    // Last, it is on the same edge in every group.
+    const order = Array.from(header.children);
+    expect(order.indexOf(actions)).toBeGreaterThanOrEqual(0);
+    expect(order.indexOf(count)).toBe(order.length - 1);
+    expect(order.indexOf(count)).toBeGreaterThan(order.indexOf(actions));
+  });
+
   it('collapses and reopens from its heading', () => {
     render(<ChangeGroup kind="changes" files={[file('a.py')]} />);
     const header = screen.getByRole('button', { name: 'Changes' });

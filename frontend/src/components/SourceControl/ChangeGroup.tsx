@@ -89,7 +89,8 @@ export function ChangeGroup({ kind, files }: ChangeGroupProps) {
           aria-expanded={open}
           aria-controls={listId}
           // The heading is the first thing to lose room at a 180px panel
-          // width, where the group actions have already claimed 50 of it.
+          // width, and it loses more of it the moment a hover opens the
+          // actions beside it -- so the name in full stays in a `title`.
           title={t(TITLE_KEY[kind])}
           onClick={() => setOpen((was) => !was)}
         >
@@ -100,7 +101,16 @@ export function ChangeGroup({ kind, files }: ChangeGroupProps) {
           </span>
           <span className={styles.groupTitle}>{t(TITLE_KEY[kind])}</span>
         </button>
-        <span className={styles.groupCount}>{files.length}</span>
+        {/*
+          Title, then the actions, then the count -- the count LAST, so it is
+          pinned to the same edge in every group. Between the two it would sit
+          wherever that group's own actions left it, and the groups do not have
+          the same number of them: Changes has two and Staged Changes one, which
+          put their counts about 23px apart in the same panel. The actions open
+          into the free space to the left of it instead, which is where every
+          other editor with this panel puts them -- and since the hidden state
+          takes no width at all, the count does not move as they appear.
+        */}
         <div className={styles.groupActions}>
           {kind === 'changes' && (
             <>
@@ -144,6 +154,7 @@ export function ChangeGroup({ kind, files }: ChangeGroupProps) {
             </button>
           )}
         </div>
+        <span className={styles.groupCount}>{files.length}</span>
       </div>
       {/* `role="list"` is spelled out because `list-style: none` takes the
           list semantics away from a `<ul>` in Safari. */}
