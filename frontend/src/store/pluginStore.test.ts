@@ -990,6 +990,32 @@ describe('pluginStore — update', () => {
       'Update failed: This server has no Plugin Center. Update CodefyUI and restart it.',
     );
   });
+
+  it('carries the hint when this is not a plugin the panel updates', async () => {
+    // The code says nothing and the hint says everything: a built-in pack
+    // comes with the release, so it updates with the release.
+    api.updatePlugin.mockRejectedValue(refused(400, 'not_updatable', {
+      hint: 'A built-in pack updates with cdui update.',
+    }));
+
+    await usePluginStore.getState().update('demo');
+
+    expect(lastToast().message).toBe(
+      'Update failed: A built-in pack updates with cdui update.',
+    );
+    // Nothing broke, so the same tone `files_locked` gets.
+    expect(lastToast().type).toBe('warning');
+  });
+
+  it('says a plugin has gone rather than showing not_installed', async () => {
+    api.updatePlugin.mockRejectedValue(refused(404, 'not_installed'));
+
+    await usePluginStore.getState().update('demo');
+
+    expect(lastToast().message).toBe(
+      'Update failed: This plugin is not installed any more. Refresh the list.',
+    );
+  });
 });
 
 // ── uninstall, enable, disable ───────────────────────────────────────────
@@ -1066,6 +1092,20 @@ describe('pluginStore — uninstall', () => {
     expect(lastToast().message).toBe('Could not remove Demo plugin: Failed to fetch');
     expect(usePluginStore.getState().busy.demo).toBeFalsy();
   });
+
+  it('says a plugin has gone rather than showing not_installed', async () => {
+    // Removed from the CLI or another tab a moment ago: this row is stale,
+    // and "Could not remove Demo plugin: not_installed" is the token this
+    // replaces.
+    api.uninstallPlugin.mockRejectedValue(refused(404, 'not_installed'));
+
+    await usePluginStore.getState().uninstall('demo');
+
+    expect(lastToast().message).toBe(
+      'Could not remove Demo plugin: This plugin is not installed any more. '
+      + 'Refresh the list.',
+    );
+  });
 });
 
 describe('pluginStore — setEnabled', () => {
@@ -1100,6 +1140,18 @@ describe('pluginStore — setEnabled', () => {
 
     expect(lastToast().message).toBe('Could not change Demo plugin: nope');
     expect(usePluginStore.getState().busy.demo).toBeFalsy();
+  });
+
+  it('re-reads the catalog when the plugin turns out to be busy', async () => {
+    // The switch is only still on screen because this tab's catalog is old:
+    // "Could not change Demo plugin: busy" is the token this replaces.
+    api.setPluginEnabled.mockRejectedValue(refused(409, 'busy', { job_id: 'j1' }));
+
+    await usePluginStore.getState().setEnabled('demo', true);
+
+    expect(lastToast().message).toBe('Another install is already running.');
+    expect(lastToast().type).toBe('warning');
+    expect(order).toEqual(['catalog']);
   });
 
   it('survives a step of the refresh failing, and still runs the rest', async () => {

@@ -249,8 +249,9 @@ function refusalCode(err: unknown): string | null {
  * deliberately no `message` -- "prose about a coded refusal belongs to whoever
  * is talking to the user, in their language" -- so `readApiError` falls back to
  * the code and `err.message` is the raw token: a student is shown
- * `inspection_expired`. Every code that can reach a sentence is therefore
- * mapped here.
+ * `inspection_expired`. Every code that reaches a toast or the review card is
+ * therefore mapped here; the ones a branch answers with a better sentence of
+ * its own (`busy`, `not_updatable`) are handled at their catch instead.
  *
  * The three that are NOT are the three a control answers instead of a
  * sentence: `already_installed` grows a Reinstall button, `consent_required` a
@@ -264,6 +265,10 @@ const REFUSAL_KEY: Record<string, TranslationKey | undefined> = {
   inspection_expired: 'pluginCenter.error.inspectionExpired',
   unknown_job: 'pluginCenter.error.unknownJob',
   inspect_busy: 'pluginCenter.error.inspectBusy',
+  // A row this tab is still showing for a plugin that is gone -- removed from
+  // the CLI or another tab. Both `DELETE /{id}` and `POST /{id}/update`
+  // answer it, and neither carries a word of prose.
+  not_installed: 'pluginCenter.error.notInstalled',
   // The same sentence the source box shows before it asks at all: the server
   // and this build read a source by the same grammar, so a string that got
   // past the client parser and was still refused is answered the same way.
@@ -879,7 +884,15 @@ export const usePluginStore = create<PluginState>((set, get) => ({
         setPluginStatus(pluginId, 'installing');
         startFollowing(result.job_id, pluginId, 'update', 0);
       } catch (err) {
-        if (err instanceof ApiError && err.status === 409) {
+        // 400 `not_updatable` is a code with a `hint` beside it, and the hint
+        // is the only half that says what to do instead -- a built-in pack
+        // updates with `cdui update`, not from here. The same shape as
+        // `uninstall`'s `files_locked` branch, and `warning` for the same
+        // reason: nothing broke.
+        const hint = str(errorDetail(err)?.hint);
+        if (refusalCode(err) === 'not_updatable' && hint !== null) {
+          toast(t('pluginCenter.updateFailed', { message: hint }), 'warning');
+        } else if (err instanceof ApiError && err.status === 409) {
           toast(t('packs.toast.busy'), 'warning');
           await get().refresh();
         } else if (err instanceof ApiError && err.status === 403) {
@@ -966,12 +979,20 @@ export const usePluginStore = create<PluginState>((set, get) => ({
           'success',
         );
       } catch (err) {
-        toast(
-          t('pluginCenter.toast.toggleFailed', {
-            plugin: name, message: refusalMessage(err),
-          }),
-          'error',
-        );
+        if (err instanceof ApiError && err.status === 409) {
+          // That plugin's own install is running, and this row is what is out
+          // of date -- the button is still on screen because the catalog has
+          // not been re-read. Same branch, and the same refresh, as uninstall.
+          toast(t('packs.toast.busy'), 'warning');
+          await get().refresh();
+        } else {
+          toast(
+            t('pluginCenter.toast.toggleFailed', {
+              plugin: name, message: refusalMessage(err),
+            }),
+            'error',
+          );
+        }
       }
     });
   },

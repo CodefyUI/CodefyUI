@@ -1063,6 +1063,7 @@ const zhTW: Record<TranslationKey, string> = {
   'pluginCenter.error.unavailable': '這台伺服器不支援外掛中心。請更新 CodefyUI 後重新啟動。',
   'pluginCenter.error.inspectionExpired': '檢視已過期，請重新檢視來源。',
   'pluginCenter.error.unknownJob': '找不到這個安裝，請重新整理。',
+  'pluginCenter.error.notInstalled': '這個外掛已不在安裝清單中，請重新整理。',
   'pluginCenter.error.inspectBusy': '另一個檢視仍在進行，請稍後再試。',
   'pluginCenter.error.invalidManifest': '外掛的 manifest 無效。',
   'pluginCenter.error.notFound': 'GitHub 上找不到這個 repository 或 ref。',

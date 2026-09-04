@@ -1197,6 +1197,9 @@ const en = {
     'This server has no Plugin Center. Update CodefyUI and restart it.',
   'pluginCenter.error.inspectionExpired': 'The review expired. Review the source again.',
   'pluginCenter.error.unknownJob': 'That install is no longer tracked. Refresh.',
+  // A row for a plugin that has since been removed somewhere else: the button
+  // was pressed against a catalog this tab read a while ago.
+  'pluginCenter.error.notInstalled': 'This plugin is not installed any more. Refresh the list.',
   // One review at a time, server-side: this one is not about the source at
   // all, which is why it says "again" rather than anything about the repo.
   'pluginCenter.error.inspectBusy': 'Another review is still running. Try again in a moment.',
