@@ -216,6 +216,11 @@ def test_a_commit_id_that_is_not_one_is_refused(sha):
     "ssh://git@github.com/owner/repo.git",
     "file:///srv/mirrors/repo.git",
     "git@github.com:owner/repo.git",
+    # A port, an IPv6 literal, and a password with an unencoded ``@`` in it:
+    # three authorities the host check has to survive rather than refuse.
+    "ssh://git@github.com:2222/owner/repo.git",
+    "ssh://[fe80::1]:22/srv/repo.git",
+    "https://alice:p@ss@github.com/owner/repo.git",
 ])
 def test_a_remote_url_is_accepted(url):
     assert validate_remote_url(url) == url
@@ -233,9 +238,29 @@ def test_a_remote_url_is_accepted(url):
     pytest.param("https://github.com/owner/repo.git\n", id="trailing-newline"),
     pytest.param("", id="empty"),
     pytest.param("/srv/mirrors/repo.git", id="bare-path"),
+    # A URL is not one argument by the time git is done with it. Both of
+    # these open with a perfectly ordinary scheme and end as ``ssh
+    # -oProxyCommand=... ...``, which runs a command -- so the leading-``-``
+    # rule is applied to the PARTS and not only to the whole string.
+    pytest.param("ssh://-oProxyCommand=curl|sh/repo.git", id="option-host"),
+    pytest.param("https://-evil.example/owner/repo.git", id="option-host-https"),
+    pytest.param("ssh://git@-oProxyCommand=x/repo.git", id="option-host-after-user"),
+    pytest.param("git@-evil.example:repo.git", id="option-host-scp"),
+    pytest.param("git@github.com:-upload-pack=whoami", id="option-path-scp"),
+    # No host at all: ``https:///owner/repo.git`` is not a repository
+    # anywhere, and an empty authority is how a typo arrives.
+    pytest.param("https:///owner/repo.git", id="no-host"),
+    pytest.param("ssh://@/x", id="userinfo-and-nothing-else"),
 ])
 def test_a_remote_url_that_is_not_allowed_is_refused(url):
     assert _refused(validate_remote_url, url).code == "invalid_url"
+
+
+def test_a_file_url_needs_no_host():
+    """The one scheme whose authority is EMPTY in every form anybody writes
+    -- and the one a local mirror and the network tests both use."""
+    assert validate_remote_url("file:///srv/mirrors/repo.git")
+    assert validate_remote_url("file://C:/mirrors/repo.git")
 
 
 # --- messages and identity -------------------------------------------------

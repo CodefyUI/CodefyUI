@@ -86,6 +86,15 @@ SCP_URL_RE = re.compile(r"^[A-Za-z0-9._-]+@[A-Za-z0-9.-]+:[^\s]+$")
 #: so a bad URL is a 400 with an explanation rather than a git failure.
 ALLOWED_URL_SCHEMES = ("https://", "ssh://", "file://")
 
+#: The subset of the above whose AUTHORITY has to be checked on its own: a
+#: host is a separate argument by the time git has finished with these two,
+#: and ``file://`` has no host to check (see :func:`validate_remote_url`).
+HOSTED_URL_SCHEMES = ("https://", "ssh://")
+
+#: Where a URL's authority ends -- the first ``/``, ``?`` or ``#`` after the
+#: scheme.
+_AUTHORITY_END_RE = re.compile(r"[/?#]")
+
 #: Transport helpers whose "URL" is a command line git will run
 #: (``ext::sh -c ...``). Refused by name as well as by the scheme
 #: allowlist above, because this one is worth failing loudly.
@@ -238,6 +247,21 @@ def validate_remote_url(url: str) -> str:
     either a paste accident the user should see, or two arguments trying to
     look like one. The scheme allowlist mirrors ``GIT_ALLOW_PROTOCOL``, so
     a URL that would fail inside git fails here instead -- with a reason.
+
+    The leading-``-`` rule is applied to the URL's PARTS and not only to the
+    whole string, because a URL is not one argument by the time git is done
+    with it. ``ssh://`` and the scp-like form both end as ``ssh <host> ...``,
+    where a host called ``-oProxyCommand=curl|sh`` is an ssh OPTION and not a
+    host at all -- and the whole string still starts with a perfectly
+    ordinary ``ssh://``. Same for the path half of ``user@host:-x``. So the
+    authority of an ``https://``/``ssh://`` URL and both halves of the
+    scp-like form are checked on their own.
+
+    ``file://`` is the exception and is deliberately not host-checked: its
+    authority is EMPTY in every form anybody writes
+    (``file:///srv/mirrors/repo.git``), it starts no ssh, and requiring a
+    host there would refuse the one URL shape the tests and a local mirror
+    both use.
     """
     if not url:
         _refuse("invalid_url", "a remote URL is required")
@@ -252,9 +276,37 @@ def validate_remote_url(url: str) -> str:
     if lowered.startswith(REFUSED_URL_SCHEMES):
         _refuse("invalid_url", "that transport runs a command and is not allowed",
                 hint="use an https://, ssh:// or file:// URL")
-    if lowered.startswith(ALLOWED_URL_SCHEMES) or SCP_URL_RE.match(url):
+    if lowered.startswith(HOSTED_URL_SCHEMES):
+        _check_host(_AUTHORITY_END_RE.split(url.split("://", 1)[1], maxsplit=1)[0])
+        return url
+    if lowered.startswith(ALLOWED_URL_SCHEMES):
+        return url  # ``file://`` -- no host, no ssh; see the docstring.
+    if SCP_URL_RE.match(url):
+        authority, _, path = url.partition(":")
+        _check_host(authority)
+        if path.startswith("-"):
+            _refuse("invalid_url", "a remote path may not start with '-'")
         return url
     _refuse("invalid_url", "a remote URL must be https://, ssh://, file:// or user@host:path")
+
+
+def _check_host(authority: str) -> None:
+    """Refuse an authority whose HOST is missing or is an option.
+
+    The userinfo is dropped at the LAST ``@`` -- the same split a URL parser
+    makes, and the same one :func:`~app.core.git.errors.redact` relies on --
+    so a password containing ``@`` cannot push the host out of view. A
+    trailing ``:<digits>`` is a port and is dropped; a ``:`` with anything
+    else after it is part of an IPv6 literal, which keeps its brackets.
+    """
+    host = authority.rpartition("@")[2]
+    head, colon, tail = host.rpartition(":")
+    if colon and tail.isdigit():
+        host = head
+    if not host:
+        _refuse("invalid_url", "a remote URL must name a host")
+    if host.startswith("-"):
+        _refuse("invalid_url", "a remote host may not start with '-'")
 
 
 def validate_commit_message(message: str) -> str:
