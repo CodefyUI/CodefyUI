@@ -79,6 +79,39 @@ received — each links to the release it was published as.
   panel that writes carries the session token: staging, committing,
   initializing, saving your identity. The status behind them is an open read.
 
+- **Source control from the editor, part 3 — branches, remotes, stashes, and
+  talking to a remote.** The tab stops being read-only about everything except
+  your own index. Under the file groups are three collapsible lists, remembered
+  between sessions and loaded when they open: every branch, with how far each
+  one is from what it tracks and one press to switch to it, create one, rename
+  one or delete one; every remote, with the URL git will fetch from and the two
+  ways to change that; and the stash stack, with what each entry was called,
+  which branch it came off and how long ago, one press from being popped,
+  applied or dropped. The branch name in the header is now the button that
+  opens that first list. Above them, the header's second row is a Sync button
+  when the branch has an upstream and a Publish Branch button when it does not
+  — and when there is more than one remote to publish to, it asks which rather
+  than guessing. Fetch, Pull, Push, Publish and Stash Changes... sit in the
+  overflow menu, and a row that cannot be pressed says why in as many words: no
+  remote yet, this branch is not published, no commits yet. Network operations
+  run in a lane of their own, so a slow fetch over a bad connection does not
+  block the commit you were about to make — and neither one can be started
+  twice. A credential the server does not have comes back as a named refusal in
+  seconds rather than as a request that hangs until you close the tab, and the
+  two refusals that have a way out carry the button for it: a branch that has
+  diverged offers to merge the remote's changes, and one that was never pushed
+  offers to publish. A conflict now has a group of its own with git's three
+  answers on each row — keep mine, take incoming, or mark the file you fixed by
+  hand as resolved — plus one Abort Merge that asks first, and the commit
+  button stays live even when settling every file left nothing staged, because
+  that is exactly the merge git still wants a commit for. Anything that can put
+  different bytes under a graph you have open — a pull, a checkout, a stash pop
+  — says how many and offers to reload them rather than reloading them behind
+  you. Deleting a branch whose commits are on no other branch asks a second
+  time, in git's own words. Reading any of these lists is an open read; every
+  button that changes something carries the session token. History and the diff
+  view are the part after this one.
+
 - **The Plugin Center can read a plugin before you install it, and then
   install it.** Four routes, and the shape of them is the point: `POST
   /api/plugins/inspect` reads one source — a catalog name, an `owner/repo`,
