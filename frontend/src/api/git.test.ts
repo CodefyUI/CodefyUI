@@ -1,14 +1,35 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import {
+  GIT_ERROR_CODES,
   GIT_TIMEOUTS_S,
   GitApiError,
+  getGitBranches,
   getGitConfig,
+  getGitRemotes,
+  getGitStashes,
   getGitStatus,
+  gitAbortMerge,
+  gitAddRemote,
   gitApiError,
+  gitCheckout,
   gitCommit,
+  gitCreateBranch,
+  gitDeleteBranch,
   gitDiscard,
+  gitFetch,
   gitInit,
+  gitPull,
+  gitPush,
+  gitRemoveRemote,
+  gitRenameBranch,
+  gitResolve,
+  gitSetRemoteUrl,
   gitStage,
+  gitStashApply,
+  gitStashDrop,
+  gitStashPop,
+  gitStashPush,
+  gitSync,
   gitUnstage,
   setGitConfig,
 } from './git';
@@ -86,13 +107,21 @@ afterEach(() => {
 });
 
 describe('GIT_TIMEOUTS_S', () => {
-  // The server sends a 504 with a code and no number, so these three are the
+  // The server sends a 504 with a code and no number, so these four are the
   // only place the sentence's "{seconds}" can come from. They mirror
-  // backend/app/core/git/runner.py's T_STATUS / T_LOCAL / T_READ.
-  it('mirrors the three server-side deadlines', () => {
+  // backend/app/core/git/runner.py's T_STATUS / T_LOCAL / T_READ / T_NETWORK.
+  it('mirrors the four server-side deadlines', () => {
     expect(GIT_TIMEOUTS_S.status).toBe(10);
     expect(GIT_TIMEOUTS_S.mutation).toBe(30);
     expect(GIT_TIMEOUTS_S.read).toBe(20);
+    expect(GIT_TIMEOUTS_S.network).toBe(130);
+  });
+});
+
+describe('GIT_ERROR_CODES', () => {
+  it('recognises the two G3 remote refusal codes', () => {
+    expect(GIT_ERROR_CODES).toContain('remote_exists');
+    expect(GIT_ERROR_CODES).toContain('remote_rejected');
   });
 });
 
@@ -215,6 +244,115 @@ describe('getGitConfig', () => {
   });
 });
 
+describe('reference reads', () => {
+  it('GETs and normalizes every branch field', async () => {
+    const fetchMock = mockFetch(200, {
+      current: 'main',
+      detached: true,
+      local: [
+        {
+          name: 'main',
+          sha: 'abc1234',
+          current: true,
+          upstream: 'origin/main',
+          ahead: 2,
+          behind: 3,
+          gone: true,
+          subject: 'Ship it',
+          committed_at: 123,
+        },
+        { name: 'empty' },
+      ],
+      remote: [
+        {
+          name: 'feat/x',
+          remote: 'origin',
+          sha: 'def5678',
+          subject: 'Remote work',
+          committed_at: 456,
+        },
+        {},
+      ],
+    });
+
+    const out = await getGitBranches();
+
+    expect(fetchMock.mock.calls[0]).toEqual(['/api/git/branches']);
+    expect(out).toEqual({
+      current: 'main',
+      detached: true,
+      local: [
+        {
+          name: 'main',
+          sha: 'abc1234',
+          current: true,
+          upstream: 'origin/main',
+          ahead: 2,
+          behind: 3,
+          gone: true,
+          subject: 'Ship it',
+          committed_at: 123,
+        },
+        {
+          name: 'empty',
+          sha: '',
+          current: false,
+          upstream: null,
+          ahead: null,
+          behind: null,
+          gone: false,
+          subject: '',
+          committed_at: 0,
+        },
+      ],
+      remote: [
+        {
+          name: 'feat/x',
+          remote: 'origin',
+          sha: 'def5678',
+          subject: 'Remote work',
+          committed_at: 456,
+        },
+        { name: '', remote: '', sha: '', subject: '', committed_at: 0 },
+      ],
+    });
+  });
+
+  it('defaults a partial branches response to the empty answer', async () => {
+    mockFetch(200, {});
+    expect(await getGitBranches()).toEqual({
+      current: null,
+      detached: false,
+      local: [],
+      remote: [],
+    });
+  });
+
+  it('GETs and normalizes every remote field', async () => {
+    const fetchMock = mockFetch(200, [
+      { name: 'origin', fetch_url: 'https://example/fetch', push_url: 'ssh://example/push' },
+      {},
+    ]);
+    expect(await getGitRemotes()).toEqual([
+      { name: 'origin', fetch_url: 'https://example/fetch', push_url: 'ssh://example/push' },
+      { name: '', fetch_url: '', push_url: '' },
+    ]);
+    expect(fetchMock.mock.calls[0]).toEqual(['/api/git/remotes']);
+  });
+
+  it('GETs and normalizes every stash field', async () => {
+    const fetchMock = mockFetch(200, [
+      { index: 4, message: 'WIP on main: work', branch: 'main', created_at: 789 },
+      {},
+    ]);
+    expect(await getGitStashes()).toEqual([
+      { index: 4, message: 'WIP on main: work', branch: 'main', created_at: 789 },
+      { index: 0, message: '', branch: null, created_at: 0 },
+    ]);
+    expect(fetchMock.mock.calls[0]).toEqual(['/api/git/stashes']);
+  });
+});
+
 describe('mutations', () => {
   function mutationBody() {
     return {
@@ -298,6 +436,158 @@ describe('mutations', () => {
       amend: false,
     });
     expect(out.detail).toEqual({ sha: 'abc1234def', short: 'abc1234' });
+  });
+
+  it.each([
+    {
+      name: 'gitFetch',
+      call: () => gitFetch(),
+      url: '/api/git/fetch',
+      method: 'POST',
+      body: { remote: null },
+    },
+    {
+      name: 'gitPull',
+      call: () => gitPull({ strategy: 'merge' }),
+      url: '/api/git/pull',
+      method: 'POST',
+      body: { strategy: 'merge' },
+    },
+    {
+      name: 'gitPush',
+      call: () => gitPush({ remote: 'upstream', setUpstream: true }),
+      url: '/api/git/push',
+      method: 'POST',
+      body: { remote: 'upstream', set_upstream: true },
+    },
+    {
+      name: 'gitSync',
+      call: () => gitSync(),
+      url: '/api/git/sync',
+      method: 'POST',
+      body: undefined,
+    },
+    {
+      name: 'gitCreateBranch',
+      call: () => gitCreateBranch('feat/a b', false, 'main'),
+      url: '/api/git/branches',
+      method: 'POST',
+      body: { name: 'feat/a b', checkout: false, start_point: 'main' },
+    },
+    {
+      name: 'gitCheckout',
+      call: () => gitCheckout('origin/feat/a', 'remote'),
+      url: '/api/git/checkout',
+      method: 'POST',
+      body: { target: 'origin/feat/a', kind: 'remote' },
+    },
+    {
+      name: 'gitRenameBranch',
+      call: () => gitRenameBranch('feat/a b', 'feat/c'),
+      url: '/api/git/branches/feat%2Fa%20b',
+      method: 'PUT',
+      body: { new_name: 'feat/c' },
+    },
+    {
+      name: 'gitDeleteBranch',
+      call: () => gitDeleteBranch('feat/a b', false),
+      url: '/api/git/branches/feat%2Fa%20b',
+      method: 'DELETE',
+      body: undefined,
+    },
+    {
+      name: 'gitDeleteBranch force',
+      call: () => gitDeleteBranch('feat/a b', true),
+      url: '/api/git/branches/feat%2Fa%20b?force=1',
+      method: 'DELETE',
+      body: undefined,
+    },
+    {
+      name: 'gitAddRemote',
+      call: () => gitAddRemote('origin', 'https://example/repo.git'),
+      url: '/api/git/remotes',
+      method: 'POST',
+      body: { name: 'origin', url: 'https://example/repo.git' },
+    },
+    {
+      name: 'gitSetRemoteUrl',
+      call: () => gitSetRemoteUrl('origin', 'ssh://example/repo.git'),
+      url: '/api/git/remotes/origin',
+      method: 'PUT',
+      body: { url: 'ssh://example/repo.git' },
+    },
+    {
+      name: 'gitRemoveRemote',
+      call: () => gitRemoveRemote('origin'),
+      url: '/api/git/remotes/origin',
+      method: 'DELETE',
+      body: undefined,
+    },
+    {
+      name: 'gitStashPush',
+      call: () => gitStashPush(null, true),
+      url: '/api/git/stashes',
+      method: 'POST',
+      body: { message: null, include_untracked: true },
+    },
+    {
+      name: 'gitStashPop',
+      call: () => gitStashPop(4),
+      url: '/api/git/stashes/4/pop',
+      method: 'POST',
+      body: undefined,
+    },
+    {
+      name: 'gitStashApply',
+      call: () => gitStashApply(3),
+      url: '/api/git/stashes/3/apply',
+      method: 'POST',
+      body: undefined,
+    },
+    {
+      name: 'gitStashDrop',
+      call: () => gitStashDrop(2),
+      url: '/api/git/stashes/2',
+      method: 'DELETE',
+      body: undefined,
+    },
+    {
+      name: 'gitAbortMerge',
+      call: () => gitAbortMerge(),
+      url: '/api/git/merge/abort',
+      method: 'POST',
+      body: undefined,
+    },
+    {
+      name: 'gitResolve',
+      call: () => gitResolve('graphs/demo.graph.json', 'theirs'),
+      url: '/api/git/resolve',
+      method: 'POST',
+      body: { path: 'graphs/demo.graph.json', side: 'theirs' },
+    },
+  ])('$name uses its route, method and exact wire body', async ({ call, url, method, body }) => {
+    const fetchMock = mockFetch(200, mutationBody());
+    const out = await call();
+    const [actualUrl, init] = fetchMock.mock.calls[0];
+
+    expect(actualUrl).toBe(url);
+    expect(init.method).toBe(method);
+    expect(new Headers(init.headers).get('X-CodefyUI-Token')).toBe('test-token');
+    if (body === undefined) {
+      expect(init.body).toBeUndefined();
+    } else {
+      expect(JSON.parse(init.body)).toEqual(body);
+    }
+    expect(out.status.branch).toBe('main');
+  });
+
+  it('gitPush defaults to a plain push with no remote', async () => {
+    const fetchMock = mockFetch(200, mutationBody());
+    await gitPush({ setUpstream: false });
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({
+      remote: null,
+      set_upstream: false,
+    });
   });
 
   it('gitCommit passes all and amend through', async () => {
