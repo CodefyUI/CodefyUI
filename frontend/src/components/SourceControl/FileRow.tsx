@@ -6,8 +6,13 @@ import { confirm } from '../../utils/dialog';
 import { DiscardIcon, MinusIcon, PlusIcon } from '../shared/Icons';
 import styles from './SourceControl.module.css';
 
-/** Which group a row is being drawn in, which is what decides its actions. */
-export type ChangeGroupKind = 'merge' | 'staged' | 'changes';
+/**
+ * Which group a row is being drawn in, which is what decides its actions.
+ *
+ * No `merge`: a conflicted file's row is `MergeGroup`'s, because settling one
+ * is a decision that overwrites the file rather than a move between two lists.
+ */
+export type ChangeGroupKind = 'staged' | 'changes';
 
 /**
  * The letter in the chip.
@@ -58,6 +63,54 @@ export function displayPath(file: GitFile): string {
   return file.orig_path === null ? file.path : `${file.orig_path} -> ${file.path}`;
 }
 
+/**
+ * What the row shows for a file, which is what its buttons are named after.
+ *
+ * The basename, or `old -> new` for a rename. A panel is twenty rows deep and
+ * every row carries the same verbs, so an action's accessible name is the verb
+ * plus THIS -- and the string a reader hears has to be the string they can see.
+ */
+export function fileRowLabel(file: GitFile): string {
+  const { name } = splitPath(file.path);
+  return file.orig_path === null
+    ? name
+    : `${splitPath(file.orig_path).name} -> ${name}`;
+}
+
+/** One letter, tinted by what happened to the file, named in full for a reader. */
+export function FileKindChip({ kind }: { kind: FileKind }) {
+  const { t } = useI18n();
+  return (
+    <span
+      className={styles.chip}
+      data-kind={kind}
+      role="img"
+      aria-label={t(KIND_KEY[kind])}
+      title={t(KIND_KEY[kind])}
+    >
+      {KIND_LETTER[kind]}
+    </span>
+  );
+}
+
+/**
+ * The name half of a row: the file, with its directory under it.
+ *
+ * One button, inert here and the diff view's target later. It carries no
+ * tooltip of its own -- the row around it holds the path, because a `title` on
+ * a disabled element never opens in Chrome and a truncated name is exactly
+ * when the reader needs it.
+ */
+export function FileRowName({ file }: { file: GitFile }) {
+  const { dir } = splitPath(file.path);
+  return (
+    <button type="button" className={styles.openButton} disabled>
+      <span className={styles.rowName}>{fileRowLabel(file)}</span>
+      {dir !== '' && <span className={styles.rowDir}>{dir}</span>}
+    </button>
+  );
+}
+
 export interface FileRowProps {
   file: GitFile;
   group: ChangeGroupKind;
@@ -79,11 +132,11 @@ export interface FileRowProps {
  *  - a STAGED row can only be unstaged (its worktree copy is somebody else's
  *    row, further down);
  *  - a CHANGES row can be staged or discarded;
- *  - a MERGE row can only be staged, because staging is how git marks a
- *    conflict resolved -- and `discard` refuses a conflicted path outright
- *    (400 `path_not_in_status`: it is in neither the unstaged nor the
- *    untracked list the discard is built from), so offering the button would
- *    be offering an error.
+ *  - a CONFLICTED file is never discarded, whichever list it turns up in:
+ *    `discard` refuses the path outright (400 `path_not_in_status` -- it is in
+ *    neither the unstaged nor the untracked list the discard is built from),
+ *    so offering the button would be offering an error. The status keeps
+ *    conflicts in a list of their own, which `MergeGroup` draws.
  */
 export function FileRow({ file, group, onActed }: FileRowProps) {
   const { t } = useI18n();
@@ -92,12 +145,9 @@ export function FileRow({ file, group, onActed }: FileRowProps) {
   const discard = useGitStore((s) => s.discard);
 
   const shown = displayPath(file);
-  const { name, dir } = splitPath(file.path);
-  const label = file.orig_path === null
-    ? name
-    : `${splitPath(file.orig_path).name} -> ${name}`;
+  const label = fileRowLabel(file);
 
-  const canStage = group === 'changes' || group === 'merge';
+  const canStage = group === 'changes';
   const canUnstage = group === 'staged';
   // Never on a conflict, whichever group one turns up in.
   const canDiscard = group === 'changes' && file.kind !== 'conflict';
@@ -128,25 +178,12 @@ export function FileRow({ file, group, onActed }: FileRowProps) {
     // disabled element never opens in Chrome, and a truncated name is exactly
     // when the reader needs it.
     <li className={styles.row} title={shown}>
-      <span
-        className={styles.chip}
-        data-kind={file.kind}
-        role="img"
-        aria-label={t(KIND_KEY[file.kind])}
-        title={t(KIND_KEY[file.kind])}
-      >
-        {KIND_LETTER[file.kind]}
-      </span>
+      <FileKindChip kind={file.kind} />
       {/*
-        The row's own button. Disabled: opening the change is the diff view's
-        job and that is not in this build, and a button that looks live and
-        does nothing is worse than one that says it cannot yet. It carries no
-        tooltip of its own -- the row above it holds the path.
+        Opening the change is the diff view's job and that is not in this
+        build, so the name button is inert -- see `FileRowName`.
       */}
-      <button type="button" className={styles.openButton} disabled>
-        <span className={styles.rowName}>{label}</span>
-        {dir !== '' && <span className={styles.rowDir}>{dir}</span>}
-      </button>
+      <FileRowName file={file} />
       {/*
         The verb NAMES the file it acts on, and only the tooltip is the bare
         word. A panel is twenty rows deep and every one of them carries a

@@ -363,7 +363,9 @@
   box-shadow: var(--focus-ring);
 }
 
-/* ── Merge banner (read-only in this build) ──────────────────────────────── */
+/* ── The merge group ─────────────────────────────────────────────────────
+   The banner belongs to the group, under its heading and outside its list:
+   collapsing the rows away does not end the merge. */
 .banner {
   margin: var(--sp-3) var(--sp-4) 0;
   padding: var(--sp-3);
@@ -372,6 +374,79 @@
   color: var(--status-warning);
   font-size: var(--fs-xs);
   line-height: var(--lh-normal);
+}
+
+/* The query container for the two shapes of a row's actions below. The panel
+   itself is 180-520px and this section is as wide as the panel, so asking the
+   group its own width is asking the panel's -- without a ResizeObserver, and
+   without a media query, which would measure the WINDOW and answer for a
+   sidebar the user has just dragged narrower. */
+.mergeGroup {
+  container-type: inline-size;
+}
+
+/* A conflicted row's actions are always on screen, unlike every other row's.
+   The row exists in order to be settled, and a list of conflicts with no
+   visible way to settle any of them looks like a dead end. */
+.mergeActions {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-1);
+  flex: 0 0 auto;
+}
+
+/* Narrow first: one menu. Three verbs are about 210px of buttons in either
+   language, which is more than a 180px panel HAS. `display: none` and not
+   `visibility`, so the half that is off screen is out of the accessibility
+   tree too and nothing is offered twice. */
+.mergeChoices {
+  display: none;
+  align-items: center;
+  gap: var(--sp-1);
+}
+
+.mergeMenu {
+  display: inline-flex;
+}
+
+/* 380px: the three buttons plus the chip need about 240px, and what is left
+   has to be enough of the file name to recognise it by. Below that the menu
+   wins -- one 24px square, whatever the language. */
+@container (min-width: 380px) {
+  .mergeChoices {
+    display: inline-flex;
+  }
+
+  .mergeMenu {
+    display: none;
+  }
+}
+
+/* A text button small enough to sit three-across in a file row. Same box as
+   `.publishButton`, one step down in weight: these are choices about one file,
+   not the row's own identity. */
+.rowAction {
+  flex: 0 0 auto;
+  height: var(--h-control-xs);
+  padding: 0 var(--sp-2);
+  background: transparent;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  color: var(--text-secondary);
+  cursor: pointer;
+  font-family: inherit;
+  font-size: var(--fs-2xs);
+  white-space: nowrap;
+}
+
+.rowAction:hover {
+  border-color: var(--accent-dim);
+  color: var(--accent);
+}
+
+.rowAction:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
 }
 
 /* ── A change group ──────────────────────────────────────────────────────── */

@@ -6,6 +6,7 @@ import { ChangeGroup } from './ChangeGroup';
 import { CommitBox } from './CommitBox';
 import { EmptyStates } from './EmptyStates';
 import { IdentityForm } from './IdentityForm';
+import { MergeGroup } from './MergeGroup';
 import { RefSection } from './RefSection';
 import { ScmHeader } from './ScmHeader';
 import shell from '../Sidebar/NodePalette.module.css';
@@ -115,16 +116,21 @@ export function SourceControlTab() {
       <>
         <CommitBox />
         <div className={styles.scroll}>
-          {status.merge_in_progress && (
-            <div className={styles.banner}>{t('git.merge.banner')}</div>
+          {/*
+            Outside the clean/dirty branch, because a merge whose every file
+            has been settled as "mine" changes no file: the tree is clean, the
+            conflict list is empty, and `MERGE_HEAD` is still there with only
+            two ways out of it -- the commit box, and this group's Abort. The
+            banner is the group's own; the tab drew a second copy of that
+            sentence here until the group had a heading to hang it under.
+          */}
+          {(status.merge_in_progress || status.conflicted.length > 0) && (
+            <MergeGroup files={status.conflicted} />
           )}
           {clean
             ? <div className={styles.stateMessage}>{t('git.empty.clean')}</div>
             : (
               <>
-                {status.conflicted.length > 0 && (
-                  <ChangeGroup kind="merge" files={status.conflicted} />
-                )}
                 <ChangeGroup kind="staged" files={status.staged} />
                 <ChangeGroup kind="changes" files={changes} />
               </>

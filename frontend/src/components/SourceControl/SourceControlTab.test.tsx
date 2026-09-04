@@ -217,7 +217,7 @@ describe('SourceControlTab: the ready panel', () => {
     expect(changes.textContent).toContain('notes.txt');
   });
 
-  it('adds the Merge group only while a conflict exists, and its banner', () => {
+  it('adds the Merge group while a conflict exists, and says so once', () => {
     useGitStore.setState({
       status: status({
         conflicted: [file('src/train.py', 'conflict')],
@@ -225,10 +225,28 @@ describe('SourceControlTab: the ready panel', () => {
       }),
     });
     render(<SourceControlTab />);
-    expect(screen.getByRole('region', { name: 'Merge Changes' })).toBeTruthy();
+    const group = screen.getByRole('region', { name: 'Merge Changes' });
+    // The group carries the banner; the tab drew a second copy of that
+    // sentence a few pixels above it until this one had a heading of its own.
     expect(
-      screen.getByText('Merge in progress: resolve each file, then commit.'),
+      screen.getAllByText('Merge in progress: resolve each file, then commit.'),
+    ).toHaveLength(1);
+    expect(
+      within(group).getByRole('button', { name: 'Keep mine train.py' }),
     ).toBeTruthy();
+    // Never Discard on a conflict: the server refuses the path outright.
+    expect(within(group).queryByRole('button', { name: /Discard/ })).toBeNull();
+  });
+
+  it('keeps the Merge group on a merge with nothing left to resolve', () => {
+    // Settling every file as "mine" changes no file, so the tree is clean and
+    // the conflict list is empty -- and Abort Merge is one of the only two
+    // ways out of MERGE_HEAD from there.
+    useGitStore.setState({ status: status({ merge_in_progress: true }) });
+    render(<SourceControlTab />);
+    expect(screen.getByText('No changes')).toBeTruthy();
+    expect(screen.getByRole('region', { name: 'Merge Changes' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Abort Merge' })).toBeTruthy();
   });
 
   it('hides layout files from Changes only while the filter is on', () => {
