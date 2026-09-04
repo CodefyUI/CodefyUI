@@ -357,6 +357,20 @@ describe('Source Control: a save, a stage and a commit', () => {
     expect(messageBox()).toHaveValue('');
   });
 
+  it('tells a keyboard user why the chord did nothing', async () => {
+    tree.unstaged.push(gitFile(GRAPH));
+    await openPanel();
+
+    // Nothing typed, so the chord is refused -- by the same rule the button
+    // states in a `title` the keyboard never goes near.
+    fireEvent.keyDown(messageBox(), { key: 'Enter', ctrlKey: true });
+    await settle();
+
+    expect(api.gitCommit).not.toHaveBeenCalled();
+    expect(screen.getAllByRole('status').map((region) => region.textContent))
+      .toContain('Enter a message');
+  });
+
   it('lets a message-only amend through: it is rewriting a subject', async () => {
     // Nothing staged, on purpose. An amend that only rewords the last commit
     // is the commonest reason to amend at all.

@@ -601,6 +601,13 @@ describe('writes', () => {
 
     expect(git().liveMessage).toBe('git.group.staged 2, git.group.changes 2');
   });
+
+  it('lets a component say something the writes never would', () => {
+    // The commit chord's refusal never reaches the server, so nothing in
+    // `runOp` can announce it.
+    git().announce('Enter a message');
+    expect(git().liveMessage).toBe('Enter a message');
+  });
 });
 
 /* ── refusals ────────────────────────────────────────────────────────── */

@@ -44,6 +44,7 @@ type GitActions = ReturnType<typeof useGitStore.getState>;
 let commit: ReturnType<typeof vi.fn<GitActions['commit']>>;
 let setAmend: ReturnType<typeof vi.fn<GitActions['setAmend']>>;
 let setCommitMessage: ReturnType<typeof vi.fn<GitActions['setCommitMessage']>>;
+let announce: ReturnType<typeof vi.fn<GitActions['announce']>>;
 
 beforeEach(() => {
   useI18n.setState({ locale: 'en' });
@@ -51,6 +52,7 @@ beforeEach(() => {
   commit = vi.fn(async () => true);
   setAmend = vi.fn();
   setCommitMessage = vi.fn();
+  announce = vi.fn();
   useGitStore.setState({
     repoState: 'ready',
     status: status({ staged: [file('a.py')] }),
@@ -58,6 +60,7 @@ beforeEach(() => {
     commit,
     setAmend,
     setCommitMessage,
+    announce,
   });
 });
 
@@ -149,6 +152,29 @@ describe('CommitBox: the message', () => {
     render(<CommitBox />);
     fireEvent.keyDown(box(), { key: 'Enter', ctrlKey: true });
     expect(commit).not.toHaveBeenCalled();
+  });
+
+  it('says why the chord did nothing, in the words the button uses', () => {
+    // The tooltip is on a button the keyboard never went near, so without
+    // this the refusal is a keystroke that does nothing and says nothing.
+    useGitStore.setState({ commitMessage: '' });
+    render(<CommitBox />);
+    fireEvent.keyDown(box(), { key: 'Enter', ctrlKey: true });
+    expect(announce).toHaveBeenCalledWith('Enter a message');
+  });
+
+  it('names the other reason when the index is what is empty', () => {
+    useGitStore.setState({ status: status({ unstaged: [file('a.py')] }) });
+    render(<CommitBox />);
+    fireEvent.keyDown(box(), { key: 'Enter', ctrlKey: true });
+    expect(announce).toHaveBeenCalledWith('Nothing staged');
+  });
+
+  it('says nothing when the chord actually commits', () => {
+    render(<CommitBox />);
+    fireEvent.keyDown(box(), { key: 'Enter', ctrlKey: true });
+    expect(commit).toHaveBeenCalledTimes(1);
+    expect(announce).not.toHaveBeenCalled();
   });
 });
 

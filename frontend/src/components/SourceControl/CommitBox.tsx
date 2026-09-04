@@ -27,6 +27,7 @@ export function CommitBox() {
   const setCommitMessage = useGitStore((s) => s.setCommitMessage);
   const setAmend = useGitStore((s) => s.setAmend);
   const commit = useGitStore((s) => s.commit);
+  const announce = useGitStore((s) => s.announce);
   const inputRef = useRef<HTMLTextAreaElement>(null);
 
   // Grows with the text up to the `max-height` in the stylesheet, then
@@ -73,9 +74,16 @@ export function CommitBox() {
     (e: KeyboardEvent<HTMLTextAreaElement>) => {
       if (e.key !== 'Enter' || !(e.ctrlKey || e.metaKey)) return;
       e.preventDefault();
-      if (canCommit) runCommit(false);
+      if (canCommit) {
+        runCommit(false);
+        return;
+      }
+      // The chord goes past the button, and so past the button's tooltip: the
+      // hand that never touched the mouse would get a keystroke that does
+      // nothing and says nothing. The same reason the button carries, spoken.
+      if (blockedBecause !== undefined) announce(blockedBecause);
     },
-    [canCommit, runCommit],
+    [announce, blockedBecause, canCommit, runCommit],
   );
 
   const items: ActionMenuItem[] = [

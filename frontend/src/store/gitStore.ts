@@ -557,6 +557,7 @@ interface GitState {
   detach: () => void;
   refresh: () => Promise<void>;
   noteWorktreeWrite: () => void;
+  announce: (message: string) => void;
   setCommitMessage: (message: string) => void;
   setAmend: (amend: boolean) => void;
   stage: (paths: GitPathSelection) => Promise<boolean>;
@@ -672,6 +673,18 @@ export const useGitStore = create<GitState>((set, get) => ({
       void get().refresh();
     }, GIT_WRITE_DEBOUNCE_MS);
   },
+
+  /**
+   * Say something in the panel's live region.
+   *
+   * The writes announce themselves through `runOp`, which is where almost
+   * every sentence comes from. This is for the other kind: a refusal that
+   * never reaches the server at all. The commit chord is the one in this
+   * build -- Ctrl/Cmd+Enter with no message, or with an empty index, is a
+   * keystroke that would otherwise do nothing and say nothing, because the
+   * reason is a `title` on a button the keyboard never went near.
+   */
+  announce: (message) => set({ liveMessage: message }),
 
   setCommitMessage: (message) => set({ commitMessage: message }),
 
