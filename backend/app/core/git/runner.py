@@ -38,13 +38,14 @@ back to the command that caused it.
   ``taskkill /T`` -- the same kill the Package Center uses. On POSIX
   :func:`_run` asks for a session of its own (``start_new_session=True``)
   and :func:`_kill_group` aims the signals at the whole group: ``SIGTERM``
-  first, then ``SIGKILL`` -- once git has stopped or :data:`DRAIN_TIMEOUT_S`
-  has passed, and ALWAYS, because git's own exit says nothing about the
-  ssh that was sent the same signal. ``stop_process`` alone is NOT enough
-  there -- it calls ``terminate()`` on the child, which leaves the ssh
-  behind -- and until G3 added the commands that talk to a network there
-  was nothing here for it to leave: every G1 command is local, and a local
-  git has no long-lived children.
+  first, then up to :data:`DRAIN_TIMEOUT_S` for every group member to stop,
+  and finally ``SIGKILL`` as an unconditional deadline floor. Git's own exit
+  reaps the leader but says nothing about the ssh that was sent the same
+  signal, so only a genuinely empty process group ends the grace early.
+  ``stop_process`` alone is NOT enough there -- it calls ``terminate()`` on
+  the child, which leaves the ssh behind -- and until G3 added the commands
+  that talk to a network there was nothing here for it to leave: every G1
+  command is local, and a local git has no long-lived children.
 * **An environment scrubbed of the caller's repository.** ``GIT_DIR`` and
   its five friends (:data:`REPOSITORY_ENV_VARS`) name a repository; if the
   server was started from a shell inside a git hook, every command here
@@ -187,8 +188,12 @@ MISSING_RECHECK_S = 30.0
 VERSION_TIMEOUT_S = 5.0
 SSH_PROBE_TIMEOUT_S = 5.0
 
-#: How long a killed process gets to hand back its pipes.
+#: How long timeout cleanup waits for a POSIX group or a killed process's pipes.
 DRAIN_TIMEOUT_S = 3.0
+
+#: How often the POSIX timeout path checks whether the process group emptied.
+#: Short enough to return promptly after cleanup, without spinning on signal 0.
+GROUP_POLL_INTERVAL_S = 0.05
 
 #: How long each class of git command may take, in seconds. Every call in
 #: this package passes one of these, and ``service.py`` re-exports them so a
@@ -490,50 +495,70 @@ def _stop(proc: subprocess.Popen) -> None:
 
 
 def _kill_group(proc: subprocess.Popen) -> None:
-    """POSIX: ``SIGTERM`` the whole group, then ``SIGKILL`` it -- always.
+    """POSIX: give the whole group one grace, then ``SIGKILL`` it.
 
     ``SIGTERM`` first because an ssh that is asked to stop closes its
-    connection and its pty, and a git that is asked to stop removes the
-    lock files it made. ``SIGKILL`` second, because a credential helper
-    that ignores the first signal would otherwise hold the pipes -- and
-    the index lock -- open for as long as it liked.
+    connection and its pty, and a git that is asked to stop removes the lock
+    files it made. The child owns a session, so its pid is also the process
+    group id even if the leader exits before this function starts.
 
-    The second signal is a FLOOR, not a reaction to the first being
-    ignored, and the distinction is the whole bug it closes. ``proc.wait``
-    can only report on git itself: ``killpg`` handed ``SIGTERM`` to git and
-    to everything it started at the same moment, and git -- which has no
-    handler that waits for its children -- stops on it at once whatever
-    they did. A kill keyed to git's exit would therefore skip precisely
-    the descendant this function exists for, every time git behaved. So
-    the group is waited for only as long as git takes, up to
-    :data:`DRAIN_TIMEOUT_S`, and then sent ``SIGKILL`` regardless; on a
-    group that has emptied itself by then the second signal costs one
-    ``ESRCH``, which :func:`_signal_group` swallows.
+    ``proc.wait`` reaps only the git leader. If it exits promptly, surviving
+    helpers still receive the rest of :data:`DRAIN_TIMEOUT_S`: signal-0 probes
+    watch the group until it is genuinely empty, and a bounded sleep avoids a
+    busy loop. At or after the monotonic deadline, ``SIGKILL`` is an
+    unconditional floor -- there is deliberately no final liveness check that
+    could race with a newly observed member.
 
-    Every failure here means the group is already gone, which is the
-    outcome being asked for: a race with a child that exited on its own must
-    not turn into a 500 on top of the 504 the caller is about to raise.
+    Signal failures are treated as the outcome being asked for: a race with a
+    child that exited on its own must not turn into a 500 on top of the 504 the
+    caller is about to raise.
     """
-    try:
-        pgid = os.getpgid(proc.pid)
-    except OSError:
-        return
+    pgid = proc.pid
     _signal_group(pgid, signal.SIGTERM)
+    deadline = time.monotonic() + DRAIN_TIMEOUT_S
+
     try:
         proc.wait(timeout=DRAIN_TIMEOUT_S)
     except subprocess.TimeoutExpired:
-        pass
+        # A real timeout consumed the whole grace. The caller's ``_drain``
+        # reaps the leader after this group-level floor.
+        _signal_group(pgid, signal.SIGKILL)
+        return
+
+    while True:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        if not _group_alive(pgid):
+            return
+        time.sleep(min(GROUP_POLL_INTERVAL_S, remaining))
+
     _signal_group(pgid, signal.SIGKILL)
+
+
+def _group_alive(pgid: int) -> bool:
+    """Whether a POSIX process group still has a signalable member.
+
+    Signal 0 changes no process. ``ESRCH`` is the only answer that proves the
+    group is empty; ``EPERM`` and every other ``OSError`` are conservatively
+    alive, so they cannot weaken the deadline's ``SIGKILL`` floor.
+    """
+    try:
+        os.killpg(pgid, 0)
+    except ProcessLookupError:
+        return False
+    except OSError:
+        return True
+    return True
 
 
 def _signal_group(pgid: int, sig: int) -> None:
     """Signal one process group, and treat an empty one as done.
 
-    ``ProcessLookupError`` (``ESRCH``) is the ORDINARY answer to the second
-    signal :func:`_kill_group` sends -- git and its ssh both stopped on the
-    first, and there is nobody left -- and the other ``OSError`` there is,
-    ``EPERM``, means a member this process cannot signal at all, which a
-    second attempt would not change. Neither is a reason to raise.
+    ``ProcessLookupError`` (``ESRCH``) is ordinary whenever the group emptied
+    between a liveness observation and a real signal. ``EPERM`` means a member
+    this process cannot signal; retrying the same signal would not change that.
+    Neither is a reason to raise on top of the timeout the caller reports.
     """
     try:
         os.killpg(pgid, sig)
