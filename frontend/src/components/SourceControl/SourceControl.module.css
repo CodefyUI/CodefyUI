@@ -376,15 +376,6 @@
   line-height: var(--lh-normal);
 }
 
-/* The query container for the two shapes of a row's actions below. The panel
-   itself is 180-520px and this section is as wide as the panel, so asking the
-   group its own width is asking the panel's -- without a ResizeObserver, and
-   without a media query, which would measure the WINDOW and answer for a
-   sidebar the user has just dragged narrower. */
-.mergeGroup {
-  container-type: inline-size;
-}
-
 /* A conflicted row's actions are always on screen, unlike every other row's.
    The row exists in order to be settled, and a list of conflicts with no
    visible way to settle any of them looks like a dead end. */
@@ -395,29 +386,35 @@
   flex: 0 0 auto;
 }
 
-/* Narrow first: one menu. Three verbs are about 210px of buttons in either
-   language, which is more than a 180px panel HAS. `display: none` and not
-   `visibility`, so the half that is off screen is out of the accessibility
-   tree too and nothing is offered twice. */
-.mergeChoices {
+/* ── A row's actions, in two shapes ──────────────────────────────────────
+   Text verbs are wide: "Keep mine / Take incoming / Mark resolved" is about
+   210px, "Change URL / Remove" about 125px, "Pop / Apply / Drop" about 123px
+   beside a chip that cannot shrink. A 180px panel has 166px of row, so the
+   inline form does not merely crowd the name there -- it runs past the panel
+   edge, and the panel is `overflow: hidden`.
+
+   So every row carries BOTH shapes and the container query picks one. The one
+   that is off screen is `display: none` rather than hidden by opacity, so it
+   is out of the accessibility tree too and nothing is offered twice. */
+.rowChoices {
   display: none;
   align-items: center;
   gap: var(--sp-1);
 }
 
-.mergeMenu {
+.rowMenu {
   display: inline-flex;
 }
 
-/* 380px: the three buttons plus the chip need about 240px, and what is left
-   has to be enough of the file name to recognise it by. Below that the menu
+/* 380px: the widest verb set plus a chip needs about 240px, and what is left
+   has to be enough of the name to recognise the row by. Below that the menu
    wins -- one 24px square, whatever the language. */
 @container (min-width: 380px) {
-  .mergeChoices {
+  .rowChoices {
     display: inline-flex;
   }
 
-  .mergeMenu {
+  .rowMenu {
     display: none;
   }
 }
@@ -450,7 +447,13 @@
 }
 
 /* ── A change group ──────────────────────────────────────────────────────── */
+/* Every group is a query container, which is what lets a row ask how much room
+   it has. The panel is 180-520px and a section is as wide as the panel, so
+   asking the group is asking the panel -- without a ResizeObserver, and
+   without a media query, which would measure the WINDOW and answer for a
+   sidebar the reader has just dragged narrower. */
 .group {
+  container-type: inline-size;
   margin-top: var(--sp-2);
 }
 

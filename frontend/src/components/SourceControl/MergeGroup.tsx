@@ -83,7 +83,7 @@ export function MergeGroup({ files }: MergeGroupProps) {
   }, [abortMerge, returnFocus, t]);
 
   return (
-    <section className={`${styles.group} ${styles.mergeGroup}`} aria-labelledby={headingId}>
+    <section className={styles.group} aria-labelledby={headingId}>
       <div className={styles.groupHeader}>
         <button
           type="button"
@@ -142,12 +142,13 @@ export function MergeGroup({ files }: MergeGroupProps) {
 /**
  * One conflicted file, with both shapes of its three actions.
  *
- * Both are always in the DOM and CSS picks one (`@container` on the group):
- * "Keep mine / Take incoming / Mark resolved" is about 210px of buttons in
- * either language, which is more than a 180px panel HAS, and a menu is the
- * only honest way to offer three choices in a row that narrow. The hidden half
- * is `display: none`, so it is out of the accessibility tree as well as off
- * the screen and nothing is announced twice.
+ * Both are always in the DOM and CSS picks one (`@container` on the group; see
+ * `.rowChoices` in the stylesheet, which every list's rows share): "Keep mine
+ * / Take incoming / Mark resolved" is about 210px of buttons in either
+ * language, which is more than a 180px panel HAS, and a menu is the only
+ * honest way to offer three choices in a row that narrow. The hidden half is
+ * `display: none`, so it is out of the accessibility tree as well as off the
+ * screen and nothing is announced twice.
  *
  * The actions are not hidden behind a hover the way every other row's are. A
  * conflicted row exists in order to be settled; a list of them with no visible
@@ -170,7 +171,7 @@ function MergeRow({
       <FileKindChip kind={file.kind} />
       <FileRowName file={file} />
       <div className={styles.mergeActions}>
-        <div className={styles.mergeChoices}>
+        <div className={styles.rowChoices}>
           {SIDES.map(({ side, key }) => (
             <button
               key={side}
@@ -187,7 +188,7 @@ function MergeRow({
             </button>
           ))}
         </div>
-        <div className={styles.mergeMenu}>
+        <div className={styles.rowMenu}>
           {/* The trigger carries the file name, so the rows inside it do not
               have to: by then the menu's own name has established which file
               this is, and a row called "Keep mine train.py" inside a menu

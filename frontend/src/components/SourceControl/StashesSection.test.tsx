@@ -202,6 +202,20 @@ describe('StashesSection: the three actions', () => {
     );
   });
 
+  it('repeats all three inside one compact menu, for a 180px panel', async () => {
+    // Three verbs beside a chip that cannot shrink is more row than a 180px
+    // panel HAS, so each row carries both shapes and a container query picks
+    // one. Both are in the DOM here, because jsdom applies no CSS at all.
+    render(<StashesSection />);
+    fireEvent.click(screen.getByRole('button', { name: 'More actions stash@{0}' }));
+    const menu = screen.getByRole('menu', { name: 'More actions stash@{0}' });
+    for (const verb of ['Pop', 'Apply', 'Drop']) {
+      expect(within(menu).getByRole('menuitem', { name: verb })).toBeTruthy();
+    }
+    fireEvent.click(within(menu).getByRole('menuitem', { name: 'Apply' }));
+    await waitFor(() => expect(stashApply).toHaveBeenCalledWith(0));
+  });
+
   it('leaves focus where it was after an apply, which keeps the row', async () => {
     render(<StashesSection />);
     const apply = screen.getByRole('button', { name: 'Apply stash@{0}' });

@@ -72,10 +72,14 @@ describe('RemotesSection: the rows', () => {
   });
 
   it('keeps the whole row readable when its URL is too long to fit', () => {
-    // A URL is one unbroken token in a 180px column: it ellipsises, and the
-    // row carries what it is in a `title`.
+    // A URL is one unbroken token in a 180px column and is the first thing on
+    // the row to be ellipsised, so it carries its own `title` -- the row's is
+    // the remote's name.
     render(<RemotesSection />);
     expect(screen.getByRole('listitem').getAttribute('title')).toBe('origin');
+    expect(
+      screen.getByText('https://example.invalid/origin.git').getAttribute('title'),
+    ).toBe('https://example.invalid/origin.git');
   });
 
   it('says a repository has no remote, but only once it has been read', () => {

@@ -1,4 +1,6 @@
 import { useI18n } from '../../i18n';
+import { ActionMenu } from '../shared/ActionMenu';
+import { MoreHorizontalIcon } from '../shared/Icons';
 import styles from './SourceControl.module.css';
 
 /** One hover/focus action at the end of a reference row. */
@@ -48,14 +50,23 @@ export interface RefRowProps {
  * string in a `title`, and the actions collapsed to zero width until a hover
  * or a focus opens them -- so a 180px panel spends its width on the name and
  * a 520px one shows the rest.
+ *
+ * The actions themselves come in two shapes and CSS picks one, the way a
+ * conflict row's do: "Change URL / Remove" and "Pop / Apply / Drop" are both
+ * about 125px of text beside a chip that cannot shrink, which a 180px panel
+ * does not have -- so below the threshold they are one 24px menu instead.
  */
 export function RefRow({ name, action, identity, badge, meta, actions }: RefRowProps) {
+  const { t } = useI18n();
   const named = identity ?? name;
   const body = (
     <>
       <span className={styles.rowName}>{name}</span>
       {meta !== null && meta !== undefined && meta !== '' && (
-        <span className={styles.rowDir}>{meta}</span>
+        // Its own `title`, not the row's: a remote URL is one unbroken token
+        // in a 180px column and is the FIRST thing here to be ellipsised, so
+        // the string in full has to be reachable from the half that was cut.
+        <span className={styles.rowDir} title={meta}>{meta}</span>
       )}
     </>
   );
@@ -81,23 +92,45 @@ export function RefRow({ name, action, identity, badge, meta, actions }: RefRowP
         <span className={styles.refBadge}>{badge}</span>
       )}
       <div className={styles.rowActions}>
-        {actions.map((one) => (
-          <button
-            key={one.id}
-            type="button"
-            className={
-              one.danger === true
-                ? `${styles.rowAction} ${styles.dangerAction}`
-                : styles.rowAction
-            }
-            // The verb NAMES the row it acts on -- see `FileRow`.
-            aria-label={`${one.label} ${named}`}
-            title={one.label}
-            onClick={one.onSelect}
-          >
-            {one.label}
-          </button>
-        ))}
+        <div className={styles.rowChoices}>
+          {actions.map((one) => (
+            <button
+              key={one.id}
+              type="button"
+              className={
+                one.danger === true
+                  ? `${styles.rowAction} ${styles.dangerAction}`
+                  : styles.rowAction
+              }
+              // The verb NAMES the row it acts on -- see `FileRow`.
+              aria-label={`${one.label} ${named}`}
+              title={one.label}
+              onClick={one.onSelect}
+            >
+              {one.label}
+            </button>
+          ))}
+        </div>
+        {actions.length > 0 && (
+          // The same actions in one 24px square, for a panel too narrow for
+          // the verbs -- see `.rowChoices` in the stylesheet. The trigger
+          // carries the row's identity, so the entries inside it do not have
+          // to say it a second time.
+          <div className={styles.rowMenu}>
+            <ActionMenu
+              label={`${t('git.action.more')} ${named}`}
+              items={actions.map((one) => ({
+                id: one.id,
+                label: one.label,
+                onSelect: one.onSelect,
+              }))}
+              align="end"
+              className={styles.iconButton}
+            >
+              <MoreHorizontalIcon size={13} />
+            </ActionMenu>
+          </div>
+        )}
       </div>
     </li>
   );

@@ -296,6 +296,29 @@ describe('BranchesSection: deleting', () => {
     expect(screen.getByRole('button', { name: 'Rename main' })).toBeTruthy();
   });
 
+  it('offers the same two inside one compact menu, for a 180px panel', async () => {
+    // "Rename / Delete" is more row than a 180px panel has, so each row
+    // carries both shapes and a container query picks one. jsdom applies no
+    // CSS, so both are in the DOM here.
+    render(<BranchesSection />);
+    fireEvent.click(screen.getByRole('button', { name: 'More actions work' }));
+    const menu = screen.getByRole('menu', { name: 'More actions work' });
+    expect(within(menu).getByRole('menuitem', { name: 'Rename' })).toBeTruthy();
+    fireEvent.click(within(menu).getByRole('menuitem', { name: 'Delete' }));
+    await waitFor(() => expect(deleteBranch).toHaveBeenCalledWith('work', false));
+  });
+
+  it('gives a row with nothing to offer no menu at all', () => {
+    // A remote-tracking branch has one action and it IS the row: pressing the
+    // name checks it out. An empty menu trigger beside it would be a control
+    // that opens nothing.
+    useGitStore.setState({
+      branches: branches({ remote: [remoteBranch('origin/wip')] }),
+    });
+    render(<BranchesSection />);
+    expect(screen.queryByRole('button', { name: 'More actions origin/wip' })).toBeNull();
+  });
+
   it('puts focus back on the section heading when the row is gone', async () => {
     render(<BranchesSection />);
     fireEvent.click(screen.getByRole('button', { name: 'Delete work' }));
