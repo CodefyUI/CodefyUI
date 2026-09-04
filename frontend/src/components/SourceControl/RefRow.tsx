@@ -1,4 +1,5 @@
 import { useId } from 'react';
+import { useGitStore } from '../../store/gitStore';
 import { useI18n } from '../../i18n';
 import { ActionMenu } from '../shared/ActionMenu';
 import { MoreHorizontalIcon } from '../shared/Icons';
@@ -155,10 +156,17 @@ export function RefRow({ name, action, identity, badge, meta, actions }: RefRowP
  * seconds -- and a failure nobody asked for must not replace the refusal the
  * user was reading. An open, empty section with no reason given would be
  * worse than both, which is why it is reported at all.
+ *
+ * Except while the header is saying it already. A backend that stops answering
+ * fails the status poll and all three refs reads with one sentence, and the
+ * panel printed it in the header and again in every open section -- up to four
+ * copies of one fact on a 180px panel. `loadError` is that same server, said
+ * once, above.
  */
 export function RefError({ message }: { message: string | null }) {
   const { t } = useI18n();
-  if (message === null) return null;
+  const loadError = useGitStore((s) => s.loadError);
+  if (message === null || loadError !== null) return null;
   return (
     <li className={styles.refError}>{t('git.error.loadFail', { error: message })}</li>
   );

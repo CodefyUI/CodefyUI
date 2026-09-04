@@ -178,6 +178,21 @@ describe('BranchesSection: the rows', () => {
       within(section()).getByText('Could not read repository status: Failed to fetch'),
     ).toBeTruthy();
   });
+
+  it('leaves that sentence to the header when the server itself has stopped', () => {
+    // One outage, one sentence. A backend that stops answering fails the
+    // status poll and every open section's refs read with the same words, and
+    // the header is already drawing it -- four copies of one fact on a 180px
+    // panel is not four facts.
+    useGitStore.setState({
+      loadError: 'Failed to fetch',
+      refsError: { branches: 'Failed to fetch', remotes: null, stashes: null },
+    });
+    render(<BranchesSection />);
+    expect(
+      within(section()).queryByText('Could not read repository status: Failed to fetch'),
+    ).toBeNull();
+  });
 });
 
 describe('BranchesSection: creating and renaming', () => {
