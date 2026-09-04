@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { useState } from 'react';
-import { render, screen, fireEvent } from '@testing-library/react';
+import { render, screen, fireEvent, act } from '@testing-library/react';
 import { ActionMenu, type ActionMenuItem } from './ActionMenu';
 
 /*
@@ -259,6 +259,118 @@ describe('ActionMenu', () => {
     expect(document.activeElement).toBe(trigger());
   });
 
+  // `items` belongs to the caller, so the row holding focus can be taken away
+  // under it — a write starts and the row goes inert, or the list shortens.
+  // Focus has to land somewhere inside the menu either way, because a menu with
+  // focus on <body> no longer hears Escape.
+  it('recovers when the focused row turns disabled under it', () => {
+    function Host() {
+      const [busy, setBusy] = useState(false);
+      return (
+        <>
+          <ActionMenu
+            label="More actions"
+            items={[
+              { id: 'a', label: 'Alpha', onSelect: onA },
+              { id: 'b', label: 'Bravo', disabled: busy, onSelect: onB },
+            ]}
+          >
+            dots
+          </ActionMenu>
+          <button type="button" onClick={() => setBusy(true)}>freeze</button>
+        </>
+      );
+    }
+    render(<Host />);
+    fireEvent.click(trigger());
+    fireEvent.keyDown(item('Alpha'), { key: 'ArrowDown' });
+    expect(document.activeElement).toBe(item('Bravo'));
+
+    // A click, not a mousedown: this is a re-render from elsewhere, not the
+    // user pressing outside the menu.
+    fireEvent.click(screen.getByRole('button', { name: 'freeze' }));
+
+    expect(document.activeElement).toBe(item('Alpha'));
+    expect(item('Alpha').getAttribute('tabindex')).toBe('0');
+    fireEvent.keyDown(item('Alpha'), { key: 'Escape' });
+    expect(screen.queryByRole('menu')).toBeNull();
+    expect(document.activeElement).toBe(trigger());
+  });
+
+  it('recovers when the focused row is removed under it', () => {
+    function Host() {
+      const [short, setShort] = useState(false);
+      const rows = [
+        { id: 'a', label: 'Alpha', onSelect: onA },
+        { id: 'b', label: 'Bravo', onSelect: onB },
+      ];
+      return (
+        <>
+          <ActionMenu label="More actions" items={short ? rows.slice(0, 1) : rows}>
+            dots
+          </ActionMenu>
+          <button type="button" onClick={() => setShort(true)}>shrink</button>
+        </>
+      );
+    }
+    render(<Host />);
+    fireEvent.click(trigger());
+    fireEvent.keyDown(item('Alpha'), { key: 'ArrowDown' });
+    expect(document.activeElement).toBe(item('Bravo'));
+
+    fireEvent.click(screen.getByRole('button', { name: 'shrink' }));
+
+    expect(screen.queryByRole('menuitem', { name: 'Bravo' })).toBeNull();
+    expect(document.activeElement).toBe(item('Alpha'));
+    fireEvent.keyDown(item('Alpha'), { key: 'Escape' });
+    expect(screen.queryByRole('menu')).toBeNull();
+    expect(document.activeElement).toBe(trigger());
+  });
+
+  it('falls back to the panel when every row goes inert under it', () => {
+    function Host() {
+      const [busy, setBusy] = useState(false);
+      return (
+        <>
+          <ActionMenu
+            label="More actions"
+            items={[{ id: 'a', label: 'Alpha', disabled: busy, onSelect: onA }]}
+          >
+            dots
+          </ActionMenu>
+          <button type="button" onClick={() => setBusy(true)}>freeze</button>
+        </>
+      );
+    }
+    render(<Host />);
+    fireEvent.click(trigger());
+    expect(document.activeElement).toBe(item('Alpha'));
+
+    fireEvent.click(screen.getByRole('button', { name: 'freeze' }));
+
+    const menu = screen.getByRole('menu');
+    expect(document.activeElement).toBe(menu);
+    fireEvent.keyDown(menu, { key: 'Escape' });
+    expect(screen.queryByRole('menu')).toBeNull();
+    expect(document.activeElement).toBe(trigger());
+  });
+
+  // ── The roving tab stop follows the pointer ────────────────────────────────
+
+  it('a row focused by the pointer takes the tab stop, and the arrows go on from there', () => {
+    renderMenu();
+    fireEvent.click(trigger());
+    expect(item('Alpha').getAttribute('tabindex')).toBe('0');
+
+    // What a mouse press on the second row does: the browser focuses it.
+    act(() => item('Bravo').focus());
+    expect(item('Bravo').getAttribute('tabindex')).toBe('0');
+    expect(item('Alpha').getAttribute('tabindex')).toBe('-1');
+
+    fireEvent.keyDown(item('Bravo'), { key: 'ArrowDown' });
+    expect(document.activeElement).toBe(item('Charlie'));
+  });
+
   it('a disabled trigger opens nothing', () => {
     renderMenu({ disabled: true });
     expect(trigger().hasAttribute('disabled')).toBe(true);
@@ -296,16 +408,26 @@ describe('ActionMenu', () => {
 
   // ── Placement ──────────────────────────────────────────────────────────────
 
+  // The gap between trigger and panel (TRIGGER_GAP_PX) and the window margin
+  // (VIEWPORT_MARGIN_PX). Not exported — a test that recomputed the component's
+  // arithmetic would pass whatever that arithmetic became.
+  const GAP = 4;
+  const MARGIN = 8;
+
   // A DOMRect's fields are prototype getters, so spreading one yields {} and
   // every coordinate arrives as NaN. Spelled out instead.
-  function fakeTriggerRect() {
+  function fakeTriggerRect(top = 100) {
     const rect = {
-      x: 40, y: 100, width: 28, height: 24, top: 100, left: 40, bottom: 124, right: 68,
+      x: 40, y: top, width: 28, height: 24, top, left: 40, bottom: top + 24, right: 68,
     };
-    vi.spyOn(HTMLButtonElement.prototype, 'getBoundingClientRect').mockReturnValue({
-      ...rect,
-      toJSON: () => rect,
-    } as DOMRect);
+    return vi
+      .spyOn(HTMLButtonElement.prototype, 'getBoundingClientRect')
+      .mockReturnValue({ ...rect, toJSON: () => rect } as DOMRect);
+  }
+
+  /** jsdom lays nothing out, so the panel measures 0 unless it is told to. */
+  function fakePanelHeight(height: number) {
+    vi.spyOn(HTMLDivElement.prototype, 'offsetHeight', 'get').mockReturnValue(height);
   }
 
   it('hangs the panel below the trigger, from its left edge by default', () => {
@@ -313,7 +435,7 @@ describe('ActionMenu', () => {
     renderMenu();
     fireEvent.click(trigger());
     const menu = screen.getByRole('menu');
-    expect(menu.style.top).toBe('124px');
+    expect(menu.style.top).toBe(`${124 + GAP}px`);
     expect(menu.style.left).toBe('40px');
     expect(menu.style.right).toBe('');
   });
@@ -323,8 +445,87 @@ describe('ActionMenu', () => {
     renderMenu({ align: 'end' });
     fireEvent.click(trigger());
     const menu = screen.getByRole('menu');
-    expect(menu.style.top).toBe('124px');
+    expect(menu.style.top).toBe(`${124 + GAP}px`);
     expect(menu.style.right).toBe(`${window.innerWidth - 68}px`);
     expect(menu.style.left).toBe('');
+  });
+
+  it('flips above a trigger too low for the panel to fit under it', () => {
+    // 24px of trigger ending 20px from the bottom of the window, and a panel
+    // far taller than the gap left under it.
+    const triggerTop = window.innerHeight - 44;
+    fakeTriggerRect(triggerTop);
+    fakePanelHeight(200);
+    renderMenu();
+    fireEvent.click(trigger());
+    expect(screen.getByRole('menu').style.top).toBe(`${triggerTop - GAP - 200}px`);
+  });
+
+  it('pushes the panel up rather than off the window when neither side fits', () => {
+    // A trigger low down with a panel taller than the whole window: there is no
+    // side it fits on, so it starts at the top margin and scrolls itself.
+    fakeTriggerRect(window.innerHeight - 44);
+    fakePanelHeight(window.innerHeight * 2);
+    renderMenu();
+    fireEvent.click(trigger());
+    expect(screen.getByRole('menu').style.top).toBe(`${MARGIN}px`);
+  });
+
+  it('stays under the trigger when the panel fits below it', () => {
+    fakeTriggerRect(100);
+    fakePanelHeight(120);
+    renderMenu();
+    fireEvent.click(trigger());
+    expect(screen.getByRole('menu').style.top).toBe(`${124 + GAP}px`);
+  });
+
+  it('follows the trigger when the window is resized', () => {
+    const rect = fakeTriggerRect(100);
+    renderMenu();
+    fireEvent.click(trigger());
+    expect(screen.getByRole('menu').style.top).toBe(`${124 + GAP}px`);
+
+    const moved = { x: 40, y: 300, width: 28, height: 24, top: 300, left: 12, bottom: 324, right: 40 };
+    rect.mockReturnValue({ ...moved, toJSON: () => moved } as DOMRect);
+    fireEvent(window, new Event('resize'));
+
+    const menu = screen.getByRole('menu');
+    expect(menu.style.top).toBe(`${324 + GAP}px`);
+    expect(menu.style.left).toBe('12px');
+  });
+
+  // The listener is registered in the capture phase because a scroll inside one
+  // of the sidebar's own scroll containers never bubbles to the window.
+  it('follows the trigger when something under it scrolls', () => {
+    const rect = fakeTriggerRect(100);
+    const scroller = document.createElement('div');
+    document.body.appendChild(scroller);
+    try {
+      renderMenu();
+      fireEvent.click(trigger());
+      expect(screen.getByRole('menu').style.top).toBe(`${124 + GAP}px`);
+
+      const moved = { x: 40, y: 60, width: 28, height: 24, top: 60, left: 40, bottom: 84, right: 68 };
+      rect.mockReturnValue({ ...moved, toJSON: () => moved } as DOMRect);
+      fireEvent.scroll(scroller);
+
+      expect(screen.getByRole('menu').style.top).toBe(`${84 + GAP}px`);
+    } finally {
+      scroller.remove();
+    }
+  });
+
+  it('stops listening for resize and scroll once it is closed', () => {
+    const remove = vi.spyOn(window, 'removeEventListener');
+    fakeTriggerRect(100);
+    renderMenu();
+    fireEvent.click(trigger());
+    fireEvent.keyDown(item('Alpha'), { key: 'Escape' });
+
+    expect(remove.mock.calls.some(([type]) => type === 'resize')).toBe(true);
+    // ...with the same capture flag it was added with, or it would not come off.
+    expect(
+      remove.mock.calls.some(([type, , options]) => type === 'scroll' && options === true),
+    ).toBe(true);
   });
 });

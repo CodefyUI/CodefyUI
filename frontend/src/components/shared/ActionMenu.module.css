@@ -44,9 +44,11 @@
 .menu {
   position: fixed;
   z-index: 250;
-  /* The gap under the trigger lives here so the spacing scale stays the only
-     source of it; the inline style supplies `top` alone. */
-  margin-top: var(--sp-2);
+  /* No margin: the gap between trigger and panel is part of the placement,
+     which flips the panel above the trigger near the bottom of the window, so
+     the component owns that number (TRIGGER_GAP_PX, = --sp-2) and hands the
+     finished `top` in as an inline style. A margin here would be added on the
+     wrong side of a flipped panel. */
   min-width: 11rem;
   max-width: 20rem;
   /* A menu is never the thing that makes the window scroll. */

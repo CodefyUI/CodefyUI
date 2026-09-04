@@ -27,6 +27,10 @@ import {
   ZoomOutIcon,
 } from './Icons';
 
+// Also the render list: `it.each` mounts every entry, and the coverage case
+// below requires each of the module's exports to appear here. So Icons.tsx may
+// export components and nothing else — a constant added to it would land in
+// this tuple and be handed to `render()`.
 const icons = [
   ['EyeIcon', EyeIcon],
   ['EyeOffIcon', EyeOffIcon],

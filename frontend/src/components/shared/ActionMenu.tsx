@@ -49,6 +49,17 @@ export interface ActionMenuProps {
 }
 
 /**
+ * Distance between the trigger and the panel, above or below it. Geometry the
+ * placement code owns end to end — it has to know the gap to flip across the
+ * trigger — so it lives here rather than as a `margin` the module could not
+ * see. Mirrors `--sp-2`.
+ */
+const TRIGGER_GAP_PX = 4;
+
+/** How close to a window edge the panel is allowed to sit. */
+const VIEWPORT_MARGIN_PX = 8;
+
+/**
  * A dropdown menu attached to one button, with no third-party dependency.
  *
  * Keyboard: Down/Up walk the rows and wrap, skipping disabled ones; Home and
@@ -88,15 +99,42 @@ export function ActionMenu({
   });
   const hasCheckbox = items.some((item) => item.checked !== undefined);
 
+  // `items` belongs to the caller and can change while the menu is open: a row
+  // can be dropped, or turn disabled the moment a write starts. An index left
+  // pointing at a row that is gone or now inert would focus nothing at all —
+  // and a menu with no focus inside it swallows Escape, which is the one key
+  // that must always work. So the row that actually holds focus and the tab
+  // stop is derived every render, and only falls back when it has to.
+  const activeRow = activeIndex >= 0 ? items[activeIndex] : undefined;
+  const focusIndex = activeRow !== undefined && !activeRow.disabled
+    ? activeIndex
+    : (enabled[0] ?? -1);
+
   const place = useCallback(() => {
     const rect = triggerRef.current?.getBoundingClientRect();
     if (!rect) return;
+    const height = menuRef.current?.offsetHeight ?? 0;
+    const roomBelow = window.innerHeight - rect.bottom - VIEWPORT_MARGIN_PX;
+    const roomAbove = rect.top - VIEWPORT_MARGIN_PX;
+    // A trigger near the bottom of the window would hang its panel off the
+    // edge, where it cannot be read or clicked. Flip above it — but only when
+    // there is genuinely more room there, since flipping into an even smaller
+    // gap trades one unreachable panel for another. When neither side fits,
+    // the panel is pushed up as far as the window allows and its own
+    // max-height scrolls the rest.
+    const flip = height > roomBelow && roomAbove > roomBelow;
+    const top = flip
+      ? Math.max(VIEWPORT_MARGIN_PX, rect.top - TRIGGER_GAP_PX - height)
+      : Math.min(
+        rect.bottom + TRIGGER_GAP_PX,
+        Math.max(VIEWPORT_MARGIN_PX, window.innerHeight - VIEWPORT_MARGIN_PX - height),
+      );
     // `right` rather than `left` for end-alignment: it needs no measurement of
     // the panel, so there is never a frame where the menu is in the wrong spot.
     setPosition(
       align === 'end'
-        ? { top: rect.bottom, right: Math.max(0, window.innerWidth - rect.right) }
-        : { top: rect.bottom, left: Math.max(0, rect.left) },
+        ? { top, right: Math.max(0, window.innerWidth - rect.right) }
+        : { top, left: Math.max(0, rect.left) },
     );
   }, [align]);
 
@@ -115,9 +153,9 @@ export function ActionMenu({
 
   useEffect(() => {
     if (!open) return;
-    const target = activeIndex >= 0 ? itemRefs.current[activeIndex] : menuRef.current;
+    const target = focusIndex >= 0 ? itemRefs.current[focusIndex] : menuRef.current;
     target?.focus();
-  }, [open, activeIndex]);
+  }, [open, focusIndex]);
 
   const close = useCallback((returnFocus: boolean) => {
     setOpen(false);
@@ -149,7 +187,7 @@ export function ActionMenu({
 
   const step = (delta: number) => {
     if (enabled.length === 0) return;
-    const at = enabled.indexOf(activeIndex);
+    const at = enabled.indexOf(focusIndex);
     const next =
       at < 0
         ? (delta > 0 ? 0 : enabled.length - 1)
@@ -248,7 +286,13 @@ export function ActionMenu({
                 role={item.checked === undefined ? 'menuitem' : 'menuitemcheckbox'}
                 aria-checked={item.checked}
                 disabled={item.disabled}
-                tabIndex={index === activeIndex ? 0 : -1}
+                tabIndex={index === focusIndex ? 0 : -1}
+                // A row reached by pointer or by the browser's own focus takes
+                // the roving tab stop with it, so the next arrow key steps from
+                // where the user actually is rather than from where the keyboard
+                // last was. Harmless when the focus effect is what moved it: the
+                // value it writes is the one already in state.
+                onFocus={() => setActiveIndex(index)}
                 onClick={() => activate(item)}
               >
                 {hasCheckbox && (
