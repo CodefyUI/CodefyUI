@@ -146,9 +146,13 @@ const en = {
   'customTab.section.nodes': 'Custom Nodes',
   'customTab.section.plugins': 'Plugins',
   'customTab.manage': 'Manage...',
+  'customTab.plugins.open': 'Plugin Center...',
   'customTab.nodes.empty': 'No custom nodes yet',
+  // No hint under the empty plugins section: the header button one line above
+  // it IS the Plugin Center, so a sentence naming that destination is the
+  // same fact twice. The packs hint stays because it carries another one --
+  // what a pack is.
   'customTab.plugins.empty': 'No plugins installed',
-  'customTab.plugins.hint': 'Install packs with the cdui plugin CLI',
   'customTab.loadFail': 'Failed to load: {error}',
 
   // Config Panel
@@ -1025,6 +1029,24 @@ const en = {
   'customTab.packs.hint':
     'Models and libraries for LLM nodes are installed from the Package Center',
 
+  // Where the Plugin Center is opened from: the settings popover's own row,
+  // beside the pack one it is modelled on. The sidebar's entry point is up
+  // with the rest of the Custom & Plugins tab. `settings.packs.unsupported`
+  // is reused as it is -- "Not available on this server" says the same thing
+  // about either center, and a second translation of it is a second string to
+  // keep in step.
+  'toolbar.settings.section.plugins': 'Plugins',
+  'settings.plugins.name': 'Plugin Center',
+  'settings.plugins.desc': 'Install teaching node packs and plugins from GitHub.',
+  'settings.plugins.summary': '{installed} installed, {available} available',
+  'settings.plugins.summaryInstalling': 'Installing {plugin}...',
+  // The button's visible word is `settings.packs.action` ("Open"), the same
+  // as the pack row's. This is its accessible name: two buttons reading
+  // "Open" say nothing in a list of controls, and speech input ("click Open")
+  // has to reach one of them -- so the pack row keeps the bare word and this
+  // one contains it, the way `paramField.installPackFor` does.
+  'settings.plugins.action': 'Open Plugin Center',
+
   // "This needs a pack" — said on a select option, a node, a palette entry
   // and a refused run. Every one of them names the pack, because "needs a
   // pack" without a name is not something a user can act on.
@@ -1071,8 +1093,13 @@ const en = {
   // wrong.
   'pluginCenter.toast.refreshFailed':
     'Could not refresh the editor after the change: {message}',
-  // The files are in place; the running server could not pick them up.
-  'pluginCenter.toast.needsRestart': 'Restart the server to load {plugin}.',
+  // NOTHING was installed. A plugin job reaches this status from one place
+  // only -- the resolver refusing to replace a package the running server has
+  // already loaded -- and that happens before a single file is written, so
+  // the install has to be run again after the packages are in place.
+  'pluginCenter.toast.needsRestart':
+    'The install of {plugin} stopped: its Python packages need the server '
+    + 'stopped first. The command is in the Plugin Center.',
   'pluginCenter.toast.inProgress':
     'A plugin is still installing. Open the Plugin Center to watch it.',
   'pluginCenter.toast.openCenter': 'Open Plugin Center',
@@ -1086,6 +1113,141 @@ const en = {
     + 'Its Python packages stay installed.',
   'pluginCenter.source.invalid':
     'Enter a catalog name, owner/repo[@ref] or a GitHub URL.',
+
+  // The panel: its chrome, what the list can be saying instead of rows, and
+  // the filter over them.
+  'pluginCenter.title': 'Plugin Center',
+  'pluginCenter.subtitle': 'Install packs of teaching nodes, and plugins from GitHub',
+  'pluginCenter.close': 'Close Plugin Center',
+  'pluginCenter.refresh': 'Refresh plugin status',
+  'pluginCenter.list': 'Plugin list',
+  'pluginCenter.loading': 'Loading plugins...',
+  'pluginCenter.loadFail': 'Failed to load plugins: {error}',
+  // A server older than the Plugin Center. `pluginCenter.error.unavailable`
+  // says the same sentence about a server whose plugin service is not up:
+  // the cause differs, what the user does about it does not.
+  'pluginCenter.unsupported':
+    'This server has no Plugin Center. Update CodefyUI and restart it.',
+  'pluginCenter.empty': 'No plugins are available',
+  'pluginCenter.filter.all': 'All',
+  'pluginCenter.filter.installed': 'Installed',
+  'pluginCenter.filter.available': 'Available',
+
+  // Where a plugin came from. A plain third-party repository gets no chip --
+  // the card prints owner/repo, and "GitHub" over a GitHub link says it twice.
+  'pluginCenter.origin.builtin': 'Built-in',
+  'pluginCenter.origin.official': 'Official',
+  'pluginCenter.origin.local': 'Linked folder',
+  'pluginCenter.homepage': 'Homepage',
+  'pluginCenter.chapters': 'Lessons: {chapters}',
+
+  // The two states a pack has no word for. The other four statuses reuse
+  // `packs.status.*` and `customNodes.disabled`.
+  'pluginCenter.status.removed': 'Removed',
+  'pluginCenter.status.missingFiles': 'Files missing',
+
+  // The row's buttons (`pluginCenter.uninstall` is up with its confirm).
+  'pluginCenter.install': 'Install',
+  'pluginCenter.enable': 'Enable',
+  'pluginCenter.disable': 'Disable',
+  'pluginCenter.update': 'Update',
+  // The server refused an install because the plugin is already there. That
+  // refusal is an offer rather than a failure, and this button accepts it.
+  'pluginCenter.reinstall': 'Reinstall',
+
+  // Installing something the catalog does not list.
+  'pluginCenter.source.label': 'Install from GitHub',
+  'pluginCenter.source.placeholder': 'owner/repo[@ref] or GitHub URL',
+  'pluginCenter.source.review': 'Review',
+  'pluginCenter.source.reviewing': 'Downloading...',
+  'pluginCenter.source.fail': 'Could not fetch {source}: {message}',
+  // A bare word that is not one of this build's packs. The refusal is a code
+  // with no sentence in it, and no sentence written on the server could have
+  // said the useful part: which names WOULD work. That list only exists in
+  // the body, so the panel is what puts the two together.
+  'pluginCenter.source.unknownName': 'No plugin is called "{source}".',
+  'pluginCenter.source.knownNames': 'This server can install: {known}',
+
+  // The consent screen. Nothing is installed until this has been read and
+  // what it asks for has been ticked.
+  'pluginCenter.review.title': 'Review before installing',
+  'pluginCenter.review.author': 'Author: {author}',
+  'pluginCenter.review.nodes': 'Nodes: {nodes}',
+  'pluginCenter.review.capabilities': 'This plugin asks for:',
+  // Says what granting is and is not: "capabilities" reads like a sandbox,
+  // and this is a declaration -- nothing here is enforced at runtime.
+  'pluginCenter.review.capNote':
+    'Granting is a declaration, not a sandbox: the plugin may use these '
+    + 'modules and will not be asked again.',
+  'pluginCenter.review.grant': 'Grant these capabilities',
+  'pluginCenter.review.trust': 'I trust this author. Allows: {modules}',
+  'pluginCenter.review.frontend':
+    'Ships JavaScript that runs in this editor with full access.',
+  'pluginCenter.review.idConflict': 'The id "{id}" is reserved for a built-in pack.',
+  // The 409 the store treats as an OFFER, said out loud: without it the only
+  // sign is the Install button coming back as Reinstall.
+  'pluginCenter.review.alreadyInstalled':
+    '{plugin} is already installed. Reinstall replaces the installed copy '
+    + 'with this one.',
+
+  // One line per declared capability, each saying what granting it COSTS
+  // rather than what it is called. An id this build has no line for is
+  // printed as itself.
+  'pluginCenter.cap.network':
+    'network: reach any host, and write what it downloads to disk',
+  'pluginCenter.cap.filesystem':
+    'filesystem: use the file libraries (pathlib, shutil, zip/tar, sqlite3)',
+  'pluginCenter.cap.processEnv':
+    "process-env: the whole os module, including this process's environment "
+    + 'and API keys, starting programs, deleting files',
+
+  // The activity pane: what is running, and how it ended.
+  'pluginCenter.activity.installing': 'Installing {plugin}',
+  'pluginCenter.activity.updating': 'Updating {plugin}',
+  'pluginCenter.activity.installed': 'Installed {plugin}.',
+  'pluginCenter.activity.updated': 'Updated {plugin}.',
+  'pluginCenter.activity.lost':
+    'Lost contact with the server. Refresh to check the plugin status.',
+  // Ends in a colon because a `CommandBlock` follows it, and the command is a
+  // `uv pip install` line to run with the server STOPPED -- not a restart.
+  'pluginCenter.activity.needsRestart':
+    "The install stopped before changing anything: {plugin}'s Python packages "
+    + 'would replace one the server has loaded. With the server stopped, run this, '
+    + 'then install again:',
+  'pluginCenter.activity.cliFallback': 'Or install from a terminal:',
+
+  // The steps of an install, in the order they run. There is no `step.deps`
+  // on purpose: pip is pip, and it reuses `packs.activity.step.pip`.
+  'pluginCenter.step.resolve': 'Resolving the source',
+  'pluginCenter.step.download': 'Downloading',
+  'pluginCenter.step.extract': 'Unpacking',
+  'pluginCenter.step.verify': 'Checking the code',
+  'pluginCenter.step.stage': 'Copying files',
+  'pluginCenter.step.lock': 'Recording the install',
+  'pluginCenter.step.reload': 'Loading the nodes',
+
+  // The refusals whose entire body is a code: these routes answer
+  // `{detail: {code: ...}}` with no message at all, so without a sentence
+  // here the panel shows the raw token -- "inspection_expired".
+  'pluginCenter.error.unavailable':
+    'This server has no Plugin Center. Update CodefyUI and restart it.',
+  'pluginCenter.error.inspectionExpired': 'The review expired. Review the source again.',
+  'pluginCenter.error.unknownJob': 'That install is no longer tracked. Refresh.',
+  // A row for a plugin that has since been removed somewhere else: the button
+  // was pressed against a catalog this tab read a while ago.
+  'pluginCenter.error.notInstalled': 'This plugin is not installed any more. Refresh the list.',
+  // One review at a time, server-side: this one is not about the source at
+  // all, which is why it says "again" rather than anything about the repo.
+  'pluginCenter.error.inspectBusy': 'Another review is still running. Try again in a moment.',
+  // The three ways a source can turn out not to be a plugin this build
+  // installs: the manifest, a repository or ref that is not there, and
+  // GitHub itself.
+  'pluginCenter.error.invalidManifest': "The plugin's manifest is invalid.",
+  'pluginCenter.error.notFound': 'GitHub has no such repository or ref.',
+  'pluginCenter.error.githubRateLimited':
+    "GitHub's request limit was reached. Try again later, or set "
+    + 'CODEFYUI_GITHUB_TOKEN on the server.',
+  'pluginCenter.error.githubUnreachable': 'Could not reach GitHub.',
 
   // Source Control (the sidebar's fifth tab). Part 2 of the track: status,
   // stage / unstage / discard, commit, init and the commit identity. Branches,

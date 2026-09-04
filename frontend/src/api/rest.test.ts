@@ -1564,6 +1564,88 @@ describe('plugin center endpoints', () => {
       expect(err.message).toBe('unknown_catalog_name');
       expect(err.body).toEqual(body);
     });
+
+    // The review card maps over four of these arrays on every repaint and
+    // slices `installed.sha` down to seven characters. An absent key has to
+    // arrive as an empty list, or the consent screen crashes halfway through
+    // rendering the thing it is asking the user to agree to.
+    it('normalizes a sparse inspection', async () => {
+      mockFetch(200, { inspection_id: 'insp-1', plugin_id: 'c1-tokenizer' });
+      expect(await inspectPluginSource('c1-tokenizer')).toEqual({
+        inspection_id: 'insp-1',
+        expires_at: '',
+        // Not said is not `builtin`: that is the narrower claim.
+        kind: 'github',
+        mode: 'install',
+        plugin_id: 'c1-tokenizer',
+        catalog_id: null,
+        official: false,
+        source: '',
+        url: null,
+        ref: null,
+        sha: null,
+        name: '',
+        version: '',
+        description: '',
+        homepage: '',
+        manifest: {},
+        capabilities: [],
+        allowed_modules: [],
+        python_deps: {},
+        has_frontend: false,
+        chapters: [],
+        lessons: [],
+        consent_required: false,
+        installed: null,
+        up_to_date: false,
+        capabilities_added: [],
+        allowed_modules_added: [],
+        warnings: [],
+      });
+    });
+
+    it("folds a builtin's absent sha and a legacy source_kind to null", async () => {
+      // What the lockfile actually holds for an installed built-in pack: no
+      // commit, because nothing was fetched from a repository, and a
+      // `source_kind` written before that field had a vocabulary. The server
+      // passes the dict through untouched, so this is the only place either
+      // can be made safe to read.
+      mockFetch(200, inspection({
+        installed: {
+          sha: null, version: '1.0.0', source_kind: '',
+        } as unknown as PluginInspection['installed'],
+      }));
+      const out = await inspectPluginSource('c1-tokenizer');
+      expect(out.installed).toEqual({
+        sha: null,
+        version: '1.0.0',
+        capabilities: [],
+        trusted_modules: [],
+        // A record with no switch in it predates disabling: it is on.
+        enabled: true,
+        source_kind: null,
+      });
+    });
+
+    it('reads a kind, a mode or a source_kind outside its union', async () => {
+      mockFetch(200, inspection({
+        kind: 'local' as PluginInspection['kind'],
+        mode: 'repair' as PluginInspection['mode'],
+        installed: {
+          sha: 'abc123', version: '1.0.0', capabilities: [], trusted_modules: [],
+          enabled: false, source_kind: 'ftp',
+        } as unknown as PluginInspection['installed'],
+      }));
+      const out = await inspectPluginSource('c1-tokenizer');
+      // A source this build cannot name is still one it can install from a
+      // repository, and a mode it cannot name is a fresh install rather than
+      // an update of nothing.
+      expect(out.kind).toBe('github');
+      expect(out.mode).toBe('install');
+      expect(out.installed?.source_kind).toBeNull();
+      // An explicit false survives: only an ABSENT switch is derived.
+      expect(out.installed?.enabled).toBe(false);
+    });
   });
 
   describe('installPlugin', () => {
@@ -1639,6 +1721,25 @@ describe('plugin center endpoints', () => {
         capabilities_added: ['network'],
         allowed_modules_added: ['requests'],
       });
+    });
+
+    it('normalizes the inspection a needs_consent carries', async () => {
+      // The same review card renders this as renders a fresh install's, so it
+      // gets the same defaults rather than being trusted because it arrived
+      // on a different route.
+      mockFetch(200, {
+        status: 'needs_consent',
+        inspection: { inspection_id: 'insp-2', plugin_id: 'c1-tokenizer' },
+      });
+      const out = await updatePlugin('c1-tokenizer');
+      if (out.kind !== 'needs_consent') throw new Error('not a consent answer');
+      expect(out.inspection.capabilities).toEqual([]);
+      expect(out.inspection.python_deps).toEqual({});
+      expect(out.inspection.installed).toBeNull();
+      expect(out.inspection.mode).toBe('install');
+      // The two lists beside it default too, so the card can read either.
+      expect(out.capabilities_added).toEqual([]);
+      expect(out.allowed_modules_added).toEqual([]);
     });
 
     it('throws rather than guessing at a 200 that is neither shape', async () => {

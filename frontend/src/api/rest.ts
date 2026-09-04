@@ -1422,12 +1422,18 @@ export interface PluginInspection {
   consent_required: boolean;
   /** What is on disk today, for an update; null for a fresh install. */
   installed: {
-    sha: string;
+    /**
+     * null for a builtin: the lockfile records a commit only for what came
+     * from a repository, so a card that reads `sha.slice(0, 7)` unguarded
+     * crashes on the first installed built-in pack.
+     */
+    sha: string | null;
     version: string;
     capabilities: string[];
     trusted_modules: string[];
     enabled: boolean;
-    source_kind: PluginSourceKind;
+    /** null for a legacy lockfile entry, which recorded `''`. */
+    source_kind: PluginSourceKind | null;
   } | null;
   up_to_date: boolean;
   /** What this version asks for that the installed one did not: the ONLY
@@ -1591,6 +1597,91 @@ export async function listPluginCatalog(): Promise<PluginCatalog> {
 }
 
 /**
+ * The `installed` block as it arrives: the lockfile's own dict, which the
+ * server passes through unmodified. Every field can be absent, `sha` is null
+ * for a builtin, and `source_kind` is `''` in an entry written before that
+ * field had a vocabulary.
+ */
+type RawInstalled = Omit<
+  Partial<NonNullable<PluginInspection['installed']>>,
+  'source_kind'
+> & { source_kind?: string | null };
+
+/** An inspection as it arrives, with the enum-ish fields widened. */
+type RawInspection = Omit<
+  Partial<PluginInspection>,
+  'kind' | 'mode' | 'installed'
+> & {
+  kind?: string;
+  mode?: string;
+  installed?: RawInstalled | null;
+};
+
+function normalizeInstalled(raw: RawInstalled | null | undefined) {
+  if (raw === null || raw === undefined) return null;
+  return {
+    // '' is not a commit. Folded to null so the review card's "is there a sha
+    // to show" question has one answer instead of two.
+    sha: raw.sha ? raw.sha : null,
+    version: raw.version ?? '',
+    capabilities: raw.capabilities ?? [],
+    trusted_modules: raw.trusted_modules ?? [],
+    // A record with no switch in it predates disabling: it is on.
+    enabled: raw.enabled ?? true,
+    source_kind: PLUGIN_SOURCE_KINDS.includes(raw.source_kind ?? '')
+      ? (raw.source_kind as PluginSourceKind)
+      : null,
+  };
+}
+
+/**
+ * One inspection, field by field -- the review card's whole input.
+ *
+ * Normalised for the reason the catalog rows are: the card maps over
+ * `capabilities`, `allowed_modules`, `python_deps` and `chapters` on every
+ * repaint, and it slices `installed.sha` down to seven characters. An absent
+ * key has to arrive as an empty list and a missing commit as `null`, or a
+ * consent screen crashes halfway through rendering the thing it is asking the
+ * user to agree to.
+ */
+function normalizePluginInspection(raw: RawInspection): PluginInspection {
+  return {
+    inspection_id: raw.inspection_id ?? '',
+    expires_at: raw.expires_at ?? '',
+    // A source this build cannot name is still one it can install from a
+    // repository; `builtin` is the narrower claim, so it has to be said.
+    kind: raw.kind === 'builtin' ? 'builtin' : 'github',
+    // Same narrowing as the store's `jobKind`: anything a newer backend
+    // invents reads as a fresh install rather than as an update of nothing.
+    mode: raw.mode === 'update' ? 'update' : 'install',
+    plugin_id: raw.plugin_id ?? '',
+    catalog_id: raw.catalog_id ?? null,
+    official: raw.official ?? false,
+    source: raw.source ?? '',
+    url: raw.url ?? null,
+    ref: raw.ref ?? null,
+    sha: raw.sha ?? null,
+    name: raw.name ?? '',
+    version: raw.version ?? '',
+    description: raw.description ?? '',
+    homepage: raw.homepage ?? '',
+    manifest: raw.manifest ?? {},
+    capabilities: raw.capabilities ?? [],
+    allowed_modules: raw.allowed_modules ?? [],
+    python_deps: raw.python_deps ?? {},
+    has_frontend: raw.has_frontend ?? false,
+    chapters: raw.chapters ?? [],
+    lessons: raw.lessons ?? [],
+    consent_required: raw.consent_required ?? false,
+    installed: normalizeInstalled(raw.installed),
+    up_to_date: raw.up_to_date ?? false,
+    capabilities_added: raw.capabilities_added ?? [],
+    allowed_modules_added: raw.allowed_modules_added ?? [],
+    warnings: raw.warnings ?? [],
+  };
+}
+
+/**
  * Resolve a source -- a builtin name, a GitHub URL, a local path -- and
  * report what installing it would mean, WITHOUT installing anything.
  *
@@ -1605,7 +1696,7 @@ export async function inspectPluginSource(source: string): Promise<PluginInspect
     body: JSON.stringify({ source }),
   });
   if (!res.ok) throw await apiError(res);
-  return res.json();
+  return normalizePluginInspection((await res.json()) as RawInspection);
 }
 
 /**
@@ -1633,7 +1724,7 @@ type RawUpdateResponse = {
   job_id?: string;
   status?: string;
   sha?: string;
-  inspection?: PluginInspection;
+  inspection?: RawInspection;
   capabilities_added?: string[];
   allowed_modules_added?: string[];
 };
@@ -1676,7 +1767,10 @@ export async function updatePlugin(pluginId: string): Promise<PluginUpdateResult
   if (data.status === 'needs_consent' && data.inspection !== undefined) {
     return {
       kind: 'needs_consent',
-      inspection: data.inspection,
+      // The same review card renders this as renders a fresh install's, so it
+      // is normalised the same way rather than trusted because it arrived on
+      // a different route.
+      inspection: normalizePluginInspection(data.inspection),
       capabilities_added: data.capabilities_added ?? [],
       allowed_modules_added: data.allowed_modules_added ?? [],
     };

@@ -20,9 +20,10 @@ import { createJobFollower, emptyJob, type Job } from './jobFollower';
 import { confirm } from '../utils/dialog';
 import { reloadPluginFrontends } from '../plugins/PluginHost';
 import { useNodeDefStore } from './nodeDefStore';
-import { useToastStore, type ToastAction } from './toastStore';
+import { errorMessage, str, toast } from './storeText';
+import type { ToastAction } from './toastStore';
 import { useUIStore } from './uiStore';
-import { useI18n } from '../i18n';
+import { useI18n, type TranslationKey } from '../i18n';
 
 /**
  * App-level state for the Plugin Center.
@@ -215,26 +216,6 @@ export function parseGitHubSource(input: string): PluginSourceRef | null {
 
 // ── helpers ──────────────────────────────────────────────────────────────
 
-function errorMessage(err: unknown): string {
-  return err instanceof Error ? err.message : String(err);
-}
-
-function str(value: unknown): string | null {
-  return typeof value === 'string' ? value : null;
-}
-
-/**
- * `action` is spread rather than always passed, so a toast without one is
- * byte-for-byte the object every other caller produces.
- */
-function toast(
-  message: string,
-  type: 'info' | 'error' | 'success' | 'warning',
-  action?: ToastAction,
-) {
-  useToastStore.getState().addToast(message, type, action ? { action } : undefined);
-}
-
 /**
  * The button a toast about a plugin wears: it opens the panel on that plugin.
  *
@@ -262,6 +243,49 @@ function refusalCode(err: unknown): string | null {
 }
 
 /**
+ * The refusals whose code IS the whole message, and what to say instead.
+ *
+ * Every route here answers `HTTPException(status, detail={"code": ...})` with
+ * deliberately no `message` -- "prose about a coded refusal belongs to whoever
+ * is talking to the user, in their language" -- so `readApiError` falls back to
+ * the code and `err.message` is the raw token: a student is shown
+ * `inspection_expired`. Every code that reaches a toast or the review card is
+ * therefore mapped here; the ones a branch answers with a better sentence of
+ * its own (`busy`, `not_updatable`) are handled at their catch instead.
+ *
+ * The three that are NOT are the three a control answers instead of a
+ * sentence: `already_installed` grows a Reinstall button, `consent_required` a
+ * tick box, `trust_author_required` a second one. `reserved_id` and
+ * `unknown_catalog_name` are mapped nowhere either, because each has a line of
+ * its own on the panel built from the body it carried (`id`, `known`) --
+ * a sentence here would be the same refusal said twice.
+ */
+const REFUSAL_KEY: Record<string, TranslationKey | undefined> = {
+  unavailable: 'pluginCenter.error.unavailable',
+  inspection_expired: 'pluginCenter.error.inspectionExpired',
+  unknown_job: 'pluginCenter.error.unknownJob',
+  inspect_busy: 'pluginCenter.error.inspectBusy',
+  // A row this tab is still showing for a plugin that is gone -- removed from
+  // the CLI or another tab. Both `DELETE /{id}` and `POST /{id}/update`
+  // answer it, and neither carries a word of prose.
+  not_installed: 'pluginCenter.error.notInstalled',
+  // The same sentence the source box shows before it asks at all: the server
+  // and this build read a source by the same grammar, so a string that got
+  // past the client parser and was still refused is answered the same way.
+  unparseable_source: 'pluginCenter.source.invalid',
+  invalid_manifest: 'pluginCenter.error.invalidManifest',
+  not_found: 'pluginCenter.error.notFound',
+  github_rate_limited: 'pluginCenter.error.githubRateLimited',
+  github_unreachable: 'pluginCenter.error.githubUnreachable',
+};
+
+/** What a refusal should read as, once its code has had its say. */
+function refusalMessage(err: unknown): string {
+  const key = REFUSAL_KEY[refusalCode(err) ?? ''];
+  return key === undefined ? errorMessage(err) : useI18n.getState().t(key);
+}
+
+/**
  * Everything a thrown refusal carried, in the shape the review card reads.
  *
  * One builder rather than a shape assembled at each catch, so no caller can
@@ -274,10 +298,28 @@ function inspectionFailure(err: unknown): InspectionFailure {
     // but the machine it runs on, which only this key explains.
     message: err instanceof ApiError && err.status === 403
       ? useI18n.getState().t('packs.remoteDisabled')
-      : errorMessage(err),
+      : refusalMessage(err),
     code: refusalCode(err),
     detail: errorDetail(err),
   };
+}
+
+/**
+ * Leave *err* on the review the user is looking at, if there still is one.
+ *
+ * The refusals answered ON the card -- an unticked capability, an untrusted
+ * author, a plugin that turned out to be installed already -- keep the
+ * inspection ready and grow an error, because the fix is a control on that
+ * card rather than a new inspection. A review that is no longer ready (a
+ * second tab cleared it) drops the refusal rather than resurrecting a card
+ * for a decision nobody is making.
+ */
+function attachInspectionFailure(err: unknown): void {
+  usePluginStore.setState((state) => (
+    state.inspection.phase === 'ready'
+      ? { inspection: { ...state.inspection, error: inspectionFailure(err) } }
+      : {}
+  ));
 }
 
 /**
@@ -476,8 +518,13 @@ async function onJobSettled(
     case 'failed':
       // Only the catalog: nothing landed, so the node definitions and the
       // frontends are exactly what they were.
+      //
+      // Worded by KIND, like the pane's banner: the two are on screen
+      // together, and "Install failed" in a toast beside "Update failed" in
+      // the panel is one fact said two ways.
       toast(
-        t('packs.toast.installFailed', { message: settled?.error?.message ?? '' }),
+        t(kind === 'update' ? 'pluginCenter.updateFailed' : 'packs.toast.installFailed',
+          { message: settled?.error?.message ?? '' }),
         'error',
         openCenterAction(pluginId),
       );
@@ -488,10 +535,11 @@ async function onJobSettled(
       await store.refresh();
       break;
     case 'needs_restart':
-      // The files are in place and the registry could not pick them up from
-      // inside the running process. The JOB stays on screen — the panel's
-      // banner is what renders the command — and the catalog is refreshed
-      // because the row's status changed even though the nodes did not.
+      // NOTHING was installed: the only step that can end a job this way is
+      // the dependency resolve, which runs before a file is written, so the
+      // row is exactly what it was. The JOB stays on screen — the panel's
+      // banner is what renders the command to run with the server stopped —
+      // and the catalog is re-read because the job that held it is over.
       toast(
         t('pluginCenter.toast.needsRestart', { plugin: name }),
         'warning',
@@ -628,11 +676,16 @@ async function startInstall(
       // at: the inspection stays ready and grows a failure, so the review can
       // say which box is still unticked -- the refusal names the capabilities
       // or the modules -- instead of starting over.
-      usePluginStore.setState((state) => (
-        state.inspection.phase === 'ready'
-          ? { inspection: { ...state.inspection, error: inspectionFailure(err) } }
-          : {}
-      ));
+      attachInspectionFailure(err);
+    } else if (code === 'already_installed') {
+      // Not a failure of anything: an OFFER, and the backend says so in as
+      // many words. The install this refused is the one the user asked for,
+      // so the review stays up carrying the code and the card grows a
+      // Reinstall button -- `installInspected({force: true})`, which spends
+      // this same inspection rather than reading the source again. Checked
+      // before the 409 below, which would otherwise swallow it as "another
+      // install is already running" and refresh the offer away.
+      attachInspectionFailure(err);
     } else if (err instanceof ApiError && err.status === 409) {
       // Somebody else got there first — this tab, another tab, or the CLI.
       // The refresh adopts whatever the server IS running, which is more
@@ -642,7 +695,7 @@ async function startInstall(
     } else if (err instanceof ApiError && err.status === 403) {
       toast(t('packs.remoteDisabled'), 'error');
     } else {
-      toast(t('packs.toast.installFailed', { message: errorMessage(err) }), 'error');
+      toast(t('packs.toast.installFailed', { message: refusalMessage(err) }), 'error');
     }
   }
 }
@@ -735,8 +788,25 @@ export const usePluginStore = create<PluginState>((set, get) => ({
       return;
     }
 
+    // What the row says it was installed FROM, not its id. The two are the
+    // same for every catalog row -- a builtin resolves by name -- but an
+    // EXTERNAL plugin, one installed from a repository this build's catalog
+    // does not list, has an id that resolves to no source at all: its Install
+    // button ended in a 400 `unknown_catalog_name` with nothing on screen to
+    // say so. `source` is documented as "what a user would type to install
+    // this", which is exactly what this button is typing on their behalf.
+    //
+    // Own keys only: `byId` is built from parsed JSON, so a plugin called
+    // `constructor` would otherwise hand back a function rather than a row.
+    const row = Object.prototype.hasOwnProperty.call(state.byId, pluginId)
+      ? state.byId[pluginId]
+      : undefined;
+    // `||`, not `??`: the catalog sends `''` for a row with no source, and an
+    // empty source is not a source. The id is the better guess.
+    const source = row?.source || pluginId;
+
     await withBusy(pluginId, async () => {
-      const data = await runInspect(pluginId, pluginId);
+      const data = await runInspect(source, pluginId);
       if (data === null) return;
       if (data.consent_required) {
         // Capabilities to grant, or an author to trust. The review card takes
@@ -751,8 +821,11 @@ export const usePluginStore = create<PluginState>((set, get) => ({
       // The review this install passed through was never on screen. If the
       // install failed for something a review cannot fix — busy, refused,
       // offline — putting the card up now would answer a toast with a form
-      // nobody asked for. A consent refusal is the exception: it left a
-      // failure on the review precisely because ticking a box is the fix.
+      // nobody asked for. The three refusals a control CAN answer are the
+      // exceptions: an unticked capability, an untrusted author and a plugin
+      // that is already here all leave a failure on the review, precisely
+      // because a box or a button on that card is the fix. The clause below
+      // spares them by looking for `error === null`.
       const after = get().inspection;
       if (after.phase === 'ready' && after.error === null
           && after.forPluginId === pluginId) {
@@ -817,13 +890,21 @@ export const usePluginStore = create<PluginState>((set, get) => ({
         setPluginStatus(pluginId, 'installing');
         startFollowing(result.job_id, pluginId, 'update', 0);
       } catch (err) {
-        if (err instanceof ApiError && err.status === 409) {
+        // 400 `not_updatable` is a code with a `hint` beside it, and the hint
+        // is the only half that says what to do instead -- a built-in pack
+        // updates with `cdui update`, not from here. The same shape as
+        // `uninstall`'s `files_locked` branch, and `warning` for the same
+        // reason: nothing broke.
+        const hint = str(errorDetail(err)?.hint);
+        if (refusalCode(err) === 'not_updatable' && hint !== null) {
+          toast(t('pluginCenter.updateFailed', { message: hint }), 'warning');
+        } else if (err instanceof ApiError && err.status === 409) {
           toast(t('packs.toast.busy'), 'warning');
           await get().refresh();
         } else if (err instanceof ApiError && err.status === 403) {
           toast(t('packs.remoteDisabled'), 'error');
         } else {
-          toast(t('pluginCenter.updateFailed', { message: errorMessage(err) }), 'error');
+          toast(t('pluginCenter.updateFailed', { message: refusalMessage(err) }), 'error');
         }
       }
     });
@@ -861,7 +942,7 @@ export const usePluginStore = create<PluginState>((set, get) => ({
           // says what to do about it, so it is what the toast carries.
           toast(
             t('pluginCenter.toast.removeFailed', {
-              plugin: name, message: hint ?? errorMessage(err),
+              plugin: name, message: hint ?? refusalMessage(err),
             }),
             'warning',
           );
@@ -878,7 +959,7 @@ export const usePluginStore = create<PluginState>((set, get) => ({
         } else {
           toast(
             t('pluginCenter.toast.removeFailed', {
-              plugin: name, message: errorMessage(err),
+              plugin: name, message: refusalMessage(err),
             }),
             'error',
           );
@@ -904,12 +985,20 @@ export const usePluginStore = create<PluginState>((set, get) => ({
           'success',
         );
       } catch (err) {
-        toast(
-          t('pluginCenter.toast.toggleFailed', {
-            plugin: name, message: errorMessage(err),
-          }),
-          'error',
-        );
+        if (err instanceof ApiError && err.status === 409) {
+          // That plugin's own install is running, and this row is what is out
+          // of date -- the button is still on screen because the catalog has
+          // not been re-read. Same branch, and the same refresh, as uninstall.
+          toast(t('packs.toast.busy'), 'warning');
+          await get().refresh();
+        } else {
+          toast(
+            t('pluginCenter.toast.toggleFailed', {
+              plugin: name, message: refusalMessage(err),
+            }),
+            'error',
+          );
+        }
       }
     });
   },
@@ -925,10 +1014,10 @@ export const usePluginStore = create<PluginState>((set, get) => ({
       // unpack that is still writing files.
       await cancelPluginJob(job.jobId);
     } catch (err) {
-      toast(
-        useI18n.getState().t('packs.toast.cancelFailed', { message: errorMessage(err) }),
-        'error',
-      );
+      // A job the server has already forgotten is the common refusal here,
+      // and `unknown_job` on a toast is not a sentence.
+      const { t } = useI18n.getState();
+      toast(t('packs.toast.cancelFailed', { message: refusalMessage(err) }), 'error');
     } finally {
       set({ cancelling: false });
     }

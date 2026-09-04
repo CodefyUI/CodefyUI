@@ -139,9 +139,9 @@ const zhTW: Record<TranslationKey, string> = {
   'customTab.section.nodes': '自訂節點',
   'customTab.section.plugins': '外掛',
   'customTab.manage': '管理...',
+  'customTab.plugins.open': '外掛中心...',
   'customTab.nodes.empty': '尚未有自訂節點',
   'customTab.plugins.empty': '尚未安裝外掛',
-  'customTab.plugins.hint': '使用 cdui plugin 指令安裝外掛套件',
   'customTab.loadFail': '載入失敗：{error}',
 
   // Config Panel
@@ -940,6 +940,16 @@ const zhTW: Record<TranslationKey, string> = {
   'customTab.packs.empty': '沒有可安裝的套件',
   'customTab.packs.hint': 'LLM 節點的模型與函式庫可在套件中心安裝',
 
+  // Where the Plugin Center is opened from: the settings popover's own row,
+  // beside the pack one it is modelled on.
+  'toolbar.settings.section.plugins': '外掛',
+  'settings.plugins.name': '外掛中心',
+  'settings.plugins.desc': '安裝教學節點套件與 GitHub 上的外掛。',
+  'settings.plugins.summary': '已安裝 {installed} 個，可安裝 {available} 個',
+  'settings.plugins.summaryInstalling': '正在安裝 {plugin}...',
+  // The accessible name only; the visible word stays `settings.packs.action`.
+  'settings.plugins.action': '開啟外掛中心',
+
   // "This needs a pack" — said on a select option, a node, a palette entry
   // and a refused run. Every one of them names the pack, because "needs a
   // pack" without a name is not something a user can act on.
@@ -971,7 +981,8 @@ const zhTW: Record<TranslationKey, string> = {
   'pluginCenter.toast.toggleFailed': '無法變更 {plugin}：{message}',
   'pluginCenter.toast.refreshFailed':
     '變更後無法重新整理編輯器：{message}',
-  'pluginCenter.toast.needsRestart': '請重新啟動伺服器以載入 {plugin}。',
+  'pluginCenter.toast.needsRestart':
+    '{plugin} 的安裝停住了：它的 Python 套件需要先停止伺服器才能安裝，指令在外掛中心。',
   'pluginCenter.toast.inProgress': '有外掛仍在安裝中，可在外掛中心查看進度。',
   'pluginCenter.toast.openCenter': '開啟外掛中心',
   'pluginCenter.updateFailed': '更新失敗：{message}',
@@ -979,6 +990,99 @@ const zhTW: Record<TranslationKey, string> = {
   'pluginCenter.uninstallConfirm':
     '要解除安裝「{plugin}」嗎？使用它節點的圖將無法執行；它安裝的 Python 套件會保留。',
   'pluginCenter.source.invalid': '請輸入內建套件名稱、owner/repo[@ref] 或 GitHub URL。',
+
+  // The panel: chrome, list states, filter.
+  'pluginCenter.title': '外掛中心',
+  'pluginCenter.subtitle': '安裝教學節點套件與 GitHub 上的外掛',
+  'pluginCenter.close': '關閉外掛中心',
+  'pluginCenter.refresh': '重新整理外掛狀態',
+  'pluginCenter.list': '外掛清單',
+  'pluginCenter.loading': '正在載入外掛...',
+  'pluginCenter.loadFail': '無法載入外掛：{error}',
+  'pluginCenter.unsupported': '這台伺服器不支援外掛中心。請更新 CodefyUI 後重新啟動。',
+  'pluginCenter.empty': '目前沒有可安裝的外掛',
+  'pluginCenter.filter.all': '全部',
+  'pluginCenter.filter.installed': '已安裝',
+  'pluginCenter.filter.available': '可安裝',
+
+  // Where a plugin came from.
+  'pluginCenter.origin.builtin': '內建',
+  'pluginCenter.origin.official': '官方',
+  'pluginCenter.origin.local': '本機連結',
+  'pluginCenter.homepage': '首頁',
+  'pluginCenter.chapters': '章節：{chapters}',
+
+  // The two states a pack has no word for.
+  'pluginCenter.status.removed': '已移除',
+  'pluginCenter.status.missingFiles': '檔案遺失',
+
+  // The row's buttons.
+  'pluginCenter.install': '安裝',
+  'pluginCenter.enable': '啟用',
+  'pluginCenter.disable': '停用',
+  'pluginCenter.update': '更新',
+  'pluginCenter.reinstall': '重新安裝',
+
+  // Installing something the catalog does not list.
+  'pluginCenter.source.label': '從 GitHub 安裝',
+  'pluginCenter.source.placeholder': 'owner/repo[@ref] 或 GitHub URL',
+  'pluginCenter.source.review': '檢視',
+  'pluginCenter.source.reviewing': '正在下載...',
+  'pluginCenter.source.fail': '無法取得 {source}：{message}',
+  'pluginCenter.source.unknownName': '沒有名為「{source}」的外掛。',
+  'pluginCenter.source.knownNames': '這台伺服器可安裝：{known}',
+
+  // The consent screen.
+  'pluginCenter.review.title': '安裝前請確認',
+  'pluginCenter.review.author': '作者：{author}',
+  'pluginCenter.review.nodes': '節點：{nodes}',
+  'pluginCenter.review.capabilities': '這個外掛要求：',
+  'pluginCenter.review.capNote':
+    '授予是一種聲明，不是沙箱：外掛可使用這些模組，之後不會再詢問。',
+  'pluginCenter.review.grant': '同意授予這些能力',
+  'pluginCenter.review.trust': '我信任這位作者。允許使用：{modules}',
+  'pluginCenter.review.frontend': '包含會在編輯器中以完整權限執行的 JavaScript。',
+  'pluginCenter.review.idConflict': '「{id}」是內建套件保留的 id。',
+  'pluginCenter.review.alreadyInstalled': '{plugin} 已安裝。重新安裝會以這個版本取代現有的安裝。',
+
+  // One line per declared capability, each saying what granting it costs.
+  'pluginCenter.cap.network': 'network：可連線任何主機，並把下載內容寫入磁碟',
+  'pluginCenter.cap.filesystem':
+    'filesystem：使用檔案函式庫（pathlib、shutil、zip/tar、sqlite3）',
+  'pluginCenter.cap.processEnv':
+    'process-env：整個 os 模組，包含此行程的環境變數與 API 金鑰、啟動程式、刪除檔案',
+
+  // The activity pane.
+  'pluginCenter.activity.installing': '正在安裝 {plugin}',
+  'pluginCenter.activity.updating': '正在更新 {plugin}',
+  'pluginCenter.activity.installed': '已安裝 {plugin}。',
+  'pluginCenter.activity.updated': '已更新 {plugin}。',
+  'pluginCenter.activity.lost': '與伺服器失去聯繫。請重新整理以確認外掛狀態。',
+  'pluginCenter.activity.needsRestart':
+    '安裝在改動任何東西前停住了：{plugin} 的 Python 套件會替換伺服器已載入的套件。'
+    + '先停止伺服器並執行這行指令，再重新安裝：',
+  'pluginCenter.activity.cliFallback': '或在終端機安裝：',
+
+  // The steps of an install; `deps` reuses `packs.activity.step.pip`.
+  'pluginCenter.step.resolve': '正在解析來源',
+  'pluginCenter.step.download': '正在下載',
+  'pluginCenter.step.extract': '正在解壓縮',
+  'pluginCenter.step.verify': '正在檢查程式碼',
+  'pluginCenter.step.stage': '正在複製檔案',
+  'pluginCenter.step.lock': '正在寫入安裝紀錄',
+  'pluginCenter.step.reload': '正在載入節點',
+
+  // The refusals whose entire body is a code.
+  'pluginCenter.error.unavailable': '這台伺服器不支援外掛中心。請更新 CodefyUI 後重新啟動。',
+  'pluginCenter.error.inspectionExpired': '檢視已過期，請重新檢視來源。',
+  'pluginCenter.error.unknownJob': '找不到這個安裝，請重新整理。',
+  'pluginCenter.error.notInstalled': '這個外掛已不在安裝清單中，請重新整理。',
+  'pluginCenter.error.inspectBusy': '另一個檢視仍在進行，請稍後再試。',
+  'pluginCenter.error.invalidManifest': '外掛的 manifest 無效。',
+  'pluginCenter.error.notFound': 'GitHub 上找不到這個 repository 或 ref。',
+  'pluginCenter.error.githubRateLimited':
+    '已達 GitHub 請求上限，請稍後再試，或在伺服器設定 CODEFYUI_GITHUB_TOKEN。',
+  'pluginCenter.error.githubUnreachable': '無法連線到 GitHub。',
 
   // Source Control (the sidebar's fifth tab).
   'git.action.more': '更多動作',

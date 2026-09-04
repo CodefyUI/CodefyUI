@@ -1,0 +1,61 @@
+/* Shared status pill. Colours, type and spacing come from tokens.css only. */
+
+.pill {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  font-size: var(--fs-2xs);
+  font-weight: var(--fw-semibold);
+  /* Density comes from the padding: the label stays legible at any size. */
+  padding: var(--sp-1) var(--sp-3);
+  border-radius: var(--radius-pill);
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.pill[data-tone='success'] {
+  background: var(--success-wash);
+  color: var(--status-success);
+}
+
+.pill[data-tone='warning'] {
+  background: var(--warning-wash);
+  color: var(--status-warning);
+}
+
+.pill[data-tone='info'] {
+  background: var(--info-wash);
+  color: var(--status-info);
+}
+
+.pill[data-tone='neutral'] {
+  background: var(--surface-input);
+  color: var(--text-muted);
+}
+
+.pillDot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  /* The pill's own colour, so one rule per tone dresses the dot as well. */
+  background: currentcolor;
+  flex-shrink: 0;
+  animation: pillPulse 1.6s ease-in-out infinite;
+}
+
+@keyframes pillPulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+
+  50% {
+    opacity: 0.25;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .pillDot {
+    animation: none;
+  }
+}

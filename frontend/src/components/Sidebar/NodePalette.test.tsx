@@ -27,7 +27,10 @@ vi.mock('../../api/rest', async (importOriginal) => {
     ...actual,
     listExamples: vi.fn(),
     listCustomNodes: vi.fn(),
-    listPlugins: vi.fn(),
+    // The shell bootstraps the plugin catalog on mount (`usePluginCatalogBootstrap`),
+    // which every case in this file therefore triggers. Stubbed so it reaches
+    // a promise rather than the real module's `fetch`.
+    listPluginCatalog: vi.fn(),
   };
 });
 
@@ -112,7 +115,12 @@ beforeEach(() => {
   // reset them so "was this tab fetched?" means "in THIS test".
   mockedRest.listExamples.mockReset().mockResolvedValue([]);
   mockedRest.listCustomNodes.mockReset().mockResolvedValue([]);
-  mockedRest.listPlugins.mockReset().mockResolvedValue([]);
+  mockedRest.listPluginCatalog.mockReset().mockResolvedValue({
+    entries: [],
+    active_job: null,
+    remote_install_allowed: true,
+    generation: 0,
+  });
 });
 
 afterEach(() => {
