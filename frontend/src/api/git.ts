@@ -521,10 +521,13 @@ function normalizeMutation(raw: RawMutationResult): MutationResult {
 /**
  * The repository, and its status when there is one to read.
  *
- * The route answers 200 for every repository state, so a rejection here is
- * the server having no git service at all (503) or being unreachable — not
- * "there is no repository", which arrives as `repo.state` beside a null
- * `status`.
+ * The route answers 200 for every repository state, so "there is no
+ * repository" is never a rejection: it arrives as `repo.state` beside a null
+ * `status`. What DOES reject is everything that is genuinely a failure — a
+ * server with no git service (503), a server that cannot be reached, and git
+ * itself failing or being stopped at the deadline (500 `git_failed`, 504
+ * `timeout`), because reading the status runs two real git processes under
+ * the server's `T_STATUS` and not a lookup.
  */
 export async function getGitStatus(): Promise<StatusResponse> {
   const res = await fetch(`${BASE_URL}/status`);

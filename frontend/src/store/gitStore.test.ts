@@ -376,6 +376,17 @@ describe('refresh', () => {
     expect(git().loading).toBe(false);
   });
 
+  it('says how long the status read waited before it gave up', async () => {
+    // A status read is two real git processes under the server's deadline, not
+    // a lookup, so it can be stopped at ten seconds -- and the 504 carries the
+    // code and no number, which is why the sentence is written on this side.
+    api.getGitStatus.mockRejectedValue(await coded(504, 'timeout'));
+    await git().refresh();
+
+    expect(git().loadError).toBe(say('git.error.timeout', { seconds: 10 }));
+    expect(git().repoState).toBe('unknown');
+  });
+
   it('drops a slow read that a newer one has already overtaken', async () => {
     const slow = deferred<StatusResponse>();
     api.getGitStatus.mockReturnValueOnce(slow.promise);

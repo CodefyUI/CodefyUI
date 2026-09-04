@@ -43,8 +43,10 @@ import { useI18n, type TranslationKey } from '../i18n';
  *    is no project", "git is not installed", "this directory is not a
  *    repository" are all normal answers with a null `status` beside them --
  *    so those are states the tab draws, not errors it shows. `loadError` is
- *    for the two things that really are failures: a server with no git
- *    service (503) and a server that cannot be reached.
+ *    for what really did fail: a server with no git service (503), a server
+ *    that cannot be reached, and git itself failing or being stopped at the
+ *    status deadline (500 `git_failed`, 504 `timeout`) -- the poll runs two
+ *    real git processes, and either of them can go wrong.
  *
  *  - **`busyOp` is a lock, not a spinner.** The backend serialises mutations
  *    behind one lock and refuses a second with `409 busy`; this store refuses
@@ -639,6 +641,12 @@ export const useGitStore = create<GitState>((set, get) => ({
    * first read that is still `unknown`, which the tab draws as the loading
    * line until `loadError` turns it into the error line -- because "the
    * server did not answer" is not evidence that the repository changed.
+   *
+   * The rejection goes through `toStoreError` for the one code whose sentence
+   * this side has to write: a status read is git under the server's deadline,
+   * so it can come back 504 `timeout` with no number in the body. `loadError`
+   * keeps its string shape and its meaning -- the header shows that line in
+   * every `repoState`, and it clears on the next read that answers.
    */
   refresh: async () => {
     const seq = (readSeq += 1);
@@ -658,7 +666,7 @@ export const useGitStore = create<GitState>((set, get) => ({
       });
     } catch (err) {
       if (seq !== readSeq) return;
-      set({ loadError: errorMessage(err), loading: false });
+      set({ loadError: toStoreError(err, 'status').message, loading: false });
     }
   },
 
