@@ -339,10 +339,14 @@ def display_url(url: str) -> str:
       A password containing ``@`` is inside the masked half already,
       because the userinfo is taken at the last ``@`` like a URL parser
       does.
-    * one component that looks like a token (:data:`TOKEN_PREFIXES`) --
-      the whole thing goes. There is no username to keep: the token IS
-      the username, which is how a bare ``https://ghp_xxx@host/r.git``
-      is written.
+    * a component that looks like a token (:data:`TOKEN_PREFIXES`) in
+      EITHER half -- the whole userinfo goes. There is no username to
+      keep: the token IS the username, whether it is written bare
+      (``https://ghp_xxx@host/r.git``) or with the filler password a
+      forge documents beside it (``https://ghp_xxx:x-oauth-basic@…``,
+      ``https://ghp_xxx:@…``). Masking only the second half of those
+      would print a ``***`` where there is no secret and serve the live
+      one next to it.
     * ``x-access-token:<token>``, the GitHub App form -- the whole thing
       goes too. The first component is a constant, not a person.
     * one plain component (``git``, ``alice``) -- kept. It is an identity,
@@ -371,22 +375,37 @@ def display_url(url: str) -> str:
 
 
 def _mask_userinfo(userinfo: str) -> str:
-    """One userinfo with its credential half replaced by :data:`URL_MASK`."""
+    """One userinfo with its credential half replaced by :data:`URL_MASK`.
+
+    The FIRST component decides, and it is asked the same question in both
+    shapes: is this a credential, or is it somebody's name? A token is a
+    token whether or not something follows it -- ``<token>:x-oauth-basic``
+    is the basic-auth spelling a forge documents for one, and ``<token>:``
+    with an empty password is the other. Masking only the second component
+    of those would print a ``***`` where there is no secret at all and
+    serve the live one beside it, under a row that claims to be masked.
+    """
     user, colon, _secret = userinfo.partition(":")
+    if _is_a_credential(user):
+        return URL_MASK
     if not colon:
-        return URL_MASK if _looks_like_a_token(user) else userinfo
-    if not user or user.lower() == ACCESS_TOKEN_USER:
+        return userinfo
+    if not user:
         return URL_MASK
     return f"{user}:{URL_MASK}"
 
 
-def _looks_like_a_token(value: str) -> bool:
+def _is_a_credential(value: str) -> bool:
     """Is *value* a credential rather than somebody's name?
 
     Prefix-matched rather than pattern-matched: the issuers publish the
     prefixes, and a word carrying one is a token whatever follows it.
+    ``x-access-token`` is here too -- it is not itself a secret, it is the
+    constant a GitHub App puts where a person would go, so a userinfo
+    built on it has no name in it either way.
     """
-    return value.lower().startswith(TOKEN_PREFIXES)
+    lowered = value.lower()
+    return lowered == ACCESS_TOKEN_USER or lowered.startswith(TOKEN_PREFIXES)
 
 
 def validate_commit_message(message: str) -> str:

@@ -309,6 +309,20 @@ def test_a_url_with_no_secret_in_it_is_shown_as_it_is(url):
     # One component that is a token: there is no username to keep.
     pytest.param(f"https://{_TOKEN}@github.com/o/r.git",
                  "https://***@github.com/o/r.git", id="bare-token"),
+    # A token in the USERNAME half. The second component is filler --
+    # ``x-oauth-basic`` is the basic-auth spelling a forge documents for a
+    # token, and the empty password is the other -- so masking only the
+    # second half would print a ``***`` where there is no secret and serve
+    # the live one beside it, under a row that claims to be masked.
+    pytest.param(f"https://{_TOKEN}:x-oauth-basic@github.com/o/r.git",
+                 "https://***@github.com/o/r.git",
+                 id="token-as-the-username"),
+    pytest.param(f"https://{_TOKEN}:@github.com/o/r.git",
+                 "https://***@github.com/o/r.git",
+                 id="token-with-an-empty-password"),
+    pytest.param("https://glpat-abc123:x@gitlab.com/o/r.git",
+                 "https://***@gitlab.com/o/r.git",
+                 id="token-as-the-username-gitlab"),
     pytest.param("glpat-abc123@gitlab.com:o/r.git",
                  "***@gitlab.com:o/r.git", id="bare-token-scp"),
     # GitHub Apps: the first component is a constant, not a person.

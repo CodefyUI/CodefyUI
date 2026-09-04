@@ -323,10 +323,20 @@ def test_a_token_in_a_remote_url_is_never_listed(repo):
     assert token in repo.git("remote", "get-url", "origin")
 
 
-def test_a_url_that_is_nothing_but_a_token_loses_all_of_it(repo):
-    """No username to keep: the token IS the username."""
+@pytest.mark.parametrize("userinfo", [
+    pytest.param("{token}", id="bare"),
+    # The basic-auth spelling a forge documents for a token, and the same
+    # thing with the password left empty. The second component is filler:
+    # masking only THAT would print a ``***`` where there is no secret and
+    # serve the live one beside it, under a row that claims to be masked.
+    pytest.param("{token}:x-oauth-basic", id="with-filler-password"),
+    pytest.param("{token}:", id="with-an-empty-password"),
+])
+def test_a_url_that_is_nothing_but_a_token_loses_all_of_it(repo, userinfo):
+    """No username to keep: the token IS the username, in either half."""
     token = "ghp_16C7e42F292c6912E7710c838347Ae178B4a"
-    repo.git("remote", "add", "origin", f"https://{token}@github.com/o/r.git")
+    repo.git("remote", "add", "origin",
+             f"https://{userinfo.format(token=token)}@github.com/o/r.git")
 
     listed = refs.list_remotes(repo.root)
 
