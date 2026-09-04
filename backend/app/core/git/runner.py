@@ -517,10 +517,22 @@ def run_git(args: Sequence[str], *, cwd: Path, timeout: float,
     *read_only* marks a command that only reads, so it can run without
     taking the index lock (see :func:`git_env`).
 
-    *literal_pathspecs* is True everywhere except ``check-ignore``, which is
-    the one command that rejects :data:`LITERAL_PATHSPECS` outright ("pathspec
-    magic not supported by this command: 'literal'", exit 128). Leaving it
-    off there rests on two facts, and the second is the load-bearing one:
+    *literal_pathspecs* is True everywhere except two commands, and both
+    exemptions rest on the same load-bearing fact: the argv they are turned
+    off for carries no user-controlled pathspec, so there is nothing for
+    pathspec magic to be read out of.
+
+    ``stash push`` is the second one (``stash.stash_push``), and it is the
+    one where the option CORRUPTS rather than refuses: with it,
+    ``--include-untracked`` stores the untracked file and leaves it in the
+    working tree, exit 0 and no warning (measured on git 2.53). That
+    subcommand takes no pathspec here at all -- the message rides inside
+    ``--message=`` as an option value and nothing is positional.
+
+    ``check-ignore`` is the first, and it rejects :data:`LITERAL_PATHSPECS`
+    outright ("pathspec magic not supported by this command: 'literal'",
+    exit 128). Leaving it off there rests on two facts, and the second is
+    the load-bearing one:
 
     * that command answers a QUESTION -- is this path ignored -- and never
       returns content, so the worst a pattern could do is have the answer

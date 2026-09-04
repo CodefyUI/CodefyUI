@@ -40,7 +40,9 @@ translates, not as pydantic's English prose in a 422.
 
 G3 adds the refs: ``BranchInfo`` / ``RemoteBranchInfo`` / ``BranchesResponse``
 / ``RemoteInfo`` and the requests that create, switch, rename and delete
-them. ``StashInfo`` and the stash and network requests are the rest of G3.
+them; then ``StashInfo`` with ``StashCreateRequest`` and ``ResolveRequest``,
+which is work set aside and a merge finished. The network requests are the
+rest of G3.
 
 No subprocess and no runner import: the parser and the tests can build a
 status without a git on PATH.
@@ -372,6 +374,38 @@ class RemoteInfo(BaseModel):
     push_url: str = ""
 
 
+class StashInfo(BaseModel):
+    """One entry of the stash stack, as the Stashes section draws a row.
+
+    ``index`` is git's own ``stash@{N}`` and not this row's position in the
+    list: it is what every write is addressed by, and a row the parser
+    could not read would otherwise shift every index below it -- onto the
+    operation that drops.
+
+    ``message`` is what to SHOW, and it is one of two things. A stash made
+    with a message carries that message. One made without carries git's
+    whole ``WIP on main: 9f2c1ab Add the loader`` -- the base commit is the
+    only description an unnamed stash has, and printing just "9f2c1ab Add
+    the loader" would read as a commit the user made. The client prints
+    this field verbatim.
+
+    ``branch`` is the branch the stash was made on, and ``None`` when it
+    was made off one: git writes ``(no branch)`` for a detached HEAD, which
+    is a placeholder and not a name -- the same reading
+    :class:`BranchesResponse` gives ``current``. It is also ``None`` for a
+    subject in neither of git's two shapes (a stash another tool wrote).
+    """
+
+    #: git's own index: ``0`` is ``stash@{0}``, the newest.
+    index: int
+    #: The user's message, or git's ``WIP on ...`` line. Never empty.
+    message: str
+    #: Where it was made; ``None`` for a detached HEAD.
+    branch: str | None = None
+    #: Author time, unix seconds; ``0`` when git did not say.
+    created_at: int = 0
+
+
 class MutationResult(BaseModel):
     """What one write left behind.
 
@@ -528,3 +562,44 @@ class RemoteUrlRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     url: str
+
+
+class StashCreateRequest(BaseModel):
+    """The body of ``POST /stashes``: set the working tree aside.
+
+    Both fields have a default, so an empty body is a valid request and
+    means what the button means. ``message`` is optional because git's own
+    ``WIP on ...`` is a perfectly good name for a stash somebody is about
+    to pop again, and the prompt that asks for one lets it be skipped;
+    ``include_untracked`` defaults to TRUE because a new file is a change,
+    and setting aside half the work while saying nothing about the other
+    half is the one outcome nobody wants.
+
+    The message's own length and shape are ``paths.validate_stash_message``'s
+    job, so an over-long one comes back as a 400 with a code the tab
+    translates rather than as pydantic's English.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    message: str | None = None
+    include_untracked: bool = True
+
+
+class ResolveRequest(BaseModel):
+    """The body of ``POST /resolve``: one conflicted file, and which side.
+
+    Three words, and the third is not a side at all. ``ours`` takes the
+    version of the branch being merged INTO, ``theirs`` the version being
+    merged in, and ``mark`` takes whatever is in the working tree already
+    -- which is what a person who has edited the file by hand, markers and
+    all, means by "resolved". The file has to be one the status calls
+    conflicted; anything else is a 400 ``path_not_in_status``, because
+    ``git checkout --ours`` on a merely MODIFIED file silently throws the
+    modification away (measured).
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    path: str
+    side: Literal["ours", "theirs", "mark"]

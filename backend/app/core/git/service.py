@@ -48,6 +48,7 @@ from . import diff as diff_ops
 from . import log as log_ops
 from . import refs as refs_ops
 from . import repo
+from . import stash as stash_ops
 from .errors import GitBusy, GitError, classify_failure
 from .models import (
     BranchesResponse,
@@ -60,6 +61,7 @@ from .models import (
     MutationResult,
     RemoteInfo,
     RepoInfo,
+    StashInfo,
     StatusResponse,
 )
 from .paths import (
@@ -533,6 +535,65 @@ def init_repo(root: Path) -> dict[str, Any]:
     return {"scaffold": repo.ensure_scaffold(root)}
 
 
+# --- finishing a merge -------------------------------------------------------
+
+
+def abort_merge(root: Path) -> dict[str, Any]:
+    """Undo a merge that is half-done, and put the tree back as it was.
+
+    The pre-check is not defence in depth: ``git merge --abort`` with no
+    ``MERGE_HEAD`` says "fatal: There is no merge to abort (MERGE_HEAD
+    missing)." and exits 128, which matches no classification rule and
+    reached the browser as a 500. Deciding it here makes it a 404 whose
+    hint is the fact, and it is decided from ``merge_in_progress`` -- the
+    SAME flag the button is drawn from, so the answer can never disagree
+    with what the person clicking it can see.
+    """
+    if not repo.read_status(root).merge_in_progress:
+        raise GitError("not_found", 404, "there is no merge to abort",
+                       hint="no merge in progress")
+    run_git(["merge", "--abort"], cwd=root, timeout=T_LOCAL)
+    return {}
+
+
+def resolve(root: Path, path: str,
+            side: Literal["ours", "theirs", "mark"]) -> dict[str, Any]:
+    """Settle one conflicted file: keep ours, take theirs, or mark it done.
+
+    ``ours`` and ``theirs`` are ``checkout --ours|--theirs`` followed by an
+    ``add``; ``mark`` is the ``add`` alone, which is what a person who has
+    edited the file by hand means by "resolved" -- git does not read the
+    file, it reads the index, and staging an unmerged path is exactly how a
+    resolution is recorded.
+
+    **The path must be one the status calls conflicted, and that check is
+    the safety.** ``git checkout --ours -- b.txt`` on a file that is merely
+    MODIFIED exits 0 and silently restores it from HEAD (measured on git
+    2.53) -- the user's edit is gone, with no error and nothing to undo
+    from. A stale panel that offered "Keep mine" on the wrong row would
+    destroy work; a 400 saying the file is not in the status tells the tab
+    to reload instead.
+
+    It is a THIRD status read -- the service already reads one before and
+    one after every worktree operation -- and that is the price knowingly
+    paid. A resolve is one deliberate click per conflicted file, not a
+    poll, and the read is what keeps a command that destroys silently away
+    from a row the panel drew fifteen seconds ago.
+    """
+    clean = _writable_paths(root, [path])[0]
+    conflicted = {entry.path for entry in repo.read_status(root).conflicted}
+    if clean not in conflicted:
+        raise GitError("path_not_in_status", 400,
+                       f"{clean} is not one of the conflicted files",
+                       hint="the status has changed since it was read; "
+                            "reload it")
+    if side != "mark":
+        run_git(["checkout", f"--{side}", "--", clean], cwd=root,
+                timeout=T_LOCAL)
+    run_git(["add", "--", clean], cwd=root, timeout=T_LOCAL)
+    return {"path": clean, "side": side}
+
+
 # --- what changed ----------------------------------------------------------
 
 
@@ -657,6 +718,10 @@ class GitService:
         """Every configured remote, with its fetch and push URLs."""
         return await self._read(refs_ops.list_remotes)
 
+    async def stashes(self) -> list[StashInfo]:
+        """The stash stack, newest first."""
+        return await self._read(stash_ops.list_stashes)
+
     async def _read(self, fn: Callable[[Path], _T]) -> _T:
         """Run *fn* against the ready repository, off the loop, without the lock.
 
@@ -774,6 +839,58 @@ class GitService:
         return await self.mutate(
             "remove_remote", lambda root: refs_ops.remove_remote(root, name),
             worktree=False)
+
+    # --- the stash, and finishing a merge ---------------------------------
+    #
+    # Five of these six move files and say ``worktree=True``. A PUSH does,
+    # as much as a pop does -- it takes the working tree back to what HEAD
+    # has, which is the same replacement a checkout makes and the same
+    # reason an open editor has to be told. Only ``stash_drop`` is False:
+    # it deletes a ref and touches nothing on disk.
+    #
+    # The last two methods have the same names as the module functions they
+    # call, unlike ``stage`` / ``stage_paths``: a method name is not in
+    # scope inside its own body, so ``abort_merge`` and ``resolve`` below
+    # resolve to the module-level functions. The plan names both, and
+    # spelling them differently here would put two names on one operation.
+
+    async def stash_push(self, message: str | None = None, *,
+                         include_untracked: bool = True) -> MutationResult:
+        """Set the working tree aside as a new stash."""
+        return await self.mutate(
+            "stash_push",
+            lambda root: stash_ops.stash_push(
+                root, message=message, include_untracked=include_untracked),
+            worktree=True)
+
+    async def stash_pop(self, index: int) -> MutationResult:
+        """Put a stash back and remove it from the stack."""
+        return await self.mutate(
+            "stash_pop", lambda root: stash_ops.stash_pop(root, index),
+            worktree=True)
+
+    async def stash_apply(self, index: int) -> MutationResult:
+        """Put a stash back and keep it in the stack."""
+        return await self.mutate(
+            "stash_apply", lambda root: stash_ops.stash_apply(root, index),
+            worktree=True)
+
+    async def stash_drop(self, index: int) -> MutationResult:
+        """Throw a stash away. Nothing in the working tree moves."""
+        return await self.mutate(
+            "stash_drop", lambda root: stash_ops.stash_drop(root, index),
+            worktree=False)
+
+    async def abort_merge(self) -> MutationResult:
+        """Undo a half-finished merge and put the tree back as it was."""
+        return await self.mutate("abort_merge", abort_merge, worktree=True)
+
+    async def resolve(self, path: str,
+                      side: Literal["ours", "theirs", "mark"]
+                      ) -> MutationResult:
+        """Settle one conflicted file: keep ours, take theirs, or mark it."""
+        return await self.mutate(
+            "resolve", lambda root: resolve(root, path, side), worktree=True)
 
     async def mutate(self, op: str,
                      fn: Callable[[Path], dict[str, Any] | None], *,
