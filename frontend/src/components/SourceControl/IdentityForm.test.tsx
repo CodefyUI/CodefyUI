@@ -164,3 +164,53 @@ describe('IdentityForm', () => {
     expect(saveIdentity).not.toHaveBeenCalled();
   });
 });
+
+describe('IdentityForm: what a save is allowed to write', () => {
+  /** The form with the identity the config read answered, already seeded. */
+  async function opened() {
+    render(<IdentityForm />);
+    useGitStore.setState({
+      identity: identity({
+        name: 'Ada',
+        email: 'ada@example.com',
+        name_scope: 'global',
+        email_scope: 'global',
+      }),
+    });
+    await waitFor(() => expect(nameBox()).toHaveValue('Ada'));
+  }
+
+  it('sends the half that changed and nothing about the other one', async () => {
+    // The fields are seeded with the GLOBAL identity, so sending the seeded
+    // email back writes it into this project's `.git/config` and pins the
+    // repository to an address nobody chose. `git config --local user.email`
+    // was set after a save that only meant to give the project a name.
+    await opened();
+    fireEvent.change(nameBox(), { target: { value: 'Grace' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    expect(saveIdentity).toHaveBeenCalledWith({ name: 'Grace', email: '' });
+  });
+
+  it('sends the email alone when that is the half that changed', async () => {
+    await opened();
+    fireEvent.change(emailBox(), { target: { value: 'grace@example.com' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    expect(saveIdentity).toHaveBeenCalledWith({ name: '', email: 'grace@example.com' });
+  });
+
+  it('has nothing to save while both halves still hold what was loaded', async () => {
+    await opened();
+    const save = screen.getByRole('button', { name: 'Save' });
+    expect(save).toHaveAttribute('aria-disabled', 'true');
+    fireEvent.click(save);
+    expect(saveIdentity).not.toHaveBeenCalled();
+  });
+
+  it('still reads a half the user cleared as leave that one alone', async () => {
+    await opened();
+    fireEvent.change(nameBox(), { target: { value: '' } });
+    fireEvent.change(emailBox(), { target: { value: 'grace@example.com' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    expect(saveIdentity).toHaveBeenCalledWith({ name: '', email: 'grace@example.com' });
+  });
+});

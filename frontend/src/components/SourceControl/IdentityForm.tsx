@@ -23,10 +23,15 @@ function scopeKey(scope: ConfigScope | null, value: string | null): TranslationK
  * with no identity, and the tab answers that refusal by putting the fix where
  * the commit box is instead of throwing a dialog over the work.
  *
- * A field left blank means "leave that one alone" -- the store omits an empty
- * half from the request rather than sending an empty string, which the server
- * refuses. So a user whose name is already set globally can fill in the email
- * and nothing else, which is the common case the scope line exists to explain.
+ * A half this form does not send means "leave that one alone" -- the store
+ * omits an empty half from the request rather than sending an empty string,
+ * which the server refuses. TWO halves go unsent: the one left blank, and the
+ * one that still holds exactly what it was seeded with. The seed is the
+ * identity git answered the config read with, which for most people is the
+ * GLOBAL name and email -- so a user who opened this to set a name for one
+ * project would otherwise have written the global email into that project's
+ * `.git/config` beside it, and pinned the repository to an address nobody
+ * chose. Save is off until one of the two really changes, for the same reason.
  */
 export function IdentityForm() {
   const { t } = useI18n();
@@ -72,14 +77,26 @@ export function IdentityForm() {
     setEmail(identity.email ?? '');
   }, [identity]);
 
-  const nothingToSave = name.trim() === '' && email.trim() === '';
+  // What the fields were seeded with, and so what a half has to differ from
+  // to be worth writing. A half that is blank, or back to the value it was
+  // seeded with, is one this repository has no reason to be given.
+  const seededName = identity?.name ?? '';
+  const seededEmail = identity?.email ?? '';
+  const nameChanged = name.trim() !== '' && name.trim() !== seededName;
+  const emailChanged = email.trim() !== '' && email.trim() !== seededEmail;
+  const nothingToSave = !nameChanged && !emailChanged;
 
   const onSubmit = (e: FormEvent<HTMLFormElement>) => {
     e.preventDefault();
     if (nothingToSave) return;
-    // The store closes the form on success and leaves it open on a refusal,
-    // with the reason in the header's error line.
-    void saveIdentity({ name, email });
+    // An unchanged half goes as the empty string, which is the spelling the
+    // store already reads as "leave that one alone" and omits from the
+    // request. The store closes the form on success and leaves it open on a
+    // refusal, with the reason in the header's error line.
+    void saveIdentity({
+      name: nameChanged ? name : '',
+      email: emailChanged ? email : '',
+    });
   };
 
   return (
@@ -127,9 +144,11 @@ export function IdentityForm() {
       {/*
         Save filled and Cancel ghosted, which is the order and the weighting
         `DialogContainer` already uses everywhere else in the app. Save is off
-        while both halves are blank because that is the ONE request
-        `PUT /config` cannot do anything with -- it answers 400 `invalid_value`
-        -- and the store refuses it before the wire anyway.
+        until one of the halves differs from what was loaded, because a write
+        with nothing new in it either says nothing at all -- both halves blank
+        is the ONE request `PUT /config` refuses outright, 400 `invalid_value`,
+        and the store stops it before the wire anyway -- or copies the global
+        identity into this repository for no reason.
       */}
       <div className={styles.identityActions}>
         <button
