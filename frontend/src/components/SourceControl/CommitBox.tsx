@@ -51,15 +51,20 @@ export function CommitBox() {
 
   const hasMessage = message.trim() !== '';
   const stagedCount = status?.staged.length ?? 0;
+  // A merge commit is the only way out of MERGE_HEAD, and resolving every
+  // conflict as "mine" changes no file -- so the index is empty and git still
+  // wants the commit. "Nothing staged" would be a dead end with the tree in a
+  // state only a commit or an abort can leave.
+  const merging = status?.merge_in_progress === true;
   // An amend with an empty index is a real commit: it rewrites the last one's
   // MESSAGE, which is the commonest reason to amend at all, and the backend
   // takes it. So "nothing staged" only blocks a new commit.
-  const canCommit = hasMessage && (stagedCount > 0 || amend);
+  const canCommit = hasMessage && (stagedCount > 0 || amend || merging);
   // One reason, the first one that applies: a box with no message and nothing
   // staged has one thing to do next, not two.
   const blockedBecause = !hasMessage
     ? t('git.commit.needMessage')
-    : stagedCount === 0 && !amend
+    : stagedCount === 0 && !amend && !merging
       ? t('git.commit.nothingStaged')
       : undefined;
 

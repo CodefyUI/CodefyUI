@@ -124,6 +124,28 @@ describe('CommitBox: when Commit can be pressed', () => {
     expect(commitButton()).toHaveAttribute('aria-disabled', 'false');
     expect(commitButton().getAttribute('title')).toBeNull();
   });
+
+  it('lets a merge be committed with nothing staged', () => {
+    // Resolving every conflict as "mine" changes no file, so nothing lands in
+    // the index -- and git still wants the merge commit, which is the only way
+    // out of MERGE_HEAD. An empty index is not an empty commit here.
+    useGitStore.setState({ status: status({ merge_in_progress: true }) });
+    render(<CommitBox />);
+    expect(commitButton()).toHaveAttribute('aria-disabled', 'false');
+    expect(commitButton().getAttribute('title')).toBeNull();
+    fireEvent.click(commitButton());
+    expect(commit).toHaveBeenCalledWith({ all: false });
+  });
+
+  it('still wants a message for the merge commit', () => {
+    useGitStore.setState({
+      commitMessage: '',
+      status: status({ merge_in_progress: true }),
+    });
+    render(<CommitBox />);
+    expect(commitButton()).toHaveAttribute('aria-disabled', 'true');
+    expect(commitButton().getAttribute('title')).toBe('Enter a message');
+  });
 });
 
 describe('CommitBox: the message', () => {
