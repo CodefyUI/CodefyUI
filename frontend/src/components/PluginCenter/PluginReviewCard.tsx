@@ -1,4 +1,4 @@
-import { useState, type ReactNode } from 'react';
+import { useEffect, useRef, useState, type ReactNode } from 'react';
 import type { InspectionState } from '../../store/pluginStore';
 import { useI18n, type TranslationKey } from '../../i18n';
 import {
@@ -65,6 +65,17 @@ export function PluginReviewCard({
 
   const [granted, setGranted] = useState(false);
   const [trusted, setTrusted] = useState(false);
+  const cardRef = useRef<HTMLElement | null>(null);
+
+  // A review can be raised by the Install button on a row far down the list,
+  // and this card renders at the TOP of it. Without this, clicking Install on
+  // the eighth plugin looks like nothing happened at all.
+  //
+  // Once per review: the panel keys this component on the inspection id, so a
+  // second Review remounts rather than re-runs.
+  useEffect(() => {
+    cardRef.current?.scrollIntoView({ block: 'nearest' });
+  }, []);
 
   const needsGrant = data.capabilities.length > 0;
   const needsTrust = data.allowed_modules.length > 0;
@@ -114,6 +125,7 @@ export function PluginReviewCard({
 
   return (
     <section
+      ref={cardRef}
       // The accent ring the panel puts on a row somebody asked for: this is
       // the one card on screen that is waiting for an answer.
       className={`${packStyles.card} ${packStyles.cardHighlighted}`}

@@ -683,6 +683,18 @@ describe('PluginCenterModal — the review', () => {
     expect(screen.queryByRole('region', { name: 'Review before installing' })).toBeNull();
   });
 
+  it('brings itself into view, however far down the row that asked was', () => {
+    // A row's own Install button raises a review, and this card renders at
+    // the top of the list: without the scroll, clicking Install on the eighth
+    // plugin would look like nothing happened.
+    const scroll = vi.spyOn(HTMLElement.prototype, 'scrollIntoView');
+    seed({ inspection: ready() });
+    open();
+    render(<PluginCenterModal />);
+
+    expect(scroll).toHaveBeenCalledWith({ block: 'nearest' });
+  });
+
   it('shows what was found at the source, and what installing it would cost', () => {
     seed({
       plugins: [entry({ id: 'demo', nodes: ['demo:Split', 'demo:Join'] })],
