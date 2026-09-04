@@ -4,6 +4,8 @@ import { useI18n } from '../../i18n';
 import {
   capabilityKey,
   cliInstallCommand,
+  isAvailableStatus,
+  matchesFilter,
   originLabel,
   parseGitHubSource,
   statusKey,
@@ -106,10 +108,56 @@ describe('statusKey', () => {
   });
 });
 
+// ── the filter ───────────────────────────────────────────────────────────
+
+describe('isAvailableStatus', () => {
+  it('calls a plugin available when it is not here and could be', () => {
+    expect(isAvailableStatus('available')).toBe(true);
+    // A tombstone is a plugin that is not here and can be put back.
+    expect(isAvailableStatus('removed')).toBe(true);
+    expect(isAvailableStatus('installed')).toBe(false);
+    expect(isAvailableStatus('disabled')).toBe(false);
+  });
+
+  it('reads a row the lockfile has as installed, however wrong it is', () => {
+    // The two statuses that are neither "here" nor "not here": one is being
+    // written and one lost its directory. Both are IN the lockfile, so both
+    // belong to the Installed half -- under Available they would offer to
+    // install what is already being installed.
+    expect(isAvailableStatus('installing')).toBe(false);
+    expect(isAvailableStatus('missing_files')).toBe(false);
+  });
+
+  it('puts a status this build has never heard of on the installed side', () => {
+    // Written as the narrow half and negated for the other, so no filter can
+    // make a row disappear from both tabs.
+    expect(isAvailableStatus('quarantined' as PluginStatus)).toBe(false);
+  });
+});
+
+describe('matchesFilter', () => {
+  it('lets everything past the All tab', () => {
+    expect(matchesFilter('all', 'available')).toBe(true);
+    expect(matchesFilter('all', 'installed')).toBe(true);
+  });
+
+  it('splits the catalog into two halves with nothing in neither', () => {
+    const statuses: PluginStatus[] = [
+      'installed', 'disabled', 'available', 'removed', 'installing', 'missing_files',
+    ];
+    for (const status of statuses) {
+      expect(matchesFilter('installed', status)).toBe(!matchesFilter('available', status));
+    }
+  });
+});
+
 // ── steps ────────────────────────────────────────────────────────────────
 
 describe('stepLabel', () => {
-  it('has a sentence for all eight steps a plugin job emits', () => {
+  it('has a sentence of its own for seven of the eight steps', () => {
+    // The eighth is `deps`, which shares the Package Center's pip sentence
+    // and is pinned in the case below rather than counted here.
+    //
     // The server's own label is a log line ("Scanning demo for unsafe code");
     // it is passed in here to prove the id wins over it.
     expect(stepLabel(t, 'resolve', 'Resolving owner/demo')).toBe('Resolving the source');

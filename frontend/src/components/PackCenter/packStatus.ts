@@ -1,6 +1,7 @@
 import type { PackItem, PackStatus, PackSummary } from '../../api/rest';
 import type { PackJob } from '../../store/packStore';
 import type { TranslationKey } from '../../i18n/locales/en';
+import type { PillTone } from '../shared/Pill';
 
 /**
  * The pure half of the Package Center: everything the panel needs to decide
@@ -29,8 +30,14 @@ export type Translate = (
   vars?: Record<string, string | number>,
 ) => string;
 
-/** Which wash a status pill wears. Names a ROLE, not a colour. */
-export type StatusTone = 'success' | 'warning' | 'info' | 'neutral';
+/**
+ * Which wash a status pill wears. Names a ROLE, not a colour.
+ *
+ * An alias, not a second list: the tone is `Pill`'s vocabulary, and the two
+ * spellings of it drifted apart the moment the chip was extracted. A tone
+ * added there has to reach every `statusTone` that feeds a pill.
+ */
+export type StatusTone = PillTone;
 
 /**
  * A pack status as a tone.

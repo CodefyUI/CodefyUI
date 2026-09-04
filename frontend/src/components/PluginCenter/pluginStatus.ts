@@ -75,6 +75,31 @@ export function statusKey(status: PluginStatus): TranslationKey {
   return STATUS_KEY[status] ?? STATUS_KEY.available;
 }
 
+// ── the filter ───────────────────────────────────────────────────────────
+
+/** Which half of the catalog the list is showing. */
+export type PluginFilter = 'all' | 'installed' | 'available';
+
+/**
+ * Whether a row belongs to the "Available" half.
+ *
+ * Written as the narrow half and negated for the other, so the two halves are
+ * exhaustive by construction: a status this build has never heard of lands
+ * under "Installed" rather than under neither, and no filter can make a row
+ * disappear from both tabs. `removed` is available -- a tombstone is a plugin
+ * that is not here and can be put back -- while `missing_files` and
+ * `installing` are not: the lockfile has them.
+ */
+export function isAvailableStatus(status: PluginStatus): boolean {
+  return status === 'available' || status === 'removed';
+}
+
+/** Whether *status* passes *filter*. */
+export function matchesFilter(filter: PluginFilter, status: PluginStatus): boolean {
+  if (filter === 'all') return true;
+  return isAvailableStatus(status) === (filter === 'available');
+}
+
 /**
  * The eight step ids a plugin job emits, as sentences.
  *

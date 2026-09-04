@@ -9,7 +9,8 @@ import { RefreshIcon } from '../shared/Icons';
 // for" across both windows, and one place to change it.
 import { HIGHLIGHT_MS } from '../PackCenter/PackCenterModal';
 import { PluginCard } from './PluginCard';
-import { PluginFilterBar, matchesFilter, type PluginFilter } from './PluginFilterBar';
+import { PluginFilterBar } from './PluginFilterBar';
+import { matchesFilter, type PluginFilter } from './pluginStatus';
 import styles from '../PackCenter/PackCenterModal.module.css';
 
 /**
