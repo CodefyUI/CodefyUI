@@ -32,7 +32,7 @@ describe('EmptyStates: no project directory', () => {
 
     const guide = screen.getByRole('link', { name: 'Setup guide' });
     expect(guide.getAttribute('href')).toBe(
-      'https://docs.codefyui.com/usage/source-control',
+      'https://docs.codefyui.com/usage/project-directories',
     );
     expect(guide.getAttribute('rel')).toBe('noopener noreferrer');
   });

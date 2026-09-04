@@ -152,7 +152,7 @@ describe('ScmHeader: the title row', () => {
     openMore();
     fireEvent.click(screen.getByRole('menuitem', { name: 'Setup guide' }));
     expect(open).toHaveBeenCalledWith(
-      'https://docs.codefyui.com/usage/source-control',
+      'https://docs.codefyui.com/usage/project-directories',
       '_blank',
       'noopener,noreferrer',
     );

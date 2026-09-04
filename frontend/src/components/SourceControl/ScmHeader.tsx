@@ -9,8 +9,17 @@ import { ProgressBar } from '../shared/ProgressBar';
 import shell from '../Sidebar/NodePalette.module.css';
 import styles from './SourceControl.module.css';
 
-/** The documentation page the Setup guide link and menu row point at. */
-export const SCM_DOCS_PATH = '/usage/source-control';
+/**
+ * The documentation page the Setup guide link and menu row point at.
+ *
+ * Project directories, not a source-control page: the tab's own page is
+ * written in the part of this track that adds history and diffs, and a link
+ * to it now would 404. This one exists, and it is the right answer for the
+ * screen the link matters most on -- "Source control needs a project
+ * directory", whose two commands are that page's subject. It moves to the
+ * tab's page when that page lands.
+ */
+export const SCM_DOCS_PATH = '/usage/project-directories';
 
 /**
  * The two places focus can be parked when the row that held it is gone.
