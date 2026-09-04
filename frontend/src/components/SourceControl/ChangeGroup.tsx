@@ -134,7 +134,9 @@ export function ChangeGroup({ kind, files }: ChangeGroupProps) {
       <ul id={listId} className={styles.list} role="list" hidden={!open}>
         {files.map((file) => (
           <FileRow
-            key={`${file.path}:${file.xy}`}
+            // One path can be in the status twice with the same two letters
+            // and a different kind, so the kind is part of the identity.
+            key={`${file.path}:${file.xy}:${file.kind}`}
             file={file}
             group={kind}
             onActed={returnFocus}
