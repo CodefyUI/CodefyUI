@@ -51,9 +51,11 @@ from app.main import _AUTH_EXEMPT_PREFIXES, _prefix_exempt, app
 # ``Repo`` is the two-line repository helper; ``isolated_git`` and
 # ``make_repo`` are fixtures, autouse and factory respectively, and are used
 # by NAME below rather than by reference -- which is what pytest wants and
-# what ruff cannot see.
+# what ruff cannot see. ``_conflicted`` is a helper, not a fixture: it takes
+# a repository and leaves it mid-merge.
 from tests.test_git_service import (  # noqa: F401
     Repo,
+    _conflicted,
     isolated_git,
     make_repo,
 )
@@ -95,6 +97,7 @@ BRANCH_KEYS = {"name", "sha", "current", "upstream", "ahead", "behind",
                "gone", "subject", "committed_at"}
 REMOTE_BRANCH_KEYS = {"name", "remote", "sha", "subject", "committed_at"}
 REMOTE_KEYS = {"name", "fetch_url", "push_url"}
+STASH_KEYS = {"index", "message", "branch", "created_at"}
 
 #: The failure envelope, which is a contract of its own: the frontend
 #: switches on ``code`` and shows the rest to whoever is debugging.
@@ -499,6 +502,158 @@ async def test_a_branch_body_with_an_unknown_key_is_422(test_client, project):
     assert response.status_code == 422, response.text
 
 
+async def test_stashes_carry_exactly_the_documented_keys(test_client, project):
+    """``index`` is git's own ``stash@{N}``, which is what the three writes
+    below are addressed by -- not the row's position in this list."""
+    project.write("a.txt", "two\n")
+    await test_client.post("/api/git/stashes", json={"message": "mine"})
+
+    response = await test_client.get("/api/git/stashes")
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert set(body[0]) == STASH_KEYS
+    assert body[0]["index"] == 0
+    assert body[0]["message"] == "mine"
+    assert body[0]["branch"] == "main"
+    assert body[0]["created_at"] > 0
+
+
+async def test_the_stash_routes_push_apply_pop_and_drop(test_client, project):
+    project.write("a.txt", "two\n")
+    pushed = await test_client.post("/api/git/stashes",
+                                    json={"message": "mine"})
+    assert pushed.status_code == 200, pushed.text
+    assert set(pushed.json()) == MUTATION_KEYS
+    assert pushed.json()["detail"] == {"stash": 0, "message": "mine",
+                                       "include_untracked": True}
+    assert project.read("a.txt") == "one\ntwo\n"
+
+    applied = await test_client.post("/api/git/stashes/0/apply")
+    assert applied.status_code == 200, applied.text
+    assert applied.json()["detail"] == {"stash": 0}
+    assert project.read("a.txt") == "two\n"
+    assert applied.json()["status"]["stash_count"] == 1
+
+    dropped = await test_client.delete("/api/git/stashes/0")
+    assert dropped.status_code == 200, dropped.text
+    assert (await test_client.get("/api/git/stashes")).json() == []
+
+
+async def test_an_empty_stash_body_is_a_valid_request(test_client, project):
+    """Both fields have a default, and the More menu's item sends nothing
+    when the prompt for a message is skipped."""
+    project.write("a.txt", "two\n")
+
+    response = await test_client.post("/api/git/stashes", json={})
+
+    assert response.status_code == 200, response.text
+    assert response.json()["detail"]["message"] is None
+
+
+async def test_stashing_a_clean_tree_is_400(test_client, project):
+    response = await test_client.post("/api/git/stashes", json={})
+
+    assert response.status_code == 400
+    detail = await _detail(response)
+    assert detail["code"] == "invalid_value"
+    assert detail["hint"] == "nothing to stash"
+
+
+async def test_a_stash_index_that_is_gone_is_404(test_client, project):
+    response = await test_client.post("/api/git/stashes/3/pop")
+
+    assert response.status_code == 404
+    assert (await _detail(response))["code"] == "not_found"
+
+
+@pytest.mark.parametrize("index", ["-1", "one", "1.5"])
+async def test_a_stash_index_that_is_not_an_index_is_422(test_client, project,
+                                                         index):
+    """Bounded in the signature, like ``skip`` and ``limit``: a client bug
+    with nothing to say to the user, kept apart from the 404 that means the
+    stash list has moved on."""
+    response = await test_client.delete(f"/api/git/stashes/{index}")
+
+    assert response.status_code == 422, response.text
+
+
+async def test_a_stash_body_with_an_unknown_key_is_422(test_client, project):
+    project.write("a.txt", "two\n")
+
+    response = await test_client.post("/api/git/stashes",
+                                      json={"message": "m", "untracked": True})
+
+    assert response.status_code == 422, response.text
+
+
+async def test_the_resolve_route_settles_one_file(test_client, project):
+    _conflicted(project)
+
+    response = await test_client.post("/api/git/resolve",
+                                      json={"path": "a.txt",
+                                            "side": "theirs"})
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert set(body) == MUTATION_KEYS
+    assert body["detail"] == {"path": "a.txt", "side": "theirs"}
+    assert body["status"]["conflicted"] == []
+    assert "a.txt" in body["changed_paths"]
+    assert project.read("a.txt") == "side\n"
+
+
+async def test_resolving_a_file_that_is_not_conflicted_is_400(test_client,
+                                                              project):
+    """``git checkout --ours`` on a merely modified file exits 0 and throws
+    the modification away, so a stale row must never reach it."""
+    _conflicted(project)
+    project.write("b.txt", "an unrelated edit\n")
+
+    response = await test_client.post("/api/git/resolve",
+                                      json={"path": "b.txt", "side": "ours"})
+
+    assert response.status_code == 400
+    assert (await _detail(response))["code"] == "path_not_in_status"
+    assert project.read("b.txt") == "an unrelated edit\n"
+
+
+@pytest.mark.parametrize("body", [
+    pytest.param({"path": "a.txt"}, id="no-side"),
+    pytest.param({"path": "a.txt", "side": "mine"}, id="a-fourth-word"),
+    pytest.param({"side": "ours"}, id="no-path"),
+])
+async def test_a_resolve_body_that_is_not_one_is_422(test_client, project,
+                                                     body):
+    response = await test_client.post("/api/git/resolve", json=body)
+
+    assert response.status_code == 422, response.text
+
+
+async def test_the_abort_route_puts_the_tree_back(test_client, project):
+    _conflicted(project)
+
+    response = await test_client.post("/api/git/merge/abort")
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert set(body) == MUTATION_KEYS
+    assert body["detail"] == {}
+    assert body["status"]["merge_in_progress"] is False
+    assert project.read("a.txt") == "main\n"
+
+
+async def test_aborting_with_no_merge_is_404(test_client, project):
+    response = await test_client.post("/api/git/merge/abort")
+
+    assert response.status_code == 404
+    detail = await _detail(response)
+    assert detail["code"] == "not_found"
+    assert detail["hint"] == "no merge in progress"
+
+
+
+
 async def test_the_identity_reads_and_writes_with_its_scope(test_client,
                                                             project):
     """The scope is half the answer: "this repository" or "this machine"."""
@@ -587,7 +742,7 @@ async def test_every_mutating_route_needs_the_session_token(anon_client,
         for method in sorted(route.methods)
         if method not in {"GET", "HEAD", "OPTIONS"}
     ]
-    assert len(mutating) >= 13, "router walk is broken"
+    assert len(mutating) >= 19, "router walk is broken"
 
     for method, path in mutating:
         response = await anon_client.request(method, path, json={})
@@ -739,6 +894,37 @@ async def test_a_ref_write_takes_the_same_lock_as_every_other(test_client,
     detail = await _detail(response)
     assert detail["code"] == "busy"
     assert detail["op"] == "checkout"
+
+
+async def test_a_stash_write_takes_the_same_lock_as_every_other(test_client,
+                                                                project):
+    """The stash and merge writes are ordinary mutations: one lock, one at
+    a time, and a refusal that names the operation holding it."""
+    service = app.state.git_service
+    async with service.lock:
+        service.current_op = "stash_pop"
+        response = await test_client.post("/api/git/merge/abort")
+    service.current_op = None
+
+    assert response.status_code == 409
+    detail = await _detail(response)
+    assert detail["code"] == "busy"
+    assert detail["op"] == "stash_pop"
+
+
+async def test_a_stash_read_does_not_queue_behind_a_write(test_client,
+                                                          project):
+    """The Stashes section refreshes on a poll; it must not stall behind a
+    pop that is replacing half the working tree."""
+    service = app.state.git_service
+    async with service.lock:
+        service.current_op = "stash_pop"
+        response = await asyncio.wait_for(
+            test_client.get("/api/git/stashes"), timeout=5)
+    service.current_op = None
+
+    assert response.status_code == 200, response.text
+    assert response.json() == []
 
 
 async def test_a_branch_read_does_not_queue_behind_a_write(test_client,

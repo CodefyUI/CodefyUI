@@ -8,6 +8,7 @@
     GET    /api/git/config                 who commits here, and from where
     GET    /api/git/branches               every branch, local and remote
     GET    /api/git/remotes                every remote, and its two URLs
+    GET    /api/git/stashes                the stash stack, newest first
     POST   /api/git/init                   make the project a repository
     POST   /api/git/stage /unstage /discard
     POST   /api/git/commit
@@ -19,6 +20,12 @@
     POST   /api/git/remotes                add a remote
     PUT    /api/git/remotes/{name}         point it somewhere else
     DELETE /api/git/remotes/{name}         forget it
+    POST   /api/git/stashes                set the working tree aside
+    POST   /api/git/stashes/{i}/pop        put one back and remove it
+    POST   /api/git/stashes/{i}/apply      put one back and keep it
+    DELETE /api/git/stashes/{i}            throw one away
+    POST   /api/git/merge/abort            undo a half-finished merge
+    POST   /api/git/resolve                settle one conflicted file
 
 Every route is three lines long, and that is the design rather than an
 accident: the service on ``app.state`` owns the repository, the lock, the
@@ -52,12 +59,12 @@ one.
   startup failed has no repository to talk about either.
 * **What the query string may say is a closed set.** ``limit`` is 1..100,
   ``skip`` is 0..2**31-1 (git's own parser stops there, and one past it is
-  a failure rather than an empty page) and ``scope`` is one of three words
-  -- all three enforced by the signature, so an out-of-range page is a 422
-  before any code here runs. Everything with a meaning -- a path, a ref, a
-  sha, a message -- is validated by ``core/git/paths.py`` instead, which
-  answers with a ``code`` the frontend can translate rather than with
-  pydantic's English.
+  a failure rather than an empty page), ``scope`` is one of three words and
+  a stash ``index`` is ``>= 0`` -- all enforced by the signature, so an
+  out-of-range page is a 422 before any code here runs. Everything with a
+  meaning -- a path, a ref, a sha, a message -- is validated by
+  ``core/git/paths.py`` instead, which answers with a ``code`` the frontend
+  can translate rather than with pydantic's English.
 * **A branch name in a path is ``{name:path}``.** Half the branches anybody
   has contain a slash (``feat/source-control``), and a plain ``{name}``
   stops at one -- so ``PUT /branches/feat/x`` would be a 404 from the
@@ -71,7 +78,10 @@ from __future__ import annotations
 from collections.abc import Awaitable
 from typing import Literal, TypeVar
 
-from fastapi import APIRouter, HTTPException, Query, Request
+# ``Path`` here is FastAPI's path-parameter declaration, not ``pathlib``'s
+# -- nothing in this module has a filesystem path to hold, and the routes
+# that take a stash index need a bound the signature can enforce.
+from fastapi import APIRouter, HTTPException, Path, Query, Request
 
 from ..core.git.errors import GitBusy, GitError, redact
 from ..core.git.log import DEFAULT_LOG_LIMIT, MAX_LOG_LIMIT
@@ -92,6 +102,9 @@ from ..core.git.models import (
     RemoteCreateRequest,
     RemoteInfo,
     RemoteUrlRequest,
+    ResolveRequest,
+    StashCreateRequest,
+    StashInfo,
     StatusResponse,
 )
 from ..core.git.service import GitService
@@ -310,6 +323,17 @@ async def read_remotes(request: Request) -> list[RemoteInfo]:
     return await _answer(_service(request).remotes())
 
 
+@router.get("/stashes")
+async def read_stashes(request: Request) -> list[StashInfo]:
+    """The stash stack, newest first.
+
+    ``index`` is git's own ``stash@{N}`` and is what the three writes below
+    are addressed by -- not the row's position, which a row this server
+    could not read would shift.
+    """
+    return await _answer(_service(request).stashes())
+
+
 # --- writes (the session token, via auth_guard) -----------------------------
 
 
@@ -466,3 +490,83 @@ async def remove_remote(request: Request, name: str) -> MutationResult:
     """Forget a remote. Nothing is fetched, pushed or deleted anywhere else."""
     service = _service(request)
     return await _answer(service.remove_remote(name))
+
+
+# --- the stash and the merge (static paths first, then the indexed ones) ----
+#
+# ``index`` is bounded in the signature (``ge=0``) rather than checked in a
+# handler, for the reason ``skip`` and ``limit`` are: a negative index is a
+# client bug with nothing to say to the user, and answering it with a 422
+# keeps it apart from the 404 that means "the stash list has moved on".
+
+
+@router.post("/stashes")
+async def create_stash(request: Request,
+                       payload: StashCreateRequest) -> MutationResult:
+    """Set the working tree aside as a new stash.
+
+    An empty body is a valid request: the message is optional and untracked
+    files come along by default. ``detail.stash`` is the index the new
+    entry got, which is always ``0`` -- a stash is a stack and a push lands
+    on top of it.
+
+    A tree with nothing to set aside is a 400 rather than a success that
+    did nothing, so a click on a panel that has gone stale says so.
+    """
+    service = _service(request)
+    return await _answer(service.stash_push(
+        payload.message, include_untracked=payload.include_untracked))
+
+
+@router.post("/stashes/{index}/pop")
+async def pop_stash(request: Request,
+                    index: int = Path(ge=0)) -> MutationResult:
+    """Put a stash back and remove it from the stack.
+
+    A pop that does not apply cleanly is a 409 ``conflict`` and the stash is
+    KEPT -- git's behaviour, and the right one: the conflicted files are the
+    only copy of that work until the user resolves them.
+    """
+    return await _answer(_service(request).stash_pop(index))
+
+
+@router.post("/stashes/{index}/apply")
+async def apply_stash(request: Request,
+                      index: int = Path(ge=0)) -> MutationResult:
+    """Put a stash back and keep it in the stack."""
+    return await _answer(_service(request).stash_apply(index))
+
+
+@router.delete("/stashes/{index}")
+async def drop_stash(request: Request,
+                     index: int = Path(ge=0)) -> MutationResult:
+    """Throw a stash away. Nothing in the working tree moves.
+
+    The index is checked against a fresh list before anything runs, so a
+    click on a stale panel is a 404 and never a different stash.
+    """
+    return await _answer(_service(request).stash_drop(index))
+
+
+@router.post("/merge/abort")
+async def abort_merge(request: Request) -> MutationResult:
+    """Undo a half-finished merge and put the working tree back as it was.
+
+    No body: there is nothing to choose. With no merge in progress it is a
+    404 whose hint says so, decided from the same flag the button is drawn
+    from.
+    """
+    return await _answer(_service(request).abort_merge())
+
+
+@router.post("/resolve")
+async def resolve(request: Request,
+                  payload: ResolveRequest) -> MutationResult:
+    """Settle one conflicted file: keep ours, take theirs, or mark it done.
+
+    The path has to be one the status calls conflicted (400
+    ``path_not_in_status`` otherwise), which is what stops "Keep mine" on a
+    stale row from throwing away an edit git would have restored silently.
+    """
+    service = _service(request)
+    return await _answer(service.resolve(payload.path, payload.side))
