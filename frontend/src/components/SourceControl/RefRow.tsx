@@ -1,3 +1,4 @@
+import { useId } from 'react';
 import { useI18n } from '../../i18n';
 import { ActionMenu } from '../shared/ActionMenu';
 import { MoreHorizontalIcon } from '../shared/Icons';
@@ -59,14 +60,18 @@ export interface RefRowProps {
 export function RefRow({ name, action, identity, badge, meta, actions }: RefRowProps) {
   const { t } = useI18n();
   const named = identity ?? name;
+  // Addressable, because on a pressable row the meta is INSIDE the button --
+  // see the `aria-describedby` below.
+  const metaId = useId();
+  const hasMeta = meta !== null && meta !== undefined && meta !== '';
   const body = (
     <>
       <span className={styles.rowName}>{name}</span>
-      {meta !== null && meta !== undefined && meta !== '' && (
+      {hasMeta && (
         // Its own `title`, not the row's: a remote URL is one unbroken token
         // in a 180px column and is the FIRST thing here to be ellipsised, so
         // the string in full has to be reachable from the half that was cut.
-        <span className={styles.rowDir} title={meta}>{meta}</span>
+        <span className={styles.rowDir} id={metaId} title={meta}>{meta}</span>
       )}
     </>
   );
@@ -82,6 +87,12 @@ export function RefRow({ name, action, identity, badge, meta, actions }: RefRowP
           type="button"
           className={styles.openButton}
           aria-label={action.label}
+          // The meta is inside this button, and an `aria-label` REPLACES the
+          // name a button would otherwise take from its own text -- so
+          // "2 to push, 3 to pull" was on screen and announced to nobody. It
+          // is the description instead: the name stays the sentence a reader
+          // can act on ("Switch to work"), and the tracking half follows it.
+          aria-describedby={hasMeta ? metaId : undefined}
           title={action.label}
           onClick={action.onSelect}
         >

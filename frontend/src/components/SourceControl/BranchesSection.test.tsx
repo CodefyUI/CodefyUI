@@ -134,6 +134,29 @@ describe('BranchesSection: the rows', () => {
     expect(within(section()).queryByText('Not published')).toBeNull();
   });
 
+  it('says it to a reader too, as the switch button\'s description', () => {
+    // The row's name IS the switch button, and an `aria-label` wins over the
+    // text inside it -- so a tracking half folded into the name is announced
+    // to nobody. It is the button's DESCRIPTION instead: "Switch to work",
+    // then "2 to push, 3 to pull". This is the only thing a branch row says
+    // beyond the name, so losing it loses the list's whole second column.
+    useGitStore.setState({
+      branches: branches({
+        local: [
+          branch('work', { upstream: 'origin/work', ahead: 2, behind: 3 }),
+          branch('gone-one', { upstream: 'origin/gone-one', gone: true }),
+        ],
+      }),
+    });
+    render(<BranchesSection />);
+    expect(
+      screen.getByRole('button', { name: 'Switch to work' }),
+    ).toHaveAccessibleDescription('2 to push, 3 to pull');
+    expect(
+      screen.getByRole('button', { name: 'Switch to gone-one' }),
+    ).toHaveAccessibleDescription('Upstream deleted');
+  });
+
   it('reports a list that could not be read, inside the section', () => {
     // Not on the error line: nobody pressed a button for the fifteen-second
     // poll that failed.
