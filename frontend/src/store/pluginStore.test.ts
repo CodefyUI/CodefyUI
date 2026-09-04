@@ -1274,6 +1274,25 @@ describe('pluginStore — the follower', () => {
     expect(order).toEqual(['catalog']);
   });
 
+  it('says an UPDATE failed in the words the panel uses beside it', async () => {
+    // The pane's banner words a failure by kind, and the toast fires at the
+    // same instant: "Install failed: X" beside "Update failed: X" is one fact
+    // said twice.
+    api.getPluginJobEvents.mockResolvedValue(eventsPage({
+      status: 'failed',
+      cursor: 1,
+      events: [{
+        type: 'job_failed', cursor: 1, ts: 't', message: 'HTTP 500', hint: null,
+      }],
+    }));
+
+    follow('update');
+    await settle();
+
+    expect(lastToast().message).toBe('Update failed: HTTP 500');
+    expect(lastToast().type).toBe('error');
+  });
+
   it('puts an Open Plugin Center button on the failure, pointed at the row', async () => {
     api.getPluginJobEvents.mockResolvedValue(eventsPage({ status: 'failed', cursor: 0 }));
 
@@ -1297,22 +1316,28 @@ describe('pluginStore — the follower', () => {
   });
 
   it('keeps a needs_restart job on screen and says what to do', async () => {
+    // The command the backend really sends: the packages to put in place with
+    // the server stopped, which is what this status IS -- the resolve refused
+    // before anything was written, so nothing was installed.
     api.getPluginJobEvents.mockResolvedValue(eventsPage({
       status: 'needs_restart',
       cursor: 1,
       events: [{
-        type: 'needs_restart', cursor: 1, ts: 't', command: 'cdui start',
+        type: 'needs_restart', cursor: 1, ts: 't', command: 'uv pip install "torch==2.4.0"',
       }],
     }));
 
     follow();
     await settle();
 
-    expect(lastToast().message).toBe('Restart the server to load demo.');
+    expect(lastToast().message).toBe(
+      'The install of demo stopped: its Python packages need the server stopped '
+      + 'first. The command is in the Plugin Center.',
+    );
     expect(lastToast().type).toBe('warning');
     const job = usePluginStore.getState().job!;
     expect(job.status).toBe('needs_restart');
-    expect(job.restartCommand).toBe('cdui start');
+    expect(job.restartCommand).toBe('uv pip install "torch==2.4.0"');
   });
 
   it('settles a job exactly once, however often it is adopted', async () => {

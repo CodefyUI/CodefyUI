@@ -972,7 +972,8 @@ const zhTW: Record<TranslationKey, string> = {
   'pluginCenter.toast.toggleFailed': '無法變更 {plugin}：{message}',
   'pluginCenter.toast.refreshFailed':
     '變更後無法重新整理編輯器：{message}',
-  'pluginCenter.toast.needsRestart': '請重新啟動伺服器以載入 {plugin}。',
+  'pluginCenter.toast.needsRestart':
+    '{plugin} 的安裝停住了：它的 Python 套件需要先停止伺服器才能安裝，指令在外掛中心。',
   'pluginCenter.toast.inProgress': '有外掛仍在安裝中，可在外掛中心查看進度。',
   'pluginCenter.toast.openCenter': '開啟外掛中心',
   'pluginCenter.updateFailed': '更新失敗：{message}',
@@ -1047,7 +1048,9 @@ const zhTW: Record<TranslationKey, string> = {
   'pluginCenter.activity.installed': '已安裝 {plugin}。',
   'pluginCenter.activity.updated': '已更新 {plugin}。',
   'pluginCenter.activity.lost': '與伺服器失去聯繫。請重新整理以確認外掛狀態。',
-  'pluginCenter.activity.needsRestart': '已安裝，請重新啟動伺服器以載入 {plugin}：',
+  'pluginCenter.activity.needsRestart':
+    '安裝在改動任何東西前停住了：{plugin} 的 Python 套件會替換伺服器已載入的套件。'
+    + '先停止伺服器並執行這行指令，再重新安裝：',
   'pluginCenter.activity.cliFallback': '或在終端機安裝：',
 
   // The steps of an install; `deps` reuses `packs.activity.step.pip`.

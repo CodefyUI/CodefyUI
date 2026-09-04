@@ -348,8 +348,12 @@ function resultSentence(t: Translate, job: PluginJob, title: string): string | n
         { plugin: title },
       );
     case 'failed':
+      // The PANE's key, not the toast's twin of it: the two are the same
+      // string in both locales today, and keeping this one on the pane's
+      // namespace is what stops a later edit to the toast rewording a banner.
+      // There is no pane-side key for an update, so that arm keeps its own.
       return t(
-        update ? 'pluginCenter.updateFailed' : 'packs.toast.installFailed',
+        update ? 'pluginCenter.updateFailed' : 'packs.activity.failed',
         { message: job.error?.message ?? '' },
       );
     case 'cancelled':

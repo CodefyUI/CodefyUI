@@ -518,8 +518,13 @@ async function onJobSettled(
     case 'failed':
       // Only the catalog: nothing landed, so the node definitions and the
       // frontends are exactly what they were.
+      //
+      // Worded by KIND, like the pane's banner: the two are on screen
+      // together, and "Install failed" in a toast beside "Update failed" in
+      // the panel is one fact said two ways.
       toast(
-        t('packs.toast.installFailed', { message: settled?.error?.message ?? '' }),
+        t(kind === 'update' ? 'pluginCenter.updateFailed' : 'packs.toast.installFailed',
+          { message: settled?.error?.message ?? '' }),
         'error',
         openCenterAction(pluginId),
       );
@@ -530,10 +535,11 @@ async function onJobSettled(
       await store.refresh();
       break;
     case 'needs_restart':
-      // The files are in place and the registry could not pick them up from
-      // inside the running process. The JOB stays on screen — the panel's
-      // banner is what renders the command — and the catalog is refreshed
-      // because the row's status changed even though the nodes did not.
+      // NOTHING was installed: the only step that can end a job this way is
+      // the dependency resolve, which runs before a file is written, so the
+      // row is exactly what it was. The JOB stays on screen — the panel's
+      // banner is what renders the command to run with the server stopped —
+      // and the catalog is re-read because the job that held it is over.
       toast(
         t('pluginCenter.toast.needsRestart', { plugin: name }),
         'warning',

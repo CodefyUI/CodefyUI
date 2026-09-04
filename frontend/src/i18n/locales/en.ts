@@ -1072,8 +1072,13 @@ const en = {
   // wrong.
   'pluginCenter.toast.refreshFailed':
     'Could not refresh the editor after the change: {message}',
-  // The files are in place; the running server could not pick them up.
-  'pluginCenter.toast.needsRestart': 'Restart the server to load {plugin}.',
+  // NOTHING was installed. A plugin job reaches this status from one place
+  // only -- the resolver refusing to replace a package the running server has
+  // already loaded -- and that happens before a single file is written, so
+  // the install has to be run again after the packages are in place.
+  'pluginCenter.toast.needsRestart':
+    'The install of {plugin} stopped: its Python packages need the server '
+    + 'stopped first. The command is in the Plugin Center.',
   'pluginCenter.toast.inProgress':
     'A plugin is still installing. Open the Plugin Center to watch it.',
   'pluginCenter.toast.openCenter': 'Open Plugin Center',
@@ -1177,7 +1182,12 @@ const en = {
   'pluginCenter.activity.updated': 'Updated {plugin}.',
   'pluginCenter.activity.lost':
     'Lost contact with the server. Refresh to check the plugin status.',
-  'pluginCenter.activity.needsRestart': 'Installed. Restart the server to load {plugin}:',
+  // Ends in a colon because a `CommandBlock` follows it, and the command is a
+  // `uv pip install` line to run with the server STOPPED -- not a restart.
+  'pluginCenter.activity.needsRestart':
+    "The install stopped before changing anything: {plugin}'s Python packages "
+    + 'would replace one the server has loaded. With the server stopped, run this, '
+    + 'then install again:',
   'pluginCenter.activity.cliFallback': 'Or install from a terminal:',
 
   // The steps of an install, in the order they run. There is no `step.deps`

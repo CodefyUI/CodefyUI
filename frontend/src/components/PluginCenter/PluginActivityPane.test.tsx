@@ -363,10 +363,12 @@ describe('PluginActivityPane — how a job ended', () => {
     expect(within(banner()).getByText('Install cancelled.')).toBeInTheDocument();
   });
 
-  it('asks for a restart, and prints the command the server cannot run itself', () => {
+  it('says nothing was installed, and prints the command the server cannot run', () => {
     // The shape the backend really sends: a plugin reaches this status only
     // when its Python packages would replace one the running interpreter has
-    // loaded, and the command is the install to run with the server stopped.
+    // loaded, which the resolver refuses BEFORE anything is written -- so the
+    // command is the install to run with the server stopped, and the panel
+    // install has to be repeated afterwards.
     paint({
       job: job({
         status: 'needs_restart',
@@ -377,9 +379,22 @@ describe('PluginActivityPane — how a job ended', () => {
 
     expect(banner()).toHaveAttribute('data-tone', 'warning');
     expect(
-      within(banner()).getByText('Installed. Restart the server to load Demo plugin:'),
+      within(banner()).getByText(
+        "The install stopped before changing anything: Demo plugin's Python packages "
+        + 'would replace one the server has loaded. With the server stopped, run this, '
+        + 'then install again:',
+      ),
     ).toBeInTheDocument();
     expect(within(banner()).getByText('uv pip install "torch==2.4.0"')).toBeInTheDocument();
+  });
+
+  it('leaves the banner alone when a stopped install carried no command', () => {
+    paint({ job: job({ status: 'needs_restart', restartCommand: null }), entry: demo });
+
+    expect(banner()).toHaveAttribute('data-tone', 'warning');
+    expect(within(banner()).getByText(/^The install stopped/)).toBeInTheDocument();
+    // `CommandBlock` is the only thing in the pane with a copy button.
+    expect(screen.queryByRole('button', { name: 'Copy command' })).toBeNull();
   });
 
   it('offers to re-read the catalog when the follower lost contact', () => {
