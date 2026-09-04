@@ -27,7 +27,15 @@ interface ToastState {
   addToast: (
     message: string,
     type?: ToastType,
-    opts?: { action?: ToastAction },
+    /**
+     * `sticky` keeps a toast on screen until it is dismissed, whatever its
+     * type. Until now the only way to do that was to call something an
+     * error, which is wrong for the one the Source Control tab raises: "an
+     * open graph changed on disk" is a warning with a Reload button, and a
+     * warning that vanishes after four seconds is a warning nobody who
+     * looked away will ever see.
+     */
+    opts?: { action?: ToastAction; sticky?: boolean },
   ) => void;
   removeToast: (id: string) => void;
 }
@@ -47,7 +55,11 @@ export const useToastStore = create<ToastState>((set) => ({
         { id, message, type, ...(opts?.action ? { action: opts.action } : {}) },
       ],
     }));
-    if (type !== 'error') {
+    // An error still never times out, and now neither does a toast that
+    // asked to stay. The flag is read here and nowhere else -- the container
+    // renders a close button on every toast already, so `Toast` itself has
+    // nothing new to carry.
+    if (type !== 'error' && !opts?.sticky) {
       setTimeout(() => {
         set((state) => ({ toasts: state.toasts.filter((t) => t.id !== id) }));
       }, 4000);
