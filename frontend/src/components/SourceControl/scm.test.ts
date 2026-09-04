@@ -9,6 +9,10 @@ import {
   errorSentence,
   followUpFor,
   gitOpKey,
+  isValidBranchName,
+  isValidRemoteName,
+  isValidRemoteUrl,
+  relativeTime,
 } from './scm';
 
 const mappedErrors: Array<[GitErrorCode, string]> = [
@@ -173,5 +177,131 @@ describe('SCM operation labels and follow-ups', () => {
   it('answers a diverged pull with the merge retry, whatever the op', () => {
     expect(followUpFor('diverged', 'pull')).toBe('mergeRemote');
     expect(followUpFor('no_upstream', 'sync')).toBe('publish');
+  });
+});
+
+/*
+ * The name grammars are DELIBERATELY narrower than git's, and the server is
+ * still the authority: `git check-ref-format` is what a branch name has to
+ * pass. What these buy is a name refused while the prompt is still open, with
+ * the box still holding what was typed, instead of a round trip that closes it
+ * and answers with a red line.
+ */
+describe('scm: the name a prompt will accept', () => {
+  it.each([
+    'main',
+    'feature/login',
+    'release-2.5.0',
+    'fix_the_thing',
+    'a.b/c-d_e',
+    'wip/2026/09',
+  ])('accepts %s as a branch name', (name) => {
+    expect(isValidBranchName(name)).toBe(true);
+  });
+
+  it.each([
+    ['', 'nothing at all'],
+    ['-start', 'a leading dash, which git reads as an option'],
+    ['has space', 'a space'],
+    ['two..dots', 'the range operator'],
+    ['trailing/', 'a trailing separator'],
+    ['work.lock', 'the suffix git reserves for its own lock files'],
+    ['a~b', 'a revision operator'],
+    ['a^b', 'a revision operator'],
+    ['a:b', 'a refspec separator'],
+    ['a?b', 'a glob character'],
+    ['a*b', 'a glob character'],
+    ['a[b', 'a glob character'],
+    ['a\\b', 'a backslash'],
+    ['a\u0001b', 'a control character'],
+    ['//double', 'an empty path component'],
+    ['.hidden', 'a component starting with a dot'],
+    ['@', 'the shorthand for HEAD'],
+  ])('refuses %s -- %s', (name) => {
+    expect(isValidBranchName(name)).toBe(false);
+  });
+
+  it.each(['origin', 'up-stream', 'a.b_c', 'x0'])(
+    'accepts %s as a remote name',
+    (name) => {
+      expect(isValidRemoteName(name)).toBe(true);
+    },
+  );
+
+  it.each([
+    ['', 'nothing at all'],
+    ['-origin', 'a leading dash'],
+    ['.origin', 'a leading dot'],
+    ['has space', 'a space'],
+    ['a/b', 'a separator, which git uses to address a remote branch'],
+    ['x'.repeat(65), 'more than sixty-four characters'],
+  ])('refuses %s as a remote name -- %s', (name) => {
+    expect(isValidRemoteName(name)).toBe(false);
+  });
+
+  it.each([
+    'https://github.com/owner/repo.git',
+    'ssh://git@github.com:22/owner/repo.git',
+    'git@github.com:owner/repo.git',
+    'user.name@host.example:path/to/repo',
+    // The copy says https or SSH; a bare repository on a shared drive is the
+    // one a classroom actually reaches for, and git takes it.
+    'file:///srv/git/repo.git',
+    'file://D:/work/bare.git',
+  ])('accepts %s as a remote URL', (url) => {
+    expect(isValidRemoteUrl(url)).toBe(true);
+  });
+
+  it.each([
+    ['', 'nothing at all'],
+    ['github.com/owner/repo', 'no scheme and no user@host: form'],
+    ['ftp://host/repo.git', 'a protocol git does not speak here'],
+    // The server's allowlist is https, ssh and file; plain http is not on it.
+    ['http://gitlab.local/team/repo.git', 'a scheme the server refuses'],
+    ['https://', 'a scheme with no host'],
+    ['git@host', 'a user@host with no path'],
+    ['has space://host/repo', 'a space'],
+    ['https://host/re po', 'a space in the path'],
+    ['ext::sh -c payload', 'the transport that runs a command'],
+  ])('refuses %s as a remote URL -- %s', (url) => {
+    expect(isValidRemoteUrl(url)).toBe(false);
+  });
+});
+
+describe('scm: how long ago a stash was made', () => {
+  // Epoch SECONDS, which is what `%at` answers with.
+  const now = 1_700_000_000_000;
+  const at = (secondsAgo: number) => Math.floor(now / 1000) - secondsAgo;
+
+  // `Intl` writes the words; what is pinned is which unit each span picks and
+  // how it rounds -- the largest unit that fits, so a stash list is scannable
+  // at a glance rather than a column of five-digit minute counts.
+  it.each([
+    [30, '30 seconds ago'],
+    [90, '1 minute ago'],
+    [60 * 90, '1 hour ago'],
+    [60 * 60 * 30, 'yesterday'],
+    [60 * 60 * 24 * 10, 'last week'],
+    [60 * 60 * 24 * 70, '2 months ago'],
+    [60 * 60 * 24 * 800, '2 years ago'],
+    [0, 'now'],
+  ])('reads %s seconds back as %s', (ago, said) => {
+    expect(relativeTime(at(ago), 'en', now)).toBe(said);
+  });
+
+  it('says it in the reader\'s own language', () => {
+    expect(relativeTime(at(120), 'zh-TW', now)).not.toBe(
+      relativeTime(at(120), 'en', now),
+    );
+  });
+
+  it('says nothing for a timestamp git could not read', () => {
+    // `_timestamp` answers 0 for a reflog it could not parse, and "56 years
+    // ago" is worse than no date at all.
+    expect(relativeTime(0, 'en', now)).toBe('');
+  });
+
+  it('does not report the future for a clock a second out of step', () => {
+    expect(relativeTime(at(-2), 'en', now)).toBe(relativeTime(at(0), 'en', now));
   });
 });
