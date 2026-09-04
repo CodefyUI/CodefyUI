@@ -319,6 +319,33 @@ describe('mutations', () => {
     expect(out.status.staged).toEqual([]);
   });
 
+  it('refuses an empty selection without asking the server', async () => {
+    // A selection that turned out to be empty is the one bad body a caller
+    // can build by accident, and `{paths: []}` is a 422 the tab can do
+    // nothing with. Refused here, in the shape every caller already handles.
+    const fetchMock = mockFetch(200, mutationBody());
+    const err = await gitError(gitStage([]));
+    expect(err.status).toBe(400);
+    expect(err.code).toBe('invalid');
+    expect(fetchMock).not.toHaveBeenCalled();
+
+    expect((await gitError(gitUnstage([]))).code).toBe('invalid');
+    expect((await gitError(gitDiscard([]))).code).toBe('invalid');
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('refuses a write the server could not read back', async () => {
+    // `MutationResult.status` is required and never null. A body without it
+    // must not normalize to an empty status: that reads as a clean
+    // repository, so the tab would draw the user's changes away and claim
+    // the stage they just asked for did nothing.
+    mockFetch(200, { changed_paths: ['a.py'] });
+    const err = await gitError(gitStage(['a.py']));
+    expect(err.status).toBe(502);
+    expect(err.code).toBe('unknown');
+    expect(err.message).toBe('the write was not read back');
+  });
+
   it('surfaces a refused mutation as a GitApiError with its code', async () => {
     mockFetch(409, {
       detail: {

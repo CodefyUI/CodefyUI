@@ -264,7 +264,16 @@ export class GitApiError extends ApiError {
   readonly hint: string | null;
   /** git's own tail, for when the classification is wrong. */
   readonly stderr: string | null;
-  /** Which operation holds the lock. Only ever set on `busy`. */
+  /**
+   * Which operation holds the lock, so the tab can say "wait for the commit"
+   * rather than "wait". Only ever set on `busy`, and only a mutation can be
+   * refused that way -- reads never take the lock.
+   *
+   * The server's own vocabulary, which is not the tab's: `init`, `stage`,
+   * `unstage`, `discard`, `commit`, `set_identity`. Note the last one --
+   * `set_identity`, not `identity` -- so a store mapping it to a translated
+   * op name has to spell the wire word, not the key's (`git.op.identity`).
+   */
   readonly op: string | null;
 
   constructor(
@@ -389,7 +398,7 @@ type RawStatusResponse = {
 };
 
 type RawMutationResult = Omit<Partial<MutationResult>, 'status'> & {
-  status?: RawGitStatus;
+  status?: RawGitStatus | null;
 };
 
 const FILE_KINDS: readonly string[] = [
@@ -433,9 +442,9 @@ function normalizeFiles(raw: RawGitFile[] | undefined): GitFile[] {
 /**
  * One status, field by field.
  *
- * An empty object normalizes to "git did not mention anything", which is the
- * backend model's own default and the honest reading of a body that carries
- * no status at all.
+ * A partly filled object normalizes to "git did not mention it", which is
+ * the backend model's own default. A status that is not there AT ALL is a
+ * different thing, and only `normalizeMutation` meets it -- see there.
  */
 function normalizeStatus(raw: RawGitStatus): GitStatus {
   return {
@@ -484,9 +493,23 @@ function normalizeIdentity(raw: RawIdentity): Identity {
   };
 }
 
+/**
+ * One write's answer.
+ *
+ * A missing `status` is a REFUSAL, not a default. The backend's contract is
+ * that every mutation answers with the status it left behind -- "a write
+ * that succeeds and then cannot be read back is a failed request, not a
+ * result with a hole in it" (`models.py`) -- and normalizing the hole would
+ * hand the tab an empty status, which reads as a clean repository: the tab
+ * would draw away the user's changes and claim the stage they just asked for
+ * did nothing.
+ */
 function normalizeMutation(raw: RawMutationResult): MutationResult {
+  if (raw.status === undefined || raw.status === null) {
+    throw new GitApiError(502, 'the write was not read back', { code: 'unknown' });
+  }
   return {
-    status: normalizeStatus(raw.status ?? {}),
+    status: normalizeStatus(raw.status),
     changed_paths: raw.changed_paths ?? [],
     head: raw.head ?? null,
     detail: raw.detail ?? {},
@@ -552,12 +575,18 @@ async function mutate(path: string, body?: unknown): Promise<MutationResult> {
 /**
  * The body `PathsRequest` accepts: the named paths, or the whole tree.
  *
- * Never both keys and never an empty list — the model refuses all three of
- * those with a 422, and an empty array reaching the wire as `paths: []`
- * would be a selection the caller thinks is narrow and the server reads as
- * malformed.
+ * Exactly one key, never both, and never `paths: []` -- the model refuses
+ * all three of those with a 422. The empty list is the one a caller can
+ * reach by accident, from a selection that turned out to be empty, so it is
+ * refused HERE rather than a round trip later: a request that cannot succeed
+ * should not leave the browser, and the caller gets the same
+ * `GitApiError` it already handles instead of a 422 whose English is
+ * pydantic's.
  */
 function pathsBody(paths: GitPathSelection): { paths: string[] } | { all: true } {
+  if (paths !== 'all' && paths.length === 0) {
+    throw new GitApiError(400, 'nothing selected', { code: 'invalid' });
+  }
   return paths === 'all' ? { all: true } : { paths };
 }
 
@@ -571,13 +600,19 @@ export function gitInit(): Promise<MutationResult> {
   return mutate('/init');
 }
 
-/** Stage the named paths, or the whole tree. */
-export function gitStage(paths: GitPathSelection): Promise<MutationResult> {
+/**
+ * Stage the named paths, or the whole tree.
+ *
+ * `async` for the empty-selection refusal in `pathsBody`: a client function
+ * that can fail should always fail the same way, and a synchronous throw
+ * would miss the `.catch()` of a caller that had not awaited yet.
+ */
+export async function gitStage(paths: GitPathSelection): Promise<MutationResult> {
   return mutate('/stage', pathsBody(paths));
 }
 
 /** Take the named paths, or everything, back out of the index. */
-export function gitUnstage(paths: GitPathSelection): Promise<MutationResult> {
+export async function gitUnstage(paths: GitPathSelection): Promise<MutationResult> {
   return mutate('/unstage', pathsBody(paths));
 }
 
@@ -586,7 +621,7 @@ export function gitUnstage(paths: GitPathSelection): Promise<MutationResult> {
  * file is restored from the index and an untracked one is deleted — so every
  * caller asks first.
  */
-export function gitDiscard(paths: GitPathSelection): Promise<MutationResult> {
+export async function gitDiscard(paths: GitPathSelection): Promise<MutationResult> {
   return mutate('/discard', pathsBody(paths));
 }
 
