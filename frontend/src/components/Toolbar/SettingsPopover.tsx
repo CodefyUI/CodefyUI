@@ -502,8 +502,10 @@ export function SettingsPopover({ open, onClose, triggerRef }: Props) {
                 // "Open" reads fine beside its own row and says nothing at
                 // all in a list of controls, where it is now the second one
                 // with that label. The visible word stays; the accessible
-                // name says which center it opens.
-                aria-label={t('settings.plugins.name')}
+                // name CONTAINS it and says which center it opens, so speech
+                // input ("click Open") still reaches this button and the pack
+                // row keeps the bare word to itself.
+                aria-label={t('settings.plugins.action')}
                 className={styles.action}
               >
                 {t('settings.packs.action')}

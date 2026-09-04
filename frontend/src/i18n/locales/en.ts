@@ -148,8 +148,11 @@ const en = {
   'customTab.manage': 'Manage...',
   'customTab.plugins.open': 'Plugin Center...',
   'customTab.nodes.empty': 'No custom nodes yet',
+  // No hint under the empty plugins section: the header button one line above
+  // it IS the Plugin Center, so a sentence naming that destination is the
+  // same fact twice. The packs hint stays because it carries another one --
+  // what a pack is.
   'customTab.plugins.empty': 'No plugins installed',
-  'customTab.plugins.hint': 'Install plugins from the Plugin Center',
   'customTab.loadFail': 'Failed to load: {error}',
 
   // Config Panel
@@ -1026,6 +1029,24 @@ const en = {
   'customTab.packs.hint':
     'Models and libraries for LLM nodes are installed from the Package Center',
 
+  // Where the Plugin Center is opened from: the settings popover's own row,
+  // beside the pack one it is modelled on. The sidebar's entry point is up
+  // with the rest of the Custom & Plugins tab. `settings.packs.unsupported`
+  // is reused as it is -- "Not available on this server" says the same thing
+  // about either center, and a second translation of it is a second string to
+  // keep in step.
+  'toolbar.settings.section.plugins': 'Plugins',
+  'settings.plugins.name': 'Plugin Center',
+  'settings.plugins.desc': 'Install teaching node packs and plugins from GitHub.',
+  'settings.plugins.summary': '{installed} installed, {available} available',
+  'settings.plugins.summaryInstalling': 'Installing {plugin}...',
+  // The button's visible word is `settings.packs.action` ("Open"), the same
+  // as the pack row's. This is its accessible name: two buttons reading
+  // "Open" say nothing in a list of controls, and speech input ("click Open")
+  // has to reach one of them -- so the pack row keeps the bare word and this
+  // one contains it, the way `paramField.installPackFor` does.
+  'settings.plugins.action': 'Open Plugin Center',
+
   // "This needs a pack" — said on a select option, a node, a palette entry
   // and a refused run. Every one of them names the pack, because "needs a
   // pack" without a name is not something a user can act on.
@@ -1222,18 +1243,6 @@ const en = {
     "GitHub's request limit was reached. Try again later, or set "
     + 'CODEFYUI_GITHUB_TOKEN on the server.',
   'pluginCenter.error.githubUnreachable': 'Could not reach GitHub.',
-
-  // Where the Plugin Center is opened from: the settings popover's own row.
-  // The sidebar's entry point is up with the rest of the Custom & Plugins
-  // tab. `settings.packs.unsupported` and `settings.packs.action` are reused
-  // as they are -- "Not available on this server" and "Open" say the same
-  // thing about either center, and a second translation of each is a second
-  // string to keep in step.
-  'toolbar.settings.section.plugins': 'Plugins',
-  'settings.plugins.name': 'Plugin Center',
-  'settings.plugins.desc': 'Install teaching node packs and plugins from GitHub.',
-  'settings.plugins.summary': '{installed} installed, {available} available',
-  'settings.plugins.summaryInstalling': 'Installing {plugin}...',
 
   // Source Control (the sidebar's fifth tab). Part 2 of the track: status,
   // stage / unstage / discard, commit, init and the commit identity. Branches,

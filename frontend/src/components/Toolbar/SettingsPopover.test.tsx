@@ -479,8 +479,10 @@ describe('SettingsPopover', () => {
     expect(mockedListPluginCatalog).not.toHaveBeenCalled();
 
     // Named for what it opens, because "Open" is now the visible word on two
-    // buttons in this panel and says nothing on its own in a list of controls.
-    fireEvent.click(screen.getByRole('button', { name: 'Plugin Center' }));
+    // buttons in this panel and says nothing on its own in a list of
+    // controls. The name CONTAINS the visible word, so "click Open" still
+    // reaches it (WCAG 2.5.3) rather than only the pack row's button.
+    fireEvent.click(screen.getByRole('button', { name: 'Open Plugin Center' }));
 
     expect(onClose).toHaveBeenCalledTimes(1);
     expect(useUIStore.getState().pluginCenterOpen).toBe(true);

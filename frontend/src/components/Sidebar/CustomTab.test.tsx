@@ -188,13 +188,20 @@ describe('CustomTab', () => {
     expect(screen.getByText('Plugins')).toBeTruthy();
   });
 
-  it('shows an empty state per section, with the install hint for plugins', async () => {
+  it('shows an empty state per section, and no hint that repeats a button', async () => {
     render(<CustomTab />);
     await screen.findByText('No custom nodes yet');
     expect(screen.getByText('No plugins installed')).toBeTruthy();
-    // Re-worded with the Plugin Center: the CLI still works, but it is no
-    // longer the only way in, and this hint is beside the button that is.
-    expect(screen.getByText('Install plugins from the Plugin Center')).toBeTruthy();
+    // The button one line above the empty state IS the Plugin Center, so the
+    // hint that named it as a destination is gone. The packs one stays: it
+    // says what a pack is, which no button can.
+    expect(screen.getByRole('button', { name: 'Plugin Center...' })).toBeTruthy();
+    expect(screen.queryByText('Install plugins from the Plugin Center')).toBeNull();
+    expect(
+      screen.getByText(
+        'Models and libraries for LLM nodes are installed from the Package Center',
+      ),
+    ).toBeTruthy();
   });
 
   it('lists custom node files with their node names and enabled chip', async () => {
@@ -332,6 +339,18 @@ describe('CustomTab', () => {
     });
     fireEvent.click(screen.getByText('Retry'));
     await screen.findByText('Recovered');
+  });
+
+  it('keeps the tab when a catalog it already has fails to refresh', async () => {
+    // The plugin store is SHARED, and its error is sticky until the next
+    // catalog lands: a refresh the Plugin Center asked for, over rows this
+    // tab is already showing, must not replace the custom nodes and the packs
+    // with somebody else's dropped packet.
+    seedPlugins([plugin({ name: 'Chapter 1' })], { error: 'connection refused' });
+    render(<CustomTab />);
+    await screen.findByText('Chapter 1');
+
+    expect(screen.queryByText('Failed to load: connection refused')).toBeNull();
   });
 
   it('re-fetches from the refresh button', async () => {

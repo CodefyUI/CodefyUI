@@ -142,7 +142,6 @@ const zhTW: Record<TranslationKey, string> = {
   'customTab.plugins.open': '外掛中心...',
   'customTab.nodes.empty': '尚未有自訂節點',
   'customTab.plugins.empty': '尚未安裝外掛',
-  'customTab.plugins.hint': '外掛可在外掛中心安裝',
   'customTab.loadFail': '載入失敗：{error}',
 
   // Config Panel
@@ -941,6 +940,16 @@ const zhTW: Record<TranslationKey, string> = {
   'customTab.packs.empty': '沒有可安裝的套件',
   'customTab.packs.hint': 'LLM 節點的模型與函式庫可在套件中心安裝',
 
+  // Where the Plugin Center is opened from: the settings popover's own row,
+  // beside the pack one it is modelled on.
+  'toolbar.settings.section.plugins': '外掛',
+  'settings.plugins.name': '外掛中心',
+  'settings.plugins.desc': '安裝教學節點套件與 GitHub 上的外掛。',
+  'settings.plugins.summary': '已安裝 {installed} 個，可安裝 {available} 個',
+  'settings.plugins.summaryInstalling': '正在安裝 {plugin}...',
+  // The accessible name only; the visible word stays `settings.packs.action`.
+  'settings.plugins.action': '開啟外掛中心',
+
   // "This needs a pack" — said on a select option, a node, a palette entry
   // and a refused run. Every one of them names the pack, because "needs a
   // pack" without a name is not something a user can act on.
@@ -1073,13 +1082,6 @@ const zhTW: Record<TranslationKey, string> = {
   'pluginCenter.error.githubRateLimited':
     '已達 GitHub 請求上限，請稍後再試，或在伺服器設定 CODEFYUI_GITHUB_TOKEN。',
   'pluginCenter.error.githubUnreachable': '無法連線到 GitHub。',
-
-  // Where the Plugin Center is opened from: the settings popover's own row.
-  'toolbar.settings.section.plugins': '外掛',
-  'settings.plugins.name': '外掛中心',
-  'settings.plugins.desc': '安裝教學節點套件與 GitHub 上的外掛。',
-  'settings.plugins.summary': '已安裝 {installed} 個，可安裝 {available} 個',
-  'settings.plugins.summaryInstalling': '正在安裝 {plugin}...',
 
   // Source Control (the sidebar's fifth tab).
   'git.action.more': '更多動作',

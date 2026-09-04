@@ -133,7 +133,12 @@ export function CustomTab() {
   // over a catalog already on screen is not a load, hence `!pluginsLoaded` —
   // only a first read blanks the tab.
   const busy = loading || (pluginsLoading && !pluginsLoaded);
-  const failed = error ?? pluginsError;
+  // The plugin store's `error` is sticky until the next catalog lands, and it
+  // belongs to a SHARED store: a refresh that fails inside the Plugin Center
+  // would otherwise replace this whole tab -- custom nodes and packs included
+  // -- with "Failed to load". Only a catalog that has never arrived is this
+  // tab's business, which is the store's own rule for the rows it keeps.
+  const failed = error ?? (pluginsLoaded ? null : pluginsError);
 
   return (
     <>
@@ -252,10 +257,14 @@ export function CustomTab() {
               </button>
             </div>
 
+            {/* No hint under this one, unlike the packs section above it: the
+                header button one line up IS the Plugin Center, so a sentence
+                whose only content is that destination says the same thing
+                twice in sixty pixels of column. The packs hint earns its line
+                by saying what a pack is. */}
             {visiblePlugins.length === 0 ? (
               <div className={tabStyles.sectionEmpty}>
                 <div>{t('customTab.plugins.empty')}</div>
-                <div className={tabStyles.sectionHint}>{t('customTab.plugins.hint')}</div>
               </div>
             ) : (
               visiblePlugins.map((plugin) => (
