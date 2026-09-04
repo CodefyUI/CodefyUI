@@ -1223,24 +1223,43 @@ describe('PluginCenterModal — closing', () => {
     expect(useUIStore.getState().pluginCenterOpen).toBe(true);
     useDialogStore.setState({ active: null });
 
-    // The Package Center answers the same key. One press, one window.
-    useUIStore.setState({ packCenterOpen: true });
-    fireEvent.keyDown(window, { key: 'Escape' });
-    expect(useUIStore.getState().pluginCenterOpen).toBe(true);
-    useUIStore.setState({ packCenterOpen: false });
-
     fireEvent.keyDown(window, { key: 'Escape' });
     expect(useUIStore.getState().pluginCenterOpen).toBe(false);
   });
 
+  it('closes over an open Package Center, which is underneath it', () => {
+    // This panel renders a z-index rung above the pack one, so it is the
+    // window the press belongs to. The pack side of the same rule, in both
+    // open orders, is `escapeStacking.test.tsx`.
+    useUIStore.setState({ packCenterOpen: true });
+
+    fireEvent.keyDown(window, { key: 'Escape' });
+
+    expect(useUIStore.getState().pluginCenterOpen).toBe(false);
+    expect(useUIStore.getState().packCenterOpen).toBe(true);
+  });
+});
+
+describe('PluginCenterModal — focus', () => {
   it('hands focus back to whatever had it', () => {
-    // The modal took focus on open; closing it must not leave focus on <body>.
-    const dialog = screen.getByRole('dialog');
-    expect(dialog).toHaveFocus();
+    // Focused BEFORE the panel opens, and a real element: with nothing
+    // focused, `activeElement` is <body> before and after, and the assertion
+    // holds whether or not the panel restores anything.
+    const opener = document.createElement('button');
+    document.body.appendChild(opener);
+    opener.focus();
+    expect(opener).toHaveFocus();
+
+    seed({ plugins: [edu] });
+    open();
+    render(<PluginCenterModal />);
+    expect(screen.getByRole('dialog')).toHaveFocus();
 
     act(() => {
       useUIStore.getState().closePluginCenter();
     });
-    expect(document.activeElement).not.toBe(dialog);
+
+    expect(opener).toHaveFocus();
+    opener.remove();
   });
 });

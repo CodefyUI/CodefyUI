@@ -6,7 +6,12 @@
   display: flex;
   align-items: center;
   justify-content: center;
-  z-index: 10000;
+  /* Above every panel that can raise one: the modal rung (10000) and the
+     Plugin Center on 10001, which asks this dialog before an uninstall. It
+     used to share the modal rung and win on DOM order alone -- this portal
+     mounts when the question is asked, so it was always the later sibling --
+     which stopped being true the moment one panel took a rung of its own. */
+  z-index: 10002;
   padding: var(--sp-7);
 }
 

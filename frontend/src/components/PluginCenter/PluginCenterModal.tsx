@@ -16,6 +16,10 @@ import { PluginReviewCard } from './PluginReviewCard';
 import { PluginSourceForm } from './PluginSourceForm';
 import { matchesFilter, type PluginFilter } from './pluginStatus';
 import styles from '../PackCenter/PackCenterModal.module.css';
+// Everything this panel wears is `styles` (the pack sheet); `ownStyles` is
+// the handful of rules that are only true of this one — here, the backdrop's
+// rung above the Package Center's.
+import ownStyles from './PluginCenterModal.module.css';
 
 /**
  * The Plugin Center (core#…): every plugin this server knows about, what of it
@@ -128,12 +132,18 @@ function PluginCenterBody() {
       // this panel and leaving a shortcuts window nobody can see.
       if (useDialogStore.getState().active !== null) return;
       if (useUIStore.getState().shortcutsModalOpen) return;
-      // The Package Center is a second window with a second Escape handler on
-      // the same key. Both can be open at once — a node badge opens one, the
-      // sidebar the other — and without this, one press would close both.
-      if (useUIStore.getState().packCenterOpen) return;
       e.preventDefault();
       close();
+      // The Package Center is a second window with a second handler on this
+      // same key, and it stands down while this panel is open — but it reads
+      // `pluginCenterOpen` from the store, which `close()` has just set to
+      // false. Without this, one press would close both whenever the Package
+      // Center registered its listener FIRST (both can be open at once: each
+      // is reachable from Settings and from the sidebar's Custom & Plugins
+      // tab). This panel is the one on top by stylesheet
+      // (`PluginCenterModal.module.css: .topBackdrop`), so it is the one the
+      // press belongs to, and nothing underneath sees it.
+      e.stopImmediatePropagation();
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
@@ -186,7 +196,10 @@ function PluginCenterBody() {
 
   return createPortal(
     <div
-      className={styles.backdrop}
+      // The pack panel's backdrop, one rung up: with both centers open this
+      // one is on top whichever was opened first, which is what makes "the
+      // top-most closes on Escape" a fact rather than an assumption.
+      className={ownStyles.topBackdrop}
       onMouseDown={(e) => {
         if (e.target === e.currentTarget) close();
       }}

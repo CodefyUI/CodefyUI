@@ -2,12 +2,12 @@
   position: fixed;
   bottom: var(--sp-6);
   right: var(--sp-6);
-  /* Above the modal backdrops (10000). Both are portalled into <body> and
-     neither ancestor makes a stacking context, so a tie is broken by tree
-     order and the Package Center — a later sibling — painted its scrim over
-     every toast its own buttons fire. A click then hit the backdrop and
-     closed the panel. */
-  z-index: 10001;
+  /* Above every modal backdrop (10000), the Plugin Center on its own rung
+     (10001) and the confirm dialog (10002). Neither ancestor makes a
+     stacking context, so a tie is broken by tree order and the Package
+     Center — a later sibling — painted its scrim over every toast its own
+     buttons fire. A click then hit the backdrop and closed the panel. */
+  z-index: 10003;
   display: flex;
   flex-direction: column-reverse;
   gap: var(--sp-3);
