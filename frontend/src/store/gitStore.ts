@@ -818,6 +818,12 @@ export const useGitStore = create<GitState>((set, get) => ({
         action: {
           label: t('git.toast.reload'),
           onClick: () => {
+            // Forgotten, not removed: `ToastContainer`
+            // (`components/shared/Toast.tsx`) takes an action toast down as
+            // soon as its action has run, so a `removeToast` here would be a
+            // second take-down of a toast that is already gone. What this
+            // line is for is the HANDLE -- dropping it stops the next
+            // "changed on disk" offer from trying to supersede a dead id.
             changedToastId = null;
             void reloadAffected(affected);
           },

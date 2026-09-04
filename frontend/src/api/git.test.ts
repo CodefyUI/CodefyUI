@@ -344,6 +344,13 @@ describe('mutations', () => {
     expect(err.status).toBe(502);
     expect(err.code).toBe('unknown');
     expect(err.message).toBe('the write was not read back');
+
+    // The other half of the guard: a key that is there and null is the same
+    // hole as a key that is missing, and JSON has both spellings.
+    mockFetch(200, { status: null, changed_paths: ['a.py'] });
+    const explicit = await gitError(gitStage(['a.py']));
+    expect(explicit.status).toBe(502);
+    expect(explicit.message).toBe('the write was not read back');
   });
 
   it('surfaces a refused mutation as a GitApiError with its code', async () => {

@@ -614,7 +614,12 @@ export async function gitStage(paths: GitPathSelection): Promise<MutationResult>
   return mutate('/stage', pathsBody(paths));
 }
 
-/** Take the named paths, or everything, back out of the index. */
+/**
+ * Take the named paths, or everything, back out of the index.
+ *
+ * `async` for the reason `gitStage` gives: the empty-selection refusal must
+ * arrive as a rejection, never as a synchronous throw.
+ */
 export async function gitUnstage(paths: GitPathSelection): Promise<MutationResult> {
   return mutate('/unstage', pathsBody(paths));
 }
@@ -623,6 +628,9 @@ export async function gitUnstage(paths: GitPathSelection): Promise<MutationResul
  * Throw away working-tree changes. The one write that destroys — a tracked
  * file is restored from the index and an untracked one is deleted — so every
  * caller asks first.
+ *
+ * `async` for the reason `gitStage` gives: the empty-selection refusal must
+ * arrive as a rejection, never as a synchronous throw.
  */
 export async function gitDiscard(paths: GitPathSelection): Promise<MutationResult> {
   return mutate('/discard', pathsBody(paths));
