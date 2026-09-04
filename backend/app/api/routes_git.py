@@ -6,10 +6,19 @@
     GET    /api/git/diff                   the patch for one file
     GET    /api/git/file                   one file's content at one ref
     GET    /api/git/config                 who commits here, and from where
+    GET    /api/git/branches               every branch, local and remote
+    GET    /api/git/remotes                every remote, and its two URLs
     POST   /api/git/init                   make the project a repository
     POST   /api/git/stage /unstage /discard
     POST   /api/git/commit
     PUT    /api/git/config                 write user.name / user.email
+    POST   /api/git/branches               make a branch
+    POST   /api/git/checkout               go to one
+    PUT    /api/git/branches/{name}        rename one
+    DELETE /api/git/branches/{name}        delete one (?force=1 unmerged)
+    POST   /api/git/remotes                add a remote
+    PUT    /api/git/remotes/{name}         point it somewhere else
+    DELETE /api/git/remotes/{name}         forget it
 
 Every route is three lines long, and that is the design rather than an
 accident: the service on ``app.state`` owns the repository, the lock, the
@@ -49,6 +58,12 @@ one.
   sha, a message -- is validated by ``core/git/paths.py`` instead, which
   answers with a ``code`` the frontend can translate rather than with
   pydantic's English.
+* **A branch name in a path is ``{name:path}``.** Half the branches anybody
+  has contain a slash (``feat/source-control``), and a plain ``{name}``
+  stops at one -- so ``PUT /branches/feat/x`` would be a 404 from the
+  router, and so would the ``%2F`` a client sends instead, because the ASGI
+  server has already turned it back into a slash by the time the router
+  sees it. The converter is the only spelling that matches both.
 """
 
 from __future__ import annotations
@@ -61,6 +76,10 @@ from fastapi import APIRouter, HTTPException, Query, Request
 from ..core.git.errors import GitBusy, GitError, redact
 from ..core.git.log import DEFAULT_LOG_LIMIT, MAX_LOG_LIMIT
 from ..core.git.models import (
+    BranchCreateRequest,
+    BranchesResponse,
+    BranchRenameRequest,
+    CheckoutRequest,
     CommitRequest,
     DiffResponse,
     FileAtRef,
@@ -70,6 +89,9 @@ from ..core.git.models import (
     LogResponse,
     MutationResult,
     PathsRequest,
+    RemoteCreateRequest,
+    RemoteInfo,
+    RemoteUrlRequest,
     StatusResponse,
 )
 from ..core.git.service import GitService
@@ -271,6 +293,23 @@ async def read_config(request: Request) -> Identity:
     return await _answer(_service(request).identity())
 
 
+@router.get("/branches")
+async def read_branches(request: Request) -> BranchesResponse:
+    """Every branch, local and remote-tracking, and what HEAD is on.
+
+    One read, both lists: the Branches section draws them together, and a
+    remote branch's only job in that panel is to be the thing a Switch turns
+    into a local one.
+    """
+    return await _answer(_service(request).branches())
+
+
+@router.get("/remotes")
+async def read_remotes(request: Request) -> list[RemoteInfo]:
+    """Every configured remote, with its fetch and push URLs."""
+    return await _answer(_service(request).remotes())
+
+
 # --- writes (the session token, via auth_guard) -----------------------------
 
 
@@ -346,3 +385,84 @@ async def write_config(request: Request, payload: IdentityRequest) -> Identity:
             hint="an identity write with neither would change nothing"))
     await _answer(service.set_identity(payload.name, payload.email))
     return await _answer(service.identity())
+
+
+# --- the refs (the static paths first, then the named ones) -----------------
+
+
+@router.post("/branches")
+async def create_branch(request: Request,
+                        payload: BranchCreateRequest) -> MutationResult:
+    """Make a branch, and go to it unless ``checkout`` says otherwise.
+
+    ``detail.branch`` names it, so the tab can say which branch it is on
+    without reading the status back out of the result.
+    """
+    service = _service(request)
+    return await _answer(service.create_branch(
+        payload.name, checkout=payload.checkout,
+        start_point=payload.start_point))
+
+
+@router.post("/checkout")
+async def checkout(request: Request,
+                   payload: CheckoutRequest) -> MutationResult:
+    """Go to a local branch, or to a new one tracking a remote's.
+
+    Its own route rather than a ``PUT`` on something: a checkout is not a
+    change TO a branch, it is a change to the working tree, and
+    ``changed_paths`` on the result is the list an open editor reloads from.
+    """
+    service = _service(request)
+    return await _answer(service.checkout(payload.target, kind=payload.kind))
+
+
+@router.put("/branches/{name:path}")
+async def rename_branch(request: Request, name: str,
+                        payload: BranchRenameRequest) -> MutationResult:
+    """Give a branch another name."""
+    service = _service(request)
+    return await _answer(service.rename_branch(name, payload.new_name))
+
+
+@router.delete("/branches/{name:path}")
+async def delete_branch(request: Request, name: str,
+                        force: bool = False) -> MutationResult:
+    """Delete a branch; ``force=1`` deletes one that is not merged.
+
+    Two requests on purpose. The first is ``-d``, which git refuses with
+    ``branch_not_merged`` when the branch holds work no other branch has;
+    the tab then says so and asks again, and the second carries ``force``.
+    Deleting unmerged work is the only thing in this router that cannot be
+    undone from the tab, so the consent for it is a separate click.
+    """
+    service = _service(request)
+    return await _answer(service.delete_branch(name, force=force))
+
+
+@router.post("/remotes")
+async def add_remote(request: Request,
+                     payload: RemoteCreateRequest) -> MutationResult:
+    """Point a name at a repository somewhere else."""
+    service = _service(request)
+    return await _answer(service.add_remote(payload.name, payload.url))
+
+
+@router.put("/remotes/{name}")
+async def set_remote_url(request: Request, name: str,
+                         payload: RemoteUrlRequest) -> MutationResult:
+    """Point an existing remote somewhere else.
+
+    A plain ``{name}``, unlike the branch routes: a remote name is a closed
+    grammar with no slash in it (``paths.REMOTE_NAME_RE``), so there is
+    nothing for the ``path`` converter to rescue.
+    """
+    service = _service(request)
+    return await _answer(service.set_remote_url(name, payload.url))
+
+
+@router.delete("/remotes/{name}")
+async def remove_remote(request: Request, name: str) -> MutationResult:
+    """Forget a remote. Nothing is fetched, pushed or deleted anywhere else."""
+    service = _service(request)
+    return await _answer(service.remove_remote(name))

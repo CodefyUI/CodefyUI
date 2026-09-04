@@ -90,6 +90,11 @@ DIFF_KEYS = {"patch", "binary", "truncated", "old_ref", "new_ref", "old_text",
 FILE_AT_REF_KEYS = {"text", "binary", "size", "truncated"}
 IDENTITY_KEYS = {"name", "email", "name_scope", "email_scope"}
 MUTATION_KEYS = {"status", "changed_paths", "head", "detail"}
+BRANCHES_KEYS = {"current", "detached", "local", "remote"}
+BRANCH_KEYS = {"name", "sha", "current", "upstream", "ahead", "behind",
+               "gone", "subject", "committed_at"}
+REMOTE_BRANCH_KEYS = {"name", "remote", "sha", "subject", "committed_at"}
+REMOTE_KEYS = {"name", "fetch_url", "push_url"}
 
 #: The failure envelope, which is a contract of its own: the frontend
 #: switches on ``code`` and shows the rest to whoever is debugging.
@@ -316,6 +321,163 @@ async def test_unstage_puts_it_back(test_client, project):
         "new.txt"]
 
 
+async def test_branches_carry_exactly_the_documented_keys(test_client,
+                                                          project):
+    """Both lists in one answer: the section draws them together."""
+    project.git("branch", "feat")
+    project.git("update-ref", "refs/remotes/origin/main", project.head())
+
+    response = await test_client.get("/api/git/branches")
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert set(body) == BRANCHES_KEYS
+    assert body["current"] == "main" and body["detached"] is False
+    assert [entry["name"] for entry in body["local"]] == ["feat", "main"]
+    assert set(body["local"][0]) == BRANCH_KEYS
+    assert set(body["remote"][0]) == REMOTE_BRANCH_KEYS
+    assert body["remote"][0] == {
+        "name": "main", "remote": "origin",
+        "sha": body["local"][0]["sha"], "subject": "first",
+        "committed_at": body["local"][0]["committed_at"]}
+
+
+async def test_remotes_carry_exactly_the_documented_keys(test_client, project):
+    project.git("remote", "add", "origin", "https://example.com/owner/repo.git")
+
+    response = await test_client.get("/api/git/remotes")
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert set(body[0]) == REMOTE_KEYS
+    assert body[0]["name"] == "origin"
+    assert body[0]["fetch_url"] == "https://example.com/owner/repo.git"
+
+
+async def test_a_branch_write_answers_with_a_mutation_result(test_client,
+                                                             project):
+    """Every write in this router answers with the same four keys, so the
+    tab has one code path for all of them."""
+    response = await test_client.post("/api/git/branches",
+                                      json={"name": "feat"})
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert set(body) == MUTATION_KEYS
+    assert body["status"]["branch"] == "feat"
+    assert body["detail"] == {"branch": "feat", "checkout": True,
+                              "start_point": None}
+
+
+async def test_a_branch_name_with_a_slash_survives_the_url(test_client,
+                                                           project):
+    """``{name:path}`` is the only converter that matches ``feat/scm`` --
+    and the ``%2F`` a client sends instead, which the server has already
+    turned back into a slash by the time the router sees it."""
+    await test_client.post("/api/git/branches",
+                           json={"name": "feat/scm", "checkout": False})
+
+    renamed = await test_client.put("/api/git/branches/feat/scm",
+                                    json={"new_name": "feat/source-control"})
+    assert renamed.status_code == 200, renamed.text
+
+    deleted = await test_client.delete(
+        "/api/git/branches/feat%2Fsource-control")
+    assert deleted.status_code == 200, deleted.text
+    assert deleted.json()["detail"] == {"branch": "feat/source-control",
+                                        "forced": False}
+
+
+async def test_checkout_reports_the_files_it_replaced(test_client, project):
+    project.git("switch", "-q", "-c", "feat")
+    project.commit("on feat", {"a.txt": "feat\n"})
+    project.git("switch", "-q", "main")
+
+    response = await test_client.post("/api/git/checkout",
+                                      json={"target": "feat",
+                                            "kind": "local"})
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["status"]["branch"] == "feat"
+    assert "a.txt" in body["changed_paths"]
+
+
+async def test_a_checkout_without_a_kind_is_422(test_client, project):
+    """``kind`` has no default: "the client forgot to say" and "the user
+    picked local" are different requests, and the wrong one of those
+    creates a branch nobody asked for."""
+    response = await test_client.post("/api/git/checkout",
+                                      json={"target": "feat"})
+
+    assert response.status_code == 422, response.text
+
+
+async def test_deleting_the_branch_you_are_on_is_400(test_client, project):
+    response = await test_client.delete("/api/git/branches/main")
+
+    assert response.status_code == 400
+    assert (await _detail(response))["code"] == "invalid_value"
+
+
+async def test_an_unmerged_branch_needs_the_force_flag(test_client, project):
+    project.git("switch", "-q", "-c", "feat")
+    project.commit("only on feat", {"b.txt": "two\n"})
+    project.git("switch", "-q", "main")
+
+    refused = await test_client.delete("/api/git/branches/feat")
+    assert refused.status_code == 409
+    assert (await _detail(refused))["code"] == "branch_not_merged"
+
+    forced = await test_client.delete("/api/git/branches/feat?force=true")
+    assert forced.status_code == 200, forced.text
+    assert forced.json()["detail"] == {"branch": "feat", "forced": True}
+
+
+async def test_the_remote_routes_add_change_and_forget(test_client, project):
+    added = await test_client.post(
+        "/api/git/remotes",
+        json={"name": "origin", "url": "https://example.com/a.git"})
+    assert added.status_code == 200, added.text
+    assert set(added.json()) == MUTATION_KEYS
+
+    duplicate = await test_client.post(
+        "/api/git/remotes",
+        json={"name": "origin", "url": "https://example.com/b.git"})
+    assert duplicate.status_code == 409
+    assert (await _detail(duplicate))["code"] == "remote_exists"
+
+    changed = await test_client.put(
+        "/api/git/remotes/origin", json={"url": "https://example.com/b.git"})
+    assert changed.status_code == 200, changed.text
+
+    listed = await test_client.get("/api/git/remotes")
+    assert listed.json()[0]["fetch_url"] == "https://example.com/b.git"
+
+    removed = await test_client.delete("/api/git/remotes/origin")
+    assert removed.status_code == 200, removed.text
+    assert (await test_client.get("/api/git/remotes")).json() == []
+
+
+async def test_a_remote_url_the_server_will_not_hand_to_git_is_400(
+        test_client, project):
+    response = await test_client.post(
+        "/api/git/remotes",
+        json={"name": "origin", "url": "ssh://-oProxyCommand=x/repo.git"})
+
+    assert response.status_code == 400
+    assert (await _detail(response))["code"] == "invalid_url"
+
+
+async def test_a_branch_body_with_an_unknown_key_is_422(test_client, project):
+    """``extra="forbid"``: a key nobody defined is a client bug, not an
+    instruction to ignore."""
+    response = await test_client.post("/api/git/branches",
+                                      json={"name": "feat", "checkut": True})
+
+    assert response.status_code == 422, response.text
+
+
 async def test_the_identity_reads_and_writes_with_its_scope(test_client,
                                                             project):
     """The scope is half the answer: "this repository" or "this machine"."""
@@ -404,7 +566,7 @@ async def test_every_mutating_route_needs_the_session_token(anon_client,
         for method in sorted(route.methods)
         if method not in {"GET", "HEAD", "OPTIONS"}
     ]
-    assert len(mutating) >= 6, "router walk is broken"
+    assert len(mutating) >= 13, "router walk is broken"
 
     for method, path in mutating:
         response = await anon_client.request(method, path, json={})
@@ -539,6 +701,38 @@ async def test_a_second_write_while_one_runs_is_409_busy(test_client, project):
     detail = await _detail(response)
     assert detail["code"] == "busy"
     assert detail["op"] == "commit"
+
+
+async def test_a_ref_write_takes_the_same_lock_as_every_other(test_client,
+                                                              project):
+    """The branch and remote writes are ordinary mutations: one lock, one
+    at a time, and a refusal that names the operation holding it."""
+    service = app.state.git_service
+    async with service.lock:
+        service.current_op = "checkout"
+        response = await test_client.post("/api/git/branches",
+                                          json={"name": "feat"})
+    service.current_op = None
+
+    assert response.status_code == 409
+    detail = await _detail(response)
+    assert detail["code"] == "busy"
+    assert detail["op"] == "checkout"
+
+
+async def test_a_branch_read_does_not_queue_behind_a_write(test_client,
+                                                           project):
+    """The Branches section refreshes on a poll; it must not stall behind a
+    checkout that is replacing half the working tree."""
+    service = app.state.git_service
+    async with service.lock:
+        service.current_op = "checkout"
+        response = await asyncio.wait_for(
+            test_client.get("/api/git/branches"), timeout=5)
+    service.current_op = None
+
+    assert response.status_code == 200, response.text
+    assert response.json()["current"] == "main"
 
 
 async def test_a_read_does_not_queue_behind_a_running_write(test_client,
