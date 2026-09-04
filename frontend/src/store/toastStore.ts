@@ -36,7 +36,13 @@ interface ToastState {
      * looked away will ever see.
      */
     opts?: { action?: ToastAction; sticky?: boolean },
-  ) => void;
+    /**
+     * The new toast's id, for `removeToast`. Ignored by almost every caller
+     * -- a toast is fire-and-forget -- but a sticky one has no timer to end
+     * it, so whoever raised it needs a handle to take it back down or to
+     * replace it with the next one rather than stacking a second copy.
+     */
+  ) => string;
   removeToast: (id: string) => void;
 }
 
@@ -64,6 +70,7 @@ export const useToastStore = create<ToastState>((set) => ({
         set((state) => ({ toasts: state.toasts.filter((t) => t.id !== id) }));
       }, 4000);
     }
+    return id;
   },
   removeToast: (id) =>
     set((state) => ({ toasts: state.toasts.filter((t) => t.id !== id) })),
