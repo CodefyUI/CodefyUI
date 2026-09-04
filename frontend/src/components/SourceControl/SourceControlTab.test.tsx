@@ -1,9 +1,9 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { act, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { SourceControlTab } from './SourceControlTab';
 import { useI18n } from '../../i18n';
 import { _resetGitStoreForTesting, useGitStore } from '../../store/gitStore';
-import type { FileKind, GitFile, GitStatus, RepoInfo } from '../../api/git';
+import type { BranchInfo, FileKind, GitFile, GitStatus, RepoInfo } from '../../api/git';
 
 /*
  * The panel itself: which screen a repository state draws, and what opening
@@ -17,7 +17,20 @@ import type { FileKind, GitFile, GitStatus, RepoInfo } from '../../api/git';
  */
 vi.mock('../../api/git', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../api/git')>();
-  return { ...actual, getGitStatus: vi.fn() };
+  return {
+    ...actual,
+    getGitStatus: vi.fn(),
+    // The header asks for the remotes as soon as a repository answers: "Publish
+    // or Sync" cannot be decided from a list nobody has fetched.
+    getGitBranches: vi.fn(async () => ({
+      current: 'main',
+      detached: false,
+      local: [],
+      remote: [],
+    })),
+    getGitRemotes: vi.fn(async () => []),
+    getGitStashes: vi.fn(async () => []),
+  };
 });
 
 const { getGitStatus } = await import('../../api/git');
@@ -50,6 +63,20 @@ function status(over: Partial<GitStatus> = {}): GitStatus {
     merge_in_progress: false,
     rebase_in_progress: false,
     ...over,
+  };
+}
+
+function branch(name: string): BranchInfo {
+  return {
+    name,
+    sha: 'abc1234',
+    current: name === 'main',
+    upstream: null,
+    ahead: null,
+    behind: null,
+    gone: false,
+    subject: 'a commit',
+    committed_at: 0,
   };
 }
 
@@ -239,6 +266,61 @@ describe('SourceControlTab: the ready panel', () => {
   });
 });
 
+describe('SourceControlTab: the three reference sections', () => {
+  beforeEach(() => {
+    useGitStore.setState({ repoState: 'ready', repo: repo(), status: status() });
+  });
+
+  const section = (name: string) => screen.getByRole('region', { name });
+
+  it('draws all three, collapsed, on a repository with nothing to commit', () => {
+    // A clean tree is not an empty panel: branches, remotes and stashes are
+    // there whether or not anything has been edited.
+    render(<SourceControlTab />);
+    expect(screen.getByText('No changes')).toBeTruthy();
+    for (const name of ['Branches', 'Remotes', 'Stashes']) {
+      expect(section(name)).toBeTruthy();
+      expect(
+        screen.getByRole('button', { name }).getAttribute('aria-expanded'),
+      ).toBe('false');
+    }
+  });
+
+  it('counts what each list holds', () => {
+    useGitStore.setState({
+      branches: {
+        current: 'main',
+        detached: false,
+        local: [branch('main'), branch('work')],
+        remote: [],
+      },
+      remotes: [{ name: 'origin', fetch_url: 'u', push_url: 'u' }],
+      stashes: [],
+      status: status({ stash_count: 4 }),
+    });
+    render(<SourceControlTab />);
+    expect(within(section('Branches')).getByText('2')).toBeTruthy();
+    expect(within(section('Remotes')).getByText('1')).toBeTruthy();
+    // The list that was read wins over the status's count: it is the one whose
+    // rows the section is about to draw.
+    expect(within(section('Stashes')).getByText('0')).toBeTruthy();
+  });
+
+  it('counts stashes from the status until the list has been read', () => {
+    useGitStore.setState({ stashes: null, status: status({ stash_count: 4 }) });
+    render(<SourceControlTab />);
+    expect(within(section('Stashes')).getByText('4')).toBeTruthy();
+  });
+
+  it('opens one through the store, which is what remembers it', () => {
+    const setSectionOpen = vi.fn();
+    useGitStore.setState({ setSectionOpen });
+    render(<SourceControlTab />);
+    fireEvent.click(screen.getByRole('button', { name: 'Remotes' }));
+    expect(setSectionOpen).toHaveBeenCalledWith('remotes', true);
+  });
+});
+
 describe('SourceControlTab: the announcement region', () => {
   const regions = () => screen.getAllByRole('status');
   const said = () => regions().map((region) => region.textContent);
@@ -249,6 +331,15 @@ describe('SourceControlTab: the announcement region', () => {
       useGitStore.setState({ busyOp: 'stage', lastError: null });
       useGitStore.setState({ liveMessage: message });
       useGitStore.setState({ busyOp: null });
+    });
+  };
+
+  /** The same, for the other lane: a network operation holds `netOp`. */
+  const landNet = (message: string) => {
+    act(() => {
+      useGitStore.setState({ netOp: 'fetch', lastError: null });
+      useGitStore.setState({ liveMessage: message });
+      useGitStore.setState({ netOp: null });
     });
   };
 
@@ -278,6 +369,31 @@ describe('SourceControlTab: the announcement region', () => {
     // The same words again: an unchanged text node is announced zero times, so
     // they change sides instead.
     land('Staged Changes 1, Changes 0');
+    expect(said()).toEqual(['Staged Changes 1, Changes 0', '']);
+  });
+
+  it('changes sides for a network operation too, so a second fetch is still said', () => {
+    // Fetch, pull, push, sync and publish hold `netOp`, not `busyOp`: a guard
+    // that watched the local lane alone announced the first fetch (the text
+    // changed) and every one after it not at all.
+    render(<SourceControlTab />);
+    landNet('Fetched');
+    expect(said()).toEqual(['', 'Fetched']);
+    landNet('Fetched');
+    expect(said()).toEqual(['Fetched', '']);
+  });
+
+  it('says nothing for the identity write, which moves nothing in the panel', () => {
+    render(<SourceControlTab />);
+    act(() => {
+      useGitStore.setState({ liveMessage: 'Staged Changes 1, Changes 0' });
+    });
+    expect(said()).toEqual(['Staged Changes 1, Changes 0', '']);
+    act(() => {
+      useGitStore.setState({ busyOp: 'identity', lastError: null });
+      useGitStore.setState({ busyOp: null });
+    });
+    // A swap here would re-read whatever the last real operation said.
     expect(said()).toEqual(['Staged Changes 1, Changes 0', '']);
   });
 

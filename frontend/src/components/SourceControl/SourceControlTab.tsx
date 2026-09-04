@@ -6,6 +6,7 @@ import { ChangeGroup } from './ChangeGroup';
 import { CommitBox } from './CommitBox';
 import { EmptyStates } from './EmptyStates';
 import { IdentityForm } from './IdentityForm';
+import { RefSection } from './RefSection';
 import { ScmHeader } from './ScmHeader';
 import shell from '../Sidebar/NodePalette.module.css';
 import styles from './SourceControl.module.css';
@@ -32,6 +33,11 @@ export function SourceControlTab() {
   const repoState = useGitStore((s) => s.repoState);
   const repo = useGitStore((s) => s.repo);
   const status = useGitStore((s) => s.status);
+  const branches = useGitStore((s) => s.branches);
+  const remotes = useGitStore((s) => s.remotes);
+  const stashes = useGitStore((s) => s.stashes);
+  const sections = useGitStore((s) => s.sections);
+  const setSectionOpen = useGitStore((s) => s.setSectionOpen);
   const loadError = useGitStore((s) => s.loadError);
   const hideLayout = useGitStore((s) => s.hideLayout);
   const identityFormOpen = useGitStore((s) => s.identityFormOpen);
@@ -52,15 +58,20 @@ export function SourceControlTab() {
   // The sentence changes SIDES on each finished write, because two stages in a
   // row can leave the same words ("Staged Changes 2, Changes 0") and an
   // unchanged text node is announced exactly zero times. A finished operation
-  // is the signal: `busyOp` falling back to null with no error is one write
-  // that landed. The identity write is the exception -- it moves nothing in
-  // the panel and writes no sentence, so a swap there would re-read whatever
-  // the last real operation said.
+  // is the signal -- in EITHER lane: a local write releases `busyOp` and a
+  // network one releases `netOp`, and a guard that watched the local lane
+  // alone said a first fetch and then nothing for every fetch after it. The
+  // identity write is the exception -- it moves nothing in the panel and
+  // writes no sentence, so a swap there would re-read whatever the last real
+  // operation said, and only the local lane has that operation.
   useEffect(
     () =>
       useGitStore.subscribe((state, prev) => {
-        if (prev.busyOp === null || state.busyOp !== null) return;
-        if (prev.busyOp === 'identity') return;
+        const finishedLocal = prev.busyOp !== null
+          && state.busyOp === null
+          && prev.busyOp !== 'identity';
+        const finishedNet = prev.netOp !== null && state.netOp === null;
+        if (!finishedLocal && !finishedNet) return;
         if (state.lastError !== null) return;
         if (state.liveMessage === '') return;
         setLiveSlot((slot) => (slot === 0 ? 1 : 0));
@@ -118,6 +129,38 @@ export function SourceControlTab() {
                 <ChangeGroup kind="changes" files={changes} />
               </>
             )}
+          {/*
+            Outside the clean/dirty branch above: branches, remotes and stashes
+            are properties of the repository, not of the working tree, and a
+            clean checkout is exactly when somebody goes looking for another
+            branch. Collapsed by default and remembered by the store, which is
+            also what loads each list as its section opens.
+
+            The counts come from the lists where they have been read, so the
+            number labels the rows the section is about to draw; the stash
+            count falls back to the status, which carries it on every poll.
+          */}
+          <RefSection
+            kind="branches"
+            title={t('git.section.branches')}
+            count={branches?.local.length ?? 0}
+            open={sections.branches}
+            onOpenChange={(open) => setSectionOpen('branches', open)}
+          />
+          <RefSection
+            kind="remotes"
+            title={t('git.section.remotes')}
+            count={remotes?.length ?? 0}
+            open={sections.remotes}
+            onOpenChange={(open) => setSectionOpen('remotes', open)}
+          />
+          <RefSection
+            kind="stashes"
+            title={t('git.section.stashes')}
+            count={stashes?.length ?? status.stash_count}
+            open={sections.stashes}
+            onOpenChange={(open) => setSectionOpen('stashes', open)}
+          />
         </div>
       </>
     );
