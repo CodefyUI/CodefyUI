@@ -70,7 +70,11 @@ export function RefSection({
 }: RefSectionProps) {
   const ids = refSectionIds(kind);
   const section = sectionId ?? ids.sectionId;
-  const headingId = `${section}-heading`;
+  // The heading id is a function of the KIND and nothing else. The header's
+  // branch button scrolls to `refSectionIds('branches').headingId` from
+  // outside this component, so a heading that moved with an overridden
+  // `sectionId` would take that scroll target with it, silently.
+  const headingId = ids.headingId;
   const list = listId ?? ids.listId;
 
   return (
