@@ -35,7 +35,9 @@ export function SourceControlTab() {
   const hideLayout = useGitStore((s) => s.hideLayout);
   const identityFormOpen = useGitStore((s) => s.identityFormOpen);
   const liveMessage = useGitStore((s) => s.liveMessage);
-  const [announceKey, setAnnounceKey] = useState(0);
+  // Which of the two live regions currently carries the sentence; the other
+  // one is empty. See the pair at the bottom of this file.
+  const [liveSlot, setLiveSlot] = useState(0);
 
   useEffect(() => {
     // Read off the store rather than through a selector, so the effect can
@@ -46,13 +48,13 @@ export function SourceControlTab() {
     return () => detach();
   }, []);
 
-  // The live region is re-keyed rather than merely re-rendered, because two
-  // stages in a row can leave the SAME sentence ("Staged Changes 2, Changes
-  // 0") and an unchanged text node is announced exactly zero times. A finished
-  // operation is the signal: `busyOp` falling back to null with no error is
-  // one write that landed. The identity write is the exception -- it moves
-  // nothing in the panel and writes no sentence, so re-keying there would
-  // re-read whatever the last real operation said.
+  // The sentence changes SIDES on each finished write, because two stages in a
+  // row can leave the same words ("Staged Changes 2, Changes 0") and an
+  // unchanged text node is announced exactly zero times. A finished operation
+  // is the signal: `busyOp` falling back to null with no error is one write
+  // that landed. The identity write is the exception -- it moves nothing in
+  // the panel and writes no sentence, so a swap there would re-read whatever
+  // the last real operation said.
   useEffect(
     () =>
       useGitStore.subscribe((state, prev) => {
@@ -60,7 +62,7 @@ export function SourceControlTab() {
         if (prev.busyOp === 'identity') return;
         if (state.lastError !== null) return;
         if (state.liveMessage === '') return;
-        setAnnounceKey((n) => n + 1);
+        setLiveSlot((slot) => (slot === 0 ? 1 : 0));
       }),
     [],
   );
@@ -126,16 +128,29 @@ export function SourceControlTab() {
 
   return (
     <>
-      {/* Outside `.panelBody`, which is a flex column that nothing may be
-          positioned out of, and above the header so its text is never part of
-          the reading order of the panel it describes. */}
-      <div
-        key={announceKey}
-        className={styles.live}
-        role="status"
-        aria-live="polite"
-      >
-        {liveMessage}
+      {/*
+        TWO regions, both mounted from the first render, and the sentence
+        alternates between them.
+
+        A `role="status"` element that is INSERTED with its text already
+        inside is not reliably announced -- the same lesson
+        `PackActivityPane`'s announcer records -- so replacing one region per
+        write (which is what a changing `key` does) can be silence. Keeping
+        one region and rewriting it has the opposite hole: the second of two
+        stages leaves the identical sentence, and an unchanged text node is
+        read zero times. Alternating gives both halves: the region a sentence
+        lands in has been on the page all along, and a repeated sentence is
+        still a change to whichever region is next.
+
+        Outside `.panelBody`, which is a flex column that nothing may be
+        positioned out of, and above the header so the text is never part of
+        the reading order of the panel it describes.
+      */}
+      <div className={styles.live} role="status" aria-live="polite">
+        {liveSlot === 0 ? liveMessage : ''}
+      </div>
+      <div className={styles.live} role="status" aria-live="polite">
+        {liveSlot === 1 ? liveMessage : ''}
       </div>
       <ScmHeader />
       <div className={shell.panelBody}>

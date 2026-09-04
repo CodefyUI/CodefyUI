@@ -230,34 +230,45 @@ describe('SourceControlTab: the ready panel', () => {
 });
 
 describe('SourceControlTab: the announcement region', () => {
-  it('is one hidden polite region carrying the store\'s sentence', () => {
+  const regions = () => screen.getAllByRole('status');
+  const said = () => regions().map((region) => region.textContent);
+
+  /** One write that landed, in the order the store writes it. */
+  const land = (message: string) => {
+    act(() => {
+      useGitStore.setState({ busyOp: 'stage', lastError: null });
+      useGitStore.setState({ liveMessage: message });
+      useGitStore.setState({ busyOp: null });
+    });
+  };
+
+  it('is two hidden polite regions, one of them carrying the store\'s sentence', () => {
     useGitStore.setState({ liveMessage: 'Staged Changes 1, Changes 0' });
     render(<SourceControlTab />);
-    const live = screen.getByRole('status');
-    expect(live.getAttribute('aria-live')).toBe('polite');
-    expect(live.textContent).toBe('Staged Changes 1, Changes 0');
+    expect(regions()).toHaveLength(2);
+    for (const region of regions()) {
+      expect(region.getAttribute('aria-live')).toBe('polite');
+    }
+    expect(said()).toEqual(['Staged Changes 1, Changes 0', '']);
   });
 
   it('is replaced on each finished write, so the same sentence is said twice', () => {
     render(<SourceControlTab />);
-    const before = screen.getByRole('status');
-
-    const land = (message: string) => {
-      act(() => {
-        useGitStore.setState({ busyOp: 'stage', lastError: null });
-        useGitStore.setState({ liveMessage: message });
-        useGitStore.setState({ busyOp: null });
-      });
-    };
+    const [first, second] = regions();
 
     land('Staged Changes 1, Changes 0');
-    const after = screen.getByRole('status');
-    expect(after).not.toBe(before);
+    // The sentence moved to the OTHER region and the first was emptied --
+    // and both of them are the nodes that were on the page before the write.
+    // A live region inserted with its text already inside it is one assistive
+    // tech may never announce.
+    expect(said()).toEqual(['', 'Staged Changes 1, Changes 0']);
+    expect(regions()[0]).toBe(first);
+    expect(regions()[1]).toBe(second);
 
     // The same words again: an unchanged text node is announced zero times, so
-    // the node itself has to be a new one.
+    // they change sides instead.
     land('Staged Changes 1, Changes 0');
-    expect(screen.getByRole('status')).not.toBe(after);
+    expect(said()).toEqual(['Staged Changes 1, Changes 0', '']);
   });
 
   it('says nothing again after a write that failed', () => {
@@ -265,7 +276,7 @@ describe('SourceControlTab: the announcement region', () => {
     act(() => {
       useGitStore.setState({ liveMessage: 'Staged Changes 1, Changes 0' });
     });
-    const before = screen.getByRole('status');
+    expect(said()).toEqual(['Staged Changes 1, Changes 0', '']);
     act(() => {
       useGitStore.setState({ busyOp: 'commit', lastError: null });
       useGitStore.setState({
@@ -273,7 +284,8 @@ describe('SourceControlTab: the announcement region', () => {
       });
       useGitStore.setState({ busyOp: null });
     });
-    expect(screen.getByRole('status')).toBe(before);
+    // Nothing moved, so nothing was read out: the refusal is the header's job.
+    expect(said()).toEqual(['Staged Changes 1, Changes 0', '']);
   });
 });
 
