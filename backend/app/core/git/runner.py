@@ -65,6 +65,7 @@ the second test in a file depend on the first.
 
 from __future__ import annotations
 
+import logging
 import os
 import re
 import shutil
@@ -79,6 +80,11 @@ from pathlib import Path
 
 from ..packs.runner import creation_flags, pip_env, stop_process
 from .errors import GitError, classify_failure
+
+#: A signal this server was not allowed to send is the one thing in this
+#: module the response cannot carry: the caller gets a code, and the errno
+#: behind it belongs in the server's own log.
+logger = logging.getLogger(__name__)
 
 #: The option that turns every path this package passes into a NAME rather
 #: than a pattern. Without it ``*`` is every file in the repository,
@@ -478,7 +484,7 @@ def _session_kwargs() -> dict[str, bool]:
     return {} if sys.platform == "win32" else {"start_new_session": True}
 
 
-def _stop(proc: subprocess.Popen) -> None:
+def _stop(proc: subprocess.Popen) -> bool:
     """End a git that timed out, and everything it started.
 
     Two implementations because the two platforms hand back two different
@@ -487,14 +493,21 @@ def _stop(proc: subprocess.Popen) -> None:
     POSIX: the child is the leader of its own session (see
     :func:`_session_kwargs`), so the group id IS the pid and one signal
     reaches every descendant.
+
+    True when the tree can be reported as stopped, and the two platforms
+    prove that differently. ``stop_process`` reports nothing at all -- it
+    swallows a ``taskkill`` that timed out and a ``wait`` that timed out
+    after it -- so the Windows check is the process's own exit state and
+    nothing more: a pid with no exit status is a kill that did not land.
+    POSIX asks whether the signals it sent were delivered.
     """
     if sys.platform == "win32":
         stop_process(proc)
-        return
-    _kill_group(proc)
+        return proc.poll() is not None
+    return _kill_group(proc)
 
 
-def _kill_group(proc: subprocess.Popen) -> None:
+def _kill_group(proc: subprocess.Popen) -> bool:
     """POSIX: give the whole group one grace, then ``SIGKILL`` it.
 
     ``SIGTERM`` first because an ssh that is asked to stop closes its
@@ -509,9 +522,21 @@ def _kill_group(proc: subprocess.Popen) -> None:
     unconditional floor -- there is deliberately no final liveness check that
     could race with a newly observed member.
 
-    Signal failures are treated as the outcome being asked for: a race with a
-    child that exited on its own must not turn into a 500 on top of the 504 the
-    caller is about to raise.
+    Returns whether the group can be reported as gone: True when a probe saw
+    it genuinely empty, otherwise whether the floor ``SIGKILL`` was delivered
+    (``ESRCH`` counts -- there was nobody left to kill). A refusal is False,
+    and the caller answers with a server failure rather than claiming the
+    tree was stopped.
+
+    The probe answers "this pgid is signalable", which is NOT the same claim
+    as "our helpers are alive", and two ordinary cases separate them. Once
+    ``proc.wait`` has reaped the leader the pid can be REUSED, so a late
+    probe may be reading a stranger's group -- and the deadline ``SIGKILL``
+    would then go to that stranger. And when this server is PID 1 (a
+    container), git's orphaned helpers are reparented here with nobody
+    calling ``os.wait`` on them, so their zombies keep the group non-empty
+    for the whole grace. Neither an early return nor a spent grace is proof
+    either way; both are the best a process without a supervisor can do.
     """
     pgid = proc.pid
     _signal_group(pgid, signal.SIGTERM)
@@ -522,18 +547,17 @@ def _kill_group(proc: subprocess.Popen) -> None:
     except subprocess.TimeoutExpired:
         # A real timeout consumed the whole grace. The caller's ``_drain``
         # reaps the leader after this group-level floor.
-        _signal_group(pgid, signal.SIGKILL)
-        return
+        return _signal_group(pgid, signal.SIGKILL)
 
     while True:
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             break
         if not _group_alive(pgid):
-            return
+            return True
         time.sleep(min(GROUP_POLL_INTERVAL_S, remaining))
 
-    _signal_group(pgid, signal.SIGKILL)
+    return _signal_group(pgid, signal.SIGKILL)
 
 
 def _group_alive(pgid: int) -> bool:
@@ -552,18 +576,27 @@ def _group_alive(pgid: int) -> bool:
     return True
 
 
-def _signal_group(pgid: int, sig: int) -> None:
-    """Signal one process group, and treat an empty one as done.
+def _signal_group(pgid: int, sig: int) -> bool:
+    """Signal one process group; whether the group can be counted as handled.
 
     ``ProcessLookupError`` (``ESRCH``) is ordinary whenever the group emptied
-    between a liveness observation and a real signal. ``EPERM`` means a member
-    this process cannot signal; retrying the same signal would not change that.
-    Neither is a reason to raise on top of the timeout the caller reports.
+    between a liveness observation and a real signal, and it is a True: there
+    was nobody left to signal, which is the outcome the caller asked for.
+
+    Every other ``OSError`` is False -- ``EPERM`` means a member this process
+    cannot signal, and retrying the same signal would not change that. It is
+    still not a reason to RAISE on top of the timeout the caller reports, so
+    the errno is logged here and the decision is left to the caller.
     """
     try:
         os.killpg(pgid, sig)
-    except OSError:
-        pass
+    except ProcessLookupError:
+        return True
+    except OSError as exc:
+        logger.warning("could not send signal %s to process group %s: "
+                       "errno %s", sig, pgid, exc.errno)
+        return False
+    return True
 
 
 def _run(args: Sequence[str], *, cwd: Path, timeout: float,
@@ -615,8 +648,18 @@ def _run(args: Sequence[str], *, cwd: Path, timeout: float,
         # Kill the TREE: git's own children (ssh, curl, a credential
         # helper) are what tend to be blocked, and they hold the index lock
         # that the next request needs.
-        _stop(proc)
+        stopped = _stop(proc)
         _drain(proc)
+        if not stopped:
+            # The kill was REFUSED, so the tree is still there holding that
+            # lock. A 504 here would be a claim about the machine that is
+            # not true, and the next request would fail on the lock with
+            # nothing to connect it to.
+            raise GitError("git_failed", 500,
+                           f"git took longer than {timeout:g}s and could not "
+                           "be stopped",
+                           hint="check the server for a leftover git or ssh "
+                                "process")
         raise GitError("timeout", 504,
                        f"git took longer than {timeout:g}s and was stopped")
 
@@ -650,7 +693,9 @@ def run_git(args: Sequence[str], *, cwd: Path, timeout: float,
     exits 1 to mean "unset". Anything outside it raises -- ``GitError`` with
     a code from :func:`~app.core.git.errors.classify_failure`, or
     ``git_missing`` / ``timeout`` for the two failures that have no stderr
-    to classify.
+    to classify. A timeout whose kill was REFUSED is the third: it is a
+    ``git_failed`` 500 rather than the 504, because the tree is still
+    running and saying it was stopped would be untrue (see :func:`_stop`).
 
     *read_only* marks a command that only reads, so it can run without
     taking the index lock (see :func:`git_env`).

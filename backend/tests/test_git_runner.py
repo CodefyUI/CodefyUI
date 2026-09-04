@@ -74,6 +74,15 @@ class _FakeProc:
         self.returncode = -15
         return self.returncode
 
+    def poll(self):
+        """Whether this process has been reaped, as ``Popen.poll`` reports it.
+
+        ``None`` until something set a return code -- which is what the
+        Windows stop path asks after ``taskkill``, to tell a kill that
+        landed from one that did not.
+        """
+        return self.returncode
+
 
 def _fake_popen(monkeypatch, proc: _FakeProc) -> dict:
     """Install *proc* as the next ``Popen`` result; returns the recorded call."""
@@ -532,27 +541,22 @@ def test_a_windows_child_is_started_exactly_as_before(monkeypatch, fake_git):
 # --- failures --------------------------------------------------------------
 
 
-def _posix_kill(monkeypatch, *,
-                gone_after_sigterm: bool = False) -> list[tuple[int, int]]:
-    """Fake the POSIX group-kill calls and clock; return actual signals.
+def _posix_clock(monkeypatch) -> list[float]:
+    """POSIX, a fake monotonic clock, and a ``signal.SIGKILL`` to aim.
 
-    ``os.killpg``, ``os.getpgid`` and ``signal.SIGKILL`` do not exist on
-    Windows, which is where this suite usually runs -- so all three are
-    installed with ``raising=False``. On Linux, where they do exist, the
-    fakes replace the real ones for the length of the test, which is the
-    point: no test in this file may signal anything. (``signal.SIGTERM``
-    exists on both and is used as it is.) The monotonic clock advances only
-    when the runner sleeps, so a whole grace period costs no wall-clock time.
-
-    *gone_after_sigterm* models a group whose every member stopped on the
-    first signal: its first signal-0 liveness probe meets ``ESRCH``, the way a
-    real ``killpg`` answers a group with nobody left in it.
+    What every group-kill test needs before it installs its own
+    ``os.killpg``. ``signal.SIGKILL`` does not exist on Windows, which is
+    where this suite usually runs, so it goes in with ``raising=False``;
+    ``signal.SIGTERM`` exists on both and is used as it is. The clock is
+    patched on the runner's own ``time`` reference rather than on the
+    module, because a global fake clock would be inherited by pytest
+    itself, and it advances only when the runner sleeps -- so a whole grace
+    period costs no wall-clock time. Returns the clock, for a test that
+    wants to read or move it.
     """
-    sent: list[tuple[int, int]] = []
     clock = [1000.0]
     monkeypatch.setattr(sys, "platform", "linux")
     monkeypatch.setattr(signal, "SIGKILL", 9, raising=False)
-    monkeypatch.setattr(os, "getpgid", lambda pid: pid, raising=False)
     monkeypatch.setattr(
         runner, "time",
         types.SimpleNamespace(
@@ -560,6 +564,25 @@ def _posix_kill(monkeypatch, *,
             sleep=lambda delay: clock.__setitem__(0, clock[0] + delay),
         ),
     )
+    return clock
+
+
+def _posix_kill(monkeypatch, *,
+                gone_after_sigterm: bool = False) -> list[tuple[int, int]]:
+    """Fake the POSIX group-kill calls and clock; return actual signals.
+
+    ``os.killpg`` and ``os.getpgid`` do not exist on Windows either, so they
+    go in with ``raising=False`` too. On Linux, where they do exist, the
+    fakes replace the real ones for the length of the test, which is the
+    point: no test in this file may signal anything.
+
+    *gone_after_sigterm* models a group whose every member stopped on the
+    first signal: its first signal-0 liveness probe meets ``ESRCH``, the way a
+    real ``killpg`` answers a group with nobody left in it.
+    """
+    sent: list[tuple[int, int]] = []
+    _posix_clock(monkeypatch)
+    monkeypatch.setattr(os, "getpgid", lambda pid: pid, raising=False)
 
     def _killpg(pgid, sig):
         if sig == 0:
@@ -586,7 +609,13 @@ def test_timeout_kills_the_tree_and_reports_504(monkeypatch, fake_git):
     monkeypatch.setattr(sys, "platform", "win32")
     proc = _FakeProc(hangs=True)
     stopped: list = []
-    monkeypatch.setattr(runner, "stop_process", stopped.append)
+
+    def _taskkill(killed):
+        """``stop_process`` that worked: the tree is gone and reaped."""
+        stopped.append(killed)
+        killed.returncode = 1
+
+    monkeypatch.setattr(runner, "stop_process", _taskkill)
     _fake_popen(monkeypatch, proc)
 
     with pytest.raises(GitError) as excinfo:
@@ -596,6 +625,33 @@ def test_timeout_kills_the_tree_and_reports_504(monkeypatch, fake_git):
     assert excinfo.value.status == 504
     assert stopped == [proc]
     # The pipes are collected afterwards, so no zombie and no warning.
+    assert len(proc.communicate_calls) == 2
+
+
+def test_a_windows_kill_that_did_not_land_is_a_server_failure(monkeypatch,
+                                                              fake_git):
+    """``taskkill`` that failed must not be reported as a stopped process.
+
+    ``stop_process`` swallows both of its own failures -- a ``taskkill``
+    that timed out and a ``wait`` that timed out after it -- and returns
+    nothing either way, so the only honest evidence left is whether the
+    process has an exit status. Without this the 504 says the tree was
+    stopped while git and its children are still holding the index lock,
+    which is the one thing the next request cannot recover from on its own.
+    """
+    monkeypatch.setattr(sys, "platform", "win32")
+    proc = _FakeProc(hangs=True)
+    # ``taskkill`` ran and the process outlived it: no exit status.
+    monkeypatch.setattr(runner, "stop_process", lambda _proc: None)
+    _fake_popen(monkeypatch, proc)
+
+    with pytest.raises(GitError) as excinfo:
+        runner.run_git(["status"], cwd=Path.cwd(), timeout=10)
+
+    assert excinfo.value.code == "git_failed"
+    assert excinfo.value.status == 500
+    assert "could not be stopped" in excinfo.value.message
+    assert excinfo.value.hint
     assert len(proc.communicate_calls) == 2
 
 
@@ -774,6 +830,112 @@ def test_a_posix_group_that_is_already_gone_is_not_an_error(monkeypatch,
     assert proc.stopped is True
     assert sent == [(proc.pid, signal.SIGTERM)]
     assert sleeps == []
+
+
+def test_a_posix_kill_that_was_refused_is_a_server_failure(monkeypatch,
+                                                           fake_git):
+    """A ``SIGKILL`` the kernel refused must not answer "and was stopped".
+
+    ``EPERM`` on the floor signal means a member of the group this server
+    cannot signal -- a setuid credential helper, a container's user
+    mapping -- and it leaves the git and the ssh holding the index lock
+    exactly where they were. A 504 saying the tree was stopped is then a
+    claim about the machine that is not true, and the next request fails on
+    that lock with nothing to connect it to. The honest answer is a 500 that
+    names what is left behind.
+    """
+    _posix_clock(monkeypatch)
+    sent: list[tuple[int, int]] = []
+
+    def _killpg(pgid, sig):
+        if sig == 0:
+            return  # the group stays alive for the whole grace
+        sent.append((pgid, sig))
+        if sig == signal.SIGKILL:
+            raise PermissionError(1, "Operation not permitted")
+
+    monkeypatch.setattr(os, "killpg", _killpg, raising=False)
+    proc = _FakeProc(hangs=True)
+    _fake_popen(monkeypatch, proc)
+
+    with pytest.raises(GitError) as excinfo:
+        runner.run_git(["fetch"], cwd=Path.cwd(), timeout=10)
+
+    assert excinfo.value.code == "git_failed"
+    assert excinfo.value.status == 500
+    assert "could not be stopped" in excinfo.value.message
+    assert excinfo.value.hint
+    assert sent == [(proc.pid, signal.SIGTERM), (proc.pid, signal.SIGKILL)]
+    # The pipes are still collected: the leader is reaped whatever the
+    # group did.
+    assert len(proc.communicate_calls) == 2
+
+
+def test_a_posix_group_that_emptied_under_the_floor_is_still_a_timeout(
+        monkeypatch, fake_git):
+    """``ESRCH`` from the floor signal is the outcome, not a failure.
+
+    The group can empty in the instant between the last liveness probe and
+    the ``SIGKILL`` -- the race the floor exists to lose safely. ``ESRCH``
+    says there was nobody left to kill, which is what the caller wanted, so
+    the answer stays the ordinary 504 rather than becoming the 500 an
+    ``EPERM`` earns.
+    """
+    _posix_clock(monkeypatch)
+    sent: list[tuple[int, int]] = []
+
+    def _killpg(pgid, sig):
+        if sig == 0:
+            return  # alive at every probe
+        sent.append((pgid, sig))
+        if sig == signal.SIGKILL:
+            raise ProcessLookupError(3, "No such process")
+
+    monkeypatch.setattr(os, "killpg", _killpg, raising=False)
+    proc = _FakeProc(hangs=True)
+    _fake_popen(monkeypatch, proc)
+
+    with pytest.raises(GitError) as excinfo:
+        runner.run_git(["fetch"], cwd=Path.cwd(), timeout=10)
+
+    assert excinfo.value.code == "timeout"
+    assert excinfo.value.status == 504
+    assert sent == [(proc.pid, signal.SIGTERM), (proc.pid, signal.SIGKILL)]
+
+
+def test_a_posix_group_that_empties_during_the_grace_is_not_killed(
+        monkeypatch, fake_git):
+    """The helper cleaned up in time: no floor signal, and a plain 504.
+
+    The distinction from the test above is what the grace is FOR. Here the
+    ssh git started closed its connection and exited part-way through, the
+    probe that follows meets ``ESRCH``, and there is nothing left to send a
+    ``SIGKILL`` to -- so none is sent, and the group's emptiness is itself
+    the proof the tree is gone.
+    """
+    _posix_clock(monkeypatch)
+    sent: list[tuple[int, int]] = []
+    probes = [0]
+
+    def _killpg(pgid, sig):
+        if sig == 0:
+            probes[0] += 1
+            if probes[0] > 2:
+                raise ProcessLookupError(3, "No such process")
+            return
+        sent.append((pgid, sig))
+
+    monkeypatch.setattr(os, "killpg", _killpg, raising=False)
+    proc = _FakeProc(hangs=True)
+    _fake_popen(monkeypatch, proc)
+
+    with pytest.raises(GitError) as excinfo:
+        runner.run_git(["fetch"], cwd=Path.cwd(), timeout=10)
+
+    assert excinfo.value.code == "timeout"
+    assert excinfo.value.status == 504
+    assert probes[0] == 3, "the group was watched until it emptied"
+    assert sent == [(proc.pid, signal.SIGTERM)]
 
 
 def test_missing_git_never_spawns(monkeypatch):
