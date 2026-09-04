@@ -214,6 +214,43 @@ export function depSpec(name: string, constraint: string): string {
 }
 
 /**
+ * Who wrote a plugin, out of the manifest it says so in -- or null.
+ *
+ * An inspection has no author field: `[plugin].authors` is optional metadata
+ * nothing installs against, so the wire contract echoes the manifest whole
+ * and leaves reading it to whoever wants to show it. The scaffold writes a
+ * LIST (`authors = []`); a hand-written manifest as often has the singular
+ * string, and both are answers to the same question. Anything else -- a
+ * table, a number, a list of tables -- is dropped rather than stringified,
+ * because `[object Object]` on a consent screen is worse than no line.
+ */
+export function manifestAuthor(manifest: Record<string, unknown>): string | null {
+  const plugin = manifest.plugin;
+  if (typeof plugin !== 'object' || plugin === null) return null;
+  const table = plugin as Record<string, unknown>;
+
+  const names = (Array.isArray(table.authors) ? table.authors : [table.author])
+    .filter((value): value is string => typeof value === 'string')
+    .map((value) => value.trim())
+    .filter((value) => value !== '');
+  return names.length === 0 ? null : names.join(', ');
+}
+
+/**
+ * *value* when it is a link a browser may follow, else null.
+ *
+ * A homepage is a hand-written field in a manifest at a source NOBODY has
+ * installed yet, and the review card is where it is first shown: a
+ * `javascript:` URL there is a script that runs inside the editor the moment
+ * a reviewer clicks the one link on the screen that asks them to trust this
+ * plugin. Only http(s) survives, which is all a homepage ever is.
+ */
+export function httpUrl(value: string): string | null {
+  const url = value.trim();
+  return /^https?:\/\//i.test(url) ? url : null;
+}
+
+/**
  * The `cdui plugin install ...` line for *entry*, for the terminal fallback
  * the activity pane offers when a job fails.
  *

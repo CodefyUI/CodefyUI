@@ -1,11 +1,12 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { act, render, screen, fireEvent, within } from '@testing-library/react';
-import type { PluginCatalogEntry } from '../../api/rest';
+import type { PluginCatalogEntry, PluginInspection } from '../../api/rest';
 import { useDialogStore } from '../../store/dialogStore';
 import {
   emptyPluginJob,
   usePluginStore,
   _resetPluginStoreForTesting,
+  type InspectionState,
   type PluginJob,
 } from '../../store/pluginStore';
 import { useUIStore } from '../../store/uiStore';
@@ -81,11 +82,64 @@ const demo = entry({
 /** A built-in pack nobody has installed. */
 const stats = entry({ id: 'stats', name: 'Stats nodes' });
 
+/** An inspection as the server would answer one. */
+function inspection(over: Partial<PluginInspection> = {}): PluginInspection {
+  return {
+    inspection_id: 'insp-1',
+    expires_at: '2026-01-01T00:00:00Z',
+    kind: 'github',
+    mode: 'install',
+    plugin_id: 'demo',
+    catalog_id: null,
+    official: false,
+    source: 'owner/demo',
+    url: 'https://github.com/owner/demo',
+    ref: null,
+    sha: null,
+    name: 'Demo plugin',
+    version: '1.2.0',
+    description: '',
+    homepage: '',
+    manifest: {},
+    capabilities: [],
+    allowed_modules: [],
+    python_deps: {},
+    has_frontend: false,
+    chapters: [],
+    lessons: [],
+    consent_required: false,
+    installed: null,
+    up_to_date: false,
+    capabilities_added: [],
+    allowed_modules_added: [],
+    warnings: [],
+    ...over,
+  };
+}
+
+/**
+ * A review the server has answered, in the shape the store keeps it.
+ *
+ * The narrow variant rather than `InspectionState`, so a case that adds an
+ * `error` to it can spread this instead of casting the union back down.
+ */
+function ready(
+  over: Partial<PluginInspection> = {},
+): Extract<InspectionState, { phase: 'ready' }> {
+  const data = inspection(over);
+  return {
+    phase: 'ready', data, source: data.source, forPluginId: null, kind: data.mode, error: null,
+  };
+}
+
 /** Fresh mocks for every action the panel is allowed to call. */
 function makeActions() {
   return {
     refresh: vi.fn(async () => {}),
     install: vi.fn(async () => {}),
+    inspect: vi.fn(async () => {}),
+    installInspected: vi.fn(async () => {}),
+    clearInspection: vi.fn(() => {}),
     update: vi.fn(async () => {}),
     uninstall: vi.fn(async () => {}),
     setEnabled: vi.fn(async () => {}),
@@ -288,6 +342,8 @@ describe('PluginCenterModal — the plugin list', () => {
     ).toBeInTheDocument();
     // No filter and no source box over a server that cannot answer either.
     expect(screen.queryByRole('button', { name: 'All' })).toBeNull();
+    expect(screen.queryByLabelText('Install from GitHub')).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Review' })).toBeNull();
   });
 
   it('says so when the server lists no plugins at all', () => {
@@ -468,6 +524,342 @@ describe('PluginCenterModal — remote installs refused', () => {
     // Switching a plugin off changes nothing on disk, so the token-only gate
     // does not cover it and neither does this.
     expect(within(cardFor('demo')).getByRole('button', { name: 'Disable' })).toBeEnabled();
+  });
+});
+
+// ── The source box ──────────────────────────────────────────────────────────
+
+describe('PluginCenterModal — the source box', () => {
+  /** Type *value* into the box and press Review. */
+  function review(value: string) {
+    fireEvent.change(screen.getByLabelText('Install from GitHub'), {
+      target: { value },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Review' }));
+  }
+
+  it('offers a box for a plugin the catalog does not list', () => {
+    seed({ plugins: [edu] });
+    open();
+    render(<PluginCenterModal />);
+
+    expect(screen.getByLabelText('Install from GitHub')).toHaveAttribute(
+      'placeholder', 'owner/repo[@ref] or GitHub URL',
+    );
+    // Nothing to review until something is typed.
+    expect(screen.getByRole('button', { name: 'Review' })).toBeDisabled();
+  });
+
+  it('refuses a source that is not one without asking the server', () => {
+    seed();
+    open();
+    render(<PluginCenterModal />);
+
+    review('not a repo!');
+
+    expect(
+      screen.getByText('Enter a catalog name, owner/repo[@ref] or a GitHub URL.'),
+    ).toBeInTheDocument();
+    // The server would answer 400 to the same string; this build knows that
+    // without the round trip, so it does not make one.
+    expect(actions.inspect).not.toHaveBeenCalled();
+  });
+
+  it('asks the server to read a source it can parse, trimmed', () => {
+    seed();
+    open();
+    render(<PluginCenterModal />);
+
+    review('  owner/demo@v1  ');
+
+    expect(actions.inspect).toHaveBeenCalledWith('owner/demo@v1');
+    expect(
+      screen.queryByText('Enter a catalog name, owner/repo[@ref] or a GitHub URL.'),
+    ).toBeNull();
+  });
+
+  it('says it is reading the source while it waits', () => {
+    seed({ inspection: { phase: 'inspecting', source: 'owner/demo' } });
+    open();
+    render(<PluginCenterModal />);
+
+    expect(screen.getByRole('button', { name: 'Downloading...' })).toBeDisabled();
+  });
+
+  it('reports a source the server could not read', () => {
+    // The store has already turned the code into a sentence; what is left is
+    // naming the source it was about.
+    seed({
+      inspection: {
+        phase: 'error',
+        source: 'owner/demo',
+        failure: { message: 'Could not reach GitHub.', code: 'github_unreachable', detail: null },
+      },
+    });
+    open();
+    render(<PluginCenterModal />);
+
+    expect(
+      screen.getByText('Could not fetch owner/demo: Could not reach GitHub.'),
+    ).toBeInTheDocument();
+  });
+
+  it('names the id a reserved-id refusal was about', () => {
+    // The refusal carries no sentence at all — only the id it is about, and
+    // that is the whole useful part.
+    seed({
+      inspection: {
+        phase: 'error',
+        source: 'owner/edu',
+        failure: {
+          message: 'reserved_id',
+          code: 'reserved_id',
+          detail: { code: 'reserved_id', id: 'edu' },
+        },
+      },
+    });
+    open();
+    render(<PluginCenterModal />);
+
+    expect(
+      screen.getByText('The id "edu" is reserved for a built-in pack.'),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/reserved_id/)).toBeNull();
+  });
+
+  it('lists the names a catalog miss offered instead', () => {
+    seed({
+      inspection: {
+        phase: 'error',
+        source: 'c9',
+        failure: {
+          message: 'unknown_catalog_name',
+          code: 'unknown_catalog_name',
+          detail: { code: 'unknown_catalog_name', known: ['edu', 'stats'] },
+        },
+      },
+    });
+    open();
+    render(<PluginCenterModal />);
+
+    expect(screen.getByText('No plugin is called "c9".')).toBeInTheDocument();
+    // The list only exists in the refusal's body: no sentence written on the
+    // server could have said which names would have worked.
+    expect(screen.getByText('This server can install: edu, stats')).toBeInTheDocument();
+  });
+
+  it('will not review from a browser the server refuses installs from', () => {
+    seed({ remoteInstallAllowed: false });
+    open();
+    render(<PluginCenterModal />);
+
+    fireEvent.change(screen.getByLabelText('Install from GitHub'), {
+      target: { value: 'owner/demo' },
+    });
+    const button = screen.getByRole('button', { name: 'Review' });
+    expect(button).toBeDisabled();
+    expect(button).toHaveAttribute(
+      'title', 'Installing is only allowed from the computer that runs the server.',
+    );
+  });
+});
+
+// ── The review ──────────────────────────────────────────────────────────────
+
+describe('PluginCenterModal — the review', () => {
+  const card = () => screen.getByRole('region', { name: 'Review before installing' });
+
+  it('stays out of the way until the server has answered', () => {
+    seed({ plugins: [edu] });
+    open();
+    render(<PluginCenterModal />);
+    expect(screen.queryByRole('region', { name: 'Review before installing' })).toBeNull();
+
+    act(() => {
+      usePluginStore.setState({ inspection: { phase: 'inspecting', source: 'owner/demo' } });
+    });
+    // Nothing has been read yet, and the button already says so: an empty
+    // card here would be the same fact twice and a second layout jump.
+    expect(screen.queryByRole('region', { name: 'Review before installing' })).toBeNull();
+  });
+
+  it('shows what was found at the source, and what installing it would cost', () => {
+    seed({
+      plugins: [entry({ id: 'demo', nodes: ['demo:Split', 'demo:Join'] })],
+      inspection: ready({
+        name: 'Demo plugin',
+        version: '1.2.0',
+        description: 'Two nodes and a panel.',
+        manifest: { plugin: { authors: ['Ada', 'Grace'] } },
+        homepage: 'https://example.com/demo',
+        python_deps: { torch: '2.1.0' },
+        ref: 'main',
+        sha: 'abcdef1234567890',
+        capabilities: ['network', 'gpu'],
+        allowed_modules: ['subprocess'],
+        has_frontend: true,
+        consent_required: true,
+      }),
+    });
+    open();
+    render(<PluginCenterModal />);
+
+    const review = within(card());
+    expect(review.getByText('Demo plugin')).toBeInTheDocument();
+    expect(review.getByText('v1.2.0')).toBeInTheDocument();
+    expect(review.getByText('Two nodes and a panel.')).toBeInTheDocument();
+    expect(review.getByText('Author: Ada, Grace')).toBeInTheDocument();
+    // The catalog's row is where node names come from: an inspection cannot
+    // say without importing the code it is asking about.
+    expect(review.getByText('Nodes: demo:Split, demo:Join')).toBeInTheDocument();
+    expect(review.getByText('Python packages: torch==2.1.0')).toBeInTheDocument();
+    expect(review.getByText('main @ abcdef1')).toBeInTheDocument();
+    expect(review.getByRole('link', { name: 'Homepage' }))
+      .toHaveAttribute('href', 'https://example.com/demo');
+
+    // One line per capability, saying what granting it costs — and the raw
+    // id for one this build has no line for, rather than a silent gap.
+    expect(review.getByText(/^network: reach any host/)).toBeInTheDocument();
+    expect(review.getByText('gpu')).toBeInTheDocument();
+    expect(review.getByText(/Granting is a declaration, not a sandbox/))
+      .toBeInTheDocument();
+    expect(review.getByText('I trust this author. Allows: subprocess'))
+      .toBeInTheDocument();
+    expect(
+      review.getByText('Ships JavaScript that runs in this editor with full access.'),
+    ).toBeInTheDocument();
+  });
+
+  it('asks nothing of a manifest that declares nothing', () => {
+    seed({ inspection: ready() });
+    open();
+    render(<PluginCenterModal />);
+
+    const review = within(card());
+    expect(review.queryByRole('checkbox')).toBeNull();
+    expect(review.queryByText('This plugin asks for:')).toBeNull();
+    // Nothing to agree to, so nothing to wait for.
+    expect(review.getByRole('button', { name: 'Install' })).toBeEnabled();
+  });
+
+  it('keeps Install dead until every box the manifest asks for is ticked', () => {
+    seed({
+      inspection: ready({
+        capabilities: ['network'], allowed_modules: ['subprocess'], consent_required: true,
+      }),
+    });
+    open();
+    render(<PluginCenterModal />);
+
+    const review = within(card());
+    const install = review.getByRole('button', { name: 'Install' });
+    expect(install).toBeDisabled();
+
+    fireEvent.click(review.getByRole('checkbox', { name: 'Grant these capabilities' }));
+    // One of two is not consent.
+    expect(install).toBeDisabled();
+
+    fireEvent.click(
+      review.getByRole('checkbox', { name: 'I trust this author. Allows: subprocess' }),
+    );
+    expect(install).toBeEnabled();
+  });
+
+  it('sends the capabilities and the trust the user actually ticked', () => {
+    seed({
+      inspection: ready({
+        capabilities: ['network'], allowed_modules: ['subprocess'], consent_required: true,
+      }),
+    });
+    open();
+    render(<PluginCenterModal />);
+
+    const review = within(card());
+    fireEvent.click(review.getByRole('checkbox', { name: 'Grant these capabilities' }));
+    fireEvent.click(
+      review.getByRole('checkbox', { name: 'I trust this author. Allows: subprocess' }),
+    );
+    fireEvent.click(review.getByRole('button', { name: 'Install' }));
+
+    // The store turns the tick into the DECLARED list on the wire; what the
+    // card promises is that it never sends a trust nobody gave.
+    expect(actions.installInspected).toHaveBeenCalledWith({
+      acceptCapabilities: true, trustAuthor: true,
+    });
+  });
+
+  it('trusts no author when there was none to trust', () => {
+    seed({ inspection: ready({ capabilities: ['network'], consent_required: true }) });
+    open();
+    render(<PluginCenterModal />);
+
+    const review = within(card());
+    fireEvent.click(review.getByRole('checkbox', { name: 'Grant these capabilities' }));
+    fireEvent.click(review.getByRole('button', { name: 'Install' }));
+
+    expect(actions.installInspected).toHaveBeenCalledWith({
+      acceptCapabilities: true, trustAuthor: false,
+    });
+  });
+
+  it('offers to reinstall a plugin the server says is already here', () => {
+    seed({
+      inspection: {
+        ...ready(),
+        error: {
+          message: 'already_installed',
+          code: 'already_installed',
+          detail: { code: 'already_installed', plugin_id: 'demo' },
+        },
+      },
+    });
+    open();
+    render(<PluginCenterModal />);
+
+    // The 409 was an offer, not a failure: the review is still spendable and
+    // the button is what accepts it.
+    fireEvent.click(within(card()).getByRole('button', { name: 'Reinstall' }));
+    expect(actions.installInspected).toHaveBeenCalledWith({
+      acceptCapabilities: true, trustAuthor: false, force: true,
+    });
+  });
+
+  it('says Update when the review is of a version over one already installed', () => {
+    seed({ inspection: ready({ mode: 'update' }) });
+    open();
+    render(<PluginCenterModal />);
+
+    expect(within(card()).getByRole('button', { name: 'Update' })).toBeInTheDocument();
+  });
+
+  it('puts the review away when it is cancelled', () => {
+    seed({ inspection: ready() });
+    open();
+    render(<PluginCenterModal />);
+
+    fireEvent.click(within(card()).getByRole('button', { name: 'Cancel' }));
+    expect(actions.clearInspection).toHaveBeenCalled();
+  });
+
+  it('will not link a homepage that is not a web address', () => {
+    // A manifest at a source nobody has installed yet is untrusted text, and
+    // `javascript:` in the one link on a consent screen is a script that
+    // runs in this editor.
+    seed({ inspection: ready({ homepage: 'javascript:alert(1)' }) });
+    open();
+    render(<PluginCenterModal />);
+
+    expect(within(card()).queryByRole('link')).toBeNull();
+  });
+
+  it('will not install from a browser the server refuses installs from', () => {
+    seed({ inspection: ready(), remoteInstallAllowed: false });
+    open();
+    render(<PluginCenterModal />);
+
+    expect(within(card()).getByRole('button', { name: 'Install' })).toBeDisabled();
+    // Putting the review away is not an install, and never was refused.
+    expect(within(card()).getByRole('button', { name: 'Cancel' })).toBeEnabled();
   });
 });
 

@@ -5,7 +5,9 @@ import {
   capabilityKey,
   cliInstallCommand,
   depSpec,
+  httpUrl,
   isAvailableStatus,
+  manifestAuthor,
   matchesFilter,
   originLabel,
   provenancePin,
@@ -294,6 +296,46 @@ describe('depSpec', () => {
 
   it('leaves a name alone when nothing is constrained', () => {
     expect(depSpec('requests', '')).toBe('requests');
+  });
+});
+
+describe('manifestAuthor', () => {
+  it('reads the list the scaffolded manifest writes', () => {
+    expect(manifestAuthor({ plugin: { authors: ['Ada', 'Grace'] } })).toBe('Ada, Grace');
+  });
+
+  it('takes the singular a hand-written manifest as often has', () => {
+    expect(manifestAuthor({ plugin: { author: '  Ada  ' } })).toBe('Ada');
+  });
+
+  it('says nothing rather than something it cannot read', () => {
+    // A manifest is hand-written, and an inspection echoes it whole and
+    // unvalidated: `[object Object]` on a consent screen is worse than no
+    // line at all.
+    expect(manifestAuthor({})).toBeNull();
+    expect(manifestAuthor({ plugin: {} })).toBeNull();
+    expect(manifestAuthor({ plugin: { authors: [] } })).toBeNull();
+    expect(manifestAuthor({ plugin: { authors: [{ name: 'Ada' }] } })).toBeNull();
+    expect(manifestAuthor({ plugin: { author: '   ' } })).toBeNull();
+    expect(manifestAuthor({ plugin: 'Ada' })).toBeNull();
+  });
+});
+
+describe('httpUrl', () => {
+  it('passes a web address through', () => {
+    expect(httpUrl('https://example.com/demo')).toBe('https://example.com/demo');
+    expect(httpUrl('  http://example.com  ')).toBe('http://example.com');
+  });
+
+  it('refuses a scheme that would run rather than navigate', () => {
+    // The homepage comes out of a manifest at a source NOBODY has installed
+    // yet, and the review card is the one screen that asks the user to trust
+    // it: a `javascript:` href there runs inside the editor on a click.
+    expect(httpUrl('javascript:alert(1)')).toBeNull();
+    expect(httpUrl('data:text/html,<script>alert(1)</script>')).toBeNull();
+    expect(httpUrl('file:///etc/passwd')).toBeNull();
+    expect(httpUrl('example.com')).toBeNull();
+    expect(httpUrl('')).toBeNull();
   });
 });
 

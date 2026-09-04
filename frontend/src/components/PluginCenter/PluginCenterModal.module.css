@@ -49,6 +49,50 @@
   border-color: var(--accent-deep);
 }
 
+/* Why the last Review was refused. `flex-basis: 100%` puts it on its own row
+   of the wrapping form rather than squeezing the field it is about. */
+.sourceError {
+  flex-basis: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+  color: var(--status-error);
+  font-size: var(--fs-sm);
+  line-height: var(--lh-normal);
+  /* A refused source is whatever the user typed: a pasted URL has no break
+     opportunity of its own, and the panel's only overflow is `hidden`. */
+  overflow-wrap: anywhere;
+}
+
+/* The half of a refusal that offers something — the catalog names that WOULD
+   have worked. An offer is not a complaint, so it keeps the block and drops
+   the alarm colour. */
+.sourceHint {
+  color: var(--text-muted);
+  font-size: var(--fs-xs);
+}
+
+/* ── The review card ────────────────────────────────────────────────────── */
+
+/* One thing the user has to agree to, beside its box. Everything else on the
+   card is the Package Center's stylesheet; only this pairing is new. */
+.consentCheck {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--sp-3);
+  color: var(--text-primary);
+  font-size: var(--fs-sm);
+  line-height: var(--lh-normal);
+  cursor: pointer;
+}
+
+/* A 14 px box against a 13 px line at 1.55: aligned to the top of the line
+   box it sits a hair above the text it labels, which is what this token is
+   for. */
+.consentCheck input {
+  margin-top: var(--sp-1);
+}
+
 /* ── The filter ─────────────────────────────────────────────────────────── */
 
 /* All | Installed | Available. The pressed one is styled through

@@ -1134,6 +1134,12 @@ const en = {
   'pluginCenter.source.review': 'Review',
   'pluginCenter.source.reviewing': 'Downloading...',
   'pluginCenter.source.fail': 'Could not fetch {source}: {message}',
+  // A bare word that is not one of this build's packs. The refusal is a code
+  // with no sentence in it, and no sentence written on the server could have
+  // said the useful part: which names WOULD work. That list only exists in
+  // the body, so the panel is what puts the two together.
+  'pluginCenter.source.unknownName': 'No plugin is called "{source}".',
+  'pluginCenter.source.knownNames': 'This server can install: {known}',
 
   // The consent screen. Nothing is installed until this has been read and
   // what it asks for has been ticked.

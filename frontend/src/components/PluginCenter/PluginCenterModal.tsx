@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
+import type { PluginCatalogEntry } from '../../api/rest';
 import { useDialogStore } from '../../store/dialogStore';
 import { usePluginStore } from '../../store/pluginStore';
 import { useUIStore } from '../../store/uiStore';
@@ -10,6 +11,8 @@ import { RefreshIcon } from '../shared/Icons';
 import { HIGHLIGHT_MS } from '../PackCenter/PackCenterModal';
 import { PluginCard } from './PluginCard';
 import { PluginFilterBar } from './PluginFilterBar';
+import { PluginReviewCard } from './PluginReviewCard';
+import { PluginSourceForm } from './PluginSourceForm';
 import { matchesFilter, type PluginFilter } from './pluginStatus';
 import styles from '../PackCenter/PackCenterModal.module.css';
 
@@ -32,6 +35,19 @@ export function PluginCenterModal() {
   return <PluginCenterBody />;
 }
 
+/**
+ * The node types *pluginId* registers, as the catalog last said.
+ *
+ * Own keys only: `byId` is a bare object built from parsed JSON, so a plugin
+ * called `constructor` would otherwise hand back a function and `.nodes`
+ * would be undefined on it.
+ */
+function ownNodes(byId: Record<string, PluginCatalogEntry>, pluginId: string): string[] {
+  return Object.prototype.hasOwnProperty.call(byId, pluginId)
+    ? byId[pluginId].nodes
+    : [];
+}
+
 function PluginCenterBody() {
   const { t } = useI18n();
   const close = useUIStore((s) => s.closePluginCenter);
@@ -46,8 +62,12 @@ function PluginCenterBody() {
   const remoteInstallAllowed = usePluginStore((s) => s.remoteInstallAllowed);
   const job = usePluginStore((s) => s.job);
   const busy = usePluginStore((s) => s.busy);
+  const inspection = usePluginStore((s) => s.inspection);
   const refresh = usePluginStore((s) => s.refresh);
   const install = usePluginStore((s) => s.install);
+  const inspect = usePluginStore((s) => s.inspect);
+  const installInspected = usePluginStore((s) => s.installInspected);
+  const clearInspection = usePluginStore((s) => s.clearInspection);
   const update = usePluginStore((s) => s.update);
   const uninstall = usePluginStore((s) => s.uninstall);
   const setEnabled = usePluginStore((s) => s.setEnabled);
@@ -183,8 +203,31 @@ function PluginCenterBody() {
 
         <div className={styles.body}>
           <section className={styles.list} aria-label={t('pluginCenter.list')}>
-            {/* The source box and the install review go here, above the
-                filter: they are about a plugin that is not in the list yet. */}
+            {/* Above the filter, because both are about a plugin that is not
+                in the list yet. A server with no Plugin Center is offered
+                neither. */}
+            {!unsupported && (
+              <PluginSourceForm
+                inspection={inspection}
+                canInstall={remoteInstallAllowed}
+                onReview={(source) => void inspect(source)}
+              />
+            )}
+
+            {/* Keyed on the inspection: a second Review answers a different
+                manifest, and the boxes ticked for the first one must not
+                carry over to it. */}
+            {!unsupported && inspection.phase === 'ready' && (
+              <PluginReviewCard
+                key={inspection.data.inspection_id}
+                inspection={inspection}
+                nodes={ownNodes(byId, inspection.data.plugin_id)}
+                busy={busy[inspection.data.plugin_id] === true}
+                canInstall={remoteInstallAllowed}
+                onInstall={(opts) => void installInspected(opts)}
+                onCancel={clearInspection}
+              />
+            )}
 
             {/* No filter over a list nobody can act on: a server with no
                 Plugin Center has no rows, and neither has one whose catalog

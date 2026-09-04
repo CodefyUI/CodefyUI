@@ -1018,6 +1018,8 @@ const zhTW: Record<TranslationKey, string> = {
   'pluginCenter.source.review': '檢視',
   'pluginCenter.source.reviewing': '正在下載...',
   'pluginCenter.source.fail': '無法取得 {source}：{message}',
+  'pluginCenter.source.unknownName': '沒有名為「{source}」的外掛。',
+  'pluginCenter.source.knownNames': '這台伺服器可安裝：{known}',
 
   // The consent screen.
   'pluginCenter.review.title': '安裝前請確認',
