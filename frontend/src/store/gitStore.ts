@@ -137,30 +137,15 @@ export interface GitStoreError {
 /* ── i18n ───────────────────────────────────────────────────────────── */
 
 /**
- * The keys this store names, listed once.
+ * Translate, off the store rather than through the hook.
  *
- * `t` is typed on `TranslationKey` (`keyof typeof en`), and the `git.*`
- * strings land with the rest of the tab's copy rather than here -- so this
- * union is what stands in for the locale file until then: a typo is still a
- * compile error, and the list doubles as the store's half of the copy
- * checklist. `t` already falls back to the key itself when an entry is
- * missing, so a gap costs the raw key on screen and nothing else.
+ * `TranslationKey` is `keyof typeof en`, so every key this file names is
+ * checked against the locale file itself and a typo is a compile error. It
+ * once took a narrower union of its own, standing in for strings that had not
+ * landed yet; they have, and the real type is strictly better.
  */
-type GitStoreKey =
-  | 'git.error.busy'
-  | 'git.error.timeout'
-  | 'git.group.changes'
-  | 'git.group.skipped'
-  | 'git.group.staged'
-  | 'git.toast.changedOnDisk'
-  | 'git.toast.committed'
-  | 'git.toast.initialized'
-  | 'git.toast.missingOnDisk'
-  | 'git.toast.reload'
-  | 'git.toast.reloadConfirm';
-
-function t(key: GitStoreKey, vars?: Record<string, string | number>): string {
-  return useI18n.getState().t(key as TranslationKey, vars);
+function t(key: TranslationKey, vars?: Record<string, string | number>): string {
+  return useI18n.getState().t(key, vars);
 }
 
 /** `pluginStore`'s helper, for the same reason: no store action via a hook. */
