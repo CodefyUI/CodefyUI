@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useId, useRef, useState } from 'react';
-import { isLayoutFile, useGitStore } from '../../store/gitStore';
+import { isLayoutFile, useGitStore, type GitRefKind } from '../../store/gitStore';
 import { useI18n } from '../../i18n';
 import { docsUrl } from '../../utils/docsUrl';
 import { prompt } from '../../utils/dialog';
@@ -46,6 +46,33 @@ export function focusScmFallback(): void {
     `[data-scm-focus="${SCM_FOCUS.commit}"]`,
   ) ?? document.querySelector<HTMLElement>(`[data-scm-focus="${SCM_FOCUS.title}"]`);
   target?.focus();
+}
+
+/**
+ * Put focus back on one reference section's heading.
+ *
+ * Called after a row that held focus has gone -- a branch deleted, a stash
+ * dropped, a remote removed -- so it lands on the heading of the list it left
+ * rather than on the document body, where the next Tab starts from the top of
+ * the page.
+ *
+ * By id rather than through a ref, for the same reason the branch button
+ * points `aria-controls` at one: `refSectionIds(kind)` is fixed per kind, the
+ * panel is a singleton, and the row that loses focus and the heading that
+ * catches it are drawn by two different components. On the next frame, because
+ * the store's update has been applied but React has not necessarily rendered
+ * yet -- and the whole SECTION can be what disappears, when the panel switches
+ * screens under it.
+ */
+export function focusRefSection(kind: GitRefKind): void {
+  requestAnimationFrame(() => {
+    const heading = document.getElementById(refSectionIds(kind).headingId);
+    if (heading !== null && heading.isConnected) {
+      heading.focus();
+      return;
+    }
+    focusScmFallback();
+  });
 }
 
 /** The four overflow rows that talk to a remote, in the order they are drawn. */
@@ -180,9 +207,14 @@ export function ScmHeader() {
   const askThenStash = useCallback(async () => {
     const message = await prompt({ title: t('git.stash.messagePrompt') });
     if (message === null) return;
+    // The message is OPTIONAL and the prompt says so, so a box left empty is
+    // NOT a message: it goes as `null`, and git writes its own subject ("WIP
+    // on main: <sha> <subject>") for the row instead. An empty STRING is a
+    // different thing, and the route answers it with a 400.
+    const named = message.trim();
     // Untracked files go with it. A stash that left a new graph file behind
     // would not free the tree for the checkout the stash was made for.
-    await runStash(message, true);
+    await runStash(named === '' ? null : named, true);
   }, [runStash, t]);
 
   /**

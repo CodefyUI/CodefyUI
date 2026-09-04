@@ -602,8 +602,10 @@
   background: var(--surface-hover);
 }
 
-/* The whole name is one button — inert here, and the diff view's target
-   later. `min-width: 0` is what lets the name inside it ellipsise. */
+/* The name half of a row, drawn as one button. In a file group it is inert —
+   opening the change is the diff view's target, later; in a reference list it
+   is what switches to the branch it names. `min-width: 0` is what lets the
+   name inside it ellipsise. */
 .openButton {
   display: flex;
   align-items: baseline;
@@ -689,6 +691,80 @@
 .chip[data-kind='renamed'] {
   background: var(--info-wash);
   color: var(--status-info);
+}
+
+/* ── The three reference lists ───────────────────────────────────────────
+   Branches, remotes and stashes reuse the file row's box — the same
+   `min-width: 0` name, the same dimmer half beside it, the same actions
+   collapsed to zero width until a hover or a focus opens them. What is added
+   here is the row that cannot be pressed, the chip beside a name, and the two
+   sentences a list can be reduced to. */
+
+/* The branch you are already on: no button, but the same box as one, so the
+   names in a list line up whether or not each row can be switched to. */
+.refNameStatic {
+  display: flex;
+  align-items: baseline;
+  gap: var(--sp-2);
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: var(--sp-2) var(--sp-1);
+  color: var(--text-secondary);
+  font-size: var(--fs-sm);
+}
+
+/* "Current". Never shrinks: it is two words that mean the row, and a chip
+   ellipsised to "Cur..." would mean nothing at all. */
+.refBadge {
+  flex: 0 0 auto;
+  padding: 0 var(--sp-2);
+  border-radius: var(--radius-sm);
+  background: var(--surface-input);
+  color: var(--text-muted);
+  font-size: var(--fs-2xs);
+  white-space: nowrap;
+}
+
+/* The destructive one of a row's actions, in the palette `.dangerButton`
+   already uses for the same job among the icon buttons. */
+.dangerAction:hover {
+  border-color: var(--status-error);
+  color: var(--status-error);
+}
+
+/* One sentence where a list would be. Indented to the rows' text, so it reads
+   as the list's own answer rather than as a heading. */
+.refEmpty,
+.refError {
+  padding: var(--sp-2) var(--sp-3) var(--sp-3) var(--sp-4);
+  font-size: var(--fs-xs);
+  line-height: var(--lh-normal);
+  overflow-wrap: anywhere;
+}
+
+.refEmpty {
+  color: var(--text-muted);
+}
+
+.refError {
+  color: var(--status-error);
+}
+
+/* The remote branches: a list inside the list, under a heading of its own.
+   `display: block`, because this `<li>` holds a heading and a `<ul>` rather
+   than a row. */
+.refSublist {
+  display: block;
+}
+
+.refSubhead {
+  display: block;
+  padding: var(--sp-3) var(--sp-3) var(--sp-1) var(--sp-4);
+  color: var(--text-muted);
+  font-size: var(--fs-2xs);
+  font-weight: var(--fw-bold);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
 }
 
 /* ── Empty screens ───────────────────────────────────────────────────────── */

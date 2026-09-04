@@ -548,6 +548,30 @@ describe('ScmHeader: running a git action from the menu', () => {
     await waitFor(() => expect(asked).toHaveBeenCalledTimes(1));
     expect(stashPush).not.toHaveBeenCalled();
   });
+
+  it.each(['', '   '])(
+    'sends no message at all when the box was left at %o',
+    async (typed) => {
+      // The prompt says the message is optional. An empty STRING is a
+      // different thing from no message -- the route refuses it with a 400 --
+      // and git writes its own subject for a stash nobody named.
+      asked.mockResolvedValue(typed);
+      render(<ScmHeader />);
+      openMore();
+      fireEvent.click(menuRow('Stash Changes...'));
+      await waitFor(() => expect(stashPush).toHaveBeenCalledWith(null, true));
+    },
+  );
+
+  it('trims a message that was typed', async () => {
+    asked.mockResolvedValue('  before the demo  ');
+    render(<ScmHeader />);
+    openMore();
+    fireEvent.click(menuRow('Stash Changes...'));
+    await waitFor(() =>
+      expect(stashPush).toHaveBeenCalledWith('before the demo', true),
+    );
+  });
 });
 
 describe('ScmHeader: the follow-up beside a refusal', () => {

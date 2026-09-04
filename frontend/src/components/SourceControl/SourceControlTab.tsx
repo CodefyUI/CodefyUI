@@ -2,13 +2,15 @@ import { useEffect, useMemo, useState, type ReactNode } from 'react';
 import { isLayoutFile, useGitStore } from '../../store/gitStore';
 import { gitOpKey } from './scm';
 import { useI18n } from '../../i18n';
+import { BranchesSection } from './BranchesSection';
 import { ChangeGroup } from './ChangeGroup';
 import { CommitBox } from './CommitBox';
 import { EmptyStates } from './EmptyStates';
 import { IdentityForm } from './IdentityForm';
 import { MergeGroup } from './MergeGroup';
-import { RefSection } from './RefSection';
+import { RemotesSection } from './RemotesSection';
 import { ScmHeader } from './ScmHeader';
+import { StashesSection } from './StashesSection';
 import shell from '../Sidebar/NodePalette.module.css';
 import styles from './SourceControl.module.css';
 
@@ -34,11 +36,6 @@ export function SourceControlTab() {
   const repoState = useGitStore((s) => s.repoState);
   const repo = useGitStore((s) => s.repo);
   const status = useGitStore((s) => s.status);
-  const branches = useGitStore((s) => s.branches);
-  const remotes = useGitStore((s) => s.remotes);
-  const stashes = useGitStore((s) => s.stashes);
-  const sections = useGitStore((s) => s.sections);
-  const setSectionOpen = useGitStore((s) => s.setSectionOpen);
   const loadError = useGitStore((s) => s.loadError);
   const hideLayout = useGitStore((s) => s.hideLayout);
   const identityFormOpen = useGitStore((s) => s.identityFormOpen);
@@ -139,34 +136,13 @@ export function SourceControlTab() {
             Outside the clean/dirty branch above: branches, remotes and stashes
             are properties of the repository, not of the working tree, and a
             clean checkout is exactly when somebody goes looking for another
-            branch. Collapsed by default and remembered by the store, which is
-            also what loads each list as its section opens.
-
-            The counts come from the lists where they have been read, so the
-            number labels the rows the section is about to draw; the stash
-            count falls back to the status, which carries it on every poll.
+            branch. Each one reads its own slice of the store, collapsed by
+            default and remembered there -- which is also what loads its list
+            as the section opens.
           */}
-          <RefSection
-            kind="branches"
-            title={t('git.section.branches')}
-            count={branches?.local.length ?? 0}
-            open={sections.branches}
-            onOpenChange={(open) => setSectionOpen('branches', open)}
-          />
-          <RefSection
-            kind="remotes"
-            title={t('git.section.remotes')}
-            count={remotes?.length ?? 0}
-            open={sections.remotes}
-            onOpenChange={(open) => setSectionOpen('remotes', open)}
-          />
-          <RefSection
-            kind="stashes"
-            title={t('git.section.stashes')}
-            count={stashes?.length ?? status.stash_count}
-            open={sections.stashes}
-            onOpenChange={(open) => setSectionOpen('stashes', open)}
-          />
+          <BranchesSection />
+          <RemotesSection />
+          <StashesSection />
         </div>
       </>
     );
