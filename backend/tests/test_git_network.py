@@ -1171,11 +1171,15 @@ async def test_every_network_command_keeps_literal_pathspecs(
     argued in a docstring, because the next command added here will be
     added by somebody reading this file.
 
-    ``refs.run_git`` is recorded as well as ``network.run_git``, because
-    the inventory below claims to be EVERY command a pull or a push runs
-    and ``remote -v`` reaches git through the other module. That also
-    makes the cost visible: two helpers of one plain push want the remote
-    list, and one process answers both.
+    WHAT IS RECORDED is the ``run_git`` of all three modules a pull or a
+    push reaches, and nothing else: ``network`` (``fetch``, ``merge``,
+    ``push``, the ``for-each-ref`` push resolver and the two ``rev-parse``
+    HEAD reads), ``refs`` (``remote -v``) and ``repo`` (the ``status`` the
+    service reads around every mutation, and the ``rev-parse --git-path``
+    that goes with it). Git run any other way is invisible here -- the raw
+    ``subprocess`` the fixtures arrange with, above all. Recording one
+    module and calling the result an inventory is how this test spent two
+    rounds not seeing ``remote -v`` and then not seeing the status read.
     """
     _publish(repo, bare_remote)
     clone = clone_of(bare_remote)
@@ -1192,15 +1196,17 @@ async def test_every_network_command_keeps_literal_pathspecs(
 
     monkeypatch.setattr(network, "run_git", _recorder(network.run_git))
     monkeypatch.setattr(refs, "run_git", _recorder(refs.run_git))
+    monkeypatch.setattr(repo_ops, "run_git", _recorder(repo_ops.run_git))
 
     await repo.service.pull()
     repo.commit("mine", {"c.txt": "sea\n"})
     await repo.service.push()
 
     assert [argv for argv in seen if LITERAL_PATHSPECS not in argv] == []
-    # ...and that the list above really is every command this module runs.
+    # ...and that the set below really is every subcommand those three run.
     assert {_subcommand(argv) for argv in seen} == {
-        "fetch", "for-each-ref", "rev-parse", "merge", "push", "remote"}
+        "fetch", "for-each-ref", "rev-parse", "merge", "push", "remote",
+        "status"}
     # The pull contributes none of these: its remote comes from the
     # upstream. So this count is the plain push's, and it is one.
     assert len([argv for argv in seen if _subcommand(argv) == "remote"]) == 1
