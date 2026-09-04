@@ -276,6 +276,16 @@ function saveHideLayout(hide: boolean): void {
 
 export type GitRefKind = 'branches' | 'remotes' | 'stashes';
 export type GitSections = Record<GitRefKind, boolean>;
+/**
+ * Why each list could not be read, or null where it could.
+ *
+ * Per kind rather than one field, because the three are three separate reads:
+ * a `GET /remotes` that fails while `GET /branches` answers must not put a
+ * line under the branches the panel is showing correctly.
+ */
+export type GitRefErrors = Record<GitRefKind, string | null>;
+
+const NO_REF_ERRORS: GitRefErrors = { branches: null, remotes: null, stashes: null };
 
 const SECTIONS_KEY = 'codefyui-git-sections';
 const CLOSED_SECTIONS: GitSections = {
@@ -900,6 +910,16 @@ interface GitState {
   stashes: StashInfo[] | null;
   /** Which of the three sections are open; persisted, see `SECTIONS_KEY`. */
   sections: GitSections;
+  /**
+   * Which list reads failed, shown by the section that could not be read.
+   *
+   * Separate from `lastError` on purpose: these reads are the panel's own --
+   * the fifteen-second poll of every open section, the refresh after a write,
+   * the header's look for a remote -- and nobody pressed a button for them.
+   * Writing them to the error line meant a transient 503 replaced the refusal
+   * the user was in the middle of reading.
+   */
+  refsError: GitRefErrors;
   /** No status has come back yet. Not "a request is in flight". */
   loading: boolean;
   /** The status could not be READ -- a 503 or an unreachable server. */
@@ -965,6 +985,7 @@ export const useGitStore = create<GitState>((set, get) => ({
   remotes: null,
   stashes: null,
   sections: loadSections(),
+  refsError: NO_REF_ERRORS,
   loading: false,
   loadError: null,
   busyOp: null,
@@ -1056,26 +1077,38 @@ export const useGitStore = create<GitState>((set, get) => ({
    * same as the empty list -- a repository with no remotes is `[]`, and only
    * that answers "there is nothing to publish to".
    *
-   * A failure lands in `lastError` rather than being swallowed: the section is
-   * open because somebody opened it, and an empty list with no reason given is
-   * worse than a line saying git could not be read.
+   * A failure lands in `refsError[kind]` rather than being swallowed: the
+   * section is open because somebody opened it, and an empty list with no
+   * reason given is worse than a line saying git could not be read. It is
+   * kept OUT of `lastError` because nobody pressed a button for these reads --
+   * the poll makes them every fifteen seconds -- and the error line belongs to
+   * the operation the user asked for.
    */
   refreshRefs: async (kind) => {
     const seq = (refReadSeq[kind] += 1);
+    const note = (message: string | null) => {
+      const current = get().refsError;
+      if (current[kind] === message) return;
+      set({ refsError: { ...current, [kind]: message } });
+    };
     try {
       if (kind === 'branches') {
         const answer = await getGitBranches();
-        if (seq === refReadSeq.branches) set({ branches: answer });
+        if (seq !== refReadSeq.branches) return;
+        set({ branches: answer });
       } else if (kind === 'remotes') {
         const answer = await getGitRemotes();
-        if (seq === refReadSeq.remotes) set({ remotes: answer });
+        if (seq !== refReadSeq.remotes) return;
+        set({ remotes: answer });
       } else {
         const answer = await getGitStashes();
-        if (seq === refReadSeq.stashes) set({ stashes: answer });
+        if (seq !== refReadSeq.stashes) return;
+        set({ stashes: answer });
       }
+      note(null);
     } catch (err) {
       if (seq !== refReadSeq[kind]) return;
-      set({ lastError: toStoreError(err, 'read') });
+      note(toStoreError(err, 'read').message);
     }
   },
 
@@ -1494,6 +1527,7 @@ export function _resetGitStoreForTesting(): void {
     remotes: null,
     stashes: null,
     sections: loadSections(),
+    refsError: NO_REF_ERRORS,
     loading: false,
     loadError: null,
     busyOp: null,

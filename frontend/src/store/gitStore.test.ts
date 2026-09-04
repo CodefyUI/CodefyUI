@@ -852,6 +852,47 @@ describe('reference sections', () => {
     await stale;
     expect(git().branches?.current).toBe('newer');
   });
+
+  it('keeps a refused list read out of the error line and inside its own section', async () => {
+    // The poll refreshes every open section, so a transient failure here used
+    // to overwrite the sentence describing the user's own last action. It goes
+    // to the section that could not be read instead.
+    useGitStore.setState({
+      lastError: { code: 'dirty_tree', message: 'mine', hint: null, stderr: null, op: 'pull' },
+    });
+    api.getGitBranches.mockRejectedValueOnce(await coded(503, 'git_service_unavailable'));
+    await git().refreshRefs('branches');
+
+    expect(git().lastError?.code).toBe('dirty_tree');
+    expect(git().refsError.branches).toBe('git said git_service_unavailable');
+    expect(git().refsError.remotes).toBeNull();
+    expect(git().refsError.stashes).toBeNull();
+  });
+
+  it('clears one section\'s failure on the next read that answers', async () => {
+    api.getGitRemotes.mockRejectedValueOnce(await coded(503, 'git_service_unavailable'));
+    await git().refreshRefs('remotes');
+    expect(git().refsError.remotes).not.toBeNull();
+
+    api.getGitRemotes.mockResolvedValueOnce(remotes());
+    await git().refreshRefs('remotes');
+    expect(git().refsError.remotes).toBeNull();
+    expect(git().remotes?.[0].name).toBe('origin');
+  });
+
+  it('lets an older failed read say nothing once a newer one has answered', async () => {
+    const slow = deferred<StashInfo[]>();
+    api.getGitStashes.mockReturnValueOnce(slow.promise);
+    const stale = git().refreshRefs('stashes');
+
+    api.getGitStashes.mockResolvedValueOnce(stashes(2));
+    await git().refreshRefs('stashes');
+
+    slow.reject(await coded(503, 'git_service_unavailable'));
+    await stale;
+    expect(git().refsError.stashes).toBeNull();
+    expect(git().stashes?.[0].index).toBe(2);
+  });
 });
 
 describe('network operations', () => {
