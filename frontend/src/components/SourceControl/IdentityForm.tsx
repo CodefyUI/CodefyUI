@@ -36,9 +36,27 @@ export function IdentityForm() {
   const [name, setName] = useState('');
   const [email, setEmail] = useState('');
   const seeded = useRef(false);
+  const nameRef = useRef<HTMLInputElement>(null);
   const domId = useId();
   const nameId = `${domId}-name`;
   const emailId = `${domId}-email`;
+  const nameScopeId = `${domId}-name-scope`;
+  const emailScopeId = `${domId}-email-scope`;
+
+  // Focus the first field as the form appears.
+  //
+  // This component is mounted only while the form is open, and the case that
+  // matters is the one where nobody opened it: a commit refused for a missing
+  // identity puts it on screen by itself, above a button the user has just
+  // pressed. Landing in the Name field is what makes that a form to fill in
+  // rather than a paragraph that appeared somewhere on the page.
+  //
+  // On mount only. The seeding effect below fills the fields a frame or two
+  // later, and a focus that ran again then would take the caret back from
+  // whatever the user had already tabbed to.
+  useEffect(() => {
+    nameRef.current?.focus();
+  }, []);
 
   // The config read is async and starts when the form opens, so the fields are
   // empty for a frame or two and fill in when it lands.
@@ -71,13 +89,22 @@ export function IdentityForm() {
         <label className={styles.fieldLabel} htmlFor={nameId}>
           {t('git.identity.name')}
         </label>
+        {/*
+          The scope line DESCRIBES the field: "for this project" and "from
+          global git config" are the difference between a commit signed as you
+          and one signed as whoever last used this machine, and a reader who
+          hears only the label and the value never learns which they are
+          about to write.
+        */}
         <input
           id={nameId}
           className={styles.fieldInput}
+          aria-describedby={nameScopeId}
           value={name}
+          ref={nameRef}
           onChange={(e) => setName(e.target.value)}
         />
-        <span className={styles.scope}>
+        <span className={styles.scope} id={nameScopeId}>
           {t(scopeKey(identity?.name_scope ?? null, identity?.name ?? null))}
         </span>
       </div>
@@ -89,10 +116,11 @@ export function IdentityForm() {
           id={emailId}
           className={styles.fieldInput}
           type="email"
+          aria-describedby={emailScopeId}
           value={email}
           onChange={(e) => setEmail(e.target.value)}
         />
-        <span className={styles.scope}>
+        <span className={styles.scope} id={emailScopeId}>
           {t(scopeKey(identity?.email_scope ?? null, identity?.email ?? null))}
         </span>
       </div>

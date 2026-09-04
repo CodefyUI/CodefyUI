@@ -132,6 +132,31 @@ describe('IdentityForm', () => {
     );
   });
 
+  it('puts the caret in the first field, because nobody may have opened it', () => {
+    // The form appears BY ITSELF when a commit is refused for a missing
+    // identity, above the button that was just pressed. Without this it is a
+    // paragraph that turned up somewhere on the page.
+    render(<IdentityForm />);
+    expect(document.activeElement).toBe(nameBox());
+  });
+
+  it('describes each field with the scope it would be written at', async () => {
+    render(<IdentityForm />);
+    useGitStore.setState({
+      identity: identity({
+        name: 'Ada',
+        email: 'ada@example.com',
+        name_scope: 'global',
+        email_scope: 'local',
+      }),
+    });
+    await waitFor(() => expect(nameBox()).toHaveValue('Ada'));
+    // A reader who hears only the label and the value never learns which
+    // identity they are about to commit under.
+    expect(nameBox()).toHaveAccessibleDescription('from global git config');
+    expect(emailBox()).toHaveAccessibleDescription('for this project');
+  });
+
   it('closes without writing anything', () => {
     render(<IdentityForm />);
     fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
