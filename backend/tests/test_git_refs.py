@@ -275,9 +275,9 @@ def test_a_remote_is_listed_with_both_urls(repo):
 
 
 def test_a_push_url_of_its_own_is_reported(repo):
-    """The two halves are read separately, and the ssh one shows the mask's
-    price: ``git@`` is a username and not a secret, and it goes anyway --
-    nothing can tell the two apart on sight."""
+    """The two halves are read separately -- and the ssh one is the shape
+    that must survive the mask untouched: ``git@`` is an identity, not a
+    credential, and it is half of what makes the row recognisable."""
     repo.git("remote", "add", "origin", "https://example.com/owner/repo.git")
     repo.git("remote", "set-url", "--push", "origin",
              "ssh://git@example.com/owner/repo.git")
@@ -285,7 +285,20 @@ def test_a_push_url_of_its_own_is_reported(repo):
     listed = refs.list_remotes(repo.root)
 
     assert listed[0].fetch_url == "https://example.com/owner/repo.git"
-    assert listed[0].push_url == "ssh://***@example.com/owner/repo.git"
+    assert listed[0].push_url == "ssh://git@example.com/owner/repo.git"
+
+
+@pytest.mark.parametrize("url", [
+    pytest.param("ssh://git@github.com/org/repo.git", id="ssh"),
+    pytest.param("git@github.com:org/repo.git", id="scp"),
+    pytest.param("https://github.com/org/repo.git", id="https-anonymous"),
+    pytest.param("file:///srv/mirrors/repo.git", id="file"),
+])
+def test_a_remote_with_no_secret_in_it_lists_unchanged(repo, url):
+    """The four shapes almost every remote in the world has."""
+    repo.git("remote", "add", "origin", url)
+
+    assert refs.list_remotes(repo.root)[0].fetch_url == url
 
 
 def test_a_token_in_a_remote_url_is_never_listed(repo):
@@ -293,9 +306,9 @@ def test_a_token_in_a_remote_url_is_never_listed(repo):
     that is deliberately servable to a LAN, and a remote URL is one of the
     two strings in this subsystem that can carry a live credential.
 
-    What is MASKED is the userinfo; what survives is the scheme, the host
-    and the path -- the part that makes the row worth showing at all, and
-    the part a user needs to recognise which remote failed.
+    What is MASKED is the secret; what survives is the username, the
+    scheme, the host and the path -- everything a user needs to recognise
+    which remote this is.
     """
     token = "ghp_16C7e42F292c6912E7710c838347Ae178B4a"
     repo.git("remote", "add", "origin",
@@ -303,12 +316,22 @@ def test_a_token_in_a_remote_url_is_never_listed(repo):
 
     listed = refs.list_remotes(repo.root)
 
-    assert listed[0].fetch_url == "https://***@github.com/owner/repo.git"
-    assert listed[0].push_url == "https://***@github.com/owner/repo.git"
+    assert listed[0].fetch_url == "https://alice:***@github.com/owner/repo.git"
+    assert listed[0].push_url == listed[0].fetch_url
     assert token not in listed[0].model_dump_json()
-    assert "alice" not in listed[0].model_dump_json()
     # git still has the real thing; only what LEAVES the server is masked.
     assert token in repo.git("remote", "get-url", "origin")
+
+
+def test_a_url_that_is_nothing_but_a_token_loses_all_of_it(repo):
+    """No username to keep: the token IS the username."""
+    token = "ghp_16C7e42F292c6912E7710c838347Ae178B4a"
+    repo.git("remote", "add", "origin", f"https://{token}@github.com/o/r.git")
+
+    listed = refs.list_remotes(repo.root)
+
+    assert listed[0].fetch_url == "https://***@github.com/o/r.git"
+    assert token not in listed[0].model_dump_json()
 
 
 # --- creating a branch -------------------------------------------------------

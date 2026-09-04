@@ -61,10 +61,11 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Literal
 
-from .errors import GitError, redact
+from .errors import GitError
 from .models import BranchesResponse, BranchInfo, RemoteBranchInfo, RemoteInfo
 from .paths import (
     SHA_RE,
+    display_url,
     validate_branch_name,
     validate_remote_name,
     validate_remote_url,
@@ -260,26 +261,27 @@ def list_remotes(root: Path) -> list[RemoteInfo]:
     than the first, so a URL that somehow contains one keeps it and only the
     ``(fetch)`` / ``(push)`` marker is taken off the end.
 
-    **Both URLs are redacted before they leave this function**, and that is
-    not defence in depth -- it is the only thing standing between a token
-    and the network. ``GET /api/git/remotes`` is an open, unauthenticated
-    read like every other GET in this app, this server is deliberately
-    servable to a LAN (issue #247), and
-    ``https://alice:ghp_xxx@github.com/owner/repo.git`` is a remote URL git
-    accepts and people really do paste into ``git remote add`` --
-    ``validate_remote_url`` accepts it too, on purpose, because refusing it
-    would only mean the user configures it from a terminal instead.
-    :func:`~app.core.git.errors.redact` is the function this package
-    already has for this exact string, and its own docstring says a route
-    "still owes the same care to anything else it echoes back".
+    **Both URLs go through** :func:`~app.core.git.paths.display_url`
+    **before they leave this function**, and that is not defence in depth
+    -- it is the only thing standing between a token and the network.
+    ``GET /api/git/remotes`` is an open, unauthenticated read like every
+    other GET in this app, this server is deliberately servable to a LAN
+    (issue #247), and ``https://alice:ghp_xxx@github.com/owner/repo.git``
+    is a remote URL git accepts and people really do paste into ``git
+    remote add`` -- ``validate_remote_url`` accepts it too, on purpose,
+    because refusing it would only mean the user configures it from a
+    terminal instead.
 
-    What survives is the scheme, the host and the path -- the part that
-    makes the row worth showing -- so what the tab draws is a URL the user
-    recognises and cannot copy a credential out of. The cost is that a
-    harmless ``ssh://git@host/...`` loses its username to the same mask;
-    that is the right trade for a string nobody can tell apart from a
-    password on sight, and it is why :class:`RemoteInfo` says these values
-    are for DISPLAY and must never be written back.
+    Not ``errors.redact``, which is for stderr and masks a whole userinfo
+    because there is no structure around it to lean on. Here the string is
+    a URL: only the SECRET half goes (``alice:***``, or the whole userinfo
+    when it is a bare token with no person in it), so
+    ``ssh://git@github.com/org/repo.git`` -- the most common remote
+    anybody has -- lists exactly as it was configured. A panel that masked
+    that would be teaching people to ignore the mask.
+
+    What comes back is for DISPLAY and must never be written back; see
+    :class:`RemoteInfo`.
     """
     result = run_git(["remote", "-v"], cwd=root, timeout=T_READ,
                      read_only=True)
@@ -297,8 +299,8 @@ def list_remotes(root: Path) -> list[RemoteInfo]:
         elif marker == "(fetch)":
             urls["fetch"] = url
     return [RemoteInfo(name=name,
-                       fetch_url=redact(urls.get("fetch", "")),
-                       push_url=redact(urls.get("push", "")))
+                       fetch_url=display_url(urls.get("fetch", "")),
+                       push_url=display_url(urls.get("push", "")))
             for name, urls in found.items()]
 
 

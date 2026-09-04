@@ -44,7 +44,7 @@ from collections.abc import Sequence
 from pathlib import Path, PurePosixPath
 from typing import NoReturn
 
-from .errors import GitError
+from .errors import ACCESS_TOKEN_USER, TOKEN_PREFIXES, GitError
 
 #: How many paths one request may name. A stage-all of a big working tree
 #: goes through the ``.`` form instead, so this is a cap on an explicit
@@ -94,6 +94,11 @@ HOSTED_URL_SCHEMES = ("https://", "ssh://")
 #: Where a URL's authority ends -- the first ``/``, ``?`` or ``#`` after the
 #: scheme.
 _AUTHORITY_END_RE = re.compile(r"[/?#]")
+
+#: What :func:`display_url` puts where a credential was. The same three
+#: characters ``errors.redact`` uses, so one mask is recognisable
+#: everywhere in the tab.
+URL_MASK = "***"
 
 #: Transport helpers whose "URL" is a command line git will run
 #: (``ext::sh -c ...``). Refused by name as well as by the scheme
@@ -308,6 +313,80 @@ def _check_host(authority: str) -> None:
         _refuse("invalid_url", "a remote URL must name a host")
     if host.startswith("-"):
         _refuse("invalid_url", "a remote host may not start with '-'")
+
+
+def display_url(url: str) -> str:
+    """*url* with its SECRET half masked, for a row the user reads.
+
+    ``GET /api/git/remotes`` is an open, unauthenticated read on a server
+    somebody may deliberately serve to a LAN, and a remote URL is one of
+    the two strings in this subsystem that can carry a live credential --
+    ``https://alice:ghp_xxx@github.com/owner/repo.git`` is a URL git
+    accepts and people really do paste into ``git remote add``.
+
+    This is NOT :func:`~app.core.git.errors.redact`, and the difference is
+    the point. ``redact`` masks a whole userinfo because it works on
+    STDERR, where the text around it is arbitrary and there is no
+    structure to lean on; that is right there and wrong here, because it
+    turns ``ssh://git@github.com/org/repo.git`` -- the single most common
+    remote anybody has -- into ``ssh://***@github.com/org/repo.git``, and
+    a panel that masks a row's most recognisable part teaches people to
+    ignore the mask. Here the string IS a URL, so its parts can be told
+    apart:
+
+    * two components (``user:secret``) -- everything after the FIRST
+      ``:`` goes, the username stays: ``https://alice:***@host/r.git``.
+      A password containing ``@`` is inside the masked half already,
+      because the userinfo is taken at the last ``@`` like a URL parser
+      does.
+    * one component that looks like a token (:data:`TOKEN_PREFIXES`) --
+      the whole thing goes. There is no username to keep: the token IS
+      the username, which is how a bare ``https://ghp_xxx@host/r.git``
+      is written.
+    * ``x-access-token:<token>``, the GitHub App form -- the whole thing
+      goes too. The first component is a constant, not a person.
+    * one plain component (``git``, ``alice``) -- kept. It is an identity,
+      not a credential, and it is half of what makes the row readable.
+
+    Total by construction: anything that is not a URL with a userinfo
+    comes back unchanged, including a bare path, a ``file://`` URL and
+    anything a user configured from a terminal without passing
+    :func:`validate_remote_url`. What comes out is for DISPLAY and must
+    never be written back -- see :class:`~app.core.git.models.RemoteInfo`.
+    """
+    scheme, separator, rest = url.partition("://")
+    if separator:
+        authority = _AUTHORITY_END_RE.split(rest, maxsplit=1)[0]
+        userinfo, at_sign, hostport = authority.rpartition("@")
+        if not at_sign:
+            return url
+        return (f"{scheme}://{_mask_userinfo(userinfo)}@{hostport}"
+                f"{rest[len(authority):]}")
+    if SCP_URL_RE.match(url):
+        # ``user@host:path``. The userinfo grammar admits no ``@`` and no
+        # ``:``, so it is always one component and the first ``@`` ends it.
+        userinfo, _, hostpath = url.partition("@")
+        return f"{_mask_userinfo(userinfo)}@{hostpath}"
+    return url
+
+
+def _mask_userinfo(userinfo: str) -> str:
+    """One userinfo with its credential half replaced by :data:`URL_MASK`."""
+    user, colon, _secret = userinfo.partition(":")
+    if not colon:
+        return URL_MASK if _looks_like_a_token(user) else userinfo
+    if not user or user.lower() == ACCESS_TOKEN_USER:
+        return URL_MASK
+    return f"{user}:{URL_MASK}"
+
+
+def _looks_like_a_token(value: str) -> bool:
+    """Is *value* a credential rather than somebody's name?
+
+    Prefix-matched rather than pattern-matched: the issuers publish the
+    prefixes, and a word carrying one is a token whatever follows it.
+    """
+    return value.lower().startswith(TOKEN_PREFIXES)
 
 
 def validate_commit_message(message: str) -> str:

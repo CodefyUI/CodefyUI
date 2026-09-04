@@ -463,15 +463,28 @@ def stderr_tail(stderr: str, limit: int = LAST_STDERR_LINES) -> str:
 #: can never run past the authority into a path or a second URL.
 _USERINFO_RE = re.compile(r"://[^/\s]*@")
 
-#: The GitHub App installation token, which also appears OUTSIDE a URL --
-#: in an ``Authorization`` line a forge echoes back, or in a hook's own
-#: output. The prefix is kept so the sentence still reads.
-_ACCESS_TOKEN_RE = re.compile(r"(?i)(x-access-token:)[^\s@/]+")
+#: The placeholder GitHub Apps put in front of an installation token, so
+#: that ``x-access-token:<token>`` is a userinfo with no PERSON in it.
+#:
+#: Public, like the prefixes below and for the same reason:
+#: ``paths.display_url`` has to tell a username apart from a credential,
+#: and a second copy of the answer would drift from this one the first
+#: time a forge adds a shape.
+ACCESS_TOKEN_USER = "x-access-token"
 
 #: The token shapes whose prefixes their issuers publish. A word starting
 #: with one of these is a credential and nothing else.
+TOKEN_PREFIXES: tuple[str, ...] = (
+    "github_pat_", "ghp_", "gho_", "ghs_", "ghu_", "glpat-")
+
+#: The GitHub App installation token, which also appears OUTSIDE a URL --
+#: in an ``Authorization`` line a forge echoes back, or in a hook's own
+#: output. The prefix is kept so the sentence still reads.
+_ACCESS_TOKEN_RE = re.compile(rf"(?i)({re.escape(ACCESS_TOKEN_USER)}:)[^\s@/]+")
+
 _TOKEN_WORD_RE = re.compile(
-    r"(?i)\b(?:github_pat_|ghp_|gho_|ghs_|ghu_|glpat-)[A-Za-z0-9_-]+")
+    r"(?i)\b(?:" + "|".join(re.escape(prefix) for prefix in TOKEN_PREFIXES)
+    + r")[A-Za-z0-9_-]+")
 
 
 def redact(text: str) -> str:

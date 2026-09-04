@@ -345,15 +345,26 @@ class RemoteInfo(BaseModel):
     configured separately reports the fetch URL in both, which is what git
     itself prints and what actually happens on a push.
 
-    **Both URLs are for DISPLAY ONLY.** They arrive REDACTED -- the
-    userinfo of ``https://alice:ghp_xxx@github.com/owner/repo.git`` is
-    masked to ``***`` before it leaves ``refs.list_remotes``, because this
-    model is served by an open, unauthenticated GET. So the string here is
-    not the string git holds, and a UI must never round-trip it: a "Change
-    URL" prompt pre-filled from this field and submitted unchanged would
-    write ``https://***@github.com/...`` into the config and destroy the
-    credential the user had. The prompt starts empty, or from what the user
-    types; nothing reads a URL back out of this API.
+    **Both URLs are for DISPLAY ONLY.** This model is served by an open,
+    unauthenticated GET, so ``refs.list_remotes`` puts every URL through
+    ``paths.display_url`` first: the SECRET half of a userinfo is masked to
+    ``***`` and everything else is kept, because a row nobody recognises is
+    a row nobody can act on.
+
+    So ``ssh://git@github.com/org/repo.git`` and
+    ``git@github.com:org/repo.git`` arrive exactly as configured -- a
+    username is an identity, not a credential -- while
+    ``https://alice:ghp_xxx@host/r.git`` arrives as
+    ``https://alice:***@host/r.git``, and a userinfo that is nothing but a
+    token (``https://ghp_xxx@host/r.git``, or GitHub's
+    ``x-access-token:<token>``) arrives as ``https://***@host/r.git``.
+
+    Which means the string here is sometimes NOT the string git holds, and
+    a UI must never round-trip it: a "Change URL" prompt pre-filled from
+    this field and submitted unchanged would write ``alice:***`` into the
+    config and destroy the credential the user had. The prompt starts
+    empty, or from what the user types; nothing reads a URL back out of
+    this API.
     """
 
     name: str
