@@ -318,6 +318,11 @@ function onVisibilityChange(): void {
     refreshOnRevisit();
   } else {
     stopPoll();
+    // The read a `focus` scheduled a moment ago goes with it. Leaving it
+    // queued would send a status read against a page nobody is looking at,
+    // which is the one thing pausing here exists to avoid -- and the window
+    // is real: the two events arrive together on the way OUT of a tab too.
+    cancelRevisitDebounce();
   }
 }
 

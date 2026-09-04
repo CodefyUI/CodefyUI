@@ -343,6 +343,20 @@ describe('attach / detach', () => {
     expect(api.getGitStatus).toHaveBeenCalledTimes(1);
   });
 
+  it('drops a pending revisit read when the page hides first', async () => {
+    git().attach();
+    await settle();
+    api.getGitStatus.mockClear();
+
+    // A focus and then the page going away inside the window. The read the
+    // focus queued would land on a page nobody is looking at, which is what
+    // the pause is for.
+    window.dispatchEvent(new Event('focus'));
+    setVisibility('hidden');
+    await vi.advanceTimersByTimeAsync(GIT_REVISIT_DEBOUNCE_MS * 4);
+    expect(api.getGitStatus).not.toHaveBeenCalled();
+  });
+
   it('drops a pending revisit read when the tab closes first', async () => {
     git().attach();
     await settle();
