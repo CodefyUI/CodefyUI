@@ -33,7 +33,8 @@ import {
 } from './jobFollower';
 import { confirm } from '../utils/dialog';
 import { localizedPackTitle } from '../utils/packAvailability';
-import { useToastStore, type ToastAction } from './toastStore';
+import { errorMessage, str, toast } from './storeText';
+import type { ToastAction } from './toastStore';
 import { useUIStore } from './uiStore';
 import { useI18n, type TranslationKey } from '../i18n';
 
@@ -245,33 +246,20 @@ export function emptyPackJob(
   return { ...emptyJob(jobId), packId, mode, retryMode: null };
 }
 
-function errorMessage(err: unknown): string {
-  return err instanceof Error ? err.message : String(err);
-}
-
 /**
- * `action` is spread rather than always passed, so a toast without one is
- * byte-for-byte the object every existing caller was already producing.
+ * The button a toast about a pack wears: it opens the panel on that pack.
+ *
+ * Stays here rather than joining `errorMessage`, `str` and `toast` in
+ * `storeText`: the plugin store's copy looks identical and names a different
+ * panel and a different key, so one shared version would need both of them
+ * passed in to say nothing extra.
  */
-function toast(
-  message: string,
-  type: 'info' | 'error' | 'success' | 'warning',
-  action?: ToastAction,
-) {
-  useToastStore.getState().addToast(message, type, action ? { action } : undefined);
-}
-
-/** The button a toast about a pack wears: it opens the panel on that pack. */
 function openCenterAction(packId: string): ToastAction {
   const { t } = useI18n.getState();
   return {
     label: t('packs.toast.openCenter'),
     onClick: () => useUIStore.getState().openPackCenter(packId),
   };
-}
-
-function str(value: unknown): string | null {
-  return typeof value === 'string' ? value : null;
 }
 
 function sleep(ms: number): Promise<void> {

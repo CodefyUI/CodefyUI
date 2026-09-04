@@ -1087,6 +1087,110 @@ const en = {
   'pluginCenter.source.invalid':
     'Enter a catalog name, owner/repo[@ref] or a GitHub URL.',
 
+  // The panel: its chrome, what the list can be saying instead of rows, and
+  // the filter over them.
+  'pluginCenter.title': 'Plugin Center',
+  'pluginCenter.subtitle': 'Install packs of teaching nodes, and plugins from GitHub',
+  'pluginCenter.close': 'Close Plugin Center',
+  'pluginCenter.refresh': 'Refresh plugin status',
+  'pluginCenter.list': 'Plugin list',
+  'pluginCenter.loading': 'Loading plugins...',
+  'pluginCenter.loadFail': 'Failed to load plugins: {error}',
+  // A server older than the Plugin Center. `pluginCenter.error.unavailable`
+  // says the same sentence about a server whose plugin service is not up:
+  // the cause differs, what the user does about it does not.
+  'pluginCenter.unsupported':
+    'This server has no Plugin Center. Update CodefyUI and restart it.',
+  'pluginCenter.empty': 'No plugins are available',
+  'pluginCenter.filter.all': 'All',
+  'pluginCenter.filter.installed': 'Installed',
+  'pluginCenter.filter.available': 'Available',
+
+  // Where a plugin came from. A plain third-party repository gets no chip --
+  // the card prints owner/repo, and "GitHub" over a GitHub link says it twice.
+  'pluginCenter.origin.builtin': 'Built-in',
+  'pluginCenter.origin.official': 'Official',
+  'pluginCenter.origin.local': 'Linked folder',
+  'pluginCenter.homepage': 'Homepage',
+  'pluginCenter.chapters': 'Lessons: {chapters}',
+
+  // The two states a pack has no word for. The other four statuses reuse
+  // `packs.status.*` and `customNodes.disabled`.
+  'pluginCenter.status.removed': 'Removed',
+  'pluginCenter.status.missingFiles': 'Files missing',
+
+  // The row's buttons (`pluginCenter.uninstall` is up with its confirm).
+  'pluginCenter.install': 'Install',
+  'pluginCenter.enable': 'Enable',
+  'pluginCenter.disable': 'Disable',
+  'pluginCenter.update': 'Update',
+  // The server refused an install because the plugin is already there. That
+  // refusal is an offer rather than a failure, and this button accepts it.
+  'pluginCenter.reinstall': 'Reinstall',
+
+  // Installing something the catalog does not list.
+  'pluginCenter.source.label': 'Install from GitHub',
+  'pluginCenter.source.placeholder': 'owner/repo[@ref] or GitHub URL',
+  'pluginCenter.source.review': 'Review',
+  'pluginCenter.source.reviewing': 'Downloading...',
+  'pluginCenter.source.fail': 'Could not fetch {source}: {message}',
+
+  // The consent screen. Nothing is installed until this has been read and
+  // what it asks for has been ticked.
+  'pluginCenter.review.title': 'Review before installing',
+  'pluginCenter.review.author': 'Author: {author}',
+  'pluginCenter.review.nodes': 'Nodes: {nodes}',
+  'pluginCenter.review.capabilities': 'This plugin asks for:',
+  // Says what granting is and is not: "capabilities" reads like a sandbox,
+  // and this is a declaration -- nothing here is enforced at runtime.
+  'pluginCenter.review.capNote':
+    'Granting is a declaration, not a sandbox: the plugin may use these '
+    + 'modules and will not be asked again.',
+  'pluginCenter.review.grant': 'Grant these capabilities',
+  'pluginCenter.review.trust': 'I trust this author. Allows: {modules}',
+  'pluginCenter.review.frontend':
+    'Ships JavaScript that runs in this editor with full access.',
+  'pluginCenter.review.idConflict': 'The id "{id}" is reserved for a built-in pack.',
+
+  // One line per declared capability, each saying what granting it COSTS
+  // rather than what it is called. An id this build has no line for is
+  // printed as itself.
+  'pluginCenter.cap.network':
+    'network: reach any host, and write what it downloads to disk',
+  'pluginCenter.cap.filesystem':
+    'filesystem: use the file libraries (pathlib, shutil, zip/tar, sqlite3)',
+  'pluginCenter.cap.processEnv':
+    "process-env: the whole os module, including this process's environment "
+    + 'and API keys, starting programs, deleting files',
+
+  // The activity pane: what is running, and how it ended.
+  'pluginCenter.activity.installing': 'Installing {plugin}',
+  'pluginCenter.activity.updating': 'Updating {plugin}',
+  'pluginCenter.activity.installed': 'Installed {plugin}.',
+  'pluginCenter.activity.updated': 'Updated {plugin}.',
+  'pluginCenter.activity.lost':
+    'Lost contact with the server. Refresh to check the plugin status.',
+  'pluginCenter.activity.needsRestart': 'Installed. Restart the server to load {plugin}:',
+  'pluginCenter.activity.cliFallback': 'Or install from a terminal:',
+
+  // The steps of an install, in the order they run. There is no `step.deps`
+  // on purpose: pip is pip, and it reuses `packs.activity.step.pip`.
+  'pluginCenter.step.resolve': 'Resolving the source',
+  'pluginCenter.step.download': 'Downloading',
+  'pluginCenter.step.extract': 'Unpacking',
+  'pluginCenter.step.verify': 'Checking the code',
+  'pluginCenter.step.stage': 'Copying files',
+  'pluginCenter.step.lock': 'Recording the install',
+  'pluginCenter.step.reload': 'Loading the nodes',
+
+  // The refusals whose entire body is a code: these routes answer
+  // `{detail: {code: ...}}` with no message at all, so without a sentence
+  // here the panel shows the raw token -- "inspection_expired".
+  'pluginCenter.error.unavailable':
+    'This server has no Plugin Center. Update CodefyUI and restart it.',
+  'pluginCenter.error.inspectionExpired': 'The review expired. Review the source again.',
+  'pluginCenter.error.unknownJob': 'That install is no longer tracked. Refresh.',
+
   // Source Control (the sidebar's fifth tab). Part 2 of the track: status,
   // stage / unstage / discard, commit, init and the commit identity. Branches,
   // remotes, history and the diff view arrive with their own strings later, so

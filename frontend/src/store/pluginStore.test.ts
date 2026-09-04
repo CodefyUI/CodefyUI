@@ -444,6 +444,27 @@ describe('pluginStore — install', () => {
     });
   });
 
+  it('turns an already-installed refusal into an offer rather than a toast', async () => {
+    api.inspectPluginSource.mockResolvedValue(inspection({
+      plugin_id: 'c1', consent_required: false,
+    }));
+    api.installPlugin.mockRejectedValue(
+      refused(409, 'already_installed', { plugin_id: 'c1' }),
+    );
+
+    await usePluginStore.getState().install('c1');
+
+    // A 409, but not a busy one. The review stays up carrying the code, and
+    // the card turns it into a Reinstall button; read as "another install is
+    // running" this would have toasted and refreshed the offer away.
+    expect(usePluginStore.getState().inspection).toMatchObject({
+      phase: 'ready',
+      forPluginId: 'c1',
+      error: { code: 'already_installed', detail: { plugin_id: 'c1' } },
+    });
+    expect(useToastStore.getState().toasts).toHaveLength(0);
+  });
+
   it('refuses a second install while a job is running', async () => {
     usePluginStore.setState({ job: emptyPluginJob('j1', 'other') });
 
@@ -549,6 +570,24 @@ describe('pluginStore — inspect', () => {
     expect(state.inspection.failure.message).toBe(
       'Installing is only allowed from the computer that runs the server.',
     );
+  });
+
+  it('says the server has no plugin service instead of showing the code', async () => {
+    // 503 `{code: unavailable}`: the service failed to start, or this build
+    // predates it. The catalog route answers without the service, so this is
+    // where a user meets that refusal first.
+    api.inspectPluginSource.mockRejectedValue(refused(503, 'unavailable'));
+
+    await usePluginStore.getState().inspect('owner/demo');
+
+    const state = usePluginStore.getState();
+    if (state.inspection.phase !== 'error') throw new Error('not an error phase');
+    expect(state.inspection.failure.message).toBe(
+      'This server has no Plugin Center. Update CodefyUI and restart it.',
+    );
+    // The code survives the rewrite: the card switches on one and shows the
+    // other.
+    expect(state.inspection.failure.code).toBe('unavailable');
   });
 
   it('carries the names a catalog miss listed', async () => {
@@ -682,6 +721,76 @@ describe('pluginStore — installInspected', () => {
     });
   });
 
+  it('keeps the review spendable when the plugin is already installed', async () => {
+    await ready();
+    api.installPlugin.mockRejectedValue(
+      refused(409, 'already_installed', { plugin_id: 'demo' }),
+    );
+
+    await usePluginStore.getState().installInspected({
+      acceptCapabilities: true, trustAuthor: true,
+    });
+
+    expect(usePluginStore.getState().inspection).toMatchObject({
+      phase: 'ready',
+      error: { code: 'already_installed', detail: { plugin_id: 'demo' } },
+    });
+    // No busy toast and no refresh: both would answer an offer as if it were
+    // a failure, and the refresh is what takes the card away.
+    expect(useToastStore.getState().toasts).toHaveLength(0);
+    expect(api.listPluginCatalog).not.toHaveBeenCalled();
+  });
+
+  it('reinstalls over what is there without inspecting again', async () => {
+    await ready();
+    // Refused once; the beforeEach default answers the retry with a job.
+    api.installPlugin.mockRejectedValueOnce(
+      refused(409, 'already_installed', { plugin_id: 'demo' }),
+    );
+    await usePluginStore.getState().installInspected({
+      acceptCapabilities: true, trustAuthor: true,
+    });
+    api.getPluginJobEvents.mockImplementation(parked);
+
+    // What the card's Reinstall button does.
+    await usePluginStore.getState().installInspected({
+      acceptCapabilities: true, trustAuthor: true, force: true,
+    });
+
+    // The same inspection id: the user agreed to a manifest that was read
+    // once, and nothing went back to the source to read it again.
+    expect(api.installPlugin).toHaveBeenCalledTimes(2);
+    expect(api.installPlugin.mock.calls[1][0]).toEqual({
+      inspection_id: 'insp-1',
+      accept_capabilities: ['net', 'fs'],
+      trust_author: true,
+      force: true,
+    });
+    expect(api.inspectPluginSource).toHaveBeenCalledTimes(1);
+    expect(usePluginStore.getState().job).toMatchObject({
+      jobId: 'j1', pluginId: 'demo',
+    });
+    // Spent: the card comes down once the install it offered is running.
+    expect(usePluginStore.getState().inspection).toEqual({ phase: 'idle' });
+  });
+
+  it('says the review expired instead of showing the raw code', async () => {
+    await ready();
+    // `{detail: {code}}` with no message at all, so `err.message` IS
+    // "inspection_expired" -- which is what a student would otherwise read.
+    api.installPlugin.mockRejectedValue(
+      refused(404, 'inspection_expired', { inspection_id: 'insp-1' }),
+    );
+
+    await usePluginStore.getState().installInspected({
+      acceptCapabilities: true, trustAuthor: false,
+    });
+
+    expect(lastToast().message).toBe(
+      'Install failed: The review expired. Review the source again.',
+    );
+  });
+
   it('toasts and refreshes when the server is already busy', async () => {
     await ready();
     api.installPlugin.mockRejectedValue(refused(409, 'busy', { job_id: 'j2' }));
@@ -783,6 +892,17 @@ describe('pluginStore — update', () => {
 
     expect(lastToast().message).toBe('Update failed: GitHub is down');
     expect(usePluginStore.getState().busy.demo).toBeFalsy();
+  });
+
+  it('spells out a refusal whose whole body was a code', async () => {
+    api.updatePlugin.mockRejectedValue(refused(503, 'unavailable'));
+
+    await usePluginStore.getState().update('demo');
+
+    // "Update failed: unavailable" is the sentence this replaces.
+    expect(lastToast().message).toBe(
+      'Update failed: This server has no Plugin Center. Update CodefyUI and restart it.',
+    );
   });
 });
 
@@ -1117,6 +1237,20 @@ describe('pluginStore — cancel and dismiss', () => {
 
     expect(lastToast().message).toBe('Could not cancel the install: gone');
     expect(usePluginStore.getState().cancelling).toBe(false);
+  });
+
+  it('says a forgotten job is untracked instead of showing the code', async () => {
+    // The refusal a cancel actually meets: the server restarted, or the job
+    // aged out. "Could not cancel the install: unknown_job" is what this
+    // replaces.
+    usePluginStore.setState({ job: emptyPluginJob('j5', 'demo') });
+    api.cancelPluginJob.mockRejectedValue(refused(404, 'unknown_job', { job_id: 'j5' }));
+
+    await usePluginStore.getState().cancel();
+
+    expect(lastToast().message).toBe(
+      'Could not cancel the install: That install is no longer tracked. Refresh.',
+    );
   });
 
   it('has nothing to cancel when no job is running', async () => {

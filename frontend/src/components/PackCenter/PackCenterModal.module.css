@@ -265,65 +265,8 @@
   color: var(--text-primary);
 }
 
-/* ── Status pill ────────────────────────────────────────────────────────── */
-
-.pill {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--sp-2);
-  font-size: var(--fs-2xs);
-  font-weight: var(--fw-semibold);
-  padding: var(--sp-1) var(--sp-3);
-  border-radius: var(--radius-pill);
-  white-space: nowrap;
-  flex-shrink: 0;
-}
-
-.pill[data-tone='success'] {
-  background: var(--success-wash);
-  color: var(--status-success);
-}
-
-.pill[data-tone='warning'] {
-  background: var(--warning-wash);
-  color: var(--status-warning);
-}
-
-.pill[data-tone='info'] {
-  background: var(--info-wash);
-  color: var(--status-info);
-}
-
-.pill[data-tone='neutral'] {
-  background: var(--surface-input);
-  color: var(--text-muted);
-}
-
-.pillDot {
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: currentcolor;
-  flex-shrink: 0;
-  animation: packPulse 1.6s ease-in-out infinite;
-}
-
-@keyframes packPulse {
-  0%,
-  100% {
-    opacity: 1;
-  }
-
-  50% {
-    opacity: 0.25;
-  }
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .pillDot {
-    animation: none;
-  }
-}
+/* The status pill moved to `components/shared/Pill.module.css`: the Plugin
+   Center wears the same chip, and two copies of a wash scale drift. */
 
 /* ── Item rows ──────────────────────────────────────────────────────────── */
 

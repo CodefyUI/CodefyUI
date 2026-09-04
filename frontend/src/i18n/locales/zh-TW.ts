@@ -980,6 +980,87 @@ const zhTW: Record<TranslationKey, string> = {
     '要解除安裝「{plugin}」嗎？使用它節點的圖將無法執行；它安裝的 Python 套件會保留。',
   'pluginCenter.source.invalid': '請輸入內建套件名稱、owner/repo[@ref] 或 GitHub URL。',
 
+  // The panel: chrome, list states, filter.
+  'pluginCenter.title': '外掛中心',
+  'pluginCenter.subtitle': '安裝教學節點套件與 GitHub 上的外掛',
+  'pluginCenter.close': '關閉外掛中心',
+  'pluginCenter.refresh': '重新整理外掛狀態',
+  'pluginCenter.list': '外掛清單',
+  'pluginCenter.loading': '正在載入外掛...',
+  'pluginCenter.loadFail': '無法載入外掛：{error}',
+  'pluginCenter.unsupported': '這台伺服器不支援外掛中心。請更新 CodefyUI 後重新啟動。',
+  'pluginCenter.empty': '目前沒有可安裝的外掛',
+  'pluginCenter.filter.all': '全部',
+  'pluginCenter.filter.installed': '已安裝',
+  'pluginCenter.filter.available': '可安裝',
+
+  // Where a plugin came from.
+  'pluginCenter.origin.builtin': '內建',
+  'pluginCenter.origin.official': '官方',
+  'pluginCenter.origin.local': '本機連結',
+  'pluginCenter.homepage': '首頁',
+  'pluginCenter.chapters': '章節：{chapters}',
+
+  // The two states a pack has no word for.
+  'pluginCenter.status.removed': '已移除',
+  'pluginCenter.status.missingFiles': '檔案遺失',
+
+  // The row's buttons.
+  'pluginCenter.install': '安裝',
+  'pluginCenter.enable': '啟用',
+  'pluginCenter.disable': '停用',
+  'pluginCenter.update': '更新',
+  'pluginCenter.reinstall': '重新安裝',
+
+  // Installing something the catalog does not list.
+  'pluginCenter.source.label': '從 GitHub 安裝',
+  'pluginCenter.source.placeholder': 'owner/repo[@ref] 或 GitHub URL',
+  'pluginCenter.source.review': '檢視',
+  'pluginCenter.source.reviewing': '正在下載...',
+  'pluginCenter.source.fail': '無法取得 {source}：{message}',
+
+  // The consent screen.
+  'pluginCenter.review.title': '安裝前請確認',
+  'pluginCenter.review.author': '作者：{author}',
+  'pluginCenter.review.nodes': '節點：{nodes}',
+  'pluginCenter.review.capabilities': '這個外掛要求：',
+  'pluginCenter.review.capNote':
+    '授予是一種聲明，不是沙箱：外掛可使用這些模組，之後不會再詢問。',
+  'pluginCenter.review.grant': '同意授予這些能力',
+  'pluginCenter.review.trust': '我信任這位作者。允許使用：{modules}',
+  'pluginCenter.review.frontend': '包含會在編輯器中以完整權限執行的 JavaScript。',
+  'pluginCenter.review.idConflict': '「{id}」是內建套件保留的 id。',
+
+  // One line per declared capability, each saying what granting it costs.
+  'pluginCenter.cap.network': 'network：可連線任何主機，並把下載內容寫入磁碟',
+  'pluginCenter.cap.filesystem':
+    'filesystem：使用檔案函式庫（pathlib、shutil、zip/tar、sqlite3）',
+  'pluginCenter.cap.processEnv':
+    'process-env：整個 os 模組，包含此行程的環境變數與 API 金鑰、啟動程式、刪除檔案',
+
+  // The activity pane.
+  'pluginCenter.activity.installing': '正在安裝 {plugin}',
+  'pluginCenter.activity.updating': '正在更新 {plugin}',
+  'pluginCenter.activity.installed': '已安裝 {plugin}。',
+  'pluginCenter.activity.updated': '已更新 {plugin}。',
+  'pluginCenter.activity.lost': '與伺服器失去聯繫。請重新整理以確認外掛狀態。',
+  'pluginCenter.activity.needsRestart': '已安裝，請重新啟動伺服器以載入 {plugin}：',
+  'pluginCenter.activity.cliFallback': '或在終端機安裝：',
+
+  // The steps of an install; `deps` reuses `packs.activity.step.pip`.
+  'pluginCenter.step.resolve': '正在解析來源',
+  'pluginCenter.step.download': '正在下載',
+  'pluginCenter.step.extract': '正在解壓縮',
+  'pluginCenter.step.verify': '正在檢查程式碼',
+  'pluginCenter.step.stage': '正在複製檔案',
+  'pluginCenter.step.lock': '正在寫入安裝紀錄',
+  'pluginCenter.step.reload': '正在載入節點',
+
+  // The refusals whose entire body is a code.
+  'pluginCenter.error.unavailable': '這台伺服器不支援外掛中心。請更新 CodefyUI 後重新啟動。',
+  'pluginCenter.error.inspectionExpired': '檢視已過期，請重新檢視來源。',
+  'pluginCenter.error.unknownJob': '找不到這個安裝，請重新整理。',
+
   // Source Control (the sidebar's fifth tab).
   'git.action.more': '更多動作',
   'git.action.identity': '提交身分...',

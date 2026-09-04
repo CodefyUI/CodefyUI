@@ -9,6 +9,7 @@ import type {
 import type { PackItemProgress, PackJob } from '../../store/packStore';
 import { useI18n } from '../../i18n';
 import { localizedPackTitle, type PackIndex } from '../../utils/packAvailability';
+import { Pill } from '../shared/Pill';
 import { GpuPackDetails } from './GpuPackDetails';
 import { PackItemRow } from './PackItemRow';
 import {
@@ -23,16 +24,12 @@ import styles from './PackCenterModal.module.css';
 
 export function StatusPill({ status }: { status: PackStatus }) {
   const { t } = useI18n();
-  const tone = statusTone(status);
+  // The chip itself is shared with the Plugin Center; what is a pack's here is
+  // only which tone a pack status wears and what it is called.
   return (
-    <span className={styles.pill} data-tone={tone}>
-      {status === 'installing' && (
-        // A pulsing dot rather than a spinner: it says "still going" without
-        // claiming to know how far, and it stops dead under reduced motion.
-        <span className={styles.pillDot} data-role="pulse" aria-hidden="true" />
-      )}
+    <Pill tone={statusTone(status)} pulse={status === 'installing'}>
       {t(statusKey(status))}
-    </span>
+    </Pill>
   );
 }
 
