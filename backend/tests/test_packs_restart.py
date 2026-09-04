@@ -852,8 +852,15 @@ def test_spawn_helper_argv_flags_and_log_file(monkeypatch, tmp_path, launcher,
     kwargs = seen["kwargs"]
     assert kwargs["stderr"] is subprocess.STDOUT
     assert kwargs["stdin"] is subprocess.DEVNULL
-    assert kwargs["creationflags"] & restart.DETACHED_PROCESS
+    assert kwargs["creationflags"] & runner.CREATE_NO_WINDOW
     assert kwargs["creationflags"] & runner.CREATE_NEW_PROCESS_GROUP
+    # NOT `DETACHED_PROCESS` (0x8), which is what this was until core#420.
+    # A launcher that is one of uv's `Scripts\*.exe` shims spawns the real
+    # interpreter as a child of itself, and Windows hands a console-less
+    # parent's child a brand-new VISIBLE console: a window over the editor
+    # for the length of the install, and a CTRL_CLOSE_EVENT into `uv`
+    # mid-rewrite the moment anyone closes it.
+    assert not kwargs["creationflags"] & 0x00000008
     assert "start_new_session" not in kwargs, (
         "start_new_session is a POSIX-only kwarg")
     assert "shell" not in kwargs
