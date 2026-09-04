@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState, type ReactNode } from 'react';
-import { gitOpKey, isLayoutFile, useGitStore } from '../../store/gitStore';
+import { isLayoutFile, useGitStore } from '../../store/gitStore';
+import { gitOpKey } from './scm';
 import { useI18n } from '../../i18n';
 import { ChangeGroup } from './ChangeGroup';
 import { CommitBox } from './CommitBox';

@@ -2,21 +2,47 @@ import { create } from 'zustand';
 import {
   GIT_TIMEOUTS_S,
   GitApiError,
+  getGitBranches,
   getGitConfig,
+  getGitRemotes,
+  getGitStashes,
   getGitStatus,
+  gitAbortMerge,
+  gitAddRemote,
+  gitCheckout,
   gitCommit,
+  gitCreateBranch,
+  gitDeleteBranch,
   gitDiscard,
+  gitFetch,
   gitInit,
+  gitPull,
+  gitPush,
+  gitRemoveRemote,
+  gitRenameBranch,
+  gitResolve,
+  gitSetRemoteUrl,
   gitStage,
+  gitStashApply,
+  gitStashDrop,
+  gitStashPop,
+  gitStashPush,
+  gitSync,
   gitUnstage,
   setGitConfig,
+  type BranchesResponse,
+  type GitCheckoutKind,
   type GitErrorCode,
   type GitPathSelection,
+  type GitPullStrategy,
+  type GitResolveSide,
   type GitStatus,
   type Identity,
   type MutationResult,
+  type RemoteInfo,
   type RepoInfo,
   type RepoState,
+  type StashInfo,
 } from '../api/git';
 import { GraphMissingError, reloadTabFromDisk } from '../utils/openSavedGraph';
 import { setWorktreeWriteListener } from '../utils/worktreeWrite';
@@ -25,6 +51,7 @@ import { useProjectStore } from './projectStore';
 import { useTabStore } from './tabStore';
 import { useToastStore, type ToastAction, type ToastType } from './toastStore';
 import { useI18n, type TranslationKey } from '../i18n';
+import { errorHint } from '../components/SourceControl/scm';
 
 /**
  * Everything the Source Control tab knows and everything it does.
@@ -48,11 +75,14 @@ import { useI18n, type TranslationKey } from '../i18n';
  *    status deadline (500 `git_failed`, 504 `timeout`) -- the poll runs two
  *    real git processes, and either of them can go wrong.
  *
- *  - **`busyOp` is a lock, not a spinner.** The backend serialises mutations
- *    behind one lock and refuses a second with `409 busy`; this store refuses
- *    it a step earlier, so two clicks on Stage cannot race each other into a
- *    409 the user has to read. Reads never take that lock, which is why the
- *    poll runs straight through a commit.
+ *  - **`busyOp` and `netOp` are locks, not spinners.** The backend serialises
+ *    writes behind TWO locks -- one for the worktree, one for the network --
+ *    and refuses a second holder with `409 busy`; this store refuses it a step
+ *    earlier, so two clicks on Stage cannot race each other into a 409 the
+ *    user has to read. Two lanes rather than one because a fetch can take two
+ *    minutes and a commit during it is perfectly safe: the lanes only refuse
+ *    each other. Reads take neither, which is why the poll runs straight
+ *    through a commit.
  *
  *  - **Nothing is reloaded from disk without asking.** A discard can put an
  *    older version of a graph a tab is showing back on disk, and the tab has
@@ -63,16 +93,16 @@ import { useI18n, type TranslationKey } from '../i18n';
 /* ── Vocabulary ─────────────────────────────────────────────────────── */
 
 /**
- * The operations this store runs, in ITS spelling.
+ * The operations this store runs on the LOCAL lane, in ITS spelling.
  *
- * `status` is the poll; the other six are the writes. Two spellings differ
- * from the wire deliberately:
+ * `status` is the poll; the rest are the writes that take the worktree lock.
+ * Two spellings differ from the wire deliberately:
  *
  *  - the identity write is `set_identity` on the server (it is the word that
  *    comes back in a `busy` refusal's `op` field), and `identity` here,
  *    because the i18n key is `git.op.identity`;
  *  - `status` is an operation here even though `refresh()` never goes through
- *    `runOp`: it is one of the three timeout buckets, and a union that omits
+ *    `runOp`: it is one of the four timeout buckets, and a union that omits
  *    it would make the map below partial for no gain.
  */
 export type GitOp =
@@ -82,22 +112,34 @@ export type GitOp =
   | 'unstage'
   | 'discard'
   | 'commit'
-  | 'identity';
+  | 'identity'
+  | 'create_branch'
+  | 'checkout'
+  | 'rename_branch'
+  | 'delete_branch'
+  | 'add_remote'
+  | 'set_remote_url'
+  | 'remove_remote'
+  | 'stash_push'
+  | 'stash_pop'
+  | 'stash_apply'
+  | 'stash_drop'
+  | 'abort_merge'
+  | 'resolve';
 
 /**
- * The i18n key naming an operation, for `git.busy` ("Running {op}...").
+ * The operations that talk to a remote, and hold the OTHER lock.
  *
- * Exported rather than spelled at the header's call site because the key
- * stem and the wire word are NOT the same string for one of the seven: a
- * component that read `err.op` off a `busy` refusal and pasted it into a key
- * would ask for `git.op.set_identity`, which does not exist. Going through
- * `GitOp` is what makes that impossible.
+ * `publish` is not a route: it is `POST /push` with `set_upstream: true`, and
+ * a separate name here because it is a separate button, a separate label in
+ * the busy line and a separate toast. A `busy` refusal from the server can
+ * therefore say `push` while this store says `publish`; the two are the same
+ * lane either way.
  */
-export function gitOpKey(op: GitOp): `git.op.${GitOp}` {
-  return `git.op.${op}`;
-}
+export type GitNetOp = 'fetch' | 'pull' | 'push' | 'sync' | 'publish';
+export type GitAnyOp = GitOp | GitNetOp;
 
-/** Which of the server's three deadlines an operation runs under. */
+/** Which of the server's four deadlines an operation runs under. */
 type TimeoutBucket = keyof typeof GIT_TIMEOUTS_S;
 
 /**
@@ -108,7 +150,7 @@ type TimeoutBucket = keyof typeof GIT_TIMEOUTS_S;
  * filled in from this side. `identity` is the WRITE (30 s); reading the
  * config back is the `read` bucket and passes it explicitly.
  */
-const OP_TIMEOUT_BUCKET: Record<GitOp, TimeoutBucket> = {
+const OP_TIMEOUT_BUCKET: Record<GitAnyOp, TimeoutBucket> = {
   status: 'status',
   init: 'mutation',
   stage: 'mutation',
@@ -116,6 +158,24 @@ const OP_TIMEOUT_BUCKET: Record<GitOp, TimeoutBucket> = {
   discard: 'mutation',
   commit: 'mutation',
   identity: 'mutation',
+  create_branch: 'mutation',
+  checkout: 'mutation',
+  rename_branch: 'mutation',
+  delete_branch: 'mutation',
+  add_remote: 'mutation',
+  set_remote_url: 'mutation',
+  remove_remote: 'mutation',
+  stash_push: 'mutation',
+  stash_pop: 'mutation',
+  stash_apply: 'mutation',
+  stash_drop: 'mutation',
+  abort_merge: 'mutation',
+  resolve: 'mutation',
+  fetch: 'network',
+  pull: 'network',
+  push: 'network',
+  sync: 'network',
+  publish: 'network',
 };
 
 /**
@@ -132,6 +192,18 @@ export interface GitStoreError {
   message: string;
   hint: string | null;
   stderr: string | null;
+  /**
+   * What was being run when this came back, or null for a read.
+   *
+   * One code does not say the same thing after every operation: a 400
+   * `invalid_value` from a fetch or a push is the server telling us it could
+   * not decide WHICH remote (`network.resolve_remote`), which is a different
+   * sentence and a different button from an `invalid_value` about a value the
+   * user typed. `scm.ts` is where that decision lives; this is the fact it
+   * needs. Optional so a component or a test can build one of these from a
+   * code alone -- the store always fills it in.
+   */
+  op?: GitAnyOp | null;
 }
 
 /* ── i18n ───────────────────────────────────────────────────────────── */
@@ -202,6 +274,41 @@ function saveHideLayout(hide: boolean): void {
   }
 }
 
+export type GitRefKind = 'branches' | 'remotes' | 'stashes';
+export type GitSections = Record<GitRefKind, boolean>;
+
+const SECTIONS_KEY = 'codefyui-git-sections';
+const CLOSED_SECTIONS: GitSections = {
+  branches: false,
+  remotes: false,
+  stashes: false,
+};
+
+function loadSections(): GitSections {
+  try {
+    const raw: unknown = JSON.parse(localStorage.getItem(SECTIONS_KEY) ?? 'null');
+    if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) {
+      return { ...CLOSED_SECTIONS };
+    }
+    const stored = raw as Record<string, unknown>;
+    return {
+      branches: stored.branches === true,
+      remotes: stored.remotes === true,
+      stashes: stored.stashes === true,
+    };
+  } catch {
+    return { ...CLOSED_SECTIONS };
+  }
+}
+
+function saveSections(sections: GitSections): void {
+  try {
+    localStorage.setItem(SECTIONS_KEY, JSON.stringify(sections));
+  } catch {
+    /* A display preference must never make Source Control unusable. */
+  }
+}
+
 /* ── The poll ───────────────────────────────────────────────────────── */
 
 /**
@@ -257,6 +364,13 @@ let listening = false;
  */
 let readSeq = 0;
 
+/** Independent generations keep each lazy reference list race-safe. */
+let refReadSeq: Record<GitRefKind, number> = {
+  branches: 0,
+  remotes: 0,
+  stashes: 0,
+};
+
 /**
  * The generation of the newest identity read or write, for the same reason
  * `readSeq` exists: a config read that was slow enough to outlive the write
@@ -272,10 +386,20 @@ function pageVisible(): boolean {
   return document.visibilityState === 'visible';
 }
 
+const REF_KINDS: readonly GitRefKind[] = ['branches', 'remotes', 'stashes'];
+
+function refreshExpandedRefs(): void {
+  const state = useGitStore.getState();
+  for (const kind of REF_KINDS) {
+    if (state.sections[kind]) void state.refreshRefs(kind);
+  }
+}
+
 function startPoll(): void {
   if (pollTimer !== null || !pageVisible()) return;
   pollTimer = setInterval(() => {
     void useGitStore.getState().refresh();
+    refreshExpandedRefs();
   }, GIT_POLL_MS);
 }
 
@@ -297,6 +421,7 @@ function refreshOnRevisit(): void {
   revisitTimer = setTimeout(() => {
     revisitTimer = null;
     void useGitStore.getState().refresh();
+    refreshExpandedRefs();
   }, GIT_REVISIT_DEBOUNCE_MS);
 }
 
@@ -394,11 +519,16 @@ function revealIdentityForm(): void {
  * server: the 504 body carries the code and nothing else, so the sentence
  * ("git did not finish within {seconds}s") has to be filled in from the
  * bucket the operation ran under. Every other code keeps git's own words and
- * the component picks the sentence from `code`.
+ * the component picks the sentence from `code` -- and, for the one code whose
+ * meaning depends on what was asked, from `op` beside it.
  */
-function toStoreError(err: unknown, bucket: TimeoutBucket): GitStoreError {
+function toStoreError(
+  err: unknown,
+  bucket: TimeoutBucket,
+  op: GitAnyOp | null = null,
+): GitStoreError {
   if (!(err instanceof GitApiError)) {
-    return { code: 'unknown', message: errorMessage(err), hint: null, stderr: null };
+    return { code: 'unknown', message: errorMessage(err), hint: null, stderr: null, op };
   }
   return {
     code: err.code,
@@ -406,8 +536,9 @@ function toStoreError(err: unknown, bucket: TimeoutBucket): GitStoreError {
       err.code === 'timeout'
         ? t('git.error.timeout', { seconds: GIT_TIMEOUTS_S[bucket] })
         : err.message,
-    hint: err.hint,
+    hint: errorHint(err.code, err.hint, t),
     stderr: err.stderr,
+    op,
   };
 }
 
@@ -443,45 +574,164 @@ function groupCounts(status: GitStatus): string {
     + `${t('git.group.changes')} ${changes}`;
 }
 
+/** What one operation needs from `runOp` beyond the call itself. */
+interface RunOpOptions {
+  /** This write can put DIFFERENT bytes under an open tab -- see `runOp`. */
+  worktree?: boolean;
+  /** The reference lists this write can have changed. */
+  refs?: GitRefKind[];
+  /** Whether a refusal still needs a fresh status -- see `stepsMayHaveRun`. */
+  refreshStatusOnError?: (err: unknown) => boolean;
+  /**
+   * Fallbacks for the success sentence.
+   *
+   * `MutationResult.detail` is deliberately open, and a build of the server
+   * that does not fill in `detail.branch` or `detail.remote` should still
+   * produce a sentence with a name in it rather than one with a hole. These
+   * are what the caller already knows, used only when the answer said nothing.
+   */
+  name?: string;
+  remote?: string;
+}
+
+/** The lane an operation runs on: these five take the network lock. */
+const NETWORK_OPS: ReadonlySet<GitAnyOp> = new Set([
+  'fetch',
+  'pull',
+  'push',
+  'sync',
+  'publish',
+]);
+
+/**
+ * The operations whose news is NOT visible in the panel, and so get a toast.
+ *
+ * Everything else says what it did in the live region only: a stage moves a
+ * row between two groups on screen, a rename rewrites a line in the branch
+ * list, and a toast on top of that is the same fact twice. What a toast is for
+ * is the fact the panel cannot show -- a commit id, a repository that now
+ * exists, a branch that reached a remote.
+ */
+const SUCCESS_TOAST_OPS: ReadonlySet<GitAnyOp> = new Set([
+  'commit',
+  'init',
+  'fetch',
+  'pull',
+  'push',
+  'sync',
+  'publish',
+  'stash_push',
+  'checkout',
+]);
+
+function isNetworkOp(op: GitAnyOp): op is GitNetOp {
+  return NETWORK_OPS.has(op);
+}
+
+function detailString(result: MutationResult, key: string): string | null {
+  const value = result.detail[key];
+  return typeof value === 'string' && value !== '' ? value : null;
+}
+
+function upstreamRemote(upstream: string | null): string | null {
+  if (upstream === null) return null;
+  const slash = upstream.indexOf('/');
+  return slash > 0 ? upstream.slice(0, slash) : upstream;
+}
+
 /**
  * The sentence an operation ends with, or null when it has nothing to say.
  *
- * Commit and init are the two whose news is not visible in the panel -- a
- * commit id, a repository that now exists -- so they get a toast as well.
- * The identity write returns an identity rather than a status: nothing in
- * the panel moved, and the form redrawing with the saved values is the
- * feedback.
+ * Most operations fall through to the group counts, which is the live region
+ * saying what the screen already shows by moving rows between groups -- the
+ * one change no screen reader announces. The named ones above it are the
+ * operations whose result is a FACT rather than a rearrangement: which commit,
+ * which branch, whether anything came down, where a branch went.
+ *
+ * The identity write is the one that answers null: it returns an identity
+ * rather than a status, nothing in the panel moved, and the form redrawing
+ * with the saved values is the feedback.
  */
-function announcement(op: GitOp, result: MutationResult | Identity): string | null {
+function announcement(
+  op: GitAnyOp,
+  result: MutationResult | Identity,
+  opts: RunOpOptions,
+): string | null {
   if (!('status' in result)) return null;
   if (op === 'commit') return t('git.toast.committed', { sha: commitSha(result) });
   if (op === 'init') return t('git.toast.initialized');
+  if (op === 'fetch') return t('git.toast.fetched');
+  if (op === 'pull') {
+    return t(result.detail.head_moved === true ? 'git.toast.pulled' : 'git.toast.upToDate');
+  }
+  // `detail.published` is the server's own answer to "did this create the
+  // upstream", and it is the only thing that separates the three sentences:
+  // a sync whose last step was a publish has published a branch, and saying
+  // "Synced" would hide the one part of it the user did not already know.
+  //
+  // `detail.remote` is read ONLY on this branch. A plain push's is git's push
+  // destination, which can be a URL rather than a remote NAME and arrives
+  // credential-masked (backend `network._pushed_remote`); a publish's is the
+  // name that was resolved, which is the word this sentence needs.
+  if (op === 'push' || op === 'publish' || op === 'sync') {
+    if (result.detail.published === true) {
+      return t('git.toast.published', {
+        branch: detailString(result, 'branch') ?? result.status.branch ?? '',
+        remote:
+          detailString(result, 'remote')
+          ?? opts.remote
+          ?? upstreamRemote(result.status.upstream)
+          ?? '',
+      });
+    }
+    return t(op === 'sync' ? 'git.toast.synced' : 'git.toast.pushed');
+  }
+  if (op === 'stash_push') return t('git.toast.stashed');
+  if (op === 'checkout') {
+    return t('git.toast.switched', {
+      name: detailString(result, 'branch') ?? result.status.branch ?? opts.name ?? '',
+    });
+  }
   return groupCounts(result.status);
 }
 
 /**
- * Run one write with the lock, the error mapping and the fresh status.
+ * Run one write on its lane, with the error mapping and the fresh status.
+ *
+ * Two lanes, because the server has two locks: a network operation takes
+ * `netOp` and a local write takes `busyOp`, so a commit during a fetch is
+ * allowed on both sides and only a second operation on the SAME lane is
+ * refused. The 409 the server would answer with is the same toast, so a race
+ * this store lets through still reads correctly.
  *
  * `worktree` is the bit that decides whether the "changed on disk" offer is
  * raised, and it is deliberately NOT `changed_paths.length > 0`: a commit
  * reports every file it swallowed, and every one of those is byte-identical
  * to what the tab already holds. Only an operation that can put DIFFERENT
- * bytes under an open tab sets it -- in this build exactly `discard`.
+ * bytes under an open tab sets it -- `discard`, the merge half of a pull and
+ * of a sync, a checkout, a branch created WITH a checkout, every stash write
+ * that touches the tree, and the two merge-resolution writes.
  *
  * Answers whether the operation succeeded, so a caller can clear its form.
  */
 async function runOp(
-  op: GitOp,
+  op: GitAnyOp,
   call: () => Promise<MutationResult | Identity>,
-  opts: { worktree?: boolean } = {},
+  opts: RunOpOptions = {},
 ): Promise<boolean> {
-  if (useGitStore.getState().busyOp !== null) {
+  const network = isNetworkOp(op);
+  const state = useGitStore.getState();
+  if (network ? state.netOp !== null : state.busyOp !== null) {
     // The same sentence the server's own 409 gets, because it is the same
-    // fact: one git operation at a time.
+    // fact: one operation at a time on this lane.
     toast(t('git.error.busy'), 'warning');
     return false;
   }
-  useGitStore.setState({ busyOp: op, lastError: null });
+  // `network` is a const initialised by a type guard, so each branch below
+  // knows which of the two unions `op` is in without a cast.
+  if (network) useGitStore.setState({ netOp: op, lastError: null });
+  else useGitStore.setState({ busyOp: op, lastError: null });
+
   try {
     const result = await call();
     if ('status' in result) {
@@ -501,13 +751,17 @@ async function runOp(
       identitySeq += 1;
       useGitStore.setState({ identity: result });
     }
-    const said = announcement(op, result);
+
+    const said = announcement(op, result, opts);
     if (said !== null) {
       useGitStore.setState({ liveMessage: said });
-      if (op === 'commit' || op === 'init') toast(said, 'success');
+      if (SUCCESS_TOAST_OPS.has(op)) toast(said, 'success');
     }
     if (opts.worktree === true && 'status' in result) {
       useGitStore.getState().applyWorktreeChange(result.changed_paths);
+    }
+    if (opts.refs !== undefined) {
+      await Promise.all(opts.refs.map((kind) => useGitStore.getState().refreshRefs(kind)));
     }
     return true;
   } catch (err) {
@@ -518,21 +772,45 @@ async function runOp(
       toast(t('git.error.busy'), 'warning');
       return false;
     }
-    useGitStore.setState({ lastError: toStoreError(err, OP_TIMEOUT_BUCKET[op]) });
+    // The code is the server's, unchanged: rewriting one here would put a
+    // word in a bug report that no server ever sent. The refusal carries the
+    // operation instead, and `scm.ts` reads the pair -- see `GitStoreError.op`.
+    useGitStore.setState({ lastError: toStoreError(err, OP_TIMEOUT_BUCKET[op], op) });
     // The one refusal with a form behind it: git will not commit without a
     // name and an email, and asking for them here is the whole fix.
     if (err instanceof GitApiError && err.code === 'identity_missing') {
       revealIdentityForm();
     }
+    if (opts.refreshStatusOnError?.(err) === true) {
+      await useGitStore.getState().refresh();
+    }
     return false;
   } finally {
-    useGitStore.setState({ busyOp: null });
+    if (network) useGitStore.setState({ netOp: null });
+    else useGitStore.setState({ busyOp: null });
   }
 }
 
 /** An explicitly empty selection: a request that could only be refused. */
 function emptySelection(paths: GitPathSelection): boolean {
   return paths !== 'all' && paths.length === 0;
+}
+
+/**
+ * Whether a refusal may have left the repository changed anyway.
+ *
+ * `pull` and `sync` are sequences: a pull fetches and then merges, and a sync
+ * fetches, merges and then pushes. A refusal from the second or third step
+ * does not undo the first -- a conflicted merge leaves markers on disk and the
+ * merge in progress, and a fetch that succeeded has already moved the tracking
+ * refs and with them the ahead/behind counts on screen. So every refusal but
+ * `busy` -- the one that means the request never started -- is followed by a
+ * fresh status read. A pre-flight refusal (no upstream, a detached HEAD) buys
+ * one wasted read; the alternative is a panel describing a repository that
+ * stopped existing a second ago.
+ */
+function stepsMayHaveRun(err: unknown): boolean {
+  return !(err instanceof GitApiError && err.code === 'busy');
 }
 
 /* ── Worktree changes under open tabs ───────────────────────────────── */
@@ -605,11 +883,29 @@ interface GitState {
   /** Null for every repository state except `ready`. */
   status: GitStatus | null;
   identity: Identity | null;
+  /**
+   * The three reference lists, `null` until each one is first read.
+   *
+   * `null` and `[]` are different answers and the panel draws them
+   * differently: "not read yet" is a section that has never been opened, and
+   * the empty array is a repository that really has no remotes, no stashes.
+   * Anything deciding whether to offer Publish needs the second one, so it
+   * has to ask for the read (`refreshRefs('remotes')`) rather than read a
+   * length off a list nobody has fetched.
+   */
+  branches: BranchesResponse | null;
+  remotes: RemoteInfo[] | null;
+  stashes: StashInfo[] | null;
+  /** Which of the three sections are open; persisted, see `SECTIONS_KEY`. */
+  sections: GitSections;
   /** No status has come back yet. Not "a request is in flight". */
   loading: boolean;
   /** The status could not be READ -- a 503 or an unreachable server. */
   loadError: string | null;
+  /** The local lane's lock: a write that touches the worktree or the index. */
   busyOp: GitOp | null;
+  /** The network lane's lock, held independently of `busyOp`. */
+  netOp: GitNetOp | null;
   lastError: GitStoreError | null;
   /** The visually hidden `role="status"` region's text. */
   liveMessage: string;
@@ -621,6 +917,8 @@ interface GitState {
   attach: () => void;
   detach: () => void;
   refresh: () => Promise<void>;
+  refreshRefs: (kind: GitRefKind) => Promise<void>;
+  setSectionOpen: (kind: GitRefKind, open: boolean) => void;
   noteWorktreeWrite: () => void;
   announce: (message: string) => void;
   setCommitMessage: (message: string) => void;
@@ -631,6 +929,24 @@ interface GitState {
   commit: (opts?: { all?: boolean }) => Promise<boolean>;
   init: () => Promise<boolean>;
   saveIdentity: (identity: { name: string; email: string }) => Promise<boolean>;
+  fetch: () => Promise<boolean>;
+  pull: (strategy: GitPullStrategy) => Promise<boolean>;
+  push: () => Promise<boolean>;
+  sync: () => Promise<boolean>;
+  publish: (remote?: string) => Promise<boolean>;
+  createBranch: (name: string, checkout?: boolean, startPoint?: string | null) => Promise<boolean>;
+  checkout: (target: string, kind: GitCheckoutKind) => Promise<boolean>;
+  renameBranch: (name: string, newName: string) => Promise<boolean>;
+  deleteBranch: (name: string, force: boolean) => Promise<boolean>;
+  addRemote: (name: string, url: string) => Promise<boolean>;
+  setRemoteUrl: (name: string, url: string) => Promise<boolean>;
+  removeRemote: (name: string) => Promise<boolean>;
+  stashPush: (message: string | null, includeUntracked: boolean) => Promise<boolean>;
+  stashPop: (index: number) => Promise<boolean>;
+  stashApply: (index: number) => Promise<boolean>;
+  stashDrop: (index: number) => Promise<boolean>;
+  abortMerge: () => Promise<boolean>;
+  resolve: (path: string, side: GitResolveSide) => Promise<boolean>;
   setHideLayout: (hide: boolean) => void;
   openIdentityForm: () => void;
   closeIdentityForm: () => void;
@@ -643,9 +959,14 @@ export const useGitStore = create<GitState>((set, get) => ({
   repo: null,
   status: null,
   identity: null,
+  branches: null,
+  remotes: null,
+  stashes: null,
+  sections: loadSections(),
   loading: false,
   loadError: null,
   busyOp: null,
+  netOp: null,
   lastError: null,
   liveMessage: '',
   commitMessage: '',
@@ -673,6 +994,7 @@ export const useGitStore = create<GitState>((set, get) => ({
     setWorktreeWriteListener(() => useGitStore.getState().noteWorktreeWrite());
     startPoll();
     void get().refresh();
+    refreshExpandedRefs();
   },
 
   detach: () => {
@@ -720,6 +1042,54 @@ export const useGitStore = create<GitState>((set, get) => ({
       if (seq !== readSeq) return;
       set({ loadError: toStoreError(err, 'status').message, loading: false });
     }
+  },
+
+  /**
+   * Read one of the three reference lists.
+   *
+   * Three lists rather than one call because they are three git processes on
+   * the server and the tab almost never wants all three: the sections load
+   * what they show when they open, and every write refreshes the list it can
+   * have changed. `null` in the slice means "not read yet", which is not the
+   * same as the empty list -- a repository with no remotes is `[]`, and only
+   * that answers "there is nothing to publish to".
+   *
+   * A failure lands in `lastError` rather than being swallowed: the section is
+   * open because somebody opened it, and an empty list with no reason given is
+   * worse than a line saying git could not be read.
+   */
+  refreshRefs: async (kind) => {
+    const seq = (refReadSeq[kind] += 1);
+    try {
+      if (kind === 'branches') {
+        const answer = await getGitBranches();
+        if (seq === refReadSeq.branches) set({ branches: answer });
+      } else if (kind === 'remotes') {
+        const answer = await getGitRemotes();
+        if (seq === refReadSeq.remotes) set({ remotes: answer });
+      } else {
+        const answer = await getGitStashes();
+        if (seq === refReadSeq.stashes) set({ stashes: answer });
+      }
+    } catch (err) {
+      if (seq !== refReadSeq[kind]) return;
+      set({ lastError: toStoreError(err, 'read') });
+    }
+  },
+
+  /**
+   * Open or close one section, and remember it.
+   *
+   * Opening reads the list again even when it was read a minute ago: the
+   * cheapest correct answer to "what is on screen now" is the current one,
+   * and a section that was collapsed while somebody switched branches at the
+   * command line would otherwise open on yesterday's list.
+   */
+  setSectionOpen: (kind, open) => {
+    const sections = { ...get().sections, [kind]: open };
+    set({ sections });
+    saveSections(sections);
+    if (open) void get().refreshRefs(kind);
   },
 
   /**
@@ -848,6 +1218,187 @@ export const useGitStore = create<GitState>((set, get) => ({
     return ok;
   },
 
+  /**
+   * Bring the tracking refs up to date, and nothing else.
+   *
+   * The one network operation that cannot change a file: it moves
+   * `refs/remotes/*` and the ahead/behind counts, which is why it refreshes
+   * the branch list and is not a worktree op.
+   */
+  fetch: async () => runOp('fetch', () => gitFetch(), { refs: ['branches'] }),
+
+  /**
+   * Fetch, then take the upstream's commits.
+   *
+   * `ff-only` is what the Pull button sends and what a Sync's middle step
+   * does; `merge` is what the "Merge remote changes" follow-up sends after a
+   * `diverged` refusal, which is the only way this store writes a merge
+   * commit on purpose.
+   */
+  pull: async (strategy) =>
+    runOp('pull', () => gitPull({ strategy }), {
+      worktree: true,
+      refs: ['branches'],
+      refreshStatusOnError: stepsMayHaveRun,
+    }),
+
+  /**
+   * Send the current branch to where its upstream says.
+   *
+   * Never carries a remote: naming one without `set_upstream` is a 400 by the
+   * route's own first check, because the two together are the publish this
+   * store spells `publish`.
+   */
+  push: async () =>
+    runOp('push', () => gitPush({ setUpstream: false }), {
+      refs: ['branches'],
+    }),
+
+  /** Pull, then push -- or publish, when there is nothing to pull from. */
+  sync: async () =>
+    runOp('sync', () => gitSync(), {
+      worktree: true,
+      refs: ['branches'],
+      refreshStatusOnError: stepsMayHaveRun,
+    }),
+
+  /**
+   * Push a branch that has no upstream, and record the pairing.
+   *
+   * The remote is the caller's when it picked one (Task 5 offers an
+   * `ActionMenu` when there are several), and the only configured remote when
+   * the list has been read and holds exactly one. Otherwise none is sent and
+   * the server resolves it: it applies the same "the only one" rule, and
+   * refuses with 400 `invalid_value` when several leave it no way to choose.
+   * Sending the name we already have is what lets the success toast say where
+   * the branch went without reading the remotes again.
+   */
+  publish: async (remote) => {
+    const loadedRemotes = get().remotes;
+    const selected = remote
+      ?? (loadedRemotes?.length === 1 ? loadedRemotes[0].name : undefined);
+    const options = selected === undefined
+      ? { setUpstream: true }
+      : { remote: selected, setUpstream: true };
+    return runOp('publish', () => gitPush(options), {
+      refs: ['branches'],
+      remote: selected,
+    });
+  },
+
+  /**
+   * Create a branch, and switch to it unless told not to.
+   *
+   * `worktree: checkout` and not a plain `true`: a branch created without a
+   * checkout is a new name for the commit HEAD is already on, and no file
+   * moves -- so there is nothing to offer to reload.
+   */
+  createBranch: async (name, checkout = true, startPoint = null) =>
+    runOp('create_branch', () => gitCreateBranch(name, checkout, startPoint), {
+      worktree: checkout,
+      refs: ['branches'],
+    }),
+
+  /**
+   * Switch branches, or start tracking a remote one.
+   *
+   * `name: target` is the fallback for the toast: the server names the branch
+   * it landed on in `detail.branch`, and this is what to say if a build
+   * without that key ever answers.
+   */
+
+  checkout: async (target, kind) =>
+    runOp('checkout', () => gitCheckout(target, kind), {
+      worktree: true,
+      refs: ['branches'],
+      name: target,
+    }),
+
+  renameBranch: async (name, newName) =>
+    runOp('rename_branch', () => gitRenameBranch(name, newName), {
+      refs: ['branches'],
+    }),
+
+  deleteBranch: async (name, force) =>
+    runOp('delete_branch', () => gitDeleteBranch(name, force), {
+      refs: ['branches'],
+    }),
+
+  addRemote: async (name, url) =>
+    runOp('add_remote', () => gitAddRemote(name, url), {
+      refs: ['remotes'],
+    }),
+
+  setRemoteUrl: async (name, url) =>
+    runOp('set_remote_url', () => gitSetRemoteUrl(name, url), {
+      refs: ['remotes'],
+    }),
+
+  removeRemote: async (name) =>
+    runOp('remove_remote', () => gitRemoveRemote(name), {
+      refs: ['remotes'],
+    }),
+
+  /**
+   * Put the working tree on the stash stack.
+   *
+   * A message nobody typed is sent as `null`, never as `""`: the two are
+   * different requests, and the empty string is a 400 `invalid_value`. The
+   * prompt is optional and Cancel and an empty box mean the same thing here,
+   * which is "let git write its own `WIP on <branch>` subject".
+   */
+  stashPush: async (message, includeUntracked) => {
+    const cleanMessage = message === null || message.trim() === '' ? null : message.trim();
+    return runOp(
+      'stash_push',
+      () => gitStashPush(cleanMessage, includeUntracked),
+      { worktree: true, refs: ['stashes'] },
+    );
+  },
+
+  /**
+   * Apply and remove one stash entry.
+   *
+   * The argument is `StashInfo.index` -- git's own `stash@{N}` -- and never
+   * the row's position in the array: the two agree until a drop, after which
+   * the position would address a different entry every time.
+   */
+
+  stashPop: async (index) =>
+    runOp('stash_pop', () => gitStashPop(index), {
+      worktree: true,
+      refs: ['stashes'],
+      refreshStatusOnError: (err) =>
+        err instanceof GitApiError && err.code === 'conflict',
+    }),
+
+  stashApply: async (index) =>
+    runOp('stash_apply', () => gitStashApply(index), {
+      worktree: true,
+      refs: ['stashes'],
+      refreshStatusOnError: (err) =>
+        err instanceof GitApiError && err.code === 'conflict',
+    }),
+
+  stashDrop: async (index) =>
+    runOp('stash_drop', () => gitStashDrop(index), {
+      refs: ['stashes'],
+    }),
+
+  /** Put the tree back the way it was before the merge started. */
+  abortMerge: async () =>
+    runOp('abort_merge', () => gitAbortMerge(), { worktree: true }),
+
+  /**
+   * Settle one conflicted file.
+   *
+   * `ours` and `theirs` overwrite it before staging it, which is why this is a
+   * worktree op even though `mark` -- the manual resolution the user has
+   * already saved -- only stages what is there.
+   */
+  resolve: async (path, side) =>
+    runOp('resolve', () => gitResolve(path, side), { worktree: true }),
+
   setHideLayout: (hide) => {
     set({ hideLayout: hide });
     saveHideLayout(hide);
@@ -921,6 +1472,7 @@ export function _resetGitStoreForTesting(): void {
   cancelRevisitDebounce();
   attachCount = 0;
   readSeq = 0;
+  refReadSeq = { branches: 0, remotes: 0, stashes: 0 };
   identitySeq = 0;
   changedToastId = null;
   useGitStore.setState({
@@ -928,9 +1480,14 @@ export function _resetGitStoreForTesting(): void {
     repo: null,
     status: null,
     identity: null,
+    branches: null,
+    remotes: null,
+    stashes: null,
+    sections: loadSections(),
     loading: false,
     loadError: null,
     busyOp: null,
+    netOp: null,
     lastError: null,
     liveMessage: '',
     commitMessage: '',

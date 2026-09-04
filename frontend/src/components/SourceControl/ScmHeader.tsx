@@ -1,18 +1,13 @@
 import { useId, useState } from 'react';
-import type { GitErrorCode } from '../../api/git';
-import {
-  gitOpKey,
-  isLayoutFile,
-  useGitStore,
-  type GitStoreError,
-} from '../../store/gitStore';
-import { useI18n, type TranslationKey } from '../../i18n';
+import { isLayoutFile, useGitStore } from '../../store/gitStore';
+import { useI18n } from '../../i18n';
 import { docsUrl } from '../../utils/docsUrl';
 import { MoreHorizontalIcon, RefreshIcon } from '../shared/Icons';
 import { ActionMenu, type ActionMenuItem } from '../shared/ActionMenu';
 import { ProgressBar } from '../shared/ProgressBar';
 import shell from '../Sidebar/NodePalette.module.css';
 import styles from './SourceControl.module.css';
+import { errorSentence, gitOpKey } from './scm';
 
 /**
  * The documentation page the Setup guide link and menu row point at.
@@ -49,43 +44,6 @@ export function focusScmFallback(): void {
     `[data-scm-focus="${SCM_FOCUS.commit}"]`,
   ) ?? document.querySelector<HTMLElement>(`[data-scm-focus="${SCM_FOCUS.title}"]`);
   target?.focus();
-}
-
-/** Translate, with the store's own signature. */
-type Translate = (key: TranslationKey, vars?: Record<string, string | number>) => string;
-
-/**
- * The codes that have a sentence of their own.
- *
- * Everything absent from this map falls to `git.error.generic`, which shows
- * git's own words -- and that is deliberately where `invalid` (FastAPI's 422),
- * `unknown` (a code from a newer server, or a body that was not the git
- * envelope) and `git_service_unavailable` land: a fixed sentence for those
- * would replace the only description of the problem that exists.
- */
-const ERROR_KEY: Partial<Record<GitErrorCode, TranslationKey>> = {
-  busy: 'git.error.busy',
-  nothing_to_commit: 'git.error.nothingToCommit',
-  identity_missing: 'git.error.identityMissing',
-  detached_head: 'git.error.detachedHead',
-  merge_in_progress: 'git.error.mergeInProgress',
-  not_repo: 'git.error.notRepo',
-  invalid_value: 'git.error.invalid',
-};
-
-/**
- * The sentence for one refusal.
- *
- * `timeout` is the exception that is not a lookup: the 504 body carries a code
- * and nothing else, so the store has already written the finished sentence
- * (it is the only place that knows which of the three deadlines applied) and
- * re-mapping the code here would throw that number away.
- */
-export function errorSentence(err: GitStoreError, t: Translate): string {
-  if (err.code === 'timeout') return err.message;
-  if (err.code === 'not_found') return t('git.error.notFound', { what: err.message });
-  const key = ERROR_KEY[err.code];
-  return key === undefined ? t('git.error.generic', { message: err.message }) : t(key);
 }
 
 /**
