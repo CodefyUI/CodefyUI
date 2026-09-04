@@ -89,10 +89,11 @@ describe('RemotesSection: the rows', () => {
 
     view.unmount();
     // Null is "not read yet", never "none": a sentence here would be a claim
-    // nobody has checked.
+    // nobody has checked, and so would a count.
     useGitStore.setState({ remotes: null });
     render(<RemotesSection />);
     expect(screen.queryByText('No remote yet.')).toBeNull();
+    expect(within(section()).queryByText('0')).toBeNull();
   });
 
   it('reports a list that could not be read, inside the section', () => {

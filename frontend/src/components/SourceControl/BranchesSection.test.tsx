@@ -103,6 +103,16 @@ describe('BranchesSection: the rows', () => {
     expect(within(section()).getAllByRole('listitem')).toHaveLength(2);
   });
 
+  it('counts nothing before the list has been read', () => {
+    // The tab opens with all three sections closed and nothing reads the
+    // branches until one is expanded, so `0` beside a repository with five
+    // branches is what a fresh profile showed -- and it stayed wrong until
+    // somebody opened the section it was lying about.
+    useGitStore.setState({ branches: null });
+    render(<BranchesSection />);
+    expect(within(section()).queryByText('0')).toBeNull();
+  });
+
   it('marks the branch that is checked out rather than offering to switch', () => {
     render(<BranchesSection />);
     expect(within(section()).getByText('Current')).toBeTruthy();

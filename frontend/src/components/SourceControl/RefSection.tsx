@@ -29,8 +29,17 @@ export interface RefSectionProps {
   kind: GitRefKind;
   /** The section's name, already translated. */
   title: string;
-  /** How many rows it holds -- shown whether it is open or not. */
-  count: number;
+  /**
+   * How many rows it holds -- shown whether it is open or not, and `null`
+   * while the list has not been read.
+   *
+   * The three sections are closed on a fresh profile and nothing reads a list
+   * until one is opened, so `?? 0` here printed "Branches 0" beside a
+   * repository with five of them and kept printing it until somebody expanded
+   * the section it was wrong about. No number is what "not read yet" looks
+   * like; the first read fills it in.
+   */
+  count: number | null;
   open: boolean;
   /** The open state lives in the store, which persists it; see `setSectionOpen`. */
   onOpenChange: (open: boolean) => void;
@@ -106,7 +115,7 @@ export function RefSection({
             the same edge in every section however many actions that one has.
             See the same note in `ChangeGroup`. */}
         <div className={styles.groupActions}>{actions}</div>
-        <span className={styles.groupCount}>{count}</span>
+        {count !== null && <span className={styles.groupCount}>{count}</span>}
       </div>
       {/* `role="list"` is spelled out because `list-style: none` takes the list
           semantics away from a `<ul>` in Safari. */}

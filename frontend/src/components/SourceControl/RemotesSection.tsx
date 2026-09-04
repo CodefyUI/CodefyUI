@@ -87,7 +87,9 @@ export function RemotesSection() {
     <RefSection
       kind="remotes"
       title={t('git.section.remotes')}
-      count={remotes?.length ?? 0}
+      // Null is "not read yet" here too, and a count is as much of a claim as
+      // the empty sentence below.
+      count={remotes === null ? null : remotes.length}
       open={open}
       onOpenChange={(next) => setSectionOpen('remotes', next)}
       actions={

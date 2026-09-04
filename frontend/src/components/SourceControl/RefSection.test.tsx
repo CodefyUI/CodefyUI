@@ -97,6 +97,19 @@ describe('RefSection', () => {
     expect(screen.getByText('7')).toBeTruthy();
   });
 
+  it('counts nothing at all until the list has been read', () => {
+    // `null` is "not read yet", and the sections are closed on a fresh
+    // profile -- so a `0` here is a claim about a repository nobody has asked
+    // about, printed beside five branches. No number is the honest answer, and
+    // the first read fills it in.
+    renderSection({ count: null });
+    // The ELEMENT, not the text: a span rendering `null` draws nothing and
+    // would pass a `queryByText`, while still holding the column the header's
+    // title is fighting for at 180px.
+    expect(document.querySelector('[class*="groupCount"]')).toBeNull();
+    expect(screen.getByRole('region', { name: 'Branches' })).toBeTruthy();
+  });
+
   it('carries the header actions the section offers', () => {
     renderSection({
       actions: (

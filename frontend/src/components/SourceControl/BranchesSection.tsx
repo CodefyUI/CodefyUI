@@ -110,8 +110,10 @@ export function BranchesSection() {
       kind="branches"
       title={t('git.section.branches')}
       // The LOCAL branches: those are the rows the section's actions act on,
-      // and a remote-tracking ref is not a branch you have.
-      count={local.length}
+      // and a remote-tracking ref is not a branch you have. Null until the
+      // list has been read -- the section is closed on a fresh profile, and
+      // nothing has counted anything yet.
+      count={branches === null ? null : local.length}
       open={open}
       onOpenChange={(next) => setSectionOpen('branches', next)}
       actions={
