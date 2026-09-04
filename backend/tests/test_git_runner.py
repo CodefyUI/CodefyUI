@@ -54,6 +54,9 @@ class _FakeProc:
         self.returncode: int | None = None
         self.communicate_calls: list[tuple] = []
         self.wait_calls: list[float | None] = []
+        #: True once ``wait`` has returned -- git itself stopped on the
+        #: first signal. Says nothing about the group it was in.
+        self.stopped = False
 
     def communicate(self, data=None, timeout=None):
         self.communicate_calls.append((data, timeout))
@@ -67,6 +70,7 @@ class _FakeProc:
         self.wait_calls.append(timeout)
         if self._ignores_sigterm:
             raise subprocess.TimeoutExpired(cmd="git", timeout=timeout or 0)
+        self.stopped = True
         self.returncode = -15
         return self.returncode
 
@@ -528,22 +532,32 @@ def test_a_windows_child_is_started_exactly_as_before(monkeypatch, fake_git):
 # --- failures --------------------------------------------------------------
 
 
-def _posix_kill(monkeypatch) -> list[tuple[int, int]]:
+def _posix_kill(monkeypatch, *,
+                gone_after_sigterm: bool = False) -> list[tuple[int, int]]:
     """Fake the POSIX group-kill calls; returns what was signalled.
 
     ``os.killpg``, ``os.getpgid`` and ``signal.SIGKILL`` do not exist on
     Windows, which is where this suite usually runs -- so all three are
     installed with ``raising=False``. On Linux, where they do exist, the
     fakes replace the real ones for the length of the test, which is the
-    point: no test in this file may signal anything.
+    point: no test in this file may signal anything. (``signal.SIGTERM``
+    exists on both and is used as it is.)
+
+    *gone_after_sigterm* models a group whose every member stopped on the
+    first signal: anything sent after it meets ``ESRCH``, the way a real
+    ``killpg`` answers a group with nobody left in it.
     """
     sent: list[tuple[int, int]] = []
     monkeypatch.setattr(sys, "platform", "linux")
     monkeypatch.setattr(signal, "SIGKILL", 9, raising=False)
     monkeypatch.setattr(os, "getpgid", lambda pid: pid, raising=False)
-    monkeypatch.setattr(
-        os, "killpg", lambda pgid, sig: sent.append((pgid, sig)),
-        raising=False)
+
+    def _killpg(pgid, sig):
+        sent.append((pgid, sig))
+        if gone_after_sigterm and sig != signal.SIGTERM:
+            raise ProcessLookupError(3, "No such process")
+
+    monkeypatch.setattr(os, "killpg", _killpg, raising=False)
     return sent
 
 
@@ -577,8 +591,9 @@ def test_a_timeout_on_posix_signals_the_whole_group(monkeypatch, fake_git):
 
     ``stop_process`` on POSIX is ``proc.terminate()``, which reaches git and
     nothing it started -- so the ssh blocked on a network read survives its
-    parent. The signal goes to the negative-pid group instead, and a child
-    that stops on the first one is never sent the second.
+    parent. The first signal goes to the negative-pid group instead, and
+    the grace before the second is git's to use: ``wait`` is given the
+    drain timeout, no more.
     """
     sent = _posix_kill(monkeypatch)
     proc = _FakeProc(hangs=True)
@@ -590,17 +605,41 @@ def test_a_timeout_on_posix_signals_the_whole_group(monkeypatch, fake_git):
         runner.run_git(["fetch"], cwd=Path.cwd(), timeout=10)
 
     assert excinfo.value.code == "timeout"
-    assert sent == [(proc.pid, signal.SIGTERM)]
+    assert sent[0] == (proc.pid, signal.SIGTERM)
     assert proc.wait_calls == [runner.DRAIN_TIMEOUT_S]
     assert len(proc.communicate_calls) == 2
 
 
-def test_a_posix_child_that_ignores_sigterm_is_killed(monkeypatch, fake_git):
-    """A credential helper that will not stop is not allowed to hold on.
+def test_a_posix_descendant_that_outlives_git_is_killed_too(monkeypatch,
+                                                            fake_git):
+    """The second signal is a floor, not a reaction to git ignoring the first.
 
-    It holds the pipes, and the index lock behind them, for as long as it
-    likes -- so the second signal is the one that cannot be ignored, sent
-    after the same grace ``_drain`` gives.
+    ``killpg`` hands ``SIGTERM`` to git AND to the ssh or credential helper
+    it started, in the same instant -- but ``wait`` can only report on git,
+    which has no handler that waits for its children and stops on the
+    signal at once whatever they did. A kill keyed to that exit would skip
+    exactly the process this path exists for: the helper that ignored the
+    first signal and goes on holding the pipes, and the index lock behind
+    them. So here git stops promptly, and the group is sent ``SIGKILL``
+    all the same, in that order.
+    """
+    sent = _posix_kill(monkeypatch)
+    proc = _FakeProc(hangs=True)
+    _fake_popen(monkeypatch, proc)
+
+    with pytest.raises(GitError) as excinfo:
+        runner.run_git(["fetch"], cwd=Path.cwd(), timeout=10)
+
+    assert excinfo.value.code == "timeout"
+    assert proc.stopped is True, "the case is git STOPPING on the first"
+    assert sent == [(proc.pid, signal.SIGTERM), (proc.pid, signal.SIGKILL)]
+
+
+def test_a_posix_child_that_ignores_sigterm_is_killed(monkeypatch, fake_git):
+    """...and a git that will not stop either gets the same floor.
+
+    ``wait`` runs out the grace ``_drain`` gives and the group is killed;
+    the difference from the test above is only how long that took.
     """
     sent = _posix_kill(monkeypatch)
     proc = _FakeProc(hangs=True, ignores_sigterm=True)
@@ -609,7 +648,31 @@ def test_a_posix_child_that_ignores_sigterm_is_killed(monkeypatch, fake_git):
     with pytest.raises(GitError):
         runner.run_git(["fetch"], cwd=Path.cwd(), timeout=10)
 
+    assert proc.stopped is False
+    assert proc.wait_calls == [runner.DRAIN_TIMEOUT_S]
     assert sent == [(proc.pid, signal.SIGTERM), (proc.pid, signal.SIGKILL)]
+
+
+def test_a_posix_group_that_emptied_on_the_first_signal_is_not_an_error(
+        monkeypatch, fake_git):
+    """The ORDINARY outcome, now that the second signal is unconditional.
+
+    git and its ssh both stop on ``SIGTERM``; by the time ``SIGKILL`` is
+    sent there is nobody left in the group, and ``killpg`` says so with
+    ``ESRCH``. That is the result being asked for, and it must not turn
+    the 504 into a 500 -- nor stop the pipes being collected afterwards.
+    """
+    sent = _posix_kill(monkeypatch, gone_after_sigterm=True)
+    proc = _FakeProc(hangs=True)
+    _fake_popen(monkeypatch, proc)
+
+    with pytest.raises(GitError) as excinfo:
+        runner.run_git(["fetch"], cwd=Path.cwd(), timeout=10)
+
+    assert excinfo.value.code == "timeout"
+    assert excinfo.value.status == 504
+    assert sent == [(proc.pid, signal.SIGTERM), (proc.pid, signal.SIGKILL)]
+    assert len(proc.communicate_calls) == 2
 
 
 def test_a_posix_group_that_is_already_gone_is_not_an_error(monkeypatch,

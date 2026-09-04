@@ -38,12 +38,13 @@ back to the command that caused it.
   ``taskkill /T`` -- the same kill the Package Center uses. On POSIX
   :func:`_run` asks for a session of its own (``start_new_session=True``)
   and :func:`_kill_group` aims the signals at the whole group: ``SIGTERM``
-  first, then ``SIGKILL`` :data:`DRAIN_TIMEOUT_S` later for a child that
-  ignored it. ``stop_process`` alone is NOT enough there -- it calls
-  ``terminate()`` on the child, which leaves the ssh behind -- and until G3
-  added the commands that talk to a network there was nothing here for it
-  to leave: every G1 command is local, and a local git has no long-lived
-  children.
+  first, then ``SIGKILL`` -- once git has stopped or :data:`DRAIN_TIMEOUT_S`
+  has passed, and ALWAYS, because git's own exit says nothing about the
+  ssh that was sent the same signal. ``stop_process`` alone is NOT enough
+  there -- it calls ``terminate()`` on the child, which leaves the ssh
+  behind -- and until G3 added the commands that talk to a network there
+  was nothing here for it to leave: every G1 command is local, and a local
+  git has no long-lived children.
 * **An environment scrubbed of the caller's repository.** ``GIT_DIR`` and
   its five friends (:data:`REPOSITORY_ENV_VARS`) name a repository; if the
   server was started from a shell inside a git hook, every command here
@@ -489,13 +490,25 @@ def _stop(proc: subprocess.Popen) -> None:
 
 
 def _kill_group(proc: subprocess.Popen) -> None:
-    """POSIX: ``SIGTERM`` the whole group, then ``SIGKILL`` what survives.
+    """POSIX: ``SIGTERM`` the whole group, then ``SIGKILL`` it -- always.
 
     ``SIGTERM`` first because an ssh that is asked to stop closes its
-    connection and its pty; ``SIGKILL`` after :data:`DRAIN_TIMEOUT_S`
-    because a credential helper that ignores the first signal would
-    otherwise hold the pipes -- and the index lock -- open for as long as it
-    liked.
+    connection and its pty, and a git that is asked to stop removes the
+    lock files it made. ``SIGKILL`` second, because a credential helper
+    that ignores the first signal would otherwise hold the pipes -- and
+    the index lock -- open for as long as it liked.
+
+    The second signal is a FLOOR, not a reaction to the first being
+    ignored, and the distinction is the whole bug it closes. ``proc.wait``
+    can only report on git itself: ``killpg`` handed ``SIGTERM`` to git and
+    to everything it started at the same moment, and git -- which has no
+    handler that waits for its children -- stops on it at once whatever
+    they did. A kill keyed to git's exit would therefore skip precisely
+    the descendant this function exists for, every time git behaved. So
+    the group is waited for only as long as git takes, up to
+    :data:`DRAIN_TIMEOUT_S`, and then sent ``SIGKILL`` regardless; on a
+    group that has emptied itself by then the second signal costs one
+    ``ESRCH``, which :func:`_signal_group` swallows.
 
     Every failure here means the group is already gone, which is the
     outcome being asked for: a race with a child that exited on its own must
@@ -505,23 +518,27 @@ def _kill_group(proc: subprocess.Popen) -> None:
         pgid = os.getpgid(proc.pid)
     except OSError:
         return
-    if not _signal_group(pgid, signal.SIGTERM):
-        return
+    _signal_group(pgid, signal.SIGTERM)
     try:
         proc.wait(timeout=DRAIN_TIMEOUT_S)
-        return
     except subprocess.TimeoutExpired:
         pass
     _signal_group(pgid, signal.SIGKILL)
 
 
-def _signal_group(pgid: int, sig: int) -> bool:
-    """Signal one process group; False when there was nothing left to signal."""
+def _signal_group(pgid: int, sig: int) -> None:
+    """Signal one process group, and treat an empty one as done.
+
+    ``ProcessLookupError`` (``ESRCH``) is the ORDINARY answer to the second
+    signal :func:`_kill_group` sends -- git and its ssh both stopped on the
+    first, and there is nobody left -- and the other ``OSError`` there is,
+    ``EPERM``, means a member this process cannot signal at all, which a
+    second attempt would not change. Neither is a reason to raise.
+    """
     try:
         os.killpg(pgid, sig)
     except OSError:
-        return False
-    return True
+        pass
 
 
 def _run(args: Sequence[str], *, cwd: Path, timeout: float,
