@@ -1024,7 +1024,8 @@ class GitService:
         this was never reaches the caller -- and "the push was refused" and
         "the fetch never got there" are different things to do next. The
         step goes in the ``hint``, and only when git left that slot empty:
-        ``classify_failure`` never sets one, so this fills a gap rather than
+        ``classify_failure`` sets one for the few codes in
+        ``errors.CODE_HINTS`` alone, so this fills a gap rather than
         overwriting the one useful sentence a refusal came with.
         """
         try:

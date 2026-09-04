@@ -527,29 +527,86 @@ async def test_plain_push_uses_a_direct_remote_push_default(repo, bare_remote):
         == repo.head()
 
 
-async def test_plain_push_never_reports_credentials(repo, monkeypatch):
-    """A direct push destination is display-safe before it reaches detail."""
+def _fake_push(monkeypatch, stdout: bytes, *, returncode: int = 0,
+               stderr: bytes = b""):
+    """Answer the plain push with *stdout* and leave every other git real.
+
+    Only the mutating command is faked. The metadata reads around it --
+    the status, ``for-each-ref``, ``remote -v`` -- still run against the
+    repository on disk, which is what makes an assertion about
+    ``detail.remote`` an assertion about the real resolver.
+    """
+    real_run_git = network.run_git
+
+    def _push(args, **kwargs):
+        if args == ["push", "--porcelain"]:
+            return GitResult(argv=["git", "push", "--porcelain"],
+                             returncode=returncode, stdout=stdout,
+                             stderr=stderr)
+        return real_run_git(args, **kwargs)
+
+    monkeypatch.setattr(network, "run_git", _push)
+
+
+@pytest.mark.parametrize("with_a_to_line", [True, False],
+                         ids=["porcelain-names-the-destination",
+                              "porcelain-names-nothing"])
+async def test_plain_push_never_reports_credentials(repo, monkeypatch,
+                                                    with_a_to_line):
+    """A direct push destination is display-safe before it reaches detail.
+
+    Both shapes, because there are two masks on this path and the stdout
+    decides which one answers. With a ``To`` line the destination comes
+    from the push's own porcelain output (``_pushed_remote``); without one
+    -- an up-to-date push under some gits, or any future output change --
+    it falls back to the configured target ``_tracked_remote`` resolved.
+    A test that arranged a credential and then exercised only one of them
+    would read as a guard on both.
+    """
     token = "ghp_16C7e42F292c6912E7710c838347Ae178B4a"
     target = f"https://alice:{token}@example.invalid/repo.git"
     repo.git("config", "remote.pushDefault", target)
     repo.git("config", "push.default", "current")
-    real_run_git = network.run_git
-
-    def _successful_push(args, **kwargs):
-        if args == ["push", "--porcelain"]:
-            return GitResult(argv=["git", "push", "--porcelain"],
-                             returncode=0,
-                             stdout=f"To {target}\nDone\n".encode(),
-                             stderr=b"")
-        return real_run_git(args, **kwargs)
-
-    monkeypatch.setattr(network, "run_git", _successful_push)
+    stdout = f"To {target}\nDone\n".encode() if with_a_to_line else b"Done\n"
+    _fake_push(monkeypatch, stdout)
 
     result = await repo.service.push()
 
     assert token not in result.detail["remote"]
     assert result.detail["remote"] == (
         "https://alice:***@example.invalid/repo.git")
+
+
+async def test_a_push_destination_that_is_not_a_url_is_not_reported(
+        repo, monkeypatch):
+    """``detail.remote`` is a closed contract, not an echo of git config.
+
+    ``%(push:remotename)`` repeats ``remote.pushDefault`` verbatim, so
+    whatever string is in the user's configuration -- any length, any
+    shape -- would otherwise become a field of a JSON response. A value
+    that is neither one of this repository's remotes nor a URL
+    ``validate_remote_url`` accepts is reported as nothing at all. The
+    push itself is git's business and still runs.
+    """
+    repo.git("config", "remote.pushDefault", "a target nobody configured")
+    repo.git("config", "push.default", "current")
+    pushed: list[list[str]] = []
+    real_run_git = network.run_git
+
+    def _push(args, **kwargs):
+        if args and args[0] == "push":
+            pushed.append(list(args))
+            return GitResult(argv=["git", *args], returncode=0,
+                             stdout=b"Done\n", stderr=b"")
+        return real_run_git(args, **kwargs)
+
+    monkeypatch.setattr(network, "run_git", _push)
+
+    result = await repo.service.push()
+
+    assert result.detail == {"remote": None, "branch": "main",
+                             "published": False}
+    assert pushed == [["push", "--porcelain"]]
 
 
 async def test_branch_push_remote_overrides_the_upstream(repo, bare_remote,
@@ -604,6 +661,56 @@ async def test_a_plain_push_reports_the_effective_remote(repo, bare_remote):
                              "published": False}
     assert Repo(bare_remote).git("rev-parse", "refs/heads/main").strip() \
         == repo.head()
+
+
+async def test_a_sole_remote_answers_a_porcelain_that_named_nothing(
+        repo, bare_remote, monkeypatch):
+    """The last resort when the push output says where it went to nobody.
+
+    Ref-filter reports no destination for one remote plus
+    ``push.default=current``, so the name has to come from the push itself
+    -- and git 2.53 always writes a ``To`` line, which the URL match then
+    resolves. This is the same state with that line absent: a git that
+    stops printing it, or an output shape a future version changes. With
+    one remote there is still only one answer it can be, and returning
+    None there would blank the remote out of a toast for no reason.
+    """
+    repo.git("remote", "add", "elsewhere", remote_url(bare_remote))
+    repo.git("config", "push.default", "current")
+    _fake_push(monkeypatch, b"Done\n")
+
+    result = await repo.service.push()
+
+    assert result.detail == {"remote": "elsewhere", "branch": "main",
+                             "published": False}
+
+
+async def test_a_plain_push_names_the_remote_git_fell_back_to(repo,
+                                                              bare_remote,
+                                                              tmp_path):
+    """Several remotes and no upstream: the answer is still a NAME.
+
+    Git's implicit fallback to ``origin`` is one ref-filter does not
+    report, so ``%(push:remotename)`` is empty here and the effective
+    destination has to be recovered from the push's own ``To`` line. With
+    one remote the sole-remote branch would answer it; with two, only the
+    URL match does -- and the difference between a name and a raw
+    ``file://`` path in ``detail.remote`` is what the toast and the panel
+    read.
+    """
+    backup = make_bare_remote(tmp_path, "backup.git")
+    repo.git("remote", "add", "origin", remote_url(bare_remote))
+    repo.git("remote", "add", "backup", remote_url(backup))
+    repo.git("config", "push.default", "current")
+
+    result = await repo.service.push()
+
+    assert result.detail == {"remote": "origin", "branch": "main",
+                             "published": False}
+    assert Repo(bare_remote).git("rev-parse", "refs/heads/main").strip() \
+        == repo.head()
+    assert Repo(backup).git("for-each-ref", "refs/heads").strip() == "", \
+        "the other remote was pushed to as well"
 
 
 async def test_push_default_nothing_is_a_user_error(repo, bare_remote):
@@ -663,6 +770,37 @@ async def test_a_push_the_remote_is_ahead_of_is_refused(repo, bare_remote,
 
     assert excinfo.value.code == "non_fast_forward"
     assert excinfo.value.status == 409
+
+
+async def test_a_refused_porcelain_push_keeps_its_verdict_in_the_evidence(
+        repo, bare_remote, monkeypatch):
+    """The line the code came from has to survive ``stderr_tail``.
+
+    ``--porcelain`` moves the per-ref verdict onto STDOUT while git's own
+    ``error:`` and ``hint:`` prose stays on stderr, and a forge is free to
+    print a banner of ``remote:`` lines above both. The tail keeps the last
+    twenty lines of whatever it is handed, so joining stdout first drops the
+    one line the classification was derived from -- the tab's Details
+    disclosure then shows twenty lines of somebody's banner and no reason.
+    Classification itself scans the whole text and is order-independent, so
+    stderr goes first and the verdict sits at the end.
+    """
+    _publish(repo, bare_remote)
+    repo.commit("mine", {"c.txt": "sea\n"})
+    banner = "".join(f"remote: house rule {n}\n" for n in range(25))
+    _fake_push(
+        monkeypatch,
+        b"To file:///srv/mirrors/repo.git\n"
+        b"!\trefs/heads/main:refs/heads/main\t[rejected] (fetch first)\n"
+        b"Done\n",
+        returncode=1,
+        stderr=(banner + "error: failed to push some refs\n").encode())
+
+    with pytest.raises(GitError) as excinfo:
+        await repo.service.push()
+
+    assert excinfo.value.code == "non_fast_forward"
+    assert "[rejected] (fetch first)" in (excinfo.value.stderr or "")
 
 
 async def test_publishing_from_a_detached_head_is_refused(repo, bare_remote):
@@ -942,10 +1080,12 @@ async def test_sync_stops_at_the_first_failure_and_says_which_step(
 async def test_a_step_that_failed_with_advice_keeps_it(repo):
     """The step name fills an EMPTY hint and never replaces git's own.
 
-    ``classify_failure`` leaves the slot empty, which is what makes this
-    safe; a pre-flight refusal like this one arrives with the sentence that
-    says what to do, and losing it to "the fetch step failed" would be a
-    worse answer, not a better-labelled one.
+    ``classify_failure`` leaves the slot empty for every code but the few
+    in ``errors.CODE_HINTS``, which is what makes this safe; a pre-flight
+    refusal like this one arrives with the sentence that says what to do,
+    and losing it to "the fetch step failed" would be a worse answer, not a
+    better-labelled one. The same holds for a ``push_config`` inside a
+    sync: "check push.default" beats "the push step failed".
     """
     with pytest.raises(GitError) as excinfo:
         await repo.service.sync()
@@ -999,20 +1139,28 @@ async def test_every_network_command_keeps_literal_pathspecs(
     do half its job with the option on. Pinned at the argv rather than
     argued in a docstring, because the next command added here will be
     added by somebody reading this file.
+
+    ``refs.run_git`` is recorded as well as ``network.run_git``, because
+    the inventory below claims to be EVERY command a pull or a push runs
+    and ``remote -v`` reaches git through the other module. That also
+    makes the cost visible: two helpers of one plain push want the remote
+    list, and one process answers both.
     """
     _publish(repo, bare_remote)
     clone = clone_of(bare_remote)
     clone.commit("from the clone", {"b.txt": "bee\n"})
     clone.git("push", "-q")
-    real = network.run_git
     seen: list[list[str]] = []
 
-    def _record(args, **kwargs):
-        result = real(args, **kwargs)
-        seen.append(result.argv)
-        return result
+    def _recorder(real):
+        def _record(args, **kwargs):
+            result = real(args, **kwargs)
+            seen.append(result.argv)
+            return result
+        return _record
 
-    monkeypatch.setattr(network, "run_git", _record)
+    monkeypatch.setattr(network, "run_git", _recorder(network.run_git))
+    monkeypatch.setattr(refs, "run_git", _recorder(refs.run_git))
 
     await repo.service.pull()
     repo.commit("mine", {"c.txt": "sea\n"})
@@ -1021,4 +1169,7 @@ async def test_every_network_command_keeps_literal_pathspecs(
     assert [argv for argv in seen if LITERAL_PATHSPECS not in argv] == []
     # ...and that the list above really is every command this module runs.
     assert {_subcommand(argv) for argv in seen} == {
-        "fetch", "for-each-ref", "rev-parse", "merge", "push"}
+        "fetch", "for-each-ref", "rev-parse", "merge", "push", "remote"}
+    # The pull contributes none of these: its remote comes from the
+    # upstream. So this count is the plain push's, and it is one.
+    assert len([argv for argv in seen if _subcommand(argv) == "remote"]) == 1

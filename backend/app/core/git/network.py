@@ -51,8 +51,8 @@ from typing import Any, Literal
 
 from . import refs, repo
 from .errors import GitError, classify_failure
-from .models import GitStatus
-from .paths import display_url, validate_remote_name
+from .models import GitStatus, RemoteInfo
+from .paths import display_url, validate_remote_name, validate_remote_url
 from .runner import T_LOCAL, T_NETWORK, T_STATUS, run_git
 
 #: How a pull brings the remote's work in. ``ff-only`` moves the branch or
@@ -141,7 +141,32 @@ def _no_remote() -> GitError:
                     hint="add a remote before pushing or fetching")
 
 
-def _tracked_remote(root: Path, branch: str) -> str | None:
+def _display_target(target: str) -> str | None:
+    """*target* in display form, or None when it is not ours to echo.
+
+    ``detail.remote`` is a field of a JSON response and its contract is
+    closed: a validated remote NAME, a URL this server would accept, or
+    nothing. What arrives here is neither -- ``%(push:remotename)`` repeats
+    ``remote.pushDefault`` and ``branch.<name>.pushRemote`` verbatim, and the
+    porcelain ``To`` line repeats whatever git printed -- so a value of any
+    length and any shape can reach this point out of the user's own config.
+    Anything :func:`~app.core.git.paths.validate_remote_url` will not take is
+    reported as nothing rather than described with a string nobody bounded.
+
+    What passes still goes through
+    :func:`~app.core.git.paths.display_url` first: the accepted shapes
+    include ``https://alice:ghp_xxx@host/repo.git``, which is a URL git takes
+    and people really do configure.
+    """
+    try:
+        validate_remote_url(target)
+    except GitError:
+        return None
+    return display_url(target)
+
+
+def _tracked_remote(root: Path, branch: str,
+                    remotes: list[RemoteInfo]) -> str | None:
     """Git's configured destination for a PLAIN push, safe for display.
 
     ``%(push:remotename)`` is Git's own resolver. It applies
@@ -150,50 +175,60 @@ def _tracked_remote(root: Path, branch: str) -> str | None:
     here would drift from Git -- and would miss that either of the first two
     settings may itself be a URL or path rather than a named remote.
 
-    A named remote stays a name. A direct URL or path is returned in display
-    form, with credentials masked by :func:`~app.core.git.paths.display_url`. Ref-filter
-    leaves some implicit fallbacks empty (notably one remote plus
+    A named remote stays a name. A direct URL is returned in display form
+    (:func:`_display_target`), and anything else -- arbitrary config text
+    that is neither -- is None: git will run and answer for it either way,
+    and this function's job is only to say what the destination WAS.
+    Ref-filter leaves some implicit fallbacks empty (notably one remote plus
     ``push.default=current``); :func:`_pushed_remote` fills those from the
     successful command's porcelain output. No configured target and no named
     remotes remains the pre-flight ``no_remote`` answer.
+
+    *remotes* is passed in rather than read here: :func:`push` needs the same
+    list for :func:`_pushed_remote`, and one ``remote -v`` answers both.
     """
     result = run_git(
         ["for-each-ref", "--format=%(push:remotename)", "--",
          f"refs/heads/{branch}"],
         cwd=root, timeout=T_STATUS, read_only=True)
     target = result.out.rstrip("\r\n")
-    remotes = refs.list_remotes(root)
     if target in {remote.name for remote in remotes}:
         return validate_remote_name(target)
     if target:
-        return display_url(target)
+        return _display_target(target)
     if not remotes:
         raise _no_remote()
     return None
 
 
-def _pushed_remote(root: Path, stdout: str,
-                   configured: str | None) -> str | None:
+def _pushed_remote(stdout: str, configured: str | None,
+                   remotes: list[RemoteInfo]) -> str | None:
     """The successful push's effective target, under the detail contract.
 
     ``git push --porcelain`` writes one ``To <destination>`` line per target.
     The first is deterministic and, unlike human stderr, part of Git's
     machine-readable output. A target Git identified as a named remote stays
-    that name; an implicit sole-remote fallback becomes its name; otherwise
-    the displayed URL/path from the successful command is returned. Every URL
-    goes through :func:`~app.core.git.paths.display_url` before it can reach the response.
+    that name; an implicit sole-remote fallback becomes its name; a
+    destination that matches exactly one configured remote's push URL becomes
+    THAT name -- which is the answer for the ordinary two-remotes-and-no-
+    upstream repository, where ref-filter reports nothing and git falls back
+    to ``origin``.
+
+    The URL is matched in display form, because that is the form
+    ``refs.list_remotes`` reports; only what is RETURNED has to survive
+    :func:`_display_target`, so a remote configured as a bare relative path
+    still resolves to its name.
     """
-    destinations = [display_url(line.removeprefix("To "))
-                    for line in stdout.splitlines()
-                    if line.startswith("To ")]
-    destination = destinations[0] if destinations else None
-    remotes = refs.list_remotes(root)
+    raw = next((line.removeprefix("To ") for line in stdout.splitlines()
+                if line.startswith("To ")), None)
+    destination = display_url(raw) if raw is not None else None
+    shown = _display_target(raw) if raw is not None else None
     names = {remote.name for remote in remotes}
 
     if configured in names:
         return validate_remote_name(configured)
     if configured is not None:
-        return destination or configured
+        return shown or configured
     if len(remotes) == 1:
         return validate_remote_name(remotes[0].name)
     if destination is not None:
@@ -201,7 +236,7 @@ def _pushed_remote(root: Path, stdout: str,
                     if remote.push_url == destination}
         if len(matching) == 1:
             return validate_remote_name(matching.pop())
-        return destination
+        return shown
     return None
 
 
@@ -300,8 +335,9 @@ def push(root: Path, *, remote: str | None = None,
     own push destination and refspec configuration. A branch with no usable
     destination is Git's own refusal, and the tab answers it with the Publish
     button rather than by guessing. ``detail.remote`` comes from Git's own
-    push-remote resolver and is display-redacted when that target is a direct
-    URL or path (:func:`_tracked_remote`).
+    push-remote resolver, display-redacted when that target is a direct URL
+    (:func:`_tracked_remote`) and None when it is neither one of this
+    repository's remotes nor a URL this server would accept.
 
     A PUBLISH is ``push -u -- <remote> <branch>``: a remote that was named
     or resolved, the branch HEAD is on, and ``-u`` to record the pairing so
@@ -337,13 +373,23 @@ def push(root: Path, *, remote: str | None = None,
     status = repo.read_status(root)
     branch = _pushable_branch(status)
     if not set_upstream:
-        configured = _tracked_remote(root, branch)
+        # One ``remote -v`` for both halves of the answer: the resolver
+        # needs it to tell a configured NAME from a URL, and the porcelain
+        # reader needs it to recover the name git fell back to.
+        remotes = refs.list_remotes(root)
+        configured = _tracked_remote(root, branch, remotes)
         result = run_git(["push", "--porcelain"], cwd=root, timeout=T_NETWORK,
                          ok_codes=(0, 1, 128))
         if result.returncode != 0:
+            # STDERR FIRST. Both streams are classified (the per-ref verdict
+            # is on stdout under ``--porcelain``), and matching is
+            # order-independent -- but ``errors.stderr_tail`` keeps only the
+            # LAST twenty lines, so a forge that prints a long ``remote:``
+            # banner would push the rejected-ref line out of the evidence
+            # the tab shows behind Details.
             raise classify_failure(result.argv, result.returncode,
-                                   f"{result.out}\n{result.err}")
-        name = _pushed_remote(root, result.out, configured)
+                                   f"{result.err}\n{result.out}")
+        name = _pushed_remote(result.out, configured, remotes)
         return {"remote": name, "branch": branch, "published": False}
 
     name = resolve_remote(root, status, remote)
