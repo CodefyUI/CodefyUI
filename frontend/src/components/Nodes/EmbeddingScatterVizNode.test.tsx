@@ -5,6 +5,7 @@ import { useI18n } from '../../i18n';
 import { useTabStore } from '../../store/tabStore';
 import type { NodeData, NodeDefinition, OutputSummary } from '../../types';
 import EmbeddingScatterVizNode from './EmbeddingScatterVizNode';
+import { VizViewerModal } from './VizViewerModal';
 
 const flowProps = {
   zIndex: 0,
@@ -45,15 +46,30 @@ function seed(summary: Record<string, OutputSummary> | undefined) {
         name: 'Tab',
         nodes: [],
         edges: [],
+        // A viewer left open by the previous test must not carry over.
+        vizModalNodeId: null,
         outputSummaries: summary ? { [NODE_ID]: summary } : ({} as Record<string, Record<string, OutputSummary>>),
       },
     ],
   }));
 }
 
-function renderNode() {
+function renderNode(d: NodeData = data()) {
+  // The "View full" viewer is the store-driven host at the app root
+  // (core#324), which reads the node off the tab -- so the tab has to hold
+  // the node the card is rendered for, and the host renders beside the card.
+  useTabStore.setState((s) => ({
+    tabs: s.tabs.map((t) =>
+      t.id === s.activeTabId
+        ? { ...t, nodes: [{ id: NODE_ID, type: 'embeddingScatterNode', position: { x: 0, y: 0 }, data: d }] }
+        : t,
+    ),
+  }));
   return renderWithFlow(
-    <EmbeddingScatterVizNode id={NODE_ID} type="embeddingScatterNode" data={data()} selected={false} {...flowProps} />,
+    <>
+      <EmbeddingScatterVizNode id={NODE_ID} type="embeddingScatterNode" data={d} selected={false} {...flowProps} />
+      <VizViewerModal />
+    </>,
   );
 }
 
@@ -164,15 +180,7 @@ describe('EmbeddingScatterVizNode', () => {
   it('titles the modal with the node id when the label is absent, and Esc closes it', () => {
     seed({ points_2d: { type: 'tensor', values: [[0, 0], [1, 1]] } });
     const noLabel = { ...data(), label: undefined as unknown as string };
-    const { container } = renderWithFlow(
-      <EmbeddingScatterVizNode
-        id={NODE_ID}
-        type="embeddingScatterNode"
-        data={noLabel}
-        selected={false}
-        {...flowProps}
-      />,
-    );
+    const { container } = renderNode(noLabel);
     fireEvent.click(container.querySelector('button') as HTMLButtonElement);
     expect(screen.getByText(new RegExp(`EmbeddingScatter · ${NODE_ID}`))).toBeTruthy();
     // Closing the modal flips the node's expanded state back off.

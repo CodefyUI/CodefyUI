@@ -1,11 +1,11 @@
-import { memo, useMemo, useState } from 'react';
+import { memo, useMemo } from 'react';
 import type { NodeProps } from '@xyflow/react';
 import type { AppNode } from '../../types';
 import { useTabStore } from '../../store/tabStore';
 import { useI18n } from '../../i18n';
 import { HeatmapPlot, type HeatmapColormap } from '../shared/HeatmapPlot';
-import { HeatmapModal } from '../shared/HeatmapModal';
 import { BaseNodeBody } from './BaseNode';
+import { attentionWeights, labelList } from './vizViewers';
 import styles from './AttentionVizNode.module.css';
 
 /**
@@ -14,7 +14,8 @@ import styles from './AttentionVizNode.module.css';
  *
  * The "view full" path REST-fetches the tensor when WS values weren't
  * embedded inline (numel > 256), so this works for production-sized
- * attention matrices too.
+ * attention matrices too. The viewer itself is `VizViewerModal` at the app
+ * root (core#324); the card only asks the store to open it.
  */
 function AttentionHeatmapVizNode(props: NodeProps<AppNode>) {
   const { id, data } = props;
@@ -23,27 +24,10 @@ function AttentionHeatmapVizNode(props: NodeProps<AppNode>) {
     const tab = s.tabs.find((tt) => tt.id === s.activeTabId);
     return tab?.outputSummaries?.[id];
   });
-  const runId = useTabStore((s) => {
-    const tab = s.tabs.find((tt) => tt.id === s.activeTabId);
-    return tab?.lastRunId ?? null;
-  });
+  const openVizModal = useTabStore((s) => s.openVizModal);
 
-  const [expanded, setExpanded] = useState(false);
-
-  const matrix = useMemo<number[][] | number[][][] | null>(() => {
-    const v = summaries?.weights?.values;
-    if (!Array.isArray(v) || v.length === 0) return null;
-    if (Array.isArray(v[0]) && Array.isArray(v[0][0]) && Array.isArray((v[0][0] as unknown[])[0])) {
-      return (v as unknown as number[][][][])[0];
-    }
-    return v as number[][] | number[][][];
-  }, [summaries]);
-
-  const labels = useMemo<string[] | undefined>(() => {
-    const lv = summaries?.labels?.values;
-    if (!Array.isArray(lv) || lv.length === 0) return undefined;
-    return lv.map((s) => String(s));
-  }, [summaries]);
+  const matrix = useMemo(() => attentionWeights(summaries?.weights?.values), [summaries]);
+  const labels = useMemo(() => labelList(summaries?.labels?.values), [summaries]);
 
   const colormap = (data.params?.colormap as HeatmapColormap | undefined) ?? 'viridis';
   const hasShape = !!summaries?.weights;
@@ -60,7 +44,7 @@ function AttentionHeatmapVizNode(props: NodeProps<AppNode>) {
           <button
             type="button"
             className={styles.expandLink}
-            onClick={() => setExpanded(true)}
+            onClick={() => openVizModal(id)}
           >
             {t('attention.viewFull')} →
           </button>
@@ -73,23 +57,10 @@ function AttentionHeatmapVizNode(props: NodeProps<AppNode>) {
           colormap={colormap}
           panelWidth={is3D ? 140 : 220}
           panelHeight={is3D ? 140 : 220}
-          onExpand={() => setExpanded(true)}
+          onExpand={() => openVizModal(id)}
           normalizePerRow
         />
       )}
-      <HeatmapModal
-        isOpen={expanded}
-        onClose={() => setExpanded(false)}
-        title={`AttentionHeatmap · ${data.label ?? id}`}
-        inlineData={matrix}
-        rowLabels={labels}
-        colormap={colormap}
-        runId={runId}
-        nodeId={id}
-        port="weights"
-        detectCausalMask
-        normalizePerRow
-      />
     </div>
   );
 

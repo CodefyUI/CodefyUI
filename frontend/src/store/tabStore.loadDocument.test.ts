@@ -345,6 +345,7 @@ describe('clear leaves the same per-document residue as opening a document', () 
     store().openPresetModal('same-id');
     store().openLayersModal('same-id');
     store().openNodeDetail('same-id', { tab: 'code', port: 'same-id::out' });
+    store().openVizModal('same-id');
     store().markDirty('same-id');
     store().setTabOutputSummary(tab().id, 'same-id', {
       out: { type: 'tensor', shape: [2, 2] },
@@ -363,6 +364,7 @@ describe('clear leaves the same per-document residue as opening a document', () 
       nodeDetailNodeId: t.nodeDetailNodeId,
       nodeDetailTab: t.nodeDetailTab,
       nodeDetailPort: t.nodeDetailPort,
+      vizModalNodeId: t.vizModalNodeId,
       dirtyNodeIds: [...t.dirtyNodeIds],
       outputSummaries: t.outputSummaries,
       lastRunId: t.lastRunId,
@@ -376,6 +378,7 @@ describe('clear leaves the same per-document residue as opening a document', () 
     nodeDetailNodeId: null,
     nodeDetailTab: null,
     nodeDetailPort: null,
+    vizModalNodeId: null,
     dirtyNodeIds: [],
     outputSummaries: {},
     lastRunId: null,

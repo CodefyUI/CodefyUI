@@ -10,6 +10,7 @@ import { ResultsPanel } from './components/ResultsPanel/ResultsPanel';
 import { PresetConfigModal } from './components/PresetModal/PresetConfigModal';
 import { LayersEditorModal } from './components/LayersEditor/LayersEditorModal';
 import { NodeDetailModal } from './components/NodeDetailModal/NodeDetailModal';
+import { VizViewerModal } from './components/Nodes/VizViewerModal';
 import { TemplateGalleryModal } from './components/TemplateGallery/TemplateGalleryModal';
 import { PackCenterModal } from './components/PackCenter/PackCenterModal';
 import { RestartOverlay } from './components/PackCenter/RestartOverlay';
@@ -158,6 +159,7 @@ function App() {
       <PresetConfigModal />
       <LayersEditorModal />
       <NodeDetailModal />
+      <VizViewerModal />
       <TemplateGalleryModal />
       <PackCenterModal />
       <ToastContainer />

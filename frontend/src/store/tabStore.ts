@@ -316,6 +316,17 @@ export interface TabState {
    */
   nodeDetailNodeId: string | null;
   /**
+   * Node whose visualization viewer is open, or null (core#324) -- the
+   * heatmap or scatter modal an attention / embedding card opens from its
+   * "View full" affordance. Store-driven for the same reason the three modal
+   * ids above are: the viewer is rendered once at the app root by
+   * `VizViewerModal`, outside the canvas, so a card that
+   * `onlyRenderVisibleElements` (#162) unmounts while its viewer is up -- a
+   * window resize, a browser zoom, Shift+L, Ctrl+Z -- no longer takes the
+   * viewer down with it. Transient like the others.
+   */
+  vizModalNodeId: string | null;
+  /**
    * Tab id the detail modal should open on, or null for its default (#129).
    * Set by the edge tooltip's "View stats" link; every other entry point
    * writes null, so a deep link never becomes sticky.
@@ -395,6 +406,7 @@ function createTabState(id: string, name: string): TabState {
     nodeDetailNodeId: null,
     nodeDetailTab: null,
     nodeDetailPort: null,
+    vizModalNodeId: null,
     nodeDetailRequest: 0,
     undoStack: [],
     redoStack: [],
@@ -574,6 +586,9 @@ interface TabStoreState {
   closeLayersModal: () => void;
   openNodeDetail: (id: string, target?: { tab?: string; port?: string }) => void;
   closeNodeDetail: () => void;
+  /** One viz card's heatmap / scatter viewer (core#324); see `vizModalNodeId`. */
+  openVizModal: (id: string) => void;
+  closeVizModal: () => void;
   updateNodeLayers: (nodeId: string, layersJson: string) => void;
   setNodeExecutionStatus: (nodeId: string, status: NodeData['executionStatus'], error?: string) => void;
   clearExecutionStatus: () => void;
@@ -782,6 +797,7 @@ function clearedDocumentResidue(tab: TabState): Partial<TabState> {
     nodeDetailNodeId: null,
     nodeDetailTab: null,
     nodeDetailPort: null,
+    vizModalNodeId: null,
     dirtyNodeIds: new Set<string>(),
     outputSummaries: {},
     // A FINISHED run named the graph being replaced, and the Inspector, the
@@ -2066,6 +2082,7 @@ export const useTabStore = create<TabStoreState>((rawSet, get) => {
           nodeDetailNodeId: stillThere(tab.nodeDetailNodeId)
             ? tab.nodeDetailNodeId
             : null,
+          vizModalNodeId: stillThere(tab.vizModalNodeId) ? tab.vizModalNodeId : null,
           selectedNodeId: stillThere(tab.selectedNodeId)
             ? tab.selectedNodeId
             : null,
@@ -2213,6 +2230,7 @@ export const useTabStore = create<TabStoreState>((rawSet, get) => {
         // future callers) even though React Flow itself has no opinion left
         // — nothing is `.selected` once its node is gone.
         let nodeDetailNodeId = tab.nodeDetailNodeId;
+        let vizModalNodeId = tab.vizModalNodeId;
         let selectedNodeId = tab.selectedNodeId;
         // A segment whose head or tail is gone can never resolve a path, so
         // `deleteNode` drops it. React Flow's own Delete key never reaches
@@ -2235,6 +2253,9 @@ export const useTabStore = create<TabStoreState>((rawSet, get) => {
           if (nodeDetailNodeId !== null && removedIds.has(nodeDetailNodeId)) {
             nodeDetailNodeId = null;
           }
+          if (vizModalNodeId !== null && removedIds.has(vizModalNodeId)) {
+            vizModalNodeId = null;
+          }
           if (selectedNodeId !== null && removedIds.has(selectedNodeId)) {
             selectedNodeId = null;
           }
@@ -2254,7 +2275,14 @@ export const useTabStore = create<TabStoreState>((rawSet, get) => {
           }
         }
 
-        return { nodes: updatedNodes, nodeDetailNodeId, selectedNodeId, segmentGroups, activeSegment };
+        return {
+          nodes: updatedNodes,
+          nodeDetailNodeId,
+          vizModalNodeId,
+          selectedNodeId,
+          segmentGroups,
+          activeSegment,
+        };
       }),
     });
   },
@@ -2497,6 +2525,12 @@ export const useTabStore = create<TabStoreState>((rawSet, get) => {
         nodeDetailPort: null,
       })),
     }),
+
+  openVizModal: (id) =>
+    set({ tabs: updateTab(get().tabs, get().activeTabId, () => ({ vizModalNodeId: id })) }),
+
+  closeVizModal: () =>
+    set({ tabs: updateTab(get().tabs, get().activeTabId, () => ({ vizModalNodeId: null })) }),
 
   updateNodeLayers: (nodeId, layersJson) =>
     set({
@@ -2942,6 +2976,8 @@ export const useTabStore = create<TabStoreState>((rawSet, get) => {
           t.nodeDetailNodeId && swallowed.has(t.nodeDetailNodeId)
             ? null
             : t.nodeDetailNodeId,
+        vizModalNodeId:
+          t.vizModalNodeId && swallowed.has(t.vizModalNodeId) ? null : t.vizModalNodeId,
         // A collapsed block is one node again, so everything it contained
         // stops being a candidate for partial re-execution under its old id.
         dirtyNodeIds: new Set([result.instanceId]),
@@ -2993,6 +3029,7 @@ export const useTabStore = create<TabStoreState>((rawSet, get) => {
             : t.activeSegment,
         nodeDetailNodeId:
           t.nodeDetailNodeId === nodeId ? null : t.nodeDetailNodeId,
+        vizModalNodeId: t.vizModalNodeId === nodeId ? null : t.vizModalNodeId,
         dirtyNodeIds: new Set(result.restoredIds),
       })),
     });
@@ -3174,6 +3211,7 @@ export const useTabStore = create<TabStoreState>((rawSet, get) => {
         // to render, so close it rather than leave an empty shell on screen.
         nodeDetailNodeId:
           tab.nodeDetailNodeId === nodeId ? null : tab.nodeDetailNodeId,
+        vizModalNodeId: tab.vizModalNodeId === nodeId ? null : tab.vizModalNodeId,
         // Drop any Teaching Inspector segment whose head/tail was this node —
         // it can never resolve a path once an endpoint is gone.
         segmentGroups: tab.segmentGroups.filter(

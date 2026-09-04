@@ -1,11 +1,11 @@
-import { memo, useMemo, useState } from 'react';
+import { memo, useMemo } from 'react';
 import type { NodeProps } from '@xyflow/react';
 import type { AppNode } from '../../types';
 import { useTabStore } from '../../store/tabStore';
 import { useI18n } from '../../i18n';
 import { HeatmapPlot } from '../shared/HeatmapPlot';
-import { HeatmapModal } from '../shared/HeatmapModal';
 import { BaseNodeBody } from './BaseNode';
+import { attentionHeads, labelList } from './vizViewers';
 import styles from './AttentionVizNode.module.css';
 
 function EduMultiHeadAttentionVizNode(props: NodeProps<AppNode>) {
@@ -15,27 +15,10 @@ function EduMultiHeadAttentionVizNode(props: NodeProps<AppNode>) {
     const tab = s.tabs.find((tt) => tt.id === s.activeTabId);
     return tab?.outputSummaries?.[id];
   });
-  const runId = useTabStore((s) => {
-    const tab = s.tabs.find((tt) => tt.id === s.activeTabId);
-    return tab?.lastRunId ?? null;
-  });
+  const openVizModal = useTabStore((s) => s.openVizModal);
 
-  const [expanded, setExpanded] = useState(false);
-
-  const heads = useMemo<number[][][] | null>(() => {
-    const v = summaries?.weights?.values;
-    if (!Array.isArray(v) || v.length === 0) return null;
-    if (Array.isArray(v[0]) && Array.isArray(v[0][0]) && Array.isArray((v[0][0] as unknown[])[0])) {
-      return (v as unknown as number[][][][])[0];
-    }
-    return v as unknown as number[][][];
-  }, [summaries]);
-
-  const labels = useMemo<string[] | undefined>(() => {
-    const lv = summaries?.labels?.values;
-    if (!Array.isArray(lv) || lv.length === 0) return undefined;
-    return lv.map((s) => String(s));
-  }, [summaries]);
+  const heads = useMemo(() => attentionHeads(summaries?.weights?.values), [summaries]);
+  const labels = useMemo(() => labelList(summaries?.labels?.values), [summaries]);
 
   const numHeads = heads?.length ?? Number(data.params?.num_heads ?? 0);
   const causal = String(data.params?.causal) === 'true';
@@ -54,7 +37,7 @@ function EduMultiHeadAttentionVizNode(props: NodeProps<AppNode>) {
           <button
             type="button"
             className={styles.expandLink}
-            onClick={() => setExpanded(true)}
+            onClick={() => openVizModal(id)}
           >
             {t('attention.viewFull')} →
           </button>
@@ -67,7 +50,7 @@ function EduMultiHeadAttentionVizNode(props: NodeProps<AppNode>) {
             rowLabels={labels}
             panelWidth={panelSize}
             panelHeight={panelSize}
-            onExpand={() => setExpanded(true)}
+            onExpand={() => openVizModal(id)}
             normalizePerRow
           />
           <div className={styles.metaRow}>
@@ -79,18 +62,6 @@ function EduMultiHeadAttentionVizNode(props: NodeProps<AppNode>) {
           </div>
         </>
       )}
-      <HeatmapModal
-        isOpen={expanded}
-        onClose={() => setExpanded(false)}
-        title={`EduMultiHeadAttention · ${data.label ?? id}`}
-        inlineData={heads}
-        rowLabels={labels}
-        runId={runId}
-        nodeId={id}
-        port="weights"
-        detectCausalMask
-        normalizePerRow
-      />
     </div>
   );
 

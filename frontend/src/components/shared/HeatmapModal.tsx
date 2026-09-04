@@ -4,7 +4,7 @@ import { HeatmapPlot, type HeatmapColormap } from './HeatmapPlot';
 import { fetchOutput } from '../../api/executionOutputs';
 import styles from './HeatmapModal.module.css';
 
-interface HeatmapModalProps {
+export interface HeatmapModalProps {
   isOpen: boolean;
   onClose: () => void;
   title: string;
