@@ -53,6 +53,7 @@ vi.mock('../utils/openSavedGraph', async (importOriginal) => {
 
 import {
   GIT_POLL_MS,
+  GIT_REVISIT_DEBOUNCE_MS,
   GIT_WRITE_DEBOUNCE_MS,
   _resetGitStoreForTesting,
   gitOpKey,
@@ -300,7 +301,7 @@ describe('attach / detach', () => {
     expect(api.getGitStatus).toHaveBeenCalledTimes(1);
 
     setVisibility('visible');
-    await settle();
+    await vi.advanceTimersByTimeAsync(GIT_REVISIT_DEBOUNCE_MS);
     // Coming back is exactly when the status is most likely to be wrong.
     expect(api.getGitStatus).toHaveBeenCalledTimes(2);
     await vi.advanceTimersByTimeAsync(GIT_POLL_MS);
@@ -322,8 +323,35 @@ describe('attach / detach', () => {
     await settle();
 
     window.dispatchEvent(new Event('focus'));
-    await settle();
+    await vi.advanceTimersByTimeAsync(GIT_REVISIT_DEBOUNCE_MS);
     expect(api.getGitStatus).toHaveBeenCalledTimes(2);
+  });
+
+  it('answers a focus and a visibilitychange in one tick with a single read', async () => {
+    git().attach();
+    await settle();
+    api.getGitStatus.mockClear();
+
+    // Returning to the tab fires both, in the same tick: two identical
+    // `GET /status` at the same millisecond, on every single return.
+    window.dispatchEvent(new Event('focus'));
+    setVisibility('visible');
+    await vi.advanceTimersByTimeAsync(GIT_REVISIT_DEBOUNCE_MS - 1);
+    expect(api.getGitStatus).not.toHaveBeenCalled();
+
+    await vi.advanceTimersByTimeAsync(1);
+    expect(api.getGitStatus).toHaveBeenCalledTimes(1);
+  });
+
+  it('drops a pending revisit read when the tab closes first', async () => {
+    git().attach();
+    await settle();
+    api.getGitStatus.mockClear();
+
+    window.dispatchEvent(new Event('focus'));
+    git().detach();
+    await vi.advanceTimersByTimeAsync(GIT_REVISIT_DEBOUNCE_MS * 4);
+    expect(api.getGitStatus).not.toHaveBeenCalled();
   });
 
   it('ignores focus and visibility once nothing is attached', async () => {

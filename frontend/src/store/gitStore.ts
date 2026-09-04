@@ -225,10 +225,23 @@ export const GIT_POLL_MS = 15_000;
  */
 export const GIT_WRITE_DEBOUNCE_MS = 600;
 
+/**
+ * How long the events that mean "the page is back" are allowed to coalesce.
+ *
+ * Returning to the tab fires `visibilitychange` AND `focus` in the same tick,
+ * and each of them wanted a read of its own: every return sent two identical
+ * `GET /api/git/status`, at the same millisecond, for one status. A short
+ * trailing debounce makes a burst of them one read. Short on purpose, and not
+ * the save hook's 600 ms: nothing was written here, the page has simply come
+ * back, and the panel should be right by the time the eye reaches it.
+ */
+export const GIT_REVISIT_DEBOUNCE_MS = 100;
+
 /** How many mounted views want the poll running. */
 let attachCount = 0;
 let pollTimer: ReturnType<typeof setInterval> | null = null;
 let writeTimer: ReturnType<typeof setTimeout> | null = null;
+let revisitTimer: ReturnType<typeof setTimeout> | null = null;
 let listening = false;
 
 /**
@@ -272,26 +285,46 @@ function stopPoll(): void {
   pollTimer = null;
 }
 
+function cancelRevisitDebounce(): void {
+  if (revisitTimer === null) return;
+  clearTimeout(revisitTimer);
+  revisitTimer = null;
+}
+
+/** One read for however many "the page is back" events arrive together. */
+function refreshOnRevisit(): void {
+  cancelRevisitDebounce();
+  revisitTimer = setTimeout(() => {
+    revisitTimer = null;
+    void useGitStore.getState().refresh();
+  }, GIT_REVISIT_DEBOUNCE_MS);
+}
+
 /**
  * A hidden page polls nothing and a returning one is refreshed at once.
  *
  * Half of what this tab shows is written by something other than this tab --
  * the command line, an editor, another browser tab -- so the moment the page
  * comes back is exactly the moment its status is most likely to be wrong.
+ *
+ * The read goes through the debounce because this event does not arrive
+ * alone; the poll it starts and stops does not, because that is a schedule
+ * rather than a request.
  */
 function onVisibilityChange(): void {
   if (attachCount === 0) return;
   if (pageVisible()) {
     startPoll();
-    void useGitStore.getState().refresh();
+    refreshOnRevisit();
   } else {
     stopPoll();
   }
 }
 
+/** The other half of one return to the tab -- see `refreshOnRevisit`. */
 function onFocus(): void {
   if (attachCount === 0) return;
-  void useGitStore.getState().refresh();
+  refreshOnRevisit();
 }
 
 function listen(): void {
@@ -644,6 +677,7 @@ export const useGitStore = create<GitState>((set, get) => ({
     unlisten();
     setWorktreeWriteListener(null);
     cancelWriteDebounce();
+    cancelRevisitDebounce();
   },
 
   /**
@@ -879,6 +913,7 @@ export function _resetGitStoreForTesting(): void {
   unlisten();
   setWorktreeWriteListener(null);
   cancelWriteDebounce();
+  cancelRevisitDebounce();
   attachCount = 0;
   readSeq = 0;
   identitySeq = 0;
