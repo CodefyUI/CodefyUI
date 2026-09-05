@@ -300,9 +300,11 @@ RELEASE_ASSET = "frontend-dist.tar.gz"
 def _has_console_window() -> bool:
     """Windows: does this process own a console window?
 
-    A `cdui` run typed at a terminal does. The restart helper does not: it is
-    spawned DETACHED by a server that is about to exit, precisely so that
-    closing the console it came from cannot take it with it.
+    A `cdui` run typed at a terminal does. A run with no window on its
+    console does not, and neither does one with no console at all -- both
+    are launched by something that wanted no window on the user's desktop,
+    and the answer this returns is what keeps the hop in `_reexec` from
+    putting one there.
 
     Never raises, and an unanswerable probe reads as "there is one" -- that
     is the behaviour every `cdui` run had before this question was asked, and
@@ -1728,9 +1730,10 @@ def _pid_alive(pid: int) -> bool:
             ["tasklist", "/FI", f"PID eq {pid}", "/NH"],
             capture_output=True, **_CONSOLE_TEXT_KW,
             # `packs-run-pending` polls this every half second for up to two
-            # minutes, from a DETACHED process with no console of its own --
-            # without this each poll pops a console window over whatever the
-            # user is looking at while their server is away.
+            # minutes, from a process started for a user who is looking at an
+            # editor, not a terminal -- without this each poll can pop a
+            # console window over whatever they are looking at while their
+            # server is away.
             creationflags=subprocess.CREATE_NO_WINDOW,
         )
         # `or ""`: a dead pid makes tasklist print a translated "no tasks
@@ -1884,9 +1887,25 @@ def start() -> None:
     logf = open(SERVER_LOG, "a", buffering=1)  # noqa: SIM115 — handed to child
     popen_kw: dict = {}
     if sys.platform == "win32":
-        # New process group + detached so closing the console doesn't kill it.
-        DETACHED_PROCESS = 0x00000008
-        popen_kw["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP | DETACHED_PROCESS
+        # A console of its own, with no window on it, plus its own process
+        # group: the launching terminal's Ctrl-C cannot reach the server, and
+        # closing that terminal cannot either, because the CTRL_CLOSE_EVENT a
+        # closing console sends only reaches processes attached to THAT
+        # console.
+        #
+        # NOT `DETACHED_PROCESS`, which is what this was until core#420 and
+        # is the one thing that looks right and is not. A uv-built venv's
+        # `Scripts\*.exe` are launcher shims: `uvicorn.exe` does not run
+        # Python, it SPAWNS the interpreter as a child of itself. A detached
+        # parent has no console to hand that child, and Windows answers by
+        # giving it a brand-new VISIBLE one -- an empty black window, titled
+        # after the shim, sitting over the desktop for as long as the server
+        # runs. Users close it, because nobody asked for it; closing it sends
+        # CTRL_CLOSE_EVENT to everything on that console, and the server they
+        # just started dies. `CREATE_NO_WINDOW` gives the same chain one
+        # console with no window at all: nothing to see, and nothing to close.
+        popen_kw["creationflags"] = (subprocess.CREATE_NO_WINDOW
+                                     | subprocess.CREATE_NEW_PROCESS_GROUP)
     else:
         # New session → no controlling terminal, so SIGHUP on terminal close
         # doesn't reach the server.
@@ -2679,11 +2698,13 @@ def _run_pending_install(cmd: list, on_started=None) -> "tuple[int, list]":
     spawned this process -- so echoing is what makes an install nobody watched
     reviewable afterwards.
 
-    `CREATE_NO_WINDOW` because this helper was spawned DETACHED and has no
-    console to lend: Windows gives such a child a console of its OWN, so a
-    window sits over whatever the user is looking at for the length of the
-    install -- and closing it sends CTRL_CLOSE_EVENT to `uv` mid-rewrite,
-    which is the corruption the whole mechanism exists to prevent.
+    `CREATE_NO_WINDOW` because a window over the user's editor for the length
+    of the install is a window they will close, and closing it sends
+    CTRL_CLOSE_EVENT to `uv` mid-rewrite -- the corruption this whole
+    mechanism exists to prevent. Stated here rather than inherited from the
+    helper's own flags: `uv` is a program, but the launcher that started this
+    helper may be one of uv's `Scripts\\*.exe` shims, and a shim's child is a
+    second chance for Windows to hand out a console nobody asked for.
     `runner.creation_flags()` passes the same flag for live installs.
 
     *on_started* is called with the process the moment it exists, and before
@@ -2808,11 +2829,13 @@ def _relaunch_server(launcher: list, relaunch_argv: list, log_path: Path) -> "in
     and the page they were looking at. Whatever went wrong is in the outcome
     record, which the server that comes back reads and shows.
 
-    Detached the same two ways `start()` daemonises: no console to inherit and
-    no console to be Ctrl-C'd through on Windows, its own session on POSIX. Its
-    output goes to the job log FILE and never a pipe -- this process exits
-    seconds later, and a pipe with nobody left to read it fills up and blocks
-    the server mid-start.
+    Detached the same two ways `start()` daemonises: on Windows a console of
+    its own with no window on it, and its own process group, so neither a
+    Ctrl-C nor a closing terminal reaches it (and no window appears over the
+    editor -- see the flags in `start()` for why it is `CREATE_NO_WINDOW` and
+    not `DETACHED_PROCESS`); on POSIX its own session. Its output goes to the
+    job log FILE and never a pipe -- this process exits seconds later, and a
+    pipe with nobody left to read it fills up and blocks the server mid-start.
 
     The environment is this process's, minus the stdlib pointers -- see
     `_restart_child_env`. Nearly all of it is carried over on purpose: it is
@@ -2826,9 +2849,8 @@ def _relaunch_server(launcher: list, relaunch_argv: list, log_path: Path) -> "in
     cmd = [*launcher, "start", *relaunch_argv]
     detach: dict = {}
     if sys.platform == "win32":
-        DETACHED_PROCESS = 0x00000008
-        detach["creationflags"] = (subprocess.CREATE_NEW_PROCESS_GROUP
-                                   | DETACHED_PROCESS)
+        detach["creationflags"] = (subprocess.CREATE_NO_WINDOW
+                                   | subprocess.CREATE_NEW_PROCESS_GROUP)
     else:
         detach["start_new_session"] = True
 
@@ -3810,11 +3832,12 @@ def _terminate_pid(pid: int) -> None:
     if sys.platform == "win32":
         subprocess.run(["taskkill", "/F", "/T", "/PID", str(pid)],
                        capture_output=True,
-                       # The restart helper calls this from a DETACHED
-                       # process with no console of its own, and without
-                       # this Windows opens one for `taskkill` -- a window
-                       # over the user's screen at the one moment they are
-                       # already waiting on a server that went away.
+                       # The restart helper calls this while the user is
+                       # looking at an editor whose server has gone away.
+                       # Without this, `taskkill` -- a console program -- can
+                       # be handed a console of its own, which is a window
+                       # over their screen at the one moment they are already
+                       # waiting.
                        creationflags=subprocess.CREATE_NO_WINDOW)
         return
     import signal  # noqa: PLC0415 — only needed here, POSIX only

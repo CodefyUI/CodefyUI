@@ -8,6 +8,7 @@ from __future__ import annotations
 import asyncio
 import json
 import sqlite3
+import threading
 import time
 from typing import Any
 
@@ -57,6 +58,70 @@ class _SlowPassNode(BaseNode):
         return {"value": inputs.get("value")}
 
 
+class _HoldGate:
+    """One held node per label: the test learns when the node has ENTERED
+    ``execute`` and decides when it may RETURN.
+
+    Same shape as the sweep tests' ``_Probe`` (#187, #378): a gate the test
+    controls, never a sleep sized against wall-clock timing on a loaded
+    runner. Mutated from engine worker threads, hence ``threading.Event``.
+    """
+
+    def __init__(self) -> None:
+        self.gates: dict[str, tuple[threading.Event, threading.Event]] = {}
+
+    def hold(self, label: str) -> None:
+        """Register *label* to block on a gate. Call BEFORE the invoke: the
+        node looks its label up on entry."""
+        self.gates[label] = (threading.Event(), threading.Event())
+
+    async def entered(self, label: str, timeout: float = 5.0) -> bool:
+        """True once *label*'s node has reached its hold point.
+
+        Waited in a THREAD: this is awaited from the test's own coroutine,
+        which runs on the event loop, and the node's dispatch chain needs
+        that same loop to keep turning to reach the gate at all. A direct
+        ``Event.wait`` would deadlock against the thing it waits for.
+        """
+        entered, _release = self.gates[label]
+        return await asyncio.to_thread(entered.wait, timeout)
+
+    def release_all(self) -> None:
+        for _entered, release in self.gates.values():
+            release.set()
+
+
+_hold = _HoldGate()
+
+
+class _HeldPassNode(BaseNode):
+    """Signals that it has entered ``execute``, blocks in its executor thread
+    until the test releases its label, then passes the value through.
+
+    The wait is capped so a test that fails before releasing cannot hang the
+    suite; the cap is far above anything the test waits for itself.
+    """
+
+    NODE_NAME = "_HeldPass"
+    CATEGORY = "Test"
+    DESCRIPTION = "Blocks until released, then passes through"
+
+    @classmethod
+    def define_inputs(cls) -> list[PortDefinition]:
+        return [PortDefinition(name="value", data_type=DataType.ANY)]
+
+    @classmethod
+    def define_outputs(cls) -> list[PortDefinition]:
+        return [PortDefinition(name="value", data_type=DataType.ANY)]
+
+    def execute(self, inputs: dict[str, Any],
+                params: dict[str, Any]) -> dict[str, Any]:
+        entered, release = _hold.gates[str(params["label"])]
+        entered.set()
+        release.wait(timeout=30.0)
+        return {"value": inputs.get("value")}
+
+
 class _BoomNode(BaseNode):
     """Raises on execute — drives the execution_error taxonomy row."""
 
@@ -82,6 +147,7 @@ def _register_test_nodes():
     from app.core.node_registry import registry
 
     registry._nodes["_SlowPass"] = _SlowPassNode
+    registry._nodes["_HeldPass"] = _HeldPassNode
     registry._nodes["_Boom"] = _BoomNode
     yield
 
@@ -539,69 +605,60 @@ async def test_concurrent_invokes_on_one_slug_serialize(
 async def test_invokes_on_different_slugs_interleave(
     test_client, app_db, api_key,
 ):
-    """Different slugs never queue on each other.
+    """Different slugs never queue on each other (Decision I: one lock PER
+    slug).
 
-    Judged against a serial baseline measured on this runner moments
-    earlier, not a fixed wall-clock budget (#157): the old
-    `elapsed < 1.3` on two 0.7s sleeps left only 0.1s of margin and flaked
-    on a loaded shared CI runner (`1.398 < 1.3`, PR #154's first CI run).
-    The SAME two requests are timed serial-then-concurrent back to back, so
-    whatever this runner's current speed is affects both measurements
-    alike -- only the ratio between them has to hold.
+    Proved with a gate the test controls. Earlier versions timed a
+    concurrent pair against a serial baseline measured moments before and
+    held the ratio under 0.85 (#157, then a cold-start fix); that still
+    flaked on a loaded shared runner: the 2.6.0 release commit -- version
+    numbers and nothing else in the diff -- measured interleaved=1.216s
+    against serial=1.413s (0.86) on `pytest (built frontend)`. Any
+    wall-clock bar on a shared runner fails some fraction of the time.
 
-    Both slugs are warmed with one untimed invoke each before either
-    measurement starts (review follow-up). The FIRST-ever invoke of a
-    freshly published app pays a one-time setup cost that later invokes on
-    the same slug don't; without the warm-up, `serial` (always the FIRST
-    hit on both slugs) is measured cold while `interleaved` (always the
-    SECOND) is measured warm, which inflates `serial` well past its
-    steady-state floor. That slack is enough for a fully-serialized
-    regression to slip under `serial * margin` even though it should fail
-    -- confirmed by simulating the regression directly (collapsing both
-    slugs onto one lock, the same class of bug Decision I's per-slug lock
-    exists to prevent): the unwarmed version of this test passed anyway.
+    Here the first slug's node is held open by the test. While it is held,
+    an invoke of the SECOND slug has to reach its own node. Under a per-slug
+    lock that happens at once; under one shared lock it cannot happen until
+    the first invoke finishes, which it provably cannot while held. So the
+    wait either succeeds or times out, and which one depends only on the
+    shape of the lock.
     """
+    _hold.hold("held-a")
+    _hold.hold("held-b")
     await _publish(test_client, "para-one",
-                   _chain_graph("slow-a", "_SlowPass", {"seconds": 0.7}))
+                   _chain_graph("held-one", "_HeldPass", {"label": "held-a"}))
     await _publish(test_client, "para-two",
-                   _chain_graph("slow-b", "_SlowPass", {"seconds": 0.7}))
+                   _chain_graph("held-two", "_HeldPass", {"label": "held-b"}))
     key_headers = _bearer(api_key["token"])
 
-    async def _invoke_one():
-        return await test_client.post(
-            "/api/apps/para-one/invoke",
-            json={"inputs": {"x": "a"}}, headers=key_headers)
-
-    async def _invoke_two():
-        return await test_client.post(
+    first = asyncio.ensure_future(test_client.post(
+        "/api/apps/para-one/invoke",
+        json={"inputs": {"x": "a"}}, headers=key_headers))
+    second = None
+    reached_second = False
+    try:
+        assert await _hold.entered("held-a"), \
+            "the first invoke never reached its node"
+        second = asyncio.ensure_future(test_client.post(
             "/api/apps/para-two/invoke",
-            json={"inputs": {"x": "b"}}, headers=key_headers)
+            json={"inputs": {"x": "b"}}, headers=key_headers))
+        reached_second = await _hold.entered("held-b")
+    finally:
+        # Whatever happened above, let both worker threads return and both
+        # requests finish before the assertions below read them.
+        _hold.release_all()
+        settled = await asyncio.gather(
+            first, *([second] if second is not None else []),
+            return_exceptions=True)
+    assert reached_second, (
+        "the second slug did not reach its node while the first was held "
+        "-- different slugs are queuing on each other")
 
-    warm1 = await _invoke_one()
-    warm2 = await _invoke_two()
-    assert warm1.status_code == 200 and warm2.status_code == 200
-
-    t0 = time.monotonic()
-    baseline1 = await _invoke_one()
-    baseline2 = await _invoke_two()
-    serial = time.monotonic() - t0
-    assert baseline1.status_code == 200 and baseline2.status_code == 200
-
-    t0 = time.monotonic()
-    r1, r2 = await asyncio.gather(_invoke_one(), _invoke_two())
-    interleaved = time.monotonic() - t0
+    r1, r2 = settled
     assert r1.status_code == 200 and r2.status_code == 200
-
-    # True parallelism lands near serial/2; full serialization lands near
-    # serial/1 (ratio ~1.0). 0.85 sits well clear of both -- more headroom
-    # on the "pass" side than the bare 0.75 the review flagged as tight
-    # once the cold/warm asymmetry above is gone -- while still failing
-    # hard on a genuinely serialized run.
-    assert interleaved < serial * 0.85, (
-        f"interleaved={interleaved:.3f}s not well under "
-        f"serial={serial:.3f}s -- different slugs may be queuing on "
-        f"each other"
-    )
+    assert r1.json()["outputs"] == {"y": "a"}
+    assert r2.json()["outputs"] == {"y": "b"}
+    assert len(await _run_rows(app_db)) == 2
 
 
 @pytest.mark.asyncio

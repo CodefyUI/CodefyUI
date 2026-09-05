@@ -22,6 +22,20 @@ received — each links to the release it was published as.
 
 ## [Unreleased]
 
+## [2.6.0] — 2026-09-05
+
+Two things that used to need a terminal now happen in the editor: putting a
+project under version control, and installing a plugin. Neither is a button
+that shells out — the first is a git service that runs the host's own git
+against the open project directory and nothing else, the second a Plugin
+Center that reads a plugin's manifest and shows you what it asks for before a
+byte of the repository moves. The plugin rules the CLI privately owned moved
+into the backend to make the second one possible, which is why `cdui plugin`
+and the panel are now two front ends over one implementation rather than two
+implementations that would have drifted. Also here: the Windows fix for a
+black window that appeared beside every `cdui start` and stopped the server
+when it was closed.
+
 ### Added
 
 - **Source control from the editor, part 1 — the git service and the read and
@@ -321,6 +335,29 @@ received — each links to the release it was published as.
   here on.
 
 ### Fixed
+
+- **`cdui start` on Windows no longer puts an empty black window on the
+  desktop that kills the server when you close it** ([#420]). The window was
+  the server's own console, not the launcher's, and it appeared because of a
+  flag that reads as exactly right: the background server was started with
+  `DETACHED_PROCESS`, meaning no console to inherit and no console to be
+  Ctrl-C'd through. That holds for a program. It does not hold for
+  `backend/.venv/Scripts/uvicorn.exe`, which in a uv-built venv is a launcher
+  shim rather than a program — it spawns the real interpreter as a child of
+  itself, and Windows answers a detached parent's console-less child by
+  creating a brand-new *visible* console for it. So every `cdui start` left
+  an empty window titled with the shim's path sitting over the desktop, and
+  closing a window nobody asked for sent `CTRL_CLOSE_EVENT` to the server
+  behind it. The server is now started with `CREATE_NO_WINDOW`, which gives
+  the same chain one console with no window at all: nothing to see, and
+  nothing to close. It is still just as detached — its own console means the
+  launching terminal's close cannot reach it, and its own process group keeps
+  Ctrl-C away — and closing the terminal you started it from still leaves it
+  running. The same flag was wrong in two more places for the same reason,
+  and both are fixed with it: the relaunch that brings the server back after
+  a restart-mode install from the Package Center, and the spawn of the
+  restart helper itself, where the window a user closed would have sent that
+  same event into `uv` midway through rewriting their virtual environment.
 
 - **A plugin's `assets/` were served from a mount built at startup — and in a
   released build, never served at all.** Every installed plugin's `assets/`
@@ -3162,9 +3199,11 @@ Release candidates before 1.0.0 are on the
 [#396]: https://github.com/CodefyUI/CodefyUI/issues/396
 [#398]: https://github.com/CodefyUI/CodefyUI/issues/398
 [#140]: https://github.com/CodefyUI/CodefyUI/issues/140
+[#420]: https://github.com/CodefyUI/CodefyUI/issues/420
 [@oyea0801]: https://github.com/oyea0801
 [@latteine1217]: https://github.com/latteine1217
-[Unreleased]: https://github.com/CodefyUI/CodefyUI/compare/2.5.0...main
+[Unreleased]: https://github.com/CodefyUI/CodefyUI/compare/2.6.0...main
+[2.6.0]: https://github.com/CodefyUI/CodefyUI/compare/2.5.0...2.6.0
 [2.5.0]: https://github.com/CodefyUI/CodefyUI/compare/2.4.1...2.5.0
 [2.4.1]: https://github.com/CodefyUI/CodefyUI/compare/2.4.0...2.4.1
 [2.4.0]: https://github.com/CodefyUI/CodefyUI/compare/2.3.0...2.4.0

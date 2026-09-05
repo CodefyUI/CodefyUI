@@ -111,11 +111,6 @@ HELPER_START_GRACE_S = 60
 #: exited.
 HELPER_COMMAND = "packs-run-pending"
 
-#: No console at all, which is what a process outliving its parent needs.
-#: Not exposed by ``subprocess`` off Windows, so it is spelled out here --
-#: ``dev.py``'s ``start`` does the same for the server it daemonises.
-DETACHED_PROCESS = 0x00000008
-
 #: Mirror of ``scripts/dev.py``'s ``TORCH_INDEX_URLS`` (see the module
 #: docstring for why it is a copy). ``None`` means "let PyPI resolve it";
 #: ``"__skip__"`` means "do not touch torch at all".
@@ -970,9 +965,16 @@ def spawn_helper(pending_path: Path) -> int:
     Detached in whichever way the OS understands. POSIX gets
     ``start_new_session``: its own session and process group, so neither the
     terminal's Ctrl-C nor the SIGHUP of a closing shell reaches it. Windows
-    gets ``DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP``: no console to
-    inherit, and no console to be Ctrl-C'd through -- the same pair
-    ``cdui start`` uses to daemonise the server this will replace.
+    gets ``CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP`` -- the same pair
+    ``cdui start`` uses to daemonise the server this will replace, and the
+    same pair :func:`runner.creation_flags` passes to every live install.
+    A console of its own means no Ctrl-C and no closing terminal can reach
+    it; no WINDOW on that console means the helper cannot be closed by a
+    user who does not know what it is, mid-rewrite of their venv. Not
+    ``DETACHED_PROCESS``, which is what this was until core#420: a launcher
+    that is one of uv's ``Scripts\\*.exe`` shims spawns the real interpreter
+    as a child, and Windows gives a console-less parent's child a brand-new
+    VISIBLE console -- exactly the window this pair exists to avoid.
 
     Output goes to a FILE, never a pipe. The parent is seconds from exiting,
     and a pipe with nobody left to read it fills up and blocks the helper
@@ -1018,8 +1020,7 @@ def spawn_helper(pending_path: Path) -> int:
 
     detach: dict = {}
     if sys.platform == "win32":
-        detach["creationflags"] = (DETACHED_PROCESS
-                                   | runner.CREATE_NEW_PROCESS_GROUP)
+        detach["creationflags"] = runner.creation_flags()
     else:
         detach["start_new_session"] = True
 
