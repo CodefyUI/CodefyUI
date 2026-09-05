@@ -32,7 +32,7 @@ Three of them are about more than syntax:
   ``.gitignore`` does not un-commit it.
 
 Deliberately subprocess-free. Branch names get a regex pre-check here and
-the real ``git check-ref-format`` in the service, so this module stays
+the real ``git check-ref-format`` in ``refs.py``, so this module stays
 importable, instant and testable without a git on PATH.
 """
 
@@ -44,7 +44,7 @@ from collections.abc import Sequence
 from pathlib import Path, PurePosixPath
 from typing import NoReturn
 
-from .errors import GitError
+from .errors import ACCESS_TOKEN_USER, TOKEN_PREFIXES, GitError
 
 #: How many paths one request may name. A stage-all of a big working tree
 #: goes through the ``.`` form instead, so this is a cap on an explicit
@@ -69,10 +69,10 @@ MAX_REMOTE_URL = 2048
 
 #: A branch name, pre-check only: no leading whitespace / ``@`` / ``-``, and
 #: no whitespace or control character anywhere. ``git check-ref-format``
-#: (the service) is the authority on the rest -- trailing ``.lock``, ``..``,
-#: ``~``, ``^``, ``:`` -- and this exists so an obviously wrong name is a
-#: 400 with a reason rather than a subprocess. Exported because Task 3's
-#: service and its tests need the same rule.
+#: (``refs.check_ref_format``) is the authority on the rest -- trailing
+#: ``.lock``, ``..``, ``~``, ``^``, ``:`` -- and this exists so an obviously
+#: wrong name is a 400 with a reason rather than a subprocess. Exported
+#: because the branch operations and their tests need the same rule.
 BRANCH_NAME_RE = re.compile(r"^[^\s@-][^\s\x00-\x1f]*$")
 
 #: A remote name. git allows more than this; the tab does not need it.
@@ -85,6 +85,20 @@ SCP_URL_RE = re.compile(r"^[A-Za-z0-9._-]+@[A-Za-z0-9.-]+:[^\s]+$")
 #: The schemes ``GIT_ALLOW_PROTOCOL`` lets through, spelled out again here
 #: so a bad URL is a 400 with an explanation rather than a git failure.
 ALLOWED_URL_SCHEMES = ("https://", "ssh://", "file://")
+
+#: The subset of the above whose AUTHORITY has to be checked on its own: a
+#: host is a separate argument by the time git has finished with these two,
+#: and ``file://`` has no host to check (see :func:`validate_remote_url`).
+HOSTED_URL_SCHEMES = ("https://", "ssh://")
+
+#: Where a URL's authority ends -- the first ``/``, ``?`` or ``#`` after the
+#: scheme.
+_AUTHORITY_END_RE = re.compile(r"[/?#]")
+
+#: What :func:`display_url` puts where a credential was. The same three
+#: characters ``errors.redact`` uses, so one mask is recognisable
+#: everywhere in the tab.
+URL_MASK = "***"
 
 #: Transport helpers whose "URL" is a command line git will run
 #: (``ext::sh -c ...``). Refused by name as well as by the scheme
@@ -204,11 +218,12 @@ def validate_rel_paths(root: Path, paths: Sequence[str]) -> list[str]:
 def validate_branch_name(name: str) -> str:
     """Check *name* looks like a branch name. Returns it unchanged.
 
-    A pre-check only -- ``git check-ref-format refs/heads/<name>`` in the
-    service is what actually decides -- so this refuses the cases that must
-    never reach a command line at all: a leading ``-`` (an option), and
-    ``@{`` (the reflog syntax, which would make ``main@{yesterday}`` a
-    perfectly valid ref that is not the branch the user named).
+    A pre-check only -- ``git check-ref-format refs/heads/<name>``, in
+    ``refs.check_ref_format``, is what actually decides -- so this refuses
+    the cases that must never reach a command line at all: a leading ``-``
+    (an option), and ``@{`` (the reflog syntax, which would make
+    ``main@{yesterday}`` a perfectly valid ref that is not the branch the
+    user named).
     """
     if not name:
         _refuse("invalid_ref", "a branch name is required")
@@ -238,6 +253,21 @@ def validate_remote_url(url: str) -> str:
     either a paste accident the user should see, or two arguments trying to
     look like one. The scheme allowlist mirrors ``GIT_ALLOW_PROTOCOL``, so
     a URL that would fail inside git fails here instead -- with a reason.
+
+    The leading-``-`` rule is applied to the URL's PARTS and not only to the
+    whole string, because a URL is not one argument by the time git is done
+    with it. ``ssh://`` and the scp-like form both end as ``ssh <host> ...``,
+    where a host called ``-oProxyCommand=curl|sh`` is an ssh OPTION and not a
+    host at all -- and the whole string still starts with a perfectly
+    ordinary ``ssh://``. Same for the path half of ``user@host:-x``. So the
+    authority of an ``https://``/``ssh://`` URL and both halves of the
+    scp-like form are checked on their own.
+
+    ``file://`` is the exception and is deliberately not host-checked: its
+    authority is EMPTY in every form anybody writes
+    (``file:///srv/mirrors/repo.git``), it starts no ssh, and requiring a
+    host there would refuse the one URL shape the tests and a local mirror
+    both use.
     """
     if not url:
         _refuse("invalid_url", "a remote URL is required")
@@ -252,9 +282,130 @@ def validate_remote_url(url: str) -> str:
     if lowered.startswith(REFUSED_URL_SCHEMES):
         _refuse("invalid_url", "that transport runs a command and is not allowed",
                 hint="use an https://, ssh:// or file:// URL")
-    if lowered.startswith(ALLOWED_URL_SCHEMES) or SCP_URL_RE.match(url):
+    if lowered.startswith(HOSTED_URL_SCHEMES):
+        _check_host(_AUTHORITY_END_RE.split(url.split("://", 1)[1], maxsplit=1)[0])
+        return url
+    if lowered.startswith(ALLOWED_URL_SCHEMES):
+        return url  # ``file://`` -- no host, no ssh; see the docstring.
+    if SCP_URL_RE.match(url):
+        authority, _, path = url.partition(":")
+        _check_host(authority)
+        if path.startswith("-"):
+            _refuse("invalid_url", "a remote path may not start with '-'")
         return url
     _refuse("invalid_url", "a remote URL must be https://, ssh://, file:// or user@host:path")
+
+
+def _check_host(authority: str) -> None:
+    """Refuse an authority whose HOST is missing or is an option.
+
+    The userinfo is dropped at the LAST ``@`` -- the same split a URL parser
+    makes, and the same one :func:`~app.core.git.errors.redact` relies on --
+    so a password containing ``@`` cannot push the host out of view. A
+    trailing ``:<digits>`` is a port and is dropped; a ``:`` with anything
+    else after it is part of an IPv6 literal, which keeps its brackets.
+    """
+    host = authority.rpartition("@")[2]
+    head, colon, tail = host.rpartition(":")
+    if colon and tail.isdigit():
+        host = head
+    if not host:
+        _refuse("invalid_url", "a remote URL must name a host")
+    if host.startswith("-"):
+        _refuse("invalid_url", "a remote host may not start with '-'")
+
+
+def display_url(url: str) -> str:
+    """*url* with its SECRET half masked, for a row the user reads.
+
+    ``GET /api/git/remotes`` is an open, unauthenticated read on a server
+    somebody may deliberately serve to a LAN, and a remote URL is one of
+    the two strings in this subsystem that can carry a live credential --
+    ``https://alice:ghp_xxx@github.com/owner/repo.git`` is a URL git
+    accepts and people really do paste into ``git remote add``.
+
+    This is NOT :func:`~app.core.git.errors.redact`, and the difference is
+    the point. ``redact`` masks a whole userinfo because it works on
+    STDERR, where the text around it is arbitrary and there is no
+    structure to lean on; that is right there and wrong here, because it
+    turns ``ssh://git@github.com/org/repo.git`` -- the single most common
+    remote anybody has -- into ``ssh://***@github.com/org/repo.git``, and
+    a panel that masks a row's most recognisable part teaches people to
+    ignore the mask. Here the string IS a URL, so its parts can be told
+    apart:
+
+    * two components (``user:secret``) -- everything after the FIRST
+      ``:`` goes, the username stays: ``https://alice:***@host/r.git``.
+      A password containing ``@`` is inside the masked half already,
+      because the userinfo is taken at the last ``@`` like a URL parser
+      does.
+    * a component that looks like a token (:data:`TOKEN_PREFIXES`) in
+      EITHER half -- the whole userinfo goes. There is no username to
+      keep: the token IS the username, whether it is written bare
+      (``https://ghp_xxx@host/r.git``) or with the filler password a
+      forge documents beside it (``https://ghp_xxx:x-oauth-basic@…``,
+      ``https://ghp_xxx:@…``). Masking only the second half of those
+      would print a ``***`` where there is no secret and serve the live
+      one next to it.
+    * ``x-access-token:<token>``, the GitHub App form -- the whole thing
+      goes too. The first component is a constant, not a person.
+    * one plain component (``git``, ``alice``) -- kept. It is an identity,
+      not a credential, and it is half of what makes the row readable.
+
+    Total by construction: anything that is not a URL with a userinfo
+    comes back unchanged, including a bare path, a ``file://`` URL and
+    anything a user configured from a terminal without passing
+    :func:`validate_remote_url`. What comes out is for DISPLAY and must
+    never be written back -- see :class:`~app.core.git.models.RemoteInfo`.
+    """
+    scheme, separator, rest = url.partition("://")
+    if separator:
+        authority = _AUTHORITY_END_RE.split(rest, maxsplit=1)[0]
+        userinfo, at_sign, hostport = authority.rpartition("@")
+        if not at_sign:
+            return url
+        return (f"{scheme}://{_mask_userinfo(userinfo)}@{hostport}"
+                f"{rest[len(authority):]}")
+    if SCP_URL_RE.match(url):
+        # ``user@host:path``. The userinfo grammar admits no ``@`` and no
+        # ``:``, so it is always one component and the first ``@`` ends it.
+        userinfo, _, hostpath = url.partition("@")
+        return f"{_mask_userinfo(userinfo)}@{hostpath}"
+    return url
+
+
+def _mask_userinfo(userinfo: str) -> str:
+    """One userinfo with its credential half replaced by :data:`URL_MASK`.
+
+    The FIRST component decides, and it is asked the same question in both
+    shapes: is this a credential, or is it somebody's name? A token is a
+    token whether or not something follows it -- ``<token>:x-oauth-basic``
+    is the basic-auth spelling a forge documents for one, and ``<token>:``
+    with an empty password is the other. Masking only the second component
+    of those would print a ``***`` where there is no secret at all and
+    serve the live one beside it, under a row that claims to be masked.
+    """
+    user, colon, _secret = userinfo.partition(":")
+    if _is_a_credential(user):
+        return URL_MASK
+    if not colon:
+        return userinfo
+    if not user:
+        return URL_MASK
+    return f"{user}:{URL_MASK}"
+
+
+def _is_a_credential(value: str) -> bool:
+    """Is *value* a credential rather than somebody's name?
+
+    Prefix-matched rather than pattern-matched: the issuers publish the
+    prefixes, and a word carrying one is a token whatever follows it.
+    ``x-access-token`` is here too -- it is not itself a secret, it is the
+    constant a GitHub App puts where a person would go, so a userinfo
+    built on it has no name in it either way.
+    """
+    lowered = value.lower()
+    return lowered == ACCESS_TOKEN_USER or lowered.startswith(TOKEN_PREFIXES)
 
 
 def validate_commit_message(message: str) -> str:

@@ -22,6 +22,17 @@ that cannot be made per operation:
   what makes "one at a time" true rather than likely. READS never take the
   lock: a status poll must not queue behind a commit that is running the
   user's hooks.
+* **TWO locks, because a fetch is not a commit.** A network operation can
+  run for a minute and touches no file in the working tree, so putting it
+  on the mutation lock would refuse every commit for as long as somebody's
+  push was transferring -- a panel that goes dead while the thing it is
+  doing works fine. :attr:`GitService.network_lock` is its own queue: one
+  network operation at a time (two pushes to the same branch is a race
+  nobody wins), local writes untouched. A ``pull`` is the operation that
+  needs both, one after the other, and it is written out as two steps for
+  exactly that reason -- the fetch under the network lock, the merge under
+  the mutation one. Nothing here ever takes the mutation lock and THEN the
+  network lock, which is what keeps two locks from being a deadlock.
 * **EVERY write answers with the status it left behind.** ``mutate`` reads a
   fresh status after the operation and returns it with the result, so the
   tab never draws a panel one operation out of date, and computes
@@ -39,16 +50,20 @@ from __future__ import annotations
 
 import asyncio
 import os
-from collections.abc import Callable, Iterable, Sequence
+from collections.abc import Awaitable, Callable, Iterable, Sequence
 from pathlib import Path
-from typing import Any, TypeVar
+from typing import Any, Literal, TypeVar
 
 from ...config import settings
 from . import diff as diff_ops
 from . import log as log_ops
+from . import network as network_ops
+from . import refs as refs_ops
 from . import repo
+from . import stash as stash_ops
 from .errors import GitBusy, GitError, classify_failure
 from .models import (
+    BranchesResponse,
     DiffResponse,
     FileAtRef,
     GitFile,
@@ -56,20 +71,24 @@ from .models import (
     Identity,
     LogResponse,
     MutationResult,
+    RemoteInfo,
     RepoInfo,
+    StashInfo,
     StatusResponse,
 )
 from .paths import (
-    validate_branch_name,
     validate_commit_message,
     validate_rel_paths,
 )
+# Re-exported: the branch-name gate moved to ``refs`` with the operations
+# that need it, and this is still the name every caller learned it under.
+from .refs import check_ref_format  # noqa: F401
 from .runner import (
     T_LOCAL,
-    # Re-exported: the network timeout belongs to the operations G3 adds
-    # here, and a route should be able to name one without importing the
-    # process layer. The four live in ``runner`` because every module that
-    # runs git needs them and this one imports all of those.
+    # Re-exported: the network timeout is passed by ``network.py`` now, and
+    # this is still the name a caller outside the package would look for it
+    # under. The four live in ``runner`` because every module that runs git
+    # needs them and this one imports all of those.
     T_NETWORK,  # noqa: F401
     T_READ,
     T_STATUS,
@@ -209,39 +228,6 @@ def _state_error(info: RepoInfo) -> GitError:
                  f"directory is not; initialise one here to use this tab")
     return GitError("not_repo", 409,
                     hint="initialise a repository in the project directory")
-
-
-def check_ref_format(root: Path, name: str) -> str:
-    """Would git accept *name* as a branch name? Returns it, or raises 400.
-
-    Two checks, and the ORDER is the point. ``git check-ref-format`` is the
-    authority on the rules that are git's (a trailing ``.lock``, ``..``, a
-    control character) and knows nothing about ours: it accepts
-    ``refs/heads/-x`` quite happily -- measured, exit 0 -- and ``-x`` on a
-    command line is an option, not a branch. So the regex
-    (:data:`~app.core.git.paths.BRANCH_NAME_RE`, via
-    ``validate_branch_name``) runs FIRST and is what stops that one; git
-    then rejects what it alone knows about, with exit 1.
-
-    Every non-zero exit is the same answer. ``check-ref-format`` documents 1
-    for "not a valid ref name" and uses 128 for a call it could not make
-    sense of at all (a missing argument, an option it does not know), and
-    the second is still "git will not take this name" as far as a browser is
-    concerned -- reporting it as a 500 would be a server error for a
-    question the user asked wrongly.
-
-    Nothing calls this yet. Branches are G3's; the check belongs with the
-    service that will make them, and it is here now so that it is written
-    once and tested against a real git rather than invented in a hurry
-    alongside the routes.
-    """
-    validate_branch_name(name)
-    result = run_git(["check-ref-format", f"refs/heads/{name}"], cwd=root,
-                     timeout=T_STATUS, ok_codes=(0, 1, 128), read_only=True)
-    if result.returncode != 0:
-        raise GitError("invalid_ref", 400, f"git will not accept {name!r} "
-                                           f"as a branch name")
-    return name
 
 
 # --- the operations, as functions of a root --------------------------------
@@ -387,12 +373,21 @@ def unstage_paths(root: Path, paths: Sequence[str] | None = None
     to whichever of the two commands this repository's HEAD allows. A
     conflicted path is NOT in it: it is not staged, and taking it out of
     the index would throw away the three versions a merge tool needs.
+
+    A staged RENAME is two paths and one entry. porcelain v2 reports it as
+    a single ``2`` record carrying the new name and the old one, so a list
+    built from ``entry.path`` alone names only half of it -- and restoring
+    half a rename leaves the other half staged: ``restore --staged b.txt``
+    after ``git mv a.txt b.txt`` leaves ``a.txt`` staged as a DELETION
+    (measured on git 2.53), so "unstage everything" left the index dirty
+    and the panel showed a deletion nobody asked for. Both names go in.
     """
     status = repo.read_status(root)
     unborn = status.unborn
     if paths is None:
         kept, skipped = _tree_selection(
-            root, (entry.path for entry in status.staged))
+            root, (name for entry in status.staged
+                   for name in (entry.path, entry.orig_path) if name))
         args = (["rm", "--cached", "-r", "-q"] if unborn
                 else ["restore", "--staged"])
         _run_over(root, args, kept, timeout=T_LOCAL)
@@ -552,6 +547,65 @@ def init_repo(root: Path) -> dict[str, Any]:
     return {"scaffold": repo.ensure_scaffold(root)}
 
 
+# --- finishing a merge -------------------------------------------------------
+
+
+def abort_merge(root: Path) -> dict[str, Any]:
+    """Undo a merge that is half-done, and put the tree back as it was.
+
+    The pre-check is not defence in depth: ``git merge --abort`` with no
+    ``MERGE_HEAD`` says "fatal: There is no merge to abort (MERGE_HEAD
+    missing)." and exits 128, which matches no classification rule and
+    reached the browser as a 500. Deciding it here makes it a 404 whose
+    hint is the fact, and it is decided from ``merge_in_progress`` -- the
+    SAME flag the button is drawn from, so the answer can never disagree
+    with what the person clicking it can see.
+    """
+    if not repo.read_status(root).merge_in_progress:
+        raise GitError("not_found", 404, "there is no merge to abort",
+                       hint="no merge in progress")
+    run_git(["merge", "--abort"], cwd=root, timeout=T_LOCAL)
+    return {}
+
+
+def resolve(root: Path, path: str,
+            side: Literal["ours", "theirs", "mark"]) -> dict[str, Any]:
+    """Settle one conflicted file: keep ours, take theirs, or mark it done.
+
+    ``ours`` and ``theirs`` are ``checkout --ours|--theirs`` followed by an
+    ``add``; ``mark`` is the ``add`` alone, which is what a person who has
+    edited the file by hand means by "resolved" -- git does not read the
+    file, it reads the index, and staging an unmerged path is exactly how a
+    resolution is recorded.
+
+    **The path must be one the status calls conflicted, and that check is
+    the safety.** ``git checkout --ours -- b.txt`` on a file that is merely
+    MODIFIED exits 0 and silently restores it from HEAD (measured on git
+    2.53) -- the user's edit is gone, with no error and nothing to undo
+    from. A stale panel that offered "Keep mine" on the wrong row would
+    destroy work; a 400 saying the file is not in the status tells the tab
+    to reload instead.
+
+    It is a THIRD status read -- the service already reads one before and
+    one after every worktree operation -- and that is the price knowingly
+    paid. A resolve is one deliberate click per conflicted file, not a
+    poll, and the read is what keeps a command that destroys silently away
+    from a row the panel drew fifteen seconds ago.
+    """
+    clean = _writable_paths(root, [path])[0]
+    conflicted = {entry.path for entry in repo.read_status(root).conflicted}
+    if clean not in conflicted:
+        raise GitError("path_not_in_status", 400,
+                       f"{clean} is not one of the conflicted files",
+                       hint="the status has changed since it was read; "
+                            "reload it")
+    if side != "mark":
+        run_git(["checkout", f"--{side}", "--", clean], cwd=root,
+                timeout=T_LOCAL)
+    run_git(["add", "--", clean], cwd=root, timeout=T_LOCAL)
+    return {"path": clean, "side": side}
+
+
 # --- what changed ----------------------------------------------------------
 
 
@@ -620,6 +674,12 @@ class GitService:
         self.lock = asyncio.Lock()
         #: What the lock is being held FOR, so a refusal can name it.
         self.current_op: str | None = None
+        #: Held for the length of one NETWORK operation, which is a
+        #: different queue: a fetch may run for a minute and moves no file,
+        #: so a commit must not wait behind it (see the module docstring).
+        self.network_lock = asyncio.Lock()
+        #: What the network lock is being held FOR.
+        self.current_network_op: str | None = None
 
     # --- reads (never take the lock) ------------------------------------
 
@@ -667,6 +727,18 @@ class GitService:
         """One file's content at ``HEAD``, ``index``, ``worktree`` or a sha."""
         return await self._read(
             lambda root: diff_ops.file_at_ref(root, path, ref))
+
+    async def branches(self) -> BranchesResponse:
+        """Every branch, local and remote-tracking, and what HEAD is on."""
+        return await self._read(refs_ops.list_branches)
+
+    async def remotes(self) -> list[RemoteInfo]:
+        """Every configured remote, with its fetch and push URLs."""
+        return await self._read(refs_ops.list_remotes)
+
+    async def stashes(self) -> list[StashInfo]:
+        """The stash stack, newest first."""
+        return await self._read(stash_ops.list_stashes)
 
     async def _read(self, fn: Callable[[Path], _T]) -> _T:
         """Run *fn* against the ready repository, off the loop, without the lock.
@@ -724,6 +796,251 @@ class GitService:
             "set_identity", lambda root: repo.write_identity(root, name, email),
             worktree=False)
 
+    # --- the refs (branches and remotes) ----------------------------------
+    #
+    # ``worktree`` is the one thing these have to get right, and it is not
+    # decorative: it is what makes ``changed_paths`` be read, and
+    # ``changed_paths`` is what tells an open editor that the file under it
+    # has been replaced. A checkout replaces files; creating a branch you
+    # do not go to replaces nothing; renaming one moves no file at all. A
+    # write that claimed the wrong one would either cost a status read per
+    # click or leave the canvas showing a graph that is no longer on disk.
+
+    async def create_branch(self, name: str, *, checkout: bool = True,
+                            start_point: str | None = None) -> MutationResult:
+        """Make a branch; go to it unless ``checkout`` says otherwise."""
+        return await self.mutate(
+            "create_branch",
+            lambda root: refs_ops.create_branch(root, name, checkout=checkout,
+                                                start_point=start_point),
+            worktree=checkout)
+
+    async def checkout(self, target: str, *,
+                       kind: Literal["local", "remote"] = "local"
+                       ) -> MutationResult:
+        """Go to a local branch, or to a new one tracking a remote's."""
+        return await self.mutate(
+            "checkout",
+            lambda root: refs_ops.checkout(root, target, kind=kind),
+            worktree=True)
+
+    async def rename_branch(self, name: str, new_name: str) -> MutationResult:
+        """Give a branch another name."""
+        return await self.mutate(
+            "rename_branch",
+            lambda root: refs_ops.rename_branch(root, name, new_name),
+            worktree=False)
+
+    async def delete_branch(self, name: str, *,
+                            force: bool = False) -> MutationResult:
+        """Delete a branch; ``force`` deletes one that is not merged."""
+        return await self.mutate(
+            "delete_branch",
+            lambda root: refs_ops.delete_branch(root, name, force=force),
+            worktree=False)
+
+    async def add_remote(self, name: str, url: str) -> MutationResult:
+        """Point a name at a repository somewhere else."""
+        return await self.mutate(
+            "add_remote", lambda root: refs_ops.add_remote(root, name, url),
+            worktree=False)
+
+    async def set_remote_url(self, name: str, url: str) -> MutationResult:
+        """Point an existing remote somewhere else."""
+        return await self.mutate(
+            "set_remote_url",
+            lambda root: refs_ops.set_remote_url(root, name, url),
+            worktree=False)
+
+    async def remove_remote(self, name: str) -> MutationResult:
+        """Forget a remote."""
+        return await self.mutate(
+            "remove_remote", lambda root: refs_ops.remove_remote(root, name),
+            worktree=False)
+
+    # --- the stash, and finishing a merge ---------------------------------
+    #
+    # Five of these six move files and say ``worktree=True``. A PUSH does,
+    # as much as a pop does -- it takes the working tree back to what HEAD
+    # has, which is the same replacement a checkout makes and the same
+    # reason an open editor has to be told. Only ``stash_drop`` is False:
+    # it deletes a ref and touches nothing on disk.
+    #
+    # The last two methods have the same names as the module functions they
+    # call, unlike ``stage`` / ``stage_paths``: a method name is not in
+    # scope inside its own body, so ``abort_merge`` and ``resolve`` below
+    # resolve to the module-level functions. The plan names both, and
+    # spelling them differently here would put two names on one operation.
+
+    async def stash_push(self, message: str | None = None, *,
+                         include_untracked: bool = True) -> MutationResult:
+        """Set the working tree aside as a new stash."""
+        return await self.mutate(
+            "stash_push",
+            lambda root: stash_ops.stash_push(
+                root, message=message, include_untracked=include_untracked),
+            worktree=True)
+
+    async def stash_pop(self, index: int) -> MutationResult:
+        """Put a stash back and remove it from the stack."""
+        return await self.mutate(
+            "stash_pop", lambda root: stash_ops.stash_pop(root, index),
+            worktree=True)
+
+    async def stash_apply(self, index: int) -> MutationResult:
+        """Put a stash back and keep it in the stack."""
+        return await self.mutate(
+            "stash_apply", lambda root: stash_ops.stash_apply(root, index),
+            worktree=True)
+
+    async def stash_drop(self, index: int) -> MutationResult:
+        """Throw a stash away. Nothing in the working tree moves."""
+        return await self.mutate(
+            "stash_drop", lambda root: stash_ops.stash_drop(root, index),
+            worktree=False)
+
+    async def abort_merge(self) -> MutationResult:
+        """Undo a half-finished merge and put the tree back as it was."""
+        return await self.mutate("abort_merge", abort_merge, worktree=True)
+
+    async def resolve(self, path: str,
+                      side: Literal["ours", "theirs", "mark"]
+                      ) -> MutationResult:
+        """Settle one conflicted file: keep ours, take theirs, or mark it."""
+        return await self.mutate(
+            "resolve", lambda root: resolve(root, path, side), worktree=True)
+
+    # --- talking to a remote (the other lock) -----------------------------
+    #
+    # Four operations, and only two shapes underneath them. ``fetch`` and
+    # ``push`` are one command under the NETWORK lock. ``pull`` and
+    # ``sync`` are those steps run in order, each taking and releasing its
+    # own lock, because an ``asyncio.Lock`` is not reentrant and because
+    # holding the network lock across the local merge would refuse other
+    # people's fetches for no reason.
+    #
+    # Every step of a pull says ``pull`` and every step of a sync says
+    # ``sync``, on whichever lock it takes: a 409 names the operation the
+    # USER started, not the command it happens to be on. That is also what
+    # the tab's busy bar shows.
+
+    async def fetch(self, remote: str | None = None) -> MutationResult:
+        """Bring the remote's refs up to date, and prune what is gone."""
+        return await self._fetch("fetch", remote)
+
+    async def pull(self, strategy: network_ops.PullStrategy = "ff-only"
+                   ) -> MutationResult:
+        """Fetch, then merge the upstream into the branch HEAD is on.
+
+        Two steps and two locks (R1), never ``git pull``: the slow half is
+        the one that must not hold the mutation lock, and the fast half is
+        the one that must. The answer is the MERGE's result -- the status
+        it left, the files it replaced -- with the fetch's remote folded
+        into the detail, because "which remote did this come from" is a
+        fact only the first step has.
+        """
+        fetched = await self._step("fetch", self._fetch("pull", None))
+        merged = await self._step("merge",
+                                  self._merge_upstream("pull", strategy))
+        return merged.model_copy(update={
+            "detail": {**merged.detail,
+                       "remote": fetched.detail.get("remote")}})
+
+    async def push(self, remote: str | None = None, *,
+                   set_upstream: bool = False) -> MutationResult:
+        """Send this branch; ``set_upstream`` is Publish rather than Push."""
+        return await self._push("publish" if set_upstream else "push",
+                                remote, set_upstream=set_upstream)
+
+    async def sync(self) -> MutationResult:
+        """Pull, then push -- or publish, for a branch that has neither.
+
+        One button for "make the two sides the same", and which steps that
+        takes is decided from the status rather than asked for: a branch
+        with a live upstream is fetch, merge, push; a branch with no
+        upstream -- or one whose upstream has been deleted and pruned -- has
+        nothing to pull FROM, so it is a publish, which is the same thing
+        the header offers for both of those states (R14).
+
+        It stops at the first failure, and every step that ran has already
+        happened: a sync whose push is refused has still merged, and the
+        result the caller never sees is the reason the store refreshes the
+        status after a failure as well as after a success.
+
+        ``changed_paths`` is the union over the steps, not the last one's.
+        The merge is the step that replaces files and the push is the one
+        that answers, so returning the push's list alone would tell an open
+        editor that nothing had changed under it.
+        """
+        status = await self._read(repo.read_status)
+        if status.upstream and not status.upstream_gone:
+            fetched = await self._step("fetch", self._fetch("sync", None))
+            merged = await self._step("merge",
+                                      self._merge_upstream("sync", "ff-only"))
+            last = await self._step(
+                "push", self._push("sync", None, set_upstream=False))
+            steps = ["fetch", "merge", "push"]
+            results = [fetched, merged, last]
+            head_moved = bool(merged.detail.get("head_moved"))
+        else:
+            last = await self._step(
+                "publish", self._push("sync", None, set_upstream=True))
+            steps = ["publish"]
+            results = [last]
+            head_moved = False
+
+        return last.model_copy(update={
+            "changed_paths": sorted({path for result in results
+                                     for path in result.changed_paths}),
+            "detail": {"steps": steps, "head_moved": head_moved,
+                       "published": bool(last.detail.get("published")),
+                       "remote": last.detail.get("remote"),
+                       "branch": last.detail.get("branch")}})
+
+    async def _fetch(self, op: str, remote: str | None) -> MutationResult:
+        """One fetch, under the network lock, named by whoever asked for it."""
+        return await self.network(
+            op, lambda root: network_ops.fetch(root, remote))
+
+    async def _merge_upstream(self, op: str,
+                              strategy: network_ops.PullStrategy
+                              ) -> MutationResult:
+        """The local half of a pull: the MUTATION lock, and a worktree op."""
+        return await self.mutate(
+            op, lambda root: network_ops.merge_upstream(root, strategy),
+            worktree=True)
+
+    async def _push(self, op: str, remote: str | None, *,
+                    set_upstream: bool) -> MutationResult:
+        """One push or publish, under the network lock."""
+        return await self.network(
+            op, lambda root: network_ops.push(root, remote=remote,
+                                              set_upstream=set_upstream))
+
+    async def _step(self, step: str, call: Awaitable[_T]) -> _T:
+        """Await one step of a pull or a sync, naming it if it fails.
+
+        A failure raises, so the ``detail`` that would have said which step
+        this was never reaches the caller -- and "the push was refused" and
+        "the fetch never got there" are different things to do next.
+
+        Only for ``git_failed``, and only when the slot is empty. A hint is
+        English prose the editor draws BESIDE its own translated sentence,
+        so on a classified refusal "the merge step failed" was one line of
+        raw English under a translated one -- saying nothing the code had
+        not already said. ``git_failed`` is the one code that has no
+        sentence of its own: the tab shows git's own words there, and the
+        step is then the only thing saying where in a three-step sync this
+        happened. Everywhere else the step is still in ``stderr``, which
+        the Details disclosure shows.
+        """
+        try:
+            return await call
+        except GitError as exc:
+            if exc.code == "git_failed" and exc.hint is None:
+                exc.hint = f"the {step} step failed"
+            raise
+
     async def mutate(self, op: str,
                      fn: Callable[[Path], dict[str, Any] | None], *,
                      worktree: bool, require_repo: bool = True
@@ -758,6 +1075,42 @@ class GitService:
                     require_repo=require_repo)
             finally:
                 self.current_op = None
+
+    async def network(self, op: str,
+                      fn: Callable[[Path], dict[str, Any] | None]
+                      ) -> MutationResult:
+        """Run one NETWORK operation and answer with the status it left.
+
+        :meth:`mutate`'s twin, on the other lock and with one flag fewer.
+        Everything after the lock is the same transaction on the same
+        worker thread, so a fetch answers with a fresh status exactly as a
+        commit does -- which is the whole point of it being a
+        ``MutationResult``: what a fetch changes is the ahead/behind the
+        header draws.
+
+        ``worktree`` is not a parameter because there is nothing to decide:
+        fetch, push and publish move refs and never a file, so there is no
+        BEFORE status worth reading. The one network operation that does
+        move files is a pull's merge half, and that runs through
+        :meth:`mutate` like every other local write.
+
+        :raises GitBusy: another network operation holds the lock -- with
+            ``op`` naming it, so the tab can say "wait for the push" rather
+            than "wait". A LOCAL write is not blocked by this lock and must
+            not be: the point of the second lock is that a commit made
+            during somebody's fetch still works.
+        """
+        # Check then acquire, with no await between them -- see ``mutate``.
+        if self.network_lock.locked():
+            raise GitBusy(self.current_network_op or op)
+        async with self.network_lock:
+            self.current_network_op = op
+            try:
+                return await asyncio.to_thread(self._mutate, fn,
+                                               worktree=False,
+                                               require_repo=True)
+            finally:
+                self.current_network_op = None
 
     def _mutate(self, fn: Callable[[Path], dict[str, Any] | None], *,
                 worktree: bool, require_repo: bool) -> MutationResult:

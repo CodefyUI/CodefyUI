@@ -82,14 +82,17 @@ describe('DialogContainer', () => {
   it('renders prompt with input pre-filled with defaultValue', async () => {
     render(<DialogContainer />);
     prompt({ title: 'Rename', defaultValue: 'untitled' });
-    const input = (await screen.findByLabelText('Dialog input')) as HTMLInputElement;
+    // The prompt's own question names the box: one dialog asks for a branch
+    // name and the next for a remote URL, and "Dialog input" told a reader
+    // which of those they had landed in exactly never.
+    const input = (await screen.findByRole('textbox', { name: 'Rename' })) as HTMLInputElement;
     expect(input.value).toBe('untitled');
   });
 
   it('typing + clicking confirm resolves with input value', async () => {
     render(<DialogContainer />);
     const p = prompt({ title: 'Name?', confirmText: 'OK' });
-    const input = (await screen.findByLabelText('Dialog input')) as HTMLInputElement;
+    const input = (await screen.findByRole('textbox', { name: 'Name?' })) as HTMLInputElement;
     fireEvent.change(input, { target: { value: 'alice' } });
     fireEvent.click(screen.getByText('OK'));
     await expect(p).resolves.toBe('alice');
@@ -100,6 +103,45 @@ describe('DialogContainer', () => {
     const p = prompt({ title: 'Name?', cancelText: 'Cancel' });
     fireEvent.click(await screen.findByText('Cancel'));
     await expect(p).resolves.toBeNull();
+  });
+
+  it('gives focus back to whatever opened it', async () => {
+    // The dialog is portaled to `document.body`, so on close the focused
+    // node is REMOVED and focus falls to the body -- and the next Tab starts
+    // from the top of the page. That matters more here than for the three
+    // modals that already do this: the panel has eleven entry points into
+    // this box (New Branch, Rename, Delete, the second force-delete, Add
+    // Remote's two prompts, Change URL, Remove, Drop, Stash message, Abort
+    // Merge), and the CANCELLED ones return early without moving focus at
+    // all.
+    const opener = document.createElement('button');
+    document.body.appendChild(opener);
+    opener.focus();
+    render(<DialogContainer />);
+
+    const p = confirm({ title: 'Delete branch work?', cancelText: 'Cancel' });
+    fireEvent.click(await screen.findByText('Cancel'));
+    await expect(p).resolves.toBe(false);
+
+    expect(document.activeElement).toBe(opener);
+    opener.remove();
+  });
+
+  it('leaves focus alone when the thing that opened it has gone', async () => {
+    // The row that held focus is often exactly what the write removes -- a
+    // branch deleted, a stash dropped -- and the sections put focus on their
+    // heading for that. Refocusing a detached node would take it back off.
+    const opener = document.createElement('button');
+    document.body.appendChild(opener);
+    opener.focus();
+    render(<DialogContainer />);
+
+    const p = confirm({ title: 'Drop stash@{0}?', confirmText: 'Drop' });
+    fireEvent.click(await screen.findByText('Drop'));
+    opener.remove();
+    await expect(p).resolves.toBe(true);
+
+    expect(document.activeElement).toBe(document.body);
   });
 
   it('danger variant adds danger class to the confirm button', async () => {
@@ -118,10 +160,35 @@ describe('DialogContainer', () => {
     fireEvent.click(await screen.findByText('OK'));
     expect(await screen.findByText('Required')).toBeTruthy();
     // Promise is not yet resolved — fix the input and retry.
-    const input = (await screen.findByLabelText('Dialog input')) as HTMLInputElement;
+    const input = (await screen.findByRole('textbox', { name: 'Name?' })) as HTMLInputElement;
     fireEvent.change(input, { target: { value: 'fine' } });
     fireEvent.click(screen.getByText('OK'));
     await expect(p).resolves.toBe('fine');
+  });
+
+  it('reports the refusal ON the box that was refused', async () => {
+    // A message sitting under the input with nothing tying it to the input is
+    // a message a screen reader reads only if the user happens to walk into
+    // it. It is the input's description, and the input says it is invalid.
+    render(<DialogContainer />);
+    prompt({ title: 'Branch name', validate: () => 'Not a valid branch name' });
+    const input = (await screen.findByRole('textbox', {
+      name: 'Branch name',
+    })) as HTMLInputElement;
+    expect(input.getAttribute('aria-invalid')).toBe('false');
+    expect(input.getAttribute('aria-describedby')).toBeNull();
+
+    fireEvent.click(screen.getByText('OK'));
+    const said = await screen.findByText('Not a valid branch name');
+    expect(said.id).not.toBe('');
+    expect(input.getAttribute('aria-invalid')).toBe('true');
+    expect(input.getAttribute('aria-describedby')).toBe(said.id);
+
+    // Typing again clears both halves, so the description does not outlive
+    // the value it was about.
+    fireEvent.change(input, { target: { value: 'main' } });
+    expect(input.getAttribute('aria-invalid')).toBe('false');
+    expect(input.getAttribute('aria-describedby')).toBeNull();
   });
 
   // ── Locale-aware fallback labels (#160) ─────────────────────────────────

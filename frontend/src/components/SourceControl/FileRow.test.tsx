@@ -134,9 +134,10 @@ describe('FileRow: the actions a group allows', () => {
   it('a conflicted row offers no way to discard it', () => {
     // `discard_paths` builds its list from `unstaged` + `untracked`, and a
     // conflicted path is in neither: the server answers 400
-    // `path_not_in_status`. Staging IS how a resolution is marked, so that
-    // one stays.
-    draw(file({ kind: 'conflict', xy: 'UU' }), 'merge');
+    // `path_not_in_status`. The status keeps conflicts in a list of their own,
+    // so `MergeGroup` is where one is normally drawn -- this is the guard for
+    // a conflict that turns up somewhere else.
+    draw(file({ kind: 'conflict', xy: 'UU' }), 'changes');
     expect(screen.queryByRole('button', { name: 'Discard Changes model.py' })).toBeNull();
     expect(screen.queryByRole('button', { name: 'Unstage model.py' })).toBeNull();
     fireEvent.click(screen.getByRole('button', { name: 'Stage model.py' }));

@@ -93,8 +93,12 @@ CODES: dict[str, tuple[int, str]] = {
     "auth_required": (409, "git needs credentials this server cannot supply"),
     "network": (409, "git could not reach the remote"),
     "non_fast_forward": (409, "the remote has commits this branch does not"),
+    "remote_rejected": (409, "the remote refused the push"),
     "diverged": (409, "the local and the remote branch have diverged"),
     "no_upstream": (409, "this branch has no upstream branch"),
+    "remote_exists": (409, "a remote with that name already exists"),
+    "push_config": (409,
+                    "this repository's push configuration refuses a plain push"),
     # The working tree.
     "conflict": (409, "the merge left conflicts to resolve"),
     "dirty_tree": (409, "uncommitted changes would be overwritten"),
@@ -114,6 +118,24 @@ CODES: dict[str, tuple[int, str]] = {
     "ignored": (403, "that file is ignored and is not served"),
     # Everything else.
     "git_failed": (500, "git failed"),
+}
+
+
+#: The codes whose ``hint`` cannot be derived from anything in the failure.
+#:
+#: Almost every hint in this package is written at the ``raise`` -- it names
+#: a branch, a file or the click that fixes the state, and only the caller
+#: knows those. A CLASSIFIED failure has no caller to ask, so the few codes
+#: whose remedy is the same sentence every time carry it here.
+#:
+#: ``push_config`` is the one row that needs it. Its two states are the
+#: user's own configuration and NEITHER is visible in the tab: the header
+#: shows a branch that is published and up to date, and the refusal is about
+#: how git was told to push it. Without this the person is left with a code
+#: and no place to look.
+CODE_HINTS: dict[str, str] = {
+    "push_config": "check push.default and the upstream branch name "
+                   "(git branch -vv)",
 }
 
 
@@ -183,11 +205,30 @@ class GitBusy(GitError):
 #: path or ref opens with ``fatal: `` or comes back from the far side as
 #: ``remote: ``.
 #:
-#: The cost is known and accepted: ``git remote add`` says "error: remote
-#: origin already exists." for a duplicate, which now falls through to
-#: ``git_failed`` -- with git's own sentence attached, which is what makes
-#: that acceptable. G3 owns remotes and can add a precise row for it.
+#: The one sentence this cost, and how it was paid: ``git remote add`` says
+#: "error: remote origin already exists." for a duplicate (measured on git
+#: 2.53, exit 3), which is git's own voice under an opening this set will
+#: not take. It is anchored to that whole opening instead -- see
+#: :data:`REMOTE_EXISTS_PREFIXES` and the ``remote_exists`` row.
 GIT_MESSAGE_PREFIXES: tuple[str, ...] = ("fatal: ", "remote: ")
+
+#: The anchor for the one ``error: `` sentence that IS git's: the duplicate
+#: a ``git remote add`` refuses. Anchoring to ``error: `` alone would hand
+#: the vocabulary to every failing hook (see :data:`GIT_MESSAGE_PREFIXES`),
+#: so the anchor is the whole opening ``error: remote ``, which a hook
+#: cannot produce: everything the far side says arrives through git already
+#: prefixed with ``remote: ``, and a LOCAL hook that opened a line with
+#: "error: remote " would be writing git's sentence on purpose.
+REMOTE_EXISTS_PREFIXES: tuple[str, ...] = ("error: remote ",)
+
+#: The other opening that is git's own and is in neither set above: a
+#: ``git merge`` refusing a ref it cannot resolve says "merge: <ref> - not
+#: something we can merge" -- no ``fatal: ``, no ``error: ``, exit 1
+#: (measured on git 2.53). The only ref this package ever merges is the
+#: fixed literal ``@{u}``, so the phrase it anchors is the whole
+#: ``@{u} - not something we can merge``: a sentence a hook would have to
+#: be imitating on purpose.
+MERGE_REFUSED_PREFIXES: tuple[str, ...] = ("merge: ",)
 
 
 @dataclass(frozen=True)
@@ -199,9 +240,15 @@ class Anchored:
     line opening with one of :data:`GIT_MESSAGE_PREFIXES`. The hooks a
     commit runs write to the same stderr, and their prose must not be read
     as git's.
+
+    *prefixes* is the openings that count, and it is a field rather than a
+    constant because one row needs a different one: git says the duplicate a
+    ``remote add`` refuses with ``error: remote ...``, which the default set
+    deliberately excludes. Everything else uses the default.
     """
 
     phrase: str
+    prefixes: tuple[str, ...] = GIT_MESSAGE_PREFIXES
 
 
 #: A pattern is a string ("this text appears in stderr"), an
@@ -253,6 +300,31 @@ _RULES: tuple[tuple[str, int, tuple[_Pattern, ...]], ...] = (
         # Reached only when no credential phrase matched above.
         "Could not read from remote repository",
     )),
+    # A refusal this app inflicts on ITSELF. ``NON_INTERACTIVE_ENV`` sets
+    # ``GIT_ALLOW_PROTOCOL=https:ssh:file``, and a project the user opens
+    # can already have an ``http://`` or ``git://`` remote --
+    # ``validate_remote_url`` refuses those shapes so the tab cannot CREATE
+    # one, but it lists such a remote and offers Fetch / Pull / Sync on it.
+    # git answers "fatal: transport 'http' not allowed" (exit 128, measured
+    # on git 2.53), which fell through to ``git_failed`` -- a 500 for an
+    # ordinary click, which is the defect class this table exists to close.
+    #
+    # A PAIR, so a hook printing prose about transport cannot reach it.
+    # ``invalid_url`` is exactly what happened, and the frontend already
+    # knows the code.
+    ("invalid_url", 400, (
+        ("transport '", "' not allowed"),
+    )),
+    # ABOVE ``non_fast_forward``, and the two do not overlap by accident:
+    # git writes a server-side refusal as ``! [remote rejected] main -> main
+    # (pre-receive hook declined)`` (measured on git 2.53 against a bare
+    # repository with a refusing hook), which does not contain the
+    # ``[rejected]`` of the row below -- the character before "rejected" is
+    # a space. The order is here for the push that reports BOTH, one ref
+    # each: "the server said no" is the half a pull cannot fix.
+    ("remote_rejected", 409, (
+        "[remote rejected]",
+    )),
     ("non_fast_forward", 409, (
         ("[rejected]", "non-fast-forward"),
         ("[rejected]", "fetch first"),
@@ -283,10 +355,68 @@ _RULES: tuple[tuple[str, int, tuple[_Pattern, ...]], ...] = (
     ("dirty_tree", 409, (
         "would be overwritten by",
         "Please commit your changes or stash them",
+        # ``stash pop`` restoring an untracked file onto one that is back on
+        # disk: "n.txt already exists, no checkout", followed by "error:
+        # could not restore untracked files from stash" (measured on git
+        # 2.53, exit 1). The same answer as the row's other two phrases --
+        # move what is in the way and try again -- and it has to be HERE,
+        # above ``nothing_to_commit``, because a stash pop prints a whole
+        # ``git status`` on stdout whose last line is one of that row's
+        # phrases. Without this row the ordinary case of a project that
+        # regenerates a file answered "there is nothing to commit".
+        "already exists, no checkout",
     )),
+    # The last two are the PULL's two ways of saying the same thing, both
+    # measured on git 2.53 against ``merge --ff-only @{u}`` and both a 500
+    # before G3 added them. A branch with no upstream at all gets "fatal: no
+    # upstream configured for branch 'main'" (exit 128) -- git's own voice,
+    # in words that share no phrase with the two above. A branch whose
+    # upstream has been DELETED and pruned gets "merge: @{u} - not something
+    # we can merge" (exit 1), because ``@{u}`` still resolves in the config
+    # and no longer resolves to a commit.
+    #
+    # Both are ``no_upstream`` and not ``not_found``, and the difference is
+    # what the user does next: the tab draws the same Publish button for a
+    # branch that never had an upstream and for one whose upstream is gone
+    # (a re-publish re-creates it), and this is the code that button hangs
+    # off. ``GitStatus.upstream_gone`` keeps the two apart where the panel
+    # needs them apart.
+    #
+    # The last is a PLAIN ``push`` on a branch with no upstream when no
+    # remote is called ``origin``: git has no default to fall back on and
+    # says "fatal: No configured push destination." (exit 128, measured on
+    # git 2.53). It prints the same sentence with no remote at all, which
+    # ``network.push`` refuses first as ``no_remote`` -- so what reaches
+    # this row is the state whose remedy is the Publish click.
     ("no_upstream", 409, (
         "has no upstream branch",
         "There is no tracking information",
+        Anchored("no upstream configured for"),
+        Anchored("@{u} - not something we can merge",
+                 prefixes=MERGE_REFUSED_PREFIXES),
+        Anchored("No configured push destination"),
+    )),
+    # A plain push can also be disabled by the user's own Git configuration.
+    # Both sentences are fatal refusals from ``git push`` rather than server
+    # faults: ``nothing`` deliberately supplies no refspec, while ``simple``
+    # refuses an upstream whose branch name differs from the local one.
+    #
+    # A code of their OWN, and not ``invalid_value``, because of what the tab
+    # does with the answer. It rewrites every ``invalid_value`` from a
+    # ``push`` or a ``sync`` into ``no_upstream`` -- that rewrite is right for
+    # the state it was written for (``resolve_remote`` refusing a branch with
+    # several remotes to choose between) and wrong for these two: it draws
+    # "this branch is not published yet" over a branch that is published and
+    # up to date, and offers the Publish button, whose ``push -u -- origin
+    # main`` creates a second remote branch and repoints
+    # ``branch.main.merge`` at it. A remedy that mutates the user's config to
+    # answer a question about their config is worse than no button, and a
+    # code the frontend does not know falls through to the generic sentence
+    # with no button at all. 409 like the rest of the "the repository is not
+    # in a state for this" family; the hint is in :data:`CODE_HINTS`.
+    ("push_config", 409, (
+        'push.default is "nothing"',
+        "The upstream branch of your current branch does not match",
     )),
     # git says all three of these on STDOUT, not stderr. A caller that runs
     # ``commit`` therefore has to hand the stdout text in as well -- see
@@ -314,6 +444,15 @@ _RULES: tuple[tuple[str, int, tuple[_Pattern, ...]], ...] = (
     ("branch_exists", 409, (
         Anchored("already exists"),
     )),
+    # BELOW ``branch_exists``, so that row keeps everything it means today:
+    # it is git's own voice about a ref, anchored to ``fatal: ``/``remote:
+    # ``, and a forge that says "already exists" through a push must go on
+    # meaning that. This row is the other opening -- ``error: remote origin
+    # already exists.``, which ``git remote add`` prints for a duplicate and
+    # which nothing above can reach.
+    ("remote_exists", 409, (
+        Anchored("already exists", prefixes=REMOTE_EXISTS_PREFIXES),
+    )),
     ("branch_not_merged", 409, (
         "is not fully merged",
     )),
@@ -326,6 +465,13 @@ _RULES: tuple[tuple[str, int, tuple[_Pattern, ...]], ...] = (
     # the G1 read operations against a missing path, ref or stash -- a file
     # the user opens at a ref where it does not exist is the most ordinary
     # request the tab makes, and a 500 for it would be plainly wrong.
+    #
+    # The last two are G3's, and the same argument: the branch list is a
+    # panel that is up to fifteen seconds old, so switching to a branch
+    # somebody deleted meanwhile ("fatal: invalid reference: feat") and
+    # branching from a start point that has gone ("fatal: not a valid object
+    # name: 'deadbee'") are races the tab loses in the ordinary course of
+    # things, not server errors.
     ("not_found", 404, (
         # Anchored: two words of ordinary English that a failing lint hook
         # prints as readily as git does ("ruff: command not found").
@@ -342,6 +488,11 @@ _RULES: tuple[tuple[str, int, tuple[_Pattern, ...]], ...] = (
         "invalid object name",
         # rev-parse --verify <unknown sha>, without --quiet
         "Needed a single revision",
+        # switch <a branch that is gone>. Anchored like its neighbours: two
+        # ordinary words that a hook could print about anything.
+        Anchored("invalid reference"),
+        # branch <name> <a start point that is gone>
+        Anchored("not a valid object name"),
     )),
 )
 
@@ -361,7 +512,7 @@ def _matches(pattern: _Pattern, haystack: str, lines: Sequence[str]) -> bool:
     """
     if isinstance(pattern, Anchored):
         phrase = pattern.phrase.lower()
-        return any(line.startswith(GIT_MESSAGE_PREFIXES) and phrase in line
+        return any(line.startswith(pattern.prefixes) and phrase in line
                    for line in lines)  # the line's FIRST characters
     if isinstance(pattern, str):
         return pattern.lower() in haystack
@@ -414,15 +565,28 @@ def stderr_tail(stderr: str, limit: int = LAST_STDERR_LINES) -> str:
 #: can never run past the authority into a path or a second URL.
 _USERINFO_RE = re.compile(r"://[^/\s]*@")
 
-#: The GitHub App installation token, which also appears OUTSIDE a URL --
-#: in an ``Authorization`` line a forge echoes back, or in a hook's own
-#: output. The prefix is kept so the sentence still reads.
-_ACCESS_TOKEN_RE = re.compile(r"(?i)(x-access-token:)[^\s@/]+")
+#: The placeholder GitHub Apps put in front of an installation token, so
+#: that ``x-access-token:<token>`` is a userinfo with no PERSON in it.
+#:
+#: Public, like the prefixes below and for the same reason:
+#: ``paths.display_url`` has to tell a username apart from a credential,
+#: and a second copy of the answer would drift from this one the first
+#: time a forge adds a shape.
+ACCESS_TOKEN_USER = "x-access-token"
 
 #: The token shapes whose prefixes their issuers publish. A word starting
 #: with one of these is a credential and nothing else.
+TOKEN_PREFIXES: tuple[str, ...] = (
+    "github_pat_", "ghp_", "gho_", "ghs_", "ghu_", "glpat-")
+
+#: The GitHub App installation token, which also appears OUTSIDE a URL --
+#: in an ``Authorization`` line a forge echoes back, or in a hook's own
+#: output. The prefix is kept so the sentence still reads.
+_ACCESS_TOKEN_RE = re.compile(rf"(?i)({re.escape(ACCESS_TOKEN_USER)}:)[^\s@/]+")
+
 _TOKEN_WORD_RE = re.compile(
-    r"(?i)\b(?:github_pat_|ghp_|gho_|ghs_|ghu_|glpat-)[A-Za-z0-9_-]+")
+    r"(?i)\b(?:" + "|".join(re.escape(prefix) for prefix in TOKEN_PREFIXES)
+    + r")[A-Za-z0-9_-]+")
 
 
 def redact(text: str) -> str:
@@ -470,6 +634,11 @@ def classify_failure(argv: Sequence[str], returncode: int,
     decision belongs to ``run_git``'s ``ok_codes``, because only the caller
     knows that ``diff`` exits 1 for "there are differences".
 
+    A recognised row carries a ``hint`` when its code is in
+    :data:`CODE_HINTS` -- the few whose remedy is the same sentence every
+    time, since a classified failure has no caller to ask for a branch or a
+    file name.
+
     Unrecognised output is ``git_failed`` (500). Every result -- recognised
     or not -- carries the last :data:`LAST_STDERR_LINES` lines in
     ``.stderr``, because a code is a claim about what went wrong and a
@@ -489,7 +658,8 @@ def classify_failure(argv: Sequence[str], returncode: int,
     tail = redact(stderr_tail(stderr))
     for code, status, patterns in _RULES:
         if any(_matches(pattern, haystack, lines) for pattern in patterns):
-            return GitError(code, status, stderr=tail)
+            return GitError(code, status, hint=CODE_HINTS.get(code),
+                            stderr=tail)
     label = f"git {_subcommand(argv)}".strip()
     return GitError(
         "git_failed", CODES["git_failed"][0],

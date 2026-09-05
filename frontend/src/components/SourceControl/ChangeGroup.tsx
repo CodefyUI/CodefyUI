@@ -9,7 +9,6 @@ import { focusScmFallback } from './ScmHeader';
 import styles from './SourceControl.module.css';
 
 const TITLE_KEY: Record<ChangeGroupKind, TranslationKey> = {
-  merge: 'git.group.merge',
   staged: 'git.group.staged',
   changes: 'git.group.changes',
 };
@@ -24,10 +23,11 @@ export interface ChangeGroupProps {
  * One titled, collapsible list of files, with the actions that apply to all of
  * them.
  *
- * The Merge group has no group-level actions at all. "Stage All" in the middle
- * of a merge means "mark every conflict resolved", which is a decision per
- * file and not one a group header should be able to make by accident; the
- * per-row Stage is still there for the file the user has actually fixed.
+ * Two groups, and neither of them is the conflict list: a merge's rows are
+ * `MergeGroup`'s, because settling one is a decision that overwrites the file
+ * rather than a move between two lists -- and a "Stage All" that meant "mark
+ * every conflict resolved" is not a decision a group header should be able to
+ * make by accident.
  *
  * "Discard All" asks with the counts from the WHOLE status, not from the rows
  * on screen: `discard('all')` is a whole-tree operation, so a filter that is

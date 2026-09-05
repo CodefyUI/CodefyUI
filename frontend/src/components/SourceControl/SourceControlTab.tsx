@@ -1,11 +1,16 @@
 import { useEffect, useMemo, useState, type ReactNode } from 'react';
-import { gitOpKey, isLayoutFile, useGitStore } from '../../store/gitStore';
+import { isLayoutFile, useGitStore } from '../../store/gitStore';
+import { gitOpKey } from './scm';
 import { useI18n } from '../../i18n';
+import { BranchesSection } from './BranchesSection';
 import { ChangeGroup } from './ChangeGroup';
 import { CommitBox } from './CommitBox';
 import { EmptyStates } from './EmptyStates';
 import { IdentityForm } from './IdentityForm';
+import { MergeGroup } from './MergeGroup';
+import { RemotesSection } from './RemotesSection';
 import { ScmHeader } from './ScmHeader';
+import { StashesSection } from './StashesSection';
 import shell from '../Sidebar/NodePalette.module.css';
 import styles from './SourceControl.module.css';
 
@@ -51,15 +56,20 @@ export function SourceControlTab() {
   // The sentence changes SIDES on each finished write, because two stages in a
   // row can leave the same words ("Staged Changes 2, Changes 0") and an
   // unchanged text node is announced exactly zero times. A finished operation
-  // is the signal: `busyOp` falling back to null with no error is one write
-  // that landed. The identity write is the exception -- it moves nothing in
-  // the panel and writes no sentence, so a swap there would re-read whatever
-  // the last real operation said.
+  // is the signal -- in EITHER lane: a local write releases `busyOp` and a
+  // network one releases `netOp`, and a guard that watched the local lane
+  // alone said a first fetch and then nothing for every fetch after it. The
+  // identity write is the exception -- it moves nothing in the panel and
+  // writes no sentence, so a swap there would re-read whatever the last real
+  // operation said, and only the local lane has that operation.
   useEffect(
     () =>
       useGitStore.subscribe((state, prev) => {
-        if (prev.busyOp === null || state.busyOp !== null) return;
-        if (prev.busyOp === 'identity') return;
+        const finishedLocal = prev.busyOp !== null
+          && state.busyOp === null
+          && prev.busyOp !== 'identity';
+        const finishedNet = prev.netOp !== null && state.netOp === null;
+        if (!finishedLocal && !finishedNet) return;
         if (state.lastError !== null) return;
         if (state.liveMessage === '') return;
         setLiveSlot((slot) => (slot === 0 ? 1 : 0));
@@ -103,20 +113,36 @@ export function SourceControlTab() {
       <>
         <CommitBox />
         <div className={styles.scroll}>
-          {status.merge_in_progress && (
-            <div className={styles.banner}>{t('git.merge.banner')}</div>
+          {/*
+            Outside the clean/dirty branch, because a merge whose every file
+            has been settled as "mine" changes no file: the tree is clean, the
+            conflict list is empty, and `MERGE_HEAD` is still there with only
+            two ways out of it -- the commit box, and this group's Abort. The
+            banner is the group's own; the tab drew a second copy of that
+            sentence here until the group had a heading to hang it under.
+          */}
+          {(status.merge_in_progress || status.conflicted.length > 0) && (
+            <MergeGroup files={status.conflicted} />
           )}
           {clean
             ? <div className={styles.stateMessage}>{t('git.empty.clean')}</div>
             : (
               <>
-                {status.conflicted.length > 0 && (
-                  <ChangeGroup kind="merge" files={status.conflicted} />
-                )}
                 <ChangeGroup kind="staged" files={status.staged} />
                 <ChangeGroup kind="changes" files={changes} />
               </>
             )}
+          {/*
+            Outside the clean/dirty branch above: branches, remotes and stashes
+            are properties of the repository, not of the working tree, and a
+            clean checkout is exactly when somebody goes looking for another
+            branch. Each one reads its own slice of the store, collapsed by
+            default and remembered there -- which is also what loads its list
+            as the section opens.
+          */}
+          <BranchesSection />
+          <RemotesSection />
+          <StashesSection />
         </div>
       </>
     );

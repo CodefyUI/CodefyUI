@@ -264,6 +264,20 @@ export function DiscardIcon({ size }: { size?: number }) {
   );
 }
 
+/** Sync: pull, then push. Two arrows travelling in opposite directions, which
+ *  is the exchange this action makes -- deliberately not RefreshIcon's closed
+ *  cycle, which in this app means "read that list again". */
+export function SyncIcon({ size }: { size?: number }) {
+  return (
+    <Icon size={size}>
+      <polyline points="17 1 21 5 17 9" />
+      <path d="M3 11V9a4 4 0 0 1 4-4h14" />
+      <polyline points="7 23 3 19 7 15" />
+      <path d="M21 13v2a4 4 0 0 1-4 4H3" />
+    </Icon>
+  );
+}
+
 /** Opens a menu attached to the control beside it (the Commit split button)
  *  or expands a section. One chevron, so it never reads as ExpandAllIcon. */
 export function ChevronDownIcon({ size }: { size?: number }) {

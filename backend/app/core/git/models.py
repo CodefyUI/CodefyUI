@@ -38,8 +38,14 @@ a message is too long, whether an email looks like an email -- that is
 back as a :class:`~app.core.git.errors.GitError` with a code the frontend
 translates, not as pydantic's English prose in a 422.
 
-G3 adds ``BranchInfo`` / ``RemoteInfo`` / ``StashInfo`` and the requests for
-branches, remotes and stashes; this file is the G1 subset.
+G3 adds the refs: ``BranchInfo`` / ``RemoteBranchInfo`` / ``BranchesResponse``
+/ ``RemoteInfo`` and the requests that create, switch, rename and delete
+them; then ``StashInfo`` with ``StashCreateRequest`` and ``ResolveRequest``,
+which is work set aside and a merge finished; and finally ``FetchRequest``,
+``PullRequest`` and ``PushRequest`` -- the three bodies that talk to a
+remote. Those three have no response model of their own: what a network
+operation answers with is the ``MutationResult`` every write answers with,
+and which one ran is in its ``detail``.
 
 No subprocess and no runner import: the parser and the tests can build a
 status without a git on PATH.
@@ -273,6 +279,136 @@ class Identity(BaseModel):
     email_scope: ConfigScope | None = None
 
 
+class BranchInfo(BaseModel):
+    """One local branch, as the Branches section draws a row of it.
+
+    ``ahead`` / ``behind`` follow :class:`GitStatus`'s reading exactly, so
+    the tab has one rule and not two: both are ``None`` when the branch has
+    no upstream AND when the upstream is ``gone``, and a branch that is in
+    step with a live upstream is ``0`` / ``0`` rather than null. git prints
+    only the non-zero half (``[ahead 1]``), so the other one is filled in
+    here -- an absent number would otherwise mean "no upstream" and
+    "nothing to push" at the same time.
+    """
+
+    #: Without ``refs/heads/``: ``main``, ``feat/source-control``.
+    name: str
+    #: The tip, abbreviated the way git abbreviates it here.
+    sha: str
+    #: HEAD is on this branch.
+    current: bool = False
+    #: The upstream as git names it (``origin/main``), if configured.
+    upstream: str | None = None
+    ahead: int | None = None
+    behind: int | None = None
+    #: An upstream is configured and its ref no longer exists.
+    gone: bool = False
+    #: The tip commit's subject and commit date, for the row's second line.
+    #: Both carry git's "did not say" default rather than being required:
+    #: they are decoration, and a branch is worth listing without them.
+    subject: str = ""
+    committed_at: int = 0
+
+
+class RemoteBranchInfo(BaseModel):
+    """One remote-tracking branch: ``origin/main`` split into its two parts.
+
+    Split, rather than shipped as one string, because the tab needs both
+    halves separately -- the remote groups the list, the name is what a
+    Switch creates locally -- and splitting a name that may itself contain
+    slashes (``origin/feat/x``) is a rule better applied once here than in
+    every component that renders one.
+    """
+
+    #: The branch on the remote, without the remote's name: ``main``.
+    name: str
+    #: The remote it lives on: ``origin``.
+    remote: str
+    sha: str
+    subject: str = ""
+    committed_at: int = 0
+
+
+class BranchesResponse(BaseModel):
+    """``GET /api/git/branches``: every branch, local and remote-tracking.
+
+    ``current`` is the branch HEAD is on -- which exists on an UNBORN
+    branch, where ``local`` is empty and there is still a name to show --
+    and is ``None`` exactly when ``detached`` is true.
+    """
+
+    current: str | None = None
+    detached: bool = False
+    local: list[BranchInfo] = Field(default_factory=list)
+    remote: list[RemoteBranchInfo] = Field(default_factory=list)
+
+
+class RemoteInfo(BaseModel):
+    """One configured remote, and the two URLs it may have.
+
+    Both URLs are strings and never null: a remote whose push URL is not
+    configured separately reports the fetch URL in both, which is what git
+    itself prints and what actually happens on a push.
+
+    **Both URLs are for DISPLAY ONLY.** This model is served by an open,
+    unauthenticated GET, so ``refs.list_remotes`` puts every URL through
+    ``paths.display_url`` first: the SECRET half of a userinfo is masked to
+    ``***`` and everything else is kept, because a row nobody recognises is
+    a row nobody can act on.
+
+    So ``ssh://git@github.com/org/repo.git`` and
+    ``git@github.com:org/repo.git`` arrive exactly as configured -- a
+    username is an identity, not a credential -- while
+    ``https://alice:ghp_xxx@host/r.git`` arrives as
+    ``https://alice:***@host/r.git``, and a userinfo that is nothing but a
+    token (``https://ghp_xxx@host/r.git``, or GitHub's
+    ``x-access-token:<token>``) arrives as ``https://***@host/r.git``.
+
+    Which means the string here is sometimes NOT the string git holds, and
+    a UI must never round-trip it: a "Change URL" prompt pre-filled from
+    this field and submitted unchanged would write ``alice:***`` into the
+    config and destroy the credential the user had. The prompt starts
+    empty, or from what the user types; nothing reads a URL back out of
+    this API.
+    """
+
+    name: str
+    fetch_url: str = ""
+    push_url: str = ""
+
+
+class StashInfo(BaseModel):
+    """One entry of the stash stack, as the Stashes section draws a row.
+
+    ``index`` is git's own ``stash@{N}`` and not this row's position in the
+    list: it is what every write is addressed by, and a row the parser
+    could not read would otherwise shift every index below it -- onto the
+    operation that drops.
+
+    ``message`` is what to SHOW, and it is one of two things. A stash made
+    with a message carries that message. One made without carries git's
+    whole ``WIP on main: 9f2c1ab Add the loader`` -- the base commit is the
+    only description an unnamed stash has, and printing just "9f2c1ab Add
+    the loader" would read as a commit the user made. The client prints
+    this field verbatim.
+
+    ``branch`` is the branch the stash was made on, and ``None`` when it
+    was made off one: git writes ``(no branch)`` for a detached HEAD, which
+    is a placeholder and not a name -- the same reading
+    :class:`BranchesResponse` gives ``current``. It is also ``None`` for a
+    subject in neither of git's two shapes (a stash another tool wrote).
+    """
+
+    #: git's own index: ``0`` is ``stash@{0}``, the newest.
+    index: int
+    #: The user's message, or git's ``WIP on ...`` line. Never empty.
+    message: str
+    #: Where it was made; ``None`` for a detached HEAD.
+    branch: str | None = None
+    #: Author time, unix seconds; ``0`` when git did not say.
+    created_at: int = 0
+
+
 class MutationResult(BaseModel):
     """What one write left behind.
 
@@ -364,3 +500,168 @@ class IdentityRequest(BaseModel):
 
     name: str | None = None
     email: str | None = None
+
+
+class BranchCreateRequest(BaseModel):
+    """The body of ``POST /branches``: a new branch, and whether to go to it.
+
+    ``checkout`` defaults to true because that is what the button says --
+    "Create Branch" in every editor that has one leaves you ON it -- and it
+    is also the field that decides whether this write can move files, which
+    is why the service reads it rather than assuming either answer.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str
+    checkout: bool = True
+    #: A branch name or a commit id to start from; ``None`` means HEAD.
+    start_point: str | None = None
+
+
+class CheckoutRequest(BaseModel):
+    """The body of ``POST /checkout``: which branch, and which kind it is.
+
+    ``kind`` is REQUIRED and not defaulted, because the two are different
+    commands: a local switch moves HEAD to a branch that exists, and a
+    remote one creates a new local branch tracking ``origin/<name>``. A
+    default would make "the client forgot to say" indistinguishable from
+    "the user picked local", and the wrong one of those creates a branch
+    nobody asked for.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    #: ``main`` for a local branch, ``origin/main`` for a remote one.
+    target: str
+    kind: Literal["local", "remote"]
+
+
+class BranchRenameRequest(BaseModel):
+    """The body of ``PUT /branches/{name}``: what to call it instead."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    new_name: str
+
+
+class RemoteCreateRequest(BaseModel):
+    """The body of ``POST /remotes``: a name and where it points."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str
+    url: str
+
+
+class RemoteUrlRequest(BaseModel):
+    """The body of ``PUT /remotes/{name}``: where it points instead.
+
+    Only the URL: renaming a remote is not offered, because a rename
+    rewrites every ``branch.<name>.remote`` in the config and the tab has
+    no way to show what that changed.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    url: str
+
+
+class StashCreateRequest(BaseModel):
+    """The body of ``POST /stashes``: set the working tree aside.
+
+    Both fields have a default, so an empty body is a valid request and
+    means what the button means. ``message`` is optional because git's own
+    ``WIP on ...`` is a perfectly good name for a stash somebody is about
+    to pop again, and the prompt that asks for one lets it be skipped;
+    ``include_untracked`` defaults to TRUE because a new file is a change,
+    and setting aside half the work while saying nothing about the other
+    half is the one outcome nobody wants.
+
+    The message's own length and shape are ``paths.validate_stash_message``'s
+    job, so an over-long one comes back as a 400 with a code the tab
+    translates rather than as pydantic's English.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    message: str | None = None
+    include_untracked: bool = True
+
+
+class FetchRequest(BaseModel):
+    """The body of ``POST /fetch``: which remote, or let the server decide.
+
+    ``remote`` is ``None`` in every request the tab makes. Which remote a
+    fetch talks to is a question with an answer already -- the upstream's
+    remote, or the only one there is -- and a client that guessed would be
+    guessing from a panel that is up to fifteen seconds old. It exists for
+    a repository with several remotes and a caller that means one of them.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    remote: str | None = None
+
+
+class PullRequest(BaseModel):
+    """The body of ``POST /pull``: how to bring the remote's work in.
+
+    ``ff-only`` is the default because it is the one that cannot surprise:
+    it either moves the branch forward or refuses, and it never writes a
+    commit nobody asked for. When it refuses, the failure is ``diverged``
+    and the tab offers "Merge remote changes", which is this same request
+    with ``strategy: "merge"`` -- a real merge, with a real chance of
+    conflicts, made once the user has said so.
+
+    There is deliberately no ``rebase``: rewriting commits that may already
+    be pushed is not something a panel should offer behind one button.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    strategy: Literal["ff-only", "merge"] = "ff-only"
+
+
+class PushRequest(BaseModel):
+    """The body of ``POST /push``: send this branch, and maybe adopt it.
+
+    One route for two buttons, because they are one command with one flag.
+    ``set_upstream: false`` is Push: the branch already has an upstream and
+    git knows where its commits go. ``set_upstream: true`` is Publish: the
+    branch has never been sent anywhere, so a remote has to be named (or
+    resolved) and ``-u`` records it for every later push.
+
+    ``remote`` therefore belongs to Publish alone, and a plain push that
+    carries one is refused rather than obeyed-or-ignored: git's plain
+    ``push`` takes its destination from the upstream, so honouring a remote
+    here would send the commits somewhere the branch is not tracking -- and
+    the ahead/behind the panel draws would go on counting against the old
+    one, which is the sort of "it worked" nobody can debug.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    #: Only for a publish; the only remote is used when it is ``None``.
+    remote: str | None = None
+    #: Publish: ``push -u``, which records the upstream.
+    set_upstream: bool = False
+
+
+class ResolveRequest(BaseModel):
+    """The body of ``POST /resolve``: one conflicted file, and which side.
+
+    Three words, and the third is not a side at all. ``ours`` takes the
+    version of the branch being merged INTO, ``theirs`` the version being
+    merged in, and ``mark`` takes whatever is in the working tree already
+    -- which is what a person who has edited the file by hand, markers and
+    all, means by "resolved". The file has to be one the status calls
+    conflicted; anything else is a 400 ``path_not_in_status``, because
+    ``git checkout --ours`` on a merely MODIFIED file silently throws the
+    modification away (measured).
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    path: str
+    side: Literal["ours", "theirs", "mark"]

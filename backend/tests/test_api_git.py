@@ -51,11 +51,16 @@ from app.main import _AUTH_EXEMPT_PREFIXES, _prefix_exempt, app
 # ``Repo`` is the two-line repository helper; ``isolated_git`` and
 # ``make_repo`` are fixtures, autouse and factory respectively, and are used
 # by NAME below rather than by reference -- which is what pytest wants and
-# what ruff cannot see.
+# what ruff cannot see. ``_conflicted`` is a helper, not a fixture: it takes
+# a repository and leaves it mid-merge.
 from tests.test_git_service import (  # noqa: F401
     Repo,
+    _conflicted,
     isolated_git,
+    make_bare_remote,
+    make_clone,
     make_repo,
+    remote_url,
 )
 
 #: Every test here drives a real repository, so a machine without git has
@@ -90,6 +95,12 @@ DIFF_KEYS = {"patch", "binary", "truncated", "old_ref", "new_ref", "old_text",
 FILE_AT_REF_KEYS = {"text", "binary", "size", "truncated"}
 IDENTITY_KEYS = {"name", "email", "name_scope", "email_scope"}
 MUTATION_KEYS = {"status", "changed_paths", "head", "detail"}
+BRANCHES_KEYS = {"current", "detached", "local", "remote"}
+BRANCH_KEYS = {"name", "sha", "current", "upstream", "ahead", "behind",
+               "gone", "subject", "committed_at"}
+REMOTE_BRANCH_KEYS = {"name", "remote", "sha", "subject", "committed_at"}
+REMOTE_KEYS = {"name", "fetch_url", "push_url"}
+STASH_KEYS = {"index", "message", "branch", "created_at"}
 
 #: The failure envelope, which is a contract of its own: the frontend
 #: switches on ``code`` and shows the rest to whoever is debugging.
@@ -316,6 +327,545 @@ async def test_unstage_puts_it_back(test_client, project):
         "new.txt"]
 
 
+async def test_branches_carry_exactly_the_documented_keys(test_client,
+                                                          project):
+    """Both lists in one answer: the section draws them together."""
+    project.git("branch", "feat")
+    project.git("update-ref", "refs/remotes/origin/main", project.head())
+
+    response = await test_client.get("/api/git/branches")
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert set(body) == BRANCHES_KEYS
+    assert body["current"] == "main" and body["detached"] is False
+    assert [entry["name"] for entry in body["local"]] == ["feat", "main"]
+    assert set(body["local"][0]) == BRANCH_KEYS
+    assert set(body["remote"][0]) == REMOTE_BRANCH_KEYS
+    assert body["remote"][0] == {
+        "name": "main", "remote": "origin",
+        "sha": body["local"][0]["sha"], "subject": "first",
+        "committed_at": body["local"][0]["committed_at"]}
+
+
+async def test_remotes_carry_exactly_the_documented_keys(test_client, project):
+    project.git("remote", "add", "origin", "https://example.com/owner/repo.git")
+
+    response = await test_client.get("/api/git/remotes")
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert set(body[0]) == REMOTE_KEYS
+    assert body[0]["name"] == "origin"
+    assert body[0]["fetch_url"] == "https://example.com/owner/repo.git"
+
+
+async def test_the_remotes_read_never_serves_a_credential(anon_client, project):
+    """This GET needs no token -- like every read in the app, and on a
+    server that is deliberately servable to a LAN. A remote URL is one of
+    the two strings here that can carry a live one, so the SECRET half is
+    masked before it is serialised; the username, host and path stay,
+    because a row nobody can place is a row nobody can act on."""
+    project.git("remote", "add", "origin",
+                f"https://alice:{TOKEN}@github.com/owner/repo.git")
+    project.git("remote", "add", "upstream",
+                "ssh://git@github.com/other/repo.git")
+
+    response = await anon_client.get("/api/git/remotes")
+
+    assert response.status_code == 200, response.text
+    assert TOKEN not in response.text
+    listed = {entry["name"]: entry["fetch_url"] for entry in response.json()}
+    assert listed["origin"] == "https://alice:***@github.com/owner/repo.git"
+    # The commonest remote shape there is, through the same masking path.
+    assert listed["upstream"] == "ssh://git@github.com/other/repo.git"
+
+
+async def test_a_branch_write_answers_with_a_mutation_result(test_client,
+                                                             project):
+    """Every write in this router answers with the same four keys, so the
+    tab has one code path for all of them."""
+    response = await test_client.post("/api/git/branches",
+                                      json={"name": "feat"})
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert set(body) == MUTATION_KEYS
+    assert body["status"]["branch"] == "feat"
+    assert body["detail"] == {"branch": "feat", "checkout": True,
+                              "start_point": None}
+
+
+async def test_a_branch_name_with_a_slash_survives_the_url(test_client,
+                                                           project):
+    """``{name:path}`` is the only converter that matches ``feat/scm`` --
+    and the ``%2F`` a client sends instead, which the server has already
+    turned back into a slash by the time the router sees it."""
+    await test_client.post("/api/git/branches",
+                           json={"name": "feat/scm", "checkout": False})
+
+    renamed = await test_client.put("/api/git/branches/feat/scm",
+                                    json={"new_name": "feat/source-control"})
+    assert renamed.status_code == 200, renamed.text
+
+    deleted = await test_client.delete(
+        "/api/git/branches/feat%2Fsource-control")
+    assert deleted.status_code == 200, deleted.text
+    assert deleted.json()["detail"] == {"branch": "feat/source-control",
+                                        "forced": False}
+
+
+async def test_checkout_reports_the_files_it_replaced(test_client, project):
+    project.git("switch", "-q", "-c", "feat")
+    project.commit("on feat", {"a.txt": "feat\n"})
+    project.git("switch", "-q", "main")
+
+    response = await test_client.post("/api/git/checkout",
+                                      json={"target": "feat",
+                                            "kind": "local"})
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["status"]["branch"] == "feat"
+    assert "a.txt" in body["changed_paths"]
+
+
+async def test_a_checkout_without_a_kind_is_422(test_client, project):
+    """``kind`` has no default: "the client forgot to say" and "the user
+    picked local" are different requests, and the wrong one of those
+    creates a branch nobody asked for."""
+    response = await test_client.post("/api/git/checkout",
+                                      json={"target": "feat"})
+
+    assert response.status_code == 422, response.text
+
+
+async def test_deleting_the_branch_you_are_on_is_400(test_client, project):
+    response = await test_client.delete("/api/git/branches/main")
+
+    assert response.status_code == 400
+    assert (await _detail(response))["code"] == "invalid_value"
+
+
+async def test_an_unmerged_branch_needs_the_force_flag(test_client, project):
+    project.git("switch", "-q", "-c", "feat")
+    project.commit("only on feat", {"b.txt": "two\n"})
+    project.git("switch", "-q", "main")
+
+    refused = await test_client.delete("/api/git/branches/feat")
+    assert refused.status_code == 409
+    assert (await _detail(refused))["code"] == "branch_not_merged"
+
+    forced = await test_client.delete("/api/git/branches/feat?force=true")
+    assert forced.status_code == 200, forced.text
+    assert forced.json()["detail"] == {"branch": "feat", "forced": True}
+
+
+async def test_the_remote_routes_add_change_and_forget(test_client, project):
+    added = await test_client.post(
+        "/api/git/remotes",
+        json={"name": "origin", "url": "https://example.com/a.git"})
+    assert added.status_code == 200, added.text
+    assert set(added.json()) == MUTATION_KEYS
+
+    duplicate = await test_client.post(
+        "/api/git/remotes",
+        json={"name": "origin", "url": "https://example.com/b.git"})
+    assert duplicate.status_code == 409
+    assert (await _detail(duplicate))["code"] == "remote_exists"
+
+    changed = await test_client.put(
+        "/api/git/remotes/origin", json={"url": "https://example.com/b.git"})
+    assert changed.status_code == 200, changed.text
+
+    listed = await test_client.get("/api/git/remotes")
+    assert listed.json()[0]["fetch_url"] == "https://example.com/b.git"
+
+    removed = await test_client.delete("/api/git/remotes/origin")
+    assert removed.status_code == 200, removed.text
+    assert (await test_client.get("/api/git/remotes")).json() == []
+
+
+async def test_a_remote_url_the_server_will_not_hand_to_git_is_400(
+        test_client, project):
+    response = await test_client.post(
+        "/api/git/remotes",
+        json={"name": "origin", "url": "ssh://-oProxyCommand=x/repo.git"})
+
+    assert response.status_code == 400
+    assert (await _detail(response))["code"] == "invalid_url"
+
+
+async def test_a_branch_body_with_an_unknown_key_is_422(test_client, project):
+    """``extra="forbid"``: a key nobody defined is a client bug, not an
+    instruction to ignore."""
+    response = await test_client.post("/api/git/branches",
+                                      json={"name": "feat", "checkut": True})
+
+    assert response.status_code == 422, response.text
+
+
+async def test_stashes_carry_exactly_the_documented_keys(test_client, project):
+    """``index`` is git's own ``stash@{N}``, which is what the three writes
+    below are addressed by -- not the row's position in this list."""
+    project.write("a.txt", "two\n")
+    await test_client.post("/api/git/stashes", json={"message": "mine"})
+
+    response = await test_client.get("/api/git/stashes")
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert set(body[0]) == STASH_KEYS
+    assert body[0]["index"] == 0
+    assert body[0]["message"] == "mine"
+    assert body[0]["branch"] == "main"
+    assert body[0]["created_at"] > 0
+
+
+async def test_the_stash_routes_push_apply_pop_and_drop(test_client, project):
+    project.write("a.txt", "two\n")
+    pushed = await test_client.post("/api/git/stashes",
+                                    json={"message": "mine"})
+    assert pushed.status_code == 200, pushed.text
+    assert set(pushed.json()) == MUTATION_KEYS
+    assert pushed.json()["detail"] == {"stash": 0, "message": "mine",
+                                       "include_untracked": True}
+    assert project.read("a.txt") == "one\ntwo\n"
+
+    applied = await test_client.post("/api/git/stashes/0/apply")
+    assert applied.status_code == 200, applied.text
+    assert applied.json()["detail"] == {"stash": 0}
+    assert project.read("a.txt") == "two\n"
+    assert applied.json()["status"]["stash_count"] == 1
+
+    dropped = await test_client.delete("/api/git/stashes/0")
+    assert dropped.status_code == 200, dropped.text
+    assert (await test_client.get("/api/git/stashes")).json() == []
+
+
+async def test_an_empty_stash_body_is_a_valid_request(test_client, project):
+    """Both fields have a default, and the More menu's item sends nothing
+    when the prompt for a message is skipped."""
+    project.write("a.txt", "two\n")
+
+    response = await test_client.post("/api/git/stashes", json={})
+
+    assert response.status_code == 200, response.text
+    assert response.json()["detail"]["message"] is None
+
+
+async def test_stashing_a_clean_tree_is_400(test_client, project):
+    response = await test_client.post("/api/git/stashes", json={})
+
+    assert response.status_code == 400
+    detail = await _detail(response)
+    assert detail["code"] == "invalid_value"
+    assert detail["hint"] == "nothing to stash"
+
+
+async def test_a_stash_index_that_is_gone_is_404(test_client, project):
+    response = await test_client.post("/api/git/stashes/3/pop")
+
+    assert response.status_code == 404
+    assert (await _detail(response))["code"] == "not_found"
+
+
+@pytest.mark.parametrize("index", ["-1", "one", "1.5"])
+async def test_a_stash_index_that_is_not_an_index_is_422(test_client, project,
+                                                         index):
+    """Bounded in the signature, like ``skip`` and ``limit``: a client bug
+    with nothing to say to the user, kept apart from the 404 that means the
+    stash list has moved on."""
+    response = await test_client.delete(f"/api/git/stashes/{index}")
+
+    assert response.status_code == 422, response.text
+
+
+async def test_an_empty_stash_message_is_400_not_no_message(test_client,
+                                                            project):
+    """Pinned because Task 4's ``prompt()`` can return ``""`` for a prompt
+    somebody submitted empty, and the client must send ``null`` instead:
+    ``validate_stash_message`` refuses an empty string, so the stash would
+    not happen and the toast would say the value was not allowed."""
+    project.write("a.txt", "two\n")
+
+    response = await test_client.post("/api/git/stashes", json={"message": ""})
+
+    assert response.status_code == 400
+    assert (await _detail(response))["code"] == "invalid_value"
+    assert (await test_client.get("/api/git/stashes")).json() == []
+
+
+async def test_a_stash_body_with_an_unknown_key_is_422(test_client, project):
+    project.write("a.txt", "two\n")
+
+    response = await test_client.post("/api/git/stashes",
+                                      json={"message": "m", "untracked": True})
+
+    assert response.status_code == 422, response.text
+
+
+async def test_the_resolve_route_settles_one_file(test_client, project):
+    _conflicted(project)
+
+    response = await test_client.post("/api/git/resolve",
+                                      json={"path": "a.txt",
+                                            "side": "theirs"})
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert set(body) == MUTATION_KEYS
+    assert body["detail"] == {"path": "a.txt", "side": "theirs"}
+    assert body["status"]["conflicted"] == []
+    assert "a.txt" in body["changed_paths"]
+    assert project.read("a.txt") == "side\n"
+
+
+async def test_resolving_a_file_that_is_not_conflicted_is_400(test_client,
+                                                              project):
+    """A TRACKED file with an uncommitted edit, which is the shape that
+    matters: ``git checkout --ours -- b.txt`` exits 0 there and silently
+    restores it from HEAD. On an untracked path git would refuse anyway, so
+    a test written that way passes for the wrong reason."""
+    project.commit("add b", {"b.txt": "committed\n"})
+    _conflicted(project)
+    project.write("b.txt", "edited by the user\n")
+
+    response = await test_client.post("/api/git/resolve",
+                                      json={"path": "b.txt", "side": "ours"})
+
+    assert response.status_code == 400
+    assert (await _detail(response))["code"] == "path_not_in_status"
+    assert project.read("b.txt") == "edited by the user\n"
+
+
+async def test_stashing_during_a_merge_is_409_and_keeps_the_merge(test_client,
+                                                                  project):
+    """With every conflict staged git exits 0 and deletes MERGE_HEAD, so
+    this route has to refuse before it runs."""
+    _conflicted(project)
+    resolved = await test_client.post("/api/git/resolve",
+                                      json={"path": "a.txt",
+                                            "side": "theirs"})
+    assert resolved.status_code == 200, resolved.text
+
+    response = await test_client.post("/api/git/stashes", json={})
+
+    assert response.status_code == 409
+    detail = await _detail(response)
+    assert detail["code"] == "merge_in_progress"
+    assert (project.root / ".git" / "MERGE_HEAD").exists()
+    assert (await test_client.get("/api/git/stashes")).json() == []
+
+
+@pytest.mark.parametrize("body", [
+    pytest.param({"path": "a.txt"}, id="no-side"),
+    pytest.param({"path": "a.txt", "side": "mine"}, id="a-fourth-word"),
+    pytest.param({"side": "ours"}, id="no-path"),
+])
+async def test_a_resolve_body_that_is_not_one_is_422(test_client, project,
+                                                     body):
+    response = await test_client.post("/api/git/resolve", json=body)
+
+    assert response.status_code == 422, response.text
+
+
+async def test_the_abort_route_puts_the_tree_back(test_client, project):
+    _conflicted(project)
+
+    response = await test_client.post("/api/git/merge/abort")
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert set(body) == MUTATION_KEYS
+    assert body["detail"] == {}
+    assert body["status"]["merge_in_progress"] is False
+    assert project.read("a.txt") == "main\n"
+
+
+async def test_aborting_with_no_merge_is_404(test_client, project):
+    response = await test_client.post("/api/git/merge/abort")
+
+    assert response.status_code == 404
+    detail = await _detail(response)
+    assert detail["code"] == "not_found"
+    assert detail["hint"] == "no merge in progress"
+
+
+# --- the network routes ------------------------------------------------------
+#
+# A bare repository in ``tmp_path`` reached over ``file://``: git runs the
+# same protocol it runs over ssh, so these are real fetches and real
+# pushes, with no network, no credentials and nothing to be flaky.
+
+
+async def test_the_publish_and_push_routes_send_the_branch(test_client,
+                                                           project, tmp_path):
+    """One route, two buttons: ``set_upstream`` is the whole difference."""
+    bare = make_bare_remote(tmp_path)
+    project.git("remote", "add", "origin", remote_url(bare))
+
+    published = await test_client.post("/api/git/push",
+                                       json={"set_upstream": True})
+
+    assert published.status_code == 200, published.text
+    body = published.json()
+    assert set(body) == MUTATION_KEYS
+    assert body["detail"] == {"remote": "origin", "branch": "main",
+                              "published": True}
+    assert body["status"]["upstream"] == "origin/main"
+
+    project.commit("more", {"b.txt": "bee\n"})
+    pushed = await test_client.post("/api/git/push", json={})
+
+    assert pushed.status_code == 200, pushed.text
+    assert pushed.json()["detail"]["published"] is False
+    assert Repo(bare).git("rev-parse", "refs/heads/main").strip() \
+        == project.head()
+
+
+async def test_the_fetch_and_pull_routes_bring_the_work_in(test_client,
+                                                           project, tmp_path):
+    """Fetch moves refs and no file; pull is the fetch and the merge."""
+    bare = make_bare_remote(tmp_path)
+    project.git("remote", "add", "origin", remote_url(bare))
+    project.git("push", "-q", "-u", "origin", "main")
+    clone = make_clone(bare, tmp_path)
+    clone.commit("from the clone", {"b.txt": "bee\n"})
+    clone.git("push", "-q")
+
+    fetched = await test_client.post("/api/git/fetch", json={})
+
+    assert fetched.status_code == 200, fetched.text
+    assert fetched.json()["detail"] == {"remote": "origin"}
+    assert fetched.json()["status"]["behind"] == 1
+
+    pulled = await test_client.post("/api/git/pull", json={})
+
+    assert pulled.status_code == 200, pulled.text
+    body = pulled.json()
+    assert body["detail"] == {"step": "merge", "strategy": "ff-only",
+                              "head_moved": True, "remote": "origin"}
+    assert body["changed_paths"] == ["b.txt"]
+
+
+async def test_the_sync_route_takes_no_body(test_client, project, tmp_path):
+    """Nothing to choose, so nothing to send -- like init and merge/abort."""
+    bare = make_bare_remote(tmp_path)
+    project.git("remote", "add", "origin", remote_url(bare))
+
+    response = await test_client.post("/api/git/sync")
+
+    assert response.status_code == 200, response.text
+    assert response.json()["detail"]["steps"] == ["publish"]
+    assert response.json()["status"]["upstream"] == "origin/main"
+
+
+async def test_a_pull_that_cannot_fast_forward_is_409_diverged(test_client,
+                                                               project,
+                                                               tmp_path):
+    """The code the tab turns into "Merge remote changes"."""
+    bare = make_bare_remote(tmp_path)
+    project.git("remote", "add", "origin", remote_url(bare))
+    project.git("push", "-q", "-u", "origin", "main")
+    clone = make_clone(bare, tmp_path)
+    clone.commit("from the clone", {"b.txt": "bee\n"})
+    clone.git("push", "-q")
+    project.commit("mine", {"c.txt": "sea\n"})
+
+    response = await test_client.post("/api/git/pull", json={})
+
+    assert response.status_code == 409
+    assert (await _detail(response))["code"] == "diverged"
+
+    merged = await test_client.post("/api/git/pull",
+                                    json={"strategy": "merge"})
+
+    assert merged.status_code == 200, merged.text
+    assert merged.json()["detail"]["strategy"] == "merge"
+
+
+async def test_pushing_without_an_upstream_is_409_no_upstream(test_client,
+                                                              project,
+                                                              tmp_path):
+    """The refusal that puts the Publish button on screen."""
+    bare = make_bare_remote(tmp_path)
+    project.git("remote", "add", "origin", remote_url(bare))
+
+    response = await test_client.post("/api/git/push", json={})
+
+    assert response.status_code == 409
+    assert (await _detail(response))["code"] == "no_upstream"
+
+
+async def test_fetching_with_no_remote_configured_is_409_no_remote(test_client,
+                                                                   project):
+    response = await test_client.post("/api/git/fetch", json={})
+
+    assert response.status_code == 409
+    detail = await _detail(response)
+    assert detail["code"] == "no_remote"
+    assert detail["hint"]
+
+
+@pytest.mark.parametrize("path,body", [
+    pytest.param("/api/git/fetch", {"remote": "origin", "prune": False},
+                 id="fetch-unknown-key"),
+    pytest.param("/api/git/pull", {"strategy": "rebase"}, id="pull-rebase"),
+    pytest.param("/api/git/pull", {"strategy": None}, id="pull-null"),
+    pytest.param("/api/git/push", {"force": True}, id="push-unknown-key"),
+    # "yes" and "true" ARE booleans to pydantic; a word that is neither is
+    # the case worth pinning.
+    pytest.param("/api/git/push", {"set_upstream": "maybe"},
+                 id="push-not-bool"),
+    pytest.param("/api/git/fetch", {"remote": 7}, id="fetch-not-a-name"),
+])
+async def test_a_network_body_that_is_not_one_is_422(test_client, project,
+                                                     path, body):
+    """``extra="forbid"`` and a ``Literal``: a key nobody defined is a 422
+    rather than an instruction that was quietly dropped. ``rebase`` is the
+    strategy this API deliberately does not have."""
+    response = await test_client.post(path, json=body)
+
+    assert response.status_code == 422, response.text
+
+
+async def test_a_network_op_takes_the_other_lock(test_client, project):
+    """Two queues: a network op is refused by a NETWORK op and by nothing
+    else. The tab shows which one is running in its busy bar."""
+    service = app.state.git_service
+
+    async with service.network_lock:
+        service.current_network_op = "push"
+        refused = await test_client.post("/api/git/fetch", json={})
+    service.current_network_op = None
+
+    assert refused.status_code == 409
+    detail = await _detail(refused)
+    assert detail["code"] == "busy"
+    assert detail["op"] == "push"
+
+
+async def test_a_local_write_during_a_network_op_is_allowed(test_client,
+                                                            project):
+    """The reason the second lock exists: a commit while somebody's push is
+    transferring must not be refused for the length of the transfer."""
+    service = app.state.git_service
+    project.write("new.txt", "new\n")
+
+    async with service.network_lock:
+        service.current_network_op = "push"
+        response = await asyncio.wait_for(
+            test_client.post("/api/git/stage", json={"all": True}), timeout=5)
+    service.current_network_op = None
+
+    assert response.status_code == 200, response.text
+    assert [entry["path"] for entry in response.json()["status"]["staged"]] \
+        == ["new.txt"]
+
+
+
+
 async def test_the_identity_reads_and_writes_with_its_scope(test_client,
                                                             project):
     """The scope is half the answer: "this repository" or "this machine"."""
@@ -404,7 +954,7 @@ async def test_every_mutating_route_needs_the_session_token(anon_client,
         for method in sorted(route.methods)
         if method not in {"GET", "HEAD", "OPTIONS"}
     ]
-    assert len(mutating) >= 6, "router walk is broken"
+    assert len(mutating) >= 23, "router walk is broken"
 
     for method, path in mutating:
         response = await anon_client.request(method, path, json={})
@@ -539,6 +1089,69 @@ async def test_a_second_write_while_one_runs_is_409_busy(test_client, project):
     detail = await _detail(response)
     assert detail["code"] == "busy"
     assert detail["op"] == "commit"
+
+
+async def test_a_ref_write_takes_the_same_lock_as_every_other(test_client,
+                                                              project):
+    """The branch and remote writes are ordinary mutations: one lock, one
+    at a time, and a refusal that names the operation holding it."""
+    service = app.state.git_service
+    async with service.lock:
+        service.current_op = "checkout"
+        response = await test_client.post("/api/git/branches",
+                                          json={"name": "feat"})
+    service.current_op = None
+
+    assert response.status_code == 409
+    detail = await _detail(response)
+    assert detail["code"] == "busy"
+    assert detail["op"] == "checkout"
+
+
+async def test_a_stash_write_takes_the_same_lock_as_every_other(test_client,
+                                                                project):
+    """The stash and merge writes are ordinary mutations: one lock, one at
+    a time, and a refusal that names the operation holding it."""
+    service = app.state.git_service
+    async with service.lock:
+        service.current_op = "stash_pop"
+        response = await test_client.post("/api/git/merge/abort")
+    service.current_op = None
+
+    assert response.status_code == 409
+    detail = await _detail(response)
+    assert detail["code"] == "busy"
+    assert detail["op"] == "stash_pop"
+
+
+async def test_a_stash_read_does_not_queue_behind_a_write(test_client,
+                                                          project):
+    """The Stashes section refreshes on a poll; it must not stall behind a
+    pop that is replacing half the working tree."""
+    service = app.state.git_service
+    async with service.lock:
+        service.current_op = "stash_pop"
+        response = await asyncio.wait_for(
+            test_client.get("/api/git/stashes"), timeout=5)
+    service.current_op = None
+
+    assert response.status_code == 200, response.text
+    assert response.json() == []
+
+
+async def test_a_branch_read_does_not_queue_behind_a_write(test_client,
+                                                           project):
+    """The Branches section refreshes on a poll; it must not stall behind a
+    checkout that is replacing half the working tree."""
+    service = app.state.git_service
+    async with service.lock:
+        service.current_op = "checkout"
+        response = await asyncio.wait_for(
+            test_client.get("/api/git/branches"), timeout=5)
+    service.current_op = None
+
+    assert response.status_code == 200, response.text
+    assert response.json()["current"] == "main"
 
 
 async def test_a_read_does_not_queue_behind_a_running_write(test_client,

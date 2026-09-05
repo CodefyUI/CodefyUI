@@ -340,6 +340,30 @@ for (const colour of [
   }
 }
 
+/* 6b. The one place a status colour is deliberately NOT text.
+
+       A destructive control marks itself where the pointer or the keyboard
+       is, which paints its cue on --surface-hover -- and --status-error there
+       is 3.92:1, under the 4.5:1 that 14px text needs. So the red ships as a
+       GRAPHIC in both places that draw it (the inset rule on ActionMenu's
+       `.item.danger`, the border on Source Control's `.dangerAction`) and the
+       label keeps a --text-* tier, which section 1 already checks on this
+       surface. Tinting the background does not rescue the text version:
+       --danger-wash is a light red, so compositing it RAISES the luminance
+       and takes the pair to 3.33:1.
+
+       Section 6 above never looks at --surface-hover, so without this row a
+       token edit could take the graphic below the 3:1 WCAG 1.4.11 asks of it
+       and the gate would go on passing. Painting the red as a LABEL there
+       instead needs a lighter danger token plus a 4.5 row here — a
+       design-system change, and not something to reach by nudging this
+       number. */
+check(
+  '--status-error as a non-text cue on --surface-hover',
+  contrast(t('--status-error'), t('--surface-hover')),
+  3
+);
+
 /* 7. Text inside a filled accent button. */
 check(
   '--text-on-accent on --accent',

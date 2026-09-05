@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useId, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { useDialogStore } from '../../store/dialogStore';
 import { useI18n } from '../../i18n';
@@ -27,10 +27,36 @@ export function DialogContainer() {
   const [validationError, setValidationError] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement | null>(null);
   const confirmBtnRef = useRef<HTMLButtonElement | null>(null);
+  // The question labels the box, and the refusal describes it -- so both have
+  // to be addressable rather than merely nearby.
+  const domId = useId();
+  const titleId = `${domId}-title`;
+  const errorId = `${domId}-error`;
 
-  // Reset input + focus the right element each time a new dialog opens.
+  // Reset input + focus the right element each time a new dialog opens, and
+  // hand focus back to whatever opened it on the way out.
+  //
+  // The box is portaled to `document.body`, so the element that had focus is
+  // REMOVED when it closes and focus falls to the body -- from where the next
+  // Tab starts at the top of the page. The same pattern as `NodeDetailModal`,
+  // `PackCenterModal`, `PluginCenterModal` and `TemplateGalleryModal`.
+  //
+  // It does not fight the callers that move focus themselves: the Source
+  // Control sections put focus on a section heading after the write they
+  // asked for, on a `requestAnimationFrame` that runs after this cleanup.
+  // What it fixes is every CANCELLED one of those, which returns early and
+  // moves nothing.
   useEffect(() => {
-    if (!active) return;
+    if (!active) return undefined;
+    const previouslyFocused = document.activeElement as HTMLElement | null;
+    const handBack = () => {
+      // Not when it has gone: the row that held focus is often exactly what
+      // the write removed, and refocusing a detached node does nothing while
+      // taking the answer away from whoever did move focus.
+      if (previouslyFocused && previouslyFocused.isConnected) {
+        previouslyFocused.focus();
+      }
+    };
     let timerId: ReturnType<typeof setTimeout>;
     if (active.kind === 'prompt') {
       setInputValue(active.defaultValue ?? '');
@@ -44,7 +70,10 @@ export function DialogContainer() {
     } else {
       timerId = setTimeout(() => confirmBtnRef.current?.focus(), 0);
     }
-    return () => clearTimeout(timerId);
+    return () => {
+      clearTimeout(timerId);
+      handBack();
+    };
   }, [active]);
 
   // ESC cancels.
@@ -110,7 +139,7 @@ export function DialogContainer() {
     >
       <div className={styles.dialog} onClick={(e) => e.stopPropagation()}>
         <div className={styles.header}>
-          <span className={styles.title}>{active.title}</span>
+          <span className={styles.title} id={titleId}>{active.title}</span>
         </div>
         <form onSubmit={onSubmit} className={styles.body}>
           {active.message && (
@@ -118,6 +147,15 @@ export function DialogContainer() {
           )}
           {active.kind === 'prompt' && (
             <>
+              {/*
+                Named by the QUESTION, not by "Dialog input": one prompt asks
+                for a branch name and the next for a remote URL, and a fixed
+                label told a reader which of those they had landed in exactly
+                never. The validation message is the input's DESCRIPTION and
+                the input reports itself invalid, so the refusal reaches
+                somebody who is still in the box rather than only somebody who
+                happens to walk past the line under it.
+              */}
               <input
                 ref={inputRef}
                 type="text"
@@ -128,10 +166,12 @@ export function DialogContainer() {
                   if (validationError) setValidationError(null);
                 }}
                 placeholder={active.placeholder}
-                aria-label="Dialog input"
+                aria-labelledby={titleId}
+                aria-invalid={validationError !== null}
+                aria-describedby={validationError === null ? undefined : errorId}
               />
               {validationError && (
-                <div className={styles.error}>{validationError}</div>
+                <div className={styles.error} id={errorId}>{validationError}</div>
               )}
             </>
           )}

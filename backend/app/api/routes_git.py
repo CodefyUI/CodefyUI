@@ -6,10 +6,30 @@
     GET    /api/git/diff                   the patch for one file
     GET    /api/git/file                   one file's content at one ref
     GET    /api/git/config                 who commits here, and from where
+    GET    /api/git/branches               every branch, local and remote
+    GET    /api/git/remotes                every remote, and its two URLs
+    GET    /api/git/stashes                the stash stack, newest first
     POST   /api/git/init                   make the project a repository
     POST   /api/git/stage /unstage /discard
     POST   /api/git/commit
     PUT    /api/git/config                 write user.name / user.email
+    POST   /api/git/branches               make a branch
+    POST   /api/git/checkout               go to one
+    PUT    /api/git/branches/{name}        rename one
+    DELETE /api/git/branches/{name}        delete one (?force=1 unmerged)
+    POST   /api/git/remotes                add a remote
+    PUT    /api/git/remotes/{name}         point it somewhere else
+    DELETE /api/git/remotes/{name}         forget it
+    POST   /api/git/stashes                set the working tree aside
+    POST   /api/git/stashes/{i}/pop        put one back and remove it
+    POST   /api/git/stashes/{i}/apply      put one back and keep it
+    DELETE /api/git/stashes/{i}            throw one away
+    POST   /api/git/merge/abort            undo a half-finished merge
+    POST   /api/git/resolve                settle one conflicted file
+    POST   /api/git/fetch                  bring the remote's refs in
+    POST   /api/git/pull                   fetch, then merge the upstream
+    POST   /api/git/push                   send this branch (publish with -u)
+    POST   /api/git/sync                   pull then push, in one click
 
 Every route is three lines long, and that is the design rather than an
 accident: the service on ``app.state`` owns the repository, the lock, the
@@ -43,12 +63,18 @@ one.
   startup failed has no repository to talk about either.
 * **What the query string may say is a closed set.** ``limit`` is 1..100,
   ``skip`` is 0..2**31-1 (git's own parser stops there, and one past it is
-  a failure rather than an empty page) and ``scope`` is one of three words
-  -- all three enforced by the signature, so an out-of-range page is a 422
-  before any code here runs. Everything with a meaning -- a path, a ref, a
-  sha, a message -- is validated by ``core/git/paths.py`` instead, which
-  answers with a ``code`` the frontend can translate rather than with
-  pydantic's English.
+  a failure rather than an empty page), ``scope`` is one of three words and
+  a stash ``index`` is ``>= 0`` -- all enforced by the signature, so an
+  out-of-range page is a 422 before any code here runs. Everything with a
+  meaning -- a path, a ref, a sha, a message -- is validated by
+  ``core/git/paths.py`` instead, which answers with a ``code`` the frontend
+  can translate rather than with pydantic's English.
+* **A branch name in a path is ``{name:path}``.** Half the branches anybody
+  has contain a slash (``feat/source-control``), and a plain ``{name}``
+  stops at one -- so ``PUT /branches/feat/x`` would be a 404 from the
+  router, and so would the ``%2F`` a client sends instead, because the ASGI
+  server has already turned it back into a slash by the time the router
+  sees it. The converter is the only spelling that matches both.
 """
 
 from __future__ import annotations
@@ -56,13 +82,21 @@ from __future__ import annotations
 from collections.abc import Awaitable
 from typing import Literal, TypeVar
 
-from fastapi import APIRouter, HTTPException, Query, Request
+# ``Path`` here is FastAPI's path-parameter declaration, not ``pathlib``'s
+# -- nothing in this module has a filesystem path to hold, and the routes
+# that take a stash index need a bound the signature can enforce.
+from fastapi import APIRouter, HTTPException, Path, Query, Request
 
 from ..core.git.errors import GitBusy, GitError, redact
 from ..core.git.log import DEFAULT_LOG_LIMIT, MAX_LOG_LIMIT
 from ..core.git.models import (
+    BranchCreateRequest,
+    BranchesResponse,
+    BranchRenameRequest,
+    CheckoutRequest,
     CommitRequest,
     DiffResponse,
+    FetchRequest,
     FileAtRef,
     GitFile,
     Identity,
@@ -70,6 +104,14 @@ from ..core.git.models import (
     LogResponse,
     MutationResult,
     PathsRequest,
+    PullRequest,
+    PushRequest,
+    RemoteCreateRequest,
+    RemoteInfo,
+    RemoteUrlRequest,
+    ResolveRequest,
+    StashCreateRequest,
+    StashInfo,
     StatusResponse,
 )
 from ..core.git.service import GitService
@@ -271,6 +313,34 @@ async def read_config(request: Request) -> Identity:
     return await _answer(_service(request).identity())
 
 
+@router.get("/branches")
+async def read_branches(request: Request) -> BranchesResponse:
+    """Every branch, local and remote-tracking, and what HEAD is on.
+
+    One read, both lists: the Branches section draws them together, and a
+    remote branch's only job in that panel is to be the thing a Switch turns
+    into a local one.
+    """
+    return await _answer(_service(request).branches())
+
+
+@router.get("/remotes")
+async def read_remotes(request: Request) -> list[RemoteInfo]:
+    """Every configured remote, with its fetch and push URLs."""
+    return await _answer(_service(request).remotes())
+
+
+@router.get("/stashes")
+async def read_stashes(request: Request) -> list[StashInfo]:
+    """The stash stack, newest first.
+
+    ``index`` is git's own ``stash@{N}`` and is what the three writes below
+    are addressed by -- not the row's position, which a row this server
+    could not read would shift.
+    """
+    return await _answer(_service(request).stashes())
+
+
 # --- writes (the session token, via auth_guard) -----------------------------
 
 
@@ -346,3 +416,227 @@ async def write_config(request: Request, payload: IdentityRequest) -> Identity:
             hint="an identity write with neither would change nothing"))
     await _answer(service.set_identity(payload.name, payload.email))
     return await _answer(service.identity())
+
+
+# --- the refs (the static paths first, then the named ones) -----------------
+
+
+@router.post("/branches")
+async def create_branch(request: Request,
+                        payload: BranchCreateRequest) -> MutationResult:
+    """Make a branch, and go to it unless ``checkout`` says otherwise.
+
+    ``detail.branch`` names it, so the tab can say which branch it is on
+    without reading the status back out of the result.
+    """
+    service = _service(request)
+    return await _answer(service.create_branch(
+        payload.name, checkout=payload.checkout,
+        start_point=payload.start_point))
+
+
+@router.post("/checkout")
+async def checkout(request: Request,
+                   payload: CheckoutRequest) -> MutationResult:
+    """Go to a local branch, or to a new one tracking a remote's.
+
+    Its own route rather than a ``PUT`` on something: a checkout is not a
+    change TO a branch, it is a change to the working tree, and
+    ``changed_paths`` on the result is the list an open editor reloads from.
+    """
+    service = _service(request)
+    return await _answer(service.checkout(payload.target, kind=payload.kind))
+
+
+@router.put("/branches/{name:path}")
+async def rename_branch(request: Request, name: str,
+                        payload: BranchRenameRequest) -> MutationResult:
+    """Give a branch another name."""
+    service = _service(request)
+    return await _answer(service.rename_branch(name, payload.new_name))
+
+
+@router.delete("/branches/{name:path}")
+async def delete_branch(request: Request, name: str,
+                        force: bool = False) -> MutationResult:
+    """Delete a branch; ``force=1`` deletes one that is not merged.
+
+    Two requests on purpose. The first is ``-d``, which git refuses with
+    ``branch_not_merged`` when the branch holds work no other branch has;
+    the tab then says so and asks again, and the second carries ``force``.
+    Deleting unmerged work is the only thing in this router that cannot be
+    undone from the tab, so the consent for it is a separate click.
+    """
+    service = _service(request)
+    return await _answer(service.delete_branch(name, force=force))
+
+
+@router.post("/remotes")
+async def add_remote(request: Request,
+                     payload: RemoteCreateRequest) -> MutationResult:
+    """Point a name at a repository somewhere else."""
+    service = _service(request)
+    return await _answer(service.add_remote(payload.name, payload.url))
+
+
+@router.put("/remotes/{name}")
+async def set_remote_url(request: Request, name: str,
+                         payload: RemoteUrlRequest) -> MutationResult:
+    """Point an existing remote somewhere else.
+
+    A plain ``{name}``, unlike the branch routes: a remote name is a closed
+    grammar with no slash in it (``paths.REMOTE_NAME_RE``), so there is
+    nothing for the ``path`` converter to rescue.
+    """
+    service = _service(request)
+    return await _answer(service.set_remote_url(name, payload.url))
+
+
+@router.delete("/remotes/{name}")
+async def remove_remote(request: Request, name: str) -> MutationResult:
+    """Forget a remote. Nothing is fetched, pushed or deleted anywhere else."""
+    service = _service(request)
+    return await _answer(service.remove_remote(name))
+
+
+# --- the stash and the merge (static paths first, then the indexed ones) ----
+#
+# ``index`` is bounded in the signature (``ge=0``) rather than checked in a
+# handler, for the reason ``skip`` and ``limit`` are: a negative index is a
+# client bug with nothing to say to the user, and answering it with a 422
+# keeps it apart from the 404 that means "the stash list has moved on".
+
+
+@router.post("/stashes")
+async def create_stash(request: Request,
+                       payload: StashCreateRequest) -> MutationResult:
+    """Set the working tree aside as a new stash.
+
+    An empty body is a valid request: the message is optional and untracked
+    files come along by default. ``detail.stash`` is the index the new
+    entry got, which is always ``0`` -- a stash is a stack and a push lands
+    on top of it.
+
+    A tree with nothing to set aside is a 400 rather than a success that
+    did nothing, so a click on a panel that has gone stale says so.
+    """
+    service = _service(request)
+    return await _answer(service.stash_push(
+        payload.message, include_untracked=payload.include_untracked))
+
+
+@router.post("/stashes/{index}/pop")
+async def pop_stash(request: Request,
+                    index: int = Path(ge=0)) -> MutationResult:
+    """Put a stash back and remove it from the stack.
+
+    A pop that does not apply cleanly is a 409 ``conflict`` and the stash is
+    KEPT -- git's behaviour, and the right one: the conflicted files are the
+    only copy of that work until the user resolves them.
+    """
+    return await _answer(_service(request).stash_pop(index))
+
+
+@router.post("/stashes/{index}/apply")
+async def apply_stash(request: Request,
+                      index: int = Path(ge=0)) -> MutationResult:
+    """Put a stash back and keep it in the stack."""
+    return await _answer(_service(request).stash_apply(index))
+
+
+@router.delete("/stashes/{index}")
+async def drop_stash(request: Request,
+                     index: int = Path(ge=0)) -> MutationResult:
+    """Throw a stash away. Nothing in the working tree moves.
+
+    The index is checked against a fresh list before anything runs, so a
+    click on a stale panel is a 404 and never a different stash.
+    """
+    return await _answer(_service(request).stash_drop(index))
+
+
+@router.post("/merge/abort")
+async def abort_merge(request: Request) -> MutationResult:
+    """Undo a half-finished merge and put the working tree back as it was.
+
+    No body: there is nothing to choose. With no merge in progress it is a
+    404 whose hint says so, decided from the same flag the button is drawn
+    from.
+    """
+    return await _answer(_service(request).abort_merge())
+
+
+@router.post("/resolve")
+async def resolve(request: Request,
+                  payload: ResolveRequest) -> MutationResult:
+    """Settle one conflicted file: keep ours, take theirs, or mark it done.
+
+    The path has to be one the status calls conflicted (400
+    ``path_not_in_status`` otherwise), which is what stops "Keep mine" on a
+    stale row from throwing away an edit git would have restored silently.
+    """
+    service = _service(request)
+    return await _answer(service.resolve(payload.path, payload.side))
+
+
+# --- the network (the OTHER lock) -------------------------------------------
+#
+# These four are writes like the rest -- they change what the repository
+# knows and they answer with a fresh status -- but they queue separately.
+# A fetch can run for a minute and moves no file, so it takes the service's
+# NETWORK lock and leaves the mutation lock free: a commit made while
+# somebody's push is transferring still works, and a second network request
+# is the one that gets 409 ``busy``. See ``GitService.network``.
+
+
+@router.post("/fetch")
+async def fetch(request: Request, payload: FetchRequest) -> MutationResult:
+    """Bring the remote's refs up to date, and prune what is gone.
+
+    ``remote`` is optional and the tab never sends one: which remote a
+    fetch talks to is answered by the branch's upstream, or by there being
+    only one. An empty body (``{}``) is the ordinary request.
+    """
+    return await _answer(_service(request).fetch(payload.remote))
+
+
+@router.post("/pull")
+async def pull(request: Request, payload: PullRequest) -> MutationResult:
+    """Fetch, then merge the upstream into the branch HEAD is on.
+
+    Two steps, never ``git pull``, and the failure says which one it got
+    to. ``ff-only`` (the default) refuses a diverged branch with
+    ``diverged`` rather than writing a merge nobody asked for; the tab
+    answers that with a button that sends ``strategy: "merge"``, and a
+    merge that conflicts is a 409 ``conflict`` with the merge left IN
+    PROGRESS -- the markers are on disk and the panel draws its merge
+    group from ``status.merge_in_progress``.
+    """
+    return await _answer(_service(request).pull(payload.strategy))
+
+
+@router.post("/push")
+async def push(request: Request, payload: PushRequest) -> MutationResult:
+    """Send this branch. ``set_upstream: true`` is Publish, not Push.
+
+    One route for the two buttons because they are one command and a flag.
+    A plain push goes where the upstream says (no upstream is a 409
+    ``no_upstream``, which is how the tab knows to offer Publish); a
+    publish is ``push -u`` to a remote that was named or resolved, and
+    ``detail.published`` says which of the two happened.
+    """
+    service = _service(request)
+    return await _answer(service.push(payload.remote,
+                                      set_upstream=payload.set_upstream))
+
+
+@router.post("/sync")
+async def sync(request: Request) -> MutationResult:
+    """Pull and then push, or publish a branch that has neither.
+
+    No body: there is nothing to choose. Which steps ran is
+    ``detail.steps``, and the operation stops at the first failure -- so a
+    sync whose push was refused has already merged, and the panel has to
+    read the status again either way.
+    """
+    return await _answer(_service(request).sync())

@@ -1,13 +1,16 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import * as gitApi from '../api/git';
 import type {
+  BranchesResponse,
   FileKind,
   GitFile,
   GitStatus,
   Identity,
   MutationResult,
+  RemoteInfo,
   RepoInfo,
   RepoState,
+  StashInfo,
   StatusResponse,
 } from '../api/git';
 
@@ -27,12 +30,32 @@ vi.mock('../api/git', async (importOriginal) => {
     ...actual,
     getGitStatus: vi.fn(),
     getGitConfig: vi.fn(),
+    getGitBranches: vi.fn(),
+    getGitRemotes: vi.fn(),
+    getGitStashes: vi.fn(),
     gitInit: vi.fn(),
     gitStage: vi.fn(),
     gitUnstage: vi.fn(),
     gitDiscard: vi.fn(),
     gitCommit: vi.fn(),
     setGitConfig: vi.fn(),
+    gitFetch: vi.fn(),
+    gitPull: vi.fn(),
+    gitPush: vi.fn(),
+    gitSync: vi.fn(),
+    gitCreateBranch: vi.fn(),
+    gitCheckout: vi.fn(),
+    gitRenameBranch: vi.fn(),
+    gitDeleteBranch: vi.fn(),
+    gitAddRemote: vi.fn(),
+    gitSetRemoteUrl: vi.fn(),
+    gitRemoveRemote: vi.fn(),
+    gitStashPush: vi.fn(),
+    gitStashPop: vi.fn(),
+    gitStashApply: vi.fn(),
+    gitStashDrop: vi.fn(),
+    gitAbortMerge: vi.fn(),
+    gitResolve: vi.fn(),
   };
 });
 
@@ -56,7 +79,6 @@ import {
   GIT_REVISIT_DEBOUNCE_MS,
   GIT_WRITE_DEBOUNCE_MS,
   _resetGitStoreForTesting,
-  gitOpKey,
   useGitStore,
 } from './gitStore';
 import { GraphMissingError, reloadTabFromDisk } from '../utils/openSavedGraph';
@@ -83,9 +105,10 @@ function say(key: string, vars?: Record<string, string | number>): string {
   return vars === undefined ? key : `${key}:${JSON.stringify(vars)}`;
 }
 
-// Recorded before anything replaces it: `_resetGitStoreForTesting` restores
+// Recorded before anything replaces them: `_resetGitStoreForTesting` restores
 // this store's data, and nothing restores another store's actions.
 const realT = useI18n.getState().t;
+const realApplyWorktreeChange = useGitStore.getState().applyWorktreeChange;
 
 /* ── wire fixtures ───────────────────────────────────────────────────── */
 
@@ -143,6 +166,35 @@ function identity(over: Partial<Identity> = {}): Identity {
     email_scope: 'global',
     ...over,
   };
+}
+
+function branches(name = 'main'): BranchesResponse {
+  return {
+    current: name,
+    detached: false,
+    local: [
+      {
+        name,
+        sha: 'abc1234',
+        current: true,
+        upstream: `origin/${name}`,
+        ahead: 0,
+        behind: 0,
+        gone: false,
+        subject: 'Current work',
+        committed_at: 123,
+      },
+    ],
+    remote: [],
+  };
+}
+
+function remotes(name = 'origin'): RemoteInfo[] {
+  return [{ name, fetch_url: `https://example/${name}`, push_url: `https://example/${name}` }];
+}
+
+function stashes(index = 0): StashInfo[] {
+  return [{ index, message: `stash ${index}`, branch: 'main', created_at: 123 }];
 }
 
 /** A refusal built by the real `gitApiError`, from a body off the wire. */
@@ -219,6 +271,7 @@ beforeEach(() => {
   useTabStore.setState({ tabs: [], activeTabId: '' });
   localStorage.clear();
   _resetGitStoreForTesting();
+  useGitStore.setState({ applyWorktreeChange: realApplyWorktreeChange });
   // A fresh `vi.fn()` through `setState`, never `vi.spyOn` on an action read
   // off `getState()`: the spy would keep a stale object and carry its call
   // history into the next case.
@@ -230,12 +283,32 @@ beforeEach(() => {
 
   api.getGitStatus.mockResolvedValue(statusResponse('ready'));
   api.getGitConfig.mockResolvedValue(identity());
+  api.getGitBranches.mockResolvedValue(branches());
+  api.getGitRemotes.mockResolvedValue(remotes());
+  api.getGitStashes.mockResolvedValue(stashes());
   api.gitInit.mockResolvedValue(mutation());
   api.gitStage.mockResolvedValue(mutation());
   api.gitUnstage.mockResolvedValue(mutation());
   api.gitDiscard.mockResolvedValue(mutation());
   api.gitCommit.mockResolvedValue(mutation());
   api.setGitConfig.mockResolvedValue(identity());
+  api.gitFetch.mockResolvedValue(mutation());
+  api.gitPull.mockResolvedValue(mutation());
+  api.gitPush.mockResolvedValue(mutation());
+  api.gitSync.mockResolvedValue(mutation());
+  api.gitCreateBranch.mockResolvedValue(mutation());
+  api.gitCheckout.mockResolvedValue(mutation());
+  api.gitRenameBranch.mockResolvedValue(mutation());
+  api.gitDeleteBranch.mockResolvedValue(mutation());
+  api.gitAddRemote.mockResolvedValue(mutation());
+  api.gitSetRemoteUrl.mockResolvedValue(mutation());
+  api.gitRemoveRemote.mockResolvedValue(mutation());
+  api.gitStashPush.mockResolvedValue(mutation());
+  api.gitStashPop.mockResolvedValue(mutation());
+  api.gitStashApply.mockResolvedValue(mutation());
+  api.gitStashDrop.mockResolvedValue(mutation());
+  api.gitAbortMerge.mockResolvedValue(mutation());
+  api.gitResolve.mockResolvedValue(mutation());
   confirmMock.mockResolvedValue(true);
   reloadMock.mockResolvedValue(false);
 });
@@ -609,6 +682,24 @@ describe('writes', () => {
     expect(git().liveMessage).toBe(say('git.toast.initialized'));
   });
 
+  // A commit is the one local write that certainly moves the current branch,
+  // and an open Branches section shows that branch's sha, subject and ahead
+  // count. Without this the header would say "1 to push" (which comes from the
+  // status) beside a row that still said 0 until the fifteen-second poll.
+  it('refreshes the branch list after a commit and after an init', async () => {
+    git().setCommitMessage('a message');
+    api.getGitBranches.mockResolvedValue(branches('after-commit'));
+
+    expect(await git().commit()).toBe(true);
+    expect(git().branches?.current).toBe('after-commit');
+
+    api.getGitBranches.mockClear();
+    api.getGitBranches.mockResolvedValue(branches('after-init'));
+    expect(await git().init()).toBe(true);
+    expect(api.getGitBranches).toHaveBeenCalledTimes(1);
+    expect(git().branches?.current).toBe('after-init');
+  });
+
   it('says how many files a whole-tree write skipped', async () => {
     api.gitStage.mockResolvedValue(
       mutation({ detail: { skipped: ['notes/a.txt', 'notes/b.txt'] } }),
@@ -676,6 +767,676 @@ describe('writes', () => {
   });
 });
 
+/* ── refs, network lane and G3 writes ─────────────────────────────────── */
+
+describe('reference sections', () => {
+  it('starts collapsed and loads only a section when it opens', async () => {
+    expect(git().sections).toEqual({ branches: false, remotes: false, stashes: false });
+    expect(git().branches).toBeNull();
+    expect(git().remotes).toBeNull();
+    expect(git().stashes).toBeNull();
+
+    git().setSectionOpen('branches', true);
+    await settle();
+    expect(api.getGitBranches).toHaveBeenCalledTimes(1);
+    expect(api.getGitRemotes).not.toHaveBeenCalled();
+    expect(api.getGitStashes).not.toHaveBeenCalled();
+    expect(git().branches?.current).toBe('main');
+    expect(localStorage.getItem('codefyui-git-sections')).toBe(
+      JSON.stringify({ branches: true, remotes: false, stashes: false }),
+    );
+
+    git().setSectionOpen('remotes', true);
+    git().setSectionOpen('stashes', true);
+    await settle();
+    expect(api.getGitRemotes).toHaveBeenCalledTimes(1);
+    expect(api.getGitStashes).toHaveBeenCalledTimes(1);
+    expect(git().remotes?.[0].name).toBe('origin');
+    expect(git().stashes?.[0].index).toBe(0);
+
+    api.getGitRemotes.mockClear();
+    git().setSectionOpen('remotes', false);
+    await settle();
+    expect(api.getGitRemotes).not.toHaveBeenCalled();
+  });
+
+  it('restores all three open states and rejects malformed stored values', async () => {
+    git().setSectionOpen('branches', true);
+    git().setSectionOpen('stashes', true);
+    await settle();
+    _resetGitStoreForTesting();
+    expect(git().sections).toEqual({ branches: true, remotes: false, stashes: true });
+
+    localStorage.setItem(
+      'codefyui-git-sections',
+      JSON.stringify({ branches: 'yes', remotes: true, stashes: 1 }),
+    );
+    _resetGitStoreForTesting();
+    expect(git().sections).toEqual({ branches: false, remotes: true, stashes: false });
+
+    localStorage.setItem('codefyui-git-sections', '{not json');
+    _resetGitStoreForTesting();
+    expect(git().sections).toEqual({ branches: false, remotes: false, stashes: false });
+  });
+
+  it('refreshes only expanded refs on the initial read and each poll', async () => {
+    git().setSectionOpen('branches', true);
+    await settle();
+    api.getGitBranches.mockClear();
+    api.getGitRemotes.mockClear();
+    api.getGitStashes.mockClear();
+
+    git().attach();
+    await settle();
+    expect(api.getGitBranches).toHaveBeenCalledTimes(1);
+    expect(api.getGitRemotes).not.toHaveBeenCalled();
+    expect(api.getGitStashes).not.toHaveBeenCalled();
+
+    api.getGitBranches.mockClear();
+    await vi.advanceTimersByTimeAsync(GIT_POLL_MS);
+    expect(api.getGitBranches).toHaveBeenCalledTimes(1);
+    expect(api.getGitRemotes).not.toHaveBeenCalled();
+    expect(api.getGitStashes).not.toHaveBeenCalled();
+  });
+
+  it('asks for no list at all against a project that is not a repository', async () => {
+    // The three routes can only be refused there, and `SourceControlTab`
+    // draws the sections inside `repoState === 'ready'` -- so the `refsError`
+    // they wrote was never on screen either. A profile whose sections were
+    // left open sent three doomed reads on mount and three more every fifteen
+    // seconds, for as long as the tab was open.
+    git().setSectionOpen('branches', true);
+    git().setSectionOpen('stashes', true);
+    await settle();
+    api.getGitStatus.mockResolvedValue(statusResponse('not_repo'));
+    api.getGitBranches.mockClear();
+    api.getGitStashes.mockClear();
+
+    git().attach();
+    await settle();
+    expect(git().repoState).toBe('not_repo');
+    // The eager first read still went out: `attach` fires the status read and
+    // this in one tick, so `repoState` is still `unknown` at that moment.
+    expect(api.getGitBranches).toHaveBeenCalledTimes(1);
+
+    api.getGitBranches.mockClear();
+    api.getGitStashes.mockClear();
+    await vi.advanceTimersByTimeAsync(GIT_POLL_MS);
+    expect(api.getGitBranches).not.toHaveBeenCalled();
+    expect(api.getGitStashes).not.toHaveBeenCalled();
+  });
+
+  it('drops an older ref read after a newer one has answered', async () => {
+    const slow = deferred<BranchesResponse>();
+    api.getGitBranches.mockReturnValueOnce(slow.promise);
+    const stale = git().refreshRefs('branches');
+
+    api.getGitBranches.mockResolvedValueOnce(branches('newer'));
+    await git().refreshRefs('branches');
+    expect(git().branches?.current).toBe('newer');
+
+    slow.resolve(branches('older'));
+    await stale;
+    expect(git().branches?.current).toBe('newer');
+  });
+
+  it('keeps a refused list read out of the error line and inside its own section', async () => {
+    // The poll refreshes every open section, so a transient failure here used
+    // to overwrite the sentence describing the user's own last action. It goes
+    // to the section that could not be read instead.
+    useGitStore.setState({
+      lastError: { code: 'dirty_tree', message: 'mine', hint: null, stderr: null, op: 'pull' },
+    });
+    api.getGitBranches.mockRejectedValueOnce(await coded(503, 'git_service_unavailable'));
+    await git().refreshRefs('branches');
+
+    expect(git().lastError?.code).toBe('dirty_tree');
+    expect(git().refsError.branches).toBe('git said git_service_unavailable');
+    expect(git().refsError.remotes).toBeNull();
+    expect(git().refsError.stashes).toBeNull();
+  });
+
+  it('clears one section\'s failure on the next read that answers', async () => {
+    api.getGitRemotes.mockRejectedValueOnce(await coded(503, 'git_service_unavailable'));
+    await git().refreshRefs('remotes');
+    expect(git().refsError.remotes).not.toBeNull();
+
+    api.getGitRemotes.mockResolvedValueOnce(remotes());
+    await git().refreshRefs('remotes');
+    expect(git().refsError.remotes).toBeNull();
+    expect(git().remotes?.[0].name).toBe('origin');
+  });
+
+  it('lets an older failed read say nothing once a newer one has answered', async () => {
+    const slow = deferred<StashInfo[]>();
+    api.getGitStashes.mockReturnValueOnce(slow.promise);
+    const stale = git().refreshRefs('stashes');
+
+    api.getGitStashes.mockResolvedValueOnce(stashes(2));
+    await git().refreshRefs('stashes');
+
+    slow.reject(await coded(503, 'git_service_unavailable'));
+    await stale;
+    expect(git().refsError.stashes).toBeNull();
+    expect(git().stashes?.[0].index).toBe(2);
+  });
+});
+
+describe('network operations', () => {
+  it('fetch applies status, refreshes branches, and announces success', async () => {
+    api.gitFetch.mockResolvedValue(
+      mutation({ status: status({ head: 'after-fetch' }), detail: { remote: 'origin' } }),
+    );
+    api.getGitBranches.mockResolvedValue(branches('after-fetch'));
+
+    expect(await git().fetch()).toBe(true);
+
+    expect(api.gitFetch).toHaveBeenCalledTimes(1);
+    expect(git().status?.head).toBe('after-fetch');
+    expect(git().branches?.current).toBe('after-fetch');
+    expect(git().liveMessage).toBe(say('git.toast.fetched'));
+    expect(toasts().map((item) => [item.message, item.type])).toEqual([
+      [say('git.toast.fetched'), 'success'],
+    ]);
+  });
+
+  it.each([
+    { headMoved: true, key: 'git.toast.pulled' },
+    { headMoved: false, key: 'git.toast.upToDate' },
+  ])('pull uses $key when head_moved is $headMoved', async ({ headMoved, key }) => {
+    api.gitPull.mockResolvedValue(
+      mutation({
+        status: status({ head: headMoved ? 'after-pull' : 'abc1234def' }),
+        detail: { head_moved: headMoved, remote: 'origin' },
+      }),
+    );
+    api.getGitBranches.mockResolvedValue(branches('after-pull'));
+
+    expect(await git().pull('ff-only')).toBe(true);
+
+    expect(api.gitPull).toHaveBeenCalledWith({ strategy: 'ff-only' });
+    expect(git().branches?.current).toBe('after-pull');
+    expect(git().liveMessage).toBe(say(key));
+    expect(toasts()[0].message).toBe(say(key));
+    expect(toasts()[0].type).toBe('success');
+  });
+
+  it('push and sync apply their final status, refresh refs, and use their own toasts', async () => {
+    api.gitPush.mockResolvedValue(
+      mutation({ status: status({ head: 'after-push' }), detail: { published: false } }),
+    );
+    expect(await git().push()).toBe(true);
+    expect(api.gitPush).toHaveBeenCalledWith({ setUpstream: false });
+    expect(git().status?.head).toBe('after-push');
+    expect(git().liveMessage).toBe(say('git.toast.pushed'));
+    expect(api.getGitBranches).toHaveBeenCalledTimes(1);
+
+    useToastStore.setState({ toasts: [] });
+    api.getGitBranches.mockClear();
+    api.gitSync.mockResolvedValue(
+      mutation({
+        status: status({ head: 'after-sync' }),
+        detail: {
+          steps: ['fetch', 'merge', 'push'],
+          head_moved: true,
+          published: false,
+          remote: 'origin',
+          branch: 'main',
+        },
+      }),
+    );
+    expect(await git().sync()).toBe(true);
+    expect(api.gitSync).toHaveBeenCalledTimes(1);
+    expect(git().status?.head).toBe('after-sync');
+    expect(git().liveMessage).toBe(say('git.toast.synced'));
+    expect(toasts()[0].message).toBe(say('git.toast.synced'));
+    expect(api.getGitBranches).toHaveBeenCalledTimes(1);
+  });
+
+  it('says a sync that published a branch published it, not that it synced', async () => {
+    api.gitSync.mockResolvedValue(
+      mutation({
+        status: status({ branch: 'topic', upstream: 'origin/topic' }),
+        detail: {
+          steps: ['publish'],
+          head_moved: false,
+          published: true,
+          remote: 'origin',
+          branch: 'topic',
+        },
+      }),
+    );
+
+    expect(await git().sync()).toBe(true);
+
+    expect(git().liveMessage).toBe(
+      say('git.toast.published', { branch: 'topic', remote: 'origin' }),
+    );
+    expect(toasts()[0].message).toBe(
+      say('git.toast.published', { branch: 'topic', remote: 'origin' }),
+    );
+  });
+
+  it('publish chooses the only loaded remote and trusts detail.published for its toast', async () => {
+    useGitStore.setState({ remotes: remotes('upstream') });
+    api.gitPush.mockResolvedValue(
+      mutation({
+        status: status({ branch: 'topic', upstream: 'upstream/topic' }),
+        detail: { branch: 'topic', remote: 'upstream', published: true },
+      }),
+    );
+
+    expect(await git().publish()).toBe(true);
+
+    expect(api.gitPush).toHaveBeenCalledWith({ remote: 'upstream', setUpstream: true });
+    expect(git().liveMessage).toBe(
+      say('git.toast.published', { branch: 'topic', remote: 'upstream' }),
+    );
+    expect(toasts()[0].message).toBe(
+      say('git.toast.published', { branch: 'topic', remote: 'upstream' }),
+    );
+    expect(api.getGitBranches).toHaveBeenCalledTimes(1);
+
+    useToastStore.setState({ toasts: [] });
+    api.gitPush.mockResolvedValue(
+      mutation({ detail: { branch: 'topic', remote: 'upstream', published: false } }),
+    );
+    await git().publish('upstream');
+    expect(toasts()[0].message).toBe(say('git.toast.pushed'));
+  });
+
+  // The publish that sends NO remote is the one request in the tab that can
+  // come back 400 `invalid_value` for "several remotes and no upstream", and
+  // both halves of it are reachable from the header: the list is `null` until
+  // something reads it, and a repository with two remotes leaves nothing to
+  // pick from without asking. `scm.ts` reads that pair as "not published yet"
+  // and offers the button whose picker answers the question.
+  it.each([
+    { name: 'the remote list has never been read', loaded: null },
+    {
+      name: 'several remotes leave nothing to resolve',
+      loaded: [...remotes('origin'), ...remotes('upstream')],
+    },
+  ])('publish lets the server resolve the remote when $name', async ({ loaded }) => {
+    useGitStore.setState({ remotes: loaded });
+    api.gitPush.mockResolvedValue(
+      mutation({ detail: { branch: 'topic', remote: 'origin', published: true } }),
+    );
+
+    expect(await git().publish()).toBe(true);
+
+    expect(api.gitPush).toHaveBeenCalledWith({ setUpstream: true });
+  });
+
+  it('records publish as the op behind an ambiguous remote refusal', async () => {
+    useGitStore.setState({ remotes: [...remotes('origin'), ...remotes('upstream')] });
+    api.gitPush.mockRejectedValueOnce(await coded(400, 'invalid_value'));
+
+    expect(await git().publish()).toBe(false);
+
+    expect(api.gitPush).toHaveBeenCalledWith({ setUpstream: true });
+    expect(git().lastError?.code).toBe('invalid_value');
+    expect(git().lastError?.op).toBe('publish');
+  });
+
+  it('allows one local and one network operation, but refuses a second network operation', async () => {
+    const slowLocal = deferred<MutationResult>();
+    api.gitStage.mockReturnValueOnce(slowLocal.promise);
+    const local = git().stage(['a.py']);
+    expect(git().busyOp).toBe('stage');
+
+    const slowNetwork = deferred<MutationResult>();
+    api.gitFetch.mockReturnValueOnce(slowNetwork.promise);
+    const network = git().fetch();
+    expect(git().busyOp).toBe('stage');
+    expect(git().netOp).toBe('fetch');
+    expect(api.gitFetch).toHaveBeenCalledTimes(1);
+
+    expect(await git().pull('ff-only')).toBe(false);
+    expect(api.gitPull).not.toHaveBeenCalled();
+    expect(toasts()[0].message).toBe(say('git.error.busy'));
+
+    slowLocal.resolve(mutation());
+    slowNetwork.resolve(mutation());
+    await Promise.all([local, network]);
+    expect(git().busyOp).toBeNull();
+    expect(git().netOp).toBeNull();
+  });
+
+  it('uses the network timeout and keeps the wire code beside the op that got it', async () => {
+    api.gitFetch.mockRejectedValueOnce(await coded(504, 'timeout'));
+    await git().fetch();
+    expect(git().lastError?.message).toBe(say('git.error.timeout', { seconds: 130 }));
+    expect(git().lastError?.op).toBe('fetch');
+
+    // The ambiguous-remote refusal is presented as "not published yet", but
+    // that is `scm.ts` reading the pair: the store keeps the server's own code
+    // so a bug report quotes what was actually sent.
+    api.gitPull.mockRejectedValueOnce(await coded(400, 'invalid_value'));
+    await git().pull('ff-only');
+    expect(git().lastError?.code).toBe('invalid_value');
+    expect(git().lastError?.op).toBe('pull');
+  });
+
+  it('records publish as the op behind its own input refusal', async () => {
+    api.gitPush.mockRejectedValueOnce(await coded(400, 'invalid_value'));
+
+    await git().publish('origin');
+
+    expect(git().lastError?.code).toBe('invalid_value');
+    expect(git().lastError?.op).toBe('publish');
+  });
+
+  it.each([
+    {
+      name: 'pull conflict',
+      arrange: async () => api.gitPull.mockRejectedValue(await coded(409, 'conflict')),
+      run: () => git().pull('merge'),
+    },
+    {
+      // The fetch half still ran, so the ahead/behind counts on screen have
+      // moved even though the merge refused to touch the tree.
+      name: 'pull refused after its fetch',
+      arrange: async () => api.gitPull.mockRejectedValue(await coded(409, 'dirty_tree')),
+      run: () => git().pull('ff-only'),
+    },
+    {
+      name: 'failed sync',
+      arrange: async () => api.gitSync.mockRejectedValue(await coded(409, 'remote_rejected')),
+      run: () => git().sync(),
+    },
+  ])(
+    'refreshes status after $name because an earlier step may have changed the tree',
+    async ({ arrange, run }) => {
+      await arrange();
+      api.getGitStatus.mockResolvedValue(
+        statusResponse('ready', { head: 'read-after-failure', merge_in_progress: true }),
+      );
+
+      expect(await run()).toBe(false);
+
+      expect(api.getGitStatus).toHaveBeenCalledTimes(1);
+      expect(git().status?.head).toBe('read-after-failure');
+    },
+  );
+
+  it('reads nothing back when the lane was busy, because nothing ran', async () => {
+    api.gitSync.mockRejectedValue(await coded(409, 'busy'));
+
+    expect(await git().sync()).toBe(false);
+
+    expect(api.getGitStatus).not.toHaveBeenCalled();
+    expect(toasts()[0].message).toBe(say('git.error.busy'));
+  });
+});
+
+describe('branch and remote operations', () => {
+  it('creates, switches, renames, and deletes branches with fresh branch lists', async () => {
+    const applyWorktreeChange = vi.fn();
+    useGitStore.setState({ applyWorktreeChange });
+
+    api.gitCreateBranch.mockResolvedValue(
+      mutation({
+        status: status({ branch: 'feat/new', head: 'created' }),
+        changed_paths: ['graphs/a.graph.json'],
+      }),
+    );
+    api.getGitBranches.mockResolvedValueOnce(branches('feat/new'));
+    expect(await git().createBranch('feat/new', true, 'main')).toBe(true);
+    expect(api.gitCreateBranch).toHaveBeenCalledWith('feat/new', true, 'main');
+    expect(git().status?.head).toBe('created');
+    expect(git().branches?.current).toBe('feat/new');
+    // The same sentence a plain switch gets, because that is what happened:
+    // the branch was created AND checked out. The group counts belong to the
+    // writes that move rows between Staged Changes and Changes, and reading
+    // "Staged Changes 0, Changes 0" after a branch write says nothing about
+    // the branch and can be heard as "your staged work is gone".
+    expect(git().liveMessage).toBe(say('git.toast.switched', { name: 'feat/new' }));
+    // Said once, in the live region: the branch line and the Branches list
+    // both redraw with the new name, so a toast would be the third copy.
+    expect(toasts()).toHaveLength(0);
+    expect(applyWorktreeChange).toHaveBeenLastCalledWith(['graphs/a.graph.json']);
+
+    api.gitCheckout.mockResolvedValue(
+      mutation({
+        status: status({ branch: 'main', head: 'switched' }),
+        changed_paths: ['graphs/b.graph.json'],
+        detail: { branch: 'main' },
+      }),
+    );
+    api.getGitBranches.mockResolvedValueOnce(branches('main'));
+    expect(await git().checkout('main', 'local')).toBe(true);
+    expect(api.gitCheckout).toHaveBeenCalledWith('main', 'local');
+    expect(git().status?.head).toBe('switched');
+    expect(git().liveMessage).toBe(say('git.toast.switched', { name: 'main' }));
+    expect(toasts()[0].message).toBe(say('git.toast.switched', { name: 'main' }));
+    expect(applyWorktreeChange).toHaveBeenLastCalledWith(['graphs/b.graph.json']);
+
+    useToastStore.setState({ toasts: [] });
+    api.gitRenameBranch.mockResolvedValue(
+      mutation({ status: status({ branch: 'renamed', head: 'renamed' }) }),
+    );
+    api.getGitBranches.mockResolvedValueOnce(branches('renamed'));
+    expect(await git().renameBranch('main', 'renamed')).toBe(true);
+    expect(api.gitRenameBranch).toHaveBeenCalledWith('main', 'renamed');
+    expect(git().status?.head).toBe('renamed');
+    expect(git().branches?.current).toBe('renamed');
+    expect(toasts()).toHaveLength(0);
+    // Nothing said, and the switch's sentence taken down with it. A rename
+    // changes the LIST, not the working tree, and "Staged Changes 0, Changes
+    // 0" is a sentence about file counts that did not move -- which after a
+    // branch write can be read as "your staged work is gone".
+    expect(git().liveMessage).toBe('');
+
+    api.gitDeleteBranch.mockResolvedValue(
+      mutation({ status: status({ head: 'deleted' }) }),
+    );
+    api.getGitBranches.mockResolvedValueOnce(branches('main'));
+    expect(await git().deleteBranch('old', true)).toBe(true);
+    expect(api.gitDeleteBranch).toHaveBeenCalledWith('old', true);
+    expect(git().status?.head).toBe('deleted');
+    expect(git().branches?.current).toBe('main');
+    expect(git().liveMessage).toBe('');
+    expect(api.getGitBranches).toHaveBeenCalledTimes(4);
+  });
+
+  it('does not offer a reload when a created branch was not checked out', async () => {
+    const applyWorktreeChange = vi.fn();
+    useGitStore.setState({ applyWorktreeChange });
+    api.gitCreateBranch.mockResolvedValue(
+      mutation({ changed_paths: ['graphs/a.graph.json'] }),
+    );
+
+    await git().createBranch('feat/no-switch', false, null);
+
+    expect(applyWorktreeChange).not.toHaveBeenCalled();
+    // ...and says nothing either: a branch made without a checkout is a new
+    // name for the commit HEAD is already on, so nobody switched anywhere.
+    expect(git().liveMessage).toBe('');
+  });
+
+  it('names the branch a create-and-switch landed on, whatever the server said', async () => {
+    // `detail.branch` is the server's own answer; `opts.name` is the fallback
+    // for a build that answers without it, and the status's branch is the
+    // third. All three are the same name here in the ordinary case, and the
+    // sentence must have a name in it rather than a hole in any of them.
+    api.gitCreateBranch.mockResolvedValue(
+      mutation({ status: status({ branch: null }), detail: {} }),
+    );
+
+    await git().createBranch('feat/named');
+
+    expect(git().liveMessage).toBe(say('git.toast.switched', { name: 'feat/named' }));
+  });
+
+  it('adds, edits, and removes remotes with a fresh remote list and no toast', async () => {
+    api.getGitRemotes
+      .mockResolvedValueOnce(remotes('origin'))
+      .mockResolvedValueOnce(remotes('upstream'))
+      .mockResolvedValueOnce([]);
+
+    api.gitAddRemote.mockResolvedValue(mutation({ status: status({ head: 'added-remote' }) }));
+    expect(await git().addRemote('origin', 'https://example/repo')).toBe(true);
+    expect(api.gitAddRemote).toHaveBeenCalledWith('origin', 'https://example/repo');
+    expect(git().remotes?.[0].name).toBe('origin');
+    expect(git().status?.head).toBe('added-remote');
+
+    api.gitSetRemoteUrl.mockResolvedValue(
+      mutation({ status: status({ head: 'changed-remote' }) }),
+    );
+    expect(await git().setRemoteUrl('origin', 'ssh://example/repo')).toBe(true);
+    expect(api.gitSetRemoteUrl).toHaveBeenCalledWith('origin', 'ssh://example/repo');
+    expect(git().remotes?.[0].name).toBe('upstream');
+    expect(git().status?.head).toBe('changed-remote');
+
+    api.gitRemoveRemote.mockResolvedValue(
+      mutation({ status: status({ head: 'removed-remote' }) }),
+    );
+    expect(await git().removeRemote('upstream')).toBe(true);
+    expect(api.gitRemoveRemote).toHaveBeenCalledWith('upstream');
+    expect(git().remotes).toEqual([]);
+    expect(git().status?.head).toBe('removed-remote');
+    expect(api.getGitRemotes).toHaveBeenCalledTimes(3);
+    // A remote write moves no file either -- see the branch case above.
+    expect(git().liveMessage).toBe('');
+    expect(toasts()).toHaveLength(0);
+  });
+});
+
+describe('stash and merge operations', () => {
+  it('stashes, pops, applies, and drops by git index while refreshing the stash list', async () => {
+    const applyWorktreeChange = vi.fn();
+    useGitStore.setState({ applyWorktreeChange });
+    api.getGitStashes
+      .mockResolvedValueOnce(stashes(0))
+      .mockResolvedValueOnce(stashes(3))
+      .mockResolvedValueOnce(stashes(4))
+      .mockResolvedValueOnce([]);
+
+    api.gitStashPush.mockResolvedValue(
+      mutation({
+        status: status({ head: 'stashed' }),
+        changed_paths: ['graphs/a.graph.json'],
+      }),
+    );
+    // A box the user left blank is `null`, never `""` -- the second is a 400.
+    expect(await git().stashPush('   ', true)).toBe(true);
+    expect(api.gitStashPush).toHaveBeenCalledWith(null, true);
+    expect(git().status?.head).toBe('stashed');
+    expect(git().stashes?.[0].index).toBe(0);
+    expect(git().liveMessage).toBe(say('git.toast.stashed'));
+    expect(toasts()[0].message).toBe(say('git.toast.stashed'));
+    expect(applyWorktreeChange).toHaveBeenLastCalledWith(['graphs/a.graph.json']);
+
+    useToastStore.setState({ toasts: [] });
+    api.gitStashPop.mockResolvedValue(
+      mutation({ status: status({ head: 'popped' }), changed_paths: ['graphs/b.graph.json'] }),
+    );
+    expect(await git().stashPop(3)).toBe(true);
+    expect(api.gitStashPop).toHaveBeenCalledWith(3);
+    expect(git().stashes?.[0].index).toBe(3);
+    expect(git().status?.head).toBe('popped');
+    expect(toasts()).toHaveLength(0);
+
+    api.gitStashApply.mockResolvedValue(
+      mutation({ status: status({ head: 'applied' }), changed_paths: ['graphs/c.graph.json'] }),
+    );
+    expect(await git().stashApply(4)).toBe(true);
+    expect(api.gitStashApply).toHaveBeenCalledWith(4);
+    expect(git().stashes?.[0].index).toBe(4);
+    expect(git().status?.head).toBe('applied');
+
+    api.gitStashDrop.mockResolvedValue(mutation({ status: status({ head: 'dropped' }) }));
+    expect(await git().stashDrop(4)).toBe(true);
+    expect(api.gitStashDrop).toHaveBeenCalledWith(4);
+    expect(git().stashes).toEqual([]);
+    expect(git().status?.head).toBe('dropped');
+    // A drop takes a row off the stack and leaves the tree alone, so it
+    // says nothing -- unlike the pop and the apply above it.
+    expect(git().liveMessage).toBe('');
+    expect(api.getGitStashes).toHaveBeenCalledTimes(4);
+    expect(applyWorktreeChange).toHaveBeenCalledTimes(3);
+  });
+
+  it('sends a typed stash message without the whitespace around it', async () => {
+    await git().stashPush('  half-done sweep  ', false);
+
+    expect(api.gitStashPush).toHaveBeenCalledWith('half-done sweep', false);
+  });
+
+  // `dirty_tree` and not only `conflict`: a pop that restored the tracked
+  // half and then hit an untracked file that is back on disk prints
+  // "n.txt already exists, no checkout" and exits 1 -- which `errors.py`
+  // classifies as `dirty_tree`. The tracked file on disk already holds the
+  // STASHED bytes at that point (measured on git 2.53), so the panel was
+  // showing the pre-pop working tree, and no reload was offered for a graph
+  // file the refusal had already rewritten.
+  it.each([
+    {
+      name: 'pop',
+      code: 'conflict',
+      arrange: async () => api.gitStashPop.mockRejectedValue(await coded(409, 'conflict')),
+      run: () => git().stashPop(7),
+    },
+    {
+      name: 'apply',
+      code: 'conflict',
+      arrange: async () => api.gitStashApply.mockRejectedValue(await coded(409, 'conflict')),
+      run: () => git().stashApply(8),
+    },
+    {
+      name: 'pop',
+      code: 'dirty_tree',
+      arrange: async () => api.gitStashPop.mockRejectedValue(await coded(409, 'dirty_tree')),
+      run: () => git().stashPop(7),
+    },
+    {
+      name: 'apply',
+      code: 'dirty_tree',
+      arrange: async () => api.gitStashApply.mockRejectedValue(await coded(409, 'dirty_tree')),
+      run: () => git().stashApply(8),
+    },
+  ])('refreshes status after a stash $name refused with $code',
+    async ({ code, arrange, run }) => {
+      await arrange();
+      api.getGitStatus.mockResolvedValue(
+        statusResponse('ready', { head: 'after-stash-refusal', merge_in_progress: true }),
+      );
+
+      expect(await run()).toBe(false);
+
+      expect(api.getGitStatus).toHaveBeenCalledTimes(1);
+      expect(git().status?.head).toBe('after-stash-refusal');
+      expect(git().lastError?.code).toBe(code);
+    });
+
+  it('aborts and resolves a merge with status feedback and reload offers only', async () => {
+    const applyWorktreeChange = vi.fn();
+    useGitStore.setState({ applyWorktreeChange });
+
+    api.gitAbortMerge.mockResolvedValue(
+      mutation({ status: status({ head: 'aborted' }), changed_paths: ['graphs/a.graph.json'] }),
+    );
+    expect(await git().abortMerge()).toBe(true);
+    expect(api.gitAbortMerge).toHaveBeenCalledTimes(1);
+    expect(git().status?.head).toBe('aborted');
+    expect(git().liveMessage).toBe('git.group.staged 0, git.group.changes 0');
+    expect(toasts()).toHaveLength(0);
+
+    api.gitResolve.mockResolvedValue(
+      mutation({ status: status({ head: 'resolved' }), changed_paths: ['graphs/b.graph.json'] }),
+    );
+    expect(await git().resolve('graphs/b.graph.json', 'ours')).toBe(true);
+    expect(api.gitResolve).toHaveBeenCalledWith('graphs/b.graph.json', 'ours');
+    expect(git().status?.head).toBe('resolved');
+    expect(toasts()).toHaveLength(0);
+    expect(applyWorktreeChange.mock.calls).toEqual([
+      [['graphs/a.graph.json']],
+      [['graphs/b.graph.json']],
+    ]);
+  });
+});
+
 /* ── refusals ────────────────────────────────────────────────────────── */
 
 describe('refusals', () => {
@@ -734,7 +1495,49 @@ describe('refusals', () => {
       message: 'notes is a submodule',
       hint: 'submodules are not managed here',
       stderr: 'fatal: pathspec',
+      op: 'discard',
     });
+  });
+
+  it('supplies the local credential recovery hint for an auth refusal', async () => {
+    api.gitFetch.mockRejectedValue(await coded(409, 'auth_required'));
+
+    await git().fetch();
+
+    expect(git().lastError?.hint).toBe(say('git.error.authRequiredHint'));
+  });
+
+  it('drops an English server hint under a sentence we translate ourselves', async () => {
+    // The server names the step a sync failed at, and the tab draws that
+    // beside its own sentence: "Local and remote branches have diverged." with
+    // "the merge step failed" under it, in whatever language the reader chose.
+    // The code already said which failure this is; the raw tail is what
+    // Details is for.
+    api.gitSync.mockRejectedValue(
+      await coded(409, 'diverged', {
+        hint: 'the merge step failed',
+        stderr: 'hint: Diverging branches',
+      }),
+    );
+
+    await git().sync();
+
+    expect(git().lastError?.code).toBe('diverged');
+    expect(git().lastError?.hint).toBeNull();
+    expect(git().lastError?.stderr).toBe('hint: Diverging branches');
+  });
+
+  it('keeps it where git\'s own words are the sentence too', async () => {
+    // `git_failed` has no sentence of its own -- the line reads "git failed:
+    // <what the server said>" -- so the hint is the same voice continuing,
+    // and the only thing naming the step of a three-step sync.
+    api.gitSync.mockRejectedValue(
+      await coded(500, 'git_failed', { hint: 'the merge step failed' }),
+    );
+
+    await git().sync();
+
+    expect(git().lastError?.hint).toBe('the merge step failed');
   });
 
   it('folds a 422 list detail into one invalid error', async () => {
@@ -773,6 +1576,7 @@ describe('refusals', () => {
       message: 'socket hung up',
       hint: null,
       stderr: null,
+      op: 'stage',
     });
   });
 
@@ -1095,13 +1899,5 @@ describe('the identity form', () => {
     git().openIdentityForm();
     git().closeIdentityForm();
     expect(git().identityFormOpen).toBe(false);
-  });
-});
-
-describe('gitOpKey', () => {
-  it('spells the identity op the way the key does, not the way the wire does', () => {
-    expect(gitOpKey('identity')).toBe('git.op.identity');
-    expect(gitOpKey('status')).toBe('git.op.status');
-    expect(gitOpKey('commit')).toBe('git.op.commit');
   });
 });

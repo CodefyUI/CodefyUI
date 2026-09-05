@@ -18,6 +18,7 @@ import pytest
 from app.core.git.errors import GitError
 from app.core.git.paths import (
     MAX_PATHS,
+    display_url,
     is_env_secret_path,
     validate_branch_name,
     validate_commit_message,
@@ -216,6 +217,11 @@ def test_a_commit_id_that_is_not_one_is_refused(sha):
     "ssh://git@github.com/owner/repo.git",
     "file:///srv/mirrors/repo.git",
     "git@github.com:owner/repo.git",
+    # A port, an IPv6 literal, and a password with an unencoded ``@`` in it:
+    # three authorities the host check has to survive rather than refuse.
+    "ssh://git@github.com:2222/owner/repo.git",
+    "ssh://[fe80::1]:22/srv/repo.git",
+    "https://alice:p@ss@github.com/owner/repo.git",
 ])
 def test_a_remote_url_is_accepted(url):
     assert validate_remote_url(url) == url
@@ -233,9 +239,113 @@ def test_a_remote_url_is_accepted(url):
     pytest.param("https://github.com/owner/repo.git\n", id="trailing-newline"),
     pytest.param("", id="empty"),
     pytest.param("/srv/mirrors/repo.git", id="bare-path"),
+    # A URL is not one argument by the time git is done with it. Both of
+    # these open with a perfectly ordinary scheme and end as ``ssh
+    # -oProxyCommand=... ...``, which runs a command -- so the leading-``-``
+    # rule is applied to the PARTS and not only to the whole string.
+    pytest.param("ssh://-oProxyCommand=curl|sh/repo.git", id="option-host"),
+    pytest.param("https://-evil.example/owner/repo.git", id="option-host-https"),
+    pytest.param("ssh://git@-oProxyCommand=x/repo.git", id="option-host-after-user"),
+    pytest.param("git@-evil.example:repo.git", id="option-host-scp"),
+    pytest.param("git@github.com:-upload-pack=whoami", id="option-path-scp"),
+    # No host at all: ``https:///owner/repo.git`` is not a repository
+    # anywhere, and an empty authority is how a typo arrives.
+    pytest.param("https:///owner/repo.git", id="no-host"),
+    pytest.param("ssh://@/x", id="userinfo-and-nothing-else"),
 ])
 def test_a_remote_url_that_is_not_allowed_is_refused(url):
     assert _refused(validate_remote_url, url).code == "invalid_url"
+
+
+def test_a_file_url_needs_no_host():
+    """The one scheme whose authority is EMPTY in every form anybody writes
+    -- and the one a local mirror and the network tests both use."""
+    assert validate_remote_url("file:///srv/mirrors/repo.git")
+    assert validate_remote_url("file://C:/mirrors/repo.git")
+
+
+# --- the URL a user is shown -----------------------------------------------
+#
+# ``display_url`` is the OUTPUT half of what this module knows about a remote
+# URL: it is served by an open, unauthenticated GET, so a secret in it has to
+# go -- and a username in it has to STAY, because a row nobody recognises is
+# a row nobody can act on. Deliberately not ``errors.redact``, which masks a
+# whole userinfo because stderr has no structure to lean on.
+
+_TOKEN = "ghp_16C7e42F292c6912E7710c838347Ae178B4a"
+
+
+@pytest.mark.parametrize("url", [
+    # The four shapes almost every remote in the world has.
+    pytest.param("ssh://git@github.com/org/repo.git", id="ssh"),
+    pytest.param("git@github.com:org/repo.git", id="scp"),
+    pytest.param("https://github.com/org/repo.git", id="https-anonymous"),
+    pytest.param("file:///srv/mirrors/repo.git", id="file"),
+    # A username is an identity, not a credential.
+    pytest.param("https://alice@github.com/o/r.git", id="username-only"),
+    pytest.param("ssh://git@github.com:2222/o/r.git", id="ssh-with-a-port"),
+    # An ``@`` in the PATH is not a userinfo: the authority ends at the
+    # first ``/``, so a tag-ish path survives untouched.
+    pytest.param("https://github.com/o/r@v1.git", id="at-sign-in-the-path"),
+    # Not a URL at all. Total by construction: whatever a user configured
+    # from a terminal comes back rather than raising inside a list.
+    pytest.param("/srv/mirrors/repo.git", id="bare-path"),
+    pytest.param("", id="empty"),
+])
+def test_a_url_with_no_secret_in_it_is_shown_as_it_is(url):
+    assert display_url(url) == url
+
+
+@pytest.mark.parametrize("url,shown", [
+    # Two components: everything after the FIRST colon goes, the name stays.
+    pytest.param(f"https://alice:{_TOKEN}@github.com/o/r.git",
+                 "https://alice:***@github.com/o/r.git", id="user-and-token"),
+    pytest.param("https://alice:hunter2@github.com/o/r.git",
+                 "https://alice:***@github.com/o/r.git", id="user-and-password"),
+    # The userinfo is taken at the LAST ``@``, like a URL parser does, so an
+    # unencoded ``@`` inside the password is inside the masked half already.
+    pytest.param("https://alice:p@ss@github.com/o/r.git",
+                 "https://alice:***@github.com/o/r.git", id="at-sign-in-the-password"),
+    # One component that is a token: there is no username to keep.
+    pytest.param(f"https://{_TOKEN}@github.com/o/r.git",
+                 "https://***@github.com/o/r.git", id="bare-token"),
+    # A token in the USERNAME half. The second component is filler --
+    # ``x-oauth-basic`` is the basic-auth spelling a forge documents for a
+    # token, and the empty password is the other -- so masking only the
+    # second half would print a ``***`` where there is no secret and serve
+    # the live one beside it, under a row that claims to be masked.
+    pytest.param(f"https://{_TOKEN}:x-oauth-basic@github.com/o/r.git",
+                 "https://***@github.com/o/r.git",
+                 id="token-as-the-username"),
+    pytest.param(f"https://{_TOKEN}:@github.com/o/r.git",
+                 "https://***@github.com/o/r.git",
+                 id="token-with-an-empty-password"),
+    pytest.param("https://glpat-abc123:x@gitlab.com/o/r.git",
+                 "https://***@gitlab.com/o/r.git",
+                 id="token-as-the-username-gitlab"),
+    pytest.param("glpat-abc123@gitlab.com:o/r.git",
+                 "***@gitlab.com:o/r.git", id="bare-token-scp"),
+    # GitHub Apps: the first component is a constant, not a person.
+    pytest.param("https://x-access-token:ghs_abc123@github.com/o/r.git",
+                 "https://***@github.com/o/r.git", id="github-app"),
+    pytest.param("https://X-Access-Token:ghs_abc123@github.com/o/r.git",
+                 "https://***@github.com/o/r.git", id="github-app-cased"),
+    # A colon with nothing before it is a secret with no owner.
+    pytest.param(f"https://:{_TOKEN}@github.com/o/r.git",
+                 "https://***@github.com/o/r.git", id="password-only"),
+])
+def test_only_the_secret_half_of_a_url_is_masked(url, shown):
+    assert display_url(url) == shown
+    assert _TOKEN not in display_url(url)
+
+
+@pytest.mark.parametrize("prefix", ["ghp_", "github_pat_", "gho_", "ghs_",
+                                    "ghu_", "glpat-"])
+def test_every_published_token_prefix_is_a_username_worth_hiding(prefix):
+    """The same list ``errors.redact`` matches on, read from one place: a
+    forge adding a prefix must not have to be remembered twice."""
+    assert display_url(f"https://{prefix}abc123@github.com/o/r.git") == \
+        "https://***@github.com/o/r.git"
 
 
 # --- messages and identity -------------------------------------------------

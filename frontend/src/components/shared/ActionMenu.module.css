@@ -26,7 +26,7 @@
   transition: background var(--transition-fast), color var(--transition-fast);
 }
 
-.trigger:hover:not(:disabled) {
+.trigger:hover:not([aria-disabled='true']) {
   background: var(--surface-hover);
   color: var(--text-primary);
 }
@@ -36,7 +36,10 @@
   box-shadow: var(--focus-ring);
 }
 
-.trigger:disabled {
+/* `aria-disabled`, not `:disabled` — the same rule the rows above follow, and
+   for one more reason: a trigger that turns refused while the keyboard is on
+   it must still hold focus, and must still open the tooltip that says why. */
+.trigger[aria-disabled='true'] {
   color: var(--text-disabled);
   cursor: default;
 }
@@ -61,7 +64,7 @@
   box-shadow: var(--shadow-popover);
 }
 
-/* The panel only takes focus when every row is disabled, and a ring around the
+/* The panel only takes focus when there is no row at all, and a ring around the
    whole panel would read as a selection it does not have. */
 .menu:focus {
   outline: none;
@@ -86,7 +89,7 @@
   transition: background var(--transition-fast), color var(--transition-fast);
 }
 
-.item:hover:not(:disabled) {
+.item:hover:not([aria-disabled='true']) {
   background: var(--surface-hover);
   color: var(--text-primary);
 }
@@ -98,9 +101,44 @@
   box-shadow: var(--focus-ring);
 }
 
-.item:disabled {
+/* `aria-disabled`, not `:disabled` — the row stays focusable so the hint under
+   it can be reached and read. */
+.item[aria-disabled='true'] {
   color: var(--text-disabled);
   cursor: default;
+}
+
+/* The destructive row, in the palette the inline `.dangerAction` buttons use
+   for the same job -- marked where the pointer or the keyboard is, so it is
+   the row being CHOSEN that turns red rather than a permanent red line sitting
+   in a list of ordinary verbs. Never on a refused row: there is no press there
+   to warn about, and the reason it gives is already the whole answer.
+
+   A red RULE and not red TEXT. The rules above paint this row on
+   --surface-hover, and --status-error on --surface-hover is 3.92:1 -- under
+   the 4.5:1 that 14px text needs (a menu row is --fs-md, and it is neither
+   large text nor an inactive control, so no exception applies). The same
+   colour as a 2px graphic clears the 3:1 that WCAG 1.4.11 asks of it, and the
+   label keeps the --text-primary the hover and focus rules give it (9.89:1),
+   which is a stronger reading of the row than a red one that could not be
+   read. Tinting the background instead makes it worse, not better:
+   --danger-wash is a light red, so compositing it RAISES the background's
+   luminance and takes the pair to 3.33:1.
+
+   The ring is added back by hand in the focus rule, because a box-shadow
+   REPLACES the one the rule above set rather than adding to it. */
+.item.danger:hover:not([aria-disabled='true']) {
+  box-shadow: inset 2px 0 0 0 var(--status-error);
+}
+
+.item.danger:focus-visible:not([aria-disabled='true']) {
+  box-shadow: inset 2px 0 0 0 var(--status-error), var(--focus-ring);
+}
+
+/* A refused row has two lines, so the tick column and the label line up with
+   the top of the text rather than with the middle of the block. */
+.item:has(.hint) {
+  align-items: flex-start;
 }
 
 /* A fixed tick column, present on every row of a menu that has any checkbox in
@@ -112,7 +150,41 @@
   color: var(--accent);
 }
 
-.label {
+/* The label and its reason, stacked. The column is what takes the leftover
+   width, so `min-width: 0` here is what lets a long hint wrap instead of
+   pushing the panel wider than its `max-width`. */
+.text {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
   flex: 1;
   min-width: 0;
+}
+
+.label {
+  min-width: 0;
+}
+
+/* A refused row still has to be READ. It carries the one sentence that says
+   why the thing the user came for cannot be done, and inheriting the row's
+   colour painted both lines --text-disabled: 3.08:1 on the menu's own
+   --surface-raised, and 2.37:1 once focus puts the row on --surface-hover.
+   That is a legible-enough grey for a row nobody needs to read and the wrong
+   one for a row whose whole purpose is its explanation.
+
+   So the two lines are lifted together, and only where there IS a hint --
+   CommitBox's plain rows keep the disabled grey they have always had. The
+   label leads (--text-secondary, 9.10:1 on raised and 7.00:1 on hover) and
+   the reason follows one step down in both size and weight (--text-muted,
+   7.15:1 and 5.50:1), which is the order they are read in. It wraps rather
+   than ellipsises: half a sentence explains nothing. */
+.item:has(.hint) .label {
+  color: var(--text-secondary);
+}
+
+.hint {
+  min-width: 0;
+  color: var(--text-muted);
+  font-size: var(--fs-sm);
+  line-height: var(--lh-snug);
 }

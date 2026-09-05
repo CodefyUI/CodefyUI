@@ -1,6 +1,7 @@
 import {
   useCallback,
   useEffect,
+  useId,
   useLayoutEffect,
   useRef,
   useState,
@@ -22,8 +23,31 @@ export interface ActionMenuItem {
    * changed without reopening. A plain `menuitem` is a command and closes.
    */
   checked?: boolean;
-  /** Not activatable, and skipped by every arrow key. */
+  /**
+   * Not activatable — but still reachable. The row is `aria-disabled` rather
+   * than natively `disabled`, because a natively disabled button takes no
+   * focus at all and a row nobody can reach is a row whose {@link hint} nobody
+   * can read. Enter, Space and a click are refused in the handler instead.
+   */
   disabled?: boolean;
+  /**
+   * The destructive one, drawn the way the inline `.dangerAction` buttons are.
+   *
+   * A compact menu is the ONLY shape a narrow panel draws -- a reference row's
+   * verbs collapse into one below 380px -- so a Delete that looked exactly
+   * like a Rename in here would keep its cue on the wide panels and lose it on
+   * the 180 / 250 / 300px ones, which is where most of the choosing happens.
+   */
+  danger?: boolean;
+  /**
+   * Why the row is refused, shown and announced only while `disabled` is true.
+   *
+   * The accessible DESCRIPTION rather than part of the name, so the row is
+   * still named by what it does ("Fetch") and the reason follows it ("No
+   * remote yet."). An enabled row's hint is not rendered: a row that can be
+   * pressed explains itself by being pressable.
+   */
+  hint?: string;
   onSelect: () => void;
 }
 
@@ -44,8 +68,28 @@ export interface ActionMenuProps {
    * menu opened from a button at the right of a narrow panel on screen.
    */
   align?: 'start' | 'end';
-  /** A trigger with nothing to offer yet. */
+  /**
+   * A trigger with nothing to offer yet — or nothing it can offer RIGHT NOW.
+   *
+   * `aria-disabled` rather than the native attribute, for the same reason a
+   * refused row carries it (see {@link ActionMenuItem.disabled}) and one more:
+   * a trigger can turn refused while the keyboard is on it — a network
+   * operation starts, or `close(true)` hands focus back the instant one does —
+   * and a natively disabled button cannot hold or take focus, so the browser
+   * drops it to `<body>` and the next Tab restarts at the top of the page.
+   * `openMenu` refuses to open instead.
+   */
   disabled?: boolean;
+  /**
+   * Why the trigger is refused, as its tooltip while `disabled` is true.
+   *
+   * A trigger is usually icon-only, so its `title` is the only place a reason
+   * can go — and a natively disabled button opens no tooltip in Chrome, which
+   * is the other half of why `disabled` above is the ARIA attribute. The
+   * accessible NAME stays {@link label}: a refused control is still named by
+   * what it does, and the reason follows as its description.
+   */
+  disabledHint?: string;
 }
 
 /**
@@ -62,11 +106,15 @@ const VIEWPORT_MARGIN_PX = 8;
 /**
  * A dropdown menu attached to one button, with no third-party dependency.
  *
- * Keyboard: Down/Up walk the rows and wrap, skipping disabled ones; Home and
- * End jump to the first and last enabled row; Escape closes and puts focus back
- * on the trigger, as does Tab and choosing a command. Down or Up on the trigger
- * opens the menu onto its first or last row. Only one row is ever in the tab
- * order (a roving tabindex), so the menu is one stop, not N.
+ * Keyboard: Down/Up walk the rows and wrap; Home and End jump to the first and
+ * last row; Escape closes and puts focus back on the trigger, as does Tab and
+ * choosing a command. Down or Up on the trigger opens the menu onto its first
+ * or last row. Only one row is ever in the tab order (a roving tabindex), so
+ * the menu is one stop, not N.
+ *
+ * A refused row is walked onto like any other and refuses the press, because
+ * that row is where its `hint` is — "Fetch, No remote yet." is the whole
+ * answer, and a row the arrows skip could never give it.
  *
  * The panel is portaled to `document.body` and positioned `fixed` against the
  * trigger's rect — the same trick the node tooltip uses, and for the same
@@ -83,32 +131,44 @@ export function ActionMenu({
   className,
   align = 'start',
   disabled = false,
+  disabledHint,
 }: ActionMenuProps) {
   const triggerRef = useRef<HTMLButtonElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
   const itemRefs = useRef<(HTMLButtonElement | null)[]>([]);
   const [open, setOpen] = useState(false);
-  // Index into `items` of the row that owns the tab stop, or -1 when every row
-  // is disabled (then the panel itself takes focus, so Escape still works).
-  const [activeIndex, setActiveIndex] = useState(-1);
+  // The `id` of the row that owns the tab stop, or null when no row does
+  // (then the panel itself takes focus, so Escape still works).
+  //
+  // The id and not the index. `items` belongs to the caller and a row can be
+  // DROPPED while the menu is open -- a stash popped from under an open
+  // menu, a remote removed by another tab's poll -- and an index survives
+  // that pointing at whatever moved up into it. React keys the buttons by
+  // id, so the DOM node keeps the browser's focus; it was only the tab stop
+  // and the arrow keys' starting point that ended up on the wrong row.
+  const [activeId, setActiveId] = useState<string | null>(null);
   const [position, setPosition] = useState<CSSProperties>({ top: 0 });
+  // One stem for the hint elements; each row appends its own index, so the
+  // ids are stable across renders and unique across menus on the page.
+  const hintStem = useId();
 
-  const enabled: number[] = [];
-  items.forEach((item, index) => {
-    if (!item.disabled) enabled.push(index);
-  });
+  const lastIndex = items.length - 1;
   const hasCheckbox = items.some((item) => item.checked !== undefined);
 
   // `items` belongs to the caller and can change while the menu is open: a row
-  // can be dropped, or turn disabled the moment a write starts. An index left
-  // pointing at a row that is gone or now inert would focus nothing at all —
-  // and a menu with no focus inside it swallows Escape, which is the one key
-  // that must always work. So the row that actually holds focus and the tab
-  // stop is derived every render, and only falls back when it has to.
-  const activeRow = activeIndex >= 0 ? items[activeIndex] : undefined;
-  const focusIndex = activeRow !== undefined && !activeRow.disabled
-    ? activeIndex
-    : (enabled[0] ?? -1);
+  // can be dropped the moment a list refreshes. A row that is no longer there
+  // can hold nothing at all — and a menu with no focus inside it swallows
+  // Escape, which is the one key that must always work. So the row that
+  // actually holds focus and the tab stop is derived every render, and only
+  // falls back to the first when the one it names has gone. A row that merely
+  // turns REFUSED keeps focus: the reason it was refused has just appeared
+  // on it.
+  const namedIndex = activeId === null
+    ? -1
+    : items.findIndex((item) => item.id === activeId);
+  const focusIndex = namedIndex >= 0
+    ? namedIndex
+    : (items.length > 0 ? 0 : -1);
 
   const place = useCallback(() => {
     const rect = triggerRef.current?.getBoundingClientRect();
@@ -159,7 +219,7 @@ export function ActionMenu({
 
   const close = useCallback((returnFocus: boolean) => {
     setOpen(false);
-    setActiveIndex(-1);
+    setActiveId(null);
     if (returnFocus) triggerRef.current?.focus();
   }, []);
 
@@ -180,19 +240,15 @@ export function ActionMenu({
 
   const openMenu = (edge: 'first' | 'last') => {
     if (disabled) return;
-    const index = edge === 'first' ? enabled[0] : enabled[enabled.length - 1];
-    setActiveIndex(index ?? -1);
+    setActiveId(items.length === 0
+      ? null
+      : items[edge === 'first' ? 0 : lastIndex].id);
     setOpen(true);
   };
 
   const step = (delta: number) => {
-    if (enabled.length === 0) return;
-    const at = enabled.indexOf(focusIndex);
-    const next =
-      at < 0
-        ? (delta > 0 ? 0 : enabled.length - 1)
-        : (at + delta + enabled.length) % enabled.length;
-    setActiveIndex(enabled[next]);
+    if (items.length === 0) return;
+    setActiveId(items[(focusIndex + delta + items.length) % items.length].id);
   };
 
   const onMenuKeyDown = (e: ReactKeyboardEvent<HTMLDivElement>) => {
@@ -207,11 +263,11 @@ export function ActionMenu({
         break;
       case 'Home':
         e.preventDefault();
-        if (enabled.length > 0) setActiveIndex(enabled[0]);
+        if (items.length > 0) setActiveId(items[0].id);
         break;
       case 'End':
         e.preventDefault();
-        if (enabled.length > 0) setActiveIndex(enabled[enabled.length - 1]);
+        if (items.length > 0) setActiveId(items[lastIndex].id);
         break;
       case 'Escape':
         e.preventDefault();
@@ -257,8 +313,12 @@ export function ActionMenu({
         aria-haspopup="menu"
         aria-expanded={open}
         aria-label={label}
-        title={label}
-        disabled={disabled}
+        // The reason where there is one, and the label everywhere else: the
+        // tooltip is the only thing an icon-only trigger can say.
+        title={disabled && disabledHint !== undefined && disabledHint !== ''
+          ? disabledHint
+          : label}
+        aria-disabled={disabled}
         onClick={() => (open ? close(true) : openMenu('first'))}
         onKeyDown={onTriggerKeyDown}
       >
@@ -275,34 +335,57 @@ export function ActionMenu({
             style={position}
             onKeyDown={onMenuKeyDown}
           >
-            {items.map((item, index) => (
-              <button
-                key={item.id}
-                type="button"
-                ref={(el) => {
-                  itemRefs.current[index] = el;
-                }}
-                className={styles.item}
-                role={item.checked === undefined ? 'menuitem' : 'menuitemcheckbox'}
-                aria-checked={item.checked}
-                disabled={item.disabled}
-                tabIndex={index === focusIndex ? 0 : -1}
-                // A row reached by pointer or by the browser's own focus takes
-                // the roving tab stop with it, so the next arrow key steps from
-                // where the user actually is rather than from where the keyboard
-                // last was. Harmless when the focus effect is what moved it: the
-                // value it writes is the one already in state.
-                onFocus={() => setActiveIndex(index)}
-                onClick={() => activate(item)}
-              >
-                {hasCheckbox && (
-                  <span className={styles.check} aria-hidden="true">
-                    {item.checked === true ? '✓' : ''}
+            {items.map((item, index) => {
+              // Only a refused row explains itself; an enabled one is explained
+              // by being pressable.
+              const hint = item.disabled === true && item.hint !== undefined
+                && item.hint !== ''
+                ? item.hint
+                : null;
+              const hintId = `${hintStem}-hint-${index}`;
+              return (
+                <button
+                  key={item.id}
+                  type="button"
+                  ref={(el) => {
+                    itemRefs.current[index] = el;
+                  }}
+                  className={
+                    item.danger === true ? `${styles.item} ${styles.danger}` : styles.item
+                  }
+                  role={item.checked === undefined ? 'menuitem' : 'menuitemcheckbox'}
+                  aria-checked={item.checked}
+                  aria-disabled={item.disabled === true}
+                  // The hint is INSIDE the row, so without this it would be
+                  // read as part of the row's name ("Fetch No remote yet.")
+                  // rather than as the description that follows it. The label
+                  // is the visible text either way, so the name and what is on
+                  // screen still agree.
+                  aria-label={hint === null ? undefined : item.label}
+                  aria-describedby={hint === null ? undefined : hintId}
+                  tabIndex={index === focusIndex ? 0 : -1}
+                  // A row reached by pointer or by the browser's own focus takes
+                  // the roving tab stop with it, so the next arrow key steps from
+                  // where the user actually is rather than from where the keyboard
+                  // last was. Harmless when the focus effect is what moved it: the
+                  // value it writes is the one already in state.
+                  onFocus={() => setActiveId(item.id)}
+                  onClick={() => activate(item)}
+                >
+                  {hasCheckbox && (
+                    <span className={styles.check} aria-hidden="true">
+                      {item.checked === true ? '✓' : ''}
+                    </span>
+                  )}
+                  <span className={styles.text}>
+                    <span className={styles.label}>{item.label}</span>
+                    {hint !== null && (
+                      <span className={styles.hint} id={hintId}>{hint}</span>
+                    )}
                   </span>
-                )}
-                <span className={styles.label}>{item.label}</span>
-              </button>
-            ))}
+                </button>
+              );
+            })}
           </div>,
           document.body,
         )}

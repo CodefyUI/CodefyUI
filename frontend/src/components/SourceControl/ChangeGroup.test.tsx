@@ -111,8 +111,8 @@ describe('ChangeGroup: structure', () => {
   });
 
   it('names each group from the locale table', () => {
-    const view = render(<ChangeGroup kind="merge" files={[file('a.py', 'conflict')]} />);
-    expect(screen.getByRole('button', { name: 'Merge Changes' })).toBeTruthy();
+    const view = render(<ChangeGroup kind="changes" files={[]} />);
+    expect(screen.getByRole('button', { name: 'Changes' })).toBeTruthy();
     view.unmount();
     render(<ChangeGroup kind="staged" files={[]} />);
     expect(screen.getByRole('button', { name: 'Staged Changes' })).toBeTruthy();
@@ -131,13 +131,6 @@ describe('ChangeGroup: the group actions', () => {
     expect(screen.queryByRole('button', { name: 'Stage All' })).toBeNull();
     fireEvent.click(screen.getByRole('button', { name: 'Unstage All' }));
     await waitFor(() => expect(unstage).toHaveBeenCalledWith('all'));
-  });
-
-  it('leaves the Merge group without a single group action', () => {
-    render(<ChangeGroup kind="merge" files={[file('a.py', 'conflict')]} />);
-    expect(screen.queryByRole('button', { name: 'Stage All' })).toBeNull();
-    expect(screen.queryByRole('button', { name: 'Unstage All' })).toBeNull();
-    expect(screen.queryByRole('button', { name: 'Discard All Changes' })).toBeNull();
   });
 
   it('asks before a whole-tree discard, counting what is NOT on screen too', async () => {

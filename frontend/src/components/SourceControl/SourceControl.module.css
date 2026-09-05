@@ -11,11 +11,16 @@
    child that ellipsises — nothing may push the panel wider than it is.
    ========================================================= */
 
-/* ── The announcement region ─────────────────────────────────────────────
-   Off screen rather than `display: none`, which assistive tech ignores. Its
-   sentence is also on screen (the group headings and their counts), so making
-   it visible would say everything twice. */
-.live {
+/* ── Off screen, still announced ─────────────────────────────────────────
+   Off screen rather than `display: none`, which assistive tech ignores.
+
+   Two users of one box. `.live` is the announcement region: its sentence is
+   also on screen (the group headings and their counts), so making it visible
+   would say everything twice. `.srOnly` is the other half of a shorthand --
+   the tracking column draws `↑1 ↓0`, which is two numbers a reader cannot
+   pronounce, and carries the sentence they mean in here. */
+.live,
+.srOnly {
   position: absolute;
   width: 1px;
   height: 1px;
@@ -45,11 +50,12 @@
   line-height: var(--lh-tight);
 }
 
-/* The tracking half is the one that gives way. At a 180px panel the two of
-   them want about 165px of a 156px row, and the branch name is the identity
-   while "2 to push, 3 to pull" is derived from it -- so the name takes any
-   leftover space (`flex-grow: 1`) and shrinks reluctantly, while the tracking
-   text neither grows nor resists (`flex-shrink: 8`) and ellipsises first.
+/* The branch name gets the room. It is the row's identity, and the tracking
+   half beside it is now two glyphs and two digits (`↑1 ↓0`) rather than the
+   sentence it means -- about 30px, which a 180px panel can spare and cannot
+   spare a clause of. So the name takes every leftover pixel and is the only
+   half that shrinks; the tracking span never does. The word states
+   ("Upstream deleted", "Not published") are short enough to sit there whole.
    Both carry a `title` with their text in full. */
 .branchName {
   flex: 1 1 auto;
@@ -61,12 +67,104 @@
   font-weight: var(--fw-medium);
 }
 
+/* The name is the button that opens the Branches section, and it is drawn as
+   the text it replaced: a box around a branch name would compete with the
+   commit button two rows below it for the eye. What says it is pressable is
+   the chevron on the section it expands, plus the hover and the focus ring. */
+.branchButton {
+  padding: 0;
+  background: transparent;
+  border: 0;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  font-family: inherit;
+  /* `.branchRow`'s own step, spelled out: the panel takes every size from the
+     scale, so a button that inherited one would be the file's only line a
+     reader could not check against it. */
+  font-size: var(--fs-2xs);
+  line-height: inherit;
+  text-align: left;
+}
+
+.branchButton:hover {
+  color: var(--text-primary);
+}
+
+.branchButton:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+}
+
 .tracking {
-  flex: 0 8 auto;
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+
+/* The row holds two kinds of thing. The name and the tracking half are text and
+   sit on one baseline, which is what `align-items: baseline` above is for. Sync
+   and Publish are boxes: a flex item whose content has no baseline of its own is
+   aligned by its BOTTOM MARGIN EDGE, so the Sync glyph would sit on the branch
+   name's baseline rather than on its optical centre -- about three pixels of it
+   above the text, with the row grown to the full control height underneath.
+   They are centred against the row instead. Publish keeps its own `flex` from
+   below: it is the control that gives up width first. */
+.branchRow > .iconButton,
+.branchRow > .publishButton {
+  align-self: center;
+}
+
+/* A square glyph has nothing to give: it is already the smallest control height
+   in the scale, and the two text halves beside it ellipsise long before it
+   would need to. */
+.branchRow > .iconButton {
+  flex-shrink: 0;
+}
+
+/* Publish is text, not an icon: it is the one action in this row that has no
+   glyph anybody would read without a legend, and it takes the place of the
+   "Not published" line rather than sitting beside it. It gives up width
+   before the branch name does, and keeps its name in a `title`. */
+.publishButton {
+  flex: 0 1 auto;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  height: var(--h-control-xs);
+  padding: 0 var(--sp-2);
+  background: transparent;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  color: var(--text-secondary);
+  cursor: pointer;
+  font-family: inherit;
+  font-size: var(--fs-2xs);
+}
+
+.publishButton:hover:not([aria-disabled='true']) {
+  border-color: var(--accent-dim);
+  color: var(--accent);
+}
+
+.publishButton:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+}
+
+/* Nothing to press while the network lane is busy (R11). `--text-disabled`
+   and `cursor: default` are the pair `ActionMenu`'s trigger uses for the same
+   state, so a control that cannot be pressed looks the way every other one in
+   the app does -- a refused button still drawn as live is worse than no
+   refusal at all. The border dims with the label here and stays transparent on
+   the icon button, which has none to dim.
+
+   `aria-disabled`, not `:disabled` — see `.commitButton` below. The button
+   stays focusable, so a press that lands the instant the lane goes busy does
+   not throw focus to <body>, and its `title` still opens to say why. */
+.publishButton[aria-disabled='true'] {
+  border-color: var(--border-base);
+  color: var(--text-disabled);
+  cursor: default;
 }
 
 /* Drawn ON the header's bottom border rather than in the flow above it: a bar
@@ -274,7 +372,12 @@
   cursor: pointer;
 }
 
-.commitChevron:hover:not(:disabled) {
+/* `[aria-disabled]`, not `:disabled` -- the trigger this styles is an
+   `ActionMenu`, which never sets the native attribute (a natively disabled
+   button opens no tooltip in Chrome and takes no focus, so the one control
+   with a reason to give could not give it). The guard was left over from
+   before that rule and matched everything, hover included. */
+.commitChevron:hover:not([aria-disabled='true']) {
   background: var(--surface-hover);
   color: var(--text-primary);
 }
@@ -284,7 +387,17 @@
   box-shadow: var(--focus-ring);
 }
 
-/* ── Merge banner (read-only in this build) ──────────────────────────────── */
+/* The pair `.publishButton` and `ActionMenu`'s own trigger use, so a control
+   that cannot be pressed looks the way every other one in the app does. */
+.commitChevron[aria-disabled='true'] {
+  border-color: var(--border-base);
+  color: var(--text-disabled);
+  cursor: default;
+}
+
+/* ── The merge group ─────────────────────────────────────────────────────
+   The banner belongs to the group, under its heading and outside its list:
+   collapsing the rows away does not end the merge. */
 .banner {
   margin: var(--sp-3) var(--sp-4) 0;
   padding: var(--sp-3);
@@ -295,8 +408,84 @@
   line-height: var(--lh-normal);
 }
 
+/* A conflicted row's actions are always on screen, unlike every other row's.
+   The row exists in order to be settled, and a list of conflicts with no
+   visible way to settle any of them looks like a dead end. */
+.mergeActions {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-1);
+  flex: 0 0 auto;
+}
+
+/* ── A row's actions, in two shapes ──────────────────────────────────────
+   Text verbs are wide: "Keep mine / Take incoming / Mark resolved" is about
+   210px, "Change URL / Remove" about 125px, "Pop / Apply / Drop" about 123px
+   beside a chip that cannot shrink. A 180px panel has 166px of row, so the
+   inline form does not merely crowd the name there -- it runs past the panel
+   edge, and the panel is `overflow: hidden`.
+
+   So every row carries BOTH shapes and the container query picks one. The one
+   that is off screen is `display: none` rather than hidden by opacity, so it
+   is out of the accessibility tree too and nothing is offered twice. */
+.rowChoices {
+  display: none;
+  align-items: center;
+  gap: var(--sp-1);
+}
+
+.rowMenu {
+  display: inline-flex;
+}
+
+/* 380px: the widest verb set plus a chip needs about 240px, and what is left
+   has to be enough of the name to recognise the row by. Below that the menu
+   wins -- one 24px square, whatever the language. */
+@container (min-width: 380px) {
+  .rowChoices {
+    display: inline-flex;
+  }
+
+  .rowMenu {
+    display: none;
+  }
+}
+
+/* A text button small enough to sit three-across in a file row. Same box as
+   `.publishButton`, one step down in weight: these are choices about one file,
+   not the row's own identity. */
+.rowAction {
+  flex: 0 0 auto;
+  height: var(--h-control-xs);
+  padding: 0 var(--sp-2);
+  background: transparent;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  color: var(--text-secondary);
+  cursor: pointer;
+  font-family: inherit;
+  font-size: var(--fs-2xs);
+  white-space: nowrap;
+}
+
+.rowAction:hover {
+  border-color: var(--accent-dim);
+  color: var(--accent);
+}
+
+.rowAction:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+}
+
 /* ── A change group ──────────────────────────────────────────────────────── */
+/* Every group is a query container, which is what lets a row ask how much room
+   it has. The panel is 180-520px and a section is as wide as the panel, so
+   asking the group is asking the panel -- without a ResizeObserver, and
+   without a media query, which would measure the WINDOW and answer for a
+   sidebar the reader has just dragged narrower. */
 .group {
+  container-type: inline-size;
   margin-top: var(--sp-2);
 }
 
@@ -398,6 +587,23 @@
   opacity: 1;
 }
 
+/* An OPEN section that has read its list and found it empty keeps its header
+   action on screen. Everywhere else the hidden verbs act on rows that are
+   already there, so a hover finds them; here the section draws one sentence
+   ("No remote yet.") above nothing at all, and the button that answers it is
+   the only action the section has -- and the place `publishBranch` sends a
+   reader whose Publish resolved no remote. A dead end with the way out under
+   a hover is a dead end.
+
+   The list rather than the section: a CLOSED section is not showing the
+   sentence either, and a permanently open button on a collapsed header would
+   be the one row of the panel that never rests. */
+.group:has(> .list:not([hidden]) > .refEmpty) > .groupHeader > .groupActions {
+  width: auto;
+  overflow: visible;
+  opacity: 1;
+}
+
 .iconButton {
   display: inline-flex;
   align-items: center;
@@ -412,7 +618,7 @@
   cursor: pointer;
 }
 
-.iconButton:hover:not(:disabled) {
+.iconButton:hover:not([aria-disabled='true']) {
   background: var(--surface-hover);
   border-color: var(--border-base);
   color: var(--text-primary);
@@ -423,7 +629,14 @@
   box-shadow: var(--focus-ring);
 }
 
-.dangerButton:hover:not(:disabled) {
+/* See `.publishButton[aria-disabled='true']`. No border to dim -- this one's
+   is transparent until a hover draws it. */
+.iconButton[aria-disabled='true'] {
+  color: var(--text-disabled);
+  cursor: default;
+}
+
+.dangerButton:hover:not([aria-disabled='true']) {
   background: var(--danger-wash);
   border-color: var(--status-error);
   color: var(--status-error);
@@ -448,8 +661,10 @@
   background: var(--surface-hover);
 }
 
-/* The whole name is one button — inert here, and the diff view's target
-   later. `min-width: 0` is what lets the name inside it ellipsise. */
+/* The name half of a row, drawn as one button. In a file group it is inert —
+   opening the change is the diff view's target, later; in a reference list it
+   is what switches to the branch it names. `min-width: 0` is what lets the
+   name inside it ellipsise. */
 .openButton {
   display: flex;
   align-items: baseline;
@@ -496,6 +711,75 @@
   font-size: var(--fs-2xs);
 }
 
+/* ── Which half of a reference row gives way ─────────────────────────────
+   The pair above is a file row's proportion, and the three reference lists do
+   not all want it. Shrinking is weighted by the SHRINK FACTOR TIMES THE BASE
+   SIZE, so a row whose second half is a 400px URL takes a few pixels off a
+   40px name as well -- which at 250px is the difference between `origin` and
+   `ori...`. A name cut to three letters is a row that cannot be identified;
+   a URL cut anywhere still shows the host.
+
+   So one half of each row is FIRM -- it keeps its natural width and never
+   shrinks -- and the other takes what is left and ellipsises. Which half that
+   is, is the list's own answer:
+
+   * a REMOTE row is a short name and a long URL, so the name is firm;
+   * a BRANCH row is a name and a two-glyph count, so the count is firm;
+   * a STASH row is a message somebody wrote and a "branch, when" line, so the
+     message is the flexible half and the meta is firm.
+
+   Both firm halves keep a percentage cap, because "natural width" is data:
+   a 90-character branch name or a stash from a branch with a long name must
+   not push the other half off the row. Past the cap they ellipsise, which is
+   what `.rowName` / `.rowDir` already set up. */
+.nameFirm {
+  flex: 0 0 auto;
+  max-width: 45%;
+}
+
+.nameElastic {
+  flex: 1 1 auto;
+}
+
+.metaFirm {
+  flex: 0 0 auto;
+  max-width: 60%;
+}
+
+/* ── A third thing on a row that fits two ────────────────────────────────
+   The pair above divides a row between two halves. A STASH row has three: a
+   message somebody wrote, the branch and date it was written on, and git's own
+   selector. At 180px the meta took its 60% and the chip cannot shrink, so the
+   message was drawn as `ex...` beside `authte...` and `stash@{0}` -- a row cut
+   to two characters of the only half that identifies it.
+
+   So below the threshold the meta leaves the row: absolutely positioned, so it
+   takes no width and the message gets all of it. Off screen rather than
+   `display: none` -- that would take the branch and the date out of the
+   accessibility tree too, and a reader is the one person who never had the
+   glance this is being dropped to save. The pointer's copy is the row's own
+   `title`, since a 1px box cannot be hovered.
+
+   The same 380px as `.rowChoices` above, and the same reason: it is what is
+   left of a row once a chip and the actions have taken theirs. */
+.metaOptional {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  clip-path: inset(50%);
+}
+
+@container (min-width: 380px) {
+  .metaOptional {
+    position: static;
+    width: auto;
+    height: auto;
+    margin: 0;
+    clip-path: none;
+  }
+}
+
 /* One letter, tinted by what happened to the file. Fixed width so the names
    below each other start on one edge. */
 .chip {
@@ -535,6 +819,94 @@
 .chip[data-kind='renamed'] {
   background: var(--info-wash);
   color: var(--status-info);
+}
+
+/* ── The three reference lists ───────────────────────────────────────────
+   Branches, remotes and stashes reuse the file row's box — the same
+   `min-width: 0` name, the same dimmer half beside it, the same actions
+   collapsed to zero width until a hover or a focus opens them. What is added
+   here is the row that cannot be pressed, the chip beside a name, and the two
+   sentences a list can be reduced to. */
+
+/* The branch you are already on: no button, but the same box as one, so the
+   names in a list line up whether or not each row can be switched to. */
+.refNameStatic {
+  display: flex;
+  align-items: baseline;
+  gap: var(--sp-2);
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: var(--sp-2) var(--sp-1);
+  color: var(--text-secondary);
+  font-size: var(--fs-sm);
+}
+
+/* "Current". Never shrinks: it is two words that mean the row, and a chip
+   ellipsised to "Cur..." would mean nothing at all. */
+.refBadge {
+  flex: 0 0 auto;
+  padding: 0 var(--sp-2);
+  border-radius: var(--radius-sm);
+  background: var(--surface-input);
+  color: var(--text-muted);
+  font-size: var(--fs-2xs);
+  white-space: nowrap;
+}
+
+/* The destructive one of a row's actions, in the palette `.dangerButton`
+   already uses for the same job among the icon buttons.
+
+   Both states, because the row this sits in offers Delete beside Rename and
+   the keyboard has to be able to tell them apart: `.rowActions` opens on
+   `.row:focus-within` as well as on `.row:hover`, and a focused Delete with
+   no cue of its own was the same box as the Rename next to it.
+
+   The red is the BORDER and never the label. The pointer that hovers this
+   button hovers the row under it, so the label would be drawn on
+   --surface-hover, where --status-error is 3.92:1 -- under the 4.5:1 that
+   11px text needs. As a border it is a 1.4.11 graphic and clears the 3:1
+   that asks of it, and the label goes to --text-primary (9.89:1) rather than
+   taking the --accent that `.rowAction:hover` would otherwise leave on a
+   destructive verb. */
+.dangerAction:hover,
+.dangerAction:focus-visible {
+  border-color: var(--status-error);
+  color: var(--text-primary);
+}
+
+/* One sentence where a list would be. Indented to the rows' text, so it reads
+   as the list's own answer rather than as a heading. */
+.refEmpty,
+.refError {
+  padding: var(--sp-2) var(--sp-3) var(--sp-3) var(--sp-4);
+  font-size: var(--fs-xs);
+  line-height: var(--lh-normal);
+  overflow-wrap: anywhere;
+}
+
+.refEmpty {
+  color: var(--text-muted);
+}
+
+.refError {
+  color: var(--status-error);
+}
+
+/* The remote branches: a list inside the list, under a heading of its own.
+   `display: block`, because this `<li>` holds a heading and a `<ul>` rather
+   than a row. */
+.refSublist {
+  display: block;
+}
+
+.refSubhead {
+  display: block;
+  padding: var(--sp-3) var(--sp-3) var(--sp-1) var(--sp-4);
+  color: var(--text-muted);
+  font-size: var(--fs-2xs);
+  font-weight: var(--fw-bold);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
 }
 
 /* ── Empty screens ───────────────────────────────────────────────────────── */

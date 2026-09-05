@@ -8,12 +8,12 @@
  *
  * Two rules the backend sets and this file follows:
  *
- *  - **The six GETs are open, the five POSTs and the one PUT are not.**
+ *  - **The nine GETs are open; mutations are not.**
  *    `auth_guard` (backend/app/main.py) asks for the session token only on
  *    mutating methods, so the reads go through a bare `fetch` like every
  *    other open GET in `rest.ts` and the writes go through `apiFetch`, which
- *    attaches the header. `PUT /api/git/config` is the app's first PUT; the
- *    wrapper already covers it.
+ *    attaches the header. Mutations use POST, PUT and DELETE; the wrapper
+ *    covers all three.
  *  - **A refusal is always the same four keys** (`code`, `message`, `hint`,
  *    `stderr`, plus `op` on `busy`), which is what `GitApiError` carries. The
  *    two shapes that are NOT that envelope — FastAPI's 422 list and the
@@ -134,6 +134,51 @@ export interface Identity {
   email_scope: ConfigScope | null;
 }
 
+/** One local branch, including its relationship to an upstream branch. */
+export interface BranchInfo {
+  name: string;
+  sha: string;
+  current: boolean;
+  upstream: string | null;
+  ahead: number | null;
+  behind: number | null;
+  gone: boolean;
+  subject: string;
+  committed_at: number;
+}
+
+/** One remote-tracking branch, split into remote and branch names. */
+export interface RemoteBranchInfo {
+  name: string;
+  remote: string;
+  sha: string;
+  subject: string;
+  committed_at: number;
+}
+
+/** All local and remote-tracking branches. */
+export interface BranchesResponse {
+  current: string | null;
+  detached: boolean;
+  local: BranchInfo[];
+  remote: RemoteBranchInfo[];
+}
+
+/** One configured remote and the URLs git uses to fetch and push. */
+export interface RemoteInfo {
+  name: string;
+  fetch_url: string;
+  push_url: string;
+}
+
+/** One stash entry. `index` is git's stash index, not the array position. */
+export interface StashInfo {
+  index: number;
+  message: string;
+  branch: string | null;
+  created_at: number;
+}
+
 /**
  * What one write left behind.
  *
@@ -194,8 +239,13 @@ export const GIT_ERROR_CODES = [
   'auth_required',
   'network',
   'non_fast_forward',
+  'remote_rejected',
   'diverged',
   'no_upstream',
+  // The host's own git configuration refuses a plain push: `push.default`, or
+  // an upstream branch whose name is not this branch's.
+  'push_config',
+  'remote_exists',
   // The working tree.
   'conflict',
   'dirty_tree',
@@ -228,21 +278,30 @@ const GIT_ERROR_CODE_SET: ReadonlySet<string> = new Set(GIT_ERROR_CODES);
 
 /**
  * How long the server gives one git process before it stops it, in seconds
- * (`backend/app/core/git/runner.py`: `T_STATUS` / `T_LOCAL` / `T_READ`).
+ * (`backend/app/core/git/runner.py`: `T_STATUS` / `T_LOCAL` / `T_READ` /
+ * `T_NETWORK`).
  *
  * Held here because a 504 arrives as `{code: "timeout"}` and NOTHING else:
  * the number is not in the body, so the sentence the tab shows has to supply
  * it. This client does not abort on these — the server already enforces
  * them, and a second deadline in the browser would answer a slow commit with
  * an `AbortError` that has no code to translate.
+ *
+ * Three of the four are the server's number exactly. The network one is
+ * `T_NETWORK` (120) plus a ten-second grace, and that is deliberate: a
+ * network operation is two or three git processes plus the request itself, so
+ * the deadline the USER experienced is longer than the one any single process
+ * was given. Do not "correct" it to 120.
  */
 export const GIT_TIMEOUTS_S = {
   /** `GET /status` — the poll. */
   status: 10,
   /** Every write: init, stage, unstage, discard, commit, identity. */
   mutation: 30,
-  /** The other reads: log, diff, file, config. */
+  /** The other reads: log, diff, file, config, refs and stashes. */
   read: 20,
+  /** A remote operation: git's own `T_NETWORK` 120 s, plus the grace above. */
+  network: 130,
 } as const;
 
 /**
@@ -265,14 +324,17 @@ export class GitApiError extends ApiError {
   /** git's own tail, for when the classification is wrong. */
   readonly stderr: string | null;
   /**
-   * Which operation holds the lock, so the tab can say "wait for the commit"
-   * rather than "wait". Only ever set on `busy`, and only a mutation can be
-   * refused that way -- reads never take the lock.
+   * Which operation holds one of the server's two locks, so the tab can say
+   * what is still running rather than only "wait". The local vocabulary is
+   * `init`, `stage`, `unstage`, `discard`, `commit`, `set_identity`,
+   * `create_branch`, `checkout`, `rename_branch`, `delete_branch`,
+   * `add_remote`, `set_remote_url`, `remove_remote`, `stash_push`,
+   * `stash_pop`, `stash_apply`, `stash_drop`, `abort_merge`, `resolve`; the
+   * network lane adds `fetch`, `pull`, `push`, `sync` and `publish`.
    *
-   * The server's own vocabulary, which is not the tab's: `init`, `stage`,
-   * `unstage`, `discard`, `commit`, `set_identity`. Note the last one --
-   * `set_identity`, not `identity` -- so a store mapping it to a translated
-   * op name has to spell the wire word, not the key's (`git.op.identity`).
+   * Kept as a string rather than a closed union so a newer server can still
+   * name its operation. Store-side display goes through `gitOpKey`, including
+   * the `set_identity` wire spelling whose translation key is `identity`.
    */
   readonly op: string | null;
 
@@ -392,6 +454,15 @@ type RawIdentity = Omit<Partial<Identity>, 'name_scope' | 'email_scope'> & {
   email_scope?: string | null;
 };
 
+type RawBranchInfo = Partial<BranchInfo>;
+type RawRemoteBranchInfo = Partial<RemoteBranchInfo>;
+type RawBranchesResponse = Omit<Partial<BranchesResponse>, 'local' | 'remote'> & {
+  local?: RawBranchInfo[];
+  remote?: RawRemoteBranchInfo[];
+};
+type RawRemoteInfo = Partial<RemoteInfo>;
+type RawStashInfo = Partial<StashInfo>;
+
 type RawStatusResponse = {
   repo?: RawRepoInfo;
   status?: RawGitStatus | null;
@@ -493,6 +564,56 @@ function normalizeIdentity(raw: RawIdentity): Identity {
   };
 }
 
+function normalizeBranch(raw: RawBranchInfo): BranchInfo {
+  return {
+    name: raw.name ?? '',
+    sha: raw.sha ?? '',
+    current: raw.current ?? false,
+    upstream: raw.upstream ?? null,
+    ahead: raw.ahead ?? null,
+    behind: raw.behind ?? null,
+    gone: raw.gone ?? false,
+    subject: raw.subject ?? '',
+    committed_at: raw.committed_at ?? 0,
+  };
+}
+
+function normalizeRemoteBranch(raw: RawRemoteBranchInfo): RemoteBranchInfo {
+  return {
+    name: raw.name ?? '',
+    remote: raw.remote ?? '',
+    sha: raw.sha ?? '',
+    subject: raw.subject ?? '',
+    committed_at: raw.committed_at ?? 0,
+  };
+}
+
+function normalizeBranches(raw: RawBranchesResponse): BranchesResponse {
+  return {
+    current: raw.current ?? null,
+    detached: raw.detached ?? false,
+    local: (raw.local ?? []).map(normalizeBranch),
+    remote: (raw.remote ?? []).map(normalizeRemoteBranch),
+  };
+}
+
+function normalizeRemote(raw: RawRemoteInfo): RemoteInfo {
+  return {
+    name: raw.name ?? '',
+    fetch_url: raw.fetch_url ?? '',
+    push_url: raw.push_url ?? '',
+  };
+}
+
+function normalizeStash(raw: RawStashInfo): StashInfo {
+  return {
+    index: raw.index ?? 0,
+    message: raw.message ?? '',
+    branch: raw.branch ?? null,
+    created_at: raw.created_at ?? 0,
+  };
+}
+
 /**
  * One write's answer.
  *
@@ -551,22 +672,51 @@ export async function getGitConfig(): Promise<Identity> {
   return normalizeIdentity((await res.json()) as RawIdentity);
 }
 
+/** Local and remote-tracking branches, including upstream state. */
+export async function getGitBranches(): Promise<BranchesResponse> {
+  const res = await fetch(`${BASE_URL}/branches`);
+  if (!res.ok) throw await gitApiError(res);
+  return normalizeBranches((await res.json()) as RawBranchesResponse);
+}
+
+/** Configured remotes, with credentials masked by the server. */
+export async function getGitRemotes(): Promise<RemoteInfo[]> {
+  const res = await fetch(`${BASE_URL}/remotes`);
+  if (!res.ok) throw await gitApiError(res);
+  const data = (await res.json()) as RawRemoteInfo[];
+  return data.map(normalizeRemote);
+}
+
+/** The stash stack; callers address entries by `StashInfo.index`. */
+export async function getGitStashes(): Promise<StashInfo[]> {
+  const res = await fetch(`${BASE_URL}/stashes`);
+  if (!res.ok) throw await gitApiError(res);
+  const data = (await res.json()) as RawStashInfo[];
+  return data.map(normalizeStash);
+}
+
 /* ── Writes (the session token, via apiFetch) ───────────────────────── */
+
+type MutationMethod = 'POST' | 'PUT' | 'DELETE';
 
 /**
  * One mutating call, from the URL to the fresh status.
  *
- * Shared by all five POSTs because they differ only in the path and the
- * body: the token header, the content type, the refusal envelope and the
- * normalization are the same four lines each of them would otherwise repeat.
+ * Every mutation shares the token, refusal envelope and response shape. The
+ * method stays explicit here because branch and remote edits also use PUT and
+ * DELETE.
  */
-async function mutate(path: string, body?: unknown): Promise<MutationResult> {
+async function mutate(
+  path: string,
+  body?: unknown,
+  method: MutationMethod = 'POST',
+): Promise<MutationResult> {
   const res = await apiFetch(
     `${BASE_URL}${path}`,
     body === undefined
-      ? { method: 'POST' }
+      ? { method }
       : {
-          method: 'POST',
+          method,
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(body),
         },
@@ -683,4 +833,112 @@ export async function setGitConfig(identity: {
   });
   if (!res.ok) throw await gitApiError(res);
   return normalizeIdentity((await res.json()) as RawIdentity);
+}
+
+/* ── Refs, stashes, merges and remotes ───────────────────────────────── */
+
+export type GitCheckoutKind = 'local' | 'remote';
+export type GitResolveSide = 'ours' | 'theirs' | 'mark';
+export type GitPullStrategy = 'ff-only' | 'merge';
+
+/** Bring one resolved remote's tracking refs up to date. */
+export function gitFetch(): Promise<MutationResult> {
+  return mutate('/fetch', { remote: null });
+}
+
+/** Fetch, then fast-forward or explicitly merge the current upstream. */
+export function gitPull(options: { strategy: GitPullStrategy }): Promise<MutationResult> {
+  return mutate('/pull', { strategy: options.strategy });
+}
+
+/** Push to the upstream, or publish to a selected/resolved remote with `-u`. */
+export function gitPush(options: {
+  remote?: string;
+  setUpstream: boolean;
+}): Promise<MutationResult> {
+  return mutate('/push', {
+    remote: options.remote ?? null,
+    set_upstream: options.setUpstream,
+  });
+}
+
+/** Make the local and remote branch agree using the server's chosen steps. */
+export function gitSync(): Promise<MutationResult> {
+  return mutate('/sync');
+}
+
+/** Create a branch, checking it out by default. */
+export function gitCreateBranch(
+  name: string,
+  checkout = true,
+  startPoint: string | null = null,
+): Promise<MutationResult> {
+  return mutate('/branches', { name, checkout, start_point: startPoint });
+}
+
+/** Switch to a local branch, or create one that tracks a remote branch. */
+export function gitCheckout(
+  target: string,
+  kind: GitCheckoutKind,
+): Promise<MutationResult> {
+  return mutate('/checkout', { target, kind });
+}
+
+/** Rename a local branch. */
+export function gitRenameBranch(name: string, newName: string): Promise<MutationResult> {
+  return mutate(`/branches/${encodeURIComponent(name)}`, { new_name: newName }, 'PUT');
+}
+
+/** Delete a local branch, optionally including one not fully merged. */
+export function gitDeleteBranch(name: string, force: boolean): Promise<MutationResult> {
+  const query = force ? '?force=1' : '';
+  return mutate(`/branches/${encodeURIComponent(name)}${query}`, undefined, 'DELETE');
+}
+
+/** Add a named remote. */
+export function gitAddRemote(name: string, url: string): Promise<MutationResult> {
+  return mutate('/remotes', { name, url });
+}
+
+/** Replace one remote's URL. */
+export function gitSetRemoteUrl(name: string, url: string): Promise<MutationResult> {
+  return mutate(`/remotes/${encodeURIComponent(name)}`, { url }, 'PUT');
+}
+
+/** Remove one configured remote. */
+export function gitRemoveRemote(name: string): Promise<MutationResult> {
+  return mutate(`/remotes/${encodeURIComponent(name)}`, undefined, 'DELETE');
+}
+
+/** Put the working tree on the stash stack. */
+export function gitStashPush(
+  message: string | null,
+  includeUntracked: boolean,
+): Promise<MutationResult> {
+  return mutate('/stashes', { message, include_untracked: includeUntracked });
+}
+
+/** Apply and remove the stash entry at git's own index. */
+export function gitStashPop(index: number): Promise<MutationResult> {
+  return mutate(`/stashes/${index}/pop`);
+}
+
+/** Apply and retain the stash entry at git's own index. */
+export function gitStashApply(index: number): Promise<MutationResult> {
+  return mutate(`/stashes/${index}/apply`);
+}
+
+/** Remove the stash entry at git's own index. */
+export function gitStashDrop(index: number): Promise<MutationResult> {
+  return mutate(`/stashes/${index}`, undefined, 'DELETE');
+}
+
+/** Restore the working tree from before the in-progress merge. */
+export function gitAbortMerge(): Promise<MutationResult> {
+  return mutate('/merge/abort');
+}
+
+/** Keep a side of one conflict, or stage the user's manual resolution. */
+export function gitResolve(path: string, side: GitResolveSide): Promise<MutationResult> {
+  return mutate('/resolve', { path, side });
 }

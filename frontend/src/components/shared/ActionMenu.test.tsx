@@ -209,7 +209,21 @@ describe('ActionMenu', () => {
 
   // ── Disabled ───────────────────────────────────────────────────────────────
 
-  it('skips a disabled row with the arrow keys and refuses to run it', () => {
+  it('marks a refused row aria-disabled rather than inert', () => {
+    render(
+      <ActionMenu label="More actions" items={items([{}, { disabled: true }])}>
+        dots
+      </ActionMenu>,
+    );
+    fireEvent.click(trigger());
+    // NOT the native attribute: `disabled` takes the row out of the focus
+    // order, and a row nobody can reach is a row whose hint nobody can read.
+    expect(item('Bravo')).toHaveAttribute('aria-disabled', 'true');
+    expect(item('Bravo')).not.toBeDisabled();
+    expect(item('Alpha')).toHaveAttribute('aria-disabled', 'false');
+  });
+
+  it('walks onto a disabled row with the arrow keys and refuses to run it', () => {
     render(
       <ActionMenu label="More actions" items={items([{}, { disabled: true }])}>
         dots
@@ -218,34 +232,52 @@ describe('ActionMenu', () => {
     fireEvent.click(trigger());
     expect(document.activeElement).toBe(item('Alpha'));
 
+    // The refused row is where the reason lives, so the arrows stop on it.
     fireEvent.keyDown(item('Alpha'), { key: 'ArrowDown' });
+    expect(document.activeElement).toBe(item('Bravo'));
+    fireEvent.keyDown(item('Bravo'), { key: 'ArrowDown' });
     expect(document.activeElement).toBe(item('Charlie'));
-    fireEvent.keyDown(item('Charlie'), { key: 'ArrowDown' });
-    expect(document.activeElement).toBe(item('Alpha'));
 
     fireEvent.click(item('Bravo'));
     expect(onB).not.toHaveBeenCalled();
     expect(screen.getByRole('menu')).toBeTruthy();
   });
 
-  it('opens onto the last ENABLED row, not the last row', () => {
+  it('opens onto the last row even when that row is refused', () => {
     render(
       <ActionMenu label="More actions" items={items([{}, {}, { disabled: true }])}>
         dots
       </ActionMenu>,
     );
     fireEvent.keyDown(trigger(), { key: 'ArrowUp' });
-    expect(document.activeElement).toBe(item('Bravo'));
-    fireEvent.keyDown(item('Bravo'), { key: 'End' });
-    expect(document.activeElement).toBe(item('Bravo'));
+    expect(document.activeElement).toBe(item('Charlie'));
+    fireEvent.keyDown(item('Charlie'), { key: 'Home' });
+    expect(document.activeElement).toBe(item('Alpha'));
+    fireEvent.keyDown(item('Alpha'), { key: 'End' });
+    expect(document.activeElement).toBe(item('Charlie'));
   });
 
-  it('focuses the panel itself when every row is disabled, so Escape still works', () => {
+  it('still reaches every row when all of them are refused', () => {
     render(
       <ActionMenu
         label="More actions"
         items={items([{ disabled: true }, { disabled: true }, { disabled: true }])}
       >
+        dots
+      </ActionMenu>,
+    );
+    fireEvent.click(trigger());
+    expect(document.activeElement).toBe(item('Alpha'));
+    fireEvent.keyDown(item('Alpha'), { key: 'ArrowDown' });
+    expect(document.activeElement).toBe(item('Bravo'));
+    fireEvent.keyDown(item('Bravo'), { key: 'Escape' });
+    expect(screen.queryByRole('menu')).toBeNull();
+    expect(document.activeElement).toBe(trigger());
+  });
+
+  it('focuses the panel itself when there is no row at all, so Escape still works', () => {
+    render(
+      <ActionMenu label="More actions" items={[]}>
         dots
       </ActionMenu>,
     );
@@ -259,11 +291,55 @@ describe('ActionMenu', () => {
     expect(document.activeElement).toBe(trigger());
   });
 
-  // `items` belongs to the caller, so the row holding focus can be taken away
-  // under it — a write starts and the row goes inert, or the list shortens.
-  // Focus has to land somewhere inside the menu either way, because a menu with
-  // focus on <body> no longer hears Escape.
-  it('recovers when the focused row turns disabled under it', () => {
+  // ── Hints on a refused row ─────────────────────────────────────────────────
+
+  it('describes a refused row with its hint, without changing its name', () => {
+    render(
+      <ActionMenu
+        label="More actions"
+        items={items([{}, { disabled: true, hint: 'No remote yet.' }])}
+      >
+        dots
+      </ActionMenu>,
+    );
+    fireEvent.click(trigger());
+    const row = item('Bravo');
+    // The label stays the name, so the row is still found by what it does; the
+    // reason arrives as the description that follows it.
+    expect(row).toHaveAccessibleName('Bravo');
+    expect(row).toHaveAccessibleDescription('No remote yet.');
+  });
+
+  it('keeps a hint off a row that can be pressed', () => {
+    render(
+      <ActionMenu label="More actions" items={items([{ hint: 'not shown' }])}>
+        dots
+      </ActionMenu>,
+    );
+    fireEvent.click(trigger());
+    expect(screen.queryByText('not shown')).toBeNull();
+    expect(item('Alpha')).not.toHaveAccessibleDescription();
+  });
+
+  it('marks the destructive row, which is the only shape a narrow panel draws', () => {
+    // Below 380px a reference row's verbs ARE this menu, so a Delete that
+    // looked exactly like a Rename here would keep its cue only on the wide
+    // panels and lose it on the 180 / 250 / 300px ones.
+    render(
+      <ActionMenu label="More actions" items={items([{}, { danger: true }])}>
+        dots
+      </ActionMenu>,
+    );
+    fireEvent.click(trigger());
+    expect(item('Bravo').className).toMatch(/danger/);
+    expect(item('Alpha').className).not.toMatch(/danger/);
+  });
+
+  // `items` belongs to the caller, so the row holding focus can change under it
+  // — a write starts and the row goes inert, or the list shortens. Focus has to
+  // stay inside the menu either way, because a menu with focus on <body> no
+  // longer hears Escape.
+  it('keeps focus on a row that turns refused under it, where the reason now is', () => {
     function Host() {
       const [busy, setBusy] = useState(false);
       return (
@@ -272,7 +348,7 @@ describe('ActionMenu', () => {
             label="More actions"
             items={[
               { id: 'a', label: 'Alpha', onSelect: onA },
-              { id: 'b', label: 'Bravo', disabled: busy, onSelect: onB },
+              { id: 'b', label: 'Bravo', disabled: busy, hint: 'Still running', onSelect: onB },
             ]}
           >
             dots
@@ -290,9 +366,12 @@ describe('ActionMenu', () => {
     // user pressing outside the menu.
     fireEvent.click(screen.getByRole('button', { name: 'freeze' }));
 
-    expect(document.activeElement).toBe(item('Alpha'));
-    expect(item('Alpha').getAttribute('tabindex')).toBe('0');
-    fireEvent.keyDown(item('Alpha'), { key: 'Escape' });
+    expect(document.activeElement).toBe(item('Bravo'));
+    expect(item('Bravo').getAttribute('tabindex')).toBe('0');
+    expect(item('Bravo')).toHaveAccessibleDescription('Still running');
+    fireEvent.click(item('Bravo'));
+    expect(onB).not.toHaveBeenCalled();
+    fireEvent.keyDown(item('Bravo'), { key: 'Escape' });
     expect(screen.queryByRole('menu')).toBeNull();
     expect(document.activeElement).toBe(trigger());
   });
@@ -327,18 +406,57 @@ describe('ActionMenu', () => {
     expect(document.activeElement).toBe(trigger());
   });
 
-  it('falls back to the panel when every row goes inert under it', () => {
+  it('stays on the row it was on when a row ABOVE it is removed', () => {
+    // The tab stop is keyed on the row's id, not on its index. A stash
+    // popped from under an open menu, or a remote another tab removed on
+    // the poll, shifts every row below it up one -- and an index would have
+    // followed the position rather than the row, moving the arrow keys'
+    // starting point onto whatever slid into the slot.
     function Host() {
-      const [busy, setBusy] = useState(false);
+      const [dropped, setDropped] = useState(false);
+      const rows = [
+        { id: 'a', label: 'Alpha', onSelect: onA },
+        { id: 'b', label: 'Bravo', onSelect: onB },
+        { id: 'c', label: 'Charlie', onSelect: onC },
+      ];
       return (
         <>
           <ActionMenu
             label="More actions"
-            items={[{ id: 'a', label: 'Alpha', disabled: busy, onSelect: onA }]}
+            items={dropped ? rows.filter((row) => row.id !== 'a') : rows}
           >
             dots
           </ActionMenu>
-          <button type="button" onClick={() => setBusy(true)}>freeze</button>
+          <button type="button" onClick={() => setDropped(true)}>drop</button>
+        </>
+      );
+    }
+    render(<Host />);
+    fireEvent.click(trigger());
+    fireEvent.keyDown(item('Alpha'), { key: 'End' });
+    expect(document.activeElement).toBe(item('Charlie'));
+
+    fireEvent.click(screen.getByRole('button', { name: 'drop' }));
+
+    expect(item('Charlie').getAttribute('tabindex')).toBe('0');
+    expect(item('Bravo').getAttribute('tabindex')).toBe('-1');
+    // ...and the arrows go on from there, not from where the row used to be.
+    fireEvent.keyDown(item('Charlie'), { key: 'ArrowDown' });
+    expect(document.activeElement).toBe(item('Bravo'));
+  });
+
+  it('falls back to the panel when the last row is removed under it', () => {
+    function Host() {
+      const [empty, setEmpty] = useState(false);
+      return (
+        <>
+          <ActionMenu
+            label="More actions"
+            items={empty ? [] : [{ id: 'a', label: 'Alpha', onSelect: onA }]}
+          >
+            dots
+          </ActionMenu>
+          <button type="button" onClick={() => setEmpty(true)}>clear</button>
         </>
       );
     }
@@ -346,7 +464,7 @@ describe('ActionMenu', () => {
     fireEvent.click(trigger());
     expect(document.activeElement).toBe(item('Alpha'));
 
-    fireEvent.click(screen.getByRole('button', { name: 'freeze' }));
+    fireEvent.click(screen.getByRole('button', { name: 'clear' }));
 
     const menu = screen.getByRole('menu');
     expect(document.activeElement).toBe(menu);
@@ -371,11 +489,31 @@ describe('ActionMenu', () => {
     expect(document.activeElement).toBe(item('Charlie'));
   });
 
-  it('a disabled trigger opens nothing', () => {
-    renderMenu({ disabled: true });
-    expect(trigger().hasAttribute('disabled')).toBe(true);
+  it('a refused trigger opens nothing, and is still there to be focused', () => {
+    // `aria-disabled`, not the native attribute, for the same reason a refused
+    // ROW carries it: a natively disabled button takes no focus, so a trigger
+    // that turns refused while the keyboard is on it drops focus to <body> --
+    // and `close(true)` could not hand focus back to it either. It opens no
+    // tooltip either, which is where the reason lives on an icon-only trigger.
+    renderMenu({ disabled: true, disabledHint: 'Running fetch...' });
+    expect(trigger()).toHaveAttribute('aria-disabled', 'true');
+    expect(trigger()).not.toBeDisabled();
+    expect(trigger().getAttribute('title')).toBe('Running fetch...');
     fireEvent.keyDown(trigger(), { key: 'ArrowDown' });
     expect(screen.queryByRole('menu')).toBeNull();
+    fireEvent.click(trigger());
+    expect(screen.queryByRole('menu')).toBeNull();
+    act(() => trigger().focus());
+    expect(document.activeElement).toBe(trigger());
+  });
+
+  it('names the trigger by what it does, refused or not', () => {
+    // The hint is the DESCRIPTION and never the name: an offered trigger is
+    // titled by its label, and a refused one keeps that label as its
+    // accessible name so it is still findable by what it does.
+    renderMenu({ disabled: true });
+    expect(trigger().getAttribute('title')).toBe('More actions');
+    expect(trigger()).toHaveAttribute('aria-label', 'More actions');
   });
 
   // ── Dismissal by pointer ───────────────────────────────────────────────────

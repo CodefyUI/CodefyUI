@@ -39,6 +39,15 @@ _PLANNED_CODES = {
     "branch_not_merged", "signing_failed", "not_found", "invalid_path",
     "invalid_ref", "invalid_url", "invalid_value", "path_not_in_status",
     "ignored", "git_failed",
+    # G3's two, from the plan's own ruling: a duplicate ``git remote add``,
+    # and a push a server-side rule refused.
+    "remote_exists", "remote_rejected",
+    # And G3's third: the HOST's own push configuration refusing a plain
+    # push. Its own code rather than ``invalid_value`` because the tab reads
+    # an ``invalid_value`` from a push as "this branch is not published yet"
+    # and offers a Publish button -- which for these two states is both
+    # untrue and a write that repoints the user's upstream.
+    "push_config",
 }
 
 #: One representative stderr per classified row, as git prints it under
@@ -81,6 +90,18 @@ _SAMPLES = [
         "fatal: unable to access 'https://github.com/a/b/': "
         "Could not resolve host: github.com\n",
         "network", id="dns"),
+    # The app's own ``GIT_ALLOW_PROTOCOL=https:ssh:file`` refusing a remote
+    # that was configured outside this API. The tab cannot create one --
+    # ``validate_remote_url`` refuses the shape -- but it LISTS such a remote
+    # and offers Fetch / Pull / Sync on it, so this is a state the panel can
+    # be in, and a 500 for an ordinary click. Both lines copied off git 2.53
+    # (exit 128), one per transport.
+    pytest.param(
+        "fatal: transport 'http' not allowed\n",
+        "invalid_url", id="transport-http-refused"),
+    pytest.param(
+        "fatal: transport 'git' not allowed\n",
+        "invalid_url", id="transport-git-refused"),
     pytest.param(
         " ! [rejected]        main -> main (fetch first)\n"
         "error: failed to push some refs to 'https://github.com/a/b'\n"
@@ -89,6 +110,22 @@ _SAMPLES = [
     pytest.param(
         " ! [rejected]        main -> main (non-fast-forward)\n",
         "non_fast_forward", id="push-non-ff"),
+    # A server-side rule said no: a pre-receive hook, or a protected branch.
+    # Copied off git 2.53 pushing to a bare repository whose pre-receive
+    # hook exits 1. Note that it does NOT contain the ``[rejected]`` of the
+    # rows above -- the character before "rejected" is a space.
+    pytest.param(
+        "remote: this branch is protected\n"
+        "To file:///srv/mirrors/repo.git\n"
+        " ! [remote rejected] main -> main (pre-receive hook declined)\n"
+        "error: failed to push some refs to 'file:///srv/mirrors/repo.git'\n",
+        "remote_rejected", id="push-refused-by-the-server"),
+    # ``git remote add`` on a name that is taken (measured, exit 3). git's
+    # own voice under an ``error: `` opening, which is why its row anchors
+    # to the whole ``error: remote `` rather than to the prefix set.
+    pytest.param(
+        "error: remote origin already exists.\n",
+        "remote_exists", id="duplicate-remote"),
     pytest.param(
         "fatal: Need to specify how to reconcile divergent branches.\n",
         "diverged", id="pull-divergent"),
@@ -120,11 +157,71 @@ _SAMPLES = [
         "Aborting\n",
         "dirty_tree", id="dirty-tree"),
     pytest.param(
+        # ``stash pop`` restoring an untracked file onto one that is back on
+        # disk. The WHOLE of what the caller classifies is both streams
+        # joined, and the stdout half is a ``git status`` whose last line is
+        # a ``nothing_to_commit`` phrase -- so this sample carries both, and
+        # it is the row ORDER that makes the answer "move it out of the
+        # way" rather than "there is nothing to commit".
+        "Already up to date.\nOn branch main\nUntracked files:\n\tn.txt\n\n"
+        "nothing added to commit but untracked files present "
+        '(use "git add" to track)\n'
+        "The stash entry is kept in case you need it again.\n"
+        "\nn.txt already exists, no checkout\n"
+        "error: could not restore untracked files from stash\n",
+        "dirty_tree", id="stash-pop-onto-a-recreated-file"),
+    pytest.param(
         "fatal: The current branch feat has no upstream branch.\n",
         "no_upstream", id="no-upstream"),
     pytest.param(
         "There is no tracking information for the current branch.\n",
         "no_upstream", id="no-tracking"),
+    # G3's two, both off ``merge --ff-only @{u}`` -- the local half of a
+    # pull -- and both a 500 before the row learned them. The first is a
+    # branch that was never published; the second is one whose upstream was
+    # deleted and pruned, where ``@{u}`` still resolves in the config and no
+    # longer resolves to a commit. Note the opening of the second: it is
+    # neither ``fatal: `` nor ``error: ``.
+    pytest.param(
+        "fatal: no upstream configured for branch 'main'\n",
+        "no_upstream", id="pull-with-no-upstream"),
+    pytest.param(
+        "merge: @{u} - not something we can merge\n",
+        "no_upstream", id="pull-whose-upstream-is-gone"),
+    # A plain ``push`` with no upstream and no remote called ``origin``:
+    # git has no default destination and says so (exit 128, measured). The
+    # same sentence with NO remote at all never reaches the classifier --
+    # ``network.push`` answers that state ``no_remote`` before git runs.
+    pytest.param(
+        "fatal: No configured push destination.\n"
+        "Either specify the URL from the command-line or configure a remote "
+        "repository using\n\n    git remote add <name> <url>\n\n"
+        "and then push using the remote name\n\n    git push <name>\n",
+        "no_upstream", id="push-with-no-destination"),
+    pytest.param(
+        "fatal: You didn't specify any refspecs to push, and push.default is "
+        '"nothing".\n',
+        "push_config", id="push-default-nothing"),
+    pytest.param(
+        "fatal: The upstream branch of your current branch does not match\n"
+        "the name of your current branch.  To push to the upstream branch\n"
+        "on the remote, use\n\n"
+        "    git push origin HEAD:other\n\n"
+        "To push to the branch of the same name on the remote, use\n\n"
+        "    git push origin HEAD\n",
+        "push_config", id="push-simple-upstream-name-mismatch"),
+    # A remote NAME that is not configured, which git reports as a
+    # connection problem: "'nope' does not appear to be a git repository"
+    # then "Could not read from remote repository" (measured, exit 128).
+    # ``network`` is the honest reading of that text, and it is why
+    # ``network.resolve_remote`` checks the name against the remote list
+    # first -- a stale panel is a 404, not "check your connection".
+    pytest.param(
+        "fatal: 'nope' does not appear to be a git repository\n"
+        "fatal: Could not read from remote repository.\n\n"
+        "Please make sure you have the correct access rights\n"
+        "and the repository exists.\n",
+        "network", id="fetch-a-remote-that-is-not-a-repository"),
     pytest.param(
         'no changes added to commit (use "git add" and/or "git commit -a")\n',
         "nothing_to_commit", id="nothing-staged"),
@@ -178,6 +275,15 @@ _SAMPLES = [
     pytest.param(
         "error: stash@{9} is not a valid reference\n",
         "not_found", id="unknown-stash"),
+    # The two G3 added to the ``not_found`` row: switching to a branch and
+    # branching from a start point that were both there when the panel was
+    # drawn and are not there now.
+    pytest.param(
+        "fatal: invalid reference: feat\n",
+        "not_found", id="branch-gone"),
+    pytest.param(
+        "fatal: not a valid object name: 'deadbee'\n",
+        "not_found", id="start-point-gone"),
     pytest.param(
         "error: could not lock config file .git/config: File exists\n",
         "git_failed", id="unrecognised"),
@@ -200,6 +306,27 @@ def test_classification(stderr, code):
 
     assert error.code == code
     assert error.status == CODES[code][0]
+
+
+def test_a_push_configuration_refusal_says_where_to_look():
+    """``push_config`` is the one classified code that carries a hint.
+
+    Its two states are the user's OWN configuration -- ``push.default`` and
+    the upstream branch's name -- and neither is visible in the tab: the
+    header shows a branch that is published and up to date, and the
+    refusal is about how git was told to push it. The code alone leaves
+    nobody anywhere to go, so this row names the two settings and the
+    command that prints them.
+    """
+    error = classify_failure(
+        _ARGV, 128,
+        'fatal: You didn\'t specify any refspecs to push, and push.default '
+        'is "nothing".\n')
+
+    assert error.code == "push_config"
+    assert error.status == 409
+    assert "push.default" in (error.hint or "")
+    assert "git branch -vv" in (error.hint or "")
 
 
 def test_the_ssh_split_is_the_row_order():
@@ -369,6 +496,57 @@ def test_a_failing_hook_is_not_a_missing_object(stderr):
 def test_an_anchored_phrase_still_catches_git_saying_it(stderr, code):
     """The anchor narrows WHO is speaking, not what git means."""
     assert classify_failure(_ARGV, 128, stderr).code == code
+
+
+def test_a_forge_saying_already_exists_is_still_branch_exists():
+    """``remote_exists`` sits BELOW ``branch_exists`` so that row keeps
+    everything it means today: a phrase arriving through ``remote: `` is
+    the far side talking about a ref, and answering it with "a remote with
+    that name already exists" would be a confident lie."""
+    stderr = "remote: error: refusing to create the tag: it already exists\n"
+
+    assert classify_failure(_ARGV, 1, stderr).code == "branch_exists"
+
+
+@pytest.mark.parametrize("stderr", [
+    pytest.param("    error: remote origin already exists.\n", id="indented"),
+    pytest.param("error: the remote origin already exists.\n", id="mid-line"),
+    pytest.param("error: remote origin is not there.\n", id="another-sentence"),
+])
+def test_only_gits_own_duplicate_remote_sentence_is_remote_exists(stderr):
+    """The anchor is the whole opening ``error: remote ``, because
+    ``error: `` alone belongs to every failing hook. Anything a hook could
+    plausibly print stays ``git_failed`` -- with git's own tail attached."""
+    assert classify_failure(_ARGV, 1, stderr).code == "git_failed"
+
+
+@pytest.mark.parametrize("stderr", [
+    pytest.param("    merge: @{u} - not something we can merge\n",
+                 id="indented"),
+    pytest.param("hint: merge: @{u} - not something we can merge\n",
+                 id="quoted-by-a-hook"),
+    pytest.param("merge: feat - not something we can merge\n",
+                 id="another-ref"),
+])
+def test_only_a_merge_of_the_upstream_itself_is_no_upstream(stderr):
+    """The anchor is ``merge: `` plus the whole ``@{u}`` phrase.
+
+    ``@{u}`` is the one ref this package ever merges, so a line about any
+    OTHER ref did not come from here -- and a hook quoting the sentence
+    back is not git saying it. Both stay ``git_failed``, with git's own
+    tail attached, which is the answer for output nobody can place.
+    """
+    assert classify_failure(_ARGV, 1, stderr).code == "git_failed"
+
+
+def test_a_server_refusal_beats_a_non_fast_forward():
+    """One push can report both, one ref each. "The server said no" is the
+    half a pull cannot fix, so it is the answer the user gets."""
+    stderr = (" ! [rejected]        old -> old (non-fast-forward)\n"
+              " ! [remote rejected] main -> main (protected branch hook "
+              "declined)\n")
+
+    assert classify_failure(_ARGV, 1, stderr).code == "remote_rejected"
 
 
 def test_the_failing_subcommand_is_named():

@@ -165,6 +165,56 @@ def repo(make_repo) -> Repo:
     return make_repo()
 
 
+# --- a remote to talk to (G3's network tests build on these three) ----------
+#
+# Plain functions rather than fixtures, and the files that want them wrap
+# each in a three-line fixture of their own -- the shape ``repo`` already
+# has here. A fixture IMPORTED into another module is a name that its own
+# test signatures then shadow, which ruff reads as a redefinition: it is
+# worth two lines per file not to carry a suppression on twenty signatures.
+
+
+def remote_url(bare: Path) -> str:
+    """*bare* as a URL git and ``validate_remote_url`` both accept.
+
+    ``as_posix`` and not ``str``: on Windows the path is ``D:\\tmp\\x.git``
+    and the URL has to be ``file://D:/tmp/x.git`` -- backslashes make it a
+    string neither the validator's scheme check nor git's own parser reads
+    as a path.
+    """
+    return f"file://{bare.as_posix()}"
+
+
+def make_bare_remote(tmp_path: Path, name: str = "remote.git") -> Path:
+    """An empty bare repository, to stand in for a server.
+
+    BARE because a repository with a working tree refuses a push to the
+    branch it has checked out, which is a failure no test is about.
+    Nothing reaches a network: git speaks the same protocol over a
+    ``file://`` URL that it speaks to a forge, so a fetch really fetches, a
+    push really pushes and ``--prune`` really prunes -- with no
+    credentials, no host and nothing to be flaky.
+    """
+    bare = tmp_path / name
+    bare.mkdir()
+    Repo(bare).git("init", "--bare", "-q")
+    return bare
+
+
+def make_clone(bare: Path, tmp_path: Path, name: str = "clone") -> Repo:
+    """A clone of *bare*, with ``origin`` already pointing at it.
+
+    A real ``git clone``, so it gets everything a clone gets -- the remote,
+    the fetch refspec and an upstream on the branch it checked out --
+    rather than an approximation assembled by hand. Cloning an EMPTY bare
+    repository is fine and is a case worth having: it leaves an unborn
+    branch with a remote configured, which is the state a Publish starts
+    from.
+    """
+    Repo(tmp_path).git("clone", "-q", remote_url(bare), str(tmp_path / name))
+    return Repo(tmp_path / name)
+
+
 def _error(exc: pytest.ExceptionInfo[GitError]) -> GitError:
     return exc.value
 
@@ -630,6 +680,25 @@ async def test_unstage_all_empties_the_index(repo):
     assert result.status.staged == []
     assert [entry.path for entry in result.status.unstaged] == ["a.txt"]
     assert [entry.path for entry in result.status.untracked] == ["new.txt"]
+
+
+async def test_unstage_all_clears_both_halves_of_a_staged_rename(repo):
+    """A rename is one status entry and TWO paths.
+
+    ``git mv a.txt b.txt`` is a single porcelain-v2 ``2`` record naming
+    ``b.txt`` with ``a.txt`` beside it, so a whole-tree unstage built from
+    the new names alone runs ``restore --staged b.txt`` and leaves ``a.txt``
+    staged as a deletion -- an index that "unstage everything" claimed to
+    have emptied, showing a deletion the user never made.
+    """
+    repo.git("mv", "a.txt", "b.txt")
+    staged = (await repo.service.status()).status.staged
+    assert [entry.orig_path for entry in staged] == ["a.txt"]
+
+    result = await repo.service.unstage(all_paths=True)
+
+    assert result.status.staged == []
+    assert "b.txt" in [entry.path for entry in result.status.untracked]
 
 
 async def test_unstage_on_an_unborn_branch_uses_rm_cached(make_repo):
