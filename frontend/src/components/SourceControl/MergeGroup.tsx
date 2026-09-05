@@ -72,9 +72,13 @@ export function MergeGroup({ files }: MergeGroupProps) {
 
   const askThenAbort = useCallback(async () => {
     const ok = await confirm({
-      // The banner's own sentence: what is being thrown away is exactly the
-      // situation the line above the rows is describing.
-      title: t('git.merge.banner'),
+      // A QUESTION, the way every other destructive confirm in this panel
+      // asks one ("Delete branch work?", "Drop stash stash@{0}?"). The
+      // banner's own sentence stood here, which made the heading of a modal
+      // opened by Abort Merge an instruction to resolve and commit -- the
+      // opposite of what was pressed, and the same sentence twice on screen,
+      // since the banner is still behind it.
+      title: t('git.merge.abortConfirm'),
       confirmText: t('git.action.abortMerge'),
       variant: 'danger',
     });

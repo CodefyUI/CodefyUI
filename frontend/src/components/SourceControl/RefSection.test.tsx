@@ -138,15 +138,17 @@ describe('RefSection', () => {
     ).toBe(remotes.headingId);
   });
 
-  it('keeps the heading and the list with the kind when the section id is overridden', () => {
+  it('takes all three of its ids from the kind and nothing else', () => {
     // The header scrolls to `refSectionIds('branches').headingId` and points
     // `aria-controls` at that kind's `listId`, both read from the kind alone.
-    // An id that moved with an overridden `sectionId` would take one of those
-    // with it and say nothing.
-    renderSection({ sectionId: 'somewhere-else' });
+    // There is no per-instance override to take one of those with it: the
+    // prop that offered one had no caller, and its only exercise was a test
+    // proving the override changed nothing that mattered.
+    const ids = refSectionIds('branches');
+    renderSection();
     const heading = screen.getByRole('button', { name: 'Branches' });
-    expect(heading.id).toBe(refSectionIds('branches').headingId);
-    expect(heading.getAttribute('aria-controls')).toBe(refSectionIds('branches').listId);
-    expect(screen.getByRole('region', { name: 'Branches' }).id).toBe('somewhere-else');
+    expect(heading.id).toBe(ids.headingId);
+    expect(heading.getAttribute('aria-controls')).toBe(ids.listId);
+    expect(screen.getByRole('region', { name: 'Branches' }).id).toBe(ids.sectionId);
   });
 });

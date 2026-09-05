@@ -1196,6 +1196,7 @@ const zhTW: Record<TranslationKey, string> = {
     '捨棄 {changed} 個變更並刪除 {untracked} 個未追蹤檔案？此動作無法復原。',
   'git.discard.action': '捨棄',
   'git.merge.banner': '合併進行中：處理每個檔案後再提交。',
+  'git.merge.abortConfirm': '中止合併並捨棄目前已處理的內容？',
   'git.empty.noProject': '版本控制需要專案目錄。',
   'git.empty.noProjectHint': '建立專案並以它啟動伺服器：',
   'git.empty.notRepo': '此專案尚未是 git 儲存庫。',

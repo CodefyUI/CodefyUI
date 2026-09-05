@@ -116,9 +116,16 @@ export function ActionMenu({
   const menuRef = useRef<HTMLDivElement>(null);
   const itemRefs = useRef<(HTMLButtonElement | null)[]>([]);
   const [open, setOpen] = useState(false);
-  // Index into `items` of the row that owns the tab stop, or -1 when there is
-  // no row at all (then the panel itself takes focus, so Escape still works).
-  const [activeIndex, setActiveIndex] = useState(-1);
+  // The `id` of the row that owns the tab stop, or null when no row does
+  // (then the panel itself takes focus, so Escape still works).
+  //
+  // The id and not the index. `items` belongs to the caller and a row can be
+  // DROPPED while the menu is open -- a stash popped from under an open
+  // menu, a remote removed by another tab's poll -- and an index survives
+  // that pointing at whatever moved up into it. React keys the buttons by
+  // id, so the DOM node keeps the browser's focus; it was only the tab stop
+  // and the arrow keys' starting point that ended up on the wrong row.
+  const [activeId, setActiveId] = useState<string | null>(null);
   const [position, setPosition] = useState<CSSProperties>({ top: 0 });
   // One stem for the hint elements; each row appends its own index, so the
   // ids are stable across renders and unique across menus on the page.
@@ -128,14 +135,18 @@ export function ActionMenu({
   const hasCheckbox = items.some((item) => item.checked !== undefined);
 
   // `items` belongs to the caller and can change while the menu is open: a row
-  // can be dropped the moment a list refreshes. An index left pointing past the
-  // end would focus nothing at all — and a menu with no focus inside it
-  // swallows Escape, which is the one key that must always work. So the row
-  // that actually holds focus and the tab stop is derived every render, and
-  // only falls back when it has to. A row that merely turns REFUSED keeps
-  // focus: the reason it was refused has just appeared on it.
-  const focusIndex = activeIndex >= 0 && activeIndex <= lastIndex
-    ? activeIndex
+  // can be dropped the moment a list refreshes. A row that is no longer there
+  // can hold nothing at all — and a menu with no focus inside it swallows
+  // Escape, which is the one key that must always work. So the row that
+  // actually holds focus and the tab stop is derived every render, and only
+  // falls back to the first when the one it names has gone. A row that merely
+  // turns REFUSED keeps focus: the reason it was refused has just appeared
+  // on it.
+  const namedIndex = activeId === null
+    ? -1
+    : items.findIndex((item) => item.id === activeId);
+  const focusIndex = namedIndex >= 0
+    ? namedIndex
     : (items.length > 0 ? 0 : -1);
 
   const place = useCallback(() => {
@@ -187,7 +198,7 @@ export function ActionMenu({
 
   const close = useCallback((returnFocus: boolean) => {
     setOpen(false);
-    setActiveIndex(-1);
+    setActiveId(null);
     if (returnFocus) triggerRef.current?.focus();
   }, []);
 
@@ -208,13 +219,15 @@ export function ActionMenu({
 
   const openMenu = (edge: 'first' | 'last') => {
     if (disabled) return;
-    setActiveIndex(items.length === 0 ? -1 : (edge === 'first' ? 0 : lastIndex));
+    setActiveId(items.length === 0
+      ? null
+      : items[edge === 'first' ? 0 : lastIndex].id);
     setOpen(true);
   };
 
   const step = (delta: number) => {
     if (items.length === 0) return;
-    setActiveIndex((focusIndex + delta + items.length) % items.length);
+    setActiveId(items[(focusIndex + delta + items.length) % items.length].id);
   };
 
   const onMenuKeyDown = (e: ReactKeyboardEvent<HTMLDivElement>) => {
@@ -229,11 +242,11 @@ export function ActionMenu({
         break;
       case 'Home':
         e.preventDefault();
-        if (items.length > 0) setActiveIndex(0);
+        if (items.length > 0) setActiveId(items[0].id);
         break;
       case 'End':
         e.preventDefault();
-        if (items.length > 0) setActiveIndex(lastIndex);
+        if (items.length > 0) setActiveId(items[lastIndex].id);
         break;
       case 'Escape':
         e.preventDefault();
@@ -331,7 +344,7 @@ export function ActionMenu({
                   // where the user actually is rather than from where the keyboard
                   // last was. Harmless when the focus effect is what moved it: the
                   // value it writes is the one already in state.
-                  onFocus={() => setActiveIndex(index)}
+                  onFocus={() => setActiveId(item.id)}
                   onClick={() => activate(item)}
                 >
                   {hasCheckbox && (

@@ -1378,6 +1378,11 @@ const en = {
     + 'This cannot be undone.',
   'git.discard.action': 'Discard',
   'git.merge.banner': 'Merge in progress: resolve each file, then commit.',
+  // A question, like every other destructive confirm in this panel. The
+  // banner's own sentence was the heading here, so a reader who pressed
+  // Abort Merge got a modal telling them to resolve and commit instead --
+  // and the banner is still behind it, saying the same thing twice.
+  'git.merge.abortConfirm': 'Abort the merge and discard what you have resolved?',
   'git.empty.noProject': 'Source control needs a project directory.',
   'git.empty.noProjectHint': 'Create one and start the server on it:',
   'git.empty.notRepo': 'This project is not a git repository yet.',

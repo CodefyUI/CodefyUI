@@ -111,12 +111,16 @@ describe('MergeGroup: the group', () => {
 });
 
 describe('MergeGroup: abort', () => {
-  it('asks with the banner sentence before throwing the merge away', async () => {
+  it('asks a question of its own before throwing the merge away', async () => {
+    // Not the banner's sentence. That is an INSTRUCTION -- "resolve each
+    // file, then commit" -- and as the heading of a modal opened by Abort
+    // Merge it told the reader to do the opposite of what they pressed,
+    // while the banner behind it said the same words a second time.
     render(<MergeGroup files={[conflict('a.py')]} />);
     fireEvent.click(screen.getByRole('button', { name: 'Abort Merge' }));
     await waitFor(() => expect(abortMerge).toHaveBeenCalled());
     expect(askedConfirm).toHaveBeenCalledWith({
-      title: 'Merge in progress: resolve each file, then commit.',
+      title: 'Abort the merge and discard what you have resolved?',
       confirmText: 'Abort Merge',
       variant: 'danger',
     });

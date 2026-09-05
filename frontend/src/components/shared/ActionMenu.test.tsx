@@ -406,6 +406,45 @@ describe('ActionMenu', () => {
     expect(document.activeElement).toBe(trigger());
   });
 
+  it('stays on the row it was on when a row ABOVE it is removed', () => {
+    // The tab stop is keyed on the row's id, not on its index. A stash
+    // popped from under an open menu, or a remote another tab removed on
+    // the poll, shifts every row below it up one -- and an index would have
+    // followed the position rather than the row, moving the arrow keys'
+    // starting point onto whatever slid into the slot.
+    function Host() {
+      const [dropped, setDropped] = useState(false);
+      const rows = [
+        { id: 'a', label: 'Alpha', onSelect: onA },
+        { id: 'b', label: 'Bravo', onSelect: onB },
+        { id: 'c', label: 'Charlie', onSelect: onC },
+      ];
+      return (
+        <>
+          <ActionMenu
+            label="More actions"
+            items={dropped ? rows.filter((row) => row.id !== 'a') : rows}
+          >
+            dots
+          </ActionMenu>
+          <button type="button" onClick={() => setDropped(true)}>drop</button>
+        </>
+      );
+    }
+    render(<Host />);
+    fireEvent.click(trigger());
+    fireEvent.keyDown(item('Alpha'), { key: 'End' });
+    expect(document.activeElement).toBe(item('Charlie'));
+
+    fireEvent.click(screen.getByRole('button', { name: 'drop' }));
+
+    expect(item('Charlie').getAttribute('tabindex')).toBe('0');
+    expect(item('Bravo').getAttribute('tabindex')).toBe('-1');
+    // ...and the arrows go on from there, not from where the row used to be.
+    fireEvent.keyDown(item('Charlie'), { key: 'ArrowDown' });
+    expect(document.activeElement).toBe(item('Bravo'));
+  });
+
   it('falls back to the panel when the last row is removed under it', () => {
     function Host() {
       const [empty, setEmpty] = useState(false);

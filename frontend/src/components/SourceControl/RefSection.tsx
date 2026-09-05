@@ -47,7 +47,6 @@ export interface RefSectionProps {
   actions?: ReactNode;
   /** The `<li>` rows. */
   children?: ReactNode;
-  sectionId?: string;
 }
 
 /**
@@ -73,21 +72,17 @@ export function RefSection({
   onOpenChange,
   actions,
   children,
-  sectionId,
 }: RefSectionProps) {
-  const ids = refSectionIds(kind);
-  const section = sectionId ?? ids.sectionId;
-  // The heading and the list are a function of the KIND and nothing else. Both
+  // All three ids are a function of the KIND and nothing else. Two of them
   // are pointed at from OUTSIDE this component -- the header's branch button
   // scrolls to `refSectionIds('branches').headingId` and hangs its
   // `aria-controls` off that kind's `listId` -- so an id that could be
   // overridden per instance would take one of those with it, silently.
-  const headingId = ids.headingId;
-  const list = ids.listId;
+  const { sectionId, headingId, listId } = refSectionIds(kind);
 
   return (
     <section
-      id={section}
+      id={sectionId}
       className={styles.group}
       data-section={kind}
       aria-labelledby={headingId}
@@ -98,7 +93,7 @@ export function RefSection({
           id={headingId}
           className={styles.groupToggle}
           aria-expanded={open}
-          aria-controls={list}
+          aria-controls={listId}
           // The heading is the first thing to lose room at a 180px panel width,
           // and it loses more of it the moment a hover opens the actions beside
           // it -- so the name in full stays in a `title`.
@@ -118,7 +113,7 @@ export function RefSection({
       </div>
       {/* `role="list"` is spelled out because `list-style: none` takes the list
           semantics away from a `<ul>` in Safari. */}
-      <ul id={list} className={styles.list} role="list" hidden={!open}>
+      <ul id={listId} className={styles.list} role="list" hidden={!open}>
         {children}
       </ul>
     </section>
