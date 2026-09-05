@@ -144,6 +144,30 @@ describe('summarizeGraphDiff, logic files', () => {
     ]);
   });
 
+  it('compares a parameter whose name is one Object.prototype already answers to', () => {
+    // `key in params` is true for `toString` and `constructor` on every object
+    // `JSON.parse` builds, so a parameter with such a name used to be compared
+    // against an inherited function instead of against nothing: the removal
+    // vanished entirely and the addition read `from: null`.
+    const dropped = summarizeGraphDiff(
+      graphDoc({ nodes: [{ id: 'n', type: 'T', data: { params: { toString: 1 } } }] }),
+      graphDoc({ nodes: [{ id: 'n', type: 'T', data: { params: {} } }] }),
+      'graph',
+    );
+    expect(dropped.lines).toEqual([
+      { kind: 'param', node: 'n', param: 'toString', from: '1', to: '' },
+    ]);
+
+    const gained = summarizeGraphDiff(
+      graphDoc({ nodes: [{ id: 'n', type: 'T', data: { params: {} } }] }),
+      graphDoc({ nodes: [{ id: 'n', type: 'T', data: { params: { constructor: 2 } } }] }),
+      'graph',
+    );
+    expect(gained.lines).toEqual([
+      { kind: 'param', node: 'n', param: 'constructor', from: '', to: '2' },
+    ]);
+  });
+
   it('clips a long parameter value to forty characters', () => {
     const long = 'x'.repeat(60);
     const summary = summarizeGraphDiff(
@@ -367,11 +391,46 @@ describe('summarizeGraphDiff, presets and subgraphs', () => {
     ]);
   });
 
-  it('counts the insides of an added and of a removed subgraph definition', () => {
-    expect(summarizeGraphDiff(graphDoc(), graphDoc({ subgraphs: [SUBGRAPH] }), 'graph').lines)
-      .toEqual([{ kind: 'nodesAdded', count: 1 }]);
-    expect(summarizeGraphDiff(graphDoc({ subgraphs: [SUBGRAPH] }), graphDoc(), 'graph').lines)
-      .toEqual([{ kind: 'nodesRemoved', count: 1 }]);
+  it('gives an added or removed subgraph definition no line, without calling it unchanged', () => {
+    // A definition's insides are not nodes on the canvas. Counting them made
+    // the commonest subgraph edit -- collapsing a selection, the test below --
+    // report edges nobody added, and it contradicted the edit-in-place case,
+    // which has no line either. `canonicalText` still refuses to call it
+    // unchanged, so nothing is claimed falsely.
+    const added = summarizeGraphDiff(graphDoc(), graphDoc({ subgraphs: [SUBGRAPH] }), 'graph');
+    expect(added.lines).toEqual([]);
+    expect(added.noLogicChange).toBe(false);
+
+    const removed = summarizeGraphDiff(graphDoc({ subgraphs: [SUBGRAPH] }), graphDoc(), 'graph');
+    expect(removed.lines).toEqual([]);
+    expect(removed.noLogicChange).toBe(false);
+  });
+
+  it('reports no added edge when a selection is collapsed into a subgraph', () => {
+    // Collapsing moves the selected nodes and the edges between them out of
+    // the top level and into the new definition, leaving one instance node
+    // behind. Counting the definition's insides read that as "2 edges added"
+    // over an edit that added none.
+    const a = { id: 'a', type: 'CSVReader', data: { params: {} } };
+    const b = { id: 'b', type: 'Linear', data: { params: {} } };
+    const c = { id: 'c', type: 'ReLU', data: { params: {} } };
+    const inner = [
+      { id: 'e1', source: 'a', sourceHandle: 'tensor', target: 'b', targetHandle: 'x' },
+      { id: 'e2', source: 'b', sourceHandle: 'tensor', target: 'c', targetHandle: 'x' },
+    ];
+    const summary = summarizeGraphDiff(
+      graphDoc({ nodes: [a, b, c], edges: inner }),
+      graphDoc({
+        nodes: [{ id: 'sg_inst', type: 'Subgraph', data: { params: {} } }],
+        subgraphs: [{ ...SUBGRAPH, nodes: [a, b, c], edges: inner }],
+      }),
+      'graph',
+    );
+    expect(summary.lines).toEqual([
+      { kind: 'nodesAdded', count: 1 },
+      { kind: 'nodesRemoved', count: 3 },
+      { kind: 'edgesRemoved', count: 2 },
+    ]);
   });
 
   it('says nothing about a subgraph edited in place, but does not call it unchanged', () => {
@@ -418,6 +477,30 @@ describe('summarizeGraphDiff, layout files', () => {
     );
     expect(summary.lines).toEqual([]);
     expect(summary.noLogicChange).toBe(false);
+  });
+
+  it('does not call a position that only just appeared a move, whatever its id is', () => {
+    // `id in was` is true for `toString` on every object `JSON.parse` builds,
+    // so a node with that id counted as moved the moment it appeared -- and
+    // the inherited function is not a point, so it never compared equal.
+    const summary = summarizeGraphDiff(
+      layoutDoc({ positions: { a: { x: 0, y: 0 } } }),
+      layoutDoc({ positions: { a: { x: 0, y: 0 }, toString: { x: 5, y: 5 } } }),
+      'layout',
+    );
+    expect(summary.lines).toEqual([]);
+    expect(summary.noLogicChange).toBe(false);
+  });
+
+  it('has no line for a layout file that was added or deleted, nor calls it unchanged', () => {
+    // The empty-lines-with-noLogicChange-false shape: there is no line kind
+    // for "the whole file appeared", so Task 3 renders nothing here rather
+    // than an empty strip.
+    const layout = layoutDoc({ positions: { a: { x: 0, y: 0 } } });
+    expect(summarizeGraphDiff(null, layout, 'layout'))
+      .toEqual({ lines: [], more: 0, noLogicChange: false, unparseable: false });
+    expect(summarizeGraphDiff(layout, null, 'layout'))
+      .toEqual({ lines: [], more: 0, noLogicChange: false, unparseable: false });
   });
 
   it('leaves segment groups and note geometry to the text diff, without lying about them', () => {

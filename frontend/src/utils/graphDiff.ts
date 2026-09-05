@@ -28,9 +28,14 @@
  * - Presets by `preset_name`. A preset that changed contributes its own node
  *   and edge differences to the same counts the top level uses, and one that
  *   appeared or vanished contributes everything inside it.
- * - Subgraph definitions by `id`, added or removed only. One edited in place
- *   gets no line -- there is no key for it -- but it does defeat
- *   `noLogicChange`, so the summary never claims nothing happened.
+ * - Subgraph definitions get NO line, whether one appeared, vanished or was
+ *   edited in place: there is no line kind for a definition, and a
+ *   definition's insides are not nodes on the canvas. Counting them as such
+ *   made the commonest subgraph edit lie -- collapsing three connected nodes
+ *   into a block moves them out of `nodes` and into the definition, so the
+ *   summary read "2 edges added" over an edit that added none. Every such
+ *   change still defeats `noLogicChange`, so the summary never claims nothing
+ *   happened; the text diff below is what shows it.
  * - Layout: a node in `positions` whose `{x, y}` changed counts toward
  *   `positionsMoved`. A position that appeared or vanished is NOT a move: the
  *   node was added or deleted, and the `.graph.json` half of the pair reports
@@ -65,7 +70,17 @@ export type GraphDiffLine =
   | { kind: 'param'; node: string; param: string; from: string; to: string };
 
 export interface GraphDiffSummary {
-  /** At most `MAX_GRAPH_DIFF_LINES`, counts first. */
+  /**
+   * At most `MAX_GRAPH_DIFF_LINES`, counts first.
+   *
+   * Empty WITH `noLogicChange` false is a normal answer, not a failure: the
+   * file changed in a way v1 has no line kind for -- a layout file added or
+   * deleted, a name or description edit, a segment group, a note resized, a
+   * subgraph definition, or a preset instance's per-instance override, which
+   * lives at `data.internalParams` and not at `data.params`. Render nothing
+   * (or fall straight through to the text diff) rather than an empty strip
+   * with no sentence in it.
+   */
   lines: GraphDiffLine[];
   /** How many lines did not fit -- `git.gdiff.more`. */
   more: number;
@@ -226,21 +241,14 @@ function compareGraphs(before: Doc, after: Doc, tally: Tally): void {
     tally.edgesRemoved += asList(preset.edges).length;
   }
 
-  // Definitions, added or removed only. One edited in place has no line kind
-  // to carry it and is left to `canonicalText`, which will not let the
-  // summary call it unchanged.
-  const oldSubs = byKey(before.subgraphs, 'id');
-  const newSubs = byKey(after.subgraphs, 'id');
-  for (const [id, definition] of newSubs) {
-    if (oldSubs.has(id)) continue;
-    tally.nodesAdded += asList(definition.nodes).length;
-    tally.edgesAdded += asList(definition.edges).length;
-  }
-  for (const [id, definition] of oldSubs) {
-    if (newSubs.has(id)) continue;
-    tally.nodesRemoved += asList(definition.nodes).length;
-    tally.edgesRemoved += asList(definition.edges).length;
-  }
+  // Subgraph definitions are deliberately absent from this function. A
+  // definition holds nodes and edges, but they are not nodes and edges of the
+  // canvas: collapsing a selection into a block MOVES them off the top level
+  // and into the definition, so counting the definition's insides reported
+  // every moved edge as added on top of reporting it as removed. Whatever
+  // happened to a definition -- appeared, vanished, edited -- reaches the
+  // reader through `canonicalText`, which will not let the summary call it
+  // unchanged, and through the text diff below the summary.
 }
 
 function compareNodes(before: Map<string, NodeFacts>, after: Map<string, NodeFacts>, tally: Tally): void {
@@ -267,7 +275,7 @@ function compareNodes(before: Map<string, NodeFacts>, after: Map<string, NodeFac
 function compareParams(node: string, before: Doc, after: Doc, tally: Tally): void {
   const keys = Object.keys(after);
   for (const key of Object.keys(before)) {
-    if (!(key in after)) keys.push(key);
+    if (!hasOwn(after, key)) keys.push(key);
   }
   for (const param of keys) {
     // Compared at full length and clipped only for the line: two values that
@@ -293,7 +301,7 @@ function comparePositions(before: Doc, after: Doc, tally: Tally): void {
   const was = isPlainObject(before.positions) ? before.positions : {};
   const now = isPlainObject(after.positions) ? after.positions : {};
   for (const [id, point] of Object.entries(now)) {
-    if (!(id in was)) continue;
+    if (!hasOwn(was, id)) continue;
     if (!samePoint(was[id], point)) tally.positionsMoved += 1;
   }
 }
@@ -436,7 +444,7 @@ function edgeKey(raw: unknown): string | null {
   return `${source}:${asText(raw.sourceHandle)}->${target}:${asText(raw.targetHandle)}`;
 }
 
-function byKey(list: unknown, field: 'preset_name' | 'id'): Map<string, Doc> {
+function byKey(list: unknown, field: 'preset_name'): Map<string, Doc> {
   const out = new Map<string, Doc>();
   for (const raw of asList(list)) {
     if (!isPlainObject(raw) || typeof raw[field] !== 'string') continue;
@@ -457,7 +465,7 @@ function keyOf(value: unknown, field: string): string {
 
 /** One parameter as text, or the empty string when the key is not there. */
 function valueText(params: Doc, key: string): string {
-  return key in params ? stableText(params[key]) : '';
+  return hasOwn(params, key) ? stableText(params[key]) : '';
 }
 
 function clipValue(text: string): string {
@@ -483,6 +491,16 @@ function sortKeys(value: unknown): unknown {
 
 function isPlainObject(value: unknown): value is Doc {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+/**
+ * Own keys only. `in` reaches Object.prototype, where `toString`,
+ * `constructor` and `valueOf` live -- so a parameter or a node id with one of
+ * those names would be read as present on a side that never mentioned it, and
+ * compared against an inherited function.
+ */
+function hasOwn(object: Doc, key: string): boolean {
+  return Object.prototype.hasOwnProperty.call(object, key);
 }
 
 function asList(value: unknown): unknown[] {
