@@ -1018,6 +1018,24 @@ describe('history', () => {
     expect(api.getGitLog).not.toHaveBeenCalled();
   });
 
+  it('makes two presses of Load more one page', async () => {
+    // Both reads would carry the same `skip`, so the second is a duplicate
+    // request for rows the first is already fetching.
+    api.getGitLog.mockResolvedValueOnce(logPage(['c4', 'c3'], true));
+    await git().loadLog();
+    api.getGitLog.mockClear();
+
+    const slow = deferred<GitLogPage>();
+    api.getGitLog.mockReturnValueOnce(slow.promise);
+    const first = git().loadMoreLog();
+    const second = git().loadMoreLog();
+    expect(api.getGitLog).toHaveBeenCalledTimes(1);
+
+    slow.resolve(logPage(['c2'], false));
+    await Promise.all([first, second]);
+    expect(shas()).toEqual(['c4', 'c3', 'c2']);
+  });
+
   it('records an unborn branch as a page rather than a failure', async () => {
     api.getGitLog.mockResolvedValue({ commits: [], hasMore: false, unborn: true });
     await git().loadLog();
@@ -1182,6 +1200,30 @@ describe('history', () => {
     expect(api.getGitLog).not.toHaveBeenCalled();
   });
 
+  it('reads the page a section left open comes back to', async () => {
+    // The open flags are persisted, so a reader who left History open meets
+    // it open again after a reload. It is not in `refreshExpandedRefs`'s walk,
+    // so without a read of its own the section would draw its empty slice --
+    // "0" over a repository that has commits -- until it was reopened by hand.
+    localStorage.setItem(
+      'codefyui-git-sections',
+      JSON.stringify({ branches: false, remotes: false, stashes: false, history: true }),
+    );
+    _resetGitStoreForTesting();
+    expect(git().sections.history).toBe(true);
+
+    git().attach();
+    await settle();
+    expect(api.getGitLog).toHaveBeenCalledWith(0, 30);
+    expect(shas()).toEqual(['c1']);
+  });
+
+  it('reads nothing on mount for a history nobody has opened', async () => {
+    git().attach();
+    await settle();
+    expect(api.getGitLog).not.toHaveBeenCalled();
+  });
+
   it('stays off the fifteen-second poll', async () => {
     // Paging and polling do not mix: a re-read every fifteen seconds would
     // throw away every page past the first one the reader had loaded.
@@ -1191,9 +1233,11 @@ describe('history', () => {
 
     git().attach();
     await settle();
+    // One read for the mount, and then nothing on any tick.
+    expect(api.getGitLog).toHaveBeenCalledTimes(1);
     await vi.advanceTimersByTimeAsync(GIT_POLL_MS);
     await vi.advanceTimersByTimeAsync(GIT_POLL_MS);
-    expect(api.getGitLog).not.toHaveBeenCalled();
+    expect(api.getGitLog).toHaveBeenCalledTimes(1);
   });
 });
 

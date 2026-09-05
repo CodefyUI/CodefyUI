@@ -536,7 +536,9 @@ function refreshExpandedRefs(): void {
 /**
  * Read page one again, where there is a history that could now be wrong.
  *
- * The trigger is any write that refreshes the BRANCH list, because that is
+ * Two callers. `attach()` runs it once per mount, because the open flags are
+ * persisted and a section left open comes back open with nothing behind it.
+ * The other is any write that refreshes the BRANCH list, because that is
  * exactly the set that can move HEAD: a commit or an amend, a pull, a sync, a
  * checkout, a branch created with one, an init. Nothing else writes a commit,
  * so nothing else invalidates the page on screen.
@@ -1240,6 +1242,12 @@ export const useGitStore = create<GitState>((set, get) => ({
     startPoll();
     void get().refresh();
     refreshExpandedRefs();
+    // History is not in that walk (it is paged, and paging does not survive a
+    // schedule), but the open flags ARE persisted -- so a section left open
+    // comes back open on the next load with an empty slice behind it. Without
+    // this line it would say "0" over a repository that has commits, until
+    // somebody collapsed and reopened it.
+    void reloadLogIfLive();
   },
 
   detach: () => {
