@@ -30,9 +30,11 @@ describe('EmptyStates: no project directory', () => {
     expect(screen.getByText('cdui start --project my-project')).toBeTruthy();
     expect(screen.queryByRole('button', { name: 'Initialize Repository' })).toBeNull();
 
+    // Through `SCM_DOCS_PATH`, so this screen and the More menu's row cannot
+    // point at two different pages.
     const guide = screen.getByRole('link', { name: 'Setup guide' });
     expect(guide.getAttribute('href')).toBe(
-      'https://docs.codefyui.com/usage/project-directories',
+      'https://docs.codefyui.com/usage/source-control',
     );
     expect(guide.getAttribute('rel')).toBe('noopener noreferrer');
   });

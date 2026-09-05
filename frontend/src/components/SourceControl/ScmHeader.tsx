@@ -14,14 +14,15 @@ import { aheadBehindGlyphs, errorSentence, followUpFor, gitOpKey } from './scm';
 /**
  * The documentation page the Setup guide link and menu row point at.
  *
- * Project directories, not a source-control page: the tab's own page is
- * written in the part of this track that adds history and diffs, and a link
- * to it now would 404. This one exists, and it is the right answer for the
- * screen the link matters most on -- "Source control needs a project
- * directory", whose two commands are that page's subject. It moves to the
- * tab's page when that page lands.
+ * The tab's OWN page. It pointed at the project directories page while this
+ * one was still being written -- the right answer for the screen the link
+ * matters most on, "Source control needs a project directory", whose two
+ * commands are that page's subject, and the wrong one everywhere else. That
+ * screen's own text still names the commands; the page it links to now is the
+ * one about the panel the reader is looking at, and sets a project directory
+ * up on the way.
  */
-export const SCM_DOCS_PATH = '/usage/project-directories';
+export const SCM_DOCS_PATH = '/usage/source-control';
 
 /**
  * The two places focus can be parked when the row that held it is gone.
@@ -114,6 +115,7 @@ export function ScmHeader() {
   const hideLayout = useGitStore((s) => s.hideLayout);
   const refresh = useGitStore((s) => s.refresh);
   const refreshRefs = useGitStore((s) => s.refreshRefs);
+  const loadLog = useGitStore((s) => s.loadLog);
   const setSectionOpen = useGitStore((s) => s.setSectionOpen);
   const setHideLayout = useGitStore((s) => s.setHideLayout);
   const openIdentityForm = useGitStore((s) => s.openIdentityForm);
@@ -269,7 +271,14 @@ export function ScmHeader() {
     for (const kind of REF_KINDS) {
       if (sections[kind]) void refreshRefs(kind);
     }
-  }, [refresh, refreshRefs, repoState, sections]);
+    // History is not one of those kinds and cannot be: `refreshExpandedRefs`
+    // walks them on the fifteen-second poll, and re-reading a PAGED list every
+    // fifteen seconds would throw away every page past the first that the
+    // reader had loaded. The store reads it after the writes that move HEAD,
+    // and this button is the only other place a reader asks for it -- which is
+    // why the line exists here and nowhere else.
+    if (sections.history) void loadLog();
+  }, [loadLog, refresh, refreshRefs, repoState, sections]);
 
   const askThenStash = useCallback(async () => {
     const message = await prompt({ title: t('git.stash.messagePrompt') });

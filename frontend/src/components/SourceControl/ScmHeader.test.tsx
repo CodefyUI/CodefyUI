@@ -67,6 +67,7 @@ let setHideLayout: ReturnType<typeof vi.fn<GitActions['setHideLayout']>>;
 let openIdentityForm: ReturnType<typeof vi.fn<GitActions['openIdentityForm']>>;
 let dismissError: ReturnType<typeof vi.fn<GitActions['dismissError']>>;
 let refreshRefs: ReturnType<typeof vi.fn<GitActions['refreshRefs']>>;
+let loadLog: ReturnType<typeof vi.fn<GitActions['loadLog']>>;
 let setSectionOpen: ReturnType<typeof vi.fn<GitActions['setSectionOpen']>>;
 let doFetch: ReturnType<typeof vi.fn<GitActions['fetch']>>;
 let pull: ReturnType<typeof vi.fn<GitActions['pull']>>;
@@ -85,6 +86,7 @@ beforeEach(() => {
   openIdentityForm = vi.fn();
   dismissError = vi.fn();
   refreshRefs = vi.fn(async () => {});
+  loadLog = vi.fn(async () => {});
   setSectionOpen = vi.fn();
   doFetch = vi.fn(async () => true);
   pull = vi.fn(async () => true);
@@ -100,6 +102,7 @@ beforeEach(() => {
     openIdentityForm,
     dismissError,
     refreshRefs,
+    loadLog,
     setSectionOpen,
     fetch: doFetch,
     pull,
@@ -159,6 +162,42 @@ describe('ScmHeader: the title row', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Refresh' }));
     expect(refresh).toHaveBeenCalledTimes(1);
     expect(refreshRefs).not.toHaveBeenCalled();
+    expect(loadLog).not.toHaveBeenCalled();
+  });
+
+  it('reads the history too, and only while that section is open', () => {
+    // History is not in `REF_KINDS` -- it is paged, and re-reading it on the
+    // fifteen-second poll would throw away every page past the first that the
+    // reader had loaded. This button is the one place a reader asks for it,
+    // so it is the one place the walk above cannot answer for.
+    useGitStore.setState({
+      sections: { branches: false, remotes: false, stashes: false, history: true },
+    });
+    render(<ScmHeader />);
+    // The header reads the remote list on mount, whatever this button does:
+    // "Publish or Sync" cannot be decided from a list nobody has fetched.
+    refreshRefs.mockClear();
+    loadLog.mockClear();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Refresh' }));
+
+    expect(loadLog).toHaveBeenCalledTimes(1);
+    expect(refreshRefs).not.toHaveBeenCalled();
+  });
+
+  it('reads no history where there is no repository', () => {
+    useGitStore.setState({
+      repoState: 'not_repo',
+      status: null,
+      sections: { branches: false, remotes: false, stashes: false, history: true },
+    });
+    render(<ScmHeader />);
+    loadLog.mockClear();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Refresh' }));
+
+    expect(refresh).toHaveBeenCalledTimes(1);
+    expect(loadLog).not.toHaveBeenCalled();
   });
 
   it('reads no list where there is no repository, whatever is remembered open', () => {
@@ -270,8 +309,12 @@ describe('ScmHeader: the title row', () => {
     render(<ScmHeader />);
     openMore();
     fireEvent.click(screen.getByRole('menuitem', { name: 'Setup guide' }));
+    // The tab's OWN page, now that there is one. It pointed at the project
+    // directories page while this one was still being written, which was the
+    // right answer for the screen the link matters most on and the wrong one
+    // everywhere else.
     expect(open).toHaveBeenCalledWith(
-      'https://docs.codefyui.com/usage/project-directories',
+      'https://docs.codefyui.com/usage/source-control',
       '_blank',
       'noopener,noreferrer',
     );
