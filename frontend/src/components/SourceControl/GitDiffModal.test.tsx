@@ -151,6 +151,26 @@ describe('GitDiffModal: what it opens on', () => {
     // The short form in the header: forty characters is not a heading.
     expect(within(dialog()).getByText('Commit aaaaaaa')).toBeTruthy();
   });
+
+  it('shows the next file it is asked for and nothing of the last one', async () => {
+    // The body is keyed by target, so a second row REMOUNTS it. Without that
+    // key the graph summary -- which is state, and which only a successful
+    // pair of graph reads ever writes -- would still be on screen above the
+    // new file's patch, saying what changed in a graph nobody is looking at.
+    readFile.mockImplementation(async ({ ref }) =>
+      fileAtRef(ref === 'worktree' ? GRAPH_AFTER : GRAPH_BEFORE));
+    render(<GitDiffModal />);
+    await act(async () => {
+      useUIStore.getState().openGitDiff({ path: 'graphs/net.graph.json', scope: 'worktree' });
+    });
+    expect(within(dialog()).getByText('linear: out_features 16 -> 32')).toBeTruthy();
+
+    await act(async () => {
+      useUIStore.getState().openGitDiff({ path: 'src/model.py', scope: 'worktree' });
+    });
+    expect(within(dialog()).getByText('Changes: src/model.py')).toBeTruthy();
+    expect(within(dialog()).queryByText('linear: out_features 16 -> 32')).toBeNull();
+  });
 });
 
 describe('GitDiffModal: the patch', () => {
@@ -287,6 +307,47 @@ describe('GitDiffModal: what changed in the graph', () => {
     await open({ path: 'graphs/net.graph.json', scope: 'worktree' });
     expect(within(dialog()).queryByText('Could not parse as a graph')).toBeNull();
     expect(within(dialog()).queryByText('No logic change')).toBeNull();
+  });
+
+  it('says nothing about a graph whose side came back as bytes', async () => {
+    // `GET /file` answers a binary blob with `binary` and no text. Treated as
+    // text it is an empty string, which parses as broken JSON and would
+    // report "could not parse" about a file that is not a graph at all.
+    readFile.mockResolvedValue(fileAtRef('', { binary: true }));
+    await open({ path: 'graphs/net.graph.json', scope: 'worktree' });
+    expect(within(dialog()).queryByText('Could not parse as a graph')).toBeNull();
+    expect(within(dialog()).queryByText('No logic change')).toBeNull();
+  });
+
+  it('takes a side that is not there as an empty one', async () => {
+    // The commonest commit case: a graph ADDED in that commit has no parent
+    // side, and `GET /file` answers 404. That is an ANSWER -- "everything in
+    // this file is new" -- and the summary is what says so.
+    readFile.mockImplementation(async ({ ref }) => {
+      if (ref === 'index') {
+        throw new GitApiError(404, 'no such path', { code: 'not_found' });
+      }
+      return fileAtRef(GRAPH_AFTER);
+    });
+    await open({ path: 'graphs/net.graph.json', scope: 'worktree' });
+    expect(within(dialog()).getByText('1 node(s) added')).toBeTruthy();
+  });
+
+  it('says nothing about a graph whose side was refused for any other reason', async () => {
+    // Only 404 means "not there". A 403 means the read did not happen, and a
+    // summary built on the one side that answered would report every node in
+    // the file as added.
+    readFile.mockImplementation(async ({ ref }) => {
+      if (ref === 'index') {
+        throw new GitApiError(403, 'path is ignored', { code: 'ignored' });
+      }
+      return fileAtRef(GRAPH_AFTER);
+    });
+    await open({ path: 'graphs/net.graph.json', scope: 'worktree' });
+    expect(within(dialog()).queryByText('1 node(s) added')).toBeNull();
+    expect(within(dialog()).queryByText('Could not parse as a graph')).toBeNull();
+    // And the patch itself is unaffected: the diff read succeeded.
+    expect(within(dialog()).getByText('hidden = 32')).toBeTruthy();
   });
 
   it('says when a graph file cannot be read as a graph', async () => {
