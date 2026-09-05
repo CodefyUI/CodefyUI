@@ -746,6 +746,40 @@
   max-width: 60%;
 }
 
+/* ── A third thing on a row that fits two ────────────────────────────────
+   The pair above divides a row between two halves. A STASH row has three: a
+   message somebody wrote, the branch and date it was written on, and git's own
+   selector. At 180px the meta took its 60% and the chip cannot shrink, so the
+   message was drawn as `ex...` beside `authte...` and `stash@{0}` -- a row cut
+   to two characters of the only half that identifies it.
+
+   So below the threshold the meta leaves the row: absolutely positioned, so it
+   takes no width and the message gets all of it. Off screen rather than
+   `display: none` -- that would take the branch and the date out of the
+   accessibility tree too, and a reader is the one person who never had the
+   glance this is being dropped to save. The pointer's copy is the row's own
+   `title`, since a 1px box cannot be hovered.
+
+   The same 380px as `.rowChoices` above, and the same reason: it is what is
+   left of a row once a chip and the actions have taken theirs. */
+.metaOptional {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  clip-path: inset(50%);
+}
+
+@container (min-width: 380px) {
+  .metaOptional {
+    position: static;
+    width: auto;
+    height: auto;
+    margin: 0;
+    clip-path: none;
+  }
+}
+
 /* One letter, tinted by what happened to the file. Fixed width so the names
    below each other start on one edge. */
 .chip {

@@ -155,6 +155,11 @@ export function StashesSection() {
             identity={selector}
             badge={selector}
             meta={meta}
+            // Three things want this row and a 180px panel has room for two.
+            // The message is the one a reader is scanning for -- it is the
+            // string they wrote -- so below 380px the branch and date come out
+            // of the row and stay in its title and its accessible text.
+            metaOptional
             actions={[
               {
                 id: 'pop',

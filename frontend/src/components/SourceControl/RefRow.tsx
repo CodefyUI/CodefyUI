@@ -71,6 +71,22 @@ export interface RefRowProps {
    * shrink factors say.
    */
   firm?: 'name' | 'meta';
+  /**
+   * Whether a narrow panel DROPS the meta rather than ellipsising it.
+   *
+   * `firm` divides a row between two halves that both have to be on screen.
+   * A stash row has three: a message somebody wrote, the branch and date it
+   * was written on, and git's own selector -- and at 180px that came out as
+   * `ex... authte... stash@{0}`, a message cut to two characters because the
+   * meta had taken its 60% and the chip cannot shrink. Two of the three fit,
+   * and the message is the half the reader is looking for.
+   *
+   * So below the same threshold the row's verbs collapse at, the meta comes
+   * out of the row -- off screen rather than deleted, so a reader still hears
+   * it, and into the row's `title` as well, because a clipped span is not
+   * something a pointer can be over. Above the threshold nothing changes.
+   */
+  metaOptional?: boolean;
   actions: RefRowAction[];
 }
 
@@ -99,6 +115,7 @@ export function RefRow({
   meta,
   metaLabel,
   firm = 'meta',
+  metaOptional = false,
   actions,
 }: RefRowProps) {
   const { t } = useI18n();
@@ -111,6 +128,15 @@ export function RefRow({
   const shownMeta = meta ?? '';
   const spokenMeta = metaLabel ?? '';
   const hasMeta = shownMeta !== '' || spokenMeta !== '';
+  // What the meta MEANS, whichever half it was given as.
+  const saidMeta = spokenMeta === '' ? shownMeta : spokenMeta;
+  const metaClass = [
+    styles.rowDir,
+    firm === 'name' ? '' : styles.metaFirm,
+    metaOptional ? styles.metaOptional : '',
+  ]
+    .filter((one) => one !== '')
+    .join(' ');
   const body = (
     <>
       <span
@@ -124,13 +150,7 @@ export function RefRow({
         // Its own `title`, not the row's: a remote URL is one unbroken token
         // in a 180px column and is the FIRST thing here to be ellipsised, so
         // the string in full has to be reachable from the half that was cut.
-        <span
-          className={
-            firm === 'name' ? styles.rowDir : `${styles.rowDir} ${styles.metaFirm}`
-          }
-          id={metaId}
-          title={spokenMeta === '' ? shownMeta : spokenMeta}
-        >
+        <span className={metaClass} id={metaId} title={saidMeta}>
           {spokenMeta === '' ? shownMeta : (
             <>
               {shownMeta !== '' && <span aria-hidden="true">{shownMeta}</span>}
@@ -145,7 +165,16 @@ export function RefRow({
   return (
     // The name lives on the ROW as well: a `title` on the button would not
     // open where the button is not the thing under the pointer.
-    <li className={styles.row} title={name}>
+    //
+    // A meta the panel may drop joins it, on its own line: below the threshold
+    // that span is a 1px box off screen, so its own `title` is unreachable and
+    // the row's is the only tooltip a pointer can open. A newline rather than
+    // a separator, because the two clauses are already punctuated sentences in
+    // their own languages and no third one is needed to join them.
+    <li
+      className={styles.row}
+      title={metaOptional && saidMeta !== '' ? `${name}\n${saidMeta}` : name}
+    >
       {action === null || action === undefined ? (
         <span className={styles.refNameStatic}>{body}</span>
       ) : (

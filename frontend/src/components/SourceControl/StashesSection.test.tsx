@@ -5,6 +5,7 @@ import { useI18n } from '../../i18n';
 import { _resetGitStoreForTesting, useGitStore } from '../../store/gitStore';
 import { confirm } from '../../utils/dialog';
 import type { GitStatus, StashInfo } from '../../api/git';
+import styles from './SourceControl.module.css';
 
 /*
  * The stash list. Two things here are not taste: the index is git's own and
@@ -99,6 +100,13 @@ afterEach(() => {
 });
 
 const section = () => screen.getByRole('region', { name: 'Stashes' });
+
+/** The row a stash whose message is *message* is drawn in. */
+function rowFor(message: string): HTMLElement {
+  const row = within(section()).getByText(message).closest('li');
+  if (row === null) throw new Error(`no stash row for ${message}`);
+  return row;
+}
 
 describe('StashesSection: the rows', () => {
   it('shows git\'s own selector, the message as written, the branch and when', () => {
@@ -249,6 +257,57 @@ describe('StashesSection: the rows', () => {
     expect(
       within(section()).getByText('Could not read Stashes: Failed to fetch'),
     ).toBeTruthy();
+  });
+});
+
+describe('StashesSection: what a narrow row drops', () => {
+  /*
+   * Three things want one row: a message somebody wrote, the branch and date
+   * it was written on, and git's own selector. At 180px there is room for two
+   * -- the meta takes its 60% and the chip cannot shrink, so the message was
+   * drawn as "ex..." beside "authte..." and the row could not be told from the
+   * one under it. Below the same 380px the row's verbs collapse at, the meta
+   * comes out of the row and the message takes the width.
+   *
+   * jsdom applies no stylesheet, so what can be pinned here is the class the
+   * container query flips and what stays reachable while it is flipped. The
+   * widths themselves are a browser pass at 180px and 520px.
+   */
+  it('hangs the meta off the class the narrow layout takes out of the row', () => {
+    render(<StashesSection />);
+    const meta = within(section()).getByText('main, 2 hours ago');
+    expect(meta.className.split(' ')).toContain(styles.metaOptional);
+    // Still the firm half where it IS drawn: at 520px this is a stash row's
+    // proportion and nothing about it changes.
+    expect(meta.className.split(' ')).toContain(styles.metaFirm);
+  });
+
+  it('keeps the branch and the date in the row, off screen rather than gone', () => {
+    // Clipped, not `display: none`: a reader hears the row's text and never
+    // had the glance the meta was dropped to save, so dropping it from the
+    // accessibility tree would cost them the one thing it says.
+    render(<StashesSection />);
+    const meta = within(section()).getByText('main, 2 hours ago');
+    expect(meta.getAttribute('aria-hidden')).toBeNull();
+    expect(rowFor('before the refactor').textContent).toContain('main, 2 hours ago');
+  });
+
+  it('answers a pointer with both halves, since the clipped one cannot be hovered', () => {
+    // The row's own tooltip, because below the threshold the meta is a 1px box
+    // nothing can be over. The message is first and whole: it is what the row
+    // ellipsised, and what the reader is hovering to finish reading.
+    render(<StashesSection />);
+    expect(rowFor('before the refactor').getAttribute('title')).toBe(
+      'before the refactor\nmain, 2 hours ago',
+    );
+  });
+
+  it('says only what a stash naming no branch has to say', () => {
+    useGitStore.setState({ stashes: [stash({ branch: null })] });
+    render(<StashesSection />);
+    expect(rowFor('before the refactor').getAttribute('title')).toBe(
+      'before the refactor\n2 hours ago',
+    );
   });
 });
 
