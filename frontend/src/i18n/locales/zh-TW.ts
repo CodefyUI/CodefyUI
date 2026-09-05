@@ -88,6 +88,7 @@ const zhTW: Record<TranslationKey, string> = {
   'palette.noMatch': '找不到符合的節點',
   'palette.empty': '沒有可用的節點',
   'palette.hint': '拖曳節點到畫布上',
+  'palette.fromPlugin': '來自外掛：{plugin}',
   'palette.searchPresets': '搜尋預設組合...',
   'palette.presets.empty': '沒有可用的預設組合',
   'palette.presets.noMatch': '找不到符合的預設組合',

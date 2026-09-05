@@ -1,14 +1,15 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { render, screen, fireEvent, waitFor, within } from '@testing-library/react';
+import { act, render, screen, fireEvent, waitFor, within } from '@testing-library/react';
 import { TemplateGalleryModal, exampleSourceLabel } from './TemplateGalleryModal';
 import { useDialogStore } from '../../store/dialogStore';
 import { useNodeDefStore } from '../../store/nodeDefStore';
+import { _resetPluginStoreForTesting, usePluginStore } from '../../store/pluginStore';
 import { useTabStore } from '../../store/tabStore';
 import { useToastStore } from '../../store/toastStore';
 import { useUIStore } from '../../store/uiStore';
 import { useI18n } from '../../i18n';
 import * as rest from '../../api/rest';
-import type { ExampleSummary } from '../../api/rest';
+import type { ExampleSummary, PluginCatalogEntry } from '../../api/rest';
 
 // Only the two network calls are stubbed. `openExampleInNewTab` and
 // `insertExample` run for real against the real tab store, so the two actions
@@ -39,6 +40,39 @@ function raw(id: string) {
   return { id, type: 'Dropout', position: { x: 0, y: 0 }, data: { params: {} } };
 }
 
+function pluginEntry(over: Partial<PluginCatalogEntry> & { id: string }): PluginCatalogEntry {
+  return {
+    name: over.id,
+    description: '',
+    kind: 'github',
+    official: false,
+    status: 'installed',
+    source_kind: 'github_url',
+    source: over.id,
+    repo: null,
+    ref: null,
+    sha: null,
+    url: null,
+    homepage: '',
+    version: null,
+    installed_at: null,
+    enabled: true,
+    chapters: [],
+    lessons: [],
+    tags: [],
+    nodes: [],
+    node_count: 0,
+    capabilities: [],
+    trusted_modules: [],
+    python_deps: {},
+    has_frontend: false,
+    consent_required: false,
+    frontend_entry: null,
+    job: null,
+    ...over,
+  };
+}
+
 /** The card list. Scoped because the detail pane repeats the chosen name. */
 const grid = () => screen.getByRole('region', { name: 'Template list' });
 const detail = () => screen.getByRole('complementary', { name: 'Template details' });
@@ -46,6 +80,9 @@ const detail = () => screen.getByRole('complementary', { name: 'Template details
 beforeEach(() => {
   useI18n.setState({ locale: 'en' });
   useNodeDefStore.setState({ definitions: [], presets: [] });
+  // An empty plugin catalog unless a case seeds one: the state the modal
+  // renders in before the boot fetch lands, where the id stands in.
+  _resetPluginStoreForTesting();
   useToastStore.setState({ toasts: [] });
   useUIStore.setState({ templateGalleryOpen: true });
   useTabStore.setState({ tabs: [], activeTabId: null as unknown as string, clipboard: null });
@@ -160,6 +197,46 @@ describe('TemplateGalleryModal', () => {
     fireEvent.click(within(grid()).getByText('Second'));
     expect(within(detail()).getByText('the second one')).toBeInTheDocument();
     expect(within(detail()).getByText('From plugin pack "c2"')).toBeInTheDocument();
+  });
+
+  it('names the plugin the catalog knows, and the id until it answers', async () => {
+    mockedRest.listExamples.mockResolvedValue([
+      ex({ name: 'Lesson', description: 'a lesson graph', path: 'e/1', source: 'plugin:edu' }),
+    ]);
+    render(<TemplateGalleryModal />);
+    await waitFor(() =>
+      expect(within(detail()).getByText('a lesson graph')).toBeInTheDocument(),
+    );
+
+    // Before the catalog answers the id stands in — still a true sentence.
+    expect(within(detail()).getByText('From plugin pack "edu"')).toBeInTheDocument();
+
+    // The catalog lands: the same pane names the plugin as the Plugin Center
+    // does, without a reload and without the search behind it changing.
+    act(() => {
+      usePluginStore.setState({
+        loaded: true,
+        byId: { edu: pluginEntry({ id: 'edu', name: 'EDU - hands-on teaching nodes' }) },
+      });
+    });
+    expect(
+      within(detail()).getByText('From plugin pack "EDU - hands-on teaching nodes"'),
+    ).toBeInTheDocument();
+    expect(within(detail()).queryByText('From plugin pack "edu"')).toBeNull();
+  });
+
+  it('still calls a source that names no plugin a built-in', async () => {
+    // `plugin:` with nothing after it names nothing, and the pane said
+    // "Built-in example" for it before the catalog was consulted at all.
+    // Resolving a name must not turn that into an empty pair of quotes.
+    mockedRest.listExamples.mockResolvedValue([
+      ex({ name: 'Odd', description: 'a malformed source', path: 'o/1', source: 'plugin:' }),
+    ]);
+    render(<TemplateGalleryModal />);
+    await waitFor(() =>
+      expect(within(detail()).getByText('a malformed source')).toBeInTheDocument(),
+    );
+    expect(within(detail()).getByText('Built-in example')).toBeInTheDocument();
   });
 
   it('falls back to a placeholder for a template with no description', async () => {

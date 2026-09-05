@@ -1,10 +1,18 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { useNodeDefStore } from '../../store/nodeDefStore';
+import { usePluginStore } from '../../store/pluginStore';
 import { useTabStore } from '../../store/tabStore';
 import { useI18n } from '../../i18n';
 import { CATEGORY_COLORS } from '../../styles/theme';
+import { pluginNameOf, type PluginIndex } from '../../utils/provider';
 import type { NodeDefinition, PresetDefinition } from '../../types';
 import styles from './QuickNodeSearch.module.css';
+
+// Module-scope, so the subscription compares the same function's output frame
+// to frame; narrow, so an install running in the Plugin Center cannot re-render
+// the palette on every long-poll turn.
+type PluginStoreState = ReturnType<typeof usePluginStore.getState>;
+const selectPluginsById = (state: PluginStoreState): PluginIndex => state.byId;
 
 interface QuickNodeSearchProps {
   screenPos: { x: number; y: number };
@@ -24,6 +32,7 @@ export function QuickNodeSearch({ screenPos, flowPos, onClose }: QuickNodeSearch
 
   const definitions = useNodeDefStore((s) => s.definitions);
   const presets = useNodeDefStore((s) => s.presets);
+  const pluginsById = usePluginStore(selectPluginsById);
   const addNode = useTabStore((s) => s.addNode);
   const addPresetNode = useTabStore((s) => s.addPresetNode);
   const { t, tn } = useI18n();
@@ -34,7 +43,16 @@ export function QuickNodeSearch({ screenPos, flowPos, onClose }: QuickNodeSearch
     const items: SearchResult[] = [];
 
     for (const def of definitions) {
-      if (!q || def.node_name.toLowerCase().includes(q) || def.description.toLowerCase().includes(q)) {
+      // The same three fields the palette search matches. The plugin's id
+      // already matches through the qualified node name (`edu:FilterRows`);
+      // what the third one adds is its display name, which is how the Plugin
+      // Center names it and appears in no field of a definition.
+      if (
+        !q ||
+        def.node_name.toLowerCase().includes(q) ||
+        def.description.toLowerCase().includes(q) ||
+        (pluginNameOf(pluginsById, def.provider)?.toLowerCase().includes(q) ?? false)
+      ) {
         items.push({ kind: 'node', def });
       }
     }

@@ -361,6 +361,17 @@
   word-break: break-word;
 }
 
+/* Which plugin registered the node — last, and muted rather than warning
+   coloured: it is where the node came from, not something to fix. */
+.nodeTooltipProvenance {
+  margin-top: var(--sp-2);
+  font-size: var(--fs-sm);
+  color: var(--text-muted);
+  line-height: var(--lh-normal);
+  white-space: normal;
+  word-break: break-word;
+}
+
 /* ── Preset item ── */
 .presetItem {
   padding: var(--sp-3) var(--sp-4);

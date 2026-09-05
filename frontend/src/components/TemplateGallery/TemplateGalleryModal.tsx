@@ -3,8 +3,10 @@ import { createPortal } from 'react-dom';
 import { listExamples, type ExampleSummary } from '../../api/rest';
 import { insertExample, openExampleInNewTab } from '../../utils/openExample';
 import { useDialogStore } from '../../store/dialogStore';
+import { usePluginStore } from '../../store/pluginStore';
 import { useUIStore } from '../../store/uiStore';
 import { useI18n } from '../../i18n';
+import { pluginNameOf, type PluginIndex } from '../../utils/provider';
 import { EXAMPLE_CATEGORY_COLORS, EXAMPLE_CATEGORY_FALLBACK, mixColor, NODE_HEADER_TINT, SURFACE_RAISED } from '../../styles/theme';
 // The sidebar's Templates tab (#126) already owns the category order every
 // example surface is expected to share; importing it keeps the modal's grid
@@ -16,7 +18,21 @@ import {
 } from '../Sidebar/TemplatesTab';
 import styles from './TemplateGalleryModal.module.css';
 
-/** Human-readable origin: a built-in example, or the pack that ships it. */
+// Module-scope, so the subscription compares the same function's output frame
+// to frame, and narrow: an install running in the Plugin Center writes `job`
+// and its log on every long-poll turn, none of which renames a plugin.
+type PluginStoreState = ReturnType<typeof usePluginStore.getState>;
+const selectPluginsById = (state: PluginStoreState): PluginIndex => state.byId;
+
+/**
+ * Whether an example came from a plugin, and which one — as an id.
+ *
+ * Deliberately still the raw id and still pure: it is the GATE the detail pane
+ * asks (plugin, or built-in?), and the human name it prints comes from
+ * `pluginNameOf` at the render site, which needs the catalog and a live
+ * subscription to it. Keeping the two apart leaves this callable, and testable,
+ * without a store.
+ */
 export function exampleSourceLabel(example: ExampleSummary): string | null {
   const source = example.source ?? '';
   if (source.startsWith('plugin:')) return source.slice('plugin:'.length);
@@ -54,6 +70,7 @@ export function TemplateGalleryModal() {
 
 function TemplateGalleryBody() {
   const close = useUIStore((s) => s.closeTemplateGallery);
+  const pluginsById = usePluginStore(selectPluginsById);
   const { t } = useI18n();
 
   const [examples, setExamples] = useState<ExampleSummary[]>([]);
@@ -128,6 +145,7 @@ function TemplateGalleryBody() {
   // first remaining one rather than emptying the pane.
   const chosen =
     visible.find((e) => e.path === chosenPath) ?? visible[0] ?? null;
+  const chosenSourceId = chosen === null ? null : exampleSourceLabel(chosen);
 
   const take = useCallback(
     async (run: () => Promise<boolean>) => {
@@ -285,8 +303,13 @@ function TemplateGalleryBody() {
                     <span>{t('gallery.edgeCount', { count: chosen.edge_count })}</span>
                   </div>
                   <div className={styles.detailSource}>
-                    {exampleSourceLabel(chosen)
-                      ? t('gallery.sourcePlugin', { plugin: exampleSourceLabel(chosen)! })
+                    {/* The id is still the gate; the name is what a reader
+                        sees, and falls back to that same id for as long as the
+                        catalog has not answered. */}
+                    {chosenSourceId
+                      ? t('gallery.sourcePlugin', {
+                          plugin: pluginNameOf(pluginsById, chosen.source) ?? chosenSourceId,
+                        })
                       : t('gallery.sourceBuiltin')}
                   </div>
                   <p className={styles.detailDesc}>
