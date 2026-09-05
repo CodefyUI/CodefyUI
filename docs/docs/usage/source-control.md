@@ -6,7 +6,7 @@ description: Commit, branch, stash, push and review a CodefyUI project from the 
 
 # Source Control
 
-The **Source Control** tab -- the branch icon in the sidebar rail -- is git for the project directory the server was started on. It shows what has changed since the last commit, stages and commits it, creates and switches branches, adds a remote and pushes to it, settles a merge conflict, lists the history, and opens any file's changes as a diff. A graph is a pair of plain JSON files on disk, so all of this is ordinary git against ordinary files: everything the tab does you can also do at a command line in the same directory, and everything you do at that command line shows up here within fifteen seconds.
+The **Source Control** tab -- the branch icon in the sidebar rail -- is git for the project directory the server was started on. It shows what has changed since the last commit, stages and commits it, creates and switches branches, adds a remote and pushes to it, settles a merge conflict, lists the history, and opens any file's changes as a diff. A graph is a pair of plain JSON files on disk, so all of this is ordinary git against ordinary files: everything the tab does you can also do at a command line in the same directory, and everything you do at that command line shows up in the file lists and the branch counts within fifteen seconds.
 
 Two things have to be true before the tab can work. The server must have been started on a **project directory** -- `cdui project init my-project`, then `cdui start --project my-project`; a server started without one says "Source control needs a project directory." and prints those two commands, because the project is an argument to the server and no button in the browser can supply it. See [Project directories](./project-directories) for what a project is. And **git 2.23 or newer** must be installed on the computer that runs the server, not on the computer with the browser: without it the tab says "git is not installed on the server computer.", and with an older one `git {version} is too old; 2.23 or newer is required.` A project directory that is not a repository yet gets one button, **Initialize Repository**.
 
@@ -16,7 +16,7 @@ The server runs git as a subprocess, as its own operating-system user, and never
 
 Do this once per computer that runs a server.
 
-**Install git.** On Windows, `winget install Git.Git` -- Git for Windows bundles Git Credential Manager, which is the piece that remembers an HTTPS login. On macOS, `xcode-select --install` for Apple's git, or `brew install git` for a current one. On Ubuntu and Debian, `sudo apt install git`. The server rechecks for git about every half minute, so it picks a fresh install up without a restart.
+**Install git.** On Windows, `winget install Git.Git` -- Git for Windows bundles Git Credential Manager, which is the piece that remembers an HTTPS login. On macOS, `xcode-select --install` for Apple's git, or `brew install git` for a current one. On Ubuntu and Debian, `sudo apt install git`. The server rechecks for git about every half minute, so a fresh install is normally picked up on its own -- the screen's "Install it, then restart the server." is more cautious than it needs to be.
 
 **Say who you are.** Commits carry a name and an email, and git refuses to make one without them:
 
@@ -27,17 +27,17 @@ git config --global user.email "you@example.com"
 
 The tab can do the same thing: **More actions** > **Commit identity...** opens a small form that shows what git currently answers with and whether it comes "from global git config" or "for this project". Saving from that form writes into this repository's own config, so it is the right place for a project that needs a different address from your usual one, and the wrong place for the machine-wide default -- for that, run the two commands above.
 
-**Give the server a way to authenticate.** The first credential capture has to happen in a terminal on the server computer, because the server itself never prompts. Two ways, and one is enough:
+**Give the server a way to authenticate.** The first credential capture has to happen in a terminal on the server computer, because the server itself never prompts. Three ways, and one is enough:
 
-- **HTTPS with the GitHub CLI.** `winget install GitHub.cli` (or `brew install gh`, or `sudo apt install gh`), then `gh auth login`; answer yes when it offers to authenticate git with your GitHub credentials. It writes a credential helper into your global git config, and every push after that is silent.
+- **HTTPS with the GitHub CLI.** `winget install GitHub.cli` on Windows, or `brew install gh` on macOS; on Ubuntu, `gh` is not in every release's default repositories, so follow GitHub's own apt instructions at cli.github.com. Then `gh auth login`; answer yes when it offers to authenticate git with your GitHub credentials. It writes a credential helper into your global git config, and every push after that is silent.
 - **HTTPS with one manual push.** Clone or push once from a terminal in the project directory. The credential manager stores what you type, and from then on the server's pushes find it.
 - **SSH instead.** `ssh-keygen -t ed25519 -C "you@example.com"`, add the public key on GitHub under Settings > SSH and GPG keys, then run `ssh -T git@github.com` once from a terminal. That last step is not optional here: the server runs ssh in batch mode, and an unknown host key is a question ssh cannot ask, so a first connection made from the server would simply fail. Use the `git@github.com:owner/repo.git` form of the URL when you add the remote.
 
-**Connect a repository.** Create an empty repository on GitHub -- no README, no `.gitignore`, no licence, so that its history is empty and your first push is not a merge. Then, in the tab, **More actions** > **Add Remote...**: the name is `origin` unless you have a reason, and the URL is the one GitHub shows (`https://github.com/owner/repo.git`, or the SSH form). The header's second row then offers **Publish Branch**, which pushes the current branch and sets it to track the remote one. From then on that row is a **Sync (pull, then push)** button instead.
+**Connect a repository.** Create an empty repository on GitHub -- no README, no `.gitignore`, no licence, so that its history is empty and your first push is not a merge. Then, in the tab, open **Remotes** and press the **+** (**Add Remote...**) on its heading: the name is `origin` unless you have a reason, and the URL is the one GitHub shows (`https://github.com/owner/repo.git`, or the SSH form). The header's second row then offers **Publish Branch**, which pushes the current branch and sets it to track the remote one. From then on that row is a **Sync (pull, then push)** button instead.
 
 ## The daily loop
 
-Save the graph (`Ctrl/Cmd` + `S`). Both files it writes -- `graphs/<name>.graph.json` and `layout/<name>.layout.json` -- appear under **Changes** at once rather than at the next poll. Stage what belongs in the commit with **Stage** on a row or **Stage All** on the group heading, write a message, and press **Commit** or `Ctrl/Cmd` + `Enter`. Staging is per file; there is no hunk-level staging here. If you would rather not stage first, **Commit All (stages every change, including new files)** sits behind the chevron beside the button, and **Amend Last Commit** beside it replaces the previous commit -- offered only while there is one and it has not been pushed.
+Save the graph (`Ctrl/Cmd` + `S`). Both files it writes -- `graphs/<name>.graph.json` and `layout/<name>.layout.json` -- appear under **Changes** at once rather than at the next poll. Stage what belongs in the commit with **Stage** on a row or **Stage All** on the group heading, write a message, and press **Commit** or `Ctrl/Cmd` + `Enter`. If you would rather not stage first, **Commit All (stages every change, including new files)** sits behind the chevron beside the button, and **Amend Last Commit** beside it replaces the previous commit -- offered only while there is one and it has not been pushed.
 
 The **Commit** button says why it is unavailable rather than merely being grey: "Enter a message" or "Nothing staged", in the tooltip and to a screen reader.
 
@@ -49,11 +49,11 @@ The header's branch row carries the state of the branch. `↑2 ↓1` means two c
 
 ## Branches, remotes and stashes
 
-Under the file groups are three collapsible lists. Each is remembered between sessions, each is read when it opens, and a closed one costs nothing.
+Under the file groups are four collapsible lists: these three, and History, which has its own section below. Each is remembered between sessions, each is read when it opens, and a closed one costs nothing.
 
 **Branches** lists the local branches with how far each is from what it tracks; the name is the button that switches to it, and the one you are on says "Current" instead. **New Branch...** on the heading creates one and switches to it. Each row's menu has **Rename** and **Delete**; deleting is absent on the current branch, because git refuses it. Deleting a branch whose commits are on no other branch asks a second time, in git's own words: `{name} has unmerged commits. Delete anyway?` Under the local branches, **Remote branches** lists what the remotes have, and one press makes a local branch that tracks one.
 
-**Remotes** lists each remote with the URL git fetches from, plus **Change URL** and **Remove**; **Add Remote...** is on the heading and in the overflow menu. Only `https://`, `ssh://`, `file://` and the `git@host:owner/repo.git` form are accepted, and the server allows git exactly those three protocols -- the transports whose "URL" is a command line to run cannot be configured at all.
+**Remotes** lists each remote with the URL git fetches from, plus **Change URL** and **Remove**; **Add Remote...** is the **+** on the heading. Only `https://`, `ssh://`, `file://` and the `git@host:owner/repo.git` form are accepted, and the server allows git exactly those three protocols -- the transports whose "URL" is a command line to run cannot be configured at all.
 
 **Stashes** is the stash stack, newest first, each row showing the message you gave it, the branch it was made on and how long ago. **Stash Changes...** in the overflow menu asks for a message and takes untracked files with it, which is what makes a stash enough to free the tree for a checkout; leave the box empty and git writes its own subject. Rows offer **Pop**, **Apply** and **Drop**, and only Drop asks first -- it is the one that throws work away.
 
