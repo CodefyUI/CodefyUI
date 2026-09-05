@@ -454,6 +454,19 @@ describe('getGitLog', () => {
     expect(page.unborn).toBe(true);
     expect(page.commits).toEqual([]);
   });
+
+  it('throws on a refusal rather than reading it as an empty history', async () => {
+    // The one answer that must NOT be normalised: an error body has no
+    // `unborn` key, so a page built from it would say "no commits yet" about
+    // a repository the server simply could not read.
+    mockFetch(500, {
+      detail: { code: 'git_failed', message: 'fatal: bad revision', hint: null, stderr: null },
+    });
+    const err = await gitError(getGitLog(0, 30));
+    expect(err.status).toBe(500);
+    expect(err.code).toBe('git_failed');
+    expect(err.message).toBe('fatal: bad revision');
+  });
 });
 
 describe('getGitCommitFiles', () => {
