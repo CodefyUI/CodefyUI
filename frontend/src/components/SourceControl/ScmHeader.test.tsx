@@ -139,7 +139,7 @@ describe('ScmHeader: the title row', () => {
     // count and the branch list as they were, which is the one button whose
     // whole job is to make the panel true.
     useGitStore.setState({
-      sections: { branches: true, remotes: false, stashes: true },
+      sections: { branches: true, remotes: false, stashes: true, history: false },
     });
     render(<ScmHeader />);
     refreshRefs.mockClear();
@@ -172,7 +172,7 @@ describe('ScmHeader: the title row', () => {
     useGitStore.setState({
       repoState: 'not_repo',
       status: null,
-      sections: { branches: true, remotes: true, stashes: true },
+      sections: { branches: true, remotes: true, stashes: true, history: false },
     });
     render(<ScmHeader />);
     refreshRefs.mockClear();
@@ -371,7 +371,9 @@ describe('ScmHeader: the branch name is what opens the branch list', () => {
   });
 
   it('closes it again, so the state it reports is one it can undo', () => {
-    useGitStore.setState({ sections: { branches: true, remotes: false, stashes: false } });
+    useGitStore.setState({
+      sections: { branches: true, remotes: false, stashes: false, history: false },
+    });
     render(<ScmHeader />);
     expect(branchButton().getAttribute('aria-expanded')).toBe('true');
     fireEvent.click(branchButton());
@@ -393,7 +395,7 @@ describe('ScmHeader: Sync, Publish and the remote picker', () => {
     // draws it. Two reads for one question is what a remembered-open Remotes
     // section cost on every tab open.
     useGitStore.setState({
-      sections: { branches: false, remotes: true, stashes: false },
+      sections: { branches: false, remotes: true, stashes: false, history: false },
     });
     render(<ScmHeader />);
     await act(async () => {
@@ -404,7 +406,7 @@ describe('ScmHeader: Sync, Publish and the remote picker', () => {
     // Closed again, and now the header is the only reader there is.
     await act(async () => {
       useGitStore.setState({
-        sections: { branches: false, remotes: false, stashes: false },
+        sections: { branches: false, remotes: false, stashes: false, history: false },
       });
     });
     expect(refreshRefs).toHaveBeenCalledWith('remotes');

@@ -90,7 +90,7 @@ beforeEach(() => {
   useGitStore.setState({
     repoState: 'ready',
     branches: branches(),
-    sections: { branches: true, remotes: false, stashes: false },
+    sections: { branches: true, remotes: false, stashes: false, history: false },
     createBranch,
     checkout,
     renameBranch,

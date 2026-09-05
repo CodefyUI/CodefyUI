@@ -47,7 +47,7 @@ beforeEach(() => {
   useGitStore.setState({
     repoState: 'ready',
     remotes: [remote('origin')],
-    sections: { branches: false, remotes: true, stashes: false },
+    sections: { branches: false, remotes: true, stashes: false, history: false },
     addRemote,
     setRemoteUrl,
     removeRemote,

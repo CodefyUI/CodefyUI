@@ -3,7 +3,10 @@ import * as gitApi from '../api/git';
 import type {
   BranchesResponse,
   FileKind,
+  GitCommit,
+  GitCommitFile,
   GitFile,
+  GitLogPage,
   GitStatus,
   Identity,
   MutationResult,
@@ -33,6 +36,8 @@ vi.mock('../api/git', async (importOriginal) => {
     getGitBranches: vi.fn(),
     getGitRemotes: vi.fn(),
     getGitStashes: vi.fn(),
+    getGitLog: vi.fn(),
+    getGitCommitFiles: vi.fn(),
     gitInit: vi.fn(),
     gitStage: vi.fn(),
     gitUnstage: vi.fn(),
@@ -197,6 +202,29 @@ function stashes(index = 0): StashInfo[] {
   return [{ index, message: `stash ${index}`, branch: 'main', created_at: 123 }];
 }
 
+function commit(sha: string): GitCommit {
+  return {
+    sha,
+    short: sha.slice(0, 7),
+    parents: [],
+    authorName: 'Ada',
+    authorEmail: 'ada@example.com',
+    authoredAt: 123,
+    refs: [],
+    subject: `Work on ${sha}`,
+    body: '',
+  };
+}
+
+/** One page of history: these shas, newest first, and whether more follow. */
+function logPage(shas: string[], hasMore = false): GitLogPage {
+  return { commits: shas.map(commit), hasMore, unborn: false };
+}
+
+function commitFile(path: string): GitCommitFile {
+  return { path, origPath: null, kind: 'modified' };
+}
+
 /** A refusal built by the real `gitApiError`, from a body off the wire. */
 function refusal(httpStatus: number, body: unknown): Promise<gitApi.GitApiError> {
   const response = {
@@ -286,6 +314,8 @@ beforeEach(() => {
   api.getGitBranches.mockResolvedValue(branches());
   api.getGitRemotes.mockResolvedValue(remotes());
   api.getGitStashes.mockResolvedValue(stashes());
+  api.getGitLog.mockResolvedValue(logPage(['c1']));
+  api.getGitCommitFiles.mockResolvedValue([commitFile('a.py')]);
   api.gitInit.mockResolvedValue(mutation());
   api.gitStage.mockResolvedValue(mutation());
   api.gitUnstage.mockResolvedValue(mutation());
@@ -771,7 +801,12 @@ describe('writes', () => {
 
 describe('reference sections', () => {
   it('starts collapsed and loads only a section when it opens', async () => {
-    expect(git().sections).toEqual({ branches: false, remotes: false, stashes: false });
+    expect(git().sections).toEqual({
+      branches: false,
+      remotes: false,
+      stashes: false,
+      history: false,
+    });
     expect(git().branches).toBeNull();
     expect(git().remotes).toBeNull();
     expect(git().stashes).toBeNull();
@@ -783,7 +818,7 @@ describe('reference sections', () => {
     expect(api.getGitStashes).not.toHaveBeenCalled();
     expect(git().branches?.current).toBe('main');
     expect(localStorage.getItem('codefyui-git-sections')).toBe(
-      JSON.stringify({ branches: true, remotes: false, stashes: false }),
+      JSON.stringify({ branches: true, remotes: false, stashes: false, history: false }),
     );
 
     git().setSectionOpen('remotes', true);
@@ -800,23 +835,38 @@ describe('reference sections', () => {
     expect(api.getGitRemotes).not.toHaveBeenCalled();
   });
 
-  it('restores all three open states and rejects malformed stored values', async () => {
+  it('restores every open state and rejects malformed stored values', async () => {
     git().setSectionOpen('branches', true);
     git().setSectionOpen('stashes', true);
     await settle();
     _resetGitStoreForTesting();
-    expect(git().sections).toEqual({ branches: true, remotes: false, stashes: true });
+    expect(git().sections).toEqual({
+      branches: true,
+      remotes: false,
+      stashes: true,
+      history: false,
+    });
 
     localStorage.setItem(
       'codefyui-git-sections',
-      JSON.stringify({ branches: 'yes', remotes: true, stashes: 1 }),
+      JSON.stringify({ branches: 'yes', remotes: true, stashes: 1, history: 'open' }),
     );
     _resetGitStoreForTesting();
-    expect(git().sections).toEqual({ branches: false, remotes: true, stashes: false });
+    expect(git().sections).toEqual({
+      branches: false,
+      remotes: true,
+      stashes: false,
+      history: false,
+    });
 
     localStorage.setItem('codefyui-git-sections', '{not json');
     _resetGitStoreForTesting();
-    expect(git().sections).toEqual({ branches: false, remotes: false, stashes: false });
+    expect(git().sections).toEqual({
+      branches: false,
+      remotes: false,
+      stashes: false,
+      history: false,
+    });
   });
 
   it('refreshes only expanded refs on the initial read and each poll', async () => {
@@ -919,6 +969,231 @@ describe('reference sections', () => {
     await stale;
     expect(git().refsError.stashes).toBeNull();
     expect(git().stashes?.[0].index).toBe(2);
+  });
+});
+
+/* ── history ─────────────────────────────────────────────────────────── */
+
+describe('history', () => {
+  const shas = () => git().log.commits.map((one) => one.sha);
+
+  it('reads the first page and replaces whatever was held', async () => {
+    api.getGitLog.mockResolvedValue(logPage(['c2', 'c1'], true));
+    await git().loadLog();
+
+    expect(api.getGitLog).toHaveBeenCalledWith(0, 30);
+    expect(shas()).toEqual(['c2', 'c1']);
+    expect(git().log.hasMore).toBe(true);
+    expect(git().log.unborn).toBe(false);
+    expect(git().log.loading).toBe(false);
+
+    // Page one after a commit IS the history: merged into the old one it
+    // would show the new commit under the one it replaced.
+    api.getGitLog.mockResolvedValue(logPage(['c3', 'c2']));
+    await git().loadLog();
+    expect(shas()).toEqual(['c3', 'c2']);
+    expect(git().log.hasMore).toBe(false);
+  });
+
+  it('appends the next page from where the list ends, deduped by sha', async () => {
+    api.getGitLog.mockResolvedValueOnce(logPage(['c4', 'c3'], true));
+    await git().loadLog();
+
+    // Offset paging drifts: a commit made between two pages shifts every row
+    // down one, so page two can repeat the last row of page one.
+    api.getGitLog.mockResolvedValueOnce(logPage(['c3', 'c2'], false));
+    await git().loadMoreLog();
+
+    expect(api.getGitLog).toHaveBeenLastCalledWith(2, 30);
+    expect(shas()).toEqual(['c4', 'c3', 'c2']);
+    expect(git().log.hasMore).toBe(false);
+  });
+
+  it('asks for no page past the end of the history', async () => {
+    api.getGitLog.mockResolvedValue(logPage(['c1'], false));
+    await git().loadLog();
+    api.getGitLog.mockClear();
+
+    await git().loadMoreLog();
+    expect(api.getGitLog).not.toHaveBeenCalled();
+  });
+
+  it('records an unborn branch as a page rather than a failure', async () => {
+    api.getGitLog.mockResolvedValue({ commits: [], hasMore: false, unborn: true });
+    await git().loadLog();
+
+    expect(git().log.unborn).toBe(true);
+    expect(git().log.commits).toEqual([]);
+    expect(git().historyError).toBeNull();
+  });
+
+  it('keeps the newest page when an older read lands late', async () => {
+    const slow = deferred<GitLogPage>();
+    api.getGitLog.mockReturnValueOnce(slow.promise);
+    const stale = git().loadLog();
+
+    api.getGitLog.mockResolvedValueOnce(logPage(['newer']));
+    await git().loadLog();
+    expect(shas()).toEqual(['newer']);
+
+    slow.resolve(logPage(['older']));
+    await stale;
+    expect(shas()).toEqual(['newer']);
+    expect(git().log.loading).toBe(false);
+  });
+
+  it('holds one commit\'s files per sha and reads each sha once', async () => {
+    api.getGitCommitFiles.mockResolvedValue([commitFile('a.py')]);
+    await git().loadCommitFiles('c1');
+    expect(api.getGitCommitFiles).toHaveBeenCalledWith('c1');
+    expect(git().commitFiles.c1).toEqual([commitFile('a.py')]);
+
+    api.getGitCommitFiles.mockClear();
+    await git().loadCommitFiles('c1');
+    // A sha's tree never changes, so a second expand is a lookup.
+    expect(api.getGitCommitFiles).not.toHaveBeenCalled();
+  });
+
+  it('caps the file cache at twenty commits, dropping the oldest', async () => {
+    api.getGitCommitFiles.mockResolvedValue([commitFile('a.py')]);
+    for (let i = 0; i < 21; i += 1) await git().loadCommitFiles(`c${i}`);
+
+    const held = Object.keys(git().commitFiles);
+    expect(held).toHaveLength(20);
+    expect(held).not.toContain('c0');
+    expect(held).toContain('c20');
+  });
+
+  it('reports a failed history read inside the section, not on the error line', async () => {
+    // Nobody pressed a button for this read, and the error line belongs to
+    // the operation the user asked for -- the same rule the ref lists follow.
+    useGitStore.setState({
+      lastError: { code: 'dirty_tree', message: 'mine', hint: null, stderr: null, op: 'pull' },
+    });
+    api.getGitLog.mockRejectedValueOnce(await coded(503, 'git_service_unavailable'));
+    await git().loadLog();
+
+    expect(git().lastError?.code).toBe('dirty_tree');
+    expect(git().historyError?.code).toBe('git_service_unavailable');
+    expect(git().log.loading).toBe(false);
+  });
+
+  it('writes the read deadline into a history timeout sentence', async () => {
+    // A 504 carries a code and no number, and these reads are on the server's
+    // `read` bucket -- 20 s, not the 30 a write gets.
+    api.getGitLog.mockRejectedValueOnce(await coded(504, 'timeout'));
+    await git().loadLog();
+    expect(git().historyError?.message).toBe(say('git.error.timeout', { seconds: 20 }));
+  });
+
+  it('clears the section failure on the next read that answers', async () => {
+    api.getGitCommitFiles.mockRejectedValueOnce(await coded(404, 'not_found'));
+    await git().loadCommitFiles('gone');
+    expect(git().historyError?.code).toBe('not_found');
+    expect(git().commitFiles.gone).toBeUndefined();
+    expect(git().lastError).toBeNull();
+
+    api.getGitLog.mockResolvedValueOnce(logPage(['c1']));
+    await git().loadLog();
+    expect(git().historyError).toBeNull();
+  });
+
+  it('reads the history once when its section opens, and not again on reopen', async () => {
+    api.getGitLog.mockResolvedValue(logPage(['c1']));
+    git().setSectionOpen('history', true);
+    await settle();
+    expect(api.getGitLog).toHaveBeenCalledTimes(1);
+    expect(git().sections.history).toBe(true);
+
+    git().setSectionOpen('history', false);
+    git().setSectionOpen('history', true);
+    await settle();
+    // The pages a reader loaded survive a collapse, and the reset rules below
+    // keep them honest -- so reopening a filled section reads nothing.
+    expect(api.getGitLog).toHaveBeenCalledTimes(1);
+  });
+
+  it('persists the fourth section, and reads a stored value without it as closed', async () => {
+    git().setSectionOpen('history', true);
+    await settle();
+    expect(localStorage.getItem('codefyui-git-sections')).toBe(
+      JSON.stringify({ branches: false, remotes: false, stashes: false, history: true }),
+    );
+
+    localStorage.setItem(
+      'codefyui-git-sections',
+      JSON.stringify({ branches: true, remotes: false, stashes: false }),
+    );
+    _resetGitStoreForTesting();
+    expect(git().sections).toEqual({
+      branches: true,
+      remotes: false,
+      stashes: false,
+      history: false,
+    });
+  });
+
+  it('reloads page one after a commit', async () => {
+    git().setSectionOpen('history', true);
+    await settle();
+    api.getGitLog.mockClear();
+    api.getGitLog.mockResolvedValue(logPage(['c2', 'c1']));
+
+    git().setCommitMessage('work');
+    expect(await git().commit()).toBe(true);
+
+    expect(api.getGitLog).toHaveBeenCalledWith(0, 30);
+    expect(shas()).toEqual(['c2', 'c1']);
+  });
+
+  it.each(['checkout', 'pull', 'fetch'] as const)(
+    'reloads page one after %s, which refreshes the branch list',
+    async (op) => {
+      git().setSectionOpen('history', true);
+      await settle();
+      api.getGitLog.mockClear();
+
+      if (op === 'checkout') await git().checkout('other', 'local');
+      else if (op === 'pull') await git().pull('ff-only');
+      else await git().fetch();
+
+      expect(api.getGitLog).toHaveBeenCalledWith(0, 30);
+    },
+  );
+
+  it('reloads a page it is still holding after the section was collapsed', async () => {
+    // `setSectionOpen` reads only an EMPTY history, so the page a reader
+    // loaded and then collapsed has to be kept right by the reset rules --
+    // or reopening would show a commit list missing the commit just made.
+    api.getGitLog.mockResolvedValue(logPage(['c1']));
+    await git().loadLog();
+    git().setSectionOpen('history', false);
+    api.getGitLog.mockClear();
+
+    git().setCommitMessage('work');
+    await git().commit();
+    expect(api.getGitLog).toHaveBeenCalledTimes(1);
+  });
+
+  it('reads nothing for a history nobody has opened', async () => {
+    git().setCommitMessage('work');
+    expect(await git().commit()).toBe(true);
+    await git().pull('ff-only');
+    expect(api.getGitLog).not.toHaveBeenCalled();
+  });
+
+  it('stays off the fifteen-second poll', async () => {
+    // Paging and polling do not mix: a re-read every fifteen seconds would
+    // throw away every page past the first one the reader had loaded.
+    git().setSectionOpen('history', true);
+    await settle();
+    api.getGitLog.mockClear();
+
+    git().attach();
+    await settle();
+    await vi.advanceTimersByTimeAsync(GIT_POLL_MS);
+    await vi.advanceTimersByTimeAsync(GIT_POLL_MS);
+    expect(api.getGitLog).not.toHaveBeenCalled();
   });
 });
 

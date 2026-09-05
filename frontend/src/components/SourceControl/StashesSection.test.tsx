@@ -84,7 +84,7 @@ beforeEach(() => {
     // status re-reads itself (see the case below).
     status: status({ stash_count: 1 }),
     stashes: [stash()],
-    sections: { branches: false, remotes: false, stashes: true },
+    sections: { branches: false, remotes: false, stashes: true, history: false },
     stashPop,
     stashApply,
     stashDrop,
@@ -222,7 +222,7 @@ describe('StashesSection: the rows', () => {
     // to be wrong. Opening reads the list anyway (`setSectionOpen`), which is
     // the read that settles it.
     useGitStore.setState({
-      sections: { branches: false, remotes: false, stashes: false },
+      sections: { branches: false, remotes: false, stashes: false, history: false },
       stashes: [],
       status: status({ stash_count: 2 }),
     });
