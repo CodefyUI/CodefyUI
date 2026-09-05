@@ -1022,16 +1022,22 @@ class GitService:
 
         A failure raises, so the ``detail`` that would have said which step
         this was never reaches the caller -- and "the push was refused" and
-        "the fetch never got there" are different things to do next. The
-        step goes in the ``hint``, and only when git left that slot empty:
-        ``classify_failure`` sets one for the few codes in
-        ``errors.CODE_HINTS`` alone, so this fills a gap rather than
-        overwriting the one useful sentence a refusal came with.
+        "the fetch never got there" are different things to do next.
+
+        Only for ``git_failed``, and only when the slot is empty. A hint is
+        English prose the editor draws BESIDE its own translated sentence,
+        so on a classified refusal "the merge step failed" was one line of
+        raw English under a translated one -- saying nothing the code had
+        not already said. ``git_failed`` is the one code that has no
+        sentence of its own: the tab shows git's own words there, and the
+        step is then the only thing saying where in a three-step sync this
+        happened. Everywhere else the step is still in ``stderr``, which
+        the Details disclosure shows.
         """
         try:
             return await call
         except GitError as exc:
-            if exc.hint is None:
+            if exc.code == "git_failed" and exc.hint is None:
                 exc.hint = f"the {step} step failed"
             raise
 

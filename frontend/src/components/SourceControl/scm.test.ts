@@ -6,6 +6,7 @@ import type { GitAnyOp, GitStoreError } from '../../store/gitStore';
 import {
   ERROR_HINT_KEY,
   ERROR_KEY,
+  errorHint,
   errorSentence,
   followUpFor,
   gitOpKey,
@@ -65,6 +66,44 @@ describe('SCM error copy', () => {
 
   it('provides the actionable credential setup hint for auth_required', () => {
     expect(ERROR_HINT_KEY.auth_required).toBe('git.error.authRequiredHint');
+    expect(errorHint('auth_required', 'the fetch step failed', translator())).toBe(
+      'git.error.authRequiredHint',
+    );
+  });
+
+  // The server writes its hints in English, and the sentence above them is
+  // translated -- so "the merge step failed" under 'Local and remote branches
+  // have diverged.' was a second line in a language the reader may not have,
+  // saying no more than the first one.
+  // `auth_required` is the exception, and it is the row above: it has a
+  // sentence of its own AND a hint of its own, which replaces the server's.
+  it.each(mappedErrors
+    .map(([code]) => code)
+    .filter((code) => ERROR_HINT_KEY[code] === undefined))(
+    'drops the server hint for %s, which has a sentence of its own',
+    (code) => {
+      expect(errorHint(code, 'the merge step failed', translator())).toBeNull();
+    },
+  );
+
+  it.each(['timeout', 'not_found'] as const)(
+    'drops it for %s too, whose sentence is written here rather than mapped',
+    (code) => {
+      expect(errorHint(code, 'the push step failed', translator())).toBeNull();
+    },
+  );
+
+  it.each(['git_failed', 'unknown', 'invalid_path', 'git_service_unavailable'] as const)(
+    'keeps it for %s, where the sentence is git\'s own words as well',
+    (code) => {
+      expect(errorHint(code, 'the merge step failed', translator())).toBe(
+        'the merge step failed',
+      );
+    },
+  );
+
+  it('has nothing to show when the server sent no hint either', () => {
+    expect(errorHint('git_failed', null, translator())).toBeNull();
   });
 
   it('carries the push-configuration sentence in both locales, translated', () => {

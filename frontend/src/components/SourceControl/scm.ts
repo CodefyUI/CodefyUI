@@ -59,25 +59,51 @@ export const ERROR_KEY: Partial<Record<GitErrorCode, TranslationKey>> = {
 /**
  * The codes whose recovery step is local, and therefore ours to write.
  *
- * A server hint is English, and it describes what the SERVER saw. That is the
- * right thing to show for the one fact a code cannot carry -- which file,
- * which branch, which step of a sync failed -- so those are passed through
- * verbatim. A credential refusal is the exception: the recovery is two
- * commands on the machine running the server, they are the same two commands
- * every time, and they should be readable in the reader's own language.
+ * A credential refusal is the one whose recovery is two commands on the
+ * machine running the server, the same two every time, and they should be
+ * readable in the reader's own language rather than in the server's English.
  */
 export const ERROR_HINT_KEY: Partial<Record<GitErrorCode, TranslationKey>> = {
   auth_required: 'git.error.authRequiredHint',
 };
 
-/** The local recovery hint where there is one, otherwise the server's own. */
+/**
+ * Whether the sentence this code gets is OURS rather than git's own words.
+ *
+ * Three sources, and they are exactly the branches of `errorSentence`:
+ * `timeout` (whose sentence the store writes, with the number in it),
+ * `not_found` (which wraps the server's `message` in a translated frame) and
+ * every code in {@link ERROR_KEY}. Everything else falls to
+ * `git.error.generic`, which shows what the server said.
+ */
+function hasOwnSentence(code: GitErrorCode): boolean {
+  return code === 'timeout' || code === 'not_found' || ERROR_KEY[code] !== undefined;
+}
+
+/**
+ * The hint to draw under one refusal, or null for no second line.
+ *
+ * A server hint is ENGLISH prose, and the error line already carries a
+ * translated sentence for most codes -- so a `diverged` refusal read
+ * "Local and remote branches have diverged." with "the merge step failed"
+ * under it, in whatever language the reader had chosen. Two lines, one of
+ * them not theirs, saying between them no more than the first one alone.
+ *
+ * So the hint is ours where we have one ({@link ERROR_HINT_KEY}), nothing at
+ * all where the sentence above it is already translated, and the server's own
+ * where it is NOT: `git_failed`, `unknown` and the rest of the generic bucket
+ * show git's words in the sentence, and the hint beside them is the same
+ * voice continuing -- the one place a server sentence is the only description
+ * of the problem that exists. Git's raw tail stays behind Details either way.
+ */
 export function errorHint(
   code: GitErrorCode,
   serverHint: string | null,
   t: Translate,
 ): string | null {
   const key = ERROR_HINT_KEY[code];
-  return key === undefined ? serverHint : t(key);
+  if (key !== undefined) return t(key);
+  return hasOwnSentence(code) ? null : serverHint;
 }
 
 /**

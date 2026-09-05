@@ -1483,6 +1483,39 @@ describe('refusals', () => {
     expect(git().lastError?.hint).toBe(say('git.error.authRequiredHint'));
   });
 
+  it('drops an English server hint under a sentence we translate ourselves', async () => {
+    // The server names the step a sync failed at, and the tab draws that
+    // beside its own sentence: "Local and remote branches have diverged." with
+    // "the merge step failed" under it, in whatever language the reader chose.
+    // The code already said which failure this is; the raw tail is what
+    // Details is for.
+    api.gitSync.mockRejectedValue(
+      await coded(409, 'diverged', {
+        hint: 'the merge step failed',
+        stderr: 'hint: Diverging branches',
+      }),
+    );
+
+    await git().sync();
+
+    expect(git().lastError?.code).toBe('diverged');
+    expect(git().lastError?.hint).toBeNull();
+    expect(git().lastError?.stderr).toBe('hint: Diverging branches');
+  });
+
+  it('keeps it where git\'s own words are the sentence too', async () => {
+    // `git_failed` has no sentence of its own -- the line reads "git failed:
+    // <what the server said>" -- so the hint is the same voice continuing,
+    // and the only thing naming the step of a three-step sync.
+    api.gitSync.mockRejectedValue(
+      await coded(500, 'git_failed', { hint: 'the merge step failed' }),
+    );
+
+    await git().sync();
+
+    expect(git().lastError?.hint).toBe('the merge step failed');
+  });
+
   it('folds a 422 list detail into one invalid error', async () => {
     api.gitStage.mockRejectedValue(
       await refusal(422, {

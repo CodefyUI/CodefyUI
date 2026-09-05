@@ -905,19 +905,21 @@ describe('ScmHeader: the busy bar', () => {
 });
 
 describe('ScmHeader: the error line', () => {
-  it('shows a coded refusal, its hint, and hides stderr behind Details', () => {
+  it('shows a coded refusal and hides stderr behind Details', () => {
     useGitStore.setState({
       lastError: {
         code: 'nothing_to_commit',
         message: 'there is nothing to commit',
-        hint: 'stage something first',
+        // Null, and that is the store's doing: a code with a sentence of its
+        // own drops the server's English hint (`scm.errorHint`), because two
+        // lines in two languages said no more than the first one.
+        hint: null,
         stderr: 'nothing added to commit',
       },
     });
     render(<ScmHeader />);
     const alert = screen.getByRole('alert');
     expect(alert.textContent).toContain('Nothing to commit.');
-    expect(alert.textContent).toContain('stage something first');
 
     const details = screen.getByRole('button', { name: 'Details' });
     expect(details.getAttribute('aria-expanded')).toBe('false');
@@ -934,6 +936,26 @@ describe('ScmHeader: the error line', () => {
     fireEvent.click(details);
     expect(details.getAttribute('aria-expanded')).toBe('true');
     expect(screen.getByText('nothing added to commit').hidden).toBe(false);
+  });
+
+  it('draws the hint on its own line, under a sentence that is git\'s words', () => {
+    // The only refusals that still carry one: `git_failed` and the rest of
+    // the generic bucket, where the sentence itself is what the server said
+    // and the hint is the same voice continuing.
+    useGitStore.setState({
+      lastError: {
+        code: 'git_failed',
+        message: 'git push failed (exit 1)',
+        hint: 'the merge step failed',
+        stderr: null,
+      },
+    });
+    render(<ScmHeader />);
+    const alert = screen.getByRole('alert');
+    expect(alert.textContent).toContain('git failed: git push failed (exit 1)');
+    const hint = screen.getByText('the merge step failed');
+    // Its own block, never run on to the end of the sentence above it.
+    expect(hint.textContent).toBe('the merge step failed');
   });
 
   it('offers no Details when git said nothing on stderr', () => {

@@ -1083,7 +1083,7 @@ async def test_sync_publishes_a_branch_whose_upstream_is_gone(
         == repo.head()
 
 
-async def test_sync_stops_at_the_first_failure_and_says_which_step(
+async def test_sync_stops_at_the_first_failure_without_an_english_hint(
         repo, bare_remote, clone_of):
     """The push must not run once the merge has refused.
 
@@ -1091,6 +1091,12 @@ async def test_sync_stops_at_the_first_failure_and_says_which_step(
     remote's work in it, which is the ``non_fast_forward`` the merge just
     told us about -- or, on a remote that allows it, a history somebody
     else's commits fell out of.
+
+    A CLASSIFIED refusal carries no step name. The tab has a translated
+    sentence for ``diverged`` and draws the hint beside it, so "the merge
+    step failed" arrived as raw English under a Chinese sentence -- and it
+    said nothing the code did not already say. Which step it was is still
+    in ``stderr``, which the Details disclosure shows.
     """
     _publish(repo, bare_remote)
     clone = clone_of(bare_remote)
@@ -1103,9 +1109,32 @@ async def test_sync_stops_at_the_first_failure_and_says_which_step(
         await repo.service.sync()
 
     assert excinfo.value.code == "diverged"
-    assert excinfo.value.hint == "the merge step failed"
+    assert excinfo.value.hint is None
     assert Repo(bare_remote).git("rev-parse",
                                  "refs/heads/main").strip() == remote_head
+
+
+async def test_an_unclassified_step_failure_still_says_which_step(
+        repo, monkeypatch):
+    """``git_failed`` is the one code the step name is still worth having.
+
+    Nothing is known about that failure -- no row of the table matched --
+    so the tab shows git's own words, and "the merge step failed" is then
+    the only thing saying WHERE in a three-step sync it happened.
+    """
+    async def _boom(op, fn):
+        raise GitError("git_failed", 500, "git push failed (exit 1)")
+
+    # ``repo.service`` builds a NEW service on every read, so the one under
+    # test has to be held before it is patched.
+    service = repo.service
+    monkeypatch.setattr(service, "network", _boom)
+
+    with pytest.raises(GitError) as excinfo:
+        await service.sync()
+
+    assert excinfo.value.code == "git_failed"
+    assert excinfo.value.hint == "the publish step failed"
 
 
 async def test_a_step_that_failed_with_advice_keeps_it(repo):
