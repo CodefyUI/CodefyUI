@@ -1374,6 +1374,12 @@ const en = {
   'git.history.loadMore': 'Load more',
   'git.history.files': '{count} file(s)',
   'git.history.copySha': 'Copy commit id',
+  // What the clipboard did, said in this panel's own words rather than the
+  // Package Center's. The id is IN the sentence because the live region holds
+  // ONE string: two copies that produce the same text are the same text node
+  // twice, which a screen reader announces exactly once.
+  'git.history.copied': 'Copied {sha}',
+  'git.history.copyFailed': 'Could not copy the commit id.',
   // The diff view. The scope labels are plain words rather than "working tree
   // vs index": every other label in this panel names the GROUP a row came
   // from, and the modal's title already says which file is being shown.
@@ -1385,6 +1391,9 @@ const en = {
   'git.diff.unified': 'Unified',
   'git.diff.split': 'Side by side',
   'git.diff.close': 'Close',
+  // Its own sentence, not the toolbar's "Loading...": this window is reading
+  // one file's change, and the toolbar's key belongs to the graph list.
+  'git.diff.loading': 'Loading changes...',
   'git.diff.scope.worktree': 'Unstaged changes',
   'git.diff.scope.index': 'Staged changes',
   'git.diff.scope.commit': 'Commit {sha}',

@@ -145,6 +145,14 @@ describe('GitDiffModal: what it opens on', () => {
     expect(readDiff).not.toHaveBeenCalled();
   });
 
+  it('says it is loading the CHANGES, in its own words', async () => {
+    // Not the toolbar's "Loading...", which belongs to the graph list: a
+    // borrowed string is a string nobody can change for this window.
+    readDiff.mockReturnValue(new Promise<GitDiff>(() => {}));
+    await open({ path: 'src/model.py', scope: 'worktree' });
+    expect(within(dialog()).getByText('Loading changes...')).toBeTruthy();
+  });
+
   it('names the file it is showing and which two sides those are', async () => {
     await open({ path: 'src/model.py', scope: 'worktree' });
     expect(within(dialog()).getByText('Changes: src/model.py')).toBeTruthy();

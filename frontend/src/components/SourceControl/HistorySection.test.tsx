@@ -3,6 +3,7 @@ import { render, screen, fireEvent, waitFor, within } from '@testing-library/rea
 import { HistorySection } from './HistorySection';
 import { useI18n } from '../../i18n';
 import { _resetGitStoreForTesting, useGitStore } from '../../store/gitStore';
+import { useToastStore } from '../../store/toastStore';
 import { useUIStore } from '../../store/uiStore';
 import type { GitCommit, GitCommitFile } from '../../api/git';
 
@@ -54,6 +55,7 @@ beforeEach(() => {
   vi.setSystemTime(NOW);
   useI18n.setState({ locale: 'en' });
   _resetGitStoreForTesting();
+  useToastStore.setState({ toasts: [] });
   setSectionOpen = vi.fn();
   loadMoreLog = vi.fn(async () => {});
   loadCommitFiles = vi.fn(async () => {});
@@ -346,7 +348,12 @@ describe('HistorySection: copying the commit id', () => {
     await waitFor(() =>
       expect(writeText).toHaveBeenCalledWith('a1b2c3d4e5f60718293a4b5c6d7e8f9012345678'),
     );
-    await waitFor(() => expect(announce).toHaveBeenCalledWith('Copied to clipboard. a1b2c3d'));
+    await waitFor(() => expect(announce).toHaveBeenCalledWith('Copied a1b2c3d'));
+    // And a toast, which is what a sighted reader gets and what the Package
+    // Center already gives the same event.
+    expect(useToastStore.getState().toasts.map((one) => [one.message, one.type])).toEqual([
+      ['Copied a1b2c3d', 'success'],
+    ]);
   });
 
   it('says something different for a different commit, so the second is heard', async () => {
@@ -373,8 +380,8 @@ describe('HistorySection: copying the commit id', () => {
     const said = announce.mock.calls.map(([message]) => message);
     expect(said[0]).not.toBe(said[1]);
     expect(said).toEqual([
-      'Copied to clipboard. a1b2c3d',
-      'Copied to clipboard. bbbbbbb',
+      'Copied a1b2c3d',
+      'Copied bbbbbbb',
     ]);
   });
 
@@ -390,10 +397,11 @@ describe('HistorySection: copying the commit id', () => {
       within(section()).getByRole('button', { name: 'Copy commit id a1b2c3d' }),
     );
     await waitFor(() =>
-      expect(announce).toHaveBeenCalledWith(
-        'Could not copy. Select the text and copy it by hand. a1b2c3d',
-      ),
+      expect(announce).toHaveBeenCalledWith('Could not copy the commit id.'),
     );
+    expect(useToastStore.getState().toasts.map((one) => [one.message, one.type])).toEqual([
+      ['Could not copy the commit id.', 'error'],
+    ]);
   });
 
   it('repeats the same action inside one compact menu, for a 180px panel', () => {

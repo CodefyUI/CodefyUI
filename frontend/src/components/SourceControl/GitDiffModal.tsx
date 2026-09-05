@@ -269,7 +269,7 @@ function GitDiffBody({ target }: { target: GitDiffTarget }) {
               )}
             </div>
           ) : loading ? (
-            <div className={styles.stateMessage}>{t('toolbar.load.loading')}</div>
+            <div className={styles.stateMessage}>{t('git.diff.loading')}</div>
           ) : diff === null ? null : diff.binary ? (
             <div className={styles.stateMessage}>{t('git.diff.binary')}</div>
           ) : empty ? (

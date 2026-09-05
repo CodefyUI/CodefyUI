@@ -1,6 +1,7 @@
 import { useCallback, useId, useState } from 'react';
 import type { GitCommit, GitCommitFile } from '../../api/git';
 import { useGitStore } from '../../store/gitStore';
+import { useToastStore } from '../../store/toastStore';
 import { useUIStore } from '../../store/uiStore';
 import { useI18n } from '../../i18n';
 import { ActionMenu } from '../shared/ActionMenu';
@@ -57,9 +58,14 @@ export function HistorySection() {
     (sha: string, short: string) => {
       // Wrapped in a promise chain rather than called directly, so an absent
       // `navigator.clipboard` -- which is what a page served over plain http
-      // gets -- throws INTO the rejection path instead of past it. The
-      // sentence is the one the Package Center already says for this event;
-      // there is one clipboard and one thing to say about it.
+      // gets -- throws INTO the rejection path instead of past it.
+      //
+      // Two answers, not one: a toast, which is what the Package Center gives
+      // the same event and what a sighted reader sees, and the live message,
+      // which is what a screen reader hears. This panel's own keys rather
+      // than the Center's -- "Could not copy. Select the text and copy it by
+      // hand." is advice about a command block, and there is no text to
+      // select on a commit row.
       //
       // The id is IN the sentence, and that is not decoration. The live
       // region holds one string: `announce` writes `liveMessage`, the slots
@@ -70,11 +76,20 @@ export function HistorySection() {
       // commit B would say nothing at all for B. Naming the commit makes two
       // consecutive copies two different strings, which is what makes the
       // second one audible.
+      const { addToast } = useToastStore.getState();
       void Promise.resolve()
         .then(() => navigator.clipboard.writeText(sha))
         .then(
-          () => announce(`${t('packs.copied')} ${short}`),
-          () => announce(`${t('packs.copyFailed')} ${short}`),
+          () => {
+            const said = t('git.history.copied', { sha: short });
+            addToast(said, 'success');
+            announce(said);
+          },
+          () => {
+            const said = t('git.history.copyFailed');
+            addToast(said, 'error');
+            announce(said);
+          },
         );
     },
     [announce, t],
