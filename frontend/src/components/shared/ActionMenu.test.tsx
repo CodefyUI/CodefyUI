@@ -489,11 +489,31 @@ describe('ActionMenu', () => {
     expect(document.activeElement).toBe(item('Charlie'));
   });
 
-  it('a disabled trigger opens nothing', () => {
-    renderMenu({ disabled: true });
-    expect(trigger().hasAttribute('disabled')).toBe(true);
+  it('a refused trigger opens nothing, and is still there to be focused', () => {
+    // `aria-disabled`, not the native attribute, for the same reason a refused
+    // ROW carries it: a natively disabled button takes no focus, so a trigger
+    // that turns refused while the keyboard is on it drops focus to <body> --
+    // and `close(true)` could not hand focus back to it either. It opens no
+    // tooltip either, which is where the reason lives on an icon-only trigger.
+    renderMenu({ disabled: true, disabledHint: 'Running fetch...' });
+    expect(trigger()).toHaveAttribute('aria-disabled', 'true');
+    expect(trigger()).not.toBeDisabled();
+    expect(trigger().getAttribute('title')).toBe('Running fetch...');
     fireEvent.keyDown(trigger(), { key: 'ArrowDown' });
     expect(screen.queryByRole('menu')).toBeNull();
+    fireEvent.click(trigger());
+    expect(screen.queryByRole('menu')).toBeNull();
+    act(() => trigger().focus());
+    expect(document.activeElement).toBe(trigger());
+  });
+
+  it('names the trigger by what it does, refused or not', () => {
+    // The hint is the DESCRIPTION and never the name: an offered trigger is
+    // titled by its label, and a refused one keeps that label as its
+    // accessible name so it is still findable by what it does.
+    renderMenu({ disabled: true });
+    expect(trigger().getAttribute('title')).toBe('More actions');
+    expect(trigger()).toHaveAttribute('aria-label', 'More actions');
   });
 
   // ── Dismissal by pointer ───────────────────────────────────────────────────

@@ -68,8 +68,28 @@ export interface ActionMenuProps {
    * menu opened from a button at the right of a narrow panel on screen.
    */
   align?: 'start' | 'end';
-  /** A trigger with nothing to offer yet. */
+  /**
+   * A trigger with nothing to offer yet — or nothing it can offer RIGHT NOW.
+   *
+   * `aria-disabled` rather than the native attribute, for the same reason a
+   * refused row carries it (see {@link ActionMenuItem.disabled}) and one more:
+   * a trigger can turn refused while the keyboard is on it — a network
+   * operation starts, or `close(true)` hands focus back the instant one does —
+   * and a natively disabled button cannot hold or take focus, so the browser
+   * drops it to `<body>` and the next Tab restarts at the top of the page.
+   * `openMenu` refuses to open instead.
+   */
   disabled?: boolean;
+  /**
+   * Why the trigger is refused, as its tooltip while `disabled` is true.
+   *
+   * A trigger is usually icon-only, so its `title` is the only place a reason
+   * can go — and a natively disabled button opens no tooltip in Chrome, which
+   * is the other half of why `disabled` above is the ARIA attribute. The
+   * accessible NAME stays {@link label}: a refused control is still named by
+   * what it does, and the reason follows as its description.
+   */
+  disabledHint?: string;
 }
 
 /**
@@ -111,6 +131,7 @@ export function ActionMenu({
   className,
   align = 'start',
   disabled = false,
+  disabledHint,
 }: ActionMenuProps) {
   const triggerRef = useRef<HTMLButtonElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
@@ -292,8 +313,12 @@ export function ActionMenu({
         aria-haspopup="menu"
         aria-expanded={open}
         aria-label={label}
-        title={label}
-        disabled={disabled}
+        // The reason where there is one, and the label everywhere else: the
+        // tooltip is the only thing an icon-only trigger can say.
+        title={disabled && disabledHint !== undefined && disabledHint !== ''
+          ? disabledHint
+          : label}
+        aria-disabled={disabled}
         onClick={() => (open ? close(true) : openMenu('first'))}
         onKeyDown={onTriggerKeyDown}
       >

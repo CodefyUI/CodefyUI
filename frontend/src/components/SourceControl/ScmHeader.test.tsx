@@ -602,19 +602,86 @@ describe('ScmHeader: what the git actions are refused for', () => {
   });
 
   it('refuses Sync and Publish on the branch line for the same reason', () => {
+    // `aria-disabled` and NOT the native attribute -- the rule the rest of the
+    // panel already states twice (CommitBox's button, every menu row). A
+    // natively disabled button takes no focus and opens no tooltip, so the
+    // icon-only Sync would lose its only label at the exact moment it has a
+    // reason to give. The press is refused in the handler instead.
     useGitStore.setState({
       status: status({ upstream: 'origin/main', ahead: 1, behind: 0 }),
       remotes: [remote('origin')],
       netOp: 'pull',
     });
     const view = render(<ScmHeader />);
-    expect(screen.getByRole('button', { name: 'Sync (pull, then push)' }))
-      .toBeDisabled();
+    const syncButton = screen.getByRole('button', { name: 'Sync (pull, then push)' });
+    expect(syncButton).toHaveAttribute('aria-disabled', 'true');
+    expect(syncButton).not.toBeDisabled();
+    // The same sentence the refused menu rows give, in the one place this
+    // control can give it.
+    expect(syncButton.getAttribute('title')).toBe('Running pull...');
+    fireEvent.click(syncButton);
+    expect(sync).not.toHaveBeenCalled();
     view.unmount();
 
     useGitStore.setState({ status: status(), netOp: 'fetch' });
     render(<ScmHeader />);
-    expect(screen.getByRole('button', { name: 'Publish Branch' })).toBeDisabled();
+    const publishButton = screen.getByRole('button', { name: 'Publish Branch' });
+    expect(publishButton).toHaveAttribute('aria-disabled', 'true');
+    expect(publishButton).not.toBeDisabled();
+    expect(publishButton.getAttribute('title')).toBe('Running fetch...');
+    fireEvent.click(publishButton);
+    expect(publish).not.toHaveBeenCalled();
+  });
+
+  it('refuses the Publish picker the same way, trigger and all', () => {
+    // Several remotes draw an ActionMenu in place of the button, and its
+    // trigger is refused through the same attribute -- `close(true)` puts
+    // focus back on it after a remote is chosen, which a natively disabled
+    // trigger could not take.
+    useGitStore.setState({
+      remotes: [remote('origin'), remote('backup')],
+      netOp: 'push',
+    });
+    render(<ScmHeader />);
+    const picker = screen.getByRole('button', { name: 'Publish Branch' });
+    expect(picker).toHaveAttribute('aria-disabled', 'true');
+    expect(picker).not.toBeDisabled();
+    expect(picker.getAttribute('title')).toBe('Running push...');
+    fireEvent.click(picker);
+    expect(screen.queryByRole('menu', { name: 'Publish Branch' })).toBeNull();
+  });
+
+  it('keeps focus on the control that was just pressed', () => {
+    // `netOp` is set synchronously inside the store's `runOp`, before the
+    // request is awaited, so the control the keyboard just pressed is refused
+    // on the very next render. Natively disabled it would stop being focusable
+    // there, and the browser would drop focus to <body> -- the next Tab
+    // restarting at the top of the page, seconds into every sync.
+    useGitStore.setState({
+      status: status({ upstream: 'origin/main', ahead: 1, behind: 0 }),
+      remotes: [remote('origin')],
+    });
+    render(<ScmHeader />);
+    const syncButton = screen.getByRole('button', { name: 'Sync (pull, then push)' });
+    act(() => syncButton.focus());
+    fireEvent.click(syncButton);
+    expect(sync).toHaveBeenCalledTimes(1);
+    act(() => {
+      useGitStore.setState({ netOp: 'sync' });
+    });
+    expect(syncButton).toHaveAttribute('aria-disabled', 'true');
+    expect(document.activeElement).toBe(syncButton);
+    // jsdom neither blurs a disabled element nor refuses `focus()` on one, so
+    // the two lines above pass against the native attribute as well. What a
+    // test CAN see is the attribute the browser's rule keys off: focus
+    // survives here precisely because the refusal is not `disabled`. Measured
+    // -- with both attributes set, everything but this line still passed.
+    expect(syncButton).not.toBeDisabled();
+    act(() => {
+      syncButton.blur();
+      syncButton.focus();
+    });
+    expect(document.activeElement).toBe(syncButton);
   });
 
   it('drops Publish on a branch that already has an upstream', () => {

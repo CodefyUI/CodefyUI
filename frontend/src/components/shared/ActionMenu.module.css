@@ -26,7 +26,7 @@
   transition: background var(--transition-fast), color var(--transition-fast);
 }
 
-.trigger:hover:not(:disabled) {
+.trigger:hover:not([aria-disabled='true']) {
   background: var(--surface-hover);
   color: var(--text-primary);
 }
@@ -36,7 +36,10 @@
   box-shadow: var(--focus-ring);
 }
 
-.trigger:disabled {
+/* `aria-disabled`, not `:disabled` — the same rule the rows above follow, and
+   for one more reason: a trigger that turns refused while the keyboard is on
+   it must still hold focus, and must still open the tooltip that says why. */
+.trigger[aria-disabled='true'] {
   color: var(--text-disabled);
   cursor: default;
 }

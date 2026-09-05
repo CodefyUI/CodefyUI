@@ -245,6 +245,16 @@ export function ScmHeader() {
     await runStash(named === '' ? null : named, true);
   }, [runStash, t]);
 
+  // One network operation at a time (R11), so while that lane is busy every
+  // control that would join it is refused where it stands rather than a click
+  // later. The local lane is not consulted: a commit during a fetch is allowed
+  // on both sides. The reason is the sentence the busy bar is already showing,
+  // which is what makes the refusal readable rather than merely grey.
+  const netBusy = netOp !== null;
+  const netBusyReason = netOp === null
+    ? null
+    : t('git.busy', { op: t(gitOpKey(netOp)) });
+
   /**
    * Why a remote row is refused, or null when it can be pressed.
    *
@@ -258,7 +268,7 @@ export function ScmHeader() {
     // Above every state reason: while the network lane is busy none of these
     // can start at all, and a row that offered the press would answer it with
     // the same fact as a toast a second later (R11).
-    if (netOp !== null) return t('git.busy', { op: t(gitOpKey(netOp)) });
+    if (netBusyReason !== null) return netBusyReason;
     if (unborn) return t('git.unborn');
     if (noRemotes) return t('git.remote.empty');
     if (detached && action !== 'fetch') return t('git.detached');
@@ -413,12 +423,18 @@ export function ScmHeader() {
   // The local one wins the label: it is the one the user pressed a button for.
   const runningOp = busyOp ?? netOp;
 
-  // While the network lane is busy, the two controls that would join it are
-  // refused where they stand rather than a click later (R11). The local lane
-  // is not consulted: a commit during a fetch is allowed on both sides.
-  const netBusy = netOp !== null;
-
-  /** The Publish control, as a button or as the picker several remotes need. */
+  /**
+   * The Publish control, as a button or as the picker several remotes need.
+   *
+   * `aria-disabled` and a guarded handler, never the native attribute -- the
+   * rule this panel already states on the commit button and on every menu row.
+   * `netOp` is set synchronously, before the request goes out, so the control
+   * the user just pressed is the one that turns refused on the very next
+   * render: natively disabled it would stop being focusable there and the
+   * browser would drop focus to `<body>`, seconds at a time, on every press.
+   * The store's own busy toast is the backstop for a press that races the
+   * render; the `title` is what makes the refusal readable before it.
+   */
   const publishControl = (className: string) =>
     (remotes !== null && remotes.length > 1 ? (
       <ActionMenu
@@ -432,6 +448,7 @@ export function ScmHeader() {
         align="end"
         className={className}
         disabled={netBusy}
+        disabledHint={netBusyReason ?? undefined}
       >
         {t('git.action.publish')}
       </ActionMenu>
@@ -439,9 +456,12 @@ export function ScmHeader() {
       <button
         type="button"
         className={className}
-        title={t('git.action.publish')}
-        disabled={netBusy}
-        onClick={() => void publishBranch()}
+        title={netBusyReason ?? t('git.action.publish')}
+        aria-disabled={netBusy}
+        onClick={() => {
+          if (netBusy) return;
+          void publishBranch();
+        }}
       >
         {t('git.action.publish')}
       </button>
@@ -498,13 +518,23 @@ export function ScmHeader() {
             </span>
           )}
           {ready && !unborn && !detached && hasUpstream && (
+            /*
+              See `publishControl`: `aria-disabled` and a guarded handler. This
+              one is icon-only, so its `title` is its whole identity as well as
+              where the reason goes -- and a natively disabled button opens no
+              tooltip at all in Chrome. The name stays on `aria-label`, so it
+              is still "Sync (pull, then push)" while it is refused.
+            */
             <button
               type="button"
               className={styles.iconButton}
               aria-label={t('git.action.sync')}
-              title={t('git.action.sync')}
-              disabled={netBusy}
-              onClick={() => void runSync()}
+              title={netBusyReason ?? t('git.action.sync')}
+              aria-disabled={netBusy}
+              onClick={() => {
+                if (netBusy) return;
+                void runSync();
+              }}
             >
               <SyncIcon size={13} />
             </button>

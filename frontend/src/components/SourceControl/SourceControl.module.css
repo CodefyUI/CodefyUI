@@ -138,7 +138,7 @@
   font-size: var(--fs-2xs);
 }
 
-.publishButton:hover:not(:disabled) {
+.publishButton:hover:not([aria-disabled='true']) {
   border-color: var(--accent-dim);
   color: var(--accent);
 }
@@ -153,8 +153,12 @@
    state, so a control that cannot be pressed looks the way every other one in
    the app does -- a refused button still drawn as live is worse than no
    refusal at all. The border dims with the label here and stays transparent on
-   the icon button, which has none to dim. */
-.publishButton:disabled {
+   the icon button, which has none to dim.
+
+   `aria-disabled`, not `:disabled` — see `.commitButton` below. The button
+   stays focusable, so a press that lands the instant the lane goes busy does
+   not throw focus to <body>, and its `title` still opens to say why. */
+.publishButton[aria-disabled='true'] {
   border-color: var(--border-base);
   color: var(--text-disabled);
   cursor: default;
@@ -598,7 +602,7 @@
   cursor: pointer;
 }
 
-.iconButton:hover:not(:disabled) {
+.iconButton:hover:not([aria-disabled='true']) {
   background: var(--surface-hover);
   border-color: var(--border-base);
   color: var(--text-primary);
@@ -609,14 +613,14 @@
   box-shadow: var(--focus-ring);
 }
 
-/* See `.publishButton:disabled`. No border to dim -- this one's is
-   transparent until a hover draws it. */
-.iconButton:disabled {
+/* See `.publishButton[aria-disabled='true']`. No border to dim -- this one's
+   is transparent until a hover draws it. */
+.iconButton[aria-disabled='true'] {
   color: var(--text-disabled);
   cursor: default;
 }
 
-.dangerButton:hover:not(:disabled) {
+.dangerButton:hover:not([aria-disabled='true']) {
   background: var(--danger-wash);
   border-color: var(--status-error);
   color: var(--status-error);
