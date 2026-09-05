@@ -45,6 +45,14 @@ describe('GraphDiffSummary: the counted lines', () => {
     expect(screen.getByText(sentence)).toBeTruthy();
   });
 
+  it('is a list, and says so where the stylesheet took that away', () => {
+    // `.summary` sets `list-style: none`, which drops the list semantics of a
+    // `<ul>` in Safari -- and how many facts the strip asserts, and where
+    // "and 3 more" ends it, is the one thing the sentences cannot say.
+    draw({ lines: [{ kind: 'nodesAdded', count: 3 }] });
+    expect(screen.getByRole('list').getAttribute('role')).toBe('list');
+  });
+
   it('gives every kind a sentence of its own', () => {
     // Two kinds that share a sentence would be a swap nobody could see: the
     // strip would be grammatical, translated and about the wrong thing.

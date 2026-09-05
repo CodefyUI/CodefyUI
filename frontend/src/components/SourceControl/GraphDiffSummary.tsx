@@ -55,7 +55,11 @@ export function GraphDiffSummary({ summary }: { summary: GraphDiff }) {
   if (summary.lines.length === 0) return null;
 
   return (
-    <ul className={styles.summary}>
+    // `role="list"` is spelled out because `list-style: none` takes the list
+    // semantics away from a `<ul>` in Safari -- and how many facts the strip
+    // is asserting, and where "and 3 more" ends it, is the one thing a reader
+    // cannot get from the sentences themselves.
+    <ul className={styles.summary} role="list">
       {summary.lines.map((line, index) => (
         <li key={index} className={styles.summaryLine}>{sentence(line, t)}</li>
       ))}

@@ -19,6 +19,7 @@ import {
 import { parseUnifiedDiff } from '../../utils/unifiedDiff';
 import { DiffView, type DiffViewMode } from './DiffView';
 import { GraphDiffSummary } from './GraphDiffSummary';
+import { focusScmFallback } from './ScmHeader';
 import { errorHint, errorSentence } from './scm';
 import styles from './GitDiffModal.module.css';
 
@@ -134,7 +135,15 @@ function GitDiffBody({ target }: { target: GitDiffTarget }) {
     return () => {
       if (previouslyFocused && previouslyFocused.isConnected) {
         previouslyFocused.focus();
+        return;
       }
+      // The row that opened this window can be GONE by the time it closes:
+      // the fifteen-second poll re-renders the file groups, and a row whose
+      // key changes -- the file was staged or settled from elsewhere -- takes
+      // the button that had focus with it. Falling to `<body>` there would
+      // start the next Tab at the top of the page, so this lands on the panel
+      // instead, the same answer the file rows already give themselves.
+      focusScmFallback();
     };
   }, []);
 
@@ -175,10 +184,18 @@ function GitDiffBody({ target }: { target: GitDiffTarget }) {
   // out as a confident "No changes" over a file full of conflict markers. A
   // patch with bytes in it that yields no hunks is now shown as the text it is.
   const empty = file !== null && diff !== null && diff.patch.trim() === '';
-  // A conflicted file has no index copy until it is settled -- there is no
-  // stage 0 -- so one of the two columns could only be a guess, and the
-  // choice is not offered rather than offered and refused.
-  const canSplit = target.conflicted !== true;
+  // Offered only where there is a patch to switch. A conflicted file has no
+  // index copy until it is settled -- there is no stage 0 -- so one of the two
+  // columns could only be a guess; and while the read is out, over a refusal,
+  // over "Binary file; no text diff.", over "No changes" and over a patch that
+  // yielded no hunks, the body is one sentence and pressing either radio
+  // changes nothing on screen. A choice that does nothing is not a choice.
+  const canSplit = target.conflicted !== true
+    && error === null
+    && !loading
+    && !empty
+    && file !== null
+    && file.hunks.length > 0;
   const stderr = error?.stderr ?? null;
 
   return createPortal(
@@ -201,24 +218,7 @@ function GitDiffBody({ target }: { target: GitDiffTarget }) {
             <div className={styles.title}>{t('git.diff.title', { path: target.path })}</div>
             <div className={styles.subtitle}>{scopeLabel}</div>
           </div>
-          {canSplit && (
-            /* No name of its own: the two radios inside it carry the whole
-               vocabulary of the choice ("Unified", "Side by side"), and no
-               key names the group -- an English one invented here would be
-               the only untranslated string in the window. */
-            <div className={styles.views} role="radiogroup">
-              <ViewRadio
-                label={t('git.diff.unified')}
-                checked={mode === 'unified'}
-                onSelect={() => setMode('unified')}
-              />
-              <ViewRadio
-                label={t('git.diff.split')}
-                checked={mode === 'split'}
-                onSelect={() => setMode('split')}
-              />
-            </div>
-          )}
+          {canSplit && <ViewSwitch mode={mode} onSelect={setMode} />}
           <button
             type="button"
             className={styles.closeBtn}
@@ -236,8 +236,17 @@ function GitDiffBody({ target }: { target: GitDiffTarget }) {
               {/* One sentence, and git's own tail behind a disclosure -- the
                   shape the header's error line already uses. It stays HERE
                   and never on that line: a read nobody pressed a button for
-                  must not replace the refusal the user was reading. */}
-              <div className={styles.errorText}>{errorSentence(error, t)}</div>
+                  must not replace the refusal the user was reading.
+
+                  `role="alert"` on the SENTENCE and nothing else, for the
+                  reason the header's line records: this window opens on a
+                  loading line, and a refusal that replaces it inside a
+                  `role="dialog"` is announced by nobody -- a dialog body is
+                  not a live region. An alert re-announces on any change in
+                  its subtree, so the hint, the Details toggle and the `<pre>`
+                  stay outside it; opening the stderr must not read the whole
+                  refusal out again. */}
+              <div className={styles.errorText} role="alert">{errorSentence(error, t)}</div>
               {error.hint !== null && <div className={styles.errorHint}>{error.hint}</div>}
               {stderr !== null && stderr !== '' && (
                 <>
@@ -289,26 +298,83 @@ function GitDiffBody({ target }: { target: GitDiffTarget }) {
   );
 }
 
-/** One of the two views, as a radio rather than a pressed-looking button. */
-function ViewRadio({
-  label,
-  checked,
+/** The two views, in the order they are drawn. */
+const VIEW_MODES: readonly DiffViewMode[] = ['unified', 'split'];
+
+/** What each one is called. */
+const VIEW_KEY: Record<DiffViewMode, TranslationKey> = {
+  unified: 'git.diff.unified',
+  split: 'git.diff.split',
+};
+
+/**
+ * One choice with two answers, as a real radio group.
+ *
+ * `role="radiogroup"` is a promise about the keyboard as well as about the
+ * name: ONE tab stop, and the arrow keys move and choose inside it. It was
+ * two plain buttons wearing `role="radio"`, so a reader who heard "radio
+ * button, not checked" and reached for the arrow keys got nothing -- a role
+ * describing a widget the component was not. The roving `tabIndex` and the
+ * four arrow keys below are that contract, written once for the whole group.
+ *
+ * The name is a key of its own (`git.diff.view`) because a group needs one:
+ * the two radios carry the vocabulary of the ANSWERS, and neither says what
+ * the question is.
+ */
+function ViewSwitch({
+  mode,
   onSelect,
 }: {
-  label: string;
-  checked: boolean;
-  onSelect: () => void;
+  mode: DiffViewMode;
+  onSelect: (next: DiffViewMode) => void;
 }) {
+  const { t } = useI18n();
+  const groupRef = useRef<HTMLDivElement | null>(null);
+
+  const move = (delta: number) => {
+    const at = VIEW_MODES.indexOf(mode);
+    const to = (at + delta + VIEW_MODES.length) % VIEW_MODES.length;
+    onSelect(VIEW_MODES[to]);
+    // Focus follows the choice, which is what makes the group one tab stop:
+    // the radios are in the order of `VIEW_MODES`, so the one to focus is the
+    // one at that index. Focusing it does not wait on the re-render.
+    groupRef.current
+      ?.querySelectorAll<HTMLButtonElement>('[role="radio"]')[to]
+      ?.focus();
+  };
+
   return (
-    <button
-      type="button"
-      role="radio"
-      aria-checked={checked}
-      className={styles.viewButton}
-      onClick={onSelect}
+    <div
+      ref={groupRef}
+      className={styles.views}
+      role="radiogroup"
+      aria-label={t('git.diff.view')}
+      onKeyDown={(e) => {
+        const forward = e.key === 'ArrowRight' || e.key === 'ArrowDown';
+        const back = e.key === 'ArrowLeft' || e.key === 'ArrowUp';
+        if (!forward && !back) return;
+        // Before anything else: the arrows scroll the body underneath, and a
+        // group that both moves and scrolls moves twice as far as it looks.
+        e.preventDefault();
+        move(forward ? 1 : -1);
+      }}
     >
-      {label}
-    </button>
+      {VIEW_MODES.map((one) => (
+        <button
+          key={one}
+          type="button"
+          role="radio"
+          aria-checked={mode === one}
+          // The chosen one is the group's single tab stop; Tab leaves the
+          // group rather than walking to the answer nobody picked.
+          tabIndex={mode === one ? 0 : -1}
+          className={styles.viewButton}
+          onClick={() => onSelect(one)}
+        >
+          {t(VIEW_KEY[one])}
+        </button>
+      ))}
+    </div>
   );
 }
 

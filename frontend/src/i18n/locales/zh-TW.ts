@@ -1196,6 +1196,7 @@ const zhTW: Record<TranslationKey, string> = {
   'git.history.files': '{count} 個檔案',
   'git.history.copySha': '複製提交 ID',
   'git.diff.title': '變更：{path}',
+  'git.diff.view': '檢視方式',
   'git.diff.unified': '單欄',
   'git.diff.split': '並排',
   'git.diff.close': '關閉',

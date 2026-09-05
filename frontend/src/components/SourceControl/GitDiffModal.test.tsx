@@ -264,6 +264,74 @@ describe('GitDiffModal: the patch', () => {
 });
 
 describe('GitDiffModal: the two views', () => {
+  it('names the choice, not only its two answers', async () => {
+    await open({ path: 'src/model.py', scope: 'worktree' });
+    expect(within(dialog()).getByRole('radiogroup', { name: 'View' })).toBeTruthy();
+  });
+
+  it('is one tab stop, on whichever view is chosen', async () => {
+    // A radio group is ONE stop: Tab leaves it rather than walking to the
+    // answer nobody picked.
+    await open({ path: 'src/model.py', scope: 'worktree' });
+    const unified = screen.getByRole('radio', { name: 'Unified' });
+    const split = screen.getByRole('radio', { name: 'Side by side' });
+    expect(unified.tabIndex).toBe(0);
+    expect(split.tabIndex).toBe(-1);
+
+    fireEvent.click(split);
+    expect(unified.tabIndex).toBe(-1);
+    expect(split.tabIndex).toBe(0);
+  });
+
+  it.each([
+    ['ArrowRight', 'Side by side'],
+    ['ArrowDown', 'Side by side'],
+    ['ArrowLeft', 'Side by side'],
+    ['ArrowUp', 'Side by side'],
+  ])('moves and chooses on %s, which the role promises', async (key, expected) => {
+    // Two answers and the group wraps, so either direction lands on the other
+    // one. A reader who hears "radio button" reaches for these keys.
+    await open({ path: 'src/model.py', scope: 'worktree' });
+    const group = within(dialog()).getByRole('radiogroup');
+    fireEvent.keyDown(group, { key });
+
+    const chosen = screen.getByRole('radio', { name: expected });
+    expect(chosen.getAttribute('aria-checked')).toBe('true');
+    // Focus follows the choice, or the next arrow press would move from the
+    // radio the reader left behind.
+    expect(document.activeElement).toBe(chosen);
+  });
+
+  it('leaves every other key to the window', async () => {
+    await open({ path: 'src/model.py', scope: 'worktree' });
+    const group = within(dialog()).getByRole('radiogroup');
+    fireEvent.keyDown(group, { key: 'Home' });
+    expect(
+      screen.getByRole('radio', { name: 'Unified' }).getAttribute('aria-checked'),
+    ).toBe('true');
+  });
+
+  it.each([
+    ['while the read is still out', () => {
+      readDiff.mockReturnValue(new Promise<GitDiff>(() => {}));
+    }],
+    ['over a refusal', () => {
+      readDiff.mockRejectedValue(new GitApiError(404, 'no such path', { code: 'not_found' }));
+    }],
+    ['over a binary file', () => {
+      readDiff.mockResolvedValue(diff({ binary: true, patch: 'Binary files differ\n' }));
+    }],
+    ['over no changes at all', () => {
+      readDiff.mockResolvedValue(diff({ patch: '' }));
+    }],
+  ])('offers no view switch %s', async (_name, arrange) => {
+    // There is one sentence on screen in each of these, and pressing either
+    // radio would change nothing at all.
+    arrange();
+    await open({ path: 'src/model.py', scope: 'worktree' });
+    expect(within(dialog()).queryByRole('radiogroup')).toBeNull();
+  });
+
   it('offers one choice of two, starting on the unified one', async () => {
     await open({ path: 'src/model.py', scope: 'worktree' });
     const group = within(dialog()).getByRole('radiogroup');
@@ -439,6 +507,26 @@ describe('GitDiffModal: a read that was refused', () => {
     expect(within(dialog()).getByText('fatal: the tail git wrote')).toBeTruthy();
   });
 
+  it('announces the refusal, which nothing else in the window would', async () => {
+    // The window opens on a loading line and swaps it for this one. A
+    // `role="dialog"` body is not a live region, so without an alert the
+    // reader hears "Loading changes..." and then silence.
+    readDiff.mockRejectedValue(
+      new GitApiError(403, 'path is ignored', {
+        code: 'ignored',
+        stderr: 'fatal: the tail git wrote',
+      }),
+    );
+    await open({ path: '.env', scope: 'worktree' });
+
+    const alert = within(dialog()).getByRole('alert');
+    expect(alert.textContent).toBe('This file is ignored by git.');
+    // The sentence ALONE: an alert re-announces on any change in its subtree,
+    // so opening the stderr must not read the whole refusal out again.
+    expect(within(alert).queryByRole('button')).toBeNull();
+    expect(alert.textContent).not.toContain('fatal: the tail git wrote');
+  });
+
   it('keeps the refusal to itself, off the panel\'s error line', async () => {
     // R12: a read refusal belongs to the surface that asked for it. The
     // header's line is the one an operation the user pressed a button for
@@ -485,5 +573,28 @@ describe('GitDiffModal: the key and the focus', () => {
     });
     expect(document.activeElement).toBe(opener);
     opener.remove();
+  });
+
+  it('lands on the panel when the row that opened it has gone', async () => {
+    // The fifteen-second poll re-renders the file groups, and a row whose key
+    // changes -- staged or settled from elsewhere while the window was open --
+    // unmounts the button that had focus. Falling to `<body>` would start the
+    // next Tab at the top of the page.
+    const panel = document.createElement('div');
+    panel.setAttribute('data-scm-focus', 'title');
+    panel.tabIndex = -1;
+    document.body.appendChild(panel);
+    const opener = document.createElement('button');
+    document.body.appendChild(opener);
+    opener.focus();
+
+    await open({ path: 'src/model.py', scope: 'worktree' });
+    opener.remove();
+    await act(async () => {
+      useUIStore.getState().closeGitDiff();
+    });
+
+    expect(document.activeElement).toBe(panel);
+    panel.remove();
   });
 });

@@ -1378,6 +1378,10 @@ const en = {
   // vs index": every other label in this panel names the GROUP a row came
   // from, and the modal's title already says which file is being shown.
   'git.diff.title': 'Changes: {path}',
+  // The name of the CHOICE, not of either answer: a radio group needs one,
+  // and "Unified" and "Side by side" say what the answers are without ever
+  // saying what the question is.
+  'git.diff.view': 'View',
   'git.diff.unified': 'Unified',
   'git.diff.split': 'Side by side',
   'git.diff.close': 'Close',
