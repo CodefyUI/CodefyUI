@@ -105,6 +105,45 @@ describe('DialogContainer', () => {
     await expect(p).resolves.toBeNull();
   });
 
+  it('gives focus back to whatever opened it', async () => {
+    // The dialog is portaled to `document.body`, so on close the focused
+    // node is REMOVED and focus falls to the body -- and the next Tab starts
+    // from the top of the page. That matters more here than for the three
+    // modals that already do this: the panel has eleven entry points into
+    // this box (New Branch, Rename, Delete, the second force-delete, Add
+    // Remote's two prompts, Change URL, Remove, Drop, Stash message, Abort
+    // Merge), and the CANCELLED ones return early without moving focus at
+    // all.
+    const opener = document.createElement('button');
+    document.body.appendChild(opener);
+    opener.focus();
+    render(<DialogContainer />);
+
+    const p = confirm({ title: 'Delete branch work?', cancelText: 'Cancel' });
+    fireEvent.click(await screen.findByText('Cancel'));
+    await expect(p).resolves.toBe(false);
+
+    expect(document.activeElement).toBe(opener);
+    opener.remove();
+  });
+
+  it('leaves focus alone when the thing that opened it has gone', async () => {
+    // The row that held focus is often exactly what the write removes -- a
+    // branch deleted, a stash dropped -- and the sections put focus on their
+    // heading for that. Refocusing a detached node would take it back off.
+    const opener = document.createElement('button');
+    document.body.appendChild(opener);
+    opener.focus();
+    render(<DialogContainer />);
+
+    const p = confirm({ title: 'Drop stash@{0}?', confirmText: 'Drop' });
+    fireEvent.click(await screen.findByText('Drop'));
+    opener.remove();
+    await expect(p).resolves.toBe(true);
+
+    expect(document.activeElement).toBe(document.body);
+  });
+
   it('danger variant adds danger class to the confirm button', async () => {
     render(<DialogContainer />);
     confirm({ title: 'Delete?', confirmText: 'Delete', variant: 'danger' });

@@ -33,9 +33,30 @@ export function DialogContainer() {
   const titleId = `${domId}-title`;
   const errorId = `${domId}-error`;
 
-  // Reset input + focus the right element each time a new dialog opens.
+  // Reset input + focus the right element each time a new dialog opens, and
+  // hand focus back to whatever opened it on the way out.
+  //
+  // The box is portaled to `document.body`, so the element that had focus is
+  // REMOVED when it closes and focus falls to the body -- from where the next
+  // Tab starts at the top of the page. The same pattern as `NodeDetailModal`,
+  // `PackCenterModal`, `PluginCenterModal` and `TemplateGalleryModal`.
+  //
+  // It does not fight the callers that move focus themselves: the Source
+  // Control sections put focus on a section heading after the write they
+  // asked for, on a `requestAnimationFrame` that runs after this cleanup.
+  // What it fixes is every CANCELLED one of those, which returns early and
+  // moves nothing.
   useEffect(() => {
-    if (!active) return;
+    if (!active) return undefined;
+    const previouslyFocused = document.activeElement as HTMLElement | null;
+    const handBack = () => {
+      // Not when it has gone: the row that held focus is often exactly what
+      // the write removed, and refocusing a detached node does nothing while
+      // taking the answer away from whoever did move focus.
+      if (previouslyFocused && previouslyFocused.isConnected) {
+        previouslyFocused.focus();
+      }
+    };
     let timerId: ReturnType<typeof setTimeout>;
     if (active.kind === 'prompt') {
       setInputValue(active.defaultValue ?? '');
@@ -49,7 +70,10 @@ export function DialogContainer() {
     } else {
       timerId = setTimeout(() => confirmBtnRef.current?.focus(), 0);
     }
-    return () => clearTimeout(timerId);
+    return () => {
+      clearTimeout(timerId);
+      handBack();
+    };
   }, [active]);
 
   // ESC cancels.
