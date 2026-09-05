@@ -4,7 +4,11 @@ import {
   GIT_TIMEOUTS_S,
   GitApiError,
   getGitBranches,
+  getGitCommitFiles,
   getGitConfig,
+  getGitDiff,
+  getGitFile,
+  getGitLog,
   getGitRemotes,
   getGitStashes,
   getGitStatus,
@@ -361,6 +365,276 @@ describe('reference reads', () => {
       { index: 0, message: '', branch: null, created_at: 0 },
     ]);
     expect(fetchMock.mock.calls[0]).toEqual(['/api/git/stashes']);
+  });
+});
+
+/* ── The history and diff reads ──────────────────────────────────────── */
+
+/** The URL a read asked for, parsed so a test names keys instead of encoding. */
+function calledUrl(fetchMock: ReturnType<typeof mockFetch>): URL {
+  return new URL(String(fetchMock.mock.calls[0][0]), 'http://localhost');
+}
+
+/** One commit as `%H%x1f%h%x1f%P...` reaches the route, snake_case and all. */
+function wireCommit(over: Record<string, unknown> = {}) {
+  return {
+    sha: 'a'.repeat(40),
+    short: 'aaaaaaa',
+    parents: ['b'.repeat(40)],
+    author_name: 'Ada',
+    author_email: 'ada@example.com',
+    authored_at: 1_700_000_000,
+    refs: ['HEAD -> main', 'origin/main'],
+    subject: 'Ship it',
+    body: 'A longer note.\n',
+    ...over,
+  };
+}
+
+describe('getGitLog', () => {
+  it('GETs one page, with the window it was asked for on the query', async () => {
+    const fetchMock = mockFetch(200, { commits: [], has_more: false, unborn: false });
+    await getGitLog(30, 30);
+    const url = calledUrl(fetchMock);
+    expect(url.pathname).toBe('/api/git/log');
+    expect(url.searchParams.get('skip')).toBe('30');
+    expect(url.searchParams.get('limit')).toBe('30');
+    // Nothing else: the route takes exactly these two, and a third key would
+    // be a 422 from the signature rather than something the server ignores.
+    expect([...url.searchParams.keys()]).toEqual(['skip', 'limit']);
+  });
+
+  it('normalizes every commit field, camelCased off the wire', async () => {
+    mockFetch(200, {
+      commits: [wireCommit(), {}],
+      has_more: true,
+      unborn: false,
+    });
+    const page = await getGitLog(0, 30);
+    expect(page.hasMore).toBe(true);
+    expect(page.unborn).toBe(false);
+    expect(page.commits[0]).toEqual({
+      sha: 'a'.repeat(40),
+      short: 'aaaaaaa',
+      parents: ['b'.repeat(40)],
+      authorName: 'Ada',
+      authorEmail: 'ada@example.com',
+      // Epoch SECONDS, which is what git's `%at` answers with -- not a string
+      // and not milliseconds. `relativeTime` reads it as it stands.
+      authoredAt: 1_700_000_000,
+      refs: ['HEAD -> main', 'origin/main'],
+      subject: 'Ship it',
+      body: 'A longer note.\n',
+    });
+    // A row the server could not fill still arrives as a whole commit: the
+    // history list maps over these on every repaint.
+    expect(page.commits[1]).toEqual({
+      sha: '',
+      short: '',
+      parents: [],
+      authorName: '',
+      authorEmail: '',
+      authoredAt: 0,
+      refs: [],
+      subject: '',
+      body: '',
+    });
+  });
+
+  it('defaults a partial page to the empty answer', async () => {
+    mockFetch(200, {});
+    expect(await getGitLog(0, 30)).toEqual({ commits: [], hasMore: false, unborn: true });
+  });
+
+  it('reads an unborn branch as a page rather than a refusal', async () => {
+    // `rev-parse --verify HEAD` failing is a 200 with `unborn: true`, never an
+    // error: a repository with no commits is a state the section draws.
+    mockFetch(200, { commits: [], has_more: false, unborn: true });
+    const page = await getGitLog(0, 30);
+    expect(page.unborn).toBe(true);
+    expect(page.commits).toEqual([]);
+  });
+});
+
+describe('getGitCommitFiles', () => {
+  it('GETs the bare list under the commit, with the sha in the path', async () => {
+    const fetchMock = mockFetch(200, []);
+    await getGitCommitFiles('abc123');
+    expect(fetchMock.mock.calls[0]).toEqual(['/api/git/commits/abc123/files']);
+  });
+
+  it('normalizes each file and degrades a kind this build does not know', async () => {
+    mockFetch(200, [
+      { path: 'b.py', orig_path: 'a.py', kind: 'renamed', xy: 'R.', score: 95 },
+      { path: 'graphs/a.graph.json', kind: 'added', xy: 'A.' },
+      { path: 'x', kind: 'wobbled', xy: '?.' },
+    ]);
+    expect(await getGitCommitFiles('abc123')).toEqual([
+      { path: 'b.py', origPath: 'a.py', kind: 'renamed' },
+      { path: 'graphs/a.graph.json', origPath: null, kind: 'added' },
+      { path: 'x', origPath: null, kind: 'modified' },
+    ]);
+  });
+
+  it('keeps the not_found code a commit nobody has answers with', async () => {
+    mockFetch(404, {
+      detail: { code: 'not_found', message: 'deadbee', hint: null, stderr: null },
+    });
+    const err = await gitError(getGitCommitFiles('deadbee'));
+    expect(err.status).toBe(404);
+    expect(err.code).toBe('not_found');
+    expect(err.message).toBe('deadbee');
+  });
+});
+
+describe('getGitDiff', () => {
+  function wireDiff(over: Record<string, unknown> = {}) {
+    return {
+      patch: '@@ -1 +1 @@\n-old\n+new\n',
+      binary: false,
+      truncated: false,
+      old_ref: 'HEAD',
+      new_ref: 'index',
+      old_text: null,
+      new_text: null,
+      old_missing: false,
+      new_missing: false,
+      ...over,
+    };
+  }
+
+  it('GETs the path, the scope and the sha, and never asks for blobs', async () => {
+    const fetchMock = mockFetch(200, wireDiff({ old_ref: 'abc^', new_ref: 'abc' }));
+    await getGitDiff({ path: 'graphs/a.graph.json', scope: 'commit', sha: 'abc123' });
+    const url = calledUrl(fetchMock);
+    expect(url.pathname).toBe('/api/git/diff');
+    expect(url.searchParams.get('path')).toBe('graphs/a.graph.json');
+    expect(url.searchParams.get('scope')).toBe('commit');
+    expect(url.searchParams.get('sha')).toBe('abc123');
+    // `blobs=1` costs two extra git reads and this build's side-by-side view
+    // is derived from the patch, so the key is never sent at all.
+    expect(url.searchParams.has('blobs')).toBe(false);
+  });
+
+  it('omits the sha for the two scopes the route refuses one from', async () => {
+    // `scope=worktree` (or `index`) carrying a sha is a 400 by the route's own
+    // first check, so an absent sha has to arrive as an absent KEY.
+    for (const scope of ['worktree', 'index'] as const) {
+      const fetchMock = mockFetch(200, wireDiff());
+      await getGitDiff({ path: 'notes.md', scope });
+      expect([...calledUrl(fetchMock).searchParams.keys()]).toEqual(['path', 'scope']);
+    }
+  });
+
+  it('drops an empty sha rather than sending the key with nothing in it', async () => {
+    const fetchMock = mockFetch(200, wireDiff());
+    await getGitDiff({ path: 'notes.md', scope: 'worktree', sha: '' });
+    expect(calledUrl(fetchMock).searchParams.has('sha')).toBe(false);
+  });
+
+  it('normalizes every field, camelCased, and keeps the blob keys out', async () => {
+    mockFetch(200, wireDiff({ truncated: true, old_text: 'ignored', new_text: 'ignored' }));
+    expect(await getGitDiff({ path: 'notes.md', scope: 'index' })).toEqual({
+      patch: '@@ -1 +1 @@\n-old\n+new\n',
+      binary: false,
+      truncated: true,
+      oldRef: 'HEAD',
+      newRef: 'index',
+      oldMissing: false,
+      newMissing: false,
+    });
+  });
+
+  it('defaults a partial diff to an empty patch of a root commit', async () => {
+    // A root commit has no `old_ref` at all, and an untracked file has no old
+    // side -- both arrive as nulls the view has to draw rather than crash on.
+    mockFetch(200, { old_missing: true });
+    expect(await getGitDiff({ path: 'new.md', scope: 'worktree' })).toEqual({
+      patch: '',
+      binary: false,
+      truncated: false,
+      oldRef: null,
+      newRef: null,
+      oldMissing: true,
+      newMissing: false,
+    });
+  });
+
+  it('keeps the ignored code a refused path answers with', async () => {
+    // 403, raised before any git call, for an ignored worktree file and for
+    // anything `.env`-shaped at any ref.
+    mockFetch(403, {
+      detail: { code: 'ignored', message: '.env is not readable', hint: null, stderr: null },
+    });
+    const err = await gitError(getGitDiff({ path: '.env', scope: 'worktree' }));
+    expect(err.status).toBe(403);
+    expect(err.code).toBe('ignored');
+  });
+});
+
+describe('getGitFile', () => {
+  it('GETs the path and the ref it was asked for', async () => {
+    const fetchMock = mockFetch(200, { text: 'x', binary: false, size: 1, truncated: false });
+    await getGitFile({ path: 'graphs/a.graph.json', ref: 'HEAD' });
+    const url = calledUrl(fetchMock);
+    expect(url.pathname).toBe('/api/git/file');
+    expect(url.searchParams.get('path')).toBe('graphs/a.graph.json');
+    expect(url.searchParams.get('ref')).toBe('HEAD');
+    expect([...url.searchParams.keys()]).toEqual(['path', 'ref']);
+  });
+
+  it('normalizes every field, keeping the pre-truncation size', async () => {
+    // A blob over the 2 MiB cap is never read: the text is empty, `size` is
+    // the real one, and `truncated` is how a reader tells that apart from a
+    // file that really is empty.
+    mockFetch(200, { text: '', binary: false, size: 4_194_304, truncated: true });
+    expect(await getGitFile({ path: 'big.bin', ref: 'worktree' })).toEqual({
+      text: '',
+      binary: false,
+      size: 4_194_304,
+      truncated: true,
+    });
+  });
+
+  it('defaults a partial answer to an empty, readable file', async () => {
+    mockFetch(200, {});
+    expect(await getGitFile({ path: 'a.md', ref: 'index' })).toEqual({
+      text: '',
+      binary: false,
+      size: 0,
+      truncated: false,
+    });
+  });
+
+  it('keeps the ignored code at every ref', async () => {
+    mockFetch(403, {
+      detail: { code: 'ignored', message: 'ignored by git', hint: null, stderr: null },
+    });
+    const err = await gitError(getGitFile({ path: 'dist/app.js', ref: 'worktree' }));
+    expect(err.code).toBe('ignored');
+  });
+});
+
+describe('the four history and diff reads', () => {
+  // All four are OPEN GETs on the server's `read` deadline -- the bucket whose
+  // number `git.error.timeout {seconds}` fills in, because a 504 carries the
+  // code and nothing else. A bare `fetch(url)` with no init at all is what
+  // makes them open: no method for the auth guard to catch, so no token.
+  it('are bare GETs with no init, like every other read', async () => {
+    expect(GIT_TIMEOUTS_S.read).toBe(20);
+
+    const reads: Array<[unknown, () => Promise<unknown>]> = [
+      [{}, () => getGitLog(0, 30)],
+      [[], () => getGitCommitFiles('abc')],
+      [{}, () => getGitDiff({ path: 'a.md', scope: 'worktree' })],
+      [{}, () => getGitFile({ path: 'a.md', ref: 'HEAD' })],
+    ];
+    for (const [body, call] of reads) {
+      const fetchMock = mockFetch(200, body);
+      await call();
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      expect(fetchMock.mock.calls[0][1]).toBeUndefined();
+    }
   });
 });
 

@@ -179,6 +179,111 @@ export interface StashInfo {
   created_at: number;
 }
 
+/* ── History, diffs and one file at a ref ───────────────────────────────
+   The four reads below are the only place in this file where the wire's
+   snake_case does NOT survive into the app. The status shapes above predate
+   the tab and are read by a dozen components as `orig_path` / `stash_count`;
+   changing those now would be a rename with no reader asking for it. These
+   four are new, nothing outside this file has seen them yet, and the rest of
+   the frontend is camelCase -- so the normalizers below are also the place
+   the spelling changes, once, rather than at every call site. */
+
+/**
+ * One commit, as `git log` printed it.
+ *
+ * `authoredAt` is epoch SECONDS -- git's own `%at`, and 0 when git could not
+ * read the date at all -- because that is what `relativeTime` takes. It is
+ * deliberately not a `Date`: the browser formats it, and a normalizer that
+ * built one would put a timezone decision in the wire layer.
+ *
+ * `refs` is `%D` split on `", "`, so an entry looks like `HEAD -> main`,
+ * `origin/main` or `tag: v1` -- the whole decoration, not a name.
+ */
+export interface GitCommit {
+  sha: string;
+  /** git's own abbreviation, which is what a row shows. */
+  short: string;
+  /** Every parent; a merge has two or more, a root commit none. */
+  parents: string[];
+  authorName: string;
+  authorEmail: string;
+  authoredAt: number;
+  refs: string[];
+  subject: string;
+  /** Everything after the subject line; the empty string for most commits. */
+  body: string;
+}
+
+/**
+ * One page of history.
+ *
+ * `hasMore` is the server's answer, not a guess from the page size: it asked
+ * for one row more than the limit and dropped it. `unborn` is a branch with
+ * no commits yet, which is a 200 with an empty page rather than a refusal.
+ */
+export interface GitLogPage {
+  commits: GitCommit[];
+  hasMore: boolean;
+  unborn: boolean;
+}
+
+/**
+ * One file a commit touched.
+ *
+ * Three fields rather than the five a status entry carries: a commit's file
+ * list is drawn to be READ and opened, and the two that are missing --
+ * porcelain's `xy` letters and a rename score -- say nothing a row shows.
+ * `kind` is the same union, so the chip beside a commit's file is the chip
+ * beside a status file.
+ */
+export interface GitCommitFile {
+  path: string;
+  /** Where a rename or copy came from; null for every other kind. */
+  origPath: string | null;
+  kind: FileKind;
+}
+
+/** Which two sides a diff compares. A fourth word is a 422 from the route. */
+export type GitDiffScope = 'worktree' | 'index' | 'commit';
+
+/**
+ * One file's change, as a unified patch.
+ *
+ * `oldRef` / `newRef` are what the two sides ARE (`index` and `worktree`,
+ * `HEAD` and `index`, `<sha>^` and `<sha>`), and `oldRef` is null for a root
+ * commit, which has no parent to compare against.
+ *
+ * The `old_text` / `new_text` the route can also answer with are deliberately
+ * NOT here: they only arrive with `blobs=1`, which costs two more git reads,
+ * and this build's side-by-side view is derived from the patch instead.
+ */
+export interface GitDiff {
+  patch: string;
+  /** git printed its "Binary files ... differ" marker rather than a patch. */
+  binary: boolean;
+  /** The patch was cut at 1 MiB; what is here is the first megabyte. */
+  truncated: boolean;
+  oldRef: string | null;
+  newRef: string | null;
+  /** The file does not exist on that side -- an add, or a delete. */
+  oldMissing: boolean;
+  newMissing: boolean;
+}
+
+/**
+ * One file's whole contents at one ref.
+ *
+ * `size` is the size BEFORE any truncation, and it is the field that tells a
+ * 2 MiB blob (never read, so `text` is empty and `truncated` is true) apart
+ * from a file that really is empty.
+ */
+export interface GitFileAtRef {
+  text: string;
+  binary: boolean;
+  size: number;
+  truncated: boolean;
+}
+
 /**
  * What one write left behind.
  *
@@ -468,6 +573,36 @@ type RawStatusResponse = {
   status?: RawGitStatus | null;
 };
 
+type RawCommitInfo = {
+  sha?: string;
+  short?: string;
+  parents?: string[];
+  author_name?: string;
+  author_email?: string;
+  authored_at?: number;
+  refs?: string[];
+  subject?: string;
+  body?: string;
+};
+
+type RawLogResponse = {
+  commits?: RawCommitInfo[];
+  has_more?: boolean;
+  unborn?: boolean;
+};
+
+type RawDiffResponse = {
+  patch?: string;
+  binary?: boolean;
+  truncated?: boolean;
+  old_ref?: string | null;
+  new_ref?: string | null;
+  old_missing?: boolean;
+  new_missing?: boolean;
+};
+
+type RawFileAtRef = Partial<GitFileAtRef>;
+
 type RawMutationResult = Omit<Partial<MutationResult>, 'status'> & {
   status?: RawGitStatus | null;
 };
@@ -615,6 +750,83 @@ function normalizeStash(raw: RawStashInfo): StashInfo {
 }
 
 /**
+ * One commit, field by field and snake_case to camelCase.
+ *
+ * A row the server could not fill still arrives whole, for the reason every
+ * other normalizer here gives: the history list maps over these on every
+ * repaint, and a missing `parents` reaching a `.length` mid-render is a blank
+ * panel rather than a row with a hole in it.
+ */
+function normalizeCommit(raw: RawCommitInfo): GitCommit {
+  return {
+    sha: raw.sha ?? '',
+    short: raw.short ?? '',
+    parents: raw.parents ?? [],
+    authorName: raw.author_name ?? '',
+    authorEmail: raw.author_email ?? '',
+    authoredAt: raw.authored_at ?? 0,
+    refs: raw.refs ?? [],
+    subject: raw.subject ?? '',
+    body: raw.body ?? '',
+  };
+}
+
+/**
+ * One page of history.
+ *
+ * A body with no `unborn` in it reads as an unborn branch rather than as a
+ * born one with nothing in it: those are the same empty list on screen, and
+ * the honest one is the state that says WHY there is nothing to show. A page
+ * that really is born always carries at least one commit.
+ */
+function normalizeLogPage(raw: RawLogResponse): GitLogPage {
+  return {
+    commits: (raw.commits ?? []).map(normalizeCommit),
+    hasMore: raw.has_more ?? false,
+    unborn: raw.unborn ?? true,
+  };
+}
+
+/** One file a commit touched -- the three fields a history row draws. */
+function normalizeCommitFile(raw: RawGitFile): GitCommitFile {
+  return {
+    path: raw.path ?? '',
+    origPath: raw.orig_path ?? null,
+    // Degraded exactly the way a status file's is: an unknown kind draws an
+    // `M` chip, which is a worse label rather than a broken row.
+    kind: FILE_KINDS.includes(raw.kind ?? '') ? (raw.kind as FileKind) : 'modified',
+  };
+}
+
+/**
+ * One diff, field by field.
+ *
+ * The two blob fields are read past rather than carried: they are null unless
+ * `blobs=1` was asked for, and this client never asks.
+ */
+function normalizeDiff(raw: RawDiffResponse): GitDiff {
+  return {
+    patch: raw.patch ?? '',
+    binary: raw.binary ?? false,
+    truncated: raw.truncated ?? false,
+    oldRef: raw.old_ref ?? null,
+    newRef: raw.new_ref ?? null,
+    oldMissing: raw.old_missing ?? false,
+    newMissing: raw.new_missing ?? false,
+  };
+}
+
+/** One file at one ref. `size` defaults to 0, never to the text's length. */
+function normalizeFileAtRef(raw: RawFileAtRef): GitFileAtRef {
+  return {
+    text: raw.text ?? '',
+    binary: raw.binary ?? false,
+    size: raw.size ?? 0,
+    truncated: raw.truncated ?? false,
+  };
+}
+
+/**
  * One write's answer.
  *
  * A missing `status` is a REFUSAL, not a default. The backend's contract is
@@ -693,6 +905,81 @@ export async function getGitStashes(): Promise<StashInfo[]> {
   if (!res.ok) throw await gitApiError(res);
   const data = (await res.json()) as RawStashInfo[];
   return data.map(normalizeStash);
+}
+
+/**
+ * One page of history, newest first.
+ *
+ * Offset paging, because that is what the route takes: `skip` rows in and
+ * `limit` rows wide, with `hasMore` decided by the server having read one row
+ * more than it returned. The window can DRIFT -- a commit made between two
+ * pages shifts every row down one -- which is why the store dedupes by sha
+ * when it appends and reloads from page 1 after anything that moves HEAD.
+ *
+ * The server bounds both numbers (`limit` at 100, `skip` at 2^31-1, because
+ * git parses `--skip=` as a signed 32-bit integer) and answers 422 outside
+ * them; nothing is clamped here, so a caller that gets one wrong finds out.
+ */
+export async function getGitLog(skip: number, limit: number): Promise<GitLogPage> {
+  const query = new URLSearchParams({ skip: String(skip), limit: String(limit) });
+  const res = await fetch(`${BASE_URL}/log?${query.toString()}`);
+  if (!res.ok) throw await gitApiError(res);
+  return normalizeLogPage((await res.json()) as RawLogResponse);
+}
+
+/**
+ * The files one commit changed, against its first parent.
+ *
+ * A bare list rather than an envelope, which is the route's own shape. A sha
+ * nothing resolves to is a 404 `not_found`, not an empty list.
+ */
+export async function getGitCommitFiles(sha: string): Promise<GitCommitFile[]> {
+  const res = await fetch(`${BASE_URL}/commits/${encodeURIComponent(sha)}/files`);
+  if (!res.ok) throw await gitApiError(res);
+  const data = (await res.json()) as RawGitFile[];
+  return data.map(normalizeCommitFile);
+}
+
+/**
+ * One file's change, in one scope.
+ *
+ * The sha and the scope go together and the route refuses both mismatches: a
+ * `commit` scope without a sha is a 400, and so is any other scope WITH one.
+ * So an absent sha is sent as an absent key rather than as an empty value,
+ * and a caller holding `''` -- which is what a form field with nothing in it
+ * hands over -- is treated as having none.
+ *
+ * `blobs` is never sent. It would make the server read both whole files, and
+ * the side-by-side view in this build is derived from the patch instead.
+ */
+export async function getGitDiff(target: {
+  path: string;
+  scope: GitDiffScope;
+  sha?: string;
+}): Promise<GitDiff> {
+  const query = new URLSearchParams({ path: target.path, scope: target.scope });
+  if (target.sha !== undefined && target.sha !== '') query.set('sha', target.sha);
+  const res = await fetch(`${BASE_URL}/diff?${query.toString()}`);
+  if (!res.ok) throw await gitApiError(res);
+  return normalizeDiff((await res.json()) as RawDiffResponse);
+}
+
+/**
+ * One whole file, at `HEAD`, `index`, `worktree` or a sha.
+ *
+ * The refusals are worth knowing before calling: an ignored path is a 403
+ * `ignored` at every ref (as is anything `.env`-shaped), a conflicted file
+ * has no stage 0 so `index` answers 409, and a blob over 2 MiB comes back
+ * unread -- empty text, the real size, `truncated`.
+ */
+export async function getGitFile(target: {
+  path: string;
+  ref: string;
+}): Promise<GitFileAtRef> {
+  const query = new URLSearchParams({ path: target.path, ref: target.ref });
+  const res = await fetch(`${BASE_URL}/file?${query.toString()}`);
+  if (!res.ok) throw await gitApiError(res);
+  return normalizeFileAtRef((await res.json()) as RawFileAtRef);
 }
 
 /* ── Writes (the session token, via apiFetch) ───────────────────────── */
