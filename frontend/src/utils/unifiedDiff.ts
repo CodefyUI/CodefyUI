@@ -129,10 +129,23 @@ export function parseUnifiedDiff(patch: string): DiffFile {
     if (line.startsWith(GIT_HEADER)) {
       if (seenGitHeader) break;
       seenGitHeader = true;
-      const pair = GIT_HEADER_PAIR.exec(line.slice(GIT_HEADER.length));
+      const rest = line.slice(GIT_HEADER.length);
+      const pair = GIT_HEADER_PAIR.exec(rest);
       if (pair !== null) {
         gitOld = stripSidePrefix(unquotePath(pair[1]), 'a/');
         gitNew = stripSidePrefix(unquotePath(pair[2]), 'b/');
+      } else {
+        // git quotes a path for a control character, a quote or a backslash
+        // -- never for a space -- so `a/my image.png b/my image.png` is four
+        // tokens and the pair above cannot split it. Both sides of a
+        // non-rename header are the SAME path, so the midpoint is exact.
+        // Anything else (a rename of two unequal names) keeps no path at all
+        // rather than half of one and half of the other.
+        const middle = (rest.length - 1) / 2;
+        if (Number.isInteger(middle) && rest.charAt(middle) === ' ') {
+          gitOld = stripSidePrefix(rest.slice(0, middle), 'a/');
+          gitNew = stripSidePrefix(rest.slice(middle + 1), 'b/');
+        }
       }
       continue;
     }
@@ -249,28 +262,39 @@ function stripSidePrefix(value: string, prefix: 'a/' | 'b/'): string {
 function unquotePath(value: string): string {
   if (value.length < 2 || !value.startsWith('"') || !value.endsWith('"')) return value;
   const body = value.slice(1, -1);
-  let encoded = '';
-  for (let i = 0; i < body.length; i += 1) {
-    const ch = body.charAt(i);
-    if (ch !== '\\') {
-      encoded += encodeURIComponent(ch);
-      continue;
-    }
-    const simple = ESCAPE_BYTES[body.charAt(i + 1)];
-    if (simple !== undefined) {
-      encoded += percentByte(simple);
-      i += 1;
-      continue;
-    }
-    const octal = body.slice(i + 1, i + 4);
-    if (/^[0-7]{3}$/.test(octal)) {
-      encoded += percentByte(parseInt(octal, 8));
-      i += 3;
-      continue;
-    }
-    encoded += percentByte(0x5c);
-  }
+  // The WHOLE reassembly is guarded, not just the decode at the end:
+  // `encodeURIComponent` throws on a lone surrogate as readily as
+  // `decodeURIComponent` throws on a byte sequence that is not UTF-8, and
+  // nothing in this module may throw -- a throw inside a React render blanks
+  // the modal instead of showing the patch.
   try {
+    let encoded = '';
+    for (let i = 0; i < body.length; i += 1) {
+      const ch = body.charAt(i);
+      if (ch !== '\\') {
+        // Taken a code POINT at a time. `core.quotepath=false` -- what a
+        // reader with CJK file names sets -- leaves a non-ASCII byte alone,
+        // so an astral character can sit inside a body git quoted for some
+        // other reason, and half of one is a lone surrogate.
+        const point = String.fromCodePoint(body.codePointAt(i) as number);
+        encoded += encodeURIComponent(point);
+        i += point.length - 1;
+        continue;
+      }
+      const simple = ESCAPE_BYTES[body.charAt(i + 1)];
+      if (simple !== undefined) {
+        encoded += percentByte(simple);
+        i += 1;
+        continue;
+      }
+      const octal = body.slice(i + 1, i + 4);
+      if (/^[0-7]{3}$/.test(octal)) {
+        encoded += percentByte(parseInt(octal, 8));
+        i += 3;
+        continue;
+      }
+      encoded += percentByte(0x5c);
+    }
     return decodeURIComponent(encoded);
   } catch {
     return value;

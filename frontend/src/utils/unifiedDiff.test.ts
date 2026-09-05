@@ -306,6 +306,60 @@ describe('parseUnifiedDiff', () => {
     expect(file.hunks).toEqual([]);
   });
 
+  it('splits a diff --git header whose file name holds a space', () => {
+    // git quotes a path for a control character, a quote or a backslash --
+    // never for a space -- so this header is four whitespace-separated
+    // tokens. Both sides of a non-rename header are the same path, so the
+    // midpoint is exact. Without this a binary or mode-only patch, which has
+    // no ---/+++ pair to fall back on, reported no path at all.
+    const patch = [
+      'diff --git a/my image.png b/my image.png',
+      'index 1111111..2222222 100644',
+      'Binary files a/my image.png and b/my image.png differ',
+      '',
+    ].join('\n');
+    const file = parseUnifiedDiff(patch);
+    expect(file.oldPath).toBe('my image.png');
+    expect(file.newPath).toBe('my image.png');
+  });
+
+  it('leaves the paths empty rather than inventing a split it cannot verify', () => {
+    // A rename of two differently long names holding spaces has no midpoint
+    // to find. Reporting nothing beats reporting a path that is half of one
+    // name and half of the other.
+    const patch = [
+      'diff --git a/my old file.png b/new.png',
+      'index 1111111..2222222 100644',
+      'Binary files differ',
+      '',
+    ].join('\n');
+    expect(parseUnifiedDiff(patch)).toMatchObject({ oldPath: '', newPath: '' });
+  });
+
+  it('reads a quoted path holding an astral character, and never throws on a broken one', () => {
+    // With `core.quotepath=false` -- the setting a CJK audience reaches for --
+    // git leaves a non-ASCII byte alone but still quotes a name holding a
+    // double quote, so an emoji can arrive inside the quoted body. Walked by
+    // code UNIT that is a lone surrogate, and `encodeURIComponent` throws on
+    // one; a throw in here blanks the modal instead of showing the patch.
+    // U+1F600, built from its code point rather than typed, because every
+    // source file here stays ASCII.
+    const grin = String.fromCodePoint(0x1f600);
+    const file = parseUnifiedDiff([
+      `diff --git "a/x\\"y${grin}.json" "b/x\\"y${grin}.json"`,
+      'index 1111111..2222222 100644',
+      'Binary files differ',
+    ].join('\n'));
+    expect(file.oldPath).toBe(`x"y${grin}.json`);
+    expect(file.newPath).toBe(`x"y${grin}.json`);
+
+    // A genuinely lone surrogate cannot be repaired, so the quoted text comes
+    // back unchanged -- the point is that a `DiffFile` comes back at all.
+    const broken = `diff --git "a/x\uD83D.json" "b/x\uD83D.json"\nBinary files differ`;
+    expect(() => parseUnifiedDiff(broken)).not.toThrow();
+    expect(parseUnifiedDiff(broken).oldPath).toBe('"a/x\uD83D.json"');
+  });
+
   it('unquotes the C-style path git writes for a non-ASCII file name', () => {
     // Default `core.quotepath`. Without this the header of a graph named in
     // Chinese reads as a row of octal escapes.
