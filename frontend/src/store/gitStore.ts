@@ -738,7 +738,13 @@ function announcement(
     return t(op === 'sync' ? 'git.toast.synced' : 'git.toast.pushed');
   }
   if (op === 'stash_push') return t('git.toast.stashed');
-  if (op === 'checkout') {
+  // A branch created WITH a checkout is a switch as well as a creation, and
+  // the switch is the half the panel changed under: the branch line, the
+  // Branches list and the working tree all moved. Falling through to the
+  // group counts said "Staged Changes 0, Changes 0" -- a sentence about rows
+  // that did not move, which after a branch write reads as a warning. (A
+  // creation WITHOUT one has already returned null above.)
+  if (op === 'checkout' || op === 'create_branch') {
     return t('git.toast.switched', {
       name: detailString(result, 'branch') ?? result.status.branch ?? opts.name ?? '',
     });
@@ -1379,11 +1385,17 @@ export const useGitStore = create<GitState>((set, get) => ({
    * `worktree: checkout` and not a plain `true`: a branch created without a
    * checkout is a new name for the commit HEAD is already on, and no file
    * moves -- so there is nothing to offer to reload.
+   *
+   * `name` is the last fallback for the sentence a checkout announces, the
+   * same one `checkout` passes and for the same reason: the server names the
+   * branch it landed on in `detail.branch`, and this is what to say if a
+   * build without that key ever answers.
    */
   createBranch: async (name, checkout = true, startPoint = null) =>
     runOp('create_branch', () => gitCreateBranch(name, checkout, startPoint), {
       worktree: checkout,
       refs: ['branches'],
+      name,
     }),
 
   /**

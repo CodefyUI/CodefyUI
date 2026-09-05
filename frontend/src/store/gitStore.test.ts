@@ -1186,7 +1186,14 @@ describe('branch and remote operations', () => {
     expect(api.gitCreateBranch).toHaveBeenCalledWith('feat/new', true, 'main');
     expect(git().status?.head).toBe('created');
     expect(git().branches?.current).toBe('feat/new');
-    expect(git().liveMessage).toBe('git.group.staged 0, git.group.changes 0');
+    // The same sentence a plain switch gets, because that is what happened:
+    // the branch was created AND checked out. The group counts belong to the
+    // writes that move rows between Staged Changes and Changes, and reading
+    // "Staged Changes 0, Changes 0" after a branch write says nothing about
+    // the branch and can be heard as "your staged work is gone".
+    expect(git().liveMessage).toBe(say('git.toast.switched', { name: 'feat/new' }));
+    // Said once, in the live region: the branch line and the Branches list
+    // both redraw with the new name, so a toast would be the third copy.
     expect(toasts()).toHaveLength(0);
     expect(applyWorktreeChange).toHaveBeenLastCalledWith(['graphs/a.graph.json']);
 
@@ -1243,6 +1250,23 @@ describe('branch and remote operations', () => {
     await git().createBranch('feat/no-switch', false, null);
 
     expect(applyWorktreeChange).not.toHaveBeenCalled();
+    // ...and says nothing either: a branch made without a checkout is a new
+    // name for the commit HEAD is already on, so nobody switched anywhere.
+    expect(git().liveMessage).toBe('');
+  });
+
+  it('names the branch a create-and-switch landed on, whatever the server said', async () => {
+    // `detail.branch` is the server's own answer; `opts.name` is the fallback
+    // for a build that answers without it, and the status's branch is the
+    // third. All three are the same name here in the ordinary case, and the
+    // sentence must have a name in it rather than a hole in any of them.
+    api.gitCreateBranch.mockResolvedValue(
+      mutation({ status: status({ branch: null }), detail: {} }),
+    );
+
+    await git().createBranch('feat/named');
+
+    expect(git().liveMessage).toBe(say('git.toast.switched', { name: 'feat/named' }));
   });
 
   it('adds, edits, and removes remotes with a fresh remote list and no toast', async () => {
