@@ -5,6 +5,7 @@ import { useI18n } from '../../i18n';
 import { _resetGitStoreForTesting, useGitStore } from '../../store/gitStore';
 import { confirm, prompt } from '../../utils/dialog';
 import type { RemoteInfo } from '../../api/git';
+import styles from './SourceControl.module.css';
 
 /*
  * The remote list. The URLs on these rows are DISPLAY strings -- the server
@@ -80,6 +81,21 @@ describe('RemotesSection: the rows', () => {
     expect(
       screen.getByText('https://example.invalid/origin.git').getAttribute('title'),
     ).toBe('https://example.invalid/origin.git');
+  });
+
+  it('keeps the remote NAME whole and lets the URL give way', () => {
+    // This is the one list whose name is the short half: `origin` beside 400px
+    // of URL. The row's default proportion spent the name's last characters on
+    // a URL that had room to spare -- "ori..." next to a readable address, on a
+    // row nobody can tell from `origin-backup` -- so the section asks for
+    // `firm="name"`, and this is where that request is pinned. jsdom applies no
+    // stylesheet, so what can be asserted here is the class the stylesheet
+    // hangs the proportion off; the widths themselves are a browser pass.
+    render(<RemotesSection />);
+    const name = within(section()).getByText('origin');
+
+    expect(name.className.split(' ')).toContain(styles.nameFirm);
+    expect(name.className.split(' ')).not.toContain(styles.nameElastic);
   });
 
   it('says a repository has no remote, but only once it has been read', () => {
