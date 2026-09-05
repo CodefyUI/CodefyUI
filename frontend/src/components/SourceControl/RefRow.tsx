@@ -56,6 +56,21 @@ export interface RefRowProps {
    * answer for somebody who cannot see that there is nothing there.
    */
   metaLabel?: string;
+  /**
+   * Which half of the row never gives up width; the other one ellipsises.
+   *
+   * `meta` by default, which is a branch row (a name, and a count that is two
+   * glyphs wide) and a stash row (a message somebody wrote, and the branch and
+   * date it was written on). `name` is the remote list: a short name beside a
+   * long URL, where the default proportion spent the name's last characters
+   * on a URL that had 200px to give -- "ori..." beside a readable
+   * `https://github.com/owner/repo.git`.
+   *
+   * See the block in the stylesheet: shrinking is weighted by the base size,
+   * so a long second half takes pixels off a short first half whatever the
+   * shrink factors say.
+   */
+  firm?: 'name' | 'meta';
   actions: RefRowAction[];
 }
 
@@ -63,10 +78,13 @@ export interface RefRowProps {
  * One row in one reference list.
  *
  * The same box as a file row, and for the same reasons: a `min-width: 0` name
- * that ellipsises, a dimmer half beside it that gives way first, the whole
- * string in a `title`, and the actions collapsed to zero width until a hover
- * or a focus opens them -- so a 180px panel spends its width on the name and
- * a 520px one shows the rest.
+ * that ellipsises, a dimmer half beside it, the whole string in a `title`, and
+ * the actions collapsed to zero width until a hover or a focus opens them --
+ * so a 180px panel spends its width on the name and a 520px one shows the rest.
+ *
+ * Which half gives way is the caller's, through `firm`: a file row's
+ * proportion is right for a name beside a directory and wrong for a name
+ * beside a URL, where it left `ori...` next to a URL with room to spare.
  *
  * The actions themselves come in two shapes and CSS picks one, the way a
  * conflict row's do: "Change URL / Remove" and "Pop / Apply / Drop" are both
@@ -80,6 +98,7 @@ export function RefRow({
   badge,
   meta,
   metaLabel,
+  firm = 'meta',
   actions,
 }: RefRowProps) {
   const { t } = useI18n();
@@ -94,13 +113,21 @@ export function RefRow({
   const hasMeta = shownMeta !== '' || spokenMeta !== '';
   const body = (
     <>
-      <span className={styles.rowName}>{name}</span>
+      <span
+        className={`${styles.rowName} ${
+          firm === 'name' ? styles.nameFirm : styles.nameElastic
+        }`}
+      >
+        {name}
+      </span>
       {hasMeta && (
         // Its own `title`, not the row's: a remote URL is one unbroken token
         // in a 180px column and is the FIRST thing here to be ellipsised, so
         // the string in full has to be reachable from the half that was cut.
         <span
-          className={styles.rowDir}
+          className={
+            firm === 'name' ? styles.rowDir : `${styles.rowDir} ${styles.metaFirm}`
+          }
           id={metaId}
           title={spokenMeta === '' ? shownMeta : spokenMeta}
         >

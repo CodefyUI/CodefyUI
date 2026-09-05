@@ -698,6 +698,41 @@
   font-size: var(--fs-2xs);
 }
 
+/* ── Which half of a reference row gives way ─────────────────────────────
+   The pair above is a file row's proportion, and the three reference lists do
+   not all want it. Shrinking is weighted by the SHRINK FACTOR TIMES THE BASE
+   SIZE, so a row whose second half is a 400px URL takes a few pixels off a
+   40px name as well -- which at 250px is the difference between `origin` and
+   `ori...`. A name cut to three letters is a row that cannot be identified;
+   a URL cut anywhere still shows the host.
+
+   So one half of each row is FIRM -- it keeps its natural width and never
+   shrinks -- and the other takes what is left and ellipsises. Which half that
+   is, is the list's own answer:
+
+   * a REMOTE row is a short name and a long URL, so the name is firm;
+   * a BRANCH row is a name and a two-glyph count, so the count is firm;
+   * a STASH row is a message somebody wrote and a "branch, when" line, so the
+     message is the flexible half and the meta is firm.
+
+   Both firm halves keep a percentage cap, because "natural width" is data:
+   a 90-character branch name or a stash from a branch with a long name must
+   not push the other half off the row. Past the cap they ellipsise, which is
+   what `.rowName` / `.rowDir` already set up. */
+.nameFirm {
+  flex: 0 0 auto;
+  max-width: 45%;
+}
+
+.nameElastic {
+  flex: 1 1 auto;
+}
+
+.metaFirm {
+  flex: 0 0 auto;
+  max-width: 60%;
+}
+
 /* One letter, tinted by what happened to the file. Fixed width so the names
    below each other start on one edge. */
 .chip {

@@ -115,6 +115,11 @@ export function RemotesSection() {
           key={entry.name}
           name={entry.name}
           meta={entry.fetch_url}
+          // The one list whose NAME is the short half. A remote is called
+          // `origin` and points at 400px of URL, and a row that shared the
+          // shrink between them spent the name's last characters on a URL
+          // that had plenty to give: "ori..." beside a readable address.
+          firm="name"
           actions={[
             {
               id: 'url',
