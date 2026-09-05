@@ -468,13 +468,37 @@ describe('QuickNodeSearch', () => {
     expect(getByText('edu:FilterRows')).toBeInTheDocument();
   });
 
-  it('matches the id while the catalog has not answered', () => {
-    setStore([def('edu:FilterRows', { provider: 'plugin:edu' })], []);
-    const { getByPlaceholderText, getByText } = render(
+  it('matches the plugin id while the catalog has not answered', () => {
+    // The id here is deliberately NOT a substring of the node name or of the
+    // description: `edu:FilterRows` is contributed by the plugin `teach`, so
+    // the query below reaches this row through nothing but the third clause
+    // falling back to the id of a catalog that has not answered yet. (An id
+    // that also spells the node's prefix would pass with the clause deleted.)
+    setStore(
+      [
+        def('edu:FilterRows', {
+          description: 'drops rows a predicate rejects',
+          provider: 'plugin:teach',
+        }),
+        def('Conv2d'),
+      ],
+      [],
+    );
+    const { getByPlaceholderText, getByText, queryByText } = render(
       <QuickNodeSearch screenPos={SCREEN} flowPos={FLOW} onClose={() => {}} />,
     );
-    fireEvent.change(getByPlaceholderText('Search nodes...'), { target: { value: 'edu' } });
+    const input = getByPlaceholderText('Search nodes...');
+
+    fireEvent.change(input, { target: { value: 'teach' } });
     expect(getByText('edu:FilterRows')).toBeInTheDocument();
+    expect(queryByText('Conv2d')).toBeNull();
+
+    // The other half of "has not answered": the display name lives only in
+    // the catalog, so with an empty index a query that matches nothing but
+    // that name finds nothing. Seeded, it is the case above this one.
+    fireEvent.change(input, { target: { value: 'hands-on' } });
+    expect(getByText('No matching nodes')).toBeInTheDocument();
+    expect(queryByText('edu:FilterRows')).toBeNull();
   });
 
   it('leaves built-ins, custom nodes and presets unreachable by a plugin name', () => {
