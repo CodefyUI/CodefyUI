@@ -1,6 +1,7 @@
 import { useState, useRef, useCallback, useMemo } from 'react';
 import { createPortal } from 'react-dom';
 import { useNodeDefStore } from '../../store/nodeDefStore';
+import { usePluginStore } from '../../store/pluginStore';
 import { useUIStore } from '../../store/uiStore';
 import { useI18n } from '../../i18n';
 import {
@@ -8,10 +9,18 @@ import {
   nodeMissingPack,
   usePackAvailability,
 } from '../../utils/packAvailability';
+import { pluginNameOf, type PluginIndex } from '../../utils/provider';
 import type { NodeDefinition } from '../../types';
 import { orderCategories } from './categories';
 import { CategoryList, type CategoryGroup } from './CategoryList';
 import styles from './NodePalette.module.css';
+
+// A module-scope selector, so every row of a hundred-node library compares the
+// SAME function's output frame to frame. Narrow on purpose: an install running
+// in the Plugin Center writes `job`, `busy` and the log on every long-poll
+// turn, and none of that changes what a node is called.
+type PluginStoreState = ReturnType<typeof usePluginStore.getState>;
+const selectPluginsById = (state: PluginStoreState): PluginIndex => state.byId;
 
 // ── Operation Node Item ──
 
@@ -38,6 +47,14 @@ export function NodeItem({ definition }: NodeItemProps) {
           pack: localizedPackTitle(t, byId, missingPack.packId),
         });
 
+  // Who registered this node. Subscribed rather than read once, because the
+  // catalog lands after boot: the line says `edu` until it arrives and the
+  // plugin's own name from then on.
+  const pluginsById = usePluginStore(selectPluginsById);
+  const pluginName = pluginNameOf(pluginsById, definition.provider);
+  const provenance =
+    pluginName === null ? null : t('palette.fromPlugin', { plugin: pluginName });
+
   const desc = tn(definition.node_name, 'description', definition.description);
 
   const handleMouseEnter = useCallback(() => {
@@ -62,8 +79,10 @@ export function NodeItem({ definition }: NodeItemProps) {
   };
 
   // A pack-backed node with no description still earns a tooltip: the pack
-  // sentence is the thing worth reading before the drag.
-  const showTooltip = tooltipsEnabled && (desc || packSentence) && hovered && tooltipPos;
+  // sentence is the thing worth reading before the drag. So does a plugin's
+  // node, whose one line worth reading may be where it came from.
+  const showTooltip =
+    tooltipsEnabled && (desc || packSentence || provenance) && hovered && tooltipPos;
 
   return (
     <div
@@ -112,6 +131,10 @@ export function NodeItem({ definition }: NodeItemProps) {
           {packSentence !== null && (
             <div className={styles.nodeTooltipPack}>{packSentence}</div>
           )}
+          {/* Last: what the node is and whether it can run come first. */}
+          {provenance !== null && (
+            <div className={styles.nodeTooltipProvenance}>{provenance}</div>
+          )}
         </div>,
         document.body,
       )}
@@ -139,6 +162,7 @@ export function NodesTab() {
   const error = useNodeDefStore((s) => s.error);
   const refetch = useNodeDefStore((s) => s.fetchDefinitions);
   const beginnerMode = useUIStore((s) => s.beginnerMode);
+  const pluginsById = usePluginStore(selectPluginsById);
   const [searchQuery, setSearchQuery] = useState('');
   const { t } = useI18n();
 
@@ -150,16 +174,21 @@ export function NodesTab() {
     for (const category of orderCategories(Object.keys(categorized), beginnerMode)) {
       let items = categorized[category];
       if (q) {
+        // The third field is the plugin's DISPLAY name. Its id already
+        // matches through the qualified node name (`edu:FilterRows`), so what
+        // this adds is the plugin as a reader knows it from the Plugin Center
+        // — the only name for it that appears in no field of a definition.
         items = items.filter(
           (n) =>
             n.node_name.toLowerCase().includes(q) ||
-            n.description.toLowerCase().includes(q),
+            n.description.toLowerCase().includes(q) ||
+            (pluginNameOf(pluginsById, n.provider)?.toLowerCase().includes(q) ?? false),
         );
       }
       if (items.length > 0) out.push({ category, items });
     }
     return out;
-  }, [categorized, beginnerMode, searchQuery]);
+  }, [categorized, beginnerMode, pluginsById, searchQuery]);
 
   return (
     <>

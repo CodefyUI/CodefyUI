@@ -3,9 +3,10 @@ import { render, screen, fireEvent, within, act } from '@testing-library/react';
 import { NodesTab } from './NodesTab';
 import { useNodeDefStore } from '../../store/nodeDefStore';
 import { _resetPackStoreForTesting, usePackStore } from '../../store/packStore';
+import { _resetPluginStoreForTesting, usePluginStore } from '../../store/pluginStore';
 import { useUIStore } from '../../store/uiStore';
 import { useI18n } from '../../i18n';
-import type { PackSummary } from '../../api/rest';
+import type { PackSummary, PluginCatalogEntry } from '../../api/rest';
 import type { NodeDefinition } from '../../types';
 
 /*
@@ -51,8 +52,10 @@ beforeEach(() => {
   useI18n.setState({ locale: 'en' });
   useUIStore.setState({ tooltipsEnabled: true, beginnerMode: false });
   // Every case that does not seed a catalog runs against an empty, unloaded
-  // one — the base install, where no palette row says anything about packs.
+  // one — the base install, where no palette row says anything about packs
+  // and nothing in the library came from a plugin.
   _resetPackStoreForTesting();
+  _resetPluginStoreForTesting();
   seedStore({ categorized: {} });
   // A fresh mock per test, set through the store rather than vi.spyOn: set()
   // clones the state object, so a spy would outlive restoreAllMocks() and carry
@@ -503,5 +506,203 @@ describe('NodesTab — needs-pack badge', () => {
     seedStore({ categorized: { CNN: [def('Conv2d', 'CNN')] } });
     render(<NodesTab />);
     expect(screen.queryByText('Needs pack')).toBeNull();
+  });
+});
+
+// ── Plugin provenance (P-F3) ──────────────────────────────────────────────
+
+function pluginEntry(over: Partial<PluginCatalogEntry> & { id: string }): PluginCatalogEntry {
+  return {
+    name: over.id,
+    description: '',
+    kind: 'github',
+    official: false,
+    status: 'installed',
+    source_kind: 'github_url',
+    source: over.id,
+    repo: null,
+    ref: null,
+    sha: null,
+    url: null,
+    homepage: '',
+    version: null,
+    installed_at: null,
+    enabled: true,
+    chapters: [],
+    lessons: [],
+    tags: [],
+    nodes: [],
+    node_count: 0,
+    capabilities: [],
+    trusted_modules: [],
+    python_deps: {},
+    has_frontend: false,
+    consent_required: false,
+    frontend_entry: null,
+    job: null,
+    ...over,
+  };
+}
+
+const EDU_NAME = 'EDU - hands-on teaching nodes';
+const EDU_LINE = `From plugin: ${EDU_NAME}`;
+
+/** Put a catalog in the plugin store, the way a finished `refresh()` would. */
+function seedPlugins(...entries: PluginCatalogEntry[]) {
+  usePluginStore.setState({
+    loaded: true,
+    unsupported: false,
+    plugins: entries,
+    byId: Object.fromEntries(entries.map((entry) => [entry.id, entry])),
+  });
+}
+
+const eduEntry = () => pluginEntry({ id: 'edu', name: EDU_NAME });
+
+const eduDef = (description = 'drops rows a predicate rejects'): NodeDefinition => ({
+  ...def('edu:FilterRows', 'Data', description),
+  provider: 'plugin:edu',
+});
+
+/** The portal tooltip, found from a line inside it rather than by class. */
+const tooltipAround = (line: HTMLElement) => line.parentElement as HTMLElement;
+
+describe('NodesTab — plugin provenance', () => {
+  it('names the plugin on the last line of the tooltip, after the description', () => {
+    seedPlugins(eduEntry());
+    seedStore({ categorized: { Data: [eduDef()] } });
+    render(<NodesTab />);
+
+    const item = screen.getByText('edu:FilterRows').parentElement as HTMLElement;
+    fireEvent.mouseEnter(item);
+
+    const line = screen.getByText(EDU_LINE);
+    const tooltip = tooltipAround(line);
+    // Title, description, provenance — provenance last, because it is the
+    // least of the three things a reader wants before the drag.
+    expect(Array.from(tooltip.children).map((child) => child.textContent)).toEqual([
+      'edu:FilterRows',
+      'drops rows a predicate rejects',
+      EDU_LINE,
+    ]);
+  });
+
+  it('shows the id until the catalog answers', () => {
+    // Three ordinary states leave `byId` empty: before the boot fetch lands,
+    // on a server with no Plugin Center, and after a network error. The line
+    // still says something true, and sharpens when the catalog arrives.
+    seedStore({ categorized: { Data: [eduDef()] } });
+    render(<NodesTab />);
+
+    fireEvent.mouseEnter(screen.getByText('edu:FilterRows').parentElement as HTMLElement);
+    expect(screen.getByText('From plugin: edu')).toBeTruthy();
+
+    act(() => seedPlugins(eduEntry()));
+    expect(screen.getByText(EDU_LINE)).toBeTruthy();
+    expect(screen.queryByText('From plugin: edu')).toBeNull();
+  });
+
+  it('says nothing for a built-in, a custom node, or a server that sends no provider', () => {
+    seedPlugins(eduEntry());
+    seedStore({
+      categorized: {
+        CNN: [
+          { ...def('Conv2d', 'CNN'), provider: 'builtin' },
+          { ...def('MyLayer', 'CNN'), provider: 'custom' },
+          def('Dropout', 'CNN'),
+        ],
+      },
+    });
+    render(<NodesTab />);
+
+    for (const name of ['Conv2d', 'MyLayer', 'Dropout']) {
+      // Grabbed before the hover: once the tooltip is up the name is on screen
+      // twice, in the row and in the tooltip's title.
+      const item = screen.getByText(name).parentElement as HTMLElement;
+      fireEvent.mouseEnter(item);
+      expect(screen.queryByText(/^From plugin: /)).toBeNull();
+      fireEvent.mouseLeave(item);
+    }
+  });
+
+  it('earns a tooltip for a plugin node with no description and no pack sentence', () => {
+    // The old gate showed NO tooltip at all when a node had neither, so the
+    // one line worth reading about such a node could never appear.
+    seedPlugins(eduEntry());
+    seedStore({ categorized: { Data: [eduDef('')] } });
+    render(<NodesTab />);
+
+    const item = screen.getByText('edu:FilterRows').parentElement as HTMLElement;
+    fireEvent.mouseEnter(item);
+
+    const line = screen.getByText(EDU_LINE);
+    expect(Array.from(tooltipAround(line).children).map((c) => c.textContent)).toEqual([
+      'edu:FilterRows',
+      EDU_LINE,
+    ]);
+  });
+
+  it('puts the provenance under the pack sentence, not over it', () => {
+    seedPacks(wordVectors());
+    seedPlugins(eduEntry());
+    seedStore({
+      categorized: {
+        LLM: [{ ...packedDef(), node_name: 'edu:WordVectorLookup', provider: 'plugin:edu' }],
+      },
+    });
+    render(<NodesTab />);
+
+    fireEvent.mouseEnter(screen.getByText('edu:WordVectorLookup').parentElement as HTMLElement);
+    const line = screen.getByText(EDU_LINE);
+    // Muted, not the pack sentence's warning colour — its own class, or a
+    // reader is told where a node came from in the colour of a problem.
+    expect(line.className).not.toBe(screen.getByText(PALETTE_SENTENCE).className);
+    expect(Array.from(tooltipAround(line).children).map((c) => c.textContent)).toEqual([
+      'edu:WordVectorLookup',
+      'looks a word up in a vector table',
+      PALETTE_SENTENCE,
+      EDU_LINE,
+    ]);
+  });
+
+  it('finds a plugin node by the plugin display name', () => {
+    // Searching the id already worked — plugin node names are qualified, so
+    // `edu` matches `edu:FilterRows` through the name. What is new is the
+    // human name, which appears in no field of the definition.
+    seedPlugins(eduEntry());
+    seedStore({
+      categorized: {
+        Data: [eduDef()],
+        CNN: [def('Conv2d', 'CNN')],
+      },
+    });
+    render(<NodesTab />);
+
+    const search = screen.getByPlaceholderText('Search nodes...');
+    fireEvent.change(search, { target: { value: 'hands-on' } });
+    expect(screen.getByText('edu:FilterRows')).toBeTruthy();
+    expect(screen.queryByText('Conv2d')).toBeNull();
+
+    // Case-insensitive, like the two fields it joins.
+    fireEvent.change(search, { target: { value: 'TEACHING' } });
+    expect(screen.getByText('edu:FilterRows')).toBeTruthy();
+
+    // A built-in stays unreachable by a plugin name.
+    fireEvent.change(search, { target: { value: 'conv' } });
+    expect(screen.getByText('Conv2d')).toBeTruthy();
+    expect(screen.queryByText('edu:FilterRows')).toBeNull();
+  });
+
+  it('re-filters when the catalog lands mid-search', () => {
+    seedStore({ categorized: { Data: [eduDef()] } });
+    render(<NodesTab />);
+
+    fireEvent.change(screen.getByPlaceholderText('Search nodes...'), {
+      target: { value: 'hands-on' },
+    });
+    expect(screen.getByText('No matching nodes')).toBeTruthy();
+
+    act(() => seedPlugins(eduEntry()));
+    expect(screen.getByText('edu:FilterRows')).toBeTruthy();
   });
 });

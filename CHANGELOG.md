@@ -56,6 +56,19 @@ received — each links to the release it was published as.
   time, in git's own words. Reading any of these lists is an open read; every
   button that changes something carries the session token. History and the diff
   view are the part after this one.
+- **Every node says which plugin it came from.** Hovering a row in the node
+  library now ends its tooltip with the plugin that registered it, muted and
+  under everything that describes the node — and a plugin's node that ships no
+  description at all gets that one line rather than no tooltip at all, which is
+  what it used to get. The same name is a third thing the two searches match,
+  so typing part of a plugin's name into the library's search box, or into the
+  quick search you get by double-clicking the canvas, finds its nodes; before,
+  the only way to reach them was the `plugin:` prefix their type happens to
+  carry. The template gallery's detail pane names the plugin the same way
+  instead of printing its id. Until the Plugin Center's catalog has answered —
+  during boot, on a server too old to have one, or after the network dropped —
+  the id stands in, because **From plugin: edu** is already true and a line
+  that waits for the catalog is a line that flickers in on every page load.
 
 ## [2.6.0] — 2026-09-05
 

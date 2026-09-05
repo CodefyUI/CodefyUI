@@ -3,8 +3,10 @@ import { createPortal } from 'react-dom';
 import { listExamples, type ExampleSummary } from '../../api/rest';
 import { insertExample, openExampleInNewTab } from '../../utils/openExample';
 import { useDialogStore } from '../../store/dialogStore';
+import { usePluginStore } from '../../store/pluginStore';
 import { useUIStore } from '../../store/uiStore';
 import { useI18n } from '../../i18n';
+import { pluginNameOf, type PluginIndex } from '../../utils/provider';
 import { EXAMPLE_CATEGORY_COLORS, EXAMPLE_CATEGORY_FALLBACK, mixColor, NODE_HEADER_TINT, SURFACE_RAISED } from '../../styles/theme';
 // The sidebar's Templates tab (#126) already owns the category order every
 // example surface is expected to share; importing it keeps the modal's grid
@@ -16,12 +18,11 @@ import {
 } from '../Sidebar/TemplatesTab';
 import styles from './TemplateGalleryModal.module.css';
 
-/** Human-readable origin: a built-in example, or the pack that ships it. */
-export function exampleSourceLabel(example: ExampleSummary): string | null {
-  const source = example.source ?? '';
-  if (source.startsWith('plugin:')) return source.slice('plugin:'.length);
-  return null;
-}
+// Module-scope, so the subscription compares the same function's output frame
+// to frame, and narrow: an install running in the Plugin Center writes `job`
+// and its log on every long-poll turn, none of which renames a plugin.
+type PluginStoreState = ReturnType<typeof usePluginStore.getState>;
+const selectPluginsById = (state: PluginStoreState): PluginIndex => state.byId;
 
 function matches(example: ExampleSummary, query: string): boolean {
   return (
@@ -54,6 +55,7 @@ export function TemplateGalleryModal() {
 
 function TemplateGalleryBody() {
   const close = useUIStore((s) => s.closeTemplateGallery);
+  const pluginsById = usePluginStore(selectPluginsById);
   const { t } = useI18n();
 
   const [examples, setExamples] = useState<ExampleSummary[]>([]);
@@ -128,6 +130,12 @@ function TemplateGalleryBody() {
   // first remaining one rather than emptying the pane.
   const chosen =
     visible.find((e) => e.path === chosenPath) ?? visible[0] ?? null;
+  // One question, one answer: the NAME is both the gate (null means the
+  // example is a built-in, or names no plugin at all) and the word the pane
+  // prints. `pluginNameOf` already falls back to the bare id while the
+  // catalog has not answered, so there is no second fallback to keep in step.
+  const chosenPluginName =
+    chosen === null ? null : pluginNameOf(pluginsById, chosen.source);
 
   const take = useCallback(
     async (run: () => Promise<boolean>) => {
@@ -285,9 +293,9 @@ function TemplateGalleryBody() {
                     <span>{t('gallery.edgeCount', { count: chosen.edge_count })}</span>
                   </div>
                   <div className={styles.detailSource}>
-                    {exampleSourceLabel(chosen)
-                      ? t('gallery.sourcePlugin', { plugin: exampleSourceLabel(chosen)! })
-                      : t('gallery.sourceBuiltin')}
+                    {chosenPluginName === null
+                      ? t('gallery.sourceBuiltin')
+                      : t('gallery.sourcePlugin', { plugin: chosenPluginName })}
                   </div>
                   <p className={styles.detailDesc}>
                     {chosen.description || t('gallery.noDescription')}

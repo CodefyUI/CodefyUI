@@ -2,8 +2,10 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { render, fireEvent, waitFor, within } from '@testing-library/react';
 import { QuickNodeSearch } from './QuickNodeSearch';
 import { useNodeDefStore } from '../../store/nodeDefStore';
+import { _resetPluginStoreForTesting, usePluginStore } from '../../store/pluginStore';
 import { useTabStore } from '../../store/tabStore';
 import { useI18n } from '../../i18n';
+import type { PluginCatalogEntry } from '../../api/rest';
 import type { NodeDefinition, PresetDefinition } from '../../types';
 
 function def(name: string, overrides: Partial<NodeDefinition> = {}): NodeDefinition {
@@ -33,6 +35,51 @@ function preset(name: string, overrides: Partial<PresetDefinition> = {}): Preset
   };
 }
 
+function pluginEntry(over: Partial<PluginCatalogEntry> & { id: string }): PluginCatalogEntry {
+  return {
+    name: over.id,
+    description: '',
+    kind: 'github',
+    official: false,
+    status: 'installed',
+    source_kind: 'github_url',
+    source: over.id,
+    repo: null,
+    ref: null,
+    sha: null,
+    url: null,
+    homepage: '',
+    version: null,
+    installed_at: null,
+    enabled: true,
+    chapters: [],
+    lessons: [],
+    tags: [],
+    nodes: [],
+    node_count: 0,
+    capabilities: [],
+    trusted_modules: [],
+    python_deps: {},
+    has_frontend: false,
+    consent_required: false,
+    frontend_entry: null,
+    job: null,
+    ...over,
+  };
+}
+
+const eduEntry = () => pluginEntry({ id: 'edu', name: 'EDU - hands-on teaching nodes' });
+
+/** Put a catalog in the plugin store, the way a finished `refresh()` would. */
+function seedPlugins(...entries: PluginCatalogEntry[]) {
+  usePluginStore.setState({
+    loaded: true,
+    unsupported: false,
+    plugins: entries,
+    byId: Object.fromEntries(entries.map((entry) => [entry.id, entry])),
+  });
+}
+
 const SCREEN = { x: 50, y: 60 };
 const FLOW = { x: 11, y: 22 };
 
@@ -59,6 +106,9 @@ describe('QuickNodeSearch', () => {
   beforeEach(() => {
     useI18n.setState({ locale: 'en' });
     setStore([], []);
+    // Every case that does not seed one runs against an empty plugin catalog:
+    // the base install, where nothing in the library came from a plugin.
+    _resetPluginStoreForTesting();
     useTabStore.setState({ addNode: vi.fn(), addPresetNode: vi.fn() });
   });
 
@@ -391,5 +441,84 @@ describe('QuickNodeSearch', () => {
     const panel = container.firstElementChild as HTMLElement;
     expect(panel.style.left).toBe(`${window.innerWidth - 300}px`);
     expect(panel.style.top).toBe(`${window.innerHeight - 400}px`);
+  });
+
+  // ── Plugin provenance (P-F3) ────────────────────────────────────────────
+
+  it('finds a plugin node by the plugin display name', () => {
+    // The same third field the palette search gained: the plugin as the
+    // Plugin Center names it, which appears in no field of a definition.
+    seedPlugins(eduEntry());
+    setStore(
+      [def('edu:FilterRows', { description: 'drops rows a predicate rejects', provider: 'plugin:edu' }),
+        def('Conv2d')],
+      [],
+    );
+    const { getByPlaceholderText, getByText, queryByText } = render(
+      <QuickNodeSearch screenPos={SCREEN} flowPos={FLOW} onClose={() => {}} />,
+    );
+    const input = getByPlaceholderText('Search nodes...');
+
+    fireEvent.change(input, { target: { value: 'hands-on' } });
+    expect(getByText('edu:FilterRows')).toBeInTheDocument();
+    expect(queryByText('Conv2d')).toBeNull();
+
+    // Case-insensitive, like the two fields it joins.
+    fireEvent.change(input, { target: { value: 'TEACHING' } });
+    expect(getByText('edu:FilterRows')).toBeInTheDocument();
+  });
+
+  it('matches the plugin id while the catalog has not answered', () => {
+    // The id here is deliberately NOT a substring of the node name or of the
+    // description: `edu:FilterRows` is contributed by the plugin `teach`, so
+    // the query below reaches this row through nothing but the third clause
+    // falling back to the id of a catalog that has not answered yet. (An id
+    // that also spells the node's prefix would pass with the clause deleted.)
+    setStore(
+      [
+        def('edu:FilterRows', {
+          description: 'drops rows a predicate rejects',
+          provider: 'plugin:teach',
+        }),
+        def('Conv2d'),
+      ],
+      [],
+    );
+    const { getByPlaceholderText, getByText, queryByText } = render(
+      <QuickNodeSearch screenPos={SCREEN} flowPos={FLOW} onClose={() => {}} />,
+    );
+    const input = getByPlaceholderText('Search nodes...');
+
+    fireEvent.change(input, { target: { value: 'teach' } });
+    expect(getByText('edu:FilterRows')).toBeInTheDocument();
+    expect(queryByText('Conv2d')).toBeNull();
+
+    // The other half of "has not answered": the display name lives only in
+    // the catalog, so with an empty index a query that matches nothing but
+    // that name finds nothing. Seeded, it is the case above this one.
+    fireEvent.change(input, { target: { value: 'hands-on' } });
+    expect(getByText('No matching nodes')).toBeInTheDocument();
+    expect(queryByText('edu:FilterRows')).toBeNull();
+  });
+
+  it('leaves built-ins, custom nodes and presets unreachable by a plugin name', () => {
+    seedPlugins(eduEntry());
+    setStore(
+      [def('Conv2d', { provider: 'builtin' }), def('MyLayer', { provider: 'custom' })],
+      [preset('MyBlock')],
+    );
+    const { getByPlaceholderText, getByText, queryByText } = render(
+      <QuickNodeSearch screenPos={SCREEN} flowPos={FLOW} onClose={() => {}} />,
+    );
+    const input = getByPlaceholderText('Search nodes...');
+
+    fireEvent.change(input, { target: { value: 'hands-on' } });
+    expect(getByText('No matching nodes')).toBeInTheDocument();
+
+    // Counterfactual: the same three are still found by their own fields.
+    fireEvent.change(input, { target: { value: 'my' } });
+    expect(getByText('MyLayer')).toBeInTheDocument();
+    expect(getByText('MyBlock')).toBeInTheDocument();
+    expect(queryByText('Conv2d')).toBeNull();
   });
 });
