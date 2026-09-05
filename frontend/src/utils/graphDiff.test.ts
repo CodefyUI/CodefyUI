@@ -357,38 +357,55 @@ describe('summarizeGraphDiff, presets and subgraphs', () => {
     ]);
   });
 
-  it('counts the insides of a preset that appeared as added', () => {
+  it('gives a preset definition that appeared no line, without calling it unchanged', () => {
+    // A definition's insides are not nodes on the canvas, exactly as for a
+    // subgraph. `canonicalText` still refuses to call the file unchanged.
     const summary = summarizeGraphDiff(
       graphDoc({ presets: [] }),
       graphDoc({ presets: [PRESET] }),
       'graph',
     );
-    expect(summary.lines).toEqual([
-      { kind: 'nodesAdded', count: 2 },
-      { kind: 'edgesAdded', count: 1 },
-    ]);
+    expect(summary.lines).toEqual([]);
+    expect(summary.noLogicChange).toBe(false);
   });
 
-  it('adds preset counts to the top-level ones instead of listing them apart', () => {
+  it('reports one node added when one preset is dropped on the canvas', () => {
+    // The commonest preset edit there is, and the whole reason the Presets
+    // tab exists. The first instance of a preset takes its DEFINITION into
+    // the file with it (`tabStore.getSerializedGraph`), so counting the
+    // definition's insides read one dropped block as "7 node(s) added, 5
+    // edge(s) added" over an edit that added one node and no edges.
+    const instance = { id: 'dense-1', type: 'Dense Block', data: { params: {} } };
     const summary = summarizeGraphDiff(
       graphDoc({ nodes: [START], presets: [] }),
-      graphDoc({ nodes: [START, CSV], presets: [PRESET] }),
+      graphDoc({ nodes: [START, instance], presets: [PRESET] }),
       'graph',
     );
-    expect(summary.lines).toEqual([
-      { kind: 'nodesAdded', count: 3 },
-      { kind: 'edgesAdded', count: 1 },
-    ]);
+    expect(summary.lines).toEqual([{ kind: 'nodesAdded', count: 1 }]);
+  });
+
+  it('reports one node removed when the last instance of a preset is deleted', () => {
+    const instance = { id: 'dense-1', type: 'Dense Block', data: { params: {} } };
+    const summary = summarizeGraphDiff(
+      graphDoc({ nodes: [START, instance], presets: [PRESET] }),
+      graphDoc({ nodes: [START], presets: [] }),
+      'graph',
+    );
+    expect(summary.lines).toEqual([{ kind: 'nodesRemoved', count: 1 }]);
   });
 
   it('treats a missing presets key as no presets, since the editor may omit it', () => {
-    const withoutKey = JSON.stringify({ format_version: 1, name: 'a', description: '', nodes: [], edges: [] });
-    const summary = summarizeGraphDiff(withoutKey, graphDoc({ presets: [PRESET] }), 'graph');
-    expect(summary.unparseable).toBe(false);
-    expect(summary.lines).toEqual([
-      { kind: 'nodesAdded', count: 2 },
-      { kind: 'edgesAdded', count: 1 },
-    ]);
+    const withoutKey = JSON.stringify({ format_version: 1, name: 'Iris', description: '', nodes: [], edges: [] });
+    // Read as anything else, an editor that omits the key would look like an
+    // edit against one that writes it empty.
+    const same = summarizeGraphDiff(withoutKey, graphDoc({ subgraphs: [] }), 'graph');
+    expect(same.unparseable).toBe(false);
+    expect(same.noLogicChange).toBe(true);
+
+    const added = summarizeGraphDiff(withoutKey, graphDoc({ presets: [PRESET] }), 'graph');
+    expect(added.unparseable).toBe(false);
+    expect(added.lines).toEqual([]);
+    expect(added.noLogicChange).toBe(false);
   });
 
   it('gives an added or removed subgraph definition no line, without calling it unchanged', () => {

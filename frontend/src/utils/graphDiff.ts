@@ -25,17 +25,19 @@
  *   normalization every trigger edge in the file would read as removed and
  *   re-added. The edge `id` is ignored: copy and paste regenerates it, as
  *   `docs/docs/usage/version-control-graphs.md:185` already documents.
- * - Presets by `preset_name`. A preset that changed contributes its own node
- *   and edge differences to the same counts the top level uses, and one that
- *   appeared or vanished contributes everything inside it.
- * - Subgraph definitions get NO line, whether one appeared, vanished or was
- *   edited in place: there is no line kind for a definition, and a
- *   definition's insides are not nodes on the canvas. Counting them as such
- *   made the commonest subgraph edit lie -- collapsing three connected nodes
- *   into a block moves them out of `nodes` and into the definition, so the
- *   summary read "2 edges added" over an edit that added none. Every such
- *   change still defeats `noLogicChange`, so the summary never claims nothing
- *   happened; the text diff below is what shows it.
+ * - Presets by `preset_name`. One EDITED in place contributes its own node and
+ *   parameter differences to the same lines the top level uses; one that
+ *   appeared or vanished contributes nothing, for the reason below.
+ * - Definitions -- preset and subgraph alike -- get no COUNT line, whether one
+ *   appeared, vanished or was edited in place: a definition's insides are not
+ *   nodes and edges of the canvas. Counting them as such made both of the
+ *   commonest edits lie. Collapsing three connected nodes into a block moves
+ *   them out of `nodes` and into the definition, so the summary read "2 edges
+ *   added" over an edit that added none; and dropping ONE preset from the
+ *   Presets tab writes its whole definition into `presets`, so the summary
+ *   read "7 node(s) added, 5 edge(s) added" over an edit that added one node.
+ *   Every such change still defeats `noLogicChange`, so the summary never
+ *   claims nothing happened; the text diff below is what shows it.
  * - Layout: a node in `positions` whose `{x, y}` changed counts toward
  *   `positionsMoved`. A position that appeared or vanished is NOT a move: the
  *   node was added or deleted, and the `.graph.json` half of the pair reports
@@ -76,8 +78,9 @@ export interface GraphDiffSummary {
    * Empty WITH `noLogicChange` false is a normal answer, not a failure: the
    * file changed in a way v1 has no line kind for -- a layout file added or
    * deleted, a name or description edit, a segment group, a note resized, a
-   * subgraph definition, or a preset instance's per-instance override, which
-   * lives at `data.internalParams` and not at `data.params`. Render nothing
+   * preset or subgraph DEFINITION that appeared or vanished, or a preset
+   * instance's per-instance override, which lives at `data.internalParams`
+   * and not at `data.params`. Render nothing
    * (or fall straight through to the text diff) rather than an empty strip
    * with no sentence in it.
    */
@@ -227,28 +230,35 @@ function compareGraphs(before: Doc, after: Doc, tally: Tally): void {
   const newPresets = byKey(after.presets, 'preset_name');
   for (const [name, preset] of newPresets) {
     const was = oldPresets.get(name);
-    if (was === undefined) {
-      tally.nodesAdded += asList(preset.nodes).length;
-      tally.edgesAdded += asList(preset.edges).length;
-      continue;
-    }
+    // A definition that appeared or vanished contributes NOTHING to the
+    // counts, for the reason written under this loop.
+    if (was === undefined) continue;
     compareNodes(presetNodes(was, name), presetNodes(preset, name), tally);
     compareEdges(edgeCounts(was.edges), edgeCounts(preset.edges), tally);
   }
-  for (const [name, preset] of oldPresets) {
-    if (newPresets.has(name)) continue;
-    tally.nodesRemoved += asList(preset.nodes).length;
-    tally.edgesRemoved += asList(preset.edges).length;
-  }
 
-  // Subgraph definitions are deliberately absent from this function. A
-  // definition holds nodes and edges, but they are not nodes and edges of the
-  // canvas: collapsing a selection into a block MOVES them off the top level
-  // and into the definition, so counting the definition's insides reported
-  // every moved edge as added on top of reporting it as removed. Whatever
-  // happened to a definition -- appeared, vanished, edited -- reaches the
-  // reader through `canonicalText`, which will not let the summary call it
-  // unchanged, and through the text diff below the summary.
+  // A DEFINITION -- preset or subgraph -- that appeared, vanished or was
+  // edited in place gets no count line, because a definition's insides are not
+  // nodes and edges of the canvas.
+  //
+  // For subgraphs it was collapsing a selection into a block that made the
+  // count lie: that MOVES three nodes and two edges off the top level and into
+  // the definition, and counting the definition's insides read it as "2 edges
+  // added" over an edit that added none.
+  //
+  // For presets it is the commoner edit still: the first instance of a preset
+  // takes the whole definition into the file with it
+  // (`tabStore.getSerializedGraph` bundles `data.presetDefinition` into
+  // `presets`), so dropping ONE block from the Presets tab was summarised as
+  // "7 node(s) added, 5 edge(s) added" -- six of those nodes being the
+  // definition's insides, which are one node on the canvas. Deleting the last
+  // instance mirrored it.
+  //
+  // What DID happen still reaches the reader: the instance node itself is
+  // counted like any other node, `canonicalText` includes `presets` and
+  // `subgraphs` so the summary can never call such a file unchanged, and the
+  // text diff below the summary shows the definition. A definition edited in
+  // place keeps its per-node lines, which name the node `<preset>/<id>`.
 }
 
 function compareNodes(before: Map<string, NodeFacts>, after: Map<string, NodeFacts>, tally: Tally): void {
