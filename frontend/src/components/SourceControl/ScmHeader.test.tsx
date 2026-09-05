@@ -161,6 +161,30 @@ describe('ScmHeader: the title row', () => {
     expect(refreshRefs).not.toHaveBeenCalled();
   });
 
+  it('reads no list where there is no repository, whatever is remembered open', () => {
+    // The three ref routes can only be REFUSED against a project that is not
+    // a repository, and the tab draws no section there -- so the `refsError`
+    // each refusal writes is not on screen either. The open flags are
+    // remembered per profile, so a tab that was left open on a repository
+    // sent three doomed requests per press on the next project. The poll's
+    // own walk (`refreshExpandedRefs`) has always had this guard; the button
+    // is the other way into the same loop.
+    useGitStore.setState({
+      repoState: 'not_repo',
+      status: null,
+      sections: { branches: true, remotes: true, stashes: true },
+    });
+    render(<ScmHeader />);
+    refreshRefs.mockClear();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Refresh' }));
+
+    // The STATUS is still read in every state: it is what moves the panel out
+    // of this state when the project becomes a repository.
+    expect(refresh).toHaveBeenCalledTimes(1);
+    expect(refreshRefs).not.toHaveBeenCalled();
+  });
+
   it('offers the five git actions above the three panel ones', () => {
     render(<ScmHeader />);
     const menu = openMore();
@@ -269,9 +293,14 @@ describe('ScmHeader: the branch line', () => {
       status: status({ upstream: 'origin/main', ahead: 2, behind: 3 }),
     });
     render(<ScmHeader />);
-    expect(screen.getByText('↑2 ↓3')).toBeTruthy();
+    // The glyphs are what is on screen and the sentence is what is announced.
+    // Both halves are pinned: a reader given the two would hear the count
+    // twice, once as characters nobody can pronounce.
+    const glyphs = screen.getByText('↑2 ↓3');
+    expect(glyphs.getAttribute('aria-hidden')).toBe('true');
     const spoken = screen.getByText('2 to push, 3 to pull');
     expect(spoken.className).toContain('srOnly');
+    expect(spoken.getAttribute('aria-hidden')).toBeNull();
     expect(spoken.closest('span[title]')?.getAttribute('title')).toBe(
       '2 to push, 3 to pull',
     );

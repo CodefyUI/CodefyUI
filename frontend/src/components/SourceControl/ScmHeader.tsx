@@ -250,13 +250,26 @@ export function ScmHeader() {
    * Stashes count and the branch rows exactly as stale as they were, next to
    * a header that had just updated. A closed section is not read: nothing of
    * it is on screen to be wrong.
+   *
+   * The status is read in EVERY repository state, and the lists only where
+   * there is a repository to read them from -- the same guard the poll's own
+   * walk uses (`refreshExpandedRefs` in the store), because this is the other
+   * way into that loop. The three ref routes can only be REFUSED against a
+   * project that is not a repository, the tab draws no section there, so the
+   * `refsError` each refusal writes is not on screen either; and the open
+   * flags are remembered per profile, so a tab left open on a repository sent
+   * three doomed requests per press on the next project. `unknown` passes for
+   * the reason it passes there: it is the state between mounting and the
+   * first status, and a press inside that window is about a repository the
+   * panel simply has not been told about yet.
    */
   const refreshPanel = useCallback(() => {
     void refresh();
+    if (repoState !== 'ready' && repoState !== 'unknown') return;
     for (const kind of REF_KINDS) {
       if (sections[kind]) void refreshRefs(kind);
     }
-  }, [refresh, refreshRefs, sections]);
+  }, [refresh, refreshRefs, repoState, sections]);
 
   const askThenStash = useCallback(async () => {
     const message = await prompt({ title: t('git.stash.messagePrompt') });
