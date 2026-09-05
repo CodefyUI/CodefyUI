@@ -139,7 +139,7 @@ def fake_git(monkeypatch):
     the command under test got there. Its own tests below run it for real.
     """
     monkeypatch.setattr(runner, "git_executable", lambda: _GIT)
-    monkeypatch.setattr(runner, "_ssh_command_configured", lambda: True)
+    monkeypatch.setattr(runner, "_ssh_command_configured", lambda cwd=None: True)
 
 
 def _run(monkeypatch, proc: _FakeProc, args=("status", "--porcelain=v2"),
@@ -337,7 +337,7 @@ def test_env_keeps_the_users_own_ssh_command(monkeypatch):
     monkeypatch.setenv("GIT_SSH_COMMAND", "ssh -i C:/keys/id_ed25519")
     probes: list[int] = []
     monkeypatch.setattr(runner, "_ssh_command_configured",
-                        lambda: probes.append(1) or False)
+                        lambda cwd=None: probes.append(1) or False)
 
     assert runner.git_env()["GIT_SSH_COMMAND"] == "ssh -i C:/keys/id_ed25519"
     assert probes == []
@@ -359,7 +359,7 @@ def test_env_keeps_the_legacy_git_ssh_variable(monkeypatch):
     monkeypatch.setenv("GIT_SSH", "C:/corp/ssh-wrapper.exe")
     probes: list[int] = []
     monkeypatch.setattr(runner, "_ssh_command_configured",
-                        lambda: probes.append(1) or False)
+                        lambda cwd=None: probes.append(1) or False)
 
     env = runner.git_env()
 
@@ -392,7 +392,12 @@ def test_env_leaves_ssh_alone_when_core_sshcommand_is_set(monkeypatch):
 
 
 def test_ssh_probe_runs_once_per_process(monkeypatch):
-    """The answer cannot change often enough to be worth a process a poll."""
+    """The answer cannot change often enough to be worth a process a poll.
+
+    With no repository to ask about, the question goes to the temp
+    directory: only the global and system config can answer it there, and
+    the server's own checkout is never consulted.
+    """
     monkeypatch.setattr(runner, "git_executable", lambda: _GIT)
     calls: list[list[str]] = []
 
@@ -406,6 +411,7 @@ def test_ssh_probe_runs_once_per_process(monkeypatch):
     runner.git_env()
 
     assert len(calls) == 1
+    assert calls[0][1:3] == ["-C", str(Path(tempfile.gettempdir()).resolve())]
     assert calls[0][-3:] == ["config", "--get", "core.sshCommand"]
 
 
@@ -417,24 +423,98 @@ def test_ssh_probe_failure_is_not_fatal(monkeypatch):
 
 
 def test_the_probe_never_asks_the_servers_own_repository(monkeypatch, tmp_path):
-    """The probe runs from the temp directory, not from ``Path.cwd()``.
+    """The probe asks the PROJECT, and never ``Path.cwd()``.
 
+    Two different repositories, and only one of them is anybody's business.
     The server's working directory is its own checkout -- a repository with
-    its own config, and one the Source Control tab must never consult. A
-    ``core.sshCommand`` set THERE would otherwise decide how the user's
-    project reaches its remotes.
+    its own config, and one the Source Control tab must never consult; a
+    ``core.sshCommand`` set THERE would decide how the user's project
+    reaches its remotes. The project is the opposite: the user chose it, and
+    its config is exactly the one this question is about.
     """
     monkeypatch.setattr(runner, "git_executable", lambda: _GIT)
     # A repository, standing in for the checkout the server runs from.
-    (tmp_path / ".git").mkdir()
-    monkeypatch.chdir(tmp_path)
+    server = tmp_path / "server"
+    (server / ".git").mkdir(parents=True)
+    project = tmp_path / "project"
+    project.mkdir()
+    monkeypatch.chdir(server)
     seen = _fake_popen(monkeypatch, _FakeProc(returncode=1))
 
-    runner.git_env()
+    runner.git_env(cwd=project)
 
-    assert seen["argv"][1:3] == [
-        "-C", str(Path(tempfile.gettempdir()).resolve())]
-    assert str(tmp_path) not in seen["argv"]
+    assert seen["argv"][1:3] == ["-C", str(project.resolve())]
+    assert str(server) not in seen["argv"]
+
+
+def test_a_repositorys_own_ssh_command_is_not_overridden(monkeypatch, tmp_path):
+    """A per-repository ``core.sshCommand`` survives the default.
+
+    The deploy-key idiom is repository-local (``git config core.sshCommand
+    "ssh -i ~/.ssh/deploy_key"``), and so is the ``includeIf`` work/personal
+    split. Neither is visible from the temp directory -- ``git -C <project>
+    config --get core.sshCommand`` exits 0 with the value there and ``git -C
+    <tempdir> ...`` exits 1 (measured on git 2.53) -- and guessing "no"
+    REPLACES the setting, because git gives ``GIT_SSH_COMMAND`` precedence
+    over ``core.sshCommand``. Every fetch and push would drop the ``-i
+    <key>`` and fail ``Permission denied (publickey)``.
+    """
+    monkeypatch.setattr(runner, "git_executable", lambda: _GIT)
+    _fake_popen(monkeypatch, _FakeProc(stdout=b"ssh -i C:/keys/deploy_key\n"))
+
+    assert "GIT_SSH_COMMAND" not in runner.git_env(cwd=tmp_path)
+
+
+def test_the_answer_is_remembered_per_repository(monkeypatch, tmp_path):
+    """One probe per directory: the setting is not a property of the process.
+
+    A single remembered boolean would hand the first project's answer to
+    every project after it -- one repository with a deploy key would turn
+    the default off for all of them, or one without would turn it on over
+    another's setting.
+    """
+    monkeypatch.setattr(runner, "git_executable", lambda: _GIT)
+    with_key = tmp_path / "with-key"
+    with_key.mkdir()
+    without = tmp_path / "without"
+    without.mkdir()
+    probed: list[str] = []
+
+    def _popen(argv, **kwargs):
+        probed.append(argv[2])
+        return _FakeProc(stdout=(b"ssh -i C:/keys/deploy_key\n"
+                                 if argv[2] == str(with_key.resolve()) else b""),
+                         returncode=0 if argv[2] == str(with_key.resolve()) else 1)
+
+    monkeypatch.setattr(subprocess, "Popen", _popen)
+
+    assert "GIT_SSH_COMMAND" not in runner.git_env(cwd=with_key)
+    assert runner.git_env(cwd=without)["GIT_SSH_COMMAND"] == "ssh -oBatchMode=yes"
+    assert "GIT_SSH_COMMAND" not in runner.git_env(cwd=with_key)
+
+    assert probed == [str(with_key.resolve()), str(without.resolve())]
+
+
+def test_a_command_probes_the_repository_it_is_about(monkeypatch, tmp_path):
+    """``run_git`` hands its own *cwd* to the environment it builds.
+
+    The whole fix is worth nothing if the probe is right and the caller
+    never passes the directory: the project's config is only consulted
+    because ``run_git`` says which project this command is about.
+    """
+    monkeypatch.setattr(runner, "git_executable", lambda: _GIT)
+    seen: list[list[str]] = []
+
+    def _popen(argv, **kwargs):
+        seen.append(argv)
+        return _FakeProc(returncode=0)
+
+    monkeypatch.setattr(subprocess, "Popen", _popen)
+
+    runner.run_git(["status"], cwd=tmp_path, timeout=10)
+
+    assert seen[0][1:3] == ["-C", str(tmp_path.resolve())]
+    assert seen[0][-3:] == ["config", "--get", "core.sshCommand"]
 
 
 def test_a_probe_that_failed_is_not_repeated_on_every_command(monkeypatch):

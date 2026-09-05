@@ -234,7 +234,11 @@ _executable: str | None = None
 _missing_until: float | None = None
 _version: tuple[int, int, int] | None = None
 _version_probed_at: float | None = None
-_ssh_configured: bool | None = None
+#: The ``core.sshCommand`` answer per directory the probe was run from --
+#: see :func:`_ssh_command_configured`. One global boolean was wrong: the
+#: setting can be repository-local, so the answer belongs to the repository
+#: that was asked, not to the process.
+_ssh_configured: dict[str, bool] = {}
 _ssh_probe_failed_at: float | None = None
 
 
@@ -246,12 +250,12 @@ def _reset_for_tests() -> None:
     a process would depend on which test ran first.
     """
     global _executable, _missing_until, _version, _version_probed_at
-    global _ssh_configured, _ssh_probe_failed_at
+    global _ssh_probe_failed_at
     _executable = None
     _missing_until = None
     _version = None
     _version_probed_at = None
-    _ssh_configured = None
+    _ssh_configured.clear()
     _ssh_probe_failed_at = None
 
 
@@ -275,18 +279,24 @@ def git_executable() -> str | None:
 def _probe_cwd() -> Path:
     """A directory to run the calls that are not about a repository from.
 
-    ``git --version`` and the ``core.sshCommand`` probe still go through the
-    fixed prefix, and ``-C`` needs somewhere real to point at.
+    ``git --version`` and a ``core.sshCommand`` probe with no repository to
+    ask about still go through the fixed prefix, and ``-C`` needs somewhere
+    real to point at.
 
     The temporary directory, and NEVER ``Path.cwd()``: the server's working
     directory is its own checkout, which is a git repository the Source
     Control tab must never consult. A ``core.sshCommand`` in THAT
     repository's config would otherwise decide how the user's PROJECT
     reaches its remotes -- a setting from a repository nobody asked about,
-    silently applied to another one. Only the global and system config can
-    answer this question, and the temp directory is the cheapest place to
-    stand where neither a repository nor a deleted working directory can
-    interfere.
+    silently applied to another one. The temp directory is the cheapest
+    place to stand where neither a repository nor a deleted working
+    directory can interfere.
+
+    A command that IS about a repository asks the question from that
+    repository instead (see :func:`_ssh_command_configured`), which is a
+    different thing from the server's own checkout in every way that
+    matters: the user chose it, and it is the one whose remotes the answer
+    is about.
     """
     return Path(tempfile.gettempdir())
 
@@ -338,13 +348,32 @@ def _base_git_env() -> dict[str, str]:
     return env
 
 
-def _ssh_command_configured() -> bool:
-    """Has the user's git config already got a ``core.sshCommand``?
+def _ssh_command_configured(cwd: Path | None = None) -> bool:
+    """Has this repository's git config already got a ``core.sshCommand``?
 
-    Asked at most once per process, and only when the environment does not
-    already answer it. The directory does not matter much -- a setting that
-    is meant to apply to the user's remotes lives in their global config --
-    so this deliberately does not need a repository to be open.
+    Asked from *cwd* -- the directory the command that wants the answer is
+    about -- and at most once per directory, and only when the environment
+    does not already answer it. The directory is the whole point: git reads
+    ``core.sshCommand`` from the repository as well as from the global and
+    system config, and two ordinary setups put it in a place a probe run
+    somewhere else cannot see (measured on git 2.53):
+
+    * a REPOSITORY-LOCAL setting, which is the documented per-repo
+      deploy-key idiom (``git config core.sshCommand "ssh -i
+      ~/.ssh/deploy_key"``);
+    * a global one behind ``[includeIf "gitdir:**/work/**"]``, which is the
+      standard work/personal key split.
+
+    Both answer ``git -C <project> config --get core.sshCommand`` with the
+    value and exit 0, and ``git -C <tempdir> ...`` with exit 1. Guessing
+    "no" there is not a harmless guess: ``git_env`` then writes
+    ``GIT_SSH_COMMAND``, which git gives PRECEDENCE over ``core.sshCommand``
+    -- so the batch-mode default does not sit beside the user's setting, it
+    replaces it, and every fetch and push drops their ``-i <key>``.
+
+    *cwd* is None only for the calls that are about no repository at all
+    (see :func:`_probe_cwd`), which is also the one case where the server's
+    own checkout must not be consulted.
 
     Any failure counts as "no": git missing, a timeout, a config file the
     user cannot read. The consequence of guessing wrong here is one ssh run
@@ -361,31 +390,39 @@ def _ssh_command_configured() -> bool:
     endpoint is polled while the tab is open. One probe per interval is the
     same bargain :func:`git_executable` strikes for a missing binary.
 
+    That failure window is process-wide rather than per-directory on
+    purpose: what fails is reading git config at all, which is a property of
+    the host and not of one repository.
+
     A missing git is the exception, and is deliberately NOT remembered here:
     nothing was probed, and ``git_executable`` already has its own recheck
     window for exactly that case.
     """
-    global _ssh_configured, _ssh_probe_failed_at
+    global _ssh_probe_failed_at
 
-    if _ssh_configured is not None:
-        return _ssh_configured
+    where = _probe_cwd() if cwd is None else cwd
+    key = str(where.resolve())
+    remembered = _ssh_configured.get(key)
+    if remembered is not None:
+        return remembered
     now = time.monotonic()
     if (_ssh_probe_failed_at is not None
             and now - _ssh_probe_failed_at < MISSING_RECHECK_S):
         return False
     try:
-        result = _run(["config", "--get", "core.sshCommand"], cwd=_probe_cwd(),
+        result = _run(["config", "--get", "core.sshCommand"], cwd=where,
                       timeout=SSH_PROBE_TIMEOUT_S, env=_base_git_env(),
                       ok_codes=(0, 1))
     except GitError as exc:
         if exc.code != "git_missing":
             _ssh_probe_failed_at = now
         return False
-    _ssh_configured = result.returncode == 0 and bool(result.out.strip())
-    return _ssh_configured
+    answer = result.returncode == 0 and bool(result.out.strip())
+    _ssh_configured[key] = answer
+    return answer
 
 
-def git_env(*, read_only: bool = False) -> dict[str, str]:
+def git_env(*, read_only: bool = False, cwd: Path | None = None) -> dict[str, str]:
     """The environment every git process here runs under.
 
     *read_only* adds ``GIT_OPTIONAL_LOCKS=0``, which is what lets a status
@@ -402,10 +439,15 @@ def git_env(*, read_only: bool = False) -> dict[str, str]:
     not sit beside theirs, it would replace it -- and theirs is usually the
     only thing that knows about a key, a jump host or a corporate wrapper
     script. Batch mode is a good guess and a bad override.
+
+    *cwd* is the repository the command is about, and the config question is
+    asked THERE: ``core.sshCommand`` can be set per repository, and a probe
+    run anywhere else would answer "no opinion" for a project that has one
+    -- see :func:`_ssh_command_configured`.
     """
     env = _base_git_env()
     if (not any(env.get(name) for name in SSH_ENV_VARS)
-            and not _ssh_command_configured()):
+            and not _ssh_command_configured(cwd)):
         env["GIT_SSH_COMMAND"] = DEFAULT_GIT_SSH_COMMAND
     if read_only:
         env["GIT_OPTIONAL_LOCKS"] = "0"
@@ -732,6 +774,6 @@ def run_git(args: Sequence[str], *, cwd: Path, timeout: float,
     Every command that hands back a file's bytes keeps the option.
     """
     return _run(args, cwd=cwd, timeout=timeout,
-                env=git_env(read_only=read_only),
+                env=git_env(read_only=read_only, cwd=cwd),
                 input_bytes=input_bytes, ok_codes=ok_codes,
                 literal_pathspecs=literal_pathspecs)
