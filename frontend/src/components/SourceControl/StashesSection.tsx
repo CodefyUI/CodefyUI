@@ -48,6 +48,13 @@ export function StashesSection() {
 
   // The count this list was last re-read for, so one disagreement asks once.
   const askedFor = useRef<number | null>(null);
+  // Whether that read is still out. `askedFor` only covers the renders where
+  // the count is UNCHANGED, and the window this fires in is exactly where it
+  // moves again: a stash write answers with a status first and the list a
+  // moment later, and a second stash pushed at the command line inside that
+  // moment opened a second concurrent GET for the same list. Same shape as
+  // the header's `remotesInFlight`.
+  const inFlight = useRef(false);
 
   /**
    * Read the list again whenever the status says it is the wrong length.
@@ -60,17 +67,44 @@ export function StashesSection() {
    * store. One read per disagreement: the answer either settles it or the
    * count moves again, and a re-read on every render would ask a server that
    * kept answering the old list once a frame.
+   *
+   * The in-flight guard does not swallow the question: a skipped ask leaves
+   * `askedFor` alone, so the next answer that changes `stashes` asks it again
+   * -- with the count it disagrees about NOW rather than the one the first
+   * read went out for. That next answer is the one after the read being
+   * waited on, not the read itself: the store's `set` reaches React before
+   * the promise's `finally` does, so the effect the answer runs can still see
+   * the flag. For an open section the next answer is at most one poll away
+   * (`refreshExpandedRefs` re-reads every open list), and it takes two stash
+   * writes landing inside one read to get there at all.
    */
   useEffect(() => {
     if (stashes === null || stashCount === null) return;
+    if (!open) {
+      // A collapsed section draws no rows at all, and the number beside its
+      // heading is the STATUS's own -- so a list that disagrees with it is
+      // not on screen to be wrong, and a read here would be a request for
+      // something nobody can see. Opening reads the list anyway
+      // (`setSectionOpen`), so the disagreement is recorded as asked: without
+      // that, the render the open produces would send a second read a moment
+      // behind the section's own.
+      askedFor.current = stashCount;
+      return;
+    }
     if (stashes.length === stashCount) {
       askedFor.current = null;
       return;
     }
     if (askedFor.current === stashCount) return;
+    // Before the stamp, not after: a read that is skipped here has not been
+    // asked, and the answer that is on its way is what runs this again.
+    if (inFlight.current) return;
     askedFor.current = stashCount;
-    void refreshRefs('stashes');
-  }, [refreshRefs, stashCount, stashes]);
+    inFlight.current = true;
+    void refreshRefs('stashes').finally(() => {
+      inFlight.current = false;
+    });
+  }, [open, refreshRefs, stashCount, stashes]);
 
   const askThenDrop = useCallback(
     async (stash: StashInfo) => {

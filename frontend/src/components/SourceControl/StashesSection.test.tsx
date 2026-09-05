@@ -171,6 +171,59 @@ describe('StashesSection: the rows', () => {
     expect(refreshRefs).toHaveBeenCalledTimes(1);
   });
 
+  it('sends one read while one is already out, and asks again after it lands', async () => {
+    // A stash write moves the two halves at different moments: the status the
+    // write answers with says 1 straight away, and the list is a second read.
+    // Every render in that window disagrees, and `askedFor` only covers the
+    // ones where the COUNT is unchanged -- a second stash pushed at the
+    // command line moves it again and opened a second concurrent GET.
+    let land: () => void = () => {};
+    const landed = new Promise<void>((resolve) => {
+      land = resolve;
+    });
+    refreshRefs.mockImplementation(async () => {
+      await landed;
+      // The answer to the FIRST question, which the second has already
+      // outrun -- the same shape as a slow read the store completes.
+      useGitStore.setState({ stashes: [stash()] });
+    });
+
+    useGitStore.setState({ stashes: [], status: status({ stash_count: 1 }) });
+    render(<StashesSection />);
+    await waitFor(() => expect(refreshRefs).toHaveBeenCalledTimes(1));
+
+    useGitStore.setState({ status: status({ stash_count: 2 }) });
+    // The count on the heading is the proof the render and its effect ran.
+    await waitFor(() => expect(within(section()).getByText('2')).toBeTruthy());
+    expect(refreshRefs).toHaveBeenCalledTimes(1);
+
+    // ...and the guard does not swallow the question. A skipped ask leaves
+    // `askedFor` alone, so the next answer that still disagrees asks it again
+    // -- the answer AFTER the one being waited on, because the store's own
+    // `set` reaches React before the promise's `finally` does. For an open
+    // section that is at most one poll away.
+    land();
+    await waitFor(() => expect(within(section()).getAllByRole('listitem')).toHaveLength(1));
+    useGitStore.setState({ stashes: [stash()] });
+    await waitFor(() => expect(refreshRefs).toHaveBeenCalledTimes(2));
+  });
+
+  it('reads nothing while the section is collapsed', async () => {
+    // A collapsed section draws no rows, and the count beside its heading is
+    // the STATUS's own -- so a list that disagrees with it is not on screen
+    // to be wrong. Opening reads the list anyway (`setSectionOpen`), which is
+    // the read that settles it.
+    useGitStore.setState({
+      sections: { branches: false, remotes: false, stashes: false },
+      stashes: [],
+      status: status({ stash_count: 2 }),
+    });
+    render(<StashesSection />);
+
+    await waitFor(() => expect(within(section()).getByText('2')).toBeTruthy());
+    expect(refreshRefs).not.toHaveBeenCalled();
+  });
+
   it('stops re-reading once the two agree again', async () => {
     useGitStore.setState({ stashes: [], status: status({ stash_count: 1 }) });
     render(<StashesSection />);
