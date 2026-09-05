@@ -35,27 +35,28 @@ powershell -ExecutionPolicy ByPass -c "irm https://raw.githubusercontent.com/Cod
 cdui start
 ```
 
-開啟 [http://localhost:8000](http://localhost:8000)。單一 uvicorn 程序會同時提供 API 與預編好的 React 前端。`cdui start` 預設在**背景**執行 —— 你可以關閉 terminal 而伺服器會繼續運作；用 `cdui status` 與 `cdui stop` 來管理它。加上 `--foreground`（`-f`）可改為前景執行，並以 `Ctrl+C` 停止。
+開啟 [http://localhost:8000](http://localhost:8000)。單一 uvicorn 行程會同時提供 API 與預編好的 React 前端。`cdui start` 預設在**背景**執行。關閉終端機後，伺服器仍會繼續執行；使用 `cdui status` 與 `cdui stop` 管理。加上 `--foreground`（`-f`）可改為前景執行，並以 `Ctrl+C` 停止。
 
 :::note
 本快速開始假設使用預設的 PyTorch 版本，它適用於所有平台（CPU / Apple Silicon MPS）。若需特定的 NVIDIA CUDA 版本、AMD ROCm，或想驗證 GPU 偵測，請參考 **[GPU 與裝置設定](./gpu-device)**。
 
-裝好之後想換版本，也不一定要開終端機：只要伺服器是用 `cdui start` 啟動的，套件中心（工具列 > 設定 > 選用套件包）裡的 **GPU PyTorch** 卡片就能幫你安裝對應的 wheel 並重新啟動伺服器，同時把同一行 `cdui install --gpu <choice>` 印在下面，讓你想自己執行時也有得選。詳見[讓伺服器重新啟動的安裝](/usage/optional-packs#讓伺服器重新啟動的安裝)。
+安裝後切換版本也不必使用終端機。伺服器若由 `cdui start` 啟動，套件中心（工具列 > 設定 > 選用套件）裡的 **GPU 版 PyTorch** 卡片可以安裝對應的 wheel 並重新啟動伺服器。卡片下方也會顯示等效的 `cdui install --gpu <choice>` 指令，供手動執行。詳見[讓伺服器重新啟動的安裝](/usage/optional-packs#讓伺服器重新啟動的安裝)。
 :::
 
 ## 安裝旗標與環境變數
 
-`install.sh`／`install.ps1` 與（首次安裝後的）`cdui install` 都接受同一組選項，可以用 CLI 旗標或預先設好的環境變數。stdin 是 TTY 時預設互動，否則走安全預設值。
+`install.sh` / `install.ps1` 只會讀取下列環境變數，並一律執行 `cdui install --yes`；它們不接受旗標，也不會顯示提示。安裝完成後，若要使用互動式選單或傳入旗標，請直接執行 `cdui install`。只有在終端機中執行，且旗標與環境變數都未決定選項時，才會顯示互動式選單；透過 pipe 或 CI 執行則採用安全預設值。
 
 | 旗標 | 環境變數 | 值 | 用途 |
 |------|----------|----|------|
-| `--gpu <choice>` | `CODEFYUI_GPU` | `auto` / `cu118` / `cu121` / `cu124` / `cu128` / `rocm6.1` / `rocm6.2` / `cpu` / `mps` / `skip` | 選擇 PyTorch wheel index。`auto` 透過 `nvidia-smi`／`rocm-smi`／Apple Silicon 自動偵測。`skip` 完全不裝 torch（進階）。 |
+| `--gpu <choice>` | `CODEFYUI_GPU` | `auto` / `cu118` / `cu121` / `cu124` / `cu126` / `cu128` / `rocm6.1` / `rocm6.2` / `cpu` / `mps` / `skip` | 選擇 PyTorch wheel index。`auto` 透過 `nvidia-smi`／`rocm-smi`／Apple Silicon 自動偵測。`skip` 完全不裝 torch（進階）。 |
 | `--dev` / `--no-dev` | `CODEFYUI_DEV` | `1` / `0` | 是否安裝 `[dev]` extra（pytest、httpx、httpx-ws）。`cdui test` 需要。一般使用者預設關閉，貢獻者開啟。 |
 | `--yes` | — | — | 全部用預設值，不互動（CI／headless）。 |
-| `--lang <code>` | `CODEFYUI_LANG` | `en` / `zh-TW` | 安裝程式提示文字語言。 |
+| `--lang <code>` | `CODEFYUI_LANG` | `en` / `zh`（環境變數也接受 `zh-TW`、`zh-HK`、`zh-CN`、`english`、`chinese`） | 旗標只對 `cdui install` 與 `cdui update` 有效；環境變數會設定每個 `cdui` 指令的輸出語言。 |
 | — | `CODEFYUI_DIR` | path | 安裝目錄（預設 `~/CodefyUI`）。 |
-| — | `CODEFYUI_RELEASE_TAG` | tag | 鎖定前端 bundle 為某個 release（預設 `latest`）。 |
+| — | `CODEFYUI_RELEASE_TAG` | tag | 把前端 bundle **與**後端 checkout 鎖定到同一個 release（預設 `latest`）。 |
 | — | `CODEFYUI_FORCE_BUILD` | `1` | 跳過下載 prebuilt dist，改在本地用 pnpm build（追蹤 `main`）。 |
+| — | `CODEFYUI_UV_INSTALL_TIMEOUT` | seconds | `PATH` 中找不到 `uv` 時，允許自動下載 `uv` 的時間（預設 `180` 秒；`0` = 不設上限）。 |
 
 ## 正式模式與開發者模式
 
@@ -75,13 +76,13 @@ cdui start
 curl http://127.0.0.1:8000/api/health
 ```
 
-這應該會回傳類似 `{"status":"ok","nodes_loaded":152,"presets_loaded":3}` 的內容（`nodes_loaded` 數量會隨每個版本增加 —— 確認非 0 即可）。
+這應該會回傳類似 `{"status":"ok","nodes_loaded":152,"presets_loaded":3}` 的內容（`nodes_loaded` 數量會隨每個版本增加，確認其為非零即可）。
 
 接著開啟前端，載入 **Train CNN on MNIST** 範例並點擊 **執行**。你應該會在下方面板看到訓練進度出現。
 
 ## 選用套件包
 
-上面裝出來的環境是刻意保持精簡的，所以某些課程需要的大型附加內容 —— `sentence-transformers`、各個嵌入模型（每個 90 MB 到 470 MB）、69 MB 的 GloVe 詞向量表 —— 都不在裡面；你可以在**套件中心**（工具列 > 設定 > 選用套件包）或用 `cdui packs install <id>` 安裝需要的那些。其他行為都不會改變：執行圖形時永遠不會自己下載套件包內容，所以缺少套件包的節點會停下來、回報是哪個套件包，而不是在執行途中硬拉半個 GB 下來。
+上面的安裝刻意保持精簡，因此不包含某些課程需要的大型附加內容，例如 `sentence-transformers`、各個嵌入模型（每個 90 MB 到 470 MB）與 69 MB 的 GloVe 詞向量表。你可以在**套件中心**（工具列 > 設定 > 選用套件）或用 `cdui packs install <id>` 安裝需要的項目。其他行為不變：執行圖形時不會自行下載套件包內容；缺少套件包的節點會停止並指出所需套件包，不會在執行途中下載數百 MB 的內容。
 
 型錄內容、檔案會放在哪裡，以及該挑哪一個嵌入模型，請見 **[選用套件包](/usage/optional-packs)**。
 

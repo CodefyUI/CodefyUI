@@ -58,9 +58,11 @@ Some nodes still opt out of caching entirely with `cacheable = False`, for four 
 
 The same opt-out covers nodes whose output escapes the cache key for other reasons — `GaussianNoise`, `DDPMSampler`, `BackwardOnce`, `DiffusionTrainingLoop`, and every node that owns weights (`SequentialModel`, `DiffusionUNet`, and every layer node: `Linear`, `Conv2d`, `LSTM` and the rest), whose parameters drift as training proceeds.
 
-For those weight-owning nodes, what a second **Run** does with the weights is your choice rather than the cache's: **Settings → Training Behavior → Persist weights between runs** (on by default) continues from where the last run finished, and **Reset all weights now** throws them away so the next run starts from a fresh initialisation. `SequentialModel` states which of the two it did in its **Log** tab every run, so a loss curve that starts unexpectedly low always has a written explanation.
+For nodes that own weights, **Settings → Training Behavior → Persist weights between runs** controls subsequent runs independently of output caching. It is on by default, so the next run continues from the previous run's final weights. **Reset all weights now** discards stored weights, so the next run initialises a new model. `SequentialModel` reports which action it took in the **Execution Log** on every run.
 
 Opting out **propagates downstream**: every node fed by one of these re-executes too, because a cache key records only the *keys* of upstream nodes, not their actual outputs. A cached downstream node would otherwise hand back a stale result computed from data that has since changed.
+
+Two Settings switches bypass the cache wholesale. With **Verbose internals** or **Capture gradients** on, nothing is served from cache and every node re-executes: a cached output carries no `__steps__` trace and no gradient-tracked tensors, so a hit could not produce what was asked for.
 
 ### What a preset or subgraph box reports
 
@@ -77,7 +79,7 @@ The `Cached` case is the one worth knowing about: a preset holding a `TrainingLo
 
 ## Reproducible runs (seed)
 
-By default a run draws its randomness from whatever entropy PyTorch picks, so two runs of the same graph give slightly different weights, a different shuffle order, and therefore a different loss curve. Set a **Random seed** in **Settings → Training** to make a run repeatable.
+By default a run draws its randomness from whatever entropy PyTorch picks, so two runs of the same graph give slightly different weights, a different shuffle order, and therefore a different loss curve. Set a **Random seed** in **Settings → Training Behavior** to make a run repeatable.
 
 With a seed set:
 
@@ -109,10 +111,13 @@ A seed fixes the *software's* randomness. Exact bitwise agreement is promised on
 
 Click **Stop** to cancel an in-flight run. **Stop is the only thing that cancels a run.**
 
-Closing the browser tab, navigating away, or losing the connection no longer stops anything: the run lives on the server, not in the socket. When you come back, the tab reconnects to the run it was watching, replays everything you missed into the results panel, and carries on following it live — so a long training job survives a reload, a laptop lid, or a flaky Wi-Fi hop.
+Closing the browser tab, navigating away, or losing the connection no longer stops anything: the run lives on the server, not in the socket. When you come back, the tab reconnects to the run it was watching, replays everything you missed into the results panel, and carries on following it live — so a long training job survives a reload, a laptop lid, or a flaky Wi-Fi hop. **Watch** in the [Runs panel](./run-queue#runs-panel) attaches the tab to any other run the server owns the same way.
 
 Cancelling is cooperative rather than immediate, because there is no safe way to interrupt arbitrary node code partway through. The long-running nodes check for it every batch, step or item — a training loop stops within one batch and writes an interrupt checkpoint on its way out — and every other node runs to the end of its current call, after which the run stops at the next node boundary. Either way it is recorded as `cancelled`.
 
 ## Beyond the browser
 
-You can run any saved graph from the command line without starting the server — see the **[CLI Graph Runner](./cli-runner)**.
+- **[`cdui run`](./run-queue#cdui-run)** submits a saved graph to the running server and follows it from the terminal; the run survives the terminal.
+- The **[CLI Graph Runner](./cli-runner)** executes a graph in-process with no server at all.
+- **Export as Python** ([Tabs & Persistence](./tabs-persistence#import--export)) writes a standalone program that delegates to the same node implementations. Secret parameters are blanked in the export; `--seed` defaults to the seed set on the canvas when the file was exported (`--no-seed` for fresh entropy); `--timeout` is soft — the node already running finishes and no further node starts.
+- **[TensorBoard](./data-augmentation#tensorboard)** — `TrainingLoop.tensorboard` writes event files under the run's artifact directory.

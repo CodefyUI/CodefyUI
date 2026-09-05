@@ -20,11 +20,12 @@ A visual, node-based deep learning pipeline builder. Design CNN, RNN, Transforme
 - **Partial Re-Execution** — Dirty node tracking: only re-runs changed nodes and their downstream dependencies
 - **Quick Node Search** — Double-click the canvas to open an instant search panel for adding nodes and presets
 - **Custom Node Manager** — GUI for uploading, enabling/disabling, and deleting custom nodes
+- **Plugin Center** — Install teaching packs and GitHub plugins from the sidebar's **Custom & Plugins** tab or **Settings**; new nodes appear without a reload
 - **Model File Management** — Upload, list, and delete model weight files (.pt, .pth, .safetensors, .ckpt, .bin) via REST API
 - **CLI Graph Runner** — Execute graph.json directly from the command line with `run_graph.py`
-- **Results Panel** — Tabbed panel (Execution Log / Training), resizable, with live loss chart
+- **Results Panel** — Tabbed panel (Execution Log / Training / Runs), resizable and collapsible, with live loss chart
 - **i18n** — English and 繁體中文, with responsive `rem`-based font sizing
-- **Persistence** — Auto-saves all tabs to `localStorage`; import/export graph JSON files
+- **Persistence** — Auto-saves all tabs in the browser (IndexedDB, with a `localStorage` fallback); import/export graph JSON files
 - **Dark Theme** — Fully styled dark UI with color-coded categories
 
 ## Quick Start
@@ -65,37 +66,47 @@ Open [http://localhost:8000](http://localhost:8000). The single uvicorn process 
 | `cdui plugin list` | List installed plugin packs |
 | `cdui plugin uninstall <id>` | Remove an installed plugin pack |
 
+Not shown: `cdui run` (below), the `cdui packs`, `cdui cache` and `cdui project` groups, and the rest of `cdui plugin` — see [CLI Commands](https://docs.codefyui.com/getting-started/cli-commands).
+
 > `cdui` is a thin launcher (`cdui.cmd` on Windows) placed at `~/.local/bin/cdui` by the installer. If you didn't restart your terminal yet, invoke the absolute path: `~/CodefyUI/cdui start`. `python scripts/dev.py <cmd>` still works too — `dev.py` re-execs into the venv's Python automatically.
 
 **Contributors:** if you want hot-reload (`cdui dev`), pass `CODEFYUI_FORCE_BUILD=1` to the installer or install Node 24+ and pnpm separately. `CODEFYUI_FORCE_BUILD=1` also tracks the bleeding-edge `main` branch (building the frontend from source so it matches the backend), whereas the default prebuilt path pins to the latest tagged release. Pin a specific release with `CODEFYUI_RELEASE_TAG=<tag>`.
 
 #### `cdui install` flags & environment variables
 
-Both `install.sh`/`install.ps1` and `cdui install` (after first install) accept the same set of choices, either as CLI flags or pre-set environment variables. Defaults are interactive when stdin is a TTY, and the safe choices when not.
+`install.sh` / `install.ps1` read only the environment variables below and always run `cdui install --yes`. Run `cdui install` again afterwards for the interactive menu (offered when stdin is a TTY and no flag or env var decides), or pass the flags directly.
 
 | Flag | Env var | Values | Purpose |
 |------|---------|--------|---------|
-| `--gpu <choice>` | `CODEFYUI_GPU` | `auto` / `cu118` / `cu121` / `cu124` / `cu128` / `rocm6.1` / `rocm6.2` / `cpu` / `mps` / `skip` | Select PyTorch wheel index. `auto` detects via `nvidia-smi` / `rocm-smi` / Apple Silicon. `skip` installs no torch (advanced — for users with a custom torch already in the venv). |
+| `--gpu <choice>` | `CODEFYUI_GPU` | `auto` / `cu118` / `cu121` / `cu124` / `cu126` / `cu128` / `rocm6.1` / `rocm6.2` / `cpu` / `mps` / `skip` | Select PyTorch wheel index. `auto` detects via `nvidia-smi` / `rocm-smi` / Apple Silicon. `skip` installs no torch (advanced — for users with a custom torch already in the venv). |
 | `--dev` / `--no-dev` | `CODEFYUI_DEV` | `1` / `0` | Install the `[dev]` extra (pytest, httpx, httpx-ws). Required for `cdui test`. Default off for end users, on for contributors. |
 | `--yes` | — | — | Accept all defaults non-interactively (CI / headless). |
-| `--lang <code>` | `CODEFYUI_LANG` | `en` / `zh-TW` | Localise the installer prompts. |
+| `--lang <code>` | `CODEFYUI_LANG` | `en` / `zh` (the env var also accepts `zh-TW`) | The flag localises the `cdui install` / `cdui update` run it is passed to; the env var sets the language of every `cdui` command. |
 | — | `CODEFYUI_DIR` | path | Install directory (default: `~/CodefyUI`). |
-| — | `CODEFYUI_RELEASE_TAG` | tag | Pin the frontend bundle to a specific release (default: `latest`). |
+| — | `CODEFYUI_RELEASE_TAG` | tag | Pin the frontend bundle and the backend checkout to a specific release (default: `latest`). |
 | — | `CODEFYUI_FORCE_BUILD` | `1` | Skip the prebuilt-dist download and build locally with pnpm. |
 
-> This quick start assumes an **NVIDIA GPU with CUDA 12.4**. For CPU, Apple Silicon, AMD, or detailed troubleshooting, see the [GPU & Device Setup guide](https://docs.codefyui.com/getting-started/gpu-device).
+> No GPU flag is needed: the installer auto-detects the GPU (`auto` picks a CUDA wheel from your NVIDIA driver, MPS on Apple Silicon, ROCm when `rocm-smi` is present, CPU otherwise), and the default build works on every platform. For a specific build or troubleshooting, see the [GPU & Device Setup guide](https://docs.codefyui.com/getting-started/gpu-device).
 >
 > Switching build later needs no terminal: on a server started with `cdui start`, the **GPU PyTorch** card in the Package Center installs the matching wheel and restarts the server for you, keeping the `cdui install --gpu` line on the card for when you would rather run it yourself. See [Installs that restart the server](https://docs.codefyui.com/usage/optional-packs#installs-that-restart-the-server).
 
 ### CLI Execution
 
-Run a graph directly from the command line without starting the server:
+Submit a graph to the running server's queue — the run survives your terminal and shows up in the Runs panel:
+
+```bash
+cdui run examples/Usage_Example/CNN-MNIST/TrainCNN-MNIST/graph.json
+```
+
+Or run one directly, without the server:
 
 ```bash
 cd backend
 python run_graph.py ../examples/Usage_Example/CNN-MNIST/TrainCNN-MNIST/graph.json
 python run_graph.py ../examples/Model_Architecture/ResNet-SkipConnection-CNN/graph.json --validate-only
 ```
+
+Flags and exit codes: [Run Queue](https://docs.codefyui.com/usage/run-queue#cdui-run) and [CLI Commands](https://docs.codefyui.com/getting-started/cli-commands).
 
 ## Architecture
 
@@ -139,8 +150,16 @@ Pre-built example workflows organized in `examples/`:
 | Category | Examples |
 |----------|----------|
 | **Model Architecture** | ResNet, ConvNeXt, EfficientNet, UNet, ViT, SwinTransformer, BERT, GPT, LLaMA, DiT, LSTM TimeSeries, BiGRU SpeechRecognition, Seq2Seq Attention, DQN Atari, PPO Robotics |
-| **Usage Example** | CNN-MNIST Training, CNN-MNIST Inference, GPT-Mini Training, ResNet-CIFAR10 Training, [ResNet-18 / CIFAR-10 Baseline](examples/Usage_Example/ResNet18-CIFAR10-Baseline/) (measured 95.48%, bitwise reproducible) |
+| **Usage Example** | CNN-MNIST Training, CNN-MNIST Inference, GPT-Mini Training, ResNet-CIFAR10 Training, [ResNet-18 / CIFAR-10 Baseline](examples/Usage_Example/ResNet18-CIFAR10-Baseline/) (measured 95.48%, bitwise reproducible), Api-Function (graph-as-a-function demo) |
 | **LLM** | Word Embedding Analogy (`king − man + woman ≈ queen` with the offline `demo-16d` backend), Sentence Similarity (zh-TW), Train a Causal LM on TinyStories, RAG fully local, RAG with a chat API |
+| **Classical** | Iris with sklearn KNN, Tabular Iris Pipeline |
+| **Diffusion** | Forward Process, Toy Sampling, Mini U-Net (Compact) |
+| **RL** | RLHF building blocks: reward + KL |
+| **RNN** | RNN One Step |
+| **Transformer** | Mixture of Experts: top-k routing |
+| **VLA** | [Train a VLA on PushWorld](examples/VLA/TrainVLA-PushWorld/) (CUDA GPU, about an hour) |
+
+Requirements and descriptions for each: [Examples Gallery](https://docs.codefyui.com/usage/examples-gallery).
 
 ## Teaching Inspector
 
@@ -148,36 +167,39 @@ CodefyUI can be used as an interactive lesson — students see the exact tensor 
 
 1. Drag a **TensorInput** node onto the canvas (Data category). Set `value_mode: explicit` and fill the inline grid with the numbers you want the pipeline to see.
 2. Wire it through any chain of tensor-op nodes (e.g. `Reshape → Softmax → Print`).
-3. **Drag a `Start` node onto the canvas and connect its trigger output (the diamond handle on the right side of the Start node) to the first node you want executed — typically the `TensorInput`.** Without a Start → first-node trigger edge the graph is a draft and `Run` will reject it with a *"No start node defined"* toast. Only nodes reachable from a Start are executed.
-4. Open the toolbar **Settings** popover and switch **Record outputs** ON, then click **Run**. Every completed node's full output is captured in server memory, keyed by the run.
+3. **Drag a `Start` node onto the canvas and connect its trigger output (the diamond handle on the right side of the Start node) to the first node you want executed — typically the `TensorInput`.** Without a Start → first-node trigger edge the graph is a draft and `Run` rejects it with an error toast: *"No entry points defined. Drag a Start node from the palette and connect it to the node you want to start execution from."* The executable set includes each triggered node, its downstream data flow, any upstream nodes that feed data into that set, and internal roots in any reached preset or subgraph container.
+4. **Record node outputs** is on by default — check it is still on under **Settings → Recording & Inspection**, then click **Run**. Every completed node's full output is captured in server memory, keyed by the run.
 5. Click any node — the right-hand **Inspector** panel fetches that node's input and output, showing shape, dtype, min/max/mean and the actual values stacked top-to-bottom. Cells that changed are heat-coloured.
-6. Shift-select two nodes and use **Compare Segment** (also under Settings → Inspection) to focus on just the head-input and tail-output; the canvas wraps them in a light-orange bubble with **HEAD** / **TAIL** badges so the scope is obvious.
-7. Switch **Record outputs** OFF before a heavy training run if you don't want each epoch captured — previously captured runs stay fetchable until the server restarts.
+6. Shift-select two nodes and use **Compare segment** (also under Settings → Recording & Inspection) to focus on just the head-input and tail-output; the canvas wraps them in a light-orange bubble with **HEAD** / **TAIL** badges so the scope is obvious.
+7. Switch **Record node outputs** OFF before a heavy training run if you don't want each epoch captured — earlier captures remain fetchable until their whole run is evicted, deleted, or the server restarts.
 
-Captured data is per-session RAM (LRU, last 20 runs). Segment markers are saved with the graph JSON.
+Captured data lives in server-wide process memory, not browser-session memory. The store keeps at most 20 runs and, by default, 2 GiB; reaching either limit evicts whole oldest runs. Deleting a run or its captured outputs removes that run's captures, and restarting the server clears the store. Segment markers are saved with the graph JSON.
 
 ### Settings popover toggles
 
-The toolbar **Settings** popover groups every per-tab teaching/training switch in one place — same idea as VS Code's Settings UI:
+The toolbar **Settings** popover groups every per-tab switch by section — same idea as VS Code's Settings UI:
 
-| Toggle | What it does |
-|--------|---|
-| **Record outputs** | Capture each completed node's full output for the Inspector. Off by default for heavy training runs. |
-| **Verbose mode** | Backend records intermediate algorithmic steps (attention scores, softmax temperatures, etc.) alongside outputs — feeds the Inspector "Steps" tab. |
-| **Compare Segment** | Wraps two shift-selected nodes in a HEAD/TAIL bubble so the Inspector shows only that subgraph's boundaries. |
-| **Persist weights between runs** | Keep `Conv2d`/`Linear`/`Attention` weights across Run clicks (so the model actually learns). When off, every run reinitialises. |
-| **Reset all weights now** | Drop every cached weight for this tab; next Run starts fresh. |
-| **Capture gradients** | Run forward + `.backward()` and store each layer's gradient for the Inspector "Backward" tab. |
-| **Auto-synthesize loss** | When the graph has no `Loss`/`BackwardOnce` node, synthesize one so `.backward()` can run. |
-| **Grid snap** | Snap dragged nodes to the canvas grid. |
-| **Show node tooltips** | Reveal the description card when hovering nodes on the canvas. |
-| **Node category mode** | `Basic` shows only essential categories in the sidebar; `All` shows every category. |
+| Section | Rows |
+|---------|------|
+| **Execution** | **Compute device** — CPU by default; nodes set to `auto` follow it. |
+| **LLM Providers** | **ChatGPT Codex account** — Sign in / Sign out / Refresh for the Codex provider in `LLMChat`. |
+| **Optional packs** | **Package Center** — Open; shows how many packs are installed. |
+| **Plugins** | **Plugin Center** — Open; shows how many plugins are installed and available. |
+| **Recording & Inspection** | **Record node outputs** (on by default; turn it off before a heavy training run), **Verbose internals** (algorithm internals such as attention scores, for the Inspector's Steps tab), **Compare segment** (Create segment with two nodes selected / Clear active). |
+| **Training Behavior** | **Persist weights between runs** (on by default — off means every run reinitialises), **Reset all weights now**, **Capture gradients** (forward + `.backward()`, for the Inspector's Backward tab), **Auto-synthesize loss** (when the graph has no `Loss` / `BackwardOnce` node), **Random seed**, **Deterministic algorithms**. |
+| **Editor** | **Grid snap**, **Show node tooltips**, **Node category mode** (Basic / All), **Connection style** (Circuit, the default / Curve). |
+| **This Server** | Version, nodes and presets loaded, and cache memory usage, with a Refresh button. |
 
 ## Plugin Packs
 
 Educational ("Edu") nodes ship as installable plugin packs, organised **by
 direction** so each maps onto a hands-on textbook module and installs
-cumulatively as you progress:
+cumulatively as you progress. They also install from inside the editor: the
+**Plugin Center** (sidebar **Custom & Plugins** tab → **Plugin Center...**, or
+**Settings → Plugins**) takes a catalog name, `owner/repo[@ref]` or a GitHub
+URL and loads the new nodes without a reload — see
+[Plugin Center](https://docs.codefyui.com/advanced/plugins#plugin-center). From
+a terminal:
 
 ```bash
 cdui plugin install foundations deep rl   # full textbook companion
@@ -207,8 +229,8 @@ Each Edu node decomposes a single lesson concept into a chain of named steps
 that the Teaching Inspector renders one row at a time — `Edu-ColumnStats`
 shows the population-std formula as `sum → divide → deviations² → variance
 → sqrt`; `Edu-PolicyGradient` exposes `softmax → gather → log → baseline →
-loss`; `Edu-Patchify` makes `unfold → permute → flatten` visible. Switch
-**Verbose mode** in the toolbar Settings popover to capture them.
+loss`; `Edu-Patchify` makes `unfold → permute → flatten` visible. Switch on
+**Verbose internals** (Settings → Recording & Inspection) to capture them.
 
 ### Writing your own plugin
 
@@ -216,7 +238,7 @@ Fork the [**Official Plugin Template**](https://github.com/CodefyUI/CodefyUI-Plu
 
 ```bash
 # Install the template itself to see the pattern live
-cdui plugin install CodefyUI/CodefyUI-Plugin-Official
+cdui plugin install official-template
 
 # After forking
 cdui plugin install your-username/your-fork
@@ -252,35 +274,41 @@ class MyNode(BaseNode):
         return {"output": inputs["input"]}
 ```
 
-Hot-reload via `POST /api/nodes/reload` or the **Reload Nodes** button in the toolbar. Or use the **Custom Node Manager** GUI to upload, enable/disable, and delete custom nodes.
+Hot-reload via `POST /api/nodes/reload` or the **Reload Nodes** button in the toolbar — both re-discover every node and preset source (custom nodes and plugins are re-imported; built-ins are re-registered). Or use the **Custom Node Manager** GUI to upload, enable/disable, and delete custom nodes.
 
 ## Key Bindings
 
+Chords are ignored while typing in an input, textarea or note.
+
 | Action | Key |
 |--------|-----|
-| Delete node | `Delete` |
-| Multi-select | `Shift` + click |
+| Undo / Redo | `Ctrl/Cmd` + `Z` / `Ctrl/Cmd` + `Shift` + `Z` (or `Ctrl/Cmd` + `Y`) |
+| Copy / Paste nodes | `Ctrl/Cmd` + `C` / `Ctrl/Cmd` + `V` |
+| Delete selected | `Delete` |
+| Multi-select / Box-select | `Shift` + click / `Shift` + drag (a plain drag pans) |
 | Quick add node | Double-click canvas |
-| Rename node | Right-click → Rename |
-| Duplicate node | Right-click → Duplicate |
-| Undo | `Ctrl/Cmd` + `Z` |
-| Redo | `Ctrl/Cmd` + `Shift` + `Z` / `Ctrl/Cmd` + `Y` |
-| Copy nodes | `Ctrl/Cmd` + `C` |
-| Paste nodes | `Ctrl/Cmd` + `V` |
-| Auto Layout | `Shift` + `L` |
+| Open node details | `Enter` (one node selected) or double-click a node |
+| Bypass selected node(s) | `Ctrl/Cmd` + `B` (with a bypassable node selected) |
+| Collapse / expand sidebar | `Ctrl/Cmd` + `B` (nothing bypassable selected) / `Ctrl/Cmd` + `Shift` + `B` (always) |
+| Auto Layout (last-used mode) | `Shift` + `L` |
+| Save graph (project mode only) | `Ctrl/Cmd` + `S` |
+| Rename / Duplicate node | Right-click → Rename / Duplicate |
 | Show shortcuts | `?` |
+
+Full list: [Key Bindings](https://docs.codefyui.com/usage/keybindings).
 
 ## API Endpoints
 
+The core routes. Most mutating requests under `/api/` need the `X-CodefyUI-Token` header; published-app routes use their own rules, including API-key-only `POST /api/apps/{slug}/invoke`. Everything else — the run queue, sweeps, published apps and API keys, packs and the Plugin Center, files and media — and the full authentication matrix are in the [API reference](https://docs.codefyui.com/advanced/api-reference).
+
 | Endpoint | Method | Description |
 |----------|--------|-------------|
-| `/api/health` | GET | Health probe — returns `nodes_loaded`, `presets_loaded` |
+| `/api/health` | GET | Health probe — `status`, `version`, `boot_id`, `nodes_loaded`, `presets_loaded`, `caches` (plus `project` in project mode) |
 | `/api/nodes` | GET | List all node definitions |
 | `/api/nodes/{node_name}` | GET | Get a single node definition |
-| `/api/nodes/reload` | POST | Hot-reload all built-in and custom nodes |
-| `/api/presets` | GET | List preset definitions |
-| `/api/presets/{name}` | GET | Get a single preset definition |
-| `/api/presets/create` | POST | Create a new preset from selected nodes |
+| `/api/nodes/reload` | POST | Re-discover every node and preset source (custom nodes and plugins re-imported, built-ins re-registered); same as `/api/plugins/reload`; returns the counts |
+| `/api/presets` | GET | List preset definitions (`/{name}` returns one) |
+| `/api/presets/create` | POST | Create a preset from nodes + edges |
 | `/api/graph/validate` | POST | Validate a graph |
 | `/api/graph/save` | POST | Save a graph |
 | `/api/graph/load/{name}` | GET | Load a saved graph |
@@ -288,29 +316,13 @@ Hot-reload via `POST /api/nodes/reload` or the **Reload Nodes** button in the to
 | `/api/graph/export` | POST | Export a single-file headless Python runner (CodefyUI backend environment required) |
 | `/api/examples/list` | GET | List example graphs |
 | `/api/examples/load` | GET | Load an example graph |
-| `/api/custom-nodes` | GET | List custom nodes |
-| `/api/custom-nodes/upload` | POST | Upload a custom node |
-| `/api/custom-nodes/toggle` | POST | Enable/disable a custom node |
-| `/api/custom-nodes/{filename}` | DELETE | Delete a custom node |
-| `/api/plugins` | GET | List installed plugin packs |
-| `/api/plugins/{id}` | GET | Get a plugin's manifest + README |
-| `/api/plugins/reload` | POST | Hot-reload all node and preset sources |
-| `/api/models` | GET | List uploaded model files |
-| `/api/models/upload` | POST | Upload a model weight file |
-| `/api/models/download/{filename}` | GET | Download a model weight file (supports nested paths) |
-| `/api/models/{filename}` | DELETE | Delete a model file |
-| `/api/images` | GET | List uploaded image files |
-| `/api/images/upload` | POST | Upload an image file |
-| `/api/images/download/{filename}` | GET | Download an image file |
-| `/api/images/{filename}` | DELETE | Delete an image file |
-| `/api/execution/outputs/{run_id}` | GET | List ports captured for a run |
-| `/api/execution/outputs/{run_id}` | DELETE | Clear a captured run |
+| `/api/custom-nodes` | GET | List custom nodes (`/upload`, `/toggle` and `DELETE /{filename}` manage them) |
+| `/api/plugins` | GET | List installed plugin packs (`/{id}` returns one plugin's manifest + README) |
+| `/api/models` | GET | List uploaded model files (`/upload`, `/download/{filename}`, `DELETE /{filename}`) |
+| `/api/images` | GET | List uploaded image files (same sub-routes as models) |
+| `/api/execution/outputs/{run_id}` | GET | List ports captured for a run (`DELETE` clears it) |
 | `/api/execution/outputs/{run_id}/{node_id}/{port}` | GET | Fetch a captured tensor (supports `?slice=0,:,:`) |
-| `/api/execution/outputs/{run_id}/{node_id}/__steps_index` | GET | Step-trace metadata for a node (Inspector → Steps tab) |
-| `/api/execution/outputs/{run_id}/{node_id}/__grad_index` | GET | Captured gradient metadata (Inspector → Backward tab) |
-| `/api/execution/state/reset` | POST | Reset persisted layer weights (per-node or per-graph) |
-| `/api/execution/state/list` | GET | List how many modules are persisted (diagnostic) |
-| `/ws/execution` | WebSocket | Real-time graph execution (accepts `run_id`, `record_outputs`) |
+| `/ws/execution` | WebSocket | Attach/subscribe view of a run — client actions `execute`, `attach` / `detach`, `cancel`, `clear_cache` (`run_id` goes with `attach` and `cancel`); closing the socket never cancels a run |
 
 ## Tests
 

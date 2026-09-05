@@ -14,7 +14,7 @@ description: Freeze a saved graph as a versioned app behind a stable, API-key-pr
 
 Canvas edits touch only the saved graph file; invokes read only the stored snapshot -- editing the canvas can never change a published app until you re-publish.
 
-All management calls below use the editor session token (`X-CodefyUI-Token`, obtained exactly as on the [Graph as a Function](./graph-as-a-function) page). On Windows use `curl.exe` and pass bodies as files (`--data "@payload.json"`), never inline JSON.
+All management calls below use the editor session token (`X-CodefyUI-Token`, obtained exactly as on the [Graph as a Function](./graph-as-a-function#2-getting-the-token-for-external-scripts) page). On Windows use `curl.exe` and pass bodies as files (`--data "@payload.json"`), never inline JSON.
 
 ## 1. Publish lifecycle
 
@@ -39,9 +39,16 @@ body: {"graph": "<saved name>", "note": "optional", "create": false}
 
 ```powershell
 # payload.json: {"graph": "my-classifier", "create": true, "note": "first cut"}
-$token = Get-Content "$env:LOCALAPPDATA\codefyui\session.token"
+$token = Get-Content "$HOME\CodefyUI\.codefyui_dev\session.token"
 curl.exe -s -X POST "http://127.0.0.1:8000/api/apps/classifier/publish" `
   -H "X-CodefyUI-Token: $token" -H "Content-Type: application/json" `
+  --data "@payload.json"
+```
+
+```bash
+curl -s -X POST "http://127.0.0.1:8000/api/apps/classifier/publish" \
+  -H "X-CodefyUI-Token: $(cat ~/CodefyUI/.codefyui_dev/session.token)" \
+  -H "Content-Type: application/json" \
   --data "@payload.json"
 ```
 
@@ -122,9 +129,9 @@ GET /api/apps/{slug}/runs?limit=50&before=<created_at>&before_id=<run_id>   -- n
 GET /api/apps/{slug}/runs/{run_id}                                         -- the full row incl. inputs/outputs/node_timings
 ```
 
-`before` and `before_id` are the `created_at` and the `run_id` of the last row of the previous page. Together they name one row in the newest-first ordering, so a page boundary that falls inside a group of runs recorded in the same timestamp tick resumes at the right place. Sending only `before` is still accepted for clients written against the earlier contract, and keeps its original meaning: rows strictly older than that timestamp, which skips any run sharing it.
+`before` and `before_id` are the `created_at` and the `run_id` of the last row of the previous page. Together they name one row in the newest-first ordering, so a page boundary that falls inside a group of runs recorded in the same timestamp tick resumes at the right place. Sending only `before` is still accepted for clients written against the earlier contract, and keeps its original meaning: rows strictly older than that timestamp, which skips any run sharing it. Sending only `before_id` is 422 `incomplete_cursor`.
 
-Reads accept EITHER a valid API key or the editor session token (the editor UI reads runs without ever holding an API key), and reject requests with neither.
+Reads accept EITHER a valid API key or the editor session token (the editor UI reads runs without ever holding an API key), and reject requests with neither (401, plain `{"detail": ...}`). An unknown slug is 404 `app_not_found` on both routes; an unknown `run_id` is 404 `run_not_found`.
 
 Stored inputs/outputs are per-field capped at `RUN_IO_CAP_BYTES` (default 64 KB; base64 images are self-limiting). Fields that are not stored stay parseable via pinned marker objects:
 
@@ -150,13 +157,15 @@ cdui start --host 192.168.1.20             # one concrete interface
 
 The Host-header whitelist follows the bind automatically (a concrete LAN IP is whitelisted; a `0.0.0.0` bind whitelists each local interface IP), extra names can be added via `CODEFYUI_EXTRA_ALLOWED_HOSTS="mybox:8000,192.168.1.20:8000"`, and the effective whitelist plus reachable URLs are printed at startup. `cdui status` and `cdui stop` report the real address. `cdui dev` remains loopback-only by design.
 
+If you launch uvicorn yourself instead of `cdui start`, also export `CODEFYUI_HOST` and `CODEFYUI_PORT` to the real bind: the server never inspects its socket, and those two values are what the Host whitelist and the loopback-only pack and plugin install gates read -- see [Deployment](./deployment).
+
 Understand what a LAN bind exposes -- plainly:
 
 - Binding a LAN address serves the FULL editor, and `GET /api/auth/bootstrap` hands out the session token to any allowed-Host request. **Anyone who can reach the port controls the instance; use only on trusted networks.**
 - API keys on the published surface are therefore attribution and off-box script hygiene, NOT LAN access control.
 - Transport is plain HTTP -- no TLS in v1.
 - CORS settings change nothing about this: the exposure is same-origin, and the `Authorization` CORS header exists only so future cross-origin JS callers can be preflighted -- it is not a mitigation.
-- Editor-scoped LAN hardening (loopback-gated bootstrap; published-surface-only on non-loopback Hosts) is a named follow-up, not in v1.
+- LAN access control is **not planned** (issue #247, closed 2026-08-30): the server does not gate the editor by network, so a shared server is the reverse-proxy setup below, not a bind.
 
 The credentials half of the same story is [Shared Instances](./shared-instances): an instance has ONE identity, so the ChatGPT sign-in, the LLM keys in `.env` and the Kaggle credentials are shared by everyone who can reach the port, with no record of who spent what.
 

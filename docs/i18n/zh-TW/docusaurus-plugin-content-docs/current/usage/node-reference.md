@@ -9,7 +9,7 @@ description: 所有內建節點 — 152 個節點涵蓋 16 大類別，從 CNN �
 CodefyUI 內建 **152 個節點**，涵蓋 **16 大類別**。已安裝的 [外掛包](/advanced/plugins) 與你自己的 [自訂節點](/advanced/custom-nodes) 會再加入更多。
 
 :::tip
-這份清單在撰寫當下是準確的來源依據，但後端才是權威：即時的節點面板與 `GET /api/nodes` 永遠精確反映你的安裝實際有哪些節點。使用應用程式內的搜尋（在畫布上雙擊）可以快速找到節點。
+此表反映目前版本，但後端才是權威來源。請查看即時節點面板或 `GET /api/nodes`，確認目前安裝可用的節點。雙擊畫布可搜尋節點。
 :::
 
 | 類別 | 節點 | 數量 |
@@ -33,18 +33,22 @@ CodefyUI 內建 **152 個節點**，涵蓋 **16 大類別**。已安裝的 [外�
 
 ## 重點節點
 
-- **`Start`**（控制）— 執行的進入點。每個可執行的圖都需要一個；見 [你的第一個圖](./first-graph)。
-- **`TensorInput`**（資料）— 一個內嵌格子編輯器，用來手動把明確指定的張量餵進管線；是 [教學檢視器](./teaching-inspector) 範例的骨幹。
-- **變換鏈**（資料）— 九個可以互相串接、組出 `transforms.Compose` 的節點：`ResizeTransform`（縮放成正方形）、`ToTensorTransform`（PIL 影像轉成 `[0, 1]` 張量）、`NormalizeTransform`（每個通道做正規化，並內建預設組合）、`RandomCrop`、`RandomHorizontalFlip`、`RandomRotation`、`ColorJitter` 與 `RandAugment`（做資料增強的步驟），以及 `ComposeTransform`（合併兩條分開建立的鏈）。參數與順序規則見[資料與資料增強](./data-augmentation)。
-- **`ImageFolderDataset`**（資料）— 依 torchvision `ImageFolder` 預期的結構，從「一個類別一個資料夾」載入你自己的影像。
-- **`TrainingLoop`**（訓練）— 驅動訓練，並在結果面板發出即時 loss 圖表。它的進階區塊放著記憶體相關的開關（`precision`、`accumulate_steps`），詳見[訓練記憶體](/advanced/training-memory)。
-- **`EmbeddingScatter`**（LLM）— 把 embedding 投影到 2D（PCA / t-SNE），畫成可縮放的散佈圖。
-- **`AttentionHeatmap`**（LLM）— 把 attention 矩陣渲染成影像。
-- **需要套件包的 backend**（LLM）— `WordVector` 的 `glove-50d` 與句子編碼器選項，以及整個 `TextEmbedding`，讀的都是套件中心下載好的模型；缺少下載的選項會變灰，而執行本身永遠不會去下載。每個套件包要花多少空間、檔案放在哪裡、該挑哪一個編碼器：見[選用套件包](./optional-packs)。
-- **語言模型鏈**（LLM）— 七個節點，讓你直接在畫布上從零開始預訓練一個 GPT 式的 decoder：`TextCorpusDataset`（從 Hugging Face Hub 或本機 `.txt` 讀入原始文字列）→ `LMTokenizedDataset`（把它們打包成固定長度的下一個 token 預測區塊）→ `DataLoader` → `TrainingLoop`，模型用 `CausalLMModel`、損失函數用 `LMCrossEntropyLoss`，並由 `LMTokenizer` 提供同一個 tokenizer 物件給每個需要它的節點。訓練完成後，`PerplexityEvaluate` 在保留下來的驗證集上評分，`TextGenerate` 則從訓練好的權重採樣文字。`CausalLMModel` 的預設值描述的是一個 203,668,480 參數的模型；把 `d_model` 與 `n_layers` 調小，就能得到一堂課內筆電也訓練得完的規模。**Train a Causal LM on TinyStories** 範例把整條鏈都接好了 — 見[範例集](./examples-gallery)。
-- **RAG 鏈**（LLM）— 七個節點，讓答案來自你自己的文件，而不是模型的記憶：`DocumentLoader`（資料夾裡的每一個 `.md` 與 `.txt`，各自變成 `{text, source}`）→ `TextChunker`（切成小到可以嵌入的片段，每一塊都帶著來源與字元位移，所以引用是可以驗證的）→ `TextEmbedding` → `VectorStore`（一個 `[N, D]` 矩陣，切塊文字就放在旁邊，一次矩陣相乘就搜完）→ `Retriever`（最接近的 `top_k` 個切塊，附上每一個的分數）→ `PromptBuilder`（把切塊與問題放進一個「只准根據這些內容回答」的範本）→ `HFTextGenerate`（Qwen2.5-0.5B-Instruct，在本機跑，CPU 上雖慢但可用），或改用 `LLMChat` 把同一份提示詞送給 Ollama 或雲端供應商。七個裡只有兩個需要下載：`TextEmbedding` 需要 `sentence-embeddings` 套件包，`HFTextGenerate` 需要 `rag` 套件包。**RAG, fully local** 與 **RAG with a chat API** 這兩個範例把兩種版本都接好了 — 見[範例集](./examples-gallery)與[選用套件包](./optional-packs)。
-- **`ModelSaver` / `ModelLoader`**（IO）— 寫出與讀回模型檔。兩者都有 `state_dict` 模式（只存張量；預設值，也是唯一對檔案沒有附加條件的模式）與 `full_model` 模式（pickle 過的模組本身，在受限解序列化器下讀取，而該解序列化器只接受 torch 與 CodefyUI 自己的層類別、以及 torch 的 transformer 層會存下的那兩個啟動函式，其餘一律拒絕）。該選哪一個、以及一個 `full_model` 檔要能載入需要什麼條件：見[儲存與載入模型](./model-files)。
-- **`Switch`**（資料流）— 條件式路由，讓只有一條分支會執行。
+- **`Start`**（控制）— 定義執行進入點。每個可執行的圖都需要一個；請參閱[你的第一個圖](./first-graph)。
+- **`TensorInput`**（資料）— 提供內嵌格狀編輯器，用來輸入明確的張量值。[教學檢視器](./teaching-inspector)範例會以此節點作為輸入。
+- **變換鏈**（資料）— 九個節點會組成 `transforms.Compose`：`ResizeTransform` 將圖片縮放為正方形；`ToTensorTransform` 將 PIL 圖片轉為 `[0, 1]` 張量；`NormalizeTransform` 套用逐通道正規化並提供預設組合；`RandomCrop`、`RandomHorizontalFlip`、`RandomRotation`、`ColorJitter` 與 `RandAugment` 套用資料增強；`ComposeTransform` 則合併兩條分別建構的鏈。參數與順序規則請參閱[資料與資料增強](./data-augmentation)。
+- **`ImageFolderDataset`**（資料）— 依 torchvision `ImageFolder` 預期的目錄結構，從每個類別各自的目錄載入圖片。
+- **`TrainingLoop`**（訓練）— 執行訓練，並將即時 loss 圖表傳至結果面板。其**進階**區段包含記憶體控制項 `precision` 與 `accumulate_steps`；請參閱[訓練記憶體](/advanced/training-memory)。
+- **`SequentialModel`**（訓練）— 以單一節點表示層堆疊。雙擊節點可開啟**模型架構編輯器**。編輯器提供依類別分組且可搜尋的層級面板，以及用來連接各層的畫布。架構必須恰好包含一個 `Input` 節點與一個 `Output` 節點，合併層則提供連接埠清單編輯器。控制項包括**吸附 ON/OFF**、由上至下的**自動排列**、JSON **匯入**與**匯出**，以及**套用**。驗證會拒絕循環。
+- **`EmbeddingScatter`**（LLM）— 使用 PCA 或 t-SNE 將嵌入向量投影至 2D，並顯示可縮放的散佈圖。
+- **`AttentionHeatmap`**（LLM）— 傳遞 attention weight，可選擇其中一個 head，並傳遞選填的 token 標籤。節點卡片會將 weight 顯示為 heatmap，另提供完整尺寸的檢視器。
+- **由套件包提供的後端**（LLM）— `WordVector` 的 `glove-50d` 與句子編碼器選項，以及整個 `TextEmbedding`，都會載入套件中心所安裝的模型。未安裝模型的選項會顯示為灰色。若缺少的選項是圖中已儲存的目前值，該選項仍可選取並會顯示警告。執行圖時不會下載這些模型。套件包大小、檔案位置與編碼器選擇方式請參閱[選用套件包](./optional-packs)。
+- **語言模型鏈**（LLM）— 七個節點組成 GPT 式解碼器的訓練路徑：`TextCorpusDataset` 從 Hugging Face Hub 或本機 `.txt` 讀取文字列；`LMTokenizedDataset` 建立固定長度的下一詞元區塊；`DataLoader` 將批次供應給 `TrainingLoop`；`CausalLMModel` 提供模型；`LMCrossEntropyLoss` 提供 loss；`LMTokenizer` 則提供共用的 tokenizer。`PerplexityEvaluate` 會評估保留資料切分，`TextGenerate` 則從已訓練權重取樣文字。`CausalLMModel` 的預設值會產生 203,668,480 個參數；若要在筆電上訓練，請降低 `d_model` 與 `n_layers`。請參閱[範例集](./examples-gallery)中的 **Train a Causal LM on TinyStories**。
+- **RAG 鏈**（LLM）— 七個節點使用指定文件作為回答脈絡：`DocumentLoader` 將目錄中的每個 `.md` 與 `.txt` 讀取為 `{text, source}`；`TextChunker` 建立可嵌入的切塊，並保留來源名稱與字元位移；`TextEmbedding` 建立向量；`VectorStore` 將一個 `[N, D]` 矩陣與切塊文字一併儲存，並以一次矩陣乘法搜尋；`Retriever` 回傳最接近的 `top_k` 個切塊與分數；`PromptBuilder` 將切塊及問題插入限定脈絡的範本；`HFTextGenerate` 則在本機執行 Qwen2.5-0.5B-Instruct。你可以用 `LLMChat` 取代 `HFTextGenerate`，改用 Ollama 或託管提供者。`TextEmbedding` 需要 `sentence-embeddings` 套件包，`HFTextGenerate` 需要 `rag` 套件包。請參閱[範例集](./examples-gallery)中的 **RAG, fully local** 與 **RAG with a chat API**，下載內容則請參閱[選用套件包](./optional-packs)。
+- **VLA 鏈**（VLA）— VLA 類別包含五個專用節點。訓練與評估圖會連接 `PushWorldEnv`、`PushWorldDemos`、`VLAModel` 與 `TrainingLoop`，再使用 `VLAActionEval` 和 `VLARollout`。`PushWorldEnv` 以 torch 實作受語言條件控制的 2D 推動任務；干擾圓盤會使策略必須讀取指令才能識別目標。`PushWorldDemos` 會建立 scripted-expert 行為複製樣本與保留資料切分。`VLAModel` 結合視覺前端、位元組層級指令嵌入、Transformer 主幹與分塊動作專家。`VLAActionEval` 會測量相對於 expert 的保留資料開迴路 MSE，`VLARollout` 則以滾動時域執行測量閉迴路成功率。[**Train a VLA on PushWorld** 的 README](https://github.com/CodefyUI/CodefyUI/blob/main/examples/VLA/TrainVLA-PushWorld/README.md)建議使用 CUDA GPU，並記錄 RTX 4080 約需執行 56 分鐘。
+- **RL 節點**（RL）— `GridWorldEnv` 提供不依賴 Gymnasium 的 gridworld。`PolicyRollout` 會執行策略 N 個回合，並記錄狀態、動作、獎勵與 logits。`Discount` 計算 return，`GroupRelativeAdvantage` 計算 GRPO 的群組平均 baseline，`PPOClipObjective` 則計算 PPO 的 clipped surrogate，並回傳指出哪些樣本使用 clipped branch 的 mask。`RewardModel` 會為每個 sequence 產生一個純量分數。`PreferenceDataset` 建立訓練與保留 preference pair；`BradleyTerryLoss` 計算 preference loss；`BradleyTerryTrain` 訓練 reward head，並回報訓練與保留資料的 accuracy，以呈現捷徑學習。`KLDivergence` 計算 policy 相對於 reference 的正則化項。`DQN`、`PPO` 與 `EnvWrapper` 會與 Gymnasium 整合。請參閱[範例集](./examples-gallery)中的 **RLHF building blocks: reward + KL**。
+- **Diffusion 鏈**（Diffusion）— `GaussianNoise` 建立帶 seed 的 noise，並可符合上游張量的 shape。`DiffusionUNet` 提供將 `(x, t)` 映射至 predicted noise 的 toy U-Net，`DiffusionTrainingLoop` 則訓練此模型。`DDPMSampler` 在單一節點內執行 reverse process，使圖維持無環；其詳細 trace 會記錄 trajectory snapshot。`TimestepEmbedding`、`Upsample` 與 `Lerp` 可用來明確建構相同運算。Diffusion 範例包括 **Forward Process**（`GaussianNoise` 與 `Lerp`），以及 **Toy Sampling** 和 **Mini U-Net**（`GaussianNoise` → `DiffusionUNet` → `DDPMSampler`）。請參閱[範例集](./examples-gallery)。
+- **`ModelSaver` / `ModelLoader`**（IO）— 寫入與讀取模型檔。預設的 `state_dict` 模式會儲存張量，且不要求載入任何類別。`full_model` 模式會儲存以 pickle 序列化的模組，並使用受限解序列化器載入；此解序列化器允許 torch 與 CodefyUI 的 layer class，以及 CodefyUI Transformer layer 所儲存的兩個 torch activation function。模式選擇與載入需求請參閱[儲存與載入模型](./model-files)。
+- **`Switch`**（資料流）— 使用條件式路由，使只有一條分支執行。
 
 ## 連接埠資料型別
 
