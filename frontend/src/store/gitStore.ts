@@ -382,6 +382,33 @@ const EMPTY_LOG: GitLogSlice = {
 export const GIT_LOG_PAGE = 30;
 
 /**
+ * The most commits one read may ask for.
+ *
+ * The route's own cap, and a 422 past it. It bounds the re-read below, which
+ * is the only call that asks for more than a page: a reader who pressed Load
+ * more four times gets those hundred and twenty rows re-read as a hundred,
+ * not as a refusal.
+ */
+export const GIT_LOG_MAX_LIMIT = 100;
+
+/**
+ * How wide a re-read of the history has to be to keep what is on screen.
+ *
+ * `loadLog` REPLACES the list, so re-reading one page under a reader who had
+ * pressed Load more three times took ninety rows down to thirty -- on every
+ * sidebar tab switch, because the mount read runs then. Asking for as many
+ * rows as are held answers the same question without emptying the list.
+ *
+ * Never narrower than a page (a short history holds five rows, and asking for
+ * five would grow a Load more button the moment a sixth commit existed) and
+ * never wider than the route's cap.
+ */
+function heldLogLimit(): number {
+  const held = useGitStore.getState().log.commits.length;
+  return Math.min(Math.max(held, GIT_LOG_PAGE), GIT_LOG_MAX_LIMIT);
+}
+
+/**
  * How many commits' file lists are kept at once.
  *
  * A commit's file list never changes, so it is cached rather than re-read --
@@ -536,12 +563,15 @@ function refreshExpandedRefs(): void {
 /**
  * Read page one again, where there is a history that could now be wrong.
  *
- * Two callers. `attach()` runs it once per mount, because the open flags are
+ * Three callers. `attach()` runs it once per mount, because the open flags are
  * persisted and a section left open comes back open with nothing behind it.
- * The other is any write that refreshes the BRANCH list, because that is
+ * The second is any write that refreshes the BRANCH list, because that is
  * exactly the set that can move HEAD: a commit or an amend, a pull, a sync, a
  * checkout, a branch created with one, an init. Nothing else writes a commit,
- * so nothing else invalidates the page on screen.
+ * so nothing else invalidates the page on screen. The third is the header's
+ * Refresh button, which is why this is exported: "live" has to mean one thing,
+ * and a header testing something narrower left a collapsed-but-loaded history
+ * unread by the one control whose job is to make the panel true.
  *
  * "Live" is the section being open OR a page already being held. The second
  * half is what makes `setSectionOpen` correct: opening reads only an EMPTY
@@ -549,16 +579,18 @@ function refreshExpandedRefs(): void {
  * step here -- otherwise reopening would show a list missing the commit they
  * just made. A history nobody has ever opened holds nothing and reads nothing.
  *
+ * As many rows as are held, not one page: see `heldLogLimit`.
+ *
  * NOT part of `refreshExpandedRefs`: that is the fifteen-second poll's walk,
  * and a paged list re-read on a schedule loses every page past the first.
  */
-async function reloadLogIfLive(): Promise<void> {
+export async function reloadLogIfLive(): Promise<void> {
   const state = useGitStore.getState();
   const live = state.sections.history
     || state.log.commits.length > 0
     || state.log.unborn;
   if (!live) return;
-  await state.loadLog();
+  await state.loadLog(heldLogLimit());
 }
 
 function startPoll(): void {
@@ -1158,7 +1190,7 @@ interface GitState {
   detach: () => void;
   refresh: () => Promise<void>;
   refreshRefs: (kind: GitRefKind) => Promise<void>;
-  loadLog: () => Promise<void>;
+  loadLog: (limit?: number) => Promise<void>;
   loadMoreLog: () => Promise<void>;
   loadCommitFiles: (sha: string) => Promise<void>;
   setSectionOpen: (kind: GitSectionKind, open: boolean) => void;
@@ -1347,18 +1379,19 @@ export const useGitStore = create<GitState>((set, get) => ({
    *
    * REPLACES rather than merges, and that is the whole point of it: page one
    * after a commit IS the history, and merging it into the old list would put
-   * the new commit somewhere under the one it was made on top of. The pages a
-   * reader had loaded past the first are dropped with it, which is the honest
-   * answer -- their offsets refer to a window that has moved.
+   * the new commit somewhere under the one it was made on top of.
    *
-   * This is also what the header's Refresh calls when the section is open,
-   * and what {@link reloadLogIfLive} calls after anything that moves HEAD.
+   * `limit` is how many rows to read from the top, defaulting to one page.
+   * {@link reloadLogIfLive} passes {@link heldLogLimit} so that a reader who
+   * had paged down keeps the rows they were reading; the offsets of those
+   * pages are what cannot be kept, and re-reading them from zero in one
+   * request is what replaces them honestly.
    */
-  loadLog: async () => {
+  loadLog: async (limit = GIT_LOG_PAGE) => {
     const seq = (logSeq += 1);
     set({ log: { ...get().log, loading: true } });
     try {
-      const page = await getGitLog(0, GIT_LOG_PAGE);
+      const page = await getGitLog(0, limit);
       if (seq !== logSeq) return;
       set({
         log: {

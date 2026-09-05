@@ -221,6 +221,11 @@ function logPage(shas: string[], hasMore = false): GitLogPage {
   return { commits: shas.map(commit), hasMore, unborn: false };
 }
 
+/** `count` distinct shas starting at `from`, for the paging cases. */
+function manyShas(from: number, count: number): string[] {
+  return Array.from({ length: count }, (_, i) => `c${from + i}`);
+}
+
 function commitFile(path: string): GitCommitFile {
   return { path, origPath: null, kind: 'modified' };
 }
@@ -1198,6 +1203,51 @@ describe('history', () => {
     expect(await git().commit()).toBe(true);
     await git().pull('ff-only');
     expect(api.getGitLog).not.toHaveBeenCalled();
+  });
+
+  it('re-reads as many rows as the reader had paged down to', async () => {
+    // The mount read runs on every sidebar tab switch, and a one-page re-read
+    // under a reader who had pressed Load more twice took ninety rows back to
+    // thirty -- the list emptying itself for no reason the reader can see.
+    api.getGitLog.mockResolvedValueOnce(logPage(manyShas(0, 30), true));
+    await git().loadLog();
+    api.getGitLog.mockResolvedValueOnce(logPage(manyShas(30, 30), true));
+    await git().loadMoreLog();
+    expect(shas()).toHaveLength(60);
+    api.getGitLog.mockClear();
+
+    api.getGitLog.mockResolvedValue(logPage(manyShas(0, 60), true));
+    git().attach();
+    await settle();
+
+    expect(api.getGitLog).toHaveBeenCalledWith(0, 60);
+    expect(shas()).toHaveLength(60);
+  });
+
+  it('asks for a whole page even where fewer rows are held', async () => {
+    // Asking for the five rows a short history holds would answer `hasMore`
+    // about a sixth commit the moment one existed, growing a Load more button
+    // over a list the reader had already read to the end.
+    api.getGitLog.mockResolvedValue(logPage(manyShas(0, 5)));
+    await git().loadLog();
+    api.getGitLog.mockClear();
+
+    git().setCommitMessage('work');
+    await git().commit();
+    expect(api.getGitLog).toHaveBeenCalledWith(0, 30);
+  });
+
+  it('never asks for more rows than the route accepts', async () => {
+    // The route caps `limit` at 100 and answers 422 past it, so a reader four
+    // pages down is re-read as a hundred rows rather than as a refusal.
+    useGitStore.setState({
+      log: { commits: manyShas(0, 120).map(commit), hasMore: true, unborn: false, loading: false },
+    });
+    api.getGitLog.mockClear();
+
+    git().attach();
+    await settle();
+    expect(api.getGitLog).toHaveBeenCalledWith(0, 100);
   });
 
   it('reads the page a section left open comes back to', async () => {

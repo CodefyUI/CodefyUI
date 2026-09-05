@@ -1,5 +1,11 @@
 import { useCallback, useEffect, useId, useRef, useState } from 'react';
-import { REF_KINDS, isLayoutFile, useGitStore, type GitSectionKind } from '../../store/gitStore';
+import {
+  REF_KINDS,
+  isLayoutFile,
+  reloadLogIfLive,
+  useGitStore,
+  type GitSectionKind,
+} from '../../store/gitStore';
 import { useI18n } from '../../i18n';
 import { docsUrl } from '../../utils/docsUrl';
 import { prompt } from '../../utils/dialog';
@@ -115,7 +121,6 @@ export function ScmHeader() {
   const hideLayout = useGitStore((s) => s.hideLayout);
   const refresh = useGitStore((s) => s.refresh);
   const refreshRefs = useGitStore((s) => s.refreshRefs);
-  const loadLog = useGitStore((s) => s.loadLog);
   const setSectionOpen = useGitStore((s) => s.setSectionOpen);
   const setHideLayout = useGitStore((s) => s.setHideLayout);
   const openIdentityForm = useGitStore((s) => s.openIdentityForm);
@@ -277,8 +282,13 @@ export function ScmHeader() {
     // reader had loaded. The store reads it after the writes that move HEAD,
     // and this button is the only other place a reader asks for it -- which is
     // why the line exists here and nowhere else.
-    if (sections.history) void loadLog();
-  }, [loadLog, refresh, refreshRefs, repoState, sections]);
+    //
+    // The store's own rule, not a second one written here: a history that was
+    // opened, read and then COLLAPSED is still on screen the moment it is
+    // expanded again, and `sections.history` alone would leave it holding a
+    // page from before the commit somebody made at the command line.
+    void reloadLogIfLive();
+  }, [refresh, refreshRefs, repoState, sections]);
 
   const askThenStash = useCallback(async () => {
     const message = await prompt({ title: t('git.stash.messagePrompt') });

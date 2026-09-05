@@ -4,7 +4,7 @@ import { ScmHeader } from './ScmHeader';
 import { refSectionIds } from './RefSection';
 import { useI18n } from '../../i18n';
 import { _resetGitStoreForTesting, useGitStore } from '../../store/gitStore';
-import type { FileKind, GitFile, GitStatus, RemoteInfo } from '../../api/git';
+import type { FileKind, GitCommit, GitFile, GitStatus, RemoteInfo } from '../../api/git';
 import { prompt } from '../../utils/dialog';
 
 // The stash message is asked for through the in-app prompt, which is a promise
@@ -48,6 +48,21 @@ function status(over: Partial<GitStatus> = {}): GitStatus {
     merge_in_progress: false,
     rebase_in_progress: false,
     ...over,
+  };
+}
+
+/** One row of history, for the cases about a page the store is holding. */
+function historyCommit(sha: string): GitCommit {
+  return {
+    sha,
+    short: sha.slice(0, 7),
+    parents: [],
+    authorName: 'Ada',
+    authorEmail: 'ada@example.com',
+    authoredAt: 123,
+    refs: [],
+    subject: `Work on ${sha}`,
+    body: '',
   };
 }
 
@@ -183,6 +198,23 @@ describe('ScmHeader: the title row', () => {
 
     expect(loadLog).toHaveBeenCalledTimes(1);
     expect(refreshRefs).not.toHaveBeenCalled();
+  });
+
+  it('reads a history that is collapsed but still holding a page', () => {
+    // The store's rule for "live", not a narrower one written in the header:
+    // a page the reader loaded and then collapsed is on screen again the
+    // moment the section is expanded, and expanding reads only an EMPTY
+    // history -- so Refresh is the only thing that can keep it true.
+    useGitStore.setState({
+      sections: { branches: false, remotes: false, stashes: false, history: false },
+      log: { commits: [historyCommit('c1')], hasMore: false, unborn: false, loading: false },
+    });
+    render(<ScmHeader />);
+    loadLog.mockClear();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Refresh' }));
+
+    expect(loadLog).toHaveBeenCalledTimes(1);
   });
 
   it('reads no history where there is no repository', () => {
