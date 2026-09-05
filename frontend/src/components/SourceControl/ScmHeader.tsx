@@ -9,7 +9,7 @@ import { ProgressBar } from '../shared/ProgressBar';
 import shell from '../Sidebar/NodePalette.module.css';
 import styles from './SourceControl.module.css';
 import { refSectionIds } from './RefSection';
-import { errorSentence, followUpFor, gitOpKey } from './scm';
+import { aheadBehindGlyphs, errorSentence, followUpFor, gitOpKey } from './scm';
 
 /**
  * The documentation page the Setup guide link and menu row point at.
@@ -435,6 +435,18 @@ export function ScmHeader() {
       : status.upstream === null
         ? (publishOffered ? null : t('git.noUpstream'))
         : t('git.aheadBehind', { ahead: status.ahead ?? 0, behind: status.behind ?? 0 });
+  // The one tracking state that is a COUNT rather than a state. It is drawn
+  // as the two numbers and read out as the sentence: translated, the clause
+  // is twelve characters beside a branch name in a 156px column, and at
+  // 250px it ellipsised both halves at once. The other three -- upstream
+  // gone, not published, no commits -- stay as the words they are.
+  const counted = status !== null
+    && !status.unborn
+    && !status.upstream_gone
+    && status.upstream !== null;
+  const trackingGlyphs = counted
+    ? aheadBehindGlyphs(status?.ahead ?? 0, status?.behind ?? 0)
+    : null;
 
   const stderr = lastError?.stderr ?? null;
   // The lanes are independent, so either one running is something happening.
@@ -531,8 +543,23 @@ export function ScmHeader() {
             {branchText}
           </button>
           {trackingText !== null && (
+            /*
+              The glyphs are what is on screen and the sentence is what is
+              announced -- `aria-hidden` on the one, off-screen text for the
+              other, and the sentence in the `title` for a pointer. A tracked
+              branch that is level with its upstream draws nothing at all:
+              two zeros say only that they are zero, and the sentence is
+              still there for a reader, who has no glance to spend.
+            */
             <span className={styles.tracking} title={trackingText}>
-              {trackingText}
+              {counted ? (
+                <>
+                  {trackingGlyphs !== null && (
+                    <span aria-hidden="true">{trackingGlyphs}</span>
+                  )}
+                  <span className={styles.srOnly}>{trackingText}</span>
+                </>
+              ) : trackingText}
             </span>
           )}
           {ready && !unborn && !detached && hasUpstream && (

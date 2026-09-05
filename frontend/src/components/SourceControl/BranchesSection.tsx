@@ -7,7 +7,7 @@ import { PlusIcon } from '../shared/Icons';
 import { RefSection } from './RefSection';
 import { RefError, RefRow } from './RefRow';
 import { focusRefSection } from './ScmHeader';
-import { isValidBranchName } from './scm';
+import { aheadBehindGlyphs, isValidBranchName } from './scm';
 import styles from './SourceControl.module.css';
 
 /**
@@ -186,6 +186,14 @@ function LocalBranchRow({
     : branch.upstream === null
       ? null
       : t('git.aheadBehind', { ahead: branch.ahead ?? 0, behind: branch.behind ?? 0 });
+  // The count is drawn as the two numbers and read out as the sentence --
+  // the same split the header's branch line makes, and for the same reason:
+  // the clause and the branch name were ellipsising each other at 250px.
+  // "Upstream deleted" is a state rather than a count and stays as words.
+  const counted = !branch.gone && branch.upstream !== null;
+  const glyphs = counted
+    ? aheadBehindGlyphs(branch.ahead ?? 0, branch.behind ?? 0)
+    : null;
 
   return (
     <RefRow
@@ -194,7 +202,8 @@ function LocalBranchRow({
       // which case there is nothing to switch to and the row says so.
       action={branch.current ? null : { label: t('git.branch.switch', { name: branch.name }), onSelect: onSwitch }}
       badge={branch.current ? t('git.branch.current') : null}
-      meta={tracking}
+      meta={counted ? glyphs : tracking}
+      metaLabel={counted && tracking !== null ? tracking : undefined}
       actions={[
         { id: 'rename', label: t('git.branch.rename'), onSelect: onRename },
         // Never on the current branch: git refuses to delete the branch that

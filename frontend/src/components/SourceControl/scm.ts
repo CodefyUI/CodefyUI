@@ -201,6 +201,40 @@ export function followUpFor(
   return null;
 }
 
+/* ── How far a branch is from its upstream ───────────────────────────────── */
+
+/**
+ * The two arrows a tracking count is drawn with: UP for ahead, DOWN for
+ * behind (U+2191 / U+2193, the pair `ParamField` already uses for upload and
+ * download).
+ *
+ * Here rather than in the locale file because there is nothing to translate:
+ * a digit is a digit in every language, and these are the same two symbols
+ * git's own `status --short --branch` prints.
+ */
+const AHEAD_GLYPH = '↑';
+const BEHIND_GLYPH = '↓';
+
+/**
+ * "1 to push, 0 to pull", as the two numbers -- or null when there are none.
+ *
+ * The sentence is the accessible name and the tooltip; this is what is
+ * DRAWN. Translated, it is a twelve-character clause beside a branch name in
+ * a column that can be 156px wide, and at 250px both halves were ellipsised
+ * -- "Branch: mast... 1 to pu...", which is a row that has lost the branch
+ * name AND the count. The count is the part a glance is after, and it fits
+ * in about 30px.
+ *
+ * Nothing at all when a tracked branch is level with its upstream: two zeros
+ * are the state "there is nothing to do", and drawing them puts a number on
+ * screen whose only meaning is that it is zero. The sentence stays for a
+ * reader, who has no glance to spend.
+ */
+export function aheadBehindGlyphs(ahead: number, behind: number): string | null {
+  if (ahead === 0 && behind === 0) return null;
+  return `${AHEAD_GLYPH}${ahead} ${BEHIND_GLYPH}${behind}`;
+}
+
 /* ── What a prompt will accept ───────────────────────────────────────────
    Three grammars, all of them NARROWER than the server's and none of them
    the authority: `git check-ref-format` decides a branch name, and

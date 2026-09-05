@@ -41,6 +41,21 @@ export interface RefRowProps {
   badge?: string | null;
   /** The dimmer second half: ahead/behind, a URL, how long ago. */
   meta?: string | null;
+  /**
+   * What the meta MEANS, when what it shows is a shorthand.
+   *
+   * A branch row draws its tracking count as two arrows and two digits
+   * (`↑1 ↓0`), which is a glance's worth of screen and nothing a reader can
+   * pronounce -- so the sentence it stands for goes here, and it is what the
+   * `title` says and what the row is described by. The visible half is
+   * `aria-hidden` when this is given, so the two are never read one after
+   * the other.
+   *
+   * Given ALONE (with an empty `meta`) it still carries: a branch level with
+   * its upstream draws no count, and "0 to push, 0 to pull" is still the
+   * answer for somebody who cannot see that there is nothing there.
+   */
+  metaLabel?: string;
   actions: RefRowAction[];
 }
 
@@ -58,13 +73,25 @@ export interface RefRowProps {
  * about 125px of text beside a chip that cannot shrink, which a 180px panel
  * does not have -- so below the threshold they are one 24px menu instead.
  */
-export function RefRow({ name, action, identity, badge, meta, actions }: RefRowProps) {
+export function RefRow({
+  name,
+  action,
+  identity,
+  badge,
+  meta,
+  metaLabel,
+  actions,
+}: RefRowProps) {
   const { t } = useI18n();
   const named = identity ?? name;
   // Addressable, because on a pressable row the meta is INSIDE the button --
   // see the `aria-describedby` below.
   const metaId = useId();
-  const hasMeta = meta !== null && meta !== undefined && meta !== '';
+  // What is drawn, and what is said. They are the same string on every row
+  // whose meta is already prose (a URL, "main, 2 hours ago").
+  const shownMeta = meta ?? '';
+  const spokenMeta = metaLabel ?? '';
+  const hasMeta = shownMeta !== '' || spokenMeta !== '';
   const body = (
     <>
       <span className={styles.rowName}>{name}</span>
@@ -72,7 +99,18 @@ export function RefRow({ name, action, identity, badge, meta, actions }: RefRowP
         // Its own `title`, not the row's: a remote URL is one unbroken token
         // in a 180px column and is the FIRST thing here to be ellipsised, so
         // the string in full has to be reachable from the half that was cut.
-        <span className={styles.rowDir} id={metaId} title={meta}>{meta}</span>
+        <span
+          className={styles.rowDir}
+          id={metaId}
+          title={spokenMeta === '' ? shownMeta : spokenMeta}
+        >
+          {spokenMeta === '' ? shownMeta : (
+            <>
+              {shownMeta !== '' && <span aria-hidden="true">{shownMeta}</span>}
+              <span className={styles.srOnly}>{spokenMeta}</span>
+            </>
+          )}
+        </span>
       )}
     </>
   );

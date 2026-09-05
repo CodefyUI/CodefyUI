@@ -11,11 +11,16 @@
    child that ellipsises — nothing may push the panel wider than it is.
    ========================================================= */
 
-/* ── The announcement region ─────────────────────────────────────────────
-   Off screen rather than `display: none`, which assistive tech ignores. Its
-   sentence is also on screen (the group headings and their counts), so making
-   it visible would say everything twice. */
-.live {
+/* ── Off screen, still announced ─────────────────────────────────────────
+   Off screen rather than `display: none`, which assistive tech ignores.
+
+   Two users of one box. `.live` is the announcement region: its sentence is
+   also on screen (the group headings and their counts), so making it visible
+   would say everything twice. `.srOnly` is the other half of a shorthand --
+   the tracking column draws `↑1 ↓0`, which is two numbers a reader cannot
+   pronounce, and carries the sentence they mean in here. */
+.live,
+.srOnly {
   position: absolute;
   width: 1px;
   height: 1px;
@@ -45,11 +50,12 @@
   line-height: var(--lh-tight);
 }
 
-/* The tracking half is the one that gives way. At a 180px panel the two of
-   them want about 165px of a 156px row, and the branch name is the identity
-   while "2 to push, 3 to pull" is derived from it -- so the name takes any
-   leftover space (`flex-grow: 1`) and shrinks reluctantly, while the tracking
-   text neither grows nor resists (`flex-shrink: 8`) and ellipsises first.
+/* The branch name gets the room. It is the row's identity, and the tracking
+   half beside it is now two glyphs and two digits (`↑1 ↓0`) rather than the
+   sentence it means -- about 30px, which a 180px panel can spare and cannot
+   spare a clause of. So the name takes every leftover pixel and is the only
+   half that shrinks; the tracking span never does. The word states
+   ("Upstream deleted", "Not published") are short enough to sit there whole.
    Both carry a `title` with their text in full. */
 .branchName {
   flex: 1 1 auto;
@@ -90,10 +96,7 @@
 }
 
 .tracking {
-  flex: 0 8 auto;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  flex: 0 0 auto;
   white-space: nowrap;
 }
 

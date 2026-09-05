@@ -261,20 +261,43 @@ describe('ScmHeader: the branch line', () => {
     expect(screen.getByText('Not published')).toBeTruthy();
   });
 
-  it('counts what is ahead and behind an upstream', () => {
+  it('draws what is ahead and behind as two numbers, and says the sentence', () => {
+    // The clause and the branch name were ellipsising each other at 250px --
+    // "Branch: mast... 1 to pu..." -- so the count is drawn as the glyphs and
+    // the sentence stays for a reader and for the tooltip.
     useGitStore.setState({
       status: status({ upstream: 'origin/main', ahead: 2, behind: 3 }),
     });
     render(<ScmHeader />);
-    expect(screen.getByText('2 to push, 3 to pull')).toBeTruthy();
+    expect(screen.getByText('↑2 ↓3')).toBeTruthy();
+    const spoken = screen.getByText('2 to push, 3 to pull');
+    expect(spoken.className).toContain('srOnly');
+    expect(spoken.closest('span[title]')?.getAttribute('title')).toBe(
+      '2 to push, 3 to pull',
+    );
   });
 
-  it('reports an upstream that no longer exists', () => {
+  it('draws nothing for a branch that is level with its upstream', () => {
+    // Two zeros say only that they are zero. The sentence stays: a reader has
+    // no glance to spend on an empty column.
+    useGitStore.setState({
+      status: status({ upstream: 'origin/main', ahead: 0, behind: 0 }),
+    });
+    render(<ScmHeader />);
+    expect(screen.queryByText(/↑/)).toBeNull();
+    expect(screen.getByText('0 to push, 0 to pull').className).toContain('srOnly');
+  });
+
+  it('reports an upstream that no longer exists, in words', () => {
+    // A STATE, not a count: there is no pair of numbers to draw, so the
+    // words stay on screen rather than going off it behind a glyph.
     useGitStore.setState({
       status: status({ upstream: 'origin/gone', upstream_gone: true }),
     });
     render(<ScmHeader />);
-    expect(screen.getByText('Upstream deleted')).toBeTruthy();
+    const gone = screen.getByText('Upstream deleted');
+    expect(gone.className).not.toContain('srOnly');
+    expect(gone.closest('[aria-hidden="true"]')).toBeNull();
   });
 
   it('says HEAD is detached instead of naming a branch', () => {

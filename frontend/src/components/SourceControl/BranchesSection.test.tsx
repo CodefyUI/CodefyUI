@@ -147,11 +147,30 @@ describe('BranchesSection: the rows', () => {
       }),
     });
     render(<BranchesSection />);
-    expect(within(section()).getByText('2 to push, 3 to pull')).toBeTruthy();
-    expect(within(section()).getByText('Upstream deleted')).toBeTruthy();
+    // The count is DRAWN as the two numbers -- a row at 250px was spending
+    // the branch name's room on the clause -- and said in full off screen.
+    expect(within(section()).getByText('↑2 ↓3')).toBeTruthy();
+    expect(within(section()).getByText('2 to push, 3 to pull').className)
+      .toContain('srOnly');
+    // A state rather than a count, so it stays as words on screen.
+    const gone = within(section()).getByText('Upstream deleted');
+    expect(gone.closest('[aria-hidden="true"]')).toBeNull();
     // A branch with no upstream says nothing: "Not published" beside every
     // local branch of a repository with no remote is noise, not information.
     expect(within(section()).queryByText('Not published')).toBeNull();
+  });
+
+  it('draws nothing for a branch level with its upstream, and still says so', () => {
+    useGitStore.setState({
+      branches: branches({
+        local: [branch('level', { upstream: 'origin/level', ahead: 0, behind: 0 })],
+      }),
+    });
+    render(<BranchesSection />);
+    expect(within(section()).queryByText(/↑/)).toBeNull();
+    expect(
+      screen.getByRole('button', { name: 'Switch to level' }),
+    ).toHaveAccessibleDescription('0 to push, 0 to pull');
   });
 
   it('says it to a reader too, as the switch button\'s description', () => {
