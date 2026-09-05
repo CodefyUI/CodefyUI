@@ -89,8 +89,12 @@ function SplitHunk({ hunk }: { hunk: DiffHunk }) {
 /**
  * One half of a split row: a number, a sign and the text, or an empty box.
  *
- * The kind is the SIDE's -- a left cell is a removal and a right cell an
- * addition, unless the line is context, which both columns show unchanged.
+ * `side` picks the line NUMBER -- old on the left, new on the right -- and
+ * nothing else. What the cell is tinted as comes from the line itself, which
+ * is the half that knows: `toSplitRows` puts removals on the left and
+ * additions on the right today, and a line that says what it is stays right
+ * whatever a later pairing rule decides.
+ *
  * Three cells rather than one wrapper, because the row is a grid and a box
  * around half of it would not line up with the other half; the tint is on all
  * three, so the whole half is washed.
@@ -107,7 +111,7 @@ function Cell({ line, side }: { line: DiffLine | undefined; side: 'add' | 'del' 
       </>
     );
   }
-  const kind: DiffLineKind = line.kind === 'context' ? 'context' : side;
+  const kind = line.kind;
   return (
     <>
       <span className={styles.lineNo} data-kind={kind}>

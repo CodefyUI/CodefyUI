@@ -276,6 +276,19 @@ describe('GitDiffModal: what changed in the graph', () => {
     expect(within(dialog()).queryByText('No logic change')).toBeNull();
   });
 
+  it('says nothing about a graph one of whose sides came back unread', async () => {
+    // Over the 2 MiB cap, `GET /file` answers with the real size, `truncated`
+    // and NO text -- which parses as broken JSON and would report "could not
+    // parse" about a graph that is perfectly well formed.
+    readFile.mockImplementation(async ({ ref }) =>
+      (ref === 'worktree'
+        ? fileAtRef('', { truncated: true, size: 3_000_000 })
+        : fileAtRef(GRAPH_BEFORE)));
+    await open({ path: 'graphs/net.graph.json', scope: 'worktree' });
+    expect(within(dialog()).queryByText('Could not parse as a graph')).toBeNull();
+    expect(within(dialog()).queryByText('No logic change')).toBeNull();
+  });
+
   it('says when a graph file cannot be read as a graph', async () => {
     readFile.mockResolvedValue(fileAtRef('{ not json'));
     await open({ path: 'graphs/net.graph.json', scope: 'worktree' });

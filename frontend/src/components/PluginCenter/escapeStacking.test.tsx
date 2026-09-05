@@ -203,6 +203,25 @@ describe('the diff window, which is the rung above both of them', () => {
     expect(useUIStore.getState().packCenterOpen).toBe(true);
   });
 
+  it('stops the press it acted on, so nothing opened after it also closes', async () => {
+    // The other registration order: this window's handler runs FIRST, and by
+    // the time a Center's runs, `close()` has already emptied the `gitDiff`
+    // that Center stands down on. `stopImmediatePropagation` is what keeps
+    // one press from closing two windows here.
+    renderAll();
+    await act(async () => {
+      useUIStore.getState().openGitDiff({ path: 'src/model.py', scope: 'worktree' });
+    });
+    act(() => {
+      useUIStore.getState().openPackCenter();
+    });
+
+    escape();
+
+    expect(useUIStore.getState().gitDiff).toBeNull();
+    expect(useUIStore.getState().packCenterOpen).toBe(true);
+  });
+
   it('closes on top of the Plugin Center and leaves it open', async () => {
     // The order the diff window's own `stopImmediatePropagation` does not
     // cover on its own: the plugin handler is registered FIRST here, so it
