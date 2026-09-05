@@ -839,6 +839,33 @@ describe('reference sections', () => {
     expect(api.getGitStashes).not.toHaveBeenCalled();
   });
 
+  it('asks for no list at all against a project that is not a repository', async () => {
+    // The three routes can only be refused there, and `SourceControlTab`
+    // draws the sections inside `repoState === 'ready'` -- so the `refsError`
+    // they wrote was never on screen either. A profile whose sections were
+    // left open sent three doomed reads on mount and three more every fifteen
+    // seconds, for as long as the tab was open.
+    git().setSectionOpen('branches', true);
+    git().setSectionOpen('stashes', true);
+    await settle();
+    api.getGitStatus.mockResolvedValue(statusResponse('not_repo'));
+    api.getGitBranches.mockClear();
+    api.getGitStashes.mockClear();
+
+    git().attach();
+    await settle();
+    expect(git().repoState).toBe('not_repo');
+    // The eager first read still went out: `attach` fires the status read and
+    // this in one tick, so `repoState` is still `unknown` at that moment.
+    expect(api.getGitBranches).toHaveBeenCalledTimes(1);
+
+    api.getGitBranches.mockClear();
+    api.getGitStashes.mockClear();
+    await vi.advanceTimersByTimeAsync(GIT_POLL_MS);
+    expect(api.getGitBranches).not.toHaveBeenCalled();
+    expect(api.getGitStashes).not.toHaveBeenCalled();
+  });
+
   it('drops an older ref read after a newer one has answered', async () => {
     const slow = deferred<BranchesResponse>();
     api.getGitBranches.mockReturnValueOnce(slow.promise);
@@ -1188,6 +1215,11 @@ describe('branch and remote operations', () => {
     expect(git().status?.head).toBe('renamed');
     expect(git().branches?.current).toBe('renamed');
     expect(toasts()).toHaveLength(0);
+    // Nothing said, and the switch's sentence taken down with it. A rename
+    // changes the LIST, not the working tree, and "Staged Changes 0, Changes
+    // 0" is a sentence about file counts that did not move -- which after a
+    // branch write can be read as "your staged work is gone".
+    expect(git().liveMessage).toBe('');
 
     api.gitDeleteBranch.mockResolvedValue(
       mutation({ status: status({ head: 'deleted' }) }),
@@ -1197,6 +1229,7 @@ describe('branch and remote operations', () => {
     expect(api.gitDeleteBranch).toHaveBeenCalledWith('old', true);
     expect(git().status?.head).toBe('deleted');
     expect(git().branches?.current).toBe('main');
+    expect(git().liveMessage).toBe('');
     expect(api.getGitBranches).toHaveBeenCalledTimes(4);
   });
 
@@ -1240,7 +1273,8 @@ describe('branch and remote operations', () => {
     expect(git().remotes).toEqual([]);
     expect(git().status?.head).toBe('removed-remote');
     expect(api.getGitRemotes).toHaveBeenCalledTimes(3);
-    expect(git().liveMessage).toBe('git.group.staged 0, git.group.changes 0');
+    // A remote write moves no file either -- see the branch case above.
+    expect(git().liveMessage).toBe('');
     expect(toasts()).toHaveLength(0);
   });
 });
@@ -1293,6 +1327,9 @@ describe('stash and merge operations', () => {
     expect(api.gitStashDrop).toHaveBeenCalledWith(4);
     expect(git().stashes).toEqual([]);
     expect(git().status?.head).toBe('dropped');
+    // A drop takes a row off the stack and leaves the tree alone, so it
+    // says nothing -- unlike the pop and the apply above it.
+    expect(git().liveMessage).toBe('');
     expect(api.getGitStashes).toHaveBeenCalledTimes(4);
     expect(applyWorktreeChange).toHaveBeenCalledTimes(3);
   });
@@ -1303,29 +1340,51 @@ describe('stash and merge operations', () => {
     expect(api.gitStashPush).toHaveBeenCalledWith('half-done sweep', false);
   });
 
+  // `dirty_tree` and not only `conflict`: a pop that restored the tracked
+  // half and then hit an untracked file that is back on disk prints
+  // "n.txt already exists, no checkout" and exits 1 -- which `errors.py`
+  // classifies as `dirty_tree`. The tracked file on disk already holds the
+  // STASHED bytes at that point (measured on git 2.53), so the panel was
+  // showing the pre-pop working tree, and no reload was offered for a graph
+  // file the refusal had already rewritten.
   it.each([
     {
       name: 'pop',
+      code: 'conflict',
       arrange: async () => api.gitStashPop.mockRejectedValue(await coded(409, 'conflict')),
       run: () => git().stashPop(7),
     },
     {
       name: 'apply',
+      code: 'conflict',
       arrange: async () => api.gitStashApply.mockRejectedValue(await coded(409, 'conflict')),
       run: () => git().stashApply(8),
     },
-  ])('refreshes status after a stash $name conflict', async ({ arrange, run }) => {
-    await arrange();
-    api.getGitStatus.mockResolvedValue(
-      statusResponse('ready', { head: 'after-stash-conflict', merge_in_progress: true }),
-    );
+    {
+      name: 'pop',
+      code: 'dirty_tree',
+      arrange: async () => api.gitStashPop.mockRejectedValue(await coded(409, 'dirty_tree')),
+      run: () => git().stashPop(7),
+    },
+    {
+      name: 'apply',
+      code: 'dirty_tree',
+      arrange: async () => api.gitStashApply.mockRejectedValue(await coded(409, 'dirty_tree')),
+      run: () => git().stashApply(8),
+    },
+  ])('refreshes status after a stash $name refused with $code',
+    async ({ code, arrange, run }) => {
+      await arrange();
+      api.getGitStatus.mockResolvedValue(
+        statusResponse('ready', { head: 'after-stash-refusal', merge_in_progress: true }),
+      );
 
-    expect(await run()).toBe(false);
+      expect(await run()).toBe(false);
 
-    expect(api.getGitStatus).toHaveBeenCalledTimes(1);
-    expect(git().status?.head).toBe('after-stash-conflict');
-    expect(git().lastError?.code).toBe('conflict');
-  });
+      expect(api.getGitStatus).toHaveBeenCalledTimes(1);
+      expect(git().status?.head).toBe('after-stash-refusal');
+      expect(git().lastError?.code).toBe(code);
+    });
 
   it('aborts and resolves a merge with status feedback and reload offers only', async () => {
     const applyWorktreeChange = vi.fn();

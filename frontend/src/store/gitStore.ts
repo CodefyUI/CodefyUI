@@ -398,8 +398,23 @@ function pageVisible(): boolean {
 
 const REF_KINDS: readonly GitRefKind[] = ['branches', 'remotes', 'stashes'];
 
+/**
+ * Read every open section's list, where there is a repository to read.
+ *
+ * The three routes can only be REFUSED against a project that is not a
+ * repository -- or has no git, or is not a project at all -- and the tab
+ * draws the sections inside `repoState === 'ready'`, so the `refsError` a
+ * refusal writes is not on screen either. Without the guard a profile whose
+ * sections were left open sent three doomed requests on mount and three more
+ * every fifteen seconds for as long as the tab was open.
+ *
+ * `unknown` passes: `attach()` fires the status read and this in the same
+ * tick, so the state is still unknown when the eager first read goes out and
+ * dropping it there would cost a section its list until the next poll.
+ */
 function refreshExpandedRefs(): void {
   const state = useGitStore.getState();
+  if (state.repoState !== 'ready' && state.repoState !== 'unknown') return;
   for (const kind of REF_KINDS) {
     if (state.sections[kind]) void state.refreshRefs(kind);
   }
@@ -650,6 +665,27 @@ function upstreamRemote(upstream: string | null): string | null {
 }
 
 /**
+ * The writes whose result is a LIST, not the working tree.
+ *
+ * These say nothing at all. The group counts below are the live region
+ * describing rows moving between Staged Changes and Changes, which is the one
+ * change on this panel no screen reader announces -- and after a branch
+ * delete or a remote removal no such row moved, so "Staged Changes 0, Changes
+ * 0" was a sentence about the wrong thing, one that can be read as "your
+ * staged work is gone". The list changing on screen, and the focus move onto
+ * the section heading that goes with it, is the feedback.
+ *
+ * `create_branch` is not here because it is two operations behind one name:
+ * with a checkout it moves files, and that case is decided on `opts.worktree`
+ * below rather than on the op.
+ */
+const REF_LIST_OPS: ReadonlySet<GitAnyOp> = new Set<GitAnyOp>([
+  'rename_branch', 'delete_branch',
+  'add_remote', 'set_remote_url', 'remove_remote',
+  'stash_drop',
+]);
+
+/**
  * The sentence an operation ends with, or null when it has nothing to say.
  *
  * Most operations fall through to the group counts, which is the live region
@@ -658,9 +694,10 @@ function upstreamRemote(upstream: string | null): string | null {
  * operations whose result is a FACT rather than a rearrangement: which commit,
  * which branch, whether anything came down, where a branch went.
  *
- * The identity write is the one that answers null: it returns an identity
- * rather than a status, nothing in the panel moved, and the form redrawing
- * with the saved values is the feedback.
+ * The identity write answers null: it returns an identity rather than a
+ * status, nothing in the panel moved, and the form redrawing with the saved
+ * values is the feedback. So do the reference-list writes, for the reason at
+ * {@link REF_LIST_OPS}.
  */
 function announcement(
   op: GitAnyOp,
@@ -668,6 +705,10 @@ function announcement(
   opts: RunOpOptions,
 ): string | null {
   if (!('status' in result)) return null;
+  if (REF_LIST_OPS.has(op)) return null;
+  // A branch created without a checkout is a new name for the commit HEAD is
+  // already on: no file moved, so there are no counts worth saying.
+  if (op === 'create_branch' && opts.worktree !== true) return null;
   if (op === 'commit') return t('git.toast.committed', { sha: commitSha(result) });
   if (op === 'init') return t('git.toast.initialized');
   if (op === 'fetch') return t('git.toast.fetched');
@@ -763,10 +804,13 @@ async function runOp(
     }
 
     const said = announcement(op, result, opts);
-    if (said !== null) {
-      useGitStore.setState({ liveMessage: said });
-      if (SUCCESS_TOAST_OPS.has(op)) toast(said, 'success');
-    }
+    // Written even when there is nothing to say, so the region is emptied
+    // rather than left holding the LAST operation's sentence: the tab swaps
+    // live-region slots on every finished write, and a stale sentence in the
+    // slot it swapped into would be announced again as if it were this
+    // operation's answer. The swap skips an empty one.
+    useGitStore.setState({ liveMessage: said ?? '' });
+    if (said !== null && SUCCESS_TOAST_OPS.has(op)) toast(said, 'success');
     if (opts.worktree === true && 'status' in result) {
       useGitStore.getState().applyWorktreeChange(result.changed_paths);
     }
@@ -1411,16 +1455,23 @@ export const useGitStore = create<GitState>((set, get) => ({
     runOp('stash_pop', () => gitStashPop(index), {
       worktree: true,
       refs: ['stashes'],
-      refreshStatusOnError: (err) =>
-        err instanceof GitApiError && err.code === 'conflict',
+      // ANY refusal, for the reason `pull` and `sync` use the same argument:
+      // a stash that is being restored has already put files on disk by the
+      // time it stops. A `conflict` is the obvious half; `dirty_tree` is the
+      // other one -- a pop whose untracked file is back on disk says
+      // "n.txt already exists, no checkout", exits 1, keeps the stash AND
+      // leaves the stashed bytes in every tracked file it did restore
+      // (measured on git 2.53). Without the read, the panel went on
+      // describing the working tree from before the pop, and no reload was
+      // offered for an open graph the refusal had already rewritten.
+      refreshStatusOnError: alwaysRefresh,
     }),
 
   stashApply: async (index) =>
     runOp('stash_apply', () => gitStashApply(index), {
       worktree: true,
       refs: ['stashes'],
-      refreshStatusOnError: (err) =>
-        err instanceof GitApiError && err.code === 'conflict',
+      refreshStatusOnError: alwaysRefresh,
     }),
 
   stashDrop: async (index) =>
