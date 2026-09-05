@@ -477,6 +477,26 @@ for (const [wash, ink] of WASHES) {
   check(`${ink} on ${wash} over panel`, contrast(t(ink), hex), 4.5);
 }
 
+/* 9a. The same two washes over --surface-code, which is where the diff
+      window actually paints them: the patch grid is a code well, so an
+      added or removed row tints THAT and not the panel — a different, darker
+      ground, and a different answer. The third text tier is checked here and
+      not above because the diff row is where it lands on a wash: the line
+      numbers and the +/- sign are --text-muted. Without these six the
+      window's own colours were outside the gate entirely, and a later edit
+      to either wash could take them under AA in silence. */
+for (const [wash, ink] of [
+  ['--success-wash', '--status-success'],
+  ['--danger-wash', '--status-error'],
+]) {
+  const alpha = parseFloat(t(wash).match(/,\s*([\d.]+)\s*\)/)[1]);
+  const composited = overlay(toRgb(t(ink)), alpha, toRgb(t('--surface-code')));
+  const hex = `#${composited.map((v) => Math.round(v).toString(16).padStart(2, '0')).join('')}`;
+  for (const tier of ['--text-primary', '--text-secondary', '--text-muted']) {
+    check(`${tier} on ${wash} over --surface-code`, contrast(t(tier), hex), 4.5);
+  }
+}
+
 /* 9b. Code editor. Comments and line numbers carry meaning in source, so they
        are held to the text bar, not to a "decoration" bar. */
 for (const role of ['--code-text', '--code-comment', '--code-gutter']) {
