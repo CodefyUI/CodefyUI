@@ -6,6 +6,7 @@ import { BranchesSection } from './BranchesSection';
 import { ChangeGroup } from './ChangeGroup';
 import { CommitBox } from './CommitBox';
 import { EmptyStates } from './EmptyStates';
+import { HistorySection } from './HistorySection';
 import { IdentityForm } from './IdentityForm';
 import { MergeGroup } from './MergeGroup';
 import { RemotesSection } from './RemotesSection';
@@ -133,16 +134,21 @@ export function SourceControlTab() {
               </>
             )}
           {/*
-            Outside the clean/dirty branch above: branches, remotes and stashes
-            are properties of the repository, not of the working tree, and a
-            clean checkout is exactly when somebody goes looking for another
-            branch. Each one reads its own slice of the store, collapsed by
-            default and remembered there -- which is also what loads its list
-            as the section opens.
+            Outside the clean/dirty branch above: branches, remotes, stashes
+            and the history are properties of the repository, not of the
+            working tree, and a clean checkout is exactly when somebody goes
+            looking for another branch. Each one reads its own slice of the
+            store, collapsed by default and remembered there -- which is also
+            what loads its list as the section opens.
+
+            History LAST, and not only because it is the longest: the three
+            above it are lists of one line each, and a page of thirty commits
+            with a file list open inside it would push them off the panel.
           */}
           <BranchesSection />
           <RemotesSection />
           <StashesSection />
+          <HistorySection />
         </div>
       </>
     );

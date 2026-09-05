@@ -905,6 +905,24 @@
   text-transform: uppercase;
 }
 
+/* ── A commit ────────────────────────────────────────────────────────────
+   git's own abbreviation, which is what a command line takes and what every
+   other git client shows. Monospace so a column of them lines up, and never
+   shrinking: seven characters cut to four identify nothing, and the whole id
+   is in the span's `title` anyway. */
+.commitSha {
+  flex: 0 0 auto;
+  color: var(--text-muted);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: var(--fs-2xs);
+}
+
+/* "Load more", as the last row of the list. Indented to the rows' own text so
+   it reads as the end of the list rather than as a control over it. */
+.moreRow {
+  padding: var(--sp-1) var(--sp-3) var(--sp-2) var(--sp-4);
+}
+
 /* ── Empty screens ───────────────────────────────────────────────────────── */
 .emptyBody {
   display: flex;

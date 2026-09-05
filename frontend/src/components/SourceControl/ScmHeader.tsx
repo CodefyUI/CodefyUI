@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useId, useRef, useState } from 'react';
-import { REF_KINDS, isLayoutFile, useGitStore, type GitRefKind } from '../../store/gitStore';
+import { REF_KINDS, isLayoutFile, useGitStore, type GitSectionKind } from '../../store/gitStore';
 import { useI18n } from '../../i18n';
 import { docsUrl } from '../../utils/docsUrl';
 import { prompt } from '../../utils/dialog';
@@ -49,7 +49,7 @@ export function focusScmFallback(): void {
 }
 
 /**
- * Put focus back on one reference section's heading.
+ * Put focus back on one section's heading.
  *
  * Called after a row that held focus has gone -- a branch deleted, a stash
  * dropped, a remote removed -- so it lands on the heading of the list it left
@@ -64,7 +64,7 @@ export function focusScmFallback(): void {
  * yet -- and the whole SECTION can be what disappears, when the panel switches
  * screens under it.
  */
-export function focusRefSection(kind: GitRefKind): void {
+export function focusRefSection(kind: GitSectionKind): void {
   requestAnimationFrame(() => {
     const heading = document.getElementById(refSectionIds(kind).headingId);
     if (heading !== null && heading.isConnected) {

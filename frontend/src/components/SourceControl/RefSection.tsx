@@ -1,10 +1,10 @@
 import type { ReactNode } from 'react';
-import type { GitRefKind } from '../../store/gitStore';
+import type { GitSectionKind } from '../../store/gitStore';
 import { ChevronDownIcon } from '../shared/Icons';
 import styles from './SourceControl.module.css';
 
 /**
- * The DOM ids one reference section uses.
+ * The DOM ids one collapsible section uses.
  *
  * Fixed strings rather than `useId`, because the header's branch button
  * expands the Branches section from OUTSIDE it: `aria-controls` has to name a
@@ -12,8 +12,11 @@ import styles from './SourceControl.module.css';
  * that section's heading into view. The panel is a singleton -- the sidebar
  * mounts exactly one open tab, and each kind appears once in it -- so a fixed
  * id per kind cannot collide with itself.
+ *
+ * Every SECTION kind, not only the three reference lists: History is one of
+ * these boxes too, and `focusRefSection` has to be able to name its heading.
  */
-export function refSectionIds(kind: GitRefKind): {
+export function refSectionIds(kind: GitSectionKind): {
   sectionId: string;
   headingId: string;
   listId: string;
@@ -26,7 +29,7 @@ export function refSectionIds(kind: GitRefKind): {
 }
 
 export interface RefSectionProps {
-  kind: GitRefKind;
+  kind: GitSectionKind;
   /** The section's name, already translated. */
   title: string;
   /**
@@ -50,14 +53,14 @@ export interface RefSectionProps {
 }
 
 /**
- * One collapsible list of git references, with the actions that apply to all
- * of them.
+ * One collapsible list -- three of git references, one of commits -- with the
+ * actions that apply to all of them.
  *
  * The same disclosure shape as `ChangeGroup` -- a labelled `<section>`, a
  * header button carrying `aria-expanded`, a `<ul role="list">` it controls --
- * so the five sections in the tab read as one kind of thing. The difference is
+ * so the six sections in the tab read as one kind of thing. The difference is
  * where the open state lives: a change group opens and closes for the life of
- * the panel, while these three are remembered across reloads, so this one is
+ * the panel, while these four are remembered across reloads, so this one is
  * controlled and the store is what it asks.
  *
  * The list is `hidden` rather than unmounted, which is what lets a control
