@@ -59,8 +59,13 @@ life of the process (git does not move), a NEGATIVE one for
 :data:`MISSING_RECHECK_S` seconds, so a machine without git -- or with a git
 whose config cannot be read -- does not spawn a process on every poll of the
 status endpoint, and still notices a repair a minute later without a
-restart. ``_reset_for_tests`` exists because that cache would otherwise make
-the second test in a file depend on the first.
+restart. A negative answer is written only once the probe has FAILED, and
+the two caches a whole git process fills are filled under a lock
+(:data:`_version_lock`, :data:`_ssh_lock`), because the callers do not
+arrive one at a time: a tab mounting after a restart asks four questions in
+the same millisecond, from four threads, with nothing cached yet.
+``_reset_for_tests`` exists because that cache would otherwise make the
+second test in a file depend on the first.
 """
 
 from __future__ import annotations
@@ -73,6 +78,7 @@ import signal
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 from collections.abc import Container, Sequence
 from dataclasses import dataclass
@@ -241,6 +247,26 @@ _version_probed_at: float | None = None
 _ssh_configured: dict[str, bool] = {}
 _ssh_probe_failed_at: float | None = None
 
+#: One probe at a time, and every other caller waits for it.
+#:
+#: Each cache above is filled by a git PROCESS, which takes long enough
+#: (~50-150 ms) that other callers arrive while it is running -- and they
+#: arrive together rather than one at a time: a Source Control tab mounting
+#: after a restart fires status, branches, remotes and stashes inside the
+#: same millisecond, and each lands in its own ``asyncio.to_thread`` worker
+#: with nothing cached yet. Without these, the callers that arrive during a
+#: version probe were answered None, which the service reports as
+#: ``git_too_old`` with no number in it -- the tab said the host's git was
+#: unreadable while the next poll said 2.53.0.
+#:
+#: Two locks and not one: the two probes answer unrelated questions, and a
+#: shared lock would make a version read wait behind a ``git config`` that
+#: has nothing to do with it. Nothing takes one while holding the other --
+#: :func:`_run` builds no environment of its own (that is the whole reason
+#: it exists), so neither probe can re-enter the other or itself.
+_version_lock = threading.Lock()
+_ssh_lock = threading.Lock()
+
 
 def _reset_for_tests() -> None:
     """Forget everything cached about the host's git.
@@ -308,30 +334,57 @@ def git_version() -> tuple[int, int, int] | None:
     runs, and the caller is a status endpoint the editor polls. A failure to
     read it is remembered for :data:`MISSING_RECHECK_S` only, so a broken or
     half-installed git does not become permanent.
+
+    "Once" has to mean the callers that arrive while the probe is RUNNING
+    wait for it (:data:`_version_lock`), and the negative stamp is written
+    only when the probe actually failed. Writing it before the probe made
+    the in-flight window look exactly like a remembered failure, and None
+    here is not "ask again later" to the caller -- ``resolve_repo`` turns it
+    into ``git_too_old`` with the version left empty, so three of the four
+    requests a mounting tab sends were told the host's git is unreadable.
+    Only the first read of the finished answer is unlocked, because it is
+    the one on the polled path and a module global is rebound whole.
+
+    The interval a failure buys therefore starts when the probe FAILED
+    rather than when it began: a git that has to be killed at
+    :data:`VERSION_TIMEOUT_S` would otherwise spend five of its thirty
+    seconds before anything had gone wrong.
     """
     global _version, _version_probed_at
 
     if _version is not None:
         return _version
-    now = time.monotonic()
-    if _version_probed_at is not None and now - _version_probed_at < MISSING_RECHECK_S:
-        return None
-    _version_probed_at = now
 
-    try:
-        # The base environment, not git_env(): a version check has no use
-        # for an ssh command, and probing for one from here would run a git
-        # process to find out how to run a git process.
-        result = _run(["--version"], cwd=_probe_cwd(), timeout=VERSION_TIMEOUT_S,
-                      env=_base_git_env())
-    except GitError:
-        return None
-    match = _VERSION_RE.search(result.out)
-    if match is None:
-        return None
-    major, minor, patch = match.group(1), match.group(2), match.group(3)
-    _version = (int(major), int(minor), int(patch or 0))
-    return _version
+    with _version_lock:
+        # Both caches again, now that this thread is the only prober: the
+        # caller that held the lock a moment ago may have answered the
+        # question, or found out that it cannot be answered yet.
+        if _version is not None:
+            return _version
+        if (_version_probed_at is not None
+                and time.monotonic() - _version_probed_at < MISSING_RECHECK_S):
+            return None
+
+        try:
+            # The base environment, not git_env(): a version check has no
+            # use for an ssh command, and probing for one from here would
+            # run a git process to find out how to run a git process.
+            result = _run(["--version"], cwd=_probe_cwd(),
+                          timeout=VERSION_TIMEOUT_S, env=_base_git_env())
+        except GitError:
+            _version_probed_at = time.monotonic()
+            return None
+        match = _VERSION_RE.search(result.out)
+        if match is None:
+            _version_probed_at = time.monotonic()
+            return None
+        major, minor, patch = match.group(1), match.group(2), match.group(3)
+        _version = (int(major), int(minor), int(patch or 0))
+        # An answer is not a failure: the stamp is the negative cache and
+        # nothing else, and one left behind would be a failure recorded
+        # against a call that worked.
+        _version_probed_at = None
+        return _version
 
 
 def _base_git_env() -> dict[str, str]:
@@ -397,6 +450,15 @@ def _ssh_command_configured(cwd: Path | None = None) -> bool:
     A missing git is the exception, and is deliberately NOT remembered here:
     nothing was probed, and ``git_executable`` already has its own recheck
     window for exactly that case.
+
+    "At most once" is :data:`_ssh_lock`'s to keep, for the same reason
+    :func:`git_version` needs one: the requests a mounting tab sends arrive
+    together, and an unfinished probe reads as "not asked yet" to every one
+    of them. That was never a WRONG answer here -- each caller ran its own
+    probe and got the same result -- but it is four ``git config`` processes
+    per burst instead of the one this cache promises, on exactly the host
+    that can least afford them, and the failure window below would start
+    before the probe that filled it.
     """
     global _ssh_probe_failed_at
 
@@ -405,21 +467,27 @@ def _ssh_command_configured(cwd: Path | None = None) -> bool:
     remembered = _ssh_configured.get(key)
     if remembered is not None:
         return remembered
-    now = time.monotonic()
-    if (_ssh_probe_failed_at is not None
-            and now - _ssh_probe_failed_at < MISSING_RECHECK_S):
-        return False
-    try:
-        result = _run(["config", "--get", "core.sshCommand"], cwd=where,
-                      timeout=SSH_PROBE_TIMEOUT_S, env=_base_git_env(),
-                      ok_codes=(0, 1))
-    except GitError as exc:
-        if exc.code != "git_missing":
-            _ssh_probe_failed_at = now
-        return False
-    answer = result.returncode == 0 and bool(result.out.strip())
-    _ssh_configured[key] = answer
-    return answer
+
+    with _ssh_lock:
+        # Asked again under the lock: the caller ahead of this one has
+        # answered it by now, for this directory or for the whole host.
+        remembered = _ssh_configured.get(key)
+        if remembered is not None:
+            return remembered
+        if (_ssh_probe_failed_at is not None
+                and time.monotonic() - _ssh_probe_failed_at < MISSING_RECHECK_S):
+            return False
+        try:
+            result = _run(["config", "--get", "core.sshCommand"], cwd=where,
+                          timeout=SSH_PROBE_TIMEOUT_S, env=_base_git_env(),
+                          ok_codes=(0, 1))
+        except GitError as exc:
+            if exc.code != "git_missing":
+                _ssh_probe_failed_at = time.monotonic()
+            return False
+        answer = result.returncode == 0 and bool(result.out.strip())
+        _ssh_configured[key] = answer
+        return answer
 
 
 def git_env(*, read_only: bool = False, cwd: Path | None = None) -> dict[str, str]:

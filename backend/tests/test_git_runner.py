@@ -25,6 +25,8 @@ import signal
 import subprocess
 import sys
 import tempfile
+import threading
+import time
 import types
 from pathlib import Path
 
@@ -44,7 +46,8 @@ class _FakeProc:
 
     def __init__(self, *, stdout: bytes = b"", stderr: bytes = b"",
                  returncode: int = 0, hangs: bool = False,
-                 ignores_sigterm: bool = False, on_wait=None):
+                 ignores_sigterm: bool = False, on_wait=None,
+                 delay: float = 0.0):
         self._stdout = stdout
         self._stderr = stderr
         self._returncode = returncode
@@ -53,6 +56,11 @@ class _FakeProc:
         #: Called from ``wait``, for a test that needs waiting to COST
         #: something on its fake clock. Real waiting does.
         self._on_wait = on_wait
+        #: REAL seconds ``communicate`` takes to answer, for the tests about
+        #: what a second caller sees WHILE a probe is running. A fake clock
+        #: cannot express that: the window is one other threads have to be
+        #: inside, and only a real sleep holds one open for them.
+        self._delay = delay
         self.pid = 4242
         self.returncode: int | None = None
         self.communicate_calls: list[tuple] = []
@@ -71,6 +79,8 @@ class _FakeProc:
         self.communicate_calls.append((input, timeout))
         if self._hangs and len(self.communicate_calls) == 1:
             raise subprocess.TimeoutExpired(cmd="git", timeout=timeout or 0)
+        if self._delay:
+            time.sleep(self._delay)
         self.returncode = self._returncode
         return self._stdout, self._stderr
 
@@ -1268,6 +1278,79 @@ def test_git_version_is_read_once(monkeypatch, fake_git):
     assert calls[0][-1] == "--version"
 
 
+def test_a_failed_version_probe_is_remembered_for_the_window(monkeypatch,
+                                                             fake_git):
+    """A git that will not say what it is costs one process per interval.
+
+    The status endpoint is polled while the tab is open, so a failure that
+    is retried on every call is a whole process a poll -- the same bargain
+    :func:`~app.core.git.runner.git_executable` strikes for a missing
+    binary, and the reason the negative cache exists at all.
+
+    The window runs from when the probe FAILED, and this fake git takes the
+    whole version timeout to fail -- a hung git that had to be killed, which
+    is the expensive case the cache is for. Stamped before the probe
+    instead, the interval would be short by however long the probe took, and
+    the recheck below would come five seconds early.
+    """
+    clock = [1000.0]
+    calls: list[list[str]] = []
+    monkeypatch.setattr(runner, "time",
+                        types.SimpleNamespace(monotonic=lambda: clock[0]))
+
+    def _popen(argv, **kwargs):
+        calls.append(argv)
+        # Asking COSTS: this git spent the whole timeout before failing.
+        clock[0] += runner.VERSION_TIMEOUT_S
+        return _FakeProc(returncode=128, stderr=b"fatal: bad config line 1\n")
+
+    monkeypatch.setattr(subprocess, "Popen", _popen)
+
+    assert runner.git_version() is None
+    clock[0] += runner.MISSING_RECHECK_S - 1
+    assert runner.git_version() is None
+    assert len(calls) == 1, "the failure was rechecked inside the window"
+
+    clock[0] += 2
+    assert runner.git_version() is None
+    assert len(calls) == 2, "the failure was never rechecked"
+
+
+def test_a_version_read_after_a_failure_forgets_it(monkeypatch, fake_git):
+    """A repaired git is remembered as an ANSWER, not as a failed probe.
+
+    The stamp is the negative cache and nothing else, so a probe that
+    succeeded has to clear it: left behind, it is a failure recorded for a
+    call that worked, and the next reader of that stamp would be reading
+    about a git that is fine.
+    """
+    clock = [1000.0]
+    calls: list[list[str]] = []
+    says: list[bytes | None] = [None]
+    monkeypatch.setattr(runner, "time",
+                        types.SimpleNamespace(monotonic=lambda: clock[0]))
+
+    def _popen(argv, **kwargs):
+        calls.append(argv)
+        if says[0] is None:
+            return _FakeProc(returncode=128, stderr=b"fatal: bad config line 1\n")
+        return _FakeProc(stdout=says[0])
+
+    monkeypatch.setattr(subprocess, "Popen", _popen)
+
+    assert runner.git_version() is None
+    clock[0] += runner.MISSING_RECHECK_S + 1
+    says[0] = b"git version 2.53.0\n"
+
+    assert runner.git_version() == (2, 53, 0)
+    assert runner._version_probed_at is None, \
+        "a successful probe left a failure behind it"
+
+    clock[0] += runner.MISSING_RECHECK_S + 1
+    assert runner.git_version() == (2, 53, 0)
+    assert len(calls) == 2, "the answer was thrown away and asked for again"
+
+
 def test_git_version_without_git_is_none(monkeypatch):
     """No git, no version -- and no traceback out of a status read."""
     monkeypatch.setattr(runner, "git_executable", lambda: None)
@@ -1280,3 +1363,92 @@ def test_git_version_survives_unreadable_output(monkeypatch, fake_git):
     _fake_popen(monkeypatch, _FakeProc(stdout=b"this is not git\n"))
 
     assert runner.git_version() is None
+
+
+# --- one probe at a time ---------------------------------------------------
+#
+# Both caches here are filled by a PROCESS, which takes long enough that
+# other callers arrive while it is running -- and they arrive together
+# rather than one at a time. A Source Control tab mounting after a server
+# restart fires four requests (status, branches, remotes, stashes) inside
+# the same millisecond, and every one of them lands in its own
+# ``asyncio.to_thread`` worker with nothing cached yet.
+#
+# So "asked once" has to mean the second caller WAITS for the first answer.
+# The failure it replaces was silent and looked like a real verdict: the
+# threads that arrived during a version probe were told None, the service
+# turned that into ``git_too_old`` with no number in it, and the tab said
+# the host's git was unreadable while the next poll said 2.53.0.
+
+
+def _answers_from_four_callers(call) -> list:
+    """Call *call* from four threads that start together; their answers.
+
+    The barrier is what makes the window real: no caller has an answer
+    before every caller is inside, which is the burst a tab mounts with. A
+    thread that raises leaves the list short, and the count is asserted.
+    """
+    ready = threading.Barrier(4)
+    answers: list = []
+
+    def _one() -> None:
+        ready.wait(timeout=5)
+        answers.append(call())
+
+    callers = [threading.Thread(target=_one) for _ in range(4)]
+    for caller in callers:
+        caller.start()
+    for caller in callers:
+        caller.join(timeout=10)
+    return answers
+
+
+def test_concurrent_callers_all_get_the_version_from_one_probe(monkeypatch,
+                                                               fake_git):
+    """Four threads, one ``git --version``, and four real answers.
+
+    The three that arrive while the probe is running must WAIT for it. Told
+    None instead -- which is what a negative-cache stamp written before the
+    probe says to them -- the service reports ``git_too_old`` with
+    ``git_version`` unset, and the tab claims the host's git cannot be read
+    on a machine running 2.53.
+    """
+    calls: list[list[str]] = []
+
+    def _popen(argv, **kwargs):
+        calls.append(argv)
+        # Long enough that the other three are certainly still inside.
+        return _FakeProc(stdout=b"git version 2.53.0.windows.2\n", delay=0.1)
+
+    monkeypatch.setattr(subprocess, "Popen", _popen)
+
+    answers = _answers_from_four_callers(runner.git_version)
+
+    assert answers == [(2, 53, 0)] * 4
+    assert len(calls) == 1, "the version was probed more than once"
+
+
+def test_concurrent_callers_share_one_ssh_probe(monkeypatch, tmp_path):
+    """...and the ``core.sshCommand`` probe is one process too.
+
+    Nothing here was ever answered WRONG -- an unfinished probe reads as
+    "not asked yet", so each caller ran its own and got the same answer --
+    but the promise this cache makes is one process per interval, and four
+    requests that arrive together break it: on a host whose config cannot be
+    read, every burst pays four ``git config`` processes and the failure
+    window starts before the probe that fills it.
+    """
+    monkeypatch.setattr(runner, "git_executable", lambda: _GIT)
+    probes: list[list[str]] = []
+
+    def _popen(argv, **kwargs):
+        probes.append(argv)
+        return _FakeProc(stdout=b"ssh -i C:/keys/deploy_key\n", delay=0.1)
+
+    monkeypatch.setattr(subprocess, "Popen", _popen)
+
+    answers = _answers_from_four_callers(
+        lambda: "GIT_SSH_COMMAND" in runner.git_env(cwd=tmp_path))
+
+    assert answers == [False] * 4, "a caller overrode the repository's own ssh"
+    assert len(probes) == 1, "the config was asked more than once"
