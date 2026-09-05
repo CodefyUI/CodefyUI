@@ -337,6 +337,29 @@ describe('HistorySection: what the section says when a read fails', () => {
     render(<HistorySection />);
     expect(within(section()).getByText('Teach the model to count')).toBeTruthy();
   });
+
+  it('says it beside Load more, which is the control that failed', () => {
+    // Thirty rows deep, the top of the list is off screen at any panel
+    // height: a refused page put its explanation there while the button that
+    // caused it lightened again, unexplained, at the bottom.
+    useGitStore.setState({
+      log: { commits: [commit()], hasMore: true, unborn: false, loading: false },
+      historyError: {
+        code: 'git_failed',
+        message: 'Failed to fetch',
+        hint: null,
+        stderr: null,
+        op: null,
+      },
+    });
+    render(<HistorySection />);
+
+    const rows = [...within(section()).getByRole('list').children].map(
+      (li) => li.textContent,
+    );
+    expect(rows[rows.length - 1]).toBe('Load more');
+    expect(rows[rows.length - 2]).toBe('Could not read History: Failed to fetch');
+  });
 });
 
 describe('HistorySection: copying the commit id', () => {

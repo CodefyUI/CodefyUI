@@ -116,17 +116,6 @@ export function HistorySection() {
       open={open}
       onOpenChange={(next) => setSectionOpen('history', next)}
     >
-      {/* The same line the three reference sections draw, for the same
-          reason: this read is the panel's own and its failure must not
-          replace the refusal the user was reading on the header. The
-          store's message rather than `errorSentence`, because the frame
-          around it already says which read failed and `git.error.generic`
-          ("git failed: ...") inside that frame is the same fact twice; a
-          timeout's sentence is already in `message`. */}
-      <RefError
-        message={historyError === null ? null : historyError.message}
-        what={t('git.section.history')}
-      />
       {log.commits.map((commit) => (
         <CommitRow
           key={commit.sha}
@@ -141,6 +130,24 @@ export function HistorySection() {
             openGitDiff({ path: file.path, scope: 'commit', sha: commit.sha })}
         />
       ))}
+      {/* The same line the three reference sections draw, for the same
+          reason: this read is the panel's own and its failure must not
+          replace the refusal the user was reading on the header. The
+          store's message rather than `errorSentence`, because the frame
+          around it already says which read failed and `git.error.generic`
+          ("git failed: ...") inside that frame is the same fact twice; a
+          timeout's sentence is already in `message`.
+
+          At the END here, where those three sections put it first. A
+          reference list is a handful of rows and top or bottom is the same
+          place; a page of history is thirty rows deep and its Load more is
+          the LAST of them, so a refused page drew its explanation off screen
+          while the button that caused it lightened again where it stood.
+          A failed first page leaves the list empty, so nothing regresses. */}
+      <RefError
+        message={historyError === null ? null : historyError.message}
+        what={t('git.section.history')}
+      />
       {/* Never on an unborn branch: there is no page after a history that
           does not exist, whatever a server answers about one. */}
       {log.hasMore && !log.unborn && (
