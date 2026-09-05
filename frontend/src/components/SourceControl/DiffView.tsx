@@ -1,3 +1,4 @@
+import { useMemo } from 'react';
 import type { DiffFile, DiffHunk, DiffLine, DiffLineKind } from '../../utils/unifiedDiff';
 import { toSplitRows } from '../../utils/unifiedDiff';
 import { useI18n } from '../../i18n';
@@ -17,6 +18,23 @@ export type DiffViewMode = 'unified' | 'split';
 const SIGN: Record<DiffLineKind, string> = { context: ' ', add: '+', del: '-' };
 
 /**
+ * How many lines of a patch are DRAWN.
+ *
+ * The route caps what is fetched at 1 MiB, which is a different question: a
+ * megabyte cut exactly where `diff.py` cuts it parses to about twenty thousand
+ * lines, and the unified view draws four elements per line. Measured in
+ * Chrome 151, building and laying out that grid took 1.3 s of frozen tab
+ * -- after `setLoading(false)`, so the loading line was already gone and the
+ * window was simply unresponsive -- and toggling to Side by side, which is six
+ * elements per line, paid it again. A project directory holding a dataset or a
+ * generated JSON reaches that with one click.
+ *
+ * Two thousand lines is about ten thousand elements, and far more than anybody
+ * reads in a side panel. What is cut off is said in words under the last line.
+ */
+export const MAX_DIFF_LINES = 2000;
+
+/**
  * One file's patch, as hunks of numbered lines.
  *
  * Plain elements with `white-space: pre` rather than a `<pre>` holding the
@@ -26,15 +44,21 @@ const SIGN: Record<DiffLineKind, string> = { context: ' ', add: '+', del: '-' };
  * The monospace and the preserved whitespace are the stylesheet's, which is
  * all a `<pre>` was ever bringing.
  *
- * Nothing here is virtualised: the route caps a patch at 1 MiB and says so,
- * and a megabyte of lines in one modal is a problem this build does not have.
+ * Nothing here is virtualised. What keeps that honest is {@link
+ * MAX_DIFF_LINES}: the number of lines DRAWN is capped, and the rest is said
+ * in one sentence rather than laid out.
  */
 export function DiffView({ file, mode }: { file: DiffFile; mode: DiffViewMode }) {
+  const { t } = useI18n();
+  // Per FILE, not per mode: the two views draw the same lines, so toggling
+  // between them must not walk the patch again.
+  const drawn = useMemo(() => cutToLimit(file.hunks), [file]);
+
   return (
     // Its own scroller. A diff is as wide as its longest line, and a modal
     // that grew with it would take the page's horizontal scrollbar with it.
     <div className={styles.diff}>
-      {file.hunks.map((hunk) => (
+      {drawn.hunks.map((hunk) => (
         <div className={styles.hunk} key={hunk.header + String(hunk.newStart)}>
           {/* git's own `@@ -a,b +c,d @@`, section heading and all: it is what
               says where in the file the next lines are. */}
@@ -42,8 +66,39 @@ export function DiffView({ file, mode }: { file: DiffFile; mode: DiffViewMode })
           {mode === 'unified' ? <UnifiedHunk hunk={hunk} /> : <SplitHunk hunk={hunk} />}
         </div>
       ))}
+      {drawn.cut && (
+        // Under the last line that IS drawn, which is where a reader who has
+        // scrolled that far finds it.
+        <div className={styles.lineCap}>
+          {t('git.diff.tooManyLines', { count: MAX_DIFF_LINES })}
+        </div>
+      )}
     </div>
   );
+}
+
+/**
+ * The hunks up to the line limit, and whether anything was left out.
+ *
+ * The last hunk drawn keeps its own header and numbers and loses only the
+ * lines past the cap, so the reader is never shown a hunk that claims lines it
+ * does not have -- and a patch under the cap is handed back untouched, array
+ * and all, so the common case allocates nothing.
+ */
+function cutToLimit(hunks: DiffHunk[]): { hunks: DiffHunk[]; cut: boolean } {
+  let left = MAX_DIFF_LINES;
+  const kept: DiffHunk[] = [];
+  for (const hunk of hunks) {
+    if (left <= 0) return { hunks: kept, cut: true };
+    if (hunk.lines.length <= left) {
+      kept.push(hunk);
+      left -= hunk.lines.length;
+      continue;
+    }
+    kept.push({ ...hunk, lines: hunk.lines.slice(0, left) });
+    return { hunks: kept, cut: true };
+  }
+  return { hunks, cut: false };
 }
 
 /** The old and the new interleaved, which is how git writes a patch. */

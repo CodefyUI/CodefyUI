@@ -249,6 +249,20 @@
   white-space: pre;
 }
 
+/* What the draw limit left out, under the last line that was drawn. Wraps,
+   unlike every other row in this box: it is a sentence and not a line of a
+   file. */
+.lineCap {
+  position: sticky;
+  left: 0;
+  padding: var(--sp-2) var(--sp-3);
+  border-top: 1px solid var(--border-subtle);
+  color: var(--status-warning);
+  font-size: var(--fs-2xs);
+  line-height: var(--lh-normal);
+  white-space: normal;
+}
+
 /* Two number columns, the sign, then the text. `grid` rather than flex so
    every row's text starts on the same edge whatever the numbers are. */
 .line {

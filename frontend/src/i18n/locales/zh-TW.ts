@@ -1208,6 +1208,7 @@ const zhTW: Record<TranslationKey, string> = {
   'git.diff.scope.commit': '提交 {sha}',
   'git.diff.binary': '二進位檔案，無文字差異。',
   'git.diff.truncated': '差異已在 {kb} KB 處截斷。',
+  'git.diff.tooManyLines': '這裡只顯示前 {count} 行，其餘請開啟檔案閱讀。',
   'git.diff.empty': '沒有變更',
   'git.diff.noNewline': '檔案結尾沒有換行',
   'git.gdiff.nodesAdded': '新增 {count} 個節點',

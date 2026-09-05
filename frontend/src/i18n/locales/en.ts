@@ -1399,6 +1399,10 @@ const en = {
   'git.diff.scope.commit': 'Commit {sha}',
   'git.diff.binary': 'Binary file; no text diff.',
   'git.diff.truncated': 'Diff truncated at {kb} KB.',
+  // A different cut from the one above: that one is what the SERVER sent,
+  // this one is what the window draws. A patch of twenty thousand lines is a
+  // second of frozen tab and nothing anybody reads in a side panel.
+  'git.diff.tooManyLines': 'Only the first {count} lines are shown here. Open the file to read the rest.',
   'git.diff.empty': 'No changes',
   // git's own note, drawn on the line it is about. Without it the change is
   // two lines whose text is identical to the character.

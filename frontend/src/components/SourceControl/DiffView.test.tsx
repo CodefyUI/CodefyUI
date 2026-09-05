@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { render, screen } from '@testing-library/react';
-import { DiffView } from './DiffView';
+import { DiffView, MAX_DIFF_LINES } from './DiffView';
 import { parseUnifiedDiff } from '../../utils/unifiedDiff';
 
 /*
@@ -89,6 +89,46 @@ describe('DiffView: the unified shape', () => {
   it('keeps git\'s own hunk header, section heading and all', () => {
     render(<DiffView file={file} mode="unified" />);
     expect(screen.getByText('@@ -10,4 +20,3 @@ def train():')).toBeTruthy();
+  });
+});
+
+describe('DiffView: how much of a patch is drawn', () => {
+  /** One hunk of `count` added lines, as git would write it. */
+  const bigFile = (count: number) => parseUnifiedDiff([
+    'diff --git a/data.json b/data.json',
+    'index 1111111..2222222 100644',
+    '--- a/data.json',
+    '+++ b/data.json',
+    `@@ -0,0 +1,${count} @@`,
+    ...Array.from({ length: count }, (_, i) => `+row ${i}`),
+    '',
+  ].join('\n'));
+
+  it('stops at the line limit and says what it left out', () => {
+    // The route caps what is FETCHED at 1 MiB, which cut exactly there is
+    // about twenty thousand lines -- four elements each in this view, and
+    // over a second of frozen tab to lay out.
+    const { container } = render(
+      <DiffView file={bigFile(MAX_DIFF_LINES + 50)} mode="unified" />,
+    );
+    expect(container.querySelectorAll('[data-kind]')).toHaveLength(MAX_DIFF_LINES);
+    expect(screen.getByText(
+      `Only the first ${MAX_DIFF_LINES} lines are shown here. Open the file to read the rest.`,
+    )).toBeTruthy();
+  });
+
+  it('says nothing about a limit it did not reach', () => {
+    render(<DiffView file={bigFile(10)} mode="unified" />);
+    expect(screen.queryByText(/Only the first/)).toBeNull();
+  });
+
+  it('draws the same lines in the two columns, and no more', () => {
+    const { container } = render(
+      <DiffView file={bigFile(MAX_DIFF_LINES + 50)} mode="split" />,
+    );
+    // Six spans per row, three of them the empty half of an addition.
+    expect(container.querySelectorAll('[data-row]')).toHaveLength(MAX_DIFF_LINES);
+    expect(screen.getByText(/Only the first/)).toBeTruthy();
   });
 });
 
