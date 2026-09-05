@@ -319,9 +319,11 @@ describe('SourceControlTab: the three reference sections', () => {
     render(<SourceControlTab />);
     expect(within(section('Branches')).getByText('2')).toBeTruthy();
     expect(within(section('Remotes')).getByText('1')).toBeTruthy();
-    // The list that was read wins over the status's count: it is the one whose
-    // rows the section is about to draw.
-    expect(within(section('Stashes')).getByText('0')).toBeTruthy();
+    // The STATUS wins for the stashes: it is the half the poll keeps fresh,
+    // and a `git stash push` at the command line moves it while the list --
+    // read when the section opens -- stays where it was. The section re-reads
+    // itself on the disagreement; the count is right in the meantime.
+    expect(within(section('Stashes')).getByText('4')).toBeTruthy();
   });
 
   it('counts stashes from the status until the list has been read', () => {

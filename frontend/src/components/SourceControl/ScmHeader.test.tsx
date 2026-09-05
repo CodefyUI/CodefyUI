@@ -132,6 +132,35 @@ describe('ScmHeader: the title row', () => {
     expect(refresh).toHaveBeenCalledTimes(1);
   });
 
+  it('refreshes every OPEN section\'s list beside the status', async () => {
+    // Half of what this tab shows is written somewhere else -- a stash pushed
+    // at the command line, a commit made in an editor -- and a hidden tab
+    // runs no poll at all. So Refresh read the status and left the Stashes
+    // count and the branch list as they were, which is the one button whose
+    // whole job is to make the panel true.
+    useGitStore.setState({
+      sections: { branches: true, remotes: false, stashes: true },
+    });
+    render(<ScmHeader />);
+    refreshRefs.mockClear();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Refresh' }));
+
+    expect(refresh).toHaveBeenCalledTimes(1);
+    expect(refreshRefs).toHaveBeenCalledWith('branches');
+    expect(refreshRefs).toHaveBeenCalledWith('stashes');
+    // Not the closed one: nothing is on screen for it to be wrong about.
+    expect(refreshRefs).not.toHaveBeenCalledWith('remotes');
+  });
+
+  it('reads no list at all when every section is collapsed', () => {
+    render(<ScmHeader />);
+    refreshRefs.mockClear();
+    fireEvent.click(screen.getByRole('button', { name: 'Refresh' }));
+    expect(refresh).toHaveBeenCalledTimes(1);
+    expect(refreshRefs).not.toHaveBeenCalled();
+  });
+
   it('offers the five git actions above the three panel ones', () => {
     render(<ScmHeader />);
     const menu = openMore();

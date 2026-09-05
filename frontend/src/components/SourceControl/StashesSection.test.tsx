@@ -62,6 +62,7 @@ let stashPop: ReturnType<typeof vi.fn<GitActions['stashPop']>>;
 let stashApply: ReturnType<typeof vi.fn<GitActions['stashApply']>>;
 let stashDrop: ReturnType<typeof vi.fn<GitActions['stashDrop']>>;
 let setSectionOpen: ReturnType<typeof vi.fn<GitActions['setSectionOpen']>>;
+let refreshRefs: ReturnType<typeof vi.fn<GitActions['refreshRefs']>>;
 
 beforeEach(() => {
   vi.useFakeTimers({ shouldAdvanceTime: true });
@@ -74,15 +75,20 @@ beforeEach(() => {
   stashApply = vi.fn(async () => true);
   stashDrop = vi.fn(async () => true);
   setSectionOpen = vi.fn();
+  refreshRefs = vi.fn(async () => {});
   useGitStore.setState({
     repoState: 'ready',
-    status: status(),
+    // The two agree, which is the ordinary state: the poll and the list read
+    // are answers about the same stack, and a section that disagrees with the
+    // status re-reads itself (see the case below).
+    status: status({ stash_count: 1 }),
     stashes: [stash()],
     sections: { branches: false, remotes: false, stashes: true },
     stashPop,
     stashApply,
     stashDrop,
     setSectionOpen,
+    refreshRefs,
   });
 });
 
@@ -140,6 +146,39 @@ describe('StashesSection: the rows', () => {
     expect(within(section()).getByText('4')).toBeTruthy();
     // Not read yet is not "none": the sentence waits for an answer.
     expect(screen.queryByText('No stashes')).toBeNull();
+    // Nothing to disagree with, so nothing is re-read.
+    expect(refreshRefs).not.toHaveBeenCalled();
+  });
+
+  it('counts from the status once the list has been read too', () => {
+    // The status is what the fifteen-second poll refreshes; the list is read
+    // when the section opens and after a stash write. A `git stash push` at
+    // the command line moves the first and not the second, and the count
+    // stayed 0 beside a status that said 1 for as long as the tab was open.
+    useGitStore.setState({ stashes: [], status: status({ stash_count: 2 }) });
+    render(<StashesSection />);
+    expect(within(section()).getByText('2')).toBeTruthy();
+  });
+
+  it('re-reads the list when the status disagrees with it, and only once', async () => {
+    useGitStore.setState({ stashes: [], status: status({ stash_count: 2 }) });
+    render(<StashesSection />);
+    await waitFor(() => expect(refreshRefs).toHaveBeenCalledWith('stashes'));
+    // The read is out; a re-render while it is in flight must not send it
+    // again, or a server that keeps answering the old list would be asked
+    // once per render, forever.
+    useGitStore.setState({ status: status({ stash_count: 2 }) });
+    expect(refreshRefs).toHaveBeenCalledTimes(1);
+  });
+
+  it('stops re-reading once the two agree again', async () => {
+    useGitStore.setState({ stashes: [], status: status({ stash_count: 1 }) });
+    render(<StashesSection />);
+    await waitFor(() => expect(refreshRefs).toHaveBeenCalledTimes(1));
+
+    useGitStore.setState({ stashes: [stash()] });
+    await waitFor(() => expect(within(section()).getByText('1')).toBeTruthy());
+    expect(refreshRefs).toHaveBeenCalledTimes(1);
   });
 
   it('says a repository has no stashes once the list has been read', () => {

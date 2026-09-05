@@ -396,7 +396,16 @@ function pageVisible(): boolean {
   return document.visibilityState === 'visible';
 }
 
-const REF_KINDS: readonly GitRefKind[] = ['branches', 'remotes', 'stashes'];
+/**
+ * The three reference lists, in the order the panel draws them.
+ *
+ * Exported because the header's Refresh button walks the same three: pressing
+ * it reads the status AND every open section's list, which is what makes it
+ * the one control that answers "the panel is out of date" -- a hidden tab
+ * runs no poll, so a stash pushed at the command line is invisible until
+ * something asks.
+ */
+export const REF_KINDS: readonly GitRefKind[] = ['branches', 'remotes', 'stashes'];
 
 /**
  * Read every open section's list, where there is a repository to read.

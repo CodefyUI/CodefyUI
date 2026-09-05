@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useId, useRef, useState } from 'react';
-import { isLayoutFile, useGitStore, type GitRefKind } from '../../store/gitStore';
+import { REF_KINDS, isLayoutFile, useGitStore, type GitRefKind } from '../../store/gitStore';
 import { useI18n } from '../../i18n';
 import { docsUrl } from '../../utils/docsUrl';
 import { prompt } from '../../utils/dialog';
@@ -107,7 +107,8 @@ export function ScmHeader() {
   const busyOp = useGitStore((s) => s.busyOp);
   const netOp = useGitStore((s) => s.netOp);
   const remotes = useGitStore((s) => s.remotes);
-  const branchesOpen = useGitStore((s) => s.sections.branches);
+  const sections = useGitStore((s) => s.sections);
+  const branchesOpen = sections.branches;
   const lastError = useGitStore((s) => s.lastError);
   const loadError = useGitStore((s) => s.loadError);
   const hideLayout = useGitStore((s) => s.hideLayout);
@@ -231,6 +232,23 @@ export function ScmHeader() {
     }
     await runPublish();
   }, [refreshRefs, runPublish, setSectionOpen]);
+
+  /**
+   * Read everything that is on screen, which is what Refresh means.
+   *
+   * The status AND every OPEN section's list. A hidden tab runs no poll at
+   * all, so the panel a user comes back to can be minutes old in every one of
+   * its four parts -- and a Refresh that read the status alone left the
+   * Stashes count and the branch rows exactly as stale as they were, next to
+   * a header that had just updated. A closed section is not read: nothing of
+   * it is on screen to be wrong.
+   */
+  const refreshPanel = useCallback(() => {
+    void refresh();
+    for (const kind of REF_KINDS) {
+      if (sections[kind]) void refreshRefs(kind);
+    }
+  }, [refresh, refreshRefs, sections]);
 
   const askThenStash = useCallback(async () => {
     const message = await prompt({ title: t('git.stash.messagePrompt') });
@@ -480,7 +498,7 @@ export function ScmHeader() {
         <button
           type="button"
           className={shell.toolbarButton}
-          onClick={() => void refresh()}
+          onClick={refreshPanel}
           aria-label={t('sidebar.refresh')}
           title={t('sidebar.refresh')}
         >

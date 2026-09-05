@@ -1,4 +1,4 @@
-import { useCallback } from 'react';
+import { useCallback, useEffect, useRef } from 'react';
 import type { StashInfo } from '../../api/git';
 import { useGitStore } from '../../store/gitStore';
 import { useI18n } from '../../i18n';
@@ -36,13 +36,41 @@ function selectorFor(stash: StashInfo): string {
 export function StashesSection() {
   const { t, locale } = useI18n();
   const stashes = useGitStore((s) => s.stashes);
-  const stashCount = useGitStore((s) => s.status?.stash_count ?? 0);
+  // Null while no status has answered, which is not the same as zero.
+  const stashCount = useGitStore((s) => s.status?.stash_count ?? null);
   const open = useGitStore((s) => s.sections.stashes);
   const refsError = useGitStore((s) => s.refsError.stashes);
   const setSectionOpen = useGitStore((s) => s.setSectionOpen);
+  const refreshRefs = useGitStore((s) => s.refreshRefs);
   const stashPop = useGitStore((s) => s.stashPop);
   const stashApply = useGitStore((s) => s.stashApply);
   const stashDrop = useGitStore((s) => s.stashDrop);
+
+  // The count this list was last re-read for, so one disagreement asks once.
+  const askedFor = useRef<number | null>(null);
+
+  /**
+   * Read the list again whenever the status says it is the wrong length.
+   *
+   * The two come from different reads at different times: the status is the
+   * fifteen-second poll (and every mutation's answer), while the list is read
+   * when the section opens and after a stash write. A `git stash push` at the
+   * command line moves only the first, so the rows on screen were a stack
+   * that no longer existed -- and the panel had the evidence in its own
+   * store. One read per disagreement: the answer either settles it or the
+   * count moves again, and a re-read on every render would ask a server that
+   * kept answering the old list once a frame.
+   */
+  useEffect(() => {
+    if (stashes === null || stashCount === null) return;
+    if (stashes.length === stashCount) {
+      askedFor.current = null;
+      return;
+    }
+    if (askedFor.current === stashCount) return;
+    askedFor.current = stashCount;
+    void refreshRefs('stashes');
+  }, [refreshRefs, stashCount, stashes]);
 
   const askThenDrop = useCallback(
     async (stash: StashInfo) => {
@@ -61,10 +89,13 @@ export function StashesSection() {
     <RefSection
       kind="stashes"
       title={t('git.section.stashes')}
-      // The list wins where it has been read, because those are the rows the
-      // section is about to draw; the status carries the count on every poll
-      // before that.
-      count={stashes?.length ?? stashCount}
+      // The STATUS wins: it is the half the poll keeps fresh, and every write
+      // answers with a new one. The list is a read that happens when the
+      // section opens -- so after a `git stash push` at the command line the
+      // list said 0 beside a status that said 1, and went on saying it for as
+      // long as the tab stayed open. The list is the fallback for the moment
+      // before any status has answered.
+      count={stashCount ?? stashes?.length ?? 0}
       open={open}
       onOpenChange={(next) => setSectionOpen('stashes', next)}
     >
