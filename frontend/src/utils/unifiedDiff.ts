@@ -8,6 +8,15 @@
  * view from the patch here is what lets the tab show two columns without
  * `@codemirror/merge` and without a second `blobs=1` round trip.
  *
+ * Two shapes arrive here, not one. A tracked file's change is the two-way
+ * patch everybody pictures. A CONFLICTED file is an unmerged path, and git
+ * answers those in its COMBINED format instead -- `diff --cc`, one prefix
+ * column per parent, and one more `@` at each end of the hunk header -- which
+ * is what the tab gets every time a reader opens a row under Merge Changes.
+ * Both are read into the same hunks and lines: a row is an addition when any
+ * column holds `+`, a removal when any holds `-`, and context when they are
+ * all spaces.
+ *
  * The patch it is handed is not always well formed. `diff.py` caps the
  * response at one mebibyte and hands over the prefix of the BYTES, so a
  * routine large diff ends mid-hunk, mid-line, or mid-header. Nothing in here
@@ -45,6 +54,11 @@ export interface DiffLine {
 }
 
 export interface DiffHunk {
+  /**
+   * Where the old side of this hunk starts. On a combined hunk -- one per
+   * parent -- this is the LAST of the ranges git wrote, which is the parent
+   * the `oldNo` column follows.
+   */
   oldStart: number;
   oldLines: number;
   newStart: number;
@@ -68,8 +82,24 @@ export interface SplitRow {
   right?: DiffLine;
 }
 
-const HUNK_HEADER = /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@(.*)$/;
+/**
+ * A hunk header, in the two-way form and in git's COMBINED form.
+ *
+ * `@@ -a,b +c,d @@` is what a diff of two things looks like. An UNMERGED path
+ * -- which is exactly what the tab opens when a reader presses a conflicted
+ * row -- is not a diff of two things: git answers `@@@ -a,b -e,f +c,d @@@`,
+ * one `-` range per parent and one more `@` at each end. The run of `@` is
+ * captured and back-referenced so the closing run has to match the opening
+ * one, and one old range or twenty are read the same way.
+ */
+const HUNK_HEADER = /^(@{2,}) ((?:-\d+(?:,\d+)? )+)\+(\d+)(?:,(\d+))? \1(.*)$/;
+/** One `-a[,b]` range out of the run the header opens with. */
+const OLD_RANGE = /^-(\d+)(?:,(\d+))?$/;
+/** A row of content carries one of these three in every prefix column. */
+const CONTENT_PREFIX = /^[ +-]+$/;
 const GIT_HEADER = 'diff --git ';
+/** The combined header, which names ONE path and gives it no side prefix. */
+const CC_HEADER = 'diff --cc ';
 /** `"quoted path"` or one run of non-space, twice, and nothing else. */
 const GIT_HEADER_PAIR = /^("(?:[^"\\]|\\.)*"|\S+) ("(?:[^"\\]|\\.)*"|\S+)$/;
 const DEV_NULL = '/dev/null';
@@ -97,6 +127,8 @@ export function parseUnifiedDiff(patch: string): DiffFile {
   const rows = patch.split('\n');
   const hunks: DiffHunk[] = [];
   let hunk: DiffHunk | null = null;
+  /** How many prefix columns the open hunk's rows carry: one per parent. */
+  let columns = 1;
   let oldNo = 0;
   let newNo = 0;
   let started = false;
@@ -111,18 +143,40 @@ export function parseUnifiedDiff(patch: string): DiffFile {
 
     const opened = HUNK_HEADER.exec(line);
     if (opened !== null) {
+      // The LAST of the old ranges. A combined hunk has one per parent and
+      // this view has ONE old column, so the numbers in it can only follow one
+      // of them -- and on a conflicted file that column is a guide to where in
+      // the file you are, not an address to quote: a row present in one parent
+      // and absent from the other is an addition here, so the old numbers skip
+      // it. The new column, which is the working tree, is exact.
+      const old = OLD_RANGE.exec(opened[2].trim().split(' ').pop() ?? '');
       hunk = {
-        oldStart: Number(opened[1]),
-        oldLines: opened[2] === undefined ? 1 : Number(opened[2]),
+        oldStart: old === null ? 0 : Number(old[1]),
+        oldLines: old === null || old[2] === undefined ? 1 : Number(old[2]),
         newStart: Number(opened[3]),
         newLines: opened[4] === undefined ? 1 : Number(opened[4]),
         header: line,
         lines: [],
       };
+      // git writes one more `@` than there are parents.
+      columns = opened[1].length - 1;
       oldNo = hunk.oldStart;
       newNo = hunk.newStart;
       hunks.push(hunk);
       started = true;
+      continue;
+    }
+
+    if (line.startsWith(CC_HEADER)) {
+      if (seenGitHeader) break;
+      seenGitHeader = true;
+      // One path, and no `a/` or `b/`: there is nothing to pair when the two
+      // sides are stages of the same file. It is the only place the path is
+      // written for a conflicted BINARY file, whose patch is this line, an
+      // index line and "Binary files differ".
+      const only = unquotePath(line.slice(CC_HEADER.length));
+      gitOld = only;
+      gitNew = only;
       continue;
     }
 
@@ -151,10 +205,17 @@ export function parseUnifiedDiff(patch: string): DiffFile {
     }
 
     if (hunk !== null) {
-      const prefix = row.charAt(0);
-      if (prefix === ' ' || prefix === '+' || prefix === '-') {
-        const kind: DiffLineKind = prefix === '+' ? 'add' : prefix === '-' ? 'del' : 'context';
-        const entry: DiffLine = { kind, text: row.slice(1) };
+      // One column per parent, so a conflicted file's rows carry two. A `+`
+      // in ANY column means the row is in the result and new to at least one
+      // parent; a `-` in any column means it is in a parent and not in the
+      // result; all spaces is context. Read from `row` rather than `line` so
+      // a CRLF file keeps its CR in the text.
+      const prefix = row.slice(0, columns);
+      if (prefix.length === columns && CONTENT_PREFIX.test(prefix)) {
+        const kind: DiffLineKind = prefix.includes('+')
+          ? 'add'
+          : prefix.includes('-') ? 'del' : 'context';
+        const entry: DiffLine = { kind, text: row.slice(columns) };
         if (kind !== 'add') {
           entry.oldNo = oldNo;
           oldNo += 1;

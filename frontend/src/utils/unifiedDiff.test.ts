@@ -68,6 +68,50 @@ index 2090089..0000000
 \\ No newline at end of file
 `;
 
+// What `git diff -- <path>` answers for an UNMERGED path -- the combined
+// format, not a two-way patch. Captured from a real conflict (git 2.53) with
+// the argv `_plan` takes for a conflicted file, which is the tracked worktree
+// branch: `diff --no-color --no-ext-diff -M -- conf.txt`. Two parents, so two
+// prefix columns and one more `@` at each end of the hunk header.
+const CONFLICTED = `diff --cc conf.txt
+index f797e30,ffafd7c..0000000
+--- a/conf.txt
++++ b/conf.txt
+@@@ -1,3 -1,3 +1,7 @@@
+  line one
+++<<<<<<< HEAD
+ +OURS two
+++=======
++ THEIRS two
+++>>>>>>> feature
+  line three
+`;
+
+// The same shape where one side lost its final newline: git then writes a
+// REMOVAL row inside the combined hunk, which the two-column reading has to
+// classify from either column rather than from the first one alone.
+const CONFLICTED_REMOVAL = `diff --cc n.txt
+index 9f413b8,54a85b9..0000000
+--- a/n.txt
++++ b/n.txt
+@@@ -1,3 -1,3 +1,7 @@@
+  one
+  two
+- OURS
+++<<<<<<< HEAD
+++OURS
+++=======
++ THEIRS
+++>>>>>>> feature
+`;
+
+// A conflicted BINARY file: git names the path once, on the `diff --cc` line,
+// and writes no `---`/`+++` pair at all.
+const CONFLICTED_BINARY = `diff --cc b.bin
+index 43c4d52,7edafa3..0000000
+Binary files differ
+`;
+
 const ONE_LINE = `diff --git a/s.txt b/s.txt
 index 6c542ab..bc8c7b4 100644
 --- a/s.txt
@@ -182,6 +226,70 @@ describe('parseUnifiedDiff', () => {
     expect(file.oldPath).toBe('n.txt');
     expect(file.newPath).toBe('/dev/null');
     expect(file.hunks[0].lines.map((l) => l.oldNo)).toEqual([1, 2, 3]);
+  });
+
+  it('reads the combined patch git answers for a conflicted path', () => {
+    // The one file a diff matters most for. `_plan` sends a conflicted path
+    // down the tracked worktree branch, git sees an UNMERGED path and answers
+    // in the combined format -- so a parser that only knows `@@ -a,b +c,d @@`
+    // opens no hunk at all and the window says "No changes" over a file full
+    // of conflict markers.
+    const file = parseUnifiedDiff(CONFLICTED);
+    expect(file.oldPath).toBe('conf.txt');
+    expect(file.newPath).toBe('conf.txt');
+    expect(file.hunks).toHaveLength(1);
+    expect(file.hunks[0]).toMatchObject({
+      // The LAST old range, which is the parent the old column follows.
+      oldStart: 1, oldLines: 3, newStart: 1, newLines: 7,
+      header: '@@@ -1,3 -1,3 +1,7 @@@',
+    });
+  });
+
+  it('reads a combined row from either column and drops both of them', () => {
+    // Two columns, so a row is an addition when EITHER holds a `+`: the two
+    // sides of the conflict are ` +OURS two` and `+ THEIRS two`, and reading
+    // only the first column would call one of them context and print it with
+    // its neighbour's column still in the text.
+    const { hunks } = parseUnifiedDiff(CONFLICTED);
+    expect(hunks[0].lines.map((l) => [l.kind, l.text])).toEqual([
+      ['context', 'line one'],
+      ['add', '<<<<<<< HEAD'],
+      ['add', 'OURS two'],
+      ['add', '======='],
+      ['add', 'THEIRS two'],
+      ['add', '>>>>>>> feature'],
+      ['context', 'line three'],
+    ]);
+    expect(hunks[0].lines.map((l) => l.newNo)).toEqual([1, 2, 3, 4, 5, 6, 7]);
+  });
+
+  it('reads a removal row inside a combined hunk from its second column', () => {
+    const { hunks } = parseUnifiedDiff(CONFLICTED_REMOVAL);
+    expect(hunks[0].lines.map((l) => [l.kind, l.text])).toEqual([
+      ['context', 'one'],
+      ['context', 'two'],
+      ['del', 'OURS'],
+      ['add', '<<<<<<< HEAD'],
+      ['add', 'OURS'],
+      ['add', '======='],
+      ['add', 'THEIRS'],
+      ['add', '>>>>>>> feature'],
+    ]);
+    // The removal is on the old side only, and the rows after it carry on
+    // numbering the result.
+    expect(hunks[0].lines.map((l) => [l.oldNo, l.newNo])).toEqual([
+      [1, 1], [2, 2], [3, undefined],
+      [undefined, 3], [undefined, 4], [undefined, 5], [undefined, 6], [undefined, 7],
+    ]);
+  });
+
+  it('takes a conflicted binary file\'s path off the diff --cc line', () => {
+    // No `---`/`+++` pair at all, and the combined header names the path ONCE
+    // with no a/ or b/ prefix.
+    const file = parseUnifiedDiff(CONFLICTED_BINARY);
+    expect(file.oldPath).toBe('b.bin');
+    expect(file.newPath).toBe('b.bin');
+    expect(file.hunks).toEqual([]);
   });
 
   it('answers an empty patch with no hunks and no paths rather than throwing', () => {

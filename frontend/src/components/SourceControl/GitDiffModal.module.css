@@ -163,6 +163,15 @@
   overflow-wrap: anywhere;
 }
 
+/* A patch that arrived with bytes in it and yielded no hunks -- a shape this
+   build's parser does not know. Shown as the text git wrote rather than
+   summarised as "No changes", which would be a claim about the FILE made out
+   of a fact about the reader. Same box as git's own tail below an error. */
+.rawPatch {
+  composes: stderr;
+  margin-top: 0;
+}
+
 /* ── What changed in the graph ──────────────────────────────────────────── */
 
 /* Above the patch, and washed so it reads as a summary OF what is below

@@ -169,7 +169,12 @@ function GitDiffBody({ target }: { target: GitDiffTarget }) {
   const scopeLabel = t(SCOPE_KEY[target.scope], {
     sha: (target.sha ?? '').slice(0, SHORT_SHA),
   });
-  const empty = file !== null && file.hunks.length === 0;
+  // "No changes" is what GIT said, never what this parser managed to read. The
+  // two used to be one test, and a shape the parser did not know -- which is
+  // what an unmerged path's combined patch was until it was taught one -- came
+  // out as a confident "No changes" over a file full of conflict markers. A
+  // patch with bytes in it that yields no hunks is now shown as the text it is.
+  const empty = file !== null && diff !== null && diff.patch.trim() === '';
   // A conflicted file has no index copy until it is settled -- there is no
   // stage 0 -- so one of the two columns could only be a guess, and the
   // choice is not offered rather than offered and refused.
@@ -270,7 +275,11 @@ function GitDiffBody({ target }: { target: GitDiffTarget }) {
                   {t('git.diff.truncated', { kb: PATCH_CAP_KB })}
                 </p>
               )}
-              {file !== null && <DiffView file={file} mode={mode} />}
+              {file !== null && (file.hunks.length > 0 ? (
+                <DiffView file={file} mode={mode} />
+              ) : (
+                <pre className={styles.rawPatch}>{diff.patch}</pre>
+              ))}
             </>
           )}
         </div>

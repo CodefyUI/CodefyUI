@@ -36,6 +36,26 @@ const PATCH = [
   '',
 ].join('\n');
 
+// What git really answers for an UNMERGED path: the combined format, two
+// prefix columns and a `@@@` header. Captured from a real conflict, because
+// this is the exact patch a conflicted row opens and a two-way fixture in its
+// place would let a parser that cannot read one pass this file.
+const CONFLICT_PATCH = [
+  'diff --cc src/model.py',
+  'index f797e30,ffafd7c..0000000',
+  '--- a/src/model.py',
+  '+++ b/src/model.py',
+  '@@@ -1,3 -1,3 +1,7 @@@',
+  '  import torch',
+  '++<<<<<<< HEAD',
+  ' +hidden = 32',
+  '++=======',
+  '+ hidden = 64',
+  '++>>>>>>> feature',
+  '  print(hidden)',
+  '',
+].join('\n');
+
 function diff(over: Partial<GitDiff> = {}): GitDiff {
   return {
     patch: PATCH,
@@ -214,6 +234,33 @@ describe('GitDiffModal: the patch', () => {
     await open({ path: 'src/model.py', scope: 'worktree' });
     expect(within(dialog()).getByText('No changes')).toBeTruthy();
   });
+
+  it('draws the conflict markers of an unmerged path', async () => {
+    // The one file a diff matters most for, and the one git answers in its
+    // combined format. Read as a two-way patch it opens no hunk at all, and
+    // the window said "No changes" over a file full of markers.
+    readDiff.mockResolvedValue(diff({ patch: CONFLICT_PATCH }));
+    await open({ path: 'src/model.py', scope: 'worktree', conflicted: true });
+
+    const body = dialog();
+    expect(within(body).queryByText('No changes')).toBeNull();
+    expect(within(body).getByText('@@@ -1,3 -1,3 +1,7 @@@')).toBeTruthy();
+    expect(within(body).getByText('<<<<<<< HEAD')).toBeTruthy();
+    expect(within(body).getByText('hidden = 32')).toBeTruthy();
+    expect(within(body).getByText('hidden = 64')).toBeTruthy();
+    expect(within(body).getByText('>>>>>>> feature')).toBeTruthy();
+  });
+
+  it('shows a patch it cannot read as the text git wrote', async () => {
+    // "No changes" is what GIT said, never what this parser managed to read:
+    // bytes that yield no hunks are a shape this build does not know, and
+    // summarising them as no change is a claim about the file.
+    readDiff.mockResolvedValue(diff({ patch: 'some shape from a later git\n' }));
+    await open({ path: 'src/model.py', scope: 'worktree' });
+
+    expect(within(dialog()).queryByText('No changes')).toBeNull();
+    expect(within(dialog()).getByText(/some shape from a later git/)).toBeTruthy();
+  });
 });
 
 describe('GitDiffModal: the two views', () => {
@@ -241,7 +288,10 @@ describe('GitDiffModal: the two views', () => {
 
   it('offers no side-by-side view of a conflicted file', async () => {
     // Its INDEX copy does not exist until it is settled -- there is no stage
-    // 0 -- so one of the two columns could only be a guess.
+    // 0 -- so one of the two columns could only be a guess. The patch is the
+    // combined one git really answers for an unmerged path, so the case is
+    // about the file kind and not about a fixture that resembles it.
+    readDiff.mockResolvedValue(diff({ patch: CONFLICT_PATCH }));
     await open({ path: 'src/model.py', scope: 'worktree', conflicted: true });
     expect(within(dialog()).queryByRole('radiogroup')).toBeNull();
     expect(within(dialog()).getByText('hidden = 32')).toBeTruthy();
