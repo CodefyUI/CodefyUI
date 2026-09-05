@@ -50,6 +50,9 @@ vi.mock('./components/NodeDetailModal/NodeDetailModal', () => ({
 vi.mock('./components/Nodes/VizViewerModal', () => ({
   VizViewerModal: () => <div data-testid="viz-viewer-modal" />,
 }));
+vi.mock('./components/SourceControl/GitDiffModal', () => ({
+  GitDiffModal: () => <div data-testid="git-diff-modal" />,
+}));
 vi.mock('./components/shared/Toast', () => ({
   ToastContainer: () => <div data-testid="toast-container" />,
 }));
@@ -128,6 +131,10 @@ describe('App', () => {
     expect(screen.getByTestId('layers-editor-modal')).toBeTruthy();
     expect(screen.getByTestId('node-detail-modal')).toBeTruthy();
     expect(screen.getByTestId('viz-viewer-modal')).toBeTruthy();
+    // The diff window is mounted here rather than in the Source Control tab:
+    // the row that opens it is inside a scrolling panel and this is a portal
+    // at the top of the document, so it cannot live under the row.
+    expect(screen.getByTestId('git-diff-modal')).toBeTruthy();
     expect(screen.getByTestId('toast-container')).toBeTruthy();
     expect(screen.getByTestId('shortcuts-modal')).toBeTruthy();
     expect(screen.getByTestId('dialog-container')).toBeTruthy();

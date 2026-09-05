@@ -1,5 +1,11 @@
 import { useCallback, useEffect, useId, useRef, useState } from 'react';
-import { REF_KINDS, isLayoutFile, useGitStore, type GitRefKind } from '../../store/gitStore';
+import {
+  REF_KINDS,
+  isLayoutFile,
+  reloadLogIfLive,
+  useGitStore,
+  type GitSectionKind,
+} from '../../store/gitStore';
 import { useI18n } from '../../i18n';
 import { docsUrl } from '../../utils/docsUrl';
 import { prompt } from '../../utils/dialog';
@@ -14,14 +20,15 @@ import { aheadBehindGlyphs, errorSentence, followUpFor, gitOpKey } from './scm';
 /**
  * The documentation page the Setup guide link and menu row point at.
  *
- * Project directories, not a source-control page: the tab's own page is
- * written in the part of this track that adds history and diffs, and a link
- * to it now would 404. This one exists, and it is the right answer for the
- * screen the link matters most on -- "Source control needs a project
- * directory", whose two commands are that page's subject. It moves to the
- * tab's page when that page lands.
+ * The tab's OWN page. It pointed at the project directories page while this
+ * one was still being written -- the right answer for the screen the link
+ * matters most on, "Source control needs a project directory", whose two
+ * commands are that page's subject, and the wrong one everywhere else. That
+ * screen's own text still names the commands; the page it links to now is the
+ * one about the panel the reader is looking at, and sets a project directory
+ * up on the way.
  */
-export const SCM_DOCS_PATH = '/usage/project-directories';
+export const SCM_DOCS_PATH = '/usage/source-control';
 
 /**
  * The two places focus can be parked when the row that held it is gone.
@@ -49,7 +56,7 @@ export function focusScmFallback(): void {
 }
 
 /**
- * Put focus back on one reference section's heading.
+ * Put focus back on one section's heading.
  *
  * Called after a row that held focus has gone -- a branch deleted, a stash
  * dropped, a remote removed -- so it lands on the heading of the list it left
@@ -64,7 +71,7 @@ export function focusScmFallback(): void {
  * yet -- and the whole SECTION can be what disappears, when the panel switches
  * screens under it.
  */
-export function focusRefSection(kind: GitRefKind): void {
+export function focusRefSection(kind: GitSectionKind): void {
   requestAnimationFrame(() => {
     const heading = document.getElementById(refSectionIds(kind).headingId);
     if (heading !== null && heading.isConnected) {
@@ -269,6 +276,18 @@ export function ScmHeader() {
     for (const kind of REF_KINDS) {
       if (sections[kind]) void refreshRefs(kind);
     }
+    // History is not one of those kinds and cannot be: `refreshExpandedRefs`
+    // walks them on the fifteen-second poll, and re-reading a PAGED list every
+    // fifteen seconds would throw away every page past the first that the
+    // reader had loaded. The store reads it after the writes that move HEAD,
+    // and this button is the only other place a reader asks for it -- which is
+    // why the line exists here and nowhere else.
+    //
+    // The store's own rule, not a second one written here: a history that was
+    // opened, read and then COLLAPSED is still on screen the moment it is
+    // expanded again, and `sections.history` alone would leave it holding a
+    // page from before the commit somebody made at the command line.
+    void reloadLogIfLive();
   }, [refresh, refreshRefs, repoState, sections]);
 
   const askThenStash = useCallback(async () => {

@@ -1,0 +1,346 @@
+/* GitDiffModal.module.css — the diff window: the view switch, the graph
+   summary strip and the patch itself.
+
+   The chrome is the Package Center's, composed rather than reimplemented:
+   the backdrop, the modal box, the header, the title block, the close button
+   and the state message are one stylesheet across every window in this app,
+   and two surfaces that merely LOOK alike drift. Only what is true of this
+   window alone is written here.
+
+   Colour, type and spacing are tokens only. The bare pixel values below are
+   structural — the line-number column width, a hairline border — never colour
+   or type. */
+
+/* ── Stacking ───────────────────────────────────────────────────────────── */
+
+/* Above both Centers and below everything that can be raised OVER it:
+   Package Center 10000, Plugin Center 10001, this window 10002, dialog host
+   10003, toast stack 10004, restart overlay 10005.
+
+   Two rungs were argued over here and both were got wrong once. Sharing the
+   toast stack's rung meant this window covered every toast raised behind it
+   -- it is a portal appended when it opens, so in any TIE it is the later
+   element -- including the sticky "graph changed on disk" one, whose Reload
+   button was then blurred, dimmed and unclickable until the diff was closed.
+   Moving ABOVE the dialog host bought the same bug from the other side: this
+   window is deliberately not a focus trap, so Tab reaches the panel's
+   Discard, Delete branch and Drop stash controls behind the backdrop, each
+   of which raises a confirm — and that confirm then painted BEHIND this
+   window while this window's Escape handler stood down for it, leaving a
+   reader pressing a key at a dialog they could not see. So the dialog host
+   is one rung above this one and the answer is the same in both directions:
+   whatever is raised over this window is visible over it. The restart
+   overlay keeps the top, which its own stylesheet requires: while the server
+   is going away nothing may sit on top of it. tokens.css has no z-index
+   scale to take a value from — every z-index in this app is a literal with
+   its rung written beside it, and this is one more of the same.
+
+   `composes` rather than a second class in the markup: two single-class rules
+   have the same specificity, so which one won would come down to the order
+   the bundler happened to emit the two stylesheets in. */
+.backdrop {
+  composes: backdrop from '../PackCenter/PackCenterModal.module.css';
+  z-index: 10002;
+}
+
+.modal {
+  composes: modal from '../PackCenter/PackCenterModal.module.css';
+}
+
+.header {
+  composes: header from '../PackCenter/PackCenterModal.module.css';
+}
+
+.titleBlock {
+  composes: titleBlock from '../PackCenter/PackCenterModal.module.css';
+}
+
+/* The path, which is DATA and can be longer than the box: it wraps rather
+   than pushing the view switch and the close button off the header. */
+.title {
+  composes: title from '../PackCenter/PackCenterModal.module.css';
+  overflow-wrap: anywhere;
+}
+
+.subtitle {
+  composes: subtitle from '../PackCenter/PackCenterModal.module.css';
+}
+
+.closeBtn {
+  composes: closeBtn from '../PackCenter/PackCenterModal.module.css';
+}
+
+.stateMessage {
+  composes: stateMessage from '../PackCenter/PackCenterModal.module.css';
+}
+
+.errorText {
+  composes: errorText from '../PackCenter/PackCenterModal.module.css';
+}
+
+.linkBtn {
+  composes: linkBtn from '../PackCenter/PackCenterModal.module.css';
+}
+
+/* ── The two views ──────────────────────────────────────────────────────── */
+
+/* One segmented control, not two buttons: they are one choice with two
+   answers, which is what `role="radiogroup"` says and what the shared border
+   draws. */
+.views {
+  display: flex;
+  flex-shrink: 0;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+}
+
+.viewButton {
+  padding: var(--sp-1) var(--sp-3);
+  background: transparent;
+  border: 0;
+  color: var(--text-secondary);
+  cursor: pointer;
+  font-family: inherit;
+  font-size: var(--fs-xs);
+  white-space: nowrap;
+}
+
+.viewButton + .viewButton {
+  border-left: 1px solid var(--border-strong);
+}
+
+.viewButton:hover {
+  color: var(--accent);
+}
+
+/* The chosen one, and not by colour alone: it is the filled cell of the pair,
+   which is a shape difference as well as a wash. `aria-checked` is what says
+   it to a reader. */
+.viewButton[aria-checked='true'] {
+  background: var(--accent-wash);
+  color: var(--accent);
+}
+
+.viewButton:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+}
+
+/* ── Body ───────────────────────────────────────────────────────────────── */
+
+/* The window scrolls VERTICALLY here and the patch scrolls sideways inside
+   itself, so a long line never takes the page's own scrollbar with it. */
+.body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+  padding: var(--sp-4) var(--sp-5) var(--sp-6);
+  overflow-y: auto;
+}
+
+.errorHint {
+  color: var(--text-secondary);
+  font-size: var(--fs-xs);
+  line-height: var(--lh-normal);
+  margin-bottom: var(--sp-3);
+  overflow-wrap: anywhere;
+}
+
+/* git's own tail, folded until asked for. */
+.stderr {
+  margin: var(--sp-3) 0 0;
+  padding: var(--sp-3);
+  background: var(--surface-code);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  color: var(--text-secondary);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: var(--fs-xs);
+  line-height: var(--lh-normal);
+  text-align: left;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+/* A patch that arrived with bytes in it and yielded no hunks -- a shape this
+   build's parser does not know. Shown as the text git wrote rather than
+   summarised as "No changes", which would be a claim about the FILE made out
+   of a fact about the reader. Same box as git's own tail below an error. */
+.rawPatch {
+  composes: stderr;
+  margin-top: 0;
+}
+
+/* ── What changed in the graph ──────────────────────────────────────────── */
+
+/* Above the patch, and washed so it reads as a summary OF what is below
+   rather than as the first lines of it. */
+.summary,
+.summaryNote {
+  flex-shrink: 0;
+  margin: 0;
+  padding: var(--sp-3) var(--sp-4);
+  background: var(--surface-raised);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius);
+  color: var(--text-secondary);
+  font-size: var(--fs-sm);
+  line-height: var(--lh-normal);
+}
+
+.summary {
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+}
+
+/* A node id, a parameter name and two values: data, and none of it has a
+   break opportunity of its own. */
+.summaryLine {
+  overflow-wrap: anywhere;
+}
+
+/* The patch was cut at the route's cap. Between the summary and the diff,
+   because it is a fact about the lines below it. */
+.truncated {
+  flex-shrink: 0;
+  margin: 0;
+  color: var(--status-warning);
+  font-size: var(--fs-xs);
+  line-height: var(--lh-normal);
+}
+
+/* ── The patch ──────────────────────────────────────────────────────────── */
+
+/* Its own horizontal scroller: a diff is as wide as its longest line, and a
+   modal that grew with one would take the page's scrollbar with it. */
+.diff {
+  flex-shrink: 0;
+  overflow-x: auto;
+  background: var(--surface-code);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: var(--fs-xs);
+  line-height: var(--lh-normal);
+}
+
+/* `min-width: max-content` so a line longer than the box widens the ROWS
+   rather than being clipped by them -- without it the tint of a long added
+   line stopped at the visible edge and the rest scrolled onto bare
+   background. */
+.hunk {
+  min-width: max-content;
+}
+
+.hunk + .hunk {
+  border-top: 1px solid var(--border-subtle);
+}
+
+/* git's own `@@ -a,b +c,d @@`, which is what says where the next lines are. */
+.hunkHeader {
+  padding: var(--sp-1) var(--sp-3);
+  background: var(--surface-input);
+  color: var(--text-muted);
+  white-space: pre;
+}
+
+/* What the draw limit left out, under the last line that was drawn. Wraps,
+   unlike every other row in this box: it is a sentence and not a line of a
+   file. */
+.lineCap {
+  position: sticky;
+  left: 0;
+  padding: var(--sp-2) var(--sp-3);
+  border-top: 1px solid var(--border-subtle);
+  color: var(--status-warning);
+  font-size: var(--fs-2xs);
+  line-height: var(--lh-normal);
+  white-space: normal;
+}
+
+/* Two number columns, the sign, then the text. `grid` rather than flex so
+   every row's text starts on the same edge whatever the numbers are. */
+.line {
+  display: grid;
+  grid-template-columns: auto auto auto 1fr;
+  gap: var(--sp-2);
+  padding: 0 var(--sp-3);
+}
+
+/* The same, twice: number, sign and text for the old side, then for the new
+   one. The two halves are equal columns, so a long line on one side does not
+   push the other off the row. */
+.splitRow {
+  display: grid;
+  grid-template-columns: auto auto minmax(0, 1fr) auto auto minmax(0, 1fr);
+  gap: var(--sp-2);
+  padding: 0 var(--sp-3);
+}
+
+/* Fixed and right-aligned so the digits line up; `tabular-nums` because a
+   proportional 1 is narrower than a 0 in most system monospace faces. */
+.lineNo {
+  min-width: 3ch;
+  color: var(--text-muted);
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  user-select: none;
+}
+
+/* The one character that says what happened to the line. Drawn, never
+   implied by the tint: colour alone is not a way to say something. */
+.lineSign {
+  color: var(--text-muted);
+  user-select: none;
+  white-space: pre;
+}
+
+.lineText {
+  color: var(--text-secondary);
+  white-space: pre;
+}
+
+/* git's own note about the line, inside the text cell and dimmer than it:
+   the change it explains is otherwise two identical-looking lines. */
+.noNewline {
+  margin-left: var(--sp-3);
+  color: var(--text-muted);
+  font-size: var(--fs-2xs);
+  font-style: italic;
+}
+
+/* The tint. On the ROW in the unified view and on each CELL in the split one,
+   which is why both selectors are here: a wash around half a grid row would
+   not line up with the other half.
+
+   --text-primary on a 14% wash over --surface-code is the same relationship
+   the panel's own washes carry, and the sign character beside it is what
+   makes the row readable without any colour at all. */
+.line[data-kind='add'],
+.splitRow > [data-kind='add'] {
+  background: var(--success-wash);
+}
+
+.line[data-kind='del'],
+.splitRow > [data-kind='del'] {
+  background: var(--danger-wash);
+}
+
+.line[data-kind='add'] .lineText,
+.line[data-kind='del'] .lineText,
+.splitRow > .lineText[data-kind='add'],
+.splitRow > .lineText[data-kind='del'] {
+  color: var(--text-primary);
+}
+
+/* The half of a split row that has no line at all -- one run was longer than
+   the other. Dimmed rather than blank, so the gap reads as "nothing here"
+   rather than as the end of the file. */
+.splitRow > [data-kind='empty'] {
+  background: var(--surface-input);
+}

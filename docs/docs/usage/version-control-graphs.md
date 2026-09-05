@@ -13,6 +13,14 @@ forward-map to the split logic/layout format. For new services use
 in one command: `cdui project init my-service --adopt /path/to/my-graphs`.
 :::
 
+:::tip The editor can run the git steps for you
+Once the graphs live in a project directory, the editor's **Source Control**
+tab does the git of [Set up a service repo](#set-up-a-service-repo) for you:
+stage, commit, branch, push, settle a conflict, and read the history and the
+diffs (the one-off credential setup still happens in a terminal). See
+[Source Control](./source-control).
+:::
+
 CodefyUI saves each graph as a plain JSON file, so graphs are a natural fit for git: you get history, review, and rollback for the pipelines you build. This page is a recipe for keeping your graphs in their own git repository, validating them in CI, and publishing from a versioned source.
 
 One catch up front: the default save location is **not** version-controlled. Saved graphs land in `backend/data/graphs/`, which the repo's own `.gitignore` excludes (`backend/data/graphs/*.json`, keeping only `.gitkeep`). To version your work you point CodefyUI's graph directory at a repo you own -- the rest of this page shows how.

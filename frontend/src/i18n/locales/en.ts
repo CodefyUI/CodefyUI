@@ -1303,6 +1303,7 @@ const en = {
   'git.section.branches': 'Branches',
   'git.section.remotes': 'Remotes',
   'git.section.stashes': 'Stashes',
+  'git.section.history': 'History',
   'git.aheadBehind': '{ahead} to push, {behind} to pull',
   'git.noUpstream': 'Not published',
   'git.upstreamGone': 'Upstream deleted',
@@ -1369,6 +1370,55 @@ const en = {
   'git.status.typechange': 'Type changed',
   'git.status.untracked': 'Untracked',
   'git.status.conflict': 'Conflict',
+  // The History section: one row per commit, its file list, and the next page.
+  'git.history.loadMore': 'Load more',
+  'git.history.files': '{count} file(s)',
+  'git.history.copySha': 'Copy commit id',
+  // What the clipboard did, said in this panel's own words rather than the
+  // Package Center's. The id is IN the sentence because the live region holds
+  // ONE string: two copies that produce the same text are the same text node
+  // twice, which a screen reader announces exactly once.
+  'git.history.copied': 'Copied {sha}',
+  'git.history.copyFailed': 'Could not copy the commit id.',
+  // The diff view. The scope labels are plain words rather than "working tree
+  // vs index": every other label in this panel names the GROUP a row came
+  // from, and the modal's title already says which file is being shown.
+  'git.diff.title': 'Changes: {path}',
+  // The name of the CHOICE, not of either answer: a radio group needs one,
+  // and "Unified" and "Side by side" say what the answers are without ever
+  // saying what the question is.
+  'git.diff.view': 'View',
+  'git.diff.unified': 'Unified',
+  'git.diff.split': 'Side by side',
+  'git.diff.close': 'Close',
+  // Its own sentence, not the toolbar's "Loading...": this window is reading
+  // one file's change, and the toolbar's key belongs to the graph list.
+  'git.diff.loading': 'Loading changes...',
+  'git.diff.scope.worktree': 'Unstaged changes',
+  'git.diff.scope.index': 'Staged changes',
+  'git.diff.scope.commit': 'Commit {sha}',
+  'git.diff.binary': 'Binary file; no text diff.',
+  'git.diff.truncated': 'Diff truncated at {kb} KB.',
+  // A different cut from the one above: that one is what the SERVER sent,
+  // this one is what the window draws. A patch of twenty thousand lines is a
+  // second of frozen tab and nothing anybody reads in a side panel.
+  'git.diff.tooManyLines': 'Only the first {count} lines are shown here. Open the file to read the rest.',
+  'git.diff.empty': 'No changes',
+  // git's own note, drawn on the line it is about. Without it the change is
+  // two lines whose text is identical to the character.
+  'git.diff.noNewline': 'No newline at end of file',
+  // The summary above a graph or layout diff: what the change did to the
+  // GRAPH, rather than to the lines of JSON that hold it.
+  'git.gdiff.nodesAdded': '{count} node(s) added',
+  'git.gdiff.nodesRemoved': '{count} node(s) removed',
+  'git.gdiff.typeChanged': '{node}: type {from} -> {to}',
+  'git.gdiff.param': '{node}: {param} {from} -> {to}',
+  'git.gdiff.edgesAdded': '{count} edge(s) added',
+  'git.gdiff.edgesRemoved': '{count} edge(s) removed',
+  'git.gdiff.positionsMoved': '{count} node position(s) moved',
+  'git.gdiff.more': 'and {count} more',
+  'git.gdiff.noLogicChange': 'No logic change',
+  'git.gdiff.unparseable': 'Could not parse as a graph',
   'git.discard.confirm': 'Discard changes to {name}?',
   // An untracked file has no copy anywhere, so this one says "delete" and
   // says the loss is permanent.
@@ -1437,6 +1487,10 @@ const en = {
   'git.error.remoteRejected': 'The remote refused the push (a protected branch or a server rule).',
   'git.error.pushConfig':
     'Your git push configuration refuses this push (push.default or the upstream branch name).',
+  // A read the server refused because git itself ignores the path -- an
+  // ignored worktree file, or anything `.env`-shaped at any ref. Coded rather
+  // than generic, or a 403 would show the server's English.
+  'git.error.ignored': 'This file is ignored by git.',
   'git.error.notFound': 'Not found: {what}',
   'git.error.invalid': 'Invalid value.',
   'git.error.notRepo': 'Not a git repository.',

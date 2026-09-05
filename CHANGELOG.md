@@ -56,6 +56,38 @@ received — each links to the release it was published as.
   time, in git's own words. Reading any of these lists is an open read; every
   button that changes something carries the session token. History and the diff
   view are the part after this one.
+- **Source control from the editor, part 4 — the history, and what a change did
+  to the graph.** The part the one above promised. Under the three reference
+  lists is a fourth: History, closed until you open it, one row per commit with
+  its short id, its subject, how long ago it was made and who made it.
+  Expanding a row lists the files that commit touched, each of them a link into
+  the commit; the row's menu copies the full id; Load more fetches the next
+  thirty. History stays off the fifteen-second poll — a poll would throw away
+  the pages you had loaded — and is re-read by Refresh, by a commit or an
+  amend, and by anything that moves the branch. Every file row in the panel is
+  now a button that opens the change it names, and which change that is follows
+  the group it sits in: a row under Changes shows what you have not staged yet,
+  a row under Staged Changes shows what the next commit will contain, and a
+  file under a commit in the history shows what that commit did to it. The view
+  opens over the editor as one column or as two side by side, the second
+  derived from the same patch rather than from a second download; a conflicted
+  file offers the single column only, because a file full of conflict markers
+  has no two sides to pair. A binary file, a patch the server cut at a megabyte
+  and a file with nothing to show each say so in a line rather than drawing an
+  empty pane. And a saved graph gets a summary above its patch saying what
+  changed to the GRAPH rather than to the JSON holding it: nodes added and
+  removed, a node whose type changed, a parameter that moved from one value to
+  another, edges added and removed — compared by what they connect, so a
+  regenerated id is not a change — and, in the layout half of the pair, how
+  many node positions moved. Eight lines at most, then a count of the rest, and
+  "No logic change" where the two sides mean the same thing and only the text
+  differs; a change this first version has no line for leaves the summary empty
+  rather than claiming nothing happened, with the patch underneath to show it.
+  The history, a commit's files and a diff are open reads like everything else
+  the panel reads, and a refusal lands inside the section or the view that
+  asked for it instead of over the whole tab. The tab also has a documentation
+  page now: installing git, giving the server a credential it can use without
+  ever prompting, publishing a branch, and what each refusal means.
 - **Every node says which plugin it came from.** Hovering a row in the node
   library now ends its tooltip with the plugin that registered it, muted and
   under everything that describes the node — and a plugin's node that ships no

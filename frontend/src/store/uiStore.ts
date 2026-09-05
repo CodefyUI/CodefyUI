@@ -1,4 +1,5 @@
 import { create } from 'zustand';
+import type { GitDiffScope } from '../api/git';
 
 export type FontSize = 'small' | 'default' | 'large';
 export type EdgeStyle = 'circuit' | 'curve';
@@ -15,6 +16,28 @@ export const SIDEBAR_MAX_WIDTH = 520;
 /** Matches the pre-#126 fixed palette width, so an existing install's sidebar
  * is exactly where it was before the rail landed. */
 export const SIDEBAR_DEFAULT_WIDTH = 250;
+
+/**
+ * Which change the diff modal is showing.
+ *
+ * The scope is the SERVER's word for which two sides to compare, and it is
+ * decided by the group the row was pressed in rather than by the file: the
+ * same path can be staged AND unstaged at once, as two rows in two groups,
+ * and each of them opens a different diff. `sha` belongs to a commit row and
+ * only to one -- the route refuses a `commit` scope without it and every
+ * other scope with it.
+ *
+ * `conflicted` is not a scope. A conflicted file is diffed against the
+ * working tree like any other, but its INDEX copy does not exist (there is
+ * no stage 0 until it is resolved), so the side-by-side view cannot be built
+ * for it and the modal offers Unified only.
+ */
+export interface GitDiffTarget {
+  path: string;
+  scope: GitDiffScope;
+  sha?: string;
+  conflicted?: boolean;
+}
 
 interface UIState {
   tooltipsEnabled: boolean;
@@ -70,6 +93,22 @@ interface UIState {
    */
   setPluginCenterFocus: (pluginId: string | null) => void;
   closePluginCenter: () => void;
+  /**
+   * The Source Control diff modal, and the change it is showing.
+   *
+   * The target IS the open state -- null is closed -- because there is no
+   * such thing as an open diff of nothing, and two fields that must agree are
+   * two fields that can disagree. Same rules as the two Centers otherwise:
+   * workspace-global, and never persisted.
+   *
+   * A file row opens it rather than owning it, for the reason every other
+   * modal in `App.tsx` is opened this way: the row is inside a scrolling
+   * panel and the modal is a portal at the top of the document, so the state
+   * between them cannot be a prop.
+   */
+  gitDiff: GitDiffTarget | null;
+  openGitDiff: (target: GitDiffTarget) => void;
+  closeGitDiff: () => void;
   draggingSourceType: string | null;
   setDraggingSourceType: (type: string | null) => void;
   /** Endpoint of the edge currently being detached during an edge-reconnect
@@ -206,6 +245,9 @@ export const useUIStore = create<UIState>((set) => ({
   setPluginCenterFocus: (pluginId) => set({ pluginCenterFocusPluginId: pluginId }),
   closePluginCenter: () =>
     set({ pluginCenterOpen: false, pluginCenterFocusPluginId: null }),
+  gitDiff: null,
+  openGitDiff: (target) => set({ gitDiff: target }),
+  closeGitDiff: () => set({ gitDiff: null }),
   draggingSourceType: null,
   setDraggingSourceType: (type) => set({ draggingSourceType: type }),
   reconnectingHandle: null,

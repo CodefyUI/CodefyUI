@@ -4,6 +4,7 @@ import { MergeGroup } from './MergeGroup';
 import { SCM_FOCUS } from './ScmHeader';
 import { useI18n } from '../../i18n';
 import { _resetGitStoreForTesting, useGitStore } from '../../store/gitStore';
+import { useUIStore } from '../../store/uiStore';
 import { confirm } from '../../utils/dialog';
 import type { GitFile, GitStatus } from '../../api/git';
 
@@ -51,6 +52,7 @@ type GitActions = ReturnType<typeof useGitStore.getState>;
 
 let resolve: ReturnType<typeof vi.fn<GitActions['resolve']>>;
 let abortMerge: ReturnType<typeof vi.fn<GitActions['abortMerge']>>;
+let openGitDiff: ReturnType<typeof vi.fn<ReturnType<typeof useUIStore.getState>['openGitDiff']>>;
 
 beforeEach(() => {
   useI18n.setState({ locale: 'en' });
@@ -59,7 +61,10 @@ beforeEach(() => {
   askedConfirm.mockResolvedValue(true);
   resolve = vi.fn(async () => true);
   abortMerge = vi.fn(async () => true);
+  openGitDiff = vi.fn();
   useGitStore.setState({ repoState: 'ready', status: status(), resolve, abortMerge });
+  // A fresh mock through `setState`, never a spy on a `getState()` snapshot.
+  useUIStore.setState({ gitDiff: null, openGitDiff });
 });
 
 afterEach(() => {
@@ -72,6 +77,22 @@ function openRowMenu(name: string) {
   fireEvent.click(screen.getByRole('button', { name: `More actions ${name}` }));
   return screen.getByRole('menu', { name: `More actions ${name}` });
 }
+
+describe('MergeGroup: which diff a conflict opens', () => {
+  it('opens the working tree, marked as a conflict', () => {
+    // A conflicted file diffs against the working tree like any other -- but
+    // its INDEX copy does not exist until it is resolved (there is no stage
+    // 0), so the side-by-side view cannot be built for it and the modal has
+    // to know that before it offers the toggle.
+    render(<MergeGroup files={[conflict('src/train.py')]} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Open changes train.py' }));
+    expect(openGitDiff).toHaveBeenCalledWith({
+      path: 'src/train.py',
+      scope: 'worktree',
+      conflicted: true,
+    });
+  });
+});
 
 describe('MergeGroup: the group', () => {
   it('is a named region holding one row per conflict', () => {

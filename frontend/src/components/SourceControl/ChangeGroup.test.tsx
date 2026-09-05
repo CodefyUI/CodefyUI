@@ -4,6 +4,7 @@ import { ChangeGroup } from './ChangeGroup';
 import { SCM_FOCUS } from './ScmHeader';
 import { useI18n } from '../../i18n';
 import { _resetGitStoreForTesting, useGitStore } from '../../store/gitStore';
+import { useUIStore } from '../../store/uiStore';
 import { confirm } from '../../utils/dialog';
 import type { FileKind, GitFile, GitStatus } from '../../api/git';
 
@@ -51,6 +52,7 @@ type GitActions = ReturnType<typeof useGitStore.getState>;
 let stage: ReturnType<typeof vi.fn<GitActions['stage']>>;
 let unstage: ReturnType<typeof vi.fn<GitActions['unstage']>>;
 let discard: ReturnType<typeof vi.fn<GitActions['discard']>>;
+let openGitDiff: ReturnType<typeof vi.fn<ReturnType<typeof useUIStore.getState>['openGitDiff']>>;
 
 beforeEach(() => {
   useI18n.setState({ locale: 'en' });
@@ -60,12 +62,48 @@ beforeEach(() => {
   stage = vi.fn(async () => true);
   unstage = vi.fn(async () => true);
   discard = vi.fn(async () => true);
+  openGitDiff = vi.fn();
   useGitStore.setState({ repoState: 'ready', status: status(), stage, unstage, discard });
+  // Installed through `setState` with a fresh mock, never a spy taken off a
+  // `getState()` snapshot: the snapshot outlives the store it came from.
+  useUIStore.setState({ gitDiff: null, openGitDiff });
 });
 
 afterEach(() => {
   _resetGitStoreForTesting();
   vi.restoreAllMocks();
+});
+
+describe('ChangeGroup: which diff a row opens', () => {
+  /*
+   * The scope is the GROUP's, not the file's: one path can be staged and
+   * changed at once, as two rows in two groups, and each of them shows a
+   * different pair of sides. A staged row is HEAD against the index; a
+   * changed row is the index against the file on disk.
+   */
+  it('opens a staged row against the index', () => {
+    render(<ChangeGroup kind="staged" files={[file('src/model.py')]} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Open changes model.py' }));
+    expect(openGitDiff).toHaveBeenCalledWith({ path: 'src/model.py', scope: 'index' });
+  });
+
+  it('opens a changed row against the working tree', () => {
+    render(<ChangeGroup kind="changes" files={[file('src/model.py')]} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Open changes model.py' }));
+    expect(openGitDiff).toHaveBeenCalledWith({ path: 'src/model.py', scope: 'worktree' });
+  });
+
+  it('opens the path git knows, not the name the row shows', () => {
+    // A rename is drawn as `old -> new` and diffed as the new path alone.
+    render(
+      <ChangeGroup
+        kind="staged"
+        files={[{ ...file('src/model.py'), orig_path: 'src/net.py', kind: 'renamed' }]}
+      />,
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Open changes net.py -> model.py' }));
+    expect(openGitDiff).toHaveBeenCalledWith({ path: 'src/model.py', scope: 'index' });
+  });
 });
 
 describe('ChangeGroup: structure', () => {

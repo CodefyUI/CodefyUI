@@ -3,11 +3,17 @@
   bottom: var(--sp-6);
   right: var(--sp-6);
   /* Above every modal backdrop (10000), the Plugin Center on its own rung
-     (10001) and the confirm dialog (10002). Neither ancestor makes a
-     stacking context, so a tie is broken by tree order and the Package
-     Center — a later sibling — painted its scrim over every toast its own
-     buttons fire. A click then hit the backdrop and closed the panel. */
-  z-index: 10003;
+     (10001), the diff window (10002) and the confirm dialog (10003). Neither
+     ancestor makes a stacking context, so a tie is broken by tree order and
+     the Package Center — a later sibling — painted its scrim over every
+     toast its own buttons fire. A click then hit the backdrop and closed the
+     panel. The diff window was the same trap and could not be argued out of
+     it: it is a portal appended when it opens, so it is ALWAYS the later
+     element, and while it shared this rung the sticky "graph changed on
+     disk" toast sat behind a blurred scrim with its Reload button
+     unclickable. Only the restart overlay (10005) is above this, and that
+     one is the single thing entitled to cover a toast. */
+  z-index: 10004;
   display: flex;
   flex-direction: column-reverse;
   gap: var(--sp-3);

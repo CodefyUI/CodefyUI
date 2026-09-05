@@ -19,13 +19,15 @@
    different every time. A rule that depends on open order is not a rule, so
    the Plugin Center takes a rung of its own.
 
-   The three layers that sit above the modal rung moved up with it, keeping
-   their order and the reasons written beside them: the confirm dialog
-   (10002), which this panel itself raises to ask about an uninstall; the
-   toast stack (10003), which reports what this panel's buttons did; and the
-   restart overlay (10004). tokens.css has no z-index scale to take the next
+   The layers that sit above the modal rung moved up with it, keeping their
+   order and the reasons written beside them: the diff window (10002), which
+   is a portal and so always the later element of any tie; the confirm dialog
+   (10003), which this panel itself raises to ask about an uninstall and
+   which has to be visible over anything that asks; the toast stack (10004),
+   which reports what this panel's buttons did; and the restart overlay
+   (10005). tokens.css has no z-index scale to take the next
    value from -- every z-index in this app is a literal with the rung it
-   belongs to written next to it, and these are four more of the same.
+   belongs to written next to it, and these are five more of the same.
 
    `composes` rather than a second class in the markup: two single-class
    rules have the same specificity, so which one won would come down to the

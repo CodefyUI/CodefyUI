@@ -62,6 +62,26 @@ describe('useI18n store (runtime methods)', () => {
       expect(out).toContain('42');
     });
 
+    it('puts a value in verbatim, dollar signs and all', async () => {
+      // `String.replace` reads `$&`, `` $` ``, `$'` and `$$` in the
+      // REPLACEMENT as substitution patterns, so a value holding one of them
+      // rewrote the sentence around it. The Source Control summary is the
+      // first place the value is arbitrary graph data -- a parameter can be a
+      // prompt, a regex, a template or a shell fragment -- and
+      // `git.gdiff.param` exists to say what that value became.
+      const { useI18n } = await import('./index');
+      useI18n.getState().setLocale('en');
+      const t = useI18n.getState().t;
+      expect(t('git.gdiff.param', {
+        node: 'Linear', param: 'label', from: "$'", to: 'x',
+      })).toBe("Linear: label $' -> x");
+      expect(t('git.gdiff.param', {
+        node: 'Linear', param: 'label', from: '$&', to: 'x',
+      })).toBe('Linear: label $& -> x');
+      expect(t('git.diff.title', { path: 'a$&b.py' })).toBe('Changes: a$&b.py');
+      expect(t('git.diff.title', { path: 'a$$b.py' })).toBe('Changes: a$$b.py');
+    });
+
     it('returns text unchanged when no vars are passed', async () => {
       const { useI18n } = await import('./index');
       useI18n.getState().setLocale('en');

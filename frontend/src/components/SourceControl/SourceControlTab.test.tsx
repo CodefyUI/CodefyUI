@@ -284,24 +284,35 @@ describe('SourceControlTab: the ready panel', () => {
   });
 });
 
-describe('SourceControlTab: the three reference sections', () => {
+describe('SourceControlTab: the four repository sections', () => {
   beforeEach(() => {
     useGitStore.setState({ repoState: 'ready', repo: repo(), status: status() });
   });
 
   const section = (name: string) => screen.getByRole('region', { name });
 
-  it('draws all three, collapsed, on a repository with nothing to commit', () => {
-    // A clean tree is not an empty panel: branches, remotes and stashes are
-    // there whether or not anything has been edited.
+  it('draws all four, collapsed, on a repository with nothing to commit', () => {
+    // A clean tree is not an empty panel: branches, remotes, stashes and the
+    // history are there whether or not anything has been edited.
     render(<SourceControlTab />);
     expect(screen.getByText('No changes')).toBeTruthy();
-    for (const name of ['Branches', 'Remotes', 'Stashes']) {
+    for (const name of ['Branches', 'Remotes', 'Stashes', 'History']) {
       expect(section(name)).toBeTruthy();
       expect(
         screen.getByRole('button', { name }).getAttribute('aria-expanded'),
       ).toBe('false');
     }
+  });
+
+  it('draws the history last, under the three one-line lists', () => {
+    // A page of thirty commits with a file list open inside it would push
+    // every other section off the panel.
+    render(<SourceControlTab />);
+    const names = screen
+      .getAllByRole('region')
+      .map((one) => one.getAttribute('data-section'))
+      .filter((one) => one !== null);
+    expect(names).toEqual(['branches', 'remotes', 'stashes', 'history']);
   });
 
   it('counts what each list holds', () => {

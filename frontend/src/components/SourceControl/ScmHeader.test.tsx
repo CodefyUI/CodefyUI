@@ -4,7 +4,7 @@ import { ScmHeader } from './ScmHeader';
 import { refSectionIds } from './RefSection';
 import { useI18n } from '../../i18n';
 import { _resetGitStoreForTesting, useGitStore } from '../../store/gitStore';
-import type { FileKind, GitFile, GitStatus, RemoteInfo } from '../../api/git';
+import type { FileKind, GitCommit, GitFile, GitStatus, RemoteInfo } from '../../api/git';
 import { prompt } from '../../utils/dialog';
 
 // The stash message is asked for through the in-app prompt, which is a promise
@@ -51,6 +51,21 @@ function status(over: Partial<GitStatus> = {}): GitStatus {
   };
 }
 
+/** One row of history, for the cases about a page the store is holding. */
+function historyCommit(sha: string): GitCommit {
+  return {
+    sha,
+    short: sha.slice(0, 7),
+    parents: [],
+    authorName: 'Ada',
+    authorEmail: 'ada@example.com',
+    authoredAt: 123,
+    refs: [],
+    subject: `Work on ${sha}`,
+    body: '',
+  };
+}
+
 function remote(name: string): RemoteInfo {
   return {
     name,
@@ -67,6 +82,7 @@ let setHideLayout: ReturnType<typeof vi.fn<GitActions['setHideLayout']>>;
 let openIdentityForm: ReturnType<typeof vi.fn<GitActions['openIdentityForm']>>;
 let dismissError: ReturnType<typeof vi.fn<GitActions['dismissError']>>;
 let refreshRefs: ReturnType<typeof vi.fn<GitActions['refreshRefs']>>;
+let loadLog: ReturnType<typeof vi.fn<GitActions['loadLog']>>;
 let setSectionOpen: ReturnType<typeof vi.fn<GitActions['setSectionOpen']>>;
 let doFetch: ReturnType<typeof vi.fn<GitActions['fetch']>>;
 let pull: ReturnType<typeof vi.fn<GitActions['pull']>>;
@@ -85,6 +101,7 @@ beforeEach(() => {
   openIdentityForm = vi.fn();
   dismissError = vi.fn();
   refreshRefs = vi.fn(async () => {});
+  loadLog = vi.fn(async () => {});
   setSectionOpen = vi.fn();
   doFetch = vi.fn(async () => true);
   pull = vi.fn(async () => true);
@@ -100,6 +117,7 @@ beforeEach(() => {
     openIdentityForm,
     dismissError,
     refreshRefs,
+    loadLog,
     setSectionOpen,
     fetch: doFetch,
     pull,
@@ -139,7 +157,7 @@ describe('ScmHeader: the title row', () => {
     // count and the branch list as they were, which is the one button whose
     // whole job is to make the panel true.
     useGitStore.setState({
-      sections: { branches: true, remotes: false, stashes: true },
+      sections: { branches: true, remotes: false, stashes: true, history: false },
     });
     render(<ScmHeader />);
     refreshRefs.mockClear();
@@ -159,6 +177,59 @@ describe('ScmHeader: the title row', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Refresh' }));
     expect(refresh).toHaveBeenCalledTimes(1);
     expect(refreshRefs).not.toHaveBeenCalled();
+    expect(loadLog).not.toHaveBeenCalled();
+  });
+
+  it('reads the history too, and only while that section is open', () => {
+    // History is not in `REF_KINDS` -- it is paged, and re-reading it on the
+    // fifteen-second poll would throw away every page past the first that the
+    // reader had loaded. This button is the one place a reader asks for it,
+    // so it is the one place the walk above cannot answer for.
+    useGitStore.setState({
+      sections: { branches: false, remotes: false, stashes: false, history: true },
+    });
+    render(<ScmHeader />);
+    // The header reads the remote list on mount, whatever this button does:
+    // "Publish or Sync" cannot be decided from a list nobody has fetched.
+    refreshRefs.mockClear();
+    loadLog.mockClear();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Refresh' }));
+
+    expect(loadLog).toHaveBeenCalledTimes(1);
+    expect(refreshRefs).not.toHaveBeenCalled();
+  });
+
+  it('reads a history that is collapsed but still holding a page', () => {
+    // The store's rule for "live", not a narrower one written in the header:
+    // a page the reader loaded and then collapsed is on screen again the
+    // moment the section is expanded, and expanding reads only an EMPTY
+    // history -- so Refresh is the only thing that can keep it true.
+    useGitStore.setState({
+      sections: { branches: false, remotes: false, stashes: false, history: false },
+      log: { commits: [historyCommit('c1')], hasMore: false, unborn: false, loading: false },
+    });
+    render(<ScmHeader />);
+    loadLog.mockClear();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Refresh' }));
+
+    expect(loadLog).toHaveBeenCalledTimes(1);
+  });
+
+  it('reads no history where there is no repository', () => {
+    useGitStore.setState({
+      repoState: 'not_repo',
+      status: null,
+      sections: { branches: false, remotes: false, stashes: false, history: true },
+    });
+    render(<ScmHeader />);
+    loadLog.mockClear();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Refresh' }));
+
+    expect(refresh).toHaveBeenCalledTimes(1);
+    expect(loadLog).not.toHaveBeenCalled();
   });
 
   it('reads no list where there is no repository, whatever is remembered open', () => {
@@ -172,7 +243,7 @@ describe('ScmHeader: the title row', () => {
     useGitStore.setState({
       repoState: 'not_repo',
       status: null,
-      sections: { branches: true, remotes: true, stashes: true },
+      sections: { branches: true, remotes: true, stashes: true, history: false },
     });
     render(<ScmHeader />);
     refreshRefs.mockClear();
@@ -270,8 +341,12 @@ describe('ScmHeader: the title row', () => {
     render(<ScmHeader />);
     openMore();
     fireEvent.click(screen.getByRole('menuitem', { name: 'Setup guide' }));
+    // The tab's OWN page, now that there is one. It pointed at the project
+    // directories page while this one was still being written, which was the
+    // right answer for the screen the link matters most on and the wrong one
+    // everywhere else.
     expect(open).toHaveBeenCalledWith(
-      'https://docs.codefyui.com/usage/project-directories',
+      'https://docs.codefyui.com/usage/source-control',
       '_blank',
       'noopener,noreferrer',
     );
@@ -371,7 +446,9 @@ describe('ScmHeader: the branch name is what opens the branch list', () => {
   });
 
   it('closes it again, so the state it reports is one it can undo', () => {
-    useGitStore.setState({ sections: { branches: true, remotes: false, stashes: false } });
+    useGitStore.setState({
+      sections: { branches: true, remotes: false, stashes: false, history: false },
+    });
     render(<ScmHeader />);
     expect(branchButton().getAttribute('aria-expanded')).toBe('true');
     fireEvent.click(branchButton());
@@ -393,7 +470,7 @@ describe('ScmHeader: Sync, Publish and the remote picker', () => {
     // draws it. Two reads for one question is what a remembered-open Remotes
     // section cost on every tab open.
     useGitStore.setState({
-      sections: { branches: false, remotes: true, stashes: false },
+      sections: { branches: false, remotes: true, stashes: false, history: false },
     });
     render(<ScmHeader />);
     await act(async () => {
@@ -404,7 +481,7 @@ describe('ScmHeader: Sync, Publish and the remote picker', () => {
     // Closed again, and now the header is the only reader there is.
     await act(async () => {
       useGitStore.setState({
-        sections: { branches: false, remotes: false, stashes: false },
+        sections: { branches: false, remotes: false, stashes: false, history: false },
       });
     });
     expect(refreshRefs).toHaveBeenCalledWith('remotes');

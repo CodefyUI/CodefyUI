@@ -6,7 +6,28 @@ import { usePluginStore, _resetPluginStoreForTesting } from '../../store/pluginS
 import { useUIStore } from '../../store/uiStore';
 import { useI18n } from '../../i18n';
 import { PackCenterModal } from '../PackCenter/PackCenterModal';
+import { GitDiffModal } from '../SourceControl/GitDiffModal';
 import { PluginCenterModal } from './PluginCenterModal';
+
+// The diff window reads a patch as it opens. Stubbed at the module: these
+// cases are about one keypress, and a real read would leave a fetch in
+// flight for each of them.
+vi.mock('../../api/git', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../api/git')>();
+  return {
+    ...actual,
+    getGitDiff: vi.fn(async () => ({
+      patch: '',
+      binary: false,
+      truncated: false,
+      oldRef: 'index',
+      newRef: 'worktree',
+      oldMissing: false,
+      newMissing: false,
+    })),
+    getGitFile: vi.fn(),
+  };
+});
 
 /**
  * One Escape key, two centers.
@@ -66,6 +87,17 @@ function renderBoth() {
   );
 }
 
+/** The same, with the diff window -- a third handler on the same key. */
+function renderAll() {
+  return render(
+    <>
+      <PackCenterModal />
+      <PluginCenterModal />
+      <GitDiffModal />
+    </>,
+  );
+}
+
 const escape = () => act(() => {
   window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
 });
@@ -79,6 +111,7 @@ beforeEach(() => {
     pluginCenterOpen: false,
     pluginCenterFocusPluginId: null,
     shortcutsModalOpen: false,
+    gitDiff: null,
   });
   _resetPackStoreForTesting();
   _resetPluginStoreForTesting();
@@ -98,6 +131,7 @@ afterEach(() => {
       packCenterFocusPackId: null,
       pluginCenterOpen: false,
       pluginCenterFocusPluginId: null,
+      gitDiff: null,
     });
   });
   vi.restoreAllMocks();
@@ -143,5 +177,66 @@ describe('the Package Center and the Plugin Center on one Escape key', () => {
 
     escape();
     expect(useUIStore.getState().packCenterOpen).toBe(false);
+  });
+});
+
+describe('the diff window, which is the rung above both of them', () => {
+  /*
+   * A third window on the same key, and the only one that can be opened from
+   * a panel BEHIND a Center is not the question -- it is opened from the
+   * sidebar, which either Center covers. What matters is the other direction:
+   * a Center left open underneath must not be closed by the press that closes
+   * the diff, whichever handler happens to be registered first.
+   */
+  it('closes on top of the Package Center and leaves it open', async () => {
+    renderAll();
+    act(() => {
+      useUIStore.getState().openPackCenter();
+    });
+    await act(async () => {
+      useUIStore.getState().openGitDiff({ path: 'src/model.py', scope: 'worktree' });
+    });
+
+    escape();
+
+    expect(useUIStore.getState().gitDiff).toBeNull();
+    expect(useUIStore.getState().packCenterOpen).toBe(true);
+  });
+
+  it('stops the press it acted on, so nothing opened after it also closes', async () => {
+    // The other registration order: this window's handler runs FIRST, and by
+    // the time a Center's runs, `close()` has already emptied the `gitDiff`
+    // that Center stands down on. `stopImmediatePropagation` is what keeps
+    // one press from closing two windows here.
+    renderAll();
+    await act(async () => {
+      useUIStore.getState().openGitDiff({ path: 'src/model.py', scope: 'worktree' });
+    });
+    act(() => {
+      useUIStore.getState().openPackCenter();
+    });
+
+    escape();
+
+    expect(useUIStore.getState().gitDiff).toBeNull();
+    expect(useUIStore.getState().packCenterOpen).toBe(true);
+  });
+
+  it('closes on top of the Plugin Center and leaves it open', async () => {
+    // The order the diff window's own `stopImmediatePropagation` does not
+    // cover on its own: the plugin handler is registered FIRST here, so it
+    // runs first and has to stand down on a `gitDiff` it can see.
+    renderAll();
+    act(() => {
+      useUIStore.getState().openPluginCenter();
+    });
+    await act(async () => {
+      useUIStore.getState().openGitDiff({ path: 'src/model.py', scope: 'worktree' });
+    });
+
+    escape();
+
+    expect(useUIStore.getState().gitDiff).toBeNull();
+    expect(useUIStore.getState().pluginCenterOpen).toBe(true);
   });
 });

@@ -33,6 +33,7 @@ describe('useUIStore', () => {
       packCenterFocusPackId: null,
       pluginCenterOpen: false,
       pluginCenterFocusPluginId: null,
+      gitDiff: null,
       draggingSourceType: null,
       reconnectingHandle: null,
       beginnerMode: false,
@@ -228,6 +229,68 @@ describe('useUIStore', () => {
 
       useUIStore.getState().closePluginCenter();
       expect(useUIStore.getState().packCenterOpen).toBe(true);
+    });
+  });
+
+  describe('openGitDiff / closeGitDiff', () => {
+    it('records which file, in which scope, and closeGitDiff clears it', () => {
+      expect(useUIStore.getState().gitDiff).toBeNull();
+
+      useUIStore.getState().openGitDiff({ path: 'graphs/a.graph.json', scope: 'index' });
+      expect(useUIStore.getState().gitDiff).toEqual({
+        path: 'graphs/a.graph.json',
+        scope: 'index',
+      });
+
+      useUIStore.getState().closeGitDiff();
+      expect(useUIStore.getState().gitDiff).toBeNull();
+    });
+
+    it('carries the sha a commit row opens with', () => {
+      // A commit scope without a sha is a 400 from the route, so the row that
+      // knows which commit is the one that has to hand it over.
+      useUIStore
+        .getState()
+        .openGitDiff({ path: 'notes.md', scope: 'commit', sha: 'abc1234' });
+      expect(useUIStore.getState().gitDiff?.sha).toBe('abc1234');
+    });
+
+    it('carries the conflicted flag a merge row opens with', () => {
+      // A conflicted file has no side-by-side view: its index copy is a 409,
+      // and the modal renders Unified only. The flag is how it knows.
+      useUIStore
+        .getState()
+        .openGitDiff({ path: 'graphs/a.graph.json', scope: 'worktree', conflicted: true });
+      expect(useUIStore.getState().gitDiff?.conflicted).toBe(true);
+    });
+
+    it('replaces the target when a second row is opened', () => {
+      // One modal, and the row that was pressed last is the one it shows.
+      useUIStore.getState().openGitDiff({ path: 'a.md', scope: 'worktree' });
+      useUIStore.getState().openGitDiff({ path: 'b.md', scope: 'index' });
+      expect(useUIStore.getState().gitDiff).toEqual({ path: 'b.md', scope: 'index' });
+    });
+
+    it('is transient — writes nothing to localStorage', () => {
+      // Every other modal's rule: reopening the app on top of a diff nobody
+      // remembers asking for is never what you want.
+      useUIStore.getState().openGitDiff({ path: 'a.md', scope: 'worktree' });
+      expect(localStorage.length).toBe(0);
+      useUIStore.getState().closeGitDiff();
+      expect(localStorage.length).toBe(0);
+    });
+
+    it('is a separate modal from the two Centers', () => {
+      useUIStore.getState().openPackCenter('word-vectors');
+      useUIStore.getState().openPluginCenter('demo');
+      useUIStore.getState().openGitDiff({ path: 'a.md', scope: 'worktree' });
+
+      expect(useUIStore.getState().packCenterOpen).toBe(true);
+      expect(useUIStore.getState().pluginCenterOpen).toBe(true);
+
+      useUIStore.getState().closeGitDiff();
+      expect(useUIStore.getState().packCenterOpen).toBe(true);
+      expect(useUIStore.getState().pluginCenterOpen).toBe(true);
     });
   });
 

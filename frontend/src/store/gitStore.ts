@@ -3,7 +3,9 @@ import {
   GIT_TIMEOUTS_S,
   GitApiError,
   getGitBranches,
+  getGitCommitFiles,
   getGitConfig,
+  getGitLog,
   getGitRemotes,
   getGitStashes,
   getGitStatus,
@@ -32,6 +34,8 @@ import {
   setGitConfig,
   type BranchesResponse,
   type GitCheckoutKind,
+  type GitCommit,
+  type GitCommitFile,
   type GitErrorCode,
   type GitPathSelection,
   type GitPullStrategy,
@@ -274,14 +278,33 @@ function saveHideLayout(hide: boolean): void {
   }
 }
 
+/** The three lists that are a `GET` of their own, refreshed after a write. */
 export type GitRefKind = 'branches' | 'remotes' | 'stashes';
-export type GitSections = Record<GitRefKind, boolean>;
+
+/**
+ * Every collapsible section in the panel.
+ *
+ * History is one of these -- it opens, it closes, it is remembered -- and it
+ * is NOT a `GitRefKind`: the three reference lists are one short read each,
+ * re-read on every poll and after every write that can change them, while
+ * history is PAGED. Re-reading it on a schedule would throw away every page
+ * past the first one the reader had loaded, so it is refreshed on the events
+ * that actually invalidate it instead (see `reloadLogIfLive`).
+ */
+export type GitSectionKind = GitRefKind | 'history';
+
+export type GitSections = Record<GitSectionKind, boolean>;
 /**
  * Why each list could not be read, or null where it could.
  *
  * Per kind rather than one field, because the three are three separate reads:
  * a `GET /remotes` that fails while `GET /branches` answers must not put a
  * line under the branches the panel is showing correctly.
+ *
+ * The three ref kinds only: history's own failures land in `historyError`,
+ * which carries the whole refusal rather than a sentence -- a diff or a log
+ * read can be refused with `ignored` or `not_found`, and the section wants
+ * the code.
  */
 export type GitRefErrors = Record<GitRefKind, string | null>;
 
@@ -292,6 +315,7 @@ const CLOSED_SECTIONS: GitSections = {
   branches: false,
   remotes: false,
   stashes: false,
+  history: false,
 };
 
 function loadSections(): GitSections {
@@ -301,10 +325,14 @@ function loadSections(): GitSections {
       return { ...CLOSED_SECTIONS };
     }
     const stored = raw as Record<string, unknown>;
+    // Each kind by hand, and `=== true` rather than a truthiness test: a value
+    // written by an older build has no `history` at all and reads as closed,
+    // which needs no migration and is the right answer anyway.
     return {
       branches: stored.branches === true,
       remotes: stored.remotes === true,
       stashes: stored.stashes === true,
+      history: stored.history === true,
     };
   } catch {
     return { ...CLOSED_SECTIONS };
@@ -317,6 +345,100 @@ function saveSections(sections: GitSections): void {
   } catch {
     /* A display preference must never make Source Control unusable. */
   }
+}
+
+/* ── History ────────────────────────────────────────────────────────── */
+
+/**
+ * The history the section is showing.
+ *
+ * `commits` is every page loaded so far, newest first; `hasMore` is the
+ * SERVER's answer (it read one row more than it returned), not a guess from
+ * the page size. `unborn` is a branch with no commits at all, which is a
+ * normal 200 rather than a refusal. `loading` covers both reads, so a second
+ * press of Load more while the first is in flight does nothing.
+ */
+export interface GitLogSlice {
+  commits: GitCommit[];
+  hasMore: boolean;
+  unborn: boolean;
+  loading: boolean;
+}
+
+const EMPTY_LOG: GitLogSlice = {
+  commits: [],
+  hasMore: false,
+  unborn: false,
+  loading: false,
+};
+
+/**
+ * Commits per page.
+ *
+ * The route's own default. Its cap is 100, and `skip` is bounded at 2^31-1
+ * because git parses `--skip=` as a signed 32-bit integer -- neither is
+ * reachable by pressing Load more, which walks 30 at a time.
+ */
+export const GIT_LOG_PAGE = 30;
+
+/**
+ * The most commits one read may ask for.
+ *
+ * The route's own cap, and a 422 past it. It bounds the re-read below, which
+ * is the only call that asks for more than a page: a reader who pressed Load
+ * more four times gets those hundred and twenty rows re-read as a hundred,
+ * not as a refusal.
+ */
+export const GIT_LOG_MAX_LIMIT = 100;
+
+/**
+ * How wide a re-read of the history has to be to keep what is on screen.
+ *
+ * `loadLog` REPLACES the list, so re-reading one page under a reader who had
+ * pressed Load more three times took ninety rows down to thirty -- on every
+ * sidebar tab switch, because the mount read runs then. Asking for as many
+ * rows as are held answers the same question without emptying the list.
+ *
+ * Never narrower than a page (a short history holds five rows, and asking for
+ * five would grow a Load more button the moment a sixth commit existed) and
+ * never wider than the route's cap.
+ */
+function heldLogLimit(): number {
+  const held = useGitStore.getState().log.commits.length;
+  return Math.min(Math.max(held, GIT_LOG_PAGE), GIT_LOG_MAX_LIMIT);
+}
+
+/**
+ * How many commits' file lists are kept at once.
+ *
+ * A commit's file list never changes, so it is cached rather than re-read --
+ * but a reader walking a long history would otherwise accumulate one list per
+ * commit they expanded, for a panel that shows one at a time. Twenty is far
+ * more than is ever on screen and small enough to stay free.
+ */
+const COMMIT_FILES_CAP = 20;
+
+/**
+ * The cache with one more commit in it, and the oldest dropped past the cap.
+ *
+ * Insertion order is the eviction order, which `Object.keys` gives directly:
+ * a sha is a forty-character string, never an array index, so it keeps the
+ * position it was first written at. Re-writing a sha that is already held
+ * updates its files WITHOUT moving it, which is what makes this a cap rather
+ * than a most-recently-used list -- and either is correct here, because the
+ * answer for a sha never changes.
+ */
+function cappedCommitFiles(
+  held: Record<string, GitCommitFile[]>,
+  sha: string,
+  files: GitCommitFile[],
+): Record<string, GitCommitFile[]> {
+  const next = { ...held, [sha]: files };
+  const keys = Object.keys(next);
+  for (const stale of keys.slice(0, Math.max(0, keys.length - COMMIT_FILES_CAP))) {
+    delete next[stale];
+  }
+  return next;
 }
 
 /* ── The poll ───────────────────────────────────────────────────────── */
@@ -389,6 +511,15 @@ let refReadSeq: Record<GitRefKind, number> = {
  */
 let identitySeq = 0;
 
+/**
+ * The generation of the newest history read, for the same reason again: a
+ * `loadLog` that replaces the list while a `loadMoreLog` is in flight would
+ * otherwise have page two appended to a page one it knows nothing about --
+ * the dedupe would keep the rows apart, but the ORDER would be wrong.
+ * Bumped by both, applied only by the newest.
+ */
+let logSeq = 0;
+
 /** The sticky "changed on disk" toast, so the next one replaces it. */
 let changedToastId: string | null = null;
 
@@ -427,6 +558,39 @@ function refreshExpandedRefs(): void {
   for (const kind of REF_KINDS) {
     if (state.sections[kind]) void state.refreshRefs(kind);
   }
+}
+
+/**
+ * Read page one again, where there is a history that could now be wrong.
+ *
+ * Three callers. `attach()` runs it once per mount, because the open flags are
+ * persisted and a section left open comes back open with nothing behind it.
+ * The second is any write that refreshes the BRANCH list, because that is
+ * exactly the set that can move HEAD: a commit or an amend, a pull, a sync, a
+ * checkout, a branch created with one, an init. Nothing else writes a commit,
+ * so nothing else invalidates the page on screen. The third is the header's
+ * Refresh button, which is why this is exported: "live" has to mean one thing,
+ * and a header testing something narrower left a collapsed-but-loaded history
+ * unread by the one control whose job is to make the panel true.
+ *
+ * "Live" is the section being open OR a page already being held. The second
+ * half is what makes `setSectionOpen` correct: opening reads only an EMPTY
+ * history, so a page the reader loaded and then collapsed has to be kept in
+ * step here -- otherwise reopening would show a list missing the commit they
+ * just made. A history nobody has ever opened holds nothing and reads nothing.
+ *
+ * As many rows as are held, not one page: see `heldLogLimit`.
+ *
+ * NOT part of `refreshExpandedRefs`: that is the fifteen-second poll's walk,
+ * and a paged list re-read on a schedule loses every page past the first.
+ */
+export async function reloadLogIfLive(): Promise<void> {
+  const state = useGitStore.getState();
+  const live = state.sections.history
+    || state.log.commits.length > 0
+    || state.log.unborn;
+  if (!live) return;
+  await state.loadLog(heldLogLimit());
 }
 
 function startPoll(): void {
@@ -831,6 +995,10 @@ async function runOp(
     }
     if (opts.refs !== undefined) {
       await Promise.all(opts.refs.map((kind) => useGitStore.getState().refreshRefs(kind)));
+      // The branch list and the history are moved by the same set of writes:
+      // whatever changes which commit a branch points at changes what the
+      // history shows. See `reloadLogIfLive`.
+      if (opts.refs.includes('branches')) await reloadLogIfLive();
     }
     return true;
   } catch (err) {
@@ -967,7 +1135,30 @@ interface GitState {
   branches: BranchesResponse | null;
   remotes: RemoteInfo[] | null;
   stashes: StashInfo[] | null;
-  /** Which of the three sections are open; persisted, see `SECTIONS_KEY`. */
+  /**
+   * The history, as far as it has been paged in. Empty until the section is
+   * opened for the first time -- a tab nobody opens History on reads no log.
+   */
+  log: GitLogSlice;
+  /**
+   * One commit's files, by sha, capped at {@link COMMIT_FILES_CAP}.
+   *
+   * A cache rather than "the expanded commit's files": a reader walking a
+   * history expands one row, collapses it, expands the next and goes back --
+   * and a sha's file list never changes, so the second expand is a lookup.
+   */
+  commitFiles: Record<string, GitCommitFile[]>;
+  /**
+   * Why the history could not be read, or null.
+   *
+   * The whole refusal rather than a sentence (which is what `refsError`
+   * keeps): these reads can be refused with `ignored` or `not_found`, and the
+   * section picks its sentence from the CODE. Kept out of `lastError` for the
+   * reason `refsError` is: nobody pressed a button for a section's own read,
+   * and the error line belongs to the operation the user asked for.
+   */
+  historyError: GitStoreError | null;
+  /** Which of the four sections are open; persisted, see `SECTIONS_KEY`. */
   sections: GitSections;
   /**
    * Which list reads failed, shown by the section that could not be read.
@@ -999,7 +1190,10 @@ interface GitState {
   detach: () => void;
   refresh: () => Promise<void>;
   refreshRefs: (kind: GitRefKind) => Promise<void>;
-  setSectionOpen: (kind: GitRefKind, open: boolean) => void;
+  loadLog: (limit?: number) => Promise<void>;
+  loadMoreLog: () => Promise<void>;
+  loadCommitFiles: (sha: string) => Promise<void>;
+  setSectionOpen: (kind: GitSectionKind, open: boolean) => void;
   noteWorktreeWrite: () => void;
   announce: (message: string) => void;
   setCommitMessage: (message: string) => void;
@@ -1043,6 +1237,9 @@ export const useGitStore = create<GitState>((set, get) => ({
   branches: null,
   remotes: null,
   stashes: null,
+  log: EMPTY_LOG,
+  commitFiles: {},
+  historyError: null,
   sections: loadSections(),
   refsError: NO_REF_ERRORS,
   loading: false,
@@ -1077,6 +1274,12 @@ export const useGitStore = create<GitState>((set, get) => ({
     startPoll();
     void get().refresh();
     refreshExpandedRefs();
+    // History is not in that walk (it is paged, and paging does not survive a
+    // schedule), but the open flags ARE persisted -- so a section left open
+    // comes back open on the next load with an empty slice behind it. Without
+    // this line it would say "0" over a repository that has commits, until
+    // somebody collapsed and reopened it.
+    void reloadLogIfLive();
   },
 
   detach: () => {
@@ -1172,18 +1375,125 @@ export const useGitStore = create<GitState>((set, get) => ({
   },
 
   /**
+   * Read the first page of history, replacing whatever is held.
+   *
+   * REPLACES rather than merges, and that is the whole point of it: page one
+   * after a commit IS the history, and merging it into the old list would put
+   * the new commit somewhere under the one it was made on top of.
+   *
+   * `limit` is how many rows to read from the top, defaulting to one page.
+   * {@link reloadLogIfLive} passes {@link heldLogLimit} so that a reader who
+   * had paged down keeps the rows they were reading; the offsets of those
+   * pages are what cannot be kept, and re-reading them from zero in one
+   * request is what replaces them honestly.
+   */
+  loadLog: async (limit = GIT_LOG_PAGE) => {
+    const seq = (logSeq += 1);
+    set({ log: { ...get().log, loading: true } });
+    try {
+      const page = await getGitLog(0, limit);
+      if (seq !== logSeq) return;
+      set({
+        log: {
+          commits: page.commits,
+          hasMore: page.hasMore,
+          unborn: page.unborn,
+          loading: false,
+        },
+        historyError: null,
+      });
+    } catch (err) {
+      if (seq !== logSeq) return;
+      // The page already on screen is kept: a failed read is a reason to show
+      // a line under the list, not to empty it.
+      set({ log: { ...get().log, loading: false }, historyError: toStoreError(err, 'read') });
+    }
+  },
+
+  /**
+   * Read the page after the one the list ends on.
+   *
+   * `skip` is how many rows are held, which is offset paging and therefore
+   * DRIFTS: a commit made between two presses shifts every row down one, so
+   * the next page can repeat rows this one already has. They are dropped by
+   * sha -- git's own identity for a commit -- rather than by position.
+   *
+   * Nothing at all past the end (`hasMore` is the server's answer) or while a
+   * read is in flight: two presses of Load more are one page.
+   */
+  loadMoreLog: async () => {
+    const held = get().log;
+    if (held.loading || !held.hasMore) return;
+    const seq = (logSeq += 1);
+    set({ log: { ...held, loading: true } });
+    try {
+      const page = await getGitLog(held.commits.length, GIT_LOG_PAGE);
+      if (seq !== logSeq) return;
+      const current = get().log;
+      const seen = new Set(current.commits.map((one) => one.sha));
+      set({
+        log: {
+          commits: [
+            ...current.commits,
+            ...page.commits.filter((one) => !seen.has(one.sha)),
+          ],
+          hasMore: page.hasMore,
+          unborn: page.unborn,
+          loading: false,
+        },
+        historyError: null,
+      });
+    } catch (err) {
+      if (seq !== logSeq) return;
+      set({ log: { ...get().log, loading: false }, historyError: toStoreError(err, 'read') });
+    }
+  },
+
+  /**
+   * Read what one commit changed, once.
+   *
+   * A sha's tree never changes, so a list already held is the answer and no
+   * request goes out -- which is what makes expanding, collapsing and
+   * expanding a row again free. A refusal caches nothing, so the next expand
+   * tries again.
+   */
+  loadCommitFiles: async (sha) => {
+    if (get().commitFiles[sha] !== undefined) return;
+    try {
+      const files = await getGitCommitFiles(sha);
+      set({
+        commitFiles: cappedCommitFiles(get().commitFiles, sha, files),
+        historyError: null,
+      });
+    } catch (err) {
+      set({ historyError: toStoreError(err, 'read') });
+    }
+  },
+
+  /**
    * Open or close one section, and remember it.
    *
-   * Opening reads the list again even when it was read a minute ago: the
-   * cheapest correct answer to "what is on screen now" is the current one,
-   * and a section that was collapsed while somebody switched branches at the
-   * command line would otherwise open on yesterday's list.
+   * Opening a REFERENCE section reads its list again even when it was read a
+   * minute ago: the cheapest correct answer to "what is on screen now" is the
+   * current one, and a section that was collapsed while somebody switched
+   * branches at the command line would otherwise open on yesterday's list.
+   *
+   * History is the exception, because it is paged: re-reading it on every
+   * open would throw away the pages the reader had loaded, to answer a
+   * question the reset rules have already answered. So it reads only an EMPTY
+   * history -- see `reloadLogIfLive`, which is what keeps a held one right.
    */
   setSectionOpen: (kind, open) => {
     const sections = { ...get().sections, [kind]: open };
     set({ sections });
     saveSections(sections);
-    if (open) void get().refreshRefs(kind);
+    if (!open) return;
+    if (kind === 'history') {
+      const log = get().log;
+      if (log.commits.length === 0 && !log.unborn) void get().loadLog();
+      return;
+    }
+    void get().refreshRefs(kind);
   },
 
   /**
@@ -1589,6 +1899,7 @@ export function _resetGitStoreForTesting(): void {
   readSeq = 0;
   refReadSeq = { branches: 0, remotes: 0, stashes: 0 };
   identitySeq = 0;
+  logSeq = 0;
   changedToastId = null;
   useGitStore.setState({
     repoState: 'unknown',
@@ -1598,6 +1909,9 @@ export function _resetGitStoreForTesting(): void {
     branches: null,
     remotes: null,
     stashes: null,
+    log: EMPTY_LOG,
+    commitFiles: {},
+    historyError: null,
     sections: loadSections(),
     refsError: NO_REF_ERRORS,
     loading: false,

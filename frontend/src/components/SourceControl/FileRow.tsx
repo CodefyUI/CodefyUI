@@ -52,6 +52,31 @@ function splitPath(path: string): { name: string; dir: string } {
 }
 
 /**
+ * The two fields a row is drawn from, whichever list the file came from.
+ *
+ * A status entry (`GitFile`) spells the rename source `orig_path`, the
+ * server's own snake_case, and a commit's file (`GitCommitFile`) spells it
+ * `origPath` -- one fact, two shapes, because they arrive from two routes.
+ * Both are accepted here rather than cast at the call site: a cast would let
+ * the other shape through unnoticed and draw a rename as one path.
+ */
+export interface RowFile {
+  path: string;
+  orig_path?: string | null;
+  origPath?: string | null;
+}
+
+/**
+ * Where a rename or a copy came from, in either spelling, or null.
+ *
+ * `??` and not `=== null`: the field that is not there is `undefined`, which
+ * is exactly what the OTHER shape leaves behind on every file.
+ */
+function renameSource(file: RowFile): string | null {
+  return file.orig_path ?? file.origPath ?? null;
+}
+
+/**
  * What the row says it is.
  *
  * A rename (and a copy, which carries the same field) is TWO paths, and only
@@ -59,8 +84,9 @@ function splitPath(path: string): { name: string; dir: string } {
  * The names are joined with an ASCII arrow so the pair survives a terminal,
  * a bug report and a locale with no such glyph.
  */
-export function displayPath(file: GitFile): string {
-  return file.orig_path === null ? file.path : `${file.orig_path} -> ${file.path}`;
+export function displayPath(file: RowFile): string {
+  const from = renameSource(file);
+  return from === null ? file.path : `${from} -> ${file.path}`;
 }
 
 /**
@@ -70,11 +96,10 @@ export function displayPath(file: GitFile): string {
  * every row carries the same verbs, so an action's accessible name is the verb
  * plus THIS -- and the string a reader hears has to be the string they can see.
  */
-export function fileRowLabel(file: GitFile): string {
+export function fileRowLabel(file: RowFile): string {
   const { name } = splitPath(file.path);
-  return file.orig_path === null
-    ? name
-    : `${splitPath(file.orig_path).name} -> ${name}`;
+  const from = renameSource(file);
+  return from === null ? name : `${splitPath(from).name} -> ${name}`;
 }
 
 /** One letter, tinted by what happened to the file, named in full for a reader. */
@@ -96,15 +121,26 @@ export function FileKindChip({ kind }: { kind: FileKind }) {
 /**
  * The name half of a row: the file, with its directory under it.
  *
- * One button, inert here and the diff view's target later. It carries no
- * tooltip of its own -- the row around it holds the path, because a `title` on
- * a disabled element never opens in Chrome and a truncated name is exactly
- * when the reader needs it.
+ * One button, and it opens the change -- in whichever pair of sides the list
+ * it is drawn in compares, which is why the target is the caller's and not
+ * this component's. Its accessible name is the verb plus the file, because a
+ * panel twenty rows deep whose buttons are all called "Open changes" is
+ * twenty buttons a reader cannot tell apart.
+ *
+ * It carries no tooltip of its own: it fills most of the row, and the answer
+ * a pointer over a truncated name wants is the path in full -- which is the
+ * ROW's `title`, and would never open if this button had one of its own.
  */
-export function FileRowName({ file }: { file: GitFile }) {
+export function FileRowName({ file, onOpen }: { file: RowFile; onOpen: () => void }) {
+  const { t } = useI18n();
   const { dir } = splitPath(file.path);
   return (
-    <button type="button" className={styles.openButton} disabled>
+    <button
+      type="button"
+      className={styles.openButton}
+      aria-label={`${t('git.file.open')} ${fileRowLabel(file)}`}
+      onClick={onOpen}
+    >
       <span className={styles.rowName}>{fileRowLabel(file)}</span>
       {dir !== '' && <span className={styles.rowDir}>{dir}</span>}
     </button>
@@ -121,6 +157,11 @@ export interface FileRowProps {
    * document body.
    */
   onActed?: () => void;
+  /**
+   * Show this file's change. The GROUP decides which two sides that is, so
+   * the handler is the group's -- see `ChangeGroup`.
+   */
+  onOpen: (file: GitFile) => void;
 }
 
 /**
@@ -138,7 +179,7 @@ export interface FileRowProps {
  *    so offering the button would be offering an error. The status keeps
  *    conflicts in a list of their own, which `MergeGroup` draws.
  */
-export function FileRow({ file, group, onActed }: FileRowProps) {
+export function FileRow({ file, group, onActed, onOpen }: FileRowProps) {
   const { t } = useI18n();
   const stage = useGitStore((s) => s.stage);
   const unstage = useGitStore((s) => s.unstage);
@@ -174,16 +215,12 @@ export function FileRow({ file, group, onActed }: FileRowProps) {
   }, [discard, file.kind, file.path, run, t]);
 
   return (
-    // The path lives on the ROW, not on the button inside it: a `title` on a
-    // disabled element never opens in Chrome, and a truncated name is exactly
-    // when the reader needs it.
+    // The path lives on the ROW, not on the button inside it: the chip and
+    // the action buttons are part of the row too, and a truncated name is
+    // exactly when the reader needs the whole path.
     <li className={styles.row} title={shown}>
       <FileKindChip kind={file.kind} />
-      {/*
-        Opening the change is the diff view's job and that is not in this
-        build, so the name button is inert -- see `FileRowName`.
-      */}
-      <FileRowName file={file} />
+      <FileRowName file={file} onOpen={() => onOpen(file)} />
       {/*
         The verb NAMES the file it acts on, and only the tooltip is the bare
         word. A panel is twenty rows deep and every one of them carries a

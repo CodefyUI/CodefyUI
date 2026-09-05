@@ -222,13 +222,31 @@
   text-decoration: underline;
 }
 
-.linkButton:hover {
+.linkButton:hover:not([aria-disabled='true']) {
   color: var(--text-primary);
 }
 
 .linkButton:focus-visible {
   outline: none;
   box-shadow: var(--focus-ring);
+}
+
+/* See `.iconButton[aria-disabled='true']`. History's Load more is the button
+   that needs this: the press itself is what sets `loading`, so it is marked
+   `aria-disabled` and its handler guarded rather than natively disabled --
+   and without a rule here it kept a pointer cursor and still lightened under
+   the pointer while the next page was out, which is a button that answers a
+   press with nothing and no sign that it will not.
+
+   It reaches one other control, and deliberately: the Publish follow-up on
+   the error line is `publishControl(styles.linkButton)`, which carries
+   `aria-disabled` while the network lane is busy (R11). Its sibling in the
+   header, `.publishButton`, has had exactly this pair of declarations for
+   that state since G2, so the follow-up now looks refused where it is
+   refused instead of looking pressable in one place and not the other. */
+.linkButton[aria-disabled='true'] {
+  color: var(--text-disabled);
+  cursor: default;
 }
 
 .errorStderr {
@@ -661,10 +679,10 @@
   background: var(--surface-hover);
 }
 
-/* The name half of a row, drawn as one button. In a file group it is inert —
-   opening the change is the diff view's target, later; in a reference list it
-   is what switches to the branch it names. `min-width: 0` is what lets the
-   name inside it ellipsise. */
+/* The name half of a row, drawn as one button. In a file group it opens that
+   file's change; in a reference list it switches to the branch it names; in a
+   commit row it expands the file list. `min-width: 0` is what lets the name
+   inside it ellipsise. */
 .openButton {
   display: flex;
   align-items: baseline;
@@ -679,10 +697,6 @@
   font-family: inherit;
   font-size: var(--fs-sm);
   text-align: left;
-}
-
-.openButton:disabled {
-  cursor: default;
 }
 
 .rowName {
@@ -899,6 +913,14 @@
   display: block;
 }
 
+/* An author `display` beats the user agent's own `[hidden] { display: none }`
+   -- the rule above is why this one has to exist at all. A commit's file list
+   stays MOUNTED while it is collapsed, so the row's `aria-controls` names an
+   element that is really there, and without this it would stay VISIBLE too. */
+.refSublist[hidden] {
+  display: none;
+}
+
 .refSubhead {
   display: block;
   padding: var(--sp-3) var(--sp-3) var(--sp-1) var(--sp-4);
@@ -907,6 +929,24 @@
   font-weight: var(--fw-bold);
   letter-spacing: 0.08em;
   text-transform: uppercase;
+}
+
+/* ── A commit ────────────────────────────────────────────────────────────
+   git's own abbreviation, which is what a command line takes and what every
+   other git client shows. Monospace so a column of them lines up, and never
+   shrinking: seven characters cut to four identify nothing, and the whole id
+   is in the span's `title` anyway. */
+.commitSha {
+  flex: 0 0 auto;
+  color: var(--text-muted);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: var(--fs-2xs);
+}
+
+/* "Load more", as the last row of the list. Indented to the rows' own text so
+   it reads as the end of the list rather than as a control over it. */
+.moreRow {
+  padding: var(--sp-1) var(--sp-3) var(--sp-2) var(--sp-4);
 }
 
 /* ── Empty screens ───────────────────────────────────────────────────────── */
