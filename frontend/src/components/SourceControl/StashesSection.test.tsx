@@ -155,7 +155,7 @@ describe('StashesSection: the rows', () => {
     });
     render(<StashesSection />);
     expect(
-      within(section()).getByText('Could not read repository status: Failed to fetch'),
+      within(section()).getByText('Could not read Stashes: Failed to fetch'),
     ).toBeTruthy();
   });
 });

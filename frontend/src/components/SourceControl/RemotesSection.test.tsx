@@ -102,8 +102,10 @@ describe('RemotesSection: the rows', () => {
       refsError: { branches: null, remotes: 'Failed to fetch', stashes: null },
     });
     render(<RemotesSection />);
+    // Named by the list it is about: the repository status is fine here and
+    // one `git remote -v` is not.
     expect(
-      within(section()).getByText('Could not read repository status: Failed to fetch'),
+      within(section()).getByText('Could not read Remotes: Failed to fetch'),
     ).toBeTruthy();
     // One answer, not two: the reason replaces the empty sentence.
     expect(screen.queryByText('No remote yet.')).toBeNull();

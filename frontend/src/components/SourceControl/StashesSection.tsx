@@ -68,13 +68,19 @@ export function StashesSection() {
       open={open}
       onOpenChange={(next) => setSectionOpen('stashes', next)}
     >
-      <RefError message={refsError} />
+      <RefError message={refsError} what={t('git.section.stashes')} />
       {refsError === null && stashes !== null && stashes.length === 0 && (
         <RefEmpty text={t('git.stash.empty')} />
       )}
       {(stashes ?? []).map((stash) => {
         const selector = selectorFor(stash);
         const when = relativeTime(stash.created_at, locale);
+        // A key rather than a literal ", ": the comma between two clauses is
+        // a different character in Chinese, and a row missing one half is
+        // the other half alone rather than a dangling separator.
+        const meta = stash.branch === null || stash.branch === ''
+          ? when
+          : t('git.stash.rowMeta', { branch: stash.branch, when });
         return (
           <RefRow
             key={selector}
@@ -83,7 +89,7 @@ export function StashesSection() {
             // writes the same "WIP on main: ..." for every stash nobody named.
             identity={selector}
             badge={selector}
-            meta={[stash.branch, when].filter((part) => part !== null && part !== '').join(', ')}
+            meta={meta}
             actions={[
               {
                 id: 'pop',

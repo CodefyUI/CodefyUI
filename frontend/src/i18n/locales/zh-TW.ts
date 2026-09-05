@@ -1123,6 +1123,7 @@ const zhTW: Record<TranslationKey, string> = {
   'git.stash.apply': '套用',
   'git.stash.drop': '刪除',
   'git.stash.dropConfirm': '刪除儲藏 {name}？',
+  'git.stash.rowMeta': '{branch}，{when}',
   'git.stash.empty': '沒有儲藏',
   'git.section.branches': '分支',
   'git.section.remotes': '遠端',
@@ -1250,6 +1251,7 @@ const zhTW: Record<TranslationKey, string> = {
   'git.error.notRepo': '不是 git 儲存庫。',
   'git.error.generic': 'git 失敗：{message}',
   'git.error.loadFail': '無法讀取儲存庫狀態：{error}',
+  'git.error.listFail': '無法讀取{what}：{error}',
   'git.error.dismiss': '關閉',
   'git.error.details': '詳細資料',
 };

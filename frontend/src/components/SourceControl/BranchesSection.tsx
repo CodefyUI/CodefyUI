@@ -128,7 +128,7 @@ export function BranchesSection() {
         </button>
       }
     >
-      <RefError message={refsError} />
+      <RefError message={refsError} what={t('git.section.branches')} />
       {local.map((entry) => (
         <LocalBranchRow
           key={entry.name}

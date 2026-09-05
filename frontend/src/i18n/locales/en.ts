@@ -1294,6 +1294,10 @@ const en = {
   'git.stash.apply': 'Apply',
   'git.stash.drop': 'Drop',
   'git.stash.dropConfirm': 'Drop stash {name}?',
+  // The dimmer half of a stash row: which branch it was made on, and when.
+  // A key rather than a literal ", ", because the comma is not the same
+  // character in every language.
+  'git.stash.rowMeta': '{branch}, {when}',
   'git.stash.empty': 'No stashes',
   'git.section.branches': 'Branches',
   'git.section.remotes': 'Remotes',
@@ -1432,6 +1436,10 @@ const en = {
   'git.error.notRepo': 'Not a git repository.',
   'git.error.generic': 'git failed: {message}',
   'git.error.loadFail': 'Could not read repository status: {error}',
+  // Inside a reference section, where the status is fine and one list is not:
+  // "Could not read repository status" there tells the reader the wrong thing
+  // failed, in the one place that knows which.
+  'git.error.listFail': 'Could not read {what}: {error}',
   'git.error.dismiss': 'Dismiss',
   'git.error.details': 'Details',
 } as const;

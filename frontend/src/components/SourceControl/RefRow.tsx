@@ -160,18 +160,29 @@ export function RefRow({ name, action, identity, badge, meta, actions }: RefRowP
  * user was reading. An open, empty section with no reason given would be
  * worse than both, which is why it is reported at all.
  *
- * Except while the header is saying it already. A backend that stops answering
- * fails the status poll and all three refs reads with one sentence, and the
- * panel printed it in the header and again in every open section -- up to four
- * copies of one fact on a 180px panel. `loadError` is that same server, said
- * once, above.
+ * It names the LIST it is about. `git.error.loadFail` is the status poll's
+ * sentence, and inside the Stashes section it said the repository status
+ * could not be read while the status was fine and only `git stash list` had
+ * failed -- the wrong thing named, in the one place that knows which.
+ *
+ * Suppressed while the header is saying the same thing already. A backend
+ * that stops answering fails the status poll and all three refs reads at
+ * once, and the panel printed it in the header and again in every open
+ * section -- up to four copies of one fact on a 180px panel. But only while
+ * the header is really drawing THAT sentence: the header shows one line and
+ * the operation's refusal wins it, so a `lastError` means `loadError` is not
+ * on screen and this is the only place the failed read would be reported.
  */
-export function RefError({ message }: { message: string | null }) {
+export function RefError({ message, what }: { message: string | null; what: string }) {
   const { t } = useI18n();
   const loadError = useGitStore((s) => s.loadError);
-  if (message === null || loadError !== null) return null;
+  const lastError = useGitStore((s) => s.lastError);
+  if (message === null) return null;
+  if (loadError !== null && lastError === null) return null;
   return (
-    <li className={styles.refError}>{t('git.error.loadFail', { error: message })}</li>
+    <li className={styles.refError}>
+      {t('git.error.listFail', { what, error: message })}
+    </li>
   );
 }
 

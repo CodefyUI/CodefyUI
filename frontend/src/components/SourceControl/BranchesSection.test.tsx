@@ -177,15 +177,16 @@ describe('BranchesSection: the rows', () => {
     ).toHaveAccessibleDescription('Upstream deleted');
   });
 
-  it('reports a list that could not be read, inside the section', () => {
+  it('reports a list that could not be read, naming the list', () => {
     // Not on the error line: nobody pressed a button for the fifteen-second
-    // poll that failed.
+    // poll that failed. And not the status poll's sentence either -- the
+    // status is fine here and one `git branch` read is not.
     useGitStore.setState({
       refsError: { branches: 'Failed to fetch', remotes: null, stashes: null },
     });
     render(<BranchesSection />);
     expect(
-      within(section()).getByText('Could not read repository status: Failed to fetch'),
+      within(section()).getByText('Could not read Branches: Failed to fetch'),
     ).toBeTruthy();
   });
 
@@ -200,8 +201,30 @@ describe('BranchesSection: the rows', () => {
     });
     render(<BranchesSection />);
     expect(
-      within(section()).queryByText('Could not read repository status: Failed to fetch'),
+      within(section()).queryByText('Could not read Branches: Failed to fetch'),
     ).toBeNull();
+  });
+
+  it('says it here when the header is drawing a refusal instead', () => {
+    // The header shows ONE sentence and the operation's refusal wins it, so
+    // a `lastError` means the status failure is not on screen at all -- and
+    // suppressing this one leaves an open, empty section with no reason
+    // given, which is what the line exists to prevent.
+    useGitStore.setState({
+      loadError: 'Failed to fetch',
+      lastError: {
+        code: 'dirty_tree',
+        message: 'uncommitted changes',
+        hint: null,
+        stderr: null,
+        op: 'checkout',
+      },
+      refsError: { branches: 'Failed to fetch', remotes: null, stashes: null },
+    });
+    render(<BranchesSection />);
+    expect(
+      within(section()).getByText('Could not read Branches: Failed to fetch'),
+    ).toBeTruthy();
   });
 });
 

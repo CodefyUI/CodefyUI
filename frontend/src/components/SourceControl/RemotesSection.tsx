@@ -104,7 +104,7 @@ export function RemotesSection() {
         </button>
       }
     >
-      <RefError message={refsError} />
+      <RefError message={refsError} what={t('git.section.remotes')} />
       {/* `null` is "not read yet" and never "none", so the empty sentence
           waits for an answer rather than claiming one. */}
       {refsError === null && remotes !== null && remotes.length === 0 && (
