@@ -6,7 +6,7 @@ description: Commit, branch, stash, push and review a CodefyUI project from the 
 
 # Source Control
 
-The **Source Control** tab -- the branch icon in the sidebar rail -- is git for the project directory the server was started on. It shows what has changed since the last commit, stages and commits it, creates and switches branches, adds a remote and pushes to it, settles a merge conflict, lists the history, and opens any file's changes as a diff. A graph is a pair of plain JSON files on disk, so all of this is ordinary git against ordinary files: everything the tab does you can also do at a command line in the same directory, and everything you do at that command line shows up in the file lists and the branch counts within fifteen seconds.
+The **Source Control** tab -- the branch icon in the sidebar rail -- is git for the project directory the server was started on. It shows what has changed since the last commit, stages and commits it, creates and switches branches, adds a remote and pushes to it, settles a merge conflict, lists the history, and opens any file's changes as a diff. A graph is a pair of plain JSON files on disk, so all of this is ordinary git against ordinary files: everything the tab does you can also do at a command line in the same directory, and everything you do at that command line shows up in the file lists, on the branch line and in every list you have open within fifteen seconds.
 
 Two things have to be true before the tab can work. The server must have been started on a **project directory** -- `cdui project init my-project`, then `cdui start --project my-project`; a server started without one says "Source control needs a project directory." and prints those two commands, because the project is an argument to the server and no button in the browser can supply it. See [Project directories](./project-directories) for what a project is. And **git 2.23 or newer** must be installed on the computer that runs the server, not on the computer with the browser: without it the tab says "git is not installed on the server computer.", and with an older one `git {version} is too old; 2.23 or newer is required.` A project directory that is not a repository yet gets one button, **Initialize Repository**.
 
@@ -37,7 +37,7 @@ The tab can do the same thing: **More actions** > **Commit identity...** opens a
 
 ## The daily loop
 
-Save the graph (`Ctrl/Cmd` + `S`). Both files it writes -- `graphs/<name>.graph.json` and `layout/<name>.layout.json` -- appear under **Changes** at once rather than at the next poll. Stage what belongs in the commit with **Stage** on a row or **Stage All** on the group heading, write a message, and press **Commit** or `Ctrl/Cmd` + `Enter`. If you would rather not stage first, **Commit All (stages every change, including new files)** sits behind the chevron beside the button, and **Amend Last Commit** beside it replaces the previous commit -- offered only while there is one and it has not been pushed.
+Save the graph (`Ctrl/Cmd` + `S`). Both files it writes -- `graphs/<name>.graph.json` and `layout/<name>.layout.json` -- appear under **Changes** at once rather than at the next poll. Stage what belongs in the commit with **Stage** on a row or **Stage All** on the group heading, write a message, and press **Commit** or `Ctrl/Cmd` + `Enter`. If you would rather not stage first, **Commit All (stages every change, including new files)** sits behind the chevron beside the button, and **Amend Last Commit** beside it replaces the previous commit -- always in the menu and refused rather than withheld: greyed out while the branch has no commit at all, and renamed to "Cannot amend: the last commit is already pushed" once it has been.
 
 The **Commit** button says why it is unavailable rather than merely being grey: "Enter a message" or "Nothing staged", in the tooltip and to a screen reader.
 
@@ -45,7 +45,7 @@ The header's branch row carries the state of the branch. `↑2 ↓1` means two c
 
 **Sync (pull, then push)** is the everyday button. **Fetch**, **Pull** and **Push** are in the **More actions** menu for the times you want one half of it; Pull there is fast-forward only, so a divergence is reported rather than merged behind you. A row that cannot be pressed says why rather than merely greying out -- "No remote yet.", "Not published", "No commits yet", "Detached HEAD", or the operation already running. Network operations run in a lane of their own, so a slow fetch does not block the commit you were about to make, and neither can be started twice.
 
-**Refresh** in the title row re-reads everything on screen: the status, and every section that is open. Nothing is read for a section that is closed.
+**Refresh** in the title row re-reads everything on screen: the status, every section that is open, and the history whenever it still holds a page -- collapsing History keeps the pages you loaded, so they are kept true as well. A closed section with nothing behind it is not read.
 
 ## Branches, remotes and stashes
 
@@ -55,7 +55,7 @@ Under the file groups are four collapsible lists: these three, and History, whic
 
 **Remotes** lists each remote with the URL git fetches from, plus **Change URL** and **Remove**; **Add Remote...** is the **+** on the heading. Only `https://`, `ssh://`, `file://` and the `git@host:owner/repo.git` form are accepted, and the server allows git exactly those three protocols -- the transports whose "URL" is a command line to run cannot be configured at all.
 
-**Stashes** is the stash stack, newest first, each row showing the message you gave it, the branch it was made on and how long ago. **Stash Changes...** in the overflow menu asks for a message and takes untracked files with it, which is what makes a stash enough to free the tree for a checkout; leave the box empty and git writes its own subject. Rows offer **Pop**, **Apply** and **Drop**, and only Drop asks first -- it is the one that throws work away.
+**Stashes** is the stash stack, newest first, each row showing the message you gave it, the branch it was made on and how long ago. **Stash Changes...** in the **More actions** menu asks for a message and takes untracked files with it, which is what makes a stash enough to free the tree for a checkout; leave the box empty and git writes its own subject. Rows offer **Pop**, **Apply** and **Drop**, and only Drop asks first -- it is the one that throws work away.
 
 ## Conflicts
 
@@ -71,22 +71,23 @@ When a push is refused with "Local and remote branches have diverged.", the erro
 
 History is deliberately not on the fifteen-second poll -- a poll would throw away the pages you loaded. It is re-read by **Refresh**, by a commit or an amend, and by anything that moves the branch: a pull, a push, a sync, a checkout, a branch created or deleted.
 
-Any file row anywhere in the tab opens that file's changes: rows under **Changes** show the unstaged side, rows under **Staged Changes** show what the next commit will contain, and a file row under a commit in History shows what that commit did to it. The view opens over the editor with the path in its title and the scope beside it -- "Unstaged changes", "Staged changes" or `Commit {sha}` -- and closes with **Close** or Escape.
+Any file row anywhere in the tab opens that file's changes: rows under **Changes** show the unstaged side, rows under **Staged Changes** show what the next commit will contain, and a file row under a commit in History shows what that commit did to it. The view opens over the editor with the path in its title and the scope under it -- "Unstaged changes", "Staged changes" or `Commit {sha}` -- and closes with **Close** or Escape.
 
-**Unified** and **Side by side** are the two ways to read the patch. Side by side is derived from the same patch rather than from the whole file, so it shows the changed hunks with their context, paired left and right; a conflicted file offers unified only, because a file full of conflict markers has no two sides to pair. Three things are said in words instead of lines: a binary file gets "Binary file; no text diff."; a patch the server cut at 1 MiB carries `Diff truncated at {kb} KB.` above what did fit; and a file with no textual difference says "No changes".
+**Unified** and **Side by side** are the two ways to read the patch. Side by side is derived from the same patch rather than from the whole file, so it shows the changed hunks with their context, paired left and right; a conflicted file offers unified only, because a file full of conflict markers has no two sides to pair -- git answers an unmerged path with all of its sides at once, and that is what the window draws, markers and all. Three things about the patch as a whole are said in words instead of lines: a binary file gets "Binary file; no text diff."; a patch the server cut at 1 MiB carries `Diff truncated at {kb} KB.` above what did fit; and a file with no textual difference says "No changes". Two more appear inside the patch: git's own "No newline at end of file" beside the line it is about -- otherwise that change is two lines whose text is identical -- and, past two thousand lines, a note under the last line drawn, because laying out more than that freezes the tab for a second and nobody reads it in a side panel.
 
 ### What changed in the graph
 
 A JSON diff of a saved graph is a wall of braces in which "I changed `k` from 5 to 7" is invisible. So for `graphs/<name>.graph.json` and `layout/<name>.layout.json` a short summary sits above the patch, read from the two sides of the diff:
 
-- nodes added and removed, and a node whose type changed;
+- nodes added and removed, counted on the canvas: dropping one preset block is one node, not the six inside the definition it brought with it;
+- a node whose type changed;
 - a parameter whose value changed, under the node's label or its id where it has none, with long values clipped;
 - edges added and removed, compared by their endpoints and handles rather than by their ids, because copy and paste regenerates ids;
 - node positions moved, which can only appear on a `.layout.json` diff -- a `.graph.json` has no coordinates in it.
 
 At most eight lines are shown, then a line counting the rest ("and 3 more"). "No logic change" means the two sides say the same thing and the difference is text only: key order, whitespace, an array written in another order, a regenerated id. "Could not parse as a graph" means one side is not readable JSON of that kind.
 
-Some real changes have no line yet, and the summary is then empty rather than reassuring: segment groups, note geometry, a subgraph definition, a graph's name or description, and a preset instance's per-instance overrides. None of them is ever reported as "No logic change" -- the patch below is what shows them. A non-project graph saved as a single `<name>.json` gets no summary at all.
+Some real changes have no line yet, and the summary is then empty rather than reassuring: segment groups, note geometry, a subgraph definition, a preset definition arriving or leaving (the instance on the canvas is still counted), a graph's name or description, and a preset instance's per-instance overrides. None of them is ever reported as "No logic change" -- the patch below is what shows them. A non-project graph saved as a single `<name>.json` gets no summary at all.
 
 ## When the files change under an open graph
 
@@ -110,7 +111,7 @@ Keep secrets out of the graphs themselves as well: an API key typed into an LLM 
 - **No hunk staging.** Staging is per file.
 - **Commit signing is not supported.** A repository configured with `commit.gpgsign = true` fails with "Commit signing is not supported from the app.", because gpg cannot ask for a passphrase in a process with no terminal. Turn signing off for this repository, or make that commit from a terminal.
 - **The diff is the patch.** Side by side pairs the patch's hunks; a whole-file comparison of both revisions is a follow-up.
-- **History pages by offset.** Thirty commits at a time, so a commit made between two pages can shift the window; **Refresh** re-reads from the first page.
+- **History pages by offset.** Thirty commits at a time, so a commit made between two pages can shift the window; **Refresh** re-reads the pages you have loaded, from the first.
 
 ## Troubleshooting
 
@@ -124,6 +125,6 @@ Keep secrets out of the graphs themselves as well: an API key typed into an LLM 
 | "Not a git repository." | The project directory has no `.git` in it. | Press **Initialize Repository** on the tab's empty screen, or start the server on the directory you meant. |
 | "This file is ignored by git." | You opened the changes for a path git ignores, or for a `.env`-shaped file the server never serves. | Nothing to fix; the file is deliberately not readable through the editor. |
 | "Another git action is still running." | Two writes at once, or a write during a long one. | Wait for the progress bar under the header to finish. |
-| `git did not finish within {seconds}s.` | The command passed its deadline -- 10 s for a status, 20 s for a read, 30 s for a local write, 120 s for anything over the network. Usually an index lock held by another process. | Close whatever else is running git in that directory, then press **Refresh**. |
+| `git did not finish within {seconds}s.` | The command passed its deadline -- 10 s for a status, 20 s for a read, 30 s for a local write, 130 s for anything over the network (git's own 120 s plus the request's grace). Usually an index lock held by another process. | Close whatever else is running git in that directory, then press **Refresh**. |
 
 For the wider picture -- what belongs in the repository, what must never be committed, and how to validate every graph in CI -- see [Version control your graphs](./version-control-graphs) and [Project directories](./project-directories).

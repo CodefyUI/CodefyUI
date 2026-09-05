@@ -15,9 +15,9 @@ in one command: `cdui project init my-service --adopt /path/to/my-graphs`.
 
 :::tip The editor can run the git steps for you
 Once the graphs live in a project directory, the editor's **Source Control**
-tab does the git in this page: stage, commit, branch, push,
-settle a conflict, and read the history and the diffs (the one-off credential
-setup still happens in a terminal). See
+tab does the git of [Set up a service repo](#set-up-a-service-repo) for you:
+stage, commit, branch, push, settle a conflict, and read the history and the
+diffs (the one-off credential setup still happens in a terminal). See
 [Source Control](./source-control).
 :::
 
