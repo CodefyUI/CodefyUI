@@ -90,6 +90,18 @@ _SAMPLES = [
         "fatal: unable to access 'https://github.com/a/b/': "
         "Could not resolve host: github.com\n",
         "network", id="dns"),
+    # The app's own ``GIT_ALLOW_PROTOCOL=https:ssh:file`` refusing a remote
+    # that was configured outside this API. The tab cannot create one --
+    # ``validate_remote_url`` refuses the shape -- but it LISTS such a remote
+    # and offers Fetch / Pull / Sync on it, so this is a state the panel can
+    # be in, and a 500 for an ordinary click. Both lines copied off git 2.53
+    # (exit 128), one per transport.
+    pytest.param(
+        "fatal: transport 'http' not allowed\n",
+        "invalid_url", id="transport-http-refused"),
+    pytest.param(
+        "fatal: transport 'git' not allowed\n",
+        "invalid_url", id="transport-git-refused"),
     pytest.param(
         " ! [rejected]        main -> main (fetch first)\n"
         "error: failed to push some refs to 'https://github.com/a/b'\n"

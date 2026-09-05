@@ -39,7 +39,7 @@ from pathlib import Path
 
 import pytest
 
-from app.core.git import network, refs, repo as repo_ops
+from app.core.git import network, refs, repo as repo_ops, service as service_ops
 from app.core.git.errors import GitBusy, GitError, _subcommand
 from app.core.git.models import GitStatus, MutationResult
 from app.core.git.runner import LITERAL_PATHSPECS, GitResult
@@ -1171,15 +1171,23 @@ async def test_every_network_command_keeps_literal_pathspecs(
     argued in a docstring, because the next command added here will be
     added by somebody reading this file.
 
-    WHAT IS RECORDED is the ``run_git`` of all three modules a pull or a
-    push reaches, and nothing else: ``network`` (``fetch``, ``merge``,
-    ``push``, the ``for-each-ref`` push resolver and the two ``rev-parse``
-    HEAD reads), ``refs`` (``remote -v``) and ``repo`` (the ``status`` the
-    service reads around every mutation, and the ``rev-parse --git-path``
-    that goes with it). Git run any other way is invisible here -- the raw
-    ``subprocess`` the fixtures arrange with, above all. Recording one
-    module and calling the result an inventory is how this test spent two
-    rounds not seeing ``remote -v`` and then not seeing the status read.
+    WHAT IS RECORDED is the ``run_git`` of the FOUR modules a pull or a
+    push reaches, and nothing else:
+
+    * ``network`` -- ``fetch``, ``merge``, ``push``, the ``for-each-ref``
+      push resolver and the two ``rev-parse`` HEAD reads;
+    * ``refs`` -- ``remote -v``;
+    * ``repo`` -- the ``status`` the service reads around every mutation,
+      and the ``rev-parse --git-path`` that goes with it;
+    * ``service`` -- ``rev-parse --show-toplevel`` for the project root,
+      and the ``diff --name-only -z`` that turns two HEADs into
+      ``changed_paths``.
+
+    Git run any other way is invisible here -- the raw ``subprocess`` the
+    fixtures arrange with, above all. Recording one module and calling the
+    result an inventory is how this test spent three rounds not seeing
+    ``remote -v``, then the status read, then the two the service itself
+    makes.
     """
     _publish(repo, bare_remote)
     clone = clone_of(bare_remote)
@@ -1197,16 +1205,17 @@ async def test_every_network_command_keeps_literal_pathspecs(
     monkeypatch.setattr(network, "run_git", _recorder(network.run_git))
     monkeypatch.setattr(refs, "run_git", _recorder(refs.run_git))
     monkeypatch.setattr(repo_ops, "run_git", _recorder(repo_ops.run_git))
+    monkeypatch.setattr(service_ops, "run_git", _recorder(service_ops.run_git))
 
     await repo.service.pull()
     repo.commit("mine", {"c.txt": "sea\n"})
     await repo.service.push()
 
     assert [argv for argv in seen if LITERAL_PATHSPECS not in argv] == []
-    # ...and that the set below really is every subcommand those three run.
+    # ...and that the set below really is every subcommand those four run.
     assert {_subcommand(argv) for argv in seen} == {
-        "fetch", "for-each-ref", "rev-parse", "merge", "push", "remote",
-        "status"}
+        "diff", "fetch", "for-each-ref", "rev-parse", "merge", "push",
+        "remote", "status"}
     # The pull contributes none of these: its remote comes from the
     # upstream. So this count is the plain push's, and it is one.
     assert len([argv for argv in seen if _subcommand(argv) == "remote"]) == 1

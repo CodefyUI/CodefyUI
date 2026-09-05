@@ -300,6 +300,21 @@ _RULES: tuple[tuple[str, int, tuple[_Pattern, ...]], ...] = (
         # Reached only when no credential phrase matched above.
         "Could not read from remote repository",
     )),
+    # A refusal this app inflicts on ITSELF. ``NON_INTERACTIVE_ENV`` sets
+    # ``GIT_ALLOW_PROTOCOL=https:ssh:file``, and a project the user opens
+    # can already have an ``http://`` or ``git://`` remote --
+    # ``validate_remote_url`` refuses those shapes so the tab cannot CREATE
+    # one, but it lists such a remote and offers Fetch / Pull / Sync on it.
+    # git answers "fatal: transport 'http' not allowed" (exit 128, measured
+    # on git 2.53), which fell through to ``git_failed`` -- a 500 for an
+    # ordinary click, which is the defect class this table exists to close.
+    #
+    # A PAIR, so a hook printing prose about transport cannot reach it.
+    # ``invalid_url`` is exactly what happened, and the frontend already
+    # knows the code.
+    ("invalid_url", 400, (
+        ("transport '", "' not allowed"),
+    )),
     # ABOVE ``non_fast_forward``, and the two do not overlap by accident:
     # git writes a server-side refusal as ``! [remote rejected] main -> main
     # (pre-receive hook declined)`` (measured on git 2.53 against a bare
