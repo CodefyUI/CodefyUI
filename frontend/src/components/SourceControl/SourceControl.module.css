@@ -555,6 +555,23 @@
   opacity: 1;
 }
 
+/* An OPEN section that has read its list and found it empty keeps its header
+   action on screen. Everywhere else the hidden verbs act on rows that are
+   already there, so a hover finds them; here the section draws one sentence
+   ("No remote yet.") above nothing at all, and the button that answers it is
+   the only action the section has -- and the place `publishBranch` sends a
+   reader whose Publish resolved no remote. A dead end with the way out under
+   a hover is a dead end.
+
+   The list rather than the section: a CLOSED section is not showing the
+   sentence either, and a permanently open button on a collapsed header would
+   be the one row of the panel that never rests. */
+.group:has(> .list:not([hidden]) > .refEmpty) > .groupHeader > .groupActions {
+  width: auto;
+  overflow: visible;
+  opacity: 1;
+}
+
 .iconButton {
   display: inline-flex;
   align-items: center;
@@ -729,10 +746,24 @@
 }
 
 /* The destructive one of a row's actions, in the palette `.dangerButton`
-   already uses for the same job among the icon buttons. */
-.dangerAction:hover {
+   already uses for the same job among the icon buttons.
+
+   Both states, because the row this sits in offers Delete beside Rename and
+   the keyboard has to be able to tell them apart: `.rowActions` opens on
+   `.row:focus-within` as well as on `.row:hover`, and a focused Delete with
+   no cue of its own was the same box as the Rename next to it.
+
+   The red is the BORDER and never the label. The pointer that hovers this
+   button hovers the row under it, so the label would be drawn on
+   --surface-hover, where --status-error is 3.92:1 -- under the 4.5:1 that
+   11px text needs. As a border it is a 1.4.11 graphic and clears the 3:1
+   that asks of it, and the label goes to --text-primary (9.89:1) rather than
+   taking the --accent that `.rowAction:hover` would otherwise leave on a
+   destructive verb. */
+.dangerAction:hover,
+.dangerAction:focus-visible {
   border-color: var(--status-error);
-  color: var(--status-error);
+  color: var(--text-primary);
 }
 
 /* One sentence where a list would be. Indented to the rows' text, so it reads
