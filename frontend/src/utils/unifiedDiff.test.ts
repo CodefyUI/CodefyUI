@@ -431,6 +431,47 @@ describe('parseUnifiedDiff', () => {
     expect(file.newPath).toBe('my image.png');
   });
 
+  it('keeps /dev/null out of the paths of an UNTRACKED binary', () => {
+    // The backend diffs an untracked file as `diff --no-index -- /dev/null
+    // <path>`, and git answers by naming the same path TWICE on the header
+    // and writing `/dev/null` only on the binary marker line, which is not a
+    // header this reads. Measured with git 2.53; the midpoint split is exact
+    // here because both sides are the same string.
+    const patch = [
+      'diff --git a/shot.png b/shot.png',
+      'new file mode 100644',
+      'index 0000000..6735744',
+      'Binary files /dev/null and b/shot.png differ',
+      '',
+    ].join('\n');
+    expect(parseUnifiedDiff(patch)).toMatchObject({
+      oldPath: 'shot.png',
+      newPath: 'shot.png',
+    });
+  });
+
+  it('reads the /dev/null header of an untracked file whose name holds a space', () => {
+    // Also measured: git writes `--- /dev/null` and `+++ b/<path>` followed by
+    // a TAB. The `---`/`+++` pair wins over the `diff --git` line, so the
+    // midpoint split is never consulted, and the tab is dropped with the
+    // timestamp column it belongs to.
+    const patch = [
+      'diff --git a/brand new.txt b/brand new.txt',
+      'new file mode 100644',
+      'index 0000000..94954ab',
+      '--- /dev/null',
+      '+++ b/brand new.txt\t',
+      '@@ -0,0 +1,2 @@',
+      '+hello',
+      '+world',
+      '',
+    ].join('\n');
+    expect(parseUnifiedDiff(patch)).toMatchObject({
+      oldPath: '/dev/null',
+      newPath: 'brand new.txt',
+    });
+  });
+
   it('leaves the paths empty rather than inventing a split it cannot verify', () => {
     // A rename of two differently long names holding spaces has no midpoint
     // to find. Reporting nothing beats reporting a path that is half of one

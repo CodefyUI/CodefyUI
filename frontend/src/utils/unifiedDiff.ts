@@ -195,6 +195,13 @@ export function parseUnifiedDiff(patch: string): DiffFile {
         // non-rename header are the SAME path, so the midpoint is exact.
         // Anything else (a rename of two unequal names) keeps no path at all
         // rather than half of one and half of the other.
+        //
+        // An untracked file reaches this with both sides equal too: git names
+        // the path twice on the header and writes `/dev/null` only on the
+        // binary marker line, which is not read here. A rename header whose
+        // two paths differ in length AND hold spaces would be a wrong split,
+        // and this backend cannot emit one: every diff is taken with a
+        // one-path pathspec, which suppresses rename detection.
         const middle = (rest.length - 1) / 2;
         if (Number.isInteger(middle) && rest.charAt(middle) === ' ') {
           gitOld = stripSidePrefix(rest.slice(0, middle), 'a/');
