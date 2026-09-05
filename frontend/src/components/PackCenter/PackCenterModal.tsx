@@ -103,6 +103,12 @@ function PackCenterBody() {
       // Plugins tab — and without this, one press would close the window the
       // user is NOT looking at and leave the one they are.
       if (useUIStore.getState().pluginCenterOpen) return;
+      // The diff window is a third window on the same key, two rungs above
+      // this one (`SourceControl/GitDiffModal.module.css`). It closes itself
+      // and stops the press there, so this guard is the belt to that braces:
+      // whichever handler was registered first, the window on top is the one
+      // the press belongs to.
+      if (useUIStore.getState().gitDiff !== null) return;
       if (!closable()) return;
       e.preventDefault();
       close();

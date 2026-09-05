@@ -132,6 +132,11 @@ function PluginCenterBody() {
       // this panel and leaving a shortcuts window nobody can see.
       if (useDialogStore.getState().active !== null) return;
       if (useUIStore.getState().shortcutsModalOpen) return;
+      // The diff window is a third window on the same key and renders two
+      // rungs above this one (`SourceControl/GitDiffModal.module.css`), so a
+      // press while it is open belongs to it. It stops the press itself; this
+      // guard is what makes that true whichever handler registered first.
+      if (useUIStore.getState().gitDiff !== null) return;
       e.preventDefault();
       close();
       // The Package Center is a second window with a second handler on this
