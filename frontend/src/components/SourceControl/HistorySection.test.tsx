@@ -112,6 +112,18 @@ describe('HistorySection: the rows', () => {
     expect(row?.getAttribute('title')).toBe('Teach the model to count\n2 hours ago Ada');
   });
 
+  it('leaves that answer to the row, so the meta stays reachable', () => {
+    // The subject is the elastic part of the row and therefore most of its
+    // width, and an inner `title` WINS over an ancestor's. One here would
+    // answer a pointer with the subject alone over nearly the whole row and
+    // the meta -- which the 380px query drops off screen -- could not be read
+    // at all. `FileRowName` and `RefRow`'s name span carry none either.
+    render(<HistorySection />);
+    expect(
+      within(section()).getByText('Teach the model to count').getAttribute('title'),
+    ).toBeNull();
+  });
+
   it('counts the commits it is showing', () => {
     useGitStore.setState({
       log: {
@@ -326,7 +338,7 @@ describe('HistorySection: what the section says when a read fails', () => {
 });
 
 describe('HistorySection: copying the commit id', () => {
-  it('copies the whole id and says so', async () => {
+  it('copies the whole id and says which one it copied', async () => {
     render(<HistorySection />);
     fireEvent.click(
       within(section()).getByRole('button', { name: 'Copy commit id a1b2c3d' }),
@@ -334,7 +346,36 @@ describe('HistorySection: copying the commit id', () => {
     await waitFor(() =>
       expect(writeText).toHaveBeenCalledWith('a1b2c3d4e5f60718293a4b5c6d7e8f9012345678'),
     );
-    await waitFor(() => expect(announce).toHaveBeenCalledWith('Copied to clipboard.'));
+    await waitFor(() => expect(announce).toHaveBeenCalledWith('Copied to clipboard. a1b2c3d'));
+  });
+
+  it('says something different for a different commit, so the second is heard', async () => {
+    // The live region holds ONE string and its slots swap only when an
+    // operation releases `busyOp`/`netOp`, which a clipboard write never
+    // does. A constant sentence would therefore be the same text node twice
+    // and announced zero times the second time -- copy A, copy B, silence.
+    useGitStore.setState({
+      log: {
+        commits: [commit(), commit({ sha: 'b'.repeat(40), short: 'bbbbbbb' })],
+        hasMore: false,
+        unborn: false,
+        loading: false,
+      },
+    });
+    render(<HistorySection />);
+    fireEvent.click(
+      within(section()).getByRole('button', { name: 'Copy commit id a1b2c3d' }),
+    );
+    fireEvent.click(
+      within(section()).getByRole('button', { name: 'Copy commit id bbbbbbb' }),
+    );
+    await waitFor(() => expect(announce).toHaveBeenCalledTimes(2));
+    const said = announce.mock.calls.map(([message]) => message);
+    expect(said[0]).not.toBe(said[1]);
+    expect(said).toEqual([
+      'Copied to clipboard. a1b2c3d',
+      'Copied to clipboard. bbbbbbb',
+    ]);
   });
 
   it('says so when there is no clipboard to copy to', async () => {
@@ -350,7 +391,7 @@ describe('HistorySection: copying the commit id', () => {
     );
     await waitFor(() =>
       expect(announce).toHaveBeenCalledWith(
-        'Could not copy. Select the text and copy it by hand.',
+        'Could not copy. Select the text and copy it by hand. a1b2c3d',
       ),
     );
   });

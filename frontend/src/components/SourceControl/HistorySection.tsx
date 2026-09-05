@@ -54,17 +54,27 @@ export function HistorySection() {
   );
 
   const copySha = useCallback(
-    (sha: string) => {
+    (sha: string, short: string) => {
       // Wrapped in a promise chain rather than called directly, so an absent
       // `navigator.clipboard` -- which is what a page served over plain http
       // gets -- throws INTO the rejection path instead of past it. The
       // sentence is the one the Package Center already says for this event;
       // there is one clipboard and one thing to say about it.
+      //
+      // The id is IN the sentence, and that is not decoration. The live
+      // region holds one string: `announce` writes `liveMessage`, the slots
+      // in `SourceControlTab` swap only when an operation releases `busyOp`
+      // or `netOp`, and a clipboard write releases neither. So a constant
+      // sentence written twice is the same text node twice, which a screen
+      // reader announces exactly zero times -- copying commit A and then
+      // commit B would say nothing at all for B. Naming the commit makes two
+      // consecutive copies two different strings, which is what makes the
+      // second one audible.
       void Promise.resolve()
         .then(() => navigator.clipboard.writeText(sha))
         .then(
-          () => announce(t('packs.copied')),
-          () => announce(t('packs.copyFailed')),
+          () => announce(`${t('packs.copied')} ${short}`),
+          () => announce(`${t('packs.copyFailed')} ${short}`),
         );
     },
     [announce, t],
@@ -111,7 +121,7 @@ export function HistorySection() {
           // inherited member of this bare object.
           files={commitFiles[commit.sha]}
           onToggle={() => toggleCommit(commit.sha)}
-          onCopy={() => copySha(commit.sha)}
+          onCopy={() => copySha(commit.sha, commit.short)}
           onOpenFile={(file) =>
             openGitDiff({ path: file.path, scope: 'commit', sha: commit.sha })}
         />
@@ -193,10 +203,14 @@ function CommitRow({
           <span className={styles.commitSha} title={commit.sha}>
             {commit.short}
           </span>
-          <span
-            className={`${styles.rowName} ${styles.nameElastic}`}
-            title={commit.subject}
-          >
+          {/* No `title` of its own. This is the elastic part of the row and
+              therefore most of its width, and an inner tooltip WINS over an
+              ancestor's -- so one here would answer a pointer with the
+              subject alone over the whole button, and the row's tooltip
+              (subject AND meta), which is the only place the meta can be read
+              below 380px, would never open. `FileRowName` and `RefRow`'s name
+              span carry none for the same reason. */}
+          <span className={`${styles.rowName} ${styles.nameElastic}`}>
             {commit.subject}
           </span>
           {meta !== '' && (
