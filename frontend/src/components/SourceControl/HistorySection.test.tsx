@@ -177,6 +177,22 @@ describe('HistorySection: expanding a commit', () => {
     expect(rowToggle().getAttribute('aria-expanded')).toBe('true');
   });
 
+  it('keeps the file region in the document, hidden, while the row is closed', () => {
+    // The row's `aria-controls` has to name an element that is really there:
+    // a reader offered "go to the controlled element" would otherwise have
+    // nowhere to go. The stylesheet's `.refSublist[hidden]` is the other half
+    // -- an author `display` beats the user agent's own `[hidden]` rule.
+    render(<HistorySection />);
+    const controls = rowToggle().getAttribute('aria-controls');
+    expect(controls).not.toBeNull();
+    const region = document.getElementById(controls as string);
+    expect(region).not.toBeNull();
+    expect(region?.hasAttribute('hidden')).toBe(true);
+
+    fireEvent.click(rowToggle());
+    expect(document.getElementById(controls as string)?.hasAttribute('hidden')).toBe(false);
+  });
+
   it('reads nothing at all until a row is pressed', () => {
     // The whole reason the call is in the click handler: an effect would run
     // twice per expand under StrictMode, and once per row on mount.
