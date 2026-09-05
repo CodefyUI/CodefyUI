@@ -24,21 +24,6 @@ import styles from './TemplateGalleryModal.module.css';
 type PluginStoreState = ReturnType<typeof usePluginStore.getState>;
 const selectPluginsById = (state: PluginStoreState): PluginIndex => state.byId;
 
-/**
- * Whether an example came from a plugin, and which one — as an id.
- *
- * Deliberately still the raw id and still pure: it is the GATE the detail pane
- * asks (plugin, or built-in?), and the human name it prints comes from
- * `pluginNameOf` at the render site, which needs the catalog and a live
- * subscription to it. Keeping the two apart leaves this callable, and testable,
- * without a store.
- */
-export function exampleSourceLabel(example: ExampleSummary): string | null {
-  const source = example.source ?? '';
-  if (source.startsWith('plugin:')) return source.slice('plugin:'.length);
-  return null;
-}
-
 function matches(example: ExampleSummary, query: string): boolean {
   return (
     example.name.toLowerCase().includes(query) ||
@@ -145,7 +130,12 @@ function TemplateGalleryBody() {
   // first remaining one rather than emptying the pane.
   const chosen =
     visible.find((e) => e.path === chosenPath) ?? visible[0] ?? null;
-  const chosenSourceId = chosen === null ? null : exampleSourceLabel(chosen);
+  // One question, one answer: the NAME is both the gate (null means the
+  // example is a built-in, or names no plugin at all) and the word the pane
+  // prints. `pluginNameOf` already falls back to the bare id while the
+  // catalog has not answered, so there is no second fallback to keep in step.
+  const chosenPluginName =
+    chosen === null ? null : pluginNameOf(pluginsById, chosen.source);
 
   const take = useCallback(
     async (run: () => Promise<boolean>) => {
@@ -303,14 +293,9 @@ function TemplateGalleryBody() {
                     <span>{t('gallery.edgeCount', { count: chosen.edge_count })}</span>
                   </div>
                   <div className={styles.detailSource}>
-                    {/* The id is still the gate; the name is what a reader
-                        sees, and falls back to that same id for as long as the
-                        catalog has not answered. */}
-                    {chosenSourceId
-                      ? t('gallery.sourcePlugin', {
-                          plugin: pluginNameOf(pluginsById, chosen.source) ?? chosenSourceId,
-                        })
-                      : t('gallery.sourceBuiltin')}
+                    {chosenPluginName === null
+                      ? t('gallery.sourceBuiltin')
+                      : t('gallery.sourcePlugin', { plugin: chosenPluginName })}
                   </div>
                   <p className={styles.detailDesc}>
                     {chosen.description || t('gallery.noDescription')}

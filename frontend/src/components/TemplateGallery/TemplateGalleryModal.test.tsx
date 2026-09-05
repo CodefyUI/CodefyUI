@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { act, render, screen, fireEvent, waitFor, within } from '@testing-library/react';
-import { TemplateGalleryModal, exampleSourceLabel } from './TemplateGalleryModal';
+import { TemplateGalleryModal } from './TemplateGalleryModal';
 import { useDialogStore } from '../../store/dialogStore';
 import { useNodeDefStore } from '../../store/nodeDefStore';
 import { _resetPluginStoreForTesting, usePluginStore } from '../../store/pluginStore';
@@ -102,12 +102,10 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-describe('exampleSourceLabel', () => {
-  it('names the plugin pack, and nothing for a builtin', () => {
-    expect(exampleSourceLabel(ex({ source: 'plugin:c2' }))).toBe('c2');
-    expect(exampleSourceLabel(ex({ source: 'builtin' }))).toBeNull();
-  });
-});
+// The pane's built-in/plugin gate is `utils/provider`'s `pluginNameOf`, and
+// the two unit cases the modal used to hold for a prefix test of its own live
+// in `utils/provider.test.ts` beside it. What stays here is what only a render
+// can answer: which sentence the detail pane shows.
 
 describe('TemplateGalleryModal', () => {
   it('renders nothing while closed', () => {
@@ -229,13 +227,22 @@ describe('TemplateGalleryModal', () => {
     // `plugin:` with nothing after it names nothing, and the pane said
     // "Built-in example" for it before the catalog was consulted at all.
     // Resolving a name must not turn that into an empty pair of quotes.
+    const older = ex({ name: 'Older', description: 'no source at all', path: 'o/2' });
+    // The wire type makes `source` optional: a frontend built from source can
+    // meet a backend that omits it, and that example is a built-in too.
+    delete older.source;
     mockedRest.listExamples.mockResolvedValue([
       ex({ name: 'Odd', description: 'a malformed source', path: 'o/1', source: 'plugin:' }),
+      older,
     ]);
     render(<TemplateGalleryModal />);
     await waitFor(() =>
       expect(within(detail()).getByText('a malformed source')).toBeInTheDocument(),
     );
+    expect(within(detail()).getByText('Built-in example')).toBeInTheDocument();
+
+    fireEvent.click(within(grid()).getByText('Older'));
+    expect(within(detail()).getByText('no source at all')).toBeInTheDocument();
     expect(within(detail()).getByText('Built-in example')).toBeInTheDocument();
   });
 

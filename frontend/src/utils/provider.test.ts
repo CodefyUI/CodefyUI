@@ -84,6 +84,20 @@ describe('pluginNameOf', () => {
     expect(pluginNameOf(edu, 'plugin:')).toBeNull();
   });
 
+  it('names the plugin pack an example came from, and nothing for a builtin', () => {
+    // An example's `source` is the same vocabulary a definition's `provider`
+    // is (`builtin` / `plugin:<id>`), which is why the gallery asks these two
+    // functions rather than the prefix test it used to keep of its own. These
+    // are that helper's cases, against the one parser that survives.
+    expect(pluginIdOf('plugin:c2')).toBe('c2');
+    expect(pluginIdOf('builtin')).toBeNull();
+    expect(pluginNameOf({}, 'plugin:c2')).toBe('c2');
+    expect(pluginNameOf({}, 'builtin')).toBeNull();
+    // `source` is optional on the wire (an older backend omits it), and a
+    // missing one is a built-in.
+    expect(pluginNameOf({}, undefined)).toBeNull();
+  });
+
   it('does not read a name off Object.prototype', () => {
     // The index is built from parsed JSON, so a plain byId[id] answers with an
     // inherited member for ids like `constructor` -- whose `.name` is the

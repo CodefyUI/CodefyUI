@@ -8,9 +8,8 @@ import type { PluginCatalogEntry } from '../api/rest';
  * in `source`. Four surfaces read it -- the palette tooltip, the palette
  * search, the canvas quick search and the gallery's detail pane -- and every
  * one of them wants the same two answers, so the parse lives here rather than
- * four times over. `TemplateGalleryModal.exampleSourceLabel` predates this
- * module and keeps its own copy of the prefix test, because it answers a
- * narrower question (is this example a plugin's at all) for its own unit test.
+ * four times over -- the gallery's detail pane included, which used to keep a
+ * second copy of the prefix test for a gate this module now answers.
  *
  * Both functions are PURE, and deliberately take the catalog index as an
  * argument instead of reading `usePluginStore` themselves. A component that
