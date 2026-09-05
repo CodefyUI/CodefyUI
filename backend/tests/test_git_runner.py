@@ -1387,6 +1387,13 @@ def _answers_from_four_callers(call) -> list:
     The barrier is what makes the window real: no caller has an answer
     before every caller is inside, which is the burst a tab mounts with. A
     thread that raises leaves the list short, and the count is asserted.
+
+    The workers are DAEMONS, which is what makes a future deadlock a test
+    FAILURE rather than a hung run: the join gives up after ten seconds and
+    the caller is answered short, and the interpreter can then exit without
+    waiting for threads still parked on a lock. Without it, a regression
+    here would hang pytest after the report was printed, on CI, with no
+    failing test to point at.
     """
     ready = threading.Barrier(4)
     answers: list = []
@@ -1395,7 +1402,7 @@ def _answers_from_four_callers(call) -> list:
         ready.wait(timeout=5)
         answers.append(call())
 
-    callers = [threading.Thread(target=_one) for _ in range(4)]
+    callers = [threading.Thread(target=_one, daemon=True) for _ in range(4)]
     for caller in callers:
         caller.start()
     for caller in callers:

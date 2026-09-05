@@ -264,6 +264,23 @@ _ssh_probe_failed_at: float | None = None
 #: has nothing to do with it. Nothing takes one while holding the other --
 #: :func:`_run` builds no environment of its own (that is the whole reason
 #: it exists), so neither probe can re-enter the other or itself.
+#:
+#: How long a waiter can be held is the probe's timeout
+#: (:data:`VERSION_TIMEOUT_S`, :data:`SSH_PROBE_TIMEOUT_S` -- five seconds
+#: each) PLUS the kill path that timeout then runs, because the lock is
+#: held across both. On Windows that is ``taskkill`` for up to
+#: ``KILL_TIMEOUT_S``, the reap after it for ``TERMINATE_GRACE_S`` (both in
+#: ``packs.runner``) and :func:`_drain` for :data:`DRAIN_TIMEOUT_S`: about
+#: 21 s in the worst case, against a git that has hung AND resisted being
+#: stopped. POSIX is about 11 s -- the group grace and the drain are
+#: :data:`DRAIN_TIMEOUT_S` each. The probes themselves are local reads that
+#: normally take 50-150 ms; this is the ceiling, not the cost.
+#:
+#: Nothing that waits is the event loop. Every git call in this package
+#: runs inside an ``asyncio.to_thread`` worker (see ``service.py``), so a
+#: probe that has to be killed costs threads from that pool -- and the
+#: requests behind them -- while the server goes on answering everything
+#: else.
 _version_lock = threading.Lock()
 _ssh_lock = threading.Lock()
 
