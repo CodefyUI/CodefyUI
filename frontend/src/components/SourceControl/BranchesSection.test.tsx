@@ -36,10 +36,20 @@ function branch(name: string, over: Partial<BranchInfo> = {}): BranchInfo {
   };
 }
 
-function remoteBranch(name: string): RemoteBranchInfo {
+/**
+ * One remote-tracking branch, in the shape the SERVER sends.
+ *
+ * The two halves are separate fields and neither repeats the other:
+ * `refs.list_branches` splits `origin/feat/deep` into `remote: 'origin'` and
+ * `name: 'feat/deep'` (pinned in `backend/tests/test_git_refs.py`). A fixture
+ * that put the whole ref in `name` is a shape no server produces, and it made
+ * the row's checkout look right while it sent half a ref.
+ */
+function remoteBranch(ref: string): RemoteBranchInfo {
+  const slash = ref.indexOf('/');
   return {
-    name,
-    remote: name.split('/')[0],
+    name: ref.slice(slash + 1),
+    remote: ref.slice(0, slash),
     sha: 'abc1234',
     subject: 'a commit',
     committed_at: 0,
@@ -412,5 +422,35 @@ describe('BranchesSection: the remote branches', () => {
     useGitStore.setState({ branches: branches() });
     render(<BranchesSection />);
     expect(screen.queryByText('Remote branches')).toBeNull();
+  });
+
+  it('tells two remotes carrying the same branch name apart', async () => {
+    // `main` on two remotes is two rows, and the branch name alone names
+    // neither of them: the checkout the server takes is `<remote>/<branch>`,
+    // and two rows that read `main` are two rows a reader cannot choose
+    // between -- nor React tell apart, when the name is also the key.
+    useGitStore.setState({
+      branches: branches({
+        remote: [remoteBranch('origin/main'), remoteBranch('upstream/main')],
+      }),
+    });
+    render(<BranchesSection />);
+    const sub = screen.getByRole('list', { name: 'Remote branches' });
+    expect(within(sub).getAllByRole('listitem')).toHaveLength(2);
+    fireEvent.click(screen.getByRole('button', { name: 'Switch to upstream/main' }));
+    await waitFor(() => expect(checkout).toHaveBeenCalledWith('upstream/main', 'remote'));
+  });
+
+  it('switches to a remote branch whose own name has a slash in it', async () => {
+    // `origin/feat/x` arrives as `{remote: 'origin', name: 'feat/x'}`, and the
+    // server re-splits whatever it is sent on the FIRST slash -- so sending
+    // the name half alone asks for a branch `x` on a remote `feat`.
+    useGitStore.setState({
+      branches: branches({ remote: [remoteBranch('origin/feat/deep')] }),
+    });
+    render(<BranchesSection />);
+    fireEvent.click(screen.getByRole('button', { name: 'Switch to origin/feat/deep' }));
+    await waitFor(() =>
+      expect(checkout).toHaveBeenCalledWith('origin/feat/deep', 'remote'));
   });
 });

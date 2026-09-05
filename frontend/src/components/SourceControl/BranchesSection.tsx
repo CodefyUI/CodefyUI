@@ -153,9 +153,12 @@ export function BranchesSection() {
           <ul className={styles.list} role="list" aria-labelledby={remoteHeadingId}>
             {remote.map((entry) => (
               <RemoteBranchRow
-                key={entry.name}
+                // The whole ref, because the NAME half is not unique: `main`
+                // on two remotes is two rows, and two rows keyed on `main`
+                // are one row as far as React is concerned.
+                key={remoteRef(entry)}
                 branch={entry}
-                onSwitch={() => void checkout(entry.name, 'remote')}
+                onSwitch={() => void checkout(remoteRef(entry), 'remote')}
               />
             ))}
           </ul>
@@ -204,6 +207,21 @@ function LocalBranchRow({
   );
 }
 
+/**
+ * The ref a remote-tracking branch IS: `origin/feat/deep`.
+ *
+ * The server splits one into two fields at the FIRST slash -- `remote` is
+ * `origin` and `name` is everything after it -- and re-splits whatever the
+ * checkout is sent the same way. So the two halves have to be put back
+ * together before either the screen or the request sees them: `feat/deep`
+ * alone is refused outright (`invalid_ref`, no slash to split on for a plain
+ * branch), and worse when the branch's own name has a slash, where it names a
+ * remote called `feat` that does not exist.
+ */
+function remoteRef(branch: RemoteBranchInfo): string {
+  return `${branch.remote}/${branch.name}`;
+}
+
 /** One remote-tracking branch, which one press turns into a local one. */
 function RemoteBranchRow({
   branch,
@@ -213,10 +231,13 @@ function RemoteBranchRow({
   onSwitch: () => void;
 }) {
   const { t } = useI18n();
+  // The row says the whole ref, which is the only thing that tells `main` on
+  // `origin` from `main` on `upstream`.
+  const ref = remoteRef(branch);
   return (
     <RefRow
-      name={branch.name}
-      action={{ label: t('git.branch.switch', { name: branch.name }), onSelect: onSwitch }}
+      name={ref}
+      action={{ label: t('git.branch.switch', { name: ref }), onSelect: onSwitch }}
       actions={[]}
     />
   );
