@@ -54,6 +54,12 @@ export const ERROR_KEY: Partial<Record<GitErrorCode, TranslationKey>> = {
   // the server's machine, and git's own sentence -- which the Details
   // disclosure shows -- is the one that names the setting.
   push_config: 'git.error.pushConfig',
+  // The one refusal only the READS can answer with: a diff or a file at a ref
+  // whose path git ignores -- an ignored worktree file, or anything
+  // `.env`-shaped at any ref, which the server refuses before it runs git at
+  // all. Coded rather than generic because the server's sentence for it is
+  // English prose about a path the reader can already see.
+  ignored: 'git.error.ignored',
 };
 
 /**

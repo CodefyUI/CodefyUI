@@ -37,6 +37,7 @@ const mappedErrors: Array<[GitErrorCode, string]> = [
   ['remote_exists', 'git.error.remoteExists'],
   ['remote_rejected', 'git.error.remoteRejected'],
   ['push_config', 'git.error.pushConfig'],
+  ['ignored', 'git.error.ignored'],
 ];
 
 /** A translate that shows its key and its arguments, so both are assertable. */
@@ -113,6 +114,24 @@ describe('SCM error copy', () => {
     expect(en['git.error.pushConfig']).toContain('push.default');
     expect(zhTW['git.error.pushConfig']).toContain('push.default');
     expect(zhTW['git.error.pushConfig']).not.toBe(en['git.error.pushConfig']);
+  });
+
+  it('names the two refusals a history or diff read can answer with', () => {
+    const t = translator();
+    // A path git ignores -- an ignored worktree file, or anything
+    // `.env`-shaped at any ref. Without a row here the 403 fell to
+    // `git.error.generic`, which shows the server's English.
+    expect(errorSentence(err('ignored'), t)).toBe('git.error.ignored');
+    // Its sibling keeps the frame it already had, with the server's `message`
+    // -- the path or the sha -- inside it.
+    expect(errorSentence(err('not_found', { message: 'deadbee' }), t)).toBe(
+      'git.error.notFound:{"what":"deadbee"}',
+    );
+  });
+
+  it('carries the ignored sentence in both locales, translated', () => {
+    expect(en['git.error.ignored']).toContain('git');
+    expect(zhTW['git.error.ignored']).not.toBe(en['git.error.ignored']);
   });
 
   it('offers no recovery button for a push the host configuration refuses', () => {
