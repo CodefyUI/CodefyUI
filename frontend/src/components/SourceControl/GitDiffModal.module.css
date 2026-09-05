@@ -13,32 +13,34 @@
 
 /* ── Stacking ───────────────────────────────────────────────────────────── */
 
-/* One rung above the confirm dialog (10002) and below the toast stack
-   (10004), which is the ladder the Plugin Center's stylesheet records:
-   Package Center 10000, Plugin Center 10001, dialog host 10002, this window
+/* Above both Centers and below everything that can be raised OVER it:
+   Package Center 10000, Plugin Center 10001, this window 10002, dialog host
    10003, toast stack 10004, restart overlay 10005.
 
-   The top two rungs moved up by one to make room, and that is the whole of
-   the change: this window is a portal appended when it opens, so in any TIE
-   it is the later element and paints over the other side. Sharing 10003 with
-   the toast stack meant it covered every toast raised behind it -- including
-   the sticky "graph changed on disk" one, whose Reload button was then
-   blurred, dimmed and unclickable until the diff was closed. Sharing
-   downward instead, at 10002, would have been worse: this window would cover
-   a confirm dialog raised from the panel behind it, and its Escape handler
-   stands down for exactly that dialog, so a reader would be pressing a key
-   at a window they cannot see. The restart overlay keeps the top, which its
-   own stylesheet requires: while the server is going away nothing may sit on
-   top of it. tokens.css has no z-index scale to take a value from — every
-   z-index in this app is a literal with its rung written beside it, and this
-   is one more of the same.
+   Two rungs were argued over here and both were got wrong once. Sharing the
+   toast stack's rung meant this window covered every toast raised behind it
+   -- it is a portal appended when it opens, so in any TIE it is the later
+   element -- including the sticky "graph changed on disk" one, whose Reload
+   button was then blurred, dimmed and unclickable until the diff was closed.
+   Moving ABOVE the dialog host bought the same bug from the other side: this
+   window is deliberately not a focus trap, so Tab reaches the panel's
+   Discard, Delete branch and Drop stash controls behind the backdrop, each
+   of which raises a confirm — and that confirm then painted BEHIND this
+   window while this window's Escape handler stood down for it, leaving a
+   reader pressing a key at a dialog they could not see. So the dialog host
+   is one rung above this one and the answer is the same in both directions:
+   whatever is raised over this window is visible over it. The restart
+   overlay keeps the top, which its own stylesheet requires: while the server
+   is going away nothing may sit on top of it. tokens.css has no z-index
+   scale to take a value from — every z-index in this app is a literal with
+   its rung written beside it, and this is one more of the same.
 
    `composes` rather than a second class in the markup: two single-class rules
    have the same specificity, so which one won would come down to the order
    the bundler happened to emit the two stylesheets in. */
 .backdrop {
   composes: backdrop from '../PackCenter/PackCenterModal.module.css';
-  z-index: 10003;
+  z-index: 10002;
 }
 
 .modal {

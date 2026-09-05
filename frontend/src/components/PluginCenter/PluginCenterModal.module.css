@@ -20,11 +20,12 @@
    the Plugin Center takes a rung of its own.
 
    The layers that sit above the modal rung moved up with it, keeping their
-   order and the reasons written beside them: the confirm dialog (10002),
-   which this panel itself raises to ask about an uninstall; the diff window
-   (10003), which is a portal and so always the later element of any tie; the
-   toast stack (10004), which reports what this panel's buttons did; and the
-   restart overlay (10005). tokens.css has no z-index scale to take the next
+   order and the reasons written beside them: the diff window (10002), which
+   is a portal and so always the later element of any tie; the confirm dialog
+   (10003), which this panel itself raises to ask about an uninstall and
+   which has to be visible over anything that asks; the toast stack (10004),
+   which reports what this panel's buttons did; and the restart overlay
+   (10005). tokens.css has no z-index scale to take the next
    value from -- every z-index in this app is a literal with the rung it
    belongs to written next to it, and these are five more of the same.
 

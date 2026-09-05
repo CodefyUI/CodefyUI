@@ -6,12 +6,18 @@
   display: flex;
   align-items: center;
   justify-content: center;
-  /* Above every panel that can raise one: the modal rung (10000) and the
-     Plugin Center on 10001, which asks this dialog before an uninstall. It
-     used to share the modal rung and win on DOM order alone -- this portal
-     mounts when the question is asked, so it was always the later sibling --
-     which stopped being true the moment one panel took a rung of its own. */
-  z-index: 10002;
+  /* Above every panel that can raise one: the modal rung (10000), the Plugin
+     Center on 10001, which asks this dialog before an uninstall, and the
+     diff window on 10002, which is not a focus trap -- Tab reaches the
+     panel's Discard, Delete branch and Drop stash controls behind it, and
+     each of those asks. A question drawn behind the window it was asked from
+     is a question nobody can answer, and that window's Escape handler stands
+     down for exactly this dialog. It used to share the modal rung and win on
+     DOM order alone -- this portal mounts when the question is asked, so it
+     was always the later sibling -- which stopped being true the moment one
+     panel took a rung of its own. Above this: the toast stack (10004), which
+     reports what the answer did, and the restart overlay (10005). */
+  z-index: 10003;
   padding: var(--sp-7);
 }
 
