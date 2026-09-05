@@ -89,4 +89,17 @@ describe('DiffView: the two columns', () => {
     expect(screen.getByText('lr = 0.1').closest('[data-kind]')?.getAttribute('data-kind'))
       .toBe('del');
   });
+
+  it('leaves a context row untinted in BOTH columns', () => {
+    // The tint comes from the LINE, never from which column it landed in.
+    // Taking it from the column instead is invisible on a changed row -- the
+    // removal really is on the left -- and washes every context row red down
+    // one side and green down the other, which is a diff claiming that every
+    // unchanged line changed.
+    render(<DiffView file={file} mode="split" />);
+    const row = screen.getAllByText('start()')[0].closest('[data-row]');
+    expect([...row!.children].map((span) => span.getAttribute('data-kind'))).toEqual([
+      'context', 'context', 'context', 'context', 'context', 'context',
+    ]);
+  });
 });

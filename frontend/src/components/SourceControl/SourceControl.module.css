@@ -236,7 +236,14 @@
    `aria-disabled` and its handler guarded rather than natively disabled --
    and without a rule here it kept a pointer cursor and still lightened under
    the pointer while the next page was out, which is a button that answers a
-   press with nothing and no sign that it will not. */
+   press with nothing and no sign that it will not.
+
+   It reaches one other control, and deliberately: the Publish follow-up on
+   the error line is `publishControl(styles.linkButton)`, which carries
+   `aria-disabled` while the network lane is busy (R11). Its sibling in the
+   header, `.publishButton`, has had exactly this pair of declarations for
+   that state since G2, so the follow-up now looks refused where it is
+   refused instead of looking pressable in one place and not the other. */
 .linkButton[aria-disabled='true'] {
   color: var(--text-disabled);
   cursor: default;

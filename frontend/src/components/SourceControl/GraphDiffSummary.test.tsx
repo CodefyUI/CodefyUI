@@ -53,12 +53,16 @@ describe('GraphDiffSummary: the counted lines', () => {
     expect(screen.getByRole('list').getAttribute('role')).toBe('list');
   });
 
-  it('gives every kind a sentence of its own', () => {
-    // Two kinds that share a sentence would be a swap nobody could see: the
-    // strip would be grammatical, translated and about the wrong thing.
+  it('draws five kinds as their own five sentences, in order', () => {
+    // Written out, and matched one to one. Asserting only that the five
+    // sentences DIFFER cannot see the swap it was there to guard: exchange
+    // "added" and "removed" in the map under test and five distinct
+    // sentences are still five distinct sentences, each grammatical,
+    // translated and about the wrong thing.
     draw({ lines: COUNTED.map(([kind, count]) => ({ kind, count })) });
-    const said = screen.getAllByRole('listitem').map((li) => li.textContent);
-    expect(new Set(said).size).toBe(COUNTED.length);
+    expect(screen.getAllByRole('listitem').map((li) => li.textContent)).toEqual(
+      COUNTED.map(([, , sentence]) => sentence),
+    );
   });
 });
 
