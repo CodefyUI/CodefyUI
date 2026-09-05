@@ -1,5 +1,6 @@
 import type { DiffFile, DiffHunk, DiffLine, DiffLineKind } from '../../utils/unifiedDiff';
 import { toSplitRows } from '../../utils/unifiedDiff';
+import { useI18n } from '../../i18n';
 import styles from './GitDiffModal.module.css';
 
 /** Which of the two shapes the patch is drawn in. */
@@ -54,7 +55,10 @@ function UnifiedHunk({ hunk }: { hunk: DiffHunk }) {
           <span className={styles.lineNo}>{line.oldNo ?? ''}</span>
           <span className={styles.lineNo}>{line.newNo ?? ''}</span>
           <span className={styles.lineSign}>{SIGN[line.kind]}</span>
-          <span className={styles.lineText}>{line.text}</span>
+          <span className={styles.lineText}>
+            {line.text}
+            {line.noNewline === true && <NoNewline />}
+          </span>
         </div>
       ))}
     </>
@@ -118,7 +122,26 @@ function Cell({ line, side }: { line: DiffLine | undefined; side: 'add' | 'del' 
         {(side === 'del' ? line.oldNo : line.newNo) ?? ''}
       </span>
       <span className={styles.lineSign} data-kind={kind}>{SIGN[kind]}</span>
-      <span className={styles.lineText} data-kind={kind}>{line.text}</span>
+      <span className={styles.lineText} data-kind={kind}>
+        {line.text}
+        {line.noNewline === true && <NoNewline />}
+      </span>
     </>
   );
+}
+
+/**
+ * git's `\ No newline at end of file`, on the line it is about.
+ *
+ * Without it the commonest form of this change -- an editor or a formatter
+ * outside the app adding a final newline to a graph file -- draws `-}` above
+ * `+}` with byte-identical text, the same tint pair as any real edit, and
+ * nothing anywhere saying what differs. It is a NOTE and not content, so it
+ * goes inside the text cell rather than beside it: both views are grids with a
+ * fixed column count, and a fifth or seventh child would start a column of its
+ * own and push every row out of step.
+ */
+function NoNewline() {
+  const { t } = useI18n();
+  return <span className={styles.noNewline}>{t('git.diff.noNewline')}</span>;
 }

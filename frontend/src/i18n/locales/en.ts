@@ -1400,6 +1400,9 @@ const en = {
   'git.diff.binary': 'Binary file; no text diff.',
   'git.diff.truncated': 'Diff truncated at {kb} KB.',
   'git.diff.empty': 'No changes',
+  // git's own note, drawn on the line it is about. Without it the change is
+  // two lines whose text is identical to the character.
+  'git.diff.noNewline': 'No newline at end of file',
   // The summary above a graph or layout diff: what the change did to the
   // GRAPH, rather than to the lines of JSON that hold it.
   'git.gdiff.nodesAdded': '{count} node(s) added',

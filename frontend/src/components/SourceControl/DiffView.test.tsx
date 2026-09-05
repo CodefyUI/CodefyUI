@@ -34,7 +34,24 @@ const PATCH = [
   '',
 ].join('\n');
 
+// The change an editor or a formatter outside the app makes to a graph file
+// all the time: the same text, one final newline apart. Drawn without git's
+// note it is `-}` above `+}` and nothing at all saying what differs.
+const NEWLINE_PATCH = [
+  'diff --git a/n.txt b/n.txt',
+  'index 54d55bf..2090089 100644',
+  '--- a/n.txt',
+  '+++ b/n.txt',
+  '@@ -1,2 +1,2 @@',
+  ' one',
+  '-}',
+  '\\ No newline at end of file',
+  '+}',
+  '',
+].join('\n');
+
 const file = parseUnifiedDiff(PATCH);
+const newlineFile = parseUnifiedDiff(NEWLINE_PATCH);
 
 /** The six spans of one split row, in order: number, sign, text, twice. */
 const splitRow = (text: string) =>
@@ -54,6 +71,19 @@ describe('DiffView: the unified shape', () => {
     expect(unifiedRow('start()')).toEqual(['10', '20', ' ', 'start()']);
     expect(unifiedRow('momentum = 0.9')).toEqual(['12', '', '-', 'momentum = 0.9']);
     expect(unifiedRow('lr = 0.01')).toEqual(['', '21', '+', 'lr = 0.01']);
+  });
+
+  it('draws git\'s no-newline note on the line it belongs to', () => {
+    // The one change whose two lines are otherwise identical to the
+    // character: without the note the row pair says nothing at all.
+    render(<DiffView file={newlineFile} mode="unified" />);
+    const notes = screen.getAllByText('No newline at end of file');
+    expect(notes).toHaveLength(1);
+    // Inside the removed line's text cell, not as a line of its own -- and
+    // NOT on the added line, which ends in a newline.
+    const removed = notes[0].closest('[data-kind]');
+    expect(removed?.getAttribute('data-kind')).toBe('del');
+    expect(removed?.textContent).toContain('}');
   });
 
   it('keeps git\'s own hunk header, section heading and all', () => {
@@ -88,6 +118,12 @@ describe('DiffView: the two columns', () => {
     expect(cell?.getAttribute('data-kind')).toBe('add');
     expect(screen.getByText('lr = 0.1').closest('[data-kind]')?.getAttribute('data-kind'))
       .toBe('del');
+  });
+
+  it('carries the no-newline note into the two columns as well', () => {
+    render(<DiffView file={newlineFile} mode="split" />);
+    const note = screen.getByText('No newline at end of file');
+    expect(note.closest('[data-kind]')?.getAttribute('data-kind')).toBe('del');
   });
 
   it('leaves a context row untinted in BOTH columns', () => {

@@ -291,6 +291,15 @@
   white-space: pre;
 }
 
+/* git's own note about the line, inside the text cell and dimmer than it:
+   the change it explains is otherwise two identical-looking lines. */
+.noNewline {
+  margin-left: var(--sp-3);
+  color: var(--text-muted);
+  font-size: var(--fs-2xs);
+  font-style: italic;
+}
+
 /* The tint. On the ROW in the unified view and on each CELL in the split one,
    which is why both selectors are here: a wash around half a grid row would
    not line up with the other half.

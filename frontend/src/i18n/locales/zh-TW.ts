@@ -1209,6 +1209,7 @@ const zhTW: Record<TranslationKey, string> = {
   'git.diff.binary': '二進位檔案，無文字差異。',
   'git.diff.truncated': '差異已在 {kb} KB 處截斷。',
   'git.diff.empty': '沒有變更',
+  'git.diff.noNewline': '檔案結尾沒有換行',
   'git.gdiff.nodesAdded': '新增 {count} 個節點',
   'git.gdiff.nodesRemoved': '移除 {count} 個節點',
   'git.gdiff.typeChanged': '{node}：類型 {from} -> {to}',
