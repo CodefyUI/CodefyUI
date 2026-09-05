@@ -82,8 +82,8 @@ export function DiffView({ file, mode }: { file: DiffFile; mode: DiffViewMode })
  *
  * The last hunk drawn keeps its own header and numbers and loses only the
  * lines past the cap, so the reader is never shown a hunk that claims lines it
- * does not have -- and a patch under the cap is handed back untouched, array
- * and all, so the common case allocates nothing.
+ * does not have -- and a patch under the cap is handed back as the very array
+ * it arrived in, so the common case hands the view the same objects it had.
  */
 function cutToLimit(hunks: DiffHunk[]): { hunks: DiffHunk[]; cut: boolean } {
   let left = MAX_DIFF_LINES;
