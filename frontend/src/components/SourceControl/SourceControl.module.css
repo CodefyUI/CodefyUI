@@ -372,7 +372,12 @@
   cursor: pointer;
 }
 
-.commitChevron:hover:not(:disabled) {
+/* `[aria-disabled]`, not `:disabled` -- the trigger this styles is an
+   `ActionMenu`, which never sets the native attribute (a natively disabled
+   button opens no tooltip in Chrome and takes no focus, so the one control
+   with a reason to give could not give it). The guard was left over from
+   before that rule and matched everything, hover included. */
+.commitChevron:hover:not([aria-disabled='true']) {
   background: var(--surface-hover);
   color: var(--text-primary);
 }
@@ -380,6 +385,14 @@
 .commitChevron:focus-visible {
   outline: none;
   box-shadow: var(--focus-ring);
+}
+
+/* The pair `.publishButton` and `ActionMenu`'s own trigger use, so a control
+   that cannot be pressed looks the way every other one in the app does. */
+.commitChevron[aria-disabled='true'] {
+  border-color: var(--border-base);
+  color: var(--text-disabled);
+  cursor: default;
 }
 
 /* ── The merge group ─────────────────────────────────────────────────────
