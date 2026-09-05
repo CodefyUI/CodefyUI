@@ -359,6 +359,28 @@ describe('ScmHeader: Sync, Publish and the remote picker', () => {
     expect(refreshRefs).toHaveBeenCalledTimes(1);
   });
 
+  it('leaves the read to the Remotes section while that section is open', async () => {
+    // The section reads the same list on mount and on every poll, because it
+    // draws it. Two reads for one question is what a remembered-open Remotes
+    // section cost on every tab open.
+    useGitStore.setState({
+      sections: { branches: false, remotes: true, stashes: false },
+    });
+    render(<ScmHeader />);
+    await act(async () => {
+      useGitStore.setState({ status: status() });
+    });
+    expect(refreshRefs).not.toHaveBeenCalled();
+
+    // Closed again, and now the header is the only reader there is.
+    await act(async () => {
+      useGitStore.setState({
+        sections: { branches: false, remotes: false, stashes: false },
+      });
+    });
+    expect(refreshRefs).toHaveBeenCalledWith('remotes');
+  });
+
   it('asks again on the next status the server answers, when the read failed', async () => {
     // A failed refs read leaves `remotes` null, so a read that is never retried
     // hides Publish for as long as the panel stays open. Every status the poll

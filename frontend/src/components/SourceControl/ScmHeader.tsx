@@ -178,6 +178,14 @@ export function ScmHeader() {
       return;
     }
     if (status === null || remotes !== null) return;
+    // The Remotes SECTION reads the same list, on mount and on every poll
+    // (`refreshExpandedRefs`), because it draws it. Two readers and one
+    // question: while the section is open its read is the one that answers,
+    // and this one went out before it came back -- so opening a tab whose
+    // Remotes section was remembered open sent two GET /remotes for one
+    // list. Closing the section runs this effect again, and this time the
+    // header is the only reader there is.
+    if (sections.remotes) return;
     if (remotesInFlight.current) return;
     if (remoteTries.current >= REMOTES_READ_TRIES) return;
     remoteTries.current += 1;
@@ -185,7 +193,7 @@ export function ScmHeader() {
     void refreshRefs('remotes').finally(() => {
       remotesInFlight.current = false;
     });
-  }, [refreshRefs, remotes, repoState, status]);
+  }, [refreshRefs, remotes, repoState, sections.remotes, status]);
 
   /**
    * Publish this branch, resolving WHICH remote first.

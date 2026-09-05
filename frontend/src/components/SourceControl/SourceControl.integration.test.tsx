@@ -11,6 +11,7 @@ import type {
   GitStatus,
   Identity,
   MutationResult,
+  RemoteInfo,
   StatusResponse,
 } from '../../api/git';
 
@@ -67,7 +68,11 @@ vi.mock('../../utils/openSavedGraph', async (importOriginal) => {
 });
 
 import { SourceControlTab } from './SourceControlTab';
-import { GIT_WRITE_DEBOUNCE_MS, _resetGitStoreForTesting } from '../../store/gitStore';
+import {
+  GIT_WRITE_DEBOUNCE_MS,
+  _resetGitStoreForTesting,
+  useGitStore,
+} from '../../store/gitStore';
 import { GraphMissingError, reloadTabFromDisk } from '../../utils/openSavedGraph';
 import { announceWorktreeWrite } from '../../utils/worktreeWrite';
 import { confirm } from '../../utils/dialog';
@@ -299,6 +304,55 @@ afterEach(() => {
   useProjectStore.setState({ projectDir: null, projectName: null, loaded: false });
   vi.useRealTimers();
   vi.clearAllMocks();
+});
+
+/* ── opening the tab ─────────────────────────────────────────────────── */
+
+describe('Source Control: what one mount costs', () => {
+  /** Remember the three sections the way a returning profile would. */
+  function withSectionsOpen(over: Partial<Record<string, boolean>>): void {
+    localStorage.setItem(
+      'codefyui-git-sections',
+      JSON.stringify({ branches: false, remotes: false, stashes: false, ...over }),
+    );
+    _resetGitStoreForTesting();
+  }
+
+  it('reads each open section once, and the closed ones not at all', async () => {
+    withSectionsOpen({ branches: true, stashes: true });
+    await openPanel();
+
+    expect(api.getGitBranches).toHaveBeenCalledTimes(1);
+    expect(api.getGitStashes).toHaveBeenCalledTimes(1);
+    // Closed, but the header still wants to know whether there IS a remote:
+    // "Publish or Sync" cannot be decided from a list nobody has fetched.
+    expect(api.getGitRemotes).toHaveBeenCalledTimes(1);
+  });
+
+  it('shares one remote read between the header and an open Remotes section', async () => {
+    // Two readers, one question. The section reads the list because it draws
+    // it; the header reads it because Publish and Sync are decided from its
+    // length -- and the header's went out before the section's came back, so
+    // opening the tab sent two GET /remotes for one list.
+    let land: () => void = () => {};
+    api.getGitRemotes.mockReturnValue(
+      new Promise<RemoteInfo[]>((resolve) => {
+        land = () => resolve([]);
+      }),
+    );
+    withSectionsOpen({ remotes: true });
+
+    await openPanel();
+    expect(api.getGitRemotes).toHaveBeenCalledTimes(1);
+
+    // ...and no second one once the answer lands, either.
+    await act(async () => {
+      land();
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    expect(api.getGitRemotes).toHaveBeenCalledTimes(1);
+    expect(useGitStore.getState().remotes).toEqual([]);
+  });
 });
 
 /* ── the everyday flow ───────────────────────────────────────────────── */
