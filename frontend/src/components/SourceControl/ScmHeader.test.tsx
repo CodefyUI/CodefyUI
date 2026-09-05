@@ -325,15 +325,51 @@ describe('ScmHeader: Sync, Publish and the remote picker', () => {
     // server has already refused three times.
     render(<ScmHeader />);
     for (let i = 0; i < 5; i += 1) {
-      act(() => {
+      // Awaited, so each status is a separate poll answer: the read the last
+      // one started has come back before the next one lands, which is what
+      // the budget counts. Fifteen seconds apart, in the panel.
+      // eslint-disable-next-line no-await-in-loop
+      await act(async () => {
         useGitStore.setState({ status: status() });
       });
     }
-    await waitFor(() => expect(refreshRefs).toHaveBeenCalledTimes(3));
-    act(() => {
+    expect(refreshRefs).toHaveBeenCalledTimes(3);
+    await act(async () => {
       useGitStore.setState({ status: status() });
     });
     expect(refreshRefs).toHaveBeenCalledTimes(3);
+  });
+
+  it('spends no attempt on a read that is still out', async () => {
+    // Two statuses inside one read -- which is what StrictMode's double
+    // effect and a slow server both look like -- must not spend two of the
+    // three attempts on one question. Without the guard, a server that was
+    // restarting while the panel opened had the whole budget gone before it
+    // came back.
+    let release = () => {};
+    const outstanding = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    refreshRefs = vi.fn(() => outstanding);
+    useGitStore.setState({ refreshRefs });
+    render(<ScmHeader />);
+
+    act(() => {
+      useGitStore.setState({ status: status() });
+    });
+    act(() => {
+      useGitStore.setState({ status: status() });
+    });
+    expect(refreshRefs).toHaveBeenCalledTimes(1);
+
+    // The read comes back, and only then is another one worth asking for.
+    await act(async () => {
+      release();
+    });
+    await act(async () => {
+      useGitStore.setState({ status: status() });
+    });
+    expect(refreshRefs).toHaveBeenCalledTimes(2);
   });
 
   it('offers Sync on a branch that has an upstream', () => {
@@ -388,6 +424,14 @@ describe('ScmHeader: Sync, Publish and the remote picker', () => {
     fireEvent.click(menuRow('Publish Branch'));
     await waitFor(() => expect(setSectionOpen).toHaveBeenCalledWith('remotes', true));
     expect(publish).not.toHaveBeenCalled();
+    // ...and the keyboard goes with it. A section that opens below the fold
+    // with focus left on a Publish that did nothing is the same dead end
+    // with one more thing on screen. The Remotes heading is drawn by another
+    // component, so in here the move lands on the panel's own fallback --
+    // which is the branch that proves it was attempted at all.
+    await waitFor(() =>
+      expect(document.activeElement)
+        .toBe(document.querySelector('[data-scm-focus="title"]')));
   });
 
   it('does the same when the read answers that there is nowhere to publish to', async () => {
@@ -511,6 +555,66 @@ describe('ScmHeader: what the git actions are refused for', () => {
     openMore();
     expect(screen.queryByRole('menuitem', { name: 'Publish Branch' })).toBeNull();
     expect(refusal('Fetch')).toBeNull();
+  });
+
+  it('keeps the refused Publish row where no picker is drawn to replace it', () => {
+    // The row is dropped because the branch line's picker answers the same
+    // question -- and that line draws NOTHING on a detached HEAD or a branch
+    // with no commits. Dropping the row there took away the one thing on
+    // screen that said why publishing is not on offer.
+    useGitStore.setState({
+      status: status({ branch: null, detached: true }),
+      remotes: [remote('origin'), remote('backup')],
+    });
+    const detached = render(<ScmHeader />);
+    openMore();
+    expect(refusal('Publish Branch')).toBe('Detached HEAD');
+    detached.unmount();
+
+    useGitStore.setState({ status: status({ unborn: true, head: null }) });
+    render(<ScmHeader />);
+    openMore();
+    expect(refusal('Publish Branch')).toBe('No commits yet');
+  });
+
+  it('refuses every remote row while the network lane is busy', () => {
+    // R11: one network operation at a time. The store answers a second one
+    // with a toast, which is a working outcome and not a visible one -- the
+    // row that cannot run says so where the pointer already is.
+    useGitStore.setState({
+      status: status({
+        upstream: 'origin/main',
+        ahead: 1,
+        behind: 0,
+        unstaged: [file('src/train.py', 'modified')],
+      }),
+      remotes: [remote('origin')],
+      netOp: 'fetch',
+    });
+    render(<ScmHeader />);
+    openMore();
+    for (const name of ['Fetch', 'Pull', 'Push']) {
+      expect(refusal(name)).toBe('Running fetch...');
+    }
+    // The local lane is untouched: a commit during a fetch is allowed on
+    // both sides, and so is a stash.
+    expect(refusal('Stash Changes...')).toBeNull();
+  });
+
+  it('refuses Sync and Publish on the branch line for the same reason', () => {
+    useGitStore.setState({
+      status: status({ upstream: 'origin/main', ahead: 1, behind: 0 }),
+      remotes: [remote('origin')],
+      netOp: 'pull',
+    });
+    const view = render(<ScmHeader />);
+    expect(screen.getByRole('button', { name: 'Sync (pull, then push)' }))
+      .toBeDisabled();
+    view.unmount();
+
+    useGitStore.setState({ status: status(), netOp: 'fetch' });
+    render(<ScmHeader />);
+    expect(screen.getByRole('button', { name: 'Publish Branch' })).toBeDisabled();
   });
 
   it('drops Publish on a branch that already has an upstream', () => {
@@ -747,17 +851,22 @@ describe('ScmHeader: the error line', () => {
     const alert = screen.getByRole('alert');
     expect(alert.textContent).toContain('Nothing to commit.');
     expect(alert.textContent).toContain('stage something first');
-    expect(screen.queryByText('nothing added to commit')).toBeNull();
 
     const details = screen.getByRole('button', { name: 'Details' });
     expect(details.getAttribute('aria-expanded')).toBe('false');
+    // MOUNTED while it is closed, and hidden -- which is what makes the
+    // `aria-controls` below name something that is really in the document.
+    // Collapsed is the state this toggle is in every time an error line
+    // appears, and an idref that resolves to nothing gives a reader offering
+    // "go to the controlled element" nowhere to go.
+    const stderr = screen.getByText('nothing added to commit');
+    expect(stderr.hidden).toBe(true);
+    expect(stderr.id).not.toBe('');
+    expect(details.getAttribute('aria-controls')).toBe(stderr.id);
+
     fireEvent.click(details);
-    const opened = screen.getByText('nothing added to commit');
     expect(details.getAttribute('aria-expanded')).toBe('true');
-    // The toggle names what it opens, so the reader it was just announced to
-    // can go straight there rather than hunting for what changed.
-    expect(opened.id).not.toBe('');
-    expect(details.getAttribute('aria-controls')).toBe(opened.id);
+    expect(screen.getByText('nothing added to commit').hidden).toBe(false);
   });
 
   it('offers no Details when git said nothing on stderr', () => {

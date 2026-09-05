@@ -148,9 +148,17 @@ export function ScmHeader() {
     && status.unstaged.length === 0
     && status.untracked.length === 0
     && status.conflicted.length === 0;
+  // Publishing needs a branch to publish and somewhere to put it.
+  const publishable = ready && !unborn && !detached && !hasUpstream && !noRemotes;
 
   // Attempts spent on the remote list, for the life of this panel.
   const remoteTries = useRef(0);
+  // Whether one of those attempts is still out. StrictMode runs an effect
+  // twice on mount and a slow answer leaves the state that triggered this
+  // one unchanged, so without it two reads could spend two of the three
+  // attempts on the same question -- and a server that was restarting would
+  // have the budget gone before it came back.
+  const remotesInFlight = useRef(false);
 
   useEffect(() => {
     // The Sync / Publish / neither decision needs to know whether there IS a
@@ -169,9 +177,13 @@ export function ScmHeader() {
       return;
     }
     if (status === null || remotes !== null) return;
+    if (remotesInFlight.current) return;
     if (remoteTries.current >= REMOTES_READ_TRIES) return;
     remoteTries.current += 1;
-    void refreshRefs('remotes');
+    remotesInFlight.current = true;
+    void refreshRefs('remotes').finally(() => {
+      remotesInFlight.current = false;
+    });
   }, [refreshRefs, remotes, repoState, status]);
 
   /**
@@ -207,6 +219,10 @@ export function ScmHeader() {
     }
     if (list === null || list.length === 0) {
       setSectionOpen('remotes', true);
+      // ...and go there. A section that opens somewhere below the fold, with
+      // the keyboard left on a Publish that did nothing, is the same dead end
+      // with one more thing on screen.
+      focusRefSection('remotes');
       return;
     }
     if (list.length === 1) {
@@ -239,6 +255,10 @@ export function ScmHeader() {
    * which is exactly what Publish is for, so Publish stays on.
    */
   const refusedBecause = (action: RemoteAction): string | null => {
+    // Above every state reason: while the network lane is busy none of these
+    // can start at all, and a row that offered the press would answer it with
+    // the same fact as a toast a second later (R11).
+    if (netOp !== null) return t('git.busy', { op: t(gitOpKey(netOp)) });
     if (unborn) return t('git.unborn');
     if (noRemotes) return t('git.remote.empty');
     if (detached && action !== 'fetch') return t('git.detached');
@@ -258,8 +278,14 @@ export function ScmHeader() {
    * a row here could only send a publish naming no remote, which the server
    * refuses with a 400. Where the row is dropped, the control that replaces it
    * is already on screen.
+   *
+   * `publishable` is what makes that last clause true. Several remotes is only
+   * the picker's business where the picker is DRAWN, and it is not drawn on an
+   * unborn or a detached HEAD -- so without it those two states lost the row
+   * as well, and with it the one thing on screen that said why.
    */
-  const publishInMenu = !hasUpstream && !(remotes !== null && remotes.length > 1);
+  const publishInMenu = !hasUpstream
+    && !(publishable && remotes !== null && remotes.length > 1);
 
   const stashRefusedBecause = status?.merge_in_progress === true
     ? t('git.merge.banner')
@@ -363,8 +389,6 @@ export function ScmHeader() {
   const followUp = lastError === null
     ? null
     : followUpFor(lastError.code, lastError.op);
-  // Publishing needs a branch to publish and somewhere to put it.
-  const publishable = ready && !unborn && !detached && !hasUpstream && !noRemotes;
   const followUpPublish = followUp === 'publish' && publishable;
   // ONE control, never two: while the refusal is offering Publish, the branch
   // line does not offer it as well.
@@ -389,6 +413,11 @@ export function ScmHeader() {
   // The local one wins the label: it is the one the user pressed a button for.
   const runningOp = busyOp ?? netOp;
 
+  // While the network lane is busy, the two controls that would join it are
+  // refused where they stand rather than a click later (R11). The local lane
+  // is not consulted: a commit during a fetch is allowed on both sides.
+  const netBusy = netOp !== null;
+
   /** The Publish control, as a button or as the picker several remotes need. */
   const publishControl = (className: string) =>
     (remotes !== null && remotes.length > 1 ? (
@@ -402,6 +431,7 @@ export function ScmHeader() {
         }))}
         align="end"
         className={className}
+        disabled={netBusy}
       >
         {t('git.action.publish')}
       </ActionMenu>
@@ -410,6 +440,7 @@ export function ScmHeader() {
         type="button"
         className={className}
         title={t('git.action.publish')}
+        disabled={netBusy}
         onClick={() => void publishBranch()}
       >
         {t('git.action.publish')}
@@ -472,6 +503,7 @@ export function ScmHeader() {
               className={styles.iconButton}
               aria-label={t('git.action.sync')}
               title={t('git.action.sync')}
+              disabled={netBusy}
               onClick={() => void runSync()}
             >
               <SyncIcon size={13} />
@@ -559,8 +591,22 @@ export function ScmHeader() {
                   {t('git.error.dismiss')}
                 </button>
               </div>
-              {detailsOpen && stderr !== null && stderr !== '' && (
-                <pre className={styles.errorStderr} id={stderrId}>{stderr}</pre>
+              {/* Mounted whenever there is one, and HIDDEN while it is
+                  closed -- which is the state the toggle is in every time
+                  an error line appears. An `aria-controls` pointing at an
+                  element that is not in the document names nothing, and a
+                  reader offering "go to the controlled element" has nowhere
+                  to go. `RefSection` keeps its list mounted for the same
+                  reason. The global reset carries
+                  `[hidden] { display: none !important }`. */}
+              {stderr !== null && stderr !== '' && (
+                <pre
+                  className={styles.errorStderr}
+                  id={stderrId}
+                  hidden={!detailsOpen}
+                >
+                  {stderr}
+                </pre>
               )}
             </>
           )}
