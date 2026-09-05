@@ -661,10 +661,10 @@
   background: var(--surface-hover);
 }
 
-/* The name half of a row, drawn as one button. In a file group it is inert —
-   opening the change is the diff view's target, later; in a reference list it
-   is what switches to the branch it names. `min-width: 0` is what lets the
-   name inside it ellipsise. */
+/* The name half of a row, drawn as one button. In a file group it opens that
+   file's change; in a reference list it switches to the branch it names; in a
+   commit row it expands the file list. `min-width: 0` is what lets the name
+   inside it ellipsise. */
 .openButton {
   display: flex;
   align-items: baseline;
@@ -679,10 +679,6 @@
   font-family: inherit;
   font-size: var(--fs-sm);
   text-align: left;
-}
-
-.openButton:disabled {
-  cursor: default;
 }
 
 .rowName {

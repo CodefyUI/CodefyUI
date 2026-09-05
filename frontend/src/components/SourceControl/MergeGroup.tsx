@@ -1,6 +1,7 @@
 import { useCallback, useId, useRef, useState } from 'react';
 import type { GitFile, GitResolveSide } from '../../api/git';
 import { useGitStore } from '../../store/gitStore';
+import { useUIStore } from '../../store/uiStore';
 import { useI18n, type TranslationKey } from '../../i18n';
 import { confirm } from '../../utils/dialog';
 import { ActionMenu } from '../shared/ActionMenu';
@@ -48,6 +49,7 @@ export function MergeGroup({ files }: MergeGroupProps) {
   const merging = useGitStore((s) => s.status?.merge_in_progress === true);
   const resolve = useGitStore((s) => s.resolve);
   const abortMerge = useGitStore((s) => s.abortMerge);
+  const openGitDiff = useUIStore((s) => s.openGitDiff);
   const [open, setOpen] = useState(true);
   const toggleRef = useRef<HTMLButtonElement>(null);
   const domId = useId();
@@ -131,6 +133,14 @@ export function MergeGroup({ files }: MergeGroupProps) {
           <MergeRow
             key={`${file.path}:${file.xy}`}
             file={file}
+            onOpen={() => openGitDiff({
+              // The working tree, like any other change -- and flagged, because
+              // a conflicted path has no stage 0 until it is settled, so its
+              // index side cannot be read and the modal shows Unified only.
+              path: file.path,
+              scope: 'worktree',
+              conflicted: true,
+            })}
             onResolve={(side) => {
               void resolve(file.path, side).then((ok) => {
                 if (ok) returnFocus();
@@ -161,9 +171,11 @@ export function MergeGroup({ files }: MergeGroupProps) {
  */
 function MergeRow({
   file,
+  onOpen,
   onResolve,
 }: {
   file: GitFile;
+  onOpen: () => void;
   onResolve: (side: GitResolveSide) => void;
 }) {
   const { t } = useI18n();
@@ -173,7 +185,7 @@ function MergeRow({
     // The path lives on the ROW -- see `FileRow`.
     <li className={styles.row} title={displayPath(file)}>
       <FileKindChip kind={file.kind} />
-      <FileRowName file={file} />
+      <FileRowName file={file} onOpen={onOpen} />
       <div className={styles.mergeActions}>
         <div className={styles.rowChoices}>
           {SIDES.map(({ side, key }) => (

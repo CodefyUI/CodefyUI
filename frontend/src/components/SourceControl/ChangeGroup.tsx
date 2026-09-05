@@ -1,6 +1,7 @@
 import { useCallback, useId, useRef, useState } from 'react';
 import type { GitFile } from '../../api/git';
 import { useGitStore } from '../../store/gitStore';
+import { useUIStore } from '../../store/uiStore';
 import { useI18n, type TranslationKey } from '../../i18n';
 import { confirm } from '../../utils/dialog';
 import { ChevronDownIcon, DiscardIcon, MinusIcon, PlusIcon } from '../shared/Icons';
@@ -40,6 +41,7 @@ export function ChangeGroup({ kind, files }: ChangeGroupProps) {
   const stage = useGitStore((s) => s.stage);
   const unstage = useGitStore((s) => s.unstage);
   const discard = useGitStore((s) => s.discard);
+  const openGitDiff = useUIStore((s) => s.openGitDiff);
   const [open, setOpen] = useState(true);
   const toggleRef = useRef<HTMLButtonElement>(null);
   const domId = useId();
@@ -167,6 +169,14 @@ export function ChangeGroup({ kind, files }: ChangeGroupProps) {
             file={file}
             group={kind}
             onActed={returnFocus}
+            // The scope is the GROUP's, and that is not a detail: one path can
+            // be staged AND changed at once, as two rows in two lists, and
+            // they show two different pairs of sides. Staged is HEAD against
+            // the index; changed is the index against the file on disk.
+            onOpen={(one) => openGitDiff({
+              path: one.path,
+              scope: kind === 'staged' ? 'index' : 'worktree',
+            })}
           />
         ))}
       </ul>

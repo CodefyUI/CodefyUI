@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { render, screen, fireEvent, waitFor, within } from '@testing-library/react';
-import { FileRow, type ChangeGroupKind } from './FileRow';
+import { displayPath, FileRow, fileRowLabel, type ChangeGroupKind } from './FileRow';
 import { useI18n } from '../../i18n';
 import { _resetGitStoreForTesting, useGitStore } from '../../store/gitStore';
 import { confirm } from '../../utils/dialog';
@@ -49,10 +49,13 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
+let opened: ReturnType<typeof vi.fn<(file: GitFile) => void>>;
+
 function draw(f: GitFile, group: ChangeGroupKind, onActed?: () => void) {
+  opened = vi.fn();
   return render(
     <ul>
-      <FileRow file={f} group={group} onActed={onActed} />
+      <FileRow file={f} group={group} onActed={onActed} onOpen={opened} />
     </ul>,
   );
 }
@@ -79,7 +82,9 @@ describe('FileRow: what the row says', () => {
     draw(file({ path: 'graphs/deep/cnn.graph.json' }), 'changes');
     expect(screen.getByText('cnn.graph.json')).toBeTruthy();
     expect(screen.getByText('graphs/deep')).toBeTruthy();
-    // On the ROW: a `title` on the disabled button inside it would never open.
+    // On the ROW, which is what the chip and the action buttons are over as
+    // well -- and the button inside it carries no `title` of its own, so this
+    // one opens over the name too.
     expect(screen.getByRole('listitem').getAttribute('title')).toBe(
       'graphs/deep/cnn.graph.json',
     );
@@ -101,16 +106,56 @@ describe('FileRow: what the row says', () => {
     );
   });
 
-  it('leaves the row button inert, carrying only the full path', () => {
+  it('opens the change from the name, naming the file it will show', () => {
     draw(file(), 'changes');
-    // Anchored: the action buttons beside it now name the file too, and this
-    // is the one whose name STARTS with it.
-    const open = screen.getByRole('button', { name: /^model\.py/ });
-    expect(open).toBeDisabled();
-    // The button carries no tooltip of its own -- a disabled element opens
-    // none in Chrome, so the path is the row's.
+    const open = screen.getByRole('button', { name: 'Open changes model.py' });
+    expect(open).not.toBeDisabled();
+    // No tooltip of its own: the button fills most of the row, and the path
+    // in full is the answer a pointer over a truncated name is after -- so
+    // the row's `title` is the one that has to open here.
     expect(open.getAttribute('title')).toBeNull();
     expect(screen.getByRole('listitem').getAttribute('title')).toBe('src/model.py');
+
+    fireEvent.click(open);
+    expect(opened).toHaveBeenCalledTimes(1);
+    expect(opened).toHaveBeenCalledWith(file());
+  });
+
+  it('names the open button after a rename the way the row shows it', () => {
+    draw(file({ path: 'src/model.py', orig_path: 'src/net.py', kind: 'renamed' }), 'staged');
+    expect(
+      screen.getByRole('button', { name: 'Open changes net.py -> model.py' }),
+    ).toBeTruthy();
+  });
+});
+
+describe('FileRow: the two spellings of a rename source', () => {
+  /*
+   * A status entry carries `orig_path` (the server's own snake_case) and a
+   * commit's file carries `origPath`, because they come from two different
+   * routes. Both are one fact, and these helpers take both -- a cast at the
+   * call site would let the other shape through silently and draw a rename as
+   * one path.
+   */
+  it('reads a status entry\'s orig_path', () => {
+    const entry = { path: 'src/model.py', orig_path: 'src/net.py' };
+    expect(displayPath(entry)).toBe('src/net.py -> src/model.py');
+    expect(fileRowLabel(entry)).toBe('net.py -> model.py');
+  });
+
+  it('reads a commit file\'s origPath', () => {
+    const entry = { path: 'src/model.py', origPath: 'src/net.py' };
+    expect(displayPath(entry)).toBe('src/net.py -> src/model.py');
+    expect(fileRowLabel(entry)).toBe('net.py -> model.py');
+  });
+
+  it('treats an absent source the same as a null one, in either spelling', () => {
+    // `=== null` was the old test, and `undefined` is what the OTHER shape
+    // leaves behind for a file that was not renamed.
+    expect(displayPath({ path: 'a.py' })).toBe('a.py');
+    expect(displayPath({ path: 'a.py', orig_path: null })).toBe('a.py');
+    expect(displayPath({ path: 'a.py', origPath: null })).toBe('a.py');
+    expect(fileRowLabel({ path: 'src/a.py', origPath: undefined })).toBe('a.py');
   });
 });
 
@@ -188,8 +233,8 @@ describe('FileRow: what a screen reader hears on the buttons', () => {
     // screen.
     render(
       <ul>
-        <FileRow file={file({ path: 'graphs/a.graph.json' })} group="changes" />
-        <FileRow file={file({ path: 'graphs/b.graph.json' })} group="changes" />
+        <FileRow file={file({ path: 'graphs/a.graph.json' })} group="changes" onOpen={vi.fn()} />
+        <FileRow file={file({ path: 'graphs/b.graph.json' })} group="changes" onOpen={vi.fn()} />
       </ul>,
     );
     const names = screen
