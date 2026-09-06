@@ -17,8 +17,8 @@
  *
  * - Nodes by `id`. A logic node is `{id, type, data}` with its parameters at
  *   `data.params` -- never at `node.params`, which is the shape a PRESET's
- *   inner nodes use (`frontend/src/types/index.ts:151`). A node is named by
- *   `data.label` when the user has renamed it, otherwise by its id.
+ *   inner nodes use (`frontend/src/types/index.ts:151`). What a line CALLS a
+ *   node is `nodeName` below.
  * - Edges by `${source}:${sourceHandle}->${target}:${targetHandle}`, with a
  *   missing handle read as empty. A trigger edge carries NO `targetHandle`
  *   (`examples/Classical/Iris-Sklearn-KNN/graph.json`), so without that
@@ -216,7 +216,7 @@ function emptyTally(): Tally {
 
 /** A node reduced to the three things the summary can talk about. */
 interface NodeFacts {
-  /** What the line calls it: the label if renamed, else the id. */
+  /** What the line calls it -- `nodeName`. */
   name: string;
   type: string;
   params: Doc;
@@ -403,15 +403,43 @@ function sortList(list: unknown[], keyOfItem: (value: unknown) => string): unkno
 
 // --- shapes --------------------------------------------------------------
 
+/** An id longer than this was generated, not written by a person. */
+const MAX_ID_AS_NAME = 16;
+/** Enough of a generated id to tell two nodes of one type apart. */
+const ID_HEAD = 8;
+
+/**
+ * What a line calls a node.
+ *
+ * The label, when the user has renamed it. Otherwise the id -- but only while
+ * the id is something somebody wrote. Every node the palette, an example or a
+ * paste inserts carries a UUID and no label, so the summary used to read
+ * `f256484a-51e0-49b4-8134-4aea94b5fd68: default "a" -> "b"`: thirty-six
+ * characters of a 340 px column spent on the one fact the reader cannot use.
+ * A generated id is printed as the TYPE plus the first eight characters --
+ * what the canvas shows, plus enough to tell two of a type apart.
+ *
+ * A node with no type at all falls back to those eight characters alone: a
+ * document is readable without one, and `" f256484a"` with a leading space is
+ * a name nobody wrote.
+ */
+function nodeName(id: string, type: string, label: string | null): string {
+  if (label !== null) return label;
+  if (id.length <= MAX_ID_AS_NAME) return id;
+  const head = id.slice(0, ID_HEAD);
+  return type === '' ? head : `${type} ${head}`;
+}
+
 function graphNodes(list: unknown): Map<string, NodeFacts> {
   const out = new Map<string, NodeFacts>();
   for (const raw of asList(list)) {
     if (!isPlainObject(raw) || typeof raw.id !== 'string') continue;
     const data = isPlainObject(raw.data) ? raw.data : {};
     const label = typeof data.label === 'string' && data.label !== '' ? data.label : null;
+    const type = asText(raw.type);
     out.set(raw.id, {
-      name: label ?? raw.id,
-      type: asText(raw.type),
+      name: nodeName(raw.id, type, label),
+      type,
       params: isPlainObject(data.params) ? data.params : {},
     });
   }
@@ -422,14 +450,20 @@ function graphNodes(list: unknown): Map<string, NodeFacts> {
  * A preset's inner nodes, whose parameters sit at `params` and not under
  * `data`. Named `<preset>/<node>` because a preset's ids live in their own
  * namespace and can collide with the graph's own.
+ *
+ * The node half goes through the same `nodeName`, and it has to: a block is
+ * built by collapsing a canvas selection, so its insides carry the same
+ * generated ids the top level does. There is no label to prefer -- an inner
+ * node's `data` is not part of this shape.
  */
 function presetNodes(preset: Doc, presetName: string): Map<string, NodeFacts> {
   const out = new Map<string, NodeFacts>();
   for (const raw of asList(preset.nodes)) {
     if (!isPlainObject(raw) || typeof raw.id !== 'string') continue;
+    const type = asText(raw.type);
     out.set(raw.id, {
-      name: `${presetName}/${raw.id}`,
-      type: asText(raw.type),
+      name: `${presetName}/${nodeName(raw.id, type, null)}`,
+      type,
       params: isPlainObject(raw.params) ? raw.params : {},
     });
   }

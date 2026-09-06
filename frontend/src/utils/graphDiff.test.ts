@@ -247,6 +247,70 @@ describe('summarizeGraphDiff, logic files', () => {
     expect(summary.lines[0]).toMatchObject({ node: 'Classifier' });
   });
 
+  it('keeps an id a person could have written as the name', () => {
+    // Sixteen characters is the boundary. A hand-written id is what the
+    // reader sees on the canvas, so printing the type instead would rename a
+    // node they already know.
+    const id = 'preprocess-train';
+    expect(id).toHaveLength(16);
+    const summary = summarizeGraphDiff(
+      graphDoc({ nodes: [{ id, type: 'KNN', data: { params: { k: 1 } } }] }),
+      graphDoc({ nodes: [{ id, type: 'KNN', data: { params: { k: 2 } } }] }),
+      'graph',
+    );
+    expect(summary.lines[0]).toMatchObject({ node: id });
+  });
+
+  it('names a node with a generated id by its type and the head of that id', () => {
+    // Every node the palette, an example or a paste inserts carries a UUID
+    // and no label, so the summary read
+    // "f256484a-51e0-49b4-8134-4aea94b5fd68: default ..." -- thirty-six
+    // characters of a narrow column saying nothing about the one node the
+    // reader can see.
+    const id = 'f256484a-51e0-49b4-8134-4aea94b5fd68';
+    const summary = summarizeGraphDiff(
+      graphDoc({ nodes: [{ id, type: 'GraphInput', data: { params: { default: 'a' } } }] }),
+      graphDoc({ nodes: [{ id, type: 'GraphInput', data: { params: { default: 'b' } } }] }),
+      'graph',
+    );
+    expect(summary.lines[0]).toMatchObject({ node: 'GraphInput f256484a' });
+  });
+
+  it('prefers the label over a generated id', () => {
+    const id = 'f256484a-51e0-49b4-8134-4aea94b5fd68';
+    const summary = summarizeGraphDiff(
+      graphDoc({ nodes: [{ id, type: 'GraphInput', data: { label: 'Prompt', params: { default: 'a' } } }] }),
+      graphDoc({ nodes: [{ id, type: 'GraphInput', data: { label: 'Prompt', params: { default: 'b' } } }] }),
+      'graph',
+    );
+    expect(summary.lines[0]).toMatchObject({ node: 'Prompt' });
+  });
+
+  it('falls back to the head of the id alone when the node has no type', () => {
+    // A document is readable without a `type` on every node, and " f256484a"
+    // with a leading space is a name nobody wrote.
+    const id = 'f256484a-51e0-49b4-8134-4aea94b5fd68';
+    const summary = summarizeGraphDiff(
+      graphDoc({ nodes: [{ id, data: { params: { k: 1 } } }] }),
+      graphDoc({ nodes: [{ id, data: { params: { k: 2 } } }] }),
+      'graph',
+    );
+    expect(summary.lines[0]).toMatchObject({ node: 'f256484a' });
+  });
+
+  it('shortens a generated id inside a preset the same way', () => {
+    const id = 'f256484a-51e0-49b4-8134-4aea94b5fd68';
+    const preset = (out: number) => ({
+      ...PRESET, nodes: [{ id, type: 'Linear', params: { out_features: out } }], edges: [],
+    });
+    const summary = summarizeGraphDiff(
+      graphDoc({ presets: [preset(32)] }),
+      graphDoc({ presets: [preset(64)] }),
+      'graph',
+    );
+    expect(summary.lines[0]).toMatchObject({ node: 'Dense Block/Linear f256484a' });
+  });
+
   it('counts an edge added even when the trigger edge carries no targetHandle', () => {
     const summary = summarizeGraphDiff(
       graphDoc({ nodes: [START, CSV], edges: [] }),
