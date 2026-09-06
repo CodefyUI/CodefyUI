@@ -258,7 +258,9 @@ function compareGraphs(before: Doc, after: Doc, tally: Tally): void {
   // counted like any other node, `canonicalText` includes `presets` and
   // `subgraphs` so the summary can never call such a file unchanged, and the
   // text diff below the summary shows the definition. A definition edited in
-  // place keeps its per-node lines, which name the node `<preset>/<id>`.
+  // place keeps its per-node lines, which name the node `<preset>/<node>` --
+  // the node half through `nodeName`, so a generated id reads as its type and
+  // eight characters rather than a whole UUID.
 }
 
 function compareNodes(before: Map<string, NodeFacts>, after: Map<string, NodeFacts>, tally: Tally): void {
