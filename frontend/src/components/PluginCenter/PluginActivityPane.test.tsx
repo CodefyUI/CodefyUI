@@ -1,7 +1,11 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { render, screen, fireEvent, within } from '@testing-library/react';
 import type { PluginCatalogEntry } from '../../api/rest';
-import { emptyPluginJob, type PluginJob } from '../../store/pluginStore';
+import {
+  emptyPluginJob,
+  type PluginJob,
+  type PluginRemoval,
+} from '../../store/pluginStore';
 import { useI18n } from '../../i18n';
 import { PluginActivityPane } from './PluginActivityPane';
 import { jobOverallPercent } from './pluginStatus';
@@ -94,6 +98,7 @@ let handlers: ReturnType<typeof makeHandlers>;
  */
 function paint(over: {
   job?: PluginJob | null;
+  removal?: PluginRemoval | null;
   entry?: PluginCatalogEntry | undefined;
   cancelling?: boolean;
 } = {}) {
@@ -101,11 +106,24 @@ function paint(over: {
   return render(
     <PluginActivityPane
       job={over.job ?? null}
+      removal={over.removal ?? null}
       entry={over.entry}
       cancelling={over.cancelling ?? false}
       {...handlers}
     />,
   );
+}
+
+/** What the store records after a successful uninstall. */
+function removal(over: Partial<PluginRemoval> = {}): PluginRemoval {
+  return {
+    pluginId: 'demo',
+    name: 'Demo plugin',
+    depsLeft: [],
+    uninstallCommand: null,
+    reinstallHint: 'cdui plugin install demo',
+    ...over,
+  };
 }
 
 /** The result banner, the only `status` element the pane renders. */
@@ -496,6 +514,7 @@ describe('PluginActivityPane — how a job ended', () => {
     rerender(
       <PluginActivityPane
         job={job({ status: 'cancelled' })}
+        removal={null}
         entry={demo}
         cancelling={false}
         {...handlers}
@@ -504,6 +523,53 @@ describe('PluginActivityPane — how a job ended', () => {
     expect(live()).not.toBeNull();
     expect(live()?.textContent).toBe('');
     expect(screen.getAllByText('Install cancelled.')).toHaveLength(1);
+  });
+
+  it('reports an uninstall instead of the job it replaced', () => {
+    // The store dismisses the finished job as it records the removal, so
+    // what the pane is handed is a removal and no job. Before this, the
+    // install's "Installed Demo plugin." stayed up over a card that had
+    // already changed to "Removed".
+    paint({ removal: removal(), entry: demo });
+
+    expect(within(banner()).getByText('Demo plugin uninstalled.')).toBeInTheDocument();
+    expect(screen.queryByText('Installed Demo plugin.')).toBeNull();
+    // Nothing ran, so there is no transcript and nothing to cancel.
+    expect(screen.queryByRole('log')).toBeNull();
+    expect(screen.queryByRole('progressbar')).toBeNull();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Dismiss' }));
+    expect(handlers.onDismiss).toHaveBeenCalledTimes(1);
+  });
+
+  it('names the packages the uninstall left, and the command that removes them', () => {
+    // Nothing uninstalls a plugin's pip packages -- not this panel, not the
+    // CLI -- so the only honest ending is to say which ones stayed and hand
+    // over the line that finishes the job.
+    paint({
+      removal: removal({
+        depsLeft: ['model2vec', 'numpy'],
+        uninstallCommand: 'uv pip uninstall model2vec numpy',
+      }),
+      entry: demo,
+    });
+
+    expect(
+      within(banner()).getByText(/These Python packages stay installed: model2vec, numpy\./),
+    ).toBeInTheDocument();
+    expect(
+      within(banner()).getByText('uv pip uninstall model2vec numpy'),
+    ).toBeInTheDocument();
+    expect(within(banner()).getByText('cdui plugin install demo')).toBeInTheDocument();
+  });
+
+  it('says the sentence alone when the uninstall left nothing', () => {
+    paint({ removal: removal(), entry: demo });
+
+    expect(within(banner()).getByText('Demo plugin uninstalled.')).toBeInTheDocument();
+    expect(screen.queryByText(/stay installed/)).toBeNull();
+    // `CommandBlock` is the only thing in the pane with a copy button.
+    expect(screen.queryByRole('button', { name: 'Copy command' })).toBeNull();
   });
 
   it('announces the job by its id while the catalog has no row for it', () => {

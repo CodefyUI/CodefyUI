@@ -1,7 +1,7 @@
 import { useMemo } from 'react';
 import type { PluginCatalogEntry } from '../../api/rest';
 import type { JobPhase } from '../../store/jobFollower';
-import type { PluginJob } from '../../store/pluginStore';
+import type { PluginJob, PluginRemoval } from '../../store/pluginStore';
 import { useI18n } from '../../i18n';
 import { ProgressBar } from '../shared/ProgressBar';
 // The pack panel's own pieces rather than copies of them: an install
@@ -31,6 +31,13 @@ const BANNER_TONE: Record<JobPhase, BannerTone> = {
 
 export interface PluginActivityPaneProps {
   job: PluginJob | null;
+  /**
+   * The last uninstall, when there is one and no job. An uninstall is a
+   * single request rather than a job to follow, so it has no steps and no
+   * transcript -- but it is the last thing that happened in this panel, and
+   * the pane is where the panel says so.
+   */
+  removal: PluginRemoval | null;
   /**
    * The catalog row for `job.pluginId`: its name, the source the terminal
    * fallback would install from, and how long an install of it should take
@@ -70,6 +77,7 @@ export interface PluginActivityPaneProps {
  */
 export function PluginActivityPane({
   job,
+  removal,
   entry,
   cancelling,
   onCancel,
@@ -133,6 +141,13 @@ export function PluginActivityPane({
   );
 
   if (job === null) {
+    // A removal only ever reaches here with no job beside it -- the store
+    // dismisses the finished one as it records this, and starting a job
+    // clears it -- but the job is read first anyway, so the live thing wins
+    // whatever order two changes arrive in.
+    if (removal !== null) {
+      return <RemovalResult removal={removal} onDismiss={onDismiss} />;
+    }
     return (
       <>
         <div className={styles.activityTitle}>{t('packs.activity.idle')}</div>
@@ -190,6 +205,70 @@ export function PluginActivityPane({
             {t('packs.activity.dismiss')}
           </button>
         )}
+      </div>
+    </>
+  );
+}
+
+/**
+ * How a finished uninstall is reported.
+ *
+ * The pane's third state, beside "nothing is installing" and a job. It wears
+ * the job banner's clothes -- same tone, same `role="status"`, same Dismiss --
+ * because it answers the same question, and the two are never on screen
+ * together.
+ *
+ * The sentence is the toast's, deliberately: the toast is the notification and
+ * this is the record, and one uninstall said two ways would be two facts to
+ * reconcile. Under it, only when there is something to say: nothing removes a
+ * plugin's pip packages -- not this panel, not the CLI -- so an uninstall that
+ * left some names the packages, hands over the line that removes them with the
+ * server stopped, and the line that puts the plugin back if that was a
+ * mistake. An uninstall that left nothing is the sentence alone.
+ */
+function RemovalResult({
+  removal,
+  onDismiss,
+}: {
+  removal: PluginRemoval;
+  onDismiss: () => void;
+}) {
+  const { t } = useI18n();
+  const left = removal.depsLeft.length > 0;
+
+  return (
+    <>
+      <div className={styles.activityTitle}>{removal.name}</div>
+
+      <div className={styles.resultBanner} role="status" data-tone="success">
+        <span>{t('pluginCenter.toast.removed', { plugin: removal.name })}</span>
+
+        {left && (
+          <>
+            <span className={styles.resultHint}>
+              {t('pluginCenter.activity.depsLeft', {
+                packages: removal.depsLeft.join(', '),
+              })}
+            </span>
+            {removal.uninstallCommand !== null && (
+              <CommandBlock command={removal.uninstallCommand} />
+            )}
+            {removal.reinstallHint !== '' && (
+              <>
+                <span className={styles.resultHint}>
+                  {t('pluginCenter.activity.reinstall')}
+                </span>
+                <CommandBlock command={removal.reinstallHint} />
+              </>
+            )}
+          </>
+        )}
+      </div>
+
+      <div className={styles.cardActions}>
+        <button type="button" className={styles.secondaryBtn} onClick={onDismiss}>
+          {t('packs.activity.dismiss')}
+        </button>
       </div>
     </>
   );

@@ -1216,6 +1216,14 @@ const en = {
     + 'would replace one the server has loaded. With the server stopped, run this, '
     + 'then install again:',
   'pluginCenter.activity.cliFallback': 'Or install from a terminal:',
+  // What an uninstall leaves behind. Nothing removes a plugin's pip packages
+  // -- not the panel, not the CLI -- so the honest ending names them and
+  // hands over the line that finishes the job. Both end in a colon because a
+  // command follows.
+  'pluginCenter.activity.depsLeft':
+    'These Python packages stay installed: {packages}. With the server '
+    + 'stopped, this removes them:',
+  'pluginCenter.activity.reinstall': 'To install the plugin again:',
 
   // The steps of an install, in the order they run. There is no `step.deps`
   // on purpose: pip is pip, and it reuses `packs.activity.step.pip`.

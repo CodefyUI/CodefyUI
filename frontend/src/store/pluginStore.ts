@@ -85,6 +85,33 @@ export interface InspectionFailure {
 }
 
 /**
+ * What a finished uninstall left behind, for the activity pane to report.
+ *
+ * A removal is not a job: nothing to follow, no steps, no transcript. It is
+ * kept in the store anyway, and beside `job`, because the pane is where this
+ * panel says what has just happened -- and the alternative was a toast, which
+ * is gone by the time the user has read the card that changed. The two never
+ * coexist: recording one dismisses the finished job, and starting a job
+ * clears the removal.
+ *
+ * `name` is read BEFORE the request, like the toast's: a plugin off GitHub
+ * has no catalog row left by the time this is written.
+ *
+ * The three remaining fields are the server's own answer. Nothing uninstalls
+ * a plugin's pip packages -- not this panel, not the CLI -- so `depsLeft` is
+ * what stayed in the interpreter, `uninstallCommand` the line that would
+ * remove them with the server stopped (null when the plugin declared none),
+ * and `reinstallHint` the command that puts the plugin back.
+ */
+export interface PluginRemoval {
+  pluginId: string;
+  name: string;
+  depsLeft: string[];
+  uninstallCommand: string | null;
+  reinstallHint: string;
+}
+
+/**
  * The install review, as a little state machine.
  *
  * An inspection is not an install: it reads the manifest at a source and
@@ -126,6 +153,8 @@ interface PluginState {
   /** The node registry's reload counter, as of the last catalog read. */
   generation: number;
   job: PluginJob | null;
+  /** The last uninstall, for the pane. Never set while a job is. */
+  removal: PluginRemoval | null;
   /** Plugin ids with a request in flight — disables that row's buttons. */
   busy: Record<string, boolean>;
   cancelling: boolean;
@@ -156,7 +185,10 @@ interface PluginState {
     jobId: string, pluginId: string, kind?: PluginJobKind, cursor?: number,
   ) => void;
   stopFollowing: () => void;
-  /** Clear a finished job from the activity pane. Ignored while running. */
+  /**
+   * Clear the activity pane -- a finished job, a removal, or both. Ignored
+   * while a job is running, which is the one thing the pane cannot put away.
+   */
   dismissJob: () => void;
   /** Once per page load: adopt a job that outlived the last page. */
   checkInProgress: () => Promise<void>;
@@ -665,6 +697,9 @@ async function startInstall(
 
     usePluginStore.setState({
       job: emptyPluginJob(job_id, data.plugin_id, data.mode),
+      // The pane belongs to the live thing: a removal still on screen under
+      // an install that has just started is the older of the two facts.
+      removal: null,
       inspection: { phase: 'idle' },
     });
     setPluginStatus(data.plugin_id, 'installing');
@@ -710,6 +745,7 @@ export const usePluginStore = create<PluginState>((set, get) => ({
   remoteInstallAllowed: true,
   generation: 0,
   job: null,
+  removal: null,
   busy: {},
   cancelling: false,
   inspection: { phase: 'idle' },
@@ -749,7 +785,10 @@ export const usePluginStore = create<PluginState>((set, get) => ({
       const current = get().job;
       const kind = jobKind(active.kind);
       if (!current || current.jobId !== active.job_id) {
-        set({ job: emptyPluginJob(active.job_id, active.plugin_id, kind) });
+        set({
+          job: emptyPluginJob(active.job_id, active.plugin_id, kind),
+          removal: null,
+        });
       }
       // Idempotent: this runs on every poll, and only the FIRST one starts a
       // follower. This is how a job started in another tab is adopted.
@@ -886,7 +925,7 @@ export const usePluginStore = create<PluginState>((set, get) => ({
           });
           return;
         }
-        set({ job: emptyPluginJob(result.job_id, pluginId, 'update') });
+        set({ job: emptyPluginJob(result.job_id, pluginId, 'update'), removal: null });
         setPluginStatus(pluginId, 'installing');
         startFollowing(result.job_id, pluginId, 'update', 0);
       } catch (err) {
@@ -928,12 +967,27 @@ export const usePluginStore = create<PluginState>((set, get) => ({
 
     await withBusy(pluginId, async () => {
       try {
-        await uninstallPlugin(pluginId);
+        const result = await uninstallPlugin(pluginId);
         // Its nodes are gone from the registry and its bundle is still
         // activated in this page: all three steps, or the canvas keeps
         // offering nodes the server will refuse to run.
         await refreshEverything();
         toast(t('pluginCenter.toast.removed', { plugin: name }), 'success');
+        // And the pane says the same thing where it will still be there
+        // afterwards. The finished install it replaces goes with it: a
+        // banner reading "Installed Demo plugin." over a card that now says
+        // "Removed" is the panel contradicting itself. A job the refresh
+        // above has just adopted is live and stays.
+        set((state) => ({
+          removal: {
+            pluginId,
+            name,
+            depsLeft: result.python_deps_left,
+            uninstallCommand: result.uninstall_command,
+            reinstallHint: result.reinstall_hint,
+          },
+          job: isRunning(state.job) ? state.job : null,
+        }));
       } catch (err) {
         const hint = str(errorDetail(err)?.hint);
         if (refusalCode(err) === 'files_locked') {
@@ -1026,7 +1080,7 @@ export const usePluginStore = create<PluginState>((set, get) => ({
   followJob: (jobId, pluginId, kind = 'install', cursor = 0) => {
     const current = get().job;
     if (!current || current.jobId !== jobId) {
-      set({ job: emptyPluginJob(jobId, pluginId, kind) });
+      set({ job: emptyPluginJob(jobId, pluginId, kind), removal: null });
     }
     startFollowing(jobId, pluginId, kind, cursor);
   },
@@ -1034,9 +1088,10 @@ export const usePluginStore = create<PluginState>((set, get) => ({
   stopFollowing: () => stopFollowing(),
 
   dismissJob: () => {
-    const job = get().job;
-    if (job === null || isRunning(job)) return;
-    set({ job: null });
+    // One button clears whatever the pane is showing. A RUNNING job is the
+    // exception and the only one: it is still happening.
+    if (isRunning(get().job)) return;
+    set({ job: null, removal: null });
   },
 
   checkInProgress: async () => {
@@ -1083,6 +1138,7 @@ export function _resetPluginStoreForTesting(): void {
     remoteInstallAllowed: true,
     generation: 0,
     job: null,
+    removal: null,
     busy: {},
     cancelling: false,
     inspection: { phase: 'idle' },

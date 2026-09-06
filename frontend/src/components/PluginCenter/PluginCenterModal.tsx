@@ -73,6 +73,7 @@ function PluginCenterBody() {
   const unsupported = usePluginStore((s) => s.unsupported);
   const remoteInstallAllowed = usePluginStore((s) => s.remoteInstallAllowed);
   const job = usePluginStore((s) => s.job);
+  const removal = usePluginStore((s) => s.removal);
   const busy = usePluginStore((s) => s.busy);
   const cancelling = usePluginStore((s) => s.cancelling);
   const inspection = usePluginStore((s) => s.inspection);
@@ -348,12 +349,15 @@ function PluginCenterBody() {
             ))}
           </section>
 
-          {/* What is installing, how far it has got, and how it ended. A pure
-              view of the store's job: closing this window cannot interrupt an
-              install, and reopening it picks the same job back up. */}
+          {/* What is installing, how far it has got, and how it ended — or,
+              when the last thing to happen was an uninstall, what that left
+              behind. A pure view of the store: closing this window cannot
+              interrupt an install, and reopening it picks the same job (or the
+              same removal) back up. */}
           <aside className={styles.activity} aria-label={t('packs.activity')}>
             <PluginActivityPane
               job={job}
+              removal={removal}
               entry={jobEntry}
               cancelling={cancelling}
               onCancel={() => void cancel()}
