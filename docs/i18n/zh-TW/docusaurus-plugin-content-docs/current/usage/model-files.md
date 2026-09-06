@@ -48,12 +48,12 @@ description: ModelSaver 寫出什麼、ModelLoader 又願意讀回什麼 —— 
 這兩份清單都是從**存檔那一端**列舉出來的 —— 從「CodefyUI 實際上能組出來的模型會存下什麼」列舉 —— 而且兩份都各有一個測試會把那次列舉重跑一遍。所以，當某個類別或某個可呼叫物件開始出現在被存下的模型裡時，失敗的會是測試，而不是安靜地變成一個沒有人打得開的檢查點。
 
 :::note 實際上這代表什麼
-CodefyUI 寫出的 `full_model` 檔**可以在 CodefyUI 裡載回來**。但含有[自訂節點](/advanced/custom-nodes)、[外掛](/advanced/plugins)或別人自己腳本裡類別的 `full_model` 檔**不行** —— 那些程式碼沒有經過審查，而放寬到它們是 CodefyUI 不跨越的那條線。`ModelSaver` 會在存檔當下就在它的 **Log** 分頁告訴你剛剛寫出的是哪一種，而不是讓你晚一個節點才發現。
+CodefyUI 寫出的 `full_model` 檔**可以在 CodefyUI 裡載回來**。含有[自訂節點](/advanced/custom-nodes)、[外掛](/advanced/plugins)或其他腳本類別的檔案會被拒絕，因為受限解序列化器不接受這些類別。`ModelSaver` 會在儲存檔案時，於**執行紀錄**中回報檔案類型。
 :::
 
 ### 一個已知的邊界
 
-- **CodefyUI 寫出的檔案不是自足的。** 讀它需要 CodefyUI 自己的類別可以 import，所以比「開始放寬的那個版本」更舊的 CodefyUI 會拒絕它，而在 CodefyUI 之外用純 torch 讀則需要 `weights_only=False` 加上後端套件在 `sys.path` 上。`state_dict` 檔案這兩個條件都沒有。（只由 torch 原生層組成的檔案 —— 包含 transformer —— 這兩個條件也都沒有；`Log` 那則提示會告訴你剛剛寫出的是哪一種。）
+- **CodefyUI 寫出的檔案不是自足的。** 讀取時，CodefyUI 自己的類別必須可以 import，因此尚未允許這些類別的舊版 CodefyUI 會拒絕檔案。在 CodefyUI 之外使用純 `torch.load` 載入時，需要設定 `weights_only=False`，且 `sys.path` 必須包含後端套件。這些條件不適用於 `state_dict` 檔案，或只由標準 torch 層（包括 transformer 層）組成的檔案。**執行紀錄**訊息會指出檔案類型。
 
 ## 如果載入被拒絕，而你信任那個檔案
 
@@ -69,6 +69,6 @@ torch.save(model.state_dict(), "NEW_PATH.pt")
 
 ## 相關頁面
 
-- [重現基準結果](./reproducing-baselines) —— `CheckpointSaver` / `CheckpointLoader`，它們儲存的是訓練*狀態*（模型、最佳化器、排程、epoch）而不是一個模型，而且一律以張量形式儲存。
+- [重現標準結果](./reproducing-baselines) —— `CheckpointSaver` / `CheckpointLoader`，它們儲存的是訓練*狀態*（模型、最佳化器、排程、epoch）而不是一個模型，而且一律以張量形式儲存。
 - [執行圖](./running-graphs) —— 為什麼這兩個節點永遠不會由執行快取代為回答。
 - [Python Script 節點](/advanced/python-script-node) —— `torch.load` 在那裡是直接被拒絕的，以及為什麼。

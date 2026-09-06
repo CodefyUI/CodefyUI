@@ -30,9 +30,14 @@ Three credentials work this way.
 ### ChatGPT sign-in
 
 `POST /api/llm/codex/login` completes an OAuth flow and writes the access and
-refresh tokens to `codex_auth.json` under your user-data directory
+refresh tokens to `llm/codex_auth.json` under the user-data directory:
+`<install dir>/.codefyui_dev/llm/` for a server started by `cdui start` or
+`cdui dev` (default install dir `~/CodefyUI`), `<dir>/llm/` when
+`CODEFYUI_USER_DATA_DIR` was exported first, and the platform directory
 (`%LOCALAPPDATA%\codefyui\llm\` on Windows, `~/.local/share/codefyui/llm/` on
-Linux, `~/Library/Application Support/codefyui/llm/` on macOS). The file is
+Linux, `~/Library/Application Support/codefyui/llm/` on macOS) only for a
+hand-launched uvicorn -- see
+[Project Directories](./project-directories#6-create-an-api-key-invoke-needs-one). The file is
 chmod 0600 where that means anything -- on Windows it does not, and the
 protection is the per-account ACL on the folder instead.
 
@@ -51,11 +56,12 @@ process environment, in order:
 - OpenAI: `CODEFYUI_OPENAI_API_KEY`, then `OPENAI_API_KEY`
 - Anthropic: `CODEFYUI_ANTHROPIC_API_KEY`, then `ANTHROPIC_API_KEY`
 
-`cdui` loads these from the project `.env` at startup, so a key in that file
-is a key every graph on the instance can spend. The fallback is silent by
-design -- a graph with an empty key param does not announce that it used the
-instance's. **Assume any graph anyone can run is a graph that can spend your
-org's LLM budget.**
+When the server was started with `--project`, `cdui` loads these from the
+project `.env` at startup (see [Project Directories](./project-directories)),
+so a key in that file is a key every graph on the instance can spend. The
+fallback is silent by design -- a graph with an empty key param does not
+announce that it used the instance's. **Assume any graph anyone can run is a
+graph that can spend your org's LLM budget.**
 
 The one thing the fallback deliberately does NOT do: the `custom` provider
 never receives a key, so a graph pointing at an attacker's `base_url` cannot

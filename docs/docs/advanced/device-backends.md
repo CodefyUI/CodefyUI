@@ -39,6 +39,8 @@ An index that does not exist on this machine falls back to the **current CUDA de
 
 MPS is **float32-native** and rejects float64 tensors. CodefyUI normalizes this in `device_utils.to_device`, but if you write a [custom node](./custom-nodes) that creates tensors directly, keep them in float32 on Apple GPUs to avoid runtime errors.
 
+CodefyUI also sets `PYTORCH_ENABLE_MPS_FALLBACK=1` before importing torch. When MPS does not support an operation, PyTorch runs it on the CPU instead. This is slower but prevents an error for the unsupported operation. Export the variable as `0` before `cdui start` to make unsupported operations raise an error.
+
 ## ROCm presents as CUDA
 
 On AMD + Linux with a ROCm build of PyTorch, `torch.cuda.is_available()` returns `True` because ROCm exposes a CUDA-compatible interface. The device shows up as `cuda` in the dropdown; that's expected.

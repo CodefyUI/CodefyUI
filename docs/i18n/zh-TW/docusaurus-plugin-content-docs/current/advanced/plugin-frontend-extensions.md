@@ -11,12 +11,12 @@ description: 隨外掛包附上一個 JavaScript bundle，讓外掛能新增 UI 
 :::note 可用性
 前端擴充功能自 CodefyUI **1.3.0** 起內建。請執行 `cdui --version` 確認；若顯示更舊的版本，請執行 `cdui update`。
 
-停靠面板、工具列按鈕、執行事件與 runs 門面需要 **apiVersion 3**（CodefyUI 2.0.0 起）；`graph.getView` 需要 **apiVersion 4**（CodefyUI 2.3.0 起）；`api.workspace` 與六個代理畫布操作需要 **apiVersion 5**（CodefyUI 2.5.0 起）。使用前請先檢查版本——參見 [API 版本](#api-版本)。
+停靠面板、工具列按鈕、執行事件與執行歷史介面（`api.runs`）需要 **apiVersion 3**（CodefyUI 2.0.0 起）；`graph.getView` 需要 **apiVersion 4**（CodefyUI 2.3.0 起）；`api.workspace` 與六個代理畫布操作需要 **apiVersion 5**（CodefyUI 2.5.0 起）。使用前請先檢查功能版本，詳見 [API 版本](#api-版本)。
 :::
 
 ## API 版本
 
-`api.apiVersion` 是一個只增不減的數字，而目前每一次改版在形狀上都是**純粹新增**：舊版能用的東西，沒有被移除過，簽名也沒有被改過。為 apiVersion 2 撰寫的外掛，在 apiVersion 5 的編輯器上不必改任何一行就能繼續運作，只有一個例外由 apiVersion 5 引入，而且完整寫在下面——[唯讀分頁現在會拒絕寫入](#apiversion-5-之前的外掛要注意的一件事)。
+`api.apiVersion` 只會增加；到目前為止，每個版本的 API **都只新增介面**：舊版支援的功能未被移除，方法簽名也未變更。為 apiVersion 2 撰寫的外掛可直接在 apiVersion 5 編輯器上運作。apiVersion 5 只有一項例外，詳見下方的[唯讀分頁現在會拒絕寫入](#apiversion-5-之前的外掛要注意的一件事)。
 
 | `apiVersion` | CodefyUI | 新增內容 |
 |--------------|----------|----------|
@@ -26,7 +26,7 @@ description: 隨外掛包附上一個 JavaScript bundle，讓外掛能新增 UI 
 | 4 | 2.3.0 | `graph.getView`——使用者正在看圖表的哪一層 |
 | 5 | 2.5.0 | `workspace.*`——分頁、快照與比較後寫入；`move_node`、`set_segment` / `remove_segment`、`add_note` / `update_note`、`set_node_meta` |
 
-在使用比你所要求的版本更新的功能之前先檢查它，而且是降級處理，不是直接拋錯：
+使用超過外掛最低需求版本的新功能前，請先檢查目前的 API 版本，並在版本不足時降級處理，不要直接拋出錯誤：
 
 ```js
 export default function activate(api) {
@@ -38,7 +38,7 @@ export default function activate(api) {
 }
 ```
 
-因為改版都是純新增，破壞性變更一定會伴隨 `apiVersion` 提升與遷移說明——不會靜悄悄發生。
+若有破壞性變更，會提升 `apiVersion` 並附上遷移說明，不會在既有版本中無預警變更。
 
 ## 宣告前端進入點
 
@@ -55,17 +55,19 @@ requires_codefyui = ">=1.3.0"
 entry = "frontend/index.js"
 ```
 
-`requires_codefyui` 為提示性中繼資料（會被記錄，但目前安裝時並不強制檢查）；請將它設為首個內建你外掛所需功能的 CodefyUI 版本——前端擴充功能於 1.3.0 登場。
+`requires_codefyui` 是提示性中繼資料：系統會記錄，但目前不會在安裝時強制檢查。請將它設為第一個包含外掛所需功能的 CodefyUI 版本；前端擴充自 1.3.0 起提供。
 
 `entry` 路徑必須**相對於外掛根目錄**，且必須位於 `frontend/` 之下。該檔案必須是合法的 ES 模組，並包含一個預設匯出（參見下方的[activate 合約](#activate-合約)）。
 
 ## 編輯器如何提供並探索 bundle
 
-後端啟動時，會將每個已安裝外掛的 `frontend/` 目錄掛載於：
+後端會在以下路徑提供已啟用外掛的 `frontend/` 目錄：
 
 ```
 /plugins/<plugin-id>/frontend/<file>
 ```
+
+這些目錄不會在啟動時掛載。每個 request 都會由 route 從 lockfile 解析外掛目錄。因此，bundle 會在安裝或重載後立即可用，並在外掛停用或解除安裝後立即回傳 `404`；兩種變更都不需要重新啟動。只有已啟用且 manifest 宣告 `[frontend].entry` 的外掛，才會提供 frontend 檔案；只有 `frontend/` 目錄並不足夠。response 使用 `Cache-Control: no-cache`，讓瀏覽器重新驗證檔案，並在下次載入時取得更新。後端會透過 `/plugins/<plugin-id>/assets/<file>`，依相同的啟用規則提供 `assets/`，使用 GET 與 HEAD 且不要求 manifest entry。
 
 外掛列表端點會揭露進入點，讓編輯器得以載入：
 
@@ -84,7 +86,7 @@ GET /api/plugins
 }
 ```
 
-若 `frontend_entry` 為 `null`，代表該外掛沒有前端 bundle。只有當 `frontend_entry` 非 null 時，編輯器才會載入該模組。
+manifest 沒有 `[frontend]` entry、宣告的檔案不存在，或外掛已停用時，`frontend_entry` 會是 `null`。停用的外掛不提供 UI、frontend 檔案或 assets。只有當 `frontend_entry` 非 null 時，編輯器才會載入該模組。
 
 ## activate 合約
 
@@ -97,7 +99,7 @@ export default function activate(api) {
 }
 ```
 
-編輯器每次頁面載入時呼叫 `activate` 一次，且**不會** await 它的回傳值——請以同步方式完成設定（你仍可啟動非同步工作，編輯器只是不會等待）。在 `activate` 內同步拋出的錯誤會被逐一外掛捕獲、記錄至瀏覽器主控台並以 toast 呈現；它們無法使編輯器或其他外掛崩潰。匯入另有 10 秒逾時限制。（只要求*預設匯出是一個函式*；名稱 `activate` 只是慣例。）
+編輯器每次載入頁面時會呼叫 `activate` 一次，但**不會** await 回傳值。請同步完成初始化；函式仍可啟動非同步工作，但編輯器不會等待。`activate` 內同步拋出的錯誤會按外掛個別捕捉，記錄至瀏覽器主控台，並顯示 toast，不會使編輯器或其他外掛崩潰。模組匯入另有 10 秒逾時限制。（唯一要求是*預設匯出必須為函式*；`activate` 只是慣用名稱。）
 
 ## CodefyUIPluginAPI 參考
 
@@ -105,8 +107,8 @@ export default function activate(api) {
 
 | 方法 | 簽名 | 說明 |
 |------|------|------|
-| `addFloatingWidget` | `({ id }) => HTMLElement` | 在編輯器的浮動元件堆疊中建立（或重用）一個容器 `<div>` 並回傳。`id` 在同一外掛內必須唯一。回傳的元素歸你所有——填入你自己的 DOM，或在其上掛載一個 React root。 |
-| `toast` | `(message, level?) => void` | 顯示一個暫時性通知。`level` 為 `"info"`（預設）、`"warning"` 或 `"error"`。 |
+| `addFloatingWidget` | `({ id }) => HTMLElement` | 在編輯器的浮動元件堆疊中建立或重用容器 `<div>`，並回傳該元素。`id` 在同一外掛內必須唯一。外掛可自行填入 DOM，或在元素上掛載 React root。 |
+| `toast` | `(message, level?) => void` | 顯示一個暫時性通知。`level` 為 `"info"`（預設）、`"success"`、`"warning"` 或 `"error"`。 |
 | `addPanel` | `(opts) => HTMLElement` | **apiVersion 3。** 註冊一個停靠面板，回傳它的容器元素。 |
 | `removePanel` | `(id: string) => void` | **apiVersion 3。** 移除你自己的某個面板。 |
 | `addToolbarButton` | `(opts) => () => void` | **apiVersion 3。** 新增一個工具列按鈕；回傳移除函式。 |
@@ -127,18 +129,18 @@ interface PluginPanelOptions {
 }
 ```
 
-`"bottom"` 面板會成為編輯器底部面板的一個分頁，排在「執行記錄」、「訓練」與「執行任務」之後。`"right"` 面板則成為右側欄的一個區塊，與節點設定和檢視器面板並列。分頁外框、排序與位置由主程式決定；元素裡面的一切則歸你。
+`"bottom"` 面板會成為編輯器底部 dock 的分頁，排在**執行紀錄**、**訓練**與**執行任務**之後。`"right"` 面板會成為右側欄的區塊，與**節點設定**及檢視器面板並列。分頁外框、順序與位置由主程式管理；外掛則負責元素內的所有內容。
 
-**在面板存在的期間，那個元素都是你的。** 它的身分永遠不變，所以只需掛載一次：
+**面板存續期間會重用同一個元素。** 元素本身不會更換，因此只需掛載一次：
 
 ```js
 const el = api.ui.addPanel({ id: "runs", title: "My Runs", icon: "~" });
 createRoot(el).render(<MyPanel />);   // 只做一次，不是每次切分頁
 ```
 
-編輯器只會掛載*當前*的底部分頁，所以裝著你面板的那個容器會隨著使用者切換分頁而被拆掉重建。你的元素不會：編輯器只是把它卸下再掛回去，子節點與其狀態都完整保留。用同一個 `id` 再呼叫一次 `addPanel`，回傳的是同一個元素，只是更新標題、圖示與停靠位置。
+編輯器只會掛載目前作用中的 dock 分頁。使用者切換分頁時，包含面板的主程式容器會拆除並重建，但面板元素只會卸離再重新附加，其子元素與狀態都會保留。使用相同 `id` 再次呼叫 `addPanel` 會回傳同一個元素，並更新標題、圖示與 dock。
 
-代價只有一件事要留意：面板不在畫面上時，你的程式仍在*執行*，而且畫的是一個不在文件中的元素。如果面板做的事情不便宜——圖表、輪詢、動畫——請把它關掉：
+**需要注意面板隱藏時的執行狀態。** 面板不在畫面上時，你的程式仍會執行，並渲染到目前不在 document 中的元素。若面板包含成本較高的工作，例如圖表、輪詢或動畫，請依顯示狀態啟動與停止：
 
 ```js
 api.ui.addPanel({
@@ -172,25 +174,25 @@ const remove = api.ui.addToolbarButton({
 });
 ```
 
-按鈕會依註冊順序，集中在工具列右側的同一組裡。你無法指定位置，顯示幾個也由編輯器決定：視窗夠寬時最多三個直接排在列上，視窗窄時全部收進一個溢位選單。正是這條規則讓五個已安裝外掛不會把「執行」擠出工具列，所以請把 `tooltip` 當成標籤來寫——在選單裡，它就是標籤。
+按鈕會依註冊順序顯示在工具列右側的同一組。外掛無法指定位置，顯示數量也由編輯器決定：寬視窗最多直接顯示三個，窄視窗則收合至單一 overflow 選單。這可避免五個已安裝外掛把**執行**移出工具列。請將 `tooltip` 寫成完整標籤，因為選單會用它作為標籤。
 
 若 `onClick` 拋出錯誤，編輯器會記錄下來並繼續運作；工具列不受影響。
 
-用同一個 id 再次註冊會取代原本的按鈕。回傳的移除函式只屬於當次那一筆註冊，所以如果按鈕後來被你自己取代掉了，呼叫舊的移除函式不會有任何作用，而不會把新的那顆一起移除。若你的意思是「不管現在掛在這個 id 底下的是哪一顆，都移除掉」，請改用 `removeToolbarButton(id)`。外掛被卸載或熱重載時，按鈕會自動移除。
+再次註冊相同 id 會取代原有按鈕。回傳的移除函式只對應該次註冊；若按鈕之後已被取代，呼叫舊的移除函式不會移除新按鈕。若要移除該 id 目前對應的按鈕，請呼叫 `removeToolbarButton(id)`。外掛卸載或熱重載時，按鈕會自動移除。
 
 ### `api.graph` — 圖表讀寫
 
 | 方法 | 簽名 | 說明 |
 |------|------|------|
-| `getGraph` | `() => GraphSnapshot` | 回傳**整張**圖表狀態（節點、邊、參數，以及 `subgraphs` 底下的區塊定義）的深層副本——不論使用者當下打開哪一層，讀到的永遠是最上層。 |
+| `getGraph` | `() => SerializedGraph` | 回傳**完整**圖表狀態的深層副本，包括節點、邊、參數及 `subgraphs` 中的區塊定義。不論使用者目前開啟哪一層，這個方法一律回傳頂層圖表。 |
 | `getNodeDefinitions` | `() => NodeDefinition[]` | 回傳完整的節點面板：型別、連接埠 schema、參數 schema。 |
-| `applyOperations` | `(ops: GraphOp[]) => ApplyResult` | **同步**套用一批圖表操作（直接回傳結果，非 Promise）。整個批次以**單一撤銷快照**的形式提交，而且會寫進使用者當下打開的那張畫布——參見[使用者正在看哪一層](#使用者正在看哪一層)。 |
-| `onGraphChanged` | `(callback: () => void) => () => void` | 訂閱圖表變更事件，包含使用者走進或走出一個區塊。回呼不帶任何參數；需要內容時請在回呼裡呼叫 `getGraph()`。回傳一個取消訂閱函式。 |
+| `applyOperations` | `(ops: GraphOp[]) => ApplyResult` | **同步**套用一批圖表操作（直接回傳結果，非 Promise）。整個批次會建立**單一復原快照**，並套用至使用者目前開啟的畫布——參見[使用者正在看哪一層](#使用者正在看哪一層)。 |
+| `onGraphChanged` | `(callback: () => void) => () => void` | 訂閱圖表變更事件，包括使用者進入或離開區塊。callback 不帶參數；請在其中呼叫 `getGraph()` 取得內容。回傳取消訂閱函式。 |
 | `getView` | `() => GraphView` | **apiVersion 4。** 唯讀：使用者正在看圖表的哪一層。 |
 
 #### GraphOp 表
 
-所有操作類型都共用屬性 `op`（判別字串）。以下欄位名稱為精確值。
+十三種操作類型都共用屬性 `op`（判別字串）。以下欄位名稱為精確值。
 
 | `op` | 欄位 | 說明 |
 |------|------|------|
@@ -201,12 +203,12 @@ const remove = api.ui.addToolbarButton({
 | `"remove_edge"` | `source: string`、`target: string`、`source_handle?: string`、`target_handle?: string` | 中斷兩節點間相符的邊。 |
 | `"clear_graph"` | *（無）* | 移除所有節點與邊。 |
 | `"auto_layout"` | *（無）* | 重新執行自動圖表佈局。 |
-| `"move_node"` | `node_id: string`、`position: { x: number; y: number }` | **apiVersion 5。** 把一個節點放到精確的位置。綁在該節點上的便箋會一起移動，就跟使用者拖曳該節點時一樣。 |
-| `"set_segment"` | `segment_id?: string`、`head_node_id: string`、`tail_node_id: string` | **apiVersion 5。** 建立或取代一個區段標示——編輯器在從頭到尾的資料路徑上，為每個節點畫出的那個泡泡。省略 `segment_id` 就是建立；傳入既有的 id 就是移動它。不論哪一種，結果都會在 `segment_id` 帶回該 id。頭尾之間沒有資料邊路徑時會失敗，任一端是便箋時也會失敗。 |
-| `"remove_segment"` | `segment_id: string` | **apiVersion 5。** 移除一個區段標示。 |
-| `"add_note"` | `ref?: string`、`text: string`、`position?: { x: number; y: number }`、`color?: string`、`bind_to?: string` | **apiVersion 5。** 新增一張文字便箋。`text` 為 1 到 4000 個字元，可含換行與 tab，但不可含其他控制字元；`color` 為 `#rrggbb`；`bind_to` 把便箋綁到某個節點，使它跟著該節點移動，並預設把位置放在它旁邊。便箋永遠不會被執行、匯出或驗證。 |
-| `"update_note"` | `node_id: string`、`text?: string`、`color?: string` | **apiVersion 5。** 改寫既有的便箋。`text` 與 `color` 至少要有一個，而 `text` 只適用於文字便箋——圖片便箋的內容是它的 data URL。 |
-| `"set_node_meta"` | `node_id: string`、`label: string` | **apiVersion 5。** 為節點命名。1 到 120 個字元，單行，前後空白會被去除。標籤存放在 `params` 旁邊，永遠不會存進 `params` 裡面，而且現在存檔重新載入後也還在。 |
+| `"move_node"` | `node_id: string`、`position: { x: number; y: number }` | **apiVersion 5。** 將節點放到指定位置。綁定至該節點的註記會隨之移動，與使用者拖曳節點時相同。 |
+| `"set_segment"` | `segment_id?: string`、`head_node_id: string`、`tail_node_id: string` | **apiVersion 5。** 建立或取代段落標示；編輯器會以外框包住從起點到終點之資料路徑上的所有節點。省略 `segment_id` 會建立標示；傳入既有 id 會移動標示。兩種結果都會在 `segment_id` 回傳 id。若起點與終點之間沒有資料邊路徑，或任一端是註記，操作就會失敗。 |
+| `"remove_segment"` | `segment_id: string` | **apiVersion 5。** 移除段落標示。 |
+| `"add_note"` | `ref?: string`、`text: string`、`position?: { x: number; y: number }`、`color?: string`、`bind_to?: string` | **apiVersion 5。** 新增文字註記。`text` 長度為 1 到 4000 個字元，可含換行與 tab，但不可含其他控制字元；`color` 為 `#rrggbb`；`bind_to` 會將註記綁定至節點，使其隨節點移動，預設位置則在節點旁。註記不會被執行、匯出或驗證。 |
+| `"update_note"` | `node_id: string`、`text?: string`、`color?: string` | **apiVersion 5。** 更新既有註記。`text` 與 `color` 至少要提供一項；`text` 只適用於文字註記，圖片註記的內容是 data URL。 |
+| `"set_node_meta"` | `node_id: string`、`label: string` | **apiVersion 5。** 為節點命名。標籤長度為 1 到 120 個字元，僅限單行，並會移除前後空白。標籤與 `params` 並列儲存，不會置於其中，而且可在儲存與重新載入後保留。 |
 
 #### ApplyResult 形狀
 
@@ -227,20 +229,20 @@ interface ApplyResult {
 }
 ```
 
-**批次語義：** 單次 `applyOperations` 呼叫中的所有操作形成一個撤銷快照——在 AI 編輯後按 Ctrl+Z 會一次撤銷整個批次。操作依序套用；失敗的操作會被跳過並回報於其 `results` 條目（`ok: false` 加上 `error`），其餘操作仍會繼續。同一批次中先前 `add_node` 建立的 `ref` 別名可供後續操作使用，並會回傳於 `refs`。
+**批次語義：** 單次 `applyOperations` 呼叫中的所有操作會形成一個復原快照。AI 編輯完成後按 Ctrl+Z，會一次復原整個批次。操作依序套用；失敗的操作會略過，並在對應的 `results` 項目回報（`ok: false` 與 `error`），其餘操作仍會繼續。同一批次中，先前由 `add_node` 建立的 `ref` 別名可供後續操作使用，也會回傳於 `refs`。
 
 #### 使用者正在看哪一層
 
 需要 `api.apiVersion >= 4`。
 
-CodefyUI 的圖表是可以嵌套的。一個**區塊**（subgraph）有它自己的畫布，使用者可以走進去——畫布上方那條列就會顯示成 `Main > Encoder`。而且從頭到尾只有一張畫布：走進區塊是把區塊的內容**換**到那張畫布上，這也正是為什麼每個編輯工具在區塊裡和在區塊外的行為完全一樣。
+CodefyUI 圖表支援巢狀結構。每個**區塊**（subgraph）都有自己的畫布，使用者可以進入區塊；此時畫布上方的路徑列會顯示 `主圖 > Encoder`。編輯器只有一張畫布，進入區塊時會將區塊內容換到該畫布上，因此編輯工具在區塊內外的行為相同。
 
-對外掛來說，這件事有一個後果，而且它決定了你的編輯會落在哪裡：
+這會決定外掛編輯套用的位置：
 
-- **`getGraph()` 讀到的永遠是整張圖。** 編輯器會先把打開的層折回去再序列化，跟存檔與執行走的是同一條路，所以你讀到的位元組，和使用者按存檔會得到的檔案一致。
-- **`applyOperations()` 寫進的是使用者當下打開的那張畫布。** 在區塊裡面，`add_node` 是把節點加進*那個區塊*，`clear_graph` 清空的是*那個區塊*而不是整張圖。你從 `getGraph()` 讀到的節點 id 在那裡並不存在，所以指名它們的操作會回傳 `ok: false` 與一段錯誤說明。
+- **`getGraph()` 一律回傳完整圖表。** 編輯器會在序列化前把目前開啟的區塊內容合併回完整圖表，與**儲存**及**執行**採用相同流程，因此內容和使用者儲存的檔案相同。
+- **`applyOperations()` 會寫入使用者目前開啟的畫布。** 在區塊內，`add_node` 會將節點加入*該區塊*，`clear_graph` 也只會清空*該區塊*，不會清空完整圖表。從 `getGraph()` 取得的頂層節點 id 不存在於區塊畫布中，因此指定這些 id 的操作會回傳 `ok: false` 與錯誤訊息。
 
-也就是說，一個先讀、再推理、然後寫的外掛，可以對整張圖的判斷完全正確，卻把結果寫到使用者根本沒在看的地方。`getView()` 就是讓你在寫之前先分辨這兩種處境：
+因此，外掛可能根據完整圖表得出正確結果，卻將結果寫入使用者目前未查看的層級。請先使用 `getView()` 判斷目前層級：
 
 ```ts
 interface GraphViewLevel {
@@ -265,31 +267,31 @@ if (!view.atTopLevel) {
 api.graph.applyOperations(ops);
 ```
 
-拒絕並不是唯一誠實的答案——等使用者走出來，或是把編輯縮小到在區塊裡也說得通的範圍，都同樣可以。重點是這個選擇現在由你來做，而不是丟一次硬幣。
+外掛不一定要拒絕寫入，也可以等待使用者離開區塊，或將編輯限制在適合該區塊的範圍。這項檢查讓外掛能明確選擇處理方式，不必依賴目前畫布的偶然狀態。
 
-這個 view 是**唯讀**的，而且是即時讀取：每次呼叫都是當下的新答案；而且我們刻意沒有提供任何讓外掛帶著使用者跳到別層的方法。使用者走進或走出區塊時 `onGraphChanged` 會觸發（畢竟畫布真的換了），所以想顯示「我會寫到哪裡」的面板，可以在那個回呼裡重新讀一次 `getView()`。
+這個 view 是**唯讀**且即時的：每次呼叫都會取得目前狀態。API 刻意不提供讓外掛替使用者切換圖表層級的方法。使用者進入或離開區塊時，`onGraphChanged` 會因畫布變更而觸發；顯示寫入目標的面板可在該 callback 中重新呼叫 `getView()`。
 
-寫入會落在哪一層，是編輯器一直以來的行為，這次是把它寫下來，而不是把它改掉。未來的改版可能會讓操作自己指名目標層級；那也會是用「新增一個東西」的方式做到，而不是悄悄改寫既有外掛已經在做的那些寫入。
+寫入目標層級是編輯器既有的行為，本次只將其明確記錄。未來版本可能讓操作明確指定目標層級；該功能會以新增介面的方式提供，不會改變既有外掛的寫入目標。
 
 ### `api.workspace` — 分頁與比較後寫入
 
-需要 `api.apiVersion >= 5`。在更舊的編輯器上 `api.workspace` 會是 `undefined`——它不會被塞成一組會拋錯的方法，所以 `typeof api.workspace?.openGraphs === "function"` 是一個誠實的檢查。
+需要 `api.apiVersion >= 5`。舊版編輯器中的 `api.workspace` 為 `undefined`，不會提供一組只會拋出錯誤的 stub 方法，因此可用 `typeof api.workspace?.openGraphs === "function"` 正確檢查功能是否存在。
 
-`api.graph` 看見的是一張圖表：使用者眼前的那一張。`api.workspace` 看見的是整條分頁列。它的存在，是為了讓外掛能把一個提案放到使用者可以去看、但又不會動到他手邊工作的地方，並且只在使用者這段期間沒有改過它時才寫回去。
+`api.graph` 存取使用者目前開啟的圖表；`api.workspace` 則存取整個分頁列。外掛可將提案開在另一個分頁，讓使用者檢查而不修改原本的工作，並只在原圖未於期間變更時寫回。
 
 | 方法 | 簽名 | 說明 |
 |------|------|------|
-| `openGraphs` | `(entries, options?) => WorkspaceOpenResult[]` | 把一張或多張圖表開成編輯器分頁。結果是**依位置對應**的：`result[i]` 描述的就是 `entries[i]`，而且一筆壞掉的項目永遠不會影響另一筆。 |
+| `openGraphs` | `(entries, options?) => WorkspaceOpenResult[]` | 將一張或多張圖表開啟為編輯器分頁。結果會**依位置對應**：`result[i]` 描述 `entries[i]`，單一無效項目不會影響其他項目。 |
 | `tabs` | `() => WorkspaceTabInfo[]` | 依分頁列順序列出每個分頁，使用者正在看的那一個帶有 `active`。 |
-| `snapshot` | `(tabId?) => WorkspaceSnapshot` | 一個分頁的身分，加上它的整張圖表。不給 id 就是作用中分頁。id 不存在時回傳 `{ error: "unknown_tab" }`，而不是拋錯。 |
+| `snapshot` | `(tabId?) => WorkspaceSnapshot` | 回傳分頁識別資訊與完整圖表。省略 id 時使用作用中分頁；id 不存在時回傳 `{ error: "unknown_tab" }`，不會拋出錯誤。 |
 | `applyOperations` | `(request) => WorkspaceApplyResult` | 對指定分頁套用一個批次，可選擇只在版本號仍相符時才寫入，也可選擇全有全無。 |
 | `onChanged` | `(callback) => () => void` | 訂閱所有分頁的分頁與文件變更。回傳一個取消訂閱函式。 |
 
 #### 版本號
 
-每個分頁都帶著一個 `revision`：從 1 開始，每當該分頁的文件變更就加一。拖曳節點會讓它變。撤銷與重做也會——它們還原的是舊內容，那仍然是一次變更。重新命名分頁、切換到它、選取節點、平移畫布與標示區段都不會；執行也不會，因為執行畫在節點上的狀態、錯誤與進度從來不會寫進存檔。所以一次比較後寫入，不會在模型訓練時每秒過期好幾次。
+每個分頁都有一個 `revision`，初始值為 1。分頁文件每次變更時，該值會加一。拖曳節點、復原與重做都會變更文件；復原與重做雖然還原舊內容，仍屬於變更。重新命名或切換分頁、選取節點、平移畫布及標示段落不會增加版本號。執行圖表也不會增加版本號，因為節點上的執行狀態、錯誤與進度只顯示於畫布，不會寫入存檔。因此，模型訓練期間不會讓比較後寫入的版本號每秒失效多次。
 
-這個數字只增不減，而且會跟著分頁一起存起來，所以你在重新載入之前記下的版本號，載入之後仍然有意義。這正是重點：拿著一個版本號，離開去想個兩分鐘，然後連同你的寫入一起交回來。
+版本號只會增加，並與分頁一起儲存，因此重新載入前保存的版本號在載入後仍有效。外掛可保存版本號，進行較長時間的處理，再將該版本號連同寫入要求一起提交。
 
 ```ts
 interface WorkspaceTabInfo {
@@ -338,16 +340,16 @@ for (const [i, result] of opened.entries()) {
 1. `title` 必須是非空字串——`invalid_graph`。
 2. `graph` 必須能通過 `JSON.stringify`——`invalid_graph`。
 3. 該 JSON 最多 8 MiB——`too_large`。
-4. 圖表必須能通過編輯器的文件讀取器，也就是開啟藝廊範例所用的同一個：節點的 `params` 完全照該項目寫下來的樣子讀取，不會從它的定義或 preset 補進任何東西——你沒寫的參數就是沒有；未知的最上層鍵會被忽略、`subgraphs`、`segmentGroups` 與 `presets` 都會被採用，而 `format_version` 比這個編輯器新時，分頁會以唯讀開啟，和開檔案一模一樣。讀取器失敗是 `invalid_graph`，訊息就是讀取器自己的訊息。
+4. 圖表必須能由編輯器的文件讀取器讀取，也就是開啟範例圖庫中的範例時使用的同一個讀取器。節點的 `params` 會完全保留項目提供的值，不會從節點定義或 preset 補入內容；省略的參數會維持省略。未知的頂層 key 會忽略，`subgraphs`、`segmentGroups` 與 `presets` 會保留；若 `format_version` 高於編輯器支援的版本，分頁會和一般檔案一樣以唯讀模式開啟。讀取失敗時回傳 `invalid_graph` 與讀取器的原始訊息。
 5. 開啟後不得讓編輯器超過 32 個分頁——`too_many_tabs`。
 
-分頁數是**最後**才檢查的，而且比對的是當下的即時數量，所以同一次呼叫裡的兩筆項目，不會一起擠進只夠一筆的額度。這個順序的代價是：一筆被 `too_many_tabs` 拒絕的項目其實已經被讀過了——它帶來而這台伺服器沒看過的 preset 已經併進節點面板，即使沒有任何分頁被開出來。
+分頁數會最後檢查，並使用檢查當下的分頁數量。因此，如果只剩一個分頁額度，同一次呼叫中的兩個項目不會同時通過。由於分頁數最後才檢查，以 `too_many_tabs` 拒絕的項目已經由讀取器處理；即使未開啟分頁，其中包含且伺服器尚未見過的 preset 仍會合併至節點面板。
 
-`options.activate` 可以是 `"first"`（預設）、`"last"`，或 `"none"` 讓使用者留在原地。
+`options.activate` 可設為 `"first"`（預設）、`"last"` 或 `"none"`；最後一個選項不會切換使用者目前的分頁。
 
-開出來的分頁之後就是一個普通分頁。使用者可以重新命名、關掉它，或另存成一個真正的圖表檔案——而開啟那個檔案，會照平常的方式得到一個可編輯的分頁。`readOnly` 屬於分頁本身，直到分頁被關掉為止。
+開啟後即為一般分頁。使用者可以重新命名、關閉，或透過**另存新檔...**存成圖表檔案；重新開啟該檔案時會依一般流程建立可編輯分頁。`readOnly` 屬於分頁本身，直到分頁關閉為止。
 
-你開的分頁預設是**暫時的**：它們不會被寫進編輯器的自動存檔，所以重新載入之後就不見了。如果某個候選方案應該撐過一次重新載入，請傳 `persist: true`。這裡刻意沒有 `closeTab`：使用者正在看的分頁，要關要留由他決定。
+外掛開啟的分頁預設為**暫時分頁**：不會寫入編輯器自動存檔，重新載入後會消失。若候選方案需要在重新載入後保留，請傳入 `persist: true`。API 刻意不提供 `closeTab`；是否關閉使用者正在查看的分頁，由使用者決定。
 
 #### 在比較後寫入
 
@@ -379,19 +381,19 @@ if (result.conflict === "revision_mismatch") {
 }
 ```
 
-檢查依此順序進行，而且每一項都是「什麼都不改」地回傳：
+檢查依下列順序進行；任一檢查失敗都會直接回傳，不會變更內容：
 
-1. `tabId`（或作用中分頁）必須找得到，否則 `conflict: "unknown_tab"`、`results: []`、`committed: false`、`revision: 0`。
-2. 分頁不能是唯讀的，否則 `conflict: "read_only"`、`results: []`、`committed: false`，以及該分頁當下的 `revision`。
-3. 分頁不能正顯示某個區塊的內部，否則 `conflict: "editing_subgraph"`。區塊打開時，畫布上的是那個區塊的內容，而不是 `snapshot()` 所描述的文件，所以這時寫入會落在你從沒讀過的地方；等使用者走出來再重試。
-4. 若你有傳 `expectedRevision`，它必須等於分頁的 `revision`，否則 `conflict: "revision_mismatch"`，並回傳**當下**的版本號，讓你不必再讀一次就能重新持有。
-5. 批次會套用在一份副本上。
-6. 使用 `atomic: true` 時，只要有任何一個操作失敗就什麼都不寫：`committed: false`、`revision` 不變，而且回傳**完整長度**的 `results`，讓你看得出是哪個操作錯了。
-7. 否則，若有東西改變：一個撤銷快照、一次寫入、`committed: true`，以及新的 `revision`。什麼都沒改變的批次，不會寫入，也不會推入撤銷步驟。
+1. `tabId`（或作用中分頁）必須存在，否則回傳 `conflict: "unknown_tab"`、`results: []`、`committed: false`、`revision: 0`。
+2. 分頁不能是唯讀，否則回傳 `conflict: "read_only"`、`results: []`、`committed: false` 與分頁目前的 `revision`。
+3. 分頁不能正在顯示區塊內部，否則回傳 `conflict: "editing_subgraph"`。區塊開啟時，畫布包含區塊內容，而不是 `snapshot()` 描述的文件；此時寫入會套用至外掛未讀取的內容。請在使用者離開區塊後重試。
+4. 若有傳入 `expectedRevision`，其值必須等於分頁的 `revision`；否則回傳 `conflict: "revision_mismatch"` 與**目前**版本號，讓外掛不需再次讀取即可更新預期版本。
+5. 批次會套用至副本。
+6. 使用 `atomic: true` 時，只要任何操作失敗，就不會寫入：`committed: false`、`revision` 不變，並回傳**完整長度**的 `results`，以指出失敗的操作。
+7. 否則，只要內容有變更，就建立一個復原快照並執行一次寫入，回傳 `committed: true` 與新的 `revision`。未變更內容的批次不會寫入，也不會建立復原步驟。
 
-只要這次呼叫什麼都沒提交——被拒絕、`atomic` 前置檢查失敗、批次什麼都沒改——`node_count` 與 `edge_count` 就描述該分頁當下的樣子，所以會把它們記進 log 的外掛，拿到的絕不會是一份已經被丟掉的圖表的數字。`unknown_tab` 是例外：根本沒有分頁可數。
+每當呼叫未提交內容——包括拒絕、`atomic` 前置檢查失敗或批次未變更內容——`node_count` 與 `edge_count` 都描述分頁目前的狀態，不會回傳已捨棄副本的計數。`unknown_tab` 是例外，因為沒有可計數的分頁。
 
-衝突是**回傳的，永遠不會拋出**。一個批次仍然是一個撤銷步驟，而每個操作的語義與 `api.graph.applyOperations` 相同：沒有 `atomic` 時，失敗的操作會被跳過並回報，其餘照樣套用。若提交後的圖表已經沒有詳細資料視窗或畫布選取所指的那個節點，兩者都會被清掉，這樣還原該節點的撤銷就不會讓視窗自己彈回來。
+衝突會**以結果回傳，不會拋出錯誤**。每個批次仍只建立一個復原步驟，每項操作的語義也與 `api.graph.applyOperations` 相同：未使用 `atomic` 時，失敗的操作會略過並回報，其餘操作仍會套用。若提交後的圖表已移除詳細資料視窗或畫布選取所指向的節點，兩者都會清除；之後復原該節點時，不會自動重新開啟詳細資料視窗。
 
 ```ts
 type WorkspaceConflict =
@@ -421,15 +423,15 @@ type WorkspaceEvent =
   | { type: "active-tab"; tabId: string; revision: number };
 ```
 
-事件在變更之後同步送達，順序固定：先是新增的分頁，接著是變更的文件，然後是作用中分頁，最後是移除的分頁。`origin` 只有在變更來自外掛的寫入時才會出現在 `graph` 事件上——`workspace.applyOperations` 與舊有的 `graph.applyOperations` 兩條路徑都會蓋上它——這就是你分辨自己的寫入與使用者的寫入的方法。
+事件會在變更後同步送達，順序固定：新增分頁、文件變更、作用中分頁變更、移除分頁。`origin` 只會在變更來自外掛寫入時出現在 `graph` 事件上。`workspace.applyOperations` 與舊有的 `graph.applyOperations` 都會加入此欄位，外掛可據此區分自己的寫入與使用者的寫入。
 
-如果你的回呼拋錯，編輯器會記錄它並把你取消訂閱——外掛不能有能力弄壞分頁儲存。`api.graph.onGraphChanged` 不變：仍然是作用中分頁，仍然不帶任何內容。
+如果 callback 拋出錯誤，編輯器會記錄錯誤並取消該訂閱，避免外掛影響分頁儲存。`api.graph.onGraphChanged` 維持不變：仍只追蹤作用中分頁，且不帶 payload。
 
 #### apiVersion 5 之前的外掛要注意的一件事
 
-唯讀分頁現在連 `api.graph.applyOperations` 也會拒絕。每個操作都會回傳 `{ ok: false, error: "tab is read-only" }`，而且什麼都不會寫入。apiVersion 5 之前這個寫入是會過的：`readOnly` 只是一個 UI 上的表現，外掛的寫入路徑從來不看它。如果你的外掛是往使用者眼前那個分頁寫，請先檢查 `api.workspace.snapshot().readOnly`，或是讀一讀你本來就會拿到的 `ok` 旗標。
+唯讀分頁現在也會拒絕 `api.graph.applyOperations`。每個操作都會回傳 `{ ok: false, error: "tab is read-only" }`，且不會寫入內容。在 apiVersion 5 之前，這類寫入仍會套用，因為 `readOnly` 只控制 UI，外掛寫入路徑不會檢查它。若外掛會寫入使用者目前開啟的分頁，請先檢查 `api.workspace.snapshot().readOnly`，或檢查原本就會回傳的 `ok` 旗標。
 
-還有一個拒絕是新增的而不是變更的，因為它所指的兩個操作都是 apiVersion 5 才有的：使用者在區塊裡面時，含有 `set_segment` 或 `remove_segment` 的舊路徑批次會被整批拒絕，每個操作都回報 `set_segment and remove_segment cannot apply while a block is open`。區段是最上層的狀態，所以從區塊裡面提交一個區段，會寫出一個指名該區塊內部節點 id 的標示——它會進到存檔、畫不出任何東西，而使用者也刪不掉一個從來不會顯示的東西。其餘所有操作在區塊裡面仍然照樣寫入打開的那張畫布，跟以前一樣。
+另有一項全新的拒絕規則，所涉及的兩個操作也都是 apiVersion 5 新增的：使用者位於區塊內時，舊版寫入路徑中只要批次包含 `set_segment` 或 `remove_segment`，整個批次都會被拒絕，每個操作都回報 `set_segment and remove_segment cannot apply while a block is open`。段落屬於頂層狀態；若從區塊內提交段落，儲存檔會包含一個引用區塊內部節點 id 的段落標示。該標示不會渲染，使用者也無法在畫布上刪除。其他操作仍會和以往一樣，在區塊內寫入目前開啟的畫布。
 
 ### `api.nodes` — 自訂 node 渲染
 
@@ -439,7 +441,7 @@ type WorkspaceEvent =
 |------|------|------|
 | `registerRenderer` | `(nodeType, renderer) => () => void` | 用你自己的 UI 繪製某個外掛 node 型別的卡片內容。回傳一個取消註冊函式。 |
 
-`nodeType` 是該 node 在 `getNodeDefinitions()` 中的**命名空間化**型別。注意命名空間是你外掛 id 的 snake_case 形式——外掛 `my-plugin` 對應 node 型別 `my_plugin:MyNode`。renderer 採命令式介面，讓宿主與框架無關：
+`nodeType` 必須符合 `getNodeDefinitions()` 中節點的**命名空間型別**：`<plugin-id>:<NODE_NAME>`。外掛 id 會完全照 manifest 複製，包括連字號，因此外掛 `my-plugin` 會提供 `my-plugin:MyNode`。只有 Python import path 會將連字號轉為底線（`cdui_plugins.my_plugin`），所以註冊 `my_plugin:MyNode` 不會有作用。renderer 使用命令式 API，主程式與外掛都不必使用特定 UI framework：
 
 ```ts
 interface NodeRenderContext {
@@ -452,16 +454,16 @@ interface PluginNodeRenderer {
 }
 ```
 
-編輯器仍會渲染標準的 node 卡片（標題、連接埠、參數列），並把一個 `<div>` 交給你的 renderer 當作**內容區**——位於連接埠與參數之間。沒有註冊 renderer 的 node 型別，渲染結果與預設 node 完全相同。
+編輯器仍會渲染標準節點卡片，包括標題、連接埠與參數列，並將一個位於連接埠和參數之間的 `<div>` 作為**內容區**交給 renderer。未註冊 renderer 的節點型別會使用預設節點樣式。
 
 ```js
-api.nodes.registerRenderer('my_plugin:MyNode', {
+api.nodes.registerRenderer('my-plugin:MyNode', {
   mount(el, ctx) { el.textContent = `value: ${ctx.node.params.value}`; },
   update(el, ctx) { el.textContent = `value: ${ctx.node.params.value}`; },
 });
 ```
 
-[外掛模板](https://github.com/CodefyUI/CodefyUI-Plugin-Official)的 SDK 會用 `createRoot` 包裝它，讓你能以 React 元件撰寫內容區。
+[外掛模板](https://github.com/CodefyUI/CodefyUI-Plugin-Official)的 SDK 會用 `createRoot` 包裝此介面，讓你能以 React 元件撰寫內容區。
 
 ### `api.events` — 即時執行事件
 
@@ -492,32 +494,32 @@ const off = api.events.onExecution((event) => {
 });
 ```
 
-在你拿它蓋東西之前，值得先知道的幾件事：
+使用此介面前，請先了解下列行為：
 
-- **一則 `metric` 事件會帶著它被記錄下來時的整批點**，放在 `points` 裡。那些是 [`RunMetricPoint`](#apiruns--執行歷史唯讀)——和 `api.runs.metrics()` 回傳的*同一個*型別——所以同一個 fold 函式可以同時服務即時尾巴與 REST 回填。特別是兩邊的 `value` 對非有限數字都是 `null`：發散的 loss 是**曲線上的缺口，不是零**，而且會被送出，不會被跳過。（唯一的差別：`ts` 只有 `api.runs.metrics()` 回來的點才有，即時事件上沒有。）
-- **事件是凍結的。** 同一個事件物件會交給每一個訂閱者，所以它和它的 `points` 都經過 `Object.freeze`——你改不到別的外掛收到的內容，要轉換請先複製。
-- **事件會批次對齊到動畫影格。** 一次每秒推送數百筆指標的執行，到你手上是每影格一叢呼叫，而不是每則訊息一次呼叫——和編輯器自己更新節點徽章用的是同一套批次機制。被切到背景或被遮住的編輯器視窗不會重繪，所以在它回來之前不會派送任何東西；期間累積的量以「保留成本」計算——一個事件本身，加上它攜帶的每一個指標點，上限約兩萬個——超過上限後，最舊的指標與節點狀態會被丟棄（`run_started` 與 `run_finished` 永遠不會）。計算單位很重要，因為一個 `metric` 事件裝的是一整批指標：批次很大的執行與每次只寫一個點的執行，拿到的是同樣的記憶體預算，而不是同樣的事件數量。若你需要每一個點，請改用 `api.runs.metrics()` 重新讀取。
-- **它是尾巴，不是逐字稿。** 編輯器每次附掛到一次執行時，都會重播該次執行完整的記錄——重新整理頁面時仍在跑的執行，或使用者在「執行任務」面板挑一次執行來看的時候。那些重播的項目會經過同一條串流，而主程式會濾掉每一筆已經派送過的，所以重新附掛不可能塞給你重複的資料讓你重複計算。例外情形寫在[當編輯器附掛到一次你沒看過的執行](#當編輯器附掛到一次你沒看過的執行)。
-- **記得取消訂閱**；它會立即生效，包含在一批事件派送到一半的時候。外掛卸載或熱重載時，編輯器也會替你取消。
-- **串流涵蓋的是編輯器已附掛的執行**——從畫布分頁啟動的那些，加上使用者在「執行任務」面板選擇觀看的執行。由 `cdui run` 送出、沒人在看的執行，要從 `api.runs` 看，不在這裡。
-- **若你的 callback 拋出錯誤**，編輯器會記錄下來並繼續。其他訂閱者不受影響，但你會漏掉那一則事件。
+- **一則 `metric` 事件的 `points` 包含記錄時的完整批次。** 其中的項目是 [`RunMetricPoint`](#apiruns--執行歷史唯讀)，與 `api.runs.metrics()` 回傳的型別相同，因此同一個 fold 函式可處理即時串流與 REST 回填。兩邊遇到非有限數字時，`value` 都是 `null`：發散的 loss 代表**曲線上的缺口，不是零**，且事件仍會送出。（唯一差異是 `api.runs.metrics()` 回傳的點有 `ts`，即時事件則沒有。）
+- **事件會凍結。** 所有訂閱者共用同一個事件物件，因此事件及其 `points` 都經過 `Object.freeze`。外掛無法修改其他外掛收到的內容；轉換前請先複製。
+- **事件會依動畫影格批次派送。** 若一次執行每秒產生數百筆指標，訂閱者會在每個影格收到一批 callback 呼叫，而不是每則訊息各呼叫一次；編輯器更新節點徽章也使用相同機制。編輯器視窗位於背景或遭遮蔽時不會繪製，因此事件會等到視窗恢復顯示後才送達。緩衝上限依儲存成本計算：每個事件加上其中的每個指標點，各計一個單位，總上限約兩萬個。超過上限後會捨棄最舊的指標與節點狀態，但不會捨棄 `run_started` 或 `run_finished`。由於一個 `metric` 事件可包含整批指標，大批次與單點批次得到相同的記憶體額度，而非相同事件數。若需要所有指標點，請從 `api.runs.metrics()` 重新讀取。
+- **串流提供即時尾端，不是完整記錄。** 編輯器每次附加至執行時，都會重播完整的執行紀錄，例如頁面重新載入時仍在進行的執行，或使用者從**執行任務**面板選擇觀看的執行。重播項目會經過相同串流，主程式會濾除已送達的項目，因此重新附加不會產生重複項目或重複計數。例外情形請見[當編輯器附掛到一次你沒看過的執行](#當編輯器附掛到一次你沒看過的執行)。
+- **完成後請取消訂閱。** 取消會立即生效，即使正在派送批次也一樣。外掛卸載或熱重載時，編輯器也會自動取消訂閱。
+- **串流只涵蓋編輯器已附加的執行**：從畫布分頁啟動的執行，以及使用者從**執行任務**面板選擇觀看的執行。無人觀看且由 `cdui run` 提交的執行，可透過 `api.runs` 取得，不會出現在此串流。
+- **若 callback 拋出錯誤，**編輯器會記錄錯誤並繼續。其他訂閱者不受影響，但該 callback 會遺漏該事件。
 
 #### `cursor` 與 `seq`
 
-每則事件都帶兩個數字，把它們搞混，是做出一個會騙使用者的儀表板最快的方法。
+每則事件都帶有這兩個數值。兩者用途不同，混用會使儀表板顯示錯誤結果。
 
-**`cursor` 是這則事件在該次執行持久記錄中的位置**——和 `GET /api/runs/{id}/events` 分頁、`api.runs.get(id).last_cursor` 講的是同一個 cursor。用它把事件對回 REST 那一側。
+**`cursor` 表示事件在該次執行持久紀錄中的位置**，與 `GET /api/runs/{id}/events` 分頁使用的 cursor，以及 `api.runs.get(id).last_cursor` 回報的值相同。請用它將事件與 REST 資料對齊。
 
-它在同一次執行內嚴格遞增，但**不連續，而且跳號本身沒有任何意義**。那份記錄裡還有一些項目不會經由這條串流發布，而每一個都佔掉一個 cursor：
+它在同一次執行中嚴格遞增，但**不保證連續，跳號也不表示資料遺失**。執行紀錄還包含不會發布至此串流的項目，每個項目都會使用一個 cursor：
 
-- `artifact`——執行每存一次檢查點就寫一筆；
+- `artifact`——每次儲存執行檢查點時寫入一筆；
 - `run_warning`；
-- 被拒絕的送出，以及沒有東西可取消的取消；
-- 因為 payload 過大而被伺服器摺疊掉的指標項目。
+- 被拒絕的提交，以及沒有執行可取消時的取消要求；
+- payload 過大而由伺服器折疊的指標項目。
 
-也就是說，一次每個 epoch 存檢查點、健康得不得了的訓練，每個 epoch 都會產生一次 cursor 缺口。不要把那當成資料遺失。
+因此，即使訓練正常，每個 epoch 儲存檢查點仍會在每個 epoch 產生 cursor 缺口。請勿將此情況判定為資料遺失。
 
-**`seq` 是串流自己的計數器，它才是遺失的訊號。** 它逐一計算某次執行實際派送出去的事件，而且是連續的：你為某次執行收到的下一個事件，`seq` 一定剛好比上一個大 1——除非主程式在上面說的緩衝上限下丟了事件，而那是唯一能在它上面打洞的東西。
+**`seq` 是串流自身的計數器，也是判斷事件遺失的依據。** 它會連續計算該次執行送達的事件：下一個事件的 `seq` 應比前一個增加 1。唯一例外是主程式因上述緩衝上限捨棄事件，此時這個數值才會出現缺口。
 
 ```js
 // 每次執行各記一份：記住上一個 seq，看到洞就反應。
@@ -537,14 +539,14 @@ api.events.onExecution((event) => {
 
 #### 當編輯器附掛到一次你沒看過的執行
 
-上面說的去重，是編輯器**以執行為單位、整個頁面共用一份**的帳，不是每個外掛各記一份。這有兩個後果：
+上述去重狀態由編輯器針對每次執行維護，整個頁面共用一份，不會為每個外掛分別維護。因此有兩種情況：
 
-- 當編輯器附掛到一次**還沒有任何東西串流過**的執行時——使用者在「執行任務」面板點了某次執行——伺服器會從頭重播那次執行的記錄，而你會收到它，依 cursor 順序，然後才接上即時尾巴。每個項目仍然只到達一次，但你為那次執行看到的最初幾個事件描述的是過去。
-- 當編輯器附掛到一次**已經串流過東西**的執行時，重播會對所有人一起被濾掉。如果你的外掛比另一個晚訂閱，你會繼承那份濾除，所以對於一次你個人從沒看過的執行，你可能從重播裡**什麼都收不到**。不要靠重播來填滿自己；那是 `api.runs` 的工作。
+- 若編輯器附加至**尚未串流任何事件**的執行，例如使用者在**執行任務**面板選擇某次執行，伺服器會從頭重播該次執行的記錄。訂閱者會先依 cursor 順序收到重播項目，再收到即時事件。每個項目仍只送達一次，但最先收到的事件可能描述過去狀態。
+- 若編輯器附加至**已經串流過事件**的執行，所有訂閱者都不會再次收到已重播的項目。若外掛比其他外掛晚訂閱，即使該外掛從未看過這次執行，也可能完全收不到重播內容。請使用 `api.runs` 初始化資料，不要依賴重播。
 
-若你需要知道一則事件描述的是不是過去，`api.runs.get(run_id)` 會回報 `last_cursor`。但要注意，對還在跑的執行來說它不是一行就解決的事：你讀到的是一個會動的目標，而且是在重播已經開始*之後*才讀到，所以誠實的作法是先把事件緩衝起來，等 promise 回來之後再分類。
+若需判斷事件是否描述過去狀態，`api.runs.get(run_id)` 會回報 `last_cursor`。對仍在執行的項目，不能直接在 promise 回傳後分類：重播已經開始，這個數值也可能持續變更。請先緩衝事件，等 promise 完成後再分類。
 
-還有一個上限，與其讓你自己撞到，不如先講：編輯器會記住最近 **1024** 次它串流過的執行。在同一次頁面工作階段中附掛超過 1024 次不同的執行，然後再回頭去看那個工作階段最早的那一次，它會被重播給你第二次。一般使用根本碰不到，寫在這裡是為了讓這個限制是一條寫明的條件，而不是一個意外。
+編輯器只會記住最近串流的 **1024** 次執行。若同一個頁面工作階段附加至超過 1024 次不同執行，再回到最早的執行，該執行會再次重播。一般工作階段通常不會達到此上限，但外掛應將它視為已知限制。
 
 ### `api.runs` — 執行歷史（唯讀）
 
@@ -553,7 +555,7 @@ api.events.onExecution((event) => {
 | 方法 | 簽名 | 說明 |
 |------|------|------|
 | `list` | `(opts?) => Promise<RunListPage>` | 由新到舊的一頁執行紀錄。`opts` 為 `{ status?, limit?, offset? }`。 |
-| `get` | `(id: string) => Promise<RunInfo \| null>` | 單筆執行；伺服器沒聽過這個 id 時回傳 `null`。 |
+| `get` | `(id: string) => Promise<RunInfo \| null>` | 取得單次執行；指定 id 不存在時回傳 `null`。 |
 | `metrics` | `(id: string, name?: string) => Promise<RunMetrics>` | 已記錄的純量序列，依 `(name, step)` 排序。 |
 
 ```js
@@ -578,13 +580,13 @@ interface RunMetricPoint {
 }
 ```
 
-`RunMetricPoint` 和即時 `metric` 事件放在 `points` 裡的是同一個型別，所以儀表板可以用同一個函式 fold 兩邊。`ts` 是兩個來源之間唯一有差的欄位：`api.runs.metrics()` 會記錄每個點寫入的時間，即時串流則只帶圖表拿來對 `step` 畫的東西。忽略 `ts` 的 fold 在兩邊都能原封不動地用。
+`RunMetricPoint` 與即時 `metric` 事件在 `points` 中使用相同型別，因此儀表板可用同一個 fold 函式處理兩個來源。唯一差異是 `ts`：`api.runs.metrics()` 會記錄每個點的寫入時間，即時串流只提供圖表依 `step` 繪製所需的欄位。忽略 `ts` 的 fold 函式可直接用於兩者。
 
 `RunSummary` 對應執行歷史的一列：`id`、`name`、`status`、`error`、`options`、`queue_key`、`created_at`、`started_at`、`finished_at`、`git_commit`、`git_dirty`、`plugin_pins`、`queue_position`、`final_metrics` 與 `active`。完整型別在隨附的 SDK types 中，背後的端點則記載於 [API 參考](/advanced/api-reference)。
 
-這個門面的存在，是為了讓常見情境不必自己拼 fetch：請求由編輯器透過它自己的 API 客戶端送出，需要的驗證資訊都已附上。你不必自己組 URL，token 也不會傳進你的程式碼、不會出現在 `api.runs` 的任何回傳值裡——但這是便利，不是沙箱（參見[信任模型](#信任模型)）。
+這組介面讓常見情境不需自行實作 fetch。編輯器會透過自己的 API client 發送 request，並自動附上所需的驗證資訊。外掛不必組合 URL，session token 也不會傳入外掛程式碼或出現在 `api.runs` 的回傳值中。這只提供便利，並非沙箱（參見[信任模型](#信任模型)）。
 
-它在這一版是刻意**唯讀**的。沒有 `submit`，也沒有 `cancel`：在別人的機器上啟動或停止工作，應該發生在使用者自己打開的介面背後，而不是一次外掛呼叫背後。若你確實需要，請由使用者按下的按鈕出發，透過 `api.http.fetch` 進行。
+此版本的介面刻意設為**唯讀**，不提供 `submit` 或 `cancel`。在使用者的機器上啟動或停止工作，應由使用者開啟的 UI 操作觸發，不應由外掛自行呼叫。若需提供此功能，請讓使用者按下按鈕後，再透過 `api.http.fetch` 執行。
 
 ### `api.http` — 具 session 意識的 fetch
 
@@ -606,7 +608,7 @@ interface RunMetricPoint {
 
 外掛 JavaScript 在編輯器頁面內執行，對**編輯器 DOM、圖表狀態和 session token 擁有完整存取權**。請只安裝來自你信任來源的外掛。每當外掛宣告前端進入點時，`cdui plugin install` CLI 都會列印警告。
 
-後端的 AST 安全閘門適用於外掛 Python；外掛 JavaScript 並無沙盒機制——它以與編輯器本身相同的信任層級執行。
+後端的 AST 安全閘門適用於外掛 Python；外掛 JavaScript 並無沙箱機制——它以與編輯器本身相同的信任層級執行。
 
 ## 最小可運作範例
 
@@ -645,7 +647,7 @@ export default function activate(api) {
 
 ## 即時執行指標面板
 
-下面這個範例，就是 apiVersion 3 這組介面被加進來的目的：一個底部分頁，把一次執行的指標邊跑邊列出來。它把兩半湊在一起——`events.onExecution` 負責即時尾巴，`runs` 負責面板打開之前已經發生的事——而且*先*訂閱再回填，這樣兩者之間就不會有東西漏掉。
+下方範例示範 apiVersion 3 的主要用途：建立一個底部停靠分頁，即時列出執行指標。`events.onExecution` 提供即時事件，`runs` 提供面板開啟前的歷史資料。範例會先訂閱，再回填歷史資料，避免遺漏兩者之間產生的事件。
 
 ```js
 // frontend/index.js
@@ -703,6 +705,6 @@ export default function activate(api) {
 
 ## 另請參閱
 
-- [外掛](/advanced/plugins) — 安裝外掛包、資訊清單格式與 `cdui plugin` CLI。
-- [Graph Copilot](/advanced/graph-copilot) — 前端擴充 API 的首個正式消費者。
+- [外掛](/advanced/plugins) — 安裝外掛包、manifest 格式與 `cdui plugin` CLI。
+- [Graph Copilot](/advanced/graph-copilot) — 第一個在正式環境使用前端擴充 API 的外掛。
 - [API 參考](/advanced/api-reference) — 後端 REST 端點，包括 `/api/llm/chat`。
