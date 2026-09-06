@@ -169,6 +169,7 @@ function seed(state: Partial<ReturnType<typeof usePluginStore.getState>> = {}) {
     error: null,
     remoteInstallAllowed: true,
     job: null,
+    removal: null,
     busy: {},
     cancelling: false,
     inspection: { phase: 'idle' },
@@ -1070,6 +1071,30 @@ describe('PluginCenterModal — the activity pane', () => {
     seed({ plugins: [demo], job: job({ pluginId: 'demo', status: 'done' }) });
     open();
     render(<PluginCenterModal />);
+
+    fireEvent.click(pane().getByRole('button', { name: 'Dismiss' }));
+    expect(actions.dismissJob).toHaveBeenCalledTimes(1);
+  });
+
+  it('reports the last uninstall, and what it left installed', () => {
+    // The store records a removal instead of the job it replaces, so the
+    // panel's pane stops showing the previous install's banner over a card
+    // that has already changed to Removed.
+    seed({
+      plugins: [demo],
+      removal: {
+        pluginId: 'demo',
+        name: 'Demo plugin',
+        depsLeft: ['model2vec'],
+        uninstallCommand: 'uv pip uninstall model2vec',
+        reinstallHint: 'cdui plugin install owner/demo',
+      },
+    });
+    open();
+    render(<PluginCenterModal />);
+
+    expect(pane().getByText('Demo plugin uninstalled.')).toBeInTheDocument();
+    expect(pane().getByText('uv pip uninstall model2vec')).toBeInTheDocument();
 
     fireEvent.click(pane().getByRole('button', { name: 'Dismiss' }));
     expect(actions.dismissJob).toHaveBeenCalledTimes(1);

@@ -1058,6 +1058,121 @@ describe('pluginStore — uninstall', () => {
     expect(lastToast().type).toBe('success');
   });
 
+  it('replaces the finished job in the pane with what the removal left', async () => {
+    // The pane shows one thing at a time. "Installed Demo plugin." left
+    // standing over a card that now reads "Removed" is the panel
+    // contradicting itself, and what the uninstall actually left behind was
+    // a toast that had already gone.
+    usePluginStore.setState({
+      job: { ...emptyPluginJob('j1', 'demo'), status: 'done' },
+    });
+    api.uninstallPlugin.mockResolvedValue({
+      id: 'demo',
+      removed: true,
+      tombstoned: false,
+      files_removed: true,
+      python_deps_left: ['model2vec', 'numpy'],
+      uninstall_command: 'uv pip uninstall model2vec numpy',
+      reinstall_hint: 'cdui plugin install demo',
+    });
+
+    await usePluginStore.getState().uninstall('demo');
+
+    expect(usePluginStore.getState().job).toBeNull();
+    expect(usePluginStore.getState().removal).toEqual({
+      pluginId: 'demo',
+      name: 'Demo plugin',
+      depsLeft: ['model2vec', 'numpy'],
+      uninstallCommand: 'uv pip uninstall model2vec numpy',
+      reinstallHint: 'cdui plugin install demo',
+    });
+  });
+
+  it('records a removal that left nothing behind', async () => {
+    await usePluginStore.getState().uninstall('demo');
+
+    expect(usePluginStore.getState().removal).toMatchObject({
+      pluginId: 'demo', depsLeft: [], uninstallCommand: null,
+    });
+  });
+
+  it('records nothing when the uninstall failed', async () => {
+    api.uninstallPlugin.mockRejectedValue(refused(409, 'files_locked', {
+      error: 'WinError 32', hint: 'Close the app that is holding the file.',
+    }));
+
+    await usePluginStore.getState().uninstall('demo');
+
+    expect(usePluginStore.getState().removal).toBeNull();
+  });
+
+  it('puts the removal away with the same Dismiss a job gets', async () => {
+    await usePluginStore.getState().uninstall('demo');
+
+    usePluginStore.getState().dismissJob();
+
+    expect(usePluginStore.getState().removal).toBeNull();
+  });
+
+  // One case per place a job is set, and there are four: `followJob`,
+  // `installInspected`, `update` and the adoption inside `refresh`. Each
+  // writes its own `removal: null`, so a single case leaves the other three
+  // free to be deleted with the suite still green -- and the pane reads the
+  // job before the removal, which would hide the stale one until the day
+  // that order changes.
+  it('gives way to a job that starts after it', async () => {
+    // The pane is the live thing's place. A removal still on screen under an
+    // install that has just started would be the older of the two facts.
+    api.getPluginJobEvents.mockImplementation(parked);
+    await usePluginStore.getState().uninstall('demo');
+
+    usePluginStore.getState().followJob('j7', 'demo');
+
+    expect(usePluginStore.getState().removal).toBeNull();
+    expect(usePluginStore.getState().job!.jobId).toBe('j7');
+  });
+
+  it('gives way to an install accepted after it', async () => {
+    api.getPluginJobEvents.mockImplementation(parked);
+    await usePluginStore.getState().uninstall('demo');
+    await usePluginStore.getState().inspect('owner/demo');
+
+    await usePluginStore.getState().installInspected({
+      acceptCapabilities: false, trustAuthor: false,
+    });
+
+    expect(usePluginStore.getState().removal).toBeNull();
+    expect(usePluginStore.getState().job).toMatchObject({
+      jobId: 'j1', kind: 'install',
+    });
+  });
+
+  it('gives way to an update started after it', async () => {
+    api.getPluginJobEvents.mockImplementation(parked);
+    await usePluginStore.getState().uninstall('demo');
+
+    await usePluginStore.getState().update('demo');
+
+    expect(usePluginStore.getState().removal).toBeNull();
+    expect(usePluginStore.getState().job).toMatchObject({
+      jobId: 'j1', kind: 'update',
+    });
+  });
+
+  it('gives way to a job the next catalog read adopts', async () => {
+    // Another tab started one while this panel sat on the removal.
+    api.getPluginJobEvents.mockImplementation(parked);
+    await usePluginStore.getState().uninstall('demo');
+    serveCatalog(catalog({
+      active_job: { job_id: 'j9', plugin_id: 'demo', kind: 'install' },
+    }));
+
+    await usePluginStore.getState().refresh();
+
+    expect(usePluginStore.getState().removal).toBeNull();
+    expect(usePluginStore.getState().job!.jobId).toBe('j9');
+  });
+
   it('carries the server hint when the files could not be deleted', async () => {
     api.uninstallPlugin.mockRejectedValue(refused(409, 'files_locked', {
       error: 'WinError 32', hint: 'Close the app that is holding the file.',

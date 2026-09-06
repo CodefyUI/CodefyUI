@@ -1063,6 +1063,10 @@ const zhTW: Record<TranslationKey, string> = {
     '安裝在改動任何東西前停住了：{plugin} 的 Python 套件會替換伺服器已載入的套件。'
     + '先停止伺服器並執行這行指令，再重新安裝：',
   'pluginCenter.activity.cliFallback': '或在終端機安裝：',
+  // What an uninstall leaves behind; a command follows each of these.
+  'pluginCenter.activity.depsLeft':
+    '這些 Python 套件還留著：{packages}。先停止伺服器，再用這行移除：',
+  'pluginCenter.activity.reinstall': '要再安裝回來：',
 
   // The steps of an install; `deps` reuses `packs.activity.step.pip`.
   'pluginCenter.step.resolve': '正在解析來源',
