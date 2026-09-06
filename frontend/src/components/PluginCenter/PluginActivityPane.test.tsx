@@ -492,9 +492,11 @@ describe('PluginActivityPane — how a job ended', () => {
 
   it('says how a job ended exactly once', () => {
     // The banner is a live region in its own right (`role="status"`), so a
-    // copy of its sentence in the announcer above it was one fact said
-    // twice: read out twice, and printed twice in the pane -- once in the
-    // banner and once in the status line over the log.
+    // copy of its sentence in the announcer above it was one fact ANNOUNCED
+    // twice -- once by each. The announcer is `srOnly`, so the duplicate was
+    // in the accessibility tree only and nothing on screen ever showed the
+    // sentence twice. It is empty once a job stops, which is why one copy in
+    // the whole DOM is the assertion: the banner's.
     paint({ job: job({ status: 'done' }), entry: demo });
 
     expect(screen.getAllByText('Installed Demo plugin.')).toHaveLength(1);

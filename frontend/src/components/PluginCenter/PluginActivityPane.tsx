@@ -119,10 +119,19 @@ export function PluginActivityPane({
   //
   // And it goes QUIET at the end. The result banner is a `role="status"`
   // region in its own right and carries the outcome, so the same sentence in
-  // here was one fact said twice: read out twice, and printed twice in the
-  // pane -- once in the banner and once in this line above the log. The
-  // region stays mounted and empty rather than unmounting, because the next
-  // job's first step has to land in a region that was already there.
+  // here was one fact ANNOUNCED twice -- once by the banner and once by this
+  // region. Never SHOWN twice: this region is `srOnly`, a one-pixel clipped
+  // box, so the duplicate only ever existed for a screen reader. The region
+  // stays mounted and empty rather than unmounting, because the next job's
+  // first step has to land in a region that was already there.
+  //
+  // What that costs, recorded here rather than only in a review: the ending
+  // is now announced solely by an element that arrives WITH its text in it,
+  // which is less reliably read out than a region that was already on the
+  // page -- the very reason this one is pre-mounted. So `cancelled` and
+  // `lost` may pass in silence where they used to be spoken. It is the shape
+  // `RemovalResult` below already has, and it is what "one fact once" buys;
+  // a real screen-reader pass is what would settle whether to pay it.
   const bucket = percent === null ? -1 : Math.floor(percent / 10);
   const announcement = useMemo(
     () =>
@@ -359,10 +368,10 @@ function ResultBanner({
  *
  * The banner is that place: it is what a sighted reader sees AND a
  * `role="status"` region, so the ending is announced by the element carrying
- * it. The pane's own live region — which exists because a region that mounts
- * with its text already in it is not reliably announced — keeps the running
+ * it. The pane's own live region -- which exists because a region that mounts
+ * with its text already in it is not reliably announced -- keeps the running
  * commentary and stops where this sentence starts. It used to carry this too,
- * which printed the ending twice in one column.
+ * which read the ending out twice; being visually hidden, it never showed it.
  *
  * A failure is worded by KIND, out of the two keys that already exist for it
  * -- the same pair the store's toast uses -- rather than printing the server's
