@@ -20,11 +20,9 @@ A card carries the plugin's name, a status pill (**Installed**, **Disabled**, **
 
 ## Installing a built-in pack
 
-Five packs ship inside this release: `edu`, `foundations`, `deep`, `rl` and `stats`. Their cards say what each one brings. Find the row and press **Install**. None of the five declares a capability, so there is nothing to agree to and nothing else to press.
+Five packs ship inside this release: `edu`, `foundations`, `deep`, `rl` and `stats`. Find the row and press **Install**. A built-in pack is not a third party, so there is nothing to agree to and nothing else to press.
 
 When the job ends, the panel re-reads the catalog, the node definitions and the plugin UIs, so the new nodes are in the palette without reloading the page. They are qualified by the pack they came from -- `edu:FilterRows`, `foundations:Edu-KNN` -- so searching the palette for the pack id finds them.
-
-Installing a built-in copies no files. The pack already shipped with the release; what the install writes down is the decision to load it.
 
 ## Installing from GitHub
 
@@ -32,7 +30,7 @@ The box at the top takes `owner/repo`, `owner/repo@ref` (a tag, a branch or a co
 
 The card names the plugin, its author, its version and commit, and the Python packages it would install. Under that is what it is asking for:
 
-- **This plugin asks for:** one line per declared capability -- `network`, `filesystem` or `process-env` -- each saying what granting it costs. The note under the list is the part to read: *Granting is a declaration, not a sandbox: the plugin may use these modules and will not be asked again.* Nothing is enforced at run time. The tick box is **Grant these capabilities**.
+- **This plugin asks for:** one line per declared capability -- `network`, `filesystem` or `process-env` -- each saying what granting it costs. The note under the list is the part to read: *Granting is a declaration, not a sandbox: the plugin may use these modules and will not be asked again.* The tick box is **Grant these capabilities**.
 - **I trust this author. Allows: ...** is a second box, for the modules this plugin asks to have the security scan turned off for. That is a decision about the author, not about a feature.
 - A warning -- *Ships JavaScript that runs in this editor with full access.* -- appears when the plugin has a UI. Browser code is covered by neither box above.
 
@@ -44,7 +42,7 @@ The card names the plugin, its author, its version and commit, and the Python pa
 
 **Update** is offered only on a plugin fetched from a repository, and answers one of three ways: the plugin is up to date, the new version asks for something the installed one did not (so a review card opens, with the added capabilities on it), or there is nothing new to agree to and the job starts. A built-in pack has no Update button: it ships with the release and updates with `cdui update`. Neither has a directory you linked with `cdui plugin link`, which is already whatever is on your disk.
 
-**Uninstall** asks first, and the question names the plugin and both halves of what removing it does: graphs that use its nodes will stop running, and its Python packages stay installed. Both halves are true. A downloaded plugin's directory is deleted; a built-in keeps its files and is remembered as removed, so it stays out until you install it by name again. Nothing here removes a plugin's Python packages -- pulling a package out from under the interpreter that imported it is not something a running server may do to itself -- so they are reported instead, with the command to run once it is stopped.
+**Uninstall** asks first, and the question names the plugin and both halves of what removing it does: graphs that use its nodes will stop running, and its Python packages stay installed. A downloaded plugin's directory is deleted; a built-in keeps its files and is remembered as removed, so it stays out until you install it by name again. Nothing here removes a plugin's Python packages: pulling a package out from under the interpreter that imported it is not something a running server may do to itself.
 
 ## Watching an install
 
@@ -54,7 +52,7 @@ A job that failed offers the same install in a terminal, under **Or install from
 
 ## Installing over the network
 
-Inspect, install, update, cancel and uninstall are refused unless the server is bound to loopback, on top of the session token every write already needs: each of them decides what code this machine will import. Open the editor from another machine and those buttons are off, with the footer saying *Installing is only allowed from the computer that runs the server.* A classroom or lab server that deliberately serves a LAN opts back in with `CODEFYUI_ALLOW_REMOTE_PLUGIN_INSTALL=1`. Enable and disable are not behind that gate -- they act on code this machine already has and you already agreed to -- so a remote browser with the token can still switch a plugin on and off.
+Inspect, install, update, cancel and uninstall are refused unless the server is bound to loopback, on top of the session token every write already needs: each of them decides what code this machine will import. Serve the editor on a LAN address and those buttons are off in every browser, including the one on the server itself, with the footer saying *Installing is only allowed from the computer that runs the server.* A classroom or lab server that deliberately serves a LAN opts back in with `CODEFYUI_ALLOW_REMOTE_PLUGIN_INSTALL=1`. Enable and disable are not behind that gate -- they act on code this machine already has and you already agreed to -- so a remote browser with the token can still switch a plugin on and off.
 
 ## Where the files land
 
