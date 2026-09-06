@@ -104,8 +104,8 @@ received — each links to the release it was published as.
 
 ### Fixed
 
-- **Four things the two new panels said wrongly, found by driving the whole
-  wave in a browser.** Publishing to a repository that is not there answered
+- **Four things the two panels the last release added said wrongly, found by
+  driving the whole wave in a browser.** Publishing to a repository that is not there answered
   "Could not reach the remote" whenever the remote was an SSH one: the
   connection worked, the repository is simply gone, and GitHub says so in a
   voice of its own — `ERROR: Repository not found.` — before letting ssh's
