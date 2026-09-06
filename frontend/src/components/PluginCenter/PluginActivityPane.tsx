@@ -98,8 +98,8 @@ export function PluginActivityPane({
       label: stepLabel(t, current.step.step, current.step.label),
     });
 
-  // How a job that has stopped is reported, or null while it is running.
-  const result = job === null ? null : resultSentence(t, job, title);
+  // Has the job stopped? Then the banner below is what reports it.
+  const ended = job !== null && job.status !== 'running';
 
   // Announced on a STEP change and every ten percent, never on every byte: a
   // polite live region re-read on each progress frame would talk over itself
@@ -108,21 +108,28 @@ export function PluginActivityPane({
   // Falls back to the job's own headline for the second or two between "the
   // install was accepted" and the first step event, so a screen reader hears
   // that something started rather than a bare "0%".
+  //
+  // And it goes QUIET at the end. The result banner is a `role="status"`
+  // region in its own right and carries the outcome, so the same sentence in
+  // here was one fact said twice: read out twice, and printed twice in the
+  // pane -- once in the banner and once in this line above the log. The
+  // region stays mounted and empty rather than unmounting, because the next
+  // job's first step has to land in a region that was already there.
   const bucket = percent === null ? -1 : Math.floor(percent / 10);
   const announcement = useMemo(
     () =>
-      result ?? [
-        stepText ?? headline,
-        percent === null ? null : `${Math.round(percent)}%`,
-      ]
-        .filter(Boolean)
-        .join(' '),
+      ended
+        ? ''
+        : [
+          stepText ?? headline,
+          percent === null ? null : `${Math.round(percent)}%`,
+        ]
+          .filter(Boolean)
+          .join(' '),
     // Intentionally narrow: `stepText`, `headline` and `percent` are read at
-    // the moment one of these changes, which IS the throttle. `result` is a
-    // string, so it compares by value and the ending announces itself even
-    // when the step and the bucket both stayed put.
+    // the moment one of these changes, which IS the throttle.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [job?.jobId, current?.step.step, bucket, locale, result],
+    [job?.jobId, current?.step.step, bucket, locale, ended],
   );
 
   if (job === null) {
@@ -144,8 +151,9 @@ export function PluginActivityPane({
 
       {/* Mounted for the job's whole life, not just while it runs: a live
           region that appears WITH its text already in it is not reliably
-          announced, and that is what makes `cancelled` and `lost` silent. One
-          region, from "installing" to the sentence that ends it. */}
+          announced, so the next job's first step has to land in one that was
+          already on the page. It empties at the end -- the banner below is a
+          live region too, and it is the one that says how this job ended. */}
       <div className={styles.srOnly} aria-live="polite" aria-atomic="true">
         {announcement}
       </div>
@@ -202,8 +210,9 @@ function ResultBanner({
   const { t } = useI18n();
   const tone = BANNER_TONE[job.status] ?? 'neutral';
 
-  // The same sentence the live region announces, by construction rather than
-  // by two copies of the same five `t()` calls.
+  // `role="status"` below, so this element IS the announcement of the ending
+  // as well as the sight of it -- which is why the pane's own live region
+  // stops here rather than saying the same thing again.
   const sentence = resultSentence(t, job, title);
 
   // The same install in a terminal, for a job the panel could not finish.
@@ -267,13 +276,14 @@ function ResultBanner({
 }
 
 /**
- * The one sentence a finished job is reported with.
+ * The one sentence a finished job is reported with, said in one place.
  *
- * Shared by the banner and the live region on purpose: the banner is what a
- * sighted reader sees, and a `role="status"` element that MOUNTS with its text
- * already in it is not reliably announced. The announcer stays mounted for the
- * whole job and this sentence lands in it as a change, which is the thing
- * screen readers do read.
+ * The banner is that place: it is what a sighted reader sees AND a
+ * `role="status"` region, so the ending is announced by the element carrying
+ * it. The pane's own live region — which exists because a region that mounts
+ * with its text already in it is not reliably announced — keeps the running
+ * commentary and stops where this sentence starts. It used to carry this too,
+ * which printed the ending twice in one column.
  *
  * A failure is worded by KIND, out of the two keys that already exist for it
  * -- the same pair the store's toast uses -- rather than printing the server's

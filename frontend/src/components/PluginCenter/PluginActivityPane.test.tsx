@@ -472,11 +472,23 @@ describe('PluginActivityPane — how a job ended', () => {
     expect(handlers.onDismiss).toHaveBeenCalledTimes(1);
   });
 
-  it('announces the ending in the live region that was there all along', () => {
-    // A `role="status"` element that MOUNTS with its text already in it is
-    // not reliably announced, which is what made `cancelled` and `lost`
-    // silent: one region for the job's whole life, and the sentence lands in
-    // it as a change.
+  it('says how a job ended exactly once', () => {
+    // The banner is a live region in its own right (`role="status"`), so a
+    // copy of its sentence in the announcer above it was one fact said
+    // twice: read out twice, and printed twice in the pane -- once in the
+    // banner and once in the status line over the log.
+    paint({ job: job({ status: 'done' }), entry: demo });
+
+    expect(screen.getAllByText('Installed Demo plugin.')).toHaveLength(1);
+    expect(within(banner()).getByText('Installed Demo plugin.')).toBeInTheDocument();
+  });
+
+  it('hands the ending to the banner and goes quiet', () => {
+    // The announcer carries the running commentary the banner cannot give,
+    // and stops where the banner starts. It stays MOUNTED and empty rather
+    // than unmounting: a live region that appears with its text already in
+    // it is not reliably announced, so the next job's first step has to land
+    // in a region that was already there.
     const { container, rerender } = paint({ job: downloading(), entry: demo });
     const live = () => container.querySelector('[aria-atomic="true"]');
     expect(live()).toHaveTextContent('Step 2: Downloading 13%');
@@ -489,7 +501,9 @@ describe('PluginActivityPane — how a job ended', () => {
         {...handlers}
       />,
     );
-    expect(live()).toHaveTextContent('Install cancelled.');
+    expect(live()).not.toBeNull();
+    expect(live()?.textContent).toBe('');
+    expect(screen.getAllByText('Install cancelled.')).toHaveLength(1);
   });
 
   it('announces the job by its id while the catalog has no row for it', () => {
