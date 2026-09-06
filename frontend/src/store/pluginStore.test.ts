@@ -1114,6 +1114,12 @@ describe('pluginStore — uninstall', () => {
     expect(usePluginStore.getState().removal).toBeNull();
   });
 
+  // One case per place a job is set, and there are four: `followJob`,
+  // `installInspected`, `update` and the adoption inside `refresh`. Each
+  // writes its own `removal: null`, so a single case leaves the other three
+  // free to be deleted with the suite still green -- and the pane reads the
+  // job before the removal, which would hide the stale one until the day
+  // that order changes.
   it('gives way to a job that starts after it', async () => {
     // The pane is the live thing's place. A removal still on screen under an
     // install that has just started would be the older of the two facts.
@@ -1124,6 +1130,47 @@ describe('pluginStore — uninstall', () => {
 
     expect(usePluginStore.getState().removal).toBeNull();
     expect(usePluginStore.getState().job!.jobId).toBe('j7');
+  });
+
+  it('gives way to an install accepted after it', async () => {
+    api.getPluginJobEvents.mockImplementation(parked);
+    await usePluginStore.getState().uninstall('demo');
+    await usePluginStore.getState().inspect('owner/demo');
+
+    await usePluginStore.getState().installInspected({
+      acceptCapabilities: false, trustAuthor: false,
+    });
+
+    expect(usePluginStore.getState().removal).toBeNull();
+    expect(usePluginStore.getState().job).toMatchObject({
+      jobId: 'j1', kind: 'install',
+    });
+  });
+
+  it('gives way to an update started after it', async () => {
+    api.getPluginJobEvents.mockImplementation(parked);
+    await usePluginStore.getState().uninstall('demo');
+
+    await usePluginStore.getState().update('demo');
+
+    expect(usePluginStore.getState().removal).toBeNull();
+    expect(usePluginStore.getState().job).toMatchObject({
+      jobId: 'j1', kind: 'update',
+    });
+  });
+
+  it('gives way to a job the next catalog read adopts', async () => {
+    // Another tab started one while this panel sat on the removal.
+    api.getPluginJobEvents.mockImplementation(parked);
+    await usePluginStore.getState().uninstall('demo');
+    serveCatalog(catalog({
+      active_job: { job_id: 'j9', plugin_id: 'demo', kind: 'install' },
+    }));
+
+    await usePluginStore.getState().refresh();
+
+    expect(usePluginStore.getState().removal).toBeNull();
+    expect(usePluginStore.getState().job!.jobId).toBe('j9');
   });
 
   it('carries the server hint when the files could not be deleted', async () => {
