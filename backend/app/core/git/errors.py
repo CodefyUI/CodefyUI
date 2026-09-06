@@ -33,12 +33,14 @@ Four decisions here are not stylistic:
   the rows that must come first (auth before network -- see below) are
   adjacent to a comment saying why.
 * **the auth-vs-network split.** An ssh failure ALWAYS ends with "Could not
-  read from remote repository", whether the key was refused or the host was
-  unreachable, and those are opposite instructions for the user. The real
-  reason is on the line above it, so the auth row carries the credential
-  phrases and sits ABOVE the network row: "Permission denied", "publickey"
-  or "Host key" anywhere in the same stderr means the connection worked and
-  the credentials did not.
+  read from remote repository", whether the key was refused, the host was
+  unreachable or the repository is not there, and those are three different
+  instructions for the user. The real reason is on the line above it, so the
+  auth row carries the credential phrases and sits ABOVE the network row:
+  "Permission denied", "publickey" or "Host key" anywhere in the same stderr
+  means the connection worked and the credentials did not. The third reason
+  gets a ``not_found`` row of its own between them, because the forge says
+  it in a voice of its own -- see :data:`SSH_NOT_FOUND_PREFIXES`.
 * **three phrases are anchored to git's own voice.** "not found", "already
   exists" and "does not exist" are ordinary English, and this stream is not
   only git's: ``commit`` runs the user's hooks and prints whatever they
@@ -230,6 +232,20 @@ REMOTE_EXISTS_PREFIXES: tuple[str, ...] = ("error: remote ",)
 #: be imitating on purpose.
 MERGE_REFUSED_PREFIXES: tuple[str, ...] = ("merge: ",)
 
+#: The opening a forge uses over SSH for a repository that is not there.
+#: GitHub answers ``ERROR: Repository not found.`` (measured 2026-09-06
+#: pushing to a deleted repository) and lets ssh's ordinary "Could not read
+#: from remote repository" follow it, so the only line that says WHY opens
+#: with ``ERROR: ``. That opening is deliberately absent from
+#: :data:`GIT_MESSAGE_PREFIXES` -- it is a failing hook's favourite -- so the
+#: anchor is the whole ``ERROR: Repository ``, which a hook could not print
+#: by accident. Same trick, same reason, as :data:`REMOTE_EXISTS_PREFIXES`.
+#:
+#: Lower-cased like its neighbours: :func:`_matches` lowers the whole stream
+#: before comparing, so a prefix written in git's own casing would match
+#: nothing.
+SSH_NOT_FOUND_PREFIXES: tuple[str, ...] = ("error: repository ",)
+
 
 @dataclass(frozen=True)
 class Anchored:
@@ -291,6 +307,22 @@ _RULES: tuple[tuple[str, int, tuple[_Pattern, ...]], ...] = (
         # appears as the sentence above. A pair for each of those would be a
         # row that no input can reach.
         ("Could not read from remote repository", "Permission denied"),
+    )),
+    # BETWEEN the two ssh rows, and the position is the whole fix. A
+    # repository that is not there answers over SSH with the forge's own
+    # "ERROR: Repository not found." and then the same "Could not read from
+    # remote repository" every ssh failure ends with -- so ``network`` took
+    # it, and the tab said "could not reach the remote" about a repository
+    # that does not exist. Over HTTPS the same state says "fatal: repository
+    # '...' not found" and lands on the ``not_found`` row far below; this row
+    # is what makes the two transports answer alike.
+    #
+    # BELOW ``auth_required`` on purpose: a key the server refuses never gets
+    # far enough to be told which repository was meant, so the two phrases
+    # cannot share a stderr -- and if a forge ever printed both, the
+    # credential is still the first thing to fix.
+    ("not_found", 404, (
+        Anchored("not found", prefixes=SSH_NOT_FOUND_PREFIXES),
     )),
     ("network", 409, (
         "Could not resolve host",

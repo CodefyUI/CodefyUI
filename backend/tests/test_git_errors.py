@@ -90,6 +90,17 @@ _SAMPLES = [
         "fatal: unable to access 'https://github.com/a/b/': "
         "Could not resolve host: github.com\n",
         "network", id="dns"),
+    # A repository that is not there, over SSH. Measured on 2026-09-06
+    # pushing to a deleted GitHub repository, and it ends with the same
+    # "Could not read from remote repository" every ssh failure ends with --
+    # so without a row ABOVE ``network`` a missing repository was reported as
+    # an outage, which is the opposite instruction to the user.
+    pytest.param(
+        "ERROR: Repository not found.\n"
+        "fatal: Could not read from remote repository.\n\n"
+        "Please make sure you have the correct access rights\n"
+        "and the repository exists.\n",
+        "not_found", id="ssh-repository-missing"),
     # The app's own ``GIT_ALLOW_PROTOCOL=https:ssh:file`` refusing a remote
     # that was configured outside this API. The tab cannot create one --
     # ``validate_remote_url`` refuses the shape -- but it LISTS such a remote
@@ -347,6 +358,41 @@ def test_the_ssh_split_is_the_row_order():
     assert bare.code == "network"
 
 
+#: The same repository, missing, over each of the two transports the tab
+#: allows. HTTPS says it twice and in git's own voice; SSH says it once, in
+#: GitHub's, under an opening the ordinary anchor set will not take.
+_MISSING_REPOSITORY = [
+    pytest.param(
+        "ERROR: Repository not found.\n"
+        "fatal: Could not read from remote repository.\n\n"
+        "Please make sure you have the correct access rights\n"
+        "and the repository exists.\n",
+        id="ssh"),
+    pytest.param(
+        "remote: Repository not found.\n"
+        "fatal: repository 'https://github.com/a/b/' not found\n",
+        id="https"),
+]
+
+
+@pytest.mark.parametrize("stderr", _MISSING_REPOSITORY)
+def test_a_missing_repository_is_not_found_over_either_transport(stderr):
+    """The same fact deserves the same code however the remote was reached.
+
+    Over HTTPS it always did: git repeats the forge's sentence in its own
+    voice, and both halves are on the ``not_found`` row. Over SSH the only
+    line that says WHY is GitHub's own ``ERROR: Repository not found.``,
+    followed by the "Could not read from remote repository" that ends every
+    ssh failure -- so this used to classify as ``network`` and the tab told
+    the user their connection was down about a repository that does not
+    exist.
+    """
+    error = classify_failure(_ARGV, 128, stderr)
+
+    assert error.code == "not_found"
+    assert error.status == 404
+
+
 @pytest.mark.parametrize("line", [
     "fatal: could not read Username for 'https://github.com': "
     "terminal prompts disabled",
@@ -517,6 +563,22 @@ def test_only_gits_own_duplicate_remote_sentence_is_remote_exists(stderr):
     """The anchor is the whole opening ``error: remote ``, because
     ``error: `` alone belongs to every failing hook. Anything a hook could
     plausibly print stays ``git_failed`` -- with git's own tail attached."""
+    assert classify_failure(_ARGV, 1, stderr).code == "git_failed"
+
+
+@pytest.mark.parametrize("stderr", [
+    pytest.param("    ERROR: Repository not found.\n", id="indented"),
+    pytest.param("error: the repository was not found\n", id="another-word"),
+    pytest.param("error: repository check failed\n", id="another-sentence"),
+])
+def test_only_the_forges_own_missing_repository_line_is_not_found(stderr):
+    """The SSH row anchors the whole opening ``ERROR: Repository ``.
+
+    ``error: `` alone is a failing hook's favourite opening (see
+    :data:`GIT_MESSAGE_PREFIXES`), so the anchor has to be long enough that
+    a hook could not write it by accident. Anything shorter than the whole
+    opening stays ``git_failed``, with git's own tail attached.
+    """
     assert classify_failure(_ARGV, 1, stderr).code == "git_failed"
 
 
