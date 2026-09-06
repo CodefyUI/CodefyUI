@@ -466,6 +466,27 @@ when it was closed.
   slightly different colour one panel away. The chip is now the shared pill
   both centers use, which leaves no hard-coded colour anywhere in that tab.
 
+- **Four things the two new panels said wrongly, found by driving the whole
+  wave in a browser.** Publishing to a repository that is not there answered
+  "Could not reach the remote" whenever the remote was an SSH one: the
+  connection worked, the repository is simply gone, and GitHub says so in a
+  voice of its own — `ERROR: Repository not found.` — before letting ssh's
+  ordinary "Could not read from remote repository" follow it, which is the
+  line the classifier read. That state now gets the same "no such repository"
+  the HTTPS spelling has always got, and nothing a failing commit hook prints
+  on the same stream can reach the new row. In the commit diff, the summary
+  above a graph's text diff named each node by its raw id — and every node the
+  palette, an example or a paste inserts carries a generated one, so a
+  parameter edit read `f256484a-51e0-49b4-8134-4aea94b5fd68: default ...`. It
+  now reads `GraphInput f256484a`: the node's type plus enough of the id to
+  tell two of a kind apart, with a node you have renamed still called by its
+  name. And in the Plugin Center, the activity pane says how a job ended once
+  rather than once in the banner and once in the line above the log, and an
+  uninstall now replaces the finished install's banner with its own result —
+  which Python packages stayed, the line that removes them with the server
+  stopped, and the command that puts the plugin back — instead of leaving
+  "Installed X." standing over a card that already says Removed.
+
 ## [2.5.0] — 2026-09-01
 
 Twenty-four commits since 2.4.1, around three themes. The Package Center
