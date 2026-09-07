@@ -77,7 +77,8 @@ git commit -m "echo service"
 ```
 
 `.env` 已被 gitignore；`.env.example` 要提交。大型資料請提交一個小的下載
-腳本，永遠不要提交資料或權重本身。
+腳本，永遠不要提交資料或權重本身。伺服器在專案上跑起來之後（第 5 步），
+編輯器的[版本控制](./source-control)分頁就能在側邊欄做同樣的暫存與提交。
 
 ### 4. 驗證（CI 關卡）
 
@@ -250,9 +251,11 @@ cdui project init my-service --adopt /path/to/old-graphs
 - `CODEFYUI_MODELS_DIR`、`CODEFYUI_IMAGES_DIR` 與 `CODEFYUI_MEDIA_DIR` 可搬移模型、
   圖片與執行媒體的存放位置；專案模式下預設為 `<project>/assets/models`、
   `assets/images` 與 `assets/media`，除非明確設定。
-- 編輯器與手動改檔之間採「後寫者勝」（「磁碟上已變更」警告是後續項目）。
-  請把專案目錄排除在 OneDrive/Dropbox 同步之外 -- 同步軟體會弄壞 `.git`
-  並跟原子改名互相競爭；請改用真正的 git remote。
+- 編輯器與手動改檔之間採「後寫者勝」。只有透過[版本控制](./source-control)
+  分頁做的寫入（拉取、切換分支、取出儲藏、捨棄）會跳出「磁碟上已變更」的提示與
+  重新載入按鈕；用其他工具改的檔案不會被偵測到。請把專案目錄排除在
+  OneDrive/Dropbox 同步之外 -- 同步軟體會弄壞 `.git` 並跟原子改名互相競爭；
+  請改用真正的 git remote。
 - 由較新版 CodefyUI 寫出的 graph 會以**唯讀**開啟（可檢視／執行，儲存
   停用），讓舊版永遠不會弄丟它不認識的欄位。另存新檔... 也被同一道防護擋住，
   這是刻意的：graph 載入的那一刻，記憶體中的副本就已經丟失那些未知欄位，

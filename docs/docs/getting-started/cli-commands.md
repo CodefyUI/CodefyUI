@@ -27,7 +27,7 @@ description: The cdui launcher commands — install, start, status, dev, build, 
 
 ## Plugin commands
 
-The in-app **Plugin Center**, available from the sidebar's **Custom & Plugins** tab or **Settings → Plugins**, uses the same installation function as these commands. See **[Plugin Center](/advanced/plugins#plugin-center)**.
+The in-app **Plugin Center**, available from the sidebar's **Custom & Plugins** tab or **Settings → Plugins**, uses the same installation function as these commands. See **[Plugin Center](/usage/plugin-center)**.
 
 | Command | Description |
 |---------|-------------|

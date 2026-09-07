@@ -91,7 +91,9 @@ git commit -m "echo service"
 ```
 
 `.env` is gitignored; `.env.example` is committed. Commit a small fetch script
-for large data, never the data or weights themselves.
+for large data, never the data or weights themselves. Once the server runs on
+the project (step 5), the editor's [Source Control](./source-control) tab does
+this same staging and committing from the sidebar.
 
 ### 4. Validate (the CI gate)
 
@@ -302,9 +304,12 @@ Every `*.json` is copied into `graphs/` and split into the logic/layout pair.
   the model, image and run-media stores; in project mode they default to
   `<project>/assets/models`, `assets/images` and `assets/media` unless set
   explicitly.
-- Last-write-wins between the editor and hand-edits (a "changed on disk"
-  warning is a follow-up). Exclude project dirs from OneDrive/Dropbox sync --
-  sync clients corrupt `.git` and race atomic renames; use a real git remote.
+- Last-write-wins between the editor and hand-edits. Only a write made through
+  the [Source Control](./source-control) tab (a pull, a checkout, a stash pop,
+  a discard) raises the "changed on disk" toast with its Reload button; an edit
+  from any other tool is not detected. Exclude project dirs from OneDrive/Dropbox
+  sync -- sync clients corrupt `.git` and race atomic renames; use a real git
+  remote.
 - A graph written by a newer CodefyUI opens **read-only** (view/run allowed,
   Save disabled) so an older build can never drop fields it does not know.
   Save As is blocked by the identical guard, by design: the in-memory graph
