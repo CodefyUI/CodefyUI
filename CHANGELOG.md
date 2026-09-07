@@ -22,6 +22,18 @@ received — each links to the release it was published as.
 
 ## [Unreleased]
 
+## [2.7.0] — 2026-09-07
+
+The Source Control tab is complete. 2.6.0 shipped the working tree and the
+commit box; this release adds branches, remotes, stashes, fetch, pull and
+push, conflict resolution, a paged history, and a diff view that summarises
+what a change did to the graph. A graph now records the device it runs on in
+its own file, and every runner honours it: the canvas, `cdui run`, the run
+API, published apps, exported scripts and the offline runner. Training on
+Apple Silicon is 1.5–2.7× faster on `mps` and 1.1–1.2× faster on `cpu`. The
+documentation was synced with the code, with new Source Control and Plugin
+Center pages and four pages in zh-TW for the first time.
+
 ### Added
 
 - **Source control from the editor, part 3 — branches, remotes, stashes, and
@@ -31,76 +43,113 @@ received — each links to the release it was published as.
   one is from what it tracks and one press to switch to it, create one, rename
   one or delete one; every remote, with the URL git will fetch from and the two
   ways to change that; and the stash stack, with what each entry was called,
-  which branch it came off and how long ago, one press from being popped,
-  applied or dropped. The branch name in the header is now the button that
-  opens that first list. Above them, the header's second row is a Sync button
-  when the branch has an upstream and a Publish Branch button when it does not
-  — and when there is more than one remote to publish to, it asks which rather
-  than guessing. Fetch, Pull, Push, Publish and Stash Changes... sit in the
-  overflow menu, and a row that cannot be pressed says why in as many words: no
-  remote yet, this branch is not published, no commits yet. Network operations
-  run in a lane of their own, so a slow fetch over a bad connection does not
-  block the commit you were about to make — and neither one can be started
-  twice. A credential the server does not have comes back as a named refusal in
+  which branch it came off and how long ago, popped or applied in one press,
+  or dropped after a confirmation. The branch name in the header is now the
+  button that opens that first list. Above them, the header's second row is a
+  Sync button when the branch has an upstream and a Publish Branch button when
+  it does not — and when there is more than one remote to publish to, it asks
+  which rather than guessing. Fetch, Pull, Push and Stash Changes... sit in the
+  overflow menu, with Publish beside them while the branch is unpublished and
+  the header is not already offering the remote picker, and a row that cannot
+  be pressed says why in as many words: No remote yet, Not published, No
+  commits yet. Stash Changes... takes untracked files with it, and the message
+  is optional. Network operations run in a
+  lane of their own, so a slow fetch over a bad connection does not block the
+  commit you were about to make — and neither one can be started twice. A
+  credential the server does not have comes back as a named refusal in
   seconds rather than as a request that hangs until you close the tab, and the
   two refusals that have a way out carry the button for it: a branch that has
   diverged offers to merge the remote's changes, and one that was never pushed
   offers to publish. A conflict now has a group of its own with git's three
-  answers on each row — keep mine, take incoming, or mark the file you fixed by
-  hand as resolved — plus one Abort Merge that asks first, and the commit
+  answers on each row — keep mine, take incoming, or mark the file you fixed
+  by hand as resolved — plus one Abort Merge that asks first, and the commit
   button stays live even when settling every file left nothing staged, because
   that is exactly the merge git still wants a commit for. Anything that can put
-  different bytes under a graph you have open — a pull, a checkout, a stash pop
-  — says how many and offers to reload them rather than reloading them behind
-  you. Deleting a branch whose commits are on no other branch asks a second
-  time, in git's own words. Reading any of these lists is an open read; every
-  button that changes something carries the session token. History and the diff
-  view are the part after this one.
+  different bytes under a graph you have open — a pull, a checkout, a stash
+  pop — says how many and offers to reload them rather than reloading them
+  behind you. Deleting a branch whose commits are on no other branch asks a
+  second time. The header's Refresh re-reads every open list as well as the
+  status.
+  On a panel narrower than 380 px a row's actions collapse into one menu, and
+  a confirm or prompt dialog returns focus to the control that opened it.
+  Reading any of these lists is an open read; every button that changes
+  something carries the session token. History and the diff view are the part
+  after this one.
+  - A remote URL is checked as the pieces git will hand to ssh: a host or scp
+    path half that is empty or starts with `-` is refused as `invalid_url`, and
+    `http://` and `git://` remotes answer 400 `invalid_url` on Fetch, Pull and
+    Sync where they used to answer 500. The Remotes list shows a URL with any
+    credential in it masked (`***`), and Change URL opens an empty prompt so the
+    masked form is never sent back.
+  - The server's git honours `GIT_SSH` as well as `GIT_SSH_COMMAND`, and a
+    `core.sshCommand` configured in the project repository; the batch-mode
+    ssh default is only injected when none of those is set. A fetch or push
+    that hangs is killed together with the ssh or credential helper it
+    started (the whole process group on POSIX), and a kill that fails answers
+    500 rather than 504.
+  - Three translated refusals: a remote with that name already exists; the
+    remote refused the push (a protected branch or a server rule); the push
+    configuration refuses this push (`push.default` or the upstream branch
+    name). The server's English hint no longer sits beside a translated
+    refusal: `auth_required` gets a translated hint of its own (run
+    `gh auth login` or set up an SSH key), and only an unclassified failure
+    still shows the server's; git's own text stays under Details.
+
 - **Source control from the editor, part 4 — the history, and what a change did
   to the graph.** The part the one above promised. Under the three reference
   lists is a fourth: History, closed until you open it, one row per commit with
-  its short id, its subject, how long ago it was made and who made it.
-  Expanding a row lists the files that commit touched, each of them a link into
-  the commit; the row's menu copies the full id; Load more fetches the next
-  thirty. History stays off the fifteen-second poll — a poll would throw away
-  the pages you had loaded — and is re-read by Refresh, by a commit or an
-  amend, and by anything that moves the branch. Every file row in the panel is
-  now a button that opens the change it names, and which change that is follows
-  the group it sits in: a row under Changes shows what you have not staged yet,
-  a row under Staged Changes shows what the next commit will contain, and a
-  file under a commit in the history shows what that commit did to it. The view
-  opens over the editor as one column or as two side by side, the second
-  derived from the same patch rather than from a second download; a conflicted
-  file offers the single column only, because a file full of conflict markers
-  has no two sides to pair. A binary file, a patch the server cut at a megabyte
-  and a file with nothing to show each say so in a line rather than drawing an
-  empty pane. And a saved graph gets a summary above its patch saying what
+  its short id, its subject, how long ago it was made and who made it. Expanding
+  a row lists the files that commit touched, each of them a link into the
+  commit; Copy commit id sits on the row on a wide panel and in its menu on a
+  narrow one, and says so in a toast; Load more fetches the next thirty. History
+  stays off the fifteen-second poll — a poll would throw away the pages you had
+  loaded — and is re-read by Refresh, by a commit or an amend, and by anything
+  that moves the branch. Every file row in the panel is now a button that opens
+  the change it names, and which change that is follows the group it sits in: a
+  row under Changes shows what you have not staged yet, a row under Staged
+  Changes shows what the next commit will contain, and a file under a commit in
+  the history shows what that commit did to it. The view opens over the editor
+  as one column or as two side by side, the second derived from the same patch
+  rather than from a second download; a conflicted file offers the single column
+  only, because a file full of conflict markers has no two sides to pair. A
+  binary file and a file with nothing to show each say so in a line; a patch the
+  server cut at one megabyte says so above what it shows; and the view draws the
+  first 2,000 lines of a patch and says how to read the rest; a large graph JSON
+  reaches that limit. git's "No newline at end of file" marker is drawn as a dim
+  note on its line. And a saved graph gets a summary above its patch saying what
   changed to the GRAPH rather than to the JSON holding it: nodes added and
   removed, a node whose type changed, a parameter that moved from one value to
   another, edges added and removed — compared by what they connect, so a
-  regenerated id is not a change — and, in the layout half of the pair, how
-  many node positions moved. Eight lines at most, then a count of the rest, and
-  "No logic change" where the two sides mean the same thing and only the text
+  regenerated id is not a change — and, in the layout half of the pair, how many
+  node positions moved. Eight lines at most, then a count of the rest, and "No
+  logic change" where the two sides mean the same thing and only the text
   differs; a change this first version has no line for leaves the summary empty
   rather than claiming nothing happened, with the patch underneath to show it.
   The history, a commit's files and a diff are open reads like everything else
-  the panel reads, and a refusal lands inside the section or the view that
-  asked for it instead of over the whole tab. The tab also has a documentation
-  page now: installing git, giving the server a credential it can use without
-  ever prompting, publishing a branch, and what each refusal means.
-- **Every node says which plugin it came from.** Hovering a row in the node
-  library now ends its tooltip with the plugin that registered it, muted and
+  the panel reads, and a refusal lands inside the section or the view that asked
+  for it instead of over the whole tab; opening a git-ignored path or a
+  `.env`-shaped file says "This file is ignored by git." in your locale. The tab
+  has a documentation page, [Source
+  Control](https://docs.codefyui.com/usage/source-control), and the header's
+  Setup guide link opens it: installing git, giving the server a credential it
+  can use without ever prompting, publishing a branch, and what the panel's
+  messages mean.
+
+- **Every node says which plugin it came from.** Hovering a row in the Nodes
+  palette now ends its tooltip with the plugin that registered it, muted and
   under everything that describes the node — and a plugin's node that ships no
   description at all gets that one line rather than no tooltip at all, which is
   what it used to get. The same name is a third thing the two searches match,
-  so typing part of a plugin's name into the library's search box, or into the
+  so typing part of a plugin's name into the palette's search box, or into the
   quick search you get by double-clicking the canvas, finds its nodes; before,
-  the only way to reach them was the `plugin:` prefix their type happens to
-  carry. The template gallery's detail pane names the plugin the same way
-  instead of printing its id. Until the Plugin Center's catalog has answered —
-  during boot, on a server too old to have one, or after the network dropped —
-  the id stands in, because **From plugin: edu** is already true and a line
-  that waits for the catalog is a line that flickers in on every page load.
+  the only way to reach them was the `<plugin-id>:` prefix their type carries
+  (`edu:FilterRows`). The template gallery's detail pane uses the same name; it
+  printed the id before. Until the Plugin Center's catalog has
+  answered — during boot, on a server too old to have one, or after the
+  network dropped — the id stands in, because **From plugin: edu** is already
+  true and a line that waits for the catalog is a line that flickers in on
+  every page load.
+
 - **A graph carries its own device.** Next to Run is a control that assigns
   the device this graph runs on; the choice is written into the graph file as
   `settings.device`, so it is saved, tracked by git and honoured wherever the
@@ -109,77 +158,134 @@ received — each links to the release it was published as.
   browser-wide device, now described as what new graphs and graphs with no
   assigned device use, and shows the best device this server can see as a
   hint. Sweep children run on their parent graph's device. The per-node
-  **device** parameter stays for older graphs, moved under Advanced, and
-  lists the same devices as the two other selectors.
+  **device** parameter stays for older graphs, sits under Advanced on every
+  node, and lists the same devices as the two other selectors.
+  - The graph file gains an optional top-level `settings` object (`{"device":
+    "cpu|auto|cuda|cuda:N|mps|mps:N"}`), written by Save only when a device is
+    assigned, so unassigned graphs stay byte-identical. In a project it lives in
+    the git-tracked logic file. A bad value is refused: 400 from the run and
+    sweep routes, an `execution_error` frame on the WebSocket, 422 from Save,
+    and an `invalid_settings` finding from `cdui project validate`. Before, a
+    top-level `settings` key was ignored.
+  - Every device parameter's option list is now the list this machine offers,
+    for exposed preset parameters as well; `TextGenerate` and
+    `PerplexityEvaluate` gain `mps`. A stored run's `options.device` is the
+    device the run was submitted with, filled in from `settings.device` when the
+    client sent none (an `auto` stays `auto`; the resolved device is the row's
+    `queue_key`), and `cdui run` prints `<device> (graph)` in that case.
+  - Plugin API: `getGraph()` includes `settings.device` when assigned, the
+    graph-changed subscription fires and the document revision bumps on a
+    device change, and `openGraphs` accepts `settings.device`.
+  - Global keyboard shortcuts no longer fire while a `<select>` has focus.
+
+- **Two new docs pages, and four pages in zh-TW for the first time.**
+  [Source Control](https://docs.codefyui.com/usage/source-control) and
+  [Plugin Center](https://docs.codefyui.com/usage/plugin-center), in both
+  locales; zh-TW twins of Version Control Your Graphs, Graph as a Function,
+  Publish and Example Projects; and the rest of the documentation synced with
+  the current code, including the API reference, the Run Queue page and the
+  CLI reference. `cdui --help` lists `--version`, `run --deterministic`, the
+  whole `cdui plugin` and `cdui project` groups.
 
 ### Changed
 
-- **Training on Apple Silicon is 1.5–2.7× faster.** Measured on an M3
-  MacBook Air, one epoch of each shipped example on `mps`, with cool-down
-  gaps between runs: CNN-MNIST 11.2 s → 4.1 s, ResNet-CIFAR10 12.1 s → 5.1 s,
-  GPT-Mini 19.9 s → 13.1 s. On `cpu`: 13.7 s → 11.5 s, 27.4 s → 24.4 s,
-  22.4 s → 20.8 s. None of the changes alters the numbers a run produces.
-  - `TrainingLoop`, `EvaluateModel` and `DiffusionTrainingLoop` no longer
-    call `loss.item()` per batch. That call is a host/device synchronisation;
-    on MPS it drains the Metal command queue and cost about 6 ms of a 10 ms
-    step. The running loss, validation loss and validation correct-count
-    accumulate on the device and are read back once per epoch, at each
-    `batch_metrics` point, and for each progress frame the throttle sends
-    (`ProgressThrottle.emit` accepts a payload factory). The gradient norm
-    stays on the device until a `log_interval` step records it.
+- **Training on Apple Silicon is 1.5–2.7× faster on `mps`.** Measured on an M3
+  MacBook Air with torch 2.11, one epoch of three shipped examples on `mps`,
+  with cool-down gaps between runs: CNN-MNIST 11.2 s → 4.1 s, ResNet-CIFAR10
+  12.1 s → 5.1 s, GPT-Mini 19.9 s → 13.1 s. On `cpu`: 13.7 s → 11.5 s,
+  27.4 s → 24.4 s, 22.4 s → 20.8 s. Weights, gradients and per-batch losses
+  are unchanged. Epoch averages are now summed in float32 on the device and
+  converted once, so a logged average can differ from 2.6.0 in its last
+  digits.
+  - `TrainingLoop` and `DiffusionTrainingLoop` no longer call `loss.item()`
+    per batch, and `EvaluateModel` no longer reads its correct-count back per
+    batch. That call is a host/device synchronisation; on MPS it drains the
+    Metal command queue and cost about 6 ms of a 10 ms step. The running
+    loss, validation loss and validation correct-count accumulate on the
+    device and are read back once per epoch, at each `batch_metrics` point,
+    and for each progress frame the throttle sends (`ProgressThrottle.emit`
+    accepts a payload factory). The gradient norm stays on the device until a
+    `log_interval` step records it.
   - `Dataset` applies the default `ToTensor` + `Normalize` pipeline per batch
     for MNIST, FashionMNIST, CIFAR10 and CIFAR100, through `__getitems__`.
     Output is bit-identical to the per-sample path; host time per epoch is
-    about 11× lower. A wired transform chain, a `TransformNode` installed
-    afterwards, SVHN and STL10 use torchvision's per-sample path.
+    about 11× lower. A wired transform chain, a `target_transform`, a
+    `TransformNode` installed afterwards, SVHN and STL10 use torchvision's
+    per-sample path. The dataset object is a module-level subclass of the
+    torchvision class and its `.transform` a `Compose` subclass;
+    `isinstance` checks still hold.
   - The determinism scope skips `torch.use_deterministic_algorithms` on exit
     when the setting did not change. The first call imports `torch._dynamo`
     and `torch._inductor` (about 0.5 s), which the first run in every server
     process paid.
+
 - **An out-of-memory failure on MPS reports the allocator's numbers and
   releases its cache**, matching the CUDA path: live memory, reserved memory
   and the working-set ceiling Metal recommends for the process.
+
 - **Mixed precision stays off on MPS, with the measured reason recorded.**
-  bf16 and fp16 autocast run on torch 2.11 and measured 1.7–3× slower than
+  bf16 and fp16 autocast run on torch 2.11 and measured 1.8–3.3× slower than
   fp32 with no memory saving. `amp.py`, the Training Memory page and the new
   "Performance on Apple Silicon" section of Device Backends carry the numbers.
+
 - **`--device auto` means the best accelerator present.** `cdui run --device
-  auto`, an exported script's `--device auto` and `"device": "auto"` on the
-  run API resolve to the best device the server can see (`cuda`, then `mps`,
-  then `cpu`); before this change, `cdui run` and the run API resolved
-  `auto` to the CPU while the exported script already picked the best
-  accelerator; the three now agree. Leaving the device out means the graph's
-  own device, else CPU. `cdui run` and exported scripts no longer default to
-  `auto`, so nothing moves a run to a GPU unasked. A client that still sends
-  an explicit `auto` (an older `cdui run` binary, a hand-written request
-  body, a published-app invoke) runs on the accelerator after upgrading the
-  server; it ran on the CPU before.
+  auto` and `"device": "auto"` on the run API resolve to the best device the
+  server can see (`cuda`, then `mps`, then `cpu`); an exported script's
+  `--device auto` resolves to the best device on the machine running it.
+  Before this change, `cdui run` and the run API resolved `auto` to the CPU
+  while the exported script already picked the best accelerator; the three
+  now agree. Leaving the device out means the graph's own device, else CPU.
+  `cdui run` and exported scripts no longer default to `auto`, so nothing
+  moves a run to a GPU unasked. Two consequences for an upgrade: a client
+  that still sends an explicit `auto` (an older `cdui run` binary, a
+  hand-written request body, a published-app invoke) runs on the accelerator
+  after upgrading the server, where it ran on the CPU before; and a script
+  exported from a graph with no assigned device now defaults to the CPU,
+  where a 2.6.0 export defaulted to `auto`. Scripts exported before this
+  release keep their baked default.
 
 ### Fixed
 
-- **Four things the two panels the last release added said wrongly, found by
-  driving the whole wave in a browser.** Publishing to a repository that is not there answered
-  "Could not reach the remote" whenever the remote was an SSH one: the
-  connection worked, the repository is simply gone, and GitHub says so in a
-  voice of its own — `ERROR: Repository not found.` — before letting ssh's
-  ordinary "Could not read from remote repository" follow it, which is the
-  line the classifier read. That state now gets the same "no such repository"
-  the HTTPS spelling has always got, and nothing a failing commit hook prints
-  on the same stream can reach the new row. In the commit diff, the summary
-  above a graph's text diff named each node by its raw id — and every node the
-  palette, an example or a paste inserts carries a generated one, so a
-  parameter edit read `f256484a-51e0-49b4-8134-4aea94b5fd68: default ...`. It
-  now reads `GraphInput f256484a`: the node's type plus enough of the id to
-  tell two of a kind apart, with a node you have renamed still called by its
-  name. And in the Plugin Center, a screen reader is told how a job ended
-  once rather than twice: the result banner announces the ending, and the
-  pane's hidden running commentary, which used to read out the same sentence
-  a second time, now stops where the banner starts — nothing on screen moves,
-  because that commentary was never on screen. An uninstall now replaces the
-  finished install's banner with its own result — which Python packages
-  stayed, the line that removes them with the server stopped, and the command
-  that puts the plugin back — instead of leaving "Installed X." standing over
-  a card that already says Removed.
+- **Four things the Source Control and Plugin Center panels said wrongly, found
+  by driving the whole wave in a browser.** Publishing to a repository that is
+  not there answered "Could not reach the remote" whenever the remote was an SSH
+  one: the connection worked, the repository is simply gone, and GitHub says so
+  in a voice of its own — `ERROR: Repository not found.` — before letting ssh's
+  ordinary "Could not read from remote repository" follow it, which is the line
+  the classifier read. That state is now `not_found` (404), as it has always
+  been over HTTPS, and the panel says "Not found" where it said "Could not reach
+  the remote"; a script keyed on the old 409 `network` code for this case will
+  see the new one. The classifier anchors on the full opening `ERROR: Repository
+  `, which keeps a commit hook's ordinary output off this row. In the commit
+  diff, the summary above a graph's text diff named a node with no label by its
+  raw id — and every node the palette, an example or a paste inserts carries a
+  generated one, so a parameter edit read `f256484a-51e0-49b4-8134-4aea94b5fd68:
+  default ...`. It now reads `GraphInput f256484a`: the node's type plus the
+  first eight characters of the id, with an id of sixteen characters or fewer
+  still printed as it is, a renamed node still called by its name, and a
+  preset's inner nodes named by the same rule. And in the Plugin Center, a
+  screen reader no longer hears how a job ended twice: the result banner
+  announces the ending, and the pane's hidden running commentary, which used to
+  read out the same sentence a second time, now stops where the banner starts —
+  nothing on screen moves, because that commentary was never on screen. An
+  uninstall now replaces the finished install's banner with its own result —
+  which Python packages stayed, the line that removes them with the server
+  stopped, and the command that puts the plugin back — instead of leaving
+  "Installed X." standing over a card that already says Removed; Dismiss puts it
+  away.
+
+- **Unstage everything clears both halves of a staged rename.** git reports a
+  staged rename as one record with two paths, and the whole-tree unstage named
+  only the new one, which left the old name staged as a deletion the user
+  never made.
+
+- **A translated string no longer breaks on a value containing `$`.** Every
+  placeholder value was passed to `String.replace` as a pattern, so a label
+  holding `$'`, `` $` ``, `$&` or `$$` rewrote the sentence around it. Values
+  now go in verbatim.
+
+- **Concurrent first callers after a server restart no longer get a spurious
+  "git is too old".** The version probe runs under a lock.
 
 ## [2.6.0] — 2026-09-05
 
@@ -3328,7 +3434,8 @@ Release candidates before 1.0.0 are on the
 [#420]: https://github.com/CodefyUI/CodefyUI/issues/420
 [@oyea0801]: https://github.com/oyea0801
 [@latteine1217]: https://github.com/latteine1217
-[Unreleased]: https://github.com/CodefyUI/CodefyUI/compare/2.6.0...main
+[Unreleased]: https://github.com/CodefyUI/CodefyUI/compare/2.7.0...main
+[2.7.0]: https://github.com/CodefyUI/CodefyUI/compare/2.6.0...2.7.0
 [2.6.0]: https://github.com/CodefyUI/CodefyUI/compare/2.5.0...2.6.0
 [2.5.0]: https://github.com/CodefyUI/CodefyUI/compare/2.4.1...2.5.0
 [2.4.1]: https://github.com/CodefyUI/CodefyUI/compare/2.4.0...2.4.1
