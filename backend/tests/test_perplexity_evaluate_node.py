@@ -21,6 +21,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import Dataset
 
+from app.core.device_utils import DEVICE_PARAM_OPTIONS
 from app.core.execution_context import INTERRUPTED_KEY
 from app.nodes.llm.perplexity_evaluate_node import PerplexityEvaluateNode
 
@@ -133,7 +134,7 @@ def test_node_metadata():
     assert (params["batch_size"].min_value, params["batch_size"].max_value) == (1, 256)
     assert params["max_batches"].default == 0
     assert params["device"].default == "auto"
-    assert params["device"].options == ["auto", "cpu", "cuda"]
+    assert params["device"].options == list(DEVICE_PARAM_OPTIONS)
     assert params["precision"].default == "bf16"
     assert params["precision"].options == ["fp32", "bf16", "fp16"]
 

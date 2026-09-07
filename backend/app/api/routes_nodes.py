@@ -1,7 +1,7 @@
 from fastapi import APIRouter
 from pydantic import BaseModel, Field
 
-from ..core.device_utils import device_options, get_available_devices
+from ..core.device_utils import device_options
 from ..core.node_base import BaseNode
 from ..core.node_registry import registry
 from ..core.plugin_validator import PluginValidationError
@@ -95,21 +95,33 @@ def _node_to_definition(qualified_name: str, cls: type[BaseNode]) -> NodeDefinit
             )
             for p in cls.define_outputs()
         ],
-        params=[
-            ParamDefinitionSchema(
-                name=p.name,
-                param_type=p.param_type.value,
-                default=p.default if p.name != "device" or p.default == "auto" or p.default in get_available_devices() else "cpu",
-                description=p.description,
-                options=_filter_device_options(p.name, p.options),
-                min_value=p.min_value,
-                max_value=p.max_value,
-                visible_when=p.visible_when,
-                advanced=p.advanced,
-                option_packs=p.option_packs,
-            )
-            for p in cls.define_params()
-        ],
+        params=[_param_to_schema(p) for p in cls.define_params()],
+    )
+
+
+def _param_to_schema(p) -> ParamDefinitionSchema:
+    """The wire shape of one param.
+
+    A ``device`` param's option list and its default fallback come from one
+    ``device_options`` call: the served list is what this machine offers,
+    and a saved default this machine lacks (``cuda`` on a CPU box) is
+    served as ``cpu`` so the dropdown never shows a value it cannot run.
+    """
+    served = _filter_device_options(p.name, p.options)
+    default = p.default
+    if p.name == "device" and default != "auto" and default not in served:
+        default = "cpu"
+    return ParamDefinitionSchema(
+        name=p.name,
+        param_type=p.param_type.value,
+        default=default,
+        description=p.description,
+        options=served,
+        min_value=p.min_value,
+        max_value=p.max_value,
+        visible_when=p.visible_when,
+        advanced=p.advanced,
+        option_packs=p.option_packs,
     )
 
 

@@ -51,11 +51,14 @@ class _DtypeProbe(nn.Module):
 
 def test_device_param_offers_the_run_level_vocabulary_and_defaults_to_auto():
     """Same options, same default as TrainingLoop.device -- "auto" means
-    "follow the run-level device", the behaviour users expect."""
+    "use the graph's device", the behaviour users expect."""
+    from app.core.device_utils import DEVICE_PARAM_OPTIONS
+
     device_param = next(
         p for p in EvaluateModelNode.define_params() if p.name == "device")
     assert device_param.default == "auto"
-    assert device_param.options == ["auto", "cpu", "cuda", "mps"]
+    assert device_param.options == list(DEVICE_PARAM_OPTIONS)
+    assert device_param.advanced is True
 
 
 def test_execute_resolves_device_through_resolve_node_device(monkeypatch):

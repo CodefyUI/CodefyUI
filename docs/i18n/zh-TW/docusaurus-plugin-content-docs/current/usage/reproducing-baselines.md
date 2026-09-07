@@ -158,7 +158,6 @@ curl "http://127.0.0.1:8000/api/runs/<run_id>/metrics?format=csv" -o metrics.csv
 - **Trigger 只標示執行起點。** 在此範例中，`Start` 會 trigger `RandomCrop`、評估用的 `ToTensorTransform`、`SequentialModel` 與 `Loss`。不過，只要 root 透過 data edge 連到正在執行的節點，就會執行，不論是否有 trigger 指向它；前述四個節點與兩個 `Dataset` 節點都符合這項條件。詳見[執行圖](./running-graphs#沒有-trigger-的節點仍然可能執行)。因此，移除四條 trigger edge 中的任一條都不會改變執行內容；要排除節點，必須中斷其 data edge。
 
 - **保持 `LRScheduler.T_max` 與 `TrainingLoop.epochs` 相等。** cosine annealing 每個 epoch 前進一步，並在 `T_max` 時降至零。`T_max` 過高時，run 會在曲線尚未完成前結束，無法完整 anneal，準確率約降低一個百分點。`T_max` 過低時，cosine 在超過 `T_max` 後會再次**上升**，使最後幾個 epoch 使用逐漸提高的 learning rate。兩者不一致時，`TrainingLoop` 會在伺服器 log、**執行任務**面板顯示的事件紀錄，以及畫布的**執行紀錄**中發出警告，但不會強制要求相等。截短 schedule 是有效選擇；此外，`CosineAnnealingWarmRestarts` 會將相同值用作 `T_0`，若要求它與 epoch 數相等，就不會發生 restart。相同檢查也適用於 `OneCycleLR.total_steps`；其預設值 1000 代表 batch 數量，沒有 epoch budget 會達到這個數字。以上說明假設使用預設的 `TrainingLoop.scheduler_step = epoch`，本 baseline 也使用這項設定。若改為 `optimizer_step`，`LRScheduler` 上的所有長度都會改以 optimizer step 計算，警告也會將它們與 run 的 step budget 比較，而不是與 `epochs` 比較。
-- **`EvaluateModel.device` 預設為 `auto`**，並跟隨 run device。隨附的圖將它固定為 `cuda`，但不是必要設定。
 - **第一次執行會下載 CIFAR-10**（約 170 MB）。預設位置是 `backend/data/`；開啟專案目錄時，位置是 `<project>/assets/data`。後續 run 會重用資料。
 
 CIFAR-10 資料集來自 Krizhevsky 的 *Learning Multiple Layers of Features from Tiny Images*（2009）。資料集會在 run 時下載，不會隨 CodefyUI 散布。

@@ -14,6 +14,7 @@ from __future__ import annotations
 from typing import Any
 
 from ...core.amp import PRECISIONS
+from ...core.device_utils import DEVICE_PARAM_DESCRIPTION, DEVICE_PARAM_OPTIONS
 from ...core.node_base import (
     BaseNode,
     DataType,
@@ -81,8 +82,9 @@ class EvaluateModelNode(BaseNode):
                 name="device",
                 param_type=ParamType.SELECT,
                 default="auto",
-                options=["auto", "cpu", "cuda", "mps"],
-                description="Device to evaluate on ('auto' follows the global device)",
+                options=list(DEVICE_PARAM_OPTIONS),
+                description=DEVICE_PARAM_DESCRIPTION,
+                advanced=True,
             ),
             ParamDefinition(
                 name="precision",

@@ -23,6 +23,7 @@ from typing import Any
 # Ensure the backend package is importable
 sys.path.insert(0, str(Path(__file__).parent))
 
+from app.core.device_utils import graph_settings_device
 from app.core.graph_engine import (
     GraphValidationError,
     build_preset_fallback,
@@ -96,6 +97,9 @@ async def run(
     nodes = graph.get("nodes", [])
     edges = graph.get("edges", [])
     name = graph.get("name", path.stem)
+    # ``--device`` beats the file's own assignment; with neither set the
+    # engine's default context (cpu) is used below.
+    device = device or graph_settings_device(graph)
 
     logger.info("=" * 60)
     logger.info("  Graph: %s", name)
@@ -137,7 +141,7 @@ async def run(
         from app.core.seeding import seed_rngs
 
         resolved = resolve_device(device) if device else "cpu"
-        logger.info("Global device: %s", resolved)
+        logger.info("Device: %s", resolved)
         if seed is not None:
             # Announced, because a seeded run is also a SERIAL run — the
             # engine drops to one worker so per-node seeding cannot be
@@ -208,7 +212,9 @@ def main() -> None:
     parser.add_argument("graph", help="Path to graph.json file")
     parser.add_argument("--validate-only", action="store_true", help="Only validate, do not execute")
     parser.add_argument("--verbose", "-v", action="store_true", help="Show detailed output and tracebacks")
-    parser.add_argument("--device", default=None, help="Global compute device: cpu / cuda / mps (default cpu)")
+    parser.add_argument("--device", default=None,
+                        help="cpu / auto / cuda / cuda:N / mps (default: the "
+                             "graph's settings.device, else cpu)")
     parser.add_argument("--seed", type=int, default=None,
                         help="Seed every node from this value; makes the run reproducible")
     parser.add_argument("--deterministic", action="store_true",

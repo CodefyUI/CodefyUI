@@ -268,6 +268,19 @@ describe('useKeyboardShortcuts', () => {
     ta.remove();
   });
 
+  it('skips all shortcuts when the target is a SELECT', () => {
+    // The toolbar's device select is a permanent, Tab-reachable control;
+    // Shift+L and '?' must stay out of its type-ahead search.
+    renderHook(() => useKeyboardShortcuts());
+    const select = document.createElement('select');
+    document.body.appendChild(select);
+    dispatchKey({ key: 'L', shiftKey: true }, select);
+    dispatchKey({ key: '?' }, select);
+    expect(applyLayout).not.toHaveBeenCalled();
+    expect(toggleShortcutsModal).not.toHaveBeenCalled();
+    select.remove();
+  });
+
   it('skips all shortcuts when the target is contentEditable', () => {
     renderHook(() => useKeyboardShortcuts());
     const div = document.createElement('div');

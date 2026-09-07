@@ -57,6 +57,7 @@ from pydantic import (
 )
 
 from ..config import settings
+from ..core.device_utils import graph_settings_device
 from ..core.run_service import (
     LANE_INTERACTIVE,
     MAX_SEED,
@@ -399,7 +400,15 @@ async def create_sweep(body: CreateSweepRequest, request: Request):
         # Rule 4, then the envelope, then the compiler. The caps are read
         # from settings PER REQUEST, never captured into a module constant,
         # so CODEFYUI_MAX_SWEEP_RUNS actually reaches them.
-        options = normalize_options(body.options)
+        # An absent options.device means the base graph's own device, the
+        # same rule RunService.submit applies to a single run; the resolved
+        # options dict is then copied into every variant below.
+        raw_options = body.options
+        settings_device = graph_settings_device(body.base_graph)
+        if settings_device and (raw_options is None or (
+                isinstance(raw_options, dict) and "device" not in raw_options)):
+            raw_options = {**(raw_options or {}), "device": settings_device}
+        options = normalize_options(raw_options)
         name = normalize_name(body.name)
         graph = normalize_graph(body.base_graph)
         compiled = compile_sweep(

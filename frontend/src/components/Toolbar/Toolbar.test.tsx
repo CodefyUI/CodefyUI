@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { act } from 'react';
-import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor, within } from '@testing-library/react';
 import { Toolbar } from './Toolbar';
 import { useTabStore } from '../../store/tabStore';
 import { useUIStore } from '../../store/uiStore';
@@ -13,6 +13,7 @@ import { usePluginStore } from '../../store/pluginStore';
 import { useI18n } from '../../i18n';
 import * as rest from '../../api/rest';
 import * as exportDiagram from '../../utils/exportDiagram';
+import { _resetDeviceOptionsForTesting } from '../../hooks/useDeviceOptions';
 
 // ── Mocks ─────────────────────────────────────────────────────────────
 
@@ -123,6 +124,9 @@ function setActiveTab(overrides: Record<string, unknown> = {}) {
     // (issue #88). Tests that need other values override them explicitly.
     projectOrigin: null,
     readOnly: false,
+    // Same reason: a device one test assigned must not become the next
+    // test's `settings.device` in a save or export body.
+    graphDevice: null,
     // Same reason (core#137): a test that seeds a collapsed block would
     // otherwise hand its definitions to every test that runs after it, and
     // `subgraphs` is now a positional argument of `exportGraph` — the leak
@@ -174,6 +178,10 @@ describe('Toolbar', () => {
     usePackStore.setState({ packs: [], byId: {}, loaded: true, loading: false, job: null });
     usePluginStore.setState({ plugins: [], byId: {}, loaded: true, loading: false, job: null });
     setActiveTab();
+    // The device list is cached at module level; each test fetches afresh so
+    // a per-test `fetchDevices` override is what the toolbar renders.
+    _resetDeviceOptionsForTesting();
+    useUIStore.setState({ globalDevice: 'cpu' });
 
     // Stub blob-download plumbing (jsdom lacks createObjectURL).
     vi.spyOn(URL, 'createObjectURL').mockReturnValue('blob:mock');
@@ -220,6 +228,82 @@ describe('Toolbar', () => {
     expect(screen.getByText('Reload Nodes')).toBeInTheDocument();
     expect(screen.getByText('Custom Nodes')).toBeInTheDocument();
     expect(screen.getByText('Auto Layout')).toBeInTheDocument();
+  });
+
+  // ── Graph device select (A8) ────────────────────────────────────────
+
+  describe('graph device select', () => {
+    const MPS = { value: 'mps', label: 'Apple MPS', detail: 'Metal Performance Shaders', available: true };
+    const CPU = { value: 'cpu', label: 'CPU', detail: '', available: true };
+    const select = () =>
+      screen.getByRole('combobox', { name: 'Device for this graph' }) as HTMLSelectElement;
+
+    it('lists the server devices behind a "follow Settings" option that names the Settings device', async () => {
+      mockedRest.fetchDevices.mockResolvedValueOnce({ default: 'mps', devices: [CPU, MPS] });
+      render(<Toolbar />);
+      await waitFor(() =>
+        expect(within(select()).getByRole('option', { name: /Apple MPS/ })).toBeInTheDocument(),
+      );
+      const options = within(select()).getAllByRole('option');
+      expect(options.map((o) => o.textContent)).toEqual([
+        'Follow Settings (CPU)', 'CPU', 'Apple MPS',
+      ]);
+      expect(select().value).toBe('');
+    });
+
+    it('names the Settings device as stored when the server does not list it', async () => {
+      useUIStore.setState({ globalDevice: 'cuda' });
+      render(<Toolbar />);
+      await waitFor(() => expect(mockedRest.fetchDevices).toHaveBeenCalled());
+      expect(within(select()).getByRole('option', { name: 'Follow Settings (cuda)' })).toBeInTheDocument();
+    });
+
+    it('choosing a device writes graphDevice; the empty option clears it', async () => {
+      mockedRest.fetchDevices.mockResolvedValueOnce({ default: 'mps', devices: [CPU, MPS] });
+      render(<Toolbar />);
+      await waitFor(() =>
+        expect(within(select()).getByRole('option', { name: /Apple MPS/ })).toBeInTheDocument(),
+      );
+      fireEvent.change(select(), { target: { value: 'mps' } });
+      expect(useTabStore.getState().tabs[0].graphDevice).toBe('mps');
+      expect(select().value).toBe('mps');
+      fireEvent.change(select(), { target: { value: '' } });
+      expect(useTabStore.getState().tabs[0].graphDevice).toBeNull();
+    });
+
+    it('is disabled on a read-only tab', () => {
+      setActiveTab({ readOnly: true });
+      render(<Toolbar />);
+      expect(select()).toBeDisabled();
+    });
+
+    it('stays enabled while a run is in flight', () => {
+      setActiveTab({ status: 'running' });
+      render(<Toolbar />);
+      expect(select()).not.toBeDisabled();
+    });
+
+    it.each(['cuda:1', 'auto'])(
+      'keeps a stored %s the server does not list, as a disabled option',
+      async (stored) => {
+        setActiveTab({ graphDevice: stored });
+        render(<Toolbar />);
+        await waitFor(() => expect(mockedRest.fetchDevices).toHaveBeenCalled());
+        const synthetic = within(select()).getByRole('option', { name: stored }) as HTMLOptionElement;
+        expect(synthetic).toBeDisabled();
+        expect(synthetic.value).toBe(stored);
+        // The select keeps the file's value, so a Save keeps the assignment.
+        expect(select().value).toBe(stored);
+      },
+    );
+
+    it('adds no synthetic option for a stored device the server lists', async () => {
+      setActiveTab({ graphDevice: 'cpu' });
+      render(<Toolbar />);
+      await waitFor(() => expect(mockedRest.fetchDevices).toHaveBeenCalled());
+      expect(within(select()).getAllByRole('option')).toHaveLength(2);
+      expect(select().value).toBe('cpu');
+    });
   });
 
   // ── Run / Stop ──────────────────────────────────────────────────────
@@ -338,8 +422,29 @@ describe('Toolbar', () => {
         expect.objectContaining({ name: 'my-graph', description: '' }),
       ),
     );
+    // No assignment, no `settings` key: the saved file stays byte-identical.
+    expect('settings' in mockedRest.saveGraph.mock.calls[0][0]).toBe(false);
     await waitFor(() =>
       expect(useToastStore.getState().toasts.some((t) => t.type === 'success')).toBe(true),
+    );
+  });
+
+  it('Save: carries settings.device when the graph assigns one', async () => {
+    mockedRest.saveGraph.mockResolvedValueOnce({} as never);
+    setActiveTab({
+      graphDevice: 'cuda:1',
+      nodes: [
+        { id: 'n1', type: 'baseNode', position: { x: 0, y: 0 }, data: { type: 'Add', params: {} } },
+      ],
+    });
+    render(<Toolbar />);
+    fireEvent.click(screen.getByText('File'));
+    fireEvent.click(screen.getByText('Save'));
+    await resolveDialog('my-graph');
+    await waitFor(() =>
+      expect(mockedRest.saveGraph).toHaveBeenCalledWith(
+        expect.objectContaining({ settings: { device: 'cuda:1' } }),
+      ),
     );
   });
 
@@ -948,6 +1053,19 @@ describe('Toolbar', () => {
     await waitFor(() => expect(useTabStore.getState().tabs[0].currentGraphFile).toBeNull());
   });
 
+  it.each([
+    ['with settings.device', { settings: { device: 'cuda:1' } }, 'cuda:1'],
+    ['without settings', {}, null],
+    ['with a device outside the pattern', { settings: { device: 'gpu' } }, null],
+  ])('Import: %s installs the graph device', async (_label, extra, expected) => {
+    setActiveTab({ graphDevice: 'mps' });
+    render(<Toolbar />);
+    const payload = JSON.stringify({ nodes: [], edges: [], ...extra });
+    const file = new File([payload], 'imported.json', { type: 'application/json' });
+    fireEvent.change(fileInput(), { target: { files: [file] } });
+    await waitFor(() => expect(useTabStore.getState().tabs[0].graphDevice).toBe(expected));
+  });
+
   it('Import: JSON without presets / missing arrays uses fallbacks, no preset write', async () => {
     render(<Toolbar />);
     const payload = JSON.stringify({}); // nodes/edges absent -> ?? [] ; presets not array
@@ -1078,6 +1196,32 @@ describe('Toolbar', () => {
     fireEvent.click(screen.getByText('Export as JSON'));
     expect(URL.createObjectURL).toHaveBeenCalled();
     expect(URL.revokeObjectURL).toHaveBeenCalled();
+  });
+
+  it('Export JSON: writes settings.device when assigned and no settings key otherwise', async () => {
+    const readBlob = () => {
+      const calls = (URL.createObjectURL as unknown as ReturnType<typeof vi.fn>).mock.calls;
+      const blob = calls[calls.length - 1][0] as Blob;
+      return new Promise<string>((resolve, reject) => {
+        const fr = new FileReader();
+        fr.onload = () => resolve(String(fr.result));
+        fr.onerror = () => reject(fr.error);
+        fr.readAsText(blob);
+      });
+    };
+    const nodes = [{ id: 'n1', type: 'baseNode', position: { x: 0, y: 0 }, data: { type: 'Add', params: {} } }];
+    setActiveTab({ nodes, graphDevice: 'mps' });
+    const view = render(<Toolbar />);
+    fireEvent.click(screen.getByText('Export'));
+    fireEvent.click(screen.getByText('Export as JSON'));
+    expect(JSON.parse(await readBlob()).settings).toEqual({ device: 'mps' });
+
+    view.unmount();
+    setActiveTab({ nodes });
+    render(<Toolbar />);
+    fireEvent.click(screen.getByText('Export'));
+    fireEvent.click(screen.getByText('Export as JSON'));
+    expect('settings' in JSON.parse(await readBlob())).toBe(false);
   });
 
   it('Export JSON: uses "graph" fallback when the tab name is empty', () => {
@@ -1345,10 +1489,27 @@ describe('Toolbar', () => {
     render(<Toolbar />);
     fireEvent.click(screen.getByText('Export'));
     fireEvent.click(screen.getByText('Export as Python'));
-    // The trailing [] is `subgraphs` (core#137) -- a graph with no collapsed
-    // blocks still sends the argument, it is just empty.
+    // The [] is `subgraphs` (core#137) -- a graph with no collapsed blocks
+    // still sends the argument, it is just empty. The trailing `undefined`
+    // is `settings`: a graph with no assigned device sends none, and the
+    // request body then carries no `settings` key.
     await waitFor(() => expect(mockedRest.exportGraph).toHaveBeenCalledWith(
-      expect.anything(), expect.anything(), 'graph', [], expect.anything(), [],
+      expect.anything(), expect.anything(), 'graph', [], expect.anything(), [], undefined,
+    ));
+  });
+
+  it('Export Python: forwards the graph settings so the script bakes in the device', async () => {
+    mockedRest.exportGraph.mockResolvedValueOnce({ script: 'x' });
+    setActiveTab({
+      graphDevice: 'cuda:1',
+      nodes: [{ id: 'n1', type: 'baseNode', position: { x: 0, y: 0 }, data: { type: 'Add', params: {} } }],
+    });
+    render(<Toolbar />);
+    fireEvent.click(screen.getByText('Export'));
+    fireEvent.click(screen.getByText('Export as Python'));
+    await waitFor(() => expect(mockedRest.exportGraph).toHaveBeenCalledWith(
+      expect.anything(), expect.anything(), 'My Graph', [], expect.anything(), [],
+      { device: 'cuda:1' },
     ));
   });
 

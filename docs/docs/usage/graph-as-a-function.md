@@ -66,7 +66,7 @@ The body is OPTIONAL (absent body means `{}`), and every field is optional:
 {
   "inputs": {"prompt": "hello"},   // default {}
   "timeout_s": 300,                // default 300, min 1, max 3600
-  "device": "cuda",                // "cpu" / "cuda" / "mps"; falls back to CPU when unavailable
+  "device": "cuda",                // "cpu" / "cuda" / "cuda:N" / "mps" / "auto"; omitted = the graph's settings.device, else cpu; unavailable falls back to CPU
   "record_outputs": false          // default false; see gotchas before enabling
 }
 ```
@@ -209,7 +209,7 @@ A ready-made graph for these exact calls ships in `examples/Usage_Example/Api-Fu
 - This server never emits 504; a 504 always came from an intermediary.
 - `record_outputs=true` makes inputs and results readable by anyone on the LAN who learns the `run_id` (the GET outputs endpoint is auth-exempt; transport is plain HTTP). Published apps: run records are key-protected in SQLite; the inspector store is editor-only — invokes never write to it. To make a graph stable and key-protected: [publish it](./publish).
 - Do not put secrets in `default` values — `GET /contract` and `/load` are unauthenticated.
-- `device: "auto"` (or an unavailable device) silently resolves to CPU; the envelope's `device` field shows what you actually got.
+- `device: "auto"` resolves to the best accelerator the server can see (`cuda`, then `mps`, then `cpu`); an unavailable device silently falls back to CPU. A body with no `device` uses the saved graph's `settings.device`, else CPU. The envelope's `device` field shows what you actually got.
 - A single >65,536-element tensor output fails the whole call — remove that GraphOutput or use `record_outputs` + the slicing outputs API (`GET /api/execution/outputs/{run_id}/{node_id}/{port}?slice=...`); an outputs filter is deferred.
 - Concurrent runs share the process default thread pool (the per-run parallelism limit of 4 is not a global limit) — heavy runs contend for CPU/GPU.
 - A call waits while a **seeded** run is executing anywhere in the server, and a seeded run waits for the calls already going. Ordinary calls still overlap each other. See [reproducible runs](./running-graphs#reproducible-runs-seed) — count it against `timeout_s` if the same server is also used for seeded training.

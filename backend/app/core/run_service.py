@@ -35,6 +35,12 @@ function-local import of the #117 output-entry builders out of
 
 Lanes
 -----
+The run's device is resolved once, in :meth:`RunService.submit`: the
+effective value is ``options["device"]`` when the key is present, else the
+graph's ``settings.device``, else ``cpu``; ``auto`` resolves to the best
+accelerator this server has. The same string becomes ``exec_runs.queue_key``
+and ``ExecutionContext.device``.
+
 ``options["lane"]`` labels where a run came from. ``queued`` (the default)
 is a server-owned, fully isolated run — the shape the FIFO queue schedules.
 ``interactive`` is the canvas: a live editor session that expects its
@@ -118,7 +124,6 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import re
 import time
 import weakref
 from collections import deque
@@ -133,7 +138,7 @@ from .db import utc_now_iso
 #: "which card does a bare ``cuda`` mean in this process" is one policy
 #: decision, and #135 gave ``device_utils`` a second copy of it for the
 #: index-validation fallback. Two copies of a policy drift.
-from .device_utils import _current_cuda_index, resolve_device
+from .device_utils import DEVICE_PATTERN, _current_cuda_index, resolve_device
 from .execution_context import (
     ArtifactSignal,
     CancellationError,
@@ -269,15 +274,13 @@ DEFAULT_ERROR_MODE = "fail_fast"
 #: times; unbounded, one client typo parks a worker thread forever.
 MAX_RETRIES_LIMIT = 10
 
-#: The device vocabulary ``resolve_device`` actually understands. Validated
-#: as a VALUE, not just a key: strict option keys exist to stop a typo from
-#: silently running forty minutes on the wrong device, and ``{"device":
-#: "cudda"}`` defeats that entirely if only the key is checked — it sails
-#: through, hits ``resolve_device``'s unknown-value branch, and degrades to
-#: CPU with nothing but a log line. ``auto`` is accepted because the canvas
-#: device selector emits it; note that ``resolve_device`` currently maps it
-#: to CPU (pre-existing behaviour, deliberately not changed here).
-DEVICE_PATTERN = re.compile(r"^(cpu|auto|cuda(:\d+)?|mps(:\d+)?)$")
+#: ``DEVICE_PATTERN`` (defined in ``device_utils`` and re-exported here) is
+#: the device vocabulary ``resolve_device`` understands, validated as a
+#: VALUE: strict option keys exist to stop a typo from silently running
+#: forty minutes on the wrong device, and ``{"device": "cudda"}`` defeats
+#: that entirely if only the key is checked. ``auto`` resolves to the best
+#: accelerator present (``describe_accelerator()["default"]``); an absent
+#: device is ``cpu`` unless the graph carries ``settings.device``.
 
 #: Progress-payload keys that describe the LOOP, not a measurement. Turning
 #: ``epoch`` into a series named "epoch" whose value equals its own step is
@@ -649,12 +652,33 @@ def normalize_graph(raw: Any) -> dict[str, Any]:
         raise RunSubmitError("graph.presets must be a list")
     if not isinstance(subgraphs, list):
         raise RunSubmitError("graph.subgraphs must be a list")
-    return {
+    settings = raw.get("settings")
+    if settings is not None and not isinstance(settings, dict):
+        raise RunSubmitError("graph.settings must be an object")
+    device = (settings or {}).get("device")
+    if isinstance(device, str) and not device.strip():
+        # A blank string is "no assignment", the reading ``GraphSettings``
+        # (save/validate), ``graph_settings_device`` and the canvas share.
+        device = None
+    if device is not None:
+        if not isinstance(device, str):
+            raise RunSubmitError("graph.settings.device must be a string")
+        device = device.strip().lower()
+        if DEVICE_PATTERN.match(device) is None:
+            raise RunSubmitError(
+                f"unknown graph.settings.device {device!r}; expected cpu, "
+                "auto, cuda, cuda:N, mps or mps:N")
+    normalized = {
         "nodes": nodes,
         "edges": edges,
         "presets": presets,
         "subgraphs": subgraphs,
     }
+    # Kept only when set, so the snapshot records the assignment and a
+    # graph with none stays shaped as before.
+    if device:
+        normalized["settings"] = {"device": device}
+    return normalized
 
 
 def json_size(value: Any) -> int:
@@ -1425,7 +1449,11 @@ class RunService:
         The device is resolved ONCE here and handed to both the row
         (``queue_key``) and the run (``ExecutionContext.device``), so the
         queue a run waits in and the device it eventually uses cannot
-        disagree.
+        disagree. The effective device is ``options["device"]`` when that
+        key is present, else the graph's ``settings.device``, else ``cpu``;
+        the effective value is written into the stored options so the row
+        stays self-describing. ``auto`` resolves to the best accelerator
+        this server has.
 
         *session* is the canvas's process-local state; see
         :class:`InteractiveSession`. Passing one on any other lane is a
@@ -1443,6 +1471,11 @@ class RunService:
         if self._shutting_down:
             raise RunServiceUnavailable("run service is shutting down")
         normalized_graph = normalize_graph(graph)
+        settings_device = normalized_graph.get("settings", {}).get("device")
+        if settings_device and (options is None or (
+                isinstance(options, dict) and "device" not in options)):
+            # Key absence is the test: an explicit null still fails below.
+            options = {**(options or {}), "device": settings_device}
         normalized_options = normalize_options(options)
         normalized_name = normalize_name(name)
         lane = normalized_options["lane"]

@@ -12,7 +12,7 @@ That is what makes queueing useful. Submit five training jobs, shut the laptop l
 
 ## One queue per device
 
-Every run is scheduled against its **resolved device** — `cpu`, `cuda:0`, `mps`. That string is the queue key, so each device has its own independent line and its own concurrency limit.
+Every run is scheduled against its **resolved device** — `cpu`, `cuda:0`, `mps`. That string is the queue key, so each device has its own independent line and its own concurrency limit. The device is resolved in this order: the run's own `device` option, then the graph file's `settings.device`, then `cpu`; only an explicit `auto` picks the best accelerator present.
 
 | Queue key | Runs at once (default) | Why |
 | --- | --- | --- |
@@ -25,8 +25,8 @@ A saturated GPU never delays a CPU run, and two different cards never wait on ea
 `cuda` and `cuda:0` are the same physical device, so they are canonicalised onto a single queue key (`cuda:0`) rather than becoming two independent FIFOs over one card. Same for `mps` and `mps:0`. On a multi-GPU box `cuda` follows the process's current device.
 :::
 
-:::note `--device auto` resolves to CPU today
-Device resolution maps an unknown or `auto` request to `cpu`, so `auto` currently queues on the CPU line. Ask for `cuda` (or `cuda:0`) explicitly to use a card.
+:::note Where a run's device comes from
+A run without an explicit `device` option uses the graph file's `settings.device`, and a graph without one runs on `cpu`; no mechanism picks an accelerator on your behalf. `--device auto` (or `"device": "auto"` in the request body) is the one exception: it resolves to the best accelerator this server can see, `cuda` before `mps` before `cpu`, and queues on that line. An accelerator that is not present falls back to `cpu` with a warning.
 :::
 
 This is a limit on **runs per device**, and it is not the same knob as `CODEFYUI_MAX_PARALLEL_NODES`, which bounds how many *nodes inside one run* execute at the same time. The two multiply.
@@ -108,7 +108,7 @@ cdui run infer.json --record-outputs
 | Flag | Meaning |
 | --- | --- |
 | `--name <text>` | Label stored on the run and shown wherever runs are listed |
-| `--device <dev>` | `cpu` \| `auto` \| `cuda` \| `cuda:N` \| `mps` (default `auto`, which resolves to `cpu` today). The resolved device is the queue it joins. |
+| `--device <dev>` | `cpu` \| `auto` \| `cuda` \| `cuda:N` \| `mps`. Omitted: the graph's `settings.device`, else `cpu`. `auto`: the best accelerator this server has. The resolved device is the queue it joins. |
 | `--seed <n>` | Seed every node from `n`, making the run reproducible. A seeded run executes one node at a time — see **[Reproducible runs](./running-graphs#reproducible-runs-seed)**. |
 | `--deterministic` | Also ask PyTorch for deterministic kernels (`warn_only`) |
 | `--record-outputs` | Capture node outputs for later inspection |

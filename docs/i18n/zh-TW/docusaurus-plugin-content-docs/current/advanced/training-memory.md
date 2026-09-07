@@ -65,7 +65,7 @@ CheckpointLoader.grad_scaler_state  →  TrainingLoop.grad_scaler_state
 
 ## 指定某一張 GPU
 
-在有一張以上 CUDA 裝置的機器上，每個裝置下拉選單——**設定**裡的全域選擇器，以及每個節點自己的 **device** 參數——都會逐張列出：
+在有一張以上 CUDA 裝置的機器上，每個裝置下拉選單——**設定**裡的選擇器、圖自己的裝置控制項，以及每個節點自己的 **device** 參數——都會逐張列出：
 
 ```
 CPU

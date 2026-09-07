@@ -315,11 +315,21 @@ async def test_submit_records_normalized_options(client):
     assert record["queue_key"] == "cpu"
 
 
+async def test_submit_uses_the_graph_device_when_options_have_none(client):
+    response = await client.post("/api/runs", json={
+        "graph": {**_graph(), "settings": {"device": "cpu"}}, "options": {}})
+    run_id = response.json()["run_id"]
+    record = await _poll_until_terminal(client, run_id)
+    assert record["options"]["device"] == "cpu"
+    assert record["queue_key"] == "cpu"
+
+
 @pytest.mark.parametrize("payload,expected", [
     ({"graph": {"nodes": []}}, 400),
     ({"graph": {"edges": []}}, 400),
     ({"graph": _graph(), "options": {"devcie": "cuda"}}, 400),   # bad key
     ({"graph": _graph(), "options": {"device": "cudda"}}, 400),  # bad value
+    ({"graph": {**_graph(), "settings": {"device": "cudda"}}}, 400),
     ({"graph": _graph(), "options": {"seed": -5}}, 400),
     ({"graph": _graph(), "options": "nope"}, 400),
     ({"graph": _graph(), "name": "x" * 65}, 400),

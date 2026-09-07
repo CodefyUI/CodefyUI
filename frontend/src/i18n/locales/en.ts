@@ -5,6 +5,9 @@ const en = {
   'toolbar.stop': 'Stop',
   'toolbar.run.title': 'Execute the pipeline (Run)',
   'toolbar.stop.title': 'Stop execution',
+  'toolbar.device.aria': 'Device for this graph',
+  'toolbar.device.title': 'Run this graph on a specific device; the choice is saved in the graph file',
+  'toolbar.device.follow': 'Follow Settings ({device})',
   'toolbar.reloadNodes': 'Reload Nodes',
   'toolbar.reloadNodes.title': 'Reload node definitions from backend',
   'toolbar.reload.fail': 'Reload failed: {error}',
@@ -503,7 +506,8 @@ const en = {
   'toolbar.settings.section.llm': 'LLM Providers',
   'toolbar.settings.section.system': 'This Server',
   'settings.device.name': 'Compute device',
-  'settings.device.desc': 'Run the graph on this device. Nodes set to "auto" follow it.',
+  'settings.device.desc': 'Used by graphs with no device of their own. The toolbar assigns one per graph.',
+  'settings.device.hint': 'Best available on this server: {device}',
 
   // Font-size menu
   'toolbar.fontSize.title': 'Font size',

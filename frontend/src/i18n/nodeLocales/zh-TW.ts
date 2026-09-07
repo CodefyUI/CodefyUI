@@ -553,7 +553,7 @@ const zhTW: NodeTranslations = {
     description: '執行訓練迴圈，支援驗證、早停、學習率排程和梯度裁剪',
     params: {
       epochs: '訓練 epoch 數量',
-      device: '訓練裝置',
+      device: '此節點的裝置。保持 auto 就跟隨這張圖的裝置（工具列的圖裝置，沒有指定時則用設定）。一張圖只在一個裝置上執行；若部分工作需要不同裝置，請拆成兩張圖。',
       early_stopping_patience: '監控的指標未改善 N 個 epoch 後停止（0 = 停用）',
       monitor: '早停監控的指標。val_loss：越低越好（預設）。val_accuracy：越高越好，僅在使用分類損失函數（CrossEntropyLoss/NLLLoss）且有接上 val_dataloader 時才會記錄；兩者缺一就會退回 val_loss 並記錄警告，而不是去監控一個從未被算出來的數值。',
       checkpoint_every: '每 N 個完整 epoch 存一次檢查點，讓伺服器當機時最多只損失 N 個 epoch，而不是整次執行。與 CheckpointSaver 互相獨立，恢復方式也相同：把 CheckpointLoader.epoch 接到 start_epoch。每個檢查點大小大約是模型加上優化器狀態（常常是模型本身的好幾倍），而且是在訓練執行緒上同步寫入；大模型搭配偏低的 N、跑很長的訓練，執行完之前可能會用掉好幾 GB 磁碟空間，因為執行中的任務目前沒有機制限制這件事（0 = 停用）',
@@ -576,7 +576,7 @@ const zhTW: NodeTranslations = {
     description: '算訓練好的分類模型在一個 dataset 上的準確率。吃 model + dataset，內部建 DataLoader 跑完整個資料集、對每筆取 argmax 跟標籤比，輸出 accuracy / correct / total。補上通用訓練流缺的「評估」那一塊（對應 I2-4 看 MNIST 測試準確率）。',
     params: {
       batch_size: '評估時每批跑幾筆（不影響結果，只影響速度/記憶體）。',
-      device: '評估裝置',
+      device: '此節點的裝置。保持 auto 就跟隨這張圖的裝置（工具列的圖裝置，沒有指定時則用設定）。一張圖只在一個裝置上執行；若部分工作需要不同裝置，請拆成兩張圖。',
       precision: '前向傳播用的混合精度。bf16 在 Ampere 以後的顯卡上可以把 activation 記憶體用量大約減半，其他都不用改；fp16 則是給更舊的顯卡用的。不論選哪一種，參數都維持 fp32；但降精度的前向傳播仍可能讓量出來的準確率有些微變動（精度較低的 logit 在接近平手時可能讓 argmax 換邊），所以要回報的準確率應該用 fp32 這個數字。裝置做不到的話會自動退回 fp32 並記錄下來。',
       step: 'eval_accuracy 這個指標記錄時使用的 step 值。同一張圖裡有多個 EvaluateModel 節點時（例如微調前後的比較），需要各自設定不同的 step，否則會在圖表上互相覆蓋。',
     },
@@ -675,7 +675,7 @@ const zhTW: NodeTranslations = {
       path: '權重檔案路徑（.pt、.pth 或 .safetensors）',
       load_mode:
         '載入模式：state_dict（需要模型輸入）或 full_model 完整模型。full_model 會重建存檔中的模組本身，並且在 torch 的受限解序列化器下讀取，因此只接受由標準 torch.nn 層與 CodefyUI 自己的層組成的模型，其餘一律拒絕 —— 包含來自自訂節點或外掛的類別，以及除了 transformer 層會存下的那兩個 torch 啟動函式以外的任何函式',
-      device: '載入權重的裝置',
+      device: '此節點的裝置。保持 auto 就跟隨這張圖的裝置（工具列的圖裝置，沒有指定時則用設定）。一張圖只在一個裝置上執行；若部分工作需要不同裝置，請拆成兩張圖。',
       strict: '是否嚴格要求 state_dict 中的鍵值匹配（僅 state_dict 模式）',
     },
   },
@@ -690,13 +690,13 @@ const zhTW: NodeTranslations = {
     description: '載入訓練檢查點以恢復訓練（恢復模型 + 優化器 + 學習率排程 + epoch）',
     params: {
       path: '檢查點檔案路徑',
-      device: '載入的目標裝置',
+      device: '此節點的裝置。保持 auto 就跟隨這張圖的裝置（工具列的圖裝置，沒有指定時則用設定）。一張圖只在一個裝置上執行；若部分工作需要不同裝置，請拆成兩張圖。',
     },
   },
   Inference: {
     description: '對已訓練的模型執行推論（前向傳播）。自動設為 eval 模式並停用梯度。',
     params: {
-      device: '執行推論的裝置',
+      device: '此節點的裝置。保持 auto 就跟隨這張圖的裝置（工具列的圖裝置，沒有指定時則用設定）。一張圖只在一個裝置上執行；若部分工作需要不同裝置，請拆成兩張圖。',
     },
   },
 
@@ -1014,7 +1014,7 @@ const zhTW: NodeTranslations = {
     params: {
       batch_size: '一次計分幾個區塊。它不會改變結果 — 平均是以 token 數加權，而不是以批次數加權 — 只影響速度與記憶體。',
       max_batches: '跑到這麼多批次就停（0 = 整份資料集）。適合上課時快速估一下；實際量了多少可以看 `tokens` 輸出。',
-      device: '在哪個裝置上計分（auto 表示跟隨全域裝置，所以在 GPU 上訓練的模型也會在 GPU 上量測）。',
+      device: '此節點的裝置。保持 auto 就跟隨這張圖的裝置（工具列的圖裝置，沒有指定時則用設定）。一張圖只在一個裝置上執行；若部分工作需要不同裝置，請拆成兩張圖。',
       precision: '前向傳播使用的混合精度。在 Ampere 之後的顯卡上，bf16 大約可以省下一半的 activation 記憶體，長上下文往往得靠它才量得動；損失本身仍然以 fp32 累加。裝置若無法支援所選精度，會退回 fp32 並在 log 中說明。',
     },
   },
@@ -1028,7 +1028,7 @@ const zhTW: NodeTranslations = {
       top_k: '只從分數最高的 k 個 token 中取樣（0 = 關閉）。這是避免某個五萬分之一的 token 把整句話帶偏的手段。',
       top_p: 'Nucleus 取樣：從機率最高的 token 開始累加，直到總和達到 p，就只從這些 token 取樣（1 = 關閉）。與 top_k 不同的是這個切點會自動調整 — 模型有把握時就窄，沒把握時就寬。',
       seed: '取樣所用的隨機種子。同樣的種子加上同樣的模型，在任何裝置上都會得到同樣的文字，所以比較兩個 temperature 時，差異就只來自 temperature。',
-      device: '在哪個裝置上生成（auto 表示跟隨全域裝置，所以在 GPU 上訓練的模型也會在 GPU 上生成）。',
+      device: '此節點的裝置。保持 auto 就跟隨這張圖的裝置（工具列的圖裝置，沒有指定時則用設定）。一張圖只在一個裝置上執行；若部分工作需要不同裝置，請拆成兩張圖。',
     },
   },
   TextEmbedding: {
@@ -1043,7 +1043,7 @@ const zhTW: NodeTranslations = {
       batch_size: '一次前向傳播處理幾段文字。只影響速度與記憶體。',
       max_seq_length: '每段文字的 token 上限（0 = 模型自己的預設：paraphrase-multilingual 128、all-MiniLM 256、bge/e5 512）。超過的部分會被截掉，切塊時請把長度控制在範圍內。',
       label_chars: 'labels 輸出中每段文字保留的字元數。',
-      device: '在哪個裝置上編碼（auto 表示跟隨全域裝置）。',
+      device: '此節點的裝置。保持 auto 就跟隨這張圖的裝置（工具列的圖裝置，沒有指定時則用設定）。一張圖只在一個裝置上執行；若部分工作需要不同裝置，請拆成兩張圖。',
     },
   },
   DocumentLoader: {
@@ -1105,7 +1105,7 @@ const zhTW: NodeTranslations = {
       top_p: 'Nucleus 取樣：只從累積機率達到 p 的最可能 token 中取樣（1 = 關閉）。',
       top_k: '只從分數最高的 k 個 token 中取樣（0 = 關閉）。',
       seed: '取樣的隨機種子。同樣的種子與模型會得到同樣的答案。',
-      device: '在哪個裝置上生成（auto 表示跟隨全域裝置）。',
+      device: '此節點的裝置。保持 auto 就跟隨這張圖的裝置（工具列的圖裝置，沒有指定時則用設定）。一張圖只在一個裝置上執行；若部分工作需要不同裝置，請拆成兩張圖。',
       dtype: '權重精度。auto 在 CUDA 上用 bfloat16/float16、在 CPU 與 MPS 上用 float32。',
     },
   },
@@ -1231,7 +1231,7 @@ const zhTW: NodeTranslations = {
       instruction_mode: 'normal：回合真實指令。swapped：改講干擾 puck 的顏色——語言接地消融。只看畫面的策略兩者同分；讀語言的策略在 swapped 下崩潰',
       record_episodes: '錄進 frames 的前 N 個回合（0 = 不錄）',
       seed: '評估種子（回合種子取自與 PushWorldDemos 預設不相交的偏移流）',
-      device: 'auto 跟隨本次執行的裝置',
+      device: '此節點的裝置。保持 auto 就跟隨這張圖的裝置（工具列的圖裝置，沒有指定時則用設定）。一張圖只在一個裝置上執行；若部分工作需要不同裝置，請拆成兩張圖。',
     },
   },
   VLAActionEval: {
@@ -1243,7 +1243,7 @@ const zhTW: NodeTranslations = {
       max_samples: '最多評估的樣本數',
       batch_size: '推論批次大小',
       seed: '固定 flow head 的取樣噪聲讓數字可重現（regression 不受影響）',
-      device: 'auto 跟隨本次執行的裝置',
+      device: '此節點的裝置。保持 auto 就跟隨這張圖的裝置（工具列的圖裝置，沒有指定時則用設定）。一張圖只在一個裝置上執行；若部分工作需要不同裝置，請拆成兩張圖。',
     },
   },
 

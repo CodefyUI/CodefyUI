@@ -99,6 +99,31 @@
   opacity: 0.4;
 }
 
+/* ----- Per-graph device select -----
+   Same chrome as SettingsPopover's .select, at the Run cluster's size. */
+.deviceSelect {
+  background: var(--surface-input);
+  border: 1px solid var(--border-strong);
+  color: var(--text-secondary);
+  padding: var(--sp-2) var(--sp-3);
+  font-size: var(--fs-md);
+  font-weight: var(--fw-semibold);
+  border-radius: var(--radius);
+  cursor: pointer;
+  font-family: inherit;
+  max-width: 14rem;
+  flex-shrink: 0;
+}
+
+.deviceSelect:hover:not(:disabled) {
+  color: var(--text-primary);
+}
+
+.deviceSelect:disabled {
+  cursor: not-allowed;
+  opacity: 0.4;
+}
+
 /* ----- Stop button (ghost) ----- */
 .stopButton {
   background: transparent;

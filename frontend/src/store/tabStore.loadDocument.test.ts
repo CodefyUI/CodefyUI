@@ -122,6 +122,18 @@ describe('loadGraphDocument', () => {
     expect(t.currentGraphFile).toBeNull();
   });
 
+  it('installs the document device, and a bare document clears it', () => {
+    store().loadGraphDocument({
+      nodes: [node('a')], edges: [], boundFile: null, device: 'cuda:1',
+    });
+    expect(tab().graphDevice).toBe('cuda:1');
+
+    // `graphDevice` is written to the file as `settings.device`, so a
+    // leftover would be saved as the new graph's assignment.
+    store().loadGraphDocument({ nodes: [node('b')], edges: [], boundFile: null });
+    expect(tab().graphDevice).toBeNull();
+  });
+
   // -- #200 item 9: the save binding is part of installing a document --
 
   it('binds the tab to the file the document names, and unbinds when it names none', () => {

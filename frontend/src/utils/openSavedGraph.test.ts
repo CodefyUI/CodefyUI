@@ -92,7 +92,13 @@ describe('resolveSavedGraph', () => {
     expect(doc.subgraphs).toEqual([]);
     expect(doc.segmentGroups).toEqual([]);
     expect(doc.description).toBe('');
+    expect(doc.device).toBeNull();
     expect(doc.formatVersion).toBeUndefined();
+  });
+
+  it('reads settings.device, and reads null for a value outside the pattern', () => {
+    expect(resolveSavedGraph({ settings: { device: 'cuda:1' } }, 'a').device).toBe('cuda:1');
+    expect(resolveSavedGraph({ settings: { device: 'gpu' } }, 'a').device).toBeNull();
   });
 
   it('merges presets the running server has never seen, keeping the ones it has', () => {
@@ -190,6 +196,16 @@ describe('reloadTabFromDisk', () => {
     // And the tab in front of the user is untouched.
     expect(useTabStore.getState().activeTabId).toBe(active);
     expect(tabs().find((t) => t.id === active)!.nodes).toEqual([]);
+  });
+
+  it('installs the file device on reload, so a discard or checkout restores it', async () => {
+    const tabId = tabs()[0].id;
+    useTabStore.getState().setGraphDevice('cpu');
+    mockFetch(200, { nodes: [raw('fromDisk')], edges: [], settings: { device: 'mps' } });
+
+    await reloadTabFromDisk(tabId, 'alpha');
+
+    expect(tabs().find((t) => t.id === tabId)!.graphDevice).toBe('mps');
   });
 
   it('leaves the tab exactly as it is when the file is gone', async () => {

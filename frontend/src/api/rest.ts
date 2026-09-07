@@ -1,4 +1,4 @@
-import type { NodeDefinition, GraphSaveData, PresetDefinition } from '../types';
+import type { NodeDefinition, GraphSaveData, GraphSettings, PresetDefinition } from '../types';
 import { apiFetch } from './_auth';
 
 const BASE_URL = '/api';
@@ -113,8 +113,9 @@ export interface DevicesResponse {
 }
 
 /** Compute devices available for graph execution (CPU + any GPU backend,
- * with NVIDIA-CUDA / AMD-ROCm / Apple-MPS labels). Powers the global device
- * selector. */
+ * with NVIDIA-CUDA / AMD-ROCm / Apple-MPS labels). Read once through
+ * `useDeviceOptions`; the Settings select and the graph toolbar select
+ * render this list. */
 export async function fetchDevices(): Promise<DevicesResponse> {
   const res = await fetch(`${BASE_URL}/system/devices`);
   if (!res.ok) throw new Error(`Failed to fetch devices: ${res.statusText}`);
@@ -497,6 +498,10 @@ export async function exportGraph(
   // export with `Unknown subgraph: <id>`, so every graph containing a
   // collapsed block was un-exportable from the UI.
   subgraphs?: any[],
+  // The graph's `settings` block, when it assigns a device: the exported
+  // script bakes it in as the `--device` default. Absent for a graph that
+  // follows Settings, so its request body stays as it was.
+  settings?: GraphSettings,
 ) {
   const body: {
     nodes: any[];
@@ -506,6 +511,7 @@ export async function exportGraph(
     seed?: number | null;
     deterministic?: boolean;
     subgraphs?: any[];
+    settings?: GraphSettings;
   } = { nodes, edges };
   if (name) body.name = name;
   if (presets && presets.length > 0) body.presets = presets;
@@ -514,6 +520,7 @@ export async function exportGraph(
   if (subgraphs && subgraphs.length > 0) body.subgraphs = subgraphs;
   if (run?.seed !== undefined && run.seed !== null) body.seed = run.seed;
   if (run?.deterministic) body.deterministic = true;
+  if (settings) body.settings = settings;
   const res = await apiFetch(`${BASE_URL}/graph/export`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },

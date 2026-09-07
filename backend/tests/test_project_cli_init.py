@@ -66,6 +66,27 @@ def test_init_adopt_splits_legacy_json(tmp_path):
     assert layout["positions"]["a"] == {"x": 3, "y": 4}
 
 
+def test_init_adopt_keeps_the_device_in_logic(tmp_path):
+    """A legacy file's ``settings.device`` lands in ``graphs/<base>.graph.json``."""
+    src = tmp_path / "old"
+    src.mkdir()
+    (src / "pinned.json").write_text(json.dumps({
+        "name": "pinned",
+        "nodes": [{"id": "a", "type": "Dataset",
+                   "position": {"x": 3, "y": 4}, "data": {"params": {}}}],
+        "edges": [],
+        "settings": {"device": "cuda:1"},
+    }), encoding="utf-8")
+    target = tmp_path / "svc"
+    assert project.cmd_init(_args(dir=str(target), adopt=str(src))) == 0
+    logic = json.loads(
+        (target / "graphs" / "pinned.graph.json").read_text(encoding="utf-8"))
+    layout = json.loads(
+        (target / "layout" / "pinned.layout.json").read_text(encoding="utf-8"))
+    assert logic["settings"] == {"device": "cuda:1"}
+    assert "settings" not in layout
+
+
 def test_init_adopt_canonical_source_keeps_base(tmp_path):
     """A source file already named `<base>.graph.json` adopts under `<base>`
     (never a doubled `mix.graph.graph.json`)."""

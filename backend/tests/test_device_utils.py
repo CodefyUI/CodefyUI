@@ -136,9 +136,25 @@ def test_mps_listed_in_available_devices_when_present():
 # ── resolve_device strictness ───────────────────────────────────────
 
 def test_resolve_device_unknown_value_falls_back_to_cpu():
-    # "auto" is meaningful only as a per-node param, never a global device.
-    assert resolve_device("auto") == "cpu"
     assert resolve_device("bogus") == "cpu"
+
+
+def test_resolve_device_auto_is_the_best_accelerator(monkeypatch):
+    # "auto" has one definition everywhere: describe_accelerator()["default"].
+    from app.core import device_utils
+
+    monkeypatch.setattr(
+        device_utils, "describe_accelerator",
+        lambda: {"default": "mps", "devices": []},
+    )
+    assert resolve_device("auto") == "mps"
+    assert resolve_device(" AUTO ") == "mps"
+
+
+def test_resolve_device_auto_is_cpu_on_a_cpu_only_box(monkeypatch):
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
+    monkeypatch.setattr(torch.backends.mps, "is_available", lambda: False)
+    assert resolve_device("auto") == "cpu"
 
 
 # ── context_device ──────────────────────────────────────────────────

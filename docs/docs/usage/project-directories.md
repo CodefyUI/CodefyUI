@@ -14,7 +14,7 @@ CI-able validation, and a git commit recorded at every publish.
 ```
 my-service/
   codefyui.project.toml   manifest: name, plugin pins, default publish target
-  graphs/    <name>.graph.json    logic (nodes/edges/params/presets)
+  graphs/    <name>.graph.json    logic (nodes/edges/params/presets, optional settings.device)
   layout/    <name>.layout.json   positions (reviewable, generated)
   assets/images/   assets/models/   assets/data/    scaffolded empty
   assets/output/                                    created on demand (e.g. ImageWriter)
@@ -26,7 +26,8 @@ my-service/
 ## Why the split?
 
 `graphs/<name>.graph.json` holds only what changes the *behavior* of the graph
-(nodes, edges, parameters, embedded presets). Node **positions** and note
+(nodes, edges, parameters, embedded presets, and an optional `settings` block,
+for example `{"device": "cuda"}`, which assigns the device the graph runs on). Node **positions** and note
 geometry live in `layout/<name>.layout.json`. So a drag produces a diff only
 in `layout/`, and a parameter edit a diff only in `graphs/` -- code review sees
 the logic change, not a wall of moved-pixels noise. (Known exception:
@@ -77,9 +78,14 @@ into GraphInput and GraphInput's value into GraphOutput, then press
     {"id": "t1", "source": "start", "target": "gi", "sourceHandle": "trigger", "targetHandle": "", "type": "trigger"},
     {"id": "d1", "source": "gi", "target": "out", "sourceHandle": "value", "targetHandle": "value", "type": "data"}
   ],
-  "presets": []
+  "presets": [],
+  "settings": {"device": "cuda"}
 }
 ```
+
+`settings` is optional. A graph without it runs on the device the client
+chooses: the Settings device in the editor, or `cpu` for `cdui run` with no
+`--device`. See [Device Backends](../advanced/device-backends.md).
 
 ### 3. Commit
 

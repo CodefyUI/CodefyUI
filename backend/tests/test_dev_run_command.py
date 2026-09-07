@@ -147,9 +147,31 @@ def test_submit_body_omits_what_was_not_asked_for(graph_file):
     # The lane is the SERVER's default. Naming it here would hardcode a
     # policy the CLI has no opinion about.
     assert "lane" not in body["options"]
-    # `auto` is what the signature promises; the server maps it to cpu, and
-    # the CLI does not second-guess that mapping locally.
-    assert body["options"]["device"] == "auto"
+    # No device flag, no device key: the server applies the graph file's
+    # settings.device, else cpu, and the CLI does not repeat that rule.
+    assert "device" not in body["options"]
+
+
+def test_submit_body_sends_auto_only_when_asked(graph_file):
+    args = dev._parse_run_args([str(graph_file), "--device", "auto"])
+    assert dev._run_submit_body(args)["options"]["device"] == "auto"
+
+
+def test_the_device_line_reads_the_graph_file(graph_file, tmp_path):
+    """The printed device is the flag, else the file's device, else cpu."""
+    graph = json.loads(graph_file.read_text(encoding="utf-8"))
+    assert dev._run_display_device(
+        dev._parse_run_args([str(graph_file)]), graph) == "cpu"
+    pinned = tmp_path / "pinned.json"
+    pinned.write_text(json.dumps({**graph, "settings": {"device": "cuda"}}),
+                      encoding="utf-8")
+    args = dev._parse_run_args([str(pinned)])
+    body = dev._run_submit_body(args)
+    assert "device" not in body["options"]
+    display = dev._run_display_device(args, body["graph"])
+    assert display.startswith("cuda") and "(graph)" in display
+    args = dev._parse_run_args([str(pinned), "--device", "cpu"])
+    assert dev._run_display_device(args, body["graph"]) == "cpu"
 
 
 def test_deterministic_flag_reaches_the_options(graph_file):
@@ -179,6 +201,12 @@ def test_submit_body_is_accepted_by_the_server_contract(graph_file):
     assert options["lane"] == "queued"        # the queue's lane, by default
     assert normalize_name(request.name) == "nightly"
     assert normalize_graph(request.graph)["nodes"]
+
+    # The omitted-device envelope survives the same validators.
+    body = dev._run_submit_body(dev._parse_run_args([str(graph_file)]))
+    request = SubmitRunRequest(**body)
+    assert "device" not in request.options
+    assert normalize_options(request.options)["device"] == "cpu"
 
 
 def test_every_device_the_cli_advertises_is_one_the_server_accepts():

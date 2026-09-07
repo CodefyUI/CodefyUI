@@ -13,6 +13,7 @@ from ..schemas.models import (
     ParamDefinitionSchema,
     PresetDefinition,
 )
+from .device_utils import device_options
 from .node_registry import NodeRegistry
 
 logger = logging.getLogger(__name__)
@@ -146,7 +147,10 @@ class PresetRegistry:
                     param_type=p.param_type.value,
                     default=p.default,
                     description=p.description,
-                    options=p.options,
+                    # A device SELECT shares the machine-narrowed list the
+                    # node API serves, so an exposed one offers the same
+                    # devices the inner param does.
+                    options=device_options(p.name, p.options),
                     min_value=p.min_value,
                     max_value=p.max_value,
                     # Forwarded so an exposed preset param behaves like the

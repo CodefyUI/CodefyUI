@@ -54,6 +54,30 @@ def test_valid_contract_graph_passes(tmp_path):
     assert project.cmd_validate(_vargs(proj)) == 0
 
 
+@pytest.mark.parametrize("settings", [
+    {"device": "cuda:1"},
+    # A blank string is "no assignment"; /validate, the run submit path and
+    # the canvas read it the same way, so this gate agrees with them.
+    {"device": ""},
+    {"device": "  "},
+])
+def test_a_valid_settings_device_passes(tmp_path, settings):
+    proj = _init(tmp_path)
+    _write_graph(proj, {**_echo_graph(), "settings": settings})
+    assert project.cmd_validate(_vargs(proj)) == 0
+
+
+@pytest.mark.parametrize("settings", [
+    {"device": "cudda"}, {"device": 3}, "cpu", ["cpu"],
+])
+def test_a_bad_settings_device_fails(tmp_path, settings, capsys):
+    proj = _init(tmp_path)
+    _write_graph(proj, {**_echo_graph(), "settings": settings})
+    assert project.cmd_validate(_vargs(proj)) == 1
+    captured = capsys.readouterr()
+    assert "invalid_settings" in captured.out + captured.err
+
+
 def test_no_entry_points_fails(tmp_path):
     proj = _init(tmp_path)
     g = _echo_graph()

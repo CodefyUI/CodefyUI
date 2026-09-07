@@ -132,6 +132,45 @@ async def test_ws_execute_records_the_seed_and_deterministic_options():
 
 
 @pytest.mark.asyncio
+async def test_ws_execute_records_the_graph_settings_in_the_snapshot():
+    """The graph's own device rides into the snapshot; the run's device is
+    the explicit ``device`` the canvas sends."""
+    async with AsyncClient(
+        transport=ASGIWebSocketTransport(app=app),
+        base_url=_BASE_URL,
+    ) as client:
+        async with aconnect_ws(_WS_PATH_WITH_TOKEN, client) as ws:
+            await ws.send_text(json.dumps({
+                "action": "execute",
+                "device": "cpu",
+                "settings": {"device": "cpu"},
+                "nodes": [
+                    {"id": "start", "type": "Start", "data": {"params": {}}},
+                    {"id": "1", "type": "_TestSource", "data": {"params": {}}},
+                ],
+                "edges": [
+                    {"id": "et", "source": "start", "target": "1",
+                     "sourceHandle": "trigger", "type": "trigger"},
+                ],
+            }))
+
+            run_id = None
+            for _ in range(20):
+                msg = json.loads(await ws.receive_text())
+                run_id = run_id or msg.get("run_id")
+                if msg["type"] in ("execution_complete", "execution_error"):
+                    break
+
+    assert run_id, "no run id came back off the socket"
+    store = app.state.run_service.store
+    snapshot = await store.get_graph_snapshot(run_id)
+    assert snapshot["settings"] == {"device": "cpu"}
+    record = await store.get_run(run_id)
+    assert record.options["device"] == "cpu"
+    assert record.queue_key == "cpu"
+
+
+@pytest.mark.asyncio
 async def test_ws_execute_without_a_seed_stores_none():
     """The default is unseeded, and stored as null rather than 0."""
     async with AsyncClient(

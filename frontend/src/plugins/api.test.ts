@@ -116,6 +116,21 @@ describe('graph surface', () => {
     expect(calls).toBe(1);
   });
 
+  it('onGraphChanged fires once for a device change, which getGraph serializes', () => {
+    const api = freshApi();
+    let calls = 0;
+    const off = api.graph.onGraphChanged(() => { calls += 1; });
+
+    useTabStore.getState().setGraphDevice('mps');
+    expect(calls).toBe(1);
+    expect((api.graph.getGraph() as { settings?: { device?: string } }).settings).toEqual({ device: 'mps' });
+
+    // Same value again changes nothing a plugin can read.
+    useTabStore.getState().setGraphDevice('mps');
+    expect(calls).toBe(1);
+    off();
+  });
+
   it('applyOperations still answers with an ApplyResult and nothing more', () => {
     // The legacy path now runs through the workspace commit, which knows
     // about tab ids, revisions and conflicts. None of that may leak out

@@ -16,6 +16,7 @@ beta_end=0.05) are chosen so the schedule both fully noises the image
 import logging
 from typing import Any
 
+from ...core.device_utils import DEVICE_PARAM_OPTIONS
 from ...core.node_base import BaseNode, DataType, ParamDefinition, ParamType, PortDefinition
 
 logger = logging.getLogger(__name__)
@@ -63,10 +64,20 @@ class DiffusionTrainingLoopNode(BaseNode):
             ),
             ParamDefinition(name="beta_start", param_type=ParamType.FLOAT, default=0.0001, min_value=0.0, description="linear 排程起始 beta（要和 DDPMSampler 一致）。"),
             ParamDefinition(name="beta_end", param_type=ParamType.FLOAT, default=0.05, min_value=0.0, description="linear 排程結束 beta（要和 DDPMSampler 一致）。"),
-            # 'auto' 跟隨全域裝置，和其他所有 device 參數同一套講法。原本預設
-            # 'cpu' 且沒有 'auto'，等於這個節點在任何加速執行裡都被釘在 CPU，
-            # 而且沒有任何寫法可以說「跟著這次執行走」。
-            ParamDefinition(name="device", param_type=ParamType.SELECT, default="auto", options=["auto", "cpu", "cuda", "mps"], description="訓練裝置（'auto' 跟隨全域裝置）。"),
+            # 'auto' 跟隨這張圖的裝置，和其他所有 device 參數同一套講法；
+            # 選項清單與描述的英文版都來自 device_utils，這裡只保留中文說明。
+            ParamDefinition(
+                name="device",
+                param_type=ParamType.SELECT,
+                default="auto",
+                options=list(DEVICE_PARAM_OPTIONS),
+                description=(
+                    "此節點的裝置。保持 auto 就跟隨這張圖的裝置（工具列的圖裝置，"
+                    "沒有指定時則用設定）。一張圖只在一個裝置上執行；若部分工作需要"
+                    "不同裝置，請拆成兩張圖。"
+                ),
+                advanced=True,
+            ),
             ParamDefinition(name="seed", param_type=ParamType.INT, default=0, description="亂數種子（決定每步挑的時間步與加的雜訊）。"),
         ]
 

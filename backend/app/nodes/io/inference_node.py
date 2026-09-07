@@ -1,6 +1,7 @@
 import logging
 from typing import Any
 
+from ...core.device_utils import DEVICE_PARAM_DESCRIPTION, DEVICE_PARAM_OPTIONS
 from ...core.node_base import BaseNode, DataType, ParamDefinition, ParamType, PortDefinition
 
 logger = logging.getLogger(__name__)
@@ -51,8 +52,9 @@ class InferenceNode(BaseNode):
                 name="device",
                 param_type=ParamType.SELECT,
                 default="auto",
-                description="Device to run inference on ('auto' follows the global device)",
-                options=["auto", "cpu", "cuda", "mps"],
+                options=list(DEVICE_PARAM_OPTIONS),
+                description=DEVICE_PARAM_DESCRIPTION,
+                advanced=True,
             ),
         ]
 

@@ -136,6 +136,14 @@
   line-height: var(--lh-normal);
 }
 
+/* A second line under a row's description (the device row's "best
+   available" hint). A block element, so the two sentences meet without a
+   separator character in any locale. */
+.hint {
+  display: block;
+  margin-top: var(--sp-1);
+}
+
 .ctrl {
   display: flex;
   align-items: center;

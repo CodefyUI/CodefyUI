@@ -236,6 +236,33 @@ async def test_run_happy_path_all_envelope_keys(test_client):
 
 
 @pytest.mark.asyncio
+async def test_run_uses_the_saved_graph_device(test_client, monkeypatch):
+    """An omitted body device means the file's ``settings.device``."""
+    await _save_graph(test_client, {
+        **_echo_graph(name="run-pinned"), "settings": {"device": "cpu"}})
+    resp = await test_client.post("/api/graph/run/run-pinned",
+                                  json={"inputs": {"x": "hi"}})
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["device"] == "cpu"
+
+    # With resolution patched to identity, the assignment is visible as-is
+    # and an explicit body device still wins over it.
+    monkeypatch.setattr(
+        "app.api.routes_graph_run.resolve_device",
+        lambda requested: (requested or "cpu").strip().lower() or "cpu")
+    await _save_graph(test_client, {
+        **_echo_graph(name="run-pinned"), "settings": {"device": "cuda:1"}})
+    resp = await test_client.post("/api/graph/run/run-pinned",
+                                  json={"inputs": {"x": "hi"}})
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["device"] == "cuda:1"
+    resp = await test_client.post("/api/graph/run/run-pinned",
+                                  json={"inputs": {"x": "hi"}, "device": "cpu"})
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["device"] == "cpu"
+
+
+@pytest.mark.asyncio
 async def test_run_body_optional_uses_default(test_client):
     await _save_graph(test_client, _echo_graph(
         name="run-default", required=False, default="fallback",

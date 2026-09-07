@@ -24,12 +24,32 @@ logger = logging.getLogger(__name__)
 #: that ``int(" 0")`` is 0 in Python, so the space in the last one survives
 #: a parse-and-check approach and only a syntax check catches it.
 #:
-#: Mirrors ``run_service.DEVICE_PATTERN``, which validates the same
-#: vocabulary at submit time; this one is the last line, covering the
+#: ``DEVICE_SYNTAX`` is the runtime guard: the last line, covering the
 #: entry points that never pass through a run submission -- the exported
 #: script's ``--device``, a hand-edited SELECT param (nothing validates
 #: option values at runtime), and a direct ``execute_graph``.
+#: :data:`DEVICE_PATTERN` below is the submit/file guard and also admits
+#: ``auto``; :func:`resolve_device` dispatches ``auto`` before this check.
 DEVICE_SYNTAX = re.compile(r"^(cpu|cuda|mps)(?::(\d+))?$")
+
+#: The vocabulary a run submission and a graph file's ``settings.device``
+#: accept (``run_service`` re-exports it). ``auto`` means the best
+#: accelerator this server has, see :func:`resolve_device`. Callers strip
+#: and lower-case before matching.
+DEVICE_PATTERN = re.compile(r"^(cpu|auto|cuda(:\d+)?|mps(:\d+)?)$")
+
+#: The SELECT vocabulary every node-level ``device`` param declares. Static
+#: and torch-free on purpose: :func:`device_options` narrows it to what the
+#: machine has when the node API serves it.
+DEVICE_PARAM_OPTIONS: tuple[str, ...] = ("auto", "cpu", "cuda", "mps")
+
+#: The description every node-level ``device`` param shows.
+DEVICE_PARAM_DESCRIPTION = (
+    "Device for this node. Leave it on 'auto' to use the graph's device "
+    "(the toolbar assignment, or Settings when the graph has none). "
+    "A graph runs on one device; if part of the work needs a different one, "
+    "split it into two graphs."
+)
 
 
 def _current_cuda_index() -> int:
@@ -137,6 +157,10 @@ def get_available_devices() -> list[str]:
 def resolve_device(requested: str | None) -> str:
     """Resolve a requested device string to one that is actually available.
 
+    ``None`` and ``""`` mean ``cpu``: an unspecified device is the CPU.
+    ``auto`` means the best accelerator this process has, which is
+    :func:`describe_accelerator`'s ``default`` (``cuda`` > ``mps`` >
+    ``cpu``); that function is the only definition of "best device".
     Falls back to "cpu" (with a warning) when "cuda"/"mps" is requested but
     unavailable. Centralizes the availability check that the device-aware
     "sink" nodes (Training/Inference/Checkpoint/ModelLoader) used to each
@@ -177,6 +201,8 @@ def resolve_device(requested: str | None) -> str:
     except ImportError:
         return "cpu"
 
+    if device == "auto":
+        return describe_accelerator()["default"]
     if device == "cpu":
         return "cpu"
 
@@ -240,43 +266,53 @@ def resolve_device(requested: str | None) -> str:
         # original string, which rejected the non-canonical spellings with
         # a RuntimeError naming neither the graph nor the parameter.
         return "mps"
-    # Unknown value (e.g. "auto" sent as a global device) — never hand an
-    # invalid string to torch; degrade to CPU.
     logger.warning("Unknown device %r, falling back to CPU", device)
     return "cpu"
+
+
+def graph_settings_device(graph: Any) -> str | None:
+    """``settings.device`` off a graph dict, normalised; None when absent or invalid.
+
+    Stdlib only, so the CLI runner and the routes can call it without torch.
+
+    A blank string reads as absent. Any other invalid value is logged and
+    dropped: the run submit path rejects the same file with a 400, and the
+    callers here (the offline runner, the API-function and published-app
+    routes) fall back to ``cpu``, so the warning is how an operator sees why
+    a mistyped graph landed there.
+    """
+    settings = graph.get("settings") if isinstance(graph, dict) else None
+    value = settings.get("device") if isinstance(settings, dict) else None
+    if value is None:
+        return None
+    if isinstance(value, str):
+        value = value.strip().lower()
+        if not value:
+            return None
+        if DEVICE_PATTERN.match(value):
+            return value
+    logger.warning(
+        "Ignoring invalid settings.device %r; running on cpu", value)
+    return None
 
 
 def device_options(param_name: str, options: list[str]) -> list[str]:
     """The ``device`` SELECT vocabulary this machine can actually offer.
 
-    Two jobs, in this order:
-
-    * drop backends that are not present -- a CUDA option on a laptop with
-      no CUDA is an invitation to a run that silently lands on the CPU;
-    * expand ``cuda`` into the per-index forms when there is more than one
-      card (core#135), so a node can be pinned to ``cuda:1`` without the
-      user hand-editing the graph JSON.
-
-    ``"auto"`` (follow the global device selector) is not a backend and
-    bypasses both. A node that declares no device options, or a param that
-    is not called ``device``, is returned untouched.
+    The served list is the one source every device dropdown shares:
+    ``describe_accelerator()["devices"]`` (``cpu``, the backends present,
+    and the per-card ``cuda:N`` forms when there is more than one card,
+    core#135). ``"auto"`` (use the graph's device) is not a backend and is
+    prepended only when the node declares it. A node that declares no
+    device options, or a param that is not called ``device``, is returned
+    untouched.
     """
     if param_name != "device" or not options:
         return options
-    available = set(get_available_devices())
-    filtered: list[str] = []
-    for option in options:
-        if option != "auto" and option not in available:
-            continue
-        filtered.append(option)
-        if option == "cuda":
-            # Generated from the count rather than sorted out of
-            # ``available``: a lexical sort puts cuda:10 before cuda:2.
-            filtered.extend(
-                f"cuda:{i}" for i in range(cuda_device_count())
-                if f"cuda:{i}" in available
-            )
-    return filtered if filtered else ["cpu"]
+    served = [d["value"] for d in describe_accelerator()["devices"]]
+    if "auto" in options:
+        served.insert(0, "auto")
+    return served if served else ["cpu"]
 
 
 def is_mps_device(device: Any) -> bool:
@@ -291,13 +327,13 @@ def is_mps_device(device: Any) -> bool:
 
 
 def resolve_node_device(param_value: str | None, context: Any) -> str:
-    """Resolve a sink node's ``device`` param against the global run device.
+    """Resolve a sink node's ``device`` param against the graph's device.
 
-    ``"auto"`` (or empty) means "follow the global device" (``context.device``,
-    already resolved). An explicit ``"cpu"/"cuda"/"mps"`` overrides the global
-    setting and is availability-checked via :func:`resolve_device`. This lets a
-    saved graph pin a node to a device while fresh nodes default to ``"auto"``
-    and ride the global selector.
+    ``"auto"`` (or empty) means "use the graph's device" (``context.device``,
+    already resolved). An explicit ``"cpu"/"cuda"/"mps"`` overrides the
+    graph's device and is availability-checked via :func:`resolve_device`.
+    This lets a saved graph pin a node to a device while fresh nodes default
+    to ``"auto"`` and ride the graph's device.
     """
     value = (param_value or "auto").strip().lower() or "auto"
     if value == "auto":
@@ -306,7 +342,7 @@ def resolve_node_device(param_value: str | None, context: Any) -> str:
 
 
 def context_device(context: Any, fallback: str = "cpu") -> str:
-    """Read the resolved global device off an ExecutionContext.
+    """Read the resolved graph device off an ExecutionContext.
 
     Returns ``fallback`` when there is no context or no device set (e.g. the
     CLI runner passes ``context=None``), so device-aware nodes degrade to CPU.
@@ -486,7 +522,8 @@ def node_target_device(
     """The device a node's work should happen on.
 
     Its own ``device`` param when it declares one (so a graph can pin a node),
-    otherwise the run's global device. Both paths go through
+    otherwise the graph's device (``context.device``, resolved once at
+    submit). Both paths go through
     :func:`resolve_node_device`, so ``"auto"`` and an unavailable request
     degrade the same way they always have.
 

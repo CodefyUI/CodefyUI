@@ -7,6 +7,9 @@ const zhTW: Record<TranslationKey, string> = {
   'toolbar.stop': '停止',
   'toolbar.run.title': '執行管線',
   'toolbar.stop.title': '停止執行',
+  'toolbar.device.aria': '此圖的裝置',
+  'toolbar.device.title': '在指定裝置上執行此圖；選擇會儲存在圖檔中',
+  'toolbar.device.follow': '跟隨設定（{device}）',
   'toolbar.reloadNodes': '重新載入節點',
   'toolbar.reloadNodes.title': '從後端重新載入節點定義',
   'toolbar.reload.fail': '重新載入失敗：{error}',
@@ -482,7 +485,8 @@ const zhTW: Record<TranslationKey, string> = {
   'toolbar.settings.section.llm': 'LLM 提供者',
   'toolbar.settings.section.system': '這台伺服器',
   'settings.device.name': '運算裝置',
-  'settings.device.desc': '在此裝置上執行圖。設為「auto」的節點會跟隨此設定。',
+  'settings.device.desc': '未指定裝置的圖使用此裝置。每張圖可在工具列各自指定。',
+  'settings.device.hint': '這台伺服器可用的最佳裝置：{device}',
 
   // 字級選單
   'toolbar.fontSize.title': '字級',

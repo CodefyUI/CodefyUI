@@ -283,6 +283,42 @@ async def test_invoke_happy_path_nine_key_envelope(
 
 
 @pytest.mark.asyncio
+async def test_invoke_uses_the_snapshot_device(
+    test_client, app_db, api_key, monkeypatch,
+):
+    """An omitted body device means the published snapshot's settings.device."""
+    await _publish(test_client, SLUG, {
+        **_echo_graph(), "settings": {"device": "cpu"}})
+    resp = await test_client.post(
+        f"/api/apps/{SLUG}/invoke",
+        json={"inputs": {"x": "hello"}},
+        headers=_bearer(api_key["token"]),
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["device"] == "cpu"
+
+    monkeypatch.setattr(
+        "app.api.routes_graph_run.resolve_device",
+        lambda requested: (requested or "cpu").strip().lower() or "cpu")
+    await _publish(test_client, SLUG, {
+        **_echo_graph(), "settings": {"device": "cuda:1"}}, create=False)
+    resp = await test_client.post(
+        f"/api/apps/{SLUG}/invoke",
+        json={"inputs": {"x": "hello"}},
+        headers=_bearer(api_key["token"]),
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["device"] == "cuda:1"
+    resp = await test_client.post(
+        f"/api/apps/{SLUG}/invoke",
+        json={"inputs": {"x": "hello"}, "device": "cpu"},
+        headers=_bearer(api_key["token"]),
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["device"] == "cpu"
+
+
+@pytest.mark.asyncio
 async def test_invoke_401_invalid_key_enveloped_with_www_authenticate(
     test_client, app_db, api_key,
 ):

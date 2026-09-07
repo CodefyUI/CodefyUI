@@ -132,15 +132,16 @@ interface UIState {
   clearLayoutFit: () => void;
   fontSize: FontSize;
   setFontSize: (size: FontSize) => void;
-  /** Global compute device sent with every graph run ('cpu' | 'cuda' | 'mps').
-   * Nodes whose own device param is 'auto' follow this.
+  /** The device a run uses when the graph has no `settings.device` of its
+   * own; the graph toolbar can assign one, and a node's own non-auto
+   * `device` param overrides both. `cpu` until changed.
    *
    * CPU is the baseline and nothing switches away from it on the user's
    * behalf: an accelerator is something you opt into in Settings, where the
    * dropdown lists every device the backend can see. Startup used to adopt
-   * the best one automatically, which made the device a property of the
-   * hardware rather than of the user's choice -- and a run that silently
-   * moved to a GPU is a run whose failure modes the user never asked for. */
+   * the best one automatically, so the device followed the hardware, and a
+   * run that silently moved to a GPU is a run whose failure modes the user
+   * never asked for. */
   globalDevice: string;
   setGlobalDevice: (device: string) => void;
   /** How value edges are drawn on the canvas: orthogonal circuit-board

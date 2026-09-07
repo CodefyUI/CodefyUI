@@ -57,6 +57,7 @@ from typing import Any
 
 import torch
 
+from ...core.device_utils import DEVICE_PARAM_DESCRIPTION, DEVICE_PARAM_OPTIONS
 from ...core.loop_control import (
     EVENT_BATCH,
     ProgressThrottle,
@@ -274,10 +275,8 @@ class HFTextGenerateNode(BaseNode):
                 name="device",
                 param_type=ParamType.SELECT,
                 default="auto",
-                options=["auto", "cpu", "cuda", "mps"],
-                description=(
-                    "Where to generate (auto follows the global device)."
-                ),
+                options=list(DEVICE_PARAM_OPTIONS),
+                description=DEVICE_PARAM_DESCRIPTION,
                 advanced=True,
             ),
             ParamDefinition(

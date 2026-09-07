@@ -137,6 +137,37 @@ async def test_exposed_param_keeps_visibility_and_tier(
     assert lr["visible_when"] is None
 
 
+@pytest.mark.asyncio
+async def test_exposed_device_param_lists_only_this_machines_devices(
+    test_client, _isolated_presets, monkeypatch,
+):
+    """An exposed ``device`` SELECT is narrowed the way the node API narrows
+    it, so a preset never offers a backend this machine does not have."""
+    import torch
+
+    from app.core.device_utils import get_available_devices
+
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
+    monkeypatch.setattr(torch.backends.mps, "is_available", lambda: False)
+    get_available_devices.cache_clear()
+    try:
+        resp = await test_client.post("/api/presets/create", json={
+            "name": "Inference Preset",
+            "nodes": [
+                {"id": "inf", "type": "Inference",
+                 "data": {"params": {"device": "auto"}}},
+            ],
+            "edges": [],
+        })
+    finally:
+        get_available_devices.cache_clear()
+    assert resp.status_code == 200, resp.text
+    by_name = {p["param_name"]: p for p in resp.json()["exposed_params"]}
+    options = by_name["device"]["param_def"]["options"]
+    assert options == ["auto", "cpu"]
+    assert "cuda" not in options
+
+
 class _PackedNode(BaseNode):
     """A node with a SELECT whose options need different optional packs."""
 

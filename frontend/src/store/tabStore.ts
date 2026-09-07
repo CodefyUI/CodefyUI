@@ -242,6 +242,11 @@ export interface TabState {
   // bound to (set on load and on save), used to skip the overwrite warning
   // when re-saving the same graph.
   description: string;
+  // The device this graph runs on. Written to the graph file as
+  // `settings.device`; `seed` below stays in the tab record. `null` means no
+  // assignment: a run follows the browser's Settings device, and the saved
+  // file carries no `settings` block at all.
+  graphDevice: string | null;
   currentGraphFile: string | null;
   // Project directory (absolute path) this tab's bound graph was last saved
   // into or loaded from. `null` for a tab never touched by a project save
@@ -390,6 +395,7 @@ function createTabState(id: string, name: string): TabState {
     id,
     name,
     description: '',
+    graphDevice: null,
     currentGraphFile: null,
     projectOrigin: null,
     readOnly: false,
@@ -518,6 +524,12 @@ export interface GraphDocument {
   name?: string | null;
   description?: string;
   /**
+   * The device the file assigns (`settings.device`, already validated by
+   * `readGraphDevice`). Absent or null installs "no assignment", so a
+   * previous graph's device never survives a load.
+   */
+  device?: string | null;
+  /**
    * The document's raw `format_version` field, untrusted and unparsed. The
    * read-only verdict is computed inside the action rather than by the
    * caller, so a reader cannot forget the gate (ID8, #200 item 4).
@@ -559,6 +571,8 @@ interface TabStoreState {
   renameTab: (id: string, name: string) => void;
   // graph-level metadata (active tab)
   setDescription: (description: string) => void;
+  /** Assign the active graph's run device; '' or null clears the assignment. */
+  setGraphDevice: (device: string | null) => void;
   setCurrentGraphFile: (file: string | null) => void;
   setTabReadOnly: (v: boolean) => void;
   // Per-project persistence scoping (ID10)
@@ -605,6 +619,9 @@ interface TabStoreState {
     presets: import('../types').PresetDefinition[];
     segmentGroups: SegmentGroup[];
     subgraphs: SubgraphDefinition[];
+    // Present only when the graph assigns a device, so a file with no
+    // assignment stays byte-identical.
+    settings?: import('../types').GraphSettings;
   };
   /** The serializer as a pure function of a tab. `getSerializedGraph()` calls it with the active one. */
   getSerializedGraphOf: (tab: TabState) => ReturnType<TabStoreState['getSerializedGraph']>;
@@ -1337,6 +1354,8 @@ export interface PersistedTab {
   id: string;
   name: string;
   description?: string;
+  /** The graph's assigned device. Absent when the graph follows Settings. */
+  graphDevice?: string | null;
   currentGraphFile?: string | null;
   projectOrigin?: string | null;
   readOnly?: boolean;
@@ -1410,6 +1429,9 @@ function buildPersistedTab(input: TabState): PersistedTab {
     // Only when set, so a tab the user opened persists byte-identically.
     ...(t.source ? { source: t.source } : {}),
     description: t.description,
+    // Only persisted when set, so a tab that follows Settings keeps its
+    // stored shape.
+    ...(t.graphDevice != null ? { graphDevice: t.graphDevice } : {}),
     currentGraphFile: t.currentGraphFile,
     // Only persisted when set, so non-project localStorage is byte-identical.
     ...(t.projectOrigin != null ? { projectOrigin: t.projectOrigin } : {}),
@@ -1474,6 +1496,9 @@ function scalarSignature(t: TabState): string {
   return JSON.stringify([
     t.name,
     t.description,
+    // In the signature so a device change is a cache miss; without it the
+    // record is reused and autosave never writes the new device.
+    t.graphDevice ?? '',
     t.currentGraphFile ?? '',
     t.projectOrigin ?? '',
     t.readOnly ? '1' : '0',
@@ -1599,6 +1624,7 @@ function tabFromPersisted(t: PersistedTab, base: TabState): TabState {
     ...base,
     name: t.name,
     description: t.description ?? '',
+    graphDevice: t.graphDevice ?? null,
     currentGraphFile: t.currentGraphFile ?? null,
     projectOrigin: t.projectOrigin ?? null,
     readOnly: t.readOnly ?? false,
@@ -1816,6 +1842,12 @@ function nodeDataChanged(
 function documentChanged(prev: TabState, next: TabState): boolean {
   if (prev === next) return false;
 
+  // The assigned device changes what Run submits and what Save writes, so a
+  // plugin's compare-and-swap must expire on it. `description` stays out:
+  // it changes the saved bytes and nothing about how the graph runs, and
+  // that exclusion predates this field.
+  if (prev.graphDevice !== next.graphDevice) return true;
+
   if (prev.nodes !== next.nodes) {
     if (prev.nodes.length !== next.nodes.length) return true;
     for (let i = 0; i < next.nodes.length; i += 1) {
@@ -2018,6 +2050,14 @@ export const useTabStore = create<TabStoreState>((rawSet, get) => {
 
   setDescription: (description) =>
     set({ tabs: updateTab(get().tabs, get().activeTabId, () => ({ description })) }),
+
+  // '' and null both clear the assignment, normalised here so every caller
+  // (the toolbar select's empty option included) agrees on what "follow
+  // Settings" is stored as. No undo snapshot, like `setSeed`.
+  setGraphDevice: (device) =>
+    set({
+      tabs: updateTab(get().tabs, get().activeTabId, () => ({ graphDevice: device || null })),
+    }),
 
   setCurrentGraphFile: (file) =>
     set({ tabs: updateTab(get().tabs, get().activeTabId, () => ({ currentGraphFile: file })) }),
@@ -2604,6 +2644,7 @@ export const useTabStore = create<TabStoreState>((rawSet, get) => {
         // to the previously-open graph so the next save doesn't silently
         // overwrite that file with stale description / segment overlays.
         description: '',
+        graphDevice: null,
         currentGraphFile: null,
         segmentGroups: [],
         activeSegment: null,
@@ -2776,6 +2817,9 @@ export const useTabStore = create<TabStoreState>((rawSet, get) => {
       // top-level nodes above follow: a key does not stop being a key
       // because the node holding it was collapsed into a block.
       subgraphs,
+      // Only when the graph assigns a device, like `bypassed` above: a graph
+      // that follows Settings serializes byte-identically to before.
+      ...(tab.graphDevice ? { settings: { device: tab.graphDevice } } : {}),
     };
   },
 
@@ -2911,6 +2955,9 @@ export const useTabStore = create<TabStoreState>((rawSet, get) => {
         // untidy.
         ...clearedDocumentResidue(tab),
         description: doc.description ?? '',
+        // Same rule as `description`: written on every load, so the previous
+        // graph's device cannot ride along into the next Save or Run.
+        graphDevice: doc.device ?? null,
         readOnly,
         // The save target, stated by the reader and never inherited (#200
         // item 9). This is the field whose absence made an example opened

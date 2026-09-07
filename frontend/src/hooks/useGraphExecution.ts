@@ -575,6 +575,11 @@ export function useGraphExecution() {
       edges: graph.edges,
       presets: graph.presets,
       subgraphs: graph.subgraphs,
+      // The graph's own `settings` (its assigned device) ride along so the
+      // run's snapshot records them. Sent only when the graph has one, so a
+      // graph with no assignment keeps the message shape it had before.
+      // The run's device is the explicit `device` below.
+      ...(graph.settings ? { settings: graph.settings } : {}),
       record_outputs: tab.recordOutputs,
       // A1: verbose step-trace mode
       verbose_mode: tab.verboseMode,
@@ -584,8 +589,12 @@ export function useGraphExecution() {
       // A3: gradient capture
       backward_mode: tab.backwardMode,
       auto_backward: tab.autoBackward,
-      // Global compute device (nodes with device='auto' follow this).
-      device: useUIStore.getState().globalDevice,
+      // Device for this run: the graph's own settings.device, else the
+      // browser Settings device. Always sent: the backend treats a missing
+      // device as cpu, and only an explicit "auto" resolves to the best
+      // device. A node whose own device param is not "auto" wins over this
+      // on the backend.
+      device: graph.settings?.device ?? useUIStore.getState().globalDevice,
       // core#134: reproducibility. Sent only when set — `seed: null` is a
       // valid option value, but omitting it keeps the message byte-identical
       // to the pre-#134 one for everyone who never touches the field.

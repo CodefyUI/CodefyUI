@@ -7,6 +7,7 @@ import { useI18n } from '../i18n';
 import type { NodeData, SegmentGroup, SubgraphDefinition } from '../types';
 import { resolveSerializedNodes, resolveSerializedEdges } from '.';
 import { isFormatTooNew } from './formatVersion';
+import { readGraphDevice } from './graphSettings';
 
 /**
  * A fetched example, resolved into live canvas nodes and edges.
@@ -40,6 +41,13 @@ export interface ResolvedExample {
    * persisted through save, so a leftover gets written to disk.
    */
   description: string;
+  /**
+   * The device the example's `settings.device` assigns, or null when it
+   * assigns none (or names one outside `DEVICE_PATTERN`). Installed on open
+   * for the same reason `description` is: a leftover from the previous graph
+   * would be written to disk on the next Save.
+   */
+  device: string | null;
   /**
    * The example's raw `format_version` (#200 item 4). An example -- or a
    * plugin-shipped template -- written by a newer CodefyUI must open
@@ -115,6 +123,7 @@ export function resolveExample(data: any): ResolvedExample {
     subgraphs,
     segmentGroups,
     description,
+    device: readGraphDevice(data.settings),
     formatVersion: data.format_version,
   };
 }
@@ -147,6 +156,7 @@ function applyToActiveTab(example: ResolvedExample): void {
     segmentGroups: example.segmentGroups,
     name: example.name,
     description: example.description,
+    device: example.device,
     formatVersion: example.formatVersion,
   });
   // Same notice the Toolbar readers show, for the same reason: read-only is
@@ -231,6 +241,9 @@ export async function openExampleInNewTab(path: string): Promise<boolean> {
  * everything above -- the id remap, the definition merge, the format gate --
  * is the same work either way, which is why there is one function and not
  * two.
+ *
+ * The template's `settings.device` is ignored on a merge. The device belongs
+ * to the graph the nodes joined, and that graph keeps its own assignment.
  */
 export async function insertExample(
   path: string,

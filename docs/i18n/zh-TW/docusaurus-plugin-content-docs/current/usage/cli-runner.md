@@ -23,7 +23,7 @@ python run_graph.py ../examples/Usage_Example/CNN-MNIST/TrainCNN-MNIST/graph.jso
 |------|--------|
 | `--validate-only` | 驗證圖（DAG、型別、連接埠、Start 節點）但不執行它。 |
 | `--verbose`、`-v` | `DEBUG` 等級的 log，外加節點在執行期失敗時的完整 traceback。沒有任何 CLI 開關可以輸出檢視器的步驟追蹤。 |
-| `--device` | 全域運算裝置：`cpu` / `cuda` / `mps`。 |
+| `--device` | `cpu` / `cuda` / `cuda:N` / `mps` / `auto`。省略時用圖檔的 `settings.device`，再沒有就是 `cpu`；`auto` 會用目前最好的加速器。 |
 | `--seed N` | 用 `N` 為每個節點設定種子，讓執行可以重現。設了種子的執行會一次只跑一個節點 — 見 **[可重現的執行](./running-graphs#可重現的執行亂數種子)**。 |
 | `--deterministic` | 要求 PyTorch 使用決定性運算核心（`warn_only`，沒有決定性實作的運算會發出警告，而不會讓執行失敗）。 |
 

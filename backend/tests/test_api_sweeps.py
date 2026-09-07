@@ -599,6 +599,31 @@ async def test_a_store_failure_while_patching_a_run_id_still_fails_the_sweep(
     assert [c.sweep_variant for c in children] == [0, 1]
 
 
+async def test_children_inherit_the_base_graph_device(client, store):
+    """An absent options.device means the base graph's settings.device."""
+    graph = {**_graph(), "settings": {"device": "cuda:1"}}
+    response = await client.post("/api/sweeps", json=_body(
+        _values("lr", [0.1, 0.2]), graph=graph, options={}))
+    assert response.status_code == 201, response.text
+    children = await store.list_runs_by_sweep(response.json()["sweep_id"])
+    assert len(children) == 2
+    assert {c.queue_key for c in children} == {"cuda:1"}
+    assert {c.options["device"] for c in children} == {"cuda:1"}
+    for child in children:
+        snapshot = await store.get_graph_snapshot(child.id)
+        assert snapshot["settings"] == {"device": "cuda:1"}
+        await _await_terminal(store, child.id)
+
+    # An explicit options.device wins over the graph's assignment.
+    response = await client.post("/api/sweeps", json=_body(
+        _values("lr", [0.1, 0.2]), graph=graph, options={"device": "cpu"}))
+    assert response.status_code == 201, response.text
+    children = await store.list_runs_by_sweep(response.json()["sweep_id"])
+    assert {c.queue_key for c in children} == {"cpu"}
+    for child in children:
+        await _await_terminal(store, child.id)
+
+
 async def test_seed_variants_off_leaves_every_variant_unseeded(client, store):
     """RULING 1: an unseeded run takes the SHARED exclusion and overlaps up
     to the device limit. A seeded one takes a process-wide exclusive lock."""

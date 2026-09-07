@@ -1061,6 +1061,39 @@ describe('useGraphExecution - execute', () => {
     useUIStore.getState().setGlobalDevice('cpu'); // reset for other tests
   });
 
+  it('sends the graph device over the Settings device when the tab assigns one', async () => {
+    useUIStore.getState().setGlobalDevice('mps');
+    setTabs([
+      makeTab('t1', {
+        graphDevice: 'cuda:1',
+        nodes: [{ id: 'n1', data: { label: 'Node One' } }],
+        edges: [{ id: 'e1', source: 's', target: 'n1', data: { type: 'trigger' } }],
+      }),
+    ]);
+    const ws = tabById('t1').ws as FakeWs;
+    const { result } = renderHook(() => useGraphExecution());
+
+    await act(async () => {
+      await result.current.execute();
+    });
+
+    expect(ws.send.mock.calls[0][0].device).toBe('cuda:1');
+    // The graph's own settings ride along for the run's snapshot.
+    expect(ws.send.mock.calls[0][0].settings).toEqual({ device: 'cuda:1' });
+    useUIStore.getState().setGlobalDevice('cpu');
+  });
+
+  it('sends no settings key when the tab assigns no device', async () => {
+    const ws = tabById('t1').ws as FakeWs;
+    const { result } = renderHook(() => useGraphExecution());
+
+    await act(async () => {
+      await result.current.execute();
+    });
+
+    expect('settings' in ws.send.mock.calls[0][0]).toBe(false);
+  });
+
   it('mints no run id of its own — the server owns it (#121)', async () => {
     // Before #121 the client generated a UUID and the backend echoed it back.
     // Now RunService creates the row, so its id is THE id: sending a second

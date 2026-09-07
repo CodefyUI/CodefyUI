@@ -549,6 +549,58 @@ async def test_exported_runner_executes_unsupported_nodes_from_temp_cwd(
     assert "completed on cpu" in completed.stderr
 
 
+def _generate(nodes: list[dict], edges: list[dict], **kwargs) -> str:
+    from app.core.codegen import generate_python
+
+    return generate_python(nodes, edges, **kwargs)
+
+
+def _device_probe_graph() -> tuple[list[dict], list[dict]]:
+    """Start -> TensorCreate: the smallest graph that logs its device."""
+    nodes = [
+        {"id": "start", "type": "Start", "position": {"x": 0, "y": 0},
+         "data": {"params": {}}},
+        {"id": "out", "type": "TensorCreate", "position": {"x": 0, "y": 0},
+         "data": {"params": {"shape": "2", "fill": "ones"}}},
+    ]
+    edges = [
+        {"id": "t", "source": "start", "target": "out",
+         "sourceHandle": "trigger", "targetHandle": "", "type": "trigger"},
+    ]
+    return nodes, edges
+
+
+def test_exported_script_defaults_to_the_baked_device(tmp_path: Path):
+    """No ``--device``: the script runs on ``GRAPH_DEVICE``."""
+    nodes, edges = _device_probe_graph()
+    script = _generate(nodes, edges, name="baked", device="cpu")
+    assert "GRAPH_DEVICE = 'cpu'" in script
+    completed = _run_exported_script(script, tmp_path)
+    assert completed.returncode == 0, completed.stderr
+    assert "completed on cpu" in completed.stderr
+
+
+def test_exported_script_defaults_to_cpu_when_unbaked(tmp_path: Path):
+    nodes, edges = _device_probe_graph()
+    script = _generate(nodes, edges, name="unbaked")
+    assert "GRAPH_DEVICE = None" in script
+    completed = _run_exported_script(script, tmp_path)
+    assert completed.returncode == 0, completed.stderr
+    assert "completed on cpu" in completed.stderr
+
+
+def test_exported_script_explicit_auto_uses_resolve_device(tmp_path: Path):
+    """``--device auto`` is the best accelerator, the one definition of it."""
+    from app.core.device_utils import describe_accelerator
+
+    nodes, edges = _device_probe_graph()
+    script = _generate(nodes, edges, name="auto", device="cpu")
+    completed = _run_exported_script(script, tmp_path, "--device", "auto")
+    assert completed.returncode == 0, completed.stderr
+    best = describe_accelerator()["default"]
+    assert f"completed on {best}" in completed.stderr
+
+
 def _contract_runner_graph() -> dict:
     """Start -> GraphInput(amount) -> Print -> GraphOutput(result)."""
     return {

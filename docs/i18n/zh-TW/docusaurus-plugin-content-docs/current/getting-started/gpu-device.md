@@ -8,7 +8,7 @@ description: 為 NVIDIA CUDA、Apple Silicon（MPS）或 AMD ROCm 選擇合適�
 
 預設的 PyTorch 安裝適用於所有平台（CPU，以及透過 MPS 的 Apple Silicon）。只有在你需要特定 CUDA 版本、AMD ROCm/DirectML，或想驗證 GPU 偵測時才需要繼續往下讀。
 
-CodefyUI 會在執行階段從後端讀取可用的裝置，所以只要 PyTorch 看得到的，都會出現在每個節點的 **device** 下拉選單裡。全域裝置可以設定一次，並套用到所有以張量為來源的節點。
+CodefyUI 會在執行階段從後端讀取可用的裝置，所以只要 PyTorch 看得到的，都會出現在每個裝置下拉選單裡：設定、Run 旁邊這張圖自己的裝置控制項，以及每個節點「進階」裡的 **device** 參數。在圖上或設定裡設一次即可。節點參數是為舊圖保留的；一張圖只在一個裝置上執行，需要兩個裝置的工作應拆成兩張圖。
 
 ## NVIDIA CUDA（特定版本）
 
@@ -54,7 +54,7 @@ python -c "import torch; print('CUDA:', torch.cuda.is_available(), '| Device:', 
 
 ## Apple Silicon (MPS)
 
-在 M1/M2/M3/M4 Mac 上，預設安裝就已經附帶 Metal Performance Shaders 後端。注意「附帶」不等於「使用」：除非你在設定裡選了 `mps`，否則執行仍然留在 CPU——參見 [裝置後端](/advanced/device-backends)。驗證後端存在：
+在 M1/M2/M3/M4 Mac 上，預設安裝就已經附帶 Metal Performance Shaders 後端。注意「附帶」不等於「使用」：除非你在設定裡、或直接在圖上選了 `mps`，否則執行仍然留在 CPU——參見 [裝置後端](/advanced/device-backends)。驗證後端存在：
 
 ```bash
 python -c "import torch; print('MPS:', torch.backends.mps.is_available())"
@@ -129,4 +129,4 @@ cdui install --gpu cu128     # 改回去：cdui install --gpu cpu
 curl -s http://127.0.0.1:8000/api/nodes/TrainingLoop | python -c "import sys,json; d=json.load(sys.stdin); print([p['options'] for p in d['params'] if p['name']=='device'][0])"
 ```
 
-這會印出可用裝置。NVIDIA 系統會顯示 `['auto', 'cpu', 'cuda']`；有多張卡時，還會顯示 `cuda:0`、`cuda:1` 與其他帶索引的裝置。PyTorch 未偵測到加速器時，會顯示 `['auto', 'cpu']`。`auto` 一定可用，並會跟隨全域裝置設定。
+這會印出可用裝置。NVIDIA 系統會顯示 `['auto', 'cpu', 'cuda']`；有多張卡時，還會顯示 `cuda:0`、`cuda:1` 與其他帶索引的裝置。PyTorch 未偵測到加速器時，會顯示 `['auto', 'cpu']`。`auto` 一定可用，並會跟著圖的裝置走：工具列指定的裝置，圖沒有指定時則是設定裡的裝置。

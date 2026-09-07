@@ -14,7 +14,7 @@ git commit。
 ```
 my-service/
   codefyui.project.toml   manifest: name, plugin pins, default publish target
-  graphs/    <name>.graph.json    logic (nodes/edges/params/presets)
+  graphs/    <name>.graph.json    logic (nodes/edges/params/presets, optional settings.device)
   layout/    <name>.layout.json   positions (reviewable, generated)
   assets/images/   assets/models/   assets/data/    scaffolded empty
   assets/output/                                    created on demand (e.g. ImageWriter)
@@ -25,7 +25,7 @@ my-service/
 
 ## 為什麼要分離？
 
-`graphs/<name>.graph.json` 只儲存會改變 graph *行為* 的內容（節點、邊、參數與內嵌 presets）。節點**位置**與便利貼幾何資訊則存放在 `layout/<name>.layout.json`。因此，拖動節點只會變更 `layout/`，修改參數只會變更 `graphs/`；code review 可以聚焦於邏輯變更，不會受到節點位移的 diff 干擾。（已知例外：`SequentialModel` 子圖的層位置存放在 `params.layers`，因此仍位於 logic 檔。）
+`graphs/<name>.graph.json` 只儲存會改變 graph *行為* 的內容（節點、邊、參數、內嵌 presets，以及選填的 `settings` 區塊，例如 `{"device": "cuda"}`，用來指定這張 graph 執行的裝置）。節點**位置**與便利貼幾何資訊則存放在 `layout/<name>.layout.json`。因此，拖動節點只會變更 `layout/`，修改參數只會變更 `graphs/`；code review 可以聚焦於邏輯變更，不會受到節點位移的 diff 干擾。（已知例外：`SequentialModel` 子圖的層位置存放在 `params.layers`，因此仍位於 logic 檔。）
 
 缺少 layout 檔（或某個節點沒有已儲存的位置）時，編輯器會在載入時自動排版，
 並於下次存檔時寫回結果；便利貼若只缺幾何資訊（尺寸/綁定）則直接使用預設值 --
@@ -63,9 +63,13 @@ GraphInput、GraphInput 的 value 接到 GraphOutput，然後按 **Ctrl/Cmd+S** 
     {"id": "t1", "source": "start", "target": "gi", "sourceHandle": "trigger", "targetHandle": "", "type": "trigger"},
     {"id": "d1", "source": "gi", "target": "out", "sourceHandle": "value", "targetHandle": "value", "type": "data"}
   ],
-  "presets": []
+  "presets": [],
+  "settings": {"device": "cuda"}
 }
 ```
+
+`settings` 是選填的。沒有它的 graph 會跑在客戶端選的裝置上：編輯器裡是設定的裝置，
+不帶 `--device` 的 `cdui run` 則是 `cpu`。參見[裝置後端](../advanced/device-backends.md)。
 
 ### 3. 提交
 

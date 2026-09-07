@@ -242,6 +242,32 @@ describe('tab autosave - IndexedDB is the write target', () => {
     puts.stop();
   });
 
+  it('a graph device change rewrites only that tab record', async () => {
+    // `graphDevice` is a scalar, so it has to be in the record signature:
+    // left out, the cached record would be reused and the assignment would
+    // never reach IndexedDB.
+    const { store } = await loadStore();
+    const puts = spyOnPuts();
+    store.useTabStore.setState({
+      tabs: [
+        { ...store.useTabStore.getState().tabs[0], id: 'a', name: 'A' },
+        { ...store.useTabStore.getState().tabs[0], id: 'b', name: 'B' },
+      ],
+      activeTabId: 'a',
+    });
+    await vi.waitFor(() => {
+      expect(puts.keys).toContain('codefyui-tabs|tab|b');
+    });
+
+    puts.keys.length = 0;
+    store.useTabStore.getState().setGraphDevice('mps');
+    await vi.waitFor(() => {
+      expect(puts.keys).toContain('codefyui-tabs|tab|a');
+    });
+    expect(puts.keys).toEqual(['codefyui-tabs|tab|a']);
+    puts.stop();
+  });
+
   it('strips SECRET param values before they reach IndexedDB', async () => {
     // The "Session only" promise on a secret field is about the STORAGE tier,
     // whichever one it is. Moving persistence to IndexedDB must not quietly

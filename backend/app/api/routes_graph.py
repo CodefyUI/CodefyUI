@@ -106,6 +106,10 @@ async def save_graph(graph: GraphData):
         )
     settings.GRAPHS_DIR.mkdir(parents=True, exist_ok=True)
     payload = graph.model_dump()
+    # ``settings`` is written only when a device is assigned, so a graph
+    # file with no assignment stays byte-identical to what it was.
+    if not (payload.get("settings") or {}).get("device"):
+        payload.pop("settings", None)
     # Defense-in-depth: even if a client bypasses the editor (which already
     # blanks SECRET params before sending), never write a secret to disk.
     #
@@ -258,6 +262,8 @@ async def export_graph(graph: GraphExportRequest):
             # produced instead of drawing fresh entropy every invocation.
             seed=graph.seed,
             deterministic=graph.deterministic,
+            # The graph's own device is the exported ``--device`` default.
+            device=graph.settings.device if graph.settings else None,
         )
         # A successful response must never download syntactically broken
         # Python, even if a future template edit regresses quoting/bracketing.

@@ -17,7 +17,7 @@ import functools
 import json
 import logging
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any
 from uuid import uuid4
 
@@ -26,7 +26,7 @@ from fastapi.responses import JSONResponse
 
 from ..core import api_contract
 from ..core.api_contract import InputCoercionError, OutputSerializationError
-from ..core.device_utils import resolve_device
+from ..core.device_utils import graph_settings_device, resolve_device
 from ..core.execution_context import ExecutionContext
 from ..core.graph_engine import (
     GraphValidationError,
@@ -646,6 +646,11 @@ async def run_graph_as_function(name: str, request: Request):
                               code="invalid_input",
                               message="invalid request body",
                               details=field_errors)
+    if run_req.device is None:
+        # An omitted device means the graph's own assignment; a missing or
+        # invalid one stays None and resolves to cpu. ``auto`` resolves to
+        # the best accelerator in execute_contract_run.
+        run_req = replace(run_req, device=graph_settings_device(graph_data))
 
     # Steps 5-12 live in execute_contract_run. The output_store getattr is
     # hoisted HERE (editor-only surface); the invoke route passes None.
