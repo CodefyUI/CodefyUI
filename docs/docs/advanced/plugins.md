@@ -6,7 +6,7 @@ description: Install plugin packs of educational nodes, and learn how to write a
 
 # Plugin Packs
 
-Educational ("Edu") nodes ship as installable **plugin packs**, organised **by direction** so each maps onto a hands-on textbook module and installs cumulatively as you progress.
+Educational ("Edu") nodes ship as installable **plugin packs**, organised **by direction** so each maps onto a hands-on textbook module and installs cumulatively as you progress. Every command below has a button in the editor's [Plugin Center](/usage/plugin-center); this page is the reference behind both.
 
 ```bash
 cdui plugin sync                           # install every built-in pack you have not decided about

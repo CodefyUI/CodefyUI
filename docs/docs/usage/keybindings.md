@@ -25,7 +25,7 @@ Keyboard chords are ignored while you are typing in an input, a textarea or a no
 | Auto layout (last-used mode) | `Shift` + `L` |
 | Save graph (project mode only) | `Ctrl/Cmd` + `S` |
 | Show shortcuts overlay | `?` |
-| Commit (Source Control message box) | `Ctrl/Cmd` + `Enter` |
+| Commit ([Source Control](./source-control) message box) | `Ctrl/Cmd` + `Enter` |
 | Rename node | Right-click → Rename, or the name field in Node details (`Enter` applies, `Esc` cancels) |
 | Duplicate node | Right-click → Duplicate |
 | Node details navigation | `Left` / `Right` for the previous / next node; `Esc` closes |
