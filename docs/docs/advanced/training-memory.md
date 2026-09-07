@@ -27,7 +27,7 @@ Activations, not weights, are what fills a card on a deep model, and autocast ha
 **What each device can honour.** The choice is resolved against the device before the run starts, and a device that cannot honour it falls back to `fp32` with a warning rather than failing:
 
 - CUDA without bfloat16 support asks for `bf16` and gets `fp32`.
-- MPS gets `fp32` for anything but `fp32`. Apple's autocast coverage varies by torch build and is not something CodefyUI can verify on your machine.
+- MPS gets `fp32` for anything but `fp32`. Both 16-bit modes run on torch 2.11 but are slower: on an M3, ResNet-18 on CIFAR measured 17 ms/step in fp32, 30 ms in bf16 and 37 ms in fp16, with no change in allocator memory. MPS kernels are float32-native; half precision adds a conversion around each op.
 - CPU honours all three. Neither 16-bit mode is *fast* on a CPU — this is about being able to run the lesson on the machine in front of you.
 
 The node's config frame and its `metrics` output both report `precision` (what ran) and, when they differ, `precision_requested` (what you asked for). Validation runs under the same autocast as training, so the two loss curves stay comparable.

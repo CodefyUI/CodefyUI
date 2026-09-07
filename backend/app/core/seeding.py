@@ -220,8 +220,18 @@ def deterministic_scope(enabled: bool):
         if baseline is not None:
             previous, previous_warn, had_cublas, previous_cublas = baseline
             try:
-                torch.use_deterministic_algorithms(previous,
-                                                   warn_only=previous_warn)
+                # Only when the setting actually moved. The two queries are
+                # plain flag reads; ``use_deterministic_algorithms`` is not:
+                # its first call in a process imports ``torch._dynamo`` and
+                # ``torch._inductor`` (~0.5 s on an M3), and this restore
+                # runs at the end of EVERY run -- so the ordinary case of a
+                # run that never asked for determinism paid that import on
+                # its first graph for nothing.
+                if (torch.are_deterministic_algorithms_enabled() != previous
+                        or torch.is_deterministic_algorithms_warn_only_enabled()
+                        != previous_warn):
+                    torch.use_deterministic_algorithms(previous,
+                                                       warn_only=previous_warn)
             except Exception:  # pragma: no cover - defensive
                 logger.debug("determinism not restored", exc_info=True)
             if had_cublas:

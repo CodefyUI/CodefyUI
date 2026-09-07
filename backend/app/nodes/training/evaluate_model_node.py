@@ -176,7 +176,11 @@ class EvaluateModelNode(BaseNode):
         total_batches = loader_length(loader)
         stopped_at_batch: int | None = None
 
-        correct = 0
+        # ``correct`` accumulates ON the device (``0 + tensor`` is a tensor)
+        # and is read back once at the end: ``.item()`` per batch is a full
+        # host/device synchronisation, which on Apple MPS drains the Metal
+        # queue every batch and dominates a small model's evaluation.
+        correct: Any = 0
         total = 0
         with torch.no_grad():
             for batch_index, batch in enumerate(loader):
@@ -192,9 +196,9 @@ class EvaluateModelNode(BaseNode):
                 with policy.autocast():
                     logits = model(x)
                 pred = logits.argmax(dim=1)
-                correct += int((pred == y).sum().item())
+                correct = correct + (pred == y).sum()
                 total += int(y.numel())
-                throttle.emit({
+                throttle.emit(lambda: {
                     "event": EVENT_BATCH,
                     "batch": batch_index + 1,
                     "total_batches": total_batches,

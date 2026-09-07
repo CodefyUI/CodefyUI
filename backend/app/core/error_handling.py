@@ -186,6 +186,8 @@ def memory_digest(device: str = "") -> str:
     in use, the peak, and how much the card has in total.
     """
     kind = (device or "").split(":", 1)[0]
+    if kind == "mps":
+        return _mps_memory_digest()
     if kind != "cuda":
         return ""
     try:
@@ -229,6 +231,18 @@ def release_cached_memory(device: str = "") -> None:
     that node's cached outputs is the other.
     """
     kind = (device or "cuda").split(":", 1)[0]
+    if kind == "mps":
+        # Apple's allocator caches freed blocks exactly as CUDA's does, and
+        # on a unified-memory Mac the reserve it keeps is RAM the next run,
+        # the browser and the OS all share. Same recovery, same reasons.
+        try:
+            import torch
+
+            if getattr(torch.backends, "mps", None) and torch.backends.mps.is_available():
+                torch.mps.empty_cache()
+        except Exception:  # noqa: BLE001 - recovery must not raise over recovery
+            logger.debug("could not empty the MPS cache", exc_info=True)
+        return
     if kind != "cuda":
         return
     try:
@@ -239,3 +253,33 @@ def release_cached_memory(device: str = "") -> None:
         torch.cuda.empty_cache()
     except Exception:  # noqa: BLE001 - recovery must not raise over recovery
         logger.debug("could not empty the CUDA cache", exc_info=True)
+
+
+def _mps_memory_digest() -> str:
+    """The MPS allocator's numbers, in the same shape as the CUDA digest.
+
+    Unified memory has no "on the card" total; what torch exposes is the
+    working-set ceiling Metal recommends for this process, which is the
+    number an allocation is actually refused against.
+    """
+    try:
+        import torch
+
+        if not (getattr(torch.backends, "mps", None) and torch.backends.mps.is_available()):
+            return ""
+        allocated = torch.mps.current_allocated_memory()
+        reserved = torch.mps.driver_allocated_memory()
+        ceiling = torch.mps.recommended_max_memory()
+    except Exception:  # noqa: BLE001 - a digest is never worth an exception
+        logger.debug("could not read MPS memory statistics", exc_info=True)
+        return ""
+
+    def _gb(value: int) -> str:
+        return f"{value / (1024 ** 3):.2f} GiB"
+
+    return (
+        f"MPS memory: {_gb(allocated)} held by live tensors, "
+        f"{_gb(reserved)} reserved by the allocator, "
+        f"{_gb(ceiling)} recommended working-set ceiling for this process "
+        f"(unified memory, shared with everything else on the Mac)."
+    )

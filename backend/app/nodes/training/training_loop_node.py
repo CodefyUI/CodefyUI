@@ -1935,29 +1935,34 @@ class TrainingLoopNode(BaseNode):
             this point, so a clip measured on them would compare a number
             around 65536x too large against the threshold.
             """
-            grad_norm_value: float | None = None
+            # The norm stays a DEVICE tensor here. ``clip_grad_norm_`` never
+            # reads it back to the host (the clip coefficient is computed
+            # and applied on the device), so converting it to a float would
+            # be this function's only host/device synchronisation -- one
+            # full queue drain per optimizer step, paid even on the steps
+            # ``log_interval`` thins away. ``after_optimizer_step`` converts
+            # it exactly when a series is about to record it.
+            grad_norm_value: Any = None
             if grad_clip > 0:
                 policy.unscale_(optimizer)
                 # clip_grad_norm_ returns the PRE-clip total norm — the
                 # measurement #298's telemetry wants, for free.
-                total_norm = torch.nn.utils.clip_grad_norm_(
+                grad_norm_value = torch.nn.utils.clip_grad_norm_(
                     model.parameters(), grad_clip)
-                grad_norm_value = float(total_norm)
             elif log_grad_norm or log_update_ratio:
                 # Norm-only measurement: an infinite threshold clips
                 # nothing, and the unscale keeps the number meaningful
                 # under fp16 exactly as in the clipping branch.
                 policy.unscale_(optimizer)
-                total_norm = torch.nn.utils.clip_grad_norm_(
+                grad_norm_value = torch.nn.utils.clip_grad_norm_(
                     model.parameters(), float("inf"))
-                grad_norm_value = float(total_norm)
             applied = policy.step(optimizer)
             optimizer.zero_grad()
             return applied, grad_norm_value
 
         scheduler_is_plateau = _is_plateau(lr_scheduler)
 
-        def after_optimizer_step(grad_norm_value: float | None) -> None:
+        def after_optimizer_step(grad_norm_value: Any) -> None:
             """#297/#298 per-optimizer-step work.
 
             Called only after a step actually applied, with the pre-clip
@@ -1971,6 +1976,11 @@ class TrainingLoopNode(BaseNode):
                     and not scheduler_is_plateau):
                 lr_scheduler.step()
             thinned = optimizer_steps % log_interval == 0
+            if (grad_norm_value is not None and thinned
+                    and (log_grad_norm or log_update_ratio)):
+                # The one place the gradient norm leaves the device: a
+                # thinned step that is about to record it.
+                grad_norm_value = float(grad_norm_value)
             if grad_norm_value is not None and log_grad_norm and thinned:
                 record_metric("grad_norm", grad_norm_value, optimizer_steps)
                 if grad_clip > 0:
@@ -1980,11 +1990,15 @@ class TrainingLoopNode(BaseNode):
                         optimizer_steps)
             if grad_norm_value is not None and log_update_ratio and thinned:
                 with torch.no_grad():
-                    weight_sq = 0.0
-                    for parameter in model.parameters():
-                        if parameter.requires_grad:
-                            weight_sq += float(
-                                parameter.detach().float().norm() ** 2)
+                    # Summed on the device and read back ONCE, rather than
+                    # one synchronisation per parameter tensor.
+                    squares = [
+                        parameter.detach().float().norm() ** 2
+                        for parameter in model.parameters()
+                        if parameter.requires_grad
+                    ]
+                    weight_sq = (
+                        float(torch.stack(squares).sum()) if squares else 0.0)
                 weight_norm = weight_sq ** 0.5
                 lr_now = float(optimizer.param_groups[0].get("lr", 0.0))
                 record_metric(
@@ -2000,7 +2014,9 @@ class TrainingLoopNode(BaseNode):
                 # which has a different x-axis.
                 was_training = model.training
                 model.eval()
-                step_val_sum = 0.0
+                # ``0.0 + tensor`` is a tensor, so this accumulates on the
+                # device from the first batch on and is read back once.
+                step_val_sum: Any = 0.0
                 step_val_batches = 0
                 with torch.no_grad():
                     for step_batch in val_dataloader:
@@ -2021,12 +2037,12 @@ class TrainingLoopNode(BaseNode):
                                 loss_fn(step_out, step_targets)
                                 if step_targets is not None
                                 else loss_fn(step_out))
-                        step_val_sum += float(step_loss.item())
+                        step_val_sum = step_val_sum + step_loss.detach().float()
                         step_val_batches += 1
                 if step_val_batches:
                     record_metric(
                         "val_loss_step",
-                        step_val_sum / step_val_batches,
+                        float(step_val_sum) / step_val_batches,
                         optimizer_steps)
                 if was_training:
                     model.train()
@@ -2062,7 +2078,11 @@ class TrainingLoopNode(BaseNode):
         for epoch in range(start_epoch, epochs):
             # ── Training phase ──
             model.train()
-            running_loss = 0.0
+            # A DEVICE-side accumulator (``0.0 + tensor`` is a tensor). The
+            # per-batch loss is never read back to the host unless a metric
+            # point or a progress frame is actually due -- see the note at
+            # ``batch_loss_t`` below.
+            running_loss: Any = 0.0
             batch_count = 0
             # Micro-batches whose gradients are sitting in ``.grad`` waiting
             # for a step. Reset per epoch: an accumulation window never
@@ -2117,8 +2137,19 @@ class TrainingLoopNode(BaseNode):
                 # assembled and must not leak into the reported curve, or
                 # the same run at a different accumulate_steps would draw a
                 # different chart.
-                batch_loss = loss.item()
-                running_loss += batch_loss
+                #
+                # NOT ``loss.item()``. Reading a scalar off the accelerator
+                # is a full host/device synchronisation: the CPU stops
+                # queueing work and waits for everything already queued to
+                # finish. On Apple MPS that drains the whole Metal command
+                # queue every batch, which measured at ~6 ms per batch for
+                # the MNIST CNN example -- 60% of a 10 ms step, and the
+                # reason the example ran no faster on MPS than on CPU. The
+                # value is kept on the device and converted only where a
+                # number is actually needed: a thinned metric point, a
+                # throttled progress frame (~2/s), or the epoch average.
+                batch_loss_t = loss.detach().float()
+                running_loss = running_loss + batch_loss_t
                 batch_count += 1
                 global_batch += 1
 
@@ -2140,14 +2171,16 @@ class TrainingLoopNode(BaseNode):
                     # points. Keying off ``global_batch`` rather than
                     # ``batch_index`` keeps the spacing even across an epoch
                     # boundary whose batch count is not a multiple of it.
-                    record_metric("train_loss_batch", batch_loss,
+                    record_metric("train_loss_batch", float(batch_loss_t),
                                   global_batch)
-                throttle.emit({
+                # A factory, so the read-back happens only for the ~2
+                # frames a second the throttle lets through.
+                throttle.emit(lambda: {
                     "event": EVENT_BATCH,
                     "epoch": epoch + 1,
                     "batch": batch_index + 1,
                     "total_batches": total_batches,
-                    "loss": round(batch_loss, 6),
+                    "loss": round(float(batch_loss_t), 6),
                 })
 
                 # A step budget, checked AFTER the step so ``max_steps=1``
@@ -2202,7 +2235,8 @@ class TrainingLoopNode(BaseNode):
             if stopped_at is not None:
                 break
 
-            avg_train_loss = running_loss / max(batch_count, 1)
+            # The epoch's single read-back of the training loss.
+            avg_train_loss = float(running_loss) / max(batch_count, 1)
             epoch_losses.append(avg_train_loss)
 
             current_lr = optimizer.param_groups[0].get("lr", 0)
@@ -2213,9 +2247,11 @@ class TrainingLoopNode(BaseNode):
             avg_val_accuracy = None
             if val_dataloader is not None:
                 model.eval()
-                val_running_loss = 0.0
+                # Device-side accumulators, same reasoning as
+                # ``running_loss``: one read-back per epoch, not per batch.
+                val_running_loss: Any = 0.0
                 val_batch_count = 0
-                val_correct = 0
+                val_correct: Any = 0
                 val_total = 0
 
                 with torch.no_grad():
@@ -2246,7 +2282,8 @@ class TrainingLoopNode(BaseNode):
                                 loss = loss_fn(outputs, targets)
                             else:
                                 loss = loss_fn(outputs)
-                        val_running_loss += loss.item()
+                        val_running_loss = (
+                            val_running_loss + loss.detach().float())
                         val_batch_count += 1
 
                         # Accuracy from this SAME forward pass -- no second
@@ -2269,15 +2306,15 @@ class TrainingLoopNode(BaseNode):
                         # crash) and a number with no meaning either way.
                         if is_classification_loss and targets is not None:
                             pred = outputs.argmax(dim=1)
-                            val_correct += int((pred == targets).sum().item())
+                            val_correct = val_correct + (pred == targets).sum()
                             val_total += int(targets.numel())
 
-                        throttle.emit({
+                        throttle.emit(lambda: {
                             "event": EVENT_BATCH,
                             "epoch": epoch + 1,
                             "batch": batch_index + 1,
                             "total_batches": total_val_batches,
-                            "loss": round(val_running_loss
+                            "loss": round(float(val_running_loss)
                                           / max(val_batch_count, 1), 6),
                             "phase": "val",
                         })
@@ -2288,10 +2325,10 @@ class TrainingLoopNode(BaseNode):
                     # resume point is therefore the next epoch.
                     break
 
-                avg_val_loss = val_running_loss / max(val_batch_count, 1)
+                avg_val_loss = float(val_running_loss) / max(val_batch_count, 1)
                 val_epoch_losses.append(avg_val_loss)
                 if is_classification_loss and val_total > 0:
-                    avg_val_accuracy = val_correct / val_total
+                    avg_val_accuracy = int(val_correct) / val_total
                     val_epoch_accuracies.append(avg_val_accuracy)
 
             # ── LR Scheduler step ──

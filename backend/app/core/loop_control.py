@@ -9,7 +9,9 @@ kept in one place so ``TrainingLoop``, ``DiffusionTrainingLoop``,
 
 ``ProgressThrottle``
     Rate-limit per-iteration progress so a 5000-batch epoch reports twice a
-    second rather than 5000 times.
+    second rather than 5000 times. Accepts a payload *factory* so the loss
+    stays on the accelerator until a frame is actually due -- see
+    :meth:`ProgressThrottle.emit` for why that matters on MPS.
 
 ``save_interrupt_checkpoint``
     Write the partial training state where ``CheckpointLoader`` can find it
@@ -152,8 +154,22 @@ class ProgressThrottle:
         #: anything reads back.
         self.emitted = 0
 
-    def emit(self, payload: dict[str, Any]) -> bool:
-        """Deliver *payload* unless one went out less than the interval ago."""
+    def emit(
+        self,
+        payload: dict[str, Any] | Callable[[], dict[str, Any]],
+    ) -> bool:
+        """Deliver *payload* unless one went out less than the interval ago.
+
+        *payload* may be a zero-argument callable, called ONLY when a frame
+        actually goes out. That is how a loop keeps a device-side loss
+        tensor from being read back on every batch: reading a value off an
+        accelerator is a full host/device synchronisation (on Apple MPS it
+        drains the whole Metal command queue and was measured at ~6 ms per
+        batch -- more than the training step itself for a small CNN), and
+        the throttle only lets ~2 frames a second through. Building the
+        dict eagerly would pay that price for every frame that is then
+        thrown away.
+        """
         if self._callback is None:
             return False
         now = time.monotonic()
@@ -161,6 +177,8 @@ class ProgressThrottle:
             return False
         self._last = now
         self.emitted += 1
+        if callable(payload):
+            payload = payload()
         self._callback(payload)
         return True
 
