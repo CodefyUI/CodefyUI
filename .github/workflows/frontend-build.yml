@@ -65,7 +65,18 @@ jobs:
 
       - name: Build
         working-directory: frontend
-        run: pnpm build
+        run: |
+          set -o pipefail
+          pnpm build 2>&1 | tee "$RUNNER_TEMP/vite-build.log"
+          # vite.config.ts keeps build.chunkSizeWarningLimit at its default so
+          # the 500 kB warning stays the tripwire for the chunk layout. A chunk
+          # past the limit fails here, where the output is read, instead of
+          # scrolling by in a green job. A `!`-negated command is exempt from
+          # errexit, hence the explicit exit.
+          if grep -Eq 'Some chunks are larger than|Circular chunk' "$RUNNER_TEMP/vite-build.log"; then
+            echo 'vite build printed a chunk warning; see the chunk layout in vite.config.ts' >&2
+            exit 1
+          fi
 
       - name: Verify dist contents
         working-directory: frontend

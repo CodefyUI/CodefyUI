@@ -22,6 +22,18 @@ received — each links to the release it was published as.
 
 ## [Unreleased]
 
+### Changed
+
+- **A smaller, warning-free frontend build.** The single 1.48 MB entry script
+  is now five eager chunks cut along what changes together (React, React Flow
+  with dagre and d3, the translations, the stores and API layer, the
+  components), so after `cdui update` a browser re-downloads only what
+  changed, and KaTeX is fetched on the first description that contains a
+  formula, the way the code editor already fetches CodeMirror. `pnpm build` no
+  longer warns about a chunk over 500 kB. The build fails if a static import
+  ever undoes one of the two lazy boundaries or if the chunk layout forms a
+  cycle, and CI fails if a chunk grows past the limit.
+
 ## [2.7.0] — 2026-09-07
 
 The Source Control tab is complete. 2.6.0 shipped the working tree and the
