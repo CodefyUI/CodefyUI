@@ -50,7 +50,7 @@ CodefyUI also sets `PYTORCH_ENABLE_MPS_FALLBACK=1` before importing torch. When 
 
 ## Performance on Apple Silicon
 
-Numbers below are from an M3 MacBook Air (24 GB, torch 2.11), one epoch of each shipped example, with cool-down gaps between runs. With the first two items below applied: CNN-MNIST 11.2 s → 4.1 s, ResNet-CIFAR10 12.1 s → 5.1 s, GPT-Mini 19.9 s → 13.1 s on `mps`; 13.7 s → 11.5 s, 27.4 s → 24.4 s, 22.4 s → 20.8 s on `cpu`.
+Numbers below are from an M3 MacBook Air (24 GB, torch 2.11), one epoch of three shipped examples, with cool-down gaps between runs. With the first two items below applied: CNN-MNIST 11.2 s → 4.1 s, ResNet-CIFAR10 12.1 s → 5.1 s, GPT-Mini 19.9 s → 13.1 s on `mps`; 13.7 s → 11.5 s, 27.4 s → 24.4 s, 22.4 s → 20.8 s on `cpu`.
 
 - **The training loop does not read the loss back per batch.** `loss.item()` is a host/device synchronisation. On MPS it drains the Metal command queue, so the CPU cannot prepare the next batch while the GPU runs the current one. `TrainingLoop`, `EvaluateModel` and `DiffusionTrainingLoop` accumulate the loss on the device and read it back once per epoch, at each `batch_metrics` point, and for each progress frame (at most two per second). This change alone: CNN-MNIST 11.2 s → 5.5 s, ResNet-CIFAR10 12.1 s → 5.6 s, GPT-Mini 19.9 s → 15.8 s per epoch on `mps`.
 - **The default `ToTensor` + `Normalize` pipeline runs per batch.** For MNIST, FashionMNIST, CIFAR10 and CIFAR100 with no transform wired, `Dataset` applies both steps to the whole batch. The output is bit-identical to the per-sample path; host time per epoch drops from 1.5 s to 0.13 s for MNIST. A wired transform chain uses torchvision's per-sample path.
@@ -58,7 +58,7 @@ Numbers below are from an M3 MacBook Air (24 GB, torch 2.11), one epoch of each 
 
 When benchmarking: the first MPS run in a process spends 0.2–0.6 s initialising Metal and 0.1–0.2 s per new kernel shape. A later process on the same Mac is faster because macOS caches compiled shaders. A fanless Mac throttles after a few minutes of sustained GPU load; leave cool-down gaps between runs you compare.
 
-Mixed precision is not used on MPS. bf16 and fp16 autocast run on torch 2.11 but measured 1.7–3× slower than fp32 with no memory saving. See [Training Memory](./training-memory#mixed-precision).
+Mixed precision is not used on MPS. bf16 and fp16 autocast run on torch 2.11 but measured 1.8–3.3× slower than fp32 with no memory saving. See [Training Memory](./training-memory#mixed-precision).
 
 ## ROCm presents as CUDA
 
