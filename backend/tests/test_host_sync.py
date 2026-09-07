@@ -37,7 +37,7 @@ class _ReadBackCounter:
             # with ``.item()`` on every step. That is torch's business and
             # not a device read-back, so calls from inside torch.optim are
             # not counted.
-            caller = sys._getframe(1).f_code.co_filename
+            caller = sys._getframe(1).f_code.co_filename.replace("\\", "/")
             if "/torch/optim/" not in caller:
                 self.count += 1
             return original_item(tensor, *args, **kwargs)
