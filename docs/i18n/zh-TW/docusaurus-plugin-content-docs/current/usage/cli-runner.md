@@ -8,6 +8,8 @@ description: 使用 run_graph.py 直接從命令列執行已儲存的 graph.json
 
 你可以直接從命令列執行任何圖，而不需要啟動伺服器。這對於批次執行、CI，或在無介面（headless）下重現一條管線都很方便。
 
+如果你要透過 HTTP 呼叫*執行中*伺服器上*已儲存*的圖，傳入已宣告的輸入並取得已宣告的輸出，請見 **[把 graph 當成函式呼叫](./graph-as-a-function)**。
+
 ```bash
 cd backend
 python run_graph.py ../examples/Usage_Example/CNN-MNIST/TrainCNN-MNIST/graph.json
@@ -20,7 +22,7 @@ python run_graph.py ../examples/Usage_Example/CNN-MNIST/TrainCNN-MNIST/graph.jso
 | 旗標 | 效果 |
 |------|--------|
 | `--validate-only` | 驗證圖（DAG、型別、連接埠、Start 節點）但不執行它。 |
-| `--verbose` | 發出中間步驟追蹤，與 Inspector 的 **Steps** 分頁所顯示的資料相同。 |
+| `--verbose`、`-v` | `DEBUG` 等級的 log，外加節點在執行期失敗時的完整 traceback。沒有任何 CLI 開關可以輸出檢視器的步驟追蹤。 |
 | `--device` | 全域運算裝置：`cpu` / `cuda` / `mps`。 |
 | `--seed N` | 用 `N` 為每個節點設定種子，讓執行可以重現。設了種子的執行會一次只跑一個節點 — 見 **[可重現的執行](./running-graphs#可重現的執行亂數種子)**。 |
 | `--deterministic` | 要求 PyTorch 使用決定性運算核心（`warn_only`，沒有決定性實作的運算會發出警告，而不會讓執行失敗）。 |

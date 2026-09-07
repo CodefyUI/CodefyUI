@@ -16,17 +16,17 @@ CodefyUI 執行於 PyTorch 之上，因此繼承了 PyTorch 的裝置後端：**
 
 你不需要去推敲某個張量到底在哪個裝置上。節點執行前，`graph_engine.invoke_node` 會把它輸入裡的每個張量搬到該節點要跑的裝置——節點自己宣告了 `device` 參數就用它的，否則用這次執行的全域裝置。由於所有進入節點的路徑都經過那一個函式，這個保證同時涵蓋內建節點、外掛節點與你自己的[自訂節點](./custom-nodes)。
 
-這件事之所以重要，是因為裝置不一致在只有 CPU 的機器上根本不可能發生，所以在多數開發過程中完全隱形，只會在別人的 GPU 機器上爆出來。在對齊移進引擎之前，已經有兩張出貨的圖是這樣死的——`Input type (torch.FloatTensor) and weight type (torch.cuda.FloatTensor) should be the same`。
+這項機制很重要，因為只有 CPU 的開發環境不會發生裝置不一致，問題通常到其他人的 GPU 機器上才會出現。在輸入對齊移入引擎前，已有兩個隨附 graph 因此失敗，錯誤為 `Input type (torch.FloatTensor) and weight type (torch.cuda.FloatTensor) should be the same`。
 
 對齊**刻意不碰**的東西：
 
-- **模組。** `nn.Module.to()` 是就地修改，把一個從別的節點傳過來的模型搬走，等於在擁有它的節點腳下換掉權重。需要把收到的模型放到自己裝置上的節點，要自己明確呼叫 `to_device`。
+- **模組。** `nn.Module.to()` 會就地修改模組，因此搬移從其他節點收到的模型，可能會在擁有該模型的節點不知情時改變權重所在裝置。需要讓模型使用自身裝置的節點，必須明確呼叫 `to_device`。
 - **Dataset、DataLoader、環境等非張量值。** 它們原樣通過，所以 dataset 維持惰性，`TrainingLoop` 仍然是一次一個 batch 串流到 GPU，而不是整份常駐 VRAM。
 - **宣告了 `align_inputs = False` 的節點。** 本質上就在 host 端做事的節點——直接把輸入交給 numpy、sklearn、matplotlib 或 PIL——會選擇退出，因為 `Tensor.numpy()` 在非 CPU 上會直接丟例外。內建的例子是 `TrainTestSplit`。你自己的節點若是同一類，就寫上 `align_inputs = False`；參見[自訂節點](./custom-nodes)。
-- **節點在自己 `execute` 裡建立的張量。** 對齊看得到的是節點的*輸入*，不是它本體裡第二行才呼叫的 `torch.zeros(...)`。如果你的節點要建一個張量去跟收到的張量運算，請用 `device=<那個輸入>.device` 建立。
+- **節點在自己的 `execute` 中建立的張量。** 對齊只處理節點輸入，不會處理節點內部建立的 `torch.zeros(...)`。若新張量要與輸入張量一起運算，請用 `device=<the input>.device` 建立。
 
 :::caution 匯出的腳本會自己挑裝置
-匯出圖的 `--device` 預設是 `auto`，會解析成當下最好的加速器。上面說的 CPU 基準是**應用程式**的；你匯出後用 `python graph.py` 不加參數執行，在有 GPU 的機器上就會用 GPU。想要與 canvas 一致，請傳 `--device cpu`。
+匯出圖的 `--device` 預設是 `auto`，會解析成當下最好的加速器。上面說的 CPU 基準是**應用程式**的；你匯出後用 `python graph.py` 不加參數執行，在有 GPU 的機器上就會用 GPU。想要與畫布一致，請傳 `--device cpu`。
 :::
 
 ## 在多張卡之中指定其中一張
@@ -38,6 +38,8 @@ CodefyUI 執行於 PyTorch 之上，因此繼承了 PyTorch 的裝置後端：**
 ## float64 + MPS 的限制
 
 MPS 是 **float32 原生**的，會拒絕 float64 張量。CodefyUI 在 `device_utils.to_device` 中將其正規化，但如果你撰寫一個直接建立張量的[自訂節點](./custom-nodes)，請在 Apple GPU 上將它們維持為 float32，以避免執行時錯誤。
+
+CodefyUI 也會在 import torch 前設定 `PYTORCH_ENABLE_MPS_FALLBACK=1`。MPS 不支援某項運算時，PyTorch 會改在 CPU 上執行。速度會較慢，但不會因不支援該運算而發生錯誤。若要讓不支援的運算拋出錯誤，請在執行 `cdui start` 前將此變數匯出為 `0`。
 
 ## ROCm 呈現為 CUDA
 

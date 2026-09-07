@@ -41,7 +41,17 @@ After adding or editing a custom node, reload without restarting the server:
 - click the toolbar **Reload Nodes** button, or
 - `POST /api/nodes/reload`.
 
-The node appears in the palette immediately. You can also use the **Custom Node Manager** GUI to upload, enable/disable, and delete custom nodes.
+The node appears in the palette immediately. To upload a file instead of copying it into the directory, use the [Custom Node Manager](#uploading-through-the-custom-node-manager); it reloads node definitions after each action.
+
+## Uploading through the Custom Node Manager
+
+Open the manager with the **Manage...** button in the **Custom Nodes** section of the sidebar's **Custom & Plugins** tab. It lists each file in `custom_nodes/`, the node names defined by that file, and three actions:
+
+- **Upload .py** sends one file to `POST /api/custom-nodes/upload`. The file must have a `.py` extension and cannot exceed `CODEFYUI_MAX_UPLOAD_SIZE` (500 MB). The server scans it with the plugin AST gate at [Tier 0](/advanced/plugins#security--three-tiers). Custom nodes cannot declare capabilities, so imports such as `requests` or `os` produce a `400` response with the gate's message. Put a node that needs imports outside Tier 0 in a [plugin pack](./plugins) with a `[security]` section. Files copied directly into `backend/app/custom_nodes/` are loaded at the next reload without this scan.
+- **Enable / Disable** renames the file between `name.py` and `name.py.disabled`; a disabled file stays on disk and is skipped by discovery.
+- **Delete** removes the file (names starting with `__` are protected).
+
+After each action, the server rediscovers custom nodes, plugin packs, and presets. The palette reflects the result when the request completes; no separate reload is required.
 
 ## Anatomy of a node
 
@@ -51,9 +61,11 @@ The node appears in the palette immediately. You can also use the **Custom Node 
 | `CATEGORY` | Palette grouping and color. |
 | `DESCRIPTION` | User-facing help text (LaTeX is supported). |
 | `define_inputs()` / `define_outputs()` | Return `PortDefinition` lists — each has a `name`, a `data_type`, and optional `description` / `optional` / `media`. |
-| `define_params()` | Return `ParamDefinition` lists — `int`, `float`, `string`, `bool`, `select`, file pickers, `tensor_grid`, or `secret`, with `default`, `options`, `min_value`/`max_value`, and `visible_when`. A `secret` param (e.g. an API key) is masked in the editor and its value is **never persisted** — it is blanked on save, export, and publish, so use an environment variable to supply it to published apps. |
-| `define_outputs_dynamic(params)` | Optional — vary output ports by parameter values. |
-| `execute(self, inputs, params, *, context=...)` | The work. Returns a dict keyed by output port name. |
+| `define_params()` | Return `ParamDefinition` lists — `int`, `float`, `string`, `bool`, `select`, file pickers (`model_file`, `image_file`, `data_file`), `tensor_grid`, `code` (a multi-line editor with syntax highlighting; still an ordinary string param), or `secret`, with `default`, `options`, `min_value`/`max_value`, and `visible_when`. A `secret` param (e.g. an API key) is masked in the editor and its value is **never persisted** — it is blanked on save, export, and publish, so use an environment variable to supply it to published apps. |
+| `define_outputs_dynamic(params)` / `define_inputs_dynamic(params)` | Optional. Change output or input ports based on parameter values, such as `Split`'s `chunks` or `PythonScript`'s `input_ports`. The static methods must describe the default parameters because the palette uses them; validation, rendering, and preset export use the dynamic definitions. |
+| `execute(self, inputs, params, progress_callback=None, *, context=None)` | Execute the node and return a dict keyed by output-port name. The engine passes each optional keyword argument only when the signature declares it. `progress_callback` receives a dict for each progress event; for example, the training loop sends `{"event": "epoch", ...}`. `context` provides the run's device, seed, and determinism flag. |
+| `REQUIRES_PACK` | Optional class attribute identifying the [optional pack](/usage/optional-packs) required at execution time (`None` by default). `/api/nodes` exposes it as `requires_pack`, allowing the palette to display a pack badge and the editor to offer installation before execution fails. |
+| `cacheable` / `align_inputs` / `cache_fingerprint(params)` | Optional cache and device controls. Set `cacheable = False` for a node with trainable state, a returned live object reference, or a side effect not represented by its return value. Set `align_inputs = False` when passing inputs directly to numpy, sklearn, or PIL; otherwise the engine moves input tensors to the run device, and `Tensor.numpy()` fails for tensors outside the CPU. Override `cache_fingerprint` to add external state referenced by a parameter, such as a file's modification time, to the cache key. |
 
 ## Data types
 
@@ -100,7 +112,7 @@ def execute(self, inputs, params, progress_callback=None, *, context=None):
     }}
 ```
 
-Every number in a spec must be a finite, plain Python `float` or `int`: run events are serialised with `allow_nan=False`, and a `numpy.float32` is not JSON-serialisable at all. Keep specs small — a `node_status` payload over 128 KB is replaced by an elision marker. The full per-kind payload reference lives in the [stats pack's README](https://github.com/CodefyUI/CodefyUI/blob/main/plugins/stats/README.md), which is the reference implementation.
+Every number in a spec must be a finite, plain Python `float` or `int`: run events are serialised with `allow_nan=False`, and a `numpy.float32` is not JSON-serialisable at all. Keep specs small — a `node_status` payload over `CODEFYUI_RUN_EVENT_PAYLOAD_CAP_BYTES` (128 KB by default) is replaced by an elision marker. The full per-kind payload reference lives in the [stats pack's README](https://github.com/CodefyUI/CodefyUI/blob/main/plugins/stats/README.md), which is the reference implementation.
 
 ## Emitting a playable video
 

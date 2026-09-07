@@ -1,43 +1,43 @@
 ---
 sidebar_position: 3.9
 title: 重現標準結果
-description: 研究等級的完整走訪 — 用純 GUI 節點、固定 seed、丟上執行佇列，從頭到尾重現 ResNet-18 / CIFAR-10 的標準結果。
+description: 研究等級的完整說明 — 使用 GUI 節點、固定 seed 與執行佇列，從頭到尾重現標準 ResNet-18 / CIFAR-10 結果。
 ---
 
 # 重現標準結果
 
-這份文件大部分在講「怎麼學」。這一頁講的是另一件事：你在畫布上接出來的圖，能不能產生一個你敢寫進論文的數字，而且別人能照著重新算出來。
+多數文件著重於學習。本頁說明另一項能力：在畫布上建立的圖可以產生適合寫入論文的數值，而且其他人能依相同步驟重新推導。
 
-拿來示範的是 CIFAR-10 的標準結果 — ResNet-18、SGD 加動量、cosine 退火、裁切加翻轉的資料增強。它是影像分類重現性的「hello world」，準確率是大家都知道的常識，而這正是它適合當測試的原因：有一個公開的數字可以被錯過。
+本頁使用標準 CIFAR-10 baseline：ResNet-18、帶動量的 SGD、cosine 退火，以及裁切與翻轉資料增強。這是常用的影像分類重現性基準，預期準確率廣為人知，因此適合檢查結果是否偏離公開數值。
 
-以下完全不需要寫 Python。架構、優化器、學習率排程、資料增強鏈，全部都是節點。
+以下步驟不需要撰寫 Python。架構、優化器、學習率排程與資料增強鏈都由節點組成。
 
 ## 這個範例
 
-從空白畫布的範例庫點開 **ResNet-18 / CIFAR-10 baseline**，或直接載入它的圖。這一頁提到的所有東西都在 [`examples/Usage_Example/ResNet18-CIFAR10-Baseline/`](https://github.com/CodefyUI/CodefyUI/tree/main/examples/Usage_Example/ResNet18-CIFAR10-Baseline) 底下 — `graph.json`、一份記錄實際跑了什麼的 `README.md`，還有放著原始指標匯出與曲線圖的 `evidence/` 目錄。
+從空白畫布的**範例圖庫**開啟 **ResNet-18 / CIFAR-10 baseline**，或直接載入圖檔。本頁使用的檔案都位於 [`examples/Usage_Example/ResNet18-CIFAR10-Baseline/`](https://github.com/CodefyUI/CodefyUI/tree/main/examples/Usage_Example/ResNet18-CIFAR10-Baseline)：`graph.json`、記錄實際執行內容的 `README.md`，以及包含原始指標匯出與曲線圖的 `evidence/` 目錄。
 
-十九個節點，分成四條線匯進 `TrainingLoop`：
+圖中有 19 個節點，分為四組並連到 `TrainingLoop`：
 
-- **資料增強** — `RandomCrop` 接 `RandomHorizontalFlip` 接 `ToTensorTransform` 接 `NormalizeTransform`，接進訓練用 `Dataset` 的 `train_transform` 埠。轉換節點可以直接一個接一個串起來，不需要另外一個 Compose 節點。
-- **評估前處理** — 只有 `ToTensorTransform` 接 `NormalizeTransform`，接進測試用 `Dataset` 的 `eval_transform` 埠。測試集永遠不做資料增強。
-- **模型** — 一個 `SequentialModel`，它的層編輯器裡放著 ResNet-18：總共 70 個節點，其中 68 個是實際的層，另外 2 個是 `Input`/`Output` 標記。
-- **優化** — `Optimizer`、`Loss` 和 `LRScheduler`。
+- **資料增強** — `RandomCrop` → `RandomHorizontalFlip` → `ToTensorTransform` → `NormalizeTransform`，連到訓練 `Dataset` 的 `train_transform` port。轉換節點可直接串接，不需要另外使用 Compose。
+- **評估前處理** — 只有 `ToTensorTransform` → `NormalizeTransform`，連到測試 `Dataset` 的 `eval_transform` port。測試集不使用資料增強。
+- **模型** — 一個 `SequentialModel`，其 layer editor 包含 ResNet-18 圖：共 70 個節點，其中 68 個是模組，另外 2 個是 `Input`／`Output` 標記。
+- **優化** — `Optimizer`、`Loss` 與 `LRScheduler`。
 
-`EvaluateModel` 讀訓練好的模型和測試集，回報 top-1 準確率。`CheckpointSaver` 存權重。`Visualize` 畫 loss 曲線。
+`EvaluateModel` 讀取已訓練模型與 test split，並回報 top-1 準確率。`CheckpointSaver` 寫入權重，`Visualize` 繪製 loss 曲線。
 
-:::tip 這個架構不要用手拉
-68 個層節點加 77 條連線，不是任何人應該一個一個拖出來的東西 — 那是好幾百次不能出錯的操作，而且殘差捷徑接錯的時候不會有任何提示，要等到張量形狀對不上才會發現。
+:::tip 不要手動放置架構
+手動拖曳 68 個層節點並建立 77 條連線，需要數百次精確操作。殘差捷徑若連接錯誤，通常要到 tensor shape 不相容時才會發現。
 
-請改用層編輯器的 **Import**。它可以直接吃這個範例的 `graph.json`，一次把整個架構載進來；要在自己的圖裡重複使用這個 ResNet-18 也是同一條路：打開你的 `SequentialModel`、按 **Import**、選檔案。**Export** 會把同樣的格式寫回去。層編輯器適合拿來**看**架構和**改**架構，不適合拿來從零開始打字。
+請改用層編輯器的**匯入**。它可直接讀取此範例的 `graph.json`，一次載入完整架構。若要在自己的圖中重用這個 ResNet-18，請開啟 `SequentialModel`、點擊**匯入**並選擇檔案。**匯出**會寫出相同格式。層編輯器適合檢視及調整架構，不適合從零手動建立整個架構。
 :::
 
-## 配方
+## 基準設定 {/* #配方 */}
 
 | | |
 |---|---|
 | 架構 | ResNet-18，CIFAR 版 — 3x3 stride-1 stem、沒有 maxpool、4 個 stage 各 2 個 BasicBlock（64/128/256/512），11,173,962 個參數 |
 | 優化器 | SGD，lr 0.1，動量 0.9，Nesterov，weight decay 5e-4 |
-| 學習率排程 | `CosineAnnealingLR`，`T_max` 等於總 epoch 數（見下方「值得先知道的坑」— 兩者不一致會出現提醒，但不會被擋下來） |
+| 學習率排程 | `CosineAnnealingLR`，`T_max` 等於 epoch 數（見下方注意事項；不一致時會發出警告，但不會強制限制） |
 | 損失函數 | 交叉熵，不做 label smoothing |
 | 批次大小 | 訓練 128，評估 512 |
 | Epoch 數 | 200 |
@@ -47,25 +47,32 @@ description: 研究等級的完整走訪 — 用純 GUI 節點、固定 seed、�
 
 ### 為什麼 stem 不一樣
 
-`torchvision` 裡的 ResNet-18 是為 224x224 的 ImageNet 圖片設計的：先做 7x7 stride-2 卷積，再接 3x3 stride-2 的 max-pool，等於在進第一個殘差塊之前就把輸入縮小成四分之一。這套用在 32x32 的 CIFAR 圖片上，等於一開始就把空間資訊丟得差不多了，同樣的配方會低好幾個百分點。
+`torchvision` 的 ResNet-18 是為 224x224 ImageNet 圖片設計：先使用 7x7 stride-2 卷積，再使用 3x3 stride-2 max-pool，在第一個殘差塊前將輸入尺寸縮小四倍。若套用於 32x32 CIFAR 圖片，會在一開始移除大部分空間資訊，使相同設定的準確率降低數個百分點。
 
-CIFAR 版把整個 stem 換成單一個 3x3 stride-1 卷積，並且拿掉 max-pool，所以第一個 stage 看到的還是 32x32。所有公開的 CIFAR ResNet 數字都預設是這樣做的。「ResNet-18 跑 CIFAR-10」重現出來只有 91% 而不是 95%，最常見的原因就是這一點。
+CIFAR 版本以單一 3x3 stride-1 卷積取代整個 stem，並移除 max-pool，讓第一個 stage 仍接收 32x32 輸入。公開的 CIFAR ResNet 結果都採用這項設定。重現「ResNet-18 on CIFAR-10」時得到 91% 而不是 95%，最常見的原因就是使用了錯誤的 stem。
 
-你可以在層編輯器裡看到這個 stem：雙擊 `SequentialModel`，前三層就是 `Conv2d(3, 64, kernel_size=3, stride=1, padding=1)`、`BatchNorm2d(64)`、`ReLU`。
+可在層編輯器中查看 stem。雙擊 `SequentialModel`，前三層是 `Conv2d(3, 64, kernel_size=3, stride=1, padding=1)`、`BatchNorm2d(64)`、`ReLU`。
 
-## 怎麼跑才能重現
+## 可重現的執行方式 {/* #怎麼跑才能重現 */}
 
-關鍵是兩個執行選項，都是送出 run 的時候設定，不是設在任何節點上：
+有兩個 run 選項負責這件事，都在送出 run 時設定：
 
-- **`seed`** — 一個整數就決定全部。權重初始化、訓練 loader 的洗牌順序、資料增強的隨機抽樣，都是從它逐一推導出來的，所以結果不會因為哪個節點先執行而改變。
-- **`deterministic`** — 要求使用確定性的 kernel，並關掉 cuDNN 的演算法自動選擇。不開的話，cuDNN 每次執行會重新挑卷積演算法，同樣 seed 的兩次執行就會慢慢分岔。在這個工作量下大約損失 4% 的速度，換到一個完全可重複的數字，很划算。
+- **`seed`** — 使用一個整數為所有亂數來源設定 seed。權重初始化、訓練 loader 的洗牌順序與資料增強抽樣都會依節點從這個值推導，因此結果不受節點執行順序影響。
+- **`deterministic`** — 要求使用決定性 kernel，並停用 cuDNN 演算法 autotuner。若未啟用，cuDNN 會在每個 run 重新選擇卷積演算法，使使用相同 seed 的兩個 run 逐漸產生數值差異。此工作負載的 throughput 約降低 4%，以換取完全可重複的結果。`TrainingLoop` 的**進階**區段也有 `deterministic` 開關；任一處啟用都會套用到整個 run。
 
-從執行面板送出，或用 API：
+在畫布上，請於**設定 → 訓練行為**設定**亂數種子**與**決定性演算法**，再點擊**執行**。也可以從終端機將圖檔送到執行中的伺服器：
+
+```bash
+cdui run examples/Usage_Example/ResNet18-CIFAR10-Baseline/graph.json \
+  --name resnet18-cifar10-seed1337 --device cuda --seed 1337 --deterministic
+```
+
+也可以透過 API：
 
 ```bash
 curl -X POST http://127.0.0.1:8000/api/runs \
   -H "Content-Type: application/json" \
-  -H "X-CodefyUI-Token: $CODEFYUI_TOKEN" \
+  -H "X-CodefyUI-Token: $(cat ~/CodefyUI/.codefyui_dev/session.token)" \
   -d '{
         "name": "resnet18-cifar10-seed1337",
         "graph": {"nodes": [ ... ], "edges": [ ... ]},
@@ -73,11 +80,11 @@ curl -X POST http://127.0.0.1:8000/api/runs \
       }'
 ```
 
-把範例 `graph.json` 裡的 `nodes` 和 `edges` 陣列貼進去 — 請求本體帶的是整張圖，所以在貼上之前，這段指令直接複製去跑不會有任何效果。
+請用範例 `graph.json` 的 `nodes` 與 `edges` 陣列取代片段中的預留內容。請求本體必須包含完整圖形，因此在貼入這些內容之前，這個片段不會執行任何圖。token 檔案由伺服器在啟動時寫入；位置請見[取得 token](./graph-as-a-function#2-getting-the-token-for-external-scripts)。
 
 ## 實測結果
 
-在下列硬體上，把附的圖原封不動跑兩次、用同一個 seed 量出來的。
+以下結果是在指定硬體上，以未修改的隨附圖和相同 seed 執行兩次所測得。
 
 | | |
 |---|---|
@@ -85,84 +92,73 @@ curl -X POST http://127.0.0.1:8000/api/runs \
 | 軟體 | PyTorch 2.11.0+cu128、torchvision 0.26.0+cu128、Python 3.11 |
 | Seed | 1337，`deterministic: true` |
 | Epoch 數 | 200 |
-| 實際耗時 | 從頭到尾 22 分 29 秒（平均每個 epoch 6.62 秒、含測試集那一輪，範圍大約 6.0 到 8.1 秒；剩下的半分鐘是載入資料集和最後那次評估） |
+| 實際耗時 | 從頭到尾 22 分 29 秒（平均每個 epoch 6.62 秒，含測試那一輪，範圍 6.0 到 8.1 秒；其餘半分鐘是載入資料集與最後的評估） |
 | **測試準確率（top-1）** | **95.48%** |
 | 同 seed 重跑 | 95.48% — 差距 **0.00 個百分點** |
 
-第二次是在伺服器重啟之後才送出的，所以跟第一次不共用任何行程狀態。全部 601 個記錄點 — 200 個訓練損失、200 個測試損失、200 個學習率，加上最後的準確率 — 全部**逐位元完全相同**。
+第二個 run 在伺服器重啟後送出，因此沒有與第一個 run 共用行程狀態。601 個指標點全部**逐位元相同**：200 個訓練損失、200 個測試損失、200 個學習率，以及最後的準確率。
 
-能做到這樣靠的是 `deterministic: true`：它要求使用確定性的 kernel，並且不讓 cuDNN 在每次執行時重新挑卷積演算法。它是「盡力而為」而不是保證 — 遇到沒有確定性實作的運算，它會發出警告然後照跑 — 但在這個配方上它確實做到了完全一致，而且是跨兩個行程驗證過的。不開的話，同一個 seed 還是會得到很像的曲線，但兩次執行在數值上就會慢慢分岔。
+`deterministic: true` 會要求決定性 kernel，並防止 cuDNN 在不同 run 之間重新選擇卷積演算法。這項要求會盡力執行，但不提供保證；缺少決定性 kernel 的運算會發出警告並繼續。不過，此基準設定已跨兩個行程驗證為完全一致。若未啟用，相同 seed 仍會產生相似曲線，但兩個 run 的數值會逐漸分離。
 
-關於資料切分，有一件事要老實說：這張圖沒有跟測試集分開的驗證集。測試集同時餵給 `TrainingLoop.val_dataloader` 和 `EvaluateModel`，這是 CIFAR-10 標準結果的慣常做法。但沒有任何東西會**根據它做選擇** — early stopping 是關掉的，存下來的檢查點是最後一個 epoch 的模型，不是驗證表現最好的那個 — 所以回報的數字是乾淨的 held-out 量測。曲線標的是「測試」而不是「驗證」也是這個原因。如果你要調超參數，請先從訓練集裡切一份驗證集出來。
+資料切分有一項限制：這張圖沒有與測試集分開的驗證集。測試集同時提供給 `TrainingLoop.val_dataloader` 與 `EvaluateModel`，這是 CIFAR-10 baseline 的常見配置。它不會用於選擇模型：early stopping 已關閉，儲存的是最後一個 epoch 的模型，而不是驗證結果最佳的模型。因此，回報值仍是有效的獨立測試量測，曲線也基於這項原因標示為「測試」而不是「驗證」。如果要調整超參數，請先從訓練集切出驗證集。
 
-換**不同** seed 的話，準確率大概會有正負 0.3 個百分點的差距；那是這個配方本身的隨機性，不是壞掉。要抓緊的是同一個 seed。
+不同 seed 的結果通常相差約正負 0.3 個百分點。這是此基準設定在不同 run 之間的隨機波動，不是缺陷；相同 seed 的結果才應接近一致。
 
-如果你的數字是低好幾個百分點、而不是低零點幾，先去檢查 stem，再檢查其他東西。
+若結果低數個百分點，而不是只低零點幾個百分點，請先檢查 stem。
 
-## 關掉瀏覽器也沒關係
+## 離開正在執行的工作 {/* #關掉瀏覽器也沒關係 */}
 
-一個 run 屬於伺服器，不屬於送出它的那個分頁。這件事值得自己試一次，之後才敢信：
+run 由伺服器持有，不依附於送出它的瀏覽器分頁。這一點值得親自試一次，確認可以信任：
 
 1. 送出 run。
-2. 關掉分頁。
-3. 過一陣子再打開畫布。
+2. 關閉分頁。
+3. 稍後重新開啟畫布。
 
-執行面板會重新接上還在跑的工作，並且把中間錯過的事件補播回來。什麼都沒掉，你離開的期間它也沒有停。通道和並行上限請看[執行佇列](./run-queue.md)。
+**執行任務**面板會重新連線到仍在執行的工作，並重播錯過的事件。離開期間不會遺失資料，也不會暫停 run。通道與並行上限請見[執行佇列](./run-queue.md)。
 
 ## 停止與接續
 
-按**停止**是「合作式」的：訓練節點會把手上這個 batch 做完、寫一個檢查點、然後回傳它的部分結果。這個檢查點會登記成 run 的產物，中繼資料裡記著**已完成**的 epoch 數。
+點擊**停止**會採用協作式取消：訓練節點完成目前的 batch、寫入 checkpoint，再回傳部分結果。checkpoint 會登記為 run 的產出檔案，其中的 metadata 會記錄*已完成*的 epoch 數。
 
-要接續的話，在圖裡加一個 `CheckpointLoader`，指向那個檢查點，然後把它還原出來的四個輸出接進 `TrainingLoop`：
+若要繼續執行，請在圖中加入 `CheckpointLoader`、指定該 checkpoint，再將四個還原輸出連到 `TrainingLoop`：
 
 - `CheckpointLoader.model` 接 `TrainingLoop.model`
 - `CheckpointLoader.optimizer` 接 `TrainingLoop.optimizer`
 - `CheckpointLoader.lr_scheduler` 接 `TrainingLoop.lr_scheduler`
 - `CheckpointLoader.epoch` 接 `TrainingLoop.start_epoch`
 
-`TrainingLoop.epochs` 是絕對的目標值，不是「再跑幾個」，所以維持 200 就好，接續的 run 會從檢查點記錄的那個 epoch 的下一個開始。
+`TrainingLoop.epochs` 是絕對目標，不是要再執行的 epoch 數。維持 200 後，接續的 run 會從 checkpoint 所記錄 epoch 的下一個開始。
 
-如果你在意數字要完全對得起來，有一個邊界要知道：停止的時間點如果落在**某個 epoch 中間**，那個 epoch 已經做的權重更新會留在模型裡，但這個 epoch **不算完成**，因為它的平均損失還不完整。接續的 run 會從 batch 0 重跑那個 epoch。也就是說，學習率排程在停止前後是連續的，但資料掃過的次數不是。停過再接的 run 因此會很接近、但不會逐位元等於一次跑完的 run。在 epoch 之間才按停止就完全沒有這個問題。
+若需要精確重現數值，必須注意停止時機。**在 epoch 中途**停止時，該 epoch 已完成的權重更新會保留在模型中，但因 loss average 尚未完成，這個 epoch 不會計入完成數。接續的 run 會從 batch 0 重新執行該 epoch。學習率排程在停止前後保持連續，但資料遍歷不連續。因此，停止後再繼續的 run 會非常接近未中斷 run，卻不會逐位元相同。在 epoch 之間停止可避免這項差異。
 
-:::warning 排程器要接**進** loader，不是繞過它
-接法是 `Optimizer` 進 `LRScheduler`，再由 `LRScheduler` 進 `CheckpointLoader.lr_scheduler`。這個輸入是選填的，所以很容易漏接 — 而漏接才是真正會讓你損失東西的地方。
+:::warning 將排程器接*進* loader，不要繞過它
+請將 `Optimizer` 連到 `LRScheduler`，再將 `LRScheduler` 連到 `CheckpointLoader.lr_scheduler`。這個輸入是選用項目，很容易漏接，而漏接才是真正有代價的地方。
 
-**問題不在 `base_lrs`。** 在已經還原過的優化器上建立排程器，起點一樣是 0.1：`Optimizer.state_dict()` 會把第一個排程器蓋在 param group 上的 `initial_lr` 一起存走，`load_state_dict` 會把它還原回來，而 `LRScheduler.__init__` 是用 `setdefault` 讀它，不會覆蓋掉既有的值。兩種接法都實際量過，跟理論上的 cosine 相符到 1.4e-17。
+**問題不在 `base_lrs`。** 在已還原的優化器上建立排程器時，起始值仍為 0.1。`Optimizer.state_dict()` 包含第一個排程器寫入 param group 的 `initial_lr`；`load_state_dict` 會還原它，而 `LRScheduler.__init__` 使用 `setdefault` 讀取，不會覆寫既有值。兩種接線方式都已與理論 cosine 曲線比較，誤差只有 1.4e-17。
 
-**接法真正決定的，是檢查點裡存的排程進度會被「還原」還是被「重建」。** `CheckpointLoader` 只能把 `scheduler_state_dict` 還原進有接到它身上的排程器。這個輸入沒接，存下來的狀態就會被丟掉，排程改成用「從 `base_lrs` 重播 `start_epoch` 次 step」的方式重建。對 `CosineAnnealingLR` 來說重播是精確的 — 所以這一頁的配方兩種接法都安全 — 但由指標驅動的 `ReduceLROnPlateau` 沒辦法重播：它的 `best` 和 `num_bad_epochs` 會歸零，本來下一個 epoch 就要觸發的衰減會被往後推。
+**接線方式決定 checkpoint 中儲存的排程位置會還原或重建。** `CheckpointLoader` 只能將 `scheduler_state_dict` 還原到與它連接的排程器。若這個輸入未連接，儲存的狀態會被捨棄，排程會改為從 `base_lrs` 重播 `start_epoch` 個 step 來重建。`CosineAnnealingLR` 可以精確重播，因此本頁的基準設定在兩種接線方式下都安全。由指標驅動的 `ReduceLROnPlateau` 無法重播；其 `best` 與 `num_bad_epochs` 會重設，可能把原本將於下一個 epoch 發生的衰減延後。
 
-這件事你不必事先就知道了。兩邊現在都會在你看得到的地方講出來 — 伺服器 log、執行記錄面板讀回來的執行 log，以及畫布上該節點的 **Log** 分頁：`CheckpointLoader` 會說它正在丟掉一份存下來的排程進度，並指名該接哪個輸入；`TrainingLoop` 則會說它沒辦法把排程放回原本的位置。
+你不必事先知道這一點。這兩個節點都會在伺服器 log、**執行任務**面板顯示的事件紀錄，以及畫布的**執行紀錄**中回報這項狀況。`CheckpointLoader` 會指出已捨棄儲存的排程位置，並列出應連接的輸入；`TrainingLoop` 會指出無法還原的排程。
 :::
 
-## 自己驗證數字
+## 自行驗證數值 {/* #自己驗證數字 */}
 
-每個 run 的指標都可以查：
+每個 run 的指標都可查詢：
 
 ```bash
 curl "http://127.0.0.1:8000/api/runs/<run_id>/metrics?format=csv" -o metrics.csv
 ```
 
-`train_loss`、`val_loss` 和 `lr` 是每個 epoch 記一次。**`eval_accuracy` 不是** — `EvaluateModel` 只在 run 結束時寫一個點。所以 200 個 epoch 匯出來是 601 列而不是 800 列，而且沒有準確率對 epoch 的曲線可以畫：產品裡沒有任何節點會產生它。記在 issue [#202](https://github.com/CodefyUI/CodefyUI/issues/202)。
+`train_loss`、`val_loss` 與 `lr` 每個 epoch 各記錄一次。**`eval_accuracy` 不會如此記錄**；`EvaluateModel` 只在 run 結束時寫入一個資料點。因此，200 epoch 的匯出檔有 601 列，而不是 800 列，也無法繪製 accuracy-by-epoch 曲線，因為產品中沒有節點會發出這項資料。相關追蹤項目為 issue [#202](https://github.com/CodefyUI/CodefyUI/issues/202)。
 
-這個範例的 `TrainingLoop` 上 `tensorboard` 已經是打開的，所以每次執行也會在 run 的產物目錄下寫出 event 檔，任何 TensorBoard 都讀得起來。
+此範例的 `TrainingLoop` 已將 `tensorboard` 設為 `true`，因此每個 run 也會在其產出目錄中寫入 event 檔案，可由任何 TensorBoard 安裝讀取。
 
-## 值得先知道的坑
+## 注意事項 {/* #值得先知道的坑 */}
 
-- **每個源頭節點都要接一條觸發線。** 執行是從 `Start` 出發、沿著**資料**線往前走，所以沒有輸入資料線的節點，除非有一條從 `Start` 來的觸發線指到它，否則會被跳過。這個範例剛好有四個這種節點，四條都接了：
+- **Trigger 只標示執行起點。** 在此範例中，`Start` 會 trigger `RandomCrop`、評估用的 `ToTensorTransform`、`SequentialModel` 與 `Loss`。不過，只要 root 透過 data edge 連到正在執行的節點，就會執行，不論是否有 trigger 指向它；前述四個節點與兩個 `Dataset` 節點都符合這項條件。詳見[執行圖](./running-graphs#沒有-trigger-的節點仍然可能執行)。因此，移除四條 trigger edge 中的任一條都不會改變執行內容；要排除節點，必須中斷其 data edge。
 
-  | 觸發線指向 | 為什麼它是源頭 |
-  |---|---|
-  | `RandomCrop` | 訓練資料增強鏈的頭 |
-  | `ToTensorTransform`（評估那條） | 評估前處理鏈的頭 |
-  | `SequentialModel` | 模型沒有資料輸入 |
-  | `Loss` | 損失函數沒有資料輸入 |
+- **保持 `LRScheduler.T_max` 與 `TrainingLoop.epochs` 相等。** cosine annealing 每個 epoch 前進一步，並在 `T_max` 時降至零。`T_max` 過高時，run 會在曲線尚未完成前結束，無法完整 anneal，準確率約降低一個百分點。`T_max` 過低時，cosine 在超過 `T_max` 後會再次**上升**，使最後幾個 epoch 使用逐漸提高的 learning rate。兩者不一致時，`TrainingLoop` 會在伺服器 log、**執行任務**面板顯示的事件紀錄，以及畫布的**執行紀錄**中發出警告，但不會強制要求相等。截短 schedule 是有效選擇；此外，`CosineAnnealingWarmRestarts` 會將相同值用作 `T_0`，若要求它與 epoch 數相等，就不會發生 restart。相同檢查也適用於 `OneCycleLR.total_steps`；其預設值 1000 代表 batch 數量，沒有 epoch budget 會達到這個數字。以上說明假設使用預設的 `TrainingLoop.scheduler_step = epoch`，本 baseline 也使用這項設定。若改為 `optimizer_step`，`LRScheduler` 上的所有長度都會改以 optimizer step 計算，警告也會將它們與 run 的 step budget 比較，而不是與 `epochs` 比較。
+- **`EvaluateModel.device` 預設為 `auto`**，並跟隨 run device。隨附的圖將它固定為 `cuda`，但不是必要設定。
+- **第一次執行會下載 CIFAR-10**（約 170 MB）。預設位置是 `backend/data/`；開啟專案目錄時，位置是 `<project>/assets/data`。後續 run 會重用資料。
 
-  請注意這張表上**沒有**的東西：兩個 `Dataset` 節點都不是源頭。它們各自被自己的轉換鏈餵進來（`aug-norm` 進 `ds-train.train_transform`、`ev-norm` 進 `ds-test.eval_transform`），往前走的走訪自己就會走到它們 — 對 `Dataset` 接觸發線不會出錯，但也沒有作用。
-
-  漏掉一條觸發線，執行就會失敗，而且錯誤訊息指的是下游很遠的另一個節點。舉例來說，漏掉指向 `SequentialModel` 的那一條，`Optimizer` 和 `LRScheduler` 會跟著一起被剪掉，然後執行會抱怨 `TrainingLoop`。記在 issue [#201](https://github.com/CodefyUI/CodefyUI/issues/201)。
-
-- **`LRScheduler.T_max` 要跟 `TrainingLoop.epochs` 保持一致。** cosine 退火是每個 epoch 走一步，而且剛好在 `T_max` 歸零。`T_max` 設太大，訓練會停在曲線中段、退火退不完，大約會損失一個百分點的準確率；設太小則更麻煩 — 過了 `T_max` 之後 cosine 會**再往上爬**，最後幾個 epoch 反而是在學習率上升的情況下訓練。兩者不一致時 `TrainingLoop` 會提醒你（伺服器記錄檔、執行紀錄面板的執行記錄，以及畫布下方的記錄分頁各一份），但不會強制擋下來：截斷的排程本身是合理的選擇，而且 `CosineAnnealingWarmRestarts` 是拿同一個值當 `T_0`，在那裡「相等」反而代表永遠不會重啟。同一組檢查也涵蓋 `OneCycleLR.total_steps`，它的預設值 1000 是以批次為單位的數字，任何 epoch 設定都到不了。以上都是以預設的 `TrainingLoop.scheduler_step = epoch` 為前提，這份基準線也是這樣跑的；把它改成 `optimizer_step` 之後，`LRScheduler` 上的每一個長度就都變成以優化器步數計價，同一個提醒也會改拿這次執行的步數預算來量，而不是拿 `epochs`。
-- **`EvaluateModel` 不會跟著執行時的裝置走。** 它的 `device` 參數預設是 `cpu`，而且沒有 `auto` 可選。要自己設成 `cuda`，不然評估會很慢。記在 issue [#204](https://github.com/CodefyUI/CodefyUI/issues/204)。
-- **第一次執行會下載 CIFAR-10**（大約 170 MB）。預設會放到 `backend/data/`；如果有開專案目錄，則會放到 `<專案>/assets/data`。之後就會重複使用。
-
-CIFAR-10 資料集出自 Krizhevsky, *Learning Multiple Layers of Features from Tiny Images*（2009）；它是在執行時下載的，CodefyUI 並沒有隨附散布它。
+CIFAR-10 資料集來自 Krizhevsky 的 *Learning Multiple Layers of Features from Tiny Images*（2009）。資料集會在 run 時下載，不會隨 CodefyUI 散布。

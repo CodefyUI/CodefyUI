@@ -17,7 +17,7 @@ portable artifact with nothing to install alongside it.
 
 ## Collapsing a selection
 
-1. Select two or more nodes (Shift+click, or drag a box around them).
+1. Select two or more nodes (Shift+click, or Shift+drag a box around them).
 2. Right-click one of them and choose **Collapse to subgraph**.
 3. Give the block a name. The default is `Subgraph`; you can rename it later
    from the breadcrumb.
@@ -43,9 +43,7 @@ Collapse says no rather than producing a graph that reads wrong:
 
 ## Editing a block
 
-**Double-click** an instance to open its definition on the canvas. A breadcrumb
-appears at the top — `Main ▸ MyBlock` — and everything you already know works:
-drag, connect, delete, parameter edits, undo.
+**Double-click** an instance, or right-click it and select **Enter subgraph**, to open its definition on the canvas. The breadcrumb at the top shows a path such as `Main ▸ MyBlock`. You can drag, connect, delete, edit parameters, and undo changes. To open Node details, select the instance and press `Enter`. Its **Subgraph** tab maps each boundary port to an internal node and port, and also provides an **Enter subgraph** button.
 
 Undo inside a block stays inside it: the block gets its own history while you
 are in there, and your outer history is put back when you leave — so you can
@@ -178,14 +176,5 @@ function.
 - A `GraphInput` / `GraphOutput` node inside a subgraph is not part of the
   graph's published [API contract](../usage/graph-as-a-function.md) — keep
   those at the top level.
-- Bypass does not apply to an instance node, for the same reason it does not
-  apply to a preset: bypass forwards a value between ports a node class
-  declares, and a boundary port has no such declaration.
-- `Export → Export as Subgraph` (which creates a **preset**, not a block —
-  the two features share a word) refuses a canvas that contains collapsed
-  blocks, and names them. A preset is stored server-side as nodes and edges
-  and has no slot for a definition, so a preset built from such a canvas
-  would hold a `subgraph:<id>` node whose definition can never accompany it
-  — broken for everyone who drops it, and broken permanently, because the
-  preset outlives the graph it came from. Expand the blocks first (right
-  click → Expand), then export.
+- The canvas provides **Bypass** for an instance node through its context menu or `Ctrl/Cmd+B`. Execution then fails validation and names the instance: `Bypass is not supported on subgraph instance(s): blk1`. A bypass can forward a value only between ports declared by a node class, and boundary ports have no such declaration. Remove the bypass from the instance, or enter the block and bypass its internal nodes.
+- **Export → Export as Subgraph** creates a **preset**, not a block; both features use the term "subgraph." The export rejects a canvas that contains collapsed blocks and lists their names. A server-side preset stores nodes and edges but cannot store a block definition. Without this validation, the preset would contain a `subgraph:<id>` node without its definition and would not run independently of the source graph. Expand the blocks first by right-clicking each one and selecting **Expand subgraph here**, and then export.

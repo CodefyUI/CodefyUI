@@ -45,17 +45,18 @@ Switching build after the fact does not need a terminal either: on a server star
 
 ## Install flags & environment variables
 
-Both `install.sh`/`install.ps1` and `cdui install` (after the first install) accept the same choices, either as CLI flags or pre-set environment variables. Defaults are interactive when stdin is a TTY, and the safe choices otherwise.
+`install.sh` and `install.ps1` read only the environment variables below. They always run `cdui install --yes`, accept no command-line flags, and do not prompt. After installation, run `cdui install` directly to pass flags or use the interactive menu. The menu appears only in a terminal when no flag or environment variable has already selected an option. In a pipe or CI, the command uses the safe defaults.
 
 | Flag | Env var | Values | Purpose |
 |------|---------|--------|---------|
-| `--gpu <choice>` | `CODEFYUI_GPU` | `auto` / `cu118` / `cu121` / `cu124` / `cu128` / `rocm6.1` / `rocm6.2` / `cpu` / `mps` / `skip` | Select the PyTorch wheel index. `auto` detects via `nvidia-smi` / `rocm-smi` / Apple Silicon. `skip` installs no torch (advanced). |
+| `--gpu <choice>` | `CODEFYUI_GPU` | `auto` / `cu118` / `cu121` / `cu124` / `cu126` / `cu128` / `rocm6.1` / `rocm6.2` / `cpu` / `mps` / `skip` | Select the PyTorch wheel index. `auto` detects via `nvidia-smi` / `rocm-smi` / Apple Silicon. `skip` installs no torch (advanced). |
 | `--dev` / `--no-dev` | `CODEFYUI_DEV` | `1` / `0` | Install the `[dev]` extra (pytest, httpx, httpx-ws). Required for `cdui test`. Off for end users, on for contributors. |
 | `--yes` | — | — | Accept all defaults non-interactively (CI / headless). |
-| `--lang <code>` | `CODEFYUI_LANG` | `en` / `zh-TW` | Localise the installer prompts. |
-| — | `CODEFYUI_DIR` | path | Install directory (default `~/CodefyUI`). |
-| — | `CODEFYUI_RELEASE_TAG` | tag | Pin the frontend bundle to a specific release (default `latest`). |
-| — | `CODEFYUI_FORCE_BUILD` | `1` | Skip the prebuilt-dist download and build locally with pnpm (tracks `main`). |
+| `--lang <code>` | `CODEFYUI_LANG` | `en` / `zh` (the environment variable also accepts `zh-TW`, `zh-HK`, `zh-CN`, `english`, and `chinese`) | The flag applies to `cdui install` and `cdui update` only; the environment variable sets the output language of every `cdui` command. |
+| — | `CODEFYUI_DIR` | path | Set the installation directory. Default: `~/CodefyUI`. |
+| — | `CODEFYUI_RELEASE_TAG` | tag | Pin the frontend bundle and backend checkout to the same release. Default: `latest`. |
+| — | `CODEFYUI_FORCE_BUILD` | `1` | Skip the prebuilt distribution download, build locally with pnpm, and track `main`. |
+| — | `CODEFYUI_UV_INSTALL_TIMEOUT` | seconds | Set the automatic `uv` download timeout when `uv` is missing from `PATH`. Default: `180`. Set to `0` for no limit. |
 
 ## Production vs developer mode
 

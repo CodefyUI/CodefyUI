@@ -48,12 +48,12 @@ Admitting a **function** is judged on four points, all four required: it is torc
 Both lists are enumerated from the **save side** — from what the models CodefyUI can actually build store — and both have a test that re-runs that enumeration, so a class or a callable that starts appearing in saved models fails the suite instead of quietly becoming a checkpoint nobody can reopen.
 
 :::note What this means in practice
-A `full_model` file CodefyUI wrote **loads back into CodefyUI**. A `full_model` file containing a class from a [custom node](/advanced/custom-nodes), a [plugin](/advanced/plugins), or somebody's own script **does not** — that code has not been through review, and admitting it is the line CodefyUI does not cross. `ModelSaver` tells you which of the two you just wrote, in its **Log** tab, at save time rather than one node later.
+A `full_model` file written by CodefyUI **loads back into CodefyUI**. A file containing a class from a [custom node](/advanced/custom-nodes), a [plugin](/advanced/plugins), or another script is rejected because the restricted unpickler does not admit those classes. `ModelSaver` reports the file type in the **Execution Log** when it saves the file.
 :::
 
 ### One known edge
 
-- **A file CodefyUI wrote is not self-contained.** Reading it needs CodefyUI's own classes importable, so a CodefyUI older than the version that admitted them refuses it, and plain `torch.load` outside CodefyUI needs `weights_only=False` plus the backend package on `sys.path`. `state_dict` files have neither condition. (A file made only of stock torch layers — transformers included — has neither condition either; the `Log` note tells you which kind you wrote.)
+- **A file written by CodefyUI is not self-contained.** Reading it requires CodefyUI's own classes to be importable, so older CodefyUI versions that do not allow those classes reject it. Loading it with plain `torch.load` outside CodefyUI requires `weights_only=False` and the backend package on `sys.path`. These conditions do not apply to `state_dict` files or files made only from standard torch layers, including transformer layers. The **Execution Log** message identifies the file type.
 
 ## If a load is refused and you trust the file
 

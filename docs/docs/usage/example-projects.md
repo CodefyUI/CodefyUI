@@ -21,7 +21,7 @@ cdui start --project .
 ```
 
 Open the editor at the URL the server prints, load the graph from the toolbar, and
-press Run. Each README walks through the full publish flow (commit, `cdui project
+press **Run**. Each README walks through the full publish flow (commit, `cdui project
 publish`, mint an API key, invoke with curl) and lists anything the example needs
 beyond CodefyUI itself.
 

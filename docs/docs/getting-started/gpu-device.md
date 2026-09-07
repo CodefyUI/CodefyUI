@@ -18,19 +18,28 @@ First check your installed CUDA version:
 nvidia-smi
 ```
 
-Look at the `CUDA Version:` field in the top-right, then reinstall the matching wheel. PyTorch currently ships these stable CUDA wheel channels:
+Read the `CUDA Version:` field in the top-right, and then install the matching wheel with `cdui install --gpu`. This command replaces the PyTorch build in the venv. Later `cdui update` commands read the variant from the installed wheel and preserve it:
 
 ```bash
-uv pip uninstall torch torchvision
-
 # CUDA 12.8 — required for RTX 50 series (Blackwell, sm_120). Also works on RTX 30/40.
-uv pip install torch torchvision --index-url https://download.pytorch.org/whl/cu128
+cdui install --gpu cu128
 
 # CUDA 12.6 — RTX 30 / 40 series, a widely compatible default for modern drivers
-uv pip install torch torchvision --index-url https://download.pytorch.org/whl/cu126
+cdui install --gpu cu126
 
 # CUDA 11.8 — GTX 10 / RTX 20 series, or older drivers
-uv pip install torch torchvision --index-url https://download.pytorch.org/whl/cu118
+cdui install --gpu cu118
+```
+
+The one-line installer uses `--gpu auto`. It maps the driver version reported by `nvidia-smi` to a wheel: 560 or newer selects `cu128`, 555 or newer selects `cu126`, 545 or newer selects `cu124`, 530 or newer selects `cu121`, and 520 or newer selects `cu118`. Older drivers select the CPU build. If the server was started with `cdui start`, the **GPU PyTorch** card in the Package Center performs the same installation and restarts the server. See [Installs that restart the server](/usage/optional-packs#installs-that-restart-the-server).
+
+To install manually, activate `backend/.venv` and run the same `uv pip` command as the installer:
+
+```bash
+cd backend
+.venv\Scripts\activate       # Windows
+source .venv/bin/activate    # macOS / Linux
+uv pip install --reinstall-package torch --reinstall-package torchvision torch torchvision --index-url https://download.pytorch.org/whl/cu128   # or cu126 / cu118
 ```
 
 :::warning RTX 50 series (Blackwell)
@@ -52,7 +61,7 @@ python -c "import torch; print('MPS:', torch.backends.mps.is_available())"
 ```
 
 :::note float64 on MPS
-MPS is float32-native and rejects float64 tensors. CodefyUI handles this in `device_utils.to_device`, but if you write a custom node, keep tensors in float32 on Apple GPUs. (An experimental native-MLX inference path exists as a spike — see [Device Backends](/advanced/device-backends).)
+MPS is float32-native and rejects float64 tensors. CodefyUI handles this in `device_utils.to_device`, but custom nodes should create float32 tensors on Apple GPUs. When MPS has no kernel for an operation, PyTorch runs it on the CPU instead of failing the run. [Device Backends](/advanced/device-backends) describes how to change this fallback and also documents the experimental native-MLX inference spike.
 :::
 
 ## AMD GPU
@@ -62,9 +71,10 @@ AMD support depends heavily on your OS.
 ### Linux + AMD (ROCm, officially supported)
 
 ```bash
-uv pip uninstall torch torchvision
-uv pip install torch torchvision --index-url https://download.pytorch.org/whl/rocm6.2
+cdui install --gpu rocm6.2      # or rocm6.1
 ```
+
+When `rocm-smi` is on `PATH`, `--gpu auto` selects `rocm6.2`. For a manual installation, activate `backend/.venv` and run `uv pip install --reinstall-package torch --reinstall-package torchvision torch torchvision --index-url https://download.pytorch.org/whl/rocm6.2`.
 
 Verify:
 
@@ -91,8 +101,7 @@ PyTorch does **not** ship an official Windows ROCm build. Your options:
 ### Switching from CPU to CUDA (or vice versa)
 
 ```bash
-uv pip uninstall torch torchvision
-uv pip install torch torchvision --index-url https://download.pytorch.org/whl/cu128
+cdui install --gpu cu128     # back again: cdui install --gpu cpu
 ```
 
 ### `uv pip install -e ".[ml]"` installs the wrong PyTorch version
@@ -120,4 +129,4 @@ The frontend reads available devices from the backend. If your GPU isn't listed:
 curl -s http://127.0.0.1:8000/api/nodes/TrainingLoop | python -c "import sys,json; d=json.load(sys.stdin); print([p['options'] for p in d['params'] if p['name']=='device'][0])"
 ```
 
-This prints the available devices, e.g. `['cpu', 'cuda']` for NVIDIA or `['cpu']` if PyTorch isn't installed.
+This prints the available devices. An NVIDIA system reports `['auto', 'cpu', 'cuda']`, plus `cuda:0`, `cuda:1`, and additional indexed devices when multiple cards are present. When PyTorch detects no accelerator, it reports `['auto', 'cpu']`. `auto` is always available and follows the global device setting.

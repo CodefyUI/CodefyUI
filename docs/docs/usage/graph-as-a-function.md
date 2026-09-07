@@ -17,7 +17,7 @@ Two nodes in the palette's **IO** group define the graph's function signature:
 - **GraphInput** — one per input. Params: `name` (identifier-safe: `^[a-zA-Z_][a-zA-Z0-9_]{0,63}$`), `type` (`string` / `number` / `integer` / `boolean` / `json` / `image`), `required`, `default`, `description`.
 - **GraphOutput** — one per output. Params: `name`, `description`. Connect the value you want returned into its `value` port.
 
-**Wire Start into every GraphInput.** GraphInput nodes are data roots; the engine only executes nodes reachable from a Start trigger, so an untriggered GraphInput would be silently skipped. The run endpoint rejects such graphs up front (409 `untriggered_input`) instead of running without your input.
+**Wire Start into every GraphInput.** The run endpoint requires every GraphInput to carry a trigger edge and rejects the graph up front otherwise (409 `untriggered_input`). This is a contract rule rather than an engine limitation — an untriggered data root that feeds a running node [still runs](./running-graphs#a-node-without-a-trigger-can-still-run) — so a declared input is never left to the engine's reachability rules.
 
 ```text
 [Start] --trigger--> [GraphInput name="message"] --value--> [Print] --value--> [GraphOutput name="echo"]
@@ -29,8 +29,8 @@ The `default` param is always the canvas test value, so the same graph still run
 
 Mutating requests need the `X-CodefyUI-Token` header. Two ways to get it:
 
-- Read the token file: `<user_data_dir>/codefyui/session.token` — on Windows `%LOCALAPPDATA%\codefyui\session.token`, on macOS `~/Library/Application Support/codefyui/session.token`, on Linux `~/.local/share/codefyui/session.token`. Honors `CODEFYUI_USER_DATA_DIR` for dev-mode installs.
-- Or `GET /api/auth/bootstrap` returns `{"token": "..."}` (same-host only).
+- Read the token file. A server started by `cdui start` or `cdui dev` keeps its user data under `<install dir>/.codefyui_dev/`, and the default install dir is `~/CodefyUI` (`$HOME\CodefyUI` on Windows) — so the token is `~/CodefyUI/.codefyui_dev/session.token`. The same directory holds the plugin lockfile (`plugins/installed.json`), the asset cache (`cache/`), the ChatGPT sign-in (`llm/codex_auth.json`) and the restart-install files (`packs/`). If `CODEFYUI_USER_DATA_DIR` was exported before the server started, that directory is used instead. The platformdirs locations — `%LOCALAPPDATA%\codefyui`, `~/.local/share/codefyui`, `~/Library/Application Support/codefyui` — apply only to a hand-launched `uvicorn app.main:app` with no `CODEFYUI_USER_DATA_DIR`.
+- Or `GET /api/auth/bootstrap` returns `{"token": "..."}` to any request whose `Host` header is allowlisted. This is not limited to the server machine: on a LAN bind, remote clients using an allowlisted address receive it too.
 
 The token rotates on every server restart — scripts should re-read the file rather than caching the value.
 
@@ -155,15 +155,13 @@ img_b64 = base64.b64encode(Path("cat.png").read_bytes()).decode("ascii")
 Save your graph on the canvas first (the run API executes *saved* graphs by name). Python `requests`:
 
 ```python
-import os
 from pathlib import Path
 
 import requests
 
-# Windows: %LOCALAPPDATA%\codefyui\session.token
-# macOS:   ~/Library/Application Support/codefyui/session.token
-# Linux:   ~/.local/share/codefyui/session.token
-token = (Path(os.environ["LOCALAPPDATA"]) / "codefyui" / "session.token").read_text().strip()
+# `cdui start` / `cdui dev` keep the token under the install dir (section 2):
+#   ~/CodefyUI/.codefyui_dev/session.token   (Windows: $HOME\CodefyUI\.codefyui_dev\session.token)
+token = (Path.home() / "CodefyUI" / ".codefyui_dev" / "session.token").read_text().strip()
 
 resp = requests.post(
     "http://127.0.0.1:8000/api/graph/run/Api-Function",
@@ -180,9 +178,18 @@ curl on Windows: use `curl.exe` (PowerShell aliases `curl` to `Invoke-WebRequest
 
 ```powershell
 # payload.json: {"inputs": {"message": "hello from curl"}}
-$token = Get-Content "$env:LOCALAPPDATA\codefyui\session.token"
+$token = Get-Content "$HOME\CodefyUI\.codefyui_dev\session.token"
 curl.exe -s -X POST "http://127.0.0.1:8000/api/graph/run/Api-Function" `
   -H "X-CodefyUI-Token: $token" -H "Content-Type: application/json" `
+  --data "@payload.json"
+```
+
+The same call from bash:
+
+```bash
+curl -s -X POST "http://127.0.0.1:8000/api/graph/run/Api-Function" \
+  -H "X-CodefyUI-Token: $(cat ~/CodefyUI/.codefyui_dev/session.token)" \
+  -H "Content-Type: application/json" \
   --data "@payload.json"
 ```
 
@@ -197,7 +204,7 @@ A ready-made graph for these exact calls ships in `examples/Usage_Example/Api-Fu
 ## 8. Limits and gotchas
 
 - 403 (missing/invalid token) and 421 (Host guard) arrive WITHOUT the envelope — they fire before the route. 413 keeps the envelope on this route and on `/invoke`.
-- The `MAX_RUN_BODY_BYTES` ceiling is not specific to `/run`: it applies to **every** endpoint except the four upload routes, which answer to `MAX_UPLOAD_SIZE` (default 500 MB) instead. So `POST /api/graph/save` with a 70 MB graph is a 413 too. It is counted as the bytes arrive rather than read off `Content-Length`, which means a chunked request — one that declares no length at all — is measured like any other.
+- The `MAX_RUN_BODY_BYTES` ceiling is not specific to `/run`: it applies to **every** endpoint except the four upload routes, which answer to `MAX_UPLOAD_SIZE` (default 500 MB, `CODEFYUI_MAX_UPLOAD_SIZE`) instead. So `POST /api/graph/save` with a 70 MB graph is a 413 too. It is counted as the bytes arrive rather than read off `Content-Length`, which means a chunked request — one that declares no length at all — is measured like any other.
 - The canvas does not use HTTP — it sends the graph over `WS /ws/execution` — so it answers to a **separate** ceiling, `WS_MAX_MESSAGE_BYTES` (`CODEFYUI_WS_MAX_MESSAGE_BYTES`). It defaults to whatever `MAX_RUN_BODY_BYTES` is, so out of the box one 64 MB graph limit covers both transports and raising the HTTP cap raises this one with it. A WebSocket has no request body, so this cannot be a 413: the frame is refused by the transport *while its fragments are assembled*, and the connection closes with WebSocket code **1009** (`message too big`). The editor turns that close code into a "graph too large" message and reconnects; a non-browser client sees the 1009 and its reason on the close frame. `cdui start` and `cdui dev` pass the number to uvicorn as `--ws-max-size` — if you launch uvicorn by hand you get **its** default of 16 MB, which is stricter than the HTTP ceiling, so pass the flag yourself.
 - This server never emits 504; a 504 always came from an intermediary.
 - `record_outputs=true` makes inputs and results readable by anyone on the LAN who learns the `run_id` (the GET outputs endpoint is auth-exempt; transport is plain HTTP). Published apps: run records are key-protected in SQLite; the inspector store is editor-only — invokes never write to it. To make a graph stable and key-protected: [publish it](./publish).

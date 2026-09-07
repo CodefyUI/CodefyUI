@@ -18,19 +18,28 @@ CodefyUI 會在執行階段從後端讀取可用的裝置，所以只要 PyTorch
 nvidia-smi
 ```
 
-看右上角的 `CUDA Version:` 欄位，然後重裝對應的 wheel。PyTorch 目前提供以下這些穩定版的 CUDA wheel 通道：
+查看右上角的 `CUDA Version:` 欄位，然後使用 `cdui install --gpu` 安裝相符的 wheel。此指令會替換 venv 中的 PyTorch build。之後執行 `cdui update` 時，指令會從已安裝的 wheel 讀取變體並保留該設定：
 
 ```bash
-uv pip uninstall torch torchvision
-
 # CUDA 12.8 —— RTX 50 系列（Blackwell, sm_120）必裝，RTX 30 / 40 亦可使用。
-uv pip install torch torchvision --index-url https://download.pytorch.org/whl/cu128
+cdui install --gpu cu128
 
 # CUDA 12.6 —— RTX 30 / 40 系列，現代驅動的通用預設選擇
-uv pip install torch torchvision --index-url https://download.pytorch.org/whl/cu126
+cdui install --gpu cu126
 
 # CUDA 11.8 —— GTX 10 / RTX 20 系列，或舊驅動
-uv pip install torch torchvision --index-url https://download.pytorch.org/whl/cu118
+cdui install --gpu cu118
+```
+
+一行指令安裝程式使用 `--gpu auto`。它會依 `nvidia-smi` 回報的 driver 版本選擇 wheel：560 以上選擇 `cu128`，555 以上選擇 `cu126`，545 以上選擇 `cu124`，530 以上選擇 `cu121`，520 以上選擇 `cu118`。較舊的 driver 會選擇 CPU build。如果伺服器是以 `cdui start` 啟動，套件中心的 **GPU 版 PyTorch** 卡片會執行相同的安裝並重新啟動伺服器。請參閱[讓伺服器重新啟動的安裝](/usage/optional-packs#讓伺服器重新啟動的安裝)。
+
+若要手動安裝，請啟用 `backend/.venv`，並執行安裝程式使用的同一個 `uv pip` 指令：
+
+```bash
+cd backend
+.venv\Scripts\activate       # Windows
+source .venv/bin/activate    # macOS / Linux
+uv pip install --reinstall-package torch --reinstall-package torchvision torch torchvision --index-url https://download.pytorch.org/whl/cu128   # 或 cu126 / cu118
 ```
 
 :::warning RTX 50 系列（Blackwell）
@@ -45,14 +54,14 @@ python -c "import torch; print('CUDA:', torch.cuda.is_available(), '| Device:', 
 
 ## Apple Silicon (MPS)
 
-在 M1/M2/M3/M4 Mac 上，預設安裝就已經附帶 Metal Performance Shaders 後端。注意「附帶」不等於「使用」：除非你在設定裡選了 `mps`，否則執行仍然留在 CPU——參見 [Device Backends](/advanced/device-backends)。驗證後端存在：
+在 M1/M2/M3/M4 Mac 上，預設安裝就已經附帶 Metal Performance Shaders 後端。注意「附帶」不等於「使用」：除非你在設定裡選了 `mps`，否則執行仍然留在 CPU——參見 [裝置後端](/advanced/device-backends)。驗證後端存在：
 
 ```bash
 python -c "import torch; print('MPS:', torch.backends.mps.is_available())"
 ```
 
 :::note MPS 上的 float64
-MPS 以 float32 為原生格式，並會拒絕 float64 張量。CodefyUI 在 `device_utils.to_device` 中處理了這點，但若你撰寫自訂節點，在 Apple GPU 上請把張量保持為 float32。（有一條實驗性的原生 MLX 推論路徑作為 spike 存在 —— 請參考 [Device Backends](/advanced/device-backends)。）
+MPS 以 float32 為原生格式，並會拒絕 float64 張量。CodefyUI 會在 `device_utils.to_device` 中處理，但自訂節點在 Apple GPU 上應建立 float32 張量。MPS 沒有某項運算的 kernel 時，PyTorch 會改在 CPU 上執行，而不會使整次執行失敗。[裝置後端](/advanced/device-backends)說明如何變更此退回行為，也記錄實驗性的原生 MLX 推論 spike。
 :::
 
 ## AMD 顯卡
@@ -62,9 +71,10 @@ AMD 的支援度高度取決於你的作業系統。
 ### Linux + AMD（ROCm，官方支援）
 
 ```bash
-uv pip uninstall torch torchvision
-uv pip install torch torchvision --index-url https://download.pytorch.org/whl/rocm6.2
+cdui install --gpu rocm6.2      # 或 rocm6.1
 ```
+
+`PATH` 中有 `rocm-smi` 時，`--gpu auto` 會選擇 `rocm6.2`。若要手動安裝，請啟用 `backend/.venv`，再執行 `uv pip install --reinstall-package torch --reinstall-package torchvision torch torchvision --index-url https://download.pytorch.org/whl/rocm6.2`。
 
 驗證：
 
@@ -91,8 +101,7 @@ PyTorch **沒有**提供官方的 Windows ROCm 版本。你的選項有：
 ### 從 CPU 切換到 CUDA（或反向切換）
 
 ```bash
-uv pip uninstall torch torchvision
-uv pip install torch torchvision --index-url https://download.pytorch.org/whl/cu128
+cdui install --gpu cu128     # 改回去：cdui install --gpu cpu
 ```
 
 ### `uv pip install -e ".[ml]"` 裝到錯的 PyTorch 版本
@@ -120,4 +129,4 @@ uv pip install torch torchvision --index-url https://download.pytorch.org/whl/cu
 curl -s http://127.0.0.1:8000/api/nodes/TrainingLoop | python -c "import sys,json; d=json.load(sys.stdin); print([p['options'] for p in d['params'] if p['name']=='device'][0])"
 ```
 
-這會印出可用的裝置，例如 NVIDIA 會顯示 `['cpu', 'cuda']`，未安裝 PyTorch 時則顯示 `['cpu']`。
+這會印出可用裝置。NVIDIA 系統會顯示 `['auto', 'cpu', 'cuda']`；有多張卡時，還會顯示 `cuda:0`、`cuda:1` 與其他帶索引的裝置。PyTorch 未偵測到加速器時，會顯示 `['auto', 'cpu']`。`auto` 一定可用，並會跟隨全域裝置設定。

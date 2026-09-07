@@ -94,7 +94,9 @@ The WebSocket handshake performs the same `Host` check independently, and then
 compares the browser's `Origin` against that same `Host`. Both are satisfied by
 the one variable **as long as the proxy forwards `Host` unchanged** -- which is
 why the nginx config below uses `$http_host` and not `$host`. If you rewrite
-`Host` at the proxy, the canvas will load and then silently never connect.
+`Host` at the proxy, the canvas will load and then silently never connect. The
+refusal shows only as a WebSocket close code: `4003` for a `Host` or `Origin`
+the server does not accept, `4401` for a missing or invalid session token.
 
 ## 3. Bind loopback
 
@@ -178,6 +180,15 @@ Because `cdui` derives the flag, `--ws-max-size` is refused after `--` -- set
 the environment variable instead. If you invoke uvicorn by hand you get its
 16 MB back unless you pass the flag yourself.
 
+If you launch uvicorn yourself, also export `CODEFYUI_HOST` / `CODEFYUI_PORT`
+to the real bind. The server never inspects its socket: those two values are
+what the Host whitelist and the loopback-only pack and plugin install gates
+read. `uvicorn --host 0.0.0.0` without `CODEFYUI_HOST=0.0.0.0` answers `421`
+to LAN clients, and whitelisting them through `CODEFYUI_EXTRA_ALLOWED_HOSTS`
+instead leaves the install gates open to the LAN, because they still believe
+the bind is loopback. Restart-mode pack installs are never offered outside
+`cdui start`.
+
 Note your proxy has a say too: nginx's `client_max_body_size` bounds HTTP
 bodies, and a WebSocket frame that large needs `proxy_read_timeout` headroom to
 finish arriving.
@@ -220,8 +231,8 @@ RestartSec=5s
 TimeoutStopSec=120s
 
 # Conservative hardening. Deliberately NOT PrivateDevices (breaks GPU access),
-# ProtectHome or ProtectSystem=strict (both break writes to the install tree
-# and the user data dir).
+# ProtectHome or ProtectSystem=strict (both break writes to the install tree,
+# which for this unit includes the user data dir, /opt/codefyui/.codefyui_dev/).
 NoNewPrivileges=yes
 PrivateTmp=yes
 
@@ -361,8 +372,14 @@ If you use a different proxy, do the equivalent there.
 
 What CodefyUI *does* log -- startup, the effective Host whitelist, rejected
 `Host` values, warnings and errors -- goes to stderr, which means the journal
-under systemd. Set `CODEFYUI_LOG_DIR` to also get a rotating file (10 MB, five
-generations).
+under systemd. `CODEFYUI_LOG_LEVEL` (`DEBUG` / `INFO` / `WARNING` / `ERROR`,
+default `INFO`) sets the application loggers' level -- uvicorn's own verbosity
+is `cdui start -- --log-level ...` -- and `CODEFYUI_LOG_JSON=1` switches to one
+JSON object per line (`timestamp`, `level`, `name`, `message`, `exception`).
+Set `CODEFYUI_LOG_DIR` to also get a rotating file, `<dir>/codefyui.log` (10 MB,
+five generations). Without `--foreground`, everything the server prints goes to
+`<install dir>/.codefyui_dev/server.log` -- the path `cdui start` and
+`cdui status` print.
 
 ## Authentication is the proxy's job, and it has limits
 
@@ -410,7 +427,7 @@ Traffic leaves the machine only when a person asks for it:
 | --- | --- |
 | LLM providers (OpenAI, Anthropic, OpenRouter, ChatGPT, or a URL you supply) | Running an `LLMChat` node, or the model list in settings. Off unless a key or sign-in is configured. |
 | Dataset and model downloads (Kaggle, Hugging Face, torchvision) | Running a graph that contains one of those nodes. |
-| `github.com` | `cdui install`, `cdui update`, `cdui plugin install`. |
+| `github.com` | `cdui install`, `cdui update`, `cdui plugin install` / `info` / `update`, `cdui project restore`, and the Plugin Center. For the plugin fetches, unauthenticated GitHub allows 60 API requests an hour per IP, shared by every machine behind one NAT; export `CODEFYUI_GITHUB_TOKEN` before `cdui start` (public-repo read is enough). How the token is handled: [GitHub API rate limits](/advanced/plugins#how-an-install-runs). |
 | `astral.sh` | Only if `uv` is missing from `PATH`, which a normal install rules out. A one-time toolchain download, not a report. |
 
 An air-gapped install is therefore a matter of not using those nodes, not of

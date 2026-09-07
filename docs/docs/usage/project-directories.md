@@ -18,6 +18,7 @@ my-service/
   layout/    <name>.layout.json   positions (reviewable, generated)
   assets/images/   assets/models/   assets/data/    scaffolded empty
   assets/output/                                    created on demand (e.g. ImageWriter)
+  assets/media/                                     created on demand (run-produced video, served by /api/media)
   .env.example     committed template of required secret keys
   .env             your secrets (gitignored, never committed)
 ```
@@ -49,8 +50,10 @@ cd my-service
 `init` scaffolds `graphs/`, `layout/`, and `assets/{images,models,data}/`
 (empty, `.gitkeep`-tracked), writes `.gitignore` / `.gitattributes` /
 `.env.example` / `README.md`, and runs `git init` (no commit -- it prints the
-next steps). `assets/output/` is not created up front; it appears the first
-time a node (for example ImageWriter) writes to it.
+next steps). `--force` writes into a directory that is not empty; an existing
+manifest or `README.md` is never overwritten. `assets/output/` is not created
+up front; it appears the first time a node (for example ImageWriter) writes to
+it.
 
 ### 2. Add a graph
 
@@ -144,20 +147,34 @@ cdui start --project .
 ```
 
 The log prints `Project: <abs> (git <short-sha>)` and warns once, naming
-`cdui project restore`, if any pinned plugin is missing.
+`cdui project restore`, if any pinned plugin is missing. (`cdui dev --project .`
+does the same with hot reload.)
+
+Starting with `--project` is also what loads `<project>/.env`: plain
+`KEY=VALUE` lines (a leading `export ` and surrounding quotes are tolerated),
+applied before node and plugin discovery with `os.environ.setdefault`
+semantics, so a variable already set in the shell wins. Only execution-time
+secrets belong there -- LLM API keys, anything a node reads from the
+environment at run time. `CODEFYUI_*` settings in the file do nothing, because
+the server's configuration is fixed before the file is read; set those in the
+shell or the systemd unit. The values are never logged, only their count, and
+without `--project` no `.env` is read at all.
 
 ### 6. Create an API key (invoke needs one)
 
-The session token lives at `<user_data_dir>/codefyui/session.token` -- on
-Windows `%LOCALAPPDATA%\codefyui\session.token`, on macOS `~/Library/Application
-Support/codefyui/session.token`, on Linux `~/.local/share/codefyui/session.token`
-(see [Graph as a Function](./graph-as-a-function.md) for the full breakdown).
+The session token is `<install dir>/.codefyui_dev/session.token` for a server
+started by `cdui start` or `cdui dev` (default install dir `~/CodefyUI`, i.e.
+`$HOME\CodefyUI` on Windows), or `<CODEFYUI_USER_DATA_DIR>/session.token` when
+that variable was exported before the launcher ran. See
+[Graph as a Function](./graph-as-a-function.md#2-getting-the-token-for-external-scripts)
+for the other files in that directory, the platform directories a hand-launched
+`uvicorn app.main:app` uses, and why the token rotates on every restart.
 
 PowerShell:
 
 ```powershell
 # payload.json: {"name": "demo"}
-$token = Get-Content "$env:LOCALAPPDATA\codefyui\session.token"
+$token = Get-Content "$HOME\CodefyUI\.codefyui_dev\session.token"
 curl.exe -s -X POST "http://127.0.0.1:8000/api/keys" `
   -H "X-CodefyUI-Token: $token" -H "Content-Type: application/json" `
   --data "@payload.json"
@@ -166,7 +183,7 @@ curl.exe -s -X POST "http://127.0.0.1:8000/api/keys" `
 bash:
 
 ```bash
-TOKEN=$(cat ~/.local/share/codefyui/session.token)   # macOS: ~/Library/Application Support/codefyui/session.token
+TOKEN=$(cat ~/CodefyUI/.codefyui_dev/session.token)
 curl -s -X POST http://127.0.0.1:8000/api/keys \
   -H "X-CodefyUI-Token: $TOKEN" -H "Content-Type: application/json" \
   --data '{"name": "demo"}'
@@ -193,6 +210,7 @@ the next step warns about -- then publish:
 git add -A && git commit -m "set publish target"
 cdui project publish .
 # -> Published echo-svc v1 (git 1a2b3c4)
+cdui project publish . --note "first cut"   # --note attaches an immutable note to the version
 ```
 
 Publish is **local-only** in v1: it confirms `GET /api/health` reports THIS
@@ -276,6 +294,14 @@ Every `*.json` is copied into `graphs/` and split into the logic/layout pair.
 - One project per server instance (no in-editor project switcher yet).
 - `DB_PATH` and custom nodes stay install-global; [plugins](/advanced/plugins)
   are the portable mechanism (pinned by SHA in the manifest).
+- `assets/data/` is where a relative `Dataset` or `FileReader` path resolves.
+  Files uploaded through a DATA_FILE dropdown (`CSVReader`, `DocumentLoader`,
+  `TextCorpusDataset`) are install-global too -- `backend/data/files`, or
+  `CODEFYUI_DATA_FILES_DIR` -- like `DB_PATH` and custom nodes.
+- `CODEFYUI_MODELS_DIR`, `CODEFYUI_IMAGES_DIR` and `CODEFYUI_MEDIA_DIR` relocate
+  the model, image and run-media stores; in project mode they default to
+  `<project>/assets/models`, `assets/images` and `assets/media` unless set
+  explicitly.
 - Last-write-wins between the editor and hand-edits (a "changed on disk"
   warning is a follow-up). Exclude project dirs from OneDrive/Dropbox sync --
   sync clients corrupt `.git` and race atomic renames; use a real git remote.

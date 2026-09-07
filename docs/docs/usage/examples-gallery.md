@@ -6,14 +6,14 @@ description: Pre-built example workflows — model architectures, end-to-end tra
 
 # Examples Gallery
 
-CodefyUI ships a library of ready-to-run example graphs under `examples/`. Whenever the active tab has an empty canvas, the gallery appears right on the canvas — pick a card and the graph loads into the tab, ready to **Run**. You can also run any example headless with the [CLI Graph Runner](./cli-runner).
+CodefyUI ships a library of ready-to-run example graphs under `examples/`. Whenever the active tab has an empty canvas, the gallery appears right on the canvas — pick a card and the graph loads into the tab, ready to **Run**. The other ways to open it are listed under [When the canvas is not empty](#when-the-canvas-is-not-empty). You can also run any example headless with the [CLI Graph Runner](./cli-runner).
 
 The gallery is organized into ordered sections:
 
 | Section | Contents |
 |---------|----------|
 | **Quick Start** | The three pinned starters: **Train CNN on MNIST**, **Inference CNN on MNIST**, and **Api-Function** (graph-as-a-function demo). |
-| **Advanced Examples** | Every other runnable builtin example — LLM (Word Embedding Analogy with the offline `demo-16d` backend, **Sentence Similarity (zh-TW)** with a real sentence encoder, **Train a Causal LM on TinyStories**, and the two retrieval examples **RAG, fully local** and **RAG with a chat API**), Diffusion (Forward Process, Toy Sampling, Mini U-Net), Classical ML (Iris KNN, tabular pipeline), Transformer (MoE routing), RNN, RL (RLHF reward + KL), VLA (**Train a VLA on PushWorld** — needs a GPU and about an hour), and the remaining trainers (GPT-Mini, ResNet-CIFAR10, and the measured **ResNet-18 / CIFAR-10 baseline** — see [Reproducing Baselines](./reproducing-baselines)). |
+| **Advanced Examples** | Every other runnable builtin example — LLM (Word Embedding Analogy with the offline `demo-16d` backend, **Sentence Similarity (zh-TW)** with a real sentence encoder, **Train a Causal LM on TinyStories**, and the two retrieval examples **RAG, fully local** and **RAG with a chat API**), Diffusion (Forward Process, Toy Sampling, Mini U-Net), Classical ML (Iris KNN, tabular pipeline), Transformer (MoE routing), RNN, RL (RLHF reward + KL), VLA (**Train a VLA on PushWorld** — needs a CUDA GPU and about an hour; the recipe is in its [README](https://github.com/CodefyUI/CodefyUI/blob/main/examples/VLA/TrainVLA-PushWorld/README.md)), and the remaining trainers (GPT-Mini, ResNet-CIFAR10, and the measured **ResNet-18 / CIFAR-10 baseline** — see [Reproducing Baselines](./reproducing-baselines)). |
 | **Plugin Examples** | Examples shipped by installed [plugins](/advanced/plugins) (and any unrecognized categories). Only shown when present. |
 | **Model Architectures** | 15 classic architecture walkthroughs, always listed last: ResNet, ConvNeXt, EfficientNet, UNet, ViT, SwinTransformer, BERT, GPT, LLaMA, DiT, LSTM TimeSeries, BiGRU SpeechRecognition, Seq2Seq Attention, DQN Atari, PPO Robotics. |
 
@@ -38,11 +38,20 @@ The two RL architecture graphs (**DQN Atari**, **PPO Robotics**) feed their netw
   python run_graph.py ../examples/Usage_Example/CNN-MNIST/TrainCNN-MNIST/graph.json
   ```
 
+### When the canvas is not empty
+
+The **Template Gallery** opens from the toolbar's **Templates** button, from **Browse all templates** on the empty-canvas overlay, and from the sidebar's **Templates** tab. It groups the examples by category, and selecting one shows its description, its node and connection counts, and whether it is built in or comes from a plugin. Each example offers two actions:
+
+- **Open in new tab** leaves the current graph alone.
+- **Insert into this canvas** adds the example to the graph you are editing: the inserted nodes get fresh ids and are placed below your current graph, so nothing is overwritten, and one undo removes them.
+
+In the sidebar's **Templates** tab, click an example to insert it, or drag it onto the canvas where you want it.
+
 ## A good first run
 
 Load **Train CNN on MNIST**, then:
 
-1. Turn on **Record outputs** and **Persist weights between runs** in the Settings popover.
+1. **Record node outputs** and **Persist weights between runs** are both on by default — check them in the Settings popover (**Recording & Inspection** and **Training Behavior**).
 2. Click **Run** and watch the live loss chart in the **Training** tab.
 3. Click a `Conv2d` node to inspect its kernels and activations in the **[Teaching Inspector](./teaching-inspector)**.
 4. Run again — with weights persisted, the model keeps learning across runs.

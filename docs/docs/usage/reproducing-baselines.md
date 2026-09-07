@@ -55,17 +55,24 @@ You can see the stem in the layer editor: double-click `SequentialModel`, and th
 
 ## Running it reproducibly
 
-Two run options do the work, both set when you submit the run rather than on any node:
+Two run options do the work, both set when you submit the run:
 
 - **`seed`** — one integer seeds everything. Weight initialization, the shuffling order of the training loader, and the augmentation draws all derive from it, per node, so the result does not depend on which node happened to execute first.
-- **`deterministic`** — asks for deterministic kernels and turns off cuDNN's algorithm autotuner. Without it, cuDNN re-picks convolution algorithms per run and two runs with the same seed drift apart. On this workload it costs about 4% of throughput, which is a good trade for an exactly repeatable number.
+- **`deterministic`** — asks for deterministic kernels and turns off cuDNN's algorithm autotuner. Without it, cuDNN re-picks convolution algorithms per run and two runs with the same seed drift apart. On this workload it costs about 4% of throughput, which is a good trade for an exactly repeatable number. `TrainingLoop` also has a `deterministic` toggle under **Advanced**; either one turns it on for the whole run.
 
-Submit from the Runs panel, or over the API:
+On the canvas, set **Random seed** and **Deterministic algorithms** under **Settings → Training Behavior** and click **Run**. From a terminal, submit the graph file to the running server:
+
+```bash
+cdui run examples/Usage_Example/ResNet18-CIFAR10-Baseline/graph.json \
+  --name resnet18-cifar10-seed1337 --device cuda --seed 1337 --deterministic
+```
+
+Or over the API:
 
 ```bash
 curl -X POST http://127.0.0.1:8000/api/runs \
   -H "Content-Type: application/json" \
-  -H "X-CodefyUI-Token: $CODEFYUI_TOKEN" \
+  -H "X-CodefyUI-Token: $(cat ~/CodefyUI/.codefyui_dev/session.token)" \
   -d '{
         "name": "resnet18-cifar10-seed1337",
         "graph": {"nodes": [ ... ], "edges": [ ... ]},
@@ -73,7 +80,7 @@ curl -X POST http://127.0.0.1:8000/api/runs \
       }'
 ```
 
-Substitute the `nodes` and `edges` arrays from the example's `graph.json` — the request body carries the whole graph, so this snippet does nothing until you paste them in.
+Substitute the `nodes` and `edges` arrays from the example's `graph.json` — the request body carries the whole graph, so this snippet does nothing until you paste them in. The token is a file the server writes at startup; where it lives is explained in [Getting the token](./graph-as-a-function#2-getting-the-token-for-external-scripts).
 
 ## The measured result
 
@@ -131,7 +138,7 @@ Wire `Optimizer` into `LRScheduler`, then `LRScheduler` into `CheckpointLoader.l
 
 **What the wiring decides is whether the checkpoint's saved schedule position is restored or reconstructed.** `CheckpointLoader` can only restore `scheduler_state_dict` into a scheduler that is wired into it. Leave that input unconnected and the saved state is discarded, and the schedule is instead rebuilt by replaying `start_epoch` steps from `base_lrs`. For `CosineAnnealingLR` the replay is exact — which is why the recipe on this page is safe either way — but a metric-driven `ReduceLROnPlateau` cannot be replayed: its `best` and `num_bad_epochs` reset, postponing a decay that may have been one epoch away.
 
-You no longer have to know that in advance. Both halves now say so where you can see them — in the server log, in the run log the Runs panel shows, and in the node's **Log** tab on the canvas: `CheckpointLoader` reports that it is throwing a stored schedule position away and names the input to connect, and `TrainingLoop` reports a schedule it could not put back where it was.
+You no longer have to know that in advance. Both nodes report the condition in the server log, the run log shown in the Runs panel, and the canvas **Execution Log**: `CheckpointLoader` reports that it discarded a stored schedule position and names the input to connect; `TrainingLoop` reports a schedule it could not restore.
 :::
 
 ## Checking the numbers yourself
@@ -148,21 +155,10 @@ curl "http://127.0.0.1:8000/api/runs/<run_id>/metrics?format=csv" -o metrics.csv
 
 ## Gotchas worth knowing
 
-- **Give every root node a trigger edge.** Execution starts from `Start` and follows *data* edges forward, so a node with no incoming data edge is skipped unless a trigger edge from `Start` points at it. This example has exactly four such nodes, and wires all four:
+- **A trigger only marks where execution starts.** `Start` triggers `RandomCrop`, the evaluation `ToTensorTransform`, `SequentialModel` and `Loss` in this example, but a root that feeds a data edge into a running node — those four, and both `Dataset` nodes — runs whether or not a trigger points at it (see [Running Graphs](./running-graphs#a-node-without-a-trigger-can-still-run)). Removing one of the four trigger edges therefore changes nothing; what takes a node out of the run is disconnecting its data edge.
 
-  | Trigger target | Why it is a root |
-  |---|---|
-  | `RandomCrop` | head of the training augmentation chain |
-  | `ToTensorTransform` (evaluation) | head of the evaluation preprocessing chain |
-  | `SequentialModel` | the model has no data input |
-  | `Loss` | the loss function has no data input |
-
-  Note what is **not** on that list: neither `Dataset` node is a root. Each one is fed by its transform chain (`aug-norm` into `ds-train.train_transform`, `ev-norm` into `ds-test.eval_transform`), so the forward walk reaches them on its own — wiring a trigger to a `Dataset` is harmless but does nothing.
-
-  Miss a trigger and the run fails with a missing-input error naming a node much further downstream. Drop the one into `SequentialModel`, for instance, and `Optimizer` and `LRScheduler` are pruned with it; the run then dies complaining about `TrainingLoop`. Tracked as issue [#201](https://github.com/CodefyUI/CodefyUI/issues/201).
-
-- **Keep `LRScheduler.T_max` equal to `TrainingLoop.epochs`.** Cosine annealing is stepped once per epoch and reaches zero exactly at `T_max`. Set `T_max` too high and the run stops partway down the curve, never annealing fully, which costs roughly a point of accuracy; too low and the cosine turns back **up** past `T_max`, so the tail of the run trains at a rising learning rate. `TrainingLoop` warns when the two disagree — in the server log, in the run log the Runs panel shows, and in the canvas Log tab — but it does not enforce the pair, because a truncated schedule is a legitimate choice and `CosineAnnealingWarmRestarts` reuses the same value as `T_0`, where equality would mean no restart ever happens. The same check covers `OneCycleLR.total_steps`, whose default of 1000 is a batch count no epoch budget reaches. All of this assumes the default `TrainingLoop.scheduler_step = epoch`, which is what this baseline uses; setting it to `optimizer_step` makes every length on `LRScheduler` an optimizer-step count instead, and the same warning then measures them against the run's step budget rather than against `epochs`.
-- **`EvaluateModel` does not follow the run device.** Its `device` parameter defaults to `cpu` and offers no `auto`. Set it to `cuda` explicitly or evaluation will be slow. Tracked as issue [#204](https://github.com/CodefyUI/CodefyUI/issues/204).
+- **Keep `LRScheduler.T_max` equal to `TrainingLoop.epochs`.** Cosine annealing is stepped once per epoch and reaches zero exactly at `T_max`. Set `T_max` too high and the run stops partway down the curve, never annealing fully, which costs roughly a point of accuracy; too low and the cosine turns back **up** past `T_max`, so the tail of the run trains at a rising learning rate. `TrainingLoop` warns when the two disagree — in the server log, in the run log the Runs panel shows, and in the canvas **Execution Log** — but it does not enforce the pair, because a truncated schedule is a legitimate choice and `CosineAnnealingWarmRestarts` reuses the same value as `T_0`, where equality would mean no restart ever happens. The same check covers `OneCycleLR.total_steps`, whose default of 1000 is a batch count no epoch budget reaches. All of this assumes the default `TrainingLoop.scheduler_step = epoch`, which is what this baseline uses; setting it to `optimizer_step` makes every length on `LRScheduler` an optimizer-step count instead, and the same warning then measures them against the run's step budget rather than against `epochs`.
+- **`EvaluateModel.device` defaults to `auto`** and follows the run device; the shipped graph pins it to `cuda`, which is optional.
 - **The first run downloads CIFAR-10** (about 170 MB). It lands in `backend/data/` by default, or in `<project>/assets/data` when a project directory is open. Later runs reuse it.
 
 The CIFAR-10 dataset is Krizhevsky, *Learning Multiple Layers of Features from Tiny Images* (2009); it is downloaded at run time and not redistributed with CodefyUI.

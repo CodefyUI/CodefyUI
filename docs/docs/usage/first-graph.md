@@ -27,7 +27,7 @@ Drag from each output port to the next input port. The edges validate types as y
 :::warning Every graph needs a Start node
 Drag a **`Start`** node onto the canvas and connect its **trigger output** (the diamond handle on the right side) to the first node you want executed — typically the `TensorInput`.
 
-Without a `Start → first-node` trigger edge, the graph is treated as a draft and **Run** rejects it with a *"No start node defined"* toast. **Only nodes reachable from a Start are executed.**
+Without a `Start → first-node` trigger edge, the graph is treated as a draft and **Run** rejects it with an error toast: *"No entry points defined. Drag a Start node from the palette and connect it to the node you want to start execution from."* The executable set includes each triggered node, its downstream data flow, any upstream nodes that feed data into that set, and internal roots in any reached preset or subgraph container.
 :::
 
 This trigger-based routing is what lets you keep scratch nodes on the canvas without running them, and it enables conditional branches (e.g. a `Switch` node) where only one path executes.
@@ -38,7 +38,7 @@ Click **Run**. Watch per-node progress stream into the **Execution Log**, and th
 
 ## 5. Inspect what flowed
 
-Open the **Settings** popover, switch **Record outputs** ON, and run again. Now click any node to open the **[Teaching Inspector](./teaching-inspector)** and see the exact tensor — shape, dtype, min/max/mean, and values — at every step.
+**Record node outputs** is on by default (**Settings → Recording & Inspection**), so the run you just made already captured every node's output. Click any node to open the **[Teaching Inspector](./teaching-inspector)** and see the exact tensor — shape, dtype, min/max/mean, and values — at every step.
 
 ## Next steps
 

@@ -88,7 +88,6 @@ The default install works on every platform:
 
 ```bash
 uv pip install torch torchvision
-uv pip install gymnasium safetensors
 ```
 
 macOS gets an MPS-capable build; Linux/Windows get the default PyPI build. This is enough to run the app and test models. For a specific GPU configuration, see **[GPU & Device Setup](./gpu-device)**.
@@ -106,6 +105,8 @@ source .venv/bin/activate    # macOS / Linux
 
 uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
 ```
+
+If you change the port or bind address, set `CODEFYUI_PORT` and `CODEFYUI_HOST` to the same values. The server derives its Host allowlist from these variables rather than from the listening socket. When the port differs, every request returns `421`; when the bind address differs, only requests from other machines do, because loopback names are always allowed. `cdui start --project` sets `CODEFYUI_PROJECT_DIR=<absolute dir>`. A uvicorn process started directly with this command stores its session token and other user data in the platform data directory: `%LOCALAPPDATA%\codefyui`, `~/.local/share/codefyui`, or `~/Library/Application Support/codefyui`. It does not use `.codefyui_dev/`. See [Project Directories](/usage/project-directories#6-create-an-api-key-invoke-needs-one).
 
 **Frontend (terminal 2):**
 
@@ -126,6 +127,12 @@ python scripts/dev.py dev
 ```
 
 ## Running tests
+
+```bash
+cdui test                    # backend (pytest) + frontend (vitest); --backend / --frontend narrow it
+```
+
+`cdui test` requires the `[dev]` extra installed in step 4. When using the launcher, install it with `cdui install --dev`. With the one-line installer, set `CODEFYUI_FORCE_BUILD=1 CODEFYUI_DEV=1`. To run the backend suite directly:
 
 ```bash
 cd backend

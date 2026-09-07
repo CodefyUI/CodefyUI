@@ -46,6 +46,8 @@
                                         （預設 auto，目前會解析成 cpu；
                                         解析後的裝置就是佇列 key）
                       --seed <n>        隨機種子
+                      --deterministic   要求 torch 用確定性演算法（沒有確定性實作
+                                        的 op 只警告，不中斷 run）
                       --record-outputs  保留節點輸出供事後檢視
                       --wait            串流進度直到結束（預設）
                       --detach          只印出 run id 就離開
@@ -67,6 +69,8 @@
                       --frontend   只跑前端
     clean       移除虛擬環境、node_modules 與 frontend/dist
     uninstall   解除安裝：clean + 移除全域 cdui launcher
+    --version   印出 CodefyUI <版本>（同 -V、cdui version）。不需要 uv 或 venv，
+                半安裝的機器也答得出來。
 
     plugin <subcmd> ...
                 與 cdui plugin 完全相同的介面，但 lockfile 寫到 repo 內的
@@ -82,6 +86,25 @@
                     python scripts/dev.py plugin disable deep    # 停用（檔案保留）
                     python scripts/dev.py plugin uninstall deep  # 從 lockfile 移除
                                                                 # （sync 之後不會再裝回）
+                    python scripts/dev.py plugin update [deep]   # 重新解析 ref，有變才重裝
+                    python scripts/dev.py plugin info <id|owner/repo[@ref]>
+                    python scripts/dev.py plugin search [關鍵字]  # 不帶關鍵字則列出整個目錄
+                    python scripts/dev.py plugin link <dir> [--force]  # 就地載入本機外掛目錄
+                    python scripts/dev.py plugin unlink <id>
+                    python scripts/dev.py plugin reload          # 要伺服器熱重載外掛
+                    python scripts/dev.py plugin dev <dir> [--interval 秒] [--once]
+                                                                # link + 監看 + 熱重載
+                    python scripts/dev.py plugin new <id> [--ui] [--name] [--dir] [--force]
+                                                                # 從範本建立新外掛
+
+    project <subcmd> ...
+                專案目錄：一個 git repo 就是服務的儲存空間（codefyui.project.toml）。
+                    cdui project init <dir> [--adopt <舊 graphs 目錄>] [--force]
+                    cdui project validate <dir> [--graph <名稱>]... [--strict]
+                    cdui project freeze <dir>           # 把已安裝外掛的 SHA 寫進 manifest
+                    cdui project restore <dir>          # 依 manifest 的 SHA 安裝外掛
+                    cdui project publish <dir> [--graph] [--slug] [--note] [--create]
+                詳見文件的 Project Directories 頁。
 
     packs <subcmd> ...
                 套件中心（Package Center）的終端機介面：安裝選用的模型與套件。

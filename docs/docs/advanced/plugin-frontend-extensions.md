@@ -61,11 +61,13 @@ The `entry` path must be **relative to the plugin root** and must live under `fr
 
 ## How the editor serves and discovers the bundle
 
-When the backend starts, it mounts each installed plugin's `frontend/` directory at:
+The backend serves an enabled plugin's `frontend/` directory at:
 
 ```
 /plugins/<plugin-id>/frontend/<file>
 ```
+
+These directories are not mounted at startup. For each request, the route resolves the plugin directory from the lockfile. A bundle therefore becomes available immediately after installation or reload and returns `404` immediately after the plugin is disabled or uninstalled; neither change requires a restart. Frontend files are served only for enabled plugins whose manifest declares `[frontend].entry`; a `frontend/` directory alone is insufficient. Responses use `Cache-Control: no-cache`, which makes the browser revalidate the file and obtain updates on the next load. The backend serves `assets/` through `/plugins/<plugin-id>/assets/<file>` under the same enablement rule, using GET and HEAD without requiring a manifest entry.
 
 The plugin listing endpoint exposes the entry point so the editor can load it:
 
@@ -84,7 +86,7 @@ Example response excerpt:
 }
 ```
 
-If `frontend_entry` is `null`, the plugin has no frontend bundle. The editor only loads the module when `frontend_entry` is non-null.
+`frontend_entry` is `null` when the manifest has no `[frontend]` entry, the declared file is missing, or the plugin is disabled. Disabled plugins provide no UI, frontend files, or assets. The editor loads the module only when `frontend_entry` is non-null.
 
 ## The activate contract
 
@@ -106,7 +108,7 @@ The editor calls `activate` once per page load and does **not** await its return
 | Method | Signature | Description |
 |--------|-----------|-------------|
 | `addFloatingWidget` | `({ id }) => HTMLElement` | Create (or reuse) a container `<div>` in the editor's floating-widget stack and return it. `id` must be unique per plugin. You own the returned element — fill it with your own DOM, or mount a React root into it. |
-| `toast` | `(message, level?) => void` | Show a transient notification. `level` is `"info"` (default), `"warning"`, or `"error"`. |
+| `toast` | `(message, level?) => void` | Show a transient notification. `level` is `"info"` (default), `"success"`, `"warning"`, or `"error"`. |
 | `addPanel` | `(opts) => HTMLElement` | **apiVersion 3.** Register a dock panel and return its container element. |
 | `removePanel` | `(id: string) => void` | **apiVersion 3.** Remove one of your panels. |
 | `addToolbarButton` | `(opts) => () => void` | **apiVersion 3.** Add a toolbar button; returns a remove function. |
@@ -182,7 +184,7 @@ Re-adding an id replaces the button. The remove function you get back belongs to
 
 | Method | Signature | Description |
 |--------|-----------|-------------|
-| `getGraph` | `() => GraphSnapshot` | Return a deep copy of the **whole** graph state (nodes, edges, params, plus block definitions under `subgraphs`) — always the top level, whatever the user has open. |
+| `getGraph` | `() => SerializedGraph` | Return a deep copy of the **whole** graph state (nodes, edges, params, plus block definitions under `subgraphs`) — always the top level, whatever the user has open. |
 | `getNodeDefinitions` | `() => NodeDefinition[]` | Return the full node palette: types, port schemas, param schemas. |
 | `applyOperations` | `(ops: GraphOp[]) => ApplyResult` | Apply a batch of graph operations **synchronously** (returns the result directly — not a Promise). The whole batch is committed as a **single undo snapshot**, and it applies to the canvas the user has open — see [Which level the user is looking at](#which-level-the-user-is-looking-at). |
 | `onGraphChanged` | `(callback: () => void) => () => void` | Subscribe to graph changes — including the user stepping into or out of a block. The callback takes no arguments; call `getGraph()` from it. Returns an unsubscribe function. |
@@ -439,7 +441,7 @@ Requires `api.apiVersion >= 2`.
 |--------|-----------|-------------|
 | `registerRenderer` | `(nodeType, renderer) => () => void` | Draw a plugin node type's card body with your own UI. Returns an unregister function. |
 
-`nodeType` is the node's **namespaced** type as it appears in `getNodeDefinitions()`. Note the namespace is the snake_case form of your plugin id — plugin `my-plugin` exposes node type `my_plugin:MyNode`. The renderer is imperative, so the host stays framework-agnostic:
+`nodeType` must match the node's **namespaced** type from `getNodeDefinitions()`: `<plugin-id>:<NODE_NAME>`. The plugin id is copied exactly from the manifest, including hyphens, so plugin `my-plugin` exposes `my-plugin:MyNode`. Only the Python import path converts hyphens to underscores (`cdui_plugins.my_plugin`). Registering `my_plugin:MyNode` therefore has no effect. The renderer uses an imperative API and does not require the host or plugin to use a particular UI framework:
 
 ```ts
 interface NodeRenderContext {
@@ -455,7 +457,7 @@ interface PluginNodeRenderer {
 The editor still renders the standard node card (title, ports, param list) and hands your renderer a `<div>` for the **body** — slotted between the ports and the params. A node type with no registered renderer renders exactly like a default node.
 
 ```js
-api.nodes.registerRenderer('my_plugin:MyNode', {
+api.nodes.registerRenderer('my-plugin:MyNode', {
   mount(el, ctx) { el.textContent = `value: ${ctx.node.params.value}`; },
   update(el, ctx) { el.textContent = `value: ${ctx.node.params.value}`; },
 });

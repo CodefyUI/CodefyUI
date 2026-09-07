@@ -24,18 +24,20 @@ A single uvicorn process serves the REST API, the execution WebSocket, and the p
 
 ## Execution flow
 
-1. **Preset expansion** — preset nodes are flattened into their internal nodes before anything runs.
-2. **Validation** — DAG check, port/type safety, and a required [`Start`](/usage/first-graph) node. A node runs if it is reachable via trigger edges, OR if it feeds a data connection — required or optional port, does not matter — into one that is (directly or transitively). A root with no trigger of its own, like a `Dataset` or the head of a transform chain, is retained rather than pruned out from under a node that consumes its output (core#201).
-3. **Topological sort** — Kahn's algorithm with cycle detection.
-4. **Parallel execution** — independent nodes run concurrently.
-5. **Caching / dirty tracking** — deterministic node outputs are cached keyed by node type, params, and upstream outputs; changing a node marks it and its downstream dirty so only the affected subgraph re-runs. Non-deterministic nodes (or `cacheable = False`) always run.
-6. **Device resolution** — the requested device is checked against what's available and falls back to CPU with a warning. See [Device Backends](./device-backends).
+1. **Submission** — the canvas, `cdui run`, `POST /api/runs`, or a sweep submits the graph to the run service. The service persists and schedules it. Queued-lane runs enter a per-device FIFO; interactive canvas runs bypass the queue. See [Run Queue](/usage/run-queue).
+2. **Preset expansion** — preset nodes are flattened into their internal nodes before anything runs.
+3. **Validation** — DAG check, port/type safety, and a required [`Start`](/usage/first-graph) node. A node runs if it is reachable via trigger edges, OR if it feeds a data connection — required or optional port, does not matter — into one that is (directly or transitively). A root with no trigger of its own, like a `Dataset` or the head of a transform chain, is retained rather than pruned out from under a node that consumes its output (core#201).
+4. **Topological sort** — Kahn's algorithm with cycle detection.
+5. **Parallel execution** — independent nodes run concurrently, at most `CODEFYUI_MAX_PARALLEL_NODES` at a time.
+6. **Caching / dirty tracking** — deterministic node outputs are cached per WebSocket connection (256 entries and 1 GB by default), keyed by node type, params, one reference per incoming edge (the upstream key plus both port names), the resolved device, and a content fingerprint for nodes that read files; changing a node marks it and its downstream dirty so only the affected subgraph re-runs. Non-deterministic nodes (or `cacheable = False`) always run.
+7. **Device resolution** — the requested device is checked against what's available and falls back to CPU with a warning. See [Device Backends](./device-backends).
 
 ## State, outputs, and gradients
 
+- **Run service** — `RunService` owns each run independently of its WebSocket connection. It appends every engine event to a durable log, batches scalar metrics, and cancels cooperatively through the execution context. At startup, it marks `queued` or `running` rows left by the previous process as `interrupted`. Runs, events, metrics, and artifacts are stored in SQLite (`exec_runs`, `exec_run_events`, `exec_run_metrics`, `exec_run_artifacts`), allowing a tab to reconnect or a terminal to monitor a run started by another client.
 - **Execution context** carries per-run options: device, verbose mode, weight persistence, and gradient targets.
 - **Stateful modules** — a mixin persists `nn.Module` weights between runs via a key-value store keyed by (graph id, node id, structure hash), so a model keeps learning across **Run** clicks when *Persist weights* is on.
-- **Run output store** — an LRU cache (last ~20 runs) holds captured outputs for the [Teaching Inspector](/usage/teaching-inspector), fetched on demand over REST.
+- **Run output store** — a server-wide in-memory store retains captured outputs for the [Teaching Inspector](/usage/teaching-inspector) and serves them on demand over REST. By default, it tracks at most 20 runs and 2 GiB, evicting complete oldest runs when either limit is exceeded.
 - **Backward pass** — when *Capture gradients* is on, the engine attaches hooks, calls `.backward()`, and stores per-layer gradients alongside outputs.
 - **Step traces** — in verbose mode, instrumented nodes emit a `__steps__` trace recorded for the Inspector's **Steps** tab.
 
@@ -54,8 +56,13 @@ A single uvicorn process serves the REST API, the execution WebSocket, and the p
 | BaseNode ABC | `backend/app/core/node_base.py` |
 | Node registry + namespacing | `backend/app/core/node_registry.py` |
 | Graph validation + execution | `backend/app/core/graph_engine.py` |
+| Run service (scheduling, event log, cancel, recovery) | `backend/app/core/run_service.py` |
+| Run store (SQLite rows, retention) | `backend/app/core/run_store.py` |
+| Run REST routes | `backend/app/api/routes_runs.py` |
+| Sweeps | `backend/app/api/routes_sweeps.py`, `backend/app/core/sweep_compiler.py` |
 | WebSocket handler | `backend/app/api/ws_execution.py` |
-| Plugin discovery + AST gate | `backend/app/core/plugin_loader.py` |
+| Plugin discovery | `backend/app/core/plugin_loader.py` |
+| Plugin AST gate | `backend/app/core/plugins/gate.py`, `backend/app/core/plugin_validator.py` |
 | CLI graph runner | `backend/run_graph.py` |
 | Frontend root | `frontend/src/App.tsx` |
 | WebSocket client | `frontend/src/api/ws.ts` |

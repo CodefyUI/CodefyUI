@@ -18,18 +18,14 @@ my-service/
   layout/    <name>.layout.json   positions (reviewable, generated)
   assets/images/   assets/models/   assets/data/    scaffolded empty
   assets/output/                                    created on demand (e.g. ImageWriter)
+  assets/media/                                     created on demand (run-produced video, served by /api/media)
   .env.example     committed template of required secret keys
   .env             your secrets (gitignored, never committed)
 ```
 
 ## 為什麼要分離？
 
-`graphs/<name>.graph.json` 只存會改變 graph *行為* 的內容（節點、邊、參數、
-內嵌 presets）。節點**位置**與便利貼的幾何資訊放在
-`layout/<name>.layout.json`。因此拖動節點只會在 `layout/` 產生 diff，改參數
-只會在 `graphs/` 產生 diff -- code review 看到的是邏輯變更，而不是一整面
-「像素移動」的雜訊。（已知例外：`SequentialModel` 子圖的層位置存在
-`params.layers` 內，留在 logic 檔中。）
+`graphs/<name>.graph.json` 只儲存會改變 graph *行為* 的內容（節點、邊、參數與內嵌 presets）。節點**位置**與便利貼幾何資訊則存放在 `layout/<name>.layout.json`。因此，拖動節點只會變更 `layout/`，修改參數只會變更 `graphs/`；code review 可以聚焦於邏輯變更，不會受到節點位移的 diff 干擾。（已知例外：`SequentialModel` 子圖的層位置存放在 `params.layers`，因此仍位於 logic 檔。）
 
 缺少 layout 檔（或某個節點沒有已儲存的位置）時，編輯器會在載入時自動排版，
 並於下次存檔時寫回結果；便利貼若只缺幾何資訊（尺寸/綁定）則直接使用預設值 --
@@ -44,11 +40,7 @@ cdui project init my-service
 cd my-service
 ```
 
-`init` 會鋪好 `graphs/`、`layout/` 與 `assets/{images,models,data}/`（空目錄，
-以 `.gitkeep` 追蹤），寫入 `.gitignore` / `.gitattributes` / `.env.example` /
-`README.md`，並執行 `git init`（不建立 commit -- 它會印出後續步驟）。
-`assets/output/` 不會預先建立；第一次有節點（例如 ImageWriter）寫入時才會
-出現。
+`init` 會建立 `graphs/`、`layout/` 與 `assets/{images,models,data}/`（空目錄，以 `.gitkeep` 追蹤），寫入 `.gitignore` / `.gitattributes` / `.env.example` / `README.md`，並執行 `git init`。它不會建立 commit，而會印出後續步驟。`--force` 允許寫入非空目錄，但不會覆寫既有的 manifest 或 `README.md`。`assets/output/` 不會預先建立；節點（例如 ImageWriter）第一次寫入時才會出現。
 
 ### 2. 加入一個 graph
 
@@ -104,19 +96,13 @@ cdui project restore .   # install the manifest's plugin pins by exact SHA
 cdui project validate .
 ```
 
-`validate` 會檢查 `graphs/` 底下的**每一個** graph，並印出檢查數量 -- 空的
-`graphs/` 會回報 `Validation passed (0 graphs checked)`，而不是一個空洞的
-綠燈。**canvas-only** 的 graph（例如沒有宣告任何 **GraphOutput** 的訓練
-graph）會在 contract 關卡失敗，因為每個可發佈的 graph 至少要宣告一個輸出。
-你可以給它一個真正的輸出（MNIST 範例專案就把 checkpoint 路徑以
-`weights_path` 輸出發佈出來），或只驗證你的發佈目標：
+`validate` 會檢查 `graphs/` 底下的**每一個** graph，並印出檢查數量。空的 `graphs/` 會回報 `Validation passed (0 graphs checked)`，明確表示未檢查任何 graph。**canvas-only** graph（例如沒有宣告任何 **GraphOutput** 的訓練 graph）會在 contract 關卡失敗，因為每個可發佈的 graph 至少要宣告一個輸出。你可以加入合理的輸出；MNIST 範例專案會把 checkpoint 路徑作為 `weights_path` 輸出發佈。也可以只驗證要發佈的目標：
 
 ```bash
 cdui project validate . --graph serve   # repeatable: --graph a --graph b
 ```
 
-`--graph` 指到 `graphs/` 裡不存在的名字會直接報錯，所以打錯字絕不會讓 CI
-關卡變成空洞的通過。
+`--graph` 指定的名稱若不存在於 `graphs/`，驗證會報錯，因此拼寫錯誤不會讓 CI 在未檢查目標 graph 的情況下通過。
 
 Pins 來自 `cdui project freeze .`：它讀取你本機安裝的 plugins，把每一個的
 確切 commit SHA 寫進 `codefyui.project.toml` 的 `[plugins]` 表（以本機開發
@@ -127,6 +113,8 @@ plugin 之後執行它，並在下次 push 前提交 manifest 的變更：
 cdui project freeze .
 ```
 
+Freeze 會直接改寫 manifest：你自行加入的 key（位於 `[project]`、`[publish]` 或自訂 table 中）都會保留，但註解不會，而 `[plugins]` table 會完全依目前已安裝的內容重新產生。
+
 ### 5. 在專案上啟動伺服器
 
 ```bash
@@ -134,20 +122,20 @@ cdui start --project .
 ```
 
 log 會印出 `Project: <abs> (git <short-sha>)`，若有釘選的 plugin 未安裝，
-會警告一次並指名 `cdui project restore`。
+會警告一次並指名 `cdui project restore`。（`cdui dev --project .` 也會如此，
+並提供 hot reload。）
+
+使用 `--project` 啟動，也會載入 `<project>/.env`：一般的 `KEY=VALUE` 行（允許開頭有 `export `，也允許值外圍有引號），會在探索 node 與 plugin 前以 `os.environ.setdefault` 語意套用，因此 shell 中已設定的變數優先。只有執行期間的機密適合放在這裡 —— LLM API key，以及 node 在執行時從環境讀取的任何值。檔案中的 `CODEFYUI_*` 設定不會生效，因為伺服器設定在讀取檔案前就已固定；請改在 shell 或 systemd unit 中設定。log 只會記錄載入的數量，絕不記錄值；不帶 `--project` 時完全不會讀取 `.env`。
 
 ### 6. 建立 API key（invoke 需要）
 
-Session token 位於 `<user_data_dir>/codefyui/session.token` -- Windows 在
-`%LOCALAPPDATA%\codefyui\session.token`，macOS 在 `~/Library/Application
-Support/codefyui/session.token`，Linux 在 `~/.local/share/codefyui/session.token`
-（完整說明見 [Graph as a Function](/usage/graph-as-a-function)）。
+Session token 位於 `<install dir>/.codefyui_dev/session.token`（由 `cdui start` 或 `cdui dev` 啟動的伺服器；預設安裝目錄為 `~/CodefyUI`，Windows 上也就是 `$HOME\CodefyUI`）；若在啟動器執行前已匯出 `CODEFYUI_USER_DATA_DIR`，則位於 `<CODEFYUI_USER_DATA_DIR>/session.token`。該目錄裡的其他檔案、手動啟動的 `uvicorn app.main:app` 所用的平台目錄，以及 token 為何每次重啟都會輪換，請見[把 graph 當成函式呼叫](./graph-as-a-function.md#2-getting-the-token-for-external-scripts)。
 
 PowerShell：
 
 ```powershell
 # payload.json: {"name": "demo"}
-$token = Get-Content "$env:LOCALAPPDATA\codefyui\session.token"
+$token = Get-Content "$HOME\CodefyUI\.codefyui_dev\session.token"
 curl.exe -s -X POST "http://127.0.0.1:8000/api/keys" `
   -H "X-CodefyUI-Token: $token" -H "Content-Type: application/json" `
   --data "@payload.json"
@@ -156,7 +144,7 @@ curl.exe -s -X POST "http://127.0.0.1:8000/api/keys" `
 bash：
 
 ```bash
-TOKEN=$(cat ~/.local/share/codefyui/session.token)   # macOS: ~/Library/Application Support/codefyui/session.token
+TOKEN=$(cat ~/CodefyUI/.codefyui_dev/session.token)
 curl -s -X POST http://127.0.0.1:8000/api/keys \
   -H "X-CodefyUI-Token: $TOKEN" -H "Content-Type: application/json" \
   --data '{"name": "demo"}'
@@ -166,7 +154,7 @@ curl -s -X POST http://127.0.0.1:8000/api/keys \
 
 ### 7. 發佈（記錄 git commit）
 
-`cdui project publish` 包裝的是同一個 [publish](/usage/publish) 端點
+`cdui project publish` 包裝的是同一個 [publish](./publish.md) 端點
 （`POST /api/apps/{slug}/publish`），外加專案模式防護與自動 git 溯源。先在
 `codefyui.project.toml` 設定一次預設目標：
 
@@ -176,27 +164,18 @@ graph = "echo"
 slug = "echo-svc"
 ```
 
-提交它 -- 未提交的 manifest 變更正是下一步會警告的那種 dirty 工作樹 --
-然後發佈：
+先提交 manifest；未提交的 manifest 變更會使下一步顯示 dirty 工作樹警告。接著發佈：
 
 ```bash
 git add -A && git commit -m "set publish target"
 cdui project publish .
 # -> Published echo-svc v1 (git 1a2b3c4)
+cdui project publish . --note "first cut"   # --note attaches an immutable note to the version
 ```
 
-v1 的發佈是**僅限本機**：它會確認 `GET /api/health` 回報開啟的是「這個」
-專案（所以絕不會把錯的 commit 記在別人的位元組上），計算
-`git rev-parse HEAD` + `git status --porcelain`，並在工作樹 dirty 時大聲
-警告。從 git 儲存庫發佈時，每次都會把 `git_dirty` 以 `true` 或 `false` 記
-在 commit 旁邊 -- dirty 的工作樹還會額外印出上面說的警告橫幅。若 commit
-已解析出來、`git status` 本身卻失敗了，`git_dirty` 會記錄為 `null`（= 未知），
-絕不捏造成 `false`。
+v1 的發佈**僅限本機**：它會確認 `GET /api/health` 回報目前開啟的是此專案，避免把其他專案的內容記到這個 commit；接著計算 `git rev-parse HEAD` 與 `git status --porcelain`，工作樹有未提交變更時會顯示醒目警告。從 git 儲存庫發佈時，每次都會在 commit 旁記錄 `git_dirty` 的 `true` 或 `false`；工作樹不乾淨時也會顯示上述警告橫幅。若 commit 已解析成功，但 `git status` 本身失敗，`git_dirty` 會記為 `null`（未知），不會錯誤地記為 `false`。
 
-第一次發佈時自動建立 app，**只**適用於 manifest 裡已提交的
-`[publish].slug` 目標。在命令列明確傳入的 `--slug` 若指到伺服器不認識的
-app，會以 404 `app_not_found` 失敗 -- 打錯字不會再默默生出第二個 app --
-CLI 會提示你用 `--create` 來刻意首發一個新的命令列 slug：
+第一次發佈時，只有 manifest 中已提交的 `[publish].slug` 目標會自動建立 app。命令列明確傳入的 `--slug` 若指向伺服器未知的 app，會以 404 `app_not_found` 失敗，避免拼寫錯誤建立第二個 app。CLI 會提示使用 `--create`，明確建立新的命令列 slug：
 
 ```bash
 cdui project publish . --graph echo --slug echo-svc --create
@@ -250,7 +229,7 @@ curl -s http://127.0.0.1:8000/api/apps/echo-svc/versions \
 ## 遷移既有的扁平 graphs 目錄
 
 如果你用的是舊的「[版本控管你的 graphs](/usage/version-control-graphs)」做法
-（`CODEFYUI_GRAPHS_DIR` 指向一個扁平的 `*.json` 目錄），一個指令就能收編：
+（`CODEFYUI_GRAPHS_DIR` 指向扁平的 `*.json` 目錄），可用一個指令匯入：
 
 ```bash
 cdui project init my-service --adopt /path/to/old-graphs
@@ -263,10 +242,18 @@ cdui project init my-service --adopt /path/to/old-graphs
 - 每個伺服器實例一個專案（編輯器內還沒有專案切換器）。
 - `DB_PATH` 與 custom nodes 仍是安裝層級的全域設定；[plugins](/advanced/plugins)
   才是可攜的機制（在 manifest 中以 SHA 釘選）。
+- `assets/data/` 是相對的 `Dataset` 或 `FileReader` 路徑所解析到的位置。
+  透過 DATA_FILE 下拉選單（`CSVReader`、`DocumentLoader`、
+  `TextCorpusDataset`）上傳的檔案也同樣屬於安裝全域 —— 位於
+  `backend/data/files`，或由 `CODEFYUI_DATA_FILES_DIR` 指定 —— 就像
+  `DB_PATH` 與 custom nodes 一樣。
+- `CODEFYUI_MODELS_DIR`、`CODEFYUI_IMAGES_DIR` 與 `CODEFYUI_MEDIA_DIR` 可搬移模型、
+  圖片與執行媒體的存放位置；專案模式下預設為 `<project>/assets/models`、
+  `assets/images` 與 `assets/media`，除非明確設定。
 - 編輯器與手動改檔之間採「後寫者勝」（「磁碟上已變更」警告是後續項目）。
   請把專案目錄排除在 OneDrive/Dropbox 同步之外 -- 同步軟體會弄壞 `.git`
   並跟原子改名互相競爭；請改用真正的 git remote。
-- 由較新版 CodefyUI 寫出的 graph 會以**唯讀**開啟（可檢視／執行，Save
-  停用），讓舊版永遠不會弄丟它不認識的欄位。Save As 也被同一道防護擋住，
+- 由較新版 CodefyUI 寫出的 graph 會以**唯讀**開啟（可檢視／執行，儲存
+  停用），讓舊版永遠不會弄丟它不認識的欄位。另存新檔... 也被同一道防護擋住，
   這是刻意的：graph 載入的那一刻，記憶體中的副本就已經丟失那些未知欄位，
-  Save As 只會把這份有損的副本換個名字寫出去。
+  另存新檔... 只會把這份有損的副本換個名字寫出去。

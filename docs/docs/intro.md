@@ -13,11 +13,11 @@ description: A visual, node-based deep learning pipeline builder. Design CNN, RN
 
 ## What you can do
 
-- **Build models visually** — drag-and-drop nodes, connect ports with type-safe edges, get real-time validation. **152 built-in nodes** across 16 categories (CNN, RNN, Transformer, RL, Data, Training, LLM, Diffusion, Classical ML, and more).
-- **Watch the tensors flow** — the **Teaching Inspector** records every node's output so you can inspect input→output diffs cell-by-cell, capture gradients, and wrap a subgraph to compare just its head input and tail output.
-- **Run in real time** — a WebSocket stream reports per-node progress, live training-loss charts, and `Print` output as the graph executes.
-- **Extend it** — save subgraphs as reusable **presets**, drop in **custom nodes** (`.py` files), or install **plugin packs** of educational nodes.
-- **Use any backend** — CPU, NVIDIA CUDA, Apple Silicon (MPS), or AMD ROCm, selected at install time and per run.
+- **Build models visually.** Drag and drop nodes, connect ports with type-safe edges, and receive validation in real time. CodefyUI includes **152 built-in nodes** across 16 categories, including CNN, RNN, Transformer, RL, Data, Training, LLM, Diffusion, and Classical.
+- **Inspect tensors.** The **Teaching Inspector** records every node's output. You can compare inputs and outputs cell by cell, capture gradients, and use a segment to compare only the input at the start of a subgraph with the output at its end.
+- **Monitor runs.** A WebSocket stream reports per-node progress, live training-loss charts, and `Print` output during execution. The **Runs** panel tracks queued, active, and completed runs. See [Run Queue](/usage/run-queue).
+- **Extend the node system.** Collapse selected nodes into a reusable [subgraph](/advanced/subgraphs), save a graph as a reusable preset, or add custom nodes from `.py` files. Install optional packs and plugin packs from the Package Center, the [Plugin Center](/advanced/plugins#plugin-center), or the CLI.
+- **Select a device backend.** Run on CPU, NVIDIA CUDA, Apple Silicon MPS, or AMD ROCm. You can select the backend during installation and for each run.
 
 ## Quick start
 
