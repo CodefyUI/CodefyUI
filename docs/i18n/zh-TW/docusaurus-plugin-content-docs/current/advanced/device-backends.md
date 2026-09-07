@@ -41,6 +41,18 @@ MPS 是 **float32 原生**的，會拒絕 float64 張量。CodefyUI 在 `device_
 
 CodefyUI 也會在 import torch 前設定 `PYTORCH_ENABLE_MPS_FALLBACK=1`。MPS 不支援某項運算時，PyTorch 會改在 CPU 上執行。速度會較慢，但不會因不支援該運算而發生錯誤。若要讓不支援的運算拋出錯誤，請在執行 `cdui start` 前將此變數匯出為 `0`。
 
+## Apple Silicon 上的效能
+
+以下數字在 M3 MacBook Air（24 GB、torch 2.11）上量測，內建範例各跑一個 epoch，執行之間留冷卻間隔。套用前兩項後：`mps` 上 CNN-MNIST 11.2 s → 4.1 s、ResNet-CIFAR10 12.1 s → 5.1 s、GPT-Mini 19.9 s → 13.1 s；`cpu` 上 13.7 s → 11.5 s、27.4 s → 24.4 s、22.4 s → 20.8 s。
+
+- **訓練迴圈不會每個 batch 讀回 loss。** `loss.item()` 是一次 host/device 同步。在 MPS 上它會排空 Metal 指令佇列，CPU 因此無法在 GPU 處理目前 batch 時準備下一個。`TrainingLoop`、`EvaluateModel` 與 `DiffusionTrainingLoop` 在裝置上累計 loss，只在每個 epoch 結束、每個 `batch_metrics` 取樣點、以及每個進度訊框（每秒最多兩次）時讀回。單獨這一項：`mps` 上每個 epoch CNN-MNIST 11.2 s → 5.5 s、ResNet-CIFAR10 12.1 s → 5.6 s、GPT-Mini 19.9 s → 15.8 s。
+- **預設的 `ToTensor` + `Normalize` 以 batch 為單位執行。** MNIST、FashionMNIST、CIFAR10、CIFAR100 在 transform 埠沒有接線時，`Dataset` 對整個 batch 一次套用這兩步。輸出與逐樣本路徑逐位元相同；MNIST 每個 epoch 的主機時間從 1.5 s 降到 0.13 s。有接線的 transform 鏈使用 torchvision 的逐樣本路徑。
+- **記憶體內資料集的 `num_workers` 維持 0。** macOS 以 `spawn` 啟動 DataLoader worker。對 MNIST 規模的資料，啟動與逐 batch 的 IPC 成本高於節省的時間：CNN-MNIST 在 0 個 worker 時 11 s、2 個 25 s、4 個 16 s。worker 對需要解碼影像檔的資料集（`ImageFolderDataset`）有幫助。
+
+自行量測時：一個 process 的第一次 MPS 執行需要 0.2–0.6 s 初始化 Metal，每種新的 kernel 形狀再加 0.1–0.2 s。同一台 Mac 之後的 process 會較快，因為 macOS 會快取編譯好的 shader。無風扇的 Mac 在持續 GPU 負載幾分鐘後會熱降頻；比較不同執行時請在中間留冷卻間隔。
+
+MPS 上不使用混合精度。bf16 與 fp16 autocast 在 torch 2.11 可以執行，但量測結果比 fp32 慢 1.7–3 倍且不省記憶體。詳見[訓練記憶體](./training-memory#混合精度)。
+
 ## ROCm 呈現為 CUDA
 
 在 AMD + Linux 上搭配 ROCm 版本的 PyTorch 時，`torch.cuda.is_available()` 會回傳 `True`，因為 ROCm 暴露了一個與 CUDA 相容的介面。該裝置在下拉選單中會顯示為 `cuda`；這是預期的行為。

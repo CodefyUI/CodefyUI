@@ -39,9 +39,14 @@ what was asked for, and the training node reports both in its config frame
 so the difference is visible in the UI rather than only in a log file.
 
 * CUDA without bfloat16 support (pre-Ampere) asks for ``bf16`` -> ``fp32``.
-* MPS asks for anything but ``fp32`` -> ``fp32``. Apple's autocast coverage
-  is narrower than CUDA's and varies by torch build; guessing wrong on
-  hardware this project cannot test in CI is worse than declining.
+* MPS asks for anything but ``fp32`` -> ``fp32``. torch 2.11 runs both
+  16-bit dtypes on Apple Silicon, but they are slower and save no memory.
+  Measured on an M3 (60 steps after warm-up, same loss curve in every
+  case): ResNet-18 on CIFAR at batch 64, 17 ms/step in fp32, 30 ms in
+  bf16, 37 ms in fp16; the GPT-mini example, 13 ms, 39 ms and 43 ms;
+  allocator driver memory unchanged. MPS kernels are float32-native, so
+  half precision adds a conversion around each op. Re-measure before
+  lifting this.
 * CPU honours both ``bf16`` and ``fp16``. Neither is fast there -- CPU
   autocast is about numerical parity, not throughput -- but a lesson about
   mixed precision has to be runnable on the machine in front of the

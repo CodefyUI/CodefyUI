@@ -137,7 +137,13 @@ class DiffusionTrainingLoopNode(BaseNode):
 
         epoch_losses: list[float] = []
         for epoch in range(epochs):
-            running, batches = 0.0, 0
+            # Device-side accumulator (``0.0 + tensor`` is a tensor): the
+            # loss is read back once per epoch and for the ~2 progress
+            # frames a second the throttle lets through, never per batch --
+            # a per-batch ``.item()`` is a full host/device sync, which on
+            # Apple MPS drains the Metal queue every step.
+            running: Any = 0.0
+            batches = 0
             for batch_index, batch in enumerate(loader):
                 # #122: one threading.Event read per batch. The default here
                 # is 200 epochs of a CPU U-Net, so "Stop works" is not a
@@ -157,16 +163,16 @@ class DiffusionTrainingLoopNode(BaseNode):
                 optimizer.zero_grad()
                 loss.backward()
                 optimizer.step()
-                batch_loss = loss.item()
-                running += batch_loss
+                batch_loss_t = loss.detach()
+                running = running + batch_loss_t
                 batches += 1
-                throttle.emit({"event": EVENT_BATCH, "epoch": epoch + 1,
-                               "batch": batch_index + 1,
-                               "total_batches": total_batches,
-                               "loss": round(batch_loss, 6)})
+                throttle.emit(lambda: {"event": EVENT_BATCH, "epoch": epoch + 1,
+                                       "batch": batch_index + 1,
+                                       "total_batches": total_batches,
+                                       "loss": round(float(batch_loss_t), 6)})
             if stopped_at is not None:
                 break
-            avg = running / max(batches, 1)
+            avg = float(running) / max(batches, 1)
             epoch_losses.append(avg)
             if epoch % max(1, epochs // 10) == 0 or epoch == epochs - 1:
                 logger.info("Diffusion epoch %d/%d - Loss: %.4f", epoch + 1, epochs, avg)

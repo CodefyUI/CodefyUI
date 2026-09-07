@@ -1,8 +1,8 @@
 from typing import Any
 
 from ...core.node_base import BaseNode, DataType, ParamDefinition, ParamType, PortDefinition
+from ._batched_vision import BATCHED_FOR, DefaultVisionTransform
 from .transforms._base import (
-    compose,
     seeded_for_node,
     select_split_transform,
 )
@@ -218,7 +218,7 @@ class DatasetNode(BaseNode):
         *,
         context: Any = None,
     ) -> dict[str, Any]:
-        from torchvision import datasets, transforms
+        from torchvision import datasets
 
         name = params.get("name", "MNIST")
         split = params.get("split", "train")
@@ -230,10 +230,10 @@ class DatasetNode(BaseNode):
         # wired train_transform is about to be dropped for a test split.
         wired = select_split_transform(inputs, split, node_name="Dataset")
 
-        transform = wired if wired is not None else compose([
-            transforms.ToTensor(),
-            transforms.Normalize((0.5,), (0.5,)),
-        ])
+        # ``DefaultVisionTransform`` IS ``Compose([ToTensor, Normalize(0.5)])``;
+        # it has a type of its own so the batched fast path below can
+        # recognise it. A wired chain is used as-is.
+        transform = wired if wired is not None else DefaultVisionTransform()
 
         dataset_map = {
             "MNIST": datasets.MNIST,
@@ -247,6 +247,14 @@ class DatasetNode(BaseNode):
         dataset_cls = dataset_map.get(name)
         if dataset_cls is None:
             raise ValueError(f"Unsupported dataset: {name}")
+        if wired is None:
+            # The default pipeline on an in-memory dataset: a subclass that
+            # applies ToTensor+Normalize to a whole batch at once instead of
+            # per sample -- bit-identical output, ~11x less host time per
+            # epoch (see ``_batched_vision``). Anything wired, and any
+            # dataset without a batched variant, keeps torchvision's
+            # per-sample path.
+            dataset_cls = BATCHED_FOR.get(dataset_cls, dataset_cls)
 
         kwargs: dict[str, Any] = {
             "root": data_dir,

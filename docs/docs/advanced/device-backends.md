@@ -41,6 +41,18 @@ MPS is **float32-native** and rejects float64 tensors. CodefyUI normalizes this 
 
 CodefyUI also sets `PYTORCH_ENABLE_MPS_FALLBACK=1` before importing torch. When MPS does not support an operation, PyTorch runs it on the CPU instead. This is slower but prevents an error for the unsupported operation. Export the variable as `0` before `cdui start` to make unsupported operations raise an error.
 
+## Performance on Apple Silicon
+
+Numbers below are from an M3 MacBook Air (24 GB, torch 2.11), one epoch of each shipped example, with cool-down gaps between runs. With the first two items below applied: CNN-MNIST 11.2 s → 4.1 s, ResNet-CIFAR10 12.1 s → 5.1 s, GPT-Mini 19.9 s → 13.1 s on `mps`; 13.7 s → 11.5 s, 27.4 s → 24.4 s, 22.4 s → 20.8 s on `cpu`.
+
+- **The training loop does not read the loss back per batch.** `loss.item()` is a host/device synchronisation. On MPS it drains the Metal command queue, so the CPU cannot prepare the next batch while the GPU runs the current one. `TrainingLoop`, `EvaluateModel` and `DiffusionTrainingLoop` accumulate the loss on the device and read it back once per epoch, at each `batch_metrics` point, and for each progress frame (at most two per second). This change alone: CNN-MNIST 11.2 s → 5.5 s, ResNet-CIFAR10 12.1 s → 5.6 s, GPT-Mini 19.9 s → 15.8 s per epoch on `mps`.
+- **The default `ToTensor` + `Normalize` pipeline runs per batch.** For MNIST, FashionMNIST, CIFAR10 and CIFAR100 with no transform wired, `Dataset` applies both steps to the whole batch. The output is bit-identical to the per-sample path; host time per epoch drops from 1.5 s to 0.13 s for MNIST. A wired transform chain uses torchvision's per-sample path.
+- **Keep `num_workers` at 0 for in-memory datasets.** macOS starts DataLoader workers with `spawn`. For MNIST-sized data the start-up and per-batch IPC cost more than they save: CNN-MNIST took 11 s with 0 workers, 25 s with 2, 16 s with 4. Workers help for datasets that decode image files (`ImageFolderDataset`).
+
+When benchmarking: the first MPS run in a process spends 0.2–0.6 s initialising Metal and 0.1–0.2 s per new kernel shape. A later process on the same Mac is faster because macOS caches compiled shaders. A fanless Mac throttles after a few minutes of sustained GPU load; leave cool-down gaps between runs you compare.
+
+Mixed precision is not used on MPS. bf16 and fp16 autocast run on torch 2.11 but measured 1.7–3× slower than fp32 with no memory saving. See [Training Memory](./training-memory#mixed-precision).
+
 ## ROCm presents as CUDA
 
 On AMD + Linux with a ROCm build of PyTorch, `torch.cuda.is_available()` returns `True` because ROCm exposes a CUDA-compatible interface. The device shows up as `cuda` in the dropdown; that's expected.

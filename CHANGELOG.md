@@ -102,6 +102,38 @@ received — each links to the release it was published as.
   the id stands in, because **From plugin: edu** is already true and a line
   that waits for the catalog is a line that flickers in on every page load.
 
+### Changed
+
+- **Training on Apple Silicon is 1.5–2.7× faster.** Measured on an M3
+  MacBook Air, one epoch of each shipped example on `mps`, with cool-down
+  gaps between runs: CNN-MNIST 11.2 s → 4.1 s, ResNet-CIFAR10 12.1 s → 5.1 s,
+  GPT-Mini 19.9 s → 13.1 s. On `cpu`: 13.7 s → 11.5 s, 27.4 s → 24.4 s,
+  22.4 s → 20.8 s. None of the changes alters the numbers a run produces.
+  - `TrainingLoop`, `EvaluateModel` and `DiffusionTrainingLoop` no longer
+    call `loss.item()` per batch. That call is a host/device synchronisation;
+    on MPS it drains the Metal command queue and cost about 6 ms of a 10 ms
+    step. The running loss, validation loss and validation correct-count
+    accumulate on the device and are read back once per epoch, at each
+    `batch_metrics` point, and for each progress frame the throttle sends
+    (`ProgressThrottle.emit` accepts a payload factory). The gradient norm
+    stays on the device until a `log_interval` step records it.
+  - `Dataset` applies the default `ToTensor` + `Normalize` pipeline per batch
+    for MNIST, FashionMNIST, CIFAR10 and CIFAR100, through `__getitems__`.
+    Output is bit-identical to the per-sample path; host time per epoch is
+    about 11× lower. A wired transform chain, a `TransformNode` installed
+    afterwards, SVHN and STL10 use torchvision's per-sample path.
+  - The determinism scope skips `torch.use_deterministic_algorithms` on exit
+    when the setting did not change. The first call imports `torch._dynamo`
+    and `torch._inductor` (about 0.5 s), which the first run in every server
+    process paid.
+- **An out-of-memory failure on MPS reports the allocator's numbers and
+  releases its cache**, matching the CUDA path: live memory, reserved memory
+  and the working-set ceiling Metal recommends for the process.
+- **Mixed precision stays off on MPS, with the measured reason recorded.**
+  bf16 and fp16 autocast run on torch 2.11 and measured 1.7–3× slower than
+  fp32 with no memory saving. `amp.py`, the Training Memory page and the new
+  "Performance on Apple Silicon" section of Device Backends carry the numbers.
+
 ### Fixed
 
 - **Four things the two panels the last release added said wrongly, found by
