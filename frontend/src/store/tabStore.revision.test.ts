@@ -387,6 +387,22 @@ describe('TabState.revision, continued', () => {
     expect(revision()).toBe(before);
   });
 
+  it('setGraphDevice bumps: the device changes what Run submits and what Save writes', () => {
+    const before = revision();
+    store().setGraphDevice('mps');
+    expect(revision()).toBe(before + 1);
+    // Same value again is not a document change.
+    store().setGraphDevice('mps');
+    expect(revision()).toBe(before + 1);
+    // Clearing it is one.
+    store().setGraphDevice(null);
+    expect(revision()).toBe(before + 2);
+    // `description` stays excluded: it changes the saved bytes and nothing
+    // about how the graph runs.
+    store().setDescription('renamed');
+    expect(revision()).toBe(before + 2);
+  });
+
   it('a whole drag session bumps, and only for the batches that moved it', () => {
     // The real sequence: grab (no coordinates), two pointer moves, release
     // (same coordinates as the last move). Three of the four batches are not
@@ -435,6 +451,33 @@ describe('revision persistence', () => {
     // 1, not 41: "missing restores as 1" must mean 1, or a plugin's stored
     // expectedRevision could match whatever placeholder tab the loader reused.
     expect(restored.revision).toBe(1);
+  });
+
+  it('round-trips graphDevice, and omits it from the record when unset', async () => {
+    const { _buildPersistedTabForTesting, _tabFromPersistedForTesting } = await import('./tabStore');
+    // Unset: the record carries no key, so a tab that follows Settings keeps
+    // its stored shape.
+    const bare = _buildPersistedTabForTesting(activeTab());
+    expect('graphDevice' in bare).toBe(false);
+    const restoredBare = _tabFromPersistedForTesting(bare, { ...activeTab(), graphDevice: 'cuda' });
+    expect(restoredBare.graphDevice).toBeNull();
+
+    store().setGraphDevice('cuda:1');
+    const record = _buildPersistedTabForTesting(activeTab());
+    expect(record.graphDevice).toBe('cuda:1');
+    const restored = _tabFromPersistedForTesting(record, { ...activeTab(), graphDevice: null });
+    expect(restored.graphDevice).toBe('cuda:1');
+  });
+
+  it('a device change is a record-cache miss, so autosave sees it', async () => {
+    const { _persistedTabsForTesting } = await import('./tabStore');
+    const [first] = _persistedTabsForTesting(useTabStore.getState().tabs);
+    const [same] = _persistedTabsForTesting(useTabStore.getState().tabs);
+    expect(same).toBe(first);
+    store().setGraphDevice('mps');
+    const [changed] = _persistedTabsForTesting(useTabStore.getState().tabs);
+    expect(changed).not.toBe(first);
+    expect(changed.graphDevice).toBe('mps');
   });
 });
 

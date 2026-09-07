@@ -62,6 +62,8 @@ export interface WorkspaceGraphInput {
   subgraphs?: unknown[];
   name?: string;
   description?: string;
+  /** Graph-level run settings; `device` is read through `readGraphDevice`. */
+  settings?: { device?: string };
   format_version?: unknown;
   [key: string]: unknown;
 }
@@ -483,11 +485,15 @@ function subscribeGraphChanged(cb: () => void): () => void {
     // would read while telling it nothing happened. Reference comparison, the
     // same as the other two -- every store action that touches the definition
     // list replaces it.
+    // `graphDevice` is part of the same answer: `getGraph()` serializes it
+    // as `settings.device`, so a change to it changes the bytes a plugin
+    // reads.
     const changed =
       state.activeTabId !== prevTabId
       || tab?.nodes !== prevTab?.nodes
       || tab?.edges !== prevTab?.edges
-      || tab?.subgraphs !== prevTab?.subgraphs;
+      || tab?.subgraphs !== prevTab?.subgraphs
+      || tab?.graphDevice !== prevTab?.graphDevice;
     prevTabId = state.activeTabId;
     prevTab = tab;
     if (changed) cb();
@@ -512,6 +518,7 @@ function workspaceDocument(graph: WorkspaceGraphInput): GraphDocument {
     // graph's own `name` is deliberately not allowed to overwrite it.
     name: null,
     description: resolved.description,
+    device: resolved.device,
     formatVersion: resolved.formatVersion,
   };
 }

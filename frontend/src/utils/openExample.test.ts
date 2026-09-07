@@ -96,6 +96,20 @@ describe('openExample', () => {
     expect(activeTab().description).toBe('');
   });
 
+  it('installs the example device, and clears it for an example that ships none', async () => {
+    mockedRest.loadExample.mockResolvedValue({
+      nodes: [raw('a')], edges: [], settings: { device: 'mps' },
+    });
+    await openExample('x');
+    expect(activeTab().graphDevice).toBe('mps');
+
+    // Same rule as `description`: the previous graph's assignment would be
+    // written to disk as the new graph's.
+    mockedRest.loadExample.mockResolvedValue({ nodes: [raw('a')], edges: [] });
+    await openExample('x');
+    expect(activeTab().graphDevice).toBeNull();
+  });
+
   it('opens an example written by a newer CodefyUI read-only, and says so', async () => {
     // The gate must fail CLOSED. This path used to skip it entirely, so a
     // plugin-shipped template from a newer build opened fully editable and
@@ -195,6 +209,15 @@ describe('openExampleInNewTab', () => {
 });
 
 describe('insertExample', () => {
+  it('leaves the graph device alone: the merged nodes join the graph that owns it', async () => {
+    store().setGraphDevice('cpu');
+    mockedRest.loadExample.mockResolvedValue({
+      nodes: [raw('a')], edges: [], settings: { device: 'mps' },
+    });
+    await expect(insertExample('x')).resolves.toBe(true);
+    expect(activeTab().graphDevice).toBe('cpu');
+  });
+
   it('merges into the current canvas without clobbering colliding ids', async () => {
     // The canvas and the template both use "a" — the collision the id remap
     // exists for.

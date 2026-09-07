@@ -11,6 +11,7 @@ import logging
 from typing import Any
 
 from ...core.advisories import emit_advisory
+from ...core.device_utils import DEVICE_PARAM_DESCRIPTION, DEVICE_PARAM_OPTIONS
 from ...core.node_base import BaseNode, DataType, ParamDefinition, ParamType, PortDefinition
 
 logger = logging.getLogger(__name__)
@@ -176,8 +177,9 @@ class CheckpointLoaderNode(BaseNode):
                 name="device",
                 param_type=ParamType.SELECT,
                 default="auto",
-                description="Device to load onto ('auto' follows the global device)",
-                options=["auto", "cpu", "cuda", "mps"],
+                options=list(DEVICE_PARAM_OPTIONS),
+                description=DEVICE_PARAM_DESCRIPTION,
+                advanced=True,
             ),
         ]
 

@@ -837,6 +837,13 @@ describe('clear', () => {
     expect(tab.segmentGroups).toEqual([]);
     expect(tab.activeSegment).toBeNull();
   });
+
+  it('drops the graph device so a cleared canvas follows Settings again', () => {
+    store().setGraphDevice('mps');
+    expect(activeTab().graphDevice).toBe('mps');
+    store().clear();
+    expect(activeTab().graphDevice).toBeNull();
+  });
 });
 
 describe('getSerializedGraph', () => {
@@ -1011,6 +1018,20 @@ describe('graph metadata actions', () => {
     expect(activeTab().currentGraphFile).toBe('my_graph');
     store().setCurrentGraphFile(null);
     expect(activeTab().currentGraphFile).toBeNull();
+  });
+
+  it('setGraphDevice assigns the active graph device, and "" or null clears it', () => {
+    // A fresh tab follows Settings.
+    expect(activeTab().graphDevice).toBeNull();
+    store().setGraphDevice('mps');
+    expect(activeTab().graphDevice).toBe('mps');
+    // The toolbar select's empty option sends '': normalised to null at the
+    // store, so every reader sees one value for "no assignment".
+    store().setGraphDevice('');
+    expect(activeTab().graphDevice).toBeNull();
+    store().setGraphDevice('cuda:1');
+    store().setGraphDevice(null);
+    expect(activeTab().graphDevice).toBeNull();
   });
 
   it('setSegmentGroups replaces the whole segmentGroups array', () => {

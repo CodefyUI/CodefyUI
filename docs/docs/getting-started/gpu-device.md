@@ -8,7 +8,7 @@ description: Choose the right PyTorch build for NVIDIA CUDA, Apple Silicon (MPS)
 
 The default PyTorch install works on every platform (CPU, and Apple Silicon via MPS). Read on only if you need a specific CUDA version, AMD ROCm/DirectML, or want to verify GPU detection.
 
-CodefyUI reads the available devices from the backend at runtime, so whatever PyTorch can see shows up in each node's **device** dropdown. The global device can be set once and applies to all tensor-source nodes.
+CodefyUI reads the available devices from the backend at runtime, so whatever PyTorch can see shows up in every device dropdown: Settings, the graph's own device control next to Run, and each node's **device** parameter under Advanced. Set it once, on the graph or in Settings. The node parameter is kept for older graphs; a graph runs on one device, and work that needs two devices belongs in two graphs.
 
 ## NVIDIA CUDA (specific version)
 
@@ -54,7 +54,7 @@ python -c "import torch; print('CUDA:', torch.cuda.is_available(), '| Device:', 
 
 ## Apple Silicon (MPS)
 
-The default install already ships the Metal Performance Shaders backend on M1/M2/M3/M4 Macs. Note that *shipping* it is not the same as *using* it: a run stays on the CPU until you pick `mps` in Settings — see [Device Backends](/advanced/device-backends). Verify the backend is present:
+The default install already ships the Metal Performance Shaders backend on M1/M2/M3/M4 Macs. Note that *shipping* it is not the same as *using* it: a run stays on the CPU until you pick `mps`, in Settings or on the graph itself; see [Device Backends](/advanced/device-backends). Verify the backend is present:
 
 ```bash
 python -c "import torch; print('MPS:', torch.backends.mps.is_available())"
@@ -129,4 +129,4 @@ The frontend reads available devices from the backend. If your GPU isn't listed:
 curl -s http://127.0.0.1:8000/api/nodes/TrainingLoop | python -c "import sys,json; d=json.load(sys.stdin); print([p['options'] for p in d['params'] if p['name']=='device'][0])"
 ```
 
-This prints the available devices. An NVIDIA system reports `['auto', 'cpu', 'cuda']`, plus `cuda:0`, `cuda:1`, and additional indexed devices when multiple cards are present. When PyTorch detects no accelerator, it reports `['auto', 'cpu']`. `auto` is always available and follows the global device setting.
+This prints the available devices. An NVIDIA system reports `['auto', 'cpu', 'cuda']`, plus `cuda:0`, `cuda:1`, and additional indexed devices when multiple cards are present. When PyTorch detects no accelerator, it reports `['auto', 'cpu']`. `auto` is always available and follows the graph's device: the toolbar assignment, or the Settings device when the graph has none.

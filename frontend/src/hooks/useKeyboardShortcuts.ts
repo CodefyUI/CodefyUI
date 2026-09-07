@@ -30,8 +30,15 @@ export function useKeyboardShortcuts() {
     const handler = (e: KeyboardEvent) => {
       const mod = e.metaKey || e.ctrlKey;
       const tag = (e.target as HTMLElement)?.tagName;
-      // Skip if user is typing in an input/textarea
-      if (tag === 'INPUT' || tag === 'TEXTAREA' || (e.target as HTMLElement)?.isContentEditable) {
+      // Skip while the user types in an input, a textarea or an editable
+      // element. A focused `<select>` (the toolbar's device select is one)
+      // uses printable keys for type-ahead, so it is skipped too.
+      if (
+        tag === 'INPUT' ||
+        tag === 'TEXTAREA' ||
+        tag === 'SELECT' ||
+        (e.target as HTMLElement)?.isContentEditable
+      ) {
         return;
       }
 

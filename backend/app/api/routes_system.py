@@ -12,7 +12,7 @@ async def list_devices() -> dict:
 
     Returns ``describe_accelerator()`` — the best-available ``default`` plus a
     ``devices`` list with human-friendly labels that distinguish NVIDIA CUDA
-    from AMD ROCm and label Apple MPS. The frontend's global device selector
-    renders this.
+    from AMD ROCm and label Apple MPS. Every device dropdown (Settings, the
+    graph toolbar, node params) renders this one list.
     """
     return describe_accelerator()

@@ -1,5 +1,6 @@
 import { useState, useCallback, useRef, useEffect } from 'react';
 import { useGraphExecution } from '../../hooks/useGraphExecution';
+import { useDeviceOptions, deviceLabel } from '../../hooks/useDeviceOptions';
 import { useTabStore } from '../../store/tabStore';
 import { useNodeDefStore } from '../../store/nodeDefStore';
 import { useUIStore } from '../../store/uiStore';
@@ -12,6 +13,7 @@ import { graphToSvg, svgToPngBlob } from '../../utils/exportDiagram';
 import { confirm, prompt } from '../../utils/dialog';
 import { saveActiveGraph } from '../../utils/saveActiveGraph';
 import { resolveSavedGraph } from '../../utils/openSavedGraph';
+import { readGraphDevice } from '../../utils/graphSettings';
 import { CustomNodeManager } from '../CustomNodeManager/CustomNodeManager';
 import { useToastStore } from '../../store/toastStore';
 import { useProjectStore } from '../../store/projectStore';
@@ -325,6 +327,15 @@ export function Toolbar() {
   const { clear, getSerializedGraph, loadGraphDocument } = useTabStore();
   const activeTab = useTabStore((s) => s.tabs.find((t) => t.id === s.activeTabId)!);
   const status = activeTab.status;
+  // Per-graph device (A8): the select writes `graphDevice`, and the empty
+  // option names the Settings device a run falls back to.
+  const setGraphDevice = useTabStore((s) => s.setGraphDevice);
+  const globalDevice = useUIStore((s) => s.globalDevice);
+  const { devices } = useDeviceOptions();
+  const followDevice = devices.find((d) => d.value === globalDevice);
+  const followLabel = followDevice ? deviceLabel(followDevice) : globalDevice;
+  const storedDevice = activeTab.graphDevice;
+  const storedDeviceListed = storedDevice === null || devices.some((d) => d.value === storedDevice);
   const { reload, fetchDefinitions } = useNodeDefStore();
   const { t, locale, setLocale } = useI18n();
   const addToast = useToastStore((s) => s.addToast);
@@ -501,6 +512,7 @@ export function Toolbar() {
             subgraphs: importedSubgraphs,
             segmentGroups: Array.isArray(data.segmentGroups) ? data.segmentGroups : [],
             description: typeof data.description === 'string' ? data.description : '',
+            device: readGraphDevice(data.settings),
             formatVersion: data.format_version,
           });
           if (tooNew) {
@@ -520,13 +532,18 @@ export function Toolbar() {
   );
 
   const handleExportJson = useCallback(() => {
-    const { nodes, edges, presets, segmentGroups, subgraphs } = getSerializedGraph();
+    const { nodes, edges, presets, segmentGroups, subgraphs, settings } = getSerializedGraph();
     if (nodes.length === 0) {
       addToast(t('toolbar.exportJson.empty'), 'warning');
       return;
     }
     const name = activeTab.name || 'graph';
-    const data = { name, description: activeTab.description ?? '', nodes, edges, presets, segmentGroups, subgraphs };
+    const data = {
+      name, description: activeTab.description ?? '', nodes, edges, presets, segmentGroups, subgraphs,
+      // Only when the graph assigns a device, so an unassigned export stays
+      // byte-identical.
+      ...(settings ? { settings } : {}),
+    };
     const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
@@ -621,6 +638,9 @@ export function Toolbar() {
         serialized.presets,
         { seed: activeTab.seed, deterministic: activeTab.deterministic },
         serialized.subgraphs,
+        // The graph's device travels with the export and becomes the
+        // script's `--device` default.
+        serialized.settings,
       );
       const blob = new Blob([result.script], { type: 'text/x-python' });
       const url = URL.createObjectURL(blob);
@@ -732,6 +752,27 @@ export function Toolbar() {
         >
           {t('toolbar.stop')}
         </button>
+        {/* Stays enabled while a run is in flight: that run already holds
+            its device, and the choice applies to the next one. */}
+        <select
+          aria-label={t('toolbar.device.aria')}
+          title={t('toolbar.device.title')}
+          className={styles.deviceSelect}
+          value={storedDevice ?? ''}
+          disabled={activeTab.readOnly}
+          onChange={(e) => setGraphDevice(e.target.value || null)}
+        >
+          <option value="">{t('toolbar.device.follow', { device: followLabel })}</option>
+          {/* The file names a device this server does not list (cuda:1 on a
+              box without it, or auto). Shown as it is stored, so the select
+              keeps the value and a Save keeps the file's assignment. */}
+          {!storedDeviceListed && (
+            <option value={storedDevice as string} disabled>{storedDevice}</option>
+          )}
+          {devices.map((d) => (
+            <option key={d.value} value={d.value}>{deviceLabel(d)}</option>
+          ))}
+        </select>
       </div>
 
       <div className={styles.divider} />

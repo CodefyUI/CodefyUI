@@ -194,6 +194,18 @@ describe('exportGraph', () => {
     });
   });
 
+  it('sends the graph settings so the exported script bakes in the device', async () => {
+    const fetchMock = mockFetch(200, { script: '...' });
+    await exportGraph([], [], 'gpu', undefined, undefined, undefined, { device: 'cuda:1' });
+    const [, init] = fetchMock.mock.calls[0];
+    expect(JSON.parse(init.body)).toEqual({
+      nodes: [],
+      edges: [],
+      name: 'gpu',
+      settings: { device: 'cuda:1' },
+    });
+  });
+
   it('omits subgraphs when the graph has no blocks, so the body is unchanged', async () => {
     const fetchMock = mockFetch(200, { script: '...' });
     await exportGraph([], [], 'plain', undefined, undefined, []);

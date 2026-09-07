@@ -30,6 +30,7 @@ def _payload():
         "edges": [{"id": "e", "source": "a", "target": "a"}],
         "presets": [],
         "segmentGroups": [{"id": "s", "headNodeId": "a", "tailNodeId": "a"}],
+        "settings": {"device": "cuda:1"},
     }
 
 
@@ -50,6 +51,21 @@ def test_split_extracts_geometry_only():
     assert layout["notes"]["n1"]["boundToNodeId"] == "a"
     assert layout["notes"]["n1"]["noteWidth"] == 80 or layout["notes"]["n1"]["noteWidth"] == 200
     assert layout["segmentGroups"][0]["id"] == "s"
+    # The graph's device is logic, never layout.
+    assert logic["settings"] == {"device": "cuda:1"}
+    assert "settings" not in layout
+
+
+def test_split_writes_no_settings_when_unset():
+    for settings in (None, {}, {"device": None}, {"device": ""}):
+        payload = {**_payload(), "settings": settings}
+        logic, layout = split_graph(payload)
+        assert "settings" not in logic
+        assert "settings" not in layout
+    payload = _payload()
+    del payload["settings"]
+    logic, _ = split_graph(payload)
+    assert "settings" not in logic
 
 
 def test_merge_round_trips():
@@ -62,6 +78,7 @@ def test_merge_round_trips():
     assert note["data"]["boundToNodeId"] == "a"
     assert merged["segmentGroups"][0]["id"] == "s"
     assert merged["layout_missing"] is False
+    assert merged["settings"] == {"device": "cuda:1"}
 
 
 def test_merge_missing_layout_flags_and_omits_position():

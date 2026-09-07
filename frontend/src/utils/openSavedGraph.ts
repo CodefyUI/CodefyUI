@@ -10,6 +10,7 @@ import type {
 } from '../types';
 import { resolveSerializedNodes, resolveSerializedEdges } from '.';
 import { autoLayout, stackUnboundNotes } from './autoLayout';
+import { readGraphDevice } from './graphSettings';
 
 /**
  * Reading a SAVED GRAPH -- one of the project's own files -- into a document.
@@ -64,6 +65,8 @@ export interface SavedGraphPayload {
   subgraphs?: SubgraphDefinition[];
   segmentGroups?: SegmentGroup[];
   description?: string;
+  /** The file's `settings` block, read through `readGraphDevice`. */
+  settings?: unknown;
   /**
    * Project mode: `layout/<name>.layout.json` was missing or did not cover
    * every node, so the positions have to be computed before the graph
@@ -134,6 +137,7 @@ export function resolveSavedGraph(
     subgraphs: loadedSubgraphs,
     segmentGroups: Array.isArray(data.segmentGroups) ? data.segmentGroups : [],
     description: typeof data.description === 'string' ? data.description : '',
+    device: readGraphDevice(data.settings),
     formatVersion: data.format_version,
     // `name` is deliberately absent: a saved graph is bound to its file by
     // `currentGraphFile`, not by the tab label, so a load must not rename a

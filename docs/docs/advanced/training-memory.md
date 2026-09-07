@@ -65,7 +65,7 @@ An accumulation window never spans an epoch boundary, and a **Stop** discards th
 
 ## Picking a specific GPU
 
-On a machine with more than one CUDA device, every device dropdown — the global selector in **Settings** and each node's own **device** parameter — lists the cards individually:
+On a machine with more than one CUDA device, every device dropdown — the selector in **Settings**, the graph's own device control, and each node's **device** parameter — lists the cards individually:
 
 ```
 CPU

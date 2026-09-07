@@ -175,7 +175,7 @@ DocumentLoader -> TextChunker -> TextEmbedding -> VectorStore -> Retriever -> Pr
 
 **僅依脈絡回答。** 本機 0.5B 模型只具備少量 CodefyUI 既有資訊。範例筆記會透過提示提供資訊，不需微調。`PromptBuilder` 會要求模型只依檢索到的脈絡回答。除非 `min_score` 濾除結果，`Retriever` 一律回傳最接近的切塊，即使語料中沒有答案。因此，拒絕不受支援答案是由提示中的指示控制。
 
-**CPU 效能。** 在筆電 CPU 上，生成速度通常為每秒數個 token，因此一個答案可能需要數秒至數十秒。第一次執行還可能需要數秒從磁碟載入權重。隨附問題通常會在 160 個 token 上限前完成。這些數字依模型大小估算，並非 benchmark 實測。節點會回報每個 token 的進度。GPU 速度較快；除非節點覆寫設定，`device` 會遵循全域選擇。
+**CPU 效能。** 在筆電 CPU 上，生成速度通常為每秒數個 token，因此一個答案可能需要數秒至數十秒。第一次執行還可能需要數秒從磁碟載入權重。隨附問題通常會在 160 個 token 上限前完成。這些數字依模型大小估算，並非 benchmark 實測。節點會回報每個 token 的進度。GPU 速度較快；`device` 跟著這張圖的裝置走（圖沒有指定時就是設定裡的裝置），除非你在節點上另外指定。
 
 兩個圖都列於[範例集](./examples-gallery.md)，且各自的範例目錄都有 `README.md`。**RAG, fully local**（`examples/LLM/RAG-Local-Offline`）需要 `qwen2.5-0.5b-instruct` 和 `multilingual-e5-small`，不會向提供者發出請求。**RAG with a chat API**（`examples/LLM/RAG-LLMChat-API`）使用相同檢索節點，並以 `LLMChat` 取代最後一個節點；它需要編碼器，以及 Ollama 或提供者金鑰。兩個圖使用相同問題時，檢索脈絡會保持相同，方便比較生成器。
 

@@ -2,7 +2,8 @@
 
 In project mode a saved graph is stored as a PAIR:
   graphs/<name>.graph.json   logic  {format_version, name, description,
-                                      nodes[], edges[], presets[], subgraphs[]}
+                                      nodes[], edges[], presets[], subgraphs[],
+                                      settings{} (only when a device is set)}
   layout/<name>.layout.json  layout {format_version, positions{}, notes{},
                                       segmentGroups[], subgraphPositions{}}
 
@@ -137,6 +138,12 @@ def split_graph(payload: dict) -> tuple[dict, dict]:
         "presets": payload.get("presets", []),
         "subgraphs": logic_subgraphs,
     }
+    # The graph's device belongs to the logic file (git-tracked). It is
+    # written only when set, so an unassigned graph's logic file keeps its
+    # shape.
+    graph_settings = payload.get("settings") or {}
+    if isinstance(graph_settings, dict) and graph_settings.get("device"):
+        logic["settings"] = {"device": graph_settings["device"]}
     layout = {
         "format_version": FORMAT_VERSION,
         "positions": positions,
@@ -234,6 +241,9 @@ def merge_graph(logic: dict, layout: dict | None) -> tuple[dict, bool]:
         "segmentGroups": layout.get("segmentGroups", []) if has_layout else [],
         "layout_missing": any_missing,
     }
+    logic_settings = logic.get("settings") or {}
+    if isinstance(logic_settings, dict) and logic_settings.get("device"):
+        merged["settings"] = {"device": logic_settings["device"]}
     return merged, any_missing
 
 

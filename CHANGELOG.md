@@ -101,6 +101,16 @@ received — each links to the release it was published as.
   during boot, on a server too old to have one, or after the network dropped —
   the id stands in, because **From plugin: edu** is already true and a line
   that waits for the catalog is a line that flickers in on every page load.
+- **A graph carries its own device.** Next to Run is a control that assigns
+  the device this graph runs on; the choice is written into the graph file as
+  `settings.device`, so it is saved, tracked by git and honoured wherever the
+  graph is opened — by the canvas, `cdui run`, the run API, published apps,
+  exported scripts and the offline runner alike. Settings keeps the
+  browser-wide device, now described as what new graphs and graphs with no
+  assigned device use, and shows the best device this server can see as a
+  hint. Sweep children run on their parent graph's device. The per-node
+  **device** parameter stays for older graphs, moved under Advanced, and
+  lists the same devices as the two other selectors.
 
 ### Changed
 
@@ -133,6 +143,17 @@ received — each links to the release it was published as.
   bf16 and fp16 autocast run on torch 2.11 and measured 1.7–3× slower than
   fp32 with no memory saving. `amp.py`, the Training Memory page and the new
   "Performance on Apple Silicon" section of Device Backends carry the numbers.
+- **`--device auto` means the best accelerator present.** `cdui run --device
+  auto`, an exported script's `--device auto` and `"device": "auto"` on the
+  run API resolve to the best device the server can see (`cuda`, then `mps`,
+  then `cpu`); before this change, `cdui run` and the run API resolved
+  `auto` to the CPU while the exported script already picked the best
+  accelerator; the three now agree. Leaving the device out means the graph's
+  own device, else CPU. `cdui run` and exported scripts no longer default to
+  `auto`, so nothing moves a run to a GPU unasked. A client that still sends
+  an explicit `auto` (an older `cdui run` binary, a hand-written request
+  body, a published-app invoke) runs on the accelerator after upgrading the
+  server; it ran on the CPU before.
 
 ### Fixed
 

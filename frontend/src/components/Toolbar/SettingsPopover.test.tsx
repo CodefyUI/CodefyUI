@@ -33,6 +33,7 @@ import {
   usePluginStore,
 } from '../../store/pluginStore';
 import { computeSegmentNodes } from '../../utils/segmentPath';
+import { _resetDeviceOptionsForTesting } from '../../hooks/useDeviceOptions';
 
 vi.mock('../../api/rest', async (importOriginal) => ({
   // The REAL error class, not a stub: `packStore.refresh()` narrows a failed
@@ -256,8 +257,13 @@ describe('SettingsPopover', () => {
     mockedFetchCodexStatus.mockResolvedValue({ status: 'logged_out' });
     mockedStartCodexLogin.mockResolvedValue({ auth_url: 'https://auth.example' });
     mockedLogoutCodex.mockResolvedValue({ status: 'logged_out' });
+    // The device list is cached at module level (`useDeviceOptions`); reset
+    // so each test's `fetchDevices` override is what the popover renders.
+    _resetDeviceOptionsForTesting();
+    // `default: 'mps'` so the hint test below is not vacuous: a hint that
+    // named CPU could come from the fallback as easily as from the server.
     vi.mocked(fetchDevices).mockResolvedValue({
-      default: 'cpu',
+      default: 'mps',
       devices: [
         { value: 'cpu', label: 'CPU', detail: '', available: true },
         { value: 'mps', label: 'Apple MPS', detail: 'Metal Performance Shaders', available: true },
@@ -589,6 +595,31 @@ describe('SettingsPopover', () => {
     const options = within(select).getAllByRole('option');
     expect(options).toHaveLength(1);
     expect(options[0]).toHaveTextContent('CPU');
+  });
+
+  it("shows the server's best device as a hint, without adopting it", async () => {
+    render(<SettingsPopover open onClose={vi.fn()} triggerRef={makeTriggerRef()} />);
+    expect(
+      await screen.findByText(/Best available on this server: Apple MPS/),
+    ).toBeInTheDocument();
+    // The hint is information only; the stored choice stays where it was.
+    expect(useUIStore.getState().globalDevice).toBe('cpu');
+  });
+
+  it('hints CPU when the devices fetch fails', async () => {
+    vi.mocked(fetchDevices).mockRejectedValueOnce(new Error('offline'));
+    render(<SettingsPopover open onClose={vi.fn()} triggerRef={makeTriggerRef()} />);
+    await waitFor(() => expect(fetchDevices).toHaveBeenCalled());
+    expect(screen.getByText(/Best available on this server: CPU/)).toBeInTheDocument();
+  });
+
+  it('hints the raw default when the server names a device outside its own list', async () => {
+    vi.mocked(fetchDevices).mockResolvedValueOnce({
+      default: 'cuda',
+      devices: [{ value: 'cpu', label: 'CPU', detail: '', available: true }],
+    });
+    render(<SettingsPopover open onClose={vi.fn()} triggerRef={makeTriggerRef()} />);
+    expect(await screen.findByText(/Best available on this server: cuda/)).toBeInTheDocument();
   });
 
   // ── outside-click / esc behaviour ─────────────────────────────────

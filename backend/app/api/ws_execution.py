@@ -340,6 +340,11 @@ class _ExecutionSocket:
             # back on and the canvas must always send them.
             "subgraphs": data.get("subgraphs", []),
         }
+        if data.get("settings") is not None:
+            # The graph's own device rides into the snapshot only;
+            # ``normalize_graph`` validates it. The run's device is the
+            # explicit ``device`` below, which the canvas always sends.
+            graph["settings"] = data.get("settings")
         options = {
             "lane": LANE_INTERACTIVE,
             "device": data.get("device") or "cpu",

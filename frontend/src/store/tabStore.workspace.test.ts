@@ -142,6 +142,19 @@ describe('getSerializedGraphOf', () => {
     store().setNodes([node('a')]);
     expect(store().getSerializedGraph().nodes.map((n) => n.id)).toEqual(['a']);
   });
+
+  it('emits no settings block for a graph that follows Settings', () => {
+    store().setNodes([node('a')]);
+    const graph = store().getSerializedGraph();
+    // Key absence, so a file with no assignment stays byte-identical.
+    expect('settings' in graph).toBe(false);
+  });
+
+  it('emits settings.device once the graph assigns a device', () => {
+    store().setNodes([node('a')]);
+    store().setGraphDevice('mps');
+    expect(store().getSerializedGraph().settings).toEqual({ device: 'mps' });
+  });
 });
 
 describe('commitDocument + pushUndoSnapshotFor', () => {

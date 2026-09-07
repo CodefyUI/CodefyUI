@@ -224,6 +224,17 @@ afterEach(() => {
 });
 
 describe('saveActiveGraph over the wire', () => {
+  it('sends settings.device when the graph assigns one, and no settings key when it does not', async () => {
+    useTabStore.getState().setNodes([node('a', 'A')]);
+    await saveActiveGraph();
+    expect('settings' in savePost().body).toBe(false);
+
+    requests = [];
+    useTabStore.getState().setGraphDevice('mps');
+    await saveActiveGraph();
+    expect(savePost().body.settings).toEqual({ device: 'mps' });
+  });
+
   it('POSTs to /api/graph/save with the graph the canvas is showing', async () => {
     collapseABlock();
     await saveActiveGraph();

@@ -29,6 +29,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+from app.core.device_utils import DEVICE_PARAM_OPTIONS
 from app.core.execution_context import INTERRUPTED_KEY
 from app.nodes.llm.text_generate_node import TextGenerateNode
 
@@ -154,7 +155,7 @@ def test_node_metadata():
     assert (params["top_p"].min_value, params["top_p"].max_value) == (0.0, 1.0)
     assert params["seed"].default == 0
     assert params["device"].default == "auto"
-    assert params["device"].options == ["auto", "cpu", "cuda"]
+    assert params["device"].options == list(DEVICE_PARAM_OPTIONS)
 
 
 def test_the_node_is_not_cacheable():

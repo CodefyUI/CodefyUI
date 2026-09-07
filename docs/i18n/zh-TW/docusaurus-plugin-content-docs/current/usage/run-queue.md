@@ -12,7 +12,7 @@ description: 依裝置排隊並在背景執行圖形 — 通道、FIFO 順序、
 
 ## 每個裝置一條佇列
 
-每個 run 都依它**解析後的裝置**排程 — `cpu`、`cuda:0`、`mps`。這個字串就是佇列 key，因此每個裝置都有獨立的佇列與並行上限。
+每個 run 都依它**解析後的裝置**排程 — `cpu`、`cuda:0`、`mps`。這個字串就是佇列 key，因此每個裝置都有獨立的佇列與並行上限。解析順序是：run 自己的 `device` 選項、圖檔的 `settings.device`、最後是 `cpu`；只有明確指定 `auto` 才會挑選目前最好的加速器。
 
 | 佇列 key | 同時執行數（預設） | 為什麼 |
 | --- | --- | --- |
@@ -25,8 +25,8 @@ GPU 佇列達到上限時不會延遲 CPU run，兩張不同的卡也不會互�
 `cuda` 與 `cuda:0` 指的是同一個實體裝置，因此會正規化成同一個佇列 key（`cuda:0`），而不是在同一張卡上開兩條各自獨立的 FIFO。`mps` 與 `mps:0` 也一樣。在多張卡的機器上，`cuda` 會跟隨該行程目前的裝置。
 :::
 
-:::note `--device auto` 目前會解析成 CPU
-裝置解析會把未知或 `auto` 的請求對應到 `cpu`，所以 `auto` 現在是排在 CPU 那條線上。要用顯示卡請明確指定 `cuda`（或 `cuda:0`）。
+:::note run 的裝置從哪裡來
+沒有明確指定 `device` 的 run 會使用圖檔裡的 `settings.device`；圖檔也沒有指定時就在 `cpu` 上執行，不會有任何機制替你選加速器。`--device auto`（或請求本文中的 `"device": "auto"`）是唯一的例外：它會解析成這台伺服器能看到的最佳加速器（依序 `cuda`、`mps`、`cpu`），並排在那條佇列上。指定了不存在的加速器會退回 `cpu` 並發出警告。
 :::
 
 這項限制控制的是**每個裝置的 run 數量**，與 `CODEFYUI_MAX_PARALLEL_NODES` 不同；後者限制*單一 run 內*可同時執行的節點數。兩項並行上限的效果會相乘。
@@ -108,7 +108,7 @@ cdui run infer.json --record-outputs
 | 旗標 | 意義 |
 | --- | --- |
 | `--name <text>` | 存在 run 上的名稱，列出 run 的地方都會顯示 |
-| `--device <dev>` | `cpu` \| `auto` \| `cuda` \| `cuda:N` \| `mps`（預設 `auto`，目前會解析成 `cpu`）。解析後的裝置就是它加入的佇列。 |
+| `--device <裝置>` | `cpu` \| `auto` \| `cuda` \| `cuda:N` \| `mps`。省略時用圖檔的 `settings.device`，再沒有就是 `cpu`；`auto` 表示這台伺服器最好的加速器。解析後的裝置就是它加入的佇列。 |
 | `--seed <n>` | 用 `n` 為每個節點設定種子，讓執行可以重現。設了種子的執行會一次只跑一個節點 — 見 **[可重現的執行](./running-graphs#可重現的執行亂數種子)**。 |
 | `--deterministic` | 同時要求 PyTorch 使用決定性運算核心（`warn_only`） |
 | `--record-outputs` | 保留節點輸出供事後檢視 |

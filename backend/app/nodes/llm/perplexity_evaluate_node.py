@@ -43,6 +43,7 @@ import torch.nn.functional as F
 from torch.utils.data import DataLoader
 
 from ...core.amp import PRECISIONS
+from ...core.device_utils import DEVICE_PARAM_DESCRIPTION, DEVICE_PARAM_OPTIONS
 from ...core.node_base import (
     BaseNode,
     DataType,
@@ -243,11 +244,9 @@ class PerplexityEvaluateNode(BaseNode):
                 name="device",
                 param_type=ParamType.SELECT,
                 default="auto",
-                options=["auto", "cpu", "cuda"],
-                description=(
-                    "Device to score on ('auto' follows the global device, so "
-                    "a model trained on the GPU is measured there)."
-                ),
+                options=list(DEVICE_PARAM_OPTIONS),
+                description=DEVICE_PARAM_DESCRIPTION,
+                advanced=True,
             ),
             ParamDefinition(
                 name="precision",

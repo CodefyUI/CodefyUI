@@ -7,15 +7,14 @@ import { usePluginStore } from '../../store/pluginStore';
 import { useI18n } from '../../i18n';
 import {
   resetWeights,
-  fetchDevices,
   fetchCodexStatus,
   startCodexLogin,
   logoutCodex,
   type CodexAuthStatus,
-  type DeviceInfo,
   type PackSummary,
   type PluginCatalogEntry,
 } from '../../api/rest';
+import { useDeviceOptions, deviceLabel } from '../../hooks/useDeviceOptions';
 import { computeSegmentNodes } from '../../utils/segmentPath';
 import { generateId } from '../../utils';
 import { confirm } from '../../utils/dialog';
@@ -95,26 +94,15 @@ export function SettingsPopover({ open, onClose, triggerRef }: Props) {
   const toggleBeginnerMode = useUIStore((s) => s.toggleBeginnerMode);
   const setEdgeStyle = useUIStore((s) => s.setEdgeStyle);
 
-  // Global execution device. Options come from the backend (CPU + any GPU
-  // backend present); fall back to CPU-only if the fetch fails.
+  // Global execution device. The option list is shared with the graph
+  // toolbar's select (`useDeviceOptions`: one fetch, CPU-only on failure).
+  // The hint names the server's best device so the user can see what an
+  // explicit choice of it would mean; nothing here adopts it.
   const globalDevice = useUIStore((s) => s.globalDevice);
   const setGlobalDevice = useUIStore((s) => s.setGlobalDevice);
-  const [devices, setDevices] = useState<DeviceInfo[]>([
-    { value: 'cpu', label: 'CPU', detail: '', available: true },
-  ]);
-  useEffect(() => {
-    let cancelled = false;
-    fetchDevices()
-      .then((r) => {
-        if (!cancelled && r.devices.length > 0) setDevices(r.devices);
-      })
-      .catch(() => {
-        /* keep the CPU-only fallback */
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, []);
+  const { devices, serverDefault } = useDeviceOptions();
+  const bestDevice = devices.find((d) => d.value === serverDefault);
+  const bestLabel = bestDevice ? deviceLabel(bestDevice) : serverDefault;
 
   // Optional packs. Everything here is READ from the pack store: an install
   // is a multi-gigabyte download that outlives this popover, so the panel
@@ -381,7 +369,14 @@ export function SettingsPopover({ open, onClose, triggerRef }: Props) {
 
           <Row
             name={t('settings.device.name')}
-            desc={t('settings.device.desc')}
+            desc={
+              <>
+                {t('settings.device.desc')}
+                <span className={styles.hint}>
+                  {t('settings.device.hint', { device: bestLabel })}
+                </span>
+              </>
+            }
             ctrl={
               <select
                 aria-label={t('settings.device.name')}
@@ -391,7 +386,7 @@ export function SettingsPopover({ open, onClose, triggerRef }: Props) {
               >
                 {devices.map((d) => (
                   <option key={d.value} value={d.value}>
-                    {d.detail ? `${d.label} — ${d.detail}` : d.label}
+                    {deviceLabel(d)}
                   </option>
                 ))}
               </select>

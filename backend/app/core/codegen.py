@@ -214,9 +214,11 @@ every custom/plugin node and third-party dependency used by the graph).
 The canvas's seed is baked in below as ``GRAPH_SEED`` and is the default for
 ``--seed``, so a seeded graph reproduces here exactly as it did on the
 canvas -- same weight init, same shuffling, same crops and flips.  Pass
-``--no-seed`` for fresh entropy.  Note that TensorBoard event files are NOT
-written by an exported script: it records no artifacts, so there would be no
-row referencing the directory.
+``--no-seed`` for fresh entropy.  The graph's assigned device is baked in as
+``GRAPH_DEVICE`` and is the default for ``--device`` (``cpu`` when the graph
+had none); pass ``--device auto`` for the best accelerator on this machine.
+Note that TensorBoard event files are NOT written by an exported script: it
+records no artifacts, so there would be no row referencing the directory.
 
 Development checkout examples:
   Windows: backend/.venv/Scripts/python.exe exported_graph.py
@@ -315,12 +317,14 @@ _CLI_TAIL = '''def _parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--device",
-        default="auto",
+        default=None,
         help=(
-            "Execution device: auto, cpu, cuda, cuda:N (a specific GPU), "
-            "or mps (default: auto). An unavailable backend falls back to "
-            "the CPU and an unusable GPU index falls back to the default "
-            "GPU; either way the substitution is logged."
+            "Execution device: cpu, cuda, cuda:N (a specific GPU), mps, or "
+            "auto (the best accelerator on this machine). Default: the "
+            "device the graph was saved with (GRAPH_DEVICE), else cpu. An "
+            "unavailable backend falls back to the CPU and an unusable GPU "
+            "index falls back to the default GPU; either way the "
+            "substitution is logged."
         ),
     )
     parser.add_argument(
@@ -416,7 +420,7 @@ def _load_runtime(project_dir: Path | None) -> SimpleNamespace:
 
     try:
         from app.core import api_contract
-        from app.core.device_utils import describe_accelerator, resolve_device
+        from app.core.device_utils import resolve_device
         from app.core.execution_context import ExecutionContext
         from app.core.graph_engine import invoke_node
         from app.core.node_registry import registry
@@ -432,7 +436,6 @@ def _load_runtime(project_dir: Path | None) -> SimpleNamespace:
 
     return SimpleNamespace(
         api_contract=api_contract,
-        describe_accelerator=describe_accelerator,
         resolve_device=resolve_device,
         ExecutionContext=ExecutionContext,
         invoke_node=invoke_node,
@@ -504,12 +507,10 @@ def _run(args: argparse.Namespace) -> int:
         }
 
     try:
-        requested_device = (args.device or "auto").strip().lower() or "auto"
-        resolved_device = (
-            _RT.describe_accelerator()["default"]
-            if requested_device == "auto"
-            else _RT.resolve_device(requested_device)
-        )
+        # One definition of "best device": resolve_device handles ``auto``.
+        requested_device = (
+            (args.device or GRAPH_DEVICE or "cpu").strip().lower() or "cpu")
+        resolved_device = _RT.resolve_device(requested_device)
         context = _RT.ExecutionContext(
             device=resolved_device,
             weights_persistent=False,
@@ -669,6 +670,7 @@ def generate_python(
     seed: int | None = None,
     deterministic: bool = False,
     subgraphs: list[dict] | None = None,
+    device: str | None = None,
 ) -> str:
     """Return a runnable Python program for the graph *nodes* / *edges*.
 
@@ -690,6 +692,10 @@ def generate_python(
     ``SeededAugmentation`` was ever installed, and an exported augmenting
     graph produced different crops on every invocation -- while the
     augmentation docs promised the opposite.
+
+    *device* is the graph's own ``settings.device``, baked in as
+    ``GRAPH_DEVICE`` and the default for the generated ``--device``;
+    ``None`` bakes ``None`` and the script defaults to ``cpu``.
     """
     preset_fallback = build_preset_fallback(presets or [])
     exec_nodes, exec_edges, internal_to_preset = prepare_executable_graph(
@@ -1180,6 +1186,8 @@ def generate_python(
         "# on the command line, or edit them here.\n"
         f"GRAPH_SEED = {_literal(seed)}\n"
         f"GRAPH_DETERMINISTIC = {bool(deterministic)!r}\n"
+        "# The graph's assigned device, the default for --device (None: cpu).\n"
+        f"GRAPH_DEVICE = {_literal(device)}\n"
         "\n"
         "# Raw GraphInput/GraphOutput declarations (data, not code), consumed\n"
         "# by the canonical app.core.api_contract helpers at run time.\n"

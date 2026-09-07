@@ -228,6 +228,7 @@ def _validate_one_graph(path: Path, base: str) -> list[str]:
         find_entry_points,
         validate_graph,
     )
+    from app.core.device_utils import DEVICE_PATTERN
     from app.core.project import FORMAT_VERSION
     from app.core.secret_params import find_secret_violations
 
@@ -246,6 +247,22 @@ def _validate_one_graph(path: Path, base: str) -> list[str]:
              f"(known {FORMAT_VERSION})",
              f"{base}: format_version {fmt} is newer than this build "
              f"(known {FORMAT_VERSION})")
+
+    # 0. settings.device, the same vocabulary the save and run paths accept.
+    graph_settings = data.get("settings")
+    if graph_settings is not None:
+        if not isinstance(graph_settings, dict):
+            return ["invalid_settings: settings must be an object"]
+        value = graph_settings.get("device")
+        if isinstance(value, str) and not value.strip():
+            # A blank string is "no assignment"; the save and run paths
+            # read it the same way.
+            value = None
+        if value is not None and (
+                not isinstance(value, str)
+                or DEVICE_PATTERN.match(value.strip().lower()) is None):
+            return [f"invalid_settings: settings.device {value!r}; expected "
+                    "cpu, auto, cuda, cuda:N, mps or mps:N"]
 
     # 1. secrets (publish checks these FIRST, routes_apps.py).
     violations = find_secret_violations(nodes)

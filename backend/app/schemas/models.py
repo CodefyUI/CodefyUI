@@ -2,12 +2,15 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
-# ``app.core.seeding`` imports nothing but the standard library, so taking
-# the seed bound from its definition rather than restating it here costs no
-# import-order risk -- and restating it is how the run path and the export
-# path drift apart.
+# ``app.core.device_utils`` and ``app.core.seeding`` import only the
+# standard library at module load, so the device vocabulary and the seed
+# bound are taken from their definitions at no import-order risk. A second
+# copy here is how the run path and the save/export path drift apart.
+# (``run_service`` also exports ``DEVICE_PATTERN``; importing it from there
+# would drag the graph engine and the run store into every schema import.)
+from ..core.device_utils import DEVICE_PATTERN
 from ..core.seeding import MAX_SEED
 
 
@@ -128,6 +131,29 @@ class SubgraphDefinition(BaseModel):
     )
 
 
+class GraphSettings(BaseModel):
+    """Per-graph settings that belong to the saved graph (git-tracked)."""
+
+    #: The device this graph runs on: ``cpu``, ``auto``, ``cuda``,
+    #: ``cuda:N``, ``mps`` or ``mps:N``. ``None`` means the graph has no
+    #: assignment and the run falls back to the submitter's device.
+    device: str | None = None
+
+    @field_validator("device")
+    @classmethod
+    def _device(cls, v: str | None) -> str | None:
+        if v is None:
+            return None
+        v = v.strip().lower()
+        if not v:
+            return None
+        if DEVICE_PATTERN.match(v) is None:
+            raise ValueError(
+                f"unknown device {v!r}; expected cpu, auto, cuda, cuda:N, "
+                "mps or mps:N")
+        return v
+
+
 class GraphData(BaseModel):
     nodes: list[NodeData]
     edges: list[EdgeData]
@@ -139,16 +165,21 @@ class GraphData(BaseModel):
     segmentGroups: list[SegmentGroupData] = []
     # Subgraph definitions (core#137). Optional; older graph files omit it.
     subgraphs: list[SubgraphDefinition] = []
+    # The graph's own settings (its device). Optional; older graph files
+    # simply omit it, and ``/save`` writes it only when a device is set.
+    settings: GraphSettings | None = None
 
 
 class GraphExportRequest(GraphData):
     """A graph plus the run settings an exported script has to carry.
 
-    Separate from :class:`GraphData` because these are properties of a RUN,
-    not of the saved graph: ``/save`` must not start writing them into graph
-    files. Both are optional, so an older client (or a hand-rolled ``curl``)
-    still exports, it just exports an unseeded script -- which is what every
-    export did before core#136.
+    ``seed`` and ``deterministic`` are properties of a RUN and stay separate
+    from :class:`GraphData`: ``/save`` must not start writing them into
+    graph files. ``settings.device`` is the graph's own and is inherited
+    from :class:`GraphData`; the export bakes it in as ``GRAPH_DEVICE``.
+    Both run settings are optional, so an older client (or a hand-rolled
+    ``curl``) still exports, it just exports an unseeded script -- which is
+    what every export did before core#136.
     """
 
     #: Canvas seed, baked in as the default for the generated ``--seed``.

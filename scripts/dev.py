@@ -43,8 +43,9 @@
                 用法：cdui run <graph.json> [旗標]
                 旗標：--name <字串>     Runs 面板顯示的名稱
                       --device <裝置>   cpu | auto | cuda | cuda:N | mps
-                                        （預設 auto，目前會解析成 cpu；
-                                        解析後的裝置就是佇列 key）
+                                        （省略時用圖檔的 settings.device，
+                                        再沒有就是 cpu；auto 表示這台伺服器
+                                        最好的加速器；解析後的裝置就是佇列 key）
                       --seed <n>        隨機種子
                       --deterministic   要求 torch 用確定性演算法（沒有確定性實作
                                         的 op 只警告，不中斷 run）
@@ -3950,10 +3951,11 @@ def _parse_run_args(argv_tail: list, prog: str = "cdui run"):
     p.add_argument("graph", help="path to a graph .json file")
     p.add_argument("--name", default=None,
                    help="label for the run (shown in the Runs panel)")
-    p.add_argument("--device", default="auto",
-                   help="cpu | auto | cuda | cuda:N | mps (default: auto, "
-                        "which the server currently resolves to cpu). The "
-                        "RESOLVED device is the queue this run joins.")
+    p.add_argument("--device", default=None,
+                   help="cpu | auto | cuda | cuda:N | mps. Omitted: the "
+                        "graph file's settings.device, else cpu. auto: the "
+                        "best accelerator this server has. The RESOLVED "
+                        "device is the queue this run joins.")
     p.add_argument("--seed", type=int, default=None,
                    help="seed for random / numpy / torch. Every node is "
                         "seeded from it, and the run executes serially so "
@@ -4045,8 +4047,11 @@ def _run_submit_body(args) -> dict:
     state a CLI has none of.
     """
     graph = json.loads(Path(args.graph).read_text(encoding="utf-8"))
-    options = {"device": args.device, "record_outputs": bool(
-        getattr(args, "record_outputs", False))}
+    options = {"record_outputs": bool(getattr(args, "record_outputs", False))}
+    # Omitted means the server applies the graph file's settings.device,
+    # else cpu; the CLI does not repeat that rule locally.
+    if args.device is not None:
+        options["device"] = args.device
     if args.seed is not None:
         options["seed"] = args.seed
     if getattr(args, "deterministic", False):
@@ -4055,6 +4060,19 @@ def _run_submit_body(args) -> dict:
     if args.name:
         body["name"] = args.name
     return body
+
+
+def _run_display_device(args, graph: dict) -> str:
+    """The device line printed after submit: the flag, else the graph file's
+    ``settings.device`` marked ``(graph)``, else ``cpu``. Display only; the
+    server resolves the effective device and reports it as ``queue_key``."""
+    if args.device is not None:
+        return str(args.device)
+    graph_settings = graph.get("settings") if isinstance(graph, dict) else None
+    value = graph_settings.get("device") if isinstance(graph_settings, dict) else None
+    if isinstance(value, str) and value.strip():
+        return f"{value.strip().lower()} (graph)"
+    return "cpu"
 
 
 def _run_status_color(status: str) -> str:
@@ -4256,7 +4274,7 @@ def run_graph() -> None:
     section("提交執行", "Run submitted")
     _kv(t("Run ID", "Run ID"), run_id)
     _kv(t("圖檔", "Graph"), str(path))
-    _kv(t("裝置", "Device"), args.device)
+    _kv(t("裝置", "Device"), _run_display_device(args, body["graph"]))
     if args.name:
         _kv(t("名稱", "Name"), args.name)
     _kv(t("狀態", "Status"),

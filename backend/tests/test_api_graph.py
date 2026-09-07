@@ -253,6 +253,46 @@ async def test_export_without_a_seed_is_unchanged(test_client):
 
 
 @pytest.mark.asyncio
+async def test_export_bakes_the_graph_device(test_client):
+    """The graph's ``settings.device`` becomes the script's ``--device`` default."""
+    resp = await test_client.post(
+        "/api/graph/export",
+        json=_minimal_export_graph(settings={"device": "cuda:1"}))
+    assert resp.status_code == 200, resp.text
+    assert "GRAPH_DEVICE = 'cuda:1'" in resp.json()["script"]
+
+    resp = await test_client.post("/api/graph/export",
+                                  json=_minimal_export_graph())
+    assert resp.status_code == 200, resp.text
+    assert "GRAPH_DEVICE = None" in resp.json()["script"]
+
+
+@pytest.mark.asyncio
+async def test_validate_rejects_a_bad_settings_device(test_client):
+    graph = {**_minimal_export_graph(), "settings": {"device": "cudda"}}
+    resp = await test_client.post("/api/graph/validate", json=graph)
+    assert resp.status_code == 422, resp.text
+    locs = [tuple(err["loc"]) for err in resp.json()["detail"]]
+    assert any(loc[-2:] == ("settings", "device") for loc in locs), locs
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("device", ["", "   "])
+async def test_validate_reads_a_blank_settings_device_as_absent(
+        test_client, device):
+    """A blank ``settings.device`` is "no assignment" on every path.
+
+    ``normalize_graph`` (run submit), ``graph_settings_device`` and
+    ``cdui project validate`` read it the same way, so a file this route
+    accepts is also runnable.
+    """
+    graph = {**_minimal_export_graph(), "settings": {"device": device}}
+    resp = await test_client.post("/api/graph/validate", json=graph)
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["valid"] is True
+
+
+@pytest.mark.asyncio
 async def test_export_scrubs_secrets_from_embedded_preset(test_client):
     """Portable preset defaults and overrides are scrubbed before embedding."""
     graph = {
@@ -455,6 +495,42 @@ async def test_save_and_load_roundtrips_segment_groups(
         {"id": "g1", "headNodeId": "a", "tailNodeId": "b"},
         {"id": "g2", "headNodeId": "c", "tailNodeId": "d"},
     ]
+
+
+@pytest.mark.asyncio
+async def test_save_and_load_roundtrips_settings_device(
+    test_client, tmp_path, monkeypatch,
+):
+    monkeypatch.setattr("app.config.settings.GRAPHS_DIR", tmp_path)
+    graph = {
+        "name": "dev-graph",
+        "nodes": [],
+        "edges": [],
+        "settings": {"device": " CUDA:1 "},
+    }
+    resp = await test_client.post("/api/graph/save", json=graph)
+    assert resp.status_code == 200
+    resp = await test_client.get("/api/graph/load/dev-graph")
+    assert resp.status_code == 200
+    assert resp.json()["settings"] == {"device": "cuda:1"}
+
+
+@pytest.mark.asyncio
+async def test_save_without_device_writes_no_settings_key(
+    test_client, tmp_path, monkeypatch,
+):
+    """A graph with no assignment keeps the file shape it had before."""
+    monkeypatch.setattr("app.config.settings.GRAPHS_DIR", tmp_path)
+    for graph in (
+        {"name": "plain", "nodes": [], "edges": []},
+        {"name": "plain", "nodes": [], "edges": [], "settings": {}},
+        {"name": "plain", "nodes": [], "edges": [],
+         "settings": {"device": None}},
+    ):
+        resp = await test_client.post("/api/graph/save", json=graph)
+        assert resp.status_code == 200
+        written = json.loads((tmp_path / "plain.json").read_text())
+        assert "settings" not in written
 
 
 @pytest.mark.asyncio

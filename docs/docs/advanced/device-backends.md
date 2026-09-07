@@ -8,13 +8,20 @@ description: How CodefyUI selects and falls back across CPU, CUDA, MPS, and ROCm
 
 CodefyUI runs on PyTorch, so it inherits PyTorch's device backends: **CPU**, **NVIDIA CUDA**, **Apple Silicon (MPS)**, and **AMD ROCm** (Linux). For installing the right wheel, see **[GPU & Device Setup](/getting-started/gpu-device)**; this page explains how device selection behaves at runtime.
 
-## Global device selection
+## Device selection
 
-**CPU is the default, and nothing switches away from it on your behalf.** A run uses the CPU unless you pick an accelerator in Settings, where the dropdown lists every device PyTorch can actually see (via `device_utils.get_available_devices()`). A requested device is checked against what's available and **falls back to CPU with a warning** if it isn't present. Set it once rather than per node.
+**CPU is the default, and nothing switches away from it on your behalf.** A run resolves its device in this order, first match wins:
+
+1. A node's own **device** parameter, when it is not `auto` (under Advanced, kept for older graphs; a graph runs on one device, so work that needs two devices should be two graphs).
+2. The graph's own device, `settings.device` in the graph file, set from the **device for this graph** control next to Run. It is saved with the graph, so git tracks it and the graph runs on the same device wherever it is opened.
+3. The **Settings** device (this browser, remembered between sessions; `cpu` until you change it). New graphs and graphs with no assigned device use it; Settings also shows the best device this server can see as a hint.
+4. `cpu`, the value the server assumes when a request names no device at all.
+
+Every dropdown (Settings, the graph control and the node parameter) lists the same devices, the ones PyTorch can actually see (`device_utils.describe_accelerator()`), including `cuda:N` per card on a multi-GPU box. A requested device is checked against what's available and **falls back to CPU with a warning** if it isn't present. Only an explicit `auto` (`--device auto` on `cdui run` or an exported script, or `"device": "auto"` on the run API) resolves to the best accelerator present. Changing a graph's device invalidates the interactive cache, so every node runs again.
 
 ### Device alignment is guaranteed by the engine
 
-You do not have to reason about where a tensor happens to live. Before a node runs, `graph_engine.invoke_node` moves every tensor in its inputs to the device that node runs on — its own `device` parameter when it declares one, otherwise the run's. Because every path into a node goes through that one function, the guarantee covers builtin nodes, plugin nodes and your own [custom nodes](./custom-nodes) alike.
+You do not have to reason about where a tensor happens to live. Before a node runs, `graph_engine.invoke_node` moves every tensor in its inputs to the device that node runs on — its own `device` parameter when it declares one and it is not `auto`, otherwise the run's (resolved as above). Because every path into a node goes through that one function, the guarantee covers builtin nodes, plugin nodes and your own [custom nodes](./custom-nodes) alike.
 
 This matters because a device mismatch cannot happen on a CPU-only machine, so it is invisible during most development and shows up only on someone else's GPU box. Two shipped graphs died that way — `Input type (torch.FloatTensor) and weight type (torch.cuda.FloatTensor) should be the same` — before alignment moved into the engine.
 
@@ -25,8 +32,8 @@ What alignment deliberately does **not** touch:
 - **Nodes that declare `align_inputs = False`.** A node whose work is host-side by nature — it hands its input straight to numpy, sklearn, matplotlib or PIL — opts out, because `Tensor.numpy()` raises on anything but the CPU. `TrainTestSplit` is the builtin example. Write `align_inputs = False` on your own node if it does the same; see [Custom nodes](./custom-nodes).
 - **Tensors a node creates inside its own `execute`.** Alignment sees a node's *inputs*, not `torch.zeros(...)` called two lines into its body. If your node builds a tensor to combine with one it was handed, build it with `device=<the input>.device`.
 
-:::caution The exported script picks its own device
-`--device` on an exported graph defaults to `auto`, which resolves to the best accelerator present. The CPU baseline above is the **app's**; a graph you exported and run as `python graph.py` with no flags will use the GPU on a machine that has one. Pass `--device cpu` to get the canvas's behaviour.
+:::note The exported script follows the same rule
+`python graph.py` with no `--device` runs on the device the graph was saved with (`settings.device`), else on the CPU, the answer the canvas gives for that graph while Settings is on `cpu`. Pass `--device auto` to take the best accelerator on the machine you are running on, or `--device cuda:1` to pin one.
 :::
 
 ## Addressing one card out of several
@@ -62,7 +69,7 @@ On AMD + Linux with a ROCm build of PyTorch, `torch.cuda.is_available()` returns
 There is a **proof-of-concept** that ports a small MLP's *forward inference* from PyTorch to Apple's [MLX](https://github.com/ml-explore/mlx) framework, producing numerically identical results (max abs difference ~1.9e-7). Key points:
 
 - **Apple acceleration in the real graph engine is PyTorch MPS**, which is wired up and verified end-to-end. MLX is **not** a shipped execution backend.
-- MLX is a *distinct array framework*, not a PyTorch backend — there is no `torch.device("mlx")` — so it can't be a value in the global device selector (which drives `torch`).
+- MLX is a *distinct array framework*, not a PyTorch backend — there is no `torch.device("mlx")` — so it can't be a value in any of the device dropdowns (they drive `torch`).
 - The spike is **inference-only** and **float32**, runnable ad-hoc:
 
   ```bash

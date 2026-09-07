@@ -130,6 +130,17 @@ describe('workspace.openGraphs', () => {
     expect(result.revision).toBe(tab.revision);
   });
 
+  it('installs settings.device from the graph, and null when it ships none', () => {
+    const api = freshApi();
+    const [withDevice, without] = api.workspace.openGraphs([
+      { title: 'On MPS', graph: { ...candidateGraph('one'), settings: { device: 'mps' } } },
+      { title: 'Follows Settings', graph: candidateGraph('two') },
+    ], { activate: 'none' });
+    if (!('tabId' in withDevice) || !('tabId' in without)) throw new Error('open failed');
+    expect(store().getTab(withDevice.tabId)!.graphDevice).toBe('mps');
+    expect(store().getTab(without.tabId)!.graphDevice).toBeNull();
+  });
+
   it('is positional: one bad entry does not sink its neighbours', () => {
     const api = freshApi();
     const results = api.workspace.openGraphs([

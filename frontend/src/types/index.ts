@@ -237,6 +237,16 @@ export type ExecutionStatus =
 // holds nodes. The empty string fallback keeps the `type` slot string-assignable.
 export type AppNode = FlowNode<NodeData, string | undefined>;
 
+/**
+ * Graph-level run settings stored in the graph file. `device` is the device
+ * a run of this graph uses (`cpu`, `auto`, `cuda[:N]`, `mps[:N]`); absent
+ * means the run follows the browser's Settings device. The file carries a
+ * `settings` block only when one of these is set.
+ */
+export interface GraphSettings {
+  device?: string;
+}
+
 export interface GraphSaveData {
   nodes: any[];
   edges: any[];
@@ -245,6 +255,7 @@ export interface GraphSaveData {
   presets?: PresetDefinition[];
   segmentGroups?: SegmentGroup[];
   subgraphs?: SubgraphDefinition[];
+  settings?: GraphSettings;
 }
 
 // Teaching Inspector: full-value responses from /api/execution/outputs

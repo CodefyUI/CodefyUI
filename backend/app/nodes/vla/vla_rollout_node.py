@@ -30,6 +30,7 @@ from typing import Any
 
 import torch
 
+from ...core.device_utils import DEVICE_PARAM_DESCRIPTION, DEVICE_PARAM_OPTIONS
 from ...core.node_base import BaseNode, DataType, ParamDefinition, ParamType, PortDefinition
 from .pushworld_demos_node import encode_instruction
 from .pushworld_env_node import PushWorldFactory
@@ -192,8 +193,8 @@ class VLARolloutNode(BaseNode):
                 name="device",
                 param_type=ParamType.SELECT,
                 default="auto",
-                options=["auto", "cpu", "cuda", "mps"],
-                description="auto follows the run's device",
+                options=list(DEVICE_PARAM_OPTIONS),
+                description=DEVICE_PARAM_DESCRIPTION,
                 advanced=True,
             ),
         ]

@@ -2,7 +2,8 @@ import styles from './SettingsPopover.module.css';
 
 interface RowProps {
   name: string;
-  desc: string;
+  /** Plain text, or a fragment when a row needs a second line. */
+  desc: React.ReactNode;
   ctrl: React.ReactNode;
   onClick?: () => void;
   disabled?: boolean;

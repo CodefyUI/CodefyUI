@@ -23,8 +23,8 @@ def project_settings(monkeypatch, tmp_path):
     return tmp_path
 
 
-def _graph(param_val="MNIST", x=10, name="demo"):
-    return {
+def _graph(param_val="MNIST", x=10, name="demo", device=None):
+    graph = {
         "name": name,
         "description": "",
         "nodes": [
@@ -35,6 +35,9 @@ def _graph(param_val="MNIST", x=10, name="demo"):
         "presets": [],
         "segmentGroups": [],
     }
+    if device is not None:
+        graph["settings"] = {"device": device}
+    return graph
 
 
 async def test_save_writes_pair(project_settings, test_client):
@@ -65,6 +68,30 @@ async def test_param_edit_touches_only_logic(project_settings, test_client):
     layout2 = (project_settings / "layout" / "demo.layout.json").read_text()
     assert layout1 == layout2        # layout file untouched by a param edit
     assert logic1 != logic2          # only the logic file changed
+
+
+async def test_device_change_touches_only_logic(project_settings, test_client):
+    await test_client.post("/api/graph/save", json=_graph(device="cpu"))
+    logic1 = (project_settings / "graphs" / "demo.graph.json").read_text()
+    layout1 = (project_settings / "layout" / "demo.layout.json").read_text()
+    await test_client.post("/api/graph/save", json=_graph(device="cuda:1"))
+    logic2 = (project_settings / "graphs" / "demo.graph.json").read_text()
+    layout2 = (project_settings / "layout" / "demo.layout.json").read_text()
+    assert layout1 == layout2        # layout file untouched by a device change
+    assert logic1 != logic2          # only the logic file changed
+    assert json.loads(logic2)["settings"] == {"device": "cuda:1"}
+    assert "settings" not in json.loads(layout2)
+
+
+async def test_load_returns_the_graph_device(project_settings, test_client):
+    await test_client.post("/api/graph/save", json=_graph(device="cuda:1"))
+    r = await test_client.get("/api/graph/load/demo")
+    assert r.status_code == 200
+    assert r.json()["settings"] == {"device": "cuda:1"}
+    # Unassigned: the merged payload carries no settings key.
+    await test_client.post("/api/graph/save", json=_graph())
+    r = await test_client.get("/api/graph/load/demo")
+    assert "settings" not in r.json()
 
 
 async def test_load_merges_pair(project_settings, test_client):

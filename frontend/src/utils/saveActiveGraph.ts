@@ -78,10 +78,13 @@ export async function saveActiveGraph(opts: { saveAs?: boolean } = {}): Promise<
     // invisible in normal use because the tab's IndexedDB autosave DOES
     // persist `subgraphs`, so blocks survived browser reloads and were only
     // lost when the user did the deliberate, trust-building thing: Save.
-    const { nodes, edges, presets, segmentGroups, subgraphs } = store.getSerializedGraph();
+    const { nodes, edges, presets, segmentGroups, subgraphs, settings } = store.getSerializedGraph();
     await saveGraph({
       nodes, edges, name: targetName,
       description: tab.description ?? '', presets, segmentGroups, subgraphs,
+      // Only when the graph assigns a device: the serializer emits the block
+      // only then, and a file with no assignment stays byte-identical.
+      ...(settings ? { settings } : {}),
     });
     store.setCurrentGraphFile(sanitizeGraphName(targetName));
     if (projectMode) {

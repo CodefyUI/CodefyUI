@@ -4,7 +4,8 @@ Everything here runs without a graphics card. ``torch.cuda.device_count``
 and ``torch.cuda.is_available`` are monkeypatched to describe a machine with
 four cards, which is the only way to test multi-GPU behaviour on a box that
 has one -- and the behaviour under test is string handling and option
-enumeration, not anything the driver does.
+enumeration, not anything the driver does. MPS is patched off too, so the
+enumeration tests read the same on an Apple machine as on Linux CI.
 """
 
 from __future__ import annotations
@@ -13,10 +14,13 @@ import pytest
 import torch
 
 from app.core.device_utils import (
+    DEVICE_PARAM_DESCRIPTION,
+    DEVICE_PARAM_OPTIONS,
     cuda_device_count,
     describe_accelerator,
     device_options,
     get_available_devices,
+    graph_settings_device,
     resolve_device,
     split_device,
 )
@@ -32,6 +36,7 @@ def four_cards(monkeypatch):
     monkeypatch.setattr(torch.cuda, "get_device_name",
                         lambda index=0: f"Fake GPU {index}")
     monkeypatch.setattr(torch.cuda, "is_bf16_supported", lambda: True)
+    monkeypatch.setattr(torch.backends.mps, "is_available", lambda: False)
     get_available_devices.cache_clear()
     yield
     get_available_devices.cache_clear()
@@ -40,6 +45,7 @@ def four_cards(monkeypatch):
 @pytest.fixture
 def no_cuda(monkeypatch):
     monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
+    monkeypatch.setattr(torch.backends.mps, "is_available", lambda: False)
     get_available_devices.cache_clear()
     yield
     get_available_devices.cache_clear()
@@ -193,7 +199,47 @@ def test_mps_index_zero_is_rebuilt_rather_than_echoed(monkeypatch):
 
 def test_nonsense_still_degrades_to_the_cpu(four_cards):
     assert resolve_device("cudda:0") == "cpu"
-    assert resolve_device("auto") == "cpu"
+
+
+def test_auto_takes_the_first_card(four_cards):
+    """``auto`` is the best accelerator present, and its queue is that card's."""
+    assert resolve_device("auto") == "cuda"
+    assert canonical_queue_key(resolve_device("auto")) == "cuda:0"
+
+
+@pytest.mark.parametrize("graph, expected", [
+    ({"nodes": []}, None),
+    ({"settings": None}, None),
+    ({"settings": {"device": " CUDA:1 "}}, "cuda:1"),
+    ({"settings": {"device": "gpu"}}, None),
+    ({"settings": {"device": "auto"}}, "auto"),
+    ({"settings": {"device": 3}}, None),
+    ({"settings": {"device": ""}}, None),
+    ({"settings": {"device": "   "}}, None),
+    (None, None),
+])
+def test_graph_settings_device(graph, expected):
+    assert graph_settings_device(graph) == expected
+
+
+@pytest.mark.parametrize("value", ["cudda", 3])
+def test_graph_settings_device_logs_an_invalid_value(caplog, value):
+    """The submit path rejects the same file with a 400; the lenient
+    readers (the offline runner, the API-function and published-app
+    routes) fall back to cpu, and the warning says why."""
+    with caplog.at_level("WARNING"):
+        assert graph_settings_device({"settings": {"device": value}}) is None
+    assert "Ignoring invalid settings.device" in caplog.text
+    assert repr(value) in caplog.text
+
+
+@pytest.mark.parametrize("graph", [
+    {"nodes": []}, {"settings": None}, {"settings": {"device": ""}},
+])
+def test_graph_settings_device_is_silent_when_absent(caplog, graph):
+    with caplog.at_level("WARNING"):
+        assert graph_settings_device(graph) is None
+    assert "settings.device" not in caplog.text
 
 
 # ── enumeration ───────────────────────────────────────────────────────────
@@ -210,6 +256,7 @@ def test_a_single_card_is_not_listed_twice(monkeypatch):
     choice between two spellings of one answer."""
     monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
     monkeypatch.setattr(torch.cuda, "device_count", lambda: 1)
+    monkeypatch.setattr(torch.backends.mps, "is_available", lambda: False)
     get_available_devices.cache_clear()
     try:
         assert "cuda" in get_available_devices()
@@ -228,6 +275,15 @@ def test_node_device_options_still_drop_absent_backends(no_cuda):
         "auto", "cpu"]
 
 
+@pytest.mark.parametrize("fixture", ["four_cards", "no_cuda"])
+def test_node_options_and_settings_list_are_one_source(fixture, request):
+    """A node's dropdown and the Settings selector list the same devices."""
+    request.getfixturevalue(fixture)
+    served = device_options("device", list(DEVICE_PARAM_OPTIONS))
+    assert served[0] == "auto"
+    assert served[1:] == [d["value"] for d in describe_accelerator()["devices"]]
+
+
 def test_a_param_that_is_not_a_device_is_untouched(four_cards):
     assert device_options("mode", ["a", "b"]) == ["a", "b"]
     assert device_options("device", []) == []
@@ -237,6 +293,7 @@ def test_the_index_ordering_is_numeric_not_lexical(monkeypatch):
     """``cuda:10`` must not sort before ``cuda:2``."""
     monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
     monkeypatch.setattr(torch.cuda, "device_count", lambda: 11)
+    monkeypatch.setattr(torch.backends.mps, "is_available", lambda: False)
     get_available_devices.cache_clear()
     try:
         options = device_options("device", ["cpu", "cuda"])
@@ -260,6 +317,7 @@ def test_the_global_selector_keeps_one_entry_for_one_card(monkeypatch):
     monkeypatch.setattr(torch.cuda, "device_count", lambda: 1)
     monkeypatch.setattr(torch.cuda, "current_device", lambda: 0)
     monkeypatch.setattr(torch.cuda, "get_device_name", lambda index=0: "One")
+    monkeypatch.setattr(torch.backends.mps, "is_available", lambda: False)
     get_available_devices.cache_clear()
     try:
         values = [d["value"] for d in describe_accelerator()["devices"]]
@@ -306,11 +364,18 @@ def test_every_device_param_offers_the_indexed_forms(four_cards):
 
     checked = 0
     for name, cls in registry.nodes.items():
-        options = {p.name: p.options for p in cls.define_params()}
-        if "device" not in options or "cuda" not in options["device"]:
+        if not cls.__module__.startswith("app.nodes"):
+            continue  # test spies register device params of their own
+        params = {p.name: p for p in cls.define_params()}
+        if "device" not in params or "cuda" not in params["device"].options:
             continue
+        raw = params["device"]
+        assert raw.advanced is True, name
+        assert raw.options == list(DEVICE_PARAM_OPTIONS), name
+        if name != "DiffusionTrainingLoop":
+            assert raw.description == DEVICE_PARAM_DESCRIPTION, name
         definition = _node_to_definition(name, cls)
         device_param = next(p for p in definition.params if p.name == "device")
         assert "cuda:2" in device_param.options, name
         checked += 1
-    assert checked >= 4, "expected several device-aware nodes"
+    assert checked == 12, "expected the twelve device-aware nodes"

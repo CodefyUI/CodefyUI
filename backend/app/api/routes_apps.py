@@ -40,6 +40,7 @@ from ..core.api_keys import (
     require_session_token,
 )
 from ..core.db import Database, utc_now_iso
+from ..core.device_utils import graph_settings_device
 from ..core.graph_engine import find_entry_points, validate_graph
 from ..core.secret_params import find_secret_violations
 from .routes_graph import GraphAmbiguityError, _graph_path, _sanitize_name
@@ -700,6 +701,11 @@ async def invoke_app(
                 0.001, run_req.timeout_s - (time.monotonic() - started),
             ),
         )
+        if exec_req.device is None:
+            # An omitted device means the snapshot's own assignment
+            # (settings.device), else cpu.
+            exec_req = replace(
+                exec_req, device=graph_settings_device(snapshot))
         # output_store=None: Decision H1 — isolation is structural, not a
         # flag. The editor inspector store can never contain this data.
         from ..core.graph_engine import build_preset_fallback
@@ -893,9 +899,12 @@ def _openapi_document(
                                         "device": {
                                             "type": ["string", "null"],
                                             "description": (
-                                                "cpu / cuda / mps; an "
-                                                "unavailable device falls "
-                                                "back to cpu."
+                                                "cpu / auto / cuda / cuda:N "
+                                                "/ mps. Omitted: the graph's "
+                                                "assigned device, else cpu. "
+                                                "auto: the best available "
+                                                "device. An unavailable "
+                                                "device falls back to cpu."
                                             ),
                                         },
                                         "record_outputs": {

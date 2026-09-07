@@ -46,6 +46,7 @@ from typing import Any
 
 import torch
 
+from ...core.device_utils import DEVICE_PARAM_DESCRIPTION, DEVICE_PARAM_OPTIONS
 from ...core.loop_control import (
     ProgressThrottle,
     interrupted_result,
@@ -271,10 +272,8 @@ class TextEmbeddingNode(BaseNode):
                 name="device",
                 param_type=ParamType.SELECT,
                 default="auto",
-                options=["auto", "cpu", "cuda", "mps"],
-                description=(
-                    "Where to encode (auto follows the global device)."
-                ),
+                options=list(DEVICE_PARAM_OPTIONS),
+                description=DEVICE_PARAM_DESCRIPTION,
                 advanced=True,
             ),
         ]

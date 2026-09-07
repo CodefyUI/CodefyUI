@@ -252,6 +252,11 @@ async def submit_run(request: Request):
     way; a queued run parks the long poll properly instead of returning
     empty pages.
 
+    The run's device is ``options.device`` when the key is present, else
+    the graph's ``settings.device``, else ``cpu``. ``auto`` resolves to the
+    best accelerator this server has. The resolved device is the row's
+    ``queue_key`` and the device the run executes on.
+
     The body is parsed here rather than declared as a pydantic parameter —
     see ``_read_submit_body``. Its size ceiling is enforced by
     ``core.body_limit`` for every route, not by this one.

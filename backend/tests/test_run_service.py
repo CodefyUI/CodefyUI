@@ -57,6 +57,7 @@ from app.core.run_service import (
     _RunExclusion,
     cap_event_payload,
     json_size,
+    normalize_graph,
     normalize_name,
     normalize_options,
     run_exclusion,
@@ -649,6 +650,79 @@ async def test_submit_rejects_a_malformed_graph(service):
                 {"nodes": [{"id": "a"}], "edges": {}}):
         with pytest.raises(RunSubmitError):
             await service.submit(bad)
+
+
+# ── graph settings (the graph's own device) ───────────────────────────────
+
+
+def test_normalize_graph_keeps_a_validated_settings_device():
+    result = normalize_graph({**_graph(), "settings": {"device": " CUDA:1 "}})
+    assert result["settings"] == {"device": "cuda:1"}
+
+
+@pytest.mark.parametrize("graph", [
+    _graph(),
+    {**_graph(), "settings": {}},
+    {**_graph(), "settings": None},
+    {**_graph(), "settings": {"device": None}},
+    # A blank string is "no assignment" on every path: GraphSettings
+    # (save/validate), graph_settings_device, cdui project validate and
+    # the canvas read it the same way, so a file /validate accepts runs.
+    {**_graph(), "settings": {"device": ""}},
+    {**_graph(), "settings": {"device": "   "}},
+])
+def test_normalize_graph_omits_settings_when_no_device(graph):
+    assert "settings" not in normalize_graph(graph)
+
+
+@pytest.mark.parametrize("settings", [
+    "x", ["cpu"], {"device": "cudda"}, {"device": 3},
+])
+def test_normalize_graph_rejects_bad_settings(settings):
+    with pytest.raises(RunSubmitError):
+        normalize_graph({**_graph(), "settings": settings})
+
+
+@pytest.fixture
+def identity_devices(monkeypatch):
+    """Every device string resolves to itself (see test_run_queue.py)."""
+    import app.core.run_service as run_service_module
+
+    monkeypatch.setattr(
+        run_service_module, "resolve_device",
+        lambda requested: (requested or "cpu").strip().lower() or "cpu")
+    monkeypatch.setattr(run_service_module, "_current_cuda_index", lambda: 0)
+
+
+async def test_submit_falls_back_to_the_graph_device(
+        store, service, identity_devices):
+    graph = {**_graph(), "settings": {"device": "cuda:1"}}
+    submitted = await service.submit(graph, options={"seed": 1})
+    record = await store.get_run(submitted.run_id)
+    assert record.queue_key == "cuda:1"
+    # The effective device is written back, so the row is self-describing.
+    assert record.options["device"] == "cuda:1"
+    snapshot = await store.get_graph_snapshot(submitted.run_id)
+    assert snapshot["settings"] == {"device": "cuda:1"}
+    await _await_terminal(store, submitted.run_id)
+
+
+async def test_submit_option_device_beats_the_graph_device(
+        store, service, identity_devices):
+    graph = {**_graph(), "settings": {"device": "cuda:1"}}
+    submitted = await service.submit(graph, options={"device": "cpu"})
+    record = await store.get_run(submitted.run_id)
+    assert record.queue_key == "cpu"
+    assert record.options["device"] == "cpu"
+    await _await_terminal(store, submitted.run_id)
+
+
+async def test_submit_explicit_null_device_is_still_an_error(service):
+    graph = {**_graph(), "settings": {"device": "cpu"}}
+    with pytest.raises(RunSubmitError):
+        await service.submit(graph, options={"device": None})
+    with pytest.raises(RunSubmitError):
+        await service.submit(graph, options={"device": ""})
 
 
 async def test_submit_persists_normalized_options_and_snapshot(store, service):
