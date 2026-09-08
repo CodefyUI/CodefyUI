@@ -1,0 +1,18 @@
+/* Overrides of katex.min.css. This sheet is part of the lazy KaTeX chunk and
+   is imported after katex.min.css (see katexRenderer.tsx), which is what lets
+   these rules win at equal specificity. */
+
+/* KaTeX inherits parent text color rather than its hardcoded black so
+   the formulas blend into the dark theme. */
+.katex {
+  color: inherit;
+}
+
+/* Block math should scroll horizontally inside the narrow Inspector /
+   ConfigPanel without forcing the parent panel to grow. */
+.katex-display {
+  margin: 0.4em 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+  padding: 0 var(--sp-2);
+}
