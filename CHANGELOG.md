@@ -22,6 +22,14 @@ received — each links to the release it was published as.
 
 ## [Unreleased]
 
+## [2.7.1] — 2026-09-08
+
+A smaller frontend build that no longer trips Vite's chunk-size warning. The
+single 1.48 MB entry script is now five chunks cut along what changes
+together, so after `cdui update` a browser re-downloads only what changed, and
+KaTeX is fetched the first time a description with a formula is shown rather
+than at startup. Nothing changes in how the editor behaves.
+
 ### Changed
 
 - **A smaller, warning-free frontend build.** The single 1.48 MB entry script
@@ -3446,7 +3454,8 @@ Release candidates before 1.0.0 are on the
 [#420]: https://github.com/CodefyUI/CodefyUI/issues/420
 [@oyea0801]: https://github.com/oyea0801
 [@latteine1217]: https://github.com/latteine1217
-[Unreleased]: https://github.com/CodefyUI/CodefyUI/compare/2.7.0...main
+[Unreleased]: https://github.com/CodefyUI/CodefyUI/compare/2.7.1...main
+[2.7.1]: https://github.com/CodefyUI/CodefyUI/compare/2.7.0...2.7.1
 [2.7.0]: https://github.com/CodefyUI/CodefyUI/compare/2.6.0...2.7.0
 [2.6.0]: https://github.com/CodefyUI/CodefyUI/compare/2.5.0...2.6.0
 [2.5.0]: https://github.com/CodefyUI/CodefyUI/compare/2.4.1...2.5.0
