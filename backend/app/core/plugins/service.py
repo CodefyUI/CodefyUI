@@ -477,7 +477,9 @@ class PluginService:
         :raises AlreadyInstalled: the plugin is here and *force* was not
             given. Both kinds, and updates too: replacing what is on disk is
             an offer for the user to accept, not a default -- an inspection
-            stored by :meth:`update` carries that acceptance with it.
+            stored by :meth:`update` carries that acceptance with it. "Here"
+            means the lockfile records it OR the directory is on disk, so a
+            copy the lockfile never heard about is the same offer.
         :raises ConsentRequired: a capability the manifest asks for is not in
             *accept_capabilities* (nor already granted by a previous install).
         :raises TrustAuthorRequired: the manifest declares ``allowed_modules``
@@ -505,7 +507,20 @@ class PluginService:
         # "You already have this" is an OFFER -- Reinstall, --force -- and an
         # offer belongs in the response to the request, not in a job's event
         # log.
-        if inspection.installed is not None and not force:
+        #
+        # The disk half is the SAME question asked of the state the lockfile
+        # cannot see: a directory with no entry, left by a lockfile write that
+        # failed after the rename, by a hand-copied pack, or by an
+        # ``installed.json`` somebody edited. The flow refuses that one on
+        # ``plugin_dir.exists()``, and reached from in there the offer is
+        # unanswerable -- the job has already started, the inspection is
+        # spent, and the panel's Reinstall button exists only where this
+        # refusal does. Only the repository road: a built-in pack lives under
+        # the built-in root, and a stray user directory of the same name is
+        # not a copy of it.
+        on_disk = inspection.kind == "github" and (
+            plugin_loader.plugins_user_root() / inspection.plugin_id).exists()
+        if (inspection.installed is not None or on_disk) and not force:
             raise AlreadyInstalled(
                 f"Plugin {inspection.plugin_id!r} is already installed.",
                 plugin_id=inspection.plugin_id,

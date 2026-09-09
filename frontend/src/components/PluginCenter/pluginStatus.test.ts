@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import type { PluginCatalogEntry, PluginStatus } from '../../api/rest';
 import { useI18n } from '../../i18n';
+import type { InspectionFailure } from '../../store/pluginStore';
 import {
   capabilityKey,
   cliInstallCommand,
@@ -13,6 +14,7 @@ import {
   originLabel,
   provenancePin,
   parseGitHubSource,
+  refusalSentence,
   statusKey,
   statusTone,
   stepLabel,
@@ -276,6 +278,80 @@ describe('originLabel', () => {
     // What is actually being loaded is the folder on disk, whoever wrote it.
     expect(originLabel(entry({ id: 'demo', official: true, source_kind: 'local' })))
       .toBe('pluginCenter.origin.local');
+  });
+});
+
+// ── what a refusal reads as ──────────────────────────────────────────────
+
+describe('refusalSentence', () => {
+  /** A refusal the way the store builds one: a code, a body, no prose. */
+  function coded(code: string, detail: Record<string, unknown>): InspectionFailure {
+    return { message: code, code, detail: { code, ...detail } };
+  }
+
+  it('names which of the three things holds a reserved id', () => {
+    // The server sends the holder as a discriminant precisely so this
+    // sentence can be written in the reader's language.
+    expect(refusalSentence(t, coded('reserved_id', { id: 'edu', holder: 'route' }), 'owner/edu'))
+      .toBe('The id "edu" is reserved by CodefyUI itself.');
+    expect(refusalSentence(
+      t, coded('reserved_id', { id: 'edu', holder: 'builtin_pack' }), 'owner/edu',
+    )).toBe('The id "edu" is reserved for a built-in pack.');
+    expect(refusalSentence(
+      t,
+      coded('reserved_id', {
+        id: 'graph-copilot',
+        holder: 'repository',
+        repo: 'CodefyUI/CodefyUI-Plugin-Graph-Copilot',
+      }),
+      'a-previous-owner/CodefyUI-Plugin-Graph-Copilot',
+    )).toBe(
+      'The id "graph-copilot" belongs to CodefyUI/CodefyUI-Plugin-Graph-Copilot, '
+      + 'so it cannot be installed or updated from this source.',
+    );
+  });
+
+  it('stays holder-neutral when the holder cannot be named', () => {
+    // A server older than the `holder` field, and one that says "repository"
+    // about a catalog row it can no longer describe. Guessing "a built-in
+    // pack" would name the wrong culprit, and the repo sentence without a
+    // repo would print the placeholder itself.
+    expect(refusalSentence(t, coded('reserved_id', { id: 'edu' }), 'owner/edu'))
+      .toBe('The id "edu" already belongs to another plugin.');
+    expect(refusalSentence(
+      t, coded('reserved_id', { id: 'edu', holder: 'repository' }), 'owner/edu',
+    )).toBe('The id "edu" already belongs to another plugin.');
+  });
+
+  it('falls back to the source when the refusal named no id', () => {
+    expect(refusalSentence(t, coded('reserved_id', { holder: 'route' }), 'edu'))
+      .toBe('The id "edu" is reserved by CodefyUI itself.');
+  });
+
+  it('says which name the catalog does not have', () => {
+    expect(refusalSentence(t, coded('unknown_catalog_name', { known: ['edu'] }), 'c9'))
+      .toBe('No plugin is called "c9".');
+  });
+
+  it('names what was being fetched for every refusal the store worded', () => {
+    // The code is already a sentence by the time it gets here; what is left
+    // is naming the source, because "Could not reach GitHub" says nothing
+    // about which repository was asked for.
+    expect(refusalSentence(
+      t,
+      { message: 'Could not reach GitHub.', code: 'github_unreachable', detail: null },
+      'owner/demo',
+    )).toBe('Could not fetch owner/demo: Could not reach GitHub.');
+  });
+
+  it('says the same thing in the language the reader is in', () => {
+    useI18n.setState({ locale: 'zh-TW' });
+
+    // The wire token as the whole explanation is what this replaces:
+    // 「更新失敗：reserved_id」.
+    expect(refusalSentence(
+      t, coded('reserved_id', { id: 'edu', holder: 'builtin_pack' }), 'owner/edu',
+    )).toBe('id「edu」是內建套件保留的名稱。');
   });
 });
 

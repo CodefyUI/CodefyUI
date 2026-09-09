@@ -22,6 +22,49 @@ received — each links to the release it was published as.
 
 ## [Unreleased]
 
+### Fixed
+
+- **A plugin whose repository moved can be updated again.** GitHub keeps
+  answering at a repository's old address forever, through a 301, so an install
+  recorded before a rename or an org transfer kept fetching happily under a
+  name the catalog no longer lists — and every rule keyed on that name read it
+  as a fork of the pack it actually is. Update answered `reserved_id`
+  permanently, and the Official badge went out. The commit GitHub returns
+  already names the repository it was served from, so the canonical pair now
+  rides along on the resolve that was happening anyway, and the read that
+  notices a move corrects the lockfile. The rule that refuses a genuine fork is
+  unchanged: a fork is a real repository at its own address and redirects
+  nowhere.
+- **A refusal says who holds the id, in the reader's language.** `reserved_id`
+  reached the update toast as the bare wire token `reserved_id`, and the one
+  sentence the panel had said "reserved for a built-in pack" whichever of the
+  three things actually held the id. The server now sends which, plus the
+  repository when that is the answer, and the panel writes the sentence. A test
+  reads every coded refusal the routes can emit and fails when one is answered
+  neither by the panel's table nor at a named catch.
+- **A ref that does not resolve says so.** GitHub answers 422, not 404, for a
+  tag, branch or sha that does not exist, so a typo in a ref was reported as
+  "Cannot connect to GitHub" — a network failure on a working network.
+- **A row's refused Install reports itself on that row.** It appeared at the
+  top of the panel, under the "install from a repository" text field the user
+  never touched, worded as though they had typed it, while the row they did
+  press said nothing — and nothing at all when the list was scrolled.
+- **A refusal no longer outlives the panel.** One attached to a review that is
+  still usable survived a close, so reopening the Plugin Center hours later
+  answered a request that was long over.
+- **Installing a catalog row records it as one.** The row's Install button sent
+  `owner/repo` rather than the catalog id, so the install was recorded as
+  free-text third-party — no `catalog_id`, and the consent card reporting the
+  pack as unofficial. A row with files missing is still reinstalled from the
+  repository it recorded, which can be a fork.
+- **A plugin directory with no lockfile entry is no longer a dead end.** The
+  install was accepted, then failed with "already installed" and a hint about
+  `force` that the panel had no control for. It is refused up front, where the
+  panel's Reinstall button is.
+- **A plugin whose renderer names no node type says so.** Registering one for a
+  node that does not exist mounted nothing, silently; it now warns and, where
+  it can, names the type that was meant.
+
 ## [2.7.1] — 2026-09-08
 
 A smaller frontend build that no longer trips Vite's chunk-size warning. The

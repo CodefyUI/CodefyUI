@@ -270,6 +270,100 @@ describe('runs facade', () => {
 });
 
 /**
+ * A renderer registered for a type nothing will ever ask for.
+ *
+ * `PluginNodeBridge` falls back to the stock card body when no renderer
+ * matches a node's type, so a namespace the plugin author spelled by hand and
+ * got wrong costs the plugin its custom body with nothing anywhere saying so.
+ * The shipped `official-template` bundle registered
+ * `official_template:MovingAverage` for a node the backend namespaces as
+ * `official-template:MovingAverage`, and the only symptom was a stock body.
+ */
+describe('nodes.registerRenderer names an unknown node type', () => {
+  const MOVING_AVERAGE: NodeDefinition = {
+    node_name: 'official-template:MovingAverage', category: 'Layer',
+    description: '', inputs: [], outputs: [], params: [],
+  };
+
+  function templateApi() {
+    return buildPluginAPI('official-template', () => document.createElement('div'));
+  }
+
+  // Scoped to this block, and here rather than at the end of each test: a spy
+  // left installed by a FAILING assertion is handed straight back by the next
+  // `vi.spyOn(console, 'warn')`, carrying its call history with it, so one
+  // real failure would drag the test after it down as well.
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('warns, and registers the renderer anyway', () => {
+    useNodeDefStore.setState({ definitions: [...DEFS, MOVING_AVERAGE] });
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const renderer: PluginNodeRenderer = { mount: () => {} };
+
+    templateApi().nodes.registerRenderer('official_template:MovingAverage', renderer);
+
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(warn.mock.calls[0][0]).toContain(
+      'registerRenderer("official_template:MovingAverage")',
+    );
+    // Warned, never refused. The definition list is the host's snapshot of
+    // what exists right now, so treating a miss as an error would let a slow
+    // or partial /api/nodes throw away a renderer that is perfectly good.
+    expect(getNodeRenderer('official_template:MovingAverage')).toBe(renderer);
+  });
+
+  it('names the spelling that does exist when only the namespace is wrong', () => {
+    useNodeDefStore.setState({ definitions: [...DEFS, MOVING_AVERAGE] });
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    templateApi().nodes.registerRenderer(
+      'official_template:MovingAverage', { mount: () => {} },
+    );
+
+    expect(warn.mock.calls[0][0]).toContain(
+      'Did you mean "official-template:MovingAverage"?',
+    );
+  });
+
+  it('leaves the hint off when the plugin\'s own namespace has no such node', () => {
+    useNodeDefStore.setState({ definitions: [...DEFS, MOVING_AVERAGE] });
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    // `official-template:Ema` does not exist either, so there is nothing to
+    // suggest and the warning stays a plain statement of the miss.
+    templateApi().nodes.registerRenderer('official_template:Ema', { mount: () => {} });
+
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(warn.mock.calls[0][0]).not.toContain('Did you mean');
+  });
+
+  it('says nothing while the definition list is still empty', () => {
+    // `waitForNodeDefinitions` gives up after 15 s, so an empty list means
+    // "not loaded" and every type is unknown. Warning here would accuse every
+    // installed plugin of a typo whenever /api/nodes is slow.
+    useNodeDefStore.setState({ definitions: [] });
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const renderer: PluginNodeRenderer = { mount: () => {} };
+
+    templateApi().nodes.registerRenderer('official_template:MovingAverage', renderer);
+
+    expect(warn).not.toHaveBeenCalled();
+    expect(getNodeRenderer('official_template:MovingAverage')).toBe(renderer);
+  });
+
+  it('says nothing for a builtin type a plugin decorates', () => {
+    // The un-namespaced builtin the v2-compatibility plugin below registers.
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    templateApi().nodes.registerRenderer('Source', { mount: () => {} });
+
+    expect(warn).not.toHaveBeenCalled();
+  });
+});
+
+/**
  * apiVersion 3 was specified as purely additive, and Graph Copilot — which
  * declares `requires_codefyui = ">=1.3.0"` and was written against v2 — has to
  * keep working with no changes at all. `contract.v2.assert.ts` proves that at

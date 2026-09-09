@@ -903,12 +903,27 @@ class FakeGitHub:
         #: Every ``(owner, repo, ref)`` a resolve was asked for.
         self.resolved: list[tuple[str, str, str]] = []
 
-    def answers(self, manifest: str, *, sha: str = A_SHA) -> None:
-        def resolve(owner: str, repo: str, ref: str) -> str:
-            self.resolved.append((owner, repo, ref))
-            return sha
+    def answers(self, manifest: str, *, sha: str = A_SHA,
+                moved_to: str | None = None) -> None:
+        """Serve *manifest* at *sha*, as *moved_to* when it is given.
 
-        self._monkeypatch.setattr(github, "resolve_sha", resolve)
+        *moved_to* is the ``"owner/repo"`` GitHub ANSWERS as: a repository
+        that was renamed or transferred to another org keeps its old address
+        alive through a 301 forever, and the commit that comes back names the
+        repository it was served FROM. Left out, the repository answers as
+        itself -- every repository here that has not moved.
+        """
+        canonical = tuple(moved_to.split("/", 1)) if moved_to else None
+
+        def resolve(owner: str, repo: str, ref: str) -> github.ResolvedRef:
+            # Recorded as ASKED, because that is what the caller chose to
+            # fetch; the pair that comes back is what GitHub says it is.
+            self.resolved.append((owner, repo, ref))
+            served_owner, served_repo = canonical or (owner, repo)
+            return github.ResolvedRef(sha=sha, owner=served_owner,
+                                      repo=served_repo)
+
+        self._monkeypatch.setattr(github, "resolve_ref", resolve)
         self._monkeypatch.setattr(github, "fetch_manifest_text",
                                   lambda owner, repo, at: manifest)
 
@@ -921,8 +936,10 @@ class FakeGitHub:
         raises it. Faked at ``_gh_get``, which the module's own docstring
         names as the one place every request goes through.
         """
-        self._monkeypatch.setattr(github, "resolve_sha",
-                                  lambda owner, repo, ref: sha)
+        self._monkeypatch.setattr(
+            github, "resolve_ref",
+            lambda owner, repo, ref: github.ResolvedRef(
+                sha=sha, owner=owner, repo=repo))
         self._monkeypatch.setattr(github, "_gh_get",
                                   lambda url, *args, **kwargs: raw)
 
@@ -930,7 +947,7 @@ class FakeGitHub:
         def boom(*args, **kwargs):
             raise exc
 
-        self._monkeypatch.setattr(github, "resolve_sha", boom)
+        self._monkeypatch.setattr(github, "resolve_ref", boom)
         self._monkeypatch.setattr(github, "fetch_manifest_text", boom)
 
 
@@ -1269,8 +1286,36 @@ async def test_an_id_this_build_owns_is_refused_with_the_id(
     response = await client.post("/api/plugins/inspect",
                                  json={"source": "alice/extras"})
     assert response.status_code == 400, response.text
+    # `holder` says WHICH of the three clauses answered, so a panel can write
+    # the sentence itself: `taken_by` is English prose meant for the CLI.
     assert response.json()["detail"] == {"code": "reserved_id",
-                                         "id": "catalog"}
+                                         "id": "catalog",
+                                         "holder": "route"}
+
+
+async def test_an_id_another_repository_holds_names_that_repository(
+        client, fake_github):
+    """The third clause of the reserved-id rule, on the wire. ``holder``
+    tells the three apart -- a route, a pack that ships here, another
+    repository -- and only the third can be explained at all without the
+    repository that holds the id, which is why it travels beside it.
+
+    The other reserved-id tests all land on the route clause, so the sentence
+    a panel writes for this one was drawn from nothing: "reserved for a
+    built-in pack", about a plugin that is a GitHub repository."""
+    fake_github.answers(a_manifest("self-learning"))
+
+    response = await client.post(
+        "/api/plugins/inspect",
+        json={"source": "mallory/CodefyUI-Plugin-Self-Learning"})
+
+    assert response.status_code == 400, response.text
+    assert response.json()["detail"] == {
+        "code": "reserved_id",
+        "id": "self-learning",
+        "holder": "repository",
+        "repo": "CodefyUI/CodefyUI-Plugin-Self-Learning",
+    }
 
 
 async def test_a_catalog_row_too_broken_to_install_is_not_a_500(
@@ -1290,6 +1335,9 @@ async def test_a_catalog_row_too_broken_to_install_is_not_a_500(
 
 @pytest.mark.parametrize("status, expected, code", [
     (404, 404, "not_found"),
+    # A ref that does not resolve: GitHub answers 422 for that, never 404,
+    # and it leaves the user in the same place -- checking what they typed.
+    (422, 404, "not_found"),
     (403, 502, "github_rate_limited"),
     (429, 502, "github_rate_limited"),
     (500, 502, "github_unreachable"),
@@ -2056,6 +2104,63 @@ async def test_the_commit_that_is_installed_leaves_nothing_to_do(
     assert not flow.started.is_set()
 
 
+#: The pack whose repository really did move, and the address an install
+#: made before the move still records. GitHub answers at both.
+GRAPH_COPILOT_REPO = "CodefyUI/CodefyUI-Plugin-Graph-Copilot"
+GRAPH_COPILOT_WAS = "a-previous-owner/CodefyUI-Plugin-Graph-Copilot"
+
+
+async def test_an_update_of_a_pack_whose_repository_moved_org_is_not_a_theft(
+        client, flow, fake_github, center_lockfile):
+    """A catalog pack installed before its repository was transferred.
+
+    The lockfile records the old owner, the catalog names the new one, and
+    the id is reserved AGAINST any repository but the catalog's -- so the
+    update read itself as a fork stealing the official pack's id and refused
+    every time, with a raw ``reserved_id``. GitHub is the one that knows the
+    two names are one repository, and it says so in the commit that was being
+    fetched anyway.
+
+    The record is corrected on the way through, which is the only chance
+    there is: the pack is already at the newest commit, so no install runs
+    and nothing else ever writes the lockfile.
+    """
+    data = lockfile_of(center_lockfile)
+    data["plugins"]["graph-copilot"] = {
+        "source_kind": "github_url",
+        "source": GRAPH_COPILOT_WAS,
+        "url": f"https://github.com/{GRAPH_COPILOT_WAS}",
+        "ref": "",
+        "sha": "4" * 40,
+        "installed_at": "2026-06-04T00:00:00Z",
+        "manifest": {"id": "graph-copilot", "version": "1.0.0"},
+        "trusted_modules": [],
+        "capabilities": [],
+        "catalog_id": None,
+        "enabled": True,
+    }
+    (center_lockfile / "installed.json").write_text(json.dumps(data),
+                                                    encoding="utf-8")
+    fake_github.answers(a_manifest("graph-copilot"), sha="4" * 40,
+                        moved_to=GRAPH_COPILOT_REPO)
+
+    response = await client.post("/api/plugins/graph-copilot/update")
+
+    assert response.status_code == 200, response.text
+    assert response.json() == {"status": "up_to_date", "sha": "4" * 40}
+    # Fetched from the address the user installed from, which still works.
+    assert fake_github.resolved == [
+        ("a-previous-owner", "CodefyUI-Plugin-Graph-Copilot", "")]
+    assert not flow.started.is_set()
+    entry = lockfile_of(center_lockfile)["plugins"]["graph-copilot"]
+    assert entry["url"] == f"https://github.com/{GRAPH_COPILOT_REPO}"
+    assert entry["source"] == GRAPH_COPILOT_REPO
+    # And the badge, which reads the recorded repository: the row was drawn
+    # as third-party for as long as the record named nothing.
+    assert entry["catalog_id"] == "graph-copilot"
+    assert (await rows(client))["graph-copilot"]["official"] is True
+
+
 async def test_an_update_the_user_already_consented_to_starts_a_job(
         client, flow, fake_github):
     """One click, one job. The plan carries ``force`` because pressing Update
@@ -2245,6 +2350,9 @@ async def test_an_update_is_refused_while_another_source_is_being_read(
 
 @pytest.mark.parametrize("status, expected, code", [
     (404, 404, "not_found"),
+    # `/{id}/update` shares `_github_refusal`, and a pinned ref that stopped
+    # resolving lands here.
+    (422, 404, "not_found"),
     (403, 502, "github_rate_limited"),
     (500, 502, "github_unreachable"),
 ])
@@ -2372,8 +2480,11 @@ async def test_a_repository_that_now_declares_a_reserved_id_is_refused(
     response = await client.post("/api/plugins/demo-external/update")
 
     assert response.status_code == 400, response.text
+    # `holder` says WHICH of the three clauses answered, so a panel can write
+    # the sentence itself: `taken_by` is English prose meant for the CLI.
     assert response.json()["detail"] == {"code": "reserved_id",
-                                         "id": "catalog"}
+                                         "id": "catalog",
+                                         "holder": "route"}
 
 
 async def test_an_update_of_a_row_whose_manifest_is_not_one_is_a_400(
@@ -2613,5 +2724,8 @@ async def test_a_reserved_id_is_read_off_the_exception_not_its_message(
     response = await client.post("/api/plugins/inspect",
                                  json={"source": "alice/extras"})
     assert response.status_code == 400, response.text
+    # `holder` says WHICH of the three clauses answered, so a panel can write
+    # the sentence itself: `taken_by` is English prose meant for the CLI.
     assert response.json()["detail"] == {"code": "reserved_id",
-                                         "id": "catalog"}
+                                         "id": "catalog",
+                                         "holder": "route"}

@@ -6,9 +6,10 @@ commit's tarball. They were three ad-hoc ``urlopen`` calls in the CLI, each
 translating ``HTTPError`` into its own sentence, and the sentences did not
 say the same thing about the same failure. A GUI cannot work from sentences
 at all, so the answer here is :class:`~.errors.GitHubError` with a
-``status``: 404 is a typo in the repo name, 403 is usually the rate limit,
-and ``None`` means the request never reached GitHub -- three different next
-steps for the user, and none of them recoverable from message text.
+``status``: 404 is a typo in the repo name and 422 a ref that does not
+resolve, 403 is usually the rate limit, and ``None`` means the request never
+reached GitHub -- three different next steps for the user, and none of them
+recoverable from message text.
 
 The message is GitHub's own when GitHub sent one. Its JSON bodies say
 "Not Found", "API rate limit exceeded for ...", "Bad credentials"; the HTTP
@@ -33,10 +34,12 @@ from __future__ import annotations
 import http.client
 import json
 import os
+import re
 import tarfile
 import time
 import urllib.request
 from collections.abc import Callable
+from dataclasses import dataclass
 from pathlib import Path
 from urllib.error import HTTPError, URLError
 
@@ -209,8 +212,38 @@ def _gh_get(
         raise _from_url_error(exc) from exc
 
 
-def resolve_sha(owner: str, repo: str, ref: str) -> str:
-    """Convert tag / branch / short-sha to a full 40-char SHA.
+#: The commit URL in GitHub's own answer, which names the repository it
+#: SERVED rather than the one that was asked for. Anchored on
+#: ``api.github.com`` and on the ``/repos/<owner>/<repo>/commits/`` shape
+#: because that host is the only one whose word is taken for this: the field
+#: is GitHub's, never repository content, and anything of another shape --
+#: a proxy that rewrote it, a stub with half a commit in it -- leaves the
+#: requested pair standing instead.
+_COMMIT_URL = re.compile(
+    r"^https://api\.github\.com/repos/([^/]+)/([^/]+)/commits/"
+)
+
+
+@dataclass(frozen=True)
+class ResolvedRef:
+    """One commit, and the repository GitHub answered from.
+
+    ``owner``/``repo`` are not always the pair that was asked for. A
+    repository that was renamed or moved to another org keeps answering at
+    its old address forever, through a 301 ``urlopen`` follows, so an
+    install recorded before the move asks under a name that no longer names
+    anything -- while every rule downstream (which catalog id this
+    repository may claim, whether the badge is earned) is about the
+    repository it actually IS.
+    """
+
+    sha: str
+    owner: str
+    repo: str
+
+
+def resolve_ref(owner: str, repo: str, ref: str) -> ResolvedRef:
+    """Resolve tag / branch / short-sha to a commit, and say whose it is.
 
     The failure is re-raised naming the repository and the ref, because
     GitHub's own "Not Found" answers a question the user never asked out
@@ -224,6 +257,10 @@ def resolve_sha(owner: str, repo: str, ref: str) -> str:
     that no caller of this function catches -- so it becomes a
     :class:`~.errors.GitHubError` with no status, because whatever answered
     was not GitHub.
+
+    The repository comes back beside the sha because GitHub has already said
+    it: the commit carries its own canonical ``url``, so following a rename
+    costs nothing here and a second request everywhere else.
     """
     target = ref or "HEAD"
     url = f"https://api.github.com/repos/{owner}/{repo}/commits/{target}"
@@ -251,7 +288,21 @@ def resolve_sha(owner: str, repo: str, ref: str) -> str:
         raise GitHubError(
             f"GitHub API response for {owner}/{repo}@{target} is missing 'sha'"
         )
-    return sha
+    served = data.get("url")
+    match = _COMMIT_URL.match(served) if isinstance(served, str) else None
+    if match is None:
+        return ResolvedRef(sha=sha, owner=owner, repo=repo)
+    return ResolvedRef(sha=sha, owner=match.group(1), repo=match.group(2))
+
+
+def resolve_sha(owner: str, repo: str, ref: str) -> str:
+    """The full 40-char SHA alone, for a caller that has the repository.
+
+    :func:`resolve_ref` with its second half dropped: ``cdui plugin info``
+    and ``cdui plugin update`` ask what a ref points at and already know
+    which repository they asked about.
+    """
+    return resolve_ref(owner, repo, ref).sha
 
 
 def fetch_manifest_text(owner: str, repo: str, sha: str) -> str:

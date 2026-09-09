@@ -1047,7 +1047,10 @@ const zhTW: Record<TranslationKey, string> = {
   'pluginCenter.review.grant': '同意授予這些能力',
   'pluginCenter.review.trust': '我信任這位作者。允許使用：{modules}',
   'pluginCenter.review.frontend': '包含會在編輯器中以完整權限執行的 JavaScript。',
-  'pluginCenter.review.idConflict': '「{id}」是內建套件保留的 id。',
+  'pluginCenter.error.idTakenByRoute': 'id「{id}」是 CodefyUI 本身保留的名稱。',
+  'pluginCenter.error.idTakenByPack': 'id「{id}」是內建套件保留的名稱。',
+  'pluginCenter.error.idTakenByRepo': 'id「{id}」屬於 {repo}，無法從這個來源安裝或更新。',
+  'pluginCenter.error.idTaken': 'id「{id}」已經屬於另一個外掛。',
   'pluginCenter.review.alreadyInstalled': '{plugin} 已安裝。重新安裝會以這個版本取代現有的安裝。',
 
   // One line per declared capability, each saying what granting it costs.

@@ -679,9 +679,133 @@ describe('PluginCenterModal — the source box', () => {
     expect(actions.clearInspection).not.toHaveBeenCalled();
   });
 
-  it('names the id a reserved-id refusal was about', () => {
-    // The refusal carries no sentence at all — only the id it is about, and
-    // that is the whole useful part.
+  it('closes over a card that is on screen only because the install was refused', () => {
+    // A row's Install button raised this review and the manifest asks for
+    // nothing, so the card exists because the server answered 409
+    // `already_installed` — an answer that is over the moment the panel is.
+    const clearInspection = vi.fn(() => {
+      usePluginStore.setState({ inspection: { phase: 'idle' } });
+    });
+    seed({
+      inspection: {
+        ...ready({ plugin_id: 'demo', consent_required: false }, 'demo'),
+        error: { message: 'already_installed', code: 'already_installed', detail: null },
+      },
+      clearInspection,
+    });
+    open();
+    render(<PluginCenterModal />);
+    expect(document.querySelector('[data-review-for="demo"]')).not.toBeNull();
+
+    act(() => {
+      useUIStore.setState({ pluginCenterOpen: false });
+    });
+    act(() => {
+      useUIStore.setState({ pluginCenterOpen: true });
+    });
+
+    expect(clearInspection).toHaveBeenCalled();
+    // Hours can pass between those two lines: the panel reopens over a
+    // request nobody is making any more, and must say nothing about it.
+    expect(document.querySelector('[data-review-for]')).toBeNull();
+  });
+
+  it('keeps the refusal that names the box a consent review is waiting on', () => {
+    seed({
+      inspection: {
+        ...ready(
+          { plugin_id: 'demo', consent_required: true, capabilities: ['network'] }, 'demo',
+        ),
+        error: {
+          message: 'consent_required',
+          code: 'consent_required',
+          detail: { code: 'consent_required', capabilities: ['network'] },
+        },
+      },
+    });
+    open();
+    render(<PluginCenterModal />);
+
+    act(() => {
+      useUIStore.setState({ pluginCenterOpen: false });
+    });
+
+    // This card would be on screen without the refusal, and the refusal is
+    // what tells the user which capability is still unticked.
+    expect(actions.clearInspection).not.toHaveBeenCalled();
+  });
+
+  it('keeps a refused review of a source somebody typed', () => {
+    seed({
+      inspection: {
+        ...ready({ plugin_id: 'demo', consent_required: false }),
+        error: { message: 'already_installed', code: 'already_installed', detail: null },
+      },
+    });
+    open();
+    render(<PluginCenterModal />);
+
+    act(() => {
+      useUIStore.setState({ pluginCenterOpen: false });
+    });
+
+    // The box the source was typed into keeps its answer: losing the code
+    // here would offer Install again for the 409 that just refused it.
+    expect(actions.clearInspection).not.toHaveBeenCalled();
+  });
+
+  it('names the id a reserved-id refusal was about, and who holds it', () => {
+    // The refusal carries no sentence at all — only the id and which of the
+    // three things holds it, which is the whole useful part.
+    seed({
+      inspection: {
+        phase: 'error',
+        source: 'owner/edu',
+        failure: {
+          message: 'reserved_id',
+          code: 'reserved_id',
+          detail: { code: 'reserved_id', id: 'edu', holder: 'builtin_pack' },
+        },
+      },
+    });
+    open();
+    render(<PluginCenterModal />);
+
+    expect(
+      screen.getByText('The id "edu" is reserved for a built-in pack.'),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/reserved_id/)).toBeNull();
+  });
+
+  it('names the repository that holds the id when another one does', () => {
+    seed({
+      inspection: {
+        phase: 'error',
+        source: 'mallory/CodefyUI-Plugin-Self-Learning',
+        failure: {
+          message: 'reserved_id',
+          code: 'reserved_id',
+          detail: {
+            code: 'reserved_id',
+            id: 'self-learning',
+            holder: 'repository',
+            repo: 'CodefyUI/CodefyUI-Plugin-Self-Learning',
+          },
+        },
+      },
+    });
+    open();
+    render(<PluginCenterModal />);
+
+    expect(screen.getByText(
+      'The id "self-learning" belongs to CodefyUI/CodefyUI-Plugin-Self-Learning,'
+      + ' so it cannot be installed or updated from this source.',
+    )).toBeInTheDocument();
+  });
+
+  it('stays holder-neutral when the server did not say who holds it', () => {
+    // A server older than the `holder` field. Guessing "a built-in pack"
+    // would name the wrong culprit for a repository clash.
     seed({
       inspection: {
         phase: 'error',
@@ -697,9 +821,8 @@ describe('PluginCenterModal — the source box', () => {
     render(<PluginCenterModal />);
 
     expect(
-      screen.getByText('The id "edu" is reserved for a built-in pack.'),
+      screen.getByText('The id "edu" already belongs to another plugin.'),
     ).toBeInTheDocument();
-    expect(screen.queryByText(/reserved_id/)).toBeNull();
   });
 
   it('lists the names a catalog miss offered instead', () => {

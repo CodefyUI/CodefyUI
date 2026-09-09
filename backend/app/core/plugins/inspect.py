@@ -322,12 +322,30 @@ def inspect_github(
     because refusing it would make the official pack the one thing nobody can
     install, but a fork may not take its place.
 
+    That comparison is made against the repository GitHub ANSWERED as, which
+    is the pair asked for except when the repository has been renamed or
+    moved to another org: GitHub keeps the old address alive with a 301, so
+    an install recorded before the move asks under a name the catalog no
+    longer lists and reads, wrongly, as a fork of the pack it actually is.
+    The clause keeps its full force -- a fork is a real repository at its own
+    address and redirects nowhere, so it still resolves to itself, still
+    mismatches, and is still refused.
+
     Raises :class:`~.errors.GitHubError`, ``tomllib.TOMLDecodeError``,
     :class:`~.errors.ManifestError` or :class:`~.errors.ReservedPluginId`
     (a :class:`~.errors.PluginInstallError`, so every caller that already
     catches the base keeps catching this).
     """
-    sha = pinned_sha or github.resolve_sha(owner, repo, ref)
+    if not pinned_sha:
+        # The canonical pair rides along on the resolve that was happening
+        # anyway, so following a rename costs no extra request. A pinned sha
+        # skips the resolve, so it keeps the pair it was given -- a restore
+        # is replaying a recorded install, not re-deciding where it came
+        # from.
+        resolved = github.resolve_ref(owner, repo, ref)
+        sha, owner, repo = resolved.sha, resolved.owner, resolved.repo
+    else:
+        sha = pinned_sha
     manifest = tomllib.loads(github.fetch_manifest_text(owner, repo, sha))
     validate_manifest(manifest)
     plugin_id = manifest["plugin"]["id"]
@@ -444,6 +462,55 @@ def updatable_entry(plugin_id: str, *, lockfile: dict[str, Any]) -> dict[str, An
     return entry
 
 
+def _record_moved_repository(
+    plugin_id: str, recorded: str, found: Inspection
+) -> None:
+    """Correct a lockfile entry whose repository has since moved.
+
+    GitHub answers at a repository's old address forever, so an install made
+    before a rename or an org transfer keeps fetching happily and keeps
+    recording a name that names nothing any more. Everything keyed on that
+    name is then wrong permanently: the Official badge compares the recorded
+    repository against the catalog's (:func:`~.listing.is_official`), and an
+    update that finds nothing new answers ``up_to_date`` before any install
+    gets near the lockfile -- so the ordinary write never comes round to fix
+    it. Correcting the record on the read that noticed is what turns this
+    from a one-off migration into something that also handles the next move.
+
+    The entry is re-read from disk and re-checked against the address this
+    inspection actually followed: the file is one that the CLI and the server
+    both edit, and an install that landed while GitHub was being read owns
+    its own record.
+
+    Best effort and silent, because the caller is a READ. A lockfile that
+    could not be written is a stale badge; turning it into an exception would
+    mean a user cannot see the update they came for.
+    """
+    lockfile = plugin_loader.load_lockfile()
+    entry = _lockfile_entry(lockfile, plugin_id)
+    if entry is None:
+        return
+    match = _GITHUB_URL.match(_text(entry.get("url"))) or _GITHUB_SHORT.match(
+        _text(entry.get("source"))
+    )
+    if match is None or f"{match.group(1)}/{match.group(2)}".lower() != recorded:
+        return
+    entry["url"] = found.url
+    entry["source"] = found.source
+    row = catalog_module.catalog_entry(plugin_id)
+    if row is not None and row.repo and row.repo.lower() == (
+        f"{found.owner}/{found.repo}".lower()
+    ):
+        # GitHub says this IS the catalog's repository, which is exactly what
+        # ``catalog_id`` records -- and recording it keeps the badge lit if
+        # the catalog itself is later re-pointed somewhere else.
+        entry["catalog_id"] = row.id
+    try:
+        plugin_loader.save_lockfile(lockfile)
+    except OSError:
+        pass
+
+
 def inspect_installed(plugin_id: str, *, lockfile: dict[str, Any]) -> Inspection:
     """Describe the update available for an installed repository plugin.
 
@@ -486,6 +553,7 @@ def inspect_installed(plugin_id: str, *, lockfile: dict[str, Any]) -> Inspection
             hint=f"url={entry.get('url')!r} source={entry.get('source')!r}",
         )
     recorded_catalog_id = _text(entry.get("catalog_id")) or None
+    recorded_repo = f"{match.group(1)}/{match.group(2)}"
     found = inspect_github(
         match.group(1),
         match.group(2),
@@ -509,4 +577,8 @@ def inspect_installed(plugin_id: str, *, lockfile: dict[str, Any]) -> Inspection
                 f"want."
             ),
         )
+    if found.owner and found.repo and (
+        f"{found.owner}/{found.repo}".lower() != recorded_repo.lower()
+    ):
+        _record_moved_repository(plugin_id, recorded_repo.lower(), found)
     return found

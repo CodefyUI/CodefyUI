@@ -675,6 +675,42 @@ function subscribeWorkspaceChanged(
   };
 }
 
+/**
+ * Warn when a plugin registers a renderer for a node type nothing will look up.
+ *
+ * `PluginNodeBridge` resolves a renderer by the node's namespaced type and
+ * falls back to the stock card body on a miss, so one wrong character costs a
+ * plugin its custom node body with no error and nothing in the console. The
+ * shipped `official-template` bundle hit exactly that, registering
+ * `official_template:MovingAverage` for a node the backend namespaces as
+ * `official-template:MovingAverage`.
+ *
+ * WARNS and never refuses. The definition list is what the host happens to
+ * know right now, a plugin may register for a builtin or for a node pack that
+ * arrives later, and a registration the host threw away would be a far worse
+ * failure than the one this catches. The guard's whole job is to say out loud
+ * what would otherwise go nowhere in silence.
+ */
+function warnIfUnknownNodeType(pluginId: string, nodeType: string): void {
+  const defs = useNodeDefStore.getState().definitions;
+  // An empty list means "not loaded", which is not "absent": PluginHost's
+  // waitForNodeDefinitions gives up after 15 s, and a slow /api/nodes must not
+  // make every installed plugin warn about types that do exist.
+  if (defs.length === 0) return;
+  if (defs.some((d) => d.node_name === nodeType)) return;
+  // The namespace is the one part a plugin author spells by hand, so an
+  // otherwise-known node under a different namespace is worth naming outright.
+  const corrected = nodeType.replace(/^[^:]+:/, `${pluginId}:`);
+  const hint = corrected !== nodeType && defs.some((d) => d.node_name === corrected)
+    ? ` Did you mean "${corrected}"? A plugin's node namespace is its manifest`
+      + ' id verbatim, hyphens included; only the Python import path is snake_cased.'
+    : '';
+  console.warn(
+    `[plugins] ${pluginId}: registerRenderer("${nodeType}") names no known node`
+    + ` type, so the renderer will never mount.${hint}`,
+  );
+}
+
 export function buildPluginAPI(
   pluginId: string,
   getWidgetContainer: (id: string) => HTMLElement,
@@ -748,6 +784,7 @@ export function buildPluginAPI(
     },
     nodes: {
       registerRenderer: (nodeType, renderer) => {
+        warnIfUnknownNodeType(pluginId, nodeType);
         const unregister = registerNodeRenderer(nodeType, renderer);
         trackCleanup?.(unregister);
         return unregister;
