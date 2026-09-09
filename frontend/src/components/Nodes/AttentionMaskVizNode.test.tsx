@@ -161,7 +161,7 @@ describe('AttentionMaskVizNode', () => {
   it('clicking the HeatmapPlot expand button opens the modal with inline data', async () => {
     seed({ mask: { type: 'tensor', values: [[1, 0], [1, 1]] } });
     const { container } = renderNode();
-    const expandBtn = container.querySelector('button[aria-label="Expand heatmap"]') as HTMLButtonElement;
+    const expandBtn = container.querySelector('button[aria-label="Open detailed view"]') as HTMLButtonElement;
     expect(expandBtn).toBeTruthy();
     fireEvent.click(expandBtn);
     await waitFor(() => expect(document.querySelector('[role="dialog"]')).toBeTruthy());
@@ -174,7 +174,7 @@ describe('AttentionMaskVizNode', () => {
   it('modal title falls back to the node id when label is absent', async () => {
     seed({ mask: { type: 'tensor', values: [[1, 0], [1, 1]] } });
     const { container } = renderNode(data({ label: undefined as unknown as string }));
-    fireEvent.click(container.querySelector('button[aria-label="Expand heatmap"]') as HTMLButtonElement);
+    fireEvent.click(container.querySelector('button[aria-label="Open detailed view"]') as HTMLButtonElement);
     await waitFor(() => expect(screen.getByText(new RegExp(`AttentionMask · ${NODE_ID}`))).toBeTruthy());
   });
 
@@ -188,7 +188,7 @@ describe('AttentionMaskVizNode', () => {
   it('closing the modal (Esc) calls onClose and unmounts it', async () => {
     seed({ mask: { type: 'tensor', values: [[1, 0], [1, 1]] } });
     const { container } = renderNode();
-    fireEvent.click(container.querySelector('button[aria-label="Expand heatmap"]') as HTMLButtonElement);
+    fireEvent.click(container.querySelector('button[aria-label="Open detailed view"]') as HTMLButtonElement);
     await waitFor(() => expect(document.querySelector('[role="dialog"]')).toBeTruthy());
     fireEvent.keyDown(window, { key: 'Escape' });
     await waitFor(() => expect(document.querySelector('[role="dialog"]')).toBeNull());

@@ -67,4 +67,4 @@ CodefyUI 是單頁應用程式，中央是**畫布**，左側是**側邊欄**，
 
 ## 設定 popover
 
-工具列的**設定** popover 將控制項分成以下區段：**執行**、**LLM 提供者**、**選用套件**（[**套件中心**](./optional-packs)）、**外掛**（[**外掛中心**](/advanced/plugins#plugin-center)）、**錄製與檢視**、**訓練行為**、**編輯器**，以及**這台伺服器**。各區段的設定列見[設定 popover 的開關](./teaching-inspector#設定-popover-的開關)；其中的錄製與梯度控制項會決定 **[教學檢視器](./teaching-inspector)**可以顯示的資料。
+工具列的**設定** popover 將控制項分成以下區段：**執行**、**LLM 提供者**、**選用套件與外掛**（[**套件中心**](./optional-packs) 與 [**外掛中心**](/advanced/plugins#plugin-center)）、**錄製與檢視**、**訓練行為**、**編輯器**，以及**這台伺服器**。各區段的設定列見[設定 popover 的開關](./teaching-inspector#設定-popover-的開關)；其中的錄製與梯度控制項會決定 **[教學檢視器](./teaching-inspector)**可以顯示的資料。

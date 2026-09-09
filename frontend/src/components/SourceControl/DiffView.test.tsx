@@ -113,13 +113,13 @@ describe('DiffView: how much of a patch is drawn', () => {
     );
     expect(container.querySelectorAll('[data-kind]')).toHaveLength(MAX_DIFF_LINES);
     expect(screen.getByText(
-      `Only the first ${MAX_DIFF_LINES} lines are shown here. Open the file to read the rest.`,
+      `Showing the first ${MAX_DIFF_LINES} lines. Open the file for the rest.`,
     )).toBeTruthy();
   });
 
   it('says nothing about a limit it did not reach', () => {
     render(<DiffView file={bigFile(10)} mode="unified" />);
-    expect(screen.queryByText(/Only the first/)).toBeNull();
+    expect(screen.queryByText(/Showing the first/)).toBeNull();
   });
 
   it('draws the same lines in the two columns, and no more', () => {
@@ -128,7 +128,7 @@ describe('DiffView: how much of a patch is drawn', () => {
     );
     // Six spans per row, three of them the empty half of an addition.
     expect(container.querySelectorAll('[data-row]')).toHaveLength(MAX_DIFF_LINES);
-    expect(screen.getByText(/Only the first/)).toBeTruthy();
+    expect(screen.getByText(/Showing the first/)).toBeTruthy();
   });
 });
 

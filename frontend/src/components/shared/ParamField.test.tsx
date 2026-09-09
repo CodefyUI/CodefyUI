@@ -149,7 +149,7 @@ describe('ParamField — secret branch', () => {
     expect(input.value).toBe('sk-abc');
     // The English hint steers users to the environment variable.
     expect(
-      screen.getByText('Session only - cleared on save. Prefer the environment variable.'),
+      screen.getByText('Session only, cleared on save. Store secrets in an environment variable.'),
     ).toBeTruthy();
     fireEvent.change(input, { target: { value: 'sk-xyz' } });
     expect(onChange).toHaveBeenCalledWith('openai_api_key', 'sk-xyz');

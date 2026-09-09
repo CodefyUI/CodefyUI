@@ -121,8 +121,8 @@ const VIEWPORT_MARGIN_PX = 8;
  * reason: the sidebar panel this menu opens inside is `overflow: hidden` and
  * as narrow as 180px, so an absolutely-positioned panel would be clipped by
  * its own container. Being outside that box also lets a menu row be wider than
- * the panel, which "Commit All (stages every change, including new files)"
- * needs at every panel width.
+ * the panel, which "Commit All (includes new files)" needs at the narrow
+ * widths.
  */
 export function ActionMenu({
   label,

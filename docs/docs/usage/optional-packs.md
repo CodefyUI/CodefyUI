@@ -8,7 +8,7 @@ description: Install the optional packages and model files required by selected 
 
 Optional packs contain Python packages and model files that are not part of the base CodefyUI installation. The catalog uses permissively licensed contents and pins package versions to tested ranges. The base installation remains small and works offline; install only the packs required for a graph.
 
-Install a pack from the **Package Center** (toolbar > Settings > Optional packs, or the sidebar's **Custom & Plugins** tab > **Optional packs** > **Package Center...**) or run `cdui packs install <id>`. The Package Center displays each download size and its progress. Both interfaces use the same installer and catalog. The catalog is an allowlist and accepts only predefined ids; request bodies cannot pass a pip spec, repository id, or URL to the installer subprocess.
+Install a pack from the **Package Center** (toolbar > Settings > Optional Packs & Plugins, or the sidebar's **Custom & Plugins** tab > **Optional packs** > **Package Center...**) or run `cdui packs install <id>`. The Package Center displays each download size and its progress. Both interfaces use the same installer and catalog. The catalog is an allowlist and accepts only predefined ids; request bodies cannot pass a pip spec, repository id, or URL to the installer subprocess.
 
 :::note Graph runs do not download pack contents
 If a required pack is missing, **Run** stops at that node and identifies the pack without downloading it. `TextCorpusDataset`, `HuggingFaceDataset`, and `Tokenizer` can fetch their own small assets from the Hugging Face Hub and use separate caches. The restriction applies only to content managed by the Package Center.
@@ -42,7 +42,7 @@ In the Package Center, install the encoder item before the RAG model. You can in
 
 ## Installing and removing
 
-**In the app.** Open the Package Center from toolbar > Settings > Optional packs. Each pack lists its items, size, and download status. Select items and start the installation to view its log and byte counter. **Cancel install** stops the current transfer. Model downloads resume from partial files; single-file assets such as the GloVe table restart. Only one installation job can run at a time.
+**In the app.** Open the Package Center from toolbar > Settings > Optional Packs & Plugins. Each pack lists its items, size, and download status. Select items and start the installation to view its log and byte counter. **Cancel install** stops the current transfer. Model downloads resume from partial files; single-file assets such as the GloVe table restart. Only one installation job can run at a time.
 
 **From a terminal.** The CLI uses the same installer and catalog:
 
@@ -113,7 +113,7 @@ When a pack is missing, the editor indicates it before execution. `TextEmbedding
 A run that reaches a node with missing content stops at that node and identifies the requirement:
 
 ```text
-Model 'all-MiniLM-L6-v2' from the Sentence embeddings pack is not downloaded. Open Package Center (toolbar > Settings > Optional packs) to download it; graph runs never download (pack=sentence-embeddings)
+Model 'all-MiniLM-L6-v2' from the Sentence embeddings pack is not downloaded. Open Package Center (toolbar > Settings > Optional Packs & Plugins) to download it; graph runs never download (pack=sentence-embeddings)
 ```
 
 The `(pack=<id>)` suffix is machine-readable. The editor extracts the id and displays an error notification with an **Open Package Center** button focused on the required pack. The run does not fetch pack content.

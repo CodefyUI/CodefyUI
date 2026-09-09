@@ -204,7 +204,7 @@ describe('EduCrossAttentionVizNode', () => {
   it('inline expand opens the modal with the node label and no fetch', async () => {
     seed({ weights: { type: 'tensor', values: oneHead } });
     const { container } = renderNode();
-    fireEvent.click(container.querySelector('button[aria-label="Expand heatmap"]') as HTMLButtonElement);
+    fireEvent.click(container.querySelector('button[aria-label="Open detailed view"]') as HTMLButtonElement);
     await waitFor(() => expect(screen.getByText(/EduCrossAttention · Cross Attn/)).toBeTruthy());
     expect(g.fetch).not.toHaveBeenCalled();
   });
@@ -212,14 +212,14 @@ describe('EduCrossAttentionVizNode', () => {
   it('modal title falls back to node id when label is missing', async () => {
     seed({ weights: { type: 'tensor', values: oneHead } });
     const { container } = renderNode(data({ label: undefined as unknown as string }));
-    fireEvent.click(container.querySelector('button[aria-label="Expand heatmap"]') as HTMLButtonElement);
+    fireEvent.click(container.querySelector('button[aria-label="Open detailed view"]') as HTMLButtonElement);
     await waitFor(() => expect(screen.getByText(new RegExp(`EduCrossAttention · ${NODE_ID}`))).toBeTruthy());
   });
 
   it('closing the modal unmounts it', async () => {
     seed({ weights: { type: 'tensor', values: oneHead } });
     const { container } = renderNode();
-    fireEvent.click(container.querySelector('button[aria-label="Expand heatmap"]') as HTMLButtonElement);
+    fireEvent.click(container.querySelector('button[aria-label="Open detailed view"]') as HTMLButtonElement);
     await waitFor(() => expect(document.querySelector('[role="dialog"]')).toBeTruthy());
     fireEvent.keyDown(window, { key: 'Escape' });
     await waitFor(() => expect(document.querySelector('[role="dialog"]')).toBeNull());

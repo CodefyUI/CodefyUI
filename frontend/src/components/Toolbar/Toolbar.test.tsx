@@ -1672,10 +1672,13 @@ describe('Toolbar', () => {
     mockedRest.listCustomNodes.mockResolvedValue([]);
     render(<Toolbar />);
     fireEvent.click(screen.getByText('Custom Nodes'));
-    // The manager renders a dialog-ish modal with a title from i18n.
-    await waitFor(() => expect(screen.getByText('x')).toBeInTheDocument());
-    fireEvent.click(screen.getByText('x'));
-    await waitFor(() => expect(screen.queryByText('x')).toBeNull());
+    // The manager renders a dialog-ish modal with a title from i18n. Found
+    // by the close button's accessible name: the glyph it draws is a
+    // multiplication sign, which no query should be spelling out.
+    const close = () => screen.queryByRole('button', { name: 'Close custom node manager' });
+    await waitFor(() => expect(close()).toBeInTheDocument());
+    fireEvent.click(close()!);
+    await waitFor(() => expect(close()).toBeNull());
   });
 
   // ── Auto Layout split button + dropdown ─────────────────────────────

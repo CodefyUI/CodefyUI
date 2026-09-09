@@ -58,7 +58,7 @@ describe('HealthSection', () => {
 
   it('lists every cache store with human-readable bytes against its budget', async () => {
     render(<HealthSection />);
-    expect(await screen.findByText('Node outputs (per editor connection)')).toBeInTheDocument();
+    expect(await screen.findByText('Node outputs (per open editor)')).toBeInTheDocument();
     // The execution cache reports max_bytes_each, the other two max_bytes;
     // both have to resolve to the same "used of budget" line.
     expect(screen.getByText('2.0 MB of 512.0 MB')).toBeInTheDocument();
@@ -68,12 +68,15 @@ describe('HealthSection', () => {
     expect(screen.getByText('1.0 GB of 2.0 GB')).toBeInTheDocument();
   });
 
-  it('explains what a cache is, once, without naming a delete button that does not exist yet', async () => {
+  it('captions the list with something true of the weight store too', async () => {
     render(<HealthSection />);
-    const hint = await screen.findByText(/hold results the server already computed/);
-    // The honest version of "it is only derived data": the weight store holds
-    // TRAINED weights, so clearing it costs training time, not a recompute.
-    expect(hint).toHaveTextContent(/for the weight cache that means training time/);
+    // Not "cached results": the third row is node_state_store, which holds
+    // TRAINED layer weights -- not a result of an earlier run, and not
+    // recomputable. What clearing one costs is for the day this list grows a
+    // clear button.
+    const hint = await screen.findByText(/holding in memory from your runs/);
+    expect(screen.getByText('Layer weights kept between runs')).toBeInTheDocument();
+    expect(hint).toHaveTextContent(/saved graphs and files are not in here/);
   });
 
   it('treats a configured budget of 0 as unbounded, not as an exhausted ceiling', async () => {
@@ -95,6 +98,17 @@ describe('HealthSection', () => {
     );
     render(<HealthSection />);
     expect(await screen.findByText('4.0 KB')).toBeInTheDocument();
+  });
+
+  it('shows a store that reports no size at all as 0 B', async () => {
+    // `bytes` is not guaranteed either: CacheUsage is an open map of whatever
+    // that store chose to report, so a store still spinning up (or one whose
+    // payload predates the field) lists at zero rather than blank.
+    mockedFetchHealth.mockResolvedValue(
+      healthBody({ caches: { run_output_store: { runs: 0 } } }),
+    );
+    render(<HealthSection />);
+    expect(await screen.findByText('0 B')).toBeInTheDocument();
   });
 
   it('lists an unknown store under its raw name rather than dropping it', async () => {
@@ -127,7 +141,7 @@ describe('HealthSection', () => {
     mockedFetchHealth.mockRejectedValue(new Error('offline'));
     render(<HealthSection />);
     expect(
-      await screen.findByText('Could not read the server status. Press Refresh to try again.'),
+      await screen.findByText('Could not read the server status. Press Refresh.'),
     ).toBeInTheDocument();
     // A toast would outlive the popover the user opened to read this.
     expect(useToastStore.getState().toasts).toHaveLength(0);
@@ -142,7 +156,7 @@ describe('HealthSection', () => {
     mockedFetchHealth.mockRejectedValueOnce(new Error('offline'));
     fireEvent.click(screen.getByRole('button', { name: 'Refresh server status' }));
 
-    await screen.findByText('Could not read the server status. Press Refresh to try again.');
+    await screen.findByText('Could not read the server status. Press Refresh.');
     // Stale counts plus the warning beat a blank panel: the reader can see
     // WHICH half is untrustworthy.
     expect(screen.getByText('137')).toBeInTheDocument();
@@ -170,13 +184,13 @@ describe('HealthSection', () => {
   it('clears a previous failure once a refresh succeeds', async () => {
     mockedFetchHealth.mockRejectedValueOnce(new Error('offline'));
     render(<HealthSection />);
-    await screen.findByText('Could not read the server status. Press Refresh to try again.');
+    await screen.findByText('Could not read the server status. Press Refresh.');
 
     fireEvent.click(screen.getByRole('button', { name: 'Refresh server status' }));
 
     expect(await screen.findByText('137')).toBeInTheDocument();
     expect(
-      screen.queryByText('Could not read the server status. Press Refresh to try again.'),
+      screen.queryByText('Could not read the server status. Press Refresh.'),
     ).not.toBeInTheDocument();
   });
 
@@ -212,12 +226,12 @@ describe('HealthSection', () => {
   it('renders the zh-TW strings, including the cache caption', async () => {
     useI18n.setState({ locale: 'zh-TW' });
     render(<HealthSection />);
-    expect(await screen.findByText('這台伺服器載入了什麼')).toBeInTheDocument();
+    expect(await screen.findByText('這台伺服器')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: '重新讀取伺服器狀態' })).toBeInTheDocument();
     expect(screen.getByText('版本')).toBeInTheDocument();
-    expect(screen.getByText('節點輸出（每個編輯器連線一份）')).toBeInTheDocument();
+    expect(screen.getByText('節點輸出（每個開啟的編輯器一份）')).toBeInTheDocument();
     // The unit itself stays Latin: "2.0 MB" is how the budget is configured.
     expect(screen.getByText('2.0 MB / 上限 512.0 MB')).toBeInTheDocument();
-    expect(screen.getByText(/這些存放伺服器已經算過的結果/)).toBeInTheDocument();
+    expect(screen.getByText(/因為執行而留在記憶體裡的資料/)).toBeInTheDocument();
   });
 });

@@ -54,8 +54,11 @@ describe('CustomNodeManager', () => {
     render(<CustomNodeManager onClose={vi.fn()} />);
     expect(screen.getByText('Loading...')).toBeTruthy();
     resolveList([]);
+    // Upload .py is the only control in this modal, so its empty state names
+    // it. The sidebar's section keeps the bare `customNodes.empty`: its own
+    // action is the Manage... button that opens this modal.
     expect(
-      await screen.findByText('No custom nodes. Upload a .py file to get started.'),
+      await screen.findByText('No custom nodes yet. Upload a .py file to add one.'),
     ).toBeTruthy();
   });
 
@@ -169,7 +172,7 @@ describe('CustomNodeManager', () => {
       .mockResolvedValueOnce([])
       .mockResolvedValueOnce([customNode({ filename: 'uploaded.py' })]);
     const { container } = render(<CustomNodeManager onClose={vi.fn()} />);
-    await screen.findByText('No custom nodes. Upload a .py file to get started.');
+    await screen.findByText('No custom nodes yet. Upload a .py file to add one.');
     const fileInput = container.querySelector(
       'input[type="file"]',
     ) as HTMLInputElement;
@@ -187,7 +190,7 @@ describe('CustomNodeManager', () => {
   it('upload is a no-op when no file is selected', async () => {
     mockedRest.listCustomNodes.mockResolvedValue([]);
     const { container } = render(<CustomNodeManager onClose={vi.fn()} />);
-    await screen.findByText('No custom nodes. Upload a .py file to get started.');
+    await screen.findByText('No custom nodes yet. Upload a .py file to add one.');
     const fileInput = container.querySelector('input[type="file"]') as HTMLInputElement;
     fireEvent.change(fileInput, { target: { files: [] } });
     expect(mockedRest.uploadCustomNode).not.toHaveBeenCalled();
@@ -197,7 +200,7 @@ describe('CustomNodeManager', () => {
     mockedRest.listCustomNodes.mockResolvedValue([]);
     mockedRest.uploadCustomNode.mockRejectedValue(new Error('upload boom'));
     const { container } = render(<CustomNodeManager onClose={vi.fn()} />);
-    await screen.findByText('No custom nodes. Upload a .py file to get started.');
+    await screen.findByText('No custom nodes yet. Upload a .py file to add one.');
     const fileInput = container.querySelector('input[type="file"]') as HTMLInputElement;
     const file = new File(['x'], 'bad.py');
     fireEvent.change(fileInput, { target: { files: [file] } });
@@ -207,7 +210,7 @@ describe('CustomNodeManager', () => {
   it('the upload button proxies the click to the hidden file input', async () => {
     mockedRest.listCustomNodes.mockResolvedValue([]);
     const { container } = render(<CustomNodeManager onClose={vi.fn()} />);
-    await screen.findByText('No custom nodes. Upload a .py file to get started.');
+    await screen.findByText('No custom nodes yet. Upload a .py file to add one.');
     const fileInput = container.querySelector('input[type="file"]') as HTMLInputElement;
     const clickSpy = vi.spyOn(fileInput, 'click').mockImplementation(() => {});
     fireEvent.click(screen.getByText('Upload .py'));
@@ -218,7 +221,7 @@ describe('CustomNodeManager', () => {
     mockedRest.listCustomNodes.mockResolvedValue([]);
     const onClose = vi.fn();
     const { container } = render(<CustomNodeManager onClose={onClose} />);
-    await screen.findByText('No custom nodes. Upload a .py file to get started.');
+    await screen.findByText('No custom nodes yet. Upload a .py file to add one.');
     // Overlay is the root element.
     const overlay = container.firstChild as HTMLElement;
     fireEvent.click(overlay);
@@ -231,12 +234,12 @@ describe('CustomNodeManager', () => {
     expect(onClose).not.toHaveBeenCalled();
   });
 
-  it('the header close (x) button calls onClose', async () => {
+  it('the header close button calls onClose', async () => {
     mockedRest.listCustomNodes.mockResolvedValue([]);
     const onClose = vi.fn();
     render(<CustomNodeManager onClose={onClose} />);
-    await screen.findByText('No custom nodes. Upload a .py file to get started.');
-    fireEvent.click(screen.getByText('x'));
+    await screen.findByText('No custom nodes yet. Upload a .py file to add one.');
+    fireEvent.click(screen.getByRole('button', { name: 'Close custom node manager' }));
     expect(onClose).toHaveBeenCalledTimes(1);
   });
 });

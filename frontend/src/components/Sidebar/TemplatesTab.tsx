@@ -224,7 +224,6 @@ export function TemplatesTab() {
         >
           {t('gallery.browse')}
         </button>
-        <div className={tabStyles.footerHint}>{t('templates.hint')}</div>
       </div>
     </>
   );

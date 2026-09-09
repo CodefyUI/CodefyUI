@@ -1,5 +1,6 @@
 import { useMemo, useState } from 'react';
 import { createPortal } from 'react-dom';
+import { useI18n } from '../../i18n';
 import styles from './HeatmapPlot.module.css';
 
 export type HeatmapColormap = 'viridis' | 'blues' | 'RdBu';
@@ -379,6 +380,7 @@ export function HeatmapPlot({
   normalizePerRow = false,
   valueRange,
 }: HeatmapPlotProps) {
+  const { t } = useI18n();
   const [hover, setHover] = useState<HoverCell | null>(null);
 
   const panels = useMemo(() => {
@@ -403,7 +405,7 @@ export function HeatmapPlot({
   if (panels.length === 0 || panels[0].matrix.length === 0) {
     return (
       <div className={`${styles.empty} ${className ?? ''}`}>
-        <span>no data</span>
+        <span>{t('plot.noData')}</span>
       </div>
     );
   }
@@ -418,8 +420,11 @@ export function HeatmapPlot({
             e.stopPropagation();
             onExpand();
           }}
-          title="Open larger view"
-          aria-label="Expand heatmap"
+          // One name for the control, on both attributes: a title that says
+          // one thing while the screen reader hears another is two controls
+          // as far as the user can tell. Same key as ScatterPlot's.
+          title={t('scatter.openDetail')}
+          aria-label={t('scatter.openDetail')}
         >
           ⤢
         </button>

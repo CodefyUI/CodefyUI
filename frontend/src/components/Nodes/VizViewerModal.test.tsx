@@ -160,7 +160,7 @@ describe('VizViewerModal', () => {
       </>,
     );
     expect(dialog()).toBeNull();
-    fireEvent.click(screen.getByRole('button', { name: 'Expand heatmap' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Open detailed view' }));
     expect(activeTab().vizModalNodeId).toBe('sa');
     expect(dialog()).toBeTruthy();
 

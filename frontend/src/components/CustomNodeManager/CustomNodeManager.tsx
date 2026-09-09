@@ -80,7 +80,18 @@ export function CustomNodeManager({ onClose }: CustomNodeManagerProps) {
       <div className={styles.modal} onClick={(e) => e.stopPropagation()}>
         <div className={styles.header}>
           <h2 className={styles.title}>{t('customNodes.title')}</h2>
-          <button type="button" className={styles.closeButton} onClick={onClose}>x</button>
+          {/* A multiplication sign with a name on it. The literal letter "x"
+              this used to render was the one untranslated string in the
+              modal, and a screen reader announced the button as "x". */}
+          <button
+            type="button"
+            className={styles.closeButton}
+            onClick={onClose}
+            title={t('customNodes.close')}
+            aria-label={t('customNodes.close')}
+          >
+            &#215;
+          </button>
         </div>
 
         {error && <div className={styles.error}>{error}</div>}
@@ -89,7 +100,7 @@ export function CustomNodeManager({ onClose }: CustomNodeManagerProps) {
           {loading && <div className={styles.message}>{t('customNodes.loading')}</div>}
 
           {!loading && nodes.length === 0 && (
-            <div className={styles.message}>{t('customNodes.empty')}</div>
+            <div className={styles.message}>{t('customNodes.emptyUpload')}</div>
           )}
 
           {!loading && nodes.map((node) => (

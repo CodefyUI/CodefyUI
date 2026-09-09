@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, vi, afterEach } from 'vitest';
 import { render, screen, fireEvent, waitFor, act } from '@testing-library/react';
 import { HeatmapModal } from './HeatmapModal';
+import { useI18n } from '../../i18n';
 
 // Build a square seqLen×seqLen matrix of a constant value.
 function squareMatrix(seqLen: number, val = 0.5): number[][] {
@@ -31,6 +32,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  useI18n.setState({ locale: 'en' });
   g.fetch = originalFetch;
   (window as unknown as { innerWidth: number }).innerWidth = originalInnerWidth;
   (window as unknown as { innerHeight: number }).innerHeight = originalInnerHeight;
@@ -140,7 +142,11 @@ describe('HeatmapModal', () => {
       />,
     );
     await waitFor(() => {
-      expect(screen.getByText(/run is no longer available/i)).toBeTruthy();
+      // The whole sentence, because this string is only ever the tail of
+      // another one and has to end the way the sibling modal's does.
+      expect(
+        screen.getByText("Couldn't load: this run is no longer available."),
+      ).toBeTruthy();
     });
   });
 
@@ -432,8 +438,34 @@ describe('HeatmapModal', () => {
       />,
     );
     await waitFor(() => {
-      expect(screen.getByText(/Expected tensor, got scalar/i)).toBeTruthy();
+      expect(
+        screen.getByText("Couldn't load: expected a tensor; this port holds scalar."),
+      ).toBeTruthy();
     });
+  });
+
+  it('translates the not-a-tensor error', async () => {
+    // It was the one sentence in this modal built from an English literal, so
+    // a zh-TW reader got it in English inside a translated wrapper.
+    useI18n.setState({ locale: 'zh-TW' });
+    mockFetch(200, { type: 'scalar', value: 3 });
+    render(
+      <HeatmapModal
+        isOpen
+        onClose={() => {}}
+        title="t"
+        inlineData={null}
+        runId="r1"
+        nodeId="n1"
+        port="x"
+      />,
+    );
+    await waitFor(() => {
+      expect(
+        screen.getByText('無法載入：需要張量；這個連接埠的資料是 scalar。'),
+      ).toBeTruthy();
+    });
+    expect(screen.queryByText(/tensor, got/i)).toBeNull();
   });
 
   it('shows a stringified error when the rejection has no message', async () => {
@@ -552,7 +584,7 @@ describe('HeatmapModal', () => {
         port="x"
       />,
     );
-    expect(screen.getByText(/Loading full tensor/i)).toBeTruthy();
+    expect(screen.getByText(/Loading tensor/i)).toBeTruthy();
   });
 
   it('shows seq_len = 0 and the fallback panel size for empty data', () => {

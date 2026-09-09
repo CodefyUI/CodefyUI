@@ -420,8 +420,7 @@ const packedDef = (): NodeDefinition => ({
 // The pack is named from this build's own copy, not from the server title
 // above: the Package Center this sentence sends the reader to says the same.
 const PALETTE_SENTENCE =
-  'Needs the Word vectors (GloVe) pack. You can drag it now and install the pack from '
-  + 'the Package Center.';
+  'Needs the Word vectors (GloVe) pack — drag it now, install from the Package Center.';
 
 describe('NodesTab — needs-pack badge', () => {
   it('shows a Needs pack badge for a node whose pack is missing and keeps it draggable', () => {

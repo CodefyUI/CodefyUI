@@ -9,7 +9,7 @@ afterEach(() => {
 describe('ScatterPlot', () => {
   it('renders the empty state when there are no points', () => {
     const { container } = render(<ScatterPlot points={[]} className="extra" />);
-    expect(screen.getByText('no data')).toBeTruthy();
+    expect(screen.getByText('No data')).toBeTruthy();
     // No SVG in the empty branch; wrapper carries the extra class.
     expect(container.querySelector('svg')).toBeNull();
     expect(container.firstElementChild?.className).toContain('extra');
@@ -17,7 +17,7 @@ describe('ScatterPlot', () => {
 
   it('renders the empty state with no className (covers the ?? fallback)', () => {
     const { container } = render(<ScatterPlot points={[]} />);
-    expect(screen.getByText('no data')).toBeTruthy();
+    expect(screen.getByText('No data')).toBeTruthy();
     // className omitted → trailing space only, no extra token.
     expect(container.firstElementChild?.className.trim()).not.toContain(' ');
   });
