@@ -73,8 +73,8 @@ CATALOG: tuple[Pack, ...] = (
         pack_id="sentence-embeddings",
         title="Sentence embeddings",
         description=(
-            "sentence-transformers plus four small embedding models "
-            "(English, multilingual, Chinese) for TextEmbedding and WordVector."
+            "sentence-transformers and four small embedding models "
+            "for TextEmbedding and WordVector."
         ),
         pip=("sentence-transformers>=3.0,<6",),
         probe_modules=("sentence_transformers", "transformers"),
@@ -115,8 +115,8 @@ CATALOG: tuple[Pack, ...] = (
         pack_id="word-vectors",
         title="Word vectors (GloVe)",
         description=(
-            "Real 400k-word GloVe-50d table for WordVector; "
-            "no Python packages needed."
+            "GloVe-50d table, 400k words, for WordVector. "
+            "No Python packages."
         ),
         pip=(),
         probe_modules=(),

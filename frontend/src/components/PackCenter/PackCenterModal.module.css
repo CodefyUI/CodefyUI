@@ -588,13 +588,6 @@
   line-height: var(--lh-normal);
 }
 
-.overallLabel {
-  color: var(--text-muted);
-  font-size: var(--fs-2xs);
-  text-transform: uppercase;
-  letter-spacing: 0.08em;
-}
-
 /* The throttled announcement. Off screen rather than `display: none`, which
    assistive tech ignores; the same text is on screen as the step line and the
    bar's own value, so showing it twice would be the bug. */

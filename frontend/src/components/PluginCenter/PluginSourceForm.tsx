@@ -62,7 +62,6 @@ export function PluginSourceForm({
   inspection, canInstall, onReview,
 }: PluginSourceFormProps) {
   const { t } = useI18n();
-  const inputId = useId();
   const errorId = useId();
   const [source, setSource] = useState('');
   // Typed something that is not a source. Local, because nothing was sent:
@@ -98,10 +97,12 @@ export function PluginSourceForm({
 
   return (
     <form className={styles.sourceForm} onSubmit={submit}>
-      <label htmlFor={inputId}>{t('pluginCenter.source.label')}</label>
+      {/* The disclosure this form opens out of carries the name on screen
+          (`PluginCenterModal`), so a visible label would print it twice; the
+          field keeps it as its accessible name. */}
       <input
-        id={inputId}
         type="text"
+        aria-label={t('pluginCenter.source.label')}
         value={source}
         placeholder={t('pluginCenter.source.placeholder')}
         onChange={(event) => {

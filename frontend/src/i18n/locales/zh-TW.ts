@@ -825,7 +825,7 @@ const zhTW: Record<TranslationKey, string> = {
   // activity pane and the restart overlay. (The toast keys the pack store
   // fires are the block directly above.)
   'packs.title': '套件中心',
-  'packs.subtitle': '安裝選用的模型與函式庫，讓 LLM 節點使用真正的實作',
+  'packs.subtitle': '給 LLM 節點使用的選用模型與函式庫',
   'packs.close': '關閉套件中心',
   'packs.refresh': '重新整理套件狀態',
   'packs.list': '套件清單',
@@ -840,9 +840,10 @@ const zhTW: Record<TranslationKey, string> = {
   // sent, so a newer backend still renders.
   'packs.catalog.sentence-embeddings.title': '句向量模型',
   'packs.catalog.sentence-embeddings.desc':
-    'sentence-transformers 加上四個小型嵌入模型（英文、多語、中文），供 TextEmbedding 與 WordVector 使用',
+    'sentence-transformers 與四個小型嵌入模型，供 TextEmbedding 與 WordVector 使用',
   'packs.catalog.word-vectors.title': '詞向量（GloVe）',
-  'packs.catalog.word-vectors.desc': '給 WordVector 用的真實 40 萬字 GloVe-50d 表；不需要額外 Python 套件',
+  'packs.catalog.word-vectors.desc':
+    '給 WordVector 用的 GloVe-50d 詞向量表（40 萬字），不需 Python 套件',
   'packs.catalog.rag.title': 'RAG 檢索堆疊',
   // 兩句都不再重複下一列已經寫過的事：相依列會帶著即時狀態說「需要先安裝：
   // 句向量模型」，GPU 說明再往下兩列的按鈕就寫著「安裝並重新啟動」。
@@ -873,7 +874,7 @@ const zhTW: Record<TranslationKey, string> = {
   'packs.installSelected': '安裝選取的項目',
   'packs.cancel': '取消安裝',
   'packs.cancelling': '正在取消...',
-  'packs.remoteDisabled': '只能在執行伺服器的那台電腦上安裝。',
+  'packs.remoteDisabled': '只能在執行伺服器的電腦上安裝。',
 
   // Activity pane. `packs.activity.step.*` is keyed by the step id the job
   // sends, so an unknown step falls back to the server's own English label.
@@ -885,7 +886,6 @@ const zhTW: Record<TranslationKey, string> = {
   'packs.activity.step.download': '正在下載 {item}',
   'packs.activity.step.convert': '正在整理 {item}',
   'packs.activity.step.verify': '正在驗證安裝結果',
-  'packs.activity.overall': '整體進度',
   'packs.activity.progressAria': '安裝進度',
   'packs.activity.log': '安裝紀錄',
   'packs.activity.logEmpty': '等待第一則訊息...',
@@ -894,10 +894,9 @@ const zhTW: Record<TranslationKey, string> = {
   'packs.activity.cancelled': '已取消安裝。',
   'packs.activity.needsRestart': '已安裝，但伺服器需要重新啟動後 {pack} 才能使用。',
   'packs.activity.needsRestartConflict':
-    '安裝停住了：它得替換伺服器已載入的套件。重新啟動伺服器才能完成。',
+    '沒有安裝任何東西：它會替換伺服器正在使用的套件。重新啟動伺服器才能完成。',
   'packs.activity.lost': '與伺服器失去聯繫。請重新整理以確認套件狀態。',
   'packs.activity.dismiss': '關閉',
-  'packs.activity.restartAndInstall': '重新啟動伺服器並安裝',
   'packs.activity.restartAndInstallNote':
     '伺服器會重新啟動以安裝 Python 套件；模型請在之後用一般安裝再下載。',
 
@@ -908,14 +907,14 @@ const zhTW: Record<TranslationKey, string> = {
   'packs.gpu.installed': '目前安裝：{variant}',
   'packs.gpu.recommended': '建議安裝：{variant}',
   'packs.gpu.variant': 'PyTorch 版本',
-  'packs.gpu.restartNote': '有圖在執行時不會開始。',
+  'packs.gpu.restartNote': '有圖在執行時不會重新啟動。',
   'packs.gpu.restartConfirm': '要安裝 {variant} 並重新啟動伺服器嗎？',
   'packs.gpu.installRestart': '安裝並重新啟動',
   'packs.gpu.devMode':
     '你是用 cdui dev 啟動的，伺服器無法自行重新啟動。請在後端的終端機執行下面的指令，再重新啟動：',
-  'packs.gpu.notYet': '目前還無法在程式內切換 PyTorch 版本。請先停止伺服器，再於終端機執行：',
+  'packs.gpu.notYet': '目前無法在程式內切換 PyTorch 版本。請停止伺服器後執行：',
   'packs.gpu.noCommand': '伺服器沒有提供安裝指令。請參考 README 的 GPU 安裝步驟。',
-  'packs.manualCommand': '手動安裝指令',
+  'packs.manualCommand': '手動指令',
   'packs.copy': '複製指令',
   'packs.copied': '已複製到剪貼簿。',
   'packs.copyFailed': '無法複製，請手動選取文字後複製。',
@@ -994,11 +993,11 @@ const zhTW: Record<TranslationKey, string> = {
   'pluginCenter.uninstall': '解除安裝',
   'pluginCenter.uninstallConfirm':
     '要解除安裝「{plugin}」嗎？使用它節點的圖將無法執行；它安裝的 Python 套件會保留。',
-  'pluginCenter.source.invalid': '請輸入內建套件名稱、owner/repo[@ref] 或 GitHub URL。',
+  'pluginCenter.source.invalid': '請輸入 owner/repo[@ref] 或 GitHub URL。',
 
   // The panel: chrome, list states, filter.
   'pluginCenter.title': '外掛中心',
-  'pluginCenter.subtitle': '安裝教學節點套件與 GitHub 上的外掛',
+  'pluginCenter.subtitle': '教學節點套件與 GitHub 外掛',
   'pluginCenter.close': '關閉外掛中心',
   'pluginCenter.refresh': '重新整理外掛狀態',
   'pluginCenter.list': '外掛清單',
@@ -1008,14 +1007,14 @@ const zhTW: Record<TranslationKey, string> = {
   'pluginCenter.empty': '目前沒有可安裝的外掛',
   'pluginCenter.filter.all': '全部',
   'pluginCenter.filter.installed': '已安裝',
-  'pluginCenter.filter.available': '可安裝',
+  'pluginCenter.filter.available': '未安裝',
 
   // Where a plugin came from.
   'pluginCenter.origin.builtin': '內建',
   'pluginCenter.origin.official': '官方',
   'pluginCenter.origin.local': '本機連結',
   'pluginCenter.homepage': '首頁',
-  'pluginCenter.chapters': '章節：{chapters}',
+  'pluginCenter.chapters': '課程：{chapters}',
 
   // The two states a pack has no word for.
   'pluginCenter.status.removed': '已移除',
@@ -1032,7 +1031,7 @@ const zhTW: Record<TranslationKey, string> = {
   'pluginCenter.source.label': '從 GitHub 安裝',
   'pluginCenter.source.placeholder': 'owner/repo[@ref] 或 GitHub URL',
   'pluginCenter.source.review': '檢視',
-  'pluginCenter.source.reviewing': '正在下載...',
+  'pluginCenter.source.reviewing': '檢視中...',
   'pluginCenter.source.fail': '無法取得 {source}：{message}',
   'pluginCenter.source.unknownName': '沒有名為「{source}」的外掛。',
   'pluginCenter.source.knownNames': '這台伺服器可安裝：{known}',
@@ -1043,15 +1042,15 @@ const zhTW: Record<TranslationKey, string> = {
   'pluginCenter.review.nodes': '節點：{nodes}',
   'pluginCenter.review.capabilities': '這個外掛要求：',
   'pluginCenter.review.capNote':
-    '授予是一種聲明，不是沙箱：外掛可使用這些模組，之後不會再詢問。',
+    '授予只是聲明，執行時不會強制限制；外掛之後不會再詢問。',
   'pluginCenter.review.grant': '同意授予這些能力',
-  'pluginCenter.review.trust': '我信任這位作者。允許使用：{modules}',
+  'pluginCenter.review.trust': '信任這位作者，允許匯入 {modules}',
   'pluginCenter.review.frontend': '包含會在編輯器中以完整權限執行的 JavaScript。',
   'pluginCenter.error.idTakenByRoute': 'id「{id}」是 CodefyUI 本身保留的名稱。',
   'pluginCenter.error.idTakenByPack': 'id「{id}」是內建套件保留的名稱。',
   'pluginCenter.error.idTakenByRepo': 'id「{id}」屬於 {repo}，無法從這個來源安裝或更新。',
   'pluginCenter.error.idTaken': 'id「{id}」已經屬於另一個外掛。',
-  'pluginCenter.review.alreadyInstalled': '{plugin} 已安裝。重新安裝會以這個版本取代現有的安裝。',
+  'pluginCenter.review.alreadyInstalled': '{plugin} 已安裝。重新安裝會換成這個版本。',
 
   // One line per declared capability, each saying what granting it costs.
   'pluginCenter.cap.network': 'network：可連線任何主機，並把下載內容寫入磁碟',
@@ -1067,12 +1066,12 @@ const zhTW: Record<TranslationKey, string> = {
   'pluginCenter.activity.updated': '已更新 {plugin}。',
   'pluginCenter.activity.lost': '與伺服器失去聯繫。請重新整理以確認外掛狀態。',
   'pluginCenter.activity.needsRestart':
-    '安裝在改動任何東西前停住了：{plugin} 的 Python 套件會替換伺服器已載入的套件。'
-    + '先停止伺服器並執行這行指令，再重新安裝：',
+    '沒有安裝任何東西：{plugin} 的 Python 套件會替換伺服器正在使用的套件。'
+    + '請停止伺服器，執行這行後再安裝一次：',
   'pluginCenter.activity.cliFallback': '或在終端機安裝：',
   // What an uninstall leaves behind; a command follows each of these.
   'pluginCenter.activity.depsLeft':
-    '這些 Python 套件還留著：{packages}。先停止伺服器，再用這行移除：',
+    '這些 Python 套件還留著：{packages}。要移除的話，請停止伺服器後執行：',
   'pluginCenter.activity.reinstall': '要再安裝回來：',
 
   // The steps of an install; `deps` reuses `packs.activity.step.pip`.
@@ -1085,7 +1084,6 @@ const zhTW: Record<TranslationKey, string> = {
   'pluginCenter.step.reload': '正在載入節點',
 
   // The refusals whose entire body is a code.
-  'pluginCenter.error.unavailable': '這台伺服器不支援外掛中心。請更新 CodefyUI 後重新啟動。',
   'pluginCenter.error.inspectionExpired': '檢視已過期，請重新檢視來源。',
   'pluginCenter.error.unknownJob': '找不到這個安裝，請重新整理。',
   'pluginCenter.error.notInstalled': '這個外掛已不在安裝清單中，請重新整理。',

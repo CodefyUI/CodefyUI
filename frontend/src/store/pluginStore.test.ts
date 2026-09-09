@@ -655,7 +655,7 @@ describe('pluginStore — inspect', () => {
       // Nothing was refused, so there is no code to carry: this build knows
       // on its own that the shape is not one the server could resolve.
       failure: {
-        message: 'Enter a catalog name, owner/repo[@ref] or a GitHub URL.',
+        message: 'Enter owner/repo[@ref] or a GitHub URL.',
         code: null,
         detail: null,
       },
@@ -689,7 +689,7 @@ describe('pluginStore — inspect', () => {
       phase: 'error',
       source: 'owner/demo@..',
       failure: {
-        message: 'Enter a catalog name, owner/repo[@ref] or a GitHub URL.',
+        message: 'Enter owner/repo[@ref] or a GitHub URL.',
         code: 'unparseable_source',
         detail: { code: 'unparseable_source' },
       },
@@ -726,7 +726,7 @@ describe('pluginStore — inspect', () => {
     const state = usePluginStore.getState();
     if (state.inspection.phase !== 'error') throw new Error('not an error phase');
     expect(state.inspection.failure.message).toBe(
-      'Installing is only allowed from the computer that runs the server.',
+      'Installing works only from the computer that runs the server.',
     );
   });
 
@@ -1006,7 +1006,7 @@ describe('pluginStore — installInspected', () => {
     });
 
     expect(lastToast().message).toBe(
-      'Installing is only allowed from the computer that runs the server.',
+      'Installing works only from the computer that runs the server.',
     );
     expect(lastToast().type).toBe('error');
   });
@@ -1333,7 +1333,7 @@ describe('pluginStore — uninstall', () => {
     await usePluginStore.getState().uninstall('demo');
 
     expect(lastToast().message).toBe(
-      'Installing is only allowed from the computer that runs the server.',
+      'Installing works only from the computer that runs the server.',
     );
     expect(lastToast().type).toBe('error');
   });

@@ -549,7 +549,7 @@ function onJobSettled(jobId: string, packId: string, status: PackJobStatus): voi
         // restart itself and said so by offering the retry mode. `needsCli`
         // — "cannot be installed from inside the app" — is the one sentence
         // that is flatly false here: the panel's banner is rendering a
-        // **Restart the server and install** button that does exactly this.
+        // **Install and restart** button that does exactly this.
         // So the toast points at the panel, and carries the click, rather
         // than handing over a command the user does not need.
         toast(t('packs.toast.restartRetry'), 'warning', openCenterAction(packId));

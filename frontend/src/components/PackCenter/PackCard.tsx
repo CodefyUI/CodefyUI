@@ -117,8 +117,8 @@ export function PackCard({
     : blockedBy.length > 0
       ? t('packs.dependsOnMissing', { pack: localizedPackTitle(t, byId, blockedBy[0]) })
       : nothingToDo
-        // Its own sentence, not another control's label: a tooltip explaining
-        // why a button is dead has to say what to DO next.
+        // A tooltip explaining why a button is dead has to say what to DO
+        // next, so this is an instruction of its own.
         ? t('packs.selectSomething')
         : undefined;
 

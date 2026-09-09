@@ -281,11 +281,11 @@ describe('PackCenterModal — installing', () => {
     expect(button).toBeDisabled();
     expect(button).toHaveAttribute(
       'title',
-      'Installing is only allowed from the computer that runs the server.',
+      'Installing works only from the computer that runs the server.',
     );
     // And said once in the footer, where it does not need a hover to find.
     expect(
-      screen.getByText('Installing is only allowed from the computer that runs the server.'),
+      screen.getByText('Installing works only from the computer that runs the server.'),
     ).toBeInTheDocument();
     expect(actions.install).not.toHaveBeenCalled();
   });
@@ -605,11 +605,11 @@ describe('PackCenterModal — the activity pane', () => {
     // No button on this banner, so the command is the only way through and
     // stays open — never behind a disclosure.
     expect(within(banner).getByText('cdui install --gpu cu128')).toBeVisible();
-    expect(within(banner).queryByText('Manual install command')).toBeNull();
+    expect(within(banner).queryByText('Manual command')).toBeNull();
     expect(within(banner).getByRole('button', { name: 'Copy command' })).toBeInTheDocument();
     // No retry: this job never said a restart would finish it.
     expect(
-      within(banner).queryByRole('button', { name: 'Restart the server and install' }),
+      within(banner).queryByRole('button', { name: 'Install and restart' }),
     ).toBeNull();
   });
 
@@ -634,7 +634,7 @@ describe('PackCenterModal — the activity pane', () => {
     const banner = screen.getByRole('status');
     expect(
       within(banner).getByText(
-        'The install stopped: it would replace a package the server has loaded. '
+        'Nothing was installed: it would replace a package the server is using. '
         + 'Restart the server to finish it.',
       ),
     ).toBeInTheDocument();
@@ -658,7 +658,7 @@ describe('PackCenterModal — the activity pane', () => {
     render(<PackCenterModal />);
 
     const banner = screen.getByRole('status');
-    expect(within(banner).getByText(/^The install stopped:/)).toBeInTheDocument();
+    expect(within(banner).getByText(/^Nothing was installed:/)).toBeInTheDocument();
   });
 
   it('offers to restart and install when a live install stopped and both sides agree', async () => {
@@ -681,13 +681,13 @@ describe('PackCenterModal — the activity pane', () => {
     const banner = screen.getByRole('status');
     // The command stays: the same install, by hand, for whoever prefers it —
     // but folded, because the button beside it does the same thing.
-    const summary = within(banner).getByText('Manual install command');
+    const summary = within(banner).getByText('Manual command');
     expect(within(banner).getByText('cdui packs install rag --restart')).not.toBeVisible();
     fireEvent.click(summary);
     expect(within(banner).getByText('cdui packs install rag --restart')).toBeVisible();
 
     fireEvent.click(
-      within(banner).getByRole('button', { name: 'Restart the server and install' }),
+      within(banner).getByRole('button', { name: 'Install and restart' }),
     );
 
     await waitFor(() => expect(useDialogStore.getState().active).not.toBeNull());
@@ -717,7 +717,8 @@ describe('PackCenterModal — the activity pane', () => {
     open();
     render(<PackCenterModal />);
 
-    fireEvent.click(screen.getByRole('button', { name: 'Restart the server and install' }));
+    const banner = screen.getByRole('status');
+    fireEvent.click(within(banner).getByRole('button', { name: 'Install and restart' }));
     await waitFor(() => expect(useDialogStore.getState().active).not.toBeNull());
 
     act(() => {
@@ -740,7 +741,8 @@ describe('PackCenterModal — the activity pane', () => {
     open();
     render(<PackCenterModal />);
 
-    fireEvent.click(screen.getByRole('button', { name: 'Restart the server and install' }));
+    const banner = screen.getByRole('status');
+    fireEvent.click(within(banner).getByRole('button', { name: 'Install and restart' }));
     await waitFor(() => expect(useDialogStore.getState().active).not.toBeNull());
     act(() => useDialogStore.getState().close(false));
 
@@ -768,7 +770,7 @@ describe('PackCenterModal — the activity pane', () => {
 
     const banner = screen.getByRole('status');
     expect(
-      within(banner).queryByRole('button', { name: 'Restart the server and install' }),
+      within(banner).queryByRole('button', { name: 'Install and restart' }),
     ).toBeNull();
     expect(within(banner).getByText('cdui install --gpu cu128')).toBeInTheDocument();
   });
@@ -784,7 +786,8 @@ describe('PackCenterModal — the activity pane', () => {
     render(<PackCenterModal />);
 
     expect(
-      screen.getByRole('button', { name: 'Restart the server and install' }),
+      within(screen.getByRole('status'))
+        .getByRole('button', { name: 'Install and restart' }),
     ).toBeDisabled();
   });
 
@@ -798,11 +801,12 @@ describe('PackCenterModal — the activity pane', () => {
     open();
     render(<PackCenterModal />);
 
-    const button = screen.getByRole('button', { name: 'Restart the server and install' });
+    const button = within(screen.getByRole('status'))
+      .getByRole('button', { name: 'Install and restart' });
     expect(button).toBeDisabled();
     expect(button).toHaveAttribute(
       'title',
-      'Installing is only allowed from the computer that runs the server.',
+      'Installing works only from the computer that runs the server.',
     );
   });
 
@@ -824,7 +828,7 @@ describe('PackCenterModal — the activity pane', () => {
 
     const banner = screen.getByRole('status');
     expect(
-      within(banner).queryByRole('button', { name: 'Restart the server and install' }),
+      within(banner).queryByRole('button', { name: 'Install and restart' }),
     ).toBeNull();
     expect(within(banner).getByText('cdui packs install rag --restart')).toBeInTheDocument();
   });

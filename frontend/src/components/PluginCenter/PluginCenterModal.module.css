@@ -39,9 +39,33 @@
 
 /* ── The source box ─────────────────────────────────────────────────────── */
 
-/* Installing something the catalog does not list: a label, a field and the
-   Review button on one row, wrapping rather than shrinking the field into
-   uselessness. Rendered by `PluginSourceForm`. */
+/* Installing something the catalog does not list: the field and the Review
+   button on one row, wrapping so the field never shrinks below a whole
+   `owner/repo@ref`. Rendered by `PluginSourceForm`, inside the disclosure
+   below.
+
+   One line until it is asked for. The panel is a catalog — every row has its
+   own Install button — and typing a repository is the rare way in, so the box
+   is not what the panel opens on. Folding it is also what puts the filter bar
+   directly above the rows it filters. */
+.sourceDisclosure {
+  margin: 0;
+}
+
+.sourceDisclosure > summary {
+  color: var(--text-secondary);
+  font-size: var(--fs-sm);
+  cursor: pointer;
+}
+
+.sourceDisclosure > summary:hover {
+  color: var(--accent);
+}
+
+.sourceDisclosure > *:not(summary) {
+  margin-top: var(--sp-2);
+}
+
 .sourceForm {
   display: flex;
   align-items: center;
@@ -130,7 +154,7 @@
 
 /* ── The filter ─────────────────────────────────────────────────────────── */
 
-/* All | Installed | Available. The pressed one is styled through
+/* All | Installed | Not installed. The pressed one is styled through
    `aria-pressed` rather than a second class, so what a screen reader is told
    and what the eye is shown cannot disagree. */
 .filterBar {

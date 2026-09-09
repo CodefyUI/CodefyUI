@@ -877,8 +877,7 @@ const en = {
   // activity pane and the restart overlay. (The toast keys the pack store
   // fires are the block directly above.)
   'packs.title': 'Package Center',
-  'packs.subtitle':
-    'Install optional models and libraries so LLM nodes can use real implementations',
+  'packs.subtitle': 'Optional models and libraries for the LLM nodes',
   'packs.close': 'Close Package Center',
   'packs.refresh': 'Refresh pack status',
   'packs.list': 'Pack list',
@@ -894,10 +893,10 @@ const en = {
   // sent, so a newer backend still renders.
   'packs.catalog.sentence-embeddings.title': 'Sentence embeddings',
   'packs.catalog.sentence-embeddings.desc':
-    'sentence-transformers plus four small embedding models (English, multilingual, Chinese) for TextEmbedding and WordVector',
+    'sentence-transformers and four small embedding models for TextEmbedding and WordVector',
   'packs.catalog.word-vectors.title': 'Word vectors (GloVe)',
   'packs.catalog.word-vectors.desc':
-    'Real 400k-word GloVe-50d table for WordVector; no Python packages needed',
+    'GloVe-50d table, 400k words, for WordVector. No Python packages.',
   'packs.catalog.rag.title': 'RAG stack',
   // Neither of these names what the row under it already says: the dependency
   // line carries "Requires: Sentence embeddings" with its live state, and the
@@ -933,13 +932,14 @@ const en = {
   // does not print it once as prose and again as a button.
   'packs.dependsOnLabel': 'Requires:',
   'packs.dependsOnMissing': 'Install {pack} first',
-  // Why the Install button is dead, on its tooltip. A sentence rather than the
-  // other button's label: a disabled control has to say what to DO next.
-  'packs.selectSomething': 'Tick at least one item to install',
+  // Why the Install button is dead, on its tooltip. A disabled control has to
+  // say what to DO next, so this is an instruction; "to install" is dropped
+  // because it restated the button it hangs off.
+  'packs.selectSomething': 'Tick at least one item',
   'packs.installSelected': 'Install selected',
   'packs.cancel': 'Cancel install',
   'packs.cancelling': 'Cancelling...',
-  'packs.remoteDisabled': 'Installing is only allowed from the computer that runs the server.',
+  'packs.remoteDisabled': 'Installing works only from the computer that runs the server.',
 
   // Activity pane. `packs.activity.step.*` is keyed by the step id the job
   // sends, so an unknown step falls back to the server's own English label.
@@ -953,7 +953,6 @@ const en = {
   'packs.activity.step.download': 'Downloading {item}',
   'packs.activity.step.convert': 'Preparing {item}',
   'packs.activity.step.verify': 'Verifying the installation',
-  'packs.activity.overall': 'Overall progress',
   'packs.activity.progressAria': 'Install progress',
   'packs.activity.log': 'Install log',
   'packs.activity.logEmpty': 'Waiting for the first message...',
@@ -967,12 +966,10 @@ const en = {
   // false — and the restart is what would let it start, not what would let
   // it be used.
   'packs.activity.needsRestartConflict':
-    'The install stopped: it would replace a package the server has loaded. Restart the server to finish it.',
+    'Nothing was installed: it would replace a package the server is using. '
+    + 'Restart the server to finish it.',
   'packs.activity.lost': 'Lost contact with the server. Refresh to check the pack status.',
   'packs.activity.dismiss': 'Dismiss',
-  // Offered only when the server said it can restart itself AND the job that
-  // stopped said a restart is what would finish it.
-  'packs.activity.restartAndInstall': 'Restart the server and install',
   // The confirm body, and the one thing that would otherwise surprise the
   // user: the helper that runs during the restart installs PACKAGES. It runs
   // from an interpreter with none of this app's downloader in it, so a pack's
@@ -991,19 +988,24 @@ const en = {
   // The one condition under which the button declines — and only that. That
   // the server restarts is already the button's own label and the confirm
   // dialog's question; this is the half neither of them says.
-  'packs.gpu.restartNote': 'It will not start while a graph is running.',
+  'packs.gpu.restartNote': 'The restart is blocked while a graph is running.',
   'packs.gpu.restartConfirm': 'Install {variant} and restart the server?',
+  // One name for one act, wherever it is offered: this card's button, and the
+  // activity pane's retry after a live install stopped on a resolver conflict.
+  // Both restart the server and install into it, so both say the same words —
+  // including in the confirm dialog each of them raises.
   'packs.gpu.installRestart': 'Install and restart',
   'packs.gpu.devMode':
     'You started CodefyUI with cdui dev, so the server cannot restart itself. Run this in the backend terminal, then start it again:',
   'packs.gpu.notYet':
-    'Switching the PyTorch build from inside the app is not available yet. Run this in a terminal with the server stopped:',
+    'Switching the PyTorch build in the app is not available yet. Stop the server, then run:',
   'packs.gpu.noCommand':
     'The server did not provide an install command. See the README for the GPU install steps.',
   // The disclosure label wherever a command block sits under a button that
-  // does the same thing: the command is then a choice, not the only way
-  // through, and it costs one folded line instead of three open ones.
-  'packs.manualCommand': 'Manual install command',
+  // does the same thing: the button is the shorter way through, so the command
+  // is one folded line for whoever prefers a terminal. "install" is dropped
+  // because the panel around it has said so twice already.
+  'packs.manualCommand': 'Manual command',
   'packs.copy': 'Copy command',
   'packs.copied': 'Copied to clipboard.',
   'packs.copyFailed': 'Could not copy. Select the text and copy it by hand.',
@@ -1116,27 +1118,33 @@ const en = {
   'pluginCenter.uninstallConfirm':
     'Uninstall {plugin}? Graphs that use its nodes will stop running. '
     + 'Its Python packages stay installed.',
-  'pluginCenter.source.invalid':
-    'Enter a catalog name, owner/repo[@ref] or a GitHub URL.',
+  // A bare catalog name still parses (`parseGitHubSource`), and a name this
+  // build does not have gets its own refusal with the list of names that WOULD
+  // work — so this one names only what the label and the placeholder do.
+  'pluginCenter.source.invalid': 'Enter owner/repo[@ref] or a GitHub URL.',
 
   // The panel: its chrome, what the list can be saying instead of rows, and
   // the filter over them.
   'pluginCenter.title': 'Plugin Center',
-  'pluginCenter.subtitle': 'Install packs of teaching nodes, and plugins from GitHub',
+  'pluginCenter.subtitle': 'Teaching node packs and GitHub plugins',
   'pluginCenter.close': 'Close Plugin Center',
   'pluginCenter.refresh': 'Refresh plugin status',
   'pluginCenter.list': 'Plugin list',
   'pluginCenter.loading': 'Loading plugins...',
   'pluginCenter.loadFail': 'Failed to load plugins: {error}',
-  // A server older than the Plugin Center. `pluginCenter.error.unavailable`
-  // says the same sentence about a server whose plugin service is not up:
-  // the cause differs, what the user does about it does not.
+  // Two servers, one sentence: this build predates the Plugin Center, or its
+  // plugin service is not up. `pluginStore` maps the `unavailable` refusal
+  // here as well — the cause differs, what the user does about it is the same,
+  // and one key is one thing to keep in step across two locales.
   'pluginCenter.unsupported':
     'This server has no Plugin Center. Update CodefyUI and restart it.',
   'pluginCenter.empty': 'No plugins are available',
   'pluginCenter.filter.all': 'All',
   'pluginCenter.filter.installed': 'Installed',
-  'pluginCenter.filter.available': 'Available',
+  // The word the rows use: the pill on every row this reveals reads
+  // "Not installed" (`pluginStatus.ts` maps `available` to
+  // `packs.status.not_installed`), so the filter reads the same.
+  'pluginCenter.filter.available': 'Not installed',
 
   // Where a plugin came from. A plain third-party repository gets no chip --
   // the card prints owner/repo, and "GitHub" over a GitHub link says it twice.
@@ -1164,7 +1172,7 @@ const en = {
   'pluginCenter.source.label': 'Install from GitHub',
   'pluginCenter.source.placeholder': 'owner/repo[@ref] or GitHub URL',
   'pluginCenter.source.review': 'Review',
-  'pluginCenter.source.reviewing': 'Downloading...',
+  'pluginCenter.source.reviewing': 'Reviewing...',
   'pluginCenter.source.fail': 'Could not fetch {source}: {message}',
   // A bare word that is not one of this build's packs. The refusal is a code
   // with no sentence in it, and no sentence written on the server could have
@@ -1179,13 +1187,14 @@ const en = {
   'pluginCenter.review.author': 'Author: {author}',
   'pluginCenter.review.nodes': 'Nodes: {nodes}',
   'pluginCenter.review.capabilities': 'This plugin asks for:',
-  // Says what granting is and is not: "capabilities" reads like a sandbox,
-  // and this is a declaration -- nothing here is enforced at runtime.
+  // The word "capabilities" suggests a sandbox, so the caption states what
+  // granting does: it records a declaration, and nothing enforces it while the
+  // plugin runs.
   'pluginCenter.review.capNote':
-    'Granting is a declaration, not a sandbox: the plugin may use these '
-    + 'modules and will not be asked again.',
+    'Granting is a declaration. Nothing is enforced at runtime, and the '
+    + 'plugin will not ask again.',
   'pluginCenter.review.grant': 'Grant these capabilities',
-  'pluginCenter.review.trust': 'I trust this author. Allows: {modules}',
+  'pluginCenter.review.trust': 'Trust this author to import {modules}',
   'pluginCenter.review.frontend':
     'Ships JavaScript that runs in this editor with full access.',
   // Which of the three things holds the id. The server sends a `holder`
@@ -1200,8 +1209,7 @@ const en = {
   // The 409 the store treats as an OFFER, said out loud: without it the only
   // sign is the Install button coming back as Reinstall.
   'pluginCenter.review.alreadyInstalled':
-    '{plugin} is already installed. Reinstall replaces the installed copy '
-    + 'with this one.',
+    '{plugin} is already installed. Reinstall replaces it with this version.',
 
   // One line per declared capability, each saying what granting it COSTS
   // rather than what it is called. An id this build has no line for is
@@ -1224,17 +1232,16 @@ const en = {
   // Ends in a colon because a `CommandBlock` follows it, and the command is a
   // `uv pip install` line to run with the server STOPPED -- not a restart.
   'pluginCenter.activity.needsRestart':
-    "The install stopped before changing anything: {plugin}'s Python packages "
-    + 'would replace one the server has loaded. With the server stopped, run this, '
-    + 'then install again:',
+    "Nothing was installed: {plugin}'s Python packages would replace one the "
+    + 'server is using. Stop the server, run this, then install again:',
   'pluginCenter.activity.cliFallback': 'Or install from a terminal:',
   // What an uninstall leaves behind. Nothing removes a plugin's pip packages
   // -- not the panel, not the CLI -- so the honest ending names them and
   // hands over the line that finishes the job. Both end in a colon because a
   // command follows.
   'pluginCenter.activity.depsLeft':
-    'These Python packages stay installed: {packages}. With the server '
-    + 'stopped, this removes them:',
+    'These Python packages stay installed: {packages}. To remove them, stop '
+    + 'the server and run:',
   'pluginCenter.activity.reinstall': 'To install the plugin again:',
 
   // The steps of an install, in the order they run. There is no `step.deps`
@@ -1250,8 +1257,6 @@ const en = {
   // The refusals whose entire body is a code: these routes answer
   // `{detail: {code: ...}}` with no message at all, so without a sentence
   // here the panel shows the raw token -- "inspection_expired".
-  'pluginCenter.error.unavailable':
-    'This server has no Plugin Center. Update CodefyUI and restart it.',
   'pluginCenter.error.inspectionExpired': 'The review expired. Review the source again.',
   'pluginCenter.error.unknownJob': 'That install is no longer tracked. Refresh.',
   // A row for a plugin that has since been removed somewhere else: the button
