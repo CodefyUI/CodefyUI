@@ -722,11 +722,27 @@ async function startInstall(
       // install is already running" and refresh the offer away.
       attachInspectionFailure(err);
     } else if (err instanceof ApiError && err.status === 409) {
-      // Somebody else got there first — this tab, another tab, or the CLI.
-      // The refresh adopts whatever the server IS running, which is more
-      // useful than the refusal.
-      toast(t('packs.toast.busy'), 'warning');
-      await store.refresh();
+      if (code === 'pack_install_running') {
+        // `plugins.service.PACK_INSTALL_RUNNING`: a PACK install owns the
+        // interpreter both installers write into. No refresh here, because
+        // this catalog's `active_job` is this service's own slot and can
+        // never carry a pack's job — re-reading it would leave the activity
+        // pane saying nothing is installing directly under a toast that says
+        // something is. The toast is therefore the whole answer, and it
+        // carries the way to the panel that IS showing the job. Opened
+        // unfocused: the refusal names the job in the way by `job_id`, and
+        // `openPackCenter` focuses by PACK id.
+        toast(t('pluginCenter.toast.packBusy'), 'warning', {
+          label: t('packs.toast.openCenter'),
+          onClick: () => useUIStore.getState().openPackCenter(),
+        });
+      } else {
+        // Somebody else got there first — this tab, another tab, or the CLI.
+        // The refresh adopts whatever the server IS running, which is more
+        // useful than the refusal.
+        toast(t('packs.toast.busy'), 'warning');
+        await store.refresh();
+      }
     } else if (err instanceof ApiError && err.status === 403) {
       toast(t('packs.remoteDisabled'), 'error');
     } else {

@@ -47,8 +47,17 @@ from pathlib import Path
 
 from .errors import PackCancelled
 
-#: How many output lines to keep for a failure message. Enough to hold uv's
-#: whole "No solution found" explanation, short enough to put in a toast.
+#: How many output lines to keep for a failure message. This is the DISPLAY
+#: window: short enough to put in a toast, and far too short to hold uv's
+#: "No solution found" explanation, which states its verdict near the top --
+#: ahead of a derivation that can run to hundreds of lines -- and never
+#: restates it. Deciding "was this a resolver conflict?" from this window is
+#: how a recoverable conflict got reported as an unexplained crash: the last
+#: 40 lines of that derivation are an indented ``transformers==5.4.0``
+#: enumeration with no marker in them. :func:`run_pip` classifies from every
+#: line as it streams past instead, so CLASSIFICATION no longer depends on
+#: this number. The failure MESSAGE still does -- ``packs.flows`` and
+#: ``plugins.deps`` build their detail text out of the tail this bounds.
 TAIL_LINES = 40
 
 #: How often the caller's thread asks "finished? cancelled?". A quarter of a
@@ -79,7 +88,11 @@ KILL_TIMEOUT_S = 10
 #: would answer a broken toolchain with "restart the server and try again".
 #: uv puts its markers first on the line, behind nothing but indentation and
 #: a bullet -- ``x``, ``\u00d7`` or a box-drawing gutter -- which is what the
-#: leading group skips. Matched case-insensitively, on the joined output.
+#: leading group skips. Matched case-insensitively. ``re.MULTILINE`` anchors
+#: it to each line rather than to the text as a whole, and nothing in it
+#: spans a newline, so scanning one line at a time as the output arrives
+#: gives the same answer as scanning the joined output afterwards -- which
+#: is what lets :func:`run_pip` classify a run it has not finished reading.
 _CONFLICT_PATTERN = re.compile(
     r"^[^\w\n]*(?:x[^\w\n]+)?"
     r"(?:no solution found|because\b|constraint\b)",
@@ -129,6 +142,10 @@ def looks_like_resolver_conflict(lines: Sequence[str]) -> bool:
     The distinction decides what the user is told to do next: a resolver
     conflict means "this cannot be done inside the running server, restart
     and try again", while a failed download means "try again".
+
+    Takes a sequence so a caller can ask about a whole captured run, and
+    :func:`run_pip` asks about a single line at a time -- see the pattern's
+    note above for why the two agree.
     """
     return _CONFLICT_PATTERN.search("\n".join(lines).lower()) is not None
 
@@ -238,6 +255,7 @@ def run_pip(
     cancel_check: Callable[[], bool],
     cwd: Path,
     tail: list[str] | None = None,
+    conflict: threading.Event | None = None,
 ) -> int:
     """Install *specs* with uv, streaming output as ``log`` events.
 
@@ -250,6 +268,18 @@ def run_pip(
     output, which is what a caller builds a failure message from. It is an
     argument rather than a return value because the exit code is the thing
     every caller needs and the output is the thing only a failing one does.
+
+    *conflict* -- when given -- is SET the moment a line looks like a
+    resolver conflict, and is the only trustworthy answer to "was it one?".
+    A caller cannot work that out from *tail* afterwards: uv announces "No
+    solution found" near the top of its output and then derives that verdict
+    over as many lines as the conflict takes -- hundreds of them, without
+    ever restating it -- so by the end the tail holds a version enumeration
+    and the marker is long gone. Here, in the one place that sees every
+    line, the question is asked before any line is dropped. An
+    :class:`~threading.Event` rather than a list because the writer is the
+    daemon reader thread and the reader is the caller's thread after
+    ``reader.join``.
     """
     argv = pip_install_argv(specs, constraints_path=constraints_path)
     emit({"type": "log", "line": " ".join(argv)})
@@ -284,6 +314,9 @@ def run_pip(
                 if tail is not None:
                     tail.append(line)
                     del tail[:-TAIL_LINES]
+                if (conflict is not None and not conflict.is_set()
+                        and looks_like_resolver_conflict((line,))):
+                    conflict.set()
                 emit({"type": "log", "line": line})
         except (OSError, ValueError):
             return

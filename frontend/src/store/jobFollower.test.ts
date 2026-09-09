@@ -130,6 +130,101 @@ describe('reduceJobEvents', () => {
     expect(next.items.b.percent).toBe(0);
   });
 
+  // The GloVe convert step runs under the id of the item that was just
+  // downloaded and sends WORD counts through the byte fields, with a caption
+  // saying so. The real stream, cursors 70 to 73 of one install.
+  const CONVERTING = 'Converting GloVe text to npz (one-time)';
+
+  it('lets a captioned frame move the bar without touching the byte counters', () => {
+    const downloaded = reduceJobEvents(makeJob(), page({
+      cursor: 70,
+      events: [{
+        type: 'progress', cursor: 70, ts: 't', item: 'glove-50d',
+        bytes_done: 69182535, bytes_total: 69182535, percent: 100,
+      }],
+    }));
+    const next = reduceJobEvents(downloaded, page({
+      cursor: 73,
+      events: [{
+        type: 'progress', cursor: 73, ts: 't', item: 'glove-50d',
+        bytes_done: 10000, bytes_total: 400000, percent: 2.5, text: CONVERTING,
+      }],
+    }));
+
+    expect(next.items['glove-50d']).toEqual({
+      bytesDone: 69182535, bytesTotal: 69182535, percent: 2.5, text: CONVERTING,
+    });
+  });
+
+  it('starts a captioned frame from zero when nothing downloaded first', () => {
+    const next = reduceJobEvents(makeJob(), page({
+      cursor: 1,
+      events: [{
+        type: 'progress', cursor: 1, ts: 't', item: 'glove-50d',
+        bytes_done: 10000, bytes_total: 400000, percent: 140, text: CONVERTING,
+      }],
+    }));
+
+    // Clamped like any other bar, and the counters stay at "nothing yet"
+    // rather than borrowing the word counts beside them.
+    expect(next.items['glove-50d']).toEqual({
+      bytesDone: 0, bytesTotal: null, percent: 100, text: CONVERTING,
+    });
+  });
+
+  it('leaves a captioned frame with no percent unmeasured, not divided', () => {
+    const downloaded = reduceJobEvents(makeJob(), page({
+      cursor: 1,
+      events: [{
+        type: 'progress', cursor: 1, ts: 't', item: 'glove-50d',
+        bytes_done: 400, bytes_total: 400, percent: 100,
+      }],
+    }));
+    // A GloVe file with no header line reports lines with no total, so the
+    // converter sends percent null; 200/400 of the byte counters would be a
+    // number about the download, not about the conversion.
+    const next = reduceJobEvents(downloaded, page({
+      cursor: 2,
+      events: [{
+        type: 'progress', cursor: 2, ts: 't', item: 'glove-50d',
+        bytes_done: 200, bytes_total: null, percent: null, text: CONVERTING,
+      }],
+    }));
+
+    expect(next.items['glove-50d']).toEqual({
+      bytesDone: 400, bytesTotal: 400, percent: null, text: CONVERTING,
+    });
+  });
+
+  it('drops the caption again on the next frame that is about bytes', () => {
+    const converting = reduceJobEvents(makeJob(), page({
+      cursor: 1,
+      events: [{
+        type: 'progress', cursor: 1, ts: 't', item: 'glove-50d',
+        bytes_done: 10000, bytes_total: 400000, percent: 2.5, text: CONVERTING,
+      }],
+    }));
+    // A retry downloads the file again, and the row has to read as a size
+    // once more rather than keep saying it is converting.
+    //
+    // This one passes on the old reducer too — it is a pin, not the evidence.
+    // The byte branch rebuilds the entry from scratch, and the case exists so
+    // that rewriting it as a merge into `prev` (the obvious way to preserve
+    // `bytesTotal`) fails here instead of leaving a stale caption on screen.
+    const next = reduceJobEvents(converting, page({
+      cursor: 2,
+      events: [{
+        type: 'progress', cursor: 2, ts: 't', item: 'glove-50d',
+        bytes_done: 1024, bytes_total: 2048,
+      }],
+    }));
+
+    expect(next.items['glove-50d']).toEqual({
+      bytesDone: 1024, bytesTotal: 2048, percent: 50,
+    });
+    expect(next.items['glove-50d'].text).toBeUndefined();
+  });
+
   it('closes a still-running step when the job finishes', () => {
     const started = reduceJobEvents(makeJob(), page({
       cursor: 1,

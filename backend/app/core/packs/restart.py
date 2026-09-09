@@ -134,6 +134,31 @@ TORCH_INDEX_URLS: dict[str, str | None] = {
 VARIANTS: tuple[str, ...] = tuple(
     key for key in TORCH_INDEX_URLS if key not in {"auto", "skip"})
 
+
+def installable_variants(system: str | None = None) -> tuple[str, ...]:
+    """The :data:`VARIANTS` that have a wheel for this platform.
+
+    macOS ships MPS acceleration in the default wheel, so there is nothing a
+    switch can do there; ROCm wheels are ``linux_x86_64`` only; the CUDA
+    indexes carry manylinux and ``win_amd64`` only. ``"mps"`` is in none of
+    these: it names no index anywhere (:func:`resolve_gpu_torch` has always
+    refused it).
+
+    This is both what the panel offers and what a pick is checked against, so
+    a build this machine cannot load is never on screen and never reaches the
+    helper -- where the only thing left to say is uv's "no wheels with a
+    matching platform tag", minutes after the server took itself down to hear
+    it.
+    """
+    system = system or sys.platform
+    if system == "darwin":
+        return ()
+    if system == "win32":
+        return tuple(v for v in VARIANTS
+                     if v != "mps" and not v.startswith("rocm"))
+    return tuple(v for v in VARIANTS if v != "mps")
+
+
 #: How long ``nvidia-smi`` gets before we call it a failure. Same value as
 #: dev.py: a driver that cannot answer in five seconds is not one we want to
 #: hold an HTTP request open for.
@@ -313,6 +338,11 @@ def gpu_info() -> dict:
     None when that cannot be told -- see ``state.torch_variant``), and
     ``install_command`` is the line to type.
 
+    ``variants`` is what this platform can actually install
+    (:func:`installable_variants`), which on macOS is nothing at all: a card
+    with no builds to offer is the honest card there, and every entry it does
+    list is one a restart-mode install will accept.
+
     Never raises. Every field has an honest fallback, because the alternative
     is a 500 on the one route that draws the panel.
     """
@@ -336,7 +366,7 @@ def gpu_info() -> dict:
         "detected_label": label,
         "recommended_variant": recommended,
         "installed_variant": installed,
-        "variants": list(VARIANTS),
+        "variants": list(installable_variants()),
         "install_command": f"cdui install --gpu {recommended}",
     }
 
@@ -376,7 +406,7 @@ def resolve_gpu_torch(variant: str | None) -> tuple[str, str]:
     are answered by :func:`gpu_info`, so the wheel a restart installs is the
     wheel the panel offered.
 
-    Two refusals, both deliberate:
+    Three refusals, all deliberate:
 
     * ``"mps"`` has nothing to switch to. Apple Silicon's acceleration ships
       in the default PyPI wheel, so there is no index to reinstall from --
@@ -388,6 +418,13 @@ def resolve_gpu_torch(variant: str | None) -> tuple[str, str]:
       accepted. The value ends up in a subprocess argument list, so the day
       one arrives from a request body unvalidated, the check is already
       here.
+    * a build with no wheel for THIS platform: CUDA or ROCm on a Mac, ROCm
+      on Windows. The panel stopped offering those the moment ``variants``
+      became :func:`installable_variants`, and this is that same table said
+      again where it decides -- because a restart-mode install writes the
+      claim, spawns the helper and stops the server BEFORE a single byte of
+      the wheel is fetched, so a pick that cannot resolve has to be refused
+      while there is still a request to answer with.
     """
     chosen = (gpu_info()["recommended_variant"]
               if variant in (None, "auto") else variant)
@@ -400,6 +437,13 @@ def resolve_gpu_torch(variant: str | None) -> tuple[str, str]:
         raise ValueError(
             f"unknown torch variant {chosen!r}; expected one of "
             f"{', '.join(VARIANTS)}")
+    allowed = installable_variants()
+    if chosen not in allowed:
+        raise ValueError(
+            f"torch variant {chosen!r} has no wheel for {sys.platform}"
+            + (": this platform has nothing to switch to, its PyTorch "
+               "acceleration ships in the default wheel" if not allowed
+               else f"; expected one of {', '.join(allowed)}"))
 
     index_url = TORCH_INDEX_URLS[chosen]
     if not index_url or index_url == "__skip__":  # pragma: no cover

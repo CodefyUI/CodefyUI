@@ -135,9 +135,16 @@ beforeEach(() => {
 
 afterEach(() => {
   _resetPackStoreForTesting();
-  // The panel is not this file's store, but one toast action opens it — and
-  // an open panel inherited by the next case is a state nothing here set.
-  useUIStore.setState({ packCenterOpen: false, packCenterFocusPackId: null });
+  // Neither panel is this file's store, but a toast action opens each of them
+  // — and an open panel inherited by the next case is a state nothing here
+  // set. The Plugin Center is one of the two because the refusal that names a
+  // running plugin install points at it.
+  useUIStore.setState({
+    packCenterOpen: false,
+    packCenterFocusPackId: null,
+    pluginCenterOpen: false,
+    pluginCenterFocusPluginId: null,
+  });
   vi.useRealTimers();
   vi.clearAllMocks();
 });
@@ -661,6 +668,32 @@ describe('packStore — install', () => {
 
     expect(lastToast()).toMatchObject({ type: 'warning' });
     expect(usePackStore.getState().job).toMatchObject({ jobId: 'j-elsewhere', packId: 'rag' });
+  });
+
+  it('sends the user to the Plugin Center when a plugin install is in the way', async () => {
+    // The two installers share one interpreter, so each refuses while the
+    // OTHER is running. `busy` is true of this refusal and says nothing about
+    // whose job it is — and this panel's own activity pane can only ever
+    // answer "nothing is installing", because the job is not in its slot.
+    const err = new PackApiError(409, 'a plugin install is already running (job abc123)');
+    err.body = { detail: 'refused', job_id: 'abc123', reason: 'plugin_install_running' };
+    api.installPack.mockRejectedValue(err);
+
+    await usePackStore.getState().install('word-vectors');
+
+    expect(lastToast()).toMatchObject({
+      type: 'warning',
+      message: 'A plugin install is running. Wait for it to finish, then try again.',
+    });
+    // No catalog re-read: there is nothing here to adopt, and the pane it
+    // would refresh is the one that would contradict the toast.
+    expect(api.listPacks).not.toHaveBeenCalled();
+    // The button goes to the panel that IS showing the job, and focuses
+    // nothing: the refusal named a job id, and the panel focuses plugins.
+    expect(lastToast().action?.label).toBe('Open Plugin Center');
+    lastToast().action!.onClick();
+    expect(useUIStore.getState().pluginCenterOpen).toBe(true);
+    expect(useUIStore.getState().pluginCenterFocusPluginId).toBeNull();
   });
 
   it('prints the command when a 409 refuses the install and hands one back', async () => {

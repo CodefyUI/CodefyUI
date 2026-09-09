@@ -136,6 +136,16 @@ const REFUSAL_TOASTS = new Map<string, TranslationKey>([
 ]);
 
 /**
+ * `packs.service.PLUGIN_INSTALL_RUNNING`: the job in the way belongs to the
+ * OTHER installer, which writes into the same interpreter this one does.
+ *
+ * Deliberately outside `REFUSAL_TOASTS`: that map is read only on the branch
+ * where the body carries a `command`, and this refusal carries a `job_id`
+ * instead, so an entry there would never be looked up.
+ */
+const PLUGIN_INSTALL_RUNNING = 'plugin_install_running';
+
+/**
  * The generic job model under this panel's own names.
  *
  * Aliases rather than copies: a pack job's log lines, per-item bars, steps
@@ -749,11 +759,26 @@ export const usePackStore = create<PackState>((set, get) => ({
           ? t(refusal)
           : t('packs.toast.needsCli', { command: err.body.command }), 'warning');
       } else if (err instanceof PackApiError && err.status === 409) {
-        // Somebody else got there first — this tab, another tab, or the CLI.
-        // The refresh adopts whatever the server IS running, which is more
-        // useful than the refusal.
-        toast(t('packs.toast.busy'), 'warning');
-        await get().refresh();
+        if (err.body?.reason === PLUGIN_INSTALL_RUNNING) {
+          // A PLUGIN install owns the interpreter both installers write into.
+          // No `refresh()` here: `active_job` is this service's own slot and
+          // can never carry a plugin's job, so re-reading the catalog would
+          // leave the activity pane saying nothing is installing directly
+          // under a toast that says something is. The toast is therefore the
+          // whole answer, and it carries the way to the panel that IS showing
+          // the job. Opened unfocused because the body identifies the job in
+          // the way by `job_id`, and `openPluginCenter` focuses by PLUGIN id.
+          toast(t('packs.toast.pluginBusy'), 'warning', {
+            label: t('packs.toast.openPluginCenter'),
+            onClick: () => useUIStore.getState().openPluginCenter(),
+          });
+        } else {
+          // Somebody else got there first — this tab, another tab, or the CLI.
+          // The refresh adopts whatever the server IS running, which is more
+          // useful than the refusal.
+          toast(t('packs.toast.busy'), 'warning');
+          await get().refresh();
+        }
       } else if (err instanceof PackApiError && err.status === 403) {
         toast(t('packs.remoteDisabled'), 'error');
       } else if (err instanceof PackApiError && err.status === 400

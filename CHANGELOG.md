@@ -22,6 +22,37 @@ received — each links to the release it was published as.
 
 ## [Unreleased]
 
+### Fixed
+
+- **A pack install that cannot resolve says what to run instead.** `uv` prints
+  `No solution found` near the top of a derivation that runs to hundreds of
+  lines, and the classifier only ever saw the last 40 — so a resolver conflict,
+  which the Package Center already knows how to recover from, was reported as
+  an unexplained crash: "installing Sentence embeddings failed (uv exited 1)"
+  over 40 lines of bare version numbers. The verdict is now decided line by
+  line while the output streams, in the one place that sees all of it, so the
+  panel shows the constraint-free command that does resolve. The Plugin
+  Center's dependency step had the same window and the same fix.
+- **The GPU PyTorch card tells the truth on machines with nothing to switch
+  to.** On Apple Silicon it reported the pack as not installed, offered eight
+  CUDA and ROCm builds that have no macOS wheel, and its default action posted
+  `mps` — which the resolver has always refused, because that acceleration
+  ships in the default wheel. Picking a CUDA build took the server down first
+  and could only then fail. `installable_variants()` is now what the panel
+  offers and what a pick is checked against, `torch_variant()` answers `mps`
+  where torch says MPS is available, and a machine already running the build it
+  should be running is not offered a restart that reinstalls the same wheel.
+  `cdui install` builds its menu from the same table.
+- **The GloVe install stops going backwards at the end.** Its convert step
+  reports word counts through the item that just finished downloading, so the
+  row fell from "66 MB / 66 MB" to "9.8 KB / 391 KB" and the overall bar from
+  100% to 0.01%. A frame that carries a caption no longer overwrites the byte
+  counters, and the row shows the caption while it converts.
+- **An install refused by the other installer says which one.** A pack install
+  blocked by a running plugin install (and the reverse) said "Another install
+  is already running" while the panel's own activity pane said nothing was
+  running. Each now names the other panel and offers a way to it.
+
 ## [2.7.1] — 2026-09-08
 
 A smaller frontend build that no longer trips Vite's chunk-size warning. The

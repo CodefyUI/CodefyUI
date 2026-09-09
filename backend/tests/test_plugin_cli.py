@@ -18,6 +18,7 @@ except ModuleNotFoundError:  # pragma: no cover - exercised only on the 3.10 CI 
 
 import plugins as plugin_cli
 from app.core import plugin_loader
+from app.core.packs import runner as packs_runner
 from app.core.plugin_validator import PluginValidationError
 from app.core.plugins import catalog as core_catalog
 from app.core.plugins import lifecycle
@@ -676,7 +677,7 @@ def test_install_deps_builds_correct_pip_specs(monkeypatch):
     captured: list[list[str]] = []
 
     def fake_run_pip(specs, *, constraints_path, emit, cancel_check, cwd,
-                     tail=None):
+                     tail=None, conflict=None):
         captured.append(list(specs))
         # The step reads this to decide whether the install worked; the
         # constraints file is a real one written for this call, which is the
@@ -713,9 +714,18 @@ def test_install_deps_reports_a_resolver_conflict_as_exit_3(monkeypatch, capsys)
     monkeypatch.setenv("CODEFYUI_LANG", "en")
 
     def _conflicted(specs, *, constraints_path, emit, cancel_check, cwd,
-                    tail=None):
+                    tail=None, conflict=None):
+        # Filled the way the real runner fills them: the verdict is reached
+        # on the line as it streams past, because the tail it lands in is a
+        # display window that a long derivation would have scrolled it out
+        # of long before uv exited.
+        line = "  x No solution found when resolving dependencies:"
         if tail is not None:
-            tail.append("  x No solution found when resolving dependencies:")
+            tail.append(line)
+            del tail[:-packs_runner.TAIL_LINES]
+        if conflict is not None and packs_runner.looks_like_resolver_conflict(
+                (line,)):
+            conflict.set()
         return 1
 
     monkeypatch.setattr("app.core.packs.runner.run_pip", _conflicted)
@@ -1693,7 +1703,8 @@ def _pip_succeeds(monkeypatch) -> list[list[str]]:
     """Fake ``run_pip``: record the specs, install nothing, exit 0."""
     seen: list[list[str]] = []
 
-    def _run_pip(specs, *, constraints_path, emit, cancel_check, cwd, tail=None):
+    def _run_pip(specs, *, constraints_path, emit, cancel_check, cwd, tail=None,
+                 conflict=None):
         seen.append(list(specs))
         return 0
 
@@ -1995,9 +2006,18 @@ def test_packages_that_cannot_be_installed_here_are_exit_3_with_the_command(
     fake_github(_PREVIEW_FILES)
 
     def _conflicted(specs, *, constraints_path, emit, cancel_check, cwd,
-                    tail=None):
+                    tail=None, conflict=None):
+        # Filled the way the real runner fills them: the verdict is reached
+        # on the line as it streams past, because the tail it lands in is a
+        # display window that a long derivation would have scrolled it out
+        # of long before uv exited.
+        line = "  x No solution found when resolving dependencies:"
         if tail is not None:
-            tail.append("  x No solution found when resolving dependencies:")
+            tail.append(line)
+            del tail[:-packs_runner.TAIL_LINES]
+        if conflict is not None and packs_runner.looks_like_resolver_conflict(
+                (line,)):
+            conflict.set()
         return 1
 
     monkeypatch.setattr("app.core.packs.runner.run_pip", _conflicted)

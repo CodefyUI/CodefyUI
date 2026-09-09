@@ -218,9 +218,16 @@ beforeEach(() => {
 
 afterEach(() => {
   _resetPluginStoreForTesting();
-  // The panel is not this file's store, but a toast action opens it — and an
-  // open panel inherited by the next case is a state nothing here set.
-  useUIStore.setState({ pluginCenterOpen: false, pluginCenterFocusPluginId: null });
+  // Neither panel is this file's store, but a toast action opens each of them
+  // — and an open panel inherited by the next case is a state nothing here
+  // set. The Package Center is one of the two because the refusal that names
+  // a running pack install points at it.
+  useUIStore.setState({
+    pluginCenterOpen: false,
+    pluginCenterFocusPluginId: null,
+    packCenterOpen: false,
+    packCenterFocusPackId: null,
+  });
   vi.useRealTimers();
   vi.clearAllMocks();
 });
@@ -888,6 +895,34 @@ describe('pluginStore — installInspected', () => {
     expect(lastToast().message).toBe('Another install is already running.');
     // Whatever the server IS running is more useful than the refusal.
     expect(api.listPluginCatalog).toHaveBeenCalled();
+  });
+
+  it('sends the user to the Package Center when a pack install is in the way', async () => {
+    await ready();
+    // The mirror of the pack store's refusal: one interpreter, two
+    // installers, and `busy` would say an install is running while this
+    // panel's activity pane answers that nothing is — the job is in the
+    // Package Center's slot, which no catalog read here can reach.
+    api.installPlugin.mockRejectedValue(
+      refused(409, 'pack_install_running', { job_id: 'j2' }),
+    );
+
+    await usePluginStore.getState().installInspected({
+      acceptCapabilities: true, trustAuthor: false,
+    });
+
+    expect(lastToast()).toMatchObject({
+      type: 'warning',
+      message: 'A pack install is running. Wait for it to finish, then try again.',
+    });
+    // No catalog re-read: there is nothing here to adopt.
+    expect(api.listPluginCatalog).not.toHaveBeenCalled();
+    // The button goes to the panel that IS showing the job, and focuses
+    // nothing: the refusal named a job id, and the panel focuses packs.
+    expect(lastToast().action?.label).toBe('Open Package Center');
+    lastToast().action!.onClick();
+    expect(useUIStore.getState().packCenterOpen).toBe(true);
+    expect(useUIStore.getState().packCenterFocusPackId).toBeNull();
   });
 
   it('says so when the server refuses a remote install', async () => {

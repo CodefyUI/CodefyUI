@@ -331,7 +331,12 @@ def test_torch_variant_parses_local_tag(monkeypatch, version, expected):
 def test_torch_variant_of_an_untagged_build_depends_on_the_platform(monkeypatch):
     """PyPI's default wheel is the CPU build on Windows and Linux and carries
     no tag. On macOS the same untagged wheel is the MPS build, so "no tag"
-    there says nothing about acceleration and the answer is "unknown"."""
+    there says nothing on its own -- and torch can be asked instead of
+    guessed at: when its MPS backend works, that wheel IS the accelerated
+    build and the answer is "mps". When it does not, the answer stays None,
+    the one the docstring calls unknown -- guessing "cpu" for a Mac is what
+    would report a missing GPU pack on a machine with nothing to install.
+    """
     monkeypatch.setattr(torch, "__version__", "2.6.0")
 
     monkeypatch.setattr(sys, "platform", "win32")
@@ -340,8 +345,48 @@ def test_torch_variant_of_an_untagged_build_depends_on_the_platform(monkeypatch)
     monkeypatch.setattr(sys, "platform", "linux")
     assert state.torch_variant() == "cpu"
 
+    # Pinned rather than inherited: what THIS machine's MPS backend answers
+    # must not decide which branch the suite asserts. The predicate itself is
+    # driven against a real torch just below.
     monkeypatch.setattr(sys, "platform", "darwin")
+    monkeypatch.setattr(state, "_mps_accelerated", lambda: True)
+    assert state.torch_variant() == "mps"
+
+    # An Intel Mac, or macOS older than 12.3.
+    monkeypatch.setattr(state, "_mps_accelerated", lambda: False)
     assert state.torch_variant() is None
+
+
+def test_mps_accelerated_answers_no_to_everything_it_cannot_ask(monkeypatch):
+    """Every unknown is the same "no", because this decides what a PANEL says.
+
+    A raising ``is_available`` (a build with the backend compiled out), a
+    torch too old to have ``backends.mps``, and no torch at all are three
+    different accidents with one honest answer -- and an exception out of
+    here would reach ``pack_state`` and 500 the route that draws the whole
+    Package Center.
+    """
+    monkeypatch.setattr(torch.backends.mps, "is_available", lambda: True)
+    assert state._mps_accelerated() is True
+
+    monkeypatch.setattr(torch.backends.mps, "is_available", lambda: False)
+    assert state._mps_accelerated() is False
+
+    def _boom():
+        raise RuntimeError("this build has no MPS backend")
+
+    monkeypatch.setattr(torch.backends.mps, "is_available", _boom)
+    assert state._mps_accelerated() is False
+
+    monkeypatch.delattr(torch.backends, "mps")
+    assert state._mps_accelerated() is False
+
+    # No torch at all. ``None`` in ``sys.modules`` is what makes an ``import``
+    # raise ``ImportError`` without unloading the real module.
+    monkeypatch.setitem(sys.modules, "torch", None)
+    assert state._mps_accelerated() is False
+    assert state.torch_variant() is None, (
+        "no torch is no variant, on every platform")
 
 
 def test_gpu_torch_installed_follows_torch_variant(monkeypatch):
@@ -359,6 +404,20 @@ def test_gpu_torch_installed_follows_torch_variant(monkeypatch):
 
     monkeypatch.setattr(torch, "__version__", "2.5.1+rocm6.2")
     assert state.pack_state(get_pack("gpu-torch")).installed
+
+    # macOS ships its acceleration in the untagged wheel, so there is no tag
+    # to read and ``torch_variant`` asks the backend instead. A Mac whose MPS
+    # works has the accelerated build in place, and the card that used to
+    # tell it otherwise was offering an install with no wheel to fetch.
+    monkeypatch.setattr(torch, "__version__", "2.6.0")
+    monkeypatch.setattr(sys, "platform", "darwin")
+    monkeypatch.setattr(state, "_mps_accelerated", lambda: True)
+    mps = state.pack_state(get_pack("gpu-torch"))
+    assert mps.installed
+    assert mps.usable
+
+    monkeypatch.setattr(state, "_mps_accelerated", lambda: False)
+    assert not state.pack_state(get_pack("gpu-torch")).installed
 
 
 # ── whole-pack state ─────────────────────────────────────────────────────
