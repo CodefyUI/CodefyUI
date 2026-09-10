@@ -86,14 +86,14 @@ export function StepTraceView({ runId, nodeId }: Props) {
         if (cancelled) return;
         setIndexError(
           e instanceof RunDataExpiredError
-            ? 'run data expired — re-run to capture'
+            ? t('inspector.dataExpired')
             : (e as Error).message,
         );
       });
     return () => {
       cancelled = true;
     };
-  }, [runId, nodeId]);
+  }, [runId, nodeId, t]);
 
   // After we have the step index, fetch each tensor in parallel. The loading
   // placeholders were already seeded alongside setSteps above.
@@ -125,7 +125,7 @@ export function StepTraceView({ runId, nodeId }: Props) {
                   loading: false,
                   error:
                     e instanceof RunDataExpiredError
-                      ? 'expired'
+                      ? t('inspector.tensorExpired')
                       : (e as Error).message,
                   data: null,
                 },
@@ -139,7 +139,7 @@ export function StepTraceView({ runId, nodeId }: Props) {
     return () => {
       cancelled = true;
     };
-  }, [steps, runId, nodeId]);
+  }, [steps, runId, nodeId, t]);
 
   if (indexError) {
     return <div className={styles.portError}>{indexError}</div>;
@@ -198,7 +198,7 @@ export function StepTraceView({ runId, nodeId }: Props) {
                   </div>
                 )}
                 {step.tensor_keys.length === 0 && (
-                  <div className={styles.diffMissing}>(no tensors)</div>
+                  <div className={styles.diffMissing}>{t('inspector.noTensors')}</div>
                 )}
                 {step.tensor_keys.map((name) => {
                   const state = tensors[tkey(step.index, name)];

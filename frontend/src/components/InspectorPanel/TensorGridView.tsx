@@ -1,5 +1,6 @@
 import { useState, useMemo } from 'react';
 import type { TensorOutput } from '../../types';
+import { useI18n } from '../../i18n';
 import styles from './InspectorPanel.module.css';
 
 interface Props {
@@ -37,6 +38,7 @@ function fmt(v: unknown): string {
 }
 
 export function TensorGridView({ tensor, highlight, label }: Props) {
+  const { t } = useI18n();
   const rank = tensor.sliced_shape.length;
   const leadingCount = Math.max(0, rank - 2);
   const [leading, setLeading] = useState<number[]>(() => Array(leadingCount).fill(0));
@@ -80,7 +82,7 @@ export function TensorGridView({ tensor, highlight, label }: Props) {
             const dimSize = tensor.sliced_shape[dim] ?? 1;
             return (
               <label key={dim} className={styles.tensorLeadingLabel}>
-                dim {dim}
+                {t('tensorGrid.dim', { dim })}
                 <select
                   className={styles.tensorLeadingSelect}
                   value={val}

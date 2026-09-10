@@ -21,7 +21,7 @@ import '@xyflow/react/dist/style.css';
 
 import { useTabStore } from '../../store/tabStore';
 import { useToastStore } from '../../store/toastStore';
-import { useI18n } from '../../i18n';
+import { useI18n, type TranslationKey } from '../../i18n';
 import { generateId } from '../../utils';
 import { CANVAS_MIN_ZOOM } from '../../styles/theme';
 import { EdgeLaneProvider } from '../Canvas/EdgeLaneContext';
@@ -204,6 +204,30 @@ const MERGE_LAYER_DEFS: LayerDef[] = [
  * colour no longer sits next to the category on the same line.
  */
 export const ALL_LAYER_DEFS: LayerDef[] = [...LAYER_DEFS, ...MERGE_LAYER_DEFS];
+
+/**
+ * The text of whatever a `throw` produced. An import failure reaches the
+ * student as "Import failed: <this>", and a throw that is not an Error — a
+ * string out of a parser, a rejected DOM value — would otherwise land in that
+ * sentence as "undefined".
+ */
+function errorText(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
+
+/** Palette heading per `category`. The English value stays the internal key. */
+const CATEGORY_KEYS: Record<string, TranslationKey> = {
+  Convolution: 'layersEditor.category.convolution',
+  Normalization: 'layersEditor.category.normalization',
+  Pooling: 'layersEditor.category.pooling',
+  Regularization: 'layersEditor.category.regularization',
+  Linear: 'layersEditor.category.linear',
+  Recurrent: 'layersEditor.category.recurrent',
+  Attention: 'layersEditor.category.attention',
+  Utility: 'layersEditor.category.utility',
+  Activation: 'layersEditor.category.activation',
+  Merge: 'layersEditor.category.merge',
+};
 const LAYER_DEF_MAP_FULL = new Map(ALL_LAYER_DEFS.map((d) => [d.type, d]));
 
 // ── Layer Palette Item ──
@@ -249,11 +273,6 @@ function LayerPaletteItem({ def }: { def: LayerDef }) {
       <span style={{ fontSize: '0.8125rem', color: '#ddd', fontWeight: 500 }}>
         {def.type}
       </span>
-      {def.params.length > 0 && (
-        <span style={{ fontSize: '0.625rem', color: '#666', marginLeft: 'auto' }}>
-          {def.params.length}p
-        </span>
-      )}
     </div>
   );
 }
@@ -678,7 +697,7 @@ function LayersFlowInner({
   const handleApply = () => {
     const err = validateGraph(nodes, edges);
     if (err) {
-      useToastStore.getState().addToast(err.message, 'error');
+      useToastStore.getState().addToast(t(err.key, err.params), 'error');
       return;
     }
     onApply(flowToGraphJson(nodes, edges));
@@ -707,13 +726,13 @@ function LayersFlowInner({
   const loadGraphSpecIntoEditor = useCallback(
     (json: string) => {
       const { nodes: newNodes, edges: newEdges } = graphToFlow(json);
-      if (newNodes.length === 0) throw new Error('Empty or invalid graph');
+      if (newNodes.length === 0) throw new Error(t('layersEditor.import.emptyGraph'));
       setNodes(newNodes);
       setEdges(newEdges);
       setSelectedNodeId(null);
       setTimeout(() => fitView({ padding: 0.3 }), 50);
     },
-    [fitView],
+    [fitView, t],
   );
 
   const handleSelectSequentialModel = useCallback(
@@ -722,7 +741,7 @@ function LayersFlowInner({
       try {
         loadGraphSpecIntoEditor(layersJson);
       } catch (err) {
-        useToastStore.getState().addToast(t('layersEditor.import.fail', { error: String(err) }), 'error');
+        useToastStore.getState().addToast(t('layersEditor.import.fail', { error: errorText(err) }), 'error');
       }
     },
     [loadGraphSpecIntoEditor, t],
@@ -771,7 +790,7 @@ function LayersFlowInner({
             throw new Error(t('layersEditor.import.noContent'));
         }
       } catch (err) {
-        useToastStore.getState().addToast(t('layersEditor.import.fail', { error: String(err) }), 'error');
+        useToastStore.getState().addToast(t('layersEditor.import.fail', { error: errorText(err) }), 'error');
       }
     };
     reader.readAsText(file);
@@ -792,10 +811,15 @@ function LayersFlowInner({
     return groups;
   }, [filteredDefs]);
 
-  // i18n category labels
+  // i18n category labels. `category` stays the English key everywhere else
+  // (colours and layerCategoryOf() are pinned to it); only the display moves.
   const getCategoryLabel = (category: string) => {
-    if (category === 'Merge') return t('layersEditor.category.merge');
-    return category;
+    const key = CATEGORY_KEYS[category];
+    // Every category in ALL_LAYER_DEFS has a key, so the English-name fallback
+    // is unreachable until someone adds a category without one.
+    /* v8 ignore next -- @preserve */
+    if (!key) return category;
+    return t(key);
   };
 
   return (

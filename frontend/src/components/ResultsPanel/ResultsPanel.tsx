@@ -409,7 +409,7 @@ export function ResultsPanel() {
                       entry.video.format === 'gif' ? (
                         <img
                           src={entry.video.url}
-                          alt="output clip"
+                          alt={t('results.videoAlt')}
                           className={styles.logVideo}
                         />
                       ) : (
@@ -424,14 +424,14 @@ export function ResultsPanel() {
                     ) : entry.kind === 'image' && entry.image?.data ? (
                       <img
                         src={`data:image/${entry.image.format};base64,${entry.image.data}`}
-                        alt="output"
+                        alt={t('results.imageAlt')}
                         className={styles.logImage}
                       />
                     ) : entry.message.startsWith(LEGACY_IMAGE_PREFIX) ? (
                       // DEPRECATED (see LEGACY_IMAGE_PREFIX above).
                       <img
                         src={`data:image/png;base64,${entry.message.slice(LEGACY_IMAGE_PREFIX.length)}`}
-                        alt="output"
+                        alt={t('results.imageAlt')}
                         className={styles.logImage}
                       />
                     ) : (
@@ -516,6 +516,7 @@ export function ResultsPanel() {
                     <LossChart
                       losses={trainingData.epochs.map((e) => e.loss)}
                       height={Math.max(80, panelHeight - 90)}
+                      xLabel={t('results.epoch')}
                     />
                   ) : (
                     <div className={styles.emptyState}>{t('results.waitingEpoch')}</div>

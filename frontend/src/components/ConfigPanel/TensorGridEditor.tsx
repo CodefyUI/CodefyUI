@@ -1,5 +1,6 @@
-import { useEffect, useMemo, useState } from 'react';
+import { Fragment, useEffect, useMemo, useState } from 'react';
 import type { ParamDefinition } from '../../types';
+import { useI18n } from '../../i18n';
 import styles from './TensorGridEditor.module.css';
 
 interface Props {
@@ -121,7 +122,26 @@ function set2D(
   return clone;
 }
 
+/** The parameter both hints send the reader off to change. */
+const MODE_PARAM = 'value_mode';
+
+/**
+ * Puts `value_mode` back as a <code> span where a hint carries the `{mode}`
+ * placeholder. The parameter name is the one word in these sentences the
+ * reader has to go and find in the panel, so it keeps the markup that told
+ * them so before the sentences moved into the locale tables.
+ */
+function withModeParam(text: string) {
+  return text.split('{mode}').map((part, i) => (
+    <Fragment key={i}>
+      {i > 0 && <code>{MODE_PARAM}</code>}
+      {part}
+    </Fragment>
+  ));
+}
+
 export function TensorGridEditor({ param, value, onChange, displayLabel, siblingParams }: Props) {
+  const { t } = useI18n();
   // Shape sources, in priority order:
   //   1. siblingParams.shape — the convention used by TensorInput
   //      ("3,4,5" comma-separated string).
@@ -227,15 +247,12 @@ export function TensorGridEditor({ param, value, onChange, displayLabel, sibling
       <label className={styles.label}>{displayLabel}</label>
 
       {disabled && (
-        <div className={styles.hintDim}>
-          Set <code>value_mode</code> to <code>explicit</code> to edit values inline.
-        </div>
+        <div className={styles.hintDim}>{withModeParam(t('tensorGrid.needExplicit'))}</div>
       )}
 
       {!disabled && total > MAX_INLINE_NUMEL && (
         <div className={styles.hintWarn}>
-          Shape has {total} elements — too large for inline editing (max {MAX_INLINE_NUMEL}).
-          Switch <code>value_mode</code> to <code>random</code>, <code>zeros</code>, <code>ones</code>, or <code>arange</code>.
+          {withModeParam(t('tensorGrid.tooLarge', { total, max: MAX_INLINE_NUMEL }))}
         </div>
       )}
 
@@ -247,24 +264,24 @@ export function TensorGridEditor({ param, value, onChange, displayLabel, sibling
               className={styles.toolbarBtn}
               onClick={() => fillAll(0)}
             >
-              Fill 0
+              {t('tensorGrid.fillZero')}
             </button>
             <button
               type="button"
               className={styles.toolbarBtn}
               onClick={() => fillAll(1)}
             >
-              Fill 1
+              {t('tensorGrid.fillOne')}
             </button>
             <button
               type="button"
               className={styles.toolbarBtn}
               onClick={() => fillAll('random')}
             >
-              Random
+              {t('tensorGrid.random')}
             </button>
             <span className={styles.shapeBadge}>
-              [{shape.join(', ')}] · {total} cells
+              [{shape.join(', ')}] · {t('tensorGrid.cells', { count: total })}
             </span>
           </div>
 
@@ -276,7 +293,7 @@ export function TensorGridEditor({ param, value, onChange, displayLabel, sibling
                 const dimSize = shape[dim] ?? 1;
                 return (
                   <label key={dim} className={styles.leadingLabel}>
-                    dim {dim}
+                    {t('tensorGrid.dim', { dim })}
                     <select
                       className={styles.leadingSelect}
                       value={val}

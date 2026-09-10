@@ -19,7 +19,7 @@ Keyboard chords are ignored while you are typing in an input, a textarea or a no
 | Box-select | `Shift` + drag on empty canvas (a plain drag pans) |
 | Quick add node / preset | Double-click empty canvas; `Up` / `Down` + `Enter` picks, `Esc` closes |
 | Open node details | `Enter` with one node selected; double-click a node; right-click → Open details |
-| Double-click exceptions | `SequentialModel` → Model Architecture Editor; subgraph instance → enter the block; preset → Configure Preset; note → edit |
+| Double-click exceptions | `SequentialModel` → Model Architecture editor; subgraph instance → enter the block; preset → Configure; note → edit |
 | Bypass / un-bypass selected node(s) | `Ctrl/Cmd` + `B` (when a bypassable node is selected); right-click → Bypass |
 | Collapse / expand sidebar | `Ctrl/Cmd` + `B` when nothing bypassable is selected; `Ctrl/Cmd` + `Shift` + `B` always |
 | Auto layout (last-used mode) | `Shift` + `L` |

@@ -122,14 +122,14 @@ export function BackwardView({ runId, nodeId }: Props) {
         if (cancelled) return;
         setIndexError(
           e instanceof RunDataExpiredError
-            ? 'run data expired — re-run with Backward to capture'
+            ? t('inspector.dataExpiredBackward')
             : (e as Error).message,
         );
       });
     return () => {
       cancelled = true;
     };
-  }, [runId, nodeId]);
+  }, [runId, nodeId, t]);
 
   // The loading placeholders were already seeded alongside setEntries above.
   useEffect(() => {
@@ -153,7 +153,7 @@ export function BackwardView({ runId, nodeId }: Props) {
               loading: false,
               error:
                 err instanceof RunDataExpiredError
-                  ? 'expired'
+                  ? t('inspector.tensorExpired')
                   : (err as Error).message,
               data: null,
             },
@@ -164,7 +164,7 @@ export function BackwardView({ runId, nodeId }: Props) {
     return () => {
       cancelled = true;
     };
-  }, [entries, runId, nodeId]);
+  }, [entries, runId, nodeId, t]);
 
   if (indexError) {
     return <div className={styles.portError}>{indexError}</div>;

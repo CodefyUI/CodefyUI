@@ -38,7 +38,7 @@ CodefyUI 內建 **152 個節點**，涵蓋 **16 大類別**。已安裝的 [外�
 - **變換鏈**（資料）— 九個節點會組成 `transforms.Compose`：`ResizeTransform` 將圖片縮放為正方形；`ToTensorTransform` 將 PIL 圖片轉為 `[0, 1]` 張量；`NormalizeTransform` 套用逐通道正規化並提供預設組合；`RandomCrop`、`RandomHorizontalFlip`、`RandomRotation`、`ColorJitter` 與 `RandAugment` 套用資料增強；`ComposeTransform` 則合併兩條分別建構的鏈。參數與順序規則請參閱[資料與資料增強](./data-augmentation)。
 - **`ImageFolderDataset`**（資料）— 依 torchvision `ImageFolder` 預期的目錄結構，從每個類別各自的目錄載入圖片。
 - **`TrainingLoop`**（訓練）— 執行訓練，並將即時 loss 圖表傳至結果面板。其**進階**區段包含記憶體控制項 `precision` 與 `accumulate_steps`；請參閱[訓練記憶體](/advanced/training-memory)。
-- **`SequentialModel`**（訓練）— 以單一節點表示層堆疊。雙擊節點可開啟**模型架構編輯器**。編輯器提供依類別分組且可搜尋的層級面板，以及用來連接各層的畫布。架構必須恰好包含一個 `Input` 節點與一個 `Output` 節點，合併層則提供連接埠清單編輯器。控制項包括**吸附 ON/OFF**、由上至下的**自動排列**、JSON **匯入**與**匯出**，以及**套用**。驗證會拒絕循環。
+- **`SequentialModel`**（訓練）— 以單一節點表示層堆疊。雙擊節點可開啟**模型架構**編輯器。編輯器提供依類別分組且可搜尋的層級面板，以及用來連接各層的畫布。架構必須恰好包含一個 `Input` 節點與一個 `Output` 節點，合併層則提供連接埠清單編輯器。控制項包括**吸附 ON/OFF**、由上至下的**自動排列**、JSON **匯入**與**匯出**，以及**套用**。驗證會拒絕循環。
 - **`EmbeddingScatter`**（LLM）— 使用 PCA 或 t-SNE 將嵌入向量投影至 2D，並顯示可縮放的散佈圖。
 - **`AttentionHeatmap`**（LLM）— 傳遞 attention weight，可選擇其中一個 head，並傳遞選填的 token 標籤。節點卡片會將 weight 顯示為 heatmap，另提供完整尺寸的檢視器。
 - **由套件包提供的後端**（LLM）— `WordVector` 的 `glove-50d` 與句子編碼器選項，以及整個 `TextEmbedding`，都會載入套件中心所安裝的模型。未安裝模型的選項會顯示為灰色。若缺少的選項是圖中已儲存的目前值，該選項仍可選取並會顯示警告。執行圖時不會下載這些模型。套件包大小、檔案位置與編碼器選擇方式請參閱[選用套件包](./optional-packs)。

@@ -74,7 +74,7 @@ describe('BackwardView', () => {
       expect(screen.getByText('No gradients captured')).toBeInTheDocument(),
     );
     expect(
-      screen.getByText('Enable Backward and re-run to inspect gradients'),
+      screen.getByText('Turn on Capture gradients in Settings and re-run'),
     ).toBeInTheDocument();
   });
 
@@ -89,7 +89,9 @@ describe('BackwardView', () => {
     render(<BackwardView runId="r1" nodeId="n1" />);
     await waitFor(() =>
       expect(
-        screen.getByText('run data expired — re-run with Backward to capture'),
+        screen.getByText(
+          'Run data expired — turn on Capture gradients in Settings and re-run',
+        ),
       ).toBeInTheDocument(),
     );
   });
@@ -170,11 +172,11 @@ describe('BackwardView', () => {
     await waitFor(() => expect(screen.getByText('fetch failed')).toBeInTheDocument());
   });
 
-  it("shows 'expired' on a per-tensor RunDataExpiredError", async () => {
+  it("shows 'Expired' on a per-tensor RunDataExpiredError", async () => {
     mockGradIndex.mockResolvedValue([portEntry('g')]);
     mockOutput.mockRejectedValue(new RunDataExpiredError('r1'));
     render(<BackwardView runId="r1" nodeId="n1" />);
-    await waitFor(() => expect(screen.getByText('expired')).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText('Expired')).toBeInTheDocument());
   });
 
   it('falls back to a sliced fetch on PayloadTooLargeError', async () => {

@@ -70,6 +70,10 @@ export function NodeConfigPanel() {
             <button type="button"
               onClick={() => openPresetModal(selectedNode.id)}
               className={styles.presetConfigureBtn}
+              // The label on the button is a bare verb; the badge and the node
+              // count that say what it configures are elements of their own, so
+              // a screen reader would announce this one as just "Configure".
+              aria-label={t('preset.configure.aria')}
             >
               {t('preset.configure')}
             </button>

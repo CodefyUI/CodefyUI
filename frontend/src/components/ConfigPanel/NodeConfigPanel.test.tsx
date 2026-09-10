@@ -134,7 +134,7 @@ describe('NodeConfigPanel — header & accent color', () => {
     render(<NodeConfigPanel />);
     expect(screen.getByText('Utility')).toBeInTheDocument();
     // no params + not preset -> noParams message
-    expect(screen.getByText('No configurable parameters')).toBeInTheDocument();
+    expect(screen.getByText('No parameters')).toBeInTheDocument();
   });
 
   it('dims the panel when the canvas is panning', () => {
@@ -199,7 +199,7 @@ describe('NodeConfigPanel — params section', () => {
   it('shows the noParams message for a non-preset node with an empty params array', () => {
     seedTab([makeNode({ data: { definition: makeDef({ params: [] }) } })], 'n1');
     render(<NodeConfigPanel />);
-    expect(screen.getByText('No configurable parameters')).toBeInTheDocument();
+    expect(screen.getByText('No parameters')).toBeInTheDocument();
   });
 });
 
@@ -221,11 +221,14 @@ describe('NodeConfigPanel — preset node', () => {
     render(<NodeConfigPanel />);
     expect(screen.getByText('PRESET')).toBeInTheDocument();
     expect(screen.getByText('3 nodes inside')).toBeInTheDocument();
-    const btn = screen.getByText('Configure Preset');
+    // The visible label is a bare verb; the accessible name has to say what is
+    // being configured, because the badge and the count are separate elements.
+    const btn = screen.getByRole('button', { name: 'Configure preset' });
+    expect(btn).toHaveTextContent('Configure');
     fireEvent.click(btn);
     expect(useTabStore.getState().getActiveTab().presetModalNodeId).toBe('p1');
     // preset path renders neither the params section nor noParams
-    expect(screen.queryByText('No configurable parameters')).not.toBeInTheDocument();
+    expect(screen.queryByText('No parameters')).not.toBeInTheDocument();
     expect(screen.queryByText('Parameters')).not.toBeInTheDocument();
   });
 

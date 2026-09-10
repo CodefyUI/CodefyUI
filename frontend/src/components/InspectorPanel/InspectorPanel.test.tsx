@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor, act } from '@testing-library/react';
 import { InspectorPanel } from './InspectorPanel';
 import { useI18n } from '../../i18n';
 import { useTabStore, type TabState } from '../../store/tabStore';
@@ -133,8 +133,10 @@ describe('InspectorPanel — empty modes', () => {
   it('renders the not-run empty state when there is no lastRunId', () => {
     seedTab({ lastRunId: null });
     render(<InspectorPanel />);
-    expect(screen.getByText('Run the graph to capture data')).toBeInTheDocument();
-    expect(screen.getByText('Make sure Rec is ON, then click ▶ Run')).toBeInTheDocument();
+    expect(screen.getByText('Nothing captured yet')).toBeInTheDocument();
+    expect(
+      screen.getByText('Turn on Record node outputs in Settings, then run the graph'),
+    ).toBeInTheDocument();
   });
 
   it('renders the no-selection empty state when run exists but nothing selected', () => {
@@ -159,7 +161,7 @@ describe('InspectorPanel — collapse', () => {
     expect(screen.getByText('INSPECTOR')).toBeInTheDocument();
     // expand again
     fireEvent.click(screen.getByLabelText('Expand inspector'));
-    expect(screen.getByText('Run the graph to capture data')).toBeInTheDocument();
+    expect(screen.getByText('Nothing captured yet')).toBeInTheDocument();
   });
 });
 
@@ -198,7 +200,7 @@ describe('InspectorPanel — single node mode', () => {
     const n = node('a', 'NodeA', { outputs: [] });
     seedTab({ lastRunId: 'run1', selectedNodeId: 'a', nodes: [n], edges: [] });
     render(<InspectorPanel />);
-    expect(screen.getByText('This node has no ports.')).toBeInTheDocument();
+    expect(screen.getByText('No ports')).toBeInTheDocument();
   });
 
   it('renders TokenChipsView for a Tokenizer node', async () => {
@@ -245,7 +247,7 @@ describe('InspectorPanel — single node mode', () => {
     fireEvent.click(screen.getByRole('tab', { name: 'Steps' }));
     // StepTraceView empty state
     await waitFor(() =>
-      expect(screen.getByText('This node does not record steps')).toBeInTheDocument(),
+      expect(screen.getByText('No steps recorded')).toBeInTheDocument(),
     );
   });
 
@@ -283,8 +285,26 @@ describe('InspectorPanel — single node mode', () => {
     mockOutput.mockRejectedValue(new RunDataExpiredError('run1'));
     render(<InspectorPanel />);
     await waitFor(() =>
-      expect(screen.getByText(/run data expired — re-run to capture/)).toBeInTheDocument(),
+      expect(screen.getByText(/Run data expired — re-run to capture/)).toBeInTheDocument(),
     );
+  });
+
+  it('shows the expired message in the locale chosen after the fetch failed', async () => {
+    const n = node('a', 'NodeA', { outputs: ['out'] });
+    seedTab({ lastRunId: 'run1', selectedNodeId: 'a', nodes: [n], edges: [] });
+    mockOutput.mockRejectedValue(new RunDataExpiredError('run1'));
+    render(<InspectorPanel />);
+    await waitFor(() =>
+      expect(screen.getByText(/Run data expired — re-run to capture/)).toBeInTheDocument(),
+    );
+    const callsBefore = mockOutput.mock.calls.length;
+
+    act(() => useI18n.setState({ locale: 'zh-TW' }));
+
+    // A locale switch refetches nothing, so the line has to translate itself.
+    expect(screen.getByText(/執行資料已過期 — 重新執行以擷取/)).toBeInTheDocument();
+    expect(screen.queryByText(/Run data expired/)).toBeNull();
+    expect(mockOutput).toHaveBeenCalledTimes(callsBefore);
   });
 
   it('falls back to a sliced fetch on PayloadTooLargeError', async () => {
@@ -315,7 +335,7 @@ describe('InspectorPanel — single node mode', () => {
     });
     render(<InspectorPanel />);
     // trigger edge skipped, no outputs → empty-ports message
-    expect(screen.getByText('This node has no ports.')).toBeInTheDocument();
+    expect(screen.getByText('No ports')).toBeInTheDocument();
   });
 
   it('skips trigger edges (by edge.data.type) and edges without a sourceHandle', () => {
@@ -332,7 +352,7 @@ describe('InspectorPanel — single node mode', () => {
       ],
     });
     render(<InspectorPanel />);
-    expect(screen.getByText('This node has no ports.')).toBeInTheDocument();
+    expect(screen.getByText('No ports')).toBeInTheDocument();
   });
 
   it('handles a node without a definition (outputs default to empty)', () => {
@@ -344,7 +364,7 @@ describe('InspectorPanel — single node mode', () => {
     };
     seedTab({ lastRunId: 'run1', selectedNodeId: 'a', nodes: [n], edges: [] });
     render(<InspectorPanel />);
-    expect(screen.getByText('This node has no ports.')).toBeInTheDocument();
+    expect(screen.getByText('No ports')).toBeInTheDocument();
   });
 
   it('clicks the Forward tab handler explicitly', async () => {

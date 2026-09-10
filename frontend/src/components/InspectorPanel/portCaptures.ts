@@ -211,13 +211,19 @@ export function usePortFetches(
             }));
           } catch (e) {
             if (cancelled) return;
-            const msg =
-              e instanceof RunDataExpiredError
-                ? 'run data expired — re-run to capture'
-                : (e as Error).message;
+            // Expiry is the one cause we recognise, so it travels as a key
+            // that PortGroup translates on every render. Translating it here
+            // would freeze the wording into state, where a later locale
+            // switch cannot reach it.
+            const expired = e instanceof RunDataExpiredError;
             setFetches((prev) => ({
               ...prev,
-              [keyOf(t.nodeId, t.port)]: { loading: false, error: msg, data: null },
+              [keyOf(t.nodeId, t.port)]: {
+                loading: false,
+                error: expired ? null : (e as Error).message,
+                errorKey: expired ? 'inspector.dataExpired' : null,
+                data: null,
+              },
             }));
           }
         }),

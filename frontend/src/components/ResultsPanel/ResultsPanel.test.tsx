@@ -173,7 +173,7 @@ describe('ResultsPanel — log tab basics', () => {
   it('renders a legacy __IMAGE__ entry as an <img> with a base64 data URL', () => {
     seedLogs([makeLog({ message: '__IMAGE__:QUJD' })]);
     render(<ResultsPanel />);
-    const img = screen.getByAltText('output') as HTMLImageElement;
+    const img = screen.getByAltText('Node output image') as HTMLImageElement;
     expect(img.src).toBe('data:image/png;base64,QUJD');
   });
 
@@ -469,14 +469,14 @@ describe('ResultsPanel — structured output kinds (#117)', () => {
   it('renders a kind="image" entry as an <img> built from its payload', () => {
     seedLogs([imageLog('QUJD')]);
     render(<ResultsPanel />);
-    const img = screen.getByAltText('output') as HTMLImageElement;
+    const img = screen.getByAltText('Node output image') as HTMLImageElement;
     expect(img.src).toBe('data:image/png;base64,QUJD');
   });
 
   it('honours the payload format when building the data URL', () => {
     seedLogs([imageLog('PHN2Zy8+', 'svg+xml')]);
     render(<ResultsPanel />);
-    const img = screen.getByAltText('output') as HTMLImageElement;
+    const img = screen.getByAltText('Node output image') as HTMLImageElement;
     expect(img.src).toBe('data:image/svg+xml;base64,PHN2Zy8+');
   });
 
@@ -765,7 +765,7 @@ describe('ResultsPanel — legacy magic prefixes (deprecated, #117)', () => {
     expect(screen.getByTestId('loss-chart').getAttribute('data-len')).toBe('2');
     // Both image sources render.
     fireEvent.click(screen.getByText(t('results.title')));
-    const imgs = screen.getAllByAltText('output') as HTMLImageElement[];
+    const imgs = screen.getAllByAltText('Node output image') as HTMLImageElement[];
     expect(imgs.map((i) => i.src)).toEqual([
       'data:image/png;base64,TEdD',
       'data:image/png;base64,QUJD',

@@ -45,8 +45,10 @@ describe('TensorGridEditor — non-explicit / disabled mode', () => {
   it('shows the "set value_mode to explicit" hint when mode is not explicit', () => {
     renderEditor({ siblingParams: { shape: '2,2', value_mode: 'random' } });
     expect(screen.getByText('My Tensor')).toBeInTheDocument();
-    // hint text fragments
-    expect(screen.getByText(/to edit values inline/)).toBeInTheDocument();
+    // hint text fragments — the parameter name is a <code> span of its own, so
+    // it is not part of the surrounding sentence's text.
+    expect(screen.getByText(/to edit these values/)).toBeInTheDocument();
+    expect(screen.getByText('value_mode').tagName).toBe('CODE');
     // no toolbar (Fill 0) rendered while disabled
     expect(screen.queryByText('Fill 0')).not.toBeInTheDocument();
   });
@@ -54,7 +56,7 @@ describe('TensorGridEditor — non-explicit / disabled mode', () => {
   it('defaults value_mode to random (disabled) when siblingParams omitted', () => {
     // siblingParams undefined → shape '' → parseShape [] ; value_mode default 'random'
     renderEditor({});
-    expect(screen.getByText(/to edit values inline/)).toBeInTheDocument();
+    expect(screen.getByText(/to edit these values/)).toBeInTheDocument();
   });
 
   it('kernel_size sibling alone (no value_mode) defaults to explicit and renders an editable k×k grid', () => {
@@ -68,7 +70,7 @@ describe('TensorGridEditor — non-explicit / disabled mode', () => {
       ],
       siblingParams: { kernel_size: 3 },
     });
-    expect(screen.queryByText(/to edit values inline/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/to edit these values/)).not.toBeInTheDocument();
     expect(screen.getByText('Fill 0')).toBeInTheDocument();
     expect(screen.getByText(/\[3, 3\] · 9 cells/)).toBeInTheDocument();
     const inputs = screen.getAllByRole('spinbutton') as HTMLInputElement[];
@@ -109,7 +111,10 @@ describe('TensorGridEditor — too-large warning', () => {
   it('shows the too-large warning when numel exceeds MAX_INLINE_NUMEL', () => {
     // 100 * 100 = 10000 > 512
     renderEditor({ siblingParams: { shape: '100,100', value_mode: 'explicit' } });
-    expect(screen.getByText(/too large for inline editing/)).toBeInTheDocument();
+    expect(screen.getByText(/too many to edit here/)).toBeInTheDocument();
+    // The warning names the way out, and names the parameter as code.
+    expect(screen.getByText(/random, zeros, ones or arange/)).toBeInTheDocument();
+    expect(screen.getByText('value_mode').tagName).toBe('CODE');
     expect(screen.queryByText('Fill 0')).not.toBeInTheDocument();
   });
 });
@@ -363,7 +368,7 @@ describe('TensorGridEditor — parseShape edge cases', () => {
     expect(screen.getByText('Fill 0')).toBeInTheDocument();
     // badge: "[] · 1 cells"
     expect(screen.getByText(/\[\] · 1 cells/)).toBeInTheDocument();
-    expect(screen.queryByText(/too large/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/too many to edit here/)).not.toBeInTheDocument();
     expect(screen.queryAllByRole('spinbutton')).toHaveLength(0);
     expect(screen.getByText('My Tensor')).toBeInTheDocument();
     // Fill on a rank-0 shape exercises fillFlat's scalar (shape.length===0) leaf

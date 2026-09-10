@@ -102,7 +102,7 @@ export function CodeTab({ ctx }: { ctx: NodeDetailTabContext }) {
           </span>
           <select
             className={styles.typeSelect}
-            aria-label={`${port.name} type`}
+            aria-label={t('nodeDetail.code.portType', { port: port.name })}
             value={port.data_type}
             onChange={(e) => setType(typesParam, ports, index, e.target.value)}
           >
