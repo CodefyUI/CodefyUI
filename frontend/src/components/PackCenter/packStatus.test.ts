@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import type { PackItem, PackSummary } from '../../api/rest';
-import { emptyPackJob, type PackJob } from '../../store/packStore';
+import { emptyPackJob, reducePackEvents, type PackJob } from '../../store/packStore';
 import { useI18n } from '../../i18n';
 import {
   catalogKey,
@@ -144,6 +144,44 @@ describe('jobOverallPercent', () => {
     const p = pack({ id: 'p1', items: [item({ id: 'x', size_bytes: 449 })] });
     const j = job({ items: { x: { bytesDone: 449, bytesTotal: 476, percent: 94 } } });
     expect(jobOverallPercent(j, p)).toBeCloseTo(94.3, 1);
+  });
+
+  it('stays full through the convert step that follows a finished download', () => {
+    // Cursors 70 and 73 of one real word-vectors install. The GloVe convert
+    // step runs under the id of the item it just downloaded and reports WORDS
+    // through the byte fields, so the bar that had reached 100% collapsed to
+    // 0.01% and ended the job at 0.58%.
+    //
+    // Folded through the real reducer rather than hand-built, because the
+    // number this pins belongs to the pair of frames, not to a state: the
+    // weight here is `max(catalog 69 MB, bytesTotal)`, and it is the reducer
+    // refusing to let 400000 words into `bytesTotal` that keeps it honest.
+    const p = pack({
+      id: 'word-vectors',
+      items: [item({ id: 'glove-50d', size_bytes: 69_000_000 })],
+    });
+    const downloaded = reducePackEvents(job(), {
+      job_id: 'j1',
+      status: 'running',
+      cursor: 70,
+      events: [{
+        type: 'progress', cursor: 70, ts: 't', item: 'glove-50d',
+        bytes_done: 69182535, bytes_total: 69182535, percent: 100,
+      }],
+    });
+    expect(jobOverallPercent(downloaded, p)).toBe(100);
+
+    const converting = reducePackEvents(downloaded, {
+      job_id: 'j1',
+      status: 'running',
+      cursor: 73,
+      events: [{
+        type: 'progress', cursor: 73, ts: 't', item: 'glove-50d',
+        bytes_done: 10000, bytes_total: 400000, percent: 2.5,
+        text: 'Converting GloVe text to npz (one-time)',
+      }],
+    });
+    expect(jobOverallPercent(converting, p)).toBe(100);
   });
 });
 

@@ -221,9 +221,16 @@ beforeEach(() => {
 
 afterEach(() => {
   _resetPluginStoreForTesting();
-  // The panel is not this file's store, but a toast action opens it — and an
-  // open panel inherited by the next case is a state nothing here set.
-  useUIStore.setState({ pluginCenterOpen: false, pluginCenterFocusPluginId: null });
+  // Neither panel is this file's store, but a toast action opens each of them
+  // — and an open panel inherited by the next case is a state nothing here
+  // set. The Package Center is one of the two because the refusal that names
+  // a running pack install points at it.
+  useUIStore.setState({
+    pluginCenterOpen: false,
+    pluginCenterFocusPluginId: null,
+    packCenterOpen: false,
+    packCenterFocusPackId: null,
+  });
   vi.useRealTimers();
   vi.clearAllMocks();
 });
@@ -719,6 +726,9 @@ describe('pluginStore — inspect', () => {
   it('says why a remote inspect was refused instead of showing Forbidden', async () => {
     // The source box is where a LAN user first meets the gate, and the
     // status text alone ("Forbidden") says nothing about where to install.
+    // The gate is what the catalog's flag describes, so the state has to say
+    // so — the same fact the panel disables the buttons on.
+    usePluginStore.setState({ remoteInstallAllowed: false });
     api.inspectPluginSource.mockRejectedValue(new ApiError(403, 'Forbidden'));
 
     await usePluginStore.getState().inspect('owner/demo');
@@ -727,6 +737,21 @@ describe('pluginStore — inspect', () => {
     if (state.inspection.phase !== 'error') throw new Error('not an error phase');
     expect(state.inspection.failure.message).toBe(
       'Installing is only allowed from the computer that runs the server.',
+    );
+  });
+
+  it('blames the restarted server when a 403 arrives with installing allowed', async () => {
+    // The other producer of a 403: the auth middleware refusing a session
+    // token the server rotated when it restarted. Telling a user sitting at
+    // the machine that they are on the wrong machine is a dead end.
+    api.inspectPluginSource.mockRejectedValue(new ApiError(403, 'Forbidden'));
+
+    await usePluginStore.getState().inspect('owner/demo');
+
+    const state = usePluginStore.getState();
+    if (state.inspection.phase !== 'error') throw new Error('not an error phase');
+    expect(state.inspection.failure.message).toBe(
+      'The server restarted. Reload the page and try again.',
     );
   });
 
@@ -997,8 +1022,37 @@ describe('pluginStore — installInspected', () => {
     expect(api.listPluginCatalog).toHaveBeenCalled();
   });
 
+  it('sends the user to the Package Center when a pack install is in the way', async () => {
+    await ready();
+    // The mirror of the pack store's refusal: one interpreter, two
+    // installers, and `busy` would say an install is running while this
+    // panel's activity pane answers that nothing is — the job is in the
+    // Package Center's slot, which no catalog read here can reach.
+    api.installPlugin.mockRejectedValue(
+      refused(409, 'pack_install_running', { job_id: 'j2' }),
+    );
+
+    await usePluginStore.getState().installInspected({
+      acceptCapabilities: true, trustAuthor: false,
+    });
+
+    expect(lastToast()).toMatchObject({
+      type: 'warning',
+      message: 'A pack install is running. Wait for it to finish, then try again.',
+    });
+    // No catalog re-read: there is nothing here to adopt.
+    expect(api.listPluginCatalog).not.toHaveBeenCalled();
+    // The button goes to the panel that IS showing the job, and focuses
+    // nothing: the refusal named a job id, and the panel focuses packs.
+    expect(lastToast().action?.label).toBe('Open Package Center');
+    lastToast().action!.onClick();
+    expect(useUIStore.getState().packCenterOpen).toBe(true);
+    expect(useUIStore.getState().packCenterFocusPackId).toBeNull();
+  });
+
   it('says so when the server refuses a remote install', async () => {
     await ready();
+    usePluginStore.setState({ remoteInstallAllowed: false });
     api.installPlugin.mockRejectedValue(new ApiError(403, 'Forbidden'));
 
     await usePluginStore.getState().installInspected({
@@ -1007,6 +1061,20 @@ describe('pluginStore — installInspected', () => {
 
     expect(lastToast().message).toBe(
       'Installing is only allowed from the computer that runs the server.',
+    );
+    expect(lastToast().type).toBe('error');
+  });
+
+  it('blames the restarted server when a 403 arrives with installing allowed', async () => {
+    await ready();
+    api.installPlugin.mockRejectedValue(new ApiError(403, 'Forbidden'));
+
+    await usePluginStore.getState().installInspected({
+      acceptCapabilities: true, trustAuthor: false,
+    });
+
+    expect(lastToast().message).toBe(
+      'The server restarted. Reload the page and try again.',
     );
     expect(lastToast().type).toBe('error');
   });
@@ -1328,12 +1396,24 @@ describe('pluginStore — uninstall', () => {
   it('says so when the server refuses a remote uninstall', async () => {
     // The same gate as an install. Wrapped in "Could not remove Demo
     // plugin", `Forbidden` tells a LAN user nothing about where to do it.
+    usePluginStore.setState({ remoteInstallAllowed: false });
     api.uninstallPlugin.mockRejectedValue(new ApiError(403, 'Forbidden'));
 
     await usePluginStore.getState().uninstall('demo');
 
     expect(lastToast().message).toBe(
       'Installing is only allowed from the computer that runs the server.',
+    );
+    expect(lastToast().type).toBe('error');
+  });
+
+  it('blames the restarted server when a 403 arrives with removing allowed', async () => {
+    api.uninstallPlugin.mockRejectedValue(new ApiError(403, 'Forbidden'));
+
+    await usePluginStore.getState().uninstall('demo');
+
+    expect(lastToast().message).toBe(
+      'The server restarted. Reload the page and try again.',
     );
     expect(lastToast().type).toBe('error');
   });

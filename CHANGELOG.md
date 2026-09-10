@@ -24,6 +24,50 @@ received — each links to the release it was published as.
 
 ### Fixed
 
+- **A tab kept working after the server restarts.** The server mints a new
+  session token every time its process starts, and the browser cached the
+  first one for the life of the page. A tab left open across a restart — a
+  `cdui` restart, or the Package Center restarting the server itself to finish
+  a pack that was already imported — held a token the server had never seen,
+  so every install, uninstall and Run answered `403`, and the execution
+  WebSocket was refused on every reconnect until it gave up. Mutating requests
+  now re-read the token once and retry; the WebSocket re-reads it before each
+  reconnect attempt, and a reconnect that fails before the socket exists no
+  longer ends the retry chain.
+- **A 403 says which of the two things it was.** Both the remote-install gate
+  and a refused session token answer `403`, and the Package and Plugin Centers
+  reported either as "Installing is only allowed from the computer that runs
+  the server" — pointing a user sitting at that very computer at nothing they
+  could do. The gate's sentence is now used only when the server actually said
+  installing is remote-disabled.
+- **A pack install that cannot resolve says what to run instead.** `uv` prints
+  `No solution found` near the top of a derivation that runs to hundreds of
+  lines, and the classifier only ever saw the last 40 — so a resolver conflict,
+  which the Package Center already knows how to recover from, was reported as
+  an unexplained crash: "installing Sentence embeddings failed (uv exited 1)"
+  over 40 lines of bare version numbers. The verdict is now decided line by
+  line while the output streams, in the one place that sees all of it, so the
+  panel shows the constraint-free command that does resolve. The Plugin
+  Center's dependency step had the same window and the same fix.
+- **The GPU PyTorch card tells the truth on machines with nothing to switch
+  to.** On Apple Silicon it reported the pack as not installed, offered eight
+  CUDA and ROCm builds that have no macOS wheel, and its default action posted
+  `mps` — which the resolver has always refused, because that acceleration
+  ships in the default wheel. Picking a CUDA build took the server down first
+  and could only then fail. `installable_variants()` is now what the panel
+  offers and what a pick is checked against, `torch_variant()` answers `mps`
+  where torch says MPS is available, and a machine already running the build it
+  should be running is not offered a restart that reinstalls the same wheel.
+  `cdui install` builds its menu from the same table.
+- **The GloVe install stops going backwards at the end.** Its convert step
+  reports word counts through the item that just finished downloading, so the
+  row fell from "66 MB / 66 MB" to "9.8 KB / 391 KB" and the overall bar from
+  100% to 0.01%. A frame that carries a caption no longer overwrites the byte
+  counters, and the row shows the caption while it converts.
+- **An install refused by the other installer says which one.** A pack install
+  blocked by a running plugin install (and the reverse) said "Another install
+  is already running" while the panel's own activity pane said nothing was
+  running. Each now names the other panel and offers a way to it.
 - **A plugin whose repository moved can be updated again.** GitHub keeps
   answering at a repository's old address forever, through a 301, so an install
   recorded before a rename or an org transfer kept fetching happily under a

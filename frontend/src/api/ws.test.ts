@@ -47,9 +47,12 @@ class FakeWS {
   }
 }
 
-const g = globalThis as unknown as { WebSocket: unknown };
+const g = globalThis as unknown as { WebSocket: unknown; fetch: typeof fetch };
 let originalWebSocket: unknown;
+let originalFetch: typeof fetch;
 let addToastSpy: ReturnType<typeof vi.spyOn>;
+/** What the stubbed /api/auth/bootstrap hands back. Reassign per test. */
+let bootstrapToken: string;
 
 /**
  * Call connect() and wait for the awaited wsUrlWithToken() microtasks to
@@ -74,6 +77,19 @@ beforeEach(() => {
   FakeWS.instances = [];
   // Seed the token so wsUrlWithToken() resolves without hitting the network.
   _setSessionTokenForTesting('ws-test-token');
+  // Every reconnect drops the cached token first (the server may have
+  // restarted and minted a new one), so the bootstrap endpoint has to answer
+  // from the second attempt onwards. Same value by default: a reconnect in
+  // these tests is about the socket, not about the token.
+  originalFetch = g.fetch;
+  bootstrapToken = 'ws-test-token';
+  g.fetch = vi.fn(async (url: unknown) => {
+    if (String(url) === '/api/auth/bootstrap') {
+      return { ok: true, status: 200, json: async () => ({ token: bootstrapToken }) } as
+        unknown as Response;
+    }
+    throw new Error(`unexpected fetch: ${String(url)}`);
+  }) as unknown as typeof fetch;
   // Spy on the toast store so we can assert connection toasts without rendering.
   addToastSpy = vi.spyOn(useToastStore.getState(), 'addToast');
   vi.useFakeTimers();
@@ -83,6 +99,7 @@ afterEach(() => {
   vi.runOnlyPendingTimers();
   vi.useRealTimers();
   g.WebSocket = originalWebSocket;
+  g.fetch = originalFetch;
   _setSessionTokenForTesting(null);
   addToastSpy.mockRestore();
   vi.restoreAllMocks();
@@ -412,6 +429,69 @@ describe('onclose / reconnect', () => {
       (c: [string, ToastType?]) => c[1] === 'warning',
     );
     expect(warningToasts).toHaveLength(1);
+  });
+
+  it('handshakes with a freshly bootstrapped token on every retry', async () => {
+    // The commonest reason the socket drops is that the server restarted, and
+    // a restart rotates the session token. Reusing the cached one gets every
+    // handshake refused 403 until the tab is reloaded.
+    const ws = new ExecutionWebSocket();
+    const first = await startConnect(ws);
+    first.socket.fireOpen();
+    await first.promise;
+    expect(first.socket.url).toContain('token=ws-test-token');
+
+    bootstrapToken = 'rotated-token';
+    first.socket.fireClose();
+    await vi.advanceTimersByTimeAsync(1000);
+
+    expect(FakeWS.instances).toHaveLength(2);
+    expect(FakeWS.instances[1].url).toContain('token=rotated-token');
+    ws.disconnect();
+  });
+
+  it('keeps retrying when the bootstrap GET fails before a socket exists', async () => {
+    // The server is still down, so /api/auth/bootstrap throws and connect()
+    // rejects with no socket to fire onclose. Without a retry queued here the
+    // whole reconnect chain would stop on the first tick.
+    const ws = new ExecutionWebSocket();
+    const first = await startConnect(ws);
+    first.socket.fireOpen();
+    await first.promise;
+
+    g.fetch = vi.fn(async () => {
+      throw new Error('server down');
+    }) as unknown as typeof fetch;
+
+    first.socket.fireClose();
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(FakeWS.instances).toHaveLength(1); // nothing opened
+
+    // The next backoff tick is still queued, and now the server answers.
+    g.fetch = vi.fn(async () => ({
+      ok: true, status: 200, json: async () => ({ token: 'back-up' }),
+    })) as unknown as typeof fetch;
+    await vi.advanceTimersByTimeAsync(2000);
+
+    expect(FakeWS.instances).toHaveLength(2);
+    expect(FakeWS.instances[1].url).toContain('token=back-up');
+    ws.disconnect();
+  });
+
+  it('stops retrying after disconnect() even if the bootstrap GET was in flight', async () => {
+    const ws = new ExecutionWebSocket();
+    const first = await startConnect(ws);
+    first.socket.fireOpen();
+    await first.promise;
+
+    g.fetch = vi.fn(async () => {
+      throw new Error('server down');
+    }) as unknown as typeof fetch;
+
+    first.socket.fireClose();
+    ws.disconnect();
+    await vi.advanceTimersByTimeAsync(10000);
+    expect(FakeWS.instances).toHaveLength(1);
   });
 
   it('gives up and shows a failure toast after MAX_RECONNECT_ATTEMPTS', async () => {

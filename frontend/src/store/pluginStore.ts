@@ -327,6 +327,25 @@ function refusalMessage(err: unknown): string {
   return key === undefined ? errorMessage(err) : useI18n.getState().t(key);
 }
 
+/** A 403 from any of these routes, whatever produced it. */
+function is403(err: unknown): boolean {
+  return err instanceof ApiError && err.status === 403;
+}
+
+/**
+ * A 403 that is the remote-install gate (`_require_local_plugin_install`).
+ *
+ * Two things answer 403 here: that gate, and the auth middleware refusing
+ * this tab's session token — which the server rotates every time it starts,
+ * so a tab left open across a restart holds a dead one. Only the gate is
+ * described by `remote_install_allowed`, the same flag the Install buttons
+ * are already disabled on, so a 403 while the panel says installing IS
+ * allowed cannot be the gate and must not borrow its sentence.
+ */
+function isRemoteGate(err: unknown): boolean {
+  return is403(err) && !usePluginStore.getState().remoteInstallAllowed;
+}
+
 /**
  * Everything a thrown refusal carried, in the shape the review card reads.
  *
@@ -336,11 +355,14 @@ function refusalMessage(err: unknown): string {
 function inspectionFailure(err: unknown): InspectionFailure {
   return {
     // 403 is the one status whose own message says nothing a user can act
-    // on ("Forbidden"): it is the server refusing to install from anywhere
-    // but the machine it runs on, which only this key explains.
-    message: err instanceof ApiError && err.status === 403
+    // on ("Forbidden"): it is either the server refusing to install from
+    // anywhere but the machine it runs on, or this tab's session token being
+    // out of date. Only these keys explain either one.
+    message: isRemoteGate(err)
       ? useI18n.getState().t('packs.remoteDisabled')
-      : refusalMessage(err),
+      : is403(err)
+        ? useI18n.getState().t('packs.sessionExpired')
+        : refusalMessage(err),
     code: refusalCode(err),
     detail: errorDetail(err),
   };
@@ -755,13 +777,31 @@ async function startInstall(
       // install is already running" and refresh the offer away.
       attachInspectionFailure(err);
     } else if (err instanceof ApiError && err.status === 409) {
-      // Somebody else got there first — this tab, another tab, or the CLI.
-      // The refresh adopts whatever the server IS running, which is more
-      // useful than the refusal.
-      toast(t('packs.toast.busy'), 'warning');
-      await store.refresh();
-    } else if (err instanceof ApiError && err.status === 403) {
+      if (code === 'pack_install_running') {
+        // `plugins.service.PACK_INSTALL_RUNNING`: a PACK install owns the
+        // interpreter both installers write into. No refresh here, because
+        // this catalog's `active_job` is this service's own slot and can
+        // never carry a pack's job — re-reading it would leave the activity
+        // pane saying nothing is installing directly under a toast that says
+        // something is. The toast is therefore the whole answer, and it
+        // carries the way to the panel that IS showing the job. Opened
+        // unfocused: the refusal names the job in the way by `job_id`, and
+        // `openPackCenter` focuses by PACK id.
+        toast(t('pluginCenter.toast.packBusy'), 'warning', {
+          label: t('packs.toast.openCenter'),
+          onClick: () => useUIStore.getState().openPackCenter(),
+        });
+      } else {
+        // Somebody else got there first — this tab, another tab, or the CLI.
+        // The refresh adopts whatever the server IS running, which is more
+        // useful than the refusal.
+        toast(t('packs.toast.busy'), 'warning');
+        await store.refresh();
+      }
+    } else if (isRemoteGate(err)) {
       toast(t('packs.remoteDisabled'), 'error');
+    } else if (is403(err)) {
+      toast(t('packs.sessionExpired'), 'error');
     } else {
       toast(t('packs.toast.installFailed', { message: refusalMessage(err) }), 'error');
     }
@@ -999,8 +1039,10 @@ export const usePluginStore = create<PluginState>((set, get) => ({
         } else if (err instanceof ApiError && err.status === 409) {
           toast(t('packs.toast.busy'), 'warning');
           await get().refresh();
-        } else if (err instanceof ApiError && err.status === 403) {
+        } else if (isRemoteGate(err)) {
           toast(t('packs.remoteDisabled'), 'error');
+        } else if (is403(err)) {
+          toast(t('packs.sessionExpired'), 'error');
         } else {
           toast(t('pluginCenter.updateFailed', { message: refusalMessage(err) }), 'error');
         }
@@ -1063,12 +1105,14 @@ export const usePluginStore = create<PluginState>((set, get) => ({
         } else if (err instanceof ApiError && err.status === 409) {
           toast(t('packs.toast.busy'), 'warning');
           await get().refresh();
-        } else if (err instanceof ApiError && err.status === 403) {
+        } else if (isRemoteGate(err)) {
           // Same gate as an install, and the same answer: the server only
           // takes a change like this from the machine it runs on. Wrapping
           // `Forbidden` in "Could not remove Demo plugin" would tell a LAN
           // user that something went wrong rather than where to do it.
           toast(t('packs.remoteDisabled'), 'error');
+        } else if (is403(err)) {
+          toast(t('packs.sessionExpired'), 'error');
         } else {
           toast(
             t('pluginCenter.toast.removeFailed', {

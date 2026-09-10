@@ -895,6 +895,30 @@ TORCH_INDEX_URLS: dict[str, str | None] = {
 }
 
 
+def _installable_variants(system: str | None = None) -> tuple[str, ...]:
+    """The wheel choices that have a build for this platform.
+
+    Mirror of ``backend/app/core/packs/restart.installable_variants`` (the
+    same copy-rather-than-import as TORCH_INDEX_URLS above; the backend's
+    ``test_gpu_info_never_raises_and_mirrors_dev_py`` fails the day the two
+    drift). ROCm wheels are linux_x86_64 only, the CUDA indexes carry
+    manylinux and win_amd64 only, and macOS has nothing to switch to at all:
+    its acceleration ships in the default wheel.
+
+    "auto" and "skip" are requests rather than builds, so they are not in
+    here — the menu offers them on every platform.
+    """
+    system = system or sys.platform
+    variants = tuple(key for key in TORCH_INDEX_URLS
+                     if key not in ("auto", "skip"))
+    if system == "darwin":
+        return ()
+    if system == "win32":
+        return tuple(v for v in variants
+                     if v != "mps" and not v.startswith("rocm"))
+    return tuple(v for v in variants if v != "mps")
+
+
 def _recommended_cu_for_driver(driver_version: str) -> str:
     """Map an NVIDIA driver version to the latest compatible PyTorch CUDA wheel.
 
@@ -991,8 +1015,16 @@ def _parse_install_args(argv_tail: list[str],
 
 def _prompt_install_options(detected_label: str, detected_gpu: str) -> tuple[str, bool]:
     """Interactive menu for GPU + dev choice. Stays inside the terminal — no curses."""
-    options = ["auto", "cpu", "cu118", "cu121", "cu124", "cu126", "cu128",
-               "rocm6.1", "rocm6.2", "mps", "skip"]
+    # Only builds this machine can install, so the menu and the Package
+    # Center's dropdown say the same thing. Around them the two choices that
+    # are not builds ("auto" decides, "skip" decides nothing), and the
+    # detected wheel wherever it is not already in the list: on Apple Silicon
+    # that is "mps", the default PyPI wheel, which this installer CAN put in
+    # place even though the panel has no other build to switch to there.
+    installable = _installable_variants()
+    options = ["auto", *installable,
+               *([] if detected_gpu in installable else [detected_gpu]),
+               "skip"]
     descriptions = {
         "auto":    t("依偵測自動選擇", "auto-pick from detection"),
         "cpu":     "CPU only",
@@ -1015,8 +1047,12 @@ def _prompt_install_options(detected_label: str, detected_gpu: str) -> tuple[str
     for i, opt in enumerate(options, 1):
         is_default = (opt == "auto")
         is_detected = (opt == detected_gpu)
-        # Build trailing annotation
-        bits = [descriptions[opt]]
+        # Build trailing annotation. `options` carries whatever detect_gpu
+        # returned, which is a key of TORCH_INDEX_URLS rather than of this
+        # table, so a wheel that gains detection before it gains a line here
+        # falls back to its own name — a plain menu row beats a KeyError in
+        # front of someone halfway through an install.
+        bits = [descriptions.get(opt, opt)]
         if is_default:
             bits.append(t("預設", "default"))
             bits.append(f"→ {detected_gpu}")

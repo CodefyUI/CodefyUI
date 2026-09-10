@@ -639,8 +639,21 @@ async def test_nothing_running_elsewhere_leaves_the_install_alone():
 
 @pytest.fixture
 def available(monkeypatch):
-    """A server that may restart itself, without the environment for it."""
+    """A server that may restart itself, without the environment for it -- on
+    a box with another wheel to switch to.
+
+    The platform table comes with the permission because the two decide the
+    same submit: ``build_pending`` resolves the variant through
+    ``installable_variants()``, which reads ``sys.platform``, so the cu128
+    handshakes below would be refused on a Mac (no CUDA wheel exists for it)
+    while passing in CI. Patching the function rather than ``sys.platform``
+    leaves every other reader of that name -- ``_pid_alive``, the helper's
+    detach flags -- answering for the machine actually running the suite.
+    """
     monkeypatch.setattr(restart, "restart_available", lambda: True)
+    real = restart.installable_variants
+    monkeypatch.setattr(restart, "installable_variants",
+                        lambda system=None: real(system or "linux"))
 
 
 async def test_the_handshake_writes_spawns_stores_then_stops_the_server(

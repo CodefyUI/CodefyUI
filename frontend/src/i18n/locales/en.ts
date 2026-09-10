@@ -851,6 +851,12 @@ const en = {
   'packs.toast.cancelled': 'Install cancelled.',
   'packs.toast.cancelFailed': 'Could not cancel the install: {message}',
   'packs.toast.busy': 'Another install is already running.',
+  // The OTHER installer holds the interpreter both write into. Said with the
+  // name of the panel that is showing the job, because this panel's own
+  // activity pane can only ever say nothing is running.
+  'packs.toast.pluginBusy':
+    'A plugin install is running. Wait for it to finish, then try again.',
+  'packs.toast.openPluginCenter': 'Open Plugin Center',
   'packs.toast.needsCli':
     'This pack cannot be installed from inside the app yet. Run: {command}',
   // What `needsCli` would have said on the one server it would be lying to:
@@ -940,6 +946,9 @@ const en = {
   'packs.cancel': 'Cancel install',
   'packs.cancelling': 'Cancelling...',
   'packs.remoteDisabled': 'Installing is only allowed from the computer that runs the server.',
+  // The server mints a new session token every time it starts, so a tab left
+  // open across a restart holds one the server will refuse.
+  'packs.sessionExpired': 'The server restarted. Reload the page and try again.',
 
   // Activity pane. `packs.activity.step.*` is keyed by the step id the job
   // sends, so an unknown step falls back to the server's own English label.
@@ -988,6 +997,15 @@ const en = {
   'packs.gpu.installed': 'Installed build: {variant}',
   'packs.gpu.recommended': 'Recommended build: {variant}',
   'packs.gpu.variant': 'PyTorch build',
+  // A step that reports its own progress in something other than bytes: the
+  // GloVe convert counts words through the download item's row, so the byte
+  // caption beside it is the finished download and says nothing about this.
+  'packs.item.converting': 'Converting (one time)',
+  // Apple Silicon: the acceleration is in the default wheel, so the picker
+  // and the button would offer an install with nothing to install.
+  'packs.gpu.alreadyOptimal':
+    "This machine's GPU acceleration is already in the default PyTorch build, "
+    + 'so there is nothing to install.',
   // The one condition under which the button declines — and only that. That
   // the server restarts is already the button's own label and the confirm
   // dialog's question; this is the half neither of them says.
@@ -1108,6 +1126,8 @@ const en = {
   'pluginCenter.toast.inProgress':
     'A plugin is still installing. Open the Plugin Center to watch it.',
   'pluginCenter.toast.openCenter': 'Open Plugin Center',
+  'pluginCenter.toast.packBusy':
+    'A pack install is running. Wait for it to finish, then try again.',
   'pluginCenter.updateFailed': 'Update failed: {message}',
   'pluginCenter.uninstall': 'Uninstall',
   // Says what is lost AND what is not: nothing uninstalls a plugin's pip
