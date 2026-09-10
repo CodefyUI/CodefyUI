@@ -70,7 +70,12 @@ from ..core.plugin_loader import (
 )
 from ..core.jobs import JobBusy
 from ..core.plugins import lifecycle
-from ..core.plugins.catalog import catalog_entries
+from ..core.plugins.catalog import (
+    RESERVED_BY_BUILTIN_PACK,
+    RESERVED_BY_ROUTE,
+    catalog_entries,
+    catalog_entry,
+)
 from ..core.plugins.errors import (
     AlreadyInstalled,
     ConsentRequired,
@@ -108,6 +113,13 @@ router = APIRouter(prefix="/api/plugins", tags=["plugins"])
 _REMOTE_REFUSAL = (
     "Installing plugins is only allowed from the computer that runs the "
     "server. Set CODEFYUI_ALLOW_REMOTE_PLUGIN_INSTALL=1 to override.")
+
+#: GitHub statuses that mean "that is not there". 404 is a typo in the owner
+#: or the repository; 422 is a typo in the REF -- ``GET /repos/{owner}/{repo}
+#: /commits/{ref}`` answers 422 ("No commit found for SHA: <ref>") for a tag,
+#: branch or sha that does not resolve, never 404 -- and both leave the user
+#: in the same place, checking what they typed.
+_MISSING = frozenset({404, 422})
 
 #: GitHub statuses that mean "ask again later" rather than "that is not
 #: there". 403 is how the API answers an exhausted rate limit -- its JSON
@@ -225,17 +237,28 @@ def _service(request: Request) -> PluginService:
 def _github_refusal(exc: GitHubError) -> HTTPException:
     """One GitHub failure, split three ways for three different next steps.
 
-    A 404 is the caller's -- a typo in the owner, the repository or the ref
-    -- so it travels as a 404 they can act on. Everything else happened
+    A 404 or a 422 is the caller's -- a typo in the owner, the repository or
+    the ref, GitHub answering 422 rather than 404 for a ref that does not
+    resolve -- so it travels as a 404 they can act on. Everything else happened
     between this server and GitHub, which is a 502 whether it was a rate
     limit, a 500 or a name that never resolved; the code says which, because
     "wait" and "check the network" are different waits.
     """
-    if exc.status == 404:
+    if exc.status in _MISSING:
         return _coded(404, "not_found")
     if exc.status in _RATE_LIMITED:
         return _coded(502, "github_rate_limited")
     return _coded(502, "github_unreachable")
+
+
+#: :attr:`~.errors.ReservedPluginId.taken_by` as something a client can
+#: switch on. Anything else is the third clause -- a catalog row belonging to
+#: a DIFFERENT repository -- which has no constant because the phrase names
+#: the repository it found.
+_RESERVED_HOLDER = {
+    RESERVED_BY_ROUTE: "route",
+    RESERVED_BY_BUILTIN_PACK: "builtin_pack",
+}
 
 
 def _inspect_refusal(exc: PluginInstallError) -> HTTPException:
@@ -254,7 +277,19 @@ def _inspect_refusal(exc: PluginInstallError) -> HTTPException:
     would have turned every reserved id into ``invalid_manifest``.
     """
     if isinstance(exc, ReservedPluginId):
-        return _coded(400, "reserved_id", id=exc.plugin_id)
+        # WHICH of the three clauses answered, as a code. ``taken_by`` is an
+        # English noun phrase, written for the sentence the CLI prints; a
+        # panel has to say this in the user's language, and the third holder
+        # -- another repository -- is a fact the panel can only name if it is
+        # given the repository. Compared against the constants themselves, so
+        # rewording one of them is still not a wire change.
+        holder = _RESERVED_HOLDER.get(exc.taken_by, "repository")
+        fields: dict[str, Any] = {"id": exc.plugin_id, "holder": holder}
+        if holder == "repository":
+            row = catalog_entry(exc.plugin_id)
+            if row is not None and row.repo:
+                fields["repo"] = row.repo
+        return _coded(400, "reserved_id", **fields)
     return _coded(400, "invalid_manifest")
 
 

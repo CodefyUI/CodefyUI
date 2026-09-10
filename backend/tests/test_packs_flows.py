@@ -117,7 +117,7 @@ def installer(monkeypatch, tmp_path):
     fake = _Installer()
 
     def _run_pip(specs, *, constraints_path, emit, cancel_check, cwd,
-                 tail=None):
+                 tail=None, conflict=None):
         fake.pip_calls.append({
             "specs": list(specs), "cwd": cwd,
             "constraints": Path(constraints_path).read_text(encoding="utf-8"),
@@ -125,8 +125,18 @@ def installer(monkeypatch, tmp_path):
         })
         for line in fake.pip_output:
             emit({"type": "log", "line": line})
+            # Both of the real runner's out-parameters, kept exactly as it
+            # fills them. The trimming is the load-bearing half: a fake that
+            # let ``tail`` grow without bound could not express uv's actual
+            # failure shape -- a "No solution found" whose derivation pushes
+            # the marker out of the window -- so the misclassification that
+            # shape caused was invisible to every test here.
             if tail is not None:
                 tail.append(line)
+                del tail[:-runner.TAIL_LINES]
+            if (conflict is not None
+                    and runner.looks_like_resolver_conflict((line,))):
+                conflict.set()
         return fake.pip_returncode
 
     def _download_hf(pack, item, *, emit, cancel_check):
@@ -559,6 +569,42 @@ def test_resolver_conflict_becomes_needs_restart_with_command(
     assert "No solution found" in failure.value.hint
     assert installer.downloaded == [], "downloaded despite a failed pip run"
     assert installer.invalidated == 1
+
+
+def test_a_conflict_uv_explains_at_length_is_still_a_needs_restart(
+        installer, monkeypatch):
+    """The shape a real conflict actually has, and the one that used to be
+    misread.
+
+    uv gives its verdict near the top and then spends hundreds of lines
+    enumerating the versions it ruled out without restating it, so the tail
+    a failure message is built from ends up holding indented
+    ``transformers==5.4.0`` continuations and no marker. Classifying from
+    that tail turned the one failure with a working answer into "installing
+    Sentence embeddings failed (uv exited 1)" plus a wall of version
+    numbers: the restart advice and the pasteable command never reached the
+    user.
+    """
+    monkeypatch.setattr(state, "pip_ready", lambda pack: False)
+    installer.pip_returncode = 1
+    installer.pip_output = [
+        "Using Python 3.11.10 environment at: backend/.venv",
+        "  × No solution found when resolving dependencies:",
+        *[f"          transformers==5.{minor}.0" for minor in range(200)],
+    ]
+
+    with pytest.raises(PackNeedsRestart) as failure:
+        _install("sentence-embeddings", ["all-MiniLM-L6-v2"], installer)
+
+    command = failure.value.command
+    assert command.startswith("uv pip install --python ")
+    assert sys.executable in command
+    assert '"sentence-transformers>=3.0,<6"' in command
+    assert "-c " not in command, (
+        "the command has to run WITHOUT the constraints file -- those pins "
+        "are the thing the install has to replace")
+    assert failure.value.hint.startswith("stop the server, then run:")
+    assert installer.downloaded == [], "downloaded despite a failed pip run"
 
 
 def test_restart_command_quotes_an_interpreter_path_with_spaces(monkeypatch):

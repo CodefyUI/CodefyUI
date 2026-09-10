@@ -210,7 +210,7 @@ describe('CommitBox: the options menu', () => {
     openOptions();
     fireEvent.click(
       screen.getByRole('menuitem', {
-        name: 'Commit All (stages every change, including new files)',
+        name: 'Commit All (includes new files)',
       }),
     );
     expect(commit).toHaveBeenCalledWith({ all: true });
@@ -224,7 +224,7 @@ describe('CommitBox: the options menu', () => {
     // stays focusable so the reason on it can be reached.
     expect(
       screen.getByRole('menuitem', {
-        name: 'Commit All (stages every change, including new files)',
+        name: 'Commit All (includes new files)',
       }),
     ).toHaveAttribute('aria-disabled', 'true');
   });

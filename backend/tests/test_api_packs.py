@@ -71,6 +71,12 @@ ITEM_KEYS = {"id", "kind", "repo_id", "url", "size_bytes", "derived_bytes",
 GPU_KEYS = {"detected_label", "recommended_variant", "installed_variant",
             "variants", "install_command"}
 
+#: The real platform table, taken before ``restart_ready`` patches the name
+#: over. The handshake tests below run on a developer's machine as well as in
+#: CI, so they pin the platform rather than inherit it -- and pinning it means
+#: keeping a way to ask what ANOTHER platform would offer.
+_REAL_INSTALLABLE = restart.installable_variants
+
 
 @pytest.fixture(autouse=True)
 def isolated_cache(tmp_path, monkeypatch):
@@ -179,6 +185,15 @@ def restart_ready(monkeypatch) -> _RestartCalls:
     monkeypatch.setattr(restart, "restart_available", lambda: True)
     monkeypatch.setattr(restart, "spawn_helper", _spawn)
     monkeypatch.setattr(restart, "schedule_self_shutdown", _shutdown)
+    # The handshake is what these tests are about, and none of it depends on
+    # what is plugged into the machine running them: pin a CUDA box, so a
+    # suite run on a Mac -- which detects "mps" and can install no wheel at
+    # all -- exercises the same path CI does. ``_detected`` is the memo
+    # ``gpu_info`` fills, and a test that needs the real table back reaches
+    # for ``_REAL_INSTALLABLE``.
+    monkeypatch.setattr(restart, "_detected", ("NVIDIA (driver 560)", "cu128"))
+    monkeypatch.setattr(restart, "installable_variants",
+                        lambda system=None: _REAL_INSTALLABLE("linux"))
     return calls
 
 
@@ -224,7 +239,12 @@ async def test_list_packs_is_open_get_and_has_contract_keys(anon_client):
     assert isinstance(body["remote_install_allowed"], bool)
     assert body["launch_mode"] in {"start", "dev", "unknown"}
     assert set(body["gpu"]) == GPU_KEYS
-    assert body["gpu"]["recommended_variant"] in body["gpu"]["variants"]
+    # The recommendation is a NAME (on a Mac it is "mps"); ``variants`` is
+    # what this platform can install, which on a Mac is nothing at all. So
+    # the offer is checked against the platform table rather than against the
+    # recommendation, which has nowhere to appear on that machine.
+    assert body["gpu"]["recommended_variant"] in restart.VARIANTS
+    assert body["gpu"]["variants"] == list(restart.installable_variants())
 
     ids = [pack["id"] for pack in body["packs"]]
     assert ids == [SENTENCE, "word-vectors", "rag", "gpu-torch"]
@@ -653,6 +673,31 @@ async def test_restart_refused_while_a_graph_runs(client, restart_ready,
     assert restart_ready.shutdowns == []
 
 
+async def test_restart_refused_for_a_wheel_this_platform_cannot_install(
+        client, restart_ready, monkeypatch):
+    """Refused while there is still a request to answer with.
+
+    The handshake writes the claim, starts the helper and stops the server
+    before a byte of the wheel is fetched, so a variant with no build for this
+    platform would cost a restart to learn what the platform table already
+    knows. Patched to a Mac here, which can install none of them.
+    """
+    monkeypatch.setattr(restart, "installable_variants",
+                        lambda system=None: _REAL_INSTALLABLE("darwin"))
+
+    response = await client.post("/api/packs/gpu-torch/install",
+                                 json={"mode": "restart", "variant": "cu128"})
+
+    assert response.status_code == 400, response.text
+    assert "no wheel for" in response.json()["detail"]
+
+    # Nothing written, nothing started, and this process still here.
+    assert not pending_restart_file().exists()
+    assert restart_ready.spawned == []
+    assert restart_ready.shutdowns == []
+    assert (await client.get("/api/packs")).json()["active_job"] is None
+
+
 async def test_restart_refused_when_a_fresh_pending_exists(client,
                                                            restart_ready):
     """Two claims on one site-packages is the corruption the whole feature
@@ -1046,12 +1091,117 @@ async def test_gpu_info_never_raises_and_mirrors_dev_py():
         assert (restart.recommended_cu_for_driver(driver)
                 == dev._recommended_cu_for_driver(driver)), driver
 
+    # The platform table is mirrored too: the panel's dropdown and the
+    # installer's menu offer the same builds, or one of them is lying about
+    # what this machine can run.
+    for system in ("darwin", "linux", "win32"):
+        assert (restart.installable_variants(system)
+                == dev._installable_variants(system)), system
+
     info = restart.gpu_info()
     assert set(info) == GPU_KEYS
     assert info["recommended_variant"] in restart.VARIANTS
-    assert info["variants"] == list(restart.VARIANTS)
+    assert info["variants"] == list(restart.installable_variants())
     assert info["install_command"] == (
         f"cdui install --gpu {info['recommended_variant']}")
+
+
+@pytest.mark.parametrize("system, expected", [
+    ("darwin", ()),
+    ("linux", ("cpu", "cu118", "cu121", "cu124", "cu126", "cu128",
+               "rocm6.1", "rocm6.2")),
+    ("win32", ("cpu", "cu118", "cu121", "cu124", "cu126", "cu128")),
+])
+async def test_installable_variants_names_the_wheels_a_platform_has(
+        system, expected):
+    """The offer is per-platform, and macOS's is empty.
+
+    PyTorch publishes the ROCm wheels for linux_x86_64 only and the CUDA ones
+    for manylinux and win_amd64 only, and macOS's acceleration is in the
+    default wheel with no index to reinstall it from -- so a Mac has nothing
+    to switch TO. Offering one of these where it cannot be resolved costs a
+    restart, a couple of minutes of downtime and an error, for an install
+    that never had a wheel to fetch.
+    """
+    assert restart.installable_variants(system) == expected
+    # Never anywhere: "mps" names no index on any platform, which is exactly
+    # why ``resolve_gpu_torch`` refuses it by name.
+    assert "mps" not in restart.installable_variants(system)
+
+
+async def test_every_installable_variant_has_an_index_to_install_from():
+    """Whatever is offered has to be installable, or the offer is a trap: the
+    pending file carries the index URL to a helper that runs after this server
+    is gone, and ``None`` reaches ``--index-url`` as the four letters "None".
+    """
+    for system in ("darwin", "linux", "win32"):
+        for variant in restart.installable_variants(system):
+            url = restart.TORCH_INDEX_URLS[variant]
+            assert url and url != "__skip__", (system, variant)
+            assert url.startswith("https://download.pytorch.org/whl/"), url
+
+
+async def test_resolve_accepts_every_variant_its_platform_offers(monkeypatch):
+    for system in ("linux", "win32"):
+        monkeypatch.setattr(
+            restart, "installable_variants",
+            lambda _system=None, chosen=system: _REAL_INSTALLABLE(chosen))
+        for variant in _REAL_INSTALLABLE(system):
+            assert restart.resolve_gpu_torch(variant) == (
+                variant, restart.TORCH_INDEX_URLS[variant]), (system, variant)
+
+
+async def test_resolve_refuses_a_wheel_this_platform_cannot_load(monkeypatch):
+    """The same table again, where the install is decided rather than drawn.
+
+    A stale page, a saved request or ``cdui install --gpu`` can all name a
+    build the dropdown stopped offering, and by the time the helper finds out
+    the server has already been taken down for it.
+    """
+    monkeypatch.setattr(restart, "installable_variants",
+                        lambda system=None: _REAL_INSTALLABLE("darwin"))
+    with pytest.raises(ValueError, match="nothing to switch to"):
+        restart.resolve_gpu_torch("cu128")
+
+    # Where something IS installable the refusal names it, so the reader of a
+    # 400 knows what would have been taken.
+    monkeypatch.setattr(restart, "installable_variants",
+                        lambda system=None: _REAL_INSTALLABLE("win32"))
+    with pytest.raises(ValueError, match="expected one of .*cu128"):
+        restart.resolve_gpu_torch("rocm6.2")
+
+
+async def test_the_installer_menu_offers_what_this_platform_can_install(
+        monkeypatch, capsys):
+    """``cdui install``'s menu and the panel's dropdown are one offer.
+
+    dev.py runs before the backend is installed and cannot import a line of
+    it, so the platform table is mirrored there (asserted above). The mirror
+    only helps if the menu reads it, which is what this drives.
+    """
+    import dev
+
+    answers = iter(["3", "n"])
+    monkeypatch.setattr("builtins.input", lambda prompt: next(answers))
+    monkeypatch.setattr(dev, "_installable_variants",
+                        lambda system=None: ("cpu", "cu128"))
+
+    assert dev._prompt_install_options(
+        "NVIDIA (driver 560)", "cu128") == ("cu128", False)
+    printed = capsys.readouterr().out
+    assert "cu128" in printed
+    assert "rocm" not in printed, "a build with no wheel for this platform"
+
+    # Nothing installable, which is every Mac: the menu is the two requests
+    # that are always answerable plus the detected wheel -- "mps" there being
+    # the default PyPI build, which the installer CAN put in place even where
+    # the panel has no other build to switch to.
+    answers = iter(["2", "n"])
+    monkeypatch.setattr(dev, "_installable_variants", lambda system=None: ())
+    assert dev._prompt_install_options(
+        "Apple Silicon (MPS)", "mps") == ("mps", False)
+    printed = capsys.readouterr().out
+    assert "cu128" not in printed and "rocm" not in printed
 
 
 async def test_detect_gpu_matches_dev_py_on_this_machine():

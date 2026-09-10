@@ -8,7 +8,7 @@ description: 安裝特定 LLM 節點與 GPU 後端所需的選用 Python 套件�
 
 選用套件包內含基本 CodefyUI 安裝未提供的 Python 套件和模型檔。型錄內容皆採用寬鬆授權，套件版本固定在已測試的範圍。基本安裝可保持精簡並離線運作；只需安裝圖所需的套件包。
 
-你可以從**套件中心**安裝套件包（工具列 > 設定 > 選用套件，或側邊欄的**自訂與外掛**分頁 > **選用套件** > **套件中心...**），也可以執行 `cdui packs install <id>`。套件中心會顯示各項下載大小和進度。兩種方式使用相同的安裝程式與型錄。型錄是白名單，只接受預先定義的 id；請求內容無法將 pip spec、repository id 或 URL 傳給安裝程式的子行程。
+你可以從**套件中心**安裝套件包（工具列 > 設定 > 選用套件與外掛，或側邊欄的**自訂與外掛**分頁 > **選用套件** > **套件中心...**），也可以執行 `cdui packs install <id>`。套件中心會顯示各項下載大小和進度。兩種方式使用相同的安裝程式與型錄。型錄是白名單，只接受預先定義的 id；請求內容無法將 pip spec、repository id 或 URL 傳給安裝程式的子行程。
 
 :::note 執行圖時不會下載套件內容
 如果缺少必要的套件包，**執行**會在該節點停止並指出套件，不會下載內容。`TextCorpusDataset`、`HuggingFaceDataset` 和 `Tokenizer` 可以自行從 Hugging Face Hub 取得小型資產，並使用各自的快取。此限制只適用於套件中心管理的內容。
@@ -42,7 +42,7 @@ cdui packs install rag --yes
 
 ## 安裝與移除
 
-**在應用程式中。** 從工具列 > 設定 > 選用套件開啟套件中心。每個套件包會列出項目、大小和下載狀態。選取項目並開始安裝後，可以查看記錄和位元組計數器。**取消安裝**會停止目前的傳輸。模型下載會從部分檔案續傳；GloVe 詞向量表等單一檔案資產則會重新下載。同一時間只能執行一個安裝工作。
+**在應用程式中。** 從工具列 > 設定 > 選用套件與外掛開啟套件中心。每個套件包會列出項目、大小和下載狀態。選取項目並開始安裝後，可以查看記錄和位元組計數器。**取消安裝**會停止目前的傳輸。模型下載會從部分檔案續傳；GloVe 詞向量表等單一檔案資產則會重新下載。同一時間只能執行一個安裝工作。
 
 **從終端機。** CLI 使用相同的安裝程式與型錄：
 
@@ -113,7 +113,7 @@ uv pip uninstall --python <path-to-venv-python> sentence-transformers
 執行到缺少必要內容的節點時，會在該節點停止並指出需求：
 
 ```text
-Model 'all-MiniLM-L6-v2' from the Sentence embeddings pack is not downloaded. Open Package Center (toolbar > Settings > Optional packs) to download it; graph runs never download (pack=sentence-embeddings)
+Model 'all-MiniLM-L6-v2' from the Sentence embeddings pack is not downloaded. Open Package Center (toolbar > Settings > Optional Packs & Plugins) to download it; graph runs never download (pack=sentence-embeddings)
 ```
 
 `(pack=<id>)` 後綴可供機器解析。編輯器會擷取 id，顯示錯誤通知，並提供聚焦至必要套件的**開啟套件中心**按鈕。該次執行不會取得套件內容。

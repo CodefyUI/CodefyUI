@@ -5,10 +5,10 @@ const zhTW: Record<TranslationKey, string> = {
   'toolbar.run': '執行',
   'toolbar.running': '執行中...',
   'toolbar.stop': '停止',
-  'toolbar.run.title': '執行管線',
+  'toolbar.run.title': '執行這張圖',
   'toolbar.stop.title': '停止執行',
   'toolbar.device.aria': '此圖的裝置',
-  'toolbar.device.title': '在指定裝置上執行此圖；選擇會儲存在圖檔中',
+  'toolbar.device.title': '這張圖要在哪個裝置上執行；選擇會存進圖檔',
   'toolbar.device.follow': '跟隨設定（{device}）',
   'toolbar.reloadNodes': '重新載入節點',
   'toolbar.reloadNodes.title': '從後端重新載入節點定義',
@@ -30,38 +30,38 @@ const zhTW: Record<TranslationKey, string> = {
   'toolbar.load.loading': '載入中...',
   'toolbar.load.empty': '沒有已儲存的圖表',
   'toolbar.load.toCanvas': '載入到當前畫布分頁中',
-  'toolbar.load.toCanvas.title': '覆蓋目前畫布的內容，但不綁定檔案 —— 之後按「儲存」會問要存成什麼名字',
+  'toolbar.load.toCanvas.title': '覆蓋目前畫布；之後按「儲存」會再問名稱',
   'toolbar.load.toCanvas.confirm': '要用「{name}」覆蓋目前畫布嗎？',
   'toolbar.load.toCanvas.confirmAction': '覆蓋',
   'toolbar.load.andSave': '載入並儲存',
-  'toolbar.load.andSave.title': '載入並把這個分頁綁定到該檔案 —— 之後按「儲存」會直接覆寫它',
+  'toolbar.load.andSave.title': '把這個分頁綁定到該檔案；按「儲存」會直接寫回',
   'toolbar.load.search': '搜尋已儲存的圖表…',
   'toolbar.load.noMatch': '沒有符合「{query}」的圖表',
   'toolbar.import': '匯入 JSON...',
   'toolbar.import.fail': '匯入失敗：{error}',
   'toolbar.clear': '清除畫布',
-  'toolbar.clear.title': '清除畫布',
+  'toolbar.clear.title': '移除畫布上的所有節點',
   'toolbar.clear.confirm': '確定要清除畫布嗎？所有未儲存的內容將會遺失。',
 
   // Menu: Export
   'toolbar.menu.export': '匯出',
   'toolbar.export.empty': '畫布為空 — 請先新增一些節點再匯出。',
   'toolbar.exportJson': '匯出為 JSON',
-  'toolbar.exportJson.title': '將圖表下載為 JSON 檔案（包含子圖）',
+  'toolbar.exportJson.title': 'JSON 檔案，包含子圖',
   'toolbar.exportJson.empty': '畫布為空 — 請先新增一些節點再匯出。',
   'toolbar.export': '匯出為子圖',
-  'toolbar.export.title': '將目前圖表匯出為可重用的子圖/預設模組',
+  'toolbar.export.title': '將這張圖存成可重用的預設組合',
   'toolbar.export.prompt': '請輸入子圖名稱：',
-  'toolbar.export.success': '子圖「{name}」匯出成功！已出現在節點面板中。',
+  'toolbar.export.success': '子圖「{name}」已加入「預設組合」面板。',
   'toolbar.export.fail': '匯出失敗：{error}',
-  'toolbar.export.subgraphRefused': '畫布中有收合的子圖區塊（{names}），無法匯出為子圖。預設模組無法帶著它們的內容，請先展開這些區塊再匯出。',
+  'toolbar.export.subgraphRefused': '請先展開收合的區塊（{names}）再匯出：預設模組無法帶著它們的內容。',
   'toolbar.exportPython': '匯出為 Python',
-  'toolbar.exportPython.title': '下載無伺服器 Python 執行腳本（需要 CodefyUI 後端環境）',
+  'toolbar.exportPython.title': '可執行這張圖的 Python 腳本；需要 CodefyUI 後端環境',
   'toolbar.exportPython.empty': '畫布沒有可執行節點 — 請先新增節點再匯出。',
   'toolbar.exportPython.fail': 'Python 匯出失敗：{error}',
   'toolbar.exportDiagram.svg': '匯出架構圖 (SVG)',
   'toolbar.exportDiagram.png': '匯出架構圖 (PNG)',
-  'toolbar.exportDiagram.title': '將架構圖（節點、輸入/輸出埠與連接線,不含參數數值）下載為圖片',
+  'toolbar.exportDiagram.title': '節點、連接埠與連線的圖片，不含參數數值',
   'toolbar.exportDiagram.empty': '畫布為空 — 請先新增一些節點再匯出。',
   'toolbar.exportDiagram.fail': '架構圖匯出失敗：{error}',
 
@@ -118,33 +118,31 @@ const zhTW: Record<TranslationKey, string> = {
   'templates.loadFail': '載入範例失敗：{error}',
   'templates.empty': '沒有可用的範例',
   'templates.noMatch': '找不到符合的範例',
-  'templates.hint': '把範例拖曳到畫布上，或點一下加入',
 
   // 範例圖庫彈窗 (core#128)
   'gallery.open': '範例圖庫',
   'gallery.browse': '瀏覽全部範例',
   'gallery.open.title': '瀏覽所有內建與外掛提供的範例',
   'gallery.title': '範例圖庫',
-  'gallery.subtitle': '可以開在新分頁，或直接插入目前的畫布',
+  'gallery.subtitle': '內建與外掛提供的範例',
   'gallery.search': '搜尋範例...',
   'gallery.close': '關閉範例圖庫',
   'gallery.list': '範例清單',
   'gallery.detail': '範例詳情',
-  'gallery.detailEmpty': '選一個範例來看它的內容',
-  'gallery.noDescription': '這個範例沒有附說明文字。',
+  'gallery.detailEmpty': '選一個範例',
+  'gallery.noDescription': '沒有說明。',
   'gallery.edgeCount': '{count} 條連線',
   'gallery.sourceBuiltin': '內建範例',
   'gallery.sourcePlugin': '來自外掛套件「{plugin}」',
   'gallery.openNewTab': '在新分頁開啟',
   'gallery.insert': '插入目前畫布',
-  'gallery.insertHint': '插入的節點會拿到全新的 id，並放在目前圖表的下方，不會覆蓋既有內容。按一次復原就能整批移除。',
+  'gallery.insertHint': '節點會加在圖表下方，按一次復原即可移除。',
 
   // Sidebar: Custom & Plugins tab (#126)
   'customTab.section.nodes': '自訂節點',
   'customTab.section.plugins': '外掛',
   'customTab.manage': '管理...',
   'customTab.plugins.open': '外掛中心...',
-  'customTab.nodes.empty': '尚未有自訂節點',
   'customTab.plugins.empty': '尚未安裝外掛',
   'customTab.loadFail': '載入失敗：{error}',
 
@@ -224,7 +222,7 @@ const zhTW: Record<TranslationKey, string> = {
   'contextMenu.rename.prompt': '請輸入節點的新名稱：',
   'contextMenu.addTextNote': '新增文字註記',
   'contextMenu.addImageNote': '新增圖片註記',
-  'contextMenu.bypass': '略過這個節點',
+  'contextMenu.bypass': '略過',
   'contextMenu.unbypass': '取消略過',
   'contextMenu.collapseToSubgraph': '收合成子圖',
   'contextMenu.enterSubgraph': '進入子圖',
@@ -270,7 +268,7 @@ const zhTW: Record<TranslationKey, string> = {
   'tabs.closeRunning': '此分頁仍在執行中，確定要關閉嗎？',
   'tabs.close.confirmTitle': '要關閉「{name}」嗎？',
   'tabs.close.confirmMessage':
-    '這個分頁裡有圖表（{count} 個節點）。關閉分頁會把圖表一起丟棄，而且已關閉的分頁無法復原：尚未儲存成圖表檔案的內容都會消失。若想日後再使用，請先取消並儲存。',
+    '關閉會丟棄這個分頁與其中的 {count} 個節點，且無法復原。需要保留請先儲存。',
   'tabs.close.confirmButton': '關閉分頁',
 
   // Tab bar chrome (#341)
@@ -344,12 +342,14 @@ const zhTW: Record<TranslationKey, string> = {
   // Custom Node Manager
   'customNodes.title': '自訂節點管理',
   'customNodes.loading': '載入中...',
-  'customNodes.empty': '沒有自訂節點。上傳 .py 檔案開始使用。',
+  'customNodes.empty': '尚未有自訂節點',
+  'customNodes.emptyUpload': '尚未有自訂節點。上傳 .py 檔案即可新增。',
   'customNodes.enabled': '啟用',
   'customNodes.disabled': '停用',
   'customNodes.delete': '刪除',
   'customNodes.delete.confirm': '確定要刪除「{name}」嗎？此操作無法復原。',
   'customNodes.upload': '上傳 .py',
+  'customNodes.close': '關閉自訂節點管理',
   'toolbar.customNodes': '自訂節點',
   'toolbar.customNodes.title': '管理自訂節點',
 
@@ -362,7 +362,7 @@ const zhTW: Record<TranslationKey, string> = {
   'paramField.selectFile': '-- 選擇檔案 --',
   'paramField.uploadFailed': '上傳失敗',
   'paramField.downloadFailed': '下載失敗',
-  'paramField.secretHint': '僅本次工作階段有效，存檔時會清除。建議改用環境變數。',
+  'paramField.secretHint': '僅本次工作階段有效，存檔時清除。金鑰請改存在環境變數。',
 
   // ParamField（畫布內 Python，core#131）
   'paramField.code.checking': '檢查中…',
@@ -389,8 +389,8 @@ const zhTW: Record<TranslationKey, string> = {
 
   // Beginner-facing rewrites of raw Python/PyTorch exceptions (see
   // utils/errorMessages.ts). Each one names what to change, not just what broke.
-  'error.missingTensorInput': '這個節點需要一個 tensor 輸入，但沒有收到。請檢查所有必要的輸入是否都已接線。',
-  'error.missingInput': '缺少必要的輸入「{key}」。請檢查這個輸入是否已接線。',
+  'error.missingTensorInput': '請把 tensor 輸入接到這個節點。',
+  'error.missingInput': '請接上必要的輸入「{key}」。',
   'error.linearShapeMismatch': '尺寸不符：這一層收到 {got} 個特徵，但它設定的是 {expected} 個。請把這一層的 in_features 改成 {got}，或調整前一層讓它輸出 {expected} 個。',
   'error.invalidReshape': '無法變形成 {shape}：這個 tensor 有 {size} 個元素，無法整除成該形狀。請檢查批次大小與前一層的維度。',
   'error.channelMismatch': '通道數不符：這一層設定的輸入通道是 {expected}，但收到 {got}。請把它的 in_channels 改成 {got}，或調整接到它的來源。',
@@ -415,9 +415,9 @@ const zhTW: Record<TranslationKey, string> = {
   'shortcuts.paste': '貼上節點',
   'shortcuts.delete': '刪除選取項目',
   'shortcuts.commit': '提交（版本控制訊息框）',
-  'shortcuts.bypass': '略過／取消略過選取的節點',
-  'shortcuts.toggleSidebar': '收合／展開側邊欄（沒有選取節點時）',
-  'shortcuts.toggleSidebarAlways': '收合／展開側邊欄（永遠有效）',
+  'shortcuts.bypass': '切換選取節點的略過狀態',
+  'shortcuts.toggleSidebar': '切換側邊欄（未選取節點時）',
+  'shortcuts.toggleSidebarAlways': '切換側邊欄（永遠有效）',
   'shortcuts.quickSearch': '快速搜尋節點',
   'shortcuts.help': '顯示此說明',
   'shortcuts.doubleClickKey': '雙擊',
@@ -514,7 +514,7 @@ const zhTW: Record<TranslationKey, string> = {
   'toolbar.settings.section.llm': 'LLM 提供者',
   'toolbar.settings.section.system': '這台伺服器',
   'settings.device.name': '運算裝置',
-  'settings.device.desc': '未指定裝置的圖使用此裝置。每張圖可在工具列各自指定。',
+  'settings.device.desc': '沒有自己指定裝置的圖，會使用這裡選的裝置。',
   'settings.device.hint': '這台伺服器可用的最佳裝置：{device}',
 
   // 字級選單
@@ -525,43 +525,43 @@ const zhTW: Record<TranslationKey, string> = {
 
   // 設定面板各項
   'settings.record.name': '錄製節點輸出',
-  'settings.record.desc': '每次執行都把每個節點的輸出存下來，檢視器才能顯示 input → output 的差異。',
+  'settings.record.desc': '讓檢視器能顯示 input → output 的差異。',
   'settings.verbose.name': '顯示內部步驟',
-  'settings.verbose.desc': '檢視器額外顯示 Q / K / V / attention scores 等演算法中間步驟（教學模式）。',
+  'settings.verbose.desc': '檢視器額外顯示 Q / K / V、attention scores 等內部步驟。',
   'settings.compare.name': '段落比較',
-  'settings.compare.desc': '在畫布上選兩個節點，按下這裡會把它們之間的中段壓成「頭輸入 → 尾輸出」一對比較。',
+  'settings.compare.desc': '比較所選兩個節點中，左邊那個的輸入與右邊那個的輸出。',
   'settings.compare.actionCreate': '建立段落',
   'settings.compare.actionClear': '取消當前段落',
   'settings.compare.actionDisabled': '請先選兩個節點',
   'settings.persist.name': '在多次執行間保留權重',
-  'settings.persist.desc': '關閉時，每次執行 Conv2d / Linear / Attention 都會重新初始化 — 模型不會學習。',
+  'settings.persist.desc': '關閉時，每次執行都會重新初始化各層權重，模型不會學習。',
   'settings.resetWeights.name': '立即重置所有權重',
-  'settings.resetWeights.desc': '清空所有已保存的權重，下次執行從頭開始。',
+  'settings.resetWeights.desc': '下次執行會從全新初始化開始。',
   'settings.resetWeights.action': '重置',
   'settings.gradients.name': '擷取梯度',
   'settings.gradients.desc': '在前向之後追加 .backward()，把每層的梯度存下來給檢視器。',
   'settings.autoLoss.name': '自動合成損失',
   'settings.autoLoss.desc': '當圖中沒有 Loss / BackwardOnce 節點時，自動合成一個讓 .backward() 能跑起來。',
   'settings.seed.name': '亂數種子',
-  'settings.seed.desc': '用同一個數字為每個節點設定種子，讓執行結果可重現。設了種子的執行會一次跑一個節點。留空表示不設種子。',
+  'settings.seed.desc': '用同一個數字為每個節點設定種子，讓執行可重現；設了種子會一次跑一個節點。',
   'settings.seed.placeholder': '未設定',
   'settings.deterministic.name': '決定性演算法',
-  'settings.deterministic.desc': '要求 PyTorch 使用可重現的運算核心。沒有決定性實作的運算會發出警告，而不是讓整個執行失敗。',
+  'settings.deterministic.desc': '要求 PyTorch 使用可重現的運算核心；不支援的運算只會發出警告。',
   'settings.gridSnap.name': '對齊格線',
   'settings.gridSnap.desc': '拖曳節點時自動對齊畫布格線。',
   'settings.tooltips.name': '顯示節點說明',
-  'settings.tooltips.desc': '滑鼠懸在節點上時顯示描述卡片。',
+  'settings.tooltips.desc': '滑鼠懸停時顯示描述卡片。',
   'settings.nodeMode.name': '節點分類模式',
-  'settings.nodeMode.desc': 'Basic 只在側欄顯示新手會用到的基礎類別；All 則顯示全部類別。',
+  'settings.nodeMode.desc': '側欄要列出多少節點類別。',
   'settings.nodeMode.basic': '入門',
   'settings.nodeMode.all': '全部',
   'settings.edgeStyle.name': '連線樣式',
-  'settings.edgeStyle.desc': '數值連線的繪製方式：電路板走線或平滑曲線。',
+  'settings.edgeStyle.desc': '數值連線的繪製方式。',
   'settings.edgeStyle.circuit': '電路板',
   'settings.edgeStyle.curve': '曲線',
   'settings.codex.name': 'ChatGPT Codex 帳號',
-  'settings.codex.descLoggedOut': '登入後即可在 LLMChat 使用 Codex provider。這會使用你的 ChatGPT 帳號 session。',
-  'settings.codex.descPending': '登入流程進行中。請在瀏覽器分頁完成登入，再回到這裡。',
+  'settings.codex.descLoggedOut': '以 ChatGPT 登入後即可在 LLMChat 使用 Codex provider。',
+  'settings.codex.descPending': '請在瀏覽器分頁完成登入，再回到這裡。',
   'settings.codex.descLoggedIn': '已登入為 {email}。Codex 節點可以使用你的 ChatGPT session。',
   'settings.codex.actionSignIn': '登入',
   'settings.codex.actionSignOut': '登出',
@@ -573,20 +573,18 @@ const zhTW: Record<TranslationKey, string> = {
 
   // 「這台伺服器」區塊（#193 第 2 項）。這些數字 /api/health 從 #135 就一直在
   // 回報，只是編輯器裡一直沒有地方顯示。
-  'settings.health.name': '這台伺服器載入了什麼',
-  'settings.health.desc': '你正在使用的版本，以及它的快取目前占用了多少記憶體。',
   'settings.health.refresh': '重新讀取',
   'settings.health.refreshAria': '重新讀取伺服器狀態',
   'settings.health.loading': '正在讀取伺服器資訊…',
-  'settings.health.failed': '讀不到伺服器狀態。按「重新讀取」再試一次。',
+  'settings.health.failed': '讀不到伺服器狀態，請按「重新讀取」。',
   'settings.health.version': '版本',
   'settings.health.nodes': '節點',
   'settings.health.presets': '預設組合',
   'settings.health.unknown': '未知',
   'settings.health.caches': '快取',
   'settings.health.cachesEmpty': '目前沒有任何快取在運作。',
-  'settings.health.cachesHint': '這些存放伺服器已經算過的結果，讓下次執行可以跳過重算；裡面不會有你存下來的圖或檔案。清掉的代價是重算的時間 — 權重那一項則是重新訓練的時間，除非你存過 checkpoint。',
-  'settings.health.cache.execution_cache': '節點輸出（每個編輯器連線一份）',
+  'settings.health.cachesHint': '伺服器因為執行而留在記憶體裡的資料。你儲存的圖與檔案不在裡面。',
+  'settings.health.cache.execution_cache': '節點輸出（每個開啟的編輯器一份）',
   'settings.health.cache.run_output_store': '已錄製的執行輸出',
   'settings.health.cache.node_state_store': '在多次執行間保留的層權重',
   'settings.health.cacheOf': '{used} / 上限 {budget}',
@@ -596,7 +594,7 @@ const zhTW: Record<TranslationKey, string> = {
   'tokenizer.runHint': '執行圖以查看 token',
   'tokenizer.truncatedInline': '顯示前 {shown} 個（共 {total} 個）— 完整列表請看檢視器',
   'scatter.runHint': '執行圖以查看投影結果',
-  'scatter.tooLargeInline': '點太多,無法在節點上預覽',
+  'scatter.tooLargeInline': '點太多，無法在節點上預覽',
   'scatter.openDetail': '開啟詳細檢視',
   'scatter.points': '{count} 個點',
   'scatter.nearestToCenter': '距畫面中心最近',
@@ -610,10 +608,10 @@ const zhTW: Record<TranslationKey, string> = {
   'scatter.hidePoint': '隱藏',
   'scatter.showPoint': '顯示',
   'scatter.loading': '載入點資料中…',
-  'scatter.loadError': '無法載入點資料:{error}',
-  'scatter.unavailable': '無法載入:此次執行結果已不存在。',
+  'scatter.loadError': '無法載入點資料：{error}',
+  'scatter.unavailable': '無法載入：此次執行結果已不存在。',
   'scatter.noData': '沒有可顯示的點',
-  'scatter.closeHint': '點擊外部或按 Esc 關閉',
+  'scatter.closeHint': '按 Esc 關閉',
   'scatter.recenterHint': '點擊標籤可置中 · 拖曳可平移 · 滾動可縮放',
   'scatter.close': '關閉',
   'attention.runHint': '執行圖以查看注意力權重',
@@ -622,6 +620,13 @@ const zhTW: Record<TranslationKey, string> = {
   'attention.maskRunHint': '執行圖以查看 mask',
   'attention.tooLargeInline': '張量太大無法直接預覽',
   'attention.viewFull': '查看完整',
+  // 熱圖彈窗：關閉鈕與底部提示沿用 `scatter.*`，同一個控制項只有一種說法。
+  'heatmap.loading': '載入張量中…',
+  'heatmap.unavailable': '此次執行結果已不存在。',
+  'heatmap.notTensor': '需要張量；這個連接埠的資料是 {type}。',
+  'heatmap.loadError': '無法載入：{error}',
+  'heatmap.loadErrorHint': '請重新執行圖，或縮短輸入序列。',
+  'heatmap.rowNormalised': '色階以列為單位正規化',
   'textInput.placeholder': '在此輸入文字…',
   'textInput.charCount': '{count} 字元',
 
@@ -818,6 +823,7 @@ const zhTW: Record<TranslationKey, string> = {
   'edge.viewStats': '查看統計',
 
   // Shared plots
+  'plot.noData': '沒有資料',
   'plot.noDistribution': '沒有分佈資料',
   'plot.peak': '最高 {count}',
 
@@ -844,6 +850,8 @@ const zhTW: Record<TranslationKey, string> = {
   'packs.toast.cancelled': '已取消安裝。',
   'packs.toast.cancelFailed': '無法取消安裝：{message}',
   'packs.toast.busy': '已經有另一個安裝在進行中。',
+  'packs.toast.pluginBusy': '外掛安裝進行中，請等它完成後再試一次。',
+  'packs.toast.openPluginCenter': '開啟外掛中心',
   'packs.toast.needsCli': '這個套件目前無法從程式內安裝。請執行：{command}',
   'packs.toast.restartRetry': '安裝停在伺服器已載入的套件上。請到套件中心重新啟動伺服器來完成安裝。',
   'packs.toast.blocked': '請先安裝 {pack}。',
@@ -858,7 +866,7 @@ const zhTW: Record<TranslationKey, string> = {
   // activity pane and the restart overlay. (The toast keys the pack store
   // fires are the block directly above.)
   'packs.title': '套件中心',
-  'packs.subtitle': '安裝選用的模型與函式庫，讓 LLM 節點使用真正的實作',
+  'packs.subtitle': '給 LLM 節點使用的選用模型與函式庫',
   'packs.close': '關閉套件中心',
   'packs.refresh': '重新整理套件狀態',
   'packs.list': '套件清單',
@@ -873,9 +881,10 @@ const zhTW: Record<TranslationKey, string> = {
   // sent, so a newer backend still renders.
   'packs.catalog.sentence-embeddings.title': '句向量模型',
   'packs.catalog.sentence-embeddings.desc':
-    'sentence-transformers 加上四個小型嵌入模型（英文、多語、中文），供 TextEmbedding 與 WordVector 使用',
+    'sentence-transformers 與四個小型嵌入模型，供 TextEmbedding 與 WordVector 使用',
   'packs.catalog.word-vectors.title': '詞向量（GloVe）',
-  'packs.catalog.word-vectors.desc': '給 WordVector 用的真實 40 萬字 GloVe-50d 表；不需要額外 Python 套件',
+  'packs.catalog.word-vectors.desc':
+    '給 WordVector 用的 GloVe-50d 詞向量表（40 萬字），不需 Python 套件',
   'packs.catalog.rag.title': 'RAG 檢索堆疊',
   // 兩句都不再重複下一列已經寫過的事：相依列會帶著即時狀態說「需要先安裝：
   // 句向量模型」，GPU 說明再往下兩列的按鈕就寫著「安裝並重新啟動」。
@@ -906,7 +915,8 @@ const zhTW: Record<TranslationKey, string> = {
   'packs.installSelected': '安裝選取的項目',
   'packs.cancel': '取消安裝',
   'packs.cancelling': '正在取消...',
-  'packs.remoteDisabled': '只能在執行伺服器的那台電腦上安裝。',
+  'packs.remoteDisabled': '只能在執行伺服器的電腦上安裝。',
+  'packs.sessionExpired': '伺服器已重新啟動，請重新整理頁面後再試一次。',
 
   // Activity pane. `packs.activity.step.*` is keyed by the step id the job
   // sends, so an unknown step falls back to the server's own English label.
@@ -918,7 +928,6 @@ const zhTW: Record<TranslationKey, string> = {
   'packs.activity.step.download': '正在下載 {item}',
   'packs.activity.step.convert': '正在整理 {item}',
   'packs.activity.step.verify': '正在驗證安裝結果',
-  'packs.activity.overall': '整體進度',
   'packs.activity.progressAria': '安裝進度',
   'packs.activity.log': '安裝紀錄',
   'packs.activity.logEmpty': '等待第一則訊息...',
@@ -927,10 +936,9 @@ const zhTW: Record<TranslationKey, string> = {
   'packs.activity.cancelled': '已取消安裝。',
   'packs.activity.needsRestart': '已安裝，但伺服器需要重新啟動後 {pack} 才能使用。',
   'packs.activity.needsRestartConflict':
-    '安裝停住了：它得替換伺服器已載入的套件。重新啟動伺服器才能完成。',
+    '沒有安裝任何東西：它會替換伺服器正在使用的套件。重新啟動伺服器才能完成。',
   'packs.activity.lost': '與伺服器失去聯繫。請重新整理以確認套件狀態。',
   'packs.activity.dismiss': '關閉',
-  'packs.activity.restartAndInstall': '重新啟動伺服器並安裝',
   'packs.activity.restartAndInstallNote':
     '伺服器會重新啟動以安裝 Python 套件；模型請在之後用一般安裝再下載。',
 
@@ -941,14 +949,16 @@ const zhTW: Record<TranslationKey, string> = {
   'packs.gpu.installed': '目前安裝：{variant}',
   'packs.gpu.recommended': '建議安裝：{variant}',
   'packs.gpu.variant': 'PyTorch 版本',
-  'packs.gpu.restartNote': '有圖在執行時不會開始。',
+  'packs.item.converting': '轉換中（只需一次）',
+  'packs.gpu.alreadyOptimal': '這台機器的 GPU 加速已包含在預設的 PyTorch 版本中，不需要另外安裝。',
+  'packs.gpu.restartNote': '有圖在執行時不會重新啟動。',
   'packs.gpu.restartConfirm': '要安裝 {variant} 並重新啟動伺服器嗎？',
   'packs.gpu.installRestart': '安裝並重新啟動',
   'packs.gpu.devMode':
     '你是用 cdui dev 啟動的，伺服器無法自行重新啟動。請在後端的終端機執行下面的指令，再重新啟動：',
-  'packs.gpu.notYet': '目前還無法在程式內切換 PyTorch 版本。請先停止伺服器，再於終端機執行：',
+  'packs.gpu.notYet': '目前無法在程式內切換 PyTorch 版本。請停止伺服器後執行：',
   'packs.gpu.noCommand': '伺服器沒有提供安裝指令。請參考 README 的 GPU 安裝步驟。',
-  'packs.manualCommand': '手動安裝指令',
+  'packs.manualCommand': '手動指令',
   'packs.copy': '複製指令',
   'packs.copied': '已複製到剪貼簿。',
   'packs.copyFailed': '無法複製，請手動選取文字後複製。',
@@ -965,8 +975,10 @@ const zhTW: Record<TranslationKey, string> = {
   // because a node needs a pack that is not installed.
   'packs.toast.missingPack': '這次執行需要 {pack} 套件。',
 
-  // Where the Package Center is opened from.
-  'toolbar.settings.section.packs': '選用套件',
+  // Where the Package Center is opened from. It shares one section with the
+  // Plugin Center, headed with the two names the sidebar's Custom & Plugins
+  // tab already gives the same two doors.
+  'toolbar.settings.section.packsPlugins': '選用套件與外掛',
   'settings.packs.name': '套件中心',
   'settings.packs.desc': '下載 LLM 節點需要的模型與函式庫。',
   'settings.packs.summary': '已安裝 {installed}/{total} 個套件',
@@ -976,16 +988,17 @@ const zhTW: Record<TranslationKey, string> = {
   'customTab.section.packs': '選用套件',
   'customTab.packs.open': '套件中心...',
   'customTab.packs.empty': '沒有可安裝的套件',
-  'customTab.packs.hint': 'LLM 節點的模型與函式庫可在套件中心安裝',
+  'customTab.packs.hint': 'LLM 節點需要的模型與函式庫。',
 
   // Where the Plugin Center is opened from: the settings popover's own row,
-  // beside the pack one it is modelled on.
-  'toolbar.settings.section.plugins': '外掛',
+  // beside the pack one it is modelled on, under the heading they share.
   'settings.plugins.name': '外掛中心',
   'settings.plugins.desc': '安裝教學節點套件與 GitHub 上的外掛。',
   'settings.plugins.summary': '已安裝 {installed} 個，可安裝 {available} 個',
   'settings.plugins.summaryInstalling': '正在安裝 {plugin}...',
-  // The accessible name only; the visible word stays `settings.packs.action`.
+  'settings.plugins.unsupported': '這台伺服器不支援',
+  'settings.plugins.open': '開啟',
+  // The accessible name; the visible word is `settings.plugins.open`.
   'settings.plugins.action': '開啟外掛中心',
 
   // "This needs a pack" — said on a select option, a node, a palette entry
@@ -998,9 +1011,9 @@ const zhTW: Record<TranslationKey, string> = {
   'paramField.packHintOthers': '灰色的選項需要另外安裝套件。',
   'paramField.installPack': '安裝套件',
   'paramField.installPackFor': '安裝套件：{pack}',
-  'config.needsPack': '這個節點需要 {pack} 套件。',
+  'config.needsPack': '需要 {pack} 套件。',
   'palette.needsPack': '需要套件',
-  'palette.needsPack.title': '需要 {pack} 套件。可以先拖曳到畫布，再到套件中心安裝。',
+  'palette.needsPack.title': '需要 {pack} 套件；可先拖曳到畫布，稍後在套件中心安裝。',
   'node.needsPack': '需套件',
   'node.needsPack.title': '需要 {pack} 套件。點一下開啟套件中心。',
   'node.paramNeedsPack': '需套件',
@@ -1023,15 +1036,16 @@ const zhTW: Record<TranslationKey, string> = {
     '{plugin} 的安裝停住了：它的 Python 套件需要先停止伺服器才能安裝，指令在外掛中心。',
   'pluginCenter.toast.inProgress': '有外掛仍在安裝中，可在外掛中心查看進度。',
   'pluginCenter.toast.openCenter': '開啟外掛中心',
+  'pluginCenter.toast.packBusy': '套件安裝進行中，請等它完成後再試一次。',
   'pluginCenter.updateFailed': '更新失敗：{message}',
   'pluginCenter.uninstall': '解除安裝',
   'pluginCenter.uninstallConfirm':
     '要解除安裝「{plugin}」嗎？使用它節點的圖將無法執行；它安裝的 Python 套件會保留。',
-  'pluginCenter.source.invalid': '請輸入內建套件名稱、owner/repo[@ref] 或 GitHub URL。',
+  'pluginCenter.source.invalid': '請輸入 owner/repo[@ref] 或 GitHub URL。',
 
   // The panel: chrome, list states, filter.
   'pluginCenter.title': '外掛中心',
-  'pluginCenter.subtitle': '安裝教學節點套件與 GitHub 上的外掛',
+  'pluginCenter.subtitle': '教學節點套件與 GitHub 外掛',
   'pluginCenter.close': '關閉外掛中心',
   'pluginCenter.refresh': '重新整理外掛狀態',
   'pluginCenter.list': '外掛清單',
@@ -1041,14 +1055,14 @@ const zhTW: Record<TranslationKey, string> = {
   'pluginCenter.empty': '目前沒有可安裝的外掛',
   'pluginCenter.filter.all': '全部',
   'pluginCenter.filter.installed': '已安裝',
-  'pluginCenter.filter.available': '可安裝',
+  'pluginCenter.filter.available': '未安裝',
 
   // Where a plugin came from.
   'pluginCenter.origin.builtin': '內建',
   'pluginCenter.origin.official': '官方',
   'pluginCenter.origin.local': '本機連結',
   'pluginCenter.homepage': '首頁',
-  'pluginCenter.chapters': '章節：{chapters}',
+  'pluginCenter.chapters': '課程：{chapters}',
 
   // The two states a pack has no word for.
   'pluginCenter.status.removed': '已移除',
@@ -1065,7 +1079,7 @@ const zhTW: Record<TranslationKey, string> = {
   'pluginCenter.source.label': '從 GitHub 安裝',
   'pluginCenter.source.placeholder': 'owner/repo[@ref] 或 GitHub URL',
   'pluginCenter.source.review': '檢視',
-  'pluginCenter.source.reviewing': '正在下載...',
+  'pluginCenter.source.reviewing': '檢視中...',
   'pluginCenter.source.fail': '無法取得 {source}：{message}',
   'pluginCenter.source.unknownName': '沒有名為「{source}」的外掛。',
   'pluginCenter.source.knownNames': '這台伺服器可安裝：{known}',
@@ -1076,12 +1090,15 @@ const zhTW: Record<TranslationKey, string> = {
   'pluginCenter.review.nodes': '節點：{nodes}',
   'pluginCenter.review.capabilities': '這個外掛要求：',
   'pluginCenter.review.capNote':
-    '授予是一種聲明，不是沙箱：外掛可使用這些模組，之後不會再詢問。',
+    '授予只是聲明，執行時不會強制限制；外掛之後不會再詢問。',
   'pluginCenter.review.grant': '同意授予這些能力',
-  'pluginCenter.review.trust': '我信任這位作者。允許使用：{modules}',
+  'pluginCenter.review.trust': '信任這位作者，允許匯入 {modules}',
   'pluginCenter.review.frontend': '包含會在編輯器中以完整權限執行的 JavaScript。',
-  'pluginCenter.review.idConflict': '「{id}」是內建套件保留的 id。',
-  'pluginCenter.review.alreadyInstalled': '{plugin} 已安裝。重新安裝會以這個版本取代現有的安裝。',
+  'pluginCenter.error.idTakenByRoute': 'id「{id}」是 CodefyUI 本身保留的名稱。',
+  'pluginCenter.error.idTakenByPack': 'id「{id}」是內建套件保留的名稱。',
+  'pluginCenter.error.idTakenByRepo': 'id「{id}」屬於 {repo}，無法從這個來源安裝或更新。',
+  'pluginCenter.error.idTaken': 'id「{id}」已經屬於另一個外掛。',
+  'pluginCenter.review.alreadyInstalled': '{plugin} 已安裝。重新安裝會換成這個版本。',
 
   // One line per declared capability, each saying what granting it costs.
   'pluginCenter.cap.network': 'network：可連線任何主機，並把下載內容寫入磁碟',
@@ -1097,12 +1114,12 @@ const zhTW: Record<TranslationKey, string> = {
   'pluginCenter.activity.updated': '已更新 {plugin}。',
   'pluginCenter.activity.lost': '與伺服器失去聯繫。請重新整理以確認外掛狀態。',
   'pluginCenter.activity.needsRestart':
-    '安裝在改動任何東西前停住了：{plugin} 的 Python 套件會替換伺服器已載入的套件。'
-    + '先停止伺服器並執行這行指令，再重新安裝：',
+    '沒有安裝任何東西：{plugin} 的 Python 套件會替換伺服器正在使用的套件。'
+    + '請停止伺服器，執行這行後再安裝一次：',
   'pluginCenter.activity.cliFallback': '或在終端機安裝：',
   // What an uninstall leaves behind; a command follows each of these.
   'pluginCenter.activity.depsLeft':
-    '這些 Python 套件還留著：{packages}。先停止伺服器，再用這行移除：',
+    '這些 Python 套件還留著：{packages}。要移除的話，請停止伺服器後執行：',
   'pluginCenter.activity.reinstall': '要再安裝回來：',
 
   // The steps of an install; `deps` reuses `packs.activity.step.pip`.
@@ -1115,7 +1132,6 @@ const zhTW: Record<TranslationKey, string> = {
   'pluginCenter.step.reload': '正在載入節點',
 
   // The refusals whose entire body is a code.
-  'pluginCenter.error.unavailable': '這台伺服器不支援外掛中心。請更新 CodefyUI 後重新啟動。',
   'pluginCenter.error.inspectionExpired': '檢視已過期，請重新檢視來源。',
   'pluginCenter.error.unknownJob': '找不到這個安裝，請重新整理。',
   'pluginCenter.error.notInstalled': '這個外掛已不在安裝清單中，請重新整理。',
@@ -1205,7 +1221,7 @@ const zhTW: Record<TranslationKey, string> = {
   'git.commit.placeholder': '訊息（{mod}+Enter 提交）',
   'git.commit.button': '提交',
   'git.commit.options': '提交選項',
-  'git.commit.all': '全部提交（暫存所有變更，含新檔案）',
+  'git.commit.all': '全部提交（含新檔案）',
   'git.commit.amend': '修改上一個提交',
   'git.commit.amending': '修改中',
   'git.commit.amendPushed': '無法修改：上一個提交已推送',
@@ -1249,7 +1265,7 @@ const zhTW: Record<TranslationKey, string> = {
   'git.diff.scope.commit': '提交 {sha}',
   'git.diff.binary': '二進位檔案，無文字差異。',
   'git.diff.truncated': '差異已在 {kb} KB 處截斷。',
-  'git.diff.tooManyLines': '這裡只顯示前 {count} 行，其餘請開啟檔案閱讀。',
+  'git.diff.tooManyLines': '只顯示前 {count} 行，其餘請開啟檔案查看。',
   'git.diff.empty': '沒有變更',
   'git.diff.noNewline': '檔案結尾沒有換行',
   'git.gdiff.nodesAdded': '新增 {count} 個節點',
@@ -1318,7 +1334,7 @@ const zhTW: Record<TranslationKey, string> = {
   'git.error.signingFailed': '應用程式不支援提交簽章。',
   'git.error.remoteExists': '同名遠端已存在。',
   'git.error.remoteRejected': '遠端拒絕了這次推送（受保護的分支或伺服器規則）。',
-  'git.error.pushConfig': 'git 的推送設定拒絕了這次推送（push.default 或上游分支名稱）。',
+  'git.error.pushConfig': '本機的 git 設定拒絕了這次推送，請檢查 push.default 與上游分支名稱。',
   'git.error.ignored': '此檔案被 git 忽略。',
   'git.error.notFound': '找不到：{what}',
   'git.error.invalid': '值無效。',

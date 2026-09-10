@@ -162,7 +162,7 @@ describe('HeatmapPlot', () => {
   it('does not render expand button when onExpand prop is not given', () => {
     const m = [[0.5, 0.5], [0.3, 0.7]];
     const { container } = render(<HeatmapPlot data={m} />);
-    const btns = container.querySelectorAll('button[aria-label="Expand heatmap"]');
+    const btns = container.querySelectorAll('button[aria-label="Open detailed view"]');
     expect(btns.length).toBe(0);
   });
 
@@ -170,7 +170,7 @@ describe('HeatmapPlot', () => {
     const m = [[0.5, 0.5], [0.3, 0.7]];
     const onExpand = vi.fn();
     const { container } = render(<HeatmapPlot data={m} onExpand={onExpand} />);
-    const btn = container.querySelector('button[aria-label="Expand heatmap"]') as HTMLButtonElement;
+    const btn = container.querySelector('button[aria-label="Open detailed view"]') as HTMLButtonElement;
     expect(btn).toBeTruthy();
     // Click fires onExpand and stops propagation so the wrapper click doesn't
     // also fire (covers the e.stopPropagation() + onExpand() body).

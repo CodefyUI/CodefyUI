@@ -126,7 +126,7 @@ describe('PackCard — what it says about a pack', () => {
     expect(screen.getByText('Word vectors (GloVe)')).toBeInTheDocument();
     expect(
       screen.getByText(
-        'Real 400k-word GloVe-50d table for WordVector; no Python packages needed',
+        'GloVe-50d table, 400k words, for WordVector. No Python packages.',
       ),
     ).toBeInTheDocument();
     expect(screen.getByText('Download size: 66 MB')).toBeInTheDocument();
@@ -322,7 +322,7 @@ describe('PackCard — when it cannot install', () => {
     expect(installBtn()).toBeDisabled();
     expect(installBtn()).toHaveAttribute(
       'title',
-      'Installing is only allowed from the computer that runs the server.',
+      'Installing works only from the computer that runs the server.',
     );
   });
 
@@ -333,7 +333,7 @@ describe('PackCard — when it cannot install', () => {
     // An instruction, not the neighbouring button's label: "Select all
     // missing" on a dead Install button reads as a description of the button
     // rather than of what is stopping it.
-    expect(installBtn()).toHaveAttribute('title', 'Tick at least one item to install');
+    expect(installBtn()).toHaveAttribute('title', 'Tick at least one item');
   });
 
   it('points at the missing dependency and jumps to its card', () => {

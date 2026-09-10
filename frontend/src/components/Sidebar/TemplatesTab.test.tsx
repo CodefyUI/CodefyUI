@@ -83,15 +83,17 @@ describe('groupExamplesByCategory', () => {
 });
 
 describe('TemplatesTab', () => {
-  it('shows the loading state, then the header, search box and hint', async () => {
+  it('shows the loading state, then the header, search box and browse button', async () => {
     render(<TemplatesTab />);
     expect(screen.getByText('Loading examples...')).toBeTruthy();
     await waitFor(() => expect(screen.queryByText('Loading examples...')).toBeNull());
     expect(screen.getByText('Templates')).toBeTruthy();
     expect(screen.getByPlaceholderText('Search examples...')).toBeTruthy();
-    expect(
-      screen.getByText('Drag an example onto the canvas, or click to add it'),
-    ).toBeTruthy();
+    // The footer is the Browse button alone now: the drag instruction it used
+    // to sit under is on the Nodes tab, once, for the whole sidebar. The noun
+    // stays because `gallery.browse` is also the empty-canvas overlay's
+    // button, and there nothing else says what is being browsed.
+    expect(screen.getByRole('button', { name: 'Browse all templates' })).toBeTruthy();
   });
 
   it('lists examples grouped by category, with the node count', async () => {

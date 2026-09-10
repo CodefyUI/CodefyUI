@@ -1,7 +1,7 @@
 import type { PluginCatalogEntry, PluginStatus } from '../../api/rest';
 import type { TranslationKey } from '../../i18n/locales/en';
 import type { ItemProgress, JobStep } from '../../store/jobFollower';
-import type { PluginJob } from '../../store/pluginStore';
+import type { InspectionFailure, PluginJob } from '../../store/pluginStore';
 import type { Translate } from '../PackCenter/packStatus';
 import type { PillTone } from '../shared/Pill';
 
@@ -289,6 +289,81 @@ const CAPABILITY_KEY: Record<string, TranslationKey | undefined> = {
 /** The sentence for *id*, or null when the card should print the raw id. */
 export function capabilityKey(id: string): TranslationKey | null {
   return CAPABILITY_KEY[id] ?? null;
+}
+
+// ── what a refusal reads as ──────────────────────────────────────────────
+
+/** *detail*'s *key* when it is a non-empty string, else null. */
+function text(detail: Record<string, unknown> | null, key: string): string | null {
+  const value = detail?.[key];
+  return typeof value === 'string' && value !== '' ? value : null;
+}
+
+/**
+ * Which of the three things holds a reserved id, as the sentence for it.
+ *
+ * The server sends this discriminant rather than the phrase itself: its
+ * `taken_by` is an English noun phrase written for the line the CLI prints,
+ * and a panel has to say the same thing in the reader's language.
+ */
+const HOLDER_KEY: Record<string, TranslationKey | undefined> = {
+  route: 'pluginCenter.error.idTakenByRoute',
+  builtin_pack: 'pluginCenter.error.idTakenByPack',
+  repository: 'pluginCenter.error.idTakenByRepo',
+};
+
+/**
+ * Who holds the id a `reserved_id` refusal was about.
+ *
+ * *fallbackId* is what to call the plugin when the body names no id -- the
+ * source that was refused, which is the closest thing to it on hand.
+ *
+ * A server that predates the `holder` field, and one that names a repository
+ * it can no longer describe, both land on the holder-neutral sentence: a
+ * refusal that guessed "a built-in pack" would name the wrong culprit, and
+ * `idTakenByRepo` without a `repo` would print the placeholder itself.
+ */
+function reservedIdSentence(
+  t: Translate, detail: Record<string, unknown> | null, fallbackId: string,
+): string {
+  const id = text(detail, 'id') ?? fallbackId;
+  const key = HOLDER_KEY[text(detail, 'holder') ?? ''];
+  if (key === 'pluginCenter.error.idTakenByRepo') {
+    const repo = text(detail, 'repo');
+    return repo === null
+      ? t('pluginCenter.error.idTaken', { id })
+      : t(key, { id, repo });
+  }
+  return key === undefined
+    ? t('pluginCenter.error.idTaken', { id })
+    : t(key, { id });
+}
+
+/**
+ * What a refused inspection reads as, in one sentence.
+ *
+ * Two of these codes are answered here rather than by the store's
+ * `REFUSAL_KEY`, because the useful half of each is in the BODY and not in
+ * the code: which id is taken and whose it is, and which name was asked for.
+ * A sentence written server-side could not have said either.
+ *
+ * Shared by the source box and by the toast a ROW's refused Install raises,
+ * so the two say the same thing about the same refusal. Everything else
+ * arrives as prose already -- the store maps a coded refusal to a sentence
+ * before it reaches a caller -- and only needs the frame that names what was
+ * being fetched, since "GitHub has no such repository" says nothing about
+ * which repository.
+ */
+export function refusalSentence(
+  t: Translate, failure: InspectionFailure, source: string,
+): string {
+  if (failure.code === 'reserved_id') {
+    return reservedIdSentence(t, failure.detail, source);
+  }
+  if (failure.code === 'unknown_catalog_name') {
+    return t('pluginCenter.source.unknownName', { source });
+  }
+  return t('pluginCenter.source.fail', { source, message: failure.message });
 }
 
 // ── provenance and contents ──────────────────────────────────────────────

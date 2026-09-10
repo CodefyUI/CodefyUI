@@ -17,6 +17,10 @@ import {
   type PluginJobKind,
 } from '../api/rest';
 import { createJobFollower, emptyJob, type Job } from './jobFollower';
+// The panel's own sentence for a refusal, because a ROW's refused Install is
+// answered in a toast from here rather than on the card. Imported rather than
+// copied: the box and the toast must not describe one refusal two ways.
+import { refusalSentence } from '../components/PluginCenter/pluginStatus';
 import { confirm } from '../utils/dialog';
 import { reloadPluginFrontends } from '../plugins/PluginHost';
 import { useNodeDefStore } from './nodeDefStore';
@@ -288,12 +292,22 @@ function refusalCode(err: unknown): string | null {
  * The three that are NOT are the three a control answers instead of a
  * sentence: `already_installed` grows a Reinstall button, `consent_required` a
  * tick box, `trust_author_required` a second one. `reserved_id` and
- * `unknown_catalog_name` are mapped nowhere either, because each has a line of
- * its own on the panel built from the body it carried (`id`, `known`) --
- * a sentence here would be the same refusal said twice.
+ * `unknown_catalog_name` are mapped nowhere either, because the useful half of
+ * each is in the BODY (`id` and `holder`, `known`) and this table maps a code
+ * to a sentence with nothing to interpolate into: both are written by
+ * `refusalSentence`, from wherever they are reported.
+ *
+ * Exported for the guard beside these tests, which reads every code the
+ * routes can emit and fails when one is answered neither here nor at a catch.
+ * That is what let `reserved_id` reach a toast as itself: it acquired a second
+ * producer -- `POST /{id}/update` -- long after this table was written.
  */
-const REFUSAL_KEY: Record<string, TranslationKey | undefined> = {
-  unavailable: 'pluginCenter.error.unavailable',
+export const REFUSAL_KEY: Record<string, TranslationKey | undefined> = {
+  // The panel's own sentence about a server with no Plugin Center. The two
+  // causes differ -- a build that predates the Plugin Center, and a server
+  // whose plugin service failed to start -- and what the user does about
+  // either is the same, which is why one key covers both.
+  unavailable: 'pluginCenter.unsupported',
   inspection_expired: 'pluginCenter.error.inspectionExpired',
   unknown_job: 'pluginCenter.error.unknownJob',
   inspect_busy: 'pluginCenter.error.inspectBusy',
@@ -317,6 +331,25 @@ function refusalMessage(err: unknown): string {
   return key === undefined ? errorMessage(err) : useI18n.getState().t(key);
 }
 
+/** A 403 from any of these routes, whatever produced it. */
+function is403(err: unknown): boolean {
+  return err instanceof ApiError && err.status === 403;
+}
+
+/**
+ * A 403 that is the remote-install gate (`_require_local_plugin_install`).
+ *
+ * Two things answer 403 here: that gate, and the auth middleware refusing
+ * this tab's session token — which the server rotates every time it starts,
+ * so a tab left open across a restart holds a dead one. Only the gate is
+ * described by `remote_install_allowed`, the same flag the Install buttons
+ * are already disabled on, so a 403 while the panel says installing IS
+ * allowed cannot be the gate and must not borrow its sentence.
+ */
+function isRemoteGate(err: unknown): boolean {
+  return is403(err) && !usePluginStore.getState().remoteInstallAllowed;
+}
+
 /**
  * Everything a thrown refusal carried, in the shape the review card reads.
  *
@@ -326,11 +359,14 @@ function refusalMessage(err: unknown): string {
 function inspectionFailure(err: unknown): InspectionFailure {
   return {
     // 403 is the one status whose own message says nothing a user can act
-    // on ("Forbidden"): it is the server refusing to install from anywhere
-    // but the machine it runs on, which only this key explains.
-    message: err instanceof ApiError && err.status === 403
+    // on ("Forbidden"): it is either the server refusing to install from
+    // anywhere but the machine it runs on, or this tab's session token being
+    // out of date. Only these keys explain either one.
+    message: isRemoteGate(err)
       ? useI18n.getState().t('packs.remoteDisabled')
-      : refusalMessage(err),
+      : is403(err)
+        ? useI18n.getState().t('packs.sessionExpired')
+        : refusalMessage(err),
     code: refusalCode(err),
     detail: errorDetail(err),
   };
@@ -622,6 +658,31 @@ function setPluginStatus(pluginId: string, status: PluginCatalogEntry['status'])
 }
 
 /**
+ * Say *failure* where the request it answers was made.
+ *
+ * A source the user TYPED is answered in the box they typed it into, which is
+ * the one surface that renders `phase: 'error'`.
+ *
+ * A ROW's Install button is not. The box never asked, so a refusal parked
+ * under a field nobody touched explains a request the user did not make --
+ * worded "Could not fetch {source}" as if they had -- while the row they DID
+ * press says nothing at all, and says nothing at all off screen if the list
+ * is scrolled. So it is toasted instead, naming the source it was about and
+ * carrying the button back to its row: the same shape `startInstall` gives
+ * the refusal of the POST that follows this one.
+ */
+function reportInspectFailure(
+  spec: string, forPluginId: string | null, failure: InspectionFailure,
+): void {
+  if (forPluginId === null) {
+    usePluginStore.setState({ inspection: { phase: 'error', source: spec, failure } });
+    return;
+  }
+  const { t } = useI18n.getState();
+  toast(refusalSentence(t, failure, spec), 'error', openCenterAction(forPluginId));
+}
+
+/**
  * Inspect *source* and leave the review in whatever state it reached.
  *
  * Returns the inspection so `install` can act on it without re-reading the
@@ -638,21 +699,21 @@ async function runInspect(
     // Refused without a round trip: the server would answer 400
     // `unparseable_source`, and this is the one error the client can be sure
     // of on its own.
-    usePluginStore.setState({
-      inspection: {
-        phase: 'error',
-        source: spec,
-        // No code: nothing was refused, this build simply knows the shape is
-        // not one the server could resolve.
-        failure: {
-          message: t('pluginCenter.source.invalid'), code: null, detail: null,
-        },
-      },
+    reportInspectFailure(spec, forPluginId, {
+      // No code: nothing was refused, this build simply knows the shape is
+      // not one the server could resolve.
+      message: t('pluginCenter.source.invalid'), code: null, detail: null,
     });
     return null;
   }
 
-  usePluginStore.setState({ inspection: { phase: 'inspecting', source: spec } });
+  // The transient phase belongs to the box too: it is what turns the Review
+  // button into "Downloading...", and a row's Install had that button
+  // reporting a request of its own. The row is not left silent by the
+  // omission -- `withBusy` disables every control on it for the same span.
+  if (forPluginId === null) {
+    usePluginStore.setState({ inspection: { phase: 'inspecting', source: spec } });
+  }
   try {
     const data = await inspectPluginSource(spec);
     usePluginStore.setState({
@@ -662,9 +723,7 @@ async function runInspect(
     });
     return data;
   } catch (err) {
-    usePluginStore.setState({
-      inspection: { phase: 'error', source: spec, failure: inspectionFailure(err) },
-    });
+    reportInspectFailure(spec, forPluginId, inspectionFailure(err));
     return null;
   }
 }
@@ -722,13 +781,31 @@ async function startInstall(
       // install is already running" and refresh the offer away.
       attachInspectionFailure(err);
     } else if (err instanceof ApiError && err.status === 409) {
-      // Somebody else got there first — this tab, another tab, or the CLI.
-      // The refresh adopts whatever the server IS running, which is more
-      // useful than the refusal.
-      toast(t('packs.toast.busy'), 'warning');
-      await store.refresh();
-    } else if (err instanceof ApiError && err.status === 403) {
+      if (code === 'pack_install_running') {
+        // `plugins.service.PACK_INSTALL_RUNNING`: a PACK install owns the
+        // interpreter both installers write into. No refresh here, because
+        // this catalog's `active_job` is this service's own slot and can
+        // never carry a pack's job — re-reading it would leave the activity
+        // pane saying nothing is installing directly under a toast that says
+        // something is. The toast is therefore the whole answer, and it
+        // carries the way to the panel that IS showing the job. Opened
+        // unfocused: the refusal names the job in the way by `job_id`, and
+        // `openPackCenter` focuses by PACK id.
+        toast(t('pluginCenter.toast.packBusy'), 'warning', {
+          label: t('packs.toast.openCenter'),
+          onClick: () => useUIStore.getState().openPackCenter(),
+        });
+      } else {
+        // Somebody else got there first — this tab, another tab, or the CLI.
+        // The refresh adopts whatever the server IS running, which is more
+        // useful than the refusal.
+        toast(t('packs.toast.busy'), 'warning');
+        await store.refresh();
+      }
+    } else if (isRemoteGate(err)) {
       toast(t('packs.remoteDisabled'), 'error');
+    } else if (is403(err)) {
+      toast(t('packs.sessionExpired'), 'error');
     } else {
       toast(t('packs.toast.installFailed', { message: refusalMessage(err) }), 'error');
     }
@@ -827,22 +904,35 @@ export const usePluginStore = create<PluginState>((set, get) => ({
       return;
     }
 
-    // What the row says it was installed FROM, not its id. The two are the
-    // same for every catalog row -- a builtin resolves by name -- but an
-    // EXTERNAL plugin, one installed from a repository this build's catalog
-    // does not list, has an id that resolves to no source at all: its Install
-    // button ended in a 400 `unknown_catalog_name` with nothing on screen to
-    // say so. `source` is documented as "what a user would type to install
-    // this", which is exactly what this button is typing on their behalf.
+    // What the row says it was installed FROM, for every row whose id is not
+    // itself a source. An EXTERNAL plugin, one installed from a repository
+    // this build's catalog does not list, has an id that resolves to no
+    // source at all: its Install button ended in a 400
+    // `unknown_catalog_name` with nothing on screen to say so. `source` is
+    // documented as "what a user would type to install this", which is
+    // exactly what this button is typing on their behalf.
     //
     // Own keys only: `byId` is built from parsed JSON, so a plugin called
     // `constructor` would otherwise hand back a function rather than a row.
     const row = Object.prototype.hasOwnProperty.call(state.byId, pluginId)
       ? state.byId[pluginId]
       : undefined;
+    // A CATALOG row that nothing is installed under is installed BY ITS ID:
+    // the id is what carries `catalog_id` and `official` into the lockfile,
+    // while `owner/repo` -- which is what such a row's `source` reads -- is
+    // free text the installer refuses to take a provenance claim from
+    // ("official is a claim only the catalog is entitled to make"), so the
+    // same install recorded through it is a third-party one.
+    //
+    // Rows with NO lockfile entry only (`available`, `removed`): a
+    // `missing_files` row is reinstalled from the repository IT recorded,
+    // which can be a FORK of the catalog's, and replacing that with the
+    // official repository behind the user's back is not a reinstall.
+    const fromCatalog = row !== undefined && row.kind !== 'external'
+      && (row.status === 'available' || row.status === 'removed');
     // `||`, not `??`: the catalog sends `''` for a row with no source, and an
     // empty source is not a source. The id is the better guess.
-    const source = row?.source || pluginId;
+    const source = fromCatalog ? pluginId : (row?.source || pluginId);
 
     await withBusy(pluginId, async () => {
       const data = await runInspect(source, pluginId);
@@ -934,14 +1024,29 @@ export const usePluginStore = create<PluginState>((set, get) => ({
         // updates with `cdui update`, not from here. The same shape as
         // `uninstall`'s `files_locked` branch, and `warning` for the same
         // reason: nothing broke.
+        const code = refusalCode(err);
         const hint = str(errorDetail(err)?.hint);
-        if (refusalCode(err) === 'not_updatable' && hint !== null) {
+        if (code === 'not_updatable' && hint !== null) {
           toast(t('pluginCenter.updateFailed', { message: hint }), 'warning');
+        } else if (code === 'reserved_id') {
+          // The repository this row was installed from now declares an id
+          // this build owns -- a route, a pack that ships here, or another
+          // repository's catalog row, which is what an official repo that has
+          // MOVED produces. Answered here rather than in `REFUSAL_KEY` for
+          // the reason the source box answers it too: which id, and whose it
+          // is, are in the body, and a table of codes has nothing to
+          // interpolate. Without this arm the code IS the toast: a student
+          // was shown "更新失敗：reserved_id".
+          toast(t('pluginCenter.updateFailed', {
+            message: refusalSentence(t, inspectionFailure(err), pluginId),
+          }), 'error');
         } else if (err instanceof ApiError && err.status === 409) {
           toast(t('packs.toast.busy'), 'warning');
           await get().refresh();
-        } else if (err instanceof ApiError && err.status === 403) {
+        } else if (isRemoteGate(err)) {
           toast(t('packs.remoteDisabled'), 'error');
+        } else if (is403(err)) {
+          toast(t('packs.sessionExpired'), 'error');
         } else {
           toast(t('pluginCenter.updateFailed', { message: refusalMessage(err) }), 'error');
         }
@@ -1004,12 +1109,14 @@ export const usePluginStore = create<PluginState>((set, get) => ({
         } else if (err instanceof ApiError && err.status === 409) {
           toast(t('packs.toast.busy'), 'warning');
           await get().refresh();
-        } else if (err instanceof ApiError && err.status === 403) {
+        } else if (isRemoteGate(err)) {
           // Same gate as an install, and the same answer: the server only
           // takes a change like this from the machine it runs on. Wrapping
           // `Forbidden` in "Could not remove Demo plugin" would tell a LAN
           // user that something went wrong rather than where to do it.
           toast(t('packs.remoteDisabled'), 'error');
+        } else if (is403(err)) {
+          toast(t('packs.sessionExpired'), 'error');
         } else {
           toast(
             t('pluginCenter.toast.removeFailed', {

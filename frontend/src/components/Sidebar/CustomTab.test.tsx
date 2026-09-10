@@ -197,11 +197,7 @@ describe('CustomTab', () => {
     // says what a pack is, which no button can.
     expect(screen.getByRole('button', { name: 'Plugin Center...' })).toBeTruthy();
     expect(screen.queryByText('Install plugins from the Plugin Center')).toBeNull();
-    expect(
-      screen.getByText(
-        'Models and libraries for LLM nodes are installed from the Package Center',
-      ),
-    ).toBeTruthy();
+    expect(screen.getByText('Models and libraries for LLM nodes.')).toBeTruthy();
   });
 
   it('lists custom node files with their node names and enabled chip', async () => {
@@ -407,7 +403,7 @@ describe('CustomTab', () => {
 
     expect(
       await screen.findByText(
-        'Real 400k-word GloVe-50d table for WordVector; no Python packages needed',
+        'GloVe-50d table, 400k words, for WordVector. No Python packages.',
       ),
     ).toBeTruthy();
     expect(screen.getByText('Whatever the server says')).toBeTruthy();
@@ -419,11 +415,7 @@ describe('CustomTab', () => {
     render(<CustomTab />);
 
     expect(await screen.findByText('No optional packs available')).toBeTruthy();
-    expect(
-      screen.getByText(
-        'Models and libraries for LLM nodes are installed from the Package Center',
-      ),
-    ).toBeTruthy();
+    expect(screen.getByText('Models and libraries for LLM nodes.')).toBeTruthy();
   });
 
   it('shows the same hint on a server with no Package Center at all', async () => {

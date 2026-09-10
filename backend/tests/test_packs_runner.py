@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import subprocess
 import sys
+import threading
 from pathlib import Path
 
 import pytest
@@ -90,7 +91,7 @@ def _fake_popen(monkeypatch, proc: _FakeProc) -> dict:
 
 
 def _run(proc, monkeypatch, *, cancel=False, specs=("demo-pkg>=1",),
-         constraints_path=None, tail=None):
+         constraints_path=None, tail=None, conflict=None):
     """Call ``run_pip`` against *proc*; returns ``(rc, events, recorded call)``."""
     # Several callers fake sys.platform as "win32" on a non-Windows runner;
     # CPython 3.12's real shutil.which() branches on sys.platform and would
@@ -107,6 +108,7 @@ def _run(proc, monkeypatch, *, cancel=False, specs=("demo-pkg>=1",),
         cancel_check=lambda: cancel,
         cwd=Path.cwd(),
         tail=tail,
+        conflict=conflict,
     )
     return rc, events, seen
 
@@ -181,6 +183,63 @@ def test_run_pip_keeps_the_last_output_lines_for_the_caller(monkeypatch):
     assert rc == 1
     assert len(tail) == runner.TAIL_LINES
     assert tail[-1] == "line 199"
+
+
+#: A real ``uv`` conflict, in shape: the verdict near the top, then a
+#: derivation that enumerates every version it ruled out. Which line the
+#: verdict lands on moves with the invocation -- uv prefixes a "Using
+#: Python ..." line, as here, when the target is not the environment it
+#: would have picked on its own, and prints none when it is -- so nothing
+#: looks for it by position. The enumeration is what makes this the
+#: interesting case: it is far longer than the tail, so the window a failure
+#: message is built from ends up holding indented version numbers and no
+#: marker at all.
+_UV_CONFLICT_OUTPUT = [
+    "Using Python 3.11.10 environment at: backend/.venv",
+    "  × No solution found when resolving dependencies:",
+    *[f"          transformers==5.{minor}.0" for minor in range(200)],
+]
+
+
+def test_run_pip_reports_a_conflict_the_tail_has_already_dropped(monkeypatch):
+    """The verdict is reached while the line is going past, so a derivation
+    longer than the tail cannot bury it.
+
+    This is the failure the user hit: a genuine, recoverable conflict was
+    classified from the last 40 lines, which by then were bare
+    ``transformers==5.4.0`` continuations -- so the Package Center answered
+    "installing Sentence embeddings failed (uv exited 1)" instead of the
+    restart advice and the command that would have worked.
+    """
+    proc = _FakeProc([f"{line}\n" for line in _UV_CONFLICT_OUTPUT],
+                     returncode=1)
+    tail: list[str] = []
+    conflict = threading.Event()
+
+    rc, _, _ = _run(proc, monkeypatch, tail=tail, conflict=conflict)
+
+    assert rc == 1
+    assert conflict.is_set()
+    assert not runner.looks_like_resolver_conflict(tail), (
+        "the tail must NOT hold the marker here -- if it does, this test has "
+        "stopped exercising the case it exists for")
+
+
+def test_run_pip_leaves_the_conflict_flag_clear_for_an_ordinary_failure(
+        monkeypatch):
+    """A build that died with "because" in the middle of a sentence is a
+    broken toolchain, and telling that user to restart the server would send
+    them round a loop that cannot end."""
+    proc = _FakeProc([
+        "error: Failed to build `sentencepiece==0.2.0`\n",
+        "  The build backend returned an error because the compiler crashed\n",
+    ], returncode=1)
+    conflict = threading.Event()
+
+    rc, _, _ = _run(proc, monkeypatch, conflict=conflict)
+
+    assert rc == 1
+    assert not conflict.is_set()
 
 
 def test_run_pip_never_uses_shell(monkeypatch):

@@ -249,7 +249,7 @@ describe('TemplateGalleryModal', () => {
   it('falls back to a placeholder for a template with no description', async () => {
     mockedRest.listExamples.mockResolvedValue([ex({ name: 'Terse', description: '' })]);
     render(<TemplateGalleryModal />);
-    await screen.findByText('This template ships no description.');
+    await screen.findByText('No description.');
     expect(within(grid()).getByText('Terse')).toBeInTheDocument();
   });
 
@@ -380,6 +380,6 @@ describe('TemplateGalleryModal', () => {
   it('says so when nothing is selectable', async () => {
     render(<TemplateGalleryModal />);
     await screen.findByText('No examples available');
-    expect(screen.getByText('Select a template to see what it contains')).toBeInTheDocument();
+    expect(screen.getByText('Select a template')).toBeInTheDocument();
   });
 });

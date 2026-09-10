@@ -275,7 +275,7 @@ describe('NodeParamList', () => {
     );
 
     const banner = screen.getByRole('note');
-    expect(banner).toHaveTextContent('This node needs the Word vectors (GloVe) pack.');
+    expect(banner).toHaveTextContent('Needs the Word vectors (GloVe) pack.');
     // A missing pack is a warning, not a reason to hide the configuration:
     // the params stay editable so a saved graph can still be read.
     expect(screen.getByTestId('field-lr')).toBeInTheDocument();

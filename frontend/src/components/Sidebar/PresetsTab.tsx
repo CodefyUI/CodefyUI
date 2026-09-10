@@ -143,6 +143,13 @@ export function PresetsTab() {
         )}
       </div>
 
+      {/* The one place this gesture is teachable. A PresetItem is a plain
+          draggable div -- no click handler, no role, no key handler -- so
+          dragging is the only way to use one, and this sentence is the only
+          thing on the tab that says so. It sits with the list rather than in
+          the empty state below because that is when a reader needs it, and
+          because the server ships presets, so the empty state is not a
+          screen anyone normally reaches. */}
       <div className={styles.footer}>
         {t('palette.presets.hint')}
       </div>

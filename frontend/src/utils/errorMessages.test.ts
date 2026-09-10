@@ -24,7 +24,7 @@ describe('friendlyError — payloads the backend actually sends', () => {
     // str(KeyError('tensor')) === "'tensor'"
     const out = friendlyError("'tensor'", 'KeyError');
     expect(out).toContain('tensor');
-    expect(out).toContain('connected');
+    expect(out).toContain('Connect');
   });
 
   it('names any other missing input', () => {

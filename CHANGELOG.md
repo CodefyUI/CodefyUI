@@ -24,6 +24,28 @@ received — each links to the release it was published as.
 
 ### Changed
 
+- **Less text in the Package and Plugin Centers.** Twenty-one strings are
+  shorter or plainer in both locales, and four things that were said twice are
+  now said once: the progress bar no longer carries a "Overall progress" label
+  above a bar that prints its own percentage, the restart action has one name
+  instead of two across two buttons and two confirm dialogs, one sentence
+  covers a server with no Plugin Center instead of two identical keys, and the
+  filter uses the same word for a state as the pill on the rows it reveals.
+  The Plugin Center opens on its catalog: the "Install from GitHub" box, which
+  is the rare way in, folds into one line above the filter, so the filter sits
+  directly over the rows it filters. Nothing lost an accessible name.
+- **Settings stops explaining every row.** The popover printed a sentence under
+  all 18 of its rows, so opening it presented about 18 lines of standing prose.
+  Five keep a visible description — the ones whose consequence a reader cannot
+  get from the row's name — four carry live state, and the rest moved to the
+  control's own tooltip. "Optional packs" and "Plugins" were two sections of
+  one row each; they are one section now, so the pack and plugin counts can be
+  read against each other.
+- **Fewer words across the toolbar, the sidebar and the error messages.**
+  Fifty-five strings are shorter or plainer in both locales. Two of the three
+  near-identical "drag this onto the canvas" hints that stood permanently in
+  sidebar footers are gone; the Presets tab keeps its one, because dragging is
+  the only way to use a preset.
 - **The Inspector's empty states say one thing each.** Six of them were an icon
   over a headline over a hint that restated the headline. The headline now
   names the situation and the hint names the one action. Forty-seven strings
@@ -38,6 +60,98 @@ received — each links to the release it was published as.
 
 ### Fixed
 
+- **A tab kept working after the server restarts.** The server mints a new
+  session token every time its process starts, and the browser cached the
+  first one for the life of the page. A tab left open across a restart — a
+  `cdui` restart, or the Package Center restarting the server itself to finish
+  a pack that was already imported — held a token the server had never seen,
+  so every install, uninstall and Run answered `403`, and the execution
+  WebSocket was refused on every reconnect until it gave up. Mutating requests
+  now re-read the token once and retry; the WebSocket re-reads it before each
+  reconnect attempt, and a reconnect that fails before the socket exists no
+  longer ends the retry chain.
+- **A 403 says which of the two things it was.** Both the remote-install gate
+  and a refused session token answer `403`, and the Package and Plugin Centers
+  reported either as "Installing is only allowed from the computer that runs
+  the server" — pointing a user sitting at that very computer at nothing they
+  could do. The gate's sentence is now used only when the server actually said
+  installing is remote-disabled.
+- **A pack install that cannot resolve says what to run instead.** `uv` prints
+  `No solution found` near the top of a derivation that runs to hundreds of
+  lines, and the classifier only ever saw the last 40 — so a resolver conflict,
+  which the Package Center already knows how to recover from, was reported as
+  an unexplained crash: "installing Sentence embeddings failed (uv exited 1)"
+  over 40 lines of bare version numbers. The verdict is now decided line by
+  line while the output streams, in the one place that sees all of it, so the
+  panel shows the constraint-free command that does resolve. The Plugin
+  Center's dependency step had the same window and the same fix.
+- **The GPU PyTorch card tells the truth on machines with nothing to switch
+  to.** On Apple Silicon it reported the pack as not installed, offered eight
+  CUDA and ROCm builds that have no macOS wheel, and its default action posted
+  `mps` — which the resolver has always refused, because that acceleration
+  ships in the default wheel. Picking a CUDA build took the server down first
+  and could only then fail. `installable_variants()` is now what the panel
+  offers and what a pick is checked against, `torch_variant()` answers `mps`
+  where torch says MPS is available, and a machine already running the build it
+  should be running is not offered a restart that reinstalls the same wheel.
+  `cdui install` builds its menu from the same table.
+- **The GloVe install stops going backwards at the end.** Its convert step
+  reports word counts through the item that just finished downloading, so the
+  row fell from "66 MB / 66 MB" to "9.8 KB / 391 KB" and the overall bar from
+  100% to 0.01%. A frame that carries a caption no longer overwrites the byte
+  counters, and the row shows the caption while it converts.
+- **An install refused by the other installer says which one.** A pack install
+  blocked by a running plugin install (and the reverse) said "Another install
+  is already running" while the panel's own activity pane said nothing was
+  running. Each now names the other panel and offers a way to it.
+- **A plugin whose repository moved can be updated again.** GitHub keeps
+  answering at a repository's old address forever, through a 301, so an install
+  recorded before a rename or an org transfer kept fetching happily under a
+  name the catalog no longer lists — and every rule keyed on that name read it
+  as a fork of the pack it actually is. Update answered `reserved_id`
+  permanently, and the Official badge went out. The commit GitHub returns
+  already names the repository it was served from, so the canonical pair now
+  rides along on the resolve that was happening anyway, and the read that
+  notices a move corrects the lockfile. The rule that refuses a genuine fork is
+  unchanged: a fork is a real repository at its own address and redirects
+  nowhere.
+- **A refusal says who holds the id, in the reader's language.** `reserved_id`
+  reached the update toast as the bare wire token `reserved_id`, and the one
+  sentence the panel had said "reserved for a built-in pack" whichever of the
+  three things actually held the id. The server now sends which, plus the
+  repository when that is the answer, and the panel writes the sentence. A test
+  reads every coded refusal the routes can emit and fails when one is answered
+  neither by the panel's table nor at a named catch.
+- **A ref that does not resolve says so.** GitHub answers 422, not 404, for a
+  tag, branch or sha that does not exist, so a typo in a ref was reported as
+  "Cannot connect to GitHub" — a network failure on a working network.
+- **A row's refused Install reports itself on that row.** It appeared at the
+  top of the panel, under the "install from a repository" text field the user
+  never touched, worded as though they had typed it, while the row they did
+  press said nothing — and nothing at all when the list was scrolled.
+- **A refusal no longer outlives the panel.** One attached to a review that is
+  still usable survived a close, so reopening the Plugin Center hours later
+  answered a request that was long over.
+- **Installing a catalog row records it as one.** The row's Install button sent
+  `owner/repo` rather than the catalog id, so the install was recorded as
+  free-text third-party — no `catalog_id`, and the consent card reporting the
+  pack as unofficial. A row with files missing is still reinstalled from the
+  repository it recorded, which can be a fork.
+- **A plugin directory with no lockfile entry is no longer a dead end.** The
+  install was accepted, then failed with "already installed" and a hint about
+  `force` that the panel had no control for. It is refused up front, where the
+  panel's Reinstall button is.
+- **A plugin whose renderer names no node type says so.** Registering one for a
+  node that does not exist mounted nothing, silently; it now warns and, where
+  it can, names the type that was meant.
+- **The Custom Node Manager's close button had no name.** It rendered a bare
+  `x` with no label, so a screen reader announced it as "x".
+- **Untranslated English in the heatmap and scatter views.** Several strings
+  were hardcoded, so a zh-TW reader got a Chinese sentence wrapped around an
+  English one.
+- **The plugin row in Settings borrowed the pack row's strings.** Its visible
+  label and its unsupported state both came from `settings.packs.*`, so editing
+  the pack row's copy silently rewrote the plugin row.
 - **Untranslated English across the Inspector and the Layers editor.** The
   tensor grid editor had no `t()` call at all, and the step trace, the backward
   view, the port groups, the results panel's image labels, nine of ten palette

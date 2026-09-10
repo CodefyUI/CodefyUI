@@ -126,9 +126,24 @@ export function PackItemRow({
         <div className={styles.itemProgress}>
           <ProgressBar size="sm" value={progress.percent} label={name} />
           <span className={styles.itemBytes}>
-            {progress.bytesTotal === null
-              ? formatBytes(progress.bytesDone)
-              : `${formatBytes(progress.bytesDone)} / ${formatBytes(progress.bytesTotal)}`}
+            {/* A captioned frame is not counting bytes: the GloVe convert step
+                runs under the id of the item it just downloaded and sends WORD
+                counts through the byte fields, so a finished 66 MB download
+                would read "9.8 KB / 391 KB" beside a bar back at 2.5% — a
+                caption saying complete under a bar saying starting.
+
+                The translated key rather than `progress.text`: the server
+                writes that caption in English for a log, and this panel is
+                translated. Its PRESENCE is the signal; its wording is ours.
+
+                Truthy rather than a null test, because the field is simply
+                absent on a download frame — `progress.text !== null` holds for
+                `undefined` too and would caption every downloading row. */}
+            {progress.text
+              ? t('packs.item.converting')
+              : progress.bytesTotal === null
+                ? formatBytes(progress.bytesDone)
+                : `${formatBytes(progress.bytesDone)} / ${formatBytes(progress.bytesTotal)}`}
           </span>
         </div>
       )}
