@@ -619,6 +619,9 @@ describe('pluginStore — inspect', () => {
   it('says why a remote inspect was refused instead of showing Forbidden', async () => {
     // The source box is where a LAN user first meets the gate, and the
     // status text alone ("Forbidden") says nothing about where to install.
+    // The gate is what the catalog's flag describes, so the state has to say
+    // so — the same fact the panel disables the buttons on.
+    usePluginStore.setState({ remoteInstallAllowed: false });
     api.inspectPluginSource.mockRejectedValue(new ApiError(403, 'Forbidden'));
 
     await usePluginStore.getState().inspect('owner/demo');
@@ -627,6 +630,21 @@ describe('pluginStore — inspect', () => {
     if (state.inspection.phase !== 'error') throw new Error('not an error phase');
     expect(state.inspection.failure.message).toBe(
       'Installing is only allowed from the computer that runs the server.',
+    );
+  });
+
+  it('blames the restarted server when a 403 arrives with installing allowed', async () => {
+    // The other producer of a 403: the auth middleware refusing a session
+    // token the server rotated when it restarted. Telling a user sitting at
+    // the machine that they are on the wrong machine is a dead end.
+    api.inspectPluginSource.mockRejectedValue(new ApiError(403, 'Forbidden'));
+
+    await usePluginStore.getState().inspect('owner/demo');
+
+    const state = usePluginStore.getState();
+    if (state.inspection.phase !== 'error') throw new Error('not an error phase');
+    expect(state.inspection.failure.message).toBe(
+      'The server restarted. Reload the page and try again.',
     );
   });
 
@@ -927,6 +945,7 @@ describe('pluginStore — installInspected', () => {
 
   it('says so when the server refuses a remote install', async () => {
     await ready();
+    usePluginStore.setState({ remoteInstallAllowed: false });
     api.installPlugin.mockRejectedValue(new ApiError(403, 'Forbidden'));
 
     await usePluginStore.getState().installInspected({
@@ -935,6 +954,20 @@ describe('pluginStore — installInspected', () => {
 
     expect(lastToast().message).toBe(
       'Installing is only allowed from the computer that runs the server.',
+    );
+    expect(lastToast().type).toBe('error');
+  });
+
+  it('blames the restarted server when a 403 arrives with installing allowed', async () => {
+    await ready();
+    api.installPlugin.mockRejectedValue(new ApiError(403, 'Forbidden'));
+
+    await usePluginStore.getState().installInspected({
+      acceptCapabilities: true, trustAuthor: false,
+    });
+
+    expect(lastToast().message).toBe(
+      'The server restarted. Reload the page and try again.',
     );
     expect(lastToast().type).toBe('error');
   });
@@ -1224,12 +1257,24 @@ describe('pluginStore — uninstall', () => {
   it('says so when the server refuses a remote uninstall', async () => {
     // The same gate as an install. Wrapped in "Could not remove Demo
     // plugin", `Forbidden` tells a LAN user nothing about where to do it.
+    usePluginStore.setState({ remoteInstallAllowed: false });
     api.uninstallPlugin.mockRejectedValue(new ApiError(403, 'Forbidden'));
 
     await usePluginStore.getState().uninstall('demo');
 
     expect(lastToast().message).toBe(
       'Installing is only allowed from the computer that runs the server.',
+    );
+    expect(lastToast().type).toBe('error');
+  });
+
+  it('blames the restarted server when a 403 arrives with removing allowed', async () => {
+    api.uninstallPlugin.mockRejectedValue(new ApiError(403, 'Forbidden'));
+
+    await usePluginStore.getState().uninstall('demo');
+
+    expect(lastToast().message).toBe(
+      'The server restarted. Reload the page and try again.',
     );
     expect(lastToast().type).toBe('error');
   });

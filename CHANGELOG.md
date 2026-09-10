@@ -24,6 +24,22 @@ received — each links to the release it was published as.
 
 ### Fixed
 
+- **A tab kept working after the server restarts.** The server mints a new
+  session token every time its process starts, and the browser cached the
+  first one for the life of the page. A tab left open across a restart — a
+  `cdui` restart, or the Package Center restarting the server itself to finish
+  a pack that was already imported — held a token the server had never seen,
+  so every install, uninstall and Run answered `403`, and the execution
+  WebSocket was refused on every reconnect until it gave up. Mutating requests
+  now re-read the token once and retry; the WebSocket re-reads it before each
+  reconnect attempt, and a reconnect that fails before the socket exists no
+  longer ends the retry chain.
+- **A 403 says which of the two things it was.** Both the remote-install gate
+  and a refused session token answer `403`, and the Package and Plugin Centers
+  reported either as "Installing is only allowed from the computer that runs
+  the server" — pointing a user sitting at that very computer at nothing they
+  could do. The gate's sentence is now used only when the server actually said
+  installing is remote-disabled.
 - **A pack install that cannot resolve says what to run instead.** `uv` prints
   `No solution found` near the top of a derivation that runs to hundreds of
   lines, and the classifier only ever saw the last 40 — so a resolver conflict,

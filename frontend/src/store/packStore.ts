@@ -780,7 +780,16 @@ export const usePackStore = create<PackState>((set, get) => ({
           await get().refresh();
         }
       } else if (err instanceof PackApiError && err.status === 403) {
-        toast(t('packs.remoteDisabled'), 'error');
+        // Two things answer 403: the remote-install gate, and the auth
+        // middleware refusing this tab's session token — which the server
+        // rotates on every start, so a tab left open across a restart holds a
+        // dead one. `remote_install_allowed` is the flag the Install buttons
+        // are already disabled on, so a 403 while it says installing IS
+        // allowed can only be the second.
+        toast(
+          t(get().remoteInstallAllowed ? 'packs.sessionExpired' : 'packs.remoteDisabled'),
+          'error',
+        );
       } else if (err instanceof PackApiError && err.status === 400
                  && Array.isArray(err.body?.blocked_by)
                  && err.body.blocked_by.length > 0) {

@@ -1,6 +1,6 @@
 import { useToastStore } from '../store/toastStore';
 import { useI18n } from '../i18n';
-import { wsUrlWithToken } from './_auth';
+import { invalidateSessionToken, wsUrlWithToken } from './_auth';
 
 type MessageHandler = (data: any) => void;
 
@@ -65,6 +65,10 @@ export class ExecutionWebSocket {
       clearTimeout(this.reconnectTimer);
       this.reconnectTimer = null;
     }
+    // Cleared before the await so a caller that catches a rejection from here
+    // can tell "no socket was ever created" (the bootstrap GET failed) from
+    // "the socket opened and closed" (onclose runs and schedules the retry).
+    this.ws = null;
     // Token is appended as ?token=... because browsers cannot set custom
     // headers on WebSocket handshakes. wsUrlWithToken() awaits the bootstrap
     // exchange the first time it's called and caches the value afterwards.
@@ -172,11 +176,18 @@ export class ExecutionWebSocket {
     this.reconnectAttempt++;
     this.reconnectTimer = setTimeout(() => {
       this.reconnectTimer = null;
+      // The commonest reason a socket drops is that the server restarted,
+      // and a restart mints a new session token. Reusing the cached one
+      // means every handshake from here on is refused 403 until the tab is
+      // reloaded, so re-read it before each attempt.
+      invalidateSessionToken();
       // connect() will reject if the server is still down; in that case
       // the WebSocket's onclose fires (because hasBeenConnected is true)
       // and queues the next attempt from there.
       this.connect().catch(() => {
-        /* handled via onclose → scheduleReconnect */
+        // Unless it failed at the bootstrap GET, before a socket existed:
+        // there is no onclose to carry the chain, so queue the retry here.
+        if (this.ws === null && !this.intentionalClose) this.scheduleReconnect();
       });
     }, delay);
   }

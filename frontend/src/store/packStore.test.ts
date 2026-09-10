@@ -770,6 +770,9 @@ describe('packStore — install', () => {
     });
 
   it('says installing is local-only on a 403', async () => {
+    // The gate is what the catalog's flag describes, so the state has to say
+    // so — the same fact the Install buttons are already disabled on.
+    usePackStore.setState({ remoteInstallAllowed: false });
     api.installPack.mockRejectedValue(new PackApiError(403, 'remote install refused'));
 
     await usePackStore.getState().install('word-vectors');
@@ -777,6 +780,19 @@ describe('packStore — install', () => {
     expect(lastToast()).toMatchObject({ type: 'error' });
     expect(lastToast().message).toBe(
       'Installing is only allowed from the computer that runs the server.',
+    );
+  });
+
+  it('blames the restarted server on a 403 with installing allowed', async () => {
+    // The other producer of a 403: the auth middleware refusing a session
+    // token the server rotated when it restarted.
+    api.installPack.mockRejectedValue(new PackApiError(403, 'Forbidden'));
+
+    await usePackStore.getState().install('word-vectors');
+
+    expect(lastToast()).toMatchObject({ type: 'error' });
+    expect(lastToast().message).toBe(
+      'The server restarted. Reload the page and try again.',
     );
   });
 

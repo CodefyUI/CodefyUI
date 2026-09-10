@@ -946,6 +946,9 @@ const en = {
   'packs.cancel': 'Cancel install',
   'packs.cancelling': 'Cancelling...',
   'packs.remoteDisabled': 'Installing is only allowed from the computer that runs the server.',
+  // The server mints a new session token every time it starts, so a tab left
+  // open across a restart holds one the server will refuse.
+  'packs.sessionExpired': 'The server restarted. Reload the page and try again.',
 
   // Activity pane. `packs.activity.step.*` is keyed by the step id the job
   // sends, so an unknown step falls back to the server's own English label.

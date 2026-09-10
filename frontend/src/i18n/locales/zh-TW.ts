@@ -876,6 +876,7 @@ const zhTW: Record<TranslationKey, string> = {
   'packs.cancel': '取消安裝',
   'packs.cancelling': '正在取消...',
   'packs.remoteDisabled': '只能在執行伺服器的那台電腦上安裝。',
+  'packs.sessionExpired': '伺服器已重新啟動，請重新整理頁面後再試一次。',
 
   // Activity pane. `packs.activity.step.*` is keyed by the step id the job
   // sends, so an unknown step falls back to the server's own English label.
