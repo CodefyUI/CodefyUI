@@ -17,7 +17,7 @@ export interface PluginFilterBarProps {
 }
 
 /**
- * All | Installed | Available.
+ * All | Installed | Not installed.
  *
  * Buttons rather than tabs, and `aria-pressed` rather than a class: this
  * filters a list that is already on screen, so nothing here is a navigation.

@@ -22,6 +22,19 @@ received — each links to the release it was published as.
 
 ## [Unreleased]
 
+### Changed
+
+- **Less text in the Package and Plugin Centers.** Twenty-one strings are
+  shorter or plainer in both locales, and four things that were said twice are
+  now said once: the progress bar no longer carries a "Overall progress" label
+  above a bar that prints its own percentage, the restart action has one name
+  instead of two across two buttons and two confirm dialogs, one sentence
+  covers a server with no Plugin Center instead of two identical keys, and the
+  filter uses the same word for a state as the pill on the rows it reveals.
+  The Plugin Center opens on its catalog: the "Install from GitHub" box, which
+  is the rare way in, folds into one line above the filter, so the filter sits
+  directly over the rows it filters. Nothing lost an accessible name.
+
 ### Fixed
 
 - **A tab kept working after the server restarts.** The server mints a new

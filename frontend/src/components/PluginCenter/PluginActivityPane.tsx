@@ -185,7 +185,6 @@ export function PluginActivityPane({
       {running ? (
         <>
           {stepText !== null && <div className={styles.stepLine}>{stepText}</div>}
-          <div className={styles.overallLabel}>{t('packs.activity.overall')}</div>
           <ProgressBar
             tone="info"
             showValue

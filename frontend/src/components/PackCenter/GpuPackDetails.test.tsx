@@ -218,7 +218,7 @@ describe('GpuPackDetails — nothing worth installing', () => {
     expect(screen.queryByText(/nothing to install/)).toBeNull();
     expect(
       screen.getByText(
-        'Switching the PyTorch build from inside the app is not available yet. Run this in a terminal with the server stopped:',
+        'Switching the PyTorch build in the app is not available yet. Stop the server, then run:',
       ),
     ).toBeInTheDocument();
     expect(screen.getByText('cdui install --gpu cpu')).toBeVisible();
@@ -286,7 +286,7 @@ describe('GpuPackDetails — nothing worth installing', () => {
     expect(screen.queryByText(/nothing to install/)).toBeNull();
     expect(
       screen.getByText(
-        'Switching the PyTorch build from inside the app is not available yet. Run this in a terminal with the server stopped:',
+        'Switching the PyTorch build in the app is not available yet. Stop the server, then run:',
       ),
     ).toBeInTheDocument();
     expect(screen.getByText('cdui install --gpu cu128')).toBeVisible();
@@ -298,7 +298,7 @@ describe('GpuPackDetails — the command block', () => {
     renderCard({ launchMode: 'start' });
     expect(
       screen.getByText(
-        'Switching the PyTorch build from inside the app is not available yet. Run this in a terminal with the server stopped:',
+        'Switching the PyTorch build in the app is not available yet. Stop the server, then run:',
       ),
     ).toBeInTheDocument();
     expect(screen.getByText('cdui install --gpu cu128')).toBeInTheDocument();
@@ -324,7 +324,7 @@ describe('GpuPackDetails — the command block', () => {
     renderCard({ launchMode: 'unknown' });
     expect(
       screen.getByText(
-        'Switching the PyTorch build from inside the app is not available yet. Run this in a terminal with the server stopped:',
+        'Switching the PyTorch build in the app is not available yet. Stop the server, then run:',
       ),
     ).toBeInTheDocument();
     expect(screen.queryByText(/cdui dev/)).toBeNull();
@@ -395,7 +395,7 @@ describe('GpuPackDetails — installing and restarting', () => {
     // The button already says the server restarts; the caption only carries
     // the half the button does not — when it will refuse to start.
     expect(
-      screen.getByText('It will not start while a graph is running.'),
+      screen.getByText('The restart is blocked while a graph is running.'),
     ).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole('button', { name: 'Install and restart' }));
@@ -431,7 +431,7 @@ describe('GpuPackDetails — installing and restarting', () => {
     // under a button that works it is a choice, so it costs one folded line
     // instead of a sentence and a block.
     const onInstall = renderCard({ restartAvailable: true });
-    const summary = screen.getByText('Manual install command');
+    const summary = screen.getByText('Manual command');
     expect(screen.getByText('cdui install --gpu cu128')).not.toBeVisible();
 
     fireEvent.click(summary);
@@ -475,7 +475,7 @@ describe('GpuPackDetails — installing and restarting', () => {
     // Never folded on this card: with no button, the command IS the way
     // through, and a reader must not have to find it behind a summary.
     expect(screen.getByText('cdui install --gpu cu128')).toBeVisible();
-    expect(screen.queryByText('Manual install command')).toBeNull();
+    expect(screen.queryByText('Manual command')).toBeNull();
   });
 
   it('disables install-and-restart when remote installs are refused', () => {
@@ -484,7 +484,7 @@ describe('GpuPackDetails — installing and restarting', () => {
     expect(button).toBeDisabled();
     expect(button).toHaveAttribute(
       'title',
-      'Installing is only allowed from the computer that runs the server.',
+      'Installing works only from the computer that runs the server.',
     );
   });
 

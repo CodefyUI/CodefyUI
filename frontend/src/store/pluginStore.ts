@@ -303,7 +303,11 @@ function refusalCode(err: unknown): string | null {
  * producer -- `POST /{id}/update` -- long after this table was written.
  */
 export const REFUSAL_KEY: Record<string, TranslationKey | undefined> = {
-  unavailable: 'pluginCenter.error.unavailable',
+  // The panel's own sentence about a server with no Plugin Center. The two
+  // causes differ -- a build that predates the Plugin Center, and a server
+  // whose plugin service failed to start -- and what the user does about
+  // either is the same, which is why one key covers both.
+  unavailable: 'pluginCenter.unsupported',
   inspection_expired: 'pluginCenter.error.inspectionExpired',
   unknown_job: 'pluginCenter.error.unknownJob',
   inspect_busy: 'pluginCenter.error.inspectBusy',

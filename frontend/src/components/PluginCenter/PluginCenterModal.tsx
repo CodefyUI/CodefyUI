@@ -263,15 +263,23 @@ function PluginCenterBody() {
 
         <div className={styles.body}>
           <section className={styles.list} aria-label={t('pluginCenter.list')}>
-            {/* Above the filter, because both are about a plugin that is not
-                in the list yet. A server with no Plugin Center is offered
-                neither. */}
+            {/* Folded, because it is the rare way in. The panel is a
+                catalog: every row below carries its own Install button, and a
+                text box for a repository URL was the first thing on the page.
+                Closed it costs one line, which is what puts the filter
+                directly above the rows it filters. Above the filter rather
+                than below it, because both this and the review card under it
+                are about a plugin that is not in the list yet. A server with
+                no Plugin Center is offered neither. */}
             {!unsupported && (
-              <PluginSourceForm
-                inspection={inspection}
-                canInstall={remoteInstallAllowed}
-                onReview={(source) => void inspect(source)}
-              />
+              <details className={ownStyles.sourceDisclosure}>
+                <summary>{t('pluginCenter.source.label')}</summary>
+                <PluginSourceForm
+                  inspection={inspection}
+                  canInstall={remoteInstallAllowed}
+                  onReview={(source) => void inspect(source)}
+                />
+              </details>
             )}
 
             {/* Not on the phase alone. `install()` inspects before it
@@ -336,8 +344,8 @@ function PluginCenterBody() {
             )}
 
             {/* About the CATALOG, not about the filter: "no plugins" over a
-                list the user has just narrowed to Available would be the panel
-                answering its own question wrongly. A filter that matches
+                list the user has just narrowed to Not installed would be the
+                panel answering its own question wrongly. A filter that matches
                 nothing shows the pressed button and an empty list, which says
                 the same thing without claiming the server has nothing. */}
             {!loading && !unsupported && error === null && plugins.length === 0 && (
