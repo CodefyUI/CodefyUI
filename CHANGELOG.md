@@ -22,6 +22,31 @@ received — each links to the release it was published as.
 
 ## [Unreleased]
 
+## [2.7.2] — 2026-09-10
+
+The Package Center and the Plugin Center work, and say less while doing it.
+
+The install failures came first. A browser tab that was open across a server
+restart held a session token the server had never minted, so every install
+answered 403 — which both panels reported as "installing is only allowed from
+the computer that runs the server", to a user sitting at that computer. A pack
+whose dependencies cannot resolve was reported as an unexplained crash rather
+than with the command that does resolve, because the marker uv prints at the
+top of its explanation was being looked for in the last forty lines. The GPU
+PyTorch card offered Apple Silicon eight builds that have no macOS wheel and
+defaulted to a ninth the resolver has always refused. A plugin installed before
+this repository moved org could never be updated again, because the record of
+where it came from no longer matched the catalog.
+
+Then the text. A hundred and twenty-three strings are shorter or plainer in
+both locales, and the surfaces that were saying one thing several ways now say
+it once: Settings no longer prints an explanation under all eighteen of its
+rows, the Plugin Center opens on its catalog instead of on a text box for a
+repository URL, and six Inspector empty states stopped following a headline
+with a hint that restated it. Along the way, a good deal of the Inspector and
+the Layers editor turned out never to have been translated at all — including
+every graph-validation message, which reached the reader as an English toast.
+
 ### Changed
 
 - **Less text in the Package and Plugin Centers.** Twenty-one strings are
@@ -60,7 +85,7 @@ received — each links to the release it was published as.
 
 ### Fixed
 
-- **A tab kept working after the server restarts.** The server mints a new
+- **A tab keeps working after the server restarts.** The server mints a new
   session token every time its process starts, and the browser cached the
   first one for the life of the page. A tab left open across a restart — a
   `cdui` restart, or the Package Center restarting the server itself to finish
@@ -3595,7 +3620,8 @@ Release candidates before 1.0.0 are on the
 [#420]: https://github.com/CodefyUI/CodefyUI/issues/420
 [@oyea0801]: https://github.com/oyea0801
 [@latteine1217]: https://github.com/latteine1217
-[Unreleased]: https://github.com/CodefyUI/CodefyUI/compare/2.7.1...main
+[Unreleased]: https://github.com/CodefyUI/CodefyUI/compare/2.7.2...main
+[2.7.2]: https://github.com/CodefyUI/CodefyUI/compare/2.7.1...2.7.2
 [2.7.1]: https://github.com/CodefyUI/CodefyUI/compare/2.7.0...2.7.1
 [2.7.0]: https://github.com/CodefyUI/CodefyUI/compare/2.6.0...2.7.0
 [2.6.0]: https://github.com/CodefyUI/CodefyUI/compare/2.5.0...2.6.0
