@@ -1208,7 +1208,15 @@ const en = {
   'pluginCenter.review.trust': 'I trust this author. Allows: {modules}',
   'pluginCenter.review.frontend':
     'Ships JavaScript that runs in this editor with full access.',
-  'pluginCenter.review.idConflict': 'The id "{id}" is reserved for a built-in pack.',
+  // Which of the three things holds the id. The server sends a `holder`
+  // discriminant plus the bare repository, because the sentence about a
+  // coded refusal belongs to whoever is talking to the user, in their
+  // language -- `taken_by` is an English noun phrase the CLI prints.
+  'pluginCenter.error.idTakenByRoute': 'The id "{id}" is reserved by CodefyUI itself.',
+  'pluginCenter.error.idTakenByPack': 'The id "{id}" is reserved for a built-in pack.',
+  'pluginCenter.error.idTakenByRepo':
+    'The id "{id}" belongs to {repo}, so it cannot be installed or updated from this source.',
+  'pluginCenter.error.idTaken': 'The id "{id}" already belongs to another plugin.',
   // The 409 the store treats as an OFFER, said out loud: without it the only
   // sign is the Install button coming back as Reinstall.
   'pluginCenter.review.alreadyInstalled':

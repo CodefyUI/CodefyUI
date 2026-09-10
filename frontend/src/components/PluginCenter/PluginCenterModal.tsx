@@ -102,11 +102,28 @@ function PluginCenterBody() {
 
   // A refusal belongs to the box it was typed into, and does not outlive the
   // window that box was in: reopening the panel over "Could not fetch
-  // owner/demo: ..." would explain a request nobody here made. A REVIEW
-  // survives a close on purpose — it is a decision still waiting for an
-  // answer, and the store keeps the install job running behind it either way.
+  // owner/demo: ..." would explain a request nobody here made. A REVIEW still
+  // waiting for an answer survives a close on purpose — it is a decision, and
+  // the store keeps the install job running behind it either way.
   useEffect(() => () => {
-    if (usePluginStore.getState().inspection.phase === 'error') clearInspection();
+    const { inspection: left } = usePluginStore.getState();
+    if (left.phase === 'error') {
+      clearInspection();
+      return;
+    }
+    // The same rule for the card the render gate below draws over a refusal
+    // alone: a review a ROW's Install button raised asks nothing by itself,
+    // so it is on screen only because the install came back refused, and that
+    // refusal answers a request as finished as the box above. The two reviews
+    // that do survive are untouched — a source somebody typed, and a manifest
+    // still asking for consent — and each keeps its refusal, which is the
+    // detail naming the box that is still unticked.
+    if (
+      left.phase === 'ready' && left.error !== null
+      && left.forPluginId !== null && !left.data.consent_required
+    ) {
+      clearInspection();
+    }
   }, [clearInspection]);
 
   // Focus starts inside the panel and goes back where it came from. Not a

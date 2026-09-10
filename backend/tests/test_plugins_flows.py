@@ -188,7 +188,10 @@ def fake_github(monkeypatch):
                 {f"{repo}-main/{rel}": text for rel, text in files.items()}, dest
             )
 
-        monkeypatch.setattr(github, "resolve_sha", lambda o, r, ref: sha)
+        monkeypatch.setattr(
+            github, "resolve_ref",
+            lambda o, r, ref: github.ResolvedRef(sha=sha, owner=o, repo=r),
+        )
         monkeypatch.setattr(
             github, "fetch_manifest_text",
             lambda o, r, s: files["cdui.plugin.toml"],
@@ -316,7 +319,7 @@ def test_a_repository_install_runs_every_step_in_order(
     def _never(*_a):  # pragma: no cover - only runs on a bug
         raise AssertionError("an install must not re-resolve the ref")
 
-    monkeypatch.setattr(github, "resolve_sha", _never)
+    monkeypatch.setattr(github, "resolve_ref", _never)
 
     events: list[dict] = []
     outcome = _install(plan, emit=events.append)

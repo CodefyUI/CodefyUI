@@ -21,6 +21,7 @@ from app.core import plugin_loader
 from app.core.packs import runner as packs_runner
 from app.core.plugin_validator import PluginValidationError
 from app.core.plugins import catalog as core_catalog
+from app.core.plugins import github as core_github
 from app.core.plugins import lifecycle
 
 
@@ -1169,7 +1170,9 @@ def fake_github(monkeypatch):
     def _make(files: dict[str, str] | None = None) -> None:
         payload = {"cdui.plugin.toml": _TEMPLATE_MANIFEST} if files is None else files
         monkeypatch.setattr(
-            "app.core.plugins.github.resolve_sha", lambda o, r, ref: "0" * 40
+            "app.core.plugins.github.resolve_ref",
+            lambda o, r, ref: core_github.ResolvedRef(
+                sha="0" * 40, owner=o, repo=r),
         )
         monkeypatch.setattr(
             "app.core.plugins.github.fetch_manifest_text",

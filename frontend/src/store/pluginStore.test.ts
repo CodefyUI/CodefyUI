@@ -1,3 +1,5 @@
+import { existsSync, readFileSync } from 'node:fs';
+import { resolve as resolvePath } from 'node:path';
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import * as rest from '../api/rest';
 import type {
@@ -42,6 +44,7 @@ import {
   _resetPluginStoreForTesting,
   emptyPluginJob,
   parseGitHubSource,
+  REFUSAL_KEY,
   usePluginStore,
 } from './pluginStore';
 import { useNodeDefStore } from './nodeDefStore';
@@ -442,6 +445,110 @@ describe('pluginStore — install', () => {
     await usePluginStore.getState().install('c1');
 
     expect(api.inspectPluginSource).toHaveBeenCalledWith('c1');
+  });
+
+  it('installs a catalog row by its id, not by the repository it names', async () => {
+    // The catalog serves `owner/repo` as an available row's source, and the
+    // installer will not take a provenance claim from free text: installed
+    // that way the lockfile entry gets no `catalog_id` and the plugin the
+    // panel just showed as Official is recorded as a third-party install.
+    serveCatalog(catalog({
+      entries: [entry({
+        id: 'self-learning',
+        kind: 'github',
+        official: true,
+        status: 'available',
+        source: 'CodefyUI/CodefyUI-Plugin-Self-Learning',
+        repo: 'CodefyUI/CodefyUI-Plugin-Self-Learning',
+      })],
+    }));
+    await usePluginStore.getState().refresh();
+
+    await usePluginStore.getState().install('self-learning');
+
+    expect(api.inspectPluginSource).toHaveBeenCalledWith('self-learning');
+  });
+
+  it('reinstalls a missing_files row from the repository IT recorded', async () => {
+    // The row has a lockfile entry and its directory is gone, so `source` is
+    // what the user actually installed -- here a FORK of the catalog's
+    // repository. Installing this one by its catalog id would fetch the
+    // official repo over the fork, silently, under a button that says
+    // Install.
+    serveCatalog(catalog({
+      entries: [entry({
+        id: 'graph-copilot',
+        kind: 'github',
+        status: 'missing_files',
+        source: 'a-previous-owner/CodefyUI-Plugin-Graph-Copilot',
+        repo: 'CodefyUI/CodefyUI-Plugin-Graph-Copilot',
+      })],
+    }));
+    await usePluginStore.getState().refresh();
+
+    await usePluginStore.getState().install('graph-copilot');
+
+    expect(api.inspectPluginSource).toHaveBeenCalledWith(
+      'a-previous-owner/CodefyUI-Plugin-Graph-Copilot',
+    );
+  });
+
+  it('toasts a row refusal instead of parking it under the source box', async () => {
+    serveCatalog(catalog({
+      entries: [entry({
+        id: 'self-learning', kind: 'github', status: 'available',
+        source: 'CodefyUI/CodefyUI-Plugin-Self-Learning',
+      })],
+    }));
+    await usePluginStore.getState().refresh();
+    api.inspectPluginSource.mockRejectedValue(refused(502, 'github_unreachable'));
+
+    await usePluginStore.getState().install('self-learning');
+
+    // Under the source box this read "Could not fetch ...", worded for a
+    // string the user never typed, while the row they pressed said nothing.
+    expect(usePluginStore.getState().inspection).toEqual({ phase: 'idle' });
+    expect(lastToast().message).toBe(
+      'Could not fetch self-learning: Could not reach GitHub.',
+    );
+    expect(lastToast().type).toBe('error');
+    // And a way back to the row it was about.
+    expect(lastToast().action!.label).toBe('Open Plugin Center');
+    lastToast().action!.onClick();
+    expect(useUIStore.getState().pluginCenterFocusPluginId).toBe('self-learning');
+  });
+
+  it('keeps the wire token out of a row refusal', async () => {
+    // `unknown_catalog_name` is mapped nowhere in `REFUSAL_KEY` -- the useful
+    // half is the name in the body -- so a toast built from the message
+    // alone would print the token itself.
+    serveCatalog(catalog({ entries: [entry({ id: 'c9', status: 'available' })] }));
+    await usePluginStore.getState().refresh();
+    api.inspectPluginSource.mockRejectedValue(
+      refused(400, 'unknown_catalog_name', { known: ['c1', 'c2'] }),
+    );
+
+    await usePluginStore.getState().install('c9');
+
+    expect(lastToast().message).toBe('No plugin is called "c9".');
+  });
+
+  it('says nothing in the source box while a row is being inspected', async () => {
+    let release: (value: PluginInspection) => void = () => {};
+    api.inspectPluginSource.mockReturnValue(
+      new Promise<PluginInspection>((resolve) => { release = resolve; }),
+    );
+
+    const first = usePluginStore.getState().install('demo');
+
+    // The box's Review button reads this phase and said "Downloading..."
+    // about a request it did not make. The row is not left silent: `busy`
+    // disables every control on it for the same span.
+    expect(usePluginStore.getState().inspection).toEqual({ phase: 'idle' });
+    expect(usePluginStore.getState().busy.demo).toBe(true);
+
+    release(inspection({ plugin_id: 'demo' }));
+    await first;
   });
 
   it('leaves no review behind when an auto-install is refused', async () => {
@@ -1084,6 +1191,38 @@ describe('pluginStore — update', () => {
       'Update failed: This plugin is not installed any more. Refresh the list.',
     );
   });
+
+  it('names who holds the id when a repository has claimed a reserved one', async () => {
+    // What an official repository that MOVED produces: the row was installed
+    // from the fork's address, and the id it declares belongs to the catalog
+    // row of the repository it moved from.
+    api.updatePlugin.mockRejectedValue(refused(400, 'reserved_id', {
+      id: 'graph-copilot',
+      holder: 'repository',
+      repo: 'CodefyUI/CodefyUI-Plugin-Graph-Copilot',
+    }));
+
+    await usePluginStore.getState().update('graph-copilot');
+
+    // "Update failed: reserved_id" — the wire token as the whole
+    // explanation — is the sentence this replaces.
+    expect(lastToast().message).toBe(
+      'Update failed: The id "graph-copilot" belongs to '
+      + 'CodefyUI/CodefyUI-Plugin-Graph-Copilot, so it cannot be installed or '
+      + 'updated from this source.',
+    );
+    expect(lastToast().type).toBe('error');
+  });
+
+  it('names the plugin when a reserved-id refusal carried no id', async () => {
+    api.updatePlugin.mockRejectedValue(refused(400, 'reserved_id'));
+
+    await usePluginStore.getState().update('demo');
+
+    expect(lastToast().message).toBe(
+      'Update failed: The id "demo" already belongs to another plugin.',
+    );
+  });
 });
 
 // ── uninstall, enable, disable ───────────────────────────────────────────
@@ -1705,6 +1844,86 @@ describe('pluginStore — checkInProgress', () => {
 
     expect(useToastStore.getState().toasts).toEqual([]);
     expect(usePluginStore.getState().unsupported).toBe(true);
+  });
+});
+
+// ── the standing guard ───────────────────────────────────────────────────
+
+/**
+ * Every refusal code the plugin routes can send is answered by something.
+ *
+ * The routes answer `HTTPException(status, detail={"code": ...})` with no
+ * prose at all, so a code nothing here maps IS the sentence the user reads:
+ * `更新失敗：reserved_id`. That is not a hypothetical -- it is what shipped,
+ * because `reserved_id` grew a second producer (`POST /{id}/update`) years
+ * after the table that skips it was written, and nothing said so.
+ *
+ * Read out of the route module rather than listed here, so the next code
+ * added to it fails this file instead of reaching a toast as itself.
+ */
+describe('the refusal codes the routes can send', () => {
+  // From the working directory rather than from `import.meta.url`, which is
+  // an http: URL of the dev server here and not a path at all. Both roots are
+  // tried because this suite is run from the package and from the repository.
+  const RELATIVE = 'backend/app/api/routes_plugins.py';
+  const ROUTES = [
+    resolvePath(process.cwd(), '..', RELATIVE), resolvePath(process.cwd(), RELATIVE),
+  ].find((path) => existsSync(path)) ?? RELATIVE;
+
+  /**
+   * The codes NOT in `REFUSAL_KEY`, and what answers each instead.
+   *
+   * A note, not a proof: whether a catch still has its branch is what the
+   * cases above pin. What this list does is make ADDING a code a deliberate
+   * edit -- the author has to say where it is answered -- and make removing
+   * one show up as a stale entry.
+   */
+  const ANSWERED_ELSEWHERE: Record<string, string> = {
+    reserved_id: "update()'s catch and the source box, through refusalSentence",
+    unknown_catalog_name: 'the source box, and a row install through refusalSentence',
+    consent_required: 'the review card, which grows the tick box it names',
+    trust_author_required: 'the review card, which grows a second tick box',
+    already_installed: 'the review card, which grows a Reinstall button',
+    not_updatable: "update()'s catch, which prints the hint beside it",
+    files_locked: "uninstall()'s catch, which prints the hint beside it",
+    busy: 'every catch, in its 409 arm: another install is already running',
+    pack_install_running: 'the same 409 arm — the Package Center is installing',
+  };
+
+  /** The literal codes `_coded(status, "code", ...)` names in the module. */
+  function emittedCodes(): Set<string> {
+    const source = readFileSync(ROUTES, 'utf8');
+    return new Set(
+      [...source.matchAll(/_coded\(\s*\d+,\s*"([a-z_]+)"/g)].map((hit) => hit[1]),
+    );
+  }
+
+  it('answers each of them with a sentence, a control or a hint', () => {
+    // The regex is this guard's eyes: a `_coded` call it stops matching is a
+    // code nothing checks, and an empty answer would pass every assertion.
+    const emitted = emittedCodes();
+    expect(emitted.has('reserved_id')).toBe(true);
+    expect(emitted.has('unavailable')).toBe(true);
+    expect(emitted.size).toBeGreaterThan(10);
+
+    expect([...emitted].filter((code) => (
+      REFUSAL_KEY[code] === undefined && ANSWERED_ELSEWHERE[code] === undefined
+    ))).toEqual([]);
+  });
+
+  it('keeps the list of the ones answered elsewhere honest', () => {
+    const emitted = emittedCodes();
+    // `pack_install_running` travels as `exc.reason`, so it is the one code
+    // that is not a literal in the module that sends it.
+    emitted.add('pack_install_running');
+
+    expect(Object.keys(ANSWERED_ELSEWHERE).filter((code) => !emitted.has(code)))
+      .toEqual([]);
+    // Nothing is answered twice: a code with a sentence in `REFUSAL_KEY` is
+    // answered by that sentence wherever it lands.
+    expect(Object.keys(ANSWERED_ELSEWHERE).filter(
+      (code) => REFUSAL_KEY[code] !== undefined,
+    )).toEqual([]);
   });
 });
 

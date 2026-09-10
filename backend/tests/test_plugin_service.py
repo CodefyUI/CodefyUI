@@ -576,6 +576,49 @@ async def test_a_plugin_that_is_already_here_is_an_offer_not_a_job(sources):
     assert not flow.started.is_set()
 
 
+async def test_a_directory_with_no_lockfile_entry_is_the_same_offer(
+        sources, isolated_user_root):
+    """The half of "already here" the lockfile cannot see.
+
+    A directory with no entry is what a lockfile write that failed after the
+    rename leaves behind, and what a hand-copied pack or an edited
+    ``installed.json`` looks like: the inspection reads ``installed=None,
+    mode="install"``, so only the disk knows. The flow refuses it too, but
+    reached from in there the offer is unanswerable -- the job has started,
+    the inspection is spent, and the panel draws its Reinstall button only
+    from THIS refusal.
+    """
+    flow = ScriptedFlow()
+    service = a_service(run_flow=flow)
+    (isolated_user_root / "extras").mkdir(parents=True)
+    inspection_id = await remembered(service, sources, an_inspection())
+
+    with pytest.raises(AlreadyInstalled) as excinfo:
+        await service.submit_install(inspection_id, accept_capabilities=None,
+                                     trust_author=False, force=False)
+
+    assert excinfo.value.plugin_id == "extras"
+    assert service.current_job() is None
+    assert not flow.started.is_set()
+
+
+async def test_a_user_directory_says_nothing_about_a_builtin(
+        sources, isolated_user_root):
+    """A built-in pack lives under the built-in root, so a user directory of
+    the same name is not a copy of it -- its lockfile entry is the only thing
+    that says it is here, and ``_install_builtin`` asks only that."""
+    flow = ScriptedFlow().script()
+    service = a_service(run_flow=flow)
+    (isolated_user_root / "stats").mkdir(parents=True)
+    inspection_id = await remembered(service, sources, a_builtin_inspection())
+
+    job = await service.submit_install(inspection_id, accept_capabilities=None,
+                                       trust_author=False, force=False)
+    _, status = await drain(service, job.job_id)
+
+    assert status == "done"
+
+
 async def test_a_builtin_that_is_already_here_is_refused_the_same_way(sources):
     flow = ScriptedFlow()
     service = a_service(run_flow=flow)
