@@ -68,6 +68,21 @@ export interface ItemProgress {
   bytesTotal: number | null;
   /** 0..100, or null when there is no total to divide by. */
   percent: number | null;
+  /**
+   * The server's caption for a frame that is NOT counting bytes — the GloVe
+   * convert step reuses the downloaded item's id and counts WORDS through the
+   * same fields. Absent on a download frame, which is what makes its PRESENCE
+   * the signal that the numbers beside it are not sizes.
+   *
+   * Optional rather than `string | null` so that the object literals already
+   * building this shape stay valid. A reader must therefore test it as truthy:
+   * `text !== null` is true of every download frame ever sent.
+   *
+   * Unlike `LogLine.text` this is not for display. It is English, written for
+   * a log, and `PackItemRow` shows a translated caption of its own off the
+   * fact that the field is here at all.
+   */
+  text?: string;
 }
 
 export interface JobStep {
@@ -232,14 +247,37 @@ export function reduceJobEvents<J extends Job>(
       case 'progress': {
         const item = str(event.item);
         if (item === null) break;
+        const reported = num(event.percent);
+        const text = str(event.text);
+        if (text !== null) {
+          // A frame that captions itself is counting something other than
+          // bytes: the GloVe convert step runs under the id of the item that
+          // was just downloaded and sends WORD counts (10000 of 400000)
+          // through `bytes_done`/`bytes_total`. Only the bar and the caption
+          // move here -- letting those counts land in the byte fields turns a
+          // finished 66 MB download into "9.8 KB / 391 KB" and collapses the
+          // pack's overall bar, which weights every item by its size.
+          const prev = items[item];
+          items = {
+            ...items,
+            [item]: {
+              bytesDone: prev?.bytesDone ?? 0,
+              bytesTotal: prev?.bytesTotal ?? null,
+              percent: reported !== null ? clampPercent(reported) : null,
+              text,
+            },
+          };
+          break;
+        }
         const bytesDone = num(event.bytes_done) ?? 0;
         const bytesTotal = num(event.bytes_total);
-        const reported = num(event.percent);
         const percent = reported !== null
           ? clampPercent(reported)
           : bytesTotal !== null && bytesTotal > 0
             ? clampPercent((100 * bytesDone) / bytesTotal)
             : null;
+        // The entry is rebuilt from scratch on every frame, so a byte frame
+        // that follows a captioned one drops the caption by omitting it.
         items = { ...items, [item]: { bytesDone, bytesTotal, percent } };
         break;
       }

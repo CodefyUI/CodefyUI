@@ -188,7 +188,10 @@ def fake_github(monkeypatch):
                 {f"{repo}-main/{rel}": text for rel, text in files.items()}, dest
             )
 
-        monkeypatch.setattr(github, "resolve_sha", lambda o, r, ref: sha)
+        monkeypatch.setattr(
+            github, "resolve_ref",
+            lambda o, r, ref: github.ResolvedRef(sha=sha, owner=o, repo=r),
+        )
         monkeypatch.setattr(
             github, "fetch_manifest_text",
             lambda o, r, s: files["cdui.plugin.toml"],
@@ -211,7 +214,8 @@ def fake_pip(monkeypatch):
     calls: list[dict[str, Any]] = []
 
     def _make(*, returncode: int = 0, output: tuple[str, ...] = ()):
-        def _run_pip(specs, *, constraints_path, emit, cancel_check, cwd, tail=None):
+        def _run_pip(specs, *, constraints_path, emit, cancel_check, cwd,
+                     tail=None, conflict=None):
             calls.append({
                 "specs": list(specs),
                 "constraints_path": constraints_path,
@@ -222,8 +226,17 @@ def fake_pip(monkeypatch):
             emit({"type": "log", "line": " ".join(packs_runner.pip_install_argv(
                 specs, constraints_path=constraints_path))})
             for line in output:
+                # Both out-parameters, filled the way the real runner fills
+                # them -- trimming included. Without the trim this fake
+                # cannot produce uv's real failure shape, a conflict whose
+                # derivation is longer than the window its marker sits in,
+                # which is the case that used to be misread here.
                 if tail is not None:
                     tail.append(line)
+                    del tail[:-packs_runner.TAIL_LINES]
+                if (conflict is not None
+                        and packs_runner.looks_like_resolver_conflict((line,))):
+                    conflict.set()
                 emit({"type": "log", "line": line})
             return returncode
 
@@ -306,7 +319,7 @@ def test_a_repository_install_runs_every_step_in_order(
     def _never(*_a):  # pragma: no cover - only runs on a bug
         raise AssertionError("an install must not re-resolve the ref")
 
-    monkeypatch.setattr(github, "resolve_sha", _never)
+    monkeypatch.setattr(github, "resolve_ref", _never)
 
     events: list[dict] = []
     outcome = _install(plan, emit=events.append)
@@ -493,6 +506,31 @@ def test_a_resolver_conflict_asks_for_a_restart_and_quotes_the_command(
     assert _entry("extras") is None
 
 
+def test_a_conflict_uv_explains_at_length_still_asks_for_a_restart(
+    fake_github, fake_pip, user_root
+):
+    """A real uv conflict is a verdict near the top and a derivation behind
+    it hundreds of lines long, so the last lines this step keeps are
+    indented version numbers with no marker among them. Reading the answer
+    out of those lines reported a plugin whose packages merely need a
+    stopped server as a plugin that failed to install.
+    """
+    fake_github({"cdui.plugin.toml": WITH_DEPS})
+    fake_pip(returncode=1, output=(
+        "Using Python 3.11.10 environment at: backend/.venv",
+        "  × No solution found when resolving dependencies:",
+        *[f"          transformers==5.{minor}.0" for minor in range(200)],
+    ))
+
+    with pytest.raises(PluginNeedsRestart) as excinfo:
+        _install(_github_plan())
+    command = excinfo.value.command
+    assert command.startswith("uv pip install --python ")
+    assert '"tinylib==1.0.0"' in command
+    assert command in (excinfo.value.hint or "")
+    assert not (user_root / "extras").exists(), "deps run before anything is staged"
+
+
 def test_any_other_pip_failure_keeps_uvs_last_lines(fake_github, fake_pip):
     fake_github({"cdui.plugin.toml": WITH_DEPS})
     fake_pip(returncode=2, output=("error: could not download tinylib",))
@@ -511,7 +549,8 @@ def test_a_missing_uv_says_so_in_the_hint_rather_than_nothing(
     pumped into ``tail`` -- and the one line that says why went out as a log
     event and nowhere else, leaving the failure hint empty exactly where it
     had something to say."""
-    def _no_uv(specs, *, constraints_path, emit, cancel_check, cwd, tail=None):
+    def _no_uv(specs, *, constraints_path, emit, cancel_check, cwd, tail=None,
+               conflict=None):
         emit({"type": "log",
               "line": "uv was not found on PATH; install uv and try again"})
         return 127

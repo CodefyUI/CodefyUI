@@ -102,11 +102,28 @@ function PluginCenterBody() {
 
   // A refusal belongs to the box it was typed into, and does not outlive the
   // window that box was in: reopening the panel over "Could not fetch
-  // owner/demo: ..." would explain a request nobody here made. A REVIEW
-  // survives a close on purpose — it is a decision still waiting for an
-  // answer, and the store keeps the install job running behind it either way.
+  // owner/demo: ..." would explain a request nobody here made. A REVIEW still
+  // waiting for an answer survives a close on purpose — it is a decision, and
+  // the store keeps the install job running behind it either way.
   useEffect(() => () => {
-    if (usePluginStore.getState().inspection.phase === 'error') clearInspection();
+    const { inspection: left } = usePluginStore.getState();
+    if (left.phase === 'error') {
+      clearInspection();
+      return;
+    }
+    // The same rule for the card the render gate below draws over a refusal
+    // alone: a review a ROW's Install button raised asks nothing by itself,
+    // so it is on screen only because the install came back refused, and that
+    // refusal answers a request as finished as the box above. The two reviews
+    // that do survive are untouched — a source somebody typed, and a manifest
+    // still asking for consent — and each keeps its refusal, which is the
+    // detail naming the box that is still unticked.
+    if (
+      left.phase === 'ready' && left.error !== null
+      && left.forPluginId !== null && !left.data.consent_required
+    ) {
+      clearInspection();
+    }
   }, [clearInspection]);
 
   // Focus starts inside the panel and goes back where it came from. Not a
@@ -246,15 +263,23 @@ function PluginCenterBody() {
 
         <div className={styles.body}>
           <section className={styles.list} aria-label={t('pluginCenter.list')}>
-            {/* Above the filter, because both are about a plugin that is not
-                in the list yet. A server with no Plugin Center is offered
-                neither. */}
+            {/* Folded, because it is the rare way in. The panel is a
+                catalog: every row below carries its own Install button, and a
+                text box for a repository URL was the first thing on the page.
+                Closed it costs one line, which is what puts the filter
+                directly above the rows it filters. Above the filter rather
+                than below it, because both this and the review card under it
+                are about a plugin that is not in the list yet. A server with
+                no Plugin Center is offered neither. */}
             {!unsupported && (
-              <PluginSourceForm
-                inspection={inspection}
-                canInstall={remoteInstallAllowed}
-                onReview={(source) => void inspect(source)}
-              />
+              <details className={ownStyles.sourceDisclosure}>
+                <summary>{t('pluginCenter.source.label')}</summary>
+                <PluginSourceForm
+                  inspection={inspection}
+                  canInstall={remoteInstallAllowed}
+                  onReview={(source) => void inspect(source)}
+                />
+              </details>
             )}
 
             {/* Not on the phase alone. `install()` inspects before it
@@ -319,8 +344,8 @@ function PluginCenterBody() {
             )}
 
             {/* About the CATALOG, not about the filter: "no plugins" over a
-                list the user has just narrowed to Available would be the panel
-                answering its own question wrongly. A filter that matches
+                list the user has just narrowed to Not installed would be the
+                panel answering its own question wrongly. A filter that matches
                 nothing shows the pressed button and an empty list, which says
                 the same thing without claiming the server has nothing. */}
             {!loading && !unsupported && error === null && plugins.length === 0 && (

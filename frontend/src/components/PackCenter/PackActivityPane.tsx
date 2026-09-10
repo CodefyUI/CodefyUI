@@ -135,7 +135,6 @@ export function PackActivityPane({
       {running ? (
         <>
           {stepText !== null && <div className={styles.stepLine}>{stepText}</div>}
-          <div className={styles.overallLabel}>{t('packs.activity.overall')}</div>
           <ProgressBar
             tone="info"
             showValue
@@ -217,9 +216,9 @@ function ResultBanner({
   // second install and a bug report.
   const retry = useCallback(async () => {
     const ok = await confirm({
-      title: t('packs.activity.restartAndInstall'),
+      title: t('packs.gpu.installRestart'),
       message: t('packs.activity.restartAndInstallNote'),
-      confirmText: t('packs.activity.restartAndInstall'),
+      confirmText: t('packs.gpu.installRestart'),
       variant: 'danger',
     });
     if (!ok) return;
@@ -271,7 +270,9 @@ function ResultBanner({
             title={canInstall ? undefined : t('packs.remoteDisabled')}
             onClick={() => void retry()}
           >
-            {t('packs.activity.restartAndInstall')}
+            {/* The GPU card's label. Both buttons restart the server and
+                install into it, so both say the same words. */}
+            {t('packs.gpu.installRestart')}
           </button>
         </div>
       )}

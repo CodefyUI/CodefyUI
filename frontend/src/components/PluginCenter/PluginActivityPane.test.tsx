@@ -161,7 +161,6 @@ describe('PluginActivityPane — a running job', () => {
     // The step id is what is translated; the server's English label is only
     // the fallback for an id this build has never heard of.
     expect(screen.getByText('Step 2: Downloading')).toBeInTheDocument();
-    expect(screen.getByText('Overall progress')).toBeInTheDocument();
     expect(progressBar()).toHaveAttribute('aria-valuenow', '12.5');
     // Nothing has ended, so there is no banner to say otherwise.
     expect(screen.queryByRole('status')).toBeNull();
@@ -444,9 +443,8 @@ describe('PluginActivityPane — how a job ended', () => {
     expect(banner()).toHaveAttribute('data-tone', 'warning');
     expect(
       within(banner()).getByText(
-        "The install stopped before changing anything: Demo plugin's Python packages "
-        + 'would replace one the server has loaded. With the server stopped, run this, '
-        + 'then install again:',
+        "Nothing was installed: Demo plugin's Python packages would replace one the "
+        + 'server is using. Stop the server, run this, then install again:',
       ),
     ).toBeInTheDocument();
     expect(within(banner()).getByText('uv pip install "torch==2.4.0"')).toBeInTheDocument();
@@ -456,7 +454,7 @@ describe('PluginActivityPane — how a job ended', () => {
     paint({ job: job({ status: 'needs_restart', restartCommand: null }), entry: demo });
 
     expect(banner()).toHaveAttribute('data-tone', 'warning');
-    expect(within(banner()).getByText(/^The install stopped/)).toBeInTheDocument();
+    expect(within(banner()).getByText(/^Nothing was installed/)).toBeInTheDocument();
     // `CommandBlock` is the only thing in the pane with a copy button.
     expect(screen.queryByRole('button', { name: 'Copy command' })).toBeNull();
   });

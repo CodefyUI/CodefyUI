@@ -1,7 +1,7 @@
 import { useId, useState, type FormEvent } from 'react';
 import type { InspectionFailure, InspectionState } from '../../store/pluginStore';
 import { useI18n } from '../../i18n';
-import { parseGitHubSource, type Translate } from './pluginStatus';
+import { parseGitHubSource, refusalSentence, type Translate } from './pluginStatus';
 import packStyles from '../PackCenter/PackCenterModal.module.css';
 import styles from './PluginCenterModal.module.css';
 
@@ -19,12 +19,6 @@ import styles from './PluginCenterModal.module.css';
  * printed under the row.
  */
 
-/** *detail*'s *key* when it is a non-empty string, else null. */
-function text(detail: Record<string, unknown> | null, key: string): string | null {
-  const value = detail?.[key];
-  return typeof value === 'string' && value !== '' ? value : null;
-}
-
 /** The string members of *detail*'s *key*, or nothing at all. */
 function list(detail: Record<string, unknown> | null, key: string): string[] {
   const value = detail?.[key];
@@ -36,36 +30,24 @@ function list(detail: Record<string, unknown> | null, key: string): string[] {
  * What a refused inspection should read as: the complaint, and the offer
  * under it when the refusal carried one.
  *
- * Two of these codes are answered here rather than by `REFUSAL_KEY`, because
- * the useful half of each is in the BODY and not in the code: which id is
- * taken, and which names would have worked. A sentence written server-side
- * could not have said either.
+ * Only the OFFER is written here. The complaint is `refusalSentence`, shared
+ * with the store because a refused Install on a ROW reports itself in a
+ * toast: two builders for one refusal is how the box's wording and the
+ * toast's drift apart. The offer stays because it is the box's alone -- a
+ * list of names to type is an answer to somebody typing.
  */
 function refusalLines(
   t: Translate, failure: InspectionFailure, source: string,
 ): { message: string; hint: string | null } {
-  if (failure.code === 'reserved_id') {
-    return {
-      message: t('pluginCenter.review.idConflict', {
-        id: text(failure.detail, 'id') ?? source,
-      }),
-      hint: null,
-    };
-  }
-  if (failure.code === 'unknown_catalog_name') {
-    const known = list(failure.detail, 'known');
-    return {
-      message: t('pluginCenter.source.unknownName', { source }),
-      hint: known.length === 0
-        ? null
-        : t('pluginCenter.source.knownNames', { known: known.join(', ') }),
-    };
-  }
-  // Everything else already has its sentence: the store maps a coded refusal
-  // to one before it ever reaches a component, so `message` is prose.
+  const message = refusalSentence(t, failure, source);
+  if (failure.code !== 'unknown_catalog_name') return { message, hint: null };
+
+  const known = list(failure.detail, 'known');
   return {
-    message: t('pluginCenter.source.fail', { source, message: failure.message }),
-    hint: null,
+    message,
+    hint: known.length === 0
+      ? null
+      : t('pluginCenter.source.knownNames', { known: known.join(', ') }),
   };
 }
 
@@ -80,7 +62,6 @@ export function PluginSourceForm({
   inspection, canInstall, onReview,
 }: PluginSourceFormProps) {
   const { t } = useI18n();
-  const inputId = useId();
   const errorId = useId();
   const [source, setSource] = useState('');
   // Typed something that is not a source. Local, because nothing was sent:
@@ -116,10 +97,12 @@ export function PluginSourceForm({
 
   return (
     <form className={styles.sourceForm} onSubmit={submit}>
-      <label htmlFor={inputId}>{t('pluginCenter.source.label')}</label>
+      {/* The disclosure this form opens out of carries the name on screen
+          (`PluginCenterModal`), so a visible label would print it twice; the
+          field keeps it as its accessible name. */}
       <input
-        id={inputId}
         type="text"
+        aria-label={t('pluginCenter.source.label')}
         value={source}
         placeholder={t('pluginCenter.source.placeholder')}
         onChange={(event) => {

@@ -24,6 +24,7 @@ import pytest
 
 import plugins as plugin_cli
 from app.core import plugin_loader
+from app.core.plugins import github
 from app.core.plugins.errors import GitHubError, PluginInstallError
 
 
@@ -256,8 +257,12 @@ def fake_github(monkeypatch):
     ``progress`` keywords the flow passes.
     """
     def _make(files: dict[str, str]) -> None:
+        # `resolve_ref`, which `resolve_sha` delegates to: the inspection
+        # asks for the repository GitHub answered as, and a fake that stops
+        # one layer down would let the real request through.
         monkeypatch.setattr(
-            "app.core.plugins.github.resolve_sha", lambda o, r, ref: "0" * 40
+            "app.core.plugins.github.resolve_ref",
+            lambda o, r, ref: github.ResolvedRef(sha="0" * 40, owner=o, repo=r),
         )
         monkeypatch.setattr(
             "app.core.plugins.github.fetch_manifest_text",
@@ -517,7 +522,8 @@ def test_a_download_that_fails_is_reported_rather_than_raised(
     """
     monkeypatch.setenv("CODEFYUI_LANG", "en")
     monkeypatch.setattr(
-        "app.core.plugins.github.resolve_sha", lambda o, r, ref: "0" * 40
+        "app.core.plugins.github.resolve_ref",
+        lambda o, r, ref: github.ResolvedRef(sha="0" * 40, owner=o, repo=r),
     )
     monkeypatch.setattr(
         "app.core.plugins.github.fetch_manifest_text",

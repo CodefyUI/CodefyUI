@@ -231,17 +231,33 @@ def item_state(pack: Pack, item: ModelItem) -> ItemState:
                      sentinel=sentinel, snapshot_dir=target)
 
 
+def _mps_accelerated() -> bool:
+    """Is the untagged wheel here the working MPS build?
+
+    Never raises: this decides what a panel says, and a torch too old to have
+    ``backends.mps`` is the same answer as one that says no.
+    """
+    try:
+        import torch
+        return bool(torch.backends.mps.is_available())
+    except Exception:
+        return False
+
+
 def torch_variant() -> str | None:
-    """Which PyTorch build is installed: ``"cu128"``, ``"cpu"``, ``"rocm6.2"``
-    -- or None when it cannot be told.
+    """Which PyTorch build is installed: ``"cu128"``, ``"cpu"``, ``"mps"``,
+    ``"rocm6.2"`` -- or None when it cannot be told.
 
     Read off the local version tag, which is where the wheel records what it
     was built against (``2.11.0+cu128``). An UNTAGGED version is PyPI's
     default wheel, and what that means depends on the platform: the CPU build
     on Windows and Linux, but the MPS build on macOS -- where acceleration
-    ships in the default wheel and leaves no tag to read. Guessing "cpu"
-    there would tell a Mac user their GPU pack is missing when it is not, so
-    the answer is None: unknown.
+    ships in the default wheel and leaves no tag to read. So macOS is ASKED
+    rather than guessed at: torch itself says whether that wheel's MPS
+    backend works on this machine, and when it does the answer is "mps".
+    None is kept for the case that really is unknown -- an Intel Mac, macOS
+    too old for MPS -- because guessing "cpu" there would tell a Mac user
+    their GPU pack is missing when it is not.
     """
     try:
         import torch
@@ -251,6 +267,8 @@ def torch_variant() -> str | None:
     version = str(getattr(torch, "__version__", ""))
     if "+" in version:
         return version.split("+", 1)[1].strip() or None
+    if sys.platform == "darwin":
+        return "mps" if _mps_accelerated() else None
     return "cpu" if sys.platform in {"win32", "linux"} else None
 
 

@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import http.client
 import io
+import json
 import tarfile
 import urllib.request
 from pathlib import Path
@@ -26,6 +27,7 @@ from urllib.error import HTTPError, URLError
 
 import pytest
 
+from app.core import plugin_loader
 from app.core.plugins import catalog as catalog_module
 from app.core.plugins import consent, github
 from app.core.plugins import inspect as plugin_inspect
@@ -68,9 +70,24 @@ def _tarball_of(files: dict[str, str], dest: Path) -> None:
 
 @pytest.fixture
 def fake_github(monkeypatch):
-    """Serve one commit -- a sha, a manifest and a tarball -- with no network."""
-    def _make(manifest_text: str, *, sha: str = "a" * 40, files=None):
-        monkeypatch.setattr(github, "resolve_sha", lambda o, r, ref: sha)
+    """Serve one commit -- a sha, a manifest and a tarball -- with no network.
+
+    *moved_to* is the ``"owner/repo"`` GitHub ANSWERS as, for a repository
+    that has been renamed or transferred: the old address keeps working
+    through a 301 forever, and the commit that comes back names the
+    repository it was served from rather than the one that was asked for.
+    Left out, the repository answers as itself -- every repository that has
+    not moved, which is all the others here.
+    """
+    def _make(manifest_text: str, *, sha: str = "a" * 40, files=None,
+              moved_to: str | None = None):
+        canonical = tuple(moved_to.split("/", 1)) if moved_to else None
+
+        def resolve(o, r, ref):
+            owner, repo = canonical or (o, r)
+            return github.ResolvedRef(sha=sha, owner=owner, repo=repo)
+
+        monkeypatch.setattr(github, "resolve_ref", resolve)
         monkeypatch.setattr(
             github, "fetch_manifest_text", lambda o, r, s: manifest_text
         )
@@ -218,7 +235,7 @@ def test_a_pinned_sha_is_never_re_resolved(monkeypatch, fake_github):
     def _explode(*_a):  # pragma: no cover - only runs on a bug
         raise AssertionError("a pinned install must not resolve the ref")
 
-    monkeypatch.setattr(github, "resolve_sha", _explode)
+    monkeypatch.setattr(github, "resolve_ref", _explode)
     found = plugin_inspect.inspect_github(
         "alice", "extras", "v1.2.0", lockfile={}, pinned_sha="c" * 40
     )
@@ -321,6 +338,54 @@ def test_the_repository_the_catalog_names_may_claim_its_own_id(fake_github):
     assert plugin_inspect.inspect_github(
         "codefyui", "codefyui-plugin-self-learning", "", lockfile={}
     ).plugin_id == "self-learning"
+
+
+def test_the_repository_the_catalog_names_may_have_moved_since(fake_github):
+    """The clause asks which repository this IS, and GitHub is the one that
+    knows. A pack transferred to another org keeps answering at its old
+    address through a 301, so an install recorded before the move asks under
+    a name the catalog no longer lists -- and reading that as a fork of the
+    pack it actually is refuses the official plugin its own update."""
+    fake_github(
+        '[plugin]\nid = "self-learning"\nversion = "1"\nschema_version = 1\n',
+        moved_to="CodefyUI/CodefyUI-Plugin-Self-Learning",
+    )
+
+    found = plugin_inspect.inspect_github(
+        "a-previous-owner", "CodefyUI-Plugin-Self-Learning", "", lockfile={}
+    )
+
+    assert found.plugin_id == "self-learning"
+    # And what comes back is the repository it turned out to be, not the one
+    # that was typed: everything downstream keys on this name.
+    assert found.owner == "CodefyUI"
+    assert found.repo == "CodefyUI-Plugin-Self-Learning"
+    assert found.source == "CodefyUI/CodefyUI-Plugin-Self-Learning"
+    assert found.url == "https://github.com/CodefyUI/CodefyUI-Plugin-Self-Learning"
+
+
+def test_a_fork_keeping_the_repository_name_is_still_refused(fake_github):
+    """The regression guard on the clause above, and the reason it had to be
+    GitHub's answer rather than a name comparison: a fork keeps the
+    repository name and changes only the owner, so anything that matched on
+    the name half alone would wave ``mallory`` straight through. A fork is a
+    real repository at its own address and redirects nowhere, so it resolves
+    to itself, mismatches, and is refused.
+
+    ``mallory/evil`` above cannot show this -- it would still be refused with
+    the protection gone, because its name does not match either."""
+    fake_github(
+        '[plugin]\nid = "self-learning"\nversion = "1"\nschema_version = 1\n'
+    )
+
+    with pytest.raises(ReservedPluginId) as excinfo:
+        plugin_inspect.inspect_github(
+            "mallory", "CodefyUI-Plugin-Self-Learning", "", lockfile={}
+        )
+
+    hint = excinfo.value.hint or ""
+    assert "mallory/CodefyUI-Plugin-Self-Learning" in hint
+    assert "CodefyUI/CodefyUI-Plugin-Self-Learning" in hint
 
 
 # ── an update compared against what was consented to ───────────────────────
@@ -464,6 +529,50 @@ def test_the_badge_is_re_derived_when_the_install_recorded_no_catalog_id(
     )
     assert found.catalog_id is None, "nothing was recorded, so nothing is claimed"
     assert found.official is True
+
+
+def test_a_moved_repository_is_corrected_in_the_lockfile(
+    fake_github, tmp_path, monkeypatch
+):
+    """The record is what everything else reads, so the read that noticed the
+    move is the one that has to fix it.
+
+    On the ``up_to_date`` path deliberately: the commit on disk is already
+    the newest one, so no install ever runs and the ordinary lockfile write
+    never comes round -- which is exactly the state a user is left in, with
+    the Official badge dark and the recorded repository naming nothing, for
+    as long as the pack stays current.
+    """
+    user_root = tmp_path / "plugins"
+    user_root.mkdir(parents=True)
+    monkeypatch.setattr(plugin_loader, "plugins_user_root", lambda: user_root)
+    lockfile = _installed_official(
+        source="a-previous-owner/CodefyUI-Plugin-Self-Learning",
+        url="https://github.com/a-previous-owner/CodefyUI-Plugin-Self-Learning",
+    )
+    (user_root / "installed.json").write_text(
+        json.dumps({"schema": 1, **lockfile}), encoding="utf-8"
+    )
+    fake_github(SELF_LEARNING_MANIFEST, sha="b" * 40, moved_to=SELF_LEARNING_REPO)
+
+    found = plugin_inspect.inspect_installed("self-learning", lockfile=lockfile)
+
+    assert found.up_to_date is True, "nothing to fetch, and still corrected"
+    corrected = json.loads(
+        (user_root / "installed.json").read_text(encoding="utf-8")
+    )
+    entry = corrected["plugins"]["self-learning"]
+    assert entry["url"] == f"https://github.com/{SELF_LEARNING_REPO}"
+    assert entry["source"] == SELF_LEARNING_REPO
+    # GitHub said this IS the catalog's repository, which is what the
+    # recorded catalog id means -- and it survives the catalog being
+    # re-pointed later.
+    assert entry["catalog_id"] == "self-learning"
+    # The badge this is all for: the next read compares a record that names
+    # the right repository, and lights it.
+    assert plugin_inspect.inspect_installed(
+        "self-learning", lockfile=corrected
+    ).official is True
 
 
 @pytest.mark.parametrize(
