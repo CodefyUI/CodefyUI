@@ -5,7 +5,7 @@ import {
   type PortStats,
   type StatsColumn,
 } from '../../api/executionOutputs';
-import { useI18n } from '../../i18n';
+import { useI18n, type TranslationKey } from '../../i18n';
 import { keyOf, type PortTarget } from '../InspectorPanel/PortGroup';
 import { resolveSingleNodePorts } from '../InspectorPanel/portCaptures';
 import { HistogramPlot, type HistogramBar } from '../shared/HistogramPlot';
@@ -16,7 +16,14 @@ import styles from './StatsTab.module.css';
 
 interface StatsFetchState {
   loading: boolean;
-  /** Localized message, or null. */
+  /**
+   * A translation KEY rather than a sentence, so the message follows a
+   * locale switch. Storing what `t` returned would freeze this line in
+   * whichever language was current when the request failed, until something
+   * refetched it.
+   */
+  errorKey: TranslationKey | null;
+  /** The server's own message, which has no translation. */
   error: string | null;
   data: PortStats | null;
 }
@@ -38,11 +45,9 @@ export function usePortStats(
 ): StatsMap {
   const [stats, setStats] = useState<StatsMap>({});
   // The server's 404 detail carries the Record-outputs hint in English. It is
-  // the one error here whose cause we know exactly, so it gets the localized
-  // wording rather than a raw server string in the middle of a zh-TW panel.
-  const { t } = useI18n();
-  const tRef = useRef(t);
-  tRef.current = t;
+  // the one error here whose cause we know exactly, so the state records the
+  // key for it and the render turns that into a sentence, which keeps a raw
+  // server string out of the middle of a zh-TW panel.
 
   const portsRef = useRef(ports);
   portsRef.current = ports;
@@ -56,7 +61,9 @@ export function usePortStats(
 
     const pending: StatsMap = {};
     for (const p of all) {
-      pending[keyOf(p.nodeId, p.port)] = { loading: true, error: null, data: null };
+      pending[keyOf(p.nodeId, p.port)] = {
+        loading: true, errorKey: null, error: null, data: null,
+      };
     }
     setStats((prev) => ({ ...prev, ...pending }));
 
@@ -68,17 +75,22 @@ export function usePortStats(
             signal: controller.signal,
           });
           if (controller.signal.aborted) return;
-          setStats((prev) => ({ ...prev, [key]: { loading: false, error: null, data } }));
+          setStats((prev) => ({
+            ...prev,
+            [key]: { loading: false, errorKey: null, error: null, data },
+          }));
         } catch (e) {
           // An abort is this component going away, not a failure to report.
           if (controller.signal.aborted) return;
-          const message =
-            e instanceof StatsNotCapturedError
-              ? tRef.current('nodeDetail.stats.notCaptured')
-              : (e as Error).message;
+          const captured = e instanceof StatsNotCapturedError;
           setStats((prev) => ({
             ...prev,
-            [key]: { loading: false, error: message, data: null },
+            [key]: {
+              loading: false,
+              errorKey: captured ? 'nodeDetail.stats.notCaptured' : null,
+              error: captured ? null : (e as Error).message,
+              data: null,
+            },
           }));
         }
       }),
@@ -354,7 +366,11 @@ function PortStatsBlock({
       </header>
 
       {state?.loading && <div className={styles.muted}>{t('nodeDetail.stats.loading')}</div>}
-      {state?.error && <div className={styles.error}>{state.error}</div>}
+      {(state?.errorKey || state?.error) && (
+        <div className={styles.error}>
+          {state.errorKey ? t(state.errorKey) : state.error}
+        </div>
+      )}
       {stats?.kind === 'tensor' && <TensorStats stats={stats} />}
       {stats?.kind === 'tabular' && <TabularStats stats={stats} />}
       {stats?.kind === 'unsupported' && (
@@ -425,7 +441,7 @@ export function StatsTab({ ctx }: { ctx: NodeDetailTabContext }) {
       <div className={modal.tabBody}>
         <div className={modal.emptyState}>
           <div className={modal.emptyIcon}>~</div>
-          <div>{t('nodeDetail.stats.title')}</div>
+          <div>{t('nodeDetail.stats.notRun')}</div>
           <div className={modal.emptyHint}>{t('nodeDetail.captures.notRunHint')}</div>
         </div>
       </div>

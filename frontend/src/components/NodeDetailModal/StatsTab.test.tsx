@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
-import { render, screen, waitFor, within } from '@testing-library/react';
+import { act, render, screen, waitFor, within } from '@testing-library/react';
 import type { Edge, Node } from '@xyflow/react';
 import type { NodeData, NodeDefinition } from '../../types';
 
@@ -14,6 +14,7 @@ import {
   StatsNotCapturedError,
   type PortStats,
 } from '../../api/executionOutputs';
+import { useI18n } from '../../i18n';
 import { StatsTab, formatStat } from './StatsTab';
 import type { NodeDetailTabContext } from './tabs';
 
@@ -88,6 +89,9 @@ const tensorStats = (overrides: Partial<PortStats> = {}): PortStats => ({
 beforeEach(() => {
   mockStats.mockReset();
   mockStats.mockResolvedValue(tensorStats());
+  // The locale is module-global, so a test that switches it would otherwise
+  // hand the next one a Chinese panel to assert English against.
+  useI18n.setState({ locale: 'en' });
 });
 
 // ── rendering ────────────────────────────────────────────────────────────────
@@ -340,14 +344,16 @@ describe('StatsTab', () => {
 
   it('shows the pre-run empty state and fetches nothing without a run', () => {
     render(<StatsTab ctx={ctx({ runId: null })} />);
-    expect(screen.getByText('Node statistics')).toBeInTheDocument();
+    expect(screen.getByText('No statistics yet')).toBeInTheDocument();
     expect(mockStats).not.toHaveBeenCalled();
   });
 
-  it("warns when Record outputs is off", async () => {
+  it('warns when recording is off', async () => {
     render(<StatsTab ctx={ctx({ recordOutputs: false })} />);
     expect(
-      screen.getByText('Record outputs is off — re-run with Rec on to capture values'),
+      screen.getByText(
+        'Record node outputs is off — turn it on in Settings and re-run to capture values',
+      ),
     ).toBeInTheDocument();
   });
 
@@ -362,10 +368,34 @@ describe('StatsTab', () => {
     render(<StatsTab ctx={ctx()} />);
     await waitFor(() =>
       expect(
-        screen.getAllByText('Nothing captured for this port — re-run with Rec on'),
+        screen.getAllByText(
+          'Nothing captured for this port — turn on Record node outputs in Settings and re-run',
+        ),
       ).toHaveLength(2),
     );
     expect(screen.queryByText(/Rec toggle in the toolbar/)).toBeNull();
+  });
+
+  it('shows the not-captured hint in the locale chosen after the fetch failed', async () => {
+    // The state holds the translation KEY. Holding the sentence would freeze
+    // this line in whichever language was current when the request failed.
+    mockStats.mockRejectedValue(new StatsNotCapturedError('nothing captured'));
+    render(<StatsTab ctx={ctx()} />);
+    await waitFor(() =>
+      expect(screen.getAllByText(
+        'Nothing captured for this port — turn on Record node outputs in Settings and re-run',
+      )).toHaveLength(2),
+    );
+    const callsBefore = mockStats.mock.calls.length;
+
+    act(() => useI18n.setState({ locale: 'zh-TW' }));
+
+    expect(screen.getAllByText(
+      '這個連接埠沒有擷取到資料 — 請在設定中開啟「錄製節點輸出」後重新執行',
+    )).toHaveLength(2);
+    expect(screen.queryByText(/Nothing captured for this port/)).toBeNull();
+    // A locale switch refetches nothing, so the line has to translate itself.
+    expect(mockStats).toHaveBeenCalledTimes(callsBefore);
   });
 
   it('reports an unexpected failure without blanking the tab', async () => {

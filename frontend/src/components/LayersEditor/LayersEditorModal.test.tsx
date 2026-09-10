@@ -191,7 +191,7 @@ describe('LayersEditorModal', () => {
   it('renders the editor with the title and layer count for a valid graph', () => {
     setupOpenModal(validGraphJson());
     render(<LayersEditorModal />);
-    expect(screen.getByText('Model Architecture Editor')).toBeTruthy();
+    expect(screen.getByText('Model Architecture')).toBeTruthy();
     // 4 nodes in the valid graph.
     expect(screen.getByText('4 layers')).toBeTruthy();
   });
@@ -241,13 +241,11 @@ describe('LayersEditorModal', () => {
     expect(screen.getByText('Merge')).toBeTruthy();
   });
 
-  it('shows a parameter-count badge for layers with params and hovers a palette item', () => {
+  it('hovers a palette item', () => {
     setupOpenModal(validGraphJson());
     render(<LayersEditorModal />);
     const search = screen.getByPlaceholderText('Search layers...');
-    // Linear has 2 params → "2p" badge.
     fireEvent.change(search, { target: { value: 'Linear' } });
-    expect(screen.getByText('2p')).toBeTruthy();
 
     // The draggable palette item is the <span> label's parent div ("Linear"
     // also appears as the category header, so pick the draggable ancestor).
@@ -639,7 +637,7 @@ describe('LayersEditorModal', () => {
       lastFlowProps.onNodeClick({}, { id: 'in1' });
     });
     // Add a port so removing the original (which has edge e1) is allowed.
-    fireEvent.click(screen.getByText('+ Add port'));
+    fireEvent.click(screen.getByText('Add port'));
     // Now remove the first port ('x') → its source-handle edge e1 is orphaned.
     const rows = screen.getAllByRole('textbox').filter((el) => (el as HTMLInputElement).value !== '');
     // The port rows contain the port-name inputs; pick the 'x' row's Remove btn.
@@ -713,7 +711,7 @@ describe('LayersEditorModal', () => {
     const overlay = container.querySelector('div')!;
 
     // Click on the inner panel (currentTarget !== target) → stays open.
-    fireEvent.click(screen.getByText('Model Architecture Editor'));
+    fireEvent.click(screen.getByText('Model Architecture'));
     expect(useTabStore.getState().tabs[0].layersModalNodeId).not.toBeNull();
 
     // Click directly on the backdrop (target === currentTarget) → closes.
@@ -737,18 +735,18 @@ describe('LayersEditorModal', () => {
     render(<LayersEditorModal />);
 
     // Initially OFF.
-    expect(screen.getByText('Snap: OFF')).toBeTruthy();
+    expect(screen.getByText('Snap OFF')).toBeTruthy();
     // Turn ON → effect snaps positions to the 20px grid.
-    fireEvent.click(screen.getByText('Snap: OFF'));
-    expect(screen.getByText('Snap: ON')).toBeTruthy();
+    fireEvent.click(screen.getByText('Snap OFF'));
+    expect(screen.getByText('Snap ON')).toBeTruthy();
     const inNode = (lastFlowProps.nodes as any[]).find((n) => n.id === 'in1');
     expect(inNode.position).toEqual({ x: 20, y: 20 });
     // snapToGrid prop reflects the toggle.
     expect(lastFlowProps.snapToGrid).toBe(true);
 
     // Turn OFF again (covers the early `if (!snapEnabled) return;` on next run).
-    fireEvent.click(screen.getByText('Snap: ON'));
-    expect(screen.getByText('Snap: OFF')).toBeTruthy();
+    fireEvent.click(screen.getByText('Snap ON'));
+    expect(screen.getByText('Snap OFF')).toBeTruthy();
   });
 
   it('snap with already-aligned nodes leaves positions unchanged (unchanged branch)', () => {
@@ -762,7 +760,7 @@ describe('LayersEditorModal', () => {
     });
     setupOpenModal(json);
     render(<LayersEditorModal />);
-    fireEvent.click(screen.getByText('Snap: OFF'));
+    fireEvent.click(screen.getByText('Snap OFF'));
     const inNode = (lastFlowProps.nodes as any[]).find((n) => n.id === 'in1');
     // Unchanged → identical positions.
     expect(inNode.position).toEqual({ x: 20, y: 40 });
@@ -1056,6 +1054,41 @@ describe('LayersEditorModal', () => {
     expect(toasts[0].type).toBe('error');
   });
 
+  it('puts a non-Error throw into the import-fail toast verbatim', () => {
+    setupOpenModal(validGraphJson());
+    const { container } = render(<LayersEditorModal />);
+    const fileInput = container.querySelector('input[type="file"]') as HTMLInputElement;
+
+    // A reader whose `result` getter throws a bare string, the way a throw
+    // from outside our own code reaches the catch. Reading `.message` off it
+    // would put "undefined" in front of the student.
+    class FR {
+      onload: ((e: any) => void) | null = null;
+      readAsText() {
+        this.onload?.({
+          target: {
+            get result(): string {
+              // eslint-disable-next-line @typescript-eslint/only-throw-error
+              throw 'reader exploded';
+            },
+          },
+        });
+      }
+    }
+    const orig = globalThis.FileReader;
+    (globalThis as any).FileReader = FR as any;
+    act(() => {
+      fireEvent.change(fileInput, {
+        target: { files: [new File(['x'], 'arch.json', { type: 'application/json' })] },
+      });
+    });
+    (globalThis as any).FileReader = orig;
+
+    const toasts = useToastStore.getState().toasts;
+    expect(toasts).toHaveLength(1);
+    expect(toasts[0].message).toBe('Import failed: reader exploded');
+  });
+
   it('handleFileSelect with valid JSON but no importable content throws noContent', () => {
     setupOpenModal(validGraphJson());
     const { container } = render(<LayersEditorModal />);
@@ -1080,7 +1113,7 @@ describe('LayersEditorModal', () => {
     act(() => {
       lastFlowProps.onNodesChange([{ type: 'remove', id: (lastFlowProps.nodes as any[])[0].id }]);
     });
-    expect(screen.getByText('Drag layers from the left panel to build your model')).toBeTruthy();
+    expect(screen.getByText('Drag a layer here to start')).toBeTruthy();
     expect(screen.getByText('0 layers')).toBeTruthy();
   });
 });

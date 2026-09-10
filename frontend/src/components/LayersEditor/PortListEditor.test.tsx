@@ -83,7 +83,7 @@ describe('PortListEditor', () => {
     render(
       <PortListEditor node={node} edges={[]} onUpdatePorts={onUpdatePorts} onRemoveEdges={vi.fn()} />,
     );
-    fireEvent.click(screen.getByText('+ Add port'));
+    fireEvent.click(screen.getByText('Add port'));
     expect(onUpdatePorts).toHaveBeenCalledTimes(1);
     const [, nextPorts] = onUpdatePorts.mock.calls[0];
     expect(nextPorts).toHaveLength(2);

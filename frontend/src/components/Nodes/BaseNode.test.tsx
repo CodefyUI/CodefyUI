@@ -918,7 +918,7 @@ describe('BaseNode bypass', () => {
     const badge = screen.getByText('BYPASS');
     expect(badge).toBeInTheDocument();
     expect(badge.getAttribute('title')).toBe(
-      'Bypassed: this node is skipped and passes its input straight through',
+      'Skipped — input passes straight through',
     );
 
     // The card carries the dim/strike-through class, and says so in the DOM

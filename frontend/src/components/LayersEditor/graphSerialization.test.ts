@@ -905,23 +905,19 @@ describe('validateGraph', () => {
 
   it('requires exactly one Input node', () => {
     const o = outputNode('o', [{ id: 'op', name: 'y' }]);
-    expect(validateGraph([o], [])).toEqual({
-      message: 'Graph must have exactly one Input node',
-    });
+    expect(validateGraph([o], [])).toEqual({ key: 'layersEditor.validation.noInput' });
   });
 
   it('requires exactly one Output node', () => {
     const i = inputNode('i', [{ id: 'ip', name: 'x' }]);
-    expect(validateGraph([i], [])).toEqual({
-      message: 'Graph must have exactly one Output node',
-    });
+    expect(validateGraph([i], [])).toEqual({ key: 'layersEditor.validation.noOutput' });
   });
 
   it('requires the Input node to have at least one port', () => {
     const i = inputNode('i', []);
     const o = outputNode('o', [{ id: 'op', name: 'y' }]);
     expect(validateGraph([i, o], [])).toEqual({
-      message: 'Input node must have at least one port',
+      key: 'layersEditor.validation.inputNeedsPort',
     });
   });
 
@@ -929,7 +925,7 @@ describe('validateGraph', () => {
     const i = inputNode('i', [{ id: 'ip', name: 'x' }]);
     const o = outputNode('o', []);
     expect(validateGraph([i, o], [])).toEqual({
-      message: 'Output node must have at least one port',
+      key: 'layersEditor.validation.outputNeedsPort',
     });
   });
 
@@ -938,7 +934,7 @@ describe('validateGraph', () => {
     const i = flowNode('i', { layerType: 'Input', isBoundary: true }); // no ports field
     const o = outputNode('o', [{ id: 'op', name: 'y' }]);
     expect(validateGraph([i, o], [])).toEqual({
-      message: 'Input node must have at least one port',
+      key: 'layersEditor.validation.inputNeedsPort',
     });
   });
 
@@ -946,7 +942,7 @@ describe('validateGraph', () => {
     const i = inputNode('i', [{ id: 'ip', name: 'x' }]);
     const o = flowNode('o', { layerType: 'Output', isBoundary: true }); // no ports field
     expect(validateGraph([i, o], [])).toEqual({
-      message: 'Output node must have at least one port',
+      key: 'layersEditor.validation.outputNeedsPort',
     });
   });
 
@@ -957,7 +953,7 @@ describe('validateGraph', () => {
     ]);
     const o = outputNode('o', [{ id: 'op', name: 'y' }]);
     expect(validateGraph([i, o], [])).toEqual({
-      message: 'Input port names must be unique',
+      key: 'layersEditor.validation.dupInputPorts',
     });
   });
 
@@ -968,7 +964,7 @@ describe('validateGraph', () => {
       { id: 'op2', name: 'y' },
     ]);
     expect(validateGraph([i, o], [])).toEqual({
-      message: 'Output port names must be unique',
+      key: 'layersEditor.validation.dupOutputPorts',
     });
   });
 
@@ -982,7 +978,8 @@ describe('validateGraph', () => {
       edge('e3', 'i', 'o', { sourceHandle: 'ip', targetHandle: 'op' }),
     ];
     expect(validateGraph([i, c, o], edges)).toEqual({
-      message: "Output port 'y' must have exactly 1 incoming edge (got 2)",
+      key: 'layersEditor.validation.outputEdgeCount',
+      params: { port: 'y', count: 2 },
     });
   });
 
@@ -992,7 +989,8 @@ describe('validateGraph', () => {
     // input port used so it does not trip the unused-input check first.
     const edges = [edge('e1', 'i', 'o', { sourceHandle: 'ip', targetHandle: 'WRONG' })];
     expect(validateGraph([i, o], edges)).toEqual({
-      message: "Output port 'y' must have exactly 1 incoming edge (got 0)",
+      key: 'layersEditor.validation.outputEdgeCount',
+      params: { port: 'y', count: 0 },
     });
   });
 
@@ -1002,7 +1000,8 @@ describe('validateGraph', () => {
     // Output port satisfied, but input port has no outgoing edge.
     const edges = [edge('e1', 'i', 'o', { sourceHandle: 'OTHER', targetHandle: 'op' })];
     expect(validateGraph([i, o], edges)).toEqual({
-      message: "Input port 'x' is unused",
+      key: 'layersEditor.validation.inputPortUnused',
+      params: { port: 'x' },
     });
   });
 
@@ -1025,7 +1024,8 @@ describe('validateGraph', () => {
     ];
     // c2 is isolated -> 0 incoming.
     expect(validateGraph([i2, c2, o2], edges2)).toEqual({
-      message: "Layer 'Linear' must have exactly 1 incoming edge (got 0)",
+      key: 'layersEditor.validation.layerEdgeCount',
+      params: { layer: 'Linear', count: 0 },
     });
     void edges;
     void i;
@@ -1062,7 +1062,9 @@ describe('validateGraph', () => {
       edge('e3', 'b', 'a'), // back-edge -> cycle
       edge('e4', 'b', 'o', { targetHandle: 'op' }),
     ];
-    expect(validateGraph([i, a, b, o], edges)).toEqual({ message: 'Graph contains a cycle' });
+    expect(validateGraph([i, a, b, o], edges)).toEqual({
+      key: 'layersEditor.validation.cycle',
+    });
   });
 
   it('reports a node unreachable from Input', () => {
@@ -1080,7 +1082,8 @@ describe('validateGraph', () => {
       edge('e3', 'island', 'a'),
     ];
     expect(validateGraph([i, a, island, o], edges)).toEqual({
-      message: "Node 'Concat' is not reachable from Input",
+      key: 'layersEditor.validation.unreachable',
+      params: { layer: 'Concat' },
     });
   });
 
@@ -1119,7 +1122,8 @@ describe('validateGraph', () => {
     ];
     // dead has 1 incoming (ok for plain layer), reachable from input, but cannot reach output.
     expect(validateGraph([i, a, dead, o], edges)).toEqual({
-      message: "Node 'Dropout' cannot reach Output",
+      key: 'layersEditor.validation.cannotReachOutput',
+      params: { layer: 'Dropout' },
     });
   });
 });

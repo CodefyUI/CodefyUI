@@ -350,6 +350,10 @@ function NodeDetailModalBody({ nodeId }: { nodeId: string }) {
                 <button
                   type="button"
                   className={styles.presetConfigureBtn}
+                  // "Configure" alone is a verb with no object. The PRESET
+                  // badge and the node count beside it supply that for a
+                  // sighted reader; a screen reader gets it here.
+                  aria-label={t('preset.configure.aria')}
                   onClick={() => {
                     // One modal at a time. The preset editor sits at a lower
                     // z-index and has no Escape handler of its own, so

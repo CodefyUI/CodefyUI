@@ -71,10 +71,10 @@ describe('StepTraceView', () => {
     mockStepIndex.mockResolvedValue([]);
     render(<StepTraceView runId="r1" nodeId="n1" />);
     await waitFor(() =>
-      expect(screen.getByText('This node does not record steps')).toBeInTheDocument(),
+      expect(screen.getByText('No steps recorded')).toBeInTheDocument(),
     );
     expect(
-      screen.getByText('Enable Verbose mode and re-run to see steps'),
+      screen.getByText('Turn on Verbose internals in Settings and re-run'),
     ).toBeInTheDocument();
   });
 
@@ -88,7 +88,7 @@ describe('StepTraceView', () => {
     mockStepIndex.mockRejectedValue(new RunDataExpiredError('r1'));
     render(<StepTraceView runId="r1" nodeId="n1" />);
     await waitFor(() =>
-      expect(screen.getByText('run data expired — re-run to capture')).toBeInTheDocument(),
+      expect(screen.getByText('Run data expired — re-run to capture')).toBeInTheDocument(),
     );
   });
 
@@ -122,23 +122,23 @@ describe('StepTraceView', () => {
     ]);
     render(<StepTraceView runId="r1" nodeId="n1" />);
     await waitFor(() => expect(screen.getByText('StepA')).toBeInTheDocument());
-    // body visible (caret ▾, '(no tensors)' shown)
-    expect(screen.getByText('(no tensors)')).toBeInTheDocument();
+    // body visible (caret ▾, 'No tensors' shown)
+    expect(screen.getByText('No tensors')).toBeInTheDocument();
     expect(screen.getByText('▾')).toBeInTheDocument();
     fireEvent.click(screen.getByText('StepA'));
     // collapsed: caret ▸, body hidden
     expect(screen.getByText('▸')).toBeInTheDocument();
-    expect(screen.queryByText('(no tensors)')).not.toBeInTheDocument();
+    expect(screen.queryByText('No tensors')).not.toBeInTheDocument();
     // expand again (toggles isCollapsed back)
     fireEvent.click(screen.getByText('StepA'));
-    expect(screen.getByText('(no tensors)')).toBeInTheDocument();
+    expect(screen.getByText('No tensors')).toBeInTheDocument();
   });
 
-  it('shows the (no tensors) note for a step with empty tensor_keys and no description/scalars', async () => {
+  it('shows the no-tensors note for a step with empty tensor_keys and no description/scalars', async () => {
     mockStepIndex.mockResolvedValue([step({ index: 0, name: 'Bare' })]);
     render(<StepTraceView runId="r1" nodeId="n1" />);
     await waitFor(() => expect(screen.getByText('Bare')).toBeInTheDocument());
-    expect(screen.getByText('(no tensors)')).toBeInTheDocument();
+    expect(screen.getByText('No tensors')).toBeInTheDocument();
   });
 
   it('renders a per-tensor loading placeholder before its fetch resolves', async () => {
@@ -182,13 +182,13 @@ describe('StepTraceView', () => {
     await waitFor(() => expect(screen.getByText('tensor boom')).toBeInTheDocument());
   });
 
-  it("shows 'expired' on a per-tensor RunDataExpiredError", async () => {
+  it("shows 'Expired' on a per-tensor RunDataExpiredError", async () => {
     mockStepIndex.mockResolvedValue([
       step({ index: 0, name: 'S', tensor_keys: ['t'] }),
     ]);
     mockOutput.mockRejectedValue(new RunDataExpiredError('r1'));
     render(<StepTraceView runId="r1" nodeId="n1" />);
-    await waitFor(() => expect(screen.getByText('expired')).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText('Expired')).toBeInTheDocument());
   });
 
   it('falls back to a sliced fetch on PayloadTooLargeError', async () => {
@@ -261,7 +261,7 @@ describe('StepTraceView', () => {
     mockStepIndex.mockResolvedValue([]);
     render(<StepTraceView runId="r1" nodeId="n1" />);
     await waitFor(() =>
-      expect(screen.getByText('This node does not record steps')).toBeInTheDocument(),
+      expect(screen.getByText('No steps recorded')).toBeInTheDocument(),
     );
     expect(mockOutput).not.toHaveBeenCalled();
   });

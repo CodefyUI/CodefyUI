@@ -4,6 +4,7 @@ import type { Node, Edge } from '@xyflow/react';
 import { generateId } from '../../utils';
 import { applyValleyPass, isTriggerEdge } from '../../utils/autoLayout';
 import { LAYER_TYPE_COLORS } from '../../styles/theme';
+import type { TranslationKey } from '../../i18n';
 
 export interface PortDef {
   id: string;
@@ -610,33 +611,46 @@ export function emptyGraph(): { nodes: Node<LayerNodeData>[]; edges: Edge[] } {
   };
 }
 
+/**
+ * A failed rule, carried as its locale key plus the values that fill it.
+ * These reach the student as a toast, which has to be in the language they
+ * picked, so the sentence is built at render time: `t(error.key, error.params)`.
+ */
 export interface ValidationError {
-  message: string;
+  key: TranslationKey;
+  params?: Record<string, string | number>;
 }
 
 export function validateGraph(nodes: Node<LayerNodeData>[], edges: Edge[]): ValidationError | null {
   const inputs = nodes.filter((n) => n.data.layerType === 'Input');
   const outputs = nodes.filter((n) => n.data.layerType === 'Output');
-  if (inputs.length !== 1) return { message: 'Graph must have exactly one Input node' };
-  if (outputs.length !== 1) return { message: 'Graph must have exactly one Output node' };
+  if (inputs.length !== 1) return { key: 'layersEditor.validation.noInput' };
+  if (outputs.length !== 1) return { key: 'layersEditor.validation.noOutput' };
 
   const input = inputs[0];
   const output = outputs[0];
   const inPorts = input.data.ports ?? [];
   const outPorts = output.data.ports ?? [];
-  if (inPorts.length === 0) return { message: 'Input node must have at least one port' };
-  if (outPorts.length === 0) return { message: 'Output node must have at least one port' };
+  if (inPorts.length === 0) return { key: 'layersEditor.validation.inputNeedsPort' };
+  if (outPorts.length === 0) return { key: 'layersEditor.validation.outputNeedsPort' };
 
   const inNames = inPorts.map((p) => p.name);
-  if (new Set(inNames).size !== inNames.length) return { message: 'Input port names must be unique' };
+  if (new Set(inNames).size !== inNames.length) {
+    return { key: 'layersEditor.validation.dupInputPorts' };
+  }
   const outNames = outPorts.map((p) => p.name);
-  if (new Set(outNames).size !== outNames.length) return { message: 'Output port names must be unique' };
+  if (new Set(outNames).size !== outNames.length) {
+    return { key: 'layersEditor.validation.dupOutputPorts' };
+  }
 
   // Output port: exactly 1 incoming
   for (const p of outPorts) {
     const count = edges.filter((e) => e.target === output.id && e.targetHandle === p.id).length;
     if (count !== 1) {
-      return { message: `Output port '${p.name}' must have exactly 1 incoming edge (got ${count})` };
+      return {
+        key: 'layersEditor.validation.outputEdgeCount',
+        params: { port: p.name, count },
+      };
     }
   }
 
@@ -644,7 +658,7 @@ export function validateGraph(nodes: Node<LayerNodeData>[], edges: Edge[]): Vali
   for (const p of inPorts) {
     const count = edges.filter((e) => e.source === input.id && e.sourceHandle === p.id).length;
     if (count < 1) {
-      return { message: `Input port '${p.name}' is unused` };
+      return { key: 'layersEditor.validation.inputPortUnused', params: { port: p.name } };
     }
   }
 
@@ -653,7 +667,10 @@ export function validateGraph(nodes: Node<LayerNodeData>[], edges: Edge[]): Vali
     if (n.data.isBoundary || n.data.isMerge) continue;
     const incoming = edges.filter((e) => e.target === n.id);
     if (incoming.length !== 1) {
-      return { message: `Layer '${n.data.layerType}' must have exactly 1 incoming edge (got ${incoming.length})` };
+      return {
+        key: 'layersEditor.validation.layerEdgeCount',
+        params: { layer: n.data.layerType, count: incoming.length },
+      };
     }
   }
 
@@ -682,7 +699,7 @@ export function validateGraph(nodes: Node<LayerNodeData>[], edges: Edge[]): Vali
       if (inDegree[t] === 0) queue.push(t);
     }
   }
-  if (visited !== nodes.length) return { message: 'Graph contains a cycle' };
+  if (visited !== nodes.length) return { key: 'layersEditor.validation.cycle' };
 
   // Forward reachability: every node must be reachable from the Input node
   const reachableFromInput = new Set<string>();
@@ -699,7 +716,10 @@ export function validateGraph(nodes: Node<LayerNodeData>[], edges: Edge[]): Vali
   }
   for (const n of nodes) {
     if (!reachableFromInput.has(n.id)) {
-      return { message: `Node '${n.data.layerType}' is not reachable from Input` };
+      return {
+        key: 'layersEditor.validation.unreachable',
+        params: { layer: n.data.layerType },
+      };
     }
   }
 
@@ -718,7 +738,10 @@ export function validateGraph(nodes: Node<LayerNodeData>[], edges: Edge[]): Vali
   }
   for (const n of nodes) {
     if (!canReachOutput.has(n.id)) {
-      return { message: `Node '${n.data.layerType}' cannot reach Output` };
+      return {
+        key: 'layersEditor.validation.cannotReachOutput',
+        params: { layer: n.data.layerType },
+      };
     }
   }
 

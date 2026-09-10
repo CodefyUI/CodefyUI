@@ -46,6 +46,17 @@ received — each links to the release it was published as.
   near-identical "drag this onto the canvas" hints that stood permanently in
   sidebar footers are gone; the Presets tab keeps its one, because dragging is
   the only way to use a preset.
+- **The Inspector's empty states say one thing each.** Six of them were an icon
+  over a headline over a hint that restated the headline. The headline now
+  names the situation and the hint names the one action. Forty-seven strings
+  across the Inspector, the Config panel, the Results panel, the Node Detail
+  modal and the Layers editor are shorter or plainer in both locales.
+- **One name per control, and it is the one on screen.** Every "turn this on
+  and re-run" hint now names the toggle by the label the Settings popover
+  actually shows, in both locales, instead of four phrasings across two panels.
+  "Parameters" means node parameters again — the Training tab's hyperparameter
+  section had been sharing the word — and "ports" is one term in zh instead of
+  three.
 
 ### Fixed
 
@@ -141,6 +152,16 @@ received — each links to the release it was published as.
 - **The plugin row in Settings borrowed the pack row's strings.** Its visible
   label and its unsupported state both came from `settings.packs.*`, so editing
   the pack row's copy silently rewrote the plugin row.
+- **Untranslated English across the Inspector and the Layers editor.** The
+  tensor grid editor had no `t()` call at all, and the step trace, the backward
+  view, the port groups, the results panel's image labels, nine of ten palette
+  headings and all twelve graph-validation messages were English for a zh-TW
+  reader. The validation messages reached the user as toasts.
+- **A failure message stayed in the old language after a locale switch.** The
+  Inspector and the Stats tab stored what `t()` had returned when the request
+  failed, so those lines only caught up when something refetched them.
+- **The preset Configure button had no accessible name of its own.** Shortened
+  to a bare verb, it read as "Configure" with no object to a screen reader.
 
 ## [2.7.1] — 2026-09-08
 

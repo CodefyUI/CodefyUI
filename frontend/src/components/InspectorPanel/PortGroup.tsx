@@ -2,6 +2,7 @@ import type { OutputData, TensorOutput } from '../../types';
 import { TensorGridView } from './TensorGridView';
 import type { PortMedia, PortMediaMap } from './portCaptures';
 import { getPortColor } from '../../utils';
+import { useI18n, type TranslationKey } from '../../i18n';
 import styles from './InspectorPanel.module.css';
 
 export interface PortTarget {
@@ -15,7 +16,15 @@ export interface PortTarget {
 
 export interface PortFetchState {
   loading: boolean;
+  /** A raw message from the server or the network, already in its final form. */
   error: string | null;
+  /**
+   * The failures whose cause we know are carried as a key and translated at
+   * render time. A fetch is not redone when the locale changes, so a message
+   * translated inside its callback would sit there in the old language until
+   * the next run.
+   */
+  errorKey?: TranslationKey | null;
   data: OutputData | null;
 }
 
@@ -55,6 +64,7 @@ export function PortGroup({
    */
   media?: PortMediaMap;
 }) {
+  const { t } = useI18n();
   return (
     <div className={styles.portGroup}>
       <div className={styles.portGroupTitle}>{title}</div>
@@ -64,6 +74,7 @@ export function PortGroup({
         ports.map((p) => {
           const key = keyOf(p.nodeId, p.port);
           const state = fetches[key];
+          const errorText = state?.errorKey ? t(state.errorKey) : state?.error;
           const portMedia = media?.[key];
           return (
             <div key={key} className={styles.portBlock}>
@@ -77,8 +88,8 @@ export function PortGroup({
                 )}
                 <span className={styles.portName}>{p.displayName ?? p.port}</span>
               </div>
-              {state?.error && !portMedia && (
-                <div className={styles.portError}>{state.error}</div>
+              {errorText && !portMedia && (
+                <div className={styles.portError}>{errorText}</div>
               )}
               {portMedia ? (
                 <PortMediaView media={portMedia} label={p.displayName ?? p.port} />
@@ -95,7 +106,7 @@ export function PortGroup({
                   {state?.data && state.data.type !== 'tensor' && (
                     <NonTensorView value={state.data} />
                   )}
-                  {!state?.data && !state?.error && (
+                  {!state?.data && !errorText && (
                     <div className={styles.diffMissing}>…</div>
                   )}
                 </>
@@ -157,6 +168,7 @@ export function FlowDivider({ chip }: { chip?: string | null }) {
 }
 
 export function NonTensorView({ value, label }: { value: OutputData; label?: string }) {
+  const { t } = useI18n();
   const v = value as any;
   return (
     <div className={styles.tensorView}>
@@ -169,7 +181,7 @@ export function NonTensorView({ value, label }: { value: OutputData; label?: str
         {value.type === 'string' && v.value}
         {value.type === 'model' && (
           <div>
-            {v.class ?? 'Module'} · params{' '}
+            {v.class ?? t('inspector.tensor.module')} · {t('inspector.tensor.params')}{' '}
             {typeof v.params === 'number' ? v.params.toLocaleString() : '?'}
           </div>
         )}

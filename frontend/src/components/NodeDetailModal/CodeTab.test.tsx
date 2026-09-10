@@ -130,7 +130,7 @@ describe('CodeTab', () => {
 
   it('states the security model in plain words', () => {
     render(<CodeTab ctx={ctxFor(makeNode())} />);
-    expect(screen.getByText(/guardrail, not a sandbox/)).toBeTruthy();
+    expect(screen.getByText(/Only run code you trust/)).toBeTruthy();
   });
 
   it('says so rather than throwing when the node has no code param', () => {

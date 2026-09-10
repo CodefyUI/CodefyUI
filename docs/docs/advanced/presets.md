@@ -12,7 +12,7 @@ A **preset** packages a reusable subgraph as one node. CodefyUI includes the `ls
 
 Presets appear in the sidebar's **Presets** tab and in quick search, which opens when you double-click the canvas. The tab contains a search box, the same categories as the Nodes tab, and the hint *Drag presets onto the canvas*. A placed preset behaves like any other node. It exposes every port that was unconnected inside the subgraph and every non-secret parameter of every internal node.
 
-To configure a placed preset, double-click it or select **Configure Preset** in the Node Config panel or node detail view. The preset modal lists its internal nodes and groups exposed parameters by node. **Apply** writes the selected values to the internal nodes.
+To configure a placed preset, double-click it or select **Configure** in the Node Config panel or node detail view. The preset modal lists its internal nodes and groups exposed parameters by node. **Apply** writes the selected values to the internal nodes.
 
 Before execution, the graph engine **expands** each preset into its internal nodes. A preset packages nodes but does not add a separate runtime.
 

@@ -854,7 +854,7 @@ describe('NodeDetailModal — tabs', () => {
     await waitFor(() => expect(screen.getByText('shape [2, 2]')).toBeInTheDocument());
   });
 
-  it('warns when Record outputs is off but still shows whatever was captured', async () => {
+  it('warns when recording is off but still shows whatever was captured', async () => {
     seedTab({
       nodes: [node('n1', { definition: outputsDef(['logits']) })],
       nodeDetailNodeId: 'n1',
@@ -865,7 +865,9 @@ describe('NodeDetailModal — tabs', () => {
     fireEvent.click(screen.getByRole('tab', { name: 'Outputs' }));
 
     expect(
-      screen.getByText('Record outputs is off — re-run with Rec on to capture values'),
+      screen.getByText(
+        'Record node outputs is off — turn it on in Settings and re-run to capture values',
+      ),
     ).toBeInTheDocument();
     await waitFor(() => expect(screen.getByText('shape [2, 2]')).toBeInTheDocument());
   });
@@ -880,7 +882,7 @@ describe('NodeDetailModal — tabs', () => {
     render(<NodeDetailModal />);
     fireEvent.click(screen.getByRole('tab', { name: 'Outputs' }));
 
-    expect(screen.getByText('No captured data yet')).toBeInTheDocument();
+    expect(screen.getByText('Nothing captured yet')).toBeInTheDocument();
     expect(screen.getByText('Shapes from the last run')).toBeInTheDocument();
     expect(screen.getByText('tensor · [4, 8] · float32')).toBeInTheDocument();
     expect(mockOutput).not.toHaveBeenCalled();
@@ -896,7 +898,7 @@ describe('NodeDetailModal — tabs', () => {
     render(<NodeDetailModal />);
     fireEvent.click(screen.getByRole('tab', { name: 'Outputs' }));
 
-    expect(screen.getByText('Nothing recorded for this node yet')).toBeInTheDocument();
+    expect(screen.getByText('Not recorded')).toBeInTheDocument();
     expect(screen.getByText('list · length 12')).toBeInTheDocument();
   });
 
@@ -913,7 +915,7 @@ describe('NodeDetailModal — tabs', () => {
     render(<NodeDetailModal />);
     fireEvent.click(screen.getByRole('tab', { name: 'Steps' }));
     await waitFor(() =>
-      expect(screen.getByText('This node does not record steps')).toBeInTheDocument(),
+      expect(screen.getByText('No steps recorded')).toBeInTheDocument(),
     );
     expect(mockStepIndex).toHaveBeenCalledWith('run1', 'n1');
   });
@@ -932,9 +934,9 @@ describe('NodeDetailModal — tabs', () => {
     seedTab({ nodes: [node('n1')], nodeDetailNodeId: 'n1', lastRunId: null });
     render(<NodeDetailModal />);
     fireEvent.click(screen.getByRole('tab', { name: 'Stats' }));
-    expect(screen.getByText('Node statistics')).toBeInTheDocument();
+    expect(screen.getByText('No statistics yet')).toBeInTheDocument();
     expect(
-      screen.getByText('Run the graph with Rec on to capture this node’s values'),
+      screen.getByText('Turn on Record node outputs in Settings, then run the graph'),
     ).toBeInTheDocument();
   });
 
@@ -1132,11 +1134,9 @@ describe('NodeDetailModal — Docs tab', () => {
     fireEvent.click(screen.getByRole('tab', { name: 'Docs' }));
     const docs = within(screen.getByRole('tabpanel'));
 
-    // All three read the same way; they are three consecutive lines of one
-    // panel.
-    expect(docs.getByText('This node has no description.')).toBeInTheDocument();
-    expect(docs.getByText('This node has no parameters.')).toBeInTheDocument();
-    expect(docs.getAllByText('This node has no ports.')).toHaveLength(2);
+    expect(docs.getByText('No description')).toBeInTheDocument();
+    // Params, input ports and output ports: three empty sections, one word each.
+    expect(docs.getAllByText('None')).toHaveLength(3);
     await waitFor(() => expect(mockNodeDef).toHaveBeenCalled());
   });
 
@@ -1248,7 +1248,7 @@ describe('NodeDetailModal — parameter editing', () => {
     seedTab({ nodes: [node('n1')], nodeDetailNodeId: 'n1' });
     render(<NodeDetailModal />);
     expect(
-      screen.getByText('This node has no configurable parameters'),
+      screen.getByText('No parameters'),
     ).toBeInTheDocument();
   });
 
@@ -1271,10 +1271,10 @@ describe('NodeDetailModal — parameter editing', () => {
     });
     render(<NodeDetailModal />);
 
-    expect(screen.queryByText('This node has no configurable parameters')).toBeNull();
+    expect(screen.queryByText('No parameters')).toBeNull();
     expect(screen.getByText('3 nodes inside')).toBeInTheDocument();
 
-    fireEvent.click(screen.getByText('Configure Preset'));
+    fireEvent.click(screen.getByText('Configure'));
     // Hands over rather than stacking: the preset editor sits at a lower
     // z-index and has no Escape handler of its own.
     expect(activeTab().presetModalNodeId).toBe('p1');
@@ -1778,7 +1778,7 @@ describe('NodeDetailModal — tab registry', () => {
     render(<NodeDetailModal />);
     fireEvent.click(screen.getByRole('tab', { name: 'Stats' }));
     expect(screen.getByTestId('real-stats')).toBeInTheDocument();
-    expect(screen.queryByText('Node statistics')).toBeNull();
+    expect(screen.queryByText('No statistics yet')).toBeNull();
     // The slot is kept, not appended.
     expect(getNodeDetailTabs(ctx()).map((t) => t.id)).toEqual([
       'inputs',
@@ -1799,7 +1799,7 @@ describe('NodeDetailModal — tab registry', () => {
     seedTab({ nodes: [node('n1')], nodeDetailNodeId: 'n1' });
     render(<NodeDetailModal />);
     fireEvent.click(screen.getByRole('tab', { name: 'Stats' }));
-    expect(screen.getByText('Node statistics')).toBeInTheDocument();
+    expect(screen.getByText('No statistics yet')).toBeInTheDocument();
   });
 
   it('contains a throwing tab inside the panel instead of unmounting the app', () => {
