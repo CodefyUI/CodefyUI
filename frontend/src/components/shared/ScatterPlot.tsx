@@ -82,7 +82,7 @@ export function ScatterPlot({
   if (points.length === 0) {
     return (
       <div className={`${styles.empty} ${className ?? ''}`} style={{ width, height }}>
-        <span>no data</span>
+        <span>{t('plot.noData')}</span>
       </div>
     );
   }

@@ -3,10 +3,12 @@ const en = {
   'toolbar.run': 'Run',
   'toolbar.running': 'Running...',
   'toolbar.stop': 'Stop',
-  'toolbar.run.title': 'Execute the pipeline (Run)',
+  'toolbar.run.title': 'Run the graph',
   'toolbar.stop.title': 'Stop execution',
   'toolbar.device.aria': 'Device for this graph',
-  'toolbar.device.title': 'Run this graph on a specific device; the choice is saved in the graph file',
+  // Says nothing about overriding Settings: the first option in this select
+  // is "Follow Settings", and it is a choice the graph stores like any other.
+  'toolbar.device.title': 'Which device this graph runs on; the choice is saved in the graph file',
   'toolbar.device.follow': 'Follow Settings ({device})',
   'toolbar.reloadNodes': 'Reload Nodes',
   'toolbar.reloadNodes.title': 'Reload node definitions from backend',
@@ -28,43 +30,42 @@ const en = {
   'toolbar.load.loading': 'Loading...',
   'toolbar.load.empty': 'No saved graphs',
   'toolbar.load.toCanvas': 'Load into this canvas tab',
-  'toolbar.load.toCanvas.title':
-    'Replace what is on this canvas without binding the tab to the file — the next Save asks where to put it',
+  'toolbar.load.toCanvas.title': 'Replaces this canvas; the next Save asks for a name',
   'toolbar.load.toCanvas.confirm': 'Replace this canvas with "{name}"?',
   'toolbar.load.toCanvas.confirmAction': 'Replace',
   'toolbar.load.andSave': 'Load and save',
-  'toolbar.load.andSave.title':
-    'Load it and bind this tab to the file — Save then writes straight back over it',
+  'toolbar.load.andSave.title': 'Binds this tab to the file; Save writes back to it',
   'toolbar.load.search': 'Search saved graphs…',
   'toolbar.load.noMatch': 'No graph matches "{query}"',
   'toolbar.import': 'Import JSON...',
   'toolbar.import.fail': 'Import failed: {error}',
   'toolbar.clear': 'Clear Canvas',
-  'toolbar.clear.title': 'Clear the canvas',
+  'toolbar.clear.title': 'Remove every node from this canvas',
   'toolbar.clear.confirm': 'Clear the canvas? All unsaved work will be lost.',
 
   // Menu: Export
   'toolbar.menu.export': 'Export',
   'toolbar.export.empty': 'Canvas is empty — add some nodes before exporting.',
   'toolbar.exportJson': 'Export as JSON',
-  'toolbar.exportJson.title': 'Download graph as JSON file (includes subgraphs)',
+  'toolbar.exportJson.title': 'JSON file, including subgraphs',
   'toolbar.exportJson.empty': 'Canvas is empty — add some nodes before exporting.',
   'toolbar.export': 'Export as Subgraph',
-  'toolbar.export.title': 'Export current graph as a reusable subgraph/preset',
+  'toolbar.export.title': 'Save this graph as a reusable preset',
   'toolbar.export.prompt': 'Enter a name for this subgraph:',
-  'toolbar.export.success': 'Subgraph "{name}" exported successfully! It now appears in the Nodes panel.',
+  'toolbar.export.success': 'Subgraph "{name}" is now in the Presets panel.',
   'toolbar.export.fail': 'Export failed: {error}',
   // core#137: a preset carries only nodes + edges, so it cannot hold the
   // definition an instance node points at. Refusing names the blocks so the
   // user knows exactly which ones to expand first.
-  'toolbar.export.subgraphRefused': 'Cannot export as a subgraph while the canvas contains collapsed blocks ({names}). A preset cannot carry their contents — expand them first, then export.',
+  'toolbar.export.subgraphRefused':
+    'Expand the collapsed blocks ({names}) before exporting: a preset cannot carry their contents.',
   'toolbar.exportPython': 'Export as Python',
-  'toolbar.exportPython.title': 'Download a headless Python runner (requires the CodefyUI backend environment)',
+  'toolbar.exportPython.title': 'Python script that runs this graph; needs the CodefyUI backend environment',
   'toolbar.exportPython.empty': 'Canvas has no executable nodes — add a node before exporting.',
   'toolbar.exportPython.fail': 'Python export failed: {error}',
   'toolbar.exportDiagram.svg': 'Export Diagram (SVG)',
   'toolbar.exportDiagram.png': 'Export Diagram (PNG)',
-  'toolbar.exportDiagram.title': 'Download the architecture (nodes, input/output ports & connections — no parameter values) as an image',
+  'toolbar.exportDiagram.title': 'Image of nodes, ports and connections; no parameter values',
   'toolbar.exportDiagram.empty': 'Canvas is empty — add some nodes before exporting.',
   'toolbar.exportDiagram.fail': 'Diagram export failed: {error}',
 
@@ -122,36 +123,36 @@ const en = {
   'templates.loadFail': 'Failed to load examples: {error}',
   'templates.empty': 'No examples available',
   'templates.noMatch': 'No matching examples',
-  'templates.hint': 'Drag an example onto the canvas, or click to add it',
 
   // Template gallery modal (core#128)
   'gallery.open': 'Templates',
-  // Used where the word "Templates" is already on screen as a heading (the
-  // sidebar tab, the empty-canvas overlay), so the two never read as the same
-  // control.
+  // Two buttons open the gallery and neither can just say "Templates": the
+  // sidebar tab already carries that word as its heading, and the
+  // empty-canvas overlay is headed "Build your first deep learning model".
+  // The noun rides along because on the overlay it is the only thing that
+  // says what is being browsed.
   'gallery.browse': 'Browse all templates',
   'gallery.open.title': 'Browse every built-in and plugin example',
   'gallery.title': 'Template Gallery',
-  'gallery.subtitle': 'Open one in a new tab, or insert it into this canvas',
+  'gallery.subtitle': 'Built-in and plugin examples',
   'gallery.search': 'Search templates...',
   'gallery.close': 'Close template gallery',
   'gallery.list': 'Template list',
   'gallery.detail': 'Template details',
-  'gallery.detailEmpty': 'Select a template to see what it contains',
-  'gallery.noDescription': 'This template ships no description.',
+  'gallery.detailEmpty': 'Select a template',
+  'gallery.noDescription': 'No description.',
   'gallery.edgeCount': '{count} connections',
   'gallery.sourceBuiltin': 'Built-in example',
   'gallery.sourcePlugin': 'From plugin pack "{plugin}"',
   'gallery.openNewTab': 'Open in new tab',
   'gallery.insert': 'Insert into this canvas',
-  'gallery.insertHint': 'Inserted nodes get fresh ids and are placed below your current graph, so nothing is overwritten. One undo removes them.',
+  'gallery.insertHint': 'Nodes are added below your graph; one undo removes them.',
 
   // Sidebar: Custom & Plugins tab (#126)
   'customTab.section.nodes': 'Custom Nodes',
   'customTab.section.plugins': 'Plugins',
   'customTab.manage': 'Manage...',
   'customTab.plugins.open': 'Plugin Center...',
-  'customTab.nodes.empty': 'No custom nodes yet',
   // No hint under the empty plugins section: the header button one line above
   // it IS the Plugin Center, so a sentence naming that destination is the
   // same fact twice. The packs hint stays because it carries another one --
@@ -275,7 +276,7 @@ const en = {
   'tabs.closeRunning': 'This tab is still running. Close it anyway?',
   'tabs.close.confirmTitle': 'Close "{name}"?',
   'tabs.close.confirmMessage':
-    'This tab has a graph in it ({count} nodes). Closing discards it, and there is no undo for a closed tab: anything you have not saved to a graph file is gone. Cancel and save it first if you want it back later.',
+    'Closing discards this tab and its {count} nodes. This cannot be undone — save first if you need them.',
   'tabs.close.confirmButton': 'Close tab',
 
   // Tab bar chrome (#341)
@@ -326,12 +327,18 @@ const en = {
   // Custom Node Manager
   'customNodes.title': 'Custom Node Manager',
   'customNodes.loading': 'Loading...',
-  'customNodes.empty': 'No custom nodes. Upload a .py file to get started.',
+  // Two empty states, two actions. The sidebar section's action is the
+  // Manage... button one line above it, which opens this manager; the
+  // manager's is the Upload .py button in its own footer, and only its empty
+  // state can name that, so only its empty state does.
+  'customNodes.empty': 'No custom nodes yet',
+  'customNodes.emptyUpload': 'No custom nodes yet. Upload a .py file to add one.',
   'customNodes.enabled': 'Enabled',
   'customNodes.disabled': 'Disabled',
   'customNodes.delete': 'Delete',
   'customNodes.delete.confirm': 'Delete "{name}"? This cannot be undone.',
   'customNodes.upload': 'Upload .py',
+  'customNodes.close': 'Close custom node manager',
   'toolbar.customNodes': 'Custom Nodes',
   'toolbar.customNodes.title': 'Manage custom nodes',
 
@@ -344,7 +351,7 @@ const en = {
   'paramField.selectFile': '-- select file --',
   'paramField.uploadFailed': 'Upload failed',
   'paramField.downloadFailed': 'Download failed',
-  'paramField.secretHint': 'Session only - cleared on save. Prefer the environment variable.',
+  'paramField.secretHint': 'Session only, cleared on save. Store secrets in an environment variable.',
 
   // ParamField (in-canvas Python, core#131)
   'paramField.code.checking': 'checking...',
@@ -371,8 +378,8 @@ const en = {
 
   // Beginner-facing rewrites of raw Python/PyTorch exceptions (see
   // utils/errorMessages.ts). Each one names what to change, not just what broke.
-  'error.missingTensorInput': "This node expected a 'tensor' input but did not receive one. Check that every required input is connected.",
-  'error.missingInput': "Missing required input '{key}'. Check that it is connected.",
+  'error.missingTensorInput': "Connect a 'tensor' input to this node.",
+  'error.missingInput': "Connect the required input '{key}'.",
   'error.linearShapeMismatch': 'Size mismatch: this layer received {got} features but is configured for {expected}. Set the layer\'s in_features to {got}, or change the previous layer so it outputs {expected}.',
   'error.invalidReshape': 'Cannot reshape to {shape}: the tensor has {size} elements, which does not divide evenly into that shape. Check the batch size and the dimensions of the previous layer.',
   'error.channelMismatch': 'Channel mismatch: this layer is configured for {expected} input channels but received {got}. Set its in_channels to {got}, or change what feeds it.',
@@ -397,9 +404,9 @@ const en = {
   'shortcuts.paste': 'Paste nodes',
   'shortcuts.delete': 'Delete selected',
   'shortcuts.commit': 'Commit (Source Control message box)',
-  'shortcuts.bypass': 'Bypass / un-bypass the selected node(s)',
-  'shortcuts.toggleSidebar': 'Collapse / expand sidebar (when no node is selected)',
-  'shortcuts.toggleSidebarAlways': 'Collapse / expand sidebar (always)',
+  'shortcuts.bypass': 'Toggle bypass on selected nodes',
+  'shortcuts.toggleSidebar': 'Toggle sidebar (when no node is selected)',
+  'shortcuts.toggleSidebarAlways': 'Toggle sidebar (always)',
   'shortcuts.quickSearch': 'Quick node search',
   'shortcuts.help': 'Show this help',
   'shortcuts.doubleClickKey': 'Double-click',
@@ -506,7 +513,7 @@ const en = {
   'toolbar.settings.section.llm': 'LLM Providers',
   'toolbar.settings.section.system': 'This Server',
   'settings.device.name': 'Compute device',
-  'settings.device.desc': 'Used by graphs with no device of their own. The toolbar assigns one per graph.',
+  'settings.device.desc': 'Used by graphs with no device of their own.',
   'settings.device.hint': 'Best available on this server: {device}',
 
   // Font-size menu
@@ -517,43 +524,43 @@ const en = {
 
   // Settings rows
   'settings.record.name': 'Record node outputs',
-  'settings.record.desc': "Capture every node's output on each run so the Inspector can show input → output diffs.",
+  'settings.record.desc': 'Lets the Inspector show input → output diffs.',
   'settings.verbose.name': 'Verbose internals',
-  'settings.verbose.desc': 'Inspector also shows Q / K / V / attention scores and other algorithm internals (teaching mode).',
+  'settings.verbose.desc': 'Inspector also shows Q / K / V, attention scores and other internals.',
   'settings.compare.name': 'Compare segment',
-  'settings.compare.desc': 'Select two nodes on the canvas, then click to compare the head-input with the tail-output.',
+  'settings.compare.desc': "Compares the left-hand selected node's input with the right-hand one's output.",
   'settings.compare.actionCreate': 'Create segment',
   'settings.compare.actionClear': 'Clear active',
   'settings.compare.actionDisabled': 'Select two nodes',
   'settings.persist.name': 'Persist weights between runs',
-  'settings.persist.desc': 'When off, every run re-initialises Conv2d / Linear / Attention weights — the model never learns.',
+  'settings.persist.desc': 'When off, each run re-initialises layer weights and the model never learns.',
   'settings.resetWeights.name': 'Reset all weights now',
-  'settings.resetWeights.desc': 'Drop every cached weight; the next Run starts from fresh initialisation.',
+  'settings.resetWeights.desc': 'The next run starts from fresh initialisation.',
   'settings.resetWeights.action': 'Reset',
   'settings.gradients.name': 'Capture gradients',
   'settings.gradients.desc': 'Run forward + .backward() and store each layer\'s gradient for the Inspector.',
   'settings.autoLoss.name': 'Auto-synthesize loss',
   'settings.autoLoss.desc': 'When the graph has no Loss / BackwardOnce node, synthesize one so .backward() can run.',
   'settings.seed.name': 'Random seed',
-  'settings.seed.desc': 'Seed every node from one number so the run is reproducible. Seeded runs execute one node at a time. Blank = unseeded.',
+  'settings.seed.desc': 'One seed for every node, so a run is reproducible. Seeded runs execute one node at a time.',
   'settings.seed.placeholder': 'none',
   'settings.deterministic.name': 'Deterministic algorithms',
-  'settings.deterministic.desc': 'Ask PyTorch for reproducible kernels. Operations with no deterministic implementation warn instead of failing the run.',
+  'settings.deterministic.desc': 'Ask PyTorch for reproducible kernels. Unsupported operations only warn.',
   'settings.gridSnap.name': 'Grid snap',
   'settings.gridSnap.desc': 'Snap dragged nodes to the canvas grid.',
   'settings.tooltips.name': 'Show node tooltips',
-  'settings.tooltips.desc': 'Reveal the description card when hovering nodes on the canvas.',
+  'settings.tooltips.desc': 'Show a description card on hover.',
   'settings.nodeMode.name': 'Node category mode',
-  'settings.nodeMode.desc': 'Basic shows only the essential categories in the sidebar; All shows every category.',
+  'settings.nodeMode.desc': 'How many node categories the sidebar lists.',
   'settings.nodeMode.basic': 'Basic',
   'settings.nodeMode.all': 'All',
   'settings.edgeStyle.name': 'Connection style',
-  'settings.edgeStyle.desc': 'How value connections are drawn: circuit-board traces or smooth curves.',
+  'settings.edgeStyle.desc': 'How value connections are drawn.',
   'settings.edgeStyle.circuit': 'Circuit',
   'settings.edgeStyle.curve': 'Curve',
   'settings.codex.name': 'ChatGPT Codex account',
-  'settings.codex.descLoggedOut': 'Sign in to use the Codex provider in LLMChat. This uses your ChatGPT account session.',
-  'settings.codex.descPending': 'Sign-in is in progress. Complete it in the browser tab, then return here.',
+  'settings.codex.descLoggedOut': 'Sign in with ChatGPT to use the Codex provider in LLMChat.',
+  'settings.codex.descPending': 'Complete sign-in in the browser tab, then return here.',
   'settings.codex.descLoggedIn': 'Signed in as {email}. Codex nodes can use your ChatGPT session.',
   'settings.codex.actionSignIn': 'Sign in',
   'settings.codex.actionSignOut': 'Sign out',
@@ -565,23 +572,21 @@ const en = {
 
   // "This Server" section (#193 item 2). /api/health has reported all of this
   // since #135; until now nothing in the editor showed it.
-  'settings.health.name': 'What this server has loaded',
-  'settings.health.desc': 'The version you are running, and how much memory its caches are holding right now.',
   'settings.health.refresh': 'Refresh',
   // The Codex row's button is also called "Refresh", and the two are only
   // distinguishable by which section they sit in — which a screen reader does
   // not read out. The accessible name says which one this is.
   'settings.health.refreshAria': 'Refresh server status',
   'settings.health.loading': 'Reading the server…',
-  'settings.health.failed': 'Could not read the server status. Press Refresh to try again.',
+  'settings.health.failed': 'Could not read the server status. Press Refresh.',
   'settings.health.version': 'Version',
   'settings.health.nodes': 'Nodes',
   'settings.health.presets': 'Presets',
   'settings.health.unknown': 'unknown',
   'settings.health.caches': 'Caches',
   'settings.health.cachesEmpty': 'No caches are running yet.',
-  'settings.health.cachesHint': 'These hold results the server already computed so a re-run can skip the work; none of it is your saved graphs or files. Clearing one costs recompute time — for the weight cache that means training time, unless you saved a checkpoint.',
-  'settings.health.cache.execution_cache': 'Node outputs (per editor connection)',
+  'settings.health.cachesHint': 'What the server is holding in memory from your runs. Your saved graphs and files are not in here.',
+  'settings.health.cache.execution_cache': 'Node outputs (per open editor)',
   'settings.health.cache.run_output_store': 'Recorded run outputs',
   'settings.health.cache.node_state_store': 'Layer weights kept between runs',
   'settings.health.cacheOf': '{used} of {budget}',
@@ -608,7 +613,7 @@ const en = {
   'scatter.loadError': "Couldn't load points: {error}",
   'scatter.unavailable': 'Cannot load: this run is no longer available.',
   'scatter.noData': 'No points to display',
-  'scatter.closeHint': 'click outside or press Esc to close',
+  'scatter.closeHint': 'Esc to close',
   'scatter.recenterHint': 'click a label to centre · drag to pan · scroll to zoom',
   'scatter.close': 'Close',
   'attention.runHint': 'Run the graph to see attention weights',
@@ -617,6 +622,17 @@ const en = {
   'attention.maskRunHint': 'Run the graph to see the mask',
   'attention.tooLargeInline': 'Tensor too large for inline preview',
   'attention.viewFull': 'View full',
+  // Heatmap modal. Its close button and footer hint come from the `scatter.*`
+  // pair the sibling modal already uses -- one wording for one control.
+  'heatmap.loading': 'Loading tensor…',
+  // Lowercase because both are always read as the tail of
+  // `heatmap.loadError` and never on their own; end-stopped because the
+  // sentence they finish ends, the way `scatter.unavailable` does.
+  'heatmap.unavailable': 'this run is no longer available.',
+  'heatmap.notTensor': 'expected a tensor; this port holds {type}.',
+  'heatmap.loadError': "Couldn't load: {error}",
+  'heatmap.loadErrorHint': 'Re-run the graph, or shorten the input sequence.',
+  'heatmap.rowNormalised': 'row-normalised colours',
   'textInput.placeholder': 'Type text here…',
   'textInput.charCount': '{count} chars',
 
@@ -804,7 +820,9 @@ const en = {
   'nodeDetail.stats.unsupported': 'No statistics for this value type ({type})',
   'nodeDetail.stats.notCaptured': 'Nothing captured for this port — re-run with Rec on',
   'nodeDetail.docs.description': 'Description',
-  'nodeDetail.docs.noDescription': 'This node ships no description.',
+  // Same register as `noParams` and `noPorts` below: the Docs tab draws all
+  // three in one panel, within a few lines of each other.
+  'nodeDetail.docs.noDescription': 'This node has no description.',
   'nodeDetail.docs.params': 'Parameters',
   'nodeDetail.docs.noParams': 'This node has no parameters.',
   'nodeDetail.docs.inputs': 'Input ports',
@@ -818,6 +836,7 @@ const en = {
   'edge.viewStats': 'View stats',
 
   // Shared plots
+  'plot.noData': 'No data',
   'plot.noDistribution': 'no distribution',
   'plot.peak': 'peak {count}',
 
@@ -1040,8 +1059,13 @@ const en = {
   // because a node needs a pack that is not installed.
   'packs.toast.missingPack': 'This run needs the {pack} pack.',
 
-  // Where the Package Center is opened from.
-  'toolbar.settings.section.packs': 'Optional packs',
+  // Where the Package Center is opened from. It shares one section with the
+  // Plugin Center, so the two summaries can be read against each other
+  // instead of carrying a heading each. The heading is spelled out of the
+  // two names the sidebar's Custom & Plugins tab gives the same two doors
+  // ("Optional packs", "Plugins"), so neither surface sends a reader looking
+  // for a word the other one does not use.
+  'toolbar.settings.section.packsPlugins': 'Optional Packs & Plugins',
   'settings.packs.name': 'Package Center',
   'settings.packs.desc': 'Download models and libraries for the LLM nodes.',
   'settings.packs.summary': '{installed} of {total} packs installed',
@@ -1051,25 +1075,24 @@ const en = {
   'customTab.section.packs': 'Optional packs',
   'customTab.packs.open': 'Package Center...',
   'customTab.packs.empty': 'No optional packs available',
-  'customTab.packs.hint':
-    'Models and libraries for LLM nodes are installed from the Package Center',
+  'customTab.packs.hint': 'Models and libraries for LLM nodes.',
 
   // Where the Plugin Center is opened from: the settings popover's own row,
-  // beside the pack one it is modelled on. The sidebar's entry point is up
-  // with the rest of the Custom & Plugins tab. `settings.packs.unsupported`
-  // is reused as it is -- "Not available on this server" says the same thing
-  // about either center, and a second translation of it is a second string to
-  // keep in step.
-  'toolbar.settings.section.plugins': 'Plugins',
+  // beside the pack one it is modelled on, under the heading they share. The
+  // sidebar's entry point is up with the rest of the Custom & Plugins tab. Every string this row shows is now its own -- it borrowed the
+  // pack row's "Open" and "Not available on this server", so editing the pack
+  // copy silently rewrote this row.
   'settings.plugins.name': 'Plugin Center',
   'settings.plugins.desc': 'Install teaching node packs and plugins from GitHub.',
   'settings.plugins.summary': '{installed} installed, {available} available',
   'settings.plugins.summaryInstalling': 'Installing {plugin}...',
-  // The button's visible word is `settings.packs.action` ("Open"), the same
-  // as the pack row's. This is its accessible name: two buttons reading
-  // "Open" say nothing in a list of controls, and speech input ("click Open")
-  // has to reach one of them -- so the pack row keeps the bare word and this
-  // one contains it, the way `paramField.installPackFor` does.
+  'settings.plugins.unsupported': 'Not available on this server',
+  // The button's visible word matches the pack row's. This is its accessible
+  // name: two buttons reading "Open" say nothing in a list of controls, and
+  // speech input ("click Open") has to reach one of them -- so the pack row
+  // keeps the bare word and this one contains it, the way
+  // `paramField.installPackFor` does.
+  'settings.plugins.open': 'Open',
   'settings.plugins.action': 'Open Plugin Center',
 
   // "This needs a pack" — said on a select option, a node, a palette entry
@@ -1089,10 +1112,10 @@ const en = {
   // by control. A key rather than a hardcoded "label: pack", because the
   // separator is punctuation and punctuation is translated.
   'paramField.installPackFor': 'Install pack: {pack}',
-  'config.needsPack': 'This node needs the {pack} pack.',
+  'config.needsPack': 'Needs the {pack} pack.',
   'palette.needsPack': 'Needs pack',
   'palette.needsPack.title':
-    'Needs the {pack} pack. You can drag it now and install the pack from the Package Center.',
+    'Needs the {pack} pack — drag it now, install from the Package Center.',
   'node.needsPack': 'PACK',
   'node.needsPack.title': 'Needs the {pack} pack. Click to open the Package Center.',
   'node.paramNeedsPack': 'needs pack',
@@ -1384,7 +1407,7 @@ const en = {
   'git.commit.placeholder': 'Message ({mod}+Enter to commit)',
   'git.commit.button': 'Commit',
   'git.commit.options': 'Commit options',
-  'git.commit.all': 'Commit All (stages every change, including new files)',
+  'git.commit.all': 'Commit All (includes new files)',
   'git.commit.amend': 'Amend Last Commit',
   'git.commit.amending': 'Amending',
   'git.commit.amendPushed': 'Cannot amend: the last commit is already pushed',
@@ -1447,7 +1470,7 @@ const en = {
   // A different cut from the one above: that one is what the SERVER sent,
   // this one is what the window draws. A patch of twenty thousand lines is a
   // second of frozen tab and nothing anybody reads in a side panel.
-  'git.diff.tooManyLines': 'Only the first {count} lines are shown here. Open the file to read the rest.',
+  'git.diff.tooManyLines': 'Showing the first {count} lines. Open the file for the rest.',
   'git.diff.empty': 'No changes',
   // git's own note, drawn on the line it is about. Without it the change is
   // two lines whose text is identical to the character.
@@ -1530,8 +1553,10 @@ const en = {
   'git.error.signingFailed': 'Commit signing is not supported from the app.',
   'git.error.remoteExists': 'A remote with that name already exists.',
   'git.error.remoteRejected': 'The remote refused the push (a protected branch or a server rule).',
+  // "Your local git configuration" against the sibling above's "The remote":
+  // which end refused is the whole difference between the two keys.
   'git.error.pushConfig':
-    'Your git push configuration refuses this push (push.default or the upstream branch name).',
+    'Your local git configuration refused this push. Check push.default and the upstream branch name.',
   // A read the server refused because git itself ignores the path -- an
   // ignored worktree file, or anything `.env`-shaped at any ref. Coded rather
   // than generic, or a 403 would show the server's English.

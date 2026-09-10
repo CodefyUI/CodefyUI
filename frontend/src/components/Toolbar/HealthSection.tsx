@@ -3,7 +3,6 @@ import { useI18n } from '../../i18n';
 import type { TranslationKey } from '../../i18n/locales/en';
 import { fetchHealth, type CacheUsage, type HealthInfo } from '../../api/rest';
 import { formatBytes } from '../../utils/formatBytes';
-import { SettingsRow } from './SettingsRow';
 import styles from './SettingsPopover.module.css';
 
 /**
@@ -109,28 +108,24 @@ export function HealthSection() {
 
   return (
     <section className={styles.section}>
-      <div className={styles.sectionTitle}>{t('toolbar.settings.section.system')}</div>
-
-      <SettingsRow
-        name={t('settings.health.name')}
-        desc={t('settings.health.desc')}
-        ctrl={
-          <button
-            type="button"
-            // The LLM section's button reads "Refresh" too; the sections tell
-            // them apart visually, an accessible name has to do it in words.
-            aria-label={t('settings.health.refreshAria')}
-            className={styles.action}
-            disabled={busy}
-            onClick={(e) => {
-              e.stopPropagation();
-              setAttempt((n) => n + 1);
-            }}
-          >
-            {t('settings.health.refresh')}
-          </button>
-        }
-      />
+      {/* Refresh sits on the heading rather than in a row of its own. That
+          row's name ("Server status") and the heading above it ("This
+          Server") were the same words twice, over a stat grid that labels
+          every number it shows. */}
+      <div className={styles.sectionHeader}>
+        <div className={styles.sectionTitle}>{t('toolbar.settings.section.system')}</div>
+        <button
+          type="button"
+          // The LLM section's button reads "Refresh" too; the sections tell
+          // them apart visually, an accessible name has to do it in words.
+          aria-label={t('settings.health.refreshAria')}
+          className={styles.action}
+          disabled={busy}
+          onClick={() => setAttempt((n) => n + 1)}
+        >
+          {t('settings.health.refresh')}
+        </button>
+      </div>
 
       <div className={styles.health}>
         {/* A failed refresh keeps the numbers it already had on screen: stale

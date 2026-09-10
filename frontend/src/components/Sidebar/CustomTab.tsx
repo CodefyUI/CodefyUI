@@ -187,7 +187,7 @@ export function CustomTab() {
             </div>
 
             {customNodes.length === 0 ? (
-              <div className={tabStyles.sectionEmpty}>{t('customTab.nodes.empty')}</div>
+              <div className={tabStyles.sectionEmpty}>{t('customNodes.empty')}</div>
             ) : (
               customNodes.map((file) => (
                 <div

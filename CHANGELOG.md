@@ -34,6 +34,18 @@ received — each links to the release it was published as.
   The Plugin Center opens on its catalog: the "Install from GitHub" box, which
   is the rare way in, folds into one line above the filter, so the filter sits
   directly over the rows it filters. Nothing lost an accessible name.
+- **Settings stops explaining every row.** The popover printed a sentence under
+  all 18 of its rows, so opening it presented about 18 lines of standing prose.
+  Five keep a visible description — the ones whose consequence a reader cannot
+  get from the row's name — four carry live state, and the rest moved to the
+  control's own tooltip. "Optional packs" and "Plugins" were two sections of
+  one row each; they are one section now, so the pack and plugin counts can be
+  read against each other.
+- **Fewer words across the toolbar, the sidebar and the error messages.**
+  Fifty-five strings are shorter or plainer in both locales. Two of the three
+  near-identical "drag this onto the canvas" hints that stood permanently in
+  sidebar footers are gone; the Presets tab keeps its one, because dragging is
+  the only way to use a preset.
 
 ### Fixed
 
@@ -121,6 +133,14 @@ received — each links to the release it was published as.
 - **A plugin whose renderer names no node type says so.** Registering one for a
   node that does not exist mounted nothing, silently; it now warns and, where
   it can, names the type that was meant.
+- **The Custom Node Manager's close button had no name.** It rendered a bare
+  `x` with no label, so a screen reader announced it as "x".
+- **Untranslated English in the heatmap and scatter views.** Several strings
+  were hardcoded, so a zh-TW reader got a Chinese sentence wrapped around an
+  English one.
+- **The plugin row in Settings borrowed the pack row's strings.** Its visible
+  label and its unsupported state both came from `settings.packs.*`, so editing
+  the pack row's copy silently rewrote the plugin row.
 
 ## [2.7.1] — 2026-09-08
 

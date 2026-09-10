@@ -333,7 +333,7 @@ export function SettingsPopover({ open, onClose, triggerRef }: Props) {
   // and a lockfile entry whose files are gone are in neither, because neither
   // is a plugin the reader has, and neither is one they can install.
   const pluginsDesc = pluginsUnsupported
-    ? t('settings.packs.unsupported')
+    ? t('settings.plugins.unsupported')
     : installingPluginId !== null
       ? t('settings.plugins.summaryInstalling', { plugin: pluginName(installingPluginId) })
       : pluginsLoaded
@@ -369,6 +369,10 @@ export function SettingsPopover({ open, onClose, triggerRef }: Props) {
 
           <Row
             name={t('settings.device.name')}
+            // Both lines stay visible. Since #436 a graph carries its own
+            // device and this one is only the fallback, so "which graphs use
+            // it" is what the row means -- and a `title` says that to a
+            // mouse pointer alone, not to a keyboard or a touch screen.
             desc={
               <>
                 {t('settings.device.desc')}
@@ -447,10 +451,16 @@ export function SettingsPopover({ open, onClose, triggerRef }: Props) {
           />
         </section>
 
-        {/* ── Optional packs ─────────────────────────────────────── */}
+        {/* ── Optional Packs & Plugins ───────────────────────────── */}
+        {/* One section for both centers. Each was a <section> of exactly one
+            row, so the panel carried two headings for two rows and kept the
+            two summaries ("1 of 2 packs installed", "2 installed, 2
+            available") a heading apart. The heading spells out both of the
+            sidebar's names for these same two doors, so a reader who learned
+            one surface can find the other. */}
         <section className={styles.section}>
           <div className={styles.sectionTitle}>
-            {t('toolbar.settings.section.packs')}
+            {t('toolbar.settings.section.packsPlugins')}
           </div>
 
           <Row
@@ -473,13 +483,6 @@ export function SettingsPopover({ open, onClose, triggerRef }: Props) {
               </button>
             }
           />
-        </section>
-
-        {/* ── Plugins ────────────────────────────────────────────── */}
-        <section className={styles.section}>
-          <div className={styles.sectionTitle}>
-            {t('toolbar.settings.section.plugins')}
-          </div>
 
           <Row
             name={t('settings.plugins.name')}
@@ -503,7 +506,7 @@ export function SettingsPopover({ open, onClose, triggerRef }: Props) {
                 aria-label={t('settings.plugins.action')}
                 className={styles.action}
               >
-                {t('settings.packs.action')}
+                {t('settings.plugins.open')}
               </button>
             }
           />
@@ -517,12 +520,12 @@ export function SettingsPopover({ open, onClose, triggerRef }: Props) {
 
           <Row
             name={t('settings.record.name')}
-            desc={t('settings.record.desc')}
             onClick={toggleRecord}
             ctrl={
               <button
                 type="button"
                 aria-label={t('settings.record.name')}
+                title={t('settings.record.desc')}
                 aria-pressed={recording}
                 className={`${styles.toggle} ${recording ? styles.on : ''}`}
                 onClick={(e) => {
@@ -535,12 +538,12 @@ export function SettingsPopover({ open, onClose, triggerRef }: Props) {
 
           <Row
             name={t('settings.verbose.name')}
-            desc={t('settings.verbose.desc')}
             onClick={toggleVerbose}
             ctrl={
               <button
                 type="button"
                 aria-label={t('settings.verbose.name')}
+                title={t('settings.verbose.desc')}
                 aria-pressed={verbose}
                 className={`${styles.toggle} ${verbose ? styles.on : ''}`}
                 onClick={(e) => {
@@ -553,10 +556,10 @@ export function SettingsPopover({ open, onClose, triggerRef }: Props) {
 
           <Row
             name={t('settings.compare.name')}
-            desc={t('settings.compare.desc')}
             ctrl={
               <button
                 type="button"
+                title={t('settings.compare.desc')}
                 disabled={compareDisabled}
                 onClick={(e) => {
                   e.stopPropagation();
@@ -596,6 +599,9 @@ export function SettingsPopover({ open, onClose, triggerRef }: Props) {
 
           <Row
             name={t('settings.resetWeights.name')}
+            // Visible, not a `title`: a disabled button fires no pointer
+            // events, so the tooltip was unreadable in exactly the state
+            // where the button explains nothing by being greyed out.
             desc={t('settings.resetWeights.desc')}
             ctrl={
               <button
@@ -704,12 +710,12 @@ export function SettingsPopover({ open, onClose, triggerRef }: Props) {
 
           <Row
             name={t('settings.gridSnap.name')}
-            desc={t('settings.gridSnap.desc')}
             onClick={toggleGridSnap}
             ctrl={
               <button
                 type="button"
                 aria-label={t('settings.gridSnap.name')}
+                title={t('settings.gridSnap.desc')}
                 aria-pressed={gridSnapEnabled}
                 className={`${styles.toggle} ${gridSnapEnabled ? styles.on : ''}`}
                 onClick={(e) => {
@@ -722,12 +728,12 @@ export function SettingsPopover({ open, onClose, triggerRef }: Props) {
 
           <Row
             name={t('settings.tooltips.name')}
-            desc={t('settings.tooltips.desc')}
             onClick={toggleTooltips}
             ctrl={
               <button
                 type="button"
                 aria-label={t('settings.tooltips.name')}
+                title={t('settings.tooltips.desc')}
                 aria-pressed={tooltipsEnabled}
                 className={`${styles.toggle} ${tooltipsEnabled ? styles.on : ''}`}
                 onClick={(e) => {
@@ -740,9 +746,13 @@ export function SettingsPopover({ open, onClose, triggerRef }: Props) {
 
           <Row
             name={t('settings.nodeMode.name')}
-            desc={t('settings.nodeMode.desc')}
             ctrl={
-              <div className={styles.seg} role="group" aria-label={t('settings.nodeMode.name')}>
+              <div
+                className={styles.seg}
+                role="group"
+                aria-label={t('settings.nodeMode.name')}
+                title={t('settings.nodeMode.desc')}
+              >
                 <button
                   type="button"
                   className={`${styles.segItem} ${beginnerMode ? styles.active : ''}`}
@@ -769,9 +779,13 @@ export function SettingsPopover({ open, onClose, triggerRef }: Props) {
 
           <Row
             name={t('settings.edgeStyle.name')}
-            desc={t('settings.edgeStyle.desc')}
             ctrl={
-              <div className={styles.seg} role="group" aria-label={t('settings.edgeStyle.name')}>
+              <div
+                className={styles.seg}
+                role="group"
+                aria-label={t('settings.edgeStyle.name')}
+                title={t('settings.edgeStyle.desc')}
+              >
                 <button
                   type="button"
                   className={`${styles.segItem} ${edgeStyle === 'circuit' ? styles.active : ''}`}

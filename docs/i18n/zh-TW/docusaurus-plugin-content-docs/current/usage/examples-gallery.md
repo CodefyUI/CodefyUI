@@ -22,7 +22,7 @@ CodefyUI 在 `examples/` 底下隨附一整套可直接執行的範例 graph。�
 所有列出的範例都可以離線直接執行，只有四個例外：
 
 - **Train a Causal LM on TinyStories** 第一次執行時會從 Hugging Face Hub 下載 TinyStories 語料與 gpt2 的 BPE ranks，並且需要一張有足夠空間容納 203,668,480 參數模型的 GPU。它的說明卡開頭會列出這兩項需求；完整步驟、token 預算與記憶體調整選項則放在 graph 旁邊的 `README.md`（`examples/LLM/TrainCausalLM-TinyStories/`）。兩份下載都會被快取，之後再次執行也能離線完成。
-- **Sentence Similarity (zh-TW)** 需要 `sentence-embeddings` 套件包。這是一次性的安裝，可以在套件中心（工具列 > 設定 > 選用套件）安裝，或執行 `cdui packs install sentence-embeddings`；graph 執行時不會自動下載該套件包。安裝後，這個範例就能離線在 CPU 上執行，幾秒鐘就結束。見[選用套件包](./optional-packs)。
+- **Sentence Similarity (zh-TW)** 需要 `sentence-embeddings` 套件包。這是一次性的安裝，可以在套件中心（工具列 > 設定 > 選用套件與外掛）安裝，或執行 `cdui packs install sentence-embeddings`；graph 執行時不會自動下載該套件包。安裝後，這個範例就能離線在 CPU 上執行，幾秒鐘就結束。見[選用套件包](./optional-packs)。
 - **RAG, fully local** 需要下載兩個項目：`rag` 套件包裡的 `qwen2.5-0.5b-instruct`，以及 `sentence-embeddings` 裡的 `multilingual-e5-small`，合計約 1.5 GB。安裝 `rag` 只會加入該套件包的 Python 套件，不含編碼器，所以還需要另外選取第二個項目。兩個項目都安裝後，文件、搜尋與生成都在本機處理，不會把資料傳送到外部。CPU 上大約每秒生成幾個 token，所以答案可能需要幾秒到幾十秒；這是依模型大小估算，不是實測值，使用 GPU 會快得多。
 - **RAG with a chat API** 使用同一條檢索鏈，但最後一個節點是 `LLMChat`，所以它只需要 `multilingual-e5-small`，以及可接收 prompt 的服務。預設使用本機的 [Ollama](https://ollama.com)（先執行 `ollama pull qwen2.5:0.5b`），資料仍不會離開本機；把 `provider` 換成 hosted model 後，檢索到的內容會送給第三方，而且需要在環境變數中設定 key。
 

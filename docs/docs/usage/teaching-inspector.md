@@ -63,8 +63,8 @@ The toolbar **Settings** popover groups every per-tab teaching/training switch i
 |---|---|---|
 | Execution | **Compute device** | The device the run uses; nodes set to `auto` follow it. CPU by default. |
 | LLM Providers | **ChatGPT Codex account** | **Sign in** / **Sign out** / **Refresh** for the Codex provider — see [Graph Copilot](/advanced/graph-copilot). |
-| Optional packs | **Package Center** | Opens the Package Center; the row counts installed packs. |
-| Plugins | **Plugin Center** | Opens the [Plugin Center](/advanced/plugins#plugin-center). |
+| Optional Packs & Plugins | **Package Center** | Opens the Package Center; the row counts installed packs. |
+| | **Plugin Center** | Opens the [Plugin Center](/advanced/plugins#plugin-center); the row counts installed and available plugins. |
 | Recording & Inspection | **Record node outputs** | Capture each completed node's full output for the Inspector. On by default; turn it off before a heavy training run. |
 | | **Verbose internals** | Instrumented nodes record their intermediate steps (attention scores, softmax temperatures, ...) — feeds the **Steps** tab. With this on, nothing is served from cache; every node re-executes. |
 | | **Compare segment** | **Create segment** wraps two selected nodes in a HEAD/TAIL bubble; **Clear active** removes the highlighted one. |

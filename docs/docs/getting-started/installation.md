@@ -40,7 +40,7 @@ Open [http://localhost:8000](http://localhost:8000). A single uvicorn process se
 :::note
 This quick start assumes the default PyTorch build, which works on every platform (CPU / Apple Silicon MPS). For a specific NVIDIA CUDA version, AMD ROCm, or to verify GPU detection, see **[GPU & Device Setup](./gpu-device)**.
 
-Switching build after the fact does not need a terminal either: on a server started with `cdui start`, the **GPU PyTorch** card in the Package Center (toolbar > Settings > Optional packs) installs the matching wheel and restarts the server for you, with the same `cdui install --gpu <choice>` line printed underneath for when you would rather run it yourself. See [Installs that restart the server](/usage/optional-packs#installs-that-restart-the-server).
+Switching build after the fact does not need a terminal either: on a server started with `cdui start`, the **GPU PyTorch** card in the Package Center (toolbar > Settings > Optional Packs & Plugins) installs the matching wheel and restarts the server for you, with the same `cdui install --gpu <choice>` line printed underneath for when you would rather run it yourself. See [Installs that restart the server](/usage/optional-packs#installs-that-restart-the-server).
 :::
 
 ## Install flags & environment variables
@@ -82,7 +82,7 @@ Then open the frontend, load the **Train CNN on MNIST** example, and click **Run
 
 ## Optional packs
 
-The install above is deliberately small, so the large extras some lessons need — `sentence-transformers`, the embedding models (90 MB to 470 MB each), the 69 MB GloVe word-vector table — are not in it; install the ones you want from the **Package Center** (toolbar > Settings > Optional packs) or with `cdui packs install <id>`. Nothing else changes: a graph run never downloads pack contents on its own, so a node whose pack is missing stops with a message naming it instead of pulling half a gigabyte mid-run.
+The install above is deliberately small, so the large extras some lessons need — `sentence-transformers`, the embedding models (90 MB to 470 MB each), the 69 MB GloVe word-vector table — are not in it; install the ones you want from the **Package Center** (toolbar > Settings > Optional Packs & Plugins) or with `cdui packs install <id>`. Nothing else changes: a graph run never downloads pack contents on its own, so a node whose pack is missing stops with a message naming it instead of pulling half a gigabyte mid-run.
 
 See **[Optional Packs](/usage/optional-packs)** for the catalog, where the files land, and which embedding model to pick.
 

@@ -40,7 +40,7 @@ cdui start
 :::note
 本快速開始假設使用預設的 PyTorch 版本，它適用於所有平台（CPU / Apple Silicon MPS）。若需特定的 NVIDIA CUDA 版本、AMD ROCm，或想驗證 GPU 偵測，請參考 **[GPU 與裝置設定](./gpu-device)**。
 
-安裝後切換版本也不必使用終端機。伺服器若由 `cdui start` 啟動，套件中心（工具列 > 設定 > 選用套件）裡的 **GPU 版 PyTorch** 卡片可以安裝對應的 wheel 並重新啟動伺服器。卡片下方也會顯示等效的 `cdui install --gpu <choice>` 指令，供手動執行。詳見[讓伺服器重新啟動的安裝](/usage/optional-packs#讓伺服器重新啟動的安裝)。
+安裝後切換版本也不必使用終端機。伺服器若由 `cdui start` 啟動，套件中心（工具列 > 設定 > 選用套件與外掛）裡的 **GPU 版 PyTorch** 卡片可以安裝對應的 wheel 並重新啟動伺服器。卡片下方也會顯示等效的 `cdui install --gpu <choice>` 指令，供手動執行。詳見[讓伺服器重新啟動的安裝](/usage/optional-packs#讓伺服器重新啟動的安裝)。
 :::
 
 ## 安裝旗標與環境變數
@@ -82,7 +82,7 @@ curl http://127.0.0.1:8000/api/health
 
 ## 選用套件包
 
-上面的安裝刻意保持精簡，因此不包含某些課程需要的大型附加內容，例如 `sentence-transformers`、各個嵌入模型（每個 90 MB 到 470 MB）與 69 MB 的 GloVe 詞向量表。你可以在**套件中心**（工具列 > 設定 > 選用套件）或用 `cdui packs install <id>` 安裝需要的項目。其他行為不變：執行圖形時不會自行下載套件包內容；缺少套件包的節點會停止並指出所需套件包，不會在執行途中下載數百 MB 的內容。
+上面的安裝刻意保持精簡，因此不包含某些課程需要的大型附加內容，例如 `sentence-transformers`、各個嵌入模型（每個 90 MB 到 470 MB）與 69 MB 的 GloVe 詞向量表。你可以在**套件中心**（工具列 > 設定 > 選用套件與外掛）或用 `cdui packs install <id>` 安裝需要的項目。其他行為不變：執行圖形時不會自行下載套件包內容；缺少套件包的節點會停止並指出所需套件包，不會在執行途中下載數百 MB 的內容。
 
 型錄內容、檔案會放在哪裡，以及該挑哪一個嵌入模型，請見 **[選用套件包](/usage/optional-packs)**。
 

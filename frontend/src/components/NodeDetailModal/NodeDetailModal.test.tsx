@@ -1132,7 +1132,9 @@ describe('NodeDetailModal — Docs tab', () => {
     fireEvent.click(screen.getByRole('tab', { name: 'Docs' }));
     const docs = within(screen.getByRole('tabpanel'));
 
-    expect(docs.getByText('This node ships no description.')).toBeInTheDocument();
+    // All three read the same way; they are three consecutive lines of one
+    // panel.
+    expect(docs.getByText('This node has no description.')).toBeInTheDocument();
     expect(docs.getByText('This node has no parameters.')).toBeInTheDocument();
     expect(docs.getAllByText('This node has no ports.')).toHaveLength(2);
     await waitFor(() => expect(mockNodeDef).toHaveBeenCalled());

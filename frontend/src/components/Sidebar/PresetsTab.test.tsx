@@ -58,10 +58,25 @@ afterEach(() => {
 });
 
 describe('PresetsTab', () => {
-  it('renders the title, search box, and footer hint', () => {
+  it('renders the title, search box, and the drag instruction', () => {
     render(<PresetsTab />);
     expect(screen.getByText('Presets')).toBeTruthy();
     expect(screen.getByPlaceholderText('Search presets...')).toBeTruthy();
+    expect(screen.getByText('Drag presets onto the canvas')).toBeTruthy();
+  });
+
+  it('keeps the drag instruction beside a populated list', () => {
+    seedStore({ presetCategorized: { CNN: [preset('CNNBlock', 'CNN')] } });
+    render(<PresetsTab />);
+    // A preset is drag-only: the item is a draggable div with no button role
+    // and no keyboard path, so a reader who does not already know the gesture
+    // cannot use this tab at all. That is why the instruction stays where the
+    // list is -- an empty state would only reach a reader with nothing to
+    // drag, and the server ships presets, so that state is nearly unreachable.
+    const item = screen.getByText('CNNBlock').closest('div')!.parentElement!
+      .parentElement!;
+    expect(item.getAttribute('draggable')).toBe('true');
+    expect(screen.queryByRole('button', { name: 'CNNBlock' })).toBeNull();
     expect(screen.getByText('Drag presets onto the canvas')).toBeTruthy();
   });
 

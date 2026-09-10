@@ -189,6 +189,18 @@ function makeTriggerRef() {
   return ref;
 }
 
+/**
+ * The settings row whose visible name is `name`.
+ *
+ * By structure, not by role: the row widens the click target for a pointer
+ * and is deliberately not a control, so there is no role or test id to reach
+ * it by. `name` renders into `.name`, whose parent is the label column and
+ * whose grandparent is the row.
+ */
+function rowFor(name: string): HTMLElement {
+  return screen.getByText(name).parentElement!.parentElement!;
+}
+
 /** Replace the active tab with a single tab carrying the supplied overrides. */
 function setupTab(overrides: Partial<ReturnType<typeof baseTab>> = {}) {
   const tab = { ...baseTab(), ...overrides };
@@ -348,7 +360,21 @@ describe('SettingsPopover', () => {
     expect(await screen.findByRole('button', { name: 'Sign in' })).toBeInTheDocument();
   });
 
-  // ── Optional packs (the Package Center entry point) ───────────────
+  // ── Optional Packs & Plugins ──────────────────────────────────────
+
+  it('puts both centers in one section under one heading', () => {
+    render(<SettingsPopover open onClose={vi.fn()} triggerRef={makeTriggerRef()} />);
+
+    const packSection = rowFor('Package Center').parentElement!;
+    const pluginSection = rowFor('Plugin Center').parentElement!;
+    // Siblings, not two sections that happen to sit next to each other: split
+    // again, each row would carry a heading of its own and the two summaries
+    // could no longer be read against each other.
+    expect(packSection).toBe(pluginSection);
+    expect(within(packSection).getByText('Optional Packs & Plugins')).toBeInTheDocument();
+    // And exactly one heading over the pair.
+    expect(within(packSection).queryByText('Plugins')).toBeNull();
+  });
 
   it('summarises installed packs and opens the Package Center, closing the popover', () => {
     seedPacks([
@@ -358,7 +384,8 @@ describe('SettingsPopover', () => {
     const onClose = vi.fn();
     render(<SettingsPopover open onClose={onClose} triggerRef={makeTriggerRef()} />);
 
-    expect(screen.getByText('Optional packs')).toBeInTheDocument();
+    // One heading for both centers.
+    expect(screen.getByText('Optional Packs & Plugins')).toBeInTheDocument();
     expect(screen.getByText('Package Center')).toBeInTheDocument();
     expect(screen.getByText('1 of 2 packs installed')).toBeInTheDocument();
     // The row is a VIEW of the store: a catalog that is already here is
@@ -462,7 +489,7 @@ describe('SettingsPopover', () => {
     expect(mockedListPacks).not.toHaveBeenCalled();
   });
 
-  // ── Plugins (the Plugin Center entry point) ───────────────────────
+  // ── The Plugin Center entry point, in that same section ───────────
 
   it('counts what is installed and what is installable, and opens the Plugin Center', () => {
     seedPlugins([
@@ -478,7 +505,6 @@ describe('SettingsPopover', () => {
     const onClose = vi.fn();
     render(<SettingsPopover open onClose={onClose} triggerRef={makeTriggerRef()} />);
 
-    expect(screen.getByText('Plugins')).toBeInTheDocument();
     expect(screen.getByText('Plugin Center')).toBeInTheDocument();
     expect(screen.getByText('2 installed, 2 available')).toBeInTheDocument();
     // A view of the store: a catalog already here is never re-read.
@@ -509,8 +535,8 @@ describe('SettingsPopover', () => {
     seedPlugins([], { unsupported: true });
     render(<SettingsPopover open onClose={vi.fn()} triggerRef={makeTriggerRef()} />);
 
-    // Scoped to the row: the packs row reuses this same sentence about its
-    // own server, and the two verdicts are independent.
+    // Scoped to the row: the packs row says the same sentence about its own
+    // server, and the two verdicts are independent.
     const row = screen.getByText('Plugin Center').parentElement!;
     expect(within(row).getByText('Not available on this server')).toBeInTheDocument();
     expect(screen.queryByText('0 installed, 0 available')).toBeNull();
@@ -597,6 +623,24 @@ describe('SettingsPopover', () => {
     expect(options[0]).toHaveTextContent('CPU');
   });
 
+  it('keeps what the setting is for on the row, not in a tooltip', async () => {
+    render(<SettingsPopover open onClose={vi.fn()} triggerRef={makeTriggerRef()} />);
+    const row = rowFor('Compute device');
+    // Since #436 a graph carries its own device and this one is only the
+    // fallback, so "which graphs use it" is the row's whole meaning. A
+    // `title` on the select would say it to a hovering mouse and to nothing
+    // else -- not to a keyboard, not to a touch screen.
+    expect(
+      within(row).getByText(/Used by graphs with no device of their own/),
+    ).toBeInTheDocument();
+    expect(
+      await within(row).findByText(/Best available on this server: Apple MPS/),
+    ).toBeInTheDocument();
+    expect(within(row).getByRole('combobox', { name: 'Compute device' })).not.toHaveAttribute(
+      'title',
+    );
+  });
+
   it("shows the server's best device as a hint, without adopting it", async () => {
     render(<SettingsPopover open onClose={vi.fn()} triggerRef={makeTriggerRef()} />);
     expect(
@@ -679,8 +723,7 @@ describe('SettingsPopover', () => {
   it('toggles record via the row click (interactive Row onClick path)', () => {
     render(<SettingsPopover open onClose={vi.fn()} triggerRef={makeTriggerRef()} />);
     // Click the row (the parent of the toggle), not the toggle itself.
-    const row = screen.getByText('Record node outputs').closest('[role="button"]')!;
-    fireEvent.click(row);
+    fireEvent.click(rowFor('Record node outputs'));
     expect(useTabStore.getState().tabs[0].recordOutputs).toBe(false);
   });
 
@@ -690,38 +733,22 @@ describe('SettingsPopover', () => {
     expect(useTabStore.getState().tabs[0].verboseMode).toBe(true);
   });
 
-  // ── Row keyboard interaction ──────────────────────────────────────
+  // ── One control per setting ───────────────────────────────────────
 
-  it('activates an interactive row via Enter key', () => {
+  it('names the toggle and not the row, so the setting has one control', () => {
     render(<SettingsPopover open onClose={vi.fn()} triggerRef={makeTriggerRef()} />);
-    const row = screen.getByText('Record node outputs').closest('[role="button"]')!;
-    fireEvent.keyDown(row, { key: 'Enter' });
-    expect(useTabStore.getState().tabs[0].recordOutputs).toBe(false);
-  });
-
-  it('activates an interactive row via Space key', () => {
-    render(<SettingsPopover open onClose={vi.fn()} triggerRef={makeTriggerRef()} />);
-    const row = screen.getByText('Verbose internals').closest('[role="button"]')!;
-    fireEvent.keyDown(row, { key: ' ' });
-    expect(useTabStore.getState().tabs[0].verboseMode).toBe(true);
-  });
-
-  it('ignores other keys on an interactive row', () => {
-    render(<SettingsPopover open onClose={vi.fn()} triggerRef={makeTriggerRef()} />);
-    const row = screen.getByText('Record node outputs').closest('[role="button"]')!;
-    fireEvent.keyDown(row, { key: 'x' });
-    expect(useTabStore.getState().tabs[0].recordOutputs).toBe(true);
-  });
-
-  it('non-interactive row (Compare) has no role=button and ignores keydown', () => {
-    render(<SettingsPopover open onClose={vi.fn()} triggerRef={makeTriggerRef()} />);
-    // The Compare row has no onClick -> not interactive.
-    const compareName = screen.getByText('Compare segment');
-    const row = compareName.closest('div')!.parentElement!.parentElement!;
-    // Fire keydown to exercise the `interactive && ...` short-circuit (false branch).
-    fireEvent.keyDown(row, { key: 'Enter' });
-    // Nothing to assert state-wise; reaching here without throwing covers the branch.
-    expect(compareName).toBeInTheDocument();
+    // The row is a click target, not a second button: while it carried
+    // `role="button"` this matched the row AND its toggle, two controls with
+    // one name and only one of them carrying the state.
+    const named = screen.getAllByRole('button', { name: 'Record node outputs' });
+    expect(named).toHaveLength(1);
+    expect(named[0]).toHaveAttribute('aria-pressed', 'true');
+    // Clicking the row still works; it is simply not announced or focused as
+    // a control of its own.
+    const row = rowFor('Record node outputs');
+    expect(row).not.toHaveAttribute('role');
+    expect(row).not.toHaveAttribute('tabindex');
+    expect(row).toContainElement(named[0]);
   });
 
   // ── Compare segment ───────────────────────────────────────────────
@@ -742,6 +769,14 @@ describe('SettingsPopover', () => {
     });
     const onClose = vi.fn();
     render(<SettingsPopover open onClose={onClose} triggerRef={makeTriggerRef()} />);
+
+    // The copy describes THIS rule. n1 is selected second and still becomes
+    // the head, so a description phrased around selection order would be
+    // telling the reader something the handler does not do.
+    expect(screen.getByRole('button', { name: 'Create segment' })).toHaveAttribute(
+      'title',
+      "Compares the left-hand selected node's input with the right-hand one's output.",
+    );
 
     fireEvent.click(screen.getByRole('button', { name: 'Create segment' }));
 
@@ -888,12 +923,26 @@ describe('SettingsPopover', () => {
     fireEvent.click(autoBtn);
     expect(useTabStore.getState().tabs[0].autoBackward).toBe(true);
     // Also exercise the row onClick (backward ? toggleAutoBackward : undefined => defined)
-    const row = screen.getByText('Auto-synthesize loss').closest('[role="button"]')!;
-    fireEvent.click(row);
+    fireEvent.click(rowFor('Auto-synthesize loss'));
     expect(useTabStore.getState().tabs[0].autoBackward).toBe(false);
   });
 
   // ── Reset weights ─────────────────────────────────────────────────
+
+  it('explains Reset on the row, which is the only place a disabled button can', () => {
+    setupTab({ graphId: '' });
+    render(<SettingsPopover open onClose={vi.fn()} triggerRef={makeTriggerRef()} />);
+    const row = rowFor('Reset all weights now');
+    const btn = within(row).getByRole('button', { name: 'Reset' });
+    // A disabled button fires no pointer events, so a `title` on it never
+    // opens -- and this is the state where the reader has most reason to ask
+    // what the greyed-out button would have done.
+    expect(btn).toBeDisabled();
+    expect(btn).not.toHaveAttribute('title');
+    expect(
+      within(row).getByText('The next run starts from fresh initialisation.'),
+    ).toBeInTheDocument();
+  });
 
   it('reset weights is disabled when there is no graphId and returns early', async () => {
     setupTab({ graphId: '' });

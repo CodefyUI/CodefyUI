@@ -88,6 +88,16 @@
   border-bottom: 0;
 }
 
+/* A section heading that carries its own control ("This Server" + Refresh),
+   so the section needs no row whose name repeats the heading. */
+.sectionHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-4);
+  padding-right: var(--sp-5);
+}
+
 .sectionTitle {
   padding: var(--sp-3) var(--sp-5) var(--sp-2);
   font-size: var(--fs-xs);
@@ -104,6 +114,12 @@
   padding: var(--sp-3) var(--sp-5);
   align-items: start;
   transition: background var(--transition-fast);
+}
+
+/* A row with no description is one line tall on the left, so the control
+   reads as belonging to the name rather than sitting above it. */
+.row.compact {
+  align-items: center;
 }
 
 .row.interactive {

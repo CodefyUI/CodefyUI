@@ -135,12 +135,12 @@ def require_pack(pack_id: str, item_id: str | None = None) -> None:
     title = pack.title if pack is not None else pack_id
     if item_id is None:
         message = (f"{title} is not installed. Open Package Center "
-                   "(toolbar > Settings > Optional packs) to install it; "
+                   "(toolbar > Settings > Optional Packs & Plugins) to install it; "
                    "graph runs never download")
     else:
         message = (f"Model '{item_id}' from the {title} pack is not "
                    "downloaded. Open Package Center "
-                   "(toolbar > Settings > Optional packs) to download it; "
+                   "(toolbar > Settings > Optional Packs & Plugins) to download it; "
                    "graph runs never download")
     raise PackMissingError(pack_id, message)
 

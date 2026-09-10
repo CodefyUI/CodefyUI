@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { HeatmapPlot, type HeatmapColormap } from './HeatmapPlot';
 import { fetchOutput } from '../../api/executionOutputs';
+import { useI18n } from '../../i18n';
 import styles from './HeatmapModal.module.css';
 
 export interface HeatmapModalProps {
@@ -79,6 +80,7 @@ function HeatmapModalBody({
   variant = 'attention',
   normalizePerRow,
 }: Omit<HeatmapModalProps, 'isOpen'>) {
+  const { t } = useI18n();
   // Whether this open will REST-fetch the tensor (no inline values, and we
   // have the run coordinates to fetch with).
   const canFetch = !inlineData && !!runId && !!nodeId && !!port;
@@ -87,7 +89,7 @@ function HeatmapModalBody({
   >(null);
   const [loading, setLoading] = useState(canFetch);
   const [error, setError] = useState<string | null>(
-    !inlineData && !canFetch ? 'Cannot fetch: run is no longer available.' : null,
+    !inlineData && !canFetch ? t('heatmap.unavailable') : null,
   );
   const [viewport, setViewport] = useState(() => ({
     // window always exists under jsdom / the browser, so the SSR `: 1280` / `: 800`
@@ -120,7 +122,7 @@ function HeatmapModalBody({
         // check alone doesn't discriminate it out. The `'values' in data`
         // guard rules out outputs that don't carry tensor values at all.
         if (data.type !== 'tensor' || !('values' in data)) {
-          setError(`Expected tensor, got ${data.type}`);
+          setError(t('heatmap.notTensor', { type: data.type }));
           return;
         }
         const coerced = coerceTensorValues((data as { values: unknown }).values);
@@ -147,6 +149,8 @@ function HeatmapModalBody({
     return () => {
       cancelled = true;
     };
+    // `t` is deliberately not a dependency: re-running this effect when the
+    // locale changes would re-fetch the whole tensor to restate one sentence.
   }, [canFetch, runId, nodeId, port, variant]);
 
   // ESC closes
@@ -211,20 +215,17 @@ function HeatmapModalBody({
             type="button"
             onClick={onClose}
             className={styles.closeBtn}
-            aria-label="Close"
+            aria-label={t('scatter.close')}
           >
             ×
           </button>
         </div>
         <div className={styles.content}>
-          {loading && <div className={styles.status}>Loading full tensor…</div>}
+          {loading && <div className={styles.status}>{t('heatmap.loading')}</div>}
           {error && !loading && (
             <div className={`${styles.status} ${styles.error}`}>
-              <div>Couldn't load: {error}</div>
-              <div className={styles.errorHint}>
-                Re-run the graph if the previous run has expired, or shorten
-                the input sequence so values fit in the inline preview.
-              </div>
+              <div>{t('heatmap.loadError', { error })}</div>
+              <div className={styles.errorHint}>{t('heatmap.loadErrorHint')}</div>
             </div>
           )}
           {data && !loading && (
@@ -244,10 +245,12 @@ function HeatmapModalBody({
           <span>
             seq_len = {seqLen}
             {effectiveNormalize && data && (
-              <span className={styles.dim}> · row-normalised colours</span>
+              <span className={styles.dim}> · {t('heatmap.rowNormalised')}</span>
             )}
           </span>
-          <span className={styles.dim}>click outside or press Esc to close</span>
+          {/* Same key as ScatterModal's footer: one close hint, one wording,
+              and this modal's copy of it is no longer English-only. */}
+          <span className={styles.dim}>{t('scatter.closeHint')}</span>
         </div>
       </div>
     </div>,
