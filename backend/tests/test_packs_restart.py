@@ -81,9 +81,26 @@ def launcher(tmp_path, monkeypatch) -> list[str]:
 
 @pytest.fixture
 def cu128(monkeypatch):
-    """Pin what this machine "should" have, so no test shells out to a GPU."""
+    """Pin what this machine "should" have, so no test shells out to a GPU.
+
+    The PLATFORM goes with the card. ``resolve_gpu_torch`` checks a pick
+    against ``installable_variants()``, which reads ``sys.platform``, so a
+    box that recommends cu128 also has to be one a CUDA wheel exists for --
+    otherwise every test below that builds a cu128 pending file would pass
+    on Linux and fail on a Mac, where there is no build to switch to.
+
+    The FUNCTION is patched rather than ``sys.platform`` itself, because two
+    other readers of that name must keep answering for the real machine:
+    ``spawn_helper`` picks its detach flags from it, and ``_pid_alive`` uses
+    it to choose between a null signal and a process handle -- on Windows
+    ``os.kill(pid, 0)`` terminates the process instead of asking after it.
+    An explicit ``system=`` still gets the real table.
+    """
     monkeypatch.setattr(restart, "gpu_info",
                         lambda: {"recommended_variant": "cu128"})
+    real = restart.installable_variants
+    monkeypatch.setattr(restart, "installable_variants",
+                        lambda system=None: real(system or "linux"))
 
 
 def _pending_on_disk() -> restart.PendingRestart:
@@ -193,9 +210,13 @@ def test_runs_active_sees_running_and_queued_runs():
 # -- which wheel, and from where -------------------------------------------
 
 def test_resolve_gpu_torch_maps_variants_and_rejects_mps(cu128):
-    for variant in restart.VARIANTS:
-        if variant == "mps":
-            continue
+    # What a machine may pick is its platform's offer, and the fixture pins
+    # the one platform whose offer is the entire map bar "mps" -- so this
+    # still walks every variant that names an index anywhere, on a Windows
+    # runner (no ROCm wheels) and on a Mac (no wheels at all) alike.
+    offered = restart.installable_variants()
+    assert set(offered) == set(restart.VARIANTS) - {"mps"}
+    for variant in offered:
         assert restart.resolve_gpu_torch(variant) == (
             variant, restart.TORCH_INDEX_URLS[variant])
 
@@ -232,7 +253,7 @@ def test_resolve_gpu_torch_names_the_variants_it_would_accept(cu128):
             f"the refusal for {bogus!r} does not name the real variants")
 
 
-def test_gpu_map_parity_with_dev_py():
+def test_gpu_map_parity_with_dev_py(monkeypatch):
     """The RESOLVER, not only the map, has to agree with the installer CLI.
 
     ``test_api_packs.test_gpu_info_never_raises_and_mirrors_dev_py`` already
@@ -242,16 +263,29 @@ def test_gpu_map_parity_with_dev_py():
     file and dev.py's helper installs from it, so what matters here is that
     ``resolve_gpu_torch`` hands back exactly the URL ``cdui install --gpu``
     would have used -- for every variant a user can pick.
+
+    Which variants those ARE is now per-platform, so the loop asks each
+    platform for its own offer instead of the host for all of them: on a Mac
+    that is nothing at all, and on Windows the ROCm builds are gone. The
+    union is asserted at the end, so the pair of them still covers every
+    variant in the map and a new one cannot slip in unchecked.
     """
     import dev  # scripts/dev.py -- conftest puts scripts/ on sys.path
 
-    for variant in restart.VARIANTS:
-        if variant == "mps":
-            assert dev.TORCH_INDEX_URLS[variant] is None, (
-                "mps grew an index URL; resolve_gpu_torch must stop refusing it")
-            continue
-        assert restart.resolve_gpu_torch(variant) == (
-            variant, dev.TORCH_INDEX_URLS[variant]), variant
+    real = restart.installable_variants
+    checked: set[str] = set()
+    for system in ("darwin", "linux", "win32"):
+        monkeypatch.setattr(restart, "installable_variants",
+                            lambda _asked=None, _system=system: real(_system))
+        for variant in real(system):
+            assert restart.resolve_gpu_torch(variant) == (
+                variant, dev.TORCH_INDEX_URLS[variant]), (system, variant)
+            checked.add(variant)
+
+    assert checked == set(restart.VARIANTS) - {"mps"}, (
+        "a variant no platform offers, or one no platform checked")
+    assert dev.TORCH_INDEX_URLS["mps"] is None, (
+        "mps grew an index URL; resolve_gpu_torch must stop refusing it")
 
 
 # -- the pending file ------------------------------------------------------

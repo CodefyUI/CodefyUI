@@ -32,6 +32,7 @@ import importlib
 import re
 import sys
 import tempfile
+import threading
 from collections.abc import Callable, Sequence
 from pathlib import Path
 
@@ -209,6 +210,13 @@ def install_deps_step(
 
     tail: list[str] = []
     logged: list[str] = []
+    # Set by the runner while uv is still talking, because it is the only
+    # moment the marker is reachable: uv says "No solution found" near the
+    # top and then explains itself over hundreds of lines that never repeat
+    # it, so both windows below have long forgotten it by the time uv exits.
+    # Asking ``tail`` afterwards answered a recoverable conflict with a
+    # version dump and no way forward.
+    conflict = threading.Event()
 
     def _watched(event: dict) -> None:
         # The failure with the most nameable cause is the one that filled
@@ -223,7 +231,8 @@ def install_deps_step(
 
     try:
         returncode = _run_uv(
-            specs, emit=_watched, cancel_check=cancel_check, tail=tail
+            specs, emit=_watched, cancel_check=cancel_check, tail=tail,
+            conflict=conflict,
         )
     finally:
         # Whatever happened. uv installs in dependency order and stops at the
@@ -236,7 +245,7 @@ def install_deps_step(
 
     if returncode != 0:
         detail = "\n".join(tail).strip() or "\n".join(logged).strip()
-        if packs_runner.looks_like_resolver_conflict(tail):
+        if conflict.is_set():
             command = manual_install_command(specs)
             raise PluginNeedsRestart(
                 "This plugin's Python packages cannot be installed while the "
@@ -260,12 +269,17 @@ def _run_uv(
     emit: Callable[[dict], None],
     cancel_check: Callable[[], bool],
     tail: list[str],
+    conflict: threading.Event,
 ) -> int:
     """Run uv under a constraints file written for this call, and only this one.
 
     The file describes THIS interpreter at THIS moment, so caching it would
     pin an install to a machine state that has since changed -- which is why
     it is written into a directory that goes away with the call.
+
+    *tail* and *conflict* are the runner's own out-parameters, passed
+    straight through: the caller owns both, and this function exists only to
+    put a constraints file around the call.
     """
     with tempfile.TemporaryDirectory(prefix="codefyui-plugin-deps-") as workdir:
         # uv runs in the throwaway directory the constraints file lives in.
@@ -284,6 +298,7 @@ def _run_uv(
                 cancel_check=cancel_check,
                 cwd=workdir_path,
                 tail=tail,
+                conflict=conflict,
             )
         except PackCancelled as exc:
             raise PluginCancelled(str(exc)) from exc

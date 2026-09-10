@@ -811,6 +811,8 @@ const zhTW: Record<TranslationKey, string> = {
   'packs.toast.cancelled': '已取消安裝。',
   'packs.toast.cancelFailed': '無法取消安裝：{message}',
   'packs.toast.busy': '已經有另一個安裝在進行中。',
+  'packs.toast.pluginBusy': '外掛安裝進行中，請等它完成後再試一次。',
+  'packs.toast.openPluginCenter': '開啟外掛中心',
   'packs.toast.needsCli': '這個套件目前無法從程式內安裝。請執行：{command}',
   'packs.toast.restartRetry': '安裝停在伺服器已載入的套件上。請到套件中心重新啟動伺服器來完成安裝。',
   'packs.toast.blocked': '請先安裝 {pack}。',
@@ -875,6 +877,7 @@ const zhTW: Record<TranslationKey, string> = {
   'packs.cancel': '取消安裝',
   'packs.cancelling': '正在取消...',
   'packs.remoteDisabled': '只能在執行伺服器的電腦上安裝。',
+  'packs.sessionExpired': '伺服器已重新啟動，請重新整理頁面後再試一次。',
 
   // Activity pane. `packs.activity.step.*` is keyed by the step id the job
   // sends, so an unknown step falls back to the server's own English label.
@@ -907,6 +910,8 @@ const zhTW: Record<TranslationKey, string> = {
   'packs.gpu.installed': '目前安裝：{variant}',
   'packs.gpu.recommended': '建議安裝：{variant}',
   'packs.gpu.variant': 'PyTorch 版本',
+  'packs.item.converting': '轉換中（只需一次）',
+  'packs.gpu.alreadyOptimal': '這台機器的 GPU 加速已包含在預設的 PyTorch 版本中，不需要另外安裝。',
   'packs.gpu.restartNote': '有圖在執行時不會重新啟動。',
   'packs.gpu.restartConfirm': '要安裝 {variant} 並重新啟動伺服器嗎？',
   'packs.gpu.installRestart': '安裝並重新啟動',
@@ -989,6 +994,7 @@ const zhTW: Record<TranslationKey, string> = {
     '{plugin} 的安裝停住了：它的 Python 套件需要先停止伺服器才能安裝，指令在外掛中心。',
   'pluginCenter.toast.inProgress': '有外掛仍在安裝中，可在外掛中心查看進度。',
   'pluginCenter.toast.openCenter': '開啟外掛中心',
+  'pluginCenter.toast.packBusy': '套件安裝進行中，請等它完成後再試一次。',
   'pluginCenter.updateFailed': '更新失敗：{message}',
   'pluginCenter.uninstall': '解除安裝',
   'pluginCenter.uninstallConfirm':

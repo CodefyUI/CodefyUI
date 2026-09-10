@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import {
   getSessionToken,
+  invalidateSessionToken,
   _setSessionTokenForTesting,
   apiFetch,
   wsUrlWithToken,
@@ -200,6 +201,102 @@ describe('apiFetch', () => {
     expect(fetchMock.mock.calls[0][0]).toBe('/api/auth/bootstrap');
     const headers = new Headers(fetchMock.mock.calls[1][1].headers);
     expect(headers.get('X-CodefyUI-Token')).toBe('bootstrapped');
+  });
+});
+
+/**
+ * The server mints a new token every time its process starts, and a browser
+ * tab outlives a restart — the Package Center restarts the server itself to
+ * finish a pack that was already imported. Without a retry, every POST from
+ * that tab (install a plugin, install a pack, run a graph) answers 403 until
+ * the user reloads the page.
+ */
+describe('apiFetch after the server rotates its token', () => {
+  it('re-bootstraps and replays the request once on a 403', async () => {
+    _setSessionTokenForTesting('stale');
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(errorResponse(403, 'Forbidden'))
+      .mockResolvedValueOnce(okResponse({ token: 'fresh' }))
+      .mockResolvedValueOnce(okResponse({ done: true }));
+    g.fetch = fetchMock as unknown as typeof fetch;
+
+    const res = await apiFetch('/api/plugins/install', {
+      method: 'POST',
+      body: '{"inspection_id":"i1"}',
+    });
+
+    expect(res.ok).toBe(true);
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    expect(new Headers(fetchMock.mock.calls[0][1].headers).get('X-CodefyUI-Token'))
+      .toBe('stale');
+    expect(fetchMock.mock.calls[1][0]).toBe('/api/auth/bootstrap');
+    const replay = fetchMock.mock.calls[2];
+    expect(replay[0]).toBe('/api/plugins/install');
+    expect(new Headers(replay[1].headers).get('X-CodefyUI-Token')).toBe('fresh');
+    expect(replay[1].body).toBe('{"inspection_id":"i1"}');
+  });
+
+  it('keeps the 403 when the token has not changed', async () => {
+    // A refusal that is about the request, not the token: the server refuses
+    // a remote plugin or pack install with 403 as well. One request, not two.
+    _setSessionTokenForTesting('same');
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(errorResponse(403, 'Forbidden'))
+      .mockResolvedValueOnce(okResponse({ token: 'same' }));
+    g.fetch = fetchMock as unknown as typeof fetch;
+
+    const res = await apiFetch('/api/plugins/install', { method: 'POST' });
+
+    expect(res.status).toBe(403);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('keeps the 403 when the bootstrap endpoint is unreachable', async () => {
+    _setSessionTokenForTesting('stale');
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(errorResponse(403, 'Forbidden'))
+      .mockRejectedValueOnce(new Error('network down'));
+    g.fetch = fetchMock as unknown as typeof fetch;
+
+    const res = await apiFetch('/api/plugins/install', { method: 'POST' });
+    expect(res.status).toBe(403);
+  });
+
+  it('leaves other error statuses alone', async () => {
+    _setSessionTokenForTesting('tok');
+    const fetchMock = vi.fn().mockResolvedValue(errorResponse(500, 'Server Error'));
+    g.fetch = fetchMock as unknown as typeof fetch;
+
+    const res = await apiFetch('/api/plugins/install', { method: 'POST' });
+    expect(res.status).toBe(500);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not replay a request whose body is a stream', async () => {
+    // The first request consumed it; a second would throw instead of sending.
+    _setSessionTokenForTesting('stale');
+    const fetchMock = vi.fn().mockResolvedValue(errorResponse(403, 'Forbidden'));
+    g.fetch = fetchMock as unknown as typeof fetch;
+
+    const body = new ReadableStream();
+    const res = await apiFetch('/api/plugins/install', { method: 'POST', body });
+    expect(res.status).toBe(403);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('invalidateSessionToken', () => {
+  it('makes the next call re-read the bootstrap endpoint', async () => {
+    _setSessionTokenForTesting('old');
+    const fetchMock = vi.fn().mockResolvedValue(okResponse({ token: 'new' }));
+    g.fetch = fetchMock as unknown as typeof fetch;
+
+    invalidateSessionToken();
+    await expect(getSessionToken()).resolves.toBe('new');
+    expect(fetchMock).toHaveBeenCalledWith('/api/auth/bootstrap');
   });
 });
 

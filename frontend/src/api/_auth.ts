@@ -52,6 +52,23 @@ export async function getSessionToken(): Promise<string> {
 }
 
 /**
+ * Drop the cached token so the next call re-reads /api/auth/bootstrap.
+ *
+ * The backend mints a new token every time its process starts (see
+ * `auth.py`), and a browser tab outlives a restart: the Package Center
+ * restarts the server itself to finish a pack that was already imported, and
+ * `cdui start` after a stop is the same event. From that moment the tab holds
+ * a token the server has never heard of, so every POST — install a plugin,
+ * install a pack, run a graph — comes back 403, and the WebSocket handshake
+ * is refused on every reconnect attempt. Re-reading the bootstrap endpoint is
+ * a local GET and gets the tab back in step.
+ */
+export function invalidateSessionToken(): void {
+  cachedToken = null;
+  inflight = null;
+}
+
+/**
  * Test-only escape hatch. Vitest setup pre-populates the token so we don't
  * have to mock the bootstrap endpoint in every test file.
  */
@@ -64,6 +81,13 @@ export function _setSessionTokenForTesting(token: string | null): void {
  * Drop-in replacement for ``fetch(url, init)`` that auto-attaches the session
  * token header on mutating requests. GET / HEAD / OPTIONS are passed through
  * unchanged.
+ *
+ * A 403 gets one retry with a freshly bootstrapped token, because the token
+ * this tab cached is refused verbatim after the server restarts — see
+ * {@link invalidateSessionToken}. The retry only goes out when the new token
+ * differs from the one just refused: 403 is also how the server refuses a
+ * remote plugin or pack install (`routes_plugins.py`, `routes_packs.py`), and
+ * that refusal must cost one request, not two.
  */
 export async function apiFetch(
   url: string,
@@ -74,9 +98,38 @@ export async function apiFetch(
     return fetch(url, init);
   }
   const token = await getSessionToken();
+  const res = await fetch(url, { ...init, headers: withToken(init, token) });
+  if (res.status !== 403 || !isReplayable(init.body)) return res;
+
+  invalidateSessionToken();
+  let fresh: string;
+  try {
+    fresh = await getSessionToken();
+  } catch {
+    // The server is unreachable now; the 403 we already have is the more
+    // useful answer to give the caller.
+    return res;
+  }
+  if (fresh === token) return res;
+  return fetch(url, { ...init, headers: withToken(init, fresh) });
+}
+
+/** *init*'s headers plus the session token. */
+function withToken(init: RequestInit, token: string): Headers {
   const headers = new Headers(init.headers);
   headers.set(TOKEN_HEADER, token);
-  return fetch(url, { ...init, headers });
+  return headers;
+}
+
+/**
+ * Whether this body can be sent a second time.
+ *
+ * Strings, `FormData` and blobs can. A `ReadableStream` cannot — the first
+ * request consumed it — so a request built from one keeps its 403 rather than
+ * being retried into a `TypeError`.
+ */
+function isReplayable(body: BodyInit | null | undefined): boolean {
+  return !(typeof ReadableStream !== 'undefined' && body instanceof ReadableStream);
 }
 
 /**

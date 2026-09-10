@@ -40,6 +40,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -172,6 +173,16 @@ def _run_pip_step(pack: Pack, *, emit, cancel_check) -> None:
           "label": f"Installing packages: {', '.join(pack.pip)}"})
 
     tail: list[str] = []
+    # Two answers out of one run, because they are asked of different
+    # windows. ``tail`` is the last few lines, for the message; ``conflict``
+    # is set by the runner the instant a line looks like one, because uv's
+    # "No solution found" lands near the top of the output and the
+    # derivation that follows -- hundreds of lines, none of them repeating
+    # the verdict -- pushes it out of any tail long before the process
+    # exits. Re-reading ``tail`` here instead is how a conflict that had a
+    # working answer ("restart, then run this") was reported as an
+    # unexplained crash.
+    conflict = threading.Event()
     with tempfile.TemporaryDirectory(prefix="codefyui-packs-") as workdir:
         # The constraints file describes THIS interpreter at THIS moment, so
         # it is written per job and thrown away with the job -- caching it
@@ -184,11 +195,12 @@ def _run_pip_step(pack: Pack, *, emit, cancel_check) -> None:
             cancel_check=cancel_check,
             cwd=BACKEND_DIR,
             tail=tail,
+            conflict=conflict,
         )
 
     if returncode != 0:
         detail = _tail_text(tail)
-        if runner.looks_like_resolver_conflict(tail):
+        if conflict.is_set():
             command = _restart_command(pack)
             raise PackNeedsRestart(
                 f"{pack.title} cannot be installed while the server is "

@@ -129,11 +129,21 @@ describe('GpuPackDetails — what this machine has', () => {
   });
 
   it('hides the select when the machine offers one build', () => {
+    // The one build is still worth installing here — this machine is on
+    // `cu128` and the offer is `cpu` — so the button stays and only the
+    // one-option picker goes.
     renderCard({
       restartAvailable: true,
-      gpu: gpu({ variants: ['cpu'], recommended_variant: 'cpu' }),
+      gpu: gpu({
+        variants: ['cpu'],
+        recommended_variant: 'cpu',
+        installed_variant: 'cu128',
+      }),
     });
     expect(screen.queryByLabelText('PyTorch build')).toBeNull();
+    expect(
+      screen.getByRole('button', { name: 'Install and restart' }),
+    ).toBeInTheDocument();
   });
 
   it('hides the select on a card that has no button to spend it', () => {
@@ -142,6 +152,144 @@ describe('GpuPackDetails — what this machine has', () => {
     // server writes — so it was a live-looking dead end.
     renderCard({ restartAvailable: false });
     expect(screen.queryByLabelText('PyTorch build')).toBeNull();
+  });
+});
+
+describe('GpuPackDetails — nothing worth installing', () => {
+  // What every Apple Silicon Mac gets back: MPS acceleration is in the wheel
+  // that is already installed, and the server offers no build to swap it for.
+  const appleSilicon = gpu({
+    detected_label: 'Apple Silicon (MPS)',
+    recommended_variant: 'mps',
+    installed_variant: 'mps',
+    variants: [],
+    install_command: 'cdui install --gpu mps',
+  });
+
+  it('says the acceleration is already installed instead of offering one', () => {
+    renderCard({ restartAvailable: true, gpu: appleSilicon });
+
+    expect(
+      screen.getByText(
+        "This machine's GPU acceleration is already in the default PyTorch "
+        + 'build, so there is nothing to install.',
+      ),
+    ).toBeInTheDocument();
+    // A picker with nothing in it, a button whose install has no wheel to
+    // fetch, and a command that installs what is here: none of the three.
+    expect(screen.queryByLabelText('PyTorch build')).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Install and restart' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Copy command' })).toBeNull();
+    // The facts still stand — they are why the sentence is true.
+    expect(screen.getByText('Detected GPU: Apple Silicon (MPS)')).toBeInTheDocument();
+    expect(screen.getByText('Installed build: mps')).toBeInTheDocument();
+  });
+
+  it('says it on a server that cannot restart itself either', () => {
+    // The offer being empty comes first: "not available yet" would promise a
+    // switch that this machine will never have.
+    renderCard({ restartAvailable: false, gpu: appleSilicon });
+    expect(
+      screen.getByText(
+        "This machine's GPU acceleration is already in the default PyTorch "
+        + 'build, so there is nothing to install.',
+      ),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/is not available yet/)).toBeNull();
+    expect(screen.queryByText('cdui install --gpu mps')).toBeNull();
+  });
+
+  it('offers the command when an empty offer has no acceleration behind it', () => {
+    // An Intel Mac, or an arm one on macOS too old for MPS: `torch_variant`
+    // can name no build, so the pill above this card reads "Not installed"
+    // and nothing here is accelerated. The offer is empty all the same, and
+    // "already in the default build" would contradict both.
+    renderCard({
+      restartAvailable: true,
+      pack: pack({ install_command: 'cdui install --gpu cpu' }),
+      gpu: gpu({
+        detected_label: 'macOS x86_64',
+        recommended_variant: 'cpu',
+        installed_variant: null,
+        variants: [],
+        install_command: 'cdui install --gpu cpu',
+      }),
+    });
+    expect(screen.queryByText(/nothing to install/)).toBeNull();
+    expect(
+      screen.getByText(
+        'Switching the PyTorch build in the app is not available yet. Stop the server, then run:',
+      ),
+    ).toBeInTheDocument();
+    expect(screen.getByText('cdui install --gpu cpu')).toBeVisible();
+    expect(screen.queryByRole('button', { name: 'Install and restart' })).toBeNull();
+  });
+
+  it('does not offer to reinstall the build that is already here', () => {
+    // A cu128 box running cu128. The swap would fetch the identical wheel,
+    // and it costs the server a restart to do it.
+    renderCard({
+      restartAvailable: true,
+      gpu: gpu({ installed_variant: 'cu128', recommended_variant: 'cu128' }),
+    });
+    expect(screen.queryByRole('button', { name: 'Install and restart' })).toBeNull();
+    expect(screen.queryByLabelText('PyTorch build')).toBeNull();
+    // A deliberate downgrade is still somebody's job, and this line is how.
+    expect(screen.getByText('cdui install --gpu cu128')).toBeVisible();
+    expect(screen.getByRole('button', { name: 'Copy command' })).toBeInTheDocument();
+    // This server CAN switch builds — it has no reason to on this machine —
+    // so the sentence saying the app cannot stays off.
+    expect(screen.queryByText(/is not available yet/)).toBeNull();
+  });
+
+  it('stays quiet about a missing command on a machine that needs none', () => {
+    // `noCommand` apologises for the only way through being unprintable.
+    // Nothing is missing here, so there is nothing to apologise for.
+    renderCard({
+      restartAvailable: true,
+      pack: pack({ install_command: null }),
+      gpu: gpu({
+        installed_variant: 'cu128',
+        recommended_variant: 'cu128',
+        install_command: null,
+      }),
+    });
+    expect(screen.queryByText(/did not provide an install command/)).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Install and restart' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Copy command' })).toBeNull();
+  });
+
+  it('starts from a build the server will accept, not the recommendation', async () => {
+    // A Mac recommends `mps`, which the wheel swap refuses; anywhere the
+    // recommendation is missing from the offer, the first build on the list
+    // is the one that can actually be installed.
+    const onInstall = renderCard({
+      restartAvailable: true,
+      gpu: gpu({ recommended_variant: 'mps', installed_variant: null,
+        variants: ['cu128', 'cpu'] }),
+    });
+    const select = screen.getByLabelText('PyTorch build') as HTMLSelectElement;
+    expect(select.value).toBe('cu128');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Install and restart' }));
+    await waitFor(() => expect(onInstall).toHaveBeenCalledWith('cu128'));
+  });
+
+  it('offers the command when the server said nothing about the GPU at all', () => {
+    // `gpu: null` is a server that has not answered (or is too old to). It
+    // named no build, so a button here could only post an empty variant —
+    // which the install route refuses — and it cannot claim the acceleration
+    // is already here either. The command is what is left.
+    renderCard({ restartAvailable: true, gpu: null });
+    expect(screen.queryByRole('button', { name: 'Install and restart' })).toBeNull();
+    expect(screen.queryByLabelText('PyTorch build')).toBeNull();
+    expect(screen.queryByText(/nothing to install/)).toBeNull();
+    expect(
+      screen.getByText(
+        'Switching the PyTorch build in the app is not available yet. Stop the server, then run:',
+      ),
+    ).toBeInTheDocument();
+    expect(screen.getByText('cdui install --gpu cu128')).toBeVisible();
   });
 });
 
