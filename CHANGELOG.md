@@ -22,6 +22,22 @@ received — each links to the release it was published as.
 
 ## [Unreleased]
 
+### Changed
+
+- **The Package Center says less, and fits.** Fifty-four zh-TW strings and
+  seventeen English ones are shorter or plainer. The catalog copy names the
+  node a pack serves the way the node is named ("WordVector 節點之 GloVe-50d
+  詞向量表擴增"), the GPU card's facts are two words shorter each ("GPU:",
+  "目前版本"), and the sentence on an Apple Silicon Mac no longer ends by
+  restating what its first half implies. The layout stops depending on the
+  window: a model row reflows to two lines by the width of its card, so a
+  repo id is read in full on a phone or beside the activity pane instead of
+  as an ellipsis; a command wraps in the pane and the restart overlay instead
+  of scrolling out of sight past its second word; the activity column gives
+  way before the cards do; the modal takes nearly the whole screen under
+  860 px; and a card whose only install left is its Python packages no
+  longer prints "0 B selected" beside the button.
+
 ## [2.7.2] — 2026-09-10
 
 The Package Center and the Plugin Center work, and say less while doing it.

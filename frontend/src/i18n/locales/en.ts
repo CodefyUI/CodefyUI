@@ -908,14 +908,14 @@ const en = {
     'A plugin install is running. Wait for it to finish, then try again.',
   'packs.toast.openPluginCenter': 'Open Plugin Center',
   'packs.toast.needsCli':
-    'This pack cannot be installed from inside the app yet. Run: {command}',
+    'This pack cannot be installed from the app. Run: {command}',
   // What `needsCli` would have said on the one server it would be lying to:
   // a LIVE install the constraints file stopped, on a server that CAN
   // restart itself. The app can finish this one — the activity banner in the
   // Package Center carries the button — so the toast says where to go rather
   // than what to type, and brings the click with it.
   'packs.toast.restartRetry':
-    'The install stopped at a package the server has loaded. Open the Package Center to restart the server and finish it.',
+    'The install stopped at a package the server has loaded. Restart the server from the Package Center to finish it.',
   'packs.toast.blocked': 'Install {pack} first.',
   // The two refusals a server that CAN restart still makes. Both are 409s
   // that carry a command, and `needsCli` — "cannot be installed from inside
@@ -941,7 +941,7 @@ const en = {
   'packs.loading': 'Loading packs...',
   'packs.loadFail': 'Failed to load packs: {error}',
   'packs.unsupported':
-    'This server does not support the Package Center. Update CodefyUI and restart it.',
+    'This server does not support the Package Center. Update CodefyUI and restart.',
   'packs.empty': 'No optional packs are available',
 
   // Catalog copy, keyed by pack id. A pack this build has no string for is
@@ -949,19 +949,19 @@ const en = {
   // sent, so a newer backend still renders.
   'packs.catalog.sentence-embeddings.title': 'Sentence embeddings',
   'packs.catalog.sentence-embeddings.desc':
-    'sentence-transformers and four small embedding models for TextEmbedding and WordVector',
+    'sentence-transformers and four small embedding models for the TextEmbedding and WordVector nodes',
   'packs.catalog.word-vectors.title': 'Word vectors (GloVe)',
   'packs.catalog.word-vectors.desc':
-    'GloVe-50d table, 400k words, for WordVector. No Python packages.',
+    'GloVe-50d word-vector table (400k words) for the WordVector node',
   'packs.catalog.rag.title': 'RAG stack',
   // Neither of these names what the row under it already says: the dependency
   // line carries "Requires: Sentence embeddings" with its live state, and the
   // button two rows below the GPU description reads "Install and restart".
   'packs.catalog.rag.desc':
-    'Local generator model Qwen2.5-0.5B-Instruct for HFTextGenerate',
+    'Local generator model Qwen2.5-0.5B-Instruct for the HFTextGenerate node',
   'packs.catalog.gpu-torch.title': 'GPU PyTorch',
   'packs.catalog.gpu-torch.desc':
-    'Switch PyTorch to the CUDA/ROCm build that matches this machine',
+    "Switch PyTorch to the CUDA/ROCm build for this machine's GPU",
 
   // Pack and item state, keyed by the value the API sends.
   'packs.status.not_installed': 'Not installed',
@@ -1002,7 +1002,7 @@ const en = {
 
   // Activity pane. `packs.activity.step.*` is keyed by the step id the job
   // sends, so an unknown step falls back to the server's own English label.
-  'packs.activity.idle': 'Nothing is installing right now.',
+  'packs.activity.idle': 'Nothing is installing.',
   // Only the half the screen does not already show. "Pick a pack on the left"
   // described what the reader was looking at.
   'packs.activity.idleHint': 'Downloads keep going if you close this window.',
@@ -1019,14 +1019,14 @@ const en = {
   'packs.activity.failed': 'Install failed: {message}',
   'packs.activity.cancelled': 'Install cancelled.',
   'packs.activity.needsRestart':
-    'Installed. The server has to restart before {pack} can be used.',
+    'Installed. {pack} is usable after the server restarts.',
   // The same status, the opposite story. A LIVE install that hit a resolver
   // conflict stopped BEFORE it changed anything, so "Installed." would be
   // false — and the restart is what would let it start, not what would let
   // it be used.
   'packs.activity.needsRestartConflict':
     'Nothing was installed: it would replace a package the server is using. '
-    + 'Restart the server to finish it.',
+    + 'Restart the server to finish.',
   'packs.activity.lost': 'Lost contact with the server. Refresh to check the pack status.',
   'packs.activity.dismiss': 'Dismiss',
   // The confirm body, and the one thing that would otherwise surprise the
@@ -1039,8 +1039,8 @@ const en = {
 
   // GPU PyTorch pack — the one install that swaps the wheel under the running
   // interpreter, so the user may have to run a command themselves.
-  'packs.gpu.detected': 'Detected GPU: {label}',
-  'packs.gpu.none': 'No GPU detected. The CPU build of PyTorch is already installed.',
+  'packs.gpu.detected': 'GPU: {label}',
+  'packs.gpu.none': 'No GPU detected. The CPU build of PyTorch is installed.',
   'packs.gpu.installed': 'Installed build: {variant}',
   'packs.gpu.recommended': 'Recommended build: {variant}',
   'packs.gpu.variant': 'PyTorch build',
@@ -1049,14 +1049,14 @@ const en = {
   // caption beside it is the finished download and says nothing about this.
   'packs.item.converting': 'Converting (one time)',
   // Apple Silicon: the acceleration is in the default wheel, so the picker
-  // and the button would offer an install with nothing to install.
-  'packs.gpu.alreadyOptimal':
-    "This machine's GPU acceleration is already in the default PyTorch build, "
-    + 'so there is nothing to install.',
+  // and the button would offer an install with nothing to install. The facts
+  // above it ("GPU: Apple Silicon (MPS)", "Installed build: mps") carry the
+  // rest, so this is one clause.
+  'packs.gpu.alreadyOptimal': 'GPU acceleration is built into the default PyTorch build.',
   // The one condition under which the button declines — and only that. That
   // the server restarts is already the button's own label and the confirm
   // dialog's question; this is the half neither of them says.
-  'packs.gpu.restartNote': 'The restart is blocked while a graph is running.',
+  'packs.gpu.restartNote': 'A running graph blocks the restart.',
   'packs.gpu.restartConfirm': 'Install {variant} and restart the server?',
   // One name for one act, wherever it is offered: this card's button, and the
   // activity pane's retry after a live install stopped on a resolver conflict.
@@ -1064,11 +1064,11 @@ const en = {
   // including in the confirm dialog each of them raises.
   'packs.gpu.installRestart': 'Install and restart',
   'packs.gpu.devMode':
-    'You started CodefyUI with cdui dev, so the server cannot restart itself. Run this in the backend terminal, then start it again:',
+    'Under cdui dev the server cannot restart itself. Run this in the backend terminal, then start it again:',
   'packs.gpu.notYet':
-    'Switching the PyTorch build in the app is not available yet. Stop the server, then run:',
+    'The PyTorch build cannot be switched from the app. Stop the server, then run:',
   'packs.gpu.noCommand':
-    'The server did not provide an install command. See the README for the GPU install steps.',
+    'The server provided no install command. See the README for the GPU install steps.',
   // The disclosure label wherever a command block sits under a button that
   // does the same thing: the button is the shorter way through, so the command
   // is one folded line for whoever prefers a terminal. "install" is dropped
@@ -1211,7 +1211,7 @@ const en = {
   // here as well — the cause differs, what the user does about it is the same,
   // and one key is one thing to keep in step across two locales.
   'pluginCenter.unsupported':
-    'This server has no Plugin Center. Update CodefyUI and restart it.',
+    'This server has no Plugin Center. Update CodefyUI and restart.',
   'pluginCenter.empty': 'No plugins are available',
   'pluginCenter.filter.all': 'All',
   'pluginCenter.filter.installed': 'Installed',

@@ -74,7 +74,7 @@ CATALOG: tuple[Pack, ...] = (
         title="Sentence embeddings",
         description=(
             "sentence-transformers and four small embedding models "
-            "for TextEmbedding and WordVector."
+            "for the TextEmbedding and WordVector nodes."
         ),
         pip=("sentence-transformers>=3.0,<6",),
         probe_modules=("sentence_transformers", "transformers"),
@@ -115,8 +115,7 @@ CATALOG: tuple[Pack, ...] = (
         pack_id="word-vectors",
         title="Word vectors (GloVe)",
         description=(
-            "GloVe-50d table, 400k words, for WordVector. "
-            "No Python packages."
+            "GloVe-50d word-vector table (400k words) for the WordVector node."
         ),
         pip=(),
         probe_modules=(),
@@ -154,8 +153,8 @@ CATALOG: tuple[Pack, ...] = (
         pack_id="rag",
         title="RAG stack",
         description=(
-            "Local generator model Qwen2.5-0.5B-Instruct for HFTextGenerate; "
-            "needs Sentence embeddings first."
+            "Local generator model Qwen2.5-0.5B-Instruct for the HFTextGenerate "
+            "node; needs Sentence embeddings first."
         ),
         pip=(),
         probe_modules=("transformers",),
@@ -175,7 +174,7 @@ CATALOG: tuple[Pack, ...] = (
         pack_id="gpu-torch",
         title="GPU PyTorch",
         description=(
-            "Switch PyTorch to the CUDA/ROCm build that matches this machine; "
+            "Switch PyTorch to the CUDA/ROCm build for this machine's GPU; "
             "the server restarts."
         ),
         pip=(),

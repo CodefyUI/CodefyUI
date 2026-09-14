@@ -766,7 +766,7 @@ describe('pluginStore — inspect', () => {
     const state = usePluginStore.getState();
     if (state.inspection.phase !== 'error') throw new Error('not an error phase');
     expect(state.inspection.failure.message).toBe(
-      'This server has no Plugin Center. Update CodefyUI and restart it.',
+      'This server has no Plugin Center. Update CodefyUI and restart.',
     );
     // The code survives the rewrite: the card switches on one and shows the
     // other.
@@ -1162,7 +1162,7 @@ describe('pluginStore — update', () => {
 
     // "Update failed: unavailable" is the sentence this replaces.
     expect(lastToast().message).toBe(
-      'Update failed: This server has no Plugin Center. Update CodefyUI and restart it.',
+      'Update failed: This server has no Plugin Center. Update CodefyUI and restart.',
     );
   });
 

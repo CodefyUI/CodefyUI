@@ -356,7 +356,7 @@ describe('PluginCenterModal — the plugin list', () => {
     open();
     render(<PluginCenterModal />);
     expect(
-      screen.getByText('This server has no Plugin Center. Update CodefyUI and restart it.'),
+      screen.getByText('This server has no Plugin Center. Update CodefyUI and restart.'),
     ).toBeInTheDocument();
     // No filter and no source box over a server that cannot answer either.
     expect(screen.queryByRole('button', { name: 'All' })).toBeNull();
@@ -1183,7 +1183,7 @@ describe('PluginCenterModal — the activity pane', () => {
     open();
     render(<PluginCenterModal />);
 
-    expect(pane().getByText('Nothing is installing right now.')).toBeInTheDocument();
+    expect(pane().getByText('Nothing is installing.')).toBeInTheDocument();
   });
 
   it('follows the running job, named from its catalog row', () => {

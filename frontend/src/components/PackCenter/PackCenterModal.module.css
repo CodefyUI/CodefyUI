@@ -8,7 +8,13 @@
    Chrome copied from TemplateGalleryModal.module.css so the two modals are the
    same object. Colour, type and spacing come from tokens.css only; the bare
    pixel values below are structural (hairline borders, a fixed track width, the
-   layout breakpoint), never colour or type. */
+   layout breakpoints), never colour or type.
+
+   Two kinds of breakpoint. The viewport one at the bottom stacks the activity
+   pane under the list, like the template gallery. The container one on
+   `.items` reflows a model row by the width of the CARD, because that width is
+   set by the pane beside it as much as by the window, and a row that is fine at
+   1440 px is four ellipses at 1000 px with the pane open. */
 
 /* ── Modal chrome ───────────────────────────────────────────────────────── */
 
@@ -25,10 +31,10 @@
 }
 
 .modal {
-  width: 84vw;
-  max-width: 1180px;
+  width: min(1180px, 84vw);
   height: 82vh;
-  min-width: 320px;
+  min-width: 0;
+  max-width: 100%;
   background: linear-gradient(180deg, var(--surface-panel) 0%, var(--surface-canvas) 100%);
   border: 1px solid var(--border-base);
   border-radius: var(--radius-xl);
@@ -276,6 +282,7 @@
   border: 1px solid var(--border-subtle);
   border-radius: var(--radius);
   overflow: hidden;
+  container: pack-items / inline-size;
 }
 
 .itemRow {
@@ -285,7 +292,7 @@
      and the Remove button out of the card instead of ellipsizing. */
   grid-template-columns: auto minmax(0, 1fr) auto auto;
   align-items: center;
-  gap: var(--sp-3);
+  gap: var(--sp-2) var(--sp-3);
   padding: var(--sp-2) var(--sp-3);
   border-bottom: 1px solid var(--border-subtle);
 }
@@ -406,6 +413,37 @@
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   white-space: nowrap;
   font-variant-numeric: tabular-nums;
+}
+
+/* A narrow card: the name takes the whole first line and is allowed to wrap,
+   and the size and the state (or the Remove button) drop to a second line
+   under it. Measured on the list, not the window — see the note at the top.
+   After the rules it overrides, because it overrides them at equal
+   specificity: the same block ahead of `.itemName` lost to it. */
+@container pack-items (max-width: 600px) {
+  .itemRow {
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    row-gap: var(--sp-1);
+  }
+
+  .itemNameCell {
+    grid-column: 2 / -1;
+  }
+
+  .itemName {
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
+
+  .itemSize {
+    grid-column: 2;
+  }
+
+  .itemStatus,
+  .itemRemove {
+    grid-column: 3;
+    justify-self: end;
+  }
 }
 
 /* ── Card actions ───────────────────────────────────────────────────────── */
@@ -536,11 +574,16 @@
   overflow-x: auto;
 }
 
+/* Wraps rather than scrolls: in the 340 px pane a command scrolled out of
+   sight past its second word, and the copy button beside it carries the exact
+   text anyway. `anywhere` because a URL or a path in it has no space to break
+   at. */
 .commandBlock code {
   color: var(--code-text);
   font-size: var(--fs-xs);
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  white-space: pre;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 
 .commandRow {
@@ -557,7 +600,9 @@
 /* ── Activity pane ──────────────────────────────────────────────────────── */
 
 .activity {
-  width: 340px;
+  /* Gives way before the list does: at 1000 px a fixed 340 px column left the
+     cards 560 px, and every model name in them an ellipsis. */
+  width: clamp(280px, 32%, 340px);
   flex-shrink: 0;
   border-left: 1px solid var(--border-base);
   background: var(--surface-panel);
@@ -681,6 +726,17 @@
 /* Narrow viewports: the activity pane drops below the list rather than
    squeezing the cards to an unreadable width. Mirrors the template gallery. */
 @media (max-width: 860px) {
+  .backdrop {
+    padding: 2vh 2vw;
+  }
+
+  /* Nearly the whole window: the 84 vw of the wide layout left a phone-width
+     modal a third of its screen for a border. */
+  .modal {
+    width: 96vw;
+    height: 92vh;
+  }
+
   .body {
     flex-direction: column;
   }
@@ -704,5 +760,8 @@
      the pane's cap on a short window. */
   .log {
     min-height: 72px;
+    /* Capped so a long transcript scrolls inside the log rather than growing
+       the pane to its limit and scrolling the Cancel button out with it. */
+    max-height: 30vh;
   }
 }

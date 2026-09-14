@@ -709,7 +709,7 @@ describe('packStore — install', () => {
 
     expect(lastToast()).toMatchObject({ type: 'warning' });
     expect(lastToast().message).toBe(
-      'This pack cannot be installed from inside the app yet. Run: cdui install --gpu cu128',
+      'This pack cannot be installed from the app. Run: cdui install --gpu cu128',
     );
     // Not a collision: nothing to adopt, so no catalog re-read is triggered.
     expect(api.listPacks).not.toHaveBeenCalled();
@@ -765,7 +765,7 @@ describe('packStore — install', () => {
       await usePackStore.getState().install('word-vectors', { mode: 'restart' });
 
       expect(lastToast().message).toBe(
-        'This pack cannot be installed from inside the app yet. Run: cdui install --gpu cu128',
+        'This pack cannot be installed from the app. Run: cdui install --gpu cu128',
       );
     });
 
@@ -1294,7 +1294,7 @@ describe('packStore — a job settling', () => {
     expect(lastToast()).toMatchObject({
       type: 'warning',
       message:
-        'The install stopped at a package the server has loaded. Open the Package Center to restart the server and finish it.',
+        'The install stopped at a package the server has loaded. Restart the server from the Package Center to finish it.',
     });
     // ...and the button that gets there, on the pack the toast is about.
     expect(lastToast().action?.label).toBe('Open Package Center');

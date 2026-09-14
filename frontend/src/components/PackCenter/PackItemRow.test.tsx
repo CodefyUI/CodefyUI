@@ -84,6 +84,6 @@ describe('PackItemRow — the caption beside the bar', () => {
     useI18n.setState({ locale: 'zh-TW' });
     renderRow({ bytesDone: 69182535, bytesTotal: 69182535, percent: 2.5, text: 'Converting' });
 
-    expect(screen.getByText('轉換中（只需一次）')).toBeInTheDocument();
+    expect(screen.getByText('轉換中（僅需一次）')).toBeInTheDocument();
   });
 });

@@ -211,7 +211,7 @@ describe('stepLabel', () => {
 
   it('follows the locale', () => {
     useI18n.setState({ locale: 'zh-TW' });
-    expect(stepLabel(t(), 'verify', 'verifying')).toBe('正在驗證安裝結果');
+    expect(stepLabel(t(), 'verify', 'verifying')).toBe('驗證安裝結果');
   });
 });
 

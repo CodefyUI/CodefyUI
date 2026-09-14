@@ -233,7 +233,7 @@ describe('PackCenterModal — the pack list', () => {
     render(<PackCenterModal />);
     expect(
       screen.getByText(
-        'This server does not support the Package Center. Update CodefyUI and restart it.',
+        'This server does not support the Package Center. Update CodefyUI and restart.',
       ),
     ).toBeInTheDocument();
   });
@@ -450,7 +450,7 @@ describe('PackCenterModal — the activity pane', () => {
     seed({ packs: [words] });
     open();
     render(<PackCenterModal />);
-    expect(screen.getByText('Nothing is installing right now.')).toBeInTheDocument();
+    expect(screen.getByText('Nothing is installing.')).toBeInTheDocument();
     expect(
       screen.getByText('Downloads keep going if you close this window.'),
     ).toBeInTheDocument();
@@ -599,7 +599,7 @@ describe('PackCenterModal — the activity pane', () => {
     expect(banner).toHaveAttribute('data-tone', 'warning');
     expect(
       within(banner).getByText(
-        'Installed. The server has to restart before GPU PyTorch can be used.',
+        'Installed. GPU PyTorch is usable after the server restarts.',
       ),
     ).toBeInTheDocument();
     // No button on this banner, so the command is the only way through and
@@ -635,7 +635,7 @@ describe('PackCenterModal — the activity pane', () => {
     expect(
       within(banner).getByText(
         'Nothing was installed: it would replace a package the server is using. '
-        + 'Restart the server to finish it.',
+        + 'Restart the server to finish.',
       ),
     ).toBeInTheDocument();
     expect(within(banner).queryByText(/^Installed\./)).toBeNull();

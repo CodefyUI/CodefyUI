@@ -84,7 +84,7 @@ describe('GpuPackDetails — what this machine has', () => {
   it('names the detected GPU and both builds on one line when they differ', () => {
     renderCard();
     expect(
-      screen.getByText('Detected GPU: NVIDIA GeForce RTX 4080'),
+      screen.getByText('GPU: NVIDIA GeForce RTX 4080'),
     ).toBeInTheDocument();
     expect(
       screen.getByText('Installed build: cpu · Recommended build: cu128'),
@@ -110,7 +110,7 @@ describe('GpuPackDetails — what this machine has', () => {
       gpu: gpu({ detected_label: null, installed_variant: null, recommended_variant: null }),
     });
     expect(
-      screen.getByText('No GPU detected. The CPU build of PyTorch is already installed.'),
+      screen.getByText('No GPU detected. The CPU build of PyTorch is installed.'),
     ).toBeInTheDocument();
     // `installed_variant: null` is "cannot tell", not "none" — so no line at all.
     expect(screen.queryByText(/Installed build/)).toBeNull();
@@ -171,8 +171,7 @@ describe('GpuPackDetails — nothing worth installing', () => {
 
     expect(
       screen.getByText(
-        "This machine's GPU acceleration is already in the default PyTorch "
-        + 'build, so there is nothing to install.',
+        'GPU acceleration is built into the default PyTorch build.',
       ),
     ).toBeInTheDocument();
     // A picker with nothing in it, a button whose install has no wheel to
@@ -181,21 +180,20 @@ describe('GpuPackDetails — nothing worth installing', () => {
     expect(screen.queryByRole('button', { name: 'Install and restart' })).toBeNull();
     expect(screen.queryByRole('button', { name: 'Copy command' })).toBeNull();
     // The facts still stand — they are why the sentence is true.
-    expect(screen.getByText('Detected GPU: Apple Silicon (MPS)')).toBeInTheDocument();
+    expect(screen.getByText('GPU: Apple Silicon (MPS)')).toBeInTheDocument();
     expect(screen.getByText('Installed build: mps')).toBeInTheDocument();
   });
 
   it('says it on a server that cannot restart itself either', () => {
-    // The offer being empty comes first: "not available yet" would promise a
+    // The offer being empty comes first: "cannot be switched" would promise a
     // switch that this machine will never have.
     renderCard({ restartAvailable: false, gpu: appleSilicon });
     expect(
       screen.getByText(
-        "This machine's GPU acceleration is already in the default PyTorch "
-        + 'build, so there is nothing to install.',
+        'GPU acceleration is built into the default PyTorch build.',
       ),
     ).toBeInTheDocument();
-    expect(screen.queryByText(/is not available yet/)).toBeNull();
+    expect(screen.queryByText(/cannot be switched from the app/)).toBeNull();
     expect(screen.queryByText('cdui install --gpu mps')).toBeNull();
   });
 
@@ -215,10 +213,10 @@ describe('GpuPackDetails — nothing worth installing', () => {
         install_command: 'cdui install --gpu cpu',
       }),
     });
-    expect(screen.queryByText(/nothing to install/)).toBeNull();
+    expect(screen.queryByText(/built into the default PyTorch build/)).toBeNull();
     expect(
       screen.getByText(
-        'Switching the PyTorch build in the app is not available yet. Stop the server, then run:',
+        'The PyTorch build cannot be switched from the app. Stop the server, then run:',
       ),
     ).toBeInTheDocument();
     expect(screen.getByText('cdui install --gpu cpu')).toBeVisible();
@@ -239,7 +237,7 @@ describe('GpuPackDetails — nothing worth installing', () => {
     expect(screen.getByRole('button', { name: 'Copy command' })).toBeInTheDocument();
     // This server CAN switch builds — it has no reason to on this machine —
     // so the sentence saying the app cannot stays off.
-    expect(screen.queryByText(/is not available yet/)).toBeNull();
+    expect(screen.queryByText(/cannot be switched from the app/)).toBeNull();
   });
 
   it('stays quiet about a missing command on a machine that needs none', () => {
@@ -254,7 +252,7 @@ describe('GpuPackDetails — nothing worth installing', () => {
         install_command: null,
       }),
     });
-    expect(screen.queryByText(/did not provide an install command/)).toBeNull();
+    expect(screen.queryByText(/provided no install command/)).toBeNull();
     expect(screen.queryByRole('button', { name: 'Install and restart' })).toBeNull();
     expect(screen.queryByRole('button', { name: 'Copy command' })).toBeNull();
   });
@@ -283,10 +281,10 @@ describe('GpuPackDetails — nothing worth installing', () => {
     renderCard({ restartAvailable: true, gpu: null });
     expect(screen.queryByRole('button', { name: 'Install and restart' })).toBeNull();
     expect(screen.queryByLabelText('PyTorch build')).toBeNull();
-    expect(screen.queryByText(/nothing to install/)).toBeNull();
+    expect(screen.queryByText(/built into the default PyTorch build/)).toBeNull();
     expect(
       screen.getByText(
-        'Switching the PyTorch build in the app is not available yet. Stop the server, then run:',
+        'The PyTorch build cannot be switched from the app. Stop the server, then run:',
       ),
     ).toBeInTheDocument();
     expect(screen.getByText('cdui install --gpu cu128')).toBeVisible();
@@ -298,7 +296,7 @@ describe('GpuPackDetails — the command block', () => {
     renderCard({ launchMode: 'start' });
     expect(
       screen.getByText(
-        'Switching the PyTorch build in the app is not available yet. Stop the server, then run:',
+        'The PyTorch build cannot be switched from the app. Stop the server, then run:',
       ),
     ).toBeInTheDocument();
     expect(screen.getByText('cdui install --gpu cu128')).toBeInTheDocument();
@@ -311,7 +309,7 @@ describe('GpuPackDetails — the command block', () => {
     renderCard({ launchMode: 'dev' });
     expect(
       screen.getByText(
-        'You started CodefyUI with cdui dev, so the server cannot restart itself. Run this in the backend terminal, then start it again:',
+        'Under cdui dev the server cannot restart itself. Run this in the backend terminal, then start it again:',
       ),
     ).toBeInTheDocument();
     expect(screen.getByText('cdui install --gpu cu128')).toBeInTheDocument();
@@ -324,7 +322,7 @@ describe('GpuPackDetails — the command block', () => {
     renderCard({ launchMode: 'unknown' });
     expect(
       screen.getByText(
-        'Switching the PyTorch build in the app is not available yet. Stop the server, then run:',
+        'The PyTorch build cannot be switched from the app. Stop the server, then run:',
       ),
     ).toBeInTheDocument();
     expect(screen.queryByText(/cdui dev/)).toBeNull();
@@ -342,7 +340,7 @@ describe('GpuPackDetails — the command block', () => {
     });
     expect(
       screen.getByText(
-        'The server did not provide an install command. See the README for the GPU install steps.',
+        'The server provided no install command. See the README for the GPU install steps.',
       ),
     ).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Copy command' })).toBeNull();
@@ -395,7 +393,7 @@ describe('GpuPackDetails — installing and restarting', () => {
     // The button already says the server restarts; the caption only carries
     // the half the button does not — when it will refuse to start.
     expect(
-      screen.getByText('The restart is blocked while a graph is running.'),
+      screen.getByText('A running graph blocks the restart.'),
     ).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole('button', { name: 'Install and restart' }));
@@ -457,7 +455,7 @@ describe('GpuPackDetails — installing and restarting', () => {
       screen.getByRole('button', { name: 'Install and restart' }),
     ).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Copy command' })).toBeNull();
-    expect(screen.queryByText(/did not provide an install command/)).toBeNull();
+    expect(screen.queryByText(/provided no install command/)).toBeNull();
   });
 
   it('says the server cannot restart itself under cdui dev, and shows the command', () => {
@@ -468,7 +466,7 @@ describe('GpuPackDetails — installing and restarting', () => {
     expect(screen.queryByRole('button', { name: 'Install and restart' })).toBeNull();
     expect(
       screen.getByText(
-        'You started CodefyUI with cdui dev, so the server cannot restart itself. Run this in the backend terminal, then start it again:',
+        'Under cdui dev the server cannot restart itself. Run this in the backend terminal, then start it again:',
       ),
     ).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Copy command' })).toBeInTheDocument();
