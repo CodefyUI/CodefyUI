@@ -403,7 +403,7 @@ describe('CustomTab', () => {
 
     expect(
       await screen.findByText(
-        'GloVe-50d table, 400k words, for WordVector. No Python packages.',
+        'GloVe-50d word-vector table (400k words) for the WordVector node',
       ),
     ).toBeTruthy();
     expect(screen.getByText('Whatever the server says')).toBeTruthy();

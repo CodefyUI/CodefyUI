@@ -141,7 +141,7 @@ describe('PluginActivityPane — idle', () => {
   it('says nothing is installing, and offers no controls', () => {
     paint();
 
-    expect(screen.getByText('Nothing is installing right now.')).toBeInTheDocument();
+    expect(screen.getByText('Nothing is installing.')).toBeInTheDocument();
     expect(
       screen.getByText('Downloads keep going if you close this window.'),
     ).toBeInTheDocument();

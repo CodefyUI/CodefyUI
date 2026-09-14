@@ -126,7 +126,7 @@ describe('PackCard — what it says about a pack', () => {
     expect(screen.getByText('Word vectors (GloVe)')).toBeInTheDocument();
     expect(
       screen.getByText(
-        'GloVe-50d table, 400k words, for WordVector. No Python packages.',
+        'GloVe-50d word-vector table (400k words) for the WordVector node',
       ),
     ).toBeInTheDocument();
     expect(screen.getByText('Download size: 66 MB')).toBeInTheDocument();
@@ -170,7 +170,7 @@ describe('PackCard — what it says about a pack', () => {
       byId: index(pack({ id: 'sentence-embeddings' })),
     });
     expect(
-      screen.getByText('Local generator model Qwen2.5-0.5B-Instruct for HFTextGenerate'),
+      screen.getByText('Local generator model Qwen2.5-0.5B-Instruct for the HFTextGenerate node'),
     ).toBeInTheDocument();
     expect(screen.getByText('Requires:')).toBeInTheDocument();
     expect(screen.queryByText(/needs Sentence embeddings first/)).toBeNull();
@@ -185,7 +185,7 @@ describe('PackCard — what it says about a pack', () => {
       restartAvailable: true,
     });
     expect(
-      screen.getByText('Switch PyTorch to the CUDA/ROCm build that matches this machine'),
+      screen.getByText("Switch PyTorch to the CUDA/ROCm build for this machine's GPU"),
     ).toBeInTheDocument();
     expect(
       screen.getByRole('button', { name: 'Install and restart' }),
@@ -220,6 +220,16 @@ describe('PackCard — choosing what to install', () => {
 
     fireEvent.click(installBtn());
     expect(onInstall).toHaveBeenCalledWith(['all-MiniLM-L6-v2'], 'live');
+  });
+
+  it('ticks an item back after it was unticked', () => {
+    renderCard({ pack: p });
+    const labse = screen.getByLabelText('sentence-transformers/labse');
+    fireEvent.click(labse);
+    expect(screen.getByText('90 MB selected')).toBeInTheDocument();
+    fireEvent.click(labse);
+    expect(labse).toBeChecked();
+    expect(screen.getByText('100 MB selected')).toBeInTheDocument();
   });
 
   it('reseeds the ticks when the catalog says an item has landed', () => {
@@ -386,6 +396,9 @@ describe('PackCard — a pack whose python half is missing', () => {
     const { onInstall } = renderCard({ pack: p });
     expect(screen.getByText('Python packages not installed')).toBeInTheDocument();
     expect(installBtn()).toBeEnabled();
+    // Nothing to tick means nothing to count: "0 B selected" beside this
+    // button described a choice the card was not offering.
+    expect(screen.queryByText('0 B selected')).toBeNull();
 
     fireEvent.click(installBtn());
     expect(onInstall).toHaveBeenCalledWith([], 'live');
@@ -639,7 +652,7 @@ describe('PackCard — the GPU pack', () => {
       gpu: gpu(),
     });
     expect(screen.getByText('GPU PyTorch')).toBeInTheDocument();
-    expect(screen.getByText('Detected GPU: NVIDIA GeForce RTX 4080')).toBeInTheDocument();
+    expect(screen.getByText('GPU: NVIDIA GeForce RTX 4080')).toBeInTheDocument();
     expect(screen.getByText('cdui install --gpu cu128')).toBeInTheDocument();
     // No selection UI: there is nothing to tick on a wheel swap.
     expect(screen.queryByRole('button', { name: 'Install selected' })).toBeNull();

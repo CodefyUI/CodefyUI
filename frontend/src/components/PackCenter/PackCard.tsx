@@ -261,9 +261,15 @@ export function PackCard({
               >
                 {t('packs.installSelected')}
               </button>
-              <span className={styles.selectedSize}>
-                {t('packs.sizeSelected', { size: formatBytes(chosenBytes) })}
-              </span>
+              {/* Only while there is something to tick: a pack whose files
+                  are all here and whose libraries are not has an install to
+                  run and nothing to select, and "0 B selected" beside that
+                  button described a choice the card did not offer. */}
+              {missingItems(pack).length > 0 && (
+                <span className={styles.selectedSize}>
+                  {t('packs.sizeSelected', { size: formatBytes(chosenBytes) })}
+                </span>
+              )}
             </div>
           )}
         </>
