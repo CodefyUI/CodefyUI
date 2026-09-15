@@ -61,3 +61,81 @@ def test_image_and_tensor_outputs_match(tmp_path):
     img.save(img_path)
     res = ImageReaderNode().execute({}, {"path": str(img_path)})
     assert torch.equal(res["image"], res["tensor"])
+
+
+def test_relative_path_prefers_images_dir(tmp_path, monkeypatch):
+    """A bare filename present in the upload store resolves there, not to cwd."""
+    from app.config import settings
+
+    upload_store = tmp_path / "images"
+    upload_store.mkdir()
+    Image.new("RGB", (8, 4), (1, 2, 3)).save(upload_store / "shared.png")
+
+    workdir = tmp_path / "work"
+    workdir.mkdir()
+    Image.new("RGB", (64, 32), (9, 9, 9)).save(workdir / "shared.png")
+
+    monkeypatch.setattr(settings, "IMAGES_DIR", upload_store)
+    monkeypatch.chdir(workdir)
+    res = ImageReaderNode().execute({}, {"path": "shared.png", "mode": "RGB", "resize": 0})
+    assert res["tensor"].shape == (3, 4, 8)
+
+
+def test_relative_path_falls_back_to_cwd(tmp_path, monkeypatch):
+    """Not in the upload store -> read it relative to the working directory.
+
+    This is what lets a judging sandbox run a graph whose image sits beside
+    the submission with no CODEFYUI_IMAGES_DIR set, matching what CSVReader
+    does for a DATA_FILE param outside project mode.
+    """
+    from app.config import settings
+
+    upload_store = tmp_path / "images"
+    upload_store.mkdir()
+
+    workdir = tmp_path / "work"
+    workdir.mkdir()
+    Image.new("RGB", (64, 32), (9, 9, 9)).save(workdir / "local_only.png")
+
+    monkeypatch.setattr(settings, "IMAGES_DIR", upload_store)
+    monkeypatch.chdir(workdir)
+    res = ImageReaderNode().execute({}, {"path": "local_only.png", "mode": "RGB", "resize": 0})
+    assert res["tensor"].shape == (3, 32, 64)
+
+
+def test_relative_path_missing_everywhere_still_raises(tmp_path, monkeypatch):
+    from app.config import settings
+
+    upload_store = tmp_path / "images"
+    upload_store.mkdir()
+    workdir = tmp_path / "work"
+    workdir.mkdir()
+
+    monkeypatch.setattr(settings, "IMAGES_DIR", upload_store)
+    monkeypatch.chdir(workdir)
+    with pytest.raises(FileNotFoundError, match="nowhere.png"):
+        ImageReaderNode().execute({}, {"path": "nowhere.png", "mode": "RGB", "resize": 0})
+
+
+def test_directory_in_upload_store_does_not_shadow_the_file(tmp_path, monkeypatch):
+    """A *directory* of that name in the store falls through to the cwd file.
+
+    The store is an ordinary folder, so a non-file entry can end up in it.
+    Gating on `exists()` would return the directory and hand Pillow an
+    IsADirectoryError/PermissionError; `is_file()` keeps the fallback alive,
+    which is also what CSVReader's own store check does.
+    """
+    from app.config import settings
+
+    upload_store = tmp_path / "images"
+    upload_store.mkdir()
+    (upload_store / "frames.png").mkdir()
+
+    workdir = tmp_path / "work"
+    workdir.mkdir()
+    Image.new("RGB", (64, 32), (9, 9, 9)).save(workdir / "frames.png")
+
+    monkeypatch.setattr(settings, "IMAGES_DIR", upload_store)
+    monkeypatch.chdir(workdir)
+    res = ImageReaderNode().execute({}, {"path": "frames.png", "mode": "RGB", "resize": 0})
+    assert res["tensor"].shape == (3, 32, 64)

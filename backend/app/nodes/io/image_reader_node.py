@@ -27,11 +27,21 @@ class ImageReaderNode(BaseNode):
         from ...config import settings
 
         p = Path(path)
-        if not p.is_absolute():
-            # Relative paths resolve against IMAGES_DIR so filenames picked
-            # from the uploaded-files dropdown work without the user typing
-            # a full path.
-            p = settings.IMAGES_DIR / p
+        if p.is_absolute():
+            return p
+        # The uploaded-files dropdown writes a bare filename, so the upload
+        # store goes first and a graph built from it resolves exactly as it
+        # always did. `is_file()`, not `exists()`, so a directory of that name
+        # falls through instead of swallowing the lookup -- CSVReader gates
+        # its own store the same way.
+        candidate = settings.IMAGES_DIR / p
+        if candidate.is_file():
+            return candidate
+        # Otherwise the path as written, i.e. relative to the working directory
+        # of the process running the graph. That is what CSVReader does outside
+        # project mode, and what lets an exported script read an image sitting
+        # beside it with no CODEFYUI_IMAGES_DIR set. Reached only where the old
+        # code already raised FileNotFoundError.
         return p
 
     @classmethod

@@ -22,6 +22,28 @@ received — each links to the release it was published as.
 
 ## [Unreleased]
 
+### Fixed
+
+- **`ImageReader` finds a relative image in the working directory, not only in
+  the upload store.** A relative path was resolved against `IMAGES_DIR` and
+  nowhere else, so a graph that read `data.csv` and `photo.png` out of one
+  folder ran only if `CODEFYUI_IMAGES_DIR` pointed at that folder — with the
+  image the sole reason that variable had to be set. `CSVReader` has always
+  fallen back to the path as written outside project mode, and the asymmetry
+  cost real time to diagnose, because nothing about the failure (`Image not
+  found: photo.png`) says where the file was looked for. `ImageReader` now
+  tries the upload store first and then the path as written, and that second
+  step only fires where the old code already raised, so a graph built from the
+  upload dropdown resolves exactly as it did — `IMAGES_DIR` still wins when a
+  file of that name exists in both places. "As written" means relative to the
+  working directory of the process running the graph, so an exported script, a
+  batch runner or a judging sandbox that cannot set environment variables now
+  reads an image sitting beside it. A canvas run still resolves against
+  `IMAGES_DIR`: the server's working directory is the install's `backend/`,
+  never the folder a graph is saved in. `ModelLoader` and `FileReader` resolve
+  against their own directories and are unchanged, so a graph that also loads
+  weights or a text file still needs those set.
+
 ### Changed
 
 - **The Package Center says less, and fits.** Fifty-four zh-TW strings and
