@@ -369,17 +369,14 @@ export function SettingsPopover({ open, onClose, triggerRef }: Props) {
 
           <Row
             name={t('settings.device.name')}
-            // Both lines stay visible. Since #436 a graph carries its own
-            // device and this one is only the fallback, so "which graphs use
-            // it" is what the row means -- and a `title` says that to a
-            // mouse pointer alone, not to a keyboard or a touch screen.
+            // The row is a labelled selector, so "graphs with no device of
+            // their own use this one" only restated what a global default
+            // already is. What the selector cannot show is what the machine
+            // under it can actually do, so that line is the one that stays.
             desc={
-              <>
-                {t('settings.device.desc')}
-                <span className={styles.hint}>
-                  {t('settings.device.hint', { device: bestLabel })}
-                </span>
-              </>
+              <span className={styles.hint}>
+                {t('settings.device.hint', { device: bestLabel })}
+              </span>
             }
             ctrl={
               <select
@@ -777,6 +774,10 @@ export function SettingsPopover({ open, onClose, triggerRef }: Props) {
             }
           />
 
+          {/* The group carries no `title`: "How value connections are drawn"
+              was the row name restated over two buttons that name the two
+              answers -- and "value" was wrong, since TriggerEdge reads this
+              setting too and trigger connections change with it. */}
           <Row
             name={t('settings.edgeStyle.name')}
             ctrl={
@@ -784,7 +785,6 @@ export function SettingsPopover({ open, onClose, triggerRef }: Props) {
                 className={styles.seg}
                 role="group"
                 aria-label={t('settings.edgeStyle.name')}
-                title={t('settings.edgeStyle.desc')}
               >
                 <button
                   type="button"

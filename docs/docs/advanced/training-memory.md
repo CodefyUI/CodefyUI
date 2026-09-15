@@ -113,6 +113,8 @@ Alongside the message, two things happen so the *next* run starts from a clean c
 
 ## The server's own memory
 
+Everything in this section is what the server is holding in memory *because you ran something*. Your saved graphs, your project files and your `model_weights.pt` are on disk and are not counted here — restarting the server empties these stores and loses none of that.
+
 Three in-memory stores hold tensors between runs, and all three are bounded by bytes as well as by count:
 
 | Store | What it holds | Budget | Setting |

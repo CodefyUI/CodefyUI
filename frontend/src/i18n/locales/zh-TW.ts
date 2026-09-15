@@ -5,8 +5,6 @@ const zhTW: Record<TranslationKey, string> = {
   'toolbar.run': '執行',
   'toolbar.running': '執行中...',
   'toolbar.stop': '停止',
-  'toolbar.run.title': '執行這張圖',
-  'toolbar.stop.title': '停止執行',
   'toolbar.device.aria': '此圖的裝置',
   'toolbar.device.title': '這張圖要在哪個裝置上執行；選擇會存進圖檔',
   'toolbar.device.follow': '跟隨設定（{device}）',
@@ -17,13 +15,11 @@ const zhTW: Record<TranslationKey, string> = {
   // Menu: File
   'toolbar.menu.file': '檔案',
   'toolbar.save': '儲存',
-  'toolbar.save.title': '儲存圖表',
   'toolbar.save.prompt': '請輸入圖表名稱：',
   'toolbar.save.success': '圖表「{name}」儲存成功。',
   'toolbar.save.fail': '儲存失敗：{error}',
   'toolbar.save.overwriteConfirm': '已存在名為 {name} 的圖，存檔將會覆蓋它。要繼續嗎？',
   'toolbar.saveAs': '另存新檔...',
-  'toolbar.saveAs.title': '以新名稱儲存',
   'toolbar.load': '載入',
   'toolbar.load.title': '載入已儲存的圖表',
   'toolbar.load.fail': '載入失敗：{error}',
@@ -40,7 +36,6 @@ const zhTW: Record<TranslationKey, string> = {
   'toolbar.import': '匯入 JSON...',
   'toolbar.import.fail': '匯入失敗：{error}',
   'toolbar.clear': '清除畫布',
-  'toolbar.clear.title': '移除畫布上的所有節點',
   'toolbar.clear.confirm': '確定要清除畫布嗎？所有未儲存的內容將會遺失。',
 
   // Menu: Export
@@ -206,8 +201,7 @@ const zhTW: Record<TranslationKey, string> = {
 
   // Empty Canvas
   'empty.title': '建立你的第一個深度學習模型',
-  'empty.subtitle': '選擇一個範例快速開始',
-  'empty.hint': '或從左側面板拖曳節點',
+  'empty.subtitle': '選一個範例',
   'empty.loading': '載入範例中...',
   'empty.loadError': '載入範例失敗',
   'empty.section.quickstart': '快速上手',
@@ -351,7 +345,6 @@ const zhTW: Record<TranslationKey, string> = {
   'customNodes.upload': '上傳 .py',
   'customNodes.close': '關閉自訂節點管理',
   'toolbar.customNodes': '自訂節點',
-  'toolbar.customNodes.title': '管理自訂節點',
 
   // ParamField（模型 / 影像檔案選擇器）
   'paramField.upload.model': '上傳模型檔案',
@@ -514,8 +507,7 @@ const zhTW: Record<TranslationKey, string> = {
   'toolbar.settings.section.llm': 'LLM 提供者',
   'toolbar.settings.section.system': '這台伺服器',
   'settings.device.name': '運算裝置',
-  'settings.device.desc': '沒有自己指定裝置的圖，會使用這裡選的裝置。',
-  'settings.device.hint': '這台伺服器可用的最佳裝置：{device}',
+  'settings.device.hint': '最佳可用裝置：{device}',
 
   // 字級選單
   'toolbar.fontSize.title': '字級',
@@ -556,13 +548,12 @@ const zhTW: Record<TranslationKey, string> = {
   'settings.nodeMode.basic': '入門',
   'settings.nodeMode.all': '全部',
   'settings.edgeStyle.name': '連線樣式',
-  'settings.edgeStyle.desc': '數值連線的繪製方式。',
   'settings.edgeStyle.circuit': '電路板',
   'settings.edgeStyle.curve': '曲線',
   'settings.codex.name': 'ChatGPT Codex 帳號',
   'settings.codex.descLoggedOut': '以 ChatGPT 登入後即可在 LLMChat 使用 Codex provider。',
   'settings.codex.descPending': '請在瀏覽器分頁完成登入，再回到這裡。',
-  'settings.codex.descLoggedIn': '已登入為 {email}。Codex 節點可以使用你的 ChatGPT session。',
+  'settings.codex.descLoggedIn': '已登入為 {email}。',
   'settings.codex.actionSignIn': '登入',
   'settings.codex.actionSignOut': '登出',
   'settings.codex.actionRefresh': '重新檢查',
@@ -583,7 +574,6 @@ const zhTW: Record<TranslationKey, string> = {
   'settings.health.unknown': '未知',
   'settings.health.caches': '快取',
   'settings.health.cachesEmpty': '目前沒有任何快取在運作。',
-  'settings.health.cachesHint': '伺服器因為執行而留在記憶體裡的資料。你儲存的圖與檔案不在裡面。',
   'settings.health.cache.execution_cache': '節點輸出（每個開啟的編輯器一份）',
   'settings.health.cache.run_output_store': '已錄製的執行輸出',
   'settings.health.cache.node_state_store': '在多次執行間保留的層權重',
@@ -695,7 +685,6 @@ const zhTW: Record<TranslationKey, string> = {
   'runs.action.csv': 'CSV',
   'runs.action.cancelTitle': '要求停止',
   'runs.action.reattachTitle': '在執行紀錄中顯示這個執行',
-  'runs.action.deleteTitle': '刪除這個執行以及它的指標、事件與產出紀錄',
   'runs.action.csvTitle': '下載指標 CSV',
   'runs.delete.title': '要刪除這個執行嗎？',
   'runs.delete.message': '「{name}」的指標、事件紀錄與產出紀錄都會被移除；磁碟上的檢查點檔案會保留。',
@@ -965,7 +954,7 @@ const zhTW: Record<TranslationKey, string> = {
 
   // Restart overlay (`packs.restart.done` / `.failed` are with the toasts above).
   'packs.restart.title': '伺服器重新啟動中',
-  'packs.restart.body': '等待伺服器恢復中，完成後頁面將自動重新載入。',
+  'packs.restart.body': '頁面將自動重新載入。',
   'packs.restart.elapsed': '已等待 {seconds} 秒',
   'packs.restart.timeout': '伺服器在 10 分鐘內未恢復。',
   'packs.restart.notStarted': '伺服器未重新啟動，請執行下列指令後重新載入：',
@@ -1034,7 +1023,7 @@ const zhTW: Record<TranslationKey, string> = {
     '變更後無法重新整理編輯器：{message}',
   'pluginCenter.toast.needsRestart':
     '{plugin} 的安裝停住了：它的 Python 套件需要先停止伺服器才能安裝，指令在外掛中心。',
-  'pluginCenter.toast.inProgress': '有外掛仍在安裝中，可在外掛中心查看進度。',
+  'pluginCenter.toast.inProgress': '有外掛仍在安裝中。',
   'pluginCenter.toast.openCenter': '開啟外掛中心',
   'pluginCenter.toast.packBusy': '套件安裝進行中，請等它完成後再試一次。',
   'pluginCenter.updateFailed': '更新失敗：{message}',

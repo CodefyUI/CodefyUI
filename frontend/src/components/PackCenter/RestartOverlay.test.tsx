@@ -61,9 +61,11 @@ describe('RestartOverlay — waiting', () => {
     expect(dialog).toHaveAttribute('aria-modal', 'true');
     expect(dialog).toHaveAttribute('aria-busy', 'true');
     expect(screen.getByText('Server restarting')).toBeInTheDocument();
-    expect(
-      screen.getByText('Waiting for the server to come back. This page reloads by itself.'),
-    ).toBeInTheDocument();
+    // "Waiting for the server to come back" was the heading and the live
+    // counter said a third time, over an indeterminate progress bar. What is
+    // left is the only thing the overlay does not otherwise show: that the
+    // reader does not have to reload by hand.
+    expect(screen.getByText('This page reloads by itself.')).toBeInTheDocument();
     expect(screen.getByText('Waiting for 5 s')).toBeInTheDocument();
     // Focus starts inside the overlay rather than on the page behind it.
     expect(dialog).toHaveFocus();

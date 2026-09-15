@@ -626,16 +626,15 @@ describe('SettingsPopover', () => {
   it('keeps what the setting is for on the row, not in a tooltip', async () => {
     render(<SettingsPopover open onClose={vi.fn()} triggerRef={makeTriggerRef()} />);
     const row = rowFor('Compute device');
-    // Since #436 a graph carries its own device and this one is only the
-    // fallback, so "which graphs use it" is the row's whole meaning. A
-    // `title` on the select would say it to a hovering mouse and to nothing
-    // else -- not to a keyboard, not to a touch screen.
+    // One line, not two. "Used by graphs with no device of their own" was the
+    // definition of a global default, under a labelled selector that already
+    // said so; what the selector cannot show is what the machine can do, and
+    // that line stays -- on the row, because a `title` on the select would
+    // say it to a hovering mouse and to nothing else.
     expect(
-      within(row).getByText(/Used by graphs with no device of their own/),
+      await within(row).findByText(/Best available device: Apple MPS/),
     ).toBeInTheDocument();
-    expect(
-      await within(row).findByText(/Best available on this server: Apple MPS/),
-    ).toBeInTheDocument();
+    expect(within(row).queryByText(/graphs with no device of their own/)).toBeNull();
     expect(within(row).getByRole('combobox', { name: 'Compute device' })).not.toHaveAttribute(
       'title',
     );
@@ -643,9 +642,7 @@ describe('SettingsPopover', () => {
 
   it("shows the server's best device as a hint, without adopting it", async () => {
     render(<SettingsPopover open onClose={vi.fn()} triggerRef={makeTriggerRef()} />);
-    expect(
-      await screen.findByText(/Best available on this server: Apple MPS/),
-    ).toBeInTheDocument();
+    expect(await screen.findByText(/Best available device: Apple MPS/)).toBeInTheDocument();
     // The hint is information only; the stored choice stays where it was.
     expect(useUIStore.getState().globalDevice).toBe('cpu');
   });
@@ -654,7 +651,7 @@ describe('SettingsPopover', () => {
     vi.mocked(fetchDevices).mockRejectedValueOnce(new Error('offline'));
     render(<SettingsPopover open onClose={vi.fn()} triggerRef={makeTriggerRef()} />);
     await waitFor(() => expect(fetchDevices).toHaveBeenCalled());
-    expect(screen.getByText(/Best available on this server: CPU/)).toBeInTheDocument();
+    expect(screen.getByText(/Best available device: CPU/)).toBeInTheDocument();
   });
 
   it('hints the raw default when the server names a device outside its own list', async () => {
@@ -663,7 +660,7 @@ describe('SettingsPopover', () => {
       devices: [{ value: 'cpu', label: 'CPU', detail: '', available: true }],
     });
     render(<SettingsPopover open onClose={vi.fn()} triggerRef={makeTriggerRef()} />);
-    expect(await screen.findByText(/Best available on this server: cuda/)).toBeInTheDocument();
+    expect(await screen.findByText(/Best available device: cuda/)).toBeInTheDocument();
   });
 
   // ── outside-click / esc behaviour ─────────────────────────────────

@@ -414,12 +414,6 @@
   white-space: nowrap;
 }
 
-.healthHint {
-  margin-top: var(--sp-3);
-  color: var(--text-muted);
-  line-height: var(--lh-normal);
-}
-
 .healthNote {
   color: var(--text-muted);
   padding-bottom: var(--sp-2);

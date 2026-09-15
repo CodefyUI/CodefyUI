@@ -3,8 +3,6 @@ const en = {
   'toolbar.run': 'Run',
   'toolbar.running': 'Running...',
   'toolbar.stop': 'Stop',
-  'toolbar.run.title': 'Run the graph',
-  'toolbar.stop.title': 'Stop execution',
   'toolbar.device.aria': 'Device for this graph',
   // Says nothing about overriding Settings: the first option in this select
   // is "Follow Settings", and it is a choice the graph stores like any other.
@@ -17,13 +15,11 @@ const en = {
   // Menu: File
   'toolbar.menu.file': 'File',
   'toolbar.save': 'Save',
-  'toolbar.save.title': 'Save graph',
   'toolbar.save.prompt': 'Enter a name for this graph:',
   'toolbar.save.success': 'Graph "{name}" saved successfully.',
   'toolbar.save.fail': 'Save failed: {error}',
   'toolbar.save.overwriteConfirm': 'A graph named {name} already exists and will be overwritten - continue?',
   'toolbar.saveAs': 'Save As...',
-  'toolbar.saveAs.title': 'Save under a new name',
   'toolbar.load': 'Load',
   'toolbar.load.title': 'Load a saved graph',
   'toolbar.load.fail': 'Load failed: {error}',
@@ -40,7 +36,6 @@ const en = {
   'toolbar.import': 'Import JSON...',
   'toolbar.import.fail': 'Import failed: {error}',
   'toolbar.clear': 'Clear Canvas',
-  'toolbar.clear.title': 'Remove every node from this canvas',
   'toolbar.clear.confirm': 'Clear the canvas? All unsaved work will be lost.',
 
   // Menu: Export
@@ -221,8 +216,7 @@ const en = {
 
   // Empty Canvas
   'empty.title': 'Build your first deep learning model',
-  'empty.subtitle': 'Pick an example to get started quickly',
-  'empty.hint': 'or drag a node from the left palette',
+  'empty.subtitle': 'Pick an example',
   'empty.loading': 'Loading examples...',
   'empty.loadError': 'Failed to load example',
   'empty.section.quickstart': 'Quick Start',
@@ -378,7 +372,6 @@ const en = {
   'customNodes.upload': 'Upload .py',
   'customNodes.close': 'Close custom node manager',
   'toolbar.customNodes': 'Custom Nodes',
-  'toolbar.customNodes.title': 'Manage custom nodes',
 
   // ParamField (file picker for model / image params)
   'paramField.upload.model': 'Upload model file',
@@ -542,8 +535,7 @@ const en = {
   'toolbar.settings.section.llm': 'LLM Providers',
   'toolbar.settings.section.system': 'This Server',
   'settings.device.name': 'Compute device',
-  'settings.device.desc': 'Used by graphs with no device of their own.',
-  'settings.device.hint': 'Best available on this server: {device}',
+  'settings.device.hint': 'Best available device: {device}',
 
   // Font-size menu
   'toolbar.fontSize.title': 'Font size',
@@ -584,13 +576,12 @@ const en = {
   'settings.nodeMode.basic': 'Basic',
   'settings.nodeMode.all': 'All',
   'settings.edgeStyle.name': 'Connection style',
-  'settings.edgeStyle.desc': 'How value connections are drawn.',
   'settings.edgeStyle.circuit': 'Circuit',
   'settings.edgeStyle.curve': 'Curve',
   'settings.codex.name': 'ChatGPT Codex account',
   'settings.codex.descLoggedOut': 'Sign in with ChatGPT to use the Codex provider in LLMChat.',
   'settings.codex.descPending': 'Complete sign-in in the browser tab, then return here.',
-  'settings.codex.descLoggedIn': 'Signed in as {email}. Codex nodes can use your ChatGPT session.',
+  'settings.codex.descLoggedIn': 'Signed in as {email}.',
   'settings.codex.actionSignIn': 'Sign in',
   'settings.codex.actionSignOut': 'Sign out',
   'settings.codex.actionRefresh': 'Refresh',
@@ -614,7 +605,6 @@ const en = {
   'settings.health.unknown': 'unknown',
   'settings.health.caches': 'Caches',
   'settings.health.cachesEmpty': 'No caches are running yet.',
-  'settings.health.cachesHint': 'What the server is holding in memory from your runs. Your saved graphs and files are not in here.',
   'settings.health.cache.execution_cache': 'Node outputs (per open editor)',
   'settings.health.cache.run_output_store': 'Recorded run outputs',
   'settings.health.cache.node_state_store': 'Layer weights kept between runs',
@@ -739,7 +729,6 @@ const en = {
   'runs.action.csv': 'CSV',
   'runs.action.cancelTitle': 'Request a stop',
   'runs.action.reattachTitle': 'Show this run in the Execution Log',
-  'runs.action.deleteTitle': 'Delete this run and its metrics, events and artifacts',
   'runs.action.csvTitle': 'Download metrics as CSV',
   'runs.delete.title': 'Delete run?',
   'runs.delete.message': 'The metrics, event log and artifact records for "{name}" are removed. Checkpoint files on disk are kept.',
@@ -1080,7 +1069,7 @@ const en = {
 
   // Restart overlay (`packs.restart.done` / `.failed` are with the toasts above).
   'packs.restart.title': 'Server restarting',
-  'packs.restart.body': 'Waiting for the server to come back. This page reloads by itself.',
+  'packs.restart.body': 'This page reloads by itself.',
   'packs.restart.elapsed': 'Waiting for {seconds} s',
   'packs.restart.timeout': 'The server has not come back after 10 minutes.',
   'packs.restart.notStarted': 'The server did not restart. Run this command, then reload:',
@@ -1179,8 +1168,11 @@ const en = {
   'pluginCenter.toast.needsRestart':
     'The install of {plugin} stopped: its Python packages need the server '
     + 'stopped first. The command is in the Plugin Center.',
-  'pluginCenter.toast.inProgress':
-    'A plugin is still installing. Open the Plugin Center to watch it.',
+  // No "open the Plugin Center to watch it": the toast prints that button
+  // immediately to the right of this sentence, and "to watch it" is what
+  // pressing it obviously does. The sibling `packs.toast.inProgress` fires
+  // with no action button, so its second sentence has to stay.
+  'pluginCenter.toast.inProgress': 'A plugin is still installing.',
   'pluginCenter.toast.openCenter': 'Open Plugin Center',
   'pluginCenter.toast.packBusy':
     'A pack install is running. Wait for it to finish, then try again.',

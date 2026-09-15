@@ -2,8 +2,10 @@ import { create } from 'zustand';
 import en from './locales/en';
 import zhTW from './locales/zh-TW';
 import zhTWNodes from './nodeLocales/zh-TW';
+import zhTWExamples from './exampleLocales/zh-TW';
 import type { TranslationKey } from './locales/en';
 import type { NodeTranslations } from './nodeLocales/types';
+import type { ExampleTranslations } from './exampleLocales/types';
 
 export type Locale = 'en' | 'zh-TW';
 
@@ -14,6 +16,10 @@ const messages: Record<Locale, Record<TranslationKey, string>> = {
 
 const nodeMessages: Partial<Record<Locale, NodeTranslations>> = {
   'zh-TW': zhTWNodes,
+};
+
+const exampleMessages: Partial<Record<Locale, ExampleTranslations>> = {
+  'zh-TW': zhTWExamples,
 };
 
 // All supported locales — add new ones here
@@ -38,6 +44,13 @@ interface I18nState {
   t: (key: TranslationKey, vars?: Record<string, string | number>) => string;
   /** Translate node field. Falls back to `fallback` (the English backend text) if no translation exists. */
   tn: (nodeName: string, field: 'description' | `param.${string}`, fallback: string) => string;
+  /**
+   * Translate an example's description, keyed by the `path` from
+   * `/api/examples/list`. Falls back to `fallback` (the English text the
+   * backend read out of `graph.json`), so an example added since this build
+   * -- or one a third-party plugin ships -- still reads, in English.
+   */
+  te: (examplePath: string, fallback: string) => string;
 }
 
 export const useI18n = create<I18nState>((set, get) => ({
@@ -82,6 +95,12 @@ export const useI18n = create<I18nState>((set, get) => ({
     }
 
     return fallback;
+  },
+
+  te: (examplePath: string, fallback: string) => {
+    const { locale } = get();
+    if (locale === 'en') return fallback;
+    return exampleMessages[locale]?.[examplePath]?.description ?? fallback;
   },
 }));
 

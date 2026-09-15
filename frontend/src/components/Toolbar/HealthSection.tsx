@@ -171,7 +171,9 @@ export function HealthSection() {
                 })}
               </ul>
             )}
-            <div className={styles.healthHint}>{t('settings.health.cachesHint')}</div>
+            {/* What the caches are, and why saved graphs are not in them, is
+                a paragraph of concept -- it lives in the Training Memory page
+                of the docs, not permanently under a four-row list. */}
           </>
         )}
       </div>

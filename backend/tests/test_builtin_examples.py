@@ -26,7 +26,7 @@ same reason, minus the execution: its README quotes a parameter count, an
 effective batch size, two token budgets and a step count, and every one of
 those is a fact about *other* nodes' params that ``validate_graph`` is blind
 to. It is also the only builtin needing the network and a 16 GB GPU, and the
-canvas gallery card truncates a description at 80 characters with no tooltip --
+canvas gallery card truncates a description at 80 columns --
 so where the warning sits in the string is itself an invariant. See
 ``test_tinystories_lm_example_warns_inside_the_card_truncation`` and
 ``test_tinystories_lm_example_still_describes_itself``.
@@ -402,12 +402,14 @@ _LM_VAL_TOKEN_BUDGET = 2_000_000
 #: this graph fails here.
 _LM_PARAM_COUNT = 203_668_480
 
-#: ``EmptyCanvasOverlay.tsx`` renders an example card's description as
-#: ``description.slice(0, 80) + '...'`` with no ``title`` attribute. The
-#: empty-canvas gallery is the surface a user reads BEFORE pressing Run, and it
-#: is the only one that shows a description without being hovered (the sidebar
-#: ``TemplatesTab`` puts the full text in a tooltip), so anything past this
-#: many characters is not a warning -- it is a footnote nobody sees.
+#: ``EmptyCanvasOverlay.tsx`` renders an example card's description cut to 80
+#: columns (``truncateToWidth``, which counts a Latin character as one and a
+#: CJK one as two -- so for the English text asserted here it is the plain
+#: 80-character cut it has always been). The empty-canvas gallery is the
+#: surface a user reads BEFORE pressing Run, and the only one that shows a
+#: description without being hovered, so anything past this many characters is
+#: not a warning -- it is a footnote nobody sees. The Chinese side of the same
+#: invariant is pinned in ``frontend/src/i18n/exampleLocales/zh-TW.test.ts``.
 _CARD_VISIBLE_CHARS = 80
 
 #: What must be legible in those 80 characters: the two things that decide

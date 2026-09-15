@@ -2,6 +2,11 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { listExamples, type ExampleSummary } from '../../api/rest';
 import { insertExample, openExampleInNewTab } from '../../utils/openExample';
+import {
+  useLocalizedExamples,
+  exampleMatches,
+  type LocalizedExample,
+} from '../../utils/localizeExamples';
 import { useDialogStore } from '../../store/dialogStore';
 import { usePluginStore } from '../../store/pluginStore';
 import { useUIStore } from '../../store/uiStore';
@@ -24,13 +29,11 @@ import styles from './TemplateGalleryModal.module.css';
 type PluginStoreState = ReturnType<typeof usePluginStore.getState>;
 const selectPluginsById = (state: PluginStoreState): PluginIndex => state.byId;
 
-function matches(example: ExampleSummary, query: string): boolean {
-  return (
-    example.name.toLowerCase().includes(query) ||
-    example.description.toLowerCase().includes(query) ||
-    example.category.toLowerCase().includes(query) ||
-    (example.source ?? '').toLowerCase().includes(query)
-  );
+function matches(example: LocalizedExample, query: string): boolean {
+  // Name, category and description (in both the displayed language and the
+  // original English) are the shared rule; the gallery adds `source` because
+  // it is the only surface that prints which pack an example came from.
+  return exampleMatches(example, query) || (example.source ?? '').toLowerCase().includes(query);
 }
 
 /**
@@ -118,10 +121,12 @@ function TemplateGalleryBody() {
     return () => window.removeEventListener('keydown', onKey);
   }, [close]);
 
+  const localized = useLocalizedExamples(examples);
+
   const visible = useMemo(() => {
     const q = query.trim().toLowerCase();
-    return q ? examples.filter((e) => matches(e, q)) : examples;
-  }, [examples, query]);
+    return q ? localized.filter((e) => matches(e, q)) : localized;
+  }, [localized, query]);
 
   const groups = useMemo(() => groupExamplesByCategory(visible), [visible]);
 
