@@ -115,6 +115,11 @@
   font-weight: var(--fw-semibold);
   line-height: var(--lh-tight);
   color: var(--text-secondary);
+  /* Names stay English in every locale, and a plugin is free to ship one like
+     "Mini U-Net forward — encoder/bottleneck/decoder": no space to break at,
+     so it ran out of the card and pushed the grid past its section. */
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 
 .presetCardDesc {
