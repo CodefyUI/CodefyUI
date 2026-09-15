@@ -4,16 +4,12 @@ import { useDeviceOptions, deviceLabel } from '../../hooks/useDeviceOptions';
 import { useTabStore } from '../../store/tabStore';
 import { useNodeDefStore } from '../../store/nodeDefStore';
 import { useUIStore } from '../../store/uiStore';
-import { listGraphs, createPreset, exportGraph } from '../../api/rest';
+import { createPreset, exportGraph } from '../../api/rest';
 import { useI18n, SUPPORTED_LOCALES } from '../../i18n';
-import type { TranslationKey } from '../../i18n';
 import { subgraphIdOf } from '../../utils/subgraph';
 import { graphToSvg, svgToPngBlob } from '../../utils/exportDiagram';
 import { confirm, prompt } from '../../utils/dialog';
 import { saveActiveGraph } from '../../utils/saveActiveGraph';
-import { openSavedGraph } from '../../utils/openSavedGraph';
-import type { SavedGraphTarget } from '../../utils/openSavedGraph';
-import { importGraphFile } from '../../utils/importGraphFile';
 import { CustomNodeManager } from '../CustomNodeManager/CustomNodeManager';
 import { useToastStore } from '../../store/toastStore';
 import type { LayoutMode } from '../../utils/autoLayout';
@@ -87,224 +83,6 @@ function MenuDropdown({
   );
 }
 
-/* ── Load menu (two levels: destination, then which saved graph) ── */
-
-/** Menu-local name for the destinations `openSavedGraph` documents. */
-type LoadTarget = SavedGraphTarget;
-
-interface SavedGraph {
-  name: string;
-  file: string;
-}
-
-function LoadSubMenu({
-  open,
-  onToggle,
-  onClose,
-  onLoadGraph,
-  onImport,
-  t,
-}: {
-  open: boolean;
-  onToggle: () => void;
-  onClose: () => void;
-  onLoadGraph: (graph: SavedGraph, target: LoadTarget) => void;
-  onImport: () => void;
-  t: (key: TranslationKey, vars?: Record<string, string | number>) => string;
-}) {
-  const ref = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    if (!open) return;
-    const handler = (e: MouseEvent) => {
-      if (ref.current && !ref.current.contains(e.target as Node)) onClose();
-    };
-    document.addEventListener('mousedown', handler);
-    return () => document.removeEventListener('mousedown', handler);
-  }, [open, onClose]);
-
-  return (
-    <div ref={ref} className={styles.menuWrapper}>
-      <button type="button"
-        onClick={onToggle}
-        className={`${styles.ghost} ${open ? styles.open : ''}`}
-        aria-haspopup="menu"
-        aria-expanded={open}
-      >
-        {t('toolbar.load')}
-      </button>
-      {open && (
-        <LoadSubMenuPanel
-          onLoadGraph={onLoadGraph}
-          onImport={onImport}
-          onClose={onClose}
-          t={t}
-        />
-      )}
-    </div>
-  );
-}
-
-const LOAD_TARGETS: { key: LoadTarget; label: TranslationKey; title: TranslationKey }[] = [
-  { key: 'canvas', label: 'toolbar.load.toCanvas', title: 'toolbar.load.toCanvas.title' },
-  { key: 'bind', label: 'toolbar.load.andSave', title: 'toolbar.load.andSave.title' },
-];
-
-/**
- * The first level of {@link LoadSubMenu}: pick what the load should do, then
- * pick the graph from the flyout that opens beside it.
- *
- * Mounted only while the menu is open, so the saved-graph list is fetched
- * once on mount rather than synced off an `open` prop. The list and the
- * search box live HERE rather than in the flyout so that hovering from one
- * destination to the other neither refetches nor throws away what the user
- * has already typed.
- */
-function LoadSubMenuPanel({
-  onLoadGraph,
-  onImport,
-  onClose,
-  t,
-}: {
-  onLoadGraph: (graph: SavedGraph, target: LoadTarget) => void;
-  onImport: () => void;
-  onClose: () => void;
-  t: (key: TranslationKey, vars?: Record<string, string | number>) => string;
-}) {
-  const [graphs, setGraphs] = useState<SavedGraph[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [query, setQuery] = useState('');
-  const [target, setTarget] = useState<LoadTarget | null>(null);
-
-  useEffect(() => {
-    let cancelled = false;
-    listGraphs()
-      .then((result) => {
-        if (!cancelled) setGraphs(Array.isArray(result) ? result : []);
-      })
-      .catch(() => {
-        if (!cancelled) setGraphs([]);
-      })
-      .finally(() => {
-        if (!cancelled) setLoading(false);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-
-  return (
-    <div className={`${styles.menuPanel} ${styles.menuPanelFlyoutHost}`}>
-      {LOAD_TARGETS.map(({ key, label, title }) => (
-        <div key={key} className={styles.submenuRow}>
-          <button type="button"
-            className={`${styles.menuItem} ${styles.menuItemSub} ${target === key ? styles.menuItemOpen : ''}`}
-            title={t(title)}
-            // Hover opens it the way a native submenu does; the click is what
-            // keyboard and touch have instead of a hover, so it opens too --
-            // never toggles, or moving the pointer across the rows would
-            // leave the one under it shut.
-            onClick={() => setTarget(key)}
-            onMouseEnter={() => setTarget(key)}
-            aria-haspopup="menu"
-            aria-expanded={target === key}
-          >
-            <span>{t(label)}</span>
-            <span className={styles.submenuCaret} aria-hidden="true">▸</span>
-          </button>
-          {target === key && (
-            <SavedGraphPicker
-              graphs={graphs}
-              loading={loading}
-              query={query}
-              onQueryChange={setQuery}
-              onPick={(graph) => { onLoadGraph(graph, key); onClose(); }}
-              t={t}
-            />
-          )}
-        </div>
-      ))}
-      <div className={styles.menuDivider} />
-      <button type="button"
-        onClick={() => { onImport(); onClose(); }}
-        className={styles.menuItem}
-        style={{ color: 'var(--accent)' }}
-      >
-        {t('toolbar.import')}
-      </button>
-    </div>
-  );
-}
-
-/**
- * The saved-graph flyout: a search box over a list that SCROLLS.
- *
- * Both are the fix for the same bug -- the list used to render straight into
- * the shared `.menuPanel`, which clips at `overflow: hidden` with no height
- * cap, so once a project held more graphs than fit on screen the ones past
- * the bottom could be neither scrolled to nor clicked.
- */
-function SavedGraphPicker({
-  graphs,
-  loading,
-  query,
-  onQueryChange,
-  onPick,
-  t,
-}: {
-  graphs: SavedGraph[];
-  loading: boolean;
-  query: string;
-  onQueryChange: (value: string) => void;
-  onPick: (graph: SavedGraph) => void;
-  t: (key: TranslationKey, vars?: Record<string, string | number>) => string;
-}) {
-  const needle = query.trim().toLowerCase();
-  // Matched on the file name as well as the label: the two differ once a name
-  // has been sanitized, and the file is what the row's tooltip shows.
-  const matches = needle === ''
-    ? graphs
-    : graphs.filter(
-        (g) =>
-          g.name.toLowerCase().includes(needle) || g.file.toLowerCase().includes(needle),
-      );
-
-  return (
-    <div className={styles.submenuPanel} role="menu">
-      <input
-        type="text"
-        className={styles.submenuSearch}
-        value={query}
-        onChange={(e) => onQueryChange(e.target.value)}
-        placeholder={t('toolbar.load.search')}
-        aria-label={t('toolbar.load.search')}
-        autoFocus
-      />
-      <div className={styles.submenuList}>
-        {loading ? (
-          <div className={styles.menuMessage}>{t('toolbar.load.loading')}</div>
-        ) : graphs.length === 0 ? (
-          <div className={styles.menuMessageDim}>{t('toolbar.load.empty')}</div>
-        ) : matches.length === 0 ? (
-          <div className={styles.menuMessageDim}>{t('toolbar.load.noMatch', { query })}</div>
-        ) : (
-          matches.map((g) => (
-            <button type="button"
-              key={g.file}
-              onClick={() => onPick(g)}
-              className={`${styles.menuItem} ${styles.submenuItem}`}
-              title={g.file}
-              role="menuitem"
-            >
-              {g.name}
-            </button>
-          ))
-        )}
-      </div>
-    </div>
-  );
-}
-
 /* ── Main Toolbar ───────────────────────────────────────────────── */
 
 export function Toolbar() {
@@ -331,7 +109,6 @@ export function Toolbar() {
   const [customNodeManagerOpen, setCustomNodeManagerOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [fontSizeMenuOpen, setFontSizeMenuOpen] = useState(false);
-  const fileInputRef = useRef<HTMLInputElement>(null);
   const settingsTriggerRef = useRef<HTMLButtonElement>(null);
   const fontSizeTriggerRef = useRef<HTMLButtonElement>(null);
   const langTriggerRef = useRef<HTMLDivElement>(null);
@@ -392,41 +169,6 @@ export function Toolbar() {
     });
     if (ok) clear();
   }, [clear, t]);
-
-  const handleLoadGraph = useCallback(
-    async (graph: SavedGraph, target: LoadTarget) => {
-      // Only the unbound path asks. `bind` is the load this menu has always
-      // performed, and adding a confirm to it here would be a change to a
-      // second thing in a change about the first one. An empty canvas has
-      // nothing to lose, so it is not worth a dialog either.
-      const { tabs, activeTabId } = useTabStore.getState();
-      const canvasHasWork = tabs.find((tb) => tb.id === activeTabId)!.nodes.length > 0;
-      if (target === 'canvas' && canvasHasWork) {
-        const ok = await confirm({
-          title: t('toolbar.load.toCanvas.confirm', { name: graph.name }),
-          confirmText: t('toolbar.load.toCanvas.confirmAction'),
-          variant: 'danger',
-        });
-        if (!ok) return;
-      }
-      // Everything after the click -- the read, the preset merge, the one
-      // install, the binding, the failure toast -- is `openSavedGraph`,
-      // which the Graphs panel opens its rows with too. The confirm above
-      // is the one part the two surfaces disagree about, so it is the one
-      // part that stayed behind.
-      await openSavedGraph(graph, target);
-    },
-    [t],
-  );
-
-  const handleImportFile = useCallback((event: React.ChangeEvent<HTMLInputElement>) => {
-    const file = event.target.files?.[0];
-    if (!file) return;
-    // Not awaited: the read finishes on its own, and clearing the input has
-    // to happen now so picking the SAME file again still fires `change`.
-    void importGraphFile(file);
-    event.target.value = '';
-  }, []);
 
   const handleExportJson = useCallback(() => {
     const { nodes, edges, presets, segmentGroups, subgraphs, settings } = getSerializedGraph();
@@ -689,14 +431,6 @@ export function Toolbar() {
           onToggle={() => toggleMenu('file')}
           onClose={closeMenus}
         />
-        <LoadSubMenu
-          open={openMenu === 'load'}
-          onToggle={() => toggleMenu('load')}
-          onClose={closeMenus}
-          onLoadGraph={handleLoadGraph}
-          onImport={() => fileInputRef.current?.click()}
-          t={t}
-        />
         <MenuDropdown
           label={t('toolbar.menu.export')}
           items={exportMenuItems}
@@ -874,15 +608,6 @@ export function Toolbar() {
           )}
         </div>
       </div>
-
-      {/* Hidden file input */}
-      <input
-        ref={fileInputRef}
-        type="file"
-        accept=".json"
-        className={styles.fileInput}
-        onChange={handleImportFile}
-      />
 
       {customNodeManagerOpen && (
         <CustomNodeManager onClose={() => setCustomNodeManagerOpen(false)} />

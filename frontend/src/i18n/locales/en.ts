@@ -20,20 +20,12 @@ const en = {
   'toolbar.save.fail': 'Save failed: {error}',
   'toolbar.save.overwriteConfirm': 'A graph named {name} already exists and will be overwritten - continue?',
   'toolbar.saveAs': 'Save As...',
-  'toolbar.load': 'Load',
-  'toolbar.load.title': 'Load a saved graph',
+  // Opening and importing a graph are the Graphs panel's now, and the menu
+  // that used to own these two keys is gone. They stay under `toolbar.` --
+  // and stay here -- because they are still the wording every load and every
+  // import failure is reported in, from `openSavedGraph` and
+  // `importGraphFile`, whichever surface asked for it.
   'toolbar.load.fail': 'Load failed: {error}',
-  'toolbar.load.loading': 'Loading...',
-  'toolbar.load.empty': 'No saved graphs',
-  'toolbar.load.toCanvas': 'Load into this canvas tab',
-  'toolbar.load.toCanvas.title': 'Replaces this canvas; the next Save asks for a name',
-  'toolbar.load.toCanvas.confirm': 'Replace this canvas with "{name}"?',
-  'toolbar.load.toCanvas.confirmAction': 'Replace',
-  'toolbar.load.andSave': 'Load and save',
-  'toolbar.load.andSave.title': 'Binds this tab to the file; Save writes back to it',
-  'toolbar.load.search': 'Search saved graphs…',
-  'toolbar.load.noMatch': 'No graph matches "{query}"',
-  'toolbar.import': 'Import JSON...',
   'toolbar.import.fail': 'Import failed: {error}',
   'toolbar.clear': 'Clear Canvas',
   'toolbar.clear.confirm': 'Clear the canvas? All unsaved work will be lost.',

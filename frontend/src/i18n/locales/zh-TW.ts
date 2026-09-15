@@ -20,20 +20,10 @@ const zhTW: Record<TranslationKey, string> = {
   'toolbar.save.fail': '儲存失敗：{error}',
   'toolbar.save.overwriteConfirm': '已存在名為 {name} 的圖，存檔將會覆蓋它。要繼續嗎？',
   'toolbar.saveAs': '另存新檔...',
-  'toolbar.load': '載入',
-  'toolbar.load.title': '載入已儲存的圖表',
+  // 開啟與匯入已經是「圖表」分頁的事，原本擁有這兩個鍵的選單也拆掉了。
+  // 它們留在 toolbar. 底下：不管從哪個介面按的，載入失敗與匯入失敗都還是
+  // 由 openSavedGraph 和 importGraphFile 用這兩句話回報。
   'toolbar.load.fail': '載入失敗：{error}',
-  'toolbar.load.loading': '載入中...',
-  'toolbar.load.empty': '沒有已儲存的圖表',
-  'toolbar.load.toCanvas': '載入到當前畫布分頁中',
-  'toolbar.load.toCanvas.title': '覆蓋目前畫布；之後按「儲存」會再問名稱',
-  'toolbar.load.toCanvas.confirm': '要用「{name}」覆蓋目前畫布嗎？',
-  'toolbar.load.toCanvas.confirmAction': '覆蓋',
-  'toolbar.load.andSave': '載入並儲存',
-  'toolbar.load.andSave.title': '把這個分頁綁定到該檔案；按「儲存」會直接寫回',
-  'toolbar.load.search': '搜尋已儲存的圖表…',
-  'toolbar.load.noMatch': '沒有符合「{query}」的圖表',
-  'toolbar.import': '匯入 JSON...',
   'toolbar.import.fail': '匯入失敗：{error}',
   'toolbar.clear': '清除畫布',
   'toolbar.clear.confirm': '確定要清除畫布嗎？所有未儲存的內容將會遺失。',
