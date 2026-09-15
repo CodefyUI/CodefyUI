@@ -93,6 +93,10 @@ const en = {
   'palette.hint': 'Drag nodes onto the canvas',
   'palette.fromPlugin': 'From plugin: {plugin}',
   'palette.searchPresets': 'Search presets...',
+  // Heading of the presets group inside the Nodes tab. It repeats the old tab
+  // label on purpose: presets are now one category among the node categories,
+  // and a category needs its own heading key to sit beside them.
+  'palette.presets.category': 'Presets',
   'palette.presets.empty': 'No presets available',
   'palette.presets.noMatch': 'No matching presets',
   'palette.presets.hint': 'Drag presets onto the canvas',
@@ -100,6 +104,7 @@ const en = {
   // Sidebar rail (#126)
   'sidebar.rail.aria': 'Sidebar sections',
   'sidebar.tab.nodes': 'Nodes',
+  'sidebar.tab.graphs': 'Graphs',
   'sidebar.tab.presets': 'Presets',
   'sidebar.tab.templates': 'Templates',
   'sidebar.tab.custom': 'Custom & Plugins',
@@ -111,6 +116,41 @@ const en = {
   'sidebar.expandAll': 'Expand all',
   'sidebar.collapseAll': 'Collapse all',
   'sidebar.refresh': 'Refresh',
+
+  // Sidebar: Graphs tab
+  'graphs.search': 'Search saved graphs...',
+  // Named rather than the generic `sidebar.refresh` the other tabs use: this
+  // list is the only sidebar panel whose contents change behind your back,
+  // because every Save from the toolbar adds to it.
+  'graphs.refresh': 'Refresh the graph list',
+  'graphs.loading': 'Loading graphs...',
+  'graphs.empty': 'No saved graphs',
+  'graphs.noMatch': 'No graph matches "{query}"',
+  'graphs.listFail': 'Failed to load graphs: {error}',
+  'graphs.import': 'Import JSON...',
+  'graphs.saveAs': 'Save as...',
+  // Two ways to open, and the label is the only place the difference shows:
+  // a row click (and this menu item) binds the tab to the file so Save writes
+  // back to it, while "onto canvas" leaves the tab unbound.
+  'graphs.open': 'Open',
+  'graphs.openNewTab': 'Open in new tab',
+  'graphs.openOntoCanvas': 'Load onto canvas without binding',
+  'graphs.rename': 'Rename...',
+  'graphs.delete': 'Delete',
+  'graphs.rowMenu': 'More actions',
+  'graphs.current': 'Current',
+  'graphs.modified': 'Modified {when}',
+  'graphs.open.confirm': 'Replace this canvas with "{name}"?',
+  'graphs.open.confirmAction': 'Replace',
+  'graphs.rename.prompt': 'Enter a new name for this graph:',
+  'graphs.rename.success': 'Renamed to "{name}".',
+  'graphs.rename.fail': 'Rename failed: {error}',
+  // Says "on disk" because everything else in this panel only changes what
+  // the canvas shows; this one reaches the saved file itself.
+  'graphs.delete.confirm': 'Delete "{name}"? The file is removed from disk.',
+  'graphs.delete.confirmAction': 'Delete',
+  'graphs.delete.success': 'Deleted "{name}".',
+  'graphs.delete.fail': 'Delete failed: {error}',
 
   // Sidebar: Templates tab (#126)
   'templates.search': 'Search examples...',

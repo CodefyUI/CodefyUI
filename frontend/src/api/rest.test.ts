@@ -9,6 +9,8 @@ import {
   saveGraph,
   loadGraph,
   listGraphs,
+  deleteGraph,
+  renameGraph,
   resetWeights,
   createPreset,
   listExamples,
@@ -58,6 +60,7 @@ import {
   cancelPluginJob,
   type PluginCatalogEntry,
   type PluginInspection,
+  type SavedGraphSummary,
 } from './rest';
 import { _setSessionTokenForTesting } from './_auth';
 
@@ -461,6 +464,76 @@ describe('saveGraph', () => {
   it('throws on failure', async () => {
     mockFetch(500, {});
     await expect(saveGraph({} as never)).rejects.toThrow(/Save failed/);
+  });
+});
+
+describe('listGraphs', () => {
+  // The table above already covers the url and the failure. What is worth a
+  // case of its own is `modified` being optional: the panel sorts on it, and
+  // a backend older than the Graphs panel does not send it at all.
+  it('carries rows through with and without modified', async () => {
+    mockFetch(200, [
+      { name: 'Alpha', file: 'alpha', modified: 1758000000 },
+      { name: 'Beta', file: 'beta' },
+    ]);
+    const rows: SavedGraphSummary[] = await listGraphs();
+    expect(rows[0].modified).toBe(1758000000);
+    expect(rows[1].modified).toBeUndefined();
+  });
+});
+
+describe('deleteGraph', () => {
+  it('DELETEs the url-encoded name with the session token', async () => {
+    const fetchMock = mockFetch(200, { deleted: true });
+    expect(await deleteGraph('My Graph/v2')).toEqual({ deleted: true });
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe('/api/graph/My%20Graph%2Fv2');
+    expect(init.method).toBe('DELETE');
+    expect(new Headers(init.headers).get('X-CodefyUI-Token')).toBe('test-token');
+  });
+
+  it('surfaces the 404 for a graph another tab already deleted', async () => {
+    mockFetch(404, { detail: "Graph 'gone' not found" });
+    await expect(deleteGraph('gone')).rejects.toThrow(/Graph 'gone' not found/);
+  });
+
+  it('surfaces the 409 naming both halves of a collision', async () => {
+    mockFetch(409, { detail: 'both alpha.json and alpha.graph.json exist' });
+    await expect(deleteGraph('alpha')).rejects.toThrow(/alpha\.graph\.json/);
+  });
+
+  it('falls back to the status text when the error body is not JSON', async () => {
+    mockFetchJsonThrows(500);
+    await expect(deleteGraph('alpha')).rejects.toThrow(/Delete failed/);
+  });
+});
+
+describe('renameGraph', () => {
+  it('POSTs from/to with the session token and returns the body', async () => {
+    const fetchMock = mockFetch(200, { file: 'beta' });
+    expect(await renameGraph('alpha', 'beta')).toEqual({ file: 'beta' });
+    const [url, init] = fetchMock.mock.calls[0];
+    // A fixed route, not a path segment: the name travels in the body, so
+    // nothing here needs encoding the way deleteGraph's does.
+    expect(url).toBe('/api/graph/rename');
+    expect(init.method).toBe('POST');
+    expect(JSON.parse(init.body)).toEqual({ from: 'alpha', to: 'beta' });
+    expect(new Headers(init.headers).get('X-CodefyUI-Token')).toBe('test-token');
+  });
+
+  it('surfaces the 409 the server sends when the new name is taken', async () => {
+    mockFetch(409, { detail: "A graph named 'beta' already exists" });
+    await expect(renameGraph('alpha', 'beta')).rejects.toThrow(/already exists/);
+  });
+
+  it('surfaces the refusal of a reserved suffix', async () => {
+    mockFetch(400, { detail: "'.graph' and '.layout' are reserved" });
+    await expect(renameGraph('alpha', 'beta.graph')).rejects.toThrow(/reserved/);
+  });
+
+  it('falls back to the status text when the error body is not JSON', async () => {
+    mockFetchJsonThrows(500);
+    await expect(renameGraph('alpha', 'beta')).rejects.toThrow(/Rename failed/);
   });
 });
 

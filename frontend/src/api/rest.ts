@@ -476,9 +476,78 @@ export async function loadGraph(name: string) {
   return res.json();
 }
 
-export async function listGraphs() {
+/**
+ * One row of `GET /api/graph/list` — a graph saved server-side under
+ * `GRAPHS_DIR`.
+ *
+ * `name` is what the file calls itself; `file` is the base name every other
+ * route addresses it by (`/graph/load/{file}`, `/graph/{file}`), and the two
+ * diverge as soon as a graph's title stops matching the file it was first
+ * saved as.
+ */
+export interface SavedGraphSummary {
+  name: string;
+  file: string;
+  /**
+   * Last write, epoch SECONDS — `st_mtime`, not the milliseconds `Date` takes,
+   * so multiply before constructing one.
+   *
+   * Optional because this describes what arrives over the wire: a frontend
+   * built from source can meet a backend older than the Graphs panel, which
+   * omits the key entirely. A list with nothing to sort by is a degraded
+   * order, not a crash.
+   */
+  modified?: number;
+}
+
+export async function listGraphs(): Promise<SavedGraphSummary[]> {
   const res = await fetch(`${BASE_URL}/graph/list`);
   if (!res.ok) throw new Error(`List failed: ${res.statusText}`);
+  return res.json();
+}
+
+/**
+ * Delete a saved graph by its `file` base name.
+ *
+ * Through `apiFetch` rather than bare `fetch` for the reason `saveGraph` is:
+ * this mutates, and the auth_guard middleware refuses a DELETE under `/api`
+ * that does not echo the session token.
+ *
+ * The server's `detail` wins over the status text because the failures worth
+ * reading here already say what they are — a 404 for a graph another tab
+ * deleted first, a 409 naming both halves of a canonical/legacy collision.
+ * "Delete failed: Conflict" would throw that away.
+ */
+export async function deleteGraph(name: string) {
+  const res = await apiFetch(`${BASE_URL}/graph/${encodeURIComponent(name)}`, {
+    method: 'DELETE',
+  });
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    throw new Error(body.detail ?? `Delete failed: ${res.statusText}`);
+  }
+  return res.json();
+}
+
+/**
+ * Rename a saved graph. `from` and `to` are `file` base names; the server
+ * also rewrites the `name` inside the file so the list keeps agreeing with
+ * itself.
+ *
+ * Detail-first for the same reason as `deleteGraph`, and more so: a 409
+ * collision and the refusal of the reserved `.graph` / `.layout` suffixes are
+ * only actionable as the server's own text.
+ */
+export async function renameGraph(from: string, to: string) {
+  const res = await apiFetch(`${BASE_URL}/graph/rename`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ from, to }),
+  });
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    throw new Error(body.detail ?? `Rename failed: ${res.statusText}`);
+  }
   return res.json();
 }
 
