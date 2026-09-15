@@ -11,7 +11,7 @@ import { usePackCatalogBootstrap } from '../../hooks/usePackCatalogBootstrap';
 import { usePluginCatalogBootstrap } from '../../hooks/usePluginCatalogBootstrap';
 import { SidebarRail } from './SidebarRail';
 import { NodesTab } from './NodesTab';
-import { PresetsTab } from './PresetsTab';
+import { GraphsTab } from './GraphsTab';
 import { TemplatesTab } from './TemplatesTab';
 import { CustomTab } from './CustomTab';
 import { SourceControlTab } from '../SourceControl/SourceControlTab';
@@ -19,7 +19,7 @@ import styles from './NodePalette.module.css';
 
 const TAB_PANELS: Record<SidebarTab, ComponentType> = {
   nodes: NodesTab,
-  presets: PresetsTab,
+  graphs: GraphsTab,
   templates: TemplatesTab,
   custom: CustomTab,
   git: SourceControlTab,
@@ -32,8 +32,8 @@ const RESIZE_STEP = 16;
  * The left sidebar: a fixed icon rail plus the content panel for whichever tab
  * the rail has open (#126).
  *
- * Only the ACTIVE tab is mounted. That is what lets the Templates and Custom
- * tabs fetch on mount without every page load paying for three requests it may
+ * Only the ACTIVE tab is mounted. That is what lets the Graphs, Templates and
+ * Custom tabs fetch on mount without every page load paying for requests it may
  * never show, and it means a tab's scroll position and search box reset when
  * you come back to it — the same trade the editor already makes per canvas tab.
  *

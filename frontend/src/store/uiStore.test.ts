@@ -409,7 +409,7 @@ describe('useUIStore', () => {
 
   describe('setSidebarTab', () => {
     it('persists and updates each rail tab', () => {
-      for (const tab of ['presets', 'templates', 'custom', 'git', 'nodes'] as const) {
+      for (const tab of ['graphs', 'templates', 'custom', 'git', 'nodes'] as const) {
         useUIStore.getState().setSidebarTab(tab);
         expect(useUIStore.getState().sidebarTab).toBe(tab);
         expect(localStorage.getItem(KEYS.SIDEBAR_TAB)).toBe(tab);
@@ -569,7 +569,7 @@ describe('useUIStore', () => {
     });
 
     it('sidebarTab loads each persisted valid tab', async () => {
-      for (const tab of ['presets', 'templates', 'custom', 'git', 'nodes']) {
+      for (const tab of ['graphs', 'templates', 'custom', 'git', 'nodes']) {
         vi.resetModules();
         localStorage.setItem(KEYS.SIDEBAR_TAB, tab);
         const mod = await import('./uiStore');
@@ -580,6 +580,17 @@ describe('useUIStore', () => {
     it('sidebarTab falls back to nodes for an unknown persisted value', async () => {
       vi.resetModules();
       localStorage.setItem(KEYS.SIDEBAR_TAB, 'queue');
+      const mod = await import('./uiStore');
+      expect(mod.useUIStore.getState().sidebarTab).toBe('nodes');
+    });
+
+    it('sidebarTab falls back to nodes for the retired presets tab', async () => {
+      // Not a hypothetical unknown value: every install that had the Presets
+      // tab open when the Graphs panel replaced it has exactly this in
+      // storage, and without the whitelist it would boot the rail onto a
+      // panel that no longer exists.
+      vi.resetModules();
+      localStorage.setItem(KEYS.SIDEBAR_TAB, 'presets');
       const mod = await import('./uiStore');
       expect(mod.useUIStore.getState().sidebarTab).toBe('nodes');
     });

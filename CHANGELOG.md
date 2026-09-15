@@ -22,7 +22,55 @@ received — each links to the release it was published as.
 
 ## [Unreleased]
 
+### Added
+
+- **The sidebar lists your saved graphs.** The rail's Presets slot becomes a
+  **Graphs** tab: one searchable list of every graph the server has, most
+  recently modified first, with the row the active canvas tab saves back to
+  marked. Clicking a row opens that graph into the tab and binds it, so Save
+  writes straight back over the file; the row's menu opens it in a new tab
+  instead, loads it onto the canvas without binding, renames it, or deletes it.
+  The header saves the current canvas under a new name and re-reads the list,
+  the footer imports a `.json` file off the disk, and either replacement asks
+  first when the canvas is not empty — a row in a list you scroll through is not
+  a menu item you aimed at, and the install pushes no undo frame. Saved graphs
+  were already stored on the server; what was missing was somewhere to see them.
+  The only way to open one was a two-level menu in the toolbar, and there was no
+  way to rename or delete one at all, so a graph saved under the wrong name
+  stayed under it and the usual way back to yesterday's work was to import the
+  JSON file again.
+
+  Behind it, `GET /api/graph/list` now reports each file's modification time,
+  and two routes are new: `DELETE /api/graph/{name}` and `POST /api/graph/rename`
+  with `{from, to}`. Both go through the same name sanitizing as save and load,
+  so a traversal in either direction lands inside the graphs directory as
+  underscores rather than escaping it; both handle the `.graph.json` /
+  `.layout.json` pair a project directory splits a graph into as well as the
+  legacy single file, and both refuse rather than guess when a name matches
+  both forms (409). A rename refuses a name already taken (409) and the reserved
+  `.graph` / `.layout` endings for the same reason save does; a delete that
+  finds nothing answers 404 rather than a quiet success, because the panel had
+  just shown the user a row. In project mode each one tells the Source Control
+  tab that the working tree changed. When the file deleted or renamed is the one
+  the active tab was bound to, the tab is unbound or re-bound rather than left
+  pointing at a name that is gone — so the next Save asks where to put the graph
+  instead of silently recreating the file you just deleted.
+
 ### Fixed
+
+- **A file picked for import that is not a graph is refused rather than
+  applied.** `{}` passed every check the import made — `data.nodes ?? []` is an
+  empty array, and an empty array is an array — so picking a `package.json`, a
+  settings file, or anything else ending in `.json` replaced the canvas with
+  nothing, through an install that pushes no undo frame and therefore could not
+  be taken back. The payload now has to carry a `nodes` key to count as a graph,
+  which a graph holding no nodes still writes, and anything else is refused with
+  the same message as unparseable JSON, leaving what is on screen alone. A file
+  the browser cannot read at all — a directory picked on Linux, a file deleted
+  between the dialog and the read, an unreadable network share — is reported as
+  well: `FileReader` answers those by firing `error` and never firing `load`,
+  which the import had no handler for, so the click produced no canvas change
+  and no message either.
 
 - **`ImageReader` finds a relative image in the working directory, not only in
   the upload store.** A relative path was resolved against `IMAGES_DIR` and
@@ -45,6 +93,19 @@ received — each links to the release it was published as.
   weights or a text file still needs those set.
 
 ### Changed
+
+- **Presets are a category in the Nodes tab, and the toolbar has no Load menu.**
+  The Presets tab held a whole rail slot for the Nodes tab's list with different
+  items in it, so presets are now a **Presets** group pinned below the node
+  categories there — dragged onto the canvas the same way, matched by the same
+  search box, and filed under the same beginner-mode rule — which also puts
+  making a preset (Export > Export as Subgraph) and using one in the same panel.
+  Nothing about a preset itself moved: the drag payload, the config modal, the
+  backend routes and every saved graph holding a `preset:` node are untouched.
+  The toolbar's **Load** menu goes with the tab it made redundant. It listed the
+  saved graphs and held **Import JSON...**, and both are in the Graphs tab now.
+  **File** keeps Save, Save As... and Clear Canvas, `Ctrl/Cmd`+`S` still saves,
+  and the Export menu is unchanged.
 
 - **The Package Center says less, and fits.** Fifty-four zh-TW strings and
   seventeen English ones are shorter or plainer. The catalog copy names the

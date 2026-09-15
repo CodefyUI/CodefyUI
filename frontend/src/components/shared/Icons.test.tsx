@@ -13,8 +13,8 @@ import {
   EyeIcon,
   EyeOffIcon,
   FitIcon,
+  FolderIcon,
   GitBranchIcon,
-  LayersIcon,
   LibraryIcon,
   MinusIcon,
   MoreHorizontalIcon,
@@ -23,6 +23,7 @@ import {
   PanelLeftOpenIcon,
   PlusIcon,
   RefreshIcon,
+  SaveIcon,
   SyncIcon,
   ZoomInIcon,
   ZoomOutIcon,
@@ -41,7 +42,7 @@ const icons = [
   ['ExpandIcon', ExpandIcon],
   ['CloseIcon', CloseIcon],
   ['LibraryIcon', LibraryIcon],
-  ['LayersIcon', LayersIcon],
+  ['FolderIcon', FolderIcon],
   ['BookIcon', BookIcon],
   ['PackageIcon', PackageIcon],
   ['PanelLeftCloseIcon', PanelLeftCloseIcon],
@@ -57,6 +58,7 @@ const icons = [
   ['DiscardIcon', DiscardIcon],
   ['ChevronDownIcon', ChevronDownIcon],
   ['SyncIcon', SyncIcon],
+  ['SaveIcon', SaveIcon],
 ] as const;
 
 describe('Icons', () => {

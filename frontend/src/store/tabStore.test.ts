@@ -1020,6 +1020,35 @@ describe('graph metadata actions', () => {
     expect(activeTab().currentGraphFile).toBeNull();
   });
 
+  it('rebindGraphFile moves the binding on every tab holding the file, not just the active one', () => {
+    store().setCurrentGraphFile('alpha');
+    const background = store().activeTabId;
+    store().addTab('second');
+    store().setCurrentGraphFile('alpha');
+    store().addTab('third');
+    store().setCurrentGraphFile('beta');
+
+    store().rebindGraphFile('alpha', 'Renamed_Alpha');
+    expect(store().tabs.map((t) => t.currentGraphFile))
+      .toEqual(['Renamed_Alpha', 'Renamed_Alpha', 'beta']);
+    // The one nobody is looking at is the point: its next Save would have
+    // written the graph back under the old name.
+    expect(store().tabs.find((t) => t.id === background)!.currentGraphFile)
+      .toBe('Renamed_Alpha');
+
+    // A delete passes null, which unbinds rather than renames.
+    store().rebindGraphFile('Renamed_Alpha', null);
+    expect(store().tabs.map((t) => t.currentGraphFile)).toEqual([null, null, 'beta']);
+  });
+
+  it('rebindGraphFile writes nothing when no tab holds the file', () => {
+    store().setCurrentGraphFile('alpha');
+    const before = store().tabs;
+    store().rebindGraphFile('never-opened', null);
+    // The same array, so no subscriber of the tab list re-renders.
+    expect(store().tabs).toBe(before);
+  });
+
   it('setGraphDevice assigns the active graph device, and "" or null clears it', () => {
     // A fresh tab follows Settings.
     expect(activeTab().graphDevice).toBeNull();

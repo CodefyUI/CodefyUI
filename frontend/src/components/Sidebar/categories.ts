@@ -1,10 +1,11 @@
 /**
- * Category ordering shared by the sidebar's Nodes and Presets tabs (#126).
+ * Category ordering for the sidebar's Nodes tab (#126): both the node
+ * categories it lists and the presets group pinned below them.
  *
- * Both tabs draw from the same backend category vocabulary and must agree on
- * the order they appear in and on what beginner mode hides — before #126 the
- * two were one merged list, so keeping this in one place is what stops them
- * drifting apart.
+ * Presets are filed under the same backend category vocabulary as nodes, so
+ * one helper decides for both what order categories appear in and what
+ * beginner mode hides. Keeping it in one place is what stops the list and the
+ * group under it disagreeing about which categories a beginner sees.
  */
 
 /** Curated teaching order; anything the backend adds that is not listed here

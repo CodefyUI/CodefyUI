@@ -110,13 +110,14 @@ export function LibraryIcon({ size }: { size?: number }) {
   );
 }
 
-/** Presets — several nodes stacked into one reusable block. */
-export function LayersIcon({ size }: { size?: number }) {
+/** Saved graphs — a folder, because the tab is a place things are KEPT.
+ *  Deliberately not SaveIcon, which the panel's own header uses for the
+ *  save-as command: one glyph two hand-widths apart cannot mean both
+ *  "this section" and "do this now". */
+export function FolderIcon({ size }: { size?: number }) {
   return (
     <Icon size={size}>
-      <polygon points="12 2 2 7 12 12 22 7 12 2" />
-      <polyline points="2 17 12 22 22 17" />
-      <polyline points="2 12 12 17 22 12" />
+      <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
     </Icon>
   );
 }
@@ -284,6 +285,20 @@ export function ChevronDownIcon({ size }: { size?: number }) {
   return (
     <Icon size={size}>
       <polyline points="6 9 12 15 18 9" />
+    </Icon>
+  );
+}
+
+/** Write the graph on the canvas to a file — a floppy disk, which is still
+ *  the only shape "save" has. Deliberately not PlusIcon: the Graphs panel's
+ *  header button saves what is already open under a new name, and a `+` there
+ *  would read as "start an empty graph". */
+export function SaveIcon({ size }: { size?: number }) {
+  return (
+    <Icon size={size}>
+      <path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z" />
+      <polyline points="17 21 17 13 7 13 7 21" />
+      <polyline points="7 3 7 8 15 8" />
     </Icon>
   );
 }

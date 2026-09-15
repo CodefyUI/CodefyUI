@@ -7,7 +7,7 @@ import { _resetPluginStoreForTesting, usePluginStore } from '../../store/pluginS
 import { useUIStore } from '../../store/uiStore';
 import { useI18n } from '../../i18n';
 import type { PackSummary, PluginCatalogEntry } from '../../api/rest';
-import type { NodeDefinition } from '../../types';
+import type { NodeDefinition, PresetDefinition } from '../../types';
 
 /*
  * The node-library behaviours that used to live in NodePalette.test.tsx,
@@ -33,9 +33,29 @@ function def(
   };
 }
 
+function preset(
+  preset_name: string,
+  category: string,
+  over: Partial<PresetDefinition> = {},
+): PresetDefinition {
+  return {
+    preset_name,
+    category,
+    description: `${preset_name} desc`,
+    tags: ['beginner'],
+    nodes: [],
+    edges: [],
+    exposed_inputs: [],
+    exposed_outputs: [],
+    exposed_params: [],
+    ...over,
+  };
+}
+
 /** Seed the node-def store. This tab is a pure consumer — it never fetches. */
 function seedStore(opts: {
   categorized?: Record<string, NodeDefinition[]>;
+  presets?: PresetDefinition[];
   loading?: boolean;
   error?: string | null;
 }) {
@@ -43,9 +63,21 @@ function seedStore(opts: {
   useNodeDefStore.setState({
     definitions,
     categorized: opts.categorized ?? {},
+    // Written on every seed, not merged: the store outlives a test, so presets
+    // left behind by one case must not still be on screen in the next.
+    presets: opts.presets ?? [],
     loading: opts.loading ?? false,
     error: opts.error ?? null,
   });
+}
+
+/** The category headers, in render order, by their visible name. */
+function categoryNames(container: HTMLElement): string[] {
+  // aria-expanded is the accordion header's own attribute — the list toolbar
+  // and the jump index carry an aria-label instead.
+  return Array.from(container.querySelectorAll('button[aria-expanded]')).map(
+    (header) => header.children[1].textContent ?? '',
+  );
 }
 
 beforeEach(() => {
@@ -703,5 +735,144 @@ describe('NodesTab — plugin provenance', () => {
 
     act(() => seedPlugins(eduEntry()));
     expect(screen.getByText('edu:FilterRows')).toBeTruthy();
+  });
+});
+
+// ── Presets as a pinned group (graphs panel wave) ─────────────────────────
+
+describe('NodesTab — presets group', () => {
+  it('renders every preset in one group pinned after the node categories', () => {
+    seedStore({
+      categorized: {
+        CNN: [def('Conv2d', 'CNN')],
+        Zebra: [def('ZNode', 'Zebra')], // unknown → last of the node categories
+      },
+      // Two different backend categories, one of them ordered ahead of CNN:
+      // the group is pinned by position, not sorted in with the rest.
+      presets: [preset('LeNet', 'CNN'), preset('Tabular', 'Data')],
+    });
+    const { container } = render(<NodesTab />);
+
+    expect(categoryNames(container)).toEqual(['CNN', 'Zebra', 'Presets']);
+    expect(screen.getByText('LeNet')).toBeTruthy();
+    expect(screen.getByText('Tabular')).toBeTruthy();
+    // Counted like any other section, so the header says how many there are.
+    expect(within(screen.getByText('Presets').closest('button')!).getByText('2')).toBeTruthy();
+  });
+
+  it('drags a preset with the preset payload, not the node one', () => {
+    // The whole point of keeping presets reachable: the drop target reads
+    // `application/codefyui-preset`, and a preset dragged from here has to
+    // carry it exactly as it did from the tab presets used to have.
+    seedStore({ presets: [preset('LeNet', 'CNN')] });
+    render(<NodesTab />);
+
+    // name → header row → the draggable item.
+    const item = screen.getByText('LeNet').parentElement!.parentElement!;
+    const setData = vi.fn();
+    fireEvent.dragStart(item, { dataTransfer: { setData, effectAllowed: '' } });
+    expect(setData).toHaveBeenCalledWith('application/codefyui-preset', 'LeNet');
+  });
+
+  it('finds a preset by name, and says so when only a preset matches', () => {
+    seedStore({
+      categorized: { CNN: [def('Conv2d', 'CNN')] },
+      presets: [preset('LeNet', 'CNN'), preset('Tabular', 'Data')],
+    });
+    const { container } = render(<NodesTab />);
+
+    fireEvent.change(screen.getByPlaceholderText('Search nodes...'), {
+      target: { value: 'lenet' },
+    });
+    // Every node category filters out; the preset group survives on its own.
+    expect(categoryNames(container)).toEqual(['Presets']);
+    expect(screen.getByText('LeNet')).toBeTruthy();
+    expect(screen.queryByText('Tabular')).toBeNull();
+    expect(screen.queryByText('No matching nodes')).toBeNull();
+  });
+
+  it('shows no preset group when there are no presets, or none matches', () => {
+    seedStore({ categorized: { CNN: [def('Conv2d', 'CNN')] }, presets: [] });
+    const { container } = render(<NodesTab />);
+    expect(categoryNames(container)).toEqual(['CNN']);
+
+    // A search that no preset answers drops the group rather than leaving an
+    // empty section with a zero count under the node list.
+    act(() => {
+      seedStore({
+        categorized: { CNN: [def('Conv2d', 'CNN')] },
+        presets: [preset('LeNet', 'CNN')],
+      });
+    });
+    expect(categoryNames(container)).toEqual(['CNN', 'Presets']);
+
+    fireEvent.change(screen.getByPlaceholderText('Search nodes...'), {
+      target: { value: 'conv' },
+    });
+    expect(categoryNames(container)).toEqual(['CNN']);
+  });
+
+  it('beginner mode hides a preset whose category it hides in the node list', () => {
+    useUIStore.setState({ beginnerMode: true });
+    seedStore({
+      categorized: { CNN: [def('Conv2d', 'CNN')] },
+      presets: [preset('LeNet', 'CNN'), preset('Attention', 'Transformer')],
+    });
+    render(<NodesTab />);
+    expect(screen.getByText('LeNet')).toBeTruthy();
+    expect(screen.queryByText('Attention')).toBeNull();
+  });
+
+  // ── PresetItem: difficulty, node count, hover ────────────────────────────
+  // Migrated from PresetsTab's own test when the component moved into this
+  // file. A preset row looks the same here as it did on the retired tab.
+
+  it('shows the preset difficulty badge and node count', () => {
+    seedStore({
+      presets: [
+        preset('LeNet', 'CNN', {
+          tags: ['intermediate'],
+          nodes: [
+            { id: 'a', type: 'Linear', params: {} },
+            { id: 'b', type: 'ReLU', params: {} },
+          ],
+        }),
+      ],
+    });
+    render(<NodesTab />);
+    expect(screen.getByText('intermediate')).toBeTruthy();
+    expect(screen.getByText('2 nodes')).toBeTruthy();
+  });
+
+  it('defaults preset difficulty to beginner when no difficulty tag present', () => {
+    seedStore({ presets: [preset('LeNet', 'CNN', { tags: ['vision'] })] });
+    render(<NodesTab />);
+    expect(screen.getByText('beginner')).toBeTruthy();
+  });
+
+  it('hovering a preset toggles its hover background', () => {
+    seedStore({ presets: [preset('LeNet', 'CNN')] });
+    render(<NodesTab />);
+    const item = screen.getByText('LeNet').parentElement!.parentElement!;
+    fireEvent.mouseEnter(item);
+    expect(item.style.background).toContain('rgba(212, 160, 23');
+    fireEvent.mouseLeave(item);
+    expect(item.style.background).toBe('transparent');
+  });
+
+  it('translates the node count for a non-English locale', () => {
+    useI18n.setState({ locale: 'zh-TW' });
+    seedStore({
+      presets: [
+        preset('LeNet', 'CNN', {
+          nodes: [
+            { id: 'a', type: 'Linear', params: {} },
+            { id: 'b', type: 'ReLU', params: {} },
+          ],
+        }),
+      ],
+    });
+    render(<NodesTab />);
+    expect(screen.getByText('2 個節點')).toBeTruthy();
   });
 });

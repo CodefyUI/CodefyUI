@@ -3,6 +3,7 @@ import logging
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException
+from pydantic import BaseModel, ConfigDict, Field
 
 from ..config import settings
 from ..core.graph_engine import GraphValidationError, build_preset_fallback, validate_graph
@@ -183,7 +184,15 @@ async def list_graphs():
         for f in settings.GRAPHS_DIR.glob("*.json"):
             try:
                 data = json.loads(f.read_text())
-                graphs.append({"name": data.get("name", f.stem), "file": f.stem})
+                graphs.append({
+                    "name": data.get("name", f.stem),
+                    "file": f.stem,
+                    # Raw st_mtime (float epoch seconds), not an int: the
+                    # Graphs panel's default order is most-recent-first, and
+                    # truncating would shuffle two graphs saved within the
+                    # same second into an arbitrary order.
+                    "modified": f.stat().st_mtime,
+                })
             except Exception:
                 continue
         return graphs
@@ -198,10 +207,182 @@ async def list_graphs():
     for base, f in pairs:
         try:
             data = json.loads(f.read_text())
-            graphs.append({"name": data.get("name", base), "file": base})
+            graphs.append({
+                "name": data.get("name", base),
+                "file": base,
+                # The LOGIC file's mtime -- which is what collect_graph_files
+                # resolves to. The layout half is rewritten by every drag, so
+                # sorting on it would rank "somebody nudged a node" above
+                # "somebody rewired the graph".
+                "modified": f.stat().st_mtime,
+            })
         except Exception:
             continue
     return graphs
+
+
+class RenameGraphRequest(BaseModel):
+    """``POST /rename``'s body: ``{"from": ..., "to": ...}``.
+
+    ``from`` is a Python keyword, so the field is ``from_name`` carrying the
+    wire name as an alias; ``populate_by_name`` keeps the Python spelling
+    usable as well, so an in-process caller is not forced to build a dict just
+    to say ``from``. ``extra="forbid"`` for the reason routes_packs gives: a
+    closed key set should be a property of the schema rather than of every
+    handler remembering to check.
+    """
+
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+    from_name: str = Field(alias="from", min_length=1)
+    to: str = Field(min_length=1)
+
+
+@router.post("/rename")
+async def rename_graph(req: RenameGraphRequest):
+    """Rename a saved graph: the file, its layout half, and the ``name`` the
+    file calls itself by (which is what the graphs list shows).
+
+    Both names go through ``_sanitize_name`` via the path helpers, so a
+    traversal in either direction lands harmlessly inside GRAPHS_DIR as
+    underscores rather than escaping it.
+    """
+    # Same refusal /save gives, and for the same reason: in project mode a
+    # graph named `x.graph` would write `x.graph.graph.json` and read back as
+    # a graph called `x` with a stray suffix.
+    if _project_mode() and _reserved_graph_name(req.to):
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Graph name '{req.to}' is reserved: names ending in "
+                "'.graph' or '.layout' collide with the project file split."
+            ),
+        )
+    try:
+        src = _graph_path(req.from_name)
+        # Resolved rather than just probing the write target: this is what
+        # catches renaming a canonical pair onto a base that exists only in
+        # the legacy form (and the reverse), which would leave both forms of
+        # one base on disk -- the state GraphAmbiguityError exists to forbid.
+        dst_existing = _graph_path(req.to)
+    except GraphAmbiguityError as e:
+        raise HTTPException(status_code=409, detail=str(e))
+    if not src.exists():
+        raise HTTPException(
+            status_code=404, detail=f"Graph '{req.from_name}' not found")
+    if dst_existing.exists() and dst_existing != src:
+        raise HTTPException(
+            status_code=409, detail=f"Graph '{req.to}' already exists")
+    # The layout half gets the same refusal, checked here so that -- like
+    # every check above it -- nothing has moved yet when it fires. A layout
+    # can outlive its graph (a `git checkout` of `graphs/` alone, a manual
+    # delete, a partial revert), and `Path.replace` overwrites the
+    # destination silently on POSIX and on Windows alike, so without this the
+    # orphan would be destroyed by a rename the logic half had waved through.
+    layout_src = _graph_layout_path(req.from_name)
+    layout_dst = _graph_layout_path(req.to)
+    if (
+        layout_dst is not None
+        and layout_dst != layout_src
+        and layout_dst.exists()
+    ):
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"A layout file for '{req.to}' already exists without its "
+                "graph; remove or restore it before renaming onto that name."
+            ),
+        )
+
+    raw = src.read_text()
+    try:
+        data = json.loads(raw)
+    except ValueError:
+        data = None
+    if not isinstance(data, dict):
+        # /list silently skips a file it cannot parse, so the panel never
+        # offers to rename one. Getting here means a hand-edited file: say so
+        # rather than answering a 500 from json.loads.
+        raise HTTPException(
+            status_code=400,
+            detail=f"Graph '{req.from_name}' is not a readable graph file",
+        )
+    data["name"] = req.to
+
+    safe_to = _sanitize_name(req.to)
+    # Rename into the form the file is ALREADY in: a legacy single-file graph
+    # stays legacy and upgrades to the pair on its next /save (spec 6.4/ID2).
+    # Splitting it here instead would mean re-deriving a layout from embedded
+    # positions, which is /save's job and needs the merged shape.
+    keeps_pair = _project_mode() and src.name.endswith(".graph.json")
+    dst = settings.GRAPHS_DIR / (
+        f"{safe_to}.graph.json" if keeps_pair else f"{safe_to}.json")
+
+    # project.py's own writer rather than a second tmp+os.replace here: spec
+    # 13's atomicity should stay one mechanism, and a truncated logic file is
+    # a lost graph.
+    from ..core.project import _atomic_write
+
+    # Move first, rewrite second. The other order leaves a file whose `name`
+    # disagrees with its filename when the move then fails; this one leaves a
+    # graph that is whole and loadable under its new name, only still titled
+    # the old one. The trailing newline is preserved exactly as found so a
+    # rename does not surface in a project's git diff as a last-line change.
+    if dst != src:
+        src.replace(dst)
+    _atomic_write(
+        dst, json.dumps(data, indent=2) + ("\n" if raw.endswith("\n") else ""))
+
+    # The layout file is keyed by base name, so leaving it behind would orphan
+    # it under a name no graph answers to any more. Moved for a legacy source
+    # too: if one exists beside a legacy file it is still that graph's. The
+    # destination was proved free above, so this move can only create a file.
+    if (
+        layout_src is not None
+        and layout_dst is not None
+        and layout_dst != layout_src
+        and layout_src.exists()
+    ):
+        layout_dst.parent.mkdir(parents=True, exist_ok=True)
+        layout_src.replace(layout_dst)
+
+    # `file` is what the caller addresses the graph by from here on -- a
+    # client holding the old base (the editor's bound graph, say) has no other
+    # way to learn the sanitized new one.
+    return {"message": "Graph renamed", "name": req.to, "file": safe_to}
+
+
+# Declared after the literal routes above so a future POST/GET at `/{name}`
+# cannot swallow `/rename` or `/list`.
+@router.delete("/{name}")
+async def delete_graph(name: str):
+    """Delete a saved graph, both halves of it.
+
+    404 rather than a quiet success when nothing was there: the panel showed
+    the user a row, and "another tab deleted it first" is something they
+    should see.
+    """
+    try:
+        path = _graph_path(name)
+    except GraphAmbiguityError as e:
+        # The same refusal /load gives. Never guess which of the two files the
+        # user meant, least of all when the answer decides which one is gone.
+        raise HTTPException(status_code=409, detail=str(e))
+    if not path.exists():
+        raise HTTPException(status_code=404, detail=f"Graph '{name}' not found")
+    removed = [path]
+    path.unlink()
+    if _project_mode():
+        # `path` IS the legacy single `<name>.json` whenever that is the form
+        # on disk (resolve_graph_file returns it, and the both-forms case
+        # raised above), so the legacy file needs no unlink of its own. The
+        # layout half does: it is not a graph file, so it never takes part in
+        # that resolution at all.
+        layout_path = _graph_layout_path(name)
+        if layout_path is not None and layout_path.exists():
+            layout_path.unlink()
+            removed.append(layout_path)
+    return {"message": "Graph deleted", "removed": [str(p) for p in removed]}
 
 
 @router.post("/export")

@@ -36,14 +36,15 @@ If your browser has no usable IndexedDB — some private-browsing modes, or a sa
 Saved graphs are stored by the server, not by the browser:
 
 - **File → Save** / **Save As...** write the current tab's graph under a name; Save asks before overwriting an existing one. **File → Clear Canvas** empties the tab after a confirmation.
-- **Load** lists the saved graphs (searchable). **Load into this canvas tab** replaces what is on the canvas without binding the tab to the file, so the next Save asks where to put it; **Load and save** binds the tab to the file, so Save writes straight back over it.
+- The sidebar's **Graphs** tab lists them (searchable, most recently modified first), and the row bound to the current tab is marked. Clicking a row binds the tab to that file, so Save writes straight back over it; the row menu's **Load onto canvas without binding** replaces what is on the canvas and leaves the next Save asking where to put it, and **Open in new tab** leaves the current canvas alone. Opening into the current tab asks first, either way, when the canvas is not empty: the replacement cannot be undone.
+- The same row menu renames and deletes a saved graph — a delete removes the file from disk, and both halves of it in a [project directory](./project-directories). When the renamed or deleted file is the one the current tab saves back to, the tab follows: it binds to the new name, or to nothing, so the next Save asks rather than quietly recreating what you just deleted. The tab's header has a **Save as...** of its own, so a save lands visibly in the list you are looking at.
 
 ## Import / export
 
 You can export any graph to a JSON file and import it back later (or share it):
 
 - **Export → Export as JSON** writes the current tab's graph (nodes, edges, parameters, segment markers and subgraph definitions) to a `.json` file.
-- **Load → Import JSON...** replaces the current tab's canvas with the file — open a new tab first to keep your graph. A file written by a newer CodefyUI opens read-only, with a notice.
+- **Import JSON...**, at the foot of the sidebar's **Graphs** tab, replaces the current tab's canvas with the file — open a new tab first to keep your graph. A `.json` file that is not a graph is refused with a message instead of emptying the canvas, and a file written by a newer CodefyUI opens read-only, with a notice. An imported graph is bound to no file, so the first Save asks for a name.
 - **Export → Export Diagram (SVG / PNG)** draws the architecture only — nodes, ports and connections, no parameter values — on a light, document-friendly background.
 - **Export → Export as Python** writes a readable, single-file Python program: one function per node (with its parameters inlined as editable literals), flow functions that wire the nodes together in execution order, and a `main()` entry point with a small CLI. Each node function delegates to the same node implementation the canvas uses, so results match what you saw on the canvas. Run it with the Python environment from a compatible CodefyUI installation; it does not need the web server. Use `--help` for device, GraphInput JSON, timeout, and project-asset options.
 

@@ -1,0 +1,158 @@
+/* ── Graphs tab: one saved graph per row ──
+
+   The shell (header, search, panel body, footer, state messages) is
+   NodePalette.module.css, exactly as the Templates tab uses it; only the row
+   and the two buttons that are this panel's own live here.
+
+   Every width in here has to survive a 180px sidebar in zh-TW, which is why
+   the row is a grid with one `minmax(0, 1fr)` track: the name ellipsises and
+   nothing else in the row ever gives up its space to it. */
+
+.list {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  list-style: none;
+  margin: 0;
+  padding: var(--sp-2) 0;
+}
+
+/* The row itself is not the click target -- the menu button at its end is a
+   second one -- so the hover state is drawn here and the padding belongs to
+   the two controls inside it. */
+.row {
+  display: flex;
+  align-items: center;
+  margin: var(--sp-1) var(--sp-3);
+  padding-right: var(--sp-2);
+  border: 1px solid transparent;
+  border-radius: var(--radius);
+  transition: background var(--transition-fast), border-color var(--transition-fast);
+}
+
+.row:hover {
+  background: var(--surface-hover);
+  border-color: var(--border-base);
+}
+
+/* Left inset of 20px (margin + padding), the same the Templates tab's rows
+   sit at, so the two panels line up when you switch between them. */
+.rowOpen {
+  flex: 1;
+  min-width: 0;
+  display: grid;
+  /* One track: the name and the meta under it. The chip is not in here --
+     see `.rowBadge`. */
+  grid-template-columns: minmax(0, 1fr);
+  align-content: center;
+  padding: var(--sp-3) var(--sp-3) var(--sp-3) var(--sp-4);
+  background: transparent;
+  border: 0;
+  border-radius: var(--radius);
+  color: inherit;
+  font-family: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.rowOpen:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+}
+
+.rowName {
+  font-size: var(--fs-md);
+  font-weight: var(--fw-medium);
+  color: var(--text-primary);
+  line-height: var(--lh-tight);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* "Current" after the name, in the pair the footer button already uses.
+
+   A child of the ROW rather than of the button, the way `RefRow`'s badge is:
+   inside the button its text was swallowed by that button's `aria-label` --
+   see the comment beside it. The button's own right padding is the gap
+   before it, and it never shrinks, so a long name ellipsises against it. */
+.rowBadge {
+  flex: 0 0 auto;
+  padding: 0 var(--sp-2);
+  border-radius: var(--radius-pill);
+  background: var(--accent-wash);
+  color: var(--accent);
+  font-size: var(--fs-2xs);
+  font-weight: var(--fw-semibold);
+  line-height: var(--lh-tight);
+  white-space: nowrap;
+}
+
+/* When it was last written, under the name it belongs to. One line that
+   ellipsises rather than wrapping: the row's `title` carries the sentence in
+   full, and a third line would cost every row in the list its density. */
+.rowMeta {
+  margin-top: var(--sp-1);
+  font-size: var(--fs-2xs);
+  color: var(--text-muted);
+  line-height: var(--lh-tight);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* The ActionMenu trigger, which replaces that component's default rather than
+   layering over it. Always on screen instead of appearing on hover, the way
+   the Source Control rows do it: rename and delete have no other door here,
+   and a touch screen has no hover to open one with. */
+.rowMenuButton {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  width: var(--h-control-xs);
+  height: var(--h-control-xs);
+  padding: 0;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: color var(--transition-fast), background var(--transition-fast);
+}
+
+.rowMenuButton:hover {
+  background: var(--surface-hover);
+  color: var(--text-primary);
+}
+
+.rowMenuButton:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+}
+
+/* ── Footer: the way in from a file on disk ── */
+.importButton {
+  display: block;
+  width: 100%;
+  padding: var(--sp-2) var(--sp-3);
+  background: var(--accent-wash);
+  border: 1px solid var(--accent-dim);
+  border-radius: var(--radius-sm);
+  color: var(--accent);
+  font-size: var(--fs-sm);
+  font-weight: var(--fw-semibold);
+  cursor: pointer;
+  transition: background var(--transition-fast), color var(--transition-fast);
+}
+
+.importButton:hover {
+  background: var(--accent-dim);
+  color: var(--text-on-accent);
+}
+
+/* The picker itself is the button above; this only exists to be clicked
+   programmatically. */
+.fileInput {
+  display: none;
+}

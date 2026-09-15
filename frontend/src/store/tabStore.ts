@@ -574,6 +574,19 @@ interface TabStoreState {
   /** Assign the active graph's run device; '' or null clears the assignment. */
   setGraphDevice: (device: string | null) => void;
   setCurrentGraphFile: (file: string | null) => void;
+  /**
+   * Move, or drop, the save binding of EVERY tab that holds `from`.
+   *
+   * A rename or a delete happens to the file, not to the tab in front of the
+   * user, and any number of tabs can be bound to one graph -- the Graphs
+   * panel opens one into a new tab in a click. A tab left holding a name that
+   * is no longer on disk writes the graph back on its next Save: under the
+   * old name after a rename (the graph then exists twice), or recreating the
+   * file that was just deleted, both without asking, because an in-place Save
+   * neither prompts nor checks for a collision. The binding is persisted, so
+   * a stale one survives a reload too.
+   */
+  rebindGraphFile: (from: string, to: string | null) => void;
   setTabReadOnly: (v: boolean) => void;
   // Per-project persistence scoping (ID10)
   rehydrateForProject: (projectId: string | null) => void;
@@ -2061,6 +2074,19 @@ export const useTabStore = create<TabStoreState>((rawSet, get) => {
 
   setCurrentGraphFile: (file) =>
     set({ tabs: updateTab(get().tabs, get().activeTabId, () => ({ currentGraphFile: file })) }),
+
+  rebindGraphFile: (from, to) => {
+    const { tabs } = get();
+    // Nothing written when no tab holds the file, which is most renames and
+    // most deletes: a fresh `tabs` array re-renders every subscriber of the
+    // list, and the canvas is one of them.
+    if (!tabs.some((tab) => tab.currentGraphFile === from)) return;
+    set({
+      tabs: tabs.map((tab) => (
+        tab.currentGraphFile === from ? { ...tab, currentGraphFile: to } : tab
+      )),
+    });
+  },
 
   setTabReadOnly: (v) =>
     set({ tabs: updateTab(get().tabs, get().activeTabId, () => ({ readOnly: v })) }),

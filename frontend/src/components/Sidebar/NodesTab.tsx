@@ -10,7 +10,8 @@ import {
   usePackAvailability,
 } from '../../utils/packAvailability';
 import { pluginNameOf, type PluginIndex } from '../../utils/provider';
-import type { NodeDefinition } from '../../types';
+import type { NodeDefinition, PresetDefinition } from '../../types';
+import { DIFFICULTY_COLORS } from '../../styles/theme';
 import { orderCategories } from './categories';
 import { CategoryList, type CategoryGroup } from './CategoryList';
 import styles from './NodePalette.module.css';
@@ -142,15 +143,101 @@ export function NodeItem({ definition }: NodeItemProps) {
   );
 }
 
+// ── Preset Item ──
+
+interface PresetItemProps {
+  preset: PresetDefinition;
+}
+
+/**
+ * One composite preset, dragged onto the canvas as a whole block.
+ *
+ * It lived in `PresetsTab` until the Graphs panel took that rail slot; it
+ * moved here rather than being rewritten, because `useDragAndDrop` reads the
+ * `application/codefyui-preset` payload below and a preset dragged from the
+ * node list has to behave exactly as it did from the tab.
+ */
+export function PresetItem({ preset }: PresetItemProps) {
+  const [hovered, setHovered] = useState(false);
+  const difficulty = preset.tags.find((t) => t in DIFFICULTY_COLORS) ?? 'beginner';
+  const difficultyColor = DIFFICULTY_COLORS[difficulty];
+  const { t } = useI18n();
+
+  const handleDragStart = (event: React.DragEvent) => {
+    event.dataTransfer.setData('application/codefyui-preset', preset.preset_name);
+    event.dataTransfer.effectAllowed = 'move';
+  };
+
+  return (
+    <div
+      draggable
+      onDragStart={handleDragStart}
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => setHovered(false)}
+      title={preset.description}
+      className={styles.presetItem}
+      // Gold preset-hover tint: a semantic per-item accent (same family as
+      // CATEGORY_COLORS/DIFFICULTY_COLORS below), not chrome, so it is left
+      // outside the grey/accent token sweep. Close to --status-preset
+      // (#e0a92b) but not identical, and there is no wash/alpha variant of
+      // it to reach for; NodesTab.test.tsx also pins this exact rgba
+      // string. See migration report for the token gap.
+      style={{
+        background: hovered ? 'rgba(212,160,23,0.08)' : 'transparent',
+        borderColor: hovered ? 'rgba(212,160,23,0.3)' : 'transparent',
+      }}
+    >
+      <div className={styles.presetHeader}>
+        <div className={styles.presetName}>
+          {preset.preset_name}
+        </div>
+        <span
+          className={styles.presetDifficultyBadge}
+          style={{
+            background: `${difficultyColor}22`,
+            color: difficultyColor,
+          }}
+        >
+          {difficulty}
+        </span>
+      </div>
+      <div className={styles.presetDesc}>
+        {preset.description}
+      </div>
+      <div className={styles.presetNodeCount}>
+        {t('empty.nodeCount', { count: preset.nodes.length })}
+      </div>
+    </div>
+  );
+}
+
 // ── Nodes tab ──
+
+/**
+ * What one row of this tab can be. `CategoryList` is generic over its item, so
+ * both kinds go through the one list; `preset_name` is the discriminant,
+ * because a `NodeDefinition` never carries one.
+ */
+type PaletteEntry = NodeDefinition | PresetDefinition;
+
+const isPreset = (entry: PaletteEntry): entry is PresetDefinition => 'preset_name' in entry;
+
+/**
+ * Category key for the pinned preset group. The server's category vocabulary
+ * is plain display names, so nothing it sends can collide with this; the
+ * visible label comes from `labelFor`, not from the key.
+ */
+const PRESET_GROUP = '__presets__';
 
 /**
  * The node library: search, category accordions, drag-to-canvas.
  *
  * Lifted out of the old single-column `NodePalette` in #126 with its behaviour
- * intact; what changed is that presets moved to their own rail tab, so a
- * category here counts nodes only and the Composite/Basic sub-headers that
- * separated the two kinds are gone.
+ * intact; what changed is that the Composite/Basic sub-headers that used to
+ * split each category into nodes and presets are gone. Presets are back here
+ * as one group pinned after every node category — the rail slot they had is
+ * now the Graphs panel — so creating a preset and using one stay on the same
+ * screen.
  *
  * A pure consumer of the catalog: this tab mounts only while it is the open
  * one, so it must not be what STARTS the catalog load — that belongs to the
@@ -158,6 +245,7 @@ export function NodeItem({ definition }: NodeItemProps) {
  */
 export function NodesTab() {
   const categorized = useNodeDefStore((s) => s.categorized);
+  const presets = useNodeDefStore((s) => s.presets);
   const loading = useNodeDefStore((s) => s.loading);
   const error = useNodeDefStore((s) => s.error);
   const refetch = useNodeDefStore((s) => s.fetchDefinitions);
@@ -166,9 +254,9 @@ export function NodesTab() {
   const [searchQuery, setSearchQuery] = useState('');
   const { t } = useI18n();
 
-  const groups = useMemo<CategoryGroup<NodeDefinition>[]>(() => {
+  const groups = useMemo<CategoryGroup<PaletteEntry>[]>(() => {
     const q = searchQuery.trim().toLowerCase();
-    const out: CategoryGroup<NodeDefinition>[] = [];
+    const out: CategoryGroup<PaletteEntry>[] = [];
     // orderCategories only ever returns keys it was given, so the lookup below
     // is always a hit.
     for (const category of orderCategories(Object.keys(categorized), beginnerMode)) {
@@ -187,8 +275,28 @@ export function NodesTab() {
       }
       if (items.length > 0) out.push({ category, items });
     }
+
+    // Every preset in ONE group after the node categories, whatever category
+    // the server filed each under: a preset is a different kind of thing from
+    // a node, so the tab reads as the library with the presets under it rather
+    // than as a dozen mixed sections. Beginner mode still hides a preset whose
+    // category it hides in the list above — same helper, so the two cannot
+    // disagree about what a beginner sees. The search predicate is the one the
+    // Presets tab used, so nothing findable there stops being findable here.
+    const shown = new Set(orderCategories(presets.map((p) => p.category), beginnerMode));
+    let presetItems = presets.filter((p) => shown.has(p.category));
+    if (q) {
+      presetItems = presetItems.filter(
+        (p) =>
+          p.preset_name.toLowerCase().includes(q) ||
+          p.description.toLowerCase().includes(q) ||
+          p.tags.some((tag) => tag.toLowerCase().includes(q)),
+      );
+    }
+    if (presetItems.length > 0) out.push({ category: PRESET_GROUP, items: presetItems });
+
     return out;
-  }, [categorized, beginnerMode, pluginsById, searchQuery]);
+  }, [categorized, presets, beginnerMode, pluginsById, searchQuery]);
 
   return (
     <>
@@ -231,8 +339,17 @@ export function NodesTab() {
           ) : (
             <CategoryList
               groups={groups}
-              itemKey={(def) => def.node_name}
-              renderItem={(def) => <NodeItem definition={def} />}
+              itemKey={(entry) => (isPreset(entry) ? entry.preset_name : entry.node_name)}
+              renderItem={(entry) =>
+                isPreset(entry)
+                  ? <PresetItem preset={entry} />
+                  : <NodeItem definition={entry} />
+              }
+              // Only the pinned group is renamed; a node category still shows
+              // the key the server sent, as it did before presets moved in.
+              labelFor={(category) =>
+                category === PRESET_GROUP ? t('palette.presets.category') : category
+              }
             />
           )
         )}

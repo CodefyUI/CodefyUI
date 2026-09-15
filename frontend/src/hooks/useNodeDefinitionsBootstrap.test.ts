@@ -35,7 +35,6 @@ beforeEach(() => {
     error: null,
     categorized: {},
     presets: [],
-    presetCategorized: {},
   });
   fetchDefsMock.mockReset();
   fetchPresetsMock.mockReset();

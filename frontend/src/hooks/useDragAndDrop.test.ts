@@ -69,7 +69,6 @@ beforeEach(() => {
     loading: false,
     error: null,
     categorized: {},
-    presetCategorized: {},
   });
   // Reset tab store to a single fresh tab so addNode/addPresetNode operate.
   useTabStore.setState({ tabs: [], activeTabId: null as unknown as string });

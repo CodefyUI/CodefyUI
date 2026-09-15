@@ -8,7 +8,6 @@ interface NodeDefState {
   error: string | null;
   categorized: Record<string, NodeDefinition[]>;
   presets: PresetDefinition[];
-  presetCategorized: Record<string, PresetDefinition[]>;
   fetchDefinitions: () => Promise<void>;
   reload: () => Promise<void>;
 }
@@ -19,7 +18,6 @@ export const useNodeDefStore = create<NodeDefState>((set, get) => ({
   error: null,
   categorized: {},
   presets: [],
-  presetCategorized: {},
 
   fetchDefinitions: async () => {
     set({ loading: true, error: null });
@@ -33,12 +31,10 @@ export const useNodeDefStore = create<NodeDefState>((set, get) => ({
         if (!categorized[def.category]) categorized[def.category] = [];
         categorized[def.category].push(def);
       }
-      const presetCategorized: Record<string, PresetDefinition[]> = {};
-      for (const p of presets) {
-        if (!presetCategorized[p.category]) presetCategorized[p.category] = [];
-        presetCategorized[p.category].push(p);
-      }
-      set({ definitions: defs, categorized, presets, presetCategorized, loading: false });
+      // Presets ship flat: the Nodes tab pins them into one group of their own
+      // rather than spreading them across the node categories, so there is no
+      // second `categorized` map to build.
+      set({ definitions: defs, categorized, presets, loading: false });
     } catch (e) {
       set({ error: (e as Error).message, loading: false });
     }

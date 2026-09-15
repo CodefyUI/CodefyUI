@@ -1,6 +1,10 @@
 import type { Node } from '@xyflow/react';
+import { loadGraph } from '../api/rest';
 import { useNodeDefStore } from '../store/nodeDefStore';
+import { useProjectStore } from '../store/projectStore';
 import { useTabStore } from '../store/tabStore';
+import { useToastStore } from '../store/toastStore';
+import { useI18n } from '../i18n';
 import type { GraphDocument } from '../store/tabStore';
 import type {
   NodeData,
@@ -19,10 +23,10 @@ import { readGraphDevice } from './graphSettings';
  * tab needs: when a discard puts an older version of `graphs/foo.graph.json`
  * back on disk, the tab holding it is showing something that no longer
  * exists, and the offer to reload it has to read the file exactly the way
- * the Toolbar's Load does. Extracted from `Toolbar.handleLoadGraph` rather
- * than reimplemented, so the two can never drift: the same preset merge, the
- * same subgraph resolution, the same layout pass for a project graph whose
- * layout file is missing.
+ * opening one does. Both read it through this file rather than each writing
+ * the steps out, so the two can never drift: the same preset merge, the same
+ * subgraph resolution, the same layout pass for a project graph whose layout
+ * file is missing.
  *
  * `openExample.ts` is the sibling for examples and templates; this file is
  * for files the user owns. The difference that matters is the binding: an
@@ -146,6 +150,83 @@ export function resolveSavedGraph(
 }
 
 /**
+ * What opening a saved graph does to the tab it lands in.
+ *
+ * - `canvas` — replace what is on this canvas and bind the tab to NOTHING,
+ *   so the next Save asks where the result should go. Overwriting live work
+ *   is the whole of this path, which is why its callers confirm first.
+ * - `bind` — the original Load: replace the canvas AND bind the tab to the
+ *   file, so Save writes straight back over it.
+ *
+ * The two used to be one action (always `bind`), which meant opening a saved
+ * graph to look at it silently took over where the tab saves.
+ */
+export type SavedGraphTarget = 'canvas' | 'bind';
+
+/**
+ * Open a saved graph into the ACTIVE tab.
+ *
+ * Extracted from `Toolbar.handleLoadGraph` so the Graphs panel opens a row
+ * exactly the way the toolbar menu opened one -- not "the same idea", the
+ * same function, down to which toast a failure produces.
+ *
+ * Deliberately does NOT confirm. The two callers disagree about when to ask:
+ * a menu item the user aimed at is not a row they scrolled past, so the
+ * question belongs to whoever drew the thing that was clicked. Everything
+ * after the click is the same, and that is what lives here.
+ *
+ * `file` is the sanitized file stem, and `bind` adopts it so a later Save
+ * overwrites the file in place with no overwrite warning; `canvas`
+ * deliberately does not, which is what makes it safe to drop a saved graph
+ * onto a canvas you are still working in -- the next Save asks for a name
+ * instead of eating the original. The binding is part of installing the
+ * document (#200 item 9), not a line after it: it says which file the graph
+ * on screen writes to, so the two must never be set apart.
+ *
+ * Never throws: a failed read surfaces as a toast and leaves the graph
+ * alone. Returns whether the graph was installed, for callers that want to
+ * react.
+ */
+export async function openSavedGraph(
+  // The whole list row, not just its `file`: the callers hold one, and the
+  // pair is what stops `name` (the title inside the file) being mistaken for
+  // the name the routes address it by.
+  { file }: { name: string; file: string },
+  target: SavedGraphTarget,
+): Promise<boolean> {
+  const t = useI18n.getState().t;
+  const addToast = useToastStore.getState().addToast;
+  try {
+    // Read through `rest.loadGraph`, which is the call the toolbar's Load
+    // always made. `readSavedGraphDocument` below is the sibling for the
+    // reload path, and the only reason it exists is that it has to tell a
+    // deleted file apart from a broken server; an open has one answer for
+    // both, so it has no use for the distinction.
+    const doc = resolveSavedGraph(await loadGraph(file), target === 'bind' ? file : null);
+    // One call, not six (#200 items 4 and 8): the whole document lands in a
+    // single store update, so no subscriber sees the new nodes beside the
+    // old definitions, and the read-only gate is the action's own return
+    // value rather than a line each reader has to remember -- which is what
+    // the third reader of a document, `openExample`, did not.
+    const tooNew = useTabStore.getState().loadGraphDocument(doc);
+    if (tooNew) {
+      addToast(
+        t('project.readOnly.loadNotice', {
+          version: doc.formatVersion as string | number,
+        }),
+        'warning',
+      );
+    }
+    const projectDir = useProjectStore.getState().projectDir;
+    if (projectDir !== null) useTabStore.getState().stampActiveTabProject(projectDir);
+    return true;
+  } catch (e) {
+    addToast(t('toolbar.load.fail', { error: (e as Error).message }), 'error');
+    return false;
+  }
+}
+
+/**
  * Read one saved graph off the server and resolve it.
  *
  * Fetched here rather than through `rest.loadGraph` for one reason: that
@@ -153,8 +234,8 @@ export function resolveSavedGraph(
  * cannot tell "the file is gone" from "the server broke". The reload path
  * has to tell them apart -- a graph deleted by the commit being reloaded is
  * a sentence, and a 500 is an error line -- so the 404 becomes
- * `GraphMissingError` here. `loadGraph` itself is untouched; the Toolbar's
- * Load still goes through it and still shows what it always showed.
+ * `GraphMissingError` here. `loadGraph` itself is untouched; `openSavedGraph`
+ * still goes through it and still shows what it always showed.
  */
 export async function readSavedGraphDocument(
   file: string,

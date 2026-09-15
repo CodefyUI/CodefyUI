@@ -4,8 +4,8 @@ import { useI18n, type TranslationKey } from '../../i18n';
 import { MOD_LABEL } from '../../utils/platform';
 import {
   BookIcon,
+  FolderIcon,
   GitBranchIcon,
-  LayersIcon,
   LibraryIcon,
   PackageIcon,
   PanelLeftCloseIcon,
@@ -18,7 +18,10 @@ const TAB_META: Record<
   { Icon: ComponentType<{ size?: number }>; labelKey: TranslationKey }
 > = {
   nodes: { Icon: LibraryIcon, labelKey: 'sidebar.tab.nodes' },
-  presets: { Icon: LayersIcon, labelKey: 'sidebar.tab.presets' },
+  // The slot presets used to hold. A folder, not the floppy disk the panel's
+  // save-as button carries: a rail icon names a section, and reusing the
+  // command's glyph a few centimetres away would make it name an action too.
+  graphs: { Icon: FolderIcon, labelKey: 'sidebar.tab.graphs' },
   templates: { Icon: BookIcon, labelKey: 'sidebar.tab.templates' },
   custom: { Icon: PackageIcon, labelKey: 'sidebar.tab.custom' },
   git: { Icon: GitBranchIcon, labelKey: 'sidebar.tab.git' },

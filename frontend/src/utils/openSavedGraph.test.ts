@@ -1,12 +1,17 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import {
   GraphMissingError,
+  openSavedGraph,
   readSavedGraphDocument,
   reloadTabFromDisk,
   resolveSavedGraph,
 } from './openSavedGraph';
+import { useDialogStore } from '../store/dialogStore';
 import { useNodeDefStore } from '../store/nodeDefStore';
+import { useProjectStore } from '../store/projectStore';
 import { useTabStore } from '../store/tabStore';
+import { useToastStore } from '../store/toastStore';
+import { useI18n } from '../i18n';
 import type { PresetDefinition } from '../types';
 
 const g = globalThis as unknown as { fetch: typeof fetch };
@@ -46,10 +51,16 @@ const tabs = () => useTabStore.getState().tabs;
 
 beforeEach(() => {
   originalFetch = g.fetch;
+  useI18n.setState({ locale: 'en' });
   useNodeDefStore.setState({ definitions: [], presets: [] });
+  useProjectStore.setState({ projectDir: null, projectName: null, loaded: true });
+  useToastStore.setState({ toasts: [] });
+  useDialogStore.setState({ active: null, resolve: null });
   useTabStore.setState({ tabs: [], activeTabId: null as unknown as string, clipboard: null });
   useTabStore.getState().addTab('Tab 1');
 });
+
+const toasts = () => useToastStore.getState().toasts;
 
 afterEach(() => {
   g.fetch = originalFetch;
@@ -144,6 +155,69 @@ describe('resolveSavedGraph', () => {
       'alpha',
     );
     expect(doc.nodes[0].position).toEqual({ x: 123, y: 456 });
+  });
+});
+
+describe('openSavedGraph', () => {
+  it('reads the file the row names and binds the tab to it', async () => {
+    const fetchMock = mockFetch(200, {
+      nodes: [raw('a')],
+      edges: [],
+      description: 'from disk',
+    });
+    expect(await openSavedGraph({ name: 'Alpha', file: 'alpha.json' }, 'bind')).toBe(true);
+    expect(fetchMock).toHaveBeenCalledWith('/api/graph/load/alpha.json');
+    expect(tabs()[0].nodes.map((n) => n.id)).toEqual(['a']);
+    expect(tabs()[0].description).toBe('from disk');
+    expect(tabs()[0].currentGraphFile).toBe('alpha.json');
+  });
+
+  it('binds nothing on the canvas target, so the next Save has to ask', async () => {
+    useTabStore.getState().setCurrentGraphFile('previously-bound');
+    mockFetch(200, { nodes: [raw('a')], edges: [] });
+    await openSavedGraph({ name: 'Alpha', file: 'alpha.json' }, 'canvas');
+    expect(tabs()[0].nodes.map((n) => n.id)).toEqual(['a']);
+    expect(tabs()[0].currentGraphFile).toBeNull();
+  });
+
+  // The confirm is the caller's: the toolbar menu asks before replacing live
+  // work, the Graphs panel asks on every row. Neither rule belongs down here.
+  it('never asks anything, even over a canvas that has work', async () => {
+    useTabStore.getState().setNodes([raw('onScreen')] as never);
+    mockFetch(200, { nodes: [raw('a')], edges: [] });
+    await openSavedGraph({ name: 'Alpha', file: 'alpha.json' }, 'canvas');
+    expect(useDialogStore.getState().active).toBeNull();
+    expect(tabs()[0].nodes.map((n) => n.id)).toEqual(['a']);
+  });
+
+  it('opens a file written by a newer build read-only, and says so', async () => {
+    mockFetch(200, { nodes: [], edges: [], format_version: 99 });
+    await openSavedGraph({ name: 'Alpha', file: 'alpha' }, 'bind');
+    expect(tabs()[0].readOnly).toBe(true);
+    expect(toasts().some((t) => t.type === 'warning' && t.message.includes('v99'))).toBe(true);
+  });
+
+  it('stamps the open project onto the tab, and stamps nothing outside one', async () => {
+    useProjectStore.setState({ projectDir: 'D:/work/demo', projectName: 'demo', loaded: true });
+    mockFetch(200, { nodes: [], edges: [] });
+    await openSavedGraph({ name: 'Alpha', file: 'alpha' }, 'bind');
+    expect(tabs()[0].projectOrigin).toBe('D:/work/demo');
+
+    useProjectStore.setState({ projectDir: null, projectName: null, loaded: true });
+    useTabStore.getState().addTab('Tab 2');
+    mockFetch(200, { nodes: [], edges: [] });
+    await openSavedGraph({ name: 'Alpha', file: 'alpha' }, 'bind');
+    expect(tabs()[1].projectOrigin).toBeNull();
+  });
+
+  it('reports a failed read and leaves the graph on screen alone', async () => {
+    useTabStore.getState().setNodes([raw('onScreen')] as never);
+    mockFetch(500, {});
+    expect(await openSavedGraph({ name: 'Alpha', file: 'alpha' }, 'bind')).toBe(false);
+    expect(tabs()[0].nodes.map((n) => n.id)).toEqual(['onScreen']);
+    expect(toasts().some((t) => t.type === 'error' && t.message.includes('Load failed'))).toBe(
+      true,
+    );
   });
 });
 
