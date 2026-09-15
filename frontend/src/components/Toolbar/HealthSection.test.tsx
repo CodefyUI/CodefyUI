@@ -68,15 +68,15 @@ describe('HealthSection', () => {
     expect(screen.getByText('1.0 GB of 2.0 GB')).toBeInTheDocument();
   });
 
-  it('captions the list with something true of the weight store too', async () => {
+  it('lets the rows caption themselves, with no paragraph under the list', async () => {
     render(<HealthSection />);
-    // Not "cached results": the third row is node_state_store, which holds
-    // TRAINED layer weights -- not a result of an earlier run, and not
-    // recomputable. What clearing one costs is for the day this list grows a
-    // clear button.
-    const hint = await screen.findByText(/holding in memory from your runs/);
-    expect(screen.getByText('Layer weights kept between runs')).toBeInTheDocument();
-    expect(hint).toHaveTextContent(/saved graphs and files are not in here/);
+    // What the caches are, and why saved graphs are not among them, is a
+    // paragraph of concept: it lives on the Training Memory docs page now,
+    // rather than sitting permanently under a three-row list whose own rows
+    // already name what each store holds.
+    expect(await screen.findByText('Layer weights kept between runs')).toBeInTheDocument();
+    expect(screen.queryByText(/holding in memory from your runs/)).toBeNull();
+    expect(screen.queryByText(/saved graphs and files are not in here/)).toBeNull();
   });
 
   it('treats a configured budget of 0 as unbounded, not as an exhausted ceiling', async () => {
@@ -223,7 +223,7 @@ describe('HealthSection', () => {
 
   // ── zh-TW ─────────────────────────────────────────────────────────
 
-  it('renders the zh-TW strings, including the cache caption', async () => {
+  it('renders the zh-TW strings', async () => {
     useI18n.setState({ locale: 'zh-TW' });
     render(<HealthSection />);
     expect(await screen.findByText('這台伺服器')).toBeInTheDocument();
@@ -232,6 +232,5 @@ describe('HealthSection', () => {
     expect(screen.getByText('節點輸出（每個開啟的編輯器一份）')).toBeInTheDocument();
     // The unit itself stays Latin: "2.0 MB" is how the budget is configured.
     expect(screen.getByText('2.0 MB / 上限 512.0 MB')).toBeInTheDocument();
-    expect(screen.getByText(/因為執行而留在記憶體裡的資料/)).toBeInTheDocument();
   });
 });

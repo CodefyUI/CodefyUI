@@ -1786,9 +1786,9 @@ describe('pluginStore — checkInProgress', () => {
 
     await usePluginStore.getState().checkInProgress();
 
-    expect(lastToast().message).toBe(
-      'A plugin is still installing. Open the Plugin Center to watch it.',
-    );
+    // The message does not say "open the Plugin Center to watch it": the
+    // toast prints that button right beside it, which is the assertion below.
+    expect(lastToast().message).toBe('A plugin is still installing.');
     expect(lastToast().action!.label).toBe('Open Plugin Center');
     expect(usePluginStore.getState().job!.jobId).toBe('j9');
   });

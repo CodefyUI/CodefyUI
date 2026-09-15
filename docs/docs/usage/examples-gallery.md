@@ -47,6 +47,12 @@ The **Template Gallery** opens from the toolbar's **Templates** button, from **B
 
 In the sidebar's **Templates** tab, click an example to insert it, or drag it onto the canvas where you want it.
 
+### Languages
+
+Switch the editor to 繁體中文 and every built-in example describes itself in Chinese. The **names stay English** in both languages: an example's name is how you find it again in these docs, in `examples/` on disk, and as an argument to `run_graph.py`. Search matches either language, so `attention` and 「注意力」 both find the same graph.
+
+An example with no translation — one a third-party plugin ships — keeps its English description rather than going blank. Translations live in `frontend/src/i18n/exampleLocales/`, keyed by the example's path.
+
 ## A good first run
 
 Load **Train CNN on MNIST**, then:

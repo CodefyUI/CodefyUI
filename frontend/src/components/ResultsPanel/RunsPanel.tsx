@@ -587,8 +587,13 @@ export function RunsPanel({ panelHeight, onWatchRun }: RunsPanelProps) {
                         type="button"
                         className={`${styles.rowBtn} ${styles.rowBtnDanger}`}
                         disabled={isBusy}
+                        // No `title`: a run in this panel IS its metrics, its
+                        // events and its artifacts -- those are the sections
+                        // the row expands into -- so listing them was the
+                        // button's own label at length. The full scope, and
+                        // the checkpoints on disk that survive, are in the
+                        // confirm dialog this always raises.
                         onClick={() => void askDelete(run)}
-                        title={t('runs.action.deleteTitle')}
                       >
                         {t('runs.action.delete')}
                       </button>

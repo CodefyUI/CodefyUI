@@ -1,6 +1,11 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { listExamples, type ExampleSummary } from '../../api/rest';
 import { insertExample } from '../../utils/openExample';
+import {
+  useLocalizedExamples,
+  exampleMatches,
+  type LocalizedExample,
+} from '../../utils/localizeExamples';
 import { useUIStore } from '../../store/uiStore';
 import { useI18n } from '../../i18n';
 import { EXAMPLE_CATEGORY_COLORS, EXAMPLE_CATEGORY_FALLBACK } from '../../styles/theme';
@@ -27,10 +32,10 @@ export function exampleCategoryLabel(category: string): string {
 }
 
 /** Group the flat `/api/examples/list` payload by category, in display order. */
-export function groupExamplesByCategory(
-  examples: ExampleSummary[],
-): CategoryGroup<ExampleSummary>[] {
-  const byCategory = new Map<string, ExampleSummary[]>();
+export function groupExamplesByCategory<T extends ExampleSummary>(
+  examples: T[],
+): CategoryGroup<T>[] {
+  const byCategory = new Map<string, T[]>();
   for (const example of examples) {
     const bucket = byCategory.get(example.category);
     if (bucket) bucket.push(example);
@@ -69,7 +74,7 @@ export function groupExamplesByCategory(
  * action here and the drag has to stay an enhancement rather than the only
  * way in: `role`, `tabIndex`, and Enter/Space activation.
  */
-function ExampleItem({ example }: { example: ExampleSummary }) {
+function ExampleItem({ example }: { example: LocalizedExample }) {
   const { t } = useI18n();
   const insert = () => void insertExample(example.path);
   const handleDragStart = (event: React.DragEvent) => {
@@ -148,18 +153,13 @@ export function TemplatesTab() {
     load();
   }, [load]);
 
+  const localized = useLocalizedExamples(examples);
+
   const groups = useMemo(() => {
     const q = searchQuery.trim().toLowerCase();
-    const filtered = q
-      ? examples.filter(
-          (e) =>
-            e.name.toLowerCase().includes(q) ||
-            e.description.toLowerCase().includes(q) ||
-            e.category.toLowerCase().includes(q),
-        )
-      : examples;
+    const filtered = q ? localized.filter((e) => exampleMatches(e, q)) : localized;
     return groupExamplesByCategory(filtered);
-  }, [examples, searchQuery]);
+  }, [localized, searchQuery]);
 
   return (
     <>

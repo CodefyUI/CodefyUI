@@ -80,22 +80,26 @@ describe('EmptyCanvasOverlay', () => {
     render(<EmptyCanvasOverlay />);
     // title/subtitle always render
     expect(screen.getByText('Build your first deep learning model')).toBeInTheDocument();
-    expect(screen.getByText('Pick an example to get started quickly')).toBeInTheDocument();
+    expect(screen.getByText('Pick an example')).toBeInTheDocument();
     // loading state visible
     expect(screen.getByText('Loading examples...')).toBeInTheDocument();
 
     resolveList([]);
     await waitFor(() => expect(screen.queryByText('Loading examples...')).toBeNull());
-    // hint always present at the bottom
-    expect(screen.getByText('or drag a node from the left palette')).toBeInTheDocument();
+    // The overlay ends with the cards. "or drag a node from the left palette"
+    // pointed at the node palette, which is open beside it carrying its own
+    // pinned footer saying the same thing -- and which, unlike this overlay,
+    // is still there once the canvas stops being empty.
+    expect(screen.queryByText(/drag a node/i)).toBeNull();
   });
 
   it('falls back to an empty list when listExamples rejects', async () => {
     mockedRest.listExamples.mockRejectedValue(new Error('boom'));
     render(<EmptyCanvasOverlay />);
     await waitFor(() => expect(screen.queryByText('Loading examples...')).toBeNull());
-    // No cards, but the static hint still shows.
-    expect(screen.getByText('or drag a node from the left palette')).toBeInTheDocument();
+    // No cards, but the heading and its one instruction still show.
+    expect(screen.getByText('Build your first deep learning model')).toBeInTheDocument();
+    expect(screen.getByText('Pick an example')).toBeInTheDocument();
   });
 
   it('renders grouped sections, a known-category badge, and node counts', async () => {

@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { readdirSync, readFileSync } from 'node:fs';
-import { dirname, join, relative } from 'node:path';
+import { dirname, join, relative, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 /**
@@ -21,7 +21,10 @@ function sourceFiles(dir: string, out: string[] = []): string[] {
     if (entry.isDirectory()) {
       if (entry.name !== 'test') sourceFiles(full, out);
     } else if (/\.tsx?$/.test(entry.name) && !/\.(test|d)\.tsx?$/.test(entry.name)) {
-      out.push(full);
+      // Posix separators: `join` gives backslashes on Windows, and both the
+      // boundary regex below and `specifier.endsWith('/name')` match on `/`,
+      // so the whole file passed vacuously there.
+      out.push(full.split(sep).join('/'));
     }
   }
   return out;

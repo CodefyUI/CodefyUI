@@ -4,6 +4,11 @@ import { openExample } from '../../utils/openExample';
 import { useUIStore } from '../../store/uiStore';
 import { listExamples } from '../../api/rest';
 import type { ExampleSummary } from '../../api/rest';
+import {
+  useLocalizedExamples,
+  truncateToWidth,
+  type LocalizedExample,
+} from '../../utils/localizeExamples';
 import { EXAMPLE_CATEGORY_COLORS, EXAMPLE_CATEGORY_FALLBACK, SURFACE_RAISED, NODE_HEADER_TINT, mixColor } from '../../styles/theme';
 import styles from './EmptyCanvasOverlay.module.css';
 
@@ -30,6 +35,9 @@ const ADVANCED_CATEGORY_ORDER: string[] = [
 // Optional fine-grained ordering inside one Advanced category (lower renders
 // first). Unlisted paths sort after listed ones, keeping the backend's
 // alphabetical order among themselves.
+/** How much of a description a preset card shows, in Latin columns. */
+const CARD_DESC_COLUMNS = 80;
+
 const ADVANCED_PATH_PRIORITY: Record<string, number> = {
   'Diffusion/Forward-Process': 0,
   'Diffusion/Toy-Sampling': 1,
@@ -39,7 +47,7 @@ const ADVANCED_PATH_PRIORITY: Record<string, number> = {
 interface GallerySection {
   key: string;
   titleKey: TranslationKey;
-  items: ExampleSummary[];
+  items: LocalizedExample[];
 }
 
 function compareAdvanced(a: ExampleSummary, b: ExampleSummary): number {
@@ -60,16 +68,16 @@ function compareAdvanced(a: ExampleSummary, b: ExampleSummary): number {
  * 4. Architectures — Model_Architecture, always last.
  * Empty sections are dropped.
  */
-function groupExamples(examples: ExampleSummary[]): GallerySection[] {
+function groupExamples(examples: LocalizedExample[]): GallerySection[] {
   const byPath = new Map(examples.map((e) => [e.path, e]));
   const quickStart = QUICK_START_PATHS.map((p) => byPath.get(p)).filter(
-    (e): e is ExampleSummary => e !== undefined,
+    (e): e is LocalizedExample => e !== undefined,
   );
   const pinned = new Set(QUICK_START_PATHS);
 
-  const advanced: ExampleSummary[] = [];
-  const architectures: ExampleSummary[] = [];
-  const other: ExampleSummary[] = [];
+  const advanced: LocalizedExample[] = [];
+  const architectures: LocalizedExample[] = [];
+  const other: LocalizedExample[] = [];
   for (const e of examples) {
     if (pinned.has(e.path)) continue;
     if (e.path.startsWith('plugin:')) other.push(e);
@@ -89,12 +97,13 @@ function groupExamples(examples: ExampleSummary[]): GallerySection[] {
 }
 
 function renderCard(
-  example: ExampleSummary,
+  example: LocalizedExample,
   onClick: (e: ExampleSummary) => void,
   t: (k: TranslationKey, vars?: Record<string, string | number>) => string,
 ) {
   const catColor = EXAMPLE_CATEGORY_COLORS[example.category] ?? EXAMPLE_CATEGORY_FALLBACK;
   const catLabel = example.category.replace(/_/g, ' ');
+  const shown = truncateToWidth(example.description, CARD_DESC_COLUMNS);
   return (
     <button type="button"
       key={example.path}
@@ -114,21 +123,22 @@ function renderCard(
       <div className={styles.presetCardHeader}>
         <span className={styles.presetCardName}>{example.name}</span>
       </div>
-      {/* The cut stays at 80: every example's first line is written to say
-          what the card has to say inside it, and the backend example suite
-          asserts that a GPU, a download or a pack is named there. What the
-          card was missing is the REST of the description — this was the only
-          place one appeared with no way to read past the cut, while the
-          sidebar's gallery tab has carried the full text as a tooltip all
-          along (core#305). Only when there is more to show, so a short
-          description does not get a tooltip repeating itself. */}
+      {/* The cut stays at 80 columns: every example's first line is written to
+          say what the card has to say inside it, and the backend example suite
+          asserts that a GPU, a download or a pack is named there. Measured in
+          columns rather than code points so the Chinese card cuts in the same
+          place on screen — 80 ideographs are 160 columns wide and would run
+          off the card. What the card was missing is the REST of the
+          description — this was the only place one appeared with no way to
+          read past the cut, while the sidebar's gallery tab has carried the
+          full text as a tooltip all along (core#305). Only when there is more
+          to show, so a short description does not get a tooltip repeating
+          itself. */}
       <div
         className={styles.presetCardDesc}
-        {...(example.description.length > 80 ? { title: example.description } : {})}
+        {...(shown !== example.description ? { title: example.description } : {})}
       >
-        {example.description.length > 80
-          ? example.description.slice(0, 80) + '...'
-          : example.description}
+        {shown}
       </div>
       <div className={styles.presetCardFooter}>
         <span
@@ -162,7 +172,8 @@ export function EmptyCanvasOverlay() {
       .finally(() => setLoading(false));
   }, []);
 
-  const sections = groupExamples(examples);
+  const localized = useLocalizedExamples(examples);
+  const sections = groupExamples(localized);
 
   // Still the REPLACING reader, and the only one left (#348): this overlay
   // is shown when the canvas is empty, so there is nothing for a replace to
@@ -204,7 +215,11 @@ export function EmptyCanvasOverlay() {
           </div>
         ))}
 
-        <div className={styles.hint}>{t('empty.hint')}</div>
+        {/* No trailing "or drag a node from the left palette": the palette it
+            points at is open on its default tab with its own pinned footer
+            reading "Drag nodes onto the canvas", and that footer is the copy
+            that has to stay -- a node item is drag-only, and the footer is
+            still there after the canvas stops being empty. */}
       </div>
     </div>
   );

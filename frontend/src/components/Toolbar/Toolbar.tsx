@@ -693,10 +693,15 @@ export function Toolbar() {
 
   /* ── Menu definitions ─────────────────────────────────────────── */
 
+  // No `title` on these three: "Save graph", "Save under a new name" and
+  // "Remove every node from this canvas" were their own visible labels said
+  // again at length, in the File menu of a graph editor. The one fact worth
+  // stating before Clear Canvas -- that unsaved work goes -- is in the confirm
+  // dialog it raises. The Export items keep theirs, which name a file format.
   const fileMenuItems: MenuItem[] = [
-    { label: t('toolbar.save'), title: t('toolbar.save.title'), onClick: handleSave },
-    { label: t('toolbar.saveAs'), title: t('toolbar.saveAs.title'), onClick: handleSaveAs },
-    { label: t('toolbar.clear'), title: t('toolbar.clear.title'), onClick: handleClear },
+    { label: t('toolbar.save'), onClick: handleSave },
+    { label: t('toolbar.saveAs'), onClick: handleSaveAs },
+    { label: t('toolbar.clear'), onClick: handleClear },
   ];
 
   const exportMenuItems: MenuItem[] = [
@@ -736,10 +741,12 @@ export function Toolbar() {
 
       {/* Run / Stop */}
       <div className={styles.cluster}>
+        {/* Both labels are always visible -- no responsive rule hides them --
+            so "Run the graph" and "Stop execution" were the words on the
+            button read back with the only object they could have. */}
         <button type="button"
           onClick={handleRun}
           disabled={isRunning}
-          title={t('toolbar.run.title')}
           className={styles.runButton}
         >
           {isRunning ? t('toolbar.running') : t('toolbar.run')}
@@ -747,7 +754,6 @@ export function Toolbar() {
         <button type="button"
           onClick={handleStop}
           disabled={!isRunning}
-          title={t('toolbar.stop.title')}
           className={styles.stopButton}
         >
           {t('toolbar.stop')}
@@ -821,9 +827,10 @@ export function Toolbar() {
         >
           {t('toolbar.reloadNodes')}
         </button>
+        {/* "Manage custom nodes" was the visible label with a verb in front,
+            and the panel it opens is titled Custom Node Manager. */}
         <button type="button"
           onClick={() => setCustomNodeManagerOpen(true)}
-          title={t('toolbar.customNodes.title')}
           className={`${styles.ghost} ${styles.ghostMuted}`}
         >
           {t('toolbar.customNodes')}
