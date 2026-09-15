@@ -74,6 +74,13 @@
   margin-bottom: var(--sp-6);
 }
 
+/* The overlay used to end on a hint line, so the last section's margin sat
+   between two pieces of content. With the hint gone it would stack on the
+   panel's own bottom padding instead. */
+.section:last-child {
+  margin-bottom: 0;
+}
+
 .sectionTitle {
   font-size: var(--fs-sm);
   font-weight: var(--fw-semibold);
