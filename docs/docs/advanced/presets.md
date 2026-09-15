@@ -10,7 +10,7 @@ A **preset** packages a reusable subgraph as one node. CodefyUI includes the `ls
 
 ## Using a preset
 
-Presets appear in the sidebar's **Presets** tab and in quick search, which opens when you double-click the canvas. The tab contains a search box, the same categories as the Nodes tab, and the hint *Drag presets onto the canvas*. A placed preset behaves like any other node. It exposes every port that was unconnected inside the subgraph and every non-secret parameter of every internal node.
+Presets appear in the sidebar's **Nodes** tab, in a **Presets** group below the node categories, and in quick search, which opens when you double-click the canvas. The tab's search box matches preset names as well as node names. Drag a preset onto the canvas like any other item in the tab. A placed preset behaves like any other node. It exposes every port that was unconnected inside the subgraph and every non-secret parameter of every internal node.
 
 To configure a placed preset, double-click it or select **Configure** in the Node Config panel or node detail view. The preset modal lists its internal nodes and groups exposed parameters by node. **Apply** writes the selected values to the internal nodes.
 
@@ -22,7 +22,7 @@ Exporting a preset includes the entire canvas. You cannot select a subset of nod
 
 1. Build the subgraph. Each unconnected port becomes a preset port, so leave the required inputs and outputs unconnected. The graph must have at least one unconnected port. Otherwise, the server rejects the export. Expand all collapsed blocks before exporting. Presets cannot include block definitions, so the server rejects a canvas that contains a collapsed block.
 2. Open the toolbar **Export** menu, select **Export as Subgraph**, and enter a name. The server rejects a name already used by another preset with status `409`.
-3. The server names each exposed port `<node>_<port>` and exposes every non-secret parameter, grouped by node type. It writes the preset and reloads the palette. The preset is then available in the Presets tab and quick search.
+3. The server names each exposed port `<node>_<port>` and exposes every non-secret parameter, grouped by node type. It writes the preset and reloads the palette. The preset is then available in the Nodes tab's **Presets** group and in quick search.
 
 A preset is stored as JSON with `preset_name`, `category` (`Custom` for exported presets), `description`, `tags`, `nodes`, `edges`, `exposed_inputs`, `exposed_outputs`, and `exposed_params`. Exported and built-in presets are stored in `backend/app/presets/`. An exported preset uses `<name>.json`; its file name is lowercase, with spaces and slashes replaced by `_`. No route or button renames or deletes a preset. To remove one, delete its file and reload the nodes. [Plugin packs](./plugins) can also provide presets from their `presets/` directory.
 
