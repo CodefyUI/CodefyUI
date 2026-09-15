@@ -22,6 +22,23 @@ received — each links to the release it was published as.
 
 ## [Unreleased]
 
+## [2.8.0] — 2026-09-15
+
+The graphs you have saved get somewhere to be seen.
+
+They were on the server the whole time — save, load and list have been writing
+into the graphs directory for as long as there have been graphs — but the only
+way to open one was a two-level menu in the toolbar, and there was no way to
+rename or delete one at all. So the ordinary way back to yesterday's work was
+to import its JSON file again, and a graph saved under the wrong name stayed
+under it. Meanwhile the sidebar rail spent one of its five slots on browsing
+presets, which is the Nodes tab's list with different items in it.
+
+The Presets slot becomes a **Graphs** tab. Presets move into the Nodes tab as a
+category, which puts making one and using one in the same panel, and the
+toolbar's Load menu — the same list, one level deeper, with different rules
+about what a click does to the canvas — goes with the tab it made redundant.
+
 ### Added
 
 - **The sidebar lists your saved graphs.** The rail's Presets slot becomes a
@@ -3719,7 +3736,8 @@ Release candidates before 1.0.0 are on the
 [#420]: https://github.com/CodefyUI/CodefyUI/issues/420
 [@oyea0801]: https://github.com/oyea0801
 [@latteine1217]: https://github.com/latteine1217
-[Unreleased]: https://github.com/CodefyUI/CodefyUI/compare/2.7.2...main
+[Unreleased]: https://github.com/CodefyUI/CodefyUI/compare/2.8.0...main
+[2.8.0]: https://github.com/CodefyUI/CodefyUI/compare/2.7.2...2.8.0
 [2.7.2]: https://github.com/CodefyUI/CodefyUI/compare/2.7.1...2.7.2
 [2.7.1]: https://github.com/CodefyUI/CodefyUI/compare/2.7.0...2.7.1
 [2.7.0]: https://github.com/CodefyUI/CodefyUI/compare/2.6.0...2.7.0
