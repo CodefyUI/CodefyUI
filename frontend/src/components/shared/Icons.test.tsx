@@ -23,6 +23,7 @@ import {
   PanelLeftOpenIcon,
   PlusIcon,
   RefreshIcon,
+  SaveIcon,
   SyncIcon,
   ZoomInIcon,
   ZoomOutIcon,
@@ -57,6 +58,7 @@ const icons = [
   ['DiscardIcon', DiscardIcon],
   ['ChevronDownIcon', ChevronDownIcon],
   ['SyncIcon', SyncIcon],
+  ['SaveIcon', SaveIcon],
 ] as const;
 
 describe('Icons', () => {

@@ -287,3 +287,17 @@ export function ChevronDownIcon({ size }: { size?: number }) {
     </Icon>
   );
 }
+
+/** Write the graph on the canvas to a file — a floppy disk, which is still
+ *  the only shape "save" has. Deliberately not PlusIcon: the Graphs panel's
+ *  header button saves what is already open under a new name, and a `+` there
+ *  would read as "start an empty graph". */
+export function SaveIcon({ size }: { size?: number }) {
+  return (
+    <Icon size={size}>
+      <path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z" />
+      <polyline points="17 21 17 13 7 13 7 21" />
+      <polyline points="7 3 7 8 15 8" />
+    </Icon>
+  );
+}
