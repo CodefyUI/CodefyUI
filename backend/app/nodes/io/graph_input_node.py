@@ -52,10 +52,16 @@ def _resolve_canvas_image_path(path_value: Any) -> Any:
 
 
 def _load_canvas_image(path_value: Any) -> Any:
-    """Load the canvas-only ``default`` image path the way ImageReader does.
+    """Load the ``default`` image path into a (C, H, W) float32 tensor.
 
-    Only reached on canvas runs — the API path always injects ``value``
+    Reached whenever no ``value`` was injected: a canvas run, and also an
+    exported script run without ``--inputs``. The API path injects ``value``
     (a base64 string) and never touches ``default``.
+
+    Resolution is IMAGES_DIR-only — see :func:`_resolve_canvas_image_path`.
+    ImageReader also falls back to the path as written, so an image sitting
+    beside an exported script resolves there and not here; do not read this
+    helper as following that node.
     """
     from PIL import Image
     from torchvision import transforms
