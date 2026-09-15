@@ -11,9 +11,9 @@ import {
 } from '../../utils/packAvailability';
 import { pluginNameOf, type PluginIndex } from '../../utils/provider';
 import type { NodeDefinition, PresetDefinition } from '../../types';
+import { DIFFICULTY_COLORS } from '../../styles/theme';
 import { orderCategories } from './categories';
 import { CategoryList, type CategoryGroup } from './CategoryList';
-import { PresetItem } from './PresetsTab';
 import styles from './NodePalette.module.css';
 
 // A module-scope selector, so every row of a hundred-node library compares the
@@ -139,6 +139,74 @@ export function NodeItem({ definition }: NodeItemProps) {
         </div>,
         document.body,
       )}
+    </div>
+  );
+}
+
+// ── Preset Item ──
+
+interface PresetItemProps {
+  preset: PresetDefinition;
+}
+
+/**
+ * One composite preset, dragged onto the canvas as a whole block.
+ *
+ * It lived in `PresetsTab` until the Graphs panel took that rail slot; it
+ * moved here rather than being rewritten, because `useDragAndDrop` reads the
+ * `application/codefyui-preset` payload below and a preset dragged from the
+ * node list has to behave exactly as it did from the tab.
+ */
+export function PresetItem({ preset }: PresetItemProps) {
+  const [hovered, setHovered] = useState(false);
+  const difficulty = preset.tags.find((t) => t in DIFFICULTY_COLORS) ?? 'beginner';
+  const difficultyColor = DIFFICULTY_COLORS[difficulty];
+  const { t } = useI18n();
+
+  const handleDragStart = (event: React.DragEvent) => {
+    event.dataTransfer.setData('application/codefyui-preset', preset.preset_name);
+    event.dataTransfer.effectAllowed = 'move';
+  };
+
+  return (
+    <div
+      draggable
+      onDragStart={handleDragStart}
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => setHovered(false)}
+      title={preset.description}
+      className={styles.presetItem}
+      // Gold preset-hover tint: a semantic per-item accent (same family as
+      // CATEGORY_COLORS/DIFFICULTY_COLORS below), not chrome, so it is left
+      // outside the grey/accent token sweep. Close to --status-preset
+      // (#e0a92b) but not identical, and there is no wash/alpha variant of
+      // it to reach for; NodesTab.test.tsx also pins this exact rgba
+      // string. See migration report for the token gap.
+      style={{
+        background: hovered ? 'rgba(212,160,23,0.08)' : 'transparent',
+        borderColor: hovered ? 'rgba(212,160,23,0.3)' : 'transparent',
+      }}
+    >
+      <div className={styles.presetHeader}>
+        <div className={styles.presetName}>
+          {preset.preset_name}
+        </div>
+        <span
+          className={styles.presetDifficultyBadge}
+          style={{
+            background: `${difficultyColor}22`,
+            color: difficultyColor,
+          }}
+        >
+          {difficulty}
+        </span>
+      </div>
+      <div className={styles.presetDesc}>
+        {preset.description}
+      </div>
+      <div className={styles.presetNodeCount}>
+        {t('empty.nodeCount', { count: preset.nodes.length })}
+      </div>
     </div>
   );
 }

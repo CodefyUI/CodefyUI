@@ -14,7 +14,7 @@ import type { NodeDefinition, PresetDefinition } from '../../types';
 
 /*
  * The sidebar SHELL (#126): icon rail plus the panel for the open tab. The
- * per-tab behaviours live in NodesTab/PresetsTab/TemplatesTab/CustomTab tests;
+ * per-tab behaviours live in NodesTab/GraphsTab/TemplatesTab/CustomTab tests;
  * what is asserted here is the composition — which panel is mounted, that
  * collapsing removes it, that width survives a drag, and that the node
  * library still behaves exactly as it did before the split when it is the
@@ -27,6 +27,8 @@ vi.mock('../../api/rest', async (importOriginal) => {
     ...actual,
     listExamples: vi.fn(),
     listCustomNodes: vi.fn(),
+    // The Graphs tab reads the saved-graph list the moment it is opened.
+    listGraphs: vi.fn(),
     // The shell bootstraps the plugin catalog on mount (`usePluginCatalogBootstrap`),
     // which every case in this file therefore triggers. Stubbed so it reaches
     // a promise rather than the real module's `fetch`.
@@ -115,6 +117,7 @@ beforeEach(() => {
   // reset them so "was this tab fetched?" means "in THIS test".
   mockedRest.listExamples.mockReset().mockResolvedValue([]);
   mockedRest.listCustomNodes.mockReset().mockResolvedValue([]);
+  mockedRest.listGraphs.mockReset().mockResolvedValue([]);
   mockedRest.listPluginCatalog.mockReset().mockResolvedValue({
     entries: [],
     active_job: null,
@@ -162,14 +165,16 @@ describe('NodePalette (sidebar shell)', () => {
   it('mounts only the open tab, and swaps panels from the rail', async () => {
     render(<NodePalette />);
     expect(screen.getByText('Conv2d')).toBeTruthy();
-    // A preset name no longer says which panel is mounted -- the Nodes tab
-    // lists presets too now. The search field is the part only this panel has.
-    expect(screen.queryByPlaceholderText('Search presets...')).toBeNull();
-
-    fireEvent.click(screen.getByRole('tab', { name: 'Presets' }));
+    // The Nodes tab lists presets too, so a preset name no longer says which
+    // panel is mounted. The search field is the part only one panel has.
+    expect(screen.queryByPlaceholderText('Search saved graphs...')).toBeNull();
     expect(screen.getByText('CNNBlock')).toBeTruthy();
+
+    fireEvent.click(screen.getByRole('tab', { name: 'Graphs' }));
+    expect(await screen.findByText('No saved graphs')).toBeTruthy();
     expect(screen.queryByText('Conv2d')).toBeNull();
-    expect(screen.getByPlaceholderText('Search presets...')).toBeTruthy();
+    expect(screen.queryByText('CNNBlock')).toBeNull();
+    expect(screen.getByPlaceholderText('Search saved graphs...')).toBeTruthy();
 
     fireEvent.click(screen.getByRole('tab', { name: 'Templates' }));
     expect(await screen.findByText('No examples available')).toBeTruthy();
@@ -218,14 +223,14 @@ describe('NodePalette (sidebar shell)', () => {
     expect(fetchDefinitions).toHaveBeenCalledTimes(1);
   });
 
-  it('starts the catalog load when a tab other than Nodes is open', () => {
+  it('starts the catalog load when a tab other than Nodes is open', async () => {
     useNodeDefStore.setState({ definitions: [], categorized: {}, presets: [], presetCategorized: {} });
     const fetchDefinitions = useNodeDefStore.getState().fetchDefinitions as ReturnType<typeof vi.fn>;
-    act(() => useUIStore.getState().setSidebarTab('presets'));
+    act(() => useUIStore.getState().setSidebarTab('graphs'));
 
     render(<NodePalette />);
 
-    expect(screen.getByPlaceholderText('Search presets...')).toBeTruthy();
+    expect(await screen.findByPlaceholderText('Search saved graphs...')).toBeTruthy();
     expect(fetchDefinitions).toHaveBeenCalledTimes(1);
   });
 
@@ -236,14 +241,16 @@ describe('NodePalette (sidebar shell)', () => {
     expect(fetchDefinitions).not.toHaveBeenCalled();
   });
 
-  it('labels the panel with the tab that opened it', () => {
+  it('labels the panel with the tab that opened it', async () => {
     render(<NodePalette />);
     expect(panel()?.id).toBe('sidebar-panel-nodes');
     expect(panel()?.getAttribute('aria-labelledby')).toBe('sidebar-tab-nodes');
 
-    fireEvent.click(screen.getByRole('tab', { name: 'Presets' }));
-    expect(panel()?.id).toBe('sidebar-panel-presets');
-    expect(panel()?.getAttribute('aria-labelledby')).toBe('sidebar-tab-presets');
+    fireEvent.click(screen.getByRole('tab', { name: 'Graphs' }));
+    expect(panel()?.id).toBe('sidebar-panel-graphs');
+    expect(panel()?.getAttribute('aria-labelledby')).toBe('sidebar-tab-graphs');
+    // Lets the panel's own list read settle before the test ends.
+    expect(await screen.findByText('No saved graphs')).toBeTruthy();
   });
 
   // ── Collapse ───────────────────────────────────────────────────────────────
@@ -269,20 +276,20 @@ describe('NodePalette (sidebar shell)', () => {
     expect(shell.dataset.collapsed).toBe('true');
   });
 
-  it('restores the persisted tab, width and collapsed state', () => {
+  it('restores the persisted tab, width and collapsed state', async () => {
     // What a reload looks like: the store is rebuilt from localStorage before
     // the component mounts.
     act(() => {
-      useUIStore.getState().setSidebarTab('presets');
+      useUIStore.getState().setSidebarTab('graphs');
       useUIStore.getState().setSidebarWidth(310);
       useUIStore.getState().setSidebarCollapsed(false);
     });
-    expect(localStorage.getItem('codefyui-sidebar-tab')).toBe('presets');
+    expect(localStorage.getItem('codefyui-sidebar-tab')).toBe('graphs');
     expect(localStorage.getItem('codefyui-sidebar-width')).toBe('310');
     expect(localStorage.getItem('codefyui-sidebar-collapsed')).toBe('false');
 
     render(<NodePalette />);
-    expect(screen.getByText('CNNBlock')).toBeTruthy();
+    expect(await screen.findByText('No saved graphs')).toBeTruthy();
     expect(panel()?.style.width).toBe('310px');
   });
 

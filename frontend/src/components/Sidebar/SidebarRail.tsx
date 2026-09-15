@@ -5,11 +5,11 @@ import { MOD_LABEL } from '../../utils/platform';
 import {
   BookIcon,
   GitBranchIcon,
-  LayersIcon,
   LibraryIcon,
   PackageIcon,
   PanelLeftCloseIcon,
   PanelLeftOpenIcon,
+  SaveIcon,
 } from '../shared/Icons';
 import styles from './SidebarRail.module.css';
 
@@ -18,7 +18,9 @@ const TAB_META: Record<
   { Icon: ComponentType<{ size?: number }>; labelKey: TranslationKey }
 > = {
   nodes: { Icon: LibraryIcon, labelKey: 'sidebar.tab.nodes' },
-  presets: { Icon: LayersIcon, labelKey: 'sidebar.tab.presets' },
+  // The slot presets used to hold. A floppy disk because the panel lists the
+  // graphs that have been SAVED -- the only icon in the set that says so.
+  graphs: { Icon: SaveIcon, labelKey: 'sidebar.tab.graphs' },
   templates: { Icon: BookIcon, labelKey: 'sidebar.tab.templates' },
   custom: { Icon: PackageIcon, labelKey: 'sidebar.tab.custom' },
   git: { Icon: GitBranchIcon, labelKey: 'sidebar.tab.git' },

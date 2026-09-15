@@ -4,7 +4,7 @@ import { SidebarRail } from './SidebarRail';
 import { useUIStore, SIDEBAR_DEFAULT_WIDTH } from '../../store/uiStore';
 import { useI18n } from '../../i18n';
 
-const TAB_LABELS = ['Nodes', 'Presets', 'Templates', 'Custom & Plugins', 'Source Control'];
+const TAB_LABELS = ['Nodes', 'Graphs', 'Templates', 'Custom & Plugins', 'Source Control'];
 
 function tab(name: string) {
   return screen.getByRole('tab', { name });
@@ -56,13 +56,13 @@ describe('SidebarRail', () => {
   it('marks only the active tab as selected', () => {
     render(<SidebarRail />);
     expect(tab('Nodes').getAttribute('aria-selected')).toBe('true');
-    expect(tab('Presets').getAttribute('aria-selected')).toBe('false');
+    expect(tab('Graphs').getAttribute('aria-selected')).toBe('false');
   });
 
   it('uses a roving tabindex so the rail is a single Tab stop', () => {
     render(<SidebarRail />);
     expect(tab('Nodes').getAttribute('tabindex')).toBe('0');
-    expect(tab('Presets').getAttribute('tabindex')).toBe('-1');
+    expect(tab('Graphs').getAttribute('tabindex')).toBe('-1');
     expect(tab('Templates').getAttribute('tabindex')).toBe('-1');
   });
 
@@ -122,13 +122,13 @@ describe('SidebarRail', () => {
   it('only points aria-controls at a panel that exists', () => {
     const { rerender } = render(<SidebarRail />);
     expect(tab('Nodes').getAttribute('aria-controls')).toBe('sidebar-panel-nodes');
-    for (const label of ['Presets', 'Templates', 'Custom & Plugins', 'Source Control']) {
+    for (const label of ['Graphs', 'Templates', 'Custom & Plugins', 'Source Control']) {
       expect(tab(label).getAttribute('aria-controls')).toBeNull();
     }
 
     // Switching tabs moves the claim along with the panel.
-    fireEvent.click(tab('Presets'));
-    expect(tab('Presets').getAttribute('aria-controls')).toBe('sidebar-panel-presets');
+    fireEvent.click(tab('Graphs'));
+    expect(tab('Graphs').getAttribute('aria-controls')).toBe('sidebar-panel-graphs');
     expect(tab('Nodes').getAttribute('aria-controls')).toBeNull();
 
     // Collapsed: no panel at all, so no tab claims one.
@@ -144,8 +144,8 @@ describe('SidebarRail', () => {
   it('ArrowDown moves to the next tab and focuses it', () => {
     render(<SidebarRail />);
     fireEvent.keyDown(tab('Nodes'), { key: 'ArrowDown' });
-    expect(useUIStore.getState().sidebarTab).toBe('presets');
-    expect(document.activeElement).toBe(tab('Presets'));
+    expect(useUIStore.getState().sidebarTab).toBe('graphs');
+    expect(document.activeElement).toBe(tab('Graphs'));
   });
 
   it('ArrowUp wraps from the first tab to the last', () => {
@@ -163,9 +163,9 @@ describe('SidebarRail', () => {
   });
 
   it('Home and End jump to the first and last tabs', () => {
-    useUIStore.setState({ sidebarTab: 'presets' });
+    useUIStore.setState({ sidebarTab: 'graphs' });
     render(<SidebarRail />);
-    fireEvent.keyDown(tab('Presets'), { key: 'End' });
+    fireEvent.keyDown(tab('Graphs'), { key: 'End' });
     expect(useUIStore.getState().sidebarTab).toBe('git');
 
     fireEvent.keyDown(tab('Source Control'), { key: 'Home' });
@@ -176,7 +176,7 @@ describe('SidebarRail', () => {
     useUIStore.setState({ sidebarCollapsed: true });
     render(<SidebarRail />);
     fireEvent.keyDown(tab('Nodes'), { key: 'ArrowDown' });
-    expect(useUIStore.getState().sidebarTab).toBe('presets');
+    expect(useUIStore.getState().sidebarTab).toBe('graphs');
     expect(useUIStore.getState().sidebarCollapsed).toBe(false);
   });
 
@@ -218,6 +218,7 @@ describe('SidebarRail', () => {
     useI18n.setState({ locale: 'zh-TW' });
     render(<SidebarRail />);
     expect(screen.getByRole('tab', { name: '節點' })).toBeTruthy();
+    expect(screen.getByRole('tab', { name: '圖表' })).toBeTruthy();
     expect(screen.getByRole('tab', { name: '自訂與外掛' })).toBeTruthy();
     expect(screen.getByRole('tab', { name: '版本控制' })).toBeTruthy();
     expect(screen.getByRole('button', { name: '收合側邊欄' })).toBeTruthy();

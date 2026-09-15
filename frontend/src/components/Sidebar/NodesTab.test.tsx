@@ -767,7 +767,7 @@ describe('NodesTab — presets group', () => {
     seedStore({ presets: [preset('LeNet', 'CNN')] });
     render(<NodesTab />);
 
-    // name → header row → the draggable item, as in PresetsTab's own test.
+    // name → header row → the draggable item.
     const item = screen.getByText('LeNet').parentElement!.parentElement!;
     const setData = vi.fn();
     fireEvent.dragStart(item, { dataTransfer: { setData, effectAllowed: '' } });
@@ -821,5 +821,58 @@ describe('NodesTab — presets group', () => {
     render(<NodesTab />);
     expect(screen.getByText('LeNet')).toBeTruthy();
     expect(screen.queryByText('Attention')).toBeNull();
+  });
+
+  // ── PresetItem: difficulty, node count, hover ────────────────────────────
+  // Migrated from PresetsTab's own test when the component moved into this
+  // file. A preset row looks the same here as it did on the retired tab.
+
+  it('shows the preset difficulty badge and node count', () => {
+    seedStore({
+      presets: [
+        preset('LeNet', 'CNN', {
+          tags: ['intermediate'],
+          nodes: [
+            { id: 'a', type: 'Linear', params: {} },
+            { id: 'b', type: 'ReLU', params: {} },
+          ],
+        }),
+      ],
+    });
+    render(<NodesTab />);
+    expect(screen.getByText('intermediate')).toBeTruthy();
+    expect(screen.getByText('2 nodes')).toBeTruthy();
+  });
+
+  it('defaults preset difficulty to beginner when no difficulty tag present', () => {
+    seedStore({ presets: [preset('LeNet', 'CNN', { tags: ['vision'] })] });
+    render(<NodesTab />);
+    expect(screen.getByText('beginner')).toBeTruthy();
+  });
+
+  it('hovering a preset toggles its hover background', () => {
+    seedStore({ presets: [preset('LeNet', 'CNN')] });
+    render(<NodesTab />);
+    const item = screen.getByText('LeNet').parentElement!.parentElement!;
+    fireEvent.mouseEnter(item);
+    expect(item.style.background).toContain('rgba(212, 160, 23');
+    fireEvent.mouseLeave(item);
+    expect(item.style.background).toBe('transparent');
+  });
+
+  it('translates the node count for a non-English locale', () => {
+    useI18n.setState({ locale: 'zh-TW' });
+    seedStore({
+      presets: [
+        preset('LeNet', 'CNN', {
+          nodes: [
+            { id: 'a', type: 'Linear', params: {} },
+            { id: 'b', type: 'ReLU', params: {} },
+          ],
+        }),
+      ],
+    });
+    render(<NodesTab />);
+    expect(screen.getByText('2 個節點')).toBeTruthy();
   });
 });

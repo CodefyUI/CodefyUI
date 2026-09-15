@@ -5,10 +5,10 @@ export type FontSize = 'small' | 'default' | 'large';
 export type EdgeStyle = 'circuit' | 'curve';
 
 /** Which section the left sidebar's icon rail has open (#126). */
-export type SidebarTab = 'nodes' | 'presets' | 'templates' | 'custom' | 'git';
+export type SidebarTab = 'nodes' | 'graphs' | 'templates' | 'custom' | 'git';
 
 /** Rail order — also the arrow-key navigation order. */
-export const SIDEBAR_TABS = ['nodes', 'presets', 'templates', 'custom', 'git'] as const;
+export const SIDEBAR_TABS = ['nodes', 'graphs', 'templates', 'custom', 'git'] as const;
 
 /** Content-panel width bounds. The rail's own ~44px sits outside these. */
 export const SIDEBAR_MIN_WIDTH = 180;
@@ -186,8 +186,12 @@ const loadLayoutMode = (): 'experiments' | 'all' | 'selected' => {
 };
 
 /** UI state persisted before #126 has no sidebar-tab entry at all, and a value
- * written by some other build could be anything. Both cases land on the Nodes
- * tab rather than leaving the rail with nothing selected. */
+ * written by some other build could be anything — including `'presets'`, the
+ * tab the Graphs panel replaced, which every install that last used it still
+ * has in storage. Checking against the rail's own list is what keeps a
+ * retired tab from restoring a panel that no longer exists: anything not in
+ * SIDEBAR_TABS lands on the Nodes tab rather than leaving the rail with
+ * nothing selected. */
 const loadSidebarTab = (): SidebarTab => {
   const saved = localStorage.getItem(SIDEBAR_TAB_KEY);
   return SIDEBAR_TABS.includes(saved as SidebarTab) ? (saved as SidebarTab) : 'nodes';

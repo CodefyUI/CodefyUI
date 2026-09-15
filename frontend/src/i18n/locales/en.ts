@@ -45,9 +45,9 @@ const en = {
   'toolbar.exportJson.title': 'JSON file, including subgraphs',
   'toolbar.exportJson.empty': 'Canvas is empty — add some nodes before exporting.',
   'toolbar.export': 'Export as Subgraph',
-  'toolbar.export.title': 'Save this graph as a reusable preset',
+  'toolbar.export.title': 'Save this graph as a reusable preset, listed in the Nodes tab',
   'toolbar.export.prompt': 'Enter a name for this subgraph:',
-  'toolbar.export.success': 'Subgraph "{name}" is now in the Presets panel.',
+  'toolbar.export.success': 'Subgraph "{name}" is now in the Nodes tab.',
   'toolbar.export.fail': 'Export failed: {error}',
   // core#137: a preset carries only nodes + edges, so it cannot hold the
   // definition an instance node points at. Refusing names the blocks so the
@@ -92,20 +92,15 @@ const en = {
   'palette.empty': 'No nodes available',
   'palette.hint': 'Drag nodes onto the canvas',
   'palette.fromPlugin': 'From plugin: {plugin}',
-  'palette.searchPresets': 'Search presets...',
   // Heading of the presets group inside the Nodes tab. It repeats the old tab
   // label on purpose: presets are now one category among the node categories,
   // and a category needs its own heading key to sit beside them.
   'palette.presets.category': 'Presets',
-  'palette.presets.empty': 'No presets available',
-  'palette.presets.noMatch': 'No matching presets',
-  'palette.presets.hint': 'Drag presets onto the canvas',
 
   // Sidebar rail (#126)
   'sidebar.rail.aria': 'Sidebar sections',
   'sidebar.tab.nodes': 'Nodes',
   'sidebar.tab.graphs': 'Graphs',
-  'sidebar.tab.presets': 'Presets',
   'sidebar.tab.templates': 'Templates',
   'sidebar.tab.custom': 'Custom & Plugins',
   'sidebar.tab.git': 'Source Control',
