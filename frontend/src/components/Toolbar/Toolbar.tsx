@@ -4,19 +4,18 @@ import { useDeviceOptions, deviceLabel } from '../../hooks/useDeviceOptions';
 import { useTabStore } from '../../store/tabStore';
 import { useNodeDefStore } from '../../store/nodeDefStore';
 import { useUIStore } from '../../store/uiStore';
-import { loadGraph, listGraphs, createPreset, exportGraph } from '../../api/rest';
+import { listGraphs, createPreset, exportGraph } from '../../api/rest';
 import { useI18n, SUPPORTED_LOCALES } from '../../i18n';
 import type { TranslationKey } from '../../i18n';
-import { resolveSerializedNodes, resolveSerializedEdges } from '../../utils';
 import { subgraphIdOf } from '../../utils/subgraph';
 import { graphToSvg, svgToPngBlob } from '../../utils/exportDiagram';
 import { confirm, prompt } from '../../utils/dialog';
 import { saveActiveGraph } from '../../utils/saveActiveGraph';
-import { resolveSavedGraph } from '../../utils/openSavedGraph';
-import { readGraphDevice } from '../../utils/graphSettings';
+import { openSavedGraph } from '../../utils/openSavedGraph';
+import type { SavedGraphTarget } from '../../utils/openSavedGraph';
+import { importGraphFile } from '../../utils/importGraphFile';
 import { CustomNodeManager } from '../CustomNodeManager/CustomNodeManager';
 import { useToastStore } from '../../store/toastStore';
-import { useProjectStore } from '../../store/projectStore';
 import type { LayoutMode } from '../../utils/autoLayout';
 import { SettingsPopover } from './SettingsPopover';
 import { PluginToolbarButtons } from './PluginToolbarButtons';
@@ -90,19 +89,8 @@ function MenuDropdown({
 
 /* ── Load menu (two levels: destination, then which saved graph) ── */
 
-/**
- * What a load does to the tab it lands in.
- *
- * - `canvas` — replace what is on this canvas and bind the tab to NOTHING,
- *   so the next Save asks where the result should go. Overwriting live work
- *   is the whole of this path, which is why it confirms first.
- * - `bind` — the original Load: replace the canvas AND bind the tab to the
- *   file, so Save writes straight back over it.
- *
- * The two used to be one action (always `bind`), which meant opening a saved
- * graph to look at it silently took over where the tab saves.
- */
-type LoadTarget = 'canvas' | 'bind';
+/** Menu-local name for the destinations `openSavedGraph` documents. */
+type LoadTarget = SavedGraphTarget;
 
 interface SavedGraph {
   name: string;
@@ -321,10 +309,7 @@ function SavedGraphPicker({
 
 export function Toolbar() {
   const { execute, stop } = useGraphExecution();
-  // `loadGraphDocument` replaced the five setters both graph readers below
-  // used to call in sequence (#200 items 4 and 8) -- and, since #200 item 9,
-  // the `setCurrentGraphFile` call each of them made right after it.
-  const { clear, getSerializedGraph, loadGraphDocument } = useTabStore();
+  const { clear, getSerializedGraph } = useTabStore();
   const activeTab = useTabStore((s) => s.tabs.find((t) => t.id === s.activeTabId)!);
   const status = activeTab.status;
   // Per-graph device (A8): the select writes `graphDevice`, and the empty
@@ -410,7 +395,6 @@ export function Toolbar() {
 
   const handleLoadGraph = useCallback(
     async (graph: SavedGraph, target: LoadTarget) => {
-      const name = graph.file;
       // Only the unbound path asks. `bind` is the load this menu has always
       // performed, and adding a confirm to it here would be a change to a
       // second thing in a change about the first one. An empty canvas has
@@ -425,111 +409,24 @@ export function Toolbar() {
         });
         if (!ok) return;
       }
-      try {
-        // Everything between the response and the install lives in
-        // `utils/openSavedGraph.ts` since the Source Control tab needed the
-        // same forty lines: it re-reads an open graph from disk after a
-        // discard, and a second copy of the preset merge, the subgraph
-        // resolution and the missing-layout pass would be two readers to
-        // keep in step. The FETCH stays here -- `loadGraph` is the call this
-        // menu has always made -- and what moved is what happens to what it
-        // returns.
-        //
-        // `name` is the sanitized file stem, and `bind` adopts it so a later
-        // Save overwrites the file in place with no overwrite warning;
-        // `canvas` deliberately does not, which is what makes it safe to
-        // drop a saved graph onto a canvas you are still working in -- the
-        // next Save asks for a name instead of eating the original. The
-        // binding is part of installing the document (#200 item 9), not a
-        // line after it: it says which file the graph on screen writes to,
-        // so the two must never be set apart.
-        const doc = resolveSavedGraph(
-          await loadGraph(name),
-          target === 'bind' ? name : null,
-        );
-        // One call, not six (#200 items 4 and 8): the whole document lands in
-        // a single store update, so no subscriber sees the new nodes beside
-        // the old definitions, and the read-only gate is now the action's own
-        // return value rather than a line each reader has to remember --
-        // which is what the third reader of a document, `openExample`, did
-        // not.
-        const tooNew = loadGraphDocument(doc);
-        if (tooNew) {
-          addToast(
-            t('project.readOnly.loadNotice', {
-              version: doc.formatVersion as string | number,
-            }),
-            'warning',
-          );
-        }
-        const projectDir = useProjectStore.getState().projectDir;
-        if (projectDir !== null) useTabStore.getState().stampActiveTabProject(projectDir);
-      } catch (e) {
-        addToast(t('toolbar.load.fail', { error: (e as Error).message }), 'error');
-      }
+      // Everything after the click -- the read, the preset merge, the one
+      // install, the binding, the failure toast -- is `openSavedGraph`,
+      // which the Graphs panel opens its rows with too. The confirm above
+      // is the one part the two surfaces disagree about, so it is the one
+      // part that stayed behind.
+      await openSavedGraph(graph, target);
     },
-    [loadGraphDocument, t, addToast],
+    [t],
   );
 
-  const handleImportFile = useCallback(
-    (event: React.ChangeEvent<HTMLInputElement>) => {
-      const file = event.target.files?.[0];
-      if (!file) return;
-      const reader = new FileReader();
-      reader.onload = (e) => {
-        try {
-          const data = JSON.parse(e.target?.result as string);
-          const rawNodes = data.nodes ?? [];
-          const edges = data.edges ?? [];
-          if (!Array.isArray(rawNodes) || !Array.isArray(edges)) {
-            throw new Error('Invalid graph format');
-          }
-          const store = useNodeDefStore.getState();
-          const importedPresets = Array.isArray(data.presets) ? data.presets : [];
-          const mergedPresets = [...store.presets];
-          for (const p of importedPresets) {
-            if (!mergedPresets.some((ep) => ep.preset_name === p.preset_name)) {
-              mergedPresets.push(p);
-            }
-          }
-          const importedSubgraphs = Array.isArray(data.subgraphs) ? data.subgraphs : [];
-          const resolvedNodes = resolveSerializedNodes(rawNodes, store.definitions, mergedPresets, importedSubgraphs);
-          const resolvedEdges = resolveSerializedEdges(edges, resolvedNodes);
-          // Same one-call install as handleLoadGraph (#200 items 4 and 8),
-          // which is the point: the format-version gate (ID8 fast-follow)
-          // now runs inside it, so importing a newer-format file opens it
-          // read-only and importing an ordinary file into a previously
-          // read-only tab clears the stale flag -- neither is a line a
-          // reader of a document can forget to write any more.
-          const tooNew = loadGraphDocument({
-            nodes: resolvedNodes,
-            edges: resolvedEdges,
-            // An imported file is a fresh, unsaved graph — not bound to any
-            // saved file yet, so the next save always runs the overwrite
-            // check (#200 item 9 moved this into the install; it used to be
-            // an assignment after it).
-            boundFile: null,
-            subgraphs: importedSubgraphs,
-            segmentGroups: Array.isArray(data.segmentGroups) ? data.segmentGroups : [],
-            description: typeof data.description === 'string' ? data.description : '',
-            device: readGraphDevice(data.settings),
-            formatVersion: data.format_version,
-          });
-          if (tooNew) {
-            addToast(t('project.readOnly.loadNotice', { version: data.format_version }), 'warning');
-          }
-          if (importedPresets.length > 0) {
-            useNodeDefStore.setState({ presets: mergedPresets });
-          }
-        } catch (err) {
-          addToast(t('toolbar.import.fail', { error: (err as Error).message }), 'error');
-        }
-      };
-      reader.readAsText(file);
-      event.target.value = '';
-    },
-    [loadGraphDocument, t, addToast],
-  );
+  const handleImportFile = useCallback((event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    // Not awaited: the read finishes on its own, and clearing the input has
+    // to happen now so picking the SAME file again still fires `change`.
+    void importGraphFile(file);
+    event.target.value = '';
+  }, []);
 
   const handleExportJson = useCallback(() => {
     const { nodes, edges, presets, segmentGroups, subgraphs, settings } = getSerializedGraph();

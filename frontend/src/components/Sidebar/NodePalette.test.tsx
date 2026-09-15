@@ -162,7 +162,9 @@ describe('NodePalette (sidebar shell)', () => {
   it('mounts only the open tab, and swaps panels from the rail', async () => {
     render(<NodePalette />);
     expect(screen.getByText('Conv2d')).toBeTruthy();
-    expect(screen.queryByText('CNNBlock')).toBeNull();
+    // A preset name no longer says which panel is mounted -- the Nodes tab
+    // lists presets too now. The search field is the part only this panel has.
+    expect(screen.queryByPlaceholderText('Search presets...')).toBeNull();
 
     fireEvent.click(screen.getByRole('tab', { name: 'Presets' }));
     expect(screen.getByText('CNNBlock')).toBeTruthy();
