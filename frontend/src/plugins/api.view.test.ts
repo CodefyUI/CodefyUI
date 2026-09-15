@@ -79,7 +79,7 @@ beforeEach(() => {
   store().addTab('test');
   useNodeDefStore.setState({
     definitions: [def('A'), def('B'), def('C'), def('D'), def('S')],
-    presets: [], categorized: {}, presetCategorized: {}, loading: false, error: null,
+    presets: [], categorized: {}, loading: false, error: null,
   } as never);
 });
 

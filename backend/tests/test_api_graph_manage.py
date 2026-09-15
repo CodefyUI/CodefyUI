@@ -234,6 +234,29 @@ async def test_rename_moves_the_layout_half_in_project_mode(
     assert loaded["nodes"][0]["position"] == {"x": 10, "y": 0}
 
 
+async def test_rename_onto_an_orphan_layout_409s(test_client, project_settings):
+    """A layout file outliving its graph -- a `git checkout` of `graphs/`
+    alone, a manual delete -- is still someone's positions. The logic half has
+    nothing to collide with there, so only the layout check stands between the
+    rename and `Path.replace` overwriting the orphan without a word."""
+    await _save(test_client, _graph(name="before"))
+    orphan = project_settings / "layout" / "after.layout.json"
+    orphan.write_text(json.dumps(
+        {"format_version": 1, "positions": {"a": {"x": 999, "y": 999}}}))
+    before = orphan.read_text()
+
+    resp = await test_client.post(
+        "/api/graph/rename", json={"from": "before", "to": "after"})
+    assert resp.status_code == 409, resp.text
+    assert "layout" in resp.json()["detail"].lower()
+    # Refused before anything moved: the source pair is whole and the orphan
+    # still holds its own bytes rather than the renamed graph's.
+    assert (project_settings / "graphs" / "before.graph.json").exists()
+    assert (project_settings / "layout" / "before.layout.json").exists()
+    assert not (project_settings / "graphs" / "after.graph.json").exists()
+    assert orphan.read_text() == before
+
+
 @pytest.mark.parametrize("reserved", ["weird.graph", "weird.layout"])
 async def test_rename_to_a_reserved_name_is_refused(
     test_client, project_settings, reserved,

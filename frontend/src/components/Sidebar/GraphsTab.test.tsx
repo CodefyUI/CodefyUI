@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { render, screen, fireEvent, waitFor, within } from '@testing-library/react';
+import { act, render, screen, fireEvent, waitFor, within } from '@testing-library/react';
 import type { Node } from '@xyflow/react';
 import { GraphsTab, graphMatches, sortGraphs } from './GraphsTab';
 import { useI18n } from '../../i18n';
@@ -61,6 +61,27 @@ function freshTab() {
 }
 
 const activeTab = () => useTabStore.getState().getActiveTab();
+const tabById = (id: string) => useTabStore.getState().tabs.find((tb) => tb.id === id)!;
+
+/**
+ * A list read this test decides the answer to, and when.
+ *
+ * Every mutation refetches, so two reads are in flight together as a matter
+ * of course; the ones that matter here are the pairs that answer out of
+ * order.
+ */
+function deferredList() {
+  let settle: (rows: SavedGraphSummary[]) => void = () => {};
+  const promise = new Promise<SavedGraphSummary[]>((resolve) => { settle = resolve; });
+  return { promise, settle: (rows: SavedGraphSummary[]) => { settle(rows); } };
+}
+
+/** Let a settled read reach the component, or be discarded by it. */
+async function flush() {
+  await act(async () => {
+    await new Promise((resolve) => { setTimeout(resolve, 0); });
+  });
+}
 
 /** The rows on screen, top to bottom, by the name each one shows. */
 function rowNames(): string[] {
@@ -169,6 +190,34 @@ describe('GraphsTab list', () => {
     expect(marks[0].closest('li')?.textContent).toContain('beta');
   });
 
+  it('says which row is bound to a reader who cannot see the chip', async () => {
+    useTabStore.getState().setCurrentGraphFile('beta');
+    mockedRest.listGraphs.mockResolvedValue([
+      graph({ name: 'alpha', file: 'alpha' }),
+      graph({ name: 'beta', file: 'beta' }),
+    ]);
+    render(<GraphsTab />);
+    const bound = await screen.findByRole('button', { name: 'Open beta' });
+    const chip = screen.getByText('Current');
+    // Inside the row button, the chip was content that button's `aria-label`
+    // replaced -- on screen and announced to nobody.
+    expect(chip.closest('button')).toBeNull();
+    expect(chip.closest('li')).toBe(bound.closest('li'));
+    expect(bound).toHaveAccessibleDescription(/Current/);
+    expect(screen.getByRole('button', { name: 'Open alpha' }))
+      .not.toHaveAccessibleDescription(/Current/);
+  });
+
+  it('spends two characters on the chip in zh-TW, as the branch list does', async () => {
+    useI18n.setState({ locale: 'zh-TW' });
+    useTabStore.getState().setCurrentGraphFile('alpha');
+    mockedRest.listGraphs.mockResolvedValue([graph({ name: 'alpha', file: 'alpha' })]);
+    render(<GraphsTab />);
+    // Twice this wide left about 59px for the name at the 180px sidebar
+    // floor. `git.branch.current` is the same two characters.
+    expect(await screen.findByText('目前')).toBeTruthy();
+  });
+
   it('filters on the name and on the file stem', async () => {
     mockedRest.listGraphs.mockResolvedValue([
       graph({ name: 'My Graph', file: 'My_Graph', modified: NOW_SECONDS }),
@@ -187,7 +236,21 @@ describe('GraphsTab list', () => {
     expect(rowNames()).toEqual(['My Graph']);
 
     fireEvent.change(search, { target: { value: 'nothing' } });
-    expect(screen.getByText('No graph matches "nothing"')).toBeTruthy();
+    expect(screen.getByText('No matching graphs')).toBeTruthy();
+  });
+
+  it('does not echo the query back into the no-match line', async () => {
+    mockedRest.listGraphs.mockResolvedValue([graph({ name: 'alpha', file: 'alpha' })]);
+    render(<GraphsTab />);
+    await screen.findByRole('button', { name: 'Open alpha' });
+    // One unbroken token, which is what a paste is: repeating it into a
+    // centred message inside a panel that clips leaves it nowhere to wrap.
+    const pasted = 'z'.repeat(200);
+    fireEvent.change(screen.getByPlaceholderText('Search saved graphs...'), {
+      target: { value: pasted },
+    });
+    expect(screen.getByText('No matching graphs')).toBeTruthy();
+    expect(screen.queryByText(pasted, { exact: false })).toBeNull();
   });
 
   it('refreshing re-reads the list', async () => {
@@ -342,6 +405,25 @@ describe('GraphsTab rename', () => {
     });
   });
 
+  it('moves the binding of a tab that is not the one in front of the user', async () => {
+    // Tab 1 opened alpha; the user is now in tab 2, which never saw it.
+    useTabStore.getState().setCurrentGraphFile('alpha');
+    const background = useTabStore.getState().activeTabId;
+    useTabStore.getState().addTab('Tab 2');
+    mockedPrompt.mockResolvedValue('Renamed Graph');
+    mockedRest.renameGraph.mockResolvedValue({ file: 'Renamed_Graph' });
+    mockedRest.listGraphs.mockResolvedValue([graph({ name: 'alpha', file: 'alpha' })]);
+    render(<GraphsTab />);
+    await screen.findByRole('button', { name: 'Open alpha' });
+    fireEvent.click(within(openRowMenu('alpha')).getByRole('menuitem', { name: 'Rename...' }));
+    // Left on the old name, tab 1's next Save would write the graph to disk
+    // a second time, under a file the user renamed away.
+    await waitFor(() => {
+      expect(tabById(background).currentGraphFile).toBe('Renamed_Graph');
+    });
+    expect(activeTab().currentGraphFile).toBeNull();
+  });
+
   it('leaves a binding on a different file alone', async () => {
     useTabStore.getState().setCurrentGraphFile('beta');
     mockedPrompt.mockResolvedValue('Renamed Graph');
@@ -447,6 +529,21 @@ describe('GraphsTab delete', () => {
     });
   });
 
+  it('clears the binding of a tab that is not the one in front of the user', async () => {
+    useTabStore.getState().setCurrentGraphFile('alpha');
+    const background = useTabStore.getState().activeTabId;
+    useTabStore.getState().addTab('Tab 2');
+    mockedRest.listGraphs.mockResolvedValue([graph({ name: 'alpha', file: 'alpha' })]);
+    render(<GraphsTab />);
+    await screen.findByRole('button', { name: 'Open alpha' });
+    fireEvent.click(within(openRowMenu('alpha')).getByRole('menuitem', { name: 'Delete' }));
+    // Otherwise a Ctrl+S in tab 1 recreates the file that was just deleted,
+    // with no prompt and no collision check.
+    await waitFor(() => {
+      expect(tabById(background).currentGraphFile).toBeNull();
+    });
+  });
+
   it('reports a failed delete', async () => {
     mockedRest.deleteGraph.mockRejectedValue(new Error("Graph 'alpha' not found"));
     mockedRest.listGraphs.mockResolvedValue([graph({ name: 'alpha', file: 'alpha' })]);
@@ -458,6 +555,74 @@ describe('GraphsTab delete', () => {
         message: "Delete failed: Graph 'alpha' not found", type: 'error',
       });
     });
+  });
+});
+
+describe('GraphsTab refetching', () => {
+  it('discards a list read that lands after a newer one', async () => {
+    const stale = deferredList();
+    mockedRest.listGraphs
+      // Mount.
+      .mockResolvedValueOnce([
+        graph({ name: 'alpha', file: 'alpha' }),
+        graph({ name: 'beta', file: 'beta', modified: NOW_SECONDS - 60 }),
+      ])
+      // The Save As refetch, still in flight when the delete happens.
+      .mockImplementationOnce(() => stale.promise)
+      // The delete's own refetch, which is the one that is true.
+      .mockResolvedValueOnce([graph({ name: 'beta', file: 'beta' })]);
+    render(<GraphsTab />);
+    await screen.findByRole('button', { name: 'Open alpha' });
+
+    fireEvent.click(screen.getByRole('button', { name: 'Save as...' }));
+    await waitFor(() => {
+      expect(mockedRest.listGraphs).toHaveBeenCalledTimes(2);
+    });
+    fireEvent.click(within(openRowMenu('alpha')).getByRole('menuitem', { name: 'Delete' }));
+    await waitFor(() => {
+      expect(rowNames()).toEqual(['beta']);
+    });
+
+    // The read that started BEFORE the delete answers last, carrying a list
+    // the deleted row is still in.
+    stale.settle([
+      graph({ name: 'alpha', file: 'alpha' }),
+      graph({ name: 'beta', file: 'beta', modified: NOW_SECONDS - 60 }),
+    ]);
+    await flush();
+    expect(rowNames()).toEqual(['beta']);
+  });
+
+  it('keeps the list on screen while a delete refetches, and blanks it for the refresh button', async () => {
+    const afterDelete = deferredList();
+    const afterRefresh = deferredList();
+    mockedRest.listGraphs
+      .mockResolvedValueOnce([
+        graph({ name: 'alpha', file: 'alpha' }),
+        graph({ name: 'beta', file: 'beta', modified: NOW_SECONDS - 60 }),
+      ])
+      .mockImplementationOnce(() => afterDelete.promise)
+      .mockImplementationOnce(() => afterRefresh.promise);
+    render(<GraphsTab />);
+    await screen.findByRole('button', { name: 'Open alpha' });
+
+    fireEvent.click(within(openRowMenu('alpha')).getByRole('menuitem', { name: 'Delete' }));
+    await waitFor(() => {
+      expect(mockedRest.listGraphs).toHaveBeenCalledTimes(2);
+    });
+    // One row went; the rest of the list -- and the reader's place in it --
+    // stays where it was.
+    expect(screen.queryByText('Loading graphs...')).toBeNull();
+    expect(screen.getByRole('button', { name: 'Open beta' })).toBeTruthy();
+    afterDelete.settle([graph({ name: 'beta', file: 'beta' })]);
+    await flush();
+
+    // The refresh button is a read the user asked for, and says so.
+    fireEvent.click(screen.getByRole('button', { name: 'Refresh the graph list' }));
+    expect(screen.getByText('Loading graphs...')).toBeTruthy();
+    afterRefresh.settle([graph({ name: 'beta', file: 'beta' })]);
+    await flush();
+    expect(rowNames()).toEqual(['beta']);
   });
 });
 

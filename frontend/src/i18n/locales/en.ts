@@ -112,7 +112,7 @@ const en = {
   'graphs.refresh': 'Refresh the graph list',
   'graphs.loading': 'Loading graphs...',
   'graphs.empty': 'No saved graphs',
-  'graphs.noMatch': 'No graph matches "{query}"',
+  'graphs.noMatch': 'No matching graphs',
   'graphs.listFail': 'Failed to load graphs: {error}',
   'graphs.import': 'Import JSON...',
   'graphs.saveAs': 'Save as...',

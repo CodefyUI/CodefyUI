@@ -273,6 +273,26 @@ async def rename_graph(req: RenameGraphRequest):
     if dst_existing.exists() and dst_existing != src:
         raise HTTPException(
             status_code=409, detail=f"Graph '{req.to}' already exists")
+    # The layout half gets the same refusal, checked here so that -- like
+    # every check above it -- nothing has moved yet when it fires. A layout
+    # can outlive its graph (a `git checkout` of `graphs/` alone, a manual
+    # delete, a partial revert), and `Path.replace` overwrites the
+    # destination silently on POSIX and on Windows alike, so without this the
+    # orphan would be destroyed by a rename the logic half had waved through.
+    layout_src = _graph_layout_path(req.from_name)
+    layout_dst = _graph_layout_path(req.to)
+    if (
+        layout_dst is not None
+        and layout_dst != layout_src
+        and layout_dst.exists()
+    ):
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"A layout file for '{req.to}' already exists without its "
+                "graph; remove or restore it before renaming onto that name."
+            ),
+        )
 
     raw = src.read_text()
     try:
@@ -315,9 +335,8 @@ async def rename_graph(req: RenameGraphRequest):
 
     # The layout file is keyed by base name, so leaving it behind would orphan
     # it under a name no graph answers to any more. Moved for a legacy source
-    # too: if one exists beside a legacy file it is still that graph's.
-    layout_src = _graph_layout_path(req.from_name)
-    layout_dst = _graph_layout_path(req.to)
+    # too: if one exists beside a legacy file it is still that graph's. The
+    # destination was proved free above, so this move can only create a file.
     if (
         layout_src is not None
         and layout_dst is not None

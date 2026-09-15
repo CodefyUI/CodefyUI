@@ -35,7 +35,6 @@ describe('useNodeDefStore', () => {
       error: null,
       categorized: {},
       presets: [],
-      presetCategorized: {},
     });
   });
 
@@ -44,9 +43,9 @@ describe('useNodeDefStore', () => {
   });
 
   describe('fetchDefinitions — success', () => {
-    it('categorizes definitions and presets, grouping shared categories', async () => {
+    it('categorizes definitions and keeps presets flat', async () => {
       // Two defs in "io" exercise both the `!categorized[cat]` true and false
-      // branches; one in "train". Same idea for presets.
+      // branches; one in "train".
       mockFetchDefs.mockResolvedValue([
         def('Dataset', 'io'),
         def('DataLoader', 'io'),
@@ -66,9 +65,11 @@ describe('useNodeDefStore', () => {
       expect(state.definitions).toHaveLength(3);
       expect(state.categorized.io.map((d) => d.node_name)).toEqual(['Dataset', 'DataLoader']);
       expect(state.categorized.train.map((d) => d.node_name)).toEqual(['Trainer']);
-      expect(state.presets).toHaveLength(3);
-      expect(state.presetCategorized.starters.map((p) => p.preset_name)).toEqual(['p1', 'p2']);
-      expect(state.presetCategorized.advanced.map((p) => p.preset_name)).toEqual(['p3']);
+      // Presets are stored in fetch order and NOT grouped by category: the
+      // Nodes tab pins them into a single group, so a per-category map would
+      // be built on every catalog load with nothing to read it.
+      expect(state.presets.map((p) => p.preset_name)).toEqual(['p1', 'p2', 'p3']);
+      expect(Object.keys(useNodeDefStore.getState())).not.toContain('presetCategorized');
     });
 
     it('sets loading=true while the requests are in flight', async () => {
@@ -89,13 +90,13 @@ describe('useNodeDefStore', () => {
       expect(useNodeDefStore.getState().loading).toBe(false);
     });
 
-    it('produces empty maps when both lists are empty', async () => {
+    it('produces an empty map when both lists are empty', async () => {
       mockFetchDefs.mockResolvedValue([]);
       mockFetchPresets.mockResolvedValue([]);
       await useNodeDefStore.getState().fetchDefinitions();
       const state = useNodeDefStore.getState();
       expect(state.categorized).toEqual({});
-      expect(state.presetCategorized).toEqual({});
+      expect(state.presets).toEqual([]);
       expect(state.loading).toBe(false);
     });
   });

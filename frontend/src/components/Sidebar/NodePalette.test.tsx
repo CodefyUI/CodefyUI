@@ -108,7 +108,6 @@ beforeEach(() => {
     definitions: [def('Conv2d', 'CNN')],
     categorized: { CNN: [def('Conv2d', 'CNN')] },
     presets: [preset('CNNBlock', 'CNN')],
-    presetCategorized: { CNN: [preset('CNNBlock', 'CNN')] },
     loading: false,
     error: null,
     fetchDefinitions: vi.fn().mockResolvedValue(undefined),
@@ -213,7 +212,7 @@ describe('NodePalette (sidebar shell)', () => {
   // app with an empty catalog for the whole session.
 
   it('starts the catalog load even when the sidebar is collapsed', () => {
-    useNodeDefStore.setState({ definitions: [], categorized: {}, presets: [], presetCategorized: {} });
+    useNodeDefStore.setState({ definitions: [], categorized: {}, presets: [] });
     const fetchDefinitions = useNodeDefStore.getState().fetchDefinitions as ReturnType<typeof vi.fn>;
     act(() => useUIStore.getState().setSidebarCollapsed(true));
 
@@ -224,7 +223,7 @@ describe('NodePalette (sidebar shell)', () => {
   });
 
   it('starts the catalog load when a tab other than Nodes is open', async () => {
-    useNodeDefStore.setState({ definitions: [], categorized: {}, presets: [], presetCategorized: {} });
+    useNodeDefStore.setState({ definitions: [], categorized: {}, presets: [] });
     const fetchDefinitions = useNodeDefStore.getState().fetchDefinitions as ReturnType<typeof vi.fn>;
     act(() => useUIStore.getState().setSidebarTab('graphs'));
 

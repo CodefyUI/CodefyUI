@@ -530,9 +530,10 @@ export async function deleteGraph(name: string) {
 }
 
 /**
- * Rename a saved graph. `from` and `to` are `file` base names; the server
- * also rewrites the `name` inside the file so the list keeps agreeing with
- * itself.
+ * Rename a saved graph. `from` is the `file` base name; `to` is the new
+ * display name, which the server writes into the file as its `name` and
+ * sanitizes into the `file` it returns — so the caller must take the new base
+ * name from the response rather than assume it is `to`.
  *
  * Detail-first for the same reason as `deleteGraph`, and more so: a 409
  * collision and the refusal of the reserved `.graph` / `.layout` suffixes are

@@ -1,8 +1,10 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import type { ReactElement } from 'react';
 import { render, screen, fireEvent, within } from '@testing-library/react';
 import { SidebarRail } from './SidebarRail';
 import { useUIStore, SIDEBAR_DEFAULT_WIDTH } from '../../store/uiStore';
 import { useI18n } from '../../i18n';
+import { FolderIcon, SaveIcon } from '../shared/Icons';
 
 const TAB_LABELS = ['Nodes', 'Graphs', 'Templates', 'Custom & Plugins', 'Source Control'];
 
@@ -51,6 +53,19 @@ describe('SidebarRail', () => {
     ).toBe(true);
     // ...and the toggle is still in the rail beside it.
     expect(list.parentElement?.contains(toggle)).toBe(true);
+  });
+
+  // A rail icon names a section; the Graphs panel's header button issues the
+  // save-as command about 150px below it. They shared the floppy disk, so one
+  // glyph meant both — the rail gets the folder instead.
+  it('gives the Graphs tab a folder, not the save-as glyph in its panel', () => {
+    render(<SidebarRail />);
+    const railIcon = tab('Graphs').querySelector('svg')!.innerHTML;
+    const shape = (node: ReactElement) =>
+      render(node).container.querySelector('svg')!.innerHTML;
+
+    expect(railIcon).toBe(shape(<FolderIcon size={18} />));
+    expect(railIcon).not.toBe(shape(<SaveIcon size={18} />));
   });
 
   it('marks only the active tab as selected', () => {

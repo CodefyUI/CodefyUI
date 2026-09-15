@@ -99,6 +99,7 @@ function GraphRow({
 }: GraphRowProps) {
   const { t, locale } = useI18n();
   const metaId = useId();
+  const badgeId = useId();
 
   // Empty when the backend predates the field, or when `st_mtime` came back
   // as something no date can be made of -- a row with no date on it says more
@@ -127,6 +128,12 @@ function GraphRow({
     },
   ];
 
+  // What the row's button is DESCRIBED by, in the order a reader wants it:
+  // which graph the tab saves to, then when the file was last written.
+  const describedBy = [current ? badgeId : '', meta === '' ? '' : metaId]
+    .filter((one) => one !== '')
+    .join(' ');
+
   return (
     // The name lives on the ROW as well: the button's own `title` would not
     // open over the menu or the padding beside it. A newline rather than a
@@ -141,15 +148,21 @@ function GraphRow({
         // is INSIDE the button, so without the description it would be read
         // as part of that name.
         aria-label={`${open} ${graph.name}`}
-        aria-describedby={meta === '' ? undefined : metaId}
+        aria-describedby={describedBy === '' ? undefined : describedBy}
         onClick={() => onOpen(graph, 'bind')}
       >
         <span className={tabStyles.rowName}>{graph.name}</span>
-        {current && <span className={tabStyles.rowBadge}>{t('graphs.current')}</span>}
         {meta !== '' && (
           <span className={tabStyles.rowMeta} id={metaId}>{meta}</span>
         )}
       </button>
+      {/* Outside the button, where `RefRow` keeps its own badge: an
+          `aria-label` REPLACES the name a button takes from its content, so
+          a chip inside this one was drawn on screen and announced to nobody
+          -- and "which graph does Save write to" is the one thing this list
+          says that its names do not. Described by, not named by, so the
+          button is still the sentence a reader acts on. */}
+      {current && <span className={tabStyles.rowBadge} id={badgeId}>{t('graphs.current')}</span>}
       <ActionMenu
         label={`${t('graphs.rowMenu')} ${graph.name}`}
         items={items}
@@ -193,16 +206,40 @@ export function GraphsTab() {
     (s) => s.tabs.find((tb) => tb.id === s.activeTabId)?.currentGraphFile ?? null,
   );
 
-  const load = useCallback(() => {
-    setLoading(true);
+  // Which list read is the current one. Every rename, delete and Save As
+  // refetches and the refresh button is one click away, so two reads in
+  // flight together is ordinary -- and the one that answers LAST is not the
+  // one that was asked last: a read issued before a delete still carries the
+  // deleted row, and would put it back on screen.
+  const loadSeq = useRef(0);
+
+  /**
+   * Re-read the list. `quiet` keeps what is on screen while the read runs.
+   *
+   * Only the reads the user is waiting on -- the first one, the refresh
+   * button, the retry after a failure -- blank the list to the loading line.
+   * A refetch after a rename, a delete or a Save As changes one row, and
+   * emptying the panel for it threw away the reader's place in the list.
+   */
+  const load = useCallback((quiet = false) => {
+    const seq = loadSeq.current + 1;
+    loadSeq.current = seq;
+    if (!quiet) setLoading(true);
     setError(null);
     listGraphs()
-      .then((all) => setGraphs(Array.isArray(all) ? all : []))
+      .then((all) => {
+        if (seq !== loadSeq.current) return;
+        setGraphs(Array.isArray(all) ? all : []);
+      })
       .catch((e: Error) => {
+        if (seq !== loadSeq.current) return;
         setGraphs([]);
         setError(e.message);
       })
-      .finally(() => setLoading(false));
+      .finally(() => {
+        if (seq !== loadSeq.current) return;
+        setLoading(false);
+      });
   }, []);
 
   useEffect(() => {
@@ -282,13 +319,14 @@ export function GraphsTab() {
         // fallback for a backend that answers without the field.
         const result = (await renameGraph(graph.file, next)) as { file?: unknown };
         const file = typeof result?.file === 'string' ? result.file : sanitizeGraphName(next);
-        // The active tab was saving back to a file that no longer exists
-        // under that name; leaving the binding alone would make its next
-        // Save write a second copy under the old one.
-        if (boundFile === graph.file) useTabStore.getState().setCurrentGraphFile(file);
+        // EVERY tab that was saving back to this file, not just the one in
+        // front of the user: a tab left on the old name writes a second copy
+        // of the graph there on its next Save, and a background tab is the
+        // one nobody would think to look at.
+        useTabStore.getState().rebindGraphFile(graph.file, file);
         if (useProjectStore.getState().projectDir !== null) announceWorktreeWrite();
         useToastStore.getState().addToast(t('graphs.rename.success', { name: next }), 'success');
-        load();
+        load(true);
       } catch (e) {
         useToastStore.getState().addToast(
           t('graphs.rename.fail', { error: (e as Error).message }),
@@ -296,7 +334,7 @@ export function GraphsTab() {
         );
       }
     },
-    [boundFile, load, t],
+    [load, t],
   );
 
   const handleDelete = useCallback(
@@ -309,16 +347,17 @@ export function GraphsTab() {
       if (!ok) return;
       try {
         await deleteGraph(graph.file);
-        // The graph on screen is still whole; it simply has nowhere to save
-        // back to any more, so the next Save asks for a name rather than
-        // silently recreating the file the user just deleted.
-        if (boundFile === graph.file) useTabStore.getState().setCurrentGraphFile(null);
+        // The graphs on screen are still whole; they simply have nowhere to
+        // save back to any more, so the next Save asks for a name rather than
+        // silently recreating the file the user just deleted. Every bound
+        // tab, for the same reason the rename above rebinds every one.
+        useTabStore.getState().rebindGraphFile(graph.file, null);
         if (useProjectStore.getState().projectDir !== null) announceWorktreeWrite();
         useToastStore.getState().addToast(
           t('graphs.delete.success', { name: graph.name }),
           'success',
         );
-        load();
+        load(true);
       } catch (e) {
         useToastStore.getState().addToast(
           t('graphs.delete.fail', { error: (e as Error).message }),
@@ -326,15 +365,16 @@ export function GraphsTab() {
         );
       }
     },
-    [boundFile, load, t],
+    [load, t],
   );
 
   const handleSaveAs = useCallback(async () => {
     await saveActiveGraph({ saveAs: true });
     // Unconditional: a save that was cancelled or refused only costs one
     // list read, and asking `saveActiveGraph` to report which it was would
-    // be a change to the toolbar's Save As as well.
-    load();
+    // be a change to the toolbar's Save As as well. Quiet for that reason
+    // too -- a cancelled Save As must not blank the panel behind it.
+    load(true);
   }, [load]);
 
   const handleImport = useCallback((event: React.ChangeEvent<HTMLInputElement>) => {
@@ -363,7 +403,9 @@ export function GraphsTab() {
           <button
             type="button"
             className={styles.toolbarButton}
-            onClick={load}
+            // Wrapped, not passed: `load`'s first argument is `quiet`, and a
+            // click handler would hand it the event.
+            onClick={() => load()}
             aria-label={t('graphs.refresh')}
             title={t('graphs.refresh')}
           >
@@ -385,7 +427,7 @@ export function GraphsTab() {
         {!loading && error !== null && (
           <div className={styles.errorWrapper}>
             <div className={styles.errorText}>{t('graphs.listFail', { error })}</div>
-            <button type="button" onClick={load} className={styles.retryButton}>
+            <button type="button" onClick={() => load()} className={styles.retryButton}>
               {t('palette.retry')}
             </button>
           </div>
@@ -394,7 +436,13 @@ export function GraphsTab() {
         {!loading && error === null && (
           rows.length === 0 ? (
             <div className={styles.stateMessageMuted}>
-              {query ? t('graphs.noMatch', { query }) : t('graphs.empty')}
+              {/* The query is not repeated back: it is in the box directly
+                  above, and echoing it put a string of any length someone
+                  pasted into a centred message inside an `overflow: hidden`
+                  panel, where a single unbroken 200-character token had
+                  nowhere to wrap. The Templates tab next door says it the
+                  same way. */}
+              {query ? t('graphs.noMatch') : t('graphs.empty')}
             </div>
           ) : (
             /* `role="list"`, because `list-style: none` takes list semantics

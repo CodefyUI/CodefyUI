@@ -159,7 +159,7 @@ describe('Toolbar', () => {
       shortcutsModalOpen: false,
       fontSize: 'default',
     });
-    useNodeDefStore.setState({ definitions: [], presets: [], categorized: {}, presetCategorized: {} });
+    useNodeDefStore.setState({ definitions: [], presets: [], categorized: {} });
     useProjectStore.setState({ projectDir: null, projectName: null, loaded: false });
     // Empty catalogs that have already ARRIVED: the settings popover only
     // asks for one nobody has read yet, so opening it here stays offline.

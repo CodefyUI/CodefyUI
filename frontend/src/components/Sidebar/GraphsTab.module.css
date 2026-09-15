@@ -41,7 +41,9 @@
   flex: 1;
   min-width: 0;
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
+  /* One track: the name and the meta under it. The chip is not in here --
+     see `.rowBadge`. */
+  grid-template-columns: minmax(0, 1fr);
   align-content: center;
   padding: var(--sp-3) var(--sp-3) var(--sp-3) var(--sp-4);
   background: transparent;
@@ -68,12 +70,14 @@
   white-space: nowrap;
 }
 
-/* "Current" beside the name, in the pair the footer button already uses.
-   Its own margin rather than a `column-gap`, which would take those 4px off
-   every name in the list and not just the one row that carries a chip. */
+/* "Current" after the name, in the pair the footer button already uses.
+
+   A child of the ROW rather than of the button, the way `RefRow`'s badge is:
+   inside the button its text was swallowed by that button's `aria-label` --
+   see the comment beside it. The button's own right padding is the gap
+   before it, and it never shrinks, so a long name ellipsises against it. */
 .rowBadge {
-  align-self: center;
-  margin-left: var(--sp-2);
+  flex: 0 0 auto;
   padding: 0 var(--sp-2);
   border-radius: var(--radius-pill);
   background: var(--accent-wash);
@@ -88,7 +92,6 @@
    ellipsises rather than wrapping: the row's `title` carries the sentence in
    full, and a third line would cost every row in the list its density. */
 .rowMeta {
-  grid-column: 1 / -1;
   margin-top: var(--sp-1);
   font-size: var(--fs-2xs);
   color: var(--text-muted);

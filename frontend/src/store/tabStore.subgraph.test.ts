@@ -98,7 +98,6 @@ beforeEach(() => {
     definitions: [def('A'), def('B'), def('C'), def('S')],
     presets: [],
     categorized: {},
-    presetCategorized: {},
     loading: false,
     error: null,
   } as never);
