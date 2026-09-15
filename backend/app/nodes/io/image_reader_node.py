@@ -29,19 +29,19 @@ class ImageReaderNode(BaseNode):
         p = Path(path)
         if p.is_absolute():
             return p
-        # Relative paths resolve against IMAGES_DIR so filenames picked from
-        # the uploaded-files dropdown work without the user typing a full
-        # path. IMAGES_DIR still wins when the name exists in both places, so
-        # a graph built from the dropdown resolves exactly as it always did.
+        # The uploaded-files dropdown writes a bare filename, so the upload
+        # store goes first and a graph built from it resolves exactly as it
+        # always did. `is_file()`, not `exists()`, so a directory of that name
+        # falls through instead of swallowing the lookup -- CSVReader gates
+        # its own store the same way.
         candidate = settings.IMAGES_DIR / p
-        if candidate.exists():
+        if candidate.is_file():
             return candidate
-        # Nothing of that name in the upload store: fall back to the path as
-        # written, i.e. relative to the working directory. CSVReader has
-        # always done this, and the asymmetry cost real time -- a graph
-        # reading `data.csv` and `photo.png` out of one folder ran only if
-        # CODEFYUI_IMAGES_DIR pointed at that folder, with the image the sole
-        # reason the variable had to be set at all.
+        # Otherwise the path as written, i.e. relative to the working directory
+        # of the process running the graph. That is what CSVReader does outside
+        # project mode, and what lets an exported script read an image sitting
+        # beside it with no CODEFYUI_IMAGES_DIR set. Reached only where the old
+        # code already raised FileNotFoundError.
         return p
 
     @classmethod

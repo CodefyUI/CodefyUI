@@ -86,7 +86,7 @@ def test_relative_path_falls_back_to_cwd(tmp_path, monkeypatch):
 
     This is what lets a judging sandbox run a graph whose image sits beside
     the submission with no CODEFYUI_IMAGES_DIR set, matching what CSVReader
-    has always done for DATA_FILE params.
+    does for a DATA_FILE param outside project mode.
     """
     from app.config import settings
 
@@ -115,3 +115,27 @@ def test_relative_path_missing_everywhere_still_raises(tmp_path, monkeypatch):
     monkeypatch.chdir(workdir)
     with pytest.raises(FileNotFoundError, match="nowhere.png"):
         ImageReaderNode().execute({}, {"path": "nowhere.png", "mode": "RGB", "resize": 0})
+
+
+def test_directory_in_upload_store_does_not_shadow_the_file(tmp_path, monkeypatch):
+    """A *directory* of that name in the store falls through to the cwd file.
+
+    The store is an ordinary folder, so a non-file entry can end up in it.
+    Gating on `exists()` would return the directory and hand Pillow an
+    IsADirectoryError/PermissionError; `is_file()` keeps the fallback alive,
+    which is also what CSVReader's own store check does.
+    """
+    from app.config import settings
+
+    upload_store = tmp_path / "images"
+    upload_store.mkdir()
+    (upload_store / "frames.png").mkdir()
+
+    workdir = tmp_path / "work"
+    workdir.mkdir()
+    Image.new("RGB", (64, 32), (9, 9, 9)).save(workdir / "frames.png")
+
+    monkeypatch.setattr(settings, "IMAGES_DIR", upload_store)
+    monkeypatch.chdir(workdir)
+    res = ImageReaderNode().execute({}, {"path": "frames.png", "mode": "RGB", "resize": 0})
+    assert res["tensor"].shape == (3, 32, 64)
