@@ -27,11 +27,21 @@ class ImageReaderNode(BaseNode):
         from ...config import settings
 
         p = Path(path)
-        if not p.is_absolute():
-            # Relative paths resolve against IMAGES_DIR so filenames picked
-            # from the uploaded-files dropdown work without the user typing
-            # a full path.
-            p = settings.IMAGES_DIR / p
+        if p.is_absolute():
+            return p
+        # Relative paths resolve against IMAGES_DIR so filenames picked from
+        # the uploaded-files dropdown work without the user typing a full
+        # path. IMAGES_DIR still wins when the name exists in both places, so
+        # a graph built from the dropdown resolves exactly as it always did.
+        candidate = settings.IMAGES_DIR / p
+        if candidate.exists():
+            return candidate
+        # Nothing of that name in the upload store: fall back to the path as
+        # written, i.e. relative to the working directory. CSVReader has
+        # always done this, and the asymmetry cost real time -- a graph
+        # reading `data.csv` and `photo.png` out of one folder ran only if
+        # CODEFYUI_IMAGES_DIR pointed at that folder, with the image the sole
+        # reason the variable had to be set at all.
         return p
 
     @classmethod

@@ -22,6 +22,22 @@ received — each links to the release it was published as.
 
 ## [Unreleased]
 
+### Fixed
+
+- **`ImageReader` finds an image sitting next to the graph, the way
+  `CSVReader` always has.** A relative path was resolved against `IMAGES_DIR`
+  and nowhere else, so a graph that read `data.csv` and `photo.png` out of one
+  folder ran only if `CODEFYUI_IMAGES_DIR` pointed at that folder — with the
+  image the sole reason the variable had to be set at all. `CSVReader` has
+  always fallen back to the working directory for a `DATA_FILE` param, and the
+  asymmetry cost real time to diagnose, because nothing about the failure
+  (`Image not found: photo.png`) says the file is right there. The path now
+  resolves the same way in both nodes: the upload store first, then the path
+  as written. A graph built from the upload dropdown resolves exactly as it
+  did — `IMAGES_DIR` still wins when a file of that name exists in both
+  places — and a batch runner, a CI job or a judging sandbox that cannot set
+  environment variables now works with no configuration at all.
+
 ### Changed
 
 - **The Package Center says less, and fits.** Fifty-four zh-TW strings and
