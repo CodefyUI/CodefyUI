@@ -292,7 +292,7 @@ function openTab(name: string, file: string | null, origin: string | null): stri
   const tabs = useTabStore.getState();
   tabs.addTab(name);
   const id = useTabStore.getState().activeTabId;
-  useTabStore.getState().setCurrentGraphFile(file);
+  useTabStore.getState().setCurrentGraphFile(file, file);
   useTabStore.getState().stampActiveTabProject(origin);
   return id;
 }

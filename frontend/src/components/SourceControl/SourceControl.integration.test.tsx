@@ -198,7 +198,7 @@ function row(name: string): HTMLElement {
 function openTab(name: string, file: string, origin: string | null): string {
   useTabStore.getState().addTab(name);
   const id = useTabStore.getState().activeTabId;
-  useTabStore.getState().setCurrentGraphFile(file);
+  useTabStore.getState().setCurrentGraphFile(file, file);
   useTabStore.getState().stampActiveTabProject(origin);
   return id;
 }

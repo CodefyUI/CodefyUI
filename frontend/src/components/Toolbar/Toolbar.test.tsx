@@ -14,6 +14,9 @@ import { useI18n } from '../../i18n';
 import * as rest from '../../api/rest';
 import * as exportDiagram from '../../utils/exportDiagram';
 import { _resetDeviceOptionsForTesting } from '../../hooks/useDeviceOptions';
+// The layout test below asserts on where the separators sit in the tree, so
+// it needs the same generated class names the component renders with.
+import styles from './Toolbar.module.css';
 
 // ── Mocks ─────────────────────────────────────────────────────────────
 
@@ -128,6 +131,20 @@ function setActiveTab(overrides: Record<string, unknown> = {}) {
     // Same reason: a device one test assigned must not become the next
     // test's `settings.device` in a save or export body.
     graphDevice: null,
+    // Same reason, and the sharpest of them: a successful Save stamps
+    // `currentGraphFile` on the tab, and saveActiveGraph overwrites a BOUND
+    // file in place with no prompt at all. Carried forward, that binding
+    // quietly turns every later Save case into an in-place overwrite -- the
+    // name prompt those cases wait on never opens, and they fail on a dialog
+    // that was never going to appear rather than on what they assert.
+    currentGraphFile: null,
+    // The binding is TWO fields, and pinning one of them is pinning none: an
+    // in-place save is "bound to a file AND knowing its name", so a name left
+    // behind by a previous test's successful Save combines with the next
+    // test's own `currentGraphFile` override into a binding neither test
+    // wrote. That save then goes out under the LEAKED name, and the test
+    // fails on a graph title it never mentions.
+    currentGraphName: null,
     // Same reason (core#137): a test that seeds a collapsed block would
     // otherwise hand its definitions to every test that runs after it, and
     // `subgraphs` is now a positional argument of `exportGraph` — the leak
@@ -372,6 +389,84 @@ describe('Toolbar', () => {
     expect(screen.getByText('Export as JSON')).toBeInTheDocument();
   });
 
+  // ── Wrapped-row layout ──────────────────────────────────────────────
+
+  it('every separator trails a cluster from inside it, so none can lead a row', () => {
+    const { container } = render(<Toolbar />);
+    const root = container.querySelector<HTMLElement>(`.${styles.root}`)!;
+
+    // `.root` is the one wrapping flex container in the toolbar, and a
+    // separator that is a flex item of it is free to be carried onto the
+    // next line on its own: the second row then opens with a 1px rule that
+    // separates nothing, and the cluster after it is indented past the row
+    // above. Adding the Save icon moved the wrap point far enough to show
+    // exactly that in zh-TW at around 860px. Keeping every rule inside the
+    // cluster it trails makes the case unreachable at any width, and this
+    // assertion is what stops the next separator from being added back as a
+    // root sibling.
+    const strays = Array.from(root.children).filter((el) =>
+      el.classList.contains(styles.divider),
+    );
+    expect(strays).toHaveLength(0);
+
+    // The line above is also satisfied by a toolbar with no separators at
+    // all, which is not the invariant we mean -- so name the real one: each
+    // rule that exists closes out a cluster.
+    const rules = root.querySelectorAll<HTMLElement>(`.${styles.divider}`);
+    expect(rules.length).toBeGreaterThan(0);
+    rules.forEach((rule) => {
+      const parent = rule.parentElement!;
+      expect(parent.classList.contains(styles.cluster)).toBe(true);
+      expect(parent.lastElementChild).toBe(rule);
+    });
+  });
+
+  // ── Save icon (the one-click twin of File -> Save) ───────────────────
+
+  describe('the Save icon', () => {
+    // The button carries no text of its own, so every case here goes through
+    // its accessible name. That name is unique while the menus are shut: the
+    // File menu's Save is not in the DOM until the menu is opened.
+    const saveIcon = () => screen.getByRole('button', { name: 'Save' });
+
+    it('renders with an accessible name of Save', () => {
+      render(<Toolbar />);
+      expect(saveIcon()).toBeInTheDocument();
+      // An icon-only button has nothing on screen to read, so the hover text
+      // is the only label there is -- losing it leaves a blank square.
+      expect(saveIcon()).toHaveAttribute('title', 'Save');
+    });
+
+    it('clicking it runs the same save as File -> Save', async () => {
+      mockedRest.saveGraph.mockResolvedValueOnce({} as never);
+      render(<Toolbar />);
+      fireEvent.click(saveIcon());
+      // Same prompt, same payload as the menu item's save above: the icon is
+      // wired to handleSave itself, not to a second copy of the logic.
+      await resolveDialog('my-graph');
+      await waitFor(() =>
+        expect(mockedRest.saveGraph).toHaveBeenCalledWith(
+          expect.objectContaining({ name: 'my-graph' }),
+        ),
+      );
+    });
+
+    it('sits outside the File menu, so it takes one click and not two', () => {
+      render(<Toolbar />);
+      const icon = saveIcon();
+      // Nothing has been clicked yet, so the File menu has never rendered and
+      // its Save has no text node on the page -- while the icon is already a
+      // button. A Save that lived only in the menu would fail this pair.
+      expect(icon).toBeInTheDocument();
+      expect(screen.queryByText('Save')).toBeNull();
+      // And once the menu does open, the two are separate controls rather
+      // than the same element found twice.
+      fireEvent.click(screen.getByText('File'));
+      expect(screen.getByText('Save')).not.toBe(icon);
+      expect(icon).toBeInTheDocument();
+    });
+  });
+
   // ── Save action ─────────────────────────────────────────────────────
 
   it('Save: empty/blank name aborts without calling saveGraph', async () => {
@@ -503,15 +598,18 @@ describe('Toolbar', () => {
   it('Save: re-saving the currently-open graph does NOT warn', async () => {
     mockedRest.saveGraph.mockResolvedValueOnce({} as never);
     mockedRest.listGraphs.mockResolvedValue([{ name: 'Existing', file: 'existing' }] as never);
-    // Tab is already bound to "existing" -> re-saving it is silent.
-    setActiveTab({ currentGraphFile: 'existing' });
+    // Tab is already bound to "existing" -> re-saving it is silent. Since a
+    // bound tab overwrites its own file in place, "silent" is now the whole
+    // truth: no name prompt, and so no overwrite confirm either -- the only
+    // graph it could collide with is the one it came from.
+    setActiveTab({ currentGraphFile: 'existing', currentGraphName: 'existing' });
     render(<Toolbar />);
     fireEvent.click(screen.getByText('File'));
     fireEvent.click(screen.getByText('Save'));
-    await resolveDialog('existing');   // only the prompt; no overwrite confirm
     await waitFor(() =>
       expect(mockedRest.saveGraph).toHaveBeenCalledWith(expect.objectContaining({ name: 'existing' })),
     );
+    expect(useDialogStore.getState().active).toBeNull();
   });
 
   // ── Project-mode Save / Save As (delegated through saveActiveGraph -- ID9) ──
@@ -519,7 +617,7 @@ describe('Toolbar', () => {
   it('Save (project mode, bound): overwrites the bound file in place, no prompt', async () => {
     useProjectStore.setState({ projectDir: '/proj', projectName: 'proj', loaded: true });
     mockedRest.saveGraph.mockResolvedValueOnce({} as never);
-    setActiveTab({ currentGraphFile: 'bound-graph' });
+    setActiveTab({ currentGraphFile: 'bound-graph', currentGraphName: 'bound-graph' });
     render(<Toolbar />);
     fireEvent.click(screen.getByText('File'));
     fireEvent.click(screen.getByText('Save'));
@@ -533,7 +631,7 @@ describe('Toolbar', () => {
   it('Save As (project mode, bound): still prompts, saving under the entered name', async () => {
     useProjectStore.setState({ projectDir: '/proj', projectName: 'proj', loaded: true });
     mockedRest.saveGraph.mockResolvedValueOnce({} as never);
-    setActiveTab({ currentGraphFile: 'bound-graph' });
+    setActiveTab({ currentGraphFile: 'bound-graph', currentGraphName: 'bound-graph' });
     render(<Toolbar />);
     fireEvent.click(screen.getByText('File'));
     fireEvent.click(screen.getByText('Save As...'));

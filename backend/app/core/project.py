@@ -7,7 +7,13 @@ In project mode a saved graph is stored as a PAIR:
   layout/<name>.layout.json  layout {format_version, positions{}, notes{},
                                       segmentGroups[], subgraphPositions{}}
 
-Non-project mode never calls this module (byte-for-byte single-file legacy).
+Non-project mode never uses the SPLIT (byte-for-byte single-file legacy),
+but it does share one thing from this module: ``_atomic_write``. Saving and
+renaming a single-file graph go through the same temp-file + ``os.replace``
+mechanism, because atomicity is not a project-mode feature and because a
+bare write leaves a stale directory entry on a case-insensitive filesystem
+(see ``routes_graph.save_graph``). The writer stays here, where spec 13's
+reasoning for it lives, rather than being copied to a second home.
 """
 
 from __future__ import annotations
@@ -254,7 +260,13 @@ def _atomic_write(path: Path, text: str) -> None:
     interrupted save cannot strand a ``*.tmp-*`` orphan next to the pair
     (issue #88; the scaffold .gitignore additionally hides one in-repo).
     On success os.replace has already consumed the temp file, so the
-    unlink is a no-op.
+    unlink is a no-op. That unlink is BEST EFFORT and never raises -- see
+    the comment on it for what it would otherwise hide.
+
+    os.replace also REPLACES the directory entry rather than reusing one,
+    so the file is left spelled exactly as *path* spells it. That is the
+    second reason to call this: a bare ``write_text`` to "my_graph.json"
+    keeps an existing "My_Graph.json" entry on NTFS/APFS.
     """
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(path.name + f".tmp-{os.getpid()}")
@@ -262,7 +274,19 @@ def _atomic_write(path: Path, text: str) -> None:
         tmp.write_text(text, encoding="utf-8")
         os.replace(tmp, path)
     finally:
-        tmp.unlink(missing_ok=True)
+        # The cleanup must never become the error the caller sees. ``unlink``
+        # can fail on its own account -- WinError 123 on an over-long path is
+        # the one reproduced here -- and an exception raised from ``finally``
+        # REPLACES the one propagating out of the ``try``. A disk-full or
+        # permission failure on the write above would then surface as a
+        # complaint about a temp file the caller never named, with the real
+        # cause gone. Swallowing this strands at most one ``*.tmp-*`` orphan,
+        # which is the lesser of the two and which the scaffold .gitignore
+        # already hides.
+        try:
+            tmp.unlink(missing_ok=True)
+        except OSError:
+            pass
 
 
 def write_graph_pair(

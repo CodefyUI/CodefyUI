@@ -111,9 +111,11 @@ export function LibraryIcon({ size }: { size?: number }) {
 }
 
 /** Saved graphs — a folder, because the tab is a place things are KEPT.
- *  Deliberately not SaveIcon, which the panel's own header uses for the
- *  save-as command: one glyph two hand-widths apart cannot mean both
- *  "this section" and "do this now". */
+ *  Deliberately neither floppy. The two of them are spoken for and they say
+ *  what to DO: {@link SaveIcon} is the toolbar's Save, {@link SaveAsIcon} is
+ *  this panel's own header button. One glyph two hand-widths apart cannot
+ *  mean both "this section" and "do this now", so the tab that NAMES the
+ *  section is the one that has to be a different shape entirely. */
 export function FolderIcon({ size }: { size?: number }) {
   return (
     <Icon size={size}>
@@ -289,16 +291,41 @@ export function ChevronDownIcon({ size }: { size?: number }) {
   );
 }
 
-/** Write the graph on the canvas to a file — a floppy disk, which is still
- *  the only shape "save" has. Deliberately not PlusIcon: the Graphs panel's
- *  header button saves what is already open under a new name, and a `+` there
- *  would read as "start an empty graph". */
+/** The toolbar's Save: write the canvas back over the file this tab is bound
+ *  to, with nothing asked first. A floppy disk, which is still the only shape
+ *  "save" has -- and a BARE one, because bare is exactly what the command is.
+ *  The floppy carrying a mark is {@link SaveAsIcon}, which stops to ask for a
+ *  name; nothing may be added to this one without taking that distinction
+ *  away from the pair. */
 export function SaveIcon({ size }: { size?: number }) {
   return (
     <Icon size={size}>
       <path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z" />
       <polyline points="17 21 17 13 7 13 7 21" />
       <polyline points="7 3 7 8 15 8" />
+    </Icon>
+  );
+}
+
+/** The Graphs panel header's Save As: write what is open to a NEW file, under
+ *  a name the user is asked for.
+ *
+ *  {@link SaveIcon}'s floppy with a `+` beside it, because the two are the
+ *  same verb and differ only in whether the file already exists. They are on
+ *  screen together, about 240px apart, so they cannot share one glyph: the
+ *  toolbar's Save overwrites in silence and this one always opens a dialog,
+ *  and a reader who learned the shape from the wrong neighbour finds that out
+ *  by losing a file. The disk is drawn smaller than SaveIcon's to clear the
+ *  corner -- the `+` has to sit OUTSIDE the outline to read as "and another
+ *  one" rather than as a button printed on the disk itself. */
+export function SaveAsIcon({ size }: { size?: number }) {
+  return (
+    <Icon size={size}>
+      <path d="M13 16H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h7l4 4v7a2 2 0 0 1-2 2z" />
+      <polyline points="12 16 12 11 5 11 5 16" />
+      <polyline points="5 3 5 7 10 7" />
+      <line x1={19} y1={16} x2={19} y2={22} />
+      <line x1={16} y1={19} x2={22} y2={19} />
     </Icon>
   );
 }

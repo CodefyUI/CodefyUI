@@ -1,12 +1,10 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import {
   GraphMissingError,
-  openSavedGraph,
   readSavedGraphDocument,
   reloadTabFromDisk,
   resolveSavedGraph,
 } from './openSavedGraph';
-import { useDialogStore } from '../store/dialogStore';
 import { useNodeDefStore } from '../store/nodeDefStore';
 import { useProjectStore } from '../store/projectStore';
 import { useTabStore } from '../store/tabStore';
@@ -55,12 +53,9 @@ beforeEach(() => {
   useNodeDefStore.setState({ definitions: [], presets: [] });
   useProjectStore.setState({ projectDir: null, projectName: null, loaded: true });
   useToastStore.setState({ toasts: [] });
-  useDialogStore.setState({ active: null, resolve: null });
   useTabStore.setState({ tabs: [], activeTabId: null as unknown as string, clipboard: null });
   useTabStore.getState().addTab('Tab 1');
 });
-
-const toasts = () => useToastStore.getState().toasts;
 
 afterEach(() => {
   g.fetch = originalFetch;
@@ -94,6 +89,28 @@ describe('resolveSavedGraph', () => {
 
   it('takes the binding decision from the caller, not from the file', () => {
     expect(resolveSavedGraph({ nodes: [], edges: [] }, null).boundFile).toBeNull();
+  });
+
+  // `boundName` and `name` are two different fields and the file's `name`
+  // feeds only the first. `boundName` is what the tab saves that FILE under,
+  // so an in-place save writes "My Graph" back rather than the stem it
+  // sanitizes to; `name` is the TAB LABEL, which a load must not overwrite.
+  it('reads the display name the file carries into boundName, never into the tab label', () => {
+    const doc = resolveSavedGraph(
+      { nodes: [], edges: [], name: 'My Graph' },
+      'My_Graph',
+    );
+    expect(doc.boundName).toBe('My Graph');
+    expect('name' in doc).toBe(false);
+  });
+
+  it('answers null for a file with no usable name in it', () => {
+    // Off disk, and possibly hand-edited: a missing name, and a name that is
+    // not a string, both mean "this tab does not know what its graph is
+    // called" -- which `saveActiveGraph` answers by asking once.
+    expect(resolveSavedGraph({ nodes: [], edges: [] }, 'alpha').boundName).toBeNull();
+    expect(resolveSavedGraph({ nodes: [], edges: [], name: 42 }, 'alpha').boundName)
+      .toBeNull();
   });
 
   it('falls back for every field a file can be missing', () => {
@@ -158,76 +175,16 @@ describe('resolveSavedGraph', () => {
   });
 });
 
-describe('openSavedGraph', () => {
-  it('reads the file the row names and binds the tab to it', async () => {
-    const fetchMock = mockFetch(200, {
-      nodes: [raw('a')],
-      edges: [],
-      description: 'from disk',
-    });
-    expect(await openSavedGraph({ name: 'Alpha', file: 'alpha.json' }, 'bind')).toBe(true);
-    expect(fetchMock).toHaveBeenCalledWith('/api/graph/load/alpha.json');
-    expect(tabs()[0].nodes.map((n) => n.id)).toEqual(['a']);
-    expect(tabs()[0].description).toBe('from disk');
-    expect(tabs()[0].currentGraphFile).toBe('alpha.json');
-  });
-
-  it('binds nothing on the canvas target, so the next Save has to ask', async () => {
-    useTabStore.getState().setCurrentGraphFile('previously-bound');
-    mockFetch(200, { nodes: [raw('a')], edges: [] });
-    await openSavedGraph({ name: 'Alpha', file: 'alpha.json' }, 'canvas');
-    expect(tabs()[0].nodes.map((n) => n.id)).toEqual(['a']);
-    expect(tabs()[0].currentGraphFile).toBeNull();
-  });
-
-  // The confirm is the caller's: the toolbar menu asks before replacing live
-  // work, the Graphs panel asks on every row. Neither rule belongs down here.
-  it('never asks anything, even over a canvas that has work', async () => {
-    useTabStore.getState().setNodes([raw('onScreen')] as never);
-    mockFetch(200, { nodes: [raw('a')], edges: [] });
-    await openSavedGraph({ name: 'Alpha', file: 'alpha.json' }, 'canvas');
-    expect(useDialogStore.getState().active).toBeNull();
-    expect(tabs()[0].nodes.map((n) => n.id)).toEqual(['a']);
-  });
-
-  it('opens a file written by a newer build read-only, and says so', async () => {
-    mockFetch(200, { nodes: [], edges: [], format_version: 99 });
-    await openSavedGraph({ name: 'Alpha', file: 'alpha' }, 'bind');
-    expect(tabs()[0].readOnly).toBe(true);
-    expect(toasts().some((t) => t.type === 'warning' && t.message.includes('v99'))).toBe(true);
-  });
-
-  it('stamps the open project onto the tab, and stamps nothing outside one', async () => {
-    useProjectStore.setState({ projectDir: 'D:/work/demo', projectName: 'demo', loaded: true });
-    mockFetch(200, { nodes: [], edges: [] });
-    await openSavedGraph({ name: 'Alpha', file: 'alpha' }, 'bind');
-    expect(tabs()[0].projectOrigin).toBe('D:/work/demo');
-
-    useProjectStore.setState({ projectDir: null, projectName: null, loaded: true });
-    useTabStore.getState().addTab('Tab 2');
-    mockFetch(200, { nodes: [], edges: [] });
-    await openSavedGraph({ name: 'Alpha', file: 'alpha' }, 'bind');
-    expect(tabs()[1].projectOrigin).toBeNull();
-  });
-
-  it('reports a failed read and leaves the graph on screen alone', async () => {
-    useTabStore.getState().setNodes([raw('onScreen')] as never);
-    mockFetch(500, {});
-    expect(await openSavedGraph({ name: 'Alpha', file: 'alpha' }, 'bind')).toBe(false);
-    expect(tabs()[0].nodes.map((n) => n.id)).toEqual(['onScreen']);
-    expect(toasts().some((t) => t.type === 'error' && t.message.includes('Load failed'))).toBe(
-      true,
-    );
-  });
-});
-
 describe('readSavedGraphDocument', () => {
   it('url-encodes the file name and resolves the body', async () => {
-    const fetchMock = mockFetch(200, { nodes: [raw('a')], edges: [] });
+    const fetchMock = mockFetch(200, { nodes: [raw('a')], edges: [], name: 'My Graph/v2' });
     const doc = await readSavedGraphDocument('My Graph/v2', 'My Graph/v2');
     expect(fetchMock).toHaveBeenCalledWith('/api/graph/load/My%20Graph%2Fv2');
     expect(doc.nodes.map((n) => n.id)).toEqual(['a']);
     expect(doc.boundFile).toBe('My Graph/v2');
+    // Carried through the reader, so the tab this opens into can save the
+    // file back under the name it came with.
+    expect(doc.boundName).toBe('My Graph/v2');
   });
 
   it('names the file in a GraphMissingError when the server has none', async () => {

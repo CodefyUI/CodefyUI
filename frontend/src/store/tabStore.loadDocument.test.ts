@@ -150,7 +150,7 @@ describe('loadGraphDocument', () => {
   });
 
   it('never lets a document inherit the previous graph binding', () => {
-    store().setCurrentGraphFile('foo');
+    store().setCurrentGraphFile('foo', 'foo');
 
     store().loadGraphDocument({ nodes: [node('example')], edges: [], boundFile: null });
 
