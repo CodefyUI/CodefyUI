@@ -34,8 +34,13 @@ vi.mock('../../api/rest', async (importOriginal) => ({
   PackApiError: (await importOriginal<typeof import('../../api/rest')>()).PackApiError,
   // `pluginStore.refresh()` narrows the same way, on the shared class.
   ApiError: (await importOriginal<typeof import('../../api/rest')>()).ApiError,
-  // Used by the toolbar's Save (through saveActiveGraph, which reads the
-  // saved-graph list to spot an overwrite)
+  // And again, for the same reason: `saveActiveGraph` tells the taken-name
+  // 409 from an ordinary failure with `err instanceof GraphExistsError`, so a
+  // stub here would make every failed save throw a TypeError instead (#455).
+  GraphExistsError: (await importOriginal<typeof import('../../api/rest')>()).GraphExistsError,
+  // Used by the toolbar's Save, through saveActiveGraph. The overwrite
+  // question comes back from `saveGraph` itself now; `listGraphs` is left
+  // mocked because the module is, not because the save path calls it.
   saveGraph: vi.fn(),
   listGraphs: vi.fn(),
   // Used directly by Toolbar
@@ -570,20 +575,22 @@ describe('Toolbar', () => {
 
   it('Save: warns before overwriting a DIFFERENT existing graph and aborts on cancel', async () => {
     // A saved graph "Existing" (file "existing") is present; the tab is not
-    // bound to it (currentGraphFile null), so saving as "existing" collides.
-    mockedRest.listGraphs.mockResolvedValue([{ name: 'Existing', file: 'existing' }] as never);
+    // bound to it (currentGraphFile null), so the server refuses the save as
+    // "existing" with the taken-name 409 rather than writing over it (#455).
+    mockedRest.saveGraph.mockRejectedValueOnce(new rest.GraphExistsError('existing', 'Existing'));
     setActiveTab({ currentGraphFile: null });
     render(<Toolbar />);
     fireEvent.click(screen.getByText('File'));
     fireEvent.click(screen.getByText('Save'));
-    await resolveDialog('existing');   // prompt: name sanitizes to 'existing' -> collides
+    await resolveDialog('existing');   // prompt: the server resolves it to 'existing'
     await resolveDialog(false);         // decline the overwrite confirm
-    expect(mockedRest.saveGraph).not.toHaveBeenCalled();
+    // The refused attempt wrote nothing, and no retry follows a no.
+    expect(mockedRest.saveGraph).toHaveBeenCalledTimes(1);
   });
 
   it('Save: overwrite confirmed proceeds to saveGraph', async () => {
+    mockedRest.saveGraph.mockRejectedValueOnce(new rest.GraphExistsError('existing', 'Existing'));
     mockedRest.saveGraph.mockResolvedValueOnce({} as never);
-    mockedRest.listGraphs.mockResolvedValue([{ name: 'Existing', file: 'existing' }] as never);
     setActiveTab({ currentGraphFile: null });
     render(<Toolbar />);
     fireEvent.click(screen.getByText('File'));
@@ -591,13 +598,14 @@ describe('Toolbar', () => {
     await resolveDialog('existing');   // prompt
     await resolveDialog(true);          // confirm overwrite
     await waitFor(() =>
-      expect(mockedRest.saveGraph).toHaveBeenCalledWith(expect.objectContaining({ name: 'existing' })),
+      expect(mockedRest.saveGraph).toHaveBeenCalledWith(
+        expect.objectContaining({ name: 'existing', file: 'existing', overwrite: true }),
+      ),
     );
   });
 
   it('Save: re-saving the currently-open graph does NOT warn', async () => {
     mockedRest.saveGraph.mockResolvedValueOnce({} as never);
-    mockedRest.listGraphs.mockResolvedValue([{ name: 'Existing', file: 'existing' }] as never);
     // Tab is already bound to "existing" -> re-saving it is silent. Since a
     // bound tab overwrites its own file in place, "silent" is now the whole
     // truth: no name prompt, and so no overwrite confirm either -- the only

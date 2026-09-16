@@ -490,11 +490,13 @@ export interface GraphSaveResult {
    * Callers bind the tab to this rather than re-deriving it, because the two
    * sanitizers do not agree: `sanitizeGraphName` tests `[\p{L}\p{N}]` against
    * Node's ICU tables while the backend's `_sanitize_name` uses CPython's
-   * `str.isalnum()`, and the two carry different Unicode versions -- 16 BMP
-   * code points apart, plus astral ones. The write target is safe either way,
-   * since the server re-sanitizes whatever `file` it is handed; the binding is
-   * what breaks, ending up on a stem `GET /api/graph/list` will never report,
-   * invisible to every exact-match comparison in the app.
+   * `str.isalnum()`, and the two carry different Unicode versions -- 14,049
+   * code points apart, 16 of them in the BMP. The write target is safe either
+   * way, since the server re-sanitizes whatever `file` it is handed; the
+   * binding is what breaks, ending up on a stem `GET /api/graph/list` will
+   * never report, invisible to every exact-match comparison in the app. What
+   * that same gap did to the pre-save overwrite check was worse, and is
+   * `GraphExistsError` below.
    *
    * Optional because this describes what arrives over the wire: a frontend
    * built from source can meet a backend older than the field, the same gap
@@ -504,15 +506,102 @@ export interface GraphSaveResult {
   file?: string;
 }
 
+/**
+ * The refusal `POST /api/graph/save` answers when the address it derived from
+ * the title already holds a DIFFERENT graph and the request asked to be
+ * guarded rather than to overwrite -- `overwrite: false`, which every first
+ * attempt from this build sends (#455).
+ *
+ * A class of its own because the caller has to tell it from a failure: an
+ * ordinary error is a toast, this one is a QUESTION -- "replace <name>?" --
+ * and the answer to yes is the same request again with `overwrite: true`. The
+ * client cannot ask this question itself; deriving the stem locally is what
+ * #455 is, since `sanitizeGraphName` and the backend's `_sanitize_name` read
+ * two different Unicode versions and disagree on 14,049 code points.
+ *
+ * `name` deliberately shadows `Error.name`, unlike every other error in this
+ * file: it is the TITLE of the graph about to be overwritten, the only form of
+ * that graph the user has ever seen and the only thing worth putting in a
+ * dialog. Nothing is lost by it -- this class is identified by `instanceof`,
+ * never by its `name`, and the message below carries the stem for a log.
+ */
+export class GraphExistsError extends Error {
+  constructor(
+    /**
+     * The stem the SERVER resolved the title to, in the server's spelling.
+     * The retry sends this back as `file`, so the write lands on exactly the
+     * file the dialog named rather than on a stem re-derived here.
+     */
+    public readonly file: string,
+    /** The title stored inside that file. */
+    name: string,
+  ) {
+    super(`Graph exists: ${file}`);
+    // `extends Error` loses this class's prototype under a downlevel target,
+    // and `instanceof` is the whole of how the save path tells a question
+    // apart from a failure. Cheap insurance against the build target moving.
+    Object.setPrototypeOf(this, GraphExistsError.prototype);
+    this.name = name;
+  }
+}
+
+/**
+ * `overwrite` has three states on the wire, and a caller that wants the
+ * guard has to send all three of them at the right moments:
+ *
+ * - `false` — "I know this can come back 409 and I have a user to ask." Every
+ *   first attempt from this build says this, including the addressed ones.
+ * - `true` — the answer to a {@link GraphExistsError} the user accepted.
+ * - ABSENT — "I have never heard of the guard", which the server answers by
+ *   writing, exactly as `/save` behaved before the field existed. That is
+ *   what keeps a dist older than 2.8.1 saving against a newer backend: `file`
+ *   did not exist there either, so its every Ctrl+S names no address and
+ *   would otherwise be refused with a 409 it has no code to answer. Nothing
+ *   in this build may leave the field off for that reason.
+ *
+ * The server only ever guards a request that names NO `file`, because one
+ * carrying its own address is asserting where it wants to go.
+ */
 export async function saveGraph(
-  data: GraphSaveData & { file?: string },
+  data: GraphSaveData & { file?: string; overwrite?: boolean },
 ): Promise<GraphSaveResult> {
   const res = await apiFetch(`${BASE_URL}/graph/save`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(data),
   });
-  if (!res.ok) throw new Error(`Save failed: ${res.statusText}`);
+  if (!res.ok) {
+    // The taken-name refusal (#455) is the only 409 this route raises today,
+    // but every step of reading it stays defensive: a 409 raised elsewhere in
+    // the stack carries a plain-string `detail`, and a proxy or a dead server
+    // answers with no JSON at all. Neither may surface as a SyntaxError
+    // thrown over the top of the real failure.
+    if (res.status === 409) {
+      const body = await res.json().catch(() => null);
+      const detail = (body as { detail?: unknown } | null)?.detail;
+      if (
+        typeof detail === 'object' &&
+        detail !== null &&
+        (detail as { error?: unknown }).error === 'graph_exists'
+      ) {
+        const taken = detail as { file?: unknown; name?: unknown };
+        // Only when the stem is actually there. A retry addressed to `""`
+        // reads on the route as "no address given", which is precisely the
+        // silent overwrite this refusal exists to stop -- so a body without
+        // one is reported as an ordinary failure instead of acted on.
+        if (typeof taken.file === 'string' && taken.file) {
+          throw new GraphExistsError(
+            taken.file,
+            // The server falls back to the stem for a file it cannot read a
+            // title out of; so does this, rather than putting "undefined" in
+            // front of the user.
+            typeof taken.name === 'string' && taken.name ? taken.name : taken.file,
+          );
+        }
+      }
+    }
+    throw new Error(`Save failed: ${res.statusText}`);
+  }
   return res.json();
 }
 

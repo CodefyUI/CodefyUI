@@ -74,6 +74,55 @@ def _graph_layout_path(name: str) -> "Path | None":
     return settings.LAYOUT_DIR / f"{_sanitize_name(name)}.layout.json"
 
 
+def _existing_graph_file(stem: str) -> "Path | None":
+    """The on-disk LOGIC file already occupying an ALREADY-SANITIZED *stem*,
+    or None when nothing is there.
+
+    Non-project: `<GRAPHS_DIR>/<stem>.json`.
+    Project: canonical `<stem>.graph.json` first, then legacy `<stem>.json` --
+    the same preference order a read resolves in, so the file named in a
+    refusal is the file the user would have opened.
+
+    Deliberately NOT `resolve_graph_file`, even though it encodes that same
+    preference: it RAISES GraphAmbiguityError when both project forms exist,
+    and this function is only ever asked "is anything already there?". That
+    question has an unambiguous answer in the both-forms case -- yes -- and
+    both forms of one base is a state an ordinary `git checkout` of an older
+    commit produces. Routing /save's guard through the raising helper would
+    turn a save that works today into a failure, on a graph the user can still
+    see in the panel, over an ambiguity the save itself resolves (the pair
+    write unlinks the legacy half).
+    """
+    canonical = settings.GRAPHS_DIR / (
+        f"{stem}.graph.json" if _project_mode() else f"{stem}.json")
+    if canonical.exists():
+        return canonical
+    legacy = settings.GRAPHS_DIR / f"{stem}.json"
+    if _project_mode() and legacy.exists():
+        return legacy
+    return None
+
+
+def _stored_graph_title(path: Path, fallback: str) -> str:
+    """The title a saved graph file calls itself by, or *fallback*.
+
+    Used to tell the user WHICH graph a save is about to replace, so every
+    way of failing to find a title degrades to the stem rather than to an
+    error: the file is on disk and about to be overwritten either way, and a
+    hand-edited or half-written file is exactly the case where the warning
+    matters most. `/list` skips such a file for the same reason it cannot
+    show a name for it.
+    """
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return fallback
+    if not isinstance(data, dict):
+        return fallback
+    name = data.get("name")
+    return name if isinstance(name, str) and name else fallback
+
+
 def _graph_path(name: str) -> Path:
     """Resolve a graph name to the on-disk file to READ.
 
@@ -117,6 +166,15 @@ async def save_graph(graph: GraphSaveRequest):
     of the field writes the same bytes to the same path it always did. The
     one thing that changed for EVERY non-project save is the write
     mechanism -- see the comment on it below.
+
+    Omitting `file` is also what makes a save a Save As, and a Save As onto
+    an address something already occupies answers 409
+    `{"error": "graph_exists", "file", "name"}` rather than writing -- but
+    ONLY for a request that also sent `overwrite: false`, i.e. one that knows
+    what a 409 here means and can put the question to somebody. A request
+    that omits `overwrite` entirely is talking to a `/save` that predates the
+    guard, and gets that `/save`: it writes. See the guard below for why the
+    check cannot live in the client, and why it needs three states.
     """
     # A BLANK `file` counts as absent, not as an address of "": a client
     # that spells "this tab has no file yet" as an empty string gets the
@@ -138,6 +196,53 @@ async def save_graph(graph: GraphSaveRequest):
     # returned rather than left for the client to re-derive -- the same
     # reason /rename returns it.
     safe_target = _sanitize_name(target)
+    # The overwrite guard (#455). ONLY when the request named no address --
+    # the same `bool(graph.file)` that chose `name` as the target at the top
+    # of this function, so the guard covers exactly the case where the SERVER
+    # chose where to write. That rule is `_sanitize_name`, and no client can
+    # reproduce it:
+    # the editor's replica of it called U+2EBF0 a letter (Node ships Unicode
+    # 17) where CPython calls it an underscore (Unicode 14), so a graph titled
+    # "模型" + U+2EBF0 was pre-checked against a stem nothing occupied and
+    # then written over an existing "模型_" with no confirmation and no undo.
+    # 14,049 code points disagree that way today, and a Python upgrade moves
+    # the disagreement rather than ending it. So the client stops guessing and
+    # the server answers.
+    #
+    # A request that DOES carry `file` is asserting its own address and never
+    # takes this path -- that is the ordinary in-place Save from 2.8.1 on, it
+    # lands on an existing file by definition, and asking "replace it?" about
+    # the file the tab is already sitting on is not a question worth a dialog.
+    #
+    # `is False`, not falsy, and THAT is what protects an older client. `file`
+    # itself protects nothing here: it only shipped in 2.8.1, so every dist up
+    # to 2.8.0 posts `{name, nodes, edges}` for an in-place Ctrl+S too, with
+    # the stem occupied by the very graph being re-saved. Read as a plain
+    # bool, this guard answered those saves 409 -- and their `saveGraph`
+    # raises on any non-2xx with no way to set `overwrite`, so Save stopped
+    # working altogether and the edit was dropped with a "Conflict" toast.
+    # Reproduced over ASGITransport in both project and non-project mode. The
+    # same goes for any script written against this route's documented
+    # contract, whose second run would start failing.
+    #
+    # So the field is a three-state sentinel: absent means "this sender has
+    # never heard of the guard", and there is no point refusing a save to let
+    # somebody confirm it when nobody on that end can be asked. It writes, as
+    # it always did. `false` means "I know about the guard and have no yes for
+    # you yet" -- the editor's first attempt -- and that is the one this
+    # refuses. See `GraphSaveRequest.overwrite`.
+    if graph.overwrite is False and not graph.file:
+        occupied = _existing_graph_file(safe_target)
+        if occupied is not None:
+            # A dict detail, which FastAPI serves as {"detail": {...}}: the
+            # client has to tell this apart from /load's and /list's own 409s
+            # (both prose) to know it may offer to overwrite, and it needs the
+            # server's stem to re-post with -- deriving it is the bug.
+            raise HTTPException(status_code=409, detail={
+                "error": "graph_exists",
+                "file": safe_target,
+                "name": _stored_graph_title(occupied, safe_target),
+            })
     settings.GRAPHS_DIR.mkdir(parents=True, exist_ok=True)
     payload = graph.model_dump()
     # The address is a property of the REQUEST, never of the graph: a file
@@ -146,6 +251,13 @@ async def save_graph(graph: GraphSaveRequest):
     # `payload`, so there is exactly one line to check when asking whether a
     # saved graph can carry `file` (it cannot).
     payload.pop("file", None)
+    # And `overwrite` is an answer THIS REQUEST gave to a question about the
+    # destination, which is no more a property of the graph than the address
+    # is. Non-project mode writes `payload` verbatim, so without this pop
+    # every graph file would carry `"overwrite": false` (or `null`, for a
+    # request that never mentioned it) forever -- and a project adopting such
+    # a file would carry it into git.
+    payload.pop("overwrite", None)
     # ``settings`` is written only when a device is assigned, so a graph
     # file with no assignment stays byte-identical to what it was.
     if not (payload.get("settings") or {}).get("device"):

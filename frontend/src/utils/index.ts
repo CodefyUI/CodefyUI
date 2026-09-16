@@ -10,14 +10,26 @@ import { generateId } from './ids';
 export { generateId } from './ids';
 
 /**
- * Client-side replica of the backend's ``_sanitize_name`` (routes_graph.py):
- * every char outside [alphanumeric, '-', '_'] becomes '_'. Two different
- * display names can therefore map to the same on-disk file. Python's
- * ``str.isalnum()`` is Unicode-aware (Chinese, accented Latin, etc. are kept),
- * so we mirror that with the Unicode letter/number classes rather than
- * ASCII-only ranges. The backend remains authoritative — this only powers the
- * pre-save overwrite warning, so an exotic-codepoint divergence at worst
- * misses or double-shows the warning; it never affects what is written.
+ * A DISPLAY-ONLY guess at the file stem the backend would write a title to:
+ * every char outside [alphanumeric, '-', '_'] becomes '_', mirroring
+ * ``_sanitize_name`` in routes_graph.py.
+ *
+ * A guess, and no longer a safety mechanism. The rule is Python's
+ * ``str.isalnum()`` there and ``/[\p{L}\p{N}]/u`` here, read against two
+ * different Unicode versions — CPython's and Node's ICU — and they disagree on
+ * 14,049 code points (CJK Extensions I and J, Egyptian Hieroglyphs Ext-A, and
+ * 16 in the BMP), always in the same direction: this one KEEPS the character
+ * the server replaces with '_'. The server is the only authority on where a
+ * save lands, and the only one that can be asked.
+ *
+ * Which is why nothing decides anything on this answer any more. It used to
+ * back the pre-save overwrite check, and for a title holding one of those code
+ * points the stem computed here matched no saved graph, so no "will be
+ * overwritten" dialog was shown — and the server then resolved the same title
+ * to a stem that DID exist and replaced it (#455). That check is the server's
+ * now: it answers 409 and the client asks the user. What is left for this is
+ * the Graphs panel's display fallback for a rename whose backend reported no
+ * stem, where being wrong costs a mis-labelled row until the next list read.
  */
 export function sanitizeGraphName(name: string): string {
   return Array.from(name)
@@ -25,52 +37,17 @@ export function sanitizeGraphName(name: string): string {
     .join('');
 }
 
-/**
- * The graph a save is about to land on top of — both halves of it.
- *
- * `name` is what to put in front of the user: the graph's title, which is the
- * only form of it they have ever seen. `file` is the stem to ACT on, in the
- * spelling the server uses, and the two are separate because the match below
- * folds case: the row's own stem can differ from the stem the target name
- * sanitizes into, and the row's is the one every binding in the app was made
- * from. `saveActiveGraph` clears the binding of every other tab holding it,
- * and an exact comparison against the wrong spelling clears nothing.
+/*
+ * `findGraphNameCollision` and its `GraphNameCollision` type stood here, and
+ * were deleted with #455 rather than fixed. They answered "would saving under
+ * this title replace a different graph?" from a `GET /api/graph/list` result
+ * and the sanitizer above — a question no client can answer, because the stem
+ * is the server's to derive and the two sanitizers disagree on 14,049 code
+ * points. `POST /api/graph/save` answers it now, refusing an unaddressed save
+ * that would land on an occupied stem with a 409; `saveActiveGraph` turns that
+ * into the confirm this used to raise. Nothing should compute a collision here
+ * again.
  */
-export interface GraphNameCollision {
-  name: string;
-  file: string;
-}
-
-/**
- * Detect whether saving under ``targetName`` would silently overwrite a
- * DIFFERENT existing graph. Returns the colliding graph (see
- * {@link GraphNameCollision}) or ``null`` when there is no collision.
- * ``existing`` is the ``/api/graph/list`` result (``file`` is the sanitized
- * stem); ``currentFile`` is the sanitized stem of the graph currently open in
- * the tab — re-saving the SAME graph is never treated as a collision.
- */
-export function findGraphNameCollision(
-  targetName: string,
-  existing: { name: string; file: string }[],
-  currentFile: string | null,
-): GraphNameCollision | null {
-  // NTFS and APFS are case-INSENSITIVE, so "My_Graph.json" and
-  // "my_graph.json" are the same file on Windows/macOS even though the
-  // backend's _sanitize_name preserves case. Compare lowercased stems so a
-  // case-only collision still triggers the overwrite warning. A spurious
-  // warning on case-sensitive Linux (where the two really are distinct files)
-  // is far safer than a silent overwrite on the majority platform.
-  const target = sanitizeGraphName(targetName).toLowerCase();
-  const current = currentFile == null ? null : currentFile.toLowerCase();
-  const hit = existing.find(
-    (g) => g.file.toLowerCase() === target && g.file.toLowerCase() !== current,
-  );
-  // The row's OWN `file`, never `target`: `target` is lowercased, and even
-  // un-lowercased it is the stem this save produces rather than the stem the
-  // matched graph is stored under. Those are the same string in every case
-  // but the one that matters.
-  return hit ? { name: hit.name, file: hit.file } : null;
-}
 
 /**
  * Frontend allowlist mapping NODE_NAME → custom xyflow node type. Nodes not
