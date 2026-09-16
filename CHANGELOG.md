@@ -22,6 +22,8 @@ received — each links to the release it was published as.
 
 ## [Unreleased]
 
+## [2.8.1] — 2026-09-16
+
 Save becomes a button, and opening a graph stops costing you the one you are
 looking at.
 
@@ -3836,7 +3838,8 @@ Release candidates before 1.0.0 are on the
 [#420]: https://github.com/CodefyUI/CodefyUI/issues/420
 [@oyea0801]: https://github.com/oyea0801
 [@latteine1217]: https://github.com/latteine1217
-[Unreleased]: https://github.com/CodefyUI/CodefyUI/compare/2.8.0...main
+[Unreleased]: https://github.com/CodefyUI/CodefyUI/compare/2.8.1...main
+[2.8.1]: https://github.com/CodefyUI/CodefyUI/compare/2.8.0...2.8.1
 [2.8.0]: https://github.com/CodefyUI/CodefyUI/compare/2.7.2...2.8.0
 [2.7.2]: https://github.com/CodefyUI/CodefyUI/compare/2.7.1...2.7.2
 [2.7.1]: https://github.com/CodefyUI/CodefyUI/compare/2.7.0...2.7.1
