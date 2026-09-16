@@ -150,7 +150,7 @@ describe('openExample', () => {
     // The bug: the tab still claimed to be bound to my_graph, and a bound tab
     // is exactly the case Save skips the overwrite prompt for -- so the next
     // Save wrote the EXAMPLE into my_graph without asking.
-    store().setCurrentGraphFile('my_graph');
+    store().setCurrentGraphFile('my_graph', 'my_graph');
     mockedRest.loadExample.mockResolvedValue({ nodes: [raw('a')], edges: [] });
 
     await openExample('x');

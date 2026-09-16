@@ -11,6 +11,7 @@ import { graphToSvg, svgToPngBlob } from '../../utils/exportDiagram';
 import { confirm, prompt } from '../../utils/dialog';
 import { saveActiveGraph } from '../../utils/saveActiveGraph';
 import { CustomNodeManager } from '../CustomNodeManager/CustomNodeManager';
+import { SaveIcon } from '../shared/Icons';
 import { useToastStore } from '../../store/toastStore';
 import type { LayoutMode } from '../../utils/autoLayout';
 import { SettingsPopover } from './SettingsPopover';
@@ -418,12 +419,35 @@ export function Toolbar() {
             <option key={d.value} value={d.value}>{deviceLabel(d)}</option>
           ))}
         </select>
+        {/* Every separator is the LAST CHILD of the cluster it trails, never
+            a sibling of it. `.root` is `flex-wrap: wrap`, so a divider that
+            is a root flex item in its own right can be pushed onto the next
+            line alone -- the second row then opens with a 1px rule that
+            separates nothing, and the cluster behind it sits indented past
+            the row above. Inside the cluster the rule travels with the
+            content it belongs to and can only ever follow it. Nothing needs
+            respacing: `.root` and `.cluster` share `gap: var(--sp-3)` and
+            `.divider` keeps its own `margin: 0 var(--sp-1)`, so the run is
+            gap + margin + rule + margin + gap either way. */}
+        <div className={styles.divider} />
       </div>
-
-      <div className={styles.divider} />
 
       {/* File ops */}
       <div className={styles.cluster}>
+        {/* Save is on this row twice on purpose: the File menu is where it
+            lives beside its siblings, and this is the one-click form of the
+            one command people run after every edit, kept within reach of Run.
+            It carries a `title` the menu's Save deliberately does not -- an
+            icon-only button shows no words, so this is the only label it has.
+            14px is the ⚙ and ? glyph size beside it (.iconBtn is --fs-md). */}
+        <button type="button"
+          onClick={handleSave}
+          className={styles.iconBtn}
+          title={t('toolbar.save')}
+          aria-label={t('toolbar.save')}
+        >
+          <SaveIcon size={14} />
+        </button>
         <MenuDropdown
           label={t('toolbar.menu.file')}
           items={fileMenuItems}
@@ -438,9 +462,9 @@ export function Toolbar() {
           onToggle={() => toggleMenu('export')}
           onClose={closeMenus}
         />
+        {/* Trails its cluster from inside it -- see the first divider. */}
+        <div className={styles.divider} />
       </div>
-
-      <div className={styles.divider} />
 
       {/* Node management */}
       <div className={styles.cluster}>
@@ -466,9 +490,9 @@ export function Toolbar() {
         >
           {t('toolbar.customNodes')}
         </button>
+        {/* Trails its cluster from inside it -- see the first divider. */}
+        <div className={styles.divider} />
       </div>
-
-      <div className={styles.divider} />
 
       {/* Auto Layout + Status */}
       <div className={styles.cluster}>

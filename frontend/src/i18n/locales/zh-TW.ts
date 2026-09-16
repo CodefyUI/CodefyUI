@@ -21,8 +21,9 @@ const zhTW: Record<TranslationKey, string> = {
   'toolbar.save.overwriteConfirm': '已存在名為 {name} 的圖，存檔將會覆蓋它。要繼續嗎？',
   'toolbar.saveAs': '另存新檔...',
   // 開啟與匯入已經是「圖表」分頁的事，原本擁有這兩個鍵的選單也拆掉了。
-  // 它們留在 toolbar. 底下：不管從哪個介面按的，載入失敗與匯入失敗都還是
-  // 由 openSavedGraph 和 importGraphFile 用這兩句話回報。
+  // 它們留在 toolbar. 底下：不管從哪個介面按的，讀檔失敗都用這兩句話回報。
+  // 各只有一個來源：載入失敗來自「圖表」面板的開啟，匯入失敗來自
+  // utils/importGraphFile.ts，兩者不能互換。
   'toolbar.load.fail': '載入失敗：{error}',
   'toolbar.import.fail': '匯入失敗：{error}',
   'toolbar.clear': '清除畫布',
@@ -104,18 +105,15 @@ const zhTW: Record<TranslationKey, string> = {
   'graphs.import': '匯入 JSON...',
   'graphs.saveAs': '另存新檔...',
   'graphs.open': '開啟',
-  'graphs.openNewTab': '在新分頁開啟',
-  'graphs.openOntoCanvas': '載入畫布，不綁定這個檔案',
-  'graphs.rename': '更名...',
+  'graphs.alreadyOpen': '「{name}」已經在目前分頁開啟。',
+  'graphs.rename': '重新命名',
   'graphs.delete': '刪除',
   'graphs.rowMenu': '更多動作',
   'graphs.current': '目前',
   'graphs.modified': '修改於 {when}',
-  'graphs.open.confirm': '要用「{name}」覆蓋目前畫布嗎？',
-  'graphs.open.confirmAction': '覆蓋',
   'graphs.rename.prompt': '請輸入圖表的新名稱：',
-  'graphs.rename.success': '已更名為「{name}」。',
-  'graphs.rename.fail': '更名失敗：{error}',
+  'graphs.rename.success': '已重新命名為「{name}」。',
+  'graphs.rename.fail': '重新命名失敗：{error}',
   'graphs.delete.confirm': '要刪除「{name}」嗎？磁碟上的檔案會一起刪除。',
   'graphs.delete.confirmAction': '刪除',
   'graphs.delete.success': '已刪除「{name}」。',

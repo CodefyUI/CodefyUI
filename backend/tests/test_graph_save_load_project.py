@@ -167,6 +167,98 @@ async def test_save_reserved_name_400_in_project_mode(project_settings, test_cli
     assert list((project_settings / "graphs").iterdir()) == []
 
 
+async def test_save_reserved_title_is_allowed_once_it_is_only_a_title(
+    project_settings, test_client,
+):
+    """The refusal is about the ADDRESS, not the title.
+
+    `weird.graph` as a FILE would be written to `weird.graph.graph.json` and
+    read back as "weird" with a stray suffix -- that is the collision. A
+    graph merely TITLED "weird.graph" and stored at `weird` collides with
+    nothing, so it saves, and its title survives the round trip."""
+    r = await test_client.post("/api/graph/save", json={
+        **_graph(name="weird.graph"), "file": "weird",
+    })
+    assert r.status_code == 200
+    logic = project_settings / "graphs" / "weird.graph.json"
+    assert logic.exists()
+    assert json.loads(logic.read_text())["name"] == "weird.graph"
+
+
+async def test_save_reserved_address_400_even_with_an_ordinary_title(
+    project_settings, test_client,
+):
+    """...and the same refusal now fires on a `file` that ends in a split
+    suffix, which is the only way to ask for that collision once the title
+    no longer decides the address. Nothing is written."""
+    for bad in ("weird.graph", "weird.layout"):
+        r = await test_client.post("/api/graph/save", json={
+            **_graph(name="Perfectly Fine"), "file": bad,
+        })
+        assert r.status_code == 400, bad
+        assert "reserved" in r.json()["detail"].lower()
+    assert list((project_settings / "graphs").iterdir()) == []
+
+
+async def test_save_writes_the_pair_at_the_addressed_stem(
+    project_settings, test_client,
+):
+    """Both halves follow `file`; the title only goes inside the logic
+    file."""
+    r = await test_client.post("/api/graph/save", json={
+        **_graph(name="My Long Title"), "file": "demo",
+    })
+    assert r.status_code == 200
+    logic = project_settings / "graphs" / "demo.graph.json"
+    assert logic.exists()
+    assert (project_settings / "layout" / "demo.layout.json").exists()
+    assert json.loads(logic.read_text())["name"] == "My Long Title"
+    # Nothing was written at the sanitized TITLE.
+    assert sorted(p.name for p in (project_settings / "graphs").iterdir()) == [
+        "demo.graph.json"]
+    assert sorted(p.name for p in (project_settings / "layout").iterdir()) == [
+        "demo.layout.json"]
+
+
+async def test_neither_half_of_the_pair_carries_the_file_key(
+    project_settings, test_client,
+):
+    """Belt and braces: `/save` pops `file` before the split, and the split
+    itself copies only the keys it names -- so an unknown key cannot ride
+    into either half even if a future refactor moves the pop. (Which is why
+    this one is a guard on `split_graph`, not a test of the pop; the pop is
+    pinned by the non-project test, where the whole payload IS the file.)"""
+    await test_client.post("/api/graph/save", json={
+        **_graph(name="Titled"), "file": "addressed",
+    })
+    for half in (project_settings / "graphs" / "addressed.graph.json",
+                 project_settings / "layout" / "addressed.layout.json"):
+        raw = half.read_text()
+        assert '"file"' not in raw, half.name
+        assert "file" not in json.loads(raw), half.name
+
+
+async def test_the_legacy_file_removed_is_the_addressed_one(
+    project_settings, test_client,
+):
+    """The upgrade-on-save unlink follows the address too.
+
+    This is the destructive half of the old bug: `legacy_path` was built
+    from the title, so saving a graph titled "Alpha" that lived in
+    `beta.json` DELETED a bystanding `alpha.json` outright."""
+    graphs = project_settings / "graphs"
+    (graphs / "alpha.json").write_text(json.dumps(_graph(name="Alpha")))
+    (graphs / "beta.json").write_text(json.dumps(_graph(name="Alpha")))
+
+    r = await test_client.post("/api/graph/save", json={
+        **_graph(name="Alpha"), "file": "beta",
+    })
+    assert r.status_code == 200
+    assert (graphs / "beta.graph.json").exists()
+    assert not (graphs / "beta.json").exists()   # its own legacy half upgraded
+    assert (graphs / "alpha.json").exists()      # the bystander survives
+
+
 async def test_save_reserved_name_200_in_non_project_mode(test_client, tmp_path, monkeypatch):
     """The same name is unremarkable outside a project: no split ever
     happens, so '.graph' cannot collide with anything -- sanitized straight

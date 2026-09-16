@@ -11,17 +11,14 @@ import { useTabStore } from '../../store/tabStore';
 import { useToastStore } from '../../store/toastStore';
 import { sanitizeGraphName } from '../../utils';
 import { confirm, prompt } from '../../utils/dialog';
+import { getGraphsWriteListener, setGraphsWriteListener } from '../../utils/graphsWrite';
 import { importGraphFile } from '../../utils/importGraphFile';
-import {
-  openSavedGraph,
-  readSavedGraphDocument,
-  type SavedGraphTarget,
-} from '../../utils/openSavedGraph';
+import { readSavedGraphDocument } from '../../utils/openSavedGraph';
 import { saveActiveGraph } from '../../utils/saveActiveGraph';
 import { announceWorktreeWrite } from '../../utils/worktreeWrite';
 import { relativeTime } from '../SourceControl/scm';
 import { ActionMenu, type ActionMenuItem } from '../shared/ActionMenu';
-import { MoreHorizontalIcon, RefreshIcon, SaveIcon } from '../shared/Icons';
+import { MoreHorizontalIcon, RefreshIcon, SaveAsIcon } from '../shared/Icons';
 import styles from './NodePalette.module.css';
 import tabStyles from './GraphsTab.module.css';
 
@@ -62,27 +59,26 @@ export function graphMatches(graph: SavedGraphSummary, query: string): boolean {
   );
 }
 
-/** The active tab's nodes, which is all "is there work here to lose?" means. */
-function canvasHasWork(): boolean {
-  const { tabs, activeTabId } = useTabStore.getState();
-  return (tabs.find((tb) => tb.id === activeTabId)?.nodes.length ?? 0) > 0;
-}
-
 // ── Graph row ──
 
 interface GraphRowProps {
   graph: SavedGraphSummary;
   /** True when the ACTIVE tab saves back to this file. */
   current: boolean;
-  onOpen: (graph: SavedGraphSummary, target: SavedGraphTarget) => void;
-  onOpenInNewTab: (graph: SavedGraphSummary) => void;
+  onOpen: (graph: SavedGraphSummary) => void;
   onRename: (graph: SavedGraphSummary) => void;
   onDelete: (graph: SavedGraphSummary) => void;
 }
 
 /**
- * One saved graph: click to open it into this tab, or reach the rest through
- * the menu at the end of the row.
+ * One saved graph: click to open it in a tab of its own, or reach the other
+ * two verbs through the menu at the end of the row.
+ *
+ * Opening is ONE action rather than a choice between several. A row in a
+ * list the user scrolls past must not be able to take over the canvas that
+ * is in front of them, and a tab of its own is the only answer that is never
+ * destructive -- which is also why the row asks nothing before opening:
+ * there is no longer anything to lose by saying yes.
  *
  * Shaped like the Source Control tab's `RefRow`, which is the panel next
  * door and solved the same three problems: a name that has to ellipsise at
@@ -93,7 +89,6 @@ function GraphRow({
   graph,
   current,
   onOpen,
-  onOpenInNewTab,
   onRename,
   onDelete,
 }: GraphRowProps) {
@@ -108,17 +103,10 @@ function GraphRow({
   const meta = when === '' ? '' : t('graphs.modified', { when });
   const open = t('graphs.open');
 
+  // Two items, and neither of them is another way to open the graph: the row
+  // itself is the only door in, so the menu holds what is left -- the two
+  // things that change the FILE rather than what is on screen.
   const items: ActionMenuItem[] = [
-    {
-      id: 'new-tab',
-      label: t('graphs.openNewTab'),
-      onSelect: () => onOpenInNewTab(graph),
-    },
-    {
-      id: 'canvas',
-      label: t('graphs.openOntoCanvas'),
-      onSelect: () => onOpen(graph, 'canvas'),
-    },
     { id: 'rename', label: t('graphs.rename'), onSelect: () => onRename(graph) },
     {
       id: 'delete',
@@ -149,7 +137,7 @@ function GraphRow({
         // as part of that name.
         aria-label={`${open} ${graph.name}`}
         aria-describedby={describedBy === '' ? undefined : describedBy}
-        onClick={() => onOpen(graph, 'bind')}
+        onClick={() => onOpen(graph)}
       >
         <span className={tabStyles.rowName}>{graph.name}</span>
         {meta !== '' && (
@@ -182,15 +170,20 @@ function GraphRow({
  *
  * The list is `GET /api/graph/list`, read per mount the way the Templates tab
  * reads its own: the sidebar only mounts the tab that is open, and this list
- * is the one that changes behind your back -- every Save from the toolbar
- * adds to it -- which is what the refresh control is for.
+ * is the one that changes behind your back. A Save from inside the app says
+ * so through `graphsWrite` and the list keeps up on its own; the refresh
+ * control is for the writes this app never sees -- a file dropped into
+ * `graphs/` by hand, or written by a second browser.
  *
- * Opening is deliberately split in two. A row click BINDS, so Save writes
- * back to the file that was opened; the menu's "onto canvas" leaves the tab
- * unbound, so the next Save asks where the result should go. Both replace
- * what is on the canvas through an install that pushes no undo frame, so
- * both ask first when there is anything there to lose -- a row in a list you
- * scroll through is not a menu item you aimed at.
+ * Opening is ONE action: a row click reads the graph into a tab of its own,
+ * bound to its file so Save writes straight back over it. Nothing on screen
+ * is replaced and so nothing is asked first -- a row in a list the user
+ * scrolls past should not be able to take over the canvas being worked in,
+ * and a new tab is the only answer that is never destructive. The one graph
+ * that does not get a new tab is one a tab already holds: that tab is raised
+ * instead, so two tabs never end up bound to the same file -- and when it is
+ * the tab already in front, where raising it would move nothing, the click is
+ * answered in words instead of in silence.
  */
 export function GraphsTab() {
   const { t } = useI18n();
@@ -205,6 +198,11 @@ export function GraphsTab() {
   const boundFile = useTabStore(
     (s) => s.tabs.find((tb) => tb.id === s.activeTabId)?.currentGraphFile ?? null,
   );
+
+  // The files whose read is in flight: one entry per row that has been
+  // clicked and has no tab yet. A ref rather than state, because nothing on
+  // screen is drawn from it and a re-render per click would be noise.
+  const opening = useRef(new Set<string>());
 
   // Which list read is the current one. Every rename, delete and Save As
   // refetches and the refresh button is one click away, so two reads in
@@ -246,6 +244,23 @@ export function GraphsTab() {
     load();
   }, [load]);
 
+  // The toolbar's Save and this panel are on screen together, so a graph
+  // saved for the first time has to appear in the list without the user
+  // going looking for the refresh button -- being told to press refresh to
+  // see something you just did reads as the save having failed.
+  useEffect(() => {
+    const listener = () => load(true);
+    setGraphsWriteListener(listener);
+    return () => {
+      // Only while the slot still holds OUR listener. StrictMode mounts,
+      // unmounts and mounts again, so this cleanup runs after the remount
+      // has already registered its own -- clearing unconditionally would
+      // throw that one away and leave the panel deaf for the rest of its
+      // life, with nothing on screen to show for it.
+      if (getGraphsWriteListener() === listener) setGraphsWriteListener(null);
+    };
+  }, [load]);
+
   // Trimmed once: it decides both what is filtered and whether an empty body
   // reads as "nothing matched" or as "nothing saved", and a box holding only
   // spaces is not a search.
@@ -255,30 +270,94 @@ export function GraphsTab() {
     return sortGraphs(q ? graphs.filter((g) => graphMatches(g, q)) : graphs);
   }, [graphs, query]);
 
-  const handleOpen = useCallback(
-    async (graph: SavedGraphSummary, target: SavedGraphTarget) => {
-      if (canvasHasWork()) {
-        const ok = await confirm({
-          title: t('graphs.open.confirm', { name: graph.name }),
-          confirmText: t('graphs.open.confirmAction'),
-          variant: 'danger',
-        });
-        if (!ok) return;
+  /**
+   * Bring the tab that holds this graph to the front -- or, when it is
+   * already the tab in front, say so instead.
+   *
+   * Switching to a BACKGROUND tab is deliberately silent: the whole canvas
+   * changes under the click, which answers it better than any sentence
+   * could. The active tab has no such answer. `setActiveTab` would write the
+   * id that is already in `activeTabId`, every selector would compare equal
+   * and NOTHING on screen would move -- no tab switch, no focus, no redraw
+   * -- while the button still announces "Open <name>". A click that produces
+   * no response reads as a click that missed, and gets made again. It is
+   * also the commonest click of all, because the row marked Current is the
+   * row the user just opened.
+   *
+   * `announceNoOp` says whether "it is already here" is an ANSWER to the
+   * click or the resolution of a race, and only the first of those is worth a
+   * sentence. The check before the read answers a click: the user pressed a
+   * row whose graph is open in this very tab, and without the toast nothing
+   * at all happens. The recheck after the read is a race being settled --
+   * something bound this file while the read was in the air -- and raising
+   * the tab silently is the whole of the right answer there. Said out loud,
+   * it turns ONE user click into "already open in this tab": the panel
+   * unmounts mid-read when the user switches sidebar tabs, its in-flight Set
+   * dies with the instance, the remounted panel issues a second read, and
+   * whichever continuation loses finds the tab the winner has just created.
+   */
+  const raiseTab = useCallback(
+    (tabId: string, name: string, opts: { announceNoOp: boolean }) => {
+      if (useTabStore.getState().activeTabId === tabId) {
+        if (opts.announceNoOp) {
+          useToastStore.getState().addToast(t('graphs.alreadyOpen', { name }), 'info');
+        }
+        return;
       }
-      // Everything after the question is `openSavedGraph` -- the read, the
-      // preset merge, the one install, the binding, the failure toast -- so
-      // a row opens a graph the way the toolbar's menu always did.
-      await openSavedGraph(graph, target);
+      useTabStore.getState().setActiveTab(tabId);
     },
     [t],
   );
 
-  const handleOpenInNewTab = useCallback(
+  const handleOpen = useCallback(
     async (graph: SavedGraphSummary) => {
+      // Already open somewhere? Raise that tab instead of reading a second
+      // copy of the file in. Two tabs bound to one graph is a data-loss
+      // shape rather than a cosmetic one -- each one's next Save silently
+      // overwrites whatever the other last wrote -- and a list of rows the
+      // user clicks through is the easiest place in the app to build it.
+      // Deliberately NOT re-read into that tab either: it may be holding
+      // unsaved edits, and once a graph is open, bringing it to the front is
+      // the whole of what "open this graph" can safely mean.
+      const open = useTabStore.getState().tabs.find(
+        (tb) => tb.currentGraphFile === graph.file,
+      );
+      if (open !== undefined) {
+        // Announced: this is the click's answer, and when the tab is the one
+        // already in front nothing else about it moves.
+        raiseTab(open.id, graph.name, { announceNoOp: true });
+        return;
+      }
+      // The check above can only see tabs that EXIST, and this row's tab is
+      // not made until its read answers -- so a second click inside that
+      // window looks at a store where nothing is bound to the file yet and
+      // sails straight past it. Turned away here, before it costs a second
+      // read of the same file and a second run at creating a tab for it:
+      // two tabs bound to one graph is the data-loss shape the check above
+      // is for, and it is worse now that each tab's Save is a promptless
+      // overwrite of the bound file.
+      if (opening.current.has(graph.file)) return;
+      opening.current.add(graph.file);
       try {
         // Read BEFORE the tab exists, so a graph that cannot be read leaves
         // no empty tab behind to close.
         const doc = await readSavedGraphDocument(graph.file, graph.file);
+        // Asked again now the read is back. The mark above stops a second
+        // CLICK on this row; only this stops a second BINDING that arrived
+        // from somewhere else while the read was in the air -- an import, a
+        // Save As, a Source Control reload -- and a tab bound that way is
+        // just as real a second writer of the file. Neither guard covers
+        // the other's half of the window, so dropping either leaves it open.
+        const raced = useTabStore.getState().tabs.find(
+          (tb) => tb.currentGraphFile === graph.file,
+        );
+        if (raced !== undefined) {
+          // Silent: somebody bound the file while this read was in flight,
+          // which is not a fact about the click. See `raiseTab` for the
+          // single click this used to answer twice.
+          raiseTab(raced.id, graph.name, { announceNoOp: false });
+          return;
+        }
         const tabId = useTabStore.getState().createTab({ title: graph.name });
         const tooNew = useTabStore.getState().loadGraphDocumentInto(tabId, doc);
         if (tooNew) {
@@ -290,8 +369,9 @@ export function GraphsTab() {
           );
         }
         // The new tab is the active one, which is what `stampActiveTabProject`
-        // writes to -- the same stamp `openSavedGraph` puts on a graph opened
-        // into the tab already in front of the user.
+        // writes to. The stamp is what the Source Control tab's affected-tab
+        // filter reads, so a graph opened from here without one would sit
+        // outside every reload offer the project ever makes.
         const projectDir = useProjectStore.getState().projectDir;
         if (projectDir !== null) useTabStore.getState().stampActiveTabProject(projectDir);
       } catch (e) {
@@ -299,9 +379,16 @@ export function GraphsTab() {
           t('toolbar.load.fail', { error: (e as Error).message }),
           'error',
         );
+      } finally {
+        // In a `finally`, so a read that threw does not wedge the row shut.
+        // The toast above tells the user the open failed, which is an
+        // invitation to try again, and a mark left behind would make every
+        // later click on that row do nothing at all for the rest of the
+        // session -- with nothing on screen to explain why.
+        opening.current.delete(graph.file);
       }
     },
-    [t],
+    [raiseTab, t],
   );
 
   const handleRename = useCallback(
@@ -319,11 +406,44 @@ export function GraphsTab() {
         // fallback for a backend that answers without the field.
         const result = (await renameGraph(graph.file, next)) as { file?: unknown };
         const file = typeof result?.file === 'string' ? result.file : sanitizeGraphName(next);
+        // The name a rename moves INTO can already have an owner, so give it
+        // up before moving anything onto it. A tab stays bound to a file that
+        // is gone on purpose: when a Source Control discard, checkout or
+        // stash pop reloads the affected tabs and the file has vanished, the
+        // reload keeps the binding so the tab goes on showing what it holds
+        // -- and declining the reload offer keeps it too. The server has no
+        // objection either, because its only guard on a rename is that the
+        // destination does not exist on disk, which that file does not. Left
+        // alone, the rebind below then puts TWO tabs on one physical file,
+        // which is the shape the open-dedupe above and `saveActiveGraph`'s
+        // collision check both exist to prevent -- and it hides: the panel
+        // draws one row, the click raises the stale tab by array order, and
+        // that tab's next one-click Save overwrites the graph this rename
+        // just produced without asking anything. Cleared rather than moved:
+        // the tab keeps its graph on screen and simply has nowhere to save
+        // back to, so its next Save asks for a name. That is what
+        // `handleDelete` below does for the same reason, and it is the safe
+        // direction when the alternative is a silent overwrite.
+        //
+        // Not when the destination IS the source, which a case-only or
+        // punctuation-only rename produces -- "a b" and "a.b" both sanitize
+        // to `a_b`. There the holders of the destination are the very tabs
+        // the rebind is about to move, and clearing them first would unbind
+        // the graph the user just renamed and leave the rebind nothing to
+        // find.
+        if (file !== graph.file) useTabStore.getState().rebindGraphFile(file, null);
         // EVERY tab that was saving back to this file, not just the one in
         // front of the user: a tab left on the old name writes a second copy
         // of the graph there on its next Save, and a background tab is the
         // one nobody would think to look at.
-        useTabStore.getState().rebindGraphFile(graph.file, file);
+        //
+        // The new DISPLAY NAME travels with the new file, and `next` is it --
+        // the string the user typed, which is what the server stored as the
+        // graph's name. A tab moved onto `Renamed_Graph` while still holding
+        // "alpha" writes "alpha" back into it on its next in-place save, so
+        // the graph the user renamed renames itself back the first time they
+        // press Save.
+        useTabStore.getState().rebindGraphFile(graph.file, { file, name: next });
         if (useProjectStore.getState().projectDir !== null) announceWorktreeWrite();
         useToastStore.getState().addToast(t('graphs.rename.success', { name: next }), 'success');
         load(true);
@@ -350,7 +470,9 @@ export function GraphsTab() {
         // The graphs on screen are still whole; they simply have nowhere to
         // save back to any more, so the next Save asks for a name rather than
         // silently recreating the file the user just deleted. Every bound
-        // tab, for the same reason the rename above rebinds every one.
+        // tab, for the same reason the rename above rebinds every one. Null
+        // drops the display name with the file: there is no longer a graph on
+        // disk for it to be the name of.
         useTabStore.getState().rebindGraphFile(graph.file, null);
         if (useProjectStore.getState().projectDir !== null) announceWorktreeWrite();
         useToastStore.getState().addToast(
@@ -398,7 +520,11 @@ export function GraphsTab() {
             aria-label={t('graphs.saveAs')}
             title={t('graphs.saveAs')}
           >
-            <SaveIcon size={13} />
+            {/* Not SaveIcon: that one is the toolbar's Save, a hand's width
+                away and on screen at the same time, and it overwrites the
+                bound file without asking. This button always stops for a
+                name, so it gets the floppy with the `+`. */}
+            <SaveAsIcon size={13} />
           </button>
           <button
             type="button"
@@ -453,8 +579,7 @@ export function GraphsTab() {
                   key={graph.file}
                   graph={graph}
                   current={graph.file === boundFile}
-                  onOpen={(g, target) => void handleOpen(g, target)}
-                  onOpenInNewTab={(g) => void handleOpenInNewTab(g)}
+                  onOpen={(g) => void handleOpen(g)}
                   onRename={(g) => void handleRename(g)}
                   onDelete={(g) => void handleDelete(g)}
                 />

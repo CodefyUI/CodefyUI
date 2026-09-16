@@ -99,12 +99,15 @@ export function importGraphFile(file: File): Promise<boolean> {
           importedSubgraphs,
         );
         const resolvedEdges = resolveSerializedEdges(edges, resolvedNodes);
-        // Same one-call install as `openSavedGraph` (#200 items 4 and 8),
-        // which is the point: the format-version gate (ID8 fast-follow)
-        // runs inside it, so importing a newer-format file opens it
-        // read-only and importing an ordinary file into a previously
-        // read-only tab clears the stale flag -- neither is a line a reader
-        // of a document can forget to write any more.
+        // The same one-call install the saved-graph readers end on --
+        // `resolveSavedGraph` / `readSavedGraphDocument` in
+        // `utils/openSavedGraph.ts` build a document and hand it to
+        // `loadGraphDocument*` (#200 items 4 and 8). That it is one call is
+        // the point: the format-version gate (ID8 fast-follow) runs inside
+        // it, so importing a newer-format file opens it read-only and
+        // importing an ordinary file into a previously read-only tab clears
+        // the stale flag -- neither is a line a reader of a document can
+        // forget to write any more.
         const tooNew = useTabStore.getState().loadGraphDocument({
           nodes: resolvedNodes,
           edges: resolvedEdges,

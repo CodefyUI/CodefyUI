@@ -9,6 +9,7 @@ from ..config import settings
 from ..core.graph_engine import GraphValidationError, build_preset_fallback, validate_graph
 from ..core.project import (
     GraphAmbiguityError,
+    _atomic_write,
     collect_graph_files,
     resolve_graph_file,
 )
@@ -20,6 +21,7 @@ from ..core.secret_params import (
 from ..schemas import (
     GraphData,
     GraphExportRequest,
+    GraphSaveRequest,
     GraphValidationResponse,
 )
 
@@ -37,12 +39,18 @@ def _project_mode() -> bool:
 
 
 def _reserved_graph_name(name: str) -> bool:
-    """True when the (pre-sanitize) name would collide with the split
+    """True when the (pre-sanitize) ADDRESS would collide with the split
     suffixes.
 
-    Checked against the RAW name, not `_sanitize_name(name)`: sanitization
+    Checked against the RAW address, not `_sanitize_name(name)`: sanitization
     maps every '.' to '_', so a sanitized name can never contain a literal
     '.' and this check would be unreachable dead code if run post-sanitize.
+
+    An address, not a title: `/save` runs this on the file it is about to
+    write, which is `file` when the request carries one. A graph merely
+    TITLED "notes.graph" collides with nothing once its title is not also
+    its address; a graph STORED at `notes.graph` would be written to
+    `notes.graph.graph.json` and read back as "notes" with a stray suffix.
     """
     return name.endswith(".graph") or name.endswith(".layout")
 
@@ -96,17 +104,48 @@ async def validate(graph: GraphData):
 
 
 @router.post("/save")
-async def save_graph(graph: GraphData):
-    if _project_mode() and _reserved_graph_name(graph.name):
+async def save_graph(graph: GraphSaveRequest):
+    """Write a graph to its address.
+
+    THE ADDRESS AND THE TITLE ARE TWO THINGS. `graph.file` is where the
+    graph is stored; `graph.name` is what it calls itself. Deriving one
+    from the other is what made a save under a changed title write, or
+    delete, a DIFFERENT graph's file -- so the target is computed once,
+    here, and every path below is built from it.
+
+    `file` omitted falls back to `name`, so a client that has never heard
+    of the field writes the same bytes to the same path it always did. The
+    one thing that changed for EVERY non-project save is the write
+    mechanism -- see the comment on it below.
+    """
+    # A BLANK `file` counts as absent, not as an address of "": a client
+    # that spells "this tab has no file yet" as an empty string gets the
+    # name-derived fallback instead of a graph written to `.json`, which
+    # /list can report but nobody can open again.
+    target = graph.file if graph.file else graph.name
+    # Pre-sanitize, deliberately -- see `_reserved_graph_name`'s docstring.
+    if _project_mode() and _reserved_graph_name(target):
         raise HTTPException(
             status_code=400,
             detail=(
-                f"Graph name '{graph.name}' is reserved: names ending in "
+                f"Graph file name '{target}' is reserved: names ending in "
                 "'.graph' or '.layout' collide with the project file split."
             ),
         )
+    # The stem every path below is built from, and the address the client
+    # has to use from here on (/load/{name}, /rename, DELETE). The server is
+    # the only thing that knows the sanitization rule, which is why it is
+    # returned rather than left for the client to re-derive -- the same
+    # reason /rename returns it.
+    safe_target = _sanitize_name(target)
     settings.GRAPHS_DIR.mkdir(parents=True, exist_ok=True)
     payload = graph.model_dump()
+    # The address is a property of the REQUEST, never of the graph: a file
+    # that recorded where it lives would contradict itself the moment
+    # somebody moved or copied it. Popped before any other step touches
+    # `payload`, so there is exactly one line to check when asking whether a
+    # saved graph can carry `file` (it cannot).
+    payload.pop("file", None)
     # ``settings`` is written only when a device is assigned, so a graph
     # file with no assignment stays byte-identical to what it was.
     if not (payload.get("settings") or {}).get("device"):
@@ -131,14 +170,28 @@ async def save_graph(graph: GraphData):
     )
     if _project_mode():
         from ..core.project import write_graph_pair
-        logic_path = _graph_logic_path(graph.name)
-        layout_path = _graph_layout_path(graph.name)
-        legacy = settings.GRAPHS_DIR / f"{_sanitize_name(graph.name)}.json"
+        logic_path = _graph_logic_path(target)
+        layout_path = _graph_layout_path(target)
+        legacy = settings.GRAPHS_DIR / f"{safe_target}.json"
         write_graph_pair(logic_path, layout_path, payload, legacy_path=legacy)
-        return {"message": "Graph saved", "path": str(logic_path)}
-    path = _graph_path(graph.name)
-    path.write_text(json.dumps(payload, indent=2))
-    return {"message": "Graph saved", "path": str(path)}
+        return {
+            "message": "Graph saved",
+            "path": str(logic_path),
+            "file": safe_target,
+        }
+    path = _graph_path(target)
+    # `_atomic_write`, not `path.write_text`, and not only for crash safety.
+    # A bare write OPENS an existing directory entry, so on a
+    # case-insensitive filesystem (NTFS, APFS) saving "my graph" over a
+    # `My_Graph.json` left the entry spelled `My_Graph.json` while the
+    # server believed it had written `my_graph.json` -- after which /list
+    # reported a file nobody could address. `os.replace` REPLACES the entry,
+    # so its spelling is always the one the server computed. The project
+    # branch above has had this since spec 13; this branch was the odd one
+    # out. `json.dumps` is ASCII-only by default, so the bytes written are
+    # identical to what `write_text` wrote.
+    _atomic_write(path, json.dumps(payload, indent=2))
+    return {"message": "Graph saved", "path": str(path), "file": safe_target}
 
 
 @router.get("/load/{name}")
@@ -318,11 +371,11 @@ async def rename_graph(req: RenameGraphRequest):
     dst = settings.GRAPHS_DIR / (
         f"{safe_to}.graph.json" if keeps_pair else f"{safe_to}.json")
 
-    # project.py's own writer rather than a second tmp+os.replace here: spec
-    # 13's atomicity should stay one mechanism, and a truncated logic file is
-    # a lost graph.
-    from ..core.project import _atomic_write
-
+    # project.py's own writer (imported at the top of this module, and now
+    # shared with /save) rather than a second tmp+os.replace here: spec 13's
+    # atomicity should stay one mechanism, and a truncated logic file is a
+    # lost graph.
+    #
     # Move first, rewrite second. The other order leaves a file whose `name`
     # disagrees with its filename when the move then fails; this one leaves a
     # graph that is whole and loadable under its new name, only still titled

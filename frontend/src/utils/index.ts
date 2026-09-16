@@ -26,18 +26,34 @@ export function sanitizeGraphName(name: string): string {
 }
 
 /**
+ * The graph a save is about to land on top of — both halves of it.
+ *
+ * `name` is what to put in front of the user: the graph's title, which is the
+ * only form of it they have ever seen. `file` is the stem to ACT on, in the
+ * spelling the server uses, and the two are separate because the match below
+ * folds case: the row's own stem can differ from the stem the target name
+ * sanitizes into, and the row's is the one every binding in the app was made
+ * from. `saveActiveGraph` clears the binding of every other tab holding it,
+ * and an exact comparison against the wrong spelling clears nothing.
+ */
+export interface GraphNameCollision {
+  name: string;
+  file: string;
+}
+
+/**
  * Detect whether saving under ``targetName`` would silently overwrite a
- * DIFFERENT existing graph. Returns the colliding graph's display name (for
- * the confirm dialog) or ``null`` when there is no collision. ``existing`` is
- * the ``/api/graph/list`` result (``file`` is the sanitized stem);
- * ``currentFile`` is the sanitized stem of the graph currently open in the tab
- * — re-saving the SAME graph is never treated as a collision.
+ * DIFFERENT existing graph. Returns the colliding graph (see
+ * {@link GraphNameCollision}) or ``null`` when there is no collision.
+ * ``existing`` is the ``/api/graph/list`` result (``file`` is the sanitized
+ * stem); ``currentFile`` is the sanitized stem of the graph currently open in
+ * the tab — re-saving the SAME graph is never treated as a collision.
  */
 export function findGraphNameCollision(
   targetName: string,
   existing: { name: string; file: string }[],
   currentFile: string | null,
-): string | null {
+): GraphNameCollision | null {
   // NTFS and APFS are case-INSENSITIVE, so "My_Graph.json" and
   // "my_graph.json" are the same file on Windows/macOS even though the
   // backend's _sanitize_name preserves case. Compare lowercased stems so a
@@ -49,7 +65,11 @@ export function findGraphNameCollision(
   const hit = existing.find(
     (g) => g.file.toLowerCase() === target && g.file.toLowerCase() !== current,
   );
-  return hit ? hit.name : null;
+  // The row's OWN `file`, never `target`: `target` is lowercased, and even
+  // un-lowercased it is the stem this save produces rather than the stem the
+  // matched graph is stored under. Those are the same string in every case
+  // but the one that matters.
+  return hit ? { name: hit.name, file: hit.file } : null;
 }
 
 /**

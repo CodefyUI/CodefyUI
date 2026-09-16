@@ -827,13 +827,16 @@ describe('clear', () => {
 
   it('resets graph metadata (description, currentGraphFile, segments) so a cleared canvas is unbound', () => {
     store().setDescription('bound graph');
-    store().setCurrentGraphFile('bound_file');
+    store().setCurrentGraphFile('bound_file', 'Bound File');
     store().addSegmentGroup({ id: 's1', headNodeId: 'h', tailNodeId: 't' });
     store().setActiveSegment({ id: 's1', headNodeId: 'h', tailNodeId: 't' });
     store().clear();
     const tab = activeTab();
     expect(tab.description).toBe('');
     expect(tab.currentGraphFile).toBeNull();
+    // Both halves: a name left behind names a file this tab no longer writes
+    // to, and the next save would be deciding what to do with it.
+    expect(tab.currentGraphName).toBeNull();
     expect(tab.segmentGroups).toEqual([]);
     expect(tab.activeSegment).toBeNull();
   });
@@ -1014,21 +1017,131 @@ describe('graph metadata actions', () => {
 
   it('setCurrentGraphFile binds and unbinds the saved-graph file', () => {
     expect(activeTab().currentGraphFile).toBeNull();
-    store().setCurrentGraphFile('my_graph');
+    store().setCurrentGraphFile('my_graph', 'my_graph');
     expect(activeTab().currentGraphFile).toBe('my_graph');
-    store().setCurrentGraphFile(null);
+    store().setCurrentGraphFile(null, null);
     expect(activeTab().currentGraphFile).toBeNull();
   });
 
-  it('rebindGraphFile moves the binding on every tab holding the file, not just the active one', () => {
-    store().setCurrentGraphFile('alpha');
+  // The binding is a PAIR. The stem addresses the file; the name is what gets
+  // written INTO it, and sending the stem in its place renames the graph --
+  // `POST /api/graph/save` stores the whole payload and `GET /api/graph/list`
+  // reads the stored name back out.
+  it('setCurrentGraphFile carries the display name beside the stem', () => {
+    store().setCurrentGraphFile('My_Graph', 'My Graph');
+    expect(activeTab().currentGraphFile).toBe('My_Graph');
+    expect(activeTab().currentGraphName).toBe('My Graph');
+  });
+
+  it('setCurrentGraphFile keeps a null name, which is the 2.8.0-restored shape', () => {
+    // A record written by 2.8.0 persisted the stem alone. The tab is bound,
+    // and does not know what the graph is called -- which is the state
+    // `saveActiveGraph` answers with one question instead of one rename.
+    store().setCurrentGraphFile('My_Graph', null);
+    expect(activeTab().currentGraphFile).toBe('My_Graph');
+    expect(activeTab().currentGraphName).toBeNull();
+  });
+
+  it('setCurrentGraphFile drops the name when there is no file to go with it', () => {
+    store().setCurrentGraphFile('My_Graph', 'My Graph');
+    // Unbinding with a name still in hand: the name belongs to a file this
+    // tab no longer writes to, and leaving it behind puts the in-place test
+    // one field away from passing on a graph nobody is bound to.
+    store().setCurrentGraphFile(null, 'My Graph');
+    expect(activeTab().currentGraphFile).toBeNull();
+    expect(activeTab().currentGraphName).toBeNull();
+  });
+
+  it('setTabGraphFile binds a tab that is not the one in front of the user', () => {
     const background = store().activeTabId;
     store().addTab('second');
-    store().setCurrentGraphFile('alpha');
-    store().addTab('third');
-    store().setCurrentGraphFile('beta');
+    const active = store().activeTabId;
 
-    store().rebindGraphFile('alpha', 'Renamed_Alpha');
+    // What `saveActiveGraph` needs: a save that stopped for a name dialog
+    // resumes in a store whose active tab may have moved on, and the binding
+    // belongs to the tab the save started on.
+    store().setTabGraphFile(background, 'My_Graph', 'My Graph');
+
+    const tabOf = (id: string) => store().tabs.find((t) => t.id === id)!;
+    expect(tabOf(background).currentGraphFile).toBe('My_Graph');
+    expect(tabOf(background).currentGraphName).toBe('My Graph');
+    expect(tabOf(active).currentGraphFile).toBeNull();
+  });
+
+  it('rebindGraphFile moves the DISPLAY NAME with the file on a rename', () => {
+    store().setCurrentGraphFile('alpha', 'alpha');
+    const background = store().activeTabId;
+    store().addTab('second');
+    store().setCurrentGraphFile('alpha', 'alpha');
+
+    store().rebindGraphFile('alpha', { file: 'Renamed_Alpha', name: 'Renamed Alpha' });
+
+    // Left on the old name, the next in-place save writes "alpha" into
+    // `Renamed_Alpha.json` and the graph renames itself back by being saved.
+    for (const tab of store().tabs) {
+      expect(tab.currentGraphFile).toBe('Renamed_Alpha');
+      expect(tab.currentGraphName).toBe('Renamed Alpha');
+    }
+    expect(store().tabs.find((t) => t.id === background)!.currentGraphName)
+      .toBe('Renamed Alpha');
+  });
+
+  it('rebindGraphFile clears the name with the file on a delete', () => {
+    store().setCurrentGraphFile('alpha', 'Alpha Graph');
+
+    store().rebindGraphFile('alpha', null);
+
+    expect(activeTab().currentGraphFile).toBeNull();
+    // There is no graph on disk left for the name to be the name of, and a
+    // name without a file is what the in-place test must never see.
+    expect(activeTab().currentGraphName).toBeNull();
+  });
+
+  it('stampTabProject stamps a tab that is not the active one', () => {
+    const background = store().activeTabId;
+    store().addTab('second');
+    const active = store().activeTabId;
+
+    store().stampTabProject(background, '/proj');
+
+    const tabOf = (id: string) => store().tabs.find((t) => t.id === id)!;
+    expect(tabOf(background).projectOrigin).toBe('/proj');
+    expect(tabOf(active).projectOrigin).toBeNull();
+  });
+
+  it('loadGraphDocumentInto installs the bound name, and drops it with no file', () => {
+    store().loadGraphDocument({
+      nodes: [], edges: [], boundFile: 'My_Graph', boundName: 'My Graph',
+    });
+    expect(activeTab().currentGraphFile).toBe('My_Graph');
+    expect(activeTab().currentGraphName).toBe('My Graph');
+
+    // A document bound to nothing has no name either, whatever it says: this
+    // is the one door every reader goes through, so the pairing is kept here
+    // rather than in each of them.
+    store().loadGraphDocument({
+      nodes: [], edges: [], boundFile: null, boundName: 'My Graph',
+    });
+    expect(activeTab().currentGraphFile).toBeNull();
+    expect(activeTab().currentGraphName).toBeNull();
+  });
+
+  it('loadGraphDocumentInto leaves the name null when the document omits it', () => {
+    // What `openExample`, `importGraphFile` and the plugin API hand over: a
+    // binding decision and nothing about the name.
+    store().loadGraphDocument({ nodes: [], edges: [], boundFile: null });
+    expect(activeTab().currentGraphName).toBeNull();
+  });
+
+  it('rebindGraphFile moves the binding on every tab holding the file, not just the active one', () => {
+    store().setCurrentGraphFile('alpha', 'alpha');
+    const background = store().activeTabId;
+    store().addTab('second');
+    store().setCurrentGraphFile('alpha', 'alpha');
+    store().addTab('third');
+    store().setCurrentGraphFile('beta', 'beta');
+
+    store().rebindGraphFile('alpha', { file: 'Renamed_Alpha', name: 'Renamed Alpha' });
     expect(store().tabs.map((t) => t.currentGraphFile))
       .toEqual(['Renamed_Alpha', 'Renamed_Alpha', 'beta']);
     // The one nobody is looking at is the point: its next Save would have
@@ -1042,11 +1155,68 @@ describe('graph metadata actions', () => {
   });
 
   it('rebindGraphFile writes nothing when no tab holds the file', () => {
-    store().setCurrentGraphFile('alpha');
+    store().setCurrentGraphFile('alpha', 'alpha');
     const before = store().tabs;
     store().rebindGraphFile('never-opened', null);
     // The same array, so no subscriber of the tab list re-renders.
     expect(store().tabs).toBe(before);
+  });
+
+  // What a confirmed Save As over a file two other tabs were bound to needs:
+  // the tab that just wrote the file keeps its binding, and the tabs whose
+  // binding the write made untrue lose theirs.
+  it('rebindGraphFile spares the named tab and still clears every other holder', () => {
+    store().setCurrentGraphFile('alpha', 'alpha');
+    const stale = store().activeTabId;
+    store().addTab('second');
+    store().setCurrentGraphFile('alpha', 'alpha');
+    const alsoStale = store().activeTabId;
+    store().addTab('third');
+    store().setCurrentGraphFile('beta', 'beta');
+    const untouched = store().activeTabId;
+    store().addTab('saver');
+    store().setCurrentGraphFile('alpha', 'alpha');
+    const saver = store().activeTabId;
+
+    store().rebindGraphFile('alpha', null, saver);
+
+    const fileOf = (id: string) => store().tabs.find((t) => t.id === id)!.currentGraphFile;
+    expect(fileOf(saver)).toBe('alpha');
+    expect(fileOf(stale)).toBeNull();
+    expect(fileOf(alsoStale)).toBeNull();
+    // A tab bound to a different graph is not this action's business either
+    // way, with or without the exception.
+    expect(fileOf(untouched)).toBe('beta');
+  });
+
+  it('rebindGraphFile with the argument omitted still rebinds the active tab too', () => {
+    store().setCurrentGraphFile('alpha', 'alpha');
+    const background = store().activeTabId;
+    store().addTab('second');
+    store().setCurrentGraphFile('alpha', 'alpha');
+    const active = store().activeTabId;
+
+    // The rename/delete call shape, unchanged: the file itself moved, so no
+    // binding to it survives -- not even the active tab's.
+    store().rebindGraphFile('alpha', { file: 'Renamed_Alpha', name: 'Renamed Alpha' });
+
+    const fileOf = (id: string) => store().tabs.find((t) => t.id === id)!.currentGraphFile;
+    expect(fileOf(background)).toBe('Renamed_Alpha');
+    expect(fileOf(active)).toBe('Renamed_Alpha');
+  });
+
+  it('rebindGraphFile writes nothing when the spared tab is the only holder', () => {
+    store().setCurrentGraphFile('alpha', 'alpha');
+    const only = store().activeTabId;
+    const before = store().tabs;
+
+    store().rebindGraphFile('alpha', null, only);
+
+    // The common case after a Save As: nobody else was bound to the file, so
+    // the tab list must come back as the SAME array rather than re-rendering
+    // the canvas for a change that did not happen.
+    expect(store().tabs).toBe(before);
+    expect(store().tabs.find((t) => t.id === only)!.currentGraphFile).toBe('alpha');
   });
 
   it('setGraphDevice assigns the active graph device, and "" or null clears it', () => {
@@ -2498,6 +2668,72 @@ describe('persistence (module reload)', () => {
     const mod = await import('./tabStore');
     expect(mod.useTabStore.getState().tabs).toHaveLength(1);
     expect(mod.useTabStore.getState().tabs[0].name).toBe('Tab 1');
+  });
+
+  it('round-trips the bound display name, and omits it from the record when unset', async () => {
+    const mod = await import('./tabStore');
+    const { _buildPersistedTabForTesting, _tabFromPersistedForTesting } = mod;
+    const tab = mod.useTabStore.getState().tabs[0];
+
+    // Unbound: the record carries no key at all, so a tab nobody has saved
+    // persists byte-identically to the record 2.8.0 wrote for it.
+    const bare = _buildPersistedTabForTesting(tab);
+    expect('currentGraphName' in bare).toBe(false);
+
+    const bound = _buildPersistedTabForTesting({
+      ...tab, currentGraphFile: 'My_Graph', currentGraphName: 'My Graph',
+    });
+    expect(bound.currentGraphName).toBe('My Graph');
+    // The base is held at a name neither the record nor a fresh tab can
+    // produce, so a restore line that was deleted outright could not pass.
+    const restored = _tabFromPersistedForTesting(bound, {
+      ...tab, currentGraphName: 'not from the record',
+    });
+    expect(restored.currentGraphFile).toBe('My_Graph');
+    expect(restored.currentGraphName).toBe('My Graph');
+  });
+
+  it('a record written without the name -- every record 2.8.0 wrote -- restores as null', async () => {
+    const mod = await import('./tabStore');
+    const { _buildPersistedTabForTesting, _tabFromPersistedForTesting } = mod;
+    const tab = mod.useTabStore.getState().tabs[0];
+    const record = _buildPersistedTabForTesting({
+      ...tab, currentGraphFile: 'My_Graph', currentGraphName: 'My Graph',
+    });
+    delete (record as { currentGraphName?: string | null }).currentGraphName;
+
+    const restored = _tabFromPersistedForTesting(record, {
+      ...tab, currentGraphName: 'not from the record',
+    });
+
+    // Null, not the stem and not the placeholder tab's leftovers: null is
+    // what routes this tab through one name prompt, and the stem is what
+    // would rename its graph on the next silent save.
+    expect(restored.currentGraphFile).toBe('My_Graph');
+    expect(restored.currentGraphName).toBeNull();
+  });
+
+  it('a rename that leaves the stem alone is still a record-cache miss', async () => {
+    const mod = await import('./tabStore');
+    const { _persistedTabsForTesting } = mod;
+    const tabs = mod.useTabStore.getState().tabs;
+    const bound = [{ ...tabs[0], currentGraphFile: 'My_Graph', currentGraphName: 'My Graph' }];
+
+    const [first] = _persistedTabsForTesting(bound);
+    const [same] = _persistedTabsForTesting(bound);
+    // The cache hands back the SAME object when nothing in the signature
+    // moved, which is how `tabPersistence` knows to skip the write.
+    expect(same).toBe(first);
+
+    // Sanitizing is lossy: "My/Graph" sanitizes to `My_Graph` exactly as "My
+    // Graph" does, so the stem cannot see this rename. Left out of the
+    // signature, autosave never writes the new name and the reload comes back
+    // still saving the graph under the title it was renamed away from.
+    const [renamed] = _persistedTabsForTesting([
+      { ...bound[0], currentGraphName: 'My/Graph' },
+    ]);
+    expect(renamed).not.toBe(first);
+    expect(renamed.currentGraphName).toBe('My/Graph');
   });
 
   it('createTabState uses the non-crypto graphId fallback when randomUUID is missing', async () => {

@@ -460,7 +460,53 @@ export async function validateGraph(
   return res.json();
 }
 
-export async function saveGraph(data: GraphSaveData) {
+/**
+ * Write a graph to `GRAPHS_DIR` (or, in project mode, to the project's
+ * `graphs/`).
+ *
+ * `name` is the graph's TITLE. `file` is the ADDRESS it is written to, and
+ * the two are separate fields because the server used to derive one from the
+ * other: `name` was sanitized into the file stem AND stored in the file as
+ * its title, and no single string can be both. Sending the stem renamed
+ * every graph whose title needed sanitizing ("My Graph" -> "My_Graph") the
+ * first time it was saved; sending the title wrote to
+ * `sanitize(title)`, which for a file whose stem is not `sanitize(its own
+ * title)` is A DIFFERENT FILE -- a tab bound to `Beta.json` holding a graph
+ * called "Alpha" overwrote `Alpha.json`, and in project mode deleted it.
+ *
+ * So `file` is an address on the REQUEST, not a property of the graph: the
+ * server never writes it into the saved document, and it is deliberately
+ * absent from `GraphSaveData`, which describes what the file contains.
+ * Omitting it asks for exactly the old behaviour -- the address is derived
+ * from `name` -- which is what an unbound, freshly-named graph wants.
+ */
+export interface GraphSaveResult {
+  message?: string;
+  /** Absolute path of the file written, for logs and diagnostics. */
+  path?: string;
+  /**
+   * The stem the server ACTUALLY wrote, after its own sanitization.
+   *
+   * Callers bind the tab to this rather than re-deriving it, because the two
+   * sanitizers do not agree: `sanitizeGraphName` tests `[\p{L}\p{N}]` against
+   * Node's ICU tables while the backend's `_sanitize_name` uses CPython's
+   * `str.isalnum()`, and the two carry different Unicode versions -- 16 BMP
+   * code points apart, plus astral ones. The write target is safe either way,
+   * since the server re-sanitizes whatever `file` it is handed; the binding is
+   * what breaks, ending up on a stem `GET /api/graph/list` will never report,
+   * invisible to every exact-match comparison in the app.
+   *
+   * Optional because this describes what arrives over the wire: a frontend
+   * built from source can meet a backend older than the field, the same gap
+   * `SavedGraphSummary.modified` is optional for and the same one
+   * `renameGraph`'s caller in the Graphs panel already falls back across.
+   */
+  file?: string;
+}
+
+export async function saveGraph(
+  data: GraphSaveData & { file?: string },
+): Promise<GraphSaveResult> {
   const res = await apiFetch(`${BASE_URL}/graph/save`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },

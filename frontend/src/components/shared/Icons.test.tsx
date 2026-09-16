@@ -23,6 +23,7 @@ import {
   PanelLeftOpenIcon,
   PlusIcon,
   RefreshIcon,
+  SaveAsIcon,
   SaveIcon,
   SyncIcon,
   ZoomInIcon,
@@ -59,6 +60,7 @@ const icons = [
   ['ChevronDownIcon', ChevronDownIcon],
   ['SyncIcon', SyncIcon],
   ['SaveIcon', SaveIcon],
+  ['SaveAsIcon', SaveAsIcon],
 ] as const;
 
 describe('Icons', () => {
@@ -82,6 +84,18 @@ describe('Icons', () => {
     expect(svg?.getAttribute('stroke')).toBe('currentColor');
     // Default size is 14 when no size prop is provided.
     expect(svg?.getAttribute('width')).toBe('14');
+  });
+
+  // The toolbar's Save and the Graphs panel's Save As are on screen at the
+  // same time, about 240px apart, and one overwrites without asking while the
+  // other always stops for a name. Two commands wearing one face is how a
+  // reader learns the wrong one, so "they are drawn differently" is a fact
+  // worth holding rather than a thing to eyeball once.
+  it('draws Save and Save As as two different glyphs', () => {
+    const save = render(<SaveIcon />).container.querySelector('svg')?.innerHTML;
+    const saveAs = render(<SaveAsIcon />).container.querySelector('svg')?.innerHTML;
+    expect(save).toBeTruthy();
+    expect(saveAs).not.toBe(save);
   });
 
   it('honours an explicit size prop', () => {

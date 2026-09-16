@@ -78,7 +78,7 @@ describe('the write signal', () => {
 
 describe('saveActiveGraph announces a project write', () => {
   it('says so after a save into the project', async () => {
-    useTabStore.getState().setCurrentGraphFile('demo');
+    useTabStore.getState().setCurrentGraphFile('demo', 'demo');
     await saveActiveGraph();
 
     expect(saveGraphMock).toHaveBeenCalledTimes(1);
@@ -86,7 +86,7 @@ describe('saveActiveGraph announces a project write', () => {
   });
 
   it('says nothing when the save failed', async () => {
-    useTabStore.getState().setCurrentGraphFile('demo');
+    useTabStore.getState().setCurrentGraphFile('demo', 'demo');
     saveGraphMock.mockRejectedValue(new Error('disk full'));
     await saveActiveGraph();
 

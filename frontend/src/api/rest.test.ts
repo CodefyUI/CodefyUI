@@ -453,12 +453,51 @@ describe('validateGraph', () => {
 });
 
 describe('saveGraph', () => {
+  // `toEqual`, not `objectContaining`: a caller that sends no `file` must put
+  // no `file` on the wire, because an absent one is what asks the server for
+  // its original behaviour -- derive the address from the name.
   it('POSTs the data and returns the body', async () => {
     const fetchMock = mockFetch(200, { saved: true });
     await saveGraph({ name: 'g', nodes: [], edges: [] } as never);
     const [url, init] = fetchMock.mock.calls[0];
     expect(url).toBe('/api/graph/save');
     expect(JSON.parse(init.body)).toEqual({ name: 'g', nodes: [], edges: [] });
+  });
+
+  // `file` is the ADDRESS the write lands on; `name` is only the graph's
+  // title. One string used to do both jobs, which is how a tab bound to
+  // `Beta` came to overwrite `Alpha` -- see `saveGraph`'s own comment. All
+  // this function owes the fix is carrying the field through untouched.
+  it('sends `file` beside `name`, so the address is not the title', async () => {
+    const fetchMock = mockFetch(200, { saved: true });
+    await saveGraph({ name: 'Alpha', file: 'Beta', nodes: [], edges: [] } as never);
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({
+      name: 'Alpha', file: 'Beta', nodes: [], edges: [],
+    });
+  });
+
+  // The caller binds the tab to the stem that comes back rather than
+  // re-deriving it: the frontend's `sanitizeGraphName` and the backend's
+  // `_sanitize_name` read different Unicode tables and disagree on 16 BMP
+  // code points, and a tab bound to the loser's answer holds a stem
+  // `/api/graph/list` will never report. All this function owes that is
+  // handing the body back untouched -- and TYPED, so the caller does not have
+  // to widen `any` at the call site to read the field.
+  it('returns the stem the server says it wrote', async () => {
+    mockFetch(200, { message: 'Graph saved', path: '/g/My_Graph.json', file: 'My_Graph' });
+    await expect(
+      saveGraph({ name: 'My Graph', nodes: [], edges: [] } as never),
+    ).resolves.toMatchObject({ file: 'My_Graph' });
+  });
+
+  // A frontend built from source can meet a backend older than the field, the
+  // same gap `SavedGraphSummary.modified` is optional for. `file` is
+  // therefore optional on the result type, and the caller falls back.
+  it('carries a body with no `file` through unchanged', async () => {
+    mockFetch(200, { message: 'Graph saved', path: '/g/My_Graph.json' });
+    await expect(
+      saveGraph({ name: 'My Graph', nodes: [], edges: [] } as never),
+    ).resolves.toEqual({ message: 'Graph saved', path: '/g/My_Graph.json' });
   });
 
   it('throws on failure', async () => {

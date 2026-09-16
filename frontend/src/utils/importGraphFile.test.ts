@@ -64,7 +64,7 @@ describe('importGraphFile', () => {
   });
 
   it('unbinds the tab, so the import cannot be saved over the file that was open', async () => {
-    useTabStore.getState().setCurrentGraphFile('bound-graph');
+    useTabStore.getState().setCurrentGraphFile('bound-graph', 'bound-graph');
     await importGraphFile(jsonFile(JSON.stringify({ nodes: [], edges: [] })));
     expect(tabs()[0].currentGraphFile).toBeNull();
   });
