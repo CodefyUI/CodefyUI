@@ -191,4 +191,3 @@ Versioning graphs works today, but a few things produce friction and are being a
 
 - **Node positions add diff noise.** Dragging a node changes its saved coordinates, so rearranging the canvas produces JSON diffs even when the pipeline is unchanged.
 - **Copy/paste regenerates node ids.** Duplicating nodes assigns fresh ids, which can make a small logical change look like a large diff.
-- **Saving over an existing name overwrites silently.** Saving a graph under a name that already exists replaces the file with no warning -- commit early and lean on git to recover a previous version.

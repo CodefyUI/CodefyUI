@@ -684,7 +684,7 @@ def test_the_zh_tw_catalog_has_no_entries_for_nodes_that_do_not_exist():
 #: at the default sidebar width the description box is 188px across at 13px
 #: type and clamps to two lines. That is 28 Latin characters per line and 14
 #: CJK -- so 56 and 28 are the points past which a summary is cut off with an
-#: ellipsis. They are caps, not targets: the catalog sits at 49 and 20 on
+#: ellipsis. They are caps, not targets: the catalog sits at 48 and 20 on
 #: average, and a summary that needs every character of its cap usually has a
 #: word in it that is not earning its place.
 MAX_DESCRIPTION_CHARS = 56
