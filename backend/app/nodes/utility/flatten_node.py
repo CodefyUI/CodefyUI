@@ -6,7 +6,11 @@ from ...core.node_base import BaseNode, DataType, ParamDefinition, ParamType, Po
 class FlattenNode(BaseNode):
     NODE_NAME = "Flatten"
     CATEGORY = "Utility"
-    DESCRIPTION = "Flatten tensor dimensions: nn.Flatten(start_dim, end_dim)"
+    DESCRIPTION = "Flatten a tensor's dimensions from start_dim onward"
+    DETAILS = (
+        "Backed by nn.Flatten, so every dimension from start_dim to the last "
+        "collapses into one."
+    )
 
     @classmethod
     def define_inputs(cls) -> list[PortDefinition]:

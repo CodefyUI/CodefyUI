@@ -44,10 +44,12 @@ from ...core.step_trace import StepRecorder
 class PositionalEncodingNode(BaseNode):
     NODE_NAME = "PositionalEncoding"
     CATEGORY = "LLM"
-    DESCRIPTION = (
-        "Add positional information to token embeddings. `sinusoidal` uses the "
-        "Vaswani et al. (2017) formula PE(pos, 2i)=sin(pos/10000^(2i/d)); "
-        "`learnable` returns a seeded random pattern (deterministic per seed)."
+    DESCRIPTION = "Add position info to embeddings; also outputs it"
+    DETAILS = (
+        "sinusoidal is the Vaswani et al. (2017) formula $PE(pos, 2i) = \\sin(pos / "
+        "10000^{2i/d})$, stateless and deterministic; learnable returns a seeded "
+        "random pattern rather than a trained one. A sequence longer than max_len "
+        "raises."
     )
 
     @classmethod

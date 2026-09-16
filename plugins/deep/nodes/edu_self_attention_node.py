@@ -68,10 +68,14 @@ class _SelfAttentionProjections(nn.Module):
 class EduSelfAttentionNode(StatefulModuleMixin, BaseNode):
     NODE_NAME = "Edu-SelfAttention"
     CATEGORY = "LLM"
-    DESCRIPTION = (
-        "Hand-written single-head self-attention: Q,K,V = three Linear projections; "
-        "scores = Q@K^T/√d; weights = softmax(scores); output = weights@V. "
-        "Outputs the [seq, seq] weight matrix for direct heatmap visualisation."
+    DESCRIPTION = "Single-head self-attention; [seq, seq] weights"
+    DETAILS = (
+        "Q, K and V come from three Linear projections, scores are "
+        "$QK^T/\\sqrt{d}$, the softmax over those scores gives the weights, and the "
+        "output is those weights applied to V. Scores are divided by `temperature` "
+        "before the softmax — below 1 sharpens the distribution, above 1 flattens "
+        "it. `causal` blocks every position from attending to its right; an "
+        "optional [seq, seq] mask is combined with it by OR."
     )
 
     structural_params = ("embed_dim", "seed")

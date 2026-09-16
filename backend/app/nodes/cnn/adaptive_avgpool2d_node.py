@@ -6,7 +6,12 @@ from ...core.node_base import BaseNode, DataType, ParamDefinition, ParamType, Po
 class AdaptiveAvgPool2dNode(BaseNode):
     NODE_NAME = "AdaptiveAvgPool2d"
     CATEGORY = "CNN"
-    DESCRIPTION = "Apply 2D adaptive average pooling to produce fixed output size (wraps nn.AdaptiveAvgPool2d)"
+    DESCRIPTION = "Averages each channel to a fixed height and width"
+    DETAILS = (
+        "Backed by nn.AdaptiveAvgPool2d, which derives the window size from the "
+        "input, so any input becomes (N, C, output_height, output_width). The 1x1 "
+        "default reduces each channel to a single number."
+    )
 
     @classmethod
     def define_inputs(cls) -> list[PortDefinition]:

@@ -14,7 +14,11 @@ from app.nodes.io.graph_input_node import GraphInputNode
 def test_metadata():
     assert GraphInputNode.NODE_NAME == "GraphInput"
     assert GraphInputNode.CATEGORY == "IO"
-    assert "API" in GraphInputNode.DESCRIPTION  # palette search finds it
+    # Palette search finds it. The word moved from DESCRIPTION to DETAILS when
+    # the summary was cut to one line, and the search reads both, so the check
+    # reads both too -- and case-insensitively, because the search does.
+    copy = f"{GraphInputNode.DESCRIPTION} {GraphInputNode.DETAILS}".lower()
+    assert "api" in copy
     assert GraphInputNode.cacheable is True
 
 

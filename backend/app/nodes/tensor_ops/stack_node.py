@@ -6,7 +6,8 @@ from ...core.node_base import BaseNode, DataType, ParamDefinition, ParamType, Po
 class StackNode(BaseNode):
     NODE_NAME = "Stack"
     CATEGORY = "Tensor Operations"
-    DESCRIPTION = "Stack two tensors along a new dimension"
+    DESCRIPTION = "Join two tensors along a new dimension"
+    DETAILS = "Both tensors must have the same shape."
 
     @classmethod
     def define_inputs(cls) -> list[PortDefinition]:

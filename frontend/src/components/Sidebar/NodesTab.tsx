@@ -262,14 +262,20 @@ export function NodesTab() {
     for (const category of orderCategories(Object.keys(categorized), beginnerMode)) {
       let items = categorized[category];
       if (q) {
-        // The third field is the plugin's DISPLAY name. Its id already
+        // The last field is the plugin's DISPLAY name. Its id already
         // matches through the qualified node name (`edu:FilterRows`), so what
         // this adds is the plugin as a reader knows it from the Plugin Center
         // — the only name for it that appears in no field of a definition.
+        //
+        // `details` is searched as well as the summary: the summary is one
+        // line now, and the library a node wraps, its caveats and its formula
+        // all moved down there. Shortening the row must not make the node
+        // harder to find.
         items = items.filter(
           (n) =>
             n.node_name.toLowerCase().includes(q) ||
             n.description.toLowerCase().includes(q) ||
+            (n.details?.toLowerCase().includes(q) ?? false) ||
             (pluginNameOf(pluginsById, n.provider)?.toLowerCase().includes(q) ?? false),
         );
       }

@@ -59,10 +59,15 @@ def _load_model(repo: str) -> Any:
 class EduSentenceEmbeddingNode(BaseNode):
     NODE_NAME = "SentenceEmbedding"
     CATEGORY = "EDU"
-    DESCRIPTION = (
-        "把一段文字壓成一條有語意的句子向量 (d,)。意思接近的句子向量方向也接近，"
-        "丟給 CosineSimilarity 就能量「兩句話意思多接近」（多語言模型下還能跨語言）。"
-        "用 model2vec 靜態嵌入、跑純 CPU、結果會快取；第一次使用需下載模型權重。"
+    DESCRIPTION = "Encode a text's meaning as one (d,) vector"
+    DETAILS = (
+        "Sentences with similar meanings get vectors pointing in similar "
+        "directions. Backed by a model2vec static embedding: a pure-CPU lookup and "
+        "average, cached per process and per string. `model` chooses a "
+        "multilingual model, which handles Chinese and cross-language comparisons, "
+        "or a smaller English-only one; the weights are downloaded on first use. "
+        "Feed two of these vectors to CosineSimilarity to score how close two "
+        "sentences are."
     )
 
     @classmethod

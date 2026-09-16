@@ -44,6 +44,35 @@ async def test_get_nonexistent_node(test_client):
     assert resp.status_code == 404
 
 
+# ── The description / details split ──────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_every_node_serves_both_halves_of_its_documentation(test_client):
+    """``details`` is served for every node, empty when there is none.
+
+    The palette prints ``description`` and only that; the config panel prints
+    both. A node that served no ``details`` key at all would make the panel
+    read ``undefined`` rather than stop after the summary.
+    """
+    resp = await test_client.get("/api/nodes")
+    nodes = resp.json()
+    assert nodes
+    for node in nodes:
+        assert isinstance(node["description"], str), node["node_name"]
+        assert isinstance(node["details"], str), node["node_name"]
+
+
+@pytest.mark.asyncio
+async def test_details_are_served_apart_from_the_summary(test_client):
+    """A node that has both serves them as two fields, not one blob."""
+    resp = await test_client.get("/api/nodes/Conv2d")
+    node = resp.json()
+    assert node["description"]
+    assert node["details"]
+    assert node["details"] not in node["description"]
+
+
 # ── Script validation (core#131) ─────────────────────────────────────────
 
 
@@ -530,21 +559,11 @@ TRANSLATED_NODES = (
 #: never grow. Delete a name from here when you translate it. Two are gone
 #: already: ``Conv2dKernel`` with the node itself (#362), and
 #: ``Conv2dExplicit`` by being translated (#367) -- thirteen left.
-UNTRANSLATED_NODES = frozenset({
-    "Argmax",
-    "DatasetBatch",
-    "DecisionBoundary",
-    "DiffusionTrainingLoop",
-    "GraphInput",
-    "GraphOutput",
-    "LLMChat",
-    "RandomForestClassifier",
-    "RowSelector",
-    "ScalarMultiply",
-    "ScatterPlot2D",
-    "SyntheticSegmentation",
-    "SyntheticShapes",
-})
+#: Empty since the palette-summary rewrite, which translated the last
+#: thirteen. Keep it that way: a node added without a zh-TW entry renders in
+#: English inside an otherwise Chinese list, and the ratchet below is what
+#: says so at build time rather than on somebody's screen.
+UNTRANSLATED_NODES: frozenset[str] = frozenset()
 
 
 def _node_catalog() -> str:
@@ -642,7 +661,113 @@ def test_the_zh_tw_catalog_has_no_entries_for_nodes_that_do_not_exist():
 
     catalog = _node_catalog()
     entries = set(re.findall(r"\n  ([A-Za-z][\w:]*): \{", catalog))
+    # A quoted key is a plugin's qualified node name (`'edu:Classifier'`).
+    # Those are deliberately not checked: the pack they come from is not
+    # installed on a bare checkout, so the registry has never heard of them
+    # and every one would read as dead.
     dead = sorted(entry for entry in entries if registry.get(entry) is None)
     assert not dead, (
         "these zh-TW entries name nodes the registry does not have: "
         + str(dead))
+
+
+# ── The palette line stays a line ────────────────────────────────────────
+#
+# The node list shows DESCRIPTION under each node's name, two lines deep. It
+# drifted into holding paragraphs -- a summary, then the library it wraps,
+# then what the node is good for -- which is what the maintainer called
+# 贅詞與冗餘的話. These two ratchets are what stops it drifting back: the
+# summary is capped, and everything else belongs in DETAILS, which only the
+# config panel and the Docs tab render.
+
+#: Both caps are the row's geometry, measured in Chrome rather than guessed:
+#: at the default sidebar width the description box is 188px across at 13px
+#: type and clamps to two lines. That is 28 Latin characters per line and 14
+#: CJK -- so 56 and 28 are the points past which a summary is cut off with an
+#: ellipsis. They are caps, not targets: the catalog sits at 49 and 20 on
+#: average, and a summary that needs every character of its cap usually has a
+#: word in it that is not earning its place.
+MAX_DESCRIPTION_CHARS = 56
+MAX_ZH_DESCRIPTION_CHARS = 28
+
+
+def test_no_builtin_node_describes_itself_in_a_paragraph():
+    """DESCRIPTION is one line of English, within the cap, and says it once."""
+    import re
+
+    from app.core.node_registry import registry
+
+    too_long: list[str] = []
+    not_english: list[str] = []
+    for name in _builtin_node_names():
+        description = registry.get(name).DESCRIPTION
+        if len(description) > MAX_DESCRIPTION_CHARS or "\n" in description:
+            too_long.append(f"{name} ({len(description)} chars)")
+        # English is the base language: Chinese belongs in the zh-TW catalog,
+        # where it can be a translation rather than a replacement nobody who
+        # reads English can see past.
+        if re.search(r"[一-鿿]", description):
+            not_english.append(name)
+
+    assert not too_long, (
+        f"a palette summary is at most {MAX_DESCRIPTION_CHARS} characters on "
+        "one line -- past that the row cuts it off with an ellipsis. Move the "
+        "rest into DETAILS, which the config panel and the Docs tab render: "
+        f"{too_long}")
+    assert not not_english, (
+        "DESCRIPTION is the English text; put the Chinese in "
+        f"frontend/src/i18n/nodeLocales/zh-TW.ts instead: {not_english}")
+
+
+def _zh_descriptions() -> dict[str, str]:
+    """Every entry's `description` in the zh-TW catalog, un-wrapped.
+
+    The value is either a single quoted literal or a `'a' + 'b'` chain spread
+    over several lines; both come back as the one string the UI shows.
+    """
+    import re
+
+    entry_re = re.compile(r"^  (?:([A-Za-z0-9_$]+)|'([^']+)'): \{$")
+    literal_re = re.compile(r"'((?:[^'\\]|\\.)*)'")
+
+    out: dict[str, str] = {}
+    lines = _node_catalog().split("\n")
+    for i, line in enumerate(lines):
+        match = entry_re.match(line)
+        if not match:
+            continue
+        j = i + 1
+        while j < len(lines) and lines[j] != "  },":
+            if lines[j].startswith("    description:"):
+                buf = ""
+                for k in range(j, len(lines)):
+                    buf += lines[k]
+                    # The value closes on the line where every quote belongs
+                    # to a literal and a comma ends the field.
+                    if (buf.rstrip().endswith(",") and literal_re.search(buf)
+                            and "'" not in literal_re.sub("", buf)):
+                        break
+                out[match.group(1) or match.group(2)] = "".join(
+                    m.group(1) for m in literal_re.finditer(buf))
+                break
+            j += 1
+    return out
+
+
+def test_no_zh_tw_summary_is_a_paragraph_either():
+    """The same cap on the text a Chinese reader actually sees."""
+    descriptions = _zh_descriptions()
+    assert len(descriptions) > 100, (
+        "the catalog parser found almost nothing, so this test is not "
+        f"checking anything: {len(descriptions)} entries")
+
+    too_long = [
+        f"{name} ({len(text)} chars)"
+        for name, text in sorted(descriptions.items())
+        if len(text) > MAX_ZH_DESCRIPTION_CHARS
+    ]
+    assert not too_long, (
+        f"a zh-TW palette summary is at most {MAX_ZH_DESCRIPTION_CHARS} "
+        "characters -- past that the row cuts it off with an ellipsis. The "
+        "rest goes in the entry's `details`, which only the config panel and "
+        f"the Docs tab render: {too_long}")

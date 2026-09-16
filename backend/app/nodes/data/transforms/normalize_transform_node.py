@@ -38,9 +38,10 @@ PRESET_OPTIONS = [*PRESETS, "Custom"]
 
 class NormalizeTransformNode(TransformStepNode):
     NODE_NAME = "NormalizeTransform"
-    DESCRIPTION = (
-        "Standardise each channel to (x - mean) / std. Needs a tensor, so "
-        "it goes after ToTensorTransform."
+    DESCRIPTION = "Standardise each channel to (x - mean) / std"
+    DETAILS = (
+        "Needs a tensor, so it goes after ToTensorTransform. The presets carry the "
+        "published channel statistics for ImageNet, CIFAR-10 and CIFAR-100."
     )
 
     @classmethod

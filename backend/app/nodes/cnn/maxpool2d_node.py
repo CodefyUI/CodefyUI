@@ -6,7 +6,12 @@ from ...core.node_base import BaseNode, DataType, ParamDefinition, ParamType, Po
 class MaxPool2dNode(BaseNode):
     NODE_NAME = "MaxPool2d"
     CATEGORY = "CNN"
-    DESCRIPTION = "Apply 2D max pooling to input tensor (wraps nn.MaxPool2d)"
+    DESCRIPTION = "Largest value in each window; height and width shrink"
+    DETAILS = (
+        "Backed by nn.MaxPool2d; only kernel_size and stride are exposed, with no "
+        "padding. With the defaults, kernel_size 2 and stride 2, height and width "
+        "are halved."
+    )
 
     @classmethod
     def define_inputs(cls) -> list[PortDefinition]:

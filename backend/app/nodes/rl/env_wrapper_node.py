@@ -6,7 +6,13 @@ from ...core.node_base import BaseNode, DataType, ParamDefinition, ParamType, Po
 class EnvWrapperNode(BaseNode):
     NODE_NAME = "EnvWrapper"
     CATEGORY = "RL"
-    DESCRIPTION = "Create and wrap a Gymnasium environment, returning the env and initial observation"
+    DESCRIPTION = "Create an environment by ID and reset it"
+    DETAILS = (
+        "Wraps Gymnasium, so env_name is any ID gymnasium.make accepts, such as "
+        "CartPole-v1, and the package must be installed. GridWorldEnv is the "
+        "environment with no such dependency. The reset also returns the first "
+        "observation."
+    )
 
     @classmethod
     def define_inputs(cls) -> list[PortDefinition]:

@@ -40,11 +40,13 @@ from app.core.step_trace import StepRecorder
 class EduKNNNode(BaseNode):
     NODE_NAME = "Edu-KNN"
     CATEGORY = "Classical"
-    DESCRIPTION = (
-        "Hand-written k-NN classifier. Computes per-query distances to all "
-        "training points, picks the k smallest, votes by majority. Outputs "
-        "the distances and neighbour indices so a viz can draw lines from "
-        "each query to its k nearest training samples."
+    DESCRIPTION = "Label by majority vote of k nearest training points"
+    DETAILS = (
+        "Distances are computed against every training point, so cost grows with "
+        "N_train x N_query — the KNN node indexes with a tree for larger data. "
+        "Metric is euclidean, manhattan or cosine (1 - cos), and k is clamped to "
+        "the training-set size. It also outputs the top-k distances and the "
+        "neighbour indices per query."
     )
 
     @classmethod

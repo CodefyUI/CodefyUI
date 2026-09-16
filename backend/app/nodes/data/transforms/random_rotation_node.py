@@ -10,10 +10,11 @@ from ._base import TransformStepNode
 
 class RandomRotationNode(TransformStepNode):
     NODE_NAME = "RandomRotation"
-    DESCRIPTION = (
-        "Rotate each sample by an angle drawn uniformly from "
-        "[-degrees, +degrees]. Small angles help handwriting and satellite "
-        "imagery; large ones destroy any class whose orientation matters."
+    DESCRIPTION = "Rotate by a random angle within ±degrees"
+    DETAILS = (
+        "The angle is drawn uniformly from the range. Small angles help "
+        "handwriting and satellite imagery; a large one destroys any class whose "
+        "orientation is part of what it is."
     )
 
     @classmethod

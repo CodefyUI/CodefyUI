@@ -52,14 +52,15 @@ from ...core.node_base import (
 class PreferenceDatasetNode(BaseNode):
     NODE_NAME = "PreferenceDataset"
     CATEGORY = "RL"
-    DESCRIPTION = (
-        "Synthetic RLHF preference pairs: two feature vectors and which one is better. "
-        "True quality is spread thinly over several coordinates; one coordinate is a "
-        "SHORTCUT that tracks quality in the training split and is pure noise in the "
-        "holdout. A reward model finds the loud shortcut before the diffuse signal, so it "
-        "scores a PERFECT 1.000 on the training pairs while holdout accuracy drops -- "
-        "reward hacking that only the held-out split can see. Set shortcut_strength to 0 "
-        "for the control."
+    DESCRIPTION = "Synthetic preference pairs, train and holdout splits"
+    DETAILS = (
+        "Stands in for RLHF preference data. Each item's true quality is a "
+        "weighted sum over the first signal_dims coordinates, and the better of "
+        "the two is the winner. The last coordinate is a shortcut: it tracks "
+        "quality in the training split and is pure noise in the holdout, so a "
+        "reward model that latches onto it scores perfectly on the training pairs "
+        "while holdout accuracy falls -- reproducible reward hacking. "
+        "shortcut_strength = 0 removes it."
     )
 
     @classmethod

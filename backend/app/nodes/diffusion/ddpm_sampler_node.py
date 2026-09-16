@@ -53,11 +53,12 @@ def _cosine_betas(num_steps: int, s: float = 0.008) -> torch.Tensor:
 class DDPMSamplerNode(BaseNode):
     NODE_NAME = "DDPMSampler"
     CATEGORY = "Diffusion"
-    DESCRIPTION = (
-        "Run reverse DDPM denoising. Iterates a schedule of timesteps, "
-        "calling `model(x_t, t)` to predict noise, then applying the DDPM "
-        "update rule. Encapsulates the entire reverse loop so the graph "
-        "stays acyclic — see the verbose step trace for trajectory snapshots."
+    DESCRIPTION = "Run the reverse DDPM loop: noise tensor to image"
+    DETAILS = (
+        "Each step calls `model(x_t, t)` to predict the noise, then applies the "
+        "DDPM update; `schedule` is the original linear one or the cosine variant. "
+        "The whole loop runs inside the node, which keeps the graph acyclic, and "
+        "`seed` fixes the Gaussian noise added at each step."
     )
 
     cacheable = False  # Has internal randomness; conservative to skip cache.

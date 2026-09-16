@@ -7,7 +7,13 @@ from ...core.stateful_module import StatefulModuleMixin
 class ConvTranspose2dNode(StatefulModuleMixin, BaseNode):
     NODE_NAME = "ConvTranspose2d"
     CATEGORY = "CNN"
-    DESCRIPTION = "Apply 2D transposed convolution (deconvolution) to input tensor (wraps nn.ConvTranspose2d). Used to upsample feature maps."
+    DESCRIPTION = "Upsamples a feature map, enlarging height and width"
+    DETAILS = (
+        "Backed by nn.ConvTranspose2d, also called deconvolution. Output height is "
+        "$(H-1)\\times \\text{stride} - 2\\,\\text{padding} + \\text{kernel\\_size} + "
+        "\\text{output\\_padding}$ and width follows the same rule; output_padding "
+        "breaks the tie when several input sizes map to the same output size."
+    )
 
     structural_params = (
         "in_channels", "out_channels", "kernel_size", "stride", "padding", "output_padding",

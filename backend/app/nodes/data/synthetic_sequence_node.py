@@ -100,12 +100,14 @@ class _SyntheticSequenceDataset:
 class SyntheticSequenceNode(BaseNode):
     NODE_NAME = "SyntheticSequence"
     CATEGORY = "Data"
-    DESCRIPTION = (
-        "產生一個小型「序列記憶」資料集（CPU 友善、免下載）：每筆是一條長度 seq_len 的整數序列，"
-        "答案藏在序列的開頭（recall_first）或結尾（recall_last），其餘位置全是隨機干擾 Token；"
-        "標籤就是那個答案。recall_first 需要把記憶從第 1 步一路帶到最後一步，是檢驗梯度消失的"
-        "標準任務；recall_last 的依賴距離只有 1，任何模型都學得起來。輸出資料集，可接 DataLoader → "
-        "TrainingLoop，模型端用 Embedding → LSTM/GRU/RNN → SelectIndex → Linear。"
+    DESCRIPTION = "Generate integer sequences with the label at one end"
+    DETAILS = (
+        "All the other positions hold distractor tokens that carry no information. "
+        "`recall_first` puts the answer at position 0, so the dependency spans the "
+        "whole sequence and is the standard test for a plain RNN's vanishing "
+        "gradient; `recall_last` puts it at the last position, one step from the "
+        "output. The `vocab_size` output is n_classes + n_distractors, the "
+        "smallest `num_embeddings` a downstream Embedding can use."
     )
 
     @classmethod

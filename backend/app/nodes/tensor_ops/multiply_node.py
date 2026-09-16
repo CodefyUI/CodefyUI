@@ -6,7 +6,7 @@ from ...core.node_base import BaseNode, DataType, PortDefinition
 class MultiplyNode(BaseNode):
     NODE_NAME = "Multiply"
     CATEGORY = "Tensor Operations"
-    DESCRIPTION = "Element-wise multiplication of two tensors (supports broadcasting)"
+    DESCRIPTION = "Element-wise product of two tensors, with broadcasting"
 
     @classmethod
     def define_inputs(cls) -> list[PortDefinition]:

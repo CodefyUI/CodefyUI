@@ -186,6 +186,20 @@ describe('QuickNodeSearch', () => {
     expect(within(btn as HTMLElement).getByText('NoDesc')).toBeInTheDocument();
   });
 
+  it('filters by details too, and still shows only the summary on the row', () => {
+    setStore(
+      [def('Conv2d', { description: 'slides a kernel over the input', details: 'Wraps nn.Conv2d.' })],
+      [],
+    );
+    const { getByPlaceholderText, getByText, queryByText } = render(
+      <QuickNodeSearch screenPos={SCREEN} flowPos={FLOW} onClose={() => {}} />,
+    );
+    fireEvent.change(getByPlaceholderText('Search nodes...'), { target: { value: 'nn.conv2d' } });
+    expect(getByText('Conv2d')).toBeInTheDocument();
+    // The row is one line deep; the text that matched stays in the panel.
+    expect(queryByText(/Wraps nn\.Conv2d/)).toBeNull();
+  });
+
   it('uses the fallback colour for unknown categories', () => {
     setStore([def('Mystery', { category: 'Unknown' })], []);
     const { getByText } = render(

@@ -40,10 +40,13 @@ _AXES = ("all", "columns", "rows")
 class StatsPercentileNode(BaseNode):
     NODE_NAME = "Stats-Percentile"
     CATEGORY = "Data"
-    DESCRIPTION = (
-        "Percentiles of a tensor: one row per requested q. `all` reduces the "
-        "whole tensor to a 1D result, `columns` gives a percentile per column, "
-        "`rows` per row. NaN is skipped; interpolation is linear."
+    DESCRIPTION = "Any set of percentiles: overall, per column or row"
+    DETAILS = (
+        "`q` takes comma-separated percentiles in 0-100, sorted and de-duplicated. "
+        "Interpolation is linear, matching `np.percentile` and "
+        "`DataFrame.quantile`, but NaN is skipped per series the way "
+        "`np.nanpercentile` does. Axis `all` gives a 1D result; `columns` and "
+        "`rows` give a [q, series] table."
     )
 
     @classmethod

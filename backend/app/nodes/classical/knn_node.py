@@ -32,11 +32,14 @@ from ...core.node_base import (
 class KNNNode(BaseNode):
     NODE_NAME = "KNN"
     CATEGORY = "Classical"
-    DESCRIPTION = (
-        "k-Nearest-Neighbours classifier (sklearn). Drop-in replacement for "
-        "EduKNN with KD-tree indexing, distance weighting, and a choice of "
-        "metrics. Use this when you want production scaling; use EduKNN when "
-        "you want to see the math."
+    DESCRIPTION = "Labels each query by a vote of its k nearest points"
+    DETAILS = (
+        "sklearn's KNeighborsClassifier indexes the training set with a KD-tree or "
+        "ball-tree, so it handles large datasets; k is capped at the number of "
+        "training rows. weights='distance' makes closer neighbours count more. It "
+        "also outputs the per-class vote shares. Edu-KNN in the foundations plugin "
+        "has the same ports and runs the same vote by brute force, outputting the "
+        "distances, so the two swap without rewiring."
     )
 
     @classmethod

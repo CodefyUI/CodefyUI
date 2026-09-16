@@ -45,11 +45,13 @@ _OPS = {
 class EduFilterRowsNode(BaseNode):
     NODE_NAME = "FilterRows"
     CATEGORY = "EDU"
-    DESCRIPTION = (
-        "依條件篩選 2D 表格的列：只保留「指定欄 op 門檻」成立的列（例如 英文 > 80）。"
-        "可用欄名選欄（需連 `columns` 輸入）或用位置 `column_index`。"
-        "輸出篩選後的表、布林列遮罩 mask、以及通過的列數 count。"
-        "verbose 模式會記錄 取欄 → 比較 → 計數 → 索引 四個步驟。"
+    DESCRIPTION = "Rows of a 2D table where a column passes a comparison"
+    DETAILS = (
+        "Pick the column by `column_name`, which needs the `columns` input "
+        "connected, or by position with `column_index`. Alongside the filtered "
+        "table the node outputs the boolean row mask and the number of rows that "
+        "passed. In verbose mode the four steps — pick the column, compare it "
+        "against the threshold, count, index the table — are recorded one by one."
     )
 
     @classmethod

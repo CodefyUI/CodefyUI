@@ -10,7 +10,11 @@ logger = logging.getLogger(__name__)
 class InferenceNode(BaseNode):
     NODE_NAME = "Inference"
     CATEGORY = "IO"
-    DESCRIPTION = "Run inference (forward pass) on a trained model. Sets model to eval mode and disables gradients."
+    DESCRIPTION = "Forward pass on a model in eval mode, gradients off"
+    DETAILS = (
+        "eval() and the move to the selected device both apply to the model that "
+        "was wired in, and stay in effect after the node returns."
+    )
 
     # #254. Two reasons, either one sufficient. (1) ``model.eval()`` is a
     # permanent flip on a module this node was handed, and ``to_device``

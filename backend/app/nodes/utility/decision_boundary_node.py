@@ -26,10 +26,12 @@ from ...core.node_base import (
 class DecisionBoundaryNode(BaseNode):
     NODE_NAME = "DecisionBoundary"
     CATEGORY = "Utility"
-    DESCRIPTION = (
-        "畫已訓練分類器的 2D 決策邊界：吃 Classifier 的 model，把平面鋪成密格、每點"
-        "問分類器分到哪一類，染色成區域，再疊上訓練點。接在 Classifier 後面，換 kind "
-        "邊界就跟著換。看「同一份資料、不同分類器」的邊界形狀差異。"
+    DESCRIPTION = "Classifier's 2D decision regions plus training points"
+    DETAILS = (
+        "The model input comes from a Classifier node: this node calls predict() "
+        "over a grid spanning x_train, and only 2D features are supported. "
+        "grid_steps trades smoothness against time, and show_support_vectors marks "
+        "them when the model is an SVM."
     )
 
     @classmethod

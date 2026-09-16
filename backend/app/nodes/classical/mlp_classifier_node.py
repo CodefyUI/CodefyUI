@@ -29,12 +29,14 @@ from ...core.node_base import (
 class MLPClassifierNode(BaseNode):
     NODE_NAME = "MLPClassifier"
     CATEGORY = "Classical"
-    DESCRIPTION = (
-        "Feed-forward neural network classifier (sklearn). One or more "
-        "hidden layers, ReLU/tanh activations, Adam optimiser. Drop-in "
-        "replacement for the linear classifiers — same I/O — so the "
-        "concentric-circles failure → MLP rescue narrative needs only a "
-        "node-type swap."
+    DESCRIPTION = "Trains a feed-forward network to label each query"
+    DETAILS = (
+        "sklearn's MLPClassifier, trained with Adam. hidden_sizes is a "
+        "comma-separated list of layer widths, so '16,16' means two layers of 16 "
+        "neurons, and activation set to identity leaves the whole network linear. "
+        "It also outputs the softmax probabilities and the final training loss. "
+        "Its ports match the linear classifiers, so swapping one out for this node "
+        "needs no rewiring."
     )
 
     @classmethod

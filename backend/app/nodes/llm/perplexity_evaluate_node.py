@@ -135,14 +135,13 @@ def _sum_cross_entropy(
 class PerplexityEvaluateNode(BaseNode):
     NODE_NAME = "PerplexityEvaluate"
     CATEGORY = "LLM"
-    DESCRIPTION = (
-        "Scores a trained language model on held-out text. It runs the whole "
-        "dataset, averages the cross-entropy over every token it scored, and "
-        "reports exp(that) as perplexity -- roughly how many equally likely "
-        "tokens the model was choosing between at each step, so a uniform "
-        "guess over a 50257-token vocabulary is 50257. The average is PER "
-        "TOKEN and specific to this dataset and tokenizer, so only compare "
-        "numbers measured the same way."
+    DESCRIPTION = "Score a model on held-out text: loss and perplexity"
+    DETAILS = (
+        "Perplexity is $\\exp(\\text{val\\_loss})$, roughly how many equally likely "
+        "tokens the model was choosing between at each step, so a uniform guess "
+        "over a 50257-token vocabulary scores 50257. The average is per token and "
+        "specific to this dataset and tokenizer, so only compare numbers measured "
+        "the same way. Labels of -100 are skipped."
     )
 
     # Same reasoning as EvaluateModel (#254), one modality over. Two halves:

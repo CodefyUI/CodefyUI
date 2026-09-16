@@ -16,7 +16,13 @@ from ...core.node_base import (
 class HuggingFaceDatasetNode(BaseNode):
     NODE_NAME = "HuggingFaceDataset"
     CATEGORY = "Data"
-    DESCRIPTION = "Load an image-classification dataset from HuggingFace Hub"
+    DESCRIPTION = "Load an image-classification dataset from HuggingFace"
+    DETAILS = (
+        "Loading runs through the HuggingFace `datasets` package, and needs "
+        "network access on the first run. Set `image_column` and `label_column` "
+        "when the repo does not use the default `image` / `label` names; `split` "
+        "also accepts slice syntax such as train[:1000]."
+    )
 
     # Hits the network and the on-disk HuggingFace cache. Neither the remote
     # revision nor the cached files are visible to the cache key, so a hit

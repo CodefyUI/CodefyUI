@@ -29,11 +29,13 @@ from app.core.node_base import (
 class FFNLayerNode(BaseNode):
     NODE_NAME = "FFNLayer"
     CATEGORY = "EDU"
-    DESCRIPTION = (
-        "一個全連接（線性）層，串成多層 MLP 的積木。傳的是「正在組裝的網路」：每接一顆"
-        "就往尾端加一個 nn.Linear(in_features, out_features)，輸入維度自動從上一層推得"
-        "（第一顆用 in_features 參數）。跟 ActivationLayer 交錯串、最後接 TrainAndEvaluate。"
-        "面板會顯示每層參數量 = out_features x in_features + out_features。"
+    DESCRIPTION = "Append a fully connected layer to the model so far"
+    DETAILS = (
+        "Each node appends an `nn.Linear(in_features, out_features)`. The input "
+        "width is read off the previous layer, so only the first FFNLayer in a "
+        "chain uses `in_features`. Parameters per layer = out_features × "
+        "in_features + out_features. Interleave these with ActivationLayer to "
+        "build an MLP, and end the chain at TrainAndEvaluate."
     )
 
     @classmethod

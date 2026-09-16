@@ -30,7 +30,12 @@ SCHEDULER_STATE_DISCARDED_KIND = "checkpoint_scheduler_state_discarded"
 class CheckpointSaverNode(BaseNode):
     NODE_NAME = "CheckpointSaver"
     CATEGORY = "IO"
-    DESCRIPTION = "Save a full training checkpoint (model + optimizer + LR schedule + epoch + loss) for resuming training later"
+    DESCRIPTION = "Save model, optimizer, epoch and loss history"
+    DETAILS = (
+        "The learning-rate schedule and the fp16 loss scale are stored too when "
+        "those inputs are wired. A relative path lands in the models directory, "
+        "and CheckpointLoader reads the same format."
+    )
 
     # The write to disk IS this node's output. A cache hit returns the
     # recorded {"path": ..., "model": ...} without calling execute() again,
@@ -106,7 +111,14 @@ class CheckpointSaverNode(BaseNode):
 class CheckpointLoaderNode(BaseNode):
     NODE_NAME = "CheckpointLoader"
     CATEGORY = "IO"
-    DESCRIPTION = "Load a training checkpoint to resume training (restores model + optimizer + LR schedule + epoch)"
+    DESCRIPTION = "Restore model and optimizer, output the saved epoch"
+    DETAILS = (
+        "The epoch output belongs on TrainingLoop.start_epoch, and the loss "
+        "history and the fp16 loss scale come back with it. The LR schedule is "
+        "restored only when an LRScheduler is wired into lr_scheduler; without one "
+        "the stored position is discarded with an advisory and TrainingLoop "
+        "replays start_epoch steps instead."
+    )
 
     # #254. This node's product is a MUTATION of the model, optimizer and
     # scheduler it was handed -- ``load_state_dict`` writes in place -- and

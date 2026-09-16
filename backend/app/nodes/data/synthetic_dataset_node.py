@@ -35,10 +35,12 @@ from ...core.node_base import (
 class SyntheticDatasetNode(BaseNode):
     NODE_NAME = "SyntheticDataset"
     CATEGORY = "Data"
-    DESCRIPTION = (
-        "Generate a 2D toy dataset (concentric circles, two moons, or "
-        "isotropic blobs) via sklearn. Output matches CSVReader's shape, "
-        "so TrainTestSplit and classifier nodes plug in directly."
+    DESCRIPTION = "Generate a 2D toy dataset such as circles or moons"
+    DETAILS = (
+        "Backed by sklearn's make_circles / make_moons / make_blobs / "
+        "make_classification, with `seed` fixing the points. The three outputs "
+        "match CSVReader's, so TrainTestSplit and the classifier nodes take them "
+        "unchanged."
     )
 
     @classmethod

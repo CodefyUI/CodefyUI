@@ -32,13 +32,13 @@ _DRAW_CHUNK = 8192
 class DataMixDatasetNode(BaseNode):
     NODE_NAME = "DataMixDataset"
     CATEGORY = "LLM"
-    DESCRIPTION = (
-        "Mix 2-6 text corpora into one dataset of raw text rows — by "
-        "weighted, seeded interleaving (rows drawn proportionally, without "
-        "replacement, deterministic per seed) or ordered concatenation "
-        "(corpus_1 fully, then corpus_2, ... — a curriculum). Feed "
-        "TextCorpusDataset outputs in and the result into "
-        "LMTokenizedDataset to study data mixtures."
+    DESCRIPTION = "Mix 2-6 text corpora: weighted draws or in order"
+    DETAILS = (
+        "interleave draws rows proportionally without replacement and is "
+        "deterministic per seed; a corpus that empties stops being drawn and the "
+        "rest renormalise. concat runs corpus_1 to the end, then corpus_2. The "
+        "mixture stores only (source, row) indices and reads rows lazily. Feed "
+        "TextCorpusDataset outputs in and the result into LMTokenizedDataset."
     )
 
     # Consumes live DATASET handles a fingerprint cannot describe (the

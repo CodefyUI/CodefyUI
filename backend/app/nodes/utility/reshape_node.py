@@ -6,7 +6,7 @@ from ...core.node_base import BaseNode, DataType, ParamDefinition, ParamType, Po
 class ReshapeNode(BaseNode):
     NODE_NAME = "Reshape"
     CATEGORY = "Utility"
-    DESCRIPTION = "Reshape a tensor to a specified shape"
+    DESCRIPTION = "Reshape a tensor to a given shape"
 
     @classmethod
     def define_inputs(cls) -> list[PortDefinition]:

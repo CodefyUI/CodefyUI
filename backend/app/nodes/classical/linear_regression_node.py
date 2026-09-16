@@ -22,10 +22,12 @@ from ...core.node_base import (
 class LinearRegressionNode(BaseNode):
     NODE_NAME = "LinearRegression"
     CATEGORY = "Classical"
-    DESCRIPTION = (
-        "Ordinary-least-squares linear regression (sklearn). Closed-form fit, "
-        "no iteration. Outputs coefficients, intercept, and predictions for a "
-        "query set. The first line of every regression curriculum."
+    DESCRIPTION = "Least squares: predictions, coefficients, intercept"
+    DETAILS = (
+        "sklearn's closed-form OLS, $\\beta = (X^\\top X)^{-1} X^\\top y$, solved by "
+        "SVD when X is rank-deficient, so there is no learning rate and no "
+        "iteration. Targets may be one column or several, and with fit_intercept "
+        "off the fit passes through the origin."
     )
 
     @classmethod

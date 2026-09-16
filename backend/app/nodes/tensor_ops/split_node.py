@@ -29,9 +29,11 @@ def _resolve_chunks(params: dict[str, Any] | None) -> int:
 class SplitNode(BaseNode):
     NODE_NAME = "Split"
     CATEGORY = "Tensor Operations"
-    DESCRIPTION = (
-        "Split a tensor into N chunks along a dimension. The number of "
-        "output ports (chunk_0, chunk_1, ...) follows the `chunks` param."
+    DESCRIPTION = "Cut a tensor into chunks along a dimension"
+    DETAILS = (
+        "Sizes follow `torch.chunk`, so a dimension that does not divide evenly "
+        "leaves the last piece smaller and can yield fewer chunks than there are "
+        "output ports."
     )
 
     @classmethod

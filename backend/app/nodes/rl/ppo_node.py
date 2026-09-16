@@ -6,7 +6,13 @@ from ...core.node_base import BaseNode, DataType, ParamDefinition, ParamType, Po
 class PPONode(BaseNode):
     NODE_NAME = "PPO"
     CATEGORY = "RL"
-    DESCRIPTION = "Create a PPO actor-critic network for reinforcement learning"
+    DESCRIPTION = "Actor-critic: shared trunk, action and value heads"
+    DETAILS = (
+        "Two Linear layers with Tanh feed a softmax actor and a scalar critic, and "
+        "forward returns (action_probs, value). The state input is optional and "
+        "only runs one forward pass through the freshly built network; without it "
+        "action is all zeros."
+    )
 
     # #253/#254: a weight-owning module handed out by a node with no
     # required input is a cache root nothing can invalidate, so a hit gives

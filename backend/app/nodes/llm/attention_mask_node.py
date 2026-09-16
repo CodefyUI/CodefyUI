@@ -33,10 +33,12 @@ from ...core.node_base import (
 class AttentionMaskNode(BaseNode):
     NODE_NAME = "AttentionMask"
     CATEGORY = "LLM"
-    DESCRIPTION = (
-        "Generate a boolean attention mask (True = blocked). `causal` blocks "
-        "future positions for GPT-style decoders; `padding` blocks the columns "
-        "matching the pad token so attention doesn't bleed into padding slots."
+    DESCRIPTION = "Boolean [seq, seq] mask where True means blocked"
+    DETAILS = (
+        "causal blocks strictly future positions, the GPT-style decoder pattern; "
+        "padding blocks every column whose token equals pad_token. Sequence length "
+        "comes from the tokens list, or from dim 0 of the tensor input. Downstream "
+        "attention consumes it as scores.masked_fill(mask, -inf)."
     )
 
     @classmethod

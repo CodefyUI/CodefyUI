@@ -12,7 +12,12 @@ if TYPE_CHECKING:
 class ImageReaderNode(BaseNode):
     NODE_NAME = "ImageReader"
     CATEGORY = "IO"
-    DESCRIPTION = "Read an image file from disk and output as a tensor (C, H, W) with values in [0, 1]"
+    DESCRIPTION = "Read an image into a (C, H, W) tensor in [0, 1]"
+    DETAILS = (
+        "A bare filename resolves in the uploaded-images directory first, then as "
+        "written, relative to the working directory of the process running the "
+        "graph. resize=0 keeps the original size."
+    )
 
     # #144: cacheable again -- cache_fingerprint() below folds the resolved
     # file's (size, mtime, and for small files a content hash) into the

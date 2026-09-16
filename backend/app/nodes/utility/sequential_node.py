@@ -122,10 +122,12 @@ def _build_layer(cfg: dict) -> "torch.nn.Module":
 class SequentialModelNode(StatefulModuleMixin, BaseNode):
     NODE_NAME = "SequentialModel"
     CATEGORY = "Training"
-    DESCRIPTION = (
-        "Build an nn.Sequential model visually. "
-        "Double-click to open the architecture editor and drag-and-drop layers. "
-        "Outputs a MODEL that can be connected to Optimizer and TrainingLoop."
+    DESCRIPTION = "Build a network in the architecture editor"
+    DETAILS = (
+        "Double-click the node to edit the layer graph. It is a DAG, so branches "
+        "and merges (Add, Concat, Multiply, Subtract, Mean, Stack) work as well as "
+        "a straight stack, and the built module connects to Optimizer and "
+        "TrainingLoop."
     )
 
     #: The whole architecture lives in one param, so the layer spec IS the

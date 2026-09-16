@@ -7,7 +7,13 @@ from ...core.stateful_module import StatefulModuleMixin
 class GRUNode(StatefulModuleMixin, BaseNode):
     NODE_NAME = "GRU"
     CATEGORY = "RNN"
-    DESCRIPTION = "Apply GRU recurrent layer to input sequence (wraps nn.GRU). Gates: reset, update."
+    DESCRIPTION = "Two-gate scan of a sequence: all states and the last"
+    DETAILS = (
+        "Backed by nn.GRU, whose gates are reset and update. The `output` port "
+        "carries the hidden state at every time step, and `hidden` carries the "
+        "final one, shaped (num_layers * directions, batch, hidden_size). With "
+        "batch_first on, the input is (batch, seq_len, input_size)."
+    )
 
     structural_params = (
         "input_size", "hidden_size", "num_layers", "batch_first", "bidirectional",

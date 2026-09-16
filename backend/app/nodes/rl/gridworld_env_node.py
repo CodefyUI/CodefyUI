@@ -164,13 +164,14 @@ def _parse_traps(spec: str, size: int) -> list[tuple[int, int]]:
 class GridWorldEnvNode(BaseNode):
     NODE_NAME = "GridWorldEnv"
     CATEGORY = "RL"
-    DESCRIPTION = (
-        "The textbook gridworld, with no gym dependency. Agent starts top-left, "
-        "goal is bottom-right, traps sit where you put them. Reward is sparse and "
-        "terminal by default (0 per step, +1 at the goal, -1 in a trap), which is "
-        "the structure that makes credit assignment hard. State is a one-hot over "
-        "cells, so a single Linear layer is an exactly-expressive tabular policy. "
-        "Pair with PolicyRollout."
+    DESCRIPTION = "Square grid with a goal corner and traps"
+    DETAILS = (
+        "The agent starts top-left and the goal is the opposite corner: reaching "
+        "it ends the episode with goal_reward, a trap ends it with trap_reward, "
+        "and every other step pays step_reward (0 by default). It needs no gym "
+        "install. The observation is a one-hot over cells, so state_dim is size * "
+        "size and there are always 4 actions; a single Linear layer over that "
+        "one-hot is exactly a tabular policy."
     )
 
     #: Builds a fresh environment object each run. Nothing here owns weights,

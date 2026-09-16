@@ -59,7 +59,8 @@ After each action, the server rediscovers custom nodes, plugin packs, and preset
 |--------|---------|
 | `NODE_NAME` | Unique identifier used in graph JSON (e.g. `"MyNode"`). |
 | `CATEGORY` | Palette grouping and color. |
-| `DESCRIPTION` | User-facing help text (LaTeX is supported). |
+| `DESCRIPTION` | One line for the node palette: what the node does and what it outputs. Keep it to about 85 characters — the list shows it under the node's name, two lines deep. (LaTeX is supported.) |
+| `DETAILS` | Optional. The rest of the documentation — the library it wraps, the formula, caveats, which sibling node to reach for instead. Shown in the config panel and the node's Docs tab, never in the palette list. Leave it empty when the summary already says everything. |
 | `define_inputs()` / `define_outputs()` | Return `PortDefinition` lists — each has a `name`, a `data_type`, and optional `description` / `optional` / `media`. |
 | `define_params()` | Return `ParamDefinition` lists — `int`, `float`, `string`, `bool`, `select`, file pickers (`model_file`, `image_file`, `data_file`), `tensor_grid`, `code` (a multi-line editor with syntax highlighting; still an ordinary string param), or `secret`, with `default`, `options`, `min_value`/`max_value`, and `visible_when`. A `secret` param (e.g. an API key) is masked in the editor and its value is **never persisted** — it is blanked on save, export, and publish, so use an environment variable to supply it to published apps. |
 | `define_outputs_dynamic(params)` / `define_inputs_dynamic(params)` | Optional. Change output or input ports based on parameter values, such as `Split`'s `chunks` or `PythonScript`'s `input_ports`. The static methods must describe the default parameters because the palette uses them; validation, rendering, and preset export use the dynamic definitions. |

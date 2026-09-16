@@ -113,14 +113,13 @@ class TextEmbeddingNode(BaseNode):
     # The whole node, not just some options: every backend it has comes out
     # of this pack, so an install without it cannot run the node at all.
     REQUIRES_PACK = SENTENCE_PACK
-    DESCRIPTION = (
-        "Turn each text into one dense vector with a pre-trained "
-        "sentence-transformer, so texts that mean the same thing end up "
-        "close together (cosine near 1). This is the encoder behind semantic "
-        "search and RAG: embed your documents once, embed the question, and "
-        "compare. Needs the sentence-embeddings pack from Package Center; "
-        "the four bundled models are small (22M-118M parameters) and run on "
-        "CPU."
+    DESCRIPTION = "One dense vector per text, from a pre-trained encoder"
+    DETAILS = (
+        "Texts that mean the same thing come back as vectors pointing the same "
+        "way, so cosine near 1 is the test. Needs the sentence-embeddings pack "
+        "from Package Center; the four models are small (22M-118M parameters) and "
+        "run on CPU. Connect either texts (a chunker's list) or text (a single "
+        "string) — wiring both raises."
     )
 
     # A function of its inputs: the same texts, model and params give the

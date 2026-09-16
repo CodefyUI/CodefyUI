@@ -26,12 +26,13 @@ class DiffusionTrainingLoopNode(BaseNode):
     NODE_NAME = "DiffusionTrainingLoop"
     CATEGORY = "Diffusion"
     cacheable = False
-    DESCRIPTION = (
-        "訓練一個會去雜訊的 U-Net（DDPM 訓練）。每一步：從資料取一張乾淨圖、隨機挑一個時間步 t、"
-        "加上對應強度的雜訊、讓模型預測『剛剛加了什麼雜訊』，用 MSE 比對更新權重。訓練好的 model "
-        "接 DDPMSampler 就能從純雜訊生成新圖。"
-        "注意：這裡的雜訊排程（schedule / num_timesteps / beta_start / beta_end）必須和之後取樣的 "
-        "DDPMSampler 設成一樣，否則生成會壞掉。"
+    DESCRIPTION = "Train a U-Net to predict the added noise (DDPM)"
+    DETAILS = (
+        "Each step noises a clean image at a random timestep and updates the "
+        "weights on the MSE between the predicted and the added noise, returning "
+        "the trained model and the per-epoch loss. The noise schedule set here "
+        "(schedule, num_timesteps, beta_start, beta_end) must match the "
+        "DDPMSampler that samples from it afterwards, or generation breaks."
     )
 
     @classmethod

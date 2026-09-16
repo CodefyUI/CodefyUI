@@ -97,13 +97,13 @@ class TiktokenLMTokenizer:
 class LMTokenizerNode(BaseNode):
     NODE_NAME = "LMTokenizer"
     CATEGORY = "LLM"
-    DESCRIPTION = (
-        "The tokenizer itself, as a reusable object: wire it into "
-        "LMTokenizedDataset to turn a text corpus into training blocks, and "
-        "into the generation nodes so they speak the same token ids the model "
-        "was trained on. gpt2's 50257-token vocabulary is the usual starting "
-        "point. Each encoding downloads its BPE table once, then works "
-        "offline."
+    DESCRIPTION = "A reusable tokenizer: text to tokens and back"
+    DETAILS = (
+        "Wire it into LMTokenizedDataset to pack a corpus, and into the generation "
+        "nodes so they speak the same ids the model was trained on. gpt2's "
+        "50257-token vocabulary is the cheapest to train against; cl100k_base and "
+        "o200k_base pack more text per token but need a wider output layer. Each "
+        "encoding downloads its BPE table once, then works offline."
     )
 
     # Cacheable, and correctly so: the output is a stateless wrapper around a

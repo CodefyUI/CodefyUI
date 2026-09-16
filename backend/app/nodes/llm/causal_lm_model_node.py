@@ -610,13 +610,12 @@ def _resolve_config(params: dict[str, Any]) -> dict[str, Any]:
 class CausalLMModelNode(StatefulModuleMixin, BaseNode):
     NODE_NAME = "CausalLMModel"
     CATEGORY = "LLM"
-    DESCRIPTION = (
-        "A GPT-style decoder-only transformer you can actually train. Outputs "
-        "a MODEL that maps token ids (batch, seq_len) to next-token logits "
-        "(batch, seq_len, vocab_size) -- wire it to Optimizer and "
-        "TrainingLoop like any other model, with LMCrossEntropyLoss as the "
-        "loss. The defaults describe a ~204M-parameter model; shrink d_model "
-        "and n_layers to something a laptop can train in a lesson."
+    DESCRIPTION = "GPT-style decoder-only transformer: next-token logits"
+    DETAILS = (
+        "Wire it to Optimizer and TrainingLoop like any other model, with "
+        "LMCrossEntropyLoss as the loss. The defaults build about 204M parameters; "
+        "shrink d_model and n_layers for something a laptop can train. Editing any "
+        "structural param discards the persisted weights."
     )
 
     # A MODEL output is a live handle, so the cache cannot describe it: the

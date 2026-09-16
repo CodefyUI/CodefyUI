@@ -22,9 +22,13 @@ vi.mock('../shared/ParamField', () => ({
   ),
 }));
 
-// Mock MathText to a plain text container (avoids KaTeX rendering).
+// Mock MathText to a plain text container (avoids KaTeX rendering). The
+// testid is what lets a test count how many of them the header drew, which is
+// how "a node with no details renders no details element" is checked.
 vi.mock('../shared/MathText', () => ({
-  MathText: ({ text, className }: any) => <div className={className}>{text}</div>,
+  MathText: ({ text, className }: any) => (
+    <div className={className} data-testid="mathtext">{text}</div>
+  ),
 }));
 
 function makeParam(overrides: Partial<ParamDefinition> = {}): ParamDefinition {
@@ -119,6 +123,35 @@ describe('NodeConfigPanel — header & accent color', () => {
     seedTab([makeNode({ data: { definition: makeDef({ description: 'A dense layer' }) } })], 'n1');
     render(<NodeConfigPanel />);
     expect(screen.getByText('A dense layer')).toBeInTheDocument();
+  });
+
+  // The palette list shows the summary alone; this panel is where the rest of
+  // it goes, which is the whole point of splitting the two fields.
+  it('renders the details under the summary when the node has them', () => {
+    seedTab(
+      [makeNode({
+        data: {
+          definition: makeDef({
+            description: 'A dense layer',
+            details: 'Wraps nn.Linear. Bias is on unless you turn it off.',
+          }),
+        },
+      })],
+      'n1',
+    );
+    render(<NodeConfigPanel />);
+    expect(screen.getByText('A dense layer')).toBeInTheDocument();
+    expect(
+      screen.getByText('Wraps nn.Linear. Bias is on unless you turn it off.'),
+    ).toBeInTheDocument();
+    expect(screen.getAllByTestId('mathtext')).toHaveLength(2);
+  });
+
+  it('stops after the summary for a node with no details', () => {
+    seedTab([makeNode({ data: { definition: makeDef({ description: 'A dense layer' }) } })], 'n1');
+    render(<NodeConfigPanel />);
+    // Absent from the DOM, not an empty paragraph under the summary.
+    expect(screen.getAllByTestId('mathtext')).toHaveLength(1);
   });
 
   it('falls back to the Utility accent color for an unknown category', () => {

@@ -9,7 +9,11 @@ from app.nodes.io.graph_output_node import GraphOutputNode
 def test_metadata():
     assert GraphOutputNode.NODE_NAME == "GraphOutput"
     assert GraphOutputNode.CATEGORY == "IO"
-    assert "API" in GraphOutputNode.DESCRIPTION  # palette search finds it
+    # Palette search finds it. The word moved from DESCRIPTION to DETAILS when
+    # the summary was cut to one line, and the search reads both, so the check
+    # reads both too -- and case-insensitively, because the search does.
+    copy = f"{GraphOutputNode.DESCRIPTION} {GraphOutputNode.DETAILS}".lower()
+    assert "api" in copy
 
 
 def test_ports():

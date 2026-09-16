@@ -26,9 +26,14 @@ from ...core.node_base import (
 class RandomForestClassifierNode(BaseNode):
     NODE_NAME = "RandomForestClassifier"
     CATEGORY = "Classical"
-    DESCRIPTION = (
-        "隨機森林分類器（sklearn）：多棵決策樹投票，比單棵樹平滑、穩定。介面與 "
-        "SVMClassifier / DecisionTreeClassifier / KNN 一致（吃標籤、吐標籤），可直接互換。"
+    DESCRIPTION = "Labels each query by a vote of many decision trees"
+    DETAILS = (
+        "sklearn's RandomForestClassifier: every tree fits a bootstrap resample of "
+        "the rows and their votes come out as per-class probabilities, which makes "
+        "the boundary smoother than a single decision tree's. n_estimators sets "
+        "how many trees, more being steadier and slower, and max_depth 0 leaves "
+        "their depth unlimited. Its inputs and predictions port match the other "
+        "classical classifiers."
     )
 
     @classmethod

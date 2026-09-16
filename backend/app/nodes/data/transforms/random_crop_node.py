@@ -10,11 +10,10 @@ from ._base import TransformStepNode
 
 class RandomCropNode(TransformStepNode):
     NODE_NAME = "RandomCrop"
-    DESCRIPTION = (
-        "Pad, then take a random size x size window. With size 32 and "
-        "padding 4 this is the standard CIFAR-10 augmentation: the object "
-        "lands a few pixels off centre each epoch, so the model stops "
-        "relying on where it was."
+    DESCRIPTION = "Pad, then take a random size x size window"
+    DETAILS = (
+        "size 32 with padding 4 is the standard CIFAR-10 setting: the object lands "
+        "a few pixels off centre each epoch."
     )
 
     @classmethod

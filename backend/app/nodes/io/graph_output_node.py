@@ -22,10 +22,10 @@ from ...core.node_base import (
 class GraphOutputNode(BaseNode):
     NODE_NAME = "GraphOutput"
     CATEGORY = "IO"
-    DESCRIPTION = (
-        "Declares a named output of this graph — returned to API callers by "
-        "POST /api/graph/run under this node's 'name'. Connect the value you "
-        "want the graph to return."
+    DESCRIPTION = "Declare a named graph output from the value wired in"
+    DETAILS = (
+        "POST /api/graph/run returns that value under this node's 'name', and the "
+        "CLI runner reads the same contract."
     )
 
     @classmethod

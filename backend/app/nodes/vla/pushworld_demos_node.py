@@ -129,13 +129,14 @@ def _collect(
 class PushWorldDemosNode(BaseNode):
     NODE_NAME = "PushWorldDemos"
     CATEGORY = "VLA"
-    DESCRIPTION = (
-        "Roll the scripted expert through PushWorld episodes and emit "
-        "behavior-cloning samples ((image, instruction bytes, action "
-        "chunk), action chunk) plus a held-out split and a demo video "
-        "tensor for VideoWrite. demo_noise executes DART-style perturbed "
-        "actions while recording the expert's - the recovery data "
-        "closed-loop control needs."
+    DESCRIPTION = "Run the scripted expert for behavior-cloning samples"
+    DETAILS = (
+        "A sample is ((image, instruction bytes, action chunk), action chunk): the "
+        "chunk also sits inside the data so a flow-matching model can noise it in "
+        "forward. `demo_noise` is a DART-style perturbation of the action actually "
+        "executed while the expert's stays the label, which produces recovery "
+        "states. `holdout_episodes` collects a split from a disjoint seed stream, "
+        "and `demo_video` feeds VideoWrite."
     )
 
     # Consumes the live env handle and owns a multi-second collection pass

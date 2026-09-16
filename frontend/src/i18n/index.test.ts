@@ -176,6 +176,24 @@ describe('tn() with a synthetic node table (description fallback arm)', () => {
     // Sanity: the param lookup on the same synthetic node still resolves.
     expect(useI18n.getState().tn('FakeNode', 'param.foo', 'FB')).toBe('譯文');
   });
+
+  it('translates details, and falls back per field rather than per node', async () => {
+    // Most nodes have a summary and no details at all, so the two fields have
+    // to miss independently: a translated summary must not drag an untranslated
+    // details line into Chinese, or vice versa.
+    vi.doMock('./nodeLocales/zh-TW', () => ({
+      default: {
+        Both: { description: '摘要', details: '細節' },
+        SummaryOnly: { description: '摘要' },
+      },
+    }));
+    const { useI18n } = await import('./index');
+    useI18n.getState().setLocale('zh-TW');
+    expect(useI18n.getState().tn('Both', 'description', 'FB')).toBe('摘要');
+    expect(useI18n.getState().tn('Both', 'details', 'FB')).toBe('細節');
+    expect(useI18n.getState().tn('SummaryOnly', 'description', 'FB')).toBe('摘要');
+    expect(useI18n.getState().tn('SummaryOnly', 'details', 'EN DETAILS')).toBe('EN DETAILS');
+  });
 });
 
 describe('getInitialLocale (module init branches)', () => {

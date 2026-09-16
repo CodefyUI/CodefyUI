@@ -82,7 +82,14 @@ def _reject_inapplicable(
 class OptimizerNode(BaseNode):
     NODE_NAME = "Optimizer"
     CATEGORY = "Training"
-    DESCRIPTION = "Create an optimizer for model parameters"
+    DESCRIPTION = "Turn gradients into weight updates: 9 algorithms"
+    DETAILS = (
+        "Nine torch algorithms. Hyperparameters are shown only under the "
+        "algorithms that accept them (momentum for SGD and RMSprop, betas for the "
+        "Adam family, amsgrad for Adam and AdamW), and a non-zero weight_decay on "
+        "an algorithm that has none, such as Rprop, fails the run rather than "
+        "being ignored."
+    )
 
     # #254. An optimizer is a live handle: it holds references to the
     # model's parameters and accumulates state (momentum buffers, Adam's

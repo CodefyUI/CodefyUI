@@ -1260,9 +1260,14 @@ class TrainingLoopNode(BaseNode):
 
     NODE_NAME = "TrainingLoop"
     CATEGORY = "Training"
-    DESCRIPTION = (
-        "Run a training loop with optional validation, early stopping, "
-        "learning rate scheduling, and gradient clipping."
+    DESCRIPTION = "Train a model for n epochs; outputs model and losses"
+    DETAILS = (
+        "Validation, early stopping, LR scheduling, gradient clipping, mixed "
+        "precision and gradient accumulation are all optional. A run resumes by "
+        "feeding CheckpointLoader.epoch into start_epoch; epoch numbers are "
+        "absolute, while the losses arrays cover only the epochs this call ran. "
+        "Stop writes an interrupt checkpoint and returns the partial curves "
+        "instead of raising."
     )
 
     #: #253. Training IS a side effect: it mutates the incoming model's

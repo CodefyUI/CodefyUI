@@ -6,7 +6,7 @@ from ...core.node_base import BaseNode, DataType, ParamDefinition, ParamType, Po
 class ScalarMultiplyNode(BaseNode):
     NODE_NAME = "ScalarMultiply"
     CATEGORY = "Tensor Operations"
-    DESCRIPTION = "Multiply a tensor by a constant scalar (no second input needed)."
+    DESCRIPTION = "Multiply every element of a tensor by a constant"
 
     @classmethod
     def define_inputs(cls) -> list[PortDefinition]:

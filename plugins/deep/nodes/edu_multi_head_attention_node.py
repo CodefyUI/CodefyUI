@@ -66,11 +66,12 @@ class _MultiHeadProjections(nn.Module):
 class EduMultiHeadAttentionNode(StatefulModuleMixin, BaseNode):
     NODE_NAME = "Edu-MultiHeadAttention"
     CATEGORY = "LLM"
-    DESCRIPTION = (
-        "Toy multi-head self-attention. Splits embed_dim across num_heads, runs "
-        "scaled dot-product attention per head, then mixes with W_o. Outputs "
-        "[H, seq, seq] weights so each head's attention pattern can be "
-        "visualised side-by-side."
+    DESCRIPTION = "Multi-head self-attention; [H, seq, seq] weights"
+    DETAILS = (
+        "embed_dim is split evenly across num_heads, scaled dot-product attention "
+        "runs inside each head, and the concatenated heads are mixed by $W_o$. "
+        "`causal` blocks every position from attending to its right; an optional "
+        "[seq, seq] mask is combined with it by OR."
     )
 
     structural_params = ("embed_dim", "num_heads", "seed")

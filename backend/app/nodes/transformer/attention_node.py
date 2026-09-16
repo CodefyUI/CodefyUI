@@ -8,9 +8,13 @@ from ...core.stateful_module import StatefulModuleMixin
 class MultiHeadAttentionNode(StatefulModuleMixin, BaseNode):
     NODE_NAME = "MultiHeadAttention"
     CATEGORY = "Transformer"
-    DESCRIPTION = (
-        "Apply multi-head attention mechanism (wraps nn.MultiheadAttention). "
-        "Core: $\\text{Attention}(Q,K,V)=\\text{softmax}(\\frac{QK^T}{\\sqrt{d_k}})V$"
+    DESCRIPTION = "Attention over query, key and value, plus its weights"
+    DETAILS = (
+        "The layer is PyTorch's `nn.MultiheadAttention`. "
+        "$\\text{Attention}(Q,K,V)=\\text{softmax}(\\frac{QK^T}{\\sqrt{d_k}})V$, with "
+        "`embed_dim` split across `num_heads`. Inputs are (seq, batch, embed) "
+        "unless `batch_first` puts the batch first, and the returned weights are "
+        "averaged over the heads."
     )
 
     structural_params = ("embed_dim", "num_heads", "batch_first")

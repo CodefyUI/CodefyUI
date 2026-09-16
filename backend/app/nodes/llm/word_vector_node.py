@@ -137,15 +137,15 @@ def _vocab_index(backend: str) -> dict[str, int]:
 class WordVectorNode(BaseNode):
     NODE_NAME = "WordVector"
     CATEGORY = "LLM"
-    DESCRIPTION = (
-        "Look up a vector for each input word. Pre-trained embeddings place "
-        "related words near each other, so $king - man + woman \\approx "
-        "queen$. demo-16d is a hand-built 59-word toy vocabulary that ships "
-        "offline and makes the analogy exact; glove-50d is the real "
-        "400k-word GloVe table (word-vectors pack), where the analogy is "
-        "approximate; the sentence-transformer backends (sentence-embeddings "
-        "pack) run each word through a modern encoder, which is messier "
-        "still for single words but is what real retrieval systems use."
+    DESCRIPTION = "Look up one vector per input word, plus those found"
+    DETAILS = (
+        "Pre-trained vectors place related words near each other, so $king - man + "
+        "woman \\approx queen$. demo-16d is a hand-built 59-word vocabulary that "
+        "ships offline and makes that analogy exact; glove-50d is the real "
+        "400k-word GloVe table from the word-vectors pack, where it is only "
+        "approximate; the sentence-transformer backends, from the "
+        "sentence-embeddings pack, run each word through a modern encoder, which "
+        "is messier still for single words."
     )
 
     @classmethod

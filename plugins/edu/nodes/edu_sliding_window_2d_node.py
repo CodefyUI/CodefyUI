@@ -70,11 +70,13 @@ def _flatten(x: Any) -> list[float]:
 class EduSlidingWindow2DNode(BaseNode):
     NODE_NAME = "SlidingWindow2D"
     CATEGORY = "EDU"
-    DESCRIPTION = (
-        "在影像上滑動一個 kernel 做加權加總（cross-correlation）。吃 (C,H,W) 影像"
-        "（單通道 (H,W) 也接），對每個通道套用同一個 kernel，輸出同階影像。"
-        "選內建 3x3 preset（模糊 Blur / 邊緣 EdgeDetection / 銳化 Sharpen / 垂直邊緣 "
-        "VerticalEdge）或切到 Custom 自填 NxN 數字。padding=0 時邊長各縮 k-1。"
+    DESCRIPTION = "Slide a kernel over an image, weighted sum per window"
+    DETAILS = (
+        "Takes a (C, H, W) image, or a single-channel (H, W), and applies the same "
+        "kernel to every channel. `preset` offers four 3×3 kernels — blur, edge "
+        "detection, sharpen, vertical edge — or Custom for an N×N grid you fill in "
+        "yourself; with padding=0 each side shrinks by k-1. The operation is "
+        "cross-correlation, so the kernel is not flipped."
     )
 
     @classmethod

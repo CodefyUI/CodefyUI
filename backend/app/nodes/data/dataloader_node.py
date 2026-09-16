@@ -13,7 +13,11 @@ DEFAULT_PREFETCH_FACTOR = 2
 class DataLoaderNode(BaseNode):
     NODE_NAME = "DataLoader"
     CATEGORY = "Data"
-    DESCRIPTION = "Wrap a dataset in a DataLoader for batched iteration"
+    DESCRIPTION = "Split a dataset into batches for training"
+    DETAILS = (
+        "`shuffle` reorders the data every epoch from a generator seeded by the "
+        "run, so the epoch order depends on the seed alone."
+    )
 
     @classmethod
     def define_inputs(cls) -> list[PortDefinition]:

@@ -485,7 +485,14 @@ def _full_model_refusal(p: "Path", exc: Exception) -> str:
 class ModelLoaderNode(BaseNode):
     NODE_NAME = "ModelLoader"
     CATEGORY = "IO"
-    DESCRIPTION = "Load model weights from a .pt/.pth file into a model, or load a full saved model"
+    DESCRIPTION = "Load weights into a model, or a whole saved model"
+    DETAILS = (
+        "state_dict mode needs a model wired in and reads .pt, .pth or "
+        ".safetensors. full_model mode rebuilds the saved module itself under "
+        "torch's restricted unpickler, so it accepts stock torch.nn layers and "
+        "CodefyUI's own layers and refuses everything else, including classes from "
+        "custom nodes and plugins."
+    )
 
     # #254. In ``state_dict`` mode this node's product is a MUTATION of the
     # model it was handed -- ``load_state_dict`` writes in place -- and a

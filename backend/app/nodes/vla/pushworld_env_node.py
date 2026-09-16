@@ -249,13 +249,13 @@ class PushWorldFactory:
 class PushWorldEnvNode(BaseNode):
     NODE_NAME = "PushWorldEnv"
     CATEGORY = "VLA"
-    DESCRIPTION = (
-        "A language-conditioned 2D push environment (PushT's spirit, pure "
-        "torch): an agent disc, colored pucks, colored ring targets, and an "
-        "instruction naming which puck goes to which target. With "
-        "distractors, pixels alone cannot identify the goal - the policy "
-        "must read the instruction. Feed the env handle to PushWorldDemos "
-        "for demonstrations and VLARollout for closed-loop evaluation."
+    DESCRIPTION = "2D push world: the instruction names puck and target"
+    DETAILS = (
+        "Outputs an episode factory that PushWorldDemos and VLARollout build "
+        "seeded episodes from, and a render size VLAModel's `image_size` must "
+        "match. From `n_distractors` 1 upward there are extra pucks and a second "
+        "target, so the instruction is the only way to identify the goal. Pure "
+        "torch in PushT's spirit, with no simulator to install."
     )
 
     # The output is a live handle consumers construct episodes from. It is

@@ -22,11 +22,7 @@ from ...core.node_base import (
 class TextInputNode(BaseNode):
     NODE_NAME = "TextInput"
     CATEGORY = "Data"
-    DESCRIPTION = (
-        "Free-text entry point. Type a string into the inline textarea and "
-        "feed it into a Tokenizer, WordVector, or any other STRING-typed "
-        "input port."
-    )
+    DESCRIPTION = "Type a string and send it to any STRING input port"
 
     @classmethod
     def define_inputs(cls) -> list[PortDefinition]:

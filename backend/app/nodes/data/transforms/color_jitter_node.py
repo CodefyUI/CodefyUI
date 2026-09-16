@@ -10,10 +10,10 @@ from ._base import TransformStepNode
 
 class ColorJitterNode(TransformStepNode):
     NODE_NAME = "ColorJitter"
-    DESCRIPTION = (
-        "Randomly shift brightness, contrast, saturation and hue. Teaches "
-        "the model that a cat under a warm lamp is still a cat. The "
-        "defaults are the recipe most ImageNet training scripts use."
+    DESCRIPTION = "Randomly shift brightness, contrast, saturation, hue"
+    DETAILS = (
+        "The defaults (0.4 for brightness, contrast and saturation, 0.1 for hue) "
+        "are the values common ImageNet recipes use."
     )
 
     @classmethod

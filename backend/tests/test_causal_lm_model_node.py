@@ -253,9 +253,12 @@ def test_the_advertised_default_size_matches_the_declared_defaults():
         f"before updating this number -- and update the copy either way.")
 
     advertised = f"{round(total / 1e6)}M"      # "204M"
-    assert advertised in CausalLMModelNode.DESCRIPTION, (
-        f"the DESCRIPTION does not advertise {advertised}: "
-        f"{CausalLMModelNode.DESCRIPTION!r}")
+    # DETAILS, not DESCRIPTION: the palette summary is one line and a parameter
+    # count is not what it is for. DETAILS is the other half of the same copy,
+    # rendered by the config panel and the Docs tab.
+    copy = f"{CausalLMModelNode.DESCRIPTION} {CausalLMModelNode.DETAILS}"
+    assert advertised in copy, (
+        f"neither DESCRIPTION nor DETAILS advertises {advertised}: {copy!r}")
     # The block itself is deliberately NOT in the message: dumping a few
     # hundred characters of CJK into a Windows cp950 console is not a useful
     # failure report.

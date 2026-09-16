@@ -334,16 +334,15 @@ def _resolve_config(params: dict[str, Any]) -> dict[str, Any]:
 class VLAModelNode(StatefulModuleMixin, BaseNode):
     NODE_NAME = "VLAModel"
     CATEGORY = "VLA"
-    DESCRIPTION = (
-        "A mini vision-language-action policy: vision stem + byte-level "
-        "instruction embedding -> transformer trunk -> chunked action "
-        "expert. head_type picks the paradigm - flow_matching (pi0/SmolVLA "
-        "family: noise the chunk, learn the velocity field, Euler-integrate "
-        "at inference) or regression (direct MSE behavior cloning) - with "
-        "everything else held fixed, so the two can be compared honestly. "
-        "Emits the mode-matched loss_fn itself; wire model+loss_fn to "
-        "TrainingLoop and the PushWorldDemos dataset to a DataLoader. "
-        "Defaults build ~3.2M params."
+    DESCRIPTION = "Mini VLA policy: image + instruction to action chunks"
+    DETAILS = (
+        "`head_type` switches between flow_matching (the pi0/SmolVLA recipe: noise "
+        "the chunk, learn the velocity field, Euler-integrate at inference) and "
+        "regression (predict the chunk directly with MSE), everything else held "
+        "fixed. The matched `loss_fn` leaves its own port, so it reaches "
+        "TrainingLoop alongside the model. `chunk` and `image_size` must match the "
+        "demos and env nodes, and the defaults build a policy of about 3.2M "
+        "parameters."
     )
 
     # A MODEL output is a live handle TrainingLoop mutates in place --

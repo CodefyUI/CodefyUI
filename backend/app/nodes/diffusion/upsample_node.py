@@ -33,11 +33,12 @@ from ...core.node_base import (
 class UpsampleNode(BaseNode):
     NODE_NAME = "Upsample"
     CATEGORY = "Diffusion"
-    DESCRIPTION = (
-        "Pure spatial upsampling via F.interpolate — no learnable weights. "
-        "Doubles spatial dims by default. Use this for U-Net decoder paths "
-        "when you don't want the upsampling step to learn (compare with "
-        "`ConvTranspose2d`, which does)."
+    DESCRIPTION = "Scale spatial dims by a factor, no learnable weights"
+    DETAILS = (
+        "The resampling is `F.interpolate`: `mode` picks nearest, bilinear or "
+        "area, and `scale_factor` defaults to 2.0 — a value below 1 shrinks the "
+        "tensor instead. ConvTranspose2d is the counterpart that learns its "
+        "upsampling kernel."
     )
 
     @classmethod

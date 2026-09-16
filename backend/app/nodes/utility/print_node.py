@@ -37,7 +37,7 @@ def _console_safe(text: str) -> str:
 class PrintNode(BaseNode):
     NODE_NAME = "Print"
     CATEGORY = "Utility"
-    DESCRIPTION = "Print input value to console and pass through"
+    DESCRIPTION = "Print a value to the console and pass it through"
 
     @classmethod
     def define_inputs(cls) -> list[PortDefinition]:

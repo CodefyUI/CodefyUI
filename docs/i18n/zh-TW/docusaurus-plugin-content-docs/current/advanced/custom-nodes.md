@@ -59,7 +59,8 @@ class MyNode(BaseNode):
 |--------|---------|
 | `NODE_NAME` | 在圖 JSON 中使用的唯一識別碼（例如 `"MyNode"`）。 |
 | `CATEGORY` | 面板的分組與顏色。 |
-| `DESCRIPTION` | 面向使用者的說明文字（支援 LaTeX）。 |
+| `DESCRIPTION` | 節點列表的一行說明：這個節點做什麼、輸出什麼。控制在約 85 個字元以內，列表在節點名稱下方最多顯示兩行。（支援 LaTeX。） |
+| `DETAILS` | 選填。說明的其餘部分——包裝了哪個函式庫、公式、限制、什麼情況該改用別的節點。只顯示在節點設定面板與節點的 Docs 分頁，不會出現在左側列表。一行說明已經講完時就留空。 |
 | `define_inputs()` / `define_outputs()` | 回傳 `PortDefinition` 清單——每個都有一個 `name`、一個 `data_type`，以及選用的 `description` / `optional` / `media`。 |
 | `define_params()` | 回傳 `ParamDefinition` 清單——`int`、`float`、`string`、`bool`、`select`、檔案選擇器（`model_file`、`image_file`、`data_file`）、`tensor_grid`、`code`（具語法標示的多行編輯器；仍是普通的 string 參數），或 `secret`，並可帶有 `default`、`options`、`min_value`/`max_value` 與 `visible_when`。`secret` 參數（例如 API key）在編輯器裡會被遮罩，而且它的值**永遠不會被保存**——存檔、匯出與發佈時都會被清空，所以要把它提供給已發佈的應用程式，請改用環境變數。 |
 | `define_outputs_dynamic(params)` / `define_inputs_dynamic(params)` | 選用。依參數值變更輸出或輸入連接埠，例如 `Split` 的 `chunks` 或 `PythonScript` 的 `input_ports`。靜態方法必須描述預設參數，因為節點面板會使用這些定義；驗證、渲染與預設模組匯出會使用動態定義。 |

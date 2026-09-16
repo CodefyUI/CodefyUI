@@ -67,11 +67,12 @@ class _CrossAttentionProjections(nn.Module):
 class EduCrossAttentionNode(StatefulModuleMixin, BaseNode):
     NODE_NAME = "Edu-CrossAttention"
     CATEGORY = "Diffusion"
-    DESCRIPTION = (
-        "Multi-head cross-attention. $Q$ comes from `query`, $K$ and $V$ from "
-        "`context` — they may have different sequence lengths. Outputs a "
-        "rectangular [H, Q_seq, K_seq] attention map showing how each "
-        "query position attended to each context token."
+    DESCRIPTION = "Multi-head attention: `query` attends to `context`"
+    DETAILS = (
+        "$Q$ comes from `query`, $K$ and $V$ from `context`. `query` and `context` "
+        "may have different sequence lengths, so the output mirrors `query` while "
+        "the weights form a rectangular [H, Q_seq, K_seq] map. An optional [Q_seq, "
+        "K_seq] boolean mask blocks positions, where True means blocked."
     )
 
     structural_params = ("embed_dim", "num_heads", "seed")

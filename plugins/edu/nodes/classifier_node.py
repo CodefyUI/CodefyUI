@@ -56,10 +56,12 @@ class _FittedClassifier:
 class ClassifierNode(BaseNode):
     NODE_NAME = "Classifier"
     CATEGORY = "EDU"
-    DESCRIPTION = (
-        "一顆可切換的分類器：kind 選 knn / linear / logistic，行為就跟對應的單獨節點"
-        "一樣（吃 x_train,y_train(標籤),x_query → predictions(標籤)）。另吐 model 給"
-        "DecisionBoundary 畫邊界。對應 I2-1「只換中間這顆、其餘不動」。"
+    DESCRIPTION = "Classify x_query: KNN, linear or logistic"
+    DETAILS = (
+        "`kind` selects knn (`n_neighbors`), logistic or linear, all three backed "
+        "by scikit-learn. linear fits least squares on one-hot labels and takes "
+        "the argmax, so its `probabilities` output holds raw regression scores "
+        "rather than probabilities. The `model` output feeds DecisionBoundary."
     )
 
     @classmethod

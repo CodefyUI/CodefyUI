@@ -59,12 +59,13 @@ def _stable_hash(s: str, mod: int) -> int:
 class EduTokenEmbeddingNode(BaseNode):
     NODE_NAME = "Edu-TokenEmbedding"
     CATEGORY = "LLM"
-    DESCRIPTION = (
-        "Toy token-to-vector lookup. Accepts `tokens:LIST` or `token_ids:LIST` "
-        "and emits [seq, embed_dim] embeddings. `hash` mode maps any token "
-        "deterministically; `ordinal` mode assigns row IDs in first-appearance "
-        "order so the vocab is visible. Use the Utility/Embedding node for a "
-        "trainable, production-sized embedding table."
+    DESCRIPTION = "Tokens to vectors from a seeded lookup table"
+    DETAILS = (
+        "Takes `tokens` (strings) or `token_ids` (ints). `hash` maps any token to "
+        "a row by a stable hash; `ordinal` assigns rows in first-appearance order "
+        "and reports the assignment on `vocab`. The table is random, fixed by "
+        "`seed` and never trained — the Utility Embedding node has a learnable "
+        "one."
     )
 
     @classmethod

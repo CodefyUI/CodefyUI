@@ -119,10 +119,13 @@ def convert_chart(spec: dict[str, Any], kind: str) -> dict[str, Any]:
 class StatsChartViewNode(BaseNode):
     NODE_NAME = "Stats-ChartView"
     CATEGORY = "Data"
-    DESCRIPTION = (
-        "Draw a chart in the Results panel: bar, line, scatter or heatmap. "
-        "Takes a chart payload from another Stats node, or any table plus its "
-        "column names and row labels."
+    DESCRIPTION = "Draws a chart or table: bar, line, scatter, heatmap"
+    DETAILS = (
+        "`auto` keeps an incoming payload's own kind, and picks bar for a table "
+        "with row labels, line without them. A conversion to or from a heatmap is "
+        "refused and noted on the chart instead of failing the run. "
+        "`columns_filter` picks the columns to draw — a scatter uses the first "
+        "two, a bar the first one."
     )
 
     @classmethod

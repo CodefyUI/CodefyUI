@@ -6,7 +6,11 @@ from ...core.node_base import BaseNode, DataType, ParamDefinition, ParamType, Po
 class TensorCreateNode(BaseNode):
     NODE_NAME = "TensorCreate"
     CATEGORY = "Tensor Operations"
-    DESCRIPTION = "Create a tensor filled with zeros, ones, random values, or a constant"
+    DESCRIPTION = "Tensor of a given shape: zeros, ones, random, constant"
+    DETAILS = (
+        "The `arange` fill uses only the first entry of `shape` and returns a 1-D "
+        "float tensor."
+    )
 
     @classmethod
     def define_inputs(cls) -> list[PortDefinition]:

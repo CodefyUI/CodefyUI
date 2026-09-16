@@ -27,7 +27,13 @@ def _kaggle_credentials_present() -> bool:
 class KaggleDatasetNode(BaseNode):
     NODE_NAME = "KaggleDataset"
     CATEGORY = "Data"
-    DESCRIPTION = "Download a Kaggle dataset and load it as an ImageFolder"
+    DESCRIPTION = "Download a Kaggle dataset as an ImageFolder"
+    DETAILS = (
+        "Needs network access and Kaggle credentials — KAGGLE_USERNAME and "
+        "KAGGLE_KEY in the environment, or a kaggle.json in ~/.kaggle. Set "
+        "`subdir` when the class folders sit deeper than the root of the "
+        "downloaded dataset."
+    )
 
     # Hits the network, the kagglehub cache on disk, and KAGGLE_* credentials
     # in the environment. None of that is visible to the cache key, so a hit

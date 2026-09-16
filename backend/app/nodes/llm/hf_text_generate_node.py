@@ -126,14 +126,13 @@ class HFTextGenerateNode(BaseNode):
     # The whole node, not just some options: its only model comes out of this
     # pack, so an install without it cannot run the node at all.
     REQUIRES_PACK = RAG_PACK
-    DESCRIPTION = (
-        "Answer a prompt with a small instruction-tuned open model that runs "
-        "locally: Qwen2.5-0.5B-Instruct (Apache-2.0, about 1 GB, from the rag "
-        "pack). The chat template is applied for you, and the node reports "
-        "progress token by token. Expect a few tokens per second on a "
-        "laptop CPU; a GPU is much faster. Unlike TextGenerate, which "
-        "continues text with a model you trained on the canvas, this one "
-        "loads pre-trained weights and follows instructions."
+    DESCRIPTION = "Answer a prompt with a local instruction-tuned model"
+    DETAILS = (
+        "The model is Qwen2.5-0.5B-Instruct from the rag pack (Apache-2.0, about 1 "
+        "GB), and the chat template is applied for you. Progress is reported token "
+        "by token, and expect a few tokens per second on a laptop CPU, much faster "
+        "on a GPU. For a model trained on the canvas, reach for TextGenerate "
+        "instead; this node loads pre-trained weights and follows instructions."
     )
 
     # Sampling is not a function of the params: it advances a seeded generator

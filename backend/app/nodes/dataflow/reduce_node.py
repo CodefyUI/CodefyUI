@@ -6,9 +6,11 @@ from ...core.node_base import BaseNode, DataType, ParamDefinition, ParamType, Po
 class ReduceNode(BaseNode):
     NODE_NAME = "Reduce"
     CATEGORY = "Data Flow"
-    DESCRIPTION = (
-        "Aggregate a list of values into a single result. "
-        "Supports sum, mean, min, max, concat (tensors), and first/last selection."
+    DESCRIPTION = "Aggregate a list to one value: sum, mean, min, max"
+    DETAILS = (
+        "operation covers sum, mean, min, max, concat, stack, first and last; dim "
+        "applies to concat and stack only. Everything except first and last needs "
+        "numeric or tensor items, and an empty list raises."
     )
 
     @classmethod

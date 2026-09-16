@@ -10,9 +10,10 @@ from ._base import TransformStepNode
 
 class ResizeTransformNode(TransformStepNode):
     NODE_NAME = "ResizeTransform"
-    DESCRIPTION = (
-        "Resize every sample to a square of the given size. Put it before "
-        "ToTensorTransform."
+    DESCRIPTION = "Resize every sample to a square of the given size"
+    DETAILS = (
+        "Put it before ToTensorTransform. Both sides are set explicitly, so a "
+        "non-square image is squashed rather than kept in proportion."
     )
 
     @classmethod

@@ -6,7 +6,7 @@ from ...core.node_base import BaseNode, DataType, ParamDefinition, ParamType, Po
 class MeanNode(BaseNode):
     NODE_NAME = "Mean"
     CATEGORY = "Tensor Operations"
-    DESCRIPTION = "Compute mean of tensor along specified dimension(s)"
+    DESCRIPTION = "Average a tensor over one or more dimensions"
 
     @classmethod
     def define_inputs(cls) -> list[PortDefinition]:

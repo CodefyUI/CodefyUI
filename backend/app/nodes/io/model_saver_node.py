@@ -245,7 +245,14 @@ def _reload_note(model: Any) -> tuple[str, str]:
 class ModelSaverNode(BaseNode):
     NODE_NAME = "ModelSaver"
     CATEGORY = "IO"
-    DESCRIPTION = "Save model weights (state_dict) to a .pt/.pth/.safetensors file"
+    DESCRIPTION = "Save model weights, or the whole module, to a file"
+    DETAILS = (
+        "state_dict mode writes the weights and is the default; full_model mode "
+        "pickles the module itself and refuses a model whose layer class was "
+        "defined inside a function. A .pth path works as well as .pt, safetensors "
+        "supports state_dict only, and a relative path lands in the models "
+        "directory."
+    )
 
     # The write to disk IS this node's output. A cache hit returns the
     # recorded {"path": ..., "model": ...} without calling execute() again,

@@ -39,11 +39,12 @@ def _parse_shape(s: str) -> tuple[int, ...]:
 class GaussianNoiseNode(BaseNode):
     NODE_NAME = "GaussianNoise"
     CATEGORY = "Diffusion"
-    DESCRIPTION = (
-        "Generate i.i.d. Gaussian noise $\\epsilon \\sim \\mathcal{N}(\\mu, \\sigma^2)$. "
-        "Connect a tensor to `shape_ref` to mirror upstream shape (typical "
-        "for diffusion x_0 → noise pairing); otherwise parses `shape` from "
-        "the param. Seeded for reproducibility."
+    DESCRIPTION = "Sample i.i.d. Gaussian noise of a given shape"
+    DETAILS = (
+        "$\\epsilon \\sim \\mathcal{N}(\\mu, \\sigma^2)$ from `mean`, `std` and a "
+        "`seed` that makes the draw reproducible. Connecting a tensor to "
+        "`shape_ref` makes the noise match that tensor's shape and device, and the "
+        "`shape` param is then ignored."
     )
 
     cacheable = False  # output depends on global state being unchanged but seeded gen makes it deterministic; keep True? Set False to be safe with chain reuse.

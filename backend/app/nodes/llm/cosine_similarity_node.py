@@ -29,12 +29,12 @@ from ...core.step_trace import StepRecorder
 class CosineSimilarityNode(BaseNode):
     NODE_NAME = "CosineSimilarity"
     CATEGORY = "LLM"
-    DESCRIPTION = (
-        "Compute cosine similarity between every query and every key vector. "
-        "For unit-length inputs this is just the dot product; otherwise we "
-        "normalise on the fly. Outputs the full similarity matrix plus the "
-        "top-k indices and labels per query — the same kernel a vector "
-        "retriever uses inside RAG."
+    DESCRIPTION = "Similarity of each query to every key, plus top-k"
+    DETAILS = (
+        "Unit-length inputs reduce to a dot product; anything else is normalised "
+        "first. The top-k is taken per query row. exclude_self_words drops the "
+        "named labels from the top-k, which is what makes an analogy surface its "
+        "answer instead of its own inputs."
     )
 
     @classmethod

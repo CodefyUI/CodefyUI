@@ -10,10 +10,10 @@ from ._base import TransformStepNode
 
 class RandomHorizontalFlipNode(TransformStepNode):
     NODE_NAME = "RandomHorizontalFlip"
-    DESCRIPTION = (
-        "Mirror the image left-to-right with probability p. Free accuracy "
-        "on photographs; wrong for anything where handedness carries "
-        "meaning, such as digits or text."
+    DESCRIPTION = "Mirror the image left-to-right with probability p"
+    DETAILS = (
+        "Safe on photographs; wrong wherever left and right carry meaning, such as "
+        "digits or text."
     )
 
     @classmethod

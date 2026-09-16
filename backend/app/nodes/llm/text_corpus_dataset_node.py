@@ -123,12 +123,12 @@ def _max_rows(params: dict[str, Any]) -> int:
 class TextCorpusDatasetNode(BaseNode):
     NODE_NAME = "TextCorpusDataset"
     CATEGORY = "LLM"
-    DESCRIPTION = (
-        "Load a text corpus as rows of raw text -- either a dataset from the "
-        "HuggingFace Hub or a .txt file you uploaded. This is the raw material "
-        "for language-model training, so it has no targets yet: wire it into "
-        "LMTokenizedDataset (not straight into DataLoader), which cuts the "
-        "text into next-token training blocks."
+    DESCRIPTION = "Load text rows from HuggingFace or a .txt file"
+    DETAILS = (
+        "These rows have no targets, so DataLoader cannot batch them as they "
+        "stand: wire the dataset into LMTokenizedDataset, which cuts the text into "
+        "next-token training blocks. The default repo is roneneldan/TinyStories, "
+        "about 2M simple children's stories."
     )
 
     # Same reasoning as HuggingFaceDataset: the huggingface source hits the

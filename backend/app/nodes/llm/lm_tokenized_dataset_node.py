@@ -323,14 +323,14 @@ def _positive_int(params: dict[str, Any], name: str, default: int) -> int:
 class LMTokenizedDatasetNode(BaseNode):
     NODE_NAME = "LMTokenizedDataset"
     CATEGORY = "LLM"
-    DESCRIPTION = (
-        "Turn text rows into fixed-length training blocks: tokenize every "
-        "document, join them with the end-of-text token, and cut the stream "
-        "into (input_ids, labels) pairs where the labels are the inputs "
-        "shifted one token to the left -- next-token prediction. Wire the "
-        "output into DataLoader. The packed tokens are cached on disk, so only "
-        "the first run pays for tokenization -- nothing evicts that cache, and "
-        "`cdui cache prune` is what clears it."
+    DESCRIPTION = "Tokenize text rows into fixed-length training blocks"
+    DETAILS = (
+        "Documents are joined with the end-of-text token and the stream is cut "
+        "into (input_ids, labels) pairs whose labels are the inputs shifted one "
+        "token left — next-token prediction. Wire the output into DataLoader. "
+        "Packed tokens are cached on disk, so only the first run pays for "
+        "tokenization; nothing evicts that cache, and `cdui cache prune` clears "
+        "it."
     )
 
     # The inputs are LIVE handles -- a dataset object and a tokenizer object --

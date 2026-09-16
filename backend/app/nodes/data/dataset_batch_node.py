@@ -6,10 +6,11 @@ from ...core.node_base import BaseNode, DataType, ParamDefinition, ParamType, Po
 class DatasetBatchNode(BaseNode):
     NODE_NAME = "DatasetBatch"
     CATEGORY = "Data"
-    DESCRIPTION = (
-        "從資料集（如 Dataset 節點載入的 MNIST）取出一個批次，"
-        "輸出影像張量 (N, C, H, W) 與對應標籤。"
-        "用來把資料集直接餵進手搭的網路做一次前向傳遞、觀察每層 shape。"
+    DESCRIPTION = "Take one batch from a dataset: images and their labels"
+    DETAILS = (
+        "Images come out as (N, C, H, W). Labels are (N,) class ids for a "
+        "classification dataset, or (N, H, W) per-pixel masks for a segmentation "
+        "one. `start_index` wraps around the end of the dataset."
     )
 
     @classmethod

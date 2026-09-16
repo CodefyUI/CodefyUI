@@ -47,10 +47,13 @@ class _FittedNet:
 class TrainAndEvaluateNode(BaseNode):
     NODE_NAME = "TrainAndEvaluate"
     CATEGORY = "EDU"
-    DESCRIPTION = (
-        "把 FFNLayer / ActivationLayer 堆好的網路拿來訓練 + 預測。在訓練資料上跑梯度下降"
-        "把網路練到會，再對 x_query 預測。介面跟 Classifier / AdvancedClassifier 一致："
-        "吐 predictions(→Accuracy) 和 model(→DecisionBoundary)。輸出層自動補、用 CrossEntropy 訓練。"
+    DESCRIPTION = "Train the stacked network; predict x_query labels"
+    DETAILS = (
+        "An output Linear sized to the number of classes is appended "
+        "automatically, then the whole stack is trained with cross-entropy and "
+        "Adam for `epochs` steps at learning rate `lr`. Besides predictions it "
+        "outputs the trained `model` for DecisionBoundary and the per-epoch "
+        "`losses`."
     )
 
     @classmethod

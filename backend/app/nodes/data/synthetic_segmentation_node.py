@@ -83,10 +83,13 @@ class _SyntheticSegDataset:
 class SyntheticSegmentationNode(BaseNode):
     NODE_NAME = "SyntheticSegmentation"
     CATEGORY = "Data"
-    DESCRIPTION = (
-        "產生一個小型合成「影像分割」資料集（CPU 友善、免下載）：每張單通道小圖上隨機畫"
-        "圓形與方形，並附上逐像素的類別遮罩（0=背景、1=圓形、2=方形）。輸出一個資料集，"
-        "可直接接 DataLoader / TrainingLoop / EvaluateModel / DatasetBatch，用來訓練 UNet 做分割。"
+    DESCRIPTION = "Generate a dataset of images with per-pixel masks"
+    DETAILS = (
+        "Each image is single-channel with one or two random shapes on it, and the "
+        "mask labels every pixel: 0 background, 1 circle, 2 rectangle. It stays "
+        "small enough to train a UNet on CPU. Everything is generated in memory "
+        "from `seed`, with nothing downloaded — give the training and test sets "
+        "different seeds."
     )
 
     @classmethod
