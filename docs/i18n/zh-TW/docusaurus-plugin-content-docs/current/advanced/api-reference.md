@@ -45,7 +45,7 @@ Host guard 會在其他所有檢查之前處理每個 request，包括 SPA 頁�
 | 端點 | 方法 | 驗證 | 說明 |
 |----------|--------|------|-------------|
 | `/api/graph/validate` | POST | token | 驗證一張圖。 |
-| `/api/graph/save` | POST | token | 儲存一張圖。 |
+| `/api/graph/save` | POST | token | 儲存一張圖。request body 是這張圖，加上兩個選填欄位：`file` 是要寫入的位址（檔名主體），以及 `overwrite`。不給 `file` 就是「用 `name` 推出位址」，也就是另存新檔。這種請求帶 `overwrite: false` 就是選擇啟用衝突保護：如果推出來的位址已經有東西，伺服器不會寫入，而是回 `409`，body 為 `{"detail": {"error": "graph_exists", "file", "name"}}`，其中 `file` 是伺服器算出來的檔名主體，`name` 是那個位址上既有圖的標題；要覆蓋就帶 `overwrite: true` 再送一次。完全不帶 `overwrite` 則維持這個端點一直以來的行為：不管位址上有沒有東西都直接寫入，所以現有的 client 跟腳本不受影響。有帶 `file` 的請求是存回原處，不會被這樣擋下來。 |
 | `/api/graph/load/{name}` | GET | open | 載入一張已儲存的圖。 |
 | `/api/graph/list` | GET | open | 列出已儲存的圖。 |
 | `/api/graph/export` | POST | token | 匯出單檔、headless 的 Python runner。它會內嵌圖表，並需要相容的 CodefyUI 後端環境，但不需要執行中的伺服器。 |

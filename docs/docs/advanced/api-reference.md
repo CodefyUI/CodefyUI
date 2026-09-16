@@ -45,7 +45,7 @@ The Host guard runs before all other checks on every request, including the SPA 
 | Endpoint | Method | Auth | Description |
 |----------|--------|------|-------------|
 | `/api/graph/validate` | POST | token | Validate a graph. |
-| `/api/graph/save` | POST | token | Save a graph. |
+| `/api/graph/save` | POST | token | Save a graph. The body is the graph plus two optional fields: `file`, the address (filename stem) to write to, and `overwrite`. Omitting `file` means "derive the address from `name`", which is a Save As. Send `overwrite: false` with such a request to opt into the collision guard: one that lands on an address something already occupies then answers `409` with `{"detail": {"error": "graph_exists", "file", "name"}}` instead of writing, where `file` is the stem the server resolved and `name` is the title of the graph already there — re-send with `overwrite: true` to replace it. Leaving `overwrite` out entirely keeps the behaviour this route has always had: the save is written, occupied address or not, so existing clients and scripts are unaffected. A request that carries `file` is saving in place and is never refused this way. |
 | `/api/graph/load/{name}` | GET | open | Load a saved graph. |
 | `/api/graph/list` | GET | open | List saved graphs. |
 | `/api/graph/export` | POST | token | Export a single-file headless Python runner. It embeds the graph and requires a compatible CodefyUI backend environment, but no running server. |

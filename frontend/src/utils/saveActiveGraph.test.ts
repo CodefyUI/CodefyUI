@@ -2,9 +2,18 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import type { Node } from '@xyflow/react';
 import type { NodeData } from '../types';
 
-vi.mock('../api/rest', () => ({
+vi.mock('../api/rest', async (importOriginal) => ({
   saveGraph: vi.fn().mockResolvedValue({}),
+  // Still mocked, and still imported below, for the one assertion that
+  // matters about it now: the save path must never call it. See the #455
+  // block at the bottom of this file.
   listGraphs: vi.fn().mockResolvedValue([]),
+  // The REAL class, never a stub: `saveActiveGraph` tells a taken-name
+  // refusal from an ordinary failure with `err instanceof GraphExistsError`,
+  // and an undefined export makes that line throw a TypeError which the
+  // save's own catch would then report as the failure -- green suite, no
+  // overwrite dialog, exactly the bug back again.
+  GraphExistsError: (await importOriginal<typeof import('../api/rest')>()).GraphExistsError,
 }));
 vi.mock('./dialog', () => ({
   prompt: vi.fn(),
@@ -12,7 +21,7 @@ vi.mock('./dialog', () => ({
 }));
 
 import { saveActiveGraph } from './saveActiveGraph';
-import { saveGraph, listGraphs } from '../api/rest';
+import { saveGraph, listGraphs, GraphExistsError } from '../api/rest';
 import { confirm, prompt } from './dialog';
 import { useTabStore } from '../store/tabStore';
 import { useProjectStore } from '../store/projectStore';
@@ -377,10 +386,10 @@ describe('saveActiveGraph in-place saves under the name the TAB carries', () => 
  */
 describe('saveActiveGraph on a tab bound to a file whose name it does not know', () => {
   it('asks for a name once, then saves in place under it without asking again', async () => {
-    // The file is in the list, so a collision guard on this path would fire
-    // on the typed name -- which is one reason this path runs none: the
-    // question is "what is this file called?", not "where should this go?".
-    vi.mocked(listGraphs).mockResolvedValue([{ name: 'My Graph', file: 'My_Graph' }]);
+    // This path names its own address, so the server's overwrite guard does
+    // not fire on it at all -- and must not: the question here is "what is
+    // this file called?", not "where should this go?". A request that carries
+    // a `file` is asserting where it wants to go.
     (prompt as unknown as ReturnType<typeof vi.fn>).mockResolvedValue('My Graph');
     useTabStore.getState().setCurrentGraphFile('My_Graph', null);
 
@@ -508,9 +517,9 @@ describe('saveActiveGraph targets the file the tab is bound to', () => {
     expect(lastSaveBody().name).toBe('brand-new');
   });
 
-  it('sends NO `file` for Save As, and still runs the collision guard', async () => {
-    vi.mocked(listGraphs).mockResolvedValue([{ name: 'Taken', file: 'Taken' }]);
+  it('sends NO `file` for Save As, and lets the SERVER say the name is taken', async () => {
     (prompt as unknown as ReturnType<typeof vi.fn>).mockResolvedValue('Taken');
+    vi.mocked(saveGraph).mockRejectedValueOnce(new GraphExistsError('Taken', 'Taken'));
     useTabStore.getState().setCurrentGraphFile('My_Graph', 'My Graph');
 
     await saveActiveGraph({ saveAs: true });
@@ -518,11 +527,16 @@ describe('saveActiveGraph targets the file the tab is bound to', () => {
     // Save As is how a graph is deliberately written somewhere else, so it is
     // the one path where the typed name still chooses the address -- and
     // therefore the one path that must ask before landing on somebody else's
-    // file.
-    expect(listGraphs).toHaveBeenCalledTimes(1);
+    // file. The question is the server's 409 now, not a list read compared
+    // against this build's copy of the sanitizer (#455).
+    expect(listGraphs).not.toHaveBeenCalled();
     expect(confirm).toHaveBeenCalledTimes(1);
-    expect('file' in lastSaveBody()).toBe(false);
-    expect(lastSaveBody().name).toBe('Taken');
+    const bodies = vi.mocked(saveGraph).mock.calls
+      .map(([body]) => body as unknown as Record<string, unknown>);
+    expect('file' in bodies[0]).toBe(false);
+    expect(bodies[0].name).toBe('Taken');
+    // Only the accepted retry names an address, and it is the server's.
+    expect(bodies[1]).toMatchObject({ file: 'Taken', overwrite: true });
   });
 });
 
@@ -623,7 +637,7 @@ describe('saveActiveGraph Save As over a file another tab is bound to', () => {
     const stale = useTabStore.getState().activeTabId;
     useTabStore.getState().addTab('second');
     const saver = useTabStore.getState().activeTabId;
-    vi.mocked(listGraphs).mockResolvedValueOnce([{ name: 'alpha', file: 'alpha' }]);
+    vi.mocked(saveGraph).mockRejectedValueOnce(new GraphExistsError('alpha', 'alpha'));
     (prompt as unknown as ReturnType<typeof vi.fn>).mockResolvedValue('alpha');
 
     await saveActiveGraph({ saveAs: true });
@@ -639,19 +653,23 @@ describe('saveActiveGraph Save As over a file another tab is bound to', () => {
 /**
  * The app warns that two names are one file, and then treats them as two.
  *
- * `findGraphNameCollision` folds case on purpose -- NTFS and APFS are
- * case-INSENSITIVE, and a silent overwrite on the majority platform is the
- * worse failure. `rebindGraphFile` compares stems with `===`, also on purpose
- * -- on a case-SENSITIVE filesystem `My_Graph` and `my_graph` really are two
- * different files, and folding them there would raise the wrong tab from the
- * Graphs panel and mark the wrong row Current. Each is right on its own; the
- * gap between them is a tab that still believes it owns a file somebody else
- * has just written over:
+ * The overwrite question folds case, because NTFS and APFS are
+ * case-INSENSITIVE and a silent overwrite on the majority platform is the
+ * worse failure: on those filesystems the server finds `My_Graph.json` under
+ * the stem `my_graph` it derived from the typed title, and refuses.
+ * `rebindGraphFile` compares stems with `===`, also on purpose -- on a
+ * case-SENSITIVE filesystem `My_Graph` and `my_graph` really are two different
+ * files, and folding them there would raise the wrong tab from the Graphs
+ * panel and mark the wrong row Current. Each is right on its own; the gap
+ * between them is a tab that still believes it owns a file somebody else has
+ * just written over:
  *
  *   1. tab A saves "My Graph", the server writes `My_Graph.json`, tab A binds
  *      `My_Graph`
- *   2. tab B's Save As of "my graph" matches that row case-insensitively, the
- *      "will be overwritten" confirm fires, the user accepts
+ *   2. tab B's Save As of "my graph" is refused with a 409 naming the stem the
+ *      server derived -- `my_graph`, ITS spelling of the target, not the
+ *      directory entry's -- and the title it read out of that file; the user
+ *      accepts
  *   3. the save is an `os.replace`, so the directory ENTRY is re-spelled to
  *      `my_graph.json`; tab B binds `my_graph`, and
  *      `rebindGraphFile('my_graph', null, B)` never matches tab A's `My_Graph`
@@ -660,7 +678,9 @@ describe('saveActiveGraph Save As over a file another tab is bound to', () => {
  *      dialog and no warning
  *
  * Reproduced end to end over real HTTP by an adversarial reviewer, in both
- * non-project and project mode.
+ * non-project and project mode. #455 moved the question to the server and the
+ * clear to a case-folding pass over the tabs, and step 4 is the reason that
+ * pass was not simply deleted with the list read that used to feed it.
  */
 describe('saveActiveGraph after a CONFIRMED overwrite of another tab\'s file', () => {
   const tabOf = (id: string) => useTabStore.getState().tabs.find((tb) => tb.id === id)!;
@@ -673,10 +693,14 @@ describe('saveActiveGraph after a CONFIRMED overwrite of another tab\'s file', (
     return { a, b: useTabStore.getState().activeTabId };
   }
 
-  /** The reviewer's step 2-3: the guard matches, and the entry is re-spelled. */
+  /** The reviewer's step 2-3: the server refuses, and the entry is re-spelled. */
   function caseSkewedOverwrite(): void {
-    vi.mocked(listGraphs).mockResolvedValue([{ name: 'My Graph', file: 'My_Graph' }]);
     vi.mocked(prompt).mockResolvedValue('my graph');
+    // The stem is the server's own sanitization of the TYPED title, and the
+    // title is the one it read out of the file it found there -- which on a
+    // case-insensitive filesystem is `My_Graph.json`. So the refusal names
+    // `my_graph` while the file on disk, and tab A's binding, say `My_Graph`.
+    vi.mocked(saveGraph).mockRejectedValueOnce(new GraphExistsError('my_graph', 'My Graph'));
     vi.mocked(saveGraph).mockResolvedValueOnce({
       message: 'Graph saved', path: '/graphs/my_graph.json', file: 'my_graph',
     });
@@ -727,8 +751,8 @@ describe('saveActiveGraph after a CONFIRMED overwrite of another tab\'s file', (
     const a = useTabStore.getState().activeTabId;
     useTabStore.getState().addTab('second');
     const b = useTabStore.getState().activeTabId;
-    vi.mocked(listGraphs).mockResolvedValue([{ name: 'alpha', file: 'alpha' }]);
     vi.mocked(prompt).mockResolvedValue('alpha');
+    vi.mocked(saveGraph).mockRejectedValueOnce(new GraphExistsError('alpha', 'alpha'));
     vi.mocked(saveGraph).mockResolvedValueOnce({
       message: 'Graph saved', path: '/graphs/alpha.json', file: 'alpha',
     });
@@ -745,7 +769,8 @@ describe('saveActiveGraph after a CONFIRMED overwrite of another tab\'s file', (
   // overwrote nothing must leave every other tab exactly as it found it.
   it('clears nothing when the Save As collided with no saved graph', async () => {
     const { a, b } = twoTabs();
-    vi.mocked(listGraphs).mockResolvedValue([{ name: 'My Graph', file: 'My_Graph' }]);
+    // No 409: the server wrote the file and said so, so nobody was asked
+    // anything and no other tab's binding became wrong.
     vi.mocked(prompt).mockResolvedValue('brand new');
     vi.mocked(saveGraph).mockResolvedValueOnce({
       message: 'Graph saved', path: '/graphs/brand_new.json', file: 'brand_new',
@@ -815,5 +840,237 @@ describe('saveActiveGraph binds to the stem the server reports', () => {
     // Never `sanitizeGraphName('Alpha')`: a binding that followed the title
     // is the bug that put `file` on the request in the first place.
     expect(useTabStore.getState().getActiveTab().currentGraphFile).toBe('Beta');
+  });
+});
+
+/**
+ * WHO decides that a name is already taken (#455).
+ *
+ * It used to be this file: a `GET /api/graph/list` read taken a moment before
+ * the write, compared against a REPLICA of the backend's sanitizer. The
+ * replica is `sanitizeGraphName`, whose rule is `/[\p{L}\p{N}]/u` over Node's
+ * ICU tables where `_sanitize_name` uses CPython's `str.isalnum()` -- two
+ * Unicode versions, 14,049 code points apart, and always disagreeing in the
+ * same direction: the replica KEEPS the character the server replaces with
+ * '_'.
+ *
+ * So a graph titled `模型<U+2EBF0>` computed the stem `模型<U+2EBF0>`, matched
+ * no saved row, and raised no dialog -- and the server then resolved that same
+ * title to `模型_` and replaced the `模型_.json` that was already there. No
+ * confirm, no toast about it, no undo.
+ *
+ * The server answers the question now. It refuses a save that would land on an
+ * occupied stem with a 409 carrying that stem and the title inside it, and the
+ * client asks the user and sends the SAME bytes back with `overwrite: true`.
+ * A check the server performs one request before its own write cannot disagree
+ * with it about Unicode, and cannot be reasoned around by a client at all.
+ */
+describe('saveActiveGraph asks the SERVER whether the name is taken', () => {
+  const tabOf = (id: string) => useTabStore.getState().tabs.find((tb) => tb.id === id)!;
+
+  /** The 409: the title resolves to `file`, which already holds `name`. */
+  function nameTaken(file: string, name: string): void {
+    vi.mocked(saveGraph).mockRejectedValueOnce(new GraphExistsError(file, name));
+  }
+
+  /**
+   * A title the two sanitizers disagree about, and the stem the SERVER
+   * derives from it. U+2EBF0 is CJK Extension I: a letter to Node's ICU,
+   * not alphanumeric to the Unicode 14 tables CPython reads.
+   */
+  const TITLE = '模型\u{2EBF0}';
+  const SERVER_STEM = '模型_';
+
+  it('is testing a title the replica really does get wrong', () => {
+    // The fixture's whole point, asserted rather than asserted in a comment:
+    // a case built on a code point the two sanitizers AGREE about would pass
+    // against the old list-and-replica check too, which is how that check
+    // stayed green over this bug for the whole of its life.
+    expect(sanitizeGraphName(TITLE)).not.toBe(SERVER_STEM);
+  });
+
+  it('raises the overwrite confirm on the 409, for a title the replica gets wrong', async () => {
+    vi.mocked(prompt).mockResolvedValue(TITLE);
+    nameTaken(SERVER_STEM, '模型 v1');
+
+    await saveActiveGraph();
+
+    expect(confirm).toHaveBeenCalledTimes(1);
+    // The TITLE of the graph about to be replaced. The stem beside it is an
+    // implementation detail of where that graph is stored, and naming it
+    // would be asking the user about a file they have never seen.
+    expect(vi.mocked(confirm).mock.calls[0][0].title).toContain('模型 v1');
+  });
+
+  it('re-POSTs exactly once, with the same graph plus the server\'s own stem', async () => {
+    useTabStore.getState().setNodes([node('A-node')]);
+    vi.mocked(prompt).mockResolvedValue(TITLE);
+    nameTaken(SERVER_STEM, '模型 v1');
+    vi.mocked(saveGraph).mockResolvedValueOnce({
+      message: 'Graph saved', path: `/graphs/${SERVER_STEM}.json`, file: SERVER_STEM,
+    });
+
+    await saveActiveGraph();
+
+    const bodies = vi.mocked(saveGraph).mock.calls
+      .map(([body]) => body as unknown as Record<string, unknown>);
+    expect(bodies).toHaveLength(2);
+    // The first attempt names no address: on this path the title IS the
+    // address, and resolving it is exactly what the server is for.
+    expect('file' in bodies[0]).toBe(false);
+    // The retry is the same graph, key for key, plus the two fields that make
+    // it a retry. The canvas is serialized ONCE, before the dialog -- reading
+    // it again afterwards would save whatever was typed while the confirm was
+    // on screen, which is not the graph the user agreed to overwrite with.
+    expect(bodies[1]).toEqual({ ...bodies[0], file: SERVER_STEM, overwrite: true });
+    // And the tab is bound to the stem the SERVER reported, so the Graphs
+    // panel can mark the row it just wrote as Current.
+    expect(tabOf(useTabStore.getState().activeTabId).currentGraphFile).toBe(SERVER_STEM);
+    expect(tabOf(useTabStore.getState().activeTabId).currentGraphName).toBe(TITLE);
+  });
+
+  it('says `overwrite: false` out loud on the first attempt, never by omission', async () => {
+    vi.mocked(prompt).mockResolvedValue(TITLE);
+
+    await saveActiveGraph();
+
+    // The server reads an ABSENT `overwrite` as "this client has never heard
+    // of the guard" and writes -- which is what keeps a pre-2.8.1 dist, whose
+    // every Ctrl+S names no address either (`file` did not exist yet), saving
+    // against a newer backend instead of collecting a 409 it cannot answer.
+    // So the key has to be present and false for the guard to run at all: a
+    // build that leaves it off asks for the old silent overwrite back.
+    // `toHaveProperty`, not `toMatchObject`, because `undefined` matches an
+    // absent key there and that is precisely the mistake being pinned.
+    expect(lastSaveBody()).toHaveProperty('overwrite', false);
+  });
+
+  it('writes nothing, says nothing and rebinds nothing when the overwrite is refused', async () => {
+    useToastStore.setState({ toasts: [] });
+    const heard = vi.fn(() => undefined);
+    setGraphsWriteListener(heard);
+    useTabStore.getState().setCurrentGraphFile('My_Graph', 'My Graph');
+    vi.mocked(prompt).mockResolvedValue(TITLE);
+    nameTaken(SERVER_STEM, '模型 v1');
+    // `Once`, so the refusal cannot leak into the next test: `clearAllMocks`
+    // resets calls, not implementations.
+    vi.mocked(confirm).mockResolvedValueOnce(false);
+
+    await saveActiveGraph({ saveAs: true });
+
+    // One POST, the one that was refused -- and a refused save wrote nothing,
+    // so there is nothing to announce and nothing to report.
+    expect(saveGraph).toHaveBeenCalledTimes(1);
+    expect(heard).not.toHaveBeenCalled();
+    expect(useToastStore.getState().toasts).toEqual([]);
+    // The tab is still on the file it was on, so its next Save is still the
+    // one-click in-place save it was before the user said no.
+    expect(tabOf(useTabStore.getState().activeTabId).currentGraphFile).toBe('My_Graph');
+    expect(tabOf(useTabStore.getState().activeTabId).currentGraphName).toBe('My Graph');
+    setGraphsWriteListener(null);
+  });
+
+  it('retries silently when the 409 names the saving tab\'s OWN file', async () => {
+    useTabStore.getState().setCurrentGraphFile('My_Graph', 'My Graph');
+    vi.mocked(prompt).mockResolvedValue('My Graph');
+    nameTaken('My_Graph', 'My Graph');
+
+    await saveActiveGraph({ saveAs: true });
+
+    // Re-saving a graph under its own name is not a collision to warn about,
+    // and asking would make Save As of an unchanged name a two-dialog
+    // operation. The server cannot know this -- it has no idea which file the
+    // asking tab is sitting on -- so the exception lives here.
+    expect(confirm).not.toHaveBeenCalled();
+    expect(saveGraph).toHaveBeenCalledTimes(2);
+    expect(lastSaveBody()).toMatchObject({
+      file: 'My_Graph', name: 'My Graph', overwrite: true,
+    });
+  });
+
+  it('never reads the saved-graph list on the save path', async () => {
+    vi.mocked(listGraphs).mockResolvedValue([{ name: 'Taken', file: 'Taken' }]);
+    vi.mocked(prompt).mockResolvedValue('Taken');
+    nameTaken('Taken', 'Taken');
+
+    await saveActiveGraph();
+
+    // Pinned so that reintroducing the replica check fails a test instead of
+    // quietly restoring the bug. The list read was also an await between the
+    // name dialog and the canvas being serialized -- one more window for the
+    // user to switch tabs in.
+    expect(listGraphs).not.toHaveBeenCalled();
+  });
+
+  it('still reports an ordinary failure as a failure, asking nothing', async () => {
+    useToastStore.setState({ toasts: [] });
+    vi.mocked(prompt).mockResolvedValue('anything');
+    vi.mocked(saveGraph).mockRejectedValueOnce(new Error('disk full'));
+
+    await saveActiveGraph();
+
+    expect(confirm).not.toHaveBeenCalled();
+    expect(saveGraph).toHaveBeenCalledTimes(1);
+    const [toast] = useToastStore.getState().toasts;
+    expect(toast.type).toBe('error');
+    expect(toast.message).toContain('disk full');
+  });
+
+  // The invariant the whole file is built on, now that there is a second
+  // dialog on this path: everything after it addresses the tab the save
+  // STARTED from, by id. A confirm is seconds of the user's time, and tabs
+  // are one click away the whole time it is open.
+  it('binds the tab the save started from when the user switches tabs at the confirm', async () => {
+    useTabStore.getState().setNodes([node('A-node')]);
+    const alpha = useTabStore.getState().activeTabId;
+    useTabStore.getState().addTab('beta');
+    const beta = useTabStore.getState().activeTabId;
+    useTabStore.getState().setNodes([node('B-node')]);
+    useTabStore.getState().setActiveTab(alpha);
+    vi.mocked(prompt).mockResolvedValue('Taken');
+    nameTaken('Taken', 'Taken Graph');
+    vi.mocked(saveGraph).mockResolvedValueOnce({
+      message: 'Graph saved', path: '/graphs/Taken.json', file: 'Taken',
+    });
+    vi.mocked(confirm).mockImplementationOnce(async () => {
+      useTabStore.getState().setActiveTab(beta);
+      return true;
+    });
+
+    await saveActiveGraph();
+
+    expect(tabOf(alpha).currentGraphFile).toBe('Taken');
+    // The tab the user moved to saved nothing, so it owns nothing.
+    expect(tabOf(beta).currentGraphFile).toBeNull();
+    const retry = vi.mocked(saveGraph).mock.calls[1][0] as unknown as { nodes: { id: string }[] };
+    expect(retry.nodes.map((n) => n.id)).toEqual(['A-node']);
+  });
+
+  it('writes nothing at all when the saving tab is closed while the confirm is open', async () => {
+    useToastStore.setState({ toasts: [] });
+    const heard = vi.fn(() => undefined);
+    setGraphsWriteListener(heard);
+    useTabStore.getState().setNodes([node('A-node')]);
+    const alpha = useTabStore.getState().activeTabId;
+    useTabStore.getState().addTab('beta');
+    useTabStore.getState().setNodes([node('B-node')]);
+    useTabStore.getState().setActiveTab(alpha);
+    vi.mocked(prompt).mockResolvedValue('Taken');
+    nameTaken('Taken', 'Taken Graph');
+    vi.mocked(confirm).mockImplementationOnce(async () => {
+      useTabStore.getState().removeTab(alpha);
+      return true;
+    });
+
+    await saveActiveGraph();
+
+    // The refused attempt wrote nothing, and the graph it was for is gone.
+    // What must never happen is the retry going out anyway -- carrying a
+    // closed tab's bytes, under a `file` the server is now standing by to
+    // overwrite, with the user's yes attached to it.
+    expect(saveGraph).toHaveBeenCalledTimes(1);
+    expect(heard).not.toHaveBeenCalled();
+    expect(useToastStore.getState().toasts).toEqual([]);
+    setGraphsWriteListener(null);
   });
 });

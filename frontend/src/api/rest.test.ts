@@ -49,6 +49,7 @@ import {
   removePackItem,
   PackApiError,
   ApiError,
+  GraphExistsError,
   errorDetail,
   listPluginCatalog,
   inspectPluginSource,
@@ -500,9 +501,69 @@ describe('saveGraph', () => {
     ).resolves.toEqual({ message: 'Graph saved', path: '/g/My_Graph.json' });
   });
 
-  it('throws on failure', async () => {
-    mockFetch(500, {});
+  // #455. The taken-name 409 is a QUESTION, not a failure: the address the
+  // server derived from the title already holds a DIFFERENT graph, and the
+  // answer is this same request again with `overwrite: true`. A caller cannot
+  // tell that from `Save failed: Conflict`, so it arrives as a class it can
+  // narrow on, carrying both halves the dialog needs -- the stem to write to
+  // and the title to put in front of the user.
+  it('throws a typed GraphExistsError for the taken-name 409', async () => {
+    mockFetch(409, {
+      detail: { error: 'graph_exists', file: '模型_', name: '模型 v1' },
+    });
+    const err = await saveGraph({ name: '模型\u{2EBF0}', nodes: [], edges: [] } as never)
+      .then(() => null, (e: unknown) => e);
+    expect(err).toBeInstanceOf(GraphExistsError);
+    // The SERVER's stem, which for this title is not the one the frontend's
+    // own sanitizer would derive -- that gap is the whole of #455.
+    expect((err as GraphExistsError).file).toBe('模型_');
+    // `name` is the TITLE of the graph about to be replaced, deliberately
+    // shadowing `Error.name`: it is the only form of that graph the user has
+    // ever seen, and the only thing worth showing in the confirm.
+    expect((err as GraphExistsError).name).toBe('模型 v1');
+  });
+
+  it('carries `overwrite` through on the retry', async () => {
+    const fetchMock = mockFetch(200, { file: 'taken' });
+    await saveGraph(
+      { name: 'Taken', file: 'taken', overwrite: true, nodes: [], edges: [] } as never,
+    );
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({
+      name: 'Taken', file: 'taken', overwrite: true, nodes: [], edges: [],
+    });
+  });
+
+  // The parse stays defensive on every step. A 409 raised anywhere else in
+  // the stack carries a plain-string `detail`, and a proxy or a dead server
+  // answers with no JSON at all -- neither may surface as a SyntaxError
+  // thrown over the top of the real failure.
+  it('keeps the plain error for a 409 that is not a taken name', async () => {
+    mockFetch(409, { detail: 'Conflict raised somewhere else' });
     await expect(saveGraph({} as never)).rejects.toThrow(/Save failed/);
+  });
+
+  it('keeps the plain error for a 409 whose body is not JSON at all', async () => {
+    mockFetchJsonThrows(409);
+    await expect(saveGraph({} as never)).rejects.toThrow(/Save failed/);
+  });
+
+  // A stem-less body cannot be retried: an empty `file` reads as "no address
+  // given" on the route, which is the silent overwrite this refusal exists to
+  // stop. It is reported as an ordinary failure instead.
+  it('keeps the plain error for a taken-name 409 with no stem in it', async () => {
+    mockFetch(409, { detail: { error: 'graph_exists', name: 'Something' } });
+    await expect(saveGraph({} as never)).rejects.toThrow(/Save failed/);
+  });
+
+  it('throws a plain Error on every other failure', async () => {
+    mockFetch(500, {});
+    const err = await saveGraph({} as never).then(() => null, (e: unknown) => e);
+    expect(err).toBeInstanceOf(Error);
+    // Not the taken-name class: a 500 is a failure to report, not a question
+    // to ask, and a caller narrowing on `instanceof` must not be handed one
+    // for the other.
+    expect(err).not.toBeInstanceOf(GraphExistsError);
+    expect((err as Error).message).toMatch(/Save failed/);
   });
 });
 

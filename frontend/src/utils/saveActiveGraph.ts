@@ -1,4 +1,5 @@
-import { saveGraph, listGraphs } from '../api/rest';
+import { saveGraph, GraphExistsError } from '../api/rest';
+import type { GraphSaveResult } from '../api/rest';
 import { useTabStore } from '../store/tabStore';
 import { useProjectStore } from '../store/projectStore';
 import { useToastStore } from '../store/toastStore';
@@ -6,7 +7,7 @@ import { useI18n } from '../i18n';
 import { confirm, prompt } from './dialog';
 import { announceWorktreeWrite } from './worktreeWrite';
 import { announceGraphsWrite } from './graphsWrite';
-import { sanitizeGraphName, findGraphNameCollision } from './index';
+import { sanitizeGraphName } from './index';
 
 /**
  * Save the active tab's graph.
@@ -20,8 +21,9 @@ import { sanitizeGraphName, findGraphNameCollision } from './index';
  * - An unbound tab -- a gallery example, an import, a canvas that has never
  *   been saved -- takes the prompt path, as does every explicit Save As: a
  *   name is asked for, no `file` is sent so the server derives the address
- *   from that name exactly as it always has, and the collision guard that
- *   stops one graph quietly replacing another still runs.
+ *   from that name exactly as it always has, and the guard that stops one
+ *   graph quietly replacing another still runs -- inside the server now
+ *   (#455), as a 409 this function turns into a question and an answer.
  *
  * The binding is now the whole of that rule. It used to read "project mode +
  * bound + !saveAs", with "non-project mode: ALWAYS prompt for a name (legacy
@@ -40,14 +42,16 @@ import { sanitizeGraphName, findGraphNameCollision } from './index';
  * was loaded from a newer format_version than this build writes).
  *
  * Everything after the dialogs addresses the tab this save STARTED from, by
- * id, and never "the active tab". A save can stop for a name and a list read,
- * and the user can switch tabs or close one while it waits -- so by the time
- * the canvas is serialized, "the active tab" may be a different graph
- * entirely. Reading it there wrote the OTHER tab's nodes into the file this
- * save named, under a success toast, and nothing on screen said so. The
- * addressed calls below are the whole of the fix, and they are load-bearing
- * on every path that stops for a dialog -- the prompted path, and a bound
- * tab's one-time question about its own title.
+ * id, and never "the active tab". A save can stop for a name and for the
+ * overwrite question, and the user can switch tabs or close one while it
+ * waits -- so by the time the canvas is serialized, "the active tab" may be a
+ * different graph entirely. Reading it there wrote the OTHER tab's nodes into
+ * the file this save named, under a success toast, and nothing on screen said
+ * so. The addressed calls below are the whole of the fix, and they are
+ * load-bearing on every path that stops for a dialog -- the prompted path, a
+ * bound tab's one-time question about its own title, and the overwrite
+ * confirm, which stops the save with the canvas ALREADY READ and a `file` the
+ * server is standing by to replace.
  */
 export async function saveActiveGraph(opts: { saveAs?: boolean } = {}): Promise<void> {
   const t = useI18n.getState().t;
@@ -113,11 +117,6 @@ export async function saveActiveGraph(opts: { saveAs?: boolean } = {}): Promise<
   // graph being named for the first time wants.
   let targetFile: string | null = null;
   let targetName: string;
-  // The file the collision guard matched and the user agreed to overwrite, in
-  // the SERVER's spelling -- see the clear at the end of this function for why
-  // that spelling, and not the one this save produces, is the one to act on.
-  // Null on every path that overwrote nothing, which is most of them.
-  let overwrittenFile: string | null = null;
 
   if (inPlace && tab.currentGraphName) {
     // The one-click Save: both halves of the binding are known, so there is
@@ -147,38 +146,19 @@ export async function saveActiveGraph(opts: { saveAs?: boolean } = {}): Promise<
       // silently moved onto the copy. And the guard would have been a second
       // dialog asking whether to overwrite the file the tab is already on.
       targetFile = boundFile;
-    } else {
-      // Unbound, or an explicit Save As. The name IS the address on this
-      // path -- no `file` is sent -- so the guard that stops one graph
-      // quietly replacing another is the only thing standing between a typed
-      // name and somebody else's file. The tab's own file is excepted inside
-      // `findGraphNameCollision`: re-saving a graph under its own name is not
-      // a collision to warn about.
-      let existing: { name: string; file: string }[] = [];
-      try {
-        const r = await listGraphs();
-        if (Array.isArray(r)) existing = r;
-      } catch {
-        /* list unavailable -- proceed without the overwrite check */
-      }
-      const colliding = findGraphNameCollision(trimmed, existing, tab.currentGraphFile);
-      if (colliding !== null) {
-        const okConfirm = await confirm({
-          // The TITLE, because that is the only form of this graph the user
-          // has ever seen -- the stem beside it is an implementation detail
-          // of where it is stored.
-          title: t('toolbar.save.overwriteConfirm', { name: colliding.name }),
-          confirmText: t('toolbar.save'),
-          variant: 'danger',
-        });
-        if (!okConfirm) return;
-        // Remembered past the dialog for the clear at the end of this
-        // function. Set only here, after a yes: a refused overwrite writes
-        // nothing, so there is nothing for any other tab's binding to have
-        // become wrong about.
-        overwrittenFile = colliding.file;
-      }
     }
+    // Unbound, or an explicit Save As, and `targetFile` stays null: the name
+    // IS the address on this path, and the server derives it. The guard that
+    // stops a typed name from quietly replacing somebody else's graph rides
+    // on that same request -- see the `GraphExistsError` branch below. It
+    // used to run HERE, out of a `GET /api/graph/list` read compared against
+    // this build's replica of the backend's sanitizer, and that is #455: the
+    // replica tests `/[\p{L}\p{N}]/u` against Node's ICU tables where
+    // `_sanitize_name` uses CPython's `str.isalnum()`, so for any of the
+    // 14,049 code points the two Unicode versions disagree about, the stem
+    // computed here matched no saved row, no dialog was shown, and the server
+    // then resolved the same title to a stem that DID exist and replaced it.
+    // A client cannot ask this question. It can only be told the answer.
   }
 
   // The tab this save started on, re-read AFTER the dialogs above. `tab` is
@@ -216,37 +196,127 @@ export async function saveActiveGraph(opts: { saveAs?: boolean } = {}): Promise<
     // lost when the user did the deliberate, trust-building thing: Save.
     const { nodes, edges, presets, segmentGroups, subgraphs, settings } =
       liveStore.getSerializedGraphOf(liveTab);
-    const result = await saveGraph({
-      nodes, edges, name: targetName,
-      // The address, and only when this tab is bound to one. An omitted
-      // `file` is the server's original behaviour -- the stem comes from the
-      // name -- which is what a graph named a moment ago at the prompt above
-      // is asking for. `name` above is the title in both cases, and the
-      // server never writes this field into the file.
-      ...(targetFile !== null ? { file: targetFile } : {}),
-      // From the live tab too: the description is edited in the Inspector,
-      // which is on screen the whole time the name dialog is not.
-      description: liveTab.description ?? '', presets, segmentGroups, subgraphs,
-      // Only when the graph assigns a device: the serializer emits the block
-      // only then, and a file with no assignment stays byte-identical.
-      ...(settings ? { settings } : {}),
-    });
+    // The request, in one place, because it is sent TWICE on the path that
+    // ends in an overwrite: once as itself, and once more with `overwrite`
+    // after the user has agreed to replace what the first attempt ran into.
+    // The canvas is read exactly ONCE, above, and both attempts carry those
+    // same bytes -- re-serializing between them would save whatever the user
+    // typed while the confirm was on screen, which is not the graph they were
+    // shown and agreed to overwrite with.
+    const post = (extra: { file?: string; overwrite?: boolean } = {}) =>
+      saveGraph({
+        nodes, edges, name: targetName,
+        // The address, and only when this tab is bound to one. An omitted
+        // `file` is the server's original behaviour -- the stem comes from the
+        // name -- which is what a graph named a moment ago at the prompt above
+        // is asking for. `name` above is the title in both cases, and the
+        // server never writes this field into the file.
+        ...(targetFile !== null ? { file: targetFile } : {}),
+        // From the live tab too: the description is edited in the Inspector,
+        // which is on screen the whole time the name dialog is not.
+        description: liveTab.description ?? '', presets, segmentGroups, subgraphs,
+        // Spelled out as `false`, never left off, and that is the handshake:
+        // the route reads an ABSENT `overwrite` as "this client has never
+        // heard of the guard, write it" -- which is what keeps a 2.8.0 dist's
+        // Ctrl+S working against a 2.8.2 backend, since `file` did not exist
+        // before 2.8.1 and those saves name no address either. Sending the
+        // field is this build saying it does know, and has a user standing by
+        // to answer the 409 with the confirm below. Omit it here and an
+        // unaddressed Save As silently overwrites again, which is #455.
+        overwrite: false,
+        // Only when the graph assigns a device: the serializer emits the block
+        // only then, and a file with no assignment stays byte-identical.
+        ...(settings ? { settings } : {}),
+        // Last, so a retry's address and its `overwrite: true` win over the
+        // two above. The addresses are the same string whenever both are
+        // present -- the server only refuses a request that named no address
+        // -- and the server's spelling is the one the dialog just named to
+        // the user.
+        ...extra,
+      });
+
+    // The address this save actually put on the wire, for the `savedFile`
+    // fallback below. It moves onto the server's stem when a retry adopts one.
+    let addressSent = targetFile;
+    // Whether the user was asked to replace another graph and said yes. Only
+    // then is there anything for another tab's binding to have become wrong
+    // about -- a refused or uncontested save overwrote nothing.
+    let confirmedOverwrite = false;
+    // The saving tab's binding as it stands at the moment of the write.
+    // Re-read after the overwrite confirm, because that dialog is one more
+    // window in which the user can act on this tab.
+    let boundAtWrite = liveTab.currentGraphFile;
+
+    let result: GraphSaveResult;
+    try {
+      result = await post();
+    } catch (err) {
+      if (!(err instanceof GraphExistsError)) throw err;
+      // The name is taken, and the SERVER is the one saying so -- the only
+      // party that can, since the stem is `_sanitize_name(title)` in CPython's
+      // Unicode tables and this build's replica of that rule disagrees with it
+      // on 14,049 code points (#455). Nothing has been written: the route
+      // refuses first and writes second, so this is a question, not a loss.
+      //
+      // Unless the file it names is the one this tab is already sitting on --
+      // a Save As of a graph under its own name, which is not a collision to
+      // warn about and retries below with no dialog at all. The server cannot
+      // make that call, having no idea which file the asking tab is on. The
+      // comparison is exact, with the server's spelling on both sides: the
+      // tab's binding came from a previous save's response, so a difference
+      // here is a difference in fact, and folding case would skip the dialog
+      // on files a retry is not going to touch.
+      if (err.file !== boundAtWrite) {
+        const okConfirm = await confirm({
+          // The TITLE the file carries, because that is the only form of this
+          // graph the user has ever seen -- the stem beside it is an
+          // implementation detail of where it is stored.
+          title: t('toolbar.save.overwriteConfirm', { name: err.name }),
+          confirmText: t('toolbar.save'),
+          variant: 'danger',
+        });
+        // No. Nothing was written, so there is nothing to report and nothing
+        // to undo -- and a toast here would be an error message for a choice
+        // the user just made deliberately.
+        if (!okConfirm) return;
+        const stillOpen = useTabStore.getState().tabs.find((tb) => tb.id === tab.id);
+        if (stillOpen === undefined) {
+          // The tab was closed while the confirm was open, so the graph this
+          // save is carrying no longer exists -- and the yes it just collected
+          // is a yes to destroy a file on its behalf. The refused attempt
+          // wrote nothing; this returns before the retry can.
+          return;
+        }
+        boundAtWrite = stillOpen.currentGraphFile;
+        confirmedOverwrite = true;
+      }
+      // `err.file` on the retry, never a stem re-derived here: it is the file
+      // the dialog named and the file the server will replace, and the whole
+      // of this bug is the two not being the same string. Sending it back also
+      // makes the retry an ADDRESSED save, which the server's guard leaves
+      // alone -- `overwrite` and the address say the same thing twice, on
+      // purpose, so neither half alone can turn a second question into a
+      // silent write.
+      addressSent = err.file;
+      result = await post({ file: err.file, overwrite: true });
+    }
     // What the server just wrote, AS THE SERVER SPELLS IT. The route answers
     // with the stem it sanitized and wrote, and taking it from there is the
     // only way to be sure: `sanitizeGraphName` is a replica of the backend's
     // `_sanitize_name`, and a replica of a rule is not the rule. This one
     // tests `[\p{L}\p{N}]` against Node's ICU tables where the backend uses
-    // CPython's `str.isalnum()`, and the two Unicode versions disagree on 16
-    // BMP code points, plus astral ones. The write LANDED correctly either
-    // way -- the server re-sanitizes whatever `file` it is handed -- but a
-    // binding built from the replica's answer names a stem `GET
-    // /api/graph/list` will never report, so the Graphs panel marks no row
-    // Current and the exact-match clear below finds no tab.
+    // CPython's `str.isalnum()`, and the two Unicode versions disagree on
+    // 14,049 code points. The write LANDED correctly either way -- the server
+    // re-sanitizes whatever `file` it is handed -- but a binding built from
+    // the replica's answer names a stem `GET /api/graph/list` will never
+    // report, so the Graphs panel marks no row Current and the exact-match
+    // clear below finds no tab.
     //
     // The fallback is for a frontend built from source meeting a backend
     // older than the field, which is the same reason `renameGraph`'s caller
     // in `GraphsTab` carries one: the address we sent (so a bound tab's
-    // binding still never moves as a side effect of being saved), else the
+    // binding still never moves as a side effect of being saved, and an
+    // overwrite retry still binds to the stem the dialog named), else the
     // replica's best guess at the stem derived from the name. A BLANK `file`
     // takes that fallback too rather than being believed -- an empty stem is
     // not an address, and a tab bound to one would send `file: ""` on its
@@ -254,13 +324,13 @@ export async function saveActiveGraph(opts: { saveAs?: boolean } = {}): Promise<
     const savedFile =
       typeof result?.file === 'string' && result.file
         ? result.file
-        : targetFile ?? sanitizeGraphName(targetName);
+        : addressSent ?? sanitizeGraphName(targetName);
     // Both halves of the binding, so the NEXT save of this tab writes the
     // name the user just typed rather than the stem it was sanitized into.
     // This is what makes the 2.8.0-restored tab's one-time prompt a one-time
     // prompt.
     liveStore.setTabGraphFile(tab.id, savedFile, targetName);
-    if (savedFile !== liveTab.currentGraphFile) {
+    if (savedFile !== boundAtWrite) {
       // This save wrote a file the SAVING tab was not bound to a moment ago,
       // and a confirmed Save As is allowed to write over a file another tab
       // IS bound to. That other tab's binding is now a lie: the file holds
@@ -278,33 +348,46 @@ export async function saveActiveGraph(opts: { saveAs?: boolean } = {}): Promise<
       // other tab changed.
       liveStore.rebindGraphFile(savedFile, null, tab.id);
     }
-    if (overwrittenFile !== null && overwrittenFile !== savedFile) {
-      // The same clear, for the file the collision guard MATCHED rather than
-      // the one this save produced -- and they are not always the same
-      // string, which is the whole of this branch.
+    if (confirmedOverwrite) {
+      // The same clear again, for a tab whose binding differs from the file
+      // just written ONLY IN CASE -- which the exact comparison above cannot
+      // see, and which on the two filesystems most of our users are on is the
+      // same physical file.
       //
-      // `findGraphNameCollision` folds case on purpose: NTFS and APFS are
-      // case-insensitive, and a silent overwrite on the majority platform is
-      // the worse failure. `rebindGraphFile` compares with `===`, also on
-      // purpose: on a case-sensitive filesystem the two stems really are two
+      // `rebindGraphFile` compares stems with `===` on purpose: on a
+      // case-SENSITIVE filesystem `My_Graph` and `my_graph` really are two
       // files, and folding them there would raise the wrong tab from the
-      // Graphs panel and mark the wrong row Current. The gap between the two
-      // is a tab that still believes it owns the file:
+      // Graphs panel and mark the wrong row Current. The gap that leaves is a
+      // tab which still believes it owns the file:
       //
       //   tab A saves "My Graph" -> `My_Graph.json`, binds `My_Graph`
-      //   tab B's Save As of "my graph" matches that row, the user accepts,
-      //     and the save's `os.replace` re-spells the ENTRY to
-      //     `my_graph.json`; tab B binds `my_graph`
+      //   tab B's Save As of "my graph" is refused with a 409 -- on NTFS the
+      //     server finds `My_Graph.json` under the stem it derived,
+      //     `my_graph` -- the user accepts, and the save's `os.replace`
+      //     re-spells the ENTRY to `my_graph.json`; tab B binds `my_graph`
       //   the clear above looks for `my_graph` and never matches `My_Graph`
       //   tab A's next Save is promptless, sends `file: "My_Graph"`, and on
       //     NTFS lands on that same physical file -- over tab B's graph, with
       //     no dialog
       //
-      // So the app warned that two names are one file and then treated them
-      // as two. Reproduced end to end over real HTTP, in both non-project and
-      // project mode. The saving tab is excepted for the reason it is above:
-      // its binding is the one this save just made true.
-      liveStore.rebindGraphFile(overwrittenFile, null, tab.id);
+      // So the app warns that two names are one file and then treats them as
+      // two. Reproduced end to end over real HTTP by a reviewer, in both
+      // non-project and project mode.
+      //
+      // Folded here and only here, after a confirmed overwrite: clearing a
+      // binding is destructive to the tab it is done to -- it turns that
+      // tab's one-click Save into a dialog -- so it is done only where a file
+      // really has just been replaced with somebody else's graph. The saving
+      // tab is excepted for the reason it is above: its binding is the one
+      // this save just made true. Over-folding costs a dialog (JS
+      // `toLowerCase` folds more than NTFS does, the Kelvin sign and capital
+      // sharp s among them); under-folding costs a graph.
+      for (const other of useTabStore.getState().tabs) {
+        const stem = other.currentGraphFile;
+        if (other.id === tab.id || stem === null || stem === savedFile) continue;
+        if (stem.toLowerCase() !== savedFile.toLowerCase()) continue;
+        liveStore.rebindGraphFile(stem, null, tab.id);
+      }
     }
     if (projectMode) {
       liveStore.stampTabProject(tab.id, projectDir);

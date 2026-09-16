@@ -199,6 +199,40 @@ class GraphSaveRequest(GraphData):
     #: that is how a client usually spells "no file yet".
     file: str | None = None
 
+    #: "Yes, replace whatever is at that address." Only consulted when the
+    #: request named no ``file``, because only then did the SERVER choose the
+    #: address -- by sanitizing ``name``, under a rule no client can reproduce
+    #: (issue #455: a title ending in U+2EBF0 is a letter to Node's Unicode 17
+    #: tables and an underscore to CPython's Unicode 14 ones, so an editor
+    #: that pre-checked for a collision itself checked the wrong stem and
+    #: overwrote a graph without asking). Such a request gets a 409 naming the
+    #: occupant instead of a write; the client confirms with the user and
+    #: re-posts with this set.
+    #:
+    #: THREE STATES, NOT TWO, and the third one is the whole reason this is
+    #: ``bool | None``:
+    #:
+    #: * ``True``  -- the user was asked and said yes. Write.
+    #: * ``False`` -- the sender KNOWS about the guard and has not been given a
+    #:   yes yet. Refuse an occupied address with the 409, so the sender can
+    #:   ask. The editor's first attempt sends exactly this.
+    #: * ``None`` (the field omitted) -- the sender has never heard of the
+    #:   guard, so there is nobody on the other end to ask and a 409 is not a
+    #:   question, it is a save that failed. Write, exactly as ``/save`` did
+    #:   before this field existed.
+    #:
+    #: A plain ``bool = False`` collapses the last two, and that is a live
+    #: break rather than a theoretical one: ``file`` only shipped in 2.8.1, so
+    #: EVERY dist up to 2.8.0 posts ``{name, nodes, edges}`` for an ordinary
+    #: in-place Ctrl+S -- no address, no ``overwrite`` -- and the stem is
+    #: occupied by definition, it is the graph being re-saved. Those builds
+    #: would get a 409 they have no code path to answer (their ``saveGraph``
+    #: raises on any non-2xx), so Save would simply stop working, and the same
+    #: goes for every script written against the documented "the body is the
+    #: graph, the address comes from ``name``" contract. The sentinel is what
+    #: keeps "omitted" meaning what it has always meant.
+    overwrite: bool | None = None
+
 
 class GraphExportRequest(GraphData):
     """A graph plus the run settings an exported script has to carry.

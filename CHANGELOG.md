@@ -72,6 +72,46 @@ received — each links to the release it was published as.
 
 ### Fixed
 
+- **Save As could destroy a graph without asking, and Chinese titles were the
+  most likely to trigger it.** The editor decided whether a save was about to
+  land on top of an existing graph by sanitizing the typed title into a
+  filename itself, with a copy of the server's rule. The copy was not the
+  rule: it tested `\p{L}\p{N}` against Node's Unicode 17 tables where the
+  server uses CPython's `str.isalnum()` on Unicode 14, and the two disagree on
+  14,049 code points — every one of them a character the editor keeps and the
+  server replaces with `_`. The blocks involved are mostly CJK, with CJK
+  Ext J (8,490) and Ext I (622) the largest, so this landed hardest on the
+  people most likely to type them.
+
+  Saving a graph titled `模型𮯰` therefore checked a filename nothing occupied,
+  showed no confirmation, and then let the server write it over an existing
+  `模型_` — a graph gone, with no dialog and no undo. Anyone whose titles are
+  plain ASCII never saw it, which is why it survived this long.
+
+  The editor no longer guesses. `POST /api/graph/save` takes an `overwrite`
+  flag, and a save that leaves its address to the server now answers
+  `409 {"error": "graph_exists", "file", "name"}` when something is already
+  there, naming the graph it would have replaced. The editor turns that answer
+  into the confirmation dialog it always meant to show, and re-posts with the
+  server's own filename and `overwrite: true`. The client-side copy of the
+  rule is gone from the safety path entirely; it survives only as a display
+  guess, where being wrong costs nothing.
+
+  Two smaller faults went with it. The check and the write now happen in one
+  request, so a rename arriving between the question and the answer can no
+  longer redirect the write onto a third graph. And the old check folded case
+  with JavaScript's `toLowerCase`, which folds more than Windows and macOS
+  filesystems do — the Kelvin sign onto `k`, capital sharp s, Cherokee and
+  Deseret pairs — so it could warn about a file it was never going to touch
+  and then unbind a tab for nothing. Asking the filesystem is exact.
+
+  `overwrite` has three states rather than two, and the third one is
+  deliberate: omitted means the sender has never heard of the guard, and gets
+  the route exactly as it behaved before. That keeps every save working for a
+  frontend build older than this one — `file` only shipped in 2.8.1, so older
+  builds name no address on an ordinary Ctrl+S either — and leaves scripts
+  written against the documented request body unaffected.
+
 - **18 nodes served their Chinese text as if it were English.** `DatasetBatch`,
   `RandomForestClassifier`, `Argmax`, `ScatterPlot2D` and the whole `edu` pack,
   among others, had Traditional Chinese sitting in `DESCRIPTION` — the field

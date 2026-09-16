@@ -16,7 +16,6 @@ import {
   resolveDynamicOutputs,
   buildFlowNode,
   sanitizeGraphName,
-  findGraphNameCollision,
 } from './index';
 import type { NodeDefinition, ParamDefinition, PresetDefinition } from '../types';
 
@@ -916,61 +915,15 @@ describe('sanitizeGraphName', () => {
   });
 });
 
-describe('findGraphNameCollision', () => {
-  const existing = [
-    { name: 'My Graph', file: 'My_Graph' },
-    { name: 'Other', file: 'Other' },
-  ];
-
-  it('returns the colliding graph display name when a different graph shares the sanitized file', () => {
-    // "My.Graph" sanitizes to "My_Graph", colliding with the saved "My Graph".
-    expect(findGraphNameCollision('My.Graph', existing, null)).toEqual({
-      name: 'My Graph', file: 'My_Graph',
-    });
-  });
-
-  it('returns null when no existing graph shares the sanitized file', () => {
-    expect(findGraphNameCollision('brand-new', existing, null)).toBeNull();
-  });
-
-  it('returns null when the only match IS the currently-open graph (re-save)', () => {
-    // Editing "My_Graph" and saving under a name that maps to it again.
-    expect(findGraphNameCollision('My Graph', existing, 'My_Graph')).toBeNull();
-  });
-
-  it('still warns when the collision is a DIFFERENT graph than the open one', () => {
-    // Open graph is "Other"; saving as "My Graph" collides with the other file.
-    expect(findGraphNameCollision('My Graph', existing, 'Other')).toEqual({
-      name: 'My Graph', file: 'My_Graph',
-    });
-  });
-
-  it('flags a CASE-ONLY collision (NTFS/APFS are case-insensitive)', () => {
-    // "my graph" sanitizes to "my_graph"; on Windows/macOS that overwrites the
-    // saved "My_Graph", so we must warn despite the case difference.
-    expect(findGraphNameCollision('my graph', existing, null)).toEqual({
-      name: 'My Graph', file: 'My_Graph',
-    });
-  });
-
-  // The `file` half is not decoration, and this is the case it exists for.
-  // The match folds case, so the matched row's stem can be spelled
-  // DIFFERENTLY from the stem this save is about to produce ("my_graph" here,
-  // "My_Graph" on the row). A caller that has to act on the file being
-  // overwritten -- `saveActiveGraph` clears the binding of every other tab
-  // holding it -- can only do so through the server's spelling, because that
-  // is the spelling every binding in the app was made from.
-  it('reports the matched row\'s OWN stem, not the stem the target name sanitizes to', () => {
-    const hit = findGraphNameCollision('my graph', existing, null);
-    expect(hit?.file).toBe('My_Graph');
-    expect(hit?.file).not.toBe(sanitizeGraphName('my graph'));
-  });
-
-  it('does not warn on a case-only re-save of the currently-open graph', () => {
-    // Open file stem "My_Graph"; saving "my graph" maps to the same file.
-    expect(findGraphNameCollision('my graph', existing, 'My_Graph')).toBeNull();
-  });
-});
+/*
+ * `findGraphNameCollision`'s suite stood here and went with the function in
+ * #455. Every case in it was a client deciding, out of a list read and the
+ * sanitizer above, which titles collide -- and the two sanitizers disagree on
+ * 14,049 code points, so for those titles it decided wrong and let the server
+ * overwrite a graph with no dialog. The server refuses the save now, and the
+ * cases that replaced these live in `saveActiveGraph.test.ts`, driven by that
+ * 409 instead of by a list.
+ */
 
 describe('resolveDynamicInputs for ComposeTransform', () => {
   function composeDef(overrides: Partial<NodeDefinition> = {}): NodeDefinition {
