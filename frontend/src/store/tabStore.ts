@@ -248,6 +248,22 @@ export interface TabState {
   // file carries no `settings` block at all.
   graphDevice: string | null;
   currentGraphFile: string | null;
+  // The DISPLAY NAME of the graph inside that file -- what the Graphs panel
+  // lists it as, and the string an in-place save has to write back.
+  //
+  // Stored beside the stem because it cannot be recovered from it:
+  // `sanitizeGraphName` is lossy, so `My_Graph` could have come from "My
+  // Graph", "My/Graph" or "My.Graph", and `POST /api/graph/save` writes the
+  // whole payload -- `name` included -- into the file that `GET
+  // /api/graph/list` reads it back out of. Sending the stem therefore does
+  // not merely address the right file, it RENAMES the graph inside it: press
+  // the toolbar's save icon on "My Graph" and both the panel row and the
+  // toast say "My_Graph" from that moment on.
+  //
+  // Null means "this tab does not know its graph's name" -- a record written
+  // by 2.8.0, which persisted the stem and nothing else. `saveActiveGraph`
+  // answers that by asking, once, rather than by guessing.
+  currentGraphName: string | null;
   // Project directory (absolute path) this tab's bound graph was last saved
   // into or loaded from. `null` for a tab never touched by a project save
   // (e.g. a brand-new tab, or one opened before any project was resolved).
@@ -397,6 +413,7 @@ function createTabState(id: string, name: string): TabState {
     description: '',
     graphDevice: null,
     currentGraphFile: null,
+    currentGraphName: null,
     projectOrigin: null,
     readOnly: false,
     revision: 1,
@@ -514,6 +531,24 @@ export interface GraphDocument {
    * the third, `openExample`, never knew there was a question.
    */
   boundFile: string | null;
+  /**
+   * The display name the file named by `boundFile` carries, which the tab
+   * saves it back under. Null, or absent, for "the reader does not know".
+   *
+   * Optional where `boundFile` is required, and the asymmetry is the point.
+   * Forgetting `boundFile` meant inheriting the PREVIOUS graph's save target
+   * and overwriting a file nobody named -- silently, with no prompt, because
+   * the prompt is skipped precisely when a tab claims to be bound -- and
+   * only the compiler could catch that. Forgetting this one leaves the tab
+   * bound to a file whose name it does not know, and `saveActiveGraph`
+   * answers that by asking for a name. The mistake that costs a file is
+   * required; the mistake that costs a question is not.
+   *
+   * That is also why the three readers that install UNBOUND documents --
+   * `openExample`, `importGraphFile` and the plugin API -- need no line
+   * here: with no file there is no name, and the action below enforces it.
+   */
+  boundName?: string | null;
   subgraphs?: SubgraphDefinition[];
   segmentGroups?: SegmentGroup[];
   /**
@@ -573,7 +608,28 @@ interface TabStoreState {
   setDescription: (description: string) => void;
   /** Assign the active graph's run device; '' or null clears the assignment. */
   setGraphDevice: (device: string | null) => void;
-  setCurrentGraphFile: (file: string | null) => void;
+  /**
+   * Bind the ACTIVE tab to a saved graph, or unbind it with `(null, null)`.
+   *
+   * One call takes both halves, and the name is REQUIRED rather than
+   * defaulted, because the two are one fact: which saved graph this tab
+   * writes to. A tab holding a file with a stale or missing name renames
+   * that graph on its next in-place save -- the save writes the whole
+   * payload, `name` included -- so a caller able to set one without the
+   * other is exactly the bug the pair exists to prevent. The compiler asks
+   * for both; the action drops the name when there is no file.
+   */
+  setCurrentGraphFile: (file: string | null, name: string | null) => void;
+  /**
+   * `setCurrentGraphFile`, addressed by tab id -- the active-tab wrapper
+   * calls this, the way `loadGraphDocument` calls `loadGraphDocumentInto`.
+   *
+   * `saveActiveGraph` needs the addressed form because a save that stopped
+   * for a name dialog resumes in a store where the active tab may no longer
+   * be the tab the save started on: writing the binding to "the active tab"
+   * then stamps the file onto whichever tab the user moved to.
+   */
+  setTabGraphFile: (tabId: string, file: string | null, name: string | null) => void;
   /**
    * Move, or drop, the save binding of EVERY tab that holds `from`.
    *
@@ -585,12 +641,39 @@ interface TabStoreState {
    * file that was just deleted, both without asking, because an in-place Save
    * neither prompts nor checks for a collision. The binding is persisted, so
    * a stale one survives a reload too.
+   *
+   * `exceptTabId` spares ONE tab: the tab whose binding to `from` is the true
+   * one. `saveActiveGraph` names the active tab after a Save As that
+   * overwrote a file some other tab held -- the file is that tab's graph now,
+   * so every OTHER binding to it is stale in exactly the way this action
+   * exists to clear, while the binding the save just made correct has to
+   * survive. Omitted, no tab is spared and every holder is rebound, which is
+   * what a rename and a delete want: those happen to the file itself, so no
+   * tab's binding to it is left standing.
+   *
+   * `to` carries the file and the display name TOGETHER, or is null for "drop
+   * the binding", because a rename changes both and the pair has no meaning
+   * split up. The Graphs panel renames "My Graph" to "Draft 2"; a tab moved
+   * onto `Draft_2` while still holding "My Graph" writes that old name back
+   * into the new file on its next in-place save, renaming the graph back by
+   * the act of saving it. Passing a name without a file is not expressible,
+   * which is what a delete needs it to be.
    */
-  rebindGraphFile: (from: string, to: string | null) => void;
+  rebindGraphFile: (
+    from: string,
+    to: { file: string; name: string | null } | null,
+    exceptTabId?: string,
+  ) => void;
   setTabReadOnly: (v: boolean) => void;
   // Per-project persistence scoping (ID10)
   rehydrateForProject: (projectId: string | null) => void;
   stampActiveTabProject: (projectId: string | null) => void;
+  /**
+   * `stampActiveTabProject`, addressed by tab id. Same reason as
+   * `setTabGraphFile`: a save that started on one tab has to stamp THAT tab,
+   * even when the user has moved to another one while the dialog was open.
+   */
+  stampTabProject: (tabId: string, projectId: string | null) => void;
 
   // flow actions (operate on active tab)
   setNodes: (nodes: Node<NodeData>[]) => void;
@@ -1370,6 +1453,14 @@ export interface PersistedTab {
   /** The graph's assigned device. Absent when the graph follows Settings. */
   graphDevice?: string | null;
   currentGraphFile?: string | null;
+  /**
+   * The display name of the graph in `currentGraphFile`. Absent on a tab
+   * bound to nothing, and absent on every record 2.8.0 wrote -- that build
+   * stored the stem alone. Such a record restores with a file and no name,
+   * which `saveActiveGraph` answers by asking for one rather than by saving
+   * the graph under its own stem and renaming it.
+   */
+  currentGraphName?: string | null;
   projectOrigin?: string | null;
   readOnly?: boolean;
   /**
@@ -1446,6 +1537,11 @@ function buildPersistedTab(input: TabState): PersistedTab {
     // stored shape.
     ...(t.graphDevice != null ? { graphDevice: t.graphDevice } : {}),
     currentGraphFile: t.currentGraphFile,
+    // Only persisted when set, following `graphDevice` above and
+    // `projectOrigin` below: a tab bound to nothing writes the same record
+    // 2.8.0 wrote for it, byte for byte, so nothing about adding this field
+    // rewrites an existing workspace.
+    ...(t.currentGraphName != null ? { currentGraphName: t.currentGraphName } : {}),
     // Only persisted when set, so non-project localStorage is byte-identical.
     ...(t.projectOrigin != null ? { projectOrigin: t.projectOrigin } : {}),
     // Only persisted when true, so an editable graph's localStorage shape
@@ -1513,6 +1609,12 @@ function scalarSignature(t: TabState): string {
     // record is reused and autosave never writes the new device.
     t.graphDevice ?? '',
     t.currentGraphFile ?? '',
+    // In the signature for the change the stem cannot show: sanitizing is
+    // lossy, so renaming "My Graph" to "My/Graph" leaves the stem `My_Graph`
+    // exactly as it was. Without this the cached record is reused, autosave
+    // never writes the new name, and the tab comes back after a reload still
+    // saving the graph under the title it was renamed away from.
+    t.currentGraphName ?? '',
     t.projectOrigin ?? '',
     t.readOnly ? '1' : '0',
     t.status,
@@ -1639,6 +1741,11 @@ function tabFromPersisted(t: PersistedTab, base: TabState): TabState {
     description: t.description ?? '',
     graphDevice: t.graphDevice ?? null,
     currentGraphFile: t.currentGraphFile ?? null,
+    // A record written before this field existed carries a file and no name.
+    // It restores as null rather than as the stem, which is what routes that
+    // tab through `saveActiveGraph`'s one-time name prompt instead of letting
+    // its first save rename the graph it is bound to.
+    currentGraphName: t.currentGraphName ?? null,
     projectOrigin: t.projectOrigin ?? null,
     readOnly: t.readOnly ?? false,
     // A record without the field is pre-#341: restore as 1 rather than as
@@ -2072,19 +2179,48 @@ export const useTabStore = create<TabStoreState>((rawSet, get) => {
       tabs: updateTab(get().tabs, get().activeTabId, () => ({ graphDevice: device || null })),
     }),
 
-  setCurrentGraphFile: (file) =>
-    set({ tabs: updateTab(get().tabs, get().activeTabId, () => ({ currentGraphFile: file })) }),
+  setCurrentGraphFile: (file, name) =>
+    get().setTabGraphFile(get().activeTabId, file, name),
 
-  rebindGraphFile: (from, to) => {
+  setTabGraphFile: (tabId, file, name) =>
+    set({
+      tabs: updateTab(get().tabs, tabId, () => ({
+        currentGraphFile: file,
+        // No file, no name. An unbound tab that kept a name left
+        // `saveActiveGraph`'s two-field test one field away from passing, and
+        // the field it would have been passing on names a file the tab is no
+        // longer bound to.
+        currentGraphName: file === null ? null : name,
+      })),
+    }),
+
+  rebindGraphFile: (from, to, exceptTabId) => {
     const { tabs } = get();
+    // One predicate for the guard below and for the write, so the two can
+    // never disagree about which tabs this touches. `exceptTabId` is
+    // undefined for the rename and delete callers, and no tab id is
+    // undefined, so those keep rebinding every holder exactly as before.
+    const affected = (tab: TabState) =>
+      tab.currentGraphFile === from && tab.id !== exceptTabId;
     // Nothing written when no tab holds the file, which is most renames and
     // most deletes: a fresh `tabs` array re-renders every subscriber of the
-    // list, and the canvas is one of them.
-    if (!tabs.some((tab) => tab.currentGraphFile === from)) return;
+    // list, and the canvas is one of them. The spared tab does not count as a
+    // holder here either -- a Save As whose only other binding is the active
+    // tab's own has nothing to clear.
+    if (!tabs.some(affected)) return;
     set({
-      tabs: tabs.map((tab) => (
-        tab.currentGraphFile === from ? { ...tab, currentGraphFile: to } : tab
-      )),
+      tabs: tabs.map((tab) =>
+        affected(tab)
+          ? {
+              ...tab,
+              currentGraphFile: to?.file ?? null,
+              // Moves with the file or goes null with it, never on its own:
+              // a delete leaves no name to save under, and a rename's whole
+              // reason for carrying one is that the next in-place save must
+              // write the NEW title rather than the one the file had.
+              currentGraphName: to?.name ?? null,
+            }
+          : tab),
     });
   },
 
@@ -2105,7 +2241,10 @@ export const useTabStore = create<TabStoreState>((rawSet, get) => {
     }
   },
   stampActiveTabProject: (projectId) =>
-    set({ tabs: updateTab(get().tabs, get().activeTabId, () => ({ projectOrigin: projectId })) }),
+    get().stampTabProject(get().activeTabId, projectId),
+
+  stampTabProject: (tabId, projectId) =>
+    set({ tabs: updateTab(get().tabs, tabId, () => ({ projectOrigin: projectId })) }),
 
   // ── Helpers ──
 
@@ -2672,6 +2811,9 @@ export const useTabStore = create<TabStoreState>((rawSet, get) => {
         description: '',
         graphDevice: null,
         currentGraphFile: null,
+        // With the file, for the reason the store's own setter pairs them:
+        // a name left behind names a file this tab no longer writes to.
+        currentGraphName: null,
         segmentGroups: [],
         activeSegment: null,
         // An empty graph is trivially current-format -- never leave a tab
@@ -2990,6 +3132,12 @@ export const useTabStore = create<TabStoreState>((rawSet, get) => {
         // into a tab bound to foo.json overwrite foo.json on the next Save:
         // the graph on screen had been replaced and the binding had not.
         currentGraphFile: doc.boundFile,
+        // Paired with the file, and forced to null when there is no file.
+        // This is the one door every document reader goes through, so the
+        // pairing is enforced here once instead of being trusted to each of
+        // them -- and it is what lets `openExample`, `importGraphFile` and
+        // the plugin API keep saying `boundFile: null` and nothing else.
+        currentGraphName: doc.boundFile === null ? null : (doc.boundName ?? null),
         // Only when the document names one: a tab that was never renamed
         // keeps the label the user is looking at.
         ...(name ? { name } : {}),

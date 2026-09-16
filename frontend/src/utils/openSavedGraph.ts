@@ -1,10 +1,6 @@
 import type { Node } from '@xyflow/react';
-import { loadGraph } from '../api/rest';
 import { useNodeDefStore } from '../store/nodeDefStore';
-import { useProjectStore } from '../store/projectStore';
 import { useTabStore } from '../store/tabStore';
-import { useToastStore } from '../store/toastStore';
-import { useI18n } from '../i18n';
 import type { GraphDocument } from '../store/tabStore';
 import type {
   NodeData,
@@ -19,14 +15,14 @@ import { readGraphDevice } from './graphSettings';
 /**
  * Reading a SAVED GRAPH -- one of the project's own files -- into a document.
  *
- * The fourth door onto `loadGraphDocument`, and the one the Source Control
- * tab needs: when a discard puts an older version of `graphs/foo.graph.json`
- * back on disk, the tab holding it is showing something that no longer
- * exists, and the offer to reload it has to read the file exactly the way
- * opening one does. Both read it through this file rather than each writing
- * the steps out, so the two can never drift: the same preset merge, the same
- * subgraph resolution, the same layout pass for a project graph whose layout
- * file is missing.
+ * Two readers, and they must never drift apart: the Graphs panel opening a
+ * row into a tab of its own, and the Source Control tab offering to reload a
+ * tab after a discard put an older version of `graphs/foo.graph.json` back on
+ * disk -- the tab holding it is showing something that no longer exists, and
+ * the offer has to read the file exactly the way opening one does. Written
+ * out twice they would have diverged on the details nobody notices until
+ * they are wrong: the preset merge, the subgraph resolution, the layout pass
+ * for a project graph whose layout file is missing.
  *
  * `openExample.ts` is the sibling for examples and templates; this file is
  * for files the user owns. The difference that matters is the binding: an
@@ -65,6 +61,15 @@ export class GraphMissingError extends Error {
 export interface SavedGraphPayload {
   nodes?: unknown[];
   edges?: unknown[];
+  /**
+   * What the graph calls itself inside the file -- the name
+   * `GET /api/graph/list` reports for it, and the name an in-place save has
+   * to write back so that saving a graph does not rename it. `unknown` like
+   * `settings` and `format_version` below, so the guard that reads it is a
+   * real one: this field comes off disk and may be missing, or a number, or
+   * anything else a hand-edited file holds.
+   */
+  name?: unknown;
   presets?: PresetDefinition[];
   subgraphs?: SubgraphDefinition[];
   segmentGroups?: SegmentGroup[];
@@ -83,11 +88,11 @@ export interface SavedGraphPayload {
 /**
  * Turn an already-fetched saved graph into the document to install.
  *
- * Split from the fetch the way `resolveExample` is, and for the caller the
- * Toolbar still is: it reads the file through `rest.loadGraph`, and what it
- * needed extracting was this -- the forty lines between the response and the
- * one `loadGraphDocument` call, which are the part the reload path must
- * repeat exactly.
+ * Split from the fetch the way `resolveExample` is: what needed extracting
+ * was this -- the forty lines between the response and the one install call,
+ * which are the part every reader has to repeat exactly. Exported on its own
+ * so those forty lines can be tested against a payload rather than against a
+ * stubbed network.
  *
  * Not pure, and deliberately so: a saved graph may carry presets the running
  * server has never seen, and its nodes only resolve against them, so the
@@ -97,7 +102,9 @@ export interface SavedGraphPayload {
  * `boundFile` is the caller's binding decision -- the file a later plain
  * Save overwrites in place, or null for "ask where this should go". It is
  * the one thing not read out of the document, which is why `GraphDocument`
- * requires it.
+ * requires it. The name that file is saved UNDER is read out of the
+ * document, as `boundName`; the store pairs the two and drops the name when
+ * there is no file to go with it.
  */
 export function resolveSavedGraph(
   data: SavedGraphPayload,
@@ -138,92 +145,28 @@ export function resolveSavedGraph(
     nodes: laidOutNodes,
     edges: resolvedEdges,
     boundFile,
+    // The name of the GRAPH IN THAT FILE, which is not the tab label below
+    // and is the field a reader will assume it is. `POST /api/graph/save`
+    // writes the whole payload back, `name` included, so an in-place save
+    // has to send this exact string or it renames the graph it overwrites --
+    // "My Graph" becomes "My_Graph", the sanitized stem, and stays that way.
+    // The stem cannot stand in for it either: sanitizing is lossy, so
+    // `My_Graph` could have come from "My Graph", "My/Graph" or "My.Graph"
+    // and nothing on the tab could tell them apart afterwards.
+    boundName: typeof data.name === 'string' ? data.name : null,
     subgraphs: loadedSubgraphs,
     segmentGroups: Array.isArray(data.segmentGroups) ? data.segmentGroups : [],
     description: typeof data.description === 'string' ? data.description : '',
     device: readGraphDevice(data.settings),
     formatVersion: data.format_version,
-    // `name` is deliberately absent: a saved graph is bound to its file by
-    // `currentGraphFile`, not by the tab label, so a load must not rename a
-    // tab the user named.
+    // `name` is deliberately absent, and it is NOT the same field as
+    // `boundName` above -- the next reader here will think it is. `name` is
+    // the TAB LABEL, which the user may have typed themselves; a saved graph
+    // is bound to its file by `currentGraphFile`, not by the label, so a load
+    // must not rename a tab the user named. `boundName` is the name of the
+    // FILE the tab saves back into, which the user did not type here and
+    // which the file is the only source of.
   };
-}
-
-/**
- * What opening a saved graph does to the tab it lands in.
- *
- * - `canvas` — replace what is on this canvas and bind the tab to NOTHING,
- *   so the next Save asks where the result should go. Overwriting live work
- *   is the whole of this path, which is why its callers confirm first.
- * - `bind` — the original Load: replace the canvas AND bind the tab to the
- *   file, so Save writes straight back over it.
- *
- * The two used to be one action (always `bind`), which meant opening a saved
- * graph to look at it silently took over where the tab saves.
- */
-export type SavedGraphTarget = 'canvas' | 'bind';
-
-/**
- * Open a saved graph into the ACTIVE tab.
- *
- * Extracted from `Toolbar.handleLoadGraph` so the Graphs panel opens a row
- * exactly the way the toolbar menu opened one -- not "the same idea", the
- * same function, down to which toast a failure produces.
- *
- * Deliberately does NOT confirm. The two callers disagree about when to ask:
- * a menu item the user aimed at is not a row they scrolled past, so the
- * question belongs to whoever drew the thing that was clicked. Everything
- * after the click is the same, and that is what lives here.
- *
- * `file` is the sanitized file stem, and `bind` adopts it so a later Save
- * overwrites the file in place with no overwrite warning; `canvas`
- * deliberately does not, which is what makes it safe to drop a saved graph
- * onto a canvas you are still working in -- the next Save asks for a name
- * instead of eating the original. The binding is part of installing the
- * document (#200 item 9), not a line after it: it says which file the graph
- * on screen writes to, so the two must never be set apart.
- *
- * Never throws: a failed read surfaces as a toast and leaves the graph
- * alone. Returns whether the graph was installed, for callers that want to
- * react.
- */
-export async function openSavedGraph(
-  // The whole list row, not just its `file`: the callers hold one, and the
-  // pair is what stops `name` (the title inside the file) being mistaken for
-  // the name the routes address it by.
-  { file }: { name: string; file: string },
-  target: SavedGraphTarget,
-): Promise<boolean> {
-  const t = useI18n.getState().t;
-  const addToast = useToastStore.getState().addToast;
-  try {
-    // Read through `rest.loadGraph`, which is the call the toolbar's Load
-    // always made. `readSavedGraphDocument` below is the sibling for the
-    // reload path, and the only reason it exists is that it has to tell a
-    // deleted file apart from a broken server; an open has one answer for
-    // both, so it has no use for the distinction.
-    const doc = resolveSavedGraph(await loadGraph(file), target === 'bind' ? file : null);
-    // One call, not six (#200 items 4 and 8): the whole document lands in a
-    // single store update, so no subscriber sees the new nodes beside the
-    // old definitions, and the read-only gate is the action's own return
-    // value rather than a line each reader has to remember -- which is what
-    // the third reader of a document, `openExample`, did not.
-    const tooNew = useTabStore.getState().loadGraphDocument(doc);
-    if (tooNew) {
-      addToast(
-        t('project.readOnly.loadNotice', {
-          version: doc.formatVersion as string | number,
-        }),
-        'warning',
-      );
-    }
-    const projectDir = useProjectStore.getState().projectDir;
-    if (projectDir !== null) useTabStore.getState().stampActiveTabProject(projectDir);
-    return true;
-  } catch (e) {
-    addToast(t('toolbar.load.fail', { error: (e as Error).message }), 'error');
-    return false;
-  }
 }
 
 /**
@@ -231,11 +174,10 @@ export async function openSavedGraph(
  *
  * Fetched here rather than through `rest.loadGraph` for one reason: that
  * function throws a plain `Error` carrying the status TEXT, so a caller
- * cannot tell "the file is gone" from "the server broke". The reload path
- * has to tell them apart -- a graph deleted by the commit being reloaded is
- * a sentence, and a 500 is an error line -- so the 404 becomes
- * `GraphMissingError` here. `loadGraph` itself is untouched; `openSavedGraph`
- * still goes through it and still shows what it always showed.
+ * cannot tell "the file is gone" from "the server broke". Both readers have
+ * to tell them apart -- a graph deleted by the commit being reloaded is a
+ * sentence, and a 500 is an error line -- so the 404 becomes
+ * `GraphMissingError` here.
  */
 export async function readSavedGraphDocument(
   file: string,

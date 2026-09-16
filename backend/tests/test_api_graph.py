@@ -2,6 +2,7 @@
 
 import copy
 import json
+from pathlib import Path
 
 import pytest
 
@@ -915,3 +916,224 @@ async def test_export_scrubs_a_portable_preset_secret_inside_a_definition(
     assert resp.status_code == 200, resp.text
     assert "sk-EXPORT-INBLOCK" not in json.dumps(captured["subgraphs"])
     assert "sk-EXPORT-INBLOCK" not in resp.json()["script"]
+
+
+# ── The save ADDRESS (`file`) vs the graph TITLE (`name`) ─────────────────
+#
+# `/save` used to derive the file it wrote from `name`, so the two could not
+# both be honoured: sending the stem renamed the graph on every save, and
+# sending the title wrote a DIFFERENT graph's file whenever a stem was not
+# `sanitize(that file's own inner name)`. `file` is the address; `name` is
+# only the title. These are the non-project-mode halves; the project-mode
+# ones live in test_graph_save_load_project.py.
+
+
+@pytest.fixture
+def graphs_dir(tmp_path, monkeypatch):
+    """A non-project GRAPHS_DIR. PROJECT_DIR is pinned to None explicitly:
+    which mode we are in is the subject of these tests, not a default to be
+    inherited."""
+    d = tmp_path / "graphs"
+    d.mkdir()
+    monkeypatch.setattr("app.config.settings.PROJECT_DIR", None)
+    monkeypatch.setattr("app.config.settings.GRAPHS_DIR", d)
+    return d
+
+
+def _entries(d):
+    """Directory entry names AS SPELLED on disk. `iterdir` reports the real
+    entry, which is the whole point on a case-insensitive filesystem."""
+    return sorted(p.name for p in d.iterdir())
+
+
+@pytest.mark.asyncio
+async def test_file_addresses_the_write_and_name_only_titles_it(
+    test_client, graphs_dir,
+):
+    """A retitled graph stays in the file it was opened from."""
+    await test_client.post("/api/graph/save", json={
+        "name": "Alpha", "nodes": [], "edges": [],
+    })
+    assert _entries(graphs_dir) == ["Alpha.json"]
+
+    resp = await test_client.post("/api/graph/save", json={
+        "name": "Renamed In The Title Bar", "file": "Alpha",
+        "nodes": [], "edges": [],
+    })
+    assert resp.status_code == 200
+    # No second file: the title changed, the address did not.
+    assert _entries(graphs_dir) == ["Alpha.json"]
+    assert json.loads((graphs_dir / "Alpha.json").read_text())["name"] == (
+        "Renamed In The Title Bar")
+
+
+@pytest.mark.asyncio
+async def test_a_save_never_writes_another_graphs_file(
+    test_client, graphs_dir,
+):
+    """The verified regression: a tab bound to `Beta.json` whose stored name
+    is "Alpha" (a copy, a hand-renamed file, a graph retitled by an older
+    build) used to overwrite `Alpha.json` on save, because the address came
+    from the title."""
+    (graphs_dir / "Alpha.json").write_text(json.dumps(
+        {"name": "Alpha", "nodes": [], "edges": [], "description": "the real Alpha"}))
+    (graphs_dir / "Beta.json").write_text(json.dumps(
+        {"name": "Alpha", "nodes": [], "edges": [], "description": "a copy"}))
+
+    resp = await test_client.post("/api/graph/save", json={
+        "name": "Alpha", "file": "Beta",
+        "nodes": [], "edges": [], "description": "edited",
+    })
+    assert resp.status_code == 200
+    assert json.loads((graphs_dir / "Beta.json").read_text())["description"] == "edited"
+    # The bystander is byte-for-byte untouched.
+    assert json.loads((graphs_dir / "Alpha.json").read_text())["description"] == (
+        "the real Alpha")
+
+
+@pytest.mark.asyncio
+async def test_omitting_file_is_byte_for_byte_the_old_behaviour(
+    test_client, graphs_dir,
+):
+    """An older client sends no `file`, so the address still comes from the
+    name -- and the bytes on disk are the ones /save always wrote: indent=2,
+    ASCII, NO trailing newline, and the schema's field order with nothing
+    new in it."""
+    resp = await test_client.post("/api/graph/save", json={
+        "name": "My Graph", "nodes": [], "edges": [],
+    })
+    assert resp.status_code == 200
+    assert _entries(graphs_dir) == ["My_Graph.json"]
+    assert (graphs_dir / "My_Graph.json").read_text() == json.dumps({
+        "nodes": [],
+        "edges": [],
+        "name": "My Graph",
+        "description": "",
+        "presets": [],
+        "segmentGroups": [],
+        "subgraphs": [],
+    }, indent=2)
+
+
+@pytest.mark.asyncio
+async def test_a_blank_file_falls_back_to_the_name(test_client, graphs_dir):
+    """An empty string is how a client spells "no file yet", so it means
+    the same as an omitted field -- never an address of "", which would put
+    the graph in `.json`, where /list can report it but /load cannot open
+    it."""
+    for body in ({"name": "Blank", "file": "", "nodes": [], "edges": []},
+                 {"name": "Blank", "file": None, "nodes": [], "edges": []}):
+        resp = await test_client.post("/api/graph/save", json=body)
+        assert resp.status_code == 200, resp.text
+        assert _entries(graphs_dir) == ["Blank.json"]
+        assert resp.json()["file"] == "Blank"
+
+
+@pytest.mark.asyncio
+async def test_a_saved_graph_never_carries_the_file_key(
+    test_client, graphs_dir,
+):
+    """`file` is an address on the request, not a property of the graph: a
+    file that recorded where it lived would start lying the moment anyone
+    moved it. Asserted against the RAW text, so a nested occurrence counts
+    too."""
+    resp = await test_client.post("/api/graph/save", json={
+        "name": "Titled", "file": "addressed",
+        "nodes": [{"id": "a", "type": "Print", "position": {"x": 0, "y": 0},
+                   "data": {"params": {}}}],
+        "edges": [],
+    })
+    assert resp.status_code == 200
+    raw = (graphs_dir / "addressed.json").read_text()
+    assert '"file"' not in raw
+    assert "file" not in json.loads(raw)
+
+
+@pytest.mark.asyncio
+async def test_a_traversal_shaped_file_lands_inside_graphs_dir(
+    test_client, graphs_dir,
+):
+    """`file` goes through the same `_sanitize_name` the name always did,
+    which maps '/', '\\' and '.' to '_' -- so a traversal cannot name a
+    directory, let alone leave GRAPHS_DIR. Proved by where the file is, not
+    by asserting the mapping."""
+    resp = await test_client.post("/api/graph/save", json={
+        "name": "Innocent", "file": "../../etc/passwd",
+        "nodes": [], "edges": [],
+    })
+    assert resp.status_code == 200
+    assert Path(resp.json()["path"]).parent == graphs_dir
+    assert _entries(graphs_dir) == ["______etc_passwd.json"]
+    # Nothing escaped one level up either (GRAPHS_DIR's parent holds only it).
+    assert _entries(graphs_dir.parent) == ["graphs"]
+
+
+@pytest.mark.asyncio
+async def test_a_backslash_traversal_lands_inside_graphs_dir_too(
+    test_client, graphs_dir,
+):
+    """The Windows spelling of the same attempt."""
+    resp = await test_client.post("/api/graph/save", json={
+        "name": "Innocent", "file": "..\\..\\Windows\\System32\\drivers",
+        "nodes": [], "edges": [],
+    })
+    assert resp.status_code == 200
+    assert _entries(graphs_dir) == ["______Windows_System32_drivers.json"]
+    assert _entries(graphs_dir.parent) == ["graphs"]
+
+
+def _case_insensitive(d):
+    """True when *d*'s filesystem is case-insensitive (NTFS, APFS)."""
+    probe = d / "CaseProbe.tmp"
+    probe.write_text("")
+    try:
+        return (d / "caseprobe.tmp").exists()
+    finally:
+        probe.unlink()
+
+
+@pytest.mark.asyncio
+async def test_a_save_leaves_the_directory_entry_spelled_as_written(
+    test_client, graphs_dir,
+):
+    """A non-project save replaces the directory entry instead of reusing
+    one.
+
+    `path.write_text` OPENS an existing entry, so on a case-insensitive
+    filesystem saving to `my_graph.json` over a `My_Graph.json` left the
+    entry spelled the old way: the server reported one address, /list
+    reported another, and the stem and the title disagreed permanently.
+    `os.replace` (via `_atomic_write`, which project mode has always used)
+    replaces the entry, so its spelling is the one the server computed.
+
+    Asserted on BOTH kinds of filesystem rather than skipped on one: the
+    two saves address the same file where case does not distinguish them
+    and two different files where it does, and the full expected listing is
+    checked either way.
+    """
+    await test_client.post("/api/graph/save", json={
+        "name": "My Graph", "nodes": [], "edges": [],
+    })
+    assert _entries(graphs_dir) == ["My_Graph.json"]
+
+    resp = await test_client.post("/api/graph/save", json={
+        "name": "my graph", "file": "my graph", "nodes": [], "edges": [],
+    })
+    assert resp.status_code == 200
+
+    if _case_insensitive(graphs_dir):
+        # One file, and it is spelled the way the server said it wrote it.
+        assert _entries(graphs_dir) == ["my_graph.json"]
+    else:
+        # Genuinely two files; the new one exists under its own spelling.
+        assert _entries(graphs_dir) == ["My_Graph.json", "my_graph.json"]
+    assert resp.json()["path"].endswith("my_graph.json")
+
+    # ...and /list can address what it lists: every reported `file` is a
+    # stem that really is on disk under that exact spelling. This is what
+    # broke before -- /list reported `My_Graph` for a graph the server had
+    # written as `my_graph`.
+    listed = (await test_client.get("/api/graph/list")).json()
+    on_disk = set(_entries(graphs_dir))
+    assert {f"{g['file']}.json" for g in listed} <= on_disk
+    assert {g["file"] for g in listed} >= {"my_graph"}

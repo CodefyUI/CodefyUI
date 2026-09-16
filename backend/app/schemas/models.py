@@ -170,6 +170,31 @@ class GraphData(BaseModel):
     settings: GraphSettings | None = None
 
 
+class GraphSaveRequest(GraphData):
+    """A graph plus the ADDRESS ``POST /save`` should write it to.
+
+    ``file`` is deliberately NOT on :class:`GraphData`, for the same reason
+    :class:`GraphExportRequest` keeps ``seed`` off it: a ``GraphData``'s
+    ``model_dump()`` IS the saved document (``app.core.project.split_graph``
+    takes exactly that dict), so a field living there is a field that ends
+    up in graph files unless every writer remembers to strip it. Putting
+    the address on the REQUEST is the whole point of this change -- a graph
+    file must not have an opinion about where it is stored.
+    """
+
+    #: Where to write, before sanitization: the route turns it into
+    #: ``<GRAPHS_DIR>/<file>.json`` (plus the ``.graph.json``/``.layout.json``
+    #: pair in project mode), while ``name`` is left to be nothing but the
+    #: graph's title.
+    #:
+    #: ``None`` (the default, i.e. an omitted field) is exactly what ``/save``
+    #: did before this field existed -- the address is derived from ``name``.
+    #: An older client, or a hand-rolled ``curl``, therefore keeps writing the
+    #: same path it always wrote. An empty string is read the same way, since
+    #: that is how a client usually spells "no file yet".
+    file: str | None = None
+
+
 class GraphExportRequest(GraphData):
     """A graph plus the run settings an exported script has to carry.
 

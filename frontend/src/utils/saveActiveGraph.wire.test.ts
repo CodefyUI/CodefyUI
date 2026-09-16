@@ -213,7 +213,7 @@ beforeEach(() => {
   useProjectStore.setState({
     projectDir: '/proj', projectName: 'proj', loaded: true,
   });
-  useTabStore.getState().setCurrentGraphFile('block-graph');
+  useTabStore.getState().setCurrentGraphFile('block-graph', 'block-graph');
 });
 
 afterEach(() => {

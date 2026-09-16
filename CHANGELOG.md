@@ -22,6 +22,106 @@ received — each links to the release it was published as.
 
 ## [Unreleased]
 
+Save becomes a button, and opening a graph stops costing you the one you are
+looking at.
+
+2.8.0 gave the saved graphs a panel. What it left in place was a Save that
+lived two clicks deep in a menu and, outside a project directory, asked for the
+graph's name every single time — then asked a second time whether to overwrite
+the file that name already pointed at. Two questions to write a file that
+already has a name. Meanwhile a click on a row in the new panel replaced the
+canvas in front of you, behind a confirmation, and the row's menu offered three
+more ways to open the same graph.
+
+A **save icon** now sits in the toolbar beside Run. A tab that was opened from
+a saved graph writes straight back to it; only a canvas that has never been
+saved is asked for a name. A click on a row in the **Graphs** panel opens that
+graph in a tab of its own, or brings forward the tab already holding it, so
+nothing you have open is ever replaced — which leaves the row menu with the two
+things it is actually for, **Rename** and **Delete**.
+
+Underneath, the thing that made a promptless save unsafe is gone. `POST
+/api/graph/save` had one field doing two jobs: `name` was both the graph's
+title and the address of the file to write. So a save could keep the title or
+write the right file, never both — which is how, in 2.8.0's project mode, every
+save renamed `My Graph` to `My_Graph`, a little further from its own name each
+time.
+
+### Added
+
+- **A save icon in the toolbar**, to the right of the Run controls and ahead of
+  the File menu. It runs the same Save the menu does, which stays where it is;
+  what changed is that the command people use constantly is now one click
+  instead of two. A graph that has never been saved still opens the naming
+  dialog, and the graph then appears in the Graphs panel — including while that
+  panel is open beside it, which previously needed its refresh button.
+- **`POST /api/graph/save` takes an optional `file`.** Given, it is the address
+  the write targets and `name` is only the graph's title; omitted, the address
+  is derived from `name` exactly as before, byte for byte, so an older client
+  is unaffected. `file` is never written into the graph file — it is a property
+  of the request, not of the graph. The response now also reports the sanitized
+  stem it wrote, so a client never has to re-derive the server's own naming
+  rule. The field lives on a new `GraphSaveRequest`, not on `GraphData`, since
+  `GraphData.model_dump()` *is* the saved document and an address stored there
+  would be one more thing every writer had to remember to strip.
+
+### Changed
+
+- **Save writes back to the graph the tab was opened from, without asking** —
+  in a project directory or out of one. The binding is not a hidden state being
+  guessed at: the Graphs panel marks that row **Current**, so the file about to
+  be overwritten is already on screen beside the icon that overwrites it. An
+  unbound tab and every explicit **Save As** still ask for a name and still run
+  the overwrite guard. A tab restored from a 2.8.0 browser session carries a
+  file but no stored title; it is asked for the title once, and what it answers
+  titles the file it is already on rather than forking a second copy.
+- **A click on a Graphs row opens the graph in a new tab**, or raises the tab
+  already holding it, instead of replacing the current canvas behind a
+  confirmation. Opening is one action now, so the row menu no longer carries
+  *Open in new tab* or *Load onto canvas without binding*; what is left is
+  **Rename** and **Delete**, the two verbs that change the file rather than
+  what is on screen. Clicking the row for the graph already open in the current
+  tab says so rather than doing nothing at all.
+- The Graphs panel's header keeps its **Save as…** but no longer draws it with
+  the same floppy-disk glyph the toolbar's Save now uses: one mark two hand
+  widths apart cannot mean both "overwrite this" and "ask me where".
+
+### Fixed
+
+- **A save no longer renames the graph to its own filename.** `name` was both
+  the title and the address, so saving a graph bound to `My_Graph.json` wrote
+  `"name": "My_Graph"` into it and the panel's row changed to match — on every
+  save, for any title containing a space or anything else the filename rules
+  rewrite. Present in 2.8.0 wherever a save was promptless, which was project
+  mode; it would have reached everyone the moment Save stopped asking.
+- **A save no longer writes whichever tab happens to be active when the dialog
+  closes.** The canvas was read through "the active tab" *after* the naming
+  prompt and the overwrite confirm, so switching tabs — or closing the one
+  being saved — while a dialog was open serialized a different graph into the
+  file just named, reported as a success. Everything after a dialog now
+  addresses the tab the save started from, by id, while still picking up edits
+  made to that tab while the dialog was open.
+- **A confirmed overwrite now releases the tab that held the file it replaced.**
+  The overwrite check folds letter case, deliberately, because on Windows and
+  macOS `My Graph` and `my graph` are one file; the bookkeeping that decides
+  which tab owns a file did not. In the gap, a tab kept believing it owned a
+  file that had just been overwritten, and its next one-click save destroyed
+  the graph that replaced it. The release is now keyed on the file the check
+  actually matched.
+- **A rename no longer merges two tabs onto one file.** A tab can be bound to a
+  graph that is no longer on disk — a Source Control discard keeps the binding
+  on purpose, so the tab keeps showing what it has — and renaming another graph
+  onto that freed name moved a second tab onto it. Two tabs bound to one file
+  is the shape where each one's next save destroys the other's work.
+- **A save outside a project directory leaves the filename spelled the way it
+  was written.** The non-project write used a plain overwrite, which on a
+  case-insensitive filesystem keeps the existing directory entry's spelling, so
+  the server believed it had written `my_graph.json` while the folder still
+  said `My_Graph.json` and the graph list reported a name no tab could match.
+  It now uses the same atomic replace the project path already did.
+- A failed cleanup inside that atomic write can no longer replace the write's
+  own error with a confusing one.
+
 ## [2.8.0] — 2026-09-15
 
 The graphs you have saved get somewhere to be seen.

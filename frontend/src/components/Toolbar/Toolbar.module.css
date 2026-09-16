@@ -51,7 +51,14 @@
   color: var(--accent);
 }
 
-/* ----- Vertical separator ----- */
+/* ----- Vertical separator -----
+   Render this only as the last child of a .cluster, never as a direct child
+   of .root. .root wraps, so a divider that is a root flex item of its own can
+   be carried onto the next line by itself and open that row with a 1px rule
+   separating nothing, the cluster behind it indented past the row above.
+   The margins below are what keeps the rhythm identical in either position:
+   .root and .cluster use the same gap, so moving the rule inside a cluster
+   changes no spacing at all. */
 .divider {
   width: 1px;
   height: 1.25rem;

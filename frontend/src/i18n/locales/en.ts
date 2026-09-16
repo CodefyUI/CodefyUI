@@ -22,9 +22,10 @@ const en = {
   'toolbar.saveAs': 'Save As...',
   // Opening and importing a graph are the Graphs panel's now, and the menu
   // that used to own these two keys is gone. They stay under `toolbar.` --
-  // and stay here -- because they are still the wording every load and every
-  // import failure is reported in, from `openSavedGraph` and
-  // `importGraphFile`, whichever surface asked for it.
+  // and stay here -- because they are still the wording a failed read is
+  // reported in wherever it happened. One raiser each today: the panel's row
+  // open raises `load.fail`, and `utils/importGraphFile.ts` raises
+  // `import.fail`. They are not interchangeable.
   'toolbar.load.fail': 'Load failed: {error}',
   'toolbar.import.fail': 'Import failed: {error}',
   'toolbar.clear': 'Clear Canvas',
@@ -116,19 +117,19 @@ const en = {
   'graphs.listFail': 'Failed to load graphs: {error}',
   'graphs.import': 'Import JSON...',
   'graphs.saveAs': 'Save as...',
-  // Two ways to open, and the label is the only place the difference shows:
-  // a row click (and this menu item) binds the tab to the file so Save writes
-  // back to it, while "onto canvas" leaves the tab unbound.
+  // One way to open, so the verb needs no qualifier: a row click opens the
+  // graph in a tab of its own and never touches the canvas in front of you.
   'graphs.open': 'Open',
-  'graphs.openNewTab': 'Open in new tab',
-  'graphs.openOntoCanvas': 'Load onto canvas without binding',
-  'graphs.rename': 'Rename...',
+  // The answer to a click that has nowhere to go: the graph is open, and it
+  // is open in the tab you are already looking at. Said out loud because the
+  // alternative is a button that does nothing at all -- the most common case
+  // of all, since the row you just opened is the row you are looking at.
+  'graphs.alreadyOpen': '"{name}" is already open in this tab.',
+  'graphs.rename': 'Rename',
   'graphs.delete': 'Delete',
   'graphs.rowMenu': 'More actions',
   'graphs.current': 'Current',
   'graphs.modified': 'Modified {when}',
-  'graphs.open.confirm': 'Replace this canvas with "{name}"?',
-  'graphs.open.confirmAction': 'Replace',
   'graphs.rename.prompt': 'Enter a new name for this graph:',
   'graphs.rename.success': 'Renamed to "{name}".',
   'graphs.rename.fail': 'Rename failed: {error}',
