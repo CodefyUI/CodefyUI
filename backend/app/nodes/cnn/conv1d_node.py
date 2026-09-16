@@ -7,7 +7,12 @@ from ...core.stateful_module import StatefulModuleMixin
 class Conv1dNode(StatefulModuleMixin, BaseNode):
     NODE_NAME = "Conv1d"
     CATEGORY = "CNN"
-    DESCRIPTION = "Apply 1D convolution to input tensor (wraps nn.Conv1d). $y[i]=\\sum_k x[i+k]\\cdot w[k]+b$"
+    DESCRIPTION = "Slides learnable kernels along the length axis"
+    DETAILS = (
+        "Backed by nn.Conv1d: $y[i]=\\sum_k x[i+k]\\cdot w[k]+b$. in_channels must "
+        "equal the input's channel count, and out_channels sets how many filters "
+        "are learned. The input is (N, C, L)."
+    )
 
     structural_params = (
         "in_channels", "out_channels", "kernel_size", "stride", "padding",

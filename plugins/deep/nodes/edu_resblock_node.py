@@ -41,11 +41,14 @@ from app.nodes.diffusion._resblock_module import _ResBlockModule
 class EduResBlockNode(StatefulModuleMixin, BaseNode):
     NODE_NAME = "Edu-ResBlock"
     CATEGORY = "Diffusion"
-    DESCRIPTION = (
-        "Residual block: GN→SiLU→Conv → (+time emb projection) → GN→SiLU→Conv "
-        "→ Add(skip). The building unit of a diffusion U-Net. Connect "
-        "`time_emb` from a `TimestepEmbedding` node to make it "
-        "time-conditioned; leave it unconnected for a plain ResNet block."
+    DESCRIPTION = "Two GN→SiLU→Conv stages, then add the skip path"
+    DETAILS = (
+        "The building unit of a diffusion U-Net. Connect `time_emb`, which a "
+        "`TimestepEmbedding` node supplies, to add a timestep projection between "
+        "the two convolutions; left unconnected the node is a plain ResNet block. "
+        "The GroupNorm `groups` must divide both in_channels and out_channels, and "
+        "a 1×1 convolution is inserted on the skip path when the two channel "
+        "counts differ."
     )
 
     structural_params = ("in_channels", "out_channels", "groups", "time_emb_dim", "seed")

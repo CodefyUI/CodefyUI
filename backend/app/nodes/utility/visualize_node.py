@@ -13,7 +13,12 @@ from ...core.node_base import (
 class VisualizeNode(BaseNode):
     NODE_NAME = "Visualize"
     CATEGORY = "Utility"
-    DESCRIPTION = "Generate a matplotlib plot of data (tensor, losses, etc.) as a base64-encoded PNG"
+    DESCRIPTION = "Plot data as a line, histogram, heatmap or image"
+    DETAILS = (
+        "The plot is rendered with matplotlib. Line and histogram flatten "
+        "multi-dimensional data first, heatmap folds a 1D input into a square "
+        "grid, and image tiles a batch of (N, C, H, W) into a grid."
+    )
 
     @classmethod
     def define_inputs(cls) -> list[PortDefinition]:

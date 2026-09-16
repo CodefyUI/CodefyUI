@@ -231,7 +231,18 @@ def resolve_count_param(
 class BaseNode(ABC):
     NODE_NAME: str = ""
     CATEGORY: str = ""
+
+    #: One line, in the palette's list under the node's name: what the node
+    #: does and what it puts out. It has room for a clause, not a paragraph,
+    #: so anything that is not those two facts belongs in ``DETAILS``.
     DESCRIPTION: str = ""
+
+    #: The rest of the story, shown only where there is room to read it --
+    #: the config panel and the node's Docs tab. Which library backs the
+    #: node, what it does that the summary could not say, when to reach for
+    #: a sibling node instead. Empty when the summary already says it all;
+    #: this is not a field to fill for its own sake.
+    DETAILS: str = ""
 
     # If False, graph_engine bypasses ExecutionCache for this node type.
     # The cache relies on "same params + same upstream => same output",

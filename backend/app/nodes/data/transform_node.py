@@ -34,10 +34,13 @@ from .transforms._base import attach_transform, compose
 class TransformNode(BaseNode):
     NODE_NAME = "Transform"
     CATEGORY = "Data"
-    DESCRIPTION = (
-        "Apply a transform pipeline to a dataset. Wire a chain into "
-        "'transform' for anything beyond the three built-in steps; the "
-        "params below are ignored when it is wired."
+    DESCRIPTION = "Install a preprocessing pipeline on a dataset"
+    DETAILS = (
+        "Wiring a chain into `transform` replaces the three params below. This "
+        "node is for datasets with no transform ports of their own — "
+        "HuggingFaceDataset, KaggleDataset and custom ones — while Dataset and "
+        "ImageFolderDataset take their pipelines directly. SyntheticShapes and "
+        "SyntheticSegmentation ignore an installed pipeline."
     )
 
     # This node MUTATES its input and returns it, so a cache hit would hand

@@ -28,13 +28,12 @@ logger = logging.getLogger(__name__)
 class VLAActionEvalNode(BaseNode):
     NODE_NAME = "VLAActionEval"
     CATEGORY = "VLA"
-    DESCRIPTION = (
-        "Open-loop evaluation: mean squared error between the policy's "
-        "predicted action chunks and the expert's, over a held-out demos "
-        "dataset (PushWorldDemos' holdout output). Fast and deterministic "
-        "per seed - the complement to VLARollout's closed-loop success "
-        "rate. A low MSE beside a low success rate is the compounding-"
-        "error signature."
+    DESCRIPTION = "Action-chunk MSE against the expert on held-out demos"
+    DETAILS = (
+        "Connect PushWorldDemos' holdout output here; `max_samples` caps how many "
+        "samples run and `seed` fixes the flow head's sampling noise. The "
+        "measurement is open-loop, so a low error next to a low VLARollout success "
+        "rate points at compounding error."
     )
 
     # Consumes live handles (model, dataset); the number describes THIS

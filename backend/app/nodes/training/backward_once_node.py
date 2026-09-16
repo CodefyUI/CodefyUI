@@ -16,10 +16,12 @@ from ...core.node_base import BaseNode, DataType, ParamDefinition, PortDefinitio
 class BackwardOnceNode(BaseNode):
     NODE_NAME = "BackwardOnce"
     CATEGORY = "Training"
-    DESCRIPTION = (
-        "Marks a tensor as the target of an autograd backward pass for the "
-        "Backward inspector. Runs only when Backward mode is enabled in the toolbar. "
-        "Backward target: $\\mathcal{L} = \\sum(\\text{input})$ (synthetic scalar)."
+    DESCRIPTION = "Pass-through marking where the backward pass starts"
+    DETAILS = (
+        "Backward mode is a toolbar toggle. With it on, the engine differentiates "
+        "the synthetic scalar $\\mathcal{L} = \\sum(\\text{input})$ built from this "
+        "node's output; with it off the node still runs, as a pass-through with no "
+        "side effects."
     )
 
     cacheable = False  # Forward outputs depend on requires_grad state.

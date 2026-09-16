@@ -85,6 +85,7 @@ export function DocsTab({ node }: { node: Node<NodeData> }) {
 
   const def = remote ?? local;
   const description = def?.description ?? '';
+  const details = def?.details ?? '';
   const inputs = def?.inputs ?? [];
   const outputs = def?.outputs ?? [];
   const params = def?.params ?? [];
@@ -101,6 +102,15 @@ export function DocsTab({ node }: { node: Node<NodeData> }) {
           />
         ) : (
           <div className={styles.docsEmpty}>{t('nodeDetail.docs.noDescription')}</div>
+        )}
+        {/* The longer half, under the summary it expands on. A node with no
+            details simply stops after the one line. */}
+        {details && (
+          <MathText
+            as="div"
+            className={styles.docsDetails}
+            text={tn(nodeName, 'details', details)}
+          />
         )}
       </section>
 

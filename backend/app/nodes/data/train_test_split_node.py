@@ -32,11 +32,11 @@ from ...core.node_base import (
 class TrainTestSplitNode(BaseNode):
     NODE_NAME = "TrainTestSplit"
     CATEGORY = "Data"
-    DESCRIPTION = (
-        "Partition (features, labels) into a training set and a test set "
-        "using sklearn.train_test_split. `stratify=True` keeps class "
-        "proportions identical across both partitions — essential for "
-        "imbalanced labels."
+    DESCRIPTION = "Split (features, labels) into train and test sets"
+    DETAILS = (
+        "The split itself is sklearn.model_selection.train_test_split. Turning on "
+        "`stratify` keeps every class at the same proportion in both partitions, "
+        "which matters when the labels are imbalanced."
     )
 
     # sklearn works on host memory, so this node's whole job is off-device.

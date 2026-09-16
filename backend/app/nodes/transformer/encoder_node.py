@@ -7,7 +7,12 @@ from ...core.stateful_module import StatefulModuleMixin
 class TransformerEncoderNode(StatefulModuleMixin, BaseNode):
     NODE_NAME = "TransformerEncoder"
     CATEGORY = "Transformer"
-    DESCRIPTION = "Apply Transformer encoder stack to input tensor"
+    DESCRIPTION = "Encode a sequence through self-attention layers"
+    DETAILS = (
+        "`num_layers` layers of self-attention plus a `dim_feedforward` FFN, with "
+        "`d_model` split across `nhead` heads. Tensors are (seq, batch, d_model) — "
+        "there is no batch_first option here."
+    )
 
     structural_params = ("d_model", "nhead", "num_layers", "dim_feedforward")
 

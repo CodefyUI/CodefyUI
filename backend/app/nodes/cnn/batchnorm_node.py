@@ -7,10 +7,12 @@ from ...core.stateful_module import StatefulModuleMixin
 class BatchNormNode(StatefulModuleMixin, BaseNode):
     NODE_NAME = "BatchNorm2d"
     CATEGORY = "CNN"
-    DESCRIPTION = (
-        "Apply 2D batch normalization (wraps nn.BatchNorm2d). "
-        "Normalises each channel: $y = \\frac{x - \\mu_C}{\\sqrt{\\sigma_C^2 + \\epsilon}} \\gamma + \\beta$ "
-        "where $\\mu_C, \\sigma_C^2$ are per-channel statistics over (N, H, W)."
+    DESCRIPTION = "Normalises each channel over batch, height and width"
+    DETAILS = (
+        "Backed by nn.BatchNorm2d: $y = \\frac{x - \\mu_C}{\\sqrt{\\sigma_C^2 + "
+        "\\epsilon}} \\gamma + \\beta$, where $\\mu_C$ and $\\sigma_C^2$ are "
+        "per-channel statistics over (N, H, W). num_features must equal the "
+        "input's channel count."
     )
 
     structural_params = ("num_features",)

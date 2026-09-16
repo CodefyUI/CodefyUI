@@ -47,12 +47,15 @@ from ...core.node_base import (
 class GroupRelativeAdvantageNode(BaseNode):
     NODE_NAME = "GroupRelativeAdvantage"
     CATEGORY = "RL"
-    DESCRIPTION = (
-        "GRPO's baseline: sample the same prompt K times, then A_i = r_i - mean(r). This one "
-        "line is what replaces PPO's critic -- the baseline is COMPUTED from the group, not "
-        "estimated by a network that can be wrong. Advantages always sum to zero (a quick "
-        "wiring check). A group where every sample scores the same yields all-zero advantages "
-        "and teaches nothing, which is why the task must be one the policy sometimes gets right."
+    DESCRIPTION = "Group mean as baseline: A_i = r_i - mean(r)"
+    DETAILS = (
+        "GRPO's baseline: the group mean stands in for PPO's learned critic, so it "
+        "is computed rather than estimated. Inside a group the advantages sum to "
+        "zero, the quickest check for mis-wiring, and a group whose samples all "
+        "score the same gives all-zero advantages and teaches nothing. "
+        "expand_index -- PolicyRollout's episode_ids -- spreads each sample's "
+        "advantage back over the steps it covers, and normalize additionally "
+        "divides by the group's standard deviation."
     )
 
     @classmethod

@@ -29,10 +29,12 @@ from ...core.node_base import (
 class KLDivergenceNode(BaseNode):
     NODE_NAME = "KLDivergence"
     CATEGORY = "RL"
-    DESCRIPTION = (
-        "KL(p || q) divergence — the regularisation term in RLHF that keeps "
-        "the policy close to the reference. Accepts probabilities or logits; "
-        "returns scalar (default) or per-sample."
+    DESCRIPTION = "KL(p || q) from probabilities or logits"
+    DETAILS = (
+        "reduction follows the PyTorch convention, with batchmean (the sum divided "
+        "by batch size) the RLHF default and none returning one value per sample. "
+        "KL is not symmetric: p is the policy and q the frozen reference it is "
+        "held near."
     )
 
     @classmethod

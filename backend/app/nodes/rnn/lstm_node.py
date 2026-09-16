@@ -7,7 +7,12 @@ from ...core.stateful_module import StatefulModuleMixin
 class LSTMNode(StatefulModuleMixin, BaseNode):
     NODE_NAME = "LSTM"
     CATEGORY = "RNN"
-    DESCRIPTION = "Apply LSTM recurrent layer to input sequence (wraps nn.LSTM). Gates: input, forget, cell, output."
+    DESCRIPTION = "Four-gate scan of a sequence: all states and the last"
+    DETAILS = (
+        "Backed by nn.LSTM, whose gates are input, forget, cell and output. The "
+        "`output` port carries the hidden state at every time step and `hidden` "
+        "carries the final h_n; the cell state c_n is not exposed."
+    )
 
     structural_params = (
         "input_size", "hidden_size", "num_layers", "batch_first", "bidirectional",

@@ -53,12 +53,14 @@ from ...core.node_base import (
 class PolicyRolloutNode(BaseNode):
     NODE_NAME = "PolicyRollout"
     CATEGORY = "RL"
-    DESCRIPTION = (
-        "Run a policy in an environment for N episodes and return the trajectories: "
-        "states, actions, rewards and the policy's logits at each step, plus per-episode "
-        "returns and lengths. Actions are SAMPLED from softmax(logits), so repeated "
-        "rollouts of the same policy differ -- that spread is what GRPO's group baseline "
-        "is built from. Feeds Edu-PolicyGradient, PPOClipObjective and GroupRelativeAdvantage."
+    DESCRIPTION = "Run a policy for N episodes: states, actions, rewards"
+    DETAILS = (
+        "Actions are sampled from softmax(logits / temperature), so two rollouts "
+        "of the same policy differ; seed fixes the whole batch. It also returns "
+        "the logits, the log_probs recorded at sampling time (PPO's "
+        "log_probs_old), per-episode returns, lengths and episode_ids, a text "
+        "report and the first episode step by step. The env input only needs "
+        "reset() and step(action)."
     )
 
     #: Rolls a stochastic policy through a stateful env; a cached batch would

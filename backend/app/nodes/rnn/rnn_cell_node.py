@@ -60,10 +60,13 @@ class _SeededRNNCell(nn.Module):
 class RNNCellNode(StatefulModuleMixin, BaseNode):
     NODE_NAME = "RNNCell"
     CATEGORY = "RNN"
-    DESCRIPTION = (
-        "Single-step vanilla RNN cell: $h_t = \\phi(W_{ih} x_t + W_{hh} h_{t-1} + b)$. "
-        "Wraps nn.RNNCell. Connect the `hidden` output of one instance into "
-        "the `hidden` input of the next to manually unroll the recurrence."
+    DESCRIPTION = "Combines this input with the previous hidden state"
+    DETAILS = (
+        "Backed by nn.RNNCell: $h_t = \\phi(W_{ih} x_t + W_{hh} h_{t-1} + b)$, with "
+        "$\\phi$ chosen by nonlinearity and the weights initialised "
+        "deterministically from seed. The `hidden` input is optional and defaults "
+        "to zeros; wire one cell's `hidden` output into the next cell's `hidden` "
+        "input to unroll the recurrence by hand."
     )
 
     structural_params = ("input_size", "hidden_size", "nonlinearity", "seed")

@@ -22,6 +22,65 @@ received — each links to the release it was published as.
 
 ## [Unreleased]
 
+### Changed
+
+- **The node list says what a node does, and stops.** Every one of the 180
+  nodes that ship with CodefyUI — 152 built in, 28 from the first-party plugin
+  packs — had its palette summary rewritten to a single line: what the node
+  does, and what it puts out when the name does not already say so.
+  `DatasetBatch` read *「從資料集（如 Dataset 節點載入的 MNIST）取出一個批次，輸出
+  影像張量 (N, C, H, W) 與對應標籤。用來把資料集直接餵進手搭的網路做一次前向傳遞、
+  觀察每層 shape。」* and now reads *「從資料集中取出一個批次，輸出影像與對應
+  標籤」*. Across the catalog a Chinese summary went from 91 characters on
+  average to 20, and an English one from 189 to 49 — short enough that the
+  whole sentence now fits the row, where before 112 of 153 rows were cut off
+  mid-sentence with an ellipsis.
+
+  What went was everything that was not the node: the library it wraps, the
+  chapter of the curriculum it belongs to, which sibling node to reach for
+  instead, and sentences about watching each layer's shape go past — which is
+  what the entire editor is for.
+
+  None of that is lost. A node now has a second field, `DETAILS`, served as
+  `details` on `/api/nodes` and rendered by the config panel and the node's
+  Docs tab, where there is room to read it; 168 of the 180 have one. The
+  palette list and its hover card show the summary alone. Custom nodes and
+  plugin nodes can set it too, and one that does not simply stops after its
+  summary. Node search reads both fields, so a search for `sklearn` or
+  `nn.Conv2d` still finds the node whose summary no longer says it.
+
+  Two ratchets in `test_api_nodes.py` hold the line, and both are the row's
+  measured geometry rather than a taste: at the default sidebar width the
+  description box is 188px across at 13px type and clamps to two lines, which
+  is 56 Latin characters or 28 CJK. A summary past that is cut off, so past
+  that the build fails.
+
+- **The node list is denser.** A row gives up 8px of vertical padding and the
+  4px gap to its neighbour, so rows sit flush and the hover wash is what
+  separates one from the next — 12px per row, on a list 153 rows long. The
+  text is the size it always was: density that comes out of the type is the
+  reader paying for it.
+
+### Added
+
+- **Traditional Chinese for 41 nodes that had none.** 13 built-in nodes and
+  every node of the `deep`, `edu`, `foundations`, `rl` and `stats` packs
+  rendered in English whatever the locale, so a Chinese reader met the node
+  list in two languages at once. The ratchet in `test_api_nodes.py` that
+  allowed the 13 is now empty: every built-in node is translated, and adding
+  one without a translation fails the build.
+
+### Fixed
+
+- **18 nodes served their Chinese text as if it were English.** `DatasetBatch`,
+  `RandomForestClassifier`, `Argmax`, `ScatterPlot2D` and the whole `edu` pack,
+  among others, had Traditional Chinese sitting in `DESCRIPTION` — the field
+  that *is* the English text and the fallback for every locale without a
+  translation. An English reader got a language they may not read, with no way
+  to switch away from it. The Chinese moved to the zh-TW catalog where it can
+  be a translation rather than a replacement, and a test now fails on CJK in a
+  `DESCRIPTION`.
+
 ## [2.8.0] — 2026-09-15
 
 The graphs you have saved get somewhere to be seen.

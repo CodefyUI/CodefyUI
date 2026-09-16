@@ -323,13 +323,13 @@ def _render(
 class PromptBuilderNode(BaseNode):
     NODE_NAME = "PromptBuilder"
     CATEGORY = "LLM"
-    DESCRIPTION = (
-        "Assemble the final prompt: the retrieved chunks pasted into a "
-        "template together with the question, with an instruction to answer "
-        "only from that context. This is the whole trick of RAG -- the model "
-        "is not fine-tuned, it is simply shown the right paragraphs. The "
-        "template must contain {context} and {question}; wire a TextInput "
-        "into the template input to write your own."
+    DESCRIPTION = "Paste retrieved chunks and question into a template"
+    DETAILS = (
+        "The default template tells the model to answer only from that context. A "
+        "template must contain {context} and {question}; connect a TextInput to "
+        "the template input to write a multi-line one. number_contexts prefixes "
+        "each chunk with [1], [2], and the source is added in parentheses once the "
+        "sources port is wired."
     )
 
     # Nothing downloaded: the text on every port already exists.

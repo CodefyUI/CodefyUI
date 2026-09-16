@@ -27,10 +27,11 @@ from ...core.node_base import (
 class AccuracyNode(BaseNode):
     NODE_NAME = "Accuracy"
     CATEGORY = "Classical"
-    DESCRIPTION = (
-        "Compute classification accuracy between a predictions list and a "
-        "ground-truth labels list. Outputs the accuracy as a float (0–1), "
-        "the count of correct predictions, and the total count."
+    DESCRIPTION = "Predictions vs true labels: accuracy, correct, total"
+    DETAILS = (
+        "Accuracy is correct / total, in [0, 1]. Labels are compared as strings, "
+        "so 0 and '0' match; the two lists must be the same length, and two empty "
+        "lists give 0."
     )
 
     @classmethod

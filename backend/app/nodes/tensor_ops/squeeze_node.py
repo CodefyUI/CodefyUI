@@ -6,7 +6,7 @@ from ...core.node_base import BaseNode, DataType, ParamDefinition, ParamType, Po
 class SqueezeNode(BaseNode):
     NODE_NAME = "Squeeze"
     CATEGORY = "Tensor Operations"
-    DESCRIPTION = "Remove dimensions of size 1 from a tensor"
+    DESCRIPTION = "Remove size-1 dimensions from a tensor"
 
     @classmethod
     def define_inputs(cls) -> list[PortDefinition]:

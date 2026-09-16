@@ -22,10 +22,8 @@ from ...core.node_base import (
 class ScatterPlot2DNode(BaseNode):
     NODE_NAME = "ScatterPlot2D"
     CATEGORY = "Utility"
-    DESCRIPTION = (
-        "把 (N, 2) 的 2D 點雲畫成散點圖，依 labels 給每一類不同顏色，輸出 base64 PNG。"
-        "給分類資料看分布用：接在 SyntheticDataset 之後就能看到各類點落在平面哪裡。"
-    )
+    DESCRIPTION = "Plot (N, 2) points, coloured by label"
+    DETAILS = "Without a labels input every point is drawn in one colour."
 
     @classmethod
     def define_inputs(cls) -> list[PortDefinition]:

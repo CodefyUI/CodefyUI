@@ -26,10 +26,12 @@ DATASET_NAMES = [
 class DatasetNode(BaseNode):
     NODE_NAME = "Dataset"
     CATEGORY = "Data"
-    DESCRIPTION = (
-        "Load a standard vision dataset. Wire a transform chain into "
-        "train_transform / eval_transform to control preprocessing and "
-        "augmentation; without one it applies ToTensor and Normalize(0.5)."
+    DESCRIPTION = "Load a vision dataset such as MNIST or CIFAR10"
+    DETAILS = (
+        "Wire a transform chain into `train_transform` or `eval_transform` to "
+        "control preprocessing and augmentation; with neither wired it applies "
+        "ToTensor and Normalize(0.5). Files are downloaded into `data_dir` on "
+        "first use."
     )
 
     # #144: cacheable -- cache_fingerprint() below folds a per-file

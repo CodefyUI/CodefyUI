@@ -43,7 +43,11 @@ interface I18nState {
   setLocale: (locale: Locale) => void;
   t: (key: TranslationKey, vars?: Record<string, string | number>) => string;
   /** Translate node field. Falls back to `fallback` (the English backend text) if no translation exists. */
-  tn: (nodeName: string, field: 'description' | `param.${string}`, fallback: string) => string;
+  tn: (
+    nodeName: string,
+    field: 'description' | 'details' | `param.${string}`,
+    fallback: string,
+  ) => string;
   /**
    * Translate an example's description, keyed by the `path` from
    * `/api/examples/list`. Falls back to `fallback` (the English text the
@@ -84,8 +88,8 @@ export const useI18n = create<I18nState>((set, get) => ({
     const nodeT = nodeMessages[locale]?.[nodeName];
     if (!nodeT) return fallback;
 
-    if (field === 'description') {
-      return nodeT.description ?? fallback;
+    if (field === 'description' || field === 'details') {
+      return nodeT[field] ?? fallback;
     }
 
     // field = "param.xxx"

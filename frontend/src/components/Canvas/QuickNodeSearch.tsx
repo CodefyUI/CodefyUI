@@ -43,14 +43,20 @@ export function QuickNodeSearch({ screenPos, flowPos, onClose }: QuickNodeSearch
     const items: SearchResult[] = [];
 
     for (const def of definitions) {
-      // The same three fields the palette search matches. The plugin's id
+      // The same four fields the palette search matches. The plugin's id
       // already matches through the qualified node name (`edu:FilterRows`);
-      // what the third one adds is its display name, which is how the Plugin
+      // what the last one adds is its display name, which is how the Plugin
       // Center names it and appears in no field of a definition.
+      //
+      // `details` counts because the summary above it is one line now: the
+      // library a node wraps, its caveats and its formula all live down there,
+      // and a search for "sklearn" that stopped matching them would have made
+      // the summaries shorter by making the nodes harder to find.
       if (
         !q ||
         def.node_name.toLowerCase().includes(q) ||
         def.description.toLowerCase().includes(q) ||
+        (def.details?.toLowerCase().includes(q) ?? false) ||
         (pluginNameOf(pluginsById, def.provider)?.toLowerCase().includes(q) ?? false)
       ) {
         items.push({ kind: 'node', def });

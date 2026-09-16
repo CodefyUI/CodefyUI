@@ -53,10 +53,12 @@ _ADAPTERS: dict[Provider, ProviderAdapter] = {
 class LLMChatNode(BaseNode):
     NODE_NAME = "LLMChat"
     CATEGORY = "LLM"
-    DESCRIPTION = (
-        "Send text, an image tensor, or JSON-like array data to a chat LLM and "
-        "emit the assistant response as STRING. Providers: ChatGPT API, Codex, "
-        "Claude API, and local Ollama."
+    DESCRIPTION = "Send text, an image or array to a chat LLM for a reply"
+    DETAILS = (
+        "Providers are the ChatGPT API, Codex, the Claude API, and a local Ollama "
+        "through its OpenAI-compatible /v1 endpoint. API keys are session only: "
+        "they are cleared when the graph is saved, and OPENAI_API_KEY or "
+        "ANTHROPIC_API_KEY is the better place to keep them."
     )
     cacheable = False
 

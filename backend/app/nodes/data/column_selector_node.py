@@ -28,10 +28,10 @@ from ...core.node_base import (
 class ColumnSelectorNode(BaseNode):
     NODE_NAME = "ColumnSelector"
     CATEGORY = "Data"
-    DESCRIPTION = (
-        "Select a subset of columns from a 2D tensor. Use `indices` for "
-        "positional selection, or `names` (with the `columns` input "
-        "connected) to select by column name."
+    DESCRIPTION = "Pick columns from a 2D tensor, by index or name"
+    DETAILS = (
+        "Selecting by name needs the `columns` input wired, and `names` wins when "
+        "`indices` is also set."
     )
 
     @classmethod

@@ -48,10 +48,13 @@ class _RewardHead(nn.Module):
 class RewardModelNode(BaseNode):
     NODE_NAME = "RewardModel"
     CATEGORY = "RL"
-    DESCRIPTION = (
-        "RLHF reward head. Tiny MLP that scores a sequence with one scalar — "
-        "the thing you train on human preferences and then have PPO maximise. "
-        "Accepts [B, H] (one vector per item) or [B, T, H] (uses last token)."
+    DESCRIPTION = "MLP head scoring a hidden state, one scalar per item"
+    DETAILS = (
+        "The RLHF reward head: train it on human preferences, then have PPO "
+        "maximise the score it gives. Two Linear layers with ReLU down to a single "
+        "output, built from seed so the initial weights are reproducible. Accepts "
+        "[B, H] or [B, T, H], in which case the last token is used; the input is "
+        "optional and rewards comes back empty without it."
     )
 
     # #253/#254: a weight-owning module handed out by a node with no

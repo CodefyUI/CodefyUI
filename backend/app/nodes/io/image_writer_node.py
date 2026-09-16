@@ -9,7 +9,12 @@ logger = logging.getLogger(__name__)
 class ImageWriterNode(BaseNode):
     NODE_NAME = "ImageWriter"
     CATEGORY = "IO"
-    DESCRIPTION = "Save a tensor as an image file (PNG, JPEG, etc.)"
+    DESCRIPTION = "Save an image tensor to a PNG, JPEG, BMP or TIFF file"
+    DETAILS = (
+        "The extension follows the chosen format. A relative path lands under the "
+        "data directory's output folder, and a batched (N, C, H, W) tensor saves "
+        "only its first image."
+    )
 
     # The write to disk IS this node's output. A cache hit returns the
     # recorded {"path": ...} without calling execute() again, which is

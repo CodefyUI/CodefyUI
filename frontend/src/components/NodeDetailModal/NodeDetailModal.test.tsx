@@ -1109,6 +1109,35 @@ describe('NodeDetailModal — Docs tab', () => {
     expect(docs.getByText('A dense layer.')).toBeInTheDocument();
   });
 
+  it('prints the details under the description, and nothing when there are none', async () => {
+    seedTab({
+      nodes: [node('n1', {
+        definition: def({
+          description: 'slides a learned kernel over the input',
+          details: 'Wraps nn.Conv2d. Padding defaults to 0, so the output shrinks.',
+        }),
+      })],
+      nodeDetailNodeId: 'n1',
+    });
+    const { unmount } = render(<NodeDetailModal />);
+    fireEvent.click(screen.getByRole('tab', { name: 'Docs' }));
+    const docs = within(screen.getByRole('tabpanel'));
+    expect(docs.getByText('slides a learned kernel over the input')).toBeInTheDocument();
+    expect(docs.getByText(/Wraps nn\.Conv2d/)).toBeInTheDocument();
+    await waitFor(() => expect(mockNodeDef).toHaveBeenCalled());
+    unmount();
+
+    seedTab({
+      nodes: [node('n2', { definition: def({ description: 'no details here' }) })],
+      nodeDetailNodeId: 'n2',
+    });
+    render(<NodeDetailModal />);
+    fireEvent.click(screen.getByRole('tab', { name: 'Docs' }));
+    const bare = within(screen.getByRole('tabpanel'));
+    expect(bare.getByText('no details here')).toBeInTheDocument();
+    expect(bare.queryByText(/nn\.Conv2d/)).toBeNull();
+  });
+
   it('prefers the server definition once GET /api/nodes/{name} answers', async () => {
     mockNodeDef.mockResolvedValue(
       def({ description: 'Server-side truth.', params: [numberParam('units')] }),

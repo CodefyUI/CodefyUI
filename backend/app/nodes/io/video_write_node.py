@@ -33,11 +33,12 @@ _PREVIEW_MAX_SIDE = 256
 class VideoWriteNode(BaseNode):
     NODE_NAME = "VideoWrite"
     CATEGORY = "IO"
-    DESCRIPTION = (
-        "Encode a frames tensor (T,C,H,W) or (T,H,W,C) into a playable "
-        "video under the media directory - mp4 via the ffmpeg binary when "
-        "one is on PATH, gif via Pillow with no dependency at all - and "
-        "emit a reference the editor plays inline."
+    DESCRIPTION = "Encode frames to mp4 or gif in the media directory"
+    DETAILS = (
+        "Frames come in as (T, C, H, W) or (T, H, W, C). mp4 needs an ffmpeg "
+        "binary on PATH; without one the node falls back to gif through Pillow. "
+        "The same filename overwrites, and the outputs include a reference the "
+        "editor plays inline and a PNG of the middle frame."
     )
 
     # The write to disk IS this node's output (the ImageWriter rule, #143):

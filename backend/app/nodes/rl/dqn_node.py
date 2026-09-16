@@ -6,7 +6,13 @@ from ...core.node_base import BaseNode, DataType, ParamDefinition, ParamType, Po
 class DQNNode(BaseNode):
     NODE_NAME = "DQN"
     CATEGORY = "RL"
-    DESCRIPTION = "Create a Deep Q-Network (simple MLP) for reinforcement learning"
+    DESCRIPTION = "MLP that turns a state into one Q-value per action"
+    DETAILS = (
+        "A Deep Q-Network: three Linear layers with ReLU between them, sized by "
+        "state_dim, hidden_dim and action_dim. The state input is optional and "
+        "only runs one forward pass through the freshly built network; without it "
+        "the Q-values are all zeros."
+    )
 
     # #253/#254. This is ``SequentialModel``'s shape exactly: it builds an
     # ``nn.Module`` that owns trainable weights, it has no required input,

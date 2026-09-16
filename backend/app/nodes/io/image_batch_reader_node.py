@@ -15,7 +15,12 @@ logger = logging.getLogger(__name__)
 class ImageBatchReaderNode(BaseNode):
     NODE_NAME = "ImageBatchReader"
     CATEGORY = "IO"
-    DESCRIPTION = "Read all images from a directory and stack them into a batch tensor (N, C, H, W)"
+    DESCRIPTION = "Stack every image in a directory into (N, C, H, W)"
+    DETAILS = (
+        "Files matching the glob pattern are read in sorted order and each is "
+        "resized to the same square size so they can be stacked; an image that "
+        "fails to open is skipped. max_images caps how many are read."
+    )
 
     # #144: cacheable again -- cache_fingerprint() below folds an aggregate
     # fingerprint (count, total size, latest mtime) of exactly the files

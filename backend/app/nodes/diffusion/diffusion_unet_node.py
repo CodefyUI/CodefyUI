@@ -184,12 +184,13 @@ class _DiffusionUNetModule(nn.Module):
 class DiffusionUNetNode(StatefulModuleMixin, BaseNode):
     NODE_NAME = "DiffusionUNet"
     CATEGORY = "Diffusion"
-    DESCRIPTION = (
-        "A complete toy diffusion U-Net packaged as a single node. Outputs an "
-        "nn.Module that maps `(x, t) → predicted_noise` of the same shape as "
-        "x. Compose with `DDPMSampler` to run reverse diffusion. For students "
-        "who want to see the architecture wired up explicitly, see the "
-        "`Mini-UNet-Expanded` preset."
+    DESCRIPTION = "Toy U-Net: maps (x, t) to noise shaped like x"
+    DETAILS = (
+        "A stem conv, then one time-conditioned ResBlock per `channel_mult` level "
+        "down to a bottleneck and back up with skip connections. Input height and "
+        "width must be divisible by 2^(levels-1), and `num_groups` must divide "
+        "every level's channel count. Feed the model to DDPMSampler to run reverse "
+        "diffusion."
     )
 
     structural_params = (

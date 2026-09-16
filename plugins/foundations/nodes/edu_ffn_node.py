@@ -67,10 +67,11 @@ class _EduFFNModule(nn.Module):
 class EduFFNNode(StatefulModuleMixin, BaseNode):
     NODE_NAME = "Edu-FFN"
     CATEGORY = "LLM"
-    DESCRIPTION = (
-        "Toy feed-forward block: x → Linear(D, hidden) → activation → Linear(hidden, D). "
-        "Defaults are tiny (D=8, hidden=16) for inspectability. Exposes the "
-        "post-activation hidden state as a separate output."
+    DESCRIPTION = "Linear, activation, linear; plus hidden activations"
+    DETAILS = (
+        "Weights are initialised from `seed`, so the same seed gives the same "
+        "weights. Defaults are small — embed_dim 8, hidden_dim 16; a production "
+        "block usually sets hidden_dim to 4x embed_dim."
     )
 
     structural_params = ("embed_dim", "hidden_dim", "activation", "seed")

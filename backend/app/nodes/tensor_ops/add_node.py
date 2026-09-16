@@ -6,7 +6,7 @@ from ...core.node_base import BaseNode, DataType, ParamDefinition, ParamType, Po
 class AddNode(BaseNode):
     NODE_NAME = "Add"
     CATEGORY = "Tensor Operations"
-    DESCRIPTION = "Element-wise addition of two tensors (supports broadcasting)"
+    DESCRIPTION = "Element-wise sum of two tensors, with broadcasting"
 
     @classmethod
     def define_inputs(cls) -> list[PortDefinition]:

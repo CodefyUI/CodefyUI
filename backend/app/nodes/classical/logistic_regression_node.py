@@ -26,10 +26,14 @@ from ...core.node_base import (
 class LogisticRegressionNode(BaseNode):
     NODE_NAME = "LogisticRegression"
     CATEGORY = "Classical"
-    DESCRIPTION = (
-        "Multinomial logistic regression (sklearn). Fits a softmax classifier "
-        "with L2 / L1 regularisation; same I/O shape as EduLogisticRegression "
-        "for plug-and-play swapping."
+    DESCRIPTION = "Softmax classifier: a label and class probabilities"
+    DETAILS = (
+        "sklearn's LogisticRegression. C is the inverse regularisation strength, "
+        "so a smaller C regularises harder; penalty may be l2, l1 or none, and the "
+        "solver is picked to match. y_train needs at least two classes, and coef "
+        "carries one row per class, or a single row when there are exactly two. "
+        "Its ports match Edu-LogisticRegression in the foundations plugin, so the "
+        "two swap without rewiring."
     )
 
     @classmethod

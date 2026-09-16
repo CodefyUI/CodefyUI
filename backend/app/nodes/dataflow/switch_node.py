@@ -6,10 +6,11 @@ from ...core.node_base import BaseNode, DataType, PortDefinition
 class SwitchNode(BaseNode):
     NODE_NAME = "Switch"
     CATEGORY = "Data Flow"
-    DESCRIPTION = (
-        "Select one of multiple inputs based on a selector index. "
-        "Pure data-flow conditional: all inputs are evaluated, "
-        "the selector picks which one to forward."
+    DESCRIPTION = "Forwards one of up to four inputs by selector index"
+    DETAILS = (
+        "Every input is evaluated before the selector picks one; this is data "
+        "flow, not a branch that skips work. The index is 0-based, and one that is "
+        "out of range or not connected falls back to input_0."
     )
 
     @classmethod

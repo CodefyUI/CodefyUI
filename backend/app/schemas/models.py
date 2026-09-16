@@ -46,6 +46,11 @@ class NodeDefinition(BaseModel):
     node_name: str
     category: str
     description: str
+    # See BaseNode.DETAILS: the longer half of the node's documentation, which
+    # only the config panel and Docs tab have room for. Defaulted rather than
+    # required, so a plugin or custom node written before the split still
+    # validates -- it simply has nothing to add to its summary.
+    details: str = ""
     inputs: list[PortDefinitionSchema]
     outputs: list[PortDefinitionSchema]
     params: list[ParamDefinitionSchema]

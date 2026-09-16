@@ -25,10 +25,14 @@ from ...core.node_base import (
 class SVMClassifierNode(BaseNode):
     NODE_NAME = "SVMClassifier"
     CATEGORY = "Classical"
-    DESCRIPTION = (
-        "Support Vector Classifier (sklearn). Maximum-margin hyperplane, "
-        "with kernel trick for nonlinear boundaries. Exposes support vectors "
-        "for visualisation — those are the points that define the boundary."
+    DESCRIPTION = "Labels queries by a maximum-margin class boundary"
+    DETAILS = (
+        "sklearn's SVC. The kernel (linear, rbf, poly or sigmoid) sets how curved "
+        "the boundary can be — rbf, poly and sigmoid do it through the kernel "
+        "trick. C trades margin width against training violations, and gamma takes "
+        "'scale', 'auto' or a number. It also outputs the support vectors, the "
+        "training points on or near the margin; probability estimation is off, so "
+        "there is no probabilities port."
     )
 
     @classmethod

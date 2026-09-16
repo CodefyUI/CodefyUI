@@ -147,8 +147,12 @@ def test_the_node_is_not_cacheable():
 
 
 def test_the_description_says_the_number_is_per_token_and_dataset_specific():
-    text = PerplexityEvaluateNode.DESCRIPTION
-    assert "PER TOKEN" in text
+    # Both facts are in DETAILS since the palette summary was cut to one line.
+    # The shout ("PER TOKEN") went with the cut -- the config panel prints this
+    # as a paragraph, where an all-caps phrase reads as shouting rather than as
+    # emphasis -- so what is pinned is the sentence, not its typography.
+    text = f"{PerplexityEvaluateNode.DESCRIPTION} {PerplexityEvaluateNode.DETAILS}"
+    assert "per token" in text.lower()
     assert "dataset" in text
 
 

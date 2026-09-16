@@ -297,16 +297,18 @@ def _tier0_namespace() -> dict[str, Any]:
 class PythonScriptNode(BaseNode):
     NODE_NAME = "PythonScript"
     CATEGORY = "Utility"
-    DESCRIPTION = (
-        "Run Python you write on the canvas. Define run(inputs, params) and "
-        "return a dict keyed by output port. The script may use "
+    DESCRIPTION = "Run Python on the canvas; return a dict keyed by port"
+    # The module list stays computed rather than spelled out, so the sentence
+    # cannot drift from the policy it describes.
+    DETAILS = (
+        "The script defines run(inputs, params); a return that is not a dict "
+        "becomes out1. It may reach only "
         + ", ".join(TIER0_MODULES)
-        + " and nothing else. That limits which LIBRARIES it can reach, not "
-        "what they can do: this is a guardrail, not a sandbox, and the code "
-        "runs in the CodefyUI process with your permissions. Only run "
-        "scripts you trust. This node is never cached -- it re-runs on every "
-        "run, even when nothing upstream changed, because only the script "
-        "knows whether it has side effects."
+        + ", which limits the libraries it can import rather than what they "
+        "can do: this is a guardrail, not a sandbox, and the code runs in the "
+        "CodefyUI process with your permissions, so only run scripts you "
+        "trust. It is never cached and re-runs every time, because only the "
+        "script knows whether it has side effects."
     )
 
     # Never cached, deliberately, and this is a correctness decision rather

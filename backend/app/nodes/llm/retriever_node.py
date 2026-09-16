@@ -198,13 +198,13 @@ def _hit_label(meta: dict[str, Any]) -> str:
 class RetrieverNode(BaseNode):
     NODE_NAME = "Retriever"
     CATEGORY = "LLM"
-    DESCRIPTION = (
-        "Find the chunks most similar to a question. Scores every stored "
-        "chunk against the query embedding (one matrix multiply, the same "
-        "kernel as CosineSimilarity), keeps the top_k, drops anything under "
-        "min_score, and hands the chunk texts to PromptBuilder. Watch the "
-        "scores: a top hit near 0.3 means the corpus probably does not "
-        "contain the answer."
+    DESCRIPTION = "The top_k chunks closest to the query embedding"
+    DETAILS = (
+        "It scores every stored chunk against the query in one matrix multiply, "
+        "keeps top_k, drops anything below min_score, and hands the chunk texts to "
+        "PromptBuilder. Watch the scores: a best hit near 0.3 usually means the "
+        "corpus does not contain the answer. The query must come from the same "
+        "embedding model as the index."
     )
 
     # Nothing downloaded: the vectors on both sides already exist, and the

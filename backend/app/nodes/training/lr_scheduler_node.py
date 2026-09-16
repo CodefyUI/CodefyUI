@@ -6,7 +6,14 @@ from ...core.node_base import BaseNode, DataType, ParamDefinition, ParamType, Po
 class LRSchedulerNode(BaseNode):
     NODE_NAME = "LRScheduler"
     CATEGORY = "Training"
-    DESCRIPTION = "Create a learning rate scheduler for an optimizer"
+    DESCRIPTION = "Change the learning rate during a run: 10 schedules"
+    DETAILS = (
+        "Ten schedules, including StepLR, CosineAnnealingLR, ReduceLROnPlateau, "
+        "OneCycleLR and the warmup families. Lengths such as step_size, T_max and "
+        "total_steps are counted in the unit TrainingLoop.scheduler_step picks: "
+        "epochs by default, optimizer steps otherwise. A length longer than the "
+        "run means the schedule never finishes."
+    )
 
     # #254. A scheduler is a live handle exactly like a model or an
     # optimizer: ``TrainingLoop`` steps it once per epoch, so its

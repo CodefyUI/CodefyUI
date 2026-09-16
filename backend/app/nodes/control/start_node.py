@@ -14,9 +14,12 @@ from app.core.node_base import BaseNode, DataType, PortDefinition
 class StartNode(BaseNode):
     NODE_NAME = "Start"
     CATEGORY = "Control"
-    DESCRIPTION = (
-        "Marks an execution entry point. Connect this to the first node "
-        "of the script you want to run, like a 'When Flag Clicked' block."
+    DESCRIPTION = "Entry point; the node its trigger reaches runs first"
+    DETAILS = (
+        "It is the 'When Flag Clicked' block of a CodefyUI graph: the node does no "
+        "work at runtime and passes no data. The trigger link tells the engine "
+        "which part of the graph to execute, so it usually goes to a data root "
+        "such as a Dataset node."
     )
 
     @classmethod

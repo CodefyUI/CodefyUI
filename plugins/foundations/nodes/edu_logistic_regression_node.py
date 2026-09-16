@@ -42,11 +42,13 @@ from app.core.step_trace import StepRecorder
 class EduLogisticRegressionNode(BaseNode):
     NODE_NAME = "Edu-LogisticRegression"
     CATEGORY = "Classical"
-    DESCRIPTION = (
-        "Softmax classifier fitted by gradient descent on cross-entropy loss. "
-        "Handles binary and multi-class with the same code. Optional L2 "
-        "regularisation on weights (not bias). Predictions are string labels "
-        "matching the training label vocabulary."
+    DESCRIPTION = "Softmax by gradient descent: labels and probabilities"
+    DETAILS = (
+        "Loss is cross-entropy, and `regularization` adds L2 weight decay on the "
+        "weights but not the bias. Binary problems run through the same two-column "
+        "softmax, which is equivalent to the sigmoid form. Predicted labels come "
+        "back as strings from the sorted training vocabulary, and the `classes` "
+        "output gives the column order of `weights`."
     )
 
     @classmethod

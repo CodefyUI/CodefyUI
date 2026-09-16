@@ -34,10 +34,13 @@ from app.core.step_trace import StepRecorder
 class EduColumnStatsNode(BaseNode):
     NODE_NAME = "Edu-ColumnStats"
     CATEGORY = "Classical"
-    DESCRIPTION = (
-        "Column-wise descriptive statistics for a 2D table. Outputs the per-column "
-        "mean, std, min, max, and row count. Verbose mode records each intermediate "
-        "step so the Inspector can show sum → divide → variance → sqrt."
+    DESCRIPTION = "Per-column mean, std, min, max and row count"
+    DETAILS = (
+        "The standard deviation is the population std by default; set `unbiased` "
+        "to divide by N-1 for the sample std instead. With Verbose internals on it "
+        "also records each intermediate step — column sum, divide by the row "
+        "count, squared deviations, then the square root — so the Inspector can "
+        "show where each statistic came from."
     )
 
     @classmethod

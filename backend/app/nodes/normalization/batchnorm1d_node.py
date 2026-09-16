@@ -7,7 +7,12 @@ from ...core.stateful_module import StatefulModuleMixin
 class BatchNorm1dNode(StatefulModuleMixin, BaseNode):
     NODE_NAME = "BatchNorm1d"
     CATEGORY = "Normalization"
-    DESCRIPTION = "Apply 1D batch normalization (wraps nn.BatchNorm1d). Used after Linear layers."
+    DESCRIPTION = "Normalises each feature over the batch"
+    DETAILS = (
+        "Backed by nn.BatchNorm1d. The input is (N, C) or (N, C, L) and "
+        "num_features must equal C; for (N, C, H, W) image tensors use BatchNorm2d "
+        "instead. A learnable scale and shift are applied after normalising."
+    )
 
     structural_params = ("num_features",)
 

@@ -29,10 +29,12 @@ from ._stats_core import as_matrix, format_text_table, int_param, resolve_column
 class StatsTableViewNode(BaseNode):
     NODE_NAME = "Stats-TableView"
     CATEGORY = "Data"
-    DESCRIPTION = (
-        "Show a table in the Results panel as aligned text, with its column "
-        "names and row labels. Caps the output at `max_rows` and says how many "
-        "rows it left out."
+    DESCRIPTION = "A table as aligned text, with column and row labels"
+    DETAILS = (
+        "`max_rows` caps the rows shown and a trailing line counts the ones left "
+        "out; 0 shows every row. `precision` sets the decimal places for "
+        "non-integer values, and the same string is also handed out on the `text` "
+        "port."
     )
 
     @classmethod

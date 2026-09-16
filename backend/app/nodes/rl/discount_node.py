@@ -42,11 +42,12 @@ from ...core.node_base import (
 class DiscountNode(BaseNode):
     NODE_NAME = "Discount"
     CATEGORY = "RL"
-    DESCRIPTION = (
-        "Turn a reward sequence into discounted returns: G_t = r_t + gamma * G_{t+1}, "
-        "folded backwards. gamma near 0 sees only the next step; near 1 carries a "
-        "terminal reward all the way back to the first action. Connect episode_ids so "
-        "the fold restarts at each episode boundary instead of discounting across it."
+    DESCRIPTION = "Discounted returns G_t = r_t + gamma * G_{t+1}"
+    DETAILS = (
+        "The fold runs backwards, so each step is computed once. When the reward "
+        "lands only on the last of T steps, G_0 = gamma^(T-1). Connect episode_ids "
+        "and it restarts at every episode boundary; without them the whole tensor "
+        "is folded as one episode."
     )
 
     @classmethod

@@ -120,7 +120,17 @@ export interface SubgraphDefinition {
 export interface NodeDefinition {
   node_name: string;
   category: string;
+  /** One line for the palette list: what the node does and what it outputs. */
   description: string;
+  /**
+   * The rest of the documentation -- which library backs the node, what the
+   * one-line summary had no room for, when a sibling node is the better
+   * choice. Shown in the config panel and the Docs tab, never in the palette
+   * list or its hover card, which are deliberately one line deep.
+   *
+   * Optional: a server or plugin built before the split sends no such key.
+   */
+  details?: string;
   inputs: PortDefinition[];
   outputs: PortDefinition[];
   params: ParamDefinition[];

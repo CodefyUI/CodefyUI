@@ -1085,8 +1085,12 @@ def test_the_policy_message_does_not_promise_files_are_unreachable():
     lowered = ESCAPE_HATCH_HINT.lower()
     assert "libraries" in lowered
     assert "for file, network or process access" not in lowered
-    assert "libraries" in PythonScriptNode.DESCRIPTION.lower()
-    assert "guardrail, not a sandbox" in PythonScriptNode.DESCRIPTION.lower()
+    # Both sentences live in DETAILS now -- the palette summary is one line --
+    # and DETAILS is what the config panel prints beside the code editor, which
+    # is where trust is actually being decided.
+    copy = f"{PythonScriptNode.DESCRIPTION} {PythonScriptNode.DETAILS}".lower()
+    assert "libraries" in copy
+    assert "guardrail, not a sandbox" in copy
 
 
 # ═════════════════════════════════════════════════════════════════════════

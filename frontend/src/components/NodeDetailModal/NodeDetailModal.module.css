@@ -461,6 +461,15 @@
   line-height: var(--lh-normal);
 }
 
+/* The details paragraph under the summary — one ink tier back, so the first
+   line still reads as the answer to "what is this node". */
+.docsDetails {
+  color: var(--text-muted);
+  font-size: var(--fs-md);
+  line-height: var(--lh-normal);
+  margin-top: var(--sp-3);
+}
+
 .docsEmpty {
   color: var(--text-muted);
   font-size: var(--fs-sm);

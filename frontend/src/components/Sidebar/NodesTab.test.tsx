@@ -213,6 +213,22 @@ describe('NodesTab', () => {
     expect(screen.getByText('Conv2d')).toBeTruthy();
   });
 
+  it('filters nodes by details, which the row does not show', () => {
+    // The summary is one line now and the library a node wraps lives in
+    // `details`. A search that stopped matching there would have bought the
+    // shorter row by making the node harder to find.
+    seedStore({
+      categorized: {
+        CNN: [{ ...def('Conv2d', 'CNN', 'slides a kernel over the input'), details: 'Wraps nn.Conv2d.' }],
+      },
+    });
+    render(<NodesTab />);
+    fireEvent.change(screen.getByPlaceholderText('Search nodes...'), {
+      target: { value: 'nn.conv2d' },
+    });
+    expect(screen.getByText('Conv2d')).toBeTruthy();
+  });
+
   it('drops a category whose nodes all filter out', () => {
     seedStore({
       categorized: {
@@ -305,6 +321,26 @@ describe('NodesTab', () => {
     // No tooltip because desc is empty.
     expect(item.style.background).toBe('var(--surface-hover)');
     expect(screen.queryByText('Conv2d desc')).toBeNull();
+  });
+
+  it('shows the summary and never the details, inline or in the tooltip', () => {
+    // The whole reason `details` exists: this list is one line deep, and the
+    // long half belongs to the config panel and the Docs tab.
+    seedStore({
+      categorized: {
+        CNN: [{
+          ...def('Conv2d', 'CNN', 'slides a learned kernel over the input'),
+          details: 'Wraps nn.Conv2d. Padding defaults to 0, so the output shrinks.',
+        }],
+      },
+    });
+    render(<NodesTab />);
+    const item = screen.getByText('Conv2d').parentElement as HTMLElement;
+    expect(screen.getByText('slides a learned kernel over the input')).toBeTruthy();
+    expect(screen.queryByText(/nn\.Conv2d/)).toBeNull();
+
+    fireEvent.mouseEnter(item);
+    expect(screen.queryByText(/nn\.Conv2d/)).toBeNull();
   });
 
   it('translates node descriptions via i18n when locale is non-English', () => {

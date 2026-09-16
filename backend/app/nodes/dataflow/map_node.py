@@ -13,9 +13,12 @@ logger = logging.getLogger(__name__)
 class MapNode(BaseNode):
     NODE_NAME = "Map"
     CATEGORY = "Data Flow"
-    DESCRIPTION = (
-        "Apply a preset (subgraph) to each element in a list. "
-        "Returns a list of results. Functional-style batch processing."
+    DESCRIPTION = "Runs a subgraph per list item; collects the results"
+    DETAILS = (
+        "The subgraph parameter names a saved preset; its first exposed input "
+        "receives each item and its first exposed output becomes that item's "
+        "result. One item is one unit of work, so stopping the run interrupts "
+        "between items and returns what finished."
     )
 
     # `items` is a whole collection consumed one element at a time. Aligning

@@ -57,6 +57,16 @@ export function NodeConfigPanel() {
             text={tn(nodeName, 'description', def.description)}
           />
         )}
+        {/* The half of the documentation the palette list has no room for.
+            Here rather than there because this panel is already open on the
+            one node you are working on. */}
+        {def?.details && (
+          <MathText
+            as="div"
+            className={styles.headerDetails}
+            text={tn(nodeName, 'details', def.details)}
+          />
+        )}
       </div>
 
       {/* Scrollable content */}

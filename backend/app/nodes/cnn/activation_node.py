@@ -6,7 +6,13 @@ from ...core.node_base import BaseNode, DataType, ParamDefinition, ParamType, Po
 class ActivationNode(BaseNode):
     NODE_NAME = "Activation"
     CATEGORY = "CNN"
-    DESCRIPTION = "Apply activation function to input tensor"
+    DESCRIPTION = "Applies the selected nonlinearity; shape unchanged"
+    DETAILS = (
+        "Twelve functions are available: relu, leaky_relu, elu, gelu, silu, mish, "
+        "selu, prelu, sigmoid, tanh, hardswish and softmax. softmax normalises "
+        "over the last dimension, and prelu builds a fresh, untrained slope of "
+        "0.25 on every run."
+    )
 
     @classmethod
     def define_inputs(cls) -> list[PortDefinition]:

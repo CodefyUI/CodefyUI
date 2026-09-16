@@ -181,7 +181,9 @@ def test_the_node_says_it_always_re_runs() -> None:
     """#223's acceptance: a user who notices the node never shows `cached`
     should be able to read why in the node itself, not guess at a bug.
     """
-    assert "never cached" in PythonScriptNode.DESCRIPTION
+    # In DETAILS since the palette summary was cut to one line; the config
+    # panel and the Docs tab both render it right under that line.
+    assert "never cached" in f"{PythonScriptNode.DESCRIPTION} {PythonScriptNode.DETAILS}"
 
 
 @pytest.mark.asyncio

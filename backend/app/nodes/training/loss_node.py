@@ -60,7 +60,12 @@ DEFAULT_IGNORE_INDEX = -100
 class LossNode(BaseNode):
     NODE_NAME = "Loss"
     CATEGORY = "Training"
-    DESCRIPTION = "Create a loss function"
+    DESCRIPTION = "Cross-entropy, MSE, BCE and eight more losses"
+    DETAILS = (
+        "Eleven torch losses. The options that only some of them take "
+        "(label_smoothing, per-class weight, ignore_index, pos_weight) are shown "
+        "only under the types that accept them."
+    )
 
     @classmethod
     def define_inputs(cls) -> list[PortDefinition]:

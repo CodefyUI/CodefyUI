@@ -62,9 +62,12 @@ def resolve_dataset_root(path: str) -> Path:
 class ImageFolderDatasetNode(BaseNode):
     NODE_NAME = "ImageFolderDataset"
     CATEGORY = "Data"
-    DESCRIPTION = (
-        "Load your own images from one folder per class. Labels come from "
-        "the folder names, sorted alphabetically."
+    DESCRIPTION = "Load your own images from one folder per class"
+    DETAILS = (
+        "Labels follow the folder names in alphabetical order, and the `classes` "
+        "output lists them in that same order. `split` picks which sub-directory "
+        "of `path` to read; choose '(none)' when the class folders sit directly "
+        "under `path`."
     )
 
     # #144: cacheable again -- cache_fingerprint() below folds an aggregate

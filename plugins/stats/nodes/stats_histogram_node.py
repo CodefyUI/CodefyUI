@@ -41,10 +41,12 @@ _RANGE_MODES = ("auto", "manual")
 class StatsHistogramNode(BaseNode):
     NODE_NAME = "Stats-Histogram"
     CATEGORY = "Data"
-    DESCRIPTION = (
-        "Bin a tensor into a histogram. Outputs a [bins, 3] table of "
-        "(bin_start, bin_end, count) plus a bar chart that renders in the "
-        "Results panel. Set `density` for a probability density instead of counts."
+    DESCRIPTION = "Bins a tensor into counts, plus a bar chart"
+    DETAILS = (
+        "Each row is bin_start, bin_end and count — or a density when `density` is "
+        "set, so histograms of different sample sizes are comparable. `range_mode` "
+        "set to manual pins the edges so successive runs line up. Non-finite "
+        "values are dropped before binning and counted on the `dropped` output."
     )
 
     @classmethod

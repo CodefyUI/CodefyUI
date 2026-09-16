@@ -38,10 +38,13 @@ from app.core.step_trace import StepRecorder
 class EduLinearRegressionNode(BaseNode):
     NODE_NAME = "Edu-LinearRegression"
     CATEGORY = "Classical"
-    DESCRIPTION = (
-        "Linear regression $y = Xw + b$, solved either via the closed-form "
-        "normal equation $w = (X^T X + \\lambda I)^{-1} X^T y$ or via "
-        "gradient descent. L2 regularisation supported in both modes."
+    DESCRIPTION = "Fits $y=Xw+b$ by closed form or gradient descent"
+    DETAILS = (
+        "`closed_form` solves the normal equation $w = (X^T X + \\lambda I)^{-1} "
+        "X^T y$, falling back to a least-squares solve when the matrix is "
+        "singular; `gradient_descent` runs `epochs` steps at `lr`. "
+        "`regularization` adds an L2 (ridge) penalty on the weights only, in both "
+        "modes."
     )
 
     @classmethod

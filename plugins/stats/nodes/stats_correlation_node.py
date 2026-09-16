@@ -79,10 +79,13 @@ def _pearson(x: np.ndarray, y: np.ndarray) -> float:
 class StatsCorrelationNode(BaseNode):
     NODE_NAME = "Stats-Correlation"
     CATEGORY = "Data"
-    DESCRIPTION = (
-        "Correlation matrix across a table's columns, Pearson or Spearman. "
-        "NaN is handled pairwise by default, so one gap does not shrink every "
-        "other pair. Outputs the matrix plus a -1..1 heatmap."
+    DESCRIPTION = "Pearson or Spearman correlation matrix"
+    DETAILS = (
+        "With `drop_nan` on (pandas' default) each pair uses the rows where both "
+        "columns are present, so one gap does not shrink every other pair; off, "
+        "NaN propagates. Spearman is Pearson on average ranks, with ties sharing a "
+        "rank. The heatmap is pinned to -1..1 rather than the data's own range, "
+        "and a constant column comes back NaN."
     )
 
     @classmethod

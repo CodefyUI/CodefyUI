@@ -26,10 +26,12 @@ from app.core.node_base import (
 class ActivationLayerNode(BaseNode):
     NODE_NAME = "ActivationLayer"
     CATEGORY = "EDU"
-    DESCRIPTION = (
-        "在 MLP 堆疊裡夾一個激活函數（非線性）。夾在兩個 FFNLayer 之間，堆疊才彎得起來。"
-        "function 設 identity = 等於沒有激活，堆幾層都會塌回一條直線（I2-3 的關鍵實驗）。"
-        "跟 FFNLayer 一樣傳「正在組裝的網路」。"
+    DESCRIPTION = "Append an activation function to the model so far"
+    DETAILS = (
+        "`function` picks relu, tanh, sigmoid or identity. identity adds no "
+        "non-linearity at all, so a stack of FFNLayers collapses back into a "
+        "single linear map. The `model` input is required — place this node after "
+        "an FFNLayer."
     )
 
     @classmethod

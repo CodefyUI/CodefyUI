@@ -27,10 +27,11 @@ from ...core.node_base import (
 class RowSelectorNode(BaseNode):
     NODE_NAME = "RowSelector"
     CATEGORY = "Data"
-    DESCRIPTION = (
-        "從 2D tensor 取出一部分的列（rows）。用 `indices` 依位置選列，"
-        "或用 `names`（需連上 `labels` 輸入）依列名選列。對應 ColumnSelector，"
-        "只是作用在「列」這個維度；純挑列、不含條件判斷。"
+    DESCRIPTION = "Pick rows from a 2D tensor, by index or name"
+    DETAILS = (
+        "Selecting by name needs the `labels` input wired, and `names` wins when "
+        "`indices` is also set. Filtering by a condition such as score > 80 is "
+        "FilterRows, in the EDU pack."
     )
 
     @classmethod

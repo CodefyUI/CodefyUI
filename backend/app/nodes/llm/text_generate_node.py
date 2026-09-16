@@ -212,13 +212,12 @@ def _next_token(
 class TextGenerateNode(BaseNode):
     NODE_NAME = "TextGenerate"
     CATEGORY = "LLM"
-    DESCRIPTION = (
-        "Continues a prompt with a trained language model, one token at a "
-        "time, and streams the text as it appears. temperature, top_k and "
-        "top_p are the three knobs that decide how adventurous the writing "
-        "is: temperature 0 always takes the most likely token (repetitive but "
-        "safe), and raising it trades coherence for variety. Stops at the "
-        "end-of-text token or after max_new_tokens."
+    DESCRIPTION = "Continue a prompt with a trained model, token by token"
+    DETAILS = (
+        "temperature, top_k and top_p decide how adventurous the writing is: "
+        "temperature 0 always takes the most likely token, and raising it trades "
+        "coherence for variety. Generation stops at the end-of-text token or after "
+        "max_new_tokens. The tokenizer must be the one the model was trained with."
     )
 
     # Sampling is not a function of the params: it advances a seeded generator

@@ -7,9 +7,11 @@ from ...core.stateful_module import StatefulModuleMixin
 class LayerNormNode(StatefulModuleMixin, BaseNode):
     NODE_NAME = "LayerNorm"
     CATEGORY = "Normalization"
-    DESCRIPTION = (
-        "Apply layer normalization (wraps nn.LayerNorm). "
-        "$y = \\frac{x - \\mu}{\\sqrt{\\sigma^2 + \\epsilon}} \\gamma + \\beta$"
+    DESCRIPTION = "Normalises each sample over its last dimensions"
+    DETAILS = (
+        "Backed by nn.LayerNorm: $y = \\frac{x - \\mu}{\\sqrt{\\sigma^2 + \\epsilon}} "
+        "\\gamma + \\beta$. normalized_shape is comma-separated integers, such as "
+        "512 or 64,32, and must match the input's trailing dimensions."
     )
 
     structural_params = ("normalized_shape", "eps")

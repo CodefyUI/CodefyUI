@@ -81,10 +81,12 @@ def _load_canvas_image(path_value: Any) -> Any:
 class GraphInputNode(BaseNode):
     NODE_NAME = "GraphInput"
     CATEGORY = "IO"
-    DESCRIPTION = (
-        "Declares a named input of this graph — supplied by API callers via "
-        "POST /api/graph/run, or by the 'default' param when run on the canvas. "
-        "Wire a Start node into this node so it executes."
+    DESCRIPTION = "Declare a named graph input and output its value"
+    DETAILS = (
+        "API callers supply the value through POST /api/graph/run; on the canvas "
+        "the 'default' param stands in. A Start node must be wired into this node "
+        "for it to execute. With type=image the API sends base64 and the canvas "
+        "reads a server-local file path."
     )
 
     # Params include the injected value, so cache keys stay correct on

@@ -105,11 +105,12 @@ class LMCrossEntropyLoss(nn.Module):
 class LMCrossEntropyLossNode(BaseNode):
     NODE_NAME = "LMCrossEntropyLoss"
     CATEGORY = "LLM"
-    DESCRIPTION = (
-        "Cross-entropy shaped for language models: it flattens (batch, "
-        "seq_len, vocab_size) logits against (batch, seq_len) token ids and "
-        "returns the mean loss over every position. Wire it into "
-        "TrainingLoop's loss_fn alongside a CausalLMModel."
+    DESCRIPTION = "Mean cross-entropy over every token position"
+    DETAILS = (
+        "It flattens (batch, seq_len, vocab_size) logits against (batch, seq_len) "
+        "token ids, so a CausalLMModel plugs straight into TrainingLoop's loss_fn. "
+        "Targets equal to ignore_index (-100 by default) contribute no loss and no "
+        "gradient."
     )
 
     # Cacheable, and correctly so: the output is a small immutable function

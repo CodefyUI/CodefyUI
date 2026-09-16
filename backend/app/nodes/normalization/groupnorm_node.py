@@ -7,7 +7,12 @@ from ...core.stateful_module import StatefulModuleMixin
 class GroupNormNode(StatefulModuleMixin, BaseNode):
     NODE_NAME = "GroupNorm"
     CATEGORY = "Normalization"
-    DESCRIPTION = "Apply group normalization (wraps nn.GroupNorm). Used in modern CNN architectures."
+    DESCRIPTION = "Splits channels into groups, normalises each group"
+    DETAILS = (
+        "Backed by nn.GroupNorm. num_channels must equal the input's channel count "
+        "and be divisible by num_groups; the statistics do not depend on batch "
+        "size, which is where it holds up better than BatchNorm2d."
+    )
 
     structural_params = ("num_groups", "num_channels")
 

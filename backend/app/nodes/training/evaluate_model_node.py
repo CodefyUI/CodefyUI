@@ -27,13 +27,12 @@ from ...core.node_base import (
 class EvaluateModelNode(BaseNode):
     NODE_NAME = "EvaluateModel"
     CATEGORY = "Training"
-    DESCRIPTION = (
-        "Measures a trained classification model's accuracy on a dataset. "
-        "Takes model + dataset, builds a DataLoader internally to run the "
-        "whole dataset, takes each example's argmax and compares it to the "
-        "label, and outputs accuracy / correct / total. Fills the "
-        "'evaluation' gap in the generic training flow (maps to curriculum "
-        "I2-4: checking validation accuracy after training an MNIST MLP)."
+    DESCRIPTION = "Classifier accuracy on a dataset, with correct/total"
+    DETAILS = (
+        "Runs the whole dataset through the model in batches and compares each "
+        "example's argmax against its label. The accuracy is also logged as the "
+        "eval_accuracy metric at the given step, so two EvaluateModel nodes in one "
+        "graph need different step values or they overwrite each other's point."
     )
 
     # #254. The accuracy is not the whole of what this node produces: it

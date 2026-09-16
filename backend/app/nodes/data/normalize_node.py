@@ -31,11 +31,12 @@ from ...core.node_base import (
 class NormalizeNode(BaseNode):
     NODE_NAME = "Normalize"
     CATEGORY = "Data"
-    DESCRIPTION = (
-        "Scale a tensor along the chosen axis. zscore = $(x-\\mu)/\\sigma$, "
-        "minmax = $(x-\\min)/(\\max-\\min)$, unit_norm = $x/\\|x\\|_2$. "
-        "Use axis=0 for per-column tabular normalisation, axis=1 for "
-        "per-row sample normalisation."
+    DESCRIPTION = "Normalise a tensor along one axis; outputs the stats"
+    DETAILS = (
+        "zscore = $(x-\\mu)/\\sigma$, minmax = $(x-\\min)/(\\max-\\min)$, unit_norm = "
+        "$x/\\|x\\|_2$. axis=0 computes per column, axis=1 per row. A constant "
+        "column is divided by 1 rather than 0, so it comes out as zeros instead of "
+        "NaN."
     )
 
     @classmethod

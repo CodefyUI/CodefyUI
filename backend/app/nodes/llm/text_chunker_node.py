@@ -288,13 +288,14 @@ def _document_entry(item: Any, index: int) -> tuple[str, str]:
 class TextChunkerNode(BaseNode):
     NODE_NAME = "TextChunker"
     CATEGORY = "LLM"
-    DESCRIPTION = (
-        "Cut documents into overlapping chunks small enough to embed and to "
-        "fit in a prompt. Retrieval works on chunks, not whole files: a "
-        "question should pull back the paragraph that answers it, not a "
-        "5-page document. characters is language-neutral and works for "
-        "Chinese, which has no spaces; sentences and paragraphs keep natural "
-        "boundaries and pack them up to chunk_size."
+    DESCRIPTION = "Cut documents into overlapping chunks"
+    DETAILS = (
+        "characters cuts fixed-size windows and is language-neutral, so it works "
+        "for Chinese, which has no spaces; sentences and paragraphs keep natural "
+        "boundaries and pack them up to chunk_size. chunk_overlap applies to "
+        "characters alone, so a sentence split by a window still appears whole in "
+        "the next chunk. Each chunk carries the source it came from, and retrieval "
+        "works on chunks rather than whole files."
     )
 
     # Stated rather than inherited, like DocumentLoader's: this and the

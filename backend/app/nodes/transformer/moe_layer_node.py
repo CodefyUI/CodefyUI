@@ -92,11 +92,14 @@ class _MoELayer(nn.Module):
 class MoELayerNode(BaseNode):
     NODE_NAME = "MoELayer"
     CATEGORY = "Transformer"
-    DESCRIPTION = (
-        "Mixture-of-Experts FFN. For each token, a gate picks the top-k "
-        "experts by softmax score; the layer output is the weighted sum of "
-        "those experts' outputs. The architecture used in Switch / Mixtral / "
-        "DeepSeek-MoE."
+    DESCRIPTION = "Per-token top-k expert routing, then a weighted sum"
+    DETAILS = (
+        "A linear gate scores the experts and softmax runs over the selected k, so "
+        "each token's weights sum to 1; `routing_weights` and `expert_indices` "
+        "report the routing. The experts are re-initialised from `seed` on every "
+        "run and the forward pass runs under no_grad, so this layer does not "
+        "train. Switch Transformer, Mixtral and DeepSeek-MoE are built on this "
+        "routing."
     )
 
     @classmethod

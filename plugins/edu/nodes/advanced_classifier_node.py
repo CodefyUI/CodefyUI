@@ -50,10 +50,12 @@ class _FittedAdvanced:
 class AdvancedClassifierNode(BaseNode):
     NODE_NAME = "AdvancedClassifier"
     CATEGORY = "EDU"
-    DESCRIPTION = (
-        "一顆可切換的進階分類器：kind 選 svm / tree / rf。吃 x_train,y_train(標籤),x_query "
-        "→ predictions(標籤)，另吐 model 給 DecisionBoundary 畫邊界（SVM 的 model 還帶支持"
-        "向量）。對應 I2-2 SVM 的 kernel 與決策樹 / 隨機森林。"
+    DESCRIPTION = "Classify x_query: SVM, decision tree or random forest"
+    DETAILS = (
+        "`kind` selects SVM (with an rbf, linear or poly kernel), Decision Tree "
+        "(`max_depth`, 0 means unlimited) or Random Forest (`n_estimators`); all "
+        "three come from scikit-learn. The `model` output feeds DecisionBoundary, "
+        "and for an SVM it also carries the support vector coordinates."
     )
 
     @classmethod

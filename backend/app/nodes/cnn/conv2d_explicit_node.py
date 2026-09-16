@@ -55,14 +55,13 @@ class Conv2dExplicitNode(BaseNode):
 
     NODE_NAME = "Conv2dExplicit"
     CATEGORY = "CNN"
-    DESCRIPTION = (
-        "2D convolution with a kernel you pick, not one the network learns — "
-        "no learnable weights, no random init. Choose a built-in 3x3 filter "
-        "(EdgeDetection / Sharpen / VerticalEdge) or set preset to 'Custom' "
-        "and author an NxN matrix by hand. The same kernel is applied to "
-        "every input channel via grouped (depthwise) convolution, so a "
-        "(N, C, H, W) input produces a (N, C, H, W) output with channels "
-        "untouched."
+    DESCRIPTION = "Convolves with a kernel you pick, not one it learns"
+    DETAILS = (
+        "No learnable weights and no random init. The presets are "
+        "EdgeDetection3x3, Sharpen3x3 and VerticalEdge3x3; set preset to Custom to "
+        "author an NxN matrix, which must hold exactly kernel_size x kernel_size "
+        "values. The one kernel is applied per channel as a grouped, or depthwise, "
+        "convolution, so the channel count is unchanged."
     )
 
     @classmethod

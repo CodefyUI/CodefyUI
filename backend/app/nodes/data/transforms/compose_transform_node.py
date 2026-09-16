@@ -36,11 +36,12 @@ def _step_count(params: dict[str, Any] | None) -> int:
 
 class ComposeTransformNode(TransformStepNode):
     NODE_NAME = "ComposeTransform"
-    DESCRIPTION = (
-        "Join several transform chains into one, in port order: step_1 runs "
-        "first. Chaining node to node already composes, so reach for this "
-        "when two chains were built separately and one pipeline has to run "
-        "both."
+    DESCRIPTION = "Join transform chains into one, in port order"
+    DETAILS = (
+        "Chaining node to node already composes, so this is only needed when two "
+        "chains were built separately and one pipeline has to run both. An unwired "
+        "port is skipped, so filling step_1 and step_3 of a three-port node "
+        "composes those two in that order."
     )
 
     @classmethod

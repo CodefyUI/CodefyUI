@@ -50,7 +50,11 @@ export interface ParamDefinition {
 export interface NodeDefinition {
   node_name: string;
   category: string;
+  /** One line for the palette list: what the node does and what it outputs. */
   description: string;
+  /** The longer documentation the palette list has no room for. Absent when
+   *  the summary already says everything. */
+  details?: string;
   inputs: PortDefinition[];
   outputs: PortDefinition[];
   params: ParamDefinition[];

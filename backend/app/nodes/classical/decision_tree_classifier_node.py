@@ -27,10 +27,12 @@ from ...core.node_base import (
 class DecisionTreeClassifierNode(BaseNode):
     NODE_NAME = "DecisionTreeClassifier"
     CATEGORY = "Classical"
-    DESCRIPTION = (
-        "CART decision tree (sklearn). Recursively splits features to "
-        "maximise purity; the killer feature for teaching is tree_text — a "
-        "readable dump of the learned if/else rules."
+    DESCRIPTION = "Recursive feature splits; outputs the learned rules"
+    DETAILS = (
+        "CART tree from sklearn, split by gini, entropy or log loss. Besides the "
+        "predictions it outputs tree_text, a readable dump of the if/else rules, "
+        "and feature_importances, one score per feature summing to 1. max_depth 0 "
+        "grows the tree until its leaves are pure."
     )
 
     @classmethod

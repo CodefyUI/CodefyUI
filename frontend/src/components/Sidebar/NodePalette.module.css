@@ -250,13 +250,14 @@
 }
 
 .categoryNodes {
-  padding-top: var(--sp-1);
   padding-bottom: var(--sp-2);
 }
 
 /* ── Node item ──
-   Densest list in the app: real row height + roomy padding carry the
-   density instead of small text (core token migration).
+   Densest list in the app, and the one you scan a hundred rows of: the text
+   stays full size and the row gives up its vertical padding and its gap
+   instead. Rows now sit flush against each other — the hover wash is what
+   separates them, and only one row is ever hovered.
 
    A two-column grid rather than the old column flex: the "needs pack" badge
    has to sit beside the name, and wrapping the two in a row would have cost
@@ -266,8 +267,8 @@
 .nodeItem {
   position: relative;
   min-height: var(--h-row);
-  padding: var(--sp-3) var(--sp-4);
-  margin: var(--sp-1) var(--sp-3);
+  padding: var(--sp-2) var(--sp-4);
+  margin: 0 var(--sp-3);
   border-radius: var(--radius);
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
@@ -307,9 +308,9 @@
   white-space: nowrap;
 }
 
-/* Was single-line ellipsis (the "currently truncated" description the
-   maintainer called out); now wraps up to two lines instead of hiding the
-   rest of the text behind an ellipsis after a handful of characters. */
+/* One line of summary, wrapping to a second only when the panel is narrow —
+   the text itself is written to fit. The clamp stays as the backstop for a
+   plugin or custom node whose author wrote a paragraph. */
 .nodeItemDesc {
   /* Full width under the name + badge row. */
   grid-column: 1 / -1;
@@ -373,9 +374,10 @@
 }
 
 /* ── Preset item ── */
+/* Same rhythm as a node row above it — they share one scroll. */
 .presetItem {
-  padding: var(--sp-3) var(--sp-4);
-  margin: var(--sp-1) var(--sp-3);
+  padding: var(--sp-2) var(--sp-4);
+  margin: 0 var(--sp-3);
   border-radius: var(--radius);
   cursor: grab;
   border: 1px solid transparent;
@@ -387,7 +389,7 @@
   display: flex;
   align-items: center;
   gap: var(--sp-3);
-  margin-bottom: var(--sp-2);
+  margin-bottom: var(--sp-1);
 }
 
 .presetName {
@@ -421,7 +423,7 @@
 .presetNodeCount {
   font-size: var(--fs-2xs);
   color: var(--text-muted);
-  margin-top: var(--sp-2);
+  margin-top: var(--sp-1);
 }
 
 /* ── Footer hint ── */

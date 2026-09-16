@@ -6,7 +6,7 @@ from ...core.node_base import BaseNode, DataType, ParamDefinition, ParamType, Po
 class PermuteNode(BaseNode):
     NODE_NAME = "Permute"
     CATEGORY = "Tensor Operations"
-    DESCRIPTION = "Permute (reorder) the dimensions of a tensor"
+    DESCRIPTION = "Reorder a tensor's dimensions"
 
     @classmethod
     def define_inputs(cls) -> list[PortDefinition]:

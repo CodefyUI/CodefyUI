@@ -33,11 +33,13 @@ from app.core.step_trace import StepRecorder
 class EduPolicyGradientNode(BaseNode):
     NODE_NAME = "Edu-PolicyGradient"
     CATEGORY = "RL"
-    DESCRIPTION = (
-        "One REINFORCE policy-gradient step exposed as: softmax(logits/T) → "
-        "gather at actions → log → subtract baseline → loss = −mean(log_probs · "
-        "advantages). Each intermediate is captured in verbose mode so students "
-        "see the chain that turns logits and rewards into a scalar loss."
+    DESCRIPTION = "Loss for one REINFORCE step, plus every intermediate"
+    DETAILS = (
+        "probs = softmax(logits / temperature), log_probs is the log of the "
+        "probability at the action actually taken, and loss = -mean(log_probs * "
+        "advantages). With baseline = mean the batch-average reward is subtracted "
+        "first; with none the rewards are the advantages. It does not call "
+        "backward(); BackwardOnce is the node that does."
     )
 
     @classmethod

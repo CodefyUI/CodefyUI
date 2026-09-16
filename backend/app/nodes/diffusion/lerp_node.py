@@ -31,10 +31,11 @@ from ...core.node_base import (
 class LerpNode(BaseNode):
     NODE_NAME = "Lerp"
     CATEGORY = "Diffusion"
-    DESCRIPTION = (
-        "Linear interpolation: $\\alpha\\,a + (1-\\alpha)\\,b$. "
-        "When $\\alpha=1$ the output is $a$; when $\\alpha=0$ it's $b$. "
-        "Use as a teaching stand-in for the diffusion forward equation."
+    DESCRIPTION = "Blend two tensors: $\\alpha a + (1-\\alpha) b$"
+    DETAILS = (
+        "`alpha` comes from the param unless the `alpha` input is connected, which "
+        "takes a scalar or any broadcastable tensor; the output shape follows "
+        "broadcasting."
     )
 
     @classmethod

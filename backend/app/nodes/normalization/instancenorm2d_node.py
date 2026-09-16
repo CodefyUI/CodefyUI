@@ -7,7 +7,13 @@ from ...core.stateful_module import StatefulModuleMixin
 class InstanceNorm2dNode(StatefulModuleMixin, BaseNode):
     NODE_NAME = "InstanceNorm2d"
     CATEGORY = "Normalization"
-    DESCRIPTION = "Apply 2D instance normalization (wraps nn.InstanceNorm2d). Used in style transfer and image generation."
+    DESCRIPTION = "Normalises each sample's channel over height and width"
+    DETAILS = (
+        "Backed by nn.InstanceNorm2d, which is GroupNorm with one group per "
+        "channel; it is the normalisation used in style transfer and image "
+        "generation. affine is off by default, so there is no learnable $\\gamma$ "
+        "or $\\beta$ unless you turn it on."
+    )
 
     structural_params = ("num_features", "affine")
 

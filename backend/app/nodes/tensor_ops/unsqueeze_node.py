@@ -6,7 +6,7 @@ from ...core.node_base import BaseNode, DataType, ParamDefinition, ParamType, Po
 class UnsqueezeNode(BaseNode):
     NODE_NAME = "Unsqueeze"
     CATEGORY = "Tensor Operations"
-    DESCRIPTION = "Add a dimension of size 1 at the specified position"
+    DESCRIPTION = "Insert a size-1 dimension at a position"
 
     @classmethod
     def define_inputs(cls) -> list[PortDefinition]:

@@ -6,9 +6,10 @@ from ...core.node_base import BaseNode, DataType, ParamDefinition, ParamType, Po
 class SoftmaxNode(BaseNode):
     NODE_NAME = "Softmax"
     CATEGORY = "Tensor Operations"
-    DESCRIPTION = (
-        "Apply softmax along a dimension: $\\text{softmax}(x_i) = \\frac{e^{x_i}}{\\sum_j e^{x_j}}$. "
-        "Numerically stable: subtract $\\max(x)$ before exponentiating."
+    DESCRIPTION = "Scores to probabilities that sum to 1 over a dimension"
+    DETAILS = (
+        "$\\text{softmax}(x_i) = \\frac{e^{x_i}}{\\sum_j e^{x_j}}$, computed with the "
+        "maximum subtracted first so large scores do not overflow."
     )
 
     @classmethod

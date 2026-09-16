@@ -29,10 +29,13 @@ from app.core.step_trace import StepRecorder
 class EduPatchifyNode(BaseNode):
     NODE_NAME = "Edu-Patchify"
     CATEGORY = "Transformer"
-    DESCRIPTION = (
-        "Split a [B, C, H, W] image into a sequence of P×P patches: "
-        "[B, N_patches, C·P·P]. The unfold → permute → flatten chain that "
-        "turns 'an image' into 'a sequence of tokens' is exposed step by step."
+    DESCRIPTION = "Cut an image into P×P patches: [B,N,C·P·P]"
+    DETAILS = (
+        "H and W must each be divisible by patch_size. A second output carries the "
+        "patch grid as [grid_h, grid_w], and setting `flatten` false keeps each "
+        "patch as [C, P, P] instead of one flat vector. In verbose mode the unfold "
+        "→ permute → flatten chain that turns the image into a token sequence is "
+        "recorded step by step."
     )
 
     @classmethod

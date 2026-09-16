@@ -56,13 +56,12 @@ logger = logging.getLogger(__name__)
 class VectorStoreNode(BaseNode):
     NODE_NAME = "VectorStore"
     CATEGORY = "LLM"
-    DESCRIPTION = (
-        "Pack chunk embeddings and their texts into one searchable index. "
-        "This is the 'database' of a RAG system: an [N, D] matrix plus the N "
-        "chunk strings, with cosine as the default metric (rows are stored "
-        "unit-length so a search is a single matrix multiply). Wire the index "
-        "into Retriever. In-memory only; a re-run rebuilds it from the cached "
-        "embeddings in a few milliseconds."
+    DESCRIPTION = "Pack chunk embeddings and texts into a search index"
+    DETAILS = (
+        "The index is an [N, D] matrix plus the N chunk strings, with cosine as "
+        "the default metric — rows are stored unit-length, so a search is a single "
+        "matrix multiply. Wire index into Retriever. It lives in memory only, and "
+        "a re-run rebuilds it from the cached embeddings in milliseconds."
     )
 
     # Stated rather than inherited, like DocumentLoader's and TextChunker's:

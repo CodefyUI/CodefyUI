@@ -44,12 +44,14 @@ from ...core.node_base import (
 class PPOClipObjectiveNode(BaseNode):
     NODE_NAME = "PPOClipObjective"
     CATEGORY = "RL"
-    DESCRIPTION = (
-        "PPO's clipped surrogate objective: min(r*A, clip(r, 1-eps, 1+eps)*A). Returns the "
-        "unclipped term, the clipped term, the final objective and a mask of which samples "
-        "were truncated, so you can see the safety belt engage. Clipping flattens the "
-        "OBJECTIVE, it does not clamp the ratio -- it removes the incentive to step further, "
-        "it does not forbid the step. Give it `ratio` directly, or new/old log-probs."
+    DESCRIPTION = "min(rA, clip(r, 1-eps, 1+eps)A) per sample"
+    DETAILS = (
+        "Give it ratio directly, or give log_probs_new and log_probs_old and the "
+        "ratio becomes exp(new - old). It also returns the unclipped and clipped "
+        "terms separately, the scalar loss -mean(objective), a mask of the "
+        "truncated samples and clip_fraction. Clipping flattens the objective "
+        "rather than clamping the ratio: past the interval a further step gains "
+        "nothing, but nothing forbids it."
     )
 
     @classmethod

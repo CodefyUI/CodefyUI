@@ -6,7 +6,7 @@ from ...core.node_base import BaseNode, DataType, ParamDefinition, ParamType, Po
 class ConcatNode(BaseNode):
     NODE_NAME = "Concat"
     CATEGORY = "Utility"
-    DESCRIPTION = "Concatenate two tensors along a specified dimension"
+    DESCRIPTION = "Concatenate two tensors along a dimension"
 
     @classmethod
     def define_inputs(cls) -> list[PortDefinition]:

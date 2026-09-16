@@ -51,10 +51,13 @@ _AXES = ("columns", "rows", "all")
 class StatsDescribeNode(BaseNode):
     NODE_NAME = "Stats-Describe"
     CATEGORY = "Data"
-    DESCRIPTION = (
-        "Descriptive statistics for every column of a table: count, mean, std, "
-        "min, percentiles and max, laid out exactly like pandas' describe(). "
-        "Set `axis` to describe rows instead, or the table as a whole."
+    DESCRIPTION = "Count, mean, std, min, percentiles, max per column"
+    DETAILS = (
+        "Row names and their order follow pandas' `describe()`, and `std` is the "
+        "sample std (ddof=1). NaN counts as missing while ±Inf is a value, so a "
+        "column holding an inf has an inf mean. `axis` switches to describing each "
+        "row or the whole table as one series, and `percentiles` is reported "
+        "exactly as asked — no median is appended."
     )
 
     @classmethod

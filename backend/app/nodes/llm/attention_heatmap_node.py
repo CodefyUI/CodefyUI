@@ -36,11 +36,12 @@ from ...core.node_base import (
 class AttentionHeatmapNode(BaseNode):
     NODE_NAME = "AttentionHeatmap"
     CATEGORY = "LLM"
-    DESCRIPTION = (
-        "Pure visualisation node: passes attention weights through unchanged "
-        "while exposing them to a heatmap viz. Use it to tap the `weights` "
-        "output of any attention node (toy or production) without changing "
-        "the downstream graph."
+    DESCRIPTION = "Passes attention weights through, or slices one head"
+    DETAILS = (
+        "The node card draws the weights as a heatmap. It accepts [seq, seq], [H, "
+        "seq, seq] or [B, H, seq, seq]; head_index -1 keeps every head for a "
+        "side-by-side grid, a non-negative value takes one. Labels pass through "
+        "for the axes."
     )
 
     @classmethod

@@ -20,11 +20,12 @@ logger = logging.getLogger(__name__)
 class VideoLoadNode(BaseNode):
     NODE_NAME = "VideoLoad"
     CATEGORY = "IO"
-    DESCRIPTION = (
-        "Decode a video file (mp4/webm via the ffmpeg binary, gif via "
-        "Pillow) into a frames tensor (T,3,H,W) float [0,1], with fps and "
-        "frame count. Relative paths resolve under the media directory, "
-        "where VideoWrite puts its clips."
+    DESCRIPTION = "Decode video to frames (T,3,H,W), fps and frame count"
+    DETAILS = (
+        "Frames come back as float in [0, 1]. mp4 and webm decode through the "
+        "ffmpeg binary, gif through Pillow. A relative path resolves under the "
+        "media directory, where VideoWrite puts its clips. Without max_frames a "
+        "long video is held in memory whole."
     )
 
     # The output mirrors a file that can change or vanish between runs, and

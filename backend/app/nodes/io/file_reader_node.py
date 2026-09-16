@@ -15,7 +15,13 @@ logger = logging.getLogger(__name__)
 class FileReaderNode(BaseNode):
     NODE_NAME = "FileReader"
     CATEGORY = "IO"
-    DESCRIPTION = "Read a text or CSV file and output its contents as a string or as a tensor (for numeric CSV)"
+    DESCRIPTION = "Text or CSV file to a string, numeric CSV to a tensor"
+    DETAILS = (
+        "In csv mode the numeric rows become a 2D float tensor, and a single "
+        "non-numeric cell leaves that output empty; in text mode it stays empty. A "
+        "relative path resolves under the graphs directory, or under assets/data "
+        "in a project, and files outside the project data directories are refused."
+    )
 
     # #144: cacheable again -- cache_fingerprint() below folds the resolved
     # file's (size, mtime, and for small files a content hash) into the

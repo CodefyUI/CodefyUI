@@ -72,6 +72,10 @@ def _node_to_definition(qualified_name: str, cls: type[BaseNode]) -> NodeDefinit
         node_name=qualified_name,
         category=cls.CATEGORY,
         description=cls.DESCRIPTION,
+        # ``getattr`` for the same reason as ``requires_pack`` below: a class
+        # in the registry that never inherited this BaseNode should list
+        # without the field rather than 500.
+        details=getattr(cls, "DETAILS", ""),
         provider=_provider_for(qualified_name, cls),
         # ``getattr`` rather than ``cls.REQUIRES_PACK``: the registry is a
         # plain dict anything can be written into, and a node class that

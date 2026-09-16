@@ -30,12 +30,12 @@ from ...core.step_trace import StepRecorder
 class EmbeddingScatterNode(BaseNode):
     NODE_NAME = "EmbeddingScatter"
     CATEGORY = "LLM"
-    DESCRIPTION = (
-        "Project an [N, D] embedding tensor down to [N, 2] for plotting. "
-        "PCA finds the directions of maximum variance (linear, "
-        "deterministic). t-SNE non-linearly preserves which points were "
-        "neighbors in the original space, which often produces tighter "
-        "semantic clusters at the cost of a stochastic layout."
+    DESCRIPTION = "Project an [N, D] embedding to [N, 2] coordinates"
+    DETAILS = (
+        "PCA takes the directions of maximum variance: linear, deterministic and "
+        "fast. t-SNE preserves which points were neighbours in the original space, "
+        "which usually gives tighter clusters but a different layout per seed. "
+        "Coordinates are rescaled to [-1, 1]."
     )
 
     @classmethod

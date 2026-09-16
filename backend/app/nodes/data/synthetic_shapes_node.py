@@ -52,11 +52,12 @@ class _SyntheticShapesDataset:
 class SyntheticShapesNode(BaseNode):
     NODE_NAME = "SyntheticShapes"
     CATEGORY = "Data"
-    DESCRIPTION = (
-        "產生一個小型「影像生成」資料集（CPU 友善、免下載）：一批單通道小圖，每張上面有一個"
-        "位置、大小隨機的柔和光斑（gaussian blob），背景為暗。影像正規化到 [-1, 1]（擴散模型訓練"
-        "的慣用範圍）。用來訓練一個小型擴散模型，學會『從雜訊生成這種形狀』。輸出資料集，可接 "
-        "DataLoader / DiffusionTrainingLoop。"
+    DESCRIPTION = "Generate a dataset of small images with a soft blob"
+    DETAILS = (
+        "Images are single-channel and normalised to [-1, 1], the range diffusion "
+        "training expects. Each blob is a Gaussian on a dark background, its "
+        "position and size drawn from `seed`. Each sample carries a dummy label of "
+        "0 so it passes through a DataLoader unchanged."
     )
 
     @classmethod

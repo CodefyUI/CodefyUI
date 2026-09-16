@@ -105,7 +105,10 @@ def test_the_description_warns_that_nothing_evicts_the_block_cache():
     front of them at the moment they make it happen, and the sentence is
     useless without the command that undoes it.
     """
-    text = LMTokenizedDatasetNode.DESCRIPTION
+    # In DETAILS since the palette summary was cut to one line. Still "in front
+    # of them at the moment they make it happen": the config panel prints it
+    # directly under the summary, beside the params that grow the cache.
+    text = f"{LMTokenizedDatasetNode.DESCRIPTION} {LMTokenizedDatasetNode.DETAILS}"
     assert "cdui cache prune" in text
     assert "evict" in text
 

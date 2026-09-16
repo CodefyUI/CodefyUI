@@ -72,10 +72,12 @@ class _TimestepMLP(nn.Module):
 class TimestepEmbeddingNode(StatefulModuleMixin, BaseNode):
     NODE_NAME = "TimestepEmbedding"
     CATEGORY = "Diffusion"
-    DESCRIPTION = (
-        "Encode a diffusion timestep $t$ into a vector that conditions U-Net "
-        "blocks. Sinusoidal frequency bank (à la Vaswani) followed by "
-        "Linear→SiLU→Linear, the standard DDPM recipe."
+    DESCRIPTION = "Encode a timestep $t$ into a conditioning vector"
+    DETAILS = (
+        "Vaswani's sinusoidal frequency bank, bounded by `max_period`, then "
+        "Linear→SiLU→Linear — the standard DDPM recipe. The output is [B, "
+        "embed_dim], and `embed_dim` must be even because sin and cos take half "
+        "each."
     )
 
     structural_params = ("embed_dim", "max_period", "seed")

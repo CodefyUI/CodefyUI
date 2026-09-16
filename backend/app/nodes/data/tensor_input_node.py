@@ -6,7 +6,11 @@ from ...core.node_base import BaseNode, DataType, ParamDefinition, ParamType, Po
 class TensorInputNode(BaseNode):
     NODE_NAME = "TensorInput"
     CATEGORY = "Data"
-    DESCRIPTION = "Teaching entry point — inline tensor editor with explicit values, random, zeros, ones, or arange. Seed-reproducible."
+    DESCRIPTION = "Type a tensor, or fill it: random, zeros, ones, arange"
+    DETAILS = (
+        "Random fills come from `seed`, so the same seed gives the same tensor "
+        "every run; explicit, zeros, ones and arange ignore it."
+    )
 
     @classmethod
     def define_inputs(cls) -> list[PortDefinition]:

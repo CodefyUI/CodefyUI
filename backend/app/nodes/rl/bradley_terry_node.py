@@ -39,11 +39,12 @@ from ...core.node_base import (
 class BradleyTerryLossNode(BaseNode):
     NODE_NAME = "BradleyTerryLoss"
     CATEGORY = "RL"
-    DESCRIPTION = (
-        "Turn two reward scores into a preference: P(w>l) = sigmoid(r_w - r_l), "
-        "loss = -log P. ONLY THE DIFFERENCE MATTERS -- add any constant to both scores "
-        "and the probability is unchanged, which is why RLHF never needs absolute human "
-        "scores and why two reward models' outputs cannot be compared."
+    DESCRIPTION = "Preference loss, P(w>l) and accuracy from two rewards"
+    DETAILS = (
+        "loss = -log sigmoid(r_w - r_l), so only the difference between the two "
+        "scores matters: add the same constant to both and the probability does "
+        "not move. That is why RLHF never needs absolute human scores, and why two "
+        "reward models' scores cannot be compared."
     )
 
     @classmethod
@@ -116,12 +117,14 @@ class BradleyTerryLossNode(BaseNode):
 class BradleyTerryTrainNode(BaseNode):
     NODE_NAME = "BradleyTerryTrain"
     CATEGORY = "RL"
-    DESCRIPTION = (
-        "Fit a reward model on preference pairs with the Bradley-Terry objective, measuring "
-        "accuracy on BOTH the training pairs and a held-out split every epoch. The GAP "
-        "between those two numbers is reward hacking: the model can score a perfect 1.000 on "
-        "the pairs it trained on while having learned a shortcut instead of the preference, "
-        "and only the held-out split reveals it."
+    DESCRIPTION = "Fit a reward model on preference pairs"
+    DETAILS = (
+        "Trains a two-layer MLP with the Bradley-Terry objective for the given "
+        "number of epochs, recording loss and both accuracies each time. The gap "
+        "between the two accuracies is reward hacking made visible: a model can "
+        "score a perfect 1.000 on the pairs it trained on and still have learned a "
+        "shortcut instead of the preference. The holdout inputs are optional; "
+        "without them the holdout numbers are NaN."
     )
 
     #: Owns trained weights and has no required upstream that changes; a cache

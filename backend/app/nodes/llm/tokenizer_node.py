@@ -63,10 +63,13 @@ def _load_encoder(family: str) -> tuple[str, Any]:
 class TokenizerNode(BaseNode):
     NODE_NAME = "Tokenizer"
     CATEGORY = "LLM"
-    DESCRIPTION = (
-        "Split text into the integer tokens an LLM consumes. Different families use "
-        "different algorithms — BPE (GPT), WordPiece (BERT), SentencePiece (Llama, T5) — "
-        "so the same input produces visibly different breakdowns."
+    DESCRIPTION = "Split text into tokens, with ids and character offsets"
+    DETAILS = (
+        "Families differ by algorithm — BPE for GPT, WordPiece for BERT, "
+        "SentencePiece for Llama and T5 — so the same input breaks up visibly "
+        "differently. cl100k_base, o200k_base, p50k_base and gpt2 come from "
+        "tiktoken, which caches each BPE table after the first use; the other "
+        "three download a tokenizer.json from HuggingFace."
     )
 
     @classmethod

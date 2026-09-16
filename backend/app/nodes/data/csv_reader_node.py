@@ -40,11 +40,13 @@ from ...core.node_base import (
 class CSVReaderNode(BaseNode):
     NODE_NAME = "CSVReader"
     CATEGORY = "Data"
-    DESCRIPTION = (
-        "Load a CSV into a feature tensor + label list. Numeric columns "
-        "(filtered by `include_columns` if set) become a [N, F] float32 "
-        "tensor; the column named in `target_column` becomes a list of "
-        "string labels for downstream classifier nodes."
+    DESCRIPTION = "Load a CSV into features, labels and column names"
+    DETAILS = (
+        "Numeric columns become the [N, F] float32 tensor; `include_columns` "
+        "narrows that set, and without it non-numeric columns are dropped. The "
+        "column named in `target_column` becomes the string label list. Turn "
+        "`skip_header` off for a headerless file, whose columns are then named 0, "
+        "1, 2 and so on."
     )
 
     # #144: cacheable again -- cache_fingerprint() below folds the resolved

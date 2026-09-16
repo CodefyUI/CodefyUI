@@ -65,11 +65,14 @@ def _aggregate(values: np.ndarray, how: str) -> float:
 class StatsGroupByAggregateNode(BaseNode):
     NODE_NAME = "Stats-GroupByAggregate"
     CATEGORY = "Data"
-    DESCRIPTION = (
-        "Collapse a table to one row per group. Group by a per-row label list "
-        "on `keys` (e.g. CSVReader's labels) or by the table's own columns via "
-        "`group_by`, then aggregate every remaining column with mean / sum / "
-        "count / min / max / std."
+    DESCRIPTION = "One row per group: mean, sum, count, min, max or std"
+    DETAILS = (
+        "Group by the per-row `keys` list (CSVReader's `labels`) or by the table's "
+        "own columns via `group_by`, which wins when both are given; a grouping "
+        "column leaves the value set. `agg_overrides` takes `column=agg` pairs for "
+        "exceptions. NaN is skipped as in pandas, so `count` is the number of "
+        "present values, while the separate `counts` output holds each group's row "
+        "count."
     )
 
     @classmethod

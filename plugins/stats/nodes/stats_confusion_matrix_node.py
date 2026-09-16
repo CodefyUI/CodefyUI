@@ -59,11 +59,13 @@ def _sorted_classes(labels: list[str]) -> list[str]:
 class StatsConfusionMatrixNode(BaseNode):
     NODE_NAME = "Stats-ConfusionMatrix"
     CATEGORY = "Data"
-    DESCRIPTION = (
-        "Confusion matrix of predictions against true labels — rows are the "
-        "true class, columns the predicted one. Normalize by true row "
-        "(recall), predicted column (precision) or the grand total. Renders as "
-        "a heatmap in the Results panel and the node's detail view."
+    DESCRIPTION = "True vs predicted counts, accuracy and a heatmap"
+    DETAILS = (
+        "Rows are the true class and columns the predicted one, matching sklearn's "
+        "`confusion_matrix`. `normalize` divides by the true row (recall on the "
+        "diagonal), the predicted column (precision) or the grand total, with 0/0 "
+        "resolved to 0. Each input takes a label list, a 1D tensor of class "
+        "indices, or a 2D score matrix whose row argmax is used."
     )
 
     @classmethod

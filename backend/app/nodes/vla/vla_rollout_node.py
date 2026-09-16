@@ -63,13 +63,14 @@ def _tint_border(frames: list[torch.Tensor], success: bool) -> None:
 class VLARolloutNode(BaseNode):
     NODE_NAME = "VLARollout"
     CATEGORY = "VLA"
-    DESCRIPTION = (
-        "Closed-loop evaluation of a VLAModel in PushWorld: fresh episodes, "
-        "receding-horizon execution (predict a chunk, execute execute_k, "
-        "re-plan), success rate + per-episode metrics + a rollout video "
-        "tensor for VideoWrite (green/red border per outcome). "
-        "instruction_mode=swapped is the language ablation: a policy that "
-        "actually reads the instruction collapses when it lies."
+    DESCRIPTION = "Closed-loop eval: success rate, avg steps, video"
+    DETAILS = (
+        "The policy predicts a chunk and only `execute_k` of its actions run "
+        "before it re-plans — a receding horizon — so raising `execute_k` toward "
+        "the chunk size measures open-loop compounding error. "
+        "`instruction_mode=swapped` names a distractor puck's color instead, and a "
+        "policy that ignores language scores the same either way. `frames` records "
+        "episodes with a green border on success and a red one on timeout."
     )
 
     # Consumes two live handles (model, env factory) and its outputs

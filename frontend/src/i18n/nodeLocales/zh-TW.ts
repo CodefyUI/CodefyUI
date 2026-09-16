@@ -3,15 +3,23 @@ import type { NodeTranslations } from './types';
 const zhTW: NodeTranslations = {
   // ── Control ──
   Start: {
-    description: '標記執行的進入點。將此節點連接到要執行的腳本的第一個節點，類似於「當綠旗被點擊」積木。',
+    description: '標記執行的進入點，trigger 接到的節點就是起點',
+    details:
+      '相當於 Scratch 的「當綠旗被點擊」積木：節點本身在執行時不做任何事，也不傳遞資料。trigger 連線是告訴引擎要執行圖上的哪一塊，' +
+      '因此通常接到 Dataset 之類的資料起點。',
   },
 
   // ── Classical (sklearn) ──
   Accuracy: {
-    description: '計算預測標籤與真實標籤的分類正確率。會輸出 [0, 1] 的小數、答對數與樣本總數三個欄位 — 讓圖表能直接落在「50%」這種一目了然的數字上。C2 章節的標準收尾節點：線性分類器在同心圓資料上失敗時，這裡就會跳出 ≈ 0.5 的證據。',
+    description: '比對預測標籤與真實標籤，輸出正確率、答對數與總數',
+    details: '正確率是答對數除以總數，範圍在 [0, 1]。標籤會轉成字串比對，所以 0 和 \'0\' 算相同；兩份清單長度必須一致，兩邊都空的時候回傳 0。',
   },
   DecisionTreeClassifier: {
-    description: 'CART 決策樹（封裝 sklearn）。遞迴切分特徵以最大化純度；教學上最有價值的是 tree_text 輸出 — 直接把學到的 if/else 規則以易讀格式印出來。',
+    description: '遞迴切分特徵，輸出學到的規則',
+    details:
+      'sklearn 的 CART 決策樹，分割準則可選 gini、entropy 或 log loss。除了預測結果，還會輸出 ' +
+      'tree_text（if/else 規則的可讀文字）與 feature_importances（每個特徵一個分數，總和為 1）。' +
+      'max_depth 設成 0 時會長到葉節點純淨為止。',
     params: {
       max_depth: '樹的最大深度。0 = 不設限（一路長到全純）。',
       criterion: '切分品質的衡量函式：gini 不純度、entropy 或 log loss。',
@@ -19,7 +27,11 @@ const zhTW: NodeTranslations = {
     },
   },
   KNN: {
-    description: 'k 近鄰分類器（封裝 sklearn）。EduKNN 的正式版替身：內部用 KD-tree 索引、可選距離加權與多種度量。要看數學去用 EduKNN，要實際跑資料就用這個。',
+    description: '以最近的 k 個訓練點投票決定每筆查詢的類別',
+    details:
+      'sklearn 的 KNeighborsClassifier 以 KD-tree 或 ball-tree 索引訓練集，能處理較大的資料；k ' +
+      '會被限制在訓練筆數之內。weights 設成 distance 時越近的鄰居權重越高。另外會輸出各類別的投票比例。foundations ' +
+      '外掛的 Edu-KNN 介面相同，以暴力法做同樣的計算並輸出距離，兩者可直接互換。',
     params: {
       n_neighbors: '鄰居數 k。',
       weights: '投票權重：uniform 每個鄰居等權；distance 越近權重越大。',
@@ -27,13 +39,20 @@ const zhTW: NodeTranslations = {
     },
   },
   LinearRegression: {
-    description: '普通最小平方法線性迴歸（封裝 sklearn）。封閉解、不需迭代。輸出係數、截距與對 query 集合的預測值。所有迴歸課程的第一行公式。',
+    description: '以最小平方法擬合，預測查詢目標並輸出係數與截距',
+    details:
+      'sklearn 的封閉解最小平方法 $\\beta = (X^\\top X)^{-1} X^\\top y$，X 秩不足時改用 SVD 求解，' +
+      '不需要學習率也不需要迭代。目標值可以是單欄或多欄；關掉 fit_intercept 時迴歸會通過原點。',
     params: {
       fit_intercept: '若為 False，迴歸直線會通過原點（不擬合截距）。',
     },
   },
   LogisticRegression: {
-    description: '多類別邏輯斯迴歸（封裝 sklearn）。擬合 softmax 分類器，支援 L2/L1 正則化；I/O 介面與 EduLogisticRegression 相同，可直接抽換。',
+    description: 'softmax 分類器，輸出類別與各類機率',
+    details:
+      'sklearn 的 LogisticRegression。C 是正則化強度的倒數，越小正則化越強；penalty 可選 l2、l1 或 ' +
+      'none，求解器會自動配合。y_train 至少要有兩個類別；coef 每個類別一列，剛好兩類時只有一列。介面與 foundations ' +
+      '外掛的 Edu-LogisticRegression 相同，兩者可直接互換。',
     params: {
       C: '正則化強度的倒數（值越小，正則化越強）。',
       max_iter: '求解器最大迭代次數。',
@@ -41,7 +60,11 @@ const zhTW: NodeTranslations = {
     },
   },
   MLPClassifier: {
-    description: '前饋神經網路分類器（封裝 sklearn MLPClassifier）。一層或多層隱藏層、ReLU/tanh 激活、Adam 優化器。I/O 介面與線性分類器完全相同，所以「同心圓線性分類失敗 → 換 MLP 救回」這個敘事只需換一個節點型別。要看內部步驟用 Edu 系列，要直接拿結果用這個。',
+    description: '訓練前饋神經網路，標註每筆查詢的類別',
+    details:
+      'sklearn 的 MLPClassifier，以 Adam 訓練。hidden_sizes 是以逗號分隔的各層寬度，\'16,16\' ' +
+      '代表兩層各 16 個神經元；activation 設成 identity 時整個網路仍是線性的。另外會輸出 softmax ' +
+      '機率與最後的訓練損失。介面與線性分類器相同，換成這個節點不必重接線路。',
     params: {
       hidden_sizes: '逗號分隔的隱藏層大小。「16,16」代表兩層、每層 16 個神經元。',
       activation: '隱藏層激活函數。「identity」會讓整個網路退化成線性 — 用來示範為什麼需要非線性激活。',
@@ -51,17 +74,31 @@ const zhTW: NodeTranslations = {
     },
   },
   SVMClassifier: {
-    description: '支援向量分類器（封裝 sklearn SVC）。求出最大邊界超平面，並用 kernel trick 畫出非線性決策邊界。會輸出 support vectors 給下游視覺化 — 那才是真正決定邊界的點。',
+    description: '以最大邊界的分隔面切開類別，並標註每筆查詢',
+    details:
+      'sklearn 的 SVC。kernel（linear、rbf、poly、sigmoid）決定邊界能有多彎，rbf、poly、' +
+      'sigmoid 靠 kernel trick 做到。C 在邊界寬度與訓練違例之間取捨，gamma 可填 scale、auto 或數字。' +
+      '另外會輸出 support vectors，也就是落在邊界附近的訓練點；沒有開啟機率估計，因此沒有 probabilities 輸出。',
     params: {
       C: '懲罰強度；C 越小邊界越寬，可容忍更多違規。',
       kernel: '核函式：linear 線性、rbf 高斯、poly 多項式、sigmoid。',
       gamma: 'rbf/poly/sigmoid 的核係數。「scale」用 1/(F·var(X))、「auto」用 1/F，也可以填數字字串。',
     },
   },
+  RandomForestClassifier: {
+    description: '由多棵決策樹投票決定每筆查詢的類別',
+    details:
+      'sklearn 的 RandomForestClassifier：每棵樹在隨機重抽的樣本上訓練，投票結果以各類別機率輸出，' +
+      '邊界比單棵決策樹平滑。n_estimators 決定樹的數量，越多越穩也越慢；max_depth 設成 0 代表深度不限。輸入與 ' +
+      'predictions 輸出和其他 classical 分類器一致。',
+  },
 
   // ── CNN ──
   Conv2d: {
-    description: '對輸入張量套用 2D 卷積（封裝 nn.Conv2d）。$y[i,j]=\\sum_{k,l} x[i+k,j+l]\\cdot w[k,l] + b$',
+    description: '在影像上滑動可學習的卷積核，每個產生一張特徵圖',
+    details:
+      '底層是 nn.Conv2d：$y[i,j]=\\sum_{k,l} x[i+k,j+l]\\cdot w[k,l] + b$。' +
+      'in_channels 必須等於輸入的通道數；權重一開始是隨機的，訓練時才被學出來。',
     params: {
       in_channels: '輸入通道數',
       out_channels: '輸出通道數',
@@ -71,7 +108,11 @@ const zhTW: NodeTranslations = {
     },
   },
   Conv2dExplicit: {
-    description: '用你指定的 kernel 做 2D 卷積 —— 不是網路學出來的那種，沒有可學參數、也沒有隨機初始化。可以選內建的 3×3 濾波器（邊緣偵測 / 銳化 / 垂直邊緣），或把 preset 設成 Custom 自己填一個 NxN 矩陣。同一個 kernel 會套用到每個輸入通道（depthwise 分組卷積），所以 (N, C, H, W) 進去就是 (N, C, H, W) 出來，通道數不變。',
+    description: '用你指定的卷積核做卷積，不是網路學出來的',
+    details:
+      '沒有可學參數，也沒有隨機初始化。內建預設為 EdgeDetection3x3、Sharpen3x3、VerticalEdge3x3；把 ' +
+      'preset 設成 Custom 就能自填 NxN 矩陣，元素數量必須剛好是 kernel_size × kernel_size。' +
+      '同一個卷積核以分組卷積（也就是 depthwise 卷積）逐通道套用，通道數不變。',
     params: {
       preset: '內建的 3×3 kernel，或選 Custom 自己寫一個矩陣。',
       kernel_size: 'NxN kernel 的邊長 N（只有 Custom 會用到）。',
@@ -81,32 +122,48 @@ const zhTW: NodeTranslations = {
     },
   },
   MaxPool2d: {
-    description: '對輸入張量套用 2D 最大池化（封裝 nn.MaxPool2d）',
+    description: '取每個視窗中的最大值，縮小高與寬',
+    details:
+      '底層是 nn.MaxPool2d，只開放 kernel_size 與 stride，沒有 padding。用預設值（kernel_size ' +
+      '2、stride 2）時，高與寬各減半。',
     params: {
       kernel_size: '池化視窗大小',
       stride: '池化視窗步幅',
     },
   },
   BatchNorm2d: {
-    description: '對輸入張量套用 2D 批次正規化（封裝 nn.BatchNorm2d）。每通道：$y = \\frac{x - \\mu_C}{\\sqrt{\\sigma_C^2 + \\epsilon}} \\gamma + \\beta$',
+    description: '對每個通道在批次與高寬上正規化',
+    details:
+      '底層是 nn.BatchNorm2d：$y = \\frac{x - \\mu_C}{\\sqrt{\\sigma_C^2 + ' +
+      '\\epsilon}} \\gamma + \\beta$，其中 $\\mu_C$、$\\sigma_C^2$ 是每個通道在 (N, H, W) ' +
+      '上的統計量。num_features 必須等於輸入的通道數。',
     params: {
       num_features: '要正規化的特徵（通道）數量',
     },
   },
   Dropout: {
-    description: '對輸入張量套用 Dropout 正則化（封裝 nn.Dropout）',
+    description: '隨機把元素歸零，其餘按比例放大',
+    details:
+      '底層是 nn.Dropout，留下來的元素會乘上 $1/(1-p)$，讓平均值維持不變。單獨當節點用時每次都以訓練模式重建，' +
+      '評估階段也照樣丟棄；放進 SequentialModel 則跟隨模型的訓練／評估狀態。',
     params: {
       p: '元素被歸零的機率',
     },
   },
   Activation: {
-    description: '對輸入張量套用激活函數',
+    description: '套用選定的非線性函數，形狀不變',
+    details:
+      '共十二種函數：relu、leaky_relu、elu、gelu、silu、mish、selu、prelu、sigmoid、tanh、' +
+      'hardswish、softmax。softmax 在最後一個維度上正規化；prelu 每次執行都會新建一個未訓練的斜率 0.25。',
     params: {
       function: '要套用的激活函數',
     },
   },
   Conv1d: {
-    description: '對輸入張量套用 1D 卷積（封裝 nn.Conv1d）',
+    description: '沿著長度軸滑動可學習的卷積核',
+    details:
+      '底層是 nn.Conv1d：$y[i]=\\sum_k x[i+k]\\cdot w[k]+b$。in_channels 必須等於輸入的通道數，' +
+      'out_channels 決定要學幾個濾波器。輸入為 (N, C, L)。',
     params: {
       in_channels: '輸入通道數',
       out_channels: '輸出通道數',
@@ -116,7 +173,11 @@ const zhTW: NodeTranslations = {
     },
   },
   ConvTranspose2d: {
-    description: '對輸入張量套用 2D 轉置卷積/反卷積（封裝 nn.ConvTranspose2d）',
+    description: '把特徵圖上採樣，放大高與寬',
+    details:
+      '底層是 nn.ConvTranspose2d，也稱反卷積。輸出高度為 $(H-1)\\times \\text{stride} - ' +
+      '2\\,\\text{padding} + \\text{kernel\\_size} + \\text{output\\_padding}$，' +
+      '寬度同理；多個輸入尺寸對應到同一輸出時，由 output_padding 決定取哪一個。',
     params: {
       in_channels: '輸入通道數',
       out_channels: '輸出通道數',
@@ -127,7 +188,10 @@ const zhTW: NodeTranslations = {
     },
   },
   AvgPool2d: {
-    description: '對輸入張量套用 2D 平均池化（封裝 nn.AvgPool2d）',
+    description: '取每個視窗的平均值，縮小高與寬',
+    details:
+      '底層是 nn.AvgPool2d。視窗裡每個數值都會納入計算，結果比 MaxPool2d 平滑。用預設值（kernel_size 2、' +
+      'stride 2）時，高與寬各減半。',
     params: {
       kernel_size: '池化視窗大小',
       stride: '池化視窗步幅',
@@ -135,7 +199,10 @@ const zhTW: NodeTranslations = {
     },
   },
   AdaptiveAvgPool2d: {
-    description: '對輸入張量套用 2D 自適應平均池化，產生固定輸出尺寸（封裝 nn.AdaptiveAvgPool2d）',
+    description: '把每個通道平均縮到指定的高與寬',
+    details:
+      '底層是 nn.AdaptiveAvgPool2d，池化窗口由輸入尺寸反推，因此任何輸入都會得到 (N, C, output_height, ' +
+      'output_width)。預設的 1x1 會把每個通道壓成一個數字。',
     params: {
       output_height: '目標輸出高度',
       output_width: '目標輸出寬度',
@@ -144,28 +211,40 @@ const zhTW: NodeTranslations = {
 
   // ── Normalization ──
   LayerNorm: {
-    description: '套用層正規化（封裝 nn.LayerNorm）。$y = \\frac{x - \\mu}{\\sqrt{\\sigma^2 + \\epsilon}} \\gamma + \\beta$',
+    description: '對每個樣本在最後幾個維度上正規化',
+    details:
+      '底層是 nn.LayerNorm：$y = \\frac{x - \\mu}{\\sqrt{\\sigma^2 + \\epsilon}} ' +
+      '\\gamma + \\beta$。normalized_shape 以逗號分隔整數，例如 512 或 64,32，必須與輸入最後幾個維度相符。',
     params: {
       normalized_shape: '要正規化的維度形狀（逗號分隔整數）',
       eps: '數值穩定性的 Epsilon',
     },
   },
   GroupNorm: {
-    description: '套用群組正規化（封裝 nn.GroupNorm）。用於現代 CNN 架構。',
+    description: '把通道分成幾組，在每一組之內做正規化',
+    details:
+      '底層是 nn.GroupNorm。num_channels 必須等於輸入的通道數，且能被 num_groups 整除；統計量與批次大小無關，' +
+      '這點比 BatchNorm2d 穩定。',
     params: {
       num_groups: '將通道分成的群組數',
       num_channels: '通道數（必須能被 num_groups 整除）',
     },
   },
   InstanceNorm2d: {
-    description: '套用 2D 實例正規化（封裝 nn.InstanceNorm2d）。用於風格轉換和影像生成。',
+    description: '每個樣本的每個通道各自在高寬上正規化',
+    details:
+      '底層是 nn.InstanceNorm2d，等同於每個通道自成一組的 GroupNorm，風格轉換與影像生成用的就是這種正規化。' +
+      'affine 預設關閉，除非打開，否則沒有可學的 $\\gamma$ 與 $\\beta$。',
     params: {
       num_features: '特徵（通道）數',
       affine: '是否使用可學習的仿射參數',
     },
   },
   BatchNorm1d: {
-    description: '套用 1D 批次正規化（封裝 nn.BatchNorm1d）。用於 Linear 層之後。',
+    description: '對每個特徵在批次上正規化',
+    details:
+      '底層是 nn.BatchNorm1d。輸入為 (N, C) 或 (N, C, L)，num_features 必須等於 C；(N, C, ' +
+      'H, W) 的影像張量請改用 BatchNorm2d。正規化後會再做一次可學的縮放與平移。',
     params: {
       num_features: '要正規化的特徵數',
     },
@@ -173,7 +252,11 @@ const zhTW: NodeTranslations = {
 
   // ── RNN ──
   RNNCell: {
-    description: '單步原生 RNN cell：$h_t = \\phi(W_{ih} x_t + W_{hh} h_{t-1} + b)$。封裝 nn.RNNCell。把上一個 cell 的 hidden 輸出接到下一個 cell 的 hidden 輸入，就能手動展開遞迴。',
+    description: '結合這一步的輸入與前一步的隱藏狀態',
+    details:
+      '底層是 nn.RNNCell：$h_t = \\phi(W_{ih} x_t + W_{hh} h_{t-1} + b)$，$\\phi$ 由 ' +
+      'nonlinearity 決定，權重依 seed 確定性初始化。hidden 可省略，預設全零；把前一個 cell 的 hidden ' +
+      '接到下一個的 hidden，即可手動展開遞迴。',
     params: {
       input_size: '每個時間步的輸入向量維度。',
       hidden_size: '隱藏狀態的維度。',
@@ -182,7 +265,10 @@ const zhTW: NodeTranslations = {
     },
   },
   LSTM: {
-    description: '對輸入序列套用 LSTM 遞迴層（封裝 nn.LSTM）',
+    description: '以四個閘掃過序列，輸出每步狀態與最後狀態',
+    details:
+      '底層是 nn.LSTM，四個閘分別是輸入、遺忘、記憶單元與輸出。output 埠是每個時間步的隱藏狀態，hidden 埠是最後的 h_n；' +
+      '細胞狀態 c_n 不對外輸出。',
     params: {
       input_size: '輸入的預期特徵數',
       hidden_size: '隱藏狀態的特徵數',
@@ -192,7 +278,11 @@ const zhTW: NodeTranslations = {
     },
   },
   GRU: {
-    description: '對輸入序列套用 GRU 遞迴層（封裝 nn.GRU）',
+    description: '以兩個閘掃過序列，輸出每步狀態與最後狀態',
+    details:
+      '底層是 nn.GRU，兩個閘分別是重置閘與更新閘。output 埠是每個時間步的隱藏狀態，hidden 埠是最後一步，形狀為 ' +
+      '(num_layers × 方向數, batch, hidden_size)。batch_first 開啟時，輸入為 (batch, ' +
+      'seq_len, input_size)。',
     params: {
       input_size: '輸入的預期特徵數',
       hidden_size: '隱藏狀態的特徵數',
@@ -204,14 +294,22 @@ const zhTW: NodeTranslations = {
 
   // ── Transformer ──
   MultiHeadAttention: {
-    description: '套用多頭注意力機制（封裝 nn.MultiheadAttention）。核心：$\\text{Attention}(Q,K,V)=\\text{softmax}(\\frac{QK^T}{\\sqrt{d_k}})V$',
+    description: '以 query/key/value 計算注意力與權重',
+    details:
+      '本層直接使用 PyTorch 的 nn.MultiheadAttention。' +
+      '$\\text{Attention}(Q,K,V)=\\text{softmax}(\\frac{QK^T}{\\sqrt{d_k}})V$，' +
+      'embed_dim 會平均分給 num_heads 個頭；輸入預設為 (seq, batch, embed)，開啟 batch_first ' +
+      '才是批次在前，輸出的權重是各頭的平均。',
     params: {
       embed_dim: '模型的總維度',
       num_heads: '平行注意力頭的數量',
     },
   },
   TransformerEncoder: {
-    description: '對輸入張量套用 Transformer 編碼器堆疊',
+    description: '以多層自注意力編碼序列',
+    details:
+      '共 num_layers 層，每層是自注意力加上寬度 dim_feedforward 的前饋網路，d_model 會分給 nhead 個頭。' +
+      '張量固定為 (seq, batch, d_model)，沒有 batch_first 選項。',
     params: {
       d_model: '模型維度',
       nhead: '注意力頭的數量',
@@ -220,7 +318,11 @@ const zhTW: NodeTranslations = {
     },
   },
   TransformerDecoder: {
-    description: '對輸入張量套用 Transformer 解碼器堆疊（含編碼器記憶）',
+    description: '以編碼器記憶解碼目標序列',
+    details:
+      '共 num_layers 層，每層是自注意力、對 memory 的交叉注意力與寬度 dim_feedforward 的前饋網路，' +
+      'd_model 會分給 nhead 個頭。張量固定為 (seq, batch, d_model)，沒有 batch_first 選項；' +
+      '也不套用因果遮罩，每個目標位置都看得到整個序列。',
     params: {
       d_model: '模型維度',
       nhead: '注意力頭的數量',
@@ -229,7 +331,12 @@ const zhTW: NodeTranslations = {
     },
   },
   MoELayer: {
-    description: '混合專家（Mixture-of-Experts）前饋層。每個 token 由 gate 以 softmax 分數挑出 top-k 個專家，輸出為這 k 個專家輸出的加權和。Switch Transformer、Mixtral、DeepSeek-MoE 都採用這個結構。',
+    description: '每個 token 交給 top-k 專家，加權相加',
+    details:
+      'gate 以線性層對每個專家評分，softmax 只在選中的 k 個專家上正規化，每個 token 的權重和為 1；' +
+      'routing_weights 與 expert_indices 會回報路由結果。專家權重每次執行都依 seed 重新初始化，前向也在 ' +
+      'no_grad 下計算，所以這層不會被訓練。Switch Transformer、Mixtral、DeepSeek-MoE ' +
+      '都採用這個路由結構。',
     params: {
       num_experts: '專家 FFN 的數量。',
       top_k: '每個 token 路由到的專家數（會 clamp 在 num_experts 內）。',
@@ -241,7 +348,10 @@ const zhTW: NodeTranslations = {
 
   // ── RL ──
   DQN: {
-    description: '建立用於強化學習的深度 Q 網路（簡單 MLP）',
+    description: '以 MLP 把狀態轉成每個動作的 Q 值',
+    details:
+      '深度 Q 網路：三層 Linear、中間夾 ReLU，大小由 state_dim、hidden_dim、action_dim 決定。' +
+      'state 輸入是選填的，只是拿剛建好的網路跑一次前向；沒接時 Q 值全是 0。',
     params: {
       state_dim: '狀態空間維度',
       action_dim: '動作空間維度',
@@ -249,7 +359,10 @@ const zhTW: NodeTranslations = {
     },
   },
   PPO: {
-    description: '建立用於強化學習的 PPO Actor-Critic 網路',
+    description: 'Actor-Critic：共用主幹、動作頭與價值頭',
+    details:
+      '兩層 Linear 加 Tanh 的共用主幹，接上 softmax 的 actor 與純量 critic，forward 回傳 ' +
+      '(action_probs, value)。state 輸入是選填的，只是拿剛建好的網路跑一次前向；沒接時 action 全是 0。',
     params: {
       state_dim: '狀態空間維度',
       action_dim: '動作空間維度',
@@ -257,20 +370,30 @@ const zhTW: NodeTranslations = {
     },
   },
   EnvWrapper: {
-    description: '建立並封裝 Gymnasium 環境，回傳環境與初始觀測值',
+    description: '依 ID 建立環境並 reset',
+    details:
+      '封裝 Gymnasium，env_name 可填 gymnasium.make 接受的任何 ID，例如 CartPole-v1，' +
+      '而且必須先安裝該套件。不想多裝套件時，改用 GridWorldEnv。reset 同時輸出第一個觀測。',
     params: {
       env_name: 'Gymnasium 環境 ID',
     },
   },
   KLDivergence: {
-    description: 'KL(p || q) 散度 — RLHF 中用來把策略約束在參考策略附近的正則項。可接受機率或 logits 作為輸入；預設輸出純量，也可以改成 per-sample。',
+    description: 'KL(p || q)，輸入可為機率或 logits',
+    details:
+      'reduction 沿用 PyTorch 慣例，預設 batchmean（總和除以批次大小），none 則每個樣本給一個值。KL 不對稱：' +
+      'p 是策略，q 是被拉近的那個凍結參考策略。',
     params: {
       input_kind: 'p、q 是已經算好的機率，還是尚未經過 softmax 的 logits。',
       reduction: '如何把每個樣本的 KL 聚合起來。batchmean = sum / batch_size，是 RLHF 的預設用法。',
     },
   },
   RewardModel: {
-    description: 'RLHF 的獎勵頭。一個小 MLP 把序列打成單一純量分數 — 你會先用人類偏好資料訓練它，再讓 PPO 去最大化它。可接受 [B, H]（每筆一個向量）或 [B, T, H]（取最後一個 token）。',
+    description: '用 MLP 頭把隱藏狀態打成每筆一個純量分數',
+    details:
+      'RLHF 的獎勵頭：先用人類偏好訓練它，再讓 PPO 去最大化它給的分數。兩層 Linear 加 ReLU 收成單一輸出，依 seed ' +
+      '初始化，所以初始權重可重現。可接受 [B, H] 或 [B, T, H]（取最後一個 token）；輸入是選填的，沒接時 rewards ' +
+      '是空張量。',
     params: {
       input_dim: '隱藏狀態的維度 H。',
       hidden_dim: 'MLP 中間層的寬度。',
@@ -278,7 +401,11 @@ const zhTW: NodeTranslations = {
     },
   },
   GridWorldEnv: {
-    description: '教科書上的網格世界，不需要 gymnasium。左上角出發、右下角是終點、陷阱放在中間。狀態小到可以逐格列舉，獎勵稀疏且只在結尾出現 — 這正是讓功勞分配變難、因而值得展示的結構。狀態以 one-hot 輸出，所以單層 Linear 就是課本畫在格子上的那張策略表。',
+    description: '方格世界，終點在對角，另有陷阱',
+    details:
+      '代理人從左上角出發，終點在對角：抵達終點以 goal_reward 結束回合，踩到陷阱以 trap_reward 結束，其餘每步給 ' +
+      'step_reward（預設 0）。不需要安裝 gymnasium。觀測是格子的 one-hot，所以 state_dim 等於 size ' +
+      '× size，動作固定 4 個；單層 Linear 在這個 one-hot 上就是一張表格式策略。',
     params: {
       size: '格子邊長。4 就是課本畫的 4×4。',
       traps: "陷阱格，寫成 '列,行'，多個用 ';' 分隔（例如 '1,1; 2,3'）。留空表示沒有陷阱。",
@@ -289,7 +416,11 @@ const zhTW: NodeTranslations = {
     },
   },
   PolicyRollout: {
-    description: '讓策略在環境裡實際走完若干回合，並把每一步的狀態、動作、獎勵都留下來。動作是「照機率抽」而不是「挑最大的」，所以同一顆模型換個 seed 就會走出不同軌跡 — 這個性質正是 GRPO 同題多答的基礎。把 episodes 設成 K，就是 GRPO 的一組樣本。',
+    description: '讓策略跑 N 個回合，輸出狀態、動作與獎勵',
+    details:
+      '動作是從 softmax(logits / temperature) 抽樣而來，所以同一顆策略跑兩次不會一樣；seed 固定整批。' +
+      '另外會輸出 logits、抽樣當下記錄的 log_probs（PPO 的 log_probs_old）、每回合的回報、長度與 ' +
+      'episode_ids，以及文字報告和第一個回合的逐步表格。env 只需要提供 reset() 與 step(action)。',
     params: {
       episodes: '要走幾個回合。設成 1 看單一軌跡；設成 K 就是 GRPO 的一組樣本。',
       temperature: '抽樣溫度。低 = 偏向利用（每次都挑機率最高的動作）、高 = 偏向探索。',
@@ -297,25 +428,40 @@ const zhTW: NodeTranslations = {
     },
   },
   Discount: {
-    description: '把每一步的獎勵摺成折扣回報 G_t = r_t + γ·r_{t+1} + γ²·r_{t+2} + …，由後往前累加。給了 episode_ids 就會在回合邊界重新起算，不會把上一個回合的獎勵算進來。獎勵只在最後一步出現時，G_0 就等於 γ^(T-1) — 這說明了為什麼序列一長，γ 就必須設得接近 1。',
+    description: '折扣回報 G_t = r_t + γ·G_{t+1}',
+    details:
+      '由後往前摺疊，所以每一步只算一次。獎勵只落在第 T 步時，G_0 = γ^(T-1)。接上 episode_ids 就會在回合邊界重新起算，' +
+      '沒接時整個張量當成一個回合。',
     params: {
       gamma: '折扣因子。1 = 完全不折扣；越小則越晚拿到的獎勵越不值錢，智能體也就越偏好快點達成目標。',
     },
   },
   PPOClipObjective: {
-    description: 'PPO 的截斷目標 min(r·A, clip(r, 1-ε, 1+ε)·A)。除了最後的值，也把未截斷項、截斷項與「哪些樣本被砍了」一起輸出，讓你看得見安全帶何時作用。注意 clip 壓平的是「目標」而不是「機率比」 — 它拿掉繼續往前推的誘因，並沒有禁止這一步。可以直接給 ratio（重現課本例題），也可以給新舊 log 機率讓它自己算。',
+    description: '逐樣本 min(rA, clip(r,1±ε)A)',
+    details:
+      '可以直接給 ratio，也可以給 log_probs_new 與 log_probs_old，比值就是 exp(new - old)。' +
+      '另外把未截斷項與截斷項分開輸出，還有純量損失 -mean(objective)、被截斷的樣本遮罩與 clip_fraction。clip ' +
+      '壓平的是目標而不是機率比：超出區間後再往前推得不到好處，但並沒有被禁止。',
     params: {
       epsilon: '截斷半徑。常用 0.1–0.2：太大則一個幸運樣本就可能暴衝，太小則學得很慢。',
     },
   },
   GroupRelativeAdvantage: {
-    description: 'GRPO 的基準：同一題採樣 K 次，然後 A_i = r_i - mean(r)。這一行就是用來取代 PPO critic 的全部內容 — 基準是「算出來的」而不是「一個會估錯的網路估出來的」。優勢必定加總為 0，這是檢查有沒有接錯最快的方法。一組樣本分數全部相同時，所有優勢都是 0、整批學不到東西，所以任務難度必須落在策略「偶爾做得到」的範圍。',
+    description: '組平均為基準：A_i = r_i - mean(r)',
+    details:
+      'GRPO 的基準：以組平均取代 PPO 學出來的 critic，基準是算出來的而不是估出來的。同組內的優勢加總為 0，這是最快的接線檢查；' +
+      '一組樣本分數全部相同時優勢全為 0，這一組學不到東西。expand_index（PolicyRollout 的 episode_ids）' +
+      '把優勢攤回它涵蓋的每一步，normalize 則再除以該組的標準差。',
     params: {
       normalize: '是否再除以組內標準差。預設關閉，這樣算出來的數字還能跟手算對得起來。',
     },
   },
   PreferenceDataset: {
-    description: 'RLHF 用的合成偏好對：兩個特徵向量，加上哪一個比較好。真實品質分散在好幾個維度上，另外有一個維度是「捷徑」 — 它在訓練集裡跟品質高度相關，在保留驗證集裡則是純雜訊。獎勵模型會先找到那條響亮的捷徑、而不是分散的真訊號，於是訓練準確率照樣滿分、保留集卻掉下來。這就是可重現的獎勵作弊，而且只有保留集看得見。把 shortcut_strength 設成 0 就是對照組。',
+    description: '合成偏好對，分成訓練與保留兩份',
+    details:
+      '模擬 RLHF 的偏好資料。每筆的真實品質是前 signal_dims 個維度的加權和，品質高的那一筆就是贏家。最後一個維度是捷徑：' +
+      '在訓練集裡跟品質高度相關，在保留集裡則是純雜訊，所以獎勵模型只要抓到它，訓練準確率滿分、保留集準確率卻會掉下來，這就是可重現的獎勵作弊。' +
+      'shortcut_strength 設 0 就沒有捷徑。',
     params: {
       n_pairs: '訓練用的偏好對數量。',
       holdout_pairs: '保留驗證用的偏好對數量，只拿來量、不拿來訓練。',
@@ -326,11 +472,17 @@ const zhTW: NodeTranslations = {
     },
   },
   BradleyTerryLoss: {
-    description: '把兩個獎勵分數變成偏好：P(w>l) = sigmoid(r_w - r_l)，損失 = -log P。只有「差」有意義 — 兩邊同時加上任何常數，偏好機率一位數都不會變。這正是 RLHF 從來不需要人類給絕對分數的原因，也是兩個不同獎勵模型的分數不能互相比較的原因。',
+    description: '從兩個獎勵分數算出偏好損失、P(w>l) 與準確率',
+    details:
+      '損失為 -log sigmoid(r_w - r_l)，只有兩個分數的差有意義：兩邊同時加上一個常數，機率完全不變。這就是 RLHF ' +
+      '從來不需要人類給絕對分數的原因，也是兩個獎勵模型的分數不能互相比較的原因。',
     params: {},
   },
   BradleyTerryTrain: {
-    description: '用 Bradley-Terry 目標在偏好對上訓練獎勵模型，每個 epoch 同時量「訓練集」與「保留驗證集」兩個準確率。兩者之間的落差就是獎勵作弊：模型可以在訓練過的那批資料上拿到滿分 1.000，卻學到的是一條捷徑而不是真正的偏好 — 而這件事只有保留集看得出來。',
+    description: '在偏好對上訓練獎勵模型',
+    details:
+      '以 Bradley-Terry 目標訓練一個兩層 MLP，每個 epoch 記錄損失與兩個準確率。兩個準確率之間的落差就是獎勵作弊：' +
+      '模型可以在訓練過的那批資料上拿到滿分 1.000，學到的卻是捷徑而不是偏好。保留集輸入是選填的，沒接時保留集的數字是 NaN。',
     params: {
       epochs: '在偏好對上跑幾輪。夠把訓練集完全學起來即可。',
       hidden_dim: '獎勵頭中間層的寬度。',
@@ -341,7 +493,8 @@ const zhTW: NodeTranslations = {
 
   // ── Data ──
   TensorInput: {
-    description: '教學用進入點 — 內嵌張量編輯器，可使用明確值、隨機、零、一或 arange 模式。隨機模式可用 seed 重現。',
+    description: '手動輸入張量，或以隨機、零、一、arange 填滿',
+    details: '隨機模式的數值由 seed 決定，同一個 seed 每次都得到相同的張量；explicit、zeros、ones、arange 不受 seed 影響。',
     params: {
       shape: '張量形狀，以逗號分隔的整數（例如 \'1,4,4\'）',
       dtype: '資料型別',
@@ -351,7 +504,10 @@ const zhTW: NodeTranslations = {
     },
   },
   Dataset: {
-    description: '載入標準影像資料集。把變換鏈接到 train_transform / eval_transform 就能控制前處理與資料增強；沒有接的話會套用 ToTensor 與 Normalize(0.5)。',
+    description: '載入影像資料集，如 MNIST、CIFAR10',
+    details:
+      '把變換鏈接到 train_transform 或 eval_transform 就能控制前處理與資料增強；兩個都沒接時套用 ' +
+      'ToTensor 與 Normalize(0.5)。第一次執行會把檔案下載到 data_dir。',
     params: {
       name: '要載入的資料集',
       split: '資料分割',
@@ -359,14 +515,21 @@ const zhTW: NodeTranslations = {
     },
   },
   ImageFolderDataset: {
-    description: '從「一個類別一個資料夾」的結構載入自己的影像。標籤由資料夾名稱依字母順序決定。',
+    description: '從「一個類別一個資料夾」的結構載入自己的影像',
+    details:
+      '標籤依資料夾名稱的字母順序決定，classes 輸出也照同一順序列出。split 決定要讀 path 底下哪個子目錄；類別資料夾直接放在 ' +
+      'path 之下時選「(none)」。',
     params: {
       path: '放置各個分割的資料夾。相對路徑會相對於同時放著 models/ 與 images/ 的資料目錄。',
       split: '要載入的子資料夾。如果類別資料夾直接放在 path 底下、沒有分割這一層，選「(none)」；這時沒有分割可以區分兩個 transform 埠，所以接了哪一個就用哪一個，兩個都接時以 train_transform 為準。',
     },
   },
   SyntheticDataset: {
-    description: '用 sklearn 即時生成 2D 玩具資料集（同心圓、雙月、blob 群聚或一般 make_classification）。輸出格式與 CSVReader 一致，所以 TrainTestSplit 與下游分類器可以直接接 — 範例圖不再需要綁定 CSV 檔。C2-2 ~ C2-5 的標準資料來源。',
+    description: '生成 2D 玩具資料集，如同心圓、雙月',
+    details:
+      '底層是 sklearn 的 make_circles / make_moons / make_blobs / ' +
+      'make_classification，seed 固定產生的點。三個輸出與 CSVReader 相同，TrainTestSplit ' +
+      '與分類器節點可以直接接上。',
     params: {
       kind: 'circles 同心圓（線性不可分）；moons 雙交錯半月；blobs 等向高斯群聚（線性可分）；classification 通用 sklearn make_classification。',
       n_samples: '要生成的樣本總數。',
@@ -377,7 +540,11 @@ const zhTW: NodeTranslations = {
     },
   },
   SyntheticSequence: {
-    description: '即時生成「序列記憶」資料集（免下載、CPU 友善）。每筆是一條長度 seq_len 的整數序列，答案藏在開頭（recall_first）或結尾（recall_last），其餘位置都是不帶資訊的干擾 Token；標籤就是那個答案。兩種 kind 其餘完全相同，只差「答案離輸出多遠」——把依賴距離變成一個可以轉的旋鈕，是檢驗循環模型梯度消失的標準做法。接 DataLoader → TrainingLoop，模型端用 Embedding → LSTM/GRU/RNN → SelectIndex → Linear。',
+    description: '生成整數序列資料集，標籤就在序列一端',
+    details:
+      '其餘位置都是不帶資訊的干擾 Token。recall_first 把答案放在第 1 個位置，依賴距離等於整條序列，是檢驗 RNN ' +
+      '梯度消失的標準任務；recall_last 放在最後一格，距離只有 1。vocab_size 輸出等於 n_classes + ' +
+      'n_distractors，即下游 Embedding 的 num_embeddings 最小值。',
     params: {
       kind: 'recall_first 答案在第 1 個位置（依賴距離 = seq_len）；recall_last 答案在最後一個位置（依賴距離 = 1）。',
       seq_len: '每條序列的長度 T。調大就是把依賴距離拉遠。',
@@ -388,7 +555,10 @@ const zhTW: NodeTranslations = {
     },
   },
   HuggingFaceDataset: {
-    description: '從 HuggingFace Hub 載入影像分類資料集（透過 datasets 套件）',
+    description: '從 HuggingFace 載入影像分類資料集',
+    details:
+      '資料由 HuggingFace 的 datasets 套件載入，第一次執行需要網路連線。資料集欄位不是預設的 image / label ' +
+      '時，請設定 image_column 與 label_column；split 也接受 train[:1000] 這種切片寫法。',
     params: {
       dataset_name: 'HuggingFace Hub 上的 repo id（例：cifar10、ylecun/mnist、uoft-cs/cifar100）',
       subset: '多 config 資料集的 config 名稱（空字串=不指定）',
@@ -399,7 +569,10 @@ const zhTW: NodeTranslations = {
     },
   },
   KaggleDataset: {
-    description: '從 Kaggle 下載資料集，並以 ImageFolder 結構載入',
+    description: '下載 Kaggle 資料集為 ImageFolder',
+    details:
+      '需要網路連線與 Kaggle 憑證：環境變數 KAGGLE_USERNAME 與 KAGGLE_KEY，或放在 ~/.kaggle 的 ' +
+      'kaggle.json。類別資料夾不在下載內容的根目錄時，用 subdir 指到真正的起點。',
     params: {
       dataset_slug: 'Kaggle dataset 的 owner/slug（例：puneet6060/intel-image-classification）',
       subdir: '下載後資料夾內，包含 class 子資料夾的相對路徑',
@@ -407,7 +580,8 @@ const zhTW: NodeTranslations = {
     },
   },
   DataLoader: {
-    description: '將資料集包裝為 DataLoader 以進行批次迭代',
+    description: '把資料集分成批次，供訓練逐批取用',
+    details: 'shuffle 每個 epoch 重新排序，用的是由本次執行種子衍生的產生器，所以順序只取決於種子。',
     params: {
       batch_size: '每批次的樣本數',
       shuffle: '每個 epoch 是否隨機打亂資料',
@@ -419,7 +593,11 @@ const zhTW: NodeTranslations = {
     },
   },
   Transform: {
-    description: '對資料集套用變換流程。三個內建步驟以外的需求，請把變換鏈接到 transform；一旦接上，下面的參數就會被忽略。',
+    description: '為資料集裝上前處理流程',
+    details:
+      '把變換鏈接到 transform 之後，下面三個參數就會被忽略。這個節點是給本身沒有 transform 輸入埠的資料集用的，例如 ' +
+      'HuggingFaceDataset、KaggleDataset 與自訂資料集；Dataset 與 ImageFolderDataset ' +
+      '自己就能接變換鏈。SyntheticShapes 與 SyntheticSegmentation 會忽略裝上去的流程。',
     params: {
       resize: '調整大小維度（0 表示不調整）。接上變換鏈時會被忽略。',
       normalize: '套用正規化（mean=0.5, std=0.5）。接上變換鏈時會被忽略；資料集統計值的預設組合在 NormalizeTransform。',
@@ -429,17 +607,20 @@ const zhTW: NodeTranslations = {
 
   // ── Data / 變換鏈（core#136）──
   ResizeTransform: {
-    description: '把每個樣本縮放成指定邊長的正方形。放在 ToTensorTransform 之前。',
+    description: '把每個樣本縮放成指定邊長的正方形',
+    details: '放在 ToTensorTransform 之前。兩邊都明確指定，所以非正方形的影像會被壓扁，不會維持原本的比例。',
     params: {
       size: '縮放後正方形的邊長（像素）',
       interpolation: '重取樣濾波器。nearest 保留硬邊緣（遮罩、標籤圖）；bicubic 在照片上比較銳利。',
     },
   },
   ToTensorTransform: {
-    description: '把 PIL 影像轉成範圍 [0, 1] 的 CxHxW 浮點張量。多數變換鏈的分界點：幾何與色彩步驟放在它之前，NormalizeTransform 放在它之後。',
+    description: 'PIL 影像轉成 0~1 的 CxHxW 浮點張量',
+    details: '多數變換鏈的分界：幾何與色彩步驟放在它前面，NormalizeTransform 放在它後面。',
   },
   NormalizeTransform: {
-    description: '對每個通道做 (x - mean) / std 標準化。需要張量，所以放在 ToTensorTransform 之後。',
+    description: '各通道標準化為 (x - mean) / std',
+    details: '需要張量，所以放在 ToTensorTransform 之後。預設組合收錄 ImageNet、CIFAR-10、CIFAR-100 公布的通道統計值。',
     params: {
       preset: '用來標準化的通道統計值。Half 會把 [0, 1] 映射到 [-1, 1]，也是 CodefyUI 在有預設組合之前一直採用的做法；想重現論文結果時，請選你實際訓練的資料集。',
       mean: '每個通道的平均值，以逗號分隔。只給一個值就套用到所有通道。',
@@ -447,7 +628,8 @@ const zhTW: NodeTranslations = {
     },
   },
   RandomCrop: {
-    description: '先補邊，再隨機取一個 size x size 的視窗。size 32 搭配 padding 4 就是標準的 CIFAR-10 資料增強：物體每個 epoch 都會偏移幾個像素，模型因此不再依賴它原本的位置。',
+    description: '先補邊，再隨機取一個 size x size 的視窗',
+    details: 'size 32 配 padding 4 是標準的 CIFAR-10 設定：物體每輪都會偏移幾個像素。',
     params: {
       size: '裁切後正方形的邊長（像素）',
       padding: '裁切前四邊各補上的像素數。設 0 會真的裁出比原圖小的視窗；補的量等於想要的位移量時，輸出大小會和輸入一樣。',
@@ -455,13 +637,15 @@ const zhTW: NodeTranslations = {
     },
   },
   RandomHorizontalFlip: {
-    description: '以機率 p 左右鏡射影像。在照片上幾乎是免費的準確率；但對於左右有意義的資料（數字、文字）就是錯的。',
+    description: '以機率 p 左右鏡射影像',
+    details: '用在照片上沒問題；但左右有意義的資料（數字、文字）不能這樣做。',
     params: {
       p: '每個樣本被翻轉的機率',
     },
   },
   RandomRotation: {
-    description: '把每個樣本旋轉一個從 [-degrees, +degrees] 均勻抽出的角度。小角度對手寫與衛星影像有幫助；角度過大則會破壞任何方向性有意義的類別。',
+    description: '隨機旋轉，角度在 ±degrees 以內',
+    details: '角度在範圍內均勻抽樣。小角度對手寫與衛星影像有幫助；角度太大會破壞方向本身就是特徵的類別。',
     params: {
       degrees: '旋轉範圍的半寬（度）。設 15 表示每個樣本最多往任一邊轉 15 度。',
       expand: '放大輸出畫布，避免角落被裁掉。這會改變影像尺寸，所以下游任何假設固定形狀的節點後面都要再接一個縮放。',
@@ -469,7 +653,8 @@ const zhTW: NodeTranslations = {
     },
   },
   ColorJitter: {
-    description: '隨機調整亮度、對比、飽和度與色相。讓模型明白，暖光燈下的貓還是貓。預設值就是多數 ImageNet 訓練腳本採用的組合。',
+    description: '隨機調整亮度、對比、飽和度與色相',
+    details: '預設值（亮度、對比、飽和度 0.4，色相 0.1）是常見 ImageNet 配方採用的數值。',
     params: {
       brightness: '亮度會乘上一個從 [1-b, 1+b] 抽出的係數。設 0 表示停用。',
       contrast: '範圍規則與亮度相同。設 0 表示停用。',
@@ -478,7 +663,10 @@ const zhTW: NodeTranslations = {
     },
   },
   RandAugment: {
-    description: '從固定的操作集合（傾斜、平移、旋轉、色調分離、曝光過度、色彩、對比、亮度、銳利度、直方圖等化、自動對比、identity）隨機挑 num_ops 個套用，強度都一樣。需要 PIL 影像或 uint8 張量，所以放在 ToTensorTransform 之前。',
+    description: '隨機挑 num_ops 個操作套用，強度相同',
+    details:
+      '操作集合是傾斜、平移、旋轉、色調分離、曝光過度、色彩、對比、亮度、銳利度、直方圖等化、自動對比與 identity。需要 PIL 影像或 ' +
+      'uint8 張量，所以放在 ToTensorTransform 之前。',
     params: {
       num_ops: '每個樣本要套用幾個操作。論文的預設值是 2。',
       magnitude: '所有操作的強度，範圍是 0 到 num_magnitude_bins - 1。模型與資料集越大就調越高；小模型配小資料集，通常還沒需要 15 就已經欠擬合了。',
@@ -486,13 +674,19 @@ const zhTW: NodeTranslations = {
     },
   },
   ComposeTransform: {
-    description: '把數條變換鏈依照埠的順序合併成一條：step_1 先跑。節點接節點本身就會組合，所以只有在兩條鏈分開建立、又要合成同一條流程時才需要它。',
+    description: '依埠的順序把多條變換鏈合併成一條',
+    details:
+      '節點接節點本身就會組合，所以只有在兩條鏈分開建立、又要合進同一條流程時才需要它。沒接線的埠會跳過，三個埠只接 step_1 和 ' +
+      'step_3 就是依序組合這兩條。',
     params: {
       steps: '要合併幾條鏈',
     },
   },
   CSVReader: {
-    description: '把 CSV 載入為「特徵張量 + 標籤列表」。數值欄位（若有設 include_columns 會再篩選）轉成 [N, F] 的 float32 張量；target_column 指定的欄位則變成下游分類器吃的字串標籤列表。',
+    description: '把 CSV 載入為特徵、標籤與欄位名稱',
+    details:
+      '數值欄位組成 [N, F] 的 float32 張量；include_columns 會再縮小這個範圍，沒設定時非數值欄位一律捨棄。' +
+      'target_column 指定的欄位變成字串標籤列表。檔案沒有標題列時關掉 skip_header，欄位會依序命名為 0、1、2。',
     params: {
       path: 'CSV 檔案路徑（絕對路徑或相對於後端工作目錄）。',
       target_column: '標籤欄位名稱（選填）。留空表示沒有標籤、純資料載入。',
@@ -501,31 +695,66 @@ const zhTW: NodeTranslations = {
     },
   },
   ColumnSelector: {
-    description: '從 2D 張量中挑出部分欄位。設 indices 用位置選；設 names（需同時接 columns 輸入）則用名稱選。兩者同時設定時 names 優先。',
+    description: '從 2D 張量中挑出指定的欄位，依位置或名稱',
+    details: '用名稱挑選時必須連上 columns 輸入；indices 與 names 同時設定時以 names 為準。',
     params: {
       indices: '以逗號分隔的欄位索引，例：「0,2,3」。當 names 為空時使用。',
       names: '以逗號分隔的欄位名稱。一旦設定就會蓋過 indices，並且需要連上 columns 輸入。',
     },
   },
   Normalize: {
-    description: '沿指定軸縮放張量。zscore = $(x-\\mu)/\\sigma$、minmax = $(x-\\min)/(\\max-\\min)$、unit_norm = $x/\\|x\\|_2$。表格資料逐欄正規化用 axis=0；逐樣本正規化用 axis=1。',
+    description: '沿指定軸正規化張量，並輸出所用的統計量',
+    details:
+      'zscore = $(x-\\mu)/\\sigma$、minmax = $(x-\\min)/(\\max-\\min)$、unit_norm = ' +
+      '$x/\\|x\\|_2$。axis=0 逐欄計算，axis=1 逐列計算。整欄數值相同時除以 1 而不是 0，結果為 0 而非 NaN。',
     params: {
       mode: '正規化方法。',
       axis: '計算統計量的軸。0 = 逐欄，1 = 逐列。',
     },
   },
   TrainTestSplit: {
-    description: '把 (features, labels) 切成訓練集與測試集，封裝 sklearn.train_test_split。開啟 stratify 會讓兩邊保持相同的類別比例 — 對不平衡資料是必備的。',
+    description: '把特徵與標籤切成訓練集與測試集',
+    details:
+      '切分本身呼叫的是 sklearn.model_selection.train_test_split。開啟 stratify ' +
+      '會讓兩邊維持相同的類別比例，標籤不平衡時尤其重要。',
     params: {
       test_size: '保留作為測試集的樣本比例，必須介於 (0, 1)。',
       seed: '隨機洗牌的種子，方便可重現。',
       stratify: '是否在兩邊保留每個類別的比例（分層抽樣）。',
     },
   },
+  DatasetBatch: {
+    description: '從資料集中取出一個批次，輸出影像與對應標籤',
+    details:
+      '影像輸出形狀為 (N, C, H, W)。標籤在分類資料集是 (N,) 的類別編號，在分割資料集是 (N, H, W) 的逐像素遮罩。' +
+      'start_index 超過資料集長度時會繞回開頭。',
+  },
+  RowSelector: {
+    description: '從 2D 張量中挑出指定的列，依位置或名稱',
+    details:
+      '用名稱挑選時必須連上 labels 輸入；indices 與 names 同時設定時以 names 為準。要依條件（例如分數 > 80）' +
+      '篩選，請用 EDU 套件裡的 FilterRows。',
+  },
+  SyntheticSegmentation: {
+    description: '生成影像與逐像素遮罩的資料集',
+    details:
+      '每張是單通道小圖，上面隨機畫一到兩個形狀；遮罩逐像素標記 0 為背景、1 為圓形、2 為方形，規模小到能在 CPU 上訓練 UNet。' +
+      '全部由 seed 在記憶體中生成，不需要下載；訓練集與測試集請用不同的 seed。',
+  },
+  SyntheticShapes: {
+    description: '生成小圖資料集，每張有一個柔和光斑',
+    details:
+      '影像為單通道，數值正規化到 [-1, 1]，也就是擴散模型訓練慣用的範圍。每個光斑是暗背景上的高斯函數，位置與大小由 seed 決定。' +
+      '每筆附一個固定為 0 的假標籤，可以直接通過 DataLoader。',
+  },
 
   // ── Training ──
   Optimizer: {
-    description: '建立優化器用於模型參數',
+    description: '把梯度變成權重更新：9 種演算法',
+    details:
+      '共 9 種 torch 演算法。超參數只會在接受它的演算法下出現（momentum 屬於 SGD 與 RMSprop，betas 屬於 ' +
+      'Adam 家族，amsgrad 只有 Adam 與 AdamW）；weight_decay 設成非 0 卻選了沒有這個參數的演算法（如 ' +
+      'Rprop）會直接失敗，而不是悄悄忽略。',
     params: {
       type: '優化器演算法',
       lr: '學習率',
@@ -539,7 +768,10 @@ const zhTW: NodeTranslations = {
     },
   },
   Loss: {
-    description: '建立損失函數',
+    description: '交叉熵、MSE、BCE 等 11 種損失函數',
+    details:
+      '共 11 種 torch 損失函數。只有部分類型接受的選項（label_smoothing、類別權重、ignore_index、' +
+      'pos_weight）只會在適用的類型下出現。',
     params: {
       type: '損失函數類型',
       label_smoothing: '把 one-hot 目標變得平滑一些：0 表示硬目標，0.1 是常見的正則化強度',
@@ -550,7 +782,11 @@ const zhTW: NodeTranslations = {
     },
   },
   TrainingLoop: {
-    description: '執行訓練迴圈，支援驗證、早停、學習率排程和梯度裁剪',
+    description: '訓練模型指定的輪數，輸出訓練後的模型與 loss',
+    details:
+      '驗證、早停、學習率排程、梯度裁剪、混合精度與梯度累積都是選用。接續訓練是把 CheckpointLoader.epoch 接到 ' +
+      'start_epoch：輪數編號是整段訓練的絕對值，losses 只涵蓋這次執行跑過的輪。按停止會寫出中斷檢查點並回傳已算出的曲線，' +
+      '不會報錯。',
     params: {
       epochs: '訓練 epoch 數量',
       device: '此節點的裝置。保持 auto 就跟隨這張圖的裝置（工具列的圖裝置，沒有指定時則用設定）。一張圖只在一個裝置上執行；若部分工作需要不同裝置，請拆成兩張圖。',
@@ -573,7 +809,10 @@ const zhTW: NodeTranslations = {
     },
   },
   EvaluateModel: {
-    description: '算訓練好的分類模型在一個 dataset 上的準確率。吃 model + dataset，內部建 DataLoader 跑完整個資料集、對每筆取 argmax 跟標籤比，輸出 accuracy / correct / total。補上通用訓練流缺的「評估」那一塊（對應 I2-4 看 MNIST 測試準確率）。',
+    description: '分類模型在資料集上的準確率，附答對數與總數',
+    details:
+      '以批次跑完整個資料集，對每筆取 argmax 與標籤比對。準確率同時會以 eval_accuracy 指標記在指定的 step 上，' +
+      '同一張圖有兩顆 EvaluateModel 就要設不同的 step，否則會蓋掉彼此的點。',
     params: {
       batch_size: '評估時每批跑幾筆（不影響結果，只影響速度/記憶體）。',
       device: '此節點的裝置。保持 auto 就跟隨這張圖的裝置（工具列的圖裝置，沒有指定時則用設定）。一張圖只在一個裝置上執行；若部分工作需要不同裝置，請拆成兩張圖。',
@@ -582,11 +821,18 @@ const zhTW: NodeTranslations = {
     },
   },
   BackwardOnce: {
-    description: '標記張量為 autograd 反向傳播的目標，供 Backward 檢視器使用。僅在工具列啟用 Backward 模式時執行。反向傳播目標：$\\mathcal{L} = \\sum(\\text{input})$（合成純量）。',
+    description: '標記反向傳播的起點，張量原樣輸出',
+    details:
+      'Backward 模式是工具列上的開關。開啟時，引擎會對這裡輸出的張量取合成純量 $\\mathcal{L} = ' +
+      '\\sum(\\text{input})$ 再做反向傳播；關閉時節點照樣執行，只是原樣傳遞、沒有副作用。',
   },
 
   LRScheduler: {
-    description: '建立學習率排程器',
+    description: '訓練中改變學習率：10 種排程',
+    details:
+      '共 10 種排程，含 StepLR、CosineAnnealingLR、ReduceLROnPlateau、OneCycleLR 與 ' +
+      'warmup 系列。step_size、T_max、total_steps 的單位由 TrainingLoop 的 ' +
+      'scheduler_step 決定：預設是輪數，另一種是優化器步數。長度大於整段訓練時排程跑不完。',
     params: {
       type: '排程器類型',
       step_size:
@@ -605,7 +851,8 @@ const zhTW: NodeTranslations = {
 
   // ── IO ──
   ImageReader: {
-    description: '從磁碟讀取影像檔案，輸出為張量 (C, H, W)，值域 [0, 1]',
+    description: '讀取影像為 (C,H,W) 張量，值域 [0,1]',
+    details: '只寫檔名時會先找上傳影像目錄，找不到才依原樣相對於執行圖的行程工作目錄解析。resize 設為 0 就保留原尺寸。',
     params: {
       path: '選擇已上傳的影像，或上傳新檔案',
       mode: '載入影像的色彩模式（L = 灰階）',
@@ -613,17 +860,18 @@ const zhTW: NodeTranslations = {
     },
   },
   ImageWriter: {
-    description: '將張量儲存為影像檔案（PNG、JPEG 等）',
+    description: '把影像張量存成 PNG/JPEG/BMP/TIFF',
+    details: '副檔名跟著選定的格式走。相對路徑會寫到資料目錄下的 output 資料夾；輸入是 (N, C, H, W) 批次張量時只存第一張。',
     params: {
       path: '輸出檔案路徑',
       format: '影像格式',
     },
   },
   VideoWrite: {
-    description:
-      '將幀張量 (T,C,H,W) 或 (T,H,W,C) 編碼為可播放影片並寫入媒體目錄——' +
-      'PATH 上有 ffmpeg 時輸出 mp4，否則以 Pillow 輸出 gif（零相依），' +
-      '並發出可在編輯器內嵌播放的參照',
+    description: '把幀張量編碼成 mp4 或 gif，寫入媒體目錄',
+    details:
+      '輸入可以是 (T, C, H, W) 或 (T, H, W, C)。PATH 上有 ffmpeg 執行檔就輸出 mp4，沒有就退回 ' +
+      'Pillow 輸出 gif。同名檔案會被覆蓋；另外輸出可在編輯器內嵌播放的參照與中間幀的 PNG。',
     params: {
       filename: '媒體目錄下的檔名（可含子資料夾）；副檔名依格式決定，同名會覆寫',
       format: 'auto：PATH 上有 ffmpeg 則 mp4，否則 gif。gif 永遠可用；mp4 需要安裝 ffmpeg',
@@ -632,9 +880,10 @@ const zhTW: NodeTranslations = {
     },
   },
   VideoLoad: {
-    description:
-      '解碼影片檔（mp4/webm 走 ffmpeg，gif 走 Pillow）為幀張量 (T,3,H,W)、' +
-      '值域 [0,1]，並輸出 fps 與幀數；相對路徑以媒體目錄為基準（VideoWrite 的輸出位置）',
+    description: '解碼影片為幀張量 (T,3,H,W)、fps 與幀數',
+    details:
+      '幀是 float、值域 [0,1]。mp4 與 webm 走 ffmpeg 執行檔解碼，gif 走 Pillow。相對路徑以媒體目錄為基準，' +
+      '也就是 VideoWrite 的輸出位置。沒設 max_frames 時，長影片會整支載進記憶體。',
     params: {
       path: '影片檔案：絕對路徑，或相對於媒體目錄',
       max_frames: '最多解碼幀數（0 = 全部）；未設上限的長片會整段載入記憶體',
@@ -642,7 +891,8 @@ const zhTW: NodeTranslations = {
     },
   },
   ImageBatchReader: {
-    description: '從目錄讀取所有影像，堆疊為批次張量 (N, C, H, W)',
+    description: '把目錄下每張影像堆成 (N, C, H, W)',
+    details: '符合 glob 樣式的檔案依檔名排序讀入，並全部縮放成同一個正方形尺寸才能堆疊；開不起來的影像會略過。max_images 可限制讀取張數。',
     params: {
       directory: '包含影像檔案的目錄',
       pattern: '檔案比對模式（如 *.png、*.jpg）',
@@ -652,7 +902,10 @@ const zhTW: NodeTranslations = {
     },
   },
   FileReader: {
-    description: '讀取文字或 CSV 檔案，輸出內容為字串或張量（數值 CSV）',
+    description: '讀文字或 CSV 檔為字串，數值 CSV 另出張量',
+    details:
+      'csv 模式把數值列轉成 2D 浮點張量，只要有一格不是數字，張量輸出就是空的；text 模式恆為空。相對路徑落在 graphs ' +
+      '目錄（專案模式下是 assets/data），專案資料目錄以外的檔案一律拒讀。',
     params: {
       path: '檔案路徑',
       mode: '讀取方式',
@@ -662,7 +915,10 @@ const zhTW: NodeTranslations = {
   },
 
   ModelSaver: {
-    description: '將模型權重（state_dict）儲存為 .pt/.pth/.safetensors 檔案',
+    description: '把模型權重或整個模組存成檔案',
+    details:
+      'state_dict 模式只存權重，也是預設；full_model 模式把整個模組 pickle 起來，遇到定義在函式內的層類別會直接拒存。' +
+      '路徑用 .pth 也可以，safetensors 只支援 state_dict，相對路徑會寫到 models 目錄。',
     params: {
       path: '輸出檔案路徑（.pt、.pth 或 .safetensors）',
       save_mode: '儲存模式：state_dict（推薦）或完整模型',
@@ -670,7 +926,11 @@ const zhTW: NodeTranslations = {
     },
   },
   ModelLoader: {
-    description: '從 .pt/.pth/.safetensors 檔案載入模型權重，或載入完整的已儲存模型',
+    description: '從檔案載入權重到模型，或直接載入整個已儲存的模型',
+    details:
+      'state_dict 模式要接上模型，可讀 .pt、.pth 或 .safetensors。full_model 模式在 torch ' +
+      '受限的 unpickler 下重建整個模組，只接受原生 torch.nn 層與 CodefyUI 自己的層，其餘一律拒絕，' +
+      '包含自訂節點與外掛的類別。',
     params: {
       path: '權重檔案路徑（.pt、.pth 或 .safetensors）',
       load_mode:
@@ -680,38 +940,61 @@ const zhTW: NodeTranslations = {
     },
   },
   CheckpointSaver: {
-    description: '儲存完整訓練檢查點（模型 + 優化器 + 學習率排程 + epoch + 損失值），用於稍後恢復訓練',
+    description: '存下模型、優化器、epoch 與損失歷史',
+    details: '學習率排程與 fp16 損失縮放狀態在對應輸入有接線時也會一併存入。相對路徑會寫到 models 目錄，CheckpointLoader 讀的是同一種格式。',
     params: {
       path: '輸出檢查點檔案路徑',
       epoch: '要儲存在檢查點中的當前 epoch 數',
     },
   },
   CheckpointLoader: {
-    description: '載入訓練檢查點以恢復訓練（恢復模型 + 優化器 + 學習率排程 + epoch）',
+    description: '還原模型與優化器，輸出存檔時的 epoch',
+    details:
+      'epoch 輸出接到 TrainingLoop.start_epoch，損失歷史與 fp16 損失縮放狀態也會一併輸出。只有 ' +
+      'lr_scheduler 接上 LRScheduler 時才會還原排程位置；沒接就丟棄並提示，改由 TrainingLoop 重放 ' +
+      'start_epoch 步數推算。',
     params: {
       path: '檢查點檔案路徑',
       device: '此節點的裝置。保持 auto 就跟隨這張圖的裝置（工具列的圖裝置，沒有指定時則用設定）。一張圖只在一個裝置上執行；若部分工作需要不同裝置，請拆成兩張圖。',
     },
   },
   Inference: {
-    description: '對已訓練的模型執行推論（前向傳播）。自動設為 eval 模式並停用梯度。',
+    description: '以 eval 模式對模型做前向傳播，不計算梯度',
+    details: 'eval() 與搬到指定裝置這兩件事都直接作用在接進來的模型上，節點結束後仍然有效。',
     params: {
       device: '此節點的裝置。保持 auto 就跟隨這張圖的裝置（工具列的圖裝置，沒有指定時則用設定）。一張圖只在一個裝置上執行；若部分工作需要不同裝置，請拆成兩張圖。',
     },
   },
+  GraphInput: {
+    description: '宣告這張圖的具名輸入，輸出外部傳進來的值',
+    details:
+      'API 呼叫端以 POST /api/graph/run 提供值；在畫布上執行時改用 default 參數。要接一個 Start 節點進來，' +
+      '這個節點才會執行。type=image 時 API 傳 base64，畫布則讀伺服器本機的檔案路徑。',
+  },
+  GraphOutput: {
+    description: '宣告這張圖的具名輸出，回傳接進來的值',
+    details: 'POST /api/graph/run 會以這個節點的 name 為鍵回傳該值，CLI 執行器讀的是同一份契約。',
+  },
 
   // ── Data Flow ──
   Switch: {
-    description: '根據選擇器索引選取多個輸入之一。純資料流條件選擇：所有輸入都會被求值，選擇器決定轉發哪一個。',
+    description: '依 selector 索引轉發最多四個輸入中的一個',
+    details: '所有輸入都會先被求值，selector 才挑出其中一個，是資料流的選擇而不是會跳過計算的分支。索引從 0 開始，超出範圍或沒有連線時會退回 input_0。',
   },
   Map: {
-    description: '對列表中的每個元素套用子圖（預設模組）。函數式批次處理。',
+    description: '對清單中的每個元素各跑一次子圖，收集成結果清單',
+    details:
+      'subgraph 參數填的是已儲存的預設子圖名稱；子圖的第一個對外輸入接收每個元素，第一個對外輸出就是該元素的結果。一個元素算一個工作單位，' +
+      '中途停止會在元素之間中斷並回傳已完成的部分。',
     params: {
       subgraph: '要套用到每個元素的子圖/預設模組名稱',
     },
   },
   Reduce: {
-    description: '將列表聚合為單一結果。支援 sum、mean、min、max、concat、stack、first、last。',
+    description: '把清單聚合成單一值：總和、平均、最小、最大',
+    details:
+      'operation 可選 sum、mean、min、max、concat、stack、first、last，dim 只對 concat 與 ' +
+      'stack 有作用。除了 first 與 last 之外，元素必須是數值或張量，空清單會直接報錯。',
     params: {
       operation: '聚合運算',
       dim: 'concat/stack 運算的維度',
@@ -720,70 +1003,78 @@ const zhTW: NodeTranslations = {
 
   // ── Tensor Operations ──
   Permute: {
-    description: '排列（重新排序）張量的維度',
+    description: '重新排列張量的維度順序',
     params: {
       dims: '新的維度順序（逗號分隔整數）',
     },
   },
   Squeeze: {
-    description: '移除大小為 1 的維度',
+    description: '移除張量中大小為 1 的維度',
     params: {
       dim: '要壓縮的維度（-1 表示全部）',
     },
   },
   Unsqueeze: {
-    description: '在指定位置新增大小為 1 的維度',
+    description: '在指定位置插入一個大小為 1 的維度',
     params: {
       dim: '要插入的維度位置',
     },
   },
   Add: {
-    description: '兩個張量的逐元素相加（支援廣播）',
+    description: '兩個張量逐元素相加，支援廣播',
     params: {
       alpha: 'tensor_b 的乘數：a + alpha * b',
     },
   },
   Multiply: {
-    description: '兩個張量的逐元素相乘（支援廣播）',
+    description: '兩個張量逐元素相乘，支援廣播',
   },
   MaskedFill: {
-    description: '把遮罩標記的位置換成一個常數（預設 $-\infty$）。搭配 AttentionMask 使用，而且要放在 Softmax **之前**：$e^{-\infty} = 0$，所以被擋住的位置會拿到恰好 0 的權重，剩下的位置則自動重新分配、每列加總仍然是 1。放到 softmax 之後才歸零會破壞這個性質。',
+    description: '把遮罩標記的位置換成常數，預設 $-\\infty$',
+    details:
+      '放在 Softmax 之前：因為 $e^{-\\infty} = 0$，被擋住的位置會拿到恰好 0 的機率，其餘位置重新歸一化後加總仍為 1。' +
+      '改在 softmax 之後才歸零，該列就不再加總為 1。輸入張量必須是浮點數。',
     params: {
       value: '填入被遮住位置的值。-inf 是注意力的標準做法（softmax 之後變成 0）；zero 與 custom 用於非注意力的遮罩，不會得到正確的注意力權重。',
       custom_value: '當 value 選 custom 時實際填入的數值。',
     },
   },
   MatMul: {
-    description: '兩個張量的矩陣乘法（torch.matmul）',
+    description: '兩個張量的批次矩陣乘法',
+    details: '行為同 torch.matmul：最後兩維做矩陣相乘，前面的維度會以批次方式廣播。兩個一維輸入則得到內積。',
   },
   Mean: {
-    description: '沿指定維度計算張量的平均值',
+    description: '沿一或多個維度取平均',
     params: {
       dim: '要縮減的維度（逗號分隔整數）',
       keepdim: '是否保留被縮減的維度',
     },
   },
   Softmax: {
-    description: '沿指定維度套用 Softmax：$\\text{softmax}(x_i) = \\frac{e^{x_i}}{\\sum_j e^{x_j}}$。為數值穩定，先減去 $\\max(x)$ 再取指數。',
+    description: '沿指定維度把分數轉成加總為 1 的機率',
+    details: '$\\text{softmax}(x_i) = \\frac{e^{x_i}}{\\sum_j e^{x_j}}$，計算時會先減去最大值，避免數值過大而溢位。',
     params: {
       dim: '要套用 Softmax 的維度',
     },
   },
   Split: {
-    description: '沿指定維度將張量切分為多個區塊',
+    description: '沿指定維度把張量切成數個區塊',
+    details: '切法同 torch.chunk，維度長度無法整除時最後一塊會比較小，也可能切出的區塊比輸出埠還少。',
     params: {
       chunks: '要切分的區塊數',
       dim: '要切分的維度',
     },
   },
   Stack: {
-    description: '沿新維度堆疊兩個張量',
+    description: '沿新的維度把兩個張量疊起來',
+    details: '兩個張量的形狀必須相同。',
     params: {
       dim: '要堆疊的維度',
     },
   },
   TensorCreate: {
-    description: '建立填充零、一、隨機值或常數的張量',
+    description: '依指定形狀建立張量：零、一、隨機值或常數',
+    details: 'arange 只會用到 shape 的第一個數字，輸出一維浮點張量。',
     params: {
       shape: '張量形狀（逗號分隔整數）',
       fill: '填充方法',
@@ -791,17 +1082,26 @@ const zhTW: NodeTranslations = {
       requires_grad: '張量是否需要梯度',
     },
   },
+  Argmax: {
+    description: '沿指定維度取最大值的索引',
+  },
+  ScalarMultiply: {
+    description: '把張量的每個元素乘上一個常數',
+  },
 
   // ── Utility ──
   Print: {
-    description: '將輸入值印出到主控台並傳遞',
+    description: '把值印到主控台，並原樣傳出',
     params: {
       label: '標籤前綴',
     },
   },
   PythonScript: {
-    description:
-      '直接在畫布上寫 Python。定義 run(inputs, params)，回傳以輸出連接埠為鍵的字典（直接回傳單一值時視為 out1）。腳本只能使用 collections、itertools、json、math、numpy、re、statistics、torch 這幾個函式庫。這限制的是它能碰到哪些函式庫，而不是那些函式庫能做什麼：這是防護欄，不是沙箱，程式碼以你的權限在 CodefyUI 行程內執行。只執行你信任的程式碼。',
+    description: '在畫布上寫 Python，回傳以連接埠為鍵的字典',
+    details:
+      '腳本要定義 run(inputs, params)；回傳的不是字典時視為 out1。只能碰 collections、itertools、' +
+      'json、math、numpy、re、statistics、torch，限制的是能匯入哪些函式庫，不是它們能做什麼：這是防護欄，不是沙箱，' +
+      '程式碼以你的權限在 CodefyUI 行程內執行，只跑你信任的腳本。此節點不快取，每次都重跑。',
     params: {
       code: '定義 run(inputs, params) 的 Python 原始碼。每次編輯都會依 Tier-0 政策檢查。',
       input_ports: '輸入連接埠 in1..inN 的數量（1..8）',
@@ -823,7 +1123,10 @@ const zhTW: NodeTranslations = {
     },
   },
   Visualize: {
-    description: '將資料（張量、損失值等）生成 matplotlib 圖表，輸出為 base64 編碼的 PNG',
+    description: '把資料畫成折線、直方圖、熱圖或影像',
+    details:
+      '圖由 matplotlib 繪製。line 與 histogram 會先把多維資料攤平，heatmap 會把一維輸入摺成方形格子，' +
+      'image 則把 (N, C, H, W) 批次排成網格。',
     params: {
       title: '圖表標題',
       plot_type: '要生成的圖表類型',
@@ -831,26 +1134,34 @@ const zhTW: NodeTranslations = {
   },
 
   Flatten: {
-    description: '展平張量的維度：nn.Flatten(start_dim, end_dim)',
+    description: '從 start_dim 起把張量的維度展平',
+    details: '底層是 nn.Flatten，從 start_dim 到最後一維全部合併成一維。',
     params: {
       start_dim: '開始展平的維度',
     },
   },
   Linear: {
-    description: '全連接（密集）層：$y = xW^T + b$。封裝 nn.Linear(in_features, out_features)。',
+    description: '全連接層：$y = xW^T + b$',
+    details: '底層是 nn.Linear，也叫密集（dense）層。in_features 必須等於輸入張量的最後一維。',
     params: {
       in_features: '輸入特徵大小',
       out_features: '輸出特徵大小',
     },
   },
   SequentialModel: {
-    description: '從 JSON 層列表建構 nn.Sequential 模型',
+    description: '在架構編輯器裡組出網路',
+    details:
+      '在節點上點兩下可編輯層的連線圖。它是 DAG，除了直線堆疊，也支援分支與合併（Add、Concat、Multiply、Subtract、' +
+      'Mean、Stack）；建出的模組可接到 Optimizer 與 TrainingLoop。',
     params: {
       layers: '層定義的 JSON 陣列',
     },
   },
   Embedding: {
-    description: '可學習的嵌入查表（封裝 nn.Embedding）。將整數索引對應到可訓練權重矩陣 $W$ 的列：$E[i] = W[i, :]$。如需預訓練詞向量（GloVe 等），請改用 LLM 分類下的 `WordVector` 節點。',
+    description: '把整數索引對應到可訓練權重矩陣 $W$ 的列',
+    details:
+      '底層是 nn.Embedding，即 $E[i] = W[i, :]$，這張表會跟著整張圖一起訓練。padding_idx 小於 0 ' +
+      '代表不設 padding 列。要用 GloVe 這類預訓練詞向量請改用 LLM 分類下的 WordVector 節點。',
     params: {
       num_embeddings: '詞彙表大小',
       embedding_dim: '每個嵌入向量的維度',
@@ -859,17 +1170,29 @@ const zhTW: NodeTranslations = {
   },
 
   TextInput: {
-    description:
-      '純文字輸入點。在節點本體的多行 textarea 中打字，輸出 STRING 可以接到 Tokenizer、WordVector 或任何吃 STRING 的輸入埠。對之後 RAG 的 DocumentInput 是同一條路。',
+    description: '輸入一段文字，輸出給任何 STRING 輸入埠',
     params: {
       value: '多行文字。可以拖曳 textarea 右下角調整大小。',
     },
   },
+  DecisionBoundary: {
+    description: '把訓練好的分類器 2D 決策區域上色，並疊上訓練點',
+    details:
+      'model 要接 Classifier 節點的輸出：節點會在涵蓋 x_train 的密格上呼叫 predict()，而且只支援 2D 特徵。' +
+      'grid_steps 越大邊界越平滑也越慢；show_support_vectors 只在 model 是 SVM 時有效。',
+  },
+  ScatterPlot2D: {
+    description: '把 (N, 2) 的點畫成散點圖，依標籤上色',
+    details: '沒有接 labels 時，所有點都畫成同一個顏色。',
+  },
 
   // ── LLM ──
   Tokenizer: {
-    description:
-      '把文字切成 LLM 看得懂的整數 token。不同家族用不同演算法 — BPE（GPT）、WordPiece（BERT）、SentencePiece（Llama、T5）— 同一段文字會被切成不同的樣子。',
+    description: '把文字切成 token，並輸出 ids 與字元位移',
+    details:
+      '不同家族用不同演算法：BPE（GPT）、WordPiece（BERT）、SentencePiece（Llama、T5），' +
+      '同一段文字會被切成不同的樣子。cl100k_base、o200k_base、p50k_base 與 gpt2 來自 tiktoken，' +
+      'BPE 表第一次載入後留在本機；其餘三個從 HuggingFace 下載 tokenizer.json。',
     params: {
       family: 'Tokenizer 家族。tiktoken 完全離線可跑 cl100k/o200k/p50k/gpt2；其餘會在第一次使用時從 HuggingFace 下載 tokenizer.json。',
       text: '要切分的文字。當沒有 `text` 輸入連線時使用此欄位。',
@@ -877,8 +1200,12 @@ const zhTW: NodeTranslations = {
     },
   },
   WordVector: {
-    description:
-      '為每個輸入單字查一條向量。預訓練嵌入會把語意相近的字放在一起，所以 $king - man + woman \\approx queen$。demo-16d 是手工打造的 59 字玩具詞彙表，隨安裝附帶、完全離線，類比在它上面是精確成立的；glove-50d 是真正的 40 萬字 GloVe 表（需要 word-vectors 套件包），類比只是近似；sentence-transformer 後端（需要 sentence-embeddings 套件包）會把每個字丟進現代的編碼器，對單一個字來說更「毛躁」，但那正是真實檢索系統在用的東西。',
+    description: '為每個輸入單字查一條向量，並回報查到的字',
+    details:
+      '預訓練向量會把語意相近的字放在一起，所以 $king - man + woman \\approx queen$。demo-16d ' +
+      '是離線隨附的 59 字手工詞彙表，類比精確成立；glove-50d 是 word-vectors 套件包裡的 40 萬字 GloVe 表，' +
+      '只能近似；sentence-transformer 後端（sentence-embeddings 套件包）把每個字丟進現代編碼器，' +
+      '單字結果更雜亂。',
     params: {
       backend: '向量來源。灰掉的選項需要先到套件中心安裝對應的套件包；執行圖的時候永遠不會自動下載。',
       words: '以空白或逗號分隔的單字列表。當沒有 `tokens` 輸入連線時使用此欄位。',
@@ -887,8 +1214,8 @@ const zhTW: NodeTranslations = {
     },
   },
   EmbeddingScatter: {
-    description:
-      '把高維嵌入投影到 2D 來「看見」嵌入空間的幾何結構。語意相近的字會聚成一群。PCA 是線性、決定性、快；t-SNE 是非線性、會更好保留局部鄰域結構，但每次跑出來的版面都略有不同。',
+    description: '把 [N, D] 嵌入張量投影成 [N, 2] 座標',
+    details: 'PCA 取變異數最大的方向，線性、結果固定、快。t-SNE 保留原空間中的鄰近關係，群聚通常更緊，但每個種子的版面都不同。座標會縮放到 [-1, 1]。',
     params: {
       method: 'PCA：線性、決定性、快。t-SNE：非線性、保留局部鄰域結構。',
       perplexity: '只在 t-SNE 使用 — 局部親和模型的鄰域大小。',
@@ -896,8 +1223,10 @@ const zhTW: NodeTranslations = {
     },
   },
   CosineSimilarity: {
-    description:
-      '計算每個 query 與每個 key 之間的 cosine similarity。對單位向量輸入這就是點積；非單位向量會自動正規化。輸出整個相似度矩陣以及每個 query 的 top-k key — 這就是 RAG 中向量檢索的核心。',
+    description: '每個 query 對 key 的相似度與 top-k',
+    details:
+      '輸入若已是單位向量，結果就是內積；否則會先正規化。top-k 是每個 query 各自取。exclude_self_words ' +
+      '會把指定的標籤排除在 top-k 之外，做類比時才不會撈回輸入的那幾個字。',
     params: {
       top_k: '每個 query 要回傳的最相似 key 數量。',
       exclude_self_words:
@@ -905,7 +1234,11 @@ const zhTW: NodeTranslations = {
     },
   },
   PositionalEncoding: {
-    description: '把位置資訊加到 token 嵌入上。sinusoidal 用 Vaswani et al. (2017) 的公式 PE(pos, 2i)=sin(pos/10000^(2i/d))；learnable 則回傳種子可控的亂數樣式（同樣種子會得到一樣結果）。',
+    description: '把位置資訊加到嵌入上，並輸出位置編碼',
+    details:
+      'sinusoidal 就是 Vaswani et al. (2017) 的公式 $PE(pos, 2i) = \\sin(pos / ' +
+      '10000^{2i/d})$，無狀態、結果固定；learnable 回傳的是種子決定的亂數樣式，不是訓練出來的。序列長度超過 ' +
+      'max_len 會報錯。',
     params: {
       mode: 'sinusoidal = Vaswani 公式；learnable = 種子可控的隨機初始化。',
       max_len: '支援的最大序列長度。輸入超過此值會直接報錯。',
@@ -913,22 +1246,31 @@ const zhTW: NodeTranslations = {
     },
   },
   AttentionMask: {
-    description: '產生布林注意力遮罩（True 表示被擋）。causal 會擋掉未來位置（GPT 風格 decoder）；padding 會擋掉值等於 pad_token 的欄位，避免注意力洩漏到填補欄位。',
+    description: '布林遮罩 [seq, seq]，True 表示被擋',
+    details:
+      'causal 擋掉嚴格在未來的位置，也就是 GPT 式 decoder 的樣式；padding 擋掉 token 等於 pad_token ' +
+      '的整欄。序列長度取自 tokens 清單，或 tensor 輸入的第 0 維。下游的注意力節點以 ' +
+      'scores.masked_fill(mask, -inf) 使用它。',
     params: {
       mode: 'causal：擋掉嚴格未來的位置（decoder 風格）。padding：擋掉值與 pad_token 相同的欄位。',
       pad_token: '視為填補的字串符號，只在 padding 模式下使用。',
     },
   },
   AttentionHeatmap: {
-    description: '純視覺化節點：原樣轉送 attention 權重，同時把它暴露給熱圖視圖。可以串在任何 attention 節點（教學版或正式版）的 weights 輸出後面，不會改變下游圖的結構。',
+    description: '原樣轉送注意力權重，或只取其中一個 head',
+    details:
+      '節點卡片會把權重畫成熱圖。接受 [seq, seq]、[H, seq, seq] 或 [B, H, seq, seq]；' +
+      'head_index 為 -1 時保留所有 head 並排顯示，設為非負數則取出其中一個。labels 會原樣轉送，供座標軸標註。',
     params: {
       head_index: '若權重是 per-head 形式（[H,seq,seq] 或 [B,H,seq,seq]），可指定顯示哪一個 head。-1 代表保留全部 head 並排顯示。',
       colormap: '熱圖視覺化用的色階（僅前端使用，後端會忽略）。',
     },
   },
   CausalLMModel: {
-    description:
-      '一個真的可以訓練的 GPT 風格 decoder-only transformer。輸出一個 MODEL，把 token ids（batch, seq_len）對應到下一個 token 的 logits（batch, seq_len, vocab_size）— 跟其他模型一樣接到 Optimizer 與 TrainingLoop，損失函數用 LMCrossEntropyLoss。預設值大約是 204M（2 億）參數的模型；把 d_model 與 n_layers 調小，才能在一堂課的時間內用筆電訓練完。',
+    description: 'GPT 式純解碼器：下個 token logits',
+    details:
+      '跟其他模型一樣接到 Optimizer 與 TrainingLoop，損失函數用 LMCrossEntropyLoss。預設值會建出約 ' +
+      '204M 參數的模型；把 d_model 與 n_layers 調小，筆電才訓練得動。改動任何結構參數都會丟棄已保存的權重。',
     params: {
       vocab_size: '模型認得幾種不同的 token。必須與餵進來的 tokenizer 一致 — 50257 是 GPT-2 的詞彙量。',
       d_model: 'residual stream 的寬度：每個 token 穿過整個網路時所攜帶的向量大小。必須能被 n_heads 整除。',
@@ -950,24 +1292,32 @@ const zhTW: NodeTranslations = {
     },
   },
   LMCrossEntropyLoss: {
-    description:
-      '專為語言模型調整形狀的 cross-entropy：把（batch, seq_len, vocab_size）的 logits 與（batch, seq_len）的 token ids 攤平後對齊，回傳所有位置的平均損失。搭配 CausalLMModel 接到 TrainingLoop 的 loss_fn。',
+    description: '每個 token 位置的平均交叉熵',
+    details:
+      '它會把 (batch, seq_len, vocab_size) 的 logits 與 (batch, seq_len) 的 token ' +
+      'ids 攤平對齊，所以 CausalLMModel 能直接接上 TrainingLoop 的 loss_fn。等於 ' +
+      'ignore_index（預設 -100）的目標不計損失、也不產生梯度。',
     params: {
       ignore_index: '這個 target id 不會產生任何損失與梯度。可以用在 padding，或指令資料中屬於提示（prompt）的那一半。-100 是各家工具共通的慣例。',
       label_smoothing: '把一小部分機率質量分給其他 token，讓「答對但過度自信」也要付一點代價（0 = 關閉，0.1 是常見值）。',
     },
   },
   LMTokenizer: {
-    description:
-      'tokenizer 本身，以一個可重複使用的物件輸出：接到 LMTokenizedDataset 可以把文字語料切成訓練用的區塊，接到生成節點則能讓它們使用與訓練時相同的 token ids。gpt2 的 50257 個 token 是最常見的起點。每種編碼只會下載一次 BPE 對照表，之後就能離線使用。',
+    description: '可重用 tokenizer：文字與 token 互轉',
+    details:
+      '接到 LMTokenizedDataset 可把語料打包成訓練區塊，接到生成節點則讓它們使用與訓練時相同的 token ids。gpt2 ' +
+      '的 50257 個 token 訓練成本最低；cl100k_base 與 o200k_base 每個 token 塞得下更多文字，' +
+      '但輸出層要更寬。每種編碼只會下載一次 BPE 對照表，之後就能離線使用。',
     params: {
       encoding:
         '要使用哪一套 BPE 詞彙表。gpt2（50257 個 token）訓練成本最低；cl100k_base（GPT-3.5/4）與 o200k_base（GPT-4o）能用同樣的 token 數塞進更多文字，但輸出層也要寬得多。',
     },
   },
   TextCorpusDataset: {
-    description:
-      '把文字語料以「一列一段原始文字」的形式載入 — 可以是 HuggingFace Hub 上的資料集，也可以是你自己上傳的 .txt 檔。這是語言模型訓練的原料，所以還沒有標籤（target）：請接到 LMTokenizedDataset（不要直接接 DataLoader），由它把文字切成「預測下一個 token」的訓練區塊。',
+    description: '從 HuggingFace 或 .txt 載入文字列',
+    details:
+      '這些列沒有標籤，DataLoader 無法直接批次化：請把 dataset 接到 LMTokenizedDataset，由它切成預測下一個 ' +
+      'token 的訓練區塊。預設的 repo 是 roneneldan/TinyStories，約 200 萬篇簡單的童話故事。',
     params: {
       source: '文字的來源：HuggingFace Hub 上已發布的資料集，或這台機器上的 .txt 檔。',
       dataset_name:
@@ -985,8 +1335,11 @@ const zhTW: NodeTranslations = {
     },
   },
   LMTokenizedDataset: {
-    description:
-      '把文字列轉成固定長度的訓練區塊：先把每份文件 tokenize，用 end-of-text token 串接起來，再把整條 token 流切成 (input_ids, labels) 配對，其中 labels 就是 input_ids 往左位移一格 — 這就是「預測下一個 token」。輸出接到 DataLoader。打包好的 token 會存到磁碟快取，所以只有第一次執行需要付 tokenize 的時間 — 這份快取不會自動清除，要清請用 `cdui cache prune`。',
+    description: '把文字列 tokenize 後切成固定長度的訓練區塊',
+    details:
+      '文件間用 end-of-text token 串接，再把 token 流切成 (input_ids, labels) 配對，labels ' +
+      '是 input_ids 往左位移一格，也就是預測下一個 token。輸出接到 DataLoader。打包好的 token 存進磁碟快取，' +
+      '只有第一次要花時間 tokenize；這份快取不會自動清除，要清請用 `cdui cache prune`。',
     params: {
       seq_len:
         '每個訓練區塊有幾個 token — 也就是模型學習時看到的上下文長度。不能超過模型的 max_seq_len。越長，attention 的記憶體成本以平方成長。',
@@ -999,8 +1352,11 @@ const zhTW: NodeTranslations = {
     },
   },
   DataMixDataset: {
-    description:
-      '把 2–6 個文字語料混成一個原始文字列的資料集 — 依權重、種子化的交錯（比例抽取、不重複、同種子可重現），或依序串接（corpus_1 全部、再 corpus_2… 的課程式排序）。接 TextCorpusDataset 的輸出進來，結果餵給 LMTokenizedDataset，就能研究資料混合比例與課程順序的影響。混合只記錄（來源, 列號）索引、逐列惰性讀取，不會把語料文字實體化。',
+    description: '把 2-6 個語料混成資料集：依權重抽取或依序串接',
+    details:
+      'interleave 依權重不重複抽取，同一個種子得到同樣順序；某個語料抽完後就不再被抽，其餘權重重新正規化。concat 則是 ' +
+      'corpus_1 全部跑完再接 corpus_2。混合只記錄（來源, 列號）索引，逐列惰性讀取。輸入接 TextCorpusDataset ' +
+      '的輸出，結果餵給 LMTokenizedDataset。',
     params: {
       sources: '這顆節點有幾個語料輸入埠。',
       weights: '逗號分隔的抽取權重，每個來源一個（會正規化；只在 interleave 模式使用）。抽完的來源不再被抽，其餘來源重新正規化 — 混合的尾段就是還有剩的語料。',
@@ -1009,8 +1365,11 @@ const zhTW: NodeTranslations = {
     },
   },
   PerplexityEvaluate: {
-    description:
-      '在沒看過的文字上為訓練好的語言模型打分。它會跑完整個資料集，把每一個計分位置的 cross-entropy 平均起來，再回報 $\\mathrm{perplexity} = \\exp(\\text{val\\_loss})$ — 大致可以讀成「模型在每一步大約是在幾個機率相當的 token 之間猶豫」，所以在 50257 個 token 的詞彙表上亂猜就是 50257。這個平均值是「每個 token」的，而且綁定這份資料集與這套 tokenizer，因此只有用同樣方式量出來的數字才能互相比較。',
+    description: '用沒看過的文字評估模型：損失與 perplexity',
+    details:
+      'perplexity 就是 $\\exp(\\text{val\\_loss})$，大致可讀成模型每一步在幾個機率相當的 token 之間猶豫，' +
+      '所以在 50257 個 token 的詞彙表上亂猜就是 50257。這個平均是「每個 token」的，而且綁定這份資料集與這套 ' +
+      'tokenizer，只有用同樣方式量出來的數字才能互相比較。標籤為 -100 的位置會跳過。',
     params: {
       batch_size: '一次計分幾個區塊。它不會改變結果 — 平均是以 token 數加權，而不是以批次數加權 — 只影響速度與記憶體。',
       max_batches: '跑到這麼多批次就停（0 = 整份資料集）。適合上課時快速估一下；實際量了多少可以看 `tokens` 輸出。',
@@ -1019,8 +1378,11 @@ const zhTW: NodeTranslations = {
     },
   },
   TextGenerate: {
-    description:
-      '用訓練好的語言模型接續一段提示文字，一個 token 一個 token 地生成，並且邊生成邊串流出來。temperature、top_k、top_p 這三個旋鈕決定寫出來的東西有多敢冒險：temperature 設 0 時每次都取機率最高的 token（安全但容易重複），調高則是拿連貫性換多樣性。遇到 end-of-text token 或達到 max_new_tokens 就停。',
+    description: '用訓練好的模型接續提示文字，逐 token 輸出',
+    details:
+      'temperature、top_k、top_p 決定寫出來的東西有多敢冒險：temperature 設 0 時每次都取機率最高的 ' +
+      'token，調高則是拿連貫性換多樣性。遇到 end-of-text token 或達到 max_new_tokens 就停。' +
+      'tokenizer 必須跟訓練時用的是同一個。',
     params: {
       prompt: '要接續的文字。當沒有 `prompt` 輸入連線時使用此欄位。提示文字的風格越接近訓練資料，小模型的表現越好。',
       max_new_tokens: '最多生成幾個 token。每一個都要對「目前已經寫出來的全部內容」重新跑一次前向傳播，所以這是決定本節點要跑多久的旋鈕。',
@@ -1032,8 +1394,11 @@ const zhTW: NodeTranslations = {
     },
   },
   TextEmbedding: {
-    description:
-      '用預訓練的 sentence-transformer 把每段文字變成一條稠密向量，意思相近的文字向量會靠得很近（cosine 接近 1）。這就是語意搜尋與 RAG 背後的編碼器：先把文件各自嵌入一次，再把問題嵌入，然後比較。需要從套件中心安裝 sentence-embeddings 套件包；內附的四個模型都很小（22M 到 118M 參數），純 CPU 也跑得動。',
+    description: '用預訓練的句子編碼器把每段文字變成一條稠密向量',
+    details:
+      '意思相同的文字會得到方向相同的向量，cosine 接近 1 就是判準。需要套件中心的 sentence-embeddings 套件包；' +
+      '四個模型都不大（2200 萬到 1.18 億參數），純 CPU 也跑得動。texts（切塊後的清單）與 text（單一字串）只能接其中一個，' +
+      '兩個都接會報錯。',
     params: {
       model: 'all-MiniLM-L6-v2：最小、英文。paraphrase-multilingual-MiniLM-L12-v2：支援 50 多種語言（含繁體中文），不需要前綴。bge-small-zh-v1.5：中文專用。multilingual-e5-small：檢索效果最好，但需要 "query: " / "passage: " 前綴（見 prefix）。',
       text: '沒有任何輸入連線時使用的備用文字。',
@@ -1047,8 +1412,11 @@ const zhTW: NodeTranslations = {
     },
   },
   DocumentLoader: {
-    description:
-      '從一個資料夾或一個上傳的檔案讀入純文字文件（.txt 與 .md）。每份文件會以 {text, source} 的形式輸出，讓後面的節點能標註答案出自哪裡。內附的 data/samples/rag 資料夾放了五篇關於 CodefyUI 與機器學習基礎的中英雙語短文，所以 RAG 範例不需要任何設定就能跑。RAG 鏈的第一個節點：DocumentLoader -> TextChunker -> TextEmbedding -> VectorStore。',
+    description: '從資料夾或上傳檔讀入 .txt 與 .md，附上來源',
+    details:
+      '每份文件輸出成 {text, source}，來源會一路帶到 TextChunker 與最後的引用標註。內附的 ' +
+      'data/samples/rag 資料夾放了五篇關於 CodefyUI 與機器學習基礎的中英雙語短文，RAG 範例不必設定就能跑。RAG ' +
+      '鏈從這裡開始：DocumentLoader → TextChunker → TextEmbedding → VectorStore。',
     params: {
       source: '文件來源：一個資料夾，或一個你上傳的檔案。',
       directory: '放 .txt/.md 檔的資料夾。相對路徑先以後端工作目錄解析，再以 CodefyUI 後端資料夾解析（所以內附範例在任何目錄下都找得到）；專案模式下相對路徑必須留在專案目錄內。',
@@ -1058,8 +1426,11 @@ const zhTW: NodeTranslations = {
     },
   },
   TextChunker: {
-    description:
-      '把文件切成有重疊的小塊，小到能嵌入、也放得進提示詞。檢索是以「塊」為單位而不是整份檔案：一個問題應該撈回能回答它的那一段，而不是整份五頁的文件。characters 與語言無關、中文沒有空格也適用；sentences 與 paragraphs 會保留自然的邊界，再把它們塞滿到 chunk_size。',
+    description: '把文件切成有重疊的小塊',
+    details:
+      'characters 以固定字數切窗，與語言無關，中文沒有空格也適用；sentences 與 paragraphs 保留自然邊界，' +
+      '再把它們塞滿到 chunk_size。chunk_overlap 只用於 characters，讓被切斷的句子在下一塊裡仍然完整。' +
+      '每一塊都會記下自己的來源；檢索以塊為單位而不是整份檔案。',
     params: {
       strategy: 'characters：固定長度的字元視窗。sentences：以句號、問號、驚嘆號切句再打包。paragraphs：以空行切段再打包。',
       chunk_size: '每一塊的字元數（所有策略共用的上限）。',
@@ -1068,24 +1439,31 @@ const zhTW: NodeTranslations = {
     },
   },
   VectorStore: {
-    description:
-      '把各塊的嵌入向量與文字打包成一個可搜尋的索引。這就是 RAG 系統的「資料庫」：一個 [N, D] 矩陣加上 N 段文字，預設用 cosine 當度量（每列存成單位長度，搜尋就只是一次矩陣乘法）。把 index 接到 Retriever。只存在記憶體裡；重新執行時會從快取的嵌入在幾毫秒內重建。',
+    description: '把各塊的嵌入向量與文字打包成可搜尋的索引',
+    details:
+      '索引就是一個 [N, D] 矩陣加上 N 段文字，預設度量是 cosine — 每列都存成單位長度，所以搜尋只是一次矩陣乘法。index ' +
+      '接到 Retriever。它只存在記憶體裡，重新執行時會從快取的嵌入在幾毫秒內重建。',
     params: {
       metric: 'cosine 忽略向量長度，是句子嵌入訓練時所用的度量；dot 是原始內積，給長度本身有意義的嵌入用。',
       normalize: '把每列存成單位長度（此時 cosine 等於 dot）。metric 為 dot 時忽略。',
     },
   },
   Retriever: {
-    description:
-      '找出與問題最相似的幾塊文字。把索引裡每一塊都跟問題向量算分（一次矩陣乘法，跟 CosineSimilarity 是同一個核心），留下 top_k，再丟掉低於 min_score 的，最後把文字交給 PromptBuilder。留意分數：最高分只有 0.3 左右，通常代表語料裡根本沒有答案。',
+    description: '從索引中取出與問題向量最相似的 top_k 塊文字',
+    details:
+      '它用一次矩陣乘法為索引裡的每一塊評分，留下 top_k，再丟掉低於 min_score 的，最後把文字交給 PromptBuilder。' +
+      '留意分數：最高分只有 0.3 左右，通常代表語料裡沒有答案。問題向量必須來自與索引相同的嵌入模型。',
     params: {
       top_k: '要撈回幾塊。',
       min_score: '低於這個分數的結果會被丟掉（cosine 的範圍是 -1 到 1）。0 表示全部保留；用 e5/MiniLM 時 0.3 到 0.5 是合理的門檻。',
     },
   },
   PromptBuilder: {
-    description:
-      '組出最後的提示詞：把撈回的文字塊貼進模板，連同問題與「只能根據這些內容回答」的指示。這就是 RAG 的全部訣竅：模型沒有被微調，只是被拿給它看對的段落。模板必須包含 {context} 與 {question}；想自己寫多行模板，把 TextInput 接到 template 輸入即可。',
+    description: '把撈回的文字塊與問題填進提示詞模板',
+    details:
+      '預設模板會要求模型只依據那段內容作答。模板必須包含 {context} 與 {question}；想寫多行模板，把 TextInput ' +
+      '接到 template 輸入。number_contexts 會在每塊文字前標上 [1]、[2]，接上 sources ' +
+      '後會在括號裡附上出處。',
     params: {
       template: '含 {context} 與 {question} 兩個佔位符的模板。連了 template 輸入時以輸入為準。',
       separator: '各塊文字之間的分隔：blank_line 空一行、newline 換行、rule 一條分隔線。',
@@ -1094,8 +1472,11 @@ const zhTW: NodeTranslations = {
     },
   },
   HFTextGenerate: {
-    description:
-      '用一個在本機執行的小型指令微調開源模型回答提示詞：Qwen2.5-0.5B-Instruct（Apache-2.0，約 1 GB，來自 rag 套件包）。對話模板會自動套用，節點會逐個 token 回報進度。筆電 CPU 大約每秒幾個 token，GPU 快很多。與 TextGenerate 不同：那個節點是用你在畫布上訓練的模型接續文字，這個節點是載入預訓練權重並聽從指令。',
+    description: '用本機的指令微調模型回答提示詞',
+    details:
+      '模型是 rag 套件包裡的 Qwen2.5-0.5B-Instruct（Apache-2.0，約 1 GB），對話模板會自動套用。' +
+      '節點會逐個 token 回報進度；筆電 CPU 大約每秒幾個 token，GPU 快很多。若要用畫布上訓練出來的模型接續文字，請改用 ' +
+      'TextGenerate；這裡載入的是預訓練權重，聽從指令作答。',
     params: {
       model: '要載入的模型。灰掉的選項需要先到套件中心安裝 rag 套件包。',
       prompt: '當沒有 `prompt` 輸入連線時使用的提示詞。',
@@ -1109,10 +1490,20 @@ const zhTW: NodeTranslations = {
       dtype: '權重精度。auto 在 CUDA 上用 bfloat16/float16、在 CPU 與 MPS 上用 float32。',
     },
   },
+  LLMChat: {
+    description: '把文字、影像或陣列送給聊天 LLM，輸出它的回覆',
+    details:
+      '可用的供應商有 ChatGPT API、Codex、Claude API，以及本機 Ollama（走它的 OpenAI 相容 /v1 端點）' +
+      '。API 金鑰只存在於本次工作階段：存檔時會被清掉，建議改用 OPENAI_API_KEY 或 ANTHROPIC_API_KEY ' +
+      '環境變數。',
+  },
 
   // ── Diffusion ──
   GaussianNoise: {
-    description: '產生獨立同分布的高斯噪聲 $\\epsilon \\sim \\mathcal{N}(\\mu, \\sigma^2)$。把張量接到 shape_ref 就會自動跟隨上游形狀（diffusion 中 x_0 與 noise 配對的標準作法）；否則就讀 shape 參數。可指定種子確保可重現。',
+    description: '依指定形狀取樣獨立同分布的高斯噪聲',
+    details:
+      '$\\epsilon \\sim \\mathcal{N}(\\mu, \\sigma^2)$，由 mean、std 決定，seed ' +
+      '相同就會得到相同的噪聲。把張量接到 shape_ref 時，噪聲會跟隨該張量的形狀與裝置，shape 參數則不再使用。',
     params: {
       shape: '逗號分隔的維度，例：「1,3,32,32」。當 shape_ref 沒接時才會用。',
       mean: '高斯分布的平均值，預設 0（標準常態）。',
@@ -1121,13 +1512,17 @@ const zhTW: NodeTranslations = {
     },
   },
   Lerp: {
-    description: '線性內插：$\\alpha\\,a + (1-\\alpha)\\,b$。$\\alpha=1$ 時等於 $a$；$\\alpha=0$ 時等於 $b$。可作為 diffusion 前向公式的教學替身。',
+    description: '以 alpha 混合兩個張量',
+    details: 'alpha 預設讀參數，接上 alpha 輸入時改用輸入值，可以是純量或任何能廣播的張量；輸出形狀由廣播決定。',
     params: {
       alpha: '內插權重（0..1）。只在沒接 alpha 輸入時才會用此參數。',
     },
   },
   TimestepEmbedding: {
-    description: '把 diffusion 的時間步 $t$ 編碼成可餵給 U-Net 各 block 的向量。沿用 Vaswani 風格的正弦頻率組合，後面接 Linear→SiLU→Linear，是 DDPM 的標準配方。',
+    description: '把時間步 $t$ 編碼成條件向量',
+    details:
+      '先做 Vaswani 式的正弦頻率編碼（範圍由 max_period 控制），再接 Linear→SiLU→Linear，這是 DDPM ' +
+      '的標準配方。輸出形狀為 [B, embed_dim]；sin 與 cos 各佔一半，所以 embed_dim 必須是偶數。',
     params: {
       embed_dim: '時間向量的維度，必須是偶數（sin/cos 各半）。',
       max_period: '頻率組中最大的週期 — 控制能分辨多少個不同的時間步。',
@@ -1135,14 +1530,21 @@ const zhTW: NodeTranslations = {
     },
   },
   Upsample: {
-    description: '純粹的空間 upsample（使用 F.interpolate，沒有可學習權重）。預設把空間維度放大為 2 倍。U-Net 解碼路徑若不想讓 upsample 也跟著學習，就用這個（相較之下 ConvTranspose2d 會學）。',
+    description: '依倍率縮放空間維度，沒有可學習權重',
+    details:
+      '縮放由 F.interpolate 完成：mode 可選 nearest、bilinear 或 area，scale_factor 預設 ' +
+      '2.0，小於 1 時會改為縮小。若需要可學習的上採樣核，請改用 ConvTranspose2d。',
     params: {
       mode: '插值方式。nearest=直接複製像素、bilinear=雙線性平滑、area=平均（適合做 downsample）。',
       scale_factor: '空間維度的縮放倍數。2.0 放大兩倍、0.5 縮成一半。',
     },
   },
   DiffusionUNet: {
-    description: '把整個玩具版 diffusion U-Net 封裝成單一節點。輸出一個 nn.Module，輸入 $(x, t)$ 後會回傳形狀與 x 相同的「預測噪聲」。可串到 DDPMSampler 跑反向 diffusion。若想看到架構被一塊塊明確接起來，可以改用 `Mini-UNet-Expanded` preset。',
+    description: '玩具版噪聲預測 U-Net，輸出與輸入同形狀的噪聲',
+    details:
+      '先經過 stem 卷積，接著依 channel_mult 每層一個時間條件 ResBlock，下採樣到瓶頸後再帶著 skip ' +
+      '連接上採樣回來。輸入的高與寬必須能被 2^(層數-1) 整除，num_groups 也必須整除每層的通道數。把 model 接給 ' +
+      'DDPMSampler 即可跑反向擴散。',
     params: {
       in_channels: '噪聲輸入的通道數（RGB 為 3，常見 SD latent 為 4）。',
       base_channels: '經過 stem 後的通道數。每一層會以對應的 channel_mult 倍率相乘。',
@@ -1153,7 +1555,10 @@ const zhTW: NodeTranslations = {
     },
   },
   DDPMSampler: {
-    description: '執行反向 DDPM 去噪。會依照排程逐步呼叫 `model(x_t, t)` 預測噪聲，再套用 DDPM 更新公式。整個反向迴圈封在節點內部，圖才能維持無環 — 開啟 verbose 後可在 step trace 看到中間軌跡。',
+    description: '執行反向 DDPM 迴圈，將噪聲張量去噪成影像',
+    details:
+      '每一步呼叫 `model(x_t, t)` 預測噪聲，再套用 DDPM 更新公式；schedule 可選原始的 linear 或 ' +
+      'cosine。整個迴圈在節點內部執行，圖因此維持無環，每步加入的高斯噪聲由 seed 決定。',
     params: {
       num_steps: '反向 diffusion 的步數。步數越多軌跡越平滑，但也越慢。',
       schedule: '噪聲排程。linear 是原版 DDPM；cosine（Nichol & Dhariwal 2021）在接近資料的區域噪聲增加得更慢。',
@@ -1162,14 +1567,21 @@ const zhTW: NodeTranslations = {
       seed: '取樣時每一步加入的高斯噪聲 z 所使用的種子。',
     },
   },
+  DiffusionTrainingLoop: {
+    description: '訓練 U-Net 預測加入的雜訊（DDPM）',
+    details:
+      '每一步取一張乾淨影像、隨機挑一個時間步加上雜訊，再用預測雜訊與實際雜訊的 MSE 更新權重，輸出訓練後的模型與每輪 loss。' +
+      '這裡設定的雜訊排程（schedule、num_timesteps、beta_start、beta_end）必須和之後取樣的 ' +
+      'DDPMSampler 一致，否則生成會壞掉。',
+  },
 
   // ── VLA ──
   PushWorldEnv: {
-    description:
-      '語言條件式 2D 推物環境（PushT 精神、純 torch）：一個白色 agent、' +
-      '彩色圓盤 puck 與彩色圓環目標，指令指定哪個 puck 要推到哪個目標。' +
-      '有干擾物時單靠畫面無法判斷目標，策略必須讀懂指令。' +
-      '把 env 接給 PushWorldDemos 與 VLARollout',
+    description: '2D 推物環境，指令指定 puck 與目標',
+    details:
+      '輸出回合工廠給 PushWorldDemos 與 VLARollout 依種子建立回合，畫面尺寸要與 VLAModel 的 ' +
+      'image_size 一致。n_distractors 為 1 以上時會多出干擾 puck 與第二個目標，指令成為判斷目標的唯一依據。以純 ' +
+      'torch 重現 PushT 的精神，不需安裝模擬器。',
     params: {
       image_size: '渲染畫面邊長（像素，正方形）；96 對齊 PushT 慣例',
       n_distractors: '目標 puck 之外的干擾 puck 數；0 時語言只是裝飾，≥1 時指令是唯一的目標線索',
@@ -1177,12 +1589,11 @@ const zhTW: NodeTranslations = {
     },
   },
   PushWorldDemos: {
-    description:
-      '用腳本專家滾 PushWorld 回合，產出行為複製樣本' +
-      '（(影像, 指令位元組, 動作區塊), 動作區塊）、' +
-      '一份獨立種子的驗證切分，與可接 VideoWrite 的示範影片張量。' +
-      'demo_noise 是 DART 式擾動：執行帶噪動作、標註保留專家動作，' +
-      '這正是閉環控制需要的回復資料',
+    description: '執行腳本專家的回合，輸出行為複製樣本',
+    details:
+      '樣本是 ((影像, 指令位元組, 動作區塊), 動作區塊)：動作區塊也放在輸入裡，flow matching 才能在 forward ' +
+      '內對它加噪。demo_noise 是 DART 式擾動：執行帶噪動作、但記錄專家動作，藉此產生回復狀態；holdout_episodes ' +
+      '以不重疊的種子另收一份，demo_video 可接 VideoWrite。',
     params: {
       episodes: '訓練回合數（每回合約 25 個樣本；600 回合約 1.5 萬樣本、約 0.4 GB）',
       chunk: '每個樣本的動作數（動作區塊長度 H，須與 VLAModel 的 chunk 一致）；超過回合結尾時重複最後一個動作',
@@ -1194,12 +1605,11 @@ const zhTW: NodeTranslations = {
   },
 
   VLAModel: {
-    description:
-      '迷你視覺-語言-動作策略：視覺 stem + 位元組級指令嵌入 -> transformer 主幹 ' +
-      '-> 動作區塊 expert。head_type 選擇範式——flow_matching（pi0/SmolVLA 家族：' +
-      '對動作區塊加噪、學習速度場、推論時 Euler 積分）或 regression（直接 MSE 行為複製）' +
-      '——其他一切固定，兩者可誠實對比。loss_fn 由本節點配對輸出，' +
-      '接錯損失而靜默訓練錯目標的整類錯誤因此不存在。預設約 3.2M 參數',
+    description: '迷你視覺-語言-動作策略：由影像與指令預測一段動作',
+    details:
+      'head_type 在 flow_matching（pi0/SmolVLA 路線：對動作區塊加噪、學習速度場、推論時 Euler 積分）與 ' +
+      'regression（直接預測、用 MSE）之間切換，其餘設定相同。配對的 loss_fn 由輸出埠提供，與 model 一起接到 ' +
+      'TrainingLoop。chunk、image_size 需與 demos 和 env 節點一致，預設約 3.2M 參數。',
     params: {
       head_type: 'flow_matching：pi0/SmolVLA 式速度場 + Euler 取樣。regression：直接預測區塊、MSE。loss_fn 輸出自動跟隨此選擇',
       d_model: '所有 token 流的寬度（須能被 n_heads 整除）',
@@ -1219,11 +1629,11 @@ const zhTW: NodeTranslations = {
     },
   },
   VLARollout: {
-    description:
-      '在 PushWorld 中閉環評估 VLAModel：全新回合、後退視野執行' +
-      '（預測一個區塊、執行 execute_k 步、重新規劃），輸出成功率、逐回合指標、' +
-      '與可接 VideoWrite 的 rollout 影片張量（依結果鑲綠/紅邊框）。' +
-      'instruction_mode=swapped 是語言接地消融：真的在讀指令的策略，指令說謊時會崩潰',
+    description: '閉環評估：成功率、平均步數與影片',
+    details:
+      '策略每次預測一個動作區塊，只執行其中 execute_k 步就重新規劃，即所謂的後退視野（receding horizon）；把 ' +
+      'execute_k 調到接近區塊長度，量到的就是開環的誤差累積。instruction_mode=swapped 改用干擾 puck ' +
+      '的顏色下指令，不看語言的策略成績不會改變。frames 會記錄回合畫面，成功鑲綠邊、逾時鑲紅邊。',
     params: {
       episodes: '評估回合數（種子流與訓練資料不相交）',
       execute_k: '每個預測區塊執行幾步後重新規劃（後退視野）。同一策略實測：2 -> 46%、4 -> 34%、整塊 8 -> 20%——往區塊長度調大即可研究 open-loop 誤差累積',
@@ -1235,16 +1645,209 @@ const zhTW: NodeTranslations = {
     },
   },
   VLAActionEval: {
-    description:
-      '開環評估：在保留示範集（PushWorldDemos 的 holdout 輸出）上，' +
-      '計算策略預測動作區塊與專家動作的均方誤差。快速、每種子可重現——' +
-      '與 VLARollout 閉環成功率互補。MSE 低而成功率低，正是誤差累積的特徵',
+    description: '在保留樣本上比較預測動作與專家動作的均方誤差',
+    details:
+      '請接 PushWorldDemos 的 holdout 輸出；max_samples 限制樣本數，seed 固定 flow head ' +
+      '的取樣噪聲。這是開環量測，誤差低但 VLARollout 成功率低時，通常代表誤差累積。',
     params: {
       max_samples: '最多評估的樣本數',
       batch_size: '推論批次大小',
       seed: '固定 flow head 的取樣噪聲讓數字可重現（regression 不受影響）',
       device: '此節點的裝置。保持 auto 就跟隨這張圖的裝置（工具列的圖裝置，沒有指定時則用設定）。一張圖只在一個裝置上執行；若部分工作需要不同裝置，請拆成兩張圖。',
     },
+  },
+
+  // ── Plugins ──
+  // The first-party packs that ship from this repo. Keyed by the QUALIFIED node
+  // name the registry serves (`edu:Classifier`), which is what `tn` looks up;
+  // a pack that is not installed simply never reaches these lines. A
+  // third-party plugin has no way to add translations of its own yet, so its
+  // nodes read in English whatever the locale.
+  'deep:Edu-CrossAttention': {
+    description: '多頭注意力：query 關注 context',
+    details:
+      '$Q$ 取自 `query`，$K$、$V$ 取自 `context`。`query` 與 `context` 的序列長度不必相同，' +
+      '所以輸出形狀跟隨 `query`，權重則是長方形的 [H, Q_seq, K_seq]。可選的 [Q_seq, K_seq] ' +
+      '布林遮罩會擋住指定位置，True 代表擋住。',
+  },
+  'deep:Edu-MultiHeadAttention': {
+    description: '多頭自注意力，輸出 [H, seq, seq] 權重',
+    details:
+      'embed_dim 會平分給 num_heads 個頭，每個頭各自做縮放點積注意力，再把串接後的結果經 $W_o$ 混合。`causal` ' +
+      '會擋住每個位置右側的內容，可選的 [seq, seq] 遮罩與它以 OR 合併。',
+  },
+  'deep:Edu-Patchify': {
+    description: '影像切成 P×P 區塊，輸出 [B,N,C·P·P]',
+    details:
+      'H 與 W 都必須能被 patch_size 整除。第二個輸出是區塊格點數 [grid_h, grid_w]；把 `flatten` ' +
+      '關掉則每個區塊保留 [C, P, P] 形狀，而不是壓成一條向量。verbose 模式會逐步記錄 unfold → permute → ' +
+      'flatten 這條把影像變成 token 序列的過程。',
+  },
+  'deep:Edu-ResBlock': {
+    description: '兩段 GN→SiLU→Conv，加回 skip 路徑',
+    details:
+      '擴散模型 U-Net 的基本組成單元。把 `TimestepEmbedding` 接到 `time_emb`，' +
+      '兩個卷積之間就會加入時間步投影；不接就是一般的 ResNet 區塊。GroupNorm 的 `groups` 必須同時整除 ' +
+      'in_channels 與 out_channels；兩者不同時，skip 路徑會補一個 1×1 卷積。',
+  },
+  'deep:Edu-SelfAttention': {
+    description: '單頭自注意力，輸出 [seq, seq] 注意力權重',
+    details:
+      'Q、K、V 由三個 Linear 投影而來，分數為 $QK^T/\\sqrt{d}$，對分數取 softmax 得到權重，輸出則是權重乘上 ' +
+      'V。分數在 softmax 前會先除以 `temperature`：小於 1 會讓分布更尖銳，大於 1 更平坦。`causal` ' +
+      '會擋住每個位置右側的內容，可選的 [seq, seq] 遮罩與它以 OR 合併。',
+  },
+  'edu:ActivationLayer': {
+    description: '往正在組裝的網路尾端加一個激活函數',
+    details:
+      '`function` 可選 relu、tanh、sigmoid、identity。identity 完全不加非線性，整疊 FFNLayer ' +
+      '會塌回單一個線性映射。`model` 輸入必須接上，這顆要放在 FFNLayer 後面。',
+  },
+  'edu:AdvancedClassifier': {
+    description: '以 SVM、決策樹或隨機森林分類 x_query',
+    details:
+      '`kind` 可選 SVM（kernel 為 rbf、linear 或 poly）、Decision Tree（`max_depth`，0 ' +
+      '代表不限）或 Random Forest（`n_estimators`），三者都來自 scikit-learn。`model` 輸出可接到 ' +
+      'DecisionBoundary，SVM 的 model 還帶著支持向量座標。',
+  },
+  'edu:Classifier': {
+    description: '以 KNN、線性或邏輯斯分類 x_query',
+    details:
+      '`kind` 可選 knn（`n_neighbors`）、logistic 或 linear，三者底層都是 scikit-learn。' +
+      'linear 是對 one-hot 標籤做最小平方再取 argmax，所以它的 `probabilities` 是回歸分數而不是機率。' +
+      '`model` 輸出可接到 DecisionBoundary。',
+  },
+  'edu:FFNLayer': {
+    description: '往正在組裝的網路尾端加一個全連接層',
+    details:
+      '每接一顆就往尾端加一個 `nn.Linear(in_features, out_features)`。輸入維度會從上一層推得，' +
+      '所以只有鏈上第一顆會用到 `in_features`。每層參數量 = out_features × in_features + ' +
+      'out_features。跟 ActivationLayer 交錯串成 MLP，鏈的尾端接 TrainAndEvaluate。',
+  },
+  'edu:FilterRows': {
+    description: '只保留 2D 表格中指定欄位通過比較的列',
+    details:
+      '用 `column_name` 選欄時需要連上 `columns` 輸入，或改用 `column_index` 指定位置。除了篩選後的表，' +
+      '還會輸出布林的列遮罩與通過的列數。verbose 模式會逐一記錄取欄、與門檻比較、計數、索引四個步驟。',
+  },
+  'edu:SentenceEmbedding': {
+    description: '把文字的語意編碼成一條 (d,) 向量',
+    details:
+      '意思接近的句子，向量方向也接近。底層是 model2vec 靜態嵌入：純 CPU 的查表加平均，模型與結果都會在行程內快取。`model` ' +
+      '可選多語言模型（支援中文與跨語言比較）或更小的純英文模型；第一次使用會下載權重。把兩條向量接給 CosineSimilarity ' +
+      '就能量兩句話意思有多接近。',
+  },
+  'edu:SlidingWindow2D': {
+    description: '把 kernel 在影像上滑動，每個位置做加權加總',
+    details:
+      '吃 (C, H, W) 影像，單通道 (H, W) 也接，每個通道套用同一個 kernel。`preset` 提供四個 3×3 ' +
+      'kernel（模糊、邊緣偵測、銳化、垂直邊緣），或切到 Custom 自填 N×N 數字；padding=0 時邊長各縮 k-1。運算是 ' +
+      'cross-correlation，kernel 不會翻轉。',
+  },
+  'edu:TrainAndEvaluate': {
+    description: '訓練堆好的網路，再預測 x_query 標籤',
+    details:
+      '尾端會自動補上一個壓到類別數的線性輸出層，再以 cross-entropy 與 Adam 訓練 `epochs` 輪、學習率為 `lr`。' +
+      '除了 predictions，還會輸出可接 DecisionBoundary 的 `model` 與每輪的 `losses`。',
+  },
+  'foundations:Edu-ColumnStats': {
+    description: '每欄的平均、標準差、最小值、最大值與列數',
+    details:
+      '標準差預設是母體標準差（除以 N）；勾選 unbiased 改成除以 N−1 的樣本標準差。開啟「顯示內部步驟」後，還會記錄每個中間步驟：' +
+      '欄總和、除以列數、平方差、開根號，檢視器就能看到每個統計量是怎麼算出來的。',
+  },
+  'foundations:Edu-FFN': {
+    description: '兩層線性層夾一個激活函數，另外輸出隱藏層激活值',
+    details:
+      '權重由 seed 初始化，同一個 seed 得到同一組權重。預設維度很小：embed_dim 8、hidden_dim 16；實務上 ' +
+      'hidden_dim 通常是 embed_dim 的 4 倍。',
+  },
+  'foundations:Edu-KNN': {
+    description: '由最近的 k 個訓練點多數決，輸出預測標籤',
+    details:
+      '距離對每個訓練點逐一計算，成本隨 N_train × N_query 成長；資料量大時改用有樹狀索引的 KNN 節點。度量可選 ' +
+      'euclidean、manhattan 或 cosine（1 − cos），k 會被限制在訓練集大小內。另外會輸出每筆查詢的前 k ' +
+      '個距離與鄰居索引。',
+  },
+  'foundations:Edu-LinearRegression': {
+    description: '以封閉解或梯度下降擬合 $y=Xw+b$',
+    details:
+      'closed_form 解正規方程 $w = (X^T X + \\lambda I)^{-1} X^T y$，矩陣奇異時退回最小平方求解；' +
+      'gradient_descent 用 lr 跑 epochs 次迭代。regularization 在兩種解法下都只對權重加 ' +
+      'L2（ridge）懲罰。',
+  },
+  'foundations:Edu-LogisticRegression': {
+    description: '以梯度下降訓練 softmax，輸出標籤與機率',
+    details:
+      '損失函數是交叉熵，regularization 對權重（不含 bias）加上 L2 衰減。二元問題走同一條兩欄 softmax，等價於 ' +
+      'sigmoid 形式。預測標籤是字串，取自排序後的訓練標籤集合；classes 輸出對應 weights 的欄位順序。',
+  },
+  'foundations:Edu-TokenEmbedding': {
+    description: '以固定種子的向量表，把 token 列表轉成向量',
+    details:
+      '輸入可以是 tokens（字串）或 token_ids（整數）。hash 用穩定雜湊把任何 token 映到某一列；ordinal ' +
+      '依首次出現順序配號，並從 vocab 輸出對照。向量表隨機、由 seed 固定且不會被訓練；需要可學習的查表請用 Utility 的 ' +
+      'Embedding 節點。',
+  },
+  'rl:Edu-PolicyGradient': {
+    description: '一次 REINFORCE 步驟的損失與每個中間量',
+    details:
+      'probs = softmax(logits / temperature)，在實際採取的動作上取值再取 log，loss = ' +
+      '-mean(log_probs · advantages)；baseline 設 mean 會減掉批次平均獎勵，設 none ' +
+      '則直接用原始獎勵當優勢。不會呼叫 backward()，那一步由 BackwardOnce 負責。',
+  },
+  'stats:Stats-ChartView': {
+    description: '把圖表資料或表格畫成長條、折線、散佈或熱圖',
+    details:
+      'auto 沿用傳入圖表原本的類型；表格有 row_labels 時畫長條圖，沒有就畫折線圖。熱圖與其他類型之間不做轉換，而是在圖上加註，' +
+      '不讓整次執行失敗。columns_filter 決定要畫哪些欄位：散佈圖取前兩欄，長條圖取第一欄。',
+  },
+  'stats:Stats-ConfusionMatrix': {
+    description: '真實類別對預測類別的計數，另輸出正確率與熱圖',
+    details:
+      '列是真實類別、欄是預測類別，與 sklearn 的 confusion_matrix 一致。normalize 可除以真實列（對角線即 ' +
+      'recall）、預測欄（precision）或總數，0/0 一律當 0。兩個輸入都接受標籤列表、1D 類別索引張量，或取每列 argmax ' +
+      '的 2D 分數矩陣。',
+  },
+  'stats:Stats-Correlation': {
+    description: 'Pearson 或 Spearman 相關矩陣',
+    details:
+      'drop_nan 開啟時（同 pandas 預設），每一對只取兩欄都有值的列，一個缺值不會縮短其他配對；關閉則讓 NaN 傳播。' +
+      'Spearman 是對平均排名做 Pearson，同分共用排名。熱圖固定在 -1..1，不隨資料伸縮；常數欄的結果是 NaN。',
+  },
+  'stats:Stats-Describe': {
+    description: '每欄的筆數、平均、標準差、最小值、百分位數與最大值',
+    details:
+      '列名與順序沿用 pandas 的 describe()，std 是樣本標準差（ddof=1）。NaN 視為缺值，±Inf 則是有效值，含 ' +
+      'inf 的欄位平均也是 inf。axis 可改成逐列描述或把整張表當成一條序列；percentiles 只回報指定的那幾個，' +
+      '不會自動補上中位數。',
+  },
+  'stats:Stats-GroupByAggregate': {
+    description: '每組一列，欄位取平均、總和、計數、極值或標準差',
+    details:
+      '分組可接每列一個標籤的 keys（例如 CSVReader 的 labels），或用 group_by 指定表格自己的欄位；兩者都有時以 ' +
+      'group_by 為準，被分組的欄位不再參與彙總。agg_overrides 以 column=agg 指定個別例外。NaN 照 ' +
+      'pandas 跳過，count 算有值的筆數，每組列數看 counts 輸出。',
+  },
+  'stats:Stats-Histogram': {
+    description: '把張量分箱計數，另輸出長條圖',
+    details:
+      '每列是 bin_start、bin_end 與 count；開啟 density 時第三欄改成機率密度，樣本數不同的分布才能互相比較。' +
+      'range_mode 設為 manual 可固定分箱範圍，讓連續幾次執行對得起來。非有限值（NaN、±Inf）在分箱前剔除，數量從 ' +
+      'dropped 輸出。',
+  },
+  'stats:Stats-Percentile': {
+    description: '任意組百分位數，可取整個張量、逐欄或逐列',
+    details:
+      'q 是以逗號分隔的 0-100 百分位數，會排序並去重。內插是線性，與 np.percentile、DataFrame.quantile ' +
+      '相同，但 NaN 逐條序列跳過，行為接近 np.nanpercentile。axis 選 all 得到 1D 結果，選 columns 或 ' +
+      'rows 則是 [q, series] 表格。',
+  },
+  'stats:Stats-TableView': {
+    description: '把表格排版成對齊的文字，含欄位名稱與列標籤',
+    details:
+      'max_rows 限制顯示的列數，結尾會有一行交代少了幾列；設為 0 則全部顯示。precision 決定非整數的小數位數；' +
+      '同一份文字也會從 text 輸出埠傳出。',
   },
 
   // ── Custom ──

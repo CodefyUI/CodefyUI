@@ -7,8 +7,10 @@ from ...core.stateful_module import StatefulModuleMixin
 class LinearNode(StatefulModuleMixin, BaseNode):
     NODE_NAME = "Linear"
     CATEGORY = "Utility"
-    DESCRIPTION = (
-        "Fully-connected (dense) layer: $y = xW^T + b$. Wraps nn.Linear(in_features, out_features)."
+    DESCRIPTION = "Fully-connected layer: $y = xW^T + b$"
+    DETAILS = (
+        "Backed by nn.Linear, and also called a dense layer. in_features must "
+        "match the last dimension of the input tensor."
     )
 
     structural_params = ("in_features", "out_features")

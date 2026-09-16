@@ -9,9 +9,9 @@ from ._base import TransformStepNode
 
 class ToTensorTransformNode(TransformStepNode):
     NODE_NAME = "ToTensorTransform"
-    DESCRIPTION = (
-        "Convert a PIL image to a CxHxW float tensor scaled to [0, 1]. The "
-        "hinge of most chains: geometric and colour steps go before it, "
+    DESCRIPTION = "PIL image to a CxHxW float tensor scaled to [0, 1]"
+    DETAILS = (
+        "The hinge of most chains: geometric and colour steps go before it, "
         "NormalizeTransform after it."
     )
 

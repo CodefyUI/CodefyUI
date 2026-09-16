@@ -7,11 +7,12 @@ from ...core.stateful_module import StatefulModuleMixin
 class EmbeddingNode(StatefulModuleMixin, BaseNode):
     NODE_NAME = "Embedding"
     CATEGORY = "Utility"
-    DESCRIPTION = (
-        "Learnable embedding lookup (wraps nn.Embedding). Maps integer indices "
-        "to vectors from a trainable weight matrix $W$ — conceptually "
-        "$E[i] = W[i, :]$. For pre-trained word vectors (GloVe, etc.) use the "
-        "`WordVector` node in the LLM category instead."
+    DESCRIPTION = "Map indices to rows of a trainable weight matrix $W$"
+    DETAILS = (
+        "Backed by nn.Embedding, so $E[i] = W[i, :]$ and the table trains with the "
+        "rest of the graph. A padding_idx below 0 means no padding row. "
+        "Pre-trained vectors such as GloVe come from the WordVector node in the "
+        "LLM category instead."
     )
 
     structural_params = ("num_embeddings", "embedding_dim", "padding_idx")

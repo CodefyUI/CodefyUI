@@ -6,7 +6,12 @@ from ...core.node_base import BaseNode, DataType, ParamDefinition, ParamType, Po
 class AvgPool2dNode(BaseNode):
     NODE_NAME = "AvgPool2d"
     CATEGORY = "CNN"
-    DESCRIPTION = "Apply 2D average pooling to input tensor (wraps nn.AvgPool2d)"
+    DESCRIPTION = "Average of each window; height and width shrink"
+    DETAILS = (
+        "Backed by nn.AvgPool2d. Every value in the window contributes, so the "
+        "result is smoother than MaxPool2d. With the defaults, kernel_size 2 and "
+        "stride 2, height and width are halved."
+    )
 
     @classmethod
     def define_inputs(cls) -> list[PortDefinition]:

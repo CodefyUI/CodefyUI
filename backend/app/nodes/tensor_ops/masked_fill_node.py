@@ -44,11 +44,12 @@ from ...core.node_base import (
 class MaskedFillNode(BaseNode):
     NODE_NAME = "MaskedFill"
     CATEGORY = "Tensor Operations"
-    DESCRIPTION = (
-        "Replace every masked position with a constant (default $-\\infty$). "
-        "Pair it with `AttentionMask` and place it BEFORE `Softmax`: $-\\infty$ "
-        "is what makes a blocked position get exactly zero probability while "
-        "the surviving positions renormalise to sum to 1."
+    DESCRIPTION = "Set masked positions to a constant, default $-\\infty$"
+    DETAILS = (
+        "Put it before `Softmax`: because $e^{-\\infty} = 0$, a blocked position "
+        "gets exactly zero probability and the remaining positions renormalise to "
+        "sum to 1. Zeroing the entries after the softmax instead leaves the row no "
+        "longer summing to 1. The tensor must be floating point."
     )
 
     @classmethod

@@ -193,14 +193,13 @@ def _read_document(path: Path) -> str | None:
 class DocumentLoaderNode(BaseNode):
     NODE_NAME = "DocumentLoader"
     CATEGORY = "LLM"
-    DESCRIPTION = (
-        "Read plain-text documents (.txt and .md) from a folder or one "
-        "uploaded file. Each document comes out as {text, source} so later "
-        "nodes can cite where an answer came from. The bundled "
-        "data/samples/rag folder holds five short bilingual notes about "
-        "CodefyUI and ML basics, so the RAG examples run with no setup. "
-        "First node of the RAG chain: DocumentLoader -> TextChunker -> "
-        "TextEmbedding -> VectorStore."
+    DESCRIPTION = "Read .txt and .md from a folder or upload, with source"
+    DETAILS = (
+        "Each document comes out as {text, source}, and the source travels through "
+        "TextChunker into the citations. The bundled data/samples/rag folder holds "
+        "five short bilingual notes on CodefyUI and ML basics, so the RAG examples "
+        "run with no setup. The RAG chain starts here: DocumentLoader → "
+        "TextChunker → TextEmbedding → VectorStore."
     )
 
     # Stated rather than inherited: every other node in the RAG chain needs a

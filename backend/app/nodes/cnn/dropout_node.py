@@ -6,7 +6,13 @@ from ...core.node_base import BaseNode, DataType, ParamDefinition, ParamType, Po
 class DropoutNode(BaseNode):
     NODE_NAME = "Dropout"
     CATEGORY = "CNN"
-    DESCRIPTION = "Apply dropout regularization to input tensor (wraps nn.Dropout)"
+    DESCRIPTION = "Zeros each element at random, scaling the rest up"
+    DETAILS = (
+        "Backed by nn.Dropout, which scales the surviving elements by $1/(1-p)$ so "
+        "the mean is preserved. As a standalone node it is rebuilt in training "
+        "mode on every run, so it drops even during evaluation; inside "
+        "SequentialModel it follows the model's train/eval state."
+    )
 
     @classmethod
     def define_inputs(cls) -> list[PortDefinition]:

@@ -6,7 +6,12 @@ from ...core.node_base import BaseNode, DataType, PortDefinition
 class MatMulNode(BaseNode):
     NODE_NAME = "MatMul"
     CATEGORY = "Tensor Operations"
-    DESCRIPTION = "Matrix multiplication of two tensors (torch.matmul)"
+    DESCRIPTION = "Batched matrix product of two tensors"
+    DETAILS = (
+        "Follows `torch.matmul`: the last two dimensions multiply as matrices "
+        "while any leading dimensions broadcast as batch. Two 1-D inputs give a "
+        "dot product instead."
+    )
 
     @classmethod
     def define_inputs(cls) -> list[PortDefinition]:

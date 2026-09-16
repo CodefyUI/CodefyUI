@@ -6,11 +6,7 @@ from ...core.node_base import BaseNode, DataType, ParamDefinition, ParamType, Po
 class ArgmaxNode(BaseNode):
     NODE_NAME = "Argmax"
     CATEGORY = "Tensor Operations"
-    DESCRIPTION = (
-        "沿指定維度取最大值的索引（argmax）。常用在分類 / 分割輸出："
-        "對 logits 取 argmax 得到預測類別。例如分割輸出 (N, C, H, W) 沿 dim=1 取 argmax，"
-        "得到每像素的類別 (N, H, W)。"
-    )
+    DESCRIPTION = "Index of the largest value along a dimension"
 
     @classmethod
     def define_inputs(cls) -> list[PortDefinition]:
