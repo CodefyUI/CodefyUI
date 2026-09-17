@@ -22,7 +22,7 @@ received — each links to the release it was published as.
 
 ## [Unreleased]
 
-## [2.8.2] — 2026-09-16
+## [2.8.2] — 2026-09-17
 
 The node list says what a node does, and a Save As can no longer destroy a
 graph without asking.

@@ -22,6 +22,17 @@ you:
 1. **Promote `CHANGELOG.md`.** Rename `## [Unreleased]` to
    `## [X.Y.Z] — YYYY-MM-DD`, open a fresh empty `## [Unreleased]` above it, and
    update the `[Unreleased]` compare link at the bottom to point at the new tag.
+
+   > The date is the tag's **UTC** date — what the tag object and GitHub's
+   > `published_at` both record, and what 2.8.0 and 2.5.0 used. On a UTC+8 box
+   > that differs from the local date for eight hours out of every day.
+   >
+   > **Re-read it just before you push the tag.** The heading is written when
+   > the release PR is opened; the tag goes up when that PR is merged, and
+   > nothing recomputes the date in between. 2.8.2 was promoted as 2026-09-16
+   > and tagged eleven hours later at 2026-09-17T05:22Z, which took a
+   > follow-up PR to correct.
+
    The tag annotation — which becomes the GitHub release body — should say the
    same thing; the changelog is what answers "what is on main that nobody has
    yet" *between* releases, which the tag cannot.
