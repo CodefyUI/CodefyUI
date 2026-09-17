@@ -22,6 +22,37 @@ received — each links to the release it was published as.
 
 ## [Unreleased]
 
+## [2.8.2] — 2026-09-16
+
+The node list says what a node does, and a Save As can no longer destroy a
+graph without asking.
+
+The palette is where you meet a node, and what it handed you was a paragraph:
+the library it wraps, the chapter of the curriculum it belongs to, which
+sibling to reach for instead, and a sentence about watching each layer's shape
+go past. The row is 188px wide and two lines deep, so 112 of its 153 rows ended
+mid-sentence in an ellipsis — the one list whose whole job is to say what a
+node is for was the one place in the editor you could not read. Every summary
+is now a single line, and everything that was not the node moved to a field
+with room for it.
+
+The other half of the release is a graph that could disappear. Save As decided
+whether it was about to write over an existing graph by sanitizing the typed
+title into a filename itself, with a copy of the server's rule — a copy that
+disagrees with the rule on 14,049 code points, most of them Chinese. Where they
+disagreed no confirmation appeared and the server overwrote the graph anyway.
+The editor no longer guesses: the server answers `409` and names the graph it
+would have replaced.
+
+### Added
+
+- **Traditional Chinese for 41 nodes that had none.** 13 built-in nodes and
+  every node of the `deep`, `edu`, `foundations`, `rl` and `stats` packs
+  rendered in English whatever the locale, so a Chinese reader met the node
+  list in two languages at once. The ratchet in `test_api_nodes.py` that
+  allowed the 13 is now empty: every built-in node is translated, and adding
+  one without a translation fails the build.
+
 ### Changed
 
 - **The node list says what a node does, and stops.** Every one of the 180
@@ -32,7 +63,7 @@ received — each links to the release it was published as.
   影像張量 (N, C, H, W) 與對應標籤。用來把資料集直接餵進手搭的網路做一次前向傳遞、
   觀察每層 shape。」* and now reads *「從資料集中取出一個批次，輸出影像與對應
   標籤」*. Across the catalog a Chinese summary went from 91 characters on
-  average to 20, and an English one from 189 to 49 — short enough that the
+  average to 20, and an English one from 191 to 48 — short enough that the
   whole sentence now fits the row, where before 112 of 153 rows were cut off
   mid-sentence with an ellipsis.
 
@@ -56,19 +87,12 @@ received — each links to the release it was published as.
   that the build fails.
 
 - **The node list is denser.** A row gives up 8px of vertical padding and the
-  4px gap to its neighbour, so rows sit flush and the hover wash is what
-  separates one from the next — 12px per row, on a list 153 rows long. The
-  text is the size it always was: density that comes out of the type is the
-  reader paying for it.
-
-### Added
-
-- **Traditional Chinese for 41 nodes that had none.** 13 built-in nodes and
-  every node of the `deep`, `edu`, `foundations`, `rl` and `stats` packs
-  rendered in English whatever the locale, so a Chinese reader met the node
-  list in two languages at once. The ratchet in `test_api_nodes.py` that
-  allowed the 13 is now empty: every built-in node is translated, and adding
-  one without a translation fails the build.
+  2px that stood between it and its neighbour — 2px rather than the 4px the
+  rule appears to drop, because the margin under one row and the margin over
+  the next were always collapsing into one. Rows sit flush and the hover wash
+  is what separates one from the next: 10px per row, on a list 153 rows long.
+  The text is the size it always was: density that comes out of the type is
+  the reader paying for it.
 
 ### Fixed
 
@@ -79,9 +103,9 @@ received — each links to the release it was published as.
   rule: it tested `\p{L}\p{N}` against Node's Unicode 17 tables where the
   server uses CPython's `str.isalnum()` on Unicode 14, and the two disagree on
   14,049 code points — every one of them a character the editor keeps and the
-  server replaces with `_`. The blocks involved are mostly CJK, with CJK
-  Ext J (8,490) and Ext I (622) the largest, so this landed hardest on the
-  people most likely to type them.
+  server replaces with `_`. Two thirds of them are CJK — Extensions J (4,298),
+  H (4,192) and I (622) — and most of the rest Egyptian Hieroglyphs Ext-A
+  (3,995), so this landed hardest on the people most likely to type them.
 
   Saving a graph titled `模型𮯰` therefore checked a filename nothing occupied,
   showed no confirmation, and then let the server write it over an existing
@@ -3937,7 +3961,8 @@ Release candidates before 1.0.0 are on the
 [#420]: https://github.com/CodefyUI/CodefyUI/issues/420
 [@oyea0801]: https://github.com/oyea0801
 [@latteine1217]: https://github.com/latteine1217
-[Unreleased]: https://github.com/CodefyUI/CodefyUI/compare/2.8.1...main
+[Unreleased]: https://github.com/CodefyUI/CodefyUI/compare/2.8.2...main
+[2.8.2]: https://github.com/CodefyUI/CodefyUI/compare/2.8.1...2.8.2
 [2.8.1]: https://github.com/CodefyUI/CodefyUI/compare/2.8.0...2.8.1
 [2.8.0]: https://github.com/CodefyUI/CodefyUI/compare/2.7.2...2.8.0
 [2.7.2]: https://github.com/CodefyUI/CodefyUI/compare/2.7.1...2.7.2

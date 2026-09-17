@@ -17,10 +17,10 @@ export { generateId } from './ids';
  * A guess, and no longer a safety mechanism. The rule is Python's
  * ``str.isalnum()`` there and ``/[\p{L}\p{N}]/u`` here, read against two
  * different Unicode versions — CPython's and Node's ICU — and they disagree on
- * 14,049 code points (CJK Extensions I and J, Egyptian Hieroglyphs Ext-A, and
- * 16 in the BMP), always in the same direction: this one KEEPS the character
- * the server replaces with '_'. The server is the only authority on where a
- * save lands, and the only one that can be asked.
+ * 14,049 code points (CJK Extensions H, I and J, Egyptian Hieroglyphs Ext-A,
+ * and 16 in the BMP), always in the same direction: this one KEEPS the
+ * character the server replaces with '_'. The server is the only authority on
+ * where a save lands, and the only one that can be asked.
  *
  * Which is why nothing decides anything on this answer any more. It used to
  * back the pre-save overwrite check, and for a title holding one of those code
