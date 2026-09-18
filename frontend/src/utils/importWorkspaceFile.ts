@@ -223,10 +223,19 @@ export async function importWorkspaceFile(
     useTabStore.getState().setActiveTab(activeId);
     // Step 7. Only now that something has taken its place.
     if (loneEmptyTabId !== null) useTabStore.getState().removeTab(loneEmptyTabId);
-    // Step 8. Through the stores, so each one is persisted the normal way.
-    const { locale, ...ui } = workspace.preferences;
-    useUIStore.getState().applyPreferences(ui);
-    if (locale !== undefined) useI18n.getState().setLocale(locale);
+    // Step 8. Through the stores, so each one is persisted the normal way --
+    // which means `localStorage.setItem`, and that throws where storage is
+    // blocked or full. Wrapped because the tabs are already open by now: left
+    // to escape, the router would report a finished import as "Import failed"
+    // and the user would import the same file again, ending up with every tab
+    // twice. A preference that could not be stored is simply not applied.
+    try {
+      const { locale, ...ui } = workspace.preferences;
+      useUIStore.getState().applyPreferences(ui);
+      if (locale !== undefined) useI18n.getState().setLocale(locale);
+    } catch {
+      // No toast: the import itself succeeded, and `report` says so below.
+    }
   }
 
   report(results, newerVersions, openedGraphs);

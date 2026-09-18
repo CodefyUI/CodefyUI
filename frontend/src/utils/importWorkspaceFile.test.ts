@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, afterEach, beforeEach, vi } from 'vitest';
 import type { Node } from '@xyflow/react';
 import { importWorkspaceFile, type WorkspaceImportResult } from './importWorkspaceFile';
 import type { ParsedWorkspace, ParsedWorkspaceTab, WorkspaceRunSettings } from './workspaceFile';
@@ -97,6 +97,10 @@ beforeEach(() => {
   // One EMPTY tab, which is what a fresh browser holds.
   useTabStore.setState({ tabs: [], activeTabId: null as unknown as string, clipboard: null });
   store().addTab('Tab 1');
+});
+
+afterEach(() => {
+  vi.restoreAllMocks();
 });
 
 describe('importWorkspaceFile: where the tabs land', () => {
@@ -349,6 +353,46 @@ describe('importWorkspaceFile: preferences', () => {
     expect(useI18n.getState().locale).toBe('en');
     expect(localStorage.getItem('codefyui-locale')).toBeNull();
     expect(localStorage.getItem('codefyui-edge-style')).toBeNull();
+  });
+
+  it('still reports the import as a success when the browser refuses to store them', async () => {
+    // Both preference writes go through `localStorage.setItem`, which throws
+    // where storage is blocked or full. The tabs are open by the time that
+    // happens, so reporting the import as a failure would send the user back
+    // to import the same file again -- and end up with every tab twice.
+    const PREFERENCE_KEYS = [
+      'codefyui-locale',
+      'codefyui-font-size',
+      'codefyui-edge-style',
+      'codefyui-gridsnap',
+      'codefyui-tooltips',
+      'codefyui-beginner-mode',
+    ];
+    const setItem = Storage.prototype.setItem;
+    vi.spyOn(Storage.prototype, 'setItem').mockImplementation(function (
+      this: Storage,
+      key: string,
+      value: string,
+    ) {
+      if (PREFERENCE_KEYS.includes(key)) {
+        throw new DOMException('storage is full', 'QuotaExceededError');
+      }
+      setItem.call(this, key, value);
+    });
+
+    const pending = importWorkspaceFile(
+      workspace([entry('A')], { preferences: { fontSize: 'large', locale: 'zh-TW' } }),
+    );
+
+    await expect(pending).resolves.toMatchObject({ imported: 1 });
+    expect(names()).toEqual(['A']);
+    expect(messages('success')).toEqual(['Imported 1 tab(s).']);
+    // A preference that could not be stored is simply not applied, and is
+    // worth no toast of its own: the tabs are what the import was for.
+    expect(useUIStore.getState().fontSize).toBe('default');
+    expect(useI18n.getState().locale).toBe('en');
+    expect(messages('warning')).toEqual([]);
+    expect(messages('error')).toEqual([]);
   });
 });
 
