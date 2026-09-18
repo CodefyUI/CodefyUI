@@ -20,6 +20,7 @@ import {
 import type { NodeDefinition, WorkspaceSource } from '../types';
 import { resolveExample } from '../utils/openExample';
 import { subgraphViewPath } from '../utils/subgraph';
+import { MAX_WORKSPACE_GRAPH_BYTES, MAX_WORKSPACE_TABS } from '../utils/workspaceLimits';
 import { applyGraphOps, type ApplyOutcome, type GraphOp, type OpResult } from './ops';
 import { registerNodeRenderer, type PluginNodeRenderer } from './nodeRenderers';
 import {
@@ -123,10 +124,6 @@ export type WorkspaceEvent =
   | { type: 'tabs'; tabId: string; revision: number; removed: boolean }
   | { type: 'active-tab'; tabId: string; revision: number };
 
-/** Serialized JSON a single `openGraphs` entry may carry. */
-const MAX_WORKSPACE_GRAPH_BYTES = 8 * 1024 * 1024;
-/** How many tabs the editor will hold before `openGraphs` starts refusing. */
-const MAX_WORKSPACE_TABS = 32;
 /**
  * Refusal for a legacy batch that would commit a top-level segment from
  * inside a block (#341 section 4.6).
