@@ -730,6 +730,16 @@ const en = {
   'workspace.export.title': 'One file with every open tab',
   'workspace.export.empty': 'Nothing to export: every tab is empty or read-only.',
   'workspace.export.skippedReadOnly': '{count} read-only tab(s) were left out.',
+  'workspace.import.success': 'Imported {count} tab(s).',
+  // `{reasons}` is the distinct reasons below, joined with ", ".
+  'workspace.import.partial': 'Imported {imported} of {total} tabs. Skipped: {reasons}.',
+  'workspace.import.none': 'No tabs were imported: {reasons}.',
+  'workspace.import.reason.invalidGraph': 'not a graph',
+  'workspace.import.reason.tooManyTabs': '{max}-tab limit reached',
+  // Says what happens and no more. Nothing re-links a placeholder when the
+  // plugin arrives later, so this does not promise that it will.
+  'workspace.import.missingTypes': 'Node types not installed here: {types}. They open as placeholders.',
+  'workspace.import.moreTypes': '+{count} more',
 
   // Plugin API v3 chrome (#132). Plugin panels and toolbar buttons supply
   // their own titles, so the host only labels the containers around them.
