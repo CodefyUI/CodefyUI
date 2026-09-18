@@ -18,7 +18,7 @@ import {
   type RunInfo, type RunListPage, type RunMetrics, type RunStatus,
 } from '../api/rest';
 import type { NodeDefinition, WorkspaceSource } from '../types';
-import { resolveExample } from '../utils/openExample';
+import { resolveUnboundDocument } from '../utils/openExample';
 import { subgraphViewPath } from '../utils/subgraph';
 import { MAX_WORKSPACE_GRAPH_BYTES, MAX_WORKSPACE_TABS } from '../utils/workspaceLimits';
 import { applyGraphOps, type ApplyOutcome, type GraphOp, type OpResult } from './ops';
@@ -497,29 +497,6 @@ function subscribeGraphChanged(cb: () => void): () => void {
   });
 }
 
-/**
- * Read a plugin's graph the way a file load reads a file, and hand back the
- * document `loadGraphDocumentInto` installs. Throws the reader's own error.
- */
-function workspaceDocument(graph: WorkspaceGraphInput): GraphDocument {
-  const resolved = resolveExample(graph);
-  return {
-    nodes: resolved.nodes,
-    edges: resolved.edges,
-    // A plugin's graph is bound to no file: the first Save has to ask where
-    // it should go, exactly as an example does.
-    boundFile: null,
-    subgraphs: resolved.subgraphs,
-    segmentGroups: resolved.segmentGroups,
-    // The TAB's label is the entry's `title`, already set by `createTab`. The
-    // graph's own `name` is deliberately not allowed to overwrite it.
-    name: null,
-    description: resolved.description,
-    device: resolved.device,
-    formatVersion: resolved.formatVersion,
-  };
-}
-
 function openWorkspaceGraphs(
   entries: WorkspaceOpenEntry[],
   options?: { activate?: 'first' | 'last' | 'none' },
@@ -550,7 +527,7 @@ function openWorkspaceGraphs(
     }
     let doc: GraphDocument;
     try {
-      doc = workspaceDocument(entry.graph);
+      doc = resolveUnboundDocument(entry.graph);
     } catch (error) {
       results.push({
         error: `openGraphs: ${error instanceof Error ? error.message : String(error)}`,
