@@ -678,6 +678,9 @@ const zhTW: Record<TranslationKey, string> = {
   // 只說明現況。之後裝上外掛並不會自動修復佔位節點，所以這裡不做這個承諾。
   'workspace.import.missingTypes': '尚未安裝的節點類型：{types}。這些節點會以佔位節點顯示。',
   'workspace.import.moreTypes': '另外 {count} 種',
+  'workspace.import.tooNew': '這個工作區檔案由較新版本的 CodefyUI 寫入，沒有匯入任何內容。',
+  'workspace.import.invalid': '不是有效的工作區檔案。',
+  'workspace.import.fileTooLarge': '工作區檔案超過 {mib} MiB。',
 
   // 外掛 API v3 的外框（#132）。外掛面板與工具列按鈕自帶標題，主程式只負責
   // 標示包在外面的容器。

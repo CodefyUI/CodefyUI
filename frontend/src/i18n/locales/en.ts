@@ -740,6 +740,9 @@ const en = {
   // plugin arrives later, so this does not promise that it will.
   'workspace.import.missingTypes': 'Node types not installed here: {types}. They open as placeholders.',
   'workspace.import.moreTypes': '+{count} more',
+  'workspace.import.tooNew': 'This workspace was written by a newer CodefyUI. Nothing was imported.',
+  'workspace.import.invalid': 'Not a valid workspace file.',
+  'workspace.import.fileTooLarge': 'The workspace file is over {mib} MiB.',
 
   // Plugin API v3 chrome (#132). Plugin panels and toolbar buttons supply
   // their own titles, so the host only labels the containers around them.
