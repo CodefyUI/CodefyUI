@@ -56,7 +56,7 @@ Because graphs are plain JSON, they diff and version-control cleanly. Commit a g
 
 ### Workspace files
 
-**Export → Workspace (.cduiworkspace)** writes every open tab into one file, so a whole session can move to another browser or another computer. **Import...** reads it back: the tabs are added beside the ones already open, no open graph is replaced, and a browser holding only one empty tab ends up with exactly the exported set.
+**Export → Workspace (.cduiworkspace)** writes every open tab into one file, `workspace-YYYY-MM-DD.cduiworkspace`, so a whole session can move to another browser or another computer. **Import...** reads it back: the tabs are added beside the ones already open, no open graph is replaced, and a browser holding only one empty tab ends up with exactly the exported set.
 
 For each tab the file carries its title, its graph and its run settings: Random seed, Deterministic algorithms, Record node outputs, Verbose internals, Persist weights between runs, Capture gradients and Auto-synthesize loss. It also carries which tab was active, and six preferences: Language, Font size, Connection style, Grid snap, Show node tooltips and Node category mode. Each `tabs[i].graph` in the file is an ordinary Export-as-JSON graph.
 
@@ -66,10 +66,10 @@ What never travels:
 - anything a plugin stored in the browser, such as the provider API keys an assistant plugin keeps there
 - run results and trained weights, which live in the server's memory
 - the binding between a tab and a saved graph
-- the compute device and the panel layout, which belong to one machine
+- the Settings compute device and the panel layout, which belong to one machine
 
 An imported tab is therefore bound to no saved graph: its first Save asks for a name, and a name already in the list is confirmed before it replaces the graph holding it. In a [project directory](./project-directories) nothing is stamped until that first Save.
 
 Secret values are recognised from the node's definition, so a node whose type the exporting browser has not loaded — its plugin disabled or missing — has no secret the export can recognise; Save and **Export as JSON** have the same limit, so check such tabs before you share a file.
 
-Empty tabs, read-only tabs and tabs a plugin opened are not exported. On import, an entry that is not a graph, or that would be the 33rd open tab, is skipped and the rest still open — the editor holds 32 tabs, and the lone empty tab an import replaces is not one of them. A file over 64 MiB, or one written by a newer CodefyUI, is refused whole. A node type that is not installed here opens as a placeholder and a warning names the missing types; nothing re-links them later, so install the plugin or custom node they come from and import the file again.
+Empty tabs, read-only tabs and tabs a plugin opened temporarily are not exported. On import, an entry that is not a graph, or that would be the 33rd open tab, is skipped and the rest still open — an import stops at 32 tabs, and the lone empty tab it replaces is not one of them. A file over 64 MiB, or a workspace file written by a newer CodefyUI, is refused whole. A node type that is not installed here opens as a placeholder and a warning names the missing types; nothing re-links them later, so install the plugin or custom node they come from and import the file again.

@@ -27,7 +27,8 @@ received — each links to the release it was published as.
 - **Every open tab in one file.** Open tabs live in the browser's IndexedDB,
   so moving to another browser or another computer lost them, and the only
   export was one graph at a time. **Export → Workspace (.cduiworkspace)**
-  writes every tab that holds a graph — its title, its graph and its run
+  writes every editable tab that holds a graph to one
+  `workspace-YYYY-MM-DD.cduiworkspace` — its title, its graph and its run
   settings, and which tab was active — plus six preferences: Language, Font
   size, Connection style, Grid snap, Show node tooltips and Node category
   mode. **Import...** in the Graphs tab adds those tabs beside the ones
@@ -35,21 +36,22 @@ received — each links to the release it was published as.
   ends up with exactly the exported set.
 
   Secret parameter values, anything a plugin stored in the browser, run
-  results and trained weights, saved-graph bindings, the compute device and
-  the panel layout are never written. An imported tab therefore arrives bound
-  to no saved graph: its first Save asks for a name, and a name already in the
-  list is confirmed before it is replaced. Each imported tab gets a graph id
-  of its own, so two copies of one graph never share trained weights on the
-  server. Secrets are recognised from the node's definition, so a node whose
-  type the exporting browser has not loaded has none to recognise — the limit
-  Save and Export as JSON already have.
+  results and trained weights, saved-graph bindings, the Settings compute
+  device and the panel layout are never written. An imported tab therefore
+  arrives bound to no saved graph: its first Save asks for a name, and a name
+  already in the list is confirmed before it is replaced. Each imported tab
+  gets a graph id of its own, so two copies of one graph never share trained
+  weights on the server. Secrets are recognised from the node's definition,
+  so a node whose type the exporting browser has not loaded has none to
+  recognise — the limit Save and Export as JSON already have.
 
-  An entry that cannot open — not a graph, or past the editor's 32 tabs — is
-  skipped without sinking the rest, and leaves none of its presets behind in
-  the palette. A file over 64 MiB, or one written by a newer CodefyUI, is
-  refused whole. A node type this install does not have opens as a placeholder
-  and a warning names it; installing the plugin afterwards does not re-link
-  it, so import the file again. See `docs/docs/usage/tabs-persistence.md`.
+  An entry that cannot open — not a graph, or past the 32 tabs an import
+  stops at — is skipped without sinking the rest, and leaves none of its
+  presets behind in the palette. A file over 64 MiB, or a workspace file
+  written by a newer CodefyUI, is refused whole. A node type this install
+  does not have opens as a placeholder and a warning names it; installing the
+  plugin afterwards does not re-link it, so import the file again. See
+  `docs/docs/usage/tabs-persistence.md`.
 
 ### Changed
 
