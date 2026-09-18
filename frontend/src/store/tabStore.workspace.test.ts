@@ -342,3 +342,64 @@ describe('Delete key prunes segments (#341 section 5.5)', () => {
     expect(activeTab().segmentGroups.map((s) => s.id)).toEqual(['s1']);
   });
 });
+
+describe('setTabRunSettings', () => {
+  const ALL_ON = {
+    seed: 7,
+    deterministic: true,
+    recordOutputs: false,
+    verboseMode: true,
+    weightsPersistent: false,
+    backwardMode: true,
+    autoBackward: true,
+  };
+  const DEFAULTS = {
+    seed: null,
+    deterministic: false,
+    recordOutputs: true,
+    verboseMode: false,
+    weightsPersistent: true,
+    backwardMode: false,
+    autoBackward: false,
+  };
+
+  it('writes onto the NAMED tab and leaves the active one alone', () => {
+    const target = store().createTab({ title: 'Background', activate: false });
+    store().setTabRunSettings(target, ALL_ON);
+    expect(store().getTab(target)).toMatchObject(ALL_ON);
+    expect(activeTab()).toMatchObject(DEFAULTS);
+  });
+
+  it('leaves the keys it was not given as they were', () => {
+    const target = store().createTab({ title: 'Partial', activate: false });
+    store().setTabRunSettings(target, ALL_ON);
+    store().setTabRunSettings(target, { verboseMode: false });
+    expect(store().getTab(target)).toMatchObject({ ...ALL_ON, verboseMode: false });
+    store().setTabRunSettings(target, {});
+    expect(store().getTab(target)).toMatchObject({ ...ALL_ON, verboseMode: false });
+  });
+
+  it('reads the seed the way setSeed does', () => {
+    const target = store().createTab({ title: 'Seeded', activate: false });
+    store().setTabRunSettings(target, { seed: 12.9 });
+    expect(store().getTab(target)!.seed).toBe(12);
+    store().setTabRunSettings(target, { seed: Number('not a number') });
+    expect(store().getTab(target)!.seed).toBeNull();
+    store().setTabRunSettings(target, { seed: 0 });
+    expect(store().getTab(target)!.seed).toBe(0);
+    store().setTabRunSettings(target, { seed: null });
+    expect(store().getTab(target)!.seed).toBeNull();
+  });
+
+  it('reaches the autosave record, and is not a document change', () => {
+    const target = store().createTab({ title: 'Saved', activate: false });
+    const revision = store().getTab(target)!.revision;
+    store().setTabRunSettings(target, { seed: 3, backwardMode: true });
+    const record = _buildPersistedTabForTesting(store().getTab(target)!);
+    expect(record.seed).toBe(3);
+    expect(record.backwardMode).toBe(true);
+    // Run settings are not the document, so a plugin's compare-and-swap
+    // token must not move.
+    expect(store().getTab(target)!.revision).toBe(revision);
+  });
+});

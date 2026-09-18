@@ -406,6 +406,21 @@ export interface TabState {
   deterministic: boolean;
 }
 
+/**
+ * The per-tab switches a run reads. Derived from `TabState`, so it cannot
+ * drift from the fields it names.
+ */
+export type TabRunSettings = Pick<
+  TabState,
+  | 'seed'
+  | 'deterministic'
+  | 'recordOutputs'
+  | 'verboseMode'
+  | 'weightsPersistent'
+  | 'backwardMode'
+  | 'autoBackward'
+>;
+
 function createTabState(id: string, name: string): TabState {
   return {
     id,
@@ -851,6 +866,15 @@ interface TabStoreState {
     tabId: string,
     meta: { readOnly?: boolean; source?: WorkspaceSource | null; transient?: boolean },
   ) => void;
+  /**
+   * Set any subset of a tab's run settings, addressed by tab id. Absent keys
+   * are left alone.
+   *
+   * The toggles further down only ever address the ACTIVE tab, and a toggle
+   * can only flip. The workspace importer restores settings onto tabs it
+   * opened in the background, so it has to name the tab and state the value.
+   */
+  setTabRunSettings: (tabId: string, settings: Partial<TabRunSettings>) => void;
 
   // execution actions for specific tab (used by WS handlers)
   applyTabNodeUpdates: (updates: PendingNodeUpdates) => void;
@@ -881,6 +905,25 @@ interface TabStoreState {
 
 function updateTab(tabs: TabState[], tabId: string, updater: (tab: TabState) => Partial<TabState>): TabState[] {
   return tabs.map((tab) => (tab.id === tabId ? { ...tab, ...updater(tab) } : tab));
+}
+
+/** The boolean half of `TabRunSettings`; `seed` has a rule of its own. */
+const RUN_FLAG_KEYS = [
+  'deterministic',
+  'recordOutputs',
+  'verboseMode',
+  'weightsPersistent',
+  'backwardMode',
+  'autoBackward',
+] as const;
+
+/**
+ * What a seed is stored as. Decided here rather than at each call site so
+ * every entry point agrees on what "no seed" is: null. A cleared field and a
+ * half-typed one that parsed to NaN mean the same thing to a run.
+ */
+function normalizeSeed(seed: number | null): number | null {
+  return seed === null || Number.isNaN(seed) ? null : Math.trunc(seed);
 }
 
 /**
@@ -2262,6 +2305,19 @@ export const useTabStore = create<TabStoreState>((rawSet, get) => {
         ...(meta.source !== undefined ? { source: meta.source } : {}),
         ...(meta.transient !== undefined ? { transient: meta.transient } : {}),
       })),
+    }),
+
+  setTabRunSettings: (tabId, settings) =>
+    set({
+      tabs: updateTab(get().tabs, tabId, () => {
+        const next: Partial<TabRunSettings> = {};
+        if (settings.seed !== undefined) next.seed = normalizeSeed(settings.seed);
+        for (const key of RUN_FLAG_KEYS) {
+          const value = settings[key];
+          if (value !== undefined) next[key] = value;
+        }
+        return next;
+      }),
     }),
 
   commitDocument: (tabId, patch) => {
@@ -4177,10 +4233,7 @@ export const useTabStore = create<TabStoreState>((rawSet, get) => {
   setSeed: (seed) =>
     set({
       tabs: updateTab(get().tabs, get().activeTabId, () => ({
-        // Normalised here rather than at each call site so every entry point
-        // agrees on what "no seed" is: null. A cleared field and a
-        // half-typed one that parsed to NaN mean the same thing to a run.
-        seed: seed === null || Number.isNaN(seed) ? null : Math.trunc(seed),
+        seed: normalizeSeed(seed),
       })),
     }),
 
