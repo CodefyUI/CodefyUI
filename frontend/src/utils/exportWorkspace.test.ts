@@ -3,14 +3,14 @@ import type { Node } from '@xyflow/react';
 import { rememberAppVersion } from './appVersion';
 import { collectWorkspaceFile, exportWorkspace } from './exportWorkspace';
 import { GRAPH_FORMAT_VERSION } from './formatVersion';
-import { importGraphFile } from './importGraphFile';
+import { importFile, importGraphFile } from './importGraphFile';
 import { parseWorkspaceFile } from './workspaceFile';
 import { useI18n } from '../i18n';
 import { useNodeDefStore } from '../store/nodeDefStore';
 import { useTabStore, type TabState } from '../store/tabStore';
 import { useToastStore } from '../store/toastStore';
 import { useUIStore } from '../store/uiStore';
-import type { NodeData, NodeDefinition } from '../types';
+import type { NodeData, NodeDefinition, SubgraphDefinition } from '../types';
 
 const store = () => useTabStore.getState();
 const toasts = () => useToastStore.getState().toasts;
@@ -290,5 +290,97 @@ describe('exportWorkspace', () => {
     expect(toasts().map((t) => [t.type, t.message])).toEqual([
       ['info', '2 read-only tab(s) were left out.'],
     ]);
+  });
+});
+
+/**
+ * The two halves against each other, through JSON TEXT and the live Import
+ * door. Every other test in this feature covers one half against a
+ * hand-written fixture, which is exactly where a field the exporter writes
+ * under one name and the importer reads under another would survive.
+ */
+describe('export -> import, end to end', () => {
+  const BLOCK: SubgraphDefinition = {
+    id: 'blk',
+    name: 'Block',
+    description: '',
+    nodes: [],
+    edges: [],
+    interface: { inputs: [], outputs: [], triggerTargets: [] },
+  };
+
+  /** A collapsed block's instance node: what keeps its definition exported. */
+  function instanceNode(id: string, subgraphId: string): Node<NodeData> {
+    return {
+      id,
+      type: 'subgraphNode',
+      position: { x: 0, y: 0 },
+      data: { label: 'Block', type: `subgraph:${subgraphId}`, params: {} },
+    };
+  }
+
+  it('rebuilds every tab from the bytes the exporter wrote', async () => {
+    const encoder = store().createTab({ title: 'Encoder', activate: false });
+    store().loadGraphDocumentInto(encoder, {
+      nodes: [node('a'), node('b'), instanceNode('blk1', 'blk')],
+      edges: [
+        { id: 'e1', source: 'a', target: 'b', sourceHandle: 'tensor', targetHandle: 'tensor' },
+      ],
+      boundFile: null,
+      description: 'the first half',
+      device: 'cuda:0',
+      segmentGroups: [{ id: 's1', headNodeId: 'a', tailNodeId: 'b' }],
+      subgraphs: [BLOCK],
+    });
+    const decoder = tabWith('Decoder', [node('c')]);
+    store().setTabRunSettings(decoder, { seed: 7, backwardMode: true, weightsPersistent: false });
+    store().setActiveTab(decoder);
+    useUIStore.setState({ fontSize: 'large', gridSnapEnabled: true });
+    const sourceGraphIds = [encoder, decoder].map((id) => store().getTab(id)!.graphId);
+
+    const text = JSON.stringify(collectWorkspaceFile().file);
+
+    // Another browser: one empty tab, and the preferences at their defaults.
+    useTabStore.setState({ tabs: [], activeTabId: null as unknown as string, clipboard: null });
+    store().addTab('Tab 1');
+    useUIStore.setState({ fontSize: 'default', gridSnapEnabled: false });
+
+    expect(await importFile(new File([text], 'w.cduiworkspace'))).toBe(true);
+
+    // The empty tab is gone, both tabs are back in order, the second is active.
+    expect(store().tabs.map((t) => t.name)).toEqual(['Encoder', 'Decoder']);
+    expect(store().getActiveTab().name).toBe('Decoder');
+
+    const [first, second] = store().tabs;
+    expect(first.nodes.map((n) => [n.id, n.data.type])).toEqual([
+      ['a', 'Add'],
+      ['b', 'Add'],
+      ['blk1', 'subgraph:blk'],
+    ]);
+    expect(first.edges.map((e) => [e.source, e.target])).toEqual([['a', 'b']]);
+    expect(first.description).toBe('the first half');
+    expect(first.graphDevice).toBe('cuda:0');
+    expect(first.segmentGroups).toEqual([{ id: 's1', headNodeId: 'a', tailNodeId: 'b' }]);
+    expect(first.subgraphs.map((d) => d.id)).toEqual(['blk']);
+
+    expect(second.nodes.map((n) => n.id)).toEqual(['c']);
+    // All seven, the three that were changed and the four that were not.
+    expect(second).toMatchObject({
+      seed: 7,
+      deterministic: false,
+      recordOutputs: true,
+      verboseMode: false,
+      weightsPersistent: false,
+      backwardMode: true,
+      autoBackward: false,
+    });
+
+    for (const tab of store().tabs) {
+      // Bound to nothing, so the first Save asks where the graph should go.
+      expect(tab.currentGraphFile).toBeNull();
+      // A copied id would make two tabs share trained weights on the server.
+      expect(sourceGraphIds).not.toContain(tab.graphId);
+    }
+    expect(useUIStore.getState()).toMatchObject({ fontSize: 'large', gridSnapEnabled: true });
   });
 });
