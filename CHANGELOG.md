@@ -24,6 +24,15 @@ received — each links to the release it was published as.
 
 ### Added
 
+- **`TensorStats`: shape, min, max, mean, sum and std of a tensor.** Each
+  statistic has its own port, and a one-block `report` also goes to the
+  Execution Log, so the numbers appear on Run with nothing else wired in. The
+  tensor passes through unchanged, so the node can sit on any edge. A problem
+  statement can quote "TensorStats after MaxPool2d shows mean=0.076823" as the
+  check, and the scalar ports let a judge compare a signature without the full
+  tensor. `precision` formats only the report; `std` is the population value;
+  integer and boolean input is promoted to float32; an empty tensor is refused
+  with its shape in the message.
 - **File menu: Open... and Import...** ([#689]). **Open...** shows the Graphs
   panel with the saved graphs, opening the sidebar if it is collapsed.
   **Import...** is the Graphs panel's Import button: it takes a graph (.json)
