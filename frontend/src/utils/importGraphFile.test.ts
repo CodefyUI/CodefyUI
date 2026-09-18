@@ -235,13 +235,16 @@ describe('importFile', () => {
     return reads;
   }
 
-  it('still sends a plain graph down the old path: it replaces the active tab and opens none', async () => {
-    useTabStore.getState().setNodes([raw('onScreen')] as never);
-    const body = JSON.stringify({ nodes: [raw('n1')], edges: [] });
-    expect(await importFile(jsonFile(body))).toBe(true);
-    expect(tabs()).toHaveLength(1);
-    expect(tabs()[0].nodes.map((n) => n.id)).toEqual(['n1']);
-  });
+  it.each(['g.json', 'renamed.cduiworkspace'])(
+    'still sends a plain graph in %s down the old path: it replaces the active tab and opens none',
+    async (name) => {
+      useTabStore.getState().setNodes([raw('onScreen')] as never);
+      const body = JSON.stringify({ nodes: [raw('n1')], edges: [] });
+      expect(await importFile(namedFile(body, name))).toBe(true);
+      expect(tabs()).toHaveLength(1);
+      expect(tabs()[0].nodes.map((n) => n.id)).toEqual(['n1']);
+    },
+  );
 
   it.each(['moved.cduiworkspace', 'renamed.json'])(
     'opens a workspace called %s as tabs: the content decides, not the name',
@@ -299,24 +302,34 @@ describe('importFile', () => {
   // the `void importFile(file)` the panel makes, and the user would be told
   // nothing at all.
   it('reports an importer that rejects, rather than letting it escape', async () => {
+    vi.mocked(importWorkspaceFile).mockClear();
     vi.mocked(importWorkspaceFile).mockRejectedValueOnce(new Error('the tab store is gone'));
     const body = JSON.stringify(workspaceJson());
     expect(await importFile(namedFile(body, 'w.cduiworkspace'))).toBe(false);
     expect(errorToasts().map((t) => t.message)).toEqual([
       'Import failed: the tab store is gone',
     ]);
+    // Called once, so the queued one-shot rejection is spent here and cannot
+    // leak into whichever test runs next.
+    expect(vi.mocked(importWorkspaceFile)).toHaveBeenCalledTimes(1);
   });
 
   describe('the 64 MiB cap', () => {
-    it('refuses an oversize .cduiworkspace without reading it', async () => {
-      const reads = installCountingReader(JSON.stringify(workspaceJson()));
-      const file = oversized(namedFile('ignored', 'big.cduiworkspace'));
-      expect(await importFile(file)).toBe(false);
-      expect(reads).toHaveLength(0);
-      expect(errorToasts().map((t) => t.message)).toEqual([
-        'The workspace file is over 64 MiB.',
-      ]);
-    });
+    // The second row is the extension check's case: a name off a Windows
+    // disk can arrive in any case, and the check is what decides whether the
+    // file is read into memory at all.
+    it.each(['big.cduiworkspace', 'BIG.CDUIWORKSPACE'])(
+      'refuses an oversize %s without reading it',
+      async (name) => {
+        const reads = installCountingReader(JSON.stringify(workspaceJson()));
+        const file = oversized(namedFile('ignored', name));
+        expect(await importFile(file)).toBe(false);
+        expect(reads).toHaveLength(0);
+        expect(errorToasts().map((t) => t.message)).toEqual([
+          'The workspace file is over 64 MiB.',
+        ]);
+      },
+    );
 
     it('refuses an oversize workspace under another name as soon as it sees what it is', async () => {
       const before = tabs();

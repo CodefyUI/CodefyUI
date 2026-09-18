@@ -238,6 +238,8 @@ export async function importWorkspaceFile(
     }
   }
 
+  // Step 9 AFTER step 8, deliberately: the result toast then reads in the
+  // language the file just switched the UI to, not the one it is leaving.
   report(results, newerVersions, openedGraphs);
   return { results, imported: openedIds.length };
 }

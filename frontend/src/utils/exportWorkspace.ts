@@ -1,3 +1,10 @@
+/**
+ * Exporting every open tab as one `.cduiworkspace` file.
+ *
+ * This is the half of the format that reads the stores; the format itself is
+ * `workspaceFile.ts`, which knows nothing about them.
+ */
+
 import { useI18n } from '../i18n';
 import { runSettingsOf, tabHasContent, useTabStore, type TabState } from '../store/tabStore';
 import { useToastStore } from '../store/toastStore';
@@ -10,13 +17,6 @@ import {
   type WorkspaceFile,
   type WorkspaceTabEntry,
 } from './workspaceFile';
-
-/**
- * Exporting every open tab as one `.cduiworkspace` file.
- *
- * This is the half of the format that reads the stores; the format itself is
- * `workspaceFile.ts`, which knows nothing about them.
- */
 
 /**
  * `application/octet-stream`, not `application/json`: a browser has no

@@ -29,6 +29,13 @@ import { MAX_WORKSPACE_FILE_BYTES } from './workspaceLimits';
  * caller: this takes a `File`, not an input event, because there is nothing
  * about reading a graph that needs to know an `<input type="file">` was
  * involved.
+ *
+ * `importFile` at the foot of the file is the live door the UI calls: it reads
+ * the picked file once and routes by CONTENT between the graph install below
+ * -- which replaces the active tab's graph -- and the `.cduiworkspace`
+ * importer, which adds tabs. `importGraphFile` stays exported for its own
+ * contract (a graph file, onto this tab, reporting its own failures) and for
+ * the tests that pin it.
  */
 
 /**

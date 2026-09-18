@@ -29,6 +29,12 @@ export const WORKSPACE_EXTENSION = '.cduiworkspace';
  * make a change to the app a compile error instead of a silent drop.
  */
 export interface WorkspaceRunSettings {
+  /**
+   * `null` is "no seed". A number is NOT bounded here, on the way in or out:
+   * the backend refuses a seed outside 0..4294967295 when the run is
+   * submitted, with a message the canvas shows, and that is the one place the
+   * range is stated.
+   */
   seed: number | null;
   deterministic: boolean;
   recordOutputs: boolean;
@@ -51,14 +57,18 @@ export interface WorkspaceGraph {
   presets: unknown[];
   segmentGroups: unknown[];
   subgraphs: unknown[];
-  /** Present only when the graph assigns a device. */
+  /**
+   * Present only when the graph assigns a device. Spelled out here rather
+   * than imported from the app's `GraphSettings`, ON PURPOSE: a field added
+   * to that type must not change what this format claims to hold.
+   */
   settings?: { device?: string };
   /** `GRAPH_FORMAT_VERSION` at export time. */
   format_version: number;
 }
 
 export interface WorkspaceTabEntry {
-  /** The tab label. */
+  /** The tab label. No length bound here: the tab strip clips a long one. */
   title: string;
   graph: WorkspaceGraph;
   run: WorkspaceRunSettings;
@@ -114,7 +124,14 @@ export interface ParsedWorkspace {
   version: number;
   appVersion: string | null;
   exportedAt: string | null;
-  /** A valid index into `tabs`, or null. */
+  /**
+   * A valid index into `tabs`, or null.
+   *
+   * It indexes the FILE's tabs, entries the importer will refuse included --
+   * `tabs` below is positional and keeps them. An importer that drops entries
+   * must therefore map this through its own positions, never count what it
+   * opened.
+   */
   active: number | null;
   /** Never empty. Positional: `tabs[i]` is the file's `tabs[i]`. */
   tabs: ParsedWorkspaceTab[];

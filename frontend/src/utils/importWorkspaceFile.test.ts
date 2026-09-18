@@ -229,6 +229,11 @@ describe('importWorkspaceFile: what an imported tab carries', () => {
     const result = await importWorkspaceFile(workspace([entry('In a project')]));
     expect(store().getTab(tabIdAt(result, 0))!.projectOrigin).toBeNull();
   });
+
+  it('belongs to no plugin and is not scratch, so the next export carries it', async () => {
+    const result = await importWorkspaceFile(workspace([entry('Mine')]));
+    expect(store().getTab(tabIdAt(result, 0))).toMatchObject({ source: null, transient: false });
+  });
 });
 
 describe('importWorkspaceFile: entries that cannot open', () => {
@@ -345,6 +350,9 @@ describe('importWorkspaceFile: preferences', () => {
     expect(localStorage.getItem('codefyui-gridsnap')).toBe('true');
     expect(localStorage.getItem('codefyui-tooltips')).toBe('false');
     expect(localStorage.getItem('codefyui-beginner-mode')).toBe('true');
+    // The result toast comes after the language is applied, so it reads in
+    // the language the file just switched to.
+    expect(messages('success')).toEqual(['已匯入 1 個分頁。']);
   });
 
   it('leaves alone what the file does not mention', async () => {

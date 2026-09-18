@@ -210,6 +210,45 @@ describe('parseWorkspaceFile', () => {
     expect(parsed.workspace.tabs[0].run).toEqual({ seed: null });
   });
 
+  it('leaves a seed that is no finite number out, so the tab keeps its default', () => {
+    // Neither NaN nor Infinity has a JSON spelling -- `JSON.stringify` writes
+    // `null` for both and a hand-edited file spells them as strings -- but the
+    // parser is handed already-parsed data, so it refuses them itself.
+    for (const seed of [NaN, Infinity, -Infinity, 'NaN', '7']) {
+      const parsed = parseWorkspaceFile({
+        ...fileJson(),
+        tabs: [{ title: 'T', graph: {}, run: { seed } }],
+      });
+      if (!parsed.ok) throw new Error(`parse failed: ${parsed.reason}`);
+      expect(parsed.workspace.tabs[0].run, `seed: ${String(seed)}`).toEqual({});
+    }
+  });
+
+  it('takes `__proto__` and `constructor` for ordinary keys, and pollutes nothing', () => {
+    // Built through `JSON.parse`, which is the only way to get an OWN
+    // `__proto__` key: written as a literal it would set the prototype.
+    const hostile = (extra: string) =>
+      JSON.parse(`{"__proto__": {"polluted": true}, "constructor": {"polluted": true}, ${extra}}`);
+    const parsed = parseWorkspaceFile({
+      ...fileJson(),
+      preferences: hostile('"tooltips": true'),
+      tabs: [{ title: 'T', graph: {}, run: hostile('"verboseMode": true') }],
+    });
+    if (!parsed.ok) throw new Error(`parse failed: ${parsed.reason}`);
+    expect(parsed.workspace.preferences).toEqual({ tooltips: true });
+    expect(parsed.workspace.tabs[0].run).toEqual({ verboseMode: true });
+    expect('polluted' in {}).toBe(false);
+  });
+
+  it.each([
+    ['app_version', 'appVersion'],
+    ['exported_at', 'exportedAt'],
+  ] as const)('reads a %s that is not a string as null', (fileKey, parsedKey) => {
+    const parsed = parseWorkspaceFile({ ...fileJson(), [fileKey]: 42 });
+    if (!parsed.ok) throw new Error(`parse failed: ${parsed.reason}`);
+    expect(parsed.workspace[parsedKey]).toBeNull();
+  });
+
   it.each([[-1], [2], [0.5], ['0'], [undefined]])(
     'reads an active index of %s as "the active tab was not exported"',
     (active) => {

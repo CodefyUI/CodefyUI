@@ -12,11 +12,12 @@ import { readGraphDevice } from './graphSettings';
 /**
  * A fetched example, resolved into live canvas nodes and edges.
  *
- * Exported since #341: `api.workspace.openGraphs` reads a plugin's graph
- * through this same door, so a graph handed over by an agent is normalised
- * exactly the way a file or an example is -- unknown presets merged, block
- * definitions honoured, `format_version` carried through to the read-only
- * verdict.
+ * What every reader that is NOT opening into the active tab works from:
+ * `resolveUnboundDocument` below turns it into the document the plugin API
+ * (`workspace.openGraphs`) and the `.cduiworkspace` importer install, so a
+ * graph handed over by an agent or read out of a workspace file is normalised
+ * exactly the way an example is -- unknown presets merged, block definitions
+ * honoured, `format_version` carried through to the read-only verdict.
  */
 export interface ResolvedExample {
   nodes: Node<NodeData>[];

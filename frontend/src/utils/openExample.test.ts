@@ -458,9 +458,19 @@ describe('resolveUnboundDocument', () => {
     const doc = resolveUnboundDocument({
       name: 'The graph has a name of its own',
       description: 'carried',
-      nodes: [raw('a')],
-      edges: [],
+      nodes: [raw('a'), raw('b'), raw('blk1', { type: 'subgraph:blk' })],
+      edges: [{ id: 'e1', source: 'a', target: 'b', sourceHandle: 'out', targetHandle: 'in' }],
       segmentGroups: [{ id: 's1', headNodeId: 'a', tailNodeId: 'a' }],
+      subgraphs: [
+        {
+          id: 'blk',
+          name: 'Block',
+          description: '',
+          nodes: [],
+          edges: [],
+          interface: { inputs: [], outputs: [], triggerTargets: [] },
+        },
+      ],
       settings: { device: 'cuda:1' },
       format_version: 99,
     });
@@ -468,7 +478,10 @@ describe('resolveUnboundDocument', () => {
     expect(doc.boundFile).toBeNull();
     // Null, so `loadGraphDocumentInto` leaves the label `createTab` set.
     expect(doc.name).toBeNull();
-    expect(doc.nodes.map((n) => n.id)).toEqual(['a']);
+    expect(doc.nodes.map((n) => n.id)).toEqual(['a', 'b', 'blk1']);
+    // The wiring and the collapsed block travel too, not just the nodes.
+    expect(doc.edges.map((e) => [e.source, e.target])).toEqual([['a', 'b']]);
+    expect(doc.subgraphs!.map((d) => d.id)).toEqual(['blk']);
     expect(doc.description).toBe('carried');
     expect(doc.segmentGroups).toHaveLength(1);
     expect(doc.device).toBe('cuda:1');
