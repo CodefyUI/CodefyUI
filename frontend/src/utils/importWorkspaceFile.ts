@@ -1,6 +1,11 @@
 import { useI18n } from '../i18n';
 import { useNodeDefStore } from '../store/nodeDefStore';
-import { tabHasContent, useTabStore, type GraphDocument } from '../store/tabStore';
+import {
+  tabHasContent,
+  useTabStore,
+  whenTabsHydrated,
+  type GraphDocument,
+} from '../store/tabStore';
 import { useToastStore } from '../store/toastStore';
 import { useUIStore } from '../store/uiStore';
 import { resolveUnboundDocument } from './openExample';
@@ -174,7 +179,13 @@ function report(
 export async function importWorkspaceFile(
   workspace: ParsedWorkspace,
 ): Promise<WorkspaceImportResult> {
+  // Step 3. Hydration writes `{tabs, activeTabId}` wholesale, so an import
+  // that landed before it settled would be overwritten. Nothing below awaits
+  // again, so nothing can interleave with the steps that follow.
+  await whenTabsHydrated();
+
   // Step 4. "Lone empty tab": exactly one tab, empty, not transient, not running.
+  // Read AFTER the wait: before it, the one tab is only the boot placeholder.
   const before = useTabStore.getState().tabs;
   const lone = before.length === 1 ? before[0] : null;
   const loneEmptyTabId =

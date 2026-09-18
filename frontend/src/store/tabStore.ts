@@ -4357,13 +4357,14 @@ function _startHydration(): void {
 /**
  * Resolves once the newest hydration attempt has settled.
  *
- * No production caller, deliberately: acting on a bad outcome is
- * `hydrateTabsFromPersistence`'s own job (it raises the toast at the point of
- * failure, where the reason is still in scope), so nothing has to remember to
- * await this and check. It exists so tests can be deterministic about a step
- * that is otherwise only observable as "the tabs changed a bit later", and so
- * a future caller that genuinely needs to sequence against hydration has a
- * handle rather than a timeout.
+ * One production caller: `importWorkspaceFile` awaits this before it appends
+ * tabs, because hydration writes `{tabs, activeTabId}` wholesale and would
+ * overwrite an import that landed first. Nobody else needs it: acting on a
+ * bad outcome is `hydrateTabsFromPersistence`'s own job (it raises the toast
+ * at the point of failure, where the reason is still in scope), so nothing
+ * has to remember to await this and check. It also lets tests be
+ * deterministic about a step that is otherwise only observable as "the tabs
+ * changed a bit later".
  */
 export function whenTabsHydrated(): Promise<HydrationOutcome> {
   return _lastHydration;
