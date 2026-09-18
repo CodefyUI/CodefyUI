@@ -64,6 +64,7 @@ import {
   type SavedGraphSummary,
 } from './rest';
 import { _setSessionTokenForTesting } from './_auth';
+import { cachedAppVersion } from '../utils/appVersion';
 
 const g = globalThis as unknown as { fetch: typeof fetch };
 let originalFetch: typeof fetch;
@@ -387,6 +388,17 @@ describe('fetchHealth', () => {
   it('throws on a non-ok response', async () => {
     mockFetch(500, {});
     await expect(fetchHealth()).rejects.toThrow(/Health failed/);
+  });
+
+  it('remembers the version, for the caller that cannot wait on the network', async () => {
+    mockFetch(200, { status: 'ok', version: '2.8.2', nodes_loaded: 3, presets_loaded: 1 });
+    await fetchHealth();
+    expect(cachedAppVersion()).toBe('2.8.2');
+
+    // The newest answer wins, including "this server does not say".
+    mockFetch(200, { status: 'ok', nodes_loaded: 3, presets_loaded: 1 });
+    await fetchHealth();
+    expect(cachedAppVersion()).toBeNull();
   });
 });
 
