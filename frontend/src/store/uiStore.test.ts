@@ -405,6 +405,66 @@ describe('useUIStore', () => {
     });
   });
 
+  describe('applyPreferences', () => {
+    it('sets every preference it is given and persists each under its own key', () => {
+      useUIStore.getState().applyPreferences({
+        fontSize: 'large',
+        edgeStyle: 'curve',
+        gridSnap: true,
+        tooltips: false,
+        beginnerMode: true,
+      });
+      expect(useUIStore.getState()).toMatchObject({
+        fontSize: 'large',
+        edgeStyle: 'curve',
+        gridSnapEnabled: true,
+        tooltipsEnabled: false,
+        beginnerMode: true,
+      });
+      expect(localStorage.getItem(KEYS.FONT_SIZE)).toBe('large');
+      expect(localStorage.getItem(KEYS.EDGE_STYLE)).toBe('curve');
+      expect(localStorage.getItem(KEYS.GRIDSNAP)).toBe('true');
+      expect(localStorage.getItem(KEYS.TOOLTIPS)).toBe('false');
+      expect(localStorage.getItem(KEYS.BEGINNER)).toBe('true');
+    });
+
+    it('SETS rather than toggles: applying the value already in force changes nothing', () => {
+      // The baseline is gridSnap off, tooltips on, beginner mode off.
+      useUIStore.getState().applyPreferences({ gridSnap: false, tooltips: true, beginnerMode: false });
+      expect(useUIStore.getState()).toMatchObject({
+        gridSnapEnabled: false,
+        tooltipsEnabled: true,
+        beginnerMode: false,
+      });
+    });
+
+    it('leaves absent keys, and their storage, alone', () => {
+      useUIStore.getState().applyPreferences({});
+      expect(localStorage.length).toBe(0);
+      expect(useUIStore.getState().fontSize).toBe('default');
+
+      useUIStore.getState().applyPreferences({ edgeStyle: 'curve' });
+      expect(localStorage.length).toBe(1);
+      expect(useUIStore.getState().fontSize).toBe('default');
+    });
+
+    it('is one store update, however many preferences it carries', () => {
+      const listener = vi.fn();
+      const unsubscribe = useUIStore.subscribe(listener);
+      useUIStore.getState().applyPreferences({ fontSize: 'small', gridSnap: true, tooltips: false });
+      unsubscribe();
+      expect(listener).toHaveBeenCalledTimes(1);
+    });
+
+    it('never touches the settings that belong to one machine', () => {
+      useUIStore.getState().applyPreferences({ fontSize: 'large', beginnerMode: true });
+      expect(useUIStore.getState().globalDevice).toBe('cpu');
+      expect(useUIStore.getState().sidebarTab).toBe('nodes');
+      expect(localStorage.getItem(KEYS.GLOBAL_DEVICE)).toBeNull();
+      expect(localStorage.getItem(KEYS.SIDEBAR_TAB)).toBeNull();
+    });
+  });
+
   // ── Sidebar (#126) ──────────────────────────────────────────────────────────
 
   describe('setSidebarTab', () => {
