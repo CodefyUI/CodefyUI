@@ -1,7 +1,8 @@
 // Type-only imports: erased at build time, so this module pulls in no store
 // and no DOM, and the format stays testable on its own.
 import type { Locale } from '../i18n';
-import type { EdgeStyle, FontSize } from '../store/uiStore';
+import type { TabRunSettings } from '../store/tabStore';
+import type { EdgeStyle, FontSize, UIPreferences } from '../store/uiStore';
 
 /**
  * The `.cduiworkspace` format: every open tab in one file.
@@ -20,7 +21,13 @@ export const WORKSPACE_FORMAT = 'codefyui-workspace';
 export const WORKSPACE_VERSION = 1;
 export const WORKSPACE_EXTENSION = '.cduiworkspace';
 
-/** One tab's run settings, under the names `TabState` uses for them. */
+/**
+ * One tab's run settings, under the names `TabState` uses for them.
+ *
+ * Declared here rather than imported from `TabRunSettings`: the FILE's shape
+ * must not change because the app's did. The `satisfies` tables below are what
+ * make a change to the app a compile error instead of a silent drop.
+ */
 export interface WorkspaceRunSettings {
   seed: number | null;
   deterministic: boolean;
@@ -57,7 +64,10 @@ export interface WorkspaceTabEntry {
   run: WorkspaceRunSettings;
 }
 
-/** Every key optional: an importer applies what is there and valid. */
+/**
+ * Every key optional: an importer applies what is there and valid. Declared
+ * independently of `UIPreferences`, for the reason `WorkspaceRunSettings` is.
+ */
 export interface WorkspacePreferences {
   locale?: Locale;
   fontSize?: FontSize;
@@ -149,21 +159,24 @@ export function isWorkspaceFile(data: unknown): boolean {
   return isRecord(data) && data.format === WORKSPACE_FORMAT;
 }
 
-const RUN_FLAGS = [
-  'deterministic',
-  'recordOutputs',
-  'verboseMode',
-  'weightsPersistent',
-  'backwardMode',
-  'autoBackward',
-] as const;
+// Exhaustive against the app's own run settings: an eighth one added to
+// `TabRunSettings` is a compile error here, not a field this parser drops
+// without a word. The type import is TYPE-ONLY, so the module stays pure.
+const RUN_FLAGS = {
+  deterministic: true,
+  recordOutputs: true,
+  verboseMode: true,
+  weightsPersistent: true,
+  backwardMode: true,
+  autoBackward: true,
+} satisfies Record<Exclude<keyof TabRunSettings, 'seed'>, true>;
 
 function readRunSettings(raw: unknown): Partial<WorkspaceRunSettings> {
   if (!isRecord(raw)) return {};
   const run: Partial<WorkspaceRunSettings> = {};
   const seed = raw.seed;
   if (seed === null || (typeof seed === 'number' && Number.isFinite(seed))) run.seed = seed;
-  for (const flag of RUN_FLAGS) {
+  for (const flag of Object.keys(RUN_FLAGS) as (keyof typeof RUN_FLAGS)[]) {
     const value = raw[flag];
     if (typeof value === 'boolean') run[flag] = value;
   }
@@ -175,7 +188,12 @@ function readRunSettings(raw: unknown): Partial<WorkspaceRunSettings> {
 const LOCALES = { en: true, 'zh-TW': true } satisfies Record<Locale, true>;
 const FONT_SIZES = { small: true, default: true, large: true } satisfies Record<FontSize, true>;
 const EDGE_STYLES = { circuit: true, curve: true } satisfies Record<EdgeStyle, true>;
-const PREFERENCE_FLAGS = ['gridSnap', 'tooltips', 'beginnerMode'] as const;
+// And exhaustive against the app's own preferences, the way `RUN_FLAGS` is.
+const PREFERENCE_FLAGS = {
+  gridSnap: true,
+  tooltips: true,
+  beginnerMode: true,
+} satisfies Record<Exclude<keyof UIPreferences, 'fontSize' | 'edgeStyle'>, true>;
 
 /** `value` when it is one of the table's OWN keys (so `'toString'` is not one). */
 function oneOf<T extends string>(allowed: Record<T, true>, value: unknown): T | undefined {
@@ -193,7 +211,7 @@ function readPreferences(raw: unknown): WorkspacePreferences {
   if (fontSize !== undefined) preferences.fontSize = fontSize;
   const edgeStyle = oneOf(EDGE_STYLES, raw.edgeStyle);
   if (edgeStyle !== undefined) preferences.edgeStyle = edgeStyle;
-  for (const flag of PREFERENCE_FLAGS) {
+  for (const flag of Object.keys(PREFERENCE_FLAGS) as (keyof typeof PREFERENCE_FLAGS)[]) {
     const value = raw[flag];
     if (typeof value === 'boolean') preferences[flag] = value;
   }

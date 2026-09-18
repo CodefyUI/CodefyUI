@@ -1,5 +1,5 @@
 import { useI18n } from '../i18n';
-import { tabHasContent, useTabStore, type TabState } from '../store/tabStore';
+import { runSettingsOf, tabHasContent, useTabStore, type TabState } from '../store/tabStore';
 import { useToastStore } from '../store/toastStore';
 import { useUIStore } from '../store/uiStore';
 import { cachedAppVersion } from './appVersion';
@@ -63,15 +63,9 @@ function entryOf(tab: TabState): WorkspaceTabEntry {
       ...(settings ? { settings } : {}),
       format_version: GRAPH_FORMAT_VERSION,
     },
-    run: {
-      seed: tab.seed,
-      deterministic: tab.deterministic,
-      recordOutputs: tab.recordOutputs,
-      verboseMode: tab.verboseMode,
-      weightsPersistent: tab.weightsPersistent,
-      backwardMode: tab.backwardMode,
-      autoBackward: tab.autoBackward,
-    },
+    // Lifted by the store, not listed here: a run setting added to
+    // `TabRunSettings` then fails to compile there instead of going unwritten.
+    run: runSettingsOf(tab),
   };
 }
 

@@ -421,6 +421,26 @@ export type TabRunSettings = Pick<
   | 'autoBackward'
 >;
 
+/**
+ * A tab's run settings, lifted off it.
+ *
+ * An object LITERAL against the annotated return type, so an eighth setting
+ * added above is a compile error here rather than a field the workspace
+ * exporter quietly stops writing. Its one caller is `exportWorkspace.ts`,
+ * which used to list the seven fields by hand.
+ */
+export function runSettingsOf(tab: TabState): TabRunSettings {
+  return {
+    seed: tab.seed,
+    deterministic: tab.deterministic,
+    recordOutputs: tab.recordOutputs,
+    verboseMode: tab.verboseMode,
+    weightsPersistent: tab.weightsPersistent,
+    backwardMode: tab.backwardMode,
+    autoBackward: tab.autoBackward,
+  };
+}
+
 function createTabState(id: string, name: string): TabState {
   return {
     id,
@@ -907,15 +927,23 @@ function updateTab(tabs: TabState[], tabId: string, updater: (tab: TabState) => 
   return tabs.map((tab) => (tab.id === tabId ? { ...tab, ...updater(tab) } : tab));
 }
 
-/** The boolean half of `TabRunSettings`; `seed` has a rule of its own. */
-const RUN_FLAG_KEYS = [
-  'deterministic',
-  'recordOutputs',
-  'verboseMode',
-  'weightsPersistent',
-  'backwardMode',
-  'autoBackward',
-] as const;
+/**
+ * The boolean half of `TabRunSettings`; `seed` has a rule of its own.
+ *
+ * A table rather than a list so `satisfies` can make it exhaustive: an eighth
+ * run setting is a compile error here, not a value `setTabRunSettings`
+ * silently ignores.
+ */
+const RUN_FLAGS = {
+  deterministic: true,
+  recordOutputs: true,
+  verboseMode: true,
+  weightsPersistent: true,
+  backwardMode: true,
+  autoBackward: true,
+} satisfies Record<Exclude<keyof TabRunSettings, 'seed'>, true>;
+
+const RUN_FLAG_KEYS = Object.keys(RUN_FLAGS) as (keyof typeof RUN_FLAGS)[];
 
 /**
  * What a seed is stored as. Decided here rather than at each call site so
