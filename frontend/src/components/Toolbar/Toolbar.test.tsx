@@ -765,6 +765,44 @@ describe('Toolbar', () => {
     expect(doc.nodes[0].position).toEqual({ x: 2, y: 2 });
   });
 
+  it('Export Workspace: is the last Export item, set apart by a divider', () => {
+    render(<Toolbar />);
+    fireEvent.click(screen.getByText('Export'));
+    const item = screen.getByRole('button', { name: 'Workspace (.cduiworkspace)' });
+    expect(item.title).toBe('One file with every open tab');
+
+    // Every menu item sits in a wrapper div of its own inside the panel.
+    const wrapper = item.parentElement as HTMLElement;
+    const panel = wrapper.parentElement as HTMLElement;
+    expect(panel.lastElementChild).toBe(wrapper);
+    // `dividerAfter` is on the item ABOVE, so the rule closes that wrapper.
+    expect(
+      wrapper.previousElementSibling?.querySelector(`.${styles.menuDivider}`),
+    ).not.toBeNull();
+  });
+
+  it('Export Workspace: downloads a file whose name ends in .cduiworkspace', () => {
+    setActiveTab({
+      nodes: [{ id: 'n1', type: 'baseNode', position: { x: 0, y: 0 }, data: { type: 'Add', params: {} } }],
+    });
+    render(<Toolbar />);
+    fireEvent.click(screen.getByText('Export'));
+    fireEvent.click(screen.getByText('Workspace (.cduiworkspace)'));
+
+    expect(URL.createObjectURL).toHaveBeenCalledTimes(1);
+    const click = HTMLAnchorElement.prototype.click as unknown as ReturnType<typeof vi.fn>;
+    const anchor = click.mock.contexts[0] as HTMLAnchorElement;
+    expect(anchor.download).toMatch(/^workspace-\d{4}-\d{2}-\d{2}\.cduiworkspace$/);
+  });
+
+  it('Export Workspace: nothing exportable warns and downloads nothing', () => {
+    render(<Toolbar />);
+    fireEvent.click(screen.getByText('Export'));
+    fireEvent.click(screen.getByText('Workspace (.cduiworkspace)'));
+    expect(useToastStore.getState().toasts.some((t) => t.type === 'warning')).toBe(true);
+    expect(URL.createObjectURL).not.toHaveBeenCalled();
+  });
+
   it('Export Subgraph: empty canvas warns', () => {
     render(<Toolbar />);
     fireEvent.click(screen.getByText('Export'));
