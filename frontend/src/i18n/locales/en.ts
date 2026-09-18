@@ -115,7 +115,8 @@ const en = {
   'graphs.empty': 'No saved graphs',
   'graphs.noMatch': 'No matching graphs',
   'graphs.listFail': 'Failed to load graphs: {error}',
-  'graphs.import': 'Import JSON...',
+  'graphs.import': 'Import...',
+  'graphs.import.title': 'A graph (.json) or a workspace (.cduiworkspace)',
   'graphs.saveAs': 'Save as...',
   // One way to open, so the verb needs no qualifier: a row click opens the
   // graph in a tab of its own and never touches the canvas in front of you.
