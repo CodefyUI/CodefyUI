@@ -25,6 +25,13 @@ export interface PortFetchState {
    * the next run.
    */
   errorKey?: TranslationKey | null;
+  /**
+   * Why there is nothing here YET — the node that owns this port has not
+   * returned, so no request was made. Neutral rather than an error, and a key
+   * for the same reason `errorKey` is one. Set at render from the owner's
+   * current status, never stored, so it cannot lag behind it.
+   */
+  noteKey?: TranslationKey | null;
   data: OutputData | null;
 }
 
@@ -107,7 +114,9 @@ export function PortGroup({
                     <NonTensorView value={state.data} />
                   )}
                   {!state?.data && !errorText && (
-                    <div className={styles.diffMissing}>…</div>
+                    <div className={styles.diffMissing}>
+                      {state?.noteKey ? t(state.noteKey) : '…'}
+                    </div>
                   )}
                 </>
               )}

@@ -1,7 +1,8 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { render, screen, waitFor } from '@testing-library/react';
+import { act, render, screen, waitFor } from '@testing-library/react';
 import { BackwardView } from './BackwardView';
 import { useI18n } from '../../i18n';
+import { useTabStore } from '../../store/tabStore';
 import {
   fetchGradIndex,
   fetchOutput,
@@ -9,7 +10,7 @@ import {
   RunDataExpiredError,
   type GradIndexEntry,
 } from '../../api/executionOutputs';
-import type { TensorOutput } from '../../types';
+import type { ExecutionStatus, TensorOutput } from '../../types';
 
 // Mock only the fetch functions; keep the real error classes so `instanceof`
 // checks in the component behave correctly.
@@ -388,5 +389,51 @@ describe('BackwardView', () => {
     await waitFor(() => expect(screen.getByText('nope')).toBeInTheDocument());
     // no tensor table rendered because state.data stays null (tensorData null)
     expect(container.querySelectorAll('table').length).toBe(0);
+  });
+});
+
+// ── Gradients of a run that is still going ──────────────────────────────────
+// A node's gradients are written by the backward pass, which runs after the
+// whole forward pass — so unlike the Forward tab, what makes this view
+// readable is the RUN finishing, not the selected node finishing. Read too
+// early the index comes back empty, which the view reads as "no gradients
+// captured": an instruction to turn on a setting that is already on.
+
+describe('BackwardView — while the run is still going', () => {
+  function setRunStatus(status: ExecutionStatus) {
+    act(() => {
+      const { activeTabId, setTabStatus } = useTabStore.getState();
+      setTabStatus(activeTabId, status);
+    });
+  }
+
+  afterEach(() => setRunStatus('idle'));
+
+  it('says the graph is running instead of claiming nothing was captured', async () => {
+    mockGradIndex.mockResolvedValue([]);
+    setRunStatus('running');
+    render(<BackwardView runId="r1" nodeId="n1" />);
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+
+    expect(screen.getByText('Graph is running…')).toBeInTheDocument();
+    expect(screen.queryByText('No gradients captured')).toBeNull();
+    expect(mockGradIndex).not.toHaveBeenCalled();
+  });
+
+  it('loads the gradients by itself when the run finishes', async () => {
+    mockGradIndex.mockResolvedValue([portEntry('logits')]);
+    mockOutput.mockResolvedValue(tensor([[1, -1], [0.5, 0]], { min: -1, max: 1 }));
+    setRunStatus('running');
+    render(<BackwardView runId="r1" nodeId="n1" />);
+    expect(mockGradIndex).not.toHaveBeenCalled();
+
+    // The run's last frame — the user did not touch the panel.
+    setRunStatus('completed');
+
+    await waitFor(() => expect(screen.getByText('logits')).toBeInTheDocument());
+    expect(screen.queryByText('Graph is running…')).toBeNull();
+    expect(mockGradIndex).toHaveBeenCalledTimes(1);
   });
 });

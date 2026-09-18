@@ -7,7 +7,12 @@ import {
 } from '../../api/executionOutputs';
 import { useI18n, type TranslationKey } from '../../i18n';
 import { keyOf, type PortTarget } from '../InspectorPanel/PortGroup';
-import { resolveSingleNodePorts } from '../InspectorPanel/portCaptures';
+import {
+  capturePhaseNoteKey,
+  resolveSingleNodePorts,
+  takeDuePorts,
+  usePortPhases,
+} from '../InspectorPanel/portCaptures';
 import { HistogramPlot, type HistogramBar } from '../shared/HistogramPlot';
 import { getPortColor } from '../../utils';
 import type { NodeDetailTabContext } from './tabs';
@@ -25,6 +30,8 @@ interface StatsFetchState {
   errorKey: TranslationKey | null;
   /** The server's own message, which has no translation. */
   error: string | null;
+  /** Why there is nothing here yet — see `PortFetchState.noteKey`. */
+  noteKey?: TranslationKey | null;
   data: PortStats | null;
 }
 
@@ -33,17 +40,22 @@ type StatsMap = Record<string, StatsFetchState>;
 /**
  * Load `/stats` for every port of one node.
  *
- * Mirrors `usePortFetches`, with one difference that matters: the in-flight
- * requests are tied to an `AbortController` and cancelled on unmount or port
- * change (#124). Stats are the one capture read that can cost the server a
- * second of CPU per port, so a user arrowing through ten nodes must not leave
- * ten abandoned computations queued behind the one they are looking at.
+ * Mirrors `usePortFetches`, including the rule that a port is not asked for
+ * while the node that owns it is still running — `/stats` summarises the same
+ * captures, so it 404s at the same moments. The difference that matters is
+ * the `AbortController`: stats are the one capture read that can cost the
+ * server a second of CPU per port, so a user arrowing through ten nodes must
+ * not leave ten abandoned computations queued behind the one they are looking
+ * at (#124). One controller per REQUEST rather than per effect run, because
+ * the effect now re-runs whenever any node's status changes and aborting the
+ * port the user is actually waiting on would strand its row.
  */
 export function usePortStats(
   runId: string | null,
   ports: readonly PortTarget[],
 ): StatsMap {
   const [stats, setStats] = useState<StatsMap>({});
+  const phases = usePortPhases(ports);
   // The server's 404 detail carries the Record-outputs hint in English. It is
   // the one error here whose cause we know exactly, so the state records the
   // key for it and the render turns that into a sentence, which keeps a raw
@@ -51,16 +63,48 @@ export function usePortStats(
 
   const portsRef = useRef(ports);
   portsRef.current = ports;
+  const phasesRef = useRef(phases);
+  phasesRef.current = phases;
   const portsKey = ports.map((p) => keyOf(p.nodeId, p.port)).join('|');
+  const phasesKey = phases.join('');
+
+  const askedRef = useRef<{ runId: string | null; keys: Set<string> }>({
+    runId: null,
+    keys: new Set(),
+  });
+  const inFlightRef = useRef<Map<string, AbortController>>(new Map());
+
+  useEffect(() => {
+    const inFlight = inFlightRef.current;
+    return () => {
+      for (const controller of inFlight.values()) controller.abort();
+      inFlight.clear();
+    };
+  }, []);
 
   useEffect(() => {
     if (!runId) return;
+    const inFlight = inFlightRef.current;
+    if (askedRef.current.runId !== runId) {
+      // Whatever the previous run was computing is worthless now.
+      for (const controller of inFlight.values()) controller.abort();
+      inFlight.clear();
+      askedRef.current = { runId, keys: new Set() };
+    }
+
     const all = portsRef.current;
-    if (all.length === 0) return;
-    const controller = new AbortController();
+    const onScreen = new Set(all.map((p) => keyOf(p.nodeId, p.port)));
+    for (const [key, controller] of inFlight) {
+      if (onScreen.has(key)) continue;
+      controller.abort();
+      inFlight.delete(key);
+    }
+
+    const due = takeDuePorts(all, phasesRef.current, askedRef.current.keys);
+    if (due.length === 0) return;
 
     const pending: StatsMap = {};
-    for (const p of all) {
+    for (const p of due) {
       pending[keyOf(p.nodeId, p.port)] = {
         loading: true, errorKey: null, error: null, data: null,
       };
@@ -68,8 +112,11 @@ export function usePortStats(
     setStats((prev) => ({ ...prev, ...pending }));
 
     void Promise.all(
-      all.map(async (p) => {
+      due.map(async (p) => {
         const key = keyOf(p.nodeId, p.port);
+        inFlight.get(key)?.abort();
+        const controller = new AbortController();
+        inFlight.set(key, controller);
         try {
           const data = await fetchPortStats(runId, p.nodeId, p.port, {
             signal: controller.signal,
@@ -92,14 +139,25 @@ export function usePortStats(
               data: null,
             },
           }));
+        } finally {
+          if (inFlight.get(key) === controller) inFlight.delete(key);
         }
       }),
     );
+  }, [runId, portsKey, phasesKey]);
 
-    return () => controller.abort();
-  }, [runId, portsKey]);
-
-  return stats;
+  // Derived, never stored: a node that is running again must not show last
+  // pass's statistics for even one frame.
+  let out = stats;
+  for (let i = 0; i < ports.length; i++) {
+    const noteKey = capturePhaseNoteKey(phases[i]);
+    if (!noteKey) continue;
+    if (out === stats) out = { ...stats };
+    out[keyOf(ports[i].nodeId, ports[i].port)] = {
+      loading: false, errorKey: null, error: null, noteKey, data: null,
+    };
+  }
+  return out;
 }
 
 /** Drop trailing zeros only from something that actually has a decimal point. */
@@ -365,6 +423,7 @@ function PortStatsBlock({
         )}
       </header>
 
+      {state?.noteKey && <div className={styles.muted}>{t(state.noteKey)}</div>}
       {state?.loading && <div className={styles.muted}>{t('nodeDetail.stats.loading')}</div>}
       {(state?.errorKey || state?.error) && (
         <div className={styles.error}>

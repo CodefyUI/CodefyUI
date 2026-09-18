@@ -45,6 +45,7 @@ import {
   fetchOutput,
   fetchStepIndex,
   fetchGradIndex,
+  RunDataExpiredError,
 } from '../../api/executionOutputs';
 import { fetchNodeDefinition } from '../../api/rest';
 import { NodeDetailModal } from './NodeDetailModal';
@@ -60,6 +61,7 @@ import { NodeConfigPanel } from '../ConfigPanel/NodeConfigPanel';
 import { FlowCanvas } from '../Canvas/FlowCanvas';
 import { useKeyboardShortcuts } from '../../hooks/useKeyboardShortcuts';
 import { useTabStore, type TabState } from '../../store/tabStore';
+import { flushTabNodeUpdates, queueTabNodeStatus } from '../../store/nodeUpdateQueue';
 import { useUIStore } from '../../store/uiStore';
 import { useDialogStore } from '../../store/dialogStore';
 import { useI18n } from '../../i18n';
@@ -1406,6 +1408,40 @@ describe('NodeDetailModal — capture parity with InspectorPanel', () => {
     render(<NodeDetailModal />);
     fireEvent.click(screen.getByRole('tab', { name: 'Outputs' }));
     await waitFor(() => expect(screen.getByText('port failed')).toBeInTheDocument());
+  });
+
+  // The modal reads captures through the same hook as the panel, so a node
+  // that has not returned yet has to read the same way on both surfaces.
+  it('says the node is running, and fills the port in when it finishes', async () => {
+    seedTab({
+      nodes: [
+        node('n1', {
+          definition: outputsDef(['logits']),
+          data: { executionStatus: 'running' },
+        }),
+      ],
+      nodeDetailNodeId: 'n1',
+      lastRunId: 'run1',
+      status: 'running',
+    });
+    // Exactly what the server answers for a node that has not written yet.
+    mockOutput.mockRejectedValue(new RunDataExpiredError('run1'));
+    render(<NodeDetailModal />);
+    fireEvent.click(screen.getByRole('tab', { name: 'Outputs' }));
+
+    expect(screen.getByText('Node is running…')).toBeInTheDocument();
+    expect(screen.queryByText(/Run data expired/)).toBeNull();
+    expect(mockOutput).not.toHaveBeenCalled();
+
+    mockOutput.mockResolvedValue(tensor([[1, 2], [3, 4]], { min: 1, max: 4 }));
+    act(() => {
+      queueTabNodeStatus(activeTab().id, 'n1', 'completed');
+      flushTabNodeUpdates();
+    });
+
+    // No reselect and no tab switch: the row was on screen the whole time.
+    await waitFor(() => expect(screen.getByText('shape [2, 2]')).toBeInTheDocument());
+    expect(mockOutput).toHaveBeenCalledWith('run1', 'n1', 'logits');
   });
 });
 
