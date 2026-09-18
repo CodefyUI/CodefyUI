@@ -663,6 +663,13 @@ const zhTW: Record<TranslationKey, string> = {
   'project.readOnly.saveBlocked': '儲存已停用：此圖由較新版本的 CodefyUI 寫入，請更新 CodefyUI 後再編輯。',
   'project.formatTooNew.insertRefused': '沒有插入任何內容：此範本使用比目前版本更新的格式（v{version}），合併進你的圖可能會悄悄遺失其中一部分。可以改用開啟的方式以唯讀檢視，或更新 CodefyUI 後再使用。',
 
+  // 工作區檔案（.cduiworkspace）：把所有開啟的分頁放進一個檔案。匯出在工具列
+  // 「匯出」選單的最後一項；匯入用「圖表」面板的同一顆匯入按鈕，依內容分辨格式。
+  'workspace.export': '工作區 (.cduiworkspace)',
+  'workspace.export.title': '一個檔案，包含所有開啟的分頁',
+  'workspace.export.empty': '沒有可匯出的內容：所有分頁都是空的或唯讀。',
+  'workspace.export.skippedReadOnly': '已略過 {count} 個唯讀分頁。',
+
   // 外掛 API v3 的外框（#132）。外掛面板與工具列按鈕自帶標題，主程式只負責
   // 標示包在外面的容器。
   'plugins.panels': '外掛面板',

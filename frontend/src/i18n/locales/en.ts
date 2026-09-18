@@ -723,6 +723,14 @@ const en = {
   'project.readOnly.saveBlocked': 'Save is disabled: this graph was written by a newer CodefyUI. Update CodefyUI to edit it.',
   'project.formatTooNew.insertRefused': 'Nothing was inserted: this template uses a newer format (v{version}) than this CodefyUI build, so merging it into your graph could quietly drop parts of it. Open it instead to view it read-only, or update CodefyUI to use it.',
 
+  // Workspace files (.cduiworkspace): every open tab in one file. Export is
+  // the last item of the toolbar's Export menu; import is the Graphs panel's
+  // one Import button, which tells the two formats apart by content.
+  'workspace.export': 'Workspace (.cduiworkspace)',
+  'workspace.export.title': 'One file with every open tab',
+  'workspace.export.empty': 'Nothing to export: every tab is empty or read-only.',
+  'workspace.export.skippedReadOnly': '{count} read-only tab(s) were left out.',
+
   // Plugin API v3 chrome (#132). Plugin panels and toolbar buttons supply
   // their own titles, so the host only labels the containers around them.
   'plugins.panels': 'Plugin panels',
