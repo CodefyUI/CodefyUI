@@ -1,8 +1,46 @@
 {
-  "name": "Train Mini-GPT on MNIST",
-  "description": "Scaled-down GPT-style decoder trained end-to-end on MNIST. The SequentialModel flattens each 28x28 image, projects it to a 16-token x 24-dim 'sequence' via a learned embedding, runs a 4-layer TransformerDecoder (self-attention mode) over those tokens, then projects to 10 class logits. Training runs through the Training Pipeline preset. Open the SequentialModel layer editor to play with d_model, num_layers, or head count.",
+  "name": "Train a Transformer classifier on MNIST",
+  "description": "16 image tokens, then test accuracy; needs a download",
   "gallery": { "section": "training", "order": 3 },
   "nodes": [
+    {
+      "id": "note-overview",
+      "type": "note",
+      "position": {
+        "x": -570,
+        "y": 200
+      },
+      "data": {
+        "noteKind": "text",
+        "noteContent": "A Transformer used as an image classifier, to show that attention is not tied to text. Each image becomes a sequence of 16 tokens, four decoder blocks attend over them, and a linear head reads out 10 class scores.\n\nAfter a run, watch the loss curve fall and read the test accuracy Print. Three epochs reach about 96%: attention over invented tokens does not beat convolution on images, and a model this small is not meant to.\n\nThe first run downloads MNIST into backend/data. Three epochs take a few minutes on a CPU. Open the SequentialModel layer editor to change d_model, num_layers or the head count.\n\n這是把 Transformer 當成影像分類器用，說明注意力機制不是文字專屬的。每張影像會變成一段 16 個 token 的序列，四層 decoder 對它們做注意力，最後由一層線性層讀出 10 個類別分數。\n\n跑完之後看損失曲線下降，並讀測試準確率的 Print。三個 epoch 大約到 96%：在影像上，對自己造出來的 token 做注意力贏不過卷積，而這麼小的模型本來也不是為了贏。\n\n第一次執行會把 MNIST 下載到 backend/data。3 個 epoch 在 CPU 上約數分鐘。打開 SequentialModel 的層編輯器可以改 d_model、num_layers 或頭數。",
+        "noteColor": "#3d3d1a",
+        "boundToNodeId": "start-1",
+        "boundOffset": {
+          "x": -420,
+          "y": 0
+        },
+        "noteWidth": 360
+      }
+    },
+    {
+      "id": "note-model-builder",
+      "type": "note",
+      "position": {
+        "x": 50,
+        "y": -130
+      },
+      "data": {
+        "noteKind": "text",
+        "noteContent": "Flatten turns the 28x28 image into 784 numbers, Linear projects those to 384, and Reshape reads the 384 as 16 tokens of 24 dims. That is the whole trick: there is no text here, the sequence is invented. d_model has to stay equal to the token width, 24.\n\nFlatten 把 28x28 的影像攤成 784 個數字，Linear 投影成 384，Reshape 再把這 384 個數字讀成 16 個 24 維的 token。訣竅就只有這樣：這裡沒有文字，序列是自己造出來的。d_model 必須等於 token 寬度 24。",
+        "noteColor": "#3d3d1a",
+        "boundToNodeId": "model-builder",
+        "boundOffset": {
+          "x": 0,
+          "y": -330
+        },
+        "noteWidth": 300
+      }
+    },
     {
       "id": "start-1",
       "type": "Start",
@@ -75,6 +113,48 @@
           "plot_type": "line"
         }
       }
+    },
+    {
+      "id": "ds-test",
+      "type": "Dataset",
+      "position": {
+        "x": 500,
+        "y": 640
+      },
+      "data": {
+        "params": {
+          "name": "MNIST",
+          "split": "test",
+          "data_dir": "./data"
+        }
+      }
+    },
+    {
+      "id": "eval",
+      "type": "EvaluateModel",
+      "position": {
+        "x": 900,
+        "y": 640
+      },
+      "data": {
+        "params": {
+          "batch_size": 256,
+          "device": "auto"
+        }
+      }
+    },
+    {
+      "id": "print-accuracy",
+      "type": "Print",
+      "position": {
+        "x": 1260,
+        "y": 640
+      },
+      "data": {
+        "params": {
+          "label": "Test accuracy"
+        }
+      }
     }
   ],
   "edges": [
@@ -100,9 +180,37 @@
       "targetHandle": "data"
     },
     {
+      "id": "e-4",
+      "source": "ds-test",
+      "target": "eval",
+      "sourceHandle": "dataset",
+      "targetHandle": "dataset"
+    },
+    {
+      "id": "e-5",
+      "source": "train-pipeline",
+      "target": "eval",
+      "sourceHandle": "model",
+      "targetHandle": "model"
+    },
+    {
+      "id": "e-6",
+      "source": "eval",
+      "target": "print-accuracy",
+      "sourceHandle": "accuracy",
+      "targetHandle": "value"
+    },
+    {
       "id": "e-trigger-1",
       "source": "start-1",
       "target": "model-builder",
+      "sourceHandle": "trigger",
+      "type": "trigger"
+    },
+    {
+      "id": "e-trigger-2",
+      "source": "start-1",
+      "target": "ds-test",
       "sourceHandle": "trigger",
       "type": "trigger"
     }
