@@ -1,13 +1,24 @@
 {
   "name": "C6-4 MoE: per-token routing picks top-2 of 4 experts",
-  "description": "The §C6.4.1 'classroom group project' analogy made into actual tensors. Input is a (1, 8, 32) batch — 8 tokens of width 32. MoELayer is set up with num_experts=4 and top_k=2: each token's router scores 4 experts, softmaxes the top 2, and combines only those two experts' outputs. routing_weights (1, 8, 2) and expert_indices (1, 8, 2) show which experts each token picked and with what weight. This is the §C6.4.2 'total params big, per-token compute small' trade-off that powers DeepSeek-V3 671B (37B active) and Mixtral.",
+  "description": "The weights and the expert numbers, token by token",
   "nodes": [
     { "id": "start",   "type": "Start",       "position": { "x": -320, "y":   0 }, "data": { "params": {} } },
     { "id": "x",       "type": "TensorInput", "position": { "x":  -60, "y":   0 }, "data": { "params": { "shape": "1,8,32", "dtype": "float32", "value_mode": "random", "seed": 9 } } },
     { "id": "moe",     "type": "MoELayer",    "position": { "x":  280, "y":   0 }, "data": { "params": { "num_experts": 4, "top_k": 2, "hidden_dim": 32, "expert_hidden_dim": 64, "seed": 42 } } },
-    { "id": "p_out",   "type": "Print",       "position": { "x":  600, "y": -120 }, "data": { "params": { "label": "MoE output (1, 8, 32) — same shape as input" } } },
+    { "id": "p_out",   "type": "Print",       "position": { "x":  600, "y": -190 }, "data": { "params": { "label": "MoE output (1, 8, 32) — same shape as input" } } },
     { "id": "p_w",     "type": "Print",       "position": { "x":  600, "y":    0 }, "data": { "params": { "label": "Routing weights (1, 8, 2) — softmax over top-2 experts per token" } } },
-    { "id": "p_idx",   "type": "Print",       "position": { "x":  600, "y":  120 }, "data": { "params": { "label": "Expert indices (1, 8, 2) — which 2 of 4 experts each token used" } } }
+    { "id": "p_idx",   "type": "Print",       "position": { "x":  600, "y":  190 }, "data": { "params": { "label": "Expert indices (1, 8, 2) — which 2 of 4 experts each token used" } } },
+
+    { "id": "note-overview", "type": "note", "position": { "x": -740, "y": 0 },
+      "data": { "noteKind": "text",
+                "noteContent": "Mixture of experts, with the routing left visible. Eight tokens of width 32 arrive; for each one a small router scores all four experts, keeps the best two, softmaxes those two scores and combines only those outputs. The other two do no work for that token.\n\nThree Prints, three shapes. The output is (1, 8, 32), unchanged from the input, because an MoE layer is a drop-in replacement for a feed-forward layer. routing_weights is (1, 8, 2) and sums to one per token; expert_indices is (1, 8, 2) and names which two.\n\nThat is the trade making very large models affordable: parameters grow with num_experts, work per token only with top_k.\n\n專家混合，而且把路由攤開來看。進來的是八個寬度 32 的 token；對每一個 token，一個小型路由器替四位專家打分數，留下最好的兩位，對這兩個分數做 softmax，然後只合併那兩位專家的輸出。另外兩位對這個 token 完全沒做事。\n\n三個 Print、三種形狀。輸出是 (1, 8, 32)，和輸入一樣，因為 MoE 層就是前饋層的替換品。routing_weights 是 (1, 8, 2)，每個 token 加起來是 1；expert_indices 是 (1, 8, 2)，寫的是挑中哪兩位。\n\n這就是讓超大模型付得起的那個取捨：參數量隨 num_experts 成長，每個 token 的計算量只隨 top_k 成長。",
+                "noteColor": "#3d3d1a", "boundToNodeId": "start",
+                "boundOffset": { "x": -420, "y": 0 }, "noteWidth": 360 } },
+    { "id": "note-moe", "type": "note", "position": { "x": 280, "y": -480 },
+      "data": { "noteKind": "text",
+                "noteContent": "Two dials, two different costs. num_experts multiplies the parameters the layer holds; top_k multiplies the work a token does. Shipped models lean hard on that gap: many experts, a small top_k. hidden_dim has to equal the incoming token width, 32 here.\n\n兩個旋鈕，代價不一樣。num_experts 決定這一層要存多少參數；top_k 決定每個 token 真正要算多少。實際出貨的模型就是吃這個落差：專家很多、top_k 很小。hidden_dim 必須等於輸入的 token 寬度，這裡是 32。",
+                "noteColor": "#3d3d1a", "boundToNodeId": "moe",
+                "boundOffset": { "x": 0, "y": -480 }, "noteWidth": 300 } }
   ],
   "edges": [
     { "id": "et",   "source": "start", "target": "x",     "sourceHandle": "trigger", "type": "trigger" },

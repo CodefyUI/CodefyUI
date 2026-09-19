@@ -806,6 +806,18 @@ export interface ExampleSummary {
    * backend. Every consumer already treats a missing value as "built-in".
    */
   source?: string;
+  /**
+   * Where the example sits in the gallery, from the optional `gallery` block
+   * in its `graph.json` (#141). `section` is one of the five an example may
+   * declare, `family` sub-groups the architectures, and `order` sorts inside
+   * a group. The backend degrades anything it does not recognise to null, so
+   * a third-party pack cannot break the list; `utils/exampleSections` does
+   * the same again, because these three are also the fields an older backend
+   * simply does not send.
+   */
+  section?: string | null;
+  family?: string | null;
+  order?: number | null;
 }
 
 export async function listExamples(): Promise<ExampleSummary[]> {

@@ -28,6 +28,8 @@ from app.core.graph_engine import execute_graph, validate_graph
 from app.core.node_registry import NodeRegistry
 from app.core.plugin_loader import install_plugin_finder
 
+from tests._example_graphs import graph_nodes
+
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _PLUGIN_ROOT = _REPO_ROOT / "plugins"
 
@@ -168,6 +170,11 @@ def test_chapter_graph_node_types_match_the_palette_exactly(
 ):
     """Every node type in a pack example is a key the palette actually has.
 
+    Read through ``graph_nodes``, so a note the example carries to explain
+    itself is not asked to be a registry key -- it is an annotation, and
+    the canvas renders it from the node list without consulting a
+    definition.
+
     ``test_chapter_graph_executes`` above does NOT cover this.
     ``registry.get`` falls back to a suffix scan, so a graph asking for a
     bare ``Edu-KNN`` while the registry holds ``foundations:Edu-KNN``
@@ -189,7 +196,7 @@ def test_chapter_graph_node_types_match_the_palette_exactly(
     unresolved = sorted(
         {
             node_type
-            for node in payload.get("nodes", [])
+            for node in graph_nodes(payload)
             for node_type in [str(node.get("type", ""))]
             if not node_type.startswith(_NON_REGISTRY_PREFIXES)
             and node_type not in palette
@@ -202,3 +209,255 @@ def test_chapter_graph_node_types_match_the_palette_exactly(
         f"must be written qualified, as \"<plugin-id>:<NodeName>\" — the "
         f"plugin id exactly as its cdui.plugin.toml spells it."
     )
+
+
+# ── a pack trainer reports a number, on the split it did not train on ─────
+
+#: The deep pack's MNIST trainer. It trains inside
+#: ``preset:Training Pipeline``, so ``_SLOW_NODE_TYPES`` keeps it out of the
+#: smoke run above and structure is the only thing a test can see here --
+#: which is also the thing that rots. A ``split`` flipped to ``train``
+#: scores the model on the images it memorised, and a dropped ``accuracy``
+#: edge takes the number off the screen again; both still validate, and
+#: both still train. So does an evaluation left on another device: both pack
+#: trainers pin their training device to ``cpu`` instead of ``auto``, and a
+#: graph that trains on one device and scores on another is the bug the
+#: ResNet baseline shipped with.
+_LENET_TRAINER = (_PLUGIN_ROOT / "deep" / "examples" / "C3-1"
+                  / "LeNet-MNIST-Training" / "graph.json")
+
+
+def test_the_lenet_pack_trainer_scores_the_split_it_did_not_train_on():
+    """Train on ``train``, report ``test``, on the training device, and put
+    the number on screen.
+
+    The dataset the example trains on is read off the preset's own
+    ``internalParams`` rather than named here, so the two halves cannot
+    drift apart: an example repointed at another dataset has to repoint its
+    evaluation with it. The built-in quick-start trainer holds the same
+    split contract in ``test_builtin_examples.py``.
+    """
+    payload = json.loads(_LENET_TRAINER.read_text(encoding="utf-8"))
+    edges = payload["edges"]
+    by_id = {node["id"]: node for node in graph_nodes(payload)}
+
+    def feeding(target: str, handle: str) -> dict:
+        sources = [e["source"] for e in edges
+                   if e.get("type", "data") == "data"
+                   and e["target"] == target and e.get("targetHandle") == handle]
+        assert len(sources) == 1, f"{target}.{handle} is fed by {sources}"
+        return by_id[sources[0]]
+
+    evaluator = by_id["eval"]
+    assert evaluator["type"] == "EvaluateModel", evaluator["type"]
+    pipeline = feeding("eval", "model")
+    assert pipeline["type"] == "preset:Training Pipeline", pipeline["type"]
+    trained_on = pipeline["data"]["internalParams"]["dataset"]
+    assert trained_on["split"] == "train", trained_on
+
+    scored_on = feeding("eval", "dataset")
+    assert scored_on["type"] == "Dataset", scored_on["type"]
+    assert scored_on["data"]["params"]["name"] == trained_on["name"], (
+        f"the example trains on {trained_on['name']} and scores itself on "
+        f"{scored_on['data']['params']['name']}")
+    assert scored_on["data"]["params"]["split"] == "test", (
+        f"{scored_on['id']} reads the {scored_on['data']['params']['split']!r} "
+        f"split -- an accuracy measured on the images the loop trained on is "
+        f"not an accuracy")
+
+    training_device = pipeline["data"]["internalParams"]["train_loop"]["device"]
+    assert evaluator["data"]["params"]["device"] == training_device, (
+        f"the loop trains on {training_device!r} and the evaluation runs on "
+        f"{evaluator['data']['params']['device']!r}; a graph that pins its "
+        f"training device has to pin the same one for the pass that scores it")
+
+    shown = {by_id[e["target"]]["type"] for e in edges
+             if e.get("type", "data") == "data" and e["source"] == "eval"
+             and e.get("sourceHandle") == "accuracy"}
+    assert "Print" in shown, (
+        f"EvaluateModel.accuracy reaches {sorted(shown)} -- the one number "
+        f"the evaluation tail exists to produce has to reach a Print")
+
+
+#: The foundations pack's MNIST trainer, the C2 chapter's flagship. Same
+#: contract as the LeNet one above, device pin included, checked separately
+#: because it is a separate file a separate edit can break.
+_MLP_TRAINER = (_PLUGIN_ROOT / "foundations" / "examples" / "C2-5"
+                / "MLP-MNIST-Training" / "graph.json")
+
+
+def test_the_foundations_pack_trainer_scores_the_split_it_did_not_train_on():
+    """Train on ``train``, report ``test``, on the training device."""
+    payload = json.loads(_MLP_TRAINER.read_text(encoding="utf-8"))
+    edges = payload["edges"]
+    by_id = {node["id"]: node for node in graph_nodes(payload)}
+
+    def feeding(target: str, handle: str) -> dict:
+        sources = [e["source"] for e in edges
+                   if e.get("type", "data") == "data"
+                   and e["target"] == target and e.get("targetHandle") == handle]
+        assert len(sources) == 1, f"{target}.{handle} is fed by {sources}"
+        return by_id[sources[0]]
+
+    evaluator = by_id["eval"]
+    assert evaluator["type"] == "EvaluateModel", evaluator["type"]
+    pipeline = feeding("eval", "model")
+    assert pipeline["type"] == "preset:Training Pipeline", pipeline["type"]
+    trained_on = pipeline["data"]["internalParams"]["dataset"]
+    assert trained_on["split"] == "train", trained_on
+
+    scored_on = feeding("eval", "dataset")
+    assert scored_on["type"] == "Dataset", scored_on["type"]
+    assert scored_on["data"]["params"]["name"] == trained_on["name"], (
+        f"the example trains on {trained_on['name']} and scores itself on "
+        f"{scored_on['data']['params']['name']}")
+    assert scored_on["data"]["params"]["split"] == "test", (
+        f"{scored_on['id']} reads the {scored_on['data']['params']['split']!r} "
+        f"split -- an accuracy measured on the images the loop trained on is "
+        f"not an accuracy")
+
+    training_device = pipeline["data"]["internalParams"]["train_loop"]["device"]
+    assert evaluator["data"]["params"]["device"] == training_device, (
+        f"the loop trains on {training_device!r} and the evaluation runs on "
+        f"{evaluator['data']['params']['device']!r}; a graph that pins its "
+        f"training device has to pin the same one for the pass that scores it")
+
+    shown = {by_id[e["target"]]["type"] for e in edges
+             if e.get("type", "data") == "data" and e["source"] == "eval"
+             and e.get("sourceHandle") == "accuracy"}
+    assert "Print" in shown, (
+        f"EvaluateModel.accuracy reaches {sorted(shown)} -- the one number "
+        f"the evaluation tail exists to produce has to reach a Print")
+
+
+# ── a note that quotes a number still quotes the number the graph gives ───
+
+#: ``(example, note id, quoted text, node id, output port)`` for the pack
+#: examples whose notes tell the reader what a run comes out at.
+#:
+#: A number in a note is the part of it that rots: a seed, a param or a
+#: ``values`` list is edited in a second, everything still validates and
+#: still runs, and the note goes on quoting what the example used to
+#: produce. That is worse than no note, so each quote is pinned to the port
+#: it was read off -- to the decimals it is written to, because that is how
+#: a reader compares it with the Print.
+#:
+#: The foundations accuracies are all k/n over a fixed test split, so a
+#: prediction has to flip before one of them moves -- which is exactly the
+#: change worth failing on. Two numbers those notes also quote are left out
+#: deliberately: the sklearn MLP training losses (0.004 and 0.008) are the
+#: one place where another machine's BLAS could move a digit without
+#: anything being wrong, and their accuracies already guard the same graphs.
+#: The deep pack has nothing to pin here -- its notes quote shapes, its one
+#: measured accuracy belongs to an MNIST graph this suite does not execute,
+#: and C4-1 says in the note itself that its numbers are unseeded.
+_QUOTED_FROM_A_PORT = [
+    ("foundations/C2-1/Supervised-Learning-101", "note-overview", "1.0",
+     "acc", "accuracy"),
+    ("foundations/C2-2/Concentric-Circles-Failure", "note-overview", "0.45",
+     "acc", "accuracy"),
+    ("foundations/C2-3/Decision-Tree-Iris", "note-overview", "0.9667",
+     "acc", "accuracy"),
+    ("foundations/C2-3/SVM-RBF-Beats-Circles", "note-overview", "1.0",
+     "acc", "accuracy"),
+    ("foundations/C2-4/MLP-Solves-Circles", "note-overview", "1.0",
+     "acc", "accuracy"),
+    ("foundations/C2-4/MLP-Without-Activation", "note-overview", "0.4",
+     "acc", "accuracy"),
+    ("foundations/C2-5/MLP-Inline-Demo", "note-overview", "1.0",
+     "acc", "accuracy"),
+    ("rl/C5-1/RL-Trajectory-Mockup", "note-overview", "0.35", "return", "tensor"),
+    ("rl/C5-1/RL-Trajectory-Mockup", "note-return", "0.35", "return", "tensor"),
+    ("rl/C5-3/RLHF-Reward-Model", "note-overview", "0.041", "rm_chosen", "rewards"),
+    ("rl/C5-3/RLHF-Reward-Model", "note-overview", "0.177", "rm_reject", "rewards"),
+    ("rl/C5-4/GRPO-Group-Advantage", "note-overview", "0.4875", "mean", "tensor"),
+    ("rl/RL/Policy-Gradient-101", "note-overview", "-0.128", "pg", "loss"),
+    ("rl/RL/Policy-Gradient-101", "note-pg", "-0.1283", "pg", "loss"),
+    ("stats/Stats/Confusion-Matrix-Heatmap", "note-cm", "0.9778", "cm", "accuracy"),
+]
+
+#: The same idea where the number is a cell of a table rather than a port of
+#: its own: the quote has to appear in the text ``Stats-TableView`` renders,
+#: which is the surface the note sends the reader to look at.
+#:
+#: ``Column-Stats-101`` fits neither list. Its note quotes one element of a
+#: three-column tensor, which the single-number reader below rejects, and
+#: that graph has no table view to read a cell out of; a pin for it would
+#: have to index a tensor, which is a third shape for two numbers.
+_QUOTED_FROM_A_TABLE = [
+    ("stats/Stats/Iris-Describe-Table", "note-overview", "5.8433", "view"),
+    ("stats/Stats/Iris-Describe-Table", "note-overview", "3.7580", "view"),
+    ("stats/Stats/Iris-GroupBy-Chart", "note-overview", "1.462", "view"),
+    ("stats/Stats/Iris-GroupBy-Chart", "note-overview", "4.260", "view"),
+    ("stats/Stats/Iris-GroupBy-Chart", "note-overview", "5.552", "view"),
+]
+
+
+def _note_content(payload: dict, note_id: str) -> str:
+    note = next((n for n in payload["nodes"]
+                 if n.get("id") == note_id and n.get("type") == "note"), None)
+    assert note is not None, f"{note_id} is not a note in this example"
+    return str(note["data"]["noteContent"])
+
+
+def _one_number(value) -> float:
+    """The single number behind a port, tensor or plain float."""
+    flatten = getattr(value, "flatten", None)
+    if flatten is None:
+        return float(value)
+    flat = flatten()
+    assert len(flat) == 1, f"expected one number, got {len(flat)}"
+    return float(flat[0])
+
+
+def test_the_pack_notes_quote_what_their_graphs_produce():
+    """Run each example and check its notes against the real output.
+
+    Cheap: none of these graphs holds a slow node type, which is why the
+    smoke test above executes them all anyway. That one asks whether they
+    run; this one asks whether they still say what they do.
+    """
+    backend_dir = Path(__file__).resolve().parents[1]
+    payloads: dict[str, dict] = {}
+    results: dict[str, dict] = {}
+
+    prev_cwd = Path.cwd()
+    os.chdir(backend_dir)  # CSVReader reads data/samples/iris.csv from here
+    try:
+        for example in sorted({row[0] for row
+                               in _QUOTED_FROM_A_PORT + _QUOTED_FROM_A_TABLE}):
+            pack, _, rest = example.partition("/")
+            path = _PLUGIN_ROOT / pack / "examples" / rest / "graph.json"
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            payloads[example] = payload
+            results[example] = asyncio.run(
+                execute_graph(payload["nodes"], payload["edges"],
+                              error_mode="fail_fast")
+            )
+    finally:
+        os.chdir(prev_cwd)
+
+    wrong: list[str] = []
+
+    def quoted_at_all(example: str, note_id: str, quoted: str) -> None:
+        if quoted not in _note_content(payloads[example], note_id):
+            wrong.append(f"{example} {note_id}: does not say {quoted} at all "
+                         f"-- the pin, not the note, is what went stale")
+
+    for example, note_id, quoted, node_id, port in _QUOTED_FROM_A_PORT:
+        produced = _one_number(results[example][node_id][port])
+        rendered = f"{produced:.{len(quoted.partition('.')[2])}f}"
+        if rendered != quoted:
+            wrong.append(f"{example} {note_id}: says {quoted}, but "
+                         f"{node_id}.{port} comes out {rendered}")
+        quoted_at_all(example, note_id, quoted)
+
+    for example, note_id, quoted, node_id in _QUOTED_FROM_A_TABLE:
+        if quoted not in str(results[example][node_id]["text"]):
+            wrong.append(f"{example} {note_id}: says {quoted}, which is "
+                         f"nowhere in the table {node_id} rendered")
+        quoted_at_all(example, note_id, quoted)
+
+    assert not wrong, (
+        "a note tells the reader what a run comes out at, and the run no "
+        f"longer comes out at that: {wrong}")

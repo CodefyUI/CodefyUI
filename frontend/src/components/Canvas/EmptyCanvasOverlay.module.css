@@ -62,11 +62,13 @@
   background: rgba(34, 211, 238, 0.22);
 }
 
-/* Quick-start preset card grid */
+/* Preset card grid. Rows start at the left edge, under the section title and
+   the sub-header: a centred row of three sat a card's width away from the
+   heading that names it. */
 .quickStartGrid {
   display: flex;
   gap: var(--sp-4);
-  justify-content: center;
+  justify-content: flex-start;
   flex-wrap: wrap;
 }
 
@@ -89,6 +91,27 @@
   text-align: left;
   margin-bottom: var(--sp-3);
   letter-spacing: 0.02em;
+}
+
+/* Architecture families and packs. Only the sections that have one carry the
+   extra row; everywhere else this wrapper is the grid it used to be. */
+.subsection {
+  margin-bottom: var(--sp-4);
+}
+
+.subsection:last-child {
+  margin-bottom: 0;
+}
+
+/* One step quieter than the section title — same tier, smaller and without
+   its own margin above, so a family reads as part of the section rather than
+   as a second heading beside it. */
+.subsectionTitle {
+  font-size: var(--fs-xs);
+  line-height: var(--lh-snug);
+  color: var(--text-muted);
+  text-align: left;
+  margin-bottom: var(--sp-2);
 }
 
 /* Preset card base — hover effects (borderColor, boxShadow) applied via onMouseEnter/Leave inline */

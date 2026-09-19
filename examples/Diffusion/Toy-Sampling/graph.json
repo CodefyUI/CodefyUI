@@ -1,13 +1,25 @@
 {
   "name": "Toy Sampling: reverse diffusion with an untrained U-Net",
-  "description": "The reverse-diffusion sampling loop, using a freshly-initialized (untrained) `DiffusionUNet`. Because the model isn't trained, the final 'image' is meaningless noise — but the *trajectory* and the *schedule arithmetic* are exactly what a trained Stable Diffusion does. Watch the DDPMSampler node: 20 reverse-diffusion steps, each calling the U-Net once with a different timestep. To get a meaningful output you'd need to train the U-Net (separate workflow); this preset is about teaching the sampling math, not generating pretty pictures.",
+  "description": "20 reverse steps; untrained, so the output is noise",
+  "gallery": { "section": "concepts", "order": 6 },
   "nodes": [
     { "id": "start-1",  "type": "Start", "position": { "x": -260, "y": 0 }, "data": { "params": {} } },
     { "id": "noise",    "type": "GaussianNoise", "position": { "x": 0,    "y": 80 }, "data": { "params": { "shape": "1,3,16,16", "mean": 0, "std": 1, "seed": 42 } } },
     { "id": "unet",     "type": "DiffusionUNet",  "position": { "x": 320,  "y": -80 }, "data": { "params": { "in_channels": 3, "base_channels": 16, "channel_mult": "1,2,4", "time_emb_dim": 32, "num_groups": 4, "seed": 42 } } },
     { "id": "sampler",  "type": "DDPMSampler",    "position": { "x": 660,  "y": 0 }, "data": { "params": { "num_steps": 20, "schedule": "linear", "beta_start": 0.0001, "beta_end": 0.02, "seed": 7 } } },
     { "id": "print",    "type": "Print",          "position": { "x": 1000, "y": 0 }, "data": { "params": { "label": "Final x_0 (untrained → noise)" } } },
-    { "id": "viz_x0",   "type": "Visualize",      "position": { "x": 1000, "y": 180 }, "data": { "params": { "title": "Sampled x_0 (untrained U-Net -> noise)", "plot_type": "image" } } }
+    { "id": "viz_x0",   "type": "Visualize",      "position": { "x": 1000, "y": 180 }, "data": { "params": { "title": "Sampled x_0 (untrained U-Net -> noise)", "plot_type": "image" } } },
+
+    { "id": "note-overview", "type": "note", "position": { "x": -680, "y": 0 },
+      "data": { "noteKind": "text",
+                "noteContent": "Sampling runs diffusion backwards: start from pure noise and ask the model, 20 times over, what noise to take out. DDPMSampler keeps that loop inside one node, which is what keeps the canvas acyclic. This U-Net was never trained, so its answer at every step is arbitrary and the output is noise by design -- values from about -5 to 5, which the image view clips. The arithmetic is the part worth reading, and it is the arithmetic Stable Diffusion runs.\n\n取樣是把擴散倒著跑：從純噪聲開始，問模型 20 次要拿掉哪些噪聲。DDPMSampler 把整個迴圈收在一個節點裡，畫布才不會有環。這裡的 U-Net 沒有訓練過，每一步的答案都是任意的，所以輸出本來就該是噪聲 — 數值大約落在 -5 到 5，影像檢視會裁掉超出範圍的部分。值得看的是那組算術，而 Stable Diffusion 跑的就是同一組。",
+                "noteColor": "#3d3d1a", "boundToNodeId": "start-1",
+                "boundOffset": { "x": -420, "y": 0 }, "noteWidth": 360 } },
+    { "id": "note-sampler", "type": "note", "position": { "x": 660, "y": -330 },
+      "data": { "noteKind": "text",
+                "noteContent": "num_steps is how finely the schedule is walked, not how good the result is: untrained, 20 steps and 200 steps both give noise. schedule picks the original linear betas or the cosine variant, which adds noise more slowly near the data.\n\nnum_steps 決定排程被切得多細，不是結果有多好：模型沒訓練過，20 步和 200 步都一樣是噪聲。schedule 可以選原始的線性 beta，或 cosine 版本，後者在接近資料的那一端加噪比較慢。",
+                "noteColor": "#3d3d1a", "boundToNodeId": "sampler",
+                "boundOffset": { "x": 0, "y": -330 }, "noteWidth": 300 } }
   ],
   "edges": [
     { "id": "trig_noise", "source": "start-1", "target": "noise",   "sourceHandle": "trigger", "type": "trigger" },

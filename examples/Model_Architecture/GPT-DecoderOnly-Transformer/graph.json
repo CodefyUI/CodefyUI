@@ -1,6 +1,7 @@
 {
   "name": "GPT Decoder-Only Transformer",
-  "description": "Forward-pass visualization of a GPT-style decoder block on a sample (seq_len=16, batch=2, d_model=24) token-embedding tensor. The TransformerDecoder node wires its own tensor output back as memory (causal self-attention only — no encoder), which is the core of decoder-only LLMs like GPT, Claude, and LLaMA. Downstream: Permute to batch-first, Flatten, Dropout, and a Linear head projecting to 10 logits. Not a training graph — see Usage_Example/GPT-Mini for training.",
+  "description": "Decoder-only Transformer forward pass to logits",
+  "gallery": { "section": "architectures", "family": "Transformer", "order": 1 },
   "nodes": [
     { "id": "start-1", "type": "Start", "position": { "x": -200, "y": 0 }, "data": { "params": {} } },
 
@@ -12,7 +13,19 @@
     { "id": "flat", "type": "Flatten", "position": { "x": 760, "y": 0 }, "data": { "params": { "start_dim": 1 } } },
     { "id": "drop", "type": "Dropout", "position": { "x": 980, "y": 0 }, "data": { "params": { "p": 0.1 } } },
     { "id": "head", "type": "Linear", "position": { "x": 1200, "y": 0 }, "data": { "params": { "in_features": 384, "out_features": 10 } } },
-    { "id": "print_logits", "type": "Print", "position": { "x": 1420, "y": 0 }, "data": { "params": { "label": "Logits (B,10)" } } }
+    { "id": "print_logits", "type": "Print", "position": { "x": 1420, "y": 0 }, "data": { "params": { "label": "Logits (B,10)" } } },
+
+    { "id": "note-overview", "type": "note", "position": { "x": -620, "y": 0 },
+      "data": { "noteKind": "text", "noteContent": "Decoder-only means there is no encoder to attend to, so the block attends to its own input: the same tensor is wired into both tensor and memory. That is the shape GPT-style models have.\n\nOne honest gap: this TransformerDecoder applies no causal mask, so a position can see the whole sequence. Real decoder-only training masks the future out - without that, a language model can read the answer. The graph shows the wiring, not the masking.\n\nThe input is a random tensor: the shapes, not a trained model. Tensors here are (seq, batch, d_model) and Print is (2, 10).\n\ndecoder-only 的意思是沒有編碼器可以去注意，所以這個區塊注意的是自己的輸入：同一個張量同時接到 tensor 和 memory。GPT 這一類模型就是長這樣。\n\n有一個要說清楚的落差：這個 TransformerDecoder 沒有加因果遮罩，所以每個位置都看得到整個序列。真正的 decoder-only 訓練會把未來遮掉 — 沒遮的話，語言模型等於直接看到答案。這張圖畫的是接線，不是遮罩。\n\n輸入是隨機張量：看的是形狀，不是訓練好的模型。這裡的張量是 (seq, batch, d_model)，Print 是 (2, 10)。",
+                 "noteColor": "#3d3d1a", "boundToNodeId": "start-1", "boundOffset": { "x": -420, "y": 0 }, "noteWidth": 360 } },
+
+    { "id": "note-decoder", "type": "note", "position": { "x": 260, "y": -330 },
+      "data": { "noteKind": "text", "noteContent": "Both edges come from input: tensor is the target sequence, memory is what the cross-attention layer reads. Feeding it its own input turns that layer into a second pass over the same sequence - the node has no self-attention-only mode.\n\n兩條邊都來自 input：tensor 是目標序列，memory 是 cross-attention 那一層要讀的東西。把自己的輸入餵進去，等於讓那一層再對同一段序列注意一次 — 這個節點沒有「只做自注意力」的模式。",
+                 "noteColor": "#3d3d1a", "boundToNodeId": "decoder", "boundOffset": { "x": 0, "y": -330 }, "noteWidth": 300 } },
+
+    { "id": "note-head", "type": "note", "position": { "x": 1200, "y": -290 },
+      "data": { "noteKind": "text", "noteContent": "Flatten has collapsed 16 steps x 24 dims into 384 features, so this head classifies the whole sequence at once. A language-model head would project each step to the vocabulary and keep the sequence.\n\nFlatten 把 16 步 x 24 維壓成 384 個特徵，所以這個頭是一次分類整段序列。語言模型的頭會改成把每一步各自投影到詞彙表，序列維度留著。",
+                 "noteColor": "#3d3d1a", "boundToNodeId": "head", "boundOffset": { "x": 0, "y": -290 }, "noteWidth": 300 } }
   ],
   "edges": [
     { "id": "e-trig", "source": "start-1", "target": "input", "sourceHandle": "trigger", "type": "trigger" },

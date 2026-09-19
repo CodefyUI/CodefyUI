@@ -1,7 +1,38 @@
 {
   "name": "C1-3 the same image through four different 3×3 kernels",
-  "description": "Figure C1-3-e made runnable: one (1, 1, 8, 8) image, four Conv2dExplicit nodes, four completely different outputs — from an operator that never changes. §C1.3.4.1 makes the claim that 'the arithmetic is always the same; the nine weights decide what the window is looking for', and this graph is where a student checks it. The image is built by hand rather than randomly: columns 0–3 are 100 and columns 4–7 are 200 (one vertical edge down the middle), with a single bright 200 at row 6, column 1 (one isolated dot in the dark half). Every kernel then reports on the same two features. EdgeDetection returns exactly 800 at the dot — the number worked out by hand in §C1.3.4.1 Example 3-2 — and 0 across both flat regions, which is the 'flat → 0, different → large' property that section claims. Sharpen leaves the flat regions at their own value (100 stays 100, 200 stays 200) and pushes the dot to 600. VerticalEdge answers 300 on the two boundary columns and 0 at the dot, since an isolated point is not a vertical edge. The blur is the Custom preset with all nine weights at 1/9: flat regions unchanged, the dot smeared down to 111.11, the edge softened into a 133 → 167 ramp. Swap any preset, or edit the Custom matrix, and only the output changes — the graph does not.",
+  "description": "Edge, sharpen, vertical edge and blur, printed as grids",
   "nodes": [
+    { "id": "note-overview", "type": "note", "position": { "x": -760, "y": 0 },
+      "data": { "noteKind": "text",
+                "noteContent": "Figure C1-3-e of the textbook, made runnable. One hand-built 8x8 picture goes into four Conv2dExplicit nodes at once. The arithmetic is the same in all four -- slide a 3x3 window, multiply, add -- and only the nine numbers inside the window differ, so the four Prints are four answers to the same question about the same pixels.\n\nThe picture is typed in rather than generated, so every kernel has exactly two things to report on: one vertical edge and one isolated bright pixel.\n\nRead the grids away from the outer ring. Padding is zero, so the border sees an edge that is not in the picture.\n\n課本圖 C1-3-e 的可執行版。一張手工排出來的 8x8 圖，同時送進四個 Conv2dExplicit。四邊的算法完全一樣 -- 滑動 3x3 視窗、相乘、相加 -- 差別只在視窗裡那九個數字，所以四個 Print 是同一批像素、同一個問題的四種答案。\n\n這張圖是手動填的、不是亂數生的，所以每個 kernel 要回報的就只有兩樣東西：一條垂直邊，和一個孤立的亮點。\n\n看這四張格子時請避開最外圈。padding 補的是 0，邊界因此會看到一條圖裡根本沒有的邊。",
+                "noteColor": "#3d3d1a", "boundToNodeId": "start",
+                "boundOffset": { "x": -420, "y": 0 }, "noteWidth": 360 } },
+    { "id": "note-img", "type": "note", "position": { "x": -60, "y": -410 },
+      "data": { "noteKind": "text",
+                "noteContent": "The values are typed in, not generated: columns 0-3 are 100, columns 4-7 are 200, and row 6 column 1 holds a single 200 in the dark half. Change one number and all four Prints change with it.\n\n這些數值是手動填的，不是生出來的：第 0-3 欄是 100、第 4-7 欄是 200，第 6 列第 1 欄在暗的那半放了一個 200。改動其中一個數字，四個 Print 都會跟著變。",
+                "noteColor": "#3d3d1a", "boundToNodeId": "img",
+                "boundOffset": { "x": 0, "y": -410 }, "noteWidth": 300 } },
+    { "id": "note-k_edge", "type": "note", "position": { "x": 320, "y": -800 },
+      "data": { "noteKind": "text",
+                "noteContent": "EdgeDetection is the Laplacian: centre +8, the eight neighbours -1. On flat pixels the nine terms cancel to 0; on the lone bright pixel it answers 800, the figure the textbook works out by hand. Either side of the vertical edge it gives +300 and -300.\n\nEdgeDetection 就是 Laplacian：中心 +8、周圍八格各 -1。落在平坦區時九項互相抵消，得到 0；落在那個孤立亮點上會給 800，正是課本手算出來的數字。垂直邊兩側則分別是 +300 和 -300。",
+                "noteColor": "#3d3d1a", "boundToNodeId": "k_edge",
+                "boundOffset": { "x": 0, "y": -410 }, "noteWidth": 300 } },
+    { "id": "note-k_sharp", "type": "note", "position": { "x": 1020, "y": -270 },
+      "data": { "noteKind": "text",
+                "noteContent": "Sharpen is centre +5, the four side neighbours -1, the corners 0. Flat regions keep their value, 100 and 200. At the edge the dark side drops to 0 and the bright side rises to 300, so the jump across it grows from 100 to 300. The lone pixel is pushed to 600.\n\nSharpen 是中心 +5、上下左右四格各 -1、四個角是 0。平坦區維持原本的值，100 和 200。到了邊界，暗的一側掉到 0、亮的一側升到 300，跨過邊界的落差從 100 拉大到 300。孤立亮點則被推到 600。",
+                "noteColor": "#3d3d1a", "boundToNodeId": "k_sharp",
+                "boundOffset": { "x": 700, "y": -140 }, "noteWidth": 300 } },
+    { "id": "note-k_vert", "type": "note", "position": { "x": 1020, "y": 150 },
+      "data": { "noteKind": "text",
+                "noteContent": "VerticalEdge is -1 down the left column and +1 down the right. Columns 3 and 4, where the halves meet, read 300. The lone pixel reads 0, because the columns either side of it match: an isolated point is not a vertical edge. Only a faint -100 shows in the column to its right.\n\nVerticalEdge 是左欄 -1、右欄 +1。兩半交界的第 3、4 欄得到 300。孤立亮點本身是 0，因為它左右兩欄一樣亮：單獨一個點不是垂直邊。只有它右邊那一欄出現淡淡的 -100。",
+                "noteColor": "#3d3d1a", "boundToNodeId": "k_vert",
+                "boundOffset": { "x": 700, "y": 20 }, "noteWidth": 300 } },
+    { "id": "note-k_blur", "type": "note", "position": { "x": 320, "y": 820 },
+      "data": { "noteKind": "text",
+                "noteContent": "The fourth kernel is not a preset: preset is Custom and all nine weights are 1/9, which averages the window. The flat halves keep 100 and 200, the lone pixel smears down to 111.11, and the edge becomes a 133.33 -> 166.67 ramp. Edit the grid to invent a filter.\n\n第四個 kernel 不是內建的：preset 設成 Custom，九個權重全是 1/9，等於把視窗取平均。兩塊平坦區維持 100 與 200，孤立亮點被抹成 111.11，邊界變成 133.33 -> 166.67 的斜坡。改那九格就能自己發明一個濾波器。",
+                "noteColor": "#3d3d1a", "boundToNodeId": "k_blur",
+                "boundOffset": { "x": 0, "y": 430 }, "noteWidth": 300 } },
+
     { "id": "start", "type": "Start",           "position": { "x": -340, "y":    0 }, "data": { "params": {} } },
     { "id": "img",   "type": "TensorInput",     "position": { "x":  -60, "y":    0 }, "data": { "params": { "shape": "1,1,8,8", "dtype": "float32", "value_mode": "explicit", "values": [[[
         [100, 100, 100, 100, 200, 200, 200, 200],
@@ -23,10 +54,10 @@
         [0.1111111111111111, 0.1111111111111111, 0.1111111111111111]
       ] } } },
 
-    { "id": "p_edge",  "type": "Print", "position": { "x": 700, "y": -390 }, "data": { "params": { "label": "邊緣偵測 EdgeDetection — flat regions 0, the isolated dot 800 (§C1.3.4.1 Example 3-2)" } } },
-    { "id": "p_sharp", "type": "Print", "position": { "x": 700, "y": -130 }, "data": { "params": { "label": "銳化 Sharpen — flat regions keep their own value (100, 200), the dot rises to 600" } } },
-    { "id": "p_vert",  "type": "Print", "position": { "x": 700, "y":  130 }, "data": { "params": { "label": "垂直邊緣 VerticalEdge — 300 on the two boundary columns, 0 at the dot" } } },
-    { "id": "p_blur",  "type": "Print", "position": { "x": 700, "y":  390 }, "data": { "params": { "label": "模糊 Blur (Custom, all 1/9) — the dot smears to 111.11, the edge ramps 133 → 167" } } }
+    { "id": "p_edge",  "type": "Print", "position": { "x": 700, "y": -390 }, "data": { "params": { "label": "邊緣偵測 EdgeDetection" } } },
+    { "id": "p_sharp", "type": "Print", "position": { "x": 700, "y": -130 }, "data": { "params": { "label": "銳化 Sharpen" } } },
+    { "id": "p_vert",  "type": "Print", "position": { "x": 700, "y":  130 }, "data": { "params": { "label": "垂直邊緣 VerticalEdge" } } },
+    { "id": "p_blur",  "type": "Print", "position": { "x": 700, "y":  390 }, "data": { "params": { "label": "模糊 Blur (Custom, all 1/9)" } } }
   ],
   "edges": [
     { "id": "et", "source": "start", "target": "img", "sourceHandle": "trigger", "type": "trigger" },

@@ -53,7 +53,130 @@ received — each links to the release it was published as.
   plugin afterwards does not re-link it, so import the file again. See
   `docs/docs/usage/tabs-persistence.md`.
 
+- **An example says where it belongs in the gallery.** A `graph.json` may
+  carry a top-level `gallery` block — `{"section": "architectures",
+  "family": "CNN", "order": 2}` — and `GET /api/examples/list` serves
+  `section`, `family` and `order` with every example it lists. `section` is
+  one of `quickstart`, `training`, `llm`, `concepts` and `architectures`;
+  `family` is the sub-heading inside **Model Architectures**; `order` sorts
+  within the group, and an example without one comes after those that have
+  one. A field the list cannot read — an unknown section, an `order` that
+  is not an integer — is served as nothing for that field alone, so a
+  third-party pack with a typo in its metadata loses a heading instead of
+  taking the gallery down with it. All 36 built-in examples declare a
+  block. See `docs/docs/usage/examples-gallery.md`.
+
+- **Every built-in example explains itself on the canvas.** Each of the 36
+  carries an overview note beside its `Start` node — what the example
+  demonstrates, what to look at after a run, what it needs and roughly how
+  long it takes — and up to four stage notes on the nodes that are the idea:
+  the `Add` that closes a residual block, the `Permute` that reshapes a
+  tensor for attention, the three dataset nodes to change for your own data.
+  Each note is written twice inside the one note, an English paragraph then
+  the same thing in Traditional Chinese, so it reads in both languages with
+  no translation table to keep in step. Notes are what the long descriptions
+  became: the explanation now sits beside the nodes it is about instead of
+  in a field that cuts at the edge of a card.
+
+- **A training example built entirely from HuggingFace datasets.** *Train a
+  CNN on a HuggingFace dataset* wires `AI-Lab-Makerere/beans` — 1,295 photos
+  of bean leaves in three classes — through three `HuggingFaceDataset` nodes,
+  one per split, with no `Training Pipeline` preset hiding a stage: every
+  node your own data passes through is on the canvas and can be opened. Its
+  notes name exactly what to change for another repo — `dataset_name`,
+  `subset`, `image_column`, `label_column`, the split names and the slice
+  syntax for a repo that ships no validation split, and `out_features` for
+  the number of classes — and the two limits: image classification only, and
+  labels that are already integers. Four CPU runs of the shipped file
+  measured 0.82 to 0.85 test accuracy against a 0.33 chance baseline, about
+  two minutes each.
+
+- **The training examples score what they train.** *Train CNN on MNIST*,
+  *Train a Transformer classifier on MNIST* and *Train ResNet on CIFAR10*
+  each gained a second `Dataset` on the test split, an `EvaluateModel` and a
+  `Print`, so a run ends on a number measured on images the training loop
+  never saw — about 0.99, 0.96 and 0.63 respectively on the shipped epoch
+  counts. *Train CNN on MNIST* also tiles 16 test images beside the 16
+  digits it predicted for them, so the accuracy can be checked by eye.
+
+- **The teaching packs' examples explain themselves on the canvas too.** All
+  36 examples the `foundations`, `deep`, `rl` and `stats` packs ship now
+  carry the same notes the built-ins do: an overview note beside the `Start`
+  node and stage notes on the nodes that are the idea — the
+  `Concat` where a U-Net's skip doubles the channel count, the `Add` that
+  closes a residual, the one parameter that is the whole lesson. 94 notes in
+  all, each written twice inside the one note, English then Traditional
+  Chinese. Where a graph does less than its chapter promises, the note says
+  so rather than describing the version the reader does not have: the GRPO
+  example stops at the group mean and names `GroupRelativeAdvantage` as the
+  node that does the subtraction, and the untrained attention and reward
+  examples say their numbers come from a seed rather than from training.
+
+- **The two teaching-pack MNIST trainers score what they train.** *C3-1
+  Train LeNet-style CNN on MNIST* and *C2-5 Train a 784→128→64→10 MLP on
+  MNIST* each gained the same evaluation tail the built-in trainers now
+  have — a second `Dataset` on the test split, an `EvaluateModel` fed from
+  the pipeline's `model` output, and a `Print` — so a lab ends on a number
+  measured on the 10,000 images the loop never saw. Measured on CPU at the
+  shipped five epochs: 0.9876 for the CNN, 0.9694 for the MLP. Each
+  evaluation follows its own graph's training device, which both pin to
+  `cpu`.
+
 ### Changed
+
+- **The example gallery is grouped by what an example is for.** Seven
+  sections — Quick Start, Training, LLM and RAG, Concepts, Model
+  Architectures (sub-grouped by CNN, RNN, Transformer, Diffusion and RL),
+  Plugin Packs and Other — in place of Quick Start, Advanced Examples,
+  Plugin Examples and Model Architectures, where "Advanced Examples" meant
+  everything that was not one of the three starters or one of the 15
+  architecture walkthroughs: 17 of the 35 built-in examples in one list.
+
+  The three surfaces that list examples now share one grouping. The
+  empty-canvas overlay pinned three examples by path and ranked the rest
+  through a hard-coded category order; the sidebar's Templates tab and the
+  Template Gallery grouped by the folder on disk instead. Folders do not
+  move — a section is declared in the graph file — so the paths in the
+  docs, in the translation tables and in `run_graph.py` arguments are
+  unchanged.
+
+  An example description is now a single line of at most 56 columns, the
+  width the card, the sidebar row and the detail pane can show without
+  cutting; the longer explanation belongs in a note on the canvas, beside
+  the nodes it is about. All 72 descriptions obey it, in English and in
+  Traditional Chinese — the longest ran to 1,272 columns — and each one
+  that needs a GPU, a download, a pack or a running service says so in the
+  line itself. Nothing is exempt: the rule holds over every example in
+  `examples/` and every example a pack ships, with no allowlist on either
+  side.
+
+- **Seven examples were renamed to say what they are.** *Api-Function* is
+  **Call a graph as an API**; *Train Mini-GPT on MNIST* is **Train a
+  Transformer classifier on MNIST**, which is what it is — a Transformer
+  used as an image classifier, not a language model. *Iris with sklearn KNN:
+  same graph, production scale* and *Mini U-Net (Compact): the same
+  architecture in one node* both pointed at a sibling the base install does
+  not have, and are now **Classify Iris with k-nearest neighbours** and
+  **Mini U-Net as a single node**. *RNN One Step* unrolls three steps, so it
+  is **RNN unrolled: three steps, one set of weights**; *Mixture of Experts:
+  top-k routing in 5 nodes* has six, so the count is gone; and *Forward
+  Diffusion: gradually adding noise* is now **a digit dissolving into
+  noise**, which is what it shows. Folder paths do not move, so the docs,
+  the translation tables and `run_graph.py` arguments are unchanged.
+
+- **Thirteen teaching-pack examples were renamed for the same reason.** Each
+  keeps the lesson code it had, which is how the textbook refers to it, and
+  drops a promise the graph does not keep or a chain of arrows the canvas
+  already shows. *C4-2 Attention finds 'it → cat'* is **C4-2 Self-attention
+  over a tokenised sentence**: its sentence is Chinese, and `cl100k_base`
+  splits those 14 characters into 25 tokens, most of them byte fragments, so
+  no row is labelled `it` and none ever was.
+  *C5-4 GRPO: group-relative advantage replaces the value-network baseline*
+  is **C5-4 GRPO: the baseline is a group mean, not a critic**, because the
+  graph computes the mean and stops there. *Multi-Head Causal Attention:
+  GPT-style decoder block* is **two heads, one mask** — it has neither the
+  `LayerNorm`s nor the residual adds a decoder block needs, which is what
+  the C4-3 example is for. Folder paths are unchanged.
 
 - **The Graphs tab's import button reads "Import..."** and takes a graph
   `.json` or a `.cduiworkspace`, told apart by what is inside the file rather
@@ -61,6 +184,66 @@ received — each links to the release it was published as.
   canvas; importing a workspace only adds tabs.
 
 ### Fixed
+
+- **Inference CNN on MNIST fed the model images unlike the ones it trained
+  on.** `Dataset` normalises every MNIST image with mean and standard
+  deviation 0.5, so the training graph saw values in `[-1, 1]`; this graph
+  handed `ImageReader`'s `[0, 1]` tensor straight to `Inference`. The logits
+  were therefore not the ones the saved weights were trained to produce.
+  The graph now applies the same shift and scale before the model, and
+  prints the digit it read alongside the logits and the probabilities.
+
+- **Numbers that were computed and never shown.** The *ResNet-18 / CIFAR-10
+  baseline* ran `EvaluateModel` and left its `accuracy` port unwired, so the
+  95% the example exists to demonstrate never reached the screen; it also
+  evaluated on a hard-coded `cuda` while training followed the run's device.
+  *Train a VLA on PushWorld* computed a closed-loop success rate, an average
+  episode length, a rollout report and a held-out action MSE, and showed
+  none of them. *Classify Iris with k-nearest neighbours* fit a classifier
+  and never scored it. Each now ends on a `Print` or a `GraphOutput`, and
+  the ResNet-18 evaluation follows the run's device like its training does.
+
+- **Forward Diffusion blended noise into noise.** Its "clean image" was a
+  `randn` tensor, so the `Lerp` mixed Gaussian noise with Gaussian noise and
+  the `Visualize` output could not show anything dissolving. It now reads
+  `backend/data/images/test_digit.png`, the same real MNIST digit the
+  inference example uses, at an alpha where the digit is still legible under
+  the grain.
+
+- **Teaching-pack text quoted accuracies the graphs do not produce.**
+  *C2-1 Supervised Learning 101*, *C2-3 SVM kernel trick* and *C2-4 Neural
+  network solves circles* each promised "≈95%" in the description and on a
+  `Print` label; all three return 1.0. *C2-2 Concentric Circles* promised
+  "~50%" and returns 0.45, *C2-4 Multi-layer ≠ depth* "≈50%" against 0.4,
+  and *C2-5 MLP inline demo* labelled a `Print` "Test accuracy (≈ 0.95 on
+  moons)" above a graph that answers 1.0. *C2-5 Train a 784→128→64→10 MLP on
+  MNIST* claimed "val accuracy ≈98%" from a graph that computed no
+  validation figure at all — it now measures 0.9694 on the test split and
+  prints it. *C4-2* kept a label telling the reader to hover the `it` row of
+  a heatmap whose 25 axis labels are mostly byte fragments of Chinese. Every
+  number in a pack description or note is now one that was read off a real
+  run of the file as shipped, and a test runs the `foundations`, `rl` and
+  `stats` examples and pins each figure their notes quote to the port it
+  came from, so editing a seed or a parameter fails until the note is edited
+  with it.
+
+- **Two `deep` pack examples reached the network without saying so.** *C4-2*
+  and *C4-4 LLM inference* tokenise real text with the same `Tokenizer` node
+  as *Self-Attention 101* and *Multi-Head Causal Attention*, which fetches
+  the `cl100k_base` table on its first use — but only the latter two said
+  "needs a download" on the card. All four say it now, and each names the
+  download in its overview note as a first-run cost.
+
+- **A graph with a note on it would not run outside the editor.** A note is
+  a node in the file, of type `note`, and `validate_graph` reported it as
+  `Unknown node type: note`. The editor dropped notes in the browser before
+  validating, so **Run** worked there and the same saved graph failed at
+  `python run_graph.py` with exit 1, and at the routes that run a graph by
+  name with a `409 invalid_graph`. Notes and the edges into them are now
+  dropped before every other check, so every caller sees what the canvas
+  always did. `/api/examples/list` leaves notes out of an example's node
+  count as well: the best-explained example is not the most complicated
+  one.
 
 - **A node inspected while the graph was running said its data had expired.**
   The engine writes a node's captures when the node returns, and answers `404`

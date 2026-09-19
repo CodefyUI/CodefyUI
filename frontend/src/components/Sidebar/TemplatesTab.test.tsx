@@ -1,7 +1,8 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { render, screen, fireEvent, waitFor, within } from '@testing-library/react';
-import { TemplatesTab, groupExamplesByCategory } from './TemplatesTab';
+import { TemplatesTab } from './TemplatesTab';
 import { useNodeDefStore } from '../../store/nodeDefStore';
+import { _resetPluginStoreForTesting, usePluginStore } from '../../store/pluginStore';
 import { useTabStore } from '../../store/tabStore';
 import { useToastStore } from '../../store/toastStore';
 import { useI18n } from '../../i18n';
@@ -47,6 +48,7 @@ function ex(overrides: Partial<ExampleSummary> = {}): ExampleSummary {
 beforeEach(() => {
   useI18n.setState({ locale: 'en' });
   useNodeDefStore.setState({ definitions: [], presets: [] });
+  _resetPluginStoreForTesting();
   useToastStore.setState({ toasts: [] });
   mockedRest.listExamples.mockReset();
   mockedRest.loadExample.mockReset();
@@ -57,30 +59,10 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-describe('groupExamplesByCategory', () => {
-  it('puts usage examples first, architectures last, and the rest alphabetically', () => {
-    const groups = groupExamplesByCategory([
-      ex({ category: 'Model_Architecture', path: 'a' }),
-      ex({ category: 'RNN', path: 'b' }),
-      ex({ category: 'Usage_Example', path: 'c' }),
-      ex({ category: 'Diffusion', path: 'd' }),
-    ]);
-    expect(groups.map((g) => g.category)).toEqual([
-      'Usage_Example',
-      'Diffusion',
-      'RNN',
-      'Model_Architecture',
-    ]);
-  });
-
-  it('keeps the backend order of examples within a category', () => {
-    const groups = groupExamplesByCategory([
-      ex({ name: 'First', path: '1' }),
-      ex({ name: 'Second', path: '2' }),
-    ]);
-    expect(groups[0].items.map((i) => i.name)).toEqual(['First', 'Second']);
-  });
-});
+/** The accordion headers, in order. */
+function sectionNames(): (string | null)[] {
+  return [...document.querySelectorAll('[class*="categoryName"]')].map((el) => el.textContent);
+}
 
 describe('TemplatesTab', () => {
   it('shows the loading state, then the header, search box and browse button', async () => {
@@ -96,17 +78,48 @@ describe('TemplatesTab', () => {
     expect(screen.getByRole('button', { name: 'Browse all templates' })).toBeTruthy();
   });
 
-  it('lists examples grouped by category, with the node count', async () => {
+  it('lists examples under their gallery section, with the node count', async () => {
     mockedRest.listExamples.mockResolvedValue([
-      ex({ name: 'Train CNN', category: 'Usage_Example', path: 'u/1', node_count: 7 }),
-      ex({ name: 'ResNet', category: 'Model_Architecture', path: 'm/1' }),
+      ex({ name: 'ResNet', category: 'Model_Architecture', path: 'm/1', section: 'architectures' }),
+      ex({
+        name: 'Train CNN',
+        category: 'Usage_Example',
+        path: 'u/1',
+        node_count: 7,
+        section: 'quickstart',
+      }),
     ]);
     render(<TemplatesTab />);
     await screen.findByText('Train CNN');
-    // Category label has its underscores replaced for display.
-    expect(screen.getByText('Usage Example')).toBeTruthy();
-    expect(screen.getByText('Model Architecture')).toBeTruthy();
+    // The same sections the overlay and the gallery modal render, in the same
+    // order — the tab used to sort by category and disagree with both.
+    expect(sectionNames()).toEqual(['Quick Start', 'Model Architectures']);
     expect(screen.getByText('7 nodes')).toBeTruthy();
+  });
+
+  it('heads a family or a pack with its own name, under the section accent', async () => {
+    // "Model Architectures - CNN" does not fit the row: the name column is
+    // about 150px wide, and the pair ellipsises away the half that tells one
+    // family from the next.
+    usePluginStore.setState({ byId: { c2: { id: 'c2', name: 'Chapter 2' } } as never });
+    mockedRest.listExamples.mockResolvedValue([
+      ex({ name: 'ResNet', category: 'Model_Architecture', path: 'm/1', section: 'architectures', family: 'CNN' }),
+      ex({ name: 'LSTM', category: 'Model_Architecture', path: 'm/2', section: 'architectures', family: 'RNN' }),
+      ex({ name: 'Lesson', category: 'Classical', path: 'plugin:c2/1', source: 'plugin:c2' }),
+    ]);
+    render(<TemplatesTab />);
+    await screen.findByText('ResNet');
+    expect(sectionNames()).toEqual(['CNN', 'RNN', 'Chapter 2']);
+
+    // Both families carry the architectures accent, so the run still reads as
+    // one section without repeating its name three times.
+    const accents = [...document.querySelectorAll('[class*="categoryButton"]')].map(
+      (el) => (el as HTMLElement).style.borderBottom,
+    );
+    // #2397f3 — the architectures accent, normalized by jsdom.
+    expect(accents[0]).toContain('rgb(35, 151, 243)');
+    expect(accents[1]).toBe(accents[0]);
+    expect(accents[2]).not.toBe(accents[0]);
   });
 
   it('shows the empty state when the backend has no examples', async () => {
@@ -254,24 +267,24 @@ describe('TemplatesTab', () => {
     expect(activeTab().nodes.map((n) => n.id)).toEqual(['mine']);
   });
 
-  it('offers a jump index across example categories', async () => {
+  it('offers a jump index across the sections', async () => {
     mockedRest.listExamples.mockResolvedValue([
-      ex({ name: 'A', category: 'Usage_Example', path: 'u/1' }),
-      ex({ name: 'B', category: 'Diffusion', path: 'd/1' }),
+      ex({ name: 'A', category: 'Usage_Example', path: 'u/1', section: 'quickstart' }),
+      ex({ name: 'B', category: 'Diffusion', path: 'd/1', section: 'concepts' }),
     ]);
     render(<TemplatesTab />);
     await screen.findByText('A');
     const index = screen.getByRole('navigation', { name: 'Jump to category' });
-    expect(within(index).getByRole('button', { name: 'Usage Example' })).toBeTruthy();
-    expect(within(index).getByRole('button', { name: 'Diffusion' })).toBeTruthy();
+    expect(within(index).getByRole('button', { name: 'Quick Start' })).toBeTruthy();
+    expect(within(index).getByRole('button', { name: 'Concepts' })).toBeTruthy();
   });
 
-  it('gives an unknown (plugin-defined) category the fallback accent colour', async () => {
+  it('gives an example that declares no section the Other accent colour', async () => {
     mockedRest.listExamples.mockResolvedValue([
-      ex({ name: 'Plugin Demo', category: 'Something_Else', path: 'plugin:c2/x' }),
+      ex({ name: 'Misc Demo', category: 'Something_Else', path: 'x/misc' }),
     ]);
     render(<TemplatesTab />);
-    const header = (await screen.findByText('Something Else')).closest('button')!;
+    const header = (await screen.findByText('Other')).closest('button')!;
     // #FF9800 — EXAMPLE_CATEGORY_FALLBACK, normalized by jsdom.
     expect(header.style.borderBottom).toContain('rgb(255, 152, 0)');
   });

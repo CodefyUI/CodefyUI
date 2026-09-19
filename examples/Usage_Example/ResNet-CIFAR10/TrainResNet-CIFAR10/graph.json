@@ -1,7 +1,46 @@
 {
   "name": "Train ResNet on CIFAR10",
-  "description": "End-to-end ResNet training on CIFAR10. SequentialModel builds a mini-ResNet with two residual blocks (shortcut edges stem_pool→b1_add and b1_r2→b2_add) into an nn.Module, which is then wired through the Training Pipeline preset (Dataset → DataLoader → Optimizer → Loss → TrainingLoop). Open the SequentialModel layer editor to inspect or edit the residual graph.",
+  "description": "Train and score a mini-ResNet; needs a 170 MB download",
+  "gallery": { "section": "training", "order": 2 },
   "nodes": [
+    {
+      "id": "note-overview",
+      "type": "note",
+      "position": {
+        "x": -570,
+        "y": 200
+      },
+      "data": {
+        "noteKind": "text",
+        "noteContent": "A mini-ResNet: a 7x7 stem, two residual blocks, then global pooling and a 10-way head. The point is the shortcut. Each block adds its own input back to its output, so the block only has to learn a correction rather than the whole mapping.\n\nAfter a run, read the loss curve and the test accuracy Print. Three epochs of plain SGD at lr 0.1 reach about 63%: a starting point, not a result. Raising epochs is the first thing to try.\n\nThe first run downloads CIFAR-10 (about 170 MB) into backend/data. That download, not the training, is what takes the time: three epochs of a model this small are well under a minute of CPU.\n\n這是一個迷你 ResNet：7x7 的 stem、兩個殘差區塊，接全域池化和 10 類的輸出層。重點在捷徑：每個區塊會把自己的輸入加回輸出，所以區塊只需要學一個修正量，而不是整個映射。\n\n跑完之後看損失曲線和測試準確率的 Print。用一般 SGD、學習率 0.1 跑三個 epoch 大約到 63%，這是起點而不是結果，最先該試的是把 epochs 調大。\n\n第一次執行會把 CIFAR-10（約 170 MB）下載到 backend/data。花時間的是這個下載而不是訓練：這麼小的模型跑三個 epoch，在 CPU 上遠不到一分鐘。",
+        "noteColor": "#3d3d1a",
+        "boundToNodeId": "start-1",
+        "boundOffset": {
+          "x": -420,
+          "y": 0
+        },
+        "noteWidth": 360
+      }
+    },
+    {
+      "id": "note-model-builder",
+      "type": "note",
+      "position": {
+        "x": 50,
+        "y": -130
+      },
+      "data": {
+        "noteKind": "text",
+        "noteContent": "Open the layer editor and look for the two edges that skip ahead: stem_pool to b1_add, and b1_r2 to b2_add. Those are the shortcuts. Each Add sums a block's output with the input that entered it, which is what lets gradients reach the early layers.\n\n打開層編輯器，找兩條往前跳的連線：stem_pool 到 b1_add，以及 b1_r2 到 b2_add，那就是捷徑。每個 Add 會把區塊的輸出和進入這個區塊的輸入相加，梯度才回得到前面的層。",
+        "noteColor": "#3d3d1a",
+        "boundToNodeId": "model-builder",
+        "boundOffset": {
+          "x": 0,
+          "y": -330
+        },
+        "noteWidth": 300
+      }
+    },
     {
       "id": "start-1",
       "type": "Start",
@@ -74,6 +113,48 @@
           "plot_type": "line"
         }
       }
+    },
+    {
+      "id": "ds-test",
+      "type": "Dataset",
+      "position": {
+        "x": 500,
+        "y": 640
+      },
+      "data": {
+        "params": {
+          "name": "CIFAR10",
+          "split": "test",
+          "data_dir": "./data"
+        }
+      }
+    },
+    {
+      "id": "eval",
+      "type": "EvaluateModel",
+      "position": {
+        "x": 900,
+        "y": 640
+      },
+      "data": {
+        "params": {
+          "batch_size": 256,
+          "device": "auto"
+        }
+      }
+    },
+    {
+      "id": "print-accuracy",
+      "type": "Print",
+      "position": {
+        "x": 1260,
+        "y": 640
+      },
+      "data": {
+        "params": {
+          "label": "Test accuracy"
+        }
+      }
     }
   ],
   "edges": [
@@ -99,9 +180,37 @@
       "targetHandle": "data"
     },
     {
+      "id": "e-4",
+      "source": "ds-test",
+      "target": "eval",
+      "sourceHandle": "dataset",
+      "targetHandle": "dataset"
+    },
+    {
+      "id": "e-5",
+      "source": "train-pipeline",
+      "target": "eval",
+      "sourceHandle": "model",
+      "targetHandle": "model"
+    },
+    {
+      "id": "e-6",
+      "source": "eval",
+      "target": "print-accuracy",
+      "sourceHandle": "accuracy",
+      "targetHandle": "value"
+    },
+    {
       "id": "e-trigger-1",
       "source": "start-1",
       "target": "model-builder",
+      "sourceHandle": "trigger",
+      "type": "trigger"
+    },
+    {
+      "id": "e-trigger-2",
+      "source": "start-1",
+      "target": "ds-test",
       "sourceHandle": "trigger",
       "type": "trigger"
     }

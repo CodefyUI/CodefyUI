@@ -1,13 +1,24 @@
 {
   "name": "C2-4 Multi-layer ≠ depth without activation",
-  "description": "Same architecture as MLP-Solves-Circles (16, 16 hidden) — but activation='identity'. With no non-linearity between layers, two linear transforms collapse into one linear transform: W₂·W₁·x + b is still a single straight line. Accuracy crashes back to the 50% wall, exactly like LogisticRegression in C2-2. Run both C2-4 graphs side by side and §C2.4.3 ('without activation the whole network is one linear layer') is no longer a claim — it's a demonstration.",
+  "description": "Drop the ReLU and the same network drops to chance",
   "nodes": [
+    { "id": "note-overview", "type": "note", "position": { "x": -720, "y": 0 },
+      "data": { "noteKind": "text",
+                "noteContent": "The same graph as the ReLU one beside it -- same data, same two hidden layers of 16, same optimiser -- with activation set to identity. Nothing bends between the layers, so the two matrix multiplies collapse into one: W2 . W1 . x + b is still a single straight boundary.\n\nThe accuracy Print reads 0.4, 24 of 60, no better than the straight-line classifier this was meant to improve on. The training loss stops at 0.693, which is ln 2 -- exactly the loss of a model that answers half and half to every point.\n\nRun this and the ReLU example side by side and compare the two numbers. Depth on its own bought nothing.\n\n這張圖和旁邊用 ReLU 的那張一模一樣 -- 同一份資料、同樣兩層各 16 個單元、同一個最佳化器 -- 只把 activation 設成 identity。層與層之間沒有任何彎折，兩次矩陣相乘就塌成一次：W2 . W1 . x + b 仍然只是一條直線邊界。\n\n準確率的 Print 是 0.4，60 題對 24 題，並沒有比它想勝過的那個直線分類器好。訓練損失停在 0.693，也就是 ln 2 -- 對每個點都回答「一半一半」的模型，損失正好是這個數。\n\n把這張圖和用 ReLU 的那張並排跑，對照兩個數字。光有深度什麼也沒買到。",
+                "noteColor": "#3d3d1a", "boundToNodeId": "start",
+                "boundOffset": { "x": -420, "y": 0 }, "noteWidth": 360 } },
+    { "id": "note-mlp", "type": "note", "position": { "x": 560, "y": -430 },
+      "data": { "noteKind": "text",
+                "noteContent": "activation is the only difference from the ReLU example. identity means no function at all is applied after the matrix multiply, and a stack of linear maps is one linear map. Set it back to relu here, touch nothing else, and the accuracy jumps to 1.0.\n\nactivation 是這張圖和用 ReLU 那張唯一的差別。identity 表示矩陣相乘之後不再套任何函數，而一串線性映射合起來還是一個線性映射。在這裡把它改回 relu、其他都不動，準確率就會跳到 1.0。",
+                "noteColor": "#3d3d1a", "boundToNodeId": "mlp",
+                "boundOffset": { "x": 0, "y": -430 }, "noteWidth": 300 } },
+
     { "id": "start",   "type": "Start",            "position": { "x": -300, "y":   0 }, "data": { "params": {} } },
     { "id": "data",    "type": "SyntheticDataset", "position": { "x":  -40, "y":   0 }, "data": { "params": { "kind": "circles", "n_samples": 300, "noise": 0.08, "factor": 0.5, "seed": 42 } } },
     { "id": "split",   "type": "TrainTestSplit",   "position": { "x":  260, "y":   0 }, "data": { "params": { "test_size": 0.2, "seed": 42, "stratify": true } } },
     { "id": "mlp",     "type": "MLPClassifier",    "position": { "x":  560, "y":   0 }, "data": { "params": { "hidden_sizes": "16,16", "activation": "identity", "max_iter": 800, "learning_rate_init": 0.01, "seed": 42 } } },
     { "id": "acc",     "type": "Accuracy",         "position": { "x":  860, "y":   0 }, "data": { "params": {} } },
-    { "id": "p_acc",   "type": "Print",            "position": { "x": 1140, "y":   0 }, "data": { "params": { "label": "Test accuracy (≈ 0.50 = no activation → no depth)" } } }
+    { "id": "p_acc",   "type": "Print",            "position": { "x": 1140, "y":   0 }, "data": { "params": { "label": "Test accuracy" } } }
   ],
   "edges": [
     { "id": "et",        "source": "start", "target": "data",  "sourceHandle": "trigger", "type": "trigger" },

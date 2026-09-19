@@ -6,49 +6,19 @@ import {
   exampleMatches,
   type LocalizedExample,
 } from '../../utils/localizeExamples';
+import { selectPluginsById, usePluginStore } from '../../store/pluginStore';
 import { useUIStore } from '../../store/uiStore';
 import { useI18n } from '../../i18n';
-import { EXAMPLE_CATEGORY_COLORS, EXAMPLE_CATEGORY_FALLBACK } from '../../styles/theme';
+import {
+  flattenExampleSections,
+  groupExamplesBySection,
+} from '../../utils/exampleSections';
+import { pluginNameOf } from '../../utils/provider';
+import { EXAMPLE_CATEGORY_FALLBACK, EXAMPLE_SECTION_COLORS } from '../../styles/theme';
 import { RefreshIcon } from '../shared/Icons';
-import { CategoryList, type CategoryGroup } from './CategoryList';
+import { CategoryList } from './CategoryList';
 import styles from './NodePalette.module.css';
 import tabStyles from './TemplatesTab.module.css';
-
-/** Beginner-facing usage examples lead; the reference architectures (which are
- * illustrative rather than runnable starting points) sit at the bottom. Every
- * other category — builtin or plugin-shipped — sorts alphabetically between
- * them. */
-const FIRST_CATEGORY = 'Usage_Example';
-const LAST_CATEGORY = 'Model_Architecture';
-
-function categoryRank(category: string): number {
-  if (category === FIRST_CATEGORY) return 0;
-  if (category === LAST_CATEGORY) return 2;
-  return 1;
-}
-
-export function exampleCategoryLabel(category: string): string {
-  return category.replace(/_/g, ' ');
-}
-
-/** Group the flat `/api/examples/list` payload by category, in display order. */
-export function groupExamplesByCategory<T extends ExampleSummary>(
-  examples: T[],
-): CategoryGroup<T>[] {
-  const byCategory = new Map<string, T[]>();
-  for (const example of examples) {
-    const bucket = byCategory.get(example.category);
-    if (bucket) bucket.push(example);
-    else byCategory.set(example.category, [example]);
-  }
-  return [...byCategory.entries()]
-    .map(([category, items]) => ({ category, items }))
-    .sort(
-      (a, b) =>
-        categoryRank(a.category) - categoryRank(b.category) ||
-        a.category.localeCompare(b.category),
-    );
-}
 
 // ── Example item ──
 
@@ -120,10 +90,11 @@ function ExampleItem({ example }: { example: LocalizedExample }) {
  *
  * Deliberately thumbnail-less: this is the always-available list view, and the
  * richer gallery is the empty-canvas overlay's job — and core#128's modal,
- * which the footer button below opens. All three group by category through
- * `groupExamplesByCategory` (exported for exactly that reason) so they never
- * drift out of order, and this tab and the modal now share `insertExample`
- * (#348) so an example joins the canvas the same way from either.
+ * which the footer button below opens. All three group through
+ * `utils/exampleSections` (#141), so the same example sits in the same place
+ * wherever it is opened from; this tab and the modal also share
+ * `insertExample` (#348) so an example joins the canvas the same way from
+ * either.
  *
  * Examples are fetched per mount rather than cached in a store: the sidebar
  * only mounts this tab while it is the selected one, and the list changes
@@ -136,6 +107,7 @@ export function TemplatesTab() {
   const [error, setError] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
   const { t } = useI18n();
+  const pluginsById = usePluginStore(selectPluginsById);
 
   const load = useCallback(() => {
     setLoading(true);
@@ -155,11 +127,21 @@ export function TemplatesTab() {
 
   const localized = useLocalizedExamples(examples);
 
+  // Filter first, group second: a search that empties a section drops the
+  // section with it rather than leaving a header over nothing.
   const groups = useMemo(() => {
     const q = searchQuery.trim().toLowerCase();
     const filtered = q ? localized.filter((e) => exampleMatches(e, q)) : localized;
-    return groupExamplesByCategory(filtered);
-  }, [localized, searchQuery]);
+    const sections = groupExamplesBySection(filtered, (source) =>
+      pluginNameOf(pluginsById, source),
+    );
+    return flattenExampleSections(sections, t);
+  }, [localized, pluginsById, searchQuery, t]);
+
+  // `CategoryList` addresses a group by its key alone — collapse state, the
+  // jump index and the scroll target all hang off it — so the label and the
+  // accent are looked up rather than passed down.
+  const byKey = useMemo(() => new Map(groups.map((g) => [g.category, g])), [groups]);
 
   return (
     <>
@@ -207,9 +189,13 @@ export function TemplatesTab() {
               groups={groups}
               itemKey={(example) => example.path}
               renderItem={(example) => <ExampleItem example={example} />}
-              colorFor={(category) =>
-                EXAMPLE_CATEGORY_COLORS[category] ?? EXAMPLE_CATEGORY_FALLBACK}
-              labelFor={exampleCategoryLabel}
+              colorFor={(key) => {
+                const section = byKey.get(key)?.sectionKey;
+                return (
+                  (section && EXAMPLE_SECTION_COLORS[section]) ?? EXAMPLE_CATEGORY_FALLBACK
+                );
+              }}
+              labelFor={(key) => byKey.get(key)?.label ?? key}
             />
           )
         )}

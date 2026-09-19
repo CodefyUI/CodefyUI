@@ -199,7 +199,7 @@ Inspect the contract first when scripting against an unfamiliar graph:
 curl.exe -s "http://127.0.0.1:8000/api/graph/contract/Api-Function"
 ```
 
-A ready-made graph for these exact calls ships in `examples/Usage_Example/Api-Function/` — open it from the Examples gallery, save it, and the commands above work verbatim.
+A ready-made graph for these exact calls ships in `examples/Usage_Example/Api-Function/`, listed in the Examples gallery as **Call a graph as an API**. Open it, save it as `Api-Function` — the address in the URLs above is the name you save under, not the example's name — and the commands work verbatim.
 
 ## 8. Limits and gotchas
 

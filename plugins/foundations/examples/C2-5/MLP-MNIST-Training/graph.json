@@ -1,7 +1,23 @@
 {
   "name": "C2-5 Train a 784→128→64→10 MLP on MNIST",
-  "description": "The flagship C2 example. SequentialModel assembles the §C2.5.2 architecture (Flatten → Linear 784→128 → ReLU → Linear 128→64 → ReLU → Linear 64→10) and the Training Pipeline preset wires the standard Dataset(MNIST) → DataLoader → CrossEntropyLoss → Adam → TrainingLoop. After 5 epochs the loss curve should drop from ~2.3 (random) to ~0.05 and val accuracy hit ≈98% — matching the table in §C2.5.4. Bump 'Epochs' on the preset to 20 for the full §C2.5.4 training curve; set 'activation' inside the layer config to identity to demonstrate the §C2.5.6 'no activation = single linear layer' collapse.",
+  "description": "Train the MLP on MNIST, then test it; needs a download",
   "nodes": [
+    { "id": "note-overview", "type": "note", "position": { "x": -680, "y": 200 },
+      "data": { "noteKind": "text",
+                "noteContent": "Flatten the 28x28 image into 784 numbers, then 128, then 64, then 10: the plainest network that still reads handwriting. It trains on the 60,000 training images and is then scored on the 10,000 test images the loop never saw.\n\nFive epochs bring the training loss from about 0.40 down to about 0.10, and the test accuracy Print to about 97%. The first run downloads MNIST into backend/data; the training itself takes well under a minute on a CPU.\n\nOpen the Training Pipeline box to change the epochs, the optimizer or the learning rate. The deep pack trains a convolutional network on the same digits, which is the comparison this chapter ends on.\n\n把 28x28 的影像攤平成 784 個數字，再經過 128、64、10：還讀得懂手寫數字的最樸素網路。它在 60,000 張訓練影像上訓練，再用訓練迴圈沒看過的 10,000 張測試影像評分。\n\n5 個 epoch 會把訓練損失從大約 0.40 壓到大約 0.10，測試準確率的 Print 約 97%。第一次執行會把 MNIST 下載到 backend/data；訓練本身在 CPU 上不用一分鐘。\n\n打開 Training Pipeline 方塊可以改 epochs、optimizer 或學習率。deep 套件包用同一批數字訓練卷積網路，那正是本章最後要做的對照。",
+                "noteColor": "#3d3d1a", "boundToNodeId": "start",
+                "boundOffset": { "x": -420, "y": 0 }, "noteWidth": 360 } },
+    { "id": "note-pipeline", "type": "note", "position": { "x": 360, "y": -230 },
+      "data": { "noteKind": "text",
+                "noteContent": "Inside the box: Dataset(MNIST, train) -> DataLoader(batch 64, shuffled) -> CrossEntropyLoss -> Adam at lr 0.001 -> a 5-epoch loop. Open it to change any of them. Its device is pinned to cpu rather than auto, so a GPU stays unused until you change it here.\n\n方塊裡面是：Dataset(MNIST, train) -> DataLoader(batch 64、shuffle) -> CrossEntropyLoss -> lr 0.001 的 Adam -> 5 個 epoch 的訓練迴圈。要改哪一項都在裡面。它的 device 固定成 cpu 而不是 auto，所以在這裡改掉之前，GPU 都不會被用到。",
+                "noteColor": "#3d3d1a", "boundToNodeId": "pipeline",
+                "boundOffset": { "x": 0, "y": -430 }, "noteWidth": 300 } },
+    { "id": "note-ds_test", "type": "note", "position": { "x": 0, "y": 800 },
+      "data": { "noteKind": "text",
+                "noteContent": "A second Dataset node, same files, split set to test. EvaluateModel runs all 10,000 of them through the trained network and compares each argmax with the label, so the accuracy is measured on images the training loop never touched.\n\n這是第二個 Dataset 節點，讀同一份檔案，split 設成 test。EvaluateModel 會把這 10,000 張全部送進訓練好的網路，逐筆比對 argmax 與標籤，所以準確率算在訓練迴圈完全沒碰過的影像上。",
+                "noteColor": "#3d3d1a", "boundToNodeId": "ds_test",
+                "boundOffset": { "x": -360, "y": 0 }, "noteWidth": 300 } },
+
     {
       "id": "start", "type": "Start", "position": { "x": -260, "y": 200 }, "data": { "params": {} }
     },
@@ -32,14 +48,21 @@
     },
     {
       "id": "p_model", "type": "Print", "position": { "x": 800, "y": 300 },
-      "data": { "params": { "label": "Trained MLP (state_dict ready to save)" } }
-    }
+      "data": { "params": { "label": "Trained MLP" } }
+    },
+    { "id": "ds_test", "type": "Dataset",       "position": { "x": 360,  "y": 800 }, "data": { "params": { "name": "MNIST", "split": "test", "data_dir": "./data" } } },
+    { "id": "eval",    "type": "EvaluateModel", "position": { "x": 760,  "y": 800 }, "data": { "params": { "batch_size": 256, "device": "cpu" } } },
+    { "id": "p_acc",   "type": "Print",         "position": { "x": 1120, "y": 800 }, "data": { "params": { "label": "Test accuracy" } } }
   ],
   "edges": [
     { "id": "et",  "source": "start", "target": "mlp", "sourceHandle": "trigger", "type": "trigger" },
     { "id": "e1",  "source": "mlp", "target": "pipeline", "sourceHandle": "model", "targetHandle": "model" },
     { "id": "e2",  "source": "mlp", "target": "pipeline", "sourceHandle": "model", "targetHandle": "model_for_opt" },
     { "id": "e3",  "source": "pipeline", "target": "viz", "sourceHandle": "losses", "targetHandle": "data" },
-    { "id": "e4",  "source": "pipeline", "target": "p_model", "sourceHandle": "model", "targetHandle": "value" }
+    { "id": "e4",  "source": "pipeline", "target": "p_model", "sourceHandle": "model", "targetHandle": "value" },
+    { "id": "et2", "source": "start",    "target": "ds_test", "sourceHandle": "trigger",  "type": "trigger" },
+    { "id": "e5",  "source": "ds_test",  "target": "eval",  "sourceHandle": "dataset",  "targetHandle": "dataset" },
+    { "id": "e6",  "source": "pipeline", "target": "eval",  "sourceHandle": "model",    "targetHandle": "model" },
+    { "id": "e7",  "source": "eval",     "target": "p_acc", "sourceHandle": "accuracy", "targetHandle": "value" }
   ]
 }

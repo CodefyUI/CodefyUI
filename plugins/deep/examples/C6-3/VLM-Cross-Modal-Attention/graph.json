@@ -1,6 +1,6 @@
 {
-  "name": "C6-3 VLM: image tokens attend to text tokens via cross-attention",
-  "description": "The §C6.3 'vision + language fusion' core. 9 image patch tokens (from EduPatchify of a 12×12 image, squeezed to [9, 48]) form the query stream; 4 text tokens (a mocked [4, 48] tensor) form the key/value stream. EduCrossAttention runs Q from query × K, V from context — each image patch attends to whichever text token is most relevant. Output shape (9, 48): same number of image tokens, but each enriched with text-grounded information. This is the operator behind Flamingo, LLaVA, Claude Vision, and (with action tokens replacing text) VLA models like RT-2.",
+  "name": "C6-3 VLM: image patches attend to text tokens",
+  "description": "Nine image patches read four text tokens, on four heads",
   "nodes": [
     { "id": "start", "type": "Start",             "position": { "x": -320, "y":    0 }, "data": { "params": {} } },
     { "id": "img",   "type": "TensorInput",       "position": { "x":  -60, "y": -120 }, "data": { "params": { "shape": "1,3,12,12", "dtype": "float32", "value_mode": "random", "seed": 13 } } },
@@ -8,7 +8,18 @@
     { "id": "patch", "type": "deep:Edu-Patchify",       "position": { "x":  240, "y": -120 }, "data": { "params": { "patch_size": 4, "flatten": true } } },
     { "id": "sq",    "type": "Squeeze",           "position": { "x":  540, "y": -120 }, "data": { "params": { "dim": 0 } } },
     { "id": "xattn", "type": "deep:Edu-CrossAttention", "position": { "x":  840, "y":    0 }, "data": { "params": { "embed_dim": 48, "num_heads": 4, "seed": 42 } } },
-    { "id": "p_out", "type": "Print",             "position": { "x": 1180, "y":    0 }, "data": { "params": { "label": "Image tokens, text-grounded — shape (9, 48)" } } }
+    { "id": "p_out", "type": "Print",             "position": { "x": 1180, "y":    0 }, "data": { "params": { "label": "Image tokens, text-grounded — shape (9, 48)" } } },
+
+    { "id": "note-overview", "type": "note", "position": { "x": -740, "y": 0 },
+      "data": { "noteKind": "text",
+                "noteContent": "Cross-attention is what makes a model multimodal, and it is a small change from self-attention: queries from one stream, keys and values from another. Here nine image patches ask and four text tokens answer.\n\nThe shapes say it. query is (9, 48), context is (4, 48), so the weights are (4, 9, 4): four heads, a row per patch, four columns across the text. The output is (9, 48) again - the same nine patches, each now carrying something from the text.\n\nThe text side is a random tensor standing in for a text encoder and nothing is trained, so which patch attends where means nothing yet. Swap the inputs and the text reads the image; both directions ship.\n\n交叉注意力是讓模型變成多模態的那一個運算，而它和自注意力只差一點：query 來自一個串流，key 和 value 來自另一個。這裡是九個影像 patch 提問，四個文字 token 回答。\n\n形狀就說明了一切。query 是 (9, 48)，context 是 (4, 48)，所以權重是 (4, 9, 4) - 四個 head、每個影像 patch 一列、四個欄位分配到文字上。輸出又是 (9, 48)：同樣那九塊 patch，只是每一塊現在都帶了一點文字的資訊。\n\n文字那邊是隨機張量，代替文字編碼器的輸出，而且完全沒有訓練，所以哪塊 patch 注意到哪裡目前沒有意義。把兩個輸入對調，就變成文字讀影像；實際系統兩個方向都有人用。",
+                "noteColor": "#3d3d1a", "boundToNodeId": "start",
+                "boundOffset": { "x": -420, "y": 0 }, "noteWidth": 360 } },
+    { "id": "note-xattn", "type": "note", "position": { "x": 840, "y": -480 },
+      "data": { "noteKind": "text",
+                "noteContent": "query and context are not interchangeable. The output always takes the query's length, nine here, so swapping the ports changes what the graph produces rather than relabelling it. embed_dim has to match the last dimension of both streams - 48 on each side is why this connects.\n\nquery 和 context 不能互換。輸出的長度永遠跟著 query，這裡是 9，所以把兩個埠對調不只是換個名字，出來的東西就不一樣。embed_dim 必須和兩邊的最後一維都相同 — 兩邊都是 48，所以才接得起來。",
+                "noteColor": "#3d3d1a", "boundToNodeId": "xattn",
+                "boundOffset": { "x": 0, "y": -480 }, "noteWidth": 300 } }
   ],
   "edges": [
     { "id": "et1",   "source": "start", "target": "img",   "sourceHandle": "trigger", "type": "trigger" },

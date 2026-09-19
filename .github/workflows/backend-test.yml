@@ -31,6 +31,10 @@ on:
       # backend file touched would otherwise skip the very checks that guard
       # it. (Same class of gap as examples/** in frontend-build.yml.)
       - 'frontend/src/i18n/**'
+      # Same again: test_example_descriptions.py measures a description in
+      # columns with a port of the frontend's displayWidth, and both copies
+      # are pinned to the vectors in this file.
+      - 'frontend/src/utils/displayWidth.vectors.json'
       - 'ruff.toml'
       - '.github/workflows/backend-test.yml'
   workflow_dispatch:

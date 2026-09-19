@@ -1,6 +1,7 @@
 {
   "name": "ResNet-18 / CIFAR-10 baseline",
-  "description": "Research-grade CIFAR-10 baseline built entirely from GUI nodes. ResNet-18 in its CIFAR variant (3x3 stride-1 stem, no maxpool, 4 stages of 2 BasicBlocks, 11,173,962 parameters) is described in the SequentialModel layer editor. Recipe: SGD (Nesterov) lr 0.1, momentum 0.9, weight decay 5e-4, batch 128, cosine annealing over the full schedule, RandomCrop(32, padding=4) + RandomHorizontalFlip + CIFAR-10 channel normalization. Run it with a fixed seed from the Runs panel; see the example README for the measured accuracy.",
+  "description": "About 95% test accuracy; needs a GPU and a download",
+  "gallery": { "section": "training", "order": 4 },
   "nodes": [
     {
       "id": "start",
@@ -262,7 +263,20 @@
       "data": {
         "params": {
           "batch_size": 512,
-          "device": "cuda"
+          "device": "auto"
+        }
+      }
+    },
+    {
+      "id": "print-accuracy",
+      "type": "Print",
+      "position": {
+        "x": 2400,
+        "y": -120
+      },
+      "data": {
+        "params": {
+          "label": "Top-1 test accuracy"
         }
       }
     },
@@ -278,6 +292,82 @@
           "title": "ResNet-18 / CIFAR-10 training loss",
           "plot_type": "line"
         }
+      }
+    },
+    {
+      "id": "note-overview",
+      "type": "note",
+      "position": {
+        "x": -680,
+        "y": 60
+      },
+      "data": {
+        "noteKind": "text",
+        "noteContent": "The project's accuracy claim, with no Python anywhere: the whole ResNet-18 sits in the SequentialModel layer editor and everything else is node parameters. It is the CIFAR variant -- 3x3 stride-1 stem, no maxpool -- which is why it reaches 95% and not the 91% a stock ImageNet ResNet-18 gives on 32x32 images.\nSubmit it from the Runs panel with seed 1337 and deterministic on. 200 epochs took 22 minutes on an RTX 4080 and Print showed 0.9548 top-1. The first run downloads CIFAR-10, about 170 MB.\nREADME.md is the provenance record: the measured numbers and two runs that matched bitwise.\n\n本專案的準確率宣稱，而且整張圖沒有寫任何 Python：ResNet-18 全部放在 SequentialModel 的層編輯器裡，其餘都是節點參數。它是 CIFAR 版本（3x3 stride-1 的 stem、不做 maxpool），所以能到 95%，而不是原版 ImageNet ResNet-18 在 32x32 影像上的 91%。\n從 Runs 面板以 seed 1337、開啟 deterministic 送出執行。200 個 epoch 在 RTX 4080 上花 22 分鐘，Print 顯示 top-1 為 0.9548。第一次執行會下載 CIFAR-10，約 170 MB。\n旁邊的 README.md 是完整紀錄：量到的數字，以及兩次逐位元相同的執行。",
+        "noteColor": "#3d3d1a",
+        "boundToNodeId": "start",
+        "boundOffset": {
+          "x": -420,
+          "y": 0
+        },
+        "noteWidth": 360
+      }
+    },
+    {
+      "id": "note-model",
+      "type": "note",
+      "position": {
+        "x": 40,
+        "y": 232
+      },
+      "data": {
+        "noteKind": "text",
+        "noteContent": "Every layer of the ResNet-18 is inside this node's layer editor: 68 layer nodes, 77 connections, 11,173,962 parameters. Do not place them by hand -- the editor's Import reads this directory's graph.json directly, and Export writes the same format back out.\n\n整個 ResNet-18 都在這顆節點的層編輯器裡：68 個層節點、77 條連線、11,173,962 個參數。不要手動擺放：層編輯器的 Import 可以直接讀這個目錄的 graph.json，Export 也會寫回同樣的格式。",
+        "noteColor": "#3d3d1a",
+        "boundToNodeId": "model",
+        "boundOffset": {
+          "x": 0,
+          "y": 172
+        },
+        "noteWidth": 300
+      }
+    },
+    {
+      "id": "note-opt",
+      "type": "note",
+      "position": {
+        "x": 740,
+        "y": 700
+      },
+      "data": {
+        "noteKind": "text",
+        "noteContent": "This is the standard CIFAR-10 recipe: SGD with Nesterov, lr 0.1, momentum 0.9, weight decay 5e-4, and batch 128 on the DataLoader. The augmentation half is RandomCrop(32, padding 4) and RandomHorizontalFlip on the training split only; both splits get the same channel normalization.\n\n這就是 CIFAR-10 的標準配方：SGD 加 Nesterov、lr 0.1、momentum 0.9、weight decay 5e-4，DataLoader 的 batch 是 128。資料增強那一半是 RandomCrop(32, padding 4) 與 RandomHorizontalFlip，而且只套在訓練集上；兩個分割共用同一組通道正規化。",
+        "noteColor": "#3d3d1a",
+        "boundToNodeId": "opt",
+        "boundOffset": {
+          "x": -360,
+          "y": 0
+        },
+        "noteWidth": 300
+      }
+    },
+    {
+      "id": "note-sched",
+      "type": "note",
+      "position": {
+        "x": 1380,
+        "y": 1020
+      },
+      "data": {
+        "noteKind": "text",
+        "noteContent": "T_max has to stay equal to TrainingLoop.epochs. Cosine annealing steps once per epoch here and is meant to reach zero exactly at the end; when the two disagree TrainingLoop warns and runs anyway, so nothing stops you and the accuracy simply comes out lower.\n\nT_max 要和 TrainingLoop.epochs 保持一致。這裡的 cosine annealing 每個 epoch 走一步，設計上要在訓練結束時剛好降到零；兩者不一致時 TrainingLoop 只會警告並照樣執行，所以沒有東西會擋你，只是準確率會變低。",
+        "noteColor": "#3d3d1a",
+        "boundToNodeId": "sched",
+        "boundOffset": {
+          "x": 0,
+          "y": 320
+        },
+        "noteWidth": 300
       }
     }
   ],
@@ -463,6 +553,13 @@
       "target": "eval",
       "sourceHandle": "dataset",
       "targetHandle": "dataset"
+    },
+    {
+      "id": "e-e3",
+      "source": "eval",
+      "target": "print-accuracy",
+      "sourceHandle": "accuracy",
+      "targetHandle": "value"
     },
     {
       "id": "e-v1",

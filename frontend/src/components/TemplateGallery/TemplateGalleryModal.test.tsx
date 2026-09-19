@@ -77,6 +77,15 @@ function pluginEntry(over: Partial<PluginCatalogEntry> & { id: string }): Plugin
 const grid = () => screen.getByRole('region', { name: 'Template list' });
 const detail = () => screen.getByRole('complementary', { name: 'Template details' });
 
+/** Each section heading, without the item count its last child carries. */
+const headings = () =>
+  [...grid().querySelectorAll('h3')].map((h) =>
+    [...h.childNodes]
+      .filter((n) => n.nodeType === Node.TEXT_NODE)
+      .map((n) => n.textContent)
+      .join(''),
+  );
+
 beforeEach(() => {
   useI18n.setState({ locale: 'en' });
   useNodeDefStore.setState({ definitions: [], presets: [] });
@@ -115,28 +124,70 @@ describe('TemplateGalleryModal', () => {
     expect(mockedRest.listExamples).not.toHaveBeenCalled();
   });
 
-  it('is reachable with a populated canvas and lists examples by category', async () => {
+  it('is reachable with a populated canvas and lists examples by section', async () => {
     // The whole point of the modal: before it, a canvas with nodes on it had
     // no way back to the examples at all.
     store().setNodes([
       { id: 'mine', type: 'baseNode', position: { x: 0, y: 0 }, data: { label: 'A', type: 'K', params: {} } },
     ] as never);
     mockedRest.listExamples.mockResolvedValue([
-      ex({ name: 'ResNet', category: 'Model_Architecture', path: 'm/1' }),
-      ex({ name: 'Train CNN', category: 'Usage_Example', path: 'u/1', node_count: 7 }),
+      ex({ name: 'ResNet', category: 'Model_Architecture', path: 'm/1', section: 'architectures' }),
+      ex({
+        name: 'Train CNN',
+        category: 'Usage_Example',
+        path: 'u/1',
+        node_count: 7,
+        section: 'quickstart',
+      }),
     ]);
 
     render(<TemplateGalleryModal />);
     await screen.findByText('Train CNN');
 
     expect(screen.getByRole('dialog')).toBeInTheDocument();
-    // Category labels have their underscores replaced for display, and appear
-    // in the shared order (usage examples first, architectures last).
-    const listed = grid().textContent ?? '';
-    expect(listed.indexOf('Usage Example')).toBeLessThan(listed.indexOf('Model Architecture'));
+    // The same sections, in the same order, as the sidebar's Templates tab and
+    // the empty-canvas overlay (#141).
+    expect(headings()).toEqual(['Quick Start', 'Model Architectures']);
     expect(within(grid()).getByText('ResNet')).toBeInTheDocument();
     // The canvas keeps its own graph while the gallery is up.
     expect(activeTab().nodes.map((n) => n.id)).toEqual(['mine']);
+  });
+
+  it('heads an architecture family and a pack with its own name', async () => {
+    usePluginStore.setState({
+      loaded: true,
+      byId: { c2: pluginEntry({ id: 'c2', name: 'Chapter 2' }) },
+    });
+    mockedRest.listExamples.mockResolvedValue([
+      ex({ name: 'ResNet', category: 'Model_Architecture', path: 'm/1', section: 'architectures', family: 'CNN' }),
+      ex({ name: 'LSTM', category: 'Model_Architecture', path: 'm/2', section: 'architectures', family: 'RNN' }),
+      ex({ name: 'Lesson', category: 'Classical', path: 'plugin:c2/1', source: 'plugin:c2' }),
+    ]);
+
+    render(<TemplateGalleryModal />);
+    await waitFor(() => expect(within(grid()).getByText('ResNet')).toBeInTheDocument());
+    expect(headings()).toEqual(['CNN', 'RNN', 'Chapter 2']);
+  });
+
+  it('leaves the chip off a card whose group heading already says it', async () => {
+    mockedRest.listExamples.mockResolvedValue([
+      ex({ name: 'ResNet', category: 'Model_Architecture', path: 'm/1', section: 'architectures', family: 'CNN' }),
+      ex({ name: 'Iris', category: 'Classical', path: 'c/1', section: 'concepts' }),
+      ex({ name: 'Tiny CNN', category: 'Usage_Example', path: 'u/1', section: 'training', family: 'CNN' }),
+    ]);
+
+    render(<TemplateGalleryModal />);
+    await waitFor(() => expect(within(grid()).getByText('ResNet')).toBeInTheDocument());
+
+    const chips = [...grid().querySelectorAll('[class*="cardChip"]')].map((el) => el.textContent);
+    // Training, then concepts, then the architectures. ResNet sits in the group
+    // headed "CNN", so a "CNN" chip on it would say the same thing twice; Tiny
+    // CNN's group is headed "Training", so its family chip stays.
+    expect(chips).toEqual(['CNN', 'Classical']);
+    // The detail pane still names the category of whatever is chosen — the
+    // first example the server listed, until a card is clicked — because it is
+    // the one place with room for the example's own provenance.
+    expect(within(detail()).getByText('Model Architecture')).toBeInTheDocument();
   });
 
   it('shows the loading, empty, and error states', async () => {

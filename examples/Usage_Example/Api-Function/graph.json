@@ -1,7 +1,21 @@
 {
-  "name": "Api-Function",
-  "description": "Graph-as-a-Function demo: Start -> GraphInput -> Print -> GraphOutput. Run it on the canvas (uses the input's default) or save it and call POST /api/graph/run/Api-Function with {\"inputs\": {\"message\": \"...\"}} to get {\"outputs\": {\"echo\": \"...\"}} back. See docs: Usage -> Graph as a Function.",
+  "name": "Call a graph as an API",
+  "description": "Echo a message from the canvas or from an HTTP POST",
+  "gallery": { "section": "quickstart", "order": 3 },
   "nodes": [
+    {
+      "id": "note-overview",
+      "type": "note",
+      "position": { "x": -570, "y": 100 },
+      "data": {
+        "noteKind": "text",
+        "noteContent": "GraphInput declares a named, typed input and GraphOutput a named output: together they are the graph's HTTP contract. On the canvas the input falls back to its default, so Run works with no caller.\n\nSave the graph first; the run API executes saved graphs by name. Then\n\nPOST http://127.0.0.1:8000/api/graph/run/<saved name>\nheader X-CodefyUI-Token: the token in ~/CodefyUI/.codefyui_dev/session.token\nbody {\"inputs\": {\"message\": \"hi\"}}\n\nThe reply is a run envelope, with the echoed value at outputs.echo. GET /api/graph/contract/<saved name> needs no token, so keep secrets out of a default value.\n\nGraphInput 宣告一個具名、有型別的輸入，GraphOutput 宣告一個具名的輸出；兩者合起來就是這張圖的 HTTP 介面。在畫布上執行時輸入會用自己的預設值，所以不需要任何呼叫端。\n\n請先存檔：run API 是用「存檔時取的名字」去執行圖的。接著\n\nPOST http://127.0.0.1:8000/api/graph/run/<存檔名稱>\n標頭 X-CodefyUI-Token：~/CodefyUI/.codefyui_dev/session.token 裡的 token\n內容 {\"inputs\": {\"message\": \"hi\"}}\n\n回應是一個 run envelope，回傳的值在 outputs.echo。GET /api/graph/contract/<存檔名稱> 會列出介面而且不需要 token，所以別把機密放進預設值。",
+        "noteColor": "#3d3d1a",
+        "boundToNodeId": "start-1",
+        "boundOffset": { "x": -420, "y": 0 },
+        "noteWidth": 360
+      }
+    },
     {
       "id": "start-1",
       "type": "Start",
@@ -26,7 +40,7 @@
       "id": "print-1",
       "type": "Print",
       "position": { "x": 340, "y": 100 },
-      "data": { "params": { "label": "Api-Function" } }
+      "data": { "params": { "label": "Echoed message" } }
     },
     {
       "id": "output-echo",

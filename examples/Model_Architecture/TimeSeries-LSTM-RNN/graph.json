@@ -1,13 +1,26 @@
 {
   "name": "LSTM Time-Series Forecaster",
-  "description": "Forward-pass visualization of an LSTM time-series forecasting head. A batch of 24 past observations (batch=2, seq=24, features=1 — for example, hourly sensor readings) feeds into a 2-layer LSTM with hidden size 32. We take the full output sequence (B, 24, 32), Flatten to (B, 768), then project via Linear to a single scalar forecast per example. This is the classic 'lookback→predict-next' pattern used in weather, finance, and IoT forecasting.",
+  "description": "LSTM forward pass: 24 past steps, one forecast",
+  "gallery": { "section": "architectures", "family": "RNN", "order": 1 },
   "nodes": [
-    { "id": "start-1", "type": "Start", "position": { "x": -200, "y": 0 }, "data": { "params": {} } },
+    { "id": "start-1", "type": "Start", "position": { "x": -230, "y": 0 }, "data": { "params": {} } },
     { "id": "history", "type": "TensorCreate", "position": { "x": 0, "y": 0 }, "data": { "params": { "shape": "2,24,1", "fill": "randn", "value": 0.0, "requires_grad": false } } },
-    { "id": "lstm", "type": "LSTM", "position": { "x": 240, "y": 0 }, "data": { "params": { "input_size": 1, "hidden_size": 32, "num_layers": 2, "batch_first": true, "bidirectional": false, "dropout": 0.0 } } },
-    { "id": "flat", "type": "Flatten", "position": { "x": 480, "y": 0 }, "data": { "params": { "start_dim": 1 } } },
-    { "id": "predict", "type": "Linear", "position": { "x": 700, "y": 0 }, "data": { "params": { "in_features": 768, "out_features": 1 } } },
-    { "id": "print_forecast", "type": "Print", "position": { "x": 920, "y": 0 }, "data": { "params": { "label": "Next-step forecast (B,1)" } } }
+    { "id": "lstm", "type": "LSTM", "position": { "x": 270, "y": 0 }, "data": { "params": { "input_size": 1, "hidden_size": 32, "num_layers": 2, "batch_first": true, "bidirectional": false, "dropout": 0.0 } } },
+    { "id": "flat", "type": "Flatten", "position": { "x": 550, "y": 0 }, "data": { "params": { "start_dim": 1 } } },
+    { "id": "predict", "type": "Linear", "position": { "x": 800, "y": 0 }, "data": { "params": { "in_features": 768, "out_features": 1 } } },
+    { "id": "print_forecast", "type": "Print", "position": { "x": 1050, "y": 0 }, "data": { "params": { "label": "Next-step forecast (B,1)" } } },
+
+    { "id": "note-overview", "type": "note", "position": { "x": -650, "y": 0 },
+      "data": { "noteKind": "text", "noteContent": "The lookback window is the whole input: 24 past readings, two series in the batch, one feature each. The LSTM scans them and its output port carries a hidden state for every step, (2, 24, 32). Flatten lays all 24 of those states end to end and Linear reads one number off the lot, so this head uses the whole window rather than the final state alone.\n\nThe input is a random tensor: this graph shows the wiring and the shapes, not a trained model. Print is (2, 1), one forecast per series.\n\n回看窗就是整個輸入：過去 24 筆觀測、批次裡兩條序列、每筆一個特徵。LSTM 掃過去之後，output 埠帶出每一步的隱藏狀態 (2, 24, 32)。Flatten 把這 24 個狀態接成一條，Linear 再從整條讀出一個數字 — 所以這個預測頭用的是整段窗，而不是只看最後一步。\n\n輸入是隨機張量：這張圖看的是接線與形狀，不是訓練好的模型。Print 是 (2, 1)，每條序列一個預測值。",
+                 "noteColor": "#3d3d1a", "boundToNodeId": "start-1", "boundOffset": { "x": -420, "y": 0 }, "noteWidth": 360 } },
+
+    { "id": "note-lstm", "type": "note", "position": { "x": 270, "y": -310 },
+      "data": { "noteKind": "text", "noteContent": "batch_first is on, so the tensor stays (batch, seq, feature). Only output is wired; hidden, the final h_n, has no edge. num_layers 2 means the second layer reads the first layer's per-step output, not the raw series.\n\nbatch_first 開著，所以張量維持 (batch, seq, feature)。這裡只接了 output，hidden（最後的 h_n）沒有連線。num_layers 2 表示第二層讀的是第一層每一步的輸出，不是原始序列。",
+                 "noteColor": "#3d3d1a", "boundToNodeId": "lstm", "boundOffset": { "x": 0, "y": -310 }, "noteWidth": 300 } },
+
+    { "id": "note-predict", "type": "note", "position": { "x": 800, "y": -270 },
+      "data": { "noteKind": "text", "noteContent": "in_features is 768 = 24 steps x 32 hidden units, because Flatten keeps every step. Change the window length or hidden_size and this number has to change with them.\n\nin_features 是 768 = 24 步 x 32 個隱藏單元，因為 Flatten 把每一步都留下來了。窗長或 hidden_size 一改，這個數字就要跟著改。",
+                 "noteColor": "#3d3d1a", "boundToNodeId": "predict", "boundOffset": { "x": 0, "y": -270 }, "noteWidth": 300 } }
   ],
   "edges": [
     { "id": "e-t", "source": "start-1", "target": "history", "sourceHandle": "trigger", "type": "trigger" },

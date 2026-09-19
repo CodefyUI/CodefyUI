@@ -1,14 +1,25 @@
 {
-  "name": "C2-4 Neural network solves circles (ReLU does the magic)",
-  "description": "Same SyntheticDataset(circles) that crushed LogisticRegression in C2-2 — but the classifier here is a 2-layer MLP with ReLU activation. Accuracy jumps to ≈95%. The §C2.4.4 'multi-layer + non-linearity' claim becomes a single graph: identical inputs, swap the classifier node, watch the failure flip to success. Pair this with C2-4 MLP-Without-Activation (next graph) to see why the activation function is what 'depth' really means.",
+  "name": "C2-4 Neural network solves circles (ReLU does the work)",
+  "description": "Two ReLU layers get all 60 test points right",
   "nodes": [
+    { "id": "note-overview", "type": "note", "position": { "x": -720, "y": 0 },
+      "data": { "noteKind": "text",
+                "noteContent": "The data that beat LogisticRegression in the concentric-circles example, handed to a small network instead: two hidden layers of 16 units with ReLU between them, trained by Adam.\n\nThe accuracy Print reads 1.0 -- all 60 test points -- and the training loss lands near 0.004, so the network really did fit the rings rather than memorise a few of them.\n\nA ReLU layer bends the space the next layer sees, and two bends are enough to turn two rings into two regions a plane can separate. The example beside it removes the ReLU and nothing else, which is the cleanest way to see that the layers alone were not the point.\n\n在同心圓那個範例裡打垮 LogisticRegression 的同一份資料，這次交給一個小網路：兩層各 16 個單元的隱藏層，中間夾 ReLU，用 Adam 訓練。\n\n準確率的 Print 是 1.0 -- 60 個測試點全對 -- 訓練損失落在 0.004 附近，可見網路真的把兩圈點學起來了，不是硬背幾個點。\n\nReLU 把下一層看到的空間折一下，折兩次就足以讓兩個圈變成一個平面切得開的兩塊。旁邊那個範例只拿掉 ReLU、其他都不動，那是看清楚「光有層數不算數」最乾淨的方式。",
+                "noteColor": "#3d3d1a", "boundToNodeId": "start",
+                "boundOffset": { "x": -420, "y": 0 }, "noteWidth": 360 } },
+    { "id": "note-mlp", "type": "note", "position": { "x": 560, "y": -430 },
+      "data": { "noteKind": "text",
+                "noteContent": "hidden_sizes is the whole architecture: 16,16 means two hidden layers of 16 units. max_iter 800 is how many Adam passes it gets, not how many samples. Try 4 for hidden_sizes -- it still works, which says the two rings need very little capacity, only the right kind.\n\nhidden_sizes 就是整個架構：16,16 表示兩層各 16 個單元的隱藏層。max_iter 800 指的是 Adam 走幾輪，不是樣本數。把 hidden_sizes 改成 4 試試 -- 一樣做得到，可見兩圈點需要的容量很小，需要的是對的那一種。",
+                "noteColor": "#3d3d1a", "boundToNodeId": "mlp",
+                "boundOffset": { "x": 0, "y": -430 }, "noteWidth": 300 } },
+
     { "id": "start",   "type": "Start",            "position": { "x": -300, "y":   0 }, "data": { "params": {} } },
     { "id": "data",    "type": "SyntheticDataset", "position": { "x":  -40, "y":   0 }, "data": { "params": { "kind": "circles", "n_samples": 300, "noise": 0.08, "factor": 0.5, "seed": 42 } } },
     { "id": "split",   "type": "TrainTestSplit",   "position": { "x":  260, "y":   0 }, "data": { "params": { "test_size": 0.2, "seed": 42, "stratify": true } } },
     { "id": "mlp",     "type": "MLPClassifier",    "position": { "x":  560, "y":   0 }, "data": { "params": { "hidden_sizes": "16,16", "activation": "relu", "max_iter": 800, "learning_rate_init": 0.01, "seed": 42 } } },
     { "id": "acc",     "type": "Accuracy",         "position": { "x":  860, "y":   0 }, "data": { "params": {} } },
-    { "id": "p_acc",   "type": "Print",            "position": { "x": 1140, "y": -80 }, "data": { "params": { "label": "Test accuracy (≈ 0.95 = ReLU + 2 layers → curved boundary)" } } },
-    { "id": "p_loss",  "type": "Print",            "position": { "x": 1140, "y":  80 }, "data": { "params": { "label": "Final training loss (should be near 0 — model fit circles well)" } } }
+    { "id": "p_acc",   "type": "Print",            "position": { "x": 1140, "y": -100 }, "data": { "params": { "label": "Test accuracy" } } },
+    { "id": "p_loss",  "type": "Print",            "position": { "x": 1140, "y":  100 }, "data": { "params": { "label": "Final training loss" } } }
   ],
   "edges": [
     { "id": "et",        "source": "start", "target": "data",  "sourceHandle": "trigger", "type": "trigger" },

@@ -24,6 +24,27 @@ const PLUGINS = join(REPO, 'plugins');
  * `CARD_DESC_COLUMNS` in EmptyCanvasOverlay.tsx. */
 const CARD_COLUMNS = 80;
 
+/** One line, this wide -- the Chinese half of the rule
+ * `backend/tests/test_example_descriptions.py` holds over the English. The
+ * long explanation belongs in a note on the canvas, beside the nodes it is
+ * about, not in the one field every card and every row has to render. Every
+ * example obeys it, so there is no exception list on either side. */
+const MAX_DESCRIPTION_COLUMNS = 56;
+
+/** Widths both implementations of `displayWidth` are pinned to. */
+const WIDTH_VECTORS = join(
+  dirname(fileURLToPath(import.meta.url)),
+  '..',
+  '..',
+  'utils',
+  'displayWidth.vectors.json',
+);
+
+interface Vector {
+  text: string;
+  width: number;
+}
+
 interface Example {
   key: string;
   name: string;
@@ -137,13 +158,29 @@ describe('zh-TW example descriptions', () => {
     expect(missing).toEqual([]);
   });
 
-  it('says something on the card rather than opening with setup', () => {
-    // 80 columns is about 40 ideographs. A description whose first 40 do not
-    // reach a verb has spent the whole card on preamble.
-    for (const [key, { description }] of Object.entries(zhTW)) {
-      expect(displayWidth(description ?? ''), `${key} is too short to say anything`).toBeGreaterThan(
-        40,
-      );
-    }
+  it('measures a width the Python port agrees with', () => {
+    // `backend/tests/test_example_descriptions.py` checks the same cap over
+    // the English descriptions, with its own copy of `displayWidth`. Two
+    // implementations of one measurement drift silently, so both read these
+    // vectors.
+    const { vectors } = JSON.parse(readFileSync(WIDTH_VECTORS, 'utf8'));
+    expect(vectors.length).toBeGreaterThan(5);
+    expect(vectors.map((v: Vector) => displayWidth(v.text))).toEqual(
+      vectors.map((v: Vector) => v.width),
+    );
+  });
+
+  it('says it in one line, inside the cap', () => {
+    // The card cuts at 80 columns, but a description that needs 80 has
+    // stopped being a label and become the explanation -- which belongs in a
+    // note on the canvas, next to the nodes it is about. Every example obeys
+    // this now, so the rule holds with no exceptions.
+    const over = Object.entries(zhTW)
+      .filter(([, { description }]) => {
+        const text = description ?? '';
+        return displayWidth(text) > MAX_DESCRIPTION_COLUMNS || text.includes('\n');
+      })
+      .map(([key, { description }]) => `${key} (${displayWidth(description ?? '')} columns)`);
+    expect(over).toEqual([]);
   });
 });
