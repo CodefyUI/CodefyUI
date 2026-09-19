@@ -15,7 +15,7 @@ with a 500.
 
 Two halves, in one file because they are two ends of the same contract: the
 route, checked against a temporary examples directory holding the shapes a
-hand-written file can really have, and the 35 built-ins, checked against the
+hand-written file can really have, and the built-ins, checked against the
 section table this wave assigned them. The table is written out literally
 rather than derived -- it IS the contract, and a derivation would agree with
 whatever the files happen to say.
@@ -246,22 +246,24 @@ async def test_a_graph_file_that_is_not_a_graph_costs_only_its_own_card(
         assert (entry["node_count"], entry["edge_count"]) == expected
 
 
-# ── the 35 built-ins ──────────────────────────────────────────────────────
+# ── the built-ins ─────────────────────────────────────────────────────────
 
 #: Where every shipped example belongs: ``path -> (section, order, family)``.
 #:
 #: Literal on purpose. This table is the classification decision itself --
 #: purpose first, model family second -- so a change to a file has to be a
-#: change here too, and the 35 rows are the only record of what was agreed.
+#: change here too, and the rows are the only record of what was agreed.
 #: ``family`` is ``None`` outside ``architectures``, the one section that is
 #: sub-grouped.
 #:
-#: ``training`` starts at 2: order 1 is reserved for the Hugging Face
-#: training example that lands with the example content.
+#: ``training`` opens on the Hugging Face example: it is the one that shows
+#: where somebody else's dataset plugs in, which is the first thing asked of
+#: a training graph after the quick start.
 _SHIPPED_SECTIONS: dict[str, tuple[str, int, str | None]] = {
     "Usage_Example/CNN-MNIST/TrainCNN-MNIST": ("quickstart", 1, None),
     "Usage_Example/CNN-MNIST/InferenceCNN-MNIST": ("quickstart", 2, None),
     "Usage_Example/Api-Function": ("quickstart", 3, None),
+    "Usage_Example/HuggingFace-Dataset/TrainCNN-Beans": ("training", 1, None),
     "Usage_Example/ResNet-CIFAR10/TrainResNet-CIFAR10": ("training", 2, None),
     "Usage_Example/GPT-Mini/TrainGPT-Mini": ("training", 3, None),
     "Usage_Example/ResNet18-CIFAR10-Baseline": ("training", 4, None),

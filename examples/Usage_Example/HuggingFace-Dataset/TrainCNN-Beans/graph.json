@@ -1,0 +1,540 @@
+{
+  "name": "Train a CNN on a HuggingFace dataset",
+  "description": "Test accuracy on 3 bean-leaf classes; needs a download",
+  "gallery": { "section": "training", "order": 1 },
+  "nodes": [
+    {
+      "id": "start",
+      "type": "Start",
+      "position": {
+        "x": -360,
+        "y": 380
+      },
+      "data": {
+        "params": {}
+      }
+    },
+    {
+      "id": "ds-train",
+      "type": "HuggingFaceDataset",
+      "position": {
+        "x": 0,
+        "y": 0
+      },
+      "data": {
+        "params": {
+          "dataset_name": "AI-Lab-Makerere/beans",
+          "subset": "",
+          "split": "train",
+          "image_column": "image",
+          "label_column": "labels",
+          "cache_dir": ""
+        }
+      }
+    },
+    {
+      "id": "ds-val",
+      "type": "HuggingFaceDataset",
+      "position": {
+        "x": 0,
+        "y": 300
+      },
+      "data": {
+        "params": {
+          "dataset_name": "AI-Lab-Makerere/beans",
+          "subset": "",
+          "split": "validation",
+          "image_column": "image",
+          "label_column": "labels",
+          "cache_dir": ""
+        }
+      }
+    },
+    {
+      "id": "ds-test",
+      "type": "HuggingFaceDataset",
+      "position": {
+        "x": 0,
+        "y": 600
+      },
+      "data": {
+        "params": {
+          "dataset_name": "AI-Lab-Makerere/beans",
+          "subset": "",
+          "split": "test",
+          "image_column": "image",
+          "label_column": "labels",
+          "cache_dir": ""
+        }
+      }
+    },
+    {
+      "id": "tf-train",
+      "type": "Transform",
+      "position": {
+        "x": 340,
+        "y": 0
+      },
+      "data": {
+        "params": {
+          "resize": 64,
+          "to_tensor": true,
+          "normalize": true
+        }
+      }
+    },
+    {
+      "id": "tf-val",
+      "type": "Transform",
+      "position": {
+        "x": 340,
+        "y": 300
+      },
+      "data": {
+        "params": {
+          "resize": 64,
+          "to_tensor": true,
+          "normalize": true
+        }
+      }
+    },
+    {
+      "id": "tf-test",
+      "type": "Transform",
+      "position": {
+        "x": 340,
+        "y": 600
+      },
+      "data": {
+        "params": {
+          "resize": 64,
+          "to_tensor": true,
+          "normalize": true
+        }
+      }
+    },
+    {
+      "id": "dl-train",
+      "type": "DataLoader",
+      "position": {
+        "x": 680,
+        "y": 0
+      },
+      "data": {
+        "params": {
+          "batch_size": 32,
+          "shuffle": true,
+          "num_workers": 0,
+          "pin_memory": false,
+          "drop_last": false
+        }
+      }
+    },
+    {
+      "id": "dl-val",
+      "type": "DataLoader",
+      "position": {
+        "x": 680,
+        "y": 300
+      },
+      "data": {
+        "params": {
+          "batch_size": 64,
+          "shuffle": false,
+          "num_workers": 0,
+          "pin_memory": false,
+          "drop_last": false
+        }
+      }
+    },
+    {
+      "id": "model",
+      "type": "SequentialModel",
+      "position": {
+        "x": 0,
+        "y": 960
+      },
+      "data": {
+        "params": {
+          "layers": "{\"version\":2,\"nodes\":[{\"id\":\"in\",\"type\":\"Input\",\"ports\":[{\"id\":\"p_x\",\"name\":\"x\"}]},{\"id\":\"c1\",\"type\":\"Conv2d\",\"params\":{\"in_channels\":3,\"out_channels\":16,\"kernel_size\":3,\"padding\":1,\"bias\":false}},{\"id\":\"b1\",\"type\":\"BatchNorm2d\",\"params\":{\"num_features\":16}},{\"id\":\"a1\",\"type\":\"ReLU\"},{\"id\":\"p1\",\"type\":\"MaxPool2d\",\"params\":{\"kernel_size\":2,\"stride\":2}},{\"id\":\"c2\",\"type\":\"Conv2d\",\"params\":{\"in_channels\":16,\"out_channels\":32,\"kernel_size\":3,\"padding\":1,\"bias\":false}},{\"id\":\"b2\",\"type\":\"BatchNorm2d\",\"params\":{\"num_features\":32}},{\"id\":\"a2\",\"type\":\"ReLU\"},{\"id\":\"p2\",\"type\":\"MaxPool2d\",\"params\":{\"kernel_size\":2,\"stride\":2}},{\"id\":\"c3\",\"type\":\"Conv2d\",\"params\":{\"in_channels\":32,\"out_channels\":64,\"kernel_size\":3,\"padding\":1,\"bias\":false}},{\"id\":\"b3\",\"type\":\"BatchNorm2d\",\"params\":{\"num_features\":64}},{\"id\":\"a3\",\"type\":\"ReLU\"},{\"id\":\"pool\",\"type\":\"AdaptiveAvgPool2d\",\"params\":{\"output_size\":1}},{\"id\":\"flat\",\"type\":\"Flatten\"},{\"id\":\"head\",\"type\":\"Linear\",\"params\":{\"in_features\":64,\"out_features\":3}},{\"id\":\"out\",\"type\":\"Output\",\"ports\":[{\"id\":\"p_y\",\"name\":\"y\"}]}],\"edges\":[{\"id\":\"e1\",\"source\":\"in\",\"sourceHandle\":\"p_x\",\"target\":\"c1\"},{\"id\":\"e2\",\"source\":\"c1\",\"target\":\"b1\"},{\"id\":\"e3\",\"source\":\"b1\",\"target\":\"a1\"},{\"id\":\"e4\",\"source\":\"a1\",\"target\":\"p1\"},{\"id\":\"e5\",\"source\":\"p1\",\"target\":\"c2\"},{\"id\":\"e6\",\"source\":\"c2\",\"target\":\"b2\"},{\"id\":\"e7\",\"source\":\"b2\",\"target\":\"a2\"},{\"id\":\"e8\",\"source\":\"a2\",\"target\":\"p2\"},{\"id\":\"e9\",\"source\":\"p2\",\"target\":\"c3\"},{\"id\":\"e10\",\"source\":\"c3\",\"target\":\"b3\"},{\"id\":\"e11\",\"source\":\"b3\",\"target\":\"a3\"},{\"id\":\"e12\",\"source\":\"a3\",\"target\":\"pool\"},{\"id\":\"e13\",\"source\":\"pool\",\"target\":\"flat\"},{\"id\":\"e14\",\"source\":\"flat\",\"target\":\"head\"},{\"id\":\"e15\",\"source\":\"head\",\"target\":\"out\",\"targetHandle\":\"p_y\"}]}"
+        }
+      }
+    },
+    {
+      "id": "opt",
+      "type": "Optimizer",
+      "position": {
+        "x": 340,
+        "y": 960
+      },
+      "data": {
+        "params": {
+          "type": "Adam",
+          "lr": 0.001,
+          "weight_decay": 0.0001
+        }
+      }
+    },
+    {
+      "id": "sched",
+      "type": "LRScheduler",
+      "position": {
+        "x": 680,
+        "y": 960
+      },
+      "data": {
+        "params": {
+          "type": "CosineAnnealingLR",
+          "T_max": 30
+        }
+      }
+    },
+    {
+      "id": "loss",
+      "type": "Loss",
+      "position": {
+        "x": 340,
+        "y": 1180
+      },
+      "data": {
+        "params": {
+          "type": "CrossEntropyLoss"
+        }
+      }
+    },
+    {
+      "id": "train",
+      "type": "TrainingLoop",
+      "position": {
+        "x": 1020,
+        "y": 180
+      },
+      "data": {
+        "params": {
+          "epochs": 30,
+          "device": "auto",
+          "precision": "fp32",
+          "early_stopping_patience": 0,
+          "log_interval": 10,
+          "tensorboard": false
+        }
+      }
+    },
+    {
+      "id": "viz-loss",
+      "type": "Visualize",
+      "position": {
+        "x": 1360,
+        "y": -60
+      },
+      "data": {
+        "params": {
+          "title": "Training loss",
+          "plot_type": "line"
+        }
+      }
+    },
+    {
+      "id": "viz-val",
+      "type": "Visualize",
+      "position": {
+        "x": 1360,
+        "y": 180
+      },
+      "data": {
+        "params": {
+          "title": "Validation loss",
+          "plot_type": "line"
+        }
+      }
+    },
+    {
+      "id": "eval",
+      "type": "EvaluateModel",
+      "position": {
+        "x": 1360,
+        "y": 600
+      },
+      "data": {
+        "params": {
+          "batch_size": 64,
+          "device": "auto"
+        }
+      }
+    },
+    {
+      "id": "print-accuracy",
+      "type": "Print",
+      "position": {
+        "x": 1700,
+        "y": 600
+      },
+      "data": {
+        "params": {
+          "label": "Test accuracy"
+        }
+      }
+    },
+    {
+      "id": "save",
+      "type": "ModelSaver",
+      "position": {
+        "x": 1360,
+        "y": 900
+      },
+      "data": {
+        "params": {
+          "path": "beans-cnn/beans_cnn.pt",
+          "save_mode": "state_dict",
+          "format": "pytorch"
+        }
+      }
+    },
+    {
+      "id": "note-overview",
+      "type": "note",
+      "position": {
+        "x": -780,
+        "y": 380
+      },
+      "data": {
+        "noteKind": "text",
+        "noteContent": "A training graph with nothing hidden inside a preset: every stage your own dataset touches is a node you can open. The first run downloads AI-Lab-Makerere/beans -- 1,295 photos of bean leaves, about 170 MB -- then trains a small CNN for 30 epochs and scores it on the held-out test split.\nRead Print \"Test accuracy\". Chance over three classes is 0.33; four CPU runs measured 0.82 to 0.85, each about two minutes. The learning rate anneals to zero over the 30 epochs, which keeps the last ones from bouncing. The two Visualize plots are the training and validation loss.\nTo make the graph yours, change the three dataset nodes and the model's last Linear.\n\n沒有把步驟藏進預設組的訓練圖：你自己的資料會經過的每一段都是可以打開的節點。第一次執行會下載 AI-Lab-Makerere/beans（1,295 張豆葉照片，約 170 MB），接著訓練 30 個 epoch 的小型 CNN，再用保留的 test 分割評分。\n跑完請看 Print「Test accuracy」。三個類別亂猜是 0.33；在 CPU 上跑了四次，每次約兩分鐘，量到 0.82 到 0.85。學習率會在 30 個 epoch 內退火到零，最後幾個 epoch 才不會震盪。兩張 Visualize 分別是訓練損失與驗證損失。\n要換成自己的資料，改三個資料集節點和模型最後一層 Linear。",
+        "noteColor": "#3d3d1a",
+        "boundToNodeId": "start",
+        "boundOffset": {
+          "x": -420,
+          "y": 0
+        },
+        "noteWidth": 360
+      }
+    },
+    {
+      "id": "note-ds-train",
+      "type": "note",
+      "position": {
+        "x": 0,
+        "y": -410
+      },
+      "data": {
+        "noteKind": "text",
+        "noteContent": "One repo, loaded once per split. For your own data change dataset_name, subset (multi-config repos only), image_column, label_column and the split names on all three. A repo with no validation split takes slice syntax instead: train[:80%] and train[80%:].\nImage classification only, and the labels must already be integers.\n\n同一個 repo 載三次，一個分割一顆。換成自己的資料時，三顆都要改 dataset_name、subset（只有多設定檔的 repo 需要）、image_column、label_column 與 split。沒有 validation 分割的 repo 改用切片語法：train[:80%] 與 train[80%:]。\n只支援影像分類，而且標籤必須已經是整數。",
+        "noteColor": "#3d3d1a",
+        "boundToNodeId": "ds-train",
+        "boundOffset": {
+          "x": 0,
+          "y": -410
+        },
+        "noteWidth": 300
+      }
+    },
+    {
+      "id": "note-tf-train",
+      "type": "note",
+      "position": {
+        "x": 340,
+        "y": -410
+      },
+      "data": {
+        "noteKind": "text",
+        "noteContent": "HuggingFaceDataset has no train_transform / eval_transform ports, so each split gets a Transform of its own -- and all three must carry the same settings, or the accuracy is measured on images unlike anything the model saw. resize 64 is what makes the 500x500 originals cheap on a CPU; raise it on all three.\n\nHuggingFaceDataset 沒有 train_transform / eval_transform 接口，所以每個分割各接一顆 Transform；三顆的設定必須一致，否則量到的準確率是在模型沒看過的影像上算的。resize 64 是讓 500x500 原圖在 CPU 上跑得動的關鍵；要調大就三顆一起調。",
+        "noteColor": "#3d3d1a",
+        "boundToNodeId": "tf-train",
+        "boundOffset": {
+          "x": 0,
+          "y": -410
+        },
+        "noteWidth": 300
+      }
+    },
+    {
+      "id": "note-model",
+      "type": "note",
+      "position": {
+        "x": 0,
+        "y": 1132
+      },
+      "data": {
+        "noteKind": "text",
+        "noteContent": "Three convolution blocks, then AdaptiveAvgPool2d collapses whatever spatial size is left to 1x1 -- which is why changing resize does not change the Linear below it. out_features is the one number your own dataset decides: it is the number of classes, 3 here.\n\n三組卷積，之後由 AdaptiveAvgPool2d 把剩下的空間尺寸收成 1x1，所以改 resize 不必改下面那層 Linear。out_features 是唯一由你的資料決定的數字：它就是類別數，這裡是 3。",
+        "noteColor": "#3d3d1a",
+        "boundToNodeId": "model",
+        "boundOffset": {
+          "x": 0,
+          "y": 172
+        },
+        "noteWidth": 300
+      }
+    }
+  ],
+  "edges": [
+    {
+      "id": "e-trigger-ds-train",
+      "source": "start",
+      "target": "ds-train",
+      "sourceHandle": "trigger",
+      "type": "trigger"
+    },
+    {
+      "id": "e-trigger-ds-val",
+      "source": "start",
+      "target": "ds-val",
+      "sourceHandle": "trigger",
+      "type": "trigger"
+    },
+    {
+      "id": "e-trigger-ds-test",
+      "source": "start",
+      "target": "ds-test",
+      "sourceHandle": "trigger",
+      "type": "trigger"
+    },
+    {
+      "id": "e-trigger-model",
+      "source": "start",
+      "target": "model",
+      "sourceHandle": "trigger",
+      "type": "trigger"
+    },
+    {
+      "id": "e-trigger-loss",
+      "source": "start",
+      "target": "loss",
+      "sourceHandle": "trigger",
+      "type": "trigger"
+    },
+    {
+      "id": "e-ds-train-tf-train",
+      "source": "ds-train",
+      "target": "tf-train",
+      "sourceHandle": "dataset",
+      "targetHandle": "dataset"
+    },
+    {
+      "id": "e-ds-val-tf-val",
+      "source": "ds-val",
+      "target": "tf-val",
+      "sourceHandle": "dataset",
+      "targetHandle": "dataset"
+    },
+    {
+      "id": "e-ds-test-tf-test",
+      "source": "ds-test",
+      "target": "tf-test",
+      "sourceHandle": "dataset",
+      "targetHandle": "dataset"
+    },
+    {
+      "id": "e-tf-train-dl-train",
+      "source": "tf-train",
+      "target": "dl-train",
+      "sourceHandle": "dataset",
+      "targetHandle": "dataset"
+    },
+    {
+      "id": "e-tf-val-dl-val",
+      "source": "tf-val",
+      "target": "dl-val",
+      "sourceHandle": "dataset",
+      "targetHandle": "dataset"
+    },
+    {
+      "id": "e-dl-train-train",
+      "source": "dl-train",
+      "target": "train",
+      "sourceHandle": "dataloader",
+      "targetHandle": "dataloader"
+    },
+    {
+      "id": "e-dl-val-train",
+      "source": "dl-val",
+      "target": "train",
+      "sourceHandle": "dataloader",
+      "targetHandle": "val_dataloader"
+    },
+    {
+      "id": "e-model-opt",
+      "source": "model",
+      "target": "opt",
+      "sourceHandle": "model",
+      "targetHandle": "model"
+    },
+    {
+      "id": "e-model-train",
+      "source": "model",
+      "target": "train",
+      "sourceHandle": "model",
+      "targetHandle": "model"
+    },
+    {
+      "id": "e-opt-train",
+      "source": "opt",
+      "target": "train",
+      "sourceHandle": "optimizer",
+      "targetHandle": "optimizer"
+    },
+    {
+      "id": "e-opt-sched",
+      "source": "opt",
+      "target": "sched",
+      "sourceHandle": "optimizer",
+      "targetHandle": "optimizer"
+    },
+    {
+      "id": "e-sched-train",
+      "source": "sched",
+      "target": "train",
+      "sourceHandle": "scheduler",
+      "targetHandle": "lr_scheduler"
+    },
+    {
+      "id": "e-loss-train",
+      "source": "loss",
+      "target": "train",
+      "sourceHandle": "loss_fn",
+      "targetHandle": "loss_fn"
+    },
+    {
+      "id": "e-train-viz-loss",
+      "source": "train",
+      "target": "viz-loss",
+      "sourceHandle": "losses",
+      "targetHandle": "data"
+    },
+    {
+      "id": "e-train-viz-val",
+      "source": "train",
+      "target": "viz-val",
+      "sourceHandle": "val_losses",
+      "targetHandle": "data"
+    },
+    {
+      "id": "e-train-eval",
+      "source": "train",
+      "target": "eval",
+      "sourceHandle": "model",
+      "targetHandle": "model"
+    },
+    {
+      "id": "e-tf-test-eval",
+      "source": "tf-test",
+      "target": "eval",
+      "sourceHandle": "dataset",
+      "targetHandle": "dataset"
+    },
+    {
+      "id": "e-eval-print-accuracy",
+      "source": "eval",
+      "target": "print-accuracy",
+      "sourceHandle": "accuracy",
+      "targetHandle": "value"
+    },
+    {
+      "id": "e-train-save",
+      "source": "train",
+      "target": "save",
+      "sourceHandle": "model",
+      "targetHandle": "model"
+    }
+  ]
+}

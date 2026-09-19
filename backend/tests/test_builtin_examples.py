@@ -200,7 +200,14 @@ _SHIPPED_RECIPE: dict[str, dict] = {
     "loss": {"type": "CrossEntropyLoss", "label_smoothing": 0.0},
     "sched": {"type": "CosineAnnealingLR", "T_max": 200},
     "train": {"epochs": 200, "precision": "bf16", "early_stopping_patience": 0},
-    "eval": {"batch_size": 512},
+    # ``device`` is pinned here although the published number came from an
+    # explicit ``cuda``: since #204 "auto" on this node means "follow the
+    # run-level device", which is what ``TrainingLoop.device`` beside it
+    # already says, so the two now agree instead of the evaluation naming a
+    # device the training did not. Pinned rather than left free because
+    # "auto" is the property -- a re-hardcoded device would go back to
+    # failing on the machines that do not have it.
+    "eval": {"batch_size": 512, "device": "auto"},
 }
 
 
@@ -217,16 +224,33 @@ def _data_source(edges: list[dict], target: str, handle: str) -> str:
     raise AssertionError(f"no data edge feeds {target}.{handle}")
 
 
+def _note_text(payload: dict, note_id: str) -> str:
+    """The text of one on-canvas note, which is where the long prose lives.
+
+    A description is one line now (``test_example_descriptions.py``), so a
+    number that used to be asserted against the card is asserted against the
+    note holding the explanation instead. Same guarantee, different surface:
+    the figure is still derived from the params, so the prose cannot drift
+    from the graph it sits on.
+    """
+    for node in payload["nodes"]:
+        if node.get("id") == note_id:
+            assert node.get("type") == "note", f"{note_id} is not a note"
+            return node["data"]["noteContent"]
+    raise AssertionError(f"the graph has no note {note_id!r}")
+
+
 def _assert_shipped_recipe(nodes: list[dict], edges: list[dict]) -> None:
     """The shipped graph still is the graph the published number came from.
 
-    Two kinds of check, and the second is the one that matters most:
+    Three kinds of check, and the second is the one that matters most:
 
     * every hyperparameter the README and the docs page quote is still the
       value in the file;
     * evaluation still happens on the *held-out* split. The whole milestone
       rests on that one property, and it is exactly the property that is
-      invisible to an execution smoke against a synthetic image folder.
+      invisible to an execution smoke against a synthetic image folder;
+    * the accuracy it measures reaches something that shows it.
     """
     by_id = {n["id"]: n for n in nodes}
 
@@ -268,6 +292,15 @@ def _assert_shipped_recipe(nodes: list[dict], edges: list[dict]) -> None:
     assert aug_targets == {"train_transform"}, (
         f"the augmentation chain feeds {aug_targets}, not just train_transform"
     )
+
+    # And the number reaches the screen. An EvaluateModel whose ``accuracy``
+    # has no outgoing edge runs, logs its metric point, and shows the reader
+    # nothing -- the one figure this whole example exists to produce.
+    assert [
+        e for e in edges
+        if e.get("type", "data") == "data"
+        and e["source"] == "eval" and e.get("sourceHandle") == "accuracy"
+    ], "EvaluateModel.accuracy is computed and never displayed"
 
 
 def _shrink_for_ci(nodes: list[dict], data_root: Path) -> None:
@@ -657,13 +690,148 @@ def test_tinystories_lm_example_still_describes_itself():
     for number in (blocks, micro_batches, optimizer_steps):
         assert f"**{number:,}**" in readme, (
             f"the README's budget table does not derive {number:,}")
-    description = payload["description"]
-    assert f"{micro_batches:,} micro-batches" in description
-    assert f"about {optimizer_steps:,} optimizer steps" in description
+    # What "one epoch" costs used to be on the card. The card is one line
+    # now, so it is on the overview note -- which is where a reader deciding
+    # whether to start an hour-long run is actually looking.
+    overview = _note_text(payload, "note-overview")
+    assert f"{micro_batches:,} micro-batches" in overview
+    assert f"about {optimizer_steps:,} optimizer steps" in overview
     # Validation is scored whole, so its block count is quoted too.
     val_blocks = (_LM_VAL_TOKEN_BUDGET - 1) // _LM_SEQ_LEN
     assert params("ppl")["max_batches"] == 0
     assert f"{val_blocks:,} blocks" in readme
+
+
+# ── HuggingFace beans: the four things a reader re-points at their data ────
+
+_BEANS_DIR = (
+    _EXAMPLES_ROOT / "Usage_Example" / "HuggingFace-Dataset" / "TrainCNN-Beans"
+)
+_BEANS_EXAMPLE = _BEANS_DIR / "graph.json"
+
+#: The repo the example is wired to, and the column names it needs. ``beans``
+#: calls its label column ``labels``, not the node's default ``label`` --
+#: which is the whole reason the example ships pointed at it rather than at a
+#: dataset where every default already fits.
+_BEANS_REPO = "AI-Lab-Makerere/beans"
+_BEANS_IMAGE_COLUMN = "image"
+_BEANS_LABEL_COLUMN = "labels"
+
+#: One ``HuggingFaceDataset`` node per split, and the split each one reads.
+_BEANS_SPLITS = {"ds-train": "train", "ds-val": "validation", "ds-test": "test"}
+
+#: ``beans`` has three classes, so the model's last ``Linear`` has three
+#: outputs. The stage note beside it tells the reader this is the one number
+#: to change for their own dataset, which only stays true while it is true.
+_BEANS_CLASSES = 3
+
+
+def _beans_graph() -> dict:
+    return json.loads(_BEANS_EXAMPLE.read_text(encoding="utf-8"))
+
+
+def _nodes_of_type(nodes: list[dict], node_type: str) -> dict[str, dict]:
+    return {n["id"]: n for n in nodes if n.get("type") == node_type}
+
+
+def test_huggingface_beans_example_reads_three_splits_of_one_dataset():
+    """Three loads of one repo, and the column names spelled the same way.
+
+    The example exists to be re-pointed: a reader swaps ``dataset_name`` and
+    the two column names for their own repo. A split that had drifted onto a
+    different dataset, or a column name that matched on one node and not the
+    others, would still validate and still train -- on the wrong data.
+    """
+    nodes = _beans_graph()["nodes"]
+    sources = _nodes_of_type(nodes, "HuggingFaceDataset")
+
+    assert set(sources) == set(_BEANS_SPLITS), sorted(sources)
+    for node_id, split in _BEANS_SPLITS.items():
+        params = sources[node_id]["data"]["params"]
+        assert params["dataset_name"] == _BEANS_REPO, node_id
+        assert params["split"] == split, node_id
+        assert params["image_column"] == _BEANS_IMAGE_COLUMN, node_id
+        assert params["label_column"] == _BEANS_LABEL_COLUMN, node_id
+
+
+def test_huggingface_beans_example_preprocesses_every_split_alike():
+    """One Transform recipe on all three splits, or the accuracy means nothing.
+
+    ``HuggingFaceDataset`` has no ``train_transform``/``eval_transform`` ports
+    to keep the two pipelines honest -- a ``Transform`` node is installed per
+    split instead -- so nothing but this stops the evaluation split from being
+    resized or normalized differently from what training saw. That skew is
+    invisible: the graph runs, and only the accuracy is wrong.
+    """
+    nodes = _beans_graph()["nodes"]
+    transforms = _nodes_of_type(nodes, "Transform")
+
+    assert len(transforms) == len(_BEANS_SPLITS), sorted(transforms)
+    recipes = {node_id: node["data"]["params"]
+               for node_id, node in transforms.items()}
+    assert len(set(map(str, map(sorted, (r.items() for r in recipes.values()))))) == 1, (
+        f"the splits are preprocessed differently: {recipes}")
+
+    only = next(iter(recipes.values()))
+    assert only["resize"] > 0, "the 500x500 originals have to be resized"
+    assert only["to_tensor"] is True
+    assert only["normalize"] is True
+
+
+def test_huggingface_beans_example_scores_the_split_it_did_not_train_on():
+    """Train on ``train``, watch ``validation``, report ``test``.
+
+    Each of the three is reached through its own ``Transform``, so the check
+    walks two edges back rather than one.
+    """
+    payload = _beans_graph()
+    nodes, edges = payload["nodes"], payload["edges"]
+    splits = {n["id"]: n["data"]["params"].get("split")
+              for n in nodes if n.get("type") == "HuggingFaceDataset"}
+
+    def split_behind(target: str, handle: str) -> str:
+        transform = _data_source(edges, target, handle)
+        return splits[_data_source(edges, transform, "dataset")]
+
+    train_loader = _data_source(edges, "train", "dataloader")
+    val_loader = _data_source(edges, "train", "val_dataloader")
+    assert split_behind(train_loader, "dataset") == "train"
+    assert split_behind(val_loader, "dataset") == "validation"
+    assert split_behind("eval", "dataset") == "test"
+
+    # And the accuracy is shown. EvaluateModel returning a number nothing
+    # reads is the failure this whole wave is about.
+    accuracy_readers = {
+        e["target"] for e in edges
+        if e.get("type", "data") == "data"
+        and e["source"] == "eval" and e.get("sourceHandle") == "accuracy"
+    }
+    assert accuracy_readers, "EvaluateModel.accuracy is computed and not shown"
+
+
+def test_huggingface_beans_example_keeps_its_training_loop_on_the_canvas():
+    """No ``preset:`` node: every stage is one the reader can open and change.
+
+    The MNIST quick-start hides Dataset/DataLoader/Optimizer/Loss/TrainingLoop
+    inside ``preset:Training Pipeline``, which is right for a first run and
+    wrong for the example whose job is to show where your own dataset plugs
+    in. Also pins the head width, because the stage note beside it says three
+    outputs is the number to change.
+    """
+    payload = _beans_graph()
+    nodes = payload["nodes"]
+
+    presets = [n["id"] for n in nodes
+               if str(n.get("type", "")).startswith("preset:")]
+    assert not presets, f"the example hides stages inside a preset: {presets}"
+    assert not payload.get("presets"), "the file carries a preset definition"
+
+    model = _nodes_of_type(nodes, "SequentialModel")
+    assert len(model) == 1, sorted(model)
+    layers = json.loads(next(iter(model.values()))["data"]["params"]["layers"])
+    heads = [n for n in layers["nodes"] if n["type"] == "Linear"]
+    assert heads, "the model has no Linear head"
+    assert heads[-1]["params"]["out_features"] == _BEANS_CLASSES, heads[-1]
 
 
 def test_tinystories_lm_example_scores_a_split_it_did_not_train_on():
@@ -703,3 +871,50 @@ def test_tinystories_lm_example_scores_a_split_it_did_not_train_on():
     }, tokenizer_consumers
     assert [n for n in nodes if n["type"] == "LMTokenizer"] == [by_id["tok"]], (
         "the example has more than one LMTokenizer")
+
+
+# ── VLA on PushWorld: an hour of training has to end in numbers ────────────
+
+_VLA_EXAMPLE = _EXAMPLES_ROOT / "VLA" / "TrainVLA-PushWorld" / "graph.json"
+
+
+def test_vla_example_shows_everything_its_evaluation_measures():
+    """Both evaluation nodes' outputs reach a GraphOutput.
+
+    The two of them are the entire point of the hour this example costs, and
+    every port they have was computed and then dropped: the success rate, the
+    per-episode report and the action error existed only in the run log. The
+    port names come from the node classes rather than a list here, so a node
+    that gains an output cannot quietly go unshown.
+
+    ``frames`` is the exception, and a real one: it is the rollout video,
+    already wired to ``VideoWrite``, which is what showing a video means.
+    """
+    from app.nodes.vla.vla_action_eval_node import VLAActionEvalNode
+    from app.nodes.vla.vla_rollout_node import VLARolloutNode
+
+    payload = json.loads(_VLA_EXAMPLE.read_text(encoding="utf-8"))
+    by_id = {n["id"]: n for n in payload["nodes"]}
+    consumed = {
+        (e["source"], e.get("sourceHandle")): e["target"]
+        for e in payload["edges"] if e.get("type", "data") == "data"
+    }
+
+    expected = {
+        "rollout": [p.name for p in VLARolloutNode.define_outputs()
+                    if p.name != "frames"],
+        "eval": [p.name for p in VLAActionEvalNode.define_outputs()],
+    }
+    assert expected["rollout"], "VLARollout declares no outputs"
+
+    unshown = []
+    for node_id, ports in expected.items():
+        for port in ports:
+            reader = consumed.get((node_id, port))
+            if reader is None or by_id[reader]["type"] != "GraphOutput":
+                unshown.append(f"{node_id}.{port} -> {reader}")
+    assert not unshown, (
+        f"these measurements do not reach a GraphOutput: {unshown}")
+
+    # And the rollout video is still written, which is why frames is exempt.
+    assert by_id[consumed[("rollout", "frames")]]["type"] == "VideoWrite"
