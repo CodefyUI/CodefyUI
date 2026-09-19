@@ -18,6 +18,18 @@ GALLERY_SECTIONS = frozenset(
     {"quickstart", "training", "llm", "concepts", "architectures"})
 
 
+def _as_list(value) -> list:
+    """*value* if it is a list, an empty list otherwise.
+
+    ``nodes`` and ``edges`` are the two keys the list route reads for their
+    length rather than their contents, and a file saying ``"nodes": null``
+    parses fine and then raises on iteration. Same reasoning as
+    :func:`_gallery_metadata`: the cost of an unreadable field is that
+    field, not the whole gallery.
+    """
+    return value if isinstance(value, list) else []
+
+
 def _gallery_metadata(data: dict) -> dict:
     """The three gallery keys, read defensively out of *data*.
 
@@ -60,6 +72,11 @@ def _scan_examples(base: Path, source: str, path_prefix: str = "") -> list[dict]
             data = json.loads(graph_file.read_text(encoding="utf-8"))
         except Exception:
             continue
+        # Valid JSON, but not an object: a file with no ``name`` and no
+        # ``nodes`` to read is not an example, and listing it would put a
+        # card in the gallery that opens onto nothing.
+        if not isinstance(data, dict):
+            continue
         rel = graph_file.parent.relative_to(base)
         parts = rel.parts
         category = parts[0] if parts else "Other"
@@ -76,10 +93,10 @@ def _scan_examples(base: Path, source: str, path_prefix: str = "") -> list[dict]
             # graph -- counting them would make the best-explained example
             # look like the most complicated one.
             "node_count": sum(
-                1 for node in data.get("nodes", [])
+                1 for node in _as_list(data.get("nodes"))
                 if isinstance(node, dict) and not is_note_node(node)
             ),
-            "edge_count": len(data.get("edges", [])),
+            "edge_count": len(_as_list(data.get("edges"))),
             **_gallery_metadata(data),
         })
     return out

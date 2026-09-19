@@ -189,6 +189,63 @@ async def test_node_count_does_not_count_the_notes(test_client, examples_root):
     assert entry["edge_count"] == 1
 
 
+def _write_raw(root: Path, rel: str, text: str) -> None:
+    """Write ``<root>/<rel>/graph.json`` verbatim, JSON or not.
+
+    ``_write_example`` can only produce files this route can already read.
+    The shapes below are the ones a hand-edited file really has.
+    """
+    directory = root / rel
+    directory.mkdir(parents=True, exist_ok=True)
+    (directory / "graph.json").write_text(text, encoding="utf-8")
+
+
+#: A readable JSON file that is not a graph, and what the list does with it.
+#:
+#: ``None`` means the entry is dropped: nothing sensible can be said about a
+#: file whose root is not an object, and inventing a name for it would put a
+#: card in the gallery that opens onto nothing.
+_UNREADABLE_GRAPHS = [
+    pytest.param("[]", None, id="root-is-a-list"),
+    pytest.param('"a graph"', None, id="root-is-a-string"),
+    pytest.param("null", None, id="root-is-null"),
+    pytest.param(
+        '{"name": "Nulls", "description": "", "nodes": null, "edges": null}',
+        (0, 0),
+        id="null-node-and-edge-lists",
+    ),
+    pytest.param(
+        '{"name": "Nulls", "description": "", "nodes": {}, "edges": "none"}',
+        (0, 0),
+        id="lists-that-are-not-lists",
+    ),
+]
+
+
+@pytest.mark.parametrize("text, expected", _UNREADABLE_GRAPHS)
+async def test_a_graph_file_that_is_not_a_graph_costs_only_its_own_card(
+    test_client, examples_root, text, expected
+):
+    """One pack's typo must not take everybody's gallery down with a 500.
+
+    The route walks every installed pack's examples directory into a single
+    list, so a file it cannot read is not that pack's problem alone -- an
+    exception here is the whole gallery, for everyone. Only the malformed
+    entry is affected; the example beside it still lists.
+    """
+    _write_raw(examples_root, "Broken/Example", text)
+    _write_example(examples_root, "Fine/Example",
+                   gallery={"section": "training", "order": 1})
+
+    listing = await _builtin_listing(test_client)
+    assert listing["Fine/Example"]["section"] == "training"
+    if expected is None:
+        assert "Broken/Example" not in listing
+    else:
+        entry = listing["Broken/Example"]
+        assert (entry["node_count"], entry["edge_count"]) == expected
+
+
 # ── the 35 built-ins ──────────────────────────────────────────────────────
 
 #: Where every shipped example belongs: ``path -> (section, order, family)``.
