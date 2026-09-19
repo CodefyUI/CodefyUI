@@ -1,6 +1,7 @@
 {
   "name": "Train ResNet on CIFAR10",
   "description": "End-to-end ResNet training on CIFAR10. SequentialModel builds a mini-ResNet with two residual blocks (shortcut edges stem_pool→b1_add and b1_r2→b2_add) into an nn.Module, which is then wired through the Training Pipeline preset (Dataset → DataLoader → Optimizer → Loss → TrainingLoop). Open the SequentialModel layer editor to inspect or edit the residual graph.",
+  "gallery": { "section": "training", "order": 2 },
   "nodes": [
     {
       "id": "start-1",

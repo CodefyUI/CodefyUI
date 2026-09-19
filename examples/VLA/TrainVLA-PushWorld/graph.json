@@ -1,6 +1,7 @@
 {
   "name": "Train a VLA on PushWorld",
   "description": "Needs a GPU and about an hour: behavior-clone a 3.3M-parameter vision-language-action policy from 2,400 DART-noised scripted demonstrations, then evaluate it closed-loop (measured 0.97 success at execute_k=2) and write the rollout video. Flip VLARollout.instruction_mode to swapped to watch success collapse to 0.03 - proof the policy reads the instruction. Full recipe and the ablation playbook are in README.md beside this graph.",
+  "gallery": { "section": "training", "order": 6 },
   "nodes": [
     {
       "id": "start",

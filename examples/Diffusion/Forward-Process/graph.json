@@ -1,6 +1,7 @@
 {
   "name": "Forward Diffusion: gradually adding noise",
   "description": "The forward diffusion process gradually destroys a clean image by mixing in Gaussian noise according to a schedule. The classical equation is $x_t = \\sqrt{\\bar\\alpha_t}\\,x_0 + \\sqrt{1-\\bar\\alpha_t}\\,\\epsilon$, with $\\bar\\alpha_t$ shrinking from 1 (clean) to 0 (pure noise) as t grows. Here we approximate this with a single Lerp at alpha=0.4 — the result $x_t$ is a 40/60 blend of clean signal and noise. The TimestepEmbedding on the side shows how a scalar t becomes a 32-d vector that the U-Net can use as a conditioning signal.",
+  "gallery": { "section": "concepts", "order": 5 },
   "nodes": [
     { "id": "start-1", "type": "Start", "position": { "x": -260, "y": 0 }, "data": { "params": {} } },
     { "id": "x0",      "type": "TensorCreate", "position": { "x": 0,   "y": -150 }, "data": { "params": { "shape": "1,3,8,8", "fill": "randn", "value": 0, "requires_grad": false } } },

@@ -1,6 +1,7 @@
 {
   "name": "Train Mini-GPT on MNIST",
   "description": "Scaled-down GPT-style decoder trained end-to-end on MNIST. The SequentialModel flattens each 28x28 image, projects it to a 16-token x 24-dim 'sequence' via a learned embedding, runs a 4-layer TransformerDecoder (self-attention mode) over those tokens, then projects to 10 class logits. Training runs through the Training Pipeline preset. Open the SequentialModel layer editor to play with d_model, num_layers, or head count.",
+  "gallery": { "section": "training", "order": 3 },
   "nodes": [
     {
       "id": "start-1",

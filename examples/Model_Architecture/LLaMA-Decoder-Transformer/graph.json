@@ -1,6 +1,7 @@
 {
   "name": "LLaMA Decoder-Only Transformer",
   "description": "Forward-pass visualization of a LLaMA-style decoder-only transformer. Architecturally similar to GPT (causal self-attention, no encoder), but LLaMA's distinctive choice is pre-normalization: a LayerNorm (originally RMSNorm in the paper) is applied to the input before the attention stack. Input is a (seq=16, batch=2, d=32) token-embedding tensor. We pre-normalise, run the decoder with tensor=memory (self-attention only), post-normalise, pool, and project to 32 vocab logits.",
+  "gallery": { "section": "architectures", "family": "Transformer", "order": 3 },
   "nodes": [
     { "id": "start-1", "type": "Start", "position": { "x": -200, "y": 0 }, "data": { "params": {} } },
     { "id": "input", "type": "TensorCreate", "position": { "x": 0, "y": 0 }, "data": { "params": { "shape": "16,2,32", "fill": "randn", "value": 0.0, "requires_grad": false } } },

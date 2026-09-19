@@ -1,6 +1,7 @@
 {
   "name": "Train CNN on MNIST",
   "description": "Complete end-to-end CNN training on MNIST. SequentialModel builds an nn.Module from JSON layer config, then connects to the Training Pipeline preset (Dataset → DataLoader → Optimizer → Loss → TrainingLoop). After training, ModelSaver writes the weights to backend/data/models/model_weights.pt so the inference example can load them.",
+  "gallery": { "section": "quickstart", "order": 1 },
   "nodes": [
     {
       "id": "start-1",

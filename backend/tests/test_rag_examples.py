@@ -39,6 +39,8 @@ from app.core.node_base import ParamType
 from app.core.node_registry import NodeRegistry
 from app.nodes.llm.llm_chat_node import LLMChatNode
 
+from tests._example_graphs import graph_nodes
+
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _EXAMPLES_ROOT = _REPO_ROOT / "examples"
 
@@ -283,7 +285,7 @@ def test_sentence_similarity_wires_labels_to_both_consumers(palette: set[str]):
             f"port is optional, so the run still succeeds and shows blanks "
             f"where the sentences should be")
 
-    unresolved = sorted({node["type"] for node in payload["nodes"]}
+    unresolved = sorted({node["type"] for node in graph_nodes(payload)}
                         - palette)
     assert not unresolved, (
         f"{_SENTENCE_EXAMPLE.name} uses node types that are not registry "
@@ -459,8 +461,11 @@ def test_rag_examples_share_the_retrieval_chain():
     api = _payload(_RAG_LLMCHAT_EXAMPLE)
 
     def shape(payload: dict) -> dict[str, tuple[str, dict]]:
+        # Notes are out: each graph explains ITSELF, so the local one talks
+        # about a model on disk and the API one about a chat endpoint. The
+        # pipeline is what has to be identical, not the prose beside it.
         return {node["id"]: (node["type"], node["data"]["params"])
-                for node in payload["nodes"] if node["id"] != "gen"}
+                for node in graph_nodes(payload) if node["id"] != "gen"}
 
     local_shape, api_shape = shape(local), shape(api)
     assert set(local_shape) == set(api_shape), (
@@ -538,7 +543,7 @@ def test_rag_llmchat_example_carries_no_secret_params():
         "LLMChat declares no SECRET params, so this test would pass "
         "vacuously -- check what changed in llm_chat_node.py")
 
-    for node in _payload(_RAG_LLMCHAT_EXAMPLE)["nodes"]:
+    for node in graph_nodes(_payload(_RAG_LLMCHAT_EXAMPLE)):
         present = sorted(secrets & set(node["data"]["params"]))
         assert not present, (
             f"node {node['id']!r} carries the secret param(s) {present}. "

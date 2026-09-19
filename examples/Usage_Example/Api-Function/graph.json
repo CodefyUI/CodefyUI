@@ -1,6 +1,7 @@
 {
   "name": "Api-Function",
   "description": "Graph-as-a-Function demo: Start -> GraphInput -> Print -> GraphOutput. Run it on the canvas (uses the input's default) or save it and call POST /api/graph/run/Api-Function with {\"inputs\": {\"message\": \"...\"}} to get {\"outputs\": {\"echo\": \"...\"}} back. See docs: Usage -> Graph as a Function.",
+  "gallery": { "section": "quickstart", "order": 3 },
   "nodes": [
     {
       "id": "start-1",
