@@ -1,7 +1,14 @@
 import { describe, it, expect } from 'vitest';
 import type { Edge, Node } from '@xyflow/react';
-import type { NodeData, NodeDefinition } from '../../types';
-import { portDataType, resolveInputSources, resolveSingleNodePorts } from './portCaptures';
+import type { ExecutionStatus, NodeData, NodeDefinition } from '../../types';
+import {
+  capturePhase,
+  capturePhaseNoteKey,
+  portDataType,
+  resolveInputSources,
+  resolveSingleNodePorts,
+  takeDuePorts,
+} from './portCaptures';
 
 function def(outputs: { name: string; data_type: string }[]): NodeDefinition {
   return {
@@ -103,5 +110,77 @@ describe('resolveSingleNodePorts', () => {
   it('treats a node with no definition as having no outputs', () => {
     const nodes = [node('n1')];
     expect(resolveSingleNodePorts('n1', nodes, [])).toEqual({ inputs: [], outputs: [] });
+  });
+});
+
+// ── Captures exist only once a node has returned ────────────────────────────
+// The engine writes a node's captures after the node returns and answers 404
+// for anything not written yet, so a port read mid-run has three states, not
+// two: nothing to read YET is different from nothing to read.
+
+describe('capturePhase', () => {
+  const TERMINAL: ExecutionStatus[] = ['completed', 'cached', 'error', 'skipped', 'interrupted'];
+
+  it('is running while the node runs in a run that is in progress', () => {
+    expect(capturePhase('running', true)).toBe('running');
+  });
+
+  it('is pending for a node the run has not reached, and never claims it is running', () => {
+    expect(capturePhase('idle', true)).toBe('pending');
+    expect(capturePhase(undefined, true)).toBe('pending');
+  });
+
+  it('is settled once the node reports any terminal status', () => {
+    for (const status of TERMINAL) expect(capturePhase(status, true)).toBe('settled');
+  });
+
+  it('is settled for every status when no run is in progress', () => {
+    const all: (ExecutionStatus | undefined)[] = [undefined, 'idle', 'running', ...TERMINAL];
+    for (const status of all) expect(capturePhase(status, false)).toBe('settled');
+  });
+});
+
+describe('capturePhaseNoteKey', () => {
+  it('names a line for the two phases that have nothing to read yet, and none once settled', () => {
+    expect(capturePhaseNoteKey('running')).toBe('inspector.nodeRunning');
+    expect(capturePhaseNoteKey('pending')).toBe('inspector.nodePending');
+    expect(capturePhaseNoteKey('settled')).toBeNull();
+  });
+});
+
+describe('takeDuePorts', () => {
+  const A = { nodeId: 'a', port: 'out' };
+  const B = { nodeId: 'b', port: 'out' };
+
+  it('hands out a settled port once, however often it is asked', () => {
+    const asked = new Set<string>();
+    expect(takeDuePorts([A, B], ['settled', 'settled'], asked)).toEqual([A, B]);
+    expect(takeDuePorts([A, B], ['settled', 'settled'], asked)).toEqual([]);
+  });
+
+  it('holds back a port whose owner has not returned, and releases it when it has', () => {
+    const asked = new Set<string>();
+    expect(takeDuePorts([A, B], ['settled', 'running'], asked)).toEqual([A]);
+    expect(takeDuePorts([A, B], ['settled', 'pending'], asked)).toEqual([]);
+    // B finishing must not hand A out a second time.
+    expect(takeDuePorts([A, B], ['settled', 'settled'], asked)).toEqual([B]);
+  });
+
+  it('hands a port out again after its owner ran a second time', () => {
+    const asked = new Set<string>();
+    expect(takeDuePorts([A], ['settled'], asked)).toEqual([A]);
+    expect(takeDuePorts([A], ['running'], asked)).toEqual([]);
+    expect(takeDuePorts([A], ['settled'], asked)).toEqual([A]);
+  });
+
+  it('forgets a port that left the view, so coming back to it reads it afresh', () => {
+    const asked = new Set<string>();
+    expect(takeDuePorts([A], ['settled'], asked)).toEqual([A]);
+    expect(takeDuePorts([B], ['settled'], asked)).toEqual([B]);
+    expect(takeDuePorts([A], ['settled'], asked)).toEqual([A]);
+  });
+
+  it('asks once for a port listed twice', () => {
+    expect(takeDuePorts([A, { ...A }], ['settled', 'settled'], new Set())).toEqual([A]);
   });
 });

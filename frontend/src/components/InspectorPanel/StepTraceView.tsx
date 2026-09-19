@@ -9,6 +9,7 @@ import {
 import type { OutputData, TensorOutput } from '../../types';
 import { TensorGridView } from './TensorGridView';
 import { MathText } from '../shared/MathText';
+import { capturePhaseNoteKey, useCapturePhase } from './portCaptures';
 import { useI18n } from '../../i18n';
 import styles from './InspectorPanel.module.css';
 
@@ -58,12 +59,19 @@ export function StepTraceView({ runId, nodeId }: Props) {
   const [indexError, setIndexError] = useState<string | null>(null);
   const [tensors, setTensors] = useState<TensorMap>({});
   const [collapsed, setCollapsed] = useState<Record<number, boolean>>({});
+  // A node's steps are written when the node returns, together with its
+  // outputs, and the index endpoint 404s until then — which `fetchStepIndex`
+  // reads as an empty list, i.e. "no steps recorded, turn on Verbose". Wait
+  // for the node instead, and read the moment it is done.
+  const phase = useCapturePhase(nodeId);
+  const phaseNoteKey = capturePhaseNoteKey(phase);
 
   // Fetch the step index for this (run, node) pair. The parent remounts this
   // component (via a `key` on runId:nodeId), so each mount starts from fresh
   // state — no manual reset needed, and the user never sees the prior node's
   // trace flash before the new fetch resolves.
   useEffect(() => {
+    if (phase !== 'settled') return;
     let cancelled = false;
     fetchStepIndex(runId, nodeId)
       .then((entries) => {
@@ -93,7 +101,7 @@ export function StepTraceView({ runId, nodeId }: Props) {
     return () => {
       cancelled = true;
     };
-  }, [runId, nodeId, t]);
+  }, [runId, nodeId, t, phase]);
 
   // After we have the step index, fetch each tensor in parallel. The loading
   // placeholders were already seeded alongside setSteps above.
@@ -140,6 +148,12 @@ export function StepTraceView({ runId, nodeId }: Props) {
       cancelled = true;
     };
   }, [steps, runId, nodeId, t]);
+
+  // Ahead of everything else: while the node has not returned, the previous
+  // pass's trace is not this node's trace any more.
+  if (phaseNoteKey) {
+    return <div className={styles.diffMissing}>{t(phaseNoteKey)}</div>;
+  }
 
   if (indexError) {
     return <div className={styles.portError}>{indexError}</div>;

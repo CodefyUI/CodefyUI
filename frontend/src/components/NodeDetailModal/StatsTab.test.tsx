@@ -1,7 +1,9 @@
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, afterEach, beforeEach, vi } from 'vitest';
 import { act, render, screen, waitFor, within } from '@testing-library/react';
 import type { Edge, Node } from '@xyflow/react';
-import type { NodeData, NodeDefinition } from '../../types';
+import type { ExecutionStatus, NodeData, NodeDefinition } from '../../types';
+import { useTabStore } from '../../store/tabStore';
+import { flushTabNodeUpdates, queueTabNodeStatus } from '../../store/nodeUpdateQueue';
 
 vi.mock('../../api/executionOutputs', async (importOriginal) => {
   const actual =
@@ -15,6 +17,7 @@ import {
   type PortStats,
 } from '../../api/executionOutputs';
 import { useI18n } from '../../i18n';
+import { keyOf } from '../InspectorPanel/PortGroup';
 import { StatsTab, formatStat } from './StatsTab';
 import type { NodeDetailTabContext } from './tabs';
 
@@ -404,27 +407,31 @@ describe('StatsTab', () => {
     await waitFor(() => expect(screen.getAllByText('boom').length).toBe(2));
   });
 
-  it('aborts the previous round when the port set changes', async () => {
-    const signals: AbortSignal[] = [];
-    mockStats.mockImplementation(async (_r, _n, _p, opts) => {
-      if (opts?.signal) signals.push(opts.signal);
-      return tensorStats();
+  it('aborts the port that left the view, and leaves the one that stayed alone', async () => {
+    const signals = new Map<string, AbortSignal>();
+    // Still computing — an abort is only observable on a request in flight.
+    mockStats.mockImplementation((_r, nodeId, port, opts) => {
+      if (opts?.signal) signals.set(keyOf(nodeId, port), opts.signal);
+      return new Promise<PortStats>(() => {});
     });
     const { rerender } = render(<StatsTab ctx={ctx()} />);
-    await waitFor(() => expect(signals.length).toBe(2));
+    await waitFor(() => expect(signals.size).toBe(2));
 
     // Dropping the edge drops the input port, so the set changes.
     rerender(<StatsTab ctx={ctx({ edges: [] })} />);
-    await waitFor(() => expect(signals.length).toBeGreaterThan(2));
-    expect(signals[0].aborted).toBe(true);
-    expect(signals[signals.length - 1].aborted).toBe(false);
+
+    expect(signals.get(keyOf('src', 'out'))!.aborted).toBe(true);
+    // The port that stayed is neither cancelled nor computed a second time:
+    // its statistics did not change because a sibling row went away.
+    expect(signals.get(keyOf('n1', 'out'))!.aborted).toBe(false);
+    expect(mockStats).toHaveBeenCalledTimes(2);
   });
 
   it('aborts in-flight requests when the tab unmounts', async () => {
     let captured: AbortSignal | undefined;
-    mockStats.mockImplementation(async (_r, _n, _p, opts) => {
+    mockStats.mockImplementation((_r, _n, _p, opts) => {
       captured = opts?.signal;
-      return tensorStats();
+      return new Promise<PortStats>(() => {});
     });
     const { unmount } = render(<StatsTab ctx={ctx()} />);
     await waitFor(() => expect(captured).toBeDefined());
@@ -452,6 +459,89 @@ describe('StatsTab', () => {
   it('tells the user when a node has no connected inputs', async () => {
     render(<StatsTab ctx={ctx({ edges: [] })} />);
     expect(screen.getByText('No inputs connected')).toBeInTheDocument();
+  });
+});
+
+// ── Statistics of a node that has not returned yet ───────────────────────────
+// `/stats` summarises the same captures the Inputs and Outputs tabs read, so
+// it answers 404 until the node owning the port has returned. Read too early
+// the row says nothing was captured and points at a setting — about a node
+// that has simply not run yet.
+
+describe('StatsTab — while the graph is running', () => {
+  /** The ctx node as the engine last reported it, on the tab the hook reads. */
+  function atStatus(id: string, executionStatus: ExecutionStatus): Node<NodeData> {
+    const n = node(id);
+    return { ...n, data: { ...n.data, executionStatus } };
+  }
+
+  /** Put the active tab in a run, holding the same nodes the ctx names. */
+  function seedRun(statuses: Record<string, ExecutionStatus>) {
+    const tab = useTabStore.getState().tabs[0];
+    useTabStore.setState({
+      tabs: [
+        {
+          ...tab,
+          status: 'running',
+          lastRunId: 'run1',
+          nodes: Object.entries(statuses).map(([id, s]) => atStatus(id, s)),
+        },
+      ],
+      activeTabId: tab.id,
+    });
+  }
+
+  /** One `node_status` frame, through the queue the socket handler writes to. */
+  function report(nodeId: string, status: ExecutionStatus) {
+    act(() => {
+      queueTabNodeStatus(useTabStore.getState().activeTabId, nodeId, status);
+      flushTabNodeUpdates();
+    });
+  }
+
+  afterEach(() => {
+    const tab = useTabStore.getState().tabs[0];
+    useTabStore.setState({ tabs: [{ ...tab, status: 'idle', lastRunId: null, nodes: [] }] });
+  });
+
+  it('says the node is running instead of reporting its port uncaptured', async () => {
+    seedRun({ src: 'completed', n1: 'running' });
+    render(<StatsTab ctx={ctx()} />);
+    await waitFor(() =>
+      expect(mockStats).toHaveBeenCalledWith('run1', 'src', 'out', expect.anything()),
+    );
+
+    const block = screen.getByTestId('stats-port-n1-out');
+    expect(within(block).getByText('Node is running…')).toBeInTheDocument();
+    expect(screen.queryByText(/Nothing captured for this port/)).toBeNull();
+    // Asking for this node's statistics now could only be answered 404.
+    expect(mockStats).toHaveBeenCalledTimes(1);
+  });
+
+  it('computes the statistics by itself when the node finishes', async () => {
+    seedRun({ src: 'completed', n1: 'running' });
+    render(<StatsTab ctx={ctx()} />);
+    await waitFor(() => expect(mockStats).toHaveBeenCalledTimes(1));
+
+    report('n1', 'completed');
+
+    // No reselect: the row was on screen the whole time.
+    await waitFor(() =>
+      expect(mockStats).toHaveBeenCalledWith('run1', 'n1', 'out', expect.anything()),
+    );
+    const block = screen.getByTestId('stats-port-n1-out');
+    await waitFor(() => expect(within(block).getByText('[2, 3]')).toBeInTheDocument());
+    expect(within(block).queryByText('Node is running…')).toBeNull();
+    // The upstream port was summarised once, and not again.
+    expect(mockStats).toHaveBeenCalledTimes(2);
+  });
+
+  it('says a queued node is waiting, not running', () => {
+    seedRun({ src: 'idle', n1: 'idle' });
+    render(<StatsTab ctx={ctx()} />);
+    expect(screen.getAllByText('Waiting for this node to run…')).toHaveLength(2);
+    expect(screen.queryByText('Node is running…')).toBeNull();
+    expect(mockStats).not.toHaveBeenCalled();
   });
 });
 

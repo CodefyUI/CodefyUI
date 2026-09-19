@@ -3,6 +3,7 @@ import { render, screen, fireEvent, waitFor, act } from '@testing-library/react'
 import { InspectorPanel } from './InspectorPanel';
 import { useI18n } from '../../i18n';
 import { useTabStore, type TabState } from '../../store/tabStore';
+import { flushTabNodeUpdates, queueTabNodeStatus } from '../../store/nodeUpdateQueue';
 import {
   fetchOutput,
   fetchStepIndex,
@@ -10,7 +11,14 @@ import {
   PayloadTooLargeError,
   RunDataExpiredError,
 } from '../../api/executionOutputs';
-import type { TensorOutput, OutputData, NodeData, NodeDefinition, SegmentGroup } from '../../types';
+import type {
+  ExecutionStatus,
+  TensorOutput,
+  OutputData,
+  NodeData,
+  NodeDefinition,
+  SegmentGroup,
+} from '../../types';
 import type { Node, Edge } from '@xyflow/react';
 
 vi.mock('../../api/executionOutputs', async () => {
@@ -109,6 +117,9 @@ function seedTab(partial: Partial<TabState>) {
     selectedNodeId: null,
     activeSegment: null,
     lastRunId: null,
+    // The tab is carried over from the previous test, so one that left a run
+    // in progress would otherwise hand `running` to every test after it.
+    status: 'idle',
     ...partial,
   };
   useTabStore.setState({ tabs: [newTab], activeTabId: newTab.id });
@@ -735,6 +746,427 @@ describe('InspectorPanel — segment mode', () => {
     });
     render(<InspectorPanel />);
     expect(screen.getByText('Segment outputs (0)')).toBeInTheDocument();
+  });
+});
+
+// ── Inspecting a node while the graph is still running ───────────────────────
+// The engine writes a node's captures only after the node returns, and answers
+// 404 for anything not written yet. Every test here answers the same way, so a
+// request issued too early fails exactly as it does against the real server.
+
+describe('InspectorPanel — while the graph is running', () => {
+  const RUNNING_NOTE = 'Node is running…';
+  const PENDING_NOTE = 'Waiting for this node to run…';
+  const EXPIRED = /Run data expired/;
+
+  /** The node as the engine last reported it. */
+  function at(status: ExecutionStatus, n: Node<NodeData>): Node<NodeData> {
+    return { ...n, data: { ...n.data, executionStatus: status } };
+  }
+
+  function tabId(): string {
+    return useTabStore.getState().activeTabId;
+  }
+
+  /**
+   * One `node_status` frame, written the way the socket handler writes it:
+   * buffered in the frame queue, then applied in a single store commit.
+   */
+  function report(nodeId: string, status: ExecutionStatus) {
+    act(() => {
+      queueTabNodeStatus(tabId(), nodeId, status);
+      flushTabNodeUpdates();
+    });
+  }
+
+  /** What `execute()` does to the tab before the new run's id arrives. */
+  function startNewRun(runId: string) {
+    act(() => {
+      const store = useTabStore.getState();
+      store.clearExecutionStatus();
+      store.setTabStatus(tabId(), 'running');
+      store.setLastRunId(tabId(), null);
+    });
+    act(() => useTabStore.getState().setLastRunId(tabId(), runId));
+  }
+
+  const SHAPES: Record<string, Partial<TensorOutput>> = {
+    wide: { full_shape: [2, 3], sliced_shape: [2, 3] },
+    flat: { full_shape: [3], sliced_shape: [3] },
+  };
+
+  /** 404 until the node is in `finished`, then a tensor whose shape names the node. */
+  function serveFinished(finished: Set<string>, shapeOf: Record<string, keyof typeof SHAPES> = {}) {
+    mockOutput.mockImplementation(async (runId, nodeId) => {
+      if (!finished.has(nodeId)) throw new RunDataExpiredError(runId);
+      const shape = shapeOf[nodeId];
+      if (shape === 'wide') return tensor([[1, 2, 3], [4, 5, 6]], SHAPES.wide);
+      if (shape === 'flat') return tensor([1, 2, 3], SHAPES.flat);
+      return tensor([[1, 2], [3, 4]], { min: 1, max: 4 });
+    });
+  }
+
+  function callsFor(nodeId: string): number {
+    return mockOutput.mock.calls.filter(([, id]) => id === nodeId).length;
+  }
+
+  /** Let every request already issued run to its end. */
+  async function settle() {
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+  }
+
+  it('says the node is running instead of calling its run data expired', async () => {
+    const a = at('running', node('a', 'NodeA', { outputs: ['out'] }));
+    seedTab({ status: 'running', lastRunId: 'run1', selectedNodeId: 'a', nodes: [a], edges: [] });
+    serveFinished(new Set());
+    render(<InspectorPanel />);
+    await settle();
+
+    expect(screen.queryByText(EXPIRED)).toBeNull();
+    const note = screen.getByText(RUNNING_NOTE);
+    // A neutral line, not the warning style an error gets.
+    expect(note.className).not.toMatch(/portError/);
+    // Asking now could only be answered 404.
+    expect(mockOutput).not.toHaveBeenCalled();
+  });
+
+  it.each(['completed', 'cached', 'interrupted'] as const)(
+    'fills the output in by itself when the node reports %s',
+    async (terminal) => {
+      const a = at('running', node('a', 'NodeA', { outputs: ['out'] }));
+      seedTab({ status: 'running', lastRunId: 'run1', selectedNodeId: 'a', nodes: [a], edges: [] });
+      const finished = new Set<string>();
+      serveFinished(finished);
+      render(<InspectorPanel />);
+      await settle();
+
+      finished.add('a'); // the engine writes the captures first...
+      report('a', terminal); // ...and only then says the node is done
+
+      // No reselect, no tab switch: the row was on screen the whole time.
+      await waitFor(() => expect(screen.getByText('shape [2, 2]')).toBeInTheDocument());
+      expect(screen.queryByText(RUNNING_NOTE)).toBeNull();
+      expect(screen.queryByText(EXPIRED)).toBeNull();
+      expect(mockOutput).toHaveBeenCalledTimes(1);
+      expect(mockOutput).toHaveBeenCalledWith('run1', 'a', 'out');
+    },
+  );
+
+  it('reads an input whose upstream node has finished while the selected node still runs', async () => {
+    const src = at('completed', node('src', 'Src'));
+    const a = at('running', node('a', 'NodeA', { outputs: ['out'] }));
+    seedTab({
+      status: 'running',
+      lastRunId: 'run1',
+      selectedNodeId: 'a',
+      nodes: [a, src],
+      edges: [edge('e1', 'src', 'a', { sourceHandle: 'y' })],
+    });
+    serveFinished(new Set(['src']));
+    render(<InspectorPanel />);
+
+    // The input belongs to `src`, so it is `src`'s status that decides.
+    await waitFor(() => expect(screen.getAllByText('shape [2, 2]')).toHaveLength(1));
+    expect(screen.getByText(RUNNING_NOTE)).toBeInTheDocument();
+    expect(screen.queryByText(EXPIRED)).toBeNull();
+    expect(mockOutput).toHaveBeenCalledTimes(1);
+    expect(mockOutput).toHaveBeenCalledWith('run1', 'src', 'y');
+  });
+
+  it('says a queued node is waiting, not running, then follows it to the end', async () => {
+    const a = at('idle', node('a', 'NodeA', { outputs: ['out'] }));
+    seedTab({ status: 'running', lastRunId: 'run1', selectedNodeId: 'a', nodes: [a], edges: [] });
+    const finished = new Set<string>();
+    serveFinished(finished);
+    render(<InspectorPanel />);
+    await settle();
+
+    expect(screen.getByText(PENDING_NOTE)).toBeInTheDocument();
+    expect(screen.queryByText(RUNNING_NOTE)).toBeNull();
+    expect(screen.queryByText(EXPIRED)).toBeNull();
+    expect(mockOutput).not.toHaveBeenCalled();
+
+    report('a', 'running');
+    expect(screen.getByText(RUNNING_NOTE)).toBeInTheDocument();
+    expect(screen.queryByText(PENDING_NOTE)).toBeNull();
+    expect(mockOutput).not.toHaveBeenCalled();
+
+    finished.add('a');
+    report('a', 'completed');
+    await waitFor(() => expect(screen.getByText('shape [2, 2]')).toBeInTheDocument());
+    expect(mockOutput).toHaveBeenCalledTimes(1);
+  });
+
+  it('translates the note at render, so it follows a locale switch', async () => {
+    const a = at('idle', node('a', 'NodeA', { outputs: ['out'] }));
+    seedTab({ status: 'running', lastRunId: 'run1', selectedNodeId: 'a', nodes: [a], edges: [] });
+    serveFinished(new Set());
+    render(<InspectorPanel />);
+    expect(screen.getByText(PENDING_NOTE)).toBeInTheDocument();
+
+    act(() => useI18n.setState({ locale: 'zh-TW' }));
+    expect(screen.getByText('等待此節點執行…')).toBeInTheDocument();
+    expect(screen.queryByText(PENDING_NOTE)).toBeNull();
+
+    report('a', 'running');
+    expect(screen.getByText('節點執行中…')).toBeInTheDocument();
+  });
+
+  it('does not refetch when the nodes array is rebuilt with no status change (#166)', async () => {
+    const src = at('completed', node('src', 'Src'));
+    const a = at('running', node('a', 'NodeA', { outputs: ['out'] }));
+    seedTab({
+      status: 'running',
+      lastRunId: 'run1',
+      selectedNodeId: 'a',
+      nodes: [a, src],
+      edges: [edge('e1', 'src', 'a', { sourceHandle: 'y' })],
+    });
+    serveFinished(new Set(['src']));
+    render(<InspectorPanel />);
+    await waitFor(() => expect(screen.getByText('shape [2, 2]')).toBeInTheDocument());
+    await settle();
+    const before = mockOutput.mock.calls.length;
+
+    // What dragging a node does on every frame: a new array of new node
+    // objects, every status exactly as it was.
+    for (let step = 0; step < 3; step++) {
+      act(() => {
+        useTabStore.setState((s) => ({
+          tabs: s.tabs.map((t) => ({
+            ...t,
+            nodes: t.nodes.map((n) => ({
+              ...n,
+              position: { x: n.position.x + 10, y: n.position.y },
+            })),
+          })),
+        }));
+      });
+    }
+    await settle();
+
+    expect(mockOutput).toHaveBeenCalledTimes(before);
+    expect(screen.getByText('shape [2, 2]')).toBeInTheDocument();
+    expect(screen.getByText(RUNNING_NOTE)).toBeInTheDocument();
+  });
+
+  it('does not read a finished port again because another node changed status', async () => {
+    const s1 = at('completed', node('s1', 'S1'));
+    const s2 = at('running', node('s2', 'S2'));
+    const a = at('idle', node('a', 'NodeA', { outputs: ['o1'] }));
+    seedTab({
+      status: 'running',
+      lastRunId: 'run1',
+      selectedNodeId: 'a',
+      nodes: [a, s1, s2],
+      edges: [
+        edge('e1', 's1', 'a', { sourceHandle: 'p' }),
+        edge('e2', 's2', 'a', { sourceHandle: 'q' }),
+      ],
+    });
+    const finished = new Set(['s1']);
+    serveFinished(finished, { s1: 'wide', s2: 'flat' });
+    render(<InspectorPanel />);
+    await waitFor(() => expect(screen.getByText('shape [2, 3]')).toBeInTheDocument());
+    expect(callsFor('s1')).toBe(1);
+
+    finished.add('s2');
+    report('s2', 'completed');
+    await waitFor(() => expect(screen.getByText('shape [3]')).toBeInTheDocument());
+
+    report('a', 'running');
+    finished.add('a');
+    report('a', 'completed');
+    await waitFor(() => expect(screen.getByText('shape [2, 2]')).toBeInTheDocument());
+
+    // Three status changes later, the upstream tensor was downloaded once.
+    expect(callsFor('s1')).toBe(1);
+    expect(callsFor('s2')).toBe(1);
+    expect(callsFor('a')).toBe(1);
+  });
+
+  it('keeps a download already in flight when another node changes status', async () => {
+    const src = at('completed', node('src', 'Src'));
+    const a = at('running', node('a', 'NodeA', { outputs: ['out'] }));
+    seedTab({
+      status: 'running',
+      lastRunId: 'run1',
+      selectedNodeId: 'a',
+      nodes: [a, src],
+      edges: [edge('e1', 'src', 'a', { sourceHandle: 'y' })],
+    });
+    let landSrc!: (value: OutputData) => void;
+    let aFinished = false;
+    mockOutput.mockImplementation((runId, nodeId) => {
+      if (nodeId === 'src') return new Promise<OutputData>((resolve) => { landSrc = resolve; });
+      if (!aFinished) return Promise.reject(new RunDataExpiredError(runId));
+      return Promise.resolve(tensor([1, 2, 3], SHAPES.flat));
+    });
+    render(<InspectorPanel />);
+    await waitFor(() => expect(mockOutput).toHaveBeenCalledWith('run1', 'src', 'y'));
+
+    // `a` finishing has nothing to do with `src.y`, which is still downloading.
+    aFinished = true;
+    report('a', 'completed');
+    await waitFor(() => expect(screen.getByText('shape [3]')).toBeInTheDocument());
+
+    await act(async () => landSrc(tensor([[1, 2, 3], [4, 5, 6]], SHAPES.wide)));
+    await waitFor(() => expect(screen.getByText('shape [2, 3]')).toBeInTheDocument());
+    expect(callsFor('src')).toBe(1);
+  });
+
+  it('reads a node again when it runs a second time in the same run', async () => {
+    const a = at('completed', node('a', 'NodeA', { outputs: ['out'] }));
+    seedTab({ status: 'running', lastRunId: 'run1', selectedNodeId: 'a', nodes: [a], edges: [] });
+    mockOutput
+      .mockResolvedValueOnce(tensor([[1, 2, 3], [4, 5, 6]], SHAPES.wide))
+      .mockResolvedValueOnce(tensor([1, 2, 3], SHAPES.flat));
+    render(<InspectorPanel />);
+    await waitFor(() => expect(screen.getByText('shape [2, 3]')).toBeInTheDocument());
+
+    // Second pass: the first pass's value is no longer what this node holds.
+    report('a', 'running');
+    expect(screen.queryByText('shape [2, 3]')).toBeNull();
+    expect(screen.getByText(RUNNING_NOTE)).toBeInTheDocument();
+    expect(mockOutput).toHaveBeenCalledTimes(1);
+
+    report('a', 'completed');
+    await waitFor(() => expect(screen.getByText('shape [3]')).toBeInTheDocument());
+    expect(mockOutput).toHaveBeenCalledTimes(2);
+  });
+
+  it('does not let a slow first-pass download overwrite the second pass', async () => {
+    const a = at('completed', node('a', 'NodeA', { outputs: ['out'] }));
+    seedTab({ status: 'running', lastRunId: 'run1', selectedNodeId: 'a', nodes: [a], edges: [] });
+    let landFirstPass!: (value: OutputData) => void;
+    mockOutput
+      .mockImplementationOnce(
+        () => new Promise<OutputData>((resolve) => { landFirstPass = resolve; }),
+      )
+      .mockResolvedValueOnce(tensor([1, 2, 3], SHAPES.flat));
+    render(<InspectorPanel />);
+    await waitFor(() => expect(mockOutput).toHaveBeenCalledTimes(1));
+
+    report('a', 'running');
+    report('a', 'completed');
+    await waitFor(() => expect(screen.getByText('shape [3]')).toBeInTheDocument());
+
+    await act(async () => landFirstPass(tensor([[1, 2, 3], [4, 5, 6]], SHAPES.wide)));
+    await settle();
+    expect(screen.getByText('shape [3]')).toBeInTheDocument();
+    expect(screen.queryByText('shape [2, 3]')).toBeNull();
+  });
+
+  it('drops a stale expired line the moment the node is known to be running', async () => {
+    // A reload mid-run: the tab comes back idle until the server acknowledges
+    // the re-attach, so the first read is issued, and answered 404.
+    const a = at('idle', node('a', 'NodeA', { outputs: ['out'] }));
+    seedTab({ status: 'idle', lastRunId: 'run1', selectedNodeId: 'a', nodes: [a], edges: [] });
+    const finished = new Set<string>();
+    serveFinished(finished);
+    render(<InspectorPanel />);
+    await waitFor(() => expect(screen.getByText(EXPIRED)).toBeInTheDocument());
+
+    act(() => useTabStore.getState().setTabStatus(tabId(), 'running'));
+    expect(screen.queryByText(EXPIRED)).toBeNull();
+    expect(screen.getByText(PENDING_NOTE)).toBeInTheDocument();
+
+    report('a', 'running');
+    expect(screen.queryByText(EXPIRED)).toBeNull();
+    expect(screen.getByText(RUNNING_NOTE)).toBeInTheDocument();
+
+    finished.add('a');
+    report('a', 'completed');
+    await waitFor(() => expect(screen.getByText('shape [2, 2]')).toBeInTheDocument());
+    expect(screen.queryByText(EXPIRED)).toBeNull();
+  });
+
+  it('never shows the previous run’s value under a node the new run has not reached', async () => {
+    const a = at('completed', node('a', 'NodeA', { outputs: ['out'] }));
+    seedTab({ status: 'completed', lastRunId: 'run1', selectedNodeId: 'a', nodes: [a], edges: [] });
+    const finished = new Set(['a']);
+    serveFinished(finished, { a: 'wide' });
+    render(<InspectorPanel />);
+    await waitFor(() => expect(screen.getByText('shape [2, 3]')).toBeInTheDocument());
+
+    finished.clear();
+    startNewRun('run2');
+    expect(screen.queryByText('shape [2, 3]')).toBeNull();
+    expect(screen.getByText(PENDING_NOTE)).toBeInTheDocument();
+    await settle();
+    expect(mockOutput.mock.calls.filter(([runId]) => runId === 'run2')).toHaveLength(0);
+
+    report('a', 'running');
+    finished.add('a');
+    report('a', 'completed');
+    await waitFor(() => expect(screen.getByText('shape [2, 3]')).toBeInTheDocument());
+    expect(mockOutput).toHaveBeenLastCalledWith('run2', 'a', 'out');
+  });
+
+  it('drops an answer that arrives after the tab moved on to another run', async () => {
+    const a = at('completed', node('a', 'NodeA', { outputs: ['out'] }));
+    seedTab({ status: 'completed', lastRunId: 'run1', selectedNodeId: 'a', nodes: [a], edges: [] });
+    let landRun1!: (value: OutputData) => void;
+    mockOutput.mockImplementation(
+      () => new Promise<OutputData>((resolve) => { landRun1 = resolve; }),
+    );
+    render(<InspectorPanel />);
+    await waitFor(() => expect(mockOutput).toHaveBeenCalledWith('run1', 'a', 'out'));
+
+    startNewRun('run2');
+    await act(async () => landRun1(tensor([[1, 2, 3], [4, 5, 6]], SHAPES.wide)));
+    await settle();
+
+    expect(screen.queryByText('shape [2, 3]')).toBeNull();
+    expect(screen.getByText(PENDING_NOTE)).toBeInTheDocument();
+  });
+
+  it('applies the same rule to every owner in segment mode', async () => {
+    const ext = at('completed', node('ext', 'Ext'));
+    const head = at('running', node('h', 'Head'));
+    const tail = at('idle', node('t', 'Tail', { outputs: ['result'] }));
+    seedTab({
+      status: 'running',
+      lastRunId: 'run1',
+      activeSegment: { id: 'seg1', headNodeId: 'h', tailNodeId: 't' },
+      nodes: [head, tail, ext],
+      edges: [
+        edge('e1', 'h', 't', { sourceHandle: 'mid', targetHandle: 'in' }),
+        edge('e2', 'ext', 'h', { sourceHandle: 'feed', targetHandle: 'x' }),
+      ],
+    });
+    const finished = new Set(['ext']);
+    serveFinished(finished, { ext: 'wide', t: 'flat' });
+    render(<InspectorPanel />);
+
+    // The segment's input is owned by `ext`, its output by the tail.
+    await waitFor(() => expect(screen.getByText('shape [2, 3]')).toBeInTheDocument());
+    expect(screen.getByText(PENDING_NOTE)).toBeInTheDocument();
+    expect(screen.queryByText(EXPIRED)).toBeNull();
+    expect(callsFor('t')).toBe(0);
+
+    report('h', 'completed');
+    report('t', 'running');
+    expect(screen.getByText(RUNNING_NOTE)).toBeInTheDocument();
+
+    finished.add('t');
+    report('t', 'completed');
+    await waitFor(() => expect(screen.getByText('shape [3]')).toBeInTheDocument());
+    expect(callsFor('ext')).toBe(1);
+    expect(callsFor('t')).toBe(1);
+  });
+
+  it('still reports expired data for a node that never produced any', async () => {
+    // Out of scope to redesign: a node the run passed over has no captures,
+    // and once the run is over that is what the 404 means.
+    const a = at('skipped', node('a', 'NodeA', { outputs: ['out'] }));
+    seedTab({ status: 'running', lastRunId: 'run1', selectedNodeId: 'a', nodes: [a], edges: [] });
+    serveFinished(new Set());
+    render(<InspectorPanel />);
+    await waitFor(() => expect(screen.getByText(EXPIRED)).toBeInTheDocument());
+    expect(screen.queryByText(RUNNING_NOTE)).toBeNull();
   });
 });
 

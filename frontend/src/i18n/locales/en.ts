@@ -511,6 +511,13 @@ const en = {
   'inspector.segmentBadge': 'SEGMENT',
   'inspector.emptyPorts': 'No ports',
   'inspector.dataExpired': 'Run data expired — re-run to capture',
+  // Nothing is wrong yet: a node writes its captures when it returns, so
+  // until then there is nothing to read rather than nothing recorded.
+  'inspector.nodeRunning': 'Node is running…',
+  'inspector.nodePending': 'Waiting for this node to run…',
+  // Gradients land after the whole forward pass, so this view waits on the
+  // run, not on the selected node.
+  'inspector.runRunning': 'Graph is running…',
   'inspector.dataExpiredBackward':
     'Run data expired — turn on Capture gradients in Settings and re-run',
   'inspector.tensorExpired': 'Expired',
