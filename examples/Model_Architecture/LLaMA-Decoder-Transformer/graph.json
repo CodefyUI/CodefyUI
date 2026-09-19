@@ -1,6 +1,6 @@
 {
   "name": "LLaMA Decoder-Only Transformer",
-  "description": "Decoder forward pass with a LayerNorm before attention",
+  "description": "Decoder forward pass, LayerNorm in front of the stack",
   "gallery": { "section": "architectures", "family": "Transformer", "order": 3 },
   "nodes": [
     { "id": "start-1", "type": "Start", "position": { "x": -200, "y": 0 }, "data": { "params": {} } },
@@ -14,11 +14,11 @@
     { "id": "print_logits", "type": "Print", "position": { "x": 1660, "y": 0 }, "data": { "params": { "label": "Next-token logits (B,V)" } } },
 
     { "id": "note-overview", "type": "note", "position": { "x": -620, "y": 0 },
-      "data": { "noteKind": "text", "noteContent": "GPT's original block normalises after each sub-layer; LLaMA normalises before it. Pre-norm leaves the residual path unnormalised from top to bottom, which is what makes very deep stacks train without a long warmup.\n\nTwo honest gaps. The paper's norm is RMSNorm, a cheaper variant that skips the mean subtraction; the canvas has LayerNorm, so that is what is drawn. And one LayerNorm sits in front of the whole stack here, where a real block has one before attention and one before the feedforward.\n\nThe input is a random tensor: the wiring and the shapes, not a trained model.\n\nGPT 原本的區塊是在每個子層之後才做正規化，LLaMA 則是之前。pre-norm 讓殘差那條路徑整段保持沒被正規化過，很深的堆疊才不必靠長長的 warmup 才訓得起來。\n\n有兩個要說清楚的落差。論文用的是 RMSNorm，一種省掉減平均的簡化版；畫布只有 LayerNorm，所以畫的是 LayerNorm。另外這裡只有一個 LayerNorm 擺在整個堆疊前面，真正的區塊則是 attention 前一個、feedforward 前一個。\n\n輸入是隨機張量：看的是接線與形狀，不是訓練好的模型。",
+      "data": { "noteKind": "text", "noteContent": "GPT's original block normalises after each sub-layer; LLaMA normalises before it, which leaves the residual path unnormalised end to end and lets deep stacks train without a long warmup.\n\nThree honest gaps. The paper's norm is RMSNorm, which skips the mean subtraction; the canvas has LayerNorm. One LayerNorm sits in front of the whole stack, not one before attention and one before the feedforward. And TransformerDecoder is PyTorch's default layer: it normalises AFTER its sub-layers and applies no causal mask, so inside the stack this is still GPT's arrangement, every position seeing the whole sequence.\n\nThe input is a random tensor: the wiring and the shapes, not a trained model.\n\nGPT 原本的區塊是在每個子層之後才做正規化，LLaMA 則是之前；殘差那條路徑整段保持沒被正規化過，很深的堆疊才不必靠長長的 warmup 才訓得起來。\n\n有三個要說清楚的落差。論文用的是 RMSNorm，一種省掉減平均的簡化版，畫布只有 LayerNorm。這裡也只有一個 LayerNorm 擺在整個堆疊前面，真正的區塊則是 attention 前一個、feedforward 前一個。還有 TransformerDecoder 是 PyTorch 的預設層：它在每個子層「之後」才正規化，也沒有加因果遮罩，所以堆疊裡面其實還是 GPT 那種排法，每個位置也都看得到整個序列。\n\n輸入是隨機張量：看的是接線與形狀，不是訓練好的模型。",
                  "noteColor": "#3d3d1a", "boundToNodeId": "start-1", "boundOffset": { "x": -420, "y": 0 }, "noteWidth": 360 } },
 
     { "id": "note-pre_norm", "type": "note", "position": { "x": 240, "y": -290 },
-      "data": { "noteKind": "text", "noteContent": "normalized_shape 32 means it normalises across the feature dimension, one token at a time - never across the sequence. This is the 'pre' in pre-normalisation, applied once in front of the stack.\n\nnormalized_shape 32 表示它沿特徵維度正規化，一次一個 token — 不會跨序列。這就是 pre-normalization 的「pre」，只是在這裡只套在整個堆疊前面一次。",
+      "data": { "noteKind": "text", "noteContent": "normalized_shape 32 means it normalises across the feature dimension, one token at a time - never across the sequence. It shows where pre-normalisation puts the norm; the decoder's own layers still normalise after each sub-layer.\n\nnormalized_shape 32 表示它沿特徵維度正規化，一次一個 token — 不會跨序列。它畫的是 pre-normalization 把正規化擺在哪裡；decoder 自己那幾層仍然是在子層之後才正規化。",
                  "noteColor": "#3d3d1a", "boundToNodeId": "pre_norm", "boundOffset": { "x": 0, "y": -290 }, "noteWidth": 300 } },
 
     { "id": "note-last_token", "type": "note", "position": { "x": 1220, "y": -270 },

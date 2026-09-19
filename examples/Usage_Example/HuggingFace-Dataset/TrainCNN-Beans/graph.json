@@ -337,7 +337,7 @@
       },
       "data": {
         "noteKind": "text",
-        "noteContent": "HuggingFaceDataset has no train_transform / eval_transform ports, so each split gets a Transform of its own -- and all three must carry the same settings, or the accuracy is measured on images unlike anything the model saw. resize 64 is what makes the 500x500 originals cheap on a CPU; raise it on all three.\n\nHuggingFaceDataset 沒有 train_transform / eval_transform 接口，所以每個分割各接一顆 Transform；三顆的設定必須一致，否則量到的準確率是在模型沒看過的影像上算的。resize 64 是讓 500x500 原圖在 CPU 上跑得動的關鍵；要調大就三顆一起調。",
+        "noteContent": "HuggingFaceDataset has no train_transform / eval_transform ports, so each split gets a Transform of its own -- and all three must carry the same settings, or the accuracy is measured on images unlike anything the model saw. resize 64 is what makes the 500x500 originals cheap on a CPU; raise it on all three.\n\nHuggingFaceDataset 沒有 train_transform / eval_transform 輸入埠，所以每個分割各接一顆 Transform；三顆的設定必須一致，否則量到的準確率是在模型沒看過的影像上算的。resize 64 是讓 500x500 原圖在 CPU 上跑得動的關鍵；要調大就三顆一起調。",
         "noteColor": "#3d3d1a",
         "boundToNodeId": "tf-train",
         "boundOffset": {

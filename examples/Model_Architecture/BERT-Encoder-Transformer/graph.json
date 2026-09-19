@@ -9,7 +9,7 @@
     { "id": "to_batch_first", "type": "Permute", "position": { "x": 540, "y": 0 }, "data": { "params": { "dims": "1,0,2" } } },
     { "id": "pool", "type": "Mean", "position": { "x": 760, "y": 0 }, "data": { "params": { "dim": "1", "keepdim": false } } },
     { "id": "head", "type": "Linear", "position": { "x": 980, "y": 0 }, "data": { "params": { "in_features": 48, "out_features": 2 } } },
-    { "id": "print_logits", "type": "Print", "position": { "x": 1200, "y": 0 }, "data": { "params": { "label": "CLS logits (B,2)" } } },
+    { "id": "print_logits", "type": "Print", "position": { "x": 1200, "y": 0 }, "data": { "params": { "label": "Class logits (B,2)" } } },
 
     { "id": "note-overview", "type": "note", "position": { "x": -620, "y": 0 },
       "data": { "noteKind": "text", "noteContent": "What separates an encoder from a decoder-only stack is what each position may look at. An encoder layer runs one unmasked self-attention pass, so token 3 sees token 15 and the other way round. That makes the representation good for classifying a sentence and useless for generating one left to right.\n\nThere is no CLS token here: Mean over the sequence pools the 16 positions instead, and Linear turns that into two class scores. The input is a random tensor, so this graph shows the wiring and the shapes, not a trained model.\n\n編碼器和 decoder-only 堆疊的差別，在於每個位置可以看到什麼。編碼器層做的是一次沒有遮罩的自注意力，所以第 3 個 token 看得到第 15 個，反過來也一樣。這樣的表示很適合替整句分類，卻不能拿來從左到右生成。\n\n這裡沒有 CLS token：改用 Mean 沿序列維度把 16 個位置平均起來，再由 Linear 變成兩個類別分數。輸入是隨機張量，所以這張圖看的是接線與形狀，不是訓練好的模型。",

@@ -63,7 +63,7 @@ received — each links to the release it was published as.
   one. A field the list cannot read — an unknown section, an `order` that
   is not an integer — is served as nothing for that field alone, so a
   third-party pack with a typo in its metadata loses a heading instead of
-  taking the gallery down with it. All 35 built-in examples declare a
+  taking the gallery down with it. All 36 built-in examples declare a
   block. See `docs/docs/usage/examples-gallery.md`.
 
 - **Every built-in example explains itself on the canvas.** Each of the 36

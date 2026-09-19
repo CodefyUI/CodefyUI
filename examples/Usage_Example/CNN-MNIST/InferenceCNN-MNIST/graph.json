@@ -31,7 +31,7 @@
       },
       "data": {
         "noteKind": "text",
-        "noteContent": "Training normalised every image with (x - 0.5) / 0.5, so the model expects values in [-1, 1]; ImageReader hands over [0, 1]. The Add and the ScalarMultiply put that back. Without them the logits are not the ones this model was trained to produce.\n\n訓練時每張影像都做過 (x - 0.5) / 0.5，所以模型預期的範圍是 [-1, 1]，而 ImageReader 給的是 [0, 1]。這裡的 Add 與 ScalarMultiply 把它補回來。少了它們，logits 就不是這個模型訓練時看到的那種。",
+        "noteContent": "Training normalised every image with (x - 0.5) / 0.5, so the model expects values in [-1, 1]; ImageReader hands over [0, 1]. The Add and the ScalarMultiply put that back. Without them the logits are not the ones this model was trained to produce.\n\n訓練時每張影像都做過 (x - 0.5) / 0.5，所以模型預期的範圍是 [-1, 1]，而 ImageReader 給的是 [0, 1]。這裡的 Add 與 ScalarMultiply 把它補回來。少了它們，算出來的 logits 就不是這個模型訓練後該給的那種。",
         "noteColor": "#3d3d1a",
         "boundToNodeId": "centre",
         "boundOffset": {

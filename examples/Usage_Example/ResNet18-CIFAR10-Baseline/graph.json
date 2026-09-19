@@ -333,6 +333,25 @@
       }
     },
     {
+      "id": "note-opt",
+      "type": "note",
+      "position": {
+        "x": 740,
+        "y": 700
+      },
+      "data": {
+        "noteKind": "text",
+        "noteContent": "This is the standard CIFAR-10 recipe: SGD with Nesterov, lr 0.1, momentum 0.9, weight decay 5e-4, and batch 128 on the DataLoader. The augmentation half is RandomCrop(32, padding 4) and RandomHorizontalFlip on the training split only; both splits get the same channel normalization.\n\n這就是 CIFAR-10 的標準配方：SGD 加 Nesterov、lr 0.1、momentum 0.9、weight decay 5e-4，DataLoader 的 batch 是 128。資料增強那一半是 RandomCrop(32, padding 4) 與 RandomHorizontalFlip，而且只套在訓練集上；兩個分割共用同一組通道正規化。",
+        "noteColor": "#3d3d1a",
+        "boundToNodeId": "opt",
+        "boundOffset": {
+          "x": -360,
+          "y": 0
+        },
+        "noteWidth": 300
+      }
+    },
+    {
       "id": "note-sched",
       "type": "note",
       "position": {

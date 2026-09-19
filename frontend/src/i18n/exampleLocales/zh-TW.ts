@@ -48,7 +48,7 @@ const zhTW: ExampleTranslations = {
 
   // ── LLM -- embeddings, retrieval, causal-LM training ──
   'LLM/RAG-LLMChat-API': {
-    description: '需 sentence-embeddings 套件包與一個跑著的 Ollama',
+    description: '由 Ollama 作答；需 sentence-embeddings 套件包',
   },
   'LLM/RAG-Local-Offline': {
     description: '離線作答；需 rag 與 sentence-embeddings 套件包',
@@ -117,7 +117,7 @@ const zhTW: ExampleTranslations = {
     description: '只有 decoder 的 Transformer 前向傳播到 logits',
   },
   'Model_Architecture/LLaMA-Decoder-Transformer': {
-    description: 'decoder 前向傳播，attention 之前先做 LayerNorm',
+    description: 'decoder 前向傳播，整個堆疊前先做一次 LayerNorm',
   },
   'Model_Architecture/PPO-Robotics-RL': {
     description: 'actor-critic 前向傳播：376 個輸入換 17 個動作',
@@ -129,7 +129,7 @@ const zhTW: ExampleTranslations = {
     description: '編碼器-解碼器 LSTM 前向傳播，中間接 attention',
   },
   'Model_Architecture/SwinTransformer-Transformer': {
-    description: '兩層階層式前向傳播，中間做一次 patch merging',
+    description: '兩階段階層式前向傳播，中間做一次 patch merging',
   },
   'Model_Architecture/TimeSeries-LSTM-RNN': {
     description: 'LSTM 前向傳播：24 步歷史換一個預測值',
