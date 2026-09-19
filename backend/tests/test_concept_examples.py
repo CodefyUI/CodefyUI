@@ -143,13 +143,15 @@ def test_the_tabular_pipeline_means_come_out_near_zero():
 
     The 120-row training split is a subset, so its means are near zero
     rather than at it -- which is exactly the thing the graph is asking the
-    reader to check, and the overview note quotes the range.
+    reader to check, and what the overview note quotes as "within about
+    0.03". The bound here is the claim in that note with room to breathe,
+    not a generous one: the largest of the four measures 0.021.
     """
     results = _run("Classical/Tabular-Iris-Pipeline")
 
     means = results["mean-cols"]["tensor"]
     assert tuple(means.shape) == (4,), "one mean per Iris feature"
-    assert float(means.abs().max()) < 0.2, means.tolist()
+    assert float(means.abs().max()) < 0.05, means.tolist()
 
 
 # ── Forward diffusion: a real image under the noise ───────────────────────
