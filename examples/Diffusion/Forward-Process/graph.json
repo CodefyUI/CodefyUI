@@ -20,7 +20,7 @@
                 "boundOffset": { "x": -420, "y": 0 }, "noteWidth": 360 } },
     { "id": "note-lerp", "type": "note", "position": { "x": 660, "y": 216 },
       "data": { "noteKind": "text",
-                "noteContent": "The real equation is x_t = sqrt(alpha_bar_t) * x_0 + sqrt(1 - alpha_bar_t) * noise, weighted that way so x_t keeps the variance x_0 had. A Lerp weights by alpha and 1 - alpha instead: the same blend, simpler arithmetic, and one fixed step rather than a whole schedule.\n\n真正的式子是 x_t = sqrt(alpha_bar_t) * x_0 + sqrt(1 - alpha_bar_t) * noise，那樣配權重是為了讓 x_t 保持 x_0 的變異數。Lerp 改用 alpha 與 1 - alpha：混法相同、算術簡單，但只是固定的一步，不是一整條排程。",
+                "noteContent": "The real equation is x_t = sqrt(alpha_bar_t) * x_0 + sqrt(1 - alpha_bar_t) * noise, weighted that way so x_t keeps unit variance when x_0 has it. A Lerp weights by alpha and 1 - alpha instead: the same blend, simpler arithmetic, and one fixed step rather than a whole schedule.\n\n真正的式子是 x_t = sqrt(alpha_bar_t) * x_0 + sqrt(1 - alpha_bar_t) * noise，那樣配權重，是為了在 x_0 變異數為 1 時讓 x_t 也維持 1。Lerp 改用 alpha 與 1 - alpha：混法相同、算術簡單，但只是固定的一步，不是一整條排程。",
                 "noteColor": "#3d3d1a", "boundToNodeId": "lerp",
                 "boundOffset": { "x": 0, "y": 216 }, "noteWidth": 300 } },
     { "id": "note-tembed", "type": "note", "position": { "x": 320, "y": -380 },
