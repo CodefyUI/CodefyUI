@@ -53,7 +53,42 @@ received — each links to the release it was published as.
   plugin afterwards does not re-link it, so import the file again. See
   `docs/docs/usage/tabs-persistence.md`.
 
+- **An example says where it belongs in the gallery.** A `graph.json` may
+  carry a top-level `gallery` block — `{"section": "architectures",
+  "family": "CNN", "order": 2}` — and `GET /api/examples/list` serves
+  `section`, `family` and `order` with every example it lists. `section` is
+  one of `quickstart`, `training`, `llm`, `concepts` and `architectures`;
+  `family` is the sub-heading inside **Model Architectures**; `order` sorts
+  within the group, and an example without one comes after those that have
+  one. A field the list cannot read — an unknown section, an `order` that
+  is not an integer — is served as nothing for that field alone, so a
+  third-party pack with a typo in its metadata loses a heading instead of
+  taking the gallery down with it. All 35 built-in examples declare a
+  block. See `docs/docs/usage/examples-gallery.md`.
+
 ### Changed
+
+- **The example gallery is grouped by what an example is for.** Seven
+  sections — Quick Start, Training, LLM and RAG, Concepts, Model
+  Architectures (sub-grouped by CNN, RNN, Transformer, Diffusion and RL),
+  Plugin Packs and Other — in place of Quick Start, Advanced Examples,
+  Plugin Examples and Model Architectures, where "Advanced Examples" meant
+  everything that was not one of the three starters or one of the 15
+  architecture walkthroughs: 17 of the 35 built-in examples in one list.
+
+  The three surfaces that list examples now share one grouping. The
+  empty-canvas overlay pinned three examples by path and ranked the rest
+  through a hard-coded category order; the sidebar's Templates tab and the
+  Template Gallery grouped by the folder on disk instead. Folders do not
+  move — a section is declared in the graph file — so the paths in the
+  docs, in the translation tables and in `run_graph.py` arguments are
+  unchanged.
+
+  An example description is now a single line of at most 56 columns, the
+  width the card, the sidebar row and the detail pane can show without
+  cutting; the longer explanation belongs in a note on the canvas, beside
+  the nodes it is about. The rule is in place and every description that
+  breaks it today is listed by name until it is rewritten.
 
 - **The Graphs tab's import button reads "Import..."** and takes a graph
   `.json` or a `.cduiworkspace`, told apart by what is inside the file rather
@@ -61,6 +96,17 @@ received — each links to the release it was published as.
   canvas; importing a workspace only adds tabs.
 
 ### Fixed
+
+- **A graph with a note on it would not run outside the editor.** A note is
+  a node in the file, of type `note`, and `validate_graph` reported it as
+  `Unknown node type: note`. The editor dropped notes in the browser before
+  validating, so **Run** worked there and the same saved graph failed at
+  `python run_graph.py` with exit 1, and at the routes that run a graph by
+  name with a `409 invalid_graph`. Notes and the edges into them are now
+  dropped before every other check, so every caller sees what the canvas
+  always did. `/api/examples/list` leaves notes out of an example's node
+  count as well: the best-explained example is not the most complicated
+  one.
 
 - **A node inspected while the graph was running said its data had expired.**
   The engine writes a node's captures when the node returns, and answers `404`
