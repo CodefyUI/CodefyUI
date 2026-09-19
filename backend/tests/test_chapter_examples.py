@@ -265,3 +265,107 @@ def test_the_lenet_pack_trainer_scores_the_split_it_did_not_train_on():
     assert "Print" in shown, (
         f"EvaluateModel.accuracy reaches {sorted(shown)} -- the one number "
         f"the evaluation tail exists to produce has to reach a Print")
+
+
+# ── a note that quotes a number still quotes the number the graph gives ───
+
+#: ``(example, note id, quoted text, node id, output port)`` for the rl and
+#: stats examples whose notes tell the reader what a run comes out at.
+#:
+#: A number in a note is the part of it that rots: a seed, a param or a
+#: ``values`` list is edited in a second, everything still validates and
+#: still runs, and the note goes on quoting what the example used to
+#: produce. That is worse than no note, so each quote is pinned to the port
+#: it was read off -- to the decimals it is written to, because that is how
+#: a reader compares it with the Print.
+_QUOTED_FROM_A_PORT = [
+    ("rl/C5-1/RL-Trajectory-Mockup", "note-overview", "0.35", "return", "tensor"),
+    ("rl/C5-1/RL-Trajectory-Mockup", "note-return", "0.35", "return", "tensor"),
+    ("rl/C5-3/RLHF-Reward-Model", "note-overview", "0.041", "rm_chosen", "rewards"),
+    ("rl/C5-3/RLHF-Reward-Model", "note-overview", "0.177", "rm_reject", "rewards"),
+    ("rl/C5-4/GRPO-Group-Advantage", "note-overview", "0.4875", "mean", "tensor"),
+    ("rl/RL/Policy-Gradient-101", "note-overview", "-0.128", "pg", "loss"),
+    ("rl/RL/Policy-Gradient-101", "note-pg", "-0.1283", "pg", "loss"),
+    ("stats/Stats/Confusion-Matrix-Heatmap", "note-cm", "0.9778", "cm", "accuracy"),
+]
+
+#: The same idea where the number is a cell of a table rather than a port of
+#: its own: the quote has to appear in the text ``Stats-TableView`` renders,
+#: which is the surface the note sends the reader to look at.
+_QUOTED_FROM_A_TABLE = [
+    ("stats/Stats/Iris-Describe-Table", "note-overview", "5.8433", "view"),
+    ("stats/Stats/Iris-Describe-Table", "note-overview", "3.7580", "view"),
+    ("stats/Stats/Iris-GroupBy-Chart", "note-overview", "1.462", "view"),
+    ("stats/Stats/Iris-GroupBy-Chart", "note-overview", "4.260", "view"),
+    ("stats/Stats/Iris-GroupBy-Chart", "note-overview", "5.552", "view"),
+]
+
+
+def _note_content(payload: dict, note_id: str) -> str:
+    note = next((n for n in payload["nodes"]
+                 if n.get("id") == note_id and n.get("type") == "note"), None)
+    assert note is not None, f"{note_id} is not a note in this example"
+    return str(note["data"]["noteContent"])
+
+
+def _one_number(value) -> float:
+    """The single number behind a port, tensor or plain float."""
+    flatten = getattr(value, "flatten", None)
+    if flatten is None:
+        return float(value)
+    flat = flatten()
+    assert len(flat) == 1, f"expected one number, got {len(flat)}"
+    return float(flat[0])
+
+
+def test_the_rl_and_stats_notes_quote_what_their_graphs_produce():
+    """Run each example and check its notes against the real output.
+
+    Cheap: none of these graphs holds a slow node type, which is why the
+    smoke test above executes them all anyway. That one asks whether they
+    run; this one asks whether they still say what they do.
+    """
+    backend_dir = Path(__file__).resolve().parents[1]
+    payloads: dict[str, dict] = {}
+    results: dict[str, dict] = {}
+
+    prev_cwd = Path.cwd()
+    os.chdir(backend_dir)  # CSVReader reads data/samples/iris.csv from here
+    try:
+        for example in sorted({row[0] for row
+                               in _QUOTED_FROM_A_PORT + _QUOTED_FROM_A_TABLE}):
+            pack, _, rest = example.partition("/")
+            path = _PLUGIN_ROOT / pack / "examples" / rest / "graph.json"
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            payloads[example] = payload
+            results[example] = asyncio.run(
+                execute_graph(payload["nodes"], payload["edges"],
+                              error_mode="fail_fast")
+            )
+    finally:
+        os.chdir(prev_cwd)
+
+    wrong: list[str] = []
+
+    def quoted_at_all(example: str, note_id: str, quoted: str) -> None:
+        if quoted not in _note_content(payloads[example], note_id):
+            wrong.append(f"{example} {note_id}: does not say {quoted} at all "
+                         f"-- the pin, not the note, is what went stale")
+
+    for example, note_id, quoted, node_id, port in _QUOTED_FROM_A_PORT:
+        produced = _one_number(results[example][node_id][port])
+        rendered = f"{produced:.{len(quoted.partition('.')[2])}f}"
+        if rendered != quoted:
+            wrong.append(f"{example} {note_id}: says {quoted}, but "
+                         f"{node_id}.{port} comes out {rendered}")
+        quoted_at_all(example, note_id, quoted)
+
+    for example, note_id, quoted, node_id in _QUOTED_FROM_A_TABLE:
+        if quoted not in str(results[example][node_id]["text"]):
+            wrong.append(f"{example} {note_id}: says {quoted}, which is "
+                         f"nowhere in the table {node_id} rendered")
+        quoted_at_all(example, note_id, quoted)
+
+    assert not wrong, (
+        "a note tells the reader what a run comes out at, and the run no "
+        f"longer comes out at that: {wrong}")
