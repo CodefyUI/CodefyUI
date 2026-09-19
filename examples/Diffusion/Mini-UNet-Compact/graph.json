@@ -11,7 +11,7 @@
 
     { "id": "note-overview", "type": "note", "position": { "x": -680, "y": 0 },
       "data": { "noteKind": "text",
-                "noteContent": "DiffusionUNet is a whole U-Net in one node: encoder, bottleneck, and decoder with its skip connections, none of it drawn. That is the form you want once the architecture is settled and the graph is about the pipeline around it. One sampling step is enough to make the point -- [1, 3, 16, 16] goes in and [1, 3, 16, 16] comes out, because a U-Net predicts noise shaped like its input. Untrained, so the numbers themselves mean nothing.\n\nDiffusionUNet 把整個 U-Net 收在一個節點裡：編碼器、瓶頸、含捷徑的解碼器，一條線都不用畫。架構定下來、重點變成它外面那條流程時，用的就是這個形式。取樣一步就夠說明了 — [1, 3, 16, 16] 進、[1, 3, 16, 16] 出，因為 U-Net 預測的噪聲和輸入同形狀。模型沒訓練過，數值本身沒有意義。",
+                "noteContent": "DiffusionUNet is a whole U-Net in one node: encoder, bottleneck, and decoder with its skip connections, none of it drawn. That is the form you want once the architecture is settled and the graph is about the pipeline around it. One sampling step is enough to make the point -- [1, 3, 16, 16] goes in and [1, 3, 16, 16] comes out, because a U-Net predicts noise shaped like its input. Untrained, so the numbers themselves mean nothing. The deep pack has the same architecture with every ResBlock, Upsample and Concat wired by hand.\n\nDiffusionUNet 把整個 U-Net 收在一個節點裡：編碼器、瓶頸、含捷徑的解碼器，一條線都不用畫。架構定下來、重點變成它外面那條流程時，用的就是這個形式。取樣一步就夠說明了 — [1, 3, 16, 16] 進、[1, 3, 16, 16] 出，因為 U-Net 預測的噪聲和輸入同形狀。模型沒訓練過，數值本身沒有意義。deep 套件包裡有同一套架構，但每顆 ResBlock、Upsample 與 Concat 都是手接的。",
                 "noteColor": "#3d3d1a", "boundToNodeId": "start-1",
                 "boundOffset": { "x": -420, "y": 0 }, "noteWidth": 360 } },
     { "id": "note-unet", "type": "note", "position": { "x": 320, "y": -390 },
