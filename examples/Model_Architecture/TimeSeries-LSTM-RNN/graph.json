@@ -1,6 +1,7 @@
 {
   "name": "LSTM Time-Series Forecaster",
   "description": "Forward-pass visualization of an LSTM time-series forecasting head. A batch of 24 past observations (batch=2, seq=24, features=1 — for example, hourly sensor readings) feeds into a 2-layer LSTM with hidden size 32. We take the full output sequence (B, 24, 32), Flatten to (B, 768), then project via Linear to a single scalar forecast per example. This is the classic 'lookback→predict-next' pattern used in weather, finance, and IoT forecasting.",
+  "gallery": { "section": "architectures", "family": "RNN", "order": 1 },
   "nodes": [
     { "id": "start-1", "type": "Start", "position": { "x": -200, "y": 0 }, "data": { "params": {} } },
     { "id": "history", "type": "TensorCreate", "position": { "x": 0, "y": 0 }, "data": { "params": { "shape": "2,24,1", "fill": "randn", "value": 0.0, "requires_grad": false } } },

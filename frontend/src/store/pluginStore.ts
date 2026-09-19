@@ -812,6 +812,17 @@ async function startInstall(
   }
 }
 
+/**
+ * The installed packs keyed by id, for a component that has to name one.
+ *
+ * Module scope, so a subscription compares the same function's output frame
+ * to frame, and narrow: an install running in the Plugin Center writes `job`
+ * and its log on every long-poll turn, none of which renames a pack. Every
+ * example surface subscribes through this one (#141), because a pack's
+ * examples are sub-headed by the pack's display name.
+ */
+export const selectPluginsById = (state: PluginState): PluginState['byId'] => state.byId;
+
 export const usePluginStore = create<PluginState>((set, get) => ({
   plugins: [],
   byId: {},

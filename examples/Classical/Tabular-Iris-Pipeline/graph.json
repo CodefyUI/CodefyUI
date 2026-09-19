@@ -1,6 +1,7 @@
 {
   "name": "Tabular Iris Pipeline: CSV → features → train/test",
   "description": "The C1-2 lesson made concrete. We load the classic Iris dataset (150 rows × 4 features × 3 species), pick all four features, z-score normalise per column, then split 80/20 stratified by class so train and test both see all three species. The Print at the end shows the train-feature tensor — students can verify the shape (120, 4) and check that means cluster around 0.",
+  "gallery": { "section": "concepts", "order": 1 },
   "nodes": [
     { "id": "start-1",   "type": "Start",          "position": { "x": -260, "y": 0 }, "data": { "params": {} } },
     { "id": "csv",       "type": "CSVReader",      "position": { "x": -40,  "y": 0 }, "data": { "params": { "path": "data/samples/iris.csv", "target_column": "species", "include_columns": "", "skip_header": true } } },

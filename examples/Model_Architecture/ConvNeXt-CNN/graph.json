@@ -1,6 +1,7 @@
 {
   "name": "ConvNeXt (Simplified)",
   "description": "Forward-pass visualization of a ConvNeXt-style block. ConvNeXt (FAIR, 2022) modernises a plain ResNet with four Transformer-inspired tweaks: (1) patchify stem (Conv 4x4 stride 4), (2) depthwise-style spatial mixing, (3) inverted-bottleneck 1x1 convs, (4) GELU activations. This demo uses a plain Conv2d instead of depthwise (not yet available as a primitive), so it's architecturally close but not bit-identical. Input (2,3,32,32) → stem (8x8 feature map) → one ConvNeXt block with residual → pool → Linear → 10 class logits.",
+  "gallery": { "section": "architectures", "family": "CNN", "order": 4 },
   "nodes": [
     { "id": "start-1", "type": "Start", "position": { "x": -200, "y": 0 }, "data": { "params": {} } },
     { "id": "input", "type": "TensorCreate", "position": { "x": 0, "y": 0 }, "data": { "params": { "shape": "2,3,32,32", "fill": "randn", "value": 0.0, "requires_grad": false } } },

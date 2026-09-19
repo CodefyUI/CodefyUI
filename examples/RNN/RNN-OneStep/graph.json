@@ -1,6 +1,7 @@
 {
   "name": "RNN One Step: the recurrence written in two lines",
   "description": "The simplest possible RNN demo: feed three input vectors x_1, x_2, x_3 through three RNNCells in series, where each cell's hidden output flows into the next cell's hidden input. Same parameters (input_size=4, hidden_size=8, seed=42) on every cell so they share one matrix W_ih and one matrix W_hh — that's the whole point of 'recurrent'. The final hidden state h_3 is what 'reading the whole sequence' looks like in this simplest possible architecture.",
+  "gallery": { "section": "concepts", "order": 3 },
   "nodes": [
     { "id": "start-1",  "type": "Start",        "position": { "x": -260, "y": 0 }, "data": { "params": {} } },
 

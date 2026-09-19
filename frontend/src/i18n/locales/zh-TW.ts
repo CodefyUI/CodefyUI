@@ -217,10 +217,16 @@ const zhTW: Record<TranslationKey, string> = {
   'empty.subtitle': '選一個範例',
   'empty.loading': '載入範例中...',
   'empty.loadError': '載入範例失敗',
-  'empty.section.quickstart': '快速上手',
-  'empty.section.advanced': '進階範例',
-  'empty.section.plugin': '外掛範例',
-  'empty.section.architecture': '模型架構範例',
+
+  // 範例分區。不再放在 empty.* 底下：空白畫布、側邊欄範本頁與範例總覽
+  // 現在都用這一組分區（#141）。
+  'examples.section.quickstart': '快速開始',
+  'examples.section.training': '訓練',
+  'examples.section.llm': 'LLM 與 RAG',
+  'examples.section.concepts': '觀念',
+  'examples.section.architectures': '模型架構',
+  'examples.section.plugin': '擴充套件包',
+  'examples.section.other': '其他',
 
   // Context Menu
   'contextMenu.rename': '重新命名',

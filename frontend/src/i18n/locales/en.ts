@@ -248,10 +248,16 @@ const en = {
   'empty.subtitle': 'Pick an example',
   'empty.loading': 'Loading examples...',
   'empty.loadError': 'Failed to load example',
-  'empty.section.quickstart': 'Quick Start',
-  'empty.section.advanced': 'Advanced Examples',
-  'empty.section.plugin': 'Plugin Examples',
-  'empty.section.architecture': 'Model Architectures',
+
+  // Gallery sections. Not `empty.*` any more: the overlay, the sidebar's
+  // Templates tab and the gallery modal all group by these now (#141).
+  'examples.section.quickstart': 'Quick Start',
+  'examples.section.training': 'Training',
+  'examples.section.llm': 'LLM and RAG',
+  'examples.section.concepts': 'Concepts',
+  'examples.section.architectures': 'Model Architectures',
+  'examples.section.plugin': 'Plugin Packs',
+  'examples.section.other': 'Other',
 
   // Context Menu
   'contextMenu.rename': 'Rename',

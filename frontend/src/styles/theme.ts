@@ -334,9 +334,29 @@ export const EXAMPLE_CATEGORY_COLORS: Record<string, string> = {
   RNN: '#838fcf',
   RL: '#f16663',
   Stats: '#a286d3',
+  VLA: '#a9c94f',
 };
 
 export const EXAMPLE_CATEGORY_FALLBACK = '#ff9800';
+
+/**
+ * Accent per gallery SECTION (#141) — the header dot and underline in the
+ * sidebar's Templates tab, and the section heading in the gallery modal. A
+ * section holds several categories, so it needs a hue of its own; every value
+ * here is one the example palette above already ships, which is what keeps
+ * `scripts/check-contrast.mjs` section 8b covering all of them. Keyed by
+ * `ExampleSectionKey`, and `other` deliberately takes the same orange as an
+ * unknown category, because that is what it is.
+ */
+export const EXAMPLE_SECTION_COLORS: Record<string, string> = {
+  quickstart: '#4caf50',
+  training: '#ef6292',
+  llm: '#c279ce',
+  concepts: '#26a69a',
+  architectures: '#2397f3',
+  plugin: '#26c6da',
+  other: '#ff9800',
+};
 
 export const DIFFICULTY_COLORS: Record<string, string> = {
   beginner: '#4caf50',

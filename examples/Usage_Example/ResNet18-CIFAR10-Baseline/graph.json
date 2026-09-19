@@ -1,6 +1,7 @@
 {
   "name": "ResNet-18 / CIFAR-10 baseline",
   "description": "Research-grade CIFAR-10 baseline built entirely from GUI nodes. ResNet-18 in its CIFAR variant (3x3 stride-1 stem, no maxpool, 4 stages of 2 BasicBlocks, 11,173,962 parameters) is described in the SequentialModel layer editor. Recipe: SGD (Nesterov) lr 0.1, momentum 0.9, weight decay 5e-4, batch 128, cosine annealing over the full schedule, RandomCrop(32, padding=4) + RandomHorizontalFlip + CIFAR-10 channel normalization. Run it with a fixed seed from the Runs panel; see the example README for the measured accuracy.",
+  "gallery": { "section": "training", "order": 4 },
   "nodes": [
     {
       "id": "start",

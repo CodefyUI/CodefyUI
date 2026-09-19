@@ -8,16 +8,21 @@ description: Pre-built example workflows — model architectures, end-to-end tra
 
 CodefyUI ships a library of ready-to-run example graphs under `examples/`. Whenever the active tab has an empty canvas, the gallery appears right on the canvas — pick a card and the graph loads into the tab, ready to **Run**. The other ways to open it are listed under [When the canvas is not empty](#when-the-canvas-is-not-empty). You can also run any example headless with the [CLI Graph Runner](./cli-runner).
 
-The gallery is organized into ordered sections:
+The gallery is grouped by what an example is for, in this order:
 
 | Section | Contents |
 |---------|----------|
-| **Quick Start** | The three pinned starters: **Train CNN on MNIST**, **Inference CNN on MNIST**, and **Api-Function** (graph-as-a-function demo). |
-| **Advanced Examples** | Every other runnable builtin example — LLM (Word Embedding Analogy with the offline `demo-16d` backend, **Sentence Similarity (zh-TW)** with a real sentence encoder, **Train a Causal LM on TinyStories**, and the two retrieval examples **RAG, fully local** and **RAG with a chat API**), Diffusion (Forward Process, Toy Sampling, Mini U-Net), Classical ML (Iris KNN, tabular pipeline), Transformer (MoE routing), RNN, RL (RLHF reward + KL), VLA (**Train a VLA on PushWorld** — needs a CUDA GPU and about an hour; the recipe is in its [README](https://github.com/CodefyUI/CodefyUI/blob/main/examples/VLA/TrainVLA-PushWorld/README.md)), and the remaining trainers (GPT-Mini, ResNet-CIFAR10, and the measured **ResNet-18 / CIFAR-10 baseline** — see [Reproducing Baselines](./reproducing-baselines)). |
-| **Plugin Examples** | Examples shipped by installed [plugins](/advanced/plugins) (and any unrecognized categories). Only shown when present. |
-| **Model Architectures** | 15 classic architecture walkthroughs, always listed last: ResNet, ConvNeXt, EfficientNet, UNet, ViT, SwinTransformer, BERT, GPT, LLaMA, DiT, LSTM TimeSeries, BiGRU SpeechRecognition, Seq2Seq Attention, DQN Atari, PPO Robotics. |
+| **Quick Start** | The first three to run: **Train CNN on MNIST**, **Inference CNN on MNIST**, and **Api-Function** (graph-as-a-function demo). |
+| **Training** | The graphs that train a model end to end: **Train ResNet on CIFAR10**, **Train Mini-GPT on MNIST**, the measured **ResNet-18 / CIFAR-10 baseline** (see [Reproducing Baselines](./reproducing-baselines)), **Train a Causal LM on TinyStories**, and **Train a VLA on PushWorld** — which needs a CUDA GPU and about an hour; the recipe is in its [README](https://github.com/CodefyUI/CodefyUI/blob/main/examples/VLA/TrainVLA-PushWorld/README.md). |
+| **LLM and RAG** | **Word Embedding Analogy**, **Sentence Similarity (zh-TW)**, and the two retrieval examples **RAG, fully local** and **RAG with a chat API**. |
+| **Concepts** | One idea per graph, small enough to read end to end: the two Iris pipelines, **RNN One Step**, **Mixture of Experts**, the three diffusion graphs (**Forward Diffusion**, **Toy Sampling**, **Mini U-Net**), and **RLHF building blocks: reward + KL**. |
+| **Model Architectures** | 15 classic architecture walkthroughs, sub-grouped by family: CNN, RNN, Transformer, Diffusion, RL. |
+| **Plugin Packs** | Examples shipped by installed [plugins](/advanced/plugins), one sub-heading per pack. Only shown when present. |
+| **Other** | A built-in example that declares no section, or one this list does not recognise. |
 
-On disk the examples are grouped by topic folder: `Classical/`, `Diffusion/`, `LLM/`, `Model_Architecture/`, `RL/`, `RNN/`, `Transformer/`, `Usage_Example/`, and `VLA/`.
+All three surfaces that list examples use this one grouping: the empty-canvas overlay, the **Template Gallery**, and the sidebar's **Templates** tab.
+
+On disk the examples are grouped by topic folder: `Classical/`, `Diffusion/`, `LLM/`, `Model_Architecture/`, `RL/`, `RNN/`, `Transformer/`, `Usage_Example/`, and `VLA/`. A folder is not a section — see [Adding an example](#adding-an-example).
 
 Every listed example runs offline out of the box, with four exceptions:
 
@@ -40,7 +45,7 @@ The two RL architecture graphs (**DQN Atari**, **PPO Robotics**) feed their netw
 
 ### When the canvas is not empty
 
-The **Template Gallery** opens from the toolbar's **Templates** button, from **Browse all templates** on the empty-canvas overlay, and from the sidebar's **Templates** tab. It groups the examples by category, and selecting one shows its description, its node and connection counts, and whether it is built in or comes from a plugin. Each example offers two actions:
+The **Template Gallery** opens from the toolbar's **Templates** button, from **Browse all templates** on the empty-canvas overlay, and from the sidebar's **Templates** tab. It groups the examples into the sections above, and selecting one shows its description, its node and connection counts, and whether it is built in or comes from a plugin. Each example offers two actions:
 
 - **Open in new tab** leaves the current graph alone.
 - **Insert into this canvas** adds the example to the graph you are editing: the inserted nodes get fresh ids and are placed below your current graph, so nothing is overwritten, and one undo removes them.
@@ -52,6 +57,30 @@ In the sidebar's **Templates** tab, click an example to insert it, or drag it on
 Switch the editor to 繁體中文 and every built-in example describes itself in Chinese. The **names stay English** in both languages: an example's name is how you find it again in these docs, in `examples/` on disk, and as an argument to `run_graph.py`. Search matches either language, so `attention` and 「注意力」 both find the same graph.
 
 An example with no translation — one a third-party plugin ships — keeps its English description rather than going blank. Translations live in `frontend/src/i18n/exampleLocales/`, keyed by the example's path.
+
+## Adding an example
+
+An example is a directory holding a `graph.json` — under `examples/` for a built-in, under `<pack>/examples/` for one a plugin ships. Three things in that file decide how it reads in the gallery.
+
+**Where it appears.** An optional top-level `gallery` block:
+
+```json
+{
+  "name": "UNet for Image Segmentation",
+  "description": "...",
+  "gallery": { "section": "architectures", "family": "CNN", "order": 2 },
+  "nodes": [],
+  "edges": []
+}
+```
+
+`section` is one of `quickstart`, `training`, `llm`, `concepts`, and `architectures`. `family` is the sub-heading inside **Model Architectures**: the five families above come first, in that order, and any other string after them alphabetically. Wherever an example declares a `family`, that is also what its card's chip shows in place of the category, except under a sub-heading that already says the same word, where the card carries no chip. `order` sorts ascending inside the section, or inside the family, and an example without one comes after those that have one. A field the list cannot read is served as nothing for that field alone rather than failing the gallery for everyone: a `section` it does not recognise puts a built-in example in **Other**, and an `order` that is not an integer simply sorts the example after the ones that have an order. An example a plugin ships is listed under its pack whatever it declares.
+
+The folder an example sits in is not its section. Folders are paths, and the paths are what these docs, the translation tables, and `run_graph.py` arguments refer to, so they stay put when the gallery is regrouped.
+
+**What the card says.** `description` is one line of at most 56 columns — what the card, the sidebar row, and the detail pane show without cutting. Columns rather than characters: a Chinese description mixes ideographs with Latin node names, and an ideograph is two columns wide. `backend/tests/test_example_descriptions.py` holds that rule for the English and `frontend/src/i18n/exampleLocales/zh-TW.test.ts` for the Chinese.
+
+**Where the explanation goes.** Everything longer belongs in a [note](./canvas-basics#notes) on the canvas, beside the nodes it is about. A note is a node of type `note`: the validator skips it, a run never reaches it, and the card's node count leaves it out. Each note is written twice inside the one note — an English paragraph, a blank line, then the same thing in Traditional Chinese — so it reads in both languages with no translation table to keep in step.
 
 ## A good first run
 

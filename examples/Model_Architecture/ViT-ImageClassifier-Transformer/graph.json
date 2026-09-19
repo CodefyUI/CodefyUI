@@ -1,6 +1,7 @@
 {
   "name": "ViT Image Classifier (Transformer)",
   "description": "Forward-pass visualization of a Vision Transformer. A (2,3,32,32) image batch is sliced into 8x8 non-overlapping patches by a Conv2d stem (stride=8), producing a (2,48,4,4) tensor. Reshape+Permute flatten the spatial grid into a 16-token sequence of 48-dim embeddings (seq=16, batch=2, d=48). A TransformerEncoder applies self-attention across all patches globally. We mean-pool the patch tokens and project to 10 class logits.",
+  "gallery": { "section": "architectures", "family": "Transformer", "order": 4 },
   "nodes": [
     { "id": "start-1", "type": "Start", "position": { "x": -200, "y": 0 }, "data": { "params": {} } },
     { "id": "input", "type": "TensorCreate", "position": { "x": 0, "y": 0 }, "data": { "params": { "shape": "2,3,32,32", "fill": "randn", "value": 0.0, "requires_grad": false } } },

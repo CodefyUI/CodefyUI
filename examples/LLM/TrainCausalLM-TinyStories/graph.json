@@ -1,6 +1,7 @@
 {
   "name": "Train a Causal LM on TinyStories",
   "description": "Needs a 16 GB GPU and one first-run download: pretrain a 204M-parameter GPT-style decoder on TinyStories from scratch, then score it and read what it wrote. One epoch is 2,441 micro-batches at bf16, about 610 optimizer steps -- under an hour, because the corpus is capped. Full recipe, token budgets and memory levers are in README.md beside this graph.",
+  "gallery": { "section": "training", "order": 5 },
   "nodes": [
     {
       "id": "start",

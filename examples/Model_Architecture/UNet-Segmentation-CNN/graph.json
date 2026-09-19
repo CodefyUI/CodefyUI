@@ -1,6 +1,7 @@
 {
   "name": "UNet for Image Segmentation",
   "description": "Classic two-level U-Net wired in full so every encoder Conv, every MaxPool, every ConvTranspose, and every Concat-based skip is visible on the canvas. A 32×32 RGB image flows through: Lv1 Conv→ReLU at 32×32 (skip saved), MaxPool to 16×16, Lv2 Conv→ReLU (skip saved), MaxPool to 8×8, bottleneck Conv→ReLU, then mirror back up — ConvTranspose to 16×16, Concat with the Lv2 skip (channel-wise), Conv→ReLU, ConvTranspose to 32×32, Concat with the Lv1 skip, Conv→ReLU, finishing with a 1×1 head Conv that projects to a single segmentation channel. The skip-Concat edges (encoder→decoder) cross the canvas — those are the U-shape that gives the architecture its name.",
+  "gallery": { "section": "architectures", "family": "CNN", "order": 2 },
   "nodes": [
     { "id": "start-1",   "type": "Start", "position": { "x": -260, "y": 0 }, "data": { "params": {} } },
 

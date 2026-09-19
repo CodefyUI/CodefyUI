@@ -20,6 +20,7 @@ import {
   STATUS_COLORS,
   EXAMPLE_CATEGORY_COLORS,
   EXAMPLE_CATEGORY_FALLBACK,
+  EXAMPLE_SECTION_COLORS,
   NODE_HEADER_TINT,
   FLOW_COLORS,
   PRESET_GOLD,
@@ -108,12 +109,41 @@ describe('tokens.css / theme.ts agreement', () => {
     ['RNN', '--ex-rnn'],
     ['RL', '--ex-rl'],
     ['Stats', '--ex-stats'],
+    ['VLA', '--ex-vla'],
   ])('example category %s matches %s', (name, token) => {
     expect(EXAMPLE_CATEGORY_COLORS[name]).toBe(cssVar(token));
   });
 
   it('example fallback matches its CSS variable', () => {
     expect(EXAMPLE_CATEGORY_FALLBACK).toBe(cssVar('--ex-fallback'));
+  });
+
+  // The gallery's section accents (#141) borrow from the example palette
+  // rather than adding a second one, which is what keeps `check-contrast.mjs`
+  // section 8b covering every value. These pin that: a section pointed at a
+  // hue this file does not mirror would be a colour the gate never measures.
+  it.each([
+    ['quickstart', '--ex-usage-example'],
+    ['training', '--ex-diffusion'],
+    ['llm', '--ex-llm'],
+    ['concepts', '--ex-classical'],
+    ['architectures', '--ex-model-architecture'],
+    ['plugin', '--ex-transformer'],
+    ['other', '--ex-fallback'],
+  ])('example section %s matches %s', (name, token) => {
+    expect(EXAMPLE_SECTION_COLORS[name]).toBe(cssVar(token));
+  });
+
+  it('gives every gallery section an accent', () => {
+    expect(Object.keys(EXAMPLE_SECTION_COLORS).sort()).toEqual([
+      'architectures',
+      'concepts',
+      'llm',
+      'other',
+      'plugin',
+      'quickstart',
+      'training',
+    ]);
   });
 
   it.each([

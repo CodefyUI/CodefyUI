@@ -1,6 +1,7 @@
 {
   "name": "BERT Encoder Transformer",
   "description": "Forward-pass visualization of a BERT-style bidirectional encoder on a (seq=16, batch=2, d=48) token-embedding tensor. Unlike GPT (decoder, causal self-attention), BERT uses the full TransformerEncoder stack where each token can attend to every other token. We pool the sequence with a Mean over the sequence dimension and project to two classification logits, analogous to a CLS-head classifier.",
+  "gallery": { "section": "architectures", "family": "Transformer", "order": 2 },
   "nodes": [
     { "id": "start-1", "type": "Start", "position": { "x": -200, "y": 0 }, "data": { "params": {} } },
     { "id": "input", "type": "TensorCreate", "position": { "x": 0, "y": 0 }, "data": { "params": { "shape": "16,2,48", "fill": "randn", "value": 0.0, "requires_grad": false } } },

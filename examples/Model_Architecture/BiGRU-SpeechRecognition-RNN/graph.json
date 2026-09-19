@@ -1,6 +1,7 @@
 {
   "name": "BiGRU Speech Recognition",
   "description": "Forward-pass visualization of a Bidirectional GRU acoustic model. A mock mel-spectrogram batch (batch=2, seq=32 frames, features=40 mel bins) is fed into a 2-layer bidirectional GRU. Because bidirectional=true, the hidden dimension doubles to 128 at the output. A frame-wise Linear head projects to 50 phoneme classes per timestep — the standard front-end for CTC-based speech recognizers like DeepSpeech.",
+  "gallery": { "section": "architectures", "family": "RNN", "order": 2 },
   "nodes": [
     { "id": "start-1", "type": "Start", "position": { "x": -200, "y": 0 }, "data": { "params": {} } },
     { "id": "mel_input", "type": "TensorCreate", "position": { "x": 0, "y": 0 }, "data": { "params": { "shape": "2,32,40", "fill": "randn", "value": 0.0, "requires_grad": false } } },
