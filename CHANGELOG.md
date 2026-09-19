@@ -266,6 +266,18 @@ received — each links to the release it was published as.
   Backward tab waits on the run rather than on the node, because gradients are
   written after the whole forward pass.
 
+- **Two `RewardModel` or `MoELayer` nodes built from the same seed could get
+  different weights.** A run without a run seed executes the nodes of one
+  level at the same time, and each of these seeded torch's process-wide
+  random generator and built its layers from it, so two of them on one level
+  took turns drawing from it and their weights depended on thread timing.
+  *C5-3 RLHF Reward Model*, whose two heads are meant to hold identical
+  weights, scored 0.086 and -0.236 on a CI runner against the 0.041 and 0.177
+  its note quotes. Both nodes now draw from a generator of their own: the
+  same seed always gives the same weights, and they are bit for bit the
+  weights a run without the overlap already gave, so no number an example
+  quotes has moved.
+
 ## [2.8.2] — 2026-09-17
 
 The node list says what a node does, and a Save As can no longer destroy a

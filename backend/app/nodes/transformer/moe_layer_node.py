@@ -32,6 +32,7 @@ from ...core.node_base import (
     ParamType,
     PortDefinition,
 )
+from ...core.seeding import seeded_linear_init
 
 
 class _ExpertFFN(nn.Module):
@@ -149,12 +150,14 @@ class MoELayerNode(BaseNode):
         expert_hidden_dim = int(params.get("expert_hidden_dim", 256))
         seed = int(params.get("seed", 42))
 
-        gen_state = torch.random.get_rng_state()
-        try:
-            torch.manual_seed(seed)
-            layer = _MoELayer(num_experts, top_k, hidden_dim, expert_hidden_dim)
-        finally:
-            torch.random.set_rng_state(gen_state)
+        # Weights from the seed alone, never through ``torch.manual_seed``:
+        # two of these on one level of an unseeded run reseeded the one
+        # global generator under each other. The constructor's own init
+        # still draws from the global RNG; every value is overwritten, and
+        # those draws are deliberately not fenced off with ``fork_rng``
+        # (``seeded_linear_init`` says why).
+        layer = seeded_linear_init(
+            _MoELayer(num_experts, top_k, hidden_dim, expert_hidden_dim), seed)
 
         # The layer is built fresh on CPU; move it to the input's device so the
         # gate/expert weights match x under the global device setting.
