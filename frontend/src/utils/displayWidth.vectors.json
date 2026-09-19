@@ -1,0 +1,18 @@
+{
+  "why": "displayWidth in localizeExamples.ts is measured a second time in Python, by display_width in backend/tests/test_example_descriptions.py, so that one description cap can be checked on both sides. Two implementations of one measurement drift silently, so both read these vectors and assert against them. One table, two readers: change a width here and both tests have to be right about it.",
+  "vectors": [
+    { "text": "", "width": 0 },
+    { "text": "MNIST", "width": 5 },
+    { "text": "訓練 CNN", "width": 8 },
+    { "text": "以 SequentialModel 訓練 MNIST", "width": 29 },
+    { "text": "（zh-TW）", "width": 9 },
+    { "text": "，", "width": 2 },
+    { "text": "「注意力」", "width": 10 },
+    { "text": "…", "width": 1 },
+    { "text": "·", "width": 1 },
+    { "text": "Ω", "width": 1 },
+    { "text": "ｱ", "width": 1 },
+    { "text": "가", "width": 2 },
+    { "text": "𠀀", "width": 2 }
+  ]
+}
