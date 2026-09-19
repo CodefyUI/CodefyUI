@@ -14,7 +14,7 @@
                 "boundOffset": { "x": 0, "y": -430 }, "noteWidth": 300 } },
     { "id": "note-knn", "type": "note", "position": { "x": 1020, "y": -430 },
       "data": { "noteKind": "text",
-                "noteContent": "k is how many neighbours vote: 5 here, so a query needs three of its five nearest to agree. Drop it to 1 and each query copies its single closest neighbour, which follows the noise in the training points instead of the trend.\n\nk 是幾個鄰居投票：這裡是 5，所以一個查詢點要有三個最近鄰意見一致。把它改成 1，每個查詢點就直接複製最近的那一個鄰居，跟著訓練點的雜訊走，而不是跟著趨勢。",
+                "noteContent": "k is how many neighbours vote: 5 here, and the species with the most votes wins, with a tie going to the one whose neighbour is nearest. Drop it to 1 and each query copies its single closest neighbour, which follows the noise in the training points instead of the trend.\n\nk 是幾個鄰居投票：這裡是 5，票數最多的品種勝出，平手時取鄰居離得比較近的那個品種。把它改成 1，每個查詢點就直接複製最近的那一個鄰居，跟著訓練點的雜訊走，而不是跟著趨勢。",
                 "noteColor": "#3d3d1a", "boundToNodeId": "knn",
                 "boundOffset": { "x": 0, "y": -430 }, "noteWidth": 300 } },
 

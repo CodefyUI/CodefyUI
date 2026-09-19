@@ -1,6 +1,6 @@
 {
   "name": "C2-2 Concentric Circles: where linear classifiers die",
-  "description": "One straight line, two rings: 27 of 60 test points",
+  "description": "One straight line, two rings: 27 of 60 test points right",
   "nodes": [
     { "id": "note-overview", "type": "note", "position": { "x": -720, "y": 0 },
       "data": { "noteKind": "text",

@@ -220,11 +220,12 @@ received — each links to the release it was published as.
   MNIST* claimed "val accuracy ≈98%" from a graph that computed no
   validation figure at all — it now measures 0.9694 on the test split and
   prints it. *C4-2* kept a label telling the reader to hover the `it` row of
-  a heatmap whose 25 axis labels are byte fragments of Chinese. Every number
-  in a pack description or note is now one that was read off a real run of
-  the file as shipped, and a test runs the `foundations`, `rl` and `stats`
-  examples and pins each figure their notes quote to the port it came from,
-  so editing a seed or a parameter fails until the note is edited with it.
+  a heatmap whose 25 axis labels are mostly byte fragments of Chinese. Every
+  number in a pack description or note is now one that was read off a real
+  run of the file as shipped, and a test runs the `foundations`, `rl` and
+  `stats` examples and pins each figure their notes quote to the port it
+  came from, so editing a seed or a parameter fails until the note is edited
+  with it.
 
 - **Two `deep` pack examples reached the network without saying so.** *C4-2*
   and *C4-4 LLM inference* tokenise real text with the same `Tokenizer` node

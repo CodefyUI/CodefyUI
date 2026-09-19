@@ -167,7 +167,7 @@ const zhTW: ExampleTranslations = {
     description: '兩個月牙形，用一個 MLP 節點大約一秒就分開',
   },
   'plugin:foundations/C2-5/MLP-MNIST-Training': {
-    description: '在 MNIST 上訓練這個 MLP，再測準確率；需要下載',
+    description: '在 MNIST 上訓練這個 MLP，再測準確率；需下載',
   },
   'plugin:foundations/Classical/Column-Stats-101': {
     description: '逐欄印出平均、標準差與最小值',
@@ -187,7 +187,7 @@ const zhTW: ExampleTranslations = {
     description: '在 MNIST 上訓練 LeNet CNN，再測準確率；需下載',
   },
   'plugin:deep/C3-2/UNet-Forward-Shapes': {
-    description: '16 縮到 4 再放大回來，中間接一條 48 通道跳接',
+    description: '16 縮到 4 再放大回來，跳接處接成 48 通道',
   },
   'plugin:deep/C3-3/Diffusion-Denoise-Loop': {
     description: '未訓練的 U-Net 跑 20 個反向步驟；輸出是噪聲',
