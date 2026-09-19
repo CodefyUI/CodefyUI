@@ -1,7 +1,23 @@
 {
   "name": "Linear vs Logistic: same skeleton, different last operator",
-  "description": "Two parallel chains illustrating C2-2's punchline — KNN, linear, and logistic regression share the same `feature → linear combination` skeleton; the only difference is what happens to the linear output. The top chain runs EduLinearRegression on a regression target (real-valued); the bottom chain runs EduLogisticRegression on the same features but with a binary classification target. The Print nodes show how the same input fits two different models.",
+  "description": "One chain predicts a number, the other a species",
   "nodes": [
+    { "id": "note-overview", "type": "note", "position": { "x": -680, "y": 0 },
+      "data": { "noteKind": "text",
+                "noteContent": "Two chains, one skeleton. Both multiply features by weights and add a bias; only the last step differs. The top chain stops at the number that comes out, so it predicts a quantity; the bottom chain sends the numbers through a softmax and reads off the most likely class, so it predicts a species.\n\nThe top chain is fitted to random x and random y on purpose: there is nothing to learn, so the weights come out near zero, and they differ every run because those tensors are not seeded.\n\nThe bottom chain uses real petal measurements and is asked about the same 150 rows it fitted: 131 come back right, which says how well it fitted, not how well it would generalise.\n\n兩條鏈，同一副骨架。兩邊都把特徵乘上權重再加偏差，差別只在最後一步。上面那條停在算出來的數字，所以預測的是一個量；下面那條把數字送進 softmax，讀出機率最高的類別，所以預測的是品種。\n\n上面那條是刻意用隨機的 x 和隨機的 y 擬合的：沒有東西可學，權重會落在 0 附近，而且每次執行都不一樣，因為那兩個張量沒有固定種子。\n\n下面那條用的是真的花瓣量測值，而且問的就是它擬合過的那 150 列：其中 131 列答對，這說明的是擬合得多好，不是類推到新資料有多好。",
+                "noteColor": "#3d3d1a", "boundToNodeId": "start-1",
+                "boundOffset": { "x": -420, "y": 0 }, "noteWidth": 360 } },
+    { "id": "note-linreg", "type": "note", "position": { "x": 280, "y": -530 },
+      "data": { "noteKind": "text",
+                "noteContent": "method is closed_form, so the fit is one solve of the normal equation and lr and epochs are ignored; switch to gradient_descent and those two start to matter. The Print shows the two learned weights, one per input column.\n\nmethod 是 closed_form，所以擬合是一次解正規方程，lr 和 epochs 都用不到；換成 gradient_descent，這兩個參數才開始有意義。Print 印出學到的兩個權重，每個輸入欄一個。",
+                "noteColor": "#3d3d1a", "boundToNodeId": "linreg",
+                "boundOffset": { "x": 0, "y": -430 }, "noteWidth": 300 } },
+    { "id": "note-logreg", "type": "note", "position": { "x": 280, "y": 550 },
+      "data": { "noteKind": "text",
+                "noteContent": "The same skeleton asking a different question: which of the three species a row is. Training rows and query rows are the same 150, so the Print is a list of 150 labels -- read it in the Inspector, where it lines up with the CSV.\n\n同一副骨架，問的是另一個問題：一列資料屬於三個品種中的哪一個。訓練用的列和查詢的列是同樣那 150 列，所以 Print 印出來是 150 個標籤 -- 在檢視器裡看，比較容易對照 CSV。",
+                "noteColor": "#3d3d1a", "boundToNodeId": "logreg",
+                "boundOffset": { "x": 0, "y": 430 }, "noteWidth": 300 } },
+
     { "id": "start-1",  "type": "Start",                  "position": { "x": -260, "y": 0 }, "data": { "params": {} } },
 
     { "id": "x_data",   "type": "TensorCreate",           "position": { "x": -40,  "y": -160 }, "data": { "params": { "shape": "30,2", "fill": "randn", "value": 0, "requires_grad": false } } },

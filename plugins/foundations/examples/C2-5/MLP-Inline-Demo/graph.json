@@ -1,13 +1,24 @@
 {
   "name": "C2-5 MLP inline demo (no MNIST download required)",
-  "description": "A no-network-needed companion to MLP-MNIST-Training. Uses MLPClassifier on a synthetic 2-moons dataset — the network is still the same family (multi-layer ReLU MLP fit with Adam) but the data is 200 points instead of 60,000 images, so it runs in under a second. Good for quick 'does my graph engine work' smoke tests and for showing that MLP isn't married to MNIST — same model, any tabular dataset.",
+  "description": "Two moons split by one MLP node, in about a second",
   "nodes": [
+    { "id": "note-overview", "type": "note", "position": { "x": -720, "y": 0 },
+      "data": { "noteKind": "text",
+                "noteContent": "Two interleaved crescents of points, and one node that does the whole job: MLPClassifier fits a 32-16 ReLU network to the training half with Adam, then classifies the query points with it.\n\nAfter a run the accuracy Print reads 1.0 -- all 40 held-out points on the right side -- and the final training loss lands near 0.008. Nothing downloads, and the whole graph runs in about a second.\n\nThe MNIST example in this chapter trains the same kind of network on images. Raise the SyntheticDataset noise towards 0.3 until the crescents bleed into each other, and the accuracy finally moves.\n\n兩團交錯的月牙形點，整件事由一個節點做完：MLPClassifier 用 Adam 把 32-16 的 ReLU 網路擬合到訓練的那一半，再用它分類查詢點。\n\n跑完之後，準確率的 Print 是 1.0 -- 保留的 40 個點全部落在正確的一側 -- 最後的訓練損失落在 0.008 附近。不用下載，整張圖大約一秒就跑完。\n\n本章的 MNIST 範例用同一類網路訓練影像。把 SyntheticDataset 的 noise 調到 0.3 附近，兩個月牙形開始互相滲透，準確率才會開始動。",
+                "noteColor": "#3d3d1a", "boundToNodeId": "start",
+                "boundOffset": { "x": -420, "y": 0 }, "noteWidth": 360 } },
+    { "id": "note-mlp", "type": "note", "position": { "x": 560, "y": -430 },
+      "data": { "noteKind": "text",
+                "noteContent": "One node does both halves: x_train with y_train fits the network, x_query is classified with the result, and seed 42 makes the fit repeatable. train_loss is the last Adam pass over the training points, not a score on the 40 held out.\n\n這一個節點同時做兩件事：x_train 和 y_train 用來擬合網路，x_query 再用擬合好的結果分類，seed 42 讓每次擬合都一樣。train_loss 是最後一輪 Adam 在訓練點上的損失，不是保留那 40 個點的成績。",
+                "noteColor": "#3d3d1a", "boundToNodeId": "mlp",
+                "boundOffset": { "x": 0, "y": -430 }, "noteWidth": 300 } },
+
     { "id": "start", "type": "Start",              "position": { "x": -300, "y":   0 }, "data": { "params": {} } },
     { "id": "data",  "type": "SyntheticDataset",   "position": { "x":  -40, "y":   0 }, "data": { "params": { "kind": "moons", "n_samples": 200, "noise": 0.15, "seed": 42 } } },
     { "id": "split", "type": "TrainTestSplit",     "position": { "x":  260, "y":   0 }, "data": { "params": { "test_size": 0.2, "seed": 42, "stratify": true } } },
     { "id": "mlp",   "type": "MLPClassifier",      "position": { "x":  560, "y":   0 }, "data": { "params": { "hidden_sizes": "32,16", "activation": "relu", "max_iter": 800, "seed": 42 } } },
     { "id": "acc",   "type": "Accuracy",           "position": { "x":  860, "y":   0 }, "data": { "params": {} } },
-    { "id": "p_acc", "type": "Print",              "position": { "x": 1140, "y": -80 }, "data": { "params": { "label": "Test accuracy (≈ 0.95 on moons)" } } },
+    { "id": "p_acc", "type": "Print",              "position": { "x": 1140, "y": -80 }, "data": { "params": { "label": "Test accuracy" } } },
     { "id": "p_loss","type": "Print",              "position": { "x": 1140, "y":  80 }, "data": { "params": { "label": "Final training loss" } } }
   ],
   "edges": [
