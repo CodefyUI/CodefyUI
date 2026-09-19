@@ -148,6 +148,26 @@ def test_a_graph_carrying_a_note_executes_and_the_note_produces_nothing(
     assert results["2"]["value"] == "test"
 
 
+def test_a_graph_whose_note_is_wired_runs_the_same_way(sample_graph):
+    """The execution twin of the dangling-edge test above.
+
+    An edge into a note makes the note REACHABLE, which is what put it in
+    the executable set and got it looked up in the registry mid-run -- after
+    the upstream nodes had already printed. Validation answering "clean" for
+    a graph the run then refuses is the disagreement the validator's own
+    comment rules out, so the run drops the same notes and the same edges.
+    """
+    nodes = [*sample_graph["nodes"], _note()]
+    edges = [
+        *sample_graph["edges"],
+        {"id": "e_note", "source": "1", "target": "n1",
+         "sourceHandle": "value", "targetHandle": "value", "type": "data"},
+    ]
+    results = asyncio.run(execute_graph(nodes, edges, error_mode="fail_fast"))
+    assert "n1" not in results
+    assert results["2"]["value"] == "test"
+
+
 # ── run_graph.py ──────────────────────────────────────────────────────────
 
 async def test_run_graph_validates_a_file_that_carries_a_note(

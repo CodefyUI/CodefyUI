@@ -1064,6 +1064,34 @@ def is_note_node(node: dict) -> bool:
     return node.get("type") == NOTE_NODE_TYPE
 
 
+def drop_notes(
+    nodes: list[dict], edges: list[dict]
+) -> tuple[list[dict], list[dict]]:
+    """*nodes* and *edges* without the notes and the edges touching them.
+
+    Both graph-wide entry points start here -- :func:`validate_graph` and
+    :func:`prepare_executable_graph` -- and they have to agree: validate
+    answering "clean" for a graph the run then refuses is worse than either
+    answer on its own, because the refusal arrives mid-run, after the nodes
+    upstream of the note have already done their work.
+
+    The edges go with the notes. The canvas draws no handle on a note, so it
+    cannot make such an edge, but a hand-edited or machine-written file can
+    carry one and ``POST /api/graph/export`` has dropped rather than refused
+    it since notes existed.
+    """
+    if not any(is_note_node(node) for node in nodes):
+        return nodes, edges
+    note_ids = {node["id"] for node in nodes if is_note_node(node)}
+    return (
+        [node for node in nodes if node["id"] not in note_ids],
+        [
+            edge for edge in edges
+            if edge["source"] not in note_ids and edge["target"] not in note_ids
+        ],
+    )
+
+
 def validate_graph(
     nodes: list[dict],
     edges: list[dict],
@@ -1095,18 +1123,10 @@ def validate_graph(
     something the graph runs -- see :func:`is_note_node`.
     """
     errors: list[str] = []
-    # Dropped first, so no check below has to know what a note is. The edges
-    # go with them: the canvas draws no handle on a note, but a hand-edited
-    # file can carry such an edge and ``POST /api/graph/export`` has always
-    # dropped it rather than refused it -- a graph that exports must be a
-    # graph that validates.
-    if any(is_note_node(node) for node in nodes):
-        note_ids = {node["id"] for node in nodes if is_note_node(node)}
-        nodes = [node for node in nodes if node["id"] not in note_ids]
-        edges = [
-            edge for edge in edges
-            if edge["source"] not in note_ids and edge["target"] not in note_ids
-        ]
+    # Dropped first, so no check below has to know what a note is -- see
+    # :func:`drop_notes`, which the execution preflight calls in the same
+    # place for the same reason.
+    nodes, edges = drop_notes(nodes, edges)
     # Before expansion, because expansion is what removes the instance node
     # AND its ``bypassed`` flag -- see :func:`container_bypass_errors`. Preset
     # nodes are excluded: they are still here when `resolve_bypass` runs
@@ -1642,6 +1662,13 @@ def prepare_executable_graph(
     with :func:`outermost_container` -- the retention below, the roll-up, and
     the exporter.
     """
+
+    # Dropped first, exactly where :func:`validate_graph` drops them: an edge
+    # into a note makes the note reachable, and a reachable note reaches the
+    # registry lookup in `_execute_single_node` -- mid-run, after its upstream
+    # has already executed. The validator tolerates such a file, so the run
+    # has to as well.
+    nodes, edges = drop_notes(nodes, edges)
 
     # Refused before expansion, while the container node still exists to be
     # named -- see :func:`container_bypass_errors`.
