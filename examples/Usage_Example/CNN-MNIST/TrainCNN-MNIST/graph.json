@@ -8,7 +8,7 @@
       "type": "note",
       "position": {
         "x": -570,
-        "y": 200
+        "y": 230
       },
       "data": {
         "noteKind": "text",
@@ -27,7 +27,7 @@
       "type": "note",
       "position": {
         "x": 140,
-        "y": 700
+        "y": 820
       },
       "data": {
         "noteKind": "text",
@@ -46,7 +46,7 @@
       "type": "note",
       "position": {
         "x": 140,
-        "y": 1100
+        "y": 1290
       },
       "data": {
         "noteKind": "text",
@@ -65,7 +65,7 @@
       "type": "Start",
       "position": {
         "x": -150,
-        "y": 200
+        "y": 230
       },
       "data": {
         "params": {}
@@ -76,7 +76,7 @@
       "type": "SequentialModel",
       "position": {
         "x": 50,
-        "y": 200
+        "y": 230
       },
       "data": {
         "params": {
@@ -89,7 +89,7 @@
       "type": "preset:Training Pipeline",
       "position": {
         "x": 500,
-        "y": 200
+        "y": 230
       },
       "data": {
         "params": {},
@@ -124,7 +124,7 @@
       "type": "Visualize",
       "position": {
         "x": 950,
-        "y": 200
+        "y": 230
       },
       "data": {
         "params": {
@@ -138,7 +138,7 @@
       "type": "ModelSaver",
       "position": {
         "x": 950,
-        "y": 380
+        "y": 450
       },
       "data": {
         "params": {
@@ -153,7 +153,7 @@
       "type": "Dataset",
       "position": {
         "x": 500,
-        "y": 700
+        "y": 820
       },
       "data": {
         "params": {
@@ -168,7 +168,7 @@
       "type": "EvaluateModel",
       "position": {
         "x": 900,
-        "y": 700
+        "y": 820
       },
       "data": {
         "params": {
@@ -182,7 +182,7 @@
       "type": "Print",
       "position": {
         "x": 1260,
-        "y": 700
+        "y": 820
       },
       "data": {
         "params": {
@@ -195,7 +195,7 @@
       "type": "DatasetBatch",
       "position": {
         "x": 500,
-        "y": 1100
+        "y": 1290
       },
       "data": {
         "params": {
@@ -209,7 +209,7 @@
       "type": "Inference",
       "position": {
         "x": 900,
-        "y": 1100
+        "y": 1290
       },
       "data": {
         "params": {
@@ -222,7 +222,7 @@
       "type": "Argmax",
       "position": {
         "x": 1260,
-        "y": 1100
+        "y": 1290
       },
       "data": {
         "params": {
@@ -236,7 +236,7 @@
       "type": "Print",
       "position": {
         "x": 1560,
-        "y": 1100
+        "y": 1290
       },
       "data": {
         "params": {
@@ -249,7 +249,7 @@
       "type": "ScalarMultiply",
       "position": {
         "x": 900,
-        "y": 1340
+        "y": 1570
       },
       "data": {
         "params": {
@@ -262,7 +262,7 @@
       "type": "TensorCreate",
       "position": {
         "x": 900,
-        "y": 1580
+        "y": 1850
       },
       "data": {
         "params": {
@@ -278,7 +278,7 @@
       "type": "Add",
       "position": {
         "x": 1260,
-        "y": 1340
+        "y": 1570
       },
       "data": {
         "params": {
@@ -291,7 +291,7 @@
       "type": "Visualize",
       "position": {
         "x": 1560,
-        "y": 1340
+        "y": 1570
       },
       "data": {
         "params": {

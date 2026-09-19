@@ -3,23 +3,23 @@
   "description": "Bidirectional GRU forward pass over mel frames",
   "gallery": { "section": "architectures", "family": "RNN", "order": 2 },
   "nodes": [
-    { "id": "start-1", "type": "Start", "position": { "x": -200, "y": 0 }, "data": { "params": {} } },
+    { "id": "start-1", "type": "Start", "position": { "x": -230, "y": 0 }, "data": { "params": {} } },
     { "id": "mel_input", "type": "TensorCreate", "position": { "x": 0, "y": 0 }, "data": { "params": { "shape": "2,32,40", "fill": "randn", "value": 0.0, "requires_grad": false } } },
-    { "id": "bigru", "type": "GRU", "position": { "x": 240, "y": 0 }, "data": { "params": { "input_size": 40, "hidden_size": 64, "num_layers": 2, "batch_first": true, "bidirectional": true, "dropout": 0.0 } } },
-    { "id": "frame_head", "type": "Linear", "position": { "x": 520, "y": 0 }, "data": { "params": { "in_features": 128, "out_features": 50 } } },
-    { "id": "print_logits", "type": "Print", "position": { "x": 760, "y": 0 }, "data": { "params": { "label": "Frame logits (B,T,50)" } } },
+    { "id": "bigru", "type": "GRU", "position": { "x": 270, "y": 0 }, "data": { "params": { "input_size": 40, "hidden_size": 64, "num_layers": 2, "batch_first": true, "bidirectional": true, "dropout": 0.0 } } },
+    { "id": "frame_head", "type": "Linear", "position": { "x": 590, "y": 0 }, "data": { "params": { "in_features": 128, "out_features": 50 } } },
+    { "id": "print_logits", "type": "Print", "position": { "x": 860, "y": 0 }, "data": { "params": { "label": "Frame logits (B,T,50)" } } },
 
-    { "id": "note-overview", "type": "note", "position": { "x": -620, "y": 0 },
+    { "id": "note-overview", "type": "note", "position": { "x": -650, "y": 0 },
       "data": { "noteKind": "text", "noteContent": "An acoustic model labels every frame of a recording, so it is allowed to look ahead: bidirectional runs a second GRU backwards over the same 32 frames and concatenates the two directions. That is why hidden_size is 64 but frame_head takes 128 features. The head then scores 50 phonemes at each frame, which is what a CTC loss consumes.\n\nThe input is a random tensor standing in for a mel spectrogram: this graph shows the wiring and the shapes, not a trained model. Print is (2, 32, 50). A live streaming recogniser cannot do this - it has no future frames yet.\n\n聲學模型要為每一幀標音，所以可以往後看：bidirectional 會讓第二個 GRU 反向再掃一次同樣的 32 幀，再把兩個方向接起來。這就是為什麼 hidden_size 是 64，frame_head 卻要吃 128 個特徵。最後每一幀給出 50 個音素分數，正好是 CTC 損失要的輸入。\n\n輸入是隨機張量，代表一段 mel 頻譜：這張圖看的是接線與形狀，不是訓練好的模型。Print 是 (2, 32, 50)。真正的即時辨識做不到這件事 — 未來的幀還沒到。",
                  "noteColor": "#3d3d1a", "boundToNodeId": "start-1", "boundOffset": { "x": -420, "y": 0 }, "noteWidth": 360 } },
 
-    { "id": "note-bigru", "type": "note", "position": { "x": 240, "y": -250 },
+    { "id": "note-bigru", "type": "note", "position": { "x": 270, "y": -250 },
       "data": { "noteKind": "text", "noteContent": "bidirectional doubles the feature dimension, not the sequence: (2, 32, 40) in, (2, 32, 128) out. Turn it off and frame_head's in_features drops to 64.\n\nbidirectional 加倍的是特徵維度，不是序列長度：進去 (2, 32, 40)，出來 (2, 32, 128)。關掉它，frame_head 的 in_features 就要改成 64。",
                  "noteColor": "#3d3d1a", "boundToNodeId": "bigru", "boundOffset": { "x": 0, "y": -250 }, "noteWidth": 300 } },
 
-    { "id": "note-frame_head", "type": "note", "position": { "x": 520, "y": 172 },
+    { "id": "note-frame_head", "type": "note", "position": { "x": 650, "y": -280 },
       "data": { "noteKind": "text", "noteContent": "One Linear, applied at all 32 steps: the output is a score sequence, not a single label for the clip. Turning that sequence into words is the decoder's job, and it is not in this graph.\n\n同一個 Linear 會作用在 32 個時間步上：輸出是一整串分數，而不是整段音訊一個標籤。要把這串分數變成文字是解碼器的工作，這張圖沒有畫。",
-                 "noteColor": "#3d3d1a", "boundToNodeId": "frame_head", "boundOffset": { "x": 0, "y": 172 }, "noteWidth": 300 } }
+                 "noteColor": "#3d3d1a", "boundToNodeId": "frame_head", "boundOffset": { "x": 60, "y": -280 }, "noteWidth": 300 } }
   ],
   "edges": [
     { "id": "e-t", "source": "start-1", "target": "mel_input", "sourceHandle": "trigger", "type": "trigger" },

@@ -8,7 +8,7 @@
       "type": "Start",
       "position": {
         "x": -150,
-        "y": 50
+        "y": 70
       },
       "data": {
         "params": {}
@@ -19,7 +19,7 @@
       "type": "TensorCreate",
       "position": {
         "x": 50,
-        "y": 50
+        "y": 70
       },
       "data": {
         "params": {
@@ -35,7 +35,7 @@
       "type": "Print",
       "position": {
         "x": 50,
-        "y": 900
+        "y": 1230
       },
       "data": {
         "params": {
@@ -48,7 +48,7 @@
       "type": "Conv2d",
       "position": {
         "x": 50,
-        "y": 300
+        "y": 410
       },
       "data": {
         "params": {
@@ -65,7 +65,7 @@
       "type": "Activation",
       "position": {
         "x": 750,
-        "y": 300
+        "y": 410
       },
       "data": {
         "params": {
@@ -78,7 +78,7 @@
       "type": "Conv2d",
       "position": {
         "x": 1100,
-        "y": 300
+        "y": 410
       },
       "data": {
         "params": {
@@ -95,7 +95,7 @@
       "type": "Activation",
       "position": {
         "x": 50,
-        "y": 500
+        "y": 680
       },
       "data": {
         "params": {
@@ -108,7 +108,7 @@
       "type": "Conv2d",
       "position": {
         "x": 400,
-        "y": 500
+        "y": 680
       },
       "data": {
         "params": {
@@ -125,7 +125,7 @@
       "type": "Activation",
       "position": {
         "x": 750,
-        "y": 500
+        "y": 680
       },
       "data": {
         "params": {
@@ -138,7 +138,7 @@
       "type": "Reshape",
       "position": {
         "x": 1100,
-        "y": 500
+        "y": 680
       },
       "data": {
         "params": {
@@ -151,7 +151,7 @@
       "type": "DQN",
       "position": {
         "x": 50,
-        "y": 700
+        "y": 960
       },
       "data": {
         "params": {
@@ -166,7 +166,7 @@
       "type": "Optimizer",
       "position": {
         "x": 400,
-        "y": 1150
+        "y": 1580
       },
       "data": {
         "params": {
@@ -181,7 +181,7 @@
       "type": "Print",
       "position": {
         "x": 400,
-        "y": 900
+        "y": 1230
       },
       "data": {
         "params": {
@@ -194,7 +194,7 @@
       "type": "Visualize",
       "position": {
         "x": 400,
-        "y": 1350
+        "y": 1850
       },
       "data": {
         "params": {
@@ -208,7 +208,7 @@
       "type": "SequentialModel",
       "position": {
         "x": 400,
-        "y": 300
+        "y": 410
       },
       "data": {
         "params": {
@@ -222,7 +222,7 @@
       "type": "note",
       "position": {
         "x": -570,
-        "y": 50
+        "y": 70
       },
       "data": {
         "noteKind": "text",
@@ -242,7 +242,7 @@
       "type": "note",
       "position": {
         "x": 400,
-        "y": -50
+        "y": 30
       },
       "data": {
         "noteKind": "text",
@@ -251,7 +251,7 @@
         "boundToNodeId": "seq-model",
         "boundOffset": {
           "x": 0,
-          "y": -350
+          "y": -380
         },
         "noteWidth": 300
       }
@@ -262,7 +262,7 @@
       "type": "note",
       "position": {
         "x": 700,
-        "y": 840
+        "y": 1270
       },
       "data": {
         "noteKind": "text",

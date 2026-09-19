@@ -7,8 +7,8 @@
       "id": "note-overview",
       "type": "note",
       "position": {
-        "x": -570,
-        "y": 200
+        "x": -590,
+        "y": 230
       },
       "data": {
         "noteKind": "text",
@@ -26,8 +26,8 @@
       "id": "note-centre",
       "type": "note",
       "position": {
-        "x": 750,
-        "y": 190
+        "x": 840,
+        "y": 180
       },
       "data": {
         "noteKind": "text",
@@ -36,7 +36,7 @@
         "boundToNodeId": "centre",
         "boundOffset": {
           "x": 0,
-          "y": -290
+          "y": -380
         },
         "noteWidth": 300
       }
@@ -45,8 +45,8 @@
       "id": "start-1",
       "type": "Start",
       "position": {
-        "x": -150,
-        "y": 200
+        "x": -170,
+        "y": 230
       },
       "data": {
         "params": {}
@@ -56,8 +56,8 @@
       "id": "model-builder",
       "type": "SequentialModel",
       "position": {
-        "x": 50,
-        "y": 200
+        "x": 60,
+        "y": 230
       },
       "data": {
         "params": {
@@ -69,8 +69,8 @@
       "id": "weight-loader",
       "type": "ModelLoader",
       "position": {
-        "x": 450,
-        "y": 200
+        "x": 500,
+        "y": 230
       },
       "data": {
         "params": {
@@ -85,8 +85,8 @@
       "id": "test-image",
       "type": "ImageReader",
       "position": {
-        "x": 450,
-        "y": 480
+        "x": 500,
+        "y": 560
       },
       "data": {
         "params": {
@@ -100,8 +100,8 @@
       "id": "norm-mean",
       "type": "TensorCreate",
       "position": {
-        "x": 450,
-        "y": 720
+        "x": 500,
+        "y": 840
       },
       "data": {
         "params": {
@@ -116,8 +116,8 @@
       "id": "centre",
       "type": "Add",
       "position": {
-        "x": 750,
-        "y": 480
+        "x": 840,
+        "y": 560
       },
       "data": {
         "params": {
@@ -129,8 +129,8 @@
       "id": "scale",
       "type": "ScalarMultiply",
       "position": {
-        "x": 1000,
-        "y": 480
+        "x": 1120,
+        "y": 560
       },
       "data": {
         "params": {
@@ -142,8 +142,8 @@
       "id": "add-batch-dim",
       "type": "Unsqueeze",
       "position": {
-        "x": 1250,
-        "y": 480
+        "x": 1400,
+        "y": 560
       },
       "data": {
         "params": {
@@ -155,8 +155,8 @@
       "id": "inference",
       "type": "Inference",
       "position": {
-        "x": 1550,
-        "y": 300
+        "x": 1740,
+        "y": 350
       },
       "data": {
         "params": {
@@ -168,8 +168,8 @@
       "id": "print-output",
       "type": "Print",
       "position": {
-        "x": 1850,
-        "y": 200
+        "x": 2070,
+        "y": 230
       },
       "data": {
         "params": {
@@ -181,8 +181,8 @@
       "id": "predicted-digit",
       "type": "Argmax",
       "position": {
-        "x": 1850,
-        "y": 380
+        "x": 2070,
+        "y": 450
       },
       "data": {
         "params": {
@@ -195,8 +195,8 @@
       "id": "print-digit",
       "type": "Print",
       "position": {
-        "x": 2150,
-        "y": 380
+        "x": 2410,
+        "y": 450
       },
       "data": {
         "params": {
@@ -208,8 +208,8 @@
       "id": "softmax",
       "type": "Softmax",
       "position": {
-        "x": 1850,
-        "y": 560
+        "x": 2070,
+        "y": 660
       },
       "data": {
         "params": {
@@ -221,8 +221,8 @@
       "id": "print-probs",
       "type": "Print",
       "position": {
-        "x": 2150,
-        "y": 560
+        "x": 2410,
+        "y": 660
       },
       "data": {
         "params": {

@@ -356,7 +356,7 @@
       "type": "note",
       "position": {
         "x": 1380,
-        "y": 872
+        "y": 1020
       },
       "data": {
         "noteKind": "text",
@@ -365,7 +365,7 @@
         "boundToNodeId": "sched",
         "boundOffset": {
           "x": 0,
-          "y": 172
+          "y": 320
         },
         "noteWidth": 300
       }

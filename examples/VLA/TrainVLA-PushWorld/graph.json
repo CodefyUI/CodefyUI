@@ -8,7 +8,7 @@
       "type": "Start",
       "position": {
         "x": -420,
-        "y": 260
+        "y": 420
       },
       "data": {
         "params": {}
@@ -19,7 +19,7 @@
       "type": "PushWorldEnv",
       "position": {
         "x": -140,
-        "y": 120
+        "y": 190
       },
       "data": {
         "params": {
@@ -34,7 +34,7 @@
       "type": "PushWorldDemos",
       "position": {
         "x": 180,
-        "y": 120
+        "y": 190
       },
       "data": {
         "params": {
@@ -52,7 +52,7 @@
       "type": "VLAModel",
       "position": {
         "x": -140,
-        "y": 480
+        "y": 770
       },
       "data": {
         "params": {
@@ -71,7 +71,7 @@
       "type": "DataLoader",
       "position": {
         "x": 520,
-        "y": 40
+        "y": 60
       },
       "data": {
         "params": {
@@ -85,7 +85,7 @@
       "type": "DataLoader",
       "position": {
         "x": 520,
-        "y": 240
+        "y": 390
       },
       "data": {
         "params": {
@@ -99,7 +99,7 @@
       "type": "Optimizer",
       "position": {
         "x": 180,
-        "y": 480
+        "y": 770
       },
       "data": {
         "params": {
@@ -114,7 +114,7 @@
       "type": "LRScheduler",
       "position": {
         "x": 520,
-        "y": 480
+        "y": 770
       },
       "data": {
         "params": {
@@ -129,7 +129,7 @@
       "type": "TrainingLoop",
       "position": {
         "x": 860,
-        "y": 260
+        "y": 420
       },
       "data": {
         "params": {
@@ -144,7 +144,7 @@
       "type": "VLARollout",
       "position": {
         "x": 1220,
-        "y": 120
+        "y": 190
       },
       "data": {
         "params": {
@@ -161,7 +161,7 @@
       "type": "VLAActionEval",
       "position": {
         "x": 1220,
-        "y": 420
+        "y": 680
       },
       "data": {
         "params": {
@@ -174,7 +174,7 @@
       "type": "VideoWrite",
       "position": {
         "x": 1540,
-        "y": 120
+        "y": 190
       },
       "data": {
         "params": {
@@ -190,7 +190,7 @@
       "type": "VideoWrite",
       "position": {
         "x": 520,
-        "y": -160
+        "y": -260
       },
       "data": {
         "params": {
@@ -206,7 +206,7 @@
       "type": "GraphOutput",
       "position": {
         "x": 1860,
-        "y": 40
+        "y": 60
       },
       "data": {
         "params": {
@@ -220,7 +220,7 @@
       "type": "GraphOutput",
       "position": {
         "x": 1860,
-        "y": 240
+        "y": 390
       },
       "data": {
         "params": {
@@ -234,7 +234,7 @@
       "type": "GraphOutput",
       "position": {
         "x": 1860,
-        "y": 440
+        "y": 710
       },
       "data": {
         "params": {
@@ -248,7 +248,7 @@
       "type": "GraphOutput",
       "position": {
         "x": 1860,
-        "y": 640
+        "y": 1030
       },
       "data": {
         "params": {
@@ -262,7 +262,7 @@
       "type": "GraphOutput",
       "position": {
         "x": 1860,
-        "y": 840
+        "y": 1350
       },
       "data": {
         "params": {
@@ -276,7 +276,7 @@
       "type": "note",
       "position": {
         "x": -840,
-        "y": 260
+        "y": 420
       },
       "data": {
         "noteKind": "text",
@@ -295,7 +295,7 @@
       "type": "note",
       "position": {
         "x": 180,
-        "y": -190
+        "y": -170
       },
       "data": {
         "noteKind": "text",
@@ -304,7 +304,7 @@
         "boundToNodeId": "demos",
         "boundOffset": {
           "x": 0,
-          "y": -310
+          "y": -360
         },
         "noteWidth": 300
       }
@@ -314,7 +314,7 @@
       "type": "note",
       "position": {
         "x": 1220,
-        "y": -250
+        "y": -180
       },
       "data": {
         "noteKind": "text",

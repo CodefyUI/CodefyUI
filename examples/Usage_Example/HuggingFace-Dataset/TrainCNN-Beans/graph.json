@@ -314,7 +314,7 @@
       "type": "note",
       "position": {
         "x": 0,
-        "y": -410
+        "y": -500
       },
       "data": {
         "noteKind": "text",
@@ -323,7 +323,7 @@
         "boundToNodeId": "ds-train",
         "boundOffset": {
           "x": 0,
-          "y": -410
+          "y": -500
         },
         "noteWidth": 300
       }
@@ -333,7 +333,7 @@
       "type": "note",
       "position": {
         "x": 340,
-        "y": -410
+        "y": -440
       },
       "data": {
         "noteKind": "text",
@@ -342,7 +342,7 @@
         "boundToNodeId": "tf-train",
         "boundOffset": {
           "x": 0,
-          "y": -410
+          "y": -440
         },
         "noteWidth": 300
       }

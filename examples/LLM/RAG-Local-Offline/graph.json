@@ -217,8 +217,8 @@
       "id": "note-retriever",
       "type": "note",
       "position": {
-        "x": 1180,
-        "y": -130
+        "x": 1160,
+        "y": -180
       },
       "data": {
         "noteKind": "text",
@@ -226,8 +226,8 @@
         "noteColor": "#3d3d1a",
         "boundToNodeId": "retriever",
         "boundOffset": {
-          "x": -20,
-          "y": -330
+          "x": -40,
+          "y": -380
         },
         "noteWidth": 300
       }
@@ -236,8 +236,8 @@
       "id": "note-prompt",
       "type": "note",
       "position": {
-        "x": 1500,
-        "y": 638
+        "x": 1460,
+        "y": 780
       },
       "data": {
         "noteKind": "text",
@@ -245,8 +245,8 @@
         "noteColor": "#3d3d1a",
         "boundToNodeId": "prompt",
         "boundOffset": {
-          "x": 0,
-          "y": 238
+          "x": -40,
+          "y": 380
         },
         "noteWidth": 300
       }
@@ -256,7 +256,7 @@
       "type": "note",
       "position": {
         "x": 1800,
-        "y": 50
+        "y": 0
       },
       "data": {
         "noteKind": "text",
@@ -265,7 +265,7 @@
         "boundToNodeId": "gen",
         "boundOffset": {
           "x": 0,
-          "y": -350
+          "y": -400
         },
         "noteWidth": 300
       }

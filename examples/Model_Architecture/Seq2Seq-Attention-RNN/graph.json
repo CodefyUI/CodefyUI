@@ -3,32 +3,32 @@
   "description": "Encoder-decoder LSTM forward pass with attention",
   "gallery": { "section": "architectures", "family": "RNN", "order": 3 },
   "nodes": [
-    { "id": "start-1", "type": "Start", "position": { "x": -200, "y": 0 }, "data": { "params": {} } },
+    { "id": "start-1", "type": "Start", "position": { "x": -230, "y": 0 }, "data": { "params": {} } },
 
     { "id": "src_input", "type": "TensorCreate", "position": { "x": 0, "y": 0 }, "data": { "params": { "shape": "2,10,16", "fill": "randn", "value": 0.0, "requires_grad": false } } },
-    { "id": "encoder_lstm", "type": "LSTM", "position": { "x": 240, "y": 0 }, "data": { "params": { "input_size": 16, "hidden_size": 32, "num_layers": 1, "batch_first": true, "bidirectional": false, "dropout": 0.0 } } },
-    { "id": "enc_to_seq_first", "type": "Permute", "position": { "x": 480, "y": 0 }, "data": { "params": { "dims": "1,0,2" } } },
+    { "id": "encoder_lstm", "type": "LSTM", "position": { "x": 270, "y": 0 }, "data": { "params": { "input_size": 16, "hidden_size": 32, "num_layers": 1, "batch_first": true, "bidirectional": false, "dropout": 0.0 } } },
+    { "id": "enc_to_seq_first", "type": "Permute", "position": { "x": 550, "y": 0 }, "data": { "params": { "dims": "1,0,2" } } },
 
-    { "id": "tgt_input", "type": "TensorCreate", "position": { "x": 0, "y": 260 }, "data": { "params": { "shape": "2,8,16", "fill": "randn", "value": 0.0, "requires_grad": false } } },
-    { "id": "decoder_lstm", "type": "LSTM", "position": { "x": 240, "y": 260 }, "data": { "params": { "input_size": 16, "hidden_size": 32, "num_layers": 1, "batch_first": true, "bidirectional": false, "dropout": 0.0 } } },
-    { "id": "dec_to_seq_first", "type": "Permute", "position": { "x": 480, "y": 260 }, "data": { "params": { "dims": "1,0,2" } } },
+    { "id": "tgt_input", "type": "TensorCreate", "position": { "x": 0, "y": 310 }, "data": { "params": { "shape": "2,8,16", "fill": "randn", "value": 0.0, "requires_grad": false } } },
+    { "id": "decoder_lstm", "type": "LSTM", "position": { "x": 270, "y": 310 }, "data": { "params": { "input_size": 16, "hidden_size": 32, "num_layers": 1, "batch_first": true, "bidirectional": false, "dropout": 0.0 } } },
+    { "id": "dec_to_seq_first", "type": "Permute", "position": { "x": 550, "y": 310 }, "data": { "params": { "dims": "1,0,2" } } },
 
-    { "id": "attention", "type": "MultiHeadAttention", "position": { "x": 760, "y": 130 }, "data": { "params": { "embed_dim": 32, "num_heads": 4, "dropout": 0.0, "batch_first": false } } },
-    { "id": "to_batch_first", "type": "Permute", "position": { "x": 1040, "y": 130 }, "data": { "params": { "dims": "1,0,2" } } },
-    { "id": "vocab_head", "type": "Linear", "position": { "x": 1260, "y": 130 }, "data": { "params": { "in_features": 32, "out_features": 64 } } },
-    { "id": "print_logits", "type": "Print", "position": { "x": 1480, "y": 130 }, "data": { "params": { "label": "Decoder vocab logits (B,T,V)" } } },
+    { "id": "attention", "type": "MultiHeadAttention", "position": { "x": 860, "y": 150 }, "data": { "params": { "embed_dim": 32, "num_heads": 4, "dropout": 0.0, "batch_first": false } } },
+    { "id": "to_batch_first", "type": "Permute", "position": { "x": 1180, "y": 150 }, "data": { "params": { "dims": "1,0,2" } } },
+    { "id": "vocab_head", "type": "Linear", "position": { "x": 1430, "y": 150 }, "data": { "params": { "in_features": 32, "out_features": 64 } } },
+    { "id": "print_logits", "type": "Print", "position": { "x": 1680, "y": 150 }, "data": { "params": { "label": "Decoder vocab logits (B,T,V)" } } },
 
-    { "id": "note-overview", "type": "note", "position": { "x": -620, "y": 0 },
+    { "id": "note-overview", "type": "note", "position": { "x": -650, "y": 0 },
       "data": { "noteKind": "text", "noteContent": "Before Transformers, translation ran an encoder RNN over the source and a decoder RNN over the target, and attention was the fix for the bottleneck between them: instead of one summary vector, every decoder step queries all 10 encoder states and takes a weighted mixture. Query from the decoder, key and value from the encoder - the arrangement still called cross-attention today.\n\nThe inputs are random tensors: this graph shows the wiring and the shapes, not a trained model. Print is (2, 8, 64): eight target steps, 64 vocabulary scores each.\n\n在 Transformer 出現以前，機器翻譯是用一個編碼器 RNN 讀來源句、一個解碼器 RNN 產生目標句，而 attention 正是為了解開兩者之間的瓶頸：解碼器的每一步不再只看一個摘要向量，而是去查詢全部 10 個編碼器狀態，取加權後的混合。query 來自解碼器，key 和 value 來自編碼器 — 這個安排今天仍叫 cross-attention。\n\n輸入是隨機張量：這張圖看的是接線與形狀，不是訓練好的模型。Print 是 (2, 8, 64)：八個目標步，每步 64 個詞彙分數。",
                  "noteColor": "#3d3d1a", "boundToNodeId": "start-1", "boundOffset": { "x": -420, "y": 0 }, "noteWidth": 360 } },
 
-    { "id": "note-attention", "type": "note", "position": { "x": 760, "y": -180 },
+    { "id": "note-attention", "type": "note", "position": { "x": 860, "y": -160 },
       "data": { "noteKind": "text", "noteContent": "batch_first is off on this node, which is why three Permute nodes surround it: the LSTMs speak (batch, seq, d) and nn.MultiheadAttention wants (seq, batch, d). query is the decoder side, key and value the encoder side.\n\n這個節點的 batch_first 是關的，所以前後才需要三個 Permute：LSTM 用的是 (batch, seq, d)，nn.MultiheadAttention 要的是 (seq, batch, d)。query 接解碼器那側，key 和 value 接編碼器那側。",
                  "noteColor": "#3d3d1a", "boundToNodeId": "attention", "boundOffset": { "x": 0, "y": -310 }, "noteWidth": 300 } },
 
-    { "id": "note-encoder_lstm", "type": "note", "position": { "x": 240, "y": -290 },
+    { "id": "note-encoder_lstm", "type": "note", "position": { "x": 270, "y": -340 },
       "data": { "noteKind": "text", "noteContent": "Only output is used - attention needs every encoder state, one per source token. The hidden port carries the final state, the single summary vector attention was invented to stop relying on.\n\n這裡只用 output — attention 需要的是每一個編碼器狀態，來源句每個詞一個。hidden 埠帶的是最後一個狀態，也就是那個單一摘要向量，而 attention 當初就是為了不再依賴它而生的。",
-                 "noteColor": "#3d3d1a", "boundToNodeId": "encoder_lstm", "boundOffset": { "x": 0, "y": -290 }, "noteWidth": 300 } }
+                 "noteColor": "#3d3d1a", "boundToNodeId": "encoder_lstm", "boundOffset": { "x": 0, "y": -340 }, "noteWidth": 300 } }
   ],
   "edges": [
     { "id": "e-ts", "source": "start-1", "target": "src_input", "sourceHandle": "trigger", "type": "trigger" },

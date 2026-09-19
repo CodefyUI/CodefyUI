@@ -334,8 +334,8 @@
       "id": "note-gen",
       "type": "note",
       "position": {
-        "x": 1440,
-        "y": 654
+        "x": 1680,
+        "y": 840
       },
       "data": {
         "noteKind": "text",
@@ -343,8 +343,8 @@
         "noteColor": "#3d3d1a",
         "boundToNodeId": "gen",
         "boundOffset": {
-          "x": 0,
-          "y": 194
+          "x": 240,
+          "y": 380
         },
         "noteWidth": 300
       }

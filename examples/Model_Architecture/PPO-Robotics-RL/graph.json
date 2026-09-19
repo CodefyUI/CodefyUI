@@ -8,7 +8,7 @@
       "type": "Start",
       "position": {
         "x": -150,
-        "y": 50
+        "y": 70
       },
       "data": {
         "params": {}
@@ -19,7 +19,7 @@
       "type": "TensorCreate",
       "position": {
         "x": 50,
-        "y": 50
+        "y": 70
       },
       "data": {
         "params": {
@@ -35,7 +35,7 @@
       "type": "Print",
       "position": {
         "x": 50,
-        "y": 500
+        "y": 670
       },
       "data": {
         "params": {
@@ -48,7 +48,7 @@
       "type": "PPO",
       "position": {
         "x": 50,
-        "y": 300
+        "y": 400
       },
       "data": {
         "params": {
@@ -63,7 +63,7 @@
       "type": "Optimizer",
       "position": {
         "x": 400,
-        "y": 750
+        "y": 1000
       },
       "data": {
         "params": {
@@ -78,7 +78,7 @@
       "type": "Print",
       "position": {
         "x": 400,
-        "y": 500
+        "y": 670
       },
       "data": {
         "params": {
@@ -91,7 +91,7 @@
       "type": "Visualize",
       "position": {
         "x": 750,
-        "y": 500
+        "y": 670
       },
       "data": {
         "params": {
@@ -105,7 +105,7 @@
       "type": "SequentialModel",
       "position": {
         "x": 400,
-        "y": 300
+        "y": 400
       },
       "data": {
         "params": {
@@ -119,7 +119,7 @@
       "type": "note",
       "position": {
         "x": -570,
-        "y": 50
+        "y": 70
       },
       "data": {
         "noteKind": "text",
@@ -138,8 +138,8 @@
       "id": "note-ppo-1",
       "type": "note",
       "position": {
-        "x": 50,
-        "y": 680
+        "x": -290,
+        "y": 700
       },
       "data": {
         "noteKind": "text",
@@ -147,8 +147,8 @@
         "noteColor": "#3d3d1a",
         "boundToNodeId": "ppo-1",
         "boundOffset": {
-          "x": 0,
-          "y": 380
+          "x": -340,
+          "y": 300
         },
         "noteWidth": 300
       }
@@ -159,7 +159,7 @@
       "type": "note",
       "position": {
         "x": 400,
-        "y": -50
+        "y": 20
       },
       "data": {
         "noteKind": "text",
@@ -168,7 +168,7 @@
         "boundToNodeId": "seq-model",
         "boundOffset": {
           "x": 0,
-          "y": -350
+          "y": -380
         },
         "noteWidth": 300
       }
@@ -179,7 +179,7 @@
       "type": "note",
       "position": {
         "x": 400,
-        "y": 922
+        "y": 1240
       },
       "data": {
         "noteKind": "text",
@@ -188,7 +188,7 @@
         "boundToNodeId": "optimizer-1",
         "boundOffset": {
           "x": 0,
-          "y": 172
+          "y": 240
         },
         "noteWidth": 300
       }
