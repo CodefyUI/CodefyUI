@@ -1,6 +1,6 @@
 {
   "name": "C4-4 LLM inference: one layer of the stack",
-  "description": "Five prompt tokens, each ending as an 8-dim hidden",
+  "description": "Five tokens, each an 8-dim hidden; needs a download",
   "nodes": [
     { "id": "start", "type": "Start",                  "position": { "x": -260, "y":   0 }, "data": { "params": {} } },
     { "id": "text",  "type": "TextInput",              "position": { "x":  -40, "y":   0 }, "data": { "params": { "value": "I learned that the cat" } } },
@@ -14,7 +14,7 @@
 
     { "id": "note-overview", "type": "note", "position": { "x": -680, "y": 0 },
       "data": { "noteKind": "text",
-                "noteContent": "What happens between typing a prompt and reading an answer, with the stack cut to one layer. The prompt tokenises to five pieces - I, ' learned', ' that', ' the', ' cat' - each becomes an 8-number vector from a seeded table, positions are added, and one LayerNorm, attention and feed-forward pass runs.\n\nThe result is (5, 8): a hidden state per token, not logits. A real model ends with a Linear projecting the last hidden state onto the whole vocabulary, then samples. That projection is all that is missing here.\n\nOpen the attention weights. Where C4-2's byte fragments give a nearly flat matrix, these five clean tokens produce one with real structure, 0.007 to 0.954.\n\n從打進提示詞到讀出答案之間發生的事，只是把整疊層縮成一層。提示詞切成五塊 - I、' learned'、' that'、' the'、' cat' - 每一塊從一張有種子的表裡取出 8 個數字的向量，加上位置，再跑一次 LayerNorm、注意力和前饋網路。\n\n結果是 (5, 8)：每個 token 一個 hidden state，不是 logits。真正的模型最後會接一顆 Linear，把最後一個 token 的 hidden state 投影到整個詞彙表再抽樣。這裡缺的就只有那一步投影。\n\n注意力權重值得打開來看。C4-2 的位元組碎片給出幾乎平坦的矩陣，而這裡五個乾淨的 token 給出真的有結構的矩陣，從 0.007 到 0.954。",
+                "noteContent": "What happens between typing a prompt and reading an answer, with the stack cut to one layer. The prompt tokenises to five pieces - I, ' learned', ' that', ' the', ' cat' - each becomes an 8-number vector from a seeded table, positions are added, and one LayerNorm, attention and feed-forward pass runs.\n\nThe result is (5, 8): a hidden state per token, not logits. A real model ends with a Linear projecting the last hidden state onto the whole vocabulary, then samples. That projection is all that is missing here.\n\nOpen the attention weights. Where C4-2's byte fragments give a nearly flat matrix, these five clean tokens produce one with real structure, 0.007 to 0.954. The first run downloads the cl100k_base table, later runs are offline.\n\n從打進提示詞到讀出答案之間發生的事，只是把整疊層縮成一層。提示詞切成五塊 - I、' learned'、' that'、' the'、' cat' - 每一塊從一張有種子的表裡取出 8 個數字的向量，加上位置，再跑一次 LayerNorm、注意力和前饋網路。\n\n結果是 (5, 8)：每個 token 一個 hidden state，不是 logits。真正的模型最後會接一顆 Linear，把最後一個 token 的 hidden state 投影到整個詞彙表再抽樣。這裡缺的就只有那一步投影。\n\n注意力權重值得打開來看。C4-2 的位元組碎片給出幾乎平坦的矩陣，而這裡五個乾淨的 token 給出真的有結構的矩陣，從 0.007 到 0.954。第一次執行會下載 cl100k_base 表，之後就不需要網路。",
                 "noteColor": "#3d3d1a", "boundToNodeId": "start",
                 "boundOffset": { "x": -420, "y": 0 }, "noteWidth": 360 } },
     { "id": "note-embed", "type": "note", "position": { "x": 520, "y": -480 },

@@ -1,6 +1,6 @@
 {
   "name": "C4-2 Self-attention over a tokenised sentence",
-  "description": "A 25x25 attention matrix over one tokenised sentence",
+  "description": "14 characters, 25 tokens, a 25x25 map; needs a download",
   "nodes": [
     { "id": "start", "type": "Start",                  "position": { "x": -260, "y":   0 }, "data": { "params": {} } },
     { "id": "text",  "type": "TextInput",              "position": { "x":  -40, "y":   0 }, "data": { "params": { "value": "她去了那家貓咖啡因為它很可愛" } } },
@@ -8,12 +8,12 @@
     { "id": "embed", "type": "foundations:Edu-TokenEmbedding",      "position": { "x":  520, "y":   0 }, "data": { "params": { "embed_dim": 16, "vocab_size": 64, "seed": 42, "mode": "ordinal" } } },
     { "id": "pe",    "type": "PositionalEncoding",     "position": { "x":  800, "y":   0 }, "data": { "params": { "mode": "sinusoidal", "max_len": 64, "seed": 42 } } },
     { "id": "attn",  "type": "deep:Edu-SelfAttention",       "position": { "x": 1080, "y":   0 }, "data": { "params": { "embed_dim": 16, "causal": false, "temperature": 1.0, "seed": 42 } } },
-    { "id": "p_w",   "type": "Print",                  "position": { "x": 1380, "y": -80 }, "data": { "params": { "label": "Attention weights (T, T) — hover 'it' row for §C4.2.4 heatmap" } } },
+    { "id": "p_w",   "type": "Print",                  "position": { "x": 1380, "y": -80 }, "data": { "params": { "label": "Attention weights (T, T) — one row per token, each summing to 1" } } },
     { "id": "p_out", "type": "Print",                  "position": { "x": 1380, "y":  80 }, "data": { "params": { "label": "Output: each token's new representation (text-aware)" } } },
 
     { "id": "note-overview", "type": "note", "position": { "x": -680, "y": 0 },
       "data": { "noteKind": "text",
-                "noteContent": "Self-attention on real text instead of a random tensor. The sentence goes through cl100k_base, which splits Chinese into UTF-8 bytes, so fourteen characters come out as twenty-five tokens and the matrix labels are byte fragments rather than words.\n\nOut of that comes a 25x25 matrix, one row per token, every row summing to one. The projections are random, so this run's weights sit between 0.013 and 0.086, close to the 0.04 a flat row would give. Read the shape and the three steps, not which token attended to which.\n\nPut an English sentence in TextInput for one token per word and readable labels; C4-4 shows that.\n\n這裡的自注意力跑的是真實文字，不是隨機張量。句子先經過 cl100k_base，它會把中文拆成 UTF-8 位元組，所以十四個字變成二十五個 token，矩陣上的標籤也就是位元組碎片，不是詞。\n\n算出來的是 25x25 的矩陣，每個 token 一列，每一列加起來是 1。投影矩陣是隨機的，所以這次執行的權重落在 0.013 到 0.086 之間，很接近完全平均時的 0.04。這裡要看的是形狀和那三個步驟，不是誰注意了誰。\n\n把 TextInput 換成英文句子，就會一個字一個 token、標籤也讀得懂；C4-4 就是那個樣子。",
+                "noteContent": "Self-attention on real text instead of a random tensor. The sentence goes through cl100k_base, which splits Chinese into UTF-8 bytes, so fourteen characters come out as twenty-five tokens and the matrix labels are byte fragments rather than words.\n\nOut of that comes a 25x25 matrix, one row per token, every row summing to one. The projections are random, so this run's weights sit between 0.013 and 0.086, close to the 0.04 a flat row would give. Read the shape and the three steps, not which token attended to which.\n\nPut an English sentence in TextInput for one token per word and readable labels; C4-4 shows that. The first run downloads the cl100k_base table, later runs are offline.\n\n這裡的自注意力跑的是真實文字，不是隨機張量。句子先經過 cl100k_base，它會把中文拆成 UTF-8 位元組，所以十四個字變成二十五個 token，矩陣上的標籤也就是位元組碎片，不是詞。\n\n算出來的是 25x25 的矩陣，每個 token 一列，每一列加起來是 1。投影矩陣是隨機的，所以這次執行的權重落在 0.013 到 0.086 之間，很接近完全平均時的 0.04。這裡要看的是形狀和那三個步驟，不是誰注意了誰。\n\n把 TextInput 換成英文句子，就會一個字一個 token、標籤也讀得懂；C4-4 就是那個樣子。第一次執行會下載 cl100k_base 表，之後就不需要網路。",
                 "noteColor": "#3d3d1a", "boundToNodeId": "start",
                 "boundOffset": { "x": -420, "y": 0 }, "noteWidth": 360 } },
     { "id": "note-tok", "type": "note", "position": { "x": 240, "y": -430 },

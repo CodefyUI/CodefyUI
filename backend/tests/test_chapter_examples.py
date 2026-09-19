@@ -323,8 +323,8 @@ def test_the_foundations_pack_trainer_scores_the_split_it_did_not_train_on():
 
 # ── a note that quotes a number still quotes the number the graph gives ───
 
-#: ``(example, note id, quoted text, node id, output port)`` for the rl and
-#: stats examples whose notes tell the reader what a run comes out at.
+#: ``(example, note id, quoted text, node id, output port)`` for the pack
+#: examples whose notes tell the reader what a run comes out at.
 #:
 #: A number in a note is the part of it that rots: a seed, a param or a
 #: ``values`` list is edited in a second, everything still validates and
@@ -332,7 +332,31 @@ def test_the_foundations_pack_trainer_scores_the_split_it_did_not_train_on():
 #: produce. That is worse than no note, so each quote is pinned to the port
 #: it was read off -- to the decimals it is written to, because that is how
 #: a reader compares it with the Print.
+#:
+#: The foundations accuracies are all k/n over a fixed test split, so a
+#: prediction has to flip before one of them moves -- which is exactly the
+#: change worth failing on. Two numbers those notes also quote are left out
+#: deliberately: the sklearn MLP training losses (0.004 and 0.008) are the
+#: one place where another machine's BLAS could move a digit without
+#: anything being wrong, and their accuracies already guard the same graphs.
+#: The deep pack has nothing to pin here -- its notes quote shapes, its one
+#: measured accuracy belongs to an MNIST graph this suite does not execute,
+#: and C4-1 says in the note itself that its numbers are unseeded.
 _QUOTED_FROM_A_PORT = [
+    ("foundations/C2-1/Supervised-Learning-101", "note-overview", "1.0",
+     "acc", "accuracy"),
+    ("foundations/C2-2/Concentric-Circles-Failure", "note-overview", "0.45",
+     "acc", "accuracy"),
+    ("foundations/C2-3/Decision-Tree-Iris", "note-overview", "0.9667",
+     "acc", "accuracy"),
+    ("foundations/C2-3/SVM-RBF-Beats-Circles", "note-overview", "1.0",
+     "acc", "accuracy"),
+    ("foundations/C2-4/MLP-Solves-Circles", "note-overview", "1.0",
+     "acc", "accuracy"),
+    ("foundations/C2-4/MLP-Without-Activation", "note-overview", "0.4",
+     "acc", "accuracy"),
+    ("foundations/C2-5/MLP-Inline-Demo", "note-overview", "1.0",
+     "acc", "accuracy"),
     ("rl/C5-1/RL-Trajectory-Mockup", "note-overview", "0.35", "return", "tensor"),
     ("rl/C5-1/RL-Trajectory-Mockup", "note-return", "0.35", "return", "tensor"),
     ("rl/C5-3/RLHF-Reward-Model", "note-overview", "0.041", "rm_chosen", "rewards"),
@@ -346,6 +370,11 @@ _QUOTED_FROM_A_PORT = [
 #: The same idea where the number is a cell of a table rather than a port of
 #: its own: the quote has to appear in the text ``Stats-TableView`` renders,
 #: which is the surface the note sends the reader to look at.
+#:
+#: ``Column-Stats-101`` fits neither list. Its note quotes one element of a
+#: three-column tensor, which the single-number reader below rejects, and
+#: that graph has no table view to read a cell out of; a pin for it would
+#: have to index a tensor, which is a third shape for two numbers.
 _QUOTED_FROM_A_TABLE = [
     ("stats/Stats/Iris-Describe-Table", "note-overview", "5.8433", "view"),
     ("stats/Stats/Iris-Describe-Table", "note-overview", "3.7580", "view"),
@@ -372,7 +401,7 @@ def _one_number(value) -> float:
     return float(flat[0])
 
 
-def test_the_rl_and_stats_notes_quote_what_their_graphs_produce():
+def test_the_pack_notes_quote_what_their_graphs_produce():
     """Run each example and check its notes against the real output.
 
     Cheap: none of these graphs holds a slow node type, which is why the
