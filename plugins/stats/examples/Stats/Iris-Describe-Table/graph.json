@@ -1,6 +1,6 @@
 {
   "name": "Iris describe(): the whole table in one node",
-  "description": "Reads the bundled iris.csv and hands it to Stats-Describe, which reproduces pandas' describe() — count, mean, std, min, 25/50/75%, max for every numeric column. Stats-TableView prints the result in the Results panel with its statistic names down the side. This is the shortest path from a CSV to knowing what is in it.",
+  "description": "Eight summary statistics for the four iris columns",
   "nodes": [
     {
       "id": "start-1",
@@ -42,6 +42,45 @@
           "precision": 4,
           "title": "Iris - describe()"
         }
+      }
+    },
+    {
+      "id": "note-overview",
+      "type": "note",
+      "position": { "x": -680, "y": 40 },
+      "data": {
+        "noteKind": "text",
+        "noteContent": "Stats-Describe is pandas' describe(), and this graph is the shortest path from a CSV to knowing what is in it: read the file, describe it, render the table. The Results panel gets eight rows for each of the four measurement columns -- count 150, mean sepal length 5.8433, mean petal length 3.7580, and the three quartiles between min and max. std is the sample standard deviation, ddof=1, and a NaN counts as missing rather than as a value. Point CSVReader at your own file and nothing else has to change.\n\nStats-Describe 就是 pandas 的 describe()，這張圖是從一個 CSV 到「知道裡面有什麼」最短的一條路：讀檔、描述、印表。結果面板會給出四個量測欄位、每欄八列 - count 是 150，sepal length 平均 5.8433，petal length 平均 3.7580，min 和 max 之間還有三個四分位數。std 是樣本標準差（ddof=1），NaN 算缺值，不算一筆資料。把 CSVReader 指到自己的檔案，其他都不必改。",
+        "noteColor": "#3d3d1a",
+        "boundToNodeId": "start-1",
+        "boundOffset": { "x": -420, "y": 0 },
+        "noteWidth": 360
+      }
+    },
+    {
+      "id": "note-csv",
+      "type": "note",
+      "position": { "x": 0, "y": 264 },
+      "data": {
+        "noteKind": "text",
+        "noteContent": "target_column is species, and that column leaves on the labels port instead of entering the table -- which is why Describe sees four columns and not five. include_columns empty keeps every remaining numeric column; a non-numeric one is dropped either way.\n\ntarget_column 是 species，這一欄會從 labels 輸出，不會進到表格裡 - 所以 Describe 看到的是四欄，不是五欄。include_columns 留空表示其餘的數值欄位全收；非數值的欄位無論如何都會被丟掉。",
+        "noteColor": "#3d3d1a",
+        "boundToNodeId": "csv",
+        "boundOffset": { "x": 0, "y": 264 },
+        "noteWidth": 300
+      }
+    },
+    {
+      "id": "note-describe",
+      "type": "note",
+      "position": { "x": 320, "y": -370 },
+      "data": {
+        "noteKind": "text",
+        "noteContent": "percentiles is reported exactly as asked: pandas 2 quietly appended the median to any list, pandas 3 stopped doing that, and this node follows the surviving rule. axis switches to describing each row, or the whole table as one series.\n\npercentiles 要什麼就給什麼：pandas 2 會偷偷把中位數補進清單裡，pandas 3 不再這樣做，這個節點跟的是留下來的那條規則。axis 可以改成描述每一列，或把整張表當成一串資料。",
+        "noteColor": "#3d3d1a",
+        "boundToNodeId": "describe",
+        "boundOffset": { "x": 0, "y": -370 },
+        "noteWidth": 300
       }
     }
   ],

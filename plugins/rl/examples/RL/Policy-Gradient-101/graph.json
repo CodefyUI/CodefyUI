@@ -1,6 +1,6 @@
 {
   "name": "Policy Gradient 101: one REINFORCE step exposed",
-  "description": "Supports lesson C5-2 (PPO) — minus the clipping. Three input tensors stand in for the trajectory: `logits` (the policy's preference over 3 actions for 4 timesteps), `actions` (which action was actually sampled), and `rewards` (the return that followed). EduPolicyGradient softmaxes the logits, gathers π(a|s), subtracts the batch-mean baseline to get advantages, and assembles the scalar loss. Run it, then switch `baseline` to 'none' and watch how the loss changes when the variance-reduction trick is removed.",
+  "description": "Prints the loss, the advantages and log pi(a|s)",
   "nodes": [
     { "id": "start-1", "type": "Start",              "position": { "x": -240, "y":   0 }, "data": { "params": {} } },
     { "id": "logits",  "type": "TensorInput",        "position": { "x":   40, "y": -160 }, "data": { "params": { "shape": "4,3", "dtype": "float32", "value_mode": "random", "seed": 1 } } },
@@ -9,7 +9,23 @@
     { "id": "pg",      "type": "rl:Edu-PolicyGradient",  "position": { "x":  380, "y":    0 }, "data": { "params": { "baseline": "mean", "temperature": 1.0 } } },
     { "id": "p_loss",  "type": "Print",              "position": { "x":  720, "y": -120 }, "data": { "params": { "label": "Policy-gradient loss" } } },
     { "id": "p_adv",   "type": "Print",              "position": { "x":  720, "y":    0 }, "data": { "params": { "label": "Advantages (rewards − baseline)" } } },
-    { "id": "p_lp",    "type": "Print",              "position": { "x":  720, "y":  120 }, "data": { "params": { "label": "log π(a|s)" } } }
+    { "id": "p_lp",    "type": "Print",              "position": { "x":  720, "y":  120 }, "data": { "params": { "label": "log π(a|s)" } } },
+
+    { "id": "note-overview", "type": "note", "position": { "x": -660, "y": 0 },
+      "data": { "noteKind": "text",
+                "noteContent": "REINFORCE is the simplest policy gradient: take a trajectory, then push up the log-probability of the actions that did better than average. Edu-PolicyGradient is that update with its insides on the ports: one run shows log pi(a|s) for the action taken, the advantages and the scalar loss. The advantages come out 0.69, 0.06, -0.02 and -0.73, summing to zero because the baseline is their mean, and the loss is -0.128. A policy-gradient loss is negative as often as not: it is not an error being driven to zero, it is the quantity whose gradient moves the policy. C5-2 adds the clip this one leaves out.\n\nREINFORCE 是最簡單的策略梯度：拿一條軌跡，把表現優於平均的那些動作的對數機率往上推。Edu-PolicyGradient 就是這一步更新，而且把中間量都接到輸出埠上，跑一次就看得到全部：實際採取的動作的 log pi(a|s)、優勢，還有純量損失。照目前的設定，優勢是 0.69、0.06、-0.02、-0.73，加起來是零，因為基準就是它們的平均；損失是 -0.128。策略梯度的損失是負的很正常：它不是要壓到零的誤差，而是要用它的梯度去推動策略的那個量。C5-2 會補上這裡沒有的 clip。",
+                "noteColor": "#3d3d1a", "boundToNodeId": "start-1",
+                "boundOffset": { "x": -420, "y": 0 }, "noteWidth": 360 } },
+    { "id": "note-logits", "type": "note", "position": { "x": 40, "y": -530 },
+      "data": { "noteKind": "text",
+                "noteContent": "Shape 4 by 3: one score per action, for three actions at each of four timesteps. A row's softmax is the policy at that state, and temperature divides the row first -- the lower it is, the greedier. These numbers are random, so the policy itself means nothing.\n\n形狀是 4x3：四個時間步，每步三個動作各一個分數。一列取 softmax 就是那個狀態下的策略，而 temperature 會先除這一列，越小越貪心。這些數字是隨機的，所以策略本身沒有意義。",
+                "noteColor": "#3d3d1a", "boundToNodeId": "logits",
+                "boundOffset": { "x": 0, "y": -370 }, "noteWidth": 300 } },
+    { "id": "note-pg", "type": "note", "position": { "x": 380, "y": -420 },
+      "data": { "noteKind": "text",
+                "noteContent": "baseline mean subtracts the batch-average reward, which is why the four advantages sum to zero. Set it to none and the advantages become the raw rewards: the same run then prints +0.0345 instead of -0.1283. The node stops at the loss; BackwardOnce takes the gradient.\n\nbaseline 設 mean 會減掉批次平均獎勵，所以四個優勢加起來是零。改成 none 之後，優勢就是原始獎勵，同一次執行印出來的會是 +0.0345，而不是 -0.1283。這個節點只算到損失；負責取梯度的是 BackwardOnce。",
+                "noteColor": "#3d3d1a", "boundToNodeId": "pg",
+                "boundOffset": { "x": 0, "y": -420 }, "noteWidth": 300 } }
   ],
   "edges": [
     { "id": "trig",  "source": "start-1", "target": "logits",  "sourceHandle": "trigger", "type": "trigger" },
