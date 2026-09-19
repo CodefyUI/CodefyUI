@@ -200,10 +200,11 @@ describe('EmptyCanvasOverlay', () => {
     expect(screen.getAllByText('Model Architectures')).toHaveLength(1);
   });
 
-  it('puts the family on an architecture chip, and the category on every other', async () => {
+  it('leaves the chip off a card whose sub-header already says it', async () => {
     mockedRest.listExamples.mockResolvedValue([
       ex({ name: 'ResNet', category: 'Model_Architecture', path: 'm/resnet', section: 'architectures', family: 'CNN' }),
       ex({ name: 'Iris', category: 'Classical', path: 'c/iris', section: 'concepts' }),
+      ex({ name: 'Tiny CNN', category: 'Usage_Example', path: 'u/tiny', section: 'training', family: 'CNN' }),
     ]);
     render(<EmptyCanvasOverlay />);
     await waitFor(() => expect(screen.getByText('ResNet')).toBeInTheDocument());
@@ -211,10 +212,12 @@ describe('EmptyCanvasOverlay', () => {
     const chips = [...document.querySelectorAll('[class*="difficultyBadge"]')].map(
       (el) => el.textContent,
     );
-    // Concepts renders before the architectures, so Iris comes first.
-    // "Model Architecture" told the reader nothing the section header had not
-    // already said; the family is what distinguishes one card from the next.
-    expect(chips).toEqual(['Classical', 'CNN']);
+    // Training, then concepts, then the architectures. ResNet sits under a
+    // "CNN" sub-header, so a "CNN" chip on it would say the same thing twice;
+    // Tiny CNN has no sub-header above it, so its family chip stays.
+    expect(chips).toEqual(['CNN', 'Classical']);
+    // The node count is what is left in that card's footer.
+    expect(screen.getByText('ResNet').closest('button')).toHaveTextContent('3 nodes');
   });
 
   it('puts a built-in that declares no section under Other', async () => {

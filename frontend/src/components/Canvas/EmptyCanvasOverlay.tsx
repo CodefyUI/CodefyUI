@@ -22,12 +22,15 @@ function renderCard(
   example: LocalizedExample,
   onClick: (e: ExampleSummary) => void,
   t: (k: TranslationKey, vars?: Record<string, string | number>) => string,
+  heading: string | null,
 ) {
   const catColor = EXAMPLE_CATEGORY_COLORS[example.category] ?? EXAMPLE_CATEGORY_FALLBACK;
   // The family, for the architectures: they are all one category, so
   // "Model Architecture" on every card of a section already headed
-  // "Model Architectures" said nothing twice over.
+  // "Model Architectures" said nothing twice over. And no chip at all when
+  // the sub-header right above the card is that same word.
   const chipLabel = exampleChipLabel(example);
+  const showChip = chipLabel !== heading;
   const shown = truncateToWidth(example.description, CARD_DESC_COLUMNS);
   return (
     <button type="button"
@@ -66,18 +69,20 @@ function renderCard(
         {shown}
       </div>
       <div className={styles.presetCardFooter}>
-        <span
-          className={styles.difficultyBadge}
-          // Fill is the hue tinted into the card surface and the border carries
-          // the hue at full strength; the label takes the text tier. The old
-          // `${catColor}22` wash with the hue as text measured 2.24:1.
-          style={{
-            background: mixColor(SURFACE_RAISED, catColor, NODE_HEADER_TINT),
-            borderColor: catColor,
-          }}
-        >
-          {chipLabel}
-        </span>
+        {showChip && (
+          <span
+            className={styles.difficultyBadge}
+            // Fill is the hue tinted into the card surface and the border carries
+            // the hue at full strength; the label takes the text tier. The old
+            // `${catColor}22` wash with the hue as text measured 2.24:1.
+            style={{
+              background: mixColor(SURFACE_RAISED, catColor, NODE_HEADER_TINT),
+              borderColor: catColor,
+            }}
+          >
+            {chipLabel}
+          </span>
+        )}
         <span className={styles.nodeCount}>{t('empty.nodeCount', { count: example.node_count })}</span>
       </div>
     </button>
@@ -149,7 +154,7 @@ export function EmptyCanvasOverlay() {
                   <div className={styles.subsectionTitle}>{subgroup.label}</div>
                 )}
                 <div className={styles.quickStartGrid}>
-                  {subgroup.items.map((example) => renderCard(example, handleClick, t))}
+                  {subgroup.items.map((example) => renderCard(example, handleClick, t, subgroup.label))}
                 </div>
               </div>
             ))}

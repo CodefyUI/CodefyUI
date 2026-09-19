@@ -169,18 +169,21 @@ describe('TemplateGalleryModal', () => {
     expect(headings()).toEqual(['CNN', 'RNN', 'Chapter 2']);
   });
 
-  it('puts the family on an architecture chip, and the category on every other', async () => {
+  it('leaves the chip off a card whose group heading already says it', async () => {
     mockedRest.listExamples.mockResolvedValue([
       ex({ name: 'ResNet', category: 'Model_Architecture', path: 'm/1', section: 'architectures', family: 'CNN' }),
       ex({ name: 'Iris', category: 'Classical', path: 'c/1', section: 'concepts' }),
+      ex({ name: 'Tiny CNN', category: 'Usage_Example', path: 'u/1', section: 'training', family: 'CNN' }),
     ]);
 
     render(<TemplateGalleryModal />);
     await waitFor(() => expect(within(grid()).getByText('ResNet')).toBeInTheDocument());
 
     const chips = [...grid().querySelectorAll('[class*="cardChip"]')].map((el) => el.textContent);
-    // Concepts renders before the architectures, so Iris comes first.
-    expect(chips).toEqual(['Classical', 'CNN']);
+    // Training, then concepts, then the architectures. ResNet sits in the group
+    // headed "CNN", so a "CNN" chip on it would say the same thing twice; Tiny
+    // CNN's group is headed "Training", so its family chip stays.
+    expect(chips).toEqual(['CNN', 'Classical']);
     // The detail pane still names the category of whatever is chosen — the
     // first example the server listed, until a card is clicked — because it is
     // the one place with room for the example's own provenance.

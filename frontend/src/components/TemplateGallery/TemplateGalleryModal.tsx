@@ -278,16 +278,20 @@ function TemplateGalleryBody() {
                             <span className={styles.cardName}>{example.name}</span>
                             <span className={styles.cardDesc}>{example.description}</span>
                             <span className={styles.cardFooter}>
-                              <span
-                                className={styles.cardChip}
-                                // Hue on the border (a graphic, 3:1) and in the
-                                // fill; the label is text and takes the text
-                                // tier. The hue on its own tint cannot reach
-                                // 4.5:1.
-                                style={{ borderColor: chipColor, background: chipFill }}
-                              >
-                                {exampleChipLabel(example)}
-                              </span>
+                              {/* No chip when the group heading right above is
+                                  that same word (an architecture family). */}
+                              {exampleChipLabel(example) !== label && (
+                                <span
+                                  className={styles.cardChip}
+                                  // Hue on the border (a graphic, 3:1) and in the
+                                  // fill; the label is text and takes the text
+                                  // tier. The hue on its own tint cannot reach
+                                  // 4.5:1.
+                                  style={{ borderColor: chipColor, background: chipFill }}
+                                >
+                                  {exampleChipLabel(example)}
+                                </span>
+                              )}
                               <span className={styles.cardCount}>
                                 {t('empty.nodeCount', { count: example.node_count })}
                               </span>

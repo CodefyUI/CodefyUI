@@ -62,11 +62,13 @@
   background: rgba(34, 211, 238, 0.22);
 }
 
-/* Quick-start preset card grid */
+/* Preset card grid. Rows start at the left edge, under the section title and
+   the sub-header: a centred row of three sat a card's width away from the
+   heading that names it. */
 .quickStartGrid {
   display: flex;
   gap: var(--sp-4);
-  justify-content: center;
+  justify-content: flex-start;
   flex-wrap: wrap;
 }
 
