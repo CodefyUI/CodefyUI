@@ -60,6 +60,29 @@ received — each links to the release it was published as.
   than by its name. Importing a single graph still replaces the current tab's
   canvas; importing a workspace only adds tabs.
 
+### Fixed
+
+- **A node inspected while the graph was running said its data had expired.**
+  The engine writes a node's captures when the node returns, and answers `404`
+  for anything not written yet; the Inspector read every `404` as expiry. So
+  clicking a node mid-run answered "Run data expired — re-run to capture" about
+  a node that was, at that moment, running. The fetch was keyed on the run and
+  the port set, and a node finishing changes neither, so that line then stayed
+  put: the data arrived and the panel never went back for it. Closing the panel
+  and reopening it was the only way to see the values.
+
+  Each port now waits on the node that *owns* it — for an input row that is the
+  upstream source, not the node on screen — and says so, with "Node is
+  running…" or, for one the run has not reached yet, "Waiting for this node to
+  run…". No request goes out while that node is still working, and the moment
+  it reports a terminal status the row fills itself in, with no reselect. A
+  port that has already been read is not read again because some *other* node
+  finished, so an upstream tensor is downloaded once rather than once per
+  downstream node that completes. The same rule reaches the Node Detail modal's
+  Inputs, Outputs and Statistics tabs and the Inspector's Steps tab. The
+  Backward tab waits on the run rather than on the node, because gradients are
+  written after the whole forward pass.
+
 ## [2.8.2] — 2026-09-17
 
 The node list says what a node does, and a Save As can no longer destroy a

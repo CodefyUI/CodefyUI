@@ -1,7 +1,9 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { act, render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { StepTraceView } from './StepTraceView';
 import { useI18n } from '../../i18n';
+import { useTabStore } from '../../store/tabStore';
+import { flushTabNodeUpdates, queueTabNodeStatus } from '../../store/nodeUpdateQueue';
 import {
   fetchOutput,
   fetchStepIndex,
@@ -9,7 +11,7 @@ import {
   RunDataExpiredError,
   type StepIndexEntry,
 } from '../../api/executionOutputs';
-import type { TensorOutput, OutputData } from '../../types';
+import type { ExecutionStatus, TensorOutput, OutputData } from '../../types';
 
 vi.mock('../../api/executionOutputs', async () => {
   const actual = await vi.importActual<typeof import('../../api/executionOutputs')>(
@@ -21,6 +23,37 @@ vi.mock('../../api/executionOutputs', async () => {
     fetchOutput: vi.fn(),
   };
 });
+
+/** Put the active tab in the given run state, holding one node `n1`. */
+function seedRun(tabStatus: ExecutionStatus, nodeStatus: ExecutionStatus) {
+  const tab = useTabStore.getState().tabs[0];
+  useTabStore.setState({
+    tabs: [
+      {
+        ...tab,
+        status: tabStatus,
+        lastRunId: 'r1',
+        nodes: [
+          {
+            id: 'n1',
+            type: 'baseNode',
+            position: { x: 0, y: 0 },
+            data: { label: 'N1', type: 'Generic', params: {}, executionStatus: nodeStatus },
+          },
+        ],
+      },
+    ],
+    activeTabId: tab.id,
+  });
+}
+
+/** One `node_status` frame, through the same queue the socket handler writes to. */
+function report(nodeId: string, status: ExecutionStatus) {
+  act(() => {
+    queueTabNodeStatus(useTabStore.getState().activeTabId, nodeId, status);
+    flushTabNodeUpdates();
+  });
+}
 
 const mockStepIndex = vi.mocked(fetchStepIndex);
 const mockOutput = vi.mocked(fetchOutput);
@@ -264,5 +297,62 @@ describe('StepTraceView', () => {
       expect(screen.getByText('No steps recorded')).toBeInTheDocument(),
     );
     expect(mockOutput).not.toHaveBeenCalled();
+  });
+});
+
+// A node's steps are written when the node returns, together with its outputs,
+// and the index endpoint answers 404 — which `fetchStepIndex` reads as "no
+// steps" — for anything not written yet.
+describe('StepTraceView — while the node is still running', () => {
+  afterEach(() => {
+    // The tab outlives the test; leave it as the tests above expect to find it.
+    const tab = useTabStore.getState().tabs[0];
+    useTabStore.setState({ tabs: [{ ...tab, status: 'idle', lastRunId: null, nodes: [] }] });
+  });
+
+  /** Empty until the node is done, the way the server answers. */
+  function serveStepsWhenDone(done: { value: boolean }) {
+    mockStepIndex.mockImplementation(async () =>
+      done.value ? [step({ index: 0, name: 'Softmax' })] : [],
+    );
+  }
+
+  it('says the node is running instead of telling the user to turn Verbose on', async () => {
+    seedRun('running', 'running');
+    serveStepsWhenDone({ value: false });
+    render(<StepTraceView runId="r1" nodeId="n1" />);
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+
+    expect(screen.queryByText('No steps recorded')).toBeNull();
+    expect(screen.getByText('Node is running…')).toBeInTheDocument();
+    expect(mockStepIndex).not.toHaveBeenCalled();
+  });
+
+  it('says a queued node is waiting', () => {
+    seedRun('running', 'idle');
+    serveStepsWhenDone({ value: false });
+    render(<StepTraceView runId="r1" nodeId="n1" />);
+    expect(screen.getByText('Waiting for this node to run…')).toBeInTheDocument();
+    expect(mockStepIndex).not.toHaveBeenCalled();
+  });
+
+  it('loads the steps by itself when the node finishes', async () => {
+    seedRun('running', 'running');
+    const done = { value: false };
+    serveStepsWhenDone(done);
+    render(<StepTraceView runId="r1" nodeId="n1" />);
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+
+    done.value = true;
+    report('n1', 'completed');
+
+    await waitFor(() => expect(screen.getByText('Softmax')).toBeInTheDocument());
+    expect(screen.queryByText('Node is running…')).toBeNull();
+    expect(mockStepIndex).toHaveBeenCalledTimes(1);
+    expect(mockStepIndex).toHaveBeenCalledWith('r1', 'n1');
   });
 });

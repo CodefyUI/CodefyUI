@@ -8,6 +8,7 @@ import {
 } from '../../api/executionOutputs';
 import type { OutputData, TensorOutput } from '../../types';
 import { TensorGridView } from './TensorGridView';
+import { useRunInProgress } from './portCaptures';
 import { useI18n } from '../../i18n';
 import styles from './InspectorPanel.module.css';
 
@@ -101,11 +102,18 @@ export function BackwardView({ runId, nodeId }: Props) {
   const [entries, setEntries] = useState<GradIndexEntry[] | null>(null);
   const [indexError, setIndexError] = useState<string | null>(null);
   const [tensors, setTensors] = useState<TensorMap>({});
+  // Gradients are written by the backward pass, which runs after the WHOLE
+  // forward pass — so unlike the Forward tab, what this view waits for is the
+  // run, not the selected node. Read mid-run the index comes back empty,
+  // which reads as "no gradients captured": an instruction to turn on a
+  // setting that may well already be on.
+  const runInProgress = useRunInProgress();
 
   // The parent remounts this component (via a `key` on runId:nodeId), so each
   // mount starts from fresh state — no manual reset needed, and the prior
   // node's gradients never flash before the new fetch resolves.
   useEffect(() => {
+    if (runInProgress) return;
     let cancelled = false;
     fetchGradIndex(runId, nodeId)
       .then((es) => {
@@ -129,7 +137,7 @@ export function BackwardView({ runId, nodeId }: Props) {
     return () => {
       cancelled = true;
     };
-  }, [runId, nodeId, t]);
+  }, [runId, nodeId, t, runInProgress]);
 
   // The loading placeholders were already seeded alongside setEntries above.
   useEffect(() => {
@@ -165,6 +173,10 @@ export function BackwardView({ runId, nodeId }: Props) {
       cancelled = true;
     };
   }, [entries, runId, nodeId, t]);
+
+  if (runInProgress) {
+    return <div className={styles.diffMissing}>{t('inspector.runRunning')}</div>;
+  }
 
   if (indexError) {
     return <div className={styles.portError}>{indexError}</div>;
