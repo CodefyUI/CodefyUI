@@ -1,13 +1,24 @@
 {
-  "name": "Mini U-Net (Compact): the same architecture in one node",
-  "description": "The whole U-Net packaged into a single `DiffusionUNet` meta-node, rather than every ResBlock + Upsample + Concat wired by hand — the form you'd actually use when assembling a sampling pipeline. Run it: GaussianNoise feeds the model + DDPMSampler at one step to confirm the output shape is preserved. If you want to see the same architecture opened up node by node, the `Mini-UNet-Expanded` counterpart ships in the `deep` chapter pack (`cdui plugin install deep`), not in the base install.",
+  "name": "Mini U-Net as a single node",
+  "description": "One denoise step; the output keeps the input shape",
   "gallery": { "section": "concepts", "order": 7 },
   "nodes": [
     { "id": "start-1",  "type": "Start", "position": { "x": -260, "y": 0 }, "data": { "params": {} } },
     { "id": "noise",    "type": "GaussianNoise", "position": { "x": 0,    "y": 60 }, "data": { "params": { "shape": "1,3,16,16", "mean": 0, "std": 1, "seed": 42 } } },
     { "id": "unet",     "type": "DiffusionUNet",  "position": { "x": 320,  "y": -60 }, "data": { "params": { "in_channels": 3, "base_channels": 16, "channel_mult": "1,2,4", "time_emb_dim": 32, "num_groups": 4, "seed": 42 } } },
     { "id": "sampler",  "type": "DDPMSampler",    "position": { "x": 660,  "y": 0 }, "data": { "params": { "num_steps": 1, "schedule": "linear", "beta_start": 0.0001, "beta_end": 0.02, "seed": 42 } } },
-    { "id": "print",    "type": "Print",          "position": { "x": 1000, "y": 0 }, "data": { "params": { "label": "Compact U-Net output (1-step denoise)" } } }
+    { "id": "print",    "type": "Print",          "position": { "x": 1000, "y": 0 }, "data": { "params": { "label": "Compact U-Net output (1-step denoise)" } } },
+
+    { "id": "note-overview", "type": "note", "position": { "x": -680, "y": 0 },
+      "data": { "noteKind": "text",
+                "noteContent": "DiffusionUNet is a whole U-Net in one node: encoder, bottleneck, and decoder with its skip connections, none of it drawn. That is the form you want once the architecture is settled and the graph is about the pipeline around it. One sampling step is enough to make the point -- [1, 3, 16, 16] goes in and [1, 3, 16, 16] comes out, because a U-Net predicts noise shaped like its input. Untrained, so the numbers themselves mean nothing. The deep pack has the same architecture with every ResBlock, Upsample and Concat wired by hand.\n\nDiffusionUNet 把整個 U-Net 收在一個節點裡：編碼器、瓶頸、含捷徑的解碼器，一條線都不用畫。架構定下來、重點變成它外面那條流程時，用的就是這個形式。取樣一步就夠說明了 — [1, 3, 16, 16] 進、[1, 3, 16, 16] 出，因為 U-Net 預測的噪聲和輸入同形狀。模型沒訓練過，數值本身沒有意義。deep 套件包裡有同一套架構，但每顆 ResBlock、Upsample 與 Concat 都是手接的。",
+                "noteColor": "#3d3d1a", "boundToNodeId": "start-1",
+                "boundOffset": { "x": -420, "y": 0 }, "noteWidth": 360 } },
+    { "id": "note-unet", "type": "note", "position": { "x": 320, "y": -390 },
+      "data": { "noteKind": "text",
+                "noteContent": "base_channels and channel_mult are the shape of it: 16 channels at full resolution, then 1, 2 and 4 times that as each stage halves the picture. num_groups is the GroupNorm split, and it has to divide every one of those channel counts.\n\nbase_channels 與 channel_mult 決定它的形狀：最上層 16 個通道，之後每一階把圖縮一半、通道數變成 1、2、4 倍。num_groups 是 GroupNorm 的分組數，必須能整除上面每一個通道數。",
+                "noteColor": "#3d3d1a", "boundToNodeId": "unet",
+                "boundOffset": { "x": 0, "y": -330 }, "noteWidth": 300 } }
   ],
   "edges": [
     { "id": "trig_noise", "source": "start-1", "target": "noise",   "sourceHandle": "trigger", "type": "trigger" },

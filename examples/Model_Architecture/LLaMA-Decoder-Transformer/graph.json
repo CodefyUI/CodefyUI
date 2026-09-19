@@ -1,17 +1,29 @@
 {
   "name": "LLaMA Decoder-Only Transformer",
-  "description": "Forward-pass visualization of a LLaMA-style decoder-only transformer. Architecturally similar to GPT (causal self-attention, no encoder), but LLaMA's distinctive choice is pre-normalization: a LayerNorm (originally RMSNorm in the paper) is applied to the input before the attention stack. Input is a (seq=16, batch=2, d=32) token-embedding tensor. We pre-normalise, run the decoder with tensor=memory (self-attention only), post-normalise, pool, and project to 32 vocab logits.",
+  "description": "Decoder forward pass, LayerNorm in front of the stack",
   "gallery": { "section": "architectures", "family": "Transformer", "order": 3 },
   "nodes": [
-    { "id": "start-1", "type": "Start", "position": { "x": -200, "y": 0 }, "data": { "params": {} } },
+    { "id": "start-1", "type": "Start", "position": { "x": -230, "y": 0 }, "data": { "params": {} } },
     { "id": "input", "type": "TensorCreate", "position": { "x": 0, "y": 0 }, "data": { "params": { "shape": "16,2,32", "fill": "randn", "value": 0.0, "requires_grad": false } } },
-    { "id": "pre_norm", "type": "LayerNorm", "position": { "x": 240, "y": 0 }, "data": { "params": { "normalized_shape": "32", "eps": 0.00001 } } },
-    { "id": "decoder", "type": "TransformerDecoder", "position": { "x": 480, "y": 0 }, "data": { "params": { "d_model": 32, "nhead": 4, "num_layers": 4, "dim_feedforward": 128 } } },
-    { "id": "post_norm", "type": "LayerNorm", "position": { "x": 760, "y": 0 }, "data": { "params": { "normalized_shape": "32", "eps": 0.00001 } } },
-    { "id": "to_batch_first", "type": "Permute", "position": { "x": 1000, "y": 0 }, "data": { "params": { "dims": "1,0,2" } } },
-    { "id": "last_token", "type": "Mean", "position": { "x": 1220, "y": 0 }, "data": { "params": { "dim": "1", "keepdim": false } } },
-    { "id": "head", "type": "Linear", "position": { "x": 1440, "y": 0 }, "data": { "params": { "in_features": 32, "out_features": 32 } } },
-    { "id": "print_logits", "type": "Print", "position": { "x": 1660, "y": 0 }, "data": { "params": { "label": "Next-token logits (B,V)" } } }
+    { "id": "pre_norm", "type": "LayerNorm", "position": { "x": 270, "y": 0 }, "data": { "params": { "normalized_shape": "32", "eps": 0.00001 } } },
+    { "id": "decoder", "type": "TransformerDecoder", "position": { "x": 550, "y": 0 }, "data": { "params": { "d_model": 32, "nhead": 4, "num_layers": 4, "dim_feedforward": 128 } } },
+    { "id": "post_norm", "type": "LayerNorm", "position": { "x": 860, "y": 0 }, "data": { "params": { "normalized_shape": "32", "eps": 0.00001 } } },
+    { "id": "to_batch_first", "type": "Permute", "position": { "x": 1140, "y": 0 }, "data": { "params": { "dims": "1,0,2" } } },
+    { "id": "last_token", "type": "Mean", "position": { "x": 1390, "y": 0 }, "data": { "params": { "dim": "1", "keepdim": false } } },
+    { "id": "head", "type": "Linear", "position": { "x": 1640, "y": 0 }, "data": { "params": { "in_features": 32, "out_features": 32 } } },
+    { "id": "print_logits", "type": "Print", "position": { "x": 1890, "y": 0 }, "data": { "params": { "label": "Next-token logits (B,V)" } } },
+
+    { "id": "note-overview", "type": "note", "position": { "x": -650, "y": 0 },
+      "data": { "noteKind": "text", "noteContent": "GPT's original block normalises after each sub-layer; LLaMA normalises before it, which leaves the residual path unnormalised end to end and lets deep stacks train without a long warmup.\n\nThree honest gaps. The paper's norm is RMSNorm, which skips the mean subtraction; the canvas has LayerNorm. One LayerNorm sits in front of the whole stack, not one before attention and one before the feedforward. And TransformerDecoder is PyTorch's default layer: it normalises AFTER its sub-layers and applies no causal mask, so inside the stack this is still GPT's arrangement, every position seeing the whole sequence.\n\nThe input is a random tensor: the wiring and the shapes, not a trained model.\n\nGPT 原本的區塊是在每個子層之後才做正規化，LLaMA 則是之前；殘差那條路徑整段保持沒被正規化過，很深的堆疊才不必靠長長的 warmup 才訓得起來。\n\n有三個要說清楚的落差。論文用的是 RMSNorm，一種省掉減平均的簡化版，畫布只有 LayerNorm。這裡也只有一個 LayerNorm 擺在整個堆疊前面，真正的區塊則是 attention 前一個、feedforward 前一個。還有 TransformerDecoder 是 PyTorch 的預設層：它在每個子層「之後」才正規化，也沒有加因果遮罩，所以堆疊裡面其實還是 GPT 那種排法，每個位置也都看得到整個序列。\n\n輸入是隨機張量：看的是接線與形狀，不是訓練好的模型。",
+                 "noteColor": "#3d3d1a", "boundToNodeId": "start-1", "boundOffset": { "x": -420, "y": 0 }, "noteWidth": 360 } },
+
+    { "id": "note-pre_norm", "type": "note", "position": { "x": 270, "y": -360 },
+      "data": { "noteKind": "text", "noteContent": "normalized_shape 32 means it normalises across the feature dimension, one token at a time - never across the sequence. It shows where pre-normalisation puts the norm; the decoder's own layers still normalise after each sub-layer.\n\nnormalized_shape 32 表示它沿特徵維度正規化，一次一個 token — 不會跨序列。它畫的是 pre-normalization 把正規化擺在哪裡；decoder 自己那幾層仍然是在子層之後才正規化。",
+                 "noteColor": "#3d3d1a", "boundToNodeId": "pre_norm", "boundOffset": { "x": 0, "y": -360 }, "noteWidth": 300 } },
+
+    { "id": "note-last_token", "type": "note", "position": { "x": 1390, "y": -270 },
+      "data": { "noteKind": "text", "noteContent": "The id says last_token, but the node is a Mean: it averages all 16 positions. A real next-token head reads the final position only, the one that has seen the whole prompt.\n\n節點 id 寫的是 last_token，但它其實是 Mean：把 16 個位置全部平均。真正的 next-token 頭只讀最後一個位置，因為那個位置才看過整段輸入。",
+                 "noteColor": "#3d3d1a", "boundToNodeId": "last_token", "boundOffset": { "x": 0, "y": -270 }, "noteWidth": 300 } }
   ],
   "edges": [
     { "id": "e-t", "source": "start-1", "target": "input", "sourceHandle": "trigger", "type": "trigger" },

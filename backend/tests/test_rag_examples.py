@@ -5,14 +5,23 @@ switches to a 69 MB GloVe table for its real vectors,
 Sentence-Similarity-zhTW needs a 470 MB multilingual encoder before it does
 anything at all, and the two RAG examples need that encoder plus a
 generator -- a gigabyte of Qwen2.5 for the local one, a running Ollama or a
-hosted API for the other. None of them is executed here -- CI has no pack
-cache, and a box that HAS one should not load half a gigabyte of weights
-inside the fast suite (which is why ``TextEmbedding``, ``HFTextGenerate``
-and ``LLMChat`` all sit in ``test_builtin_examples._SLOW_NODE_TYPES``). So
-this file asserts everything about them that does not need the model: what
-the gallery card says, how many sentences the example carries, where the
-labels are wired, and -- for the RAG pair -- that the two graphs really are
-the same retrieval chain under two different generators.
+hosted API for the other. Three of them are never executed here -- CI has no
+pack cache, and a box that HAS one should not load half a gigabyte of
+weights inside the fast suite (which is why ``TextEmbedding``,
+``HFTextGenerate`` and ``LLMChat`` all sit in
+``test_builtin_examples._SLOW_NODE_TYPES``). So this file asserts everything
+about them that does not need the model: what the gallery card says, how
+many sentences the example carries, where the labels are wired, and -- for
+the RAG pair -- that the two graphs really are the same retrieval chain
+under two different generators, annotated with the same notes.
+
+Word-Embedding-Analogy is the exception, and only as it SHIPS: its default
+``demo-16d`` backend is a table written inline in the source, so running the
+graph costs a second and downloads nothing. Its overview note tells the
+reader which five words come back, and
+``test_analogy_prints_the_five_words_its_note_names`` is where that promise
+is checked against a real run. Switching that graph to ``glove-50d`` is the
+download, and that test lives next door with the rest of them.
 
 Why the card is worth a test. ``EmptyCanvasOverlay.tsx`` renders an
 example's description as ``description.slice(0, 80) + '...'`` with no
@@ -29,12 +38,14 @@ file is written to avoid.
 
 from __future__ import annotations
 
+import asyncio
 import json
 from pathlib import Path
 
 import pytest
 
 from app.config import settings
+from app.core.graph_engine import execute_graph, is_note_node
 from app.core.node_base import ParamType
 from app.core.node_registry import NodeRegistry
 from app.nodes.llm.llm_chat_node import LLMChatNode
@@ -107,6 +118,27 @@ _PACK_BACKED_CARDS = [
 
 def _payload(graph_path: Path) -> dict:
     return json.loads(graph_path.read_text(encoding="utf-8"))
+
+
+def _notes(payload: dict) -> dict[str, dict]:
+    """The graph's note nodes, keyed by id.
+
+    The complement of ``graph_nodes``: that helper exists so a test about
+    the pipeline reads past the prose, and this one so a test about the
+    prose can find it. Keyed rather than listed because every assertion
+    below is about a NAMED note -- the overview, the one on ``gen`` -- and
+    an id is how the two RAG graphs line their notes up with each other.
+    """
+    return {node["id"]: node for node in payload.get("nodes", [])
+            if is_note_node(node)}
+
+
+#: What ``print_top`` shows on the shipped analogy graph, measured by
+#: running it (``demo-16d``, 2026-09-19). The overview note lists these five
+#: words to a reader who has not run anything yet, so the list is a fact
+#: about the graph rather than a nicety, and
+#: ``test_analogy_prints_the_five_words_its_note_names`` holds both to it.
+_ANALOGY_TOP_K = ["queen", "duchess", "princess", "mother", "goddess"]
 
 
 def _cuts_cleanly(description: str) -> bool:
@@ -188,32 +220,88 @@ def test_pack_example_cards_warn_inside_the_80_char_truncation(
 
 
 def test_analogy_card_says_it_runs_offline():
-    """Both facts that decide whether the analogy runs survive the cut.
+    """The one fact that decides whether the analogy runs survives the cut.
 
-    That it works offline on ``demo-16d`` and that ``glove-50d`` is where the
-    real vectors are: a learner without the word-vectors pack needs the
-    first, and one wondering what the toy table is for needs the second. It
-    is the mirror image of the test above -- this example runs WITHOUT a
+    That it works offline on ``demo-16d``: a learner without the
+    word-vectors pack needs to know the default backend ships with the app.
+    It is the mirror image of the test above -- this example runs WITHOUT a
     pack, and the card has to say so.
 
-    Where the cut LANDS is a separate assertion because the two come apart: a
-    description can carry both facts inside 80 characters and still be cut in
-    the middle of the word after them.
+    ``glove-50d`` used to be asserted here too. It is not a requirement but
+    advice -- what to change to see the analogy on real vectors -- and
+    advice on a card is what pushed these descriptions past the cut in the
+    first place. It now has to be in a note instead, which the test below
+    holds it to.
     """
     description = _payload(_ANALOGY_EXAMPLE)["description"]
     visible = description[:_CARD_VISIBLE_CHARS]
 
     assert "offline" in visible
-    assert "glove-50d" in visible
-    assert _cuts_cleanly(description), (
-        f"the card renders {visible!r} and nothing more, cutting a word in "
-        f"half; end the opening sentence inside {_CARD_VISIBLE_CHARS} "
-        f"characters")
 
-    # And the opening sentence is what has to fit, not just any 80 characters
-    # of it: the rest of the description is written for the sidebar tooltip.
-    first_sentence = description[:description.index(". ") + 1]
-    assert len(first_sentence) <= _CARD_VISIBLE_CHARS
+    # The whole description, not its opening sentence: a one-line card is
+    # self-contained because nothing of it is cut, which is the property the
+    # old "the first sentence fits" assertion was reaching for by proxy.
+    # Stronger than the old check and it replaces it rather than joining it:
+    # a description the card shows WHOLE cannot be cut mid-word, so
+    # ``_cuts_cleanly`` beside this line would be an assertion that cannot
+    # fail. The pack-backed cards above still need it -- theirs are allowed
+    # to run past the cut.
+    assert len(description) == len(visible), (
+        f"the card renders {visible!r} and cuts the rest; an example "
+        f"description is one line the card can show whole")
+
+
+def test_analogy_note_sends_the_reader_to_the_real_vectors():
+    """``glove-50d`` is named on the canvas, where there is room for it.
+
+    The toy table is what makes the example runnable and what makes it a
+    toy: the analogy is exact on ``demo-16d`` because the 59 vectors were
+    written so that it would be, and a reader who never hears about the real
+    400k-word table leaves believing word vectors are cleaner than they are.
+    That is a paragraph, not a card -- so it lives in a note, and the pack it
+    comes from is named beside it or the advice ends at a greyed-out
+    dropdown.
+    """
+    notes = _notes(_payload(_ANALOGY_EXAMPLE))
+    assert notes, "the analogy example carries no notes at all"
+
+    text = "\n".join(note["data"]["noteContent"] for note in notes.values())
+    for phrase in ("glove-50d", "word-vectors"):
+        assert phrase in text, (
+            f"{phrase!r} is in none of the analogy's notes "
+            f"({sorted(notes)}); the card no longer has room for it, so the "
+            f"canvas is where it has to be said")
+
+
+def test_analogy_prints_the_five_words_its_note_names():
+    """The shipped graph is run, and the overview note is read against it.
+
+    The one example in this file that executes here, and the exception is
+    the point: its default ``demo-16d`` backend is inline, so this costs a
+    second and no download, while the other three would each pull half a
+    gigabyte. The note tells the reader which five words ``print_top``
+    comes back with -- a promise about a run, made in a file nothing
+    executes -- so the run is made and the note is held to it. A note that
+    contradicts its graph is worse than no note.
+    """
+    payload = _payload(_ANALOGY_EXAMPLE)
+    results = asyncio.run(execute_graph(
+        payload["nodes"], payload["edges"], error_mode="fail_fast"))
+
+    assert results["similarity"]["top_k_labels"] == [_ANALOGY_TOP_K], (
+        f"the analogy now ranks "
+        f"{results['similarity']['top_k_labels']} on demo-16d; the overview "
+        f"note names {_ANALOGY_TOP_K}")
+
+    note = _notes(payload)["note-overview"]["data"]["noteContent"]
+    at = -1
+    for word in _ANALOGY_TOP_K:
+        found = note.find(word, at + 1)
+        assert found > at, (
+            f"the overview note does not name {word!r} after "
+            f"{_ANALOGY_TOP_K[:_ANALOGY_TOP_K.index(word)]}, so it no longer "
+            f"lists what print_top shows")
+        at = found
 
 
 # -- Sentence-Similarity-zhTW ---------------------------------------------
@@ -495,17 +583,66 @@ def test_rag_examples_share_the_retrieval_chain():
         f"got {generators}")
 
 
+#: The two notes the RAG pair is allowed to disagree in: the overview, which
+#: says what each example is FOR, and the one on the generator, which is the
+#: only node that differs. Everything else on the canvas describes the shared
+#: retrieval chain and has to read the same in both.
+_RAG_NOTES_THAT_DIFFER = {"note-overview", "note-gen"}
+
+
+def test_rag_examples_carry_the_same_notes_under_the_same_ids():
+    """The annotations are part of "the same chain", and nothing sees it.
+
+    ``test_rag_examples_share_the_retrieval_chain`` above compares the two
+    graphs through ``graph_nodes``, which drops notes -- deliberately, so
+    the pipeline comparison is about the pipeline. The consequence is that
+    the prose beside it is compared by NOTHING: a top_k explained one way
+    here and another way there would pass every test in this file while the
+    reader is told two different things about one shipped parameter.
+
+    So the same rule, one level up. Same note ids, same positions, same
+    text -- except in the overview and on ``gen``, where the two examples
+    genuinely differ and are REQUIRED to, or one of them is describing the
+    other one's generator.
+    """
+    local = _notes(_payload(_RAG_LOCAL_EXAMPLE))
+    api = _notes(_payload(_RAG_LLMCHAT_EXAMPLE))
+
+    assert local, "RAG-Local-Offline carries no notes, so this compares nothing"
+    assert set(local) == set(api), (
+        f"the two RAG graphs no longer carry the same notes: only in the "
+        f"local one {sorted(set(local) - set(api))}, only in the API one "
+        f"{sorted(set(api) - set(local))}")
+
+    for note_id in sorted(local):
+        assert local[note_id]["position"] == api[note_id]["position"], (
+            f"note {note_id!r} sits at {local[note_id]['position']} in the "
+            f"local example and {api[note_id]['position']} in the API one; "
+            f"the nodes they annotate are at identical positions, so the "
+            f"notes are too")
+
+    differ = {note_id for note_id in local
+              if local[note_id]["data"]["noteContent"]
+              != api[note_id]["data"]["noteContent"]}
+    assert differ == _RAG_NOTES_THAT_DIFFER, (
+        f"the notes that differ between the two RAG examples are "
+        f"{sorted(differ)}, not {sorted(_RAG_NOTES_THAT_DIFFER)}. A note "
+        f"about the shared retrieval chain must read the same in both; the "
+        f"overview and the one on `gen` must not, or one example is "
+        f"describing the other's generator.")
+
+
 def test_rag_readmes_exist_and_corpus_has_five_documents():
     """Each RAG graph has its README, and the corpus behind them is intact.
 
-    The chat-API card ends by pointing at "README.md beside this graph" and
-    neither example is documented anywhere else, so a missing file leaves
-    the reader with a graph and no explanation. The corpus count is the
-    other half: the local card says five notes, both READMEs list the five
-    by subject, and the opt-in real run next door asserts which TWO of the
-    five fill the top three of the search -- a sixth file dropped into
-    ``backend/data/samples/rag`` makes all three wrong and breaks none of
-    them on its own.
+    The chat-API's overview note ends by pointing at "README.md beside this
+    graph", and the long form of either example is documented nowhere else,
+    so a missing file leaves the reader with a graph, a note and no detail.
+    The corpus count is the other half: the local example's overview note
+    says five notes, both READMEs list the five by subject, and the opt-in
+    real run next door asserts which TWO of the five fill the top three of
+    the search -- a sixth file dropped into ``backend/data/samples/rag``
+    makes all three wrong and breaks none of them on its own.
     """
     for graph_path in (_RAG_LOCAL_EXAMPLE, _RAG_LLMCHAT_EXAMPLE):
         readme = graph_path.parent / "README.md"

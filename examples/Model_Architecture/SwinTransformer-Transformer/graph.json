@@ -1,25 +1,37 @@
 {
   "name": "Swin Transformer (Simplified)",
-  "description": "Forward-pass visualization of a simplified Swin Transformer stage. Swin's distinctive idea is hierarchical patch merging + shifted-window attention for linear-in-pixels complexity. This demo keeps the hierarchy and patch embedding (Conv2d stride=4 then a second stride=2 downsample) but uses a plain TransformerEncoder at each stage rather than shifted-window attention (which requires cycle-shift ops not yet available as canvas primitives). Output is 10 class logits from mean-pooled patches.",
+  "description": "Two-stage hierarchical forward pass, patches merged",
   "gallery": { "section": "architectures", "family": "Transformer", "order": 5 },
   "nodes": [
-    { "id": "start-1", "type": "Start", "position": { "x": -200, "y": 0 }, "data": { "params": {} } },
+    { "id": "start-1", "type": "Start", "position": { "x": -250, "y": 0 }, "data": { "params": {} } },
     { "id": "input", "type": "TensorCreate", "position": { "x": 0, "y": 0 }, "data": { "params": { "shape": "2,3,32,32", "fill": "randn", "value": 0.0, "requires_grad": false } } },
-    { "id": "patch_embed", "type": "Conv2d", "position": { "x": 220, "y": 0 }, "data": { "params": { "in_channels": 3, "out_channels": 48, "kernel_size": 4, "stride": 4, "padding": 0 } } },
-    { "id": "stage1_flat", "type": "Reshape", "position": { "x": 440, "y": 0 }, "data": { "params": { "shape": "2,48,64" } } },
-    { "id": "stage1_seq", "type": "Permute", "position": { "x": 660, "y": 0 }, "data": { "params": { "dims": "2,0,1" } } },
-    { "id": "stage1_enc", "type": "TransformerEncoder", "position": { "x": 920, "y": 0 }, "data": { "params": { "d_model": 48, "nhead": 4, "num_layers": 2, "dim_feedforward": 192 } } },
-    { "id": "stage1_bf", "type": "Permute", "position": { "x": 1200, "y": 0 }, "data": { "params": { "dims": "1,2,0" } } },
-    { "id": "stage1_grid", "type": "Reshape", "position": { "x": 1420, "y": 0 }, "data": { "params": { "shape": "2,48,8,8" } } },
+    { "id": "patch_embed", "type": "Conv2d", "position": { "x": 270, "y": 0 }, "data": { "params": { "in_channels": 3, "out_channels": 48, "kernel_size": 4, "stride": 4, "padding": 0 } } },
+    { "id": "stage1_flat", "type": "Reshape", "position": { "x": 550, "y": 0 }, "data": { "params": { "shape": "2,48,64" } } },
+    { "id": "stage1_seq", "type": "Permute", "position": { "x": 820, "y": 0 }, "data": { "params": { "dims": "2,0,1" } } },
+    { "id": "stage1_enc", "type": "TransformerEncoder", "position": { "x": 1140, "y": 0 }, "data": { "params": { "d_model": 48, "nhead": 4, "num_layers": 2, "dim_feedforward": 192 } } },
+    { "id": "stage1_bf", "type": "Permute", "position": { "x": 1490, "y": 0 }, "data": { "params": { "dims": "1,2,0" } } },
+    { "id": "stage1_grid", "type": "Reshape", "position": { "x": 1760, "y": 0 }, "data": { "params": { "shape": "2,48,8,8" } } },
 
     { "id": "merge", "type": "Conv2d", "position": { "x": 0, "y": 260 }, "data": { "params": { "in_channels": 48, "out_channels": 96, "kernel_size": 2, "stride": 2, "padding": 0 } } },
-    { "id": "stage2_flat", "type": "Reshape", "position": { "x": 220, "y": 260 }, "data": { "params": { "shape": "2,96,16" } } },
-    { "id": "stage2_seq", "type": "Permute", "position": { "x": 440, "y": 260 }, "data": { "params": { "dims": "2,0,1" } } },
-    { "id": "stage2_enc", "type": "TransformerEncoder", "position": { "x": 700, "y": 260 }, "data": { "params": { "d_model": 96, "nhead": 4, "num_layers": 2, "dim_feedforward": 384 } } },
-    { "id": "stage2_bf", "type": "Permute", "position": { "x": 980, "y": 260 }, "data": { "params": { "dims": "1,0,2" } } },
-    { "id": "pool", "type": "Mean", "position": { "x": 1200, "y": 260 }, "data": { "params": { "dim": "1", "keepdim": false } } },
-    { "id": "head", "type": "Linear", "position": { "x": 1420, "y": 260 }, "data": { "params": { "in_features": 96, "out_features": 10 } } },
-    { "id": "print_logits", "type": "Print", "position": { "x": 1640, "y": 260 }, "data": { "params": { "label": "Class logits (B,10)" } } }
+    { "id": "stage2_flat", "type": "Reshape", "position": { "x": 270, "y": 260 }, "data": { "params": { "shape": "2,96,16" } } },
+    { "id": "stage2_seq", "type": "Permute", "position": { "x": 550, "y": 260 }, "data": { "params": { "dims": "2,0,1" } } },
+    { "id": "stage2_enc", "type": "TransformerEncoder", "position": { "x": 870, "y": 260 }, "data": { "params": { "d_model": 96, "nhead": 4, "num_layers": 2, "dim_feedforward": 384 } } },
+    { "id": "stage2_bf", "type": "Permute", "position": { "x": 1220, "y": 260 }, "data": { "params": { "dims": "1,0,2" } } },
+    { "id": "pool", "type": "Mean", "position": { "x": 1490, "y": 260 }, "data": { "params": { "dim": "1", "keepdim": false } } },
+    { "id": "head", "type": "Linear", "position": { "x": 1760, "y": 260 }, "data": { "params": { "in_features": 96, "out_features": 10 } } },
+    { "id": "print_logits", "type": "Print", "position": { "x": 2040, "y": 260 }, "data": { "params": { "label": "Class logits (B,10)" } } },
+
+    { "id": "note-overview", "type": "note", "position": { "x": -670, "y": 0 },
+      "data": { "noteKind": "text", "noteContent": "A ViT keeps one resolution from start to finish. Swin makes it a pyramid: attend inside a stage, then merge neighbouring patches into fewer, wider tokens, and repeat - so late layers see coarse structure and the cost stays linear in pixels. Here merge is the stride-2 Conv2d between the stages: 64 tokens of 48 dims become 16 tokens of 96.\n\nSwin's other half, shifted-window attention, is not here - the cycle shift it needs has no canvas node - so each stage attends over all of its tokens. The input is a random tensor: the wiring and the shapes, not a trained model.\n\nViT 從頭到尾只有一種解析度。Swin 把它做成金字塔：先在一個 stage 內做注意力，再把相鄰的 patch 合併成更少、更寬的 token，然後重複 — 後面的層看到的是粗結構，計算量也能隨像素數線性成長。這裡的 merge 就是兩個 stage 之間那個 stride 2 的 Conv2d：64 個 48 維 token 變成 16 個 96 維。\n\nSwin 的另一半 — shifted-window attention — 沒有畫進來，因為它需要的 cycle shift 在畫布上沒有對應節點，所以每個 stage 都是對全部 token 做注意力。輸入是隨機張量：看的是接線與形狀，不是訓練好的模型。",
+                 "noteColor": "#3d3d1a", "boundToNodeId": "start-1", "boundOffset": { "x": -420, "y": 0 }, "noteWidth": 360 } },
+
+    { "id": "note-merge", "type": "note", "position": { "x": 0, "y": 540 },
+      "data": { "noteKind": "text", "noteContent": "Patch merging in one node: stride 2 halves the 8x8 grid to 4x4 and doubles the channels, 48 to 96. Fewer tokens, richer ones - which is why stage2_enc runs at d_model 96.\n\n用一個節點做 patch merging：stride 2 把 8x8 的格點縮成 4x4，通道從 48 加倍成 96。token 變少、變厚 — 所以 stage2_enc 的 d_model 是 96。",
+                 "noteColor": "#3d3d1a", "boundToNodeId": "merge", "boundOffset": { "x": 0, "y": 280 }, "noteWidth": 300 } },
+
+    { "id": "note-stage1_bf", "type": "note", "position": { "x": 1490, "y": -380 },
+      "data": { "noteKind": "text", "noteContent": "Permute 1,2,0 puts the tensor back as (batch, channels, tokens) so Reshape can fold the 64 tokens into an 8x8 grid. Attention wants a sequence, convolution wants the grid; every Permute and Reshape here switches between those two views.\n\nPermute 1,2,0 把張量轉回 (batch, channels, tokens)，Reshape 才能把 64 個 token 折回 8x8 的格點。注意力要的是序列，卷積要的是格點；這裡每一組 Permute 和 Reshape 都只是在這兩種看法之間切換。",
+                 "noteColor": "#3d3d1a", "boundToNodeId": "stage1_bf", "boundOffset": { "x": 0, "y": -380 }, "noteWidth": 300 } }
   ],
   "edges": [
     { "id": "e-t", "source": "start-1", "target": "input", "sourceHandle": "trigger", "type": "trigger" },

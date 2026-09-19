@@ -1,6 +1,6 @@
 {
   "name": "PPO Robotics Controller",
-  "description": "Proximal Policy Optimization for Robotics Control - PPO (OpenAI, 2017) is the default algorithm behind most modern RL deployments: OpenAI Five (Dota 2), ChatGPT RLHF fine-tuning, robotic manipulation, and autonomous driving. Uses a clipped surrogate objective for stable policy gradient updates with an Actor-Critic architecture. This example runs fully offline: a TensorCreate node supplies a synthetic batch of Humanoid-style observations (randn, shape 2x376) in place of a live MuJoCo environment, so no gym/mujoco install is needed. Swap in an EnvWrapper to drive it from a real environment. The `seq-model` node off to the side is not part of the data path: it holds the 376-256-256-17 policy stack as one layer spec — double-click it to read the whole architecture in the layer editor. The optimizer is fed by `ppo-1.model`, the agent's own network, which is what gets trained.",
+  "description": "Actor-critic forward pass: 376 inputs to 17 actions",
   "gallery": { "section": "architectures", "family": "RL", "order": 2 },
   "nodes": [
     {
@@ -8,7 +8,7 @@
       "type": "Start",
       "position": {
         "x": -150,
-        "y": 50
+        "y": 70
       },
       "data": {
         "params": {}
@@ -19,7 +19,7 @@
       "type": "TensorCreate",
       "position": {
         "x": 50,
-        "y": 50
+        "y": 70
       },
       "data": {
         "params": {
@@ -35,7 +35,7 @@
       "type": "Print",
       "position": {
         "x": 50,
-        "y": 500
+        "y": 670
       },
       "data": {
         "params": {
@@ -48,7 +48,7 @@
       "type": "PPO",
       "position": {
         "x": 50,
-        "y": 300
+        "y": 400
       },
       "data": {
         "params": {
@@ -63,7 +63,7 @@
       "type": "Optimizer",
       "position": {
         "x": 400,
-        "y": 750
+        "y": 1000
       },
       "data": {
         "params": {
@@ -78,7 +78,7 @@
       "type": "Print",
       "position": {
         "x": 400,
-        "y": 500
+        "y": 670
       },
       "data": {
         "params": {
@@ -91,7 +91,7 @@
       "type": "Visualize",
       "position": {
         "x": 750,
-        "y": 500
+        "y": 670
       },
       "data": {
         "params": {
@@ -105,12 +105,92 @@
       "type": "SequentialModel",
       "position": {
         "x": 400,
-        "y": 300
+        "y": 400
       },
       "data": {
         "params": {
           "layers": "{\"version\":2,\"nodes\":[{\"id\":\"in\",\"type\":\"Input\",\"ports\":[{\"id\":\"p_x\",\"name\":\"x\"}]},{\"id\":\"n0\",\"type\":\"Linear\",\"params\":{\"in_features\":376,\"out_features\":256}},{\"id\":\"n1\",\"type\":\"ReLU\"},{\"id\":\"n2\",\"type\":\"Linear\",\"params\":{\"in_features\":256,\"out_features\":256}},{\"id\":\"n3\",\"type\":\"ReLU\"},{\"id\":\"n4\",\"type\":\"Linear\",\"params\":{\"in_features\":256,\"out_features\":17}},{\"id\":\"out\",\"type\":\"Output\",\"ports\":[{\"id\":\"p_y\",\"name\":\"y\"}]}],\"edges\":[{\"id\":\"e0\",\"source\":\"in\",\"sourceHandle\":\"p_x\",\"target\":\"n0\"},{\"id\":\"e1\",\"source\":\"n0\",\"target\":\"n1\"},{\"id\":\"e2\",\"source\":\"n1\",\"target\":\"n2\"},{\"id\":\"e3\",\"source\":\"n2\",\"target\":\"n3\"},{\"id\":\"e4\",\"source\":\"n3\",\"target\":\"n4\"},{\"id\":\"e5\",\"source\":\"n4\",\"target\":\"out\",\"targetHandle\":\"p_y\"}]}"
         }
+      }
+    },
+
+    {
+      "id": "note-overview",
+      "type": "note",
+      "position": {
+        "x": -570,
+        "y": 70
+      },
+      "data": {
+        "noteKind": "text",
+        "noteContent": "PPO is one network with two heads: an actor that gives a probability for each action, and a critic that scores the state. They share a trunk, so the value estimate and the policy learn from the same features. What makes it PPO is the clipped objective in the update - a step that moves the policy too far gets cut back - and that update is not in this graph.\n\nThe observation is a random tensor standing in for a Humanoid-style state of 376 joint angles, velocities and contacts, so no gym or mujoco install is needed; swap in EnvWrapper for a live environment. Nothing here is trained.\n\nPPO 是一個網路、兩個頭：actor 給出每個動作的機率，critic 給這個狀態打分。兩者共用一段軀幹，所以價值估計和策略是從同一批特徵學的。真正讓它叫 PPO 的是更新時那個截斷目標 — 策略一步走太遠就會被砍回來 — 而那段更新不在這張圖裡。\n\n觀測是隨機張量，代替 Humanoid 那種 376 維的狀態（關節角度、速度、接觸），所以不必安裝 gym 或 mujoco；要接真環境就換成 EnvWrapper。這裡不訓練任何東西。",
+        "noteColor": "#3d3d1a",
+        "boundToNodeId": "start-1",
+        "boundOffset": {
+          "x": -420,
+          "y": 0
+        },
+        "noteWidth": 360
+      }
+    },
+
+    {
+      "id": "note-ppo-1",
+      "type": "note",
+      "position": {
+        "x": -290,
+        "y": 700
+      },
+      "data": {
+        "noteKind": "text",
+        "noteContent": "The node builds a 376-256-256 trunk with Tanh, then splits: the actor gives 17 action probabilities through a softmax, the critic one value. Only the probabilities leave the node - the value is computed inside forward and has no port.\n\n這個節點先搭出 376-256-256 的軀幹（用 Tanh），再分岔：actor 經 softmax 給 17 個動作機率，critic 給一個價值。只有機率會離開這個節點 — 價值是在 forward 裡算出來的，沒有對應的埠。",
+        "noteColor": "#3d3d1a",
+        "boundToNodeId": "ppo-1",
+        "boundOffset": {
+          "x": -340,
+          "y": 300
+        },
+        "noteWidth": 300
+      }
+    },
+
+    {
+      "id": "note-seq-model",
+      "type": "note",
+      "position": {
+        "x": 400,
+        "y": 20
+      },
+      "data": {
+        "noteKind": "text",
+        "noteContent": "Off the data path: only the trigger edge reaches it. It writes the actor's side - 376-256-256-17 with ReLU - as one layer stack you can open in the layer editor. The PPO node's own trunk uses Tanh and adds the critic head, which a single stack cannot show.\n\n它不在資料路徑上，只有 trigger 那條邊會走到它。它把 actor 那一側寫成一份層堆疊 376-256-256-17（用 ReLU），可以在層編輯器裡打開。PPO 節點自己的軀幹用的是 Tanh，還多一個 critic 頭，那是單一堆疊畫不出來的。",
+        "noteColor": "#3d3d1a",
+        "boundToNodeId": "seq-model",
+        "boundOffset": {
+          "x": 0,
+          "y": -380
+        },
+        "noteWidth": 300
+      }
+    },
+
+    {
+      "id": "note-optimizer-1",
+      "type": "note",
+      "position": {
+        "x": 400,
+        "y": 1240
+      },
+      "data": {
+        "noteKind": "text",
+        "noteContent": "Built over ppo-1's parameters and never stepped: there is no rollout, no advantage and no clipped loss in this graph. It shows where the optimizer attaches - to the agent's network, not to seq-model.\n\n它建在 ppo-1 的參數上，但從來沒被 step 過：這張圖沒有 rollout、沒有優勢值，也沒有截斷損失。它只是標出優化器接的位置 — 接的是代理人的網路，不是 seq-model。",
+        "noteColor": "#3d3d1a",
+        "boundToNodeId": "optimizer-1",
+        "boundOffset": {
+          "x": 0,
+          "y": 240
+        },
+        "noteWidth": 300
       }
     }
   ],

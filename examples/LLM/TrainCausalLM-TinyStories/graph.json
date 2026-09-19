@@ -1,6 +1,6 @@
 {
   "name": "Train a Causal LM on TinyStories",
-  "description": "Needs a 16 GB GPU and one first-run download: pretrain a 204M-parameter GPT-style decoder on TinyStories from scratch, then score it and read what it wrote. One epoch is 2,441 micro-batches at bf16, about 610 optimizer steps -- under an hour, because the corpus is capped. Full recipe, token budgets and memory levers are in README.md beside this graph.",
+  "description": "Perplexity and a story; needs a 16 GB GPU and a download",
   "gallery": { "section": "training", "order": 5 },
   "nodes": [
     {
@@ -290,6 +290,63 @@
           "name": "sample",
           "description": "Text the trained model wrote when asked to continue 'Once upon a time'."
         }
+      }
+    },
+    {
+      "id": "note-overview",
+      "type": "note",
+      "position": {
+        "x": -780,
+        "y": 560
+      },
+      "data": {
+        "noteKind": "text",
+        "noteContent": "Pretraining from scratch, not fine-tuning: the weights start random and the only thing this graph is given is text. TinyStories is short children's stories in a small vocabulary, which is what lets a 204M-parameter decoder write readable English after a single pass.\nOne epoch is 2,441 micro-batches at bf16, about 610 optimizer steps -- under an hour on a 16 GB GPU, because the corpus is capped at 20M tokens. It downloads the corpus on the first run.\nAfterwards read the two graph outputs: perplexity on the held-out split, lower being better, and the story the model wrote from \"Once upon a time\". README.md has the recipe, the budgets and the memory levers.\n\n這是從零開始的預訓練，不是微調：權重一開始是隨機的，這張圖唯一拿到的東西就是文字。TinyStories 是用小字彙寫成的短篇童話，所以 204M 參數的 decoder 只跑一輪就能寫出看得懂的英文。\n一個 epoch 是 2,441 個 micro-batch（bf16），約 610 次 optimizer 更新；在 16 GB GPU 上不到一小時，因為語料被限制在 2,000 萬個 token。第一次執行會下載語料。\n跑完看兩個 graph output：保留分割上的 perplexity（越低越好），以及模型從 \"Once upon a time\" 續寫的故事。配方、預算與記憶體調整方式都在旁邊的 README.md。",
+        "noteColor": "#3d3d1a",
+        "boundToNodeId": "start",
+        "boundOffset": {
+          "x": -420,
+          "y": 0
+        },
+        "noteWidth": 360
+      }
+    },
+    {
+      "id": "note-pack-train",
+      "type": "note",
+      "position": {
+        "x": 360,
+        "y": -330
+      },
+      "data": {
+        "noteKind": "text",
+        "noteContent": "max_tokens is the whole run-length control: 20,000,000 tokens cut into 1,024-token blocks is what makes one epoch under an hour. Raise it to train longer on the same corpus; the loss is still falling when the budget runs out.\n\nmax_tokens 是控制整趟執行長度的參數：2,000 萬個 token 切成 1,024 個 token 一塊，才讓一個 epoch 不到一小時。想在同一份語料上訓練更久就把它調大；預算用完時損失其實還在下降。",
+        "noteColor": "#3d3d1a",
+        "boundToNodeId": "pack-train",
+        "boundOffset": {
+          "x": 0,
+          "y": -330
+        },
+        "noteWidth": 300
+      }
+    },
+    {
+      "id": "note-gen",
+      "type": "note",
+      "position": {
+        "x": 1680,
+        "y": 840
+      },
+      "data": {
+        "noteKind": "text",
+        "noteContent": "The sample is drawn, not computed: temperature, top_k and top_p decide how adventurous it is, and seed makes one run's story repeatable. Lower the temperature for safer, flatter text; change the prompt to ask for something else.\n\n這段文字是抽樣抽出來的，不是算出來的：temperature、top_k 與 top_p 決定它有多敢冒險，seed 則讓同一次設定能重現同一篇故事。想要穩一點但平淡一點就把 temperature 調低；想問別的就改 prompt。",
+        "noteColor": "#3d3d1a",
+        "boundToNodeId": "gen",
+        "boundOffset": {
+          "x": 240,
+          "y": 380
+        },
+        "noteWidth": 300
       }
     }
   ],

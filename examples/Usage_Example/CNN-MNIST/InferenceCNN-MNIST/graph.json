@@ -1,14 +1,52 @@
 {
   "name": "Inference CNN on MNIST",
-  "description": "PREREQUISITE: run 'Train CNN on MNIST' once first — it writes model_weights.pt, which this graph loads. Trained weights are never shipped with an install, so on a fresh machine this graph fails at ModelLoader until that training run has happened. After that: ImageReader reads test_digit.png (a real MNIST digit bundled under backend/data/images/), SequentialModel rebuilds the same architecture, ModelLoader restores the saved weights, and Inference runs the forward pass to classify a single handwritten digit.",
+  "description": "Classify one digit; needs Train CNN on MNIST run first",
   "gallery": { "section": "quickstart", "order": 2 },
   "nodes": [
+    {
+      "id": "note-overview",
+      "type": "note",
+      "position": {
+        "x": -590,
+        "y": 230
+      },
+      "data": {
+        "noteKind": "text",
+        "noteContent": "Run Train CNN on MNIST first: it writes model_weights.pt, and this graph loads it. Trained weights are never shipped with an install, so on a fresh machine this stops at ModelLoader.\n\nSequentialModel rebuilds the architecture the training graph used, layer for layer. A state_dict carries tensors and nothing else, so anything that does not match is a load error rather than a wrong answer.\n\nAfter a run the Print nodes show the raw logits, the softmax probabilities and the predicted digit, which is 7 for the bundled test_digit.png. Point ImageReader at your own image to try another one.\n\n請先跑一次 Train CNN on MNIST：它會寫出 model_weights.pt，這張圖才載得到。安裝檔不會附訓練好的權重，所以在全新的機器上會停在 ModelLoader。\n\nSequentialModel 會逐層重建訓練時用的架構。state_dict 只存張量，所以只要有一層對不上，就是載入失敗，而不是給你一個錯的答案。\n\n跑完之後，Print 會顯示原始 logits、softmax 機率，以及預測的數字；內附的 test_digit.png 應該是 7。把 ImageReader 指到自己的影像就能換一張試。",
+        "noteColor": "#3d3d1a",
+        "boundToNodeId": "start-1",
+        "boundOffset": {
+          "x": -420,
+          "y": 0
+        },
+        "noteWidth": 360
+      }
+    },
+    {
+      "id": "note-centre",
+      "type": "note",
+      "position": {
+        "x": 840,
+        "y": 180
+      },
+      "data": {
+        "noteKind": "text",
+        "noteContent": "Training normalised every image with (x - 0.5) / 0.5, so the model expects values in [-1, 1]; ImageReader hands over [0, 1]. The Add and the ScalarMultiply put that back. Without them the logits are not the ones this model was trained to produce.\n\n訓練時每張影像都做過 (x - 0.5) / 0.5，所以模型預期的範圍是 [-1, 1]，而 ImageReader 給的是 [0, 1]。這裡的 Add 與 ScalarMultiply 把它補回來。少了它們，算出來的 logits 就不是這個模型訓練後該給的那種。",
+        "noteColor": "#3d3d1a",
+        "boundToNodeId": "centre",
+        "boundOffset": {
+          "x": 0,
+          "y": -380
+        },
+        "noteWidth": 300
+      }
+    },
     {
       "id": "start-1",
       "type": "Start",
       "position": {
-        "x": -150,
-        "y": 200
+        "x": -170,
+        "y": 230
       },
       "data": {
         "params": {}
@@ -18,8 +56,8 @@
       "id": "model-builder",
       "type": "SequentialModel",
       "position": {
-        "x": 50,
-        "y": 200
+        "x": 60,
+        "y": 230
       },
       "data": {
         "params": {
@@ -31,8 +69,8 @@
       "id": "weight-loader",
       "type": "ModelLoader",
       "position": {
-        "x": 450,
-        "y": 200
+        "x": 500,
+        "y": 230
       },
       "data": {
         "params": {
@@ -47,8 +85,8 @@
       "id": "test-image",
       "type": "ImageReader",
       "position": {
-        "x": 450,
-        "y": 420
+        "x": 500,
+        "y": 560
       },
       "data": {
         "params": {
@@ -59,11 +97,53 @@
       }
     },
     {
+      "id": "norm-mean",
+      "type": "TensorCreate",
+      "position": {
+        "x": 500,
+        "y": 840
+      },
+      "data": {
+        "params": {
+          "shape": "1",
+          "fill": "full",
+          "value": 0.5,
+          "requires_grad": false
+        }
+      }
+    },
+    {
+      "id": "centre",
+      "type": "Add",
+      "position": {
+        "x": 840,
+        "y": 560
+      },
+      "data": {
+        "params": {
+          "alpha": -1.0
+        }
+      }
+    },
+    {
+      "id": "scale",
+      "type": "ScalarMultiply",
+      "position": {
+        "x": 1120,
+        "y": 560
+      },
+      "data": {
+        "params": {
+          "scalar": 2.0
+        }
+      }
+    },
+    {
       "id": "add-batch-dim",
       "type": "Unsqueeze",
       "position": {
-        "x": 650,
-        "y": 420
+        "x": 1400,
+        "y": 560
       },
       "data": {
         "params": {
@@ -75,8 +155,8 @@
       "id": "inference",
       "type": "Inference",
       "position": {
-        "x": 850,
-        "y": 280
+        "x": 1740,
+        "y": 350
       },
       "data": {
         "params": {
@@ -88,8 +168,8 @@
       "id": "print-output",
       "type": "Print",
       "position": {
-        "x": 1200,
-        "y": 200
+        "x": 2070,
+        "y": 230
       },
       "data": {
         "params": {
@@ -98,11 +178,38 @@
       }
     },
     {
+      "id": "predicted-digit",
+      "type": "Argmax",
+      "position": {
+        "x": 2070,
+        "y": 450
+      },
+      "data": {
+        "params": {
+          "dim": -1,
+          "keepdim": false
+        }
+      }
+    },
+    {
+      "id": "print-digit",
+      "type": "Print",
+      "position": {
+        "x": 2410,
+        "y": 450
+      },
+      "data": {
+        "params": {
+          "label": "Predicted digit"
+        }
+      }
+    },
+    {
       "id": "softmax",
       "type": "Softmax",
       "position": {
-        "x": 1200,
-        "y": 380
+        "x": 2070,
+        "y": 660
       },
       "data": {
         "params": {
@@ -114,8 +221,8 @@
       "id": "print-probs",
       "type": "Print",
       "position": {
-        "x": 1550,
-        "y": 380
+        "x": 2410,
+        "y": 660
       },
       "data": {
         "params": {
@@ -142,12 +249,33 @@
     {
       "id": "e-3",
       "source": "test-image",
+      "target": "centre",
+      "sourceHandle": "tensor",
+      "targetHandle": "tensor_a"
+    },
+    {
+      "id": "e-3b",
+      "source": "norm-mean",
+      "target": "centre",
+      "sourceHandle": "tensor",
+      "targetHandle": "tensor_b"
+    },
+    {
+      "id": "e-3c",
+      "source": "centre",
+      "target": "scale",
+      "sourceHandle": "tensor",
+      "targetHandle": "tensor"
+    },
+    {
+      "id": "e-3d",
+      "source": "scale",
       "target": "add-batch-dim",
       "sourceHandle": "tensor",
       "targetHandle": "tensor"
     },
     {
-      "id": "e-3b",
+      "id": "e-3e",
       "source": "add-batch-dim",
       "target": "inference",
       "sourceHandle": "tensor",
@@ -175,6 +303,20 @@
       "targetHandle": "value"
     },
     {
+      "id": "e-7",
+      "source": "inference",
+      "target": "predicted-digit",
+      "sourceHandle": "output",
+      "targetHandle": "tensor"
+    },
+    {
+      "id": "e-8",
+      "source": "predicted-digit",
+      "target": "print-digit",
+      "sourceHandle": "tensor",
+      "targetHandle": "value"
+    },
+    {
       "id": "e-trigger-1",
       "source": "start-1",
       "target": "model-builder",
@@ -185,6 +327,13 @@
       "id": "e-trigger-2",
       "source": "start-1",
       "target": "test-image",
+      "sourceHandle": "trigger",
+      "type": "trigger"
+    },
+    {
+      "id": "e-trigger-3",
+      "source": "start-1",
+      "target": "norm-mean",
       "sourceHandle": "trigger",
       "type": "trigger"
     }

@@ -1,6 +1,6 @@
 {
   "name": "RAG with a chat API: retrieve locally, generate anywhere",
-  "description": "Needs the sentence-embeddings pack plus a running Ollama, or an API key instead. The same retrieval chain as RAG-Local-Offline (DocumentLoader -> TextChunker -> TextEmbedding -> VectorStore -> Retriever -> PromptBuilder), but the generator is LLMChat: by default it talks to a local Ollama at http://127.0.0.1:11434 running qwen2.5:0.5b ('ollama pull qwen2.5:0.5b' first), and switching provider to ChatGPT API or Claude API with a key sends the identical prompt to a hosted model. Compare its answer with the local example's. README.md beside this graph explains each stage.",
+  "description": "Answers via Ollama; needs the sentence-embeddings pack",
   "gallery": { "section": "llm", "order": 4 },
   "nodes": [
     {
@@ -189,6 +189,82 @@
         "params": {
           "label": "Answer"
         }
+      }
+    },
+    {
+      "id": "note-overview",
+      "type": "note",
+      "position": {
+        "x": -720,
+        "y": 200
+      },
+      "data": {
+        "noteKind": "text",
+        "noteContent": "Retrieval is local work; generation is a swappable back end. Everything before gen is identical to RAG-Local-Offline, node for node, so running both on one question shows you the generator and nothing else. Read print_ctx for the three retrieved chunks, then print_ans. Needs the sentence-embeddings pack for the encoder and a running Ollama with the model pulled (ollama pull qwen2.5:0.5b). Set gen.provider to ChatGPT API or Claude API with a key to send the same prompt to a hosted model -- which also sends the retrieved chunks to a third party. README.md beside this graph has the rest.\n\n檢索是本機的工作，生成則是可以換掉的後端。gen 之前的每個節點都跟 RAG-Local-Offline 一模一樣，所以用同一個問題跑兩張圖，看到的差別就只有生成模型。跑完先看 print_ctx 撈回來的三段內容，再看 print_ans。需要 sentence-embeddings 套件包提供編碼器，以及一個跑著的 Ollama，並先 ollama pull qwen2.5:0.5b。把 gen.provider 改成 ChatGPT API 或 Claude API 並給金鑰，同一份提示詞就會送到雲端模型 — 連帶把撈回來的內容也送給第三方。其餘細節在旁邊的 README.md。",
+        "noteColor": "#3d3d1a",
+        "boundToNodeId": "start",
+        "boundOffset": {
+          "x": -420,
+          "y": 0
+        },
+        "noteWidth": 360
+      }
+    },
+    {
+      "id": "note-retriever",
+      "type": "note",
+      "position": {
+        "x": 1160,
+        "y": -180
+      },
+      "data": {
+        "noteKind": "text",
+        "noteContent": "top_k is 3, so three chunks reach the prompt. A retriever always returns something, so read the scores in the node's log: a best hit near 0.3 means the corpus does not hold the answer. min_score 0 keeps every hit; raise it to drop the weak ones.\n\ntop_k 是 3，所以有三段內容會進到提示詞。檢索一定會回傳東西，所以要看節點日誌裡的分數：最高分只有 0.3 左右，通常代表語料裡沒有答案。min_score 設 0 等於不設門檻，調高就會把分數低的丟掉。",
+        "noteColor": "#3d3d1a",
+        "boundToNodeId": "retriever",
+        "boundOffset": {
+          "x": -40,
+          "y": -380
+        },
+        "noteWidth": 300
+      }
+    },
+    {
+      "id": "note-prompt",
+      "type": "note",
+      "position": {
+        "x": 1460,
+        "y": 780
+      },
+      "data": {
+        "noteKind": "text",
+        "noteContent": "The template is what stops the model answering from memory: use only the context, and say so when it is not enough. {context} and {question} come from the two ports; number_contexts prefixes each chunk with [1], [2] and its file, so a citation can be checked.\n\n提示詞範本才是讓模型不靠記憶亂答的關鍵：只准用提供的內容，不夠就明說。{context} 與 {question} 由兩個輸入埠填入；number_contexts 會在每段前面加上 [1]、[2] 與來源檔名，引用可以回頭核對。",
+        "noteColor": "#3d3d1a",
+        "boundToNodeId": "prompt",
+        "boundOffset": {
+          "x": -40,
+          "y": 380
+        },
+        "noteWidth": 300
+      }
+    },
+    {
+      "id": "note-gen",
+      "type": "note",
+      "position": {
+        "x": 1800,
+        "y": 0
+      },
+      "data": {
+        "noteKind": "text",
+        "noteContent": "LLMChat sends the prompt to a server instead of loading a model here. Ollama is the OpenAI-compatible path, so ollama_base_url ends in /v1 and needs no key. The prompt param is prepended to whatever arrives on text, so it stays empty; no key field is saved in this file.\n\nLLMChat 把提示詞送到伺服器，而不是在這裡載入模型。Ollama 走的是 OpenAI 相容介面，所以 ollama_base_url 結尾是 /v1，也不需要金鑰。prompt 參數會接在 text 輸入前面，所以留空；這個檔案裡不存任何金鑰欄位。",
+        "noteColor": "#3d3d1a",
+        "boundToNodeId": "gen",
+        "boundOffset": {
+          "x": 0,
+          "y": -400
+        },
+        "noteWidth": 300
       }
     }
   ],

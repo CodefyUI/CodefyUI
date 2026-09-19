@@ -47,45 +47,11 @@ interface Vector {
 /** Translations whose description still runs past the card. Only ever
  * shorter: the test below fails on an entry that no longer belongs.
  *
- * All 71 today, in the order `zh-TW.ts` declares them, so a rewrite crosses
- * off the line next to the one it just did. `NOT_YET_SHORTENED` in
+ * The 36 a pack ships, in the order `zh-TW.ts` declares them -- all that is
+ * left of the 71 this list started with, now that every built-in says its one
+ * line. `NOT_YET_SHORTENED` in
  * `backend/tests/test_example_descriptions.py` is the English twin. */
 const NOT_YET_SHORTENED = new Set<string>([
-  'Usage_Example/Api-Function',
-  'Usage_Example/CNN-MNIST/InferenceCNN-MNIST',
-  'Usage_Example/CNN-MNIST/TrainCNN-MNIST',
-  'Usage_Example/GPT-Mini/TrainGPT-Mini',
-  'Usage_Example/ResNet-CIFAR10/TrainResNet-CIFAR10',
-  'Usage_Example/ResNet18-CIFAR10-Baseline',
-  'Classical/Iris-Sklearn-KNN',
-  'Classical/Tabular-Iris-Pipeline',
-  'LLM/RAG-LLMChat-API',
-  'LLM/RAG-Local-Offline',
-  'LLM/Sentence-Similarity-zhTW',
-  'LLM/TrainCausalLM-TinyStories',
-  'LLM/Word-Embedding-Analogy',
-  'Diffusion/Forward-Process',
-  'Diffusion/Mini-UNet-Compact',
-  'Diffusion/Toy-Sampling',
-  'Transformer/MoE-TopK-Routing',
-  'RNN/RNN-OneStep',
-  'RL/RLHF-Reward-and-KL',
-  'VLA/TrainVLA-PushWorld',
-  'Model_Architecture/BERT-Encoder-Transformer',
-  'Model_Architecture/BiGRU-SpeechRecognition-RNN',
-  'Model_Architecture/ConvNeXt-CNN',
-  'Model_Architecture/DQN-Atari-RL',
-  'Model_Architecture/DiT-Diffusion-Transformer',
-  'Model_Architecture/EfficientNet-CNN',
-  'Model_Architecture/GPT-DecoderOnly-Transformer',
-  'Model_Architecture/LLaMA-Decoder-Transformer',
-  'Model_Architecture/PPO-Robotics-RL',
-  'Model_Architecture/ResNet-SkipConnection-CNN',
-  'Model_Architecture/Seq2Seq-Attention-RNN',
-  'Model_Architecture/SwinTransformer-Transformer',
-  'Model_Architecture/TimeSeries-LSTM-RNN',
-  'Model_Architecture/UNet-Segmentation-CNN',
-  'Model_Architecture/ViT-ImageClassifier-Transformer',
   'plugin:foundations/C1-3/Kernel-Effects',
   'plugin:foundations/C2-1/Supervised-Learning-101',
   'plugin:foundations/C2-2/Concentric-Circles-Failure',

@@ -12,10 +12,10 @@ CodefyUI 在 `examples/` 底下隨附一整套可直接執行的範例 graph。�
 
 | 區塊 | 內容 |
 |---------|----------|
-| **快速開始** | 最先跑的三個：**Train CNN on MNIST**、**Inference CNN on MNIST**，以及 **Api-Function**（graph-as-a-function 示範）。 |
-| **訓練** | 從頭訓練出一個模型的圖：**Train ResNet on CIFAR10**、**Train Mini-GPT on MNIST**、實測過的 **ResNet-18 / CIFAR-10 baseline**（見[重現標準結果](./reproducing-baselines)）、**Train a Causal LM on TinyStories**，以及 **Train a VLA on PushWorld** — 它需要 CUDA GPU 與大約一小時，操作方式在它的 [README](https://github.com/CodefyUI/CodefyUI/blob/main/examples/VLA/TrainVLA-PushWorld/README.md) 中。 |
+| **快速開始** | 最先跑的三個：**Train CNN on MNIST**、**Inference CNN on MNIST**，以及 **Call a graph as an API**（graph-as-a-function 示範）。 |
+| **訓練** | 從頭訓練出一個模型的圖：**Train a CNN on a HuggingFace dataset**、**Train ResNet on CIFAR10**、**Train a Transformer classifier on MNIST**、實測過的 **ResNet-18 / CIFAR-10 baseline**（見[重現標準結果](./reproducing-baselines)）、**Train a Causal LM on TinyStories**，以及 **Train a VLA on PushWorld** — 它需要 CUDA GPU 與大約一小時，操作方式在它的 [README](https://github.com/CodefyUI/CodefyUI/blob/main/examples/VLA/TrainVLA-PushWorld/README.md) 中。 |
 | **LLM 與 RAG** | **Word Embedding Analogy**、**Sentence Similarity (zh-TW)**，以及兩個檢索範例 **RAG, fully local** 與 **RAG with a chat API**。 |
-| **觀念** | 一張圖講一個觀念，小到可以從頭看到尾：兩個 Iris 管線、**RNN One Step**、**Mixture of Experts**、三個 diffusion 範例（**Forward Diffusion**、**Toy Sampling**、**Mini U-Net**），以及 **RLHF building blocks: reward + KL**。 |
+| **觀念** | 一張圖講一個觀念，小到可以從頭看到尾：兩個 Iris 管線、**RNN unrolled**、**Mixture of Experts**、三個 diffusion 範例（**Forward Diffusion**、**Toy Sampling**、**Mini U-Net**），以及 **RLHF building blocks: reward + KL**。 |
 | **模型架構** | 15 個經典架構導覽，再依模型家族分成 CNN、RNN、Transformer、Diffusion、RL 五組。 |
 | **擴充套件包** | 由已安裝的[外掛](/advanced/plugins)提供的範例，每個套件包一個小標題。只有存在時才會顯示。 |
 | **其他** | 沒有宣告區塊、或宣告了這份清單不認識的區塊的內建範例。 |
@@ -24,8 +24,10 @@ CodefyUI 在 `examples/` 底下隨附一整套可直接執行的範例 graph。�
 
 在磁碟上，範例依主題資料夾分組：`Classical/`、`Diffusion/`、`LLM/`、`Model_Architecture/`、`RL/`、`RNN/`、`Transformer/`、`Usage_Example/` 與 `VLA/`。資料夾不等於區塊 — 見[新增範例](#adding-an-example)。
 
-所有列出的範例都可以離線直接執行，只有四個例外：
+所有列出的範例都可以離線直接執行，以下是例外。每一個都會在自己的卡片上用卡片放得下的字說明 —「需要下載」、「需套件包」、「需 GPU」：
 
+- 四個資料集訓練範例會在第一次執行時下載資料，之後就能離線執行：**Train CNN on MNIST** 與 **Train a Transformer classifier on MNIST** 下載 MNIST，**Train ResNet on CIFAR10** 與 **ResNet-18 / CIFAR-10 baseline** 下載 CIFAR-10（約 170 MB）。兩份都放在 `backend/data/` 底下。
+- **Train a CNN on a HuggingFace dataset** 第一次執行時會從 Hugging Face Hub 下載 `AI-Lab-Makerere/beans`（1,295 張照片，約 170 MB）到 Hugging Face 的快取目錄。把圖裡三個 `HuggingFaceDataset` 節點指到別的 repo，下載的就會換成那一個。
 - **Train a Causal LM on TinyStories** 第一次執行時會從 Hugging Face Hub 下載 TinyStories 語料與 gpt2 的 BPE ranks，並且需要一張有足夠空間容納 203,668,480 參數模型的 GPU。它的說明卡開頭會列出這兩項需求；完整步驟、token 預算與記憶體調整選項則放在 graph 旁邊的 `README.md`（`examples/LLM/TrainCausalLM-TinyStories/`）。兩份下載都會被快取，之後再次執行也能離線完成。
 - **Sentence Similarity (zh-TW)** 需要 `sentence-embeddings` 套件包。這是一次性的安裝，可以在套件中心（工具列 > 設定 > 選用套件與外掛）安裝，或執行 `cdui packs install sentence-embeddings`；graph 執行時不會自動下載該套件包。安裝後，這個範例就能離線在 CPU 上執行，幾秒鐘就結束。見[選用套件包](./optional-packs)。
 - **RAG, fully local** 需要下載兩個項目：`rag` 套件包裡的 `qwen2.5-0.5b-instruct`，以及 `sentence-embeddings` 裡的 `multilingual-e5-small`，合計約 1.5 GB。安裝 `rag` 只會加入該套件包的 Python 套件，不含編碼器，所以還需要另外選取第二個項目。兩個項目都安裝後，文件、搜尋與生成都在本機處理，不會把資料傳送到外部。CPU 上大約每秒生成幾個 token，所以答案可能需要幾秒到幾十秒；這是依模型大小估算，不是實測值，使用 GPU 會快得多。
@@ -86,9 +88,11 @@ CodefyUI 在 `examples/` 底下隨附一整套可直接執行的範例 graph。�
 
 載入 **Train CNN on MNIST**，然後：
 
-1. **錄製節點輸出**與**在多次執行間保留權重**預設都已開啟 — 可在「設定」popover 中的**錄製與檢視**及**訓練行為**確認。
-2. 點擊**執行**，並在**訓練**分頁觀看即時 loss 圖表。
-3. 點擊一個 `Conv2d` 節點，在 **[教學檢視器](./teaching-inspector)**中檢視它的 kernel 與 activation。
-4. 再執行一次 — 因為權重已保留，模型會跨次執行持續學習。
+1. 先讀 `Start` 節點左邊那則註記 — 它會說這張圖在做什麼，以及跑完要看哪裡。
+2. **錄製節點輸出**與**在多次執行間保留權重**預設都已開啟 — 可在「設定」popover 中的**錄製與檢視**及**訓練行為**確認。
+3. 點擊**執行**，並在**訓練**分頁觀看即時 loss 圖表。第一次執行會下載 MNIST；5 個 epoch 在 CPU 上大約一兩分鐘。
+4. 點擊一個 `Conv2d` 節點，在 **[教學檢視器](./teaching-inspector)**中檢視它的 kernel 與 activation。
+5. 跑完之後看 **Test accuracy** 那個 `Print`，大約 0.99，算在訓練迴圈沒看過的 10,000 張測試影像上；再把 16 個預測數字和旁邊 `Visualize` 排出來的 16 張影像對照。
+6. 再執行一次 — 因為權重已保留，模型會跨次執行持續學習。
 
-訓練也會存下 `model_weights.pt`（在 `backend/data/models/` 底下）。之後載入 **Inference CNN on MNIST**；它會使用剛才訓練出的權重分類 `test_digit.png`。這是放在 `backend/data/images/` 底下的真實 MNIST 數字影像。
+訓練也會存下 `model_weights.pt`（在 `backend/data/models/` 底下）。之後載入 **Inference CNN on MNIST**；它會使用剛才訓練出的權重分類 `test_digit.png`（放在 `backend/data/images/` 底下的真實 MNIST 數字影像），並印出它讀到的數字。

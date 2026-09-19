@@ -1,18 +1,34 @@
 {
   "name": "RLHF building blocks: reward + KL",
-  "description": "The two pieces that turn a pretrained LLM into an RLHF-tuned one. Top half: a fake hidden-state batch (4 sequences × 16 dim) is fed into RewardModel, which scores each sequence with one scalar — this is what you'd train on human preferences. Bottom half: a random logit tensor (the 'policy') and a zero-logit tensor (the uniform 'reference') are compared by KLDivergence — this is the regularisation term that keeps PPO from drifting too far from the reference model. The two blocks are independent here so each can be inspected in isolation; in a real RLHF run, KL-divergence × β is subtracted from the reward inside PPO.",
+  "description": "A reward per sequence, and the KL against a reference",
   "gallery": { "section": "concepts", "order": 8 },
   "nodes": [
     { "id": "start-1",  "type": "Start",        "position": { "x": -260, "y": 0    }, "data": { "params": {} } },
 
-    { "id": "h",        "type": "TensorCreate", "position": { "x": -40,  "y": -120 }, "data": { "params": { "shape": "4,16", "fill": "randn", "value": 0, "requires_grad": false } } },
-    { "id": "rm",       "type": "RewardModel",  "position": { "x": 220,  "y": -120 }, "data": { "params": { "input_dim": 16, "hidden_dim": 32, "seed": 42 } } },
-    { "id": "print_r",  "type": "Print",        "position": { "x": 520,  "y": -120 }, "data": { "params": { "label": "rewards per sequence" } } },
+    { "id": "h",        "type": "TensorCreate", "position": { "x": -40,  "y": -210 }, "data": { "params": { "shape": "4,16", "fill": "randn", "value": 0, "requires_grad": false } } },
+    { "id": "rm",       "type": "RewardModel",  "position": { "x": 220,  "y": -210 }, "data": { "params": { "input_dim": 16, "hidden_dim": 32, "seed": 42 } } },
+    { "id": "print_r",  "type": "Print",        "position": { "x": 520,  "y": -210 }, "data": { "params": { "label": "rewards per sequence" } } },
 
-    { "id": "p",        "type": "TensorCreate", "position": { "x": -40,  "y": 100  }, "data": { "params": { "shape": "1,4", "fill": "randn", "value": 0, "requires_grad": false } } },
-    { "id": "q",        "type": "TensorCreate", "position": { "x": -40,  "y": 220  }, "data": { "params": { "shape": "1,4", "fill": "full", "value": 0.0, "requires_grad": false } } },
-    { "id": "kl",       "type": "KLDivergence", "position": { "x": 240,  "y": 160  }, "data": { "params": { "input_kind": "logits", "reduction": "batchmean" } } },
-    { "id": "print_kl", "type": "Print",        "position": { "x": 540,  "y": 160  }, "data": { "params": { "label": "KL(policy || ref)" } } }
+    { "id": "p",        "type": "TensorCreate", "position": { "x": -40,  "y": 180  }, "data": { "params": { "shape": "1,4", "fill": "randn", "value": 0, "requires_grad": false } } },
+    { "id": "q",        "type": "TensorCreate", "position": { "x": -40,  "y": 380  }, "data": { "params": { "shape": "1,4", "fill": "full", "value": 0.0, "requires_grad": false } } },
+    { "id": "kl",       "type": "KLDivergence", "position": { "x": 240,  "y": 280  }, "data": { "params": { "input_kind": "logits", "reduction": "batchmean" } } },
+    { "id": "print_kl", "type": "Print",        "position": { "x": 540,  "y": 280  }, "data": { "params": { "label": "KL(policy || ref)" } } },
+
+    { "id": "note-overview", "type": "note", "position": { "x": -680, "y": 0 },
+      "data": { "noteKind": "text",
+                "noteContent": "RLHF tunes a pretrained model with two pieces, and this graph runs them side by side: a reward model that scores an answer, and a KL term that stops the policy running away from the model it started as. They are kept independent so each can be read on its own; inside PPO the quantity being maximised is the reward minus beta times the KL. Both halves run on stand-in tensors -- no language model is loaded, and nothing is trained, so the numbers are shapes rather than results.\n\nRLHF 用兩樣東西調整預訓練模型，這張圖把它們並排跑：一個是給答案打分數的獎勵模型，一個是不讓策略跑離原本模型太遠的 KL 項。這裡刻意讓兩邊各自獨立，方便分開讀；在 PPO 裡真正被最大化的，是獎勵減掉 beta 乘上 KL。兩邊用的都是替代張量 — 沒有載入任何語言模型，也沒有訓練，所以數字看的是形狀，不是結果。",
+                "noteColor": "#3d3d1a", "boundToNodeId": "start-1",
+                "boundOffset": { "x": -420, "y": 0 }, "noteWidth": 360 } },
+    { "id": "note-rm", "type": "note", "position": { "x": 220, "y": -630 },
+      "data": { "noteKind": "text",
+                "noteContent": "The reward half. RewardModel is the head you would put on a frozen language model and train on pairs of human-ranked answers: hidden states in, one scalar out per sequence. The input here is a random [4, 16] batch, so the four scores mean nothing -- that there is exactly one per sequence is the point.\n\n這是獎勵那一半。RewardModel 就是接在凍結語言模型上、拿人類排序過的答案配對去訓練的那顆頭：吃 hidden state，每條序列吐一個純量。這裡的輸入是隨機的 [4, 16]，所以四個分數沒有意義 — 重點是每條序列剛好一個。",
+                "noteColor": "#3d3d1a", "boundToNodeId": "rm",
+                "boundOffset": { "x": 0, "y": -420 }, "noteWidth": 300 } },
+    { "id": "note-kl", "type": "note", "position": { "x": 240, "y": 540 },
+      "data": { "noteKind": "text",
+                "noteContent": "The KL half. p is the policy's logits and q the frozen reference's, all zeros here, which is the uniform distribution. batchmean is the RLHF convention: the sum divided by the batch size. KL is not symmetric, so which tensor goes into p is a decision, not a detail.\n\n這是 KL 那一半。p 是策略的 logits，q 是凍結參考模型的 logits，這裡全部是 0，也就是均勻分布。batchmean 是 RLHF 的慣例：總和除以批次大小。KL 不對稱，所以哪個張量接到 p 是要想過的，不是小細節。",
+                "noteColor": "#3d3d1a", "boundToNodeId": "kl",
+                "boundOffset": { "x": 0, "y": 260 }, "noteWidth": 300 } }
   ],
   "edges": [
     { "id": "trig_h", "source": "start-1", "target": "h",  "sourceHandle": "trigger", "type": "trigger" },

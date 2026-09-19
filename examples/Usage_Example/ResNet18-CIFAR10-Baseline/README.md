@@ -158,8 +158,11 @@ back, and the Runs panel re-attaches and replays what it missed.
   Leaving a trigger out produces a missing-input error naming a node much
   further downstream: drop `e-trigger-3` and `model`, `opt` and `sched` all
   vanish, and the failure is reported against `train` (issue #201).
-- **`EvaluateModel.device` is set to `cuda` explicitly.** It defaults to `cpu`
-  and has no `auto` option, so it does not follow the run's device (issue #204).
+- **`EvaluateModel.device` is `auto`, like `TrainingLoop.device` beside it.**
+  It used to be pinned to `cuda` because the node had no way to follow the
+  run's device; since issue #204 `auto` means "the device this run was
+  submitted with" on both nodes, so the evaluation cannot land on the CPU
+  after a CUDA training run and cannot name a device the machine lacks.
 - **`num_workers` is 4 with `persistent_workers`.** The GPU does an epoch of
   compute in under 5 seconds on an RTX 4080; single-threaded PIL augmentation of
   50,000 images is several times that, so the data pipeline, not the GPU, sets
@@ -185,7 +188,9 @@ and asserts that the file still is the file the 95.48% came from: every
 hyperparameter the tables above quote, `T_max == epochs`, and — the property the
 whole result rests on — that `EvaluateModel` still reads the `test` split, from a
 different `Dataset` node than the training dataloader, with no augmentation
-routed onto it.
+routed onto it. It also asserts that the accuracy still reaches a node that
+displays it: the number had no outgoing edge at all until the `Print` beside
+`EvaluateModel` was added.
 
 `test_resnet18_cifar10_baseline_short_epoch` then executes the graph for two
 optimizer steps against a generated image folder rather than the real download.

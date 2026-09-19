@@ -1,25 +1,37 @@
 {
   "name": "ConvNeXt (Simplified)",
-  "description": "Forward-pass visualization of a ConvNeXt-style block. ConvNeXt (FAIR, 2022) modernises a plain ResNet with four Transformer-inspired tweaks: (1) patchify stem (Conv 4x4 stride 4), (2) depthwise-style spatial mixing, (3) inverted-bottleneck 1x1 convs, (4) GELU activations. This demo uses a plain Conv2d instead of depthwise (not yet available as a primitive), so it's architecturally close but not bit-identical. Input (2,3,32,32) → stem (8x8 feature map) → one ConvNeXt block with residual → pool → Linear → 10 class logits.",
+  "description": "ConvNeXt block forward pass: patchify stem, 1x1 convs",
   "gallery": { "section": "architectures", "family": "CNN", "order": 4 },
   "nodes": [
-    { "id": "start-1", "type": "Start", "position": { "x": -200, "y": 0 }, "data": { "params": {} } },
+    { "id": "start-1", "type": "Start", "position": { "x": -250, "y": 0 }, "data": { "params": {} } },
     { "id": "input", "type": "TensorCreate", "position": { "x": 0, "y": 0 }, "data": { "params": { "shape": "2,3,32,32", "fill": "randn", "value": 0.0, "requires_grad": false } } },
 
-    { "id": "stem_conv", "type": "Conv2d", "position": { "x": 220, "y": 0 }, "data": { "params": { "in_channels": 3, "out_channels": 96, "kernel_size": 4, "stride": 4, "padding": 0 } } },
-    { "id": "stem_bn", "type": "BatchNorm2d", "position": { "x": 440, "y": 0 }, "data": { "params": { "num_features": 96 } } },
+    { "id": "stem_conv", "type": "Conv2d", "position": { "x": 270, "y": 0 }, "data": { "params": { "in_channels": 3, "out_channels": 96, "kernel_size": 4, "stride": 4, "padding": 0 } } },
+    { "id": "stem_bn", "type": "BatchNorm2d", "position": { "x": 550, "y": 0 }, "data": { "params": { "num_features": 96 } } },
 
     { "id": "block_spatial", "type": "Conv2d", "position": { "x": 0, "y": 260 }, "data": { "params": { "in_channels": 96, "out_channels": 96, "kernel_size": 7, "stride": 1, "padding": 3 } } },
-    { "id": "block_bn", "type": "BatchNorm2d", "position": { "x": 220, "y": 260 }, "data": { "params": { "num_features": 96 } } },
-    { "id": "block_pw1", "type": "Conv2d", "position": { "x": 440, "y": 260 }, "data": { "params": { "in_channels": 96, "out_channels": 384, "kernel_size": 1, "stride": 1, "padding": 0 } } },
-    { "id": "block_gelu", "type": "Activation", "position": { "x": 660, "y": 260 }, "data": { "params": { "function": "gelu" } } },
-    { "id": "block_pw2", "type": "Conv2d", "position": { "x": 880, "y": 260 }, "data": { "params": { "in_channels": 384, "out_channels": 96, "kernel_size": 1, "stride": 1, "padding": 0 } } },
-    { "id": "block_add", "type": "Add", "position": { "x": 1100, "y": 130 }, "data": { "params": { "alpha": 1.0 } } },
+    { "id": "block_bn", "type": "BatchNorm2d", "position": { "x": 270, "y": 260 }, "data": { "params": { "num_features": 96 } } },
+    { "id": "block_pw1", "type": "Conv2d", "position": { "x": 550, "y": 260 }, "data": { "params": { "in_channels": 96, "out_channels": 384, "kernel_size": 1, "stride": 1, "padding": 0 } } },
+    { "id": "block_gelu", "type": "Activation", "position": { "x": 820, "y": 260 }, "data": { "params": { "function": "gelu" } } },
+    { "id": "block_pw2", "type": "Conv2d", "position": { "x": 1090, "y": 260 }, "data": { "params": { "in_channels": 384, "out_channels": 96, "kernel_size": 1, "stride": 1, "padding": 0 } } },
+    { "id": "block_add", "type": "Add", "position": { "x": 1360, "y": 130 }, "data": { "params": { "alpha": 1.0 } } },
 
-    { "id": "head_pool", "type": "AdaptiveAvgPool2d", "position": { "x": 1320, "y": 130 }, "data": { "params": { "output_height": 1, "output_width": 1 } } },
-    { "id": "head_flat", "type": "Flatten", "position": { "x": 1540, "y": 130 }, "data": { "params": { "start_dim": 1 } } },
-    { "id": "head_fc", "type": "Linear", "position": { "x": 1760, "y": 130 }, "data": { "params": { "in_features": 96, "out_features": 10 } } },
-    { "id": "print_logits", "type": "Print", "position": { "x": 1980, "y": 130 }, "data": { "params": { "label": "Class logits (B,10)" } } }
+    { "id": "head_pool", "type": "AdaptiveAvgPool2d", "position": { "x": 1640, "y": 130 }, "data": { "params": { "output_height": 1, "output_width": 1 } } },
+    { "id": "head_flat", "type": "Flatten", "position": { "x": 1910, "y": 130 }, "data": { "params": { "start_dim": 1 } } },
+    { "id": "head_fc", "type": "Linear", "position": { "x": 2180, "y": 130 }, "data": { "params": { "in_features": 96, "out_features": 10 } } },
+    { "id": "print_logits", "type": "Print", "position": { "x": 2460, "y": 130 }, "data": { "params": { "label": "Class logits (B,10)" } } },
+
+    { "id": "note-overview", "type": "note", "position": { "x": -670, "y": 0 },
+      "data": { "noteKind": "text", "noteContent": "ConvNeXt (2022) asks what a plain ConvNet looks like once it copies the Transformer's habits: a patchify stem, one wide 7x7 kernel per block instead of a stack of 3x3s, an inverted bottleneck of two 1x1 convs (96 to 384 and back), GELU, and few normalisation layers.\n\nThe input is a random tensor: this graph shows the wiring and the shapes, not a trained model. Depthwise convolution is not a canvas node, so block_spatial is a full 7x7 Conv2d - the same shapes, many more parameters than the paper's block. Print is (2, 10).\n\nConvNeXt（2022）問的是：一個普通的卷積網路，如果把 Transformer 的幾個習慣學過來，會長成什麼樣子 — patchify stem、每個區塊用一個 7x7 的大卷積核而不是疊一堆 3x3、兩個 1x1 卷積組成的反向瓶頸（96 到 384 再回來）、GELU，以及很少的正規化層。\n\n輸入是隨機張量：這張圖看的是接線與形狀，不是訓練好的模型。畫布沒有 depthwise 卷積節點，所以 block_spatial 是完整的 7x7 Conv2d — 形狀相同，參數比論文的區塊多很多。Print 是 (2, 10)。",
+                 "noteColor": "#3d3d1a", "boundToNodeId": "start-1", "boundOffset": { "x": -420, "y": 0 }, "noteWidth": 360 } },
+
+    { "id": "note-stem_conv", "type": "note", "position": { "x": 270, "y": -320 },
+      "data": { "noteKind": "text", "noteContent": "kernel 4 with stride 4 is patchify: the 32x32 image is cut into an 8x8 grid of 4x4 tiles, one 96-dim vector each. It is the same first move a ViT makes, done with a Conv2d.\n\nkernel 4 搭配 stride 4 就是 patchify：32x32 的影像被切成 8x8 格、每格 4x4 的方塊，每塊變成一個 96 維向量。ViT 的第一步也是這樣，只是這裡用 Conv2d 做。",
+                 "noteColor": "#3d3d1a", "boundToNodeId": "stem_conv", "boundOffset": { "x": 0, "y": -320 }, "noteWidth": 300 } },
+
+    { "id": "note-block_spatial", "type": "note", "position": { "x": 0, "y": 540 },
+      "data": { "noteKind": "text", "noteContent": "7x7 is the point: one wide kernel gives a block the reach that stacking small ones needs depth for. padding 3 keeps the 8x8 map at 8x8, so the residual Add still lines up.\n\n7x7 才是重點：一個大卷積核就能給這個區塊足夠的感受野，不必靠疊很多小卷積換深度。padding 3 讓 8x8 的特徵圖維持 8x8，後面的殘差 Add 才對得起來。",
+                 "noteColor": "#3d3d1a", "boundToNodeId": "block_spatial", "boundOffset": { "x": 0, "y": 280 }, "noteWidth": 300 } }
   ],
   "edges": [
     { "id": "e-t", "source": "start-1", "target": "input", "sourceHandle": "trigger", "type": "trigger" },
