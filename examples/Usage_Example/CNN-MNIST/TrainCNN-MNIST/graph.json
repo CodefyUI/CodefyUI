@@ -50,7 +50,7 @@
       },
       "data": {
         "noteKind": "text",
-        "noteContent": "DatasetBatch takes 16 images from the same test split. Raise start_index to look at a different 16, or batch_size to see more at once.\n\nDatasetBatch 從同一個測試集取 16 張影像。把 start_index 調大可以換另外 16 張，把 batch_size 調大則一次看更多。",
+        "noteContent": "DatasetBatch takes 16 images from the same test split. Raise start_index to look at a different 16, or batch_size to see more at once. Dataset normalises them to [-1, 1], so the multiply and add before Visualize put the picture back into [0, 1]; Inference reads the normalised batch as it is.\n\nDatasetBatch 從同一個測試集取 16 張影像。把 start_index 調大可以換另外 16 張，把 batch_size 調大則一次看更多。Dataset 會把影像正規化到 [-1, 1]，所以送進 Visualize 之前的乘法與加法把畫面還原回 [0, 1]；Inference 讀到的仍然是正規化後的批次。",
         "noteColor": "#3d3d1a",
         "boundToNodeId": "sample-batch",
         "boundOffset": {
@@ -245,10 +245,52 @@
       }
     },
     {
+      "id": "show-scale",
+      "type": "ScalarMultiply",
+      "position": {
+        "x": 900,
+        "y": 1340
+      },
+      "data": {
+        "params": {
+          "scalar": 0.5
+        }
+      }
+    },
+    {
+      "id": "show-mean",
+      "type": "TensorCreate",
+      "position": {
+        "x": 900,
+        "y": 1580
+      },
+      "data": {
+        "params": {
+          "shape": "1",
+          "fill": "full",
+          "value": 0.5,
+          "requires_grad": false
+        }
+      }
+    },
+    {
+      "id": "show-shift",
+      "type": "Add",
+      "position": {
+        "x": 1260,
+        "y": 1340
+      },
+      "data": {
+        "params": {
+          "alpha": 1.0
+        }
+      }
+    },
+    {
       "id": "show-digits",
       "type": "Visualize",
       "position": {
-        "x": 900,
+        "x": 1560,
         "y": 1340
       },
       "data": {
@@ -347,8 +389,29 @@
     {
       "id": "e-13",
       "source": "sample-batch",
-      "target": "show-digits",
+      "target": "show-scale",
       "sourceHandle": "images",
+      "targetHandle": "tensor"
+    },
+    {
+      "id": "e-14",
+      "source": "show-scale",
+      "target": "show-shift",
+      "sourceHandle": "tensor",
+      "targetHandle": "tensor_a"
+    },
+    {
+      "id": "e-15",
+      "source": "show-mean",
+      "target": "show-shift",
+      "sourceHandle": "tensor",
+      "targetHandle": "tensor_b"
+    },
+    {
+      "id": "e-16",
+      "source": "show-shift",
+      "target": "show-digits",
+      "sourceHandle": "tensor",
       "targetHandle": "data"
     },
     {
@@ -362,6 +425,13 @@
       "id": "e-trigger-2",
       "source": "start-1",
       "target": "ds-test",
+      "sourceHandle": "trigger",
+      "type": "trigger"
+    },
+    {
+      "id": "e-trigger-3",
+      "source": "start-1",
+      "target": "show-mean",
       "sourceHandle": "trigger",
       "type": "trigger"
     }

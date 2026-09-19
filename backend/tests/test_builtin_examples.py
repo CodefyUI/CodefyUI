@@ -59,12 +59,13 @@ assert _GRAPHS, "builtin example smoke suite discovered no examples"
 # Node types that pull a real dataset, train for multiple epochs, or load/save
 # weights — longer than a few seconds or dependent on prior runs.
 # test_chapter_examples.py carries the same list minus ``TextCorpusDataset``,
-# which no plugin example uses. This correctly skips execution for ten
-# graphs: the six training examples (CNN-MNIST, GPT-Mini, ResNet-CIFAR10, the
-# ResNet-18 baseline, the TinyStories LM and VLA-PushWorld), the MNIST
-# inference example, which needs weights from a prior training run, and the
-# three pack-backed LLM examples (zh-TW Sentence Similarity, RAG-Local-Offline
-# and RAG-LLMChat-API), whose encoder and generator are pack downloads.
+# which no plugin example uses. This correctly skips execution for eleven
+# graphs: the seven training examples (CNN-MNIST, GPT-Mini, ResNet-CIFAR10,
+# the ResNet-18 baseline, the HuggingFace beans CNN, the TinyStories LM and
+# VLA-PushWorld), the MNIST inference example, which needs weights from a
+# prior training run, and the three pack-backed LLM examples (zh-TW Sentence
+# Similarity, RAG-Local-Offline and RAG-LLMChat-API), whose encoder and
+# generator are pack downloads.
 # Everything else — including all Model_Architecture graphs — must execute.
 _SLOW_NODE_TYPES = {
     "Dataset",
@@ -918,3 +919,215 @@ def test_vla_example_shows_everything_its_evaluation_measures():
 
     # And the rollout video is still written, which is why frames is exempt.
     assert by_id[consumed[("rollout", "frames")]]["type"] == "VideoWrite"
+
+
+# ── Quick Start: the graphs a test can only read ───────────────────────────
+
+#: The three examples whose training runs inside ``preset:Training Pipeline``
+#: and that grew an evaluation tail in this wave. Each contains a slow node
+#: type, so ``test_builtin_graph_executes`` validates them and skips the run:
+#: structure is all a test can see here, and structure is what rots. A
+#: ``split`` flipped to ``train`` scores the model on the images it
+#: memorised, and a dropped ``accuracy`` edge takes the number off the
+#: screen again -- both still validate, and both still train.
+_PRESET_TRAINERS = (
+    "Usage_Example/CNN-MNIST/TrainCNN-MNIST",
+    "Usage_Example/GPT-Mini/TrainGPT-Mini",
+    "Usage_Example/ResNet-CIFAR10/TrainResNet-CIFAR10",
+)
+
+
+def _example(path: str) -> dict:
+    return json.loads(
+        (_EXAMPLES_ROOT / path / "graph.json").read_text(encoding="utf-8"))
+
+
+def _readers(edges: list[dict], source: str, handle: str | None = None
+             ) -> list[str]:
+    """Ids of the nodes reading ``source``'s output over a data edge."""
+    return [e["target"] for e in edges
+            if e.get("type", "data") == "data" and e["source"] == source
+            and (handle is None or e.get("sourceHandle") == handle)]
+
+
+def _assert_argmax_is_printed(edges: list[dict], by_id: dict, model: str
+                              ) -> None:
+    """``model`` -> ``Argmax`` -> ``Print``: the label, not just the logits.
+
+    A Print on the raw logits is ten numbers; the reader compares the digit
+    against the image, and the digit is what the Argmax makes.
+    """
+    argmax = [n for n in _readers(edges, model, "output")
+              if by_id[n]["type"] == "Argmax"]
+    assert argmax, f"nothing turns {model}'s logits into a label"
+    printed = [t for node in argmax for t in _readers(edges, node)
+               if by_id[t]["type"] == "Print"]
+    assert printed, f"{argmax} computes a label that never reaches a Print"
+
+
+@pytest.mark.parametrize("example", _PRESET_TRAINERS)
+def test_a_quickstart_trainer_scores_the_split_it_did_not_train_on(example):
+    """Train on ``train``, report ``test``, and put the number on screen.
+
+    The dataset the example trains on is read off the preset's own
+    ``internalParams`` rather than listed here, so the two halves cannot
+    drift apart: an example repointed at another dataset has to repoint its
+    evaluation with it.
+    """
+    payload = _example(example)
+    nodes, edges = payload["nodes"], payload["edges"]
+    by_id = {n["id"]: n for n in nodes}
+
+    pipeline = by_id[_data_source(edges, "eval", "model")]
+    assert pipeline["type"] == "preset:Training Pipeline", pipeline["type"]
+    trained_on = pipeline["data"]["internalParams"]["dataset"]
+    assert trained_on["split"] == "train", trained_on
+
+    assert [
+        e for e in edges
+        if e.get("type", "data") == "data"
+        and e["source"] == pipeline["id"] and e.get("sourceHandle") == "model"
+        and e["target"] == "eval" and e.get("targetHandle") == "model"
+    ], "EvaluateModel is scored on something other than the trained model"
+
+    scored_on = by_id[_data_source(edges, "eval", "dataset")]
+    assert scored_on["type"] == "Dataset", scored_on["type"]
+    assert scored_on["data"]["params"]["name"] == trained_on["name"], (
+        f"the example trains on {trained_on['name']} and scores itself on "
+        f"{scored_on['data']['params']['name']}")
+    assert scored_on["data"]["params"]["split"] == "test", (
+        f"{scored_on['id']} reads the {scored_on['data']['params']['split']!r} "
+        f"split -- an accuracy measured on the images the loop trained on is "
+        f"not an accuracy")
+
+    shown = {by_id[e["target"]]["type"] for e in edges
+             if e.get("type", "data") == "data" and e["source"] == "eval"
+             and e.get("sourceHandle") == "accuracy"}
+    assert "Print" in shown, (
+        f"EvaluateModel.accuracy reaches {sorted(shown)} -- the one number "
+        f"the evaluation tail exists to produce has to reach a Print")
+
+
+def _default_normalize():
+    """The ``Normalize`` step ``Dataset`` applies when nothing is wired in.
+
+    Read off the app's own transform rather than written out as 0.5/0.5, so
+    the two examples below follow a changed default instead of silently
+    disagreeing with it.
+    """
+    from torchvision import transforms
+
+    from app.nodes.data._batched_vision import DefaultVisionTransform
+
+    steps = DefaultVisionTransform().transforms
+    assert isinstance(steps[-1], transforms.Normalize), steps
+    return steps[-1]
+
+
+#: Everything between the PNG and the tensor ``Inference`` reads. The model
+#: half is left out on purpose: ``ModelLoader`` wants weights from a training
+#: run, which is why the smoke above cannot execute this graph at all.
+_INFERENCE_EXAMPLE = "Usage_Example/CNN-MNIST/InferenceCNN-MNIST"
+_INFERENCE_PREPROCESSING = (
+    "start-1", "test-image", "norm-mean", "centre", "scale", "add-batch-dim")
+
+
+def test_the_mnist_inference_example_feeds_the_model_the_range_it_trained_on():
+    """Executed, not read: the tensor has to match, not the node types.
+
+    Training normalises every image through ``DefaultVisionTransform``, so
+    the saved weights expect [-1, 1]; ``ImageReader`` hands over [0, 1]. The
+    ``Add``/``ScalarMultiply`` pair in between is the whole of that fix, and
+    a graph with the pair deleted validates, executes, and classifies a
+    tensor unlike anything the weights ever saw -- a wrong answer with no
+    error anywhere. So the preprocessing half is run for real here and its
+    output compared with the transform the training split went through.
+    """
+    import torch
+
+    payload = _example(_INFERENCE_EXAMPLE)
+    edges = payload["edges"]
+    by_id = {n["id"]: n for n in payload["nodes"]}
+    assert _data_source(edges, "inference", "input") == "add-batch-dim", (
+        "the chain measured below is no longer what Inference reads")
+    _assert_argmax_is_printed(edges, by_id, "inference")
+
+    kept = set(_INFERENCE_PREPROCESSING)
+    nodes = [n for n in payload["nodes"] if n["id"] in kept]
+    assert {n["id"] for n in nodes} == kept, sorted(n["id"] for n in nodes)
+    sub_edges = [e for e in edges
+                 if e["source"] in kept and e["target"] in kept]
+
+    # ``ImageReader`` resolves a bare filename under the images directory,
+    # which is backend-relative; the smoke test above hops cwd for the same
+    # reason.
+    backend_dir = Path(__file__).resolve().parents[1]
+    prev_cwd = Path.cwd()
+    os.chdir(backend_dir)
+    try:
+        results = asyncio.run(
+            execute_graph(nodes, sub_edges, error_mode="fail_fast"))
+    finally:
+        os.chdir(prev_cwd)
+
+    raw = results["test-image"]["tensor"]
+    got = results["add-batch-dim"]["tensor"]
+
+    assert tuple(got.shape) == (1, 1, 28, 28), tuple(got.shape)
+    assert 0.0 <= float(raw.min()) and float(raw.max()) <= 1.0, (
+        "ImageReader no longer hands over [0, 1]; the shift and scale below "
+        "were chosen for that range")
+    assert torch.allclose(got[0], _default_normalize()(raw), atol=1e-6), (
+        f"the graph feeds Inference [{float(got.min()):.4f}, "
+        f"{float(got.max()):.4f}], not what Dataset's default transform "
+        f"produces -- the training/inference skew is back")
+
+
+def test_the_mnist_quickstart_shows_the_digits_it_normalised():
+    """The image grid is the picture, not the tensor the model reads.
+
+    ``Dataset`` hands every image over normalised to [-1, 1] and
+    ``Visualize`` clips floats to [0, 1] before drawing, so the two together
+    erase every pixel at or below mid-grey -- roughly a third of the ink in
+    an MNIST digit, drawn pure black. The multiply and add on the way to the
+    Visualize node undo exactly the ``Normalize`` the dataset applied, and
+    both numbers are read off that transform here rather than written out,
+    so they cannot be right today and wrong after somebody changes it.
+
+    ``Inference`` keeps reading the normalised batch: de-normalising what
+    the model sees would be the same skew as the inference example's, in
+    the other direction.
+    """
+    normalize = _default_normalize()
+    mean, std = float(normalize.mean[0]), float(normalize.std[0])
+
+    payload = _example("Usage_Example/CNN-MNIST/TrainCNN-MNIST")
+    edges = payload["edges"]
+    by_id = {n["id"]: n for n in payload["nodes"]}
+
+    shift = by_id[_data_source(edges, "show-digits", "data")]
+    assert shift["type"] == "Add", shift["type"]
+    assert shift["data"]["params"]["alpha"] == 1.0, shift["data"]["params"]
+
+    scale = by_id[_data_source(edges, shift["id"], "tensor_a")]
+    assert scale["type"] == "ScalarMultiply", scale["type"]
+    assert scale["data"]["params"]["scalar"] == std, (
+        f"{scale['id']} multiplies by {scale['data']['params']['scalar']}, "
+        f"but Dataset divided by {std}")
+    assert _data_source(edges, scale["id"], "tensor") == "sample-batch", (
+        "the tiles are drawn from something other than the batch the "
+        "predictions were made on")
+
+    offset = by_id[_data_source(edges, shift["id"], "tensor_b")]
+    assert offset["type"] == "TensorCreate", offset["type"]
+    assert offset["data"]["params"]["fill"] == "full", offset["data"]["params"]
+    assert offset["data"]["params"]["value"] == mean, (
+        f"{offset['id']} adds {offset['data']['params']['value']}, but "
+        f"Dataset subtracted {mean}")
+
+    assert _data_source(edges, "predict", "input") == "sample-batch", (
+        "Inference must read the normalised batch, not the de-normalised one")
+
+    # Both halves of the claim the note beside them makes: 16 tiles to look
+    # at, and 16 labels to compare them with.
+    _assert_argmax_is_printed(edges, by_id, "predict")
