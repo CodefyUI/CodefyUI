@@ -1,6 +1,7 @@
 {
   "name": "RLHF building blocks: reward + KL",
   "description": "The two pieces that turn a pretrained LLM into an RLHF-tuned one. Top half: a fake hidden-state batch (4 sequences × 16 dim) is fed into RewardModel, which scores each sequence with one scalar — this is what you'd train on human preferences. Bottom half: a random logit tensor (the 'policy') and a zero-logit tensor (the uniform 'reference') are compared by KLDivergence — this is the regularisation term that keeps PPO from drifting too far from the reference model. The two blocks are independent here so each can be inspected in isolation; in a real RLHF run, KL-divergence × β is subtracted from the reward inside PPO.",
+  "gallery": { "section": "concepts", "order": 8 },
   "nodes": [
     { "id": "start-1",  "type": "Start",        "position": { "x": -260, "y": 0    }, "data": { "params": {} } },
 

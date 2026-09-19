@@ -1039,6 +1039,59 @@ def container_bypass_errors(
     return errors
 
 
+#: The ``type`` the canvas serializes a note under. Not a registry key and
+#: never will be: a note has no ports, no params and nothing to execute.
+NOTE_NODE_TYPE = "note"
+
+
+def is_note_node(node: dict) -> bool:
+    """Is *node* a canvas note rather than something the graph runs?
+
+    A note travels in the graph's ``nodes`` list because that is the only
+    list a graph file has, and it is written exactly as
+    ``{"id": ..., "type": "note", "position": ..., "data": {...}}`` -- no
+    ``params`` key at all. Every reader that walks that list has to tell the
+    two apart; ``POST /api/graph/export`` and ``app.core.project`` did so
+    with a literal comparison each, and this is that comparison named once,
+    for them, for :func:`validate_graph` below, and for the example test
+    suites that read shipped graphs off disk.
+
+    Exact, deliberately: ``noteNode`` is the react-flow component type,
+    which the serializer never writes to a file, and an unknown spelling is
+    a node type nobody registered -- which the unknown-type branch already
+    reports.
+    """
+    return node.get("type") == NOTE_NODE_TYPE
+
+
+def drop_notes(
+    nodes: list[dict], edges: list[dict]
+) -> tuple[list[dict], list[dict]]:
+    """*nodes* and *edges* without the notes and the edges touching them.
+
+    Both graph-wide entry points start here -- :func:`validate_graph` and
+    :func:`prepare_executable_graph` -- and they have to agree: validate
+    answering "clean" for a graph the run then refuses is worse than either
+    answer on its own, because the refusal arrives mid-run, after the nodes
+    upstream of the note have already done their work.
+
+    The edges go with the notes. The canvas draws no handle on a note, so it
+    cannot make such an edge, but a hand-edited or machine-written file can
+    carry one and ``POST /api/graph/export`` has dropped rather than refused
+    it since notes existed.
+    """
+    if not any(is_note_node(node) for node in nodes):
+        return nodes, edges
+    note_ids = {node["id"] for node in nodes if is_note_node(node)}
+    return (
+        [node for node in nodes if node["id"] not in note_ids],
+        [
+            edge for edge in edges
+            if edge["source"] not in note_ids and edge["target"] not in note_ids
+        ],
+    )
+
+
 def validate_graph(
     nodes: list[dict],
     edges: list[dict],
@@ -1064,8 +1117,16 @@ def validate_graph(
     runs against the graph that would actually execute: a node whose only
     upstream is bypassed is checked against what the bypass forwards, not
     against the node the user muted.
+
+    Notes are removed before any of that, for the same reason and one step
+    earlier: they are annotations the canvas keeps in the node list, not
+    something the graph runs -- see :func:`is_note_node`.
     """
     errors: list[str] = []
+    # Dropped first, so no check below has to know what a note is -- see
+    # :func:`drop_notes`, which the execution preflight calls in the same
+    # place for the same reason.
+    nodes, edges = drop_notes(nodes, edges)
     # Before expansion, because expansion is what removes the instance node
     # AND its ``bypassed`` flag -- see :func:`container_bypass_errors`. Preset
     # nodes are excluded: they are still here when `resolve_bypass` runs
@@ -1601,6 +1662,13 @@ def prepare_executable_graph(
     with :func:`outermost_container` -- the retention below, the roll-up, and
     the exporter.
     """
+
+    # Dropped first, exactly where :func:`validate_graph` drops them: an edge
+    # into a note makes the note reachable, and a reachable note reaches the
+    # registry lookup in `_execute_single_node` -- mid-run, after its upstream
+    # has already executed. The validator tolerates such a file, so the run
+    # has to as well.
+    nodes, edges = drop_notes(nodes, edges)
 
     # Refused before expansion, while the container node still exists to be
     # named -- see :func:`container_bypass_errors`.

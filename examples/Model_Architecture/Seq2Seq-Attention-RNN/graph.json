@@ -1,6 +1,7 @@
 {
   "name": "Seq2Seq with Attention",
   "description": "Forward-pass visualization of the classic Bahdanau-style seq-to-seq with attention used in pre-Transformer neural machine translation. An encoder LSTM summarizes the source sequence (batch=2, src_len=10, d=16) into contextual states. A decoder LSTM generates target states (batch=2, tgt_len=8, d=16). MultiHeadAttention then lets each decoder step query the full encoder state sequence, producing context-aware hidden states which are projected to vocabulary logits (vocab=64 for illustration).",
+  "gallery": { "section": "architectures", "family": "RNN", "order": 3 },
   "nodes": [
     { "id": "start-1", "type": "Start", "position": { "x": -200, "y": 0 }, "data": { "params": {} } },
 

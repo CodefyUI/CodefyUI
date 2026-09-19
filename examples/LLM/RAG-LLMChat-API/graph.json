@@ -1,6 +1,7 @@
 {
   "name": "RAG with a chat API: retrieve locally, generate anywhere",
   "description": "Needs the sentence-embeddings pack plus a running Ollama, or an API key instead. The same retrieval chain as RAG-Local-Offline (DocumentLoader -> TextChunker -> TextEmbedding -> VectorStore -> Retriever -> PromptBuilder), but the generator is LLMChat: by default it talks to a local Ollama at http://127.0.0.1:11434 running qwen2.5:0.5b ('ollama pull qwen2.5:0.5b' first), and switching provider to ChatGPT API or Claude API with a key sends the identical prompt to a hosted model. Compare its answer with the local example's. README.md beside this graph explains each stage.",
+  "gallery": { "section": "llm", "order": 4 },
   "nodes": [
     {
       "id": "start",

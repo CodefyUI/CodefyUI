@@ -1,6 +1,7 @@
 {
   "name": "Toy Sampling: reverse diffusion with an untrained U-Net",
   "description": "The reverse-diffusion sampling loop, using a freshly-initialized (untrained) `DiffusionUNet`. Because the model isn't trained, the final 'image' is meaningless noise — but the *trajectory* and the *schedule arithmetic* are exactly what a trained Stable Diffusion does. Watch the DDPMSampler node: 20 reverse-diffusion steps, each calling the U-Net once with a different timestep. To get a meaningful output you'd need to train the U-Net (separate workflow); this preset is about teaching the sampling math, not generating pretty pictures.",
+  "gallery": { "section": "concepts", "order": 6 },
   "nodes": [
     { "id": "start-1",  "type": "Start", "position": { "x": -260, "y": 0 }, "data": { "params": {} } },
     { "id": "noise",    "type": "GaussianNoise", "position": { "x": 0,    "y": 80 }, "data": { "params": { "shape": "1,3,16,16", "mean": 0, "std": 1, "seed": 42 } } },

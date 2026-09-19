@@ -1,6 +1,7 @@
 {
   "name": "Swin Transformer (Simplified)",
   "description": "Forward-pass visualization of a simplified Swin Transformer stage. Swin's distinctive idea is hierarchical patch merging + shifted-window attention for linear-in-pixels complexity. This demo keeps the hierarchy and patch embedding (Conv2d stride=4 then a second stride=2 downsample) but uses a plain TransformerEncoder at each stage rather than shifted-window attention (which requires cycle-shift ops not yet available as canvas primitives). Output is 10 class logits from mean-pooled patches.",
+  "gallery": { "section": "architectures", "family": "Transformer", "order": 5 },
   "nodes": [
     { "id": "start-1", "type": "Start", "position": { "x": -200, "y": 0 }, "data": { "params": {} } },
     { "id": "input", "type": "TensorCreate", "position": { "x": 0, "y": 0 }, "data": { "params": { "shape": "2,3,32,32", "fill": "randn", "value": 0.0, "requires_grad": false } } },

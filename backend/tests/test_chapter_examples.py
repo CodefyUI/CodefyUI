@@ -28,6 +28,8 @@ from app.core.graph_engine import execute_graph, validate_graph
 from app.core.node_registry import NodeRegistry
 from app.core.plugin_loader import install_plugin_finder
 
+from tests._example_graphs import graph_nodes
+
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _PLUGIN_ROOT = _REPO_ROOT / "plugins"
 
@@ -168,6 +170,11 @@ def test_chapter_graph_node_types_match_the_palette_exactly(
 ):
     """Every node type in a pack example is a key the palette actually has.
 
+    Read through ``graph_nodes``, so a note the example carries to explain
+    itself is not asked to be a registry key -- it is an annotation, and
+    the canvas renders it from the node list without consulting a
+    definition.
+
     ``test_chapter_graph_executes`` above does NOT cover this.
     ``registry.get`` falls back to a suffix scan, so a graph asking for a
     bare ``Edu-KNN`` while the registry holds ``foundations:Edu-KNN``
@@ -189,7 +196,7 @@ def test_chapter_graph_node_types_match_the_palette_exactly(
     unresolved = sorted(
         {
             node_type
-            for node in payload.get("nodes", [])
+            for node in graph_nodes(payload)
             for node_type in [str(node.get("type", ""))]
             if not node_type.startswith(_NON_REGISTRY_PREFIXES)
             and node_type not in palette

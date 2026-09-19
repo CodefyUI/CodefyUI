@@ -1,6 +1,7 @@
 {
   "name": "DiT Diffusion Transformer",
   "description": "Forward-pass visualization of a DiT (Diffusion Transformer) block — the backbone used by Stable Diffusion 3 and OpenAI Sora. A noisy image batch (2,4,8,8) is patch-embedded into 16 tokens of 64-dim via a stride-2 Conv2d, processed by a TransformerEncoder with self-attention across all image patches, then projected back to per-patch noise predictions via a Linear head. The key insight: the Transformer's global receptive field replaces the local U-Net in classical diffusion models.",
+  "gallery": { "section": "architectures", "family": "Diffusion", "order": 1 },
   "nodes": [
     { "id": "start-1", "type": "Start", "position": { "x": -200, "y": 0 }, "data": { "params": {} } },
     { "id": "noisy_latent", "type": "TensorCreate", "position": { "x": 0, "y": 0 }, "data": { "params": { "shape": "2,4,8,8", "fill": "randn", "value": 0.0, "requires_grad": false } } },

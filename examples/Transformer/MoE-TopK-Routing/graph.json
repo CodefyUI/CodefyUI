@@ -1,6 +1,7 @@
 {
   "name": "Mixture of Experts: top-k routing in 5 nodes",
   "description": "What MoE actually does to a token batch. A 2 × 5 × 32 tensor (2 batches of 5 tokens, hidden dim 32) goes into MoELayer with N=4 experts and top_k=2. Each token picks its 2 best experts by softmax over a small gating network; the layer's output is the weighted sum of those 2 experts' FFN outputs. All three outputs are printed, and reading them together is the point: `expert_indices` says WHICH 2 experts each token chose, `routing_weights` says how confident the gate was about that choice, and `output` is the mixture those two produce — [B, T, H], the same shape that went in, which is what lets an MoE layer drop into a Transformer block where a plain FFN used to sit. Same architecture pattern as Switch Transformer, Mixtral, and DeepSeek-MoE — sized down so the routing decisions fit on one screen.",
+  "gallery": { "section": "concepts", "order": 4 },
   "nodes": [
     { "id": "start-1",   "type": "Start",        "position": { "x": -260, "y": 0    }, "data": { "params": {} } },
     { "id": "x",         "type": "TensorCreate", "position": { "x": -40,  "y": 0    }, "data": { "params": { "shape": "2,5,32", "fill": "randn", "value": 0, "requires_grad": false } } },

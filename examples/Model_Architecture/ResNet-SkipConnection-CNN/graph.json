@@ -1,6 +1,7 @@
 {
   "name": "ResNet with Skip Connections",
   "description": "Forward-pass visualization of a mini-ResNet on a sample CIFAR10-shaped batch. Each layer node executes on the real tensor flowing from TensorCreate, so you can see shapes at every stage. The Add nodes (b1_add, b2_add) make the residual shortcuts explicit on the canvas. Not a training graph — use the Usage_Example/ResNet-CIFAR10 version for training.",
+  "gallery": { "section": "architectures", "family": "CNN", "order": 1 },
   "nodes": [
     { "id": "start-1", "type": "Start", "position": { "x": -200, "y": 0 }, "data": { "params": {} } },
 

@@ -1,6 +1,7 @@
 {
   "name": "EfficientNet MBConv Block (Simplified)",
   "description": "Forward-pass visualization of EfficientNet's core MBConv (mobile inverted bottleneck) block. The expand→depthwise-spatial→squeeze-and-excite→project pattern is simplified here: (1) expand via 1x1 Conv (channels 32→128), (2) spatial mixing via 3x3 Conv, (3) Squeeze-and-Excite via AdaptiveAvgPool→Linear→Linear→sigmoid→Multiply, (4) project back via 1x1 Conv, (5) residual Add. Input (2,32,16,16) → MBConv block → (2,32,16,16) → global pool → Linear → 10 class logits.",
+  "gallery": { "section": "architectures", "family": "CNN", "order": 3 },
   "nodes": [
     { "id": "start-1", "type": "Start", "position": { "x": -200, "y": 0 }, "data": { "params": {} } },
     { "id": "input", "type": "TensorCreate", "position": { "x": 0, "y": 0 }, "data": { "params": { "shape": "2,32,16,16", "fill": "randn", "value": 0.0, "requires_grad": false } } },

@@ -1,6 +1,7 @@
 {
   "name": "GPT Decoder-Only Transformer",
   "description": "Forward-pass visualization of a GPT-style decoder block on a sample (seq_len=16, batch=2, d_model=24) token-embedding tensor. The TransformerDecoder node wires its own tensor output back as memory (causal self-attention only — no encoder), which is the core of decoder-only LLMs like GPT, Claude, and LLaMA. Downstream: Permute to batch-first, Flatten, Dropout, and a Linear head projecting to 10 logits. Not a training graph — see Usage_Example/GPT-Mini for training.",
+  "gallery": { "section": "architectures", "family": "Transformer", "order": 1 },
   "nodes": [
     { "id": "start-1", "type": "Start", "position": { "x": -200, "y": 0 }, "data": { "params": {} } },
 
