@@ -219,19 +219,23 @@ def test_chapter_graph_node_types_match_the_palette_exactly(
 #: which is also the thing that rots. A ``split`` flipped to ``train``
 #: scores the model on the images it memorised, and a dropped ``accuracy``
 #: edge takes the number off the screen again; both still validate, and
-#: both still train.
+#: both still train. So does an evaluation left on another device: both pack
+#: trainers pin their training device to ``cpu`` instead of ``auto``, and a
+#: graph that trains on one device and scores on another is the bug the
+#: ResNet baseline shipped with.
 _LENET_TRAINER = (_PLUGIN_ROOT / "deep" / "examples" / "C3-1"
                   / "LeNet-MNIST-Training" / "graph.json")
 
 
 def test_the_lenet_pack_trainer_scores_the_split_it_did_not_train_on():
-    """Train on ``train``, report ``test``, and put the number on screen.
+    """Train on ``train``, report ``test``, on the training device, and put
+    the number on screen.
 
     The dataset the example trains on is read off the preset's own
     ``internalParams`` rather than named here, so the two halves cannot
     drift apart: an example repointed at another dataset has to repoint its
     evaluation with it. The built-in quick-start trainer holds the same
-    contract in ``test_builtin_examples.py``.
+    split contract in ``test_builtin_examples.py``.
     """
     payload = json.loads(_LENET_TRAINER.read_text(encoding="utf-8"))
     edges = payload["edges"]
@@ -244,6 +248,8 @@ def test_the_lenet_pack_trainer_scores_the_split_it_did_not_train_on():
         assert len(sources) == 1, f"{target}.{handle} is fed by {sources}"
         return by_id[sources[0]]
 
+    evaluator = by_id["eval"]
+    assert evaluator["type"] == "EvaluateModel", evaluator["type"]
     pipeline = feeding("eval", "model")
     assert pipeline["type"] == "preset:Training Pipeline", pipeline["type"]
     trained_on = pipeline["data"]["internalParams"]["dataset"]
@@ -259,6 +265,12 @@ def test_the_lenet_pack_trainer_scores_the_split_it_did_not_train_on():
         f"split -- an accuracy measured on the images the loop trained on is "
         f"not an accuracy")
 
+    training_device = pipeline["data"]["internalParams"]["train_loop"]["device"]
+    assert evaluator["data"]["params"]["device"] == training_device, (
+        f"the loop trains on {training_device!r} and the evaluation runs on "
+        f"{evaluator['data']['params']['device']!r}; a graph that pins its "
+        f"training device has to pin the same one for the pass that scores it")
+
     shown = {by_id[e["target"]]["type"] for e in edges
              if e.get("type", "data") == "data" and e["source"] == "eval"
              and e.get("sourceHandle") == "accuracy"}
@@ -268,12 +280,8 @@ def test_the_lenet_pack_trainer_scores_the_split_it_did_not_train_on():
 
 
 #: The foundations pack's MNIST trainer, the C2 chapter's flagship. Same
-#: contract as the LeNet one above and the built-in quick-start trainer,
-#: checked separately because it is a separate file a separate edit can
-#: break. It carries one extra pin: this graph pins its training device to
-#: ``cpu`` instead of ``auto``, and an evaluation left on another device is
-#: the bug the ResNet baseline shipped with -- a graph that trains on one
-#: device and scores on another.
+#: contract as the LeNet one above, device pin included, checked separately
+#: because it is a separate file a separate edit can break.
 _MLP_TRAINER = (_PLUGIN_ROOT / "foundations" / "examples" / "C2-5"
                 / "MLP-MNIST-Training" / "graph.json")
 
@@ -292,6 +300,7 @@ def test_the_foundations_pack_trainer_scores_the_split_it_did_not_train_on():
         return by_id[sources[0]]
 
     evaluator = by_id["eval"]
+    assert evaluator["type"] == "EvaluateModel", evaluator["type"]
     pipeline = feeding("eval", "model")
     assert pipeline["type"] == "preset:Training Pipeline", pipeline["type"]
     trained_on = pipeline["data"]["internalParams"]["dataset"]
