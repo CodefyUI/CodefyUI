@@ -1,36 +1,49 @@
 {
   "name": "UNet for Image Segmentation",
-  "description": "Classic two-level U-Net wired in full so every encoder Conv, every MaxPool, every ConvTranspose, and every Concat-based skip is visible on the canvas. A 32×32 RGB image flows through: Lv1 Conv→ReLU at 32×32 (skip saved), MaxPool to 16×16, Lv2 Conv→ReLU (skip saved), MaxPool to 8×8, bottleneck Conv→ReLU, then mirror back up — ConvTranspose to 16×16, Concat with the Lv2 skip (channel-wise), Conv→ReLU, ConvTranspose to 32×32, Concat with the Lv1 skip, Conv→ReLU, finishing with a 1×1 head Conv that projects to a single segmentation channel. The skip-Concat edges (encoder→decoder) cross the canvas — those are the U-shape that gives the architecture its name.",
+  "description": "U-Net forward pass, skips drawn as Concat nodes",
+  "gallery": { "section": "architectures", "family": "CNN", "order": 2 },
   "nodes": [
-    { "id": "start-1",   "type": "Start", "position": { "x": -260, "y": 0 }, "data": { "params": {} } },
+    { "id": "start-1",   "type": "Start", "position": { "x": -300, "y": 0 }, "data": { "params": {} } },
 
-    { "id": "x_in",      "type": "TensorCreate", "position": { "x": -40,   "y": 0 }, "data": { "params": { "shape": "1,3,32,32", "fill": "randn", "value": 0, "requires_grad": false } } },
+    { "id": "x_in",      "type": "TensorCreate", "position": { "x": -50,   "y": 0 }, "data": { "params": { "shape": "1,3,32,32", "fill": "randn", "value": 0, "requires_grad": false } } },
 
-    { "id": "e1_conv",   "type": "Conv2d",     "position": { "x": 200,   "y": 0 },     "data": { "params": { "in_channels": 3, "out_channels": 16, "kernel_size": 3, "stride": 1, "padding": 1 } } },
-    { "id": "e1_relu",   "type": "Activation", "position": { "x": 380,   "y": 0 },     "data": { "params": { "function": "relu" } } },
+    { "id": "e1_conv",   "type": "Conv2d",     "position": { "x": 230,   "y": 0 },     "data": { "params": { "in_channels": 3, "out_channels": 16, "kernel_size": 3, "stride": 1, "padding": 1 } } },
+    { "id": "e1_relu",   "type": "Activation", "position": { "x": 430,   "y": 0 },     "data": { "params": { "function": "relu" } } },
 
-    { "id": "pool1",     "type": "MaxPool2d",  "position": { "x": 540,   "y": 0 },     "data": { "params": { "kernel_size": 2, "stride": 2 } } },
+    { "id": "pool1",     "type": "MaxPool2d",  "position": { "x": 610,   "y": 0 },     "data": { "params": { "kernel_size": 2, "stride": 2 } } },
 
-    { "id": "e2_conv",   "type": "Conv2d",     "position": { "x": 720,   "y": 0 },     "data": { "params": { "in_channels": 16, "out_channels": 32, "kernel_size": 3, "stride": 1, "padding": 1 } } },
-    { "id": "e2_relu",   "type": "Activation", "position": { "x": 900,   "y": 0 },     "data": { "params": { "function": "relu" } } },
+    { "id": "e2_conv",   "type": "Conv2d",     "position": { "x": 820,   "y": 0 },     "data": { "params": { "in_channels": 16, "out_channels": 32, "kernel_size": 3, "stride": 1, "padding": 1 } } },
+    { "id": "e2_relu",   "type": "Activation", "position": { "x": 1020,   "y": 0 },     "data": { "params": { "function": "relu" } } },
 
-    { "id": "pool2",     "type": "MaxPool2d",  "position": { "x": 1060,  "y": 0 },     "data": { "params": { "kernel_size": 2, "stride": 2 } } },
+    { "id": "pool2",     "type": "MaxPool2d",  "position": { "x": 1210,  "y": 0 },     "data": { "params": { "kernel_size": 2, "stride": 2 } } },
 
-    { "id": "bn_conv",   "type": "Conv2d",     "position": { "x": 1240,  "y": 0 },     "data": { "params": { "in_channels": 32, "out_channels": 64, "kernel_size": 3, "stride": 1, "padding": 1 } } },
-    { "id": "bn_relu",   "type": "Activation", "position": { "x": 1420,  "y": 0 },     "data": { "params": { "function": "relu" } } },
+    { "id": "bn_conv",   "type": "Conv2d",     "position": { "x": 1410,  "y": 0 },     "data": { "params": { "in_channels": 32, "out_channels": 64, "kernel_size": 3, "stride": 1, "padding": 1 } } },
+    { "id": "bn_relu",   "type": "Activation", "position": { "x": 1620,  "y": 0 },     "data": { "params": { "function": "relu" } } },
 
-    { "id": "up2",       "type": "ConvTranspose2d", "position": { "x": 1600, "y": 0 },  "data": { "params": { "in_channels": 64, "out_channels": 32, "kernel_size": 2, "stride": 2, "padding": 0, "output_padding": 0 } } },
-    { "id": "cat2",      "type": "Concat",     "position": { "x": 1820,  "y": 0 },     "data": { "params": { "dim": 1 } } },
-    { "id": "d2_conv",   "type": "Conv2d",     "position": { "x": 2020,  "y": 0 },     "data": { "params": { "in_channels": 64, "out_channels": 32, "kernel_size": 3, "stride": 1, "padding": 1 } } },
-    { "id": "d2_relu",   "type": "Activation", "position": { "x": 2200,  "y": 0 },     "data": { "params": { "function": "relu" } } },
+    { "id": "up2",       "type": "ConvTranspose2d", "position": { "x": 1820, "y": 0 },  "data": { "params": { "in_channels": 64, "out_channels": 32, "kernel_size": 2, "stride": 2, "padding": 0, "output_padding": 0 } } },
+    { "id": "cat2",      "type": "Concat",     "position": { "x": 2070,  "y": 0 },     "data": { "params": { "dim": 1 } } },
+    { "id": "d2_conv",   "type": "Conv2d",     "position": { "x": 2300,  "y": 0 },     "data": { "params": { "in_channels": 64, "out_channels": 32, "kernel_size": 3, "stride": 1, "padding": 1 } } },
+    { "id": "d2_relu",   "type": "Activation", "position": { "x": 2500,  "y": 0 },     "data": { "params": { "function": "relu" } } },
 
-    { "id": "up1",       "type": "ConvTranspose2d", "position": { "x": 2380, "y": 0 },  "data": { "params": { "in_channels": 32, "out_channels": 16, "kernel_size": 2, "stride": 2, "padding": 0, "output_padding": 0 } } },
-    { "id": "cat1",      "type": "Concat",     "position": { "x": 2600,  "y": 0 },     "data": { "params": { "dim": 1 } } },
-    { "id": "d1_conv",   "type": "Conv2d",     "position": { "x": 2800,  "y": 0 },     "data": { "params": { "in_channels": 32, "out_channels": 16, "kernel_size": 3, "stride": 1, "padding": 1 } } },
-    { "id": "d1_relu",   "type": "Activation", "position": { "x": 2980,  "y": 0 },     "data": { "params": { "function": "relu" } } },
+    { "id": "up1",       "type": "ConvTranspose2d", "position": { "x": 2710, "y": 0 },  "data": { "params": { "in_channels": 32, "out_channels": 16, "kernel_size": 2, "stride": 2, "padding": 0, "output_padding": 0 } } },
+    { "id": "cat1",      "type": "Concat",     "position": { "x": 2960,  "y": 0 },     "data": { "params": { "dim": 1 } } },
+    { "id": "d1_conv",   "type": "Conv2d",     "position": { "x": 3180,  "y": 0 },     "data": { "params": { "in_channels": 32, "out_channels": 16, "kernel_size": 3, "stride": 1, "padding": 1 } } },
+    { "id": "d1_relu",   "type": "Activation", "position": { "x": 3390,  "y": 0 },     "data": { "params": { "function": "relu" } } },
 
-    { "id": "head",      "type": "Conv2d",     "position": { "x": 3160,  "y": 0 },     "data": { "params": { "in_channels": 16, "out_channels": 1, "kernel_size": 1, "stride": 1, "padding": 0 } } },
-    { "id": "print",     "type": "Print",      "position": { "x": 3360,  "y": 0 },     "data": { "params": { "label": "Segmentation mask" } } }
+    { "id": "head",      "type": "Conv2d",     "position": { "x": 3590,  "y": 0 },     "data": { "params": { "in_channels": 16, "out_channels": 1, "kernel_size": 1, "stride": 1, "padding": 0 } } },
+    { "id": "print",     "type": "Print",      "position": { "x": 3820,  "y": 0 },     "data": { "params": { "label": "Segmentation mask" } } },
+
+    { "id": "note-overview", "type": "note", "position": { "x": -720, "y": 0 },
+      "data": { "noteKind": "text", "noteContent": "The encoder halves the resolution twice and widens the channels; the decoder walks back up with ConvTranspose2d. On the way up, each level is concatenated with the encoder map of the same size - cat2 with e2_relu, cat1 with e1_relu - so the decoder gets back the detail that pooling threw away. Those two crossing edges are the U.\n\nThe input is a random tensor: this graph shows the wiring and the shapes, not a trained model. The head Conv projects to one channel, so the Print is (1, 1, 32, 32): one logit per pixel, the shape a mask has.\n\n編碼器把解析度連降兩次、通道變寬；解碼器再用 ConvTranspose2d 一層層還原。往上走的時候，每一層都和同尺寸的編碼器特徵圖串接 — cat2 對 e2_relu、cat1 對 e1_relu — 池化丟掉的細節就是這樣補回來的。那兩條橫越畫布的邊，就是 U 形的由來。\n\n輸入是隨機張量：這張圖看的是接線與形狀，不是訓練好的模型。最後的 head 是 1x1 卷積、只輸出一個通道，所以 Print 是 (1, 1, 32, 32)：每個像素一個值，這就是遮罩的形狀。",
+                 "noteColor": "#3d3d1a", "boundToNodeId": "start-1", "boundOffset": { "x": -420, "y": 0 }, "noteWidth": 360 } },
+
+    { "id": "note-cat2", "type": "note", "position": { "x": 2070, "y": -340 },
+      "data": { "noteKind": "text", "noteContent": "Concat on dim 1 stacks channels: 32 from up2 plus 32 from e2_relu makes 64, which is why d2_conv takes in_channels 64. Height and width have to match - up2's stride 2 is what undoes pool2.\n\nConcat 走 dim 1，是把通道疊起來：up2 的 32 個通道加上 e2_relu 的 32 個，合起來 64，所以 d2_conv 的 in_channels 是 64。高和寬必須一致 — up2 的 stride 2 正好抵銷 pool2。",
+                 "noteColor": "#3d3d1a", "boundToNodeId": "cat2", "boundOffset": { "x": 0, "y": -340 }, "noteWidth": 300 } },
+
+    { "id": "note-head", "type": "note", "position": { "x": 3590, "y": -270 },
+      "data": { "noteKind": "text", "noteContent": "A 1x1 Conv is the segmentation head: it mixes the 16 channels at each pixel and leaves the grid alone. out_channels is the number of classes - one here, which is the binary case.\n\n1x1 卷積就是分割頭：它只在每個像素上混合那 16 個通道，不動空間格點。out_channels 等於類別數 — 這裡是 1，也就是二元分割。",
+                 "noteColor": "#3d3d1a", "boundToNodeId": "head", "boundOffset": { "x": 0, "y": -270 }, "noteWidth": 300 } }
   ],
   "edges": [
     { "id": "trig", "source": "start-1", "target": "x_in", "sourceHandle": "trigger", "type": "trigger" },

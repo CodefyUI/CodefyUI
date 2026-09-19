@@ -78,7 +78,7 @@ curl http://127.0.0.1:8000/api/health
 
 This should return something like `{"status":"ok","nodes_loaded":152,"presets_loaded":3}` (the `nodes_loaded` count grows with each release — just confirm it's non-zero).
 
-Then open the frontend, load the **Train CNN on MNIST** example, and click **Run**. You should see training progress appear in the bottom panel.
+Then open the frontend, load the **Train CNN on MNIST** example, and click **Run**. You should see training progress appear in the bottom panel, and a test accuracy of about 0.99 printed when it finishes. The first run downloads MNIST.
 
 ## Optional packs
 

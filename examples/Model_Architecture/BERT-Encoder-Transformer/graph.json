@@ -1,6 +1,7 @@
 {
   "name": "BERT Encoder Transformer",
-  "description": "Forward-pass visualization of a BERT-style bidirectional encoder on a (seq=16, batch=2, d=48) token-embedding tensor. Unlike GPT (decoder, causal self-attention), BERT uses the full TransformerEncoder stack where each token can attend to every other token. We pool the sequence with a Mean over the sequence dimension and project to two classification logits, analogous to a CLS-head classifier.",
+  "description": "Encoder forward pass: every token attends to all",
+  "gallery": { "section": "architectures", "family": "Transformer", "order": 2 },
   "nodes": [
     { "id": "start-1", "type": "Start", "position": { "x": -200, "y": 0 }, "data": { "params": {} } },
     { "id": "input", "type": "TensorCreate", "position": { "x": 0, "y": 0 }, "data": { "params": { "shape": "16,2,48", "fill": "randn", "value": 0.0, "requires_grad": false } } },
@@ -8,7 +9,19 @@
     { "id": "to_batch_first", "type": "Permute", "position": { "x": 540, "y": 0 }, "data": { "params": { "dims": "1,0,2" } } },
     { "id": "pool", "type": "Mean", "position": { "x": 760, "y": 0 }, "data": { "params": { "dim": "1", "keepdim": false } } },
     { "id": "head", "type": "Linear", "position": { "x": 980, "y": 0 }, "data": { "params": { "in_features": 48, "out_features": 2 } } },
-    { "id": "print_logits", "type": "Print", "position": { "x": 1200, "y": 0 }, "data": { "params": { "label": "CLS logits (B,2)" } } }
+    { "id": "print_logits", "type": "Print", "position": { "x": 1200, "y": 0 }, "data": { "params": { "label": "Class logits (B,2)" } } },
+
+    { "id": "note-overview", "type": "note", "position": { "x": -620, "y": 0 },
+      "data": { "noteKind": "text", "noteContent": "What separates an encoder from a decoder-only stack is what each position may look at. An encoder layer runs one unmasked self-attention pass, so token 3 sees token 15 and the other way round. That makes the representation good for classifying a sentence and useless for generating one left to right.\n\nThere is no CLS token here: Mean over the sequence pools the 16 positions instead, and Linear turns that into two class scores. The input is a random tensor, so this graph shows the wiring and the shapes, not a trained model.\n\n編碼器和 decoder-only 堆疊的差別，在於每個位置可以看到什麼。編碼器層做的是一次沒有遮罩的自注意力，所以第 3 個 token 看得到第 15 個，反過來也一樣。這樣的表示很適合替整句分類，卻不能拿來從左到右生成。\n\n這裡沒有 CLS token：改用 Mean 沿序列維度把 16 個位置平均起來，再由 Linear 變成兩個類別分數。輸入是隨機張量，所以這張圖看的是接線與形狀，不是訓練好的模型。",
+                 "noteColor": "#3d3d1a", "boundToNodeId": "start-1", "boundOffset": { "x": -420, "y": 0 }, "noteWidth": 360 } },
+
+    { "id": "note-encoder", "type": "note", "position": { "x": 260, "y": -320 },
+      "data": { "noteKind": "text", "noteContent": "nhead 4 splits d_model 48 into four heads of 12 dimensions each; num_layers 4 stacks the block four times. Those two numbers, not the sequence length, are what make an encoder wide or deep.\n\nnhead 4 把 d_model 48 分成四個頭、每個頭 12 維；num_layers 4 則是把同一個區塊疊四次。決定編碼器寬或深的是這兩個數字，不是序列長度。",
+                 "noteColor": "#3d3d1a", "boundToNodeId": "encoder", "boundOffset": { "x": 0, "y": -320 }, "noteWidth": 300 } },
+
+    { "id": "note-pool", "type": "note", "position": { "x": 760, "y": -310 },
+      "data": { "noteKind": "text", "noteContent": "dim 1 is the sequence, because to_batch_first has just made the tensor (batch, seq, d). Averaging every token is the simplest sentence vector; BERT itself reads position 0, a token it was trained to fill.\n\ndim 1 是序列維度，因為 to_batch_first 剛把張量轉成 (batch, seq, d)。把所有 token 平均是最簡單的句向量；BERT 本身讀的是第 0 個位置，那是它訓練時就學著填的 token。",
+                 "noteColor": "#3d3d1a", "boundToNodeId": "pool", "boundOffset": { "x": 0, "y": -310 }, "noteWidth": 300 } }
   ],
   "edges": [
     { "id": "e-t", "source": "start-1", "target": "input", "sourceHandle": "trigger", "type": "trigger" },

@@ -1,17 +1,57 @@
 {
   "name": "Word Embedding Analogy: king − man + woman ≈ queen",
-  "description": "Runs offline on the toy demo-16d vocab; set backend=glove-50d for real GloVe. We pull vectors for king, man and woman, compose the analogy with two Add nodes (alpha=-1 subtracts man), and ask CosineSimilarity which of the 59 listed words is closest; with king, man and woman excluded, the answer is queen. On demo-16d the analogy is exact by construction; on glove-50d (word-vectors pack, 400k real words) queen still wins here but other analogies get approximate, which is the point. The EmbeddingScatter projects the vocabulary to 2D.",
+  "description": "Vector arithmetic on a 59-word toy table, offline",
+  "gallery": { "section": "llm", "order": 1 },
   "nodes": [
-    { "id": "start-1", "type": "Start", "position": { "x": -260, "y": 40 }, "data": { "params": {} } },
-    { "id": "wv_king",  "type": "WordVector", "position": { "x": 0,   "y": -120 }, "data": { "params": { "backend": "demo-16d", "words": "king",  "normalize": false, "keep_oov": false } } },
+    { "id": "start-1", "type": "Start", "position": { "x": -260, "y": 100 }, "data": { "params": {} } },
+    { "id": "wv_king",  "type": "WordVector", "position": { "x": 0,   "y": -290 }, "data": { "params": { "backend": "demo-16d", "words": "king",  "normalize": false, "keep_oov": false } } },
     { "id": "wv_man",   "type": "WordVector", "position": { "x": 0,   "y": 0    }, "data": { "params": { "backend": "demo-16d", "words": "man",   "normalize": false, "keep_oov": false } } },
-    { "id": "wv_woman", "type": "WordVector", "position": { "x": 0,   "y": 120  }, "data": { "params": { "backend": "demo-16d", "words": "woman", "normalize": false, "keep_oov": false } } },
-    { "id": "sub_man",  "type": "Add", "position": { "x": 280, "y": -60 }, "data": { "params": { "alpha": -1.0 } } },
+    { "id": "wv_woman", "type": "WordVector", "position": { "x": 0,   "y": 290  }, "data": { "params": { "backend": "demo-16d", "words": "woman", "normalize": false, "keep_oov": false } } },
+    { "id": "sub_man",  "type": "Add", "position": { "x": 280, "y": -140 }, "data": { "params": { "alpha": -1.0 } } },
     { "id": "add_woman","type": "Add", "position": { "x": 540, "y": 0   }, "data": { "params": { "alpha":  1.0 } } },
-    { "id": "wv_all",   "type": "WordVector", "position": { "x": 0,   "y": 320  }, "data": { "params": { "backend": "demo-16d", "words": "angel ant apple bee bird boat boy bread brother bus butterfly car cat cheese dog dolphin dream duchess duke eagle father fish fly girl god goddess horse imagine jump king kitten lion man mother owl pizza plane prince princess puppy queen rabbit rain remember run shark ship sister snow sparrow sun swim think tiger truck walk whale wind woman", "normalize": false, "keep_oov": false } } },
-    { "id": "similarity", "type": "CosineSimilarity", "position": { "x": 820, "y": 100 }, "data": { "params": { "top_k": 5, "exclude_self_words": "king,man,woman" } } },
-    { "id": "scatter",  "type": "EmbeddingScatter", "position": { "x": 820, "y": 360 }, "data": { "params": { "method": "PCA", "perplexity": 5.0, "seed": 42 } } },
-    { "id": "print_top","type": "Print", "position": { "x": 1140, "y": 100 }, "data": { "params": { "label": "Top-k labels (excluding self)" } } }
+    { "id": "wv_all",   "type": "WordVector", "position": { "x": 0,   "y": 770  }, "data": { "params": { "backend": "demo-16d", "words": "angel ant apple bee bird boat boy bread brother bus butterfly car cat cheese dog dolphin dream duchess duke eagle father fish fly girl god goddess horse imagine jump king kitten lion man mother owl pizza plane prince princess puppy queen rabbit rain remember run shark ship sister snow sparrow sun swim think tiger truck walk whale wind woman", "normalize": false, "keep_oov": false } } },
+    { "id": "similarity", "type": "CosineSimilarity", "position": { "x": 820, "y": 240 }, "data": { "params": { "top_k": 5, "exclude_self_words": "king,man,woman" } } },
+    { "id": "scatter",  "type": "EmbeddingScatter", "position": { "x": 820, "y": 860 }, "data": { "params": { "method": "PCA", "perplexity": 5.0, "seed": 42 } } },
+    { "id": "print_top","type": "Print", "position": { "x": 1140, "y": 240 }, "data": { "params": { "label": "Top-k labels (excluding self)" } } },
+    {
+      "id": "note-overview",
+      "type": "note",
+      "position": { "x": -680, "y": 100 },
+      "data": {
+        "noteKind": "text",
+        "noteContent": "Word vectors put related words near each other, so arithmetic on the vectors lands near a word that means something. demo-16d is a 59-word, 16-dimension table written by hand: it ships with the app, downloads nothing, and makes this analogy exact. After a run read print_top; it shows queen, duchess, princess, mother, goddess, and the EmbeddingScatter node draws the whole table in 2D on its own body. The run takes about a second. For real vectors set backend to glove-50d on all four WordVector nodes (word-vectors pack, 400k words): queen still wins here, other analogies only come close.\n\n詞向量會把意思相近的字放在一起，所以直接對向量做加減，結果也會落在某個有意義的字附近。demo-16d 是手寫的 59 字、16 維小詞表，隨安裝附帶、不必下載，這個類比在它上面剛好成立。跑完看 print_top，上面是 queen、duchess、princess、mother、goddess；EmbeddingScatter 節點本身會把整張詞表畫成 2D 散點圖。整張圖約一秒跑完。想換成真實向量，就把四個 WordVector 的 backend 都改成 glove-50d（word-vectors 套件包，40 萬個字）：queen 仍然勝出，其他類比就只是接近而已。",
+        "noteColor": "#3d3d1a",
+        "boundToNodeId": "start-1",
+        "boundOffset": { "x": -420, "y": 0 },
+        "noteWidth": 360
+      }
+    },
+    {
+      "id": "note-sub_man",
+      "type": "note",
+      "position": { "x": 280, "y": -370 },
+      "data": {
+        "noteKind": "text",
+        "noteContent": "alpha = -1 makes this Add a subtraction: the output is king - man. The next Add leaves alpha at 1 and puts woman back.\n\nalpha = -1 讓這個 Add 變成減法，輸出是 king - man。下一個 Add 的 alpha 維持 1，把 woman 加回來。",
+        "noteColor": "#3d3d1a",
+        "boundToNodeId": "sub_man",
+        "boundOffset": { "x": 0, "y": -230 },
+        "noteWidth": 300
+      }
+    },
+    {
+      "id": "note-similarity",
+      "type": "note",
+      "position": { "x": 820, "y": -120 },
+      "data": {
+        "noteKind": "text",
+        "noteContent": "exclude_self_words drops king, man and woman from the ranking, so an analogy cannot answer with one of its own inputs. On demo-16d the composed vector is near queen either way: clear the field and only rank 5 changes, to woman.\n\nexclude_self_words 把 king、man、woman 從排名裡拿掉，類比才不會拿自己的輸入當答案。在 demo-16d 上合成向量本來就靠近 queen，把這個欄位清空也只有第 5 名會變成 woman。",
+        "noteColor": "#3d3d1a",
+        "boundToNodeId": "similarity",
+        "boundOffset": { "x": 0, "y": -360 },
+        "noteWidth": 300
+      }
+    }
   ],
   "edges": [
     { "id": "trig_king",  "source": "start-1", "target": "wv_king",  "sourceHandle": "trigger", "type": "trigger" },

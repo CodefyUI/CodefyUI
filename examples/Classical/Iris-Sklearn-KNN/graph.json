@@ -1,6 +1,7 @@
 {
-  "name": "Iris with sklearn KNN: same graph, production scale",
-  "description": "CSV → ColumnSelector → Normalize → TrainTestSplit → KNN: the production classifier (sklearn-backed), with distance-weighted voting and a KD-tree internally, so this same graph still runs at 100k+ rows. It is the second half of a dual-track pair — the teaching half is the `Edu-KNN` node, which computes every distance in the open where you can read it. Both share the same input/output contract, so swapping one for the other is a one-edit change to this graph. `Edu-KNN` and the matching `KNN-from-Scratch` example ship in the `foundations` chapter pack (`cdui plugin install foundations`), not in the base install.",
+  "name": "Classify Iris with k-nearest neighbours",
+  "description": "Fit sklearn KNN on Iris and print its test accuracy",
+  "gallery": { "section": "concepts", "order": 2 },
   "nodes": [
     { "id": "start-1",   "type": "Start",          "position": { "x": -260, "y": 0 }, "data": { "params": {} } },
     { "id": "csv",       "type": "CSVReader",      "position": { "x": -40,  "y": 0 }, "data": { "params": { "path": "data/samples/iris.csv", "target_column": "species", "include_columns": "", "skip_header": true } } },
@@ -8,7 +9,20 @@
     { "id": "norm",      "type": "Normalize",      "position": { "x": 480,  "y": 0 }, "data": { "params": { "mode": "zscore", "axis": 0 } } },
     { "id": "split",     "type": "TrainTestSplit", "position": { "x": 740,  "y": 0 }, "data": { "params": { "test_size": 0.2, "seed": 42, "stratify": true } } },
     { "id": "knn",       "type": "KNN",            "position": { "x": 1020, "y": 0 }, "data": { "params": { "n_neighbors": 5, "weights": "distance", "metric": "minkowski" } } },
-    { "id": "print",     "type": "Print",          "position": { "x": 1300, "y": 0 }, "data": { "params": { "label": "sklearn KNN test predictions" } } }
+    { "id": "print",     "type": "Print",          "position": { "x": 1300, "y": 0 }, "data": { "params": { "label": "sklearn KNN test predictions" } } },
+    { "id": "acc",       "type": "Accuracy",       "position": { "x": 1300, "y": 220 }, "data": { "params": {} } },
+    { "id": "print-acc", "type": "Print",          "position": { "x": 1560, "y": 220 }, "data": { "params": { "label": "test accuracy" } } },
+
+    { "id": "note-overview", "type": "note", "position": { "x": -680, "y": 0 },
+      "data": { "noteKind": "text",
+                "noteContent": "k-nearest neighbours has nothing to train: it keeps the training rows and labels a query by the vote of the k closest ones. ColumnSelector takes only petal length and petal width, the two columns that separate the species best, so the whole decision happens in a plane you could draw by hand. A run prints 30 predictions and then the accuracy, about 93%. Both mistakes are versicolor confused with virginica, which overlap in the real flowers too. Try n_neighbors 1, then 25.\n\nk-nearest neighbours 沒有東西要訓練：它把訓練資料留著，再用最近的 k 筆投票決定查詢點的標籤。ColumnSelector 只取花瓣長度與花瓣寬度這兩欄，因為它們最能分開三個品種，整個判斷就落在一個畫得出來的平面上。跑一次會印出 30 筆預測，再印出準確率，大約 93%。兩個錯誤都是 versicolor 與 virginica 弄混，這兩種花在真實資料裡本來就重疊。把 n_neighbors 改成 1，再改成 25 看看。",
+                "noteColor": "#3d3d1a", "boundToNodeId": "start-1",
+                "boundOffset": { "x": -420, "y": 0 }, "noteWidth": 360 } },
+    { "id": "note-knn", "type": "note", "position": { "x": 1020, "y": -380 },
+      "data": { "noteKind": "text",
+                "noteContent": "weights=distance makes a nearer neighbour count for more than a far one, which is what decides the points sitting between two species. The foundations pack ships Edu-KNN: the same ports, with every distance computed in the open, so swapping it in is a one-node change.\n\nweights=distance 讓比較近的鄰居票數比較重，落在兩個品種中間的點就是這樣決定的。foundations 套件包裡有 Edu-KNN，介面相同，但把每一段距離都攤開來算給你看，換過去只要改一個節點。",
+                "noteColor": "#3d3d1a", "boundToNodeId": "knn",
+                "boundOffset": { "x": 0, "y": -380 }, "noteWidth": 300 } }
   ],
   "edges": [
     { "id": "trig",          "source": "start-1", "target": "csv",    "sourceHandle": "trigger", "type": "trigger" },
@@ -20,6 +34,9 @@
     { "id": "e_xtrain",      "source": "split",   "target": "knn",    "sourceHandle": "x_train", "targetHandle": "x_train" },
     { "id": "e_ytrain",      "source": "split",   "target": "knn",    "sourceHandle": "y_train", "targetHandle": "y_train" },
     { "id": "e_xtest",       "source": "split",   "target": "knn",    "sourceHandle": "x_test",  "targetHandle": "x_query" },
-    { "id": "e_pred_print",  "source": "knn",     "target": "print",  "sourceHandle": "predictions", "targetHandle": "value" }
+    { "id": "e_pred_print",  "source": "knn",     "target": "print",  "sourceHandle": "predictions", "targetHandle": "value" },
+    { "id": "e_pred_acc",    "source": "knn",     "target": "acc",    "sourceHandle": "predictions", "targetHandle": "predictions" },
+    { "id": "e_ytest_acc",   "source": "split",   "target": "acc",    "sourceHandle": "y_test",      "targetHandle": "labels" },
+    { "id": "e_acc_print",   "source": "acc",     "target": "print-acc", "sourceHandle": "accuracy", "targetHandle": "value" }
   ]
 }

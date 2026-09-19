@@ -1,13 +1,71 @@
 {
   "name": "Train CNN on MNIST",
-  "description": "Complete end-to-end CNN training on MNIST. SequentialModel builds an nn.Module from JSON layer config, then connects to the Training Pipeline preset (Dataset → DataLoader → Optimizer → Loss → TrainingLoop). After training, ModelSaver writes the weights to backend/data/models/model_weights.pt so the inference example can load them.",
+  "description": "Train a CNN on MNIST and test it; needs a download",
+  "gallery": { "section": "quickstart", "order": 1 },
   "nodes": [
+    {
+      "id": "note-overview",
+      "type": "note",
+      "position": {
+        "x": -570,
+        "y": 230
+      },
+      "data": {
+        "noteKind": "text",
+        "noteContent": "The first example to run. Two convolution blocks and two linear layers are trained on the 60,000 MNIST training images, saved to model_weights.pt, then scored on the 10,000 test images the model never saw.\n\nAfter a run, look at three things: the loss curve, the test accuracy Print (about 99%), and the 16 predicted digits, which should match the 16 images the Visualize node tiles.\n\nThe first run downloads MNIST into backend/data. Five epochs take a minute or two on a CPU. Open the Training Pipeline box to lower epochs, change the optimizer, or change the learning rate.\n\n這是最先跑的範例。兩組卷積區塊加兩層全連接層，在 MNIST 的 60,000 張訓練影像上訓練，權重存成 model_weights.pt，再用模型沒看過的 10,000 張測試影像評分。\n\n跑完之後看三件事：損失曲線、測試準確率的 Print（約 99%），以及 16 個預測數字 - 它們應該和 Visualize 排出來的 16 張影像相符。\n\n第一次執行會把 MNIST 下載到 backend/data。5 個 epoch 在 CPU 上大約一兩分鐘。打開 Training Pipeline 方塊可以調 epochs、換 optimizer 或改學習率。",
+        "noteColor": "#3d3d1a",
+        "boundToNodeId": "start-1",
+        "boundOffset": {
+          "x": -420,
+          "y": 0
+        },
+        "noteWidth": 360
+      }
+    },
+    {
+      "id": "note-ds-test",
+      "type": "note",
+      "position": {
+        "x": 140,
+        "y": 820
+      },
+      "data": {
+        "noteKind": "text",
+        "noteContent": "A second Dataset node, same files, split set to test. EvaluateModel runs all 10,000 of them through the trained model and compares each argmax with the label, so the accuracy is measured on images the training loop never touched.\n\n這是第二個 Dataset 節點，讀同一份檔案，split 設成 test。EvaluateModel 會把這 10,000 張全部送進訓練好的模型，逐筆比對 argmax 與標籤，所以準確率算在訓練迴圈完全沒碰過的影像上。",
+        "noteColor": "#3d3d1a",
+        "boundToNodeId": "ds-test",
+        "boundOffset": {
+          "x": -360,
+          "y": 0
+        },
+        "noteWidth": 300
+      }
+    },
+    {
+      "id": "note-sample-batch",
+      "type": "note",
+      "position": {
+        "x": 140,
+        "y": 1290
+      },
+      "data": {
+        "noteKind": "text",
+        "noteContent": "DatasetBatch takes 16 images from the same test split. Raise start_index to look at a different 16, or batch_size to see more at once. Dataset normalises them to [-1, 1], so the multiply and add before Visualize put the picture back into [0, 1]; Inference reads the normalised batch as it is.\n\nDatasetBatch 從同一個測試集取 16 張影像。把 start_index 調大可以換另外 16 張，把 batch_size 調大則一次看更多。Dataset 會把影像正規化到 [-1, 1]，所以送進 Visualize 之前的乘法與加法把畫面還原回 [0, 1]；Inference 讀到的仍然是正規化後的批次。",
+        "noteColor": "#3d3d1a",
+        "boundToNodeId": "sample-batch",
+        "boundOffset": {
+          "x": -360,
+          "y": 0
+        },
+        "noteWidth": 300
+      }
+    },
     {
       "id": "start-1",
       "type": "Start",
       "position": {
         "x": -150,
-        "y": 200
+        "y": 230
       },
       "data": {
         "params": {}
@@ -18,7 +76,7 @@
       "type": "SequentialModel",
       "position": {
         "x": 50,
-        "y": 200
+        "y": 230
       },
       "data": {
         "params": {
@@ -31,7 +89,7 @@
       "type": "preset:Training Pipeline",
       "position": {
         "x": 500,
-        "y": 200
+        "y": 230
       },
       "data": {
         "params": {},
@@ -66,7 +124,7 @@
       "type": "Visualize",
       "position": {
         "x": 950,
-        "y": 200
+        "y": 230
       },
       "data": {
         "params": {
@@ -80,7 +138,7 @@
       "type": "ModelSaver",
       "position": {
         "x": 950,
-        "y": 380
+        "y": 450
       },
       "data": {
         "params": {
@@ -91,28 +149,154 @@
       }
     },
     {
-      "id": "print-model",
-      "type": "Print",
+      "id": "ds-test",
+      "type": "Dataset",
       "position": {
-        "x": 1350,
-        "y": 380
+        "x": 500,
+        "y": 820
       },
       "data": {
         "params": {
-          "label": "Trained CNN Model"
+          "name": "MNIST",
+          "split": "test",
+          "data_dir": "./data"
         }
       }
     },
     {
-      "id": "print-saved-path",
-      "type": "Print",
+      "id": "eval",
+      "type": "EvaluateModel",
       "position": {
-        "x": 1350,
-        "y": 540
+        "x": 900,
+        "y": 820
       },
       "data": {
         "params": {
-          "label": "Saved weights path"
+          "batch_size": 256,
+          "device": "auto"
+        }
+      }
+    },
+    {
+      "id": "print-accuracy",
+      "type": "Print",
+      "position": {
+        "x": 1260,
+        "y": 820
+      },
+      "data": {
+        "params": {
+          "label": "Test accuracy"
+        }
+      }
+    },
+    {
+      "id": "sample-batch",
+      "type": "DatasetBatch",
+      "position": {
+        "x": 500,
+        "y": 1290
+      },
+      "data": {
+        "params": {
+          "batch_size": 16,
+          "start_index": 0
+        }
+      }
+    },
+    {
+      "id": "predict",
+      "type": "Inference",
+      "position": {
+        "x": 900,
+        "y": 1290
+      },
+      "data": {
+        "params": {
+          "device": "auto"
+        }
+      }
+    },
+    {
+      "id": "predicted-labels",
+      "type": "Argmax",
+      "position": {
+        "x": 1260,
+        "y": 1290
+      },
+      "data": {
+        "params": {
+          "dim": -1,
+          "keepdim": false
+        }
+      }
+    },
+    {
+      "id": "print-predictions",
+      "type": "Print",
+      "position": {
+        "x": 1560,
+        "y": 1290
+      },
+      "data": {
+        "params": {
+          "label": "Predicted digits"
+        }
+      }
+    },
+    {
+      "id": "show-scale",
+      "type": "ScalarMultiply",
+      "position": {
+        "x": 900,
+        "y": 1570
+      },
+      "data": {
+        "params": {
+          "scalar": 0.5
+        }
+      }
+    },
+    {
+      "id": "show-mean",
+      "type": "TensorCreate",
+      "position": {
+        "x": 900,
+        "y": 1850
+      },
+      "data": {
+        "params": {
+          "shape": "1",
+          "fill": "full",
+          "value": 0.5,
+          "requires_grad": false
+        }
+      }
+    },
+    {
+      "id": "show-shift",
+      "type": "Add",
+      "position": {
+        "x": 1260,
+        "y": 1570
+      },
+      "data": {
+        "params": {
+          "alpha": 1.0
+        }
+      }
+    },
+    {
+      "id": "show-digits",
+      "type": "Visualize",
+      "position": {
+        "x": 1560,
+        "y": 1570
+      },
+      "data": {
+        "params": {
+          "title": "The same 16 test digits",
+          "plot_type": "image"
         }
       }
     }
@@ -148,22 +332,106 @@
     },
     {
       "id": "e-5",
-      "source": "model-saver",
-      "target": "print-model",
-      "sourceHandle": "model",
-      "targetHandle": "value"
+      "source": "ds-test",
+      "target": "eval",
+      "sourceHandle": "dataset",
+      "targetHandle": "dataset"
     },
     {
       "id": "e-6",
-      "source": "model-saver",
-      "target": "print-saved-path",
-      "sourceHandle": "path",
+      "source": "train-pipeline",
+      "target": "eval",
+      "sourceHandle": "model",
+      "targetHandle": "model"
+    },
+    {
+      "id": "e-7",
+      "source": "eval",
+      "target": "print-accuracy",
+      "sourceHandle": "accuracy",
       "targetHandle": "value"
+    },
+    {
+      "id": "e-8",
+      "source": "ds-test",
+      "target": "sample-batch",
+      "sourceHandle": "dataset",
+      "targetHandle": "dataset"
+    },
+    {
+      "id": "e-9",
+      "source": "train-pipeline",
+      "target": "predict",
+      "sourceHandle": "model",
+      "targetHandle": "model"
+    },
+    {
+      "id": "e-10",
+      "source": "sample-batch",
+      "target": "predict",
+      "sourceHandle": "images",
+      "targetHandle": "input"
+    },
+    {
+      "id": "e-11",
+      "source": "predict",
+      "target": "predicted-labels",
+      "sourceHandle": "output",
+      "targetHandle": "tensor"
+    },
+    {
+      "id": "e-12",
+      "source": "predicted-labels",
+      "target": "print-predictions",
+      "sourceHandle": "tensor",
+      "targetHandle": "value"
+    },
+    {
+      "id": "e-13",
+      "source": "sample-batch",
+      "target": "show-scale",
+      "sourceHandle": "images",
+      "targetHandle": "tensor"
+    },
+    {
+      "id": "e-14",
+      "source": "show-scale",
+      "target": "show-shift",
+      "sourceHandle": "tensor",
+      "targetHandle": "tensor_a"
+    },
+    {
+      "id": "e-15",
+      "source": "show-mean",
+      "target": "show-shift",
+      "sourceHandle": "tensor",
+      "targetHandle": "tensor_b"
+    },
+    {
+      "id": "e-16",
+      "source": "show-shift",
+      "target": "show-digits",
+      "sourceHandle": "tensor",
+      "targetHandle": "data"
     },
     {
       "id": "e-trigger-1",
       "source": "start-1",
       "target": "model-builder",
+      "sourceHandle": "trigger",
+      "type": "trigger"
+    },
+    {
+      "id": "e-trigger-2",
+      "source": "start-1",
+      "target": "ds-test",
+      "sourceHandle": "trigger",
+      "type": "trigger"
+    },
+    {
+      "id": "e-trigger-3",
+      "source": "start-1",
+      "target": "show-mean",
       "sourceHandle": "trigger",
       "type": "trigger"
     }

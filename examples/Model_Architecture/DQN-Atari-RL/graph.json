@@ -1,13 +1,14 @@
 {
   "name": "DQN with CNN Feature Extractor (Atari)",
-  "description": "Deep Q-Network with CNN backbone for Atari game playing - the landmark DeepMind architecture (2015) that demonstrated superhuman performance on Atari games. Conv layers extract visual features from stacked 84x84 frames, fed into a DQN head for action-value estimation. This example runs fully offline: a TensorCreate node supplies a synthetic batch of preprocessed observations (randn, shape 2x4x84x84) in place of a live Atari environment, so no gym/ale-py install is needed. Swap in an EnvWrapper to drive it from a real environment. The `seq-model` node off to the side is not part of the data path: it holds the same Conv/ReLU backbone the canvas builds node by node, packaged as one layer stack — double-click it to read the whole architecture in the layer editor. The optimizer is fed by `dqn-1.model`, the agent's own network, which is what gets trained.",
+  "description": "Forward pass: four stacked frames to four Q-values",
+  "gallery": { "section": "architectures", "family": "RL", "order": 1 },
   "nodes": [
     {
       "id": "start-1",
       "type": "Start",
       "position": {
         "x": -150,
-        "y": 50
+        "y": 70
       },
       "data": {
         "params": {}
@@ -18,7 +19,7 @@
       "type": "TensorCreate",
       "position": {
         "x": 50,
-        "y": 50
+        "y": 70
       },
       "data": {
         "params": {
@@ -34,7 +35,7 @@
       "type": "Print",
       "position": {
         "x": 50,
-        "y": 900
+        "y": 1230
       },
       "data": {
         "params": {
@@ -47,7 +48,7 @@
       "type": "Conv2d",
       "position": {
         "x": 50,
-        "y": 300
+        "y": 410
       },
       "data": {
         "params": {
@@ -64,7 +65,7 @@
       "type": "Activation",
       "position": {
         "x": 750,
-        "y": 300
+        "y": 410
       },
       "data": {
         "params": {
@@ -77,7 +78,7 @@
       "type": "Conv2d",
       "position": {
         "x": 1100,
-        "y": 300
+        "y": 410
       },
       "data": {
         "params": {
@@ -94,7 +95,7 @@
       "type": "Activation",
       "position": {
         "x": 50,
-        "y": 500
+        "y": 680
       },
       "data": {
         "params": {
@@ -107,7 +108,7 @@
       "type": "Conv2d",
       "position": {
         "x": 400,
-        "y": 500
+        "y": 680
       },
       "data": {
         "params": {
@@ -124,7 +125,7 @@
       "type": "Activation",
       "position": {
         "x": 750,
-        "y": 500
+        "y": 680
       },
       "data": {
         "params": {
@@ -137,7 +138,7 @@
       "type": "Reshape",
       "position": {
         "x": 1100,
-        "y": 500
+        "y": 680
       },
       "data": {
         "params": {
@@ -150,7 +151,7 @@
       "type": "DQN",
       "position": {
         "x": 50,
-        "y": 700
+        "y": 960
       },
       "data": {
         "params": {
@@ -165,7 +166,7 @@
       "type": "Optimizer",
       "position": {
         "x": 400,
-        "y": 1150
+        "y": 1580
       },
       "data": {
         "params": {
@@ -180,7 +181,7 @@
       "type": "Print",
       "position": {
         "x": 400,
-        "y": 900
+        "y": 1230
       },
       "data": {
         "params": {
@@ -193,7 +194,7 @@
       "type": "Visualize",
       "position": {
         "x": 400,
-        "y": 1350
+        "y": 1850
       },
       "data": {
         "params": {
@@ -207,12 +208,72 @@
       "type": "SequentialModel",
       "position": {
         "x": 400,
-        "y": 300
+        "y": 410
       },
       "data": {
         "params": {
           "layers": "{\"version\":2,\"nodes\":[{\"id\":\"in\",\"type\":\"Input\",\"ports\":[{\"id\":\"p_x\",\"name\":\"x\"}]},{\"id\":\"n0\",\"type\":\"Conv2d\",\"params\":{\"in_channels\":4,\"out_channels\":32,\"kernel_size\":8,\"stride\":4}},{\"id\":\"n1\",\"type\":\"ReLU\"},{\"id\":\"n2\",\"type\":\"Conv2d\",\"params\":{\"in_channels\":32,\"out_channels\":64,\"kernel_size\":4,\"stride\":2}},{\"id\":\"n3\",\"type\":\"ReLU\"},{\"id\":\"n4\",\"type\":\"Conv2d\",\"params\":{\"in_channels\":64,\"out_channels\":64,\"kernel_size\":3,\"stride\":1}},{\"id\":\"n5\",\"type\":\"ReLU\"},{\"id\":\"n6\",\"type\":\"Flatten\"},{\"id\":\"n7\",\"type\":\"Linear\",\"params\":{\"in_features\":3136,\"out_features\":512}},{\"id\":\"n8\",\"type\":\"ReLU\"},{\"id\":\"n9\",\"type\":\"Linear\",\"params\":{\"in_features\":512,\"out_features\":4}},{\"id\":\"out\",\"type\":\"Output\",\"ports\":[{\"id\":\"p_y\",\"name\":\"y\"}]}],\"edges\":[{\"id\":\"e0\",\"source\":\"in\",\"sourceHandle\":\"p_x\",\"target\":\"n0\"},{\"id\":\"e1\",\"source\":\"n0\",\"target\":\"n1\"},{\"id\":\"e2\",\"source\":\"n1\",\"target\":\"n2\"},{\"id\":\"e3\",\"source\":\"n2\",\"target\":\"n3\"},{\"id\":\"e4\",\"source\":\"n3\",\"target\":\"n4\"},{\"id\":\"e5\",\"source\":\"n4\",\"target\":\"n5\"},{\"id\":\"e6\",\"source\":\"n5\",\"target\":\"n6\"},{\"id\":\"e7\",\"source\":\"n6\",\"target\":\"n7\"},{\"id\":\"e8\",\"source\":\"n7\",\"target\":\"n8\"},{\"id\":\"e9\",\"source\":\"n8\",\"target\":\"n9\"},{\"id\":\"e10\",\"source\":\"n9\",\"target\":\"out\",\"targetHandle\":\"p_y\"}]}"
         }
+      }
+    },
+
+    {
+      "id": "note-overview",
+      "type": "note",
+      "position": {
+        "x": -570,
+        "y": 70
+      },
+      "data": {
+        "noteKind": "text",
+        "noteContent": "DQN (DeepMind, 2015) learned Atari from pixels by predicting one Q-value per action - the return it expects if it takes that action now. The Conv stack is the eye: four stacked greyscale frames, so a single input already shows motion. The DQN node is the head, three Linear layers turning 3136 features into 4 action values.\n\nNothing is trained here. The observation is a random tensor in place of a real frame stack, so no gym or ale-py install is needed; swap in EnvWrapper to drive it from a live environment. A real agent would add a target network, a replay buffer and a TD loss.\n\nDQN（DeepMind, 2015）從像素學會玩 Atari，做法是替每個動作預測一個 Q 值 — 也就是現在採取那個動作之後預期能拿到的回報。Conv 堆疊是它的眼睛：一次吃四張堆疊的灰階畫面，所以單一輸入就看得出動態。DQN 節點是它的頭，三層 Linear 把 3136 個特徵變成 4 個動作價值。\n\n這張圖不訓練任何東西。觀測是隨機張量，代替真正的畫面堆疊，所以不必安裝 gym 或 ale-py；要接真環境就換成 EnvWrapper。真正的代理人還需要目標網路、回放緩衝區和 TD 損失。",
+        "noteColor": "#3d3d1a",
+        "boundToNodeId": "start-1",
+        "boundOffset": {
+          "x": -420,
+          "y": 0
+        },
+        "noteWidth": 360
+      }
+    },
+
+    {
+      "id": "note-seq-model",
+      "type": "note",
+      "position": {
+        "x": 400,
+        "y": 30
+      },
+      "data": {
+        "noteKind": "text",
+        "noteContent": "Off the data path: only the trigger edge reaches it. It holds the same network as one layer stack - the Conv/ReLU backbone, Flatten, Linear 3136-512, ReLU, Linear 512-4. Double-click to open it in the layer editor. The DQN node's own head is one Linear deeper.\n\n它不在資料路徑上，只有 trigger 那條邊會走到它。它把同一套網路寫成一份層堆疊 — Conv/ReLU 骨幹、Flatten、Linear 3136-512、ReLU、Linear 512-4 — 雙擊可以在層編輯器裡讀完。DQN 節點自己的頭比這裡多一層 Linear。",
+        "noteColor": "#3d3d1a",
+        "boundToNodeId": "seq-model",
+        "boundOffset": {
+          "x": 0,
+          "y": -380
+        },
+        "noteWidth": 300
+      }
+    },
+
+    {
+      "id": "note-optimizer-1",
+      "type": "note",
+      "position": {
+        "x": 700,
+        "y": 1270
+      },
+      "data": {
+        "noteKind": "text",
+        "noteContent": "Built over dqn-1's parameters and never stepped - this graph is a forward pass, and there is no loss to step it with. It is here to show where the optimizer attaches: to the agent's own network, not to seq-model.\n\n它建在 dqn-1 的參數上，但從來沒有被 step 過 — 這張圖只做前向傳播，也沒有損失可以讓它更新。它在這裡是要說明優化器接的位置：接的是代理人自己的網路，不是 seq-model。",
+        "noteColor": "#3d3d1a",
+        "boundToNodeId": "optimizer-1",
+        "boundOffset": {
+          "x": 300,
+          "y": -310
+        },
+        "noteWidth": 300
       }
     }
   ],

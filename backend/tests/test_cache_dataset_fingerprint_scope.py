@@ -31,6 +31,12 @@ The graphs are used as they ship. Two params are rewritten -- the dataset's
 download, and the epoch/batch counts, to keep the suite fast -- and each
 rewrite is asserted, so a graph that stops containing the node it rewrites
 fails loudly rather than quietly testing something else.
+
+``TrainCNN-MNIST`` ships a SECOND ``Dataset`` since it grew an evaluation
+tail (the test split it scores on). The counts below are per graph and
+exact for that reason: the measurement here is about the TRAINING dataset's
+cache key, and a test that merely took "the first Dataset" would follow
+whichever one the file happens to list first.
 """
 
 from __future__ import annotations
@@ -49,21 +55,22 @@ from app.nodes.data.dataset_node import DATASET_NAMES, DatasetNode
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 
-#: The three shipped graphs that train and read MNIST. The first two have
-#: no writer at all -- they are the ones #253 actually reproduced on. The
-#: third has a ``ModelSaver``, which is what gave it the accidental
-#: protection this change removes, so it is the one that proves the removal
-#: is safe.
+#: The three shipped graphs that train and read MNIST, as
+#: ``key -> (path, has_saver, dataset_count)``. The first two have no writer
+#: at all -- they are the ones #253 actually reproduced on. The third has a
+#: ``ModelSaver``, which is what gave it the accidental protection this
+#: change removes, so it is the one that proves the removal is safe; it is
+#: also the one that scores itself afterwards, hence two datasets.
 SHIPPED_GRAPHS = {
     "C2-5/MLP-MNIST-Training": (
         _REPO_ROOT / "plugins" / "foundations" / "examples" / "C2-5"
-        / "MLP-MNIST-Training" / "graph.json", False),
+        / "MLP-MNIST-Training" / "graph.json", False, 1),
     "C3-1/LeNet-MNIST-Training": (
         _REPO_ROOT / "plugins" / "deep" / "examples" / "C3-1"
-        / "LeNet-MNIST-Training" / "graph.json", False),
+        / "LeNet-MNIST-Training" / "graph.json", False, 1),
     "CNN-MNIST/TrainCNN-MNIST": (
         _REPO_ROOT / "examples" / "Usage_Example" / "CNN-MNIST"
-        / "TrainCNN-MNIST" / "graph.json", True),
+        / "TrainCNN-MNIST" / "graph.json", True, 2),
 }
 
 
@@ -240,7 +247,7 @@ def test_svhn_is_scoped_per_split_because_it_downloads_per_split():
 # ─────────────────────────────────────────────────────────────────────────
 
 def _shipped_graph(key: str, data_dir: Path) -> tuple[list[dict], list[dict]]:
-    path, _ = SHIPPED_GRAPHS[key]
+    path, _, dataset_count = SHIPPED_GRAPHS[key]
     payload = json.loads(path.read_text(encoding="utf-8"))
     nodes, edges, _ = expand_presets(payload["nodes"], payload["edges"])
 
@@ -257,10 +264,12 @@ def _shipped_graph(key: str, data_dir: Path) -> tuple[list[dict], list[dict]]:
 
     # The shipped file IS the fixture. If it stops containing the nodes
     # rewritten above, the rewrite became a no-op and everything below
-    # would still pass while measuring a different graph.
-    assert rewritten == {"Dataset": 1, "TrainingLoop": 1}, (
-        f"{path} no longer has exactly one Dataset and one TrainingLoop "
-        f"after preset expansion: {rewritten}")
+    # would still pass while measuring a different graph. The Dataset count
+    # is exact rather than ">= 1" for the same reason: a graph that grows or
+    # loses a split has to be looked at, not absorbed.
+    assert rewritten == {"Dataset": dataset_count, "TrainingLoop": 1}, (
+        f"{path} no longer has exactly {dataset_count} Dataset node(s) and "
+        f"one TrainingLoop after preset expansion: {rewritten}")
     return nodes, edges
 
 
@@ -280,8 +289,16 @@ async def test_a_shipped_graph_trains_on_all_three_runs(key, data_root):
     from app.nodes.training.training_loop_node import TrainingLoopNode
 
     nodes, edges = _shipped_graph(key, data_root)
-    _, has_saver = SHIPPED_GRAPHS[key]
-    dataset_id = next(n["id"] for n in nodes if n["type"] == "Dataset")
+    _, has_saver, dataset_count = SHIPPED_GRAPHS[key]
+    dataset_ids = [n["id"] for n in nodes if n["type"] == "Dataset"]
+    # The training dataset by its own split, not by file order: TrainCNN's
+    # second Dataset is the test split it scores on, and reading run 1's
+    # statuses off whichever node came first would measure that one instead.
+    train_ids = [n["id"] for n in nodes if n["type"] == "Dataset"
+                 and n["data"]["params"].get("split", "train") == "train"]
+    assert len(train_ids) == 1, (
+        f"{key}: expected exactly one train-split Dataset, got {train_ids}")
+    dataset_id = train_ids[0]
 
     counts = {"train": 0, "dataset": 0}
     real_train = TrainingLoopNode.execute
@@ -304,6 +321,7 @@ async def test_a_shipped_graph_trains_on_all_three_runs(key, data_root):
     cache = ExecutionCache()
     per_run: list[int] = []
     dataset_statuses: list[str] = []
+    per_dataset_statuses: dict[str, list[str]] = {i: [] for i in dataset_ids}
 
     TrainingLoopNode.execute = counting_train
     LiveDatasetNode.execute = counting_dataset
@@ -319,6 +337,8 @@ async def test_a_shipped_graph_trains_on_all_three_runs(key, data_root):
             await execute_graph(nodes, edges, on_progress=track, cache=cache)
             per_run.append(counts["train"] - before)
             dataset_statuses.append(statuses.get(dataset_id, "?"))
+            for node_id in dataset_ids:
+                per_dataset_statuses[node_id].append(statuses.get(node_id, "?"))
     finally:
         TrainingLoopNode.execute = real_train
         LiveDatasetNode.execute = real_dataset
@@ -334,9 +354,19 @@ async def test_a_shipped_graph_trains_on_all_three_runs(key, data_root):
         "dataset' from 'the dataset kept invalidating and carried the loop "
         "along with it', which is the accident being removed.")
 
-    assert counts["dataset"] == 1, (
-        f"{key}: the dataset was read {counts['dataset']} time(s) across "
-        "three runs; scoping the fingerprint should have made it exactly 1.")
+    # Every split, not only the one that trains: an evaluation dataset that
+    # kept missing would re-read the same files three times over, and the
+    # scope being measured covers the whole MNIST directory, so both splits
+    # answer to it.
+    assert per_dataset_statuses == {
+        node_id: ["completed", "cached", "cached"] for node_id in dataset_ids
+    }, (f"{key}: the datasets' statuses were {per_dataset_statuses}.")
+
+    assert counts["dataset"] == dataset_count, (
+        f"{key}: the datasets were read {counts['dataset']} time(s) across "
+        f"three runs; scoping the fingerprint should have made it exactly "
+        f"{dataset_count} -- one read per Dataset node in the graph, on the "
+        f"first run only.")
 
     if has_saver:
         saved = settings.MODELS_DIR / "model_weights.pt"

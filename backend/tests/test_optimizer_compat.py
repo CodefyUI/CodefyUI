@@ -13,8 +13,8 @@ Covers two PyTorch 2.11+ compatibility breaks reported by users:
    public kwarg. The naive rebind ``optimizer_cls(model.parameters(),
    **optimizer.defaults)`` therefore raised
    ``AdamW.__init__() got an unexpected keyword argument 'decoupled_weight_decay'``
-   for any graph that selected AdamW (notably the Train Mini-GPT on MNIST
-   example, via the Training Pipeline preset).
+   for any graph that selected AdamW (notably the Train a Transformer
+   classifier on MNIST example, via the Training Pipeline preset).
 """
 
 from __future__ import annotations
