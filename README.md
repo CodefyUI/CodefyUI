@@ -150,12 +150,12 @@ Pre-built example workflows organized in `examples/`:
 | Category | Examples |
 |----------|----------|
 | **Model Architecture** | ResNet, ConvNeXt, EfficientNet, UNet, ViT, SwinTransformer, BERT, GPT, LLaMA, DiT, LSTM TimeSeries, BiGRU SpeechRecognition, Seq2Seq Attention, DQN Atari, PPO Robotics |
-| **Usage Example** | CNN-MNIST Training, CNN-MNIST Inference, GPT-Mini Training, ResNet-CIFAR10 Training, [ResNet-18 / CIFAR-10 Baseline](examples/Usage_Example/ResNet18-CIFAR10-Baseline/) (measured 95.48%, bitwise reproducible), Api-Function (graph-as-a-function demo) |
+| **Usage Example** | Train CNN on MNIST, Inference CNN on MNIST, Train a Transformer classifier on MNIST, Train ResNet on CIFAR10, Train a CNN on a HuggingFace dataset, [ResNet-18 / CIFAR-10 Baseline](examples/Usage_Example/ResNet18-CIFAR10-Baseline/) (measured 95.48%, bitwise reproducible), Call a graph as an API (graph-as-a-function demo) |
 | **LLM** | Word Embedding Analogy (`king − man + woman ≈ queen` with the offline `demo-16d` backend), Sentence Similarity (zh-TW), Train a Causal LM on TinyStories, RAG fully local, RAG with a chat API |
-| **Classical** | Iris with sklearn KNN, Tabular Iris Pipeline |
-| **Diffusion** | Forward Process, Toy Sampling, Mini U-Net (Compact) |
+| **Classical** | Classify Iris with k-nearest neighbours, Tabular Iris Pipeline |
+| **Diffusion** | Forward Diffusion, Toy Sampling, Mini U-Net as a single node |
 | **RL** | RLHF building blocks: reward + KL |
-| **RNN** | RNN One Step |
+| **RNN** | RNN unrolled |
 | **Transformer** | Mixture of Experts: top-k routing |
 | **VLA** | [Train a VLA on PushWorld](examples/VLA/TrainVLA-PushWorld/) (CUDA GPU, about an hour) |
 

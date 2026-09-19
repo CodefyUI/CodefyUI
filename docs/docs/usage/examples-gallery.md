@@ -12,10 +12,10 @@ The gallery is grouped by what an example is for, in this order:
 
 | Section | Contents |
 |---------|----------|
-| **Quick Start** | The first three to run: **Train CNN on MNIST**, **Inference CNN on MNIST**, and **Api-Function** (graph-as-a-function demo). |
-| **Training** | The graphs that train a model end to end: **Train ResNet on CIFAR10**, **Train Mini-GPT on MNIST**, the measured **ResNet-18 / CIFAR-10 baseline** (see [Reproducing Baselines](./reproducing-baselines)), **Train a Causal LM on TinyStories**, and **Train a VLA on PushWorld** — which needs a CUDA GPU and about an hour; the recipe is in its [README](https://github.com/CodefyUI/CodefyUI/blob/main/examples/VLA/TrainVLA-PushWorld/README.md). |
+| **Quick Start** | The first three to run: **Train CNN on MNIST**, **Inference CNN on MNIST**, and **Call a graph as an API** (graph-as-a-function demo). |
+| **Training** | The graphs that train a model end to end: **Train a CNN on a HuggingFace dataset**, **Train ResNet on CIFAR10**, **Train a Transformer classifier on MNIST**, the measured **ResNet-18 / CIFAR-10 baseline** (see [Reproducing Baselines](./reproducing-baselines)), **Train a Causal LM on TinyStories**, and **Train a VLA on PushWorld** — which needs a CUDA GPU and about an hour; the recipe is in its [README](https://github.com/CodefyUI/CodefyUI/blob/main/examples/VLA/TrainVLA-PushWorld/README.md). |
 | **LLM and RAG** | **Word Embedding Analogy**, **Sentence Similarity (zh-TW)**, and the two retrieval examples **RAG, fully local** and **RAG with a chat API**. |
-| **Concepts** | One idea per graph, small enough to read end to end: the two Iris pipelines, **RNN One Step**, **Mixture of Experts**, the three diffusion graphs (**Forward Diffusion**, **Toy Sampling**, **Mini U-Net**), and **RLHF building blocks: reward + KL**. |
+| **Concepts** | One idea per graph, small enough to read end to end: the two Iris pipelines, **RNN unrolled**, **Mixture of Experts**, the three diffusion graphs (**Forward Diffusion**, **Toy Sampling**, **Mini U-Net**), and **RLHF building blocks: reward + KL**. |
 | **Model Architectures** | 15 classic architecture walkthroughs, sub-grouped by family: CNN, RNN, Transformer, Diffusion, RL. |
 | **Plugin Packs** | Examples shipped by installed [plugins](/advanced/plugins), one sub-heading per pack. Only shown when present. |
 | **Other** | A built-in example that declares no section, or one this list does not recognise. |
@@ -24,8 +24,10 @@ All three surfaces that list examples use this one grouping: the empty-canvas ov
 
 On disk the examples are grouped by topic folder: `Classical/`, `Diffusion/`, `LLM/`, `Model_Architecture/`, `RL/`, `RNN/`, `Transformer/`, `Usage_Example/`, and `VLA/`. A folder is not a section — see [Adding an example](#adding-an-example).
 
-Every listed example runs offline out of the box, with four exceptions:
+Every listed example runs offline out of the box, with these exceptions. Each one says so on its own card, in the words the card has room for — "needs a download", "needs a pack", "needs a GPU":
 
+- The four dataset trainers fetch their data on the first run and are offline after that: **Train CNN on MNIST** and **Train a Transformer classifier on MNIST** download MNIST, **Train ResNet on CIFAR10** and the **ResNet-18 / CIFAR-10 baseline** download CIFAR-10 (about 170 MB). Both land under `backend/data/`.
+- **Train a CNN on a HuggingFace dataset** downloads `AI-Lab-Makerere/beans` from the Hugging Face Hub on its first run — 1,295 photos, about 170 MB — into the Hugging Face cache. Point its three `HuggingFaceDataset` nodes at another repo and that one is fetched instead.
 - **Train a Causal LM on TinyStories** downloads the TinyStories corpus from the Hugging Face Hub and the gpt2 BPE ranks on its first run, and needs a GPU with headroom for a 203,668,480-parameter model. Its card leads with both requirements; the full recipe, the token budgets and the memory levers are in the `README.md` beside the graph, at `examples/LLM/TrainCausalLM-TinyStories/`. Both downloads are cached, so later runs are offline too.
 - **Sentence Similarity (zh-TW)** needs the `sentence-embeddings` pack, which is a one-off install from the Package Center (toolbar > Settings > Optional Packs & Plugins) or `cdui packs install sentence-embeddings` — a run never downloads it for you. Once the pack is in, the example runs offline on CPU in a few seconds. See [Optional Packs](./optional-packs).
 - **RAG, fully local** needs two downloads rather than one: `qwen2.5-0.5b-instruct` from the `rag` pack, and the `multilingual-e5-small` item of `sentence-embeddings` — about 1.5 GB together. Installing `rag` brings that pack's Python packages but no encoder, so the second item has to be picked as well. With both in, nothing leaves the machine: the documents, the search and the generation all happen locally, at a few tokens per second on a CPU, so expect the answer to take anywhere from a few seconds to tens of seconds — an estimate from the model size rather than a measurement, and much faster on a GPU.
@@ -86,9 +88,11 @@ The folder an example sits in is not its section. Folders are paths, and the pat
 
 Load **Train CNN on MNIST**, then:
 
-1. **Record node outputs** and **Persist weights between runs** are both on by default — check them in the Settings popover (**Recording & Inspection** and **Training Behavior**).
-2. Click **Run** and watch the live loss chart in the **Training** tab.
-3. Click a `Conv2d` node to inspect its kernels and activations in the **[Teaching Inspector](./teaching-inspector)**.
-4. Run again — with weights persisted, the model keeps learning across runs.
+1. Read the note to the left of the `Start` node — it says what the graph does and what to look at afterwards.
+2. **Record node outputs** and **Persist weights between runs** are both on by default — check them in the Settings popover (**Recording & Inspection** and **Training Behavior**).
+3. Click **Run** and watch the live loss chart in the **Training** tab. The first run downloads MNIST; five epochs take a minute or two on a CPU.
+4. Click a `Conv2d` node to inspect its kernels and activations in the **[Teaching Inspector](./teaching-inspector)**.
+5. When it finishes, read the **Test accuracy** `Print` — about 0.99, measured on the 10,000 test images the training loop never saw — and compare the 16 predicted digits with the 16 images the `Visualize` node tiles beside them.
+6. Run again — with weights persisted, the model keeps learning across runs.
 
-Training also saves `model_weights.pt` (under `backend/data/models/`). After that, load **Inference CNN on MNIST** — it classifies `test_digit.png`, a real MNIST digit bundled under `backend/data/images/`, using the weights you just trained.
+Training also saves `model_weights.pt` (under `backend/data/models/`). After that, load **Inference CNN on MNIST** — it classifies `test_digit.png`, a real MNIST digit bundled under `backend/data/images/`, using the weights you just trained, and prints the digit it read.

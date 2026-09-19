@@ -66,6 +66,39 @@ received — each links to the release it was published as.
   taking the gallery down with it. All 35 built-in examples declare a
   block. See `docs/docs/usage/examples-gallery.md`.
 
+- **Every built-in example explains itself on the canvas.** Each of the 36
+  carries an overview note beside its `Start` node — what the example
+  demonstrates, what to look at after a run, what it needs and roughly how
+  long it takes — and up to four stage notes on the nodes that are the idea:
+  the `Add` that closes a residual block, the `Permute` that reshapes a
+  tensor for attention, the three dataset nodes to change for your own data.
+  Each note is written twice inside the one note, an English paragraph then
+  the same thing in Traditional Chinese, so it reads in both languages with
+  no translation table to keep in step. Notes are what the long descriptions
+  became: the explanation now sits beside the nodes it is about instead of
+  in a field that cuts at the edge of a card.
+
+- **A training example built entirely from HuggingFace datasets.** *Train a
+  CNN on a HuggingFace dataset* wires `AI-Lab-Makerere/beans` — 1,295 photos
+  of bean leaves in three classes — through three `HuggingFaceDataset` nodes,
+  one per split, with no `Training Pipeline` preset hiding a stage: every
+  node your own data passes through is on the canvas and can be opened. Its
+  notes name exactly what to change for another repo — `dataset_name`,
+  `subset`, `image_column`, `label_column`, the split names and the slice
+  syntax for a repo that ships no validation split, and `out_features` for
+  the number of classes — and the two limits: image classification only, and
+  labels that are already integers. Four CPU runs of the shipped file
+  measured 0.82 to 0.85 test accuracy against a 0.33 chance baseline, about
+  two minutes each.
+
+- **The training examples score what they train.** *Train CNN on MNIST*,
+  *Train a Transformer classifier on MNIST* and *Train ResNet on CIFAR10*
+  each gained a second `Dataset` on the test split, an `EvaluateModel` and a
+  `Print`, so a run ends on a number measured on images the training loop
+  never saw — about 0.99, 0.96 and 0.63 respectively on the shipped epoch
+  counts. *Train CNN on MNIST* also tiles 16 test images beside the 16
+  digits it predicted for them, so the accuracy can be checked by eye.
+
 ### Changed
 
 - **The example gallery is grouped by what an example is for.** Seven
@@ -87,8 +120,25 @@ received — each links to the release it was published as.
   An example description is now a single line of at most 56 columns, the
   width the card, the sidebar row and the detail pane can show without
   cutting; the longer explanation belongs in a note on the canvas, beside
-  the nodes it is about. The rule is in place and every description that
-  breaks it today is listed by name until it is rewritten.
+  the nodes it is about. All 36 built-in descriptions now obey it, in
+  English and in Traditional Chinese — the longest ran to 883 columns —
+  and each one that needs a GPU, a download, a pack or a running service
+  says so in the line itself. The 36 a pack ships are listed by name until
+  they follow.
+
+- **Seven examples were renamed to say what they are.** *Api-Function* is
+  **Call a graph as an API**; *Train Mini-GPT on MNIST* is **Train a
+  Transformer classifier on MNIST**, which is what it is — a Transformer
+  used as an image classifier, not a language model. *Iris with sklearn KNN:
+  same graph, production scale* and *Mini U-Net (Compact): the same
+  architecture in one node* both pointed at a sibling the base install does
+  not have, and are now **Classify Iris with k-nearest neighbours** and
+  **Mini U-Net as a single node**. *RNN One Step* unrolls three steps, so it
+  is **RNN unrolled: three steps, one set of weights**; *Mixture of Experts:
+  top-k routing in 5 nodes* has six, so the count is gone; and *Forward
+  Diffusion: gradually adding noise* is now **a digit dissolving into
+  noise**, which is what it shows. Folder paths do not move, so the docs,
+  the translation tables and `run_graph.py` arguments are unchanged.
 
 - **The Graphs tab's import button reads "Import..."** and takes a graph
   `.json` or a `.cduiworkspace`, told apart by what is inside the file rather
@@ -96,6 +146,31 @@ received — each links to the release it was published as.
   canvas; importing a workspace only adds tabs.
 
 ### Fixed
+
+- **Inference CNN on MNIST fed the model images unlike the ones it trained
+  on.** `Dataset` normalises every MNIST image with mean and standard
+  deviation 0.5, so the training graph saw values in `[-1, 1]`; this graph
+  handed `ImageReader`'s `[0, 1]` tensor straight to `Inference`. The logits
+  were therefore not the ones the saved weights were trained to produce.
+  The graph now applies the same shift and scale before the model, and
+  prints the digit it read alongside the logits and the probabilities.
+
+- **Numbers that were computed and never shown.** The *ResNet-18 / CIFAR-10
+  baseline* ran `EvaluateModel` and left its `accuracy` port unwired, so the
+  95% the example exists to demonstrate never reached the screen; it also
+  evaluated on a hard-coded `cuda` while training followed the run's device.
+  *Train a VLA on PushWorld* computed a closed-loop success rate, an average
+  episode length, a rollout report and a held-out action MSE, and showed
+  none of them. *Classify Iris with k-nearest neighbours* fit a classifier
+  and never scored it. Each now ends on a `Print` or a `GraphOutput`, and
+  the ResNet-18 evaluation follows the run's device like its training does.
+
+- **Forward Diffusion blended noise into noise.** Its "clean image" was a
+  `randn` tensor, so the `Lerp` mixed Gaussian noise with Gaussian noise and
+  the `Visualize` output could not show anything dissolving. It now reads
+  `backend/data/images/test_digit.png`, the same real MNIST digit the
+  inference example uses, at an alpha where the digit is still legible under
+  the grain.
 
 - **A graph with a note on it would not run outside the editor.** A note is
   a node in the file, of type `note`, and `validate_graph` reported it as
