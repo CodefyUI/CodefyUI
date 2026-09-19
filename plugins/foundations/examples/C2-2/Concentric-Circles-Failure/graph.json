@@ -18,8 +18,8 @@
     { "id": "split",   "type": "TrainTestSplit",     "position": { "x":  260, "y":   0 }, "data": { "params": { "test_size": 0.2, "seed": 42, "stratify": true } } },
     { "id": "clf",     "type": "LogisticRegression", "position": { "x":  560, "y":   0 }, "data": { "params": {} } },
     { "id": "acc",     "type": "Accuracy",           "position": { "x":  860, "y":   0 }, "data": { "params": {} } },
-    { "id": "p_acc",   "type": "Print",              "position": { "x": 1140, "y": -80 }, "data": { "params": { "label": "Test accuracy" } } },
-    { "id": "p_preds", "type": "Print",              "position": { "x": 1140, "y":  80 }, "data": { "params": { "label": "Predictions on the test points" } } }
+    { "id": "p_acc",   "type": "Print",              "position": { "x": 1140, "y": -100 }, "data": { "params": { "label": "Test accuracy" } } },
+    { "id": "p_preds", "type": "Print",              "position": { "x": 1140, "y":  100 }, "data": { "params": { "label": "Predictions on the test points" } } }
   ],
   "edges": [
     { "id": "et",        "source": "start", "target": "data",  "sourceHandle": "trigger", "type": "trigger" },

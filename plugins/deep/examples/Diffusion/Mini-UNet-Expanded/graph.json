@@ -5,8 +5,8 @@
     { "id": "start-1",  "type": "Start", "position": { "x": -300, "y": 0 }, "data": { "params": {} } },
 
     { "id": "x_in",     "type": "TensorCreate",      "position": { "x": -60,   "y": 0 },     "data": { "params": { "shape": "1,3,16,16", "fill": "randn", "value": 0, "requires_grad": false } } },
-    { "id": "t_scalar", "type": "TensorCreate",      "position": { "x": -60,   "y": -200 },  "data": { "params": { "shape": "1", "fill": "full", "value": 5, "requires_grad": false } } },
-    { "id": "t_emb",    "type": "TimestepEmbedding", "position": { "x": 220,   "y": -200 },  "data": { "params": { "embed_dim": 32, "max_period": 10000, "seed": 42 } } },
+    { "id": "t_scalar", "type": "TensorCreate",      "position": { "x": -60,   "y": -230 },  "data": { "params": { "shape": "1", "fill": "full", "value": 5, "requires_grad": false } } },
+    { "id": "t_emb",    "type": "TimestepEmbedding", "position": { "x": 220,   "y": -230 },  "data": { "params": { "embed_dim": 32, "max_period": 10000, "seed": 42 } } },
 
     { "id": "stem",     "type": "Conv2d",            "position": { "x": 220,   "y": 0 },     "data": { "params": { "in_channels": 3, "out_channels": 16, "kernel_size": 3, "stride": 1, "padding": 1 } } },
 
@@ -34,7 +34,7 @@
                 "noteContent": "The built-in example Mini U-Net as a single node hides all of this inside one DiffusionUNet node; here the same architecture is drawn out. One forward pass over a random 16 by 16 image at timestep 5: the channel counts run 16, 16, 32, 64, then 96 and 48 where the two Concat nodes take the skips back in, and 3 at the head, because a U-Net predicts noise shaped like its input. The picture halves twice on the way down and doubles twice on the way back. The weights are seeded and never trained, so read the printed tensor as a shape, not a result.\n\n內建範例 Mini U-Net as a single node 把這些全部收在一個 DiffusionUNet 節點裡；這裡是同一套架構攤開來畫。一次前向傳播，輸入是隨機的 16x16 影像、時間步 5：通道數依序是 16、16、32、64，接著兩個 Concat 把 skip 接回來時變成 96 和 48，最後在 head 收回 3 — 因為 U-Net 預測的噪聲和輸入同形狀。畫面在下行時縮小兩次，上行時再放大兩次。權重由 seed 固定、沒有訓練過，所以印出來的張量看形狀就好，不是結果。",
                 "noteColor": "#3d3d1a", "boundToNodeId": "start-1",
                 "boundOffset": { "x": -420, "y": 0 }, "noteWidth": 360 } },
-    { "id": "note-t_emb", "type": "note", "position": { "x": 220, "y": -570 },
+    { "id": "note-t_emb", "type": "note", "position": { "x": 220, "y": -600 },
       "data": { "noteKind": "text",
                 "noteContent": "One timestep embedding feeds all five ResBlocks. That shared vector is what lets a single set of convolution weights behave differently early and late in the denoising; unplug it and each block falls back to a plain ResNet block.\n\n同一份 timestep embedding 餵給全部五個 ResBlock。就是這個共用向量，讓同一組卷積權重在去噪的早期和晚期表現不同；把它拔掉，每個區塊就退回一般的 ResNet 區塊。",
                 "noteColor": "#3d3d1a", "boundToNodeId": "t_emb",

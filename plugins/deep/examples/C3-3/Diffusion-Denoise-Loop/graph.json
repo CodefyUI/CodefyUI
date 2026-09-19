@@ -3,11 +3,11 @@
   "description": "20 reverse steps on an untrained U-Net; output is noise",
   "nodes": [
     { "id": "start", "type": "Start",         "position": { "x": -320, "y":   0 }, "data": { "params": {} } },
-    { "id": "noise", "type": "GaussianNoise", "position": { "x":  -40, "y": -100 }, "data": { "params": { "shape": "1,3,16,16", "mean": 0.0, "std": 1.0, "seed": 0 } } },
-    { "id": "unet",  "type": "DiffusionUNet", "position": { "x":  -40, "y":  100 }, "data": { "params": { "in_channels": 3, "base_channels": 16, "channel_mult": "1,2,4", "time_emb_dim": 32, "num_groups": 4, "seed": 42 } } },
+    { "id": "noise", "type": "GaussianNoise", "position": { "x":  -40, "y": -130 }, "data": { "params": { "shape": "1,3,16,16", "mean": 0.0, "std": 1.0, "seed": 0 } } },
+    { "id": "unet",  "type": "DiffusionUNet", "position": { "x":  -40, "y":  130 }, "data": { "params": { "in_channels": 3, "base_channels": 16, "channel_mult": "1,2,4", "time_emb_dim": 32, "num_groups": 4, "seed": 42 } } },
     { "id": "samp",  "type": "DDPMSampler",   "position": { "x":  320, "y":   0 }, "data": { "params": { "num_steps": 20, "schedule": "linear", "beta_start": 0.0001, "beta_end": 0.02, "seed": 42 } } },
-    { "id": "p_x0",  "type": "Print",         "position": { "x":  640, "y": -80 }, "data": { "params": { "label": "Final denoised image x_0 (untrained → just smoothed noise)" } } },
-    { "id": "p_xT",  "type": "Print",         "position": { "x":  640, "y":  80 }, "data": { "params": { "label": "Starting noise x_T (pure Gaussian)" } } },
+    { "id": "p_x0",  "type": "Print",         "position": { "x":  640, "y": -100 }, "data": { "params": { "label": "Final denoised image x_0 (untrained → just smoothed noise)" } } },
+    { "id": "p_xT",  "type": "Print",         "position": { "x":  640, "y":  100 }, "data": { "params": { "label": "Starting noise x_T (pure Gaussian)" } } },
 
     { "id": "note-overview", "type": "note", "position": { "x": -740, "y": 0 },
       "data": { "noteKind": "text",

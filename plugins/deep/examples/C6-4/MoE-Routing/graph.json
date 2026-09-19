@@ -5,9 +5,9 @@
     { "id": "start",   "type": "Start",       "position": { "x": -320, "y":   0 }, "data": { "params": {} } },
     { "id": "x",       "type": "TensorInput", "position": { "x":  -60, "y":   0 }, "data": { "params": { "shape": "1,8,32", "dtype": "float32", "value_mode": "random", "seed": 9 } } },
     { "id": "moe",     "type": "MoELayer",    "position": { "x":  280, "y":   0 }, "data": { "params": { "num_experts": 4, "top_k": 2, "hidden_dim": 32, "expert_hidden_dim": 64, "seed": 42 } } },
-    { "id": "p_out",   "type": "Print",       "position": { "x":  600, "y": -120 }, "data": { "params": { "label": "MoE output (1, 8, 32) — same shape as input" } } },
+    { "id": "p_out",   "type": "Print",       "position": { "x":  600, "y": -190 }, "data": { "params": { "label": "MoE output (1, 8, 32) — same shape as input" } } },
     { "id": "p_w",     "type": "Print",       "position": { "x":  600, "y":    0 }, "data": { "params": { "label": "Routing weights (1, 8, 2) — softmax over top-2 experts per token" } } },
-    { "id": "p_idx",   "type": "Print",       "position": { "x":  600, "y":  120 }, "data": { "params": { "label": "Expert indices (1, 8, 2) — which 2 of 4 experts each token used" } } },
+    { "id": "p_idx",   "type": "Print",       "position": { "x":  600, "y":  190 }, "data": { "params": { "label": "Expert indices (1, 8, 2) — which 2 of 4 experts each token used" } } },
 
     { "id": "note-overview", "type": "note", "position": { "x": -740, "y": 0 },
       "data": { "noteKind": "text",

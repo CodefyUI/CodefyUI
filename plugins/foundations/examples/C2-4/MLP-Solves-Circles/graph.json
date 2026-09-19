@@ -18,8 +18,8 @@
     { "id": "split",   "type": "TrainTestSplit",   "position": { "x":  260, "y":   0 }, "data": { "params": { "test_size": 0.2, "seed": 42, "stratify": true } } },
     { "id": "mlp",     "type": "MLPClassifier",    "position": { "x":  560, "y":   0 }, "data": { "params": { "hidden_sizes": "16,16", "activation": "relu", "max_iter": 800, "learning_rate_init": 0.01, "seed": 42 } } },
     { "id": "acc",     "type": "Accuracy",         "position": { "x":  860, "y":   0 }, "data": { "params": {} } },
-    { "id": "p_acc",   "type": "Print",            "position": { "x": 1140, "y": -80 }, "data": { "params": { "label": "Test accuracy" } } },
-    { "id": "p_loss",  "type": "Print",            "position": { "x": 1140, "y":  80 }, "data": { "params": { "label": "Final training loss" } } }
+    { "id": "p_acc",   "type": "Print",            "position": { "x": 1140, "y": -100 }, "data": { "params": { "label": "Test accuracy" } } },
+    { "id": "p_loss",  "type": "Print",            "position": { "x": 1140, "y":  100 }, "data": { "params": { "label": "Final training loss" } } }
   ],
   "edges": [
     { "id": "et",        "source": "start", "target": "data",  "sourceHandle": "trigger", "type": "trigger" },

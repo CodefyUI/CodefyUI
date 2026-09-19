@@ -22,11 +22,11 @@
                 "noteContent": "These Edu nodes read dimension 0 as the sequence and dimension 1 as the batch. This input is (1, 5, 8), so they see one token in a batch of five: the weights come back (5, 2, 1, 1), every value 1.0, because a lone token can only attend to itself. Squeeze dim 0 first, as C6-2 does, for a real 5x5 matrix.\n\n這些 Edu 節點把第 0 維當序列、第 1 維當 batch。這裡輸入是 (1, 5, 8)，所以它看到的是 batch 五筆、每筆一個 token：權重出來是 (5, 2, 1, 1)，每個值都是 1.0，因為單獨一個 token 只能注意自己。像 C6-2 那樣先 Squeeze 掉第 0 維，才會得到真正的 5x5 矩陣。",
                 "noteColor": "#3d3d1a", "boundToNodeId": "mha",
                 "boundOffset": { "x": 0, "y": -520 }, "noteWidth": 300 } },
-    { "id": "note-add1", "type": "note", "position": { "x": 840, "y": -440 },
+    { "id": "note-add1", "type": "note", "position": { "x": 880, "y": -400 },
       "data": { "noteKind": "text",
                 "noteContent": "The residual. tensor_a is what attention produced, tensor_b is the block's untouched input, and alpha is left at its default 1.0, so this is a plain sum. Wire mha.output into ln2 and add2 instead and the graph still runs; it just stops being trainable once the stack gets deep.\n\n這是殘差。tensor_a 是注意力算出來的東西，tensor_b 是這個區塊原封不動的輸入，alpha 保持預設的 1.0，所以就是單純相加。改成把 mha.output 接到 ln2 和 add2，圖還是跑得動，只是堆深了就訓練不起來。",
                 "noteColor": "#3d3d1a", "boundToNodeId": "add1",
-                "boundOffset": { "x": 0, "y": -440 }, "noteWidth": 300 } }
+                "boundOffset": { "x": 40, "y": -400 }, "noteWidth": 300 } }
   ],
   "edges": [
     { "id": "et",   "source": "start", "target": "x",    "sourceHandle": "trigger", "type": "trigger" },
