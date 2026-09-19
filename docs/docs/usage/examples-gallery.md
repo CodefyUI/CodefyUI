@@ -18,7 +18,7 @@ The gallery is grouped by what an example is for, in this order:
 | **Concepts** | One idea per graph, small enough to read end to end: the two Iris pipelines, **RNN One Step**, **Mixture of Experts**, the three diffusion graphs (**Forward Diffusion**, **Toy Sampling**, **Mini U-Net**), and **RLHF building blocks: reward + KL**. |
 | **Model Architectures** | 15 classic architecture walkthroughs, sub-grouped by family: CNN, RNN, Transformer, Diffusion, RL. |
 | **Plugin Packs** | Examples shipped by installed [plugins](/advanced/plugins), one sub-heading per pack. Only shown when present. |
-| **Other** | Anything that declares no section — an example from a pack that ships no gallery metadata. |
+| **Other** | A built-in example that declares no section, or one this list does not recognise. |
 
 All three surfaces that list examples use this one grouping: the empty-canvas overlay, the **Template Gallery**, and the sidebar's **Templates** tab.
 
@@ -74,7 +74,7 @@ An example is a directory holding a `graph.json` — under `examples/` for a bui
 }
 ```
 
-`section` is one of `quickstart`, `training`, `llm`, `concepts`, and `architectures`. `family` is the sub-heading inside **Model Architectures** — one of the five families above — and is read nowhere else. `order` sorts ascending inside the section, or inside the family, and an example without one comes after those that have one. A field the list cannot read — an unknown section, an `order` that is not an integer — is served as nothing for that field alone, which puts the example in **Other** rather than failing the gallery for everyone. An example a plugin ships is listed under its pack whatever it declares.
+`section` is one of `quickstart`, `training`, `llm`, `concepts`, and `architectures`. `family` is the sub-heading inside **Model Architectures**: the five families above come first, in that order, and any other string after them alphabetically. Wherever an example declares a `family`, that is also what its card's chip shows in place of the category. `order` sorts ascending inside the section, or inside the family, and an example without one comes after those that have one. A field the list cannot read is served as nothing for that field alone rather than failing the gallery for everyone: a `section` it does not recognise puts a built-in example in **Other**, and an `order` that is not an integer simply sorts the example after the ones that have an order. An example a plugin ships is listed under its pack whatever it declares.
 
 The folder an example sits in is not its section. Folders are paths, and the paths are what these docs, the translation tables, and `run_graph.py` arguments refer to, so they stay put when the gallery is regrouped.
 

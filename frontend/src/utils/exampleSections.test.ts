@@ -311,5 +311,16 @@ describe('example labels', () => {
     expect(exampleChipLabel(ex({ path: 'u/b', category: 'Usage_Example', family: '' }))).toBe(
       'Usage Example',
     );
+    // Wherever a family is declared, not only inside architectures and not
+    // only on a built-in. The chip is about the card in front of the reader,
+    // and a pack that names a family has said something about its own card
+    // even though the grouping ignores its `gallery` block. Any string, too:
+    // the five shipped families are a sort order, not a vocabulary.
+    expect(
+      exampleChipLabel(ex({ path: 'LLM/A', category: 'LLM', section: 'llm', family: 'Mamba' })),
+    ).toBe('Mamba');
+    expect(
+      exampleChipLabel(ex({ path: 'plugin:c1/A', category: 'Classical', family: 'CNN' })),
+    ).toBe('CNN');
   });
 });
