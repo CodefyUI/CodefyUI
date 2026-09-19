@@ -136,20 +136,30 @@ describe('groupExamplesBySection', () => {
   });
 
   it('sub-groups architectures by family: the shipped order, then the rest alphabetically, then none', () => {
+    // All five shipped families, in an order none of them belongs in, so the
+    // assertion pins the sequence rather than the two or three pairs a
+    // smaller fixture happens to constrain. Every one of them ships: leaving
+    // Diffusion out of the fixture let it be dropped from FAMILY_ORDER
+    // entirely -- which sorts DiT-Diffusion-Transformer below the RL
+    // examples -- with every test still green.
     const sections = groupExamplesBySection(
       [
         ex({ path: 'm/rl', section: 'architectures', family: 'RL' }),
         ex({ path: 'm/gnn', section: 'architectures', family: 'GNN' }),
         ex({ path: 'm/none', section: 'architectures' }),
+        ex({ path: 'm/diff', section: 'architectures', family: 'Diffusion' }),
         ex({ path: 'm/cnn', section: 'architectures', family: 'CNN' }),
         ex({ path: 'm/ann', section: 'architectures', family: 'ANN' }),
         ex({ path: 'm/tf', section: 'architectures', family: 'Transformer' }),
+        ex({ path: 'm/rnn', section: 'architectures', family: 'RNN' }),
       ],
       noPacks,
     );
     expect(sections[0].subgroups.map((g) => g.label)).toEqual([
       'CNN',
+      'RNN',
       'Transformer',
+      'Diffusion',
       'RL',
       'ANN',
       'GNN',
@@ -157,7 +167,9 @@ describe('groupExamplesBySection', () => {
     ]);
     expect(sections[0].subgroups.map((g) => g.key)).toEqual([
       'architectures:CNN',
+      'architectures:RNN',
       'architectures:Transformer',
+      'architectures:Diffusion',
       'architectures:RL',
       'architectures:ANN',
       'architectures:GNN',
