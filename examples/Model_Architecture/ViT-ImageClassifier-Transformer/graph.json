@@ -1,6 +1,6 @@
 {
   "name": "ViT Image Classifier (Transformer)",
-  "description": "Forward-pass visualization of a Vision Transformer. A (2,3,32,32) image batch is sliced into 8x8 non-overlapping patches by a Conv2d stem (stride=8), producing a (2,48,4,4) tensor. Reshape+Permute flatten the spatial grid into a 16-token sequence of 48-dim embeddings (seq=16, batch=2, d=48). A TransformerEncoder applies self-attention across all patches globally. We mean-pool the patch tokens and project to 10 class logits.",
+  "description": "Forward pass: image to 16 patch tokens to logits",
   "gallery": { "section": "architectures", "family": "Transformer", "order": 4 },
   "nodes": [
     { "id": "start-1", "type": "Start", "position": { "x": -200, "y": 0 }, "data": { "params": {} } },
@@ -12,7 +12,19 @@
     { "id": "to_batch_first", "type": "Permute", "position": { "x": 1200, "y": 0 }, "data": { "params": { "dims": "1,0,2" } } },
     { "id": "pool", "type": "Mean", "position": { "x": 1420, "y": 0 }, "data": { "params": { "dim": "1", "keepdim": false } } },
     { "id": "head", "type": "Linear", "position": { "x": 1640, "y": 0 }, "data": { "params": { "in_features": 48, "out_features": 10 } } },
-    { "id": "print_logits", "type": "Print", "position": { "x": 1860, "y": 0 }, "data": { "params": { "label": "Class logits (B,10)" } } }
+    { "id": "print_logits", "type": "Print", "position": { "x": 1860, "y": 0 }, "data": { "params": { "label": "Class logits (B,10)" } } },
+
+    { "id": "note-overview", "type": "note", "position": { "x": -620, "y": 0 },
+      "data": { "noteKind": "text", "noteContent": "A Vision Transformer has no convolutional hierarchy. It cuts the image into fixed tiles, treats each tile as a token, and lets self-attention compare every tile with every other one from the first layer on - where a ConvNet needs depth before two far-apart pixels can meet.\n\nThe input is a random tensor: this graph shows the wiring and the shapes, not a trained model. Two pieces of a real ViT are missing: a position embedding, without which this stack cannot tell where a tile came from, and a CLS token, for which Mean pooling stands in. Print is (2, 10).\n\nVision Transformer 沒有卷積式的階層。它把影像切成固定大小的方塊，每塊當成一個 token，從第一層開始就讓自注意力兩兩比較 — 卷積網路則要疊到夠深，相隔很遠的兩個像素才碰得到面。\n\n輸入是隨機張量：這張圖看的是接線與形狀，不是訓練好的模型。真正的 ViT 少了兩件東西：位置嵌入（少了它，這個堆疊分不出方塊原本在哪裡），以及 CLS token（這裡用 Mean 池化代替）。Print 是 (2, 10)。",
+                 "noteColor": "#3d3d1a", "boundToNodeId": "start-1", "boundOffset": { "x": -420, "y": 0 }, "noteWidth": 360 } },
+
+    { "id": "note-patch_embed", "type": "note", "position": { "x": 220, "y": -310 },
+      "data": { "noteKind": "text", "noteContent": "A stride-8 Conv2d over a 32x32 image is the patch cut: 16 non-overlapping 8x8 tiles, each projected to 48 dims. The Reshape and Permute after it only change the view, (2,48,4,4) to (16,2,48).\n\n對 32x32 影像做 stride 8 的 Conv2d，就是切 patch：16 個互不重疊的 8x8 方塊，每塊投影成 48 維。後面的 Reshape 和 Permute 只是換一種看法，(2,48,4,4) 變成 (16,2,48)。",
+                 "noteColor": "#3d3d1a", "boundToNodeId": "patch_embed", "boundOffset": { "x": 0, "y": -310 }, "noteWidth": 300 } },
+
+    { "id": "note-pool", "type": "note", "position": { "x": 1420, "y": -270 },
+      "data": { "noteKind": "text", "noteContent": "Mean over dim 1 averages the 16 patch tokens into one vector, and head turns it into 10 class scores. A ViT with a CLS token reads that one position instead of averaging.\n\nMean 沿 dim 1 把 16 個 patch token 平均成一個向量，head 再把它變成 10 個類別分數。有 CLS token 的 ViT 則是直接讀那一個位置，不做平均。",
+                 "noteColor": "#3d3d1a", "boundToNodeId": "pool", "boundOffset": { "x": 0, "y": -270 }, "noteWidth": 300 } }
   ],
   "edges": [
     { "id": "e-t", "source": "start-1", "target": "input", "sourceHandle": "trigger", "type": "trigger" },

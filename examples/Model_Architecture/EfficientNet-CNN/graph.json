@@ -1,6 +1,6 @@
 {
   "name": "EfficientNet MBConv Block (Simplified)",
-  "description": "Forward-pass visualization of EfficientNet's core MBConv (mobile inverted bottleneck) block. The expand→depthwise-spatial→squeeze-and-excite→project pattern is simplified here: (1) expand via 1x1 Conv (channels 32→128), (2) spatial mixing via 3x3 Conv, (3) Squeeze-and-Excite via AdaptiveAvgPool→Linear→Linear→sigmoid→Multiply, (4) project back via 1x1 Conv, (5) residual Add. Input (2,32,16,16) → MBConv block → (2,32,16,16) → global pool → Linear → 10 class logits.",
+  "description": "MBConv forward pass: expand, squeeze-excite, project",
   "gallery": { "section": "architectures", "family": "CNN", "order": 3 },
   "nodes": [
     { "id": "start-1", "type": "Start", "position": { "x": -200, "y": 0 }, "data": { "params": {} } },
@@ -30,7 +30,19 @@
     { "id": "head_pool", "type": "AdaptiveAvgPool2d", "position": { "x": 0, "y": 520 }, "data": { "params": { "output_height": 1, "output_width": 1 } } },
     { "id": "head_flat", "type": "Flatten", "position": { "x": 220, "y": 520 }, "data": { "params": { "start_dim": 1 } } },
     { "id": "head_fc", "type": "Linear", "position": { "x": 440, "y": 520 }, "data": { "params": { "in_features": 32, "out_features": 10 } } },
-    { "id": "print_logits", "type": "Print", "position": { "x": 660, "y": 520 }, "data": { "params": { "label": "Class logits (B,10)" } } }
+    { "id": "print_logits", "type": "Print", "position": { "x": 660, "y": 520 }, "data": { "params": { "label": "Class logits (B,10)" } } },
+
+    { "id": "note-overview", "type": "note", "position": { "x": -620, "y": 0 },
+      "data": { "noteKind": "text", "noteContent": "MBConv is an inverted bottleneck: widen to 128 channels, mix space while wide, then project back down to 32 - the opposite order to a classic ResNet bottleneck. Squeeze-and-excite is the second idea: pool the whole map to one number per channel, learn a gate from it, and rescale the channels with it.\n\nThe input is a random tensor: this graph shows the wiring and the shapes, not a trained model. Depthwise convolution is not a canvas node, so the spatial step is a full Conv2d - the shapes are right, the parameter count is far higher than the paper's. Print is (2, 10).\n\nMBConv 是反向瓶頸：先把通道撐寬到 128，在寬的地方做空間混合，再投影回 32 — 順序和傳統 ResNet 瓶頸相反。第二個重點是 squeeze-and-excite：把整張特徵圖壓成每個通道一個數字，從中學出一組權重，再拿它調整各通道的強弱。\n\n輸入是隨機張量：這張圖看的是接線與形狀，不是訓練好的模型。畫布沒有 depthwise 卷積節點，所以空間那一步用的是完整的 Conv2d — 形狀是對的，參數量比論文多很多。Print 是 (2, 10)。",
+                 "noteColor": "#3d3d1a", "boundToNodeId": "start-1", "boundOffset": { "x": -420, "y": 0 }, "noteWidth": 360 } },
+
+    { "id": "note-se_apply", "type": "note", "position": { "x": 1620, "y": -180 },
+      "data": { "noteKind": "text", "noteContent": "The excite half. se_sigmoid gives one weight in [0, 1] per channel, se_unflat makes it (2, 128, 1, 1) so it broadcasts over every position, and Multiply turns each channel up or down. Nothing about space changes here.\n\n這裡是 excite。se_sigmoid 給每個通道一個介於 0 到 1 的權重，se_unflat 把它整成 (2, 128, 1, 1) 好廣播到每個位置，Multiply 再逐通道放大或縮小。空間資訊在這一步完全沒動。",
+                 "noteColor": "#3d3d1a", "boundToNodeId": "se_apply", "boundOffset": { "x": 80, "y": -310 }, "noteWidth": 300 } },
+
+    { "id": "note-skip_add", "type": "note", "position": { "x": 2200, "y": -140 },
+      "data": { "noteKind": "text", "noteContent": "The residual only closes because expand and project are inverses in channel count: 32 in, 32 out, the same 16x16 grid. Change project's out_channels and this Add is where the run stops.\n\n殘差接得回來，是因為 expand 和 project 在通道數上互為反向：進去 32、出來 32，格點一樣是 16x16。把 project 的 out_channels 改掉，執行就會停在這個 Add。",
+                 "noteColor": "#3d3d1a", "boundToNodeId": "skip_add", "boundOffset": { "x": 0, "y": -270 }, "noteWidth": 300 } }
   ],
   "edges": [
     { "id": "e-t", "source": "start-1", "target": "input", "sourceHandle": "trigger", "type": "trigger" },

@@ -1,6 +1,6 @@
 {
   "name": "DiT Diffusion Transformer",
-  "description": "Forward-pass visualization of a DiT (Diffusion Transformer) block — the backbone used by Stable Diffusion 3 and OpenAI Sora. A noisy image batch (2,4,8,8) is patch-embedded into 16 tokens of 64-dim via a stride-2 Conv2d, processed by a TransformerEncoder with self-attention across all image patches, then projected back to per-patch noise predictions via a Linear head. The key insight: the Transformer's global receptive field replaces the local U-Net in classical diffusion models.",
+  "description": "Forward pass: noisy patches to predicted noise",
   "gallery": { "section": "architectures", "family": "Diffusion", "order": 1 },
   "nodes": [
     { "id": "start-1", "type": "Start", "position": { "x": -200, "y": 0 }, "data": { "params": {} } },
@@ -11,7 +11,19 @@
     { "id": "dit_blocks", "type": "TransformerEncoder", "position": { "x": 920, "y": 0 }, "data": { "params": { "d_model": 64, "nhead": 8, "num_layers": 4, "dim_feedforward": 256 } } },
     { "id": "to_batch_first", "type": "Permute", "position": { "x": 1200, "y": 0 }, "data": { "params": { "dims": "1,0,2" } } },
     { "id": "noise_head", "type": "Linear", "position": { "x": 1420, "y": 0 }, "data": { "params": { "in_features": 64, "out_features": 64 } } },
-    { "id": "print_eps", "type": "Print", "position": { "x": 1640, "y": 0 }, "data": { "params": { "label": "Predicted noise (B,N,D)" } } }
+    { "id": "print_eps", "type": "Print", "position": { "x": 1640, "y": 0 }, "data": { "params": { "label": "Predicted noise (B,N,D)" } } },
+
+    { "id": "note-overview", "type": "note", "position": { "x": -620, "y": 0 },
+      "data": { "noteKind": "text", "noteContent": "A diffusion model is trained to look at a noisy image and say which part of it is noise. DiT does that with a Transformer instead of a U-Net: patch the latent, attend globally over the patches, project back. Every patch can consult every other one from layer one, where a U-Net has to pool its way to that reach.\n\nTwo things a real DiT conditions on are not wired here: the timestep and the prompt, which enter through adaptive layer norm in the paper. The input is a random tensor, so what comes out is a guess about noise from noise - the graph shows the wiring and the shapes.\n\n擴散模型學的是看著一張帶噪的影像，指出其中哪一部分是噪聲。DiT 用 Transformer 取代 U-Net 來做這件事：把 latent 切成 patch、讓 patch 之間做全域注意力、再投影回去。每個 patch 從第一層就能參考其他所有 patch，U-Net 則要靠一路池化才有同樣的視野。\n\n真正的 DiT 會條件化的兩件事沒有接進來：時間步和提示詞，論文是從 adaptive layer norm 進去的。輸入是隨機張量，所以輸出等於是從噪聲猜噪聲 — 這張圖看的是接線與形狀。",
+                 "noteColor": "#3d3d1a", "boundToNodeId": "start-1", "boundOffset": { "x": -420, "y": 0 }, "noteWidth": 360 } },
+
+    { "id": "note-patch_embed", "type": "note", "position": { "x": 220, "y": -290 },
+      "data": { "noteKind": "text", "noteContent": "The input is already a latent, 4 channels at 8x8, about the size a VAE would leave. A stride-2 patch of it gives a 4x4 grid: 16 tokens of 64 dims, and that is the whole sequence the Transformer sees.\n\n輸入本身就是 latent：4 個通道、8x8，差不多是 VAE 壓完的大小。對它做 stride 2 的切塊會得到 4x4 的格點：16 個 64 維 token，這就是 Transformer 看到的全部序列。",
+                 "noteColor": "#3d3d1a", "boundToNodeId": "patch_embed", "boundOffset": { "x": 0, "y": -290 }, "noteWidth": 300 } },
+
+    { "id": "note-noise_head", "type": "note", "position": { "x": 1420, "y": -270 },
+      "data": { "noteKind": "text", "noteContent": "out_features 64 is per patch: each token is projected back to a patch-sized noise prediction. A full model would fold those into the latent grid and subtract one step of noise.\n\nout_features 64 是「每個 patch」的：每個 token 被投影回一塊 patch 大小的噪聲預測。完整的模型會把它們折回 latent 格點，再減掉一步噪聲。",
+                 "noteColor": "#3d3d1a", "boundToNodeId": "noise_head", "boundOffset": { "x": 0, "y": -270 }, "noteWidth": 300 } }
   ],
   "edges": [
     { "id": "e-t", "source": "start-1", "target": "noisy_latent", "sourceHandle": "trigger", "type": "trigger" },

@@ -1,6 +1,6 @@
 {
   "name": "ResNet with Skip Connections",
-  "description": "Forward-pass visualization of a mini-ResNet on a sample CIFAR10-shaped batch. Each layer node executes on the real tensor flowing from TensorCreate, so you can see shapes at every stage. The Add nodes (b1_add, b2_add) make the residual shortcuts explicit on the canvas. Not a training graph — use the Usage_Example/ResNet-CIFAR10 version for training.",
+  "description": "Mini-ResNet forward pass, shortcuts drawn as Add nodes",
   "gallery": { "section": "architectures", "family": "CNN", "order": 1 },
   "nodes": [
     { "id": "start-1", "type": "Start", "position": { "x": -200, "y": 0 }, "data": { "params": {} } },
@@ -31,7 +31,15 @@
     { "id": "head_pool", "type": "AdaptiveAvgPool2d", "position": { "x": 1540, "y": 220 }, "data": { "params": { "output_height": 1, "output_width": 1 } } },
     { "id": "head_flat", "type": "Flatten", "position": { "x": 1760, "y": 220 }, "data": { "params": { "start_dim": 1 } } },
     { "id": "head_fc", "type": "Linear", "position": { "x": 1980, "y": 220 }, "data": { "params": { "in_features": 64, "out_features": 10 } } },
-    { "id": "print_logits", "type": "Print", "position": { "x": 2200, "y": 220 }, "data": { "params": { "label": "Logits (B,10)" } } }
+    { "id": "print_logits", "type": "Print", "position": { "x": 2200, "y": 220 }, "data": { "params": { "label": "Logits (B,10)" } } },
+
+    { "id": "note-overview", "type": "note", "position": { "x": -620, "y": 0 },
+      "data": { "noteKind": "text", "noteContent": "A residual block adds its own input back onto its output, so gradients reach the early layers through the shortcut and not only through the convolutions. That is what let ResNet go deep. The two shortcuts here are the edges into b1_add and b2_add, drawn on the canvas instead of hidden inside a module.\n\nThe input is a random tensor: this graph shows the wiring and the shapes, not a trained model. The Print at the end is (2, 10) - two images, ten classes.\n\n殘差區塊把自己的輸入加回輸出，梯度除了走卷積，也能沿著捷徑回到前面的層，ResNet 才疊得深。這裡兩條捷徑就是接進 b1_add 與 b2_add 的那兩條邊，直接畫在畫布上，而不是藏在模組裡。\n\n輸入是隨機張量：這張圖看的是接線與形狀，不是訓練好的模型。最後的 Print 是 (2, 10)，兩張影像、十個類別。",
+                 "noteColor": "#3d3d1a", "boundToNodeId": "start-1", "boundOffset": { "x": -420, "y": 0 }, "noteWidth": 360 } },
+
+    { "id": "note-b1_add", "type": "note", "position": { "x": 1160, "y": -200 },
+      "data": { "noteKind": "text", "noteContent": "The shortcut edge comes from stem_pool, the block's input; the other edge is the block's output. alpha is 1.0, so this is a plain sum, and the ReLU after it is applied to the sum - that order is the paper's.\n\n捷徑那條邊來自 stem_pool，也就是這個區塊的輸入；另一條是區塊自己的輸出。alpha 是 1.0，所以這裡就是單純相加，後面的 b1_act2 是對「相加之後」做 ReLU — 這個順序來自論文。",
+                 "noteColor": "#3d3d1a", "boundToNodeId": "b1_add", "boundOffset": { "x": 60, "y": -310 }, "noteWidth": 300 } }
   ],
   "edges": [
     { "id": "e-trig-input", "source": "start-1", "target": "input", "sourceHandle": "trigger", "type": "trigger" },
