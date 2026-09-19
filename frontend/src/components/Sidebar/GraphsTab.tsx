@@ -12,7 +12,7 @@ import { useToastStore } from '../../store/toastStore';
 import { sanitizeGraphName } from '../../utils';
 import { confirm, prompt } from '../../utils/dialog';
 import { getGraphsWriteListener, setGraphsWriteListener } from '../../utils/graphsWrite';
-import { importGraphFile } from '../../utils/importGraphFile';
+import { importFile } from '../../utils/importGraphFile';
 import { readSavedGraphDocument } from '../../utils/openSavedGraph';
 import { saveActiveGraph } from '../../utils/saveActiveGraph';
 import { announceWorktreeWrite } from '../../utils/worktreeWrite';
@@ -504,7 +504,7 @@ export function GraphsTab() {
     if (!file) return;
     // Not awaited: the read finishes on its own, and clearing the input has
     // to happen now so picking the SAME file again still fires `change`.
-    void importGraphFile(file);
+    void importFile(file);
     event.target.value = '';
   }, []);
 
@@ -593,6 +593,9 @@ export function GraphsTab() {
         <button
           type="button"
           className={tabStyles.importButton}
+          // One button for two formats; the router tells them apart by
+          // content, and this is the one place that names them.
+          title={t('graphs.import.title')}
           onClick={() => fileInputRef.current?.click()}
         >
           {t('graphs.import')}
@@ -600,7 +603,7 @@ export function GraphsTab() {
         <input
           ref={fileInputRef}
           type="file"
-          accept=".json"
+          accept=".json,.cduiworkspace"
           className={tabStyles.fileInput}
           onChange={handleImport}
         />

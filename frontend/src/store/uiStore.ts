@@ -39,6 +39,19 @@ export interface GitDiffTarget {
   conflicted?: boolean;
 }
 
+/**
+ * The preferences a workspace file (`.cduiworkspace`) carries, under the
+ * FILE's key names: `gridSnap` is this store's `gridSnapEnabled`, `tooltips`
+ * its `tooltipsEnabled`. The language is not here -- it belongs to `useI18n`.
+ */
+export interface UIPreferences {
+  fontSize?: FontSize;
+  edgeStyle?: EdgeStyle;
+  gridSnap?: boolean;
+  tooltips?: boolean;
+  beginnerMode?: boolean;
+}
+
 interface UIState {
   tooltipsEnabled: boolean;
   toggleTooltips: () => void;
@@ -158,6 +171,13 @@ interface UIState {
   toggleSidebarCollapsed: () => void;
   sidebarWidth: number;
   setSidebarWidth: (width: number) => void;
+  /**
+   * Apply the preferences a workspace import carries. Absent keys are left
+   * alone; each given one is persisted under the key its own setter or toggle
+   * writes, in the same form. One action rather than three conditional
+   * toggles: a toggle can only flip, and an import has to SET.
+   */
+  applyPreferences: (prefs: UIPreferences) => void;
 }
 
 const TOOLTIPS_KEY = 'codefyui-tooltips';
@@ -309,4 +329,29 @@ export const useUIStore = create<UIState>((set) => ({
     localStorage.setItem(SIDEBAR_WIDTH_KEY, String(next));
     set({ sidebarWidth: next });
   },
+  applyPreferences: (prefs) =>
+    set(() => {
+      const next: Partial<UIState> = {};
+      if (prefs.fontSize !== undefined) {
+        localStorage.setItem(FONT_SIZE_KEY, prefs.fontSize);
+        next.fontSize = prefs.fontSize;
+      }
+      if (prefs.edgeStyle !== undefined) {
+        localStorage.setItem(EDGE_STYLE_KEY, prefs.edgeStyle);
+        next.edgeStyle = prefs.edgeStyle;
+      }
+      if (prefs.gridSnap !== undefined) {
+        localStorage.setItem(GRIDSNAP_KEY, String(prefs.gridSnap));
+        next.gridSnapEnabled = prefs.gridSnap;
+      }
+      if (prefs.tooltips !== undefined) {
+        localStorage.setItem(TOOLTIPS_KEY, String(prefs.tooltips));
+        next.tooltipsEnabled = prefs.tooltips;
+      }
+      if (prefs.beginnerMode !== undefined) {
+        localStorage.setItem(BEGINNER_KEY, String(prefs.beginnerMode));
+        next.beginnerMode = prefs.beginnerMode;
+      }
+      return next;
+    }),
 }));

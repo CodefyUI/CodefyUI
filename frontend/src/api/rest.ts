@@ -1,4 +1,5 @@
 import type { NodeDefinition, GraphSaveData, GraphSettings, PresetDefinition } from '../types';
+import { rememberAppVersion } from '../utils/appVersion';
 import { apiFetch } from './_auth';
 
 const BASE_URL = '/api';
@@ -89,9 +90,13 @@ export async function fetchHealth(): Promise<HealthInfo> {
   const res = await fetch(`${BASE_URL}/health`);
   if (!res.ok) throw new Error(`Health failed: ${res.statusText}`);
   const data = await res.json();
+  const version: string | null = data.version ?? null;
+  // Kept for the one caller that must not wait on the network: the workspace
+  // export stamps `app_version` from it and downloads at once.
+  rememberAppVersion(version);
   return {
     status: data.status,
-    version: data.version ?? null,
+    version,
     nodes_loaded: data.nodes_loaded,
     presets_loaded: data.presets_loaded,
     caches: data.caches ?? {},

@@ -10,6 +10,7 @@ import { subgraphIdOf } from '../../utils/subgraph';
 import { graphToSvg, svgToPngBlob } from '../../utils/exportDiagram';
 import { confirm, prompt } from '../../utils/dialog';
 import { saveActiveGraph } from '../../utils/saveActiveGraph';
+import { exportWorkspace } from '../../utils/exportWorkspace';
 import { CustomNodeManager } from '../CustomNodeManager/CustomNodeManager';
 import { SaveIcon } from '../shared/Icons';
 import { useToastStore } from '../../store/toastStore';
@@ -72,10 +73,7 @@ function MenuDropdown({
               >
                 {item.label}
               </button>
-              {/* No menu item sets dividerAfter: true, so the divider is never rendered */}
-              {/* v8 ignore start */}
               {item.dividerAfter && <div className={styles.menuDivider} />}
-              {/* v8 ignore stop */}
             </div>
           ))}
         </div>
@@ -349,7 +347,10 @@ export function Toolbar() {
     { label: t('toolbar.exportDiagram.svg'), title: t('toolbar.exportDiagram.title'), onClick: () => handleExportDiagram('svg') },
     { label: t('toolbar.exportDiagram.png'), title: t('toolbar.exportDiagram.title'), onClick: () => handleExportDiagram('png') },
     { label: t('toolbar.export'), title: t('toolbar.export.title'), onClick: handleExportSubgraph },
-    { label: t('toolbar.exportPython'), title: t('toolbar.exportPython.title'), onClick: handleExportPython },
+    // The divider sets the last item apart: the five above export THIS tab's
+    // graph, the one below exports every tab.
+    { label: t('toolbar.exportPython'), title: t('toolbar.exportPython.title'), onClick: handleExportPython, dividerAfter: true },
+    { label: t('workspace.export'), title: t('workspace.export.title'), onClick: exportWorkspace },
   ];
 
   /* ── Status visuals ───────────────────────────────────────────── */

@@ -22,6 +22,44 @@ received — each links to the release it was published as.
 
 ## [Unreleased]
 
+### Added
+
+- **Every open tab in one file.** Open tabs live in the browser's IndexedDB,
+  so moving to another browser or another computer lost them, and the only
+  export was one graph at a time. **Export → Workspace (.cduiworkspace)**
+  writes every editable tab that holds a graph to one
+  `workspace-YYYY-MM-DD.cduiworkspace` — its title, its graph and its run
+  settings, and which tab was active — plus six preferences: Language, Font
+  size, Connection style, Grid snap, Show node tooltips and Node category
+  mode. **Import...** in the Graphs tab adds those tabs beside the ones
+  already open and replaces no open graph; a browser holding one empty tab
+  ends up with exactly the exported set.
+
+  Secret parameter values, anything a plugin stored in the browser, run
+  results and trained weights, saved-graph bindings, the Settings compute
+  device and the panel layout are never written. An imported tab therefore
+  arrives bound to no saved graph: its first Save asks for a name, and a name
+  already in the list is confirmed before it is replaced. Each imported tab
+  gets a graph id of its own, so two copies of one graph never share trained
+  weights on the server. Secrets are recognised from the node's definition,
+  so a node whose type the exporting browser has not loaded has none to
+  recognise — the limit Save and Export as JSON already have.
+
+  An entry that cannot open — not a graph, or past the 32 tabs an import
+  stops at — is skipped without sinking the rest, and leaves none of its
+  presets behind in the palette. A file over 64 MiB, or a workspace file
+  written by a newer CodefyUI, is refused whole. A node type this install
+  does not have opens as a placeholder and a warning names it; installing the
+  plugin afterwards does not re-link it, so import the file again. See
+  `docs/docs/usage/tabs-persistence.md`.
+
+### Changed
+
+- **The Graphs tab's import button reads "Import..."** and takes a graph
+  `.json` or a `.cduiworkspace`, told apart by what is inside the file rather
+  than by its name. Importing a single graph still replaces the current tab's
+  canvas; importing a workspace only adds tabs.
+
 ### Fixed
 
 - **A node inspected while the graph was running said its data had expired.**

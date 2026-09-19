@@ -102,7 +102,8 @@ const zhTW: Record<TranslationKey, string> = {
   'graphs.empty': '沒有已儲存的圖表',
   'graphs.noMatch': '找不到符合的圖表',
   'graphs.listFail': '載入圖表失敗：{error}',
-  'graphs.import': '匯入 JSON...',
+  'graphs.import': '匯入...',
+  'graphs.import.title': '圖表 (.json) 或工作區 (.cduiworkspace)',
   'graphs.saveAs': '另存新檔...',
   'graphs.open': '開啟',
   'graphs.alreadyOpen': '「{name}」已經在目前分頁開啟。',
@@ -665,6 +666,25 @@ const zhTW: Record<TranslationKey, string> = {
   'project.readOnly.loadNotice': '以唯讀開啟：此圖使用比目前版本更新的格式（v{version}）。',
   'project.readOnly.saveBlocked': '儲存已停用：此圖由較新版本的 CodefyUI 寫入，請更新 CodefyUI 後再編輯。',
   'project.formatTooNew.insertRefused': '沒有插入任何內容：此範本使用比目前版本更新的格式（v{version}），合併進你的圖可能會悄悄遺失其中一部分。可以改用開啟的方式以唯讀檢視，或更新 CodefyUI 後再使用。',
+
+  // 工作區檔案（.cduiworkspace）：把所有開啟的分頁放進一個檔案。匯出在工具列
+  // 「匯出」選單的最後一項；匯入用「圖表」面板的同一顆匯入按鈕，依內容分辨格式。
+  'workspace.export': '工作區 (.cduiworkspace)',
+  'workspace.export.title': '一個檔案，包含所有開啟的分頁',
+  'workspace.export.empty': '沒有可匯出的內容：所有分頁都是空的或唯讀。',
+  'workspace.export.skippedReadOnly': '已略過 {count} 個唯讀分頁。',
+  'workspace.import.success': '已匯入 {count} 個分頁。',
+  // {reasons} 是下面幾個原因（不重複），以 ", " 串接。
+  'workspace.import.partial': '已匯入 {total} 個分頁中的 {imported} 個。略過原因：{reasons}。',
+  'workspace.import.none': '沒有匯入任何分頁：{reasons}。',
+  'workspace.import.reason.invalidGraph': '不是圖表',
+  'workspace.import.reason.tooManyTabs': '已達 {max} 個分頁上限',
+  // 只說明現況。之後裝上外掛並不會自動修復佔位節點，所以這裡不做這個承諾。
+  'workspace.import.missingTypes': '尚未安裝的節點類型：{types}。這些節點會以佔位節點顯示。',
+  'workspace.import.moreTypes': '另外 {count} 種',
+  'workspace.import.tooNew': '這個工作區檔案由較新版本的 CodefyUI 寫入，沒有匯入任何內容。',
+  'workspace.import.invalid': '不是有效的工作區檔案。',
+  'workspace.import.fileTooLarge': '工作區檔案超過 {mib} MiB。',
 
   // 外掛 API v3 的外框（#132）。外掛面板與工具列按鈕自帶標題，主程式只負責
   // 標示包在外面的容器。

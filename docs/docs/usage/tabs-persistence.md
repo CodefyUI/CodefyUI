@@ -1,7 +1,7 @@
 ---
 sidebar_position: 5
 title: Tabs & Persistence
-description: Multi-tab workspaces, automatic in-browser saving, and importing/exporting graphs as JSON.
+description: Multi-tab workspaces, automatic in-browser saving, importing/exporting graphs as JSON, and moving every open tab to another browser.
 ---
 
 # Tabs & Persistence
@@ -23,7 +23,7 @@ Double-click a tab to rename it (`Enter` applies, `Esc` cancels). A running tab 
 
 ## Automatic saving
 
-All tabs are auto-saved in your browser, so your work is restored when you reload the page. This is local to the browser; it is not synced to the server.
+All tabs are auto-saved in your browser, so your work is restored when you reload the page. This is local to the browser; it is not synced to the server. Another browser, or another computer, therefore starts with none of them — a [workspace file](#workspace-files) is how you take them along.
 
 Saving uses **IndexedDB**, with one record per tab. That matters for large graphs: the older `localStorage` backend capped an origin at roughly 5MB, and a graph past that limit simply stopped being saved. IndexedDB has no comparable practical limit, and only the tab you edited is rewritten.
 
@@ -44,7 +44,7 @@ Saved graphs are stored by the server, not by the browser:
 You can export any graph to a JSON file and import it back later (or share it):
 
 - **Export → Export as JSON** writes the current tab's graph (nodes, edges, parameters, segment markers and subgraph definitions) to a `.json` file.
-- **Import JSON...**, at the foot of the sidebar's **Graphs** tab, replaces the current tab's canvas with the file — open a new tab first to keep your graph. A `.json` file that is not a graph is refused with a message instead of emptying the canvas, and a file written by a newer CodefyUI opens read-only, with a notice. An imported graph is bound to no file, so the first Save asks for a name.
+- **Import...**, at the foot of the sidebar's **Graphs** tab, takes a graph `.json` or a [workspace file](#workspace-files) and tells them apart by what is inside, not by the file name. The two do opposite things: a graph **replaces** the current tab's canvas — open a new tab first to keep your graph — while a workspace file only **adds** tabs and leaves every open tab alone. A `.json` file that is not a graph is refused with a message instead of emptying the canvas, and a graph written by a newer CodefyUI opens read-only, with a notice. An imported graph is bound to no file, so the first Save asks for a name.
 - **Export → Export Diagram (SVG / PNG)** draws the architecture only — nodes, ports and connections, no parameter values — on a light, document-friendly background.
 - **Export → Export as Python** writes a readable, single-file Python program: one function per node (with its parameters inlined as editable literals), flow functions that wire the nodes together in execution order, and a `main()` entry point with a small CLI. Each node function delegates to the same node implementation the canvas uses, so results match what you saw on the canvas. Run it with the Python environment from a compatible CodefyUI installation; it does not need the web server. Use `--help` for device, GraphInput JSON, timeout, and project-asset options.
 
@@ -53,3 +53,23 @@ The same JSON format is what the backend's example graphs use, so an exported gr
 :::tip
 Because graphs are plain JSON, they diff and version-control cleanly. Commit a graph alongside your code to capture an exact, reproducible pipeline.
 :::
+
+### Workspace files
+
+**Export → Workspace (.cduiworkspace)** writes every open tab into one file, `workspace-YYYY-MM-DD.cduiworkspace`, so a whole session can move to another browser or another computer. **Import...** reads it back: the tabs are added beside the ones already open, no open graph is replaced, and a browser holding only one empty tab ends up with exactly the exported set.
+
+For each tab the file carries its title, its graph and its run settings: Random seed, Deterministic algorithms, Record node outputs, Verbose internals, Persist weights between runs, Capture gradients and Auto-synthesize loss. It also carries which tab was active, and six preferences: Language, Font size, Connection style, Grid snap, Show node tooltips and Node category mode. Each `tabs[i].graph` in the file is an ordinary Export-as-JSON graph.
+
+What never travels:
+
+- secret parameter values
+- anything a plugin stored in the browser, such as the provider API keys an assistant plugin keeps there
+- run results and trained weights, which live in the server's memory
+- the binding between a tab and a saved graph
+- the Settings compute device and the panel layout, which belong to one machine
+
+An imported tab is therefore bound to no saved graph: its first Save asks for a name, and a name already in the list is confirmed before it replaces the graph holding it. In a [project directory](./project-directories) nothing is stamped until that first Save.
+
+Secret values are recognised from the node's definition, so a node whose type the exporting browser has not loaded — its plugin disabled or missing — has no secret the export can recognise; Save and **Export as JSON** have the same limit, so check such tabs before you share a file.
+
+Empty tabs, read-only tabs and tabs a plugin opened temporarily are not exported. On import, an entry that is not a graph, or that would be the 33rd open tab, is skipped and the rest still open — an import stops at 32 tabs, and the lone empty tab it replaces is not one of them. A file over 64 MiB, or a workspace file written by a newer CodefyUI, is refused whole. A node type that is not installed here opens as a placeholder and a warning names the missing types; nothing re-links them later, so install the plugin or custom node they come from and import the file again.

@@ -1,7 +1,7 @@
 import type { Edge, Node } from '@xyflow/react';
 import { loadExample } from '../api/rest';
 import { useNodeDefStore } from '../store/nodeDefStore';
-import { useTabStore } from '../store/tabStore';
+import { useTabStore, type GraphDocument } from '../store/tabStore';
 import { useToastStore } from '../store/toastStore';
 import { useI18n } from '../i18n';
 import type { NodeData, SegmentGroup, SubgraphDefinition } from '../types';
@@ -12,11 +12,12 @@ import { readGraphDevice } from './graphSettings';
 /**
  * A fetched example, resolved into live canvas nodes and edges.
  *
- * Exported since #341: `api.workspace.openGraphs` reads a plugin's graph
- * through this same door, so a graph handed over by an agent is normalised
- * exactly the way a file or an example is -- unknown presets merged, block
- * definitions honoured, `format_version` carried through to the read-only
- * verdict.
+ * What every reader that is NOT opening into the active tab works from:
+ * `resolveUnboundDocument` below turns it into the document the plugin API
+ * (`workspace.openGraphs`) and the `.cduiworkspace` importer install, so a
+ * graph handed over by an agent or read out of a workspace file is normalised
+ * exactly the way an example is -- unknown presets merged, block definitions
+ * honoured, `format_version` carried through to the read-only verdict.
  */
 export interface ResolvedExample {
   nodes: Node<NodeData>[];
@@ -125,6 +126,37 @@ export function resolveExample(data: any): ResolvedExample {
     description,
     device: readGraphDevice(data.settings),
     formatVersion: data.format_version,
+  };
+}
+
+/**
+ * Read a serialized graph the way a file load reads a file, and hand back the
+ * document `loadGraphDocumentInto` installs into a tab that ALREADY has its
+ * label. Throws the reader's own error.
+ *
+ * Two callers: `api.workspace.openGraphs`, whose tab is labelled by the
+ * entry's `title`, and the `.cduiworkspace` importer, whose tab is labelled by
+ * the file's `title`. Both open a graph that is bound to no file, so the first
+ * Save asks where it should go -- exactly as an example does -- and neither
+ * lets the graph's own `name` overwrite the label `createTab` just set.
+ *
+ * Not pure, because `resolveExample` is not: it merges the graph's unknown
+ * presets into the node-def store. Decide every refusal that can be decided
+ * from the raw payload BEFORE calling this, or a refused graph leaves its
+ * presets behind in the palette (#401).
+ */
+export function resolveUnboundDocument(data: any): GraphDocument {
+  const resolved = resolveExample(data);
+  return {
+    nodes: resolved.nodes,
+    edges: resolved.edges,
+    boundFile: null,
+    subgraphs: resolved.subgraphs,
+    segmentGroups: resolved.segmentGroups,
+    name: null,
+    description: resolved.description,
+    device: resolved.device,
+    formatVersion: resolved.formatVersion,
   };
 }
 

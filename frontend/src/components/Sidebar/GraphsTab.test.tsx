@@ -14,7 +14,7 @@ import {
 } from '../../utils/graphsWrite';
 import { setWorktreeWriteListener } from '../../utils/worktreeWrite';
 import { confirm, prompt } from '../../utils/dialog';
-import { importGraphFile } from '../../utils/importGraphFile';
+import { importFile } from '../../utils/importGraphFile';
 import { saveActiveGraph } from '../../utils/saveActiveGraph';
 import * as rest from '../../api/rest';
 import type { SavedGraphSummary } from '../../api/rest';
@@ -36,13 +36,13 @@ vi.mock('../../api/rest', async (importOriginal) => {
   };
 });
 vi.mock('../../utils/dialog', () => ({ confirm: vi.fn(), prompt: vi.fn() }));
-vi.mock('../../utils/importGraphFile', () => ({ importGraphFile: vi.fn() }));
+vi.mock('../../utils/importGraphFile', () => ({ importFile: vi.fn() }));
 vi.mock('../../utils/saveActiveGraph', () => ({ saveActiveGraph: vi.fn() }));
 
 const mockedRest = vi.mocked(rest);
 const mockedConfirm = vi.mocked(confirm);
 const mockedPrompt = vi.mocked(prompt);
-const mockedImport = vi.mocked(importGraphFile);
+const mockedImport = vi.mocked(importFile);
 const mockedSaveAs = vi.mocked(saveActiveGraph);
 
 const NOW_SECONDS = Math.floor(Date.now() / 1000);
@@ -313,7 +313,7 @@ describe('GraphsTab list', () => {
   it('shows one line and the import action when there is nothing saved', async () => {
     render(<GraphsTab />);
     expect(await screen.findByText('No saved graphs')).toBeTruthy();
-    expect(screen.getByRole('button', { name: 'Import JSON...' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Import...' })).toBeTruthy();
     // Nothing else: no list, no explanation of what a saved graph is.
     expect(screen.queryByRole('list')).toBeNull();
   });
@@ -1040,25 +1040,34 @@ describe('GraphsTab live refresh', () => {
 });
 
 describe('GraphsTab import and save', () => {
-  it('the footer button proxies the click to the hidden file input', async () => {
+  it('the footer button proxies the click to the hidden file input, which takes both formats', async () => {
     const { container } = render(<GraphsTab />);
     await screen.findByText('No saved graphs');
     const fileInput = container.querySelector('input[type="file"]') as HTMLInputElement;
-    expect(fileInput.accept).toBe('.json');
+    expect(fileInput.accept).toBe('.json,.cduiworkspace');
     const clickSpy = vi.spyOn(fileInput, 'click').mockImplementation(() => {});
-    fireEvent.click(screen.getByRole('button', { name: 'Import JSON...' }));
+    const button = screen.getByRole('button', { name: 'Import...' });
+    // One button for two formats, so its title is where they are named.
+    expect(button.title).toBe('A graph (.json) or a workspace (.cduiworkspace)');
+    fireEvent.click(button);
     expect(clickSpy).toHaveBeenCalled();
   });
 
-  it('a picked file goes to importGraphFile and the input is cleared', async () => {
+  it('a picked file goes to importFile, whichever format it is, and the input is cleared', async () => {
     const { container } = render(<GraphsTab />);
     await screen.findByText('No saved graphs');
     const fileInput = container.querySelector('input[type="file"]') as HTMLInputElement;
-    const file = new File(['{"nodes":[]}'], 'graph.json', { type: 'application/json' });
-    fireEvent.change(fileInput, { target: { files: [file] } });
-    expect(mockedImport).toHaveBeenCalledWith(file);
+
+    const graphFile = new File(['{"nodes":[]}'], 'graph.json', { type: 'application/json' });
+    fireEvent.change(fileInput, { target: { files: [graphFile] } });
+    expect(mockedImport).toHaveBeenLastCalledWith(graphFile);
     // Cleared now, not after the read, so picking the SAME file again fires.
     expect(fileInput.value).toBe('');
+
+    const workspaceFile = new File(['{"format":"codefyui-workspace"}'], 'w.cduiworkspace');
+    fireEvent.change(fileInput, { target: { files: [workspaceFile] } });
+    expect(mockedImport).toHaveBeenLastCalledWith(workspaceFile);
+    expect(mockedImport).toHaveBeenCalledTimes(2);
   });
 
   it('picking nothing imports nothing', async () => {

@@ -115,7 +115,8 @@ const en = {
   'graphs.empty': 'No saved graphs',
   'graphs.noMatch': 'No matching graphs',
   'graphs.listFail': 'Failed to load graphs: {error}',
-  'graphs.import': 'Import JSON...',
+  'graphs.import': 'Import...',
+  'graphs.import.title': 'A graph (.json) or a workspace (.cduiworkspace)',
   'graphs.saveAs': 'Save as...',
   // One way to open, so the verb needs no qualifier: a row click opens the
   // graph in a tab of its own and never touches the canvas in front of you.
@@ -729,6 +730,27 @@ const en = {
   'project.readOnly.loadNotice': 'Opened read-only: this graph uses a newer format (v{version}) than this CodefyUI build.',
   'project.readOnly.saveBlocked': 'Save is disabled: this graph was written by a newer CodefyUI. Update CodefyUI to edit it.',
   'project.formatTooNew.insertRefused': 'Nothing was inserted: this template uses a newer format (v{version}) than this CodefyUI build, so merging it into your graph could quietly drop parts of it. Open it instead to view it read-only, or update CodefyUI to use it.',
+
+  // Workspace files (.cduiworkspace): every open tab in one file. Export is
+  // the last item of the toolbar's Export menu; import is the Graphs panel's
+  // one Import button, which tells the two formats apart by content.
+  'workspace.export': 'Workspace (.cduiworkspace)',
+  'workspace.export.title': 'One file with every open tab',
+  'workspace.export.empty': 'Nothing to export: every tab is empty or read-only.',
+  'workspace.export.skippedReadOnly': '{count} read-only tab(s) were left out.',
+  'workspace.import.success': 'Imported {count} tab(s).',
+  // `{reasons}` is the distinct reasons below, joined with ", ".
+  'workspace.import.partial': 'Imported {imported} of {total} tabs. Skipped: {reasons}.',
+  'workspace.import.none': 'No tabs were imported: {reasons}.',
+  'workspace.import.reason.invalidGraph': 'not a graph',
+  'workspace.import.reason.tooManyTabs': '{max}-tab limit reached',
+  // Says what happens and no more. Nothing re-links a placeholder when the
+  // plugin arrives later, so this does not promise that it will.
+  'workspace.import.missingTypes': 'Node types not installed here: {types}. They open as placeholders.',
+  'workspace.import.moreTypes': '+{count} more',
+  'workspace.import.tooNew': 'This workspace was written by a newer CodefyUI. Nothing was imported.',
+  'workspace.import.invalid': 'Not a valid workspace file.',
+  'workspace.import.fileTooLarge': 'The workspace file is over {mib} MiB.',
 
   // Plugin API v3 chrome (#132). Plugin panels and toolbar buttons supply
   // their own titles, so the host only labels the containers around them.

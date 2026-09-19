@@ -406,6 +406,41 @@ export interface TabState {
   deterministic: boolean;
 }
 
+/**
+ * The per-tab switches a run reads. Derived from `TabState`, so it cannot
+ * drift from the fields it names.
+ */
+export type TabRunSettings = Pick<
+  TabState,
+  | 'seed'
+  | 'deterministic'
+  | 'recordOutputs'
+  | 'verboseMode'
+  | 'weightsPersistent'
+  | 'backwardMode'
+  | 'autoBackward'
+>;
+
+/**
+ * A tab's run settings, lifted off it.
+ *
+ * An object LITERAL against the annotated return type, so an eighth setting
+ * added above is a compile error here rather than a field the workspace
+ * exporter quietly stops writing. Its one caller is `exportWorkspace.ts`,
+ * which used to list the seven fields by hand.
+ */
+export function runSettingsOf(tab: TabState): TabRunSettings {
+  return {
+    seed: tab.seed,
+    deterministic: tab.deterministic,
+    recordOutputs: tab.recordOutputs,
+    verboseMode: tab.verboseMode,
+    weightsPersistent: tab.weightsPersistent,
+    backwardMode: tab.backwardMode,
+    autoBackward: tab.autoBackward,
+  };
+}
+
 function createTabState(id: string, name: string): TabState {
   return {
     id,
@@ -851,6 +886,15 @@ interface TabStoreState {
     tabId: string,
     meta: { readOnly?: boolean; source?: WorkspaceSource | null; transient?: boolean },
   ) => void;
+  /**
+   * Set any subset of a tab's run settings, addressed by tab id. Absent keys
+   * are left alone.
+   *
+   * The toggles further down only ever address the ACTIVE tab, and a toggle
+   * can only flip. The workspace importer restores settings onto tabs it
+   * opened in the background, so it has to name the tab and state the value.
+   */
+  setTabRunSettings: (tabId: string, settings: Partial<TabRunSettings>) => void;
 
   // execution actions for specific tab (used by WS handlers)
   applyTabNodeUpdates: (updates: PendingNodeUpdates) => void;
@@ -881,6 +925,33 @@ interface TabStoreState {
 
 function updateTab(tabs: TabState[], tabId: string, updater: (tab: TabState) => Partial<TabState>): TabState[] {
   return tabs.map((tab) => (tab.id === tabId ? { ...tab, ...updater(tab) } : tab));
+}
+
+/**
+ * The boolean half of `TabRunSettings`; `seed` has a rule of its own.
+ *
+ * A table rather than a list so `satisfies` can make it exhaustive: an eighth
+ * run setting is a compile error here, not a value `setTabRunSettings`
+ * silently ignores.
+ */
+const RUN_FLAGS = {
+  deterministic: true,
+  recordOutputs: true,
+  verboseMode: true,
+  weightsPersistent: true,
+  backwardMode: true,
+  autoBackward: true,
+} satisfies Record<Exclude<keyof TabRunSettings, 'seed'>, true>;
+
+const RUN_FLAG_KEYS = Object.keys(RUN_FLAGS) as (keyof typeof RUN_FLAGS)[];
+
+/**
+ * What a seed is stored as. Decided here rather than at each call site so
+ * every entry point agrees on what "no seed" is: null. A cleared field and a
+ * half-typed one that parsed to NaN mean the same thing to a run.
+ */
+function normalizeSeed(seed: number | null): number | null {
+  return seed === null || Number.isNaN(seed) ? null : Math.trunc(seed);
 }
 
 /**
@@ -2262,6 +2333,19 @@ export const useTabStore = create<TabStoreState>((rawSet, get) => {
         ...(meta.source !== undefined ? { source: meta.source } : {}),
         ...(meta.transient !== undefined ? { transient: meta.transient } : {}),
       })),
+    }),
+
+  setTabRunSettings: (tabId, settings) =>
+    set({
+      tabs: updateTab(get().tabs, tabId, () => {
+        const next: Partial<TabRunSettings> = {};
+        if (settings.seed !== undefined) next.seed = normalizeSeed(settings.seed);
+        for (const key of RUN_FLAG_KEYS) {
+          const value = settings[key];
+          if (value !== undefined) next[key] = value;
+        }
+        return next;
+      }),
     }),
 
   commitDocument: (tabId, patch) => {
@@ -4177,10 +4261,7 @@ export const useTabStore = create<TabStoreState>((rawSet, get) => {
   setSeed: (seed) =>
     set({
       tabs: updateTab(get().tabs, get().activeTabId, () => ({
-        // Normalised here rather than at each call site so every entry point
-        // agrees on what "no seed" is: null. A cleared field and a
-        // half-typed one that parsed to NaN mean the same thing to a run.
-        seed: seed === null || Number.isNaN(seed) ? null : Math.trunc(seed),
+        seed: normalizeSeed(seed),
       })),
     }),
 
@@ -4304,13 +4385,14 @@ function _startHydration(): void {
 /**
  * Resolves once the newest hydration attempt has settled.
  *
- * No production caller, deliberately: acting on a bad outcome is
- * `hydrateTabsFromPersistence`'s own job (it raises the toast at the point of
- * failure, where the reason is still in scope), so nothing has to remember to
- * await this and check. It exists so tests can be deterministic about a step
- * that is otherwise only observable as "the tabs changed a bit later", and so
- * a future caller that genuinely needs to sequence against hydration has a
- * handle rather than a timeout.
+ * One production caller: `importWorkspaceFile` awaits this before it appends
+ * tabs, because hydration writes `{tabs, activeTabId}` wholesale and would
+ * overwrite an import that landed first. Nobody else needs it: acting on a
+ * bad outcome is `hydrateTabsFromPersistence`'s own job (it raises the toast
+ * at the point of failure, where the reason is still in scope), so nothing
+ * has to remember to await this and check. It also lets tests be
+ * deterministic about a step that is otherwise only observable as "the tabs
+ * changed a bit later".
  */
 export function whenTabsHydrated(): Promise<HydrationOutcome> {
   return _lastHydration;

@@ -1,5 +1,11 @@
+import { readFileSync } from 'node:fs';
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { insertExample, openExample, openExampleInNewTab } from './openExample';
+import {
+  insertExample,
+  openExample,
+  openExampleInNewTab,
+  resolveUnboundDocument,
+} from './openExample';
 import { useNodeDefStore } from '../store/nodeDefStore';
 import { useTabStore } from '../store/tabStore';
 import { useToastStore } from '../store/toastStore';
@@ -444,5 +450,48 @@ describe('examples that ship subgraph definitions', () => {
     // canvas never paints ports the block does not have.
     const inserted = activeTab().nodes.find((n) => n.selected && n.data.subgraphId)!;
     expect(inserted.data.label).toBe('Mine');
+  });
+});
+
+describe('resolveUnboundDocument', () => {
+  it('reads a serialized graph into a document bound to no file, which keeps the tab label', () => {
+    const doc = resolveUnboundDocument({
+      name: 'The graph has a name of its own',
+      description: 'carried',
+      nodes: [raw('a'), raw('b'), raw('blk1', { type: 'subgraph:blk' })],
+      edges: [{ id: 'e1', source: 'a', target: 'b', sourceHandle: 'out', targetHandle: 'in' }],
+      segmentGroups: [{ id: 's1', headNodeId: 'a', tailNodeId: 'a' }],
+      subgraphs: [
+        {
+          id: 'blk',
+          name: 'Block',
+          description: '',
+          nodes: [],
+          edges: [],
+          interface: { inputs: [], outputs: [], triggerTargets: [] },
+        },
+      ],
+      settings: { device: 'cuda:1' },
+      format_version: 99,
+    });
+
+    expect(doc.boundFile).toBeNull();
+    // Null, so `loadGraphDocumentInto` leaves the label `createTab` set.
+    expect(doc.name).toBeNull();
+    expect(doc.nodes.map((n) => n.id)).toEqual(['a', 'b', 'blk1']);
+    // The wiring and the collapsed block travel too, not just the nodes.
+    expect(doc.edges.map((e) => [e.source, e.target])).toEqual([['a', 'b']]);
+    expect(doc.subgraphs!.map((d) => d.id)).toEqual(['blk']);
+    expect(doc.description).toBe('carried');
+    expect(doc.segmentGroups).toHaveLength(1);
+    expect(doc.device).toBe('cuda:1');
+    expect(doc.formatVersion).toBe(99);
+  });
+
+  it('is the only copy: the plugin API reads through it', () => {
+    // Read relative to the vitest cwd (frontend/), as the example-graph tests do.
+    const source = readFileSync('src/plugins/api.ts', 'utf8');
+    expect(source).not.toContain('function workspaceDocument');
+    expect(source).toContain('resolveUnboundDocument(entry.graph)');
   });
 });
