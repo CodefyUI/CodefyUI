@@ -1,5 +1,6 @@
 {
   "why": "displayWidth in localizeExamples.ts is measured a second time in Python, by display_width in backend/tests/test_example_descriptions.py, so that one description cap can be checked on both sides. Two implementations of one measurement drift silently, so both read these vectors and assert against them. One table, two readers: change a width here and both tests have to be right about it.",
+  "coverage": "The prose vectors below are what descriptions actually contain; the single characters after them are one per wide range, so that dropping or mistyping any one range in either port fails here rather than shipping. A range's own bounds are pinned only where a real assigned character sits on both sides of them (U+303E/U+303F, U+FF60/U+FF61, and the four narrow neighbours just past a range's top) -- most of these ranges end on an unassigned code point, which is not something to pin a test to. U+F900 is written as an escape on purpose: it is a compatibility ideograph that looks exactly like U+8C48 and normalises to it, so a literal character here would silently move to another range.",
   "vectors": [
     { "text": "", "width": 0 },
     { "text": "MNIST", "width": 5 },
@@ -13,6 +14,23 @@
     { "text": "Ω", "width": 1 },
     { "text": "ｱ", "width": 1 },
     { "text": "가", "width": 2 },
-    { "text": "𠀀", "width": 2 }
+    { "text": "𠀀", "width": 2 },
+    { "text": "ᄀ", "width": 2 },
+    { "text": "〾", "width": 2 },
+    { "text": "〿", "width": 1 },
+    { "text": "あ", "width": 2 },
+    { "text": "㎡", "width": 2 },
+    { "text": "㏿", "width": 2 },
+    { "text": "㐀", "width": 2 },
+    { "text": "䷀", "width": 1 },
+    { "text": "ꀀ", "width": 2 },
+    { "text": "ꓐ", "width": 1 },
+    { "text": "豈", "width": 2 },
+    { "text": "ﬀ", "width": 1 },
+    { "text": "︰", "width": 2 },
+    { "text": "ﹰ", "width": 1 },
+    { "text": "｠", "width": 2 },
+    { "text": "｡", "width": 1 },
+    { "text": "￥", "width": 2 }
   ]
 }
