@@ -267,6 +267,60 @@ def test_the_lenet_pack_trainer_scores_the_split_it_did_not_train_on():
         f"the evaluation tail exists to produce has to reach a Print")
 
 
+#: The foundations pack's MNIST trainer, the C2 chapter's flagship. Same
+#: contract as the LeNet one above and the built-in quick-start trainer,
+#: checked separately because it is a separate file a separate edit can
+#: break. It carries one extra pin: this graph pins its training device to
+#: ``cpu`` instead of ``auto``, and an evaluation left on another device is
+#: the bug the ResNet baseline shipped with -- a graph that trains on one
+#: device and scores on another.
+_MLP_TRAINER = (_PLUGIN_ROOT / "foundations" / "examples" / "C2-5"
+                / "MLP-MNIST-Training" / "graph.json")
+
+
+def test_the_foundations_pack_trainer_scores_the_split_it_did_not_train_on():
+    """Train on ``train``, report ``test``, on the training device."""
+    payload = json.loads(_MLP_TRAINER.read_text(encoding="utf-8"))
+    edges = payload["edges"]
+    by_id = {node["id"]: node for node in graph_nodes(payload)}
+
+    def feeding(target: str, handle: str) -> dict:
+        sources = [e["source"] for e in edges
+                   if e.get("type", "data") == "data"
+                   and e["target"] == target and e.get("targetHandle") == handle]
+        assert len(sources) == 1, f"{target}.{handle} is fed by {sources}"
+        return by_id[sources[0]]
+
+    evaluator = by_id["eval"]
+    pipeline = feeding("eval", "model")
+    assert pipeline["type"] == "preset:Training Pipeline", pipeline["type"]
+    trained_on = pipeline["data"]["internalParams"]["dataset"]
+    assert trained_on["split"] == "train", trained_on
+
+    scored_on = feeding("eval", "dataset")
+    assert scored_on["type"] == "Dataset", scored_on["type"]
+    assert scored_on["data"]["params"]["name"] == trained_on["name"], (
+        f"the example trains on {trained_on['name']} and scores itself on "
+        f"{scored_on['data']['params']['name']}")
+    assert scored_on["data"]["params"]["split"] == "test", (
+        f"{scored_on['id']} reads the {scored_on['data']['params']['split']!r} "
+        f"split -- an accuracy measured on the images the loop trained on is "
+        f"not an accuracy")
+
+    training_device = pipeline["data"]["internalParams"]["train_loop"]["device"]
+    assert evaluator["data"]["params"]["device"] == training_device, (
+        f"the loop trains on {training_device!r} and the evaluation runs on "
+        f"{evaluator['data']['params']['device']!r}; a graph that pins its "
+        f"training device has to pin the same one for the pass that scores it")
+
+    shown = {by_id[e["target"]]["type"] for e in edges
+             if e.get("type", "data") == "data" and e["source"] == "eval"
+             and e.get("sourceHandle") == "accuracy"}
+    assert "Print" in shown, (
+        f"EvaluateModel.accuracy reaches {sorted(shown)} -- the one number "
+        f"the evaluation tail exists to produce has to reach a Print")
+
+
 # ── a note that quotes a number still quotes the number the graph gives ───
 
 #: ``(example, note id, quoted text, node id, output port)`` for the rl and

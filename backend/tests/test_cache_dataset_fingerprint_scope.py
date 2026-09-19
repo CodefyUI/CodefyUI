@@ -65,7 +65,7 @@ _REPO_ROOT = Path(__file__).resolve().parents[2]
 SHIPPED_GRAPHS = {
     "C2-5/MLP-MNIST-Training": (
         _REPO_ROOT / "plugins" / "foundations" / "examples" / "C2-5"
-        / "MLP-MNIST-Training" / "graph.json", False, 1),
+        / "MLP-MNIST-Training" / "graph.json", False, 2),
     "C3-1/LeNet-MNIST-Training": (
         _REPO_ROOT / "plugins" / "deep" / "examples" / "C3-1"
         / "LeNet-MNIST-Training" / "graph.json", False, 2),

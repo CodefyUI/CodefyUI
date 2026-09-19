@@ -201,9 +201,13 @@ def _shipped_graph_without_the_download() -> tuple[list[dict], list[dict]]:
 
 
 def _only(nodes: list[dict], node_type: str) -> str:
-    ids = [n["id"] for n in nodes if n["type"] == node_type]
+    ids = _all(nodes, node_type)
     assert len(ids) == 1, f"expected exactly one {node_type}, found {ids}"
     return ids[0]
+
+
+def _all(nodes: list[dict], node_type: str) -> list[str]:
+    return [n["id"] for n in nodes if n["type"] == node_type]
 
 
 @pytest.mark.parametrize(
@@ -291,16 +295,26 @@ async def test_shipped_example_trains_on_every_run() -> None:
     # the assertions above are not riding on an invalidation somewhere
     # upstream (the accident #259 is filed to remove).
     loss_id = _only(nodes, "Loss")
-    dataset_id = _only(nodes, FIXTURE_NODE)
+    # Two fixture datasets, because the shipped example grew an evaluation
+    # tail: the training split inside the preset, and the test split it
+    # scores itself on. Both are asserted rather than "the first one" --
+    # the one this test is about is the one UPSTREAM of TrainingLoop, and
+    # reading whichever the file happens to list first would eventually
+    # measure the other.
+    dataset_ids = _all(nodes, FIXTURE_NODE)
+    assert len(dataset_ids) == 2, (
+        f"{_SHIPPED_EXAMPLE} no longer has one training Dataset and one "
+        f"evaluation Dataset after preset expansion: {dataset_ids}")
     assert statuses[loss_id] == "cached", (
         "the pure Loss node must still hit the cache on the second run -- "
         "otherwise this test cannot tell '#253 fixed' apart from 'caching "
         f"stopped working entirely' (status was {statuses[loss_id]!r})"
     )
-    assert statuses[dataset_id] == "cached", (
-        "the fixture dataset must hit the cache on the second run, proving "
+    assert {statuses[node_id] for node_id in dataset_ids} == {"cached"}, (
+        "every fixture dataset must hit the cache on the second run, proving "
         "TrainingLoop re-ran on its own merits rather than because an "
-        f"upstream node invalidated it (status was {statuses[dataset_id]!r})"
+        "upstream node invalidated it (statuses were "
+        f"{ {i: statuses[i] for i in dataset_ids} })"
     )
 
 
