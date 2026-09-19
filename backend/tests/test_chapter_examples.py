@@ -209,3 +209,59 @@ def test_chapter_graph_node_types_match_the_palette_exactly(
         f"must be written qualified, as \"<plugin-id>:<NodeName>\" — the "
         f"plugin id exactly as its cdui.plugin.toml spells it."
     )
+
+
+# ── a pack trainer reports a number, on the split it did not train on ─────
+
+#: The deep pack's MNIST trainer. It trains inside
+#: ``preset:Training Pipeline``, so ``_SLOW_NODE_TYPES`` keeps it out of the
+#: smoke run above and structure is the only thing a test can see here --
+#: which is also the thing that rots. A ``split`` flipped to ``train``
+#: scores the model on the images it memorised, and a dropped ``accuracy``
+#: edge takes the number off the screen again; both still validate, and
+#: both still train.
+_LENET_TRAINER = (_PLUGIN_ROOT / "deep" / "examples" / "C3-1"
+                  / "LeNet-MNIST-Training" / "graph.json")
+
+
+def test_the_lenet_pack_trainer_scores_the_split_it_did_not_train_on():
+    """Train on ``train``, report ``test``, and put the number on screen.
+
+    The dataset the example trains on is read off the preset's own
+    ``internalParams`` rather than named here, so the two halves cannot
+    drift apart: an example repointed at another dataset has to repoint its
+    evaluation with it. The built-in quick-start trainer holds the same
+    contract in ``test_builtin_examples.py``.
+    """
+    payload = json.loads(_LENET_TRAINER.read_text(encoding="utf-8"))
+    edges = payload["edges"]
+    by_id = {node["id"]: node for node in graph_nodes(payload)}
+
+    def feeding(target: str, handle: str) -> dict:
+        sources = [e["source"] for e in edges
+                   if e.get("type", "data") == "data"
+                   and e["target"] == target and e.get("targetHandle") == handle]
+        assert len(sources) == 1, f"{target}.{handle} is fed by {sources}"
+        return by_id[sources[0]]
+
+    pipeline = feeding("eval", "model")
+    assert pipeline["type"] == "preset:Training Pipeline", pipeline["type"]
+    trained_on = pipeline["data"]["internalParams"]["dataset"]
+    assert trained_on["split"] == "train", trained_on
+
+    scored_on = feeding("eval", "dataset")
+    assert scored_on["type"] == "Dataset", scored_on["type"]
+    assert scored_on["data"]["params"]["name"] == trained_on["name"], (
+        f"the example trains on {trained_on['name']} and scores itself on "
+        f"{scored_on['data']['params']['name']}")
+    assert scored_on["data"]["params"]["split"] == "test", (
+        f"{scored_on['id']} reads the {scored_on['data']['params']['split']!r} "
+        f"split -- an accuracy measured on the images the loop trained on is "
+        f"not an accuracy")
+
+    shown = {by_id[e["target"]]["type"] for e in edges
+             if e.get("type", "data") == "data" and e["source"] == "eval"
+             and e.get("sourceHandle") == "accuracy"}
+    assert "Print" in shown, (
+        f"EvaluateModel.accuracy reaches {sorted(shown)} -- the one number "
+        f"the evaluation tail exists to produce has to reach a Print")

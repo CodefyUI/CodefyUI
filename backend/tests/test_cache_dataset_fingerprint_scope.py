@@ -32,11 +32,11 @@ download, and the epoch/batch counts, to keep the suite fast -- and each
 rewrite is asserted, so a graph that stops containing the node it rewrites
 fails loudly rather than quietly testing something else.
 
-``TrainCNN-MNIST`` ships a SECOND ``Dataset`` since it grew an evaluation
-tail (the test split it scores on). The counts below are per graph and
-exact for that reason: the measurement here is about the TRAINING dataset's
-cache key, and a test that merely took "the first Dataset" would follow
-whichever one the file happens to list first.
+A graph that grew an evaluation tail ships a SECOND ``Dataset``: the test
+split it scores on. The counts below are per graph and exact for that
+reason: the measurement here is about the TRAINING dataset's cache key, and
+a test that merely took "the first Dataset" would follow whichever one the
+file happens to list first.
 """
 
 from __future__ import annotations
@@ -59,15 +59,16 @@ _REPO_ROOT = Path(__file__).resolve().parents[2]
 #: ``key -> (path, has_saver, dataset_count)``. The first two have no writer
 #: at all -- they are the ones #253 actually reproduced on. The third has a
 #: ``ModelSaver``, which is what gave it the accidental protection this
-#: change removes, so it is the one that proves the removal is safe; it is
-#: also the one that scores itself afterwards, hence two datasets.
+#: change removes, so it is the one that proves the removal is safe.
+#: ``dataset_count`` is two for every graph that has grown an evaluation
+#: tail, because the test split it scores on is a second ``Dataset`` node.
 SHIPPED_GRAPHS = {
     "C2-5/MLP-MNIST-Training": (
         _REPO_ROOT / "plugins" / "foundations" / "examples" / "C2-5"
         / "MLP-MNIST-Training" / "graph.json", False, 1),
     "C3-1/LeNet-MNIST-Training": (
         _REPO_ROOT / "plugins" / "deep" / "examples" / "C3-1"
-        / "LeNet-MNIST-Training" / "graph.json", False, 1),
+        / "LeNet-MNIST-Training" / "graph.json", False, 2),
     "CNN-MNIST/TrainCNN-MNIST": (
         _REPO_ROOT / "examples" / "Usage_Example" / "CNN-MNIST"
         / "TrainCNN-MNIST" / "graph.json", True, 2),

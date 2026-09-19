@@ -25,13 +25,20 @@
       }
     },
     { "id": "viz", "type": "Visualize", "position": { "x": 800, "y": 100 }, "data": { "params": { "title": "C3-1 LeNet loss curve", "plot_type": "line" } } },
-    { "id": "p_model", "type": "Print", "position": { "x": 800, "y": 300 }, "data": { "params": { "label": "Trained LeNet" } } }
+    { "id": "p_model", "type": "Print", "position": { "x": 800, "y": 300 }, "data": { "params": { "label": "Trained LeNet" } } },
+    { "id": "ds_test", "type": "Dataset",       "position": { "x": 360,  "y": 800 }, "data": { "params": { "name": "MNIST", "split": "test", "data_dir": "./data" } } },
+    { "id": "eval",    "type": "EvaluateModel", "position": { "x": 760,  "y": 800 }, "data": { "params": { "batch_size": 256, "device": "cpu" } } },
+    { "id": "p_acc",   "type": "Print",         "position": { "x": 1120, "y": 800 }, "data": { "params": { "label": "Test accuracy" } } }
   ],
   "edges": [
     { "id": "et", "source": "start", "target": "cnn", "sourceHandle": "trigger", "type": "trigger" },
     { "id": "e1", "source": "cnn",   "target": "pipeline", "sourceHandle": "model", "targetHandle": "model" },
     { "id": "e2", "source": "cnn",   "target": "pipeline", "sourceHandle": "model", "targetHandle": "model_for_opt" },
     { "id": "e3", "source": "pipeline", "target": "viz", "sourceHandle": "losses", "targetHandle": "data" },
-    { "id": "e4", "source": "pipeline", "target": "p_model", "sourceHandle": "model", "targetHandle": "value" }
+    { "id": "e4", "source": "pipeline", "target": "p_model", "sourceHandle": "model", "targetHandle": "value" },
+    { "id": "et2", "source": "start", "target": "ds_test", "sourceHandle": "trigger", "type": "trigger" },
+    { "id": "e5", "source": "ds_test",  "target": "eval",  "sourceHandle": "dataset",  "targetHandle": "dataset" },
+    { "id": "e6", "source": "pipeline", "target": "eval",  "sourceHandle": "model",    "targetHandle": "model" },
+    { "id": "e7", "source": "eval",     "target": "p_acc", "sourceHandle": "accuracy", "targetHandle": "value" }
   ]
 }
