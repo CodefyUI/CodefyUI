@@ -1,6 +1,6 @@
 {
-  "name": "RNN One Step: the recurrence written in two lines",
-  "description": "The simplest possible RNN demo: feed three input vectors x_1, x_2, x_3 through three RNNCells in series, where each cell's hidden output flows into the next cell's hidden input. Same parameters (input_size=4, hidden_size=8, seed=42) on every cell so they share one matrix W_ih and one matrix W_hh — that's the whole point of 'recurrent'. The final hidden state h_3 is what 'reading the whole sequence' looks like in this simplest possible architecture.",
+  "name": "RNN unrolled: three steps, one set of weights",
+  "description": "Run three RNN steps and print the last hidden state",
   "gallery": { "section": "concepts", "order": 3 },
   "nodes": [
     { "id": "start-1",  "type": "Start",        "position": { "x": -260, "y": 0 }, "data": { "params": {} } },
@@ -13,7 +13,18 @@
     { "id": "cell2",    "type": "RNNCell",      "position": { "x": 240,  "y": 0    }, "data": { "params": { "input_size": 4, "hidden_size": 8, "nonlinearity": "tanh", "seed": 42 } } },
     { "id": "cell3",    "type": "RNNCell",      "position": { "x": 240,  "y": 150  }, "data": { "params": { "input_size": 4, "hidden_size": 8, "nonlinearity": "tanh", "seed": 42 } } },
 
-    { "id": "print",    "type": "Print",        "position": { "x": 540,  "y": 150 }, "data": { "params": { "label": "h_3 (final hidden state)" } } }
+    { "id": "print",    "type": "Print",        "position": { "x": 540,  "y": 150 }, "data": { "params": { "label": "h_3 (final hidden state)" } } },
+
+    { "id": "note-overview", "type": "note", "position": { "x": -680, "y": 0 },
+      "data": { "noteKind": "text",
+                "noteContent": "A recurrent network is one cell applied once per time step, carrying a hidden state forward. The three cells here are that loop drawn out: each takes the input vector for its step plus the hidden state the step before it produced. All three are configured the same way -- input_size 4, hidden_size 8, seed 42 -- so all three hold the same weights, which is what makes this equal to one cell run three times. cell1's hidden input is left unconnected and starts at zeros. h_3 comes out [1, 8]: the whole sequence, read.\n\n遞迴網路就是同一顆 cell 每個時間步跑一次，把 hidden state 一路帶下去。這裡的三顆 cell 就是把那個迴圈攤開來畫：每顆吃自己這一步的輸入向量，加上前一步算出來的 hidden state。三顆的設定完全一樣 — input_size 4、hidden_size 8、seed 42 — 所以權重相同，等於同一顆 cell 跑三次。cell1 的 hidden 沒有接線，從全零開始。h_3 是 [1, 8]：整段序列讀完的樣子。",
+                "noteColor": "#3d3d1a", "boundToNodeId": "start-1",
+                "boundOffset": { "x": -420, "y": 0 }, "noteWidth": 360 } },
+    { "id": "note-cell1", "type": "note", "position": { "x": 240, "y": -440 },
+      "data": { "noteKind": "text",
+                "noteContent": "Each cell builds its own copy of the weights from seed, so the three are identical rather than literally shared. For a forward pass that is the same computation; train them and they would drift apart.\n\n每顆 cell 都用 seed 自己建一份權重，所以三份是一模一樣的複本，而不是真的共用同一份。就 forward 來說結果完全相同；但拿去訓練，它們就會各走各的。",
+                "noteColor": "#3d3d1a", "boundToNodeId": "cell1",
+                "boundOffset": { "x": 0, "y": -290 }, "noteWidth": 300 } }
   ],
   "edges": [
     { "id": "trig_x1", "source": "start-1", "target": "x1", "sourceHandle": "trigger", "type": "trigger" },

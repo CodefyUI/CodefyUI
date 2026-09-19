@@ -1,6 +1,6 @@
 {
   "name": "Tabular Iris Pipeline: CSV → features → train/test",
-  "description": "The C1-2 lesson made concrete. We load the classic Iris dataset (150 rows × 4 features × 3 species), pick all four features, z-score normalise per column, then split 80/20 stratified by class so train and test both see all three species. The Print at the end shows the train-feature tensor — students can verify the shape (120, 4) and check that means cluster around 0.",
+  "description": "Load Iris, z-score columns, split 80/20, print means",
   "gallery": { "section": "concepts", "order": 1 },
   "nodes": [
     { "id": "start-1",   "type": "Start",          "position": { "x": -260, "y": 0 }, "data": { "params": {} } },
@@ -8,7 +8,19 @@
     { "id": "select",    "type": "ColumnSelector", "position": { "x": 220,  "y": 0 }, "data": { "params": { "indices": "0,1,2,3", "names": "" } } },
     { "id": "norm",      "type": "Normalize",      "position": { "x": 480,  "y": 0 }, "data": { "params": { "mode": "zscore", "axis": 0 } } },
     { "id": "split",     "type": "TrainTestSplit", "position": { "x": 740,  "y": 0 }, "data": { "params": { "test_size": 0.2, "seed": 42, "stratify": true } } },
-    { "id": "print",     "type": "Print",          "position": { "x": 1000, "y": 0 }, "data": { "params": { "label": "x_train (120, 4)" } } }
+    { "id": "mean-cols", "type": "Mean",           "position": { "x": 1000, "y": 0 }, "data": { "params": { "dim": "0", "keepdim": false } } },
+    { "id": "print",     "type": "Print",          "position": { "x": 1260, "y": 0 }, "data": { "params": { "label": "x_train column means" } } },
+
+    { "id": "note-overview", "type": "note", "position": { "x": -680, "y": 0 },
+      "data": { "noteKind": "text",
+                "noteContent": "Iris is 150 rows, four measurements and three species: the smallest table that still needs every step of a real tabular pipeline. After a run the Print shows one mean per feature. z-scoring put every column of the whole table at zero, and the 120-row training split keeps them there, within about 0.03. A mean far from zero would mean the split is not representative -- raise test_size, or turn stratify off, to see that happen.\n\nIris 有 150 列、四個量測欄位、三個品種，是還用得上完整表格流程的最小資料集。跑完之後，Print 會印出每個特徵一個平均值。z-score 把整張表的每一欄都拉到 0，120 列的訓練集也留在 0 附近，誤差大約 0.03 以內。某一欄離 0 很遠，就表示這次切分不夠有代表性 — 把 test_size 調大，或把 stratify 關掉，就看得到。",
+                "noteColor": "#3d3d1a", "boundToNodeId": "start-1",
+                "boundOffset": { "x": -420, "y": 0 }, "noteWidth": 360 } },
+    { "id": "note-split", "type": "note", "position": { "x": 740, "y": -270 },
+      "data": { "noteKind": "text",
+                "noteContent": "stratify keeps all three species at the same proportion in both halves. With 50 rows per species and a 30-row test set, turning it off can hand you a test set that is missing a species entirely.\n\nstratify 讓三個品種在訓練集與測試集裡的比例一致。每個品種 50 列、測試集只有 30 列，關掉之後有可能整個品種都沒被抽到。",
+                "noteColor": "#3d3d1a", "boundToNodeId": "split",
+                "boundOffset": { "x": 0, "y": -270 }, "noteWidth": 300 } }
   ],
   "edges": [
     { "id": "trig",       "source": "start-1", "target": "csv",    "sourceHandle": "trigger", "type": "trigger" },
@@ -17,6 +29,7 @@
     { "id": "e_sel_norm", "source": "select",  "target": "norm",   "sourceHandle": "tensor", "targetHandle": "tensor" },
     { "id": "e_norm_split","source": "norm",   "target": "split",  "sourceHandle": "tensor", "targetHandle": "features" },
     { "id": "e_csv_split","source": "csv",     "target": "split",  "sourceHandle": "labels", "targetHandle": "labels" },
-    { "id": "e_split_print","source": "split", "target": "print",  "sourceHandle": "x_train","targetHandle": "value" }
+    { "id": "e_xtrain_mean","source": "split", "target": "mean-cols", "sourceHandle": "x_train","targetHandle": "tensor" },
+    { "id": "e_mean_print","source": "mean-cols","target": "print",   "sourceHandle": "tensor", "targetHandle": "value" }
   ]
 }
