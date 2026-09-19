@@ -1,6 +1,6 @@
 {
   "name": "Train a VLA on PushWorld",
-  "description": "Needs a GPU and about an hour: behavior-clone a 3.3M-parameter vision-language-action policy from 2,400 DART-noised scripted demonstrations, then evaluate it closed-loop (measured 0.97 success at execute_k=2) and write the rollout video. Flip VLARollout.instruction_mode to swapped to watch success collapse to 0.03 - proof the policy reads the instruction. Full recipe and the ablation playbook are in README.md beside this graph.",
+  "description": "0.97 closed-loop success; needs a GPU and about an hour",
   "gallery": { "section": "training", "order": 6 },
   "nodes": [
     {
@@ -200,6 +200,133 @@
           "resize": 192
         }
       }
+    },
+    {
+      "id": "out-success",
+      "type": "GraphOutput",
+      "position": {
+        "x": 1860,
+        "y": 40
+      },
+      "data": {
+        "params": {
+          "name": "success_rate",
+          "description": "Episodes the trained policy solved, out of the 30 it was rolled out on."
+        }
+      }
+    },
+    {
+      "id": "out-avg-steps",
+      "type": "GraphOutput",
+      "position": {
+        "x": 1860,
+        "y": 240
+      },
+      "data": {
+        "params": {
+          "name": "avg_steps",
+          "description": "Mean episode length; a timed-out episode counts at the full 120-step budget."
+        }
+      }
+    },
+    {
+      "id": "out-report",
+      "type": "GraphOutput",
+      "position": {
+        "x": 1860,
+        "y": 440
+      },
+      "data": {
+        "params": {
+          "name": "rollout_report",
+          "description": "Per-episode outcome of the closed-loop rollout, as text."
+        }
+      }
+    },
+    {
+      "id": "out-action-mse",
+      "type": "GraphOutput",
+      "position": {
+        "x": 1860,
+        "y": 640
+      },
+      "data": {
+        "params": {
+          "name": "action_mse",
+          "description": "Open-loop error against the expert's action chunks on the held-out split."
+        }
+      }
+    },
+    {
+      "id": "out-evaluated",
+      "type": "GraphOutput",
+      "position": {
+        "x": 1860,
+        "y": 840
+      },
+      "data": {
+        "params": {
+          "name": "actions_evaluated",
+          "description": "How many held-out samples the action MSE above was averaged over."
+        }
+      }
+    },
+    {
+      "id": "note-overview",
+      "type": "note",
+      "position": {
+        "x": -840,
+        "y": 260
+      },
+      "data": {
+        "noteKind": "text",
+        "noteContent": "Behavior cloning end to end, with nothing downloaded: the environment, the 2,400 scripted demonstrations and both videos are made by the graph itself. PushWorld hands the policy one distractor puck and two targets, so the pixels alone cannot say which puck to push -- it has to read the instruction.\nMeasured on an RTX 4080, about 56 minutes: success_rate 0.967 (29 of 30), average episode 45.6 steps of a 120-step budget, held-out action MSE 0.588. The rollout video lands under /api/media/vla/ and plays in the editor, green-bordered where the episode was solved.\nREADME.md has the reference table and the knobs worth studying.\n\n端到端的行為複製，而且什麼都不用下載：環境、2,400 段腳本示範，還有兩支影片，全都是這張圖自己產生的。PushWorld 會給策略一顆干擾冰球和兩個目標，所以光看畫面無法判斷該推哪一顆，它必須讀懂指令。\n在 RTX 4080 上實測約 56 分鐘：success_rate 0.967（30 回合中成功 29 回合）、平均回合長度 45.6 步（上限 120 步）、保留集上的動作 MSE 0.588。rollout 影片會寫到 /api/media/vla/ 並直接在編輯器裡播放；綠色邊框代表成功，紅色代表失敗。\n旁邊的 README.md 有完整的參考數字，以及值得研究的參數。",
+        "noteColor": "#3d3d1a",
+        "boundToNodeId": "start",
+        "boundOffset": {
+          "x": -420,
+          "y": 0
+        },
+        "noteWidth": 360
+      }
+    },
+    {
+      "id": "note-demos",
+      "type": "note",
+      "position": {
+        "x": 180,
+        "y": -190
+      },
+      "data": {
+        "noteKind": "text",
+        "noteContent": "demo_noise 0.5 is DART: the EXECUTED action is perturbed while the expert's action stays the label, so the policy is taught states it has to recover from. Set it to 0 and closed-loop success collapses to 4% at the same budget.\n\ndemo_noise 0.5 就是 DART：被擾動的是實際執行的動作，專家的動作仍然當作標籤，所以策略學得到「從偏掉的狀態救回來」。把它設成 0，在同樣的預算下閉環成功率會掉到 4%。",
+        "noteColor": "#3d3d1a",
+        "boundToNodeId": "demos",
+        "boundOffset": {
+          "x": 0,
+          "y": -310
+        },
+        "noteWidth": 300
+      }
+    },
+    {
+      "id": "note-rollout",
+      "type": "note",
+      "position": {
+        "x": 1220,
+        "y": -250
+      },
+      "data": {
+        "noteKind": "text",
+        "noteContent": "Set instruction_mode to swapped and success falls from 0.967 to 0.033 on identical weights -- the policy really is acting on the language. execute_k is the receding horizon: predict 8 actions, execute 2, re-plan. At 8 it never re-plans and success drops to about 0.4.\n\n把 instruction_mode 改成 swapped，權重完全沒變，成功率卻從 0.967 掉到 0.033：這就是策略確實有在讀指令的證據。execute_k 是滾動視野：預測 8 步、只執行 2 步、再重新規劃。設成 8 就等於不重新規劃，成功率會掉到約 0.4。",
+        "noteColor": "#3d3d1a",
+        "boundToNodeId": "rollout",
+        "boundOffset": {
+          "x": 0,
+          "y": -370
+        },
+        "noteWidth": 300
+      }
     }
   ],
   "edges": [
@@ -335,6 +462,41 @@
       "sourceHandle": "frames",
       "target": "vw-rollout",
       "targetHandle": "frames"
+    },
+    {
+      "id": "e-rollout-success_rate-out-success-value",
+      "source": "rollout",
+      "sourceHandle": "success_rate",
+      "target": "out-success",
+      "targetHandle": "value"
+    },
+    {
+      "id": "e-rollout-avg_steps-out-avg-steps-value",
+      "source": "rollout",
+      "sourceHandle": "avg_steps",
+      "target": "out-avg-steps",
+      "targetHandle": "value"
+    },
+    {
+      "id": "e-rollout-report-out-report-value",
+      "source": "rollout",
+      "sourceHandle": "report",
+      "target": "out-report",
+      "targetHandle": "value"
+    },
+    {
+      "id": "e-eval-action_mse-out-action-mse-value",
+      "source": "eval",
+      "sourceHandle": "action_mse",
+      "target": "out-action-mse",
+      "targetHandle": "value"
+    },
+    {
+      "id": "e-eval-evaluated-out-evaluated-value",
+      "source": "eval",
+      "sourceHandle": "evaluated",
+      "target": "out-evaluated",
+      "targetHandle": "value"
     }
   ]
 }

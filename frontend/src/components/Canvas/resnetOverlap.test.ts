@@ -56,6 +56,21 @@ const MEASUREMENT_SLACK = 8;
  */
 const CROSSING_FLOOR = 12;
 
+/**
+ * Edges added since the Chrome capture, by id. Only ever shorter.
+ *
+ * `e-e3` arrived when the example started showing the accuracy it measures:
+ * `EvaluateModel.accuracy` now reaches a `Print`. Its two handle coordinates
+ * cannot be derived from `graph.json` — a node's width and its port pitch
+ * come out of rendered text, which is why the other 27 rows were read off the
+ * browser rather than computed — so the edge is left unmeasured until someone
+ * re-captures with the recipe in the fixture. Declared here rather than
+ * skipped silently: the throw below still fires for any edge nobody listed,
+ * and the ratchet test at the bottom fails the moment a row does exist, so
+ * this list cannot outlive its reason.
+ */
+const NOT_YET_CAPTURED = new Set<string>(['e-e3']);
+
 interface RawEdge extends LaneEdgeInput {
   type?: string;
 }
@@ -91,26 +106,36 @@ function loadWires(): Wire[] {
       bottom: n.position.y + 120,
     });
   }
+  ALL_EDGES.length = 0;
+  ALL_EDGES.push(...graph.edges);
   const at = new Map(
     (geometry.edges as Array<[string, number, number, number, number]>).map((row) => [
       row[0],
       { sourceX: row[1], sourceY: row[2], targetX: row[3], targetY: row[4] },
     ]),
   );
-  return graph.edges.map((e) => {
+  CAPTURED.clear();
+  for (const id of at.keys()) CAPTURED.add(id);
+  return graph.edges.flatMap((e) => {
     const g = at.get(e.id);
     if (!g) {
+      if (NOT_YET_CAPTURED.has(e.id)) return [];
       throw new Error(
         `no captured geometry for edge ${e.id}. The example gained an edge; re-capture resnet18EdgeGeometry.json (the recipe is in the file).`,
       );
     }
-    return { ...e, ...g };
+    return [{ ...e, ...g }];
   });
 }
 
 const NODE_GEOMETRY = new Map<string, LaneNodeGeometry>();
+const ALL_EDGES: RawEdge[] = [];
+const CAPTURED = new Set<string>();
 const WIRES = loadWires();
-const LANES = computeEdgeLanes(WIRES, NODE_GEOMETRY);
+// Over every edge the canvas has, not just the measured ones: a lane slot is
+// assigned from what shares a column, so hiding an edge from this call would
+// measure the other 27 against lanes the app never uses.
+const LANES = computeEdgeLanes(ALL_EDGES, NODE_GEOMETRY);
 
 function pathsFor(circuit: boolean): string[] {
   return WIRES.map((w) =>
@@ -268,5 +293,13 @@ describe('ResNet-18 example, the shape of the graph', () => {
       expect(Number.isFinite(w.sourceX)).toBe(true);
       expect(Number.isFinite(w.targetY)).toBe(true);
     }
+  });
+
+  it('keeps no uncaptured edge that is captured, or gone', () => {
+    // The ratchet. An entry whose row now exists, or whose edge has been
+    // deleted, is a line that stops an edge being measured for no reason.
+    const live = new Set(ALL_EDGES.map((e) => e.id));
+    expect([...NOT_YET_CAPTURED].filter((id) => !live.has(id))).toEqual([]);
+    expect([...NOT_YET_CAPTURED].filter((id) => CAPTURED.has(id))).toEqual([]);
   });
 });
