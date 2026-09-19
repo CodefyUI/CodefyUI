@@ -1,6 +1,6 @@
 {
   "name": "C3-1 Train LeNet-style CNN on MNIST",
-  "description": "The §C3.1.5 LeNet pipeline as a real training run. SequentialModel = Conv(32, 3×3) → ReLU → MaxPool → Conv(64, 3×3) → ReLU → MaxPool → Flatten → Linear(3136→128) → ReLU → Linear(128→10). Training Pipeline preset wires Dataset(MNIST) → DataLoader → CrossEntropy → Adam → 5-epoch loop. Reaches ≈99% val accuracy — the canonical demonstration that learned kernels (random at init → edges/textures/parts after training, §C3.1.4) actually crush MNIST. Compare with C2-5 MLP-MNIST (≈98% with no spatial inductive bias) to feel the §C2.5.6 'parameter explosion' MLP weakness that CNN solves.",
+  "description": "Train a LeNet CNN on MNIST and test it; needs a download",
   "nodes": [
     { "id": "start", "type": "Start", "position": { "x": -260, "y": 200 }, "data": { "params": {} } },
     {
@@ -28,7 +28,18 @@
     { "id": "p_model", "type": "Print", "position": { "x": 800, "y": 300 }, "data": { "params": { "label": "Trained LeNet" } } },
     { "id": "ds_test", "type": "Dataset",       "position": { "x": 360,  "y": 800 }, "data": { "params": { "name": "MNIST", "split": "test", "data_dir": "./data" } } },
     { "id": "eval",    "type": "EvaluateModel", "position": { "x": 760,  "y": 800 }, "data": { "params": { "batch_size": 256, "device": "cpu" } } },
-    { "id": "p_acc",   "type": "Print",         "position": { "x": 1120, "y": 800 }, "data": { "params": { "label": "Test accuracy" } } }
+    { "id": "p_acc",   "type": "Print",         "position": { "x": 1120, "y": 800 }, "data": { "params": { "label": "Test accuracy" } } },
+
+    { "id": "note-overview", "type": "note", "position": { "x": -680, "y": 200 },
+      "data": { "noteKind": "text",
+                "noteContent": "The chapter's LeNet-style stack trained for real: two convolution blocks, then two linear layers, 421,642 parameters. The Training Pipeline box runs five epochs over the 60,000 MNIST training images, and the tail below scores the result on the 10,000 test images it never saw.\n\nAfterwards, look at the loss curve and the Test accuracy Print. A healthy run lands near 99%; this machine measured 0.9876 in about 40 seconds on a CPU. The first run downloads MNIST into backend/data.\n\nOpen the Training Pipeline box to change epochs, the optimizer or the learning rate.\n\n教材裡的 LeNet 堆疊真的跑一次訓練：兩組卷積區塊接兩層全連接，總共 421,642 個參數。Training Pipeline 方塊在 60,000 張 MNIST 訓練影像上跑五個 epoch，下面那條尾巴再用模型沒看過的 10,000 張測試影像評分。\n\n跑完之後看損失曲線和 Test accuracy 的 Print。正常大約落在 99% 附近；這台機器測到 0.9876，在 CPU 上約 40 秒。第一次執行會把 MNIST 下載到 backend/data。\n\n打開 Training Pipeline 方塊可以調 epochs、換 optimizer 或改學習率。",
+                "noteColor": "#3d3d1a", "boundToNodeId": "start",
+                "boundOffset": { "x": -420, "y": 0 }, "noteWidth": 360 } },
+    { "id": "note-ds_test", "type": "note", "position": { "x": 0, "y": 800 },
+      "data": { "noteKind": "text",
+                "noteContent": "A second Dataset node, the same files, split set to test. EvaluateModel runs all 10,000 of them through the trained model and compares each argmax with the label, so the accuracy is measured on images the training loop never touched.\n\n這是第二個 Dataset 節點，讀同一份檔案，split 設成 test。EvaluateModel 把這 10,000 張全部送進訓練好的模型，逐筆比對 argmax 和標籤，所以準確率算在訓練迴圈完全沒碰過的影像上。",
+                "noteColor": "#3d3d1a", "boundToNodeId": "ds_test",
+                "boundOffset": { "x": -360, "y": 0 }, "noteWidth": 300 } }
   ],
   "edges": [
     { "id": "et", "source": "start", "target": "cnn", "sourceHandle": "trigger", "type": "trigger" },

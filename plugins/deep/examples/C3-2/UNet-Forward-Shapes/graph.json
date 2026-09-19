@@ -1,6 +1,6 @@
 {
-  "name": "C3-2 Mini U-Net forward — encoder/bottleneck/decoder/skip in 6 nodes",
-  "description": "Walks a (1, 1, 16, 16) synthetic image through a minimal U-shape: two down-sampling Conv+Pool blocks shrink 16→8→4, a ConvTranspose2d up-samples 4→8, and Concat fuses the §C3.2.2.3 skip from the matching encoder layer (8×8 + 8×8 → channel 32). Final ConvTranspose2d brings it back to 16×16. The shapes that print at every step are the textbook's §C3.2.5 'spatial halves, channels double' picture in actual tensor numbers — without training, just to verify the geometry. For a real segmentation training run, swap the inputs for HuggingFaceDataset and add a Training Pipeline preset.",
+  "name": "C3-2 Mini U-Net forward pass with one skip",
+  "description": "16 down to 4 and back, with a 48-channel skip join",
   "nodes": [
     { "id": "start", "type": "Start",            "position": { "x": -320, "y":    0 }, "data": { "params": {} } },
     { "id": "img",   "type": "TensorInput",      "position": { "x":  -60, "y":    0 }, "data": { "params": { "shape": "1,1,16,16", "dtype": "float32", "value_mode": "random", "seed": 3 } } },
@@ -12,7 +12,18 @@
     { "id": "skip",  "type": "Concat",           "position": { "x": 1620, "y":   40 }, "data": { "params": { "dim": 1 } } },
     { "id": "up2",   "type": "ConvTranspose2d",  "position": { "x": 1900, "y":   40 }, "data": { "params": { "in_channels": 48, "out_channels": 1,  "kernel_size": 2, "stride": 2, "padding": 0 } } },
     { "id": "p_bn",  "type": "Print",            "position": { "x": 1340, "y": -120 }, "data": { "params": { "label": "Bottleneck shape (1, 32, 4, 4)" } } },
-    { "id": "p_out", "type": "Print",            "position": { "x": 2180, "y":   40 }, "data": { "params": { "label": "Final shape (1, 1, 16, 16) — back to input resolution" } } }
+    { "id": "p_out", "type": "Print",            "position": { "x": 2180, "y":   40 }, "data": { "params": { "label": "Final shape (1, 1, 16, 16) — back to input resolution" } } },
+
+    { "id": "note-overview", "type": "note", "position": { "x": -740, "y": 0 },
+      "data": { "noteKind": "text",
+                "noteContent": "A U-Net reduced to its four moves. Two Conv-plus-pool blocks take the 16x16 image down to (1, 32, 4, 4); a transposed convolution lifts it back to 8x8; Concat glues the matching encoder output onto it; a second transposed convolution returns (1, 1, 16, 16).\n\nNothing is trained, so the two Prints are the whole result: the bottleneck shape, and a final shape back at the input resolution. It has to match, or a segmentation head would have nothing to label pixel by pixel.\n\nSet the input to 1,1,32,32 and every shape doubles: no layer here is tied to a resolution, only the channel counts must agree.\n\n把 U-Net 縮到只剩四個動作。兩組 Conv 加 pool 把 16x16 影像壓到 (1, 32, 4, 4)；一顆轉置卷積放大回 8x8；Concat 把編碼器對應層的輸出接上來；再一顆轉置卷積變回 (1, 1, 16, 16)。\n\n這裡沒有訓練，所以兩個 Print 就是全部的結果：瓶頸層的形狀，以及和輸入解析度相同的最終形狀。必須相同，否則分割用的輸出頭沒有辦法逐像素標記。\n\n把輸入改成 1,1,32,32，每個形狀都會加倍。這些層都不綁定解析度，只有通道數必須對得上。",
+                "noteColor": "#3d3d1a", "boundToNodeId": "start",
+                "boundOffset": { "x": -420, "y": 0 }, "noteWidth": 360 } },
+    { "id": "note-skip", "type": "note", "position": { "x": 1620, "y": -390 },
+      "data": { "noteKind": "text",
+                "noteContent": "The skip connection. up1 brings 16 channels back up to 8x8 and enc2 still holds its own 32 channels at 8x8, so concatenating on dim 1 gives 48. That is why the next ConvTranspose2d declares in_channels 48 - change one and the other must move with it.\n\n這就是跳接。up1 把 16 個通道放大回 8x8，enc2 手上還有自己那 32 個通道也在 8x8，沿著 dim 1 接起來就是 48。所以下一顆 ConvTranspose2d 的 in_channels 寫 48 — 改了一邊，另一邊就得跟著改。",
+                "noteColor": "#3d3d1a", "boundToNodeId": "skip",
+                "boundOffset": { "x": 0, "y": -430 }, "noteWidth": 300 } }
   ],
   "edges": [
     { "id": "et",   "source": "start", "target": "img",   "sourceHandle": "trigger", "type": "trigger" },

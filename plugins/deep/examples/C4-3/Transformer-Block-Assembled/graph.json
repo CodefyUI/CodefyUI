@@ -1,6 +1,6 @@
 {
-  "name": "C4-3 Transformer Block: pre-norm → MHA → residual → pre-norm → FFN → residual",
-  "description": "The §C4.3.5 pre-norm Transformer block built from the parts you already know. A (1, 5, 8) tensor goes through: LayerNorm → EduMultiHeadAttention → Add (residual back to the original input) → LayerNorm → EduFFN → Add (second residual). Every output port is shape (1, 5, 8) — proof that a block is a pure 'in-place enhancement' of token features (§C4.3.6). Stacking N of these (12 for GPT-2 small, 80 for Llama 70B) is how the production architecture grows; no new operators are introduced, just this same block on repeat.",
+  "name": "C4-3 Pre-norm Transformer block, assembled",
+  "description": "Six nodes, one shape: (1, 5, 8) in and (1, 5, 8) out",
   "nodes": [
     { "id": "start", "type": "Start",                  "position": { "x": -320, "y":   0 }, "data": { "params": {} } },
     { "id": "x",     "type": "TensorInput",            "position": { "x":  -60, "y":   0 }, "data": { "params": { "shape": "1,5,8", "dtype": "float32", "value_mode": "random", "seed": 4 } } },
@@ -10,7 +10,23 @@
     { "id": "ln2",   "type": "LayerNorm",              "position": { "x": 1140, "y":   0 }, "data": { "params": { "normalized_shape": "8", "eps": 1e-5 } } },
     { "id": "ffn",   "type": "foundations:Edu-FFN",                 "position": { "x": 1440, "y":   0 }, "data": { "params": { "embed_dim": 8, "hidden_dim": 32, "activation": "gelu", "seed": 42 } } },
     { "id": "add2",  "type": "Add",                    "position": { "x": 1740, "y":   0 }, "data": { "params": {} } },
-    { "id": "p_out", "type": "Print",                  "position": { "x": 2040, "y":   0 }, "data": { "params": { "label": "Block output — same shape (1, 5, 8) as the input" } } }
+    { "id": "p_out", "type": "Print",                  "position": { "x": 2040, "y":   0 }, "data": { "params": { "label": "Block output — same shape (1, 5, 8) as the input" } } },
+
+    { "id": "note-overview", "type": "note", "position": { "x": -740, "y": 0 },
+      "data": { "noteKind": "text",
+                "noteContent": "The block every decoder stacks, built out of parts you can open. Normalise, attend, add the input back; normalise again, run the feed-forward, add again. Pre-norm means each LayerNorm sits before its sub-layer rather than after, which is what lets deep stacks train without warmup tricks.\n\nThe two Adds matter more than they look. Without them a gradient would have to travel through every sub-layer in turn, and a stack of eighty blocks would not train at all.\n\nEvery port in the chain carries (1, 5, 8): a block improves token features in place, so stacking N introduces no new shapes. Read the note on the attention node before trusting its weights.\n\n每個 decoder 都在堆疊的區塊，用可以打開來看的零件組起來。正規化、做注意力、把輸入加回去；再正規化一次、跑前饋網路、再加一次。pre-norm 的意思是每個 LayerNorm 放在子層之前而不是之後，深層堆疊才能不靠 warmup 技巧就訓練起來。\n\n那兩顆 Add 比看起來重要。沒有它們，梯度就得一層一層穿過每個子層，堆十二層或八十層根本訓練不動。\n\n這條鏈上每個輸出埠都是 (1, 5, 8)，這就是要帶走的重點：一個區塊是就地改善 token 的特徵，所以堆 N 個也不會生出新的形狀。在相信注意力權重之前，先看那顆節點上的說明。",
+                "noteColor": "#3d3d1a", "boundToNodeId": "start",
+                "boundOffset": { "x": -420, "y": 0 }, "noteWidth": 360 } },
+    { "id": "note-mha", "type": "note", "position": { "x": 540, "y": -520 },
+      "data": { "noteKind": "text",
+                "noteContent": "These Edu nodes read dimension 0 as the sequence and dimension 1 as the batch. This input is (1, 5, 8), so they see one token in a batch of five: the weights come back (5, 2, 1, 1), every value 1.0, because a lone token can only attend to itself. Squeeze dim 0 first, as C6-2 does, for a real 5x5 matrix.\n\n這些 Edu 節點把第 0 維當序列、第 1 維當 batch。這裡輸入是 (1, 5, 8)，所以它看到的是 batch 五筆、每筆一個 token：權重出來是 (5, 2, 1, 1)，每個值都是 1.0，因為單獨一個 token 只能注意自己。像 C6-2 那樣先 Squeeze 掉第 0 維，才會得到真正的 5x5 矩陣。",
+                "noteColor": "#3d3d1a", "boundToNodeId": "mha",
+                "boundOffset": { "x": 0, "y": -520 }, "noteWidth": 300 } },
+    { "id": "note-add1", "type": "note", "position": { "x": 840, "y": -390 },
+      "data": { "noteKind": "text",
+                "noteContent": "The residual. tensor_a is what attention produced, tensor_b is the block's untouched input, and alpha is left at its default 1.0, so this is a plain sum. Delete the node and the graph still runs; it just stops being trainable once the stack gets deep.\n\n這是殘差。tensor_a 是注意力算出來的東西，tensor_b 是這個區塊原封不動的輸入，alpha 保持預設的 1.0，所以就是單純相加。把這顆刪掉圖還是跑得動，只是堆深了就訓練不起來。",
+                "noteColor": "#3d3d1a", "boundToNodeId": "add1",
+                "boundOffset": { "x": 0, "y": -390 }, "noteWidth": 300 } }
   ],
   "edges": [
     { "id": "et",   "source": "start", "target": "x",    "sourceHandle": "trigger", "type": "trigger" },
