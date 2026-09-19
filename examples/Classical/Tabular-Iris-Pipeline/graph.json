@@ -1,6 +1,6 @@
 {
   "name": "Tabular Iris Pipeline: CSV → features → train/test",
-  "description": "Load Iris, z-score columns, split 80/20, print means",
+  "description": "Every feature column comes out with a mean near zero",
   "gallery": { "section": "concepts", "order": 1 },
   "nodes": [
     { "id": "start-1",   "type": "Start",          "position": { "x": -260, "y": 0 }, "data": { "params": {} } },

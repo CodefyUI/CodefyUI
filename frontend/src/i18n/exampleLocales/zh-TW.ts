@@ -8,168 +8,137 @@ import type { ExampleTranslations } from './types';
  * docs, in `examples/` on disk and in a `run_graph.py` argument, so it reads
  * the same in both locales and only the description changes.
  *
- * Each description is written to survive the card's 80-column cut: the first
- * sentence says what the graph shows, and any requirement -- a GPU, a
- * download, a pack that has to be installed first -- sits inside that cut
- * rather than after it. `exampleLocales/zh-TW.test.ts` pins both.
+ * A description is one line of at most 56 columns -- what a card, a sidebar
+ * row and the detail pane show without cutting -- saying what the graph shows
+ * plus any requirement that stops a run: a GPU, a download, a pack that has to
+ * be installed first. Everything longer belongs in a note on the canvas,
+ * beside the nodes it is about. `exampleLocales/zh-TW.test.ts` pins the rule.
  */
 const zhTW: ExampleTranslations = {
   // ── Usage examples -- the beginner-facing starters ──
   'Usage_Example/Api-Function': {
-    description:
-      '把一張圖當成函式呼叫的示範：Start → GraphInput → Print → GraphOutput。在畫布上直接執行會用輸入的預設值；存檔之後也可以用 POST /api/graph/run/Api-Function 帶 {"inputs": {"message": "..."}} 呼叫，拿回 {"outputs": {"echo": "..."}}。詳見文件「使用方式 → 把 graph 當成函式呼叫」。',
+    description: '把訊息原樣回傳：在畫布上執行，或用 HTTP POST 呼叫',
   },
   'Usage_Example/CNN-MNIST/InferenceCNN-MNIST': {
-    description:
-      '必須先跑過一次「Train CNN on MNIST」：那張圖會寫出 model_weights.pt，這張圖才載得到。安裝檔不會附訓練好的權重，所以在全新的機器上，沒訓練過就會停在 ModelLoader。之後 ImageReader 讀進 test_digit.png（backend/data/images/ 裡附的真實 MNIST 數字），SequentialModel 重建同一套架構，ModelLoader 還原權重，Inference 做一次前向傳播，辨識這張手寫數字。',
+    description: '辨識一個數字；需先跑過 Train CNN on MNIST',
   },
   'Usage_Example/CNN-MNIST/TrainCNN-MNIST': {
-    description:
-      'SequentialModel 以 JSON 層設定組出 nn.Module，接上 Training Pipeline 預設模組（Dataset → DataLoader → Optimizer → Loss → TrainingLoop）完整訓練。結束後 ModelSaver 把權重寫到 backend/data/models/model_weights.pt，推論範例才載得到。',
+    description: '在 MNIST 上訓練 CNN 再測試；需要下載',
   },
   'Usage_Example/GPT-Mini/TrainGPT-Mini': {
-    description:
-      'SequentialModel 把每張 28x28 影像攤平，用一個學出來的 embedding 投影成 16 token × 24 維的「序列」，交給 4 層 TransformerDecoder（自注意力模式）處理，最後投影成 10 個類別 logits；訓練走 Training Pipeline 預設模組。打開 SequentialModel 的層編輯器就能改 d_model、層數或 head 數。',
+    description: '每張影像 16 個 token，再看測試準確率；需要下載',
+  },
+  'Usage_Example/HuggingFace-Dataset/TrainCNN-Beans': {
+    description: '三類豆葉影像的測試準確率；需下載',
   },
   'Usage_Example/ResNet-CIFAR10/TrainResNet-CIFAR10': {
-    description:
-      'SequentialModel 組出一個含兩個殘差區塊的 mini-ResNet（捷徑邊 stem_pool→b1_add 與 b1_r2→b2_add）並輸出成 nn.Module，再接上 Training Pipeline 預設模組（Dataset → DataLoader → Optimizer → Loss → TrainingLoop）完整訓練。想看或改殘差結構，打開 SequentialModel 的層編輯器。',
+    description: '訓練迷你 ResNet 並評分；需下載 170 MB',
   },
   'Usage_Example/ResNet18-CIFAR10-Baseline': {
-    description:
-      '完全用 GUI 節點搭出來的研究等級 CIFAR-10 baseline。架構是 CIFAR 版的 ResNet-18（3x3 stride-1 stem、不接 maxpool、4 個 stage 各 2 個 BasicBlock，11,173,962 個參數），寫在 SequentialModel 的層編輯器裡。配方：SGD（Nesterov）lr 0.1、momentum 0.9、weight decay 5e-4、batch 128、整段排程走 cosine annealing，增強用 RandomCrop(32, padding=4) + RandomHorizontalFlip + CIFAR-10 通道正規化。從執行任務面板以固定種子送出執行；實測準確率見範例目錄下的 README。',
+    description: '測試準確率約 95%；需 GPU 與下載',
   },
 
   // ── Classical ML ──
   'Classical/Iris-Sklearn-KNN': {
-    description:
-      '正式版的 KNN 分類器（封裝 sklearn）：距離加權投票、內部建 KD-tree 索引，所以同一張圖在 10 萬列以上的資料仍然跑得動。這是雙軌配對的另一半 — 教學版是 EduKNN 節點，每一段距離都攤開來算給你看。兩者的輸入/輸出介面相同，要互換只需要改一個節點。EduKNN 與對應的 KNN-from-Scratch 範例在 foundations 章節包裡（cdui plugin install foundations），基本安裝不含。',
+    description: '用 sklearn KNN 分類 Iris，印出測試準確率',
   },
   'Classical/Tabular-Iris-Pipeline': {
-    description:
-      '載入 Iris（150 列 × 4 特徵 × 3 個品種），四個特徵全選，逐欄做 z-score 正規化，再以 80/20 分層切分，讓訓練集與測試集都看得到三個品種 — C1-2 課程的具體版本。最後的 Print 印出訓練特徵張量，可以核對形狀 (120, 4)，並確認各欄平均值都落在 0 附近。',
+    description: '每個特徵欄位的平均值都落在 0 附近',
   },
 
   // ── LLM -- embeddings, retrieval, causal-LM training ──
   'LLM/RAG-LLMChat-API': {
-    description:
-      '需要 sentence-embeddings 套件包，外加一個跑著的 Ollama，或改用 API 金鑰。檢索留在本機，生成換成 LLMChat：預設連本機 http://127.0.0.1:11434 上的 qwen2.5:0.5b（先 `ollama pull qwen2.5:0.5b`）；把 provider 改成 ChatGPT API 或 Claude API 並給金鑰，同一份提示詞就會送到雲端模型 — 內容會離開這台機器。檢索鏈與 RAG-Local-Offline 完全相同（DocumentLoader → TextChunker → TextEmbedding → VectorStore → Retriever → PromptBuilder），只換掉最後的生成節點，答案可以跟本機版對照。各階段說明在旁邊的 README.md。',
+    description: '需 sentence-embeddings 套件包與一個跑著的 Ollama',
   },
   'LLM/RAG-Local-Offline': {
-    description:
-      '需要 rag 與 sentence-embeddings 兩個套件包（約 1.5 GB），裝好之後就不必連網。DocumentLoader 從 data/samples/rag 讀五篇中英雙語短文，TextChunker 切成 400 字元的塊，TextEmbedding（multilingual-e5-small，前綴 `passage: `）轉成向量，VectorStore 建索引；問題以同樣方式嵌入（前綴 `query: `），Retriever 撈最接近的 3 塊，PromptBuilder 包成「只依內容作答」的提示詞，HFTextGenerate 再用 Qwen2.5-0.5B-Instruct 寫出答案。CPU 上生成要數秒到數十秒，內附的問題大約 30 個 token 就結束。',
+    description: '離線作答；需 rag 與 sentence-embeddings 套件包',
   },
   'LLM/Sentence-Similarity-zhTW': {
-    description:
-      '多語言 sentence-transformer 編碼八個句子。需要 sentence-embeddings 套件包（套件中心），裝好後在 CPU 上離線執行。四組配對分別是天氣、食物、股市、機器學習，最後一組是中文對英文；CosineSimilarity 為每句列出最近的 3 句 — 第 1 名永遠是自己（1.0），第 2 名應該是它的配對句，即使兩句沒幾個字相同，中英那組則顯示模型把兩種語言對齊。EmbeddingScatter 把向量投影到 2D；想要中文專用的編碼器，換成 BAAI/bge-small-zh-v1.5。',
+    description: '配對八個句子；需 sentence-embeddings 套件包',
   },
   'LLM/TrainCausalLM-TinyStories': {
-    description:
-      '需要 16 GB 顯卡，第一次執行會下載一次語料：在 TinyStories 上從零預訓練一個 204M 參數的 GPT 風格 decoder，訓練完算 perplexity，並讀它寫出來的故事。一個 epoch 是 2,441 個 micro-batch（bf16）、約 610 次優化器更新 — 語料有設上限，所以一小時內跑得完。完整配方、token 預算與記憶體調節手段在旁邊的 README.md。',
+    description: '困惑度與一段它寫的故事；需 16 GB GPU 與下載',
   },
   'LLM/Word-Embedding-Analogy': {
-    description:
-      '取 king、man、woman 三條詞向量，用兩個 Add 節點組出類比（alpha=-1 就是減掉 man），再讓 CosineSimilarity 從列出的 59 個字裡找最接近的一個；排除 king、man、woman 之後答案是 queen。預設的 demo-16d 玩具詞彙表隨安裝附帶、離線可跑，類比在它上面精確成立；改成 backend=glove-50d（word-vectors 套件包，40 萬個真實單字）這題 queen 仍然勝出，但其他類比就只是近似 — 那才是重點。EmbeddingScatter 把整個詞彙表投影到 2D。',
+    description: '在 59 字的玩具詞向量表上做加減，離線可跑',
   },
 
   // ── Diffusion ──
   'Diffusion/Forward-Process': {
-    description:
-      '一個 Lerp（alpha=0.4）就是前向加噪公式的教學替身：結果是乾淨訊號與高斯噪聲的 40/60 混合，固定的 alpha 取代了整條加噪排程。完整式子為 $x_t = \\sqrt{\\bar\\alpha_t}\\,x_0 + \\sqrt{1-\\bar\\alpha_t}\\,\\epsilon$，t 越大，$\\bar\\alpha_t$ 就從 1（乾淨）降到 0（純噪聲）。旁邊的 TimestepEmbedding 示範純量 t 如何變成 32 維向量，讓 U-Net 拿它當條件訊號。',
+    description: '把高斯噪聲混進一張真實的手寫數字圖，再看結果',
   },
   'Diffusion/Mini-UNet-Compact': {
-    description:
-      '整個 U-Net 收在一個 `DiffusionUNet` 節點裡，不必手接每一顆 ResBlock、Upsample 與 Concat — 真要組取樣流程時就是用這個形式。跑跑看：GaussianNoise 餵給模型，DDPMSampler 只走一步，確認輸出形狀不變。想看同一套架構一塊塊攤開，對應的 `Mini-UNet-Expanded` 在 `deep` 章節外掛裡（`cdui plugin install deep`），基本安裝不含。',
+    description: '跑一步去噪；輸出形狀與輸入相同',
   },
   'Diffusion/Toy-Sampling': {
-    description:
-      '反向 diffusion 的取樣迴圈，用的是剛初始化、沒訓練過的 `DiffusionUNet`。所以最後那張「影像」只是無意義的噪聲 — 但軌跡與排程的算術跟訓練好的 Stable Diffusion 完全一樣。看 DDPMSampler：20 個反向步，每一步帶不同的 timestep 呼叫 U-Net 一次。要有意義的輸出得先訓練 U-Net（另一張圖的事）；這個範例教的是取樣的數學，不是產生好看的圖。',
+    description: '跑 20 個反向步驟；模型沒訓練過，輸出是噪聲',
   },
 
   // ── Transformer ──
   'Transformer/MoE-TopK-Routing': {
-    description:
-      '一個 2 × 5 × 32 的 token 張量（2 批、每批 5 個 token、隱藏維度 32）進 MoELayer，專家數 N=4、top_k=2。每個 token 由一個小 gating 網路用 softmax 挑出最適合的 2 位專家，層的輸出是這 2 位專家 FFN 輸出的加權和。三個輸出要合起來讀：`expert_indices` 說每個 token 挑了哪 2 位、`routing_weights` 說 gate 對這個選擇有多篤定、`output` 是兩者混合的結果 — [B, T, H]，和輸入同形狀，所以 MoE 層可以直接塞進 Transformer block 裡原本放一般 FFN 的位置。Switch Transformer、Mixtral、DeepSeek-MoE 是同一套結構，這裡縮小到路由決策一個畫面就看得完。',
+    description: '4 位專家中挑 2 位的路由，逐 token 印出',
   },
 
   // ── RNN ──
   'RNN/RNN-OneStep': {
-    description:
-      '三個輸入向量 x_1、x_2、x_3 串過三顆 RNNCell，每顆的 hidden 輸出接到下一顆的 hidden 輸入。三顆的參數完全相同（input_size=4、hidden_size=8、seed=42），等於共用同一組 W_ih 與 W_hh — 這就是「遞迴」的全部意思。最後的 h_3，就是這個最簡架構裡「把整段序列讀完」長什麼樣子。',
+    description: '印出整段序列讀完之後的 hidden state',
   },
 
   // ── Reinforcement learning ──
   'RL/RLHF-Reward-and-KL': {
-    description:
-      '上半 RewardModel 給每條序列打一個分數，下半 KLDivergence 量策略與參考模型的距離 — 預訓練 LLM 變成 RLHF 模型靠的就是這兩塊。上半的輸入是一批假的 hidden state（4 條序列 × 16 維），實務上這顆獎勵模型要用人類偏好資料訓練。下半的「策略」是隨機 logit 張量，「參考」是全零 logit（均勻分布），KL 項的作用是不讓 PPO 離參考模型太遠。兩塊在這裡各自獨立，方便分開檢視；真的跑 RLHF 時，KL × β 會在 PPO 內部從獎勵裡扣掉。',
+    description: '每條序列一個獎勵分數，再加上對參考模型的 KL',
   },
 
   // ── Vision-language-action ──
   'VLA/TrainVLA-PushWorld': {
-    description:
-      '行為複製一個 3.3M 參數的視覺-語言-動作策略，需要 GPU、約一小時。訓練資料是 2,400 條加了 DART 噪聲的腳本示範，訓練完直接閉環評估並輸出 rollout 影片（execute_k=2 實測成功率 0.97）。把 VLARollout.instruction_mode 改成 swapped，成功率會塌到 0.03 — 策略確實在讀指令。完整配方與消融手冊在同一層的 README.md。',
+    description: '閉環成功率 0.97；需 GPU、約一小時',
   },
 
   // ── Model architectures -- illustrative forward passes ──
   'Model_Architecture/BERT-Encoder-Transformer': {
-    description:
-      '前向傳播示範：每個 token 都能注意到序列裡其他所有 token — 這就是雙向編碼器和 GPT（decoder、因果自注意力）最大的差別。輸入是 (seq=16, batch=2, d=48) 的 token 嵌入張量，走完 TransformerEncoder 堆疊後沿序列維度取 Mean 池化，再投影成 2 個分類 logits，相當於 CLS head 分類器。',
+    description: '編碼器前向傳播：每個 token 都能注意到全部',
   },
   'Model_Architecture/BiGRU-SpeechRecognition-RNN': {
-    description:
-      '前向傳播示範：雙向 GRU 聲學模型，DeepSpeech 這類 CTC 語音辨識器的標準前端。模擬的 mel 頻譜批次 (batch=2, seq=32, features=40)，也就是 32 個時間幀、40 個 mel bin，進入 2 層雙向 GRU；因為 bidirectional=true，輸出的隱藏維度加倍成 128。逐幀的 Linear head 在每個時間步投影成 50 個音素類別。',
+    description: '雙向 GRU 前向傳播，輸入是 mel 頻譜幀',
   },
   'Model_Architecture/ConvNeXt-CNN': {
-    description:
-      'ConvNeXt（FAIR, 2022）風格區塊的前向傳播。它用四項取自 Transformer 的改動把一般的 ResNet 現代化：(1) patchify stem（Conv 4x4 stride 4）、(2) depthwise 式的空間混合、(3) inverted bottleneck 的 1x1 卷積、(4) GELU 激活。這裡沒有 depthwise 的基本節點，改用一般 Conv2d，架構相近但不完全等價。(2,3,32,32) → stem（8x8 特徵圖）→ 一個帶殘差的 ConvNeXt 區塊 → pool → Linear → 10 類 logits。',
+    description: 'ConvNeXt 區塊前向傳播：patchify stem 與 1x1 卷積',
   },
   'Model_Architecture/DQN-Atari-RL': {
-    description:
-      'DeepMind 2015 年在 Atari 上超越人類的那個架構。Conv 層從堆疊的 84x84 畫面抽出視覺特徵，交給 DQN head 估每個動作的價值。這張圖完全離線跑：TensorCreate 產生一批合成的預處理觀測（randn，shape 2x4x84x84）取代真的 Atari 環境，不必安裝 gym/ale-py；要接真環境就換成 EnvWrapper。旁邊的 `seq-model` 不在資料路徑上，它把畫布上一顆顆接出來的 Conv/ReLU 骨幹打包成同一份層堆疊 — 雙擊可以在「模型架構」編輯器裡讀完整架構。優化器吃的是 `dqn-1.model`，也就是真正被訓練的那個 agent 網路。',
+    description: '前向傳播：四張堆疊畫面換四個動作的 Q 值',
   },
   'Model_Architecture/DiT-Diffusion-Transformer': {
-    description:
-      '前向傳播示範：Stable Diffusion 3 與 OpenAI Sora 用的骨幹。關鍵是用 Transformer 的全域感受野，取代傳統 diffusion 裡區域性的 U-Net。帶噪影像批次 (2,4,8,8) 經 stride-2 的 Conv2d 切成 16 個 64 維 token，TransformerEncoder 讓所有 patch 互相注意，最後由 Linear head 投影回每個 patch 的噪聲預測。',
+    description: '前向傳播：帶噪 patch 進去，預測的噪聲出來',
   },
   'Model_Architecture/EfficientNet-CNN': {
-    description:
-      'EfficientNet 核心的 MBConv 區塊前向傳播（mobile inverted bottleneck）。expand → depthwise 空間混合 → squeeze-and-excite → project 這條路徑在這裡簡化成：(1) 1x1 Conv 擴張通道（32→128）、(2) 3x3 Conv 做空間混合、(3) Squeeze-and-Excite 走 AdaptiveAvgPool→Linear→Linear→sigmoid→Multiply、(4) 1x1 Conv 投影回原通道、(5) 殘差 Add。(2,32,16,16) → MBConv 區塊 → (2,32,16,16) → 全域池化 → Linear → 10 類 logits。',
+    description: 'MBConv 前向傳播：擴張、squeeze-excite、投影',
   },
   'Model_Architecture/GPT-DecoderOnly-Transformer': {
-    description:
-      '前向傳播示範：TransformerDecoder 把自己的輸出接回 memory，只做因果自注意力、沒有 encoder。這就是 GPT、Claude、LLaMA 這類 decoder-only LLM 的核心。輸入是 (seq_len=16, batch=2, d_model=24) 的 token 嵌入張量；後面接 Permute 轉成 batch-first、Flatten、Dropout，再用 Linear head 投影成 10 個 logits。這張圖不訓練，要訓練請看 Usage_Example/GPT-Mini。',
+    description: '只有 decoder 的 Transformer 前向傳播到 logits',
   },
   'Model_Architecture/LLaMA-Decoder-Transformer': {
-    description:
-      '前向傳播示範：架構和 GPT 幾乎一樣（因果自注意力、沒有 encoder），差別在 pre-normalization。進 attention 堆疊之前先做一次 LayerNorm（論文原本用的是 RMSNorm）。輸入是 (seq=16, batch=2, d=32) 的 token 嵌入張量：先正規化，decoder 以 tensor=memory 只做自注意力，再正規化、池化，最後投影成 32 個 vocab logits。',
+    description: 'decoder 前向傳播，attention 之前先做 LayerNorm',
   },
   'Model_Architecture/PPO-Robotics-RL': {
-    description:
-      'Actor-Critic 配上截斷代理目標，讓策略梯度更新穩定。PPO（OpenAI, 2017）是現在多數 RL 實際部署的預設演算法 — OpenAI Five（Dota 2）、ChatGPT 的 RLHF 微調、機械手臂操作、自動駕駛都用它。這張圖完全離線跑：TensorCreate 產生一批 Humanoid 風格的合成觀測（randn，shape 2x376）取代真的 MuJoCo 環境，不必安裝 gym/mujoco；要接真環境就換成 EnvWrapper。旁邊的 `seq-model` 不在資料路徑上，它把 376-256-256-17 的策略堆疊寫成同一份層規格 — 雙擊可以在「模型架構」編輯器裡讀完整架構。優化器吃的是 `ppo-1.model`，也就是真正被訓練的那個 agent 網路。',
+    description: 'actor-critic 前向傳播：376 個輸入換 17 個動作',
   },
   'Model_Architecture/ResNet-SkipConnection-CNN': {
-    description:
-      'mini-ResNet 的前向傳播：輸入是 CIFAR10 形狀的批次。每個層節點都作用在 TensorCreate 流出來的真實張量上，所以每一段的形狀都看得到。兩個 Add 節點（b1_add、b2_add）把殘差捷徑明白畫在畫布上。這不是訓練圖 — 要訓練請用 Usage_Example/ResNet-CIFAR10。',
+    description: 'mini-ResNet 前向傳播，捷徑就是兩個 Add 節點',
   },
   'Model_Architecture/Seq2Seq-Attention-RNN': {
-    description:
-      '前向傳播示範：Transformer 出現之前，類神經機器翻譯所用的 Bahdanau 式 attention seq-to-seq。encoder LSTM 把來源序列 (batch=2, src_len=10, d=16) 壓成帶上下文的狀態，decoder LSTM 產生目標端狀態 (batch=2, tgt_len=8, d=16)，MultiHeadAttention 讓 decoder 的每一步都去查詢整段 encoder 狀態，得到的隱藏狀態再投影成詞彙 logits（示範用 vocab=64）。',
+    description: '編碼器-解碼器 LSTM 前向傳播，中間接 attention',
   },
   'Model_Architecture/SwinTransformer-Transformer': {
-    description:
-      '簡化版 Swin Transformer stage 的前向傳播。Swin 的特點是階層式 patch merging 加上 shifted-window attention，讓複雜度隨像素數線性成長。這裡保留了階層與 patch embedding（Conv2d stride=4，再一次 stride=2 下採樣），但每個 stage 用的是一般的 TransformerEncoder，而不是 shifted-window attention — 後者需要的 cycle-shift 運算目前還沒有對應的畫布節點。最後把 patch 平均池化，輸出 10 類 logits。',
+    description: '兩層階層式前向傳播，中間做一次 patch merging',
   },
   'Model_Architecture/TimeSeries-LSTM-RNN': {
-    description:
-      '前向傳播示範：用過去 24 筆觀測值預測下一個值 — 天氣、金融、IoT 預測的經典「回看 → 預測下一步」模式。輸入是 (batch=2, seq=24, features=1) 的批次，例如每小時一筆的感測器讀數；進入 2 層、hidden size 32 的 LSTM，取完整輸出序列 (B, 24, 32)，Flatten 成 (B, 768)，再用 Linear 投影成每筆一個純量預測值。',
+    description: 'LSTM 前向傳播：24 步歷史換一個預測值',
   },
   'Model_Architecture/UNet-Segmentation-CNN': {
-    description:
-      '兩層式的經典 U-Net，完整接成一張圖：每一個 encoder Conv、每一次 MaxPool、每一個 ConvTranspose、每一條 Concat skip 都看得到。一張 32×32 RGB 影像的路徑是 Lv1 Conv→ReLU 於 32×32（存下 skip）、MaxPool 到 16×16、Lv2 Conv→ReLU（存下 skip）、MaxPool 到 8×8、bottleneck Conv→ReLU，然後鏡像往上 — ConvTranspose 回 16×16、沿通道與 Lv2 的 skip 做 Concat、Conv→ReLU、ConvTranspose 回 32×32、與 Lv1 的 skip 做 Concat、Conv→ReLU，最後用 1×1 的 head Conv 投影成單一分割通道。encoder→decoder 的 skip-Concat 連線橫跨畫布，那個 U 形就是這個架構名字的由來。',
+    description: 'U-Net 前向傳播，skip 連線就是 Concat 節點',
   },
   'Model_Architecture/ViT-ImageClassifier-Transformer': {
-    description:
-      'Vision Transformer 的前向傳播。(2,3,32,32) 的影像批次由 Conv2d stem（stride=8）切成互不重疊的 8x8 patch，得到 (2,48,4,4) 張量。Reshape 加 Permute 把空間格點攤平成 16 個 token 的序列，每個 token 48 維（seq=16, batch=2, d=48）。TransformerEncoder 對所有 patch 做全域 self-attention，最後把 patch token 平均池化，投影成 10 類 logits。',
+    description: '前向傳播：影像切成 16 個 patch token 再分類',
   },
 
   // ── plugin: foundations -- Foundations teaching pack (C1, C2) ──

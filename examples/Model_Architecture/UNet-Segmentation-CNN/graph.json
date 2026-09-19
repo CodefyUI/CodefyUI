@@ -1,6 +1,6 @@
 {
   "name": "UNet for Image Segmentation",
-  "description": "U-Net forward pass, skips drawn as Concat edges",
+  "description": "U-Net forward pass, skips drawn as Concat nodes",
   "gallery": { "section": "architectures", "family": "CNN", "order": 2 },
   "nodes": [
     { "id": "start-1",   "type": "Start", "position": { "x": -260, "y": 0 }, "data": { "params": {} } },

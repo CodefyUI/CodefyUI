@@ -2,7 +2,7 @@
 
 ``description`` in ``graph.json`` is what the gallery card, the sidebar row
 and the modal's detail pane all show, and it had turned into the place the
-whole example was explained: 71 of 71 shipped descriptions run past the
+whole example was explained: 71 of 71 shipped descriptions ran past the
 card, the longest to 1,272 columns. Everything past the cut is text nobody
 reads, in the one field whose job is to say what a graph is for. The long
 explanation belongs in on-canvas notes, where the reader is looking at the
@@ -99,46 +99,10 @@ _DESCRIPTIONS = _shipped_descriptions()
 
 #: Examples whose description still runs past the card. Only ever shorter.
 #:
-#: Every example that ships, which is the point: the rule arrives with the
-#: gallery sections, and the 71 rewrites follow example by example. Delete
-#: a line when its description becomes one, and the tests below make sure
-#: it can never grow back.
+#: The 36 a pack ships, all that is left of the 71 this list started with:
+#: every built-in now says its one line. Delete a line when its description
+#: becomes one, and the tests below make sure it can never grow back.
 NOT_YET_SHORTENED: frozenset[str] = frozenset({
-    "Classical/Iris-Sklearn-KNN",
-    "Classical/Tabular-Iris-Pipeline",
-    "Diffusion/Forward-Process",
-    "Diffusion/Mini-UNet-Compact",
-    "Diffusion/Toy-Sampling",
-    "LLM/RAG-LLMChat-API",
-    "LLM/RAG-Local-Offline",
-    "LLM/Sentence-Similarity-zhTW",
-    "LLM/TrainCausalLM-TinyStories",
-    "LLM/Word-Embedding-Analogy",
-    "Model_Architecture/BERT-Encoder-Transformer",
-    "Model_Architecture/BiGRU-SpeechRecognition-RNN",
-    "Model_Architecture/ConvNeXt-CNN",
-    "Model_Architecture/DQN-Atari-RL",
-    "Model_Architecture/DiT-Diffusion-Transformer",
-    "Model_Architecture/EfficientNet-CNN",
-    "Model_Architecture/GPT-DecoderOnly-Transformer",
-    "Model_Architecture/LLaMA-Decoder-Transformer",
-    "Model_Architecture/PPO-Robotics-RL",
-    "Model_Architecture/ResNet-SkipConnection-CNN",
-    "Model_Architecture/Seq2Seq-Attention-RNN",
-    "Model_Architecture/SwinTransformer-Transformer",
-    "Model_Architecture/TimeSeries-LSTM-RNN",
-    "Model_Architecture/UNet-Segmentation-CNN",
-    "Model_Architecture/ViT-ImageClassifier-Transformer",
-    "RL/RLHF-Reward-and-KL",
-    "RNN/RNN-OneStep",
-    "Transformer/MoE-TopK-Routing",
-    "Usage_Example/Api-Function",
-    "Usage_Example/CNN-MNIST/InferenceCNN-MNIST",
-    "Usage_Example/CNN-MNIST/TrainCNN-MNIST",
-    "Usage_Example/GPT-Mini/TrainGPT-Mini",
-    "Usage_Example/ResNet-CIFAR10/TrainResNet-CIFAR10",
-    "Usage_Example/ResNet18-CIFAR10-Baseline",
-    "VLA/TrainVLA-PushWorld",
     "plugin:deep/C3-1/Conv2D-Kernel-Effects",
     "plugin:deep/C3-1/LeNet-MNIST-Training",
     "plugin:deep/C3-2/UNet-Forward-Shapes",
