@@ -102,9 +102,9 @@ received — each links to the release it was published as.
 - **The teaching packs' examples explain themselves on the canvas too.** All
   36 examples the `foundations`, `deep`, `rl` and `stats` packs ship now
   carry the same notes the built-ins do: an overview note beside the `Start`
-  node and up to three stage notes on the nodes that are the idea — the
+  node and stage notes on the nodes that are the idea — the
   `Concat` where a U-Net's skip doubles the channel count, the `Add` that
-  closes a residual, the one parameter that is the whole lesson. 92 notes in
+  closes a residual, the one parameter that is the whole lesson. 94 notes in
   all, each written twice inside the one note, English then Traditional
   Chinese. Where a graph does less than its chapter promises, the note says
   so rather than describing the version the reader does not have: the GRPO
