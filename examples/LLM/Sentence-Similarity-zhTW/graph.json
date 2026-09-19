@@ -1,6 +1,6 @@
 {
   "name": "Sentence Similarity (zh-TW): meaning, not spelling",
-  "description": "Needs the sentence-embeddings pack (Package Center); then runs offline on CPU. A multilingual sentence-transformer encodes eight Traditional Chinese sentences: four pairs on weather, food, the stock market and machine learning, the last split across Chinese and English. CosineSimilarity lists the 3 nearest for each: rank 1 is always itself (score 1.0), rank 2 should be its partner though they share few characters, and the zh/en pair shows the model aligns languages. EmbeddingScatter projects the vectors to 2D. Switch to BAAI/bge-small-zh-v1.5 for a Chinese-focused encoder.",
+  "description": "Pairs 8 sentences; needs the sentence-embeddings pack",
   "gallery": { "section": "llm", "order": 2 },
   "nodes": [
     { "id": "start",      "type": "Start",            "position": { "x": -260, "y":  60 }, "data": { "params": {} } },
@@ -8,7 +8,46 @@
     { "id": "embed",      "type": "TextEmbedding",    "position": { "x":  300, "y":  60 }, "data": { "params": { "model": "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2", "text": "", "split_lines": true, "prefix": "", "normalize": true, "batch_size": 32, "max_seq_length": 0, "label_chars": 48, "device": "auto" } } },
     { "id": "similarity", "type": "CosineSimilarity", "position": { "x":  600, "y": -60 }, "data": { "params": { "top_k": 3, "exclude_self_words": "" } } },
     { "id": "scatter",    "type": "EmbeddingScatter", "position": { "x":  600, "y": 240 }, "data": { "params": { "method": "PCA", "perplexity": 5.0, "seed": 42 } } },
-    { "id": "print_top",  "type": "Print",            "position": { "x":  900, "y": -60 }, "data": { "params": { "label": "Top-3 per sentence (rank 1 is itself)" } } }
+    { "id": "print_top",  "type": "Print",            "position": { "x":  900, "y": -60 }, "data": { "params": { "label": "Top-3 per sentence (rank 1 is itself)" } } },
+    {
+      "id": "note-overview",
+      "type": "note",
+      "position": { "x": -680, "y": 60 },
+      "data": {
+        "noteKind": "text",
+        "noteContent": "Four pairs of sentences, written so that the two halves of a pair share few characters: weather, food, the stock market, and machine learning across Chinese and English. The encoder puts each pair together anyway, which is what \"by meaning\" means here. After a run read print_top: rank 1 is always the sentence itself at 1.0, and rank 2 should be its partner. EmbeddingScatter plots the eight vectors in 2D on its own body. Needs the sentence-embeddings pack from Package Center, about 470 MB for this encoder; the run is then offline and a few seconds on CPU.\n\n四組句子配對，每組刻意寫成沒幾個字相同：天氣、食物、股市，最後一組是中文對英文的機器學習。編碼器還是能把每一組湊在一起，這就是這裡說的「看意思」。跑完看 print_top：第 1 名一定是句子自己、分數 1.0，第 2 名應該是它的配對句。EmbeddingScatter 節點本身會把八條向量畫成 2D 散點圖。需要套件中心的 sentence-embeddings 套件包，這個編碼器約 470 MB；裝好之後離線執行，CPU 上大約幾秒。",
+        "noteColor": "#3d3d1a",
+        "boundToNodeId": "start",
+        "boundOffset": { "x": -420, "y": 0 },
+        "noteWidth": 360
+      }
+    },
+    {
+      "id": "note-embed",
+      "type": "note",
+      "position": { "x": 280, "y": -270 },
+      "data": {
+        "noteKind": "text",
+        "noteContent": "split_lines is on, so each of the eight lines becomes its own vector; turn it off and the whole block is embedded as one. Swap model for BAAI/bge-small-zh-v1.5 to try a Chinese-only encoder, a separate 95 MB download from the same pack.\n\nsplit_lines 開著，所以八行各自變成一條向量；關掉的話整段會被當成一段文字編碼。把 model 換成 BAAI/bge-small-zh-v1.5 就能試中文專用的編碼器，那是同一個套件包裡另一項 95 MB 的下載。",
+        "noteColor": "#3d3d1a",
+        "boundToNodeId": "embed",
+        "boundOffset": { "x": -20, "y": -330 },
+        "noteWidth": 300
+      }
+    },
+    {
+      "id": "note-similarity",
+      "type": "note",
+      "position": { "x": 600, "y": -350 },
+      "data": {
+        "noteKind": "text",
+        "noteContent": "queries and keys are the same eight vectors, so every row's first hit is itself at 1.0; a run where it is not means the two ports no longer carry the same tensor. top_k is 3, so the column worth reading is the second one.\n\nqueries 與 keys 是同一組八條向量，所以每一列的第 1 名都是自己、分數 1.0；要是不是，就代表兩個輸入埠已經不是同一份資料。top_k 是 3，真正要看的是第 2 名那一欄。",
+        "noteColor": "#3d3d1a",
+        "boundToNodeId": "similarity",
+        "boundOffset": { "x": 0, "y": -290 },
+        "noteWidth": 300
+      }
+    }
   ],
   "edges": [
     { "id": "trig", "source": "start",      "target": "sentences",  "sourceHandle": "trigger",      "type": "trigger" },

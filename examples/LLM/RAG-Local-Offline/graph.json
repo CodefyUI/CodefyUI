@@ -1,6 +1,6 @@
 {
   "name": "RAG, fully local: retrieve then generate",
-  "description": "Needs two packs: rag and sentence-embeddings (about 1.5 GB); then runs offline. DocumentLoader reads five bilingual notes from data/samples/rag, TextChunker cuts 400-character pieces, TextEmbedding (multilingual-e5-small, 'passage: ') vectorises them and VectorStore indexes them. The question is embedded the same way ('query: '), Retriever pulls the 3 closest chunks, PromptBuilder wraps them in an answer-only-from-context prompt, and HFTextGenerate answers with Qwen2.5-0.5B-Instruct. Generation takes a few seconds to tens of seconds on a CPU; the shipped question ends after about 30 tokens.",
+  "description": "Answers offline; needs rag + sentence-embeddings packs",
   "gallery": { "section": "llm", "order": 3 },
   "nodes": [
     {
@@ -192,6 +192,82 @@
         "params": {
           "label": "Answer"
         }
+      }
+    },
+    {
+      "id": "note-overview",
+      "type": "note",
+      "position": {
+        "x": -720,
+        "y": 200
+      },
+      "data": {
+        "noteKind": "text",
+        "noteContent": "A 0.5B model knows almost nothing about CodefyUI. Wired to five notes about it, it answers anyway, and that gap is the argument for retrieval. Read print_ctx first -- the three chunks the search picked -- then print_ans, written from them. On the recorded run the three came from 01-what-is-codefyui.md and 02-nodes-and-edges.md, and Qwen answered in 32 tokens. Needs the rag and sentence-embeddings packs, about 1.5 GB, and nothing after that: no request leaves the machine. Edit question.value to ask something else, or point loader.directory at your own folder of notes.\n\n0.5B 的模型幾乎不知道 CodefyUI 是什麼；把五篇相關筆記接給它，它還是答得出來 — 這就是檢索的意義。跑完先看 print_ctx，那是搜尋挑出來的三段內容，再看 print_ans，也就是根據那三段寫出來的答案。實測那次三段來自 01-what-is-codefyui.md 與 02-nodes-and-edges.md，Qwen 用 32 個 token 就答完。需要 rag 與 sentence-embeddings 兩個套件包，約 1.5 GB；裝好以後不會有任何連線離開這台機器。想問別的就改 question.value，想換成自己的筆記就把 loader.directory 指到自己的資料夾。",
+        "noteColor": "#3d3d1a",
+        "boundToNodeId": "start",
+        "boundOffset": {
+          "x": -420,
+          "y": 0
+        },
+        "noteWidth": 360
+      }
+    },
+    {
+      "id": "note-retriever",
+      "type": "note",
+      "position": {
+        "x": 1180,
+        "y": -130
+      },
+      "data": {
+        "noteKind": "text",
+        "noteContent": "top_k is 3, so three chunks reach the prompt. A retriever always returns something, so read the scores in the node's log: a best hit near 0.3 means the corpus does not hold the answer. min_score 0 keeps every hit; raise it to drop the weak ones.\n\ntop_k 是 3，所以有三段內容會進到提示詞。檢索一定會回傳東西，所以要看節點日誌裡的分數：最高分只有 0.3 左右，通常代表語料裡沒有答案。min_score 設 0 等於不設門檻，調高就會把分數低的丟掉。",
+        "noteColor": "#3d3d1a",
+        "boundToNodeId": "retriever",
+        "boundOffset": {
+          "x": -20,
+          "y": -330
+        },
+        "noteWidth": 300
+      }
+    },
+    {
+      "id": "note-prompt",
+      "type": "note",
+      "position": {
+        "x": 1500,
+        "y": 638
+      },
+      "data": {
+        "noteKind": "text",
+        "noteContent": "The template is what stops the model answering from memory: use only the context, and say so when it is not enough. {context} and {question} come from the two ports; number_contexts prefixes each chunk with [1], [2] and its file, so a citation can be checked.\n\n提示詞範本才是讓模型不靠記憶亂答的關鍵：只准用提供的內容，不夠就明說。{context} 與 {question} 由兩個輸入埠填入；number_contexts 會在每段前面加上 [1]、[2] 與來源檔名，引用可以回頭核對。",
+        "noteColor": "#3d3d1a",
+        "boundToNodeId": "prompt",
+        "boundOffset": {
+          "x": 0,
+          "y": 238
+        },
+        "noteWidth": 300
+      }
+    },
+    {
+      "id": "note-gen",
+      "type": "note",
+      "position": {
+        "x": 1800,
+        "y": 50
+      },
+      "data": {
+        "noteKind": "text",
+        "noteContent": "Qwen2.5-0.5B-Instruct runs in this process, out of the rag pack; device auto follows the run's device. max_new_tokens 160 is a ceiling, not a length -- the shipped question ends after about 30. prompt stays empty: it is only the fallback for an unwired port.\n\nQwen2.5-0.5B-Instruct 在這個程式裡執行，權重來自 rag 套件包；device 設 auto，跟著執行裝置走。max_new_tokens 160 是上限不是長度，內附的問題大約 30 個 token 就結束。prompt 留空：它只是輸入埠沒接時的備援。",
+        "noteColor": "#3d3d1a",
+        "boundToNodeId": "gen",
+        "boundOffset": {
+          "x": 0,
+          "y": -350
+        },
+        "noteWidth": 300
       }
     }
   ],
