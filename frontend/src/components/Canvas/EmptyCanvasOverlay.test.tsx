@@ -3,6 +3,7 @@ import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { EmptyCanvasOverlay } from './EmptyCanvasOverlay';
 import { useTabStore } from '../../store/tabStore';
 import { useNodeDefStore } from '../../store/nodeDefStore';
+import { _resetPluginStoreForTesting, usePluginStore } from '../../store/pluginStore';
 import { useToastStore } from '../../store/toastStore';
 import { useI18n } from '../../i18n';
 import * as rest from '../../api/rest';
@@ -59,6 +60,9 @@ describe('EmptyCanvasOverlay', () => {
   beforeEach(() => {
     useI18n.setState({ locale: 'en' });
     useNodeDefStore.setState({ definitions: [], presets: [] });
+    // An empty pack catalog unless a case seeds one, which is the state the
+    // overlay renders in before the boot fetch lands.
+    _resetPluginStoreForTesting();
     useToastStore.setState({ toasts: [] });
     mockedRest.listExamples.mockReset();
     mockedRest.loadExample.mockReset();
@@ -102,16 +106,20 @@ describe('EmptyCanvasOverlay', () => {
     expect(screen.getByText('Pick an example')).toBeInTheDocument();
   });
 
-  it('renders grouped sections, a known-category badge, and node counts', async () => {
+  it('renders the declared section, a known-category badge, and node counts', async () => {
     mockedRest.listExamples.mockResolvedValue([
-      ex({ name: 'Train MLP', category: 'Usage_Example', node_count: 5 }),
-      ex({ name: 'ResNet', category: 'Model_Architecture', path: '/a/resnet.json' }),
+      ex({ name: 'Train MLP', category: 'Usage_Example', node_count: 5, section: 'quickstart' }),
+      ex({
+        name: 'ResNet',
+        category: 'Model_Architecture',
+        path: '/a/resnet.json',
+        section: 'architectures',
+      }),
     ]);
     render(<EmptyCanvasOverlay />);
 
     await waitFor(() => expect(screen.getByText('Train MLP')).toBeInTheDocument());
-    // Unpinned Usage_Example lands in Advanced; Model_Architecture in its own section.
-    expect(screen.getByText('Advanced Examples')).toBeInTheDocument();
+    expect(screen.getByText('Quick Start')).toBeInTheDocument();
     expect(screen.getByText('Model Architectures')).toBeInTheDocument();
     // category label has underscores replaced by spaces
     expect(screen.getByText('Usage Example')).toBeInTheDocument();
@@ -120,30 +128,30 @@ describe('EmptyCanvasOverlay', () => {
     expect(screen.getByText('5 nodes')).toBeInTheDocument();
   });
 
-  it('pins Quick Start by path and renders sections in order: quickstart, advanced, plugin, architectures', async () => {
-    // Deliberately shuffled relative to the pinned order to prove path pinning
-    // (the backend returns alphabetical-by-path, not curated order).
+  it('renders the sections in the contract order, whatever order the server listed', async () => {
+    // Deliberately shuffled: the order comes from the gallery metadata each
+    // example carries, not from where the backend happened to put it.
     mockedRest.listExamples.mockResolvedValue([
-      ex({ name: 'ResNet Arch', category: 'Model_Architecture', path: 'Model_Architecture/ResNet-SkipConnection-CNN' }),
-      ex({ name: 'Api Fn', category: 'Usage_Example', path: 'Usage_Example/Api-Function' }),
-      ex({ name: 'Inference CNN', category: 'Usage_Example', path: 'Usage_Example/CNN-MNIST/InferenceCNN-MNIST' }),
-      ex({ name: 'Train CNN', category: 'Usage_Example', path: 'Usage_Example/CNN-MNIST/TrainCNN-MNIST' }),
-      ex({ name: 'Train GPT', category: 'Usage_Example', path: 'Usage_Example/GPT-Mini/TrainGPT-Mini' }),
-      ex({ name: 'Analogy', category: 'LLM', path: 'LLM/Word-Embedding-Analogy' }),
-      // Plugin example whose folder shares a builtin category name — must go
-      // to the plugin section, not Advanced.
-      ex({ name: 'Plugin Demo', category: 'Classical', path: 'plugin:c2/Classical/Foo' }),
+      ex({ name: 'Misc', category: 'Something_Else', path: 'X/misc' }),
+      ex({ name: 'Plugin Demo', category: 'Classical', path: 'plugin:c2/Classical/Foo', source: 'plugin:c2' }),
+      ex({ name: 'ResNet Arch', category: 'Model_Architecture', path: 'm/resnet', section: 'architectures', family: 'CNN' }),
+      ex({ name: 'Iris', category: 'Classical', path: 'Classical/Iris', section: 'concepts' }),
+      ex({ name: 'Analogy', category: 'LLM', path: 'LLM/Analogy', section: 'llm' }),
+      ex({ name: 'Train GPT', category: 'Usage_Example', path: 'Usage_Example/GPT', section: 'training' }),
+      ex({ name: 'Train CNN', category: 'Usage_Example', path: 'Usage_Example/CNN', section: 'quickstart' }),
     ]);
     render(<EmptyCanvasOverlay />);
     await waitFor(() => expect(screen.getByText('Train CNN')).toBeInTheDocument());
 
-    // All four section titles are present and in document order.
     const body = document.body.textContent ?? '';
     const positions = [
       'Quick Start',
-      'Advanced Examples',
-      'Plugin Examples',
+      'Training',
+      'LLM and RAG',
+      'Concepts',
       'Model Architectures',
+      'Plugin Packs',
+      'Other',
     ].map((title) => {
       const idx = body.indexOf(title);
       expect(idx, title).toBeGreaterThanOrEqual(0);
@@ -151,36 +159,65 @@ describe('EmptyCanvasOverlay', () => {
     });
     expect(positions).toEqual([...positions].sort((a, b) => a - b));
 
-    // Global card order: pinned trio first (in pinned order, not list order),
-    // then Advanced (LLM before leftover Usage_Example), then plugin, then
-    // architectures last.
     expect(cardNames()).toEqual([
       'Train CNN',
-      'Inference CNN',
-      'Api Fn',
-      'Analogy',
       'Train GPT',
-      'Plugin Demo',
+      'Analogy',
+      'Iris',
       'ResNet Arch',
+      'Plugin Demo',
+      'Misc',
     ]);
   });
 
-  it('orders Advanced by category order, then per-path priority within a category', async () => {
-    // Backend alphabetical order within Diffusion is Forward, Mini-UNet, Toy;
-    // the per-path priority hoists Toy-Sampling above Mini-UNet-Compact.
+  it('orders a section by the declared order, nulls last, ties as listed', async () => {
     mockedRest.listExamples.mockResolvedValue([
-      ex({ name: 'Iris', category: 'Classical', path: 'Classical/Iris-Sklearn-KNN' }),
-      ex({ name: 'Forward', category: 'Diffusion', path: 'Diffusion/Forward-Process' }),
-      ex({ name: 'MiniUNet', category: 'Diffusion', path: 'Diffusion/Mini-UNet-Compact' }),
-      ex({ name: 'ToySampling', category: 'Diffusion', path: 'Diffusion/Toy-Sampling' }),
-      ex({ name: 'Analogy', category: 'LLM', path: 'LLM/Word-Embedding-Analogy' }),
+      ex({ name: 'Unordered', path: 'c/unordered', section: 'concepts' }),
+      ex({ name: 'Third', path: 'c/third', section: 'concepts', order: 3 }),
+      ex({ name: 'First', path: 'c/first', section: 'concepts', order: 1 }),
+      ex({ name: 'Second', path: 'c/second', section: 'concepts', order: 2 }),
     ]);
     render(<EmptyCanvasOverlay />);
-    await waitFor(() => expect(screen.getByText('Analogy')).toBeInTheDocument());
-    expect(cardNames()).toEqual(['Analogy', 'Forward', 'ToySampling', 'MiniUNet', 'Iris']);
+    await waitFor(() => expect(screen.getByText('First')).toBeInTheDocument());
+    expect(cardNames()).toEqual(['First', 'Second', 'Third', 'Unordered']);
   });
 
-  it('renders unknown categories in the plugin section with the fallback badge colour', async () => {
+  it('gives the architecture families and the packs a sub-header', async () => {
+    usePluginStore.setState({ byId: { c2: { id: 'c2', name: 'Chapter 2' } } as never });
+    mockedRest.listExamples.mockResolvedValue([
+      ex({ name: 'ResNet', category: 'Model_Architecture', path: 'm/resnet', section: 'architectures', family: 'CNN' }),
+      ex({ name: 'LSTM', category: 'Model_Architecture', path: 'm/lstm', section: 'architectures', family: 'RNN' }),
+      ex({ name: 'Lesson', category: 'Classical', path: 'plugin:c2/Lesson', source: 'plugin:c2' }),
+    ]);
+    render(<EmptyCanvasOverlay />);
+    await waitFor(() => expect(screen.getByText('ResNet')).toBeInTheDocument());
+
+    const subheads = [...document.querySelectorAll('[class*="subsectionTitle"]')].map(
+      (el) => el.textContent,
+    );
+    expect(subheads).toEqual(['CNN', 'RNN', 'Chapter 2']);
+    // One section title above the two families, not one per family.
+    expect(screen.getAllByText('Model Architectures')).toHaveLength(1);
+  });
+
+  it('puts the family on an architecture chip, and the category on every other', async () => {
+    mockedRest.listExamples.mockResolvedValue([
+      ex({ name: 'ResNet', category: 'Model_Architecture', path: 'm/resnet', section: 'architectures', family: 'CNN' }),
+      ex({ name: 'Iris', category: 'Classical', path: 'c/iris', section: 'concepts' }),
+    ]);
+    render(<EmptyCanvasOverlay />);
+    await waitFor(() => expect(screen.getByText('ResNet')).toBeInTheDocument());
+
+    const chips = [...document.querySelectorAll('[class*="difficultyBadge"]')].map(
+      (el) => el.textContent,
+    );
+    // Concepts renders before the architectures, so Iris comes first.
+    // "Model Architecture" told the reader nothing the section header had not
+    // already said; the family is what distinguishes one card from the next.
+    expect(chips).toEqual(['Classical', 'CNN']);
+  });
+
+  it('puts a built-in that declares no section under Other', async () => {
     mockedRest.listExamples.mockResolvedValue([
       ex({ name: 'Misc Demo', category: 'Something_Else', path: '/x/misc.json' }),
     ]);
@@ -188,10 +225,8 @@ describe('EmptyCanvasOverlay', () => {
     await waitFor(() => expect(screen.getByText('Misc Demo')).toBeInTheDocument());
     // Unknown category still renders its label (replaced underscores).
     expect(screen.getByText('Something Else')).toBeInTheDocument();
-    // It lands under the generic plugin/other section, not the curated ones.
-    expect(screen.getByText('Plugin Examples')).toBeInTheDocument();
+    expect(screen.getByText('Other')).toBeInTheDocument();
     expect(screen.queryByText('Quick Start')).toBeNull();
-    expect(screen.queryByText('Advanced Examples')).toBeNull();
     expect(screen.queryByText('Model Architectures')).toBeNull();
   });
 

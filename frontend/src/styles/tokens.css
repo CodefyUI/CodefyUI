@@ -278,6 +278,9 @@
   --ex-rnn: #838fcf; /* lifted */
   --ex-rl: #f16663; /* lifted */
   --ex-stats: #a286d3; /* lifted */
+  /* The VLA examples had been wearing --ex-fallback, which is the hue that
+     means "a category this build has never heard of". */
+  --ex-vla: #a9c94f;
   --ex-fallback: #ff9800;
 
   /* Difficulty badges */

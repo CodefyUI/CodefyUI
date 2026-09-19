@@ -8,26 +8,29 @@ import {
   type LocalizedExample,
 } from '../../utils/localizeExamples';
 import { useDialogStore } from '../../store/dialogStore';
-import { usePluginStore } from '../../store/pluginStore';
+import { selectPluginsById, usePluginStore } from '../../store/pluginStore';
 import { useUIStore } from '../../store/uiStore';
 import { useI18n } from '../../i18n';
-import { pluginNameOf, type PluginIndex } from '../../utils/provider';
-import { EXAMPLE_CATEGORY_COLORS, EXAMPLE_CATEGORY_FALLBACK, mixColor, NODE_HEADER_TINT, SURFACE_RAISED } from '../../styles/theme';
-// The sidebar's Templates tab (#126) already owns the category order every
-// example surface is expected to share; importing it keeps the modal's grid
-// and the tab's list in the same sequence by construction rather than by
-// two copies of the same sort staying in step.
+import { pluginNameOf } from '../../utils/provider';
+import {
+  EXAMPLE_CATEGORY_COLORS,
+  EXAMPLE_CATEGORY_FALLBACK,
+  EXAMPLE_SECTION_COLORS,
+  mixColor,
+  NODE_HEADER_TINT,
+  SURFACE_RAISED,
+} from '../../styles/theme';
+// `utils/exampleSections` (#141) owns the one grouping every example surface
+// shares, so the modal's grid, the sidebar's list and the empty-canvas overlay
+// are in the same sequence by construction rather than by three copies of the
+// same sort staying in step.
 import {
   exampleCategoryLabel,
-  groupExamplesByCategory,
-} from '../Sidebar/TemplatesTab';
+  exampleChipLabel,
+  flattenExampleSections,
+  groupExamplesBySection,
+} from '../../utils/exampleSections';
 import styles from './TemplateGalleryModal.module.css';
-
-// Module-scope, so the subscription compares the same function's output frame
-// to frame, and narrow: an install running in the Plugin Center writes `job`
-// and its log on every long-poll turn, none of which renames a plugin.
-type PluginStoreState = ReturnType<typeof usePluginStore.getState>;
-const selectPluginsById = (state: PluginStoreState): PluginIndex => state.byId;
 
 function matches(example: LocalizedExample, query: string): boolean {
   // Name, category and description (in both the displayed language and the
@@ -128,7 +131,16 @@ function TemplateGalleryBody() {
     return q ? localized.filter((e) => matches(e, q)) : localized;
   }, [localized, query]);
 
-  const groups = useMemo(() => groupExamplesByCategory(visible), [visible]);
+  // Grouped after the search, so a query that empties a section takes the
+  // section's heading with it.
+  const groups = useMemo(
+    () =>
+      flattenExampleSections(
+        groupExamplesBySection(visible, (source) => pluginNameOf(pluginsById, source)),
+        t,
+      ),
+    [pluginsById, t, visible],
+  );
 
   // The detail pane always describes something as long as anything is
   // listed: a search that filters the chosen example away falls back to the
@@ -231,51 +243,58 @@ function TemplateGalleryBody() {
             )}
 
             {!loading && !error &&
-              groups.map(({ category, items }) => {
+              groups.map(({ category, label, sectionKey, items }) => {
                 const color =
-                  EXAMPLE_CATEGORY_COLORS[category] ?? EXAMPLE_CATEGORY_FALLBACK;
-                // Badge fill is the category hue mixed into --surface-raised
-                // (the same tint node headers use), not an alpha wash over an
-                // unknown backdrop — that pattern is what measured 2.24:1 on
-                // these badges. See scripts/check-contrast.mjs section 8b.
-                const chipFill = mixColor(SURFACE_RAISED, color, NODE_HEADER_TINT);
+                  EXAMPLE_SECTION_COLORS[sectionKey] ?? EXAMPLE_CATEGORY_FALLBACK;
                 return (
                   <section key={category} className={styles.section}>
                     <h3 className={styles.sectionTitle} style={{ color }}>
                       <span className={styles.sectionDot} style={{ background: color }} />
-                      {exampleCategoryLabel(category)}
+                      {label}
                       <span className={styles.sectionCount}>{items.length}</span>
                     </h3>
                     <div className={styles.cards}>
-                      {items.map((example) => (
-                        <button
-                          key={example.path}
-                          type="button"
-                          className={`${styles.card} ${
-                            chosen?.path === example.path ? styles.cardActive : ''
-                          }`}
-                          aria-pressed={chosen?.path === example.path}
-                          onClick={() => setChosenPath(example.path)}
-                          onDoubleClick={() => openInNewTab(example.path)}
-                        >
-                          <span className={styles.cardName}>{example.name}</span>
-                          <span className={styles.cardDesc}>{example.description}</span>
-                          <span className={styles.cardFooter}>
-                            <span
-                              className={styles.cardChip}
-                              // Hue on the border (a graphic, 3:1) and in the
-                              // fill; the label is text and takes the text tier.
-                              // The hue on its own tint cannot reach 4.5:1.
-                              style={{ borderColor: color, background: chipFill }}
-                            >
-                              {exampleCategoryLabel(category)}
+                      {items.map((example) => {
+                        // Per card, not per section: a section holds several
+                        // categories now, and the chip is what says which.
+                        const chipColor =
+                          EXAMPLE_CATEGORY_COLORS[example.category] ?? EXAMPLE_CATEGORY_FALLBACK;
+                        // Fill is the hue mixed into --surface-raised (the same
+                        // tint node headers use), not an alpha wash over an
+                        // unknown backdrop — that pattern is what measured
+                        // 2.24:1 on these badges. See check-contrast.mjs 8b.
+                        const chipFill = mixColor(SURFACE_RAISED, chipColor, NODE_HEADER_TINT);
+                        return (
+                          <button
+                            key={example.path}
+                            type="button"
+                            className={`${styles.card} ${
+                              chosen?.path === example.path ? styles.cardActive : ''
+                            }`}
+                            aria-pressed={chosen?.path === example.path}
+                            onClick={() => setChosenPath(example.path)}
+                            onDoubleClick={() => openInNewTab(example.path)}
+                          >
+                            <span className={styles.cardName}>{example.name}</span>
+                            <span className={styles.cardDesc}>{example.description}</span>
+                            <span className={styles.cardFooter}>
+                              <span
+                                className={styles.cardChip}
+                                // Hue on the border (a graphic, 3:1) and in the
+                                // fill; the label is text and takes the text
+                                // tier. The hue on its own tint cannot reach
+                                // 4.5:1.
+                                style={{ borderColor: chipColor, background: chipFill }}
+                              >
+                                {exampleChipLabel(example)}
+                              </span>
+                              <span className={styles.cardCount}>
+                                {t('empty.nodeCount', { count: example.node_count })}
+                              </span>
                             </span>
-                            <span className={styles.cardCount}>
-                              {t('empty.nodeCount', { count: example.node_count })}
-                            </span>
-                          </span>
-                        </button>
-                      ))}
+                          </button>
+                        );
+                      })}
                     </div>
                   </section>
                 );
