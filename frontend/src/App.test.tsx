@@ -16,6 +16,12 @@ vi.mock('./hooks/useKeyboardShortcuts', () => ({
 vi.mock('./components/Toolbar/Toolbar', () => ({
   Toolbar: () => <div data-testid="toolbar" />,
 }));
+vi.mock('./components/Toolbar/WelcomeToolbar', () => ({
+  WelcomeToolbar: () => <div data-testid="welcome-toolbar" />,
+}));
+vi.mock('./components/Welcome/WelcomeScreen', () => ({
+  WelcomeScreen: () => <div data-testid="welcome-screen" />,
+}));
 vi.mock('./components/TabBar/TabBar', () => ({
   TabBar: () => <div data-testid="tabbar" />,
 }));
@@ -173,11 +179,31 @@ describe('App', () => {
     expect(screen.getByTestId('flow-canvas').dataset.tabId).toBe(first);
   });
 
-  it('renders nothing for the editor surface when no tab is active', () => {
-    // Defensive: a store mid-rehydration can briefly name a tab that is gone.
+  it('shows the welcome screen instead of the editor when no tab is active', () => {
+    // Two ways to land here: the store is mid-rehydration and briefly names a
+    // tab that is gone, or the user closed the last one. Both get the same
+    // answer -- there is no graph, so there is no editor and no graph toolbar.
     useTabStore.setState({ activeTabId: 'missing' });
     render(<App />);
     expect(screen.queryByTestId('flow-canvas')).toBeNull();
+    expect(screen.getByTestId('welcome-screen')).toBeTruthy();
+  });
+
+  it('swaps the graph toolbar for the welcome one when no tab is active', () => {
+    // The editor toolbar reads the active tab from the top of its body, so it
+    // must not be mounted at all here -- not merely rendered empty.
+    render(<App />);
+    expect(screen.getByTestId('toolbar')).toBeTruthy();
+    expect(screen.queryByTestId('welcome-toolbar')).toBeNull();
+
+    act(() => {
+      useTabStore.getState().removeTab(useTabStore.getState().activeTabId);
+    });
+    expect(screen.queryByTestId('toolbar')).toBeNull();
+    expect(screen.getByTestId('welcome-toolbar')).toBeTruthy();
+    expect(screen.getByTestId('welcome-screen')).toBeTruthy();
+    // The tab bar stays: its `+` is the other way back to an editor.
+    expect(screen.getByTestId('tabbar')).toBeTruthy();
   });
 
   // ── RightColumn conditional rendering ───────────────────────────────────────

@@ -1,0 +1,136 @@
+/* WelcomeScreen.module.css — the no-tab-open state.
+   Sits where `App.module.css`'s .tabContent would, so it takes the same
+   `flex: 1` share of the shell and does its own scrolling. */
+
+.screen {
+  flex: 1;
+  display: flex;
+  min-height: 0;
+  overflow: hidden;
+  background: var(--surface-app);
+}
+
+/* ----- Left: the welcome column ----- */
+/*
+  A fixed share rather than `flex: 1`, so the examples beside it always get
+  the wider half: the cards are 200px and everything gained here is a card
+  per row lost there.
+
+  Top-aligned, sharing the examples column's top padding, so the two columns
+  start on the same line. Centred vertically it floated somewhere around the
+  middle of a tall screen with the gallery's heading already well above it,
+  which read as an unanchored block rather than as the left half of one
+  screen.
+*/
+.welcome {
+  flex: 0 0 22rem;
+  display: flex;
+  flex-direction: column;
+  padding: var(--sp-9) var(--sp-8);
+  box-sizing: border-box;
+  border-right: 1px solid var(--border-base);
+  overflow-y: auto;
+}
+
+.brand {
+  font-size: var(--fs-3xl);
+  font-weight: var(--fw-bold);
+  line-height: var(--lh-snug);
+  color: var(--text-primary);
+  margin-bottom: var(--sp-3);
+}
+
+.tagline {
+  font-size: var(--fs-md);
+  line-height: var(--lh-normal);
+  color: var(--text-secondary);
+  margin: 0 0 var(--sp-6);
+}
+
+/* Stacked, not side by side: at 22rem two buttons on one row would each be
+   too narrow for their label in zh-TW, and the stack also says which of the
+   two is the main road. */
+.actions {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--sp-3);
+}
+
+.primaryButton,
+.secondaryButton {
+  padding: var(--sp-3) var(--sp-5);
+  border-radius: var(--radius);
+  font-size: var(--fs-sm);
+  font-weight: var(--fw-semibold);
+  cursor: pointer;
+  transition: background var(--transition-fast);
+}
+
+.primaryButton {
+  background: var(--accent-wash);
+  border: 1px solid var(--accent-dim);
+  color: var(--accent);
+}
+
+.primaryButton:hover {
+  /* Same hand-tuned accent tint the empty-canvas browse button uses; no
+     "wash-strong" token exists yet. */
+  background: rgba(34, 211, 238, 0.22);
+}
+
+.secondaryButton {
+  background: transparent;
+  border: 1px solid var(--border-base);
+  color: var(--text-secondary);
+}
+
+.secondaryButton:hover {
+  background: var(--surface-raised);
+  color: var(--text-primary);
+}
+
+/* ----- Right: the example gallery ----- */
+.examples {
+  flex: 1;
+  min-width: 0;
+  overflow-y: auto;
+  /* Same top padding as the welcome column, so the brand and the gallery's
+     heading sit on one line. */
+  padding: var(--sp-9) var(--sp-8);
+  box-sizing: border-box;
+}
+
+.examplesTitle {
+  font-size: var(--fs-lg);
+  font-weight: var(--fw-semibold);
+  line-height: var(--lh-snug);
+  color: var(--text-primary);
+  margin: 0 0 var(--sp-5);
+}
+
+/* Under ~860px the two columns stop being two columns: the welcome copy goes
+   on top at its natural height and the gallery takes the rest, so neither is
+   squeezed into a strip. The screen scrolls as one from here down, because a
+   pair of independently scrolling regions in a short viewport is worse than
+   a single long page. */
+@media (max-width: 860px) {
+  .screen {
+    flex-direction: column;
+    overflow-y: auto;
+  }
+
+  .welcome {
+    flex: none;
+    border-right: none;
+    border-bottom: 1px solid var(--border-base);
+    padding: var(--sp-7) var(--sp-6);
+    overflow-y: visible;
+  }
+
+  .examples {
+    flex: none;
+    padding: var(--sp-7) var(--sp-6);
+    overflow-y: visible;
+  }
+}

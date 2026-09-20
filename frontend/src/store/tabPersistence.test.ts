@@ -223,11 +223,16 @@ describe('tabPersistence incremental writes', () => {
 });
 
 describe('tabPersistence damaged data', () => {
-  it('returns null when meta is present but names no tabs', async () => {
+  it('reads meta naming no tabs as an empty workspace, not as missing data', async () => {
+    // Not damaged data at all any more: since the last tab became closable,
+    // "no tabs open" is a state the user can save, and it has to survive a
+    // reload. `null` would mean "nothing here" and send the caller off to
+    // migrate whatever localStorage holds -- which is how the freshly-seeded
+    // `Tab 1` used to be written straight back over the empty workspace.
     await idbGetKeysByPrefix(SCOPE); // ensure the db exists
     const { idbSet } = await import('../utils/idb');
     await idbSet(tabMetaKey(SCOPE), { activeTabId: 'a', tabIds: [] });
-    expect(await readSnapshot(SCOPE)).toBeNull();
+    expect(await readSnapshot(SCOPE)).toEqual({ tabs: [], activeTabId: '' });
   });
 
   it('returns null when meta names tabs whose records are gone', async () => {

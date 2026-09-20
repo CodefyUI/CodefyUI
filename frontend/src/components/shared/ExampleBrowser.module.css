@@ -1,0 +1,173 @@
+/* ExampleBrowser.module.css — the sectioned gallery both empty states draw.
+   Moved here from EmptyCanvasOverlay.module.css with the markup it styles;
+   the overlay keeps only its own framing (heading, copy, browse button). */
+
+/* Preset card grid. Rows start at the left edge, under the section title and
+   the sub-header: a centred row of three sat a card's width away from the
+   heading that names it. */
+.quickStartGrid {
+  display: flex;
+  gap: var(--sp-4);
+  justify-content: flex-start;
+  flex-wrap: wrap;
+}
+
+.section {
+  margin-bottom: var(--sp-6);
+}
+
+/* The overlay used to end on a hint line, so the last section's margin sat
+   between two pieces of content. With the hint gone it would stack on the
+   panel's own bottom padding instead. */
+.section:last-child {
+  margin-bottom: 0;
+}
+
+.sectionTitle {
+  font-size: var(--fs-sm);
+  font-weight: var(--fw-semibold);
+  line-height: var(--lh-snug);
+  color: var(--text-muted);
+  text-align: left;
+  margin-bottom: var(--sp-3);
+  letter-spacing: 0.02em;
+}
+
+/* Architecture families and packs. Only the sections that have one carry the
+   extra row; everywhere else this wrapper is the grid it used to be. */
+.subsection {
+  margin-bottom: var(--sp-4);
+}
+
+.subsection:last-child {
+  margin-bottom: 0;
+}
+
+/* One step quieter than the section title — same tier, smaller and without
+   its own margin above, so a family reads as part of the section rather than
+   as a second heading beside it. */
+.subsectionTitle {
+  font-size: var(--fs-xs);
+  line-height: var(--lh-snug);
+  color: var(--text-muted);
+  text-align: left;
+  margin-bottom: var(--sp-2);
+}
+
+/* Preset card base — hover effects (borderColor, boxShadow) applied via onMouseEnter/Leave inline */
+.presetCard {
+  background: var(--surface-raised);
+  border: 1px solid var(--border-base);
+  border-radius: var(--radius-lg);
+  padding: var(--sp-4) var(--sp-5);
+  cursor: pointer;
+  /* rem, not a literal 200px: the root font-size is
+     clamp(16px, 0.35vw + 11px, 19px) (App.css), so on a wide screen the name
+     and the description inside this card are at their largest while a px
+     width is not — the card shrinks against its own type. 13rem is 208px at
+     a 16px root and tracks the type from there, and matches the gallery
+     modal's grid track so the same example is the same size on both
+     surfaces. */
+  width: 13rem;
+  text-align: left;
+  /* A column, so .presetCardFooter can claim the leftover height with
+     margin-top: auto and land at the same place on every card in the row. */
+  display: flex;
+  flex-direction: column;
+  transition: border-color var(--transition), box-shadow var(--transition);
+}
+
+.presetCardHeader {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  margin-bottom: var(--sp-3);
+}
+
+.presetCardName {
+  font-size: var(--fs-sm);
+  font-weight: var(--fw-semibold);
+  /* Snug, not tight: this label wraps to a second line now, and --lh-tight is
+     the token for single-line dense UI. */
+  line-height: var(--lh-snug);
+  color: var(--text-secondary);
+  /* Names stay English in every locale, and a plugin is free to ship one like
+     "Mini U-Net forward — encoder/bottleneck/decoder": no space to break at,
+     so it ran out of the card and pushed the grid past its section. */
+  min-width: 0;
+  overflow-wrap: anywhere;
+  /* Two lines and then an ellipsis. Breaking anywhere kept a long name inside
+     the card but let it wrap to three or four lines, and since these cards
+     sit in a flex row of fixed-width siblings, that one card was taller than
+     everything beside it. The shipped names are one line; the clamp is what
+     bounds the name a pack ships. */
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.presetCardDesc {
+  font-size: var(--fs-xs);
+  color: var(--text-muted);
+  line-height: var(--lh-snug);
+}
+
+/* One line, always. The card has a fixed width while its two footer parts do
+   not: a long family chip ("Transformer", or a pack name a plugin chose) plus
+   a node count did not always fit side by side, and the flex default wrapped
+   the count onto a second line -- so the card grew a row and the grid went
+   ragged. The count is the part that must stay put and stay whole; the chip
+   is the part that can afford to be cut, because the sub-header above the
+   card usually says the same word. */
+.presetCardFooter {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  flex-wrap: nowrap;
+  /* Pinned to the bottom of the card, not left to follow the text. The row
+     is a wrapping flex line, so every card in it is as tall as the tallest;
+     a badge that followed the prose sat at three different heights across
+     one row, because a name is one line or two and a description likewise.
+     The gallery modal's .cardFooter is pinned for the same reason. */
+  margin-top: auto;
+  padding-top: var(--sp-3);
+}
+
+/* Difficulty badge — bg and color are dynamic (DIFFICULTY_COLORS) — set inline */
+.difficultyBadge {
+  /* Hue on the border and in the fill tint (graphics, 3:1); the label is text
+     and takes the text tier. The old pattern was the hue as text on a 13%
+     alpha wash of itself, which measured 2.24:1. */
+  color: var(--text-muted);
+  border: 1px solid;
+  font-size: var(--fs-2xs);
+  line-height: var(--lh-tight);
+  padding: var(--sp-1) var(--sp-2);
+  border-radius: var(--radius-sm);
+  font-weight: var(--fw-semibold);
+  /* Yields the row to the node count: `min-width: 0` is what lets a flex item
+     shrink below its content at all, and the three together turn an overlong
+     label into an ellipsis instead of a second line. */
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.nodeCount {
+  font-size: var(--fs-2xs);
+  line-height: var(--lh-tight);
+  color: var(--text-muted);
+  /* Never wrapped, never shrunk: "12 nodes" is four words in no language and
+     is the one thing in the footer that has to be readable whole. */
+  flex: none;
+  white-space: nowrap;
+}
+
+.hint {
+  font-size: var(--fs-sm);
+  line-height: var(--lh-normal);
+  color: var(--text-secondary);
+}

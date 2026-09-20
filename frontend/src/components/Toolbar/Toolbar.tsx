@@ -5,7 +5,7 @@ import { useTabStore } from '../../store/tabStore';
 import { useNodeDefStore } from '../../store/nodeDefStore';
 import { useUIStore } from '../../store/uiStore';
 import { createPreset, exportGraph } from '../../api/rest';
-import { useI18n, SUPPORTED_LOCALES } from '../../i18n';
+import { useI18n } from '../../i18n';
 import { subgraphIdOf } from '../../utils/subgraph';
 import { graphToSvg, svgToPngBlob } from '../../utils/exportDiagram';
 import { confirm, prompt } from '../../utils/dialog';
@@ -15,9 +15,7 @@ import { CustomNodeManager } from '../CustomNodeManager/CustomNodeManager';
 import { SaveIcon } from '../shared/Icons';
 import { useToastStore } from '../../store/toastStore';
 import type { LayoutMode } from '../../utils/autoLayout';
-import { SettingsPopover } from './SettingsPopover';
-import { PluginToolbarButtons } from './PluginToolbarButtons';
-import { FontSizeMenu } from './FontSizeMenu';
+import { ToolbarGlobalActions } from './ToolbarGlobalActions';
 import { ProjectBadge } from './ProjectBadge';
 import styles from './Toolbar.module.css';
 
@@ -97,7 +95,7 @@ export function Toolbar() {
   const storedDevice = activeTab.graphDevice;
   const storedDeviceListed = storedDevice === null || devices.some((d) => d.value === storedDevice);
   const { reload, fetchDefinitions } = useNodeDefStore();
-  const { t, locale, setLocale } = useI18n();
+  const { t } = useI18n();
   const followDevice = devices.find((d) => d.value === globalDevice);
   // When the Settings device is one this server does not serve, the option
   // still follows Settings -- that is what the empty value means -- but it
@@ -114,14 +112,8 @@ export function Toolbar() {
   const addToast = useToastStore((s) => s.addToast);
 
   const [openMenu, setOpenMenu] = useState<string | null>(null);
-  const [langMenuOpen, setLangMenuOpen] = useState(false);
   const [layoutMenuOpen, setLayoutMenuOpen] = useState(false);
   const [customNodeManagerOpen, setCustomNodeManagerOpen] = useState(false);
-  const [settingsOpen, setSettingsOpen] = useState(false);
-  const [fontSizeMenuOpen, setFontSizeMenuOpen] = useState(false);
-  const settingsTriggerRef = useRef<HTMLButtonElement>(null);
-  const fontSizeTriggerRef = useRef<HTMLButtonElement>(null);
-  const langTriggerRef = useRef<HTMLDivElement>(null);
   const layoutTriggerRef = useRef<HTMLDivElement>(null);
 
   const lastLayoutMode = useUIStore((s) => s.lastLayoutMode);
@@ -560,90 +552,10 @@ export function Toolbar() {
         </div>
       </div>
 
-      {/* RIGHT cluster: plugin buttons, Settings, Help, FontSize, Language */}
-      <div className={`${styles.cluster} ${styles.right}`}>
-        {/* Plugin buttons (#132) lead the right-hand group so an installed
-            plugin never pushes Settings or Help off the row. Renders nothing
-            at all — no element, no gap — when no plugin registered one. */}
-        <PluginToolbarButtons />
-
-        {/* Settings ⚙ */}
-        <div className={styles.menuWrapper}>
-          <button type="button"
-            ref={settingsTriggerRef}
-            onClick={() => setSettingsOpen((v) => !v)}
-            title={t('toolbar.settings.title')}
-            className={`${styles.iconBtn} ${settingsOpen ? styles.active : ''}`}
-            aria-label={t('toolbar.settings')}
-            aria-expanded={settingsOpen}
-          >
-            ⚙
-          </button>
-          <SettingsPopover
-            open={settingsOpen}
-            onClose={() => setSettingsOpen(false)}
-            triggerRef={settingsTriggerRef}
-          />
-        </div>
-
-        {/* Help ? — opens shortcuts modal */}
-        <button type="button"
-          onClick={() => useUIStore.getState().toggleShortcutsModal()}
-          className={styles.iconBtn}
-          title={t('shortcuts.title')}
-          aria-label={t('shortcuts.title')}
-        >
-          ?
-        </button>
-
-        {/* Font size Aa */}
-        <div className={styles.menuWrapper}>
-          <button type="button"
-            ref={fontSizeTriggerRef}
-            onClick={() => setFontSizeMenuOpen((v) => !v)}
-            className={`${styles.dropdown} ${styles.dropdownNoCaret} ${fontSizeMenuOpen ? styles.open : ''}`}
-            title={t('toolbar.fontSize.title')}
-            aria-label={t('toolbar.fontSize.title')}
-            aria-expanded={fontSizeMenuOpen}
-          >
-            Aa
-          </button>
-          <FontSizeMenu
-            open={fontSizeMenuOpen}
-            onClose={() => setFontSizeMenuOpen(false)}
-            triggerRef={fontSizeTriggerRef}
-          />
-        </div>
-
-        {/* Language */}
-        <div ref={langTriggerRef} className={styles.menuWrapper}>
-          <button type="button"
-            onClick={() => setLangMenuOpen((v) => !v)}
-            className={`${styles.dropdown} ${langMenuOpen ? styles.open : ''}`}
-            aria-label={t('toolbar.language.aria')}
-            aria-expanded={langMenuOpen}
-          >
-            {SUPPORTED_LOCALES.find((l) => l.code === locale)?.label ?? locale}
-          </button>
-          {langMenuOpen && (
-            <>
-              <div className={styles.overlay} onClick={() => setLangMenuOpen(false)} />
-              <div className={`${styles.menuPanel} ${styles.menuPanelRight}`}>
-                {SUPPORTED_LOCALES.map((l) => (
-                  <button type="button"
-                    key={l.code}
-                    onClick={() => { setLocale(l.code); setLangMenuOpen(false); }}
-                    className={`${styles.langOption} ${l.code === locale ? styles.activeOption : ''}`}
-                  >
-                    <span>{l.nativeName}</span>
-                    {l.code === locale && <span className={styles.langOptionCheck}>✓</span>}
-                  </button>
-                ))}
-              </div>
-            </>
-          )}
-        </div>
-      </div>
+      {/* RIGHT cluster: plugin buttons, Settings, Help, FontSize, Language.
+          Its own component since the welcome screen (no active tab) shows
+          exactly this group and none of the graph controls above it. */}
+      <ToolbarGlobalActions />
 
       {customNodeManagerOpen && (
         <CustomNodeManager onClose={() => setCustomNodeManagerOpen(false)} />

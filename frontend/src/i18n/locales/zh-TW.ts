@@ -218,6 +218,13 @@ const zhTW: Record<TranslationKey, string> = {
   'empty.loading': '載入範例中...',
   'empty.loadError': '載入範例失敗',
 
+  // 歡迎畫面：一個分頁都沒有時看到的畫面。跟上面的 empty.* 分開寫，因為
+  // 那組是對著「已經開著但空白的畫布」講話，使用者手上已經有地方可以動工；
+  // 這裡什麼都沒有，所以要先說這是什麼，再給兩條進去的路。
+  'welcome.tagline': '用拖拉節點的方式建立深度學習模型。',
+  'welcome.newGraph': '新增空白圖表',
+  'welcome.examples': '或從一個範例開始',
+
   // 範例分區。不再放在 empty.* 底下：空白畫布、側邊欄範本頁與範例總覽
   // 現在都用這一組分區（#141）。
   'examples.section.quickstart': '快速開始',

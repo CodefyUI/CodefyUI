@@ -35,9 +35,12 @@ describe('TabBar', () => {
     expect(screen.getByTitle('New tab')).toBeTruthy();
   });
 
-  it('does not render a close button with only a single tab (close guard)', () => {
+  it('renders a close button on the only tab', () => {
+    // Every tab is closable now, the last one included: closing it leaves the
+    // workspace with no tab open, which is the welcome screen. Hiding the ×
+    // here used to make a single leftover tab permanent.
     render(<TabBar />);
-    expect(screen.queryByText('×')).toBeNull();
+    expect(screen.getByText('×')).toBeTruthy();
   });
 
   it('adds a new tab when clicking the add button', () => {
@@ -175,16 +178,35 @@ describe('TabBar', () => {
 
   // ── Close guards & running confirm ──────────────────────────────────────────
 
-  it('close guard: does nothing when only one tab remains even if click fires', () => {
-    // With a single tab there is no close button, but exercise handleClose via
-    // a second tab then closing down to one and asserting it stops.
+  it('closes down to one tab, then closes that one too', () => {
     useTabStore.getState().addTab('Tab 2');
     render(<TabBar />);
-    const closeButtons = screen.getAllByText('×');
-    fireEvent.click(closeButtons[0]);
+    fireEvent.click(screen.getAllByText('×')[0]);
     expect(useTabStore.getState().tabs).toHaveLength(1);
-    // No more close buttons.
-    expect(screen.queryByText('×')).toBeNull();
+
+    // The survivor keeps its own × -- that is the whole change. Both tabs are
+    // empty here, so neither close asks for confirmation.
+    fireEvent.click(screen.getByText('×'));
+    expect(useTabStore.getState().tabs).toEqual([]);
+    expect(useTabStore.getState().activeTabId).toBe('');
+  });
+
+  it('still asks before closing the last tab when it holds a graph', async () => {
+    // The content confirm is what stops an accidental click from costing a
+    // graph, and it is the ONLY thing standing between the × and an empty
+    // workspace now -- so it has to fire on the last tab, not just on the
+    // ones with a neighbour to fall back to.
+    const only = useTabStore.getState().tabs[0];
+    useTabStore.setState({
+      tabs: [{ ...only, nodes: [{ id: 'n1' } as never] }],
+    });
+    render(<TabBar />);
+    fireEvent.click(screen.getByText('×'));
+
+    await waitFor(() => expect(useDialogStore.getState().active).not.toBeNull());
+    expect(useTabStore.getState().tabs).toHaveLength(1);
+    useDialogStore.getState().resolve?.(true);
+    await waitFor(() => expect(useTabStore.getState().tabs).toEqual([]));
   });
 
   it('closing a running tab asks for confirmation and removes it when confirmed', async () => {

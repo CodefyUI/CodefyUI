@@ -1187,4 +1187,21 @@ describe('SettingsPopover', () => {
     // graphId '' -> reset disabled
     expect(screen.getByRole('button', { name: 'Reset' })).toBeDisabled();
   });
+  it('drops the per-graph sections when no tab is open, keeping the global ones', async () => {
+    // The popover is on the welcome bar too (no tab, no graph). Recording,
+    // training and seeds all describe a graph, so they are left out rather
+    // than shown against a tab that does not exist -- and, more to the point,
+    // the popover must not crash reading fields off one.
+    useTabStore.setState({ tabs: [], activeTabId: '' });
+    render(<SettingsPopover open onClose={vi.fn()} triggerRef={makeTriggerRef()} />);
+
+    expect(screen.queryByText('Recording & Inspection')).toBeNull();
+    expect(screen.queryByText('Training Behavior')).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Record node outputs' })).toBeNull();
+
+    // Everything that belongs to the app is still there.
+    expect(screen.getByText('Execution')).toBeInTheDocument();
+    expect(screen.getByText('Editor')).toBeInTheDocument();
+    await waitFor(() => expect(vi.mocked(fetchDevices)).toHaveBeenCalled());
+  });
 });

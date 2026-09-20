@@ -278,11 +278,31 @@ describe('tab management', () => {
     expect(tabs[tabs.length - 1].name).toBe(`Tab ${tabs.length}`);
   });
 
-  it('removeTab is a no-op when only one tab remains', () => {
+  it('removeTab closes the last tab and leaves the workspace empty', () => {
+    // The guard that made this a no-op is gone: closing everything is how you
+    // get back to the welcome screen, and refusing it made one leftover tab
+    // permanent. `activeTabId` goes to NO_ACTIVE_TAB rather than to a tab id
+    // that no longer exists, so every `t.id === activeTabId` selector in the
+    // app simply misses.
     const id = store().activeTabId;
     store().removeTab(id);
-    expect(store().tabs.length).toBe(1);
-    expect(store().activeTabId).toBe(id);
+    expect(store().tabs).toEqual([]);
+    expect(store().activeTabId).toBe('');
+  });
+
+  it('removeTab disconnects the last tab socket and forgets its viewport', () => {
+    const tab = store().tabs[0];
+    const disconnect = vi.spyOn(tab.ws, 'disconnect');
+    store().removeTab(tab.id);
+    expect(disconnect).toHaveBeenCalled();
+  });
+
+  it('addTab from an empty workspace opens Tab 1 and activates it', () => {
+    store().removeTab(store().activeTabId);
+    store().addTab();
+    expect(store().tabs).toHaveLength(1);
+    expect(store().tabs[0].name).toBe('Tab 1');
+    expect(store().activeTabId).toBe(store().tabs[0].id);
   });
 
   it('removeTab removes a non-active tab and keeps the active one', () => {
@@ -851,6 +871,18 @@ describe('clear', () => {
 
 describe('getSerializedGraph', () => {
   beforeEach(resetToSingleTab);
+
+  it('answers with an empty graph when no tab is open', () => {
+    // A plugin panel stays mounted across the close of the last tab, and
+    // `graph.getGraph()` is typically read from a mount effect or a memo --
+    // so this used to throw a TypeError inside third-party render code
+    // (`getActiveTab()` asserts its lookup and returned undefined). Nothing
+    // is open, so nothing is in it.
+    store().removeTab(store().activeTabId);
+    expect(store().getSerializedGraph()).toEqual({
+      nodes: [], edges: [], presets: [], segmentGroups: [], subgraphs: [],
+    });
+  });
 
   it('serializes plain nodes and edges with default handle strings', () => {
     store().setNodes([
@@ -2656,11 +2688,16 @@ describe('persistence (module reload)', () => {
     expect(mod.useTabStore.getState().tabs[0].segmentGroups).toEqual([]);
   });
 
-  it('loadTabs falls back to default when stored tabs array is empty', async () => {
+  it('loadTabs restores an explicitly empty tab list as an empty workspace', async () => {
+    // A stored `tabs: []` is an answer, not a missing record: the user closed
+    // every tab and is looking at the welcome screen, and a reload owes them
+    // that screen rather than a tab they did not ask for. Only a missing or
+    // unparseable record still falls back to `Tab 1` -- see the two cases
+    // below.
     localStorage.setItem(STORAGE_KEY, JSON.stringify({ activeTabId: 'x', tabs: [] }));
     const mod = await import('./tabStore');
-    expect(mod.useTabStore.getState().tabs).toHaveLength(1);
-    expect(mod.useTabStore.getState().tabs[0].name).toBe('Tab 1');
+    expect(mod.useTabStore.getState().tabs).toEqual([]);
+    expect(mod.useTabStore.getState().activeTabId).toBe('');
   });
 
   it('loadTabs falls back to default on corrupted JSON', async () => {

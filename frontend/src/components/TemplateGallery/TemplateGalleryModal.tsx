@@ -9,6 +9,7 @@ import {
 } from '../../utils/localizeExamples';
 import { useDialogStore } from '../../store/dialogStore';
 import { selectPluginsById, usePluginStore } from '../../store/pluginStore';
+import { useTabStore } from '../../store/tabStore';
 import { useUIStore } from '../../store/uiStore';
 import { useI18n } from '../../i18n';
 import { pluginNameOf } from '../../utils/provider';
@@ -62,6 +63,8 @@ export function TemplateGalleryModal() {
 function TemplateGalleryBody() {
   const close = useUIStore((s) => s.closeTemplateGallery);
   const pluginsById = usePluginStore(selectPluginsById);
+  // Whether there is a graph for Insert to merge into; see the button.
+  const hasActiveTab = useTabStore((s) => s.tabs.some((t) => t.id === s.activeTabId));
   const { t } = useI18n();
 
   const [examples, setExamples] = useState<ExampleSummary[]>([]);
@@ -338,15 +341,24 @@ function TemplateGalleryBody() {
                   >
                     {t('gallery.openNewTab')}
                   </button>
-                  <button
-                    type="button"
-                    className={styles.secondaryBtn}
-                    disabled={busy}
-                    onClick={() => void take(() => insertExample(chosen.path))}
-                  >
-                    {t('gallery.insert')}
-                  </button>
-                  <div className={styles.detailHint}>{t('gallery.insertHint')}</div>
+                  {/* Insert merges into the graph the user is standing in.
+                      With no tab open -- the welcome screen, which offers
+                      this modal too -- there is no such graph: `insertGraph`
+                      would map over an empty tab list and do nothing at all,
+                      silently. Open in a new tab is the whole offer there. */}
+                  {hasActiveTab && (
+                    <>
+                      <button
+                        type="button"
+                        className={styles.secondaryBtn}
+                        disabled={busy}
+                        onClick={() => void take(() => insertExample(chosen.path))}
+                      >
+                        {t('gallery.insert')}
+                      </button>
+                      <div className={styles.detailHint}>{t('gallery.insertHint')}</div>
+                    </>
+                  )}
                 </div>
               </>
             )}

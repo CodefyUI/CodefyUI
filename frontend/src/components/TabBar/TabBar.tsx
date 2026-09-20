@@ -31,10 +31,6 @@ export function TabBar() {
   const handleClose = useCallback(
     async (e: React.MouseEvent, id: string) => {
       e.stopPropagation();
-      // The close button only renders when tabs.length > 1
-      /* v8 ignore start */
-      if (tabs.length <= 1) return;
-      /* v8 ignore stop */
       const tab = tabs.find((t) => t.id === id);
       // Only reachable if the tab vanished between render and click.
       /* v8 ignore start */
@@ -149,15 +145,18 @@ export function TabBar() {
                 <span className={styles.badge}>{t('tabBar.readOnly')}</span>
               )}
 
-              {/* Close button */}
-              {tabs.length > 1 && (
-                <span
-                  onClick={(e) => handleClose(e, tab.id)}
-                  className={styles.closeBtn}
-                >
-                  ×
-                </span>
-              )}
+              {/* Close button. On every tab, including the last one: closing
+                  it leaves the workspace with no tab open, which is the
+                  welcome screen, not a broken state. Hiding it used to make a
+                  single leftover tab permanent -- the one case where "I am
+                  done with this" had no answer. The confirms in `handleClose`
+                  are what keep an accidental click from costing a graph. */}
+              <span
+                onClick={(e) => handleClose(e, tab.id)}
+                className={styles.closeBtn}
+              >
+                ×
+              </span>
             </div>
           );
         })}

@@ -54,7 +54,39 @@ its canvas, in both languages, beside the nodes it is about, and listed in the
 docs; the tests that used to require a requirement on the card now require it
 in a note and refuse it on the card.
 
+### Changed
+
+- **The last tab can be closed, and closing it lands on a welcome screen.** The
+  close × was hidden on the only remaining tab and `removeTab` refused to act
+  on it, so a tab you were finished with could be emptied but never put away —
+  the workspace always held at least one. It is closable now, and a workspace
+  with no tab open shows a welcome screen instead of an editor with nothing to
+  edit: a short greeting and "New blank graph" on the left, the example gallery
+  on the right. The state is saved like any other, so a reload comes back to
+  the welcome screen rather than to a tab nobody asked for.
+
+  What goes with it: the toolbar swaps for one carrying only what belongs to
+  the app rather than to a graph (Settings, Help, font size, language — the
+  language button especially, since this is the first screen a new install
+  shows), Settings drops its Recording and Training sections while no graph is
+  open, and the gallery modal offers only "Open in new tab" there, because
+  Insert has no graph to merge into.
+
+- **The example gallery is wider, and a card's node count no longer wraps.**
+  The empty-canvas gallery was capped at 900px, which on a wide monitor left a
+  narrow column of three cards per row down the middle of the screen; it now
+  goes to 1100px, where the same cards sit five or more to a row. Separately,
+  inside a card a long category chip and the node count no longer compete for
+  one line: the count stays whole on the first line and the chip is the part
+  that gets an ellipsis.
+
 ### Fixed
+
+- **A plugin panel no longer throws when the last tab closes.** `getGraph()`
+  read the active tab without checking there was one, so a panel that reads the
+  graph on mount — the self-learning pack's does — hit a `TypeError` inside its
+  own render as soon as the workspace was emptied. It answers with an empty
+  graph now, which is what the screen is showing.
 
 - **The toolbar and Settings no longer disagree about which device a run will
   use.** The compute device is saved in the browser, so a `cuda` set on one
