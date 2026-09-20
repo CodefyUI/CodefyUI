@@ -22,6 +22,8 @@ received — each links to the release it was published as.
 
 ## [Unreleased]
 
+## [2.8.4] — 2026-09-20
+
 Every example title in the gallery fits on its card.
 
 All 38 of them were ellipsized — measured, not estimated, on a 2560px window.
@@ -53,6 +55,15 @@ node* now. What an example needs before it will run is written in the note on
 its canvas, in both languages, beside the nodes it is about, and listed in the
 docs; the tests that used to require a requirement on the card now require it
 in a note and refuse it on the card.
+
+Away from the gallery, two things that disagreed with the screen in front of
+you. The workspace always held at least one tab, so a tab you were finished
+with could be emptied but never put away; the last one closes now, onto a
+welcome screen that a reload comes back to. And the compute device is saved in
+the browser, so a `cuda` chosen on a machine that has a GPU follows you to a
+server that has none — the toolbar and Settings each said something different
+about it, and neither could be put right from the screen. Both now say the run
+will fall back to CPU, and picking a device the server does have takes effect.
 
 ### Changed
 
@@ -4329,7 +4340,8 @@ Release candidates before 1.0.0 are on the
 [#420]: https://github.com/CodefyUI/CodefyUI/issues/420
 [@oyea0801]: https://github.com/oyea0801
 [@latteine1217]: https://github.com/latteine1217
-[Unreleased]: https://github.com/CodefyUI/CodefyUI/compare/2.8.3...main
+[Unreleased]: https://github.com/CodefyUI/CodefyUI/compare/2.8.4...main
+[2.8.4]: https://github.com/CodefyUI/CodefyUI/compare/2.8.3...2.8.4
 [2.8.3]: https://github.com/CodefyUI/CodefyUI/compare/2.8.2...2.8.3
 [2.8.2]: https://github.com/CodefyUI/CodefyUI/compare/2.8.1...2.8.2
 [2.8.1]: https://github.com/CodefyUI/CodefyUI/compare/2.8.0...2.8.1
