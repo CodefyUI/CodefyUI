@@ -22,6 +22,39 @@ received — each links to the release it was published as.
 
 ## [Unreleased]
 
+## [2.8.3] — 2026-09-20
+
+The 72 examples say what they are for, explain themselves on the canvas and end
+on a number — and the tabs you have open now travel in one file.
+
+The gallery was 35 built-in examples in four groups, one of which — "Advanced
+Examples" — held 17 of them, and a card's description ran to as much as 1,272
+columns in a row that can show 56. Examples are now grouped by what they are
+for, every description is one line that fits, and the explanation that used to
+be crushed into that field sits on the canvas as a note beside the nodes it is
+about: 197 of them, each written in English and then in Traditional Chinese.
+Three built-in trainers and two teaching-pack trainers gained an evaluation
+tail, so a training run ends on an accuracy measured on images the loop never
+saw, and a new example trains a CNN on a HuggingFace dataset with every stage
+on the canvas instead of inside a preset.
+
+Reading all 72 closely turned up graphs that did not do what they said.
+*Inference CNN on MNIST* fed the model images normalised differently from the
+ones it trained on; *Forward Diffusion* blended noise into noise; three graphs
+computed the number they exist to demonstrate and never showed it; and eight
+teaching-pack descriptions quoted accuracies their graphs do not produce. Every
+figure a description or a note quotes is now one that was read off a run of the
+file as shipped, and a test pins it to the port it came from.
+
+The rest of the release is three things that could go wrong away from the
+gallery. Open tabs lived only in one browser's IndexedDB, and now export to a
+single `.cduiworkspace` that imports beside the tabs already open. A node
+clicked while the graph was running said its run data had expired, rather than
+that it was running, and stayed that way after it finished. And a graph with a
+note on it ran in the editor but failed at `python run_graph.py` with `Unknown
+node type: note` — notes are dropped before validation now, so every caller
+sees what the canvas always did.
+
 ### Added
 
 - **Every open tab in one file.** Open tabs live in the browser's IndexedDB,
@@ -4217,7 +4250,8 @@ Release candidates before 1.0.0 are on the
 [#420]: https://github.com/CodefyUI/CodefyUI/issues/420
 [@oyea0801]: https://github.com/oyea0801
 [@latteine1217]: https://github.com/latteine1217
-[Unreleased]: https://github.com/CodefyUI/CodefyUI/compare/2.8.2...main
+[Unreleased]: https://github.com/CodefyUI/CodefyUI/compare/2.8.3...main
+[2.8.3]: https://github.com/CodefyUI/CodefyUI/compare/2.8.2...2.8.3
 [2.8.2]: https://github.com/CodefyUI/CodefyUI/compare/2.8.1...2.8.2
 [2.8.1]: https://github.com/CodefyUI/CodefyUI/compare/2.8.0...2.8.1
 [2.8.0]: https://github.com/CodefyUI/CodefyUI/compare/2.7.2...2.8.0
