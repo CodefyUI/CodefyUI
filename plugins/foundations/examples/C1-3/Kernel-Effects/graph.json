@@ -1,6 +1,6 @@
 {
-  "name": "C1-3 the same image through four different 3×3 kernels",
-  "description": "Edge, sharpen, vertical edge and blur, printed as grids",
+  "name": "C1-3 Four fixed 3x3 kernels",
+  "description": "Edge, sharpen, vertical edge and blur",
   "nodes": [
     { "id": "note-overview", "type": "note", "position": { "x": -760, "y": 0 },
       "data": { "noteKind": "text",

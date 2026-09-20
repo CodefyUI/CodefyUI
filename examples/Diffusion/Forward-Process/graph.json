@@ -1,6 +1,6 @@
 {
-  "name": "Forward Diffusion: a digit dissolving into noise",
-  "description": "Blend Gaussian noise into a real digit and view it",
+  "name": "Forward diffusion on a digit",
+  "description": "One step of noise; the 7 still shows",
   "gallery": { "section": "concepts", "order": 5 },
   "nodes": [
     { "id": "start-1", "type": "Start", "position": { "x": -260, "y": 0 }, "data": { "params": {} } },

@@ -1,6 +1,6 @@
 {
-  "name": "Multi-Head Causal Attention: two heads, one mask",
-  "description": "Two maps, striped above the diagonal; needs a download",
+  "name": "Multi-Head Causal Attention",
+  "description": "Two 5x5 maps, striped by the mask",
   "nodes": [
     { "id": "start-1",  "type": "Start",                  "position": { "x": -320, "y": 0 }, "data": { "params": {} } },
     { "id": "text",     "type": "TextInput",              "position": { "x": -50,  "y": 0 }, "data": { "params": { "value": "once upon a time there" } } },
@@ -13,7 +13,7 @@
 
     { "id": "note-overview", "type": "note", "position": { "x": -740, "y": 0 },
       "data": { "noteKind": "text",
-                "noteContent": "Two heads and a mask, on the chain Self-Attention 101 already walks. embed_dim 8 splits into 2 heads of 4, each attends on its own, and W_o mixes them back to 8. The mask stops a position reading anything to its right, so the first row of each map is 1 then zeros. The sentence is 5 tokens, so the heatmap on Edu-MultiHeadAttention holds 2 panels of 5 by 5, striped wherever the mask blocked a cell. Nothing here is trained. The pack's C4-3 example adds the LayerNorms and residual adds that make this a whole block. The first run downloads the cl100k_base table.\n\n兩個 head 加上一個遮罩，走的是 Self-Attention 101 那條鏈。embed_dim 8 拆成 2 個 4 維的 head，各自做一次 attention，再由 W_o 混回 8 維。遮罩不讓任何位置讀到自己右邊，所以每張圖的第一列都是 1、之後全是 0。這句話有 5 個 token，所以 Edu-MultiHeadAttention 上的熱圖是 2 張 5 列 5 欄，被遮罩擋掉的格子畫上斜線。這裡沒有任何東西訓練過。這個套件包的 C4-3 範例補上 LayerNorm 和殘差相加，那才是完整的一個 block。第一次執行會下載 cl100k_base 表。",
+                "noteContent": "Two heads and a mask, on the chain Self-Attention 101 already walks. embed_dim 8 splits into 2 heads of 4, each attends on its own, and W_o mixes them back to 8. The mask stops a position reading anything to its right, so the first row of each map is 1 then zeros. The sentence is 5 tokens, so the heatmap on Edu-MultiHeadAttention holds 2 panels of 5 by 5, striped wherever the mask blocked a cell. Nothing here is trained. The pack's C4-3 example adds the LayerNorms and residual adds that make this a whole block. The first run needs the network: it downloads the cl100k_base table.\n\n兩個 head 加上一個遮罩，走的是 Self-Attention 101 那條鏈。embed_dim 8 拆成 2 個 4 維的 head，各自做一次 attention，再由 W_o 混回 8 維。遮罩不讓任何位置讀到自己右邊，所以每張圖的第一列都是 1、之後全是 0。這句話有 5 個 token，所以 Edu-MultiHeadAttention 上的熱圖是 2 張 5 列 5 欄，被遮罩擋掉的格子畫上斜線。這裡沒有任何東西訓練過。這個套件包的 C4-3 範例補上 LayerNorm 和殘差相加，那才是完整的一個 block。第一次執行需要連網：它會下載 cl100k_base 表。",
                 "noteColor": "#3d3d1a", "boundToNodeId": "start-1",
                 "boundOffset": { "x": -420, "y": 0 }, "noteWidth": 360 } },
     { "id": "note-mha", "type": "note", "position": { "x": 1350, "y": -390 },

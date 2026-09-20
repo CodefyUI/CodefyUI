@@ -1,6 +1,6 @@
 {
-  "name": "Self-Attention 101: how a single attention head looks",
-  "description": "Six tokens as a 6x6 attention map; needs a download",
+  "name": "Self-Attention 101",
+  "description": "Six tokens, a 6x6 map of who read whom",
   "nodes": [
     { "id": "start-1",  "type": "Start",              "position": { "x": -320, "y": 0 }, "data": { "params": {} } },
     { "id": "text",     "type": "TextInput",          "position": { "x": -50,  "y": 0 }, "data": { "params": { "value": "the cat sat on the mat" } } },
@@ -12,7 +12,7 @@
 
     { "id": "note-overview", "type": "note", "position": { "x": -740, "y": 0 },
       "data": { "noteKind": "text",
-                "noteContent": "One attention head with nothing hidden: text, tokens, an 8-wide embedding, sinusoidal positions, then the three projections and a softmax over the scores. The sentence tokenises into 6 tokens, so the heatmap on Edu-SelfAttention is 6 by 6 -- row i is how much position i read each position, and every row sums to 1. Nothing is trained; the projections come from seed 42. Set causal to true to block the upper triangle, or drop temperature below 1 to sharpen each row. The first run downloads the cl100k_base table, later runs are offline.\n\n一個 attention head，整條攤開來看：文字、token、8 維 embedding、sinusoidal 位置編碼，接著三組投影和對分數取 softmax。這句話會切成 6 個 token，所以 Edu-SelfAttention 上的熱圖是 6 列 6 欄 — 第 i 列是位置 i 對每個位置放了多少注意力，每一列加起來是 1。沒有任何東西訓練過，投影由 seed 42 決定。把 causal 改成 true 可以擋掉上三角，把 temperature 調到 1 以下則讓每一列更集中。第一次執行會下載 cl100k_base 表，之後就不需要網路。",
+                "noteContent": "One attention head with nothing hidden: text, tokens, an 8-wide embedding, sinusoidal positions, then the three projections and a softmax over the scores. The sentence tokenises into 6 tokens, so the heatmap on Edu-SelfAttention is 6 by 6 -- row i is how much position i read each position, and every row sums to 1. Nothing is trained; the projections come from seed 42. Set causal to true to block the upper triangle, or drop temperature below 1 to sharpen each row. The first run needs the network: it downloads the cl100k_base table, and later runs are offline.\n\n一個 attention head，整條攤開來看：文字、token、8 維 embedding、sinusoidal 位置編碼，接著三組投影和對分數取 softmax。這句話會切成 6 個 token，所以 Edu-SelfAttention 上的熱圖是 6 列 6 欄 — 第 i 列是位置 i 對每個位置放了多少注意力，每一列加起來是 1。沒有任何東西訓練過，投影由 seed 42 決定。把 causal 改成 true 可以擋掉上三角，把 temperature 調到 1 以下則讓每一列更集中。第一次執行需要連網：它會下載 cl100k_base 表，之後就不需要網路。",
                 "noteColor": "#3d3d1a", "boundToNodeId": "start-1",
                 "boundOffset": { "x": -420, "y": 0 }, "noteWidth": 360 } },
     { "id": "note-embed", "type": "note", "position": { "x": 650, "y": -410 },

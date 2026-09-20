@@ -22,6 +22,38 @@ received — each links to the release it was published as.
 
 ## [Unreleased]
 
+Every example title in the gallery fits on its card.
+
+All 38 of them were ellipsized — measured, not estimated, on a 2560px window.
+The root font-size is `clamp(16px, 0.35vw + 11px, 19px)`, so the type grows to
+19px on a wide screen while the card stayed pinned at a literal 200px: the
+title had the least room exactly where the screen had the most. Cards are now
+`13rem` and scale with the type, the title wraps to two lines instead of being
+cut at one, and the description sits a step below it rather than at the same
+weight. The detail pane and the search box were px for the same reason and are
+rem now too; the empty-canvas card and the sidebar's Templates row got the
+same treatment, since all three print the same name.
+
+The names themselves were the other half. Nothing had ever capped them, and
+they had reached eleven words and 58 columns; a description could be 56. A
+name is now a label — one line, at most five words and 34 columns — and a
+description is one line of at most 40 columns, which is twenty Chinese
+characters. 57 of the 72 names and all 72 descriptions were rewritten to fit,
+in English and in Traditional Chinese. Both caps are pinned by tests over both
+roots, and a new one refuses two examples that ship the same name — it is the
+one label the gallery card, the sidebar row and the empty-canvas card all
+print.
+
+And the line under the title now says what the graph does. It had filled up
+with logistics and scores — *About 99% accuracy; needs a download*, *Needs rag
++ sentence-embeddings packs*, *0.97 success; needs a GPU and an hour* — which
+is the card spending the one line it has on everything except the example. It
+reads *Each block learns only a correction* and *Every dataset stage is its own
+node* now. What an example needs before it will run is written in the note on
+its canvas, in both languages, beside the nodes it is about, and listed in the
+docs; the tests that used to require a requirement on the card now require it
+in a note and refuse it on the card.
+
 ### Changed
 
 - **The last tab can be closed, and closing it lands on a welcome screen.** The
@@ -44,9 +76,9 @@ received — each links to the release it was published as.
   The empty-canvas gallery was capped at 900px, which on a wide monitor left a
   narrow column of three cards per row down the middle of the screen; it now
   goes to 1100px, where the same cards sit five or more to a row. Separately,
-  inside each 200px card a long category chip and the node count no longer
-  compete for one line: the count stays whole on the first line and the chip
-  is the part that gets an ellipsis.
+  inside a card a long category chip and the node count no longer compete for
+  one line: the count stays whole on the first line and the chip is the part
+  that gets an ellipsis.
 
 ### Fixed
 

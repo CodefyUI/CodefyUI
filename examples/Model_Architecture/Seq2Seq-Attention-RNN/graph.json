@@ -1,6 +1,6 @@
 {
   "name": "Seq2Seq with Attention",
-  "description": "Encoder-decoder LSTM forward pass with attention",
+  "description": "Each decoder step queries 10 states",
   "gallery": { "section": "architectures", "family": "RNN", "order": 3 },
   "nodes": [
     { "id": "start-1", "type": "Start", "position": { "x": -230, "y": 0 }, "data": { "params": {} } },

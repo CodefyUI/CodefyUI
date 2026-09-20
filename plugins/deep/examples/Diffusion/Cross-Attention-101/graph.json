@@ -1,6 +1,6 @@
 {
-  "name": "Cross-Attention 101: Q from one place, K/V from another",
-  "description": "A rectangular attention map: 6 queries over 4 keys",
+  "name": "Cross-Attention 101",
+  "description": "Two heads, 6 queries over 4 keys",
   "nodes": [
     { "id": "start-1", "type": "Start", "position": { "x": -260, "y": 0 }, "data": { "params": {} } },
     { "id": "q",   "type": "TensorCreate", "position": { "x": 0,   "y": -100 }, "data": { "params": { "shape": "6,8", "fill": "randn", "value": 0, "requires_grad": false } } },

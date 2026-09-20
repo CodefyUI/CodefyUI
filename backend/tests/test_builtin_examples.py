@@ -25,10 +25,12 @@ The TinyStories LM pretraining example (#292) gets the same treatment for the
 same reason, minus the execution: its README quotes a parameter count, an
 effective batch size, two token budgets and a step count, and every one of
 those is a fact about *other* nodes' params that ``validate_graph`` is blind
-to. It is also the only builtin needing the network and a 16 GB GPU, and the
-canvas gallery card truncates a description at 80 columns --
-so where the warning sits in the string is itself an invariant. See
-``test_tinystories_lm_example_warns_inside_the_card_truncation`` and
+to. It is also the one builtin needing both the network and a 16 GB GPU --
+and neither of those is on its gallery card. A card says what the graph
+shows; what an example needs before it runs is written in the note on its
+canvas, in both languages, which is the rule the three checks under "Where a
+requirement is written" hold over all 72 shipped examples. See
+``test_tinystories_lm_example_names_what_it_needs_in_its_notes`` and
 ``test_tinystories_lm_example_still_describes_itself``.
 """
 
@@ -47,6 +49,11 @@ from app.core.graph_engine import execute_graph, validate_graph
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _EXAMPLES_ROOT = _REPO_ROOT / "examples"
+
+#: The second root the gallery draws cards from. Only the prose rules at the
+#: bottom of this file read it: executing a pack's graphs is
+#: ``test_chapter_examples.py``'s job and stays there.
+_PLUGINS_ROOT = _REPO_ROOT / "plugins"
 
 
 def _discover_builtin_graphs() -> list[Path]:
@@ -139,7 +146,7 @@ def test_builtin_graph_executes(graph_path: Path):
         os.chdir(prev_cwd)
 
 
-# ── ResNet-18 / CIFAR-10 baseline: short-epoch execution (core#138) ─────────
+# ── ResNet-18 CIFAR-10 baseline: short-epoch execution (core#138) ───────────
 
 _RESNET18_EXAMPLE = (
     _EXAMPLES_ROOT / "Usage_Example" / "ResNet18-CIFAR10-Baseline" / "graph.json"
@@ -239,6 +246,18 @@ def _note_text(payload: dict, note_id: str) -> str:
             assert node.get("type") == "note", f"{note_id} is not a note"
             return node["data"]["noteContent"]
     raise AssertionError(f"the graph has no note {note_id!r}")
+
+
+def _notes_of(payload: dict) -> list[str]:
+    """The text of every note on one graph's canvas.
+
+    The unnamed twin of :func:`_note_text`: that one goes after a note a
+    test knows by id, this one after "what does this graph tell its reader
+    anywhere on the canvas", which is the question the requirement rules at
+    the bottom of the file ask of all 72 examples at once.
+    """
+    return [node["data"]["noteContent"] for node in payload.get("nodes", [])
+            if node.get("type") == "note"]
 
 
 def _assert_shipped_recipe(nodes: list[dict], edges: list[dict]) -> None:
@@ -436,60 +455,100 @@ _LM_VAL_TOKEN_BUDGET = 2_000_000
 #: this graph fails here.
 _LM_PARAM_COUNT = 203_668_480
 
-#: ``EmptyCanvasOverlay.tsx`` renders an example card's description cut to 80
-#: columns (``truncateToWidth``, which counts a Latin character as one and a
-#: CJK one as two -- so for the English text asserted here it is the plain
-#: 80-character cut it has always been). The empty-canvas gallery is the
-#: surface a user reads BEFORE pressing Run, and the only one that shows a
-#: description without being hovered, so anything past this many characters is
-#: not a warning -- it is a footnote nobody sees. The Chinese side of the same
-#: invariant is pinned in ``frontend/src/i18n/exampleLocales/zh-TW.test.ts``.
-_CARD_VISIBLE_CHARS = 80
+#: The two things that decide whether a reader CAN run this graph at all,
+#: and the word each half of the bilingual note says them with.
+#:
+#: Neither is on the card. A description is one line of forty columns
+#: (``test_example_descriptions.py``), and a line that spends half of itself
+#: on "needs a 16 GB GPU, a download" has stopped saying what the graph is
+#: for -- so the warning moved onto the canvas, beside the nodes it is
+#: about, where there is room to say how big the download is and why the GPU
+#: has to be that size. Everything past that is in README.md.
+#:
+#: ``(what, English, Traditional Chinese)``: a note is written twice inside
+#: the one note, and there is no translation table behind it, so a warning
+#: that survives only the English half is a warning half the readers of this
+#: project never see.
+_LM_NOTE_REQUIREMENTS = (
+    ("a 16 GB GPU", "16 GB GPU", "16 GB GPU"),
+    ("the corpus download", "download", "下載"),
+)
 
-#: What must be legible in those 80 characters: the two things that decide
-#: whether a user CAN run this graph at all. Everything else is in README.md.
-_LM_CARD_REQUIREMENTS = ("16 GB GPU", "download")
 
+def test_tinystories_lm_example_names_what_it_needs_in_its_notes():
+    """The 16 GB GPU and the download are on the canvas, in both languages.
 
-def test_tinystories_lm_example_warns_inside_the_card_truncation():
-    """The requirements survive the gallery card's 80-character cut.
+    This example is the one builtin that needs the network AND a 16 GB GPU,
+    and the gallery card says neither: the card says what the graph shows.
+    That moves the warning rather than dropping it -- onto the notes, which
+    are what a reader is looking at while deciding whether to start an
+    hour-long run, and which have room for the size and the reason.
 
-    This example is the only builtin that needs the network and a 16 GB GPU,
-    and a requirement that appears at character 900 of a 1,100-character
-    description is a requirement the canvas card silently drops. Asserted
-    against the truncated string rather than the whole one, because the whole
-    one is not what anybody reads.
+    Every note is searched, not the overview alone, because the two facts do
+    not have to sit in the same note. What they cannot do is sit in only one
+    language.
     """
     payload = json.loads(_LM_EXAMPLE.read_text(encoding="utf-8"))
-    description = payload["description"]
-    visible = description[:_CARD_VISIBLE_CHARS]
+    notes = _notes_of(payload)
+    assert notes, "the LM example carries no notes, so this checks nothing"
 
-    for requirement in _LM_CARD_REQUIREMENTS:
-        assert requirement in visible, (
-            f"{requirement!r} is not inside the {_CARD_VISIBLE_CHARS} "
-            f"characters the canvas gallery card shows. The card renders "
-            f"{visible!r} and nothing more -- move the requirement to the "
-            f"front of the description, not into README.md.")
+    # English paragraph, blank line, the same thing in Traditional Chinese --
+    # the shape ``test_concept_examples.py`` holds every note to. Split the
+    # same way here so a fact asserted "in the Chinese" cannot be satisfied
+    # by the English copy of it sitting above.
+    english = "\n".join(note.partition("\n\n")[0] for note in notes)
+    chinese = "\n".join(note.partition("\n\n")[2] for note in notes)
+
+    for what, in_english, in_chinese in _LM_NOTE_REQUIREMENTS:
+        assert in_english in english, (
+            f"the English half of this example's notes never names "
+            f"{what} ({in_english!r}); the card does not carry it either, so "
+            f"nothing in the product warns an English reader before they "
+            f"press Run")
+        assert in_chinese in chinese, (
+            f"the Traditional Chinese half of this example's notes never "
+            f"names {what} ({in_chinese!r}); a note is the only bilingual "
+            f"surface this warning has, and half of it is missing")
 
     # A tooltip-length description is still worth keeping short: the sidebar
     # shows it in full as a `title`, and a native tooltip of several hundred
     # characters is its own kind of unreadable. Generous ceiling, not a style
-    # rule -- the point is that the detail lives in README.md.
+    # rule -- the point is that the recipe lives in README.md and the
+    # explanation on the canvas, not in the one field every row renders.
+    description = payload["description"]
     assert len(description) <= 500, (
         f"the description is {len(description)} characters; the recipe belongs "
         f"in {_LM_README.name}, not on the card")
 
     assert _LM_README.is_file(), (
-        f"{_LM_README} is missing -- the card's last sentence points at it, and "
-        f"the docs pages point at it instead of at the card")
+        f"{_LM_README} is missing -- the overview note's last sentence points "
+        f"at it, and the docs pages point at it instead of at the card")
 
 
-#: The heavy requirements a gallery card has to state before the cut, and the
-#: words each one is actually written with across the examples.
+# ── Where a requirement is written: the note, not the card ────────────────
+#
+# The three rules below replace one that pointed the other way. It required
+# every requirement an example stated to land inside the characters the
+# gallery card shows, which was right while a description was the only prose
+# an example carried. It is not any more: a description is one line of forty
+# columns and an example explains itself in notes on its canvas, so the
+# ruling is that the line under the title says what the graph does and what
+# it is explaining, and a download, a GPU, a pack, an API key or a sibling
+# example that has to be run first is named on the canvas and in the docs.
+#
+# The detector underneath is the same detector, pointed the other way: the
+# vocabulary tables below were written against the way these examples
+# actually phrase a requirement, including the two shapes they used to get
+# wrong, and that work is worth as much to a rule that forbids a sentence as
+# to one that demanded it. "CARD" survives in their names from when the card
+# was the only surface they were read on.
+
+#: The heavy requirements, and the words each one is actually written with
+#: across the examples.
 #:
-#: Deliberately NOT a bare "network": a dozen descriptions say it about a
-#: neural one ("the agent's own network", "a small gating network"), and a
-#: check that fires on every example is a check nobody can read.
+#: Deliberately NOT a bare "network": a dozen examples say it about a neural
+#: one ("the agent's own network", "a small gating network"), and a check
+#: that fires on every example is a check nobody can read.
 _CARD_REQUIREMENT_WORDS = {
     "a GPU": r"\bGPUs?\b|\bCUDA\b|\bVRAM\b",
     "a download": r"\bdownload(s|ed|ing)?\b",
@@ -499,15 +558,16 @@ _CARD_REQUIREMENT_WORDS = {
 
 #: What turns a mention into a requirement.
 #:
-#: ``install`` is NOT here on purpose: three descriptions name a pack only to
+#: ``install`` is NOT here on purpose: several examples name a pack only to
 #: say where a SIBLING example ships (``cdui plugin install foundations``),
-#: which the example holding the card does not need. The verbs below are the
+#: which the example doing the naming does not need. The verbs below are the
 #: ones that say "you cannot run this without".
 #:
 #: ``needed`` is in ``need(s|ed)?`` because English says a requirement in the
 #: passive at least as often as in the active: "a GPU is needed" is the same
-#: warning as "needs a GPU", and the check that heard only one of them would
-#: pass an example that hid the other one past the cut.
+#: warning as "needs a GPU", and a check that heard only one of them would
+#: let a card keep the other one, and would read a note that carries it as a
+#: note that says nothing.
 _CARD_REQUIREMENT_VERBS = (
     r"\bneed(s|ed)?\b|\brequires?\b|\brequired\b|\bprerequisite\b|\bmust\b")
 
@@ -515,22 +575,31 @@ _CARD_REQUIREMENT_VERBS = (
 #:
 #: "No GPU is required." matches a requirement verb and names a resource, and
 #: means the opposite of both. Flagged, it would tell the author to move a
-#: reassurance to the front of the card -- advice that makes the card worse,
-#: which is a sharper failure than the one the check exists to catch.
+#: reassurance off the card and onto the canvas -- advice that makes both
+#: surfaces worse, which is a sharper failure than the one the check exists
+#: to catch.
 #:
 #: Judged per resource, against the text BEFORE the resource word: a sentence
 #: reading "needs a GPU, no download" negates the download and not the GPU.
 _CARD_REQUIREMENT_NEGATIONS = r"\bno\b|\bnot\b|\bwithout\b|\boptional\b"
 
 
-def _requirements_stated_in(description: str) -> list[tuple[str, str]]:
-    """The heavy resources ``description`` says you cannot run it without.
+def _requirements_stated_in(text: str) -> list[tuple[str, str]]:
+    """The heavy resources *text* says the graph cannot run without.
 
     One ``(requirement, sentence)`` pair per resource actually required, so
-    the caller can quote the sentence back at whoever has to fix the card.
+    the caller can quote the sentence back at whoever has to move it.
+
+    Reads a description and a note alike, because the rules below need the
+    same sentence heard on both surfaces: once to say it does not belong on
+    the card, once to say it does belong on the canvas. A note carries its
+    Traditional Chinese half in the same string, which this ignores -- there
+    are no English requirement verbs in it, and the bilingual half of the
+    rule is asserted where it is specific enough to be worth asserting
+    (``test_tinystories_lm_example_names_what_it_needs_in_its_notes``).
     """
     stated: list[tuple[str, str]] = []
-    for sentence in re.split(r"(?<=[.!?])\s+", description):
+    for sentence in re.split(r"(?<=[.!?])\s+", text):
         if not re.search(_CARD_REQUIREMENT_VERBS, sentence, re.I):
             continue
         for requirement, pattern in _CARD_REQUIREMENT_WORDS.items():
@@ -544,72 +613,175 @@ def _requirements_stated_in(description: str) -> list[tuple[str, str]]:
     return stated
 
 
-def test_every_example_states_its_requirements_inside_the_card_cut():
-    """A requirement stated anywhere must be stated inside the first 80 chars.
+def _every_shipped_example() -> dict[str, dict]:
+    """Every example the gallery lists, keyed as ``/api/examples/list`` keys
+    it: the relative path for a built-in, ``plugin:<id>/<rest>`` for one a
+    pack ships.
 
-    ``test_tinystories_lm_example_warns_inside_the_card_truncation`` above is
-    this rule for one example, written when the LM example was the only builtin
-    that needed the network and a GPU. It is not any more -- three pack-backed
-    LLM examples and the VLA example joined it -- and a per-example mitigation
-    is a rule the next example does not inherit.
+    Both roots, unlike ``_GRAPHS`` at the top of this file. Running a pack's
+    graphs is ``test_chapter_examples.py``'s job and stays there, but the
+    rules below are about what a card says and what a note says, and the
+    gallery draws a pack's examples on the same cards as the built-ins. A
+    reader cannot tell which root a card came from, so a rule that covered
+    one root would be a rule half the gallery does not follow. Six of the
+    sixteen descriptions the rewritten rule first caught sat in ``plugins/``,
+    which the old card check never opened.
+    """
+    shipped: dict[str, dict] = {}
 
-    So: for every builtin, take each sentence that STATES a requirement, and
-    require every heavy resource named in it to be named again inside the
-    characters the canvas card actually shows. The card is what a user reads
-    before pressing Run; a 1.5 GB download named at character 300 is not a
-    warning, it is a footnote nobody sees.
+    def read(graph_file: Path) -> dict:
+        return json.loads(graph_file.read_text(encoding="utf-8"))
 
-    A failure here is fixed in the example's description -- move the
-    requirement into the opening sentence, in the fewest honest words -- and
-    never by widening the cut.
+    for graph_file in sorted(_EXAMPLES_ROOT.rglob("graph.json")):
+        key = graph_file.parent.relative_to(_EXAMPLES_ROOT).as_posix()
+        shipped[key] = read(graph_file)
+    for pack_dir in sorted(_PLUGINS_ROOT.glob("*")):
+        pack_examples = pack_dir / "examples"
+        if not pack_examples.is_dir():
+            continue
+        for graph_file in sorted(pack_examples.rglob("graph.json")):
+            rel = graph_file.parent.relative_to(pack_examples).as_posix()
+            shipped[f"plugin:{pack_dir.name}/{rel}"] = read(graph_file)
+    return shipped
+
+
+_SHIPPED = _every_shipped_example()
+assert len(_SHIPPED) > 50, (
+    f"the two-root scan found {len(_SHIPPED)} examples; the rules below "
+    f"would hold over an almost empty gallery")
+
+
+def test_no_example_description_states_a_requirement():
+    """A card says what the graph shows, not what you install first.
+
+    The old rule required a requirement to land inside the characters the
+    card shows. This is that rule inverted, and the inversion is the whole
+    ruling: a description is one line of forty columns
+    (``test_example_descriptions.py``), and a line that spends half of
+    itself on "needs a 1.5 GB download" has stopped saying what the graph is
+    for -- which is the one thing only the card can say, because it is what
+    a reader picks a card by.
+
+    So a download, a GPU, a pack or an API key -- and anything else an
+    example needs first, such as a sibling graph that has to be run before
+    it, which the vocabulary above cannot hear -- goes in the note on the
+    canvas, beside the nodes it is about, where there is room to say how big
+    it is and where it comes from, and in
+    ``docs/docs/usage/examples-gallery.md``, where the exceptions are listed
+    in full.
+
+    Fixed by moving the sentence onto the note -- never by trimming the
+    vocabulary above until the sentence stops matching.
     """
     offenders: list[str] = []
-    covered: list[str] = []
-
-    for graph_path in _GRAPHS:
-        payload = json.loads(graph_path.read_text(encoding="utf-8"))
-        description = payload.get("description", "")
-        visible = description[:_CARD_VISIBLE_CHARS]
-        name = graph_path.relative_to(_EXAMPLES_ROOT).as_posix()
-
-        for requirement, sentence in _requirements_stated_in(description):
-            if re.search(_CARD_REQUIREMENT_WORDS[requirement], visible, re.I):
-                covered.append(f"{name}: {requirement}")
-            else:
-                offenders.append(
-                    f"{name} needs {requirement} -- said in "
-                    f"{sentence!r} -- but the card shows only "
-                    f"{visible!r}")
+    for key, payload in _SHIPPED.items():
+        for requirement, sentence in _requirements_stated_in(
+                payload.get("description", "")):
+            offenders.append(
+                f"{key} states {requirement} on its card -- {sentence!r}")
 
     assert not offenders, (
-        f"{len(offenders)} example(s) hide a requirement past the "
-        f"{_CARD_VISIBLE_CHARS}-character card cut:\n  "
+        f"{len(offenders)} example description(s) state a requirement:\n  "
         + "\n  ".join(offenders)
-        + "\nMove it into the opening sentence; do not widen the cut.")
+        + "\nThe line under the title says what the graph does and what it "
+          "is explaining. What an example needs before it runs belongs in "
+          "the note on its canvas, beside the nodes it is about, and in the "
+          "exceptions list in docs/docs/usage/examples-gallery.md.")
 
-    # A rule that has stopped matching anything has stopped being a rule. If
-    # this trips, either every heavy example was retired or the vocabulary
-    # above no longer matches how the descriptions are written.
-    assert covered, (
-        "no builtin example states a GPU, download, pack or service "
-        "requirement any more -- check _CARD_REQUIREMENT_WORDS still matches "
-        "the way the descriptions are written")
+
+def test_every_requirement_an_example_states_is_stated_in_its_notes():
+    """A requirement moves onto the canvas; it does not just disappear.
+
+    The rule above is satisfied as well by deleting a warning as by moving
+    it, and deleting it is the worse outcome of the two: the reader then
+    presses Run on a graph that stops at a missing pack, with nothing
+    anywhere in the product having said so. So whatever heavy resource a
+    graph still names as required in the prose that is NOT a note, one of
+    its notes has to name as required too.
+
+    "Prose that is not a note" is ``name`` and ``description`` -- the only
+    other two text fields a graph file has. Once every description is clean
+    this rule has nothing left to compare, which is exactly why the floor in
+    the test below exists: the two are halves of one guarantee, and neither
+    is worth much on its own.
+    """
+    offenders: list[str] = []
+    for key, payload in _SHIPPED.items():
+        notes = _notes_of(payload)
+        on_the_card = {
+            requirement for requirement, _ in _requirements_stated_in(
+                f"{payload.get('name', '')}. {payload.get('description', '')}")
+        }
+        in_the_notes = {
+            requirement
+            for note in notes
+            for requirement, _ in _requirements_stated_in(note)
+        }
+        for requirement in sorted(on_the_card - in_the_notes):
+            offenders.append(
+                f"{key} says it needs {requirement} in its name or its "
+                f"description, and in none of its {len(notes)} note(s)")
+
+    assert not offenders, (
+        f"{len(offenders)} requirement(s) are stated only where there is no "
+        f"room to act on them:\n  " + "\n  ".join(offenders)
+        + "\nMove the sentence onto the note bound to the nodes it is about. "
+          "Do not delete it: an unwarned download is worse than a crowded "
+          "card.")
+
+
+#: How many examples must still name a heavy resource in one of their notes.
+#:
+#: A floor, set well under what ships -- sixteen examples across the two
+#: roots named a download, a pack, a GPU or a chat backend when the warnings
+#: were moved off the cards -- so that retiring one heavy example is not a
+#: test failure while gutting the warnings is.
+_EXAMPLES_THAT_MUST_WARN = 10
+
+
+def test_the_notes_still_warn_about_something():
+    """A rule that has stopped matching anything has stopped being a rule.
+
+    This is the ``assert covered`` that used to close the card check, moved
+    to the surface the warnings moved to, and for the same reason. Without
+    it the two rules above are satisfied perfectly by a rewrite that drops
+    every warning from every example: the cards would be clean, nothing
+    would contradict a note, and a learner would press Run on a graph that
+    needs a 1.5 GB download with no warning anywhere on screen.
+
+    If this trips, either the vocabulary in ``_CARD_REQUIREMENT_WORDS`` no
+    longer matches the way the notes are written -- fix the vocabulary -- or
+    the warnings really are gone, which is the failure it was written for.
+    """
+    warned = sorted(
+        key for key, payload in _SHIPPED.items()
+        if any(_requirements_stated_in(note) for note in _notes_of(payload)))
+
+    assert len(warned) >= _EXAMPLES_THAT_MUST_WARN, (
+        f"only {len(warned)} of {len(_SHIPPED)} shipped examples name a GPU, "
+        f"a download, a pack or a service of the reader's own in a note: "
+        f"{warned}. At least {_EXAMPLES_THAT_MUST_WARN} have to, because at "
+        f"least that many cannot run on a fresh offline install.")
 
 
 def test_the_card_requirement_reader_hears_both_ways_of_saying_it():
     """Two sentences no builtin happens to be written with today.
 
-    The test above can only be as good as the vocabulary underneath it, and
-    that vocabulary is only exercised by whatever the current 35 descriptions
-    happen to say. These two are the shapes it used to get wrong: a passive
-    requirement it did not hear, and a reassurance it heard as a requirement
-    and would have told the author to move to the front of the card.
+    The rules above can only be as good as the vocabulary underneath them,
+    and that vocabulary is only exercised by whatever the shipped
+    descriptions and notes happen to say. These two are the shapes it used
+    to get wrong: a passive requirement it did not hear, and a reassurance
+    it heard as a requirement.
+
+    Both matter more now that the detector is a prohibition. A requirement
+    it cannot hear is a requirement that stays on the card; a reassurance it
+    mishears is an author told to move "no GPU required" off the card and
+    onto the canvas, which takes the one sentence a hesitant reader wanted
+    and hides it.
     """
     assert _requirements_stated_in("A GPU is needed for the training loop.") == [
         ("a GPU", "A GPU is needed for the training loop.")]
 
-    # The wrong advice, not merely a missed one: told to move this forward,
-    # an author would open the card with the requirement it does NOT have.
     assert _requirements_stated_in("Runs on CPU. No GPU is required.") == []
 
 

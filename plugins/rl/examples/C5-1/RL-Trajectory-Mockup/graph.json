@@ -1,6 +1,6 @@
 {
-  "name": "C5-1 A trajectory as state, action and reward tensors",
-  "description": "Prints one episode: states, actions, rewards, return",
+  "name": "C5-1 One episode as tensors",
+  "description": "States, actions, rewards and the return",
   "nodes": [
     { "id": "start",  "type": "Start",        "position": { "x": -300, "y":   0 }, "data": { "params": {} } },
     { "id": "states", "type": "TensorInput",  "position": { "x":  -40, "y": -250 }, "data": { "params": { "shape": "4,6", "dtype": "float32", "value_mode": "random", "seed": 1 } } },

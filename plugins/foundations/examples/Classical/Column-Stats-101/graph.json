@@ -1,6 +1,6 @@
 {
-  "name": "Column Stats 101: open a table and see the numbers move",
-  "description": "Mean, standard deviation and minimum, column by column",
+  "name": "Column Stats 101",
+  "description": "Mean, std and min, column by column",
   "nodes": [
     { "id": "note-overview", "type": "note", "position": { "x": -660, "y": 0 },
       "data": { "noteKind": "text",

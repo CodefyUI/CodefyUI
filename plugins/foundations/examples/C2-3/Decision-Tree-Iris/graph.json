@@ -1,6 +1,6 @@
 {
-  "name": "C2-3 Decision Tree: a 20-questions classifier",
-  "description": "A depth-3 tree on Iris, printed as its own rules",
+  "name": "C2-3 Decision tree on Iris",
+  "description": "A depth-3 tree, printed as rules",
   "nodes": [
     { "id": "note-overview", "type": "note", "position": { "x": -720, "y": 0 },
       "data": { "noteKind": "text",

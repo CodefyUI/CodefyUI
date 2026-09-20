@@ -1,6 +1,6 @@
 {
-  "name": "C2-1 Supervised Learning: fit a function from (x, y) pairs",
-  "description": "Fit on 160 points, then score the 40 held back",
+  "name": "C2-1 Supervised Learning 101",
+  "description": "Fit on 160 points, score 40 held back",
   "nodes": [
     { "id": "note-overview", "type": "note", "position": { "x": -720, "y": 0 },
       "data": { "noteKind": "text",

@@ -1,6 +1,6 @@
 {
-  "name": "C6-1 World model: one step of learned dynamics",
-  "description": "State and action in, the predicted next state out",
+  "name": "C6-1 World model next state",
+  "description": "State and action in, prediction out",
   "nodes": [
     { "id": "start",  "type": "Start",       "position": { "x": -320, "y":   0 }, "data": { "params": {} } },
     { "id": "state",  "type": "TensorInput", "position": { "x":  -60, "y": -120 }, "data": { "params": { "shape": "1,4", "dtype": "float32", "value_mode": "explicit", "values": [0.2, -0.5, 0.0, 1.0], "seed": 0 } } },

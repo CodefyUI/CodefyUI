@@ -199,7 +199,7 @@ curl -s -X POST "http://127.0.0.1:8000/api/graph/run/Api-Function" \
 curl.exe -s "http://127.0.0.1:8000/api/graph/contract/Api-Function"
 ```
 
-上述呼叫所需的 graph 位於 `examples/Usage_Example/Api-Function/`，在範例集裡叫做 **Call a graph as an API**。開啟後存檔，名稱要存成 `Api-Function` — 上面網址裡的位址是你存檔時取的名字，不是範例的名稱 — 這樣上面的指令就不需修改即可執行。
+上述呼叫所需的 graph 位於 `examples/Usage_Example/Api-Function/`，在範例集裡叫做 **Call a graph over HTTP**。開啟後存檔，名稱要存成 `Api-Function` — 上面網址裡的位址是你存檔時取的名字，不是範例的名稱 — 這樣上面的指令就不需修改即可執行。
 
 ## 8. 限制與注意事項 {/* #8-limits-and-gotchas */}
 

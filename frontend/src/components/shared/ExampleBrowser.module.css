@@ -61,8 +61,19 @@
   border-radius: var(--radius-lg);
   padding: var(--sp-4) var(--sp-5);
   cursor: pointer;
-  width: 200px;
+  /* rem, not a literal 200px: the root font-size is
+     clamp(16px, 0.35vw + 11px, 19px) (App.css), so on a wide screen the name
+     and the description inside this card are at their largest while a px
+     width is not — the card shrinks against its own type. 13rem is 208px at
+     a 16px root and tracks the type from there, and matches the gallery
+     modal's grid track so the same example is the same size on both
+     surfaces. */
+  width: 13rem;
   text-align: left;
+  /* A column, so .presetCardFooter can claim the leftover height with
+     margin-top: auto and land at the same place on every card in the row. */
+  display: flex;
+  flex-direction: column;
   transition: border-color var(--transition), box-shadow var(--transition);
 }
 
@@ -76,34 +87,52 @@
 .presetCardName {
   font-size: var(--fs-sm);
   font-weight: var(--fw-semibold);
-  line-height: var(--lh-tight);
+  /* Snug, not tight: this label wraps to a second line now, and --lh-tight is
+     the token for single-line dense UI. */
+  line-height: var(--lh-snug);
   color: var(--text-secondary);
   /* Names stay English in every locale, and a plugin is free to ship one like
      "Mini U-Net forward — encoder/bottleneck/decoder": no space to break at,
      so it ran out of the card and pushed the grid past its section. */
   min-width: 0;
   overflow-wrap: anywhere;
+  /* Two lines and then an ellipsis. Breaking anywhere kept a long name inside
+     the card but let it wrap to three or four lines, and since these cards
+     sit in a flex row of fixed-width siblings, that one card was taller than
+     everything beside it. The shipped names are one line; the clamp is what
+     bounds the name a pack ships. */
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
 }
 
 .presetCardDesc {
   font-size: var(--fs-xs);
   color: var(--text-muted);
   line-height: var(--lh-snug);
-  margin-bottom: var(--sp-3);
 }
 
-/* One line, always. The card is a fixed 200px while its two footer parts are
+/* One line, always. The card has a fixed width while its two footer parts do
    not: a long family chip ("Transformer", or a pack name a plugin chose) plus
-   a node count no longer fit side by side, and the flex default wrapped the
-   count onto a second line -- so the card grew a row and the grid went ragged.
-   The count is the part that must stay put and stay whole; the chip is the
-   part that can afford to be cut, because the sub-header above the card
-   usually says the same word. */
+   a node count did not always fit side by side, and the flex default wrapped
+   the count onto a second line -- so the card grew a row and the grid went
+   ragged. The count is the part that must stay put and stay whole; the chip
+   is the part that can afford to be cut, because the sub-header above the
+   card usually says the same word. */
 .presetCardFooter {
   display: flex;
   align-items: center;
   gap: var(--sp-3);
   flex-wrap: nowrap;
+  /* Pinned to the bottom of the card, not left to follow the text. The row
+     is a wrapping flex line, so every card in it is as tall as the tallest;
+     a badge that followed the prose sat at three different heights across
+     one row, because a name is one line or two and a description likewise.
+     The gallery modal's .cardFooter is pinned for the same reason. */
+  margin-top: auto;
+  padding-top: var(--sp-3);
 }
 
 /* Difficulty badge — bg and color are dynamic (DIFFICULTY_COLORS) — set inline */

@@ -1,6 +1,6 @@
 {
-  "name": "Train a Causal LM on TinyStories",
-  "description": "Perplexity and a story; needs a 16 GB GPU and a download",
+  "name": "Pretrain an LM on TinyStories",
+  "description": "From random weights to a short story",
   "gallery": { "section": "training", "order": 5 },
   "nodes": [
     {
@@ -301,7 +301,7 @@
       },
       "data": {
         "noteKind": "text",
-        "noteContent": "Pretraining from scratch, not fine-tuning: the weights start random and the only thing this graph is given is text. TinyStories is short children's stories in a small vocabulary, which is what lets a 204M-parameter decoder write readable English after a single pass.\nOne epoch is 2,441 micro-batches at bf16, about 610 optimizer steps -- under an hour on a 16 GB GPU, because the corpus is capped at 20M tokens. It downloads the corpus on the first run.\nAfterwards read the two graph outputs: perplexity on the held-out split, lower being better, and the story the model wrote from \"Once upon a time\". README.md has the recipe, the budgets and the memory levers.\n\n這是從零開始的預訓練，不是微調：權重一開始是隨機的，這張圖唯一拿到的東西就是文字。TinyStories 是用小字彙寫成的短篇童話，所以 204M 參數的 decoder 只跑一輪就能寫出看得懂的英文。\n一個 epoch 是 2,441 個 micro-batch（bf16），約 610 次 optimizer 更新；在 16 GB GPU 上不到一小時，因為語料被限制在 2,000 萬個 token。第一次執行會下載語料。\n跑完看兩個 graph output：保留分割上的 perplexity（越低越好），以及模型從 \"Once upon a time\" 續寫的故事。配方、預算與記憶體調整方式都在旁邊的 README.md。",
+        "noteContent": "Pretraining from scratch, not fine-tuning: the weights start random and the only thing this graph is given is text. TinyStories is short children's stories in a small vocabulary, which is what lets a 204M-parameter decoder write readable English after a single pass.\nOne epoch is 2,441 micro-batches at bf16, about 610 optimizer steps -- under an hour on the 16 GB GPU it requires, because the corpus is capped at 20M tokens. The first run downloads the corpus.\nAfterwards read the two graph outputs: perplexity on the held-out split, lower being better, and the story the model wrote from \"Once upon a time\". README.md has the recipe, the budgets and the memory levers.\n\n這是從零開始的預訓練，不是微調：權重一開始是隨機的，這張圖唯一拿到的東西就是文字。TinyStories 是用小字彙寫成的短篇童話，所以 204M 參數的 decoder 只跑一輪就能寫出看得懂的英文。\n一個 epoch 是 2,441 個 micro-batch（bf16），約 610 次 optimizer 更新；在它需要的 16 GB GPU 上不到一小時，因為語料被限制在 2,000 萬個 token。第一次執行會下載語料。\n跑完看兩個 graph output：保留分割上的 perplexity（越低越好），以及模型從 \"Once upon a time\" 續寫的故事。配方、預算與記憶體調整方式都在旁邊的 README.md。",
         "noteColor": "#3d3d1a",
         "boundToNodeId": "start",
         "boundOffset": {

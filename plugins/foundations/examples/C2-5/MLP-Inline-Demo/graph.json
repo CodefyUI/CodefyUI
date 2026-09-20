@@ -1,6 +1,6 @@
 {
-  "name": "C2-5 MLP inline demo (no MNIST download required)",
-  "description": "Two moons split by one MLP node, in about a second",
+  "name": "C2-5 MLP inline demo",
+  "description": "Two moons; one node fits and classifies",
   "nodes": [
     { "id": "note-overview", "type": "note", "position": { "x": -720, "y": 0 },
       "data": { "noteKind": "text",

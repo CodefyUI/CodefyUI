@@ -1,6 +1,6 @@
 {
   "name": "BERT Encoder Transformer",
-  "description": "Encoder forward pass: every token attends to all",
+  "description": "Every token attends to every other",
   "gallery": { "section": "architectures", "family": "Transformer", "order": 2 },
   "nodes": [
     { "id": "start-1", "type": "Start", "position": { "x": -200, "y": 0 }, "data": { "params": {} } },

@@ -1,6 +1,6 @@
 {
-  "name": "C6-3 VLM: image patches attend to text tokens",
-  "description": "Nine image patches read four text tokens, on four heads",
+  "name": "C6-3 VLM cross-modal attention",
+  "description": "9 patches read 4 text tokens on 4 heads",
   "nodes": [
     { "id": "start", "type": "Start",             "position": { "x": -320, "y":    0 }, "data": { "params": {} } },
     { "id": "img",   "type": "TensorInput",       "position": { "x":  -60, "y": -120 }, "data": { "params": { "shape": "1,3,12,12", "dtype": "float32", "value_mode": "random", "seed": 13 } } },

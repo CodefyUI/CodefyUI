@@ -1,6 +1,6 @@
 {
-  "name": "Linear vs Logistic: same skeleton, different last operator",
-  "description": "One chain predicts a number, the other a species",
+  "name": "Linear vs Logistic regression",
+  "description": "Same skeleton, a number or a species",
   "nodes": [
     { "id": "note-overview", "type": "note", "position": { "x": -740, "y": 0 },
       "data": { "noteKind": "text",

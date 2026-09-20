@@ -1,6 +1,6 @@
 {
-  "name": "Policy Gradient 101: one REINFORCE step exposed",
-  "description": "Prints the loss, the advantages and log pi(a|s)",
+  "name": "Policy Gradient 101",
+  "description": "One REINFORCE step: loss and advantages",
   "nodes": [
     { "id": "start-1", "type": "Start",              "position": { "x": -240, "y":   0 }, "data": { "params": {} } },
     { "id": "logits",  "type": "TensorInput",        "position": { "x":   40, "y": -250 }, "data": { "params": { "shape": "4,3", "dtype": "float32", "value_mode": "random", "seed": 1 } } },

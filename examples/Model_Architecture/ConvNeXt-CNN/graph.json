@@ -1,6 +1,6 @@
 {
-  "name": "ConvNeXt (Simplified)",
-  "description": "ConvNeXt block forward pass: patchify stem, 1x1 convs",
+  "name": "ConvNeXt block",
+  "description": "Patchify stem, one 7x7, two 1x1 convs",
   "gallery": { "section": "architectures", "family": "CNN", "order": 4 },
   "nodes": [
     { "id": "start-1", "type": "Start", "position": { "x": -250, "y": 0 }, "data": { "params": {} } },

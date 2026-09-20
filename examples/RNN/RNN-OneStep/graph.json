@@ -1,6 +1,6 @@
 {
-  "name": "RNN unrolled: three steps, one set of weights",
-  "description": "Print the hidden state after the whole sequence",
+  "name": "RNN unrolled over three steps",
+  "description": "One set of weights, reused each step",
   "gallery": { "section": "concepts", "order": 3 },
   "nodes": [
     { "id": "start-1",  "type": "Start",        "position": { "x": -260, "y": 0 }, "data": { "params": {} } },

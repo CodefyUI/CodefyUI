@@ -1,6 +1,6 @@
 {
-  "name": "Mixture of Experts: top-k routing",
-  "description": "Top-2 routing over 4 experts, printed per token",
+  "name": "Mixture of Experts top-k routing",
+  "description": "Only 2 of the 4 run per token",
   "gallery": { "section": "concepts", "order": 4 },
   "nodes": [
     { "id": "start-1",   "type": "Start",        "position": { "x": -260, "y": 0    }, "data": { "params": {} } },

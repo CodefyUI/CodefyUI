@@ -1,6 +1,6 @@
 {
-  "name": "C2-4 Multi-layer ≠ depth without activation",
-  "description": "Drop the ReLU and the same network drops to chance",
+  "name": "C2-4 Depth without activation",
+  "description": "Two linear layers collapse into one",
   "nodes": [
     { "id": "note-overview", "type": "note", "position": { "x": -720, "y": 0 },
       "data": { "noteKind": "text",

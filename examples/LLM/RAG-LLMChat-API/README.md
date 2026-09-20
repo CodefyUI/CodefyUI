@@ -1,4 +1,4 @@
-# RAG with a chat API: retrieve locally, generate anywhere
+# RAG with a chat API
 
 The same retrieval chain as
 [RAG-Local-Offline](../RAG-Local-Offline/README.md), with the last box swapped.

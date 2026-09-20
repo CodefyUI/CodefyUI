@@ -1,6 +1,6 @@
 {
   "name": "PPO Robotics Controller",
-  "description": "Actor-critic forward pass: 376 inputs to 17 actions",
+  "description": "376 inputs to 17 action probabilities",
   "gallery": { "section": "architectures", "family": "RL", "order": 2 },
   "nodes": [
     {

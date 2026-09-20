@@ -1,6 +1,6 @@
 {
-  "name": "C6-4 MoE: per-token routing picks top-2 of 4 experts",
-  "description": "The weights and the expert numbers, token by token",
+  "name": "C6-4 MoE top-2 expert routing",
+  "description": "Expert ids and weights, token by token",
   "nodes": [
     { "id": "start",   "type": "Start",       "position": { "x": -320, "y":   0 }, "data": { "params": {} } },
     { "id": "x",       "type": "TensorInput", "position": { "x":  -60, "y":   0 }, "data": { "params": { "shape": "1,8,32", "dtype": "float32", "value_mode": "random", "seed": 9 } } },
