@@ -1,6 +1,6 @@
 import { useState, useCallback, useRef, useEffect } from 'react';
 import { useGraphExecution } from '../../hooks/useGraphExecution';
-import { useDeviceOptions, deviceLabel } from '../../hooks/useDeviceOptions';
+import { useDeviceOptions, deviceLabel, isDeviceServed } from '../../hooks/useDeviceOptions';
 import { useTabStore } from '../../store/tabStore';
 import { useNodeDefStore } from '../../store/nodeDefStore';
 import { useUIStore } from '../../store/uiStore';
@@ -94,12 +94,23 @@ export function Toolbar() {
   const setGraphDevice = useTabStore((s) => s.setGraphDevice);
   const globalDevice = useUIStore((s) => s.globalDevice);
   const { devices } = useDeviceOptions();
-  const followDevice = devices.find((d) => d.value === globalDevice);
-  const followLabel = followDevice ? deviceLabel(followDevice) : globalDevice;
   const storedDevice = activeTab.graphDevice;
   const storedDeviceListed = storedDevice === null || devices.some((d) => d.value === storedDevice);
   const { reload, fetchDefinitions } = useNodeDefStore();
   const { t, locale, setLocale } = useI18n();
+  const followDevice = devices.find((d) => d.value === globalDevice);
+  // When the Settings device is one this server does not serve, the option
+  // still follows Settings -- that is what the empty value means -- but it
+  // names where the run actually lands, because `resolve_device` downgrades
+  // such a run to CPU on the way in and the bare "Follow Settings (cuda)"
+  // promised the opposite. Not the Settings row's sentence appended: this
+  // select is capped at 14rem, and the longer string clipped mid-word at
+  // exactly the part that carries the news. The row explains; this reports.
+  const followText = isDeviceServed(devices, globalDevice)
+    ? t('toolbar.device.follow', {
+        device: followDevice ? deviceLabel(followDevice) : globalDevice,
+      })
+    : t('toolbar.device.followFallback', { device: globalDevice });
   const addToast = useToastStore((s) => s.addToast);
 
   const [openMenu, setOpenMenu] = useState<string | null>(null);
@@ -409,7 +420,7 @@ export function Toolbar() {
           disabled={activeTab.readOnly}
           onChange={(e) => setGraphDevice(e.target.value || null)}
         >
-          <option value="">{t('toolbar.device.follow', { device: followLabel })}</option>
+          <option value="">{followText}</option>
           {/* The file names a device this server does not list (cuda:1 on a
               box without it, or auto). Shown as it is stored, so the select
               keeps the value and a Save keeps the file's assignment. */}

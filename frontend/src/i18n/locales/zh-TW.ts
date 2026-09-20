@@ -530,6 +530,10 @@ const zhTW: Record<TranslationKey, string> = {
   'toolbar.settings.section.system': '這台伺服器',
   'settings.device.name': '運算裝置',
   'settings.device.hint': '最佳可用裝置：{device}',
+  'settings.device.unavailable': '{device}（此伺服器沒有）',
+  'toolbar.device.followFallback': '跟隨設定（{device} → CPU）',
+  'settings.device.fallback': '這台伺服器沒有 {device}，執行時會退回 CPU。',
+  'settings.device.gpuIdle': '偵測到 {gpu}，但這台伺服器跑的是 CPU 版。安裝：',
 
   // 字級選單
   'toolbar.fontSize.title': '字級',

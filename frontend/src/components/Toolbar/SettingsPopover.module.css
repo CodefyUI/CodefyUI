@@ -160,6 +160,49 @@
   margin-top: var(--sp-1);
 }
 
+/* A command the reader retypes in a terminal, inside a sentence. The code
+   well's own colours, so it reads as text to copy rather than as prose --
+   `anywhere` because a path or a flag in one has no space to break at, and
+   this column is ~180px wide, which `cdui install --gpu cu128` already
+   outgrows in English. Not a CommandBlock: that is a block with a copy button
+   beside it, and a settings row has room for neither.
+
+   `inline-block` is what keeps a wrapped command ONE box. As a plain inline it
+   broke into two rectangles at the line end, each with its own rounded corners
+   and padding, and the flag it split on read as two commands. */
+.command {
+  display: inline-block;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  background: var(--surface-code);
+  color: var(--code-text);
+  border-radius: var(--radius-sm);
+  padding: 0 var(--sp-2);
+  overflow-wrap: anywhere;
+}
+
+/* A word inside a description that opens a panel. A button, not an anchor:
+   it opens a modal in this app rather than navigating anywhere, so there is
+   no href to give an <a>. Same affordance as ParamField's `.linkBtn`. */
+.linkBtn {
+  padding: 0;
+  background: none;
+  border: 0;
+  color: var(--accent);
+  font: inherit;
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+.linkBtn:hover {
+  color: var(--text-primary);
+}
+
+.linkBtn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: var(--sp-1);
+  border-radius: var(--radius-sm);
+}
+
 .ctrl {
   display: flex;
   align-items: center;
