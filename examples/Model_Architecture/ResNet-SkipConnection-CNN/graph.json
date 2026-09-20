@@ -1,6 +1,6 @@
 {
   "name": "ResNet with Skip Connections",
-  "description": "Mini-ResNet forward pass, shortcuts drawn as Add nodes",
+  "description": "The shortcuts are drawn as Add nodes",
   "gallery": { "section": "architectures", "family": "CNN", "order": 1 },
   "nodes": [
     { "id": "start-1", "type": "Start", "position": { "x": -250, "y": 0 }, "data": { "params": {} } },

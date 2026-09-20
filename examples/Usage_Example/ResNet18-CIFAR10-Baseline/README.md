@@ -1,4 +1,4 @@
-# ResNet-18 / CIFAR-10 baseline
+# ResNet-18 CIFAR-10 baseline
 
 The standard CIFAR-10 reproduction, built entirely from GUI nodes. No Python is
 written anywhere in this example and none executes as part of it — the

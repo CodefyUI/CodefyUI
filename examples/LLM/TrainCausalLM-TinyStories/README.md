@@ -1,4 +1,4 @@
-# Train a Causal LM on TinyStories
+# Pretrain an LM on TinyStories
 
 Pretrain a decoder-only language model from scratch, entirely from GUI nodes. No
 Python is written anywhere in this example and none executes as part of it — the
@@ -146,13 +146,13 @@ the two suite-wide sweeps that pick it up by glob
 because it downloads and trains; `test_codegen.py` checks it still exports to
 compilable Python).
 
-`test_tinystories_lm_example_warns_inside_the_card_truncation` asserts the
-requirements at the top of this file still fit inside the **80 characters** the
-canvas gallery card shows. It truncates there and offers no tooltip, so
-anything past it is invisible on the surface a user reads before pressing Run —
-which makes *where* the warning sits in the description an invariant, not a
-style preference. The same test caps the description's length and requires this
-README to exist, since the card's last sentence points at it.
+`test_tinystories_lm_example_names_what_it_needs_in_its_notes` asserts that the
+two requirements at the top of this file — the 16 GB GPU and the corpus
+download — are still named in the notes on the graph's canvas, in the English
+half and in the Traditional Chinese half. The gallery card does not carry them:
+a card says what the graph shows, and what an example needs before it runs is
+written beside the nodes it is about. The same test caps the description's
+length and requires this README to exist, since the overview note points at it.
 
 `test_tinystories_lm_example_still_describes_itself` asserts that every number
 *this file* quotes is still derivable from the graph's params: the reference
@@ -170,7 +170,7 @@ type-check perfectly when broken, so neither is catchable any other way.
 
 ## Provenance
 
-Unlike the [ResNet-18 / CIFAR-10
+Unlike the [ResNet-18 CIFAR-10
 baseline](../../Usage_Example/ResNet18-CIFAR10-Baseline/README.md), this example
 ships **no measured result**: the timings above are estimates from the step
 count, not from a run, and there is no evidence directory. If you run it, the

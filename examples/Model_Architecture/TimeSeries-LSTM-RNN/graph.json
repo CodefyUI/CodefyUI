@@ -1,6 +1,6 @@
 {
   "name": "LSTM Time-Series Forecaster",
-  "description": "LSTM forward pass: 24 past steps, one forecast",
+  "description": "24 past readings, one number out",
   "gallery": { "section": "architectures", "family": "RNN", "order": 1 },
   "nodes": [
     { "id": "start-1", "type": "Start", "position": { "x": -230, "y": 0 }, "data": { "params": {} } },

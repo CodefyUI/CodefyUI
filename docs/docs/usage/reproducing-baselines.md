@@ -14,7 +14,7 @@ Nothing below involves writing Python. The architecture, the optimizer, the sche
 
 ## The example
 
-Open **ResNet-18 / CIFAR-10 baseline** from the empty-canvas gallery, or load its graph directly. Everything referred to on this page lives in [`examples/Usage_Example/ResNet18-CIFAR10-Baseline/`](https://github.com/CodefyUI/CodefyUI/tree/main/examples/Usage_Example/ResNet18-CIFAR10-Baseline) — the `graph.json`, a `README.md` recording exactly what was run, and an `evidence/` directory holding the raw metric export and the plotted curves.
+Open **ResNet-18 CIFAR-10 baseline** from the empty-canvas gallery, or load its graph directly. Everything referred to on this page lives in [`examples/Usage_Example/ResNet18-CIFAR10-Baseline/`](https://github.com/CodefyUI/CodefyUI/tree/main/examples/Usage_Example/ResNet18-CIFAR10-Baseline) — the `graph.json`, a `README.md` recording exactly what was run, and an `evidence/` directory holding the raw metric export and the plotted curves.
 
 Nineteen nodes, in four strands that meet at `TrainingLoop`:
 

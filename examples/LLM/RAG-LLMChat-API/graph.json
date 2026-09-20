@@ -1,6 +1,6 @@
 {
-  "name": "RAG with a chat API: retrieve locally, generate anywhere",
-  "description": "Answers via Ollama; needs the sentence-embeddings pack",
+  "name": "RAG with a chat API",
+  "description": "Retrieval is local, the generator is not",
   "gallery": { "section": "llm", "order": 4 },
   "nodes": [
     {

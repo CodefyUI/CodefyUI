@@ -1,6 +1,6 @@
 {
-  "name": "C4-3 Pre-norm Transformer block, assembled",
-  "description": "Six nodes, one shape: (1, 5, 8) in and (1, 5, 8) out",
+  "name": "C4-3 Pre-norm Transformer block",
+  "description": "Six nodes, (1, 5, 8) in and out",
   "nodes": [
     { "id": "start", "type": "Start",                  "position": { "x": -320, "y":   0 }, "data": { "params": {} } },
     { "id": "x",     "type": "TensorInput",            "position": { "x":  -60, "y":   0 }, "data": { "params": { "shape": "1,5,8", "dtype": "float32", "value_mode": "random", "seed": 4 } } },

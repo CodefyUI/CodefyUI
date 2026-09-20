@@ -1,6 +1,6 @@
 {
-  "name": "RAG, fully local: retrieve then generate",
-  "description": "Answers offline; needs rag + sentence-embeddings packs",
+  "name": "Fully local RAG",
+  "description": "A 0.5B model answers from five notes",
   "gallery": { "section": "llm", "order": 3 },
   "nodes": [
     {

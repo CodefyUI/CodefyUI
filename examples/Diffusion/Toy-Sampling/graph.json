@@ -1,6 +1,6 @@
 {
-  "name": "Toy Sampling: reverse diffusion with an untrained U-Net",
-  "description": "20 reverse steps; untrained, so the output is noise",
+  "name": "Toy reverse diffusion sampling",
+  "description": "20 steps; untrained, so it stays noise",
   "gallery": { "section": "concepts", "order": 6 },
   "nodes": [
     { "id": "start-1",  "type": "Start", "position": { "x": -260, "y": 0 }, "data": { "params": {} } },

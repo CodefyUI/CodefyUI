@@ -1,6 +1,6 @@
 {
   "name": "BiGRU Speech Recognition",
-  "description": "Bidirectional GRU forward pass over mel frames",
+  "description": "50 phoneme scores at each of 32 frames",
   "gallery": { "section": "architectures", "family": "RNN", "order": 2 },
   "nodes": [
     { "id": "start-1", "type": "Start", "position": { "x": -230, "y": 0 }, "data": { "params": {} } },

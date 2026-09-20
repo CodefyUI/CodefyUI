@@ -22,9 +22,20 @@
   font-size: var(--fs-md);
   font-weight: var(--fw-medium);
   color: var(--text-primary);
+  line-height: var(--lh-snug);
+  /* Two lines rather than one ellipsized one. The row is as wide as the
+     sidebar the reader dragged it to, and the type inside it follows the
+     root font-size (App.css clamps that up to 19px on a wide screen), so a
+     single nowrap line cut names that had room to wrap. The description
+     right below has wrapped to two lines all along. */
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  -webkit-box-orient: vertical;
   overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  /* A pack is free to ship a name with nothing to break at, and this row can
+     be dragged down to 180px wide — the same guard .presetCardName carries. */
+  overflow-wrap: anywhere;
 }
 
 .exampleDesc {

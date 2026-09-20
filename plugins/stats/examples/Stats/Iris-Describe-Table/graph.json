@@ -1,6 +1,6 @@
 {
-  "name": "Iris describe(): the whole table in one node",
-  "description": "Eight summary statistics for the four iris columns",
+  "name": "Iris describe() in one node",
+  "description": "Eight statistics for four columns",
   "nodes": [
     {
       "id": "start-1",

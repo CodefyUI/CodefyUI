@@ -1,6 +1,6 @@
 {
   "name": "GPT Decoder-Only Transformer",
-  "description": "Decoder-only Transformer forward pass to logits",
+  "description": "The same tensor is input and memory",
   "gallery": { "section": "architectures", "family": "Transformer", "order": 1 },
   "nodes": [
     { "id": "start-1", "type": "Start", "position": { "x": -200, "y": 0 }, "data": { "params": {} } },

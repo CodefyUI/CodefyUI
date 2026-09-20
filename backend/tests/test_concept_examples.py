@@ -206,7 +206,7 @@ def test_the_forward_process_leaves_the_digit_visible():
 # ── RNN unrolled: one set of weights, applied three times ─────────────────
 
 def test_the_unrolled_rnn_applies_one_set_of_weights():
-    """The name says "one set of weights", so the params have to say it too.
+    """The description says "one set of weights", so the params say it too.
 
     Each cell builds its own module from ``seed``, so three cells with the
     same four structural params hold three identical copies -- which is what

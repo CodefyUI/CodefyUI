@@ -14,7 +14,7 @@ description: 研究等級的完整說明 — 使用 GUI 節點、固定 seed 與
 
 ## 這個範例
 
-從空白畫布的**範例圖庫**開啟 **ResNet-18 / CIFAR-10 baseline**，或直接載入圖檔。本頁使用的檔案都位於 [`examples/Usage_Example/ResNet18-CIFAR10-Baseline/`](https://github.com/CodefyUI/CodefyUI/tree/main/examples/Usage_Example/ResNet18-CIFAR10-Baseline)：`graph.json`、記錄實際執行內容的 `README.md`，以及包含原始指標匯出與曲線圖的 `evidence/` 目錄。
+從空白畫布的**範例圖庫**開啟 **ResNet-18 CIFAR-10 baseline**，或直接載入圖檔。本頁使用的檔案都位於 [`examples/Usage_Example/ResNet18-CIFAR10-Baseline/`](https://github.com/CodefyUI/CodefyUI/tree/main/examples/Usage_Example/ResNet18-CIFAR10-Baseline)：`graph.json`、記錄實際執行內容的 `README.md`，以及包含原始指標匯出與曲線圖的 `evidence/` 目錄。
 
 圖中有 19 個節點，分為四組並連到 `TrainingLoop`：
 

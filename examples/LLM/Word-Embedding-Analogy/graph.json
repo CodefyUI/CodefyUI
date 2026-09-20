@@ -1,6 +1,6 @@
 {
-  "name": "Word Embedding Analogy: king − man + woman ≈ queen",
-  "description": "Vector arithmetic on a 59-word toy table, offline",
+  "name": "Word embedding analogy",
+  "description": "King - man + woman gives queen",
   "gallery": { "section": "llm", "order": 1 },
   "nodes": [
     { "id": "start-1", "type": "Start", "position": { "x": -260, "y": 100 }, "data": { "params": {} } },

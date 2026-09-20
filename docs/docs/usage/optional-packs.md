@@ -146,7 +146,7 @@ Connect either `texts`, for a list such as a chunker's output, or `text`, for on
 - **`max_seq_length`** sets the token limit for each text. `0` uses the model default: 128 for paraphrase-multilingual, 256 for all-MiniLM, and 512 for bge and e5. Longer text is truncated.
 - **`normalize`** is enabled by default. Other controls are **`batch_size`**, **`label_chars`**, and **`device`**.
 
-The `embeddings` and `labels` outputs connect to `CosineSimilarity` and `EmbeddingScatter`. The **Sentence Similarity (zh-TW)** example in [Examples Gallery](./examples-gallery.md) uses this path and requires the pack.
+The `embeddings` and `labels` outputs connect to `CosineSimilarity` and `EmbeddingScatter`. The **Sentence similarity in zh-TW** example in [Examples Gallery](./examples-gallery.md) uses this path and requires the pack.
 
 ### The RAG chain
 
@@ -177,7 +177,7 @@ DocumentLoader -> TextChunker -> TextEmbedding -> VectorStore -> Retriever -> Pr
 
 **CPU performance.** On a laptop CPU, generation is typically a few tokens per second, so an answer can take several to tens of seconds. The first run can add a few seconds to load weights from disk. The bundled question usually completes before its 160-token limit. These are estimates based on model size, not benchmark measurements. The node reports progress for each token. A GPU is faster; `device` follows the graph's device (Settings when the graph has none) unless the node overrides it.
 
-Both graphs are available in [Examples Gallery](./examples-gallery.md), with a `README.md` in each example directory. **RAG, fully local** (`examples/LLM/RAG-Local-Offline`) requires `qwen2.5-0.5b-instruct` and `multilingual-e5-small` and makes no provider request. **RAG with a chat API** (`examples/LLM/RAG-LLMChat-API`) uses the same retrieval nodes and replaces the final node with `LLMChat`; it requires the encoder and either Ollama or a provider key. Running both with the same question keeps the retrieved context constant when comparing generators.
+Both graphs are available in [Examples Gallery](./examples-gallery.md), with a `README.md` in each example directory. **Fully local RAG** (`examples/LLM/RAG-Local-Offline`) requires `qwen2.5-0.5b-instruct` and `multilingual-e5-small` and makes no provider request. **RAG with a chat API** (`examples/LLM/RAG-LLMChat-API`) uses the same retrieval nodes and replaces the final node with `LLMChat`; it requires the encoder and either Ollama or a provider key. Running both with the same question keeps the retrieved context constant when comparing generators.
 
 ## Choosing an embedding model
 

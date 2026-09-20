@@ -1,6 +1,6 @@
 {
-  "name": "ViT Image Classifier (Transformer)",
-  "description": "Forward pass: image to 16 patch tokens to logits",
+  "name": "ViT Image Classifier",
+  "description": "One image becomes 16 patch tokens",
   "gallery": { "section": "architectures", "family": "Transformer", "order": 4 },
   "nodes": [
     { "id": "start-1", "type": "Start", "position": { "x": -250, "y": 0 }, "data": { "params": {} } },

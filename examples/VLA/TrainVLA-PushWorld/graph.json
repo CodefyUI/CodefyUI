@@ -1,6 +1,6 @@
 {
   "name": "Train a VLA on PushWorld",
-  "description": "0.97 closed-loop success; needs a GPU and about an hour",
+  "description": "The instruction says which puck to push",
   "gallery": { "section": "training", "order": 6 },
   "nodes": [
     {
@@ -280,7 +280,7 @@
       },
       "data": {
         "noteKind": "text",
-        "noteContent": "Behavior cloning end to end, with nothing downloaded: the environment, the 2,400 scripted demonstrations and both videos are made by the graph itself. PushWorld hands the policy one distractor puck and two targets, so the pixels alone cannot say which puck to push -- it has to read the instruction.\nMeasured on an RTX 4080, about 56 minutes: success_rate 0.967 (29 of 30), average episode 45.6 steps of a 120-step budget, held-out action MSE 0.588. The rollout video lands under /api/media/vla/ and plays in the editor, green-bordered where the episode was solved and red where it was not.\nREADME.md has the reference table and the knobs worth studying.\n\n端到端的行為複製，而且什麼都不用下載：環境、2,400 段腳本示範，還有兩支影片，全都是這張圖自己產生的。PushWorld 會給策略一顆干擾冰球和兩個目標，所以光看畫面無法判斷該推哪一顆，它必須讀懂指令。\n在 RTX 4080 上實測約 56 分鐘：success_rate 0.967（30 回合中成功 29 回合）、平均回合長度 45.6 步（上限 120 步）、保留集上的動作 MSE 0.588。rollout 影片會寫到 /api/media/vla/ 並直接在編輯器裡播放；綠色邊框代表成功，紅色代表失敗。\n旁邊的 README.md 有完整的參考數字，以及值得研究的參數。",
+        "noteContent": "Behavior cloning end to end, with nothing downloaded: the environment, the 2,400 scripted demonstrations and both videos are made by the graph itself. PushWorld hands the policy one distractor puck and two targets, so the pixels alone cannot say which puck to push -- it has to read the instruction.\nIt needs a GPU and about an hour. Measured on an RTX 4080, about 56 minutes: success_rate 0.967 (29 of 30), average episode 45.6 steps of a 120-step budget, held-out action MSE 0.588. The rollout video lands under /api/media/vla/ and plays in the editor, green-bordered where the episode was solved and red where it was not.\nREADME.md has the reference table and the knobs worth studying.\n\n端到端的行為複製，而且什麼都不用下載：環境、2,400 段腳本示範，還有兩支影片，全都是這張圖自己產生的。PushWorld 會給策略一顆干擾冰球和兩個目標，所以光看畫面無法判斷該推哪一顆，它必須讀懂指令。\n這張圖需要 GPU，也要跑上大約一個小時。在 RTX 4080 上實測約 56 分鐘：success_rate 0.967（30 回合中成功 29 回合）、平均回合長度 45.6 步（上限 120 步）、保留集上的動作 MSE 0.588。rollout 影片會寫到 /api/media/vla/ 並直接在編輯器裡播放；綠色邊框代表成功，紅色代表失敗。\n旁邊的 README.md 有完整的參考數字，以及值得研究的參數。",
         "noteColor": "#3d3d1a",
         "boundToNodeId": "start",
         "boundOffset": {

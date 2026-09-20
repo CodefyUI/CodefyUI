@@ -1,6 +1,6 @@
 {
-  "name": "Classify Iris with k-nearest neighbours",
-  "description": "Fit sklearn KNN on Iris and print its test accuracy",
+  "name": "Classify Iris with sklearn KNN",
+  "description": "Two petal columns, five neighbours vote",
   "gallery": { "section": "concepts", "order": 2 },
   "nodes": [
     { "id": "start-1",   "type": "Start",          "position": { "x": -260, "y": 0 }, "data": { "params": {} } },

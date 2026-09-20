@@ -150,13 +150,13 @@ Pre-built example workflows organized in `examples/`:
 | Category | Examples |
 |----------|----------|
 | **Model Architecture** | ResNet, ConvNeXt, EfficientNet, UNet, ViT, SwinTransformer, BERT, GPT, LLaMA, DiT, LSTM TimeSeries, BiGRU SpeechRecognition, Seq2Seq Attention, DQN Atari, PPO Robotics |
-| **Usage Example** | Train CNN on MNIST, Inference CNN on MNIST, Train a Transformer classifier on MNIST, Train ResNet on CIFAR10, Train a CNN on a HuggingFace dataset, [ResNet-18 / CIFAR-10 Baseline](examples/Usage_Example/ResNet18-CIFAR10-Baseline/) (measured 95.48%, bitwise reproducible), Call a graph as an API (graph-as-a-function demo) |
-| **LLM** | Word Embedding Analogy (`king − man + woman ≈ queen` with the offline `demo-16d` backend), Sentence Similarity (zh-TW), Train a Causal LM on TinyStories, RAG fully local, RAG with a chat API |
-| **Classical** | Classify Iris with k-nearest neighbours, Tabular Iris Pipeline |
-| **Diffusion** | Forward Diffusion, Toy Sampling, Mini U-Net as a single node |
-| **RL** | RLHF building blocks: reward + KL |
-| **RNN** | RNN unrolled |
-| **Transformer** | Mixture of Experts: top-k routing |
+| **Usage Example** | Train CNN on MNIST, Inference CNN on MNIST, Train a Transformer on MNIST, Train ResNet on CIFAR10, Train a CNN on beans (from the Hugging Face Hub), [ResNet-18 CIFAR-10 baseline](examples/Usage_Example/ResNet18-CIFAR10-Baseline/) (measured 95.48%, bitwise reproducible), Call a graph over HTTP (graph-as-a-function demo) |
+| **LLM** | Word embedding analogy (`king − man + woman ≈ queen` with the offline `demo-16d` backend), Sentence similarity in zh-TW, Pretrain an LM on TinyStories, Fully local RAG, RAG with a chat API |
+| **Classical** | Classify Iris with sklearn KNN, Tabular Iris feature pipeline |
+| **Diffusion** | Forward diffusion on a digit, Toy reverse diffusion sampling, Mini U-Net node |
+| **RL** | RLHF reward and KL terms |
+| **RNN** | RNN unrolled over three steps |
+| **Transformer** | Mixture of Experts top-k routing |
 | **VLA** | [Train a VLA on PushWorld](examples/VLA/TrainVLA-PushWorld/) (CUDA GPU, about an hour) |
 
 Requirements and descriptions for each: [Examples Gallery](https://docs.codefyui.com/usage/examples-gallery).

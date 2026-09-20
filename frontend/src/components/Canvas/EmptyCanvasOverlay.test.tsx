@@ -233,23 +233,39 @@ describe('EmptyCanvasOverlay', () => {
     expect(screen.queryByText('Model Architectures')).toBeNull();
   });
 
-  it('truncates descriptions longer than 80 characters', async () => {
+  it('truncates descriptions longer than 40 columns', async () => {
+    // 40, not the 80 this used to cut at: a description is allowed to be 40
+    // columns wide in the first place (`MAX_DESCRIPTION_COLUMNS`, backend and
+    // zh-TW), so a wider cut could only ever fire on text that already broke
+    // the rule -- which is a third-party pack's description, never one of
+    // ours.
     const long = 'x'.repeat(120);
     mockedRest.listExamples.mockResolvedValue([ex({ description: long })]);
     render(<EmptyCanvasOverlay />);
     await waitFor(() => expect(screen.getByText('Example')).toBeInTheDocument());
-    expect(screen.getByText(`${'x'.repeat(80)}...`)).toBeInTheDocument();
+    expect(screen.getByText(`${'x'.repeat(40)}...`)).toBeInTheDocument();
+  });
+
+  it('leaves a description that fits the 40 columns uncut', async () => {
+    // The other side of the cut, and the one that holds for everything this
+    // repo ships: at exactly the cap the card shows the line whole, with no
+    // ellipsis. Without this, narrowing the cut again would go unnoticed
+    // until a reader found a sentence ending in "...".
+    const exact = 'y'.repeat(40);
+    mockedRest.listExamples.mockResolvedValue([ex({ description: exact })]);
+    render(<EmptyCanvasOverlay />);
+    expect(await screen.findByText(exact)).toBeInTheDocument();
   });
 
   it('keeps the whole description reachable as a tooltip (core#305)', async () => {
-    // The cut stays at 80 -- every example's first line is written to fit it,
-    // and the backend suite asserts that. What was missing is the rest: this
-    // card was the only place a description appeared with no way to read the
-    // other 400 characters. The sidebar's gallery tab already does this.
-    const long = `${'x'.repeat(80)} and the part nobody could read`;
+    // The cut only fires on a description that ran past the 40-column rule,
+    // and that is exactly when the tooltip earns its place: this card is the
+    // one place a description appears with no way to read the rest. The
+    // sidebar's gallery tab already does this.
+    const long = `${'x'.repeat(40)} and the part nobody could read`;
     mockedRest.listExamples.mockResolvedValue([ex({ description: long })]);
     render(<EmptyCanvasOverlay />);
-    const shown = await screen.findByText(`${'x'.repeat(80)}...`);
+    const shown = await screen.findByText(`${'x'.repeat(40)}...`);
     expect(shown).toHaveAttribute('title', long);
   });
 

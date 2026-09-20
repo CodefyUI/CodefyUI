@@ -1,6 +1,6 @@
 {
-  "name": "EfficientNet MBConv Block (Simplified)",
-  "description": "MBConv forward pass: expand, squeeze-excite, project",
+  "name": "EfficientNet MBConv block",
+  "description": "Expand, squeeze-excite, then project",
   "gallery": { "section": "architectures", "family": "CNN", "order": 3 },
   "nodes": [
     { "id": "start-1", "type": "Start", "position": { "x": -250, "y": 0 }, "data": { "params": {} } },

@@ -1,4 +1,4 @@
-# RAG, fully local: retrieve then generate
+# Fully local RAG
 
 Retrieval-augmented generation with nothing leaving the machine. The graph reads
 a folder of plain-text notes, turns them into vectors, finds the three passages

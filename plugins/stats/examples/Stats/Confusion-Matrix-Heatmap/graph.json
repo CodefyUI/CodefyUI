@@ -1,6 +1,6 @@
 {
   "name": "Confusion matrix as a heatmap",
-  "description": "True against predicted for 45 held-out iris rows",
+  "description": "True against predicted, 45 iris rows",
   "nodes": [
     {
       "id": "start-1",

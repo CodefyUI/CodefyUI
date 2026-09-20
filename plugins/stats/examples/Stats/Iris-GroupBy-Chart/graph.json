@@ -1,6 +1,6 @@
 {
-  "name": "Group by species, then chart it",
-  "description": "Three bars: mean petal length for each iris species",
+  "name": "Iris grouped by species, charted",
+  "description": "Three bars of mean petal length",
   "nodes": [
     {
       "id": "start-1",

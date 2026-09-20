@@ -1,6 +1,6 @@
 {
-  "name": "KNN from Scratch: classify Iris with 2 features",
-  "description": "A k=5 majority vote, drawn as a scatter on the node",
+  "name": "KNN from Scratch on Iris",
+  "description": "A k=5 majority vote, drawn as a scatter",
   "nodes": [
     { "id": "note-overview", "type": "note", "position": { "x": -680, "y": 0 },
       "data": { "noteKind": "text",

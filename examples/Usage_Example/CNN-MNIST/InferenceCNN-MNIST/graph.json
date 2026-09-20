@@ -1,6 +1,6 @@
 {
   "name": "Inference CNN on MNIST",
-  "description": "Classify one digit; needs Train CNN on MNIST run first",
+  "description": "Load the saved weights, read one digit",
   "gallery": { "section": "quickstart", "order": 2 },
   "nodes": [
     {
