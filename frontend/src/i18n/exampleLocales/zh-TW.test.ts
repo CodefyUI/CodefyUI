@@ -27,7 +27,8 @@ const CARD_COLUMNS = 80;
 /** One line, this wide -- the Chinese half of the rule
  * `backend/tests/test_example_descriptions.py` holds over the English. The
  * long explanation belongs in a note on the canvas, beside the nodes it is
- * about, not in the one field every card and every row has to render. */
+ * about, not in the one field every card and every row has to render. Every
+ * example obeys it, so there is no exception list on either side. */
 const MAX_DESCRIPTION_COLUMNS = 56;
 
 /** Widths both implementations of `displayWidth` are pinned to. */
@@ -43,52 +44,6 @@ interface Vector {
   text: string;
   width: number;
 }
-
-/** Translations whose description still runs past the card. Only ever
- * shorter: the test below fails on an entry that no longer belongs.
- *
- * The 36 a pack ships, in the order `zh-TW.ts` declares them -- all that is
- * left of the 71 this list started with, now that every built-in says its one
- * line. `NOT_YET_SHORTENED` in
- * `backend/tests/test_example_descriptions.py` is the English twin. */
-const NOT_YET_SHORTENED = new Set<string>([
-  'plugin:foundations/C1-3/Kernel-Effects',
-  'plugin:foundations/C2-1/Supervised-Learning-101',
-  'plugin:foundations/C2-2/Concentric-Circles-Failure',
-  'plugin:foundations/C2-3/Decision-Tree-Iris',
-  'plugin:foundations/C2-3/SVM-RBF-Beats-Circles',
-  'plugin:foundations/C2-4/MLP-Solves-Circles',
-  'plugin:foundations/C2-4/MLP-Without-Activation',
-  'plugin:foundations/C2-5/MLP-Inline-Demo',
-  'plugin:foundations/C2-5/MLP-MNIST-Training',
-  'plugin:foundations/Classical/Column-Stats-101',
-  'plugin:foundations/Classical/KNN-from-Scratch',
-  'plugin:foundations/Classical/Linear-Logistic-Compare',
-  'plugin:deep/C3-1/Conv2D-Kernel-Effects',
-  'plugin:deep/C3-1/LeNet-MNIST-Training',
-  'plugin:deep/C3-2/UNet-Forward-Shapes',
-  'plugin:deep/C3-3/Diffusion-Denoise-Loop',
-  'plugin:deep/C4-1/LSTM-Sequence-Forward',
-  'plugin:deep/C4-2/Co-Reference-Attention',
-  'plugin:deep/C4-3/Transformer-Block-Assembled',
-  'plugin:deep/C4-4/LLM-Inference-Pipeline',
-  'plugin:deep/C6-1/World-Model-Next-State',
-  'plugin:deep/C6-2/ViT-Full-Forward',
-  'plugin:deep/C6-3/VLM-Cross-Modal-Attention',
-  'plugin:deep/C6-4/MoE-Routing',
-  'plugin:deep/Diffusion/Cross-Attention-101',
-  'plugin:deep/Diffusion/Mini-UNet-Expanded',
-  'plugin:deep/LLM/Multi-Head-Causal',
-  'plugin:deep/LLM/Self-Attention-101',
-  'plugin:deep/Transformer/Patchify-101',
-  'plugin:rl/C5-1/RL-Trajectory-Mockup',
-  'plugin:rl/C5-3/RLHF-Reward-Model',
-  'plugin:rl/C5-4/GRPO-Group-Advantage',
-  'plugin:rl/RL/Policy-Gradient-101',
-  'plugin:stats/Stats/Confusion-Matrix-Heatmap',
-  'plugin:stats/Stats/Iris-Describe-Table',
-  'plugin:stats/Stats/Iris-GroupBy-Chart',
-]);
 
 interface Example {
   key: string;
@@ -218,25 +173,14 @@ describe('zh-TW example descriptions', () => {
   it('says it in one line, inside the cap', () => {
     // The card cuts at 80 columns, but a description that needs 80 has
     // stopped being a label and become the explanation -- which belongs in a
-    // note on the canvas, next to the nodes it is about.
+    // note on the canvas, next to the nodes it is about. Every example obeys
+    // this now, so the rule holds with no exceptions.
     const over = Object.entries(zhTW)
-      .filter(([key]) => !NOT_YET_SHORTENED.has(key))
       .filter(([, { description }]) => {
         const text = description ?? '';
         return displayWidth(text) > MAX_DESCRIPTION_COLUMNS || text.includes('\n');
       })
       .map(([key, { description }]) => `${key} (${displayWidth(description ?? '')} columns)`);
     expect(over).toEqual([]);
-  });
-
-  it('keeps no entry for a description that has already been shortened', () => {
-    // The ratchet: a stale entry fails, so the list can only get shorter.
-    const stale = [...NOT_YET_SHORTENED].filter((key) => {
-      const text = zhTW[key]?.description;
-      return text !== undefined && displayWidth(text) <= MAX_DESCRIPTION_COLUMNS
-        && !text.includes('\n');
-    });
-    expect(stale).toEqual([]);
-    expect([...NOT_YET_SHORTENED].filter((key) => !(key in zhTW))).toEqual([]);
   });
 });

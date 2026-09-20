@@ -1,6 +1,6 @@
 {
-  "name": "C6-2 ViT: image → 16 patches → 1 Transformer block → class hidden",
-  "description": "Extends Patchify-101 into the rest of the §C6.2.4 ViT pipeline. A (1, 3, 16, 16) image is split by EduPatchify into 16 tokens (patch_size=4). Squeeze drops the batch dim so the Edu attention/FFN nodes (which expect [seq, D] or [seq, batch, D]) see a clean [16, 48] sequence. PositionalEncoding adds position vectors; LayerNorm → EduMultiHeadAttention → EduFFN is one Transformer block (a real ViT-Base has 12 stacked). Output shape (16, 48) — 16 patch tokens, each a 48-dim hidden — is what ViT feeds to its final classifier head. Bump patch_size down to 2 to land 64 tokens, up to 8 for 4 tokens.",
+  "name": "C6-2 ViT: 16 patches through one Transformer block",
+  "description": "Each 4x4 patch becomes one of 16 48-number tokens",
   "nodes": [
     { "id": "start", "type": "Start",                  "position": { "x": -320, "y":   0 }, "data": { "params": {} } },
     { "id": "img",   "type": "TensorInput",            "position": { "x":  -60, "y":   0 }, "data": { "params": { "shape": "1,3,16,16", "dtype": "float32", "value_mode": "random", "seed": 11 } } },
@@ -10,7 +10,18 @@
     { "id": "ln",    "type": "LayerNorm",              "position": { "x": 1140, "y":   0 }, "data": { "params": { "normalized_shape": "48", "eps": 1e-5 } } },
     { "id": "mha",   "type": "deep:Edu-MultiHeadAttention",  "position": { "x": 1440, "y":   0 }, "data": { "params": { "embed_dim": 48, "num_heads": 4, "causal": false, "seed": 42 } } },
     { "id": "ffn",   "type": "foundations:Edu-FFN",                 "position": { "x": 1740, "y":   0 }, "data": { "params": { "embed_dim": 48, "hidden_dim": 96, "activation": "gelu", "seed": 42 } } },
-    { "id": "p_out", "type": "Print",                  "position": { "x": 2040, "y":   0 }, "data": { "params": { "label": "Final patch hiddens (16, 48) — feed to MLP classifier head" } } }
+    { "id": "p_out", "type": "Print",                  "position": { "x": 2040, "y":   0 }, "data": { "params": { "label": "Final patch hiddens (16, 48) — feed to MLP classifier head" } } },
+
+    { "id": "note-overview", "type": "note", "position": { "x": -740, "y": 0 },
+      "data": { "noteKind": "text",
+                "noteContent": "How a Transformer reads an image at all: stop treating it as a grid and make it a sequence. Edu-Patchify cuts the 16x16 picture into sixteen 4x4 tiles and flattens each tile's 3 x 4 x 4 numbers into one 48-number token. After that nothing is image-specific - positions are added, then LayerNorm, attention and a feed-forward layer run once each, as they would over words. C4-3 adds the two residuals that make that a full block.\n\nSqueeze is not decoration. These Edu nodes read dimension 0 as the sequence, so the batch dimension has to go before attention sees one sequence of sixteen tokens rather than sixteen sequences of one token.\n\nOut comes (16, 48), sixteen patch hiddens. A real ViT prepends a class token and classifies from that row, and ViT-Base stacks twelve full blocks.\n\nTransformer 要讀影像，第一步就是別再把它當網格，改成一段序列。Edu-Patchify 把 16x16 的圖切成十六塊 4x4 的小方塊，再把每塊的 3 x 4 x 4 個數字攤平成一個 48 個數字的 token。之後就沒有任何和影像有關的東西了 - 加上位置，再各跑一次 LayerNorm、注意力和前饋層，跟處理文字時一模一樣。C4-3 補上兩個殘差，才算完整的區塊。\n\nSqueeze 不是裝飾。這些 Edu 節點把第 0 維當成序列，所以要先把 batch 那一維拿掉，注意力看到的才是一段十六個 token 的序列，而不是十六段各只有一個 token 的序列。\n\n輸出是 (16, 48)，十六個 patch 的 hidden。真正的 ViT 會在前面加一個 class token，從那一列做分類，而且 ViT-Base 堆的是十二個完整區塊。",
+                "noteColor": "#3d3d1a", "boundToNodeId": "start",
+                "boundOffset": { "x": -420, "y": 0 }, "noteWidth": 360 } },
+    { "id": "note-patch", "type": "note", "position": { "x": 240, "y": -520 },
+      "data": { "noteKind": "text",
+                "noteContent": "Two numbers fall out of patch_size. The token count is (16 / 4) squared = 16, and a token's width is channels x patch_size squared = 3 x 4 x 4 = 48. Drop patch_size to 2 for 64 tokens of 12, raise it to 8 for 4 of 192. Every width downstream has to follow.\n\npatch_size 一動，兩個數字跟著動。token 數是 (16 / 4) 的平方 = 16，每個 token 的寬度是通道數 x patch_size 平方 = 3 x 4 x 4 = 48。改成 2 會得到 64 個寬 12 的 token，改成 8 則是 4 個寬 192。下游每一處寬度都要跟著改。",
+                "noteColor": "#3d3d1a", "boundToNodeId": "patch",
+                "boundOffset": { "x": 0, "y": -520 }, "noteWidth": 300 } }
   ],
   "edges": [
     { "id": "et",   "source": "start", "target": "img",   "sourceHandle": "trigger", "type": "trigger" },

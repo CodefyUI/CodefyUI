@@ -1,12 +1,28 @@
 {
   "name": "Cross-Attention 101: Q from one place, K/V from another",
-  "description": "The mechanism that lets Stable Diffusion's U-Net condition on a text prompt. Self-attention sources Q, K, V all from one tensor; cross-attention sources Q from a 'query' tensor (the image patches) and K/V from a 'context' tensor (the text token embeddings). The two may have different sequence lengths — the heatmap on the right is rectangular, with image positions on the rows and text positions on the columns. Run it and check the inline heatmap to see which 'text' position each 'image' position attended to.",
+  "description": "A rectangular attention map: 6 queries over 4 keys",
   "nodes": [
     { "id": "start-1", "type": "Start", "position": { "x": -260, "y": 0 }, "data": { "params": {} } },
     { "id": "q",   "type": "TensorCreate", "position": { "x": 0,   "y": -100 }, "data": { "params": { "shape": "6,8", "fill": "randn", "value": 0, "requires_grad": false } } },
     { "id": "ctx", "type": "TensorCreate", "position": { "x": 0,   "y": 100  }, "data": { "params": { "shape": "4,8", "fill": "randn", "value": 0, "requires_grad": false } } },
     { "id": "attn", "type": "deep:Edu-CrossAttention", "position": { "x": 320, "y": 0 }, "data": { "params": { "embed_dim": 8, "num_heads": 2, "seed": 42 } } },
-    { "id": "print", "type": "Print", "position": { "x": 700, "y": 0 }, "data": { "params": { "label": "Cross-attn output" } } }
+    { "id": "print", "type": "Print", "position": { "x": 700, "y": 0 }, "data": { "params": { "label": "Cross-attn output" } } },
+
+    { "id": "note-overview", "type": "note", "position": { "x": -680, "y": 0 },
+      "data": { "noteKind": "text",
+                "noteContent": "Self-attention takes Q, K and V from one tensor. Cross-attention takes Q from one and K and V from another, and that is how Stable Diffusion's U-Net reads a text prompt while it denoises an image. Both inputs here are random stand-ins: query for 6 image positions, context for 4 prompt tokens, with the four projections fixed by seed 42 and never trained. After a run the heatmap on the Edu-CrossAttention node holds 2 panels, one per head, each 6 rows by 4 columns, every row summing to 1. The pack's C6-3 example gives the same node image patches as its query.\n\nSelf-attention 的 Q、K、V 都來自同一個張量；cross-attention 的 Q 來自一邊，K 和 V 來自另一邊 — Stable Diffusion 的 U-Net 就是這樣一邊去噪、一邊讀文字 prompt。這裡兩邊的輸入都是隨機的替代張量：query 代表 6 個影像位置，context 代表 4 個 prompt token，四組投影由 seed 42 固定，沒有訓練過。跑完之後，Edu-CrossAttention 節點上的熱圖會有 2 張，一個 head 一張，每張 6 列 4 欄，每一列加起來是 1。這個套件包的 C6-3 範例把影像切出來的 patch 當成同一個節點的 query。",
+                "noteColor": "#3d3d1a", "boundToNodeId": "start-1",
+                "boundOffset": { "x": -420, "y": 0 }, "noteWidth": 360 } },
+    { "id": "note-attn", "type": "note", "position": { "x": 320, "y": -390 },
+      "data": { "noteKind": "text",
+                "noteContent": "Q is projected from query, K and V from context, so the two sides do not have to be the same length: the weights come out as heads by query rows by context rows. Nothing is connected to q_labels or k_labels, so the axes stay unnamed.\n\nQ 由 query 投影，K 和 V 由 context 投影，所以兩邊的長度不必相同：權重的形狀是 head 數、query 列數、context 列數。q_labels 和 k_labels 都沒有接，所以座標軸上不會有名稱。",
+                "noteColor": "#3d3d1a", "boundToNodeId": "attn",
+                "boundOffset": { "x": 0, "y": -390 }, "noteWidth": 300 } },
+    { "id": "note-ctx", "type": "note", "position": { "x": -60, "y": 342 },
+      "data": { "noteKind": "text",
+                "noteContent": "context is the K/V side, and its row count is free: make the shape 7,8 and the map becomes 6 by 7. The last number has to stay 8, because both sides must match embed_dim on the attention node.\n\ncontext 是 K/V 那一邊，列數可以自由決定：把 shape 改成 7,8，圖就變成 6 列 7 欄。最後一個數字必須維持 8，因為兩邊都要和 attention 節點的 embed_dim 相同。",
+                "noteColor": "#3d3d1a", "boundToNodeId": "ctx",
+                "boundOffset": { "x": -60, "y": 242 }, "noteWidth": 300 } }
   ],
   "edges": [
     { "id": "trig_q",   "source": "start-1", "target": "q",   "sourceHandle": "trigger", "type": "trigger" },

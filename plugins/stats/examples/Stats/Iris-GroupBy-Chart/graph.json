@@ -1,11 +1,11 @@
 {
   "name": "Group by species, then chart it",
-  "description": "CSV -> GroupBy -> Chart. The species column becomes the grouping key (CSVReader's `labels` output is exactly the per-row label list Stats-GroupByAggregate wants), every numeric column is averaged per species, and Stats-ChartView draws the mean petal length as a bar per species. The same grouped table is printed as text alongside, so the chart and the numbers agree in front of you.",
+  "description": "Three bars: mean petal length for each iris species",
   "nodes": [
     {
       "id": "start-1",
       "type": "Start",
-      "position": { "x": -260, "y": 60 },
+      "position": { "x": -260, "y": 90 },
       "data": { "params": {} }
     },
     {
@@ -36,7 +36,7 @@
     {
       "id": "chart",
       "type": "stats:Stats-ChartView",
-      "position": { "x": 660, "y": -80 },
+      "position": { "x": 660, "y": -120 },
       "data": {
         "params": {
           "kind": "bar",
@@ -48,13 +48,52 @@
     {
       "id": "view",
       "type": "stats:Stats-TableView",
-      "position": { "x": 660, "y": 140 },
+      "position": { "x": 660, "y": 220 },
       "data": {
         "params": {
           "max_rows": 10,
           "precision": 3,
           "title": "Per-species means"
         }
+      }
+    },
+    {
+      "id": "note-overview",
+      "type": "note",
+      "position": { "x": -680, "y": 90 },
+      "data": {
+        "noteKind": "text",
+        "noteContent": "CSV to GroupBy to Chart, with no adapter node in between: CSVReader's labels output is already the per-row key Stats-GroupByAggregate wants, and Stats-ChartView takes the grouped table directly. Fifty rows per species come out as three, and the mean petal length is 1.462 for setosa, 4.260 for versicolor and 5.552 for virginica -- which is why that one column nearly separates the three species on its own. The bar chart and the text table beside it are the same numbers, so the picture can be checked against the digits.\n\nCSV 到 GroupBy 再到 Chart，中間不需要轉接節點：CSVReader 的 labels 輸出本來就是 Stats-GroupByAggregate 要的逐列分組鍵，Stats-ChartView 也能直接吃分組後的表格。每個品種 50 列會收成一列，平均花瓣長度 setosa 是 1.462、versicolor 是 4.260、virginica 是 5.552 - 這也是為什麼光這一欄就幾乎能把三個品種分開。長條圖和旁邊的文字表格是同一組數字，圖看到的可以拿數字對。",
+        "noteColor": "#3d3d1a",
+        "boundToNodeId": "start-1",
+        "boundOffset": { "x": -420, "y": 0 },
+        "noteWidth": 360
+      }
+    },
+    {
+      "id": "note-group",
+      "type": "note",
+      "position": { "x": 320, "y": -400 },
+      "data": {
+        "noteKind": "text",
+        "noteContent": "group_by is empty, so the keys input decides the groups; fill group_by in and it wins instead, which keeps an experiment from depending on an edge you forgot to unplug. Every numeric column is averaged, and its name gains the aggregate: petal length (cm) [mean].\n\ngroup_by 留空，所以分組看的是 keys 輸入；一旦填了 group_by 就以它為準，免得實驗結果取決於某條忘了拔掉的線。每個數值欄位都會取平均，欄名後面也會加上聚合方式：petal length (cm) [mean]。",
+        "noteColor": "#3d3d1a",
+        "boundToNodeId": "group",
+        "boundOffset": { "x": 0, "y": -400 },
+        "noteWidth": 300
+      }
+    },
+    {
+      "id": "note-chart",
+      "type": "note",
+      "position": { "x": 660, "y": -510 },
+      "data": {
+        "noteKind": "text",
+        "noteContent": "A bar chart draws one column, so columns_filter names it -- and the name it has to match is the aggregated one, petal length (cm) [mean]. kind auto would pick bar here anyway: the grouped table has row labels, and row labels mean the rows are categories.\n\n長條圖一次只畫一欄，所以要用 columns_filter 指定，而且要對上聚合後的欄名 petal length (cm) [mean]。kind 設 auto 在這裡也會選長條圖：分組後的表格有列標籤，有列標籤就表示每一列是一個類別。",
+        "noteColor": "#3d3d1a",
+        "boundToNodeId": "chart",
+        "boundOffset": { "x": 0, "y": -390 },
+        "noteWidth": 300
       }
     }
   ],

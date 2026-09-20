@@ -99,6 +99,29 @@ received — each links to the release it was published as.
   counts. *Train CNN on MNIST* also tiles 16 test images beside the 16
   digits it predicted for them, so the accuracy can be checked by eye.
 
+- **The teaching packs' examples explain themselves on the canvas too.** All
+  36 examples the `foundations`, `deep`, `rl` and `stats` packs ship now
+  carry the same notes the built-ins do: an overview note beside the `Start`
+  node and stage notes on the nodes that are the idea — the
+  `Concat` where a U-Net's skip doubles the channel count, the `Add` that
+  closes a residual, the one parameter that is the whole lesson. 94 notes in
+  all, each written twice inside the one note, English then Traditional
+  Chinese. Where a graph does less than its chapter promises, the note says
+  so rather than describing the version the reader does not have: the GRPO
+  example stops at the group mean and names `GroupRelativeAdvantage` as the
+  node that does the subtraction, and the untrained attention and reward
+  examples say their numbers come from a seed rather than from training.
+
+- **The two teaching-pack MNIST trainers score what they train.** *C3-1
+  Train LeNet-style CNN on MNIST* and *C2-5 Train a 784→128→64→10 MLP on
+  MNIST* each gained the same evaluation tail the built-in trainers now
+  have — a second `Dataset` on the test split, an `EvaluateModel` fed from
+  the pipeline's `model` output, and a `Print` — so a lab ends on a number
+  measured on the 10,000 images the loop never saw. Measured on CPU at the
+  shipped five epochs: 0.9876 for the CNN, 0.9694 for the MLP. Each
+  evaluation follows its own graph's training device, which both pin to
+  `cpu`.
+
 ### Changed
 
 - **The example gallery is grouped by what an example is for.** Seven
@@ -120,11 +143,12 @@ received — each links to the release it was published as.
   An example description is now a single line of at most 56 columns, the
   width the card, the sidebar row and the detail pane can show without
   cutting; the longer explanation belongs in a note on the canvas, beside
-  the nodes it is about. All 36 built-in descriptions now obey it, in
-  English and in Traditional Chinese — the longest ran to 883 columns —
-  and each one that needs a GPU, a download, a pack or a running service
-  says so in the line itself. The 36 a pack ships are listed by name until
-  they follow.
+  the nodes it is about. All 72 descriptions obey it, in English and in
+  Traditional Chinese — the longest ran to 1,272 columns — and each one
+  that needs a GPU, a download, a pack or a running service says so in the
+  line itself. Nothing is exempt: the rule holds over every example in
+  `examples/` and every example a pack ships, with no allowlist on either
+  side.
 
 - **Seven examples were renamed to say what they are.** *Api-Function* is
   **Call a graph as an API**; *Train Mini-GPT on MNIST* is **Train a
@@ -139,6 +163,20 @@ received — each links to the release it was published as.
   Diffusion: gradually adding noise* is now **a digit dissolving into
   noise**, which is what it shows. Folder paths do not move, so the docs,
   the translation tables and `run_graph.py` arguments are unchanged.
+
+- **Thirteen teaching-pack examples were renamed for the same reason.** Each
+  keeps the lesson code it had, which is how the textbook refers to it, and
+  drops a promise the graph does not keep or a chain of arrows the canvas
+  already shows. *C4-2 Attention finds 'it → cat'* is **C4-2 Self-attention
+  over a tokenised sentence**: its sentence is Chinese, and `cl100k_base`
+  splits those 14 characters into 25 tokens, most of them byte fragments, so
+  no row is labelled `it` and none ever was.
+  *C5-4 GRPO: group-relative advantage replaces the value-network baseline*
+  is **C5-4 GRPO: the baseline is a group mean, not a critic**, because the
+  graph computes the mean and stops there. *Multi-Head Causal Attention:
+  GPT-style decoder block* is **two heads, one mask** — it has neither the
+  `LayerNorm`s nor the residual adds a decoder block needs, which is what
+  the C4-3 example is for. Folder paths are unchanged.
 
 - **The Graphs tab's import button reads "Import..."** and takes a graph
   `.json` or a `.cduiworkspace`, told apart by what is inside the file rather
@@ -172,6 +210,30 @@ received — each links to the release it was published as.
   inference example uses, at an alpha where the digit is still legible under
   the grain.
 
+- **Teaching-pack text quoted accuracies the graphs do not produce.**
+  *C2-1 Supervised Learning 101*, *C2-3 SVM kernel trick* and *C2-4 Neural
+  network solves circles* each promised "≈95%" in the description and on a
+  `Print` label; all three return 1.0. *C2-2 Concentric Circles* promised
+  "~50%" and returns 0.45, *C2-4 Multi-layer ≠ depth* "≈50%" against 0.4,
+  and *C2-5 MLP inline demo* labelled a `Print` "Test accuracy (≈ 0.95 on
+  moons)" above a graph that answers 1.0. *C2-5 Train a 784→128→64→10 MLP on
+  MNIST* claimed "val accuracy ≈98%" from a graph that computed no
+  validation figure at all — it now measures 0.9694 on the test split and
+  prints it. *C4-2* kept a label telling the reader to hover the `it` row of
+  a heatmap whose 25 axis labels are mostly byte fragments of Chinese. Every
+  number in a pack description or note is now one that was read off a real
+  run of the file as shipped, and a test runs the `foundations`, `rl` and
+  `stats` examples and pins each figure their notes quote to the port it
+  came from, so editing a seed or a parameter fails until the note is edited
+  with it.
+
+- **Two `deep` pack examples reached the network without saying so.** *C4-2*
+  and *C4-4 LLM inference* tokenise real text with the same `Tokenizer` node
+  as *Self-Attention 101* and *Multi-Head Causal Attention*, which fetches
+  the `cl100k_base` table on its first use — but only the latter two said
+  "needs a download" on the card. All four say it now, and each names the
+  download in its overview note as a first-run cost.
+
 - **A graph with a note on it would not run outside the editor.** A note is
   a node in the file, of type `note`, and `validate_graph` reported it as
   `Unknown node type: note`. The editor dropped notes in the browser before
@@ -203,6 +265,18 @@ received — each links to the release it was published as.
   Inputs, Outputs and Statistics tabs and the Inspector's Steps tab. The
   Backward tab waits on the run rather than on the node, because gradients are
   written after the whole forward pass.
+
+- **Two `RewardModel` or `MoELayer` nodes built from the same seed could get
+  different weights.** A run without a run seed executes the nodes of one
+  level at the same time, and each of these seeded torch's process-wide
+  random generator and built its layers from it, so two of them on one level
+  took turns drawing from it and their weights depended on thread timing.
+  *C5-3 RLHF Reward Model*, whose two heads are meant to hold identical
+  weights, scored 0.086 and -0.236 on a CI runner against the 0.041 and 0.177
+  its note quotes. Both nodes now draw from a generator of their own: the
+  same seed always gives the same weights, and they are bit for bit the
+  weights a run without the overlap already gave, so no number an example
+  quotes has moved.
 
 ## [2.8.2] — 2026-09-17
 

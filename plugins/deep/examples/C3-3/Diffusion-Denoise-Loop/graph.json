@@ -1,13 +1,24 @@
 {
-  "name": "C3-3 Diffusion: 20 denoising steps from pure noise to image",
-  "description": "The §C3.3.2 'reverse process' as a single graph. GaussianNoise samples the starting x_T (1×3×16×16 of standard normal), DiffusionUNet builds a noise-predicting U-Net (random weights — a real diffusion model would be trained on millions of images first), and DDPMSampler iterates `num_steps=20` denoising steps with a linear beta schedule. The output is x_0, a same-shape tensor that, on a trained model, would be a coherent image. With random weights it's just a smoothed noise field — but the shape flow is exactly what Stable Diffusion runs at inference time (§C3.3.5). Swap GaussianNoise's shape to 1,3,64,64 to feel how compute scales with resolution.",
+  "name": "C3-3 Diffusion: 20 reverse steps from pure noise",
+  "description": "20 reverse steps on an untrained U-Net; output is noise",
   "nodes": [
     { "id": "start", "type": "Start",         "position": { "x": -320, "y":   0 }, "data": { "params": {} } },
-    { "id": "noise", "type": "GaussianNoise", "position": { "x":  -40, "y": -100 }, "data": { "params": { "shape": "1,3,16,16", "mean": 0.0, "std": 1.0, "seed": 0 } } },
-    { "id": "unet",  "type": "DiffusionUNet", "position": { "x":  -40, "y":  100 }, "data": { "params": { "in_channels": 3, "base_channels": 16, "channel_mult": "1,2,4", "time_emb_dim": 32, "num_groups": 4, "seed": 42 } } },
+    { "id": "noise", "type": "GaussianNoise", "position": { "x":  -40, "y": -130 }, "data": { "params": { "shape": "1,3,16,16", "mean": 0.0, "std": 1.0, "seed": 0 } } },
+    { "id": "unet",  "type": "DiffusionUNet", "position": { "x":  -40, "y":  130 }, "data": { "params": { "in_channels": 3, "base_channels": 16, "channel_mult": "1,2,4", "time_emb_dim": 32, "num_groups": 4, "seed": 42 } } },
     { "id": "samp",  "type": "DDPMSampler",   "position": { "x":  320, "y":   0 }, "data": { "params": { "num_steps": 20, "schedule": "linear", "beta_start": 0.0001, "beta_end": 0.02, "seed": 42 } } },
-    { "id": "p_x0",  "type": "Print",         "position": { "x":  640, "y": -80 }, "data": { "params": { "label": "Final denoised image x_0 (untrained → just smoothed noise)" } } },
-    { "id": "p_xT",  "type": "Print",         "position": { "x":  640, "y":  80 }, "data": { "params": { "label": "Starting noise x_T (pure Gaussian)" } } }
+    { "id": "p_x0",  "type": "Print",         "position": { "x":  640, "y": -100 }, "data": { "params": { "label": "Final denoised image x_0 (untrained → just smoothed noise)" } } },
+    { "id": "p_xT",  "type": "Print",         "position": { "x":  640, "y":  100 }, "data": { "params": { "label": "Starting noise x_T (pure Gaussian)" } } },
+
+    { "id": "note-overview", "type": "note", "position": { "x": -740, "y": 0 },
+      "data": { "noteKind": "text",
+                "noteContent": "The reverse half of diffusion, in one graph. GaussianNoise draws x_T, a (1, 3, 16, 16) tensor of standard normal values; DiffusionUNet builds a network whose job is to predict the noise inside a sample; DDPMSampler subtracts a little of that prediction twenty times and hands back x_0 with the same shape.\n\nThe U-Net's weights are random, so x_0 is noise as well. Only a trained model makes the last step land on a picture; what this graph shows is the loop, the schedule and the shapes, which are what a production sampler runs.\n\nCompare the two Prints: same shape, different numbers. Raising num_steps makes the loop longer, and widening GaussianNoise to 1,3,64,64 shows how the cost grows with resolution.\n\n擴散模型的反向那一半，整個放在一張圖裡。GaussianNoise 抽出 x_T，一個 (1, 3, 16, 16) 的標準常態張量；DiffusionUNet 建一個負責預測樣本中噪聲的網路；DDPMSampler 把這個預測一點一點減掉，重複二十次，回傳形狀相同的 x_0。\n\nU-Net 的權重是隨機的，所以 x_0 也還是噪聲。只有訓練過的模型才能讓最後一步落在一張圖上；這張圖給的是迴圈、排程和形狀，而這些和實際的取樣器完全一樣。\n\n比較兩個 Print：形狀相同、數值不同。把 num_steps 調大會走得更久，把 GaussianNoise 改成 1,3,64,64 則能感受到成本怎麼隨解析度上升。",
+                "noteColor": "#3d3d1a", "boundToNodeId": "start",
+                "boundOffset": { "x": -420, "y": 0 }, "noteWidth": 360 } },
+    { "id": "note-samp", "type": "note", "position": { "x": 320, "y": -410 },
+      "data": { "noteKind": "text",
+                "noteContent": "num_steps is the speed-against-quality dial: 20 is fast and coarse, image models ship with a few hundred. beta_start and beta_end are the ends of the linear schedule's variance ramp; cosine ignores both and derives its betas from a curve instead.\n\nnum_steps 是速度和品質的取捨：20 步又快又粗糙，實際的影像模型通常用好幾百步。beta_start 和 beta_end 是線性排程變異數斜坡的兩端；換成 cosine 就不會用到這兩個值，改由餘弦曲線推出 beta。",
+                "noteColor": "#3d3d1a", "boundToNodeId": "samp",
+                "boundOffset": { "x": 0, "y": -410 }, "noteWidth": 300 } }
   ],
   "edges": [
     { "id": "et1",   "source": "start", "target": "noise", "sourceHandle": "trigger", "type": "trigger" },

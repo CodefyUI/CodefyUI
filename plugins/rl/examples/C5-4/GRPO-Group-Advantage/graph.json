@@ -1,12 +1,28 @@
 {
-  "name": "C5-4 GRPO: group-relative advantage replaces the value-network baseline",
-  "description": "DeepSeek-R1's §C5.4 core trick in two operations. Generate K=8 candidate completions per prompt — here we mock them as K reward scores. Mean over the group is the §C5.4.2 group baseline, and (reward − group mean) is the per-completion advantage. Compared to PPO's value-network baseline (one extra model to train), GRPO's baseline is just an arithmetic mean — that's the whole engineering simplification that made R1 cheap to train. Negative advantages (completion worse than the group average) get pushed down by the policy gradient; positives get reinforced.",
+  "name": "C5-4 GRPO: the baseline is a group mean, not a critic",
+  "description": "Prints eight candidate rewards and their group mean",
   "nodes": [
     { "id": "start",   "type": "Start",       "position": { "x": -300, "y":   0 }, "data": { "params": {} } },
     { "id": "rewards", "type": "TensorInput", "position": { "x":  -40, "y":   0 }, "data": { "params": { "shape": "8", "dtype": "float32", "value_mode": "explicit", "values": [0.2, 0.8, 0.5, 0.1, 0.9, 0.3, 0.7, 0.4], "seed": 0 } } },
     { "id": "mean",    "type": "Mean",        "position": { "x":  260, "y":   0 }, "data": { "params": { "dim": "0", "keepdim": true } } },
     { "id": "p_mean",  "type": "Print",       "position": { "x":  560, "y": -100 }, "data": { "params": { "label": "Group mean reward (the GRPO baseline)" } } },
-    { "id": "p_rew",   "type": "Print",       "position": { "x":  560, "y":  100 }, "data": { "params": { "label": "Per-completion rewards (8 candidates)" } } }
+    { "id": "p_rew",   "type": "Print",       "position": { "x":  560, "y":  100 }, "data": { "params": { "label": "Per-completion rewards (8 candidates)" } } },
+
+    { "id": "note-overview", "type": "note", "position": { "x": -720, "y": 0 },
+      "data": { "noteKind": "text",
+                "noteContent": "GRPO's one change to PPO is the baseline. PPO trains a critic network to guess what a state is worth and subtracts that; GRPO samples the same prompt K times and subtracts the mean of the group, so a whole model leaves the training setup. The eight numbers stand in for eight sampled completions a reward model has scored, and the Mean node is the whole baseline: 0.4875. An advantage is one reward minus that number, and a group's advantages always sum to zero. This graph stops at the baseline; GroupRelativeAdvantage does the subtraction and the sum-to-zero check in one node.\n\nGRPO 對 PPO 只改了基準這一件事。PPO 要另外訓練一個 critic 去猜某個狀態值多少，再減掉它；GRPO 則是對同一個提示採樣 K 次，減掉這一組的平均，於是整個模型從訓練流程裡消失。這裡的八個數字代表獎勵模型已經打過分的八份候選回答，而 Mean 節點就是基準的全部：0.4875。優勢是某一個獎勵減掉這個數字，同一組的優勢加起來一定是零。這張圖到基準為止；RL 分類裡的 GroupRelativeAdvantage 節點會把相減和「加起來是零」的檢查一次做完。",
+                "noteColor": "#3d3d1a", "boundToNodeId": "start",
+                "boundOffset": { "x": -420, "y": 0 }, "noteWidth": 360 } },
+    { "id": "note-rewards", "type": "note", "position": { "x": -40, "y": 242 },
+      "data": { "noteKind": "text",
+                "noteContent": "Real GRPO samples K completions from the policy for one prompt and has a reward model score each; these eight are typed in so the arithmetic stays visible. K matters: if every completion in a group scores the same, every advantage is zero and the group teaches nothing.\n\n真正的 GRPO 會對同一個提示從策略採樣 K 份回答，再用獎勵模型各打一個分數；這裡的八個分數是直接填進去的，好讓算術看得見。K 的大小有差：如果一組裡每份回答分數都一樣，優勢就全是零，這一組什麼也教不了。",
+                "noteColor": "#3d3d1a", "boundToNodeId": "rewards",
+                "boundOffset": { "x": 0, "y": 242 }, "noteWidth": 300 } },
+    { "id": "note-mean", "type": "note", "position": { "x": 220, "y": -400 },
+      "data": { "noteKind": "text",
+                "noteContent": "dim 0 averages the eight rewards, and keepdim true hands back a one-element tensor rather than a scalar; either shape broadcasts against the eight when you subtract. Nothing estimated this number: it is the average of the eight above it, so it cannot be wrong about them.\n\ndim 設 0 表示對八個獎勵取平均，keepdim 開著會回傳只有一個元素的張量，而不是純量；相減時兩種形狀都能對那八個數廣播。這個數字不是估出來的，它就是上面那八個數的平均，所以不可能估錯。",
+                "noteColor": "#3d3d1a", "boundToNodeId": "mean",
+                "boundOffset": { "x": -40, "y": -400 }, "noteWidth": 300 } }
   ],
   "edges": [
     { "id": "et", "source": "start",   "target": "rewards", "sourceHandle": "trigger", "type": "trigger" },

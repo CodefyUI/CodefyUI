@@ -1,13 +1,24 @@
 {
   "name": "Column Stats 101: open a table and see the numbers move",
-  "description": "Supports lesson C1-2 (表格資料). A 6×3 random table flows into EduColumnStats. The Inspector's Steps tab shows the sequence sum → divide → deviations² → variance → sqrt for each column — exactly the chain a student would write on the whiteboard. Toggle the `unbiased` param to compare population vs sample std.",
+  "description": "Mean, standard deviation and minimum, column by column",
   "nodes": [
+    { "id": "note-overview", "type": "note", "position": { "x": -660, "y": 0 },
+      "data": { "noteKind": "text",
+                "noteContent": "A 6-row, 3-column table and the three statistics that come first in any look at tabular data. The table is seeded, so the numbers are the same on every machine: the first column's mean is -0.79 and its standard deviation 0.97.\n\nThe values are drawn from a standard normal distribution. The std lands close to its 1, but the mean sits well away from its 0: six rows are too few for a sample mean to settle.\n\nThe node also computes a per-column max and the row count; neither has a Print yet. Chapter C1-2 of the textbook is where the theory lives.\n\n一張 6 列 3 欄的表，以及看任何表格資料時最先算的三個統計量。這張表是固定亂數種子生出來的，所以每台機器上的數字都一樣：第一欄的平均是 -0.79、標準差是 0.97。\n\n數值取自標準常態分布。標準差落在它的 1 附近，平均卻離它的 0 相當遠：只有六列，樣本平均還穩定不下來。\n\n這顆節點也算了每欄的最大值和列數，只是還沒有接 Print。理論在課本 C1-2 章。",
+                "noteColor": "#3d3d1a", "boundToNodeId": "start-1",
+                "boundOffset": { "x": -420, "y": 0 }, "noteWidth": 360 } },
+    { "id": "note-stats", "type": "note", "position": { "x": 340, "y": 430 },
+      "data": { "noteKind": "text",
+                "noteContent": "unbiased is off, so the variance divides by all 6 rows -- the population std. Turn it on and the first column goes from 0.97 to 1.07, because the divisor becomes 5. With Verbose internals on, the Inspector's Steps tab replays sum, divide, square, root.\n\nunbiased 是關的，所以變異數除以全部 6 列 -- 也就是母體標準差。打開它，第一欄就從 0.97 變成 1.07，因為除數變成 5。在設定裡打開「顯示內部步驟」，檢視器的「步驟」分頁會重播加總、相除、平方、開根號。",
+                "noteColor": "#3d3d1a", "boundToNodeId": "stats",
+                "boundOffset": { "x": 0, "y": 430 }, "noteWidth": 300 } },
+
     { "id": "start-1", "type": "Start",          "position": { "x": -240, "y": 0 }, "data": { "params": {} } },
     { "id": "table",   "type": "TensorInput",    "position": { "x":   40, "y": 0 }, "data": { "params": { "shape": "6,3", "dtype": "float32", "value_mode": "random", "seed": 7 } } },
     { "id": "stats",   "type": "foundations:Edu-ColumnStats", "position": { "x":  340, "y": 0 }, "data": { "params": { "unbiased": false } } },
-    { "id": "p_mean",  "type": "Print",          "position": { "x":  660, "y": -120 }, "data": { "params": { "label": "Per-column mean" } } },
+    { "id": "p_mean",  "type": "Print",          "position": { "x":  660, "y": -190 }, "data": { "params": { "label": "Per-column mean" } } },
     { "id": "p_std",   "type": "Print",          "position": { "x":  660, "y":   0 }, "data": { "params": { "label": "Per-column std" } } },
-    { "id": "p_range", "type": "Print",          "position": { "x":  660, "y": 120 }, "data": { "params": { "label": "Per-column min" } } }
+    { "id": "p_range", "type": "Print",          "position": { "x":  660, "y": 190 }, "data": { "params": { "label": "Per-column min" } } }
   ],
   "edges": [
     { "id": "trig", "source": "start-1", "target": "table", "sourceHandle": "trigger", "type": "trigger" },

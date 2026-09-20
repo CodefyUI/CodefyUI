@@ -32,6 +32,7 @@ CodefyUI 在 `examples/` 底下隨附一整套可直接執行的範例 graph。�
 - **Sentence Similarity (zh-TW)** 需要 `sentence-embeddings` 套件包。這是一次性的安裝，可以在套件中心（工具列 > 設定 > 選用套件與外掛）安裝，或執行 `cdui packs install sentence-embeddings`；graph 執行時不會自動下載該套件包。安裝後，這個範例就能離線在 CPU 上執行，幾秒鐘就結束。見[選用套件包](./optional-packs)。
 - **RAG, fully local** 需要下載兩個項目：`rag` 套件包裡的 `qwen2.5-0.5b-instruct`，以及 `sentence-embeddings` 裡的 `multilingual-e5-small`，合計約 1.5 GB。安裝 `rag` 只會加入該套件包的 Python 套件，不含編碼器，所以還需要另外選取第二個項目。兩個項目都安裝後，文件、搜尋與生成都在本機處理，不會把資料傳送到外部。CPU 上大約每秒生成幾個 token，所以答案可能需要幾秒到幾十秒；這是依模型大小估算，不是實測值，使用 GPU 會快得多。
 - **RAG with a chat API** 使用同一條檢索鏈，但最後一個節點是 `LLMChat`，所以它只需要 `multilingual-e5-small`，以及可接收 prompt 的服務。預設使用本機的 [Ollama](https://ollama.com)（先執行 `ollama pull qwen2.5:0.5b`），資料仍不會離開本機；把 `provider` 換成 hosted model 後，檢索到的內容會送給第三方，而且需要在環境變數中設定 key。
+- **擴充套件包**區塊裡有六個範例會在第一次執行時下載東西，卡片上也會寫「需下載」：`foundations` 與 `deep` 套件包各有一個 MNIST 訓練範例，會把 MNIST 下載到 `backend/data/`；`deep` 套件包裡處理真實文字的四個範例 **Self-Attention 101**、**Multi-Head Causal Attention**、**C4-2 Self-attention over a tokenised sentence** 與 **C4-4 LLM inference** 則會把 `cl100k_base` 的 BPE 表下載到快取目錄，之後每次執行都直接讀本機的快取。這四個套件包的其他範例從第一次點下去就能離線執行。
 
 兩個 RL 架構 graph（**DQN Atari**、**PPO Robotics**）會將合成的觀測張量（`TensorCreate`、`randn`）傳入網路，而不是連接真正的 gym 環境，所以不需要安裝 `ale-py`/`mujoco` — 若要用真實環境驅動它們，換成 `EnvWrapper` 節點即可。
 

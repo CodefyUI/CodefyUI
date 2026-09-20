@@ -1,14 +1,25 @@
 {
-  "name": "C2-3 SVM kernel trick: bend the line that linear couldn't",
-  "description": "Same wiring as C2-2 Concentric-Circles-Failure with one change: the classifier node is SVMClassifier with kernel='rbf'. Where LogisticRegression hits 50%, SVM-RBF lifts the circles into a 3D space where they are linearly separable, slices a plane, projects the cut back down as a closed curve, and lands ≈95%. The §C2.3.2 'kernel trick' becomes a single param flip in the same graph. Try kernel='linear' to confirm: linear-SVM falls back to the same 50% wall as logistic.",
+  "name": "C2-3 SVM kernel trick: a boundary a line cannot draw",
+  "description": "With an RBF kernel, all 60 test points come out right",
   "nodes": [
+    { "id": "note-overview", "type": "note", "position": { "x": -720, "y": 0 },
+      "data": { "noteKind": "text",
+                "noteContent": "The same graph as the concentric-circles failure beside it, with one node changed: the classifier is an SVM and its kernel is rbf. An RBF kernel scores a point by its distance to training points rather than its position along a line, so the boundary it draws can close into a ring. The accuracy Print reads 1.0 -- all 60 test points.\n\nThe second Print is the support vectors: 46 of the 240 training points, the only ones the boundary rests on. Deleting the rest would not move it.\n\nInstant, and nothing downloads.\n\n這張圖和旁邊那張同心圓失敗的例子完全一樣，只換掉一個節點：分類器改成 SVM，kernel 設為 rbf。RBF 核看的是一個點到各訓練點的距離，而不是它落在直線的哪一側，所以畫出來的邊界可以收成一個圈。準確率的 Print 是 1.0 -- 60 個測試點全對。\n\n第二個 Print 印的是支撐向量：240 個訓練點裡的 46 個，邊界只靠它們撐著，其餘的刪掉也不會讓邊界移動。\n\n瞬間跑完，不用下載。",
+                "noteColor": "#3d3d1a", "boundToNodeId": "start",
+                "boundOffset": { "x": -420, "y": 0 }, "noteWidth": 360 } },
+    { "id": "note-clf", "type": "note", "position": { "x": 560, "y": -430 },
+      "data": { "noteKind": "text",
+                "noteContent": "kernel is the whole example. Set it to linear and the same SVM lands on 0.5167, 31 of 60 -- back behind the wall the straight line hit, and leaning on 234 support vectors instead of 46, because no straight boundary fits.\n\nkernel 就是這個範例的全部。把它改成 linear，同一顆 SVM 只剩 0.5167、60 題對 31 題 -- 又撞回直線那面牆，而且支撐向量從 46 個變成 234 個，因為沒有任何直線邊界接得住。",
+                "noteColor": "#3d3d1a", "boundToNodeId": "clf",
+                "boundOffset": { "x": 0, "y": -430 }, "noteWidth": 300 } },
+
     { "id": "start",   "type": "Start",            "position": { "x": -300, "y":   0 }, "data": { "params": {} } },
     { "id": "data",    "type": "SyntheticDataset", "position": { "x":  -40, "y":   0 }, "data": { "params": { "kind": "circles", "n_samples": 300, "noise": 0.08, "factor": 0.5, "seed": 42 } } },
     { "id": "split",   "type": "TrainTestSplit",   "position": { "x":  260, "y":   0 }, "data": { "params": { "test_size": 0.2, "seed": 42, "stratify": true } } },
     { "id": "clf",     "type": "SVMClassifier",    "position": { "x":  560, "y":   0 }, "data": { "params": { "C": 1.0, "kernel": "rbf", "gamma": "scale" } } },
     { "id": "acc",     "type": "Accuracy",         "position": { "x":  860, "y":   0 }, "data": { "params": {} } },
-    { "id": "p_acc",   "type": "Print",            "position": { "x": 1140, "y": -80 }, "data": { "params": { "label": "Test accuracy (≈ 0.95 = kernel trick rescues circles)" } } },
-    { "id": "p_sv",    "type": "Print",            "position": { "x": 1140, "y":  80 }, "data": { "params": { "label": "Support vectors (points that define the boundary)" } } }
+    { "id": "p_acc",   "type": "Print",            "position": { "x": 1140, "y": -100 }, "data": { "params": { "label": "Test accuracy" } } },
+    { "id": "p_sv",    "type": "Print",            "position": { "x": 1140, "y":  100 }, "data": { "params": { "label": "Support vectors" } } }
   ],
   "edges": [
     { "id": "et",         "source": "start", "target": "data",  "sourceHandle": "trigger", "type": "trigger" },

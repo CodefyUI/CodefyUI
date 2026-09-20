@@ -37,6 +37,7 @@ from app.core.seeding import (
     make_generator,
     make_worker_init_fn,
     seed_rngs,
+    seeded_linear_init,
 )
 
 FIXTURE_NODE = "_SeedFixtureDataset"
@@ -338,6 +339,54 @@ def test_apply_determinism_is_warn_only():
         assert torch.are_deterministic_algorithms_enabled()
     finally:
         torch.use_deterministic_algorithms(previously)
+
+
+def _two_layer_mlp() -> torch.nn.Module:
+    return torch.nn.Sequential(
+        torch.nn.Linear(3, 5), torch.nn.ReLU(), torch.nn.Linear(5, 2, bias=False))
+
+
+def test_seeded_linear_init_draws_what_the_seeded_constructor_drew():
+    """Bit for bit ``torch.manual_seed(seed)`` + the constructor's own init.
+
+    Nodes switching to it must not move a single weight, or every number an
+    example note quotes off them goes stale. The last layer has no bias, so
+    the draw count per layer is checked as well as the draw order.
+    """
+    torch.manual_seed(11)
+    expected = _two_layer_mlp().state_dict()
+
+    module = _two_layer_mlp()
+    assert seeded_linear_init(module, 11) is module
+    got = module.state_dict()
+
+    assert list(got) == list(expected)
+    assert all(torch.equal(got[key], expected[key]) for key in expected)
+
+
+def test_seeded_linear_init_leaves_the_global_rng_alone():
+    module = _two_layer_mlp()
+    before = torch.get_rng_state()
+
+    seeded_linear_init(module, 11)
+
+    assert torch.equal(torch.get_rng_state(), before)
+
+
+def test_seeded_linear_init_refuses_a_parameter_it_cannot_seed():
+    """An ``Embedding`` would keep the value the global RNG gave it.
+
+    Refused before anything is drawn, so a module that cannot be seeded is
+    not left half re-initialised either.
+    """
+    module = torch.nn.Sequential(torch.nn.Linear(3, 5), torch.nn.Embedding(4, 5))
+    untouched = {key: value.clone() for key, value in module.state_dict().items()}
+
+    with pytest.raises(ValueError, match=r"'1\.weight'"):
+        seeded_linear_init(module, 11)
+
+    assert all(torch.equal(module.state_dict()[key], untouched[key])
+               for key in untouched)
 
 
 # ── the wiring ────────────────────────────────────────────────────────────

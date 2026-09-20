@@ -25,6 +25,7 @@ from ...core.node_base import (
     ParamType,
     PortDefinition,
 )
+from ...core.seeding import seeded_linear_init
 
 
 class _RewardHead(nn.Module):
@@ -102,12 +103,13 @@ class RewardModelNode(BaseNode):
         hidden_dim = int(params.get("hidden_dim", 64))
         seed = int(params.get("seed", 42))
 
-        gen_state = torch.random.get_rng_state()
-        try:
-            torch.manual_seed(seed)
-            model = _RewardHead(input_dim, hidden_dim)
-        finally:
-            torch.random.set_rng_state(gen_state)
+        # Weights from the seed alone, never through ``torch.manual_seed``:
+        # two of these on one level of an unseeded run reseeded the one
+        # global generator under each other. The constructor's own init
+        # still draws from the global RNG; every value is overwritten, and
+        # those draws are deliberately not fenced off with ``fork_rng``
+        # (``seeded_linear_init`` says why).
+        model = seeded_linear_init(_RewardHead(input_dim, hidden_dim), seed)
 
         h = inputs.get("hidden_states")
         if h is None:

@@ -35,6 +35,7 @@ import contextlib
 import functools
 import hashlib
 import logging
+import math
 import os
 import threading
 from typing import Any, Callable
@@ -263,6 +264,73 @@ def make_generator(seed: int | None) -> Any | None:
     except Exception:  # pragma: no cover - torch always present in practice
         logger.debug("generator not created", exc_info=True)
         return None
+
+
+def seeded_linear_init(module: Any, seed: int) -> Any:
+    """Re-initialise every ``nn.Linear`` in *module* from *seed* alone.
+
+    For a node whose own ``seed`` param promises the same weights every
+    time. The old way to keep that promise was to save the global RNG
+    state, call ``torch.manual_seed(seed)``, build the module and put the
+    state back. That only works if nothing else draws from the
+    PROCESS-GLOBAL generator in between, and an unseeded run executes a
+    level's nodes concurrently (see the module docstring). Two
+    ``RewardModel`` nodes built from seed 42 on one level took turns
+    drawing from that one generator and came out with different weights,
+    different again on the next run, and the restore rewound the stream
+    under whatever was drawing beside them. The global RNG belongs to the
+    run, so this draws from a LOCAL generator and never reads or writes it.
+
+    It draws torch's own default ``nn.Linear`` initialisation:
+    ``kaiming_uniform_(a=sqrt(5))`` on the weight, then ``U(-1/sqrt(fan_in),
+    1/sqrt(fan_in))`` on the bias, layer by layer in ``module.modules()``
+    order. For a module that registers its layers in the order it builds
+    them, that is the exact draw sequence of ``torch.manual_seed(seed)``
+    followed by the constructor, so the weights are BIT-IDENTICAL to what
+    the old way gave and every number an example note quotes off such a
+    node still holds. For the same reason the seed is used as given, not
+    reduced into :data:`SEED_SPACE`: ``torch.manual_seed`` used it as given.
+
+    The constructor's own init has already drawn from the global RNG by the
+    time this runs. Every value it drew is overwritten here, and callers
+    let those draws happen rather than fence them off with ``fork_rng``.
+    Drawing from the run's generator is what any unseeded node does; a
+    restore writes to it, and rewinds whatever a concurrent node drew in
+    the meantime.
+
+    Refuses, before drawing anything, a module holding a parameter that is
+    not a Linear's weight or bias. Nothing here would seed it, so it would
+    keep what the global RNG gave it at construction -- the bug this
+    function removes, back as soon as someone adds an ``Embedding``. CPU
+    modules only: the generator is a CPU one, as in :func:`make_generator`,
+    so move the module after seeding it. Returns *module*.
+    """
+    import torch
+    from torch import nn
+
+    layers = [m for m in module.modules() if isinstance(m, nn.Linear)]
+    seedable = {id(layer.weight) for layer in layers}
+    seedable.update(id(layer.bias) for layer in layers
+                    if layer.bias is not None)
+    for name, param in module.named_parameters():
+        if id(param) not in seedable:
+            raise ValueError(
+                f"seeded_linear_init: {name!r} is not the weight or bias of "
+                f"an nn.Linear, so nothing here would seed it and it would "
+                f"keep what the global RNG gave it at construction.")
+
+    generator = torch.Generator()
+    generator.manual_seed(int(seed))
+    for layer in layers:
+        # ``nn.Linear.reset_parameters``, with the generator passed in. The
+        # fan-in of a Linear's 2-D weight is its second dimension.
+        nn.init.kaiming_uniform_(layer.weight, a=math.sqrt(5),
+                                 generator=generator)
+        if layer.bias is not None:
+            fan_in = layer.weight.size(1)
+            bound = 1 / math.sqrt(fan_in) if fan_in > 0 else 0
+            nn.init.uniform_(layer.bias, -bound, bound, generator=generator)
+    return module
 
 
 def seed_worker(base_seed: int, worker_id: int) -> None:

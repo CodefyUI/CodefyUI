@@ -1,6 +1,6 @@
 {
   "name": "Confusion matrix as a heatmap",
-  "description": "Trains a shallow decision tree on 70% of iris, predicts the held-out 30%, and feeds those predictions plus the true labels to Stats-ConfusionMatrix. The matrix arrives as a labelled heatmap in the Results panel and in the node's detail view, so a confusion between versicolor and virginica is a bright off-diagonal cell rather than a number to hunt for. Switch `normalize` to `true` to read per-class recall straight off the diagonal.",
+  "description": "True against predicted for 45 held-out iris rows",
   "nodes": [
     {
       "id": "start-1",
@@ -55,6 +55,45 @@
       "position": { "x": 1220, "y": 120 },
       "data": {
         "params": { "max_rows": 10, "precision": 0, "title": "Counts (rows = true, columns = predicted)" }
+      }
+    },
+    {
+      "id": "note-overview",
+      "type": "note",
+      "position": { "x": -680, "y": 60 },
+      "data": {
+        "noteKind": "text",
+        "noteContent": "An accuracy says how often the model is right; a confusion matrix says what it is wrong about. The tree is fitted on 105 rows of iris and scored on the 45 it never saw: 44 land on the diagonal, and the single miss is a versicolor called virginica -- the two species that overlap in this dataset. Rows are the true class, columns the predicted one. The node draws the heatmap itself, and the counts are printed beside it. Set normalize to true to read per-class recall off the diagonal instead of counts.\n\n準確率只講對了多少，混淆矩陣才講錯在哪裡。這棵樹用 iris 的 105 列訓練，再對沒看過的 45 列評分：44 列落在對角線上，唯一一次失誤是把 versicolor 判成 virginica - 這兩個品種在這份資料裡本來就有重疊。列是真實類別，行是預測類別。熱圖由節點自己畫出來，計數則印在旁邊。把 normalize 改成 true，對角線上讀到的就從計數變成每一類的召回率。",
+        "noteColor": "#3d3d1a",
+        "boundToNodeId": "start-1",
+        "boundOffset": { "x": -420, "y": 0 },
+        "noteWidth": 360
+      }
+    },
+    {
+      "id": "note-split",
+      "type": "note",
+      "position": { "x": 260, "y": -390 },
+      "data": {
+        "noteKind": "text",
+        "noteContent": "stratify keeps each class's share, so the held-out 30% is exactly 15 setosa, 15 versicolor and 15 virginica and a single row of the matrix is worth reading on its own. seed 42 fixes which rows those are, so the matrix is the same on every run.\n\nstratify 會維持各類別的比例，所以保留的 30% 剛好是 15 筆 setosa、15 筆 versicolor、15 筆 virginica，矩陣裡單獨一列才值得看。seed 42 固定了是哪些列，所以每次跑出來的矩陣都一樣。",
+        "noteColor": "#3d3d1a",
+        "boundToNodeId": "split",
+        "boundOffset": { "x": -40, "y": -390 },
+        "noteWidth": 300
+      }
+    },
+    {
+      "id": "note-cm",
+      "type": "note",
+      "position": { "x": 900, "y": -400 },
+      "data": {
+        "noteKind": "text",
+        "noteContent": "The node also hands out accuracy, 0.9778 here, on a port nothing in this graph reads: connect a Print to it when the single number is what you want. class_names is empty, so the classes are every one seen in either input, sorted.\n\n這個節點還會從一個埠輸出 accuracy，這裡是 0.9778，只是這張圖沒有接走它：想要那個單一數字，接一個 Print 就好。class_names 留空，類別就是兩邊輸入裡出現過的全部，依序排好。",
+        "noteColor": "#3d3d1a",
+        "boundToNodeId": "cm",
+        "boundOffset": { "x": 0, "y": -400 },
+        "noteWidth": 300
       }
     }
   ],
