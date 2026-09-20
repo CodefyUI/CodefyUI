@@ -50,6 +50,21 @@ export function deviceLabel(d: DeviceInfo): string {
   return d.detail ? `${d.label} · ${d.value} · ${d.detail}` : `${d.label} · ${d.value}`;
 }
 
+/**
+ * Whether *value* is one of the devices this server actually offers.
+ *
+ * Here rather than in either caller because both dropdowns have to reach the
+ * same verdict about the same stored string: the global device is free-form
+ * and persisted in localStorage, so a `cuda` set on one machine follows the
+ * browser to a CPU-only server. The Settings select marks it, the toolbar's
+ * "follow" option marks it, and a run carrying it is downgraded to CPU by
+ * `resolve_device` on the way in -- two surfaces disagreeing about that is
+ * how the toolbar came to promise a CUDA run the server could not do.
+ */
+export function isDeviceServed(devices: DeviceInfo[], value: string): boolean {
+  return devices.some((d) => d.value === value);
+}
+
 export function useDeviceOptions(): DeviceOptions {
   // A consumer mounting after the fetch settled starts on the answer, so a
   // popover opened later never flashes the CPU-only list.

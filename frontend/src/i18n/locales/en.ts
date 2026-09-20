@@ -578,6 +578,24 @@ const en = {
   'toolbar.settings.section.system': 'This Server',
   'settings.device.name': 'Compute device',
   'settings.device.hint': 'Best available device: {device}',
+  // The stored device is not one this server offers -- a `cuda` the browser
+  // carried over from another machine, say. Used by BOTH device dropdowns
+  // (the Settings select's own option, and the toolbar's "follow Settings"
+  // one), so the two surfaces say the same thing about the same string.
+  'settings.device.unavailable': '{device} (not on this server)',
+  // The toolbar's own wording for that state. Shorter than the key above on
+  // purpose -- the graph-device select is capped at 14rem, and the Settings
+  // sentence appended to "Follow Settings (cuda)" clipped mid-word at the
+  // part that carries the news. This says where the run lands instead; the
+  // Settings row is where the sentence lives.
+  'toolbar.device.followFallback': 'Follow Settings ({device} → CPU)',
+  // Replaces the hint above in that state rather than joining it: naming CPU
+  // as the best device and as the fallback is one fact printed twice.
+  'settings.device.fallback': 'No {device} on this server. Runs fall back to CPU.',
+  // A GPU is here and the server is running the CPU wheel, which is why the
+  // list above has no GPU in it. The command follows as literal text; what a
+  // switch involves is the Package Center's GPU card, not this row.
+  'settings.device.gpuIdle': '{gpu} detected; this server runs the CPU build. Install:',
 
   // Font-size menu
   'toolbar.fontSize.title': 'Font size',

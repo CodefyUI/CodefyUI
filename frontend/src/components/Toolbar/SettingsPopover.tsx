@@ -11,10 +11,11 @@ import {
   startCodexLogin,
   logoutCodex,
   type CodexAuthStatus,
+  type PackGpuInfo,
   type PackSummary,
   type PluginCatalogEntry,
 } from '../../api/rest';
-import { useDeviceOptions, deviceLabel } from '../../hooks/useDeviceOptions';
+import { useDeviceOptions, deviceLabel, isDeviceServed } from '../../hooks/useDeviceOptions';
 import { computeSegmentNodes } from '../../utils/segmentPath';
 import { generateId } from '../../utils';
 import { confirm } from '../../utils/dialog';
@@ -47,6 +48,9 @@ const selectPacksLoaded = (state: PackStoreState): boolean => state.loaded;
 const selectPacksUnsupported = (state: PackStoreState): boolean => state.unsupported;
 const selectInstallingPackId = (state: PackStoreState): string | null =>
   state.job !== null && state.job.status === 'running' ? state.job.packId : null;
+// What this machine can offer for the GPU wheel, which the device row reads
+// to explain a missing GPU. Written once per catalog read, like `packs`.
+const selectGpu = (state: PackStoreState): PackGpuInfo | null => state.gpu;
 
 // The plugin row reads the same five things about its own store, for the same
 // reasons. A plugin install streams its steps too.
@@ -103,6 +107,9 @@ export function SettingsPopover({ open, onClose, triggerRef }: Props) {
   const { devices, serverDefault } = useDeviceOptions();
   const bestDevice = devices.find((d) => d.value === serverDefault);
   const bestLabel = bestDevice ? deviceLabel(bestDevice) : serverDefault;
+  // The stored device is free-form and persisted, so it can name something
+  // this server does not have. Both dropdowns ask this the same way.
+  const deviceServed = isDeviceServed(devices, globalDevice);
 
   // Optional packs. Everything here is READ from the pack store: an install
   // is a multi-gigabyte download that outlives this popover, so the panel
@@ -113,6 +120,7 @@ export function SettingsPopover({ open, onClose, triggerRef }: Props) {
   const packsLoaded = usePackStore(selectPacksLoaded);
   const packsUnsupported = usePackStore(selectPacksUnsupported);
   const installingPackId = usePackStore(selectInstallingPackId);
+  const gpu = usePackStore(selectGpu);
 
   // Gated on `open` rather than on mount, because this component is mounted
   // for the whole session: a bare mount effect would fire during boot, win
@@ -296,6 +304,21 @@ export function SettingsPopover({ open, onClose, triggerRef }: Props) {
   // name wherever a reader meets it.
   const packName = (packId: string): string => localizedPackTitle(t, packsById, packId);
 
+  // A GPU this machine has and this server is not using: it recommends a
+  // build, that build is not the CPU one, and the wheel actually loaded is a
+  // different one. `installed_variant: null` means "cannot tell which wheel is
+  // here", which is not a disagreement, and without a `detected_label` there
+  // is no GPU to name -- so either way the row says nothing rather than guess.
+  const idleGpu =
+    gpu !== null
+    && gpu.detected_label !== null
+    && gpu.recommended_variant !== null
+    && gpu.recommended_variant !== 'cpu'
+    && gpu.installed_variant !== null
+    && gpu.installed_variant !== gpu.recommended_variant
+      ? { label: gpu.detected_label, command: gpu.install_command }
+      : null;
+
   const packsDesc = packsUnsupported
     ? t('settings.packs.unsupported')
     : installingPackId !== null
@@ -372,11 +395,51 @@ export function SettingsPopover({ open, onClose, triggerRef }: Props) {
             // The row is a labelled selector, so "graphs with no device of
             // their own use this one" only restated what a global default
             // already is. What the selector cannot show is what the machine
-            // under it can actually do, so that line is the one that stays.
+            // under it can actually do, so that line is the one that stays --
+            // until the stored device is not on this machine at all, where
+            // what a run WILL do matters more than what it could have done.
             desc={
-              <span className={styles.hint}>
-                {t('settings.device.hint', { device: bestLabel })}
-              </span>
+              <>
+                <span className={styles.hint}>
+                  {deviceServed
+                    ? t('settings.device.hint', { device: bestLabel })
+                    : t('settings.device.fallback', { device: globalDevice })}
+                </span>
+                {/* Why the list above has no GPU in it, on the one machine
+                    that has one and cannot use it. The card in the Package
+                    Center owns the rest of that story -- which builds exist,
+                    what a switch costs -- so this line names the GPU, prints
+                    the command, and offers the door rather than a second copy
+                    of what is behind it. */}
+                {idleGpu !== null && (
+                  <span className={styles.hint}>
+                    {t('settings.device.gpuIdle', { gpu: idleGpu.label })}
+                    {/* `install_command` is null when the server cannot name
+                        one for this machine. The sentence above still stands,
+                        so only the command is dropped. */}
+                    {idleGpu.command !== null && (
+                      <>
+                        {' '}
+                        <code className={styles.command}>{idleGpu.command}</code>
+                      </>
+                    )}{' '}
+                    <button
+                      type="button"
+                      className={styles.linkBtn}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        onClose();
+                        // No argument: `PackGpuInfo` carries no pack id, and a
+                        // hardcoded one here would silently focus nothing the
+                        // day the catalog renames that pack.
+                        openPackCenter();
+                      }}
+                    >
+                      {t('settings.packs.name')}
+                    </button>
+                  </span>
+                )}
+              </>
             }
             ctrl={
               <select
@@ -385,6 +448,20 @@ export function SettingsPopover({ open, onClose, triggerRef }: Props) {
                 value={globalDevice}
                 onChange={(e) => setGlobalDevice(e.target.value)}
               >
+                {/* The stored device is one this server does not serve -- a
+                    `cuda` this browser carried over from another machine. Kept
+                    as an option so the control SHOWS what a run would be
+                    submitted with: without it the browser fell back to the
+                    first option, the row read "CPU" while the store still said
+                    `cuda`, and choosing CPU fired no change event, so there was
+                    no way back from inside the UI. Disabled, because it is not
+                    a choice; picking a real device now moves the value and
+                    heals the store. */}
+                {!deviceServed && (
+                  <option value={globalDevice} disabled>
+                    {t('settings.device.unavailable', { device: globalDevice })}
+                  </option>
+                )}
                 {devices.map((d) => (
                   <option key={d.value} value={d.value}>
                     {deviceLabel(d)}
