@@ -18,6 +18,7 @@ import {
   listPluginCatalog,
   PackApiError,
   type PackCatalog,
+  type PackGpuInfo,
   type PackSummary,
   type PluginCatalog,
   type PluginCatalogEntry,
@@ -661,6 +662,108 @@ describe('SettingsPopover', () => {
     });
     render(<SettingsPopover open onClose={vi.fn()} triggerRef={makeTriggerRef()} />);
     expect(await screen.findByText(/Best available device: cuda/)).toBeInTheDocument();
+  });
+
+  // ── Execution: a stored device this server does not serve ─────────
+
+  /** A CPU-only server, so a stored `cuda` is not among what it offers. */
+  function cpuOnlyServer() {
+    vi.mocked(fetchDevices).mockResolvedValueOnce({
+      default: 'cpu',
+      devices: [{ value: 'cpu', label: 'CPU', detail: '', available: true }],
+    });
+  }
+
+  /** A machine with a GPU whose torch wheel is the CPU build. */
+  const IDLE_GPU: PackGpuInfo = {
+    detected_label: 'NVIDIA GeForce RTX 4080 (driver 610.74)',
+    recommended_variant: 'cu128',
+    installed_variant: 'cpu',
+    variants: ['cu128'],
+    install_command: 'cdui install --gpu cu128',
+  };
+
+  it('shows a stored device this server does not serve, instead of reading as CPU', async () => {
+    useUIStore.setState({ globalDevice: 'cuda' });
+    cpuOnlyServer();
+    render(<SettingsPopover open onClose={vi.fn()} triggerRef={makeTriggerRef()} />);
+    const select = screen.getByRole('combobox', { name: 'Compute device' }) as HTMLSelectElement;
+
+    const stale = await within(select).findByRole('option', { name: 'cuda (not on this server)' });
+    expect(stale).toBeDisabled();
+    // The defect this replaces: with no option carrying the value, the browser
+    // fell back to the first one and the row read "CPU" while the store -- and
+    // every run submitted from it -- still said `cuda`.
+    expect(select.value).toBe('cuda');
+    expect(useUIStore.getState().globalDevice).toBe('cuda');
+  });
+
+  it('lets the user out of that state by picking a device the server has', async () => {
+    useUIStore.setState({ globalDevice: 'cuda' });
+    cpuOnlyServer();
+    render(<SettingsPopover open onClose={vi.fn()} triggerRef={makeTriggerRef()} />);
+    const select = screen.getByRole('combobox', { name: 'Compute device' }) as HTMLSelectElement;
+    await within(select).findByRole('option', { name: 'cuda (not on this server)' });
+
+    // A real change event, because the value moved: while the select DISPLAYED
+    // CPU it was already on CPU, so choosing it fired nothing and the stored
+    // `cuda` could not be corrected from the UI at all.
+    fireEvent.change(select, { target: { value: 'cpu' } });
+
+    expect(useUIStore.getState().globalDevice).toBe('cpu');
+    expect(within(select).queryByRole('option', { name: /not on this server/ })).toBeNull();
+  });
+
+  it('says what a run does instead, in place of the best-available hint', async () => {
+    useUIStore.setState({ globalDevice: 'cuda' });
+    cpuOnlyServer();
+    render(<SettingsPopover open onClose={vi.fn()} triggerRef={makeTriggerRef()} />);
+    const row = rowFor('Compute device');
+
+    expect(
+      await within(row).findByText('No cuda on this server. Runs fall back to CPU.'),
+    ).toBeInTheDocument();
+    // One fact once: the line this replaces named CPU as the best device.
+    expect(within(row).queryByText(/Best available device/)).toBeNull();
+  });
+
+  it('names a GPU this server is not using, and the command that installs it', () => {
+    seedPacks([], { gpu: IDLE_GPU });
+    render(<SettingsPopover open onClose={vi.fn()} triggerRef={makeTriggerRef()} />);
+    const row = rowFor('Compute device');
+
+    expect(row).toHaveTextContent('NVIDIA GeForce RTX 4080 (driver 610.74)');
+    // Text to retype, not prose about a command.
+    expect(within(row).getByText('cdui install --gpu cu128').tagName).toBe('CODE');
+  });
+
+  const SILENT_GPU: [string, Partial<PackGpuInfo>][] = [
+    ['the installed build cannot be read', { installed_variant: null }],
+    ['the installed build is already the recommended one', { installed_variant: 'cu128' }],
+    ['this machine has no GPU build to recommend', { recommended_variant: null }],
+    // Counterfactual: the two variants DO differ here, and the row is still
+    // silent because the recommendation is the CPU build.
+    ['the recommended build is the CPU one', { recommended_variant: 'cpu', installed_variant: 'cu128' }],
+    ['no GPU was detected', { detected_label: null }],
+  ];
+
+  it.each(SILENT_GPU)('says nothing about the GPU when %s', (_case, over) => {
+    seedPacks([], { gpu: { ...IDLE_GPU, ...over } });
+    render(<SettingsPopover open onClose={vi.fn()} triggerRef={makeTriggerRef()} />);
+    expect(rowFor('Compute device')).not.toHaveTextContent('RTX 4080');
+  });
+
+  it('opens the Package Center instead of restating its GPU card', () => {
+    seedPacks([], { gpu: IDLE_GPU });
+    const onClose = vi.fn();
+    render(<SettingsPopover open onClose={onClose} triggerRef={makeTriggerRef()} />);
+
+    fireEvent.click(
+      within(rowFor('Compute device')).getByRole('button', { name: 'Package Center' }),
+    );
+
+    expect(onClose).toHaveBeenCalledTimes(1);
+    expect(useUIStore.getState().packCenterOpen).toBe(true);
   });
 
   // ── outside-click / esc behaviour ─────────────────────────────────

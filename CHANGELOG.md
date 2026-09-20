@@ -22,6 +22,21 @@ received — each links to the release it was published as.
 
 ## [Unreleased]
 
+### Fixed
+
+- **The toolbar and Settings no longer disagree about which device a run will
+  use.** The compute device is saved in the browser, so a `cuda` set on one
+  machine follows you to a server that has no GPU — and nothing reconciled the
+  two. The toolbar offered "Follow Settings (cuda)" while the Settings select
+  showed CPU, every run was submitted as `cuda` and quietly downgraded to CPU
+  by the server, and the setting could not be put right from the screen:
+  choosing CPU fired nothing, because CPU was already what the select
+  displayed. Both surfaces now mark such a device as not on this server, the
+  Settings row says runs fall back to CPU, and picking a device the server does
+  have takes effect. That row also names a GPU the server is not using —
+  installed, but running the CPU build of PyTorch — and prints the command that
+  installs the right one.
+
 ## [2.8.3] — 2026-09-20
 
 The 72 examples say what they are for, explain themselves on the canvas and end

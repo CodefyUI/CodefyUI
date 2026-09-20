@@ -257,11 +257,21 @@ describe('Toolbar', () => {
       expect(select().value).toBe('');
     });
 
-    it('names the Settings device as stored when the server does not list it', async () => {
+    it('marks the Settings device as unserved when the server does not list it', async () => {
       useUIStore.setState({ globalDevice: 'cuda' });
       render(<Toolbar />);
       await waitFor(() => expect(mockedRest.fetchDevices).toHaveBeenCalled());
-      expect(within(select()).getByRole('option', { name: 'Follow Settings (cuda)' })).toBeInTheDocument();
+      // Still named as it is stored -- and followed by where the run really
+      // lands, because this server downgrades such a run to CPU and the bare
+      // "Follow Settings (cuda)" promised the opposite.
+      expect(
+        within(select()).getByRole('option', {
+          name: 'Follow Settings (cuda → CPU)',
+        }),
+      ).toBeInTheDocument();
+      expect(
+        within(select()).queryByRole('option', { name: 'Follow Settings (cuda)' }),
+      ).toBeNull();
     });
 
     it('choosing a device writes graphDevice; the empty option clears it', async () => {
