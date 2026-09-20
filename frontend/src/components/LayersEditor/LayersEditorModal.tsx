@@ -1221,12 +1221,16 @@ function LayersFlowInner({
 // ── Main Export ──
 
 export function LayersEditorModal() {
-  const activeTab = useTabStore((s) => s.tabs.find((t) => t.id === s.activeTabId)!);
+  // Optional, like the three other root-mounted modals: this is mounted for
+  // the whole session, including while no tab is open at all (the welcome
+  // screen). There is no editor to show then, and the guard below already
+  // says so -- what the non-null assertion did was crash on the way to it.
+  const activeTab = useTabStore((s) => s.tabs.find((t) => t.id === s.activeTabId) ?? null);
   const closeLayersModal = useTabStore((s) => s.closeLayersModal);
   const updateNodeLayers = useTabStore((s) => s.updateNodeLayers);
 
-  const nodeId = activeTab.layersModalNodeId;
-  const node = activeTab.nodes.find((n) => n.id === nodeId);
+  const nodeId = activeTab?.layersModalNodeId ?? null;
+  const node = activeTab?.nodes.find((n) => n.id === nodeId);
 
   if (!nodeId || !node) return null;
 

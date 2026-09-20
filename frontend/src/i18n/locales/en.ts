@@ -249,6 +249,15 @@ const en = {
   'empty.loading': 'Loading examples...',
   'empty.loadError': 'Failed to load example',
 
+  // Welcome screen — what the workspace shows when no tab is open at all.
+  // Separate copy from `empty.*` above, which greets an open but empty
+  // canvas: there the user already has somewhere to build, so the heading
+  // can go straight to the work. Here they have nothing, so the screen says
+  // what this is first and offers the two ways in.
+  'welcome.tagline': 'Build deep learning models by dragging nodes onto a canvas.',
+  'welcome.newGraph': 'New blank graph',
+  'welcome.examples': 'Or start from an example',
+
   // Gallery sections. Not `empty.*` any more: the overlay, the sidebar's
   // Templates tab and the gallery modal all group by these now (#141).
   'examples.section.quickstart': 'Quick Start',

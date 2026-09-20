@@ -148,7 +148,22 @@ export async function writeSnapshot(
 export async function readSnapshot(scope: string): Promise<PersistedSnapshot | null> {
   const meta = await idbGet<PersistedTabsMeta>(tabMetaKey(scope));
   if (!meta || typeof meta !== 'object' || !Array.isArray(meta.tabIds)) return null;
-  if (meta.tabIds.length === 0) return null;
+  // A meta record naming NO tabs is a real, saved state since the last tab
+  // became closable: the user closed everything and is looking at the welcome
+  // screen. It is not the same answer as `null`, which means "nothing here,
+  // migrate whatever localStorage has" -- returning null for it made a reload
+  // write the freshly-seeded `Tab 1` back over the empty workspace, so the
+  // state could never survive one. The `|tab|` scan below is skipped: meta
+  // names nothing to look for, and any record it fails to name is left for
+  // the next clean save to sweep, exactly as the damaged-meta note above says.
+  if (meta.tabIds.length === 0) {
+    _written.set(scope, new Map());
+    // Signed as the snapshot we are handing back, not as whatever `activeTabId`
+    // the record happens to carry, so the first save of an untouched empty
+    // workspace writes nothing at all.
+    _writtenMeta.set(scope, metaSignature('', []));
+    return { tabs: [], activeTabId: '' };
+  }
 
   const records = await idbGetByPrefix<PersistedTab>(tabRecordPrefix(scope));
   if (records.length === 0) return null;

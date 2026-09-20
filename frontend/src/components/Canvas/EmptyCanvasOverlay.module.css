@@ -1,4 +1,6 @@
-/* EmptyCanvasOverlay.module.css */
+/* EmptyCanvasOverlay.module.css
+   The gallery's own styles moved to shared/ExampleBrowser.module.css with the
+   markup they style; what is left here is this overlay's framing. */
 
 .overlay {
   position: absolute;
@@ -14,7 +16,12 @@
 .inner {
   text-align: center;
   pointer-events: auto;
-  max-width: 900px;
+  /* 1100px, up from 900px. The cards are a fixed 200px, so the old ceiling
+     capped a wide monitor at four per row and left the gallery a narrow
+     column down the middle of the screen with the canvas showing either side
+     of it. `width: 90%` still governs on anything smaller, so a laptop is
+     unaffected -- this only spends room that was already empty. */
+  max-width: 1100px;
   width: 90%;
   max-height: 90%;
   overflow-y: auto;
@@ -60,126 +67,4 @@
      rgb() at a higher alpha rather than reusing the old, unrelated
      accent-deep hue. See migration report. */
   background: rgba(34, 211, 238, 0.22);
-}
-
-/* Preset card grid. Rows start at the left edge, under the section title and
-   the sub-header: a centred row of three sat a card's width away from the
-   heading that names it. */
-.quickStartGrid {
-  display: flex;
-  gap: var(--sp-4);
-  justify-content: flex-start;
-  flex-wrap: wrap;
-}
-
-.section {
-  margin-bottom: var(--sp-6);
-}
-
-/* The overlay used to end on a hint line, so the last section's margin sat
-   between two pieces of content. With the hint gone it would stack on the
-   panel's own bottom padding instead. */
-.section:last-child {
-  margin-bottom: 0;
-}
-
-.sectionTitle {
-  font-size: var(--fs-sm);
-  font-weight: var(--fw-semibold);
-  line-height: var(--lh-snug);
-  color: var(--text-muted);
-  text-align: left;
-  margin-bottom: var(--sp-3);
-  letter-spacing: 0.02em;
-}
-
-/* Architecture families and packs. Only the sections that have one carry the
-   extra row; everywhere else this wrapper is the grid it used to be. */
-.subsection {
-  margin-bottom: var(--sp-4);
-}
-
-.subsection:last-child {
-  margin-bottom: 0;
-}
-
-/* One step quieter than the section title — same tier, smaller and without
-   its own margin above, so a family reads as part of the section rather than
-   as a second heading beside it. */
-.subsectionTitle {
-  font-size: var(--fs-xs);
-  line-height: var(--lh-snug);
-  color: var(--text-muted);
-  text-align: left;
-  margin-bottom: var(--sp-2);
-}
-
-/* Preset card base — hover effects (borderColor, boxShadow) applied via onMouseEnter/Leave inline */
-.presetCard {
-  background: var(--surface-raised);
-  border: 1px solid var(--border-base);
-  border-radius: var(--radius-lg);
-  padding: var(--sp-4) var(--sp-5);
-  cursor: pointer;
-  width: 200px;
-  text-align: left;
-  transition: border-color var(--transition), box-shadow var(--transition);
-}
-
-.presetCardHeader {
-  display: flex;
-  align-items: center;
-  gap: var(--sp-3);
-  margin-bottom: var(--sp-3);
-}
-
-.presetCardName {
-  font-size: var(--fs-sm);
-  font-weight: var(--fw-semibold);
-  line-height: var(--lh-tight);
-  color: var(--text-secondary);
-  /* Names stay English in every locale, and a plugin is free to ship one like
-     "Mini U-Net forward — encoder/bottleneck/decoder": no space to break at,
-     so it ran out of the card and pushed the grid past its section. */
-  min-width: 0;
-  overflow-wrap: anywhere;
-}
-
-.presetCardDesc {
-  font-size: var(--fs-xs);
-  color: var(--text-muted);
-  line-height: var(--lh-snug);
-  margin-bottom: var(--sp-3);
-}
-
-.presetCardFooter {
-  display: flex;
-  align-items: center;
-  gap: var(--sp-3);
-}
-
-/* Difficulty badge — bg and color are dynamic (DIFFICULTY_COLORS) — set inline */
-.difficultyBadge {
-  /* Hue on the border and in the fill tint (graphics, 3:1); the label is text
-     and takes the text tier. The old pattern was the hue as text on a 13%
-     alpha wash of itself, which measured 2.24:1. */
-  color: var(--text-muted);
-  border: 1px solid;
-  font-size: var(--fs-2xs);
-  line-height: var(--lh-tight);
-  padding: var(--sp-1) var(--sp-2);
-  border-radius: var(--radius-sm);
-  font-weight: var(--fw-semibold);
-}
-
-.nodeCount {
-  font-size: var(--fs-2xs);
-  line-height: var(--lh-tight);
-  color: var(--text-muted);
-}
-
-.hint {
-  font-size: var(--fs-sm);
-  line-height: var(--lh-normal);
-  color: var(--text-secondary);
 }

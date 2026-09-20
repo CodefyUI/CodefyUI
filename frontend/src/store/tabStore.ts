@@ -441,6 +441,18 @@ export function runSettingsOf(tab: TabState): TabRunSettings {
   };
 }
 
+/**
+ * What `activeTabId` holds when no tab is open at all.
+ *
+ * The empty string rather than `null` so the field stays a `string` and the
+ * ~30 selectors that compare against it (`t.id === s.activeTabId`) keep
+ * working untouched: no tab id is ever empty, so every one of them simply
+ * misses, which is the intended answer. `App` asks the same question once --
+ * `tabs.some(t => t.id === activeTabId)` -- and renders the welcome screen
+ * when it is false.
+ */
+export const NO_ACTIVE_TAB = '';
+
 function createTabState(id: string, name: string): TabState {
   return {
     id,
@@ -1866,13 +1878,18 @@ function loadTabs(): { tabs: TabState[]; activeTabId: string } {
     const raw = localStorage.getItem(_storageKey());
     if (raw) {
       const data = JSON.parse(raw);
-      if (Array.isArray(data.tabs) && data.tabs.length > 0) {
+      if (Array.isArray(data.tabs)) {
+        // An EMPTY array is a real answer, not a missing one: since the last
+        // tab became closable, "no tabs open" is a state the user can put the
+        // workspace into, and a reload owes them the welcome screen they left
+        // rather than a tab they did not ask for. Only a missing or
+        // unparseable record falls through to the fresh `Tab 1` below.
         const tabs: TabState[] = data.tabs.map((t: PersistedTab) =>
           tabFromPersisted(t, createTabState(t.id, t.name)),
         );
         const activeTabId = tabs.some((t) => t.id === data.activeTabId)
           ? data.activeTabId
-          : tabs[0].id;
+          : tabs[0]?.id ?? NO_ACTIVE_TAB;
         return { tabs, activeTabId };
       }
     }
@@ -2219,7 +2236,6 @@ export const useTabStore = create<TabStoreState>((rawSet, get) => {
 
   removeTab: (id) => {
     const { tabs, activeTabId } = get();
-    if (tabs.length <= 1) return;
 
     const tab = tabs.find((t) => t.id === id);
     if (tab) tab.ws.disconnect();
@@ -2228,6 +2244,18 @@ export const useTabStore = create<TabStoreState>((rawSet, get) => {
     forgetViewport(id);
 
     const remaining = tabs.filter((t) => t.id !== id);
+    // Closing the LAST tab is allowed, and leaves the workspace with no tab at
+    // all: `App` renders the welcome screen for that state rather than an
+    // editor with nothing to edit. Before, the guard above refused it, so the
+    // only way out of a tab you were finished with was to keep it.
+    //
+    // The index arithmetic below reads `remaining[...]`, which is `undefined`
+    // once the list is empty -- so the empty case is answered first, not left
+    // to `Math.min(0, -1)`.
+    if (remaining.length === 0) {
+      set({ tabs: remaining, activeTabId: NO_ACTIVE_TAB });
+      return;
+    }
     const newActive = activeTabId === id
       ? remaining[Math.min(tabs.findIndex((t) => t.id === id), remaining.length - 1)].id
       : activeTabId;
@@ -2909,7 +2937,25 @@ export const useTabStore = create<TabStoreState>((rawSet, get) => {
     });
   },
 
-  getSerializedGraph: () => get().getSerializedGraphOf(get().getActiveTab()),
+  getSerializedGraph: () => {
+    // `getTab`, not `getActiveTab`: the latter asserts its lookup with `!`,
+    // and there really can be no active tab -- the welcome screen is that
+    // state. A PLUGIN observes it: its panel stays mounted across the close,
+    // and `graph.getGraph()` is typically read in a mount effect or a memo,
+    // so an undefined tab reaching `getSerializedGraphOf` threw a TypeError
+    // inside third-party render code (caught in the browser with the
+    // self-learning panel open while closing the last tab).
+    //
+    // An empty graph is the honest answer rather than a convenient one:
+    // nothing is open, so nothing is in it -- the same reasoning
+    // `currentGraphView` already applies one field over.
+    const { activeTabId, getTab } = get();
+    const tab = getTab(activeTabId);
+    if (!tab) {
+      return { nodes: [], edges: [], presets: [], segmentGroups: [], subgraphs: [] };
+    }
+    return get().getSerializedGraphOf(tab);
+  },
 
   getSerializedGraphOf: (input) => {
     // A tab whose canvas is showing a subgraph's insides still SAVES and

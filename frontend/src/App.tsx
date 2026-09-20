@@ -1,7 +1,9 @@
 import { useEffect } from 'react';
 import { ReactFlowProvider } from '@xyflow/react';
 import { Toolbar } from './components/Toolbar/Toolbar';
+import { WelcomeToolbar } from './components/Toolbar/WelcomeToolbar';
 import { TabBar } from './components/TabBar/TabBar';
+import { WelcomeScreen } from './components/Welcome/WelcomeScreen';
 import { NodePalette } from './components/Sidebar/NodePalette';
 import { FlowCanvas } from './components/Canvas/FlowCanvas';
 import { NodeConfigPanel } from './components/ConfigPanel/NodeConfigPanel';
@@ -155,9 +157,14 @@ function App() {
 
   return (
     <div className={styles.root}>
-      <Toolbar />
+      {/* No tab open is a normal state since the last tab became closable, and
+          both the header and the body answer it. `Toolbar` cannot be the one
+          to: it reads the active tab's status, device and read-only flag from
+          the top of its body, so mounting it with nothing active is a crash,
+          and every control on it names a graph anyway. */}
+      {hasActiveTab ? <Toolbar /> : <WelcomeToolbar />}
       <TabBar />
-      {hasActiveTab && <TabContent tabId={activeTabId} />}
+      {hasActiveTab ? <TabContent tabId={activeTabId} /> : <WelcomeScreen />}
       <PresetConfigModal />
       <LayersEditorModal />
       <NodeDetailModal />

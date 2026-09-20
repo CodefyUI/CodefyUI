@@ -65,17 +65,27 @@ export function SettingsPopover({ open, onClose, triggerRef }: Props) {
   const ref = useRef<HTMLDivElement>(null);
   const { t } = useI18n();
 
-  // Per-tab settings (Recording / Training)
-  const activeTab = useTabStore((s) => s.tabs.find((tab) => tab.id === s.activeTabId)!);
-  const recording = activeTab.recordOutputs ?? true;
-  const verbose = activeTab.verboseMode ?? false;
-  const persistent = activeTab.weightsPersistent ?? true;
-  const backward = activeTab.backwardMode ?? false;
-  const autoBackward = activeTab.autoBackward ?? false;
-  const seed = activeTab.seed ?? null;
-  const deterministic = activeTab.deterministic ?? false;
-  const graphId = activeTab.graphId ?? '';
-  const activeSegment = activeTab.activeSegment;
+  // Per-tab settings (Recording / Training).
+  //
+  // Null when no tab is open at all -- this popover is on the welcome bar
+  // too, where the global sections (Execution, LLM, Packs, Editor) are still
+  // meaningful and these two are not: recording, seeds and weight
+  // persistence are properties of a graph, and there is no graph. The two
+  // sections are left out entirely rather than shown disabled, because a
+  // toggle whose value nothing can read is a claim about a setting that does
+  // not exist yet.
+  const activeTab = useTabStore(
+    (s) => s.tabs.find((tab) => tab.id === s.activeTabId) ?? null,
+  );
+  const recording = activeTab?.recordOutputs ?? true;
+  const verbose = activeTab?.verboseMode ?? false;
+  const persistent = activeTab?.weightsPersistent ?? true;
+  const backward = activeTab?.backwardMode ?? false;
+  const autoBackward = activeTab?.autoBackward ?? false;
+  const seed = activeTab?.seed ?? null;
+  const deterministic = activeTab?.deterministic ?? false;
+  const graphId = activeTab?.graphId ?? '';
+  const activeSegment = activeTab?.activeSegment ?? null;
 
   const toggleRecord = useTabStore((s) => s.toggleRecord);
   const toggleVerbose = useTabStore((s) => s.toggleVerbose);
@@ -180,7 +190,7 @@ export function SettingsPopover({ open, onClose, triggerRef }: Props) {
   }, [codexStatus.status]);
 
   // Compare segment selection state
-  const selected = activeTab.nodes.filter((n) => n.selected);
+  const selected = activeTab?.nodes.filter((n) => n.selected) ?? [];
   const canCreateSegment = selected.length === 2;
   const canClearSegment = activeSegment !== null;
 
@@ -262,7 +272,9 @@ export function SettingsPopover({ open, onClose, triggerRef }: Props) {
     }
   };
   const handleCompare = () => {
-    if (canCreateSegment) {
+    // `canCreateSegment` counts selected nodes, which is 0 without a tab, so
+    // this arm is unreachable there -- the narrowing is for the compiler.
+    if (canCreateSegment && activeTab) {
       const [left, right] =
         selected[0].position.x <= selected[1].position.x
           ? [selected[0], selected[1]]
@@ -586,195 +598,204 @@ export function SettingsPopover({ open, onClose, triggerRef }: Props) {
           />
         </section>
 
-        {/* ── Recording & Inspection ─────────────────────────────── */}
-        <section className={styles.section}>
-          <div className={styles.sectionTitle}>
-            {t('toolbar.settings.section.recording')}
-          </div>
+        {/* Both sections below belong to the ACTIVE GRAPH, not to the app:
+            what a run records, what it seeds, whether its weights survive.
+            With no tab open there is no graph for them to describe, so they
+            are left out rather than shown against a tab that does not exist.
+            Everything around them is global and stays. */}
+        {activeTab && (
+          <>
+          {/* ── Recording & Inspection ─────────────────────────────── */}
+          <section className={styles.section}>
+            <div className={styles.sectionTitle}>
+              {t('toolbar.settings.section.recording')}
+            </div>
 
-          <Row
-            name={t('settings.record.name')}
-            onClick={toggleRecord}
-            ctrl={
-              <button
-                type="button"
-                aria-label={t('settings.record.name')}
-                title={t('settings.record.desc')}
-                aria-pressed={recording}
-                className={`${styles.toggle} ${recording ? styles.on : ''}`}
-                onClick={(e) => {
-                  e.stopPropagation();
-                  toggleRecord();
-                }}
-              />
-            }
-          />
+            <Row
+              name={t('settings.record.name')}
+              onClick={toggleRecord}
+              ctrl={
+                <button
+                  type="button"
+                  aria-label={t('settings.record.name')}
+                  title={t('settings.record.desc')}
+                  aria-pressed={recording}
+                  className={`${styles.toggle} ${recording ? styles.on : ''}`}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    toggleRecord();
+                  }}
+                />
+              }
+            />
 
-          <Row
-            name={t('settings.verbose.name')}
-            onClick={toggleVerbose}
-            ctrl={
-              <button
-                type="button"
-                aria-label={t('settings.verbose.name')}
-                title={t('settings.verbose.desc')}
-                aria-pressed={verbose}
-                className={`${styles.toggle} ${verbose ? styles.on : ''}`}
-                onClick={(e) => {
-                  e.stopPropagation();
-                  toggleVerbose();
-                }}
-              />
-            }
-          />
+            <Row
+              name={t('settings.verbose.name')}
+              onClick={toggleVerbose}
+              ctrl={
+                <button
+                  type="button"
+                  aria-label={t('settings.verbose.name')}
+                  title={t('settings.verbose.desc')}
+                  aria-pressed={verbose}
+                  className={`${styles.toggle} ${verbose ? styles.on : ''}`}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    toggleVerbose();
+                  }}
+                />
+              }
+            />
 
-          <Row
-            name={t('settings.compare.name')}
-            ctrl={
-              <button
-                type="button"
-                title={t('settings.compare.desc')}
-                disabled={compareDisabled}
-                onClick={(e) => {
-                  e.stopPropagation();
-                  handleCompare();
-                }}
-                className={`${styles.action} ${canClearSegment && !canCreateSegment ? styles.accent : ''}`}
-              >
-                {compareLabel}
-              </button>
-            }
-          />
-        </section>
+            <Row
+              name={t('settings.compare.name')}
+              ctrl={
+                <button
+                  type="button"
+                  title={t('settings.compare.desc')}
+                  disabled={compareDisabled}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    handleCompare();
+                  }}
+                  className={`${styles.action} ${canClearSegment && !canCreateSegment ? styles.accent : ''}`}
+                >
+                  {compareLabel}
+                </button>
+              }
+            />
+          </section>
 
-        {/* ── Training Behavior ──────────────────────────────────── */}
-        <section className={styles.section}>
-          <div className={styles.sectionTitle}>
-            {t('toolbar.settings.section.training')}
-          </div>
+          {/* ── Training Behavior ──────────────────────────────────── */}
+          <section className={styles.section}>
+            <div className={styles.sectionTitle}>
+              {t('toolbar.settings.section.training')}
+            </div>
 
-          <Row
-            name={t('settings.persist.name')}
-            desc={t('settings.persist.desc')}
-            onClick={togglePersistWeights}
-            ctrl={
-              <button
-                type="button"
-                aria-label={t('settings.persist.name')}
-                aria-pressed={persistent}
-                className={`${styles.toggle} ${persistent ? styles.on : ''}`}
-                onClick={(e) => {
-                  e.stopPropagation();
-                  togglePersistWeights();
-                }}
-              />
-            }
-          />
+            <Row
+              name={t('settings.persist.name')}
+              desc={t('settings.persist.desc')}
+              onClick={togglePersistWeights}
+              ctrl={
+                <button
+                  type="button"
+                  aria-label={t('settings.persist.name')}
+                  aria-pressed={persistent}
+                  className={`${styles.toggle} ${persistent ? styles.on : ''}`}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    togglePersistWeights();
+                  }}
+                />
+              }
+            />
 
-          <Row
-            name={t('settings.resetWeights.name')}
-            // Visible, not a `title`: a disabled button fires no pointer
-            // events, so the tooltip was unreadable in exactly the state
-            // where the button explains nothing by being greyed out.
-            desc={t('settings.resetWeights.desc')}
-            ctrl={
-              <button
-                type="button"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  handleResetWeights();
-                }}
-                className={`${styles.action} ${styles.danger}`}
-                disabled={!graphId}
-              >
-                {t('settings.resetWeights.action')}
-              </button>
-            }
-          />
+            <Row
+              name={t('settings.resetWeights.name')}
+              // Visible, not a `title`: a disabled button fires no pointer
+              // events, so the tooltip was unreadable in exactly the state
+              // where the button explains nothing by being greyed out.
+              desc={t('settings.resetWeights.desc')}
+              ctrl={
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    handleResetWeights();
+                  }}
+                  className={`${styles.action} ${styles.danger}`}
+                  disabled={!graphId}
+                >
+                  {t('settings.resetWeights.action')}
+                </button>
+              }
+            />
 
-          <Row
-            name={t('settings.gradients.name')}
-            desc={t('settings.gradients.desc')}
-            onClick={toggleBackward}
-            ctrl={
-              <button
-                type="button"
-                aria-label={t('settings.gradients.name')}
-                aria-pressed={backward}
-                className={`${styles.toggle} ${backward ? styles.on : ''}`}
-                onClick={(e) => {
-                  e.stopPropagation();
-                  toggleBackward();
-                }}
-              />
-            }
-          />
+            <Row
+              name={t('settings.gradients.name')}
+              desc={t('settings.gradients.desc')}
+              onClick={toggleBackward}
+              ctrl={
+                <button
+                  type="button"
+                  aria-label={t('settings.gradients.name')}
+                  aria-pressed={backward}
+                  className={`${styles.toggle} ${backward ? styles.on : ''}`}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    toggleBackward();
+                  }}
+                />
+              }
+            />
 
-          <Row
-            name={t('settings.autoLoss.name')}
-            desc={t('settings.autoLoss.desc')}
-            disabled={!backward}
-            onClick={backward ? toggleAutoBackward : undefined}
-            ctrl={
-              <button
-                type="button"
-                aria-label={t('settings.autoLoss.name')}
-                aria-pressed={autoBackward}
-                disabled={!backward}
-                className={`${styles.toggle} ${autoBackward && backward ? styles.on : ''}`}
-                onClick={(e) => {
-                  e.stopPropagation();
-                  // This control is disabled when !backward, so backward is always true here
-                  /* v8 ignore start */
-                  if (backward) toggleAutoBackward();
-                  /* v8 ignore stop */
-                }}
-              />
-            }
-          />
+            <Row
+              name={t('settings.autoLoss.name')}
+              desc={t('settings.autoLoss.desc')}
+              disabled={!backward}
+              onClick={backward ? toggleAutoBackward : undefined}
+              ctrl={
+                <button
+                  type="button"
+                  aria-label={t('settings.autoLoss.name')}
+                  aria-pressed={autoBackward}
+                  disabled={!backward}
+                  className={`${styles.toggle} ${autoBackward && backward ? styles.on : ''}`}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    // This control is disabled when !backward, so backward is always true here
+                    /* v8 ignore start */
+                    if (backward) toggleAutoBackward();
+                    /* v8 ignore stop */
+                  }}
+                />
+              }
+            />
 
-          {/* Reproducibility (core#134). A blank field is "no seed", which
-              is the historical behaviour; any number makes the run
-              repeatable and, as a consequence, serial. */}
-          <Row
-            name={t('settings.seed.name')}
-            desc={t('settings.seed.desc')}
-            ctrl={
-              <input
-                type="number"
-                className={styles.numberInput}
-                aria-label={t('settings.seed.name')}
-                placeholder={t('settings.seed.placeholder')}
-                value={seed === null ? '' : seed}
-                min={0}
-                step={1}
-                onClick={(e) => e.stopPropagation()}
-                onChange={(e) => {
-                  const raw = e.target.value.trim();
-                  setSeed(raw === '' ? null : Number(raw));
-                }}
-              />
-            }
-          />
+            {/* Reproducibility (core#134). A blank field is "no seed", which
+                is the historical behaviour; any number makes the run
+                repeatable and, as a consequence, serial. */}
+            <Row
+              name={t('settings.seed.name')}
+              desc={t('settings.seed.desc')}
+              ctrl={
+                <input
+                  type="number"
+                  className={styles.numberInput}
+                  aria-label={t('settings.seed.name')}
+                  placeholder={t('settings.seed.placeholder')}
+                  value={seed === null ? '' : seed}
+                  min={0}
+                  step={1}
+                  onClick={(e) => e.stopPropagation()}
+                  onChange={(e) => {
+                    const raw = e.target.value.trim();
+                    setSeed(raw === '' ? null : Number(raw));
+                  }}
+                />
+              }
+            />
 
-          <Row
-            name={t('settings.deterministic.name')}
-            desc={t('settings.deterministic.desc')}
-            onClick={toggleDeterministic}
-            ctrl={
-              <button
-                type="button"
-                aria-label={t('settings.deterministic.name')}
-                aria-pressed={deterministic}
-                className={`${styles.toggle} ${deterministic ? styles.on : ''}`}
-                onClick={(e) => {
-                  e.stopPropagation();
-                  toggleDeterministic();
-                }}
-              />
-            }
-          />
-        </section>
+            <Row
+              name={t('settings.deterministic.name')}
+              desc={t('settings.deterministic.desc')}
+              onClick={toggleDeterministic}
+              ctrl={
+                <button
+                  type="button"
+                  aria-label={t('settings.deterministic.name')}
+                  aria-pressed={deterministic}
+                  className={`${styles.toggle} ${deterministic ? styles.on : ''}`}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    toggleDeterministic();
+                  }}
+                />
+              }
+            />
+          </section>
+          </>
+        )}
 
         {/* ── Editor ─────────────────────────────────────────────── */}
         <section className={styles.section}>

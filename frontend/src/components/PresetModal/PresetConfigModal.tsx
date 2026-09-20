@@ -5,13 +5,17 @@ import { useI18n } from '../../i18n';
 import styles from './PresetConfigModal.module.css';
 
 export function PresetConfigModal() {
-  const activeTab = useTabStore((s) => s.tabs.find((t) => t.id === s.activeTabId)!);
+  // Optional, like the three other root-mounted modals: this is mounted for
+  // the whole session, including while no tab is open at all (the welcome
+  // screen). There is no modal to show then, and the guard below already
+  // says so -- what the non-null assertion did was crash on the way to it.
+  const activeTab = useTabStore((s) => s.tabs.find((t) => t.id === s.activeTabId) ?? null);
   const closePresetModal = useTabStore((s) => s.closePresetModal);
   const updatePresetInternalParam = useTabStore((s) => s.updatePresetInternalParam);
   const { t } = useI18n();
 
-  const presetModalNodeId = activeTab.presetModalNodeId;
-  const node = activeTab.nodes.find((n) => n.id === presetModalNodeId);
+  const presetModalNodeId = activeTab?.presetModalNodeId ?? null;
+  const node = activeTab?.nodes.find((n) => n.id === presetModalNodeId);
   const preset = node?.data.presetDefinition;
   const currentInternalParams = node?.data.internalParams ?? {};
 
