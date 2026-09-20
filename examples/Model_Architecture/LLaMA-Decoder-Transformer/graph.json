@@ -1,6 +1,6 @@
 {
   "name": "LLaMA Decoder-Only Transformer",
-  "description": "Decoder forward pass, LayerNorm in front of the stack",
+  "description": "One LayerNorm in front of the stack",
   "gallery": { "section": "architectures", "family": "Transformer", "order": 3 },
   "nodes": [
     { "id": "start-1", "type": "Start", "position": { "x": -230, "y": 0 }, "data": { "params": {} } },

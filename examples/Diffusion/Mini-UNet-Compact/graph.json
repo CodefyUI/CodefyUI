@@ -1,6 +1,6 @@
 {
-  "name": "Mini U-Net as a single node",
-  "description": "One denoise step; the output keeps the input shape",
+  "name": "Mini U-Net node",
+  "description": "One denoise step, same shape out",
   "gallery": { "section": "concepts", "order": 7 },
   "nodes": [
     { "id": "start-1",  "type": "Start", "position": { "x": -260, "y": 0 }, "data": { "params": {} } },

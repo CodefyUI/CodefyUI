@@ -1,6 +1,6 @@
 {
-  "name": "Tabular Iris Pipeline: CSV → features → train/test",
-  "description": "Every feature column comes out with a mean near zero",
+  "name": "Tabular Iris feature pipeline",
+  "description": "Every feature ends with a mean near 0",
   "gallery": { "section": "concepts", "order": 1 },
   "nodes": [
     { "id": "start-1",   "type": "Start",          "position": { "x": -260, "y": 0 }, "data": { "params": {} } },
@@ -13,7 +13,7 @@
 
     { "id": "note-overview", "type": "note", "position": { "x": -680, "y": 0 },
       "data": { "noteKind": "text",
-                "noteContent": "Iris is 150 rows, four measurements and three species: the smallest table that still needs every step of a real tabular pipeline. After a run the Print shows one mean per feature. z-scoring put every column of the whole table at zero, and the 120-row training split keeps them there, within about 0.03. A mean far from zero would say the split is not representative of the table it came from: raise test_size, or turn stratify off, and watch them move.\n\nIris 有 150 列、四個量測欄位、三個品種，是還用得上完整表格流程的最小資料集。跑完之後，Print 會印出每個特徵一個平均值。z-score 把整張表的每一欄都拉到 0，120 列的訓練集也留在 0 附近，誤差大約 0.03 以內。某一欄離 0 很遠，就表示這次切分沒能代表原本那張表：把 test_size 調大，或把 stratify 關掉，看它們怎麼動。",
+                "noteContent": "Iris is 150 rows, four measurements and three species: the smallest table that still needs every step of a real tabular pipeline. Those steps are the graph, left to right: read the CSV, take all four columns, z-score them, then split into train and test. After a run the Print shows one mean per feature. z-scoring put every column of the whole table at zero, and the 120-row training split keeps them there, within about 0.03. A mean far from zero would say the split is not representative of the table it came from: raise test_size, or turn stratify off, and watch them move.\n\nIris 有 150 列、四個量測欄位、三個品種，是還用得上完整表格流程的最小資料集。那些步驟就是這張圖由左到右的順序：讀進 CSV、四個欄位全取、做 z-score，再切成訓練集與測試集。跑完之後，Print 會印出每個特徵一個平均值。z-score 把整張表的每一欄都拉到 0，120 列的訓練集也留在 0 附近，誤差大約 0.03 以內。某一欄離 0 很遠，就表示這次切分沒能代表原本那張表：把 test_size 調大，或把 stratify 關掉，看它們怎麼動。",
                 "noteColor": "#3d3d1a", "boundToNodeId": "start-1",
                 "boundOffset": { "x": -420, "y": 0 }, "noteWidth": 360 } },
     { "id": "note-split", "type": "note", "position": { "x": 740, "y": -330 },

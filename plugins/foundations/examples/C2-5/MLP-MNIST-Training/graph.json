@@ -1,10 +1,10 @@
 {
-  "name": "C2-5 Train a 784→128→64→10 MLP on MNIST",
-  "description": "Train the MLP on MNIST, then test it; needs a download",
+  "name": "C2-5 MLP trained on MNIST",
+  "description": "Flatten the image, then 784-128-64-10",
   "nodes": [
     { "id": "note-overview", "type": "note", "position": { "x": -680, "y": 200 },
       "data": { "noteKind": "text",
-                "noteContent": "Flatten the 28x28 image into 784 numbers, then 128, then 64, then 10: the plainest network that still reads handwriting. It trains on the 60,000 training images and is then scored on the 10,000 test images the loop never saw.\n\nFive epochs bring the training loss from about 0.40 down to about 0.10, and the test accuracy Print to about 97%. The first run downloads MNIST into backend/data; the training itself takes well under a minute on a CPU.\n\nOpen the Training Pipeline box to change the epochs, the optimizer or the learning rate. The deep pack trains a convolutional network on the same digits, which is the comparison this chapter ends on.\n\n把 28x28 的影像攤平成 784 個數字，再經過 128、64、10：還讀得懂手寫數字的最樸素網路。它在 60,000 張訓練影像上訓練，再用訓練迴圈沒看過的 10,000 張測試影像評分。\n\n5 個 epoch 會把訓練損失從大約 0.40 壓到大約 0.10，測試準確率的 Print 約 97%。第一次執行會把 MNIST 下載到 backend/data；訓練本身在 CPU 上不用一分鐘。\n\n打開 Training Pipeline 方塊可以改 epochs、optimizer 或學習率。deep 套件包用同一批數字訓練卷積網路，那正是本章最後要做的對照。",
+                "noteContent": "Flatten the 28x28 image into 784 numbers, then 128, then 64, then 10: the plainest network that still reads handwriting. It trains on the 60,000 training images and is then scored on the 10,000 test images the loop never saw.\n\nFive epochs bring the training loss from about 0.40 down to about 0.10, and the test accuracy Print to about 97%. The first run needs the network: it downloads MNIST into backend/data; the training itself takes well under a minute on a CPU.\n\nOpen the Training Pipeline box to change the epochs, the optimizer or the learning rate. The deep pack trains a convolutional network on the same digits, which is the comparison this chapter ends on.\n\n把 28x28 的影像攤平成 784 個數字，再經過 128、64、10：還讀得懂手寫數字的最樸素網路。它在 60,000 張訓練影像上訓練，再用訓練迴圈沒看過的 10,000 張測試影像評分。\n\n5 個 epoch 會把訓練損失從大約 0.40 壓到大約 0.10，測試準確率的 Print 約 97%。第一次執行需要連網：它會把 MNIST 下載到 backend/data；訓練本身在 CPU 上不用一分鐘。\n\n打開 Training Pipeline 方塊可以改 epochs、optimizer 或學習率。deep 套件包用同一批數字訓練卷積網路，那正是本章最後要做的對照。",
                 "noteColor": "#3d3d1a", "boundToNodeId": "start",
                 "boundOffset": { "x": -420, "y": 0 }, "noteWidth": 360 } },
     { "id": "note-pipeline", "type": "note", "position": { "x": 360, "y": -230 },

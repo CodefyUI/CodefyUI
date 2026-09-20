@@ -1,6 +1,6 @@
 {
   "name": "Train ResNet on CIFAR10",
-  "description": "Train and score a mini-ResNet; needs a 170 MB download",
+  "description": "Each block learns only a correction",
   "gallery": { "section": "training", "order": 2 },
   "nodes": [
     {
@@ -12,7 +12,7 @@
       },
       "data": {
         "noteKind": "text",
-        "noteContent": "A mini-ResNet: a 7x7 stem, two residual blocks, then global pooling and a 10-way head. The point is the shortcut. Each block adds its own input back to its output, so the block only has to learn a correction rather than the whole mapping.\n\nAfter a run, read the loss curve and the test accuracy Print. Three epochs of plain SGD at lr 0.1 reach about 63%: a starting point, not a result. Raising epochs is the first thing to try.\n\nThe first run downloads CIFAR-10 (about 170 MB) into backend/data. That download, not the training, is what takes the time: three epochs of a model this small are well under a minute of CPU.\n\n這是一個迷你 ResNet：7x7 的 stem、兩個殘差區塊，接全域池化和 10 類的輸出層。重點在捷徑：每個區塊會把自己的輸入加回輸出，所以區塊只需要學一個修正量，而不是整個映射。\n\n跑完之後看損失曲線和測試準確率的 Print。用一般 SGD、學習率 0.1 跑三個 epoch 大約到 63%，這是起點而不是結果，最先該試的是把 epochs 調大。\n\n第一次執行會把 CIFAR-10（約 170 MB）下載到 backend/data。花時間的是這個下載而不是訓練：這麼小的模型跑三個 epoch，在 CPU 上遠不到一分鐘。",
+        "noteContent": "A mini-ResNet: a 7x7 stem, two residual blocks, then global pooling and a 10-way head. The point is the shortcut. Each block adds its own input back to its output, so the block only has to learn a correction rather than the whole mapping.\n\nAfter a run, read the loss curve and the test accuracy Print. Three epochs of plain SGD at lr 0.1 reach about 63%: a starting point, not a result. Raising epochs is the first thing to try.\n\nThe first run needs the network: it downloads CIFAR-10 (about 170 MB) into backend/data. That download, not the training, is what takes the time: three epochs of a model this small are well under a minute of CPU.\n\n這是一個迷你 ResNet：7x7 的 stem、兩個殘差區塊，接全域池化和 10 類的輸出層。重點在捷徑：每個區塊會把自己的輸入加回輸出，所以區塊只需要學一個修正量，而不是整個映射。\n\n跑完之後看損失曲線和測試準確率的 Print。用一般 SGD、學習率 0.1 跑三個 epoch 大約到 63%，這是起點而不是結果，最先該試的是把 epochs 調大。\n\n第一次執行需要連網：它會把 CIFAR-10（約 170 MB）下載到 backend/data。花時間的是這個下載而不是訓練：這麼小的模型跑三個 epoch，在 CPU 上遠不到一分鐘。",
         "noteColor": "#3d3d1a",
         "boundToNodeId": "start-1",
         "boundOffset": {

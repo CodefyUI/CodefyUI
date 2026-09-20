@@ -1,6 +1,6 @@
 {
-  "name": "Call a graph as an API",
-  "description": "Echo a message from the canvas or from an HTTP POST",
+  "name": "Call a graph over HTTP",
+  "description": "Echo a message from a POST body",
   "gallery": { "section": "quickstart", "order": 3 },
   "nodes": [
     {

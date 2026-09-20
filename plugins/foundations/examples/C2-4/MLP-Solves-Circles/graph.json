@@ -1,6 +1,6 @@
 {
-  "name": "C2-4 Neural network solves circles (ReLU does the work)",
-  "description": "Two ReLU layers get all 60 test points right",
+  "name": "C2-4 MLP solves circles",
+  "description": "Two ReLU bends turn rings into regions",
   "nodes": [
     { "id": "note-overview", "type": "note", "position": { "x": -720, "y": 0 },
       "data": { "noteKind": "text",

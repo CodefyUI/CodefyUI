@@ -1,6 +1,6 @@
 {
-  "name": "Mini U-Net (Expanded): every block visible",
-  "description": "Skips merge by Concat, so channels add up at the join",
+  "name": "Mini U-Net expanded",
+  "description": "Every block visible; Concat joins skips",
   "nodes": [
     { "id": "start-1",  "type": "Start", "position": { "x": -300, "y": 0 }, "data": { "params": {} } },
 
@@ -31,7 +31,7 @@
 
     { "id": "note-overview", "type": "note", "position": { "x": -720, "y": 0 },
       "data": { "noteKind": "text",
-                "noteContent": "The built-in example Mini U-Net as a single node hides all of this inside one DiffusionUNet node; here the same architecture is drawn out. One forward pass over a random 16 by 16 image at timestep 5: the channel counts run 16, 16, 32, 64, then 96 and 48 where the two Concat nodes take the skips back in, and 3 at the head, because a U-Net predicts noise shaped like its input. The picture halves twice on the way down and doubles twice on the way back. The weights are seeded and never trained, so read the printed tensor as a shape, not a result.\n\n內建範例 Mini U-Net as a single node 把這些全部收在一個 DiffusionUNet 節點裡；這裡是同一套架構攤開來畫。一次前向傳播，輸入是隨機的 16x16 影像、時間步 5：通道數依序是 16、16、32、64，接著兩個 Concat 把 skip 接回來時變成 96 和 48，最後在 head 收回 3 — 因為 U-Net 預測的噪聲和輸入同形狀。畫面在下行時縮小兩次，上行時再放大兩次。權重由 seed 固定、沒有訓練過，所以印出來的張量看形狀就好，不是結果。",
+                "noteContent": "The built-in example Mini U-Net node hides all of this inside one DiffusionUNet node; here the same architecture is drawn out. One forward pass over a random 16 by 16 image at timestep 5: the channel counts run 16, 16, 32, 64, then 96 and 48 where the two Concat nodes take the skips back in, and 3 at the head, because a U-Net predicts noise shaped like its input. The picture halves twice on the way down and doubles twice on the way back. The weights are seeded and never trained, so read the printed tensor as a shape, not a result.\n\n內建範例 Mini U-Net node 把這些全部收在一個 DiffusionUNet 節點裡；這裡是同一套架構攤開來畫。一次前向傳播，輸入是隨機的 16x16 影像、時間步 5：通道數依序是 16、16、32、64，接著兩個 Concat 把 skip 接回來時變成 96 和 48，最後在 head 收回 3 — 因為 U-Net 預測的噪聲和輸入同形狀。畫面在下行時縮小兩次，上行時再放大兩次。權重由 seed 固定、沒有訓練過，所以印出來的張量看形狀就好，不是結果。",
                 "noteColor": "#3d3d1a", "boundToNodeId": "start-1",
                 "boundOffset": { "x": -420, "y": 0 }, "noteWidth": 360 } },
     { "id": "note-t_emb", "type": "note", "position": { "x": 220, "y": -600 },

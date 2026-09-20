@@ -1,6 +1,6 @@
 {
-  "name": "Train a CNN on a HuggingFace dataset",
-  "description": "Test accuracy on 3 bean-leaf classes; needs a download",
+  "name": "Train a CNN on beans",
+  "description": "Every dataset stage is its own node",
   "gallery": { "section": "training", "order": 1 },
   "nodes": [
     {
@@ -299,7 +299,7 @@
       },
       "data": {
         "noteKind": "text",
-        "noteContent": "A training graph with nothing hidden inside a preset: every stage your own dataset touches is a node you can open. The first run downloads AI-Lab-Makerere/beans -- 1,295 photos of bean leaves, about 170 MB -- then trains a small CNN for 30 epochs and scores it on the held-out test split.\nRead Print \"Test accuracy\". Chance over three classes is 0.33; four CPU runs measured 0.82 to 0.85, each about two minutes. The learning rate anneals to zero over the 30 epochs, which keeps the last ones from bouncing. The two Visualize plots are the training and validation loss.\nTo make the graph yours, change the three dataset nodes and the model's last Linear.\n\n沒有把步驟藏進預設組的訓練圖：你自己的資料會經過的每一段都是可以打開的節點。第一次執行會下載 AI-Lab-Makerere/beans（1,295 張豆葉照片，約 170 MB），接著訓練 30 個 epoch 的小型 CNN，再用保留的 test 分割評分。\n跑完請看 Print「Test accuracy」。三個類別亂猜是 0.33；在 CPU 上跑了四次，每次約兩分鐘，量到 0.82 到 0.85。學習率會在 30 個 epoch 內退火到零，最後幾個 epoch 才不會震盪。兩張 Visualize 分別是訓練損失與驗證損失。\n要換成自己的資料，改三個資料集節點和模型最後一層 Linear。",
+        "noteContent": "A training graph with nothing hidden inside a preset: every stage your own dataset touches is a node you can open. The first run needs the network, and downloads AI-Lab-Makerere/beans from Hugging Face -- 1,295 photos of bean leaves, about 170 MB -- then trains a small CNN for 30 epochs and scores it on the held-out test split.\nRead Print \"Test accuracy\". Chance over three classes is 0.33; four CPU runs measured 0.82 to 0.85, each about two minutes. The learning rate anneals to zero over the 30 epochs, which keeps the last ones from bouncing. The two Visualize plots are the training and validation loss.\nTo make the graph yours, change the three dataset nodes and the model's last Linear.\n\n沒有把步驟藏進預設組的訓練圖：你自己的資料會經過的每一段都是可以打開的節點。第一次執行需要連網，會從 Hugging Face 下載 AI-Lab-Makerere/beans（1,295 張豆葉照片，約 170 MB），接著訓練 30 個 epoch 的小型 CNN，再用保留的 test 分割評分。\n跑完請看 Print「Test accuracy」。三個類別亂猜是 0.33；在 CPU 上跑了四次，每次約兩分鐘，量到 0.82 到 0.85。學習率會在 30 個 epoch 內退火到零，最後幾個 epoch 才不會震盪。兩張 Visualize 分別是訓練損失與驗證損失。\n要換成自己的資料，改三個資料集節點和模型最後一層 Linear。",
         "noteColor": "#3d3d1a",
         "boundToNodeId": "start",
         "boundOffset": {

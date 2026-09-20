@@ -158,8 +158,8 @@ rows are categories) and a line chart otherwise.
 
 `examples/Stats/` ships three graphs, reachable from the Examples gallery:
 
-- **Iris describe()** — `CSVReader → Stats-Describe → Stats-TableView`.
-- **Group by species, then chart it** — `CSVReader → Stats-GroupByAggregate → Stats-ChartView`.
+- **Iris describe() in one node** — `CSVReader → Stats-Describe → Stats-TableView`.
+- **Iris grouped by species, charted** — `CSVReader → Stats-GroupByAggregate → Stats-ChartView`.
 - **Confusion matrix as a heatmap** — decision tree on held-out iris → `Stats-ConfusionMatrix`.
 
 ---

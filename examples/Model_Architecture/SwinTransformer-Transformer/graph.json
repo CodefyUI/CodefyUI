@@ -1,6 +1,6 @@
 {
-  "name": "Swin Transformer (Simplified)",
-  "description": "Two-stage hierarchical forward pass, patches merged",
+  "name": "Swin Transformer pyramid",
+  "description": "64 tokens merge into 16 wider ones",
   "gallery": { "section": "architectures", "family": "Transformer", "order": 5 },
   "nodes": [
     { "id": "start-1", "type": "Start", "position": { "x": -250, "y": 0 }, "data": { "params": {} } },

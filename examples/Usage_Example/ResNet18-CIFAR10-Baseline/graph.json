@@ -1,6 +1,6 @@
 {
-  "name": "ResNet-18 / CIFAR-10 baseline",
-  "description": "About 95% test accuracy; needs a GPU and a download",
+  "name": "ResNet-18 CIFAR-10 baseline",
+  "description": "Every layer in the editor, no Python",
   "gallery": { "section": "training", "order": 4 },
   "nodes": [
     {
@@ -303,7 +303,7 @@
       },
       "data": {
         "noteKind": "text",
-        "noteContent": "The project's accuracy claim, with no Python anywhere: the whole ResNet-18 sits in the SequentialModel layer editor and everything else is node parameters. It is the CIFAR variant -- 3x3 stride-1 stem, no maxpool -- which is why it reaches 95% and not the 91% a stock ImageNet ResNet-18 gives on 32x32 images.\nSubmit it from the Runs panel with seed 1337 and deterministic on. 200 epochs took 22 minutes on an RTX 4080 and Print showed 0.9548 top-1. The first run downloads CIFAR-10, about 170 MB.\nREADME.md is the provenance record: the measured numbers and two runs that matched bitwise.\n\n本專案的準確率宣稱，而且整張圖沒有寫任何 Python：ResNet-18 全部放在 SequentialModel 的層編輯器裡，其餘都是節點參數。它是 CIFAR 版本（3x3 stride-1 的 stem、不做 maxpool），所以能到 95%，而不是原版 ImageNet ResNet-18 在 32x32 影像上的 91%。\n從 Runs 面板以 seed 1337、開啟 deterministic 送出執行。200 個 epoch 在 RTX 4080 上花 22 分鐘，Print 顯示 top-1 為 0.9548。第一次執行會下載 CIFAR-10，約 170 MB。\n旁邊的 README.md 是完整紀錄：量到的數字，以及兩次逐位元相同的執行。",
+        "noteContent": "The project's accuracy claim, with no Python anywhere: the whole ResNet-18 sits in the SequentialModel layer editor and everything else is node parameters. It is the CIFAR variant -- 3x3 stride-1 stem, no maxpool -- which is why it reaches 95% and not the 91% a stock ImageNet ResNet-18 gives on 32x32 images.\nSubmit it from the Runs panel with seed 1337 and deterministic on. It needs a GPU: 200 epochs took 22 minutes on an RTX 4080 and Print showed 0.9548 top-1. The first run downloads CIFAR-10, about 170 MB.\nREADME.md is the provenance record: the measured numbers and two runs that matched bitwise.\n\n本專案的準確率宣稱，而且整張圖沒有寫任何 Python：ResNet-18 全部放在 SequentialModel 的層編輯器裡，其餘都是節點參數。它是 CIFAR 版本（3x3 stride-1 的 stem、不做 maxpool），所以能到 95%，而不是原版 ImageNet ResNet-18 在 32x32 影像上的 91%。\n從 Runs 面板以 seed 1337、開啟 deterministic 送出執行。這張圖需要 GPU：200 個 epoch 在 RTX 4080 上花 22 分鐘，Print 顯示 top-1 為 0.9548。第一次執行會下載 CIFAR-10，約 170 MB。\n旁邊的 README.md 是完整紀錄：量到的數字，以及兩次逐位元相同的執行。",
         "noteColor": "#3d3d1a",
         "boundToNodeId": "start",
         "boundOffset": {

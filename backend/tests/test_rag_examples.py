@@ -10,9 +10,9 @@ pack cache, and a box that HAS one should not load half a gigabyte of
 weights inside the fast suite (which is why ``TextEmbedding``,
 ``HFTextGenerate`` and ``LLMChat`` all sit in
 ``test_builtin_examples._SLOW_NODE_TYPES``). So this file asserts everything
-about them that does not need the model: what the gallery card says, how
-many sentences the example carries, where the labels are wired, and -- for
-the RAG pair -- that the two graphs really are the same retrieval chain
+about them that does not need the model: what the graph tells its reader,
+how many sentences the example carries, where the labels are wired, and --
+for the RAG pair -- that the two graphs really are the same retrieval chain
 under two different generators, annotated with the same notes.
 
 Word-Embedding-Analogy is the exception, and only as it SHIPS: its default
@@ -23,13 +23,21 @@ reader which five words come back, and
 is checked against a real run. Switching that graph to ``glove-50d`` is the
 download, and that test lives next door with the rest of them.
 
-Why the card is worth a test. ``EmptyCanvasOverlay.tsx`` renders an
-example's description as ``description.slice(0, 80) + '...'`` with no
-``title`` attribute, so those 80 characters are the whole of the warning a
-learner reads before pressing Run on a graph that will otherwise stop at a
-missing pack. "The requirement is somewhere in the description" is
-therefore not the property worth holding; "the requirement is inside the
-first 80 characters, and the cut does not land mid-word" is.
+Why the notes are worth a test. A description is one line of forty columns
+now, and it says what the graph shows -- not what has to be installed
+before it will run. That puts the whole of the warning on the canvas: the
+note bound to the nodes it is about is where a learner finds out that
+pressing Run without the pack ends at an error rather than at a download,
+and it is the only surface with room for how big the download is and where
+it comes from. "The requirement is somewhere in the example" is therefore
+not the property worth holding; "the requirement is in a note, spelled the
+way the reader has to spell it in Package Center" is.
+
+The general form of that rule -- no description states a requirement, every
+requirement is stated in a note -- runs over all 72 shipped examples in
+``test_builtin_examples.py``. These three are pinned here as well, by the
+exact phrases, because a pack named as "a download" is a pack nobody can
+search for.
 
 The real run lives next door in ``test_pack_examples_real.py``, opt-in
 behind ``CODEFYUI_PACK_NETWORK_TESTS=1`` because it needs the download this
@@ -76,24 +84,20 @@ _RAG_EXAMPLES = [
 #: ``directory`` param names it relative to ``backend/``.
 _RAG_CORPUS = _REPO_ROOT / "backend" / "data" / "samples" / "rag"
 
-#: ``EmptyCanvasOverlay.tsx`` renders a gallery card's description as
-#: ``description.slice(0, 80) + '...'``. Mirrors
-#: ``test_builtin_examples._CARD_VISIBLE_CHARS``.
-_CARD_VISIBLE_CHARS = 80
-
-#: The sidebar ``TemplatesTab`` shows the full description in a native
-#: ``title`` tooltip, and a tooltip of a thousand characters is its own kind
-#: of unreadable. A generous ceiling rather than a style rule: the detail
-#: belongs beside the graph, not on the card.
-_DESCRIPTION_LIMIT = 600
-
-#: Each pack-backed example and the phrases its card must show, because
+#: Each pack-backed example and the phrases its notes must name, because
 #: without them the learner presses Run and gets an error instead of a
 #: download. A TUPLE per example rather than one string: RAG-LLMChat-API
 #: needs two things before it answers -- the encoder pack for the retrieval
-#: half and a chat backend for the generation half -- and a card naming only
-#: one of them still sends somebody to a failed run.
-_PACK_BACKED_CARDS = [
+#: half and a chat backend for the generation half -- and naming only one of
+#: them still sends somebody to a failed run.
+#:
+#: Verbatim phrases rather than a vocabulary, and that is what these are
+#: still worth after the general rule moved to ``test_builtin_examples.py``:
+#: that one asks whether a requirement is stated on the canvas at all, and
+#: this one asks whether it is stated with the pack id the reader has to
+#: find in Package Center. "needs a download" satisfies the first and leaves
+#: the reader with nothing to search for.
+_PACK_BACKED_NOTES = [
     pytest.param(
         _SENTENCE_EXAMPLE,
         ("sentence-embeddings pack",),
@@ -101,7 +105,7 @@ _PACK_BACKED_CARDS = [
     ),
     pytest.param(
         # BOTH pack ids: installing ``rag`` fetches Qwen but not e5, which
-        # comes from ``sentence-embeddings``, and a card naming one of them
+        # comes from ``sentence-embeddings``, and a note naming one of them
         # sends the learner back to Package Center a second time -- after
         # the download they thought was the last one.
         _RAG_LOCAL_EXAMPLE,
@@ -141,19 +145,6 @@ def _notes(payload: dict) -> dict[str, dict]:
 _ANALOGY_TOP_K = ["queen", "duchess", "princess", "mother", "goddess"]
 
 
-def _cuts_cleanly(description: str) -> bool:
-    """Does the card's 80-character slice end between words?
-
-    A boundary, not a length: the cut is clean when the text ends before it,
-    or when whitespace sits on either side of it. Anything else splits a
-    word, and the card appends its own ellipsis -- so "for real Glo..."
-    reads as a bug rather than as a summary.
-    """
-    return (len(description) <= _CARD_VISIBLE_CHARS
-            or description[_CARD_VISIBLE_CHARS].isspace()
-            or description[_CARD_VISIBLE_CHARS - 1].isspace())
-
-
 #: The CJK Unified Ideographs block, as codepoints rather than as the two
 #: boundary characters: U+9FFF is a rare ideograph that a cp950 console
 #: cannot print, so a literal would break the traceback on the Windows box
@@ -185,70 +176,70 @@ def palette() -> set[str]:
     return keys
 
 
-# -- the gallery cards -----------------------------------------------------
+# -- what the reader is told before pressing Run ---------------------------
 
-@pytest.mark.parametrize("graph_path, requirements", _PACK_BACKED_CARDS)
-def test_pack_example_cards_warn_inside_the_80_char_truncation(
+@pytest.mark.parametrize("graph_path, requirements", _PACK_BACKED_NOTES)
+def test_pack_example_notes_name_the_pack_by_the_id_it_installs_under(
     graph_path: Path, requirements: tuple[str, ...]
 ):
-    """The pack requirement survives the card's cut, and reads as a sentence.
+    """The pack requirement is on the canvas, spelled the way it installs.
 
     An example that needs a download has exactly one chance to say so before
-    the Run button is pressed, and it is these 80 characters. Asserted
-    against the truncated string rather than the whole description, because
-    the whole one is not what anybody reads.
+    the Run button is pressed, and it is now the note beside the nodes: the
+    card is one line of what the graph shows, and carries no requirement at
+    all. A requirement in neither place is one the learner meets as an error
+    message.
+
+    Every note on the graph is searched, not the overview alone. Which note
+    a sentence sits in is a layout decision, and pinning it here would turn
+    moving a line between two notes into a test failure -- while the
+    property that matters, that the reader can find the pack, is the same
+    wherever it is written.
     """
-    description = _payload(graph_path)["description"]
-    visible = description[:_CARD_VISIBLE_CHARS]
+    notes = _notes(_payload(graph_path))
+    assert notes, f"{graph_path.parent.name} carries no notes at all"
+    text = "\n".join(note["data"]["noteContent"] for note in notes.values())
 
     for requirement in requirements:
-        assert requirement in visible, (
-            f"{requirement!r} is not inside the {_CARD_VISIBLE_CHARS} "
-            f"characters the canvas gallery card shows. The card renders "
-            f"{visible!r} and nothing more, so a learner without it presses "
-            f"Run and gets an error instead of a download -- move the "
-            f"requirement to the front of the description.")
-
-    assert _cuts_cleanly(description), (
-        f"the card renders {visible!r} and nothing more, cutting a word in "
-        f"half; end the opening sentence inside {_CARD_VISIBLE_CHARS} "
-        f"characters")
-
-    assert len(description) <= _DESCRIPTION_LIMIT, (
-        f"the description is {len(description)} characters; the sidebar shows "
-        f"it in full as a tooltip, so keep the detail beside the graph")
+        assert requirement in text, (
+            f"{requirement!r} is in none of {graph_path.parent.name}'s notes "
+            f"({sorted(notes)}), and the card no longer states a requirement "
+            f"either -- so a learner without it presses Run and gets an "
+            f"error instead of a download. Say it on the canvas, with the id "
+            f"Package Center lists, or the warning ends at a search with no "
+            f"hits.")
 
 
-def test_analogy_card_says_it_runs_offline():
-    """The one fact that decides whether the analogy runs survives the cut.
+def test_analogy_note_says_it_needs_no_pack():
+    """The one fact that decides whether the analogy runs, in both languages.
 
-    That it works offline on ``demo-16d``: a learner without the
-    word-vectors pack needs to know the default backend ships with the app.
-    It is the mirror image of the test above -- this example runs WITHOUT a
-    pack, and the card has to say so.
+    That it works on ``demo-16d`` without the word-vectors pack: a learner
+    looking at a gallery full of examples that DO need a pack has to be able
+    to find out that this one does not. It is the mirror image of the test
+    above -- those three name the pack they need, this one names the table
+    that ships with the app.
+
+    It used to be asserted on the card. The card now says what the graph
+    shows and nothing about what it needs, so the fact moved to the note
+    with every other requirement -- and unlike the card, the note is written
+    twice, so the Chinese half is checked too rather than left to a reader
+    who happens to read English.
 
     ``glove-50d`` used to be asserted here too. It is not a requirement but
-    advice -- what to change to see the analogy on real vectors -- and
-    advice on a card is what pushed these descriptions past the cut in the
-    first place. It now has to be in a note instead, which the test below
-    holds it to.
+    advice -- what to change to see the analogy on real vectors -- which the
+    test below holds to its own note.
     """
-    description = _payload(_ANALOGY_EXAMPLE)["description"]
-    visible = description[:_CARD_VISIBLE_CHARS]
+    notes = _notes(_payload(_ANALOGY_EXAMPLE))
+    text = "\n".join(note["data"]["noteContent"] for note in notes.values())
 
-    assert "offline" in visible
-
-    # The whole description, not its opening sentence: a one-line card is
-    # self-contained because nothing of it is cut, which is the property the
-    # old "the first sentence fits" assertion was reaching for by proxy.
-    # Stronger than the old check and it replaces it rather than joining it:
-    # a description the card shows WHOLE cannot be cut mid-word, so
-    # ``_cuts_cleanly`` beside this line would be an assertion that cannot
-    # fail. The pack-backed cards above still need it -- theirs are allowed
-    # to run past the cut.
-    assert len(description) == len(visible), (
-        f"the card renders {visible!r} and cuts the rest; an example "
-        f"description is one line the card can show whole")
+    for half, phrase in (("English", "downloads nothing"),
+                         ("Traditional Chinese", "不必下載")):
+        assert phrase in text, (
+            f"the {half} half of {_ANALOGY_EXAMPLE.parent.name}'s notes no "
+            f"longer says the default table needs no download. The card does "
+            f"not say it either -- it says what the graph shows -- so a "
+            f"learner who has just read three cards that need a pack has "
+            f"nowhere left to learn that this one does not.")
 
 
 def test_analogy_note_sends_the_reader_to_the_real_vectors():
@@ -647,8 +638,9 @@ def test_rag_readmes_exist_and_corpus_has_five_documents():
     for graph_path in (_RAG_LOCAL_EXAMPLE, _RAG_LLMCHAT_EXAMPLE):
         readme = graph_path.parent / "README.md"
         assert readme.is_file(), (
-            f"{readme} is missing, but the gallery card for "
-            f"{graph_path.parent.name} tells the reader to go and read it")
+            f"{readme} is missing, but the overview note on "
+            f"{graph_path.parent.name}'s canvas tells the reader to go and "
+            f"read it")
         text = readme.read_text(encoding="utf-8")
         assert "## Before you run it" in text, (
             f"{readme} has no 'Before you run it' section; that is where the "
@@ -658,7 +650,7 @@ def test_rag_readmes_exist_and_corpus_has_five_documents():
                        if p.suffix.lower() in {".md", ".txt"})
     assert len(documents) == 5, (
         f"the bundled corpus holds {len(documents)} documents, not the five "
-        f"both RAG cards promise: {documents}")
+        f"the local example's card and both READMEs promise: {documents}")
 
 
 def test_rag_llmchat_example_carries_no_secret_params():

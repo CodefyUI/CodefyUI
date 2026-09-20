@@ -3,33 +3,40 @@ import { readdirSync, readFileSync, existsSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import zhTW from './zh-TW';
-import { displayWidth, truncateToWidth } from '../../utils/localizeExamples';
+import { displayWidth } from '../../utils/localizeExamples';
 
 /**
  * The Chinese half of the example-gallery invariants.
  *
  * `backend/tests/test_builtin_examples.py` pins the English descriptions: they
- * are read off `graph.json`, and it asserts that a requirement lands inside the
- * card's 80-column cut. Nothing was checking the Chinese, which is a separate
- * table written by hand -- so a translation could drop a GPU requirement, grow
- * past the card, or translate an English name that is supposed to stay English,
- * and every test would still pass.
+ * are read off `graph.json`, and it asserts that no description states a
+ * requirement and that every requirement is stated in a note on the canvas
+ * instead. Nothing was checking the Chinese, which is a separate table written
+ * by hand -- so a translation could keep a GPU requirement the English had
+ * dropped, grow past the card, or translate an English name that is supposed
+ * to stay English, and every test would still pass.
+ *
+ * The English name has its own rule -- five words, 34 columns, unique across
+ * the repo -- and it lives in `test_example_descriptions.py` alone, because
+ * the name is not translated: this table carries descriptions only, which the
+ * "translates no name" case below pins.
  */
 
 const REPO = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..', '..');
 const EXAMPLES = join(REPO, 'examples');
 const PLUGINS = join(REPO, 'plugins');
 
-/** How much of a description the empty-canvas card shows. Mirrors
- * `CARD_DESC_COLUMNS` in EmptyCanvasOverlay.tsx. */
-const CARD_COLUMNS = 80;
-
 /** One line, this wide -- the Chinese half of the rule
- * `backend/tests/test_example_descriptions.py` holds over the English. The
- * long explanation belongs in a note on the canvas, beside the nodes it is
- * about, not in the one field every card and every row has to render. Every
- * example obeys it, so there is no exception list on either side. */
-const MAX_DESCRIPTION_COLUMNS = 56;
+ * `backend/tests/test_example_descriptions.py` holds over the English. Forty
+ * columns is twenty Chinese characters, which is what the line under the
+ * title has room for in a 13rem card whose type grows to 19px on a wide
+ * screen. `CARD_DESC_COLUMNS` in EmptyCanvasOverlay.tsx cuts at the same 40,
+ * so a description that obeys this cap is never cut on screen and the card
+ * shows the line whole. The long explanation belongs in a note on the canvas,
+ * beside the nodes it is about, not in the one field every card and every row
+ * has to render. Every example obeys it, so there is no exception list on
+ * either side. */
+const MAX_DESCRIPTION_COLUMNS = 40;
 
 /** Widths both implementations of `displayWidth` are pinned to. */
 const WIDTH_VECTORS = join(
@@ -130,32 +137,45 @@ describe('zh-TW example descriptions', () => {
     expect(bloated).toEqual([]);
   });
 
-  it('keeps every requirement inside the card cut, as the English does', () => {
-    // The empty-canvas card is what a reader sees BEFORE pressing Run, and it
-    // is the one surface that shows a description without being hovered. A
-    // requirement past the cut is a footnote nobody reads -- so wherever the
-    // English names one inside its own 80 columns, the Chinese has to name it
-    // inside its 80 too. Pairs, because "GPU" is not a word the Chinese uses.
-    const REQUIREMENTS: { en: RegExp; zh: RegExp; what: string }[] = [
-      { en: /GPU/, zh: /GPU|顯卡/, what: 'a GPU' },
-      { en: /download/i, zh: /下載/, what: 'a download' },
-      { en: /\bpacks?\b/i, zh: /套件包/, what: 'a pack install' },
-      { en: /Ollama|API key/i, zh: /Ollama|金鑰/, what: 'a model endpoint' },
-      { en: /about an hour/i, zh: /一小時|小時/, what: 'the runtime' },
+  it('states no requirement -- a card says what the graph shows', () => {
+    // The inverse of the rule this case used to hold. Forty columns is twenty
+    // Chinese characters, and a line that spends half of them on 「需 1.5 GB
+    // 下載」 has stopped saying what the graph is for -- which is the one
+    // thing only the card can say, because it is what a reader picks a card
+    // by. A download, a GPU, a pack, an API key or a sibling example that has
+    // to be run first is named in the note on the canvas, beside the nodes it
+    // is about, where there is room for how big it is and where it comes from.
+    //
+    // `backend/tests/test_builtin_examples.py` holds both halves of that over
+    // the English and over the notes, which are bilingual in one string. This
+    // file only ever sees the translation table, so it holds the Chinese
+    // descriptions and asserts nothing about the notes.
+    const RESOURCES: { pattern: RegExp; what: string }[] = [
+      { pattern: /GPU|顯卡/, what: 'a GPU' },
+      { pattern: /下載/, what: 'a download' },
+      { pattern: /套件包/, what: 'a pack install' },
+      { pattern: /金鑰|Ollama/, what: 'a key or a model endpoint' },
     ];
-    const missing: string[] = [];
-    for (const example of shipped) {
-      const zh = zhTW[example.key]?.description;
-      if (!zh) continue;
-      const enCard = truncateToWidth(example.description, CARD_COLUMNS);
-      const zhCard = truncateToWidth(zh, CARD_COLUMNS);
-      for (const { en, zh: zhPattern, what } of REQUIREMENTS) {
-        if (en.test(enCard) && !zhPattern.test(zhCard)) {
-          missing.push(`${example.key}: the English card names ${what}, the Chinese card does not`);
+    // 需 covers 需要 and the bare 需 a short line writes (「需 GPU」). The
+    // lookbehind is the negation guard `_CARD_REQUIREMENT_NEGATIONS` carries
+    // on the Python side, for the same reason: 「不需下載」 names a download
+    // to say it is NOT needed, and flagging it would tell the author to move
+    // a reassurance off the card -- the one sentence a hesitant reader wanted.
+    const REQUIRES = /(?<![不無毋])需|必須/;
+    const offenders: string[] = [];
+    for (const [key, { description }] of Object.entries(zhTW)) {
+      const text = description ?? '';
+      if (!REQUIRES.test(text)) continue;
+      for (const { pattern, what } of RESOURCES) {
+        if (pattern.test(text)) {
+          offenders.push(`${key} states ${what}: ${text}`);
         }
       }
     }
-    expect(missing).toEqual([]);
+    expect(
+      offenders,
+      'a requirement belongs in the note on the example canvas, beside the nodes it is about, and in the exceptions list in docs/ -- not on the card',
+    ).toEqual([]);
   });
 
   it('measures a width the Python port agrees with', () => {
@@ -171,10 +191,11 @@ describe('zh-TW example descriptions', () => {
   });
 
   it('says it in one line, inside the cap', () => {
-    // The card cuts at 80 columns, but a description that needs 80 has
-    // stopped being a label and become the explanation -- which belongs in a
-    // note on the canvas, next to the nodes it is about. Every example obeys
-    // this now, so the rule holds with no exceptions.
+    // Forty columns -- twenty Chinese characters -- is the line the card has
+    // room for. A description that needs more has stopped being a label and
+    // become the explanation, which belongs in a note on the canvas, next to
+    // the nodes it is about. Every example obeys this now, so the rule holds
+    // with no exceptions.
     const over = Object.entries(zhTW)
       .filter(([, { description }]) => {
         const text = description ?? '';

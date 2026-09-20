@@ -1,6 +1,6 @@
 {
-  "name": "RLHF building blocks: reward + KL",
-  "description": "A reward per sequence, and the KL against a reference",
+  "name": "RLHF reward and KL terms",
+  "description": "One scores the answer, one limits drift",
   "gallery": { "section": "concepts", "order": 8 },
   "nodes": [
     { "id": "start-1",  "type": "Start",        "position": { "x": -260, "y": 0    }, "data": { "params": {} } },

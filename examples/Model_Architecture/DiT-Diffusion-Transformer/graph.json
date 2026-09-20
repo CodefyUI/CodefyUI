@@ -1,6 +1,6 @@
 {
   "name": "DiT Diffusion Transformer",
-  "description": "Forward pass: noisy patches to predicted noise",
+  "description": "Noisy patches in, predicted noise out",
   "gallery": { "section": "architectures", "family": "Diffusion", "order": 1 },
   "nodes": [
     { "id": "start-1", "type": "Start", "position": { "x": -250, "y": 0 }, "data": { "params": {} } },

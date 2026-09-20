@@ -15,8 +15,15 @@ import { pluginNameOf } from '../../utils/provider';
 import { EXAMPLE_CATEGORY_COLORS, EXAMPLE_CATEGORY_FALLBACK, SURFACE_RAISED, NODE_HEADER_TINT, mixColor } from '../../styles/theme';
 import styles from './EmptyCanvasOverlay.module.css';
 
-/** How much of a description a preset card shows, in Latin columns. */
-const CARD_DESC_COLUMNS = 80;
+/** How much of a description a preset card shows, in Latin columns.
+ *
+ * The same 40 columns a description is allowed to be in the first place --
+ * `MAX_DESCRIPTION_COLUMNS` in `backend/tests/test_example_descriptions.py`
+ * and its Chinese half in `exampleLocales/zh-TW.test.ts`. Keep the three in
+ * step: a cut wider than the rule can never fire, and a cut narrower than it
+ * would clip text that obeys the rule.
+ */
+const CARD_DESC_COLUMNS = 40;
 
 function renderCard(
   example: LocalizedExample,
@@ -51,16 +58,19 @@ function renderCard(
       <div className={styles.presetCardHeader}>
         <span className={styles.presetCardName}>{example.name}</span>
       </div>
-      {/* The cut stays at 80 columns: every example's first line is written to
-          say what the card has to say inside it, and the backend example suite
-          asserts that a GPU, a download or a pack is named there. Measured in
-          columns rather than code points so the Chinese card cuts in the same
-          place on screen — 80 ideographs are 160 columns wide and would run
-          off the card. What the card was missing is the REST of the
-          description — this was the only place one appeared with no way to
-          read past the cut, while the sidebar's gallery tab has carried the
-          full text as a tooltip all along (core#305). Only when there is more
-          to show, so a short description does not get a tooltip repeating
+      {/* The cut is 40 columns — the width a description is allowed to be at
+          all, pinned by both halves of the length rule. So for everything
+          that ships in this repo it never fires: the card shows the whole
+          line, and a GPU, a download or a pack named in that line is on the
+          card rather than behind a cut. It fires for a third-party pack that
+          writes past the rule, which is exactly when the tooltip below earns
+          its place — this card was the only surface that showed a
+          description with no way to read past the cut, while the sidebar's
+          gallery tab has carried the full text all along (core#305).
+          Measured in columns rather than code points so the Chinese card
+          cuts in the same place on screen: 40 ideographs are 80 columns wide
+          and would run off the card. The tooltip is set only when there is
+          more to show, so a description that fits does not get one repeating
           itself. */}
       <div
         className={styles.presetCardDesc}

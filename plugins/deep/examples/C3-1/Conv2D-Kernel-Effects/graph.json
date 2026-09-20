@@ -1,6 +1,6 @@
 {
-  "name": "C3-1 3×3 kernel sliding over a synthetic image",
-  "description": "One 8x8 image becomes 32 feature maps, pooled to 4x4",
+  "name": "C3-1 Conv2D feature maps",
+  "description": "One 8x8 image to 32 maps, pooled 4x4",
   "nodes": [
     { "id": "start", "type": "Start",        "position": { "x": -300, "y":   0 }, "data": { "params": {} } },
     { "id": "img",   "type": "TensorInput",  "position": { "x":  -40, "y":   0 }, "data": { "params": { "shape": "1,1,8,8", "dtype": "float32", "value_mode": "random", "seed": 7 } } },
@@ -11,7 +11,7 @@
 
     { "id": "note-overview", "type": "note", "position": { "x": -720, "y": 0 },
       "data": { "noteKind": "text",
-                "noteContent": "One convolution layer, seen as shapes. The random 8x8 image enters as (1, 1, 8, 8). The layer holds 32 kernels, each sweeping the whole image, so 32 feature maps leave as (1, 32, 8, 8). ReLU clips the negatives without changing the shape; max-pool halves both sides to (1, 32, 4, 4), which is what the Print shows.\n\nThe kernels are random, so nothing here detects anything yet: training is what turns them into edge and texture detectors, and C3-1 Train LeNet-style CNN on MNIST does exactly that. Raise out_channels and the second number in the printed shape follows it.\n\n一層卷積，用形狀來看。隨機的 8x8 影像以 (1, 1, 8, 8) 進來。這一層有 32 個 kernel，每個都掃過整張影像，所以出來 32 張特徵圖，形狀是 (1, 32, 8, 8)。ReLU 把負值切掉、形狀不變；max-pool 把長寬各砍一半，變成 (1, 32, 4, 4)，也就是 Print 印出來的東西。\n\n這裡的 kernel 是隨機的，所以還沒有偵測到任何東西：要靠訓練才會變成邊緣和紋理的偵測器，C3-1 Train LeNet-style CNN on MNIST 做的就是這件事。把 out_channels 調大，印出來形狀的第二個數字就跟著變。",
+                "noteContent": "One convolution layer, seen as shapes. The random 8x8 image enters as (1, 1, 8, 8). The layer holds 32 kernels, each sweeping the whole image, so 32 feature maps leave as (1, 32, 8, 8). ReLU clips the negatives without changing the shape; max-pool halves both sides to (1, 32, 4, 4), which is what the Print shows.\n\nThe kernels are random, so nothing here detects anything yet: training is what turns them into edge and texture detectors, and C3-1 Train LeNet on MNIST does exactly that. Raise out_channels and the second number in the printed shape follows it.\n\n一層卷積，用形狀來看。隨機的 8x8 影像以 (1, 1, 8, 8) 進來。這一層有 32 個 kernel，每個都掃過整張影像，所以出來 32 張特徵圖，形狀是 (1, 32, 8, 8)。ReLU 把負值切掉、形狀不變；max-pool 把長寬各砍一半，變成 (1, 32, 4, 4)，也就是 Print 印出來的東西。\n\n這裡的 kernel 是隨機的，所以還沒有偵測到任何東西：要靠訓練才會變成邊緣和紋理的偵測器，C3-1 Train LeNet on MNIST 做的就是這件事。把 out_channels 調大，印出來形狀的第二個數字就跟著變。",
                 "noteColor": "#3d3d1a", "boundToNodeId": "start",
                 "boundOffset": { "x": -420, "y": 0 }, "noteWidth": 360 } },
     { "id": "note-conv", "type": "note", "position": { "x": 280, "y": -410 },

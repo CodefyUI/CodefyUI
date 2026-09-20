@@ -16,7 +16,12 @@
 
 .modal {
   width: 84vw;
-  max-width: 1180px;
+  /* Raised from 1180px with the card. A 13rem track is wider than the 200px
+     one it replaced, so at the old cap a 2048px window fitted three columns
+     where it used to fit four — the cards got readable and the gallery got
+     shorter at the same time. 1400px puts the fourth column back and is
+     still narrower than 84vw on any screen big enough to reach the cap. */
+  max-width: 1400px;
   height: 82vh;
   min-width: 320px;
   background: linear-gradient(180deg, var(--surface-panel) 0%, var(--surface-canvas) 100%);
@@ -60,7 +65,11 @@
 
 .search {
   margin-left: auto;
-  width: 240px;
+  /* rem, not px, for the same reason as .cards below: the field holds text at
+     --fs-md, which grows with the root font, so a literal width would squeeze
+     the query the wider the screen gets. 15rem is the old 240px at a 16px
+     root. */
+  width: 15rem;
   max-width: 40%;
   padding: var(--sp-2) var(--sp-3);
   background: var(--surface-canvas);
@@ -172,7 +181,13 @@
 
 .cards {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  /* The track is sized in rem so the card scales with the type it holds. The
+     root font-size is clamp(16px, 0.35vw + 11px, 19px) (App.css), so on a
+     2560px window every label in the card is at its largest while a card
+     pinned at a literal 200px is not — which is how all 38 gallery titles
+     came to be ellipsized at once. 13rem is 208px at a 16px root and grows
+     from there with everything inside it. */
+  grid-template-columns: repeat(auto-fill, minmax(13rem, 1fr));
   gap: var(--sp-4);
 }
 
@@ -206,27 +221,38 @@
 }
 
 .cardName {
-  /* Gallery cards are a primary browsing surface, not secondary chrome —
-     titles read at the emphasis tier, not the UI-body tier. */
+  /* The title is a two-line label at the UI-body tier, inside a card that
+     scales with the root font. It read at the emphasis tier on one nowrap
+     line before, which is exactly what stopped fitting: --fs-lg on the one
+     line a 200px card had room for ellipsized all 38 titles the gallery
+     listed, measured on a 2560px window. The weight, not the size, is what
+     separates it from the description below. */
   color: var(--text-primary);
-  font-size: var(--fs-lg);
+  font-size: var(--fs-md);
   font-weight: var(--fw-semibold);
+  line-height: var(--lh-snug);
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  -webkit-box-orient: vertical;
   overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  /* Names stay English in every locale, and a third-party pack is free to
+     ship one with nothing to break at — the same guard .presetCardName in
+     EmptyCanvasOverlay.module.css carries, and for the same reason: without
+     it such a name runs out of the card and pushes the grid sideways. */
+  overflow-wrap: anywhere;
 }
 
 .cardDesc {
   color: var(--text-secondary);
-  font-size: var(--fs-md);
-  line-height: var(--lh-normal);
+  font-size: var(--fs-sm);
+  line-height: var(--lh-snug);
   /* Two lines, then ellipsis — the detail pane carries the full text. */
   display: -webkit-box;
   -webkit-line-clamp: 2;
   line-clamp: 2;
   -webkit-box-orient: vertical;
   overflow: hidden;
-  min-height: 2em;
 }
 
 .cardFooter {
@@ -234,7 +260,13 @@
   align-items: center;
   justify-content: space-between;
   gap: var(--sp-3);
-  margin-top: var(--sp-1);
+  /* Pinned to the bottom of the card rather than left to follow the text.
+     The grid stretches every card in a row to the tallest one, and the
+     title above is one line or two depending on the name, so a footer that
+     followed the prose put the chips at two different heights in the same
+     row. `auto` spends the leftover height above it instead. */
+  margin-top: auto;
+  padding-top: var(--sp-3);
 }
 
 .cardChip {
@@ -262,7 +294,10 @@
 /* ── Detail pane ────────────────────────────────────────────────────────── */
 
 .detail {
-  width: 290px;
+  /* rem for the same reason as .cards: the pane is a column of text at sizes
+     that follow the root font, so a literal width narrows as the type grows.
+     18rem is the old 290px at a 16px root. */
+  width: 18rem;
   flex-shrink: 0;
   border-left: 1px solid var(--border-base);
   background: rgba(0, 0, 0, 0.18);
@@ -375,7 +410,9 @@
 }
 
 /* Narrow viewports: the detail pane drops below the grid rather than
-   squeezing the cards to one column of unreadable width. */
+   squeezing the cards to one column of unreadable width. The query stays in
+   px because it measures the viewport, not type — only the widths it sets
+   are in rem. */
 @media (max-width: 860px) {
   .body {
     flex-direction: column;
@@ -389,6 +426,6 @@
   }
 
   .search {
-    width: 150px;
+    width: 9.375rem; /* 150px @ 16px root */
   }
 }

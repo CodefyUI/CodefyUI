@@ -1,6 +1,6 @@
 {
-  "name": "Sentence Similarity (zh-TW): meaning, not spelling",
-  "description": "Pairs 8 sentences; needs the sentence-embeddings pack",
+  "name": "Sentence similarity in zh-TW",
+  "description": "Four pairs share meaning, not words",
   "gallery": { "section": "llm", "order": 2 },
   "nodes": [
     { "id": "start",      "type": "Start",            "position": { "x": -260, "y":  70 }, "data": { "params": {} } },

@@ -1,6 +1,6 @@
 {
-  "name": "C2-3 SVM kernel trick: a boundary a line cannot draw",
-  "description": "With an RBF kernel, all 60 test points come out right",
+  "name": "C2-3 SVM RBF kernel trick",
+  "description": "A boundary that closes into a ring",
   "nodes": [
     { "id": "note-overview", "type": "note", "position": { "x": -720, "y": 0 },
       "data": { "noteKind": "text",

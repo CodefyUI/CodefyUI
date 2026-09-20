@@ -1,6 +1,6 @@
 {
-  "name": "DQN with CNN Feature Extractor (Atari)",
-  "description": "Forward pass: four stacked frames to four Q-values",
+  "name": "DQN on Atari pixels",
+  "description": "Four stacked frames to four Q-values",
   "gallery": { "section": "architectures", "family": "RL", "order": 1 },
   "nodes": [
     {

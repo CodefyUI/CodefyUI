@@ -146,7 +146,7 @@ Model 'all-MiniLM-L6-v2' from the Sentence embeddings pack is not downloaded. Op
 - **`max_seq_length`** 設定每段文字的 token 上限。`0` 使用模型預設值：paraphrase-multilingual 為 128、all-MiniLM 為 256、bge 和 e5 為 512。較長文字會被截斷。
 - **`normalize`** 預設啟用。其他控制項為 **`batch_size`**、**`label_chars`** 和 **`device`**。
 
-`embeddings` 和 `labels` 輸出可連接至 `CosineSimilarity` 與 `EmbeddingScatter`。[範例集](./examples-gallery.md)中的 **Sentence Similarity (zh-TW)** 使用此路徑並需要該套件。
+`embeddings` 和 `labels` 輸出可連接至 `CosineSimilarity` 與 `EmbeddingScatter`。[範例集](./examples-gallery.md)中的 **Sentence similarity in zh-TW** 使用此路徑並需要該套件。
 
 ### RAG 鏈
 
@@ -177,7 +177,7 @@ DocumentLoader -> TextChunker -> TextEmbedding -> VectorStore -> Retriever -> Pr
 
 **CPU 效能。** 在筆電 CPU 上，生成速度通常為每秒數個 token，因此一個答案可能需要數秒至數十秒。第一次執行還可能需要數秒從磁碟載入權重。隨附問題通常會在 160 個 token 上限前完成。這些數字依模型大小估算，並非 benchmark 實測。節點會回報每個 token 的進度。GPU 速度較快；`device` 跟著這張圖的裝置走（圖沒有指定時就是設定裡的裝置），除非你在節點上另外指定。
 
-兩個圖都列於[範例集](./examples-gallery.md)，且各自的範例目錄都有 `README.md`。**RAG, fully local**（`examples/LLM/RAG-Local-Offline`）需要 `qwen2.5-0.5b-instruct` 和 `multilingual-e5-small`，不會向提供者發出請求。**RAG with a chat API**（`examples/LLM/RAG-LLMChat-API`）使用相同檢索節點，並以 `LLMChat` 取代最後一個節點；它需要編碼器，以及 Ollama 或提供者金鑰。兩個圖使用相同問題時，檢索脈絡會保持相同，方便比較生成器。
+兩個圖都列於[範例集](./examples-gallery.md)，且各自的範例目錄都有 `README.md`。**Fully local RAG**（`examples/LLM/RAG-Local-Offline`）需要 `qwen2.5-0.5b-instruct` 和 `multilingual-e5-small`，不會向提供者發出請求。**RAG with a chat API**（`examples/LLM/RAG-LLMChat-API`）使用相同檢索節點，並以 `LLMChat` 取代最後一個節點；它需要編碼器，以及 Ollama 或提供者金鑰。兩個圖使用相同問題時，檢索脈絡會保持相同，方便比較生成器。
 
 ## 如何挑選嵌入模型
 
