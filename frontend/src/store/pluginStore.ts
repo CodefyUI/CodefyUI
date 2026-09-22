@@ -103,9 +103,10 @@ export interface InspectionFailure {
  *
  * The three remaining fields are the server's own answer. Nothing uninstalls
  * a plugin's pip packages -- not this panel, not the CLI -- so `depsLeft` is
- * what stayed in the interpreter, `uninstallCommand` the line that would
- * remove them with the server stopped (null when the plugin declared none),
- * and `reinstallHint` the command that puts the plugin back.
+ * the packages it declared that nothing else still needs (#414),
+ * `uninstallCommand` the line that would remove them with the server
+ * stopped (null when there are none), and `reinstallHint` the command that
+ * puts the plugin back.
  */
 export interface PluginRemoval {
   pluginId: string;

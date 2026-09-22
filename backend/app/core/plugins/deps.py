@@ -24,21 +24,31 @@ only wanted one more node. When the resolver says it cannot be done under
 those pins, that is not a broken plugin: it is "not while the server is
 running", and :class:`~.errors.PluginNeedsRestart` carries the command to
 type instead.
+
+The same table is read once more on the way out. An uninstall hands the
+user a ``uv pip uninstall`` line for what the plugin leaves behind, and
+:func:`orphaned_deps` decides what may be on it: only a package that nothing
+else here still needs (#414).
 """
 
 from __future__ import annotations
 
 import importlib
+import importlib.metadata
 import re
 import sys
 import tempfile
 import threading
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterable, Sequence
 from pathlib import Path
+
+from packaging.requirements import InvalidRequirement, Requirement
+from packaging.utils import canonicalize_name
 
 from app.core.packs import runner as packs_runner
 from app.core.packs.constraints import write_constraints_file
 from app.core.packs.errors import PackCancelled
+from app.core.version import PACKAGE_NAME
 
 from .errors import PluginCancelled, PluginInstallError, PluginNeedsRestart
 
@@ -131,12 +141,15 @@ def dep_specs(deps: dict[str, str]) -> list[str]:
 
 
 #: An argument every shell passes through untouched. Copied from
-#: ``packs.flows._shell_quote`` rather than imported: this package may depend
-#: on ``packs.runner`` and ``packs.constraints`` and on nothing else in that
-#: package, and ``packs.flows`` drags the model downloader, the pack catalog
-#: and the sentinel state in behind it. See that module for why the test is
-#: inverted -- an unquoted ``>`` is redirection in every shell, and Git Bash
-#: eats the backslashes of an unquoted Windows path.
+#: ``packs.flows._shell_quote`` rather than imported: at import time this
+#: package depends on ``packs.runner``, ``packs.constraints`` and
+#: ``packs.errors`` and on nothing else in that package
+#: (``_named_by_pack_catalog`` reads the stdlib-only catalog, and imports it
+#: only when an uninstall asks), and ``packs.flows`` drags the model
+#: downloader, the pack catalog and the sentinel state in behind it. See
+#: that module for why the test is inverted -- an unquoted ``>`` is
+#: redirection in every shell, and Git Bash eats the backslashes of an
+#: unquoted Windows path.
 _BARE_ARGUMENT = re.compile(r"[A-Za-z0-9._/:+-]+")
 
 
@@ -161,6 +174,128 @@ def manual_install_command(specs: Sequence[str]) -> str:
     """
     argv = ["uv", "pip", "install", "--python", sys.executable, *specs]
     return " ".join(_shell_quote(part) for part in argv)
+
+
+def manual_uninstall_command(names: Sequence[str]) -> str:
+    """The line that removes *names* with this server stopped.
+
+    The install line's twin, quoted by the same rule for the same reason:
+    it is pasted into whatever shell the user has open, a space splits an
+    unquoted interpreter path in every one of them, and Git Bash eats the
+    backslashes of an unquoted Windows one. It used to be an f-string in
+    ``lifecycle``, unquoted, so the two lines a user is handed were quoted
+    two ways (#414).
+    """
+    argv = ["uv", "pip", "uninstall", "--python", sys.executable, *names]
+    return " ".join(_shell_quote(part) for part in argv)
+
+
+#: The name a requirement line starts with. PEP 508 puts it first whatever
+#: follows, which is what lets :func:`_requirement_name` read a line that
+#: ``packaging`` refuses.
+_LEADING_NAME = re.compile(r"\s*([A-Za-z0-9][A-Za-z0-9._-]*)")
+
+
+def orphaned_deps(
+    names: Iterable[str], *, declared_elsewhere: Iterable[str] = (),
+) -> list[str]:
+    """Those of *names* that nothing else here still needs, as written, in order.
+
+    What an uninstall offers to remove, as a ``uv pip uninstall`` line the
+    user is told to run -- so this errs in one direction only. Keeping one
+    package too many costs some disk; removing one too many breaks whatever
+    needed it, and a plugin that declared ``numpy`` would have been handed a
+    line that uninstalls a dependency of CodefyUI itself (#414). A name is
+    kept when
+
+    * it is CodefyUI itself (:data:`~app.core.version.PACKAGE_NAME`).
+      Nothing requires the top of the tree, so the walk below cannot see it;
+    * another installed distribution requires it, under any extra or marker.
+      The walk includes the editable project, which is how CodefyUI's own
+      dependencies, direct and transitive, are covered. It also includes
+      the other names offered here: when a plugin declared ``a`` and ``b``
+      and ``a`` requires ``b``, only ``a`` is offered and ``b`` stays -- one
+      package too many, rather than an order of removal worked out here;
+    * it is in *declared_elsewhere*: another installed plugin's
+      ``[python_deps]``, which the caller reads off the lockfile;
+    * a Package Center pack installs it -- any pack in the catalog, installed
+      or not. A pack pip-installs a top-level package that nothing requires,
+      so the walk cannot see it.
+
+    Names compare in their PEP 503 form, so ``Model2Vec`` and ``model2vec``
+    are one package. Nothing is read when *names* is empty.
+    """
+    wanted = list(names)
+    if not wanted:
+        return []
+    kept = _required_by_installed_distributions() | _named_by_pack_catalog()
+    kept.add(canonicalize_name(PACKAGE_NAME))
+    kept.update(canonicalize_name(name) for name in declared_elsewhere)
+    return [name for name in wanted if canonicalize_name(name) not in kept]
+
+
+def _required_by_installed_distributions() -> set[str]:
+    """Every PEP 503 name an installed distribution requires of ANOTHER one.
+
+    Extras and markers are not evaluated. Which extras somebody installed
+    cannot be read back from here, and "might be needed" is enough to keep a
+    package. What a distribution requires of itself (``foo[all]`` in foo's
+    own metadata) is skipped: it goes when its owner does. A record that
+    cannot be read protects nothing, since there is nothing to read its
+    requirements from, and costs no other record its turn.
+    """
+    required: set[str] = set()
+    for dist in importlib.metadata.distributions():
+        try:
+            metadata = dist.metadata
+            own = (metadata["Name"] if metadata else None) or ""
+            lines = dist.requires or ()
+        except Exception:
+            continue
+        own_name = canonicalize_name(str(own)) if own else None
+        for line in lines:
+            name = _requirement_name(line)
+            if name is not None and name != own_name:
+                required.add(name)
+    return required
+
+
+def _named_by_pack_catalog() -> set[str]:
+    """The PEP 503 names of every package a Package Center pack installs.
+
+    Every pack in the catalog counts, installed or not, read off its own
+    ``pip`` list. Asking which packs ARE installed means importing
+    ``packs.state``, which imports ``app.config``, which validates every
+    ``CODEFYUI_*`` variable as it loads. In the CLI that was the first
+    import of ``app.config``, inside the uninstall's lock, so one malformed
+    variable abandoned the uninstall with a traceback (#414). Keeping a
+    package whose pack is not installed costs some disk; ``packs.catalog``
+    is stdlib-only, so this path imports nothing that can refuse to load.
+    Imported here rather than at the top because only an uninstall asks.
+    """
+    from app.core.packs import catalog as packs_catalog
+
+    named: set[str] = set()
+    for pack in packs_catalog.iter_packs():
+        for spec in pack.pip:
+            name = _requirement_name(spec)
+            if name is not None:
+                named.add(name)
+    return named
+
+
+def _requirement_name(line: str) -> str | None:
+    """The PEP 503 name a requirement line is about, or ``None``.
+
+    A line ``packaging`` refuses is still read for the name it starts with:
+    a malformed ``Requires-Dist`` in somebody else's package is no reason to
+    offer what it names for removal.
+    """
+    try:
+        return canonicalize_name(Requirement(line).name)
+    except InvalidRequirement:
+        match = _LEADING_NAME.match(line)
+        return canonicalize_name(match.group(1)) if match else None
 
 
 def install_deps_step(

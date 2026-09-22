@@ -127,6 +127,7 @@ license text.
 | platformdirs | MIT |
 | psutil | BSD-3-Clause |
 | httpx | BSD-3-Clause |
+| packaging | Apache-2.0 OR BSD-2-Clause |
 | tomli (Python < 3.11 only) | MIT |
 
 Notable transitive dependencies: certifi is licensed under MPL-2.0, and tqdm
