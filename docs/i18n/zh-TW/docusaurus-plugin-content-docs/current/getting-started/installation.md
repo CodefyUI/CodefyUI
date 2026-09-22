@@ -13,7 +13,7 @@ description: 透過一行指令安裝 CodefyUI —— 一般使用者只需要 g
 - **[開發者安裝](./dev-install)** —— 你想編輯程式碼或貢獻（手動設定 `uv` + pnpm，並支援熱重載）。
 :::
 
-## 快速安裝
+## 快速安裝 {/* #quick-install */}
 
 ```bash
 # macOS / Linux
@@ -42,10 +42,10 @@ cdui start
 :::note
 本快速開始假設使用預設的 PyTorch 版本，它適用於所有平台（CPU / Apple Silicon MPS）。若需特定的 NVIDIA CUDA 版本、AMD ROCm，或想驗證 GPU 偵測，請參考 **[GPU 與裝置設定](./gpu-device)**。
 
-安裝後切換版本也不必使用終端機。伺服器若由 `cdui start` 啟動，套件中心（工具列 > 設定 > 選用套件與外掛）裡的 **GPU 版 PyTorch** 卡片可以安裝對應的 wheel 並重新啟動伺服器。卡片下方也會顯示等效的 `cdui install --gpu <choice>` 指令，供手動執行。詳見[讓伺服器重新啟動的安裝](/usage/optional-packs#讓伺服器重新啟動的安裝)。
+安裝後切換版本也不必使用終端機。伺服器若由 `cdui start` 啟動，套件中心（工具列 > 設定 > 選用套件與外掛）裡的 **GPU 版 PyTorch** 卡片可以安裝對應的 wheel 並重新啟動伺服器。卡片下方也會顯示等效的 `cdui install --gpu <choice>` 指令，供手動執行。詳見[讓伺服器重新啟動的安裝](/usage/optional-packs#installs-that-restart-the-server)。
 :::
 
-## 安裝旗標與環境變數
+## 安裝旗標與環境變數 {/* #install-flags--environment-variables */}
 
 `install.sh` / `install.ps1` 只會讀取下列環境變數，並一律執行 `cdui install --yes`；它們不接受旗標，也不會顯示提示。安裝完成後，若要使用互動式選單或傳入旗標，請直接執行 `cdui install`。只有在終端機中執行，且旗標與環境變數都未決定選項時，才會顯示互動式選單；透過 pipe 或 CI 執行則採用安全預設值。
 
@@ -59,7 +59,7 @@ cdui start
 | — | `CODEFYUI_RELEASE_TAG` | tag | 把前端 bundle **與**後端 checkout 鎖定到同一個 release（預設 `latest`）。 |
 | — | `CODEFYUI_FORCE_BUILD` | `1` | 跳過下載 prebuilt dist，改在本地用 pnpm build（追蹤 `main`）。 |
 
-## 正式模式與開發者模式
+## 正式模式與開發者模式 {/* #production-vs-developer-mode */}
 
 - `cdui start` —— 單一 uvicorn 跑 `:8000` 提供預編前端。**不需要 Node。** 這是一般使用者的預設模式。
 - `cdui dev` —— Vite dev server 跑 `:5173`（HMR）+ uvicorn 跑 `:8000`。**需要 Node 24+ 與 pnpm。** 編輯前端程式碼時使用 —— 請參考[開發者安裝](./dev-install)。
@@ -67,11 +67,11 @@ cdui start
 
 完整的啟動器指令清單請見 **[CLI 指令](./cli-commands)**。
 
-## 裝在伺服器上給一個團隊用
+## 裝在伺服器上給一個團隊用 {/* #installing-on-a-server-for-a-team */}
 
 上面的步驟裝出來的是一台只在 `127.0.0.1` 上、給自己用的環境。如果有好幾個人要共用一台機器，請先讀 **[放在反向代理後面](/usage/deployment)**：CodefyUI 沒有使用者帳號，所以身分驗證和 TLS 都來自前面那台代理，而代理的主機名稱必須加進 `CODEFYUI_EXTRA_ALLOWED_HOSTS`，否則每一個請求 —— 包含網頁本身 —— 都會被以 `421` 拒絕，瀏覽器上就是一片空白。
 
-## 驗證是否正常運作
+## 驗證是否正常運作 {/* #verify-it-works */}
 
 ```bash
 curl http://127.0.0.1:8000/api/health
@@ -81,13 +81,13 @@ curl http://127.0.0.1:8000/api/health
 
 接著開啟前端，載入 **Train CNN on MNIST** 範例並點擊 **執行**。你應該會在下方面板看到訓練進度出現，跑完會印出大約 0.99 的測試準確率。第一次執行會下載 MNIST。
 
-## 選用套件包
+## 選用套件包 {/* #optional-packs */}
 
 上面的安裝刻意保持精簡，因此不包含某些課程需要的大型附加內容，例如 `sentence-transformers`、各個嵌入模型（每個 90 MB 到 470 MB）與 69 MB 的 GloVe 詞向量表。你可以在**套件中心**（工具列 > 設定 > 選用套件與外掛）或用 `cdui packs install <id>` 安裝需要的項目。其他行為不變：執行圖形時不會自行下載套件包內容；缺少套件包的節點會停止並指出所需套件包，不會在執行途中下載數百 MB 的內容。
 
 型錄內容、檔案會放在哪裡，以及該挑哪一個嵌入模型，請見 **[選用套件包](/usage/optional-packs)**。
 
-## 更新
+## 更新 {/* #updating */}
 
 ```bash
 cdui update

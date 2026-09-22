@@ -14,13 +14,13 @@ description: 安裝特定 LLM 節點與 GPU 後端所需的選用 Python 套件�
 如果缺少必要的套件包，**執行**會在該節點停止並指出套件，不會下載內容。`TextCorpusDataset`、`HuggingFaceDataset` 和 `Tokenizer` 可以自行從 Hugging Face Hub 取得小型資產，並使用各自的快取。此限制只適用於套件中心管理的內容。
 :::
 
-## 為什麼是選用的
+## 為什麼是選用的 {/* #why-packs-are-optional */}
 
 基本安裝可以離線啟動及執行。`WordVector` 預設使用 `demo-16d`，這是內建的手工詞彙表，包含 59 個詞和 16 個可解讀維度。它不需下載，且向量經過設計，使 `king - man + woman = queen` 精確成立。
 
 安裝或移除套件包只會變更相關選項的可用狀態，不會變更基本安裝的其他部分。缺少下載內容的 `select` 選項會變灰並提供安裝操作。如果該選項是圖中儲存的目前值，它仍可選取並會顯示警告，避免開啟面板時變更儲存值。所有後端都需要同一套件的節點（包括 `TextEmbedding` 和 `HFTextGenerate`）會在節點層級顯示標記。移除套件後，缺少內容的標記會再次出現。
 
-## 套件目錄
+## 套件目錄 {/* #the-catalog */}
 
 | 套件包 | 內容 | 下載量 | 授權 | 可用功能 |
 |--------|------|--------|------|----------|
@@ -40,7 +40,7 @@ cdui packs install rag --yes
 
 在套件中心內，也請先安裝編碼器項目，再安裝 RAG 模型。可以在課程使用前先完成兩項安裝。
 
-## 安裝與移除
+## 安裝與移除 {/* #installing-and-removing */}
 
 **在應用程式中。** 從工具列 > 設定 > 選用套件與外掛開啟套件中心。每個套件包會列出項目、大小和下載狀態。選取項目並開始安裝後，可以查看記錄和位元組計數器。安裝工作在伺服器上執行：關閉套件中心不會停止它，重新開啟面板、換一個瀏覽器分頁或重新載入頁面，都會接續同一個工作。重新載入後，會出現「套件安裝中，可在套件中心查看進度。」的通知。只有**取消安裝**會停止目前的傳輸。模型下載會從部分檔案續傳；GloVe 詞向量表等單一檔案資產則會重新下載。套件中心與[外掛中心](./plugin-center.md)同一時間只執行一個安裝工作：外掛安裝進行中時，套件安裝會被拒絕，並顯示「外掛安裝進行中，請於完成後再試。」和**開啟外掛中心**按鈕。
 
@@ -68,7 +68,7 @@ uv pip uninstall --python <path-to-venv-python> sentence-transformers
 
 **透過網路安裝。** 所有會修改狀態的 `/api/packs` 路由都要求伺服器綁定至 loopback，因為安裝會針對提供服務的直譯器執行套件管理程式。若伺服器是刻意對區網開放，可設定 `CODEFYUI_ALLOW_REMOTE_PACK_INSTALL=1` 允許安裝。兩種情況都會套用型錄白名單。詳見 [API 參考](../advanced/api-reference.md)。
 
-### 讓伺服器重新啟動的安裝
+### 讓伺服器重新啟動的安裝 {/* #installs-that-restart-the-server */}
 
 部分安裝必須取代伺服器已匯入的套件。**GPU 版 PyTorch** 一律需要此模式。如果線上安裝的 constraints 偵測到 resolver 衝突，並在取代任何套件前停止，該套件也需要此模式。由 `cdui start` 管理的伺服器會記錄請求、啟動分離的輔助程式，然後關閉。輔助程式會等待伺服器結束、執行安裝、記錄結果，再使用原本的 `cdui start` 引數啟動伺服器。輔助程式不使用線上安裝的 constraints 檔，因此可在套件需要不同版本時取代 torch。
 
@@ -106,7 +106,7 @@ uv pip uninstall --python <path-to-venv-python> sentence-transformers
 
 認領狀態為**已中斷**時，請執行 `cdui start` 刪除紀錄並啟動伺服器。狀態為**收尾中**時，`cdui start` 會拒絕啟動另一個行程，並要求查看 `cdui status`。
 
-## 畫布上會看到的變化
+## 畫布上會看到的變化 {/* #what-changes-on-the-canvas */}
 
 缺少套件時，編輯器會在執行前顯示狀態。所有後端都需要套件的 `TextEmbedding` 和 `HFTextGenerate` 會在節點面板顯示**需要套件**標籤，但仍可拖曳。放在畫布上的節點會顯示**需套件**徽章，點擊後會開啟套件中心並定位至必要套件。`WordVector` 中無法使用的 **backend** 選項會變灰，`demo-16d` 仍可選取，欄位下方則顯示**安裝套件**連結。如果使用不含套件中心的版本，請執行 `cdui packs list` 查看可用狀態。
 
@@ -118,7 +118,7 @@ Model 'all-MiniLM-L6-v2' from the Sentence embeddings pack is not downloaded. Op
 
 `(pack=<id>)` 後綴可供機器解析。編輯器會擷取 id，顯示錯誤通知，並提供聚焦至必要套件的**開啟套件中心**按鈕。該次執行不會取得套件內容。
 
-## 套件相關節點參考
+## 套件相關節點參考 {/* #node-reference-for-pack-backed-nodes */}
 
 ### WordVector
 
@@ -148,7 +148,7 @@ Model 'all-MiniLM-L6-v2' from the Sentence embeddings pack is not downloaded. Op
 
 `embeddings` 和 `labels` 輸出可連接至 `CosineSimilarity` 與 `EmbeddingScatter`。[範例集](./examples-gallery.md)中的 **Sentence similarity in zh-TW** 使用此路徑並需要該套件。
 
-### RAG 鏈
+### RAG 鏈 {/* #the-rag-chain */}
 
 檢索增強生成圖包含七個節點，其中兩個需要下載：
 
@@ -179,7 +179,7 @@ DocumentLoader -> TextChunker -> TextEmbedding -> VectorStore -> Retriever -> Pr
 
 兩個圖都列於[範例集](./examples-gallery.md)，且各自的範例目錄都有 `README.md`。**Fully local RAG**（`examples/LLM/RAG-Local-Offline`）需要 `qwen2.5-0.5b-instruct` 和 `multilingual-e5-small`，不會向提供者發出請求。**RAG with a chat API**（`examples/LLM/RAG-LLMChat-API`）使用相同檢索節點，並以 `LLMChat` 取代最後一個節點；它需要編碼器，以及 Ollama 或提供者金鑰。兩個圖使用相同問題時，檢索脈絡會保持相同，方便比較生成器。
 
-## 如何挑選嵌入模型
+## 如何挑選嵌入模型 {/* #choosing-an-embedding-model */}
 
 | 模型 | 語言 | 維度 | token 上限 | 需要前綴 | 下載量 |
 |------|------|-----:|-----------:|----------|-------:|
@@ -195,7 +195,7 @@ DocumentLoader -> TextChunker -> TextEmbedding -> VectorStore -> Retriever -> Pr
 
 行程最多同時將兩個模型保留在記憶體中。載入第三個模型時，會移除最久未使用的模型。
 
-## 疑難排解
+## 疑難排解 {/* #troubleshooting */}
 
 - **「reports installed but `sentence_transformers` cannot be imported」** — 狀態紀錄存在，但目前的直譯器無法匯入套件。請從套件中心重新安裝 `sentence-embeddings`，或執行 `cdui packs install sentence-embeddings --yes`。
 - **「Model ... is not downloaded」** — Python 套件已安裝，但所選模型尚未下載。四個編碼器模型需分別安裝。請在套件中心安裝指定模型，或執行 `cdui packs install sentence-embeddings --items multilingual-e5-small`。
@@ -207,7 +207,7 @@ DocumentLoader -> TextChunker -> TextEmbedding -> VectorStore -> Retriever -> Pr
 - **安裝期間伺服器停止且未恢復。** 這只會發生於重新啟動模式。請執行 `cdui status`。如果「重啟安裝」顯示**收尾中**，請等待；`cdui start` 不會啟動第二個行程。如果顯示**已中斷**，或出現「上次重啟安裝」，請查看 `<user data>/packs/logs/restart-<job>.log`，再執行 `cdui start`；啟動時會清除過期的認領紀錄。重新啟動失敗會記錄為 `relaunch: failed`，不會取代安裝本身的狀態。套件中心只會在遮罩仍追蹤相同工作時顯示結果。遮罩逾時或之後才開啟分頁時，請查看保留一小時的「上次重啟安裝」列和記錄檔。
 - **磁碟空間不足。** 系統會在下載前檢查空間。錯誤會列出所需空間和可用空間。
 
-## 授權
+## 授權 {/* #licences */}
 
 型錄中的每個項目都採用寬鬆授權。`cdui packs list` 會顯示各下載項目的授權；型錄定義位於 `backend/app/core/packs/catalog.py`。
 

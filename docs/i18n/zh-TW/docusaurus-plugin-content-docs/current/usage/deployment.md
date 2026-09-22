@@ -22,7 +22,7 @@ CodefyUI 是透過 HTTP 提供服務的桌面工具，沒有使用者帳號、�
 2. 那個名稱必須加進 CodefyUI 的 **Host 白名單**，否則每一個請求都會失敗。
 3. CodefyUI 只綁定**回送位址**，讓代理是唯一的入口。
 
-## 1. 給它一個網域名稱，不要用子路徑
+## 1. 給它一個網域名稱，不要用子路徑 {/* #1-give-it-a-hostname-not-a-subpath */}
 
 `https://codefyui.example.com/` 可以。`https://tools.example.com/codefyui/` 不行。
 
@@ -32,7 +32,7 @@ build 出來的前端產生的是根目錄絕對路徑：`index.html` 連的是 
 這類應用程式通常使用獨立的 vhost，只需要新增一筆 DNS 紀錄。支援子路徑則必須讓同一項 build 設定貫穿前端、API 客戶端與後端靜態掛載，而多數團隊不需要這種部署方式。如果確實無法配置主機名稱，請開 issue 說明原因；這類使用情境可能改變此決定。
 :::
 
-## 2. 把對外的主機名稱加進白名單
+## 2. 把對外的主機名稱加進白名單 {/* #2-whitelist-the-public-hostname */}
 
 **若漏掉這一步，瀏覽器會顯示空白頁面。**
 
@@ -67,7 +67,7 @@ export CODEFYUI_EXTRA_ALLOWED_HOSTS="codefyui.example.com,codefyui.example.com:8
 
 WebSocket 交握會獨立執行相同的 `Host` 檢查，再比較瀏覽器的 `Origin` 與該 `Host`。只要代理原樣轉發 `Host`，同一個環境變數就能通過兩項檢查；因此下方 nginx 設定使用 `$http_host`，而不是 `$host`。若代理改寫 `Host`，畫布雖能載入，WebSocket 卻無法連線。拒絕原因只會顯示為 WebSocket close code：伺服器不接受 `Host` 或 `Origin` 時是 `4003`，缺少 session token 或 token 無效時是 `4401`。
 
-## 3. 只綁定回送位址
+## 3. 只綁定回送位址 {/* #3-bind-loopback */}
 
 ```bash
 cdui start --host 127.0.0.1 --port 8000
@@ -77,7 +77,7 @@ cdui start --host 127.0.0.1 --port 8000
 
 `cdui start` 會以常駐服務執行：它會脫離 terminal、寫入 pidfile，而 `cdui stop` 會先向整個行程群組送出 `SIGTERM`，約兩秒後若仍在執行，再送出 `SIGKILL`。它不會開啟瀏覽器，適合沒有桌面環境的伺服器。行程監督則交由下方的 systemd 處理。
 
-## 4. 轉發 uvicorn 參數：`cdui start -- ...`
+## 4. 轉發 uvicorn 參數：`cdui start -- ...` {/* #4-passing-uvicorn-flags-cdui-start---- */}
 
 單獨一個 `--` 之後的所有參數，都會原樣轉給 uvicorn：
 
@@ -113,7 +113,7 @@ CodefyUI 刻意不直接讀取 `X-Forwarded-Proto`。否則任何客戶端都能
 代理本身也有限制：nginx 的 `client_max_body_size` 會限制 HTTP 本文大小，而大型 WebSocket 訊框需要足夠的 `proxy_read_timeout` 才能傳完。
 :::
 
-## systemd 單元
+## systemd 單元 {/* #a-systemd-unit */}
 
 已測試：在真的 systemd 上安裝、`systemctl enable`、啟動與停止都跑過，`systemd-analyze verify` 也沒有問題。
 
@@ -168,7 +168,7 @@ journalctl -u codefyui -f
 
 `--foreground` 是必要參數。`cdui start` 預設會以常駐模式 double-fork，不符合 `Type=exec` 服務的需求。CodefyUI 的 stdout 會寫入 journal，因此啟動錯誤與被拒絕的 `Host` 值（`rejected request with Host='...' path=...`）可在 `journalctl -u codefyui` 中查看。每個請求的紀錄不會出現在這裡，原因見後面的「代理同時也是你的存取紀錄」一節。
 
-## nginx 站台設定
+## nginx 站台設定 {/* #an-nginx-site */}
 
 已測試：`nginx -t` 通過，而且底下每一個請求都是真的透過它、以 TLS 連到一台執行中的 CodefyUI。
 
@@ -245,13 +245,13 @@ server {
 
 請依組織既有方式，在 `location /` 前加入單一登入，例如對 OIDC 輔助服務使用 `auth_request`、vouch 類型的 forward-auth，或使用供應商的 nginx 模組。CodefyUI 沒有身分模型，不需要感知或整合這一層。
 
-## TLS 在代理這一層結束
+## TLS 在代理這一層結束 {/* #tls-terminates-at-the-proxy */}
 
 為了 HTTPS，前端不需要重新 build，也不需要改任何設定。WebSocket 的網址是在執行時從 `window.location` 推導出來的，所以 `wss://` 會自動跟著 `https://` 走，埠號也會一起帶過去。隨附的 bundle 裡沒有任何寫死的主機或協定 -- 整個專案裡唯一的 `ws://localhost:8000` 屬於 Vite 開發代理，那個永遠不會被打包出去。
 
 CodefyUI 自己不處理 TLS，也沒有憑證相關的選項。到回送位址那一段請維持純 HTTP。
 
-## 代理同時也是你的存取紀錄
+## 代理同時也是你的存取紀錄 {/* #the-proxy-is-also-your-access-log */}
 
 **CodefyUI 不會寫 HTTP 存取紀錄。** uvicorn 的 `uvicorn.access` logger 在啟動時被提高到 `WARNING`，而存取紀錄是以 `INFO` 輸出的，所以每一筆請求的紀錄都被丟掉了。後端裡也沒有任何會記錄請求的 middleware。這件事有實測過：透過代理送出一批請求，nginx 每一個請求都留下一行紀錄，CodefyUI 一行都沒有。
 
@@ -263,7 +263,7 @@ WebSocket 的網址會用 `?token=...` 帶著工作階段權杖。用 nginx 預�
 
 CodefyUI *會*記錄的東西 -- 啟動過程、被拒絕的 `Host` 值、警告與錯誤 -- 都輸出到標準錯誤，在 systemd 底下也就是 journal。實際生效的 Host 白名單只有在綁定非回送位址時才會印出；在這個代理後方，白名單是回送位址名稱加上 `CODEFYUI_EXTRA_ALLOWED_HOSTS`。`CODEFYUI_LOG_LEVEL`（`DEBUG` / `INFO` / `WARNING` / `ERROR`，預設 `INFO`）設定應用程式 logger 的層級 -- uvicorn 本身的詳細程度則用 `cdui start -- --log-level ...` -- 而 `CODEFYUI_LOG_JSON=1` 會改成每行一個 JSON 物件（`timestamp`、`level`、`name`、`message`、`exception`）。設定 `CODEFYUI_LOG_DIR` 會再產生一份可輪替的檔案 `<dir>/codefyui.log`（10 MB，保留五份）。未使用 `--foreground` 時，伺服器印出的所有內容都會寫入 `<install dir>/.codefyui_dev/server.log` -- `cdui start` 與 `cdui status` 都會印出這個路徑。
 
-## 身分驗證是代理的工作，而它有極限
+## 身分驗證是代理的工作，而它有極限 {/* #authentication-is-the-proxys-job-and-it-has-limits */}
 
 代理可以決定**誰能連入** CodefyUI，但無法讓 CodefyUI 對不同的已驗證使用者套用不同權限，因為 CodefyUI 沒有使用者模型。
 
@@ -276,7 +276,7 @@ CodefyUI *會*記錄的東西 -- 啟動過程、被拒絕的 `Host` 值、警告
 
 [共用的伺服器](./shared-instances)詳細說明這些憑證，包括讀取順序與儲存位置。將網址提供給團隊前請先閱讀。如果需要個別使用者歸屬，請為每個人執行獨立實例，每個實例使用自己的安裝目錄、環境變數檔與埠號，並在每個實例前配置代理。只設定不同的 `CODEFYUI_USER_DATA_DIR`，無法區隔從同一個安裝啟動的兩個實例；該頁列出它們仍然共用的項目。
 
-## CodefyUI 會往外送什麼、送給誰
+## CodefyUI 會往外送什麼、送給誰 {/* #what-codefyui-sends-out-and-to-whom */}
 
 共用伺服器的審查也應確認下列對外流量：
 
@@ -295,7 +295,7 @@ CodefyUI *會*記錄的東西 -- 啟動過程、被拒絕的 `Host` 值、警告
 
 因此，隔離網路的安裝只需避免使用上述節點與指令，不需要停用額外的回報管道。
 
-## 檢查清單
+## 檢查清單 {/* #checklist */}
 
 - [ ] 一個指向代理的 DNS 名稱，而不是子路徑。
 - [ ] `CODEFYUI_EXTRA_ALLOWED_HOSTS` 設成那個名稱；代理若不是監聽 443，要連埠號一起寫。

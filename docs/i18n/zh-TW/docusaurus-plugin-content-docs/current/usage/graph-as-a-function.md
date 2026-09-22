@@ -73,7 +73,7 @@ request body 是**選填的**（沒有 body 等同 `{}`），而且每個欄位�
 
 ### graph 的位址 {/* #the-graphs-address */}
 
-`/api/graph/contract/{name}` 與 `/api/graph/run/{name}` 中的 `{name}` 是 graph 的位址，也就是它在 graphs 資料夾中不含副檔名的檔名（`<address>.json`；在專案目錄的 `graphs/` 底下則是 `<address>.graph.json`）。位址不一定等於**圖表**分頁顯示的標題。第一次存檔以及每次**另存新檔...**時，位址會由標題產生：字母、數字、`-` 與 `_` 以外的每個字元都會換成 `_`（中文字等其他文字系統的字元也算字母，會保留），因此標題為 `My Classifier` 的 graph 會存成 `My_Classifier`。原地存檔會保留位址；在**圖表**分頁使用**重新命名**時，會以相同方式產生新的位址。`GET /api/graph/list` 會列出每個 graph 的位址（`file`）與標題（`name`）。這些路由不會替你轉換名稱：`POST /api/graph/run/My%20Classifier` 會回傳 404 `graph_not_found`。
+`/api/graph/contract/{name}` 與 `/api/graph/run/{name}` 中的 `{name}` 是 graph 的位址，也就是它在 graphs 資料夾中不含副檔名的檔名（`<address>.json`；在專案目錄的 `graphs/` 底下則是 `<address>.graph.json`）。位址不一定等於**圖表**分頁顯示的標題。第一次存檔以及每次**另存新檔...** 時，位址會由標題產生：字母、數字、`-` 與 `_` 以外的每個字元都會換成 `_`（中文字等其他文字系統的字元也算字母，會保留），因此標題為 `My Classifier` 的 graph 會存成 `My_Classifier`。原地存檔會保留位址；在**圖表**分頁使用**重新命名**時，會以相同方式產生新的位址。`GET /api/graph/list` 會列出每個 graph 的位址（`file`）與標題（`name`）。這些路由不會替你轉換名稱：`POST /api/graph/run/My%20Classifier` 會回傳 404 `graph_not_found`。
 
 ### 回應封裝格式 {/* #the-response-envelope */}
 

@@ -31,14 +31,14 @@ CodefyUI 內建 **152 個節點**，涵蓋 **16 大類別**。已安裝的 [外�
 | **Diffusion** | Upsample、TimestepEmbedding、Lerp、GaussianNoise、DDPMSampler、DiffusionUNet、DiffusionTrainingLoop | 7 |
 | **VLA** | VLAModel、VLARollout、VLAActionEval、PushWorldEnv、PushWorldDemos | 5 |
 
-## 重點節點
+## 重點節點 {/* #notable-nodes */}
 
 - **`Start`**（控制）— 定義執行進入點。每個可執行的圖都需要一個；請參閱[你的第一個圖](./first-graph)。
 - **`TensorInput`**（資料）— 提供內嵌格狀編輯器，用來輸入明確的張量值。[教學檢視器](./teaching-inspector)範例會以此節點作為輸入。
 - **變換鏈**（資料）— 九個節點會組成 `transforms.Compose`：`ResizeTransform` 將圖片縮放為正方形；`ToTensorTransform` 將 PIL 圖片轉為 `[0, 1]` 張量；`NormalizeTransform` 套用逐通道正規化並提供預設組合；`RandomCrop`、`RandomHorizontalFlip`、`RandomRotation`、`ColorJitter` 與 `RandAugment` 套用資料增強；`ComposeTransform` 則合併兩條分別建構的鏈。參數與順序規則請參閱[資料與資料增強](./data-augmentation)。
 - **`ImageFolderDataset`**（資料）— 依 torchvision `ImageFolder` 預期的目錄結構，從每個類別各自的目錄載入圖片。
 - **`TrainingLoop`**（訓練）— 執行訓練，並將即時 loss 圖表傳至結果面板。它的選項與記錄的指標序列列在[訓練迴圈與 loss 圖表](./running-graphs#training-loops-and-loss-charts)。其**進階**區段包含記憶體控制項 `precision` 與 `accumulate_steps`；請參閱[訓練記憶體](/advanced/training-memory)。
-- **`SequentialModel`**（訓練）— 以單一節點表示層堆疊。雙擊節點可開啟**模型架構**編輯器。編輯器提供依類別分組且可搜尋的層級面板，以及用來連接各層的畫布。架構必須恰好包含一個 `Input` 節點與一個 `Output` 節點，合併層則提供連接埠清單編輯器。控制項包括**吸附 ON/OFF**、由上至下的**自動排列**、JSON **匯入**與**匯出**，以及**套用**。驗證會拒絕循環。**匯出**會把架構下載為 `model_architecture.json`。**匯入**可讀取這種檔案或畫布圖的 `.json`：檔案中的層節點會轉成 `Input` → 各層 → `Output` 的鏈；若沒有層節點，則載入其中的 `SequentialModel`（有多個時，會以**選擇要匯入的 SequentialModel**詢問要匯入哪一個）。其他檔案會失敗並顯示**匯入失敗：此檔案沒有層級或 SequentialModel 節點。**匯入只會取代編輯器目前顯示的內容；點擊**套用**後節點才會變更。
+- **`SequentialModel`**（訓練）— 以單一節點表示層堆疊。雙擊節點可開啟**模型架構**編輯器。編輯器提供依類別分組且可搜尋的層級面板，以及用來連接各層的畫布。架構必須恰好包含一個 `Input` 節點與一個 `Output` 節點，合併層則提供連接埠清單編輯器。控制項包括**吸附 ON/OFF**、由上至下的**自動排列**、JSON **匯入**與**匯出**，以及**套用**。驗證會拒絕循環。**匯出**會把架構下載為 `model_architecture.json`。**匯入**可讀取這種檔案或畫布圖的 `.json`：檔案中的層節點會轉成 `Input` → 各層 → `Output` 的鏈；若沒有層節點，則載入其中的 `SequentialModel`（有多個時，會以**選擇要匯入的 SequentialModel**詢問要匯入哪一個）。其他檔案會失敗並顯示**匯入失敗：此檔案沒有層級或 SequentialModel 節點。** 匯入只會取代編輯器目前顯示的內容；點擊**套用**後節點才會變更。
 - **`EmbeddingScatter`**（LLM）— 使用 PCA 或 t-SNE 將嵌入向量投影至 2D，並顯示可縮放的散佈圖。
 - **`AttentionHeatmap`**（LLM）— 傳遞 attention weight，可選擇其中一個 head，並傳遞選填的 token 標籤。節點卡片會將 weight 顯示為 heatmap，另提供完整尺寸的檢視器。
 - **由套件包提供的後端**（LLM）— `WordVector` 的 `glove-50d` 與句子編碼器選項，以及整個 `TextEmbedding`，都會載入套件中心所安裝的模型。未安裝模型的選項會顯示為灰色。若缺少的選項是圖中已儲存的目前值，該選項仍可選取並會顯示警告。執行圖時不會下載這些模型。套件包大小、檔案位置與編碼器選擇方式請參閱[選用套件包](./optional-packs)。
@@ -51,6 +51,6 @@ CodefyUI 內建 **152 個節點**，涵蓋 **16 大類別**。已安裝的 [外�
 - **`VideoWrite` / `VideoLoad`**（IO）— `VideoWrite` 將 `(T, C, H, W)` 或 `(T, H, W, C)` 的影格張量編碼後寫入媒體資料夾（`backend/data/media`，專案目錄模式下為 `assets/media`）。`format` 為 `auto` 時，若 `PATH` 中有 `ffmpeg` 執行檔就寫出 mp4，否則透過 Pillow 寫出 gif；選 `mp4` 則必須有 ffmpeg。相同的 `filename` 會覆寫先前的影片。執行紀錄與檢視器會直接播放 mp4，gif 則以圖片顯示；`preview` 輸出是中間影格的 PNG。`VideoLoad` 會將影片解碼為數值在 `[0, 1]` 的 `(T, 3, H, W)` 影格，並輸出 `fps` 與 `num_frames`；相對的 `path` 會從媒體資料夾讀取。mp4 與 webm 需要 `ffmpeg` 與 `ffprobe` 執行檔，gif 只需要 Pillow；`max_frames` 與 `stride` 可限制保留在記憶體中的影格數。
 - **`Switch`**（資料流）— 使用條件式路由，使只有一條分支執行。
 
-## 連接埠資料型別
+## 連接埠資料型別 {/* #port-data-types */}
 
 連線是有型別的。內建的資料型別包括：**Tensor、Model、Dataset、DataLoader、Optimizer、Loss、Scalar、String、Image、List、Transform、Any、Trigger**。`Trigger` 型別正是 `Start` 節點所發出、用來驅動執行順序的型別，而 `Transform` 則是變換鏈節點之間互相傳遞的型別。

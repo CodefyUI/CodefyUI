@@ -13,7 +13,7 @@ backend/    Python 3.10+ · FastAPI · PyTorch
 
 單一 uvicorn 行程同時提供 REST API、執行 WebSocket，以及預先建置好的 React 應用程式。
 
-## 核心原則
+## 核心原則 {/* #core-principles */}
 
 | 原則 | 說明 |
 |-----------|--------|
@@ -22,7 +22,7 @@ backend/    Python 3.10+ · FastAPI · PyTorch
 | **WebSocket 執行** | `ws://host/ws/execution` 是伺服器所擁有之 run 的*視圖*：即時串流每個節點的狀態，也能從任意 cursor 重播該 run 已儲存的事件紀錄，讓重新連線的分頁完整接上。run 本身由 run service 擁有，而不是 socket。 |
 | **拓撲排序執行** | 使用 Kahn 演算法進行 DAG 排序 + 循環偵測，並對獨立節點進行平行執行。 |
 
-## 執行流程
+## 執行流程 {/* #execution-flow */}
 
 1. **送出**——畫布、`cdui run`、`POST /api/runs` 或 sweep 會將圖送至 run service。該服務會將圖持久化並排程。queued 通道的 run 會進入各裝置的 FIFO；interactive 畫布 run 則會跳過佇列。詳見[執行佇列](/usage/run-queue)。
 2. **展開**——在任何東西執行之前：丟棄註記；內聯展開子圖實例（最多 10 層；包含自己的方塊會被拒絕），其內部節點以 `<instance>/<node>` 的 id 執行；把預設組合節點攤平成其內部節點（最多 10 層）；移除被略過的節點，並把它的每個輸出改由相符的輸入轉送。請參閱[子圖](./subgraphs)。
@@ -32,7 +32,7 @@ backend/    Python 3.10+ · FastAPI · PyTorch
 6. **快取／髒節點追蹤**——具決定性的節點輸出會依 WebSocket 連線個別快取（預設 256 筆與 1 GB），快取鍵包含節點類型、params、每條輸入邊的一份參照（上游鍵加上兩端的連接埠名稱）、解析後的裝置，以及讀檔節點的內容指紋；變更一個節點會把它與其下游標記為 dirty，因此只有受影響的子圖會重新執行。非決定性節點（或 `cacheable = False`）一律執行。
 7. **裝置解析**——沒有指定裝置時為 `cpu`，`auto` 代表最佳的加速器（依序為 `cuda`、`mps`、`cpu`）。無法使用的 `cuda` 或 `mps` 會退回 CPU 並發出警告；在有 CUDA 的機器上，超出範圍或格式錯誤的 `cuda:N` 會改用目前的 CUDA 裝置。節點自己的 `device` 參數不是 `auto` 時，會覆寫 run 的裝置。請參閱[裝置後端](./device-backends)。
 
-## 狀態、輸出與梯度
+## 狀態、輸出與梯度 {/* #state-outputs-and-gradients */}
 
 - **Run service**——`RunService` 會獨立於 WebSocket 連線管理每個 run。它會將每個引擎事件附加至持久事件紀錄、批次寫入純量指標，並透過執行環境協作式取消。啟動時，它會將上一個行程留下的 `queued` 或 `running` 資料列標記為 `interrupted`。run、事件、指標與產出會儲存在 SQLite（`exec_runs`、`exec_run_events`、`exec_run_metrics`、`exec_run_artifacts`），讓分頁可以重新連線，終端機也可以監控由其他用戶端啟動的 run。
 - **執行環境**攜帶每次執行的選項：裝置、亂數種子與決定性旗標、「顯示內部步驟」模式、權重持久化、反向傳播與梯度設定，以及協作式停止旗標。
@@ -41,14 +41,14 @@ backend/    Python 3.10+ · FastAPI · PyTorch
 - **反向傳播**——開啟*擷取梯度*時，引擎會掛上 hook、呼叫 `.backward()`，並把每層的梯度與輸出一起儲存。
 - **步驟追蹤**——在「顯示內部步驟」模式下，受插樁的節點會發出 `__steps__` 追蹤，記錄供檢視器的**步驟**分頁使用。
 
-## 節點註冊表與可擴充性
+## 節點註冊表與可擴充性 {/* #node-registry--extensibility */}
 
 - **註冊表**透過走訪節點套件來探索 `BaseNode` 子類別。內建節點使用裸名稱（`Conv2d`）；外掛節點則加上命名空間（`foundations:Edu-KNN`），以避免衝突並讓圖能自我說明。
 - **[自訂節點](./custom-nodes)**——把一個 `.py` 檔案放進 `custom_nodes/`，即可熱重載。
 - **[外掛包](./plugins)**——從編輯器的**外掛中心**或以 `cdui plugin install` 安裝（兩者共用 `backend/app/core/plugins/` 這一套安裝實作）、藉由 lockfile 探索，並在載入第三方程式碼之前經過 **AST 驗證**。
 - **[預設組合](./presets)**——可重用的子圖，於執行時展開。
 
-## 進入點
+## 進入點 {/* #entry-points */}
 
 | 區域 | 檔案 |
 |------|------|

@@ -23,7 +23,7 @@ my-service/
   .env             your secrets (gitignored, never committed)
 ```
 
-## 為什麼要分離？
+## 為什麼要分離？ {/* #why-the-split */}
 
 `graphs/<name>.graph.json` 只儲存會改變 graph *行為* 的內容（節點、邊、參數、內嵌 presets、子圖定義，以及選填的 `settings` 區塊，例如 `{"device": "cuda"}`，用來指定這張 graph 執行的裝置）。節點**位置**（包括子圖定義內部節點的位置）、便利貼幾何資訊與比較用的段落標記（`segmentGroups`）則存放在 `layout/<name>.layout.json`。因此，拖動節點只會變更 `layout/`，修改參數只會變更 `graphs/`；code review 可以聚焦於邏輯變更，不會受到節點位移的 diff 干擾。（已知例外：`SequentialModel` 子圖的層位置存放在 `params.layers`，因此仍位於 logic 檔。）
 
@@ -31,9 +31,9 @@ my-service/
 並於下次存檔時寫回結果；便利貼若只缺幾何資訊（尺寸/綁定）則直接使用預設值 --
 「只缺幾何資訊」刻意不視為缺少 layout。
 
-## 完整流程
+## 完整流程 {/* #a-complete-walkthrough */}
 
-### 1. 建立專案
+### 1. 建立專案 {/* #1-create-the-project */}
 
 ```bash
 cdui project init my-service
@@ -44,7 +44,7 @@ cd my-service
 
 `.gitattributes` 有兩行。`*.json text eol=lf` 讓 graph 與 layout 檔在 checkout 時維持 LF：伺服器以 LF 寫出這些檔案，若 Windows 上設定了 `core.autocrlf=true`，git 會把它們以 CRLF 交回，每次存檔都會改寫每一行。`layout/*.layout.json linguist-generated=true` 會讓 layout 檔在 GitHub diff 中收合。2.6.0 之前建立的專案會保留舊的 `.gitattributes`，其中沒有第一行；請自行加入 `*.json text eol=lf`。
 
-### 2. 加入一個 graph
+### 2. 加入一個 graph {/* #2-add-a-graph */}
 
 可以在編輯器裡建（`cdui start --project .`，放一個 **Start**、一個名為 `x`
 的 **GraphInput**、一個名為 `y` 的 **GraphOutput**，把 Start 的 trigger 接到
@@ -73,7 +73,7 @@ GraphInput、GraphInput 的 value 接到 GraphOutput，然後按 **Ctrl/Cmd+S** 
 `settings` 是選填的。沒有它的 graph 會跑在客戶端選的裝置上：編輯器裡是設定的裝置，
 不帶 `--device` 的 `cdui run` 則是 `cpu`。`settings.device` 接受的值，以及存檔何時寫入這個區塊，請見[裝置後端](../advanced/device-backends.md#the-graph-settings-object)。
 
-### 3. 提交
+### 3. 提交 {/* #3-commit */}
 
 ```bash
 git config user.name  "You"
@@ -86,7 +86,7 @@ git commit -m "echo service"
 腳本，永遠不要提交資料或權重本身。伺服器在專案上跑起來之後（第 5 步），
 編輯器的[版本控制](./source-control)分頁就能在側邊欄做同樣的暫存與提交。
 
-### 4. 驗證（CI 關卡）
+### 4. 驗證（CI 關卡） {/* #4-validate-the-ci-gate */}
 
 ```bash
 cdui project validate .
@@ -129,7 +129,7 @@ cdui project freeze .
 
 Freeze 會直接改寫 manifest：你自行加入的 key（位於 `[project]`、`[publish]` 或自訂 table 中）都會保留，但註解不會，而 `[plugins]` table 會完全依目前已安裝的內容重新產生。
 
-### 5. 在專案上啟動伺服器
+### 5. 在專案上啟動伺服器 {/* #5-start-the-server-on-the-project */}
 
 ```bash
 cdui start --project .
@@ -141,7 +141,7 @@ log 會印出 `Project: <abs> (git <short-sha>)`，若有釘選的 plugin 未安
 
 使用 `--project` 啟動，也會載入 `<project>/.env`：一般的 `KEY=VALUE` 行（允許開頭有 `export `，也允許值外圍有引號），會在探索 node 與 plugin 前以 `os.environ.setdefault` 語意套用，因此 shell 中已設定的變數優先。只有執行期間的機密適合放在這裡 —— LLM API key，以及 node 在執行時從環境讀取的任何值。檔案中的 `CODEFYUI_*` 設定不會生效，因為伺服器設定在讀取檔案前就已固定；請改在 shell 或 systemd unit 中設定。log 只會記錄載入的數量，絕不記錄值；不帶 `--project` 時完全不會讀取 `.env`。
 
-### 6. 建立 API key（invoke 需要）
+### 6. 建立 API key（invoke 需要） {/* #6-create-an-api-key-invoke-needs-one */}
 
 Session token 位於 `<install dir>/.codefyui_dev/session.token`（由 `cdui start` 或 `cdui dev` 啟動的伺服器；預設安裝目錄為 `~/CodefyUI`，Windows 上也就是 `$HOME\CodefyUI`）；若在啟動器執行前已匯出 `CODEFYUI_USER_DATA_DIR`，則位於 `<CODEFYUI_USER_DATA_DIR>/session.token`。該目錄裡的其他檔案、手動啟動的 `uvicorn app.main:app` 所用的平台目錄，以及 token 為何每次重啟都會輪換，請見[把 graph 當成函式呼叫](./graph-as-a-function.md#2-getting-the-token-for-external-scripts)。
 
@@ -166,7 +166,7 @@ curl -s -X POST http://127.0.0.1:8000/api/keys \
 
 `# -> {"id": 1, "name": "demo", "prefix": "cdui_xxxxxxx", "token": "cdui_..."}`（完整金鑰只顯示這一次，在 "token" 欄位）
 
-### 7. 發佈（記錄 git commit）
+### 7. 發佈（記錄 git commit） {/* #7-publish-records-the-git-commit */}
 
 `cdui project publish` 包裝的是同一個 [publish](./publish.md) 端點
 （`POST /api/apps/{slug}/publish`），外加專案模式防護與自動 git 溯源。先在
@@ -203,7 +203,7 @@ cdui project publish . --graph echo --slug echo-svc --create
 > 跑，但發佈需要一台開著該專案的本機伺服器。已排定的後續項目是管理範圍、
 > 用 API key 的發佈（`--url` / `--key`）。
 
-### 8. 呼叫（invoke）
+### 8. 呼叫（invoke） {/* #8-invoke */}
 
 PowerShell：
 
@@ -224,7 +224,7 @@ curl -s -X POST http://127.0.0.1:8000/api/apps/echo-svc/invoke \
 
 `# -> {"status": "ok", "outputs": {"y": "hello"}, ...}`
 
-### 9. 查「這是哪個 commit 發佈的」
+### 9. 查「這是哪個 commit 發佈的」 {/* #9-see-which-commit-built-this */}
 
 PowerShell：
 
@@ -244,7 +244,7 @@ curl -s http://127.0.0.1:8000/api/apps/echo-svc/versions \
 作用中版本的 `GET /api/apps/echo-svc/openapi.json` 的 `info` 區塊也帶有
 `x-codefyui-git-commit` 與 `x-codefyui-git-dirty`。
 
-## 遷移既有的扁平 graphs 目錄
+## 遷移既有的扁平 graphs 目錄 {/* #migrating-an-existing-flat-graphs-dir */}
 
 如果你用的是舊的「[版本控管你的 graphs](/usage/version-control-graphs)」做法
 （`CODEFYUI_GRAPHS_DIR` 指向扁平的 `*.json` 目錄），可用一個指令匯入：
@@ -255,7 +255,7 @@ cdui project init my-service --adopt /path/to/old-graphs
 
 每個 `*.json` 都會複製進 `graphs/` 並拆分成 logic/layout 一對檔案。
 
-## 注意事項與限制（v1）
+## 注意事項與限制（v1） {/* #notes-and-limits-v1 */}
 
 - 每個伺服器實例一個專案（編輯器內還沒有專案切換器）。
 - `DB_PATH` 與 custom nodes 仍是安裝層級的全域設定；[plugins](/advanced/plugins)

@@ -12,7 +12,7 @@ Graph Copilot 是編輯器的代理工作台（agent workbench）外掛。它以
 Graph Copilot 建構於兩項 CodefyUI 功能之上：[外掛前端擴充 API](/advanced/plugin-frontend-extensions) 與統一的 LLM 代理端點（`/api/llm/chat`）。兩者皆自 CodefyUI **1.3.0** 起內建。若 `cdui --version` 顯示更舊的版本，請先執行 `cdui update` 再安裝。
 :::
 
-## 安裝
+## 安裝 {/* #installation */}
 
 ```bash
 cdui plugin install graph-copilot
@@ -22,7 +22,7 @@ cdui plugin install graph-copilot
 
 外掛原始碼與問題回報：[github.com/CodefyUI/CodefyUI-Plugin-Graph-Copilot](https://github.com/CodefyUI/CodefyUI-Plugin-Graph-Copilot)
 
-## 快速上手
+## 快速上手 {/* #quick-start */}
 
 1. 依上述步驟安裝外掛。
 2. 點擊編輯器右下角的 **Graph Copilot** 按鈕（對話框圖示），開啟面板。
@@ -41,7 +41,7 @@ cdui plugin install graph-copilot
 - **History**：先前的對話。點擊其中一筆即可接續，或用 **+ New chat** 開始新對話。
 - **Settings**：提供者、模型與推理強度、API 金鑰或登入，以及執行完成通知。
 
-## 選擇 LLM 提供者 {/* #選擇-llm-提供商 */}
+## 選擇 LLM 提供者 {/* #choosing-an-llm-provider */}
 
 點擊 Graph Copilot 面板中的 **Settings**（齒輪）圖示，以設定提供者與金鑰。
 
@@ -55,13 +55,13 @@ cdui plugin install graph-copilot
 
 代理也提供 `POST /api/llm/models`，供 **Refresh** 列出提供者的模型。`POST /api/llm/codex/login`、`GET /api/llm/codex/status` 與 `POST /api/llm/codex/logout` 用於 ChatGPT 登入。相同控制項也位於 **設定 → LLM 提供者**。只有 **OpenAI API** 與 **OpenAI Codex (ChatGPT)** 會使用 `reasoning_effort`。這個值必須是 1–64 個字元，只能包含小寫字母、數字、`_` 或 `-`，並以字母開頭；其他值對每個提供者都會回傳 `422`。代理會對 **OpenAI Codex (ChatGPT)** 拒絕 `ultra`（`400`），其他值則原樣轉送。編輯器會提供這些 `POST` routes 所需的 session token。
 
-## 金鑰處理
+## 金鑰處理 {/* #key-handling */}
 
 API 金鑰會以 Graph Copilot 專用的 namespace 儲存在 `localStorage`。每次 request 都會將選擇的金鑰送到本機 CodefyUI 後端。`/api/llm/chat` 會把金鑰與訊息轉送給設定的提供者，再將 response 串流回來。它不會記錄或持久化金鑰與訊息。每個提供者都有固定的上游主機；只有 **Custom** 會使用你提供的 base URL。這些金鑰與環境變數 `CODEFYUI_OPENAI_API_KEY` / `OPENAI_API_KEY` 和 `CODEFYUI_ANTHROPIC_API_KEY` / `ANTHROPIC_API_KEY` 分開；只有 `LLMChat` 節點會讀取這些環境變數，代理一個也不會讀取。
 
-## 使用方式
+## 使用方式 {/* #usage */}
 
-### 發送請求
+### 發送請求 {/* #sending-a-request */}
 
 在聊天輸入框中輸入需求，按 Enter（或點擊 **Send**）。範例：
 
@@ -71,25 +71,25 @@ API 金鑰會以 Graph Copilot 專用的 namespace 儲存在 `localStorage`。�
 
 AI 會先回傳計畫，再套用操作。每次工具呼叫會在回覆下方顯示為一個步驟，例如 **Edit graph** 搭配 `add_node ×2, connect ×1`，並顯示是否成功。
 
-### 對話記錄
+### 對話記錄 {/* #conversation-history */}
 
 對話儲存在瀏覽器中（Graph Copilot 專用 namespace 的 `localStorage`），最新的在前，最多 50 筆；超過時會刪除最舊的一筆。對話不與特定圖綁定。開啟編輯器時會開始新對話；要接續先前的對話，請開啟 **History**。
 
-### 中止與重試
+### 中止與重試 {/* #stop-and-retry */}
 
 在串流過程中點擊 **Stop** 可取消進行中的請求；已經串流出來的文字會留在對話中。請求失敗時，面板會顯示 **Request failed** 與 **Retry** 按鈕，點擊後會重新送出你的上一則訊息及其附件。
 
-### 復原 AI 編輯 {/* #撤銷-ai-編輯 */}
+### 復原 AI 編輯 {/* #undoing-ai-edits */}
 
 AI 每套用一批操作就是一個復原快照。按一次 **Ctrl+Z**（macOS 上為 Cmd+Z）即可復原最後一批。AI 在同一則回覆中自我修正時會套用不只一批操作，每一批都需要各按一次 Ctrl+Z。
 
-## 使用技巧
+## 使用技巧 {/* #tips */}
 
 - 提供你正在建構的內容背景：「我正在建構一個採用 ResNet 骨幹網路的視覺分類器」有助於 AI 做出更好的選擇。
 - 若 AI 新增了不在你節點面板中的節點類型，該操作會被跳過並回報——請先使用 `cdui plugin install` 安裝所需的外掛包。
 - Graph Copilot 在每次請求前會讀取目前的圖表狀態與完整節點面板，因此它知道有哪些類型可用，以及畫布上已有什麼。
 
-## 另請參閱
+## 另請參閱 {/* #see-also */}
 
 - [Graph Copilot 文件](https://codefyui.github.io/CodefyUI-Plugin-Graph-Copilot/) — 實驗、附件、圖的執行，以及代理契約。
 - [外掛前端擴充](/advanced/plugin-frontend-extensions) — Graph Copilot 所基於的 JS API。

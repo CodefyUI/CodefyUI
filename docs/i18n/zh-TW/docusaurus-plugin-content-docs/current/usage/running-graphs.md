@@ -8,13 +8,13 @@ description: 執行如何運作 — WebSocket 串流、結果面板、即時 los
 
 當你點擊 **執行** 時，前端會透過 WebSocket（`ws://host/ws/execution`）把圖送到後端，後端則在每個節點完成時把結果串流回來。
 
-## 即時執行
+## 即時執行 {/* #real-time-execution */}
 
 - 後端會驗證圖（DAG 檢查、型別安全、至少一個 [`Start`](./first-graph) 節點），對它進行拓撲排序（Kahn 演算法，含循環偵測），並平行執行彼此獨立的節點。
 - 每個節點在執行過程中回報狀態：`running` → `completed`（或 `error`），並內嵌一份精簡的 **輸出摘要** 方便快速查看。
 - **執行紀錄** 分頁會顯示這種逐節點的進度，以及任何 `Print` 節點的輸出。
 
-## 沒有 trigger 的節點仍然可能執行
+## 沒有 trigger 的節點仍然可能執行 {/* #a-node-without-a-trigger-can-still-run */}
 
 只移除節點的 trigger 邊，不會讓它退出這次執行。只要一條 **data** 邊仍把它的輸出連到會執行的節點，這個節點就會執行；連到必要輸入或選用輸入都沒有差別，也不要求它有自己的 trigger。`Dataset` 或轉換鏈的第一個節點通常沒有 trigger，並預期以這種方式執行。相同規則適用於其他已連線的節點。
 
@@ -22,7 +22,7 @@ description: 執行如何運作 — WebSocket 串流、結果面板、即時 los
 
 這也會影響讀取節點。`CSVReader`、`ImageReader` 等節點只要仍連到一個輸入埠，即使是選用輸入埠，也會在沒有 trigger 時執行；過去這種情況會略過節點。如果節點指向的檔案已刪除或移動，先前能成功執行的圖可能會在該節點發生 `FileNotFoundError`。
 
-## 訓練迴圈與 loss 圖表
+## 訓練迴圈與 loss 圖表 {/* #training-loops-and-loss-charts */}
 
 `TrainingLoop` 節點會在訓練期間發出進度事件。結果面板的**訓練**分頁會即時顯示這些事件：目前的**輪次**、最新與**最佳**的訓練 loss、進度條、每個 epoch 訓練 loss 的**損失曲線**、迴圈的**訓練設定**，以及列出每個 epoch 變化量與耗時的表格。
 
@@ -49,13 +49,13 @@ description: 執行如何運作 — WebSocket 串流、結果面板、即時 los
 
 `optimizer` 輸出是實際用於訓練的 optimizer：通常就是接進來的那一個；若它的參數與模型不符，則是重新建立的 optimizer。請把這個輸出接到 `CheckpointSaver.optimizer`，而不是 `Optimizer` 節點的輸出。記憶體選項 `precision` 與 `accumulate_steps` 見[訓練記憶體](/advanced/training-memory)，`tensorboard` 見 [TensorBoard](./data-augmentation#tensorboard)。
 
-## 部分重新執行（髒節點追蹤）
+## 部分重新執行（髒節點追蹤） {/* #partial-re-execution-dirty-tracking */}
 
 CodefyUI 會追蹤 **dirty** 節點。當你變更一個節點的參數或輸入時，只有該節點及其**下游依賴**會被標記為需要重新執行。未變更的節點會回傳快取輸出（顯示為 `cached`）。因此，調整單一超參數時只會重新執行圖中受影響的部分，可縮短開發期間的執行時間。
 
 確定性的節點會自動快取；非確定性的節點（訓練迴圈、隨機運算，或任何 `cacheable = False` 的節點）則一律重新執行。
 
-### 檔案讀取節點的內容感知快取
+### 檔案讀取節點的內容感知快取 {/* #content-aware-caching-for-file-reading-nodes */}
 
 快取項目的 key 由節點類型、參數、上游節點的快取 key，以及執行裝置雜湊而成。節點從圖外部讀取的內容無法只由 `params` 表示：`path` 參數只記錄讀取位置，不包含該位置的內容。因此，讀取外部狀態的節點還會把內容指紋加入 key。指紋包含解析後檔案的大小與修改時間；對於不超過 8 MB 的檔案，還包含內容雜湊。即使同樣大小的修改發生在同一個檔案系統時間戳記刻度內，key 仍會改變。`CSVReader`、`FileReader`、`ImageReader`、`ImageBatchReader`、`Dataset`、`ImageFolderDataset` 和 `DocumentLoader` 都使用這項機制。編輯檔案後再次點擊 **執行**，會取得新內容；若檔案未變，則使用快取結果而不重新讀取。對於 `Dataset` 和 `ImageFolderDataset`，資料集中的任一檔案變更也會更新指紋。`DocumentLoader` 會對 `directory` 底下的每個檔案建立指紋，即使 `recursive` 關閉也包含子資料夾；使用上傳的單一檔案時，則只對該檔案建立指紋。
 
@@ -63,7 +63,7 @@ CodefyUI 會追蹤 **dirty** 節點。當你變更一個節點的參數或輸入
 
 `GraphInput` 搭配 `type=image` 進行**畫布**執行時，也使用相同機制。API 路徑已把呼叫者提供的值放在 `params` 中；畫布執行則會從磁碟載入 `default` 路徑。內容指紋可讓兩次畫布執行之間修改的圖片載入新像素。
 
-### 從不快取的內容
+### 從不快取的內容 {/* #what-is-never-cached */}
 
 有些節點會設定 `cacheable = False`，完全停用快取。原因分為四類：
 
@@ -77,7 +77,7 @@ CodefyUI 會追蹤 **dirty** 節點。當你變更一個節點的參數或輸入
 
 `ModelLoader` 和 `CheckpointLoader` 即使有內容指紋，仍屬於這一類。指紋描述它們讀取的內容，不描述它們寫入的內容：`load_state_dict` 會修改連接的 model，而快取命中會跳過這項操作。代價比聽起來小：停用快取會向下游傳播（見下文），而且只要它們的 `model` 輸入已連接，來源就是擁有權重的節點，那本來就不可快取，因此一般接線方式下這兩個節點原本就不會由快取提供結果。
 
-**節點可能有只有作者知道的副作用。** `PythonScript` 會執行畫布中輸入的程式碼。`code` 參數會納入快取 key，因此修改腳本後會重新執行；但腳本和輸入都未變更時會命中快取。腳本可能就地修改輸入 tensor 或 model、變更行程全域的 `torch`／`numpy` 狀態，或使用 `ANY` 型別輸入埠提供的任意物件。節點類型與原始碼檢查都無法完整描述這些行為，因此 `PythonScript` 一律停用快取。詳見 [PythonScript 節點](../advanced/python-script-node.md#快取)。
+**節點可能有只有作者知道的副作用。** `PythonScript` 會執行畫布中輸入的程式碼。`code` 參數會納入快取 key，因此修改腳本後會重新執行；但腳本和輸入都未變更時會命中快取。腳本可能就地修改輸入 tensor 或 model、變更行程全域的 `torch`／`numpy` 狀態，或使用 `ANY` 型別輸入埠提供的任意物件。節點類型與原始碼檢查都無法完整描述這些行為，因此 `PythonScript` 一律停用快取。詳見 [PythonScript 節點](../advanced/python-script-node.md#caching)。
 
 相同設定也適用於其他輸出無法由快取 key 完整描述的節點，包括 `GaussianNoise`、`DDPMSampler`、`BackwardOnce`、`DiffusionTrainingLoop`，以及所有擁有權重的節點（`SequentialModel`、`DiffusionUNet` 和每個 layer 節點，例如 `Linear`、`Conv2d`、`LSTM`）。這些節點的參數會隨訓練改變。
 
@@ -87,7 +87,7 @@ CodefyUI 會追蹤 **dirty** 節點。當你變更一個節點的參數或輸入
 
 設定中的兩個開關會完全繞過快取。開啟**顯示內部步驟**或**擷取梯度**時，不會使用任何快取，所有節點都會重新執行。快取輸出不包含 `__steps__` trace，也不包含保留梯度追蹤的 tensor，因此無法提供要求的內容。
 
-### 預設組合（preset）與子圖方塊會回報什麼狀態
+### 預設組合（preset）與子圖方塊會回報什麼狀態 {/* #what-a-preset-or-subgraph-box-reports */}
 
 畫布上的 preset 節點和子圖實例各以一個方塊代表多個內部節點，因此只會回報一個整體狀態。狀態取決於內部節點實際執行的結果：
 
@@ -100,7 +100,7 @@ CodefyUI 會追蹤 **dirty** 節點。當你變更一個節點的參數或輸入
 
 `已快取` 狀態需要特別注意：包含 `TrainingLoop` 的 preset 回報 `已快取` 時，表示這次 run **沒有進行訓練**。在區分這項狀態之前，兩種情況都顯示 `已完成`，無法從 preset 層級判斷變更是否讓內部節點重新執行。若要重新執行，請變更其依賴項目或清除快取。
 
-## 可重現的執行（亂數種子）
+## 可重現的執行（亂數種子） {/* #reproducible-runs-seed */}
 
 預設情況下，run 使用 PyTorch 選擇的熵，因此同一張圖執行兩次時，權重初始化與洗牌順序會略有不同，loss 曲線也會不同。在**設定 → 訓練行為**中設定**亂數種子**，可讓 run 重現相同結果。
 
@@ -130,7 +130,7 @@ cdui run graph.json --seed 1234 --deterministic
 種子固定的是「軟體層面」的亂數。位元完全一致的保證只適用於 CPU；換不同的 GPU、驅動程式版本或 PyTorch 版本時，浮點數的歸約順序仍然可能不同。
 :::
 
-## 停止
+## 停止 {/* #stopping */}
 
 點擊 **停止** 可取消執行中的 run。**只有「停止」會取消 run。**
 
@@ -138,9 +138,9 @@ cdui run graph.json --seed 1234 --deterministic
 
 取消採用協作方式，不會立即中斷，因為任意節點程式碼執行到一半時無法安全停止。長時間執行的節點會在每個 batch、step 或 item 檢查取消狀態。訓練迴圈會在一個 batch 內停止，並在結束前寫入 interrupt checkpoint。其他節點會完成目前的呼叫，run 再於下一個節點邊界停止。兩種情況都會記錄為 `cancelled`。
 
-## 瀏覽器之外
+## 瀏覽器之外 {/* #beyond-the-browser */}
 
 - **[`cdui run`](./run-queue#cdui-run)** 會把已儲存的圖送到執行中的伺服器，並從終端機跟隨進度；關閉終端機後 run 仍會繼續。
 - **[CLI 圖形執行器](./cli-runner)** 不需要伺服器，會直接在行程內執行圖。
-- **匯出為 Python**（[分頁與持久化](./tabs-persistence#匯入匯出)）會寫出獨立程式，並委派給相同的節點實作。匯出時會清空 secret 參數；`--seed` 預設採用匯出時畫布設定的 seed（使用 `--no-seed` 可改用新的熵來源）；`--timeout` 是 soft timeout，已在執行的節點會完成，但不會再啟動下一個節點。
+- **匯出為 Python**（[分頁與持久化](./tabs-persistence#import--export)）會寫出獨立程式，並委派給相同的節點實作。匯出時會清空 secret 參數；`--seed` 預設採用匯出時畫布設定的 seed（使用 `--no-seed` 可改用新的熵來源）；`--timeout` 是 soft timeout，已在執行的節點會完成，但不會再啟動下一個節點。
 - **[TensorBoard](./data-augmentation#tensorboard)** — `TrainingLoop.tensorboard` 會將 event 檔寫入該 run 的產出目錄。

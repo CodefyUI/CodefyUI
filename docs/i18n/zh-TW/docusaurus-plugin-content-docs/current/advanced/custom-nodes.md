@@ -12,7 +12,7 @@ CodefyUI 是**後端權威**的：一個節點的連接埠、參數與類別全�
 如果只需要簡短的轉換，或對圖表已產生的結果計算統計資料，[PythonScript 節點](./python-script-node.md)可直接執行你在畫布上輸入的 Python，不需建立檔案或重新啟動。當程式碼不再適合放在單一節點中，或需要存取檔案、網路或允許清單以外的相依套件時，再建立自訂節點。
 :::
 
-## 最小範例
+## 最小範例 {/* #minimal-example */}
 
 ```python
 from app.core.node_base import BaseNode, DataType, PortDefinition
@@ -34,7 +34,7 @@ class MyNode(BaseNode):
         return {"output": inputs["input"]}
 ```
 
-## 熱重載
+## 熱重載 {/* #hot-reload */}
 
 新增或編輯自訂節點後，無需重啟伺服器即可重新載入：
 
@@ -47,13 +47,13 @@ class MyNode(BaseNode):
 
 請使用側邊欄**自訂與外掛**分頁之**自訂節點**區段中的**管理...** 按鈕開啟管理視窗。它會列出 `custom_nodes/` 中的每個檔案、該檔案定義的節點名稱，以及三種操作：
 
-- **上傳 .py** 會將一個檔案送至 `POST /api/custom-nodes/upload`。檔案必須使用 `.py` 副檔名，而且不得超過 `CODEFYUI_MAX_UPLOAD_SIZE`（500 MB）。伺服器會以外掛 AST 閘門的[第 0 級](/advanced/plugins#安全性三個層級)掃描檔案。自訂節點無法宣告能力，因此 `requests` 或 `os` 等 imports 會產生 `400` response 與閘門訊息。需要第 0 級以外 imports 的節點，應放入具有 `[security]` 區段的[外掛包](./plugins)。直接複製到 `backend/app/custom_nodes/` 的檔案，會在下次重新載入時載入，不會進行這項掃描。
+- **上傳 .py** 會將一個檔案送至 `POST /api/custom-nodes/upload`。檔案必須使用 `.py` 副檔名，而且不得超過 `CODEFYUI_MAX_UPLOAD_SIZE`（500 MB）。伺服器會以外掛 AST 閘門的[第 0 級](/advanced/plugins#security--three-tiers)掃描檔案。自訂節點無法宣告能力，因此 `requests` 或 `os` 等 imports 會產生 `400` response 與閘門訊息。需要第 0 級以外 imports 的節點，應放入具有 `[security]` 區段的[外掛包](./plugins)。直接複製到 `backend/app/custom_nodes/` 的檔案，會在下次重新載入時載入，不會進行這項掃描。
 - **啟用／停用**會在 `name.py` 與 `name.py.disabled` 之間重新命名檔案；停用的檔案仍留在磁碟上，但探索時會跳過。
 - **刪除**會移除檔案（名稱以 `__` 開頭者受保護）。
 
 每次操作後，伺服器都會重新探索自訂節點、外掛包與預設模組。request 完成時，節點面板會反映結果，不需另外重新載入。
 
-## 節點的剖析
+## 節點的剖析 {/* #anatomy-of-a-node */}
 
 | 成員 | 用途 |
 |--------|---------|
@@ -70,11 +70,11 @@ class MyNode(BaseNode):
 
 自訂節點的 `DESCRIPTION`、`DETAILS` 與參數說明在每種介面語言中都會照原文顯示：只有內建節點與本儲存庫隨附的外掛包有 zh-TW 翻譯（`frontend/src/i18n/nodeLocales/zh-TW.ts`），自訂節點與第三方外掛無法加入自己的翻譯。
 
-## 資料型別
+## 資料型別 {/* #data-types */}
 
 連接埠使用共用的 `DataType` 列舉：`TENSOR`、`MODEL`、`DATASET`、`DATALOADER`、`OPTIMIZER`、`LOSS_FN`、`SCALAR`、`STRING`、`IMAGE`、`LIST`、`TRANSFORM`、`ANY`、`TRIGGER`。兩端型別相同、任一端為 `ANY`，或從 `IMAGE` 連到 `TENSOR` 時，邊才有效。`TRIGGER` 只能連到 `TRIGGER`，並從 [`Start`](/usage/first-graph) 節點驅動執行順序。
 
-## 在結果面板顯示圖片 {/* #在執行結果面板顯示圖片 */}
+## 在結果面板顯示圖片 {/* #showing-an-image-in-the-results-panel */}
 
 會產生圖片的節點，必須在輸出連接埠上以 `media=MEDIA_IMAGE` **明確宣告**。該連接埠的值就是一個 base64 編碼的 PNG 字串（不含 `data:` 前綴），結果面板會把它渲染成圖片：
 
@@ -94,7 +94,7 @@ def define_outputs(cls):
 
 系統不會根據值的內容判斷它是否為圖片，因此媒體宣告是**必要的**。未宣告媒體類型的連接埠一律視為一般資料，即使內容看似圖片也是如此。這可避免將長文字輸出（LLM 的回答、token 傾印）誤當成圖片而渲染失敗。
 
-## 在結果面板畫圖表 {/* #在執行結果面板畫圖表 */}
+## 在結果面板畫圖表 {/* #drawing-a-chart-in-the-results-panel */}
 
 `media=MEDIA_CHART` 是同一套機制，用來畫圖表。連接埠的值是一份 JSON **圖表規格**（一個普通的 dict），由編輯器用自己的 SVG 元件繪製，因此圖表會套用主題、可以滑鼠停留查看數值，而且放大也不會糊掉——這些都是固定尺寸的 PNG 做不到的：
 
@@ -130,7 +130,7 @@ def execute(self, inputs, params, progress_callback=None, *, context=None):
 
 請勿自行建立這些參照。請透過 `VideoWrite` 節點寫入影格，或在你的節點中呼叫 `core.video_io`。它負責編碼（mp4 使用 PATH 中的 `ffmpeg` 執行檔；gif 使用 Pillow，完全不需要額外相依套件）、限制路徑範圍，以及建立參照格式。絕對路徑的 `path` 會在傳輸層被拒絕。
 
-### 自訂你自己的媒體種類
+### 自訂你自己的媒體種類 {/* #your-own-media-kind */}
 
 系統不會對任何媒體種類加入特殊判斷。解析器以連接埠宣告的字串為鍵；只要連接埠的值是非空 dict，就會原封不動送出。因此，外掛包宣告 `media="waveform"` 後，瀏覽器便會收到 `{"output_kind": "waveform", ...}`；只有*繪製*該資料時才需要修改前端。編輯器遇到不認識的種類時會忽略，不會發生錯誤。
 

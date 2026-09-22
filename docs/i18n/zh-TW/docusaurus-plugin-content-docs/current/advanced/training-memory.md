@@ -10,7 +10,7 @@ description: 讓單張顯示卡跑更大的訓練——混合精度、梯度累�
 
 以下所有功能**預設都是關閉的**。在這些功能出現以前存下來的圖，行為和以前完全一樣。
 
-## 混合精度
+## 混合精度 {/* #mixed-precision */}
 
 `TrainingLoop` 的**進階**區塊裡有一個 **precision** 參數：
 
@@ -32,7 +32,7 @@ description: 讓單張顯示卡跑更大的訓練——混合精度、梯度累�
 
 節點的設定訊框與 `metrics` 輸出都會回報 `precision`（實際跑的），以及在兩者不同時回報 `precision_requested`（你要求的）。驗證階段跑在和訓練一樣的 autocast 底下，所以兩條 loss 曲線可以互相比較。
 
-### 續跑一個 fp16 的訓練
+### 續跑一個 fp16 的訓練 {/* #resuming-an-fp16-run */}
 
 loss scale 是訓練狀態的一部分。`CheckpointSaver` 與 `CheckpointLoader` 用 `grad_scaler_state` 這個 port 攜帶它，`TrainingLoop` 兩側各有一個：
 
@@ -43,7 +43,7 @@ CheckpointLoader.grad_scaler_state  →  TrainingLoop.grad_scaler_state
 
 `fp32` 與 `bf16` 兩邊都不用接——沒有 scale 需要保存。弄丟這個狀態不會致命：新的 scaler 在幾百步之內就會重新找到它的水位，只是這中間那些步是在錯誤的倍率下走的。
 
-## 梯度累積
+## 梯度累積 {/* #gradient-accumulation */}
 
 **accumulate_steps**（同樣在**進階**區塊）會先跑 N 批、把每一批的 loss 除以 N，然後才做一次優化器更新。
 
@@ -63,7 +63,7 @@ CheckpointLoader.grad_scaler_state  →  TrainingLoop.grad_scaler_state
 
 累積視窗不會跨越 epoch 邊界，而按下 **停止** 時會丟掉還沒更新的視窗，而不是在離開前再多走一步。
 
-## 指定某一張 GPU
+## 指定某一張 GPU {/* #picking-a-specific-gpu */}
 
 在有一張以上 CUDA 裝置的機器上，每個裝置下拉選單——**設定**裡的選擇器、圖自己的裝置控制項，以及每個節點自己的 **device** 參數——都會逐張列出：
 
@@ -88,7 +88,7 @@ NVIDIA CUDA #1       cuda:1
 這是刻意畫下的界線，不是還沒補上的缺口。DDP 需要行程啟動、rendezvous、逐 rank 的記錄與逐 rank 的檢查點，而這每一項都會動到 run service、事件串流與 artifact 儲存。做一半會比完全不做更糟。
 :::
 
-## 如果還是不夠用
+## 如果還是不夠用 {/* #when-the-card-runs-out-anyway */}
 
 CUDA、MPS 或 CPU 上的記憶體不足都會以 **NodeOOMError** 回報：哪一個節點、哪一個裝置、當下配置器手上握著什麼，以及該改什麼。在 CUDA 上大致長這樣：
 
@@ -113,7 +113,7 @@ Original error: CUDA out of memory. Tried to allocate 2.00 GiB ...
 
 **不會重試，也不會幫你把 batch size 調小。** 同樣的配置再跑一次會得到同樣的答案。在你背後把批次砍半，會在你不知情的狀況下改變這次執行產生的數字，那麼同一張圖就會因為當下剩多少 VRAM 而代表兩種不同的意思。你會拿到訊息，然後由你來改。
 
-## 伺服器自己的記憶體
+## 伺服器自己的記憶體 {/* #the-servers-own-memory */}
 
 這一節講的都是伺服器**因為你執行了東西**才留在記憶體裡的資料。你儲存的圖、專案檔案與 `model_weights.pt` 都在磁碟上，不算在這裡面 — 重啟伺服器會清空這些儲存區，但那些東西一個都不會少。
 

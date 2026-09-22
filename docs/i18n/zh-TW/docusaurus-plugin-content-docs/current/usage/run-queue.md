@@ -10,7 +10,7 @@ description: 依裝置排隊並在背景執行圖形 — 通道、FIFO 順序、
 
 這就是佇列的用途。一次送出五個訓練工作後關上筆電，伺服器會在 GPU 上逐一執行，而不是五個同時啟動、四十分鐘後耗盡 VRAM。
 
-## 每個裝置一條佇列
+## 每個裝置一條佇列 {/* #one-queue-per-device */}
 
 每個 run 都依它**解析後的裝置**排程 — `cpu`、`cuda:0`、`mps`。這個字串就是佇列 key，因此每個裝置都有獨立的佇列與並行上限。解析順序是：run 自己的 `device` 選項、圖檔的 `settings.device`、最後是 `cpu`；只有明確指定 `auto` 才會挑選目前最好的加速器。
 
@@ -31,7 +31,7 @@ GPU 佇列達到上限時不會延遲 CPU run，兩張不同的卡也不會互�
 
 這項限制控制的是**每個裝置的 run 數量**，與 `CODEFYUI_MAX_PARALLEL_NODES` 不同；後者限制*單一 run 內*可同時執行的節點數。兩項並行上限的效果會相乘。
 
-## 通道（lane）
+## 通道（lane） {/* #lanes */}
 
 一個 run 的**通道**記錄它從哪裡來，並決定它怎麼被排程。
 
@@ -42,7 +42,7 @@ GPU 佇列達到上限時不會延遲 CPU run，兩張不同的卡也不會互�
 
 畫布會刻意跳過佇列：課堂示範不應排在六小時的訓練工作後面。代價是 interactive run 可能讓同一張卡上的執行數超過該裝置 queued 通道的上限。FIFO 的用途是讓無人看顧的工作依序進行，而不是讓裝置只供一個 run 使用。
 
-### interactive 通道的兩道上限
+### interactive 通道的兩道上限 {/* #the-interactive-lanes-two-limits */}
 
 因為它跳過佇列，interactive 通道改用另外兩種方式設限：
 
@@ -51,13 +51,13 @@ GPU 佇列達到上限時不會延遲 CPU run，兩張不同的卡也不會互�
 
 這兩種拒絕都會立即明確回報（HTTP 503 或畫布上的錯誤），而不是無提示地等待。畫布前有使用者在等；點擊後若默默加入看不見的佇列，與當機沒有分別。實際使用時不會碰到每個 session 一個 run 的規則，因為 run 進行期間 **執行** 按鈕會停用。
 
-## 觀察與取消
+## 觀察與取消 {/* #watching-and-cancelling */}
 
 `GET /api/runs` 會為每個排隊中的 run 回報 `queue_position` — 從 1 開始，而且是**在它自己那條裝置佇列裡**的位置，所以排在兩個 CPU run 後面的 CPU run 就是第 3 位，不管它前面送出過幾個 CUDA run。`cdui run --wait` 等待時會印出這個位置，結果面板的 **執行任務** 分頁則會顯示成 `佇列第 N 位`。
 
 取消一個還沒開始的 run，就只是把它從隊伍裡拿掉。什麼都沒執行、沒有碰到任何裝置，後面的 run 依序遞補。該筆紀錄會標成 `cancelled` 且沒有開始時間，正在追蹤它的客戶端也會收到一般的停止事件。
 
-取消一個已經在跑的 run 則是協作式的 — 見[執行圖的「停止」一節](./running-graphs#停止)。
+取消一個已經在跑的 run 則是協作式的 — 見[執行圖的「停止」一節](./running-graphs#stopping)。
 
 :::note 上限為 1 的佇列上，可能短暫出現兩個 running
 run 的圖完成後會立即歸還裝置名額，再寫入最終狀態與結束事件。因此，下一個 run 可能在前一個 run 尚未完成狀態寫入時啟動，這段期間的查詢會在上限為 1 的佇列中看到兩筆 `running`。裝置上沒有重複執行任何內容；前一個 run 已經結束，裝置也已經可用。這項設計可避免 GPU 在資料庫寫入期間閒置，也可避免畫布收到 run 已結束的通知後，下一次執行仍因名額尚未歸還而被拒絕。
@@ -69,7 +69,7 @@ run 的圖完成後會立即歸還裝置名額，再寫入最終狀態與結束�
 
 | 動作 | 用途 |
 | --- | --- |
-| **停止** | 要求排隊中或執行中的 run 停止 — 採協作式停止，見[停止](./running-graphs#停止)。 |
+| **停止** | 要求排隊中或執行中的 run 停止 — 採協作式停止，見[停止](./running-graphs#stopping)。 |
 | **觀看** | 只適用於排隊中或執行中的 run。把該 run 串流到目前分頁的執行紀錄並從頭重播，同時把面板切換到執行紀錄。你可以用它查看從終端機或另一個分頁送出的 run；目前分頁會停止跟隨原本觀看的 run（若那個 run 仍在執行，會先詢問），但兩個 run 本身都不受影響。 |
 | **CSV** | 下載該 run 的指標（`GET /api/runs/{id}/metrics?format=csv`）。 |
 | **刪除** | 只適用於已結束的 run。移除該 run 的指標、事件紀錄、產出紀錄與任何錄製的輸出；磁碟上的 checkpoint 檔案會保留。 |
@@ -109,7 +109,7 @@ cdui run infer.json --record-outputs
 | --- | --- |
 | `--name <text>` | 存在 run 上的名稱，列出 run 的地方都會顯示 |
 | `--device <裝置>` | `cpu` \| `auto` \| `cuda` \| `cuda:N` \| `mps` \| `mps:N`。省略時用圖檔的 `settings.device`，再沒有就是 `cpu`；`auto` 表示這台伺服器最好的加速器。解析後的裝置就是它加入的佇列。 |
-| `--seed <n>` | 用 `n` 為每個節點設定種子，讓執行可以重現。設了種子的執行會一次只跑一個節點 — 見 **[可重現的執行](./running-graphs#可重現的執行亂數種子)**。 |
+| `--seed <n>` | 用 `n` 為每個節點設定種子，讓執行可以重現。設了種子的執行會一次只跑一個節點 — 見 **[可重現的執行](./running-graphs#reproducible-runs-seed)**。 |
 | `--deterministic` | 同時要求 PyTorch 使用決定性運算核心（`warn_only`） |
 | `--record-outputs` | 保留節點輸出供事後檢視 |
 | `--wait` | 串流進度直到 run 結束（**預設**） |
@@ -136,7 +136,7 @@ run 在排隊時，CLI 會回報它排在第幾位，而不是沒有任何輸出
   Result          succeeded
 ```
 
-### 離開碼 {/* #結束代碼 */}
+### 離開碼 {/* #exit-codes */}
 
 | 代碼 | 意義 |
 | --- | --- |
@@ -178,7 +178,7 @@ run 在排隊時，CLI 會回報它排在第幾位，而不是沒有任何輸出
 
 **`objective` 是必填的。** `metric` 是節點所記錄的一個 series 名稱（`train_loss`、`val_loss`、`val_accuracy`、`eval_accuracy`，或外掛節點記錄的任何名稱；`TrainingLoop` 記錄的 series 列在[執行圖](./running-graphs#training-loops-and-loss-charts)），`direction` 則是 `minimize` 或 `maximize`。送出時不會檢查這個名稱，因為當時還沒有任何 variant 跑過；如果最後沒有任何 variant 記錄它，排名表會是空的，並附上一個 `objective_warning`，列出各 run 實際記錄的 series。
 
-**`options`** 會原封不動交給每個 variant（device、`record_outputs` 等），但有三種情況會被拒絕：`options.seed`（seed 由 sweep 管理）、`lane: interactive`（sweep 一律排隊），以及 variant 數量超過輸出儲存上限（預設 20）時使用 `record_outputs`，因為最早幾個 variant 的捕獲資料會在 sweep 結束前被逐出。若要為訓練本身設定 seed，請設定 `sweep_spec.seed` 及 `"seed_variants": true`：第 *i* 個 variant 會使用 `seed + i`，超出時折回有效的 seed 範圍。若設定 `seed_variants: true` 卻沒有提供 `sweep_spec.seed`，請求會在建立任何資料列前以 `400` 拒絕。這會讓每個 variant 都成為 seeded run，因此一次只執行一個節點，也不會有其他 run 同時執行。seeded sweep 會嚴格依序執行，畫布 run 在整段期間都無法執行；詳見[可重現的執行](./running-graphs#可重現的執行亂數種子)。
+**`options`** 會原封不動交給每個 variant（device、`record_outputs` 等），但有三種情況會被拒絕：`options.seed`（seed 由 sweep 管理）、`lane: interactive`（sweep 一律排隊），以及 variant 數量超過輸出儲存上限（預設 20）時使用 `record_outputs`，因為最早幾個 variant 的捕獲資料會在 sweep 結束前被逐出。若要為訓練本身設定 seed，請設定 `sweep_spec.seed` 及 `"seed_variants": true`：第 *i* 個 variant 會使用 `seed + i`，超出時折回有效的 seed 範圍。若設定 `seed_variants: true` 卻沒有提供 `sweep_spec.seed`，請求會在建立任何資料列前以 `400` 拒絕。這會讓每個 variant 都成為 seeded run，因此一次只執行一個節點，也不會有其他 run 同時執行。seeded sweep 會嚴格依序執行，畫布 run 在整段期間都無法執行；詳見[可重現的執行](./running-graphs#reproducible-runs-seed)。
 
 **可以掃描什麼：** 已註冊節點上的 int、float、bool、string 與 select 參數。不支援 preset 實例的內部參數、subgraph 實例的參數、`SECRET` 參數（選中的值會以明文存入 sweep 資料列），也不支援在圖中出現兩次的 node id。
 
@@ -202,7 +202,7 @@ run 在排隊時，CLI 會回報它排在第幾位，而不是沒有任何輸出
 
 編輯器目前還沒有 sweep 專屬畫面。child 都是一般 run：它們會以 sweep 的 `name` 出現在[執行任務面板](#runs-panel)，而 `GET /api/runs` 的每一列都帶有 `sweep_id` 與 `sweep_variant`。要跟隨某一個 variant，可像其他 run 一樣使用 `GET /api/runs/{id}/events`。
 
-## 伺服器停止時
+## 伺服器停止時 {/* #when-the-server-stops */}
 
 佇列不會在伺服器重啟後繼續執行。排程只存在伺服器記憶體中；如果保留等待中的資料列，它會持續等待已不存在的排程器。
 
@@ -210,7 +210,7 @@ run 在排隊時，CLI 會回報它排在第幾位，而不是沒有任何輸出
 
 若仍要執行這些工作，請重新送出。
 
-## 設定
+## 設定 {/* #configuration */}
 
 以下都是啟動時讀取的環境變數（跟其他設定一樣使用 `CODEFYUI_` 前綴）。
 
@@ -229,7 +229,7 @@ run 在排隊時，CLI 會回報它排在第幾位，而不是沒有任何輸出
 
 Retention 會在啟動時及每個 run 結束後執行，保留最新的 `KEEP_LAST` 筆已結束 run。活動中的 run 不會被刪減，但仍會計入保留窗口。和執行任務面板的**刪除**不同，刪減也會移除該 run 自動寫出的 checkpoint 與 TensorBoard 目錄。結果為 `interrupted` 的 run 所留下的 checkpoint 會保留，以避免 crash 造成 resume point 遺失。
 
-## 延伸閱讀
+## 延伸閱讀 {/* #see-also */}
 
 - [執行圖](./running-graphs) — 單一 run 內部發生了什麼
 - [CLI 圖形執行器](./cli-runner) — 不開伺服器執行一張圖

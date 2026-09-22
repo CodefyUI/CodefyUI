@@ -16,7 +16,7 @@ def run(inputs, params):
     return {"out1": x.mean()}
 ```
 
-## 函式介面
+## 函式介面 {/* #the-contract */}
 
 ```python
 def run(inputs: dict, params: dict) -> dict
@@ -48,7 +48,7 @@ def run(inputs: dict, params: dict) -> dict
       return total
   ```
 
-## 連接埠
+## 連接埠 {/* #ports */}
 
 `input_ports` 與 `output_ports`（各 1–8）決定節點有幾個連接點。**程式碼** 分頁的連接埠區塊可以同時設定數量與每個連接埠的 `DataType`；同樣的值以逗號分隔字串存在 `input_types` / `output_types` 參數裡，所以流程 JSON 仍然易讀。
 
@@ -56,7 +56,7 @@ def run(inputs: dict, params: dict) -> dict
 * 輸入連接埠預設是 `TENSOR`，輸出連接埠預設是 `ANY`，可以接到任何地方。把輸出改成實際型別（`TENSOR`、`SCALAR`、`STRING`……）之後，流程驗證器就會幫你檢查接線——腳本寫好之後很值得補上。
 * 調降連接埠數量時，接在已消失連接埠上的連線會被**移除**，受影響的下游節點也會被標記為需要重跑。
 
-## 快取
+## 快取 {/* #caching */}
 
 **這個節點永遠不會被快取。它每次執行都會重跑，這是刻意的，即使上游什麼都沒變也一樣。**
 
@@ -69,9 +69,9 @@ def run(inputs: dict, params: dict) -> dict
 
 透過輸入連接埠拿到的東西是第三條路徑：輸入連接埠接受 `ANY` 輸出送來的任何值（`input_types` 也可以設成 `ANY`），所以自訂節點或外掛可以把寫檔器、記錄器或已開啟的檔案握柄交給你的腳本，而 Tier-0 政策完全看不到——Tier-0 限制的是腳本可以 import 哪些**函式庫**，不是別人**交給它**的物件能做什麼。
 
-代價是實在的：純轉換的腳本每次都會重跑，而且因為退出快取會[往下游傳播](../usage/running-graphs.md#從不快取的內容)，它餵的所有節點也一樣。如果某個步驟很貴而且確實是純的，它該寫成[自訂節點](./custom-nodes.md)——自訂節點可以為自己宣告 `cacheable = True`，因為它的作者看得到它全部的程式碼。
+代價是實在的：純轉換的腳本每次都會重跑，而且因為退出快取會[往下游傳播](../usage/running-graphs.md#what-is-never-cached)，它餵的所有節點也一樣。如果某個步驟很貴而且確實是純的，它該寫成[自訂節點](./custom-nodes.md)——自訂節點可以為自己宣告 `cacheable = True`，因為它的作者看得到它全部的程式碼。
 
-## 輸出與錯誤
+## 輸出與錯誤 {/* #output-and-errors */}
 
 腳本裡的 `print()` 會被擷取（每次執行上限 64,000 個字元），以節點的紀錄行出現在**執行紀錄**中。這不是全域的 stdout 轉向——直接寫入 `sys.stdout` 的函式庫仍會輸出到伺服器主控台——因為節點共用執行緒池，劫持整個行程的 stdout 會把其他節點同時印出的內容一起吃掉。
 
@@ -83,7 +83,7 @@ PythonScript failed at line 4: ZeroDivisionError: division by zero
 
 標出的是你程式碼裡最深的那一層：在 `statistics.mean([])` 裡爆掉會指向呼叫它的那一行，在你自己寫的輔助函式裡爆掉則指向那個函式。腳本在失敗前印出的內容也會附在訊息後面。流程的錯誤處理模式（fail-fast／continue／retry）與其他節點完全一致。
 
-## Tier-0 政策
+## Tier-0 政策 {/* #the-tier-0-policy */}
 
 這裡有兩層，而只有其中一層是真正的界線。
 
@@ -109,7 +109,7 @@ torch.nn          torch.nn.functional   torch.signal   torch.signal.windows
 
 這些根套件底下的其他東西——`torch.utils`、`torch.package`、`torch.fx`、`torch.serialization`、`numpy.f2py`、`numpy.testing`、`numpy.lib.format`——一律拒絕，因為它們每一個都藏著一行就能逃出去的路。如果你需要的做法剛好少了某一個，那是刻意畫的線而不是疏漏：說一聲，可以單獨評估。
 
-### 代理會拒絕什麼
+### 代理會拒絕什麼 {/* #what-the-proxy-refuses */}
 
 * **清單以外的任何模組，不管用什麼方式碰到。** `collections._sys`、`statistics.random`、`json.codecs`、`torch.cuda.tunable.mp`（那其實是標準函式庫的 `multiprocessing`）——判斷依據是模組自己的身分，所以沒有別名可找、也沒有名字要補。**被允許**套件底下的子模組（`numpy.linalg`、`torch.nn.functional`、`torch.signal.windows`）會包成巢狀代理，正常可用。
 * **函式庫的私有屬性與雙底線屬性**：`re._parser`、`statistics._sum`、`numpy.__version__`。函式庫的私有名稱正是它自己那些 import 的所在。請改用公開 API——但請注意，在 Tier-0 之下函式庫的**版本號根本拿不到**：`torch.__version__` 和 `numpy.__version__` 是雙底線屬性，而 `torch.version` / `numpy.version` 是子套件允許清單沒有收錄的模組。需要依函式庫版本分支的腳本，應該寫成[自訂節點](./custom-nodes.md)。
@@ -143,14 +143,14 @@ torch.nn          torch.nn.functional   torch.signal   torch.signal.windows
 
 **綠色標記不是保證。** 編輯器跑的是 AST 關卡，所以關卡挑不出毛病的腳本，仍然可能在執行途中被拒絕——`numpy.f2py.crackfortran.myeval` 與 `torch.utils.collect_env.run` 都是透過被允許的模組碰到的 numpy／torch 自家子套件，這兩行裡沒有任何一個字看起來像規則，代理則直接拒絕。真的發生時，你會在執行紀錄裡看到同一段政策訊息，並附上你的行號。
 
-### 需要清單以外的東西？
+### 需要清單以外的東西？ {/* #need-something-off-the-list */}
 
 那正是另外兩條路存在的理由，而且它們更適合：
 
 * [自訂節點](./custom-nodes.md)——放在你自己專案裡的檔案，你寫的、你能檢查。
-* [外掛套件](./plugins.md)——可安裝、有版本，並依它自己的[三級政策](./plugins.md#安全性三個層級)執行：純運算不需要任何宣告，`network` / `filesystem` / `process-env` 在 manifest 宣告並於安裝時由使用者確認，超出這三者的則需要 `--trust-author`。
+* [外掛套件](./plugins.md)——可安裝、有版本，並依它自己的[三級政策](./plugins.md#security--three-tiers)執行：純運算不需要任何宣告，`network` / `filesystem` / `process-env` 在 manifest 宣告並於安裝時由使用者確認，超出這三者的則需要 `--trust-author`。
 
-## 安全模型——這是防護欄，不是沙箱
+## 安全模型——這是防護欄，不是沙箱 {/* #security-model--a-guardrail-not-a-sandbox */}
 
 在把 CodefyUI 開到網路介面上之前，請先讀這一節。
 
@@ -171,7 +171,7 @@ torch.nn          torch.nn.functional   torch.signal   torch.signal.windows
 
 真正的界線是**誰能碰到這個編輯器**。CodefyUI 預設只綁定本機；除非你信任該網路上的所有人，否則請維持原狀。
 
-## 匯出
+## 匯出 {/* #export */}
 
 「匯出為 Python」會把腳本以「一行原始碼一個字串常量」的形式寫進產生的檔案，並附上來源註解：
 
@@ -193,9 +193,9 @@ def n02_pythonscript(ctx):
 
 它易讀、可改——改一行，匯出的流程就照著改動跑——而且仍然只是字串常量，所以你程式碼裡的 `'''` 永遠不可能變成程式本體。
 
-## 統計常用範例
+## 統計常用範例 {/* #statistics-recipes */}
 
-### 每個通道的平均與標準差
+### 每個通道的平均與標準差 {/* #per-channel-mean-and-standard-deviation */}
 
 一個 TENSOR 進、兩個 TENSOR 出（`output_ports: 2`、`output_types: TENSOR,TENSOR`）：
 
@@ -209,7 +209,7 @@ def run(inputs, params):
     }
 ```
 
-### 標籤批次的類別分佈
+### 標籤批次的類別分佈 {/* #class-balance-of-a-label-batch */}
 
 一個 TENSOR 進、一個 STRING 出：
 
@@ -228,7 +228,7 @@ def run(inputs, params):
     return {"out1": "\n".join(lines)}
 ```
 
-### 穩健統計摘要（中位數、四分位距、離群值數量）
+### 穩健統計摘要（中位數、四分位距、離群值數量） {/* #robust-summary-median-iqr-outlier-count */}
 
 ```python
 import statistics
@@ -247,7 +247,7 @@ def run(inputs, params):
     }
 ```
 
-### 比較兩個張量
+### 比較兩個張量 {/* #comparing-two-tensors */}
 
 兩個 TENSOR 進（`input_ports: 2`）、一個 SCALAR 出：
 
@@ -259,7 +259,7 @@ def run(inputs, params):
     return float((a - b).abs().max())     # 單一值 -> out1
 ```
 
-### 在本次執行的裝置上建立張量
+### 在本次執行的裝置上建立張量 {/* #creating-a-tensor-on-the-runs-device */}
 
 `device` 是本次執行解析出來的運算裝置，讓建立張量的腳本跟流程其他部分待在同一個裝置上：
 
@@ -268,7 +268,7 @@ def run(inputs, params):
     return torch.zeros(4, 4, device=device)
 ```
 
-## 限制
+## 限制 {/* #limits */}
 
 | | |
 |---|---|

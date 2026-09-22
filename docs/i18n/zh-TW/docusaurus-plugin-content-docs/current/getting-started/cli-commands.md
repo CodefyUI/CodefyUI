@@ -8,12 +8,12 @@ description: cdui 啟動器的 install、start、status、dev、build、外掛�
 
 `cdui` 是安裝程式放在 `~/.local/bin/cdui` 的輕量啟動器，在 Windows 上為 `cdui.cmd`。如果尚未重新開啟 terminal，請使用絕對路徑 `~/CodefyUI/cdui start`，或執行 `python scripts/dev.py <cmd>`。`dev.py` 會自動改用 venv 的 Python 重新執行。
 
-## 核心指令
+## 核心指令 {/* #core-commands */}
 
 | 指令 | 說明 |
 |------|------|
 | `cdui install` | 安裝後端依賴；下載預編好的前端（若有 `pnpm` 則改在本地 build）。`frontend/dist/index.html` 已存在時會略過前端步驟，除非設定 `CODEFYUI_FORCE_BUILD=1`。 |
-| `cdui update` | 更新 checkout 後重新安裝。使用哪個來源取決於執行時 `PATH` 中是否有 pnpm，而不是 CodefyUI 當初的安裝方式。沒有 pnpm 時，它會以 `git checkout -f` 切換到最新的 release tag（或 `CODEFYUI_RELEASE_TAG`），這會捨棄已追蹤檔案的本機修改，並下載該 release 的前端；查不到最新 tag 時，改走 `main` 的路徑。有 pnpm，或設定 `CODEFYUI_FORCE_BUILD=1` 時，它會把本機 `main` 分支重設為抓下來的 `origin/main`（先 `git fetch origin main --depth 1`，再 `git checkout -B main FETCH_HEAD`），並重新建置前端。請勿在有本機修改的開發 clone 中執行。此指令不會顯示確認提示。除非以 `--gpu` 或 `--dev` 覆寫，否則會沿用 venv 中的 PyTorch 變體與開發工具。伺服器執行中時，更新會移除正在提供的 `frontend/dist`，所以此指令會拒絕執行；請先執行 `cdui stop`。重新啟動安裝仍在收尾時，此指令也會拒絕並以離開碼 `1` 結束。請參閱[套件包指令](#套件包指令)。 |
+| `cdui update` | 更新 checkout 後重新安裝。使用哪個來源取決於執行時 `PATH` 中是否有 pnpm，而不是 CodefyUI 當初的安裝方式。沒有 pnpm 時，它會以 `git checkout -f` 切換到最新的 release tag（或 `CODEFYUI_RELEASE_TAG`），這會捨棄已追蹤檔案的本機修改，並下載該 release 的前端；查不到最新 tag 時，改走 `main` 的路徑。有 pnpm，或設定 `CODEFYUI_FORCE_BUILD=1` 時，它會把本機 `main` 分支重設為抓下來的 `origin/main`（先 `git fetch origin main --depth 1`，再 `git checkout -B main FETCH_HEAD`），並重新建置前端。請勿在有本機修改的開發 clone 中執行。此指令不會顯示確認提示。除非以 `--gpu` 或 `--dev` 覆寫，否則會沿用 venv 中的 PyTorch 變體與開發工具。伺服器執行中時，更新會移除正在提供的 `frontend/dist`，所以此指令會拒絕執行；請先執行 `cdui stop`。重新啟動安裝仍在收尾時，此指令也會拒絕並以離開碼 `1` 結束。請參閱[套件包指令](#package-commands)。 |
 | `cdui start` | 在正式模式下以背景行程啟動單一 uvicorn，預設使用 `:8000`。不需要 Node。`--foreground`／`-f` 改為前景執行。`frontend/dist/index.html` 不存在時，此指令以離開碼 `1` 結束；請執行 `cdui install` 或 `cdui build`。若 dist 建置時的 commit 與目前 checkout 的前端不同（記錄在 `frontend/dist/build-info.json`），或未提交的修改使 `frontend/src` 比 dist 新，它會印出警告但照常啟動。警告會建議：`PATH` 中有 pnpm 時執行 `cdui build`，否則執行 `cdui update`。 |
 | `cdui run <graph.json>` | 將已儲存的 graph 提交至執行中伺服器依裝置區分的 FIFO 佇列。執行由伺服器管理，因此關閉此終端機後仍會繼續。旗標：`--name`、`--device`（`cpu` / `auto` / `cuda` / `cuda:N` / `mps`）、`--seed`、`--deterministic`、`--record-outputs`、`--wait`（預設）或 `--detach`、`--timeout <s>`、`--host` / `--port`。離開碼：`0` 成功（或 `--detach` 已提交）、`1` 失敗、取消或無法提交、`2` 命令列有誤、`130` 表示 `Ctrl+C`；這只會停止等待結果，不會停止該次執行。詳見 **[執行佇列](/usage/run-queue#cdui-run)**。 |
 | `cdui status` | btop／k9s 風格的儀表板：CPU、記憶體、磁碟、GPU、前幾名行程，以及伺服器的 PID 與健康狀態。即時重新整理（每 2 秒；`Ctrl+C` 離開）。傳入數字可設定間隔（`cdui status 1`），或用 `--once`（或 `-1`）只顯示單一畫面；`-w` / `--watch [secs]` 即使 stdout 不是 terminal，也會強制進入即時迴圈（間隔下限 0.5 秒）。單一畫面模式（`--once` 或將輸出導向其他位置）會在伺服器未執行時以 `1` 結束，讓腳本可依離開碼判斷狀態。它也會回報會重新啟動伺服器的套件包安裝：認領紀錄存在時顯示「重啟安裝」一行；輔助程式或它啟動的安裝仍在執行時顯示「收尾中」，兩者都已結束時顯示「已中斷」。工作完成後的一小時內則會顯示「上次重啟安裝」一行。 |
@@ -25,7 +25,7 @@ description: cdui 啟動器的 install、start、status、dev、build、外掛�
 | `cdui uninstall` | clean + 移除 PATH 上的啟動器。安裝目錄會保留，包括 `backend/data/` 中已儲存的 graph 與上傳檔案，以及 `.codefyui_dev/` 中的 plugin lockfile、session token、伺服器 log 與套件包下載內容。若要全部移除，請手動刪除該目錄，並移除安裝程式加入的 `PATH` 設定（如果有）：macOS/Linux 上是 shell 啟動檔中標記為 `# >>> CodefyUI PATH (cdui) >>>` 的區塊，Windows 上是使用者 `PATH` 中的項目。 |
 | `cdui --version` | 印出 `CodefyUI <version>`（也可用 `-V` 與 `cdui version`）。此指令會在其他作業前回傳版本，不需要 `uv` 或 venv，因此安裝未完成時仍可使用。 |
 
-## 外掛指令
+## 外掛指令 {/* #plugin-commands */}
 
 應用程式內的**外掛中心**可從側邊欄的**自訂與外掛**分頁或**設定 → 選用套件與外掛**開啟，並與這些指令使用相同的安裝函式。請參閱 **[外掛中心](/usage/plugin-center)**。
 
@@ -51,7 +51,7 @@ description: cdui 啟動器的 install、start、status、dev、build、外掛�
 
 完整的外掛工作流程請見 **[外掛](/advanced/plugins)**。
 
-## 套件包指令
+## 套件包指令 {/* #package-commands */}
 
 選用套件包是預設安裝未包含的大型附加內容，例如 `sentence-transformers`、嵌入模型、GloVe 詞向量表與加速版 PyTorch。應用程式內的**套件中心**可顯示進度並安裝套件包；以下指令可從終端機執行相同作業，但必須替換已載入內容的套件包除外：`cdui packs` 會拒絕 GPU 版 PyTorch 套件包（離開碼 `2`），遇到套件衝突時會停止（離開碼 `3`），並印出改用的指令。伺服器若由 `cdui start` 啟動，套件中心可透過重新啟動伺服器安裝這兩種套件包（見下文）。
 
@@ -64,9 +64,9 @@ description: cdui 啟動器的 install、start、status、dev、build、外掛�
 
 腳本可使用下列離開碼：`0` 表示完成；`1` 表示安裝失敗或在提示中拒絕安裝；`2` 表示執行前即遭拒，包括套件包或 `--items` id 不存在、相依未滿足、套件包只能透過重新啟動安裝（`gpu-torch` 會印出改用的 `cdui install --gpu` 指令），或沒有終端機可進行確認；`3` 表示伺服器執行中，無法執行作業，並會印出替代指令；`130` 表示以 `Ctrl+C` 中斷。
 
-**讓伺服器重新啟動的安裝。** 由 `cdui start` 啟動的伺服器，可透過自動重新啟動安裝 GPU PyTorch 套件包，或處理線上安裝遇到相依衝突的套件包。伺服器會先記錄安裝內容，以分離模式啟動 `cdui packs-run-pending`，再自行關閉。輔助程式會等待原行程結束、執行安裝、記錄結果，最後用原本的 `cdui start` 參數（去掉 `--foreground`）重新啟動伺服器，因此伺服器一律回到背景執行。`packs-run-pending` 是**內部指令**，刻意不列在說明文字中。它收到的檔案會指定要等待的行程；若手動對執行中的伺服器執行，會等待兩分鐘後停止該伺服器。若自動重新啟動在某台機器上無法正常完成，可設定 `CODEFYUI_ENABLE_RESTART_INSTALL=0` 關閉此功能。重新啟動安裝仍在「收尾中」時——記錄的輔助程式或它啟動的 `uv` 安裝仍在執行，或認領單建立未滿六十秒且輔助程式尚未寫入 pid——`cdui start` 不會在正在修改的 venv 中啟動第二個伺服器，而會提示查看 `cdui status` 後返回。兩者都結束後，或輔助程式未啟動且已超過六十秒，認領單會標示為「已中斷」；此時 `cdui start` 會刪除認領單並正常啟動。詳見 **[讓伺服器重新啟動的安裝](/usage/optional-packs#讓伺服器重新啟動的安裝)**。
+**讓伺服器重新啟動的安裝。** 由 `cdui start` 啟動的伺服器，可透過自動重新啟動安裝 GPU PyTorch 套件包，或處理線上安裝遇到相依衝突的套件包。伺服器會先記錄安裝內容，以分離模式啟動 `cdui packs-run-pending`，再自行關閉。輔助程式會等待原行程結束、執行安裝、記錄結果，最後用原本的 `cdui start` 參數（去掉 `--foreground`）重新啟動伺服器，因此伺服器一律回到背景執行。`packs-run-pending` 是**內部指令**，刻意不列在說明文字中。它收到的檔案會指定要等待的行程；若手動對執行中的伺服器執行，會等待兩分鐘後停止該伺服器。若自動重新啟動在某台機器上無法正常完成，可設定 `CODEFYUI_ENABLE_RESTART_INSTALL=0` 關閉此功能。重新啟動安裝仍在「收尾中」時——記錄的輔助程式或它啟動的 `uv` 安裝仍在執行，或認領單建立未滿六十秒且輔助程式尚未寫入 pid——`cdui start` 不會在正在修改的 venv 中啟動第二個伺服器，而會提示查看 `cdui status` 後返回。兩者都結束後，或輔助程式未啟動且已超過六十秒，認領單會標示為「已中斷」；此時 `cdui start` 會刪除認領單並正常啟動。詳見 **[讓伺服器重新啟動的安裝](/usage/optional-packs#installs-that-restart-the-server)**。
 
-## 快取指令
+## 快取指令 {/* #cache-commands */}
 
 有些節點會將可重新計算的結果寫入磁碟，除非手動刪除，否則不會清除。最大的快取來自 `LMTokenizedDataset`：它將整份語料封裝成 token 流，存放在 `<data>/cache/lm_blocks/`。每種語料、tokenizer、`seq_len`、`append_eos` 與 `max_tokens` 組合各產生一個檔案，每個 token 佔 8 bytes。100M-token 語料的每個檔案約 800 MB，因此以三個值掃描 `seq_len` 會留下三份完整副本。這些指令只處理可重新產生的快取，不會變更下載的模型與素材（由 `cdui packs remove` 刪除），也不會變更執行輸出、已儲存模型或 graph。
 
@@ -91,7 +91,7 @@ description: cdui 啟動器的 install、start、status、dev、build、外掛�
 | `cdui project restore <dir>` | 依 manifest 記錄的確切 SHA 安裝 plugin pin。在 CI 中，請先執行此指令再執行 `validate`。 |
 | `cdui project publish <dir>` | 將 graph 發佈到本機伺服器（`127.0.0.1` 上的 `CODEFYUI_PORT`，預設 `8000`），並在版本上記錄 git commit。`--graph` / `--slug` 可覆蓋 manifest 的 `[publish]` 目標；`--note` 加上一則不可變更的版本註記；`--create` 允許首次發佈到伺服器尚未認得的 `--slug`。 |
 
-## 背景與前景
+## 背景與前景 {/* #background-vs-foreground */}
 
 `cdui start` 預設在**背景**執行。關閉終端機後，伺服器仍會繼續執行。使用以下指令管理：
 
@@ -103,7 +103,7 @@ cdui start -f   # 改為前景執行（Ctrl+C 停止）
 
 背景執行時，伺服器的所有輸出都會寫入 `<install dir>/.codefyui_dev/server.log`；`cdui start` 與 `cdui status` 都會印出此路徑。
 
-## `cdui start` 的參數
+## `cdui start` 的參數 {/* #cdui-start-flags */}
 
 | 參數 | 說明 |
 |------|------|
@@ -134,14 +134,14 @@ cdui start --host 127.0.0.1 --port 8000 -- --proxy-headers --forwarded-allow-ips
 | `CODEFYUI_LANG` | 每個指令 | `cdui` 指令的輸出語言。英文值為 `en` 或 `english`；中文值為 `zh`、`zh-TW`、`zh-HK`、`zh-CN` 或 `chinese`。未設定時，由 `LANG` 與系統 locale 決定。`plugin`、`project`、`packs` 與 `cache` 指令群組只認得 `zh` 本身；未設定此變數時，它們會讀取 `LANG`／`LC_ALL`，但不看系統 locale。 |
 | `NO_COLOR` | 每個指令 | 設為任何非空值即可關閉 ANSI 色彩。輸出不是終端機時，色彩也會關閉。 |
 | `CODEFYUI_UV_INSTALL_TIMEOUT` | 每個可能需要 `uv` 的指令 | `PATH` 中找不到 `uv` 時，允許自動下載 `uv` 的秒數。預設：`180`。設為 `0` 表示不設上限。一行指令安裝程式會自行下載 `uv`，沒有時間限制。 |
-| `CODEFYUI_USER_DATA_DIR` | `cdui start`、`cdui dev`、`cdui run`、`plugin` / `project` / `cache` / `packs` 指令群組，以及伺服器 | session token、plugin lockfile、asset cache、ChatGPT 登入與重新啟動安裝檔案的目錄。除非已自行匯出，否則這些指令會將它設為 `<install dir>/.codefyui_dev/`。請參閱[專案目錄](/usage/project-directories#6-建立-api-keyinvoke-需要)。 |
+| `CODEFYUI_USER_DATA_DIR` | `cdui start`、`cdui dev`、`cdui run`、`plugin` / `project` / `cache` / `packs` 指令群組，以及伺服器 | session token、plugin lockfile、asset cache、ChatGPT 登入與重新啟動安裝檔案的目錄。除非已自行匯出，否則這些指令會將它設為 `<install dir>/.codefyui_dev/`。請參閱[專案目錄](/usage/project-directories#6-create-an-api-key-invoke-needs-one)。 |
 | `CODEFYUI_HOST`、`CODEFYUI_PORT` | 伺服器、`plugin` 指令群組、`cdui project publish` | 綁定位址與埠號。`cdui start --host` 與 `--port` 會把這些值匯出給它啟動的伺服器。手動啟動 uvicorn 時請直接設定。伺服器會使用這些值推導 Host 允許清單與僅限 loopback 的安裝限制。請參閱[開發者安裝](/getting-started/dev-install)。外掛指令的熱重新載入與 `cdui project publish` 會連到 `127.0.0.1` 上的 `CODEFYUI_PORT`（預設 `8000`），不會讀取 `cdui start` 記錄的埠號；伺服器使用其他埠號時，請在執行這些指令的 shell 中匯出 `CODEFYUI_PORT`。 |
 | `CODEFYUI_ENABLE_RESTART_INSTALL` | 伺服器 | 設為 `0` 會停用重新啟動伺服器的安裝。 |
 | `CODEFYUI_GITHUB_TOKEN` | plugin 安裝 | `cdui plugin install`、`info`、`update`、`cdui project restore` 與外掛中心使用的 GitHub token。它會提高 GitHub 每個 IP 每小時 60 次未驗證 API 請求的上限。每次呼叫時讀取，只會傳送至 GitHub，且不會寫入 log。 |
 
-`CODEFYUI_EXTRA_ALLOWED_HOSTS`、`CODEFYUI_WS_MAX_MESSAGE_BYTES`、`CODEFYUI_LOG_LEVEL`、`CODEFYUI_LOG_DIR` 與 `CODEFYUI_LOG_JSON` 請參閱[放在反向代理後面](/usage/deployment)。佇列設定請參閱[執行佇列](/usage/run-queue#設定)。
+`CODEFYUI_EXTRA_ALLOWED_HOSTS`、`CODEFYUI_WS_MAX_MESSAGE_BYTES`、`CODEFYUI_LOG_LEVEL`、`CODEFYUI_LOG_DIR` 與 `CODEFYUI_LOG_JSON` 請參閱[放在反向代理後面](/usage/deployment)。佇列設定請參閱[執行佇列](/usage/run-queue#configuration)。
 
-## 不啟動伺服器執行圖
+## 不啟動伺服器執行圖 {/* #running-a-graph-without-the-server */}
 
 你不需要網頁 UI 就能執行一張圖 —— 請見 **[CLI 圖形執行器](/usage/cli-runner)**。執行器需要後端的虛擬環境：
 
