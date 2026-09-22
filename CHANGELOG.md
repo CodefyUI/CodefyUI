@@ -22,23 +22,41 @@ received — each links to the release it was published as.
 
 ## [Unreleased]
 
-The documentation was checked against the code and brought up to 2.8.4, in
-English and in Traditional Chinese. Every docs page, the README,
-CONTRIBUTING, RELEASING and the example READMEs were compared with the code;
-about 270 findings were verified again before each fix, and a second review
-checked the result. The docs now cover what shipped since 2.7.0 — the
-Welcome screen, the device messages, the inspector's running state,
-workspace files — and every HTTP route the server has.
+## [2.8.5] — 2026-09-22
 
-Four bugs that could lose or destroy what a user had also went: a keyboard
-shortcut reaching past an open panel onto the canvas, a preset name escaping
-the presets folder, two plugin writers overwriting each other's record of
-what is installed, and a sweep discarding its own results without saying so.
+The keyboard reaches the workspace tab strip, and no longer the canvas
+behind an open panel. The strip could only be used with a mouse; now the
+Tab key reaches it, the arrow keys move between tabs, Enter switches, F2
+renames and Delete closes, and a screen reader announces each tab. With the
+Package Center, the Plugin Center, the template gallery, a git diff or the
+Custom Node Manager open, Delete removed the selected nodes on the canvas
+behind it and Shift+L re-laid out the graph; neither does now.
+
+`cdui plugin uninstall` now names the Python packages it leaves behind, as
+the Plugin Center already did, and both offer to remove only packages
+nothing else needs, never one CodefyUI itself depends on. The release
+download, `frontend-dist.tar.gz`, now carries `COMMERCIAL-LICENSE.md` and
+`CONTRIBUTING.md`, which its license notices point to, and a release build
+refuses an archive that lacks them.
+
+The documentation was checked against the code and brought up to 2.8.4, in
+English and in Traditional Chinese. It covers what shipped since 2.7.0 — the
+Welcome screen, the device messages, the inspector's running state,
+workspace files — and every HTTP route the server has. Every screenshot was
+taken again from the current app.
+
+Four more faults that could lose or damage what a user had are gone: two
+plugin writers overwriting each other's record of what is installed, a
+preset name escaping the presets folder, a sweep discarding its own results
+without saying so, and a plugin write that changed nothing emptying the
+redo history. `cdui plugin new` also scaffolds an example node whose
+summary fits the palette, and the first-party packs' nodes are held to the
+same one-line summary as the built-ins.
 
 ### Changed
 
-- **The documentation matches 2.8.4.** New sections cover closing the last
-  tab and the Welcome screen; the device select and what it says when a
+- **The documentation matches 2.8.4** (#474). New sections cover closing the
+  last tab and the Welcome screen; the device select and what it says when a
   device is not available
   ([GPU & device](https://docs.codefyui.com/getting-started/gpu-device#when-a-device-is-unavailable));
   TrainingLoop's options and the metric series it records; the graph file's
@@ -48,40 +66,107 @@ what is installed, and a sweep discarding its own results without saying so.
   lists all 131 routes, including the 32 `/api/git` routes. The Your First
   Graph walkthrough runs with default parameters again, and the plugin
   API's minimal example uses a node type and handles that exist.
-- **Switching the docs language keeps your place.** Every zh-TW heading
-  carries its English twin's anchor, the search box and search page are in
-  Traditional Chinese, and a link to a missing anchor now fails the docs
-  build.
-- **The MNIST examples no longer say they download MNIST.** It ships with
-  CodefyUI; only inside a project directory does the first run download it.
-- **NOTICE and the licensing page** say the Python dependencies are
-  installed from PyPI, not redistributed. The licensing page names the two
-  MPL-2.0 packages among them (certifi and tqdm).
+- **Switching the docs language keeps your place** (#474). Every zh-TW
+  heading carries its English twin's anchor, the search box and search page
+  are in Traditional Chinese, and a link to a missing anchor now fails the
+  docs build.
+- **The MNIST examples no longer say they download MNIST** (#474). It ships
+  with CodefyUI; only inside a project directory does the first run
+  download it.
+- **NOTICE and the licensing page say the Python dependencies are installed
+  from PyPI, not redistributed** (#474). The licensing page names the two
+  MPL-2.0 packages among them, certifi and tqdm.
+- **The screenshots show the current app** (#460). The README, the docs home
+  page in both languages and the preview image of a shared docs link showed
+  the app as it was in May or earlier: bezier wires, no Save button, no
+  sidebar rail, no close button on the tab. They were captured again, in
+  English and in Traditional Chinese, and the link preview is now a 1200x630 card instead of the whole 3834x1896
+  window.
 
 ### Fixed
 
-- **A modal now takes the keyboard with it.** With the Package Center, the
-  Plugin Center, the template gallery or a git diff open, pressing Delete
-  deleted the selected nodes on the canvas behind it, and Shift+L silently
-  re-laid out the graph. Eight shortcuts were reaching past an open panel;
-  the layers editor still deletes its own layers, because it excludes itself.
-- **A preset name cannot escape the presets folder.** `Export as Subgraph`
-  turned the name straight into a filename without rejecting backslashes or
-  drive letters, so on Windows a name carrying path syntax wrote the file
-  outside the presets directory. Names are now checked before they become a
-  path and the result is verified to be inside it, and a refused name says
-  which rule it broke instead of showing `[object Object]`.
-- **Two writers can no longer erase each other's plugin installs.**
+- **The tab strip works from the keyboard** (#402). The Tab key stops once
+  on the strip, at the active tab; Left and Right move between tabs,
+  wrapping at the ends, and Home and End go to the first and the last. Enter
+  or Space switches to the focused tab, F2 renames it, and Delete closes it
+  as its close button does, so a tab holding a graph still asks first. The
+  arrows move focus without switching, because a switch redraws the whole
+  canvas. A screen reader is told that the strip is a set of tabs, which one
+  is selected, and which plugin opened a tab and whether it is read-only.
+  Double-clicking a word in the rename box no longer throws away what you
+  had typed.
+- **A modal now takes the keyboard with it** (#475, #484, #491). With the
+  Package Center, the Plugin Center, the template gallery, a git diff or the
+  Custom Node Manager open, pressing Delete deleted the selected nodes on the
+  canvas behind it, and Shift+L silently re-laid out the graph. Eight
+  shortcuts were reaching past an open panel; they stop at it now, and the
+  layers editor still deletes its own layers, because it excludes itself.
+  The Custom Node Manager also takes keyboard focus while it is open and
+  gives it back afterwards, and Esc closes it.
+- **`cdui plugin uninstall` names the Python packages it leaves installed**
+  (#414). Like the Plugin Center, it prints a sentence naming them and then
+  the `uv pip uninstall` command that removes them, on a line of its own.
+  Both now leave out any package that CodefyUI or another installed package
+  depends on, that another plugin declares, or that a Package Center pack
+  installs. The Plugin Center's list used to be everything the plugin
+  declared, so a plugin that declared `numpy` came with a command that would
+  have removed it from under CodefyUI. The interpreter path in the command
+  is quoted now; unquoted, Git Bash dropped its backslashes and a path with
+  a space split in two.
+- **The release download carries the license files its notices point to**
+  (#459). `NOTICE` and `THIRD_PARTY_NOTICES.md` in `frontend-dist.tar.gz`
+  point to `COMMERCIAL-LICENSE.md`, which the archive did not contain, and
+  `NOTICE` and `COMMERCIAL-LICENSE.md` point to `CONTRIBUTING.md` for the
+  contributor terms the commercial license rests on. Both files ship now,
+  and a release build refuses to attach an archive that is missing any of
+  the five: these two, `LICENSE`, `NOTICE` and `THIRD_PARTY_NOTICES.md`. An
+  installed CodefyUI was never short of them, since both installers clone
+  the whole repository.
+- **Two writers can no longer erase each other's plugin installs** (#412).
   `installed.json` was read and written by seven places in the CLI and the
   server with no lock between them, so an install, an uninstall or an enable
-  could vanish — including from a check for updates that found nothing to do.
-  Every writer now edits it under one lock, and a caller that cannot have the
-  lock is told so rather than left to overwrite.
-- **A sweep that loses its results says so.** When retention could not copy a
-  sweep's objectives across before deleting its children, the numbers were
-  gone with nothing recorded; the sweep row now carries the reason. `cancelling`
-  is documented for what it is: every running child was asked to stop, not a
-  promise that any of them will — read the outstanding count, not the clock.
+  could vanish — including from a check for updates that found nothing to
+  do. Every writer now edits it under one lock, and a caller that cannot
+  have the lock is told so rather than left to overwrite.
+- **A preset name cannot escape the presets folder** (#476).
+  `Export as Subgraph` turned the name straight into a filename without
+  rejecting backslashes or drive letters, so on Windows a name carrying path
+  syntax wrote the file outside the presets directory. Names are now checked
+  before they become a path and the result is verified to be inside it, and
+  a refused name says which rule it broke instead of showing
+  `[object Object]`.
+- **A sweep that loses its results says so** (#404). When retention could
+  not copy a sweep's objectives across before deleting its children, the
+  numbers were gone with nothing recorded; the sweep row now carries the
+  reason. `cancelling` is documented for what it is: every running child was
+  asked to stop, not a promise that any of them will — read the outstanding
+  count, not the clock.
+- **A plugin write that changes nothing no longer costs an undo step or your
+  redo history** (#494, part of #397). A batch that left the graph as it
+  was, such as a node moved to where it already stood or a note given the
+  text it already had, still pushed an undo step, and pushing one empties
+  the redo stack: a plugin that wrote the same state over and over erased
+  your redo history and left a Ctrl+Z that did nothing. Such a batch now
+  commits nothing and answers `committed: false` with an unchanged
+  `revision`, so for a plugin author `committed: false` can now also mean
+  that nothing changed.
+- **`cdui plugin new` scaffolds an example node whose summary fits the
+  palette** (#496, part of #461). Its `DESCRIPTION` was 70 characters, past
+  the 56 every shipped node keeps to, so the palette cut it off, and it had
+  no `DETAILS`. The summary is 35 characters now, and a `DETAILS` shows what
+  the field is for: the summary is the one line the palette row shows,
+  `DETAILS` the longer text the config panel and the Docs tab show.
+
+### Internal
+
+- **A first-party pack node can no longer grow its palette summary back into
+  a paragraph** (#463). The test that holds a node's summary to one line of
+  at most 56 characters, with no Chinese in it, covered only the built-in
+  nodes; it now also covers the 28 nodes of the `deep`, `edu`,
+  `foundations`, `rl` and `stats` packs. It reads the pack files rather than
+  the node registry, so a plugin installed from outside the repository is
+  still never checked, and a pack node has to set its `DESCRIPTION` as a
+  plain string in its own class.
 
 ## [2.8.4] — 2026-09-20
 
@@ -4401,7 +4486,8 @@ Release candidates before 1.0.0 are on the
 [#420]: https://github.com/CodefyUI/CodefyUI/issues/420
 [@oyea0801]: https://github.com/oyea0801
 [@latteine1217]: https://github.com/latteine1217
-[Unreleased]: https://github.com/CodefyUI/CodefyUI/compare/2.8.4...main
+[Unreleased]: https://github.com/CodefyUI/CodefyUI/compare/2.8.5...main
+[2.8.5]: https://github.com/CodefyUI/CodefyUI/compare/2.8.4...2.8.5
 [2.8.4]: https://github.com/CodefyUI/CodefyUI/compare/2.8.3...2.8.4
 [2.8.3]: https://github.com/CodefyUI/CodefyUI/compare/2.8.2...2.8.3
 [2.8.2]: https://github.com/CodefyUI/CodefyUI/compare/2.8.1...2.8.2
