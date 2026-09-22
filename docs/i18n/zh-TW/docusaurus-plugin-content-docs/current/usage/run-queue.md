@@ -172,7 +172,7 @@ run 在排隊時，CLI 會回報它排在第幾位，而不是沒有任何輸出
 }
 ```
 
-`params` 裡的每一筆項目都以節點 id 指向該節點的一個參數，並帶有明確且不重複的 `values` 清單，或由系統展開的 `range`。`range` 會從 `min` 到 `max` 取 `count` 個點，並在 `linear` 或以 10 為底的 `log` 尺度上等距分布；`log` 尺度需要正的 `min`。若為 `type: int`，結果會四捨五入成整數；如果因此只剩較少的相異值，就只使用那些值。任何項目排入佇列前，每個值都會依節點定義檢查型別、允許的選項及 min/max。無法滿足的 spec 會收到指出該項目的 `400`，且不會留下只建立一部分的 sweep。不符合請求 schema 的本文會更早被拒絕，回傳 FastAPI 的 `422` 驗證錯誤，例如缺少 `objective`、本文任何位置出現未知的 key、`method`、`scale`、`type` 或 `direction` 不在列出的值之中、`count`、`seed` 或 `samples` 不是整數、`values` 裡有 `null`、清單或物件，或 `objective.metric` 是空白。本頁其他的 sweep 拒絕情況都是 `400`。
+`params` 裡的每一筆項目都以節點 id 指向該節點的一個參數，並帶有明確且不重複的 `values` 清單，或由系統展開的 `range`。`range` 會從 `min` 到 `max` 取 `count` 個點，並在 `linear` 或以 10 為底的 `log` 尺度上等距分布；`log` 尺度需要正的 `min`。若為 `type: int`，結果會四捨五入成整數；如果因此只剩較少的相異值，就只使用那些值。任何項目排入佇列前，每個值都會依節點定義檢查型別、允許的選項及 min/max。無法滿足的 spec 會收到指出該項目的 `400`，且不會留下只建立一部分的 sweep。不符合請求 schema 的本文會更早被拒絕，回傳 FastAPI 的 `422` 驗證錯誤，例如缺少 `objective`、本文最上層或 `sweep_spec`、`objective`、`params` 項目及其 `range` 內出現未知的 key、`method`、`scale`、`type` 或 `direction` 不在列出的值之中、`count`、`seed` 或 `samples` 不是整數、`values` 裡有 `null`、清單或物件，或 `objective.metric` 是空白。本頁其他的 sweep 拒絕情況都是 `400`，包括 `options` 內的未知 key。
 
 **Grid 或 random。** `method: grid` 會列舉每一種組合，最後列出的 param 變動最快，且不接受 `samples`。`method: random` 會抽取 `samples` 種不重複的組合，而且 `samples` 與 `seed`（0 到 4294967295）缺一不可；相同的 seed 永遠會抽到相同組合。要求的 sample 多於空間能提供的組合會被拒絕；編譯後 variant 數量超過上限的 sweep 也會被拒絕，絕不會默默截斷。
 
@@ -206,7 +206,9 @@ run 在排隊時，CLI 會回報它排在第幾位，而不是沒有任何輸出
 
 佇列不會在伺服器重啟後繼續執行。排程只存在伺服器記憶體中；如果保留等待中的資料列，它會持續等待已不存在的排程器。
 
-正常關閉伺服器（在 `cdui start --foreground` 按 Ctrl+C，或對[放在反向代理後面](./deployment#a-systemd-unit)中的 unit 執行 `systemctl stop`）會立即將每個等待中的 run 標記為 `interrupted`、寫入一般停止事件，並給執行中的 run 5 秒以協作方式停止。`cdui stop` 不會等待這個過程：在 Windows 上它會強制終止伺服器的行程樹（`taskkill /F /T`），在 Linux 與 macOS 上則先送出 SIGTERM，約 2 秒後再送出 SIGKILL。`cdui stop`、其他強制終止行程的方式，或執行超過這 5 秒的 run，都可能留下 `queued` 或 `running` 資料列。下次啟動時，復原程序會把這兩種狀態都改成 `interrupted`，但不會寫入停止事件；兩者都不會繼續執行。
+正常關閉會立即將每個等待中的 run 標記為 `interrupted`、寫入一般停止事件，並給執行中的 run 5 秒以協作方式停止。對[放在反向代理後面](./deployment#a-systemd-unit)中的 unit 執行 `systemctl stop` 就是以這種方式關閉伺服器，因為它會直接對伺服器行程送出 SIGTERM。在 Windows 上，於 `cdui start --foreground` 按一次 Ctrl+C 也是如此；若在 uvicorn 等待連線關閉時再按一次 Ctrl+C，就會略過這些步驟。
+
+在 Linux 與 macOS 上，於 `cdui start --foreground` 按 Ctrl+C 不是正常關閉：`cdui` 行程會在按下 Ctrl+C 約 0.25 秒後強制終止伺服器，因此執行中的 run 拿不到這 5 秒，等待中的 run 也可能來不及標記為 `interrupted`。`cdui stop` 同樣不會等這些步驟完成：在 Windows 上它會強制終止伺服器的行程樹（`taskkill /F /T`），在 Linux 與 macOS 上則先送出 SIGTERM，約 2 秒後再送出 SIGKILL。這些停止方式、其他強制終止行程的方式，或執行超過這 5 秒的 run，都可能留下 `queued` 或 `running` 資料列。下次啟動時，復原程序會把這兩種狀態都改成 `interrupted`，但不會寫入停止事件；兩者都不會繼續執行。
 
 若仍要執行這些工作，請重新送出。
 

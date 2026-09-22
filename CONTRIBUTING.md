@@ -194,7 +194,7 @@ It used to run only `pytest` in `backend/`, which meant a green `cdui test` said
 Three things worth knowing:
 
 - **A missing `pnpm` is a skip, not a failure.** CodefyUI has a deliberate no-Node install path (the release ships a prebuilt `frontend-dist.tar.gz`), so a machine with no Node is a healthy machine. The frontend half is reported as `SKIPPED` — never as a pass — and CI's `frontend-build.yml` runs those tests regardless.
-- **Both halves finish.** A red backend does not stop the frontend from running; you get both answers in one pass. The exit code is 1 if either failed. The exception is a missing `pytest` (a venv installed without `--dev`, or no venv at all): unless you passed `--frontend`, the command then exits 1 before either half runs. Re-run `./cdui install --dev`.
+- **Both halves finish.** A red backend does not stop the frontend from running; you get both answers in one pass. The exit code is 1 if either failed. The exception is a missing `pytest` (a venv installed without `--dev`, or no venv at all): unless you passed only `--frontend`, the command then exits 1 before either half runs. Re-run `./cdui install --dev`.
 - **`--backend` / `--frontend`** narrow the run when you know what you touched. Anything else is rejected rather than ignored — `cdui test -k foo` used to run the whole suite while looking like it had filtered.
 
 ### The full local set
@@ -325,7 +325,9 @@ This is a convention, not a CI gate — `byte-scan.yml` checks for raw C0 contro
 
 `docs/` is a Docusaurus site with a full Traditional Chinese translation under `docs/i18n/zh-TW/docusaurus-plugin-content-docs/current/`. **If you change an English page, change its zh-TW counterpart in the same PR.** A missing translation silently falls back to English, so drift is invisible until a reader hits a half-translated section.
 
-Build the site before pushing docs changes — `onBrokenLinks` is set to `throw`, so a bad relative link fails the build rather than shipping. A link to a heading anchor that does not exist (`page#missing`) only prints a warning, so read the output:
+Every zh-TW heading carries its English twin's anchor as an explicit ID, `## 標題 {/* #english-anchor */}`, so the language switcher lands on the same section and a link with an anchor works in both locales. When you add or rename an English heading, give its zh-TW twin the same ID.
+
+Build the site before pushing docs changes — `onBrokenLinks` and `onBrokenAnchors` are set to `throw`, so a bad relative link, or a link to a heading anchor that does not exist (`page#missing`), fails the build rather than shipping:
 
 ```bash
 cd docs && pnpm install && pnpm build
@@ -337,7 +339,7 @@ The app ships English and Traditional Chinese. New user-facing text — node des
 
 ### Where to start
 
-Read the [Architecture](https://docs.codefyui.com/advanced/architecture) page first. The single most important thing to know is that CodefyUI is **backend-authoritative**: `GET /api/nodes` returns every node definition and one React component renders all of them, so adding a node is a backend-only change.
+Read the [Architecture](https://docs.codefyui.com/advanced/architecture) page first. The single most important thing to know is that CodefyUI is **backend-authoritative**: `GET /api/nodes` returns every node definition and one React component (`BaseNode`) can render any of them, so adding a node is a backend-only change.
 
 Browse the [issue tracker](https://github.com/CodefyUI/CodefyUI/issues) for something to pick up. If an issue is not clear, ask in a comment before writing code — a question costs a day, a wrong implementation costs a week.
 

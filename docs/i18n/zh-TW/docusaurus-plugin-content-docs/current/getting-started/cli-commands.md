@@ -13,7 +13,7 @@ description: cdui 啟動器的 install、start、status、dev、build、外掛�
 | 指令 | 說明 |
 |------|------|
 | `cdui install` | 安裝後端依賴；下載預編好的前端（若有 `pnpm` 則改在本地 build）。`frontend/dist/index.html` 已存在時會略過前端步驟，除非設定 `CODEFYUI_FORCE_BUILD=1`。 |
-| `cdui update` | 更新 checkout 後重新安裝。使用哪個來源取決於執行時 `PATH` 中是否有 pnpm，而不是 CodefyUI 當初的安裝方式。沒有 pnpm 時，它會以 `git checkout -f` 切換到最新的 release tag（或 `CODEFYUI_RELEASE_TAG`），這會捨棄已追蹤檔案的本機修改，並下載該 release 的前端；查不到最新 tag 時，改走 `main` 的路徑。有 pnpm，或設定 `CODEFYUI_FORCE_BUILD=1` 時，它會把本機 `main` 分支重設為抓下來的 `origin/main`（先 `git fetch origin main --depth 1`，再 `git checkout -B main FETCH_HEAD`），並重新建置前端。請勿在有本機修改的開發 clone 中執行。此指令不會顯示確認提示。除非以 `--gpu` 或 `--dev` 覆寫，否則會沿用 venv 中的 PyTorch 變體與開發工具。伺服器執行中時，更新會移除正在提供的 `frontend/dist`，所以此指令會拒絕執行；請先執行 `cdui stop`。重新啟動安裝仍在收尾時，此指令也會拒絕並以離開碼 `1` 結束。請參閱[套件包指令](#package-commands)。 |
+| `cdui update` | 更新 checkout 後重新安裝。使用哪個來源取決於執行時 `PATH` 中是否有 pnpm，而不是 CodefyUI 當初的安裝方式。沒有 pnpm 時，它會以 `git checkout -f` 切換到最新的 release tag（或 `CODEFYUI_RELEASE_TAG`），這會捨棄已追蹤檔案的本機修改，並下載該 release 的前端。查不到最新 tag 時（GitHub API 無法連線或達到速率限制），它會像下面有 pnpm 的路徑一樣重設 `main`，但仍下載最新 release 的前端，因此後端與前端可能來自不同版本；設定 `CODEFYUI_RELEASE_TAG=<tag>` 可略過這次查詢。有 pnpm，或設定 `CODEFYUI_FORCE_BUILD=1` 時，它會把本機 `main` 分支重設為抓下來的 `origin/main`（先 `git fetch origin main --depth 1`，再 `git checkout -B main FETCH_HEAD`），並重新建置前端。請勿在有本機修改的開發 clone 中執行。此指令不會顯示確認提示。除非以 `--gpu` 或 `--dev` 覆寫，否則會沿用 venv 中的 PyTorch 變體與開發工具。伺服器執行中時，更新會移除正在提供的 `frontend/dist`，所以此指令會拒絕執行；請先執行 `cdui stop`。重新啟動安裝仍在收尾時，此指令也會拒絕並以離開碼 `1` 結束。請參閱[套件包指令](#package-commands)。 |
 | `cdui start` | 在正式模式下以背景行程啟動單一 uvicorn，預設使用 `:8000`。不需要 Node。`--foreground`／`-f` 改為前景執行。`frontend/dist/index.html` 不存在時，此指令以離開碼 `1` 結束；請執行 `cdui install` 或 `cdui build`。若 dist 建置時的 commit 與目前 checkout 的前端不同（記錄在 `frontend/dist/build-info.json`），或未提交的修改使 `frontend/src` 比 dist 新，它會印出警告但照常啟動。警告會建議：`PATH` 中有 pnpm 時執行 `cdui build`，否則執行 `cdui update`。 |
 | `cdui run <graph.json>` | 將已儲存的 graph 提交至執行中伺服器依裝置區分的 FIFO 佇列。執行由伺服器管理，因此關閉此終端機後仍會繼續。旗標：`--name`、`--device`（`cpu` / `auto` / `cuda` / `cuda:N` / `mps`）、`--seed`、`--deterministic`、`--record-outputs`、`--wait`（預設）或 `--detach`、`--timeout <s>`、`--host` / `--port`。離開碼：`0` 成功（或 `--detach` 已提交）、`1` 失敗、取消或無法提交、`2` 命令列有誤、`130` 表示 `Ctrl+C`；這只會停止等待結果，不會停止該次執行。詳見 **[執行佇列](/usage/run-queue#cdui-run)**。 |
 | `cdui status` | btop／k9s 風格的儀表板：CPU、記憶體、磁碟、GPU、前幾名行程，以及伺服器的 PID 與健康狀態。即時重新整理（每 2 秒；`Ctrl+C` 離開）。傳入數字可設定間隔（`cdui status 1`），或用 `--once`（或 `-1`）只顯示單一畫面；`-w` / `--watch [secs]` 即使 stdout 不是 terminal，也會強制進入即時迴圈（間隔下限 0.5 秒）。單一畫面模式（`--once` 或將輸出導向其他位置）會在伺服器未執行時以 `1` 結束，讓腳本可依離開碼判斷狀態。它也會回報會重新啟動伺服器的套件包安裝：認領紀錄存在時顯示「重啟安裝」一行；輔助程式或它啟動的安裝仍在執行時顯示「收尾中」，兩者都已結束時顯示「已中斷」。工作完成後的一小時內則會顯示「上次重啟安裝」一行。 |
@@ -22,7 +22,7 @@ description: cdui 啟動器的 install、start、status、dev、build、外掛�
 | `cdui stop` | 停止**此安裝**的服務，包括 pidfile 記錄的背景伺服器，以及從此目錄啟動的殘留行程，例如前景 `cdui start`、`cdui dev` 的 Vite 與遺留 worker。`--all` 會停止整台機器上的所有 CodefyUI 與 Vite 行程，包括其他使用者的伺服器與無關的 Vite dev server。請勿在共用主機使用 `--all`。 |
 | `cdui test` | 執行整個專案的測試：後端（`pytest`）與前端（`vitest`）。沒有 pnpm 時，前端測試會標示為 `SKIPPED`，不會使指令失敗，因為 release 安裝不含 Node。兩組測試都會執行完畢；任一組失敗時，指令以離開碼 `1` 結束。選了後端測試，但 `backend/.venv` 或其中的 `pytest` 不存在時（安裝時未加 `--dev`），指令會在兩組測試開始前以離開碼 `1` 結束；請執行 `cdui install --dev`。`--backend` / `--frontend` 可限定其中一組；其他參數會被拒絕（離開碼 `2`），不會直接忽略。若要篩選個別測試，請直接使用 `pytest` 或 `pnpm test`。 |
 | `cdui clean` | 移除虛擬環境、`node_modules` 與 `frontend/dist`。 |
-| `cdui uninstall` | clean + 移除 PATH 上的啟動器。安裝目錄會保留，包括 `backend/data/` 中已儲存的 graph 與上傳檔案，以及 `.codefyui_dev/` 中的 plugin lockfile、session token、伺服器 log 與套件包下載內容。若要全部移除，請手動刪除該目錄，並移除安裝程式加入的 `PATH` 設定（如果有）：macOS/Linux 上是 shell 啟動檔中標記為 `# >>> CodefyUI PATH (cdui) >>>` 的區塊，Windows 上是使用者 `PATH` 中的項目。 |
+| `cdui uninstall` | clean + 移除 PATH 上的啟動器。安裝目錄會保留，包括 `backend/data/` 中已儲存的 graph 與上傳檔案，以及 `.codefyui_dev/` 中的 plugin lockfile、session token、伺服器 log 與套件包下載內容。若要全部移除，請手動刪除該目錄，並移除安裝程式加入的 `PATH` 設定（如果有）：macOS/Linux 上是 shell 啟動檔中標記為 `# >>> CodefyUI PATH (cdui) >>>` 的區塊，Windows 上是使用者 `PATH` 中的項目。若 Windows 安裝程式改用了 PortableGit，還要刪除 `%LOCALAPPDATA%\CodefyUI\PortableGit`，並從使用者 `PATH` 移除 `%LOCALAPPDATA%\CodefyUI\PortableGit\cmd`。 |
 | `cdui --version` | 印出 `CodefyUI <version>`（也可用 `-V` 與 `cdui version`）。此指令會在其他作業前回傳版本，不需要 `uv` 或 venv，因此安裝未完成時仍可使用。 |
 
 ## 外掛指令 {/* #plugin-commands */}
@@ -47,7 +47,7 @@ description: cdui 啟動器的 install、start、status、dev、build、外掛�
 
 每個會修改 lockfile 的子指令，以及 `reload`，都會要求執行中的伺服器熱重新載入。這個請求會連到 `127.0.0.1` 上的 `CODEFYUI_PORT`（預設 `8000`）；請參閱[環境變數](#environment-variables)。
 
-腳本可使用下列離開碼：`0` 表示完成，包括在 `Proceed?` 提示選擇不要；`1` 表示安裝失敗，或能力／模組要求遭拒；`2` 表示執行前即遭拒，例如來源無法解析或未提供來源；`3` 表示伺服器執行中，無法安裝此外掛的 Python 套件，並會印出替代指令；`130` 表示以 `Ctrl+C` 中斷。
+腳本可使用下列離開碼：`0` 表示完成，包括在 `Proceed?` 提示選擇不要；`1` 表示安裝失敗，或能力／模組要求遭拒；`2` 表示有來源無法解析（排在它前面的來源已經安裝），或未提供來源；`3` 表示伺服器執行中，無法安裝此外掛的 Python 套件，並會印出替代指令；`130` 表示以 `Ctrl+C` 中斷。
 
 完整的外掛工作流程請見 **[外掛](/advanced/plugins)**。
 
@@ -85,7 +85,7 @@ description: cdui 啟動器的 install、start、status、dev、build、外掛�
 
 | 指令 | 說明 |
 |------|------|
-| `cdui project init <dir>` | 建立 `graphs/`、`layout/`、`assets/images/`、`assets/models/`、`assets/data/`、manifest `codefyui.project.toml`、`.gitignore`、`.gitattributes`、`.env.example` 與 `README.md`，再執行 `git init`，但不建立 commit。既有檔案一律不會被覆寫。[專案目錄](/usage/project-directories#1-create-the-project)說明 `.gitattributes` 的內容，以及 2.6.0 之前建立的專案必須自行補上的那一行。非空目錄需要加上 `--force` 或 `--adopt`。`--adopt <old-graphs-dir>` 會複製扁平 graphs 目錄中的每個 `*.json`，並把它拆成 logic 與 layout。 |
+| `cdui project init <dir>` | 建立 `graphs/`、`layout/`、`assets/images/`、`assets/models/`、`assets/data/`、manifest `codefyui.project.toml`、`.gitignore`、`.gitattributes`、`.env.example` 與 `README.md`，再執行 `git init`，但不建立 commit。上述檔案若已存在，一律不會被覆寫。[專案目錄](/usage/project-directories#1-create-the-project)說明 `.gitattributes` 的內容，以及 2.6.0 之前建立的專案必須自行補上的那一行。非空目錄需要加上 `--force` 或 `--adopt`。`--adopt <old-graphs-dir>` 會複製扁平 graphs 目錄中的每個 `*.json`，並把它拆成 logic 與 layout；目標中已有同名的 graph 或 layout 檔時會被取代。 |
 | `cdui project validate <dir>` | 載入完整的節點 registry，並對 `graphs/` 下的每個 graph 執行發佈時的檢查；兩者的差異請參閱[專案目錄](/usage/project-directories#4-validate-the-ci-gate)。如果 git 已追蹤 `.env`，此指令也會失敗。重複使用 `--graph <name>` 可指定要檢查的 graph。`--strict` 會將缺少 plugin pin 的警告視為錯誤。 |
 | `cdui project freeze <dir>` | 將每個已安裝 GitHub plugin 的確切 commit SHA 寫入 manifest 的 `[plugins]` 表。連結的本機 plugin 會被略過。 |
 | `cdui project restore <dir>` | 依 manifest 記錄的確切 SHA 安裝 plugin pin。在 CI 中，請先執行此指令再執行 `validate`。 |

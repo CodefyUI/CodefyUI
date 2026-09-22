@@ -147,6 +147,7 @@ the one before it until you publish it again; publishing runs Install Check
 again. Useful if a release was published before `frontend-build.yml` existed
 and the asset is missing.
 
-Leave **Tag** blank to build without touching any release: the tarball is kept
-as a workflow artifact for 30 days, built from the ref chosen under **Use
-workflow from**.
+Leaving **Tag** blank does not produce an artifact, although the form says
+"leave blank to upload as artifact only": the run fails at the **Read tag
+annotation as release body** step (`fatal: ambiguous argument ''`) before the
+frontend is built, and no release is changed.

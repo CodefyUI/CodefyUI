@@ -79,7 +79,7 @@ curl http://127.0.0.1:8000/api/health
 
 這應該會回傳類似 `{"status":"ok","nodes_loaded":152,"presets_loaded":3}` 的內容（`nodes_loaded` 數量會隨每個版本增加，確認其為非零即可）。
 
-接著開啟前端，載入 **Train CNN on MNIST** 範例並點擊 **執行**。你應該會在下方面板看到訓練進度出現，跑完會印出大約 0.99 的測試準確率。第一次執行會下載 MNIST。
+接著開啟前端，載入 **Train CNN on MNIST** 範例並點擊 **執行**。你應該會在下方面板看到訓練進度出現，跑完會印出大約 0.99 的測試準確率。MNIST 已隨 CodefyUI 附上，所以這次執行不需要下載。
 
 ## 選用套件包 {/* #optional-packs */}
 

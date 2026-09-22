@@ -197,7 +197,7 @@ const remove = api.ui.addToolbarButton({
 | `onGraphChanged` | `(callback: () => void) => () => void` | 訂閱圖表變更事件，包括使用者進入或離開區塊。callback 不帶參數；請在其中呼叫 `getGraph()` 取得內容。回傳取消訂閱函式。 |
 | `getView` | `() => GraphView` | **apiVersion 4。** 唯讀：使用者正在看圖表的哪一層。 |
 
-`getGraph()` 回傳新的頂層物件，但不是深層副本：沒有 secret 參數之節點的 `params`、`segmentGroups`，以及 preset 與區塊定義，都是編輯器正在使用的物件。請不要修改回傳結果；變更圖表一律透過 `applyOperations`。secret 參數（例如 LLM 節點的 API 金鑰欄位）會以 `""` 回傳，因此外掛無法讀取使用者在編輯器中輸入的金鑰。`workspace.snapshot().graph` 也以相同方式產生。`settings` 物件的說明見[圖的 `settings` 物件](/advanced/device-backends#the-graph-settings-object)；指定或清除圖表的裝置會觸發 `onGraphChanged`、提高分頁的 [revision](#revisions)，並以 `graph` 事件送達 `workspace.onChanged`。
+`getGraph()` 回傳新的頂層物件，但不是深層副本：沒有 secret 參數之節點的 `params`、`segmentGroups`，以及 preset 與區塊定義，都是編輯器正在使用的物件。請不要修改回傳結果；變更圖表一律透過 `applyOperations`。secret 參數（例如 LLM 節點的 API 金鑰欄位）會以 `""` 回傳，因此 `getGraph()` 不會把使用者在編輯器中輸入的金鑰交給外掛。但這無法對外掛隱藏金鑰：金鑰仍在編輯器頁面中，而外掛 JavaScript 就在這個頁面內執行（參見[信任模型](#trust-model)）。`workspace.snapshot().graph` 也以相同方式產生。`settings` 物件的說明見[圖的 `settings` 物件](/advanced/device-backends#the-graph-settings-object)；指定或清除圖表的裝置會觸發 `onGraphChanged`、提高分頁的 [revision](#revisions)，並以 `graph` 事件送達 `workspace.onChanged`。
 
 #### GraphOp 表 {/* #graphop-table */}
 

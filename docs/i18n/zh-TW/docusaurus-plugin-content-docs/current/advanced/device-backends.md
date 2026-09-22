@@ -25,7 +25,7 @@ CodefyUI 執行於 PyTorch 之上，因此繼承了 PyTorch 的裝置後端：**
 
 - **可用值：**`cpu`、`auto`、`cuda`、`cuda:N`、`mps` 或 `mps:N`，不分大小寫。空字串代表未指定。Mac 只有一個 MPS 裝置，所以 `mps:N` 會在 `mps` 上執行。
 - **只在有指定時寫入。** 存檔只在圖有指定裝置時寫入 `settings`，所以沒有指定裝置的圖會與原本逐位元組相同。在[專案目錄](/usage/project-directories)中，它寫在受 git 追蹤的 `graphs/<name>.graph.json`，不在 layout 檔。
-- **其他值一律拒絕：**`POST /api/graph/save`、`/api/graph/validate` 與 `/api/graph/export` 回傳 `422`；`POST /api/runs` 與 `POST /api/sweeps` 回傳 `400`（因此 `cdui run` 會回報提交失敗）；畫布執行這張圖時會收到 `execution_error` 訊框；`cdui project validate` 會回報 `invalid_settings`。離線執行器（`backend/run_graph.py`）、[`POST /api/graph/run/{name}`](/usage/graph-as-a-function) 與 [`POST /api/apps/{slug}/invoke`](/usage/publish) 會忽略無效值、記錄警告，並在 CPU 上執行。
+- **其他值一律拒絕：**`POST /api/graph/save`、`/api/graph/validate` 與 `/api/graph/export` 回傳 `422`；`POST /api/runs` 與 `POST /api/sweeps` 回傳 `400`（因此 `cdui run` 會回報提交失敗）；畫布執行這張圖時會收到 `execution_error` 訊框；`cdui project validate` 會回報 `invalid_settings`。離線執行器（`backend/run_graph.py`）、[`POST /api/graph/run/{name}`](/usage/graph-as-a-function) 與 [`POST /api/apps/{slug}/invoke`](/usage/publish) 只在呼叫沒有指定裝置（`--device` 或 body 的 `device`）時讀取 `settings.device`；此時會忽略無效值、記錄警告，並在 CPU 上執行。
 
 不帶 `--device` 的 `cdui run` 會把圖檔的裝置顯示為 `<device> (graph)`。
 

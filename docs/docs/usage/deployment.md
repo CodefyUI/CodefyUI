@@ -249,12 +249,13 @@ systemctl status codefyui
 journalctl -u codefyui -f
 ```
 
-`--foreground` is the load-bearing flag. `cdui start`'s default daemon mode
-double-forks, which is exactly what systemd does not want from a `Type=exec`
-service. Note also that CodefyUI's own stdout goes to the journal, so
-`journalctl -u codefyui` is where startup errors and rejected `Host` values
+`--foreground` is required. Without it, `cdui start` starts the server in the
+background and exits, and systemd treats the exit of a `Type=exec` service's
+main process as the service ending. Note also that CodefyUI's log output (stderr) goes to the journal,
+so `journalctl -u codefyui` is where startup errors and rejected `Host` values
 (`rejected request with Host='...' path=...`) appear -- but per-request lines
-do not, for the reason in the next section but one.
+do not, for the reason in
+[The proxy is also your access log](#the-proxy-is-also-your-access-log).
 
 ## An nginx site
 
@@ -402,11 +403,11 @@ Concretely, once someone is through your SSO:
 - Everyone through the SSO can install packs and plugins. The loopback-only
   install gates check the address the server is bound to, never where a request
   comes from, and behind this proxy the bind is `127.0.0.1`, so they let every
-  request through. That covers installing and removing packs in the
-  **Package Center**, and installing, updating and removing plugins in the
-  **Plugin Center** -- a plugin is third-party code this server process
-  imports. CodefyUI has no setting that closes these gates on a loopback bind;
-  the gated routes are the ones marked `token+loopback` in the
+  request through. That covers installing packs and removing their downloaded
+  models in the **Package Center**, and installing, updating and removing
+  plugins in the **Plugin Center** -- a plugin is third-party code this server
+  process imports. CodefyUI has no setting that closes these gates on a
+  loopback bind; the gated routes are the ones marked `token+loopback` in the
   [API reference](/advanced/api-reference#authentication), and only the proxy
   can keep them to administrators.
 - The package-install log is an open read. `GET /api/packs/jobs/{id}/events`

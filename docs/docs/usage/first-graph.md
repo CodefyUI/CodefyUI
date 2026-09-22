@@ -38,7 +38,7 @@ This trigger-based routing is what lets you keep scratch nodes on the canvas wit
 
 ## 4. Run it
 
-Click **Run**. Watch per-node progress stream into the **Execution Log**, and the `Print` node's output appear there too. See **[Running Graphs](./running-graphs)** for what happens during execution.
+Click **Run**. Each node's card shows its status while the run goes, and the **Execution Log** lists each node's outcome and the `Print` node's output. See **[Running Graphs](./running-graphs)** for what happens during execution.
 
 ## 5. Inspect what flowed
 

@@ -98,15 +98,15 @@ PyTorch **沒有**提供官方的 Windows ROCm 版本。你的選項有：
 
 ## 裝置無法使用時 {/* #when-a-device-is-unavailable */}
 
-**設定**裡的**運算裝置**儲存在瀏覽器中，而不是伺服器上，因此它可能指向這台伺服器沒有的裝置，例如在另一台電腦上選的 `cuda`。這時編輯器會顯示執行實際會用的裝置：
+**設定**裡的**運算裝置**儲存在瀏覽器中，而不是伺服器上，因此它可能指向這台伺服器沒有的裝置，例如在另一台電腦上選的 `cuda`。這時編輯器會顯示：
 
 - 設定的下拉選單會把儲存的值顯示為停用的選項「cuda（此伺服器沒有）」，這一列的提示也會從「最佳可用裝置：…」改為「這台伺服器沒有 cuda，執行時會退回 CPU。」
 - **執行**旁邊這張圖的裝置選單中，第一個選項會從「跟隨設定（…）」改為「跟隨設定（cuda → CPU）」。
 - 圖檔中儲存、但不在這台伺服器清單中的裝置，例如 `auto`，或單一 GPU 機器上的 `cuda:1`，會在該選單中以停用選項顯示儲存的值。儲存圖時會保留這個值。
 
-選擇清單中的裝置即可解除這個狀態。伺服器沒有的裝置類型會改在 CPU 上執行；伺服器沒有的 `cuda:N` 索引會改用它目前的 GPU，`auto` 則使用現有最好的裝置（見[裝置後端](/advanced/device-backends)）。
+選擇清單中的裝置即可解除這個狀態。伺服器沒有的裝置類型會改在 CPU 上執行；伺服器清單中沒有的 `cuda:N` 或 `mps:N` 會改用它目前的 GPU（或 `mps`），`auto` 則使用現有最好的裝置（見[裝置後端](/advanced/device-backends)）。上面的 CPU 訊息不會區分這些情況：在只列出 `cuda` 的單一 GPU 伺服器上，設定中的裝置為 `cuda:0` 或 `cuda:1` 時會顯示「執行時會退回 CPU」與「→ CPU」，但執行其實會在 GPU 上。
 
-伺服器偵測到 GPU、但 PyTorch build 不是該 GPU 建議的版本時（通常是 CPU 版），設定的這一列會加上「偵測到 NVIDIA GeForce RTX 4080 (driver 560.94)，但這台伺服器跑的是 CPU 版。安裝：」、安裝指令（例如 `cdui install --gpu cu128`）與**套件中心**連結。伺服器若由 `cdui start` 啟動，套件中心裡的 **GPU 版 PyTorch** 卡片會安裝該版本、重新啟動伺服器並重新載入頁面。設定中的裝置不會自動改變；要使用 GPU，請在設定或圖上選擇它。
+伺服器偵測到 GPU、但 PyTorch build 不是該 GPU 建議的版本時（通常是 CPU 版），設定的這一列會加上「偵測到 NVIDIA GeForce RTX 4080 (driver 560.94)，但這台伺服器跑的是 CPU 版。安裝：」、安裝指令（例如 `cdui install --gpu cu128`）與**套件中心**連結。只要版本不一致，訊息就會說「CPU 版」，包括已經能使用 GPU 的較舊 CUDA 版（例如 `cu126`）。伺服器若由 `cdui start` 啟動，套件中心裡的 **GPU 版 PyTorch** 卡片會安裝該版本、重新啟動伺服器並重新載入頁面。設定中的裝置不會自動改變；要使用 GPU，請在設定或圖上選擇它。
 
 ## 疑難排解 {/* #troubleshooting */}
 
@@ -132,7 +132,7 @@ cdui install --gpu cu128     # 改回去：cdui install --gpu cpu
 前端會從後端讀取可用裝置。若你的 GPU 沒有列出來：
 
 1. 在啟用 `backend/.venv` 的情況下確認 PyTorch 能看見它：`python -c "import torch; print(torch.cuda.is_available())"`
-2. 重新啟動伺服器（先 `cdui stop`，再 `cdui start`）。伺服器只在啟動時匯入一次 PyTorch，所以執行期間安裝的 build 它看不到，**重新載入節點**也不會重新匯入。套件中心的 **GPU 版 PyTorch** 卡片會一次完成安裝與重新啟動。
+2. 重新啟動伺服器（先 `cdui stop`，再 `cdui start`）。伺服器只在啟動時匯入一次 PyTorch，所以執行期間安裝的 build 它看不到，**重新載入節點**也不會重新匯入。
 3. 重新整理頁面。編輯器每次載入頁面只讀取一次裝置清單。
 
 ### 從 API 驗證裝置偵測 {/* #verify-device-detection-from-the-api */}

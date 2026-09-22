@@ -25,7 +25,7 @@ A visual, node-based deep learning pipeline builder. Design CNN, RNN, Transforme
 - **Quick Node Search** — Double-click the canvas to open an instant search panel for adding nodes and presets
 - **Custom Node Manager** — GUI for uploading, enabling/disabling, and deleting custom nodes
 - **Plugin Center** — Install teaching packs and GitHub plugins from the sidebar's **Custom & Plugins** tab or **Settings**; new nodes appear without a reload
-- **Optional Packs** — The **Package Center** (or `cdui packs`) installs the large extras a stock install leaves out: sentence-transformers, embedding models, GloVe word vectors, a GPU build of PyTorch
+- **Optional Packs** — The **Package Center** (or `cdui packs`) installs the large extras a stock install leaves out: sentence-transformers, embedding models, GloVe word vectors; on a server started with `cdui start`, the Package Center also switches PyTorch to a GPU build
 - **Publish** — Serve a graph as a versioned HTTP endpoint protected by API keys
 - **Model File Management** — Upload, list, and delete model weight files (.pt, .pth, .safetensors, .ckpt, .bin) via REST API
 - **CLI Graph Runner** — Execute graph.json directly from the command line with `run_graph.py`
@@ -67,7 +67,7 @@ Open [http://localhost:8000](http://localhost:8000). The single uvicorn process 
 | `cdui stop` | Stop **this install's** services: the background server, plus leftovers started from this directory (foreground `cdui start`, `cdui dev`'s Vite). `--all` stops every CodefyUI and Vite process on the machine instead — including other people's, so avoid it on a shared host |
 | `cdui test` | Run the backend (`pytest`) and frontend (`vitest`) tests; the frontend half is skipped, not failed, when pnpm is absent |
 | `cdui clean` | Remove virtualenv, `node_modules`, and `frontend/dist` |
-| `cdui uninstall` | Clean + remove the PATH launcher. The install directory, with your saved graphs and uploads, stays; delete it by hand to remove everything |
+| `cdui uninstall` | Clean + remove the PATH launcher. The install directory, with your saved graphs and uploads, stays; [CLI Commands](https://docs.codefyui.com/getting-started/cli-commands#core-commands) lists what to delete to remove everything |
 | `cdui plugin install <name\|url>` | Install a plugin pack (catalog name like `foundations`, `owner/repo[@ref]`, or full GitHub URL) |
 | `cdui plugin list` | List installed plugin packs |
 | `cdui plugin uninstall <id>` | Remove an installed plugin pack |

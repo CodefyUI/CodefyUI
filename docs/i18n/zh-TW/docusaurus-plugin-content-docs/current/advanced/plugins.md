@@ -46,7 +46,7 @@ cdui plugin uninstall deep                 # 會被記住：sync 不會再把它
 ## 外掛包如何儲存 {/* #how-packs-are-stored */}
 
 - **內建方向外掛包**位於 repo 內的 `plugins/<id>/`，並就地啟用（不複製）。
-- **第三方外掛包**會以固定 SHA 的 tarball 下載到 `<USER_DATA>/plugins/<id>/`，並在安裝前經過 **AST 驗證**（見[安全性](#security--three-tiers)）。tarball 是該 commit 的整個 repository。安裝會拒絕壓縮後超過 100 MB 或解壓後超過 500 MB 的 tarball，以及超過 1 MB 的 `cdui.plugin.toml`，拒絕後不會留下任何檔案；因此資料集與模型權重不要放進 repository。含絕對路徑、指向外掛目錄外的連結，或裝置檔的封存成員也會被拒絕。
+- **第三方外掛包**會以固定 SHA 的 tarball 下載到 `<USER_DATA>/plugins/<id>/`，並在安裝前經過 **AST 驗證**（見[安全性](#security--three-tiers)）。tarball 是該 commit 的整個 repository。安裝會拒絕壓縮後超過 100 MB 或解壓後超過 500 MB 的 tarball，以及超過 1 MB 的 `cdui.plugin.toml`，拒絕後不會留下任何檔案；因此資料集與模型權重不要放進 repository。會寫到解壓目錄之外的封存成員（例如 `../` 路徑）、指向該目錄之外的連結，以及裝置檔也會被拒絕。
 - `<USER_DATA>/plugins/installed.json` 的 lockfile 會記錄每次安裝及已授予的能力，讓 `cdui start` 能在下次啟動時重新探索外掛。對透過 `cdui` 執行的命令，`<USER_DATA>` 是 `<install dir>/.codefyui_dev/`：除非已匯出 `CODEFYUI_USER_DATA_DIR`，否則 `cdui start`、`cdui dev` 與每個 `cdui plugin` 命令都會將它設為該目錄。因此，預設安裝使用 `~/CodefyUI/.codefyui_dev/plugins/installed.json`。平台 user-data 目錄（`%LOCALAPPDATA%\codefyui`、`~/.local/share/codefyui` 或 `~/Library/Application Support/codefyui`）只適用於直接啟動且未設定 `CODEFYUI_USER_DATA_DIR` 的 `uvicorn app.main:app`。lockfile 也用來判定外掛是否已安裝。如果目錄已被手動刪除，或要取代透過 `cdui plugin link` 連結的目錄，重新安裝時必須使用 `--force`。
 
 外掛節點會加上命名空間，以避免衝突並讓圖能自我說明——內建節點使用像 `Conv2d` 這樣的裸名稱，而外掛節點則會像 `foundations:Edu-KNN` 這樣加上限定。
@@ -235,7 +235,7 @@ $ cdui plugin install alice/metric-logger
 
 **確認欄位對應三個安全層級。** [第 0 級](#security--three-tiers)不需要同意。第 1 級會列出檢查結果之 `capabilities` 中的每個值。第 2 級會列出 `allowed_modules`，並要求以 `trust_author` 傳送獨立的作者信任決定。這兩個層級都不是沙箱。能力獲得授權後，外掛可以 import 該組模組，不會再次顯示提示。授予存取權前，請閱讀[這不是什麼](#what-this-is-not)。
 
-**外掛安裝預設限制為本機用戶端。** inspect、install、cancel、update 與 delete routes 都要求工作階段 token，而且伺服器必須綁定至回送位址。這些 routes 可以取得外部程式碼、將其安裝至伺服器行程，或移除已安裝的外掛。區網上的教室或實驗室伺服器可用 `CODEFYUI_ALLOW_REMOTE_PLUGIN_INSTALL=1` 允許遠端存取。reload、enable 與 disable 需要 token，但不要求回送位址，因為它們只處理現有的本機檔案。讀取 routes 保持開放，包括 job 事件，因此其他分頁可以監控執行中的安裝。
+**外掛安裝取決於伺服器綁定的位址。** inspect、install、cancel、update 與 delete routes 都要求工作階段 token，而且伺服器必須綁定至回送位址。這些 routes 可以取得外部程式碼、將其安裝至伺服器行程，或移除已安裝的外掛。這道閘門檢查的是伺服器綁定的位址，從不檢查請求來自哪裡：伺服器在反向代理後方綁定回送位址時，每個連得到編輯器的人都能安裝外掛（參閱[放在反向代理後面](/usage/deployment#authentication-is-the-proxys-job-and-it-has-limits)）。區網上的教室或實驗室伺服器可用 `CODEFYUI_ALLOW_REMOTE_PLUGIN_INSTALL=1` 允許遠端存取。reload、enable 與 disable 需要 token，但不要求回送位址，因為它們只處理現有的本機檔案。讀取 routes 保持開放，包括 job 事件，因此其他分頁可以監控執行中的安裝。
 
 **GitHub API 請求上限。** 未驗證身分的 GitHub API 存取，限制為每個 IP 位址每小時 60 次 request。共用 NAT 後方的電腦會共用配額。配額用盡時，面板會顯示「已達 GitHub 請求上限，請稍後再試，或在伺服器設定 CODEFYUI_GITHUB_TOKEN。」（`502` `github_rate_limited`）。請將 `CODEFYUI_GITHUB_TOKEN` 設為具備 public repository 讀取權限的 token。要讓外掛中心使用它，請在執行 `cdui start` 的環境中設定（以專案目錄啟動的伺服器也可以寫在該專案的 `.env`），並重新啟動伺服器：執行中的伺服器看不到之後才在其他 shell 匯出的變數。`cdui plugin install|info|update` 從執行它們的 shell 讀取 token，在該 shell 匯出後不必重新啟動。每個 GitHub request 都會重新讀取 token；token 只會以 bearer header 傳送給 GitHub，redirect 時會移除，也不會出現在 log 或錯誤訊息中。
 

@@ -8,7 +8,7 @@ description: 節點、圖、run、sweep、已發佈應用程式、外掛、選�
 
 後端提供 REST API 與執行用 WebSocket。所有端點都使用與應用程式相同的來源（預設為 `http://localhost:8000`）。**驗證**欄使用[驗證](#authentication)一節定義的五種值。每個表格都會連結到相關的使用說明頁面。
 
-伺服器也提供 FastAPI 產生的 schema：`GET /openapi.json`（OpenAPI 3.1，涵蓋本頁每條 HTTP route，不含 WebSocket）、`GET /docs`（Swagger UI，另有輔助頁面 `/docs/oauth2-redirect`）與 `GET /redoc`。這四條都是 open。`/docs` 與 `/redoc` 會從 cdn.jsdelivr.net 載入 script，因此瀏覽器必須能連上網際網路才能顯示；`/openapi.json` 不需要。有預先建置的前端時，`/api/` 與 `/ws/` 以外的其他路徑都會提供編輯器的檔案（`/assets/...`，否則為 `index.html`）；`/api/` 或 `/ws/` 底下沒有對應 route 的路徑回傳 404，不會回傳編輯器頁面。
+伺服器也提供 FastAPI 產生的 schema：`GET /openapi.json`（OpenAPI 3.1，涵蓋本頁每條 HTTP route，不含 WebSocket）、`GET /docs`（Swagger UI，另有輔助頁面 `/docs/oauth2-redirect`）與 `GET /redoc`。這四條都是 open。`/docs` 與 `/redoc` 會從 cdn.jsdelivr.net 載入 script，因此瀏覽器必須能連上網際網路才能顯示；`/openapi.json` 不需要。有預先建置的前端時，對 `/api/` 與 `/ws/` 以外其他路徑的 `GET`，若前端建置中有該路徑的檔案就回傳該檔案（`/assets/...` 的 bundle、`/build-info.json`，以及 release 前端的 `/LICENSE`、`/NOTICE` 與 `/THIRD_PARTY_NOTICES.md`），否則回傳 `index.html`。`/assets/` 底下不存在的檔案，以及 `/api/` 或 `/ws/` 底下沒有對應 route 的路徑，都回傳 404，不會回傳編輯器頁面。
 
 ## 驗證 {/* #authentication */}
 
@@ -34,7 +34,7 @@ Host guard 會在其他所有檢查之前處理每個 request，包括 SPA 頁�
 
 | 端點 | 方法 | 驗證 | 說明 |
 |----------|--------|------|-------------|
-| `/api/nodes` | GET | open | 列出所有節點定義。每個節點都帶有 `details`（較長的說明；`description` 已足夠時為空）、`provider`（`builtin`、`custom` 或 `plugin:<id>`）與 `requires_pack`（執行前所需的套件包 id，沒有則為 `null`），每個 SELECT 參數則帶有 `option_packs`（選項值到套件包 id 的對應）。編輯器會讓目前使用但尚未安裝的值保持可選取並顯示警告，將其他尚未安裝的選項變灰，並提供安裝入口；無論如何，run 本身仍由後端把關。 |
+| `/api/nodes` | GET | open | 列出所有節點定義。每個節點都帶有 `details`（較長的說明；`description` 已足夠時為空）、`provider`（`builtin`、`custom` 或 `plugin:<id>`）與 `requires_pack`（節點宣告的套件包，沒有則為 `null`），每個 SELECT 參數則帶有 `option_packs`（選項值到套件包 id 的對應）。編輯器會讓目前使用但尚未安裝的值保持可選取並顯示警告，將其他尚未安裝的選項變灰，並提供安裝入口。這兩個欄位都不會阻止 run；不能在缺少套件包時執行的節點會在 `execute` 中拒絕執行，內建節點就是如此（參閱[自訂節點](/advanced/custom-nodes#anatomy-of-a-node)）。 |
 | `/api/nodes/{node_name}` | GET | open | 取得單一節點定義。 |
 | `/api/nodes/reload` | POST | token | 重新探索每一個節點與預設模組來源：從磁碟重新 import 自訂節點與外掛；重新註冊但不重新 import 內建節點；重新掃描預設模組。回傳 `{builtin, custom, plugins, presets, total}`；與 `POST /api/plugins/reload` 完全相同。 |
 | `/api/nodes/script/validate` | POST | token | 在輸入 PythonScript body 時，依 Tier-0 政策檢查它（`{"code"}`）：`{ok, error, line, defines_run, allowed_modules}`。`ok: false` 是正常的 200，不是錯誤。 |
@@ -55,7 +55,7 @@ Host guard 會在其他所有檢查之前處理每個 request，包括 SPA 頁�
 | `/api/graph/export` | POST | token | 匯出單檔、headless 的 Python runner。它會內嵌圖表，並需要相容的 CodefyUI 後端環境，但不需要執行中的伺服器。 |
 | `/api/graph/contract/{name}` | GET | open | 從已儲存圖表推導出的函式簽名——`inputs`、`outputs`、`problems`——供腳本呼叫。參閱[把 graph 當成函式呼叫，第 3 節](/usage/graph-as-a-function#3-inspect-the-contract)。 |
 | `/api/graph/run/{name}` | POST | token | 將最新儲存的檔案當成函式執行：輸入 `{inputs, timeout_s, device, record_outputs}`，每種結果都輸出九鍵 envelope。參閱[把 graph 當成函式呼叫，第 4 節](/usage/graph-as-a-function#4-run-the-graph)。 |
-| `/api/examples/list` | GET | open | 列出內建範例圖與已安裝外掛的範例圖：`[{name, description, category, path, source, node_count, edge_count, section, family, order}]`。`source` 為 `builtin` 或 `plugin:<id>`，`node_count` 不計入註記，`section`、`family` 與 `order` 決定範例在範例集中的位置（參閱[範例集，新增範例](/usage/examples-gallery#adding-an-example)）。 |
+| `/api/examples/list` | GET | open | 列出內建範例圖與已啟用外掛的範例圖：`[{name, description, category, path, source, node_count, edge_count, section, family, order}]`。`source` 為 `builtin` 或 `plugin:<id>`，`node_count` 不計入註記，`section`、`family` 與 `order` 決定範例在範例集中的位置（參閱[範例集，新增範例](/usage/examples-gallery#adding-an-example)）。 |
 | `/api/examples/load` | GET | open | 載入一張範例圖；`?path=` 是清單某一列的 `path`。 |
 
 ## Run 與 sweep {/* #runs-and-sweeps */}
@@ -74,7 +74,7 @@ Host guard 會在其他所有檢查之前處理每個 request，包括 SPA 頁�
 | `/api/sweeps/{sweep_id}` | GET | open | 排名後的比較表——最佳優先的 `variants`、`best`、`counts`，以及存在時的 `objective_warning`；`?format=csv` 可下載。 |
 | `/api/sweeps/{sweep_id}/cancel` | POST | token | 取消每一個排隊中或執行中的變體：`{sweep_id, state, cancelled, already_finished, variants[]}`，依變體索引順序每個一筆。 |
 
-**Runs API。** `POST /api/runs` 接受 `{"graph": {...}, "options": {...}, "name": "..."}`。graph 使用已儲存圖的 JSON 格式（`nodes`、`edges`，以及選用的 `presets`、`subgraphs` 與 `settings`）。envelope 或選項無效時回傳 400；run service 無法使用，或 `interactive` lane 的送出數超過上限時，回傳 503。選項 key 是封閉集合：`device`、`seed`、`deterministic`、`record_outputs`、`lane`、畫布旗標 `verbose`、`graph_id`、`weights_persistent`、`backward_mode`、`auto_backward`，以及引擎錯誤政策 `error_mode`、`max_retries`。run 的裝置在有提供 `options.device` 時就是它，否則為 graph 的 `settings.device`（參閱[圖的 settings 物件](/advanced/device-backends#the-graph-settings-object)），再否則為 `cpu`。run 的 `status` 只會是 `queued`、`running`、`succeeded`、`failed`、`cancelled` 或 `interrupted`。`/events` 有兩個上限：單一 payload 超過 `CODEFYUI_RUN_EVENT_PAYLOAD_CAP_BYTES`（128 KB）時，輸出會以省略標記取代後再儲存；response 超過 `CODEFYUI_RUN_EVENTS_RESPONSE_CAP_BYTES`（4 MB）時會結束。佇列順序、lane、保留政策與 `cdui run` 請見[執行佇列](/usage/run-queue)。
+**Runs API。** `POST /api/runs` 接受 `{"graph": {...}, "options": {...}, "name": "..."}`。graph 使用已儲存圖的 JSON 格式（`nodes`、`edges`，以及選用的 `presets`、`subgraphs` 與 `settings`）。body 不是 JSON 或沒有 `graph` 物件時回傳 422；graph 無效（例如 `nodes` 為空或 `settings.device` 無效）或選項無效時回傳 400；run service 無法使用，或 `interactive` lane 的送出數超過上限時，回傳 503。選項 key 是封閉集合：`device`、`seed`、`deterministic`、`record_outputs`、`lane`、畫布旗標 `verbose`、`graph_id`、`weights_persistent`、`backward_mode`、`auto_backward`，以及引擎錯誤政策 `error_mode`、`max_retries`。run 的裝置在有提供 `options.device` 時就是它，否則為 graph 的 `settings.device`（參閱[圖的 settings 物件](/advanced/device-backends#the-graph-settings-object)），再否則為 `cpu`。run 的 `status` 只會是 `queued`、`running`、`succeeded`、`failed`、`cancelled` 或 `interrupted`。`/events` 有兩個上限：單一 payload 超過 `CODEFYUI_RUN_EVENT_PAYLOAD_CAP_BYTES`（128 KB）時，輸出會以省略標記取代後再儲存；response 超過 `CODEFYUI_RUN_EVENTS_RESPONSE_CAP_BYTES`（4 MB）時會結束。佇列順序、lane、保留政策與 `cdui run` 請見[執行佇列](/usage/run-queue)。
 
 **Sweeps。** `POST /api/sweeps` 接受 `base_graph`、一份 `sweep_spec`（`method` 為 `grid` 或 `random`、`seed`、`samples`，以及 `params[{node_id, param, values | range}]`）、必要的 `objective`（`metric`，以及 `direction` 為 `minimize` 或 `maximize`）、同一組 `options`、`name` 與 `seed_variants`。最多建立 `CODEFYUI_MAX_SWEEP_RUNS`（32）個變體。每個變體都是一般的 `/api/runs` 列，可分別追蹤其 `/events` 端點。spec、驗證錯誤與取消行為請見[執行佇列——Sweeps](/usage/run-queue#sweeps)。
 
@@ -122,7 +122,7 @@ Host guard 會在其他所有檢查之前處理每個 request，包括 SPA 頁�
 | `/api/custom-nodes/{filename}` | DELETE | token | 刪除一個自訂節點。 |
 | `/api/plugins` | GET | open | 列出已安裝的外掛包。 |
 | `/api/plugins/catalog` | GET | open | 列出型錄與已安裝的外掛。每列包含其狀態：已安裝、已停用、明確移除或檔案遺失。 |
-| `/api/plugins/generation` | GET | open | 回傳編輯器用來輪詢節點面板變更的 reload generation。 |
+| `/api/plugins/generation` | GET | open | 回傳重載計數器，每次重新探索節點與外掛都會加一。只有在頁面載入時已安裝啟用中的連結外掛，編輯器才會輪詢它，並在數值改變時重新啟用外掛前端；參閱[外掛](/advanced/plugins#rest-api)。 |
 | `/api/plugins/{id}` | GET | open | 取得某外掛的 manifest 與 README。 |
 | `/api/plugins/reload` | POST | token | 與 `POST /api/nodes/reload` 相同。 |
 | `/api/plugins/inspect` | POST | token+loopback | 在單一個已解析 commit 上檢查型錄名稱、`owner/repo` 或 URL。回傳安裝需求並存入 `inspection_id`，但不安裝外掛。 |
@@ -136,7 +136,7 @@ Host guard 會在其他所有檢查之前處理每個 request，包括 SPA 頁�
 | `/plugins/{id}/frontend/{path}` | GET | open | 當已啟用外掛的 manifest 宣告 `[frontend]` 時，提供其 `frontend/` 目錄中的檔案；否則回傳 404。route 會在每個 request 重讀 lockfile，因此安裝、啟用、停用與解除安裝不需重啟即可生效。`Cache-Control: no-cache` 會要求瀏覽器在更新後重新驗證。 |
 | `/plugins/{id}/assets/{path}` | GET, HEAD | open | 提供已啟用外掛 `assets/` 目錄中的檔案，使用偵測到的 media type；未知時使用 `application/octet-stream`。此 route 使用與 frontend route 相同的每次 request lockfile 檢查與重新驗證。目錄 request 與外掛目錄以外的路徑都會被拒絕。 |
 
-:::note 安裝外掛只能從本機操作
+:::note 安裝外掛需要綁定回送位址的伺服器
 `inspect`、`install`、job `cancel`、`update` 與 `DELETE` 需要上述回送位址閘門。這些操作可以下載、安裝或移除第三方程式碼，檢查來源時也會依呼叫端提供的內容連線 GitHub。`reload`、`enable` 與 `disable` 只處理伺服器上已有的程式碼，因此只需要 token。這些 route 的拒絕回應使用 `busy`、`already_installed`、`consent_required` 等可供機器判讀的 `code`；請參閱[外掛中心](/advanced/plugins#plugin-center)下的表格。job 事件帶有英文的步驟 `label`，以及英文的失敗 `message` 與 `hint`。client 應以步驟 id（`resolve`、`download`、`extract`、`verify`、`deps`、`stage`、`lock`、`reload`）判斷：編輯器會翻譯這些 id，只有遇到不認得的 id 時才顯示英文 label。失敗訊息維持英文。
 :::
 
@@ -180,7 +180,7 @@ Host guard 會在其他所有檢查之前處理每個 request，包括 SPA 頁�
 | `/api/git/remotes` | POST | token | `{name, url}`：新增遠端。`url` 必須是 `https://`、`ssh://`、`file://` 或 `user@host:path`，否則回傳 400 `invalid_url`；名稱已被使用時回傳 409 `remote_exists`。 |
 | `/api/git/remotes/{name}` | PUT | token | `{url}`：讓遠端指向另一個 URL，URL 規則相同。 |
 | `/api/git/remotes/{name}` | DELETE | token | 移除遠端。 |
-| `/api/git/stashes` | POST | token | `{message?, include_untracked?: true}`；空的 body 也有效。`detail.stash` 一律為 0。沒有東西可以 stash 時回傳 400。 |
+| `/api/git/stashes` | POST | token | `{message?, include_untracked?: true}`；`{}` 是有效的 body（完全沒有 body 的 request 回傳 422）。`detail.stash` 一律為 0。沒有東西可以 stash 時回傳 400。 |
 | `/api/git/stashes/{index}/pop` | POST | token | 套用 stash 並將它丟棄。pop 發生衝突時回傳 409 `conflict`，並保留該 stash。 |
 | `/api/git/stashes/{index}/apply` | POST | token | 套用 stash 並保留它。 |
 | `/api/git/stashes/{index}` | DELETE | token | 丟棄一個 stash。在這條與上面兩條 route 中，目前清單裡沒有的 index 回傳 404，負數 index 回傳 422。 |
@@ -188,7 +188,7 @@ Host guard 會在其他所有檢查之前處理每個 request，包括 SPA 頁�
 | `/api/git/resolve` | POST | token | `{path, side: "ours" \| "theirs" \| "mark"}`，檔案必須是 status 列為衝突的檔案，否則回傳 400 `path_not_in_status`。`mark` 會以磁碟上的現況暫存該檔案。 |
 | `/api/git/fetch` | POST | token | `{remote?}`；一般的 body 是 `{}`。會 fetch 並 prune。 |
 | `/api/git/pull` | POST | token | `{strategy?: "ff-only" \| "merge"}`（預設 `ff-only`）：先 fetch，再合併 upstream。`ff-only` 下分支已分歧時回傳 409 `diverged`；合併發生衝突時回傳 409 `conflict`，合併會維持進行中。 |
-| `/api/git/push` | POST | token | `{remote?, set_upstream?: false}`。`set_upstream: true` 會把分支發佈（`push -u`）到 `remote`，省略 `remote` 時發佈到唯一的遠端；沒有 `set_upstream: true` 卻帶 `remote` 時回傳 400。沒有 upstream 的一般 push 回傳 409 `no_upstream`。`detail.published` 指出實際執行的是哪一種。 |
+| `/api/git/push` | POST | token | `{remote?, set_upstream?: false}`。`set_upstream: true` 會把分支發佈（`push -u`）到 `remote`；省略 `remote` 時，分支有 upstream 就發佈到 upstream 所在的遠端，否則發佈到唯一的遠端（有多個遠端時回傳 400 `invalid_value`，沒有遠端時回傳 409 `no_remote`）。沒有 `set_upstream: true` 卻帶 `remote` 時回傳 400。沒有 upstream 的一般 push 回傳 409 `no_upstream`。`detail.published` 指出實際執行的是哪一種。 |
 | `/api/git/sync` | POST | token | 先 pull（只做 fast-forward）再 push；分支沒有 upstream 或 upstream 已消失時則改為發佈。不需要 body。遇到第一個失敗就停止，之前已完成的步驟維持完成；`detail.steps` 列出執行過的步驟。 |
 
 - **Response。** 除了 `PUT /api/git/config`，每個寫入都回傳 `{status, changed_paths, head, detail}`：最新的 status、這次操作變動的檔案、操作後的 HEAD，以及各操作專屬的額外資訊。

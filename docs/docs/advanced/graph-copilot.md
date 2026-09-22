@@ -37,7 +37,7 @@ The browser stores the provider and key, so you only need to configure them once
 The panel has four views, chosen with the buttons at its top:
 
 - **Chat**: the conversation with the agent.
-- **Lab**: the experiment studies you asked for in Chat. Variants of the current graph run on in-memory copies and are ranked; the canvas does not change.
+- **Lab**: experiment studies run from Chat, and studies imported from a file (**Import portable study**). A study runs each variant on an in-memory copy of the current graph and ranks the results. The canvas changes only when you ask the agent to apply the winner and the winner changes only parameters: it is then applied as one undo step, unless the graph changed while the study ran.
 - **History**: earlier conversations. Click one to resume it, or start a new one with **+ New chat**.
 - **Settings**: provider, model and reasoning effort, API key or sign-in, and run notifications.
 

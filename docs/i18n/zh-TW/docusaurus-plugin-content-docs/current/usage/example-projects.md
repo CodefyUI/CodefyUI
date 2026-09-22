@@ -25,7 +25,7 @@ cdui start --project .
 | [example-word-analogy](https://github.com/CodefyUI/example-word-analogy) | 詞向量類比查詢：輸入三個詞，輸出最接近的類比詞。 | 不需要任何東西 -- 完全離線。 |
 | [example-tabular-predictor](https://github.com/CodefyUI/example-tabular-predictor) | 表格資料分類器：輸入特徵列，輸出類別預測。 | 不需要任何東西 -- 完全離線。 |
 | [example-llm-document](https://github.com/CodefyUI/example-llm-document) | 文件摘要器：輸入文件內容，輸出摘要。 | 本機安裝的 [Ollama](https://ollama.com)。 |
-| [example-mnist-train-serve](https://github.com/CodefyUI/example-mnist-train-serve) | 一個專案、兩張 graph：先在畫布上用 MNIST 訓練一個小型 CNN，再把「你自己訓練出來的」權重當成數字辨識 API 提供出去。 | 第一次訓練時會下載 MNIST（約 60 MB）。 |
+| [example-mnist-train-serve](https://github.com/CodefyUI/example-mnist-train-serve) | 一個專案、兩張 graph：先在畫布上用 MNIST 訓練一個小型 CNN，再把「你自己訓練出來的」權重當成數字辨識 API 提供出去。 | 第一次訓練時會下載 MNIST（約 12 MB；解壓後在磁碟上約 66 MB）。 |
 
 ## 為什麼它們是各自獨立的儲存庫 {/* #why-they-are-separate-repositories */}
 

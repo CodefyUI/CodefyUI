@@ -166,7 +166,7 @@ systemctl status codefyui
 journalctl -u codefyui -f
 ```
 
-`--foreground` 是必要參數。`cdui start` 預設會以常駐模式 double-fork，不符合 `Type=exec` 服務的需求。CodefyUI 的 stdout 會寫入 journal，因此啟動錯誤與被拒絕的 `Host` 值（`rejected request with Host='...' path=...`）可在 `journalctl -u codefyui` 中查看。每個請求的紀錄不會出現在這裡，原因見後面的「代理同時也是你的存取紀錄」一節。
+`--foreground` 是必要參數。少了它，`cdui start` 會在背景啟動伺服器後自行結束，而 systemd 會把 `Type=exec` 服務主程序的結束視為服務結束。CodefyUI 的紀錄會輸出到標準錯誤（stderr）並寫入 journal，因此啟動錯誤與被拒絕的 `Host` 值（`rejected request with Host='...' path=...`）可在 `journalctl -u codefyui` 中查看。每個請求的紀錄不會出現在這裡，原因見[代理同時也是你的存取紀錄](#the-proxy-is-also-your-access-log)。
 
 ## nginx 站台設定 {/* #an-nginx-site */}
 
@@ -271,7 +271,7 @@ CodefyUI *會*記錄的東西 -- 啟動過程、被拒絕的 `Host` 值、警告
 
 - 所有存下來的圖、模型、資料集與執行紀錄，每個人都看得到也改得動。
 - 環境層級的憑證是整台伺服器共用的。ChatGPT 登入、環境變數裡的 `OPENAI_API_KEY` 或 `ANTHROPIC_API_KEY`、Kaggle 與 Hugging Face 憑證，以及**版本控制**分頁推送時使用的 git 憑證，都屬於這台伺服器而不是某個人 -- 一個人登入之後，所有人的圖都算在他頭上，而且沒有任何紀錄說得出錢是誰花的。
-- 每個通過單一登入的人都能安裝套件包與外掛。只允許回送位址的安裝關卡檢查的是伺服器綁定的位址，從不檢查請求來自哪裡；在這個代理後方綁定的是 `127.0.0.1`，因此這些關卡會放行每一個請求。這包括在**套件中心**安裝與移除套件包，以及在**外掛中心**安裝、更新與移除外掛；外掛是這個伺服器行程會匯入的第三方程式碼。CodefyUI 沒有任何設定能在綁定回送位址時關閉這些關卡；受關卡保護的路由是 [API 參考](/advanced/api-reference#authentication)中標示為 `token+loopback` 的路由，只有代理能把它們限制為僅供管理員使用。
+- 每個通過單一登入的人都能安裝套件包與外掛。只允許回送位址的安裝關卡檢查的是伺服器綁定的位址，從不檢查請求來自哪裡；在這個代理後方綁定的是 `127.0.0.1`，因此這些關卡會放行每一個請求。這包括在**套件中心**安裝套件包與移除已下載的模型，以及在**外掛中心**安裝、更新與移除外掛；外掛是這個伺服器行程會匯入的第三方程式碼。CodefyUI 沒有任何設定能在綁定回送位址時關閉這些關卡；受關卡保護的路由是 [API 參考](/advanced/api-reference#authentication)中標示為 `token+loopback` 的路由，只有代理能把它們限制為僅供管理員使用。
 - 套件包安裝的紀錄是公開的讀取。`GET /api/packs/jobs/{id}/events` 不需要工作階段權杖，和 `GET /api/runs/{id}/events` 完全一樣 -- 兩者都是讀取，套件中心就是靠輪詢它們畫出進度條。發動安裝需要工作階段權杖，但安裝留下的那份紀錄會寫出它是對哪個直譯器執行的（`uv` 參數裡的 venv 路徑），也會原封不動帶著 `uv` 自己的輸出。綁定到區域網路時，任何連得到那個埠的人都讀得到它。
 
 [共用的伺服器](./shared-instances)詳細說明這些憑證，包括讀取順序與儲存位置。將網址提供給團隊前請先閱讀。如果需要個別使用者歸屬，請為每個人執行獨立實例，每個實例使用自己的安裝目錄、環境變數檔與埠號，並在每個實例前配置代理。只設定不同的 `CODEFYUI_USER_DATA_DIR`，無法區隔從同一個安裝啟動的兩個實例；該頁列出它們仍然共用的項目。

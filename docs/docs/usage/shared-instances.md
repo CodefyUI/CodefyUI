@@ -107,8 +107,9 @@ Three consequences:
   an exported graph leaves the field blank; an `LLMChat` node then falls back
   to the instance's environment key, if one is set, or fails with its
   missing-key error. A queued run keeps the typed value in server memory only
-  until it starts; if the server stops first, the run is retired as
-  `interrupted` and the value is gone. That is the intended trade, not a bug.
+  until the run ends; if the server stops before the run starts, the run is
+  retired as `interrupted` and the value is gone. That is the intended trade,
+  not a bug.
 - **Anything you type from now on is fine.** The value never reaches the
   database, and deleted database pages are zeroed rather than recycled with
   their contents intact, so run history that ages out does not leave a

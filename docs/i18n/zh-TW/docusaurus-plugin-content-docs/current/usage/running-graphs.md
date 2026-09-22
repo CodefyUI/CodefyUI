@@ -12,7 +12,7 @@ description: 執行如何運作 — WebSocket 串流、結果面板、即時 los
 
 - 後端會驗證圖（DAG 檢查、型別安全、至少一個 [`Start`](./first-graph) 節點），對它進行拓撲排序（Kahn 演算法，含循環偵測），並平行執行彼此獨立的節點。
 - 每個節點在執行過程中回報狀態：`running` → `completed`（或 `error`），並內嵌一份精簡的 **輸出摘要** 方便快速查看。
-- **執行紀錄** 分頁會顯示這種逐節點的進度，以及任何 `Print` 節點的輸出。
+- **執行紀錄** 分頁會列出每個節點的結果，以及節點寫出的文字；見[結果面板](./canvas-basics#the-results-panel)。
 
 ## 沒有 trigger 的節點仍然可能執行 {/* #a-node-without-a-trigger-can-still-run */}
 
@@ -39,12 +39,14 @@ description: 執行如何運作 — WebSocket 串流、結果面板、即時 los
 | `update_ratio` | 開啟 `log_update_ratio` 時，每 `log_interval` 個 optimizer step 記錄一次：‖lr × grad‖ / ‖weights‖。 | optimizer step |
 | `val_loss_step` | 每 `val_every_steps` 個 optimizer step 記錄一次，需接上 `val_dataloader`。 | optimizer step |
 
+設定面板只有在 `batch_metrics` 開啟時才會顯示 `log_interval`（進階），但不論 `batch_metrics` 是否開啟，上表的 `grad_norm` 與 `update_ratio` 都依它的值記錄。
+
 `EvaluateModel` 執行時會新增一個 `eval_accuracy` 資料點。
 
 迴圈的其他選項：
 
 - **Early stopping。** `early_stopping_patience` 大於 0 時，會在 `monitor` 連續這麼多個 epoch 沒有改善時停止訓練：`val_loss` 越低越好（沒有接上 `val_dataloader` 時改看訓練 loss），`val_accuracy` 越高越好（沒有記錄這個序列時，迴圈會發出警告並改看 `val_loss`）。開啟 early stopping 時，`model` 輸出是最佳 epoch 的權重，而不是最後一個 epoch 的權重；按下**停止**的情況除外。
-- **定期 checkpoint。** `checkpoint_every` 每 N 個 epoch、`checkpoint_every_steps` 每 N 個 optimizer step 儲存一次 checkpoint（預設值 0 表示關閉），寫入資料目錄中的 `models/periodic/`。這些檔案會列在執行任務面板中該 run 的產出檔案裡，run 因保留上限被清除時也會一併刪除。每個檔案約為模型加上 optimizer 狀態的大小，常是模型本身的數倍，而且 run 仍在執行時，寫入的數量沒有上限。匯出的腳本與 CLI 圖形執行器不會寫入這些檔案。從這些檔案接續訓練的方式與其他 checkpoint 相同，見[停止與接續](./reproducing-baselines#stopping-and-resuming)。
+- **定期 checkpoint。** `checkpoint_every` 每 N 個 epoch、`checkpoint_every_steps` 每 N 個 optimizer step 儲存一次 checkpoint（預設值 0 表示關閉），寫入資料目錄中的 `models/periodic/`。這些檔案會列在執行任務面板中該 run 的產出檔案裡，run 因保留上限被清除時也會一併刪除。每個檔案約為模型加上 optimizer 狀態的大小，常是模型本身的數倍，而且 run 仍在執行時，寫入的數量沒有上限。匯出的腳本與 CLI 圖形執行器不會寫入這些檔案。從 `checkpoint_every` 的檔案接續訓練的方式與其他 checkpoint 相同，見[停止與接續](./reproducing-baselines#stopping-and-resuming)。`checkpoint_every_steps` 的檔案在 epoch 欄位存的是 optimizer step 數，因此透過 `start_epoch` 接續時，這個數字會被當成已完成的 epoch 數；它達到或超過 `epochs` 時，這次 run 不會進行任何訓練。
 - **以 step 為單位的排程。** `scheduler_step`（進階）決定接上的 `LRScheduler` 何時前進：每個 `epoch` 之後（預設），或每個 `optimizer_step` 之後（`ReduceLROnPlateau` 仍然每個 epoch 前進一次）。它也決定排程器各長度參數（`step_size`、`T_max`、`total_steps`）的單位。`LRScheduler` 的 `warmup_cosine`、`warmup_linear` 與 `constant_with_warmup` 會在 `warmup_steps`（預設 100）內把學習率從接近零提高，之後分別以 cosine 遞減、線性遞減或維持不變，全長為 `total_steps`；請搭配 `optimizer_step` 使用，因為以 epoch 為單位時，100 個 warmup step 就是 100 個 epoch。`max_steps`（進階）大於 0 時，會在 optimizer step 總數達到這個值時結束訓練，不論 `epochs` 為何。排程長度如何配合 run 的長度，見[注意事項](./reproducing-baselines#gotchas-worth-knowing)。
 
 `optimizer` 輸出是實際用於訓練的 optimizer：通常就是接進來的那一個；若它的參數與模型不符，則是重新建立的 optimizer。請把這個輸出接到 `CheckpointSaver.optimizer`，而不是 `Optimizer` 節點的輸出。記憶體選項 `precision` 與 `accumulate_steps` 見[訓練記憶體](/advanced/training-memory)，`tensorboard` 見 [TensorBoard](./data-augmentation#tensorboard)。

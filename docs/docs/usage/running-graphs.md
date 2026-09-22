@@ -12,7 +12,7 @@ When you click **Run**, the frontend sends the graph to the backend over a WebSo
 
 - The backend validates the graph (DAG check, type safety, at least one [`Start`](./first-graph) node), topologically sorts it (Kahn's algorithm, with cycle detection), and runs independent nodes in parallel.
 - Each node reports status as it goes: `running` → `completed` (or `error`), with a small **output summary** embedded inline for quick viewing.
-- The **Execution Log** tab shows this per-node progress and any `Print` node output.
+- The **Execution Log** tab lists each node's outcome and the text nodes write; see [The results panel](./canvas-basics#the-results-panel).
 
 ## A node without a trigger can still run
 
@@ -39,12 +39,14 @@ Every value the loop records is also stored with the run as a named series. A ru
 | `update_ratio` | Every `log_interval`-th optimizer step, with `log_update_ratio` on: ‖lr × grad‖ / ‖weights‖. | Optimizer step |
 | `val_loss_step` | Every `val_every_steps` optimizer steps, when `val_dataloader` is wired. | Optimizer step |
 
+The config panel shows `log_interval` (Advanced) only while `batch_metrics` is on, but the `grad_norm` and `update_ratio` rows above follow its value either way.
+
 `EvaluateModel` adds one `eval_accuracy` point when it runs.
 
 The loop's other options:
 
 - **Early stopping.** `early_stopping_patience`, when above 0, stops training after that many epochs without improvement in `monitor`: `val_loss`, lower is better (the training loss when no `val_dataloader` is wired), or `val_accuracy`, higher is better (when it is not recorded, the loop warns and watches `val_loss`). With early stopping on, the `model` output holds the best epoch's weights rather than the last epoch's, except after **Stop**.
-- **Periodic checkpoints.** `checkpoint_every` saves a checkpoint every N epochs, and `checkpoint_every_steps` every N optimizer steps (0, the default, turns either off), to `models/periodic/` in the data folder. The files are listed with the run's artifacts in the Runs panel, and retention deletes them with their run. Each one is roughly the model plus its optimizer state, often several times the model's size, and nothing limits how many a run writes while it is still going. An exported script and the CLI Graph Runner write none. Resume from one the same way as from any checkpoint: [Stopping and resuming](./reproducing-baselines#stopping-and-resuming).
+- **Periodic checkpoints.** `checkpoint_every` saves a checkpoint every N epochs, and `checkpoint_every_steps` every N optimizer steps (0, the default, turns either off), to `models/periodic/` in the data folder. The files are listed with the run's artifacts in the Runs panel, and retention deletes them with their run. Each one is roughly the model plus its optimizer state, often several times the model's size, and nothing limits how many a run writes while it is still going. An exported script and the CLI Graph Runner write none. Resume from a `checkpoint_every` file the same way as from any checkpoint: [Stopping and resuming](./reproducing-baselines#stopping-and-resuming). A `checkpoint_every_steps` file stores its optimizer-step count where the epoch belongs, so a resume through `start_epoch` reads that count as completed epochs and, when it is at or past `epochs`, trains nothing.
 - **Step-based schedules.** `scheduler_step` (Advanced) sets when a wired `LRScheduler` advances: after every `epoch` (the default) or after every `optimizer_step` (`ReduceLROnPlateau` stays per epoch). It also sets the unit of the scheduler's lengths (`step_size`, `T_max`, `total_steps`). `LRScheduler`'s `warmup_cosine`, `warmup_linear` and `constant_with_warmup` raise the rate from near zero over `warmup_steps` (default 100), then decay it with a cosine, decay it linearly or hold it, over `total_steps` in all; use them with `optimizer_step`, since per epoch 100 warmup steps are 100 epochs. `max_steps` (Advanced), when above 0, ends training after that many optimizer steps, whatever `epochs` says. See [Gotchas worth knowing](./reproducing-baselines#gotchas-worth-knowing) for matching a schedule's length to the run.
 
 The `optimizer` output is the optimizer that actually trained: the one wired in, or a rebuilt one when that one's parameters did not match the model. Wire it, not the `Optimizer` node, into `CheckpointSaver.optimizer`. The memory options `precision` and `accumulate_steps` are covered in [Training Memory](/advanced/training-memory), and `tensorboard` in [TensorBoard](./data-augmentation#tensorboard).
