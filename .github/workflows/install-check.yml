@@ -61,6 +61,18 @@ jobs:
             || { echo "::error::frontend/dist/index.html missing — install never produced a usable bundle"; exit 1; }
           echo "✓ frontend/dist/index.html exists"
           ls "$INSTALL_DIR/frontend/dist"
+          # The legal files, and the CONTRIBUTING.md they point to, ride next
+          # to index.html in the release tarball (core#459). release-build.yml
+          # checks the archive before it is attached; this checks what the
+          # installer actually unpacked. A manual run for a release older than
+          # 2.8.5 fails here by design, since its tarball predates these files:
+          # to test one, choose its tag under "Use workflow from" as well as in
+          # release_tag.
+          for f in LICENSE NOTICE THIRD_PARTY_NOTICES.md COMMERCIAL-LICENSE.md CONTRIBUTING.md; do
+            test -f "$INSTALL_DIR/frontend/dist/$f" \
+              || { echo "::error::frontend/dist/$f missing — the release tarball must carry it next to index.html"; exit 1; }
+          done
+          echo "✓ frontend/dist carries LICENSE, NOTICE, THIRD_PARTY_NOTICES.md, COMMERCIAL-LICENSE.md and CONTRIBUTING.md"
 
       - name: Start backend & verify endpoints
         shell: bash
@@ -188,6 +200,20 @@ jobs:
           }
           Write-Host "✓ $indexPath exists"
           Get-ChildItem (Join-Path $env:INSTALL_DIR 'frontend\dist')
+          # The legal files, and the CONTRIBUTING.md they point to, ride next
+          # to index.html in the release tarball (core#459). release-build.yml
+          # checks the archive before it is attached; this checks what the
+          # installer actually unpacked. A manual run for a release older than
+          # 2.8.5 fails here by design, since its tarball predates these files:
+          # to test one, choose its tag under "Use workflow from" as well as in
+          # release_tag.
+          foreach ($f in 'LICENSE', 'NOTICE', 'THIRD_PARTY_NOTICES.md', 'COMMERCIAL-LICENSE.md', 'CONTRIBUTING.md') {
+            if (-not (Test-Path (Join-Path $env:INSTALL_DIR "frontend\dist\$f") -PathType Leaf)) {
+              Write-Host "::error::frontend/dist/$f missing — the release tarball must carry it next to index.html"
+              exit 1
+            }
+          }
+          Write-Host "✓ frontend/dist carries LICENSE, NOTICE, THIRD_PARTY_NOTICES.md, COMMERCIAL-LICENSE.md and CONTRIBUTING.md"
 
       - name: Start backend & verify endpoints
         shell: pwsh
@@ -310,6 +336,7 @@ jobs:
           bash ./install.sh
           echo "INSTALL_DIR=$CODEFYUI_DIR" >> "$GITHUB_ENV"
 
+      # No legal-file check here: only the release tarball puts the legal files in dist (core#459).
       - name: Verify locally-built dist
         shell: bash
         run: |
