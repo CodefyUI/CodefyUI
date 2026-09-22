@@ -258,11 +258,13 @@ Linked directories (`source_kind` `local`) provide only Enable and Disable in ev
 
 **`needs_restart` is not a failure.** A plugin's `[python_deps]` are installed add-only, under a constraints file that pins every package installed in the server's environment (editable installs such as CodefyUI itself excepted) to its current version: a live install can add packages but cannot upgrade, downgrade or replace one. If dependency resolution cannot satisfy those constraints during a live install, the job ends with `needs_restart` and returns the exact `command` to run after stopping the server. Repeating the installation while the same server is running produces the same result. `cdui plugin install` also prints the command and exits with code `3`.
 
-**Uninstall behavior depends on the plugin source.** `DELETE /api/plugins/{id}` deletes the directory of a downloaded plugin. Built-in plugin files remain because they are part of the release; the server records the plugin as removed so `cdui plugin sync` does not restore it until it is installed by name. A directory registered with `cdui plugin link` also remains unchanged. Python dependencies are not removed because uninstalling modules already imported by the running server could leave the process in an inconsistent state. The response lists retained dependencies in `python_deps_left` and provides an `uninstall_command` to run after stopping the server:
+**Uninstall behavior depends on the plugin source.** `DELETE /api/plugins/{id}` deletes the directory of a downloaded plugin. Built-in plugin files remain because they are part of the release; the server records the plugin as removed so `cdui plugin sync` does not restore it until it is installed by name. A directory registered with `cdui plugin link` also remains unchanged. Python dependencies are not removed because uninstalling modules already imported by the running server could leave the process in an inconsistent state. The response lists in `python_deps_left` the declared dependencies that nothing else still needs, and provides an `uninstall_command` to run after stopping the server; `cdui plugin uninstall` prints the same names and command:
 
 ```bash
-uv pip uninstall --python <the CodefyUI venv's python> httpx
+uv pip uninstall --python <the CodefyUI venv's python> model2vec
 ```
+
+A declared dependency is left out of `python_deps_left` and `uninstall_command` when it is CodefyUI itself or something else still needs it: another installed distribution requires it (CodefyUI's own dependencies included, under any extra or marker), another installed plugin declares it, or a Package Center pack installs it, whether or not that pack is installed.
 
 If the directory cannot be deleted, the operation makes no changes: the lockfile entry remains, the plugin stays installed, and the server returns `409` `files_locked` with the operating-system error and the remaining directory. This commonly occurs on Windows when another process has a file open. Close that process or stop the server, then retry the uninstall.
 

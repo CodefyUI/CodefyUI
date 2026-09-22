@@ -744,10 +744,12 @@ async def uninstall_plugin(plugin_id: str, request: Request) -> dict[str, Any]:
     What is NOT removed is the plugin's Python dependencies. Uninstalling
     packages from inside the process that imported them is how you get a
     half-loaded interpreter serving requests, so they are reported instead:
-    ``python_deps_left`` and the ``uninstall_command`` to run by hand with the
-    server stopped. They are in the answer because whatever draws this has to
-    SAY so -- an uninstall that silently leaves packages behind is the half of
-    the story the user finds out about from a disk that never got smaller.
+    ``python_deps_left`` -- the ones nothing else here still needs, so the
+    command cannot take a package from CodefyUI or another plugin (#414) --
+    and the ``uninstall_command`` to run by hand with the server stopped.
+    They are in the answer because whatever draws this has to SAY so -- an
+    uninstall that silently leaves packages behind is the half of the story
+    the user finds out about from a disk that never got smaller.
 
     Then this process forgets the plugin, in this order: its modules leave
     ``sys.modules`` and only THEN is the registry re-discovered. Nothing else

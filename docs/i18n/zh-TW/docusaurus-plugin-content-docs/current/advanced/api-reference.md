@@ -130,7 +130,7 @@ Host guard 會在其他所有檢查之前處理每個 request，包括 SPA 頁�
 | `/api/plugins/jobs/{job_id}/events` | GET | open | 回傳安裝 job 在 `?cursor=` 之後的 log 與進度。`?wait=` 最多長輪詢 60 秒。job 可能以 `needs_restart` 結束，並包含伺服器停止後要執行的指令。 |
 | `/api/plugins/jobs/{job_id}/cancel` | POST | token+loopback | 取消執行中的安裝並移除部分寫入的內容。 |
 | `/api/plugins/{id}/update` | POST | token+loopback | 檢查外掛的 GitHub repository 是否有更新。回傳 `202 {"job_id"}`、`200 {"status": "up_to_date", "sha"}`，或在更新需要額外權限時回傳 `200 {"status": "needs_consent", "inspection", "capabilities_added", "allowed_modules_added"}`。若需同意，請呼叫 `POST /api/plugins/install {"inspection_id", "accept_capabilities", "trust_author"}` 完成更新，不需使用 `force`。更新會保留啟用狀態。內建外掛、本機連結外掛，或 manifest 已改用另一個外掛 id 的 repository，會回傳 `400 not_updatable`。 |
-| `/api/plugins/{id}` | DELETE | token+loopback | 解除安裝外掛。內建外掛會保留檔案並記錄為已移除；本機連結目錄不會變更。Python 套件也會保留，response 會提供解除安裝這些套件的指令。 |
+| `/api/plugins/{id}` | DELETE | token+loopback | 解除安裝外掛。內建外掛會保留檔案並記錄為已移除；本機連結目錄不會變更。Python 套件也會保留；response 會列出其他地方都不再需要的套件，並附上移除它們的指令。 |
 | `/api/plugins/{id}/enable` | POST | token | 啟用一個已安裝的外掛並重新探索。 |
 | `/api/plugins/{id}/disable` | POST | token | 停用它，但不解除安裝。 |
 | `/plugins/{id}/frontend/{path}` | GET | open | 當已啟用外掛的 manifest 宣告 `[frontend]` 時，提供其 `frontend/` 目錄中的檔案；否則回傳 404。route 會在每個 request 重讀 lockfile，因此安裝、啟用、停用與解除安裝不需重啟即可生效。`Cache-Control: no-cache` 會要求瀏覽器在更新後重新驗證。 |

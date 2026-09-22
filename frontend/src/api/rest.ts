@@ -1714,7 +1714,10 @@ export interface PluginUninstallResult {
   tombstoned: boolean;
   /** null when the server could not tell -- Windows keeps an open file. */
   files_removed: boolean | null;
-  /** Nothing uninstalls a plugin's pip packages; these are what it left. */
+  /**
+   * Nothing uninstalls a plugin's pip packages. These are the ones it
+   * declared that nothing else still needs (#414).
+   */
   python_deps_left: string[];
   uninstall_command: string | null;
   reinstall_hint: string;

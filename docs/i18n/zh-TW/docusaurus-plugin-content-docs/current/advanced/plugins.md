@@ -243,11 +243,13 @@ $ cdui plugin install alice/metric-logger
 
 **`needs_restart` 不代表失敗。** 外掛的 `[python_deps]` 只能新增套件，並套用 constraints 檔，將伺服器環境中已安裝的每個套件（CodefyUI 本身等 editable 安裝除外）固定在目前版本：即時安裝可以新增套件，但不能升級、降級或取代任何套件。依賴解析如果無法在即時安裝期間符合這些 constraints，job 會以 `needs_restart` 結束，並回傳要在停止伺服器後執行的確切 `command`。同一台伺服器仍在執行時重複安裝，會得到相同結果。`cdui plugin install` 也會印出該指令，並以離開碼 `3` 結束。
 
-**解除安裝行為取決於外掛來源。** `DELETE /api/plugins/{id}` 會刪除已下載外掛的目錄。內建外掛檔案屬於發行版，因此會保留；伺服器會將外掛記錄為已移除，讓 `cdui plugin sync` 不會還原，直到再次按名稱安裝。透過 `cdui plugin link` 註冊的目錄也不會變更。Python 依賴套件不會移除，因為解除安裝執行中伺服器已 import 的模組，可能使行程處於不一致的狀態。response 會在 `python_deps_left` 中列出保留的依賴套件，並提供停止伺服器後執行的 `uninstall_command`：
+**解除安裝行為取決於外掛來源。** `DELETE /api/plugins/{id}` 會刪除已下載外掛的目錄。內建外掛檔案屬於發行版，因此會保留；伺服器會將外掛記錄為已移除，讓 `cdui plugin sync` 不會還原，直到再次按名稱安裝。透過 `cdui plugin link` 註冊的目錄也不會變更。Python 依賴套件不會移除，因為解除安裝執行中伺服器已 import 的模組，可能使行程處於不一致的狀態。response 會在 `python_deps_left` 中列出其他地方都不再需要的已宣告依賴套件，並提供停止伺服器後執行、能移除它們的 `uninstall_command`；`cdui plugin uninstall` 也會印出相同的套件名稱與指令：
 
 ```bash
-uv pip uninstall --python <the CodefyUI venv's python> httpx
+uv pip uninstall --python <the CodefyUI venv's python> model2vec
 ```
+
+已宣告的依賴套件如果就是 CodefyUI 本身，或還有其他地方需要，就不會出現在 `python_deps_left` 與 `uninstall_command` 中：其他已安裝的套件需要它（包括 CodefyUI 本身的依賴套件，不論在哪個 extra 或 marker 之下），其他已安裝的外掛宣告了它，或套件中心的某個套件包會安裝它（不論該套件包是否已安裝）。
 
 如果無法刪除目錄，操作不會進行任何變更：lockfile 條目會保留、外掛仍維持已安裝狀態，伺服器則回傳 `409` `files_locked`、作業系統錯誤與仍存在的目錄。Windows 上的常見原因是其他行程仍開啟某個檔案。請關閉該行程或停止伺服器，再重試解除安裝。
 

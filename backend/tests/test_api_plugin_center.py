@@ -1895,11 +1895,12 @@ def forgetting(monkeypatch) -> list[str]:
 
 
 async def test_deleting_a_downloaded_plugin_takes_its_files_and_its_entry(
-        client, center_lockfile):
+        client, center_lockfile, caplog):
     """A ``github_url`` plugin is a copy this install downloaded, so the copy
     goes with it. Its Python packages do NOT: uninstalling those from inside
     the process that imported them is how a running server ends up half
-    loaded, so the answer names them and hands over the command instead.
+    loaded, so the answer names the ones nothing else needs and hands over
+    the command instead.
 
     The one delete here that lets the REAL purge and re-discovery run -- a
     recorder can prove the calls happen, not that they work. This is the
@@ -1908,6 +1909,15 @@ async def test_deleting_a_downloaded_plugin_takes_its_files_and_its_entry(
     generation asserted below is what a real re-discovery bumps.
     """
     assert (center_lockfile / "demo-external").is_dir()
+    # ``numpy``, which CodefyUI itself requires, in place of the fixture's
+    # ``tabulate``: whether ``tabulate`` is spoken for depends on which
+    # optional extras pandas and scipy happen to list, and this test should
+    # not.
+    (center_lockfile / "demo-external" / "cdui.plugin.toml").write_text(
+        '[plugin]\nid = "demo-external"\nname = "Demo External"\n'
+        'version = "2.0.0"\nschema_version = 1\n\n'
+        '[python_deps]\nnumpy = ">=1.24"\n',
+        encoding="utf-8")
     generation = plugin_loader.reload_generation()
 
     response = await client.delete("/api/plugins/demo-external")
@@ -1921,9 +1931,14 @@ async def test_deleting_a_downloaded_plugin_takes_its_files_and_its_entry(
     # for a tombstone to prevent.
     assert body["tombstoned"] is False
     assert body["files_removed"] is True
-    assert body["python_deps_left"] == ["tabulate"]
-    assert body["uninstall_command"].startswith("uv pip uninstall --python ")
-    assert body["uninstall_command"].endswith(" tabulate")
+    # ``numpy`` is CodefyUI's own dependency, so it is not offered for
+    # removal (#414). A package nothing needs, and its command, are the next
+    # test's.
+    assert body["python_deps_left"] == []
+    assert body["uninstall_command"] is None
+    # An empty list is also what a failed computation answers, with this
+    # warning: without the check, a swallowed exception would pass here.
+    assert "could not tell" not in caplog.text
     assert body["reinstall_hint"] == "cdui plugin install demo-external"
 
     assert not (center_lockfile / "demo-external").exists()
@@ -1931,6 +1946,30 @@ async def test_deleting_a_downloaded_plugin_takes_its_files_and_its_entry(
     # The editor polls this counter to learn that the palette moved, and only
     # a real re-discovery bumps it.
     assert plugin_loader.reload_generation() > generation
+
+
+async def test_a_delete_offers_to_remove_only_what_nothing_else_needs(
+        client, center_lockfile, forgetting):
+    """The route hands over the lifecycle's answer whole: of the packages a
+    plugin declared, only those nothing else here still needs, and the line
+    that removes exactly those, with the interpreter quoted the way the
+    install line quotes it (#414). ``numpy`` is one of CodefyUI's own
+    dependencies; the other name is made up, so nothing can ever need it.
+    """
+    from app.core.plugins.deps import manual_uninstall_command
+
+    (center_lockfile / "demo-external" / "cdui.plugin.toml").write_text(
+        '[plugin]\nid = "demo-external"\nname = "Demo External"\n'
+        'version = "2.0.0"\nschema_version = 1\n\n'
+        '[python_deps]\nnumpy = ">=1.24"\ncodefyui-orphan-probe = ">=1.0"\n',
+        encoding="utf-8")
+
+    response = await client.delete("/api/plugins/demo-external")
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["python_deps_left"] == ["codefyui-orphan-probe"]
+    assert body["uninstall_command"] == manual_uninstall_command(
+        ["codefyui-orphan-probe"])
 
 
 async def test_the_plugin_is_forgotten_before_the_palette_is_rebuilt(

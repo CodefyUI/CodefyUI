@@ -1902,6 +1902,22 @@ def cmd_uninstall(args: argparse.Namespace) -> int:
         info("伺服器未運行", "Server not running")
 
     ok(f"已移除 {plugin_id}", f"Removed {plugin_id}")
+    # The plugin's Python packages are still installed: nothing uninstalls
+    # them (``core_lifecycle`` says why). The Plugin Center names them and
+    # shows the command that removes them, and this prints the same two
+    # facts from the same outcome, in the panel's words (#414). The command
+    # goes on a line of its own, as the panel puts it in a block of its own,
+    # so copying it picks up nothing else. When no packages are left, nothing
+    # is printed, not an empty heading.
+    if outcome.python_deps_left:
+        packages = ", ".join(outcome.python_deps_left)
+        info(
+            f"這些 Python 套件還留著：{packages}。要移除的話，請停止伺服器後執行：",
+            f"These Python packages stay installed: {packages}. To remove "
+            f"them, stop the server and run:",
+        )
+        if outcome.uninstall_command is not None:
+            print(f"      {outcome.uninstall_command}")
     if outcome.tombstoned:
         info(
             f"cdui plugin sync 不會再把 {plugin_id} 裝回來；"

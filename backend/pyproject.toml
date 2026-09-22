@@ -108,6 +108,13 @@ dependencies = [
     # LLM provider proxy (/api/llm/*) upstream HTTP + SSE streaming. Also in
     # the dev extra for tests; listed here because the proxy is runtime code.
     "httpx>=0.27.0",
+    # `app.core.plugins.deps` parses installed distributions' requirements
+    # with it, to tell which of an uninstalled plugin's packages nothing else
+    # still needs (#414). It was already here through matplotlib,
+    # huggingface_hub and datasets; declared because this codebase now
+    # imports it itself. The floor is huggingface_hub's own, so declaring it
+    # narrows no resolution.
+    "packaging>=20.9",
     # tomllib is stdlib on 3.11+; pull the backport for the 3.10 floor so
     # `routes_plugins.py` and `scripts/plugins.py` import cleanly.
     'tomli>=2.0.0; python_version < "3.11"',

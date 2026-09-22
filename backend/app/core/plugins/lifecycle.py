@@ -24,7 +24,9 @@ needs today: an uninstall leaves the plugin's Python dependencies behind
 (uninstalling packages from inside the process that imported them is how you
 get a half-loaded interpreter serving requests -- see ``routes_packs.py``),
 and the only honest thing to do about that is to say so and hand over the
-command. The value carries the answer so that neither caller has to re-derive
+command -- for the ones nothing else still needs, since a line the user is
+told to run must not remove what CodefyUI or another plugin depends on
+(#414). The value carries the answer so that neither caller has to re-derive
 it from a manifest that is, by then, sometimes deleted.
 """
 
@@ -32,7 +34,6 @@ from __future__ import annotations
 
 import logging
 import shutil
-import sys
 from collections.abc import Collection
 from dataclasses import dataclass
 from pathlib import Path
@@ -41,7 +42,7 @@ from typing import Any
 from app.core import plugin_loader
 
 from .catalog import builtin_catalog_packs
-from .deps import is_safe_dep_name
+from .deps import is_safe_dep_name, manual_uninstall_command, orphaned_deps
 from .lockfile_lock import locked_lockfile
 from .manifest import manifest_python_deps
 
@@ -107,12 +108,18 @@ class UninstallOutcome:
     #: never a copy of ours to delete (a built-in pack is repo code; a linked
     #: one is the author's own working tree).
     files_removed: bool | None
-    #: ``[python_deps]`` names this plugin asked for, which are still
-    #: installed in the interpreter. See the module docstring for why nothing
-    #: uninstalls them.
+    #: ``[python_deps]`` names this plugin asked for that nothing else still
+    #: needs: they are not CodefyUI itself, no other installed distribution
+    #: requires them, no other installed plugin declares them, and no
+    #: Package Center pack installs them (``deps.orphaned_deps``). The rest
+    #: are left out because the command below would take them from whatever
+    #: needs them (#414). Empty, too, when that could not be worked out: it
+    #: is advice, and never the reason an uninstall fails. See the module
+    #: docstring for why nothing uninstalls these either.
     python_deps_left: tuple[str, ...]
     #: The command that WOULD remove those packages, to run by hand with the
-    #: server stopped; ``None`` when the plugin declared none.
+    #: server stopped, quoted as the install command is; ``None`` when there
+    #: are none.
     uninstall_command: str | None
     #: How to get this plugin back.
     reinstall_hint: str
@@ -177,7 +184,7 @@ def uninstall_plugin(
         if not entry:
             return None
 
-        deps = tuple(sorted(_declared_python_deps(plugin_id, lockfile)))
+        deps = _python_deps_left_behind(plugin_id, lockfile)
 
         files_removed: bool | None = None
         directory: Path | None = None
@@ -241,15 +248,54 @@ def _outcome(
         tombstoned=tombstoned,
         files_removed=files_removed,
         python_deps_left=deps,
-        uninstall_command=(
-            f"uv pip uninstall --python {sys.executable} {' '.join(deps)}"
-            if deps
-            else None
-        ),
+        uninstall_command=manual_uninstall_command(deps) if deps else None,
         reinstall_hint=f"cdui plugin install {plugin_id}",
         directory=directory,
         error=error,
     )
+
+
+def _python_deps_left_behind(
+    plugin_id: str, lockfile: dict[str, Any],
+) -> tuple[str, ...]:
+    """The declared packages this uninstall leaves that nothing else needs.
+
+    Read where the manifest is, and for the same reason: before the files
+    go. The one fact only the lockfile holds -- which OTHER plugins are
+    installed -- is gathered here; the rest of "does anything still need
+    it" is :func:`~.deps.orphaned_deps`'s. A plugin that declared nothing
+    costs nothing more: the distribution walk behind that call runs inside
+    this uninstall's lock, and only when there is a name to protect.
+
+    Never raises. This is advice about what the uninstall leaves, worked
+    out inside the uninstall's lock, and an exception here would abandon an
+    uninstall that has nothing wrong with it -- which is what a malformed
+    ``CODEFYUI_*`` variable did, through an ``app.config`` import on this
+    path (#414). So anything unexpected costs the advice and nothing else:
+    no package is named, and the reason is logged -- one line, no
+    traceback, because in the CLI that line lands on the user's terminal.
+    ``_reload_target`` in ``scripts/plugins.py`` strikes the same bargain
+    around its own ``app.config`` import.
+    """
+    try:
+        declared = _declared_python_deps(plugin_id, lockfile)
+        if not declared:
+            return ()
+        return tuple(sorted(orphaned_deps(
+            declared,
+            declared_elsewhere=_python_deps_of_other_plugins(
+                plugin_id, lockfile),
+        )))
+    except Exception as exc:
+        # ``%r``, not ``%s``: the ``str`` of a KeyError is the bare key, and a
+        # line that ends in a quoted word names no failure at all.
+        logger.warning(
+            "plugin uninstall: could not tell which of %s's Python packages "
+            "nothing else needs, so none are named: %r",
+            plugin_id,
+            exc,
+        )
+        return ()
 
 
 def _declared_python_deps(plugin_id: str, lockfile: dict[str, Any]) -> list[str]:
@@ -273,6 +319,31 @@ def _declared_python_deps(plugin_id: str, lockfile: dict[str, Any]) -> list[str]
     manifest = plugin_loader.read_manifest_safe(plugin_dir)
     return [name for name in manifest_python_deps(manifest)
             if is_safe_dep_name(name)]
+
+
+def _python_deps_of_other_plugins(
+    plugin_id: str, lockfile: dict[str, Any],
+) -> list[str]:
+    """Every ``[python_deps]`` name another installed plugin declares.
+
+    Disabled plugins count: switching one off keeps its files, and switching
+    it back on has to find its packages where it left them. Not vetted --
+    these names are only compared, never printed -- and a plugin whose
+    manifest cannot be read declares nothing this can see. Walked through
+    ``iter_plugin_dirs``, the rule discovery itself uses, like
+    :func:`installed_dir`.
+    """
+    names: list[str] = []
+    for other_id, plugin_dir in plugin_loader.iter_plugin_dirs(
+        plugin_loader.plugins_builtin_root(),
+        plugin_loader.plugins_user_root(),
+        lockfile,
+        include_disabled=True,
+    ):
+        if other_id != plugin_id:
+            names.extend(manifest_python_deps(
+                plugin_loader.read_manifest_safe(plugin_dir)))
+    return names
 
 
 def installed_dir(plugin_id: str, lockfile: dict[str, Any]) -> Path | None:

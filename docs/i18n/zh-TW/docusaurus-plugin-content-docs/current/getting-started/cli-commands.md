@@ -37,7 +37,7 @@ description: cdui 啟動器的 install、start、status、dev、build、外掛�
 | `cdui plugin list` | 列出已安裝的外掛包，以及尚待決定是否使用的內建外掛包。 |
 | `cdui plugin info <id \| catalog-name \| owner/repo[@ref]>` | 顯示外掛包的 manifest、涵蓋課程與節點名稱。若尚未安裝，只會讀取解析後 commit 中的 manifest，不會下載任何內容。 |
 | `cdui plugin search [query]` | 查詢外掛型錄。未提供 query 時，會列出完整型錄、標示已安裝項目，並為 GitHub 上的項目加上標籤（官方項目為 `[github, official]`）。 |
-| `cdui plugin uninstall <id>` | 移除已安裝的外掛包。若為內建外掛包，系統會記錄此決定，因此 `cdui plugin sync` 不會重新安裝；可用 `cdui plugin install <id>` 恢復。所有類型的外掛包都會保留其 Python 套件。執行中的伺服器已載入這些套件，直接移除可能使伺服器處於不完整狀態。若要釋放空間，請先停止伺服器，再手動移除套件。 |
+| `cdui plugin uninstall <id>` | 移除已安裝的外掛包。若為內建外掛包，系統會記錄此決定，因此 `cdui plugin sync` 不會重新安裝；可用 `cdui plugin install <id>` 恢復。所有類型的外掛包都會保留其 Python 套件。執行中的伺服器已載入這些套件，直接移除可能使伺服器處於不完整狀態。因此這個指令會列出外掛包在 `[python_deps]` 宣告、且其他地方都不再需要的套件，並印出能移除它們的 `uv pip uninstall` 指令，請在停止伺服器後執行。 |
 | `cdui plugin enable <id>` / `cdui plugin disable <id>` | 在不修改檔案的情況下啟用或停用已安裝外掛：切換 lockfile 中的 `enabled`，並熱重新載入執行中的伺服器。外掛未安裝時以 `1` 結束；外掛已處於要求狀態時不執行變更（離開碼 `0`）。 |
 | `cdui plugin link <path>` | 登記含有 `cdui.plugin.toml` 的本機外掛目錄，直接從原始位置載入，不複製檔案。`--force` 會覆蓋 id 相同的現有項目。 |
 | `cdui plugin unlink <id>` | 移除連結外掛的 lockfile 項目，不會修改原始檔案。 |
