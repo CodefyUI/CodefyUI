@@ -30,6 +30,11 @@ checked the result. The docs now cover what shipped since 2.7.0 — the
 Welcome screen, the device messages, the inspector's running state,
 workspace files — and every HTTP route the server has.
 
+Four bugs that could lose or destroy what a user had also went: a keyboard
+shortcut reaching past an open panel onto the canvas, a preset name escaping
+the presets folder, two plugin writers overwriting each other's record of
+what is installed, and a sweep discarding its own results without saying so.
+
 ### Changed
 
 - **The documentation matches 2.8.4.** New sections cover closing the last
@@ -52,6 +57,31 @@ workspace files — and every HTTP route the server has.
 - **NOTICE and the licensing page** say the Python dependencies are
   installed from PyPI, not redistributed. The licensing page names the two
   MPL-2.0 packages among them (certifi and tqdm).
+
+### Fixed
+
+- **A modal now takes the keyboard with it.** With the Package Center, the
+  Plugin Center, the template gallery or a git diff open, pressing Delete
+  deleted the selected nodes on the canvas behind it, and Shift+L silently
+  re-laid out the graph. Eight shortcuts were reaching past an open panel;
+  the layers editor still deletes its own layers, because it excludes itself.
+- **A preset name cannot escape the presets folder.** `Export as Subgraph`
+  turned the name straight into a filename without rejecting backslashes or
+  drive letters, so on Windows a name carrying path syntax wrote the file
+  outside the presets directory. Names are now checked before they become a
+  path and the result is verified to be inside it, and a refused name says
+  which rule it broke instead of showing `[object Object]`.
+- **Two writers can no longer erase each other's plugin installs.**
+  `installed.json` was read and written by seven places in the CLI and the
+  server with no lock between them, so an install, an uninstall or an enable
+  could vanish — including from a check for updates that found nothing to do.
+  Every writer now edits it under one lock, and a caller that cannot have the
+  lock is told so rather than left to overwrite.
+- **A sweep that loses its results says so.** When retention could not copy a
+  sweep's objectives across before deleting its children, the numbers were
+  gone with nothing recorded; the sweep row now carries the reason. `cancelling`
+  is documented for what it is: every running child was asked to stop, not a
+  promise that any of them will — read the outstanding count, not the clock.
 
 ## [2.8.4] — 2026-09-20
 
