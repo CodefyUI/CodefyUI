@@ -21,6 +21,7 @@ import '@xyflow/react/dist/style.css';
 
 import { useTabStore } from '../../store/tabStore';
 import { useToastStore } from '../../store/toastStore';
+import { useAnyModalOpen, type ModalName } from '../../store/modalState';
 import { useI18n, type TranslationKey } from '../../i18n';
 import { generateId } from '../../utils';
 import { CANVAS_MIN_ZOOM } from '../../styles/theme';
@@ -513,6 +514,13 @@ const nodeTypes: NodeTypes = {
   outputNode: OutputNode,
 };
 
+/**
+ * This editor IS a modal (`layersModalNodeId`), so its own open-ness must not
+ * disable its own Delete key — only something stacked ON TOP of it does
+ * (#475).
+ */
+const IGNORE_OWN_MODAL: readonly ModalName[] = ['layersModal'];
+
 function LayersFlowInner({
   initialLayersJson,
   onApply,
@@ -525,6 +533,7 @@ function LayersFlowInner({
   const { t } = useI18n();
   const { screenToFlowPosition, fitView } = useReactFlow();
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const anyModalOpen = useAnyModalOpen(IGNORE_OWN_MODAL);
 
   const initial = useMemo(() => {
     const parsed = graphToFlow(initialLayersJson);
@@ -1074,7 +1083,7 @@ function LayersFlowInner({
                 snapToGrid={snapEnabled}
                 snapGrid={[20, 20]}
                 proOptions={{ hideAttribution: true }}
-                deleteKeyCode="Delete"
+                deleteKeyCode={anyModalOpen ? null : 'Delete'}
                 onNodesDelete={(deleted) => {
                   const ids = new Set(deleted.map((n) => n.id));
                   setNodes((prev) => prev.filter((n) => !ids.has(n.id)));

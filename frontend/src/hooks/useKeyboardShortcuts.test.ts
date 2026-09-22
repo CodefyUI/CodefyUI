@@ -3,6 +3,7 @@ import { renderHook } from '@testing-library/react';
 import { useKeyboardShortcuts } from './useKeyboardShortcuts';
 import { useTabStore } from '../store/tabStore';
 import { useUIStore } from '../store/uiStore';
+import { useDialogStore } from '../store/dialogStore';
 import { useProjectStore } from '../store/projectStore';
 import { saveActiveGraph } from '../utils/saveActiveGraph';
 
@@ -16,9 +17,24 @@ let redo: ReturnType<typeof vi.fn>;
 let copySelectedNodes: ReturnType<typeof vi.fn>;
 let pasteNodes: ReturnType<typeof vi.fn>;
 let applyLayout: ReturnType<typeof vi.fn>;
+let openNodeDetail: ReturnType<typeof vi.fn>;
 let toggleShortcutsModal: ReturnType<typeof vi.fn>;
 let toggleSidebarCollapsed: ReturnType<typeof vi.fn>;
 let toggleBypassForSelection: ReturnType<typeof vi.fn>;
+
+const ORIGINAL_TABS = useTabStore.getState().tabs;
+const ORIGINAL_ACTIVE = useTabStore.getState().activeTabId;
+const TAB_ID = 'tab-shortcuts-test';
+
+/**
+ * Patch the active tab. The four per-tab modal ids (#475's gate reads them)
+ * and the selection Enter needs both live on the tab, not on the store root.
+ */
+function setActiveTab(patch: Record<string, unknown>) {
+  useTabStore.setState((s: any) => ({
+    tabs: s.tabs.map((t: any) => (t.id === TAB_ID ? { ...t, ...patch } : t)),
+  }) as any);
+}
 
 beforeEach(() => {
   undo = vi.fn();
@@ -26,6 +42,7 @@ beforeEach(() => {
   copySelectedNodes = vi.fn();
   pasteNodes = vi.fn();
   applyLayout = vi.fn();
+  openNodeDetail = vi.fn();
   toggleShortcutsModal = vi.fn();
   toggleSidebarCollapsed = vi.fn();
   // Defaults to "nothing bypassable was selected", so mod+B falls through to
@@ -33,20 +50,44 @@ beforeEach(() => {
   toggleBypassForSelection = vi.fn().mockReturnValue(false);
 
   // Override only the actions exercised here; leave the rest of the store intact.
+  // One tab with a stable id, so the per-tab modal ids (#475) are ours to set.
   useTabStore.setState({
-    undo, redo, copySelectedNodes, pasteNodes, applyLayout, toggleBypassForSelection,
+    tabs: [
+      {
+        ...ORIGINAL_TABS[0],
+        id: TAB_ID,
+        nodes: [],
+        selectedNodeId: null,
+        presetModalNodeId: null,
+        layersModalNodeId: null,
+        nodeDetailNodeId: null,
+        vizModalNodeId: null,
+      },
+    ],
+    activeTabId: TAB_ID,
+    undo, redo, copySelectedNodes, pasteNodes, applyLayout, openNodeDetail,
+    toggleBypassForSelection,
   } as any);
   useUIStore.setState({
     toggleShortcutsModal,
     toggleSidebarCollapsed,
     lastLayoutMode: 'all',
+    // Every modal flag the #475 gate reads, reset so one test's open panel
+    // cannot leak into the next.
+    shortcutsModalOpen: false,
+    templateGalleryOpen: false,
+    packCenterOpen: false,
+    pluginCenterOpen: false,
+    gitDiff: null,
   } as any);
+  useDialogStore.setState({ active: null, resolve: null });
   useProjectStore.setState({ projectDir: null, projectName: null, loaded: false });
   vi.mocked(saveActiveGraph).mockClear();
 });
 
 afterEach(() => {
   vi.restoreAllMocks();
+  useTabStore.setState({ tabs: ORIGINAL_TABS, activeTabId: ORIGINAL_ACTIVE } as any);
 });
 
 /**
@@ -314,5 +355,139 @@ describe('useKeyboardShortcuts', () => {
     // After unmount the handler no longer fires.
     dispatchKey({ key: 'z', ctrlKey: true });
     expect(undo).not.toHaveBeenCalled();
+  });
+});
+
+// ── #475: nothing reaches the canvas from behind a modal ────────────────────
+//
+// The handler is bound to `document`, and a modal panel is a portal at the top
+// of that same document — so before this gate every chord below fired on the
+// graph the user could not even see. Shift+L was the worst of them: the user
+// closed the panel and found the whole graph re-laid-out.
+
+/** Each modal, as the store write that opens it. */
+const MODALS: Array<[string, () => void]> = [
+  ['the Package Center', () => useUIStore.setState({ packCenterOpen: true } as any)],
+  ['the Plugin Center', () => useUIStore.setState({ pluginCenterOpen: true } as any)],
+  ['the Template Gallery', () => useUIStore.setState({ templateGalleryOpen: true } as any)],
+  ['a Git diff', () => useUIStore.setState({ gitDiff: { path: 'a.py', scope: 'worktree' } } as any)],
+  ['the shortcuts sheet', () => useUIStore.setState({ shortcutsModalOpen: true } as any)],
+  [
+    'a confirm dialog',
+    () => useDialogStore.setState({ active: { kind: 'confirm', title: 'sure?' }, resolve: null }),
+  ],
+  ['a node detail modal', () => setActiveTab({ nodeDetailNodeId: 'n1' })],
+  ['a preset modal', () => setActiveTab({ presetModalNodeId: 'n1' })],
+  ['the layers editor', () => setActiveTab({ layersModalNodeId: 'n1' })],
+  ['a viz viewer', () => setActiveTab({ vizModalNodeId: 'n1' })],
+];
+
+describe('useKeyboardShortcuts behind an open modal', () => {
+  it.each(MODALS)('%s blocks Shift+L, so the graph is where the user left it', (_name, open) => {
+    open();
+    renderHook(() => useKeyboardShortcuts());
+    const e = dispatchKey({ key: 'L', shiftKey: true });
+    expect(applyLayout).not.toHaveBeenCalled();
+    expect(e.defaultPrevented).toBe(false);
+  });
+
+  it.each(MODALS)('%s blocks Ctrl+Z', (_name, open) => {
+    open();
+    renderHook(() => useKeyboardShortcuts());
+    const e = dispatchKey({ key: 'z', ctrlKey: true });
+    expect(undo).not.toHaveBeenCalled();
+    expect(e.defaultPrevented).toBe(false);
+  });
+
+  it('the Package Center blocks redo, copy, paste, save and both sidebar chords', () => {
+    useProjectStore.setState({ projectDir: '/proj', projectName: 'proj', loaded: true });
+    useUIStore.setState({ packCenterOpen: true } as any);
+    renderHook(() => useKeyboardShortcuts());
+
+    dispatchKey({ key: 'z', ctrlKey: true, shiftKey: true });
+    dispatchKey({ key: 'y', ctrlKey: true });
+    dispatchKey({ key: 'c', ctrlKey: true });
+    dispatchKey({ key: 'v', ctrlKey: true });
+    dispatchKey({ key: 's', ctrlKey: true });
+    dispatchKey({ key: 'b', ctrlKey: true });
+    dispatchKey({ key: 'b', ctrlKey: true, shiftKey: true });
+
+    expect(redo).not.toHaveBeenCalled();
+    expect(copySelectedNodes).not.toHaveBeenCalled();
+    expect(pasteNodes).not.toHaveBeenCalled();
+    expect(saveActiveGraph).not.toHaveBeenCalled();
+    expect(toggleBypassForSelection).not.toHaveBeenCalled();
+    expect(toggleSidebarCollapsed).not.toHaveBeenCalled();
+  });
+
+  it('Ctrl+C and Ctrl+V are blocked even with nothing selected to copy', () => {
+    // The old yield was "is there a text selection?". A user reading a panel
+    // has no selection, so Ctrl+C fell through and copied the canvas NODES
+    // from behind it — the panel's own text was never what got copied.
+    vi.spyOn(window, 'getSelection').mockReturnValue({ toString: () => '' } as Selection);
+    useUIStore.setState({ packCenterOpen: true } as any);
+    renderHook(() => useKeyboardShortcuts());
+
+    const copy = dispatchKey({ key: 'c', ctrlKey: true });
+    const paste = dispatchKey({ key: 'v', ctrlKey: true });
+
+    expect(copySelectedNodes).not.toHaveBeenCalled();
+    expect(pasteNodes).not.toHaveBeenCalled();
+    // Unprevented, so the browser's own copy/paste still works in the panel.
+    expect(copy.defaultPrevented).toBe(false);
+    expect(paste.defaultPrevented).toBe(false);
+  });
+
+  it('? does not stack the shortcuts sheet on top of the Package Center', () => {
+    useUIStore.setState({ packCenterOpen: true } as any);
+    renderHook(() => useKeyboardShortcuts());
+    const e = dispatchKey({ key: '?' });
+    expect(toggleShortcutsModal).not.toHaveBeenCalled();
+    expect(e.defaultPrevented).toBe(false);
+  });
+
+  it('? still closes the shortcuts sheet, which is the only modal it may answer', () => {
+    // The gate cannot swallow this one: `?` is what opened the sheet, and a
+    // key that opens a thing it can never close is worse than no key.
+    useUIStore.setState({ shortcutsModalOpen: true } as any);
+    renderHook(() => useKeyboardShortcuts());
+    const e = dispatchKey({ key: '?' });
+    expect(toggleShortcutsModal).toHaveBeenCalledTimes(1);
+    expect(e.defaultPrevented).toBe(true);
+  });
+
+  it.each(MODALS)('%s blocks Enter from opening a node detail', (_name, open) => {
+    setActiveTab({
+      nodes: [{ id: 'n1', type: 'baseNode', position: { x: 0, y: 0 }, data: {} }],
+      selectedNodeId: 'n1',
+    });
+    open();
+    renderHook(() => useKeyboardShortcuts());
+    const e = dispatchKey({ key: 'Enter' });
+    expect(openNodeDetail).not.toHaveBeenCalled();
+    expect(e.defaultPrevented).toBe(false);
+  });
+
+  it('Enter opens the detail modal when nothing is in the way', () => {
+    // The gate's counterweight: over-blocking would be just as much a bug.
+    setActiveTab({
+      nodes: [{ id: 'n1', type: 'baseNode', position: { x: 0, y: 0 }, data: {} }],
+      selectedNodeId: 'n1',
+    });
+    renderHook(() => useKeyboardShortcuts());
+    const e = dispatchKey({ key: 'Enter' });
+    expect(openNodeDetail).toHaveBeenCalledWith('n1');
+    expect(e.defaultPrevented).toBe(true);
+  });
+
+  it('every shortcut is back once the last modal closes', () => {
+    useUIStore.setState({ packCenterOpen: true } as any);
+    renderHook(() => useKeyboardShortcuts());
+    dispatchKey({ key: 'z', ctrlKey: true });
+    expect(undo).not.toHaveBeenCalled();
+
+    useUIStore.setState({ packCenterOpen: false } as any);
+    dispatchKey({ key: 'z', ctrlKey: true });
+    expect(undo).toHaveBeenCalledTimes(1);
   });
 });

@@ -134,6 +134,13 @@ beforeEach(() => {
     draggingSourceType: null,
     reconnectingHandle: null,
     isCanvasPanning: false,
+    // Every modal flag the #475 delete-key gate reads, so one test's open
+    // panel cannot leak into the next.
+    shortcutsModalOpen: false,
+    templateGalleryOpen: false,
+    packCenterOpen: false,
+    pluginCenterOpen: false,
+    gitDiff: null,
   });
   useNodeDefStore.setState({ definitions: [makeDef()], presets: [] });
   useDialogStore.setState({ active: null, resolve: null });
@@ -1031,5 +1038,50 @@ describe('change handlers passthrough', () => {
     renderCanvas();
     act(() => captured.rf.onEdgesChange([{ id: 'e1', type: 'remove' }]));
     expect(activeTab().edges).toHaveLength(0);
+  });
+});
+
+// ── deleteKeyCode behind a modal (#475) ─────────────────────────────────────
+//
+// React Flow binds Delete on `document` and filters only on `isInputDOMNode`.
+// A panel's focus target is a `tabIndex={-1}` div, not an input, so the filter
+// passed and Delete destroyed the selection on the canvas behind the panel.
+// Handing React Flow `null` is what unbinds the key for as long as a modal is
+// up; it is one prop, so this suite asserts the prop.
+
+describe('FlowCanvas delete key with a modal open', () => {
+  const MODALS: Array<[string, () => void]> = [
+    ['the Package Center', () => useUIStore.setState({ packCenterOpen: true })],
+    ['the Plugin Center', () => useUIStore.setState({ pluginCenterOpen: true })],
+    ['the Template Gallery', () => useUIStore.setState({ templateGalleryOpen: true })],
+    ['a Git diff', () => useUIStore.setState({ gitDiff: { path: 'a.py', scope: 'worktree' } })],
+    ['the shortcuts sheet', () => useUIStore.setState({ shortcutsModalOpen: true })],
+    [
+      'a confirm dialog',
+      () => useDialogStore.setState({ active: { kind: 'confirm', title: 'sure?' }, resolve: null }),
+    ],
+    ['a node detail modal', () => setTab({ nodeDetailNodeId: 'n1' } as any)],
+    ['a preset modal', () => setTab({ presetModalNodeId: 'n1' } as any)],
+    ['the layers editor', () => setTab({ layersModalNodeId: 'n1' } as any)],
+    ['a viz viewer', () => setTab({ vizModalNodeId: 'n1' } as any)],
+  ];
+
+  it.each(MODALS)('unbinds Delete while %s is open', (_name, open) => {
+    setTab({ nodes: [node('a')] });
+    open();
+    renderCanvas();
+    expect(captured.rf.deleteKeyCode).toBeNull();
+  });
+
+  it('gives Delete back when the panel closes', () => {
+    // The canvas has to SUBSCRIBE to the flag, not read it once on mount:
+    // closing the panel has to re-arm the key without remounting the canvas.
+    setTab({ nodes: [node('a')] });
+    useUIStore.setState({ packCenterOpen: true });
+    renderCanvas();
+    expect(captured.rf.deleteKeyCode).toBeNull();
+
+    act(() => useUIStore.setState({ packCenterOpen: false }));
+    expect(captured.rf.deleteKeyCode).toBe('Delete');
   });
 });
