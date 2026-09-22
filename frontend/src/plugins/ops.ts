@@ -66,6 +66,12 @@ export interface ApplyOutcome {
   results: OpResult[];
   refs: Record<string, string>;
   dirtyIds: string[];
+  /**
+   * True when some op wrote. An op asked for what is already there -- a node
+   * moved to where it stands, a note given the text it has -- writes nothing
+   * and hands its node back as it came in (#397). The commit path does not
+   * rely on this alone: it compares the document as well.
+   */
   mutated: boolean;
 }
 
@@ -94,6 +100,29 @@ function boundOffsetFrom(
   parentPosition: { x: number; y: number },
 ): { x: number; y: number } {
   return { x: notePosition.x - parentPosition.x, y: notePosition.y - parentPosition.y };
+}
+
+/**
+ * True when `move_node` would leave the graph exactly as it is (#397).
+ *
+ * The node already stands at `target`, so the notes bound to it follow by a
+ * zero delta; and when it is a bound note itself, the offset re-derived from
+ * where it stands is the one it already stores. That last check is not a
+ * formality: a stored offset that disagrees with the note's position is
+ * repaired by the move, and a repair is an edit.
+ */
+function moveChangesNothing(
+  nodes: Node<NodeData>[],
+  node: Node<NodeData>,
+  target: { x: number; y: number },
+): boolean {
+  if (node.position.x !== target.x || node.position.y !== target.y) return false;
+  const offset = node.data.boundOffset;
+  if (node.type !== 'noteNode' || !node.data.boundToNodeId || !offset) return true;
+  const parent = nodes.find((p) => p.id === node.data.boundToNodeId);
+  if (!parent) return true;
+  const derived = boundOffsetFrom(target, parent.position);
+  return derived.x === offset.x && derived.y === offset.y;
 }
 
 /**
@@ -195,6 +224,25 @@ function validateParams(
     if (err) return err;
   }
   return null;
+}
+
+/**
+ * True when every value in `next` is the one `current` already holds (#397).
+ *
+ * By `===`, so a param holding an object counts as unchanged only when it is
+ * that very object -- the side that errs toward writing. Either argument can
+ * be missing -- `current` on a node out of a hand-edited record, `next` from a
+ * plugin that sent no `params` -- and the spread this stands in front of never
+ * threw on either, so neither does this.
+ */
+function paramsAlreadyHold(
+  current: Record<string, unknown> | undefined,
+  next: Record<string, unknown> | undefined,
+): boolean {
+  const held = current ?? {};
+  return Object.entries(next ?? {}).every(
+    ([name, value]) => Object.prototype.hasOwnProperty.call(held, name) && held[name] === value,
+  );
 }
 
 export function applyGraphOps(
@@ -319,6 +367,14 @@ export function applyGraphOps(
           const err = validateParams(def, op.params);
           if (err) return fail(err);
         }
+        // Every value is already the one asked for (#397). A fresh `params`
+        // object would read as an edit -- the revision rule compares it by
+        // reference -- and would mark for re-execution a node that has
+        // nothing new to run with.
+        if (paramsAlreadyHold(node.data.params, op.params)) {
+          results.push({ index, ok: true, node_id: id });
+          return;
+        }
         nodes = nodes.map((n) =>
           n.id === id
             ? { ...n, data: { ...n.data, params: { ...n.data.params, ...op.params } } }
@@ -403,6 +459,11 @@ export function applyGraphOps(
           return fail('move_node: position must be two finite numbers');
         }
         const moved = nodes.find((n) => n.id === id)!;
+        // Already there (#397): the op is done, and there is nothing to write.
+        if (moveChangesNothing(nodes, moved, target)) {
+          results.push({ index, ok: true, node_id: id });
+          return;
+        }
         const dx = target.x - moved.position.x;
         const dy = target.y - moved.position.y;
         nodes = nodes.map((n) => {
@@ -457,6 +518,14 @@ export function applyGraphOps(
           );
         }
         const id = op.segment_id ?? generateId();
+        // Already this very segment (#397). Replacing it would move it to the
+        // end of the list, which is written to the file in order: an edit
+        // that draws the same bubble.
+        const existing = segmentGroups.find((s) => s.id === id);
+        if (existing && existing.headNodeId === headId && existing.tailNodeId === tailId) {
+          results.push({ index, ok: true, segment_id: id });
+          return;
+        }
         segmentGroups = [
           ...segmentGroups.filter((s) => s.id !== id),
           { id, headNodeId: headId, tailNodeId: tailId },
@@ -540,6 +609,14 @@ export function applyGraphOps(
           const colorError = validateNoteColor(op.color);
           if (colorError) return fail(`update_note: ${colorError}`);
         }
+        // Already says this, in this colour (#397).
+        if (
+          (op.text === undefined || op.text === note.data.noteContent)
+          && (op.color === undefined || op.color === note.data.noteColor)
+        ) {
+          results.push({ index, ok: true, node_id: id });
+          return;
+        }
         nodes = nodes.map((n) =>
           n.id === id
             ? {
@@ -567,6 +644,11 @@ export function applyGraphOps(
         const labelError = validateNodeLabel(op.label);
         if (labelError) return fail(`set_node_meta: ${labelError}`);
         const label = op.label.trim();
+        // Already named this (#397).
+        if (label === target.data.label) {
+          results.push({ index, ok: true, node_id: id });
+          return;
+        }
         nodes = nodes.map((n) =>
           n.id === id ? { ...n, data: { ...n.data, label } } : n,
         );

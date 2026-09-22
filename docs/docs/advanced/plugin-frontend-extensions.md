@@ -193,7 +193,7 @@ Re-adding an id replaces the button. The remove function you get back belongs to
 |--------|-----------|-------------|
 | `getGraph` | `() => SerializedGraph` | Return the **whole** graph (nodes, edges, params, block definitions under `subgraphs`, and `settings` when the graph assigns a device) — always the top level, whatever the user has open. Treat it as read-only; see below. |
 | `getNodeDefinitions` | `() => NodeDefinition[]` | Return the full node palette: types, port schemas, param schemas. |
-| `applyOperations` | `(ops: GraphOp[]) => ApplyResult` | Apply a batch of graph operations **synchronously** (returns the result directly — not a Promise). The whole batch is committed as a **single undo snapshot**, and it applies to the canvas the user has open — see [Which level the user is looking at](#which-level-the-user-is-looking-at). |
+| `applyOperations` | `(ops: GraphOp[]) => ApplyResult` | Apply a batch of graph operations **synchronously** (returns the result directly — not a Promise). The whole batch is committed as **at most one undo step**, and it applies to the canvas the user has open — see [Which level the user is looking at](#which-level-the-user-is-looking-at). |
 | `onGraphChanged` | `(callback: () => void) => () => void` | Subscribe to graph changes — including the user stepping into or out of a block. The callback takes no arguments; call `getGraph()` from it. Returns an unsubscribe function. |
 | `getView` | `() => GraphView` | **apiVersion 4.** Read-only: which level of the graph the user is looking at. |
 
@@ -238,7 +238,7 @@ interface ApplyResult {
 }
 ```
 
-**Batch semantics:** All ops in a single `applyOperations` call form one undo snapshot — pressing Ctrl+Z after an AI edit undoes the entire batch at once. Ops are applied in order; a failing op is skipped and reported in its `results` entry (`ok: false` plus an `error`), while the remaining ops continue. A `ref` alias created by an earlier `add_node` in the same batch is available to later ops, and is echoed back in `refs`.
+**Batch semantics:** All ops in a single `applyOperations` call form at most one undo step — pressing Ctrl+Z after an AI edit undoes the entire batch at once, and a batch that leaves the graph as it was adds none. Ops are applied in order; a failing op is skipped and reported in its `results` entry (`ok: false` plus an `error`), while the remaining ops continue. A `ref` alias created by an earlier `add_node` in the same batch is available to later ops, and is echoed back in `refs`.
 
 #### Which level the user is looking at
 
@@ -382,7 +382,7 @@ if (result.conflict === "revision_mismatch") {
   api.ui.toast("That tab is read-only — promote into an editable one.", "warning");
 } else if (result.conflict === "editing_subgraph") {
   api.ui.toast("Step out of the block first — the write is waiting.", "warning");
-} else if (!result.committed) {
+} else if (!result.committed && result.results.some((r) => !r.ok)) {
   const failed = result.results.filter((r) => !r.ok);
   api.ui.toast(`Nothing applied: ${failed.map((r) => r.error).join("; ")}`, "error");
 } else {
@@ -398,11 +398,11 @@ The checks run in this order, and each one returns without changing anything:
 4. `expectedRevision`, if you passed one, must equal the tab's `revision`, else `conflict: "revision_mismatch"` and the **current** revision, so you can re-arm without a second read.
 5. The batch is applied to a copy.
 6. With `atomic: true`, if any op failed, nothing is written: `committed: false`, `revision` unchanged, and the **full-length** `results` so you can see which op was wrong.
-7. Otherwise, if anything changed: one undo snapshot, one write, `committed: true`, and the new `revision`. A batch that changes nothing writes nothing and pushes no undo step.
+7. Otherwise, if anything changed: one undo snapshot, one write, `committed: true`, and the new `revision`. A batch that leaves the document exactly as it was commits nothing and adds no undo step, even when every op in it succeeded — a `move_node` to where the node already stands, for example — so `committed: false` on its own does not mean an op failed.
 
 Whenever a call commits nothing — a refusal, a failed `atomic` preflight, a batch that changed nothing — `node_count` and `edge_count` describe the tab as it stands, so a plugin that logs them is never handed the counts of a graph that was thrown away. `unknown_tab` is the exception: there is no tab to count.
 
-Conflicts are **returned, never thrown**. A batch is still one undo step, and per-op semantics are unchanged from `api.graph.applyOperations`: without `atomic`, a failing op is skipped and reported while the rest apply. A commit that leaves the graph without the node a detail modal or the canvas selection names clears both, so an undo restoring that node cannot pop the modal open by itself.
+Conflicts are **returned, never thrown**. A batch is still at most one undo step, and per-op semantics are unchanged from `api.graph.applyOperations`: without `atomic`, a failing op is skipped and reported while the rest apply. A commit that leaves the graph without the node a detail modal or the canvas selection names clears both, so an undo restoring that node cannot pop the modal open by itself.
 
 ```ts
 type WorkspaceConflict =

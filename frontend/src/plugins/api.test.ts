@@ -59,6 +59,30 @@ describe('graph surface', () => {
     expect(useTabStore.getState().getActiveTab().undoStack.length).toBe(before);
   });
 
+  it('pushes no undo snapshot for a batch that leaves the graph as it was, and keeps redo (#397)', () => {
+    // Every op succeeds and nothing changes: a plugin re-applying a position
+    // it already applied. Pushing a frame for that also empties the redo
+    // stack, so the legacy path needs the promise as much as the workspace one.
+    const api = freshApi();
+    const added = api.graph.applyOperations([
+      { op: 'add_node', node_type: 'Source', position: { x: 0, y: 0 } },
+    ]);
+    const id = added.results[0].node_id!;
+    api.graph.applyOperations([{ op: 'move_node', node_id: id, position: { x: 40, y: 40 } }]);
+    useTabStore.getState().undo();
+    const before = useTabStore.getState().getActiveTab();
+    expect(before.redoStack).toHaveLength(1);
+
+    const result = api.graph.applyOperations([
+      { op: 'move_node', node_id: id, position: { x: 0, y: 0 } },
+    ]);
+
+    expect(result.results[0].ok).toBe(true);
+    const after = useTabStore.getState().getActiveTab();
+    expect(after.undoStack).toHaveLength(before.undoStack.length);
+    expect(after.redoStack).toHaveLength(1);
+  });
+
   it('getGraph returns the serialized active tab', () => {
     const api = freshApi();
     api.graph.applyOperations([{ op: 'add_node', node_type: 'Source' }]);

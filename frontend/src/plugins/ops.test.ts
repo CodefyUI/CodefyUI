@@ -147,6 +147,22 @@ describe('applyGraphOps — set_params / remove_node / remove_edge / clear / lay
     expect(bad.results[0].ok).toBe(false);
   });
 
+  it('set_params with the values a node already has writes nothing (#397)', () => {
+    const { nodes, edges, a } = seeded();
+    // `a` was built with its defaults: size 8, mode 'a'.
+    const r = run([{ op: 'set_params', node_id: a.id, params: { size: 8, mode: 'a' } }], nodes, edges);
+    expect(r.results[0]).toMatchObject({ ok: true, node_id: a.id });
+    expect(r.mutated).toBe(false);
+    expect(r.nodes.find((n) => n.id === a.id)).toBe(a);
+    // Nothing changed, so there is nothing to re-run either.
+    expect(r.dirtyIds).toEqual([]);
+
+    // One value that differs is an edit again.
+    const changed = run([{ op: 'set_params', node_id: a.id, params: { size: 8, mode: 'b' } }], nodes, edges);
+    expect(changed.mutated).toBe(true);
+    expect(changed.dirtyIds).toEqual([a.id]);
+  });
+
   it('remove_node drops the node and its edges', () => {
     const { nodes, edges, a } = seeded();
     const r = run([{ op: 'remove_node', node_id: a.id }], nodes, edges);
@@ -254,6 +270,33 @@ describe('applyGraphOps — move_node', () => {
     const r = run([{ op: 'move_node', node_id: a.id, position: { x: 7, y: 8 } }], nodes);
     expect(r.nodes.find((n) => n.id === a.id)!.data).toBe(before);
   });
+
+  it('writes nothing for a move to where the node already stands (#397)', () => {
+    const { nodes, a } = seeded();
+    const r = run([{ op: 'move_node', node_id: a.id, position: { x: 0, y: 0 } }], nodes);
+    expect(r.results[0]).toMatchObject({ ok: true, node_id: a.id });
+    expect(r.mutated).toBe(false);
+    // Every node handed back as it came in, the note bound to `a` included.
+    expect(r.nodes.every((n, i) => n === nodes[i])).toBe(true);
+  });
+
+  it('a bound note moved to where it sits writes nothing, unless its offset needs repair (#397)', () => {
+    const { nodes } = seeded();
+    // note1 sits at (30, 40) over a parent at (0, 0): the stored offset agrees.
+    const note = nodes.find((n) => n.id === 'note1')!;
+    const same = run([{ op: 'move_node', node_id: 'note1', position: { x: 30, y: 40 } }], nodes);
+    expect(same.mutated).toBe(false);
+    expect(same.nodes.find((n) => n.id === 'note1')).toBe(note);
+
+    // An offset that disagrees with where the note sits is re-derived by the
+    // move, the way a drag re-derives it, and a repair is an edit.
+    const stale = nodes.map((n) => (n.id === 'note1'
+      ? { ...n, data: { ...n.data, boundOffset: { x: 5, y: 5 } } }
+      : n));
+    const repaired = run([{ op: 'move_node', node_id: 'note1', position: { x: 30, y: 40 } }], stale);
+    expect(repaired.mutated).toBe(true);
+    expect(repaired.nodes.find((n) => n.id === 'note1')!.data.boundOffset).toEqual({ x: 30, y: 40 });
+  });
 });
 
 describe('applyGraphOps — set_segment / remove_segment', () => {
@@ -283,6 +326,23 @@ describe('applyGraphOps — set_segment / remove_segment', () => {
     );
     expect(r.segmentGroups).toHaveLength(1);
     expect(r.segmentGroups[0]).toEqual({ id: 's1', headNodeId: b.id, tailNodeId: b.id });
+  });
+
+  it('re-setting a segment exactly as it stands writes nothing and keeps its place (#397)', () => {
+    const { nodes, edges, a, b } = chain();
+    const groups: SegmentGroup[] = [
+      { id: 's1', headNodeId: a.id, tailNodeId: b.id },
+      { id: 's2', headNodeId: b.id, tailNodeId: b.id },
+    ];
+    const r = run(
+      [{ op: 'set_segment', segment_id: 's1', head_node_id: a.id, tail_node_id: b.id }],
+      nodes, edges, groups,
+    );
+    expect(r.results[0]).toMatchObject({ ok: true, segment_id: 's1' });
+    expect(r.mutated).toBe(false);
+    // Not moved to the end: the list is written to the file in order, so a
+    // move would be an edit that draws the same bubble.
+    expect(r.segmentGroups).toBe(groups);
   });
 
   it('refuses head and tail with no data-edge path between them', () => {
@@ -462,6 +522,29 @@ describe('applyGraphOps — add_note / update_note', () => {
     expect(r.results[0].ok).toBe(false);
     expect(r.mutated).toBe(false);
   });
+
+  it('update_note with the text and colour a note already has writes nothing (#397)', () => {
+    const added = run([{ op: 'add_note', text: 'draft', color: '#1a2d3d' }]);
+    const noteId = added.results[0].node_id!;
+    const note = added.nodes.find((n) => n.id === noteId)!;
+    for (const op of [
+      { op: 'update_note', node_id: noteId, text: 'draft' },
+      { op: 'update_note', node_id: noteId, color: '#1a2d3d' },
+      { op: 'update_note', node_id: noteId, text: 'draft', color: '#1a2d3d' },
+    ] as GraphOp[]) {
+      const r = run([op], added.nodes);
+      expect(r.results[0].ok, JSON.stringify(op)).toBe(true);
+      expect(r.mutated, JSON.stringify(op)).toBe(false);
+      expect(r.nodes.find((n) => n.id === noteId), JSON.stringify(op)).toBe(note);
+    }
+
+    // Either half differing is an edit again.
+    const recoloured = run(
+      [{ op: 'update_note', node_id: noteId, text: 'draft', color: '#1a3d1a' }],
+      added.nodes,
+    );
+    expect(recoloured.mutated).toBe(true);
+  });
 });
 
 describe('applyGraphOps — set_node_meta', () => {
@@ -478,6 +561,16 @@ describe('applyGraphOps — set_node_meta', () => {
     // The label is metadata, not a param: an agent naming a node must not
     // look to a consumer like a parameter change.
     expect(r.nodes[0].data.params).toEqual(a.data.params);
+  });
+
+  it('set_node_meta with the label a node already has writes nothing (#397)', () => {
+    const { nodes, a } = seeded();
+    const named = run([{ op: 'set_node_meta', node_id: a.id, label: 'Encoder input' }], nodes);
+    // Compared after the trim, since the trimmed label is what would be written.
+    const r = run([{ op: 'set_node_meta', node_id: a.id, label: '  Encoder input ' }], named.nodes);
+    expect(r.results[0]).toMatchObject({ ok: true, node_id: a.id });
+    expect(r.mutated).toBe(false);
+    expect(r.nodes[0]).toBe(named.nodes[0]);
   });
 
   it('rejects a blank, multi-line or over-long label and a note target', () => {

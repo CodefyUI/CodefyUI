@@ -459,6 +459,11 @@ export interface WorkspaceApplyResult extends ApplyResult {
    * same way. Unchanged by a conflict or a failed `atomic` preflight.
    */
   revision: number;
+  /**
+   * False when nothing was written: a conflict, a failed `atomic` preflight,
+   * or a batch that left the document exactly as it was — which commits
+   * nothing and adds no undo step, even when every op in it succeeded.
+   */
   committed: boolean;
   conflict?: WorkspaceConflict;
 }
@@ -535,7 +540,8 @@ export interface CodefyUIPluginAPI {
     getGraph(): SerializedGraph;
     getNodeDefinitions(): NodeDefinition[];
     /**
-     * Synchronous — returns the result directly, committed as one undo step.
+     * Synchronous — returns the result directly, committed as at most one
+     * undo step: a batch that leaves the graph as it was adds none.
      *
      * **A batch applies to the canvas the user has open, which is not always
      * the top level.** Entering a block replaces the canvas with that block's
@@ -605,8 +611,8 @@ export interface CodefyUIPluginAPI {
      */
     snapshot(tabId?: string): WorkspaceSnapshot;
     /**
-     * Apply a batch to a named tab, as one undo step, under an optional
-     * compare-and-swap.
+     * Apply a batch to a named tab, as at most one undo step, under an
+     * optional compare-and-swap.
      *
      * Checked in a fixed order, each refusal leaving the tab untouched:
      * unknown tab, read-only tab, the user is inside a block, stale
