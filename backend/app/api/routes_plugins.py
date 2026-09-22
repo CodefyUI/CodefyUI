@@ -98,6 +98,7 @@ from ..core.plugins.listing import (
     installed_facts,
     nodes_for_plugin,
 )
+from ..core.plugins.lockfile_lock import LockfileBusy
 from ..core.plugins.reload import rediscover_now
 from ..core.plugins.service import PluginService, StoredInspection, UnknownJob
 
@@ -126,6 +127,14 @@ _MISSING = frozenset({404, 422})
 #: body says so while the reason phrase only says "Forbidden" -- and 429 is
 #: the same fact from whatever sits in front of it.
 _RATE_LIMITED = frozenset({403, 429})
+
+#: How long a REQUEST may wait for the plugin lockfile's writer lock before
+#: it is refused. Short, and short for a structural reason: the two handlers
+#: that edit the lockfile are ``async def``, so they run ON the event loop --
+#: a generous wait here would stall every other request in the process,
+#: which is a worse answer than "come back in a moment". The CLI, which has
+#: only itself to block, waits far longer.
+_LOCKFILE_WAIT_S = 0.2
 
 
 class PluginInspectRequest(BaseModel):
@@ -750,7 +759,17 @@ async def uninstall_plugin(plugin_id: str, request: Request) -> dict[str, Any]:
     """
     _refuse_while_busy(request, plugin_id)
 
-    outcome = lifecycle.uninstall_plugin(plugin_id)
+    try:
+        outcome = lifecycle.uninstall_plugin(
+            plugin_id, lock_timeout=_LOCKFILE_WAIT_S)
+    except LockfileBusy:
+        # Somebody else -- ``cdui plugin`` in a terminal, most likely -- is
+        # between their read of the lockfile and their write of it. Refused
+        # rather than waited out: this handler runs on the event loop, and
+        # nothing was deleted, so asking again is the whole recovery. No
+        # ``job_id`` beside the code, unlike the other ``busy`` here: there
+        # is no job to follow, only a moment to wait.
+        raise _coded(409, "busy") from None
     if outcome is None:
         raise _coded(404, "not_installed")
     if not outcome.removed:
@@ -881,12 +900,20 @@ def _set_plugin_enabled(plugin_id: str, enabled: bool) -> dict[str, Any]:
     """Shared implementation behind the two toggle endpoints.
 
     Returns the new state on success; raises HTTPException 404 when the
-    plugin is not installed. Hot-reloads the registry so the change is
-    immediately visible without restarting the server -- including when the
-    flag was already in the requested state, because a client that asks
-    twice is usually a client whose registry disagrees with the lockfile.
+    plugin is not installed, or 409 ``busy`` when another writer holds the
+    lockfile. Hot-reloads the registry so the change is immediately visible
+    without restarting the server -- including when the flag was already in
+    the requested state, because a client that asks twice is usually a client
+    whose registry disagrees with the lockfile.
     """
-    if lifecycle.set_enabled(plugin_id, enabled) is None:
+    try:
+        flipped = lifecycle.set_enabled(
+            plugin_id, enabled, lock_timeout=_LOCKFILE_WAIT_S)
+    except LockfileBusy:
+        # See the uninstall handler: refused rather than waited out, because
+        # this runs on the event loop and the flag was not flipped.
+        raise _coded(409, "busy") from None
+    if flipped is None:
         raise HTTPException(
             status_code=404,
             detail=f"Plugin '{plugin_id}' is not installed",

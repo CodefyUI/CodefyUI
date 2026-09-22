@@ -63,11 +63,19 @@ from app.core.plugin_loader import (
     clear_removed,
     is_enabled,
     load_lockfile,
+    lockfile_path,
     plugins_builtin_root,
     plugins_user_root,
     removed_ids,
-    save_lockfile,
+    # Re-exported, never called from here. Nothing in this file writes the
+    # lockfile directly any more -- every edit goes through
+    # ``locked_lockfile`` below, which is what keeps the CLI and the server
+    # from overwriting each other (#412). The name stays because tests seed a
+    # lockfile through ``plugin_cli.save_lockfile``, which is a WRITE with no
+    # reader to race.
+    save_lockfile as save_lockfile,
 )
+from app.core.plugins.lockfile_lock import LockfileBusy, locked_lockfile
 from app.core.plugins import catalog as core_catalog
 from app.core.plugins import consent as core_consent
 from app.core.plugins import deps as core_deps
@@ -198,6 +206,33 @@ def err(zh: str, en: str) -> None:
 
 def ok(zh: str, en: str) -> None:
     print(f"  {GREEN}{MARK_OK} {t(zh, en)}{RESET}")
+
+
+def lockfile_busy_err(exc: LockfileBusy) -> int:
+    """Say that somebody else is editing the lockfile, and give up. Exit 1.
+
+    Every ``cdui plugin`` subcommand that writes ``installed.json`` ends here
+    when the writer's lock will not come free: the Plugin Center in a browser
+    and a second terminal both reach the same file, and #412 is what happened
+    when they overlapped -- one whole edit vanished with nothing said. Saying
+    so and stopping is the honest half of that fix; the other half is that
+    NOTHING was written, so running the command again is safe.
+
+    Returns the exit code so a caller can ``return lockfile_busy_err(exc)``.
+    """
+    holder = f"（pid {exc.holder_pid}）" if exc.holder_pid else ""
+    holder_en = f" (pid {exc.holder_pid})" if exc.holder_pid else ""
+    err(
+        f"另一個程式正在修改外掛清單{holder}，這次沒有做任何變更",
+        f"Another program is editing the plugin lockfile{holder_en} "
+        f"-- nothing was changed",
+    )
+    info(
+        f"清單位置：{lockfile_path()}。等對方結束後再執行一次即可。",
+        f"The lockfile is {lockfile_path()}. Run this again once the other "
+        f"command has finished.",
+    )
+    return 1
 
 
 def raw_err(message: str) -> None:
@@ -1637,8 +1672,24 @@ def cmd_sync(args: argparse.Namespace) -> int:
         # The in-memory prune happens either way so the pending list below is a
         # faithful preview, but under --dry-run nothing is saved: a flag whose
         # whole promise is "changes nothing" must not quietly edit the lockfile
-        # because a second flag was also passed.
-        pruned = _prune_stale_lockfile_keys(lockfile)
+        # because a second flag was also passed. Which is also why only the
+        # real branch takes the writer's lock -- a preview has no read-modify-
+        # write to protect, and taking a lock to change nothing would refuse a
+        # ``--dry-run`` that is safe to run at any moment.
+        if dry_run:
+            pruned = _prune_stale_lockfile_keys(lockfile)
+        else:
+            try:
+                with locked_lockfile() as locked:
+                    pruned = _prune_stale_lockfile_keys(locked)
+                    if pruned:
+                        locked.save()
+                    # Carry the document that was actually pruned forward:
+                    # the pending list below is read off it, and re-reading
+                    # the file here would answer from a third read.
+                    lockfile = dict(locked)
+            except LockfileBusy as exc:
+                return lockfile_busy_err(exc)
         if not pruned:
             info("沒有需要清除的 lockfile 項目", "Nothing stale to prune")
         elif dry_run:
@@ -1648,7 +1699,6 @@ def cmd_sync(args: argparse.Namespace) -> int:
                     f"--dry-run: would prune lockfile entry '{plugin_id}' ({reason})",
                 )
         else:
-            save_lockfile(lockfile)
             for plugin_id, reason in pruned:
                 ok(
                     f"已清除 lockfile 項目 {plugin_id}（{reason}）",
@@ -1771,7 +1821,10 @@ def _set_enabled(plugin_id: str, enabled: bool) -> int:
     verb_en = "Enabling" if enabled else "Disabling"
     section(f"{verb_zh}外掛：{plugin_id}", f"{verb_en} plugin: {plugin_id}")
 
-    flipped = core_lifecycle.set_enabled(plugin_id, enabled)
+    try:
+        flipped = core_lifecycle.set_enabled(plugin_id, enabled)
+    except LockfileBusy as exc:
+        return lockfile_busy_err(exc)
     if flipped is None:
         err(
             f"找不到外掛 {plugin_id}（請先 install）",
@@ -1816,9 +1869,15 @@ def cmd_uninstall(args: argparse.Namespace) -> int:
     plugin_id = args.plugin_id.lower()
     section(f"移除外掛：{plugin_id}", f"Uninstalling plugin: {plugin_id}")
 
-    outcome = core_lifecycle.uninstall_plugin(
-        plugin_id, builtin_ids=set(builtin_catalog_packs())
-    )
+    try:
+        outcome = core_lifecycle.uninstall_plugin(
+            plugin_id, builtin_ids=set(builtin_catalog_packs())
+        )
+    except LockfileBusy as exc:
+        # Refused before the ``rmtree``, so the plugin's files are untouched
+        # and the entry still describes them -- which is what makes running
+        # this again the whole recovery.
+        return lockfile_busy_err(exc)
     if outcome is None:
         err(f"找不到外掛 {plugin_id}", f"Plugin '{plugin_id}' is not installed")
         return 1
@@ -1895,8 +1954,12 @@ def _link_local(root: Path, *, force: bool) -> int:
         )
         return 1
 
-    lockfile = load_lockfile()
-    if plugin_id in lockfile.get("plugins", {}) and not force:
+    # A lock-free READ, deliberately: this is a precondition the user is
+    # about to be told about, not the edit. The edit is at the bottom, after
+    # the dependency install, and takes the writer's lock for itself -- a
+    # ``uv pip install`` can run for minutes, and holding the lockfile across
+    # one would stall the Plugin Center for the whole of it (#412).
+    if plugin_id in load_lockfile().get("plugins", {}) and not force:
         err(
             f"外掛 {plugin_id} 已安裝/連結。加 --force 覆寫。",
             f"Plugin '{plugin_id}' is already installed/linked. Use --force to overwrite.",
@@ -1931,7 +1994,7 @@ def _link_local(root: Path, *, force: bool) -> int:
     # would be misleading. Recording it still means `cdui plugin list` and
     # `info` tell the truth about what this plugin declares.
     capabilities = manifest_capabilities(manifest)
-    lockfile.setdefault("plugins", {})[plugin_id] = {
+    record = {
         "source_kind": "local",
         "source": str(root),
         "path": str(root),
@@ -1941,7 +2004,12 @@ def _link_local(root: Path, *, force: bool) -> int:
         "capabilities": list(capabilities),
         "enabled": True,
     }
-    save_lockfile(lockfile)
+    try:
+        with locked_lockfile() as lockfile:
+            lockfile.setdefault("plugins", {})[plugin_id] = record
+            lockfile.save()
+    except LockfileBusy as exc:
+        return lockfile_busy_err(exc)
 
     if _backend_reload():
         ok("熱重載完成", "Hot-reloaded backend")
@@ -1978,20 +2046,24 @@ def cmd_unlink(args: argparse.Namespace) -> int:
     plugin_id = args.plugin_id.lower()
     section(f"取消連結：{plugin_id}", f"Unlinking plugin: {plugin_id}")
 
-    lockfile = load_lockfile()
-    entry = lockfile.get("plugins", {}).get(plugin_id)
-    if not entry:
-        err(f"找不到外掛 {plugin_id}", f"Plugin '{plugin_id}' is not installed")
-        return 1
-    if entry.get("source_kind") != "local":
-        err(
-            f"{plugin_id} 不是本地連結（請改用 cdui plugin uninstall）",
-            f"'{plugin_id}' is not a local link — use `cdui plugin uninstall` instead",
-        )
-        return 1
+    try:
+        with locked_lockfile() as lockfile:
+            entry = lockfile.get("plugins", {}).get(plugin_id)
+            if not entry:
+                err(f"找不到外掛 {plugin_id}",
+                    f"Plugin '{plugin_id}' is not installed")
+                return 1
+            if entry.get("source_kind") != "local":
+                err(
+                    f"{plugin_id} 不是本地連結（請改用 cdui plugin uninstall）",
+                    f"'{plugin_id}' is not a local link — use `cdui plugin uninstall` instead",
+                )
+                return 1
 
-    lockfile["plugins"].pop(plugin_id, None)
-    save_lockfile(lockfile)
+            lockfile["plugins"].pop(plugin_id, None)
+            lockfile.save()
+    except LockfileBusy as exc:
+        return lockfile_busy_err(exc)
 
     if _backend_reload():
         ok("熱重載完成", "Hot-reloaded backend")
