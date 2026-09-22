@@ -310,6 +310,12 @@ const zhTW: Record<TranslationKey, string> = {
   // Tab bar chrome (#341)
   'tabBar.readOnly': '唯讀',
   'tabBar.sourceTitle': '由 {plugin} 開啟',
+  // 螢幕閱讀器對分頁列與各分頁讀出的名稱（#402）。分頁名稱是另外指定的，不從
+  // 分頁內容讀取，所以要重述上面徽章與提示顯示的內容。
+  'tabBar.aria': '工作區分頁',
+  'tabBar.source.aria': '{name}，由 {plugin} 開啟',
+  'tabBar.readOnly.aria': '{name}，唯讀',
+  'tabBar.close.aria': '關閉「{name}」',
 
   // Subgraph Editor (SequentialModel)
   'layersEditor.title': '模型架構',

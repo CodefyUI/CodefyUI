@@ -6,7 +6,7 @@ description: Keyboard and mouse shortcuts for the CodefyUI editor.
 
 # Key Bindings
 
-Keyboard chords are ignored while you are typing in an input, a textarea or a note, and while a dropdown (such as the device select next to **Run**) has focus.
+Keyboard chords are ignored while you are typing in an input, a textarea or a note, and while a dropdown (such as the device select next to **Run**) has focus. While a dialog or a full-screen panel is open, they are ignored too, and so are the tab-strip keys.
 
 | Action | Key / gesture |
 |--------|---------------|
@@ -31,7 +31,8 @@ Keyboard chords are ignored while you are typing in an input, a textarea or a no
 | Node details navigation | `Left` / `Right` for the previous / next node; `Esc` closes |
 | Confirm / prompt dialogs | `Enter` confirms, `Esc` cancels |
 | Close Settings, the font-size menu or an edge summary | `Esc` |
-| Rename tab | Double-click the tab; `Enter` applies, `Esc` cancels |
+| Rename tab | Double-click the tab, or press `F2` on the focused tab; `Enter` applies, `Esc` cancels |
+| Tab strip | `Tab` reaches the open tab; `Left` / `Right` / `Home` / `End` move focus between tabs; `Enter` / `Space` switches to the focused tab; `Delete` closes it, as its close button does |
 | Sidebar rail | `Up` / `Down` / `Home` / `End` move between tabs; click the open tab's icon to collapse |
 | Resize sidebar | Drag the panel edge, or move focus to it with `Tab` and press `Left` / `Right` (16 px), `Home` (180 px) or `End` (520 px) |
 | Detach / rewire an edge | Left-drag a connected input port (drop on empty space deletes it; `Shift` / `Ctrl` / `Alt` + drag starts a new connection instead) |
@@ -42,5 +43,5 @@ Keyboard chords are ignored while you are typing in an input, a textarea or a no
 | Templates tab | `Enter` / `Space` inserts the focused example |
 
 :::tip
-Press `?` at any time to open the in-app overlay, which lists the most common shortcuts.
+Press `?` to open the in-app overlay, which lists the most common shortcuts.
 :::

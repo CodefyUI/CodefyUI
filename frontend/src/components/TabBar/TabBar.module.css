@@ -34,6 +34,15 @@
   user-select: none;
 }
 
+/* Keyboard focus (#402). Drawn inside the tab: the tab is the bar's full
+   height and both the bar and the scrolling row clip what overflows them, so
+   a ring outside it would lose its top and bottom. `:focus-visible`, so a
+   click does not leave a ring behind. */
+.tab:focus-visible {
+  outline: 2px solid var(--border-focus);
+  outline-offset: -2px;
+}
+
 .tabName {
   overflow: hidden;
   text-overflow: ellipsis;
@@ -67,8 +76,14 @@
   outline: none;
 }
 
-/* Close button */
+/* Close button. A <button> since #402, so the browser's own padding, border,
+   fill and font are cleared first; it inherits the tab's weight as the span
+   before it did. */
 .closeBtn {
+  padding: 0;
+  border: none;
+  background: transparent;
+  font: inherit;
   font-size: var(--fs-lg);
   color: var(--text-muted);
   cursor: pointer;
