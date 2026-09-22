@@ -20,12 +20,13 @@ description: 把已儲存的 graph 固定為有版本的應用程式，透過穩
 
 ```text
 POST /api/apps/{slug}/publish        (session token)
-body: {"graph": "<saved name>", "note": "optional", "create": false}
+body: {"graph": "<graph address>", "note": "optional", "create": false}
       (optional "record_io": true|false -- omitted inherits the app's current setting; see below)
       (optional "git_commit": "<7-40 hex>", "git_dirty": true|false -- publish provenance;
        normally set for you by `cdui project publish`)
 ```
 
+- `graph` 是已儲存 graph 的位址，不一定等於它的標題；請見[graph 的位址](./graph-as-a-function#the-graphs-address)。
 - `slug` 是穩定的對外名稱：`^[a-z][a-z0-9-]{0,63}$`。它由你選定，與 graph 名稱無關；重新命名 graph 不會使已發佈的網址失效。
 - 首次發佈至不存在的 slug 時必須傳入 `"create": true`，否則會收到 404 `app_not_found`。重新發佈時，即使拼錯 slug，也不會自動建立第二個應用程式。
 - 發佈到既有 slug 時會新增下一個版本；這就是重新發佈流程。
@@ -84,7 +85,7 @@ POST /api/keys/{id}/revoke    (session token)  -- soft revoke; the row stays lis
 POST /api/apps/{slug}/invoke          (auth: Authorization: Bearer cdui_...)
 ```
 
-request body 與 [`/api/graph/run`](./graph-as-a-function) 相同：整個 body 為選填，其中 `inputs`、`timeout_s`、`device` 也都是選填欄位。兩者有以下差異：
+request body 與 [`/api/graph/run`](./graph-as-a-function) 相同：整個 body 為選填，其中 `inputs`、`timeout_s`、`device` 也都是選填欄位。沒有 `device` 的 body 會使用已發佈 graph 的 [`settings.device`](/advanced/device-backends#the-graph-settings-object)，沒有設定時使用 CPU；`"device": "auto"` 會使用可用的最佳加速器。兩者有以下差異：
 
 - `record_outputs` **會被接受但忽略**；已發佈的執行會記錄在 SQLite（見下方），不會寫入編輯器的檢視器儲存區。
 - `timeout_s` 涵蓋**包含排隊等待在內**的完整請求時間。同一個應用程式的 invoke 由每個 slug 各自的鎖逐一執行；若呼叫在等待前一個 invoke 時用完時間，會回傳 `timeout` 錯誤，並註明逾時發生在排隊期間。不同 slug 可以平行執行。
@@ -167,6 +168,6 @@ Host 標頭白名單會依綁定位址自動設定：具體的區域網路 IP �
 - CORS 設定不會降低此暴露範圍：暴露的是同源的部分，而 `Authorization` 這個 CORS 標頭只用於讓未來跨來源的 JS 呼叫端通過預檢 -- 它不是緩解措施。
 - 區域網路存取控制**不在規劃內**（issue #247，於 2026-08-30 關閉）：伺服器不會依網路來源限制編輯器。因此，共用伺服器應採用下方的反向代理設定，而不是直接綁定區域網路。
 
-相關憑證風險請見[共用的伺服器](./shared-instances)。一台伺服器只有**一個**身分，因此 ChatGPT 登入、`.env` 裡的 LLM 金鑰與 Kaggle 憑證，會由所有能連上該連接埠的人共用，而且不會記錄費用由誰產生。
+相關憑證風險請見[共用的伺服器](./shared-instances)。一台伺服器只有**一個**身分，因此 ChatGPT 登入、`.env` 裡的 LLM 金鑰，以及伺服器持有的其他所有憑證，會由所有能連上該連接埠的人共用，而且不會記錄費用由誰產生。
 
 如果需要具身分驗證的共用伺服器，請不要直接綁定區域網路。請只綁定回送位址，並在前方設定反向代理；這是目前唯一能在 CodefyUI 實例前加入身分驗證與 TLS 的方式。[放在反向代理後面](./deployment)提供完整設定，包含實際測試過的 nginx 站台設定與 systemd 單元。

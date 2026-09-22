@@ -65,16 +65,16 @@ A run gives its device slot back the moment its graph finishes, before it writes
 
 ### Runs panel
 
-The **Runs** tab of the results panel lists every run the server owns — started from any tab, `cdui run` or the API — newest first, with filter chips **All / Running / Queued / Succeeded / Failed / Cancelled / Interrupted** and the columns **Run, Status, Device, Started, Duration, Final loss**. A waiting run shows `Queue #N` beside its device. Each row offers up to four actions:
+The **Runs** tab of the results panel lists the newest 50 runs the server owns — started from any tab, `cdui run` or the API — newest first, with filter chips **All / Running / Queued / Succeeded / Failed / Cancelled / Interrupted** and the columns **Run, Status, Device, Started, Duration, Final loss**. A filter chip applies before the 50-row cut, and the count next to **Refresh** shows how many of the matching runs are listed (`50 of 312`). Older runs are reachable through `GET /api/runs?offset=`. A waiting run shows `Queue #N` beside its device. Each row offers up to four actions:
 
 | Action | What it does |
 | --- | --- |
 | **Stop** | Asks a queued or running run to stop — cooperatively, see [Stopping](./running-graphs#stopping). |
-| **Watch** | Streams that run into the active tab's Execution Log, replaying it from the start. This is how you pick up a run submitted from a terminal or from another tab; the tab stops following whatever it was watching before, and the runs themselves are unaffected. |
+| **Watch** | Queued or running runs only. Streams that run into the active tab's Execution Log, replaying it from the start, and switches the panel to that log. This is how you pick up a run submitted from a terminal or from another tab; the tab stops following whatever it was watching before (it asks first if that run is still going), and the runs themselves are unaffected. |
 | **CSV** | Downloads the run's metrics (`GET /api/runs/{id}/metrics?format=csv`). |
 | **Delete** | Finished runs only. Removes the run's metrics, event log, artifact records and any captured outputs; checkpoint files on disk are kept. |
 
-Click a row for its detail: the seed and **Deterministic** when they were set, the error if it failed, the metrics chart with its own **Download CSV**, the recorded artifacts each with a **Copy path** button, and the last 200 events of its log, which keeps updating while the run is active. Loading the editor while runs are still in progress shows a toast that counts them and points you here.
+Click a row for its detail: the seed and **Deterministic** when they were set, the error if it failed, the metrics chart with its own **Download CSV**, the recorded artifacts each with a **Copy path** button, and the last 200 events of its log, which keeps updating while the run is active. Loading the editor while runs are still in progress shows a toast that counts them and points you here. With no tab open (the [welcome screen](./tabs-persistence#the-welcome-screen)) there is no results panel; open a tab to reach this one.
 
 ## `cdui run`
 
@@ -108,7 +108,7 @@ cdui run infer.json --record-outputs
 | Flag | Meaning |
 | --- | --- |
 | `--name <text>` | Label stored on the run and shown wherever runs are listed |
-| `--device <dev>` | `cpu` \| `auto` \| `cuda` \| `cuda:N` \| `mps`. Omitted: the graph's `settings.device`, else `cpu`. `auto`: the best accelerator this server has. The resolved device is the queue it joins. |
+| `--device <dev>` | `cpu` \| `auto` \| `cuda` \| `cuda:N` \| `mps` \| `mps:N`. Omitted: the graph's `settings.device`, else `cpu`. `auto`: the best accelerator this server has. The resolved device is the queue it joins. |
 | `--seed <n>` | Seed every node from `n`, making the run reproducible. A seeded run executes one node at a time — see **[Reproducible runs](./running-graphs#reproducible-runs-seed)**. |
 | `--deterministic` | Also ask PyTorch for deterministic kernels (`warn_only`) |
 | `--record-outputs` | Capture node outputs for later inspection |
@@ -172,11 +172,11 @@ A **sweep** runs one graph many times with different parameter values and ranks 
 }
 ```
 
-Each entry in `params` addresses one parameter of one node by the node's id and carries either an explicit `values` list (no repeats) or a `range` that is expanded for you: `count` points from `min` to `max`, evenly spaced on a `linear` or a base-10 `log` scale (which needs a positive `min`), rounded to whole numbers for `type: int` — a range that collapses onto fewer distinct values simply gets fewer. Every value is checked against the node's definition (type, allowed options, min/max) before anything is queued; a spec that cannot be honoured is refused with a `400` naming the entry, and no partial sweep is left behind.
+Each entry in `params` addresses one parameter of one node by the node's id and carries either an explicit `values` list (no repeats) or a `range` that is expanded for you: `count` points from `min` to `max`, evenly spaced on a `linear` or a base-10 `log` scale (which needs a positive `min`), rounded to whole numbers for `type: int` — a range that collapses onto fewer distinct values simply gets fewer. Every value is checked against the node's definition (type, allowed options, min/max) before anything is queued; a spec that cannot be honoured is refused with a `400` naming the entry, and no partial sweep is left behind. A body that does not fit the request schema is refused earlier, with FastAPI's `422` validation error — for example a missing `objective`, an unknown key at the top level or inside `sweep_spec`, `objective`, a `params` entry or its `range`, a `method`, `scale`, `type` or `direction` outside its listed values, a non-integer `count`, `seed` or `samples`, a `null`, list or object inside `values`, or a blank `objective.metric`. Every other sweep refusal on this page is a `400`, including an unknown key inside `options`.
 
 **Grid or random.** `method: grid` enumerates every combination, the last-listed param varying fastest, and does not accept `samples`. `method: random` draws `samples` distinct combinations and requires both `samples` and a `seed` (0 to 4294967295); the same seed always draws the same combinations. Asking for more samples than the space holds is refused, and so is a sweep that would compile more variants than the cap — it is never silently truncated.
 
-**`objective` is required.** `metric` is the name of a series a node logs (`train_loss`, `val_loss`, `eval_accuracy`, or whatever a plugin node records) and `direction` is `minimize` or `maximize`. The name is not checked at submit time, because no variant has run yet; if no variant ends up recording it, the ranked table comes back empty with an `objective_warning` listing the series the runs did record.
+**`objective` is required.** `metric` is the name of a series a node logs (`train_loss`, `val_loss`, `val_accuracy`, `eval_accuracy`, or whatever a plugin node records; the series `TrainingLoop` records are listed in [Running Graphs](./running-graphs#training-loops-and-loss-charts)) and `direction` is `minimize` or `maximize`. The name is not checked at submit time, because no variant has run yet; if no variant ends up recording it, the ranked table comes back empty with an `objective_warning` listing the series the runs did record.
 
 **`options`** go to every variant unchanged (device, `record_outputs`, ...), with three refusals: `options.seed` (the sweep owns seeding), `lane: interactive` (a sweep always queues), and `record_outputs` on a sweep with more variants than the output store keeps (20 by default) — the earliest variants' captures would be evicted before the sweep finished. To seed the training itself, set `sweep_spec.seed` and `"seed_variants": true`: variant *i* then runs with seed `seed + i` (wrapped into the valid seed range). Setting `seed_variants: true` without `sweep_spec.seed` is refused with `400` before any row is created. Each variant is then a seeded run, so it executes one node at a time and nothing runs alongside it — a seeded sweep is strictly sequential and holds up canvas runs for its whole duration, see [Reproducible runs](./running-graphs#reproducible-runs-seed).
 
@@ -192,7 +192,7 @@ Each entry in `params` addresses one parameter of one node by the node's id and 
 
 `GET /api/sweeps/{id}` returns the sweep: its `state` (`running`, `cancelling`, `finished`, or `failed` when the submit loop broke part-way — the children already queued keep running), the objective, per-status `counts`, `params` with each expanded domain, and `variants` **in rank order**, best first. Each variant carries its `index` (submission order), `run_id`, live `status`, the `params` it was given, its `seed`, the `objective` value it reached, its `rank`, `run_exists` and — while the child run still exists — its `final_metrics`; `best` names the rank-1 variant. A variant is ranked once its run has ended and recorded the objective, on that series' final value; a run that failed after logging it is still ranked, and unranked variants keep their row with `rank: null` in index order. `?format=csv` downloads the same table as a spreadsheet with one column per swept parameter.
 
-Results outlive the children: each finished variant's objective is copied onto the sweep row, and retention harvests any unread result before it prunes a run. A pruned or deleted child shows as `status: "missing"` with `run_exists: false`, and its row stays.
+Results outlive the children: every `GET /api/sweeps/{id}` and every cancel copies each finished variant's status and objective onto the sweep row, and retention does the same for any unread result before it prunes a run. A child removed by retention therefore keeps its harvested `status` and `objective`, with `run_exists: false` and no `final_metrics`. A child deleted with `DELETE /api/runs/{id}` before any read or cancel harvested it shows `status: "missing"` and `objective: null`. The variant's row stays in both cases.
 
 ### Cancelling
 
@@ -206,7 +206,9 @@ There is no sweep view in the editor yet. The children are ordinary runs: they a
 
 Nothing resumes a queue across a restart: the schedule lives in the server's memory, and a waiting row would otherwise sit forever waiting on a scheduler that no longer exists.
 
-A graceful stop (`cdui stop`) immediately retires every waiting run as `interrupted`, writes its normal stop event, and asks executing runs to stop cooperatively. A hard kill — or an executing task that outlasts the graceful-shutdown timeout — can leave rows as `queued` or `running`. At the next startup, recovery changes both statuses to `interrupted`; neither resumes.
+A graceful shutdown immediately retires every waiting run as `interrupted`, writes its normal stop event, and gives executing runs 5 seconds to stop cooperatively. `systemctl stop` on the unit in [Deployment](./deployment#a-systemd-unit) shuts the server down this way, because it sends SIGTERM to the server process itself. On Windows, so does Ctrl+C on `cdui start --foreground`, pressed once: a second Ctrl+C while uvicorn is waiting for connections to close skips these steps.
+
+On Linux and macOS, Ctrl+C on `cdui start --foreground` is not graceful: the `cdui` process kills the server about 0.25 seconds after the Ctrl+C, so executing runs do not get their 5 seconds and waiting runs may not be retired. `cdui stop` does not wait for these steps either: on Windows it force-kills the server's process tree (`taskkill /F /T`), and on Linux and macOS it sends SIGTERM and then SIGKILL about 2 seconds later. Those stops, any other hard kill, or an executing run that outlasts the 5 seconds can leave rows as `queued` or `running`. At the next startup, recovery changes both statuses to `interrupted` without writing a stop event; neither resumes.
 
 Requeue anything you still want by submitting it again.
 

@@ -6,20 +6,30 @@ description: CodefyUI 如何在 CPU、CUDA、MPS 與 ROCm 之間選擇與退回�
 
 # 裝置後端
 
-CodefyUI 執行於 PyTorch 之上，因此繼承了 PyTorch 的裝置後端：**CPU**、**NVIDIA CUDA**、**Apple Silicon（MPS）**與 **AMD ROCm**（Linux）。關於安裝正確的 wheel，請參閱 **[GPU 與裝置設定](/getting-started/gpu-device)**；本頁說明裝置選擇在執行時的行為。
+CodefyUI 執行於 PyTorch 之上，因此繼承了 PyTorch 的裝置後端：**CPU**、**NVIDIA CUDA**、**Apple Silicon（MPS）** 與 **AMD ROCm**（Linux）。關於安裝正確的 wheel，請參閱 **[GPU 與裝置設定](/getting-started/gpu-device)**；本頁說明裝置選擇在執行時的行為。
 
-## 裝置選擇
+## 裝置選擇 {/* #device-selection */}
 
 **預設是 CPU，而且不會有任何機制替你切走。** 一次執行依下列順序決定裝置，先命中者為準：
 
 1. 節點自己的 **device** 參數，且不是 `auto` 時（位於「進階」，為舊圖保留；一張圖只在一個裝置上執行，需要兩個裝置的工作應拆成兩張圖）。
-2. 圖自己的裝置，也就是圖檔裡的 `settings.device`，由 Run 旁邊的「此圖的裝置」控制項設定。它會跟著圖一起存檔，所以 git 會追蹤它，圖在哪裡打開都跑在同一個裝置上。
-3. **設定**裡的裝置（這個瀏覽器記住的值，改動前是 `cpu`）。新圖與尚未指定裝置的圖會使用它；設定面板也會提示這台伺服器能看到的最佳裝置。
+2. 圖自己的裝置，也就是圖檔裡的 `settings.device`（[格式見下方](#the-graph-settings-object)），由**執行**旁邊的裝置選單設定。它會跟著圖一起存檔，所以 git 會追蹤它，圖在哪裡打開都跑在同一個裝置上。選單的第一個選項（設定為 CPU 時是**跟隨設定（CPU）**）會讓圖不指定自己的裝置。
+3. **設定**裡的裝置（這個瀏覽器記住的值，改動前是 `cpu`）。新圖與尚未指定裝置的圖會使用它；設定面板也會提示這台伺服器能看到的最佳裝置。設定的裝置若不在這台伺服器的清單上，兩個選單都會標示出來；參見[裝置無法使用時](/getting-started/gpu-device#when-a-device-is-unavailable)。
 4. `cpu`：請求完全沒有指定裝置時伺服器採用的值。
 
-設定、圖的控制項與節點參數三個下拉選單列的都是同一份清單，也就是 PyTorch 實際看得到的裝置（`device_utils.describe_accelerator()`），多卡機器上也包含每張卡的 `cuda:N`。被請求的裝置會與可用的裝置比對，若不存在則**退回 CPU 並發出警告**。只有明確指定 `auto`（`cdui run` 或匯出腳本的 `--device auto`、run API 的 `"device": "auto"`）才會解析成目前最好的加速器。更改圖的裝置會讓互動快取失效，所有節點都會重新執行。
+設定、圖的控制項與節點參數三個下拉選單列的都是同一份清單，也就是 PyTorch 實際看得到的裝置（`device_utils.describe_accelerator()`），多卡機器上也包含每張卡的 `cuda:N`。被請求的裝置會與可用的裝置比對，若不存在則**退回 CPU 並發出警告**（超出範圍的 `cuda:N` 例外，會改用目前的 CUDA 裝置，見下方）。只有明確指定 `auto`（`cdui run` 或匯出腳本的 `--device auto`、run API 的 `"device": "auto"`）才會解析成目前最好的加速器。更改圖的裝置會讓互動快取失效，所有節點都會重新執行。
 
-### 裝置對齊由引擎保證
+### 圖的 `settings` 物件 {/* #the-graph-settings-object */}
+
+圖自己的裝置存在圖 JSON 最上層的一個選用物件中：`"settings": {"device": "cuda:1"}`。
+
+- **可用值：**`cpu`、`auto`、`cuda`、`cuda:N`、`mps` 或 `mps:N`，不分大小寫。空字串代表未指定。Mac 只有一個 MPS 裝置，所以 `mps:N` 會在 `mps` 上執行。
+- **只在有指定時寫入。** 存檔只在圖有指定裝置時寫入 `settings`，所以沒有指定裝置的圖會與原本逐位元組相同。在[專案目錄](/usage/project-directories)中，它寫在受 git 追蹤的 `graphs/<name>.graph.json`，不在 layout 檔。
+- **其他值一律拒絕：**`POST /api/graph/save`、`/api/graph/validate` 與 `/api/graph/export` 回傳 `422`；`POST /api/runs` 與 `POST /api/sweeps` 回傳 `400`（因此 `cdui run` 會回報提交失敗）；畫布執行這張圖時會收到 `execution_error` 訊框；`cdui project validate` 會回報 `invalid_settings`。離線執行器（`backend/run_graph.py`）、[`POST /api/graph/run/{name}`](/usage/graph-as-a-function) 與 [`POST /api/apps/{slug}/invoke`](/usage/publish) 只在呼叫沒有指定裝置（`--device` 或 body 的 `device`）時讀取 `settings.device`；此時會忽略無效值、記錄警告，並在 CPU 上執行。
+
+不帶 `--device` 的 `cdui run` 會把圖檔的裝置顯示為 `<device> (graph)`。
+
+### 裝置對齊由引擎保證 {/* #device-alignment-is-guaranteed-by-the-engine */}
 
 你不需要去推敲某個張量到底在哪個裝置上。節點執行前，`graph_engine.invoke_node` 會把它輸入裡的每個張量搬到該節點要跑的裝置——節點自己宣告了 `device` 參數且不是 `auto` 時就用它的，否則用這次執行的裝置（依上述順序解析）。由於所有進入節點的路徑都經過那一個函式，這個保證同時涵蓋內建節點、外掛節點與你自己的[自訂節點](./custom-nodes)。
 
@@ -36,19 +46,19 @@ CodefyUI 執行於 PyTorch 之上，因此繼承了 PyTorch 的裝置後端：**
 不帶 `--device` 執行 `python graph.py` 時，會用圖存檔時的裝置（`settings.device`），沒有的話就是 CPU，也就是設定為 `cpu` 時 canvas 對這張圖給的答案。想在執行的那台機器上用最好的加速器請傳 `--device auto`，想釘在某一張卡請傳 `--device cuda:1`。
 :::
 
-## 在多張卡之中指定其中一張
+## 在多張卡之中指定其中一張 {/* #addressing-one-card-out-of-several */}
 
 在有一張以上 CUDA 裝置的機器上，每個下拉選單也會逐張列出——`cuda:0`、`cuda:1` 等等——並與單純的 `cuda` 並列，後者代表「torch 目前指向的那一張」。只有一張 GPU 的機器只會顯示 `cuda`，因為在那裡兩者指的是同一塊硬體。
 
 指定了這台機器上不存在的編號時，會退回**目前的 CUDA 裝置**而不是 CPU：一張在工作站上釘在 `cuda:2` 的圖，在筆電上打開時仍然應該用 GPU 訓練。每張卡也各自有自己的執行佇列。完整說明（包含刻意排除在外的分散式訓練）請參閱 **[訓練記憶體](./training-memory)**。
 
-## float64 + MPS 的限制
+## float64 + MPS 的限制 {/* #the-float64--mps-constraint */}
 
 MPS 是 **float32 原生**的，會拒絕 float64 張量。CodefyUI 在 `device_utils.to_device` 中將其正規化，但如果你撰寫一個直接建立張量的[自訂節點](./custom-nodes)，請在 Apple GPU 上將它們維持為 float32，以避免執行時錯誤。
 
 CodefyUI 也會在 import torch 前設定 `PYTORCH_ENABLE_MPS_FALLBACK=1`。MPS 不支援某項運算時，PyTorch 會改在 CPU 上執行。速度會較慢，但不會因不支援該運算而發生錯誤。若要讓不支援的運算拋出錯誤，請在執行 `cdui start` 前將此變數匯出為 `0`。
 
-## Apple Silicon 上的效能
+## Apple Silicon 上的效能 {/* #performance-on-apple-silicon */}
 
 以下數字在 M3 MacBook Air（24 GB、torch 2.11）上量測，三個內建範例各跑一個 epoch，執行之間留冷卻間隔。套用前兩項後：`mps` 上 CNN-MNIST 11.2 s → 4.1 s、ResNet-CIFAR10 12.1 s → 5.1 s、GPT-Mini 19.9 s → 13.1 s；`cpu` 上 13.7 s → 11.5 s、27.4 s → 24.4 s、22.4 s → 20.8 s。
 
@@ -58,13 +68,13 @@ CodefyUI 也會在 import torch 前設定 `PYTORCH_ENABLE_MPS_FALLBACK=1`。MPS 
 
 自行量測時：一個 process 的第一次 MPS 執行需要 0.2–0.6 s 初始化 Metal，每種新的 kernel 形狀再加 0.1–0.2 s。同一台 Mac 之後的 process 會較快，因為 macOS 會快取編譯好的 shader。無風扇的 Mac 在持續 GPU 負載幾分鐘後會熱降頻；比較不同執行時請在中間留冷卻間隔。
 
-MPS 上不使用混合精度。bf16 與 fp16 autocast 在 torch 2.11 可以執行，但量測結果比 fp32 慢 1.8–3.3 倍且不省記憶體。詳見[訓練記憶體](./training-memory#混合精度)。
+MPS 上不使用混合精度。bf16 與 fp16 autocast 在 torch 2.11 可以執行，但量測結果比 fp32 慢 1.8–3.3 倍且不省記憶體。詳見[訓練記憶體](./training-memory#mixed-precision)。
 
-## ROCm 呈現為 CUDA
+## ROCm 呈現為 CUDA {/* #rocm-presents-as-cuda */}
 
-在 AMD + Linux 上搭配 ROCm 版本的 PyTorch 時，`torch.cuda.is_available()` 會回傳 `True`，因為 ROCm 暴露了一個與 CUDA 相容的介面。該裝置在下拉選單中會顯示為 `cuda`；這是預期的行為。
+在 AMD + Linux 上搭配 ROCm 版本的 PyTorch 時，`torch.cuda.is_available()` 會回傳 `True`，因為 ROCm 暴露了一個與 CUDA 相容的介面。設定與圖的裝置選單會把這個裝置標示為 **AMD ROCm**；存進圖檔並由執行使用的值是 `cuda`（多卡時為各卡的 `cuda:N`），節點的 **device** 參數也會列為 `cuda`。這是預期的行為。
 
-## 實驗性：原生 MLX（spike）
+## 實驗性：原生 MLX（spike） {/* #experimental-native-mlx-spike */}
 
 有一個**概念驗證 (proof-of-concept)**，把一個小型 MLP 的*前向推論*從 PyTorch 移植到 Apple 的 [MLX](https://github.com/ml-explore/mlx) 框架，產生數值上完全相同的結果（最大絕對差約 1.9e-7）。重點如下：
 
@@ -79,4 +89,4 @@ MPS 上不使用混合精度。bf16 與 fp16 autocast 在 torch 2.11 可以執�
 
 - `mlx` **並非**已納入的相依套件；主應用程式從不匯入它。只透過 `device_utils.mlx_available()`（偵測）與 spike 腳本來呈現它。
 
-**建議：**將 **MPS** 維持為所有執行（訓練 + 推論）的 Apple 預設；把 MLX 當作選用的推論加速器，只在推論密集的教學示範上有可量測的效益時才回頭考慮。
+**建議：** 將 **MPS** 維持為所有執行（訓練 + 推論）的 Apple 預設；把 MLX 當作選用的推論加速器，只在推論密集的教學示範上有可量測的效益時才回頭考慮。

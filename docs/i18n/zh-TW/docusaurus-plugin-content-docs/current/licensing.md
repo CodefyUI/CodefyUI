@@ -17,7 +17,7 @@ CodefyUI 採用**雙軌授權模式**。
 以下全部是 CodefyUI 專案自己對所採用授權條款的解讀。這樣寫是為了讓你看得到專案的意圖，並能自己拿授權原文對照。它不是法律意見，也不會建立或修改任何授權。若本頁與 [LICENSE](https://github.com/CodefyUI/CodefyUI/blob/main/LICENSE) 有出入，以 LICENSE 為準。如果你的情況需要的是確定性而不是解讀，商業授權存在的目的正是如此。
 :::
 
-## 未經修改在內部執行，會觸發 AGPL 第 13 條嗎？
+## 未經修改在內部執行，會觸發 AGPL 第 13 條嗎？ {/* #does-running-codefyui-internally-unmodified-trigger-agpl-section-13 */}
 
 **不會。**
 
@@ -40,7 +40,7 @@ AGPL-3.0 第 2 條（*Basic Permissions*）寫著：
 - **「商業使用」本身不是觸發商業授權的原因。** AGPL-3.0 完全不限制以營利為目的使用軟體。真正觸發商業路徑的，是你需要 AGPL 給不了你的條款——主要是「把修改保持閉源」的能力。
 - **散布未經修改的副本同樣沒問題**，只要一併附上授權與原始碼（第 4 / 6 條）。把安裝程式給同事，不需要向專案取得許可。
 
-## 寫自訂節點或外掛，算不算修改本程式？
+## 寫自訂節點或外掛，算不算修改本程式？ {/* #does-writing-a-custom-node-or-a-plugin-count-as-modifying-the-program */}
 
 **這才是真正重要的問題，而誠實的答案是：很可能算，而且專案就是這樣認定的。**
 
@@ -61,7 +61,7 @@ AGPL-3.0 第 2 條（*Basic Permissions*）寫著：
 「外掛算不算其宿主的衍生著作」在著作權法上是真的有爭議的問題，各法域見解不同，也還沒有法院針對 AGPL 給出定論。專案把上面的解讀寫出來，是為了讓你知道專案的意圖，不會事後拿另一套說法來找你。它不是法律意見，也不拘束任何其他人的法務。如果你需要的是一個可以依賴的答案，請取得商業授權——它不是回答這個問題，而是讓這個問題消失。
 :::
 
-## 我建的圖和訓練出來的模型會受 AGPL 約束嗎？
+## 我建的圖和訓練出來的模型會受 AGPL 約束嗎？ {/* #do-my-graphs-and-my-trained-models-fall-under-the-agpl */}
 
 **依專案的解讀，不會。** 你在畫布上建出來的 `graph.json`、訓練產生的權重，以及任何圖表或匯出檔，都是執行本程式的**輸出**。AGPL-3.0 第 2 條直接處理了這件事：
 
@@ -73,7 +73,7 @@ AGPL-3.0 第 2 條（*Basic Permissions*）寫著：
 
 唯一要分開看的是你餵進去的訓練**資料**以及你下載的預訓練權重——那些帶著它們各自來源的授權，與 CodefyUI 完全無關。
 
-## 商業授權涵蓋什麼？由誰授予？
+## 商業授權涵蓋什麼？由誰授予？ {/* #what-does-the-commercial-license-cover-and-who-grants-it */}
 
 **由誰授予：** CodefyUI（https://github.com/CodefyUI），也就是 [NOTICE](https://github.com/CodefyUI/CodefyUI/blob/main/NOTICE) 中列名的著作權人。外部貢獻以 Developer Certificate of Origin 1.1 加上一條明示的雙軌授權條款收受——見 [CONTRIBUTING.md](https://github.com/CodefyUI/CodefyUI/blob/main/CONTRIBUTING.md)——以確保貢獻的程式碼可以走任一條路徑。
 
@@ -89,7 +89,7 @@ AGPL-3.0 第 2 條（*Basic Permissions*）寫著：
 
 請從[問題追蹤器](https://github.com/CodefyUI/CodefyUI/issues)開始接洽。另見 [COMMERCIAL-LICENSE.md](https://github.com/CodefyUI/CodefyUI/blob/main/COMMERCIAL-LICENSE.md)。
 
-## 貢獻者同意了什麼？商業授權收入會分給貢獻者嗎？
+## 貢獻者同意了什麼？商業授權收入會分給貢獻者嗎？ {/* #what-do-contributors-agree-to-do-they-share-in-commercial-revenue */}
 
 三條基本規則，完整內容見 [CONTRIBUTING.md](https://github.com/CodefyUI/CodefyUI/blob/main/CONTRIBUTING.md)：
 
@@ -99,6 +99,6 @@ AGPL-3.0 第 2 條（*Basic Permissions*）寫著：
 
 對商業授權買方而言，這代表只有單一授權人，且授權不附帶任何來自個別貢獻者的付款主張。
 
-## 第三方元件
+## 第三方元件 {/* #third-party-components */}
 
-CodefyUI 會轉散布第三方軟體，包含 Python 相依套件，以及預先建置的前端 bundle 內的編譯資產（React、KaTeX 及其字型等）。它們的著作權聲明與授權條款收錄在 [THIRD_PARTY_NOTICES.md](https://github.com/CodefyUI/CodefyUI/blob/main/THIRD_PARTY_NOTICES.md)，該檔會與 `LICENSE`、`NOTICE` 一起放進 release tarball。這些元件全部是寬鬆授權，沒有任何一個帶有自己的 copyleft 義務。
+release tarball 會轉散布預先建置的前端 bundle 內的第三方編譯程式碼（React、React Flow、KaTeX 及其字型、CodeMirror 等），全部採用 MIT、ISC 或 BSD-3-Clause 授權。Python 相依套件不會被轉散布，而是在安裝時從 PyPI 安裝。其中兩個間接相依套件採用 MPL-2.0 這種檔案層級的 copyleft 授權：certifi（MPL-2.0）與 tqdm（MPL-2.0 與 MIT）。CodefyUI 未經修改地使用這兩個套件。[THIRD_PARTY_NOTICES.md](https://github.com/CodefyUI/CodefyUI/blob/main/THIRD_PARTY_NOTICES.md) 收錄前端 bundle 內程式碼的聲明，並列出 Python 相依套件及其授權；該檔會與 `LICENSE`、`NOTICE` 一起放進 release tarball。

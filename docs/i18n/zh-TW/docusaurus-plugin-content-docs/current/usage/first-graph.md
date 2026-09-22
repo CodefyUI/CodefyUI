@@ -8,13 +8,15 @@ description: 建構並執行一個最小的管線，並了解為什麼每個圖�
 
 這份操作說明會建構一個極小的管線，讓明確指定的張量依序通過幾個運算，並說明每個 CodefyUI graph 都使用的 **Start 節點**執行模型。
 
-## 1. 新增一個輸入
+在**入門**節點分類模式下，側欄不會列出 `Start`、`Reshape`、`Softmax` 與 `Print`；請雙擊畫布並搜尋來新增它們（見[側邊欄](./canvas-basics#the-sidebar)）。
 
-把一個 **`TensorInput`** 節點（Data 類別）拖到畫布上。把它的 `value_mode` 設成 `explicit`，並在內嵌格子編輯器中填入管線要處理的數值。
+## 1. 新增一個輸入 {/* #1-add-an-input */}
 
-## 2. 串接一些運算
+把一個 **`TensorInput`** 節點（Data 類別）拖到畫布上。它的 `shape` 預設為 `1,4,4`，共 16 個數值。把它的 `value_mode` 設成 `explicit`，再於內嵌格子中輸入管線要處理的數值，或用**填 0**、**填 1**、**隨機**填滿（見[設定面板](./canvas-basics#the-config-panel)）。
 
-將它連接至任意一連串張量運算節點，例如：
+## 2. 串接一些運算 {/* #2-wire-up-some-operations */}
+
+將它連接至一連串張量運算節點。下面這條鏈會把 16 個數值攤平成一列，再轉換成機率：
 
 ```
 TensorInput → Reshape → Softmax → Print
@@ -22,7 +24,9 @@ TensorInput → Reshape → Softmax → Print
 
 從每個輸出連接埠拖曳到下一個輸入連接埠。連線會在你連接時驗證型別。
 
-## 3. 新增一個 Start 節點
+把 Reshape 的 `shape` 設成 `1,16`。新的形狀必須與收到的張量有相同的元素數；Reshape 的預設值 `-1,784` 需要 784 的倍數，執行會停在 Reshape。Softmax 的 `dim` 保持 `-1`，16 個機率的總和即為 1。
+
+## 3. 新增一個 Start 節點 {/* #3-add-a-start-node */}
 
 :::warning 每個圖都需要一個 Start 節點
 把一個 **`Start`** 節點拖到畫布上，並把它的 **trigger 輸出**（右側的菱形 handle）連到你想開始執行的第一個節點 — 通常就是 `TensorInput`。
@@ -32,15 +36,15 @@ TensorInput → Reshape → Softmax → Print
 
 這種 trigger 路由讓你可以把暫存節點留在畫布上而不執行，也支援只執行其中一條路徑的條件分支（例如 `Switch` 節點）。
 
-## 4. 執行它
+## 4. 執行它 {/* #4-run-it */}
 
-點擊**執行**。執行時，每個節點的進度與 `Print` 節點輸出都會串流顯示在**執行紀錄**中。執行期間發生的處理流程，請見 **[執行圖](./running-graphs)**。
+點擊**執行**。執行期間，每個節點的卡片會顯示它的狀態；**執行紀錄**會列出每個節點的結果與 `Print` 節點的輸出。執行期間發生的處理流程，請見 **[執行圖](./running-graphs)**。
 
-## 5. 檢視流過的資料
+## 5. 檢視流過的資料 {/* #5-inspect-what-flowed */}
 
 **錄製節點輸出**預設為開啟（**設定 → 錄製與檢視**），因此本次執行已錄製每個節點的輸出。點擊任何節點以開啟 **[教學檢視器](./teaching-inspector)**，查看每一步的確切張量 — shape、dtype、min/max/mean 與數值。
 
-## 下一步
+## 下一步 {/* #next-steps */}
 
 - 載入一個真實的範例，而不是從頭建構 — 見 **[範例集](./examples-gallery)**（例如 *Train CNN on MNIST*）。
 - 在 **[節點參考](./node-reference)** 中瀏覽所有你可以放到畫布上的節點。

@@ -27,6 +27,14 @@ pnpm build      # emits ../frontend/index.js (commit it)
 pnpm dev        # rebuild on save — pair with `cdui plugin dev`
 ```
 
+A node renderer is registered under the node's type, which uses the manifest
+id exactly as written, hyphens included: this plugin's example node is
+`{{plugin_id}}:Example`. The generated `registerRenderer` call in
+`ui/src/index.tsx` uses `'{{plugin_snake}}:Example'`, which is wrong when the
+id contains a hyphen. If those two names differ, change the call to
+`'{{plugin_id}}:Example'`: a renderer registered under the wrong type never
+mounts, and the browser console logs a warning about it.
+
 The typed SDK is vendored under `ui/src/sdk/` (clone-and-own). It mirrors the
 host plugin API, so you get autocomplete for `defineTool`, the hooks, and
 `defineNodeRenderer`.

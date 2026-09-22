@@ -31,10 +31,12 @@ Where this file and LICENSE disagree, LICENSE governs.
 THIRD-PARTY COMPONENTS
 ----------------------
 
-CodefyUI redistributes third-party software, both as Python dependencies and
-as compiled assets inside the prebuilt frontend bundle. Their copyright
-notices and license terms are collected in THIRD_PARTY_NOTICES.md, which is
-distributed alongside this file.
+The prebuilt frontend bundle in each release redistributes compiled
+third-party code. The Python dependencies are not redistributed; they are
+installed from PyPI at install time. THIRD_PARTY_NOTICES.md, which is
+distributed alongside this file, collects the copyright notices and license
+terms of the bundled code and lists the Python dependencies with their
+licenses.
 
 
 CONTRIBUTIONS

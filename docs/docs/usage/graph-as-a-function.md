@@ -71,6 +71,10 @@ The body is OPTIONAL (absent body means `{}`), and every field is optional:
 }
 ```
 
+### The graph's address {/* #the-graphs-address */}
+
+`{name}` in `/api/graph/contract/{name}` and `/api/graph/run/{name}` is the graph's address: its file name in the graphs folder without the extension (`<address>.json`, or `<address>.graph.json` under a project directory's `graphs/`). It is not necessarily the title the **Graphs** tab shows. The first save, and every **Save As...**, derives the address from the title by replacing every character other than a letter, a digit, `-` or `_` with `_` (letters of any script are kept), so a graph titled `My Classifier` is saved as `My_Classifier`. Saving in place keeps the address; **Rename** in the **Graphs** tab derives a new one the same way. `GET /api/graph/list` returns each graph's address as `file` next to its title as `name`. The routes never convert a name for you: `POST /api/graph/run/My%20Classifier` is 404 `graph_not_found`.
+
 ### The response envelope
 
 Every `/run` response — success or failure — is this one shape, with ALL keys always present (`null` when not applicable):
@@ -199,7 +203,7 @@ Inspect the contract first when scripting against an unfamiliar graph:
 curl.exe -s "http://127.0.0.1:8000/api/graph/contract/Api-Function"
 ```
 
-A ready-made graph for these exact calls ships in `examples/Usage_Example/Api-Function/`, listed in the Examples gallery as **Call a graph over HTTP**. Open it, save it as `Api-Function` — the address in the URLs above is the name you save under, not the example's name — and the commands work verbatim.
+A ready-made graph for these exact calls ships in `examples/Usage_Example/Api-Function/`, listed in the Examples gallery as **Call a graph over HTTP**. Open it, save it as `Api-Function` — the address in the URLs above comes from the name you save under ([the graph's address](#the-graphs-address)), not from the example's name — and the commands work verbatim.
 
 ## 8. Limits and gotchas
 
@@ -209,7 +213,7 @@ A ready-made graph for these exact calls ships in `examples/Usage_Example/Api-Fu
 - This server never emits 504; a 504 always came from an intermediary.
 - `record_outputs=true` makes inputs and results readable by anyone on the LAN who learns the `run_id` (the GET outputs endpoint is auth-exempt; transport is plain HTTP). Published apps: run records are key-protected in SQLite; the inspector store is editor-only — invokes never write to it. To make a graph stable and key-protected: [publish it](./publish).
 - Do not put secrets in `default` values — `GET /contract` and `/load` are unauthenticated.
-- `device: "auto"` resolves to the best accelerator the server can see (`cuda`, then `mps`, then `cpu`); an unavailable device silently falls back to CPU. A body with no `device` uses the saved graph's `settings.device`, else CPU. The envelope's `device` field shows what you actually got.
+- `device: "auto"` resolves to the best accelerator the server can see (`cuda`, then `mps`, then `cpu`); an unavailable device silently falls back to CPU, except a `cuda:N` index this machine does not have, which runs on the current GPU. A body with no `device` uses the saved graph's [`settings.device`](/advanced/device-backends#the-graph-settings-object), else CPU. The envelope's `device` field shows what you actually got.
 - A single >65,536-element tensor output fails the whole call — remove that GraphOutput or use `record_outputs` + the slicing outputs API (`GET /api/execution/outputs/{run_id}/{node_id}/{port}?slice=...`); an outputs filter is deferred.
 - Concurrent runs share the process default thread pool (the per-run parallelism limit of 4 is not a global limit) — heavy runs contend for CPU/GPU.
 - A call waits while a **seeded** run is executing anywhere in the server, and a seeded run waits for the calls already going. Ordinary calls still overlap each other. See [reproducible runs](./running-graphs#reproducible-runs-seed) — count it against `timeout_s` if the same server is also used for seeded training.
@@ -219,5 +223,5 @@ A ready-made graph for these exact calls ships in `examples/Usage_Example/Api-Fu
 ## 9. Roadmap
 
 - **Stage 2 (shipped): [Publish](./publish)** — versioned apps behind `POST /api/apps/{slug}/invoke` with durable API keys, key-protected SQLite run records, a per-image pixel budget, per-app OpenAPI documents, and `cdui start --host/--port` for LAN serving.
-- `cdui call <graph> --input k=v` / `cdui publish` / `cdui keys` — CLI wrappers over these APIs (fast-follow DX items).
+- `cdui call <graph> --input k=v` / `cdui keys` — CLI wrappers over these APIs (fast-follow DX items). Publishing from the command line exists for project directories: `cdui project publish` ([Project Directories](./project-directories#7-publish-records-the-git-commit)).
 - Async job mode (202 + `job.status_url`) reusing the same envelope.

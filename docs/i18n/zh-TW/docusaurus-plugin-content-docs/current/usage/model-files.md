@@ -8,7 +8,7 @@ description: ModelSaver 寫出什麼、ModelLoader 又願意讀回什麼 —— 
 
 `ModelSaver` 和 `ModelLoader`（兩者都在節點面板的 **IO** 分類）各有兩種模式，而你選的那一組決定了檔案「是什麼」：一袋數字，或者一個 Python 物件。這個差別不只是方便與否。載入一個已存的 Python 物件是唯一有機會執行程式碼的步驟，所以這也是 CodefyUI 裡唯一一處「你打開的檔案對接下來會發生什麼有發言權」的地方。
 
-## 兩種模式
+## 兩種模式 {/* #the-two-modes */}
 
 | | `state_dict`（預設） | `full_model` |
 |---|---|---|
@@ -22,7 +22,7 @@ description: ModelSaver 寫出什麼、ModelLoader 又願意讀回什麼 —— 
 
 **`full_model` 的用途是你不想重建架構的那些情況** —— 把一個檔案交給別人讓他直接跑，或是重新載入一個你已經沒有圖的模型。
 
-## 為什麼 `full_model` 有限制
+## 為什麼 `full_model` 有限制 {/* #why-full_model-is-restricted */}
 
 完整模型檔是一個 **pickle**，而解 pickle 不是「讀資料」：一個 pickle 可以指名一個函式並要求呼叫它。這就是為什麼 `weights_only=True` 是 torch 的預設值，而 CodefyUI 從不把它關掉。
 
@@ -34,7 +34,7 @@ description: ModelSaver 寫出什麼、ModelLoader 又願意讀回什麼 —— 
 
 其他一切都會被拒絕，並附上一則指名它停在哪裡的訊息。一個指名 `os.system` 的 pickle 載不進來，因為 `os.system` 不在上面這三組裡的任何一組 —— 而除了那兩個之外的任何函式也一樣不在。
 
-### 「審核過」到底是什麼意思
+### 「審核過」到底是什麼意思 {/* #what-audited-means-exactly */}
 
 把一個**類別**列名放行之後，檔案可以對它做兩件事，而這兩件事都必須是無害的：
 
@@ -51,11 +51,11 @@ description: ModelSaver 寫出什麼、ModelLoader 又願意讀回什麼 —— 
 CodefyUI 寫出的 `full_model` 檔**可以在 CodefyUI 裡載回來**。含有[自訂節點](/advanced/custom-nodes)、[外掛](/advanced/plugins)或其他腳本類別的檔案會被拒絕，因為受限解序列化器不接受這些類別。`ModelSaver` 會在儲存檔案時，於**執行紀錄**中回報檔案類型。
 :::
 
-### 一個已知的邊界
+### 一個已知的邊界 {/* #one-known-edge */}
 
 - **CodefyUI 寫出的檔案不是自足的。** 讀取時，CodefyUI 自己的類別必須可以 import，因此尚未允許這些類別的舊版 CodefyUI 會拒絕檔案。在 CodefyUI 之外使用純 `torch.load` 載入時，需要設定 `weights_only=False`，且 `sys.path` 必須包含後端套件。這些條件不適用於 `state_dict` 檔案，或只由標準 torch 層（包括 transformer 層）組成的檔案。**執行紀錄**訊息會指出檔案類型。
 
-## 如果載入被拒絕，而你信任那個檔案
+## 如果載入被拒絕，而你信任那個檔案 {/* #if-a-load-is-refused-and-you-trust-the-file */}
 
 在 CodefyUI 之外轉換一次，然後把結果當成 `state_dict` 載入：
 
@@ -67,7 +67,7 @@ torch.save(model.state_dict(), "NEW_PATH.pt")
 
 只對你自己產生的、或來源你信任的檔案這樣做。那個 `weights_only=False` 正是 CodefyUI 不會替你按下的那一步 —— 所以它是一行你自己打出來的程式碼，而不是應用程式裡的一個勾選框。
 
-## 相關頁面
+## 相關頁面 {/* #related */}
 
 - [重現標準結果](./reproducing-baselines) —— `CheckpointSaver` / `CheckpointLoader`，它們儲存的是訓練*狀態*（模型、最佳化器、排程、epoch）而不是一個模型，而且一律以張量形式儲存。
 - [執行圖](./running-graphs) —— 為什麼這兩個節點永遠不會由執行快取代為回答。

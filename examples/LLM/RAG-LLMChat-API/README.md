@@ -133,15 +133,19 @@ notes and nothing else in the graph changes. `recursive` adds subfolders and
 - **`Ollama` is the OpenAI-compatible path.** The provider maps to the same
   adapter as `ChatGPT API`, which is why `ollama_base_url` ends in `/v1` and
   why no key is required for it.
-- **Both root nodes need a trigger edge.** `loader` and `question` are each
-  wired from `start`; execution walks forward along data edges from there.
+- **Both roots are wired from `start`.** Either trigger alone would run the
+  whole graph, because a node that feeds a data edge into a running node runs
+  too ([Running Graphs](../../../docs/docs/usage/running-graphs.md#a-node-without-a-trigger-can-still-run)).
+  `test_rag_examples_trigger_both_root_nodes` keeps the pair as this example's
+  convention.
 
 ## Continuous integration
 
 `backend/tests/test_rag_examples.py` holds this graph to its shape with no
-download and no network: the card names both the pack and Ollama inside the 80
-characters the gallery shows, the two encoders share one model with the right
-prefixes, the question reaches both consumers, no `SECRET` param appears
+download and no network: the notes on the canvas name both the
+`sentence-embeddings` pack and Ollama (the gallery card says what the graph
+does and states no requirement), the two encoders share one model with the
+right prefixes, the question reaches both consumers, no `SECRET` param appears
 anywhere in the file, and the retrieval chain matches `RAG-Local-Offline`
 node-for-node.
 

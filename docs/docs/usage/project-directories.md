@@ -14,8 +14,8 @@ CI-able validation, and a git commit recorded at every publish.
 ```
 my-service/
   codefyui.project.toml   manifest: name, plugin pins, default publish target
-  graphs/    <name>.graph.json    logic (nodes/edges/params/presets, optional settings.device)
-  layout/    <name>.layout.json   positions (reviewable, generated)
+  graphs/    <name>.graph.json    logic (nodes/edges/params/presets/subgraphs, optional settings.device)
+  layout/    <name>.layout.json   positions, note geometry, segments (reviewable, generated)
   assets/images/   assets/models/   assets/data/    scaffolded empty
   assets/output/                                    created on demand (e.g. ImageWriter)
   assets/media/                                     created on demand (run-produced video, served by /api/media)
@@ -26,9 +26,10 @@ my-service/
 ## Why the split?
 
 `graphs/<name>.graph.json` holds only what changes the *behavior* of the graph
-(nodes, edges, parameters, embedded presets, and an optional `settings` block,
-for example `{"device": "cuda"}`, which assigns the device the graph runs on). Node **positions** and note
-geometry live in `layout/<name>.layout.json`. So a drag produces a diff only
+(nodes, edges, parameters, embedded presets, subgraph definitions, and an optional `settings` block,
+for example `{"device": "cuda"}`, which assigns the device the graph runs on). Node **positions**
+(including those of the nodes inside a subgraph definition), note geometry and the
+compare segments (`segmentGroups`) live in `layout/<name>.layout.json`. So a drag produces a diff only
 in `layout/`, and a parameter edit a diff only in `graphs/` -- code review sees
 the logic change, not a wall of moved-pixels noise. (Known exception:
 `SequentialModel` sub-graph layer positions live inside `params.layers` and
@@ -49,12 +50,20 @@ cd my-service
 ```
 
 `init` scaffolds `graphs/`, `layout/`, and `assets/{images,models,data}/`
-(empty, `.gitkeep`-tracked), writes `.gitignore` / `.gitattributes` /
-`.env.example` / `README.md`, and runs `git init` (no commit -- it prints the
-next steps). `--force` writes into a directory that is not empty; an existing
-manifest or `README.md` is never overwritten. `assets/output/` is not created
-up front; it appears the first time a node (for example ImageWriter) writes to
-it.
+(empty, `.gitkeep`-tracked), writes `codefyui.project.toml` / `.gitignore` /
+`.gitattributes` / `.env.example` / `README.md`, and runs `git init` (no commit
+-- it prints the next steps). `--force` writes into a directory that is not
+empty; none of those five files is overwritten if it already exists.
+`assets/output/` is not created up front; it appears the first time a node (for
+example ImageWriter) writes to it.
+
+`.gitattributes` holds two lines. `*.json text eol=lf` keeps graph and layout
+files LF on checkout: the server writes them with LF, and a Windows checkout
+with `core.autocrlf=true` would otherwise hand them back as CRLF, so every save
+would rewrite every line. `layout/*.layout.json linguist-generated=true`
+collapses layout files in GitHub diffs. A project created before 2.6.0 keeps
+its older `.gitattributes`, which lacks the first line; add
+`*.json text eol=lf` to it yourself.
 
 ### 2. Add a graph
 
@@ -85,7 +94,8 @@ into GraphInput and GraphInput's value into GraphOutput, then press
 
 `settings` is optional. A graph without it runs on the device the client
 chooses: the Settings device in the editor, or `cpu` for `cdui run` with no
-`--device`. See [Device Backends](../advanced/device-backends.md).
+`--device`. The values `settings.device` accepts, and when Save writes the
+block, are in [Device Backends](../advanced/device-backends.md#the-graph-settings-object).
 
 ### 3. Commit
 
@@ -108,11 +118,22 @@ cdui project validate .
 ```
 
 `validate` initializes the FULL registry (builtin + custom + plugin nodes and
-presets, exactly like the server) and runs the publish pre-flight on every
-graph: the secret-in-graph check, contract, entry points, wiring, and
-node/preset validity. It also errors if `.env` is tracked by git, and warns
-(errors with `--strict`) on missing plugin pins. In CI, run **restore then
-validate**:
+presets, exactly like the server) and runs publish's checks on every graph, in
+the same order: the secret-in-graph check, contract, entry points, wiring, and
+node/preset validity. It is not identical to publish:
+
+- It also checks `settings.device` (an invalid value is an `invalid_settings`
+  error); publish does not.
+- It does not pass the graph's subgraph definitions to the node check, so a
+  graph that uses a subgraph fails with `Unknown subgraph` although publish
+  accepts it.
+- Its secret check reads top-level nodes only: a SECRET value inside a subgraph
+  or preset definition passes `validate`, and publish refuses it with 409
+  `secret_in_graph`.
+
+The last two are known issues. `validate` also errors if `.env` is tracked by
+git, and warns (errors with `--strict`) on missing plugin pins. In CI, run
+**restore then validate**:
 
 ```bash
 cdui project restore .   # install the manifest's plugin pins by exact SHA
@@ -197,7 +218,7 @@ curl -s -X POST http://127.0.0.1:8000/api/keys \
   --data '{"name": "demo"}'
 ```
 
-`# -> {"id": 1, "name": "demo", "prefix": "cdui_xxxxxxxx", "token": "cdui_..."}` (the full key is shown ONCE, in the "token" field)
+`# -> {"id": 1, "name": "demo", "prefix": "cdui_xxxxxxx", "token": "cdui_..."}` (the full key is shown ONCE, in the "token" field)
 
 ### 7. Publish (records the git commit)
 
@@ -210,6 +231,15 @@ provenance. Set the default target once in `codefyui.project.toml`:
 graph = "echo"
 slug = "echo-svc"
 ```
+
+`graph` (and `--graph`) is the graph's
+[address](./graph-as-a-function.md#the-graphs-address): its file name under
+`graphs/` without `.graph.json`, which can differ from the title the **Graphs**
+tab shows. The scaffolded manifest also has a commented-out
+`record_io = true`. When `record_io` is set, every `cdui project publish` sends
+it, so it re-applies that value each time, including over a change made with
+`PATCH /api/apps/{slug}`; leave it out to keep the app's current setting (see
+[Publish](./publish.md#1-publish-lifecycle)).
 
 Commit it -- an uncommitted manifest change is exactly the kind of dirty tree
 the next step warns about -- then publish:
@@ -229,6 +259,14 @@ the tree is dirty. Every publish from a git repo records `git_dirty` as
 the warning banner above. If `git status` itself fails after the commit was
 resolved, `git_dirty` is recorded as `null` (= unknown), never a fabricated
 `false`.
+
+It connects to `http://127.0.0.1:8000`, or to the port in `CODEFYUI_PORT` when
+that variable is set in the shell running the command; unlike `cdui run`, it
+does not use the address `cdui start` recorded. For a server started with
+`--port 9000`, run `CODEFYUI_PORT=9000 cdui project publish .` (PowerShell: set
+`$env:CODEFYUI_PORT = "9000"` first). A server bound to a single LAN address
+(`--host 192.168.1.20`) does not listen on 127.0.0.1, so this command cannot
+reach it.
 
 Creating the app on first publish is automatic **only** for the manifest's
 committed `[publish].slug` target. An explicitly passed `--slug` that names
@@ -303,9 +341,14 @@ Every `*.json` is copied into `graphs/` and split into the logic/layout pair.
 - `DB_PATH` and custom nodes stay install-global; [plugins](/advanced/plugins)
   are the portable mechanism (pinned by SHA in the manifest).
 - `assets/data/` is where a relative `Dataset` or `FileReader` path resolves.
-  Files uploaded through a DATA_FILE dropdown (`CSVReader`, `DocumentLoader`,
-  `TextCorpusDataset`) are install-global too -- `backend/data/files`, or
-  `CODEFYUI_DATA_FILES_DIR` -- like `DB_PATH` and custom nodes.
+  `CSVReader`, `DocumentLoader` and `TextCorpusDataset` resolve a typed
+  relative path against the project root instead, so write
+  `assets/data/table.csv`, not `table.csv`; a path that leaves the project is
+  refused. A bare file name is first looked up among the files uploaded through
+  their DATA_FILE dropdown, which are install-global -- `backend/data/files`,
+  or `CODEFYUI_DATA_FILES_DIR` -- like `DB_PATH` and custom nodes. The bundled
+  samples still resolve against the install: `data/samples/iris.csv` in
+  `CSVReader`, and paths under `data/samples/` in `DocumentLoader`.
 - `CODEFYUI_MODELS_DIR`, `CODEFYUI_IMAGES_DIR` and `CODEFYUI_MEDIA_DIR` relocate
   the model, image and run-media stores; in project mode they default to
   `<project>/assets/models`, `assets/images` and `assets/media` unless set

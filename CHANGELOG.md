@@ -22,6 +22,37 @@ received — each links to the release it was published as.
 
 ## [Unreleased]
 
+The documentation was checked against the code and brought up to 2.8.4, in
+English and in Traditional Chinese. Every docs page, the README,
+CONTRIBUTING, RELEASING and the example READMEs were compared with the code;
+about 270 findings were verified again before each fix, and a second review
+checked the result. The docs now cover what shipped since 2.7.0 — the
+Welcome screen, the device messages, the inspector's running state,
+workspace files — and every HTTP route the server has.
+
+### Changed
+
+- **The documentation matches 2.8.4.** New sections cover closing the last
+  tab and the Welcome screen; the device select and what it says when a
+  device is not available
+  ([GPU & device](https://docs.codefyui.com/getting-started/gpu-device#when-a-device-is-unavailable));
+  TrainingLoop's options and the metric series it records; the graph file's
+  `settings` object; the rule that turns a graph's title into its address;
+  and Basic node-category mode, node cards, notifications and the Execution
+  Log. The [API reference](https://docs.codefyui.com/advanced/api-reference)
+  lists all 131 routes, including the 32 `/api/git` routes. The Your First
+  Graph walkthrough runs with default parameters again, and the plugin
+  API's minimal example uses a node type and handles that exist.
+- **Switching the docs language keeps your place.** Every zh-TW heading
+  carries its English twin's anchor, the search box and search page are in
+  Traditional Chinese, and a link to a missing anchor now fails the docs
+  build.
+- **The MNIST examples no longer say they download MNIST.** It ships with
+  CodefyUI; only inside a project directory does the first run download it.
+- **NOTICE and the licensing page** say the Python dependencies are
+  installed from PyPI, not redistributed. The licensing page names the two
+  MPL-2.0 packages among them (certifi and tqdm).
+
 ## [2.8.4] — 2026-09-20
 
 Every example title in the gallery fits on its card.

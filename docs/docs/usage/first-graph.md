@@ -8,19 +8,23 @@ description: Build and run a minimal pipeline, and learn why every graph needs a
 
 This walkthrough builds a tiny pipeline that feeds an explicit tensor through a couple of operations — enough to learn the **Start node** execution model that every CodefyUI graph relies on.
 
+In **Basic** node category mode the sidebar hides `Start`, `Reshape`, `Softmax` and `Print`; add them by double-clicking the canvas and searching (see [The sidebar](./canvas-basics#the-sidebar)).
+
 ## 1. Add an input
 
-Drag a **`TensorInput`** node (Data category) onto the canvas. Set its `value_mode` to `explicit` and fill the inline grid editor with the numbers you want the pipeline to see.
+Drag a **`TensorInput`** node (Data category) onto the canvas. Its `shape` defaults to `1,4,4`, so it holds 16 values. Set its `value_mode` to `explicit`, then type the numbers you want the pipeline to see into the inline grid, or fill it with **Fill 0**, **Fill 1** or **Random** (see [The config panel](./canvas-basics#the-config-panel)).
 
 ## 2. Wire up some operations
 
-Connect it through any chain of tensor-op nodes, for example:
+Connect it through a chain of tensor-op nodes. This one flattens the 16 values into one row and turns them into probabilities:
 
 ```
 TensorInput → Reshape → Softmax → Print
 ```
 
 Drag from each output port to the next input port. The edges validate types as you connect.
+
+Set Reshape's `shape` to `1,16`. A new shape must hold the same number of elements as the tensor it receives, and Reshape's default, `-1,784`, needs a multiple of 784, so the run would stop at Reshape. Leave Softmax's `dim` at `-1`: the 16 probabilities then add up to 1.
 
 ## 3. Add a Start node
 
@@ -34,7 +38,7 @@ This trigger-based routing is what lets you keep scratch nodes on the canvas wit
 
 ## 4. Run it
 
-Click **Run**. Watch per-node progress stream into the **Execution Log**, and the `Print` node's output appear there too. See **[Running Graphs](./running-graphs)** for what happens during execution.
+Click **Run**. Each node's card shows its status while the run goes, and the **Execution Log** lists each node's outcome and the `Print` node's output. See **[Running Graphs](./running-graphs)** for what happens during execution.
 
 ## 5. Inspect what flowed
 

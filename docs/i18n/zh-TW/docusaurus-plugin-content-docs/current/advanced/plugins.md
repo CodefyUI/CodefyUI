@@ -6,7 +6,7 @@ description: 安裝教育節點的外掛包，並學習如何撰寫與發佈你�
 
 # 外掛包
 
-教育（「Edu」）節點以可安裝的**外掛包**形式提供，**依方向**組織，因此每一個都對應到一個動手實作的教科書模組，並在你逐步學習時累進安裝。下面每一道指令在編輯器的[外掛中心](/usage/plugin-center)裡都有對應的按鈕；這一頁是兩者背後共同的參考資料。
+教育（「Edu」）節點以可安裝的**外掛包**形式提供，**依方向**組織，因此每一個都對應到一個動手實作的教科書模組，並在你逐步學習時累進安裝。編輯器的[外掛中心](/usage/plugin-center)提供安裝、啟用、停用、更新與解除安裝的按鈕；`sync`、`info` 與 `search` 只能在命令列使用。這一頁是兩者背後共同的參考資料。
 
 ```bash
 cdui plugin sync                           # 安裝所有你還沒決定過的內建外掛包
@@ -21,7 +21,7 @@ cdui plugin enable deep                    # 重新啟用，不需再下載
 cdui plugin uninstall deep                 # 會被記住：sync 不會再把它裝回來
 ```
 
-## 有哪些可用的外掛包
+## 有哪些可用的外掛包 {/* #whats-available */}
 
 | 外掛包 | 動手實作模組 | 節點 |
 |------|------------------|-----------|
@@ -31,7 +31,7 @@ cdui plugin uninstall deep                 # 會被記住：sync 不會再把它
 | `edu` | I1 Data Representation · I2 Classical ML（動手實作） | FilterRows、SlidingWindow2D、SentenceEmbedding、Classifier、AdvancedClassifier、FFNLayer、ActivationLayer、TrainAndEvaluate |
 | `stats` | —（任何資料集） | Stats-Describe、Stats-GroupByAggregate、Stats-Histogram、Stats-Percentile、Stats-Correlation、Stats-ConfusionMatrix、Stats-TableView、Stats-ChartView |
 
-`stats` 是這裡的例外：它不是教科書的配套，而是給第三方外掛作者的實作範例。它只用 numpy 與 torch，以[第 0 級](#安全性三個層級)安裝且**整份 manifest 沒有 `[security]` 區段**；它的 [README](https://github.com/CodefyUI/CodefyUI/blob/main/plugins/stats/README.md) 正式記載了資料類外掛需要的兩份契約——表格如何在連接埠之間傳遞，以及 `chart` 輸出如何宣告與繪製。
+`stats` 是這裡的例外：它不是教科書的配套，而是給第三方外掛作者的實作範例。它只用 numpy 與 torch，以[第 0 級](#security--three-tiers)安裝且**整份 manifest 沒有 `[security]` 區段**；它的 [README](https://github.com/CodefyUI/CodefyUI/blob/main/plugins/stats/README.md) 正式記載了資料類外掛需要的兩份契約——表格如何在連接埠之間傳遞，以及 `chart` 輸出如何宣告與繪製。
 
 另外有三個官方外掛放在各自的儲存庫裡。它們一樣可以用型錄列出的名稱安裝，但和上面的外掛包不同：它們是從 GitHub 下載的，所以安裝時會請你確認。
 
@@ -43,15 +43,15 @@ cdui plugin uninstall deep                 # 會被記住：sync 不會再把它
 
 每個 Edu 節點都把單一課程概念分解成一連串具名步驟，由[教學檢視器](/usage/teaching-inspector)一次渲染一列——`Edu-ColumnStats` 將母體標準差公式呈現為 `sum → divide → deviations² → variance → sqrt`；`Edu-PolicyGradient` 暴露 `softmax → gather → log → baseline → loss`；`Edu-Patchify` 讓 `unfold → permute → flatten` 變得可見。在「設定」popover 中開啟**顯示內部步驟**即可擷取它們。
 
-## 外掛包如何儲存
+## 外掛包如何儲存 {/* #how-packs-are-stored */}
 
 - **內建方向外掛包**位於 repo 內的 `plugins/<id>/`，並就地啟用（不複製）。
-- **第三方外掛包**會以固定 SHA 的 tarball 下載到 `<USER_DATA>/plugins/<id>/`，並在安裝前經過 **AST 驗證**（見[安全性](#安全性三個層級)）。
+- **第三方外掛包**會以固定 SHA 的 tarball 下載到 `<USER_DATA>/plugins/<id>/`，並在安裝前經過 **AST 驗證**（見[安全性](#security--three-tiers)）。tarball 是該 commit 的整個 repository。安裝會拒絕壓縮後超過 100 MB 或解壓後超過 500 MB 的 tarball，以及超過 1 MB 的 `cdui.plugin.toml`，拒絕後不會留下任何檔案；因此資料集與模型權重不要放進 repository。會寫到解壓目錄之外的封存成員（例如 `../` 路徑）、指向該目錄之外的連結，以及裝置檔也會被拒絕。
 - `<USER_DATA>/plugins/installed.json` 的 lockfile 會記錄每次安裝及已授予的能力，讓 `cdui start` 能在下次啟動時重新探索外掛。對透過 `cdui` 執行的命令，`<USER_DATA>` 是 `<install dir>/.codefyui_dev/`：除非已匯出 `CODEFYUI_USER_DATA_DIR`，否則 `cdui start`、`cdui dev` 與每個 `cdui plugin` 命令都會將它設為該目錄。因此，預設安裝使用 `~/CodefyUI/.codefyui_dev/plugins/installed.json`。平台 user-data 目錄（`%LOCALAPPDATA%\codefyui`、`~/.local/share/codefyui` 或 `~/Library/Application Support/codefyui`）只適用於直接啟動且未設定 `CODEFYUI_USER_DATA_DIR` 的 `uvicorn app.main:app`。lockfile 也用來判定外掛是否已安裝。如果目錄已被手動刪除，或要取代透過 `cdui plugin link` 連結的目錄，重新安裝時必須使用 `--force`。
 
 外掛節點會加上命名空間，以避免衝突並讓圖能自我說明——內建節點使用像 `Conv2d` 這樣的裸名稱，而外掛節點則會像 `foundations:Edu-KNN` 這樣加上限定。
 
-### 升級後補上新外掛包——`cdui plugin sync`
+### 升級後補上新外掛包——`cdui plugin sync` {/* #catching-up-after-an-update--cdui-plugin-sync */}
 
 真正啟用一個外掛包的是 lockfile，而升級並不會寫入它。因此，版本**新增**內建外掛包時，檔案雖然會隨升級寫入磁碟，卻不會載入：節點可安裝，但不會顯示。`cdui plugin sync` 用來補上這些外掛包。它會安裝所有你尚未決定是否安裝的內建外掛包，執行前只確認一次，並逐一回報結果。因此，即使某個外掛包的 `python_deps` 無法透過學校網路下載，也不會影響其他外掛包。
 
@@ -64,9 +64,9 @@ cdui plugin sync --prune      # 順手清掉已不再發行的外掛 lockfile �
 
 它刻意不做兩件事。第一，它不會在啟動時自動執行，`cdui update` 也不會詢問是否執行。版本新增的程式碼是否啟用，必須由使用者同意，不能視為一般升級細節。第二，它不會重新安裝你已移除的外掛包。`cdui plugin uninstall` 會在 lockfile 中記錄移除狀態（`plugins` 旁邊的 `removed` 對應表），以區分「從未處理過」和「已主動移除」。因此，`cdui start` 與 `cdui plugin list` 也不會再列出已移除的外掛包。若要取消移除狀態，請按名稱重新安裝：`cdui plugin install stats` 會清除該紀錄，之後 sync 也會重新計入。
 
-## 安全性——三個層級
+## 安全性——三個層級 {/* #security--three-tiers */}
 
-外掛包是在 CodefyUI 行程內執行的 Python。第三方外掛包安裝前，包內任何位置的每一個 `.py` 檔——`nodes/`、`examples/`、`tests/`、`docs/`、`assets/`，或其他任何子目錄——都會由 AST 閘門走訪，決定它可以 import 什麼。任何目錄都不會因名稱而排除：外掛載入器可以從包內任何位置 import（節點檔裡寫 `from ..tests import helper` 是可行的），所以掃描範圍必須涵蓋載入器能觸及的所有位置。閘門分為三個層級，其中第 1 級需要特別說明。
+外掛包是在 CodefyUI 行程內執行的 Python。第三方外掛包安裝前，包內任何位置的每一個 `.py` 檔——`nodes/`、`examples/`、`tests/`、`docs/`、`assets/`，或其他任何子目錄——都會由 AST 閘門走訪，決定它可以 import 什麼。只有 `.git` 會略過，因為沒有任何 `import` 敘述能指名它。其他每個目錄，包括 `__pycache__`，都會掃描：外掛載入器可以從包內任何位置 import（節點檔裡寫 `from ..tests import helper` 是可行的），所以掃描範圍必須涵蓋載入器能觸及的所有位置。閘門分為三個層級，其中第 1 級需要特別說明。
 
 | 層級 | 外掛如何取得 | 涵蓋範圍 |
 |------|----------------------|----------------|
@@ -74,17 +74,17 @@ cdui plugin sync --prune      # 順手清掉已不再發行的外掛 lockfile �
 | **1——宣告能力** | manifest 寫 `[security] capabilities = [...]`，並在安裝時由使用者確認 | 每個能力對應一組具名模組。 |
 | **2——信任作者** | `[security] allowed_modules = [...]` **加上** `cdui plugin install --trust-author` | 任何模組，包括 `subprocess`、`ctypes` 與 `importlib`。 |
 
-### 能力清單
+### 能力清單 {/* #the-capabilities */}
 
 | 能力 | 解鎖 | 你正在同意的事 |
 |------------|---------|--------------------------|
 | `network` | `requests`、`urllib`、`http`、`socket`、`ssl`，以及它們背後的原始 C 模組（`_socket`、`_ssl`） | 這個外掛可以與任何主機收發資料——**並把下載到的內容寫入磁碟**，因為 `urllib.request.urlretrieve(url, dest)` 只要一行。 |
-| `filesystem` | `pathlib`、`tempfile`、`shutil`、`zipfile`、`tarfile`、`gzip`、`bz2`、`lzma`、`codecs`、`sqlite3`（含 `_sqlite3`）、`glob`、`fileinput`、`readline` | 這個外掛可以使用檔案**函式庫**。這不是寫入的邊界：單純的 `open(p, "w")` 是內建函式，完全不需要任何宣告（見[這不是什麼](#這不是什麼)）。 |
+| `filesystem` | `pathlib`、`tempfile`、`shutil`、`zipfile`、`tarfile`、`gzip`、`bz2`、`lzma`、`codecs`、`sqlite3`（含 `_sqlite3`）、`glob`、`fileinput`、`readline` | 這個外掛可以使用檔案**函式庫**。這不是寫入的邊界：單純的 `open(p, "w")` 是內建函式，完全不需要任何宣告（見[這不是什麼](#what-this-is-not)）。 |
 | `process-env` | `os`、`ntpath`、`posixpath`、`genericpath`、`nt`、`posix` | 這個外掛拿到**整個 `os` 模組**：讀取*並修改*此行程的環境變數（**包含其中的 API 金鑰**）、啟動其他程式（`os.execv`、`os.spawnve`、`os.startfile`），以及刪除或重新命名檔案。這個名字是大家索取它的理由，但授予的範圍比名字大。 |
 
 除此之外都不是能力。`subprocess`、`sys`、`importlib`、`ctypes`、`pickle`、`marshal`、`dill`、`shelve`、`runpy`、`code`、`signal`、`atexit`、`webbrowser`、`threading`、`asyncio`、`multiprocessing` 一律只能使用第 2 級：**沒有任何能力會直接允許專門用來執行程式碼或存取直譯器的模組。** 這項說明只針對能力對照表：`process-env` 會授予 `os`，而 `os` 可以啟動行程；但它不會直接授予專門執行程式碼的模組。
 
-### 路徑輔助函式屬於第 0 級
+### 路徑輔助函式屬於第 0 級 {/* #path-helpers-are-tier-0 */}
 
 `os.path.join` 是字串處理，因此不需要任何能力——但僅限於**唯一一種**綁定輔助函式本身的寫法，而且只限於那些真的是純字串函式的名稱：
 
@@ -110,7 +110,7 @@ import nt / posix                    # 需要 "process-env"——os.py 賴以建
 
 第 0 級清單上的每一個名稱都是靠**實際呼叫**驗證的，不是靠讀原始碼——在 Windows 上 `abspath` 會走到 `nt._getfullpathname`，而一份只找 `os.` 用法的原始碼稽核看不到它。
 
-### 宣告，以及被詢問
+### 宣告，以及被詢問 {/* #declaring-and-being-asked */}
 
 ```toml
 [security]
@@ -150,7 +150,7 @@ $ cdui plugin install alice/metric-logger
 - **授權內容會被記錄**在 `<USER_DATA>/plugins/installed.json`，並由 `cdui plugin list` 與 `cdui plugin info` 顯示。
 - **`cdui plugin update` 不會重複詢問**——只要新版要求的是你已授權範圍的子集；一旦它多要了一項能力就會**停下來**，而這正是更新流程真正攔得到的供應鏈風險形狀。
 
-### 每一級都成立的規則
+### 每一級都成立的規則 {/* #what-holds-in-every-tier */}
 
 `torch.load(...)` 仍然必須明確寫出 `weights_only=True`；dunder 存取（`__class__`、`__globals__`、`__subclasses__`……）、frame 走訪（`f_globals`、`gi_frame`……），以及**內建函式** `eval` / `exec` / `compile` / `__import__`——不論是裸呼叫或透過 `builtins` 模組——不論宣告了什麼都一律拒絕。**任何能力都不會允許反射。**
 
@@ -158,15 +158,15 @@ $ cdui plugin install alice/metric-logger
 
 但這不代表能力絕不會允許執行其他程式。`os.system(...)` 與 `os.popen(...)` 只在**以呼叫形式出現時**被拒絕——所以 `f = os.system` 之後再 `f(cmd)` 就能繞過這條規則——而授予 `process-env` 後，`os.spawnve` / `os.execv` / `os.startfile` 都不會被拒絕。這與上方 `process-env` 那一列所述是同一件事；此處再次說明，是因為這一段先前的版本宣稱了相反的事。
 
-### 預設關閉、第 2 級會解除的屬性名稱
+### 預設關閉、第 2 級會解除的屬性名稱 {/* #attribute-names-closed-by-default-lifted-at-tier-2 */}
 
 除了上述在所有層級都成立的規則外，還有一份固定的屬性名稱清單：第 0 級與第 1 級會拒絕這些 Tier-0 函式庫屬性，第 2 級則解除限制。`numpy.zeros(3).dump(path)` 可把大部分內容由攻擊者控制的 pickle 寫入任意路徑；`torch.hub.load(...)` 會下載並執行遠端 `hubconf.py`；`.savetxt`、`.tofile`、`.load_state_dict_from_url`、`.tensorboard` 與其他十多個項目都有相同風險。它們是 Tier-0 import 所回傳值上的**方法**，不是獨立的 import，因此只檢查 `import` 敘述的能力閘門不會發現。任何能力都無法解除這項限制，因為這些方法所在的模組已經屬於第 0 級，點名能力不會授予新模組。這與[畫布內腳本政策](/advanced/python-script-node)使用的是同一份清單。
 
 這條規則不判斷接收者，因此外掛**自己的**方法只要同名也會被拒絕：自訂類別上的 `self.save(...)` 與 `numpy.array(...).save(...)` 受到相同限制，這也和腳本政策對腳本自身 `obj.save()` 採取的限制一致。只使用第 0 級或第 1 級時，類別完全不能定義名為 `save`、`dump`、`hub` 或清單中其他名稱的方法。
 
-**`--trust-author` 會解除整份清單的限制。** 外掛以 `--trust-author` 加上 `[security] allowed_modules` 安裝後，`.dump` / `.hub` / `.save` 與其餘項目都恢復為一般屬性名稱。已信任可使用 `subprocess` 與 `ctypes` 的外掛，再限制 `arr.dump()` 並無額外保護，而且會使外掛無法定義名為 `save` 的方法。這與[每一級都成立的規則](#每一級都成立的規則)不同：那些規則拒絕的是**反射**，任何能力或信任層級都不會允許；`.dump` 與 `.hub` 涉及檔案寫入與遠端程式碼下載，而 `--trust-author` 已經授予同等或更高的權限。
+**`--trust-author` 會解除整份清單的限制。** 外掛以 `--trust-author` 加上 `[security] allowed_modules` 安裝後，`.dump` / `.hub` / `.save` 與其餘項目都恢復為一般屬性名稱。已信任可使用 `subprocess` 與 `ctypes` 的外掛，再限制 `arr.dump()` 並無額外保護，而且會使外掛無法定義名為 `save` 的方法。這與[每一級都成立的規則](#what-holds-in-every-tier)不同：那些規則拒絕的是**反射**，任何能力或信任層級都不會允許；`.dump` 與 `.hub` 涉及檔案寫入與遠端程式碼下載，而 `--trust-author` 已經授予同等或更高的權限。
 
-### 請附原始碼，不要附位元組碼
+### 請附原始碼，不要附位元組碼 {/* #ship-source-not-bytecode */}
 
 外掛 tarball 中任何可由 Python import 系統載入的檔案，都必須是可讀的**原始碼**。安裝程式會掃描整個目錄，不只 `nodes/`，並依載入器接受的副檔名（`importlib.machinery.all_suffixes()`）枚舉，而不是只找 `*.py`：`.py` 與 `.pyw` 會被掃描；`.pyc`、`.pyo`、`.pyd`、`.so`、`.dylib` 則會在安裝時依名稱**拒絕**，且不受安裝來源平台影響。
 
@@ -174,7 +174,7 @@ $ cdui plugin install alice/metric-logger
 
 編譯快取不受影響。CPython 產生的快取路徑為 `__pycache__/<name>.cpython-311.pyc`，其檔名 stem 不是合法識別字，無法由 `import` 敘述指名，因此會被略過。攻擊者提供的 `__pycache__/payload.pyc` 可以被指名，所以會被拒絕。
 
-### 這不是什麼
+### 這不是什麼 {/* #what-this-is-not */}
 
 **這是防護欄，不是沙箱。**[畫布內腳本政策](/advanced/python-script-node)也採用相同說明；此處必須重申，因為外掛會執行**第三方**程式碼。
 
@@ -188,7 +188,7 @@ $ cdui plugin install alice/metric-logger
 - **任何可寫入 `installed.json` 的程式碼，都能預先核准下一次更新。** lockfile 是 `cdui plugin update` 判斷能力已授權、不必再次詢問的依據。因此，可編輯 lockfile 的程式碼（包含已取得 `filesystem` 的外掛，或任何使用 `open` 的外掛）都能在自己的條目加入能力，讓下一次更新直接接受。這屬於入侵後的持久化，而非第一步提權；但 lockfile 是信任存放區，其保護程度取決於使用者帳號的保護程度。
 - **宣告是作者的意圖聲明。** 它會提高快速攻擊的成本，也提供安裝前可檢查的資訊。真正需要判斷的是：「你是否信任作者？」
 
-### 從舊版升級
+### 從舊版升級 {/* #upgrading-from-an-older-install */}
 
 不需要做任何事。在能力機制出現之前寫入的 lockfile 條目沒有 `capabilities` 欄位，讀起來就是「未授權任何能力」——與它原本的行為完全一致。既有的外掛包重新驗證後行為不變。
 
@@ -198,13 +198,13 @@ $ cdui plugin install alice/metric-logger
 
 ### 使用外掛中心 {/* #using-the-plugin-center */}
 
-**開啟外掛中心。** 使用側邊欄**自訂與外掛**分頁之**外掛**區段的**外掛中心...**按鈕，或**設定 → 外掛 → 外掛中心**中的**開啟**按鈕。「設定」列包含「安裝教學節點套件與 GitHub 上的外掛。」文字，以及「*已安裝 N 個，可安裝 M 個*」摘要。套件中心與外掛中心可以同時開啟；按 **Escape** 會關閉最上層的視窗。
+**開啟外掛中心。** 使用側邊欄**自訂與外掛**分頁之**外掛**區段的**外掛中心...** 按鈕，或**設定 → 選用套件與外掛**底下**外掛中心**列的**開啟**按鈕。該列在型錄載入前顯示「安裝教學節點套件與 GitHub 上的外掛。」，載入後顯示「*已安裝 N 個，可安裝 M 個*」；安裝進行中顯示「正在安裝 *名稱*...」，伺服器沒有外掛中心時顯示「此伺服器不支援」。套件中心與外掛中心可以同時開啟；按 **Escape** 會關閉最上層的視窗。
 
-**外掛清單。** 清單包含型錄中可按名稱安裝的所有內建與官方外掛，以及所有已安裝的外掛。篩選條件為**全部**、**已安裝**與**可安裝**。每張卡片會顯示名稱、狀態、版本、來源、repository 與 pin（`ref @ sha`）、章節、節點數量，以及 Python 依賴套件。來源為**內建**、**官方**，或透過 `cdui plugin link` 註冊之目錄使用的**本機連結**；其他第三方 repository 不顯示來源標籤。可用操作取決於[安裝狀態](#install-states)。
+**外掛清單。** 清單包含型錄中可按名稱安裝的所有內建與官方外掛，以及所有已安裝的外掛。篩選條件為**全部**、**已安裝**與**未安裝**。每張卡片會顯示名稱、狀態、版本、來源、repository 與 pin（`ref @ sha`）、章節、節點數量，以及 Python 依賴套件。來源為**內建**、**官方**，或透過 `cdui plugin link` 註冊之目錄使用的**本機連結**；其他第三方 repository 不顯示來源標籤。可用操作取決於[安裝狀態](#install-states)。
 
-**安裝型錄以外的外掛。** 在**從 GitHub 安裝**中輸入 `owner/repo`、`owner/repo@ref`、GitHub URL 或型錄名稱，再選取**檢視**。其他格式會在送出前遭到拒絕，並顯示「請輸入內建套件名稱、owner/repo[@ref] 或 GitHub URL。」
+**安裝型錄以外的外掛。** 展開清單上方收合的**從 GitHub 安裝**區段，輸入 `owner/repo`、`owner/repo@ref`、GitHub URL 或型錄名稱，再選取**檢視**。其他格式會在送出前遭到拒絕，並顯示「請輸入 owner/repo[@ref] 或 GitHub URL。」
 
-**檢視與同意。** 選取卡片上的**安裝**或輸入欄位中的**檢視**，會讀取單一個已解析 commit 上的 manifest。需要同意時，清單頂端會顯示**安裝前請確認**卡片。卡片包含名稱、版本、說明、作者、新註冊的節點、Python 依賴套件、commit pin，以及 manifest 有提供時的 HTTP 或 HTTPS **首頁**連結。每個必要決定都有 checkbox。**這個外掛要求：**會列出每項宣告的能力及其存取範圍；**同意授予這些能力**會記錄[第 1 級](#安全性三個層級)同意。**我信任這位作者。允許使用：...**會列出 `allowed_modules`，並記錄[第 2 級](#安全性三個層級)同意。隨附瀏覽器程式碼時，卡片會加上「包含會在編輯器中以完整權限執行的 JavaScript。」警告。所有必要的 checkbox 勾選前，**安裝**會保持停用。內建外掛包不需要同意，可直接從自己的資料列安裝。已安裝的外掛會顯示取代警告與**重新安裝**按鈕。
+**檢視與同意。** 選取卡片上的**安裝**或輸入欄位中的**檢視**，會讀取單一個已解析 commit 上的 manifest。需要同意時，清單頂端會顯示**安裝前請確認**卡片。卡片包含名稱、版本、說明、作者、型錄為該 id 列出的節點（只在全新安裝時顯示；尚未安裝的 GitHub 外掛不會列出節點，因為要知道節點名稱必須先 import 它）、Python 依賴套件、commit pin，以及 manifest 有提供時的 HTTP 或 HTTPS **首頁**連結。每個必要決定都有 checkbox。**這個外掛要求：** 會列出每項宣告的能力及其存取範圍；**同意授予這些能力**會記錄[第 1 級](#security--three-tiers)同意。**信任這位作者，允許匯入 ...**（後接模組名稱）會列出 `allowed_modules`，並記錄[第 2 級](#security--three-tiers)同意。隨附瀏覽器程式碼時，卡片會加上「包含會在編輯器中以完整權限執行的 JavaScript。」警告。所有必要的 checkbox 勾選前，**安裝**會保持停用。更新的檢視卡片上，這個按鈕顯示為**更新**。內建外掛包不需要同意，可直接從自己的資料列安裝。已安裝的外掛會顯示取代警告與**重新安裝**按鈕。
 
 **安裝進度。** 右側面板會顯示目前步驟、進度條、最近的 log，以及**取消安裝**。步驟可能包括*正在解析來源*、*正在下載*、*正在解壓縮*、*正在檢查程式碼*、有 `[python_deps]` 時的 pip 步驟、*正在複製檔案*、*正在寫入安裝紀錄*與*正在載入節點*。最終狀態可能是*已安裝*、*已更新*、附伺服器提示的*失敗*、*已取消安裝*、*needs_restart* 或*與伺服器失去聯繫。請重新整理以確認外掛狀態。* `needs_restart` 表示未安裝任何外掛檔案；面板會顯示要在伺服器停止後執行的 `uv pip install` 指令。詳見[安裝如何進行](#how-an-install-runs)。失去聯繫表示瀏覽器與伺服器中斷連線；請重新整理以取得目前狀態。關閉外掛中心不會取消 job，其他分頁也能繼續追蹤。型錄外掛安裝失敗後，面板也會顯示 `cdui plugin install <repo>[@ref]`，以便在終端機使用相同流程並查看完整 log。
 
@@ -212,7 +212,7 @@ $ cdui plugin install alice/metric-logger
 
 **啟用、停用、更新、解除安裝。** **停用**會從節點面板移除已安裝外掛的節點，並停止提供其 bundle 與 assets，但不刪除檔案。**啟用**會重新啟用外掛，不需再次下載。終端機中的 `cdui plugin enable|disable <id>` 提供相同操作。**更新**只適用於從 GitHub 安裝的外掛；內建外掛包透過 `cdui update` 更新，本機連結的目錄則使用目前檔案。**解除安裝**會先詢問：「要解除安裝「*名稱*」嗎？使用它節點的圖將無法執行；它安裝的 Python 套件會保留。」本機連結的目錄只提供**啟用**與**停用**，因為 `cdui plugin link` 管理其註冊。
 
-**從其他電腦操作。** 伺服器未綁定至回送位址時，footer 會顯示「只能在執行伺服器的那台電腦上安裝。」**檢視**、**安裝**、**更新**與**解除安裝**會停用，並顯示相同 tooltip；**啟用**與**停用**仍可使用。設定 `CODEFYUI_ALLOW_REMOTE_PLUGIN_INSTALL=1` 可允許遠端外掛操作。受影響的 routes 請見[安裝如何進行](#how-an-install-runs)。比這個面板舊的伺服器會顯示「這台伺服器不支援外掛中心。請更新 CodefyUI 後重新啟動。」
+**從其他電腦操作。** 伺服器未綁定至回送位址時，footer 會顯示「僅能在執行伺服器的電腦上安裝。」**檢視**、**安裝**、**更新**與**解除安裝**會停用，並顯示相同 tooltip；**啟用**與**停用**仍可使用。**取消安裝**仍可按下，但伺服器會拒絕。設定 `CODEFYUI_ALLOW_REMOTE_PLUGIN_INSTALL=1` 可允許遠端外掛操作。受影響的 routes 請見[安裝如何進行](#how-an-install-runs)。比這個面板舊的伺服器，或外掛 service 未啟動的伺服器，會顯示「此伺服器不支援外掛中心，請更新 CodefyUI 後重新啟動。」
 
 ### 安裝狀態 {/* #install-states */}
 
@@ -221,27 +221,27 @@ $ cdui plugin install alice/metric-logger
 | 狀態 | Pill | 意義 | 按鈕 |
 |-------|------|---------|---------|
 | `available` | 未安裝 | 存在於型錄中，沒有 lockfile 條目。 | 安裝 |
-| `removed` | 已移除 | 沒有 lockfile 條目，但解除安裝留下了 `removed` 紀錄，因此 `cdui plugin sync` 不會重新加入。計入**可安裝**。 | 安裝（會清除紀錄） |
+| `removed` | 已移除 | 沒有 lockfile 條目，但解除安裝留下了 `removed` 紀錄，因此 `cdui plugin sync` 不會重新加入。計入**未安裝**。 | 安裝（會清除紀錄） |
 | `installing` | 安裝中 | 這個外掛的 job 正在執行。計入**已安裝**。 | 無 |
 | `installed` | 已安裝 | 有 lockfile 條目、磁碟上有檔案，而且已啟用。 | 停用、更新（僅限 GitHub 安裝）、解除安裝 |
 | `disabled` | 停用 | 有 lockfile 條目、磁碟上有檔案，但已關閉：節點未註冊、bundle 與 assets 不會提供。 | 啟用、解除安裝 |
 | `missing_files` | 檔案遺失 | 有 lockfile 條目，但其目錄不存在，例如移動 checkout 或中斷解除安裝後。計入**已安裝**。 | 安裝；由於 lockfile 條目仍在，伺服器會回覆 `409` `already_installed`，檢視卡片接著提供**重新安裝**。解除安裝會移除該條目。 |
 
-本機連結的目錄（`source_kind` 為 `local`）在每種狀態下都只提供**啟用**與**停用**。側邊欄與「設定」中的計數只包含 `installed` 與 `disabled` 外掛。
+本機連結的目錄（`source_kind` 為 `local`）在每種狀態下都只提供**啟用**與**停用**。側邊欄的計數與「設定」中的已安裝數只包含 `installed` 與 `disabled` 外掛；「設定」中的可安裝數包含 `available` 與 `removed` 外掛。
 
 ### 安裝如何進行 {/* #how-an-install-runs */}
 
-**檢查與安裝是分開的 request。** `POST /api/plugins/inspect` 會將型錄名稱、`owner/repo` 或 URL 解析至單一 commit，並回傳外掛說明、Python 依賴套件、宣告的能力、`allowed_modules`、瀏覽器程式碼狀態與目前的安裝狀態。它會讀取 manifest，但不會下載外掛 archive 或安裝檔案。結果存放在 `inspection_id` 底下。`POST /api/plugins/install` 接受該 `inspection_id`、`accept_capabilities` 與 `trust_author`；取代既有安裝時另帶 `force`。它不接受 manifest、commit 或能力清單。因此，如果 archive 的 manifest 在檢查後新增能力、變更 id 或新增 allowed module，伺服器會拒絕安裝。安裝會以 job 執行：request 回傳 `202` 與 `job_id`；`GET /api/plugins/jobs/{job_id}/events` 會重播 cursor 之後的事件，並長輪詢新事件；`POST /api/plugins/jobs/{job_id}/cancel` 會取消 job 並移除未完成的寫入。
+**檢查與安裝是分開的 request。** `POST /api/plugins/inspect` 會將型錄名稱、`owner/repo` 或 URL 解析至單一 commit，並回傳外掛說明、Python 依賴套件、宣告的能力、`allowed_modules`、瀏覽器程式碼狀態與目前的安裝狀態。它會讀取 manifest，但不會下載外掛 archive 或安裝檔案。結果存放在 `inspection_id` 底下 15 分鐘（response 中的 `expires_at`）；伺服器最多保留 32 筆 inspection，超過時先移除最久未使用的一筆。安裝一旦開始就會用掉該 inspection；被拒絕的安裝則會保留它，讓 request 可以再送一次。`POST /api/plugins/install` 接受該 `inspection_id`、`accept_capabilities` 與 `trust_author`；取代既有安裝時另帶 `force`。它不接受 manifest、commit 或能力清單。因此，如果 archive 的 manifest 在檢查後新增能力、變更 id 或新增 allowed module，伺服器會拒絕安裝。安裝會以 job 執行：request 回傳 `202` 與 `job_id`；`GET /api/plugins/jobs/{job_id}/events` 會重播 cursor 之後的事件，並長輪詢新事件；`POST /api/plugins/jobs/{job_id}/cancel` 會取消 job 並移除未完成的寫入。
 
-**確認欄位對應三個安全層級。** [第 0 級](#安全性三個層級)不需要同意。第 1 級會列出檢查結果之 `capabilities` 中的每個值。第 2 級會列出 `allowed_modules`，並要求以 `trust_author` 傳送獨立的作者信任決定。這兩個層級都不是沙箱。能力獲得授權後，外掛可以 import 該組模組，不會再次顯示提示。授予存取權前，請閱讀[這不是什麼](#這不是什麼)。
+**確認欄位對應三個安全層級。** [第 0 級](#security--three-tiers)不需要同意。第 1 級會列出檢查結果之 `capabilities` 中的每個值。第 2 級會列出 `allowed_modules`，並要求以 `trust_author` 傳送獨立的作者信任決定。這兩個層級都不是沙箱。能力獲得授權後，外掛可以 import 該組模組，不會再次顯示提示。授予存取權前，請閱讀[這不是什麼](#what-this-is-not)。
 
-**外掛安裝預設限制為本機用戶端。** inspect、install、cancel、update 與 delete routes 都要求工作階段 token，而且伺服器必須綁定至回送位址。這些 routes 可以取得外部程式碼、將其安裝至伺服器行程，或移除已安裝的外掛。區網上的教室或實驗室伺服器可用 `CODEFYUI_ALLOW_REMOTE_PLUGIN_INSTALL=1` 允許遠端存取。reload、enable 與 disable 需要 token，但不要求回送位址，因為它們只處理現有的本機檔案。讀取 routes 保持開放，包括 job 事件，因此其他分頁可以監控執行中的安裝。
+**外掛安裝取決於伺服器綁定的位址。** inspect、install、cancel、update 與 delete routes 都要求工作階段 token，而且伺服器必須綁定至回送位址。這些 routes 可以取得外部程式碼、將其安裝至伺服器行程，或移除已安裝的外掛。這道閘門檢查的是伺服器綁定的位址，從不檢查請求來自哪裡：伺服器在反向代理後方綁定回送位址時，每個連得到編輯器的人都能安裝外掛（參閱[放在反向代理後面](/usage/deployment#authentication-is-the-proxys-job-and-it-has-limits)）。區網上的教室或實驗室伺服器可用 `CODEFYUI_ALLOW_REMOTE_PLUGIN_INSTALL=1` 允許遠端存取。reload、enable 與 disable 需要 token，但不要求回送位址，因為它們只處理現有的本機檔案。讀取 routes 保持開放，包括 job 事件，因此其他分頁可以監控執行中的安裝。
 
-**GitHub API 請求上限。** 未驗證身分的 GitHub API 存取，限制為每個 IP 位址每小時 60 次 request。共用 NAT 後方的電腦會共用配額。配額用盡時，面板會顯示「已達 GitHub 請求上限，請稍後再試，或在伺服器設定 CODEFYUI_GITHUB_TOKEN。」（`502` `github_rate_limited`）。請在 `cdui start` 前匯出 `CODEFYUI_GITHUB_TOKEN`，或在執行 `cdui plugin install|info|update` 的 shell 中匯出；只需具備 public repository 的讀取權限。每個 request 都會從環境讀取 token，因此加入 token 後不必重新啟動伺服器。token 只會以 bearer header 傳送給 GitHub；redirect 時會移除，也不會出現在 log 或錯誤訊息中。
+**GitHub API 請求上限。** 未驗證身分的 GitHub API 存取，限制為每個 IP 位址每小時 60 次 request。共用 NAT 後方的電腦會共用配額。配額用盡時，面板會顯示「已達 GitHub 請求上限，請稍後再試，或在伺服器設定 CODEFYUI_GITHUB_TOKEN。」（`502` `github_rate_limited`）。請將 `CODEFYUI_GITHUB_TOKEN` 設為具備 public repository 讀取權限的 token。要讓外掛中心使用它，請在執行 `cdui start` 的環境中設定（以專案目錄啟動的伺服器也可以寫在該專案的 `.env`），並重新啟動伺服器：執行中的伺服器看不到之後才在其他 shell 匯出的變數。`cdui plugin install|info|update` 從執行它們的 shell 讀取 token，在該 shell 匯出後不必重新啟動。每個 GitHub request 都會重新讀取 token；token 只會以 bearer header 傳送給 GitHub，redirect 時會移除，也不會出現在 log 或錯誤訊息中。
 
-**安裝步驟與後端失敗訊息使用英文。** 共用後端會輸出 `Resolving …`、`Downloading …`、`Unpacking …`、`Scanning … for unsafe code`、`Installing packages: …`、`Installing …` 與 `Recording …`。同一後端輸出的拒絕與失敗訊息也使用英文。周圍的介面有翻譯，但這些訊息沒有。
+**外掛中心以介面語言顯示目前步驟。** 面板中的 log、CLI 的步驟行（`Resolving …`、`Downloading …`、`Unpacking …`、`Scanning … for unsafe code`、`Installing packages: …`、`Installing …`、`Recording …`），以及後端的拒絕、失敗訊息與提示，仍使用英文。
 
-**`needs_restart` 不代表失敗。** 外掛的 `[python_deps]` 只能新增套件，並套用 constraints 檔以固定執行中伺服器已載入的套件。依賴解析如果無法在即時安裝期間符合這些 constraints，job 會以 `needs_restart` 結束，並回傳要在停止伺服器後執行的確切 `command`。同一台伺服器仍在執行時重複安裝，會得到相同結果。`cdui plugin install` 也會印出該指令，並以離開碼 `3` 結束。
+**`needs_restart` 不代表失敗。** 外掛的 `[python_deps]` 只能新增套件，並套用 constraints 檔，將伺服器環境中已安裝的每個套件（CodefyUI 本身等 editable 安裝除外）固定在目前版本：即時安裝可以新增套件，但不能升級、降級或取代任何套件。依賴解析如果無法在即時安裝期間符合這些 constraints，job 會以 `needs_restart` 結束，並回傳要在停止伺服器後執行的確切 `command`。同一台伺服器仍在執行時重複安裝，會得到相同結果。`cdui plugin install` 也會印出該指令，並以離開碼 `3` 結束。
 
 **解除安裝行為取決於外掛來源。** `DELETE /api/plugins/{id}` 會刪除已下載外掛的目錄。內建外掛檔案屬於發行版，因此會保留；伺服器會將外掛記錄為已移除，讓 `cdui plugin sync` 不會還原，直到再次按名稱安裝。透過 `cdui plugin link` 註冊的目錄也不會變更。Python 依賴套件不會移除，因為解除安裝執行中伺服器已 import 的模組，可能使行程處於不一致的狀態。response 會在 `python_deps_left` 中列出保留的依賴套件，並提供停止伺服器後執行的 `uninstall_command`：
 
@@ -267,14 +267,14 @@ uv pip uninstall --python <the CodefyUI venv's python> httpx
 |--------|------|------|---------|
 | 400 | `unparseable_source` | inspect | 值不是型錄名稱、`owner/repo[@ref]` 或 GitHub URL。 |
 | 400 | `unknown_catalog_name` | inspect | 型錄中沒有相符的裸名稱。`known` 會列出可用名稱。 |
-| 400 | `reserved_id` | inspect, update | manifest `id` 與內建外掛或 `catalog` 等保留 route 名稱衝突。response 包含 `id`。 |
+| 400 | `reserved_id` | inspect, update | manifest `id` 已被保留：被 `catalog` 等 route 名稱保留（`holder` 為 `"route"`）、被內建外掛包保留（`"builtin_pack"`），或屬於指向另一個 repository 的型錄條目（`"repository"`）。response 包含 `id`、`holder`，`"repository"` 時另含該條目的 `repo`。 |
 | 400 | `invalid_manifest` | inspect, update | manifest 沒有 `[plugin]` table、使用 `1` 以外的 `schema_version`、包含無效的 id 或 `[security]` 值、包含無效 TOML，或不是文字檔。 |
 | 400 | `consent_required` | install | 一項以上宣告的能力尚未獲得同意。`missing_capabilities` 會列出這些能力。 |
 | 400 | `trust_author_required` | install | manifest 有 `allowed_modules`，但 `trust_author` 不是 `true`。response 包含 `allowed_modules`。 |
 | 400 | `not_updatable` | update | 外掛是內建、本機連結、沒有已記錄的 repository，或其 repository 現在宣告另一個 id。`hint` 會提供替代操作。 |
 | 404 | `not_found` | inspect, update | GitHub 上沒有相符的 repository 或 ref。 |
 | 404 | `unknown_job` | events, cancel | 只保留最近一個 job，因此要求的 job 無法取得。response 包含 `job_id`。 |
-| 404 | `inspection_expired` | install | inspection 已過期。請重新檢查來源。response 包含 `inspection_id`。 |
+| 404 | `inspection_expired` | install | inspection 已不存在：已超過 15 分鐘、為了維持最多 32 筆而被移除，或已用於開始一次安裝。請重新檢查來源。response 包含 `inspection_id`。 |
 | 404 | `not_installed` | update, DELETE | 該 id 底下沒有已安裝的外掛。 |
 | 409 | `already_installed` | install | 外掛已安裝。請使用 `force: true` 重試，這等同面板的**重新安裝**操作。response 包含 `plugin_id`。 |
 | 409 | `busy` | install, update, DELETE, enable, disable | 有安裝正在執行：任何外掛都會阻擋 `install` 與 `update`；外掛會阻擋自己的 DELETE、enable 與 disable 操作。response 包含 `job_id`。 |
@@ -283,9 +283,9 @@ uv pip uninstall --python <the CodefyUI venv's python> httpx
 | 409 | `files_locked` | DELETE | 無法刪除目錄，且沒有變更任何狀態。這通常表示 Windows 上仍開啟某個檔案。response 包含 `error` 與 `hint`。 |
 | 502 | `github_rate_limited` | inspect, update | GitHub 回傳 403 或 429。請等待配額重設，或設定 `CODEFYUI_GITHUB_TOKEN`。 |
 | 502 | `github_unreachable` | inspect, update | 另一項錯誤導致伺服器無法連線至 GitHub。 |
-| 503 | `unavailable` | inspect, install, events, cancel, update | 外掛 service 未啟動。`GET /catalog` 仍可使用，面板則顯示「這台伺服器不支援外掛中心。」 |
+| 503 | `unavailable` | inspect, install, events, cancel, update | 外掛 service 未啟動。`GET /catalog` 仍可使用，面板則顯示「此伺服器不支援外掛中心，請更新 CodefyUI 後重新啟動。」 |
 
-## 撰寫你自己的外掛
+## 撰寫你自己的外掛 {/* #writing-your-own-plugin */}
 
 最快的方法是 **`cdui plugin new`**，一個指令就能產生可直接編輯的外掛骨架：
 
@@ -294,7 +294,7 @@ cdui plugin new my-plugin          # 純後端骨架
 cdui plugin new my-plugin --ui     # 另含一個接好 SDK 的 React 前端
 ```
 
-它會產生 manifest、一個範例節點、一個測試（內含 `cdui_plugins.<id>` 命名空間 shim，讓本地 `pytest` 可直接執行），並在加上 `--ui` 時產生一個 Vite + React 的 `ui/`，其 `src/sdk/` 即為型別化的外掛 SDK。外掛會建立在 `./my-plugin/`；用下方的 `cdui plugin dev` 連結後即可開始編輯。
+它會產生 manifest、一個範例節點、一個測試（內含 `cdui_plugins.<id>` 命名空間 shim，讓本地 `pytest` 可直接執行），並在加上 `--ui` 時產生一個 Vite + React 的 `ui/`，其 `src/sdk/` 即為型別化的外掛 SDK。外掛會建立在 `./my-plugin/`；用下方的 `cdui plugin dev` 連結後即可開始編輯。使用 `--ui` 且 id 含連字號時，建置前請先改一行：`ui/src/index.tsx` 將範例節點的 renderer 註冊為 `my_plugin:Example`，但節點型別會保留連字號（`my-plugin:Example`，參閱 [manifest 欄位參考](#manifest-reference)的 `id` 列）；註冊在錯誤型別上的 renderer 永遠不會掛載。
 
 若需更完整的參考，可 fork **[官方外掛模板](https://github.com/CodefyUI/CodefyUI-Plugin-Official)**——一個可運作、採 MIT 授權的外掛，包含兩個範例節點、一張範例圖、一套測試，以及一份完整註解的 manifest。它的 README 逐欄解說每個欄位與 AST 安全閘門。型錄中的名稱是 `official-template`，可以直接按名稱安裝。
 
@@ -306,7 +306,7 @@ cdui plugin install official-template
 cdui plugin install your-username/your-fork
 ```
 
-請將外掛內容放在 manifest 旁的固定目錄中：`nodes/`（自動探索）、`presets/`、`examples/`、`assets/`（於 `/plugins/<id>/assets/<file>` 提供），以及 `frontend/`（參閱[外掛前端擴充](/advanced/plugin-frontend-extensions)）。這些目錄名稱無法設定，而且 scaffold 的 `[content]` table 會被忽略。`cdui.plugin.toml` manifest 會宣告 id、版本、課程 metadata，以及[安全性](#安全性三個層級)所述的任何 `[security]` 設定。節點只使用第 0 級 imports 時，請省略 `[security]`。
+請將外掛內容放在 manifest 旁的固定目錄中：`nodes/`（自動探索）、`presets/`、`examples/`、`assets/`（於 `/plugins/<id>/assets/<file>` 提供），以及 `frontend/`（參閱[外掛前端擴充](/advanced/plugin-frontend-extensions)）。這些目錄名稱無法設定，而且 scaffold 的 `[content]` table 會被忽略。`cdui.plugin.toml` manifest 會宣告 id、版本、課程 metadata，以及[安全性](#security--three-tiers)所述的任何 `[security]` 設定。節點只使用第 0 級 imports 時，請省略 `[security]`。
 
 ### manifest 欄位參考 {/* #manifest-reference */}
 
@@ -320,18 +320,18 @@ cdui plugin install your-username/your-fork
 | `[plugin] homepage` | 否 | 檢視卡片上的**首頁**連結；只接受 http(s) URL。 |
 | `[plugin] authors`（list）或 `author`（string） | 否 | 只顯示在檢視卡片上（「作者：...」）。 |
 | `[plugin] requires_codefyui`, `license` | 否 | 儲存但不會強制執行、檢查或輸出。 |
-| `[security] capabilities` | 是 | 只能從 `network`、`filesystem` 與 `process-env` 中選取的 string list——[第 1 級](#安全性三個層級)。任何未知名稱都會讓整份 manifest 被拒絕。 |
-| `[security] allowed_modules` | 是 | module name list——[第 2 級](#安全性三個層級)，只有使用 `--trust-author` 或勾選檢視卡片上的「我信任這位作者」才能安裝。若是單一 bare string 而非 list，會被拒絕。 |
+| `[security] capabilities` | 是 | 只能從 `network`、`filesystem` 與 `process-env` 中選取的 string list——[第 1 級](#security--three-tiers)。任何未知名稱都會讓整份 manifest 被拒絕。 |
+| `[security] allowed_modules` | 是 | module name list——[第 2 級](#security--three-tiers)，只有使用 `--trust-author` 或勾選檢視卡片上的「信任這位作者，允許匯入 ...」才能安裝。若是單一 bare string 而非 list，會被拒絕。 |
 | `[python_deps]` | 安裝時 | `name = "constraint"` pair，會在複製檔案前以 `uv pip install` 安裝。以 operator 開頭的 constraint 會原樣使用（`">=0.27"`）；bare version 會被 pin（`"1.2.0"` 變成 `==1.2.0`）；空字串表示任何版本。extras、URL 與 `git+` source 都會被拒絕。 |
 | `[frontend] entry` | 載入時 | 必須以 `frontend/` 開頭的相對 POSIX 路徑（`"frontend/index.js"`）；其他值一律視為「沒有 frontend」。 |
-| `[lessons] chapters`, `lessons` | 否 | string list：卡片上的**章節：**一列，以及 `cdui plugin info`。 |
+| `[lessons] chapters`, `lessons` | 否 | string list：卡片上的**章節：** 一列，以及 `cdui plugin info`。 |
 | `[content]` | 否 | 忽略——參閱上文。 |
 
 :::warning 破壞性變更（v0.3）
 章節外掛包 `c1`–`c6` 已重新封裝為三個方向外掛包 `foundations` / `deep` / `rl`，而且每個 Edu 節點的型別 id 都加上了一個破折號（`EduKNN` → `Edu-KNN`）。引用舊有 `cN:EduFoo` 型別的已儲存圖必須更新為 `<pack>:Edu-Foo`，並以 `cdui plugin install foundations deep rl` 重新安裝這些外掛包。
 :::
 
-## 本地開發
+## 本地開發 {/* #local-development */}
 
 開發外掛時，不必每次迭代都先推上 GitHub。用 **link** 連結你的工作目錄，CodefyUI 會就地載入：
 
@@ -350,12 +350,12 @@ cdui plugin dev ./my-plugin      # 連結＋監看；每次變更自動重載
 
 請在另一個終端機執行伺服器（`cdui start` 或 `cdui dev`）。`dev` 會輪詢外掛 manifest、`nodes/`、`presets/` 與 `frontend/`；`--once` 會連結並重載一次而不監看，`--interval` 則設定輪詢間隔。會要求伺服器重載的命令——`link`、`unlink`、`dev`、`reload`、`enable`、`disable`、`install` 與 `uninstall`——會將 POST request 傳送至 `127.0.0.1:<port>`。這些命令會使用所在 shell 的 `CODEFYUI_PORT`；未設定時使用 `8000`。`cdui start --port <n>` 只會為其啟動的伺服器行程設定該變數。使用非預設 port 時，請先匯出 `CODEFYUI_PORT=<n>`，再執行這些命令或以相同方式解析 port 的 `cdui project publish`。否則，lockfile 可能已更新，但重載 request 會回報 `Server not running`。
 
-`link` 會從你的 `cdui.plugin.toml` 讀取 id，並把該目錄的絕對路徑以 `source_kind = "local"` 記入 lockfile，因此探索會直接走訪你的工作目錄。連結的外掛會跳過 AST 安全閘門（這是你自己的程式碼，並會印出警告）；`unlink` 只移除 lockfile 條目，絕不刪除你的檔案。編輯 Python 節點後，執行 `cdui plugin reload`（或 `cdui plugin dev`）即可重載。**連結中的外掛，前端變更也會自動重載**——只要安裝著連結的外掛，編輯器就會偵測重載並就地重新掛載外掛 UI，不需手動重新整理瀏覽器。
+`link` 會從你的 `cdui.plugin.toml` 讀取 id，並把該目錄的絕對路徑以 `source_kind = "local"` 記入 lockfile，因此探索會直接走訪你的工作目錄。連結的外掛會跳過 AST 安全閘門（這是你自己的程式碼，並會印出警告）；`unlink` 只移除 lockfile 條目，絕不刪除你的檔案。編輯 Python 節點後，執行 `cdui plugin reload`（或 `cdui plugin dev`）會在伺服器上重新 import 節點；按工具列的**重新載入節點**或重新載入頁面，節點面板才會顯示新增或變更的節點。**前端變更會自動重載**，前提是開啟頁面時已安裝一個啟用中的連結外掛：此時編輯器每 1.5 秒檢查一次重載，每次重載後重新啟用外掛 UI。若在編輯器已開啟後才連結外掛，請重新整理瀏覽器一次。
 
-連結外掛的 `[python_deps]` 會依照與下載型外掛包相同的規則安裝：只增不改，並套用 constraints 檔，固定執行中伺服器已載入之每個套件的版本。因此 `cdui plugin link` 也使用安裝流程的離開碼：`3` 表示它要求的套件無法安裝至執行中的伺服器（會印出伺服器停止後要執行的指令），`130` 表示 `Ctrl+C`。它不再直接回傳套件管理程式的原始離開碼。
+連結外掛的 `[python_deps]` 會依照與下載型外掛包相同的規則安裝：只增不改，並套用 constraints 檔，固定伺服器環境中已安裝之每個套件的版本。因此 `cdui plugin link` 也使用安裝流程的離開碼：`3` 表示它要求的套件無法安裝至執行中的伺服器（會印出伺服器停止後要執行的指令），`130` 表示 `Ctrl+C`。它不再直接回傳套件管理程式的原始離開碼。
 
 :::tip 每個安裝各有一份 lockfile
-`cdui` 命令由 `scripts/dev.py` 實作。除非已設定 `CODEFYUI_USER_DATA_DIR`，否則 `cdui start`、`cdui dev`、`cdui run` 與 `plugin` / `project` / `cache` / `packs` 指令群組會將它設為目前安裝的 `<install dir>/.codefyui_dev/`（參閱[外掛包如何儲存](#外掛包如何儲存)）。因此，每個 clone 都有不同的 lockfile 與本機連結外掛註冊。在一個 clone 中連結的外掛，不適用於從另一個 clone 啟動的伺服器。若要使用其他位置，請匯出 `CODEFYUI_USER_DATA_DIR`；既有值具有優先權。
+`cdui` 命令由 `scripts/dev.py` 實作。除非已設定 `CODEFYUI_USER_DATA_DIR`，否則 `cdui start`、`cdui dev`、`cdui run` 與 `plugin` / `project` / `cache` / `packs` 指令群組會將它設為目前安裝的 `<install dir>/.codefyui_dev/`（參閱[外掛包如何儲存](#how-packs-are-stored)）。因此，每個 clone 都有不同的 lockfile 與本機連結外掛註冊。在一個 clone 中連結的外掛，不適用於從另一個 clone 啟動的伺服器。若要使用其他位置，請匯出 `CODEFYUI_USER_DATA_DIR`；既有值具有優先權。
 :::
 
 ## REST API
@@ -364,11 +364,11 @@ cdui plugin dev ./my-plugin      # 連結＋監看；每次變更自動重載
 |----------|--------|------|-------------|
 | `/api/plugins` | GET | open | 列出所有已安裝的外掛，包括已停用的外掛。 |
 | `/api/plugins/catalog` | GET | open | 合併型錄條目與已安裝外掛。每個外掛處於[六種狀態](#install-states)之一；response 也包含 `active_job`、`remote_install_allowed` 與 `generation`。 |
-| `/api/plugins/generation` | GET | open | 回傳編輯器重新整理節點面板時輪詢的重載計數器。 |
+| `/api/plugins/generation` | GET | open | 回傳重載計數器。每次重新探索節點與外掛都會加一，包括安裝、更新、解除安裝、啟用、停用與重載。只有在頁面載入時已安裝啟用中的連結外掛，編輯器才會每 1.5 秒輪詢它，並在數值改變時重新啟用外掛前端；重新 import 的 bundle 以它作為 cache-buster。 |
 | `/api/plugins/{id}` | GET | open | 回傳一個外掛的 manifest、節點與 README。 |
 | `/plugins/{id}/frontend/{path}` | GET | open | 當已啟用外掛的 manifest 宣告 `[frontend].entry` 時，提供其 `frontend/` 中的檔案。此 route 不在 `/api` 底下。每個 request 都會讀取 lockfile，因此檔案會在安裝或重載後可用，並在停用或移除後回傳 `404`。response 使用 `Cache-Control: no-cache`。 |
 | `/plugins/{id}/assets/{file}` | GET, HEAD | open | 提供已啟用外掛 `assets/` 中的檔案。此 route 使用相同的啟用規則，但不要求 frontend manifest entry。media type 依副檔名決定，預設為 `application/octet-stream`。 |
-| `/api/plugins/jobs/{job_id}/events` | GET | open | 回傳 `?cursor=` 之後的安裝 job 事件；`?wait=` 會長輪詢之後的事件。 |
+| `/api/plugins/jobs/{job_id}/events` | GET | open | 回傳 `?cursor=`（預設 `0`）之後的安裝 job 事件，最多 `?limit=` 筆（1 到 2000，預設 500）；沒有新事件時，`?wait=`（0 到 60 秒）會長輪詢。response 為 `{job_id, status, events, cursor}`。 |
 | `/api/plugins/reload` | POST | token | 重新探索節點、預設模組與外掛。 |
 | `/api/plugins/{id}/enable` | POST | token | 啟用已安裝的外掛。 |
 | `/api/plugins/{id}/disable` | POST | token | 停用已安裝的外掛，但不解除安裝。 |

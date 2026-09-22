@@ -26,7 +26,7 @@ GitHub closes the issue on merge regardless of surrounding negation, e.g.
 The commands you actually ran and their outcome, not "tests pass". e.g.:
   python scripts/check_control_bytes.py   -> clean
   uvx ruff@0.14.4 check .                 -> clean
-  cd backend && uv run pytest -q          -> N passed
+  ./cdui test --backend                   -> backend PASS
   cd frontend && pnpm test                -> N passed
 If this genuinely can't be tested, say why instead of leaving it blank.
 -->
@@ -37,6 +37,8 @@ If this genuinely can't be tested, say why instead of leaving it blank.
 - [ ] If I changed a docs page or a node-param description, I updated its
       zh-TW twin in the same PR (docs/i18n/zh-TW/... or the matching
       nodeLocales entry).
+- [ ] If this changes behaviour, CHANGELOG.md has an entry under
+      `## [Unreleased]` (see CONTRIBUTING.md#changelog-entries).
 - [ ] No pictographic emoji in code, logs, UI strings, or this PR body
       (Windows consoles crash on them — ASCII markers like `[OK]` instead).
 - [ ] I explained what I deliberately did not do, if a reviewer might expect it.

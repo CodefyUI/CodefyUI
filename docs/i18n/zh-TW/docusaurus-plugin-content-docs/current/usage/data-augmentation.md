@@ -10,7 +10,7 @@ description: 用節點組出前處理流程、對訓練資料做增強、載入�
 
 這裡的一切都不會動到既有的圖。舊的 **Transform** 節點行為完全不變，參數也一樣。
 
-## 變換鏈
+## 變換鏈 {/* #a-transform-chain */}
 
 現在變換本身就是節點，而且節點之間可以互相連接。每個節點接收它前面的所有步驟，再把「到目前為止的步驟」往下傳，所以你在畫布上畫出來的鏈，就是實際執行的順序：
 
@@ -22,7 +22,7 @@ RandomCrop -> RandomHorizontalFlip -> ToTensorTransform -> NormalizeTransform
 
 這條鏈產生的正是 `transforms.Compose([RandomCrop(...), RandomHorizontalFlip(...), ToTensor(), Normalize(...)])` — 和你手寫出來的物件一模一樣，匯出的 Python 腳本建出來的也是同一個東西。
 
-### 順序很重要，torchvision 的規則依然適用
+### 順序很重要，torchvision 的規則依然適用 {/* #the-order-matters-and-torchvisions-rules-still-apply */}
 
 - **幾何與色彩步驟放最前面**，此時樣本還是 PIL 影像：`RandomCrop`、`RandomHorizontalFlip`、`RandomRotation`、`ColorJitter`、`RandAugment`、`ResizeTransform`。
 - **`ToTensorTransform` 放中間。** 它會轉成範圍 `[0, 1]` 的 `C x H x W` 浮點張量。
@@ -30,7 +30,7 @@ RandomCrop -> RandomHorizontalFlip -> ToTensorTransform -> NormalizeTransform
 
 順序錯掉的鏈會在 DataLoader 裡失敗，並顯示 torchvision 自己的錯誤訊息，訊息會指出是哪一個步驟收到了它無法處理的輸入。
 
-### 節點一覽
+### 節點一覽 {/* #the-nodes */}
 
 | 節點 | 作用 | 主要參數 |
 | --- | --- | --- |
@@ -46,7 +46,7 @@ RandomCrop -> RandomHorizontalFlip -> ToTensorTransform -> NormalizeTransform
 
 只有在「兩條鏈是分開建立的，但同一條流程要跑完兩條」時才需要 `ComposeTransform` — 節點接節點本身就已經是組合了。
 
-### 正規化預設組合
+### 正規化預設組合 {/* #normalisation-presets */}
 
 `NormalizeTransform` 內建了真正重要的統計值，你不用再去查：
 
@@ -60,7 +60,7 @@ RandomCrop -> RandomHorizontalFlip -> ToTensorTransform -> NormalizeTransform
 
 只給一個值時會廣播到所有通道，所以 `Half` 對單通道的 MNIST 和三通道的 CIFAR 都是正確的。
 
-## 把鏈接到資料集
+## 把鏈接到資料集 {/* #wiring-a-chain-to-a-dataset */}
 
 **Dataset** 與 **ImageFolderDataset** 各有兩個變換輸入：
 
@@ -71,7 +71,7 @@ RandomCrop -> RandomHorizontalFlip -> ToTensorTransform -> NormalizeTransform
 
 至於沒有變換輸入的資料集 — **HuggingFaceDataset**、**KaggleDataset**，或你自己寫的 — 請改把鏈接到 **Transform** 節點的 `transform` 輸入。一旦那個輸入接上了，該節點的三個參數就會被忽略。
 
-### CIFAR-10 的標準配方
+### CIFAR-10 的標準配方 {/* #the-cifar-10-recipe */}
 
 CIFAR-10 的標準起手式，四個節點：
 
@@ -85,11 +85,11 @@ RandomCrop(size=32, padding=4)
 
 評估用的分割則是同一條鏈，但去掉前兩個隨機步驟。
 
-## 更多資料集
+## 更多資料集 {/* #more-datasets */}
 
-**Dataset** 現在提供 `MNIST`、`FashionMNIST`、`CIFAR10`、`CIFAR100`、`SVHN` 與 `STL10`。六個都會在第一次使用時下載到同一個 `data_dir`；在專案目錄模式下，那就是 `assets/data/`。
+**Dataset** 現在提供 `MNIST`、`FashionMNIST`、`CIFAR10`、`CIFAR100`、`SVHN` 與 `STL10`。每個資料集都會在第一次使用時下載到 `data_dir`，已經存在時則不會下載。MNIST 隨 CodefyUI 附在 `backend/data/MNIST/raw/`。伺服器在 `backend/` 中執行，所以預設的 `data_dir`（`./data`）會找到它，第一次執行就直接從本機讀取 MNIST。在專案目錄模式下，相對的 `data_dir` 代表 `assets/data/`，MNIST 也會下載到那裡。
 
-### 你自己的影像
+### 你自己的影像 {/* #your-own-images */}
 
 **ImageFolderDataset** 讀的是 torchvision `ImageFolder` 預期的結構：
 
@@ -108,11 +108,11 @@ my-dataset/
 
 標籤由資料夾名稱依字母順序決定，所以在任何機器上 `cat` 都是 0、`dog` 都是 1。這個節點另外輸出一個依標籤順序排列的 `classes` 列表。
 
-### 其他形式的資料
+### 其他形式的資料 {/* #anything-else */}
 
 如果你的資料不是「一個類別一個資料夾」 — 例如一份記錄路徑的 CSV、自訂的封裝格式、或即時生成的分布 — 請寫一個自訂節點（見 [自訂節點](../advanced/custom-nodes.md)）或使用 [PythonScript 節點](../advanced/python-script-node.md)。只要你回傳的物件有一個公開、可寫入、且會在 `__getitem__` 中被套用的 `transform` 屬性，這一頁所有的變換鏈就都能用在它身上。
 
-## 可重現性
+## 可重現性 {/* #reproducibility */}
 
 資料增強是隨機的，所以「可重現的執行」也必須重現同一組增強。在執行選項裡給定 **種子（seed）** 就會做到：同一個種子會產生同樣的裁切、翻轉與色彩偏移，每次都一樣。
 
@@ -135,10 +135,10 @@ my-dataset/
 
 圖裡的每個訓練節點都有自己的葉子目錄，所以「預訓練迴圈」和「微調迴圈」在 TensorBoard 裡會畫成兩條獨立的曲線，而不是一條來回鋸齒的線。
 
-該路徑會登記成這次執行的產出檔案，你可以從 **執行紀錄** 面板複製出來直接開啟：
+該路徑會登記成這次執行的產出檔案，你可以從 **執行任務** 面板複製出來直接開啟：
 
 ```bash
-tensorboard --logdir <從執行紀錄面板複製的路徑>
+tensorboard --logdir <從執行任務面板複製的路徑>
 ```
 
 CodefyUI **不需要** 依賴 TensorBoard 就能寫出這些檔案 — 它自己編碼事件格式，所以開啟這個功能不會讓 CodefyUI 的安裝變重。你只有在要 *檢視* 它們的時候才需要安裝 TensorBoard：
@@ -151,6 +151,6 @@ pip install tensorboard
 
 **這些記錄的壽命和它所屬的那次執行一樣長。** 當一次執行掉出「保留最近 N 筆」的範圍時（`CODEFYUI_RUN_RETENTION_KEEP_LAST`，預設保留 200 筆已完成的執行 — 見 [執行佇列](./run-queue.md)），它的資料列會被刪除，它的 `tb/` 資料夾也會一起被刪掉。這就是 `runs/` 不會隨著安裝的使用時間無限膨脹的原因 — 否則每次執行的每個訓練節點都會留下一個資料夾。所以如果某條曲線值得保存到兩百次執行之後，請把那個資料夾另外複製一份出來，或是把上限調高。
 
-## 把指標匯出成 CSV
+## 把指標匯出成 CSV {/* #exporting-metrics-as-csv */}
 
-每次執行的指標都可以下載成 CSV，在 **執行紀錄** 面板有兩個入口：每一列上的 **CSV** 按鈕，以及展開某次執行後、圖表旁邊的 **下載 CSV**。兩者產生的檔案相同，一列一個資料點，包含序列名稱、step 與數值。
+每次執行的指標都可以下載成 CSV，在 **執行任務** 面板有兩個入口：每一列上的 **CSV** 按鈕，以及展開某次執行後、圖表旁邊的 **下載 CSV**。兩者產生的檔案相同，一列一個資料點，包含序列名稱、step 與數值。

@@ -135,21 +135,21 @@ silently and shows up only as a retrieval result nobody can explain.
   lets the Retriever name the file each hit came from.
 - **`gen.prompt` is empty on purpose.** The param is only the fallback for when
   nothing is connected; `PromptBuilder.prompt` is what this graph sends.
-- **Both root nodes need a trigger edge.** Execution walks forward from the
-  entry points along data edges, so `loader` and `question` are each wired
-  directly from `start`. Leaving one out prunes the whole branch behind it --
-  drop `start -> question` and `question` and `embed_q` are never scheduled,
-  so the run fails on `Retriever` with no query, two nodes from the edge that
-  is actually missing. `validate_graph` does not catch it, because the other
-  trigger keeps the entry-point check satisfied.
+- **Both roots are wired from `start`.** Either trigger alone would run the
+  whole graph: without `start -> question`, `question` and `embed_q` still run,
+  because `embed_q` feeds `Retriever`, which runs, and a node that feeds a data
+  edge into a running node runs too
+  ([Running Graphs](../../../docs/docs/usage/running-graphs.md#a-node-without-a-trigger-can-still-run)).
+  `test_rag_examples_trigger_both_root_nodes` keeps the pair as this example's
+  convention.
 
 ## Continuous integration
 
 `backend/tests/test_rag_examples.py` holds this graph to its shape without
-downloading anything: that the card names both pack ids -- `rag` and
-`sentence-embeddings` -- inside the 80 characters the gallery shows, that both
-encoders share one model with the right prefixes, that the question reaches
-both consumers, and that this README exists.
+downloading anything: that the notes on the canvas name both pack ids (`rag`
+and `sentence-embeddings`), that both encoders share one model with the right
+prefixes, that the question reaches both consumers, and that this README
+exists.
 
 `backend/tests/test_builtin_examples.py` validates the graph structurally and
 **skips executing it** -- `HFTextGenerate` and `TextEmbedding` are both in

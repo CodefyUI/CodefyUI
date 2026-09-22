@@ -12,7 +12,7 @@ description: 研究等級的完整說明 — 使用 GUI 節點、固定 seed 與
 
 以下步驟不需要撰寫 Python。架構、優化器、學習率排程與資料增強鏈都由節點組成。
 
-## 這個範例
+## 這個範例 {/* #the-example */}
 
 從空白畫布的**範例圖庫**開啟 **ResNet-18 CIFAR-10 baseline**，或直接載入圖檔。本頁使用的檔案都位於 [`examples/Usage_Example/ResNet18-CIFAR10-Baseline/`](https://github.com/CodefyUI/CodefyUI/tree/main/examples/Usage_Example/ResNet18-CIFAR10-Baseline)：`graph.json`、記錄實際執行內容的 `README.md`，以及包含原始指標匯出與曲線圖的 `evidence/` 目錄。
 
@@ -31,7 +31,7 @@ description: 研究等級的完整說明 — 使用 GUI 節點、固定 seed 與
 請改用層編輯器的**匯入**。它可直接讀取此範例的 `graph.json`，一次載入完整架構。若要在自己的圖中重用這個 ResNet-18，請開啟 `SequentialModel`、點擊**匯入**並選擇檔案。**匯出**會寫出相同格式。層編輯器適合檢視及調整架構，不適合從零手動建立整個架構。
 :::
 
-## 基準設定 {/* #配方 */}
+## 基準設定 {/* #the-recipe */}
 
 | | |
 |---|---|
@@ -45,7 +45,7 @@ description: 研究等級的完整說明 — 使用 GUI 節點、固定 seed 與
 | 正規化 | CIFAR-10 各通道統計值 — 平均 (0.4914, 0.4822, 0.4465)、標準差 (0.2470, 0.2435, 0.2616) |
 | 精度 | bf16 autocast |
 
-### 為什麼 stem 不一樣
+### 為什麼 stem 不一樣 {/* #why-the-stem-is-different */}
 
 `torchvision` 的 ResNet-18 是為 224x224 ImageNet 圖片設計：先使用 7x7 stride-2 卷積，再使用 3x3 stride-2 max-pool，在第一個殘差塊前將輸入尺寸縮小四倍。若套用於 32x32 CIFAR 圖片，會在一開始移除大部分空間資訊，使相同設定的準確率降低數個百分點。
 
@@ -53,7 +53,7 @@ CIFAR 版本以單一 3x3 stride-1 卷積取代整個 stem，並移除 max-pool�
 
 可在層編輯器中查看 stem。雙擊 `SequentialModel`，前三層是 `Conv2d(3, 64, kernel_size=3, stride=1, padding=1)`、`BatchNorm2d(64)`、`ReLU`。
 
-## 可重現的執行方式 {/* #怎麼跑才能重現 */}
+## 可重現的執行方式 {/* #running-it-reproducibly */}
 
 有兩個 run 選項負責這件事，都在送出 run 時設定：
 
@@ -82,7 +82,7 @@ curl -X POST http://127.0.0.1:8000/api/runs \
 
 請用範例 `graph.json` 的 `nodes` 與 `edges` 陣列取代片段中的預留內容。請求本體必須包含完整圖形，因此在貼入這些內容之前，這個片段不會執行任何圖。token 檔案由伺服器在啟動時寫入；位置請見[取得 token](./graph-as-a-function#2-getting-the-token-for-external-scripts)。
 
-## 實測結果
+## 實測結果 {/* #the-measured-result */}
 
 以下結果是在指定硬體上，以未修改的隨附圖和相同 seed 執行兩次所測得。
 
@@ -106,17 +106,17 @@ curl -X POST http://127.0.0.1:8000/api/runs \
 
 若結果低數個百分點，而不是只低零點幾個百分點，請先檢查 stem。
 
-## 離開正在執行的工作 {/* #關掉瀏覽器也沒關係 */}
+## 離開正在執行的工作 {/* #walking-away-from-a-run */}
 
 run 由伺服器持有，不依附於送出它的瀏覽器分頁。這一點值得親自試一次，確認可以信任：
 
 1. 送出 run。
-2. 關閉分頁。
+2. 關閉瀏覽器分頁。
 3. 稍後重新開啟畫布。
 
-**執行任務**面板會重新連線到仍在執行的工作，並重播錯過的事件。離開期間不會遺失資料，也不會暫停 run。通道與並行上限請見[執行佇列](./run-queue.md)。
+啟動該 run 的畫布分頁會重新連上它，並把完整的事件紀錄重播到**執行紀錄**（「已重新連上仍在執行中的工作」）。以 `cdui run` 送出的 run 沒有對應的畫布分頁：它會列在**執行任務**分頁，按下**觀看**即可把它串流到執行紀錄。離開期間不會遺失資料，也不會暫停 run。通道與並行上限請見[執行佇列](./run-queue.md)。
 
-## 停止與接續
+## 停止與接續 {/* #stopping-and-resuming */}
 
 點擊**停止**會採用協作式取消：訓練節點完成目前的 batch、寫入 checkpoint，再回傳部分結果。checkpoint 會登記為 run 的產出檔案，其中的 metadata 會記錄*已完成*的 epoch 數。
 
@@ -141,7 +141,7 @@ run 由伺服器持有，不依附於送出它的瀏覽器分頁。這一點值�
 你不必事先知道這一點。這兩個節點都會在伺服器 log、**執行任務**面板顯示的事件紀錄，以及畫布的**執行紀錄**中回報這項狀況。`CheckpointLoader` 會指出已捨棄儲存的排程位置，並列出應連接的輸入；`TrainingLoop` 會指出無法還原的排程。
 :::
 
-## 自行驗證數值 {/* #自己驗證數字 */}
+## 自行驗證數值 {/* #checking-the-numbers-yourself */}
 
 每個 run 的指標都可查詢：
 
@@ -149,13 +149,13 @@ run 由伺服器持有，不依附於送出它的瀏覽器分頁。這一點值�
 curl "http://127.0.0.1:8000/api/runs/<run_id>/metrics?format=csv" -o metrics.csv
 ```
 
-`train_loss`、`val_loss` 與 `lr` 每個 epoch 各記錄一次。**`eval_accuracy` 不會如此記錄**；`EvaluateModel` 只在 run 結束時寫入一個資料點。因此，200 epoch 的匯出檔有 601 列，而不是 800 列，也無法繪製 accuracy-by-epoch 曲線，因為產品中沒有節點會發出這項資料。相關追蹤項目為 issue [#202](https://github.com/CodefyUI/CodefyUI/issues/202)。
+`train_loss`、`val_loss`、`val_accuracy` 與 `lr` 每個 epoch 各記錄一次（`TrainingLoop` 記錄的所有 series 列在[執行圖](./running-graphs#training-loops-and-loss-charts)）。會有 `val_accuracy`，是因為這張圖把驗證 loader 接到 `TrainingLoop`，並使用 `CrossEntropyLoss`；該 loader 是 test split（見上文），所以這條曲線是每個 epoch 的測試準確率。`EvaluateModel` 會在 run 結束時再寫入一個 `eval_accuracy` 資料點，因此 200 epoch 的匯出檔有 801 列。隨附的 `evidence/metrics-seed1337.csv` 只有 601 列，因為它是在 `TrainingLoop` 開始記錄 `val_accuracy` 之前錄製的。
 
 此範例的 `TrainingLoop` 已將 `tensorboard` 設為 `true`，因此每個 run 也會在其產出目錄中寫入 event 檔案，可由任何 TensorBoard 安裝讀取。
 
-## 注意事項 {/* #值得先知道的坑 */}
+## 注意事項 {/* #gotchas-worth-knowing */}
 
-- **Trigger 只標示執行起點。** 在此範例中，`Start` 會 trigger `RandomCrop`、評估用的 `ToTensorTransform`、`SequentialModel` 與 `Loss`。不過，只要 root 透過 data edge 連到正在執行的節點，就會執行，不論是否有 trigger 指向它；前述四個節點與兩個 `Dataset` 節點都符合這項條件。詳見[執行圖](./running-graphs#沒有-trigger-的節點仍然可能執行)。因此，移除四條 trigger edge 中的任一條都不會改變執行內容；要排除節點，必須中斷其 data edge。
+- **Trigger 只標示執行起點。** 在此範例中，`Start` 會 trigger `RandomCrop`、評估用的 `ToTensorTransform`、`SequentialModel` 與 `Loss`。不過，只要節點透過 data edge 連到正在執行的節點，就會執行，不論是否有 trigger 指向它；前述四個節點與兩個 `Dataset` 節點都符合這項條件。詳見[執行圖](./running-graphs#a-node-without-a-trigger-can-still-run)。因此，移除四條 trigger edge 中的任一條都不會改變執行內容；要排除節點，必須中斷其 data edge。
 
 - **保持 `LRScheduler.T_max` 與 `TrainingLoop.epochs` 相等。** cosine annealing 每個 epoch 前進一步，並在 `T_max` 時降至零。`T_max` 過高時，run 會在曲線尚未完成前結束，無法完整 anneal，準確率約降低一個百分點。`T_max` 過低時，cosine 在超過 `T_max` 後會再次**上升**，使最後幾個 epoch 使用逐漸提高的 learning rate。兩者不一致時，`TrainingLoop` 會在伺服器 log、**執行任務**面板顯示的事件紀錄，以及畫布的**執行紀錄**中發出警告，但不會強制要求相等。截短 schedule 是有效選擇；此外，`CosineAnnealingWarmRestarts` 會將相同值用作 `T_0`，若要求它與 epoch 數相等，就不會發生 restart。相同檢查也適用於 `OneCycleLR.total_steps`；其預設值 1000 代表 batch 數量，沒有 epoch budget 會達到這個數字。以上說明假設使用預設的 `TrainingLoop.scheduler_step = epoch`，本 baseline 也使用這項設定。若改為 `optimizer_step`，`LRScheduler` 上的所有長度都會改以 optimizer step 計算，警告也會將它們與 run 的 step budget 比較，而不是與 `epochs` 比較。
 - **第一次執行會下載 CIFAR-10**（約 170 MB）。預設位置是 `backend/data/`；開啟專案目錄時，位置是 `<project>/assets/data`。後續 run 會重用資料。

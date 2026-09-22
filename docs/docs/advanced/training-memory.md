@@ -90,7 +90,7 @@ This is a deliberate boundary rather than a gap waiting to be filled. DDP needs 
 
 ## When the card runs out anyway
 
-A CUDA out-of-memory error is reported as a **NodeOOMError**: which node, which device, what the allocator was holding at the time, and what to change. It reads roughly like this:
+An out-of-memory error on CUDA, on MPS or on the CPU is reported as a **NodeOOMError**: which node, which device, what the allocator was holding at the time, and what to change. On CUDA it reads roughly like this:
 
 ```
 Node TrainingLoop (n7) ran out of memory on cuda:0.
@@ -107,7 +107,9 @@ the caching allocator, 15.61 GiB peak this process, 15.99 GiB on the card.
 Original error: CUDA out of memory. Tried to allocate 2.00 GiB ...
 ```
 
-Alongside the message, two things happen so the *next* run starts from a clean card: whatever that node had cached is dropped, and the caching allocator's free blocks are handed back.
+On MPS the memory line gives what live tensors hold, what the allocator has reserved, and the recommended working-set ceiling for the process (unified memory, shared with everything else on the Mac) instead of the card's size. A CPU `MemoryError` gets the same message without a memory line.
+
+Alongside the message, two things happen so the *next* run starts from a clean card: whatever that node had cached is dropped, and on CUDA and MPS the caching allocator's free blocks are handed back.
 
 **The run is not retried, and the batch size is not reduced for you.** Re-running the same allocation gets the same answer. Halving the batch behind your back would change the numbers your run produces without telling you, so the same graph would mean two different things depending on how much VRAM happened to be free. You get the message and you make the change.
 

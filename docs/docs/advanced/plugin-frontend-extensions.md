@@ -16,7 +16,7 @@ Dock panels, toolbar buttons, execution events and the runs facade need **apiVer
 
 ## API versions
 
-`api.apiVersion` is a number that only ever grows, and every release has been **additive in shape**: nothing that worked at an older version has been removed or changed signature. A plugin written for apiVersion 2 keeps working on an apiVersion 5 editor with no changes at all, with one exception that apiVersion 5 introduces and that is written down in full below — [a read-only tab now refuses a write](#one-change-for-plugins-written-before-apiversion-5).
+`api.apiVersion` is a number that only ever grows, and every release has been **additive in shape**: nothing that worked at an older version has been removed or changed signature. A plugin written for apiVersion 2 keeps working on an apiVersion 5 editor with no changes at all, with one exception that apiVersion 5 introduces and that is written down in full below — [a read-only tab now refuses a write](#one-change-for-plugins-written-before-apiversion-5). Since CodefyUI 2.8.4 the editor can also have no tab open, with `apiVersion` still 5; [When no tab is open](#when-no-tab-is-open) lists what the API returns then.
 
 | `apiVersion` | CodefyUI | Added |
 |--------------|----------|-------|
@@ -90,7 +90,7 @@ Example response excerpt:
 
 ## The activate contract
 
-Your bundle must export a single default function named `activate`. The editor calls it once at startup, after all plugins are loaded, passing the `CodefyUIPluginAPI` object:
+Your bundle must export a single default function named `activate`. The editor calls it with the `CodefyUIPluginAPI` object:
 
 ```js
 // frontend/index.js
@@ -99,9 +99,16 @@ export default function activate(api) {
 }
 ```
 
-The editor calls `activate` once per page load and does **not** await its return value — do your setup synchronously (you may still start async work; the editor just won't wait for it). Errors thrown synchronously inside `activate` are caught per-plugin, logged to the browser console, and surfaced as a toast; they cannot crash the editor or other plugins. The import is also bounded by a 10-second timeout. (Only the *default export being a function* is required; the name `activate` is convention.)
+At startup the editor waits for the node catalog to load (up to 15 seconds), then imports and activates the plugins one at a time. It activates all of them again after any Plugin Center install, update, uninstall, enable or disable, not only the plugin concerned, and after a linked plugin's hot reload. Each time it first removes everything the plugins registered through the API (panels, toolbar buttons, node renderers, subscriptions, floating widgets), then imports each enabled bundle again as a fresh module and calls its default export with a new API object. There is no deactivate hook, and timers, listeners or DOM that a plugin created outside the API are not cleaned up, so keep long-lived work behind API registrations or panel `onShow`/`onHide`.
+
+The editor does **not** await `activate`'s return value — do your setup synchronously (you may still start async work; the editor just won't wait for it). Errors thrown synchronously inside `activate` are caught per-plugin, logged to the browser console, and surfaced as a toast; they cannot crash the editor or other plugins. The import is also bounded by a 10-second timeout. (Only the *default export being a function* is required; the name `activate` is convention.)
 
 ## CodefyUIPluginAPI reference
+
+| Member | Type | Description |
+|--------|------|-------------|
+| `apiVersion` | `number` | The API version this editor implements; see [API versions](#api-versions). |
+| `pluginId` | `string` | This plugin's id exactly as its manifest writes it, hyphens included. Use it for `WorkspaceSource.pluginId`, and to recognise your own writes through `event.origin.pluginId`. |
 
 ### `api.ui` — editor UI
 
@@ -184,11 +191,13 @@ Re-adding an id replaces the button. The remove function you get back belongs to
 
 | Method | Signature | Description |
 |--------|-----------|-------------|
-| `getGraph` | `() => SerializedGraph` | Return a deep copy of the **whole** graph state (nodes, edges, params, plus block definitions under `subgraphs`) — always the top level, whatever the user has open. |
+| `getGraph` | `() => SerializedGraph` | Return the **whole** graph (nodes, edges, params, block definitions under `subgraphs`, and `settings` when the graph assigns a device) — always the top level, whatever the user has open. Treat it as read-only; see below. |
 | `getNodeDefinitions` | `() => NodeDefinition[]` | Return the full node palette: types, port schemas, param schemas. |
 | `applyOperations` | `(ops: GraphOp[]) => ApplyResult` | Apply a batch of graph operations **synchronously** (returns the result directly — not a Promise). The whole batch is committed as a **single undo snapshot**, and it applies to the canvas the user has open — see [Which level the user is looking at](#which-level-the-user-is-looking-at). |
 | `onGraphChanged` | `(callback: () => void) => () => void` | Subscribe to graph changes — including the user stepping into or out of a block. The callback takes no arguments; call `getGraph()` from it. Returns an unsubscribe function. |
 | `getView` | `() => GraphView` | **apiVersion 4.** Read-only: which level of the graph the user is looking at. |
+
+`getGraph()` returns a new top-level object, but not a deep copy: the `params` of a node with no secret param, `segmentGroups`, and preset and block definitions are the editor's live objects. Do not modify the result; change the graph only through `applyOperations`. Secret params, such as the API-key fields of LLM nodes, come back as `""`, so `getGraph()` does not hand a plugin a key typed into the editor. This does not hide the key from a plugin: the key is still in the editor page, where plugin JavaScript runs (see [Trust model](#trust-model)). `workspace.snapshot().graph` is built the same way. The `settings` object is described in [The graph's `settings` object](/advanced/device-backends#the-graph-settings-object); assigning or clearing the graph's device fires `onGraphChanged`, raises the tab's [revision](#revisions), and reaches `workspace.onChanged` as a `graph` event.
 
 #### GraphOp table
 
@@ -222,7 +231,7 @@ interface OpResult {
 }
 
 interface ApplyResult {
-  results: OpResult[];            // one entry per op, in input order
+  results: OpResult[];            // one entry per op, in input order; empty when no tab is open
   refs: Record<string, string>;  // ref alias -> generated node id
   node_count: number;            // node count after the batch
   edge_count: number;            // edge count after the batch
@@ -289,7 +298,7 @@ Requires `api.apiVersion >= 5`. On an older editor `api.workspace` is `undefined
 
 #### Revisions
 
-Every tab carries a `revision`: a number that starts at 1 and goes up by one every time the tab's document changes. Dragging a node changes it. So do undo and redo — they restore older content, which is still a change. Renaming the tab, switching to it, selecting a node, panning the canvas and highlighting a segment do not — and neither does a run, whose per-node status, error and progress are painted on the canvas but never written to the saved file. A compare-and-swap therefore does not expire several times a second while a model trains.
+Every tab carries a `revision`: a number that starts at 1 and goes up by one every time the tab's document changes. Dragging a node changes it, and so does assigning or clearing the graph's device. So do undo and redo — they restore older content, which is still a change. Renaming the tab, switching to it, selecting a node, panning the canvas and highlighting a segment do not — and neither does a run, whose per-node status, error and progress are painted on the canvas but never written to the saved file. A compare-and-swap therefore does not expire several times a second while a model trains.
 
 The number only ever climbs, and it is saved with the tab, so a revision you stored before a reload still means something afterwards. That is the whole point: hold a revision, go away and think for two minutes, and hand it back with your write.
 
@@ -340,7 +349,7 @@ Each entry is validated in this order, and a failure produces a result with an `
 1. `title` must be a non-empty string — `invalid_graph`.
 2. `graph` must survive `JSON.stringify` — `invalid_graph`.
 3. That JSON must be at most 8 MiB — `too_large`.
-4. The graph must read through the editor's document reader, the same one opening a gallery example uses: a node's `params` are taken exactly as the entry wrote them, and nothing is filled in from its definition or its preset — a param you leave out stays out; unknown top-level keys are ignored, `subgraphs`, `segmentGroups` and `presets` are honoured, and a `format_version` newer than this editor opens the tab read-only exactly as a file would. A reader failure is `invalid_graph`, with the reader's own message.
+4. The graph must read through the editor's document reader, the same one opening a gallery example uses: a node's `params` are taken exactly as the entry wrote them, and nothing is filled in from its definition or its preset — a param you leave out stays out; unknown top-level keys are ignored, `subgraphs`, `segmentGroups`, `presets` and `settings.device` are honoured (a device value the editor does not accept reads as no assignment), and a `format_version` newer than this editor opens the tab read-only exactly as a file would. A reader failure is `invalid_graph`, with the reader's own message.
 5. Opening must not take the editor past 32 tabs — `too_many_tabs`.
 
 The tab count is checked last, against the live count, so two entries in one call cannot both slip under a limit only one of them fits. The cost of that order is that an entry refused with `too_many_tabs` has already been read: presets it carries that this server has never seen are merged into the palette even though no tab was opened.
@@ -433,6 +442,18 @@ A read-only tab now refuses `api.graph.applyOperations` too. Every op comes back
 
 One further refusal is new rather than changed, because both ops it names are new in apiVersion 5: while the user is inside a block, a legacy batch containing `set_segment` or `remove_segment` is refused whole-batch, every op reporting `set_segment and remove_segment cannot apply while a block is open`. Segments are top-level state, so committing one from in there would write an overlay naming the block's inner node ids — it reaches the saved file, draws nothing, and the user cannot delete what never renders. Every other op still writes the open canvas from inside a block, exactly as before.
 
+### When no tab is open
+
+Since CodefyUI 2.8.4 the user can close the last tab, and the editor then shows its [welcome screen](/usage/tabs-persistence#the-welcome-screen). `apiVersion` is still 5. In that state:
+
+- `graph.getGraph()` returns an empty graph: `{ nodes: [], edges: [], presets: [], segmentGroups: [], subgraphs: [] }`.
+- `graph.getView()` reports the top level.
+- `graph.applyOperations()` writes nothing and returns `results: []` (not one entry per op), `refs: {}`, and counts of 0.
+- `workspace.tabs()` returns `[]`, `workspace.snapshot()` returns `{ error: "unknown_tab" }`, and `workspace.applyOperations()` without a `tabId` returns `conflict: "unknown_tab"`.
+- Closing the last tab fires `graph.onGraphChanged`, and `workspace.onChanged` receives `{ type: "active-tab", tabId: "", revision: 0 }` followed by `{ type: "tabs", removed: true }` for the closed tab.
+- `workspace.openGraphs()` still works. With `activate: "none"` the new tabs join the tab strip, but the welcome screen stays until the user opens one.
+- Dock and right-hand panels are detached from the page (`onHide` runs). The element and what you mounted in it stay alive, and the panel is attached again once a tab is open. Toolbar buttons are hidden until a tab opens. Floating widgets stay on screen.
+
 ### `api.nodes` — custom node renderers
 
 Requires `api.apiVersion >= 2`.
@@ -441,15 +462,20 @@ Requires `api.apiVersion >= 2`.
 |--------|-----------|-------------|
 | `registerRenderer` | `(nodeType, renderer) => () => void` | Draw a plugin node type's card body with your own UI. Returns an unregister function. |
 
-`nodeType` must match the node's **namespaced** type from `getNodeDefinitions()`: `<plugin-id>:<NODE_NAME>`. The plugin id is copied exactly from the manifest, including hyphens, so plugin `my-plugin` exposes `my-plugin:MyNode`. Only the Python import path converts hyphens to underscores (`cdui_plugins.my_plugin`). Registering `my_plugin:MyNode` therefore has no effect. The renderer uses an imperative API and does not require the host or plugin to use a particular UI framework:
+`nodeType` must match the node's **namespaced** type from `getNodeDefinitions()`: `<plugin-id>:<NODE_NAME>`. The plugin id is copied exactly from the manifest, including hyphens, so plugin `my-plugin` exposes `my-plugin:MyNode`. Only the Python import path converts hyphens to underscores (`cdui_plugins.my_plugin`). Registering `my_plugin:MyNode` therefore has no effect. When a registered type matches no loaded node definition, the editor logs a console warning, and names the correctly namespaced type when one exists. The renderer uses an imperative API and does not require the host or plugin to use a particular UI framework:
 
 ```ts
 interface NodeRenderContext {
-  node: { id: string; type: string; params: Record<string, unknown> };
+  node: {
+    id: string;
+    type: string;
+    params: Record<string, unknown>;
+    definition?: unknown;  // the node's NodeDefinition, as the editor holds it
+  };
 }
 interface PluginNodeRenderer {
   mount(container: HTMLElement, ctx: NodeRenderContext): void;
-  update?(container: HTMLElement, ctx: NodeRenderContext): void; // on param change
+  update?(container: HTMLElement, ctx: NodeRenderContext): void; // after mount, then on each params or type change
   unmount?(container: HTMLElement): void;
 }
 ```
@@ -539,14 +565,14 @@ The first `seq` you see for a run is your baseline, not necessarily `1`: it coun
 
 #### When the editor attaches to a run you have not seen
 
-The de-duplication above is bookkeeping the editor keeps **per run, once, for the whole page** — not per plugin. Two consequences:
+The de-duplication above is bookkeeping the editor keeps **per run, shared by all plugins** — not per plugin — for as long as at least one plugin is subscribed. Two consequences:
 
 - When the editor attaches to a run **nothing has streamed yet** — the user clicking a run in the Runs panel — the server replays that run's recorded log from the start, and you receive it, in cursor order, before the live tail begins. Every entry still arrives exactly once, but the first events you see for that run describe the past.
 - When the editor attaches to a run **something has already streamed**, the replay is filtered out for everyone. If your plugin subscribed later than another one, you inherit that filtering, so you may see *nothing at all* from the replay of a run you personally never saw. Do not rely on a replay to populate yourself; use `api.runs` for that, which is what it is for.
 
 If you need to know whether an event describes the past, `api.runs.get(run_id)` reports `last_cursor`. Note it is not a one-liner for a run that is still going: you are reading a moving target *after* the replay has already started, so the honest pattern is to buffer events until the promise resolves and only then classify them.
 
-One bound worth knowing rather than discovering: the editor remembers the last **1024** runs it has streamed. Attaching to more than 1024 distinct runs in a single page session and then returning to one from the beginning of that session will replay it to you a second time. No ordinary session comes close, and the number is here so the limit is a documented condition rather than a surprise.
+The bookkeeping has two limits. The editor remembers the last **1024** runs it has streamed, so attaching to more than 1024 distinct runs and then returning to one of the earliest replays it to you a second time. And the whole table, with any buffered events not yet delivered, is dropped when the last subscription ends, which happens in the teardown before every re-activation (see [The activate contract](#the-activate-contract)). After a re-activation, `seq` starts again at 1 for a run already in flight, and the next attach to a run replays its log again.
 
 ### `api.runs` — run history (read-only)
 
@@ -592,7 +618,7 @@ It is deliberately **read-only in this version**. There is no `submit` and no `c
 
 | Method | Signature | Description |
 |--------|-----------|-------------|
-| `fetch` | `(path: string, init?: RequestInit) => Promise<Response>` | Identical to the browser `fetch` API, but automatically attaches the CodefyUI session token header. `path` must be a relative path (e.g., `/api/llm/chat`). Use this for all calls to the CodefyUI backend. |
+| `fetch` | `(path: string, init?: RequestInit) => Promise<Response>` | The browser `fetch` with the same arguments. On POST, PUT, PATCH and DELETE it adds the session token header `X-CodefyUI-Token` (GET, HEAD and OPTIONS go out unchanged); after a `403` it reads the token again and retries once if the server has restarted since. The URL is not checked: pass only paths on the CodefyUI server, such as `/api/llm/chat`, because a POST, PUT, PATCH or DELETE to another origin sends the session token there. Use this for all calls to the CodefyUI backend. |
 
 ### `api.storage` — namespaced key-value store
 
@@ -618,7 +644,7 @@ The snippet below uses only the raw API — no build step, no framework: a singl
 // frontend/index.js
 export default function activate(api) {
   const btn = document.createElement("button");
-  btn.textContent = "Insert Linear + ReLU";
+  btn.textContent = "Insert Linear + Activation";
   btn.style.cssText =
     "padding:6px 12px;background:#0d9488;color:#fff;border:none;border-radius:4px;cursor:pointer";
 
@@ -626,12 +652,13 @@ export default function activate(api) {
     // applyOperations is synchronous — no await.
     const result = api.graph.applyOperations([
       { op: "add_node", node_type: "Linear", ref: "lin1", position: { x: 200, y: 200 } },
-      { op: "add_node", node_type: "ReLU",   ref: "relu1", position: { x: 440, y: 200 } },
-      // Handle names ("output"/"input" here) come from each node's port schema —
+      { op: "add_node", node_type: "Activation", ref: "act1",
+        params: { function: "relu" }, position: { x: 440, y: 200 } },
+      // Handle names ("tensor" here) come from each node's port schema —
       // call api.graph.getNodeDefinitions() to discover them.
       { op: "connect",
-        source: "lin1", source_handle: "output",
-        target: "relu1", target_handle: "input" },
+        source: "lin1", source_handle: "tensor",
+        target: "act1", target_handle: "tensor" },
     ]);
     const failed = result.results.filter((r) => !r.ok);
     if (failed.length > 0) {

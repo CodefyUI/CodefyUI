@@ -87,7 +87,7 @@ and, for the evaluation split, the same chain without the two random steps.
 
 ## More datasets
 
-**Dataset** now offers `MNIST`, `FashionMNIST`, `CIFAR10`, `CIFAR100`, `SVHN` and `STL10`. All six download on first use into the same `data_dir`; in a project directory that is `assets/data/`.
+**Dataset** now offers `MNIST`, `FashionMNIST`, `CIFAR10`, `CIFAR100`, `SVHN` and `STL10`. Each one is downloaded into `data_dir` the first time it is used, unless it is already there. MNIST ships with CodefyUI in `backend/data/MNIST/raw/`. The server runs from `backend/`, so the default `data_dir` of `./data` finds it and MNIST is read locally from the first run. In a project directory a relative `data_dir` means `assets/data/`, and MNIST is downloaded there too.
 
 ### Your own images
 

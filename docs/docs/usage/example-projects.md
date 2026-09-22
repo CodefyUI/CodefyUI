@@ -21,7 +21,9 @@ cdui start --project .
 ```
 
 Open the editor at the URL the server prints, open the graph from the sidebar's
-**Graphs** tab, and press **Run**. Each README walks through the full publish flow (commit, `cdui project
+**Graphs** tab, and press **Run**. If the welcome screen shows instead, no tab is
+open and there is no sidebar; click **New blank graph** first (see
+[Tabs & Persistence](./tabs-persistence#the-welcome-screen)). Each README walks through the full publish flow (commit, `cdui project
 publish`, mint an API key, invoke with curl) and lists anything the example needs
 beyond CodefyUI itself.
 
@@ -32,7 +34,7 @@ beyond CodefyUI itself.
 | [example-word-analogy](https://github.com/CodefyUI/example-word-analogy) | Word-vector analogy lookup: three words in, nearest analogy words out. | Nothing -- fully offline. |
 | [example-tabular-predictor](https://github.com/CodefyUI/example-tabular-predictor) | Tabular classifier: feature rows in, class predictions out. | Nothing -- fully offline. |
 | [example-llm-document](https://github.com/CodefyUI/example-llm-document) | Document summarizer: document text in, summary out. | A local [Ollama](https://ollama.com) install. |
-| [example-mnist-train-serve](https://github.com/CodefyUI/example-mnist-train-serve) | One project, two graphs: train a small CNN on MNIST on the canvas, then serve YOUR trained weights as a digit-recognition API. | MNIST download on first training run (about 60 MB). |
+| [example-mnist-train-serve](https://github.com/CodefyUI/example-mnist-train-serve) | One project, two graphs: train a small CNN on MNIST on the canvas, then serve YOUR trained weights as a digit-recognition API. | MNIST download on first training run (about 12 MB; about 66 MB on disk once unpacked). |
 
 ## Why they are separate repositories
 

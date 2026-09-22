@@ -13,11 +13,21 @@ CodefyUI runs on PyTorch, so it inherits PyTorch's device backends: **CPU**, **N
 **CPU is the default, and nothing switches away from it on your behalf.** A run resolves its device in this order, first match wins:
 
 1. A node's own **device** parameter, when it is not `auto` (under Advanced, kept for older graphs; a graph runs on one device, so work that needs two devices should be two graphs).
-2. The graph's own device, `settings.device` in the graph file, set from the **device for this graph** control next to Run. It is saved with the graph, so git tracks it and the graph runs on the same device wherever it is opened.
-3. The **Settings** device (this browser, remembered between sessions; `cpu` until you change it). New graphs and graphs with no assigned device use it; Settings also shows the best device this server can see as a hint.
+2. The graph's own device, `settings.device` in the graph file ([format below](#the-graph-settings-object)), set from the device select next to **Run**. It is saved with the graph, so git tracks it and the graph runs on the same device wherever it is opened. The select's first option, **Follow Settings (CPU)** while Settings is on CPU, leaves the graph without a device of its own.
+3. The **Settings** device (this browser, remembered between sessions; `cpu` until you change it). New graphs and graphs with no assigned device use it; Settings also shows the best device this server can see as a hint. A Settings device this server does not list is marked in both selects; see [When a device is unavailable](/getting-started/gpu-device#when-a-device-is-unavailable).
 4. `cpu`, the value the server assumes when a request names no device at all.
 
-Every dropdown (Settings, the graph control and the node parameter) lists the same devices, the ones PyTorch can actually see (`device_utils.describe_accelerator()`), including `cuda:N` per card on a multi-GPU box. A requested device is checked against what's available and **falls back to CPU with a warning** if it isn't present. Only an explicit `auto` (`--device auto` on `cdui run` or an exported script, or `"device": "auto"` on the run API) resolves to the best accelerator present. Changing a graph's device invalidates the interactive cache, so every node runs again.
+Every dropdown (Settings, the graph control and the node parameter) lists the same devices, the ones PyTorch can actually see (`device_utils.describe_accelerator()`), including `cuda:N` per card on a multi-GPU box. A requested device is checked against what's available and **falls back to CPU with a warning** if it isn't present (except an out-of-range `cuda:N`, which goes to the current CUDA device; see below). Only an explicit `auto` (`--device auto` on `cdui run` or an exported script, or `"device": "auto"` on the run API) resolves to the best accelerator present. Changing a graph's device invalidates the interactive cache, so every node runs again.
+
+### The graph's `settings` object {/* #the-graph-settings-object */}
+
+The graph's own device is stored in an optional top-level object of the graph JSON: `"settings": {"device": "cuda:1"}`.
+
+- **Values:** `cpu`, `auto`, `cuda`, `cuda:N`, `mps` or `mps:N`, case-insensitive. An empty string means no assignment. A Mac has one MPS device, so `mps:N` runs on `mps`.
+- **Written only when set.** Save writes `settings` only when the graph has a device, so a graph without one stays byte-identical to what it was. In a [project directory](/usage/project-directories) it goes in the git-tracked `graphs/<name>.graph.json`, not in the layout file.
+- **Any other value is refused:** `422` from `POST /api/graph/save`, `/api/graph/validate` and `/api/graph/export`; `400` from `POST /api/runs` and `POST /api/sweeps` (so `cdui run` reports a failed submit); an `execution_error` frame when the canvas runs the graph; and an `invalid_settings` finding from `cdui project validate`. The offline runner (`backend/run_graph.py`), [`POST /api/graph/run/{name}`](/usage/graph-as-a-function) and [`POST /api/apps/{slug}/invoke`](/usage/publish) read `settings.device` only when the call names no device (`--device`, or the body's `device`); then they ignore an invalid value, log a warning, and run on the CPU.
+
+`cdui run` without `--device` prints the file's device as `<device> (graph)`.
 
 ### Device alignment is guaranteed by the engine
 
@@ -62,7 +72,7 @@ Mixed precision is not used on MPS. bf16 and fp16 autocast run on torch 2.11 but
 
 ## ROCm presents as CUDA
 
-On AMD + Linux with a ROCm build of PyTorch, `torch.cuda.is_available()` returns `True` because ROCm exposes a CUDA-compatible interface. The device shows up as `cuda` in the dropdown; that's expected.
+On AMD + Linux with a ROCm build of PyTorch, `torch.cuda.is_available()` returns `True` because ROCm exposes a CUDA-compatible interface. Settings and the graph's device select label the device **AMD ROCm**; the value stored in the graph and used by the run is `cuda` (`cuda:N` per card), and a node's **device** parameter lists it as `cuda`. That is expected.
 
 ## Experimental: native MLX (spike)
 

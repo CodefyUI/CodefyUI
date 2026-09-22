@@ -112,10 +112,10 @@ no credentials at all -- that trade is explained in
 to take away.
 
 `cdui start` is a real daemon: it detaches from the terminal, writes a pidfile,
-and `cdui stop` terminates its whole process group with `SIGTERM` before
-escalating to `SIGKILL`. Nothing ever opens a browser, so it is safe on a
-headless server. What it does not have is supervision -- that is systemd's job,
-below.
+and `cdui stop` sends its whole process group `SIGTERM`, then `SIGKILL` if it
+is still running about two seconds later. Nothing ever opens a browser, so it
+is safe on a headless server. What it does not have is supervision -- that is
+systemd's job, below.
 
 ## 4. Passing uvicorn flags: `cdui start -- ...`
 
@@ -141,32 +141,33 @@ through the passthrough would win inside uvicorn and desync all of that, so it
 exits with code 2 and tells you to use `cdui start --host` instead.
 :::
 
-:::tip --proxy-headers is what makes the OpenAPI document say `https`
-Set it. Behind TLS it is not merely tidy, it is load-bearing.
-
+:::tip --forwarded-allow-ips decides whether the OpenAPI document says `https`
 The one place CodefyUI bakes a scheme into a response is the OpenAPI document
 for a published app, and its `servers[].url` (plus the two copy-paste `curl`
 snippets) is built from the scheme of the incoming request. uvicorn rewrites
-that scheme from `X-Forwarded-Proto` **only** when started with
-`--proxy-headers`, and **only** for a peer inside `--forwarded-allow-ips`.
+that scheme from `X-Forwarded-Proto`, but **only** for a peer listed in
+`--forwarded-allow-ips`. `--proxy-headers` is already uvicorn's default
+(`--no-proxy-headers` turns it off), and `--forwarded-allow-ips` defaults to
+`$FORWARDED_ALLOW_IPS`, else `127.0.0.1`. The
+`-- --proxy-headers --forwarded-allow-ips 127.0.0.1` in the examples on this
+page spells out those defaults.
 
-So: with both flags set, a document fetched over HTTPS advertises
-`https://your-host/api/apps/<slug>` and Swagger UI's "Try it out" works.
-Without them, it advertises `http://` even when reached over HTTPS -- the
-browser then blocks the call as mixed content, and a generated client gets the
-wrong base URL.
+So with nginx on the same host, as below, a document fetched over HTTPS
+advertises `https://your-host/api/apps/<slug>` and Swagger UI's "Try it out"
+works. When the scheme is not rewritten, the document advertises `http://` even
+when reached over HTTPS -- the browser then blocks the call as mixed content,
+and a generated client gets the wrong base URL.
 
 CodefyUI deliberately never reads `X-Forwarded-Proto` itself. If it did, any
 client could forge the header and dictate the URL your published app advertises
 to every integrator who fetches the document; leaving it to uvicorn keeps the
 "is this hop trusted?" decision in the one place that has been told the answer.
 
-**Mind `--forwarded-allow-ips` if your proxy is not on this machine.** It
-defaults to `127.0.0.1`, so a proxy in another container or on another host is
-*not* trusted, its `X-Forwarded-Proto` is ignored, and the document quietly goes
-back to advertising `http://` -- with no error anywhere. Set it to the proxy's
-address (the `nginx` example below terminates on the same host, which is why
-`127.0.0.1` is correct there).
+**Mind `--forwarded-allow-ips` if your proxy is not on this machine.** By
+default a proxy in another container or on another host is *not* trusted, its
+`X-Forwarded-Proto` is ignored, and the document quietly goes back to
+advertising `http://` -- with no error anywhere. Set `--forwarded-allow-ips` to
+the proxy's address.
 :::
 
 :::note WebSocket message size
@@ -248,12 +249,13 @@ systemctl status codefyui
 journalctl -u codefyui -f
 ```
 
-`--foreground` is the load-bearing flag. `cdui start`'s default daemon mode
-double-forks, which is exactly what systemd does not want from a `Type=exec`
-service. Note also that CodefyUI's own stdout goes to the journal, so
-`journalctl -u codefyui` is where startup errors and the effective Host
-whitelist appear -- but per-request lines do not, for the reason in the next
-section but one.
+`--foreground` is required. Without it, `cdui start` starts the server in the
+background and exits, and systemd treats the exit of a `Type=exec` service's
+main process as the service ending. Note also that CodefyUI's log output (stderr) goes to the journal,
+so `journalctl -u codefyui` is where startup errors and rejected `Host` values
+(`rejected request with Host='...' path=...`) appear -- but per-request lines
+do not, for the reason in
+[The proxy is also your access log](#the-proxy-is-also-your-access-log).
 
 ## An nginx site
 
@@ -370,11 +372,13 @@ and the session token is enough to take over the instance. The
 If you use a different proxy, do the equivalent there.
 :::
 
-What CodefyUI *does* log -- startup, the effective Host whitelist, rejected
-`Host` values, warnings and errors -- goes to stderr, which means the journal
-under systemd. `CODEFYUI_LOG_LEVEL` (`DEBUG` / `INFO` / `WARNING` / `ERROR`,
-default `INFO`) sets the application loggers' level -- uvicorn's own verbosity
-is `cdui start -- --log-level ...` -- and `CODEFYUI_LOG_JSON=1` switches to one
+What CodefyUI *does* log -- startup, rejected `Host` values, warnings and
+errors -- goes to stderr, which means the journal under systemd. The effective
+Host whitelist is printed only for a non-loopback bind; behind this proxy it is
+the loopback names plus `CODEFYUI_EXTRA_ALLOWED_HOSTS`. `CODEFYUI_LOG_LEVEL`
+(`DEBUG` / `INFO` / `WARNING` / `ERROR`, default `INFO`) sets the application
+loggers' level -- uvicorn's own verbosity is `cdui start -- --log-level ...` --
+and `CODEFYUI_LOG_JSON=1` switches to one
 JSON object per line (`timestamp`, `level`, `name`, `message`, `exception`).
 Set `CODEFYUI_LOG_DIR` to also get a rotating file, `<dir>/codefyui.log` (10 MB,
 five generations). Without `--foreground`, everything the server prints goes to
@@ -392,24 +396,35 @@ Concretely, once someone is through your SSO:
 - Every saved graph, model, dataset and run record is visible and editable by
   everyone.
 - Ambient credentials are instance-wide. A ChatGPT sign-in, `OPENAI_API_KEY` or
-  `ANTHROPIC_API_KEY` in the environment, and Kaggle credentials all belong to
+  `ANTHROPIC_API_KEY` in the environment, Kaggle and Hugging Face credentials,
+  and the git credentials the **Source Control** tab pushes with all belong to
   the instance, not to a person -- one person signs in and everybody's graphs
   bill to them, with nothing recording who spent what.
+- Everyone through the SSO can install packs and plugins. The loopback-only
+  install gates check the address the server is bound to, never where a request
+  comes from, and behind this proxy the bind is `127.0.0.1`, so they let every
+  request through. That covers installing packs and removing their downloaded
+  models in the **Package Center**, and installing, updating and removing
+  plugins in the **Plugin Center** -- a plugin is third-party code this server
+  process imports. CodefyUI has no setting that closes these gates on a
+  loopback bind; the gated routes are the ones marked `token+loopback` in the
+  [API reference](/advanced/api-reference#authentication), and only the proxy
+  can keep them to administrators.
 - The package-install log is an open read. `GET /api/packs/jobs/{id}/events`
   takes no session token, exactly like `GET /api/runs/{id}/events` -- both are
-  reads, and the Package Center polls them to draw its progress bar. STARTING
-  an install is still guarded (the session token, plus a loopback bind unless
-  `CODEFYUI_ALLOW_REMOTE_PACK_INSTALL=1` opts back in), but the log the install
-  leaves behind names the interpreter it ran against -- the venv path in `uv`'s
-  argv -- and carries `uv`'s own output verbatim. On a LAN bind, anyone who can
-  reach the port can read it.
+  reads, and the Package Center polls them to draw its progress bar. Starting
+  an install needs the session token, but the log the install leaves behind
+  names the interpreter it ran against -- the venv path in `uv`'s argv -- and
+  carries `uv`'s own output verbatim. On a LAN bind, anyone who can reach the
+  port can read it.
 
 [Shared Instances](./shared-instances) covers those credentials in detail,
 including the fallback order and where each is stored. Read it before you give a
 team the URL. Its answer to "we need per-person attribution" still holds here:
-run one instance per person, with separate environment files, separate
-`CODEFYUI_USER_DATA_DIR` values and separate ports -- with the proxy in front of
-each.
+run one instance per person, each from its own install directory with its own
+environment file and port -- with the proxy in front of each. A separate
+`CODEFYUI_USER_DATA_DIR` alone does not separate two instances started from one
+install; that page lists what they still share.
 
 ## What CodefyUI sends out, and to whom
 
@@ -426,12 +441,14 @@ Traffic leaves the machine only when a person asks for it:
 | What | When |
 | --- | --- |
 | LLM providers (OpenAI, Anthropic, OpenRouter, ChatGPT, or a URL you supply) | Running an `LLMChat` node, or the model list in settings. Off unless a key or sign-in is configured. |
-| Dataset and model downloads (Kaggle, Hugging Face, torchvision) | Running a graph that contains one of those nodes. |
+| Dataset and model downloads (Kaggle, Hugging Face, torchvision, tiktoken encodings) | Running a graph that contains one of those nodes. |
+| Package Center downloads: models from `huggingface.co`, the GloVe word vectors from `github.com` | Installing a pack in the **Package Center** or with `cdui packs install`. A graph run never downloads pack contents. |
+| PyPI (through `uv`) and `download.pytorch.org` | `cdui install` and `cdui update` (the Python dependencies and the PyTorch wheel), and any pack or plugin install that adds Python packages or switches to GPU PyTorch. |
 | `github.com` | `cdui install`, `cdui update`, `cdui plugin install` / `info` / `update`, `cdui project restore`, and the Plugin Center. For the plugin fetches, unauthenticated GitHub allows 60 API requests an hour per IP, shared by every machine behind one NAT; export `CODEFYUI_GITHUB_TOKEN` before `cdui start` (public-repo read is enough). How the token is handled: [GitHub API rate limits](/advanced/plugins#how-an-install-runs). |
 | `astral.sh` | Only if `uv` is missing from `PATH`, which a normal install rules out. A one-time toolchain download, not a report. |
 
-An air-gapped install is therefore a matter of not using those nodes, not of
-disabling a reporting channel.
+An air-gapped install is therefore a matter of not using those nodes and
+commands, not of disabling a reporting channel.
 
 ## Checklist
 

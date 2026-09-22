@@ -128,7 +128,7 @@ cd CodefyUI
 
 `--dev` is not optional for contributors. Without it the backend is installed as `.` rather than `.[dev]`, `pytest` never lands in the virtualenv, and `cdui test` exits with "not found". If you already installed without it, re-run with `--dev`.
 
-`cdui install` creates `backend/.venv`, installs the backend editable, and then either builds `frontend/dist` (if pnpm is present) or downloads the prebuilt bundle from the latest release. Useful flags:
+`cdui install` creates `backend/.venv`, installs the backend editable, and then either builds `frontend/dist` (if pnpm is present) or downloads the prebuilt bundle from the latest release. It skips the frontend step when `frontend/dist/index.html` already exists (unless `CODEFYUI_FORCE_BUILD=1`); run `./cdui build` to rebuild it. Useful flags:
 
 | Flag | Effect |
 |---|---|
@@ -183,7 +183,7 @@ There is a linter (`ruff`) and there is no formatter — do not go looking for o
 
 ### `cdui test` runs both halves
 
-It used to run only `pytest` in `backend/`, which meant a green `cdui test` said nothing about the 138 frontend test files. Since core#245 it runs both and prints a summary naming each half:
+It used to run only `pytest` in `backend/`, which meant a green `cdui test` said nothing about the frontend test files. Since core#245 it runs both and prints a summary naming each half:
 
 ```
 === Test summary ===
@@ -194,7 +194,7 @@ It used to run only `pytest` in `backend/`, which meant a green `cdui test` said
 Three things worth knowing:
 
 - **A missing `pnpm` is a skip, not a failure.** CodefyUI has a deliberate no-Node install path (the release ships a prebuilt `frontend-dist.tar.gz`), so a machine with no Node is a healthy machine. The frontend half is reported as `SKIPPED` — never as a pass — and CI's `frontend-build.yml` runs those tests regardless.
-- **Both halves always finish.** A red backend does not stop the frontend from running; you get both answers in one pass. The exit code is 1 if either failed.
+- **Both halves finish.** A red backend does not stop the frontend from running; you get both answers in one pass. The exit code is 1 if either failed. The exception is a missing `pytest` (a venv installed without `--dev`, or no venv at all): unless you passed only `--frontend`, the command then exits 1 before either half runs. Re-run `./cdui install --dev`.
 - **`--backend` / `--frontend`** narrow the run when you know what you touched. Anything else is rejected rather than ignored — `cdui test -k foo` used to run the whole suite while looking like it had filtered.
 
 ### The full local set
@@ -218,6 +218,12 @@ uvx ruff@0.14.4 check .
 # dependency change.
 cd backend && uv lock --check
 
+# Repository root -- if you edited frontend/src/plugins/contract.ts. Copies it
+# into the `cdui plugin new` template (ui/src/sdk/types.ts); the backend suite
+# fails until the copy matches. Refresh the template repository's copy
+# (CodefyUI-Plugin-Official) by hand.
+python scripts/sync_plugin_sdk.py
+
 # Frontend -- if you touched frontend/. `cdui test` covers `pnpm test`;
 # these are the type-check and build gates it does not run.
 cd frontend && pnpm install
@@ -230,6 +236,13 @@ Two notes on the frontend commands:
 - **`tsc -b`, not `tsc --noEmit`.** `frontend/tsconfig.json` is a solution-style config with `"files": []` and project references, so `tsc --noEmit` against it checks **zero files** and passes no matter what is broken. Build mode follows the references and actually type-checks `src/`.
 - **`pnpm build` includes the contrast gate.** The build script is `node scripts/check-contrast.mjs && tsc -b && vite build` — the first step re-derives every WCAG contrast relationship claimed by `frontend/src/styles/tokens.css` and fails the build if a token pair drops below threshold. Run it alone with `pnpm contrast` when you are editing colours.
 
+### Opt-in checks
+
+Two checks do not run in CI. Run them yourself when they apply:
+
+- **Real downloads.** `tests/test_packs_network.py` and `tests/test_pack_examples_real.py` fetch real models and packages, so they skip unless `CODEFYUI_PACK_NETWORK_TESTS=1`. Run them when you change `backend/app/core/packs/` or a pack-backed node: `cd backend && CODEFYUI_PACK_NETWORK_TESTS=1 .venv/bin/python -m pytest tests/test_packs_network.py tests/test_pack_examples_real.py -q`.
+- **A real device.** `backend/.venv/bin/python scripts/device_smoke.py cuda` (or `mps`, `cpu`; leave it out to use the best device present) runs TrainGPT-Mini, TrainCNN-MNIST and TrainResNet-CIFAR10 on that device, one epoch each unless you pass `--full`, and exits 1 if any of them fails. Run it on the hardware in question when you change device handling.
+
 ### The linter
 
 `ruff.toml` at the repo root covers `backend/`, `scripts/`, `plugins/` and `examples/` — the same blast radius `backend-test.yml` uses. It runs the rule set ruff itself defaults to (`E4`, `E7`, `E9`, `F`): unused imports, undefined names, unused locals, `== None`, bare `except`, syntax errors.
@@ -240,9 +253,10 @@ There is no frontend linter yet. That is a bigger argument because it drags a fo
 
 ### What CI runs that you cannot easily run locally
 
-- **`backend-test.yml`** runs the whole suite on Python 3.10, 3.11 and 3.12 on ubuntu, **plus one Windows job on 3.12**, plus `uv lock --check`, a smoke import (`from app.main import app`) that catches import-time syntax errors, and `ruff check`. The Windows job is not decoration: CPython 3.12 replaced `os.path.exists` / `isdir` / `isfile` / `islink` with `nt` C fast paths **on Windows only**, and `ntpath` guards that behind `try: from nt import ... except ImportError:` — so on ubuntu the fallback always wins and no Python version in an ubuntu-only matrix can ever see the difference (core#258). If you change anything that touches paths, processes or file locking, expect Windows to have an opinion.
+- **`backend-test.yml`** runs the whole suite on Python 3.10, 3.11 and 3.12 on ubuntu, **plus one Windows job on 3.12**, plus a job on 3.11 that runs the suite against a built `frontend/dist` (the SPA routes are registered only when a build exists, core#285), plus `uv lock --check`, a smoke import (`from app.main import app`) that catches import-time syntax errors, and `ruff check`. The Windows job is not decoration: CPython 3.12 replaced `os.path.exists` / `isdir` / `isfile` / `islink` with `nt` C fast paths **on Windows only**, and `ntpath` guards that behind `try: from nt import ... except ImportError:` — so on ubuntu the fallback always wins and no Python version in an ubuntu-only matrix can ever see the difference (core#258). If you change anything that touches paths, processes or file locking, expect Windows to have an opinion.
 - **`byte-scan.yml`** runs `scripts/check_control_bytes.py` over every tracked file on every PR, with no path filter.
-- **`frontend-build.yml`** runs install, `tsc -b`, `pnpm build`, a `dist/` sanity check, then `pnpm test` — on `frontend/**` changes only.
+- **`frontend-build.yml`** runs install, `tsc -b`, `pnpm build`, a `dist/` sanity check, then `pnpm test` — on every pull request, and on pushes to `main` that touch `frontend/**`, `examples/**` or `backend/tests/fixtures/**`. Its build step also fails when Vite prints a chunk-size warning ("Some chunks are larger than 500 kB") or a circular-chunk warning, which a local `pnpm build` only prints.
+- **No workflow builds the docs site on a pull request.** `docs-deploy.yml` builds `docs/` only after a merge to `main`, so a broken link shows up there as a failed deploy. Build it yourself (see [Documentation and translations](#documentation-and-translations)).
 
 ### Tests are required
 
@@ -291,6 +305,10 @@ Bodies here are **prose, not a checklist**. Look at any recently merged PR for t
 
 Detail is welcome. Under-explaining costs a review round trip; over-explaining costs nobody anything.
 
+### Changelog entries
+
+A pull request that changes behaviour adds an entry under `## [Unreleased]` in `CHANGELOG.md`, in the subsection that fits (`### Added`, `### Changed`, `### Fixed`, `### Removed`, `### Security`, `### Internal`): a bullet that opens with a bold sentence saying what changed, followed by prose on why. Refer to an issue as `[#NNN]` and define that link at the bottom of the file. Expect a conflict in this file when you merge `main`.
+
 ---
 
 ## House style
@@ -307,7 +325,9 @@ This is a convention, not a CI gate — `byte-scan.yml` checks for raw C0 contro
 
 `docs/` is a Docusaurus site with a full Traditional Chinese translation under `docs/i18n/zh-TW/docusaurus-plugin-content-docs/current/`. **If you change an English page, change its zh-TW counterpart in the same PR.** A missing translation silently falls back to English, so drift is invisible until a reader hits a half-translated section.
 
-Build the site before pushing docs changes — `onBrokenLinks` is set to `throw`, so a bad relative link fails the build rather than shipping:
+Every zh-TW heading carries its English twin's anchor as an explicit ID, `## 標題 {/* #english-anchor */}`, so the language switcher lands on the same section and a link with an anchor works in both locales. When you add or rename an English heading, give its zh-TW twin the same ID.
+
+Build the site before pushing docs changes — `onBrokenLinks` and `onBrokenAnchors` are set to `throw`, so a bad relative link, or a link to a heading anchor that does not exist (`page#missing`), fails the build rather than shipping:
 
 ```bash
 cd docs && pnpm install && pnpm build
@@ -319,7 +339,7 @@ The app ships English and Traditional Chinese. New user-facing text — node des
 
 ### Where to start
 
-Read the [Architecture](https://docs.codefyui.com/advanced/architecture) page first. The single most important thing to know is that CodefyUI is **backend-authoritative**: `GET /api/nodes` returns every node definition and one React component renders all of them, so adding a node is a backend-only change.
+Read the [Architecture](https://docs.codefyui.com/advanced/architecture) page first. The single most important thing to know is that CodefyUI is **backend-authoritative**: `GET /api/nodes` returns every node definition and one React component (`BaseNode`) can render any of them, so adding a node is a backend-only change.
 
 Browse the [issue tracker](https://github.com/CodefyUI/CodefyUI/issues) for something to pick up. If an issue is not clear, ask in a comment before writing code — a question costs a day, a wrong implementation costs a week.
 

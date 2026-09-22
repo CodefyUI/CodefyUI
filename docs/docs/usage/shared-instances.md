@@ -25,7 +25,7 @@ of the person whose browser tab is open.
 **On a shared box, whoever configured the credentials pays for everyone, and
 nothing records who spent what.**
 
-Three credentials work this way.
+Five credentials work this way.
 
 ### ChatGPT sign-in
 
@@ -37,14 +37,17 @@ refresh tokens to `llm/codex_auth.json` under the user-data directory:
 (`%LOCALAPPDATA%\codefyui\llm\` on Windows, `~/.local/share/codefyui/llm/` on
 Linux, `~/Library/Application Support/codefyui/llm/` on macOS) only for a
 hand-launched uvicorn -- see
-[Project Directories](./project-directories#6-create-an-api-key-invoke-needs-one). The file is
+[Graph as a Function](./graph-as-a-function#2-getting-the-token-for-external-scripts). The file is
 chmod 0600 where that means anything -- on Windows it does not, and the
 protection is the per-account ACL on the folder instead.
 
 The proxy checks only that SOMEONE is signed in, not that it was you:
 
-- Once one person signs in, **every** graph on that instance using the ChatGPT
-  provider bills to that person's personal ChatGPT account.
+- Once one person signs in, **every** graph on that instance whose `LLMChat`
+  uses the **Codex** provider bills to that person's ChatGPT account, and so
+  does any plugin that calls the `openai-codex` provider of `/api/llm/chat`,
+  such as [Graph Copilot](/advanced/graph-copilot). The **ChatGPT API**
+  provider uses an OpenAI API key instead (next section).
 - `POST /api/llm/codex/logout` takes no argument beyond the session token.
   Anyone who can reach the editor can sign you out.
 
@@ -63,15 +66,33 @@ fallback is silent by design -- a graph with an empty key param does not
 announce that it used the instance's. **Assume any graph anyone can run is a
 graph that can spend your org's LLM budget.**
 
-The one thing the fallback deliberately does NOT do: the `custom` provider
-never receives a key, so a graph pointing at an attacker's `base_url` cannot
-carry yours off the box.
+The one thing the fallback deliberately does NOT do: the **Ollama** provider
+never receives a key, so a graph that points `ollama_base_url` at an attacker's
+server cannot carry yours off the box.
 
 ### Kaggle
 
 The `KaggleDataset` node uses `KAGGLE_USERNAME` + `KAGGLE_KEY`, or the service
 account's `~/.kaggle/kaggle.json`. Downloads are attributed to that Kaggle
 account, including competition rules you accepted under it.
+
+### Hugging Face
+
+`HuggingFaceDataset`, `TextCorpusDataset` (with `source` set to `huggingface`)
+and Package Center model downloads authenticate with `HF_TOKEN` from the
+server's environment, or else with the token file `hf auth login` saved in the
+service account's home (`~/.cache/huggingface/token`). Gated datasets and
+models are then fetched under that Hugging Face account, including any terms
+accepted with it.
+
+### Git
+
+On a server started with `--project`, the **Source Control** tab runs the
+server account's own `git` in the project directory. Fetch, pull and push use
+whatever credentials that account has (a credential helper, SSH keys), and
+every commit is authored with the one git identity configured on the server, so
+anyone who reaches the editor pushes to the project's remotes as that account.
+See [Source Control](./source-control).
 
 ## What is per-graph instead
 
@@ -80,12 +101,15 @@ belong to whoever typed them and are handled differently. They are blanked out
 of every copy the server writes: saved graphs, exports, published app versions,
 presets, generated Python, and the run history.
 
-Two consequences worth stating plainly:
+Three consequences:
 
-- A SECRET param is NOT stored anywhere. Reloading the editor, re-importing an
-  exported graph, or promoting a queued run on a restarted server all leave the
-  field blank, and the node fails with its "requires an api key" error. That is
-  the intended trade, not a bug.
+- A SECRET param is NOT stored anywhere. Reloading the editor or re-importing
+  an exported graph leaves the field blank; an `LLMChat` node then falls back
+  to the instance's environment key, if one is set, or fails with its
+  missing-key error. A queued run keeps the typed value in server memory only
+  until the run ends; if the server stops before the run starts, the run is
+  retired as `interrupted` and the value is gone. That is the intended trade,
+  not a bug.
 - **Anything you type from now on is fine.** The value never reaches the
   database, and deleted database pages are zeroed rather than recycled with
   their contents intact, so run history that ages out does not leave a
@@ -105,6 +129,20 @@ Two consequences worth stating plainly:
 ## If you need per-person attribution
 
 There is no in-product answer today. Run one instance per person, and let each
-person supply their own credentials -- separate `.env` files, separate
-`CODEFYUI_USER_DATA_DIR` values, separate ports. Anything else shares an
-identity, and the sharing is not visible from inside the editor.
+person supply their own credentials:
+
+- Give each instance its own install directory (the installer's
+  `CODEFYUI_DIR`), environment file and port. Instances started from one
+  install share the SQLite database (run history, published apps, API keys),
+  the saved graphs, models, images, media and uploaded data files, and the
+  Python environment that pack and plugin installs add packages to; `cdui start`
+  runs one background server per install, and `cdui stop` stops every server
+  started from it. A separate `CODEFYUI_USER_DATA_DIR` moves only the session
+  token, the ChatGPT sign-in, downloaded plugins and their lockfile, the
+  download cache and the pack control files.
+- Run each instance under its own OS account if anyone relies on a credential
+  stored in the home directory: `~/.kaggle/kaggle.json`, the Hugging Face token
+  file, git's credential helper and SSH keys.
+
+Anything else shares an identity, and the sharing is not visible from inside
+the editor.

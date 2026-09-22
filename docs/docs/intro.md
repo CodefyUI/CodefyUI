@@ -16,6 +16,8 @@ description: A visual, node-based deep learning pipeline builder. Design CNN, RN
 - **Build models visually.** Drag and drop nodes, connect ports with type-safe edges, and receive validation in real time. CodefyUI includes **152 built-in nodes** across 16 categories, including CNN, RNN, Transformer, RL, Data, Training, LLM, Diffusion, and Classical.
 - **Inspect tensors.** The **Teaching Inspector** records every node's output. You can compare inputs and outputs cell by cell, capture gradients, and use a segment to compare only the input at the start of a subgraph with the output at its end.
 - **Monitor runs.** A WebSocket stream reports per-node progress, live training-loss charts, and `Print` output during execution. The **Runs** panel tracks queued, active, and completed runs. See [Run Queue](/usage/run-queue).
+- **Save and move graphs.** The sidebar **Graphs** tab lists the graphs saved on the server. **Export → Workspace (.cduiworkspace)** puts every open tab in one file that another browser can import. See [Tabs & Persistence](/usage/tabs-persistence).
+- **Version and publish.** The **Source Control** tab runs git on a [project directory](/usage/project-directories), and [Publish](/usage/publish) serves a graph as a versioned HTTP endpoint protected by API keys.
 - **Extend the node system.** Collapse selected nodes into a reusable [subgraph](/advanced/subgraphs), save a graph as a reusable preset, or add custom nodes from `.py` files. Install optional packs and plugin packs from the Package Center, the [Plugin Center](/advanced/plugins#plugin-center), or the CLI.
 - **Select a device backend.** Run on CPU, NVIDIA CUDA, Apple Silicon MPS, or AMD ROCm. You can select the backend during installation and for each run.
 

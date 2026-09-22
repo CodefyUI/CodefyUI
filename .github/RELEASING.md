@@ -9,9 +9,10 @@ maintainer's job is to push the tag and check the result before publishing.
 # 1. Promote CHANGELOG.md's [Unreleased] section to the new version, bump the
 #    three version fields, and stamp any "unreleased" docs placeholder with the
 #    new number (see "Before you tag" below).
-# 2. From main, once that commit is in:
-git tag 1.0.0rcN
-git push origin 1.0.0rcN
+# 2. From main, once that commit is in, tag it with the release notes in
+#    notes.md -- an annotated tag, kept verbatim (see "Then on GitHub"):
+git tag -a X.Y.Z --cleanup=verbatim -F notes.md
+git push origin X.Y.Z
 ```
 
 ## Before you tag
@@ -20,8 +21,11 @@ Three things are done by hand, and nothing else in the pipeline checks them for
 you:
 
 1. **Promote `CHANGELOG.md`.** Rename `## [Unreleased]` to
-   `## [X.Y.Z] — YYYY-MM-DD`, open a fresh empty `## [Unreleased]` above it, and
-   update the `[Unreleased]` compare link at the bottom to point at the new tag.
+   `## [X.Y.Z] — YYYY-MM-DD`, open a fresh empty `## [Unreleased]` above it,
+   update the `[Unreleased]` compare link at the bottom to start at the new
+   tag, and add
+   `[X.Y.Z]: https://github.com/CodefyUI/CodefyUI/compare/<previous>...X.Y.Z`
+   below it so the new heading links like the others.
 
    > The date is the tag's **UTC** date — what the tag object and GitHub's
    > `published_at` both record, and what 2.8.0 and 2.5.0 used. On a UTC+8 box
@@ -67,13 +71,15 @@ you:
    reproduces the bug in the locale nobody proofreads. One marker, both locales,
    one command. Add it to any new placeholder you write, in every locale.
 
-   Today the marker sits on the plugin `apiVersion` table and its availability
-   note (`docs/.../advanced/plugin-frontend-extensions.md` + the zh-TW twin),
-   whose version column says which CodefyUI release shipped each `apiVersion`;
-   a new row lands as a placeholder because the number does not exist when the
-   PR is written. That is not hypothetical: the apiVersion 3 row said "1.5.0"
-   from 2.0.0 through 2.2.0 — a version never tagged — because it was written
-   before 2.0.0 was the number, and nothing brought anyone back to it.
+   No page carries the marker at the moment, so the command should print
+   nothing. The place it is made for is the plugin `apiVersion` table and its
+   availability note (`docs/.../advanced/plugin-frontend-extensions.md` + the
+   zh-TW twin), whose version column says which CodefyUI release shipped each
+   `apiVersion`: a new row lands as a placeholder because the number does not
+   exist when the PR is written. That is not hypothetical: the apiVersion 3
+   row said "1.5.0" from 2.0.0 through 2.2.0 — a version never tagged —
+   because it was written before 2.0.0 was the number, and nothing brought
+   anyone back to it.
 
 Then on GitHub:
 1. Wait for **Release Build** to finish (≈2 min) — produces a draft release.
@@ -94,10 +100,12 @@ Then on GitHub:
      > see it by reading the rendered release page. This ate all five headings
      > of 2.1.0's notes on the first attempt.
    - `prerelease` = true if the tag matches `rc` / `beta` / `alpha` / `dev`
-   - `make_latest` = true (overrides GitHub's "skip prereleases for /latest"
-     so `releases/latest/download/...` resolves to this rc)
+   - `make_latest` is not set: GitHub refuses it on a draft
 2. Open the draft, **edit notes if needed**.
-3. Click **Publish** — no manual flag toggles required.
+3. Click **Publish**. A stable release becomes **Latest** by GitHub's default.
+   A prerelease cannot be Latest, so `releases/latest/...` (what the
+   installers and `cdui update` download) stays on the previous stable
+   release; install an rc with `CODEFYUI_RELEASE_TAG=<tag>`.
 4. **Install Check** workflow fires automatically and end-to-ends `install.sh` /
    `install.ps1` against the just-published asset on Linux/macOS/Windows.
 
@@ -105,28 +113,41 @@ Then on GitHub:
 
 | Workflow | Triggers | Catches |
 |----------|----------|---------|
-| `frontend-build.yml` | PR + push to `main` (frontend changes) | broken `pnpm build` / `tsc` / `vitest` before merge |
+| `frontend-build.yml` | every PR; push to `main` touching `frontend/**`, `examples/**` or `backend/tests/fixtures/**` | broken `pnpm build` / `tsc` / `vitest`, and Vite chunk warnings, before merge |
+| `backend-test.yml` | every PR; push to `main` touching the backend, examples, plugins, scripts or the frontend files the backend tests read | pytest on 3.10 / 3.11 / 3.12, on Windows 3.12 and against a built frontend; `uv lock --check`; ruff |
+| `byte-scan.yml` | every PR and push to `main` | raw C0 control bytes in tracked files |
 | `release-build.yml` | tag push, `release: created`, manual | tag without a fresh asset |
 | `install-check.yml` | `release: published`, manual | install flow regression on real OS runners |
 
 ## When CI surprises you
 
 - **Release Build failed** — fix the cause (lockfile mismatch, build error)
-  and re-push the tag (`git tag -d X && git push --delete origin X && git tag X
-  && git push origin X`). The workflow concurrency block cancels the prior run.
+  and re-push the tag (`git tag -d X && git push --delete origin X && git tag
+  -a X --cleanup=verbatim -F notes.md && git push origin X`). The workflow
+  concurrency block cancels the prior run.
 - **Install Check failed after publish** — the asset is still attached, but
   `install.sh` / `install.ps1` broke. Check the failing job's log; usually a
   Node version or network issue.
-- **Only the rc is "latest" but Github keeps showing the previous stable** —
-  toggle *Set as the latest release* on the rc; `/releases/latest/download/...`
-  follows that flag, not the tag's chronological order.
+- **A published rc is not "Latest"** — expected: GitHub never marks a
+  prerelease as Latest, and `/releases/latest/download/...` follows that flag,
+  not the tag's chronological order. Point an install at the rc with
+  `CODEFYUI_RELEASE_TAG=<tag>`, or publish it without the pre-release flag.
 
 ## Manual rebuild of an existing release
 
 ```text
-Actions → Release Build → Run workflow → Tag: 1.0.0rcN
+Actions → Release Build → Run workflow → Tag: X.Y.Z
 ```
 
-This re-builds and replaces `frontend-dist.tar.gz` on the existing release
-without touching anything else. Useful if a release was published before
-`frontend-build.yml` existed and the asset is missing.
+This rebuilds `frontend-dist.tar.gz` from the tag and replaces the asset, and
+it also turns the release back into a draft with its body reset to the tag
+annotation, so notes edited on GitHub are lost. If it was the latest release,
+`releases/latest` (what the installers and `cdui update` download) resolves to
+the one before it until you publish it again; publishing runs Install Check
+again. Useful if a release was published before `frontend-build.yml` existed
+and the asset is missing.
+
+Leaving **Tag** blank does not produce an artifact, although the form says
+"leave blank to upload as artifact only": the run fails at the **Read tag
+annotation as release body** step (`fatal: ambiguous argument ''`) before the
+frontend is built, and no release is changed.

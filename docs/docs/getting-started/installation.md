@@ -27,7 +27,9 @@ powershell -ExecutionPolicy ByPass -c "irm https://raw.githubusercontent.com/Cod
 
 By default this installs to `~/CodefyUI` (macOS/Linux) or `%USERPROFILE%\CodefyUI` (Windows). Override with the `CODEFYUI_DIR` environment variable.
 
-On Windows, `install.ps1` uses [winget](https://learn.microsoft.com/windows/package-manager/) to install `git` if it's missing. `winget` ships with Windows 11 and recent Windows 10 via the "App Installer" package. If `winget` is unavailable or its package sources cannot be reached (corporate TLS interception makes the `msstore` source fail with `0x8a15005e`), the installer falls back to extracting [PortableGit](https://git-scm.com/download/win) into `%LOCALAPPDATA%\CodefyUI\PortableGit` — no administrator rights required.
+On Windows, `install.ps1` uses [winget](https://learn.microsoft.com/windows/package-manager/) to install `git` if it's missing. `winget` ships with Windows 11 and recent Windows 10 via the "App Installer" package. If `winget` is missing or `winget install --source winget Git.Git` fails, the installer falls back to extracting [PortableGit](https://git-scm.com/download/win) into `%LOCALAPPDATA%\CodefyUI\PortableGit` — no administrator rights required. Because the installer asks only the `winget` source, a `msstore` source that corporate TLS interception breaks (`0x8a15005e`) does not stop it.
+
+If the prebuilt `frontend-dist.tar.gz` cannot be downloaded, the installer installs Node.js 24 (through nvm on macOS/Linux, `pnpm env use --global 24` on Windows) and pnpm, and builds the frontend locally; the backend stays on the release tag. If the latest release tag cannot be looked up at all, it clones `main` instead and warns that the frontend and backend may not match.
 
 The installer places a `cdui` launcher at `~/.local/bin/cdui` (Windows: `%USERPROFILE%\.local\bin\cdui.cmd`). **Restart your terminal**, then from any directory:
 
@@ -49,14 +51,13 @@ Switching build after the fact does not need a terminal either: on a server star
 
 | Flag | Env var | Values | Purpose |
 |------|---------|--------|---------|
-| `--gpu <choice>` | `CODEFYUI_GPU` | `auto` / `cu118` / `cu121` / `cu124` / `cu126` / `cu128` / `rocm6.1` / `rocm6.2` / `cpu` / `mps` / `skip` | Select the PyTorch wheel index. `auto` detects via `nvidia-smi` / `rocm-smi` / Apple Silicon. `skip` installs no torch (advanced). |
-| `--dev` / `--no-dev` | `CODEFYUI_DEV` | `1` / `0` | Install the `[dev]` extra (pytest, httpx, httpx-ws). Required for `cdui test`. Off for end users, on for contributors. |
-| `--yes` | — | — | Accept all defaults non-interactively (CI / headless). |
-| `--lang <code>` | `CODEFYUI_LANG` | `en` / `zh` (the environment variable also accepts `zh-TW`, `zh-HK`, `zh-CN`, `english`, and `chinese`) | The flag applies to `cdui install` and `cdui update` only; the environment variable sets the output language of every `cdui` command. |
+| `--gpu <choice>` | `CODEFYUI_GPU` | `auto` / `cu118` / `cu121` / `cu124` / `cu126` / `cu128` / `rocm6.1` / `rocm6.2` / `cpu` / `mps` / `skip` | Select the PyTorch wheel index. `auto` detects via `nvidia-smi` / `rocm-smi` / Apple Silicon. `skip` chooses no wheel index: a torch that already satisfies `torch>=2.5` is kept; otherwise the dependency install pulls PyPI's default wheel (CPU-only on Windows). |
+| `--dev` / `--no-dev` | `CODEFYUI_DEV` | `1` / `0` | Install the `[dev]` extra (pytest, httpx, httpx-ws). Required for `cdui test`. Off by default, including at the interactive `[y/N]` prompt; contributors pass `--dev` or set `CODEFYUI_DEV=1`. |
+| `--yes` / `-y` | — | — | Accept all defaults non-interactively (CI / headless). |
+| `--lang <code>` | `CODEFYUI_LANG` | `en` / `zh` (the environment variable also accepts `zh-TW`, `zh-HK`, `zh-CN`, `english`, and `chinese`) | The flag applies to `cdui install` and `cdui update` only; the environment variable sets the output language of every `cdui` command. The `cdui plugin`, `project`, `packs` and `cache` groups recognise only `zh` itself: they print English for the other Chinese spellings, and without the variable they follow `LANG` / `LC_ALL` only, not the system locale. |
 | — | `CODEFYUI_DIR` | path | Set the installation directory. Default: `~/CodefyUI`. |
 | — | `CODEFYUI_RELEASE_TAG` | tag | Pin the frontend bundle and backend checkout to the same release. Default: `latest`. |
 | — | `CODEFYUI_FORCE_BUILD` | `1` | Skip the prebuilt distribution download, build locally with pnpm, and track `main`. |
-| — | `CODEFYUI_UV_INSTALL_TIMEOUT` | seconds | Set the automatic `uv` download timeout when `uv` is missing from `PATH`. Default: `180`. Set to `0` for no limit. |
 
 ## Production vs developer mode
 
@@ -78,7 +79,7 @@ curl http://127.0.0.1:8000/api/health
 
 This should return something like `{"status":"ok","nodes_loaded":152,"presets_loaded":3}` (the `nodes_loaded` count grows with each release — just confirm it's non-zero).
 
-Then open the frontend, load the **Train CNN on MNIST** example, and click **Run**. You should see training progress appear in the bottom panel, and a test accuracy of about 0.99 printed when it finishes. The first run downloads MNIST.
+Then open the frontend, load the **Train CNN on MNIST** example, and click **Run**. You should see training progress appear in the bottom panel, and a test accuracy of about 0.99 printed when it finishes. MNIST ships with CodefyUI, so the run needs no download.
 
 ## Optional packs
 
@@ -92,6 +93,6 @@ See **[Optional Packs](/usage/optional-packs)** for the catalog, where the files
 cdui update
 ```
 
-Updates to the latest release (prebuilt path) or pulls `main` (when building from source) and re-syncs the frontend.
+`cdui update` updates the checkout and re-syncs the frontend. Which source it takes depends on whether pnpm is on `PATH` when you run it, not on how CodefyUI was installed. Without pnpm, it checks out the latest release tag with `git checkout -f`, which discards local changes to tracked files, and downloads that release's frontend. With pnpm, or with `CODEFYUI_FORCE_BUILD=1`, it resets the local `main` branch to `origin/main` and rebuilds the frontend. Details: [CLI Commands](./cli-commands).
 
 Unlike `cdui install`, this never prompts. It reuses the PyTorch variant and dev tooling already in the venv — reading the variant straight off the installed wheel — so a deliberately chosen torch build is left alone, and an unchanged one isn't re-downloaded. The same `--gpu` / `--dev` flags and `CODEFYUI_GPU` / `CODEFYUI_DEV` env vars still override when you do want a switch.
