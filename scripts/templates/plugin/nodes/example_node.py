@@ -21,7 +21,14 @@ from app.core.node_base import (
 class ExampleNode(BaseNode):
     NODE_NAME = "Example"
     CATEGORY = "{{plugin_name}}"
-    DESCRIPTION = "Greets the name in the `name` param. Replace with your plugin's logic."
+    DESCRIPTION = "Greets the name in the `name` param"
+    DETAILS = (
+        "The `greeting` output is `Hello, <name>!`, and a blank `name` falls back "
+        "to `world`. DESCRIPTION is the one-line summary the palette row shows, "
+        "cut off past 56 characters. DETAILS is this longer text, which only the "
+        "config panel and the Docs tab show; leave it empty when the summary "
+        "already says it all."
+    )
 
     @classmethod
     def define_inputs(cls) -> list[PortDefinition]:

@@ -100,6 +100,43 @@ def test_new_scaffold_backend_only(tmp_path):
     _no_unrendered_placeholders(root)
 
 
+def test_new_scaffold_example_node_fits_the_palette_and_has_details(tmp_path):
+    """The example node is the first node a plugin author reads and copies, so
+    it has to show the split every shipped node follows (#461): a DESCRIPTION
+    the palette row shows whole, and the longer explanation in DETAILS, which
+    the config panel and the Docs tab show. It used to carry a 70-character
+    DESCRIPTION the row cut off and no DETAILS, so the description in every
+    scaffolded node's Docs tab stopped at that one line."""
+    # Imported, not restated: the cap is the palette row's measured width,
+    # and it lives beside the ratchet that holds every shipped node to it, so
+    # a re-measured row moves this test along with it.
+    from tests.test_api_nodes import MAX_DESCRIPTION_CHARS
+
+    assert plugin_cli.main(["new", "my-test-plugin", "--dir", str(tmp_path)]) == 0
+    source = tmp_path / "my-test-plugin" / "nodes" / "example_node.py"
+
+    # The class the rendered file defines, whose attributes are what
+    # GET /api/nodes serves. compile + exec rather than an import, so no .pyc
+    # lands in the scaffold (the same reason as _assert_python_compiles).
+    namespace: dict = {"__name__": "scaffolded_example_node"}
+    exec(compile(source.read_text(encoding="utf-8"), str(source), "exec"), namespace)
+    node = namespace["ExampleNode"]
+
+    description = node.DESCRIPTION
+    assert len(description) <= MAX_DESCRIPTION_CHARS and "\n" not in description, (
+        f"the example node's DESCRIPTION is {len(description)} characters; a "
+        f"palette summary is one line of at most {MAX_DESCRIPTION_CHARS} and the "
+        "row cuts off the rest. Move the rest into DETAILS.")
+    assert node.DETAILS.strip(), (
+        "the example node has no DETAILS, so the description in every "
+        "scaffolded node's Docs tab stops at the one-line summary")
+    # DETAILS tells the author where the row cuts off, as a number, so a
+    # re-measured row has to move that sentence along with the cap.
+    assert f"{MAX_DESCRIPTION_CHARS} characters" in node.DETAILS, (
+        "the example node's DETAILS no longer states the palette row's cap of "
+        f"{MAX_DESCRIPTION_CHARS} characters; update the number it gives")
+
+
 def test_new_scaffold_with_ui(tmp_path):
     rc = plugin_cli.main(["new", "ui-plugin", "--ui", "--dir", str(tmp_path)])
     assert rc == 0
