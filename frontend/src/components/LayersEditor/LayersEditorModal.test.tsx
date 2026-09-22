@@ -3,6 +3,8 @@ import { render, screen, fireEvent, within, act } from '@testing-library/react';
 
 import { useTabStore } from '../../store/tabStore';
 import { useToastStore } from '../../store/toastStore';
+import { useUIStore } from '../../store/uiStore';
+import { useDialogStore } from '../../store/dialogStore';
 import { useI18n } from '../../i18n';
 
 // ──────────────────────────────────────────────────────────────────────────
@@ -153,6 +155,15 @@ describe('LayersEditorModal', () => {
   beforeEach(() => {
     useI18n.setState({ locale: 'en' });
     useToastStore.setState({ toasts: [] });
+    // Every modal flag the #475 delete-key gate reads.
+    useUIStore.setState({
+      shortcutsModalOpen: false,
+      templateGalleryOpen: false,
+      packCenterOpen: false,
+      pluginCenterOpen: false,
+      gitDiff: null,
+    });
+    useDialogStore.setState({ active: null, resolve: null });
     lastFlowProps = null;
     fitViewSpy.mockClear();
     screenToFlowPositionSpy.mockClear();
@@ -1115,5 +1126,29 @@ describe('LayersEditorModal', () => {
     });
     expect(screen.getByText('Drag a layer here to start')).toBeTruthy();
     expect(screen.getByText('0 layers')).toBeTruthy();
+  });
+
+  // ── deleteKeyCode behind a modal (#475) ─────────────────────────────────
+
+  it('keeps Delete bound while it is the only modal open', () => {
+    // This editor IS a modal (`layersModalNodeId`). Its own open-ness must
+    // never disable its own Delete key — only something ON TOP of it does.
+    setupOpenModal(validGraphJson());
+    render(<LayersEditorModal />);
+    expect(lastFlowProps.deleteKeyCode).toBe('Delete');
+  });
+
+  it('unbinds Delete while the Package Center is open on top of it', () => {
+    setupOpenModal(validGraphJson());
+    useUIStore.setState({ packCenterOpen: true });
+    render(<LayersEditorModal />);
+    expect(lastFlowProps.deleteKeyCode).toBeNull();
+  });
+
+  it('unbinds Delete while a confirm dialog is up', () => {
+    setupOpenModal(validGraphJson());
+    useDialogStore.setState({ active: { kind: 'confirm', title: 'sure?' }, resolve: null });
+    render(<LayersEditorModal />);
+    expect(lastFlowProps.deleteKeyCode).toBeNull();
   });
 });

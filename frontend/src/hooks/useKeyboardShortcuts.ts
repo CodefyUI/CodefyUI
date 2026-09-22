@@ -1,7 +1,7 @@
 import { useEffect } from 'react';
 import { useTabStore } from '../store/tabStore';
 import { useUIStore } from '../store/uiStore';
-import { useDialogStore } from '../store/dialogStore';
+import { isAnyModalOpen, type ModalName } from '../store/modalState';
 import { useProjectStore } from '../store/projectStore';
 import { saveActiveGraph } from '../utils/saveActiveGraph';
 
@@ -25,6 +25,17 @@ function hasTextSelection(): boolean {
   return (window.getSelection?.()?.toString() ?? '') !== '';
 }
 
+/**
+ * The chord that shows (or hides) the shortcuts sheet. A named test because
+ * the modal gate below has to let exactly this one key through -- see there.
+ */
+function isHelpKey(e: KeyboardEvent): boolean {
+  return e.key === '?' || (e.shiftKey && e.key === '/');
+}
+
+/** The shortcuts sheet, as the one modal `?` is allowed to act on. */
+const HELP_KEY_IGNORES: readonly ModalName[] = ['shortcuts'];
+
 export function useKeyboardShortcuts() {
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
@@ -41,6 +52,19 @@ export function useKeyboardShortcuts() {
       ) {
         return;
       }
+
+      // Skip while ANY modal is open (#475). Every shortcut below acts on the
+      // canvas, and this handler is bound to `document` — which a modal panel
+      // is a portal into, not a separate surface. Nothing in a panel has to
+      // take focus for the key to arrive here, so without this gate Shift+L
+      // re-laid-out the graph the user could not see, and Ctrl+Z undid work
+      // behind a confirm dialog.
+      //
+      // `?` is the single exception, and only because it is what OPENED the
+      // shortcuts sheet: its own branch re-asks, counting every modal but
+      // that one, so it still closes the sheet and still refuses to stack a
+      // second one on the Package Center.
+      if (isAnyModalOpen() && !isHelpKey(e)) return;
 
       // Ctrl+Z / Cmd+Z — Undo
       if (mod && !e.shiftKey && e.key === 'z') {
@@ -65,12 +89,12 @@ export function useKeyboardShortcuts() {
 
       // Ctrl+C / Cmd+C — Copy
       //
-      // Yields to a real text selection. The guard above only skips inputs and
-      // textareas, so selecting ordinary page text — the install command in
-      // the Package Center's <pre>, which the "could not copy" toast tells the
-      // user to copy by hand — and pressing Ctrl+C copied the SELECTED NODES
-      // instead and put nothing on the clipboard. A non-empty selection means
-      // the user is copying text, which is the browser's job, not ours.
+      // Yields to a real text selection, on top of the modal gate above. The
+      // tag guard only skips inputs and textareas, so selecting ordinary page
+      // text — a node label, a log line, a result — and pressing Ctrl+C copied
+      // the SELECTED NODES instead and put nothing on the clipboard. A
+      // non-empty selection means the user is copying text, which is the
+      // browser's job, not ours.
       if (mod && !e.shiftKey && e.key === 'c') {
         if (hasTextSelection()) return;
         e.preventDefault();
@@ -133,8 +157,15 @@ export function useKeyboardShortcuts() {
         return;
       }
 
-      // ? — Toggle shortcuts help
-      if (e.key === '?' || (e.shiftKey && e.key === '/')) {
+      // ? — Toggle shortcuts help.
+      //
+      // The one key the modal gate above lets past, so it can close the sheet
+      // it opened. It still has to refuse every OTHER modal: pressing ? over
+      // the Package Center used to put a second modal on top of it — and,
+      // because the sheet sits below the panels in the stacking order, an
+      // invisible one whose open state then swallowed Escape (#380).
+      if (isHelpKey(e)) {
+        if (isAnyModalOpen(HELP_KEY_IGNORES)) return;
         e.preventDefault();
         useUIStore.getState().toggleShortcutsModal();
         return;
@@ -148,26 +179,21 @@ export function useKeyboardShortcuts() {
         return;
       }
 
-      // Enter — open the selected node's detail modal (#127). Every guard
-      // below exists because Enter is the most overloaded key on the page:
-      // it must not steal activation from a focused control, must not fire
-      // behind a confirm dialog whose primary button is focused, and must not
-      // re-open a modal that is already up.
+      // Enter — open the selected node's detail modal (#127). Enter is the
+      // most overloaded key on the page: it must not steal activation from a
+      // focused control, must not fire behind a confirm dialog whose primary
+      // button is focused, and must not re-open a modal that is already up.
+      //
+      // Only the first of those is checked here. The other two used to be an
+      // enumeration on this branch — the dialog, the shortcuts sheet and the
+      // four per-tab modals — and the modal gate above now covers all six,
+      // and the four panels the enumeration never knew about (#475). One
+      // list, and this branch keeps only the guard that is its own.
       if (!mod && !e.shiftKey && !e.altKey && e.key === 'Enter') {
         if (ENTER_OWNING_TAGS.has(tag)) return;
-        if (useDialogStore.getState().active !== null) return;
-        if (useUIStore.getState().shortcutsModalOpen) return;
         const { tabs, activeTabId } = useTabStore.getState();
         const activeTab = tabs.find((t) => t.id === activeTabId);
         if (!activeTab) return;
-        if (
-          activeTab.nodeDetailNodeId ||
-          activeTab.presetModalNodeId ||
-          activeTab.layersModalNodeId ||
-          activeTab.vizModalNodeId
-        ) {
-          return;
-        }
         const selectedId = activeTab.selectedNodeId;
         if (!selectedId) return;
         const node = activeTab.nodes.find((n) => n.id === selectedId);

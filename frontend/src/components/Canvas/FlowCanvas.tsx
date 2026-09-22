@@ -59,6 +59,7 @@ import { NoteBindingLines } from './NoteBindingLines';
 import { SegmentBubble } from './SegmentBubble';
 import { useTabStore } from '../../store/tabStore';
 import { useUIStore } from '../../store/uiStore';
+import { useAnyModalOpen } from '../../store/modalState';
 import { useDragAndDrop } from '../../hooks/useDragAndDrop';
 import {
   isValidConnection,
@@ -188,6 +189,12 @@ export function FlowCanvas({ tabId }: { tabId?: string } = {}) {
   const setCanvasPanning = useUIStore((s) => s.setCanvasPanning);
   const setNodes = useTabStore((s) => s.setNodes);
   const layoutFitRequest = useUIStore((s) => s.layoutFitRequest);
+  // React Flow binds Delete on `document` and filters only on
+  // `isInputDOMNode`. A modal panel's focus target is a `tabIndex={-1}` div,
+  // not an input, so that filter passes and Delete destroyed the selection on
+  // this canvas from behind a panel the user was reading (#475). Handing it
+  // `null` is how the key is unbound for exactly as long as a modal is up.
+  const anyModalOpen = useAnyModalOpen();
   const { screenToFlowPosition, fitBounds, getViewport, setViewport } =
     useReactFlow();
 
@@ -702,7 +709,7 @@ export function FlowCanvas({ tabId }: { tabId?: string } = {}) {
           onlyRenderVisibleElements
           minZoom={CANVAS_MIN_ZOOM}
           proOptions={proOptions}
-          deleteKeyCode="Delete"
+          deleteKeyCode={anyModalOpen ? null : 'Delete'}
           multiSelectionKeyCode="Shift"
           style={{ background: 'var(--surface-canvas)' }}
           defaultEdgeOptions={{
