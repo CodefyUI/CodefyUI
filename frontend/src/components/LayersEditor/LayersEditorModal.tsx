@@ -21,7 +21,7 @@ import '@xyflow/react/dist/style.css';
 
 import { useTabStore } from '../../store/tabStore';
 import { useToastStore } from '../../store/toastStore';
-import { useAnyModalOpen, type ModalName } from '../../store/modalState';
+import { isAnyModalOpen, type ModalName } from '../../store/modalState';
 import { useI18n, type TranslationKey } from '../../i18n';
 import { generateId } from '../../utils';
 import { CANVAS_MIN_ZOOM } from '../../styles/theme';
@@ -516,10 +516,20 @@ const nodeTypes: NodeTypes = {
 
 /**
  * This editor IS a modal (`layersModalNodeId`), so its own open-ness must not
- * disable its own Delete key — only something stacked ON TOP of it does
- * (#475).
+ * refuse its own Delete — only something stacked ON TOP of it does (#475).
  */
 const IGNORE_OWN_MODAL: readonly ModalName[] = ['layersModal'];
+
+/**
+ * React Flow's `onBeforeDelete` for the editor's canvas: no deletion while
+ * something is open on top of it. Delete itself stays bound, as on the main
+ * canvas (`FlowCanvas`): unbinding it made React Flow miss the release of the
+ * key that opened that modal, and swallowed the first Delete after it closed
+ * (#491).
+ */
+async function allowDeleteWithNothingOnTop(): Promise<boolean> {
+  return !isAnyModalOpen(IGNORE_OWN_MODAL);
+}
 
 function LayersFlowInner({
   initialLayersJson,
@@ -533,7 +543,6 @@ function LayersFlowInner({
   const { t } = useI18n();
   const { screenToFlowPosition, fitView } = useReactFlow();
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const anyModalOpen = useAnyModalOpen(IGNORE_OWN_MODAL);
 
   const initial = useMemo(() => {
     const parsed = graphToFlow(initialLayersJson);
@@ -1083,7 +1092,8 @@ function LayersFlowInner({
                 snapToGrid={snapEnabled}
                 snapGrid={[20, 20]}
                 proOptions={{ hideAttribution: true }}
-                deleteKeyCode={anyModalOpen ? null : 'Delete'}
+                deleteKeyCode="Delete"
+                onBeforeDelete={allowDeleteWithNothingOnTop}
                 onNodesDelete={(deleted) => {
                   const ids = new Set(deleted.map((n) => n.id));
                   setNodes((prev) => prev.filter((n) => !ids.has(n.id)));

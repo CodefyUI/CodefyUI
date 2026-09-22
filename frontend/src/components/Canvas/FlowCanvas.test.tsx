@@ -14,6 +14,10 @@ const captured: { rf: RFProps; minimap: RFProps } = { rf: {}, minimap: {} };
 // When false, the stubbed ReactFlow renders WITHOUT a `.react-flow__pane`,
 // so the dblclick effect's `if (pane)` guards take their false branch.
 const renderPane = { value: true };
+// When true, the stub hands the same props to the REAL <ReactFlow>: for the
+// cases about React Flow's own keyboard handling, which a stub cannot have
+// (#491).
+const realFlow = { value: false };
 
 vi.mock('@xyflow/react', async (importActual) => {
   const actual = await importActual<typeof import('@xyflow/react')>();
@@ -21,6 +25,7 @@ vi.mock('@xyflow/react', async (importActual) => {
     ...actual,
     ReactFlow: (props: RFProps) => {
       captured.rf = props;
+      if (realFlow.value) return <actual.ReactFlow {...props} />;
       return (
         <div data-testid="reactflow">
           {renderPane.value && <div className="react-flow__pane" data-testid="pane" />}
@@ -140,6 +145,7 @@ beforeEach(() => {
     templateGalleryOpen: false,
     packCenterOpen: false,
     pluginCenterOpen: false,
+    customNodeManagerOpen: false,
     gitDiff: null,
   });
   useNodeDefStore.setState({ definitions: [makeDef()], presets: [] });
@@ -147,6 +153,7 @@ beforeEach(() => {
   captured.rf = {};
   captured.minimap = {};
   renderPane.value = true;
+  realFlow.value = false;
 });
 
 afterEach(() => {
@@ -1041,19 +1048,21 @@ describe('change handlers passthrough', () => {
   });
 });
 
-// ── deleteKeyCode behind a modal (#475) ─────────────────────────────────────
+// ── Delete behind a modal (#475, #491) ──────────────────────────────────────
 //
 // React Flow binds Delete on `document` and filters only on `isInputDOMNode`.
 // A panel's focus target is a `tabIndex={-1}` div, not an input, so the filter
-// passed and Delete destroyed the selection on the canvas behind the panel.
-// Handing React Flow `null` is what unbinds the key for as long as a modal is
-// up; it is one prop, so this suite asserts the prop.
+// passed and Delete destroyed the selection on the canvas behind the panel
+// (#475). The key stays bound, and the canvas refuses the deletion itself in
+// `onBeforeDelete` for as long as a modal is up: unbinding the key instead
+// made React Flow miss the release of the key that opened the panel (#491).
 
 describe('FlowCanvas delete key with a modal open', () => {
   const MODALS: Array<[string, () => void]> = [
     ['the Package Center', () => useUIStore.setState({ packCenterOpen: true })],
     ['the Plugin Center', () => useUIStore.setState({ pluginCenterOpen: true })],
     ['the Template Gallery', () => useUIStore.setState({ templateGalleryOpen: true })],
+    ['the Custom Nodes manager', () => useUIStore.setState({ customNodeManagerOpen: true })],
     ['a Git diff', () => useUIStore.setState({ gitDiff: { path: 'a.py', scope: 'worktree' } })],
     ['the shortcuts sheet', () => useUIStore.setState({ shortcutsModalOpen: true })],
     [
@@ -1066,22 +1075,101 @@ describe('FlowCanvas delete key with a modal open', () => {
     ['a viz viewer', () => setTab({ vizModalNodeId: 'n1' } as any)],
   ];
 
-  it.each(MODALS)('unbinds Delete while %s is open', (_name, open) => {
-    setTab({ nodes: [node('a')] });
+  /** What the canvas answers React Flow as it is about to delete the selection. */
+  function askToDelete(): Promise<boolean> {
+    return captured.rf.onBeforeDelete({ nodes: activeTab().nodes, edges: [] });
+  }
+
+  it.each(MODALS)('refuses to delete while %s is open, and keeps Delete bound', async (_name, open) => {
+    setTab({ nodes: [node('a', { selected: true })] });
     open();
     renderCanvas();
-    expect(captured.rf.deleteKeyCode).toBeNull();
+    // Bound all along, so React Flow sees every key come back up (#491).
+    expect(captured.rf.deleteKeyCode).toBe('Delete');
+    await expect(askToDelete()).resolves.toBe(false);
   });
 
-  it('gives Delete back when the panel closes', () => {
-    // The canvas has to SUBSCRIBE to the flag, not read it once on mount:
-    // closing the panel has to re-arm the key without remounting the canvas.
-    setTab({ nodes: [node('a')] });
+  it('lets the deletion through once the panel closes', async () => {
+    // Asked at the moment of deletion rather than read on mount, so closing
+    // the panel frees the next Delete with nothing to re-arm.
+    setTab({ nodes: [node('a', { selected: true })] });
     useUIStore.setState({ packCenterOpen: true });
     renderCanvas();
-    expect(captured.rf.deleteKeyCode).toBeNull();
+    await expect(askToDelete()).resolves.toBe(false);
 
     act(() => useUIStore.setState({ packCenterOpen: false }));
-    expect(captured.rf.deleteKeyCode).toBe('Delete');
+    await expect(askToDelete()).resolves.toBe(true);
+  });
+});
+
+// ── React Flow's own Delete key (#491) ──────────────────────────────────────
+//
+// React Flow remembers each key it sees go down until it sees it come up, and
+// runs Delete only when Delete is the one key held. The canvas used to unbind
+// Delete while a modal was open, which took React Flow's key listeners away
+// with it: a key that opened the modal came back up unseen and stayed "held",
+// so the first Delete after the modal closed read as that key plus Delete and
+// did nothing. These cases render the real <ReactFlow>, whose bookkeeping is
+// the thing under test.
+
+describe('FlowCanvas Delete key through React Flow itself (#491)', () => {
+  beforeEach(() => {
+    realFlow.value = true;
+  });
+
+  /** One Delete on the page, down and up, with React Flow's work run out. */
+  async function pressDelete() {
+    fireEvent.keyDown(document.body, { key: 'Delete', code: 'Delete' });
+    // React Flow deletes asynchronously, after awaiting `onBeforeDelete`, and
+    // a macrotask runs only once every microtask queued before it has.
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    fireEvent.keyUp(document.body, { key: 'Delete', code: 'Delete' });
+  }
+
+  type Opener = [string, KeyboardEventInit[], () => void, () => void];
+  const OPENERS: Opener[] = [
+    [
+      'Enter on the button that opens the Custom Nodes manager',
+      [{ key: 'Enter', code: 'Enter' }],
+      () => useUIStore.getState().openCustomNodeManager(),
+      () => useUIStore.getState().closeCustomNodeManager(),
+    ],
+    [
+      '? with Shift held, which opens the shortcuts sheet',
+      [
+        { key: 'Shift', code: 'ShiftLeft', shiftKey: true },
+        { key: '?', code: 'Slash', shiftKey: true },
+      ],
+      () => useUIStore.setState({ shortcutsModalOpen: true }),
+      () => useUIStore.setState({ shortcutsModalOpen: false }),
+    ],
+  ];
+
+  it.each(OPENERS)('after %s, one Delete deletes the selected node', async (_how, keys, open, close) => {
+    setTab({ nodes: [node('a', { selected: true })] });
+    renderWithFlow(<FlowCanvas />);
+    // The keys go down, the modal opens while they are held -- a button acts
+    // on Enter's keydown -- and they come back up with the modal open.
+    for (const init of keys) fireEvent.keyDown(document.body, init);
+    act(() => open());
+    for (const init of [...keys].reverse()) fireEvent.keyUp(document.body, init);
+    act(() => close());
+
+    await pressDelete();
+    expect(activeTab().nodes).toEqual([]);
+  });
+
+  it('refuses a Delete pressed while a modal is open, and takes the next one once it closes', async () => {
+    setTab({ nodes: [node('a', { selected: true })] });
+    renderWithFlow(<FlowCanvas />);
+    act(() => useUIStore.getState().openTemplateGallery());
+    await pressDelete();
+    expect(activeTab().nodes.map((n) => n.id)).toEqual(['a']);
+
+    act(() => useUIStore.getState().closeTemplateGallery());
+    await pressDelete();
+    expect(activeTab().nodes).toEqual([]);
   });
 });

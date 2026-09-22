@@ -5,23 +5,29 @@ import { useUIStore } from './uiStore';
 /**
  * "Is anything modal on screen?", asked in one place (#475).
  *
- * Two very different consumers need the same answer, which is why this is not
- * a field on any one store:
+ * Several places need the same answer, which is why this is not a field on
+ * any one store:
  *
- *  - `useKeyboardShortcuts` asks imperatively, inside a `document` keydown
- *    handler that has no React context to read from -> `isAnyModalOpen()`.
- *  - the two `<ReactFlow>` call sites ask during render, and have to
- *    re-render when the answer changes so `deleteKeyCode` is re-armed the
- *    moment the panel closes -> `useAnyModalOpen()`.
+ *  - `useKeyboardShortcuts` asks inside a `document` keydown handler that has
+ *    no React context to read from, and the tab strip asks in its own.
+ *  - the two `<ReactFlow>` call sites ask from `onBeforeDelete`, at the moment
+ *    React Flow is about to delete the selection. They used to unbind Delete
+ *    instead (`deleteKeyCode={null}` while a modal was up), but React Flow
+ *    keeps the keys it had already seen go down, and misses their release
+ *    while its listener is off: a key that opened a modal stayed "held" and
+ *    swallowed the first Delete after it closed (#491).
  *
- * Both read the same three stores through the same predicate below. Rebuilt
- * separately in each place, they would drift the first time a modal is added
- * -- which is exactly how the Package Center, the Plugin Center, the Template
- * Gallery and the Git diff came to be invisible to the shortcut hook while
- * the four older modals were not.
+ * They all ask `isAnyModalOpen()`, which reads the three stores through the
+ * one predicate below. Rebuilt separately in each place, the question would
+ * drift the first time a modal is added -- which is exactly how the Package
+ * Center, the Plugin Center, the Template Gallery and the Git diff came to be
+ * invisible to the shortcut hook while the four older modals were not.
  *
  * ADDING A MODAL: give it a name in `ModalName` and a line in the matching
- * `*ModalOpen` reader. Nothing else has to change.
+ * `*ModalOpen` reader. Nothing else has to change -- provided its open flag
+ * lives in one of these three stores. A flag held in a component's own
+ * `useState` is invisible here, which is how the Custom Nodes manager went on
+ * letting Delete and Shift+L through after this file landed.
  */
 export type ModalName =
   /** The in-app confirm / prompt (`utils/dialog`). */
@@ -30,6 +36,7 @@ export type ModalName =
   | 'templateGallery'
   | 'packCenter'
   | 'pluginCenter'
+  | 'customNodeManager'
   | 'gitDiff'
   | 'nodeDetail'
   | 'presetModal'
@@ -42,9 +49,8 @@ type DialogStoreState = ReturnType<typeof useDialogStore.getState>;
 
 /**
  * Shared empty list, so the no-argument call passes the SAME reference every
- * time. A fresh `[]` per call would be harmless here (every selector returns
- * a boolean, which zustand compares by value) but the constant says outright
- * that nothing is being allocated per keystroke.
+ * time. A fresh `[]` per call would be harmless, but the constant says
+ * outright that nothing is being allocated per keystroke.
  */
 const IGNORE_NOTHING: readonly ModalName[] = [];
 
@@ -66,6 +72,7 @@ function uiModalOpen(s: UIStoreState, ignore: readonly ModalName[]): boolean {
   if (!ignore.includes('templateGallery') && s.templateGalleryOpen) return true;
   if (!ignore.includes('packCenter') && s.packCenterOpen) return true;
   if (!ignore.includes('pluginCenter') && s.pluginCenterOpen) return true;
+  if (!ignore.includes('customNodeManager') && s.customNodeManagerOpen) return true;
   if (!ignore.includes('gitDiff') && s.gitDiff) return true;
   return false;
 }
@@ -86,8 +93,9 @@ function tabModalOpen(s: TabStoreState, ignore: readonly ModalName[]): boolean {
 }
 
 /**
- * Is any modal open right now? Reads the stores directly, for callers outside
- * React's render pass (the global keydown handler).
+ * Is any modal open right now? Reads the stores directly, at the moment of
+ * asking, which is when every caller needs the answer: the global keydown
+ * handler, the tab strip's keys, the canvases' `onBeforeDelete`.
  *
  * `ignore` names the modals the CALLER is itself inside, or is itself about
  * to close -- a caller that counted its own modal would gate away the very
@@ -99,21 +107,4 @@ export function isAnyModalOpen(ignore: readonly ModalName[] = IGNORE_NOTHING): b
     uiModalOpen(useUIStore.getState(), ignore) ||
     tabModalOpen(useTabStore.getState(), ignore)
   );
-}
-
-/**
- * The same answer, subscribed: the component re-renders when it flips.
- *
- * Three selectors rather than three whole-store subscriptions, because each
- * one returns a boolean -- so a component only re-renders when a modal
- * actually opens or closes, not on every node drag or toggled preference.
- *
- * `ignore` may be a fresh array each render without causing extra work, for
- * the same reason: what zustand compares is the boolean that comes out.
- */
-export function useAnyModalOpen(ignore: readonly ModalName[] = IGNORE_NOTHING): boolean {
-  const dialog = useDialogStore((s) => dialogModalOpen(s, ignore));
-  const ui = useUIStore((s) => uiModalOpen(s, ignore));
-  const tab = useTabStore((s) => tabModalOpen(s, ignore));
-  return dialog || ui || tab;
 }

@@ -1,7 +1,9 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor, act, within } from '@testing-library/react';
 import { CustomTab } from './CustomTab';
+import { CustomNodeManagerModal } from '../CustomNodeManager/CustomNodeManager';
 import { useI18n } from '../../i18n';
+import { isAnyModalOpen } from '../../store/modalState';
 import { useUIStore } from '../../store/uiStore';
 import { _resetPackStoreForTesting, usePackStore } from '../../store/packStore';
 import { _resetPluginStoreForTesting, usePluginStore } from '../../store/pluginStore';
@@ -25,16 +27,6 @@ vi.mock('../../api/rest', async (importOriginal) => {
     listPluginCatalog: vi.fn(),
   };
 });
-
-// The manager modal is the existing CustomNodeManager; this tab only owns
-// opening and closing it, so a stub keeps its own fetches out of these tests.
-vi.mock('../CustomNodeManager/CustomNodeManager', () => ({
-  CustomNodeManager: ({ onClose }: { onClose: () => void }) => (
-    <div data-testid="custom-node-manager">
-      <button type="button" onClick={onClose}>close manager</button>
-    </div>
-  ),
-}));
 
 const mockedRest = vi.mocked(rest);
 
@@ -156,6 +148,7 @@ beforeEach(() => {
     packCenterFocusPackId: null,
     pluginCenterOpen: false,
     pluginCenterFocusPluginId: null,
+    customNodeManagerOpen: false,
   });
   _resetPackStoreForTesting();
   _resetPluginStoreForTesting();
@@ -304,18 +297,80 @@ describe('CustomTab', () => {
     expect(counts).toEqual(['1', '0', '2']);
   });
 
-  it('opens the custom node manager and re-fetches when it closes', async () => {
-    render(<CustomTab />);
+  it('opens the one custom node manager, as a modal, and re-fetches when it closes', async () => {
+    // The Custom Nodes manager issue: this tab used to draw a manager of its
+    // own from a `useState` flag the keyboard gate could not see. It raises
+    // the store flag now, and the manager is the one App mounts at the root,
+    // rendered beside the tab here.
+    render(
+      <>
+        <CustomTab />
+        <CustomNodeManagerModal />
+      </>,
+    );
     await screen.findByText('No custom nodes yet');
     expect(mockedRest.listCustomNodes).toHaveBeenCalledTimes(1);
 
     fireEvent.click(screen.getByText('Manage...'));
-    expect(screen.getByTestId('custom-node-manager')).toBeTruthy();
+    expect(useUIStore.getState().customNodeManagerOpen).toBe(true);
+    expect(isAnyModalOpen()).toBe(true);
+    // Counted, because a tab that still drew a manager of its own would show
+    // two.
+    expect(screen.getAllByRole('heading', { name: 'Custom Node Manager' })).toHaveLength(1);
+    // The manager reads its list on mount; let that land before closing it.
+    await screen.findByText('No custom nodes yet. Upload a .py file to add one.');
 
     mockedRest.listCustomNodes.mockResolvedValue([customNode({ filename: 'uploaded.py' })]);
-    fireEvent.click(screen.getByText('close manager'));
-    expect(screen.queryByTestId('custom-node-manager')).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Close custom node manager' }));
+    expect(screen.queryByRole('heading', { name: 'Custom Node Manager' })).toBeNull();
+    expect(useUIStore.getState().customNodeManagerOpen).toBe(false);
+    expect(isAnyModalOpen()).toBe(false);
     await screen.findByText('uploaded.py');
+  });
+
+  it('Manage... moves focus into the manager, and closing it hands focus back to Manage...', async () => {
+    // The manager is mounted after the whole editor, so it has to take focus
+    // for a keyboard user to reach it at all (the Custom Nodes manager issue).
+    mockedRest.listCustomNodes.mockResolvedValue([customNode({ filename: 'a.py' })]);
+    render(
+      <>
+        <CustomTab />
+        <CustomNodeManagerModal />
+      </>,
+    );
+    await screen.findByText('a.py');
+    const manage = screen.getByRole('button', { name: 'Manage...' });
+    // A keyboard press: the button already holds focus when it is activated.
+    manage.focus();
+    fireEvent.click(manage);
+    const dialog = screen.getByRole('dialog', { name: 'Custom Node Manager' });
+    expect(document.activeElement).toBe(dialog);
+    // The manager reads its list on mount; let that land before closing it.
+    await within(dialog).findByText('a.py');
+
+    // Closing re-reads this tab's list, and focus can only come back to
+    // Manage... if the re-read leaves the button where it was.
+    mockedRest.listCustomNodes.mockResolvedValue([customNode({ filename: 'b.py' })]);
+    fireEvent.click(screen.getByRole('button', { name: 'Close custom node manager' }));
+    expect(document.activeElement).toBe(manage);
+    await screen.findByText('b.py');
+    expect(document.activeElement).toBe(manage);
+  });
+
+  it('re-fetches when the manager closes, whichever button opened it', async () => {
+    // The toolbar's Custom Nodes button opens the same manager, and an upload
+    // made from there changes what belongs in this list just as much.
+    render(<CustomTab />);
+    await screen.findByText('No custom nodes yet');
+
+    act(() => useUIStore.getState().openCustomNodeManager());
+    mockedRest.listCustomNodes.mockResolvedValue([customNode({ filename: 'from-toolbar.py' })]);
+    act(() => useUIStore.getState().closeCustomNodeManager());
+
+    await screen.findByText('from-toolbar.py');
+    // Once on mount and once on the close: opening the manager is not a
+    // reason to re-read anything.
+    expect(mockedRest.listCustomNodes).toHaveBeenCalledTimes(2);
   });
 
   it('shows the error state and retries on click', async () => {

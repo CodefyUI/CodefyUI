@@ -1,10 +1,13 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { render, screen, fireEvent, waitFor, within } from '@testing-library/react';
-import { CustomNodeManager } from './CustomNodeManager';
+import { act, render, screen, fireEvent, waitFor, within } from '@testing-library/react';
+import { CustomNodeManager, CustomNodeManagerModal } from './CustomNodeManager';
+import { DialogContainer } from '../shared/DialogContainer';
 import { useI18n } from '../../i18n';
 import { useDialogStore } from '../../store/dialogStore';
 import * as rest from '../../api/rest';
 import { useNodeDefStore } from '../../store/nodeDefStore';
+import { useTabStore } from '../../store/tabStore';
+import { useUIStore } from '../../store/uiStore';
 
 // Mock the REST seam — the manager calls list/toggle/delete/upload.
 vi.mock('../../api/rest', () => ({
@@ -15,6 +18,9 @@ vi.mock('../../api/rest', () => ({
 }));
 
 const mockedRest = vi.mocked(rest);
+
+const ORIGINAL_TABS = useTabStore.getState().tabs;
+const ORIGINAL_ACTIVE = useTabStore.getState().activeTabId;
 
 function customNode(overrides: Partial<rest.CustomNodeInfo> = {}): rest.CustomNodeInfo {
   return {
@@ -28,6 +34,7 @@ function customNode(overrides: Partial<rest.CustomNodeInfo> = {}): rest.CustomNo
 beforeEach(() => {
   useI18n.setState({ locale: 'en' });
   useDialogStore.setState({ active: null, resolve: null });
+  useUIStore.setState({ customNodeManagerOpen: false });
   // Stub the store reload() so toggling/deleting/uploading doesn't hit fetch.
   vi.spyOn(useNodeDefStore.getState(), 'reload').mockResolvedValue(undefined);
   // Sensible defaults; individual tests override as needed.
@@ -40,6 +47,7 @@ beforeEach(() => {
 afterEach(() => {
   vi.restoreAllMocks();
   vi.clearAllMocks();
+  useTabStore.setState({ tabs: ORIGINAL_TABS, activeTabId: ORIGINAL_ACTIVE });
 });
 
 describe('CustomNodeManager', () => {
@@ -241,5 +249,122 @@ describe('CustomNodeManager', () => {
     await screen.findByText('No custom nodes yet. Upload a .py file to add one.');
     fireEvent.click(screen.getByRole('button', { name: 'Close custom node manager' }));
     expect(onClose).toHaveBeenCalledTimes(1);
+  });
+});
+
+// The one manager both of its buttons open, mounted at the app root and
+// driven by `uiStore.customNodeManagerOpen` (the Custom Nodes manager issue).
+describe('CustomNodeManagerModal', () => {
+  it('renders nothing, and reads nothing, while the flag is down', () => {
+    const { container } = render(<CustomNodeManagerModal />);
+    expect(container.firstChild).toBeNull();
+    expect(mockedRest.listCustomNodes).not.toHaveBeenCalled();
+  });
+
+  it('renders the manager while the flag is up, even with a tab store that holds no tabs', async () => {
+    // Since #472 `tabs: []` is a real state, and a root-mounted component
+    // that reads the active tab with `!` crashes in it. That the manager is
+    // mounted where it outlives the graph toolbar is App.test.tsx's to prove.
+    useTabStore.setState({ tabs: [], activeTabId: null } as any);
+    useUIStore.setState({ customNodeManagerOpen: true });
+    render(<CustomNodeManagerModal />);
+    expect(screen.getByRole('heading', { name: 'Custom Node Manager' })).toBeTruthy();
+    await screen.findByText('No custom nodes yet. Upload a .py file to add one.');
+  });
+
+  // Keyboard reach (the Custom Nodes manager issue). Mounted at the app root,
+  // the manager comes after the whole editor in the page, so a manager that
+  // took no focus left a keyboard user to Tab through the sidebar, every node
+  // and edge on the canvas and the panels to reach it.
+  it('is a dialog named by its title, and takes focus as it opens', async () => {
+    render(
+      <>
+        <button type="button">opener</button>
+        <CustomNodeManagerModal />
+      </>,
+    );
+    screen.getByRole('button', { name: 'opener' }).focus();
+    act(() => useUIStore.getState().openCustomNodeManager());
+
+    const dialog = screen.getByRole('dialog', { name: 'Custom Node Manager' });
+    expect(dialog.getAttribute('aria-modal')).toBe('true');
+    expect(document.activeElement).toBe(dialog);
+    await screen.findByText('No custom nodes yet. Upload a .py file to add one.');
+  });
+
+  it('gives focus back to what had it when it closes', async () => {
+    render(
+      <>
+        <button type="button">opener</button>
+        <CustomNodeManagerModal />
+      </>,
+    );
+    const opener = screen.getByRole('button', { name: 'opener' });
+    opener.focus();
+    act(() => useUIStore.getState().openCustomNodeManager());
+    await screen.findByText('No custom nodes yet. Upload a .py file to add one.');
+    // Where focus went, or its coming back would prove nothing.
+    expect(document.activeElement).toBe(screen.getByRole('dialog'));
+
+    fireEvent.click(screen.getByRole('button', { name: 'Close custom node manager' }));
+    expect(document.activeElement).toBe(opener);
+  });
+
+  it('closes on Escape', async () => {
+    useUIStore.setState({ customNodeManagerOpen: true });
+    const { container } = render(<CustomNodeManagerModal />);
+    await screen.findByText('No custom nodes yet. Upload a .py file to add one.');
+
+    fireEvent.keyDown(document.activeElement!, { key: 'Escape' });
+    expect(useUIStore.getState().customNodeManagerOpen).toBe(false);
+    expect(container.firstChild).toBeNull();
+  });
+
+  it('leaves Escape to the confirm dialog open over it', async () => {
+    // Deleting a file asks first, and the confirm renders above the manager
+    // with an Escape of its own. One press closes one window: the one on top.
+    mockedRest.listCustomNodes.mockResolvedValue([customNode({ filename: 'a.py' })]);
+    useUIStore.setState({ customNodeManagerOpen: true });
+    render(
+      <>
+        <CustomNodeManagerModal />
+        <DialogContainer />
+      </>,
+    );
+    fireEvent.click(await screen.findByText('Delete'));
+    await waitFor(() => {
+      expect(useDialogStore.getState().active).not.toBeNull();
+    });
+
+    fireEvent.keyDown(document.activeElement!, { key: 'Escape' });
+    await waitFor(() => {
+      expect(useDialogStore.getState().active).toBeNull();
+    });
+    expect(useUIStore.getState().customNodeManagerOpen).toBe(true);
+    expect(mockedRest.deleteCustomNode).not.toHaveBeenCalled();
+
+    // The next press is the manager's.
+    fireEvent.keyDown(document.activeElement!, { key: 'Escape' });
+    expect(useUIStore.getState().customNodeManagerOpen).toBe(false);
+  });
+
+  it('its close button lowers the flag, and the manager goes', async () => {
+    useUIStore.setState({ customNodeManagerOpen: true });
+    const { container } = render(<CustomNodeManagerModal />);
+    await screen.findByText('No custom nodes yet. Upload a .py file to add one.');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Close custom node manager' }));
+    expect(useUIStore.getState().customNodeManagerOpen).toBe(false);
+    expect(container.firstChild).toBeNull();
+  });
+
+  it('a click on the scrim lowers the flag too', async () => {
+    useUIStore.setState({ customNodeManagerOpen: true });
+    const { container } = render(<CustomNodeManagerModal />);
+    await screen.findByText('No custom nodes yet. Upload a .py file to add one.');
+
+    fireEvent.click(container.firstChild as HTMLElement);
+    expect(useUIStore.getState().customNodeManagerOpen).toBe(false);
+    expect(container.firstChild).toBeNull();
   });
 });

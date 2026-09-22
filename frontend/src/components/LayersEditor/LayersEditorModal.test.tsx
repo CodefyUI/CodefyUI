@@ -161,6 +161,7 @@ describe('LayersEditorModal', () => {
       templateGalleryOpen: false,
       packCenterOpen: false,
       pluginCenterOpen: false,
+      customNodeManagerOpen: false,
       gitDiff: null,
     });
     useDialogStore.setState({ active: null, resolve: null });
@@ -1128,27 +1129,44 @@ describe('LayersEditorModal', () => {
     expect(screen.getByText('0 layers')).toBeTruthy();
   });
 
-  // ── deleteKeyCode behind a modal (#475) ─────────────────────────────────
+  // ── Delete behind a modal (#475, #491) ──────────────────────────────────
+  //
+  // Delete stays bound, so React Flow sees every key come back up (#491), and
+  // the editor refuses the deletion itself while something is on top of it.
 
-  it('keeps Delete bound while it is the only modal open', () => {
+  /** What the editor answers React Flow as it is about to delete a layer. */
+  function askToDelete(): Promise<boolean> {
+    return lastFlowProps.onBeforeDelete({ nodes: [(lastFlowProps.nodes as any[])[0]], edges: [] });
+  }
+
+  it('still deletes inside itself while it is the only modal open', async () => {
     // This editor IS a modal (`layersModalNodeId`). Its own open-ness must
-    // never disable its own Delete key — only something ON TOP of it does.
+    // never refuse its own Delete — only something ON TOP of it does.
     setupOpenModal(validGraphJson());
     render(<LayersEditorModal />);
     expect(lastFlowProps.deleteKeyCode).toBe('Delete');
+    await expect(askToDelete()).resolves.toBe(true);
+    // What React Flow does with the yes: hands the nodes to `onNodesDelete`.
+    act(() => {
+      lastFlowProps.onNodesDelete([{ id: 'lin1' }]);
+    });
+    // 4 → 3 layers.
+    expect(screen.getByText('3 layers')).toBeTruthy();
   });
 
-  it('unbinds Delete while the Package Center is open on top of it', () => {
+  it('refuses to delete while the Package Center is open on top of it', async () => {
     setupOpenModal(validGraphJson());
     useUIStore.setState({ packCenterOpen: true });
     render(<LayersEditorModal />);
-    expect(lastFlowProps.deleteKeyCode).toBeNull();
+    expect(lastFlowProps.deleteKeyCode).toBe('Delete');
+    await expect(askToDelete()).resolves.toBe(false);
   });
 
-  it('unbinds Delete while a confirm dialog is up', () => {
+  it('refuses to delete while a confirm dialog is up', async () => {
     setupOpenModal(validGraphJson());
     useDialogStore.setState({ active: { kind: 'confirm', title: 'sure?' }, resolve: null });
     render(<LayersEditorModal />);
-    expect(lastFlowProps.deleteKeyCode).toBeNull();
+    expect(lastFlowProps.deleteKeyCode).toBe('Delete');
+    await expect(askToDelete()).resolves.toBe(false);
   });
 });
