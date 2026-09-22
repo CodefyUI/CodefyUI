@@ -767,6 +767,22 @@ export async function resetWeights(graphId: string, nodeIds?: string[]) {
   return res.json() as Promise<{ graph_id: string; scope: string; evicted: number }>;
 }
 
+/**
+ * Save the canvas as a reusable preset (Export as Subgraph).
+ *
+ * Refuses through `apiError`, so the CODED refusals reach the caller whole
+ * (#476). `POST /presets/create` answers an unstorable name with `{detail:
+ * {code, ...fields}}` and deliberately no `message` -- the sentence belongs to
+ * whoever is talking to the user, in their language -- and the old
+ * `throw new Error(body.detail ?? ...)` stringified that dict: the toolbar
+ * toasted `Export failed: [object Object]` at a user whose only mistake was a
+ * slash in a name. `errorDetail(err)` now reads the code and the field beside
+ * it (`character`, `reserved`, `filename`), and `Toolbar.tsx` writes the
+ * sentence from them.
+ *
+ * The prose refusals this route also answers with (no nodes, a subgraph
+ * instance, a duplicate name) come back unchanged, as `err.message`.
+ */
 export async function createPreset(data: {
   name: string;
   description?: string;
@@ -780,10 +796,10 @@ export async function createPreset(data: {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(data),
   });
-  if (!res.ok) {
-    const body = await res.json().catch(() => ({}));
-    throw new Error(body.detail ?? `Export failed: ${res.statusText}`);
-  }
+  // No "Export failed:" prefix here any more: the toolbar's own
+  // `toolbar.export.fail` already says that, and prefixing twice read
+  // "Export failed: Export failed: Internal Server Error".
+  if (!res.ok) throw await apiError(res);
   return res.json();
 }
 

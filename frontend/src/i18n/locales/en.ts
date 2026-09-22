@@ -47,6 +47,32 @@ const en = {
   // user knows exactly which ones to expand first.
   'toolbar.export.subgraphRefused':
     'Expand the collapsed blocks ({names}) before exporting: a preset cannot carry their contents.',
+  // #476: the name becomes a FILENAME on the server, and the server now
+  // refuses the ones it cannot store with a code rather than prose --
+  // `{detail: {code, ...}}`, no message. These are that prose, written where
+  // the user's language is known. Each says what is wrong AND what to type
+  // instead; the outer sentence is `toolbar.export.fail`, so none of them
+  // repeats "Export failed".
+  'toolbar.export.name.empty': 'The subgraph name cannot be blank. Type a name and try again.',
+  'toolbar.export.name.separator':
+    'The subgraph name cannot contain "{character}", which would make it a path. Use letters, numbers, spaces, - or _.',
+  // The codepoint is the only visible trace of a character that is, by
+  // definition, invisible: it is what a paste from a terminal or a
+  // spreadsheet leaves behind.
+  'toolbar.export.name.controlCharacter':
+    'The subgraph name contains an invisible control character ({codepoint}). Delete it and type the name again.',
+  'toolbar.export.name.dotSegment':
+    'A name made only of dots is not a name. Use one with letters or numbers in it.',
+  'toolbar.export.name.reservedDevice':
+    '"{reserved}" is a name Windows keeps for a device, so no file can be called that. Pick another name.',
+  'toolbar.export.name.escapesDir':
+    'That name would write the file outside the presets folder. Use a plain name with no path in it.',
+  'toolbar.export.name.fileExists':
+    'A subgraph is already saved as {filename}. Pick another name.',
+  // A rule added to the server after this editor shipped. The code is kept in
+  // the sentence because it is the only part worth quoting in a bug report.
+  'toolbar.export.name.unknownRule':
+    'The server refused this name ({code}). Use a plain name: letters, numbers, spaces, - or _.',
   'toolbar.exportPython': 'Export as Python',
   'toolbar.exportPython.title': 'Python script that runs this graph; needs the CodefyUI backend environment',
   'toolbar.exportPython.empty': 'Canvas has no executable nodes — add a node before exporting.',
