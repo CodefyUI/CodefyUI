@@ -691,16 +691,17 @@ MAX_DESCRIPTION_CHARS = 56
 MAX_ZH_DESCRIPTION_CHARS = 28
 
 
-def test_no_builtin_node_describes_itself_in_a_paragraph():
-    """DESCRIPTION is one line of English, within the cap, and says it once."""
-    import re
+def _assert_palette_summaries(descriptions: dict[str, str]) -> None:
+    """The two palette-line rules, for any ``{name: DESCRIPTION}``.
 
-    from app.core.node_registry import registry
+    One body for the built-ins and for the first-party packs, so the two
+    cannot drift into different versions of the same rule (#463).
+    """
+    import re
 
     too_long: list[str] = []
     not_english: list[str] = []
-    for name in _builtin_node_names():
-        description = registry.get(name).DESCRIPTION
+    for name, description in sorted(descriptions.items()):
         if len(description) > MAX_DESCRIPTION_CHARS or "\n" in description:
             too_long.append(f"{name} ({len(description)} chars)")
         # English is the base language: Chinese belongs in the zh-TW catalog,
@@ -717,6 +718,101 @@ def test_no_builtin_node_describes_itself_in_a_paragraph():
     assert not not_english, (
         "DESCRIPTION is the English text; put the Chinese in "
         f"frontend/src/i18n/nodeLocales/zh-TW.ts instead: {not_english}")
+
+
+def test_no_builtin_node_describes_itself_in_a_paragraph():
+    """DESCRIPTION is one line of English, within the cap, and says it once."""
+    from app.core.node_registry import registry
+
+    _assert_palette_summaries(
+        {name: registry.get(name).DESCRIPTION for name in _builtin_node_names()})
+
+
+def _pack_node_descriptions() -> tuple[dict[str, str | None], set[str]]:
+    """The DESCRIPTION of every node in this repository's ``plugins/``.
+
+    Two things come back. ``{"<pack>:<NODE_NAME>": DESCRIPTION}``, keyed by
+    the name the registry and the zh-TW catalog give a pack node, with None
+    where the class body does not set DESCRIPTION to one string literal. And
+    the packs that have node files at all, so that a pack this scan finds
+    nothing in can be told apart from a pack with nothing to find.
+
+    Parsed, not imported. Importing a pack runs its module code through the
+    loader's ``cdui_plugins`` namespace, and this suite's registry does not
+    hold every pack anyway: conftest leaves ``edu`` out. A node is a class
+    that sets ``NODE_NAME`` in its own body, the attribute the registry keys
+    on -- an empty one marks a base class, which the registry skips, and so
+    does this.
+    """
+    import ast
+
+    from app.core.plugin_loader import plugins_builtin_root
+
+    def literal(value: Any) -> str | None:
+        if isinstance(value, ast.Constant) and isinstance(value.value, str):
+            return value.value
+        return None
+
+    root = plugins_builtin_root()
+    descriptions: dict[str, str | None] = {}
+    packs: set[str] = set()
+    # `nodes/` only: it is the one directory of a pack the loader imports.
+    for path in sorted(root.glob("*/nodes/**/*.py")):
+        pack = path.relative_to(root).parts[0]
+        if path.name != "__init__.py":
+            packs.add(pack)
+        # Every class, not only the top-level ones: a node defined under an
+        # `if`, or built by a function and bound to a module name, is still
+        # one the registry picks up.
+        for cls in ast.walk(ast.parse(path.read_bytes(), filename=str(path))):
+            if not isinstance(cls, ast.ClassDef):
+                continue
+            assigned: dict[str, Any] = {}
+            for stmt in cls.body:
+                if isinstance(stmt, ast.Assign):
+                    targets = stmt.targets
+                elif isinstance(stmt, ast.AnnAssign) and stmt.value is not None:
+                    targets = [stmt.target]
+                else:
+                    continue
+                for target in targets:
+                    if isinstance(target, ast.Name):
+                        assigned[target.id] = stmt.value
+            name = literal(assigned.get("NODE_NAME"))
+            if "NODE_NAME" in assigned and name != "":
+                descriptions[f"{pack}:{name or cls.name}"] = literal(
+                    assigned.get("DESCRIPTION"))
+    return descriptions, packs
+
+
+def test_no_first_party_pack_node_describes_itself_in_a_paragraph():
+    """The same two rules on the nodes the repository's own packs ship (#463).
+
+    ``_builtin_node_names`` leaves plugin nodes out, and should: a pack
+    installed from elsewhere is not core's to fail a build over. That also
+    left out the first-party packs under ``plugins/``, which live in this
+    repository and fill the same palette. They are found here by path, so a
+    pack installed from outside it -- into the user data directory, or
+    linked from its own checkout -- still stays out.
+    """
+    descriptions, packs = _pack_node_descriptions()
+    assert descriptions, (
+        "found no node class under plugins/*/nodes/, so this test is not "
+        "checking anything")
+    # A pack whose classes this scan cannot recognise would drop out of the
+    # check without a word, and every assertion below would still pass.
+    silent = sorted(packs - {name.split(":", 1)[0] for name in descriptions})
+    assert not silent, (
+        "these packs have node files, but no class in them sets NODE_NAME in "
+        f"its own body, so none of their summaries is being checked: {silent}")
+    # Fails rather than skips: a summary built from pieces, or inherited, is
+    # one this test cannot read, and a skip is how a paragraph gets back in.
+    unreadable = sorted(
+        name for name, text in descriptions.items() if text is None)
+    assert not unreadable, (
+        "DESCRIPTION must be one string literal in the node's own class body "
+        f"-- this test reads the source, not the imported class: {unreadable}")
+    _assert_palette_summaries(descriptions)
 
 
 def _zh_descriptions() -> dict[str, str]:
