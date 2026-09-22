@@ -363,6 +363,13 @@ const en = {
   // Tab bar chrome (#341)
   'tabBar.readOnly': 'Read-only',
   'tabBar.sourceTitle': 'Opened by {plugin}',
+  // What a screen reader hears for the strip and its tabs (#402). A tab's name
+  // is set rather than read off the tab, so it repeats what the badge and the
+  // tooltip above show.
+  'tabBar.aria': 'Workspace tabs',
+  'tabBar.source.aria': '{name}, opened by {plugin}',
+  'tabBar.readOnly.aria': '{name}, read-only',
+  'tabBar.close.aria': 'Close {name}',
 
   // Subgraph Editor (SequentialModel)
   'layersEditor.title': 'Model Architecture',
