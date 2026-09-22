@@ -33,6 +33,7 @@ describe('useUIStore', () => {
       packCenterFocusPackId: null,
       pluginCenterOpen: false,
       pluginCenterFocusPluginId: null,
+      customNodeManagerOpen: false,
       gitDiff: null,
       draggingSourceType: null,
       reconnectingHandle: null,
@@ -229,6 +230,25 @@ describe('useUIStore', () => {
 
       useUIStore.getState().closePluginCenter();
       expect(useUIStore.getState().packCenterOpen).toBe(true);
+    });
+  });
+
+  describe('openCustomNodeManager / closeCustomNodeManager', () => {
+    it('opens and closes the one manager both of its buttons share', () => {
+      expect(useUIStore.getState().customNodeManagerOpen).toBe(false);
+
+      useUIStore.getState().openCustomNodeManager();
+      expect(useUIStore.getState().customNodeManagerOpen).toBe(true);
+
+      useUIStore.getState().closeCustomNodeManager();
+      expect(useUIStore.getState().customNodeManagerOpen).toBe(false);
+    });
+
+    it('is transient — writes nothing to localStorage', () => {
+      useUIStore.getState().openCustomNodeManager();
+      expect(localStorage.length).toBe(0);
+      useUIStore.getState().closeCustomNodeManager();
+      expect(localStorage.length).toBe(0);
     });
   });
 

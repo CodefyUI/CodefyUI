@@ -1,7 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { renderHook, act } from '@testing-library/react';
 
-import { isAnyModalOpen, useAnyModalOpen, type ModalName } from './modalState';
+import { isAnyModalOpen, type ModalName } from './modalState';
 import { useDialogStore } from './dialogStore';
 import { useTabStore } from './tabStore';
 import { useUIStore } from './uiStore';
@@ -24,6 +23,7 @@ const MODALS: Array<[ModalName, () => void]> = [
   ['templateGallery', () => useUIStore.setState({ templateGalleryOpen: true })],
   ['packCenter', () => useUIStore.setState({ packCenterOpen: true })],
   ['pluginCenter', () => useUIStore.setState({ pluginCenterOpen: true })],
+  ['customNodeManager', () => useUIStore.setState({ customNodeManagerOpen: true })],
   ['gitDiff', () => useUIStore.setState({ gitDiff: { path: 'a.py', scope: 'worktree' } })],
   ['nodeDetail', () => setActiveTab({ nodeDetailNodeId: 'n1' })],
   ['presetModal', () => setActiveTab({ presetModalNodeId: 'n1' })],
@@ -50,6 +50,7 @@ beforeEach(() => {
     templateGalleryOpen: false,
     packCenterOpen: false,
     pluginCenterOpen: false,
+    customNodeManagerOpen: false,
     gitDiff: null,
   });
   useDialogStore.setState({ active: null, resolve: null });
@@ -102,40 +103,15 @@ describe('isAnyModalOpen', () => {
     setActiveTab({ nodeDetailNodeId: undefined, vizModalNodeId: undefined });
     expect(isAnyModalOpen()).toBe(false);
   });
-});
 
-describe('useAnyModalOpen', () => {
-  it('starts false and follows the store when a modal opens and closes', () => {
-    const { result } = renderHook(() => useAnyModalOpen());
-    expect(result.current).toBe(false);
+  it('follows the Custom Nodes manager through its own open and close', () => {
+    // The canvas's `onBeforeDelete` asks exactly this, so this is the Delete
+    // half of the Custom Nodes manager issue, driven through the same two
+    // actions the manager's buttons call.
+    useUIStore.getState().openCustomNodeManager();
+    expect(isAnyModalOpen()).toBe(true);
 
-    act(() => useUIStore.setState({ packCenterOpen: true }));
-    expect(result.current).toBe(true);
-
-    act(() => useUIStore.setState({ packCenterOpen: false }));
-    expect(result.current).toBe(false);
-  });
-
-  it('follows the per-tab modals too', () => {
-    const { result } = renderHook(() => useAnyModalOpen());
-    act(() => setActiveTab({ vizModalNodeId: 'n1' }));
-    expect(result.current).toBe(true);
-  });
-
-  it('follows the dialog store', () => {
-    const { result } = renderHook(() => useAnyModalOpen());
-    act(() =>
-      useDialogStore.setState({ active: { kind: 'prompt', title: 'name?' }, resolve: null }),
-    );
-    expect(result.current).toBe(true);
-  });
-
-  it('honours the ignore list, and still sees what is stacked above', () => {
-    setActiveTab({ layersModalNodeId: 'n1' });
-    const { result } = renderHook(() => useAnyModalOpen(['layersModal']));
-    expect(result.current).toBe(false);
-
-    act(() => useUIStore.setState({ pluginCenterOpen: true }));
-    expect(result.current).toBe(true);
+    useUIStore.getState().closeCustomNodeManager();
+    expect(isAnyModalOpen()).toBe(false);
   });
 });

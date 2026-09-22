@@ -78,6 +78,7 @@ beforeEach(() => {
     templateGalleryOpen: false,
     packCenterOpen: false,
     pluginCenterOpen: false,
+    customNodeManagerOpen: false,
     gitDiff: null,
   } as any);
   useDialogStore.setState({ active: null, resolve: null });
@@ -369,6 +370,7 @@ describe('useKeyboardShortcuts', () => {
 const MODALS: Array<[string, () => void]> = [
   ['the Package Center', () => useUIStore.setState({ packCenterOpen: true } as any)],
   ['the Plugin Center', () => useUIStore.setState({ pluginCenterOpen: true } as any)],
+  ['the Custom Nodes manager', () => useUIStore.setState({ customNodeManagerOpen: true } as any)],
   ['the Template Gallery', () => useUIStore.setState({ templateGalleryOpen: true } as any)],
   ['a Git diff', () => useUIStore.setState({ gitDiff: { path: 'a.py', scope: 'worktree' } } as any)],
   ['the shortcuts sheet', () => useUIStore.setState({ shortcutsModalOpen: true } as any)],

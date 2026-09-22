@@ -59,6 +59,9 @@ vi.mock('./components/Nodes/VizViewerModal', () => ({
 vi.mock('./components/SourceControl/GitDiffModal', () => ({
   GitDiffModal: () => <div data-testid="git-diff-modal" />,
 }));
+vi.mock('./components/CustomNodeManager/CustomNodeManager', () => ({
+  CustomNodeManagerModal: () => <div data-testid="custom-node-manager-modal" />,
+}));
 vi.mock('./components/shared/Toast', () => ({
   ToastContainer: () => <div data-testid="toast-container" />,
 }));
@@ -204,6 +207,22 @@ describe('App', () => {
     expect(screen.getByTestId('welcome-screen')).toBeTruthy();
     // The tab bar stays: its `+` is the other way back to an editor.
     expect(screen.getByTestId('tabbar')).toBeTruthy();
+  });
+
+  it('mounts the Custom Nodes manager once, at the root, not inside the toolbar that opens it', () => {
+    // Two buttons open it -- the graph toolbar's and the Custom tab's -- and
+    // each used to draw a copy of its own, where the keyboard gate could not
+    // see it (the Custom Nodes manager issue). The toolbar here is a stub that
+    // draws nothing, so a manager on screen is the root's; and it stays
+    // mounted when the graph toolbar itself goes (#472).
+    render(<App />);
+    expect(screen.getAllByTestId('custom-node-manager-modal')).toHaveLength(1);
+
+    act(() => {
+      useTabStore.getState().removeTab(useTabStore.getState().activeTabId);
+    });
+    expect(screen.queryByTestId('toolbar')).toBeNull();
+    expect(screen.getAllByTestId('custom-node-manager-modal')).toHaveLength(1);
   });
 
   // ── RightColumn conditional rendering ───────────────────────────────────────

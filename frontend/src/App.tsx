@@ -16,6 +16,7 @@ import { VizViewerModal } from './components/Nodes/VizViewerModal';
 import { TemplateGalleryModal } from './components/TemplateGallery/TemplateGalleryModal';
 import { PackCenterModal } from './components/PackCenter/PackCenterModal';
 import { PluginCenterModal } from './components/PluginCenter/PluginCenterModal';
+import { CustomNodeManagerModal } from './components/CustomNodeManager/CustomNodeManager';
 import { GitDiffModal } from './components/SourceControl/GitDiffModal';
 import { RestartOverlay } from './components/PackCenter/RestartOverlay';
 import { ToastContainer } from './components/shared/Toast';
@@ -172,6 +173,7 @@ function App() {
       <TemplateGalleryModal />
       <PackCenterModal />
       <PluginCenterModal />
+      <CustomNodeManagerModal />
       <GitDiffModal />
       <ToastContainer />
       <ShortcutsModal />

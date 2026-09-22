@@ -17,6 +17,11 @@
   display: flex;
   flex-direction: column;
   box-shadow: var(--shadow-lg);
+  /* The panel takes focus as it opens, so the keyboard lands inside it. A
+     ring around the whole panel would mark nothing a user can act on; the
+     Package Center, the Plugin Center, the Template Gallery and node
+     details drop it the same way. */
+  outline: none;
 }
 
 .header {

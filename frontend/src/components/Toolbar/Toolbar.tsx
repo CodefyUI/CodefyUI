@@ -11,7 +11,6 @@ import { graphToSvg, svgToPngBlob } from '../../utils/exportDiagram';
 import { confirm, prompt } from '../../utils/dialog';
 import { saveActiveGraph } from '../../utils/saveActiveGraph';
 import { exportWorkspace } from '../../utils/exportWorkspace';
-import { CustomNodeManager } from '../CustomNodeManager/CustomNodeManager';
 import { SaveIcon } from '../shared/Icons';
 import { useToastStore } from '../../store/toastStore';
 import type { LayoutMode } from '../../utils/autoLayout';
@@ -213,7 +212,6 @@ export function Toolbar() {
 
   const [openMenu, setOpenMenu] = useState<string | null>(null);
   const [layoutMenuOpen, setLayoutMenuOpen] = useState(false);
-  const [customNodeManagerOpen, setCustomNodeManagerOpen] = useState(false);
   const layoutTriggerRef = useRef<HTMLDivElement>(null);
 
   const lastLayoutMode = useUIStore((s) => s.lastLayoutMode);
@@ -594,7 +592,7 @@ export function Toolbar() {
         {/* "Manage custom nodes" was the visible label with a verb in front,
             and the panel it opens is titled Custom Node Manager. */}
         <button type="button"
-          onClick={() => setCustomNodeManagerOpen(true)}
+          onClick={() => useUIStore.getState().openCustomNodeManager()}
           className={`${styles.ghost} ${styles.ghostMuted}`}
         >
           {t('toolbar.customNodes')}
@@ -661,10 +659,6 @@ export function Toolbar() {
           Its own component since the welcome screen (no active tab) shows
           exactly this group and none of the graph controls above it. */}
       <ToolbarGlobalActions />
-
-      {customNodeManagerOpen && (
-        <CustomNodeManager onClose={() => setCustomNodeManagerOpen(false)} />
-      )}
     </div>
   );
 }

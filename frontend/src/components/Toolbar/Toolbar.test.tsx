@@ -10,10 +10,12 @@ import { useDialogStore } from '../../store/dialogStore';
 import { useProjectStore } from '../../store/projectStore';
 import { usePackStore } from '../../store/packStore';
 import { usePluginStore } from '../../store/pluginStore';
+import { isAnyModalOpen } from '../../store/modalState';
 import { useI18n } from '../../i18n';
 import * as rest from '../../api/rest';
 import * as exportDiagram from '../../utils/exportDiagram';
 import { _resetDeviceOptionsForTesting } from '../../hooks/useDeviceOptions';
+import { CustomNodeManagerModal } from '../CustomNodeManager/CustomNodeManager';
 // The layout test below asserts on where the separators sit in the tree, so
 // it needs the same generated class names the component renders with.
 import styles from './Toolbar.module.css';
@@ -50,7 +52,8 @@ vi.mock('../../api/rest', async (importOriginal) => ({
   // Used directly by Toolbar
   createPreset: vi.fn(),
   exportGraph: vi.fn(),
-  // Used by the child CustomNodeManager
+  // Used by the Custom Node Manager, which the tests below render beside the
+  // toolbar the way App mounts it
   listCustomNodes: vi.fn(),
   toggleCustomNode: vi.fn(),
   uploadCustomNode: vi.fn(),
@@ -183,6 +186,7 @@ describe('Toolbar', () => {
       tooltipsEnabled: true,
       beginnerMode: false,
       shortcutsModalOpen: false,
+      customNodeManagerOpen: false,
       fontSize: 'default',
     });
     useNodeDefStore.setState({ definitions: [], presets: [], categorized: {} });
@@ -1326,18 +1330,61 @@ describe('Toolbar', () => {
   });
 
   // ── Custom Node Manager open/close ──────────────────────────────────
+  //
+  // The Custom Nodes manager issue. This button used to open a manager of the
+  // toolbar's own, from a `useState` flag no store held, so the keyboard gate
+  // in `modalState` could not see it: Delete and Shift+L went through to the
+  // canvas behind the scrim. It raises the store flag now, and the manager is
+  // the one App mounts at the root, rendered beside the toolbar here.
 
-  it('Custom Nodes: opens the manager and closes it', async () => {
+  it('Custom Nodes: opens the one manager, as a modal, and closing it lowers the flag', async () => {
     mockedRest.listCustomNodes.mockResolvedValue([]);
-    render(<Toolbar />);
+    render(
+      <>
+        <Toolbar />
+        <CustomNodeManagerModal />
+      </>,
+    );
     fireEvent.click(screen.getByText('Custom Nodes'));
-    // The manager renders a dialog-ish modal with a title from i18n. Found
-    // by the close button's accessible name: the glyph it draws is a
-    // multiplication sign, which no query should be spelling out.
-    const close = () => screen.queryByRole('button', { name: 'Close custom node manager' });
-    await waitFor(() => expect(close()).toBeInTheDocument());
-    fireEvent.click(close()!);
-    await waitFor(() => expect(close()).toBeNull());
+    expect(useUIStore.getState().customNodeManagerOpen).toBe(true);
+    expect(isAnyModalOpen()).toBe(true);
+    // Found by the close button's accessible name: the glyph it draws is a
+    // multiplication sign, which no query should be spelling out. Counted,
+    // because a toolbar that still drew a manager of its own would show two.
+    const closeButtons = () =>
+      screen.queryAllByRole('button', { name: 'Close custom node manager' });
+    expect(closeButtons()).toHaveLength(1);
+    // The manager reads its list on mount; let that land before closing it.
+    await screen.findByText('No custom nodes yet. Upload a .py file to add one.');
+
+    fireEvent.click(closeButtons()[0]);
+    expect(closeButtons()).toHaveLength(0);
+    expect(useUIStore.getState().customNodeManagerOpen).toBe(false);
+    expect(isAnyModalOpen()).toBe(false);
+  });
+
+  it('Custom Nodes: focus moves into the manager, and Escape hands it back to the button', async () => {
+    // The manager is mounted after the whole editor, so it has to take focus
+    // for a keyboard user to reach it at all (the Custom Nodes manager issue).
+    mockedRest.listCustomNodes.mockResolvedValue([]);
+    render(
+      <>
+        <Toolbar />
+        <CustomNodeManagerModal />
+      </>,
+    );
+    const button = screen.getByRole('button', { name: 'Custom Nodes' });
+    // A keyboard press: the button already holds focus when it is activated.
+    button.focus();
+    fireEvent.click(button);
+    expect(document.activeElement).toBe(
+      screen.getByRole('dialog', { name: 'Custom Node Manager' }),
+    );
+    await screen.findByText('No custom nodes yet. Upload a .py file to add one.');
+
+    fireEvent.keyDown(document.activeElement!, { key: 'Escape' });
+    expect(useUIStore.getState().customNodeManagerOpen).toBe(false);
+    expect(document.activeElement).toBe(button);
   });
 
   // ── Auto Layout split button + dropdown ─────────────────────────────

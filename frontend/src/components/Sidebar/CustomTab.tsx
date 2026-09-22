@@ -9,7 +9,6 @@ import { useI18n } from '../../i18n';
 import { usePackStore } from '../../store/packStore';
 import { usePluginStore } from '../../store/pluginStore';
 import { useUIStore } from '../../store/uiStore';
-import { CustomNodeManager } from '../CustomNodeManager/CustomNodeManager';
 import { StatusPill } from '../PackCenter/PackCard';
 import { isInstalledStatus } from '../PluginCenter/pluginStatus';
 import { catalogKey, localizedPackTitle } from '../../utils/packAvailability';
@@ -56,7 +55,7 @@ export function CustomTab() {
   const [customNodes, setCustomNodes] = useState<CustomNodeInfo[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [managerOpen, setManagerOpen] = useState(false);
+  const openCustomNodeManager = useUIStore((s) => s.openCustomNodeManager);
   const { t } = useI18n();
 
   const packs = usePackStore(selectPacks);
@@ -70,8 +69,9 @@ export function CustomTab() {
   const pluginsUnsupported = usePluginStore(selectPluginsUnsupported);
   const openPluginCenter = useUIStore((s) => s.openPluginCenter);
 
-  const load = useCallback(() => {
-    setLoading(true);
+  // `blank` is false for the re-read after the manager closes, below.
+  const load = useCallback((blank = true) => {
+    if (blank) setLoading(true);
     setError(null);
     listCustomNodes()
       .then(setCustomNodes)
@@ -86,10 +86,19 @@ export function CustomTab() {
     load();
   }, [load]);
 
-  const closeManager = useCallback(() => {
-    setManagerOpen(false);
-    load();
-  }, [load]);
+  // Re-read when the manager closes -- whether it was opened here or from the
+  // toolbar, which opens the same one. It is mounted at the app root (the
+  // Custom Nodes manager issue), so this tab holds no close callback to hang
+  // the re-read on; it watches the store flag fall instead. The list stays up
+  // while it re-reads: "Loading..." would take the Manage... button with it,
+  // and that button is where the closing manager hands keyboard focus back.
+  useEffect(
+    () =>
+      useUIStore.subscribe((state, prev) => {
+        if (prev.customNodeManagerOpen && !state.customNodeManagerOpen) load(false);
+      }),
+    [load],
+  );
 
   // "Re-read everything this tab shows", which is both catalogs as well as
   // the files — and the retry for a boot read that never arrived. Mount does
@@ -180,7 +189,7 @@ export function CustomTab() {
               <button
                 type="button"
                 className={tabStyles.manageButton}
-                onClick={() => setManagerOpen(true)}
+                onClick={() => openCustomNodeManager()}
               >
                 {t('customTab.manage')}
               </button>
@@ -295,8 +304,6 @@ export function CustomTab() {
           </div>
         )}
       </div>
-
-      {managerOpen && <CustomNodeManager onClose={closeManager} />}
     </>
   );
 }

@@ -107,6 +107,20 @@ interface UIState {
   setPluginCenterFocus: (pluginId: string | null) => void;
   closePluginCenter: () => void;
   /**
+   * Custom Node Manager modal. Same rules as the two Centers above:
+   * workspace-global and never persisted.
+   *
+   * Held here rather than by the component that opens it, because two do --
+   * the toolbar's Custom Nodes button and the sidebar's Custom tab -- and
+   * there is one manager. Each used to keep a `useState` flag and draw its own
+   * copy, and the keyboard gate in `modalState` reads stores, not component
+   * state: Delete and Shift+L went through the scrim to the canvas behind it
+   * (the Custom Nodes manager issue).
+   */
+  customNodeManagerOpen: boolean;
+  openCustomNodeManager: () => void;
+  closeCustomNodeManager: () => void;
+  /**
    * The Source Control diff modal, and the change it is showing.
    *
    * The target IS the open state -- null is closed -- because there is no
@@ -270,6 +284,9 @@ export const useUIStore = create<UIState>((set) => ({
   setPluginCenterFocus: (pluginId) => set({ pluginCenterFocusPluginId: pluginId }),
   closePluginCenter: () =>
     set({ pluginCenterOpen: false, pluginCenterFocusPluginId: null }),
+  customNodeManagerOpen: false,
+  openCustomNodeManager: () => set({ customNodeManagerOpen: true }),
+  closeCustomNodeManager: () => set({ customNodeManagerOpen: false }),
   gitDiff: null,
   openGitDiff: (target) => set({ gitDiff: target }),
   closeGitDiff: () => set({ gitDiff: null }),
