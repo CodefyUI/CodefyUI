@@ -2445,6 +2445,26 @@ class RunService:
         and the outcome is OBSERVED on the row when the run unwinds. What
         #122 changed is how long that takes for the nodes where it mattered.
 
+        **And an acknowledgement is not a promise (#404).** Every bullet
+        above assumes the node co-operates. ``should_stop()`` is a flag a
+        node has to READ, and nothing makes it: a third-party node, or a
+        first-party one with a loop that was never instrumented, runs to
+        completion exactly as if nobody had asked. ``cancelled=True`` here
+        means "the request was delivered", never "the run will stop", and
+        there is no deadline behind it — the alternative is ``Task.cancel``
+        mid-step, which is what leaves half-written rows and wedged CUDA
+        state, and which the whole cooperative design exists to avoid. A
+        caller that renders this as "stopped" is reporting something this
+        method does not know. ``shutdown`` is the one place that escalates,
+        and only because the process is going away regardless.
+
+        This is where a sweep's ``cancelling`` state gets its meaning, and
+        its open end: ``POST /api/sweeps/{id}/cancel`` is N of these calls,
+        so the sweep sits at ``cancelling`` until every child is terminal,
+        and a single node that never polls holds it there indefinitely. See
+        ``sweep_store.SWEEP_STATE_CANCELLING`` for what a reader can do
+        about that (count what is still active; do not watch the clock).
+
         A run still WAITING in the queue is dequeued instead, and that is the
         cheap case by a wide margin: nothing has been started, so there is
         nothing to unwind, no device to release and no partial output to
