@@ -81,8 +81,9 @@ function mockFetch(status: number, body: unknown) {
   return g.fetch as unknown as ReturnType<typeof vi.fn>;
 }
 
-// Error response whose .json() rejects — exercises the `.catch(() => ({}))`
-// fallbacks in createPreset / upload* / download* error handlers.
+// Error response whose .json() rejects — exercises the not-JSON fallbacks in
+// the upload* / download* error handlers (`.catch(() => ({}))`) and in
+// `readApiError`, which is what createPreset reads a refusal through (#476).
 function mockFetchJsonThrows(status: number) {
   const response = {
     ok: status >= 200 && status < 300,
@@ -693,18 +694,50 @@ describe('createPreset', () => {
     );
   });
 
-  it('falls back to a generic message when the error body has no detail', async () => {
-    mockFetch(500, {});
-    await expect(createPreset({ name: 'p', nodes: [], edges: [] })).rejects.toThrow(
-      /Export failed/,
-    );
+  /**
+   * #476. The name refusals answer `{detail: {code, ...fields}}` with
+   * deliberately no `message` -- the sentence the user reads is the editor's,
+   * in the user's language -- so the thrown error has to CARRY that dict.
+   * `throw new Error(body.detail)` stringified it, and the toast read
+   * `Export failed: [object Object]`.
+   */
+  it('throws an ApiError carrying the coded detail of a refused name', async () => {
+    mockFetch(400, { detail: { code: 'name_separator', character: '/' } });
+    const err = await createPreset({ name: 'a/b', nodes: [], edges: [] }).catch((e) => e);
+    expect(err).toBeInstanceOf(ApiError);
+    expect((err as ApiError).status).toBe(400);
+    expect(errorDetail(err)).toEqual({ code: 'name_separator', character: '/' });
+    expect((err as Error).message).not.toContain('[object Object]');
+    // The message of a coded refusal IS the bare code, because the body
+    // carries no prose. That is the seam: it is unreadable on purpose, and
+    // the toolbar translates it (`exportFailureText`) rather than showing it.
+    expect((err as Error).message).toBe('name_separator');
   });
 
-  it('falls back to a generic message when the error body is not JSON', async () => {
+  it('carries the 409 file-exists code and its filename', async () => {
+    mockFetch(409, { detail: { code: 'preset_file_exists', filename: 'llm_preset.json' } });
+    const err = await createPreset({ name: 'LLM Preset', nodes: [], edges: [] }).catch((e) => e);
+    expect((err as ApiError).status).toBe(409);
+    expect(errorDetail(err)).toEqual({
+      code: 'preset_file_exists',
+      filename: 'llm_preset.json',
+    });
+  });
+
+  it('falls back to the status text when the error body has no detail', async () => {
+    mockFetch(500, {});
+    const err = await createPreset({ name: 'p', nodes: [], edges: [] }).catch((e) => e);
+    expect(err).toBeInstanceOf(ApiError);
+    expect((err as ApiError).status).toBe(500);
+    expect((err as Error).message).toBe('mock');
+  });
+
+  it('falls back to the status text when the error body is not JSON', async () => {
     mockFetchJsonThrows(500);
-    await expect(createPreset({ name: 'p', nodes: [], edges: [] })).rejects.toThrow(
-      /Export failed/,
-    );
+    const err = await createPreset({ name: 'p', nodes: [], edges: [] }).catch((e) => e);
+    expect(err).toBeInstanceOf(ApiError);
+    expect((err as ApiError).body).toBeNull();
+    expect((err as Error).message).toBe('mock');
   });
 });
 

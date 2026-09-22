@@ -34,6 +34,10 @@ vi.mock('../../api/rest', async (importOriginal) => ({
   PackApiError: (await importOriginal<typeof import('../../api/rest')>()).PackApiError,
   // `pluginStore.refresh()` narrows the same way, on the shared class.
   ApiError: (await importOriginal<typeof import('../../api/rest')>()).ApiError,
+  // The real unwrapper, for the same reason: the toolbar reads a coded
+  // preset-name refusal through it (#476), so a stub would make every failed
+  // Export as Subgraph throw a TypeError instead of naming the broken rule.
+  errorDetail: (await importOriginal<typeof import('../../api/rest')>()).errorDetail,
   // And again, for the same reason: `saveActiveGraph` tells the taken-name
   // 409 from an ordinary failure with `err instanceof GraphExistsError`, so a
   // stub here would make every failed save throw a TypeError instead (#455).
@@ -863,6 +867,116 @@ describe('Toolbar', () => {
     await waitFor(() =>
       expect(useToastStore.getState().toasts.some((t) => t.type === 'error' && t.message.includes('dup name'))).toBe(true),
     );
+  });
+
+  /**
+   * #476. `POST /api/presets/create` now refuses an unstorable name with a
+   * CODED 400 -- `{detail: {code, ...fields}}`, no `message` -- so the
+   * sentence the user reads is written here, in the user's language. Before
+   * this the toast was `Export failed: [object Object]`: the reason was on
+   * the wire and thrown away one line from the screen.
+   */
+  describe('Export Subgraph: a name the server will not store', () => {
+    /** A coded refusal exactly as `createPreset` now throws one. */
+    function refusal(status: number, detail: Record<string, unknown>) {
+      return new rest.ApiError(status, String(detail.code), { detail });
+    }
+
+    /**
+     * Run the export with *err* waiting, and answer with the error toast.
+     *
+     * `menu`/`item` are the labels to click, because the one case that runs
+     * in Traditional Chinese has a Traditional Chinese toolbar.
+     */
+    async function exportFailureToast(
+      err: unknown,
+      menu = 'Export',
+      item = 'Export as Subgraph',
+    ): Promise<string> {
+      mockedRest.createPreset.mockRejectedValueOnce(err);
+      setActiveTab({
+        nodes: [{ id: 'n1', type: 'baseNode', position: { x: 0, y: 0 }, data: { type: 'Add', params: {} } }],
+      });
+      render(<Toolbar />);
+      fireEvent.click(screen.getByText(menu));
+      fireEvent.click(screen.getByText(item));
+      await resolveDialog('whatever the user typed');
+      await waitFor(() =>
+        expect(useToastStore.getState().toasts.some((tt) => tt.type === 'error')).toBe(true),
+      );
+      return useToastStore.getState().toasts.find((tt) => tt.type === 'error')!.message;
+    }
+
+    // Every code `routes_presets` can answer with, and the part of the
+    // sentence that has to survive: the rule it broke, and -- where the
+    // refusal carries one -- the character, the name or the file it is
+    // about. A code that reached the toast as itself would read
+    // "Export failed: name_separator".
+    it.each<[Record<string, unknown>, string]>([
+      [{ code: 'name_empty' }, 'cannot be blank'],
+      [{ code: 'name_separator', character: '/' }, '"/"'],
+      [{ code: 'name_separator', character: '\\' }, '"\\"'],
+      [{ code: 'name_separator', character: ':' }, '":"'],
+      [{ code: 'name_control_character', codepoint: 9 }, 'U+0009'],
+      [{ code: 'name_dot_segment' }, 'dots'],
+      [{ code: 'name_reserved_device', reserved: 'com1' }, 'com1'],
+      [{ code: 'name_escapes_presets_dir' }, 'presets folder'],
+    ])('says what is wrong with %j', async (detail, expected) => {
+      const message = await exportFailureToast(refusal(400, detail));
+      expect(message).toContain(expected);
+      expect(message).not.toContain('[object Object]');
+      expect(message).not.toContain(String(detail.code));
+    });
+
+    it('names the file a 409 collided with', async () => {
+      const message = await exportFailureToast(
+        refusal(409, { code: 'preset_file_exists', filename: 'llm_preset.json' }),
+      );
+      expect(message).toContain('llm_preset.json');
+      expect(message).not.toContain('preset_file_exists');
+    });
+
+    // A code this build has never heard of -- a rule added server-side after
+    // it shipped. It still has to read as a sentence, and it still has to say
+    // the code, because that is the only part a bug report can carry.
+    it('falls back to a sentence that names an unknown future code', async () => {
+      const message = await exportFailureToast(refusal(400, { code: 'name_too_long' }));
+      expect(message).toContain('name_too_long');
+      expect(message).not.toContain('[object Object]');
+      expect(message).toMatch(/letters, numbers/);
+    });
+
+    // A coded refusal whose field is missing (an older or partial server)
+    // must not render the placeholder: `{character}` on screen is worse than
+    // the generic sentence.
+    it('falls back rather than printing an unfilled placeholder', async () => {
+      const message = await exportFailureToast(refusal(400, { code: 'name_separator' }));
+      expect(message).not.toContain('{character}');
+      expect(message).toContain('name_separator');
+    });
+
+    // The refusals that were already here answer with PROSE (`{detail:
+    // "Preset 'x' already exists"}`), and that prose is still what the editor
+    // shows: this fix translates the coded ones and leaves the rest alone.
+    it('still shows a prose detail unchanged', async () => {
+      const message = await exportFailureToast(
+        new rest.ApiError(409, "Preset 'Vision' already exists", {
+          detail: "Preset 'Vision' already exists",
+        }),
+      );
+      expect(message).toContain("Preset 'Vision' already exists");
+    });
+
+    it('reads in Traditional Chinese when the editor does', async () => {
+      useI18n.setState({ locale: 'zh-TW' });
+      const message = await exportFailureToast(
+        refusal(400, { code: 'name_separator', character: '/' }),
+        '匯出',
+        '匯出為子圖',
+      );
+      expect(message).toContain('「/」');
+      expect(message).toContain('子圖名稱');
+    });
   });
 
   // core#137 review, MAJOR 2 (sibling). A preset is stored as {nodes, edges}

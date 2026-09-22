@@ -8,6 +8,7 @@ guarantees added in the secret-params work (C1 / I3):
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -351,6 +352,272 @@ async def test_preset_still_exposes_the_default_ports_of_a_static_node(
     assert resp.status_code == 200, resp.text
     assert {p["internal_port"] for p in resp.json()["exposed_inputs"]} == {
         "step_1", "step_2"}
+
+
+# -- the name is a filename, not a path (#476) ----------------------------
+#
+# `POST /api/presets/create` turned the request's `name` straight into a
+# path with nothing but `.replace(" ", "_").replace("/", "_")` in the way.
+# A backslash was never replaced and `WindowsPath` honours it as a
+# separator, and a drive-qualified name is absolute -- so on Windows, this
+# project's primary platform, `PRESETS_DIR / name` landed wherever the name
+# said and the server wrote attacker-chosen JSON there.
+#
+# Every rule below is enforced on EVERY platform, not under a
+# `sys.platform` fake. A preset file travels (it is copied between
+# machines, synced, committed), so a name that is a path on Windows is a
+# bad name on Linux too -- and a rule that only fires on the host that runs
+# the tests is a rule CI cannot check.
+
+
+@pytest.fixture
+def _presets_sandbox(tmp_path, monkeypatch):
+    """`PRESETS_DIR` one level UNDER the sandbox root.
+
+    The room above the directory is the point: a refused name has to leave
+    the sandbox empty, not merely leave `PRESETS_DIR` empty, or a test
+    would pass on the traversal it is meant to catch.
+    """
+    presets_dir = tmp_path / "presets"
+    presets_dir.mkdir()
+    monkeypatch.setattr("app.config.settings.PRESETS_DIR", presets_dir)
+    saved = dict(preset_registry._presets)
+    try:
+        yield presets_dir
+    finally:
+        preset_registry._presets.clear()
+        preset_registry._presets.update(saved)
+
+
+def _sandbox_files(presets_dir: Path) -> list[str]:
+    """Every file anywhere in the sandbox, relative to its root.
+
+    ``as_posix`` so the expected value spells the same on both platforms:
+    a literal ``"presets/x.json"`` compares equal on Linux and fails on
+    Windows, which is the wrong way round for a Windows-first bug.
+    """
+    root = presets_dir.parent
+    return sorted(
+        p.relative_to(root).as_posix() for p in root.rglob("*") if p.is_file()
+    )
+
+
+def _one_node():
+    """A canvas the endpoint accepts: one node, ports left unconnected."""
+    return [
+        {"id": "opt", "type": "Optimizer",
+         "data": {"params": {"type": "Adam", "lr": 0.01}}},
+    ]
+
+
+async def _create(test_client, name: str):
+    return await test_client.post("/api/presets/create", json={
+        "name": name, "nodes": _one_node(), "edges": [],
+    })
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("name, character", [
+    ("..\\..\\evil", "\\"),
+    ("sub\\evil", "\\"),
+    ("..\\..\\..\\Windows\\Temp\\evil", "\\"),
+    ("../../evil", "/"),
+    ("Vision/Classifier", "/"),
+])
+async def test_a_name_carrying_a_separator_is_refused(
+    test_client, _presets_sandbox, name, character,
+):
+    """Both separators, refused rather than rewritten.
+
+    `Vision/Classifier` is in here on purpose: it used to succeed, silently,
+    as `vision_classifier.json` -- which is also the file `Vision Classifier`
+    writes, so one of the two overwrote the other with no warning. Refusing
+    asks the user for a name instead of picking one for them.
+    """
+    resp = await _create(test_client, name)
+    assert resp.status_code == 400, resp.text
+    detail = resp.json()["detail"]
+    assert detail["code"] == "name_separator"
+    assert detail["character"] == character
+    assert _sandbox_files(_presets_sandbox) == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("name", [
+    "C:\\Windows\\Temp\\evil",
+    "C:/Windows/Temp/evil",
+    "D:evil",
+    "evil:stream",
+])
+async def test_a_drive_qualified_name_is_refused(
+    test_client, _presets_sandbox, name,
+):
+    """`Path.__truediv__` DISCARDS the left side for an absolute right side,
+    so a drive-qualified name ignored `PRESETS_DIR` entirely. The colon is
+    refused on its own account too: on Windows it also opens an alternate
+    data stream on a file whose name looks perfectly ordinary.
+    """
+    resp = await _create(test_client, name)
+    assert resp.status_code == 400, resp.text
+    detail = resp.json()["detail"]
+    assert detail["code"] == "name_separator"
+    assert detail["character"] == ":"
+    assert _sandbox_files(_presets_sandbox) == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("name", ["///", "\\\\", "/\\/", ":"])
+async def test_a_name_that_is_only_separators_is_refused(
+    test_client, _presets_sandbox, name,
+):
+    """Nothing is left to name a file with once the separators are gone."""
+    resp = await _create(test_client, name)
+    assert resp.status_code == 400, resp.text
+    assert resp.json()["detail"]["code"] == "name_separator"
+    assert _sandbox_files(_presets_sandbox) == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("name, reserved", [
+    ("CON", "con"),
+    ("NUL", "nul"),
+    ("COM1", "com1"),
+    ("LPT1", "lpt1"),
+    ("con", "con"),
+    # The extension is no protection: Windows resolves the name before the
+    # first dot, so `com1.json` -- which is exactly what this endpoint
+    # writes -- opens the serial port rather than creating a file.
+    ("CON.json", "con"),
+    ("NUL.txt", "nul"),
+    ("LPT1.preset.json", "lpt1"),
+])
+async def test_a_reserved_windows_device_name_is_refused(
+    test_client, _presets_sandbox, name, reserved,
+):
+    resp = await _create(test_client, name)
+    assert resp.status_code == 400, resp.text
+    detail = resp.json()["detail"]
+    assert detail["code"] == "name_reserved_device"
+    assert detail["reserved"] == reserved
+    assert _sandbox_files(_presets_sandbox) == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("name", ["", "   ", "\t"])
+async def test_an_empty_name_is_refused(test_client, _presets_sandbox, name):
+    resp = await _create(test_client, name)
+    assert resp.status_code == 400, resp.text
+    assert resp.json()["detail"]["code"] in {"name_empty",
+                                             "name_control_character"}
+    assert _sandbox_files(_presets_sandbox) == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("name", [".", "..", "..."])
+async def test_a_name_that_is_only_dots_is_refused(
+    test_client, _presets_sandbox, name,
+):
+    """A parent segment, with the separators already gone."""
+    resp = await _create(test_client, name)
+    assert resp.status_code == 400, resp.text
+    assert resp.json()["detail"]["code"] == "name_dot_segment"
+    assert _sandbox_files(_presets_sandbox) == []
+
+
+@pytest.mark.asyncio
+async def test_a_control_character_in_a_name_is_refused(
+    test_client, _presets_sandbox,
+):
+    """An embedded NUL is what `Path.resolve()` raises `ValueError` on -- a
+    500 with a traceback for anyone who can reach the port."""
+    resp = await _create(test_client, "evil\x00.json")
+    assert resp.status_code == 400, resp.text
+    assert resp.json()["detail"]["code"] == "name_control_character"
+    assert _sandbox_files(_presets_sandbox) == []
+
+
+@pytest.mark.asyncio
+async def test_a_name_differing_only_by_case_does_not_overwrite(
+    test_client, _presets_sandbox,
+):
+    """The registry's duplicate check is case-SENSITIVE and the filename is
+    lowercased, so `llm preset` used to walk straight over `LLM Preset`'s
+    file and take its place in the registry."""
+    first = await _create(test_client, "LLM Preset")
+    assert first.status_code == 200, first.text
+
+    second = await _create(test_client, "llm preset")
+    assert second.status_code == 409, second.text
+    detail = second.json()["detail"]
+    assert detail["code"] == "preset_file_exists"
+    assert detail["filename"] == "llm_preset.json"
+
+    # The first preset is still the one on disk, and still the only file.
+    assert _sandbox_files(_presets_sandbox) == ["presets/llm_preset.json"]
+    stored = json.loads(
+        (_presets_sandbox / "llm_preset.json").read_text(encoding="utf-8"))
+    assert stored["preset_name"] == "LLM Preset"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("name, filename", [
+    ("視覺 分類器", "視覺_分類器.json"),
+    ("殘差區塊", "殘差區塊.json"),
+    ("ResNet Block", "resnet_block.json"),
+    ("block-2_v3", "block-2_v3.json"),
+])
+async def test_a_legitimate_name_still_works(
+    test_client, _presets_sandbox, name, filename,
+):
+    """The guard must not cost this project its own users' names: titles
+    here are routinely Traditional Chinese, with spaces."""
+    resp = await _create(test_client, name)
+    assert resp.status_code == 200, resp.text
+
+    written = [p for p in _presets_sandbox.iterdir() if p.is_file()]
+    assert [p.name for p in written] == [filename]
+    # The path that was actually written stays inside PRESETS_DIR.
+    assert written[0].resolve().parent == _presets_sandbox.resolve()
+    assert json.loads(written[0].read_text(encoding="utf-8"))[
+        "preset_name"] == name
+
+
+@pytest.mark.parametrize("filename", [
+    "../evil.json",
+    "../../evil.json",
+    "sub/evil.json",
+    "./sub/../../evil.json",
+    # Not an escape: the string `resolve()` REFUSES. It raises ValueError on
+    # an embedded NUL (on Windows and on POSIX alike), and letting that out
+    # would turn the refusal into a 500 with a traceback in the log.
+    "evil\x00.json",
+])
+def test_the_resolved_path_is_checked_against_presets_dir(tmp_path, filename):
+    """The second layer, on its own terms.
+
+    The name rules above should mean nothing ever reaches here -- which is
+    exactly why this calls the containment check directly rather than
+    through the route. Validation answers "is this string a filename"; this
+    answers "is the path it produced still inside the directory", and the
+    two fail in different ways. Every case here escapes on POSIX as well as
+    on Windows, so CI checks the same thing the developer's box does.
+    """
+    from fastapi import HTTPException
+
+    from app.api.routes_presets import _resolved_under
+
+    with pytest.raises(HTTPException) as caught:
+        _resolved_under(tmp_path, filename)
+    assert caught.value.status_code == 400
+    assert caught.value.detail["code"] == "name_escapes_presets_dir"
+
+
+def test_the_containment_check_accepts_a_direct_child(tmp_path):
+    """Same function, the answer that has to keep working."""
+    from app.api.routes_presets import _resolved_under
+
+    assert _resolved_under(tmp_path, "ok.json") == (
+        tmp_path.resolve() / "ok.json")
 
 
 def test_registry_types_a_port_that_only_exists_at_this_port_count():

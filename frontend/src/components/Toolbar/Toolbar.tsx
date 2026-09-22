@@ -4,8 +4,8 @@ import { useDeviceOptions, deviceLabel, isDeviceServed } from '../../hooks/useDe
 import { useTabStore } from '../../store/tabStore';
 import { useNodeDefStore } from '../../store/nodeDefStore';
 import { useUIStore } from '../../store/uiStore';
-import { createPreset, exportGraph } from '../../api/rest';
-import { useI18n } from '../../i18n';
+import { createPreset, errorDetail, exportGraph } from '../../api/rest';
+import { useI18n, type TranslationKey } from '../../i18n';
 import { subgraphIdOf } from '../../utils/subgraph';
 import { graphToSvg, svgToPngBlob } from '../../utils/exportDiagram';
 import { confirm, prompt } from '../../utils/dialog';
@@ -77,6 +77,106 @@ function MenuDropdown({
         </div>
       )}
     </div>
+  );
+}
+
+/* ── Export as Subgraph: a name the server will not store (#476) ─── */
+
+type Translate = (key: TranslationKey, vars?: Record<string, string | number>) => string;
+
+/**
+ * A control character as `U+0009`.
+ *
+ * The refusal carries `ord(character)` -- a decimal number, which names
+ * nothing to anyone. The codepoint spelling is the one form of an invisible
+ * character a user can look up or quote in a bug report.
+ */
+function codepointLabel(codepoint: number): string {
+  return `U+${codepoint.toString(16).toUpperCase().padStart(4, '0')}`;
+}
+
+/** A refusal field as text, or null: the body is `Record<string, unknown>`. */
+function field(detail: Record<string, unknown>, key: string): string | null {
+  const value = detail[key];
+  return typeof value === 'string' ? value : null;
+}
+
+/**
+ * The sentence for one coded name refusal, or null for "cannot say".
+ *
+ * `routes_presets` answers every unstorable name with `{detail: {code,
+ * ...fields}}` and deliberately NO `message`, so this is where the code
+ * becomes something a user can act on. Written as a switch rather than a
+ * code -> key table because half of these refusals carry the useful half of
+ * their answer BESIDE the code -- which character, which reserved name, which
+ * file -- and a table has nothing to interpolate.
+ *
+ * null for two cases, both of which fall through to `toolbar.export.name
+ * .unknownRule`: a code this build has never heard of (a rule the server grew
+ * later), and a known code whose field is missing (an older or partial
+ * server). The second matters as much as the first -- a sentence rendered
+ * with an unfilled `{character}` in it is worse than a general one.
+ */
+function nameRefusalMessage(
+  t: Translate,
+  code: string,
+  detail: Record<string, unknown>,
+): string | null {
+  switch (code) {
+    case 'name_empty':
+      return t('toolbar.export.name.empty');
+    case 'name_dot_segment':
+      return t('toolbar.export.name.dotSegment');
+    case 'name_escapes_presets_dir':
+      return t('toolbar.export.name.escapesDir');
+    case 'name_separator': {
+      const character = field(detail, 'character');
+      return character === null
+        ? null
+        : t('toolbar.export.name.separator', { character });
+    }
+    case 'name_reserved_device': {
+      const reserved = field(detail, 'reserved');
+      return reserved === null
+        ? null
+        : t('toolbar.export.name.reservedDevice', { reserved });
+    }
+    case 'preset_file_exists': {
+      const filename = field(detail, 'filename');
+      return filename === null
+        ? null
+        : t('toolbar.export.name.fileExists', { filename });
+    }
+    case 'name_control_character': {
+      const codepoint = detail.codepoint;
+      return typeof codepoint === 'number'
+        ? t('toolbar.export.name.controlCharacter', {
+            codepoint: codepointLabel(codepoint),
+          })
+        : null;
+    }
+    default:
+      return null;
+  }
+}
+
+/**
+ * What a failed Export as Subgraph reads as, coded refusal or not.
+ *
+ * Three kinds of failure arrive here and only one of them is coded. A PROSE
+ * refusal (no nodes, a subgraph instance, a duplicate name) and a network
+ * error both keep the message they came with -- the server wrote those
+ * sentences and rewriting them is not this fix.
+ */
+function exportFailureText(t: Translate, err: unknown): string {
+  const detail = errorDetail(err);
+  const code = detail === null ? null : field(detail, 'code');
+  if (detail === null || code === null) {
+    return err instanceof Error ? err.message : String(err);
+  }
+  return (
+    nameRefusalMessage(t, code, detail) ??
+    t('toolbar.export.name.unknownRule', { code })
   );
 }
 
@@ -247,7 +347,12 @@ export function Toolbar() {
       await fetchDefinitions();
       addToast(t('toolbar.export.success', { name: name.trim() }), 'success');
     } catch (e) {
-      addToast(t('toolbar.export.fail', { error: (e as Error).message }), 'error');
+      // #476: a name the server cannot store is refused with a CODE, and
+      // `(e as Error).message` on that refusal was the literal text
+      // `[object Object]`. The reason the user needs -- which character, which
+      // reserved name, which file -- is in the body; `exportFailureText`
+      // turns it into the sentence.
+      addToast(t('toolbar.export.fail', { error: exportFailureText(t, e) }), 'error');
     }
   }, [getSerializedGraph, fetchDefinitions, t, addToast]);
 

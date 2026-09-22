@@ -41,6 +41,22 @@ const zhTW: Record<TranslationKey, string> = {
   'toolbar.export.success': '子圖「{name}」已加入「節點」分頁。',
   'toolbar.export.fail': '匯出失敗：{error}',
   'toolbar.export.subgraphRefused': '請先展開收合的區塊（{names}）再匯出：預設模組無法帶著它們的內容。',
+  // #476：名稱在伺服器上會變成檔名，存不下來的名稱現在回一個代碼而不是句子，
+  // 句子寫在這裡。每一句都說出哪裡不對、該改成什麼；外面那句是
+  // `toolbar.export.fail`，所以這些都不再重複「匯出失敗」。
+  'toolbar.export.name.empty': '子圖名稱不能是空白，請輸入名稱後再試一次。',
+  'toolbar.export.name.separator':
+    '子圖名稱不能包含「{character}」，這個字元會讓名稱變成路徑。請改用文字、數字、空格、- 或 _。',
+  'toolbar.export.name.controlCharacter':
+    '子圖名稱裡有看不見的控制字元（{codepoint}），請刪掉它再重新輸入名稱。',
+  'toolbar.export.name.dotSegment': '只由點組成的名稱不算名稱，請改用含有文字或數字的名稱。',
+  'toolbar.export.name.reservedDevice':
+    '「{reserved}」是 Windows 保留給裝置的名稱，檔案不能叫這個名字，請換一個名稱。',
+  'toolbar.export.name.escapesDir':
+    '這個名稱會把檔案寫到預設組合資料夾外面，請用不含路徑的單純名稱。',
+  'toolbar.export.name.fileExists': '已經有一個子圖存成 {filename}，請換一個名稱。',
+  'toolbar.export.name.unknownRule':
+    '伺服器不接受這個名稱（{code}），請改用文字、數字、空格、- 或 _ 組成的單純名稱。',
   'toolbar.exportPython': '匯出為 Python',
   'toolbar.exportPython.title': '可執行這張圖的 Python 腳本；需要 CodefyUI 後端環境',
   'toolbar.exportPython.empty': '畫布沒有可執行節點 — 請先新增節點再匯出。',
