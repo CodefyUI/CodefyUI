@@ -53,7 +53,7 @@ Two more names are in scope besides the allowlisted libraries:
 `input_ports` and `output_ports` (1–8 each) decide how many handles the node has. The **Code** tab's Ports section sets both the count and the `DataType` of each port; the same values live in the `input_types` / `output_types` params as a comma-separated list, so a graph JSON stays readable.
 
 * Input ports are **optional** by construction: the script decides what it needs, so declaring four ports and wiring two is a valid graph.
-* Output ports default to `ANY`, which connects to anything. Naming a real type (`TENSOR`, `SCALAR`, `STRING`, ...) turns the graph validator into a check on your own wiring — worth doing once the script works.
+* Input ports default to `TENSOR` and output ports to `ANY`, which connects to anything. Naming a real output type (`TENSOR`, `SCALAR`, `STRING`, ...) turns the graph validator into a check on your own wiring — worth doing once the script works.
 * Lowering a port count **removes** any edge that was attached to a port that no longer exists, and marks the affected downstream nodes for re-execution.
 
 ## Caching
@@ -67,13 +67,13 @@ Only your script knows which of the two it is, so the node takes the conservativ
 * **Mutating an input in place.** `inputs` is a shallow copy, so its values are the upstream node's own objects. `inputs["in1"].add_(1)`, `p.data.zero_()` over a MODEL's parameters, or `inputs["in1"].append(x)` all change state that every downstream node shares. That is ordinary numerics — nothing could reasonably flag it.
 * **Process-global state.** `torch.manual_seed`, `numpy.random.seed`, `torch.set_default_dtype` and `torch.set_grad_enabled` are all reachable, and all of them change what the *rest* of the run computes.
 
-Anything reached through an input port is a third route: the ports are typed `ANY`, so a custom node or plugin can hand your script a writer, a logger or an open handle, and the Tier-0 policy never sees it — Tier-0 bounds which *libraries* a script may import, not what the objects it is *given* can do.
+Anything reached through an input port is a third route: an input port accepts whatever an `ANY` output sends (and `input_types` can name `ANY`), so a custom node or plugin can hand your script a writer, a logger or an open handle, and the Tier-0 policy never sees it — Tier-0 bounds which *libraries* a script may import, not what the objects it is *given* can do.
 
 The cost is real: a pure-transform script re-runs every time, and because opting out of the cache [propagates downstream](../usage/running-graphs.md#what-is-never-cached), so does everything it feeds. If a step is expensive and genuinely pure, it belongs in a [custom node](./custom-nodes.md), which can declare `cacheable = True` for itself because its author can see all of its code.
 
 ## Output and errors
 
-`print()` from your script is captured (up to 64 KB per execution) and appears in the **Execution Log** as the node's log line. It is not a global stdout redirect — a library writing straight to `sys.stdout` goes to the server console instead — because nodes share a thread pool and hijacking the process's stdout would swallow what other nodes print at the same moment.
+`print()` from your script is captured (up to 64,000 characters per execution) and appears in the **Execution Log** as the node's log line. It is not a global stdout redirect — a library writing straight to `sys.stdout` goes to the server console instead — because nodes share a thread pool and hijacking the process's stdout would swallow what other nodes print at the same moment.
 
 An exception is reported with **the line number in your script**:
 

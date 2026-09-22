@@ -24,7 +24,30 @@ One consequence worth knowing: a reader node (`CSVReader`, `ImageReader`, and th
 
 ## Training loops and loss charts
 
-The `TrainingLoop` node emits progress events during training. The **Training** tab of the results panel plots a **live loss chart** as epochs complete, so you can watch convergence in real time.
+The `TrainingLoop` node emits progress events during training. The **Training** tab of the results panel follows them live: the current **Epoch**, the latest and **Best** training loss, a progress bar, a **Loss Curve** of the training loss per epoch, the loop's **Config**, and a per-epoch table with each epoch's change and duration.
+
+Every value the loop records is also stored with the run as a named series. A run's detail in the [Runs panel](./run-queue#runs-panel) charts all of them and downloads them as CSV, and a [sweep](./run-queue#sweeps) ranks its variants by one of them (`objective.metric`):
+
+| Series | Recorded | Step axis |
+| --- | --- | --- |
+| `train_loss`, `lr` | Every epoch. | Epoch number; a run resumed through `start_epoch` continues the numbering. |
+| `val_loss` | Every epoch, when `val_dataloader` is wired. | Epoch |
+| `val_accuracy` | Every epoch, when `val_dataloader` is wired and `loss_fn` is `CrossEntropyLoss` or `NLLLoss`. | Epoch |
+| `patience_counter`, `best_epoch` | Every epoch, when early stopping is on. | Epoch |
+| `train_loss_batch` | Every `log_interval`-th batch, with `batch_metrics` on. | Batch, counted across epochs |
+| `grad_norm`, plus `grad_norm_clipped` when `grad_clip_norm` is set | Every `log_interval`-th optimizer step, with `log_grad_norm` on. The norm is measured before clipping. | Optimizer step |
+| `update_ratio` | Every `log_interval`-th optimizer step, with `log_update_ratio` on: ‖lr × grad‖ / ‖weights‖. | Optimizer step |
+| `val_loss_step` | Every `val_every_steps` optimizer steps, when `val_dataloader` is wired. | Optimizer step |
+
+`EvaluateModel` adds one `eval_accuracy` point when it runs.
+
+The loop's other options:
+
+- **Early stopping.** `early_stopping_patience`, when above 0, stops training after that many epochs without improvement in `monitor`: `val_loss`, lower is better (the training loss when no `val_dataloader` is wired), or `val_accuracy`, higher is better (when it is not recorded, the loop warns and watches `val_loss`). With early stopping on, the `model` output holds the best epoch's weights rather than the last epoch's, except after **Stop**.
+- **Periodic checkpoints.** `checkpoint_every` saves a checkpoint every N epochs, and `checkpoint_every_steps` every N optimizer steps (0, the default, turns either off), to `models/periodic/` in the data folder. The files are listed with the run's artifacts in the Runs panel, and retention deletes them with their run. Each one is roughly the model plus its optimizer state, often several times the model's size, and nothing limits how many a run writes while it is still going. An exported script and the CLI Graph Runner write none. Resume from one the same way as from any checkpoint: [Stopping and resuming](./reproducing-baselines#stopping-and-resuming).
+- **Step-based schedules.** `scheduler_step` (Advanced) sets when a wired `LRScheduler` advances: after every `epoch` (the default) or after every `optimizer_step` (`ReduceLROnPlateau` stays per epoch). It also sets the unit of the scheduler's lengths (`step_size`, `T_max`, `total_steps`). `LRScheduler`'s `warmup_cosine`, `warmup_linear` and `constant_with_warmup` raise the rate from near zero over `warmup_steps` (default 100), then decay it with a cosine, decay it linearly or hold it, over `total_steps` in all; use them with `optimizer_step`, since per epoch 100 warmup steps are 100 epochs. `max_steps` (Advanced), when above 0, ends training after that many optimizer steps, whatever `epochs` says. See [Gotchas worth knowing](./reproducing-baselines#gotchas-worth-knowing) for matching a schedule's length to the run.
+
+The `optimizer` output is the optimizer that actually trained: the one wired in, or a rebuilt one when that one's parameters did not match the model. Wire it, not the `Optimizer` node, into `CheckpointSaver.optimizer`. The memory options `precision` and `accumulate_steps` are covered in [Training Memory](/advanced/training-memory), and `tensorboard` in [TensorBoard](./data-augmentation#tensorboard).
 
 ## Partial re-execution (dirty tracking)
 
@@ -34,7 +57,7 @@ Deterministic nodes are cached automatically; non-deterministic ones (training l
 
 ### Content-aware caching for file-reading nodes
 
-A cache entry is keyed by a hash of the node's type, its parameters, its upstream nodes' cache keys, and the run device. Anything a node reads from *outside* the graph is invisible to `params` alone — a `path` parameter records *where* to read, never *what* is there. A node that reads external state therefore also folds a content fingerprint into its key: the resolved file's size and modification time, plus (for files up to 8 MB) a content hash, so a same-size edit landing inside one filesystem timestamp tick still changes the key. `CSVReader`, `FileReader`, `ImageReader`, `ImageBatchReader`, `Dataset` and `ImageFolderDataset` all do this — editing the file (or, for `Dataset`/`ImageFolderDataset`, one of the dataset's own files) and clicking **Run** again gives you the new content; leaving it untouched gets you the cached result instead of a re-read.
+A cache entry is keyed by a hash of the node's type, its parameters, its upstream nodes' cache keys, and the run device. Anything a node reads from *outside* the graph is invisible to `params` alone — a `path` parameter records *where* to read, never *what* is there. A node that reads external state therefore also folds a content fingerprint into its key: the resolved file's size and modification time, plus (for files up to 8 MB) a content hash, so a same-size edit landing inside one filesystem timestamp tick still changes the key. `CSVReader`, `FileReader`, `ImageReader`, `ImageBatchReader`, `Dataset`, `ImageFolderDataset` and `DocumentLoader` all do this — editing the file (or, for `Dataset`/`ImageFolderDataset`, one of the dataset's own files) and clicking **Run** again gives you the new content; leaving it untouched gets you the cached result instead of a re-read. `DocumentLoader` fingerprints every file under its `directory`, subfolders included even with `recursive` off, or the single uploaded file.
 
 `Dataset` fingerprints only the directory its own dataset lives in — `MNIST/` for MNIST, `cifar-10-batches-py/` for CIFAR-10, and so on — not the whole of `data_dir`. That matters because in a project directory every dataset shares one `assets/data/`, alongside `assets/models/`: before this scoping, saving a model or downloading a second dataset invalidated the first one and made it re-read on the next run.
 

@@ -84,13 +84,7 @@ uv pip install -e ".[dev]"
 
 ## 5. Install PyTorch
 
-The default install works on every platform:
-
-```bash
-uv pip install torch torchvision
-```
-
-macOS gets an MPS-capable build; Linux/Windows get the default PyPI build. This is enough to run the app and test models. For a specific GPU configuration, see **[GPU & Device Setup](./gpu-device)**.
+Step 4 already installed `torch` and `torchvision` from PyPI, because they are core dependencies of the backend. macOS gets an MPS-capable build; Linux and Windows get PyPI's default build, which is CPU-only on Windows. This is enough to run the app and test models. For a CUDA or ROCm build, reinstall from the matching wheel index; see **[GPU & Device Setup](./gpu-device)**.
 
 ## 6. Start backend + frontend
 
@@ -103,8 +97,10 @@ cd backend
 .venv\Scripts\activate       # Windows
 source .venv/bin/activate    # macOS / Linux
 
-uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
+uvicorn app.main:app --reload --host 127.0.0.1 --port 8000 --ws-max-size 67108864
 ```
+
+`--ws-max-size 67108864` gives the canvas WebSocket the 64 MB limit that `cdui start` and `cdui dev` set. Without it, uvicorn's own 16 MB limit applies, and the editor cannot run a graph larger than that.
 
 If you change the port or bind address, set `CODEFYUI_PORT` and `CODEFYUI_HOST` to the same values. The server derives its Host allowlist from these variables rather than from the listening socket. When the port differs, every request returns `421`; when the bind address differs, only requests from other machines do, because loopback names are always allowed. `cdui start --project` sets `CODEFYUI_PROJECT_DIR=<absolute dir>`. A uvicorn process started directly with this command stores its session token and other user data in the platform data directory: `%LOCALAPPDATA%\codefyui`, `~/.local/share/codefyui`, or `~/Library/Application Support/codefyui`. It does not use `.codefyui_dev/`. See [Project Directories](/usage/project-directories#6-create-an-api-key-invoke-needs-one).
 
@@ -121,18 +117,19 @@ Open [http://localhost:5173](http://localhost:5173). The Vite dev server proxies
 Or start both at once from the project root:
 
 ```bash
-cdui dev                 # if ~/.local/bin is on PATH
-./cdui dev               # from the project root
+./cdui dev               # Windows: .\cdui.cmd dev
 python scripts/dev.py dev
 ```
+
+A `cdui` on `PATH` is the launcher the one-line installer writes. It always runs the directory that installer set up, not this clone.
 
 ## Running tests
 
 ```bash
-cdui test                    # backend (pytest) + frontend (vitest); --backend / --frontend narrow it
+./cdui test                  # backend (pytest) + frontend (vitest); --backend / --frontend narrow it
 ```
 
-`cdui test` requires the `[dev]` extra installed in step 4. When using the launcher, install it with `cdui install --dev`. With the one-line installer, set `CODEFYUI_FORCE_BUILD=1 CODEFYUI_DEV=1`. To run the backend suite directly:
+`cdui test` requires the `[dev]` extra installed in step 4. When using the launcher, install it with `./cdui install --dev`. With the one-line installer, set `CODEFYUI_FORCE_BUILD=1 CODEFYUI_DEV=1`. To run the backend suite directly:
 
 ```bash
 cd backend

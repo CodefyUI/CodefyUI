@@ -111,10 +111,10 @@ curl -X POST http://127.0.0.1:8000/api/runs \
 run 由伺服器持有，不依附於送出它的瀏覽器分頁。這一點值得親自試一次，確認可以信任：
 
 1. 送出 run。
-2. 關閉分頁。
+2. 關閉瀏覽器分頁。
 3. 稍後重新開啟畫布。
 
-**執行任務**面板會重新連線到仍在執行的工作，並重播錯過的事件。離開期間不會遺失資料，也不會暫停 run。通道與並行上限請見[執行佇列](./run-queue.md)。
+啟動該 run 的畫布分頁會重新連上它，並把完整的事件紀錄重播到**執行紀錄**（「已重新連上仍在執行中的工作」）。以 `cdui run` 送出的 run 沒有對應的畫布分頁：它會列在**執行任務**分頁，按下**觀看**即可把它串流到執行紀錄。離開期間不會遺失資料，也不會暫停 run。通道與並行上限請見[執行佇列](./run-queue.md)。
 
 ## 停止與接續
 
@@ -149,13 +149,13 @@ run 由伺服器持有，不依附於送出它的瀏覽器分頁。這一點值�
 curl "http://127.0.0.1:8000/api/runs/<run_id>/metrics?format=csv" -o metrics.csv
 ```
 
-`train_loss`、`val_loss` 與 `lr` 每個 epoch 各記錄一次。**`eval_accuracy` 不會如此記錄**；`EvaluateModel` 只在 run 結束時寫入一個資料點。因此，200 epoch 的匯出檔有 601 列，而不是 800 列，也無法繪製 accuracy-by-epoch 曲線，因為產品中沒有節點會發出這項資料。相關追蹤項目為 issue [#202](https://github.com/CodefyUI/CodefyUI/issues/202)。
+`train_loss`、`val_loss`、`val_accuracy` 與 `lr` 每個 epoch 各記錄一次（`TrainingLoop` 記錄的所有 series 列在[執行圖](./running-graphs#training-loops-and-loss-charts)）。會有 `val_accuracy`，是因為這張圖把驗證 loader 接到 `TrainingLoop`，並使用 `CrossEntropyLoss`；該 loader 是 test split（見上文），所以這條曲線是每個 epoch 的測試準確率。`EvaluateModel` 會在 run 結束時再寫入一個 `eval_accuracy` 資料點，因此 200 epoch 的匯出檔有 801 列。隨附的 `evidence/metrics-seed1337.csv` 只有 601 列，因為它是在 `TrainingLoop` 開始記錄 `val_accuracy` 之前錄製的。
 
 此範例的 `TrainingLoop` 已將 `tensorboard` 設為 `true`，因此每個 run 也會在其產出目錄中寫入 event 檔案，可由任何 TensorBoard 安裝讀取。
 
 ## 注意事項 {/* #值得先知道的坑 */}
 
-- **Trigger 只標示執行起點。** 在此範例中，`Start` 會 trigger `RandomCrop`、評估用的 `ToTensorTransform`、`SequentialModel` 與 `Loss`。不過，只要 root 透過 data edge 連到正在執行的節點，就會執行，不論是否有 trigger 指向它；前述四個節點與兩個 `Dataset` 節點都符合這項條件。詳見[執行圖](./running-graphs#沒有-trigger-的節點仍然可能執行)。因此，移除四條 trigger edge 中的任一條都不會改變執行內容；要排除節點，必須中斷其 data edge。
+- **Trigger 只標示執行起點。** 在此範例中，`Start` 會 trigger `RandomCrop`、評估用的 `ToTensorTransform`、`SequentialModel` 與 `Loss`。不過，只要節點透過 data edge 連到正在執行的節點，就會執行，不論是否有 trigger 指向它；前述四個節點與兩個 `Dataset` 節點都符合這項條件。詳見[執行圖](./running-graphs#沒有-trigger-的節點仍然可能執行)。因此，移除四條 trigger edge 中的任一條都不會改變執行內容；要排除節點，必須中斷其 data edge。
 
 - **保持 `LRScheduler.T_max` 與 `TrainingLoop.epochs` 相等。** cosine annealing 每個 epoch 前進一步，並在 `T_max` 時降至零。`T_max` 過高時，run 會在曲線尚未完成前結束，無法完整 anneal，準確率約降低一個百分點。`T_max` 過低時，cosine 在超過 `T_max` 後會再次**上升**，使最後幾個 epoch 使用逐漸提高的 learning rate。兩者不一致時，`TrainingLoop` 會在伺服器 log、**執行任務**面板顯示的事件紀錄，以及畫布的**執行紀錄**中發出警告，但不會強制要求相等。截短 schedule 是有效選擇；此外，`CosineAnnealingWarmRestarts` 會將相同值用作 `T_0`，若要求它與 epoch 數相等，就不會發生 restart。相同檢查也適用於 `OneCycleLR.total_steps`；其預設值 1000 代表 batch 數量，沒有 epoch budget 會達到這個數字。以上說明假設使用預設的 `TrainingLoop.scheduler_step = epoch`，本 baseline 也使用這項設定。若改為 `optimizer_step`，`LRScheduler` 上的所有長度都會改以 optimizer step 計算，警告也會將它們與 run 的 step budget 比較，而不是與 `epochs` 比較。
 - **第一次執行會下載 CIFAR-10**（約 170 MB）。預設位置是 `backend/data/`；開啟專案目錄時，位置是 `<project>/assets/data`。後續 run 會重用資料。

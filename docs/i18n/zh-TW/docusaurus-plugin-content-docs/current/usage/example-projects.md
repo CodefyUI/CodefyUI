@@ -16,7 +16,7 @@ cd <example-name>
 cdui start --project .
 ```
 
-在伺服器印出的網址開啟編輯器，從側邊欄的**圖表**分頁開啟 graph，然後按下**執行**。每個 README 都會帶你走完整個發佈流程（commit、`cdui project publish`、建立 API key、用 curl 呼叫），並列出該範例在 CodefyUI 本身之外還需要的東西。
+在伺服器印出的網址開啟編輯器，從側邊欄的**圖表**分頁開啟 graph，然後按下**執行**。如果看到的是歡迎畫面，代表目前沒有開啟任何分頁，也沒有側邊欄；請先按**新增空白圖表**（見[分頁與持久化](./tabs-persistence#the-welcome-screen)）。每個 README 都會帶你走完整個發佈流程（commit、`cdui project publish`、建立 API key、用 curl 呼叫），並列出該範例在 CodefyUI 本身之外還需要的東西。
 
 ## 範例清單
 

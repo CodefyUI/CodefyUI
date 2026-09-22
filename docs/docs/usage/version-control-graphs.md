@@ -38,8 +38,8 @@ One catch up front: the default save location is **not** version-controlled. Sav
 - Run records -- stored only in that database, never in a file you would commit.
 - Published-app API keys (the `cdui_...` bearer tokens) -- also database-only, kept as sha256 hashes.
 - `.env` files and any local secrets.
-- The editor session token file at `<user_data_dir>/codefyui/session.token` (Windows `%LOCALAPPDATA%\codefyui\session.token`). It is written outside your graphs directory and rotates on every server restart, so it should never be copied into a repo.
-- LLM provider API keys -- see [Secrets](#secrets-keep-keys-out-of-your-graphs) below, because these are the one secret that can end up *inside* a graph you commit.
+- The editor session token file: `<install dir>/.codefyui_dev/session.token` for a server started with `cdui start` or `cdui dev` (default install dir `~/CodefyUI`), or `<dir>/session.token` when `CODEFYUI_USER_DATA_DIR` is set. Only a `uvicorn app.main:app` started by hand uses the platform user-data directory (`%LOCALAPPDATA%\codefyui\session.token` on Windows). It is written outside your graphs directory and rotates on every server restart, so it should never be copied into a repo.
+- LLM provider API keys -- keep them in environment variables; see [Secrets](#secrets-keep-keys-out-of-your-graphs) below.
 
 ## Set up a service repo
 
@@ -107,16 +107,17 @@ For large datasets, commit a small download script (or a URL plus a checksum) ra
 
 ## Secrets: keep keys out of your graphs
 
-The LLM nodes (for example LLMChat) expose API-key parameter fields such as `openai_api_key` and `anthropic_api_key`. **A value typed into one of these fields is saved verbatim into the graph JSON** -- so if you commit that graph, you commit your key. Do not do that.
+`LLMChat` has two API-key fields, `openai_api_key` and `anthropic_api_key`. They are secret parameters: a value typed into one is used only while that editor session lasts, and it is blanked from saved graphs, exports, published versions and run history ([Shared Instances](./shared-instances#what-is-per-graph-instead) has the full list). A graph you commit therefore carries no key, and the field is empty again after a reload or on another machine.
 
-Leave the field blank and provide the key through the environment instead. The node reads the first non-empty value it finds, in this order:
+Provide the key through the environment instead. The node reads the first non-empty value it finds, in this order:
 
-1. the node's `openai_api_key` field (saved in the graph -- avoid)
-2. a generic `api_key` field on the node (also saved in the graph -- avoid)
-3. `CODEFYUI_OPENAI_API_KEY` (environment)
-4. `OPENAI_API_KEY` (environment)
+1. the node's `openai_api_key` field (current session only)
+2. `CODEFYUI_OPENAI_API_KEY` (environment)
+3. `OPENAI_API_KEY` (environment)
 
-Anthropic works the same way with `CODEFYUI_ANTHROPIC_API_KEY` then `ANTHROPIC_API_KEY`. Set the environment variable before `cdui start`, keep the node field empty, and your saved graph carries no secret. If you ever paste a key into a node to test, clear it before you save and commit.
+Anthropic works the same way with `anthropic_api_key`, then `CODEFYUI_ANTHROPIC_API_KEY`, then `ANTHROPIC_API_KEY`. Set the environment variable before `cdui start`.
+
+A key can still reach a commit if you paste it into a field that is not secret, such as a prompt, or write it into the JSON by hand; the publish pre-flight refuses a graph file that still carries a secret value. A node from a plugin that is not loaded is not recognised, so its secret fields are not blanked.
 
 ## Validate every graph in CI
 
@@ -147,7 +148,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: CodefyUI/CodefyUI
-          ref: "1.3.0" # pin to a release tag for reproducibility
+          ref: "2.8.4" # pin a release tag, 1.4.0 or later (cdui project arrived in 1.4.0)
           path: CodefyUI
 
       - name: Install uv
@@ -163,15 +164,18 @@ jobs:
 
       - name: Restore plugin pins, then validate the project
         run: |
-          cdui project restore .    # or: CodefyUI/backend/.venv/bin/python CodefyUI/scripts/dev.py project restore .
-          cdui project validate .   # runs the full publish pre-flight on every graph
+          ./CodefyUI/cdui project restore .    # or: CodefyUI/backend/.venv/bin/python CodefyUI/scripts/dev.py project restore .
+          ./CodefyUI/cdui project validate .   # checks every graph in the project
 ```
 
-`cdui project validate .` validates every graph in the project through the same
-pre-flight the publish gate uses. It never hands `layout/*.layout.json` files
-to the validator, so there is no `*.json` glob to get wrong. Run
-`cdui project restore` first so plugin-provided nodes are installed before
-validation (CI order: restore, then validate).
+The job calls the `cdui` launcher by its path inside the checkout:
+`uv pip install -e .` installs no `cdui` command, so a bare `cdui` is not on
+`PATH` there. `cdui project validate .` checks every graph in the project
+([Project directories](./project-directories#4-validate-the-ci-gate) lists the
+checks). It never hands `layout/*.layout.json` files to the validator, so
+there is no `*.json` glob to get wrong. Run `cdui project restore` first so
+plugin-provided nodes are installed before validation (CI order: restore, then
+validate).
 
 ## Publishing from a versioned graph
 
@@ -187,7 +191,9 @@ That gives you a trail from a running app version back to the exact commit it ca
 
 ## Known rough edges
 
-Versioning graphs works today, but a few things produce friction and are being addressed:
+The flat `<name>.json` recipe on this page has two sources of diff noise:
 
 - **Node positions add diff noise.** Dragging a node changes its saved coordinates, so rearranging the canvas produces JSON diffs even when the pipeline is unchanged.
 - **Copy/paste regenerates node ids.** Duplicating nodes assigns fresh ids, which can make a small logical change look like a large diff.
+
+A [project directory](./project-directories) reduces both. Positions are saved in `layout/<name>.layout.json`, apart from the logic file, and **Hide layout files** keeps those files out of the Source Control tab's Changes list. The tab's graph summary counts moved positions and ignores regenerated edge ids; a node with a new id still counts as one removed and one added. See [What changed in the graph](./source-control#what-changed-in-the-graph).

@@ -84,13 +84,7 @@ uv pip install -e ".[dev]"
 
 ## 5. 安裝 PyTorch
 
-預設安裝適用於所有平台：
-
-```bash
-uv pip install torch torchvision
-```
-
-macOS 會拿到支援 MPS 的版本；Linux/Windows 會拿到 PyPI 預設版本。這樣就足以執行應用與測試模型。若需特定的 GPU 設定，請參考 **[GPU 與裝置設定](./gpu-device)**。
+第 4 步已經從 PyPI 安裝了 `torch` 與 `torchvision`，因為它們是後端的核心依賴。macOS 會拿到支援 MPS 的版本；Linux 與 Windows 會拿到 PyPI 的預設版本，其中 Windows 版是純 CPU 版。這樣就足以執行應用與測試模型。若需要 CUDA 或 ROCm 版本，請從對應的 wheel index 重新安裝，詳見 **[GPU 與裝置設定](./gpu-device)**。
 
 ## 6. 啟動後端 + 前端
 
@@ -103,8 +97,10 @@ cd backend
 .venv\Scripts\activate       # Windows
 source .venv/bin/activate    # macOS / Linux
 
-uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
+uvicorn app.main:app --reload --host 127.0.0.1 --port 8000 --ws-max-size 67108864
 ```
+
+`--ws-max-size 67108864` 讓畫布的 WebSocket 使用與 `cdui start`、`cdui dev` 相同的 64 MB 上限。少了它，uvicorn 會套用自己的 16 MB 上限，編輯器就無法執行超過這個大小的圖。
 
 如果變更 port 或綁定位址，請將 `CODEFYUI_PORT` 與 `CODEFYUI_HOST` 設為相同的值。伺服器會從這些變數推導 Host 允許清單，而不是從監聽中的 socket 取得。port 不一致時，每個請求都會回傳 `421`；綁定位址不一致時，只有來自其他機器的請求會回傳 `421`，因為 loopback 名稱一律允許。`cdui start --project` 會設定 `CODEFYUI_PROJECT_DIR=<absolute dir>`。直接以此指令啟動的 uvicorn 會將 session token 與其他使用者資料儲存在平台資料目錄：`%LOCALAPPDATA%\codefyui`、`~/.local/share/codefyui` 或 `~/Library/Application Support/codefyui`。它不會使用 `.codefyui_dev/`。請參閱[專案目錄](/usage/project-directories#6-建立-api-keyinvoke-需要)。
 
@@ -121,18 +117,19 @@ pnpm dev
 或在專案根目錄一次啟動兩者：
 
 ```bash
-cdui dev                 # 若 ~/.local/bin 已在 PATH
-./cdui dev               # 從專案根目錄執行
+./cdui dev               # Windows：.\cdui.cmd dev
 python scripts/dev.py dev
 ```
+
+`PATH` 上的 `cdui` 是一行指令安裝程式寫入的啟動器，它一律執行該安裝程式建立的目錄，而不是這份 clone。
 
 ## 執行測試
 
 ```bash
-cdui test                    # 後端（pytest）+ 前端（vitest）；--backend / --frontend 可只跑其中一組
+./cdui test                  # 後端（pytest）+ 前端（vitest）；--backend / --frontend 可只跑其中一組
 ```
 
-`cdui test` 需要第 4 步安裝的 `[dev]` extra。使用啟動器時，請執行 `cdui install --dev` 來安裝。使用一行指令安裝程式時，請設定 `CODEFYUI_FORCE_BUILD=1 CODEFYUI_DEV=1`。若要直接執行後端測試套件：
+`cdui test` 需要第 4 步安裝的 `[dev]` extra。使用啟動器時，請執行 `./cdui install --dev` 來安裝。使用一行指令安裝程式時，請設定 `CODEFYUI_FORCE_BUILD=1 CODEFYUI_DEV=1`。若要直接執行後端測試套件：
 
 ```bash
 cd backend

@@ -111,10 +111,10 @@ If your number is several points low rather than a fraction low, check the stem 
 A run belongs to the server, not to the browser tab that submitted it. This is the part worth exercising once so you trust it:
 
 1. Submit the run.
-2. Close the tab.
+2. Close the browser tab.
 3. Re-open the canvas later.
 
-The Runs panel re-attaches to the still-running job and replays the events it missed. Nothing is lost and nothing was paused while you were gone. See [Run Queue](./run-queue.md) for lanes and concurrency.
+The canvas tab that started the run re-attaches to it and replays its whole event log into the **Execution Log** ("Reconnected to a run that is still in progress"). A run submitted with `cdui run` has no canvas tab: it is listed in the **Runs** tab, where **Watch** streams it into the Execution Log. Nothing is lost and nothing was paused while you were gone. See [Run Queue](./run-queue.md) for lanes and concurrency.
 
 ## Stopping and resuming
 
@@ -149,13 +149,13 @@ Every run's metrics are queryable:
 curl "http://127.0.0.1:8000/api/runs/<run_id>/metrics?format=csv" -o metrics.csv
 ```
 
-`train_loss`, `val_loss` and `lr` are recorded once per epoch. **`eval_accuracy` is not** — `EvaluateModel` writes a single point when the run finishes. A 200-epoch export is therefore 601 rows, not 800, and there is no accuracy-against-epoch curve to plot: no node in the product emits one. Tracked as issue [#202](https://github.com/CodefyUI/CodefyUI/issues/202).
+`train_loss`, `val_loss`, `val_accuracy` and `lr` are recorded once per epoch ([Running Graphs](./running-graphs#training-loops-and-loss-charts) lists every series `TrainingLoop` records). `val_accuracy` is there because this graph wires a validation loader into `TrainingLoop` and uses `CrossEntropyLoss`; that loader is the test split (see above), so the curve is test accuracy per epoch. `EvaluateModel` adds one `eval_accuracy` point when the run finishes, so a 200-epoch export is 801 rows. The shipped `evidence/metrics-seed1337.csv` has 601 because it was recorded before `TrainingLoop` logged `val_accuracy`.
 
 `tensorboard` is already `true` on this example's `TrainingLoop`, so each run also writes event files under its artifact directory, readable by any TensorBoard install.
 
 ## Gotchas worth knowing
 
-- **A trigger only marks where execution starts.** `Start` triggers `RandomCrop`, the evaluation `ToTensorTransform`, `SequentialModel` and `Loss` in this example, but a root that feeds a data edge into a running node — those four, and both `Dataset` nodes — runs whether or not a trigger points at it (see [Running Graphs](./running-graphs#a-node-without-a-trigger-can-still-run)). Removing one of the four trigger edges therefore changes nothing; what takes a node out of the run is disconnecting its data edge.
+- **A trigger only marks where execution starts.** `Start` triggers `RandomCrop`, the evaluation `ToTensorTransform`, `SequentialModel` and `Loss` in this example, but a node that feeds a data edge into a running node — those four, and both `Dataset` nodes — runs whether or not a trigger points at it (see [Running Graphs](./running-graphs#a-node-without-a-trigger-can-still-run)). Removing one of the four trigger edges therefore changes nothing; what takes a node out of the run is disconnecting its data edge.
 
 - **Keep `LRScheduler.T_max` equal to `TrainingLoop.epochs`.** Cosine annealing is stepped once per epoch and reaches zero exactly at `T_max`. Set `T_max` too high and the run stops partway down the curve, never annealing fully, which costs roughly a point of accuracy; too low and the cosine turns back **up** past `T_max`, so the tail of the run trains at a rising learning rate. `TrainingLoop` warns when the two disagree — in the server log, in the run log the Runs panel shows, and in the canvas **Execution Log** — but it does not enforce the pair, because a truncated schedule is a legitimate choice and `CosineAnnealingWarmRestarts` reuses the same value as `T_0`, where equality would mean no restart ever happens. The same check covers `OneCycleLR.total_steps`, whose default of 1000 is a batch count no epoch budget reaches. All of this assumes the default `TrainingLoop.scheduler_step = epoch`, which is what this baseline uses; setting it to `optimizer_step` makes every length on `LRScheduler` an optimizer-step count instead, and the same warning then measures them against the run's step budget rather than against `epochs`.
 - **The first run downloads CIFAR-10** (about 170 MB). It lands in `backend/data/` by default, or in `<project>/assets/data` when a project directory is open. Later runs reuse it.

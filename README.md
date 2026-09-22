@@ -16,16 +16,22 @@ A visual, node-based deep learning pipeline builder. Design CNN, RNN, Transforme
 - **Teaching Inspector** — Record full per-node outputs, inspect input→output tensor diffs side-by-side, and wrap a subgraph with the **Compare Segment** bubble to focus on just head-input vs tail-output. Drop in a `TensorInput` node with an inline grid editor to feed the pipeline and watch each transformation
 - **Preset System** — Pre-built model templates for quick start; export your own subgraphs as reusable presets
 - **Multi-Tab Workspace** — Multiple independent canvases, each with its own execution context
+- **Saved Graphs** — The sidebar **Graphs** tab lists every graph saved on the server (search, open in its own tab, rename, delete); the toolbar **Save** icon writes back to the graph the tab came from
+- **Workspace Files** — **Export → Workspace (.cduiworkspace)** saves every open tab in one file; **Import...** in the **Graphs** tab opens a graph `.json` or a `.cduiworkspace`
+- **Source Control** — A sidebar tab that runs git on a project directory: stage, commit, branches, remotes, stash, fetch / pull / push, history and diffs
 - **WebSocket Execution** — Real-time per-node progress, Print node output displayed in the Execution Log panel
+- **Run Queue & Sweeps** — Runs belong to the server and queue per device; `cdui run` submits a graph from a terminal; `POST /api/sweeps` runs one graph over a grid or random sample of parameter values
 - **Partial Re-Execution** — Dirty node tracking: only re-runs changed nodes and their downstream dependencies
 - **Quick Node Search** — Double-click the canvas to open an instant search panel for adding nodes and presets
 - **Custom Node Manager** — GUI for uploading, enabling/disabling, and deleting custom nodes
 - **Plugin Center** — Install teaching packs and GitHub plugins from the sidebar's **Custom & Plugins** tab or **Settings**; new nodes appear without a reload
+- **Optional Packs** — The **Package Center** (or `cdui packs`) installs the large extras a stock install leaves out: sentence-transformers, embedding models, GloVe word vectors, a GPU build of PyTorch
+- **Publish** — Serve a graph as a versioned HTTP endpoint protected by API keys
 - **Model File Management** — Upload, list, and delete model weight files (.pt, .pth, .safetensors, .ckpt, .bin) via REST API
 - **CLI Graph Runner** — Execute graph.json directly from the command line with `run_graph.py`
 - **Results Panel** — Tabbed panel (Execution Log / Training / Runs), resizable and collapsible, with live loss chart
 - **i18n** — English and 繁體中文, with responsive `rem`-based font sizing
-- **Persistence** — Auto-saves all tabs in the browser (IndexedDB, with a `localStorage` fallback); import/export graph JSON files
+- **Persistence** — Tabs auto-save in the browser (IndexedDB, with a `localStorage` fallback); graphs save to the server (**Graphs** tab); import/export graph JSON and `.cduiworkspace` files
 - **Dark Theme** — Fully styled dark UI with color-coded categories
 
 ## Quick Start
@@ -42,7 +48,7 @@ curl -fsSL https://raw.githubusercontent.com/CodefyUI/CodefyUI/main/install.sh |
 powershell -ExecutionPolicy ByPass -c "irm https://raw.githubusercontent.com/CodefyUI/CodefyUI/main/install.ps1 | iex"
 ```
 
-Installs only what's needed to run the app: `git`, `uv`, and Python (via uv). The frontend bundle is downloaded prebuilt from the latest GitHub release, and the backend is **checked out at that same release tag** so the two stay in sync — **no Node.js or pnpm required for end users**. After install, **open a new terminal** and run from anywhere:
+Installs only what's needed to run the app: `git`, `uv`, and Python (via uv). The frontend bundle is downloaded prebuilt from the latest GitHub release, and the backend is **checked out at that same release tag** so the two stay in sync — **no Node.js or pnpm required for end users** (if that download fails, the installer installs Node.js 24 and pnpm and builds the frontend locally). After install, **open a new terminal** and run from anywhere:
 
 ```bash
 cdui start
@@ -52,8 +58,8 @@ Open [http://localhost:8000](http://localhost:8000). The single uvicorn process 
 
 | Command | Description |
 |---------|-------------|
-| `cdui install` | Install backend deps; download prebuilt frontend (or local build if `pnpm` available) |
-| `cdui update` | Update to the latest release (prebuilt path) or pull `main` (when building from source) and re-sync the frontend. Never prompts — reuses the PyTorch variant and dev tooling already in the venv unless `--gpu` / `--dev` override. Refuses while a server is running — `cdui stop` first |
+| `cdui install` | Install backend deps; download prebuilt frontend (or local build if `pnpm` available). The frontend step is skipped when `frontend/dist/index.html` already exists, unless `CODEFYUI_FORCE_BUILD=1` |
+| `cdui update` | Update the checkout and re-sync the frontend. Without `pnpm` on PATH: check out the latest release tag with `git checkout -f` (local changes to tracked files are discarded) and download its frontend. With `pnpm` (or `CODEFYUI_FORCE_BUILD=1`): reset local `main` to `origin/main` and rebuild. Never prompts — reuses the PyTorch variant and dev tooling already in the venv unless `--gpu` / `--dev` override. Refuses while a server is running — `cdui stop` first |
 | `cdui start` | Production mode — single uvicorn on `:8000`, in the background (no Node needed). `--foreground`/`-f` runs it attached |
 | `cdui status` | btop / k9s-style dashboard: CPU, memory, disk, GPU, top processes, plus the server's PID and health. Refreshes live by default (every 2s, `Ctrl+C` to quit); pass a number to set the interval (`cdui status 1`), or `--once` for a single frame. Piped/non-interactive output is single-frame automatically |
 | `cdui dev` | Developer mode — backend `:8000` + Vite HMR `:5173` (requires Node + pnpm) |
@@ -61,7 +67,7 @@ Open [http://localhost:8000](http://localhost:8000). The single uvicorn process 
 | `cdui stop` | Stop **this install's** services: the background server, plus leftovers started from this directory (foreground `cdui start`, `cdui dev`'s Vite). `--all` stops every CodefyUI and Vite process on the machine instead — including other people's, so avoid it on a shared host |
 | `cdui test` | Run the backend (`pytest`) and frontend (`vitest`) tests; the frontend half is skipped, not failed, when pnpm is absent |
 | `cdui clean` | Remove virtualenv, `node_modules`, and `frontend/dist` |
-| `cdui uninstall` | Clean + remove the PATH launcher |
+| `cdui uninstall` | Clean + remove the PATH launcher. The install directory, with your saved graphs and uploads, stays; delete it by hand to remove everything |
 | `cdui plugin install <name\|url>` | Install a plugin pack (catalog name like `foundations`, `owner/repo[@ref]`, or full GitHub URL) |
 | `cdui plugin list` | List installed plugin packs |
 | `cdui plugin uninstall <id>` | Remove an installed plugin pack |
@@ -78,10 +84,10 @@ Not shown: `cdui run` (below), the `cdui packs`, `cdui cache` and `cdui project`
 
 | Flag | Env var | Values | Purpose |
 |------|---------|--------|---------|
-| `--gpu <choice>` | `CODEFYUI_GPU` | `auto` / `cu118` / `cu121` / `cu124` / `cu126` / `cu128` / `rocm6.1` / `rocm6.2` / `cpu` / `mps` / `skip` | Select PyTorch wheel index. `auto` detects via `nvidia-smi` / `rocm-smi` / Apple Silicon. `skip` installs no torch (advanced — for users with a custom torch already in the venv). |
-| `--dev` / `--no-dev` | `CODEFYUI_DEV` | `1` / `0` | Install the `[dev]` extra (pytest, httpx, httpx-ws). Required for `cdui test`. Default off for end users, on for contributors. |
-| `--yes` | — | — | Accept all defaults non-interactively (CI / headless). |
-| `--lang <code>` | `CODEFYUI_LANG` | `en` / `zh` (the env var also accepts `zh-TW`) | The flag localises the `cdui install` / `cdui update` run it is passed to; the env var sets the language of every `cdui` command. |
+| `--gpu <choice>` | `CODEFYUI_GPU` | `auto` / `cu118` / `cu121` / `cu124` / `cu126` / `cu128` / `rocm6.1` / `rocm6.2` / `cpu` / `mps` / `skip` | Select PyTorch wheel index. `auto` detects via `nvidia-smi` / `rocm-smi` / Apple Silicon. `skip` chooses no wheel index: a torch that already satisfies `torch>=2.5` is kept; otherwise the dependency install pulls PyPI's default wheel (CPU-only on Windows). |
+| `--dev` / `--no-dev` | `CODEFYUI_DEV` | `1` / `0` | Install the `[dev]` extra (pytest, httpx, httpx-ws). Required for `cdui test`. Off by default, including at the interactive `[y/N]` prompt; contributors pass `--dev`. |
+| `--yes` / `-y` | — | — | Accept all defaults non-interactively (CI / headless). |
+| `--lang <code>` | `CODEFYUI_LANG` | `en` / `zh` (the env var also accepts `zh-TW`) | The flag localises the `cdui install` / `cdui update` run it is passed to; the env var sets the language of every `cdui` command. The `plugin`, `project`, `packs` and `cache` groups recognise only `zh` itself, not `zh-TW`. |
 | — | `CODEFYUI_DIR` | path | Install directory (default: `~/CodefyUI`). |
 | — | `CODEFYUI_RELEASE_TAG` | tag | Pin the frontend bundle and the backend checkout to a specific release (default: `latest`). |
 | — | `CODEFYUI_FORCE_BUILD` | `1` | Skip the prebuilt-dist download and build locally with pnpm. |
@@ -98,10 +104,11 @@ Submit a graph to the running server's queue — the run survives your terminal 
 cdui run examples/Usage_Example/CNN-MNIST/TrainCNN-MNIST/graph.json
 ```
 
-Or run one directly, without the server:
+Or run one directly, without the server, in the backend's virtual environment:
 
 ```bash
 cd backend
+source .venv/bin/activate    # Windows: .venv\Scripts\activate
 python run_graph.py ../examples/Usage_Example/CNN-MNIST/TrainCNN-MNIST/graph.json
 python run_graph.py ../examples/Model_Architecture/ResNet-SkipConnection-CNN/graph.json --validate-only
 ```
@@ -177,18 +184,19 @@ Captured data lives in server-wide process memory, not browser-session memory. T
 
 ### Settings popover toggles
 
-The toolbar **Settings** popover groups every per-tab switch by section — same idea as VS Code's Settings UI:
+The toolbar **Settings** popover groups its settings by section — same idea as VS Code's Settings UI:
 
 | Section | Rows |
 |---------|------|
 | **Execution** | **Compute device** — CPU by default; nodes set to `auto` follow it. |
 | **LLM Providers** | **ChatGPT Codex account** — Sign in / Sign out / Refresh for the Codex provider in `LLMChat`. |
-| **Optional packs** | **Package Center** — Open; shows how many packs are installed. |
-| **Plugins** | **Plugin Center** — Open; shows how many plugins are installed and available. |
+| **Optional Packs & Plugins** | **Package Center** — Open; shows how many packs are installed. **Plugin Center** — Open; shows how many plugins are installed and available. |
 | **Recording & Inspection** | **Record node outputs** (on by default; turn it off before a heavy training run), **Verbose internals** (algorithm internals such as attention scores, for the Inspector's Steps tab), **Compare segment** (Create segment with two nodes selected / Clear active). |
 | **Training Behavior** | **Persist weights between runs** (on by default — off means every run reinitialises), **Reset all weights now**, **Capture gradients** (forward + `.backward()`, for the Inspector's Backward tab), **Auto-synthesize loss** (when the graph has no `Loss` / `BackwardOnce` node), **Random seed**, **Deterministic algorithms**. |
 | **Editor** | **Grid snap**, **Show node tooltips**, **Node category mode** (Basic / All), **Connection style** (Circuit, the default / Curve). |
 | **This Server** | Version, nodes and presets loaded, and cache memory usage, with a Refresh button. |
+
+**Recording & Inspection** and **Training Behavior** are shown only while a graph tab is open.
 
 ## Plugin Packs
 
@@ -196,7 +204,7 @@ Educational ("Edu") nodes ship as installable plugin packs, organised **by
 direction** so each maps onto a hands-on textbook module and installs
 cumulatively as you progress. They also install from inside the editor: the
 **Plugin Center** (sidebar **Custom & Plugins** tab → **Plugin Center...**, or
-**Settings → Plugins**) takes a catalog name, `owner/repo[@ref]` or a GitHub
+**Settings → Optional Packs & Plugins**) takes a catalog name, `owner/repo[@ref]` or a GitHub
 URL and loads the new nodes without a reload — see
 [Plugin Center](https://docs.codefyui.com/advanced/plugins#plugin-center). From
 a terminal:
@@ -313,6 +321,8 @@ The core routes. Most mutating requests under `/api/` need the `X-CodefyUI-Token
 | `/api/graph/save` | POST | Save a graph |
 | `/api/graph/load/{name}` | GET | Load a saved graph |
 | `/api/graph/list` | GET | List saved graphs |
+| `/api/graph/rename` | POST | Rename a saved graph (body `{"from": "<name>", "to": "<name>"}`) |
+| `/api/graph/{name}` | DELETE | Delete a saved graph (and its layout file in project mode) |
 | `/api/graph/export` | POST | Export a single-file headless Python runner (CodefyUI backend environment required) |
 | `/api/examples/list` | GET | List example graphs |
 | `/api/examples/load` | GET | Load an example graph |

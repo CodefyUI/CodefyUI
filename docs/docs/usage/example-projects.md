@@ -21,7 +21,9 @@ cdui start --project .
 ```
 
 Open the editor at the URL the server prints, open the graph from the sidebar's
-**Graphs** tab, and press **Run**. Each README walks through the full publish flow (commit, `cdui project
+**Graphs** tab, and press **Run**. If the welcome screen shows instead, no tab is
+open and there is no sidebar; click **New blank graph** first (see
+[Tabs & Persistence](./tabs-persistence#the-welcome-screen)). Each README walks through the full publish flow (commit, `cdui project
 publish`, mint an API key, invoke with curl) and lists anything the example needs
 beyond CodefyUI itself.
 

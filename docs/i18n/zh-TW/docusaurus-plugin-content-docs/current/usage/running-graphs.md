@@ -18,13 +18,36 @@ description: 執行如何運作 — WebSocket 串流、結果面板、即時 los
 
 只移除節點的 trigger 邊，不會讓它退出這次執行。只要一條 **data** 邊仍把它的輸出連到會執行的節點，這個節點就會執行；連到必要輸入或選用輸入都沒有差別，也不要求它有自己的 trigger。`Dataset` 或轉換鏈的第一個節點通常沒有 trigger，並預期以這種方式執行。相同規則適用於其他已連線的節點。
 
-實際效果是：**只中斷 trigger 邊不再能停用分支。** 若要保留節點的接線供稍後使用，但本次不執行它，請中斷其 **data** 邊；這才會將它從本次執行中移除。對於鏈中間的節點，可以使用**略過這個節點**（以右鍵點擊節點，或按 `Ctrl`／`Cmd`+`B`），跳過該節點並將輸入直接傳給原本的下游節點。這項功能只適用於有一個輸入型別與輸出相同、可直接轉送的節點。因此，完全沒有輸入的來源節點（`CSVReader`、`ImageReader`、`Dataset` 及其他檔案讀取節點）會拒絕這項操作。這類節點只能透過中斷 data 邊來停用。
+實際效果是：**只中斷 trigger 邊不再能停用分支。** 若要保留節點的接線供稍後使用，但本次不執行它，請中斷其 **data** 邊；這才會將它從本次執行中移除。對於鏈中間的節點，可以使用**略過**（以右鍵點擊節點，或按 `Ctrl`／`Cmd`+`B`），跳過該節點並將輸入直接傳給原本的下游節點。這項功能只適用於有一個輸入型別與輸出相同、可直接轉送的節點。因此，完全沒有輸入的來源節點（`CSVReader`、`ImageReader`、`Dataset` 及其他檔案讀取節點）會拒絕這項操作。這類節點只能透過中斷 data 邊來停用。
 
 這也會影響讀取節點。`CSVReader`、`ImageReader` 等節點只要仍連到一個輸入埠，即使是選用輸入埠，也會在沒有 trigger 時執行；過去這種情況會略過節點。如果節點指向的檔案已刪除或移動，先前能成功執行的圖可能會在該節點發生 `FileNotFoundError`。
 
 ## 訓練迴圈與 loss 圖表
 
-`TrainingLoop` 節點會在訓練期間發出進度事件。結果面板的 **訓練** 分頁會在每個 epoch 完成時繪製 **即時 loss 圖表**，讓你即時觀察收斂情況。
+`TrainingLoop` 節點會在訓練期間發出進度事件。結果面板的**訓練**分頁會即時顯示這些事件：目前的**輪次**、最新與**最佳**的訓練 loss、進度條、每個 epoch 訓練 loss 的**損失曲線**、迴圈的**訓練設定**，以及列出每個 epoch 變化量與耗時的表格。
+
+迴圈記錄的每個數值也會以具名序列隨 run 儲存。在[執行任務面板](./run-queue#runs-panel)中開啟 run 的詳細資料，可以看到所有序列的圖表並下載 CSV；[參數掃描](./run-queue#sweeps)則依其中一個序列（`objective.metric`）為各個 variant 排名：
+
+| 序列 | 記錄時機 | 步數軸 |
+| --- | --- | --- |
+| `train_loss`、`lr` | 每個 epoch。 | epoch 編號；透過 `start_epoch` 接續的 run 會延續編號。 |
+| `val_loss` | 每個 epoch，需接上 `val_dataloader`。 | epoch |
+| `val_accuracy` | 每個 epoch，需接上 `val_dataloader`，且 `loss_fn` 為 `CrossEntropyLoss` 或 `NLLLoss`。 | epoch |
+| `patience_counter`、`best_epoch` | 每個 epoch，需開啟 early stopping。 | epoch |
+| `train_loss_batch` | 開啟 `batch_metrics` 時，每 `log_interval` 個 batch 記錄一次。 | 跨 epoch 累計的 batch 編號 |
+| `grad_norm`，設定 `grad_clip_norm` 時另有 `grad_norm_clipped` | 開啟 `log_grad_norm` 時，每 `log_interval` 個 optimizer step 記錄一次。norm 在裁剪之前量測。 | optimizer step |
+| `update_ratio` | 開啟 `log_update_ratio` 時，每 `log_interval` 個 optimizer step 記錄一次：‖lr × grad‖ / ‖weights‖。 | optimizer step |
+| `val_loss_step` | 每 `val_every_steps` 個 optimizer step 記錄一次，需接上 `val_dataloader`。 | optimizer step |
+
+`EvaluateModel` 執行時會新增一個 `eval_accuracy` 資料點。
+
+迴圈的其他選項：
+
+- **Early stopping。** `early_stopping_patience` 大於 0 時，會在 `monitor` 連續這麼多個 epoch 沒有改善時停止訓練：`val_loss` 越低越好（沒有接上 `val_dataloader` 時改看訓練 loss），`val_accuracy` 越高越好（沒有記錄這個序列時，迴圈會發出警告並改看 `val_loss`）。開啟 early stopping 時，`model` 輸出是最佳 epoch 的權重，而不是最後一個 epoch 的權重；按下**停止**的情況除外。
+- **定期 checkpoint。** `checkpoint_every` 每 N 個 epoch、`checkpoint_every_steps` 每 N 個 optimizer step 儲存一次 checkpoint（預設值 0 表示關閉），寫入資料目錄中的 `models/periodic/`。這些檔案會列在執行任務面板中該 run 的產出檔案裡，run 因保留上限被清除時也會一併刪除。每個檔案約為模型加上 optimizer 狀態的大小，常是模型本身的數倍，而且 run 仍在執行時，寫入的數量沒有上限。匯出的腳本與 CLI 圖形執行器不會寫入這些檔案。從這些檔案接續訓練的方式與其他 checkpoint 相同，見[停止與接續](./reproducing-baselines#stopping-and-resuming)。
+- **以 step 為單位的排程。** `scheduler_step`（進階）決定接上的 `LRScheduler` 何時前進：每個 `epoch` 之後（預設），或每個 `optimizer_step` 之後（`ReduceLROnPlateau` 仍然每個 epoch 前進一次）。它也決定排程器各長度參數（`step_size`、`T_max`、`total_steps`）的單位。`LRScheduler` 的 `warmup_cosine`、`warmup_linear` 與 `constant_with_warmup` 會在 `warmup_steps`（預設 100）內把學習率從接近零提高，之後分別以 cosine 遞減、線性遞減或維持不變，全長為 `total_steps`；請搭配 `optimizer_step` 使用，因為以 epoch 為單位時，100 個 warmup step 就是 100 個 epoch。`max_steps`（進階）大於 0 時，會在 optimizer step 總數達到這個值時結束訓練，不論 `epochs` 為何。排程長度如何配合 run 的長度，見[注意事項](./reproducing-baselines#gotchas-worth-knowing)。
+
+`optimizer` 輸出是實際用於訓練的 optimizer：通常就是接進來的那一個；若它的參數與模型不符，則是重新建立的 optimizer。請把這個輸出接到 `CheckpointSaver.optimizer`，而不是 `Optimizer` 節點的輸出。記憶體選項 `precision` 與 `accumulate_steps` 見[訓練記憶體](/advanced/training-memory)，`tensorboard` 見 [TensorBoard](./data-augmentation#tensorboard)。
 
 ## 部分重新執行（髒節點追蹤）
 
@@ -34,7 +57,7 @@ CodefyUI 會追蹤 **dirty** 節點。當你變更一個節點的參數或輸入
 
 ### 檔案讀取節點的內容感知快取
 
-快取項目的 key 由節點類型、參數、上游節點的快取 key，以及執行裝置雜湊而成。節點從圖外部讀取的內容無法只由 `params` 表示：`path` 參數只記錄讀取位置，不包含該位置的內容。因此，讀取外部狀態的節點還會把內容指紋加入 key。指紋包含解析後檔案的大小與修改時間；對於不超過 8 MB 的檔案，還包含內容雜湊。即使同樣大小的修改發生在同一個檔案系統時間戳記刻度內，key 仍會改變。`CSVReader`、`FileReader`、`ImageReader`、`ImageBatchReader`、`Dataset` 和 `ImageFolderDataset` 都使用這項機制。編輯檔案後再次點擊 **執行**，會取得新內容；若檔案未變，則使用快取結果而不重新讀取。對於 `Dataset` 和 `ImageFolderDataset`，資料集中的任一檔案變更也會更新指紋。
+快取項目的 key 由節點類型、參數、上游節點的快取 key，以及執行裝置雜湊而成。節點從圖外部讀取的內容無法只由 `params` 表示：`path` 參數只記錄讀取位置，不包含該位置的內容。因此，讀取外部狀態的節點還會把內容指紋加入 key。指紋包含解析後檔案的大小與修改時間；對於不超過 8 MB 的檔案，還包含內容雜湊。即使同樣大小的修改發生在同一個檔案系統時間戳記刻度內，key 仍會改變。`CSVReader`、`FileReader`、`ImageReader`、`ImageBatchReader`、`Dataset`、`ImageFolderDataset` 和 `DocumentLoader` 都使用這項機制。編輯檔案後再次點擊 **執行**，會取得新內容；若檔案未變，則使用快取結果而不重新讀取。對於 `Dataset` 和 `ImageFolderDataset`，資料集中的任一檔案變更也會更新指紋。`DocumentLoader` 會對 `directory` 底下的每個檔案建立指紋，即使 `recursive` 關閉也包含子資料夾；使用上傳的單一檔案時，則只對該檔案建立指紋。
 
 `Dataset` 只會對該資料集所在的目錄建立指紋，例如 MNIST 的 `MNIST/` 或 CIFAR-10 的 `cifar-10-batches-py/`，而不是整個 `data_dir`。在專案目錄中，每個資料集共用 `assets/data/`，旁邊還有 `assets/models/`。縮小指紋範圍後，儲存模型或下載另一個資料集不會再讓第一個資料集的快取失效並於下次執行時重新讀取。
 

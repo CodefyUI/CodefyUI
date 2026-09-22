@@ -104,9 +104,9 @@ number, and the curves are labelled "test" rather than "val" for that reason.
 `GET /api/runs/<id>/metrics?format=csv` produced it. `evidence/curves-seed1337.png`
 plots the loss curves and the cosine schedule from that CSV.
 
-There is no accuracy-against-epoch curve because no node emits one: `TrainingLoop`
-records loss and learning rate only, and `EvaluateModel` records a single point at
-the end. Tracked as issue #202.
+The export has no accuracy-per-epoch series because it was recorded before
+`TrainingLoop` logged one. A run of this graph today also records `val_accuracy`
+once per epoch (on the test split, see above), 801 metric rows in total.
 
 ### Stop and resume
 
@@ -136,28 +136,38 @@ to issue #149.
 
 ## Running it
 
-Open the example, then submit it from the Runs panel with `seed` 1337 and
-`deterministic` enabled. The first run downloads CIFAR-10 (about 170 MB) into
+Open the example, set **Random seed** to 1337 and turn on **Deterministic
+algorithms** under **Settings → Training Behavior**, and press **Run**. From a
+terminal, this submits the same run to a running server:
+
+```bash
+cdui run examples/Usage_Example/ResNet18-CIFAR10-Baseline/graph.json \
+  --seed 1337 --deterministic --device cuda
+```
+
+The first run downloads CIFAR-10 (about 170 MB) into
 `backend/data/`, or into `<project>/assets/data` when a project directory is
 open. CIFAR-10 is Krizhevsky, *Learning Multiple Layers of Features from Tiny
 Images* (2009); it is fetched at run time and not redistributed here.
 
-The run belongs to the server, not the browser tab — close the tab and come
-back, and the Runs panel re-attaches and replays what it missed.
+The run belongs to the server, not the browser tab. Close the tab and reopen the
+editor, and the canvas tab that started the run re-attaches and replays its log;
+a run started from a terminal is listed in the **Runs** tab, where **Watch**
+streams it.
 
 ## Notes for anyone editing this graph
 
-- **Every root node needs its own trigger edge from `Start`.** Execution walks
-  forward from the entry points along *data* edges, so a node with no incoming
-  data edge is pruned without one. This graph has exactly four such nodes and
-  wires all four: `aug-crop` (`RandomCrop`, head of the training augmentation
-  chain), `ev-totensor` (`ToTensorTransform`, head of the evaluation chain),
-  `model` (`SequentialModel`) and `loss` (`Loss`). The two `Dataset` nodes are
-  **not** roots — `aug-norm` feeds `ds-train.train_transform` and `ev-norm`
-  feeds `ds-test.eval_transform`, so the forward walk reaches them by itself.
-  Leaving a trigger out produces a missing-input error naming a node much
-  further downstream: drop `e-trigger-3` and `model`, `opt` and `sched` all
-  vanish, and the failure is reported against `train` (issue #201).
+- **A trigger only marks where execution starts.** `Start` triggers the four
+  roots: `aug-crop` (`RandomCrop`, head of the training augmentation chain),
+  `ev-totensor` (`ToTensorTransform`, head of the evaluation chain), `model`
+  (`SequentialModel`) and `loss` (`Loss`). The two `Dataset` nodes are **not**
+  roots — `aug-norm` feeds `ds-train.train_transform` and `ev-norm` feeds
+  `ds-test.eval_transform`, so the forward walk reaches them by itself. A node
+  that feeds a data edge into a running node runs whether or not a trigger
+  points at it
+  ([Running Graphs](../../../docs/docs/usage/running-graphs.md#a-node-without-a-trigger-can-still-run)),
+  so removing one of the four trigger edges changes nothing; disconnecting a
+  node's data edge is what takes it out of the run.
 - **`EvaluateModel.device` is `auto`, like `TrainingLoop.device` beside it.**
   It used to be pinned to `cuda` because the node had no way to follow the
   run's device; since issue #204 `auto` means "the device this run was

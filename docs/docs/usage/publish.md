@@ -20,12 +20,13 @@ All management calls below use the editor session token (`X-CodefyUI-Token`, obt
 
 ```text
 POST /api/apps/{slug}/publish        (session token)
-body: {"graph": "<saved name>", "note": "optional", "create": false}
+body: {"graph": "<graph address>", "note": "optional", "create": false}
       (optional "record_io": true|false -- omitted inherits the app's current setting; see below)
       (optional "git_commit": "<7-40 hex>", "git_dirty": true|false -- publish provenance;
        normally set for you by `cdui project publish`)
 ```
 
+- `graph` is the saved graph's address, not necessarily its title -- see [the graph's address](./graph-as-a-function#the-graphs-address).
 - `slug` is the stable public name: `^[a-z][a-z0-9-]{0,63}$`, chosen by you, independent of the graph name -- renaming a graph never breaks a published URL.
 - Publishing to a slug that does not exist yet requires `"create": true`, otherwise 404 `app_not_found` -- a misspelled slug on a re-publish can never silently create a second app.
 - Publishing to an existing slug appends the next version -- that IS the re-publish path.
@@ -84,7 +85,7 @@ POST /api/keys/{id}/revoke    (session token)  -- soft revoke; the row stays lis
 POST /api/apps/{slug}/invoke          (auth: Authorization: Bearer cdui_...)
 ```
 
-The body is the same as [`/api/graph/run`](./graph-as-a-function): optional, with optional `inputs`, `timeout_s`, `device`. A body with no `device` runs on the published graph's `settings.device`, else on the CPU; `"device": "auto"` takes the best accelerator available. Two differences:
+The body is the same as [`/api/graph/run`](./graph-as-a-function): optional, with optional `inputs`, `timeout_s`, `device`. A body with no `device` runs on the published graph's [`settings.device`](/advanced/device-backends#the-graph-settings-object), else on the CPU; `"device": "auto"` takes the best accelerator available. Two differences:
 
 - `record_outputs` is **accepted and ignored** -- published runs are recorded in SQLite (below), never in the editor's inspector store.
 - `timeout_s` covers TOTAL request time INCLUDING queue wait: invokes of one app run one-at-a-time (per-slug lock), and a call that spends its budget waiting behind another invoke fails with the `timeout` envelope noting it expired while queued. Different slugs run in parallel.
@@ -167,6 +168,6 @@ Understand what a LAN bind exposes -- plainly:
 - CORS settings change nothing about this: the exposure is same-origin, and the `Authorization` CORS header exists only so future cross-origin JS callers can be preflighted -- it is not a mitigation.
 - LAN access control is **not planned** (issue #247, closed 2026-08-30): the server does not gate the editor by network, so a shared server is the reverse-proxy setup below, not a bind.
 
-The credentials half of the same story is [Shared Instances](./shared-instances): an instance has ONE identity, so the ChatGPT sign-in, the LLM keys in `.env` and the Kaggle credentials are shared by everyone who can reach the port, with no record of who spent what.
+The credentials half of the same story is [Shared Instances](./shared-instances): an instance has ONE identity, so the ChatGPT sign-in, the LLM keys in `.env` and every other credential the server holds are shared by everyone who can reach the port, with no record of who spent what.
 
 If what you actually want is a shared server with real sign-in, do not bind the LAN at all: bind loopback and put a reverse proxy in front, which is the only way to get authentication and TLS in front of an instance today. [Deployment Behind a Reverse Proxy](./deployment) has the whole shape, with a tested nginx site and systemd unit.

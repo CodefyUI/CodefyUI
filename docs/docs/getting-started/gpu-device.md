@@ -88,13 +88,25 @@ On ROCm, `torch.cuda.is_available()` returns `True` because ROCm presents itself
 
 PyTorch does **not** ship an official Windows ROCm build. Your options:
 
-- **(a) DirectML** — uses the AMD GPU but with reduced performance and requires code changes (the built-in nodes default to `cuda`/`cpu`):
+- **(a) DirectML** — requires code changes. The package installs, but runs, graphs and node parameters accept only `cpu`, `auto`, `cuda` (or `cuda:N`) and `mps`, so CodefyUI never selects a DirectML device:
 
   ```bash
   uv pip install torch-directml
   ```
 
 - **(b) CPU mode** — the default install already works. Recommended for learning/prototyping on Windows with AMD.
+
+## When a device is unavailable {/* #when-a-device-is-unavailable */}
+
+The **Compute device** in **Settings** is stored in the browser, not on the server, so it can name a device this server does not have, such as a `cuda` chosen on another computer. The editor then shows where a run will go:
+
+- The Settings select shows the stored value as a disabled option, "cuda (not on this server)", and the row's hint changes from "Best available device: …" to "No cuda on this server. Runs fall back to CPU."
+- In the graph's device select next to **Run**, the first option changes from "Follow Settings (…)" to "Follow Settings (cuda → CPU)".
+- A device stored in the graph file that this server does not list, such as `auto` or `cuda:1` on a one-GPU machine, appears in that select as a disabled option showing the stored value. Saving the graph keeps it.
+
+Choosing a listed device clears the state. A device type the server lacks runs on the CPU; a `cuda:N` index it lacks runs on its current GPU, and `auto` on the best device present (see [Device Backends](/advanced/device-backends)).
+
+When the server detects a GPU but its PyTorch build is not the one recommended for that GPU (usually the CPU build), the Settings row adds "NVIDIA GeForce RTX 4080 (driver 560.94) detected; this server runs the CPU build. Install:", the install command (for example `cdui install --gpu cu128`) and a **Package Center** link. On a server started with `cdui start`, the **GPU PyTorch** card in the Package Center installs that build, restarts the server and reloads the page. The Settings device does not change by itself; choose the GPU there or on the graph to use it.
 
 ## Troubleshooting
 
@@ -104,9 +116,9 @@ PyTorch does **not** ship an official Windows ROCm build. Your options:
 cdui install --gpu cu128     # back again: cdui install --gpu cpu
 ```
 
-### `uv pip install -e ".[ml]"` installs the wrong PyTorch version
+### `uv pip install -e .` installs the wrong PyTorch build
 
-The `[ml]` optional group in `pyproject.toml` does **not** specify an index URL, so uv installs whatever PyPI has as default — usually the CPU build on Windows, or a version that may not match your CUDA runtime. Always use the explicit `--index-url` command from this page.
+`torch` and `torchvision` are core dependencies of the backend and name no index URL. When the venv has no torch, or one older than 2.5, `uv pip install -e .` (or `-e ".[dev]"`) installs PyPI's default wheel: CPU-only on Windows, and not necessarily built for your CUDA runtime elsewhere. Install the build you want first, with `cdui install --gpu <choice>` or the explicit `--index-url` command on this page; a torch that already satisfies the requirement is left alone.
 
 ### `torch.cuda.is_available()` returns False with an NVIDIA GPU
 
@@ -119,9 +131,9 @@ The `[ml]` optional group in `pyproject.toml` does **not** specify an index URL,
 
 The frontend reads available devices from the backend. If your GPU isn't listed:
 
-1. Confirm PyTorch sees it: `python -c "import torch; print(torch.cuda.is_available())"`
-2. Click the toolbar **Reload Nodes** button.
-3. Reload the page.
+1. Confirm PyTorch sees it, with `backend/.venv` activated: `python -c "import torch; print(torch.cuda.is_available())"`
+2. Restart the server (`cdui stop`, then `cdui start`). The server imports PyTorch once, when it starts, so a build installed while it runs stays invisible to it, and **Reload Nodes** does not re-import it. The Package Center's **GPU PyTorch** card installs and restarts in one step.
+3. Reload the page. The editor reads the device list once per page load.
 
 ### Verify device detection from the API
 

@@ -101,4 +101,4 @@ AGPL-3.0 第 2 條（*Basic Permissions*）寫著：
 
 ## 第三方元件
 
-CodefyUI 會轉散布第三方軟體，包含 Python 相依套件，以及預先建置的前端 bundle 內的編譯資產（React、KaTeX 及其字型等）。它們的著作權聲明與授權條款收錄在 [THIRD_PARTY_NOTICES.md](https://github.com/CodefyUI/CodefyUI/blob/main/THIRD_PARTY_NOTICES.md)，該檔會與 `LICENSE`、`NOTICE` 一起放進 release tarball。這些元件全部是寬鬆授權，沒有任何一個帶有自己的 copyleft 義務。
+release tarball 會轉散布預先建置的前端 bundle 內的第三方編譯程式碼（React、React Flow、KaTeX 及其字型、CodeMirror 等），全部採用 MIT、ISC 或 BSD-3-Clause 授權。Python 相依套件不會被轉散布，而是在安裝時從 PyPI 安裝。其中兩個間接相依套件採用 MPL-2.0 這種檔案層級的 copyleft 授權：certifi（MPL-2.0）與 tqdm（MPL-2.0 與 MIT）。CodefyUI 未經修改地使用這兩個套件。[THIRD_PARTY_NOTICES.md](https://github.com/CodefyUI/CodefyUI/blob/main/THIRD_PARTY_NOTICES.md) 收錄前端 bundle 內程式碼的聲明，並列出 Python 相依套件及其授權；該檔會與 `LICENSE`、`NOTICE` 一起放進 release tarball。

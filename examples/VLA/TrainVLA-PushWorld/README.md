@@ -79,5 +79,9 @@ one warmup-floor step changes nothing measurable), flip the mode, and run.
 ## Scaling down
 
 For a quick smoke on weaker hardware: `episodes: 600`, `epochs: 30`,
-`LRScheduler.total_steps: 3660` trains in a few minutes but lands well
+`LRScheduler.total_steps: 1830` trains in a few minutes but lands well
 short of the reference success rate — the full budget is what earns 0.97.
+600 episodes give 15,374 samples, which is 61 optimizer steps per epoch at
+`batch_size: 256`, and 30 epochs x 61 = 1,830. For other settings, set
+`total_steps` to epochs x ceil(samples / 256); `PushWorldDemos` reports the
+sample count in the Execution Log.

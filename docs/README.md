@@ -10,7 +10,7 @@ cd docs
 pnpm install
 pnpm start                 # English dev server (http://localhost:3000)
 pnpm start --locale zh-TW  # Traditional Chinese
-pnpm build                 # production build — fails on any broken link
+pnpm build                 # production build — fails on a broken link; a missing #anchor only warns
 pnpm serve                 # preview the production build locally
 ```
 

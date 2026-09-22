@@ -8,19 +8,23 @@ description: 建構並執行一個最小的管線，並了解為什麼每個圖�
 
 這份操作說明會建構一個極小的管線，讓明確指定的張量依序通過幾個運算，並說明每個 CodefyUI graph 都使用的 **Start 節點**執行模型。
 
+在**入門**節點分類模式下，側欄不會列出 `Start`、`Reshape`、`Softmax` 與 `Print`；請雙擊畫布並搜尋來新增它們（見[側邊欄](./canvas-basics#the-sidebar)）。
+
 ## 1. 新增一個輸入
 
-把一個 **`TensorInput`** 節點（Data 類別）拖到畫布上。把它的 `value_mode` 設成 `explicit`，並在內嵌格子編輯器中填入管線要處理的數值。
+把一個 **`TensorInput`** 節點（Data 類別）拖到畫布上。它的 `shape` 預設為 `1,4,4`，共 16 個數值。把它的 `value_mode` 設成 `explicit`，再於內嵌格子中輸入管線要處理的數值，或用**填 0**、**填 1**、**隨機**填滿（見[設定面板](./canvas-basics#the-config-panel)）。
 
 ## 2. 串接一些運算
 
-將它連接至任意一連串張量運算節點，例如：
+將它連接至一連串張量運算節點。下面這條鏈會把 16 個數值攤平成一列，再轉換成機率：
 
 ```
 TensorInput → Reshape → Softmax → Print
 ```
 
 從每個輸出連接埠拖曳到下一個輸入連接埠。連線會在你連接時驗證型別。
+
+把 Reshape 的 `shape` 設成 `1,16`。新的形狀必須與收到的張量有相同的元素數；Reshape 的預設值 `-1,784` 需要 784 的倍數，執行會停在 Reshape。Softmax 的 `dim` 保持 `-1`，16 個機率的總和即為 1。
 
 ## 3. 新增一個 Start 節點
 

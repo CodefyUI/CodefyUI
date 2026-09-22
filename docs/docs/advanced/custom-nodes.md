@@ -38,10 +38,10 @@ class MyNode(BaseNode):
 
 After adding or editing a custom node, reload without restarting the server:
 
-- click the toolbar **Reload Nodes** button, or
-- `POST /api/nodes/reload`.
+- click **Reload Nodes** in the toolbar. It re-registers the nodes on the server and refetches them, so the palette updates at once; or
+- send `POST /api/nodes/reload`. This does the server half only: an editor that is already open keeps its old palette until you click **Reload Nodes** or reload the page.
 
-The node appears in the palette immediately. To upload a file instead of copying it into the directory, use the [Custom Node Manager](#uploading-through-the-custom-node-manager); it reloads node definitions after each action.
+To upload a file instead of copying it into the directory, use the [Custom Node Manager](#uploading-through-the-custom-node-manager); it reloads node definitions after each action.
 
 ## Uploading through the Custom Node Manager
 
@@ -62,15 +62,17 @@ After each action, the server rediscovers custom nodes, plugin packs, and preset
 | `DESCRIPTION` | One line for the node palette: what the node does and what it outputs. Keep it to 56 characters — the list shows it under the node's name, two lines deep, and cuts off past that. (LaTeX is supported.) |
 | `DETAILS` | Optional. The rest of the documentation — the library it wraps, the formula, caveats, which sibling node to reach for instead. Shown in the config panel and the node's Docs tab, never in the palette list. Leave it empty when the summary already says everything. |
 | `define_inputs()` / `define_outputs()` | Return `PortDefinition` lists — each has a `name`, a `data_type`, and optional `description` / `optional` / `media`. |
-| `define_params()` | Return `ParamDefinition` lists — `int`, `float`, `string`, `bool`, `select`, file pickers (`model_file`, `image_file`, `data_file`), `tensor_grid`, `code` (a multi-line editor with syntax highlighting; still an ordinary string param), or `secret`, with `default`, `options`, `min_value`/`max_value`, and `visible_when`. A `secret` param (e.g. an API key) is masked in the editor and its value is **never persisted** — it is blanked on save, export, and publish, so use an environment variable to supply it to published apps. |
+| `define_params()` | Return `ParamDefinition` lists — `int`, `float`, `string`, `bool`, `select`, file pickers (`model_file`, `image_file`, `data_file`), `tensor_grid`, `code` (a multi-line editor with syntax highlighting; still an ordinary string param), or `secret`, with `default`, `options`, `min_value`/`max_value`, and `visible_when`. A `secret` param (e.g. an API key) is masked in the editor and its value is **never persisted** — it is blanked on save, export, and publish, so use an environment variable to supply it to published apps. `advanced=True` puts the param in the node's collapsed **Advanced** section and changes nothing else; it is saved, exported and cached like any other param. `option_packs` on a `select` param maps an option to the [optional pack](/usage/optional-packs) it needs, as `"<pack>"` or `"<pack>:<item>"`. An option whose pack or item is not installed is greyed out; a current value that needs one stays selected and shows a warning with an **Install pack** button. |
 | `define_outputs_dynamic(params)` / `define_inputs_dynamic(params)` | Optional. Change output or input ports based on parameter values, such as `Split`'s `chunks` or `PythonScript`'s `input_ports`. The static methods must describe the default parameters because the palette uses them; validation, rendering, and preset export use the dynamic definitions. |
 | `execute(self, inputs, params, progress_callback=None, *, context=None)` | Execute the node and return a dict keyed by output-port name. The engine passes each optional keyword argument only when the signature declares it. `progress_callback` receives a dict for each progress event; for example, the training loop sends `{"event": "epoch", ...}`. `context` provides the run's device, seed, and determinism flag. |
-| `REQUIRES_PACK` | Optional class attribute identifying the [optional pack](/usage/optional-packs) required at execution time (`None` by default). `/api/nodes` exposes it as `requires_pack`, allowing the palette to display a pack badge and the editor to offer installation before execution fails. |
+| `REQUIRES_PACK` | Optional class attribute naming the [optional pack](/usage/optional-packs) the node needs, as `"<pack>"` or `"<pack>:<item>"` (`None` by default). `/api/nodes` exposes it as `requires_pack`; while the pack is missing, the palette and the node show a pack badge and the config panel offers the install. It does not stop a run. To fail a run without the pack, call `require_pack("<pack>")` from `app.core.packs` in `execute`; the editor shows the error as a toast with an **Open Package Center** button. |
 | `cacheable` / `align_inputs` / `cache_fingerprint(params)` | Optional cache and device controls. Set `cacheable = False` for a node with trainable state, a returned live object reference, or a side effect not represented by its return value. Set `align_inputs = False` when passing inputs directly to numpy, sklearn, or PIL; otherwise the engine moves input tensors to the run device, and `Tensor.numpy()` fails for tensors outside the CPU. Override `cache_fingerprint` to add external state referenced by a parameter, such as a file's modification time, to the cache key. |
+
+A custom node's `DESCRIPTION`, `DETAILS` and param descriptions are shown as written in every UI language: zh-TW translations exist only for built-in nodes and the plugin packs that ship in this repository (`frontend/src/i18n/nodeLocales/zh-TW.ts`), and a custom node or a third-party plugin cannot add its own.
 
 ## Data types
 
-Ports use the shared `DataType` enum: `TENSOR`, `MODEL`, `DATASET`, `DATALOADER`, `OPTIMIZER`, `LOSS_FN`, `SCALAR`, `STRING`, `IMAGE`, `LIST`, `TRANSFORM`, `ANY`, `TRIGGER`. Matching types make an edge valid; the `TRIGGER` type drives execution order from [`Start`](/usage/first-graph) nodes.
+Ports use the shared `DataType` enum: `TENSOR`, `MODEL`, `DATASET`, `DATALOADER`, `OPTIMIZER`, `LOSS_FN`, `SCALAR`, `STRING`, `IMAGE`, `LIST`, `TRANSFORM`, `ANY`, `TRIGGER`. An edge is valid when both ends have the same type, when either end is `ANY`, or from `IMAGE` to `TENSOR`. `TRIGGER` connects only to `TRIGGER` and drives execution order from [`Start`](/usage/first-graph) nodes.
 
 ## Showing an image in the results panel
 

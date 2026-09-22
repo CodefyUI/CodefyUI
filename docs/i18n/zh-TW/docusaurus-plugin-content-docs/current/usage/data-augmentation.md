@@ -87,7 +87,7 @@ RandomCrop(size=32, padding=4)
 
 ## 更多資料集
 
-**Dataset** 現在提供 `MNIST`、`FashionMNIST`、`CIFAR10`、`CIFAR100`、`SVHN` 與 `STL10`。六個都會在第一次使用時下載到同一個 `data_dir`；在專案目錄模式下，那就是 `assets/data/`。
+**Dataset** 現在提供 `MNIST`、`FashionMNIST`、`CIFAR10`、`CIFAR100`、`SVHN` 與 `STL10`。每個資料集都會在第一次使用時下載到 `data_dir`，已經存在時則不會下載。MNIST 隨 CodefyUI 附在 `backend/data/MNIST/raw/`。伺服器在 `backend/` 中執行，所以預設的 `data_dir`（`./data`）會找到它，第一次執行就直接從本機讀取 MNIST。在專案目錄模式下，相對的 `data_dir` 代表 `assets/data/`，MNIST 也會下載到那裡。
 
 ### 你自己的影像
 
@@ -135,10 +135,10 @@ my-dataset/
 
 圖裡的每個訓練節點都有自己的葉子目錄，所以「預訓練迴圈」和「微調迴圈」在 TensorBoard 裡會畫成兩條獨立的曲線，而不是一條來回鋸齒的線。
 
-該路徑會登記成這次執行的產出檔案，你可以從 **執行紀錄** 面板複製出來直接開啟：
+該路徑會登記成這次執行的產出檔案，你可以從 **執行任務** 面板複製出來直接開啟：
 
 ```bash
-tensorboard --logdir <從執行紀錄面板複製的路徑>
+tensorboard --logdir <從執行任務面板複製的路徑>
 ```
 
 CodefyUI **不需要** 依賴 TensorBoard 就能寫出這些檔案 — 它自己編碼事件格式，所以開啟這個功能不會讓 CodefyUI 的安裝變重。你只有在要 *檢視* 它們的時候才需要安裝 TensorBoard：
@@ -153,4 +153,4 @@ pip install tensorboard
 
 ## 把指標匯出成 CSV
 
-每次執行的指標都可以下載成 CSV，在 **執行紀錄** 面板有兩個入口：每一列上的 **CSV** 按鈕，以及展開某次執行後、圖表旁邊的 **下載 CSV**。兩者產生的檔案相同，一列一個資料點，包含序列名稱、step 與數值。
+每次執行的指標都可以下載成 CSV，在 **執行任務** 面板有兩個入口：每一列上的 **CSV** 按鈕，以及展開某次執行後、圖表旁邊的 **下載 CSV**。兩者產生的檔案相同，一列一個資料點，包含序列名稱、step 與數值。

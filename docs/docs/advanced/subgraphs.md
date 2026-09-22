@@ -40,6 +40,7 @@ Collapse says no rather than producing a graph that reads wrong:
 | A **Start** node is selected | Start marks where the whole graph begins. Inside a reusable block it would mean every instance adds its own entry point. |
 | A note is selected | Notes are annotations, not computation. |
 | A node between two selected nodes is left out | The block would feed that node *and* be fed by it — a loop on the canvas that the flattened graph does not actually have. The message names the nodes to add to your selection. |
+| The graph is open read-only | A read-only tab (for example a graph saved by a newer CodefyUI) cannot be changed. The message is "This graph is open read-only". |
 
 ## Editing a block
 
@@ -127,7 +128,7 @@ So rewiring a block shows up in a review, and dragging inside one does not.
 
 ## Exporting to Python
 
-`Export → Python` emits **one function per subgraph instance**:
+**Export → Export as Python** emits **one function per subgraph instance**:
 
 ```python
 # ========================== Subgraph functions ==========================

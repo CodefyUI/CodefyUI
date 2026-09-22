@@ -65,16 +65,16 @@ run 的圖完成後會立即歸還裝置名額，再寫入最終狀態與結束�
 
 ### 執行任務面板 {/* #runs-panel */}
 
-結果面板的 **執行任務** 分頁會列出伺服器持有的每個 run，不論它是從哪個分頁、`cdui run` 或 API 啟動，並依最新到最舊排列。篩選 chip 包含 **全部／執行中／排隊中／已成功／失敗／已取消／已中斷**，欄位是**名稱、狀態、裝置、開始、耗時、最終損失**。等待中的 run 會在裝置旁顯示 `佇列第 N 位`。每一列最多提供四個動作：
+結果面板的 **執行任務** 分頁會列出伺服器持有的最新 50 個 run，不論它是從哪個分頁、`cdui run` 或 API 啟動，並依最新到最舊排列。篩選 chip 包含 **全部／執行中／排隊中／已成功／失敗／已取消／已中斷**，欄位是**名稱、狀態、裝置、開始、耗時、最終損失**。篩選 chip 會在取前 50 筆之前套用，**重新整理**旁的數字會顯示符合條件的 run 列出了幾筆（`50 / 312`）。更早的 run 可以用 `GET /api/runs?offset=` 取得。等待中的 run 會在裝置旁顯示 `佇列第 N 位`。每一列最多提供四個動作：
 
 | 動作 | 用途 |
 | --- | --- |
 | **停止** | 要求排隊中或執行中的 run 停止 — 採協作式停止，見[停止](./running-graphs#停止)。 |
-| **觀看** | 把該 run 串流到目前分頁的執行紀錄，並從頭重播。你可以用它查看從終端機或另一個分頁送出的 run；目前分頁會停止跟隨原本觀看的 run，但兩個 run 本身都不受影響。 |
+| **觀看** | 只適用於排隊中或執行中的 run。把該 run 串流到目前分頁的執行紀錄並從頭重播，同時把面板切換到執行紀錄。你可以用它查看從終端機或另一個分頁送出的 run；目前分頁會停止跟隨原本觀看的 run（若那個 run 仍在執行，會先詢問），但兩個 run 本身都不受影響。 |
 | **CSV** | 下載該 run 的指標（`GET /api/runs/{id}/metrics?format=csv`）。 |
 | **刪除** | 只適用於已結束的 run。移除該 run 的指標、事件紀錄、產出紀錄與任何錄製的輸出；磁碟上的 checkpoint 檔案會保留。 |
 
-點擊一列可查看詳細資訊：有設定時會顯示亂數種子與**決定性**，失敗時會顯示錯誤；此外還有指標圖表及其**下載 CSV**、每筆已記錄產出檔案的**複製路徑**按鈕，以及事件紀錄的最後 200 筆。run 仍在進行時，紀錄會持續更新。若載入編輯器時仍有 run 在進行，畫面會顯示包含數量的通知，並引導你前往這個面板。
+點擊一列可查看詳細資訊：有設定時會顯示亂數種子與**決定性**，失敗時會顯示錯誤；此外還有指標圖表及其**下載 CSV**、每筆已記錄產出檔案的**複製路徑**按鈕，以及事件紀錄的最後 200 筆。run 仍在進行時，紀錄會持續更新。若載入編輯器時仍有 run 在進行，畫面會顯示包含數量的通知，並引導你前往這個面板。沒有開啟任何分頁時（[歡迎畫面](./tabs-persistence#the-welcome-screen)）不會有結果面板；請先開啟一個分頁。
 
 ## `cdui run`
 
@@ -108,7 +108,7 @@ cdui run infer.json --record-outputs
 | 旗標 | 意義 |
 | --- | --- |
 | `--name <text>` | 存在 run 上的名稱，列出 run 的地方都會顯示 |
-| `--device <裝置>` | `cpu` \| `auto` \| `cuda` \| `cuda:N` \| `mps`。省略時用圖檔的 `settings.device`，再沒有就是 `cpu`；`auto` 表示這台伺服器最好的加速器。解析後的裝置就是它加入的佇列。 |
+| `--device <裝置>` | `cpu` \| `auto` \| `cuda` \| `cuda:N` \| `mps` \| `mps:N`。省略時用圖檔的 `settings.device`，再沒有就是 `cpu`；`auto` 表示這台伺服器最好的加速器。解析後的裝置就是它加入的佇列。 |
 | `--seed <n>` | 用 `n` 為每個節點設定種子，讓執行可以重現。設了種子的執行會一次只跑一個節點 — 見 **[可重現的執行](./running-graphs#可重現的執行亂數種子)**。 |
 | `--deterministic` | 同時要求 PyTorch 使用決定性運算核心（`warn_only`） |
 | `--record-outputs` | 保留節點輸出供事後檢視 |
@@ -172,11 +172,11 @@ run 在排隊時，CLI 會回報它排在第幾位，而不是沒有任何輸出
 }
 ```
 
-`params` 裡的每一筆項目都以節點 id 指向該節點的一個參數，並帶有明確且不重複的 `values` 清單，或由系統展開的 `range`。`range` 會從 `min` 到 `max` 取 `count` 個點，並在 `linear` 或以 10 為底的 `log` 尺度上等距分布；`log` 尺度需要正的 `min`。若為 `type: int`，結果會四捨五入成整數；如果因此只剩較少的相異值，就只使用那些值。任何項目排入佇列前，每個值都會依節點定義檢查型別、允許的選項及 min/max。無法滿足的 spec 會收到指出該項目的 `400`，且不會留下只建立一部分的 sweep。
+`params` 裡的每一筆項目都以節點 id 指向該節點的一個參數，並帶有明確且不重複的 `values` 清單，或由系統展開的 `range`。`range` 會從 `min` 到 `max` 取 `count` 個點，並在 `linear` 或以 10 為底的 `log` 尺度上等距分布；`log` 尺度需要正的 `min`。若為 `type: int`，結果會四捨五入成整數；如果因此只剩較少的相異值，就只使用那些值。任何項目排入佇列前，每個值都會依節點定義檢查型別、允許的選項及 min/max。無法滿足的 spec 會收到指出該項目的 `400`，且不會留下只建立一部分的 sweep。不符合請求 schema 的本文會更早被拒絕，回傳 FastAPI 的 `422` 驗證錯誤，例如缺少 `objective`、本文任何位置出現未知的 key、`method`、`scale`、`type` 或 `direction` 不在列出的值之中、`count`、`seed` 或 `samples` 不是整數、`values` 裡有 `null`、清單或物件，或 `objective.metric` 是空白。本頁其他的 sweep 拒絕情況都是 `400`。
 
 **Grid 或 random。** `method: grid` 會列舉每一種組合，最後列出的 param 變動最快，且不接受 `samples`。`method: random` 會抽取 `samples` 種不重複的組合，而且 `samples` 與 `seed`（0 到 4294967295）缺一不可；相同的 seed 永遠會抽到相同組合。要求的 sample 多於空間能提供的組合會被拒絕；編譯後 variant 數量超過上限的 sweep 也會被拒絕，絕不會默默截斷。
 
-**`objective` 是必填的。** `metric` 是節點所記錄的一個 series 名稱（`train_loss`、`val_loss`、`eval_accuracy`，或外掛節點記錄的任何名稱），`direction` 則是 `minimize` 或 `maximize`。送出時不會檢查這個名稱，因為當時還沒有任何 variant 跑過；如果最後沒有任何 variant 記錄它，排名表會是空的，並附上一個 `objective_warning`，列出各 run 實際記錄的 series。
+**`objective` 是必填的。** `metric` 是節點所記錄的一個 series 名稱（`train_loss`、`val_loss`、`val_accuracy`、`eval_accuracy`，或外掛節點記錄的任何名稱；`TrainingLoop` 記錄的 series 列在[執行圖](./running-graphs#training-loops-and-loss-charts)），`direction` 則是 `minimize` 或 `maximize`。送出時不會檢查這個名稱，因為當時還沒有任何 variant 跑過；如果最後沒有任何 variant 記錄它，排名表會是空的，並附上一個 `objective_warning`，列出各 run 實際記錄的 series。
 
 **`options`** 會原封不動交給每個 variant（device、`record_outputs` 等），但有三種情況會被拒絕：`options.seed`（seed 由 sweep 管理）、`lane: interactive`（sweep 一律排隊），以及 variant 數量超過輸出儲存上限（預設 20）時使用 `record_outputs`，因為最早幾個 variant 的捕獲資料會在 sweep 結束前被逐出。若要為訓練本身設定 seed，請設定 `sweep_spec.seed` 及 `"seed_variants": true`：第 *i* 個 variant 會使用 `seed + i`，超出時折回有效的 seed 範圍。若設定 `seed_variants: true` 卻沒有提供 `sweep_spec.seed`，請求會在建立任何資料列前以 `400` 拒絕。這會讓每個 variant 都成為 seeded run，因此一次只執行一個節點，也不會有其他 run 同時執行。seeded sweep 會嚴格依序執行，畫布 run 在整段期間都無法執行；詳見[可重現的執行](./running-graphs#可重現的執行亂數種子)。
 
@@ -192,7 +192,7 @@ run 在排隊時，CLI 會回報它排在第幾位，而不是沒有任何輸出
 
 `GET /api/sweeps/{id}` 會回傳該 sweep：它的 `state`（`running`、`cancelling`、`finished`；若送出迴圈中途失敗則為 `failed`，但已排入佇列的 child 仍會繼續）、objective、依 status 分組的 `counts`、包含每個展開後 domain 的 `params`，以及按**排名順序**、最佳者優先的 `variants`。每個 variant 會帶著自己的 `index`（送出順序）、`run_id`、即時 `status`、收到的 `params`、`seed`、達到的 `objective` 值、`rank`、`run_exists`；child run 仍存在時另有其 `final_metrics`。`best` 指向排名第 1 的 variant。run 結束且記錄過 objective 後，variant 會依該 series 的最終值排名；run 即使在記錄後失敗仍會列入排名，沒有排名的 variant 則保留自己的資料列，以 index 順序排列並顯示 `rank: null`。`?format=csv` 可將同一份表格下載成試算表，每個掃描參數各佔一欄。
 
-即使 child run 被移除，結果仍會保留：每個已結束 variant 的 objective 都會複製到 sweep 資料列上，而 retention 會在刪減 run 前收回任何尚未讀取的結果。被刪減或手動刪除的 child 會顯示 `status: "missing"` 與 `run_exists: false`，但該資料列仍會保留。
+即使 child run 被移除，結果仍會保留：每次 `GET /api/sweeps/{id}` 與每次取消，都會把每個已結束 variant 的 status 與 objective 複製到 sweep 資料列上，而 retention 會在刪減 run 前對任何尚未讀取的結果做同樣的事。因此，被 retention 刪減的 child 會保留已收回的 `status` 與 `objective`，並顯示 `run_exists: false`，不含 `final_metrics`。在任何讀取或取消收回結果之前就以 `DELETE /api/runs/{id}` 刪除的 child，會顯示 `status: "missing"` 與 `objective: null`。兩種情況下，該 variant 的資料列都會保留。
 
 ### 取消 {/* #cancelling */}
 
@@ -206,7 +206,7 @@ run 在排隊時，CLI 會回報它排在第幾位，而不是沒有任何輸出
 
 佇列不會在伺服器重啟後繼續執行。排程只存在伺服器記憶體中；如果保留等待中的資料列，它會持續等待已不存在的排程器。
 
-正常停止（`cdui stop`）會立即將每個等待中的 run 標記為 `interrupted`、寫入一般停止事件，並要求執行中的 run 以協作方式停止。強制終止行程，或執行中的工作超過正常停止的寬限時間，都可能留下 `queued` 或 `running` 資料列。下次啟動時，復原程序會把這兩種狀態都改成 `interrupted`；兩者都不會繼續執行。
+正常關閉伺服器（在 `cdui start --foreground` 按 Ctrl+C，或對[放在反向代理後面](./deployment#a-systemd-unit)中的 unit 執行 `systemctl stop`）會立即將每個等待中的 run 標記為 `interrupted`、寫入一般停止事件，並給執行中的 run 5 秒以協作方式停止。`cdui stop` 不會等待這個過程：在 Windows 上它會強制終止伺服器的行程樹（`taskkill /F /T`），在 Linux 與 macOS 上則先送出 SIGTERM，約 2 秒後再送出 SIGKILL。`cdui stop`、其他強制終止行程的方式，或執行超過這 5 秒的 run，都可能留下 `queued` 或 `running` 資料列。下次啟動時，復原程序會把這兩種狀態都改成 `interrupted`，但不會寫入停止事件；兩者都不會繼續執行。
 
 若仍要執行這些工作，請重新送出。
 

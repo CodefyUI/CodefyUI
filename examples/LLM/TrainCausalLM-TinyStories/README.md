@@ -110,13 +110,13 @@ the checkpoint is the final model.
 
 ## Notes for anyone editing this graph
 
-- **Every root node needs its own trigger edge from `Start`.** Execution walks
-  forward from the entry points along *data* edges, so a node with no incoming
-  data edge is pruned without one. This graph has exactly five such nodes and
-  wires all five: `tok` (`LMTokenizer`), `ds-train` and `ds-val`
-  (`TextCorpusDataset`), `model` (`CausalLMModel`) and `loss`
-  (`LMCrossEntropyLoss`). Leaving a trigger out produces a missing-input error
-  naming a node much further downstream.
+- **All five roots are wired from `Start`:** `tok` (`LMTokenizer`), `ds-train`
+  and `ds-val` (`TextCorpusDataset`), `model` (`CausalLMModel`) and `loss`
+  (`LMCrossEntropyLoss`). Removing any one of those trigger edges changes
+  nothing, because each of these roots also feeds a node that runs, and a node
+  that feeds a data edge into a running node runs without a trigger of its own
+  ([Running Graphs](../../../docs/docs/usage/running-graphs.md#a-node-without-a-trigger-can-still-run)).
+  Disconnecting a node's data edges is what takes it out of the run.
 - **`CausalLMModel.vocab_size` must match the tokenizer.** 50,257 is gpt2's. A
   model narrower than the tokenizer crashes in `nn.Embedding` on the first
   batch that contains a high id; a wider one silently wastes parameters.

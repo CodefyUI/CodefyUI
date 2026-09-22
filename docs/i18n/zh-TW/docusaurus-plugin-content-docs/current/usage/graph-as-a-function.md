@@ -17,7 +17,7 @@ description: 透過 HTTP 以具名函式呼叫任何已儲存的 graph，不需�
 - **GraphInput** —— 每個輸入一個。參數：`name`（須為合法識別字：`^[a-zA-Z_][a-zA-Z0-9_]{0,63}$`）、`type`（`string` / `number` / `integer` / `boolean` / `json` / `image`）、`required`、`default`、`description`。
 - **GraphOutput** —— 每個輸出一個。參數：`name`、`description`。把你想回傳的值接進它的 `value` 連接埠。
 
-**把 Start 接到每一個 GraphInput。** 執行端點要求每一個 GraphInput 都必須帶有一條 trigger 邊，否則會在一開始就拒絕這張 graph（409 `untriggered_input`）。這是合約規則，不是引擎限制。未連接 trigger、但將資料傳給執行中節點的資料根節點[仍然會執行](./running-graphs#沒有-trigger-的節點仍然可能執行)。這項規則可確保宣告的輸入不受引擎可達性判定影響。
+**把 Start 接到每一個 GraphInput。** 執行端點要求每一個 GraphInput 都必須帶有一條 trigger 邊，否則會在一開始就拒絕這張 graph（409 `untriggered_input`）。這是合約規則，不是引擎限制。未連接 trigger、但將資料傳給執行中節點的資料根節點[仍然會執行](./running-graphs#a-node-without-a-trigger-can-still-run)。這項規則可確保宣告的輸入不受引擎可達性判定影響。
 
 ```text
 [Start] --trigger--> [GraphInput name="message"] --value--> [Print] --value--> [GraphOutput name="echo"]
@@ -66,10 +66,14 @@ request body 是**選填的**（沒有 body 等同 `{}`），而且每個欄位�
 {
   "inputs": {"prompt": "hello"},   // default {}
   "timeout_s": 300,                // default 300, min 1, max 3600
-  "device": "cuda",                // "cpu" / "cuda" / "mps"; falls back to CPU when unavailable
+  "device": "cuda",                // "cpu" / "cuda" / "cuda:N" / "mps" / "auto"; omitted = the graph's settings.device, else cpu; unavailable falls back to CPU
   "record_outputs": false          // default false; see gotchas before enabling
 }
 ```
+
+### graph 的位址 {/* #the-graphs-address */}
+
+`/api/graph/contract/{name}` 與 `/api/graph/run/{name}` 中的 `{name}` 是 graph 的位址，也就是它在 graphs 資料夾中不含副檔名的檔名（`<address>.json`；在專案目錄的 `graphs/` 底下則是 `<address>.graph.json`）。位址不一定等於**圖表**分頁顯示的標題。第一次存檔以及每次**另存新檔...**時，位址會由標題產生：字母、數字、`-` 與 `_` 以外的每個字元都會換成 `_`（中文字等其他文字系統的字元也算字母，會保留），因此標題為 `My Classifier` 的 graph 會存成 `My_Classifier`。原地存檔會保留位址；在**圖表**分頁使用**重新命名**時，會以相同方式產生新的位址。`GET /api/graph/list` 會列出每個 graph 的位址（`file`）與標題（`name`）。這些路由不會替你轉換名稱：`POST /api/graph/run/My%20Classifier` 會回傳 404 `graph_not_found`。
 
 ### 回應封裝格式 {/* #the-response-envelope */}
 
@@ -199,7 +203,7 @@ curl -s -X POST "http://127.0.0.1:8000/api/graph/run/Api-Function" \
 curl.exe -s "http://127.0.0.1:8000/api/graph/contract/Api-Function"
 ```
 
-上述呼叫所需的 graph 位於 `examples/Usage_Example/Api-Function/`，在範例集裡叫做 **Call a graph over HTTP**。開啟後存檔，名稱要存成 `Api-Function` — 上面網址裡的位址是你存檔時取的名字，不是範例的名稱 — 這樣上面的指令就不需修改即可執行。
+上述呼叫所需的 graph 位於 `examples/Usage_Example/Api-Function/`，在範例集裡叫做 **Call a graph over HTTP**。開啟後存檔，名稱要存成 `Api-Function` — 上面網址裡的位址來自你存檔時取的名字（見[graph 的位址](#the-graphs-address)），不是範例的名稱 — 這樣上面的指令就不需修改即可執行。
 
 ## 8. 限制與注意事項 {/* #8-limits-and-gotchas */}
 
@@ -209,15 +213,15 @@ curl.exe -s "http://127.0.0.1:8000/api/graph/contract/Api-Function"
 - 這台伺服器從不送出 504；504 一定來自中間的某個代理。
 - `record_outputs=true` 會讓區域網路上任何知道 `run_id` 的使用者都可讀取輸入與結果（GET 輸出端點不需要驗證；傳輸是純 HTTP）。已發佈應用程式的執行紀錄儲存在 SQLite 並受 key 保護；檢視器儲存區只供編輯器使用，invoke 不會寫入。若要讓 graph 的執行內容固定在特定版本並受 key 保護，請將它[發佈](./publish)。
 - 不要把機密寫入 `default` 值 —— `GET /contract` 與 `/load` 都不需要驗證。
-- `device: "auto"`（或無法使用的裝置）會自動解析為 CPU，且不會回報錯誤；封裝格式中的 `device` 欄位會顯示實際使用的裝置。
+- `device: "auto"` 會解析為伺服器能看到的最佳加速器（依序為 `cuda`、`mps`、`cpu`）；無法使用的裝置會在不回報錯誤的情況下改用 CPU，只有本機沒有的 `cuda:N` 編號例外，會改在目前的 GPU 上執行。沒有 `device` 的 body 會使用已儲存 graph 的 [`settings.device`](/advanced/device-backends#the-graph-settings-object)，沒有設定時使用 CPU。封裝格式中的 `device` 欄位會顯示實際使用的裝置。
 - 單一 tensor 輸出超過 65,536 個元素時，整次呼叫會失敗。請移除該 GraphOutput，或改用 `record_outputs` 與可切片的輸出 API（`GET /api/execution/outputs/{run_id}/{node_id}/{port}?slice=...`）；輸出篩選器尚未實作。
 - 並行執行共用行程的預設執行緒池（每次執行的平行上限為 4，並非全域上限），因此高負載執行會競爭 CPU／GPU 資源。
-- 伺服器中只要有任何**設定亂數種子的**執行正在進行，其他呼叫就會等待；設定亂數種子的執行也會等待既有呼叫完成。一般呼叫仍可彼此重疊。請見[可重現的執行](./running-graphs#可重現的執行亂數種子)—— 如果同一台伺服器也用於設定亂數種子的訓練，請將等待時間計入 `timeout_s`。
+- 伺服器中只要有任何**設定亂數種子的**執行正在進行，其他呼叫就會等待；設定亂數種子的執行也會等待既有呼叫完成。一般呼叫仍可彼此重疊。請見[可重現的執行](./running-graphs#reproducible-runs-seed)—— 如果同一台伺服器也用於設定亂數種子的訓練，請將等待時間計入 `timeout_s`。
 - 逾時並取消後，不會再啟動新節點；正在執行的節點會在背景完成（節點可以輪詢 `context.cancelled`，以提早停止）。
 - 客戶端斷線不會停止執行；只有逾時會停止。斷線後的執行結果不會保留，除非 `record_outputs=true`。
 
 ## 9. 路線圖 {/* #9-roadmap */}
 
 - **第二階段（已推出）：[發佈](./publish)** —— 以 `POST /api/apps/{slug}/invoke` 提供版本化應用程式，並包含長效 API key、受 key 保護的 SQLite 執行紀錄、每張圖片的像素預算、每個應用程式各自的 OpenAPI 文件，以及用於區域網路服務的 `cdui start --host/--port`。
-- `cdui call <graph> --input k=v` / `cdui publish` / `cdui keys` —— 這些 API 的 CLI 包裝（接續的開發體驗項目）。
+- `cdui call <graph> --input k=v` / `cdui keys` —— 這些 API 的 CLI 包裝（接續的開發體驗項目）。專案目錄已可從命令列發佈：`cdui project publish`（見[專案目錄](./project-directories#7-publish-records-the-git-commit)）。
 - 非同步工作模式（202 + `job.status_url`），沿用同一個封裝格式。

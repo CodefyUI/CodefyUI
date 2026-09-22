@@ -38,14 +38,14 @@ class MyNode(BaseNode):
 
 新增或編輯自訂節點後，無需重啟伺服器即可重新載入：
 
-- 點擊工具列的**重新載入節點**按鈕，或
-- `POST /api/nodes/reload`。
+- 點擊工具列的**重新載入節點**。它會在伺服器上重新註冊節點並重新取得定義，節點面板會立即更新；或
+- 送出 `POST /api/nodes/reload`。這只完成伺服器端的部分：已開啟的編輯器會保留舊的節點面板，直到你點擊**重新載入節點**或重新載入頁面。
 
-節點會立即出現在面板中。若要上傳檔案而不是將檔案複製至目錄，請使用[自訂節點管理](#uploading-through-the-custom-node-manager)；每次操作後都會重新載入節點定義。
+若要上傳檔案而不是將檔案複製至目錄，請使用[自訂節點管理](#uploading-through-the-custom-node-manager)；每次操作後都會重新載入節點定義。
 
 ## 透過自訂節點管理上傳 {/* #uploading-through-the-custom-node-manager */}
 
-請使用側邊欄**自訂與外掛**分頁之**自訂節點**區段中的**管理...**按鈕開啟管理視窗。它會列出 `custom_nodes/` 中的每個檔案、該檔案定義的節點名稱，以及三種操作：
+請使用側邊欄**自訂與外掛**分頁之**自訂節點**區段中的**管理...** 按鈕開啟管理視窗。它會列出 `custom_nodes/` 中的每個檔案、該檔案定義的節點名稱，以及三種操作：
 
 - **上傳 .py** 會將一個檔案送至 `POST /api/custom-nodes/upload`。檔案必須使用 `.py` 副檔名，而且不得超過 `CODEFYUI_MAX_UPLOAD_SIZE`（500 MB）。伺服器會以外掛 AST 閘門的[第 0 級](/advanced/plugins#安全性三個層級)掃描檔案。自訂節點無法宣告能力，因此 `requests` 或 `os` 等 imports 會產生 `400` response 與閘門訊息。需要第 0 級以外 imports 的節點，應放入具有 `[security]` 區段的[外掛包](./plugins)。直接複製到 `backend/app/custom_nodes/` 的檔案，會在下次重新載入時載入，不會進行這項掃描。
 - **啟用／停用**會在 `name.py` 與 `name.py.disabled` 之間重新命名檔案；停用的檔案仍留在磁碟上，但探索時會跳過。
@@ -62,15 +62,17 @@ class MyNode(BaseNode):
 | `DESCRIPTION` | 節點列表的一行說明：這個節點做什麼、輸出什麼。控制在 56 個字元以內，列表在節點名稱下方最多顯示兩行，超過就會被截斷。（支援 LaTeX。） |
 | `DETAILS` | 選填。說明的其餘部分——包裝了哪個函式庫、公式、限制、什麼情況該改用別的節點。只顯示在節點設定面板與節點的 Docs 分頁，不會出現在左側列表。一行說明已經講完時就留空。 |
 | `define_inputs()` / `define_outputs()` | 回傳 `PortDefinition` 清單——每個都有一個 `name`、一個 `data_type`，以及選用的 `description` / `optional` / `media`。 |
-| `define_params()` | 回傳 `ParamDefinition` 清單——`int`、`float`、`string`、`bool`、`select`、檔案選擇器（`model_file`、`image_file`、`data_file`）、`tensor_grid`、`code`（具語法標示的多行編輯器；仍是普通的 string 參數），或 `secret`，並可帶有 `default`、`options`、`min_value`/`max_value` 與 `visible_when`。`secret` 參數（例如 API key）在編輯器裡會被遮罩，而且它的值**永遠不會被保存**——存檔、匯出與發佈時都會被清空，所以要把它提供給已發佈的應用程式，請改用環境變數。 |
+| `define_params()` | 回傳 `ParamDefinition` 清單——`int`、`float`、`string`、`bool`、`select`、檔案選擇器（`model_file`、`image_file`、`data_file`）、`tensor_grid`、`code`（具語法標示的多行編輯器；仍是普通的 string 參數），或 `secret`，並可帶有 `default`、`options`、`min_value`/`max_value` 與 `visible_when`。`secret` 參數（例如 API key）在編輯器裡會被遮罩，而且它的值**永遠不會被保存**——存檔、匯出與發佈時都會被清空，所以要把它提供給已發佈的應用程式，請改用環境變數。`advanced=True` 會把參數放進節點收合的**進階**區段，其他行為不變；存檔、匯出與快取都和一般參數相同。`select` 參數的 `option_packs` 會把選項對應到它需要的[選用套件包](/usage/optional-packs)，格式為 `"<pack>"` 或 `"<pack>:<item>"`。所需套件包或項目未安裝的選項會變成灰色；需要它的目前值仍保持選取，並顯示警告與**安裝套件**按鈕。 |
 | `define_outputs_dynamic(params)` / `define_inputs_dynamic(params)` | 選用。依參數值變更輸出或輸入連接埠，例如 `Split` 的 `chunks` 或 `PythonScript` 的 `input_ports`。靜態方法必須描述預設參數，因為節點面板會使用這些定義；驗證、渲染與預設模組匯出會使用動態定義。 |
 | `execute(self, inputs, params, progress_callback=None, *, context=None)` | 執行節點，並回傳以輸出連接埠名稱為鍵的 dict。執行引擎只會在函式簽名宣告時傳入各個選用關鍵字參數。`progress_callback` 會為每個進度事件接收一個 dict；例如，訓練迴圈會送出 `{"event": "epoch", ...}`。`context` 會提供該次執行的裝置、seed 與 determinism 旗標。 |
-| `REQUIRES_PACK` | 選用的類別屬性，用來識別執行時需要的[選用套件包](/usage/optional-packs)（預設為 `None`）。`/api/nodes` 會以 `requires_pack` 提供此值，讓節點面板顯示套件包徽章，並讓編輯器在執行失敗前提供安裝操作。 |
+| `REQUIRES_PACK` | 選用的類別屬性，指出節點需要的[選用套件包](/usage/optional-packs)，格式為 `"<pack>"` 或 `"<pack>:<item>"`（預設為 `None`）。`/api/nodes` 會以 `requires_pack` 提供此值；套件包未安裝時，節點面板與節點上會顯示套件包徽章，設定面板會提供安裝操作。它不會阻止執行。若要在缺少套件包時讓執行失敗，請在 `execute` 中呼叫 `app.core.packs` 的 `require_pack("<pack>")`；編輯器會把這個錯誤顯示為附有**開啟套件中心**按鈕的通知。 |
 | `cacheable` / `align_inputs` / `cache_fingerprint(params)` | 選用的快取與裝置控制。當節點具有可訓練狀態、回傳即時物件參照，或產生未反映在回傳值中的副作用時，請設定 `cacheable = False`。將輸入直接傳給 numpy、sklearn 或 PIL 時，請設定 `align_inputs = False`；否則執行引擎會將輸入張量移至該次執行的裝置，而 `Tensor.numpy()` 對 CPU 以外的張量會失敗。覆寫 `cache_fingerprint`，可將參數所參照的外部狀態（例如檔案修改時間）加入快取鍵。 |
+
+自訂節點的 `DESCRIPTION`、`DETAILS` 與參數說明在每種介面語言中都會照原文顯示：只有內建節點與本儲存庫隨附的外掛包有 zh-TW 翻譯（`frontend/src/i18n/nodeLocales/zh-TW.ts`），自訂節點與第三方外掛無法加入自己的翻譯。
 
 ## 資料型別
 
-連接埠使用共用的 `DataType` 列舉：`TENSOR`、`MODEL`、`DATASET`、`DATALOADER`、`OPTIMIZER`、`LOSS_FN`、`SCALAR`、`STRING`、`IMAGE`、`LIST`、`TRANSFORM`、`ANY`、`TRIGGER`。型別相符才能讓一條邊有效；`TRIGGER` 型別從 [`Start`](/usage/first-graph) 節點驅動執行順序。
+連接埠使用共用的 `DataType` 列舉：`TENSOR`、`MODEL`、`DATASET`、`DATALOADER`、`OPTIMIZER`、`LOSS_FN`、`SCALAR`、`STRING`、`IMAGE`、`LIST`、`TRANSFORM`、`ANY`、`TRIGGER`。兩端型別相同、任一端為 `ANY`，或從 `IMAGE` 連到 `TENSOR` 時，邊才有效。`TRIGGER` 只能連到 `TRIGGER`，並從 [`Start`](/usage/first-graph) 節點驅動執行順序。
 
 ## 在結果面板顯示圖片 {/* #在執行結果面板顯示圖片 */}
 
@@ -133,5 +135,5 @@ def execute(self, inputs, params, progress_callback=None, *, context=None):
 系統不會對任何媒體種類加入特殊判斷。解析器以連接埠宣告的字串為鍵；只要連接埠的值是非空 dict，就會原封不動送出。因此，外掛包宣告 `media="waveform"` 後，瀏覽器便會收到 `{"output_kind": "waveform", ...}`；只有*繪製*該資料時才需要修改前端。編輯器遇到不認識的種類時會忽略，不會發生錯誤。
 
 :::tip
-需要封裝既有節點而不是撰寫新行為嗎？使用**[預設模組](./presets)**。想以可安裝的套件與他人分享節點嗎？建立一個**[外掛包](./plugins)**。
+需要封裝既有節點而不是撰寫新行為嗎？使用 **[預設模組](./presets)**。想以可安裝的套件與他人分享節點嗎？建立一個 **[外掛包](./plugins)**。
 :::

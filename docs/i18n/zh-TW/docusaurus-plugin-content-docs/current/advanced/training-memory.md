@@ -61,7 +61,7 @@ CheckpointLoader.grad_scaler_state  →  TrainingLoop.grad_scaler_state
 
 如果某個 epoch 的批次數不是 `accumulate_steps` 的倍數，最後會剩下一個不完整的視窗，而那個視窗仍然會被更新——那些批次的前向與反向傳遞已經算過了。它和其他視窗一樣除以 N，所以短視窗會走出一個按比例縮小的步伐，這才是對較少樣本誠實的處理方式。
 
-累積視窗不會跨越 epoch 邊界，而按下 **Stop** 時會丟掉還沒更新的視窗，而不是在離開前再多走一步。
+累積視窗不會跨越 epoch 邊界，而按下 **停止** 時會丟掉還沒更新的視窗，而不是在離開前再多走一步。
 
 ## 指定某一張 GPU
 
@@ -90,7 +90,7 @@ NVIDIA CUDA #1       cuda:1
 
 ## 如果還是不夠用
 
-CUDA 記憶體不足會以 **NodeOOMError** 回報：哪一個節點、哪一個裝置、當下配置器手上握著什麼，以及該改什麼。大致長這樣：
+CUDA、MPS 或 CPU 上的記憶體不足都會以 **NodeOOMError** 回報：哪一個節點、哪一個裝置、當下配置器手上握著什麼，以及該改什麼。在 CUDA 上大致長這樣：
 
 ```
 Node TrainingLoop (n7) ran out of memory on cuda:0.
@@ -107,7 +107,9 @@ the caching allocator, 15.61 GiB peak this process, 15.99 GiB on the card.
 Original error: CUDA out of memory. Tried to allocate 2.00 GiB ...
 ```
 
-除了這則訊息之外，還會做兩件事，好讓*下一次*執行從乾淨的卡開始：丟掉那個節點快取起來的東西，並把快取配置器的空閒區塊還回去。
+在 MPS 上，記憶體那一行列出的是存活張量佔用的量、配置器保留的量，以及建議給這個行程的工作集上限（統一記憶體，與這台 Mac 上的其他所有東西共用），而不是顯示卡的容量。CPU 的 `MemoryError` 會得到同樣的訊息，但沒有記憶體那一行。
+
+除了這則訊息之外，還會做兩件事，好讓*下一次*執行從乾淨的卡開始：丟掉那個節點快取起來的東西，並在 CUDA 與 MPS 上把快取配置器的空閒區塊還回去。
 
 **不會重試，也不會幫你把 batch size 調小。** 同樣的配置再跑一次會得到同樣的答案。在你背後把批次砍半，會在你不知情的狀況下改變這次執行產生的數字，那麼同一張圖就會因為當下剩多少 VRAM 而代表兩種不同的意思。你會拿到訊息，然後由你來改。
 

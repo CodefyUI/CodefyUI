@@ -6,18 +6,28 @@ description: CodefyUI 如何在 CPU、CUDA、MPS 與 ROCm 之間選擇與退回�
 
 # 裝置後端
 
-CodefyUI 執行於 PyTorch 之上，因此繼承了 PyTorch 的裝置後端：**CPU**、**NVIDIA CUDA**、**Apple Silicon（MPS）**與 **AMD ROCm**（Linux）。關於安裝正確的 wheel，請參閱 **[GPU 與裝置設定](/getting-started/gpu-device)**；本頁說明裝置選擇在執行時的行為。
+CodefyUI 執行於 PyTorch 之上，因此繼承了 PyTorch 的裝置後端：**CPU**、**NVIDIA CUDA**、**Apple Silicon（MPS）** 與 **AMD ROCm**（Linux）。關於安裝正確的 wheel，請參閱 **[GPU 與裝置設定](/getting-started/gpu-device)**；本頁說明裝置選擇在執行時的行為。
 
 ## 裝置選擇
 
 **預設是 CPU，而且不會有任何機制替你切走。** 一次執行依下列順序決定裝置，先命中者為準：
 
 1. 節點自己的 **device** 參數，且不是 `auto` 時（位於「進階」，為舊圖保留；一張圖只在一個裝置上執行，需要兩個裝置的工作應拆成兩張圖）。
-2. 圖自己的裝置，也就是圖檔裡的 `settings.device`，由 Run 旁邊的「此圖的裝置」控制項設定。它會跟著圖一起存檔，所以 git 會追蹤它，圖在哪裡打開都跑在同一個裝置上。
-3. **設定**裡的裝置（這個瀏覽器記住的值，改動前是 `cpu`）。新圖與尚未指定裝置的圖會使用它；設定面板也會提示這台伺服器能看到的最佳裝置。
+2. 圖自己的裝置，也就是圖檔裡的 `settings.device`（[格式見下方](#the-graph-settings-object)），由**執行**旁邊的裝置選單設定。它會跟著圖一起存檔，所以 git 會追蹤它，圖在哪裡打開都跑在同一個裝置上。選單的第一個選項（設定為 CPU 時是**跟隨設定（CPU）**）會讓圖不指定自己的裝置。
+3. **設定**裡的裝置（這個瀏覽器記住的值，改動前是 `cpu`）。新圖與尚未指定裝置的圖會使用它；設定面板也會提示這台伺服器能看到的最佳裝置。設定的裝置若不在這台伺服器的清單上，兩個選單都會標示出來；參見[裝置無法使用時](/getting-started/gpu-device#when-a-device-is-unavailable)。
 4. `cpu`：請求完全沒有指定裝置時伺服器採用的值。
 
-設定、圖的控制項與節點參數三個下拉選單列的都是同一份清單，也就是 PyTorch 實際看得到的裝置（`device_utils.describe_accelerator()`），多卡機器上也包含每張卡的 `cuda:N`。被請求的裝置會與可用的裝置比對，若不存在則**退回 CPU 並發出警告**。只有明確指定 `auto`（`cdui run` 或匯出腳本的 `--device auto`、run API 的 `"device": "auto"`）才會解析成目前最好的加速器。更改圖的裝置會讓互動快取失效，所有節點都會重新執行。
+設定、圖的控制項與節點參數三個下拉選單列的都是同一份清單，也就是 PyTorch 實際看得到的裝置（`device_utils.describe_accelerator()`），多卡機器上也包含每張卡的 `cuda:N`。被請求的裝置會與可用的裝置比對，若不存在則**退回 CPU 並發出警告**（超出範圍的 `cuda:N` 例外，會改用目前的 CUDA 裝置，見下方）。只有明確指定 `auto`（`cdui run` 或匯出腳本的 `--device auto`、run API 的 `"device": "auto"`）才會解析成目前最好的加速器。更改圖的裝置會讓互動快取失效，所有節點都會重新執行。
+
+### 圖的 `settings` 物件 {/* #the-graph-settings-object */}
+
+圖自己的裝置存在圖 JSON 最上層的一個選用物件中：`"settings": {"device": "cuda:1"}`。
+
+- **可用值：**`cpu`、`auto`、`cuda`、`cuda:N`、`mps` 或 `mps:N`，不分大小寫。空字串代表未指定。Mac 只有一個 MPS 裝置，所以 `mps:N` 會在 `mps` 上執行。
+- **只在有指定時寫入。** 存檔只在圖有指定裝置時寫入 `settings`，所以沒有指定裝置的圖會與原本逐位元組相同。在[專案目錄](/usage/project-directories)中，它寫在受 git 追蹤的 `graphs/<name>.graph.json`，不在 layout 檔。
+- **其他值一律拒絕：**`POST /api/graph/save`、`/api/graph/validate` 與 `/api/graph/export` 回傳 `422`；`POST /api/runs` 與 `POST /api/sweeps` 回傳 `400`（因此 `cdui run` 會回報提交失敗）；畫布執行這張圖時會收到 `execution_error` 訊框；`cdui project validate` 會回報 `invalid_settings`。離線執行器（`backend/run_graph.py`）、[`POST /api/graph/run/{name}`](/usage/graph-as-a-function) 與 [`POST /api/apps/{slug}/invoke`](/usage/publish) 會忽略無效值、記錄警告，並在 CPU 上執行。
+
+不帶 `--device` 的 `cdui run` 會把圖檔的裝置顯示為 `<device> (graph)`。
 
 ### 裝置對齊由引擎保證
 
@@ -62,7 +72,7 @@ MPS 上不使用混合精度。bf16 與 fp16 autocast 在 torch 2.11 可以執�
 
 ## ROCm 呈現為 CUDA
 
-在 AMD + Linux 上搭配 ROCm 版本的 PyTorch 時，`torch.cuda.is_available()` 會回傳 `True`，因為 ROCm 暴露了一個與 CUDA 相容的介面。該裝置在下拉選單中會顯示為 `cuda`；這是預期的行為。
+在 AMD + Linux 上搭配 ROCm 版本的 PyTorch 時，`torch.cuda.is_available()` 會回傳 `True`，因為 ROCm 暴露了一個與 CUDA 相容的介面。設定與圖的裝置選單會把這個裝置標示為 **AMD ROCm**；存進圖檔並由執行使用的值是 `cuda`（多卡時為各卡的 `cuda:N`），節點的 **device** 參數也會列為 `cuda`。這是預期的行為。
 
 ## 實驗性：原生 MLX（spike）
 
@@ -79,4 +89,4 @@ MPS 上不使用混合精度。bf16 與 fp16 autocast 在 torch 2.11 可以執�
 
 - `mlx` **並非**已納入的相依套件；主應用程式從不匯入它。只透過 `device_utils.mlx_available()`（偵測）與 spike 腳本來呈現它。
 
-**建議：**將 **MPS** 維持為所有執行（訓練 + 推論）的 Apple 預設；把 MLX 當作選用的推論加速器，只在推論密集的教學示範上有可量測的效益時才回頭考慮。
+**建議：** 將 **MPS** 維持為所有執行（訓練 + 推論）的 Apple 預設；把 MLX 當作選用的推論加速器，只在推論密集的教學示範上有可量測的效益時才回頭考慮。
