@@ -42,12 +42,18 @@ from app.core import plugin_loader
 
 from .catalog import builtin_catalog_packs
 from .deps import is_safe_dep_name
+from .lockfile_lock import locked_lockfile
 from .manifest import manifest_python_deps
 
 logger = logging.getLogger(__name__)
 
 
-def set_enabled(plugin_id: str, enabled: bool) -> bool | None:
+def set_enabled(
+    plugin_id: str,
+    enabled: bool,
+    *,
+    lock_timeout: float | None = None,
+) -> bool | None:
     """Flip a plugin's ``enabled`` flag. Returns what happened.
 
     ``None`` means there is no such plugin in the lockfile, ``False`` that it
@@ -59,16 +65,27 @@ def set_enabled(plugin_id: str, enabled: bool) -> bool | None:
     The file is deliberately NOT rewritten for a no-op. A lockfile rewrite is
     what a backup tool, a file watcher and a project diff all see, and "the
     user pressed disable twice" is not a change any of them should be told
-    about.
+    about. That is also why the lock is held around a read that may write
+    nothing: whether there is anything to write is decided from the document
+    this call read, and deciding it outside the lock would answer from one
+    document and write over another (#412).
+
+    *lock_timeout* is how long to wait for the writer's lock before giving
+    up; ``None`` is the lock module's own default. The CLI can afford that; a
+    request handler passes something short, because this is called on the
+    event loop.
+
+    :raises LockfileBusy: another writer holds the lockfile. Nothing was
+        read and nothing was written.
     """
-    lockfile = plugin_loader.load_lockfile()
-    entry = lockfile.get("plugins", {}).get(plugin_id)
-    if not entry:
-        return None
-    if plugin_loader.is_enabled(entry) == enabled:
-        return False
-    entry["enabled"] = enabled
-    plugin_loader.save_lockfile(lockfile)
+    with locked_lockfile(timeout=lock_timeout) as lockfile:
+        entry = lockfile.get("plugins", {}).get(plugin_id)
+        if not entry:
+            return None
+        if plugin_loader.is_enabled(entry) == enabled:
+            return False
+        entry["enabled"] = enabled
+        lockfile.save()
     return True
 
 
@@ -117,6 +134,7 @@ def uninstall_plugin(
     plugin_id: str,
     *,
     builtin_ids: Collection[str] | None = None,
+    lock_timeout: float | None = None,
 ) -> UninstallOutcome | None:
     """Remove a plugin from this install. ``None`` when it was not installed.
 
@@ -142,43 +160,56 @@ def uninstall_plugin(
     the catalog by patching the CLI's own root: without it this would read
     past the patch and answer from the real ``registry.json``. Same reason
     :func:`~app.core.plugins.catalog.catalog_path` takes a root.
+
+    The writer's lock is held across the WHOLE of that order, ``rmtree`` and
+    all -- which is the widest read-to-write gap in the plugin system and the
+    one #412 was filed about. An install finishing anywhere inside the delete
+    used to be erased by the save at the end of it, silently, leaving a pack
+    on disk that no lockfile mentions. The delete cannot move after the write
+    (see above), so the lock is what makes the two ends agree; *lock_timeout*
+    is how long to wait for it, short from a request handler.
+
+    :raises LockfileBusy: another writer holds the lockfile. Nothing was
+        deleted and nothing was written.
     """
-    lockfile = plugin_loader.load_lockfile()
-    entry = lockfile.get("plugins", {}).get(plugin_id)
-    if not entry:
-        return None
+    with locked_lockfile(timeout=lock_timeout) as lockfile:
+        entry = lockfile.get("plugins", {}).get(plugin_id)
+        if not entry:
+            return None
 
-    deps = tuple(sorted(_declared_python_deps(plugin_id, lockfile)))
+        deps = tuple(sorted(_declared_python_deps(plugin_id, lockfile)))
 
-    files_removed: bool | None = None
-    directory: Path | None = None
-    if entry.get("source_kind") == "github_url":
-        files_removed, failure, directory = _remove_downloaded_files(plugin_id)
-        if not files_removed:
-            return _outcome(
-                plugin_id, removed=False, tombstoned=False,
-                files_removed=False, deps=deps, error=failure,
-                directory=directory,
-            )
+        files_removed: bool | None = None
+        directory: Path | None = None
+        if entry.get("source_kind") == "github_url":
+            files_removed, failure, directory = _remove_downloaded_files(plugin_id)
+            if not files_removed:
+                return _outcome(
+                    plugin_id, removed=False, tombstoned=False,
+                    files_removed=False, deps=deps, error=failure,
+                    directory=directory,
+                )
 
-    lockfile["plugins"].pop(plugin_id, None)
+        lockfile["plugins"].pop(plugin_id, None)
 
-    # Remember the decision instead of merely forgetting the pack (#175).
-    # Popping the entry made "never installed" and "removed on purpose" the
-    # same state, so `cdui plugin sync` would have to either re-install what
-    # the user just threw away or nag about it forever. Only built-in packs
-    # are tombstoned: they are the only ones sync can put back uninvited, and
-    # a tombstone nothing reads is dead data the user would still have to
-    # explain.
-    known_builtins = builtin_catalog_packs() if builtin_ids is None else builtin_ids
-    tombstoned = (
-        entry.get("source_kind") == "builtin" or plugin_id in known_builtins
-    )
-    if tombstoned:
-        plugin_loader.mark_removed(
-            lockfile, plugin_id, source_kind=entry.get("source_kind")
+        # Remember the decision instead of merely forgetting the pack (#175).
+        # Popping the entry made "never installed" and "removed on purpose" the
+        # same state, so `cdui plugin sync` would have to either re-install what
+        # the user just threw away or nag about it forever. Only built-in packs
+        # are tombstoned: they are the only ones sync can put back uninvited, and
+        # a tombstone nothing reads is dead data the user would still have to
+        # explain.
+        known_builtins = (
+            builtin_catalog_packs() if builtin_ids is None else builtin_ids
         )
-    plugin_loader.save_lockfile(lockfile)
+        tombstoned = (
+            entry.get("source_kind") == "builtin" or plugin_id in known_builtins
+        )
+        if tombstoned:
+            plugin_loader.mark_removed(
+                lockfile, plugin_id, source_kind=entry.get("source_kind")
+            )
+        lockfile.save()
 
     return _outcome(
         plugin_id, removed=True, tombstoned=tombstoned,

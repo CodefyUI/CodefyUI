@@ -50,6 +50,7 @@ from .errors import (
     PluginInstallError,
     ReservedPluginId,
 )
+from .lockfile_lock import LockfileBusy, locked_lockfile
 from .manifest import (
     manifest_allowed_modules,
     manifest_capabilities,
@@ -64,6 +65,12 @@ if sys.version_info >= (3, 11):
     import tomllib
 else:
     import tomli as tomllib  # 3.10 backport -- same API.
+
+#: How long :func:`_record_moved_repository` waits for the lockfile's writer
+#: lock. Nearly nothing, on purpose: it is the only writer reached from a
+#: READ, and a listing that stalls behind an install is a worse answer than
+#: a badge that stays stale until the next look.
+READ_LOCK_TIMEOUT = 0.05
 
 #: Said whenever a plugin ships browser code. Its own warning because the AST
 #: gate has nothing to say about JavaScript: frontend code runs inside the
@@ -485,29 +492,40 @@ def _record_moved_repository(
     Best effort and silent, because the caller is a READ. A lockfile that
     could not be written is a stale badge; turning it into an exception would
     mean a user cannot see the update they came for.
+
+    Which is also why this is the ONE writer that gives up the moment the
+    lockfile is busy. It is reached from ``inspect_installed``, which runs on
+    a worker thread inside a plain GET that the Plugin Center fires whenever
+    a row is opened -- so before #412 a panel refresh could erase a CLI
+    install that happened to be between its read and its write. Under the
+    lock it corrects the record or it does not; what it must never do is
+    wait, and it must never be the reason a read fails.
     """
-    lockfile = plugin_loader.load_lockfile()
-    entry = _lockfile_entry(lockfile, plugin_id)
-    if entry is None:
-        return
-    match = _GITHUB_URL.match(_text(entry.get("url"))) or _GITHUB_SHORT.match(
-        _text(entry.get("source"))
-    )
-    if match is None or f"{match.group(1)}/{match.group(2)}".lower() != recorded:
-        return
-    entry["url"] = found.url
-    entry["source"] = found.source
-    row = catalog_module.catalog_entry(plugin_id)
-    if row is not None and row.repo and row.repo.lower() == (
-        f"{found.owner}/{found.repo}".lower()
-    ):
-        # GitHub says this IS the catalog's repository, which is exactly what
-        # ``catalog_id`` records -- and recording it keeps the badge lit if
-        # the catalog itself is later re-pointed somewhere else.
-        entry["catalog_id"] = row.id
     try:
-        plugin_loader.save_lockfile(lockfile)
-    except OSError:
+        with locked_lockfile(timeout=READ_LOCK_TIMEOUT) as lockfile:
+            entry = _lockfile_entry(lockfile, plugin_id)
+            if entry is None:
+                return
+            match = _GITHUB_URL.match(
+                _text(entry.get("url"))
+            ) or _GITHUB_SHORT.match(_text(entry.get("source")))
+            if match is None or (
+                f"{match.group(1)}/{match.group(2)}".lower() != recorded
+            ):
+                return
+            entry["url"] = found.url
+            entry["source"] = found.source
+            row = catalog_module.catalog_entry(plugin_id)
+            if row is not None and row.repo and row.repo.lower() == (
+                f"{found.owner}/{found.repo}".lower()
+            ):
+                # GitHub says this IS the catalog's repository, which is
+                # exactly what ``catalog_id`` records -- and recording it
+                # keeps the badge lit if the catalog itself is later
+                # re-pointed somewhere else.
+                entry["catalog_id"] = row.id
+            lockfile.save()
+    except (LockfileBusy, OSError):
         pass
 
 

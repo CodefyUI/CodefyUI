@@ -102,10 +102,20 @@ def save_lockfile(data: dict[str, Any]) -> None:
     old document or the new one and never the write in progress.
 
     The temp name carries the pid so two processes writing at once (the CLI
-    and the server both do) cannot land on each other's partial file. That is
-    not a substitute for a lock -- two writers can still lose one edit
-    between a read and a write -- but it does mean neither of them can ever
-    read a torn file.
+    and the server both do) cannot land on each other's partial file. What
+    that buys is that neither of them can ever read a torn file; it says
+    nothing about WHICH document they write, because the read that produced
+    it happened earlier.
+
+    Keeping one edit from overwriting another is a different mechanism and
+    lives in :mod:`app.core.plugins.lockfile_lock` (#412): every writer goes
+    through :func:`~app.core.plugins.lockfile_lock.locked_lockfile`, which
+    holds a cross-process lock across the read AND the write. So this
+    function is deliberately unguarded -- it is the atomic write, called from
+    inside that lock -- and calling it from anywhere else is how an edit gets
+    lost. ``load_lockfile`` stays lock-free on purpose, for the readers
+    (``GET /api/plugins``, ``/catalog``, ``cdui plugin list``): a listing must
+    never wait on an install.
     """
     p = lockfile_path()
     p.parent.mkdir(parents=True, exist_ok=True)

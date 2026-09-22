@@ -72,6 +72,7 @@ from .errors import (
     ReservedPluginId,
 )
 from .inspect import Inspection
+from .lockfile_lock import LockfileBusy, locked_lockfile
 from .manifest import (
     PLUGIN_ID_RE,
     manifest_allowed_modules,
@@ -93,6 +94,13 @@ STAGING_DIRNAME = ".staging"
 #: client, and a client that reports every chunk must not become one event
 #: per 64 KB on a long poll.
 PROGRESS_MIN_INTERVAL_S = 0.25
+
+#: How long the lock step waits for the lockfile's writer lock before giving
+#: up. Far longer than anywhere else, because by then the plugin's files are
+#: already on disk: see :func:`_write_lockfile_entry`. The figure is what an
+#: uninstall's ``shutil.rmtree`` of a large pack can take on Windows, where
+#: it is retried past whatever holds a handle.
+INSTALL_LOCK_TIMEOUT = 60.0
 
 #: The clock the progress throttle reads. A module attribute rather than a
 #: direct call to ``time.monotonic`` so a test can hand this flow a clock it
@@ -785,10 +793,18 @@ def _write_lockfile_entry(plan: InstallPlan, record: dict[str, Any]) -> bool:
     """Record the install; returns whether a tombstone went with it.
 
     The lockfile is read here rather than carried in the plan, as late as the
-    write allows: it is one file that the CLI and the server both edit, and
-    every second between the read and the write is a second in which the
-    other one's edit can be lost. ``save_lockfile`` is atomic, so the file
-    is never half-written -- only, at worst, one edit behind.
+    write allows, and the writer's lock is held across both ends: it is one
+    file that the CLI and the server both edit, and every moment between the
+    read and the write used to be one in which the other one's edit could be
+    lost (#412).
+
+    The wait is long because of WHERE this is called from. By the time an
+    install reaches its lock step the files are already in place, so refusing
+    here would leave a plugin on the disk that no lockfile mentions -- the
+    exact state this whole seam exists to prevent. So it waits out anything a
+    concurrent writer could plausibly be doing (the widest is an uninstall's
+    ``rmtree``) and only then gives up, as an install failure naming the
+    directory, rather than returning as though nothing were wrong.
 
     Installing is the undo for having uninstalled, so the tombstone goes with
     it (#175): otherwise ``cdui plugin sync`` would keep skipping a pack that
@@ -796,8 +812,21 @@ def _write_lockfile_entry(plan: InstallPlan, record: dict[str, Any]) -> bool:
     no-op for a repository plugin -- asked unconditionally because "which
     kinds get tombstoned" is the uninstall's rule to change, not this one's.
     """
-    lockfile = plugin_loader.load_lockfile()
-    cleared = plugin_loader.clear_removed(lockfile, plan.plugin_id)
-    lockfile.setdefault("plugins", {})[plan.plugin_id] = record
-    plugin_loader.save_lockfile(lockfile)
+    try:
+        with locked_lockfile(timeout=INSTALL_LOCK_TIMEOUT) as lockfile:
+            cleared = plugin_loader.clear_removed(lockfile, plan.plugin_id)
+            lockfile.setdefault("plugins", {})[plan.plugin_id] = record
+            lockfile.save()
+    except LockfileBusy as exc:
+        raise PluginInstallError(
+            f"Could not record {plan.plugin_id}: another program is editing "
+            f"the plugin lockfile.",
+            hint=(
+                f"{plugin_loader.lockfile_path()} stayed locked for "
+                f"{INSTALL_LOCK_TIMEOUT:.0f}s"
+                + (f" (held by pid {exc.holder_pid})" if exc.holder_pid else "")
+                + ". The plugin's files are installed; run the install again "
+                "once the other command has finished."
+            ),
+        ) from exc
     return cleared
