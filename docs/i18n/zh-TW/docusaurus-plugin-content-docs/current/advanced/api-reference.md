@@ -8,7 +8,7 @@ description: 節點、圖、run、sweep、已發佈應用程式、外掛、選�
 
 後端提供 REST API 與執行用 WebSocket。所有端點都使用與應用程式相同的來源（預設為 `http://localhost:8000`）。**驗證**欄使用[驗證](#authentication)一節定義的五種值。每個表格都會連結到相關的使用說明頁面。
 
-伺服器也提供 FastAPI 產生的 schema：`GET /openapi.json`（OpenAPI 3.1，涵蓋本頁每條 HTTP route，不含 WebSocket）、`GET /docs`（Swagger UI，另有輔助頁面 `/docs/oauth2-redirect`）與 `GET /redoc`。這四條都是 open。`/docs` 與 `/redoc` 會從 cdn.jsdelivr.net 載入 script，因此瀏覽器必須能連上網際網路才能顯示；`/openapi.json` 不需要。有預先建置的前端時，對 `/api/` 與 `/ws/` 以外其他路徑的 `GET`，若前端建置中有該路徑的檔案就回傳該檔案（`/assets/...` 的 bundle、`/build-info.json`，以及 release 前端的 `/LICENSE`、`/NOTICE` 與 `/THIRD_PARTY_NOTICES.md`），否則回傳 `index.html`。`/assets/` 底下不存在的檔案，以及 `/api/` 或 `/ws/` 底下沒有對應 route 的路徑，都回傳 404，不會回傳編輯器頁面。
+伺服器也提供 FastAPI 產生的 schema：`GET /openapi.json`（OpenAPI 3.1，涵蓋本頁每條 HTTP route，不含 WebSocket）、`GET /docs`（Swagger UI，另有輔助頁面 `/docs/oauth2-redirect`）與 `GET /redoc`。這四條都是 open。`/docs` 與 `/redoc` 會從 cdn.jsdelivr.net 載入 script，因此瀏覽器必須能連上網際網路才能顯示；`/openapi.json` 不需要。有預先建置的前端時，對 `/api/` 與 `/ws/` 以外其他路徑的 `GET`，若前端建置中有該路徑的檔案就回傳該檔案（`/assets/...` 的 bundle、`/build-info.json`，以及 release 前端的 `/LICENSE`、`/NOTICE`、`/THIRD_PARTY_NOTICES.md`、`/COMMERCIAL-LICENSE.md` 與 `/CONTRIBUTING.md`），否則回傳 `index.html`。`/assets/` 底下不存在的檔案，以及 `/api/` 或 `/ws/` 底下沒有對應 route 的路徑，都回傳 404，不會回傳編輯器頁面。
 
 ## 驗證 {/* #authentication */}
 

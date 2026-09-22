@@ -155,9 +155,19 @@ jobs:
           # attribution notices must travel with it. NOTICE rides along for
           # the same reason: it is where the copyright holder is named, and a
           # redistributed binary that carries no attribution is exactly the
-          # gap the file exists to close (core#248). Copy them into dist so
-          # they land at the top level of the archive.
-          cp LICENSE NOTICE THIRD_PARTY_NOTICES.md frontend/dist/
+          # gap the file exists to close (core#248). COMMERCIAL-LICENSE.md
+          # rides along because NOTICE and THIRD_PARTY_NOTICES.md both send
+          # the reader to it; without it, someone weighing the commercial
+          # path from the tarball alone follows both references to nothing
+          # (core#459). CONTRIBUTING.md rides along for the same reader:
+          # NOTICE and COMMERCIAL-LICENSE.md point to it for the inbound
+          # dual-licensing term, which is what lets contributed code be
+          # offered on the commercial path at all. Copy them into dist so
+          # they land at the top level of the archive. The legal files travel
+          # with every root file they point to, and
+          # backend/tests/test_release_legal_files.py fails when one of those
+          # is missing from this line.
+          cp LICENSE NOTICE THIRD_PARTY_NOTICES.md COMMERCIAL-LICENSE.md CONTRIBUTING.md frontend/dist/
           # Pack from inside the dist dir so extraction lands cleanly with
           # `tar -xzf frontend-dist.tar.gz -C frontend/dist` (no strip needed).
           tar -czf frontend-dist.tar.gz -C frontend/dist .
@@ -168,6 +178,26 @@ jobs:
             echo "size_human=$size_human"
           } >> "$GITHUB_OUTPUT"
           ls -la frontend-dist.tar.gz
+
+      # Check the archive itself, not dist, for the five files the cp line
+      # above copies. On a tag push this runs before the draft release is
+      # created or updated, so a tarball missing one of them is never
+      # attached to a release anyone could publish (core#459). The names are
+      # listed again rather than read off that line: a file dropped from it
+      # has to fail here, not agree with it.
+      - name: Verify legal files in the archive
+        run: |
+          listing="$(tar -tzf frontend-dist.tar.gz)"
+          missing=0
+          for f in LICENSE NOTICE THIRD_PARTY_NOTICES.md COMMERCIAL-LICENSE.md CONTRIBUTING.md; do
+            # `tar -C frontend/dist .` stores a root member as ./LICENSE; a
+            # bare LICENSE counts too. -x keeps ./assets/LICENSE from counting.
+            if ! grep -qxF -e "./$f" -e "$f" <<< "$listing"; then
+              echo "::error::frontend-dist.tar.gz has no $f at its root"
+              missing=1
+            fi
+          done
+          exit "$missing"
 
       - name: Upload as artifact (workflow_dispatch path)
         if: github.event_name == 'workflow_dispatch'
