@@ -2046,8 +2046,12 @@ function nodeDataChanged(
  * `remove` move anything, and both change the length or the ids at an index.
  * A genuine reorder that preserved every id counts as a change, which is the
  * conservative direction -- serialization writes nodes in array order.
+ *
+ * Exported for the plugin write path, which asks the same question of a batch
+ * before it pushes an undo frame (#397). One rule for both is what keeps a
+ * plugin's `committed: true` and "the revision moved" from ever disagreeing.
  */
-function documentChanged(prev: TabState, next: TabState): boolean {
+export function documentChanged(prev: TabState, next: TabState): boolean {
   if (prev === next) return false;
 
   // The assigned device changes what Run submits and what Save writes, so a

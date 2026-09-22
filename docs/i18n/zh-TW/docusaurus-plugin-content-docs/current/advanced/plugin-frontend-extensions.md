@@ -193,7 +193,7 @@ const remove = api.ui.addToolbarButton({
 |------|------|------|
 | `getGraph` | `() => SerializedGraph` | 回傳**完整**圖表，包括節點、邊、參數、`subgraphs` 中的區塊定義，以及圖表指定裝置時的 `settings`。不論使用者目前開啟哪一層，這個方法一律回傳頂層圖表。請視為唯讀；詳見下文。 |
 | `getNodeDefinitions` | `() => NodeDefinition[]` | 回傳完整的節點面板：型別、連接埠 schema、參數 schema。 |
-| `applyOperations` | `(ops: GraphOp[]) => ApplyResult` | **同步**套用一批圖表操作（直接回傳結果，非 Promise）。整個批次會建立**單一復原快照**，並套用至使用者目前開啟的畫布——參見[使用者正在看哪一層](#which-level-the-user-is-looking-at)。 |
+| `applyOperations` | `(ops: GraphOp[]) => ApplyResult` | **同步**套用一批圖表操作（直接回傳結果，非 Promise）。整個批次最多建立**一個復原步驟**，並套用至使用者目前開啟的畫布——參見[使用者正在看哪一層](#which-level-the-user-is-looking-at)。 |
 | `onGraphChanged` | `(callback: () => void) => () => void` | 訂閱圖表變更事件，包括使用者進入或離開區塊。callback 不帶參數；請在其中呼叫 `getGraph()` 取得內容。回傳取消訂閱函式。 |
 | `getView` | `() => GraphView` | **apiVersion 4。** 唯讀：使用者正在看圖表的哪一層。 |
 
@@ -238,7 +238,7 @@ interface ApplyResult {
 }
 ```
 
-**批次語義：** 單次 `applyOperations` 呼叫中的所有操作會形成一個復原快照。AI 編輯完成後按 Ctrl+Z，會一次復原整個批次。操作依序套用；失敗的操作會略過，並在對應的 `results` 項目回報（`ok: false` 與 `error`），其餘操作仍會繼續。同一批次中，先前由 `add_node` 建立的 `ref` 別名可供後續操作使用，也會回傳於 `refs`。
+**批次語義：** 單次 `applyOperations` 呼叫中的所有操作最多形成一個復原步驟。AI 編輯完成後按 Ctrl+Z，會一次復原整個批次；批次若讓圖表維持原樣，就不會建立復原步驟。操作依序套用；失敗的操作會略過，並在對應的 `results` 項目回報（`ok: false` 與 `error`），其餘操作仍會繼續。同一批次中，先前由 `add_node` 建立的 `ref` 別名可供後續操作使用，也會回傳於 `refs`。
 
 #### 使用者正在看哪一層 {/* #which-level-the-user-is-looking-at */}
 
@@ -382,7 +382,7 @@ if (result.conflict === "revision_mismatch") {
   api.ui.toast("That tab is read-only — promote into an editable one.", "warning");
 } else if (result.conflict === "editing_subgraph") {
   api.ui.toast("Step out of the block first — the write is waiting.", "warning");
-} else if (!result.committed) {
+} else if (!result.committed && result.results.some((r) => !r.ok)) {
   const failed = result.results.filter((r) => !r.ok);
   api.ui.toast(`Nothing applied: ${failed.map((r) => r.error).join("; ")}`, "error");
 } else {
@@ -398,11 +398,11 @@ if (result.conflict === "revision_mismatch") {
 4. 若有傳入 `expectedRevision`，其值必須等於分頁的 `revision`；否則回傳 `conflict: "revision_mismatch"` 與**目前**版本號，讓外掛不需再次讀取即可更新預期版本。
 5. 批次會套用至副本。
 6. 使用 `atomic: true` 時，只要任何操作失敗，就不會寫入：`committed: false`、`revision` 不變，並回傳**完整長度**的 `results`，以指出失敗的操作。
-7. 否則，只要內容有變更，就建立一個復原快照並執行一次寫入，回傳 `committed: true` 與新的 `revision`。未變更內容的批次不會寫入，也不會建立復原步驟。
+7. 否則，只要內容有變更，就建立一個復原快照並執行一次寫入，回傳 `committed: true` 與新的 `revision`。若批次執行後文件與原本完全相同，就不會提交內容，也不會建立復原步驟；即使每項操作都成功也一樣（例如以 `move_node` 將節點移到原本的位置），因此 `committed: false` 本身不代表有操作失敗。
 
 每當呼叫未提交內容——包括拒絕、`atomic` 前置檢查失敗或批次未變更內容——`node_count` 與 `edge_count` 都描述分頁目前的狀態，不會回傳已捨棄副本的計數。`unknown_tab` 是例外，因為沒有可計數的分頁。
 
-衝突會**以結果回傳，不會拋出錯誤**。每個批次仍只建立一個復原步驟，每項操作的語義也與 `api.graph.applyOperations` 相同：未使用 `atomic` 時，失敗的操作會略過並回報，其餘操作仍會套用。若提交後的圖表已移除詳細資料視窗或畫布選取所指向的節點，兩者都會清除；之後復原該節點時，不會自動重新開啟詳細資料視窗。
+衝突會**以結果回傳，不會拋出錯誤**。每個批次仍最多建立一個復原步驟，每項操作的語義也與 `api.graph.applyOperations` 相同：未使用 `atomic` 時，失敗的操作會略過並回報，其餘操作仍會套用。若提交後的圖表已移除詳細資料視窗或畫布選取所指向的節點，兩者都會清除；之後復原該節點時，不會自動重新開啟詳細資料視窗。
 
 ```ts
 type WorkspaceConflict =

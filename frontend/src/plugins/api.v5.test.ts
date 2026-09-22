@@ -15,6 +15,7 @@ import { useNodeDefStore } from '../store/nodeDefStore';
 import { useProjectStore } from '../store/projectStore';
 import { _resetIdbForTests } from '../utils/idb';
 import { buildPluginAPI } from './api';
+import type { GraphOp } from './ops';
 import type { NodeDefinition } from '../types';
 
 vi.mock('../store/tabPersistence', () => ({
@@ -472,6 +473,119 @@ describe('workspace.applyOperations', () => {
     expect(store().getTab(tabId)!.undoStack).toHaveLength(before.undoStack.length);
   });
 
+  /**
+   * Leave one redo step on the tab, made the way a user makes one: a real
+   * edit, then Ctrl+Z. Undo and redo act on the ACTIVE tab, so the tab is
+   * activated first -- exactly what the user does.
+   */
+  function armRedo(api: ReturnType<typeof freshApi>, tabId: string, edit: GraphOp) {
+    store().setActiveTab(tabId);
+    expect(api.workspace.applyOperations({ tabId, operations: [edit] }).committed).toBe(true);
+    store().undo();
+    expect(store().getTab(tabId)!.redoStack).toHaveLength(1);
+  }
+
+  it('a move_node to where the node already stands commits nothing and keeps redo (#397)', () => {
+    // A plugin's poll or idle re-write sends exactly this. It used to commit:
+    // one undo step that restored what was already on screen, and -- because
+    // pushing a frame empties the redo stack -- the user's redo history gone.
+    const { api, tabId } = openEditable();
+    armRedo(api, tabId, { op: 'move_node', node_id: 'a', position: { x: 40, y: 40 } });
+    const before = store().getTab(tabId)!;
+    expect(before.nodes.find((n) => n.id === 'a')!.position).toEqual({ x: 0, y: 0 });
+
+    const result = api.workspace.applyOperations({
+      tabId, operations: [{ op: 'move_node', node_id: 'a', position: { x: 0, y: 0 } }],
+    });
+
+    // The op did what it was asked -- the node IS there -- so it reports ok;
+    // it is the batch that has nothing to commit.
+    expect(result.results).toEqual([{ index: 0, ok: true, node_id: 'a' }]);
+    expect(result.committed).toBe(false);
+    expect(result.revision).toBe(before.revision);
+    const after = store().getTab(tabId)!;
+    expect(after.revision).toBe(before.revision);
+    expect(after.undoStack).toHaveLength(before.undoStack.length);
+    expect(after.redoStack).toHaveLength(1);
+    // And the redo step still does what it did.
+    store().redo();
+    expect(store().getTab(tabId)!.nodes.find((n) => n.id === 'a')!.position)
+      .toEqual({ x: 40, y: 40 });
+  });
+
+  it('an update_note with the text the note already has commits nothing either (#397)', () => {
+    const { api, tabId } = openEditable();
+    const added = api.workspace.applyOperations({
+      tabId, operations: [{ op: 'add_note', text: 'draft' }],
+    });
+    const noteId = added.results[0].node_id!;
+    armRedo(api, tabId, { op: 'update_note', node_id: noteId, text: 'final' });
+    const before = store().getTab(tabId)!;
+    expect(before.nodes.find((n) => n.id === noteId)!.data.noteContent).toBe('draft');
+
+    const result = api.workspace.applyOperations({
+      tabId, operations: [{ op: 'update_note', node_id: noteId, text: 'draft' }],
+    });
+
+    expect(result.results).toEqual([{ index: 0, ok: true, node_id: noteId }]);
+    expect(result.committed).toBe(false);
+    expect(result.revision).toBe(before.revision);
+    const after = store().getTab(tabId)!;
+    expect(after.revision).toBe(before.revision);
+    expect(after.undoStack).toHaveLength(before.undoStack.length);
+    expect(after.redoStack).toHaveLength(1);
+    store().redo();
+    expect(store().getTab(tabId)!.nodes.find((n) => n.id === noteId)!.data.noteContent)
+      .toBe('final');
+  });
+
+  it('a batch whose ops cancel out commits nothing, though each op wrote (#397)', () => {
+    // Why the commit compares the document rather than trusting the reducer's
+    // op-by-op bookkeeping: both moves really move `a`, and the batch as a
+    // whole still leaves the graph exactly as it was.
+    const { api, tabId } = openEditable();
+    const before = store().getTab(tabId)!;
+
+    const result = api.workspace.applyOperations({
+      tabId,
+      operations: [
+        { op: 'move_node', node_id: 'a', position: { x: 40, y: 40 } },
+        { op: 'move_node', node_id: 'a', position: { x: 0, y: 0 } },
+      ],
+    });
+
+    expect(result.results.every((r) => r.ok)).toBe(true);
+    expect(result.committed).toBe(false);
+    expect(result.revision).toBe(before.revision);
+    expect(store().getTab(tabId)!.undoStack).toHaveLength(before.undoStack.length);
+  });
+
+  it('a batch that changes one thing still commits once, its no-op ops and all', () => {
+    // The guard against over-correcting (#397): an op that changes nothing
+    // must not hold back the op beside it that does.
+    const { api, tabId } = openEditable();
+    armRedo(api, tabId, { op: 'move_node', node_id: 'a', position: { x: 40, y: 40 } });
+    const before = store().getTab(tabId)!;
+
+    const result = api.workspace.applyOperations({
+      tabId,
+      operations: [
+        { op: 'move_node', node_id: 'a', position: { x: 0, y: 0 } },
+        { op: 'move_node', node_id: 'b', position: { x: 320, y: 80 } },
+      ],
+    });
+
+    expect(result.results.every((r) => r.ok)).toBe(true);
+    expect(result.committed).toBe(true);
+    expect(result.revision).toBe(before.revision + 1);
+    const after = store().getTab(tabId)!;
+    expect(after.revision).toBe(before.revision + 1);
+    expect(after.undoStack).toHaveLength(before.undoStack.length + 1);
+    // A real edit ends the redo history, exactly as the user's own edits do.
+    expect(after.redoStack).toHaveLength(0);
+    expect(after.nodes.find((n) => n.id === 'b')!.position).toEqual({ x: 320, y: 80 });
+  });
+
   it('move + segment + note + label is ONE undo step', () => {
     const { api, tabId } = openEditable();
     const result = api.workspace.applyOperations({
@@ -724,6 +838,28 @@ describe('workspace.applyOperations while the user is inside a block', () => {
     api.graph.applyOperations([{ op: 'clear_graph' }]);
     expect(store().getActiveTab().segmentGroups).toEqual([]);
     expect(store().getActiveTab().nodes).toEqual([]);
+  });
+
+  it('a legacy clear_graph on an already-empty block commits nothing (#397)', () => {
+    // The reducer empties its segment list, but from in here the commit writes
+    // the tab's own list in its place -- the rule the clear_graph tests above
+    // pin. "Did this batch change anything" has to be asked of what would be
+    // WRITTEN, or this batch would spend an undo step on a canvas that was
+    // already empty.
+    const api = freshApi();
+    enterBlockOverSegmentedGraph();
+    api.graph.applyOperations([{ op: 'remove_node', node_id: 'in1' }]);
+    const before = store().getActiveTab();
+    expect(before.nodes).toEqual([]);
+    expect(before.segmentGroups).toHaveLength(1);
+
+    const result = api.graph.applyOperations([{ op: 'clear_graph' }]);
+
+    expect(result.results[0].ok).toBe(true);
+    const after = store().getActiveTab();
+    expect(after.undoStack).toHaveLength(before.undoStack.length);
+    expect(after.revision).toBe(before.revision);
+    expect(after.segmentGroups).toHaveLength(1);
   });
 });
 

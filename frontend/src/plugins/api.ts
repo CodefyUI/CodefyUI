@@ -6,7 +6,7 @@
  * changes.
  */
 import {
-  useTabStore, lastCommitOrigin,
+  useTabStore, lastCommitOrigin, documentChanged,
   type GraphDocument, type TabState,
 } from '../store/tabStore';
 import { useNodeDefStore } from '../store/nodeDefStore';
@@ -115,6 +115,11 @@ export interface WorkspaceApplyResult extends ApplyResult {
   tabId: string;
   /** The tab's revision AFTER this call; unchanged on a conflict or a preflight failure. */
   revision: number;
+  /**
+   * False when nothing was written: a conflict, a failed `atomic` preflight,
+   * or a batch that left the document exactly as it was -- which commits
+   * nothing and adds no undo step even when every op in it succeeded (#397).
+   */
   committed: boolean;
   conflict?: WorkspaceConflict;
 }
@@ -380,27 +385,40 @@ function commitToTab(
   if (request.atomic && outcome.results.some((r) => !r.ok)) {
     return { ...applied, ...counts, revision: tab.revision, committed: false };
   }
-  if (!outcome.mutated) {
+
+  // What the commit below writes. The legacy path inside a block writes the
+  // open canvas and NOTHING else, which is what it did before v5 -- back then
+  // it wrote only nodes and edges, and the reducer's segments fell on the
+  // floor. They have to keep falling: `segmentGroups` is the GRAPH's list
+  // while a block is open (`enterSubgraph` captures it rather than swapping
+  // it), so committing the outcome would let `clear_graph` wipe every overlay
+  // on a canvas the user is not looking at, and `remove_node` prune one whose
+  // endpoint id an inner node happens to reuse. Neither is a canvas write, and
+  // both reach the next save. The two ops that mean to write segments are
+  // refused outright above; this is the same bar for the ops that would have
+  // done it by accident.
+  const written = {
+    nodes: outcome.nodes,
+    edges: outcome.edges,
+    segmentGroups: insideBlock ? tab.segmentGroups : outcome.segmentGroups,
+  };
+  // A batch that leaves the document exactly as it was commits nothing
+  // (#397). The reducer's `mutated` cannot be the judge of that on its own:
+  // it is kept op by op, so it misses a batch whose ops cancel out -- a node
+  // moved away and back -- and any op that writes without comparing first,
+  // such as `clear_graph` on an empty canvas. Committing such a batch pushed
+  // an undo step that restored what was already on screen, and pushing a
+  // frame empties the redo stack. So the question is put to what would be
+  // WRITTEN, by the rule the revision counter uses -- which is also what keeps
+  // `committed: true` and "the revision moved" from disagreeing.
+  if (!outcome.mutated || !documentChanged(tab, { ...tab, ...written })) {
     return { ...applied, ...counts, revision: tab.revision, committed: false };
   }
 
   // One snapshot, then one write: that is what makes a batch one Ctrl+Z.
   store.pushUndoSnapshotFor(tabId);
   store.commitDocument(tabId, {
-    nodes: outcome.nodes,
-    edges: outcome.edges,
-    // The legacy path inside a block writes the open canvas and NOTHING else,
-    // which is what it did before v5 -- back then it wrote only nodes and
-    // edges, and the reducer's segments fell on the floor. They have to keep
-    // falling: `segmentGroups` is the GRAPH's list while a block is open
-    // (`enterSubgraph` captures it rather than swapping it), so committing
-    // the outcome would let `clear_graph` wipe every overlay on a canvas the
-    // user is not looking at, and `remove_node` prune one whose endpoint id
-    // an inner node happens to reuse. Neither is a canvas write, and both
-    // reach the next save. The two ops that mean to write segments are
-    // refused outright above; this is the same bar for the ops that would
-    // have done it by accident.
-    segmentGroups: insideBlock ? tab.segmentGroups : outcome.segmentGroups,
+    ...written,
     dirtyIds: outcome.dirtyIds,
     origin: { pluginId },
   });
