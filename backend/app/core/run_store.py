@@ -120,6 +120,10 @@ _ARTIFACT_COLUMNS = "id, run_id, kind, path, meta, created_at"
 #: and each recursive step seeks the next one with ``MIN(name) WHERE name >
 #: previous``. Both arms, and the per-series value lookup, are covered by
 #: ``idx_exec_run_metrics_series (run_id, name, step)``.
+#:
+#: ``ORDER BY step DESC, id DESC LIMIT 1`` in the value subquery is the
+#: whole definition of "the last point of a series", and the ONLY copy of
+#: it — see :func:`last_metric_values`.
 _LATEST_METRICS_SQL = """
 WITH RECURSIVE series(name) AS (
     SELECT (SELECT MIN(name) FROM exec_run_metrics WHERE run_id = ?1)
@@ -134,6 +138,40 @@ SELECT series.name AS name,
          ORDER BY step DESC, id DESC LIMIT 1) AS value
   FROM series WHERE series.name IS NOT NULL
 """
+
+
+def last_metric_values(
+    conn: sqlite3.Connection, run_id: str,
+) -> dict[str, float]:
+    """``{series name: last value}`` for ONE run — THE rule, defined once.
+
+    The single implementation of "the last point of the named series"
+    (#404). It used to exist twice: here, inside ``latest_metrics``, and
+    again as a one-series seek in ``sweep_store._last_metric_value``. Two
+    spellings of one rule is how the read path and the prune path come to
+    disagree about a sweep's objective — and by the time they do, seam B
+    has already written its answer onto a durable ``sweeps`` row and
+    deleted the children that could have settled the argument (RULING 4).
+    Asserting that two implementations agree only ever covers the shapes
+    someone thought to test; having one leaves nothing to diverge from.
+
+    A **plain function taking a CONNECTION**, not a ``RunStore`` method,
+    for the reason ``sweep_store._select_sweep`` is one: it is called both
+    from a ``Database.run`` closure (``latest_metrics``) and from inside
+    ``RunStore.prune``'s open transaction, where opening a second
+    ``Database.run`` would deadlock on the non-reentrant lock (see the
+    module docstring). Operating on an already-open connection does not
+    violate that rule; it is the only shape that can be shared across it.
+
+    A series whose last point is a non-finite NULL is OMITTED rather than
+    reported as 0.0 — a diverged loss must not render as a suspiciously
+    good one. The caller therefore reads an absent key for "diverged",
+    "never logged" and "no such run" alike, which is the same answer in
+    all three cases: there is no number to show.
+    """
+    return {row["name"]: row["value"]
+            for row in conn.execute(_LATEST_METRICS_SQL, (run_id,))
+            if row["value"] is not None}
 
 
 def _json_safe(value: Any) -> Any:
@@ -1013,24 +1051,25 @@ class RunStore:
         A series whose last point is a non-finite NULL is OMITTED rather
         than reported as 0.0 — a diverged loss must not render as a
         suspiciously good one. Its earlier points are untouched; only the
-        summary number is withheld.
+        summary number is withheld. A run left with NOTHING to report is
+        dropped from the result entirely, so a caller reads "this run has
+        no final numbers" as a missing key rather than an empty map.
+
+        The per-run answer itself is :func:`last_metric_values`, which the
+        prune transaction shares (#404); this method is the batching and
+        the empty-run filter around it, nothing more.
         """
         ids = list(run_ids)
         if not ids:
             return {}
 
-        def _select(conn: sqlite3.Connection) -> dict[str, list[sqlite3.Row]]:
-            return {run_id: conn.execute(_LATEST_METRICS_SQL,
-                                         (run_id,)).fetchall()
+        def _select(conn: sqlite3.Connection) -> dict[str, dict[str, float]]:
+            return {run_id: last_metric_values(conn, run_id)
                     for run_id in ids}
 
-        out: dict[str, dict[str, float]] = {}
-        for run_id, rows in (await self.db.run(_select)).items():
-            values = {row["name"]: row["value"] for row in rows
-                      if row["value"] is not None}
-            if values:
-                out[run_id] = values
-        return out
+        return {run_id: values
+                for run_id, values in (await self.db.run(_select)).items()
+                if values}
 
     async def list_metric_names(self, run_id: str) -> list[str]:
         """Distinct series names for a run — the chart legend."""

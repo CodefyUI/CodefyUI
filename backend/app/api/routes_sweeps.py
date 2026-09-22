@@ -81,9 +81,8 @@ from ..core.sweep_compiler import (
     compile_sweep,
 )
 from ..core.sweep_store import (
+    SWEEP_SETTLED_STATES,
     SWEEP_STATE_CANCELLING,
-    SWEEP_STATE_FAILED,
-    SWEEP_STATE_FINISHED,
     HarvestEntry,
     SweepRecord,
     SweepStore,
@@ -551,16 +550,6 @@ async def create_sweep(body: CreateSweepRequest, request: Request):
 
 # ── the read side ─────────────────────────────────────────────────────────
 
-#: States a harvest must never re-write. ``failed`` is the submit loop's
-#: own record of what went wrong and outranks any later observation;
-#: ``finished`` is stamped once, so re-stamping it would move
-#: ``finished_at`` on every poll. ``SweepStore._write_variants`` enforces
-#: both itself -- this set is what lets the read side skip the write
-#: ENTIRELY when there is nothing else to say, which is the difference
-#: between three database round trips and four on every poll of a settled
-#: sweep.
-_SETTLED_STATES = frozenset({SWEEP_STATE_FINISHED, SWEEP_STATE_FAILED})
-
 
 async def _harvested_sweep(
     service: RunService, store: SweepStore, sweep_id: str,
@@ -609,7 +598,14 @@ async def _harvested_sweep(
             child_exists=variant.run_id in children)
         for variant in sweep.variants)
 
-    if entries or (finished and sweep.state not in _SETTLED_STATES):
+    # ``SweepStore._write_variants`` refuses to re-write a settled sweep
+    # itself; asking the same question HERE is what lets this skip the
+    # write entirely when there is nothing else to say, which is three
+    # database round trips instead of four on every poll of a settled
+    # sweep. The set is imported rather than re-spelled (#404): two
+    # copies of one rule is how the read path and the store come to
+    # disagree about which states are final.
+    if entries or (finished and sweep.state not in SWEEP_SETTLED_STATES):
         # ONE closure, so the read-modify-write of the variants blob is
         # atomic against every other database operation in the process.
         # Splitting it into a read here and a write there would silently

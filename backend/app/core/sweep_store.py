@@ -32,7 +32,7 @@ from typing import Any, Mapping, Sequence
 from uuid import uuid4
 
 from .db import Database, transaction, utc_now_iso
-from .run_store import TERMINAL_STATUSES
+from .run_store import TERMINAL_STATUSES, last_metric_values
 
 logger = logging.getLogger(__name__)
 
@@ -48,11 +48,63 @@ logger = logging.getLogger(__name__)
 # 2 were stopped is not "a cancelled sweep". Per-variant detail lives in
 # variants[].status.
 SWEEP_STATE_RUNNING = "running"
+
+#: **A stop was REQUESTED. It is not a promise that one will happen** (#404).
+#:
+#: What it asserts: at least one child was still active when
+#: ``POST /api/sweeps/{id}/cancel`` reached it, and every such child was
+#: asked to stop. What it does NOT assert: that any of them will.
+#: Cancellation is cooperative all the way down — ``RunService.cancel`` sets
+#: a flag on the ``ExecutionContext`` and never calls ``Task.cancel``,
+#: because there is no safe way to interrupt arbitrary third-party node code
+#: and killing the task outright is what leaves half-written rows and wedged
+#: CUDA state. A node that polls ``context.should_stop()`` stops within a
+#: batch; **a node that never polls it never stops, and this sweep stays
+#: here for as long as that node runs** — which can be hours, and in
+#: principle forever.
+#:
+#: There is deliberately NO timeout, and none should be added. The only way
+#: to enforce a deadline is to kill a training run mid-step, which costs the
+#: user the very thing the run existed to produce and, on a GPU, can leave
+#: the device unusable until the process dies. A state that is honest about
+#: being indefinite beats a deadline that is dishonest about being safe.
+#:
+#: How it ENDS: not by elapsed time, but by the children. ``_write_variants``
+#: moves the sweep to ``finished`` on the first harvest (either seam) at
+#: which every variant is terminal — the cancel is over once nothing is
+#: active, whether the children stopped because they were asked to or
+#: because they were going to finish anyway. A server restart also ends it:
+#: ``RunService.recover_interrupted`` retires the abandoned rows, and the
+#: next read settles the sweep.
+#:
+#: How a READER tells a slow stop from a stuck one: never by how long the
+#: state has been showing. ``GET /api/sweeps/{id}`` returns per-variant
+#: ``status`` and the ``counts`` tally built from it, so
+#: ``counts["running"] + counts["queued"]`` is exactly what the stop is
+#: still waiting on, by name and by run id. A client that renders
+#: ``cancelling`` as a spinner with no such count is promising something
+#: this state does not.
 SWEEP_STATE_CANCELLING = "cancelling"
+
 SWEEP_STATE_FINISHED = "finished"
 SWEEP_STATE_FAILED = "failed"
 SWEEP_STATES: frozenset[str] = frozenset({
     SWEEP_STATE_RUNNING, SWEEP_STATE_CANCELLING,
+    SWEEP_STATE_FINISHED, SWEEP_STATE_FAILED,
+})
+
+#: The sweep is over and nothing will move it again: ``finished`` is stamped
+#: once (re-stamping would drag ``finished_at`` forward on every poll) and
+#: ``failed`` is the sweep's own record of what went wrong and is never
+#: overwritten. Both halves are the same question, so they are one set
+#: rather than a tuple repeated at each site.
+#:
+#: The complement matters more than the set does: ``running`` and
+#: ``cancelling`` are BOTH still-going states, and classifying ``cancelling``
+#: with them rather than with the terminal pair is the machine-readable half
+#: of what it means (see above). A client that stops polling on
+#: ``cancelling`` has filed a sweep as over while its children still run.
+SWEEP_SETTLED_STATES: frozenset[str] = frozenset({
     SWEEP_STATE_FINISHED, SWEEP_STATE_FAILED,
 })
 
@@ -457,13 +509,18 @@ def _write_variants(conn: sqlite3.Connection, record: SweepRecord,
     """One UPDATE: the patched blob plus, when the sweep has just become
     finished, its terminal state.
 
-    ``failed`` is NEVER overwritten, ``finished`` is never re-stamped, and a
-    sweep in ``cancelling`` lands on ``finished`` — the cancel is over once
-    nothing is active.
+    A SETTLED sweep keeps the state it has: ``failed`` is never overwritten
+    and ``finished`` is never re-stamped. That is one question, so it is
+    asked once, against ``SWEEP_SETTLED_STATES``.
+
+    A sweep in ``cancelling`` is NOT settled and does land on ``finished``
+    here — this line is the only way out of that state, and it is driven by
+    the children being terminal rather than by any deadline (see
+    ``SWEEP_STATE_CANCELLING``).
     """
     state = record.state
     finished_at = record.finished_at
-    if finished and state not in (SWEEP_STATE_FAILED, SWEEP_STATE_FINISHED):
+    if finished and state not in SWEEP_SETTLED_STATES:
         state = SWEEP_STATE_FINISHED
         finished_at = finished_at or stamp
     conn.execute(
@@ -475,22 +532,41 @@ def _write_variants(conn: sqlite3.Connection, record: SweepRecord,
 
 def _last_metric_value(conn: sqlite3.Connection, run_id: str,
                        name: str | None) -> float | None:
-    """The LAST point of one series.
+    """The LAST point of one series, as :func:`last_metric_values` says.
 
-    ``ORDER BY step DESC, id DESC LIMIT 1`` is the identical rule
-    ``RunStore.latest_metrics`` uses (``_LATEST_METRICS_SQL``), so seam A
-    and seam B can never disagree about a variant's objective. Covered by
-    ``idx_exec_run_metrics_series``, so this is one seek per doomed child.
+    Seam B used to spell the rule out a second time — its own
+    ``SELECT value ... ORDER BY step DESC, id DESC LIMIT 1``, next to
+    ``_LATEST_METRICS_SQL``'s identical subquery on the read path. They
+    agreed, but nothing HELD them to it, and #404 lists three shapes on
+    which they could have come apart later: several series in one run, a
+    NULL last point that one side omits and the other returns, and a run
+    ``latest_metrics`` drops from its result entirely. The stakes are not
+    symmetric — seam A's answer is recomputed on the next poll, while seam
+    B's is written onto a durable ``sweeps`` row moments before the
+    children that could disprove it are deleted (RULING 4). So the rule is
+    shared rather than merely agreed with, and the three shapes stop being
+    reachable at all.
 
-    A NULL value is a non-finite point (a diverged loss) and reads back as
-    None — exactly as ``latest_metrics`` omits that series.
+    Sharing is SAFE here because ``last_metric_values`` takes a connection
+    rather than a ``Database``: it runs inside ``RunStore.prune``'s open
+    transaction, on the same connection, exactly as ``_select_sweep``
+    already does, and opens no second ``Database.run`` to deadlock on.
+
+    The cost is that a doomed child's whole series list is read instead of
+    one series. That is still seek-bounded — the leapfrog CTE hops series
+    to series through ``idx_exec_run_metrics_series`` and never scans, so
+    the price tracks a run's handful of SERIES and not its millions of
+    POINTS, which is the property that made the read path affordable in
+    the first place.
+
+    An empty or absent *name* is the one thing this adds: it answers None
+    without looking anything up. A sweeps row is durable and outlives the
+    validation that wrote it (the route requires a non-empty metric), and
+    ``{}.get("")`` is not a lookup anyone meant to make.
     """
     if not name:
         return None
-    row = conn.execute(
-        "SELECT value FROM exec_run_metrics WHERE run_id = ? AND name = ? "
-        "ORDER BY step DESC, id DESC LIMIT 1", (run_id, name)).fetchone()
-    return None if row is None else row["value"]
+    return last_metric_values(conn, run_id).get(name)
 
 
 def harvest_doomed(conn: sqlite3.Connection, where_clause: str,
@@ -513,6 +589,18 @@ def harvest_doomed(conn: sqlite3.Connection, where_clause: str,
     not ``prune``, so a hand-deleted child that no read had harvested loses
     its objective; the design then reports that variant honestly as
     ``missing`` with a null objective (spec 10.12 files the fix).
+
+    A sweep whose harvest RAISES still has its children deleted, and #404
+    asked what should be left behind. The answer is
+    :func:`_record_harvest_failure`: the row says why its table is empty.
+    Pinning the children instead — skipping their delete until the harvest
+    succeeds — was the alternative, and it is the one option this module
+    cannot take: the failures that reach the handler below are mostly
+    permanent (an unreadable ``variants`` blob does not heal), so a single
+    corrupt cell would exempt its children from retention for good, and
+    with them their metrics, their checkpoint files and their TensorBoard
+    directories. That is bookkeeping blocking retention, which is the one
+    thing this path must never do.
     """
     doomed = conn.execute(
         "SELECT id, sweep_id, sweep_variant, status FROM exec_runs "
@@ -540,13 +628,73 @@ def harvest_doomed(conn: sqlite3.Connection, where_clause: str,
         try:
             harvested += _harvest_one_sweep(conn, sweep_id, rows, doomed_ids,
                                             stamp)
-        except Exception:
+        except Exception as exc:
             logger.warning(
                 "retention: could not harvest sweep %s, so its variants keep "
                 "whatever was harvested before; every other sweep in this "
                 "pass is unaffected and the delete proceeds", sweep_id,
                 exc_info=True)
+            _record_harvest_failure(conn, sweep_id, rows, exc)
     return harvested
+
+
+#: How much of a failed harvest's own exception text is kept on the row.
+#: ``sweeps.error`` is durable, nothing deletes it, and it is serialised
+#: into every later ``GET /api/sweeps/{id}`` body — a pathological ``str``
+#: must not become this sweep's permanent payload.
+_HARVEST_ERROR_DETAIL_MAX = 300
+
+
+def _record_harvest_failure(conn: sqlite3.Connection, sweep_id: str,
+                            rows: Sequence[sqlite3.Row],
+                            exc: BaseException) -> None:
+    """Write WHY a sweep's results are missing, onto the sweep row (#404).
+
+    The residue the per-sweep isolation leaves behind: the children were
+    deleted unharvested, so the numbers are gone for good, and without this
+    the row is indistinguishable from a sweep that simply never produced
+    anything. Both render as an empty comparison table. A reader who cannot
+    tell those apart will go looking for a bug in their graph.
+
+    ``sweeps.error`` is the field, and it reaches a reader for free —
+    ``GET /api/sweeps/{id}`` already puts it in every response body, so no
+    route, no column and no migration is involved.
+
+    **The STATE is deliberately left alone.** A failed harvest says nothing
+    about which variants are terminal, and ``failed`` on a sweep is
+    reserved for a broken SUBMIT loop (:meth:`SweepStore.mark_failed`) —
+    claiming it here would both overstate what is known and, because
+    neither seam ever overwrites ``failed``, permanently prevent a sweep
+    from being stamped ``finished`` over a bookkeeping error that may well
+    have been transient.
+
+    ``error IS NULL`` guards the write for the same reason
+    :meth:`SweepStore.set_state` guards on ``failed``: a submit loop's own
+    record of what went wrong outranks a later retention note, and where
+    two retention passes both failed, the FIRST one is when the results
+    were actually lost.
+
+    **Never raises.** It runs inside ``RunStore.prune``'s transaction, one
+    statement before the DELETE, so a throw here would abort retention for
+    every run in the pass — the exact failure the isolation above exists to
+    prevent, reintroduced by the note about it. Bookkeeping about
+    bookkeeping is still bookkeeping.
+    """
+    detail = f"{type(exc).__name__}: {exc}"
+    if len(detail) > _HARVEST_ERROR_DETAIL_MAX:
+        detail = detail[:_HARVEST_ERROR_DETAIL_MAX - 3] + "..."
+    message = (
+        f"retention deleted {len(rows)} finished run(s) of this sweep "
+        f"before the harvest could copy their objectives onto this row, so "
+        f"those results are gone for good ({detail})")
+    try:
+        conn.execute(
+            "UPDATE sweeps SET error = ? WHERE id = ? AND error IS NULL",
+            (message, sweep_id))
+    except Exception:
+        logger.warning(
+            "retention: could not record the failed harvest on sweep %s "
+            "either; the delete still proceeds", sweep_id, exc_info=True)
 
 
 def _harvest_one_sweep(conn: sqlite3.Connection, sweep_id: str,

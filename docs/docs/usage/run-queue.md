@@ -194,9 +194,15 @@ Each entry in `params` addresses one parameter of one node by the node's id and 
 
 Results outlive the children: every `GET /api/sweeps/{id}` and every cancel copies each finished variant's status and objective onto the sweep row, and retention does the same for any unread result before it prunes a run. A child removed by retention therefore keeps its harvested `status` and `objective`, with `run_exists: false` and no `final_metrics`. A child deleted with `DELETE /api/runs/{id}` before any read or cancel harvested it shows `status: "missing"` and `objective: null`. The variant's row stays in both cases.
 
+A sweep can carry an `error` while its `state` is still `running` or `finished`. That is retention reporting a harvest it could not finish: the children were deleted on schedule — a delete is never held back so that results can be saved first — but their objectives could not be copied across on the way out, so those numbers are gone for good. The message says how many runs went and what went wrong. Without it an empty comparison table would be indistinguishable from a sweep that simply never recorded anything, and that is the difference the message exists to draw. `state: "failed"` still means only one thing: the submit loop broke part-way.
+
 ### Cancelling
 
 `POST /api/sweeps/{id}/cancel` asks every queued or running child to stop — one cooperative cancel each — and reports `cancelled` and `already_finished` counts plus a per-variant list in index order. The sweep's state becomes `cancelling` only if at least one child was still active, and it never becomes `cancelled`: a sweep whose first thirty variants finished and last two were stopped is a finished sweep with two cancelled rows. Once every child is terminal, the next read (the cancel reply itself, if they already were) settles the state to `finished`. Asking twice is harmless (`cancelled: 0`).
+
+A cancel is a request, not a guarantee. Stopping is cooperative: the server raises a flag and the node has to read it. The training, evaluation and sampling nodes check it every batch and stop within one, but a node that never checks runs to completion exactly as if nobody had asked. There is no force-stop behind the request and no timeout — the only way to impose a deadline is to kill the run mid-step, which throws away the work it has done and, on a GPU, can leave the device unusable until the server exits.
+
+So `cancelling` has no time bound. It ends when the last child reaches a terminal status, not after any particular wait; restarting the server ends it too, because runs abandoned by the old process are retired on the way back up. To see what a cancel is still waiting on, read `counts.running` plus `counts.queued` from `GET /api/sweeps/{id}`: those are the children that were asked and have not stopped, and `variants` names them. How long the sweep has been showing `cancelling` tells you nothing.
 
 ### Where the variants show up
 
