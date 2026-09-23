@@ -129,7 +129,8 @@ While a run is waiting, the CLI reports where it is in line rather than sitting 
   ○ queued  position 3 on cuda:0
   ▸ started
   ✓ dataset
-    trainer  epoch 3/10  loss=0.1235
+    trainer  epoch 3  batch 912/938  loss=0.1187
+    trainer  epoch 3/10  loss=0.1235  lr=0.001
   ✓ trainer
   ✓ run complete
 
