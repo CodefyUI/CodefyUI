@@ -349,10 +349,10 @@ for (const [i, result] of opened.entries()) {
 1. `title` 必須是非空字串——`invalid_graph`。
 2. `graph` 必須能通過 `JSON.stringify`——`invalid_graph`。
 3. 該 JSON 最多 8 MiB——`too_large`。
-4. 圖表必須能由編輯器的文件讀取器讀取，也就是開啟範例圖庫中的範例時使用的同一個讀取器。節點的 `params` 會完全保留項目提供的值，不會從節點定義或 preset 補入內容；省略的參數會維持省略。未知的頂層 key 會忽略，`subgraphs`、`segmentGroups`、`presets` 與 `settings.device` 會保留（編輯器不接受的裝置值視為未指定）；若 `format_version` 高於編輯器支援的版本，分頁會和一般檔案一樣以唯讀模式開啟。讀取失敗時回傳 `invalid_graph` 與讀取器的原始訊息。
-5. 開啟後不得讓編輯器超過 32 個分頁——`too_many_tabs`。
+4. 開啟後不得讓編輯器超過 32 個分頁——`too_many_tabs`。
+5. 圖表必須能由編輯器的文件讀取器讀取，也就是開啟範例圖庫中的範例時使用的同一個讀取器。節點的 `params` 會完全保留項目提供的值，不會從節點定義或 preset 補入內容；省略的參數會維持省略。未知的頂層 key 會忽略，`subgraphs`、`segmentGroups`、`presets` 與 `settings.device` 會保留（編輯器不接受的裝置值視為未指定）；若 `format_version` 高於編輯器支援的版本，分頁會和一般檔案一樣以唯讀模式開啟。讀取失敗時回傳 `invalid_graph` 與讀取器的原始訊息。
 
-分頁數會最後檢查，並使用檢查當下的分頁數量。因此，如果只剩一個分頁額度，同一次呼叫中的兩個項目不會同時通過。由於分頁數最後才檢查，以 `too_many_tabs` 拒絕的項目已經由讀取器處理；即使未開啟分頁，其中包含且伺服器尚未見過的 preset 仍會合併至節點面板。
+分頁上限以檢查當下的分頁數量判斷。因此，如果只剩一個分頁額度，同一次呼叫中的兩個項目不會同時通過。分頁上限會在讀取圖表之前檢查，因為讀取圖表時，其中包含且伺服器尚未見過的 preset 會合併至節點面板；以 `too_many_tabs` 拒絕的項目不會改變節點面板。
 
 `options.activate` 可設為 `"first"`（預設）、`"last"` 或 `"none"`；最後一個選項不會切換使用者目前的分頁。
 

@@ -175,6 +175,58 @@ describe('workspace.openGraphs', () => {
     expect(store().tabs).toHaveLength(32);
   });
 
+  /** The smallest preset the document reader accepts. */
+  function preset(name: string) {
+    return {
+      preset_name: name, category: 'Presets', description: '', tags: [],
+      nodes: [], edges: [], exposed_inputs: [], exposed_outputs: [], exposed_params: [],
+    };
+  }
+
+  const paletteNames = () => useNodeDefStore.getState().presets.map((p) => p.preset_name);
+
+  it('refuses past 32 tabs and leaves the refused graph\'s presets out of the palette', () => {
+    // Reading a graph merges the presets it carries into the palette, and only
+    // a full re-fetch of the node definitions takes them out again. So the tab
+    // limit has to refuse an entry BEFORE it is read, or a graph the user never
+    // saw leaves entries in the Nodes palette and in quick search (#416).
+    const api = freshApi();
+    while (store().tabs.length < 32) store().createTab({ activate: false });
+    const [result] = api.workspace.openGraphs(
+      [{ title: 'One too many', graph: { ...candidateGraph(), presets: [preset('FromRefused')] } }],
+      { activate: 'none' },
+    );
+    expect(result).toMatchObject({ code: 'too_many_tabs' });
+    expect(paletteNames()).toEqual([]);
+  });
+
+  it('with one slot left, only the entry that opened adds its presets', () => {
+    // The limit is read live for every entry, so the second entry sees the tab
+    // the first one opened -- and is refused before it is read.
+    const api = freshApi();
+    while (store().tabs.length < 31) store().createTab({ activate: false });
+    const results = api.workspace.openGraphs([
+      { title: 'Fits', graph: { ...candidateGraph('one'), presets: [preset('First')] } },
+      { title: 'Does not', graph: { ...candidateGraph('two'), presets: [preset('Second')] } },
+    ], { activate: 'none' });
+    expect('tabId' in results[0]).toBe(true);
+    expect(results[1]).toMatchObject({ code: 'too_many_tabs' });
+    expect(store().tabs).toHaveLength(32);
+    expect(paletteNames()).toEqual(['First']);
+  });
+
+  it('an entry that is unreadable and over the cap is refused too_many_tabs', () => {
+    // Pins the order the reference states: the tab limit is checked before the
+    // reader, so a full editor refuses the entry whatever its graph holds.
+    const api = freshApi();
+    while (store().tabs.length < 32) store().createTab({ activate: false });
+    const [result] = api.workspace.openGraphs(
+      [{ title: 'Broken', graph: { nodes: 'not-a-list', edges: [] } as never }],
+      { activate: 'none' },
+    );
+    expect(result).toMatchObject({ code: 'too_many_tabs' });
+  });
+
   it('reports a reader failure as invalid_graph and opens no tab', () => {
     const api = freshApi();
     const [result] = api.workspace.openGraphs(
