@@ -618,7 +618,7 @@ interface RunMetricPoint {
 
 | 方法 | 簽名 | 說明 |
 |------|------|------|
-| `fetch` | `(path: string, init?: RequestInit) => Promise<Response>` | 參數與瀏覽器的 `fetch` 相同。POST、PUT、PATCH 與 DELETE 會加上 session token 標頭 `X-CodefyUI-Token`（GET、HEAD 與 OPTIONS 原樣送出）；收到 `403` 時會重新讀取 token，若伺服器在此期間重新啟動過就重試一次。URL 不會經過檢查：只傳入 CodefyUI 伺服器上的路徑（例如 `/api/llm/chat`），因為送往其他 origin 的 POST、PUT、PATCH 或 DELETE 會把 session token 一併送出。所有對 CodefyUI 後端的呼叫都應使用此方法。 |
+| `fetch` | `(path: string, init?: RequestInit) => Promise<Response>` | 參數與瀏覽器的 `fetch` 相同。POST、PUT、PATCH 與 DELETE 會加上 session token 標頭 `X-CodefyUI-Token`（GET、HEAD 與 OPTIONS 原樣送出）；收到 `403` 時會重新讀取 token，若伺服器在此期間重新啟動過就重試一次。session token 只會送往編輯器本身的 origin：送往其他 origin 的 POST、PUT、PATCH 或 DELETE 會被拒絕，不會送出任何 request，promise 會以 `TypeError` 失敗。呼叫其他伺服器請使用 `window.fetch`。所有對 CodefyUI 後端的呼叫都應使用此方法，並傳入路徑，例如 `/api/llm/chat`。 |
 
 ### `api.storage` — 命名空間鍵值儲存 {/* #apistorage--namespaced-key-value-store */}
 

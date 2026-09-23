@@ -834,8 +834,9 @@ export function buildPluginAPI(
     },
     // Read-only by design (see the contract). Every request goes through the
     // host's own API client, so the session token is attached where the host
-    // attaches it and never reaches plugin code — there is nothing on this
-    // facade, or on anything it returns, that a plugin could read it from.
+    // attaches it, and nothing on this facade, or on anything it returns,
+    // holds it. That is a convenience: plugin code runs in the editor page and
+    // can reach the token another way (the reference's Trust model).
     runs: {
       list: (opts = {}) => listRuns(opts),
       get: (id) => getRun(id),

@@ -267,6 +267,17 @@ describe('runs facade', () => {
     const init = fetchMock.mock.calls[0][1] as unknown as RequestInit;
     expect(new Headers(init.headers).get('X-CodefyUI-Token')).toBe('super-secret-token');
   });
+
+  it('the host sends the token to its own origin only: a plugin POST to another origin is refused and nothing goes out', async () => {
+    // Before #482 this went out with the token attached, and whether the token
+    // left the machine was up to the other server's CORS preflight.
+    _setSessionTokenForTesting('super-secret-token');
+    const fetchMock = mockFetch({});
+    await expect(
+      freshApi().http.fetch('https://api.example.com/v1/chat', { method: 'POST' }),
+    ).rejects.toThrow(/api\.example\.com/);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
 });
 
 /**
