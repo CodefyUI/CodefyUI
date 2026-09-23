@@ -34,8 +34,13 @@ import importlib.machinery
 from collections.abc import Iterable
 from pathlib import Path
 
-from app.core.plugin_validator import PluginValidationError, validate_python_source
+from app.core.plugin_validator import (
+    PluginValidationError,
+    dangerous_modules,
+    validate_python_source,
+)
 from app.core.script_policy import TIER0_DENIED_ATTRS
+from app.core.security_tiers import CAPABILITIES
 
 __all__ = [
     "LOADER_SUFFIXES",
@@ -192,12 +197,155 @@ def _names_an_importable_module(path: Path, suffix: str) -> bool:
     return path.name[: -len(suffix)].isidentifier()
 
 
+# ── #413: a refusal the plugin's author can act on ─────────────────────────
+#
+# The validator answers for one source text and knows nothing of the plugin
+# around it, so three things are said here instead. Where the file is: its
+# path in the plugin and the line, where the validator knew only a base name
+# ("conftest.py"). Why a file outside nodes/ is read at all. And whether any
+# [security] grant could let the file through: the validator ends an import
+# refusal by telling the author to declare the grant that lifts THAT line,
+# which is a dead end when another line is refused at every tier. The
+# conftest `cdui plugin new` used to write was refused for `import sys`, told
+# to ask for it with --trust-author, and then refused for `setattr`, which
+# nothing lifts.
+
+#: What the validator calls a file it refuses. The gate names the file at the
+#: start of the refusal, so the validator's sentence reads "is not allowed in
+#: this file" rather than naming it a second time.
+_REFUSED_FILE = "this file"
+
+#: How ``plugin_validator._capability_denial`` starts the sentence telling
+#: the author to declare the grant that lifts an import refusal: Tier 2, then
+#: Tier 1. The gate cuts that sentence wherever the grant is not advice it
+#: stands behind, and ``test_plugin_gate_refusal.py`` pins both openings to
+#: the validator's text.
+_GRANT_ADVICE_OPENINGS = (
+    "A plugin that genuinely needs it has to be installed with --trust-author",
+    "Declare it in the plugin manifest as [security] capabilities",
+)
+
+_WHY_THE_SCAN_READS_IT = (
+    "The scan reads every Python file in the plugin, tests/ included, because "
+    "a node can import any file in the plugin, not only the ones in nodes/."
+)
+_CHANGE_IT_INSTEAD = (
+    "If only tests or tooling use this file, change it rather than declaring "
+    "a [security] grant, which would cover the whole plugin, its nodes included."
+)
+#: The docs section with a test setup that needs no grant. The base is the
+#: one the editor links to (``DOCS_BASE`` in ``frontend/src/utils/docsUrl.ts``).
+#: Last on its line, with no full stop after it, so a copied URL is whole.
+_TESTS_THAT_PASS = (
+    "Tests that need no grant: "
+    "https://docs.codefyui.com/advanced/plugins#tests-are-scanned-too"
+)
+
+
+def _sentence(text: str) -> str:
+    """*text* ending as a sentence. The Plugin Center shows a refusal's lines
+    as one paragraph, so each one has to end like one."""
+    return text if text.endswith((".", "?", "!")) else text + "."
+
+
+def _without_grant_advice(message: str) -> str:
+    """*message* without the sentence telling the author to declare a
+    ``[security]`` grant.
+
+    Only that sentence goes. The capability the refusal names stays, and so
+    does what follows the sentence, such as the note that
+    ``from os.path import join`` needs no capability at all.
+    """
+    kept = [
+        sentence
+        for sentence in message.split(". ")
+        if not sentence.startswith(_GRANT_ADVICE_OPENINGS)
+    ]
+    return _sentence(". ".join(kept))
+
+
+def _refused_under_every_grant(content: bytes) -> PluginValidationError | None:
+    """What still refuses *content* under the most a manifest can ask for.
+
+    That is every capability, plus every blocklisted module under
+    ``allowed_modules``, which also lifts the Tier-0 attribute names (see
+    :func:`_denied_attributes_for`). A refusal means no grant lets the file
+    through, and names the line. ``None`` means some set of grants does, or
+    that this pass could not tell.
+
+    Only advice rides on this answer, never the verdict. The pass reads past
+    the line the scan refused, so it can fail where the scan did not -- a
+    later expression nested too deep for the validator's ``ast.unparse``
+    raises ``RecursionError`` -- and then the refusal keeps the validator's
+    own words instead of turning into a traceback.
+    """
+    everything = sorted(dangerous_modules())
+    try:
+        validate_python_source(
+            content,
+            _REFUSED_FILE,
+            allowed_modules=everything,
+            capabilities=list(CAPABILITIES),
+            denied_attributes=_denied_attributes_for(everything),
+        )
+    except PluginValidationError as exc:
+        return exc.with_traceback(None)
+    except Exception:
+        return None
+    return None
+
+
+def _refusal(
+    rel_parts: tuple[str, ...], content: bytes, exc: PluginValidationError
+) -> PluginValidationError:
+    """The validator's refusal of one file, rewritten for the plugin's author.
+
+    The validator's instruction to declare a grant is kept only for a file in
+    ``nodes/`` that some set of grants lets through. When no grant does, it
+    is a dead end. Outside ``nodes/`` it would widen what the whole plugin
+    may do for the sake of a file CodefyUI never runs on its own, usually a
+    test; #413 asked for no ``--trust-author`` advice there, and a capability
+    is the same trade. Such a refusal ends with the docs section that shows a
+    test setup needing no grant.
+    """
+    where = "/".join(rel_parts)
+    if exc.lineno:
+        where += f", line {exc.lineno}"
+    in_nodes = rel_parts[0] == "nodes"
+    every_tier = _refused_under_every_grant(content)
+    message = str(exc)
+    if every_tier is not None or not in_nodes:
+        message = _without_grant_advice(message)
+    lines = [f"{where}: {message}"]
+    if not in_nodes:
+        lines.append(_WHY_THE_SCAN_READS_IT)
+    if every_tier is None:
+        if not in_nodes:
+            lines.append(_CHANGE_IT_INSTEAD)
+    elif every_tier.lineno == exc.lineno and str(every_tier) == str(exc):
+        lines.append(
+            "No [security] setting in cdui.plugin.toml lifts this refusal, so "
+            "the code has to change."
+        )
+    else:
+        at = f"line {every_tier.lineno}" if every_tier.lineno else "another line"
+        lines.append(
+            f"No [security] setting in cdui.plugin.toml lets this file through, "
+            f"because {at} is refused whatever the manifest declares: "
+            + _sentence(str(every_tier))
+        )
+    if not in_nodes:
+        lines.append(_TESTS_THAT_PASS)
+    return PluginValidationError("\n".join(lines), lineno=exc.lineno)
+
+
 def _validate_importable_tree(
     root: Path,
     allowed_modules: list[str],
     capabilities: Iterable[str],
     *,
     skip_dirs: frozenset[str] = frozenset(),
+    prefix: tuple[str, ...] = (),
 ) -> None:
     """AST-scan every importable source file under *root*; refuse the rest.
 
@@ -207,6 +355,10 @@ def _validate_importable_tree(
     unexamined code at full trust". This picks the first, by name, with a
     message that says which file and why -- never a silent skip, which is
     exactly what the ``*.py`` glob was doing.
+
+    *prefix* is where *root* sits in the plugin (``("nodes",)`` for
+    :func:`validate_nodes_dir`), so every refusal names the file by its path
+    in the plugin; a source file's refusal also names the line (#413).
     """
     if not root.exists():
         return
@@ -220,6 +372,7 @@ def _validate_importable_tree(
         suffix = loader_suffix(path)
         if suffix is None:
             continue
+        rel_parts = prefix + rel_parts
         rel = "/".join(rel_parts)
         if suffix not in SCANNABLE_SUFFIXES:
             if not _names_an_importable_module(path, suffix):
@@ -234,13 +387,23 @@ def _validate_importable_tree(
         content = path.read_bytes()
         if not content.strip():
             continue
-        validate_python_source(
-            content,
-            path.name,
-            allowed_modules=allowed_modules,
-            capabilities=list(capabilities),
-            denied_attributes=_denied_attributes_for(allowed_modules),
-        )
+        refused = None
+        try:
+            validate_python_source(
+                content,
+                _REFUSED_FILE,
+                allowed_modules=allowed_modules,
+                capabilities=list(capabilities),
+                denied_attributes=_denied_attributes_for(allowed_modules),
+            )
+        except PluginValidationError as exc:
+            # Only its message and line are needed. Its traceback holds the
+            # frames that hold the parsed tree, and _refusal parses the file
+            # again, so the tree goes first -- and the rewrite runs outside
+            # this block, where no exception is being handled.
+            refused = exc.with_traceback(None)
+        if refused is not None:
+            raise _refusal(rel_parts, content, refused) from refused
 
 
 def validate_nodes_dir(
@@ -248,7 +411,9 @@ def validate_nodes_dir(
     allowed_modules: list[str],
     capabilities: Iterable[str] = (),
 ) -> None:
-    _validate_importable_tree(nodes_dir, allowed_modules, capabilities)
+    _validate_importable_tree(
+        nodes_dir, allowed_modules, capabilities, prefix=("nodes",)
+    )
 
 
 # Directories within an extracted plugin tarball that are *not* reachable
@@ -333,6 +498,10 @@ def validate_plugin_dir(
     list here only happens once ``--trust-author`` has already been
     accepted, and refusing ``arr.dump()`` to a plugin trusted with
     ``subprocess`` protects nothing.
+
+    A refusal names the file by its path in the plugin and the line, and
+    tells the author to declare a ``[security]`` grant only where some set of
+    grants would let the file through (see :func:`_refusal`).
     """
     _validate_importable_tree(
         plugin_root,

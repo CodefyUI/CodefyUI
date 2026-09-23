@@ -1,31 +1,12 @@
-"""pytest conftest — makes the plugin importable during local development.
+"""Shared pytest setup for this plugin's tests.
 
-When installed via ``cdui plugin install``, CodefyUI registers this plugin under
-the ``cdui_plugins.{{plugin_snake}}.*`` synthetic namespace. For local pytest we
-set that up by hand so
-``from cdui_plugins.{{plugin_snake}}.nodes.example_node import ExampleNode``
-works. If you rename the plugin id in cdui.plugin.toml, update PLUGIN_ID below.
+The tests import the nodes straight from the plugin root
+(``from nodes.example_node import ExampleNode``), which ``pytest.ini`` makes
+possible with ``pythonpath = .``, so nothing here has to touch ``sys``.
+
+Keep this file and every test free of ``sys``, ``os``, ``pathlib`` and the
+other modules CodefyUI's install-time security scan refuses: the scan reads
+every ``.py`` file in the plugin, tests included, and one refused import stops
+the whole plugin from installing. Read files with plain ``open()``, which
+needs no grant.
 """
-
-from __future__ import annotations
-
-import sys
-import types
-from pathlib import Path
-
-PLUGIN_ID = "{{plugin_id}}"
-_PY_ID = PLUGIN_ID.replace("-", "_")
-_REPO_ROOT = Path(__file__).resolve().parents[1]
-
-_pkg = sys.modules.get("cdui_plugins")
-if _pkg is None:
-    _pkg = types.ModuleType("cdui_plugins")
-    _pkg.__path__ = []
-    sys.modules["cdui_plugins"] = _pkg
-
-_sub_name = f"cdui_plugins.{_PY_ID}"
-if _sub_name not in sys.modules:
-    _sub = types.ModuleType(_sub_name)
-    _sub.__path__ = [str(_REPO_ROOT)]
-    sys.modules[_sub_name] = _sub
-    setattr(_pkg, _PY_ID, _sub)

@@ -66,7 +66,7 @@ Two things it deliberately does **not** do. It does not run at startup, and `cdu
 
 ## Security — three tiers
 
-A plugin pack is Python that runs in the CodefyUI process. Before a third-party pack is installed, every `.py` file anywhere in it — `nodes/`, `examples/`, `tests/`, `docs/`, `assets/`, any other subdirectory — is walked by an AST gate that decides what it may import. Only `.git` is skipped, because no `import` statement can name it. Every other directory, `__pycache__` included, is scanned: the plugin loader can import from anywhere in the pack (`from ..tests import helper` works from a node file), so the scan has to reach everywhere the loader does. The gate has three answers, and the middle one is the interesting one.
+A plugin pack is Python that runs in the CodefyUI process. Before a third-party pack is installed, every Python source file (`.py` and `.pyw`) anywhere in it — `nodes/`, `examples/`, `tests/`, `docs/`, `assets/`, any other subdirectory — is walked by an AST gate that decides what it may import. Only `.git` is skipped, because no `import` statement can name it. Every other directory, `__pycache__` included, is scanned: the plugin loader can import from anywhere in the pack (`from ..tests import helper` works from a node file), so the scan has to reach everywhere the loader does. Compiled modules are refused rather than scanned ([Ship source, not bytecode](#ship-source-not-bytecode)), and a plugin's tests are held to the same rules as its nodes ([Tests are scanned too](#tests-are-scanned-too)). The gate has three answers, and the middle one is the interesting one.
 
 | Tier | How a plugin gets it | What it covers |
 |------|----------------------|----------------|
@@ -188,6 +188,28 @@ Compilation artifacts are not affected. CPython writes its cache as
 `__pycache__/<name>.cpython-311.pyc`, whose stem is not a valid identifier,
 so no `import` statement can name it — those are skipped. An
 attacker-supplied `__pycache__/payload.pyc` **can** be named, and is refused.
+
+### Tests are scanned too
+
+The scan reads `tests/` under the same `[security]` grants as `nodes/`, so one test that imports `sys`, `os` or `pathlib` stops the whole plugin from installing. Granting a module for the sake of a test is the wrong trade, because the grant covers the node code too. Write the tests so they need none:
+
+- Put the plugin root on the import path with a `pytest.ini` next to the manifest, and import each node from `nodes`:
+
+  ```ini
+  [pytest]
+  pythonpath = .
+  testpaths = tests
+  ```
+
+  ```python
+  from nodes.example_node import ExampleNode
+  ```
+
+- Read files with plain `open()`, which needs no grant, and list example files by name instead of globbing a directory with `pathlib` or `glob`.
+
+`cdui plugin new` writes this setup. Plugins scaffolded by earlier versions carry a `tests/conftest.py` that fakes the `cdui_plugins.<id>` package with `sys`; the scan refuses it, and no grant helps, because its `setattr` call is refused at every tier. Replace it with the setup above, and change each test's import to match: `from cdui_plugins.my_plugin.nodes.example_node import ExampleNode` becomes `from nodes.example_node import ExampleNode`. The old import needs that conftest, so without it pytest cannot even collect the test. `cdui plugin link` and `cdui plugin dev` skip the scan, so such a file usually surfaces only when someone installs the published repository.
+
+A refusal names the file by its path in the plugin and the line, such as `tests/conftest.py, line 12: Importing 'sys' is not allowed in this file: ...`. For a file outside `nodes/` it also says why the file was read and links this section. It still names the capability a module needs, but it does not tell you to declare it in `[security]` or to install with `--trust-author`. When no grant could let a file through, the refusal says so and names the line that every tier refuses.
 
 ### What this is not
 
@@ -311,7 +333,7 @@ cdui plugin new my-plugin          # backend-only skeleton
 cdui plugin new my-plugin --ui     # also a React frontend wired to the SDK
 ```
 
-It generates a manifest, an example node, a test (with the `cdui_plugins.<id>` namespace shim so `pytest` works locally), and — with `--ui` — a Vite + React `ui/` whose `src/sdk/` is the typed plugin SDK. The plugin lands in `./my-plugin/`; link it with `cdui plugin dev` (below) and start editing. With `--ui` and an id that contains a hyphen, change one line before you build: `ui/src/index.tsx` registers the example node's renderer as `my_plugin:Example`, but node types keep the hyphen (`my-plugin:Example`, see the `id` row of the [Manifest reference](#manifest-reference)), and a renderer registered under the wrong type never mounts.
+It generates a manifest, an example node, a test that `pytest` runs from the plugin root (see [Tests are scanned too](#tests-are-scanned-too)), and — with `--ui` — a Vite + React `ui/` whose `src/sdk/` is the typed plugin SDK. The plugin lands in `./my-plugin/`; link it with `cdui plugin dev` (below) and start editing.
 
 For a richer reference, fork the **[Official Plugin Template](https://github.com/CodefyUI/CodefyUI-Plugin-Official)** — a working, MIT-licensed plugin with two example nodes, a sample example graph, a test suite, and a fully-commented manifest. Its README walks through every field and the AST security gate. The catalog lists it as `official-template`, so you can install it by name.
 

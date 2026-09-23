@@ -2571,9 +2571,10 @@ def _render(text: str, ctx: dict[str, str]) -> str:
 def cmd_new(args: argparse.Namespace) -> int:
     """Scaffold a new plugin directory from the built-in template.
 
-    Generates a ready-to-edit plugin: manifest, an example node, a test + the
-    ``cdui_plugins.<id>`` namespace shim, and (with ``--ui``) a React frontend
-    wired to the typed SDK. Link it immediately with ``cdui plugin dev``.
+    Generates a ready-to-edit plugin: manifest, an example node, a test that
+    pytest runs from the plugin root (``pytest.ini``), and (with ``--ui``) a
+    React frontend wired to the typed SDK. Link it immediately with
+    ``cdui plugin dev``.
     """
     plugin_id = args.id.lower()
     section(f"建立新外掛：{plugin_id}", f"Creating new plugin: {plugin_id}")

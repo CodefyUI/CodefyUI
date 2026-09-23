@@ -48,10 +48,11 @@ function ExampleNodeBody({ node }: { node: NodeRenderContext['node'] }) {
 export default function activate(api: CodefyUIPluginAPI) {
   mountTool(api, { id: '{{plugin_id}}-panel', title: '{{plugin_name}}' }, Panel);
 
-  // Draw the Example node's card body with React. Plugin node types use the
-  // snake_case namespace — id "{{plugin_id}}" exposes "{{plugin_snake}}:Example".
+  // Draw the Example node's card body with React. A node type is the manifest
+  // id exactly as written, hyphens included, then NODE_NAME: id
+  // "{{plugin_id}}" exposes "{{plugin_id}}:Example".
   api.nodes.registerRenderer(
-    '{{plugin_snake}}:Example',
+    '{{plugin_id}}:Example',
     defineNodeRenderer(ExampleNodeBody),
   );
 }
