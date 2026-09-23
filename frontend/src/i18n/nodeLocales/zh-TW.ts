@@ -56,7 +56,7 @@ const zhTW: NodeTranslations = {
     params: {
       C: '正則化強度的倒數（值越小，正則化越強）。',
       max_iter: '求解器最大迭代次數。',
-      penalty: '正則化類型。l1 需要 liblinear/saga 求解器；sklearn 會自動挑。',
+      penalty: '正則化類型。l1 用 saga 求解器，l2 與 none 用 lbfgs。',
     },
   },
   MLPClassifier: {

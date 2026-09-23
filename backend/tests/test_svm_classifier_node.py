@@ -7,6 +7,14 @@ import torch
 
 from app.nodes.classical.svm_classifier_node import SVMClassifierNode
 
+# scikit-learn announces a removal a release or two ahead with a FutureWarning
+# (sometimes a DeprecationWarning); the node must not pass an argument that is
+# about to go. SVC's ``probability`` was deprecated in 1.9, for removal in 1.11.
+pytestmark = [
+    pytest.mark.filterwarnings("error::FutureWarning"),
+    pytest.mark.filterwarnings("error::DeprecationWarning"),
+]
+
 
 def _run(x_train, y_train, x_query, **params):
     p = {"C": 1.0, "kernel": "rbf", "gamma": "scale"}
