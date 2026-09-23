@@ -70,6 +70,18 @@ jobs:
           fetch-depth: 0
           fetch-tags: true
 
+      # CHANGELOG.md has to name this tag, carry its UTC date and leave no
+      # entries under [Unreleased] (core#462). Tag pushes only: a manual
+      # rebuild checks out an existing tag, and no tag created before this
+      # step existed has scripts/check_changelog.py, so the step would fail
+      # with "can't open file". Five of those tags (2.1.0, 2.1.1, 2.2.0, 2.6.0
+      # and 2.8.2) are also a day off their headings.
+      - name: Check CHANGELOG.md against the tag
+        if: github.event_name == 'push'
+        env:
+          TAG: ${{ steps.resolve.outputs.tag }}
+        run: python3 scripts/check_changelog.py --tag "$TAG"
+
       - name: Read tag annotation as release body
         id: tagmsg
         shell: bash

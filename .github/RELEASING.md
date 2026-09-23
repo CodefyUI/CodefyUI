@@ -12,13 +12,17 @@ maintainer's job is to push the tag and check the result before publishing.
 # 2. From main, once that commit is in, tag it with the release notes in
 #    notes.md -- an annotated tag, kept verbatim (see "Then on GitHub"):
 git tag -a X.Y.Z --cleanup=verbatim -F notes.md
+# The check Release Build runs; fails on a wrong heading, link or date:
+python scripts/check_changelog.py --tag X.Y.Z
 git push origin X.Y.Z
 ```
 
 ## Before you tag
 
-Three things are done by hand, and nothing else in the pipeline checks them for
-you:
+Three things are done by hand. Steps 1 and 2 are checked on every PR
+(`test_check_changelog.py`, `test_all_version_fields_agree` and
+`uv lock --check`), and step 1 again when the tag is pushed. Step 3 is not
+checked.
 
 1. **Promote `CHANGELOG.md`.** Rename `## [Unreleased]` to
    `## [X.Y.Z] — YYYY-MM-DD`, open a fresh empty `## [Unreleased]` above it,
@@ -37,15 +41,30 @@ you:
    > and tagged eleven hours later at 2026-09-17T05:22Z, which took a
    > follow-up PR to correct.
 
+   `scripts/check_changelog.py` checks this step on every PR, through
+   `backend/tests/test_check_changelog.py`: `## [Unreleased]` on top and only
+   once; below it the newest version, named after the version in
+   `backend/pyproject.toml`, written with an em dash and dated no earlier than
+   the heading below it; the versions newest first; one `[Unreleased]` link,
+   starting at that version; and one compare link per version, starting at
+   the release below it. `--tag X.Y.Z` reads `CHANGELOG.md` and
+   `backend/pyproject.toml` at a tag you created locally, and also requires
+   the newest heading to name the tag and carry its UTC date, and
+   `[Unreleased]` to hold no entries: renaming `## [Unreleased]` moves them
+   all, while adding the new heading below them leaves them there. Run it
+   before `git push`: the tag push runs the same check, and a refusal caught
+   locally saves deleting the tag on origin and a red Release Build run. A
+   wrong heading still needs a fix PR, because the heading lives on `main`.
+
    The tag annotation — which becomes the GitHub release body — should say the
    same thing; the changelog is what answers "what is on main that nobody has
    yet" *between* releases, which the tag cannot.
 
-2. **Bump the version in all three files**, which are edited by hand and which
-   nothing reconciles: `backend/pyproject.toml`, `backend/uv.lock` (regenerate
-   with `uv lock`), and `frontend/package.json`. A mismatch between them ships
-   silently — the frontend claiming one version while the backend claims
-   another — so check all three before tagging.
+2. **Bump the version in all three files**, which are edited by hand:
+   `backend/pyproject.toml`, `backend/uv.lock` (regenerate with `uv lock`), and
+   `frontend/package.json`. `test_all_version_fields_agree` fails a PR whose
+   three fields disagree, and `uv lock --check` fails one that bumps
+   `pyproject.toml` without regenerating the lock.
 
 3. **Stamp every docs placeholder that is waiting for this version number.**
 
@@ -114,17 +133,39 @@ Then on GitHub:
 | Workflow | Triggers | Catches |
 |----------|----------|---------|
 | `frontend-build.yml` | every PR; push to `main` touching `frontend/**`, `examples/**` or `backend/tests/fixtures/**` | broken `pnpm build` / `tsc` / `vitest`, and Vite chunk warnings, before merge |
-| `backend-test.yml` | every PR; push to `main` touching the backend, examples, plugins, scripts or the frontend files the backend tests read | pytest on 3.10 / 3.11 / 3.12, on Windows 3.12 and against a built frontend; `uv lock --check`; ruff |
+| `backend-test.yml` | every PR; push to `main` touching the backend, examples, plugins, scripts or the frontend files the backend tests read | pytest on 3.10 / 3.11 / 3.12, on Windows 3.12 and against a built frontend; a half-promoted `CHANGELOG.md` (`test_check_changelog.py`); `uv lock --check`; ruff |
 | `byte-scan.yml` | every PR and push to `main` | raw C0 control bytes in tracked files |
-| `release-build.yml` | tag push, `release: created`, manual | tag without a fresh asset |
+| `release-build.yml` | tag push, `release: created`, manual | tag without a fresh asset; on a tag push, a tag `CHANGELOG.md` does not name or dates on another UTC day, or entries left under `[Unreleased]` |
 | `install-check.yml` | `release: published`, manual | install flow regression on real OS runners |
 
 ## When CI surprises you
 
 - **Release Build failed** — fix the cause (lockfile mismatch, build error)
-  and re-push the tag (`git tag -d X && git push --delete origin X && git tag
-  -a X --cleanup=verbatim -F notes.md && git push origin X`). The workflow
-  concurrency block cancels the prior run.
+  and re-push the tag (`git tag -d X && git tag -a X --cleanup=verbatim -F
+  notes.md && python scripts/check_changelog.py --tag X && git push --delete
+  origin X && git push origin X`). The re-created tag gets a new date, and the
+  check compares it with the heading before origin is touched: a refusal
+  leaves the old tag on origin, and the same chain runs again once the cause
+  is fixed. The workflow concurrency block cancels the prior run.
+- **Release Build failed at "Check CHANGELOG.md against the tag"** — the step
+  runs before the release is created, so this run made no draft. Delete the
+  tag locally and on origin (`git tag -d X && git push --delete origin X`),
+  fix what the message names, then tag, check and push again as in the
+  TL;DR:
+  - *tag X is not the newest version*: the tag is on the wrong commit or has
+    the wrong name. On the wrong commit, tag the commit that promotes
+    `[Unreleased]` to X; with the wrong name, tag the same commit with the
+    version the newest heading names. No PR is needed.
+  - *the heading has to carry another date*: the heading lives on `main`, so
+    fix it in a PR and tag the new merge commit. A re-created tag gets a new
+    date, so re-check the heading against the UTC clock (`date -u +%F`)
+    first.
+  - *`[Unreleased]` still holds entries*: if the release PR added
+    `## [X] — ...` below them instead of renaming `## [Unreleased]`, move
+    them under `## [X]` in a PR and tag the new merge commit. If the tag is
+    on a commit after the release, tag the release commit instead.
+  - Anything else is a `CHANGELOG.md` problem the release PR's checks should
+    have stopped: fix it in a PR and tag the new merge commit.
 - **Install Check failed after publish** — the asset is still attached, but
   `install.sh` / `install.ps1` broke. Check the failing job's log; usually a
   Node version or network issue.
