@@ -1,0 +1,68 @@
+name: Docs Build
+
+# Build the Docusaurus site (docs/) on every pull request (core#399). The
+# config sets onBrokenLinks, onBrokenAnchors and onBrokenMarkdownLinks to
+# 'throw', so a broken link or anchor fails `pnpm build`, and so does an MDX
+# compile error. A pull request that caused one used to pass every check and
+# fail only the Docs Deploy run after the merge.
+#
+# A workflow of its own rather than a `pull_request:` trigger on
+# docs-deploy.yml, which would bring three things with it:
+#   * docs-deploy.yml's workflow-level `concurrency: pages` group. A newly
+#     queued run in that group cancels the older PENDING one, so a pull request
+#     build could cancel a main deploy that was waiting its turn.
+#   * Its deploy job, which would run for pull requests unless guarded.
+#   * Its `pages: write` and `id-token: write` token permissions.
+#
+# The install and build steps are docs-deploy.yml's build job, copied; change
+# the two together. `pnpm build` is `docusaurus build`, which builds every
+# locale in docusaurus.config.ts (en and zh-TW) when no --locale is given.
+on:
+  # No path filter on pull_request, so the check reports on every pull request
+  # and can be required as it is: a filtered-out workflow never reports, and a
+  # required check that never reports leaves the merge button waiting (the same
+  # rule as backend-test.yml). The build takes about 35 seconds.
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: docusaurus build (en + zh-TW)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: pnpm/action-setup@v6
+        with:
+          # Matches the pnpm major that generated docs/pnpm-lock.yaml.
+          version: 10
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '24'
+          cache: 'pnpm'
+          cache-dependency-path: docs/pnpm-lock.yaml
+
+      - name: Install (frozen lockfile)
+        working-directory: docs
+        run: pnpm install --frozen-lockfile
+
+      - name: Build
+        working-directory: docs
+        run: pnpm build
+
+      # A build narrowed to one locale (`docusaurus build --locale en`) would
+      # pass this job without ever compiling a zh-TW page.
+      - name: Verify both locales were built
+        working-directory: docs
+        run: |
+          test -f build/index.html
+          test -f build/zh-TW/index.html
