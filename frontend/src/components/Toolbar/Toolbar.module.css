@@ -269,13 +269,17 @@
   content: none;
 }
 
-/* ----- Auto Layout split (main click + caret for variants) ----- */
+/* ----- Auto Layout split (main click + caret for variants) -----
+   The wrapper must not clip its children. The layout menu opens below it,
+   from inside it, and the `overflow: hidden` that once rounded the two halves
+   hid that whole menu and cut each half's focus ring to a sliver (#507). The
+   halves round their own outer corners instead, to the curve just inside the
+   1px border, which is the curve the clip cut them to. */
 .splitButton {
   display: inline-flex;
   align-items: stretch;
   border: 1px solid var(--border-strong);
   border-radius: var(--radius);
-  overflow: hidden;
   flex-shrink: 0;
   position: relative;
 }
@@ -302,8 +306,13 @@
   color: var(--text-primary);
 }
 
+.splitButtonMain {
+  border-radius: calc(var(--radius) - 1px) 0 0 calc(var(--radius) - 1px);
+}
+
 .splitButtonCaret {
   border-left: 1px solid var(--border-base);
+  border-radius: 0 calc(var(--radius) - 1px) calc(var(--radius) - 1px) 0;
   padding: var(--sp-2) var(--sp-3);
   font-size: 0.7em;
 }
@@ -411,11 +420,18 @@
   font-size: var(--fs-xs);
 }
 
-/* ----- Auto Layout dropdown specifics ----- */
+/* ----- Auto Layout dropdown specifics -----
+   The menu is wider than the split button, and the toolbar wraps whole
+   clusters, so no one edge suits every width. Hung from the split button's
+   right edge it runs off the left of the window when this cluster starts a
+   row; hung from the left edge, off the right when the cluster ends a full
+   row. It opens from the left edge, as File and Export do, and Toolbar.tsx
+   moves it to the right edge (.layoutDropdownRight) when it measures the
+   left-edge position past the window. */
 .layoutDropdown {
   position: absolute;
   top: calc(100% + var(--sp-3));
-  right: 0;
+  left: 0;
   background: var(--surface-raised);
   border: 1px solid var(--border-base);
   border-radius: var(--radius-lg);
@@ -425,11 +441,21 @@
   box-shadow: var(--shadow-popover);
 }
 
+.layoutDropdownRight {
+  left: auto;
+  right: 0;
+}
+
 .layoutDropdownItem {
+  width: 100%;
   padding: var(--sp-3) var(--sp-4);
+  background: transparent;
+  border: 0;
   cursor: pointer;
   color: var(--text-secondary);
+  font-family: inherit;
   font-size: var(--fs-md);
+  text-align: left;
   display: flex;
   justify-content: space-between;
   align-items: center;
@@ -437,14 +463,14 @@
   transition: background var(--transition-fast), color var(--transition-fast);
 }
 
-.layoutDropdownItem:hover {
+.layoutDropdownItem:hover:not(:disabled) {
   background: var(--surface-hover);
   color: var(--text-primary);
 }
 
-.layoutDropdownItemDisabled {
-  opacity: 0.4;
+.layoutDropdownItem:disabled {
   cursor: not-allowed;
+  opacity: 0.4;
 }
 
 .layoutDropdownItemActive::after {

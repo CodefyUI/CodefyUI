@@ -1,3 +1,6 @@
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import { dirname, join } from 'node:path';
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { act } from 'react';
 import { render, screen, fireEvent, waitFor, within } from '@testing-library/react';
@@ -175,7 +178,26 @@ async function resolveDialog(value: boolean | string | null) {
   });
 }
 
+/**
+ * An element that stops `mousedown` from bubbling, as React Flow's pane does
+ * (d3-zoom stops the event there), so a listener on `document` in the bubble
+ * phase never hears a press on the canvas.
+ */
+function canvasPane(): HTMLElement {
+  const pane = document.createElement('div');
+  pane.addEventListener('mousedown', (e) => e.stopPropagation());
+  document.body.appendChild(pane);
+  return pane;
+}
+
 describe('Toolbar', () => {
+  // Every test gets a fresh vi.fn() as the store's applyLayout, installed
+  // with setState, and the real action back afterwards. Not a vi.spyOn on
+  // getState(): zustand clones the state object on every set, so a spy on it
+  // outlives its restore and carries its calls into the next test.
+  const realApplyLayout = useTabStore.getState().applyLayout;
+  let applyLayout: ReturnType<typeof vi.fn<typeof realApplyLayout>>;
+
   beforeEach(() => {
     useI18n.setState({ locale: 'en' });
     useToastStore.setState({ toasts: [] });
@@ -223,10 +245,14 @@ describe('Toolbar', () => {
 
     execute.mockReset();
     stop.mockReset();
+
+    applyLayout = vi.fn<typeof realApplyLayout>();
+    useTabStore.setState({ applyLayout });
   });
 
   afterEach(() => {
     vi.restoreAllMocks();
+    useTabStore.setState({ applyLayout: realApplyLayout });
   });
 
   // ── Basic render ────────────────────────────────────────────────────
@@ -401,6 +427,27 @@ describe('Toolbar', () => {
     fireEvent.click(screen.getByText('File'));
     fireEvent.mouseDown(screen.getByText('Save'));
     expect(screen.getByText('Save')).toBeInTheDocument();
+  });
+
+  it('File menu closes on a mousedown on the canvas, which stops it from bubbling', () => {
+    render(<Toolbar />);
+    fireEvent.click(screen.getByText('File'));
+    expect(screen.getByText('Save')).toBeInTheDocument();
+    const pane = canvasPane();
+    fireEvent.mouseDown(pane);
+    expect(screen.queryByText('Save')).toBeNull();
+    pane.remove();
+  });
+
+  // File and Export share one `openMenu`, so a listener the File menu failed
+  // to remove would close Export on a press inside it. Removing a capture
+  // listener takes the capture flag again.
+  it('a closed File menu stops listening: a press inside Export keeps Export open', () => {
+    render(<Toolbar />);
+    fireEvent.click(screen.getByText('File'));
+    fireEvent.click(screen.getByText('Export'));
+    fireEvent.mouseDown(screen.getByText('Export as JSON'));
+    expect(screen.getByText('Export as JSON')).toBeInTheDocument();
   });
 
   it('opening a second menu closes the first (toggleMenu prev===name false branch)', () => {
@@ -1391,23 +1438,24 @@ describe('Toolbar', () => {
 
   it('Auto Layout main button runs layout with the last mode and persists it', () => {
     render(<Toolbar />);
-    const applySpy = vi.spyOn(useTabStore.getState(), 'applyLayout');
     fireEvent.click(screen.getByText('Auto Layout'));
+    expect(applyLayout).toHaveBeenCalledWith('experiments');
     expect(useUIStore.getState().lastLayoutMode).toBe('experiments');
-    applySpy.mockRestore();
   });
 
   it('Auto Layout caret toggles the dropdown and selecting a mode applies it', () => {
     render(<Toolbar />);
     const caret = screen.getByRole('button', { name: 'Layout mode' });
     fireEvent.click(caret);
-    expect(screen.getByText('Layout Experiments')).toBeInTheDocument();
-    expect(screen.getByText('Layout All')).toBeInTheDocument();
+    expect(screen.getByRole('menuitem', { name: 'Layout Experiments' })).toBeInTheDocument();
+    expect(screen.getByRole('menuitem', { name: 'Layout All' })).toBeInTheDocument();
 
-    fireEvent.click(screen.getByText('Layout All'));
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Layout All' }));
+    expect(applyLayout).toHaveBeenCalledTimes(1);
+    expect(applyLayout).toHaveBeenCalledWith('all');
     expect(useUIStore.getState().lastLayoutMode).toBe('all');
     // dropdown closes after selection
-    expect(screen.queryByText('Layout Experiments')).toBeNull();
+    expect(screen.queryByRole('menu')).toBeNull();
   });
 
   it('Auto Layout: selecting "Layout Experiments" from the dropdown applies it', () => {
@@ -1431,21 +1479,26 @@ describe('Toolbar', () => {
   it('Auto Layout caret toggles closed when clicked twice', () => {
     render(<Toolbar />);
     const caret = screen.getByRole('button', { name: 'Layout mode' });
+    expect(caret).toHaveAttribute('aria-expanded', 'false');
     fireEvent.click(caret);
-    expect(screen.getByText('Layout All')).toBeInTheDocument();
+    expect(screen.getByRole('menu', { name: 'Layout mode' })).toBeInTheDocument();
+    expect(caret).toHaveAttribute('aria-expanded', 'true');
     fireEvent.click(caret);
-    expect(screen.queryByText('Layout All')).toBeNull();
+    expect(screen.queryByRole('menu')).toBeNull();
+    expect(caret).toHaveAttribute('aria-expanded', 'false');
   });
 
   it('Auto Layout: "Layout Selected" is disabled with 0 selected and clicking is a no-op', () => {
     render(<Toolbar />);
     fireEvent.click(screen.getByRole('button', { name: 'Layout mode' }));
-    const selected = screen.getByText(/Layout Selected/);
+    const selected = screen.getByRole('menuitem', { name: 'Layout Selected (0)' });
+    expect(selected).toBeDisabled();
     fireEvent.click(selected);
     // selectedCount 0 -> runLayout('selected') NOT called -> mode unchanged
+    expect(applyLayout).not.toHaveBeenCalled();
     expect(useUIStore.getState().lastLayoutMode).toBe('experiments');
     // dropdown stays open (runLayout not invoked, so it didn't close)
-    expect(screen.getByText('Layout Experiments')).toBeInTheDocument();
+    expect(screen.getByRole('menu', { name: 'Layout mode' })).toBeInTheDocument();
   });
 
   it('Auto Layout: "Layout Selected" applies when nodes are selected', () => {
@@ -1457,7 +1510,10 @@ describe('Toolbar', () => {
     });
     render(<Toolbar />);
     fireEvent.click(screen.getByRole('button', { name: 'Layout mode' }));
-    fireEvent.click(screen.getByText(/Layout Selected/));
+    const selected = screen.getByRole('menuitem', { name: 'Layout Selected (2)' });
+    expect(selected).toBeEnabled();
+    fireEvent.click(selected);
+    expect(applyLayout).toHaveBeenCalledWith('selected');
     expect(useUIStore.getState().lastLayoutMode).toBe('selected');
   });
 
@@ -1479,11 +1535,180 @@ describe('Toolbar', () => {
     expect(screen.queryByText('Layout Experiments')).toBeNull();
   });
 
+  it('Auto Layout: dropdown closes on a mousedown on the canvas, which stops it from bubbling', () => {
+    render(<Toolbar />);
+    fireEvent.click(screen.getByRole('button', { name: 'Layout mode' }));
+    expect(screen.getByRole('menu', { name: 'Layout mode' })).toBeInTheDocument();
+    const pane = canvasPane();
+    fireEvent.mouseDown(pane);
+    expect(screen.queryByRole('menu')).toBeNull();
+    pane.remove();
+  });
+
   it('Auto Layout: mousedown inside the dropdown keeps it open', () => {
     render(<Toolbar />);
     fireEvent.click(screen.getByRole('button', { name: 'Layout mode' }));
     fireEvent.mouseDown(screen.getByText('Layout Experiments'));
     expect(screen.getByText('Layout Experiments')).toBeInTheDocument();
+  });
+
+  // #507. The menu opens below the split button and was rendered inside it,
+  // and the split button's `overflow: hidden` -- there to clip its two halves
+  // to the rounded border -- clipped the whole menu with them: none of the
+  // three items could be seen or clicked. The items were bare divs as well,
+  // which Tab never reaches.
+  describe('the layout menu (#507)', () => {
+    const caret = () => screen.getByRole('button', { name: 'Layout mode' });
+    const menu = () => screen.getByRole('menu', { name: 'Layout mode' });
+    const item = (name: string) => screen.getByRole('menuitem', { name });
+
+    /**
+     * Toolbar.module.css as a list of rules, read as text.
+     *
+     * Nothing else here has the stylesheet: vitest hands a CSS module over as
+     * class names and applies none of its rules, so no style in jsdom is ever
+     * computed from it. What the rules do on screen is the browser's half of
+     * the check.
+     */
+    function cssRules(): { selector: string; classes: string[]; body: string }[] {
+      const css = readFileSync(
+        join(dirname(fileURLToPath(import.meta.url)), 'Toolbar.module.css'),
+        'utf8',
+      ).replace(/\/\*[\s\S]*?\*\//g, '');
+      return css.split('}').map((chunk) => {
+        // The last two pieces, so a rule nested in @media reads like any other.
+        const [selector = '', body = ''] = chunk.split('{').slice(-2);
+        return {
+          selector: selector.trim(),
+          classes: Array.from(selector.matchAll(/\.([A-Za-z_][\w-]*)/g), (m) => m[1]),
+          body,
+        };
+      });
+    }
+
+    /** A selector from the stylesheet, spelled with the class names the component renders. */
+    const rendered = (selector: string) =>
+      selector.replace(/\.([A-Za-z_][\w-]*)/g, (_, name: string) => `.${styles[name]}`);
+
+    it('opens as a menu of three buttons', () => {
+      render(<Toolbar />);
+      fireEvent.click(caret());
+      const items = within(menu()).getAllByRole('menuitem');
+      expect(items.map((one) => one.textContent)).toEqual([
+        'Layout Experiments',
+        'Layout All',
+        'Layout Selected (0)',
+      ]);
+      // Buttons, so Tab reaches them and Enter or Space runs them.
+      items.forEach((one) => expect(one.tagName).toBe('BUTTON'));
+    });
+
+    // The key that already closes the plugin overflow menu and the font size
+    // menu. Found by text rather than by role, so this case is about the key
+    // and nothing else.
+    it('closes on Escape', () => {
+      render(<Toolbar />);
+      fireEvent.click(caret());
+      expect(screen.getByText('Layout All')).toBeInTheDocument();
+      fireEvent.keyDown(document, { key: 'Escape' });
+      expect(screen.queryByText('Layout All')).toBeNull();
+      expect(applyLayout).not.toHaveBeenCalled();
+    });
+
+    it('opens inside nothing that clips it', () => {
+      render(<Toolbar />);
+      fireEvent.click(caret());
+      // The panel is the items' parent. Found by text rather than by role, so
+      // this case is about the clip and nothing else.
+      const panel = screen.getByText('Layout All').parentElement!;
+      const rules = cssRules();
+      // A parse that lost the split button's own rule would find no clip on
+      // it and pass for the wrong reason.
+      expect(rules.some((rule) => rule.classes.includes('splitButton'))).toBe(true);
+      const clippedBy = rules
+        .filter((rule) => /\boverflow(?:-[xy])?\s*:\s*(?:hidden|clip|auto|scroll)\b/.test(rule.body))
+        .flatMap((rule) => rule.classes)
+        .filter((name) => panel.parentElement!.closest(`.${styles[name]}`) !== null);
+      expect(clippedBy).toEqual([]);
+    });
+
+    // jsdom has no pointer and no cascade, so each hover rule on the items is
+    // asked whether it would match the disabled one with the pointer on it:
+    // the rule's selector without `:hover`, matched against the element.
+    it('dims the disabled item and never lights it up on hover', () => {
+      render(<Toolbar />);
+      fireEvent.click(caret());
+      const disabled = item('Layout Selected (0)');
+      const rules = cssRules().filter((rule) => /\.layoutDropdownItem(?![\w-])/.test(rule.selector));
+      const lit = rules.filter(
+        (rule) => rule.selector.includes(':hover')
+          && disabled.matches(rendered(rule.selector.replace(/:hover/g, ''))),
+      );
+      expect(lit.map((rule) => rule.selector)).toEqual([]);
+      const dims = rules.filter(
+        (rule) => /\bopacity\s*:/.test(rule.body) && disabled.matches(rendered(rule.selector)),
+      );
+      expect(dims).toHaveLength(1);
+    });
+
+    // The menu is wider than the split button and the toolbar wraps whole
+    // clusters, so no one edge suits every width: at some widths Auto Layout
+    // ends a full row, and a menu hung from the split button's left edge would
+    // pass the right edge of the window. jsdom lays nothing out, so these
+    // cases give the split button and the menu their rects by hand.
+    describe('placement', () => {
+      const jsdomWidth = window.innerWidth;
+      const setWidth = (px: number) =>
+        Object.defineProperty(window, 'innerWidth', { value: px, configurable: true, writable: true });
+
+      afterEach(() => {
+        setWidth(jsdomWidth);
+      });
+
+      /** A window `width` wide, the split button's left edge at `left`, a 200px menu. */
+      function layOut(left: number, width: number) {
+        setWidth(width);
+        vi.spyOn(Element.prototype, 'getBoundingClientRect').mockImplementation(function (this: Element) {
+          const [x, w] = this.getAttribute('role') === 'menu' ? [0, 200]
+            : this.classList.contains(styles.splitButton) ? [left, 122]
+            : [0, 0];
+          return { x, y: 0, left: x, top: 0, right: x + w, bottom: 30, width: w, height: 30, toJSON: () => ({}) };
+        });
+      }
+
+      const fromRightEdge = () => menu().classList.contains(styles.layoutDropdownRight);
+
+      it('opens from the split button\'s left edge when the menu fits there', () => {
+        layOut(16, 1100);
+        render(<Toolbar />);
+        fireEvent.click(caret());
+        expect(fromRightEdge()).toBe(false);
+      });
+
+      it('opens from the right edge when the left edge would carry it past the window', () => {
+        layOut(966, 1100); // 966 + 200 = 1166 > 1100
+        render(<Toolbar />);
+        fireEvent.click(caret());
+        expect(fromRightEdge()).toBe(true);
+      });
+
+      it('moves to the edge that fits when the window is resized while it is open', () => {
+        layOut(966, 1300);
+        render(<Toolbar />);
+        fireEvent.click(caret());
+        expect(fromRightEdge()).toBe(false);
+        act(() => {
+          setWidth(1100);
+          window.dispatchEvent(new Event('resize'));
+        });
+        expect(fromRightEdge()).toBe(true);
+        act(() => {
+          setWidth(1300);
+          window.dispatchEvent(new Event('resize'));
+        });
+        expect(fromRightEdge()).toBe(false);
+      });
+    });
   });
 
   // ── Settings popover toggle ─────────────────────────────────────────

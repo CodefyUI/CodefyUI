@@ -206,10 +206,12 @@ export function SettingsPopover({ open, onClose, triggerRef }: Props) {
     const handleKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') onClose();
     };
-    document.addEventListener('mousedown', handleMouseDown);
+    // Capture phase, so a press on the canvas counts: React Flow's pane stops
+    // mousedown from bubbling up to `document`.
+    document.addEventListener('mousedown', handleMouseDown, { capture: true });
     document.addEventListener('keydown', handleKey);
     return () => {
-      document.removeEventListener('mousedown', handleMouseDown);
+      document.removeEventListener('mousedown', handleMouseDown, { capture: true });
       document.removeEventListener('keydown', handleKey);
     };
   }, [open, onClose, triggerRef]);
