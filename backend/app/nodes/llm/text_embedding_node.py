@@ -78,7 +78,7 @@ def _integer(params: dict[str, Any], name: str, default: int, *,
 
     The idiom this replaces is ``int(params.get(name, d) or d)``, which reads
     FALSINESS as "not set" -- and 0 is a legal, meaningful value for
-    ``max_seq_length`` (it means "leave the model's own cap alone"). Sharing
+    ``max_seq_length`` (it means "use the model's shipped cap"). Sharing
     one helper across all three keeps that trap from being reintroduced in
     the one place it bites.
 
@@ -309,8 +309,7 @@ class TextEmbeddingNode(BaseNode):
                                maximum=200)
 
         device = resolve_node_device(params.get("device"), context)
-        model = load_sentence_model(
-            repo, device, max_seq_length=max_seq_length)
+        model = load_sentence_model(repo, device)
         # Started AFTER the load: the first run in a session pays seconds to
         # read the weights off disk and every run after it pays none, so a
         # clock started above would report "the encode took 6s" once and
@@ -323,6 +322,7 @@ class TextEmbeddingNode(BaseNode):
             batch_size=batch_size,
             normalize=normalize,
             prefix=prefix,
+            max_seq_length=max_seq_length,
             progress=(ProgressThrottle(progress_callback)
                       if progress_callback else None),
             should_stop=stop_checker(context),

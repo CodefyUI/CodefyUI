@@ -13,6 +13,7 @@ test stops at the gate before it reaches the node's own logic.
 
 from __future__ import annotations
 
+import threading
 from dataclasses import dataclass
 from typing import Any, Callable
 
@@ -33,10 +34,10 @@ from app.nodes.llm.text_embedding_node import TextEmbeddingNode
 #: Row width of the fake encoder's embeddings (``conftest._FAKE_EMBED_DIM``).
 FAKE_DIM = 32
 
-#: A second model id, spelled as the SELECT spells it. Used where a test
-#: needs a SECOND encoder instance: the loader's cache is keyed by
-#: ``(repo, device)``, so two runs against one model share one object.
-BGE = "BAAI/bge-small-zh-v1.5"
+#: One of the four models, spelled as the SELECT spells it. The loader's
+#: cache is keyed by ``(repo, device)``, so every run on it in one test
+#: shares one encoder object -- which is what the token-cap tests are about.
+MINI = "sentence-transformers/all-MiniLM-L6-v2"
 
 #: Every default the node ships, read off the node itself so a test names
 #: only the params it actually changes -- and so a changed default cannot
@@ -85,6 +86,26 @@ def encoders(fake_sentence_transformers, monkeypatch) -> list[Any]:
     monkeypatch.setattr(
         fake_sentence_transformers, "SentenceTransformer", Recording)
     return created
+
+
+def _record_caps(fake_module, monkeypatch) -> list[int]:
+    """The token cap every ``encode`` call ran at, in call order.
+
+    Read inside ``encode`` because that is where the cap matters: the value
+    left on the model after a run says nothing about the batches before the
+    last one. Subclasses whatever class is installed when it is called, so a
+    test that also asked for ``encoders`` keeps that fixture's recording.
+    """
+    caps: list[int] = []
+    base = fake_module.SentenceTransformer
+
+    class CapRecording(base):  # type: ignore[misc, valid-type]
+        def encode(self, *args, **kwargs):
+            caps.append(self.max_seq_length)
+            return super().encode(*args, **kwargs)
+
+    monkeypatch.setattr(fake_module, "SentenceTransformer", CapRecording)
+    return caps
 
 
 # -- the node's shape ------------------------------------------------------
@@ -269,14 +290,137 @@ def test_prefix_reaches_the_model(fake_sentence_transformers, encoders):
 
 def test_max_seq_length_reaches_the_model(fake_sentence_transformers,
                                           encoders):
-    """The cap is the node's to set, and 0 leaves the model's own alone."""
+    """The cap is the node's to set, and 0 is the model's shipped cap."""
     _run(inputs={"texts": ["alpha"]}, max_seq_length=64)
     assert encoders[0].max_seq_length == 64
 
-    # A different model, because the loader caches by ``(repo, device)`` and
-    # the object above already has a cap set on it.
-    _run(inputs={"texts": ["alpha"]}, model=BGE, max_seq_length=0)
-    assert encoders[1].max_seq_length == 128  # the fake's shipped default
+    # The same cached object, still at the 64 the run above set on it.
+    _run(inputs={"texts": ["alpha"]}, max_seq_length=0)
+    assert len(encoders) == 1
+    assert encoders[0].max_seq_length == 128  # the fake's shipped default
+
+
+def test_zero_cap_encodes_at_the_models_default_after_another_node_set_one(
+        fake_sentence_transformers, encoders, monkeypatch):
+    """0 means the cap the model shipped with, whoever used the model last.
+
+    Every node on one model and device shares one cached encoder. In
+    RAG-Local-Offline both TextEmbedding nodes use multilingual-e5-small and
+    the question node runs a level before the passages node, so setting the
+    question's cap to 64 used to cut every passage at 64 tokens as well,
+    instead of at the model's 512.
+    """
+    caps = _record_caps(fake_sentence_transformers, monkeypatch)
+
+    _run(inputs={"texts": ["alpha", "bravo"]}, model=MINI, batch_size=1,
+         max_seq_length=64)
+    assert caps == [64, 64]
+
+    caps.clear()
+    _run(inputs={"texts": ["alpha", "bravo"]}, model=MINI, batch_size=1,
+         max_seq_length=0)
+
+    assert len(encoders) == 1, "the two runs did not share one encoder"
+    assert caps == [128, 128]  # the fake's shipped default
+
+
+def test_two_nodes_on_one_model_at_once_each_encode_at_their_own_cap(
+        fake_sentence_transformers, encoders, monkeypatch):
+    """Two nodes on one cached model, running at the same time.
+
+    The nodes on one level of an unseeded run execute on parallel worker
+    threads, and two unseeded runs (two canvases, two queued runs, two
+    sweep variants) can overlap, so two TextEmbedding nodes on the same
+    model and device can be encoding together. On the real library that can
+    raise ``Already borrowed`` from the tokenizer; when it does not, one
+    node's texts are embedded at the other's cap.
+
+    No sleeps. The first thread into ``encode`` stays inside that batch
+    until the other thread reaches the top of its first batch (its first
+    Stop check), which comes after the other node has loaded the model and
+    before it encodes anything. A cap written before the Stop check (the
+    loader used to write it) is on the shared object by then, so the batch
+    still open sees it, in whichever order the two threads were scheduled.
+    A per-batch cap written after the Stop check without the lock is caught
+    only through the GIL handoff: the thread that has just set the event
+    usually runs on into ``encode``, writing its cap, before the waiting
+    thread wakes.
+    """
+    caps = {"cap-32": 32, "cap-256": 256}
+    texts = [f"text {index}" for index in range(20)]
+    reached_a_batch = {name: threading.Event() for name in caps}
+    guard = threading.Lock()
+    in_flight = {"now": 0, "peak": 0}
+    opener = {"claimed": False, "met": None}
+    # (thread name, cap at entry, cap at exit), one per encode call.
+    seen: list[tuple[str, int, int]] = []
+
+    base = fake_sentence_transformers.SentenceTransformer
+
+    class Observed(base):  # type: ignore[misc, valid-type]
+        def encode(self, *args, **kwargs):
+            me = threading.current_thread().name
+            with guard:
+                in_flight["now"] += 1
+                in_flight["peak"] = max(in_flight["peak"], in_flight["now"])
+                first = not opener["claimed"]
+                opener["claimed"] = True
+            try:
+                at_entry = self.max_seq_length
+                if first:
+                    other = next(name for name in caps if name != me)
+                    # A safety net, not a sleep: the other thread reaches
+                    # its first Stop check without needing this model.
+                    opener["met"] = reached_a_batch[other].wait(timeout=10)
+                rows = super().encode(*args, **kwargs)
+                seen.append((me, at_entry, self.max_seq_length))
+                return rows
+            finally:
+                with guard:
+                    in_flight["now"] -= 1
+
+    monkeypatch.setattr(
+        fake_sentence_transformers, "SentenceTransformer", Observed)
+
+    def at_batch_top() -> bool:
+        reached_a_batch[threading.current_thread().name].set()
+        return False
+
+    ready = threading.Barrier(len(caps))
+    errors: list[BaseException] = []
+
+    def run(cap: int) -> None:
+        try:
+            ready.wait(timeout=10)
+            _run(inputs={"texts": texts}, model=MINI, batch_size=1,
+                 max_seq_length=cap,
+                 context=FakeContext(should_stop=at_batch_top))
+        except BaseException as exc:  # reported below, not lost in a thread
+            errors.append(exc)
+
+    threads = [threading.Thread(target=run, args=(cap,), name=name)
+               for name, cap in caps.items()]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=30)
+
+    assert [thread.is_alive() for thread in threads] == [False, False], (
+        "a node never finished -- an encode is waiting on a lock that is "
+        "never released")
+    assert errors == []
+    assert opener["met"] is True, (
+        "the second node never reached its first batch while the first was "
+        "encoding -- a lock it needs to get there is held across encode")
+    assert len(encoders) == 1, "the two nodes did not share one encoder"
+    assert len(seen) == 2 * len(texts)
+
+    wrong = [(name, at_entry, at_exit) for name, at_entry, at_exit in seen
+             if at_entry != caps[name] or at_exit != caps[name]]
+    assert wrong == [], (
+        f"{len(wrong)} of {len(seen)} batches ran at another node's cap: "
+        f"{wrong[:4]}")
+    assert in_flight["peak"] == 1, "two batches were inside encode at once"
 
 
 def test_out_of_range_integers_are_clamped_to_the_declared_bounds(

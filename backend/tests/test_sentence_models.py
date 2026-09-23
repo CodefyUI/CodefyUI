@@ -335,30 +335,165 @@ def test_concurrent_loads_of_the_same_model_construct_it_once(
 
 
 def test_max_seq_length_is_applied_on_every_call(fake_sentence_transformers):
-    """The cap is a per-NODE choice on a per-PROCESS object.
+    """The cap is a per-CALL choice on a per-PROCESS object.
 
-    Two TextEmbedding nodes can share one cached model with different token
-    caps, so applying the cap only on load would silently give the second
-    node the first node's truncation.
+    Two nodes can share one cached model with different token caps, so the
+    cap is set for every batch rather than once on load, and 0 means the cap
+    the model shipped with -- not whatever the previous caller left on the
+    shared object.
     """
-    default = fake_sentence_transformers.SentenceTransformer("/x").max_seq_length
+    caps: list[int] = []
+    real = fake_sentence_transformers.SentenceTransformer
 
-    model = sentence_models.load_sentence_model(MINI, "cpu", max_seq_length=64)
-    assert model.max_seq_length == 64
+    class CapRecording(real):
+        def encode(self, *args, **kwargs):
+            caps.append(self.max_seq_length)
+            return super().encode(*args, **kwargs)
 
-    # 0 means "leave the cached model's cap alone" -- not "restore the
-    # shipped default". ("The model's own default" is the NODE PARAM's
-    # wording, and it is only true of a cold load.)
-    again = sentence_models.load_sentence_model(MINI, "cpu")
-    assert again is model
-    assert again.max_seq_length == 64
+    fake_sentence_transformers.SentenceTransformer = CapRecording
+    model = sentence_models.load_sentence_model(MINI, "cpu")
+    assert model.max_seq_length == 128, "the fake no longer ships 128"
 
-    # A cache HIT still gets the caller's cap.
-    third = sentence_models.load_sentence_model(MINI, "cpu", max_seq_length=256)
-    assert third is model
-    assert third.max_seq_length == 256
+    def caps_for(max_seq_length):
+        caps.clear()
+        sentence_models.encode_in_batches(
+            model, ["one", "two"], batch_size=1,
+            max_seq_length=max_seq_length)
+        return list(caps)
 
-    assert default != 256, "the fake's default would hide a no-op assignment"
+    assert caps_for(64) == [64, 64]
+    # Not the 64 the call above left on the shared object.
+    assert caps_for(0) == [128, 128]
+    assert caps_for(256) == [256, 256]
+
+    # The loader takes no cap. One written there lands on the shared object
+    # outside the lock an encode holds, which is the race itself.
+    with pytest.raises(TypeError):
+        sentence_models.load_sentence_model(MINI, "cpu", max_seq_length=64)
+
+
+def test_an_encode_in_progress_blocks_neither_a_load_nor_another_model(
+        fake_sentence_transformers):
+    """The lock an encode holds belongs to its model, not to the cache.
+
+    Holding the cache lock across the forward pass would keep the token caps
+    straight too, but every load of any model would then wait for whatever
+    forward pass is running, and two different models would queue behind
+    one another. Two models share no tokenizer and no cap, so neither has
+    to wait for the other.
+    """
+    inside = threading.Event()
+    release = threading.Event()
+    real = fake_sentence_transformers.SentenceTransformer
+
+    class HoldsTheFirstBatch(real):
+        def encode(self, *args, **kwargs):
+            if not inside.is_set():
+                inside.set()
+                # A safety net only: the test releases it as soon as it has
+                # looked, pass or fail.
+                release.wait(timeout=60)
+            return super().encode(*args, **kwargs)
+
+    fake_sentence_transformers.SentenceTransformer = HoldsTheFirstBatch
+    mini = sentence_models.load_sentence_model(MINI, "cpu")
+
+    errors: list[BaseException] = []
+    other_rows: list = []
+
+    def encode_mini():
+        try:
+            sentence_models.encode_in_batches(mini, ["held"])
+        except BaseException as exc:  # reported below, not lost in a thread
+            errors.append(exc)
+
+    def load_and_encode_bge():
+        try:
+            bge = sentence_models.load_sentence_model(BGE, "cpu")
+            rows, _ = sentence_models.encode_in_batches(bge, ["free"])
+            other_rows.append(rows)
+        except BaseException as exc:
+            errors.append(exc)
+
+    holder = threading.Thread(target=encode_mini)
+    holder.start()
+    try:
+        assert inside.wait(timeout=10), "the MINI encode never started"
+        other = threading.Thread(target=load_and_encode_bge)
+        other.start()
+        other.join(timeout=5)
+        assert not other.is_alive(), (
+            "loading and encoding BGE waited for MINI's forward pass")
+    finally:
+        release.set()
+        holder.join(timeout=10)
+
+    assert not holder.is_alive()
+    assert errors == []
+    assert len(other_rows) == 1
+    assert other_rows[0].shape == (1, FAKE_DIM)
+
+
+def test_a_load_in_progress_does_not_hold_up_an_encode_on_a_loaded_model(
+        fake_sentence_transformers):
+    """The other direction: a load never holds up a model already loaded.
+
+    A load holds the cache lock for seconds of disk I/O. An encode on a
+    model that is already loaded finds that model's lock without the cache
+    lock, so on a shared server one node starting a new model does not
+    stall a node whose model is ready.
+    """
+    loading = threading.Event()
+    finish = threading.Event()
+    real = fake_sentence_transformers.SentenceTransformer
+    built: list = []
+
+    class SlowSecondLoad(real):
+        def __init__(self, path, **kwargs):
+            built.append(path)
+            if len(built) == 2:
+                loading.set()
+                # A safety net only: the test lets the load finish as soon
+                # as it has looked, pass or fail.
+                finish.wait(timeout=60)
+            super().__init__(path, **kwargs)
+
+    fake_sentence_transformers.SentenceTransformer = SlowSecondLoad
+    mini = sentence_models.load_sentence_model(MINI, "cpu")
+
+    errors: list[BaseException] = []
+    results: list = []
+
+    def load_bge():
+        try:
+            sentence_models.load_sentence_model(BGE, "cpu")
+        except BaseException as exc:  # reported below, not lost in a thread
+            errors.append(exc)
+
+    def encode_mini():
+        try:
+            results.append(sentence_models.encode_in_batches(mini, ["ready"]))
+        except BaseException as exc:
+            errors.append(exc)
+
+    loader = threading.Thread(target=load_bge)
+    loader.start()
+    try:
+        assert loading.wait(timeout=10), "the BGE load never started"
+        encoder = threading.Thread(target=encode_mini)
+        encoder.start()
+        encoder.join(timeout=5)
+        assert not encoder.is_alive(), "encoding on MINI waited for BGE's load"
+        assert loader.is_alive(), "the BGE load ended too early"
+    finally:
+        finish.set()
+        loader.join(timeout=10)
+
+    assert not loader.is_alive()
+    assert errors == []
+    rows, stopped_at = results[0]
+    assert stopped_at is None
+    assert rows.shape == (1, FAKE_DIM)
 
 
 # ── the encode loop ──────────────────────────────────────────────────────
@@ -408,6 +543,86 @@ def test_encode_in_batches_emits_progress_and_honours_stop(
         {"event": EVENT_BATCH, "batch": 3, "total_batches": 3,
          "text": "Embedding 5/5"},
     ]
+
+
+def test_a_stop_is_seen_while_waiting_for_another_callers_batch(
+        fake_sentence_transformers):
+    """A caller queued behind another caller's batch still hears Stop.
+
+    Two runs on one model is the normal case on a shared server, and the
+    model's lock is not FIFO: a waiting caller could sit through several of
+    the other caller's batches, each seconds long, before it looked at Stop
+    again. It looks while it waits, and stops the way it would at a batch
+    boundary: nothing more is encoded, and the batch it was waiting to run
+    is where it says it stopped.
+    """
+    inside = threading.Event()
+    release = threading.Event()
+    real = fake_sentence_transformers.SentenceTransformer
+
+    class HoldsTheFirstBatch(real):
+        def encode(self, *args, **kwargs):
+            if not inside.is_set():
+                inside.set()
+                # A safety net only: the test releases it as soon as it has
+                # looked, pass or fail.
+                release.wait(timeout=60)
+            return super().encode(*args, **kwargs)
+
+    fake_sentence_transformers.SentenceTransformer = HoldsTheFirstBatch
+    model = sentence_models.load_sentence_model(MINI, "cpu")
+
+    stop = threading.Event()
+    waiting = threading.Event()
+    looks: list[None] = []
+
+    def waiter_should_stop() -> bool:
+        looks.append(None)
+        if len(looks) > 1:
+            # Its only batch has not run, so a second look at Stop can only
+            # come from inside the wait for the lock.
+            waiting.set()
+        return stop.is_set()
+
+    errors: list[BaseException] = []
+    results: list = []
+
+    def hold():
+        try:
+            sentence_models.encode_in_batches(model, ["held"])
+        except BaseException as exc:  # reported below, not lost in a thread
+            errors.append(exc)
+
+    def wait_then_stop():
+        try:
+            results.append(sentence_models.encode_in_batches(
+                model, ["never encoded"], should_stop=waiter_should_stop))
+        except BaseException as exc:
+            errors.append(exc)
+
+    holder = threading.Thread(target=hold)
+    holder.start()
+    try:
+        assert inside.wait(timeout=10), "the first encode never started"
+        waiter = threading.Thread(target=wait_then_stop)
+        waiter.start()
+        assert waiting.wait(timeout=10), (
+            "the waiting caller did not look at Stop while it waited")
+        stop.set()
+        waiter.join(timeout=10)
+        assert not waiter.is_alive(), (
+            "the waiting caller kept waiting after Stop")
+        assert holder.is_alive(), "the first caller's batch ended too early"
+    finally:
+        release.set()
+        holder.join(timeout=10)
+
+    assert not holder.is_alive()
+    assert errors == []
+    rows, stopped_at = results[0]
+    assert stopped_at == 0
+    assert rows.shape == (0, 0)
+    assert model.calls == [["held"]], "the stopped caller still encoded"
 
 
 def test_a_bare_string_is_rejected_instead_of_embedded_per_character(
