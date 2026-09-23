@@ -92,7 +92,7 @@ uv pip uninstall --python <path-to-venv-python> sentence-transformers
 
 輔助程式與它的 `uv` 安裝都結束後，或 60 秒內都未記錄行程 ID 時，認領狀態為**已中斷**（abandoned）。`cdui start` 會刪除已中斷的認領紀錄並正常啟動。伺服器也會在啟動時清除其認領紀錄；新的重新啟動安裝可取代已中斷的紀錄。
 
-每個使用者資料根目錄只支援一個受管理伺服器的一份重新啟動認領紀錄。不支援兩個受管理伺服器共用同一根目錄，例如同時執行前景的 `cdui start -f` 和背景的 `cdui start`。請為第二個伺服器設定不同的 `CODEFYUI_USER_DATA_DIR`。
+每個使用者資料根目錄只支援一個受管理伺服器的一份重新啟動認領紀錄。不支援兩個受管理伺服器共用同一根目錄，例如同時執行前景的 `cdui start -f` 和背景的 `cdui start`。請為第二個伺服器設定不同的 `CODEFYUI_USER_DATA_DIR` 與 `CODEFYUI_DB_PATH`。
 
 ```text
 <user data>/packs/pending_restart.json      要求的安裝和輔助程式狀態

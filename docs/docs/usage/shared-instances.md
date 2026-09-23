@@ -132,14 +132,16 @@ There is no in-product answer today. Run one instance per person, and let each
 person supply their own credentials:
 
 - Give each instance its own install directory (the installer's
-  `CODEFYUI_DIR`), environment file and port. Instances started from one
-  install share the SQLite database (run history, published apps, API keys),
-  the saved graphs, models, images, media and uploaded data files, and the
-  Python environment that pack and plugin installs add packages to; `cdui start`
-  runs one background server per install, and `cdui stop` stops every server
-  started from it. A separate `CODEFYUI_USER_DATA_DIR` moves only the session
-  token, the ChatGPT sign-in, downloaded plugins and their lockfile, the
-  download cache and the pack control files.
+  `CODEFYUI_DIR`), environment file and port. Two servers never share a user
+  data directory or a run database: the second one refuses to start, logs one
+  line and exits non-zero. A second instance from the same install
+  therefore needs its own `CODEFYUI_USER_DATA_DIR` (session token, ChatGPT
+  sign-in, downloaded plugins and their lockfile, download cache, pack control
+  files) and `CODEFYUI_DB_PATH` (run history, published apps, API keys), and it
+  still shares the saved graphs, models, images, media and uploaded data files,
+  and the Python environment that pack and plugin installs add packages to.
+  `cdui start` runs one background server per install, and `cdui stop` stops
+  every server started from it.
 - Run each instance under its own OS account if anyone relies on a credential
   stored in the home directory: `~/.kaggle/kaggle.json`, the Hugging Face token
   file, git's credential helper and SSH keys.

@@ -92,7 +92,7 @@ A claim is **finishing** while the helper, or the `uv` install it started, is ru
 
 A claim is **abandoned** once the helper and its `uv` install have both exited, or when no helper records a process id within 60 seconds. `cdui start` deletes an abandoned claim and starts normally. A server also clears its claim during startup, and a new restart installation can replace an abandoned claim.
 
-Each user-data root supports one restart claim for one managed server. Running two managed servers against the same root, such as `cdui start -f` beside a background `cdui start`, is unsupported. Set a separate `CODEFYUI_USER_DATA_DIR` for the second server.
+Each user-data root supports one restart claim for one managed server. Running two managed servers against the same root, such as `cdui start -f` beside a background `cdui start`, is unsupported. Set a separate `CODEFYUI_USER_DATA_DIR` and `CODEFYUI_DB_PATH` for the second server.
 
 ```text
 <user data>/packs/pending_restart.json      requested installation and helper state

@@ -120,6 +120,8 @@ def test_dev_records_managed_env(monkeypatch, tmp_path):
     monkeypatch.setattr(dev, "BACKEND_DIR", tmp_path)
     monkeypatch.setattr(dev, "FRONTEND_DIR", tmp_path)
     monkeypatch.setattr(dev.subprocess, "Popen", _fake_popen)
+    # Never probe the real 127.0.0.1:8000 for the pre-launch port check.
+    monkeypatch.setattr(dev, "_server_already_running", lambda host, port: None)
     monkeypatch.setattr(sys, "argv", ["cdui", "dev"])
 
     dev.dev()

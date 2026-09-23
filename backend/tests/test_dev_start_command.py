@@ -120,6 +120,9 @@ def started(tmp_path, monkeypatch):
     monkeypatch.setattr(dev, "_print_uninstalled_builtin_packs", lambda: None)
     monkeypatch.setattr(dev, "_local_ips", lambda: ["10.0.0.9"])
     monkeypatch.setattr(dev, "_server_healthy", lambda *a, **kw: True)
+    # The pre-launch port check would otherwise bind-probe real ports (8000
+    # and the rest), and a server running on this machine would refuse start.
+    monkeypatch.setattr(dev, "_server_already_running", lambda host, port: None)
     # `t()` reads this global at call time and it is derived from the
     # developer's locale. Pin it so assertions are about behaviour, not about
     # which machine ran them.
