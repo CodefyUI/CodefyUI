@@ -1488,6 +1488,20 @@ describe('pluginStore — setEnabled', () => {
     expect(order).toEqual(['catalog']);
   });
 
+  it("says a plugin has gone in the panel's words, not the server's", async () => {
+    // Removed from the CLI or another tab: this row is stale. The route used
+    // to answer with an English sentence, which reached this toast
+    // untranslated; it now sends the same code DELETE and update send (#415).
+    api.setPluginEnabled.mockRejectedValue(refused(404, 'not_installed'));
+
+    await usePluginStore.getState().setEnabled('demo', true);
+
+    expect(lastToast().message).toBe(
+      'Could not change Demo plugin: This plugin is not installed any more. '
+      + 'Refresh the list.',
+    );
+  });
+
   it('survives a step of the refresh failing, and still runs the rest', async () => {
     reloadMock.mockRejectedValue(new Error('bundle gone'));
 
