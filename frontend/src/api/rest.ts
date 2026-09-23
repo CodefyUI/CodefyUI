@@ -935,7 +935,12 @@ export async function uploadCustomNode(file: File) {
     method: 'POST',
     body: form,
   });
-  if (!res.ok) throw new Error(`Upload failed: ${res.statusText}`);
+  if (!res.ok) {
+    // #520: the detail says why the upload was refused (a name Windows
+    // cannot store, the Tier-0 gate's message), as the other uploads show.
+    const body = await res.json().catch(() => ({}));
+    throw new Error(body.detail ?? `Upload failed: ${res.statusText}`);
+  }
   return res.json();
 }
 

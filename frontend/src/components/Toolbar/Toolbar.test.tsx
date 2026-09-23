@@ -948,13 +948,18 @@ describe('Toolbar', () => {
       setActiveTab({
         nodes: [{ id: 'n1', type: 'baseNode', position: { x: 0, y: 0 }, data: { type: 'Add', params: {} } }],
       });
-      render(<Toolbar />);
+      const { unmount } = render(<Toolbar />);
       fireEvent.click(screen.getByText(menu));
       fireEvent.click(screen.getByText(item));
       await resolveDialog('whatever the user typed');
       await waitFor(() =>
         expect(useToastStore.getState().toasts.some((tt) => tt.type === 'error')).toBe(true),
       );
+      // Unmounted here rather than by the suite's cleanup: the afterEach
+      // above restores the tab store's applyLayout first, and a toolbar still
+      // subscribed to that store re-renders outside act(). Only the toast is
+      // asserted on, so nothing needs the toolbar after this.
+      unmount();
       return useToastStore.getState().toasts.find((tt) => tt.type === 'error')!.message;
     }
 
@@ -972,6 +977,10 @@ describe('Toolbar', () => {
       [{ code: 'name_dot_segment' }, 'dots'],
       [{ code: 'name_reserved_device', reserved: 'com1' }, 'com1'],
       [{ code: 'name_escapes_presets_dir' }, 'presets folder'],
+      // #520: the rule the upload routes share. The fallback told the user to
+      // use "a plain name", which is no help with a name that is too long.
+      [{ code: 'name_reserved_character', character: '?' }, '"?"'],
+      [{ code: 'name_too_long', limit: 255 }, '255'],
     ])('says what is wrong with %j', async (detail, expected) => {
       const message = await exportFailureToast(refusal(400, detail));
       expect(message).toContain(expected);
@@ -991,8 +1000,10 @@ describe('Toolbar', () => {
     // it shipped. It still has to read as a sentence, and it still has to say
     // the code, because that is the only part a bug report can carry.
     it('falls back to a sentence that names an unknown future code', async () => {
-      const message = await exportFailureToast(refusal(400, { code: 'name_too_long' }));
-      expect(message).toContain('name_too_long');
+      const message = await exportFailureToast(
+        refusal(400, { code: 'name_from_a_newer_server' }),
+      );
+      expect(message).toContain('name_from_a_newer_server');
       expect(message).not.toContain('[object Object]');
       expect(message).toMatch(/letters, numbers/);
     });
@@ -1000,11 +1011,14 @@ describe('Toolbar', () => {
     // A coded refusal whose field is missing (an older or partial server)
     // must not render the placeholder: `{character}` on screen is worse than
     // the generic sentence.
-    it('falls back rather than printing an unfilled placeholder', async () => {
-      const message = await exportFailureToast(refusal(400, { code: 'name_separator' }));
-      expect(message).not.toContain('{character}');
-      expect(message).toContain('name_separator');
-    });
+    it.each(['name_separator', 'name_reserved_character', 'name_too_long'])(
+      'falls back rather than printing an unfilled placeholder for %s',
+      async (code) => {
+        const message = await exportFailureToast(refusal(400, { code }));
+        expect(message).not.toMatch(/\{\w+\}/);
+        expect(message).toContain(code);
+      },
+    );
 
     // The refusals that were already here answer with PROSE (`{detail:
     // "Preset 'x' already exists"}`), and that prose is still what the editor
@@ -1027,6 +1041,17 @@ describe('Toolbar', () => {
       );
       expect(message).toContain('「/」');
       expect(message).toContain('子圖名稱');
+    });
+
+    it.each<[Record<string, unknown>, string]>([
+      [{ code: 'name_reserved_character', character: '?' }, '「?」'],
+      [{ code: 'name_too_long', limit: 255 }, '255'],
+    ])('reads %j in Traditional Chinese too', async (detail, expected) => {
+      useI18n.setState({ locale: 'zh-TW' });
+      const message = await exportFailureToast(refusal(400, detail), '匯出', '匯出為子圖');
+      expect(message).toContain(expected);
+      expect(message).toContain('子圖名稱');
+      expect(message).not.toContain(String(detail.code));
     });
   });
 

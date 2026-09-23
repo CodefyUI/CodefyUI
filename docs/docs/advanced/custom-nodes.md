@@ -6,7 +6,7 @@ description: Add new node behavior by dropping a Python file into custom_nodes/ 
 
 # Custom Nodes
 
-CodefyUI is **backend-authoritative**: a node's ports, parameters, and category all come from its Python definition, and the UI renders it automatically. To add new behavior, drop a `.py` file into `backend/app/custom_nodes/` that extends `BaseNode`.
+CodefyUI is **backend-authoritative**: a node's ports, parameters, and category all come from its Python definition, and the UI renders it automatically. To add new behavior, drop a `.py` file into `backend/app/custom_nodes/` that extends `BaseNode`. To keep custom nodes outside the installation, set `CODEFYUI_CUSTOM_NODES_DIR` to another directory before starting the server. That directory replaces `backend/app/custom_nodes/` rather than adding to it, and it applies to every project the installation opens. Files in it import each other relatively (`from .helpers import x`): `from app.custom_nodes.helpers import x` looks in `backend/app/custom_nodes/` instead.
 
 :::tip For a few lines of code, try the canvas first
 If what you need is a short transform or a statistic over what a graph already produced, the [PythonScript node](./python-script-node.md) runs Python you type straight onto the canvas -- no file, no restart. Come back here when the code outgrows it, or when it needs files, the network, or a dependency outside the script allowlist.
@@ -47,7 +47,7 @@ To upload a file instead of copying it into the directory, use the [Custom Node 
 
 Open the manager with the **Manage...** button in the **Custom Nodes** section of the sidebar's **Custom & Plugins** tab. It lists each file in `custom_nodes/`, the node names defined by that file, and three actions:
 
-- **Upload .py** sends one file to `POST /api/custom-nodes/upload`. The file must have a `.py` extension and cannot exceed `CODEFYUI_MAX_UPLOAD_SIZE` (500 MB). The server scans it with the plugin AST gate at [Tier 0](/advanced/plugins#security--three-tiers). Custom nodes cannot declare capabilities, so imports such as `requests` or `os` produce a `400` response with the gate's message. Put a node that needs imports outside Tier 0 in a [plugin pack](./plugins) with a `[security]` section. Files copied directly into `backend/app/custom_nodes/` are loaded at the next reload without this scan.
+- **Upload .py** sends one file to `POST /api/custom-nodes/upload`. The file must have a `.py` extension and cannot exceed `CODEFYUI_MAX_UPLOAD_SIZE` (500 MB). Its name cannot start with `__` or contain a character Windows does not allow in file names (see [File names](./api-reference#limits-and-errors)). The server scans it with the plugin AST gate at [Tier 0](/advanced/plugins#security--three-tiers). Custom nodes cannot declare capabilities, so imports such as `requests` or `os` produce a `400` response with the gate's message. Put a node that needs imports outside Tier 0 in a [plugin pack](./plugins) with a `[security]` section. Files copied directly into the custom nodes directory (`backend/app/custom_nodes/`, or `CODEFYUI_CUSTOM_NODES_DIR` when it is set) are loaded at the next reload without this scan.
 - **Enable / Disable** renames the file between `name.py` and `name.py.disabled`; a disabled file stays on disk and is skipped by discovery.
 - **Delete** removes the file (names starting with `__` are protected).
 

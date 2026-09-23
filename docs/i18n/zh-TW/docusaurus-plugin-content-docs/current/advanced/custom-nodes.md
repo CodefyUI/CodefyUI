@@ -6,7 +6,7 @@ description: 把一個 Python 檔案放進 custom_nodes/ 即可新增節點行�
 
 # 自訂節點
 
-CodefyUI 是**後端權威**的：一個節點的連接埠、參數與類別全部來自其 Python 定義，UI 會自動渲染它。若要新增行為，把一個 `.py` 檔案放進 `backend/app/custom_nodes/`，並繼承 `BaseNode`。
+CodefyUI 是**後端權威**的：一個節點的連接埠、參數與類別全部來自其 Python 定義，UI 會自動渲染它。若要新增行為，把一個 `.py` 檔案放進 `backend/app/custom_nodes/`，並繼承 `BaseNode`。若要把自訂節點放在安裝目錄之外，請在啟動伺服器前把 `CODEFYUI_CUSTOM_NODES_DIR` 設為另一個目錄。這個目錄會取代 `backend/app/custom_nodes/`，而不是再多加一個目錄，並套用到這個安裝開啟的每個專案。目錄中的檔案彼此要用相對匯入（`from .helpers import x`）：`from app.custom_nodes.helpers import x` 會改到 `backend/app/custom_nodes/` 裡找。
 
 :::tip 只有幾行程式碼？先試試畫布
 如果只需要簡短的轉換，或對圖表已產生的結果計算統計資料，[PythonScript 節點](./python-script-node.md)可直接執行你在畫布上輸入的 Python，不需建立檔案或重新啟動。當程式碼不再適合放在單一節點中，或需要存取檔案、網路或允許清單以外的相依套件時，再建立自訂節點。
@@ -47,7 +47,7 @@ class MyNode(BaseNode):
 
 請使用側邊欄**自訂與外掛**分頁之**自訂節點**區段中的**管理...** 按鈕開啟管理視窗。它會列出 `custom_nodes/` 中的每個檔案、該檔案定義的節點名稱，以及三種操作：
 
-- **上傳 .py** 會將一個檔案送至 `POST /api/custom-nodes/upload`。檔案必須使用 `.py` 副檔名，而且不得超過 `CODEFYUI_MAX_UPLOAD_SIZE`（500 MB）。伺服器會以外掛 AST 閘門的[第 0 級](/advanced/plugins#security--three-tiers)掃描檔案。自訂節點無法宣告能力，因此 `requests` 或 `os` 等 imports 會產生 `400` response 與閘門訊息。需要第 0 級以外 imports 的節點，應放入具有 `[security]` 區段的[外掛包](./plugins)。直接複製到 `backend/app/custom_nodes/` 的檔案，會在下次重新載入時載入，不會進行這項掃描。
+- **上傳 .py** 會將一個檔案送至 `POST /api/custom-nodes/upload`。檔案必須使用 `.py` 副檔名，而且不得超過 `CODEFYUI_MAX_UPLOAD_SIZE`（500 MB）。檔名不能以 `__` 開頭，也不能含有 Windows 不允許用在檔名中的字元（請見[檔案名稱](./api-reference#limits-and-errors)）。伺服器會以外掛 AST 閘門的[第 0 級](/advanced/plugins#security--three-tiers)掃描檔案。自訂節點無法宣告能力，因此 `requests` 或 `os` 等 imports 會產生 `400` response 與閘門訊息。需要第 0 級以外 imports 的節點，應放入具有 `[security]` 區段的[外掛包](./plugins)。直接複製到自訂節點目錄（`backend/app/custom_nodes/`，或已設定的 `CODEFYUI_CUSTOM_NODES_DIR`）的檔案，會在下次重新載入時載入，不會進行這項掃描。
 - **啟用／停用**會在 `name.py` 與 `name.py.disabled` 之間重新命名檔案；停用的檔案仍留在磁碟上，但探索時會跳過。
 - **刪除**會移除檔案（名稱以 `__` 開頭者受保護）。
 

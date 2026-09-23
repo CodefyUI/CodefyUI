@@ -1,5 +1,6 @@
-"""Which files under the data root a node may write to (#224), and which
-name a route may take from a client (#483).
+"""Which files under the data root a node may write to (#224), which name a
+route may take from a client (#483), and which names a file can be stored
+under at all (#520).
 
 Every node that turns a graph parameter into a filesystem write shares one
 rule, and it lives here so there is exactly one copy of it. Before #224
@@ -11,7 +12,9 @@ from a client had the same problem with a narrower rule, "this name, inside
 this one directory", spelled out eight times across ``app/api``; that rule
 is :func:`resolve_under` (#483). It is not the node rule: several of those
 directories (custom nodes, presets, examples) are outside the data root.
-Everything below is about the node rule.
+What a stored file may be CALLED is a third rule, :func:`check_file_name`
+(#520), explained where it is defined. Everything below is about the node
+rule.
 
 The rule
 --------
@@ -88,7 +91,9 @@ stays correct if the mechanism ever needs to come back.
 
 from __future__ import annotations
 
-from pathlib import Path
+import os
+from pathlib import Path, PurePosixPath
+from typing import Any
 
 from ..config import settings
 
@@ -198,3 +203,250 @@ def resolve_under(directory: Path, name: str, *,
     if direct_child:
         return target if target.parent == base else None
     return target if target.is_relative_to(base) else None
+
+
+# ── which names a file can be stored under (#520) ───────────────────────
+
+#: What makes a name a PATH rather than a filename: both separators and the
+#: colon, on every platform. ``WindowsPath`` honours the backslash and
+#: ``PosixPath`` does not, so a rule that asked the host which one to care
+#: about would be a rule CI (Linux) cannot check on behalf of the users
+#: (Windows). The colon does two jobs of its own on Windows: after one
+#: letter it is a drive, which turned the upload ``a:b.csv`` into ``b.csv``;
+#: after a longer prefix it names an NTFS alternate data stream, so
+#: ``run 12:30.csv`` was written into a stream of a zero-byte file
+#: ``run 12`` that no list shows.
+_SEPARATOR_CHARACTERS = "/\\:"
+
+#: The rest of what Windows refuses anywhere in a file name. There the write
+#: itself fails (every upload route answered 500); on Linux and macOS it
+#: succeeds, and the file then cannot be cloned, copied or synced onto
+#: Windows.
+_RESERVED_CHARACTERS = '<>"|?*'
+
+#: The digits Windows reads in a COM or LPT device name: the superscripts too.
+_DEVICE_DIGITS = ("123456789\N{SUPERSCRIPT ONE}\N{SUPERSCRIPT TWO}"
+                  "\N{SUPERSCRIPT THREE}")
+
+#: Names Windows resolves to a DEVICE rather than a file, whatever extension
+#: follows them: ``com1.json`` opens the serial port, and before Windows 11
+#: ``nul.csv`` swallowed whatever was written to it. The set is the one
+#: ``ntpath.isreserved`` (Python 3.13) holds, which covers every Windows
+#: version: the two console names, and COM/LPT with superscript digits.
+#: Lowercase, because the name is lowercased before it is looked up here.
+_WINDOWS_DEVICE_NAMES = frozenset(
+    {"con", "prn", "aux", "nul", "conin$", "conout$"}
+    | {f"com{digit}" for digit in _DEVICE_DIGITS}
+    | {f"lpt{digit}" for digit in _DEVICE_DIGITS}
+)
+
+#: The longest name a file can be stored under. ext4 and the other Linux file
+#: systems count UTF-8 bytes, NTFS counts UTF-16 code units, and a name within
+#: 255 bytes is within 255 units, so the stored-name rule measures bytes and
+#: holds on every server. Past it the write failed and every upload route
+#: answered 500; a name of 90 Chinese characters (270 bytes) stores on NTFS
+#: and not on ext4.
+_NAME_LIMIT = 255
+
+#: Whether a lookup refuses the characters Windows cannot store, beyond the
+#: control characters every server refuses. On a Windows server such a name
+#: addresses something other than the file it spells: ``a:b.csv`` a drive,
+#: ``run 12:30.csv`` a stream of ``run 12``, ``x\b.csv`` a file inside ``x``.
+#: On Linux and macOS it is an ordinary name a stored file can have --
+#: uploaded before #520, written by a node such as ModelSaver, placed there by
+#: hand -- and :func:`resolve_under` keeps the lookup inside its directory
+#: anyway. A module constant so tests can take either branch on any host.
+_LOOKUP_REFUSES_WINDOWS_CHARACTERS = os.name == "nt"
+
+_RENAME = "Rename the file and try again."
+
+
+class UnstorableName(ValueError):
+    """Why no file can be stored under a name on every OS CodefyUI runs on.
+
+    One refusal, read two ways. ``str()`` is an English sentence naming what
+    is wrong: the upload, download, delete and toggle routes answer it as
+    their ``detail``, and the editor shows it as written. ``code`` and
+    ``fields`` are the same refusal for a client that writes its own
+    sentence in the user's language: ``routes_presets`` answers
+    ``{"detail": {"code": ..., **fields}}`` (#476) and the toolbar translates
+    it.
+    """
+
+    def __init__(self, code: str, message: str, **fields: Any) -> None:
+        super().__init__(message)
+        self.code = code
+        self.fields = fields
+
+
+def _character_refusal(character: str) -> UnstorableName | None:
+    """The refusal of one character of a name, or None when it may stay."""
+    codepoint = ord(character)
+    if codepoint < 32 or codepoint == 127:
+        # Invisible, so the codepoint is the only way to say which one.
+        return UnstorableName(
+            "name_control_character",
+            f"File names cannot contain the control character "
+            f"U+{codepoint:04X}. {_RENAME}",
+            codepoint=codepoint,
+        )
+    if character in _SEPARATOR_CHARACTERS:
+        code = "name_separator"
+    elif character in _RESERVED_CHARACTERS:
+        code = "name_reserved_character"
+    else:
+        return None
+    return UnstorableName(
+        code,
+        f"File names cannot contain '{character}', which Windows does not "
+        f"allow. {_RENAME}",
+        character=character,
+    )
+
+
+def _utf8_size(name: str) -> int:
+    """*name*'s length in UTF-8 bytes. A lone surrogate, which a JSON string
+    can carry, is counted rather than raising."""
+    return len(name.encode("utf-8", "surrogatepass"))
+
+
+def _too_long(size: int) -> UnstorableName:
+    """The refusal of a name *size* bytes long."""
+    return UnstorableName(
+        "name_too_long",
+        f"File names can be at most {_NAME_LIMIT} bytes long, and this one is "
+        f"{size} (a Chinese character takes 3 bytes). Shorten it and try "
+        f"again.",
+        limit=_NAME_LIMIT,
+    )
+
+
+def _check_characters(name: str) -> None:
+    """Raise the refusal of the first character of *name* that no file name
+    may hold."""
+    for character in name:
+        refusal = _character_refusal(character)
+        if refusal is not None:
+            raise refusal
+
+
+def check_file_name(name: str, *, stored_as: str | None = None) -> None:
+    """Raise :class:`UnstorableName` unless a file can be stored under *name*
+    on every OS (#520).
+
+    The rule for a name a file is about to be CREATED under: an upload, a
+    preset. It is the rule #476 wrote for presets, moved here so that the
+    upload routes, which had none, share it. It is the same on every OS on
+    purpose: a name Linux accepts and Windows does not makes a project that
+    cannot move between them, and in project mode uploaded images land in
+    the project directory, which Windows machines clone too.
+
+    *stored_as* is the file name really written, when the caller derives one
+    from *name*: a preset called ``My Block`` is stored as ``my_block.json``.
+    The characters are checked in *name*, so a refusal points at one the
+    user typed; the length and the device name in the file written, which is
+    what the file system holds.
+
+    Refused, in this order, so that the problem reported is the first one:
+
+    - an empty or blank name;
+    - a separator or colon, a control character, or a character Windows
+      reserves;
+    - a name over 255 bytes of UTF-8;
+    - a name made only of dots: ``.`` and ``..`` are directories, and
+      Windows drops trailing dots, which leaves ``...`` no name at all;
+    - a Windows device name before the first dot, spaces before the dot
+      included (``con``, ``com1.csv``, ``nul .txt``).
+
+    A trailing dot or space is not refused, although Windows drops it: every
+    upload route's extension check refuses such a name already, and a
+    preset's file always ends in ``.json``.
+    """
+    stored = name if stored_as is None else stored_as
+    if not name.strip():
+        raise UnstorableName("name_empty", "The file name is empty.")
+    _check_characters(name)
+    size = _utf8_size(stored)
+    if size > _NAME_LIMIT:
+        raise _too_long(size)
+    if set(name.strip()) == {"."}:
+        raise UnstorableName(
+            "name_dot_segment",
+            f"A file name cannot be made only of dots. {_RENAME}")
+    # Windows resolves a device name from the part before the FIRST dot, and
+    # drops the spaces in front of that dot.
+    device = stored.partition(".")[0].rstrip(" ").lower()
+    if device in _WINDOWS_DEVICE_NAMES:
+        raise UnstorableName(
+            "name_reserved_device",
+            f"'{device}' is a name Windows keeps for a device, so no file "
+            f"can be called that. {_RENAME}",
+            reserved=device,
+        )
+
+
+def check_lookup_name(name: object) -> None:
+    """Raise :class:`UnstorableName` for a name no file on THIS server can
+    have, before a route looks one up by it (#520).
+
+    Looser than :func:`check_file_name` on purpose: a lookup must keep
+    reaching every file that is there, whatever put it there.
+
+    - ``/`` separates the parts of a nested name: a model saved into
+      ``runs/exp1/`` is downloaded by that path.
+    - A control character is refused on every server.
+    - The rest of what Windows cannot store is refused on a Windows server
+      only (:data:`_LOOKUP_REFUSES_WINDOWS_CHARACTERS`).
+
+    No length is refused. File systems measure a name differently -- ext4 in
+    UTF-8 bytes, NTFS, HFS+ and APFS in characters or UTF-16 units -- so any
+    one limit here would refuse a file some volume really holds, and a name
+    too long for the volume in use is answered by :func:`lookup_exists`.
+    An empty, dots-only or device name is not refused either: the routes'
+    own checks and :func:`resolve_under` answer those, and ``....`` is an
+    ordinary directory name on Linux. A *name* that is not a string is left
+    alone: :func:`resolve_under` refuses it, as the "Invalid filename" it
+    always was (#483).
+    """
+    if not isinstance(name, str):
+        return
+    for character in name:
+        if character == "/":
+            continue
+        refusal = _character_refusal(character)
+        if refusal is not None and (
+                _LOOKUP_REFUSES_WINDOWS_CHARACTERS
+                or refusal.code == "name_control_character"):
+            raise refusal
+
+
+def lookup_exists(path: Path) -> bool:
+    """Whether the file a lookup names is there; False when the OS will not
+    say (#520).
+
+    ``Path.exists`` raises, instead of answering False, for an error it does
+    not expect. On Python 3.10-3.12 that includes ENAMETOOLONG, a name part
+    longer than the volume holds, so such a lookup answered 500. No file can
+    be there under that name, so "not found" is the true answer, and it is
+    the answer whatever the volume counts in.
+    """
+    try:
+        return path.exists()
+    except OSError:
+        return False
+
+
+def upload_file_name(filename: str) -> str:
+    """The name an uploaded file is stored under, or :class:`UnstorableName`.
+
+    The part after the last ``/``: a browser never sends one, and a name
+    that arrives with one (``../../evil.csv``) is a path whose last part is
+    the name. ``PurePosixPath`` rather than ``Path`` on purpose: a
+    ``WindowsPath`` also cut at a backslash and after a drive letter, so on
+    a Windows server ``a:b.csv`` and ``x\\b.csv`` were stored as ``b.csv``,
+    over whatever had that name. Here those characters stay in the name and
+    :func:`check_file_name` refuses them, the same on every OS.
+    """
+    name = PurePosixPath(filename).name
+    check_file_name(name)
+    return name

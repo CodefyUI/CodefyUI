@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import importlib
+import importlib.machinery
+import importlib.util
 import inspect
 import logging
+import os
 import pkgutil
 import sys
 from pathlib import Path
@@ -14,6 +17,99 @@ logger = logging.getLogger(__name__)
 
 
 _PLUGIN_NS_PREFIX = "cdui_plugins."  # synthetic namespace, see plugin_loader
+
+#: The package ``backend/app/custom_nodes`` is, and the name every custom-node
+#: discovery hands to :meth:`NodeRegistry.discover`: the server's startup,
+#: every reload, ``cdui project`` and the tests.
+CUSTOM_NODES_PACKAGE = "app.custom_nodes"
+
+#: What the files of a custom nodes directory anywhere else are imported as:
+#: ``CODEFYUI_CUSTOM_NODES_DIR`` pointed outside the install (#519).
+#:
+#: A package of its own because ``app.custom_nodes.<file>`` cannot name them.
+#: Python finds that name through the real package's ``__path__``, which is
+#: ``backend/app/custom_nodes`` -- so discovery walked the configured
+#: directory and every import read the repo's: each file that was not also
+#: in the repo failed to import, and each one that was loaded the repo's
+#: copy. A separate name also keeps a module read from one directory from
+#: ever answering for a same-named file in the other.
+#:
+#: Directly under ``app`` because the shipped example imports
+#: ``from ..core.node_base``, which resolves only one package below ``app``.
+#: Beginning with ``app.custom_nodes`` because that prefix is how
+#: ``routes_nodes._provider_for`` tells a custom node from a built-in.
+CUSTOM_NODES_DIR_PACKAGE = "app.custom_nodes_dir"
+
+
+def _same_directory(path: Path, other: str) -> bool:
+    """Whether *path* and *other* are one existing directory, however spelled."""
+    try:
+        return os.path.samefile(path, other)
+    except OSError:
+        return False
+
+
+def _repo_package_locations() -> list[str]:
+    """Where ``backend/app/custom_nodes`` is, found WITHOUT importing it.
+
+    ``find_spec`` asks the finders and runs none of the package's code. An
+    import here would run its ``__init__.py``, and a broken one would then
+    stop the server from starting and fail every reload after the registry
+    was cleared; left alone, it fails each module under it in
+    :meth:`NodeRegistry.discover`'s own ``except``, logged, as it always did.
+    A package that cannot be found at all (an install that removed it) is no
+    location.
+    """
+    try:
+        spec = importlib.util.find_spec(CUSTOM_NODES_PACKAGE)
+    except (ImportError, ValueError):
+        return []
+    if spec is None or spec.submodule_search_locations is None:
+        return []
+    return list(spec.submodule_search_locations)
+
+
+def _custom_nodes_package(directory: Path) -> str:
+    """The package the custom nodes in *directory* are imported under (#519).
+
+    The repo's own directory keeps :data:`CUSTOM_NODES_PACKAGE`, so its
+    classes stay the ones a direct import returns. Any other directory is
+    imported through :data:`CUSTOM_NODES_DIR_PACKAGE`, pointed at it -- as is
+    every directory of an install whose ``backend/app/custom_nodes`` is gone.
+    """
+    if any(_same_directory(directory, entry)
+           for entry in _repo_package_locations()):
+        return CUSTOM_NODES_PACKAGE
+    _point_custom_nodes_dir_package(directory)
+    return CUSTOM_NODES_DIR_PACKAGE
+
+
+def _point_custom_nodes_dir_package(directory: Path) -> None:
+    """Make :data:`CUSTOM_NODES_DIR_PACKAGE` the package of *directory*.
+
+    Pointed at the directory it already has, it is left alone: its modules
+    stay imported and ``force_reload`` decides whether they are read again,
+    exactly as for the repo's package. Pointed anywhere else, every module
+    imported through it is dropped first -- each came from the old directory,
+    and ``import_module`` would hand it back for a same-named file in the new
+    one. Compared resolved, so another spelling of the same directory is the
+    same directory.
+    """
+    location = str(directory.resolve())
+    current = sys.modules.get(CUSTOM_NODES_DIR_PACKAGE)
+    if current is not None and list(getattr(current, "__path__", ())) == [location]:
+        return
+    stale = CUSTOM_NODES_DIR_PACKAGE + "."
+    for name in [name for name in sys.modules
+                 if name == CUSTOM_NODES_DIR_PACKAGE or name.startswith(stale)]:
+        del sys.modules[name]
+    spec = importlib.machinery.ModuleSpec(CUSTOM_NODES_DIR_PACKAGE, None,
+                                          is_package=True)
+    spec.submodule_search_locations = [location]
+    package = importlib.util.module_from_spec(spec)
+    sys.modules[CUSTOM_NODES_DIR_PACKAGE] = package
+    parent, _, child = CUSTOM_NODES_DIR_PACKAGE.rpartition(".")
+    setattr(importlib.import_module(parent), child, package)
 
 
 class _DeriveFromPackage:
@@ -155,10 +251,17 @@ class NodeRegistry:
         derived from ``package_name``, which is right for builtins (no
         prefix) but can only ever return the snake_case spelling of a plugin
         id; see :func:`_plugin_id_from_package`.
+
+        A discovery of ``app.custom_nodes`` reads *package_path* even when
+        that is not the package's own directory: a ``CODEFYUI_CUSTOM_NODES_DIR``
+        outside the install is imported as :data:`CUSTOM_NODES_DIR_PACKAGE`
+        (#519). Handled here so every caller gets it unchanged.
         """
         count = 0
         if not package_path.exists():
             return count
+        if package_name == CUSTOM_NODES_PACKAGE:
+            package_name = _custom_nodes_package(package_path)
         if isinstance(plugin_id, _DeriveFromPackage):
             plugin_id = _plugin_id_from_package(package_name)
         for importer, modname, ispkg in pkgutil.walk_packages(
