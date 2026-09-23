@@ -27,13 +27,10 @@ pnpm build      # emits ../frontend/index.js (commit it)
 pnpm dev        # rebuild on save — pair with `cdui plugin dev`
 ```
 
-A node renderer is registered under the node's type, which uses the manifest
-id exactly as written, hyphens included: this plugin's example node is
-`{{plugin_id}}:Example`. The generated `registerRenderer` call in
-`ui/src/index.tsx` uses `'{{plugin_snake}}:Example'`, which is wrong when the
-id contains a hyphen. If those two names differ, change the call to
-`'{{plugin_id}}:Example'`: a renderer registered under the wrong type never
-mounts, and the browser console logs a warning about it.
+A node renderer is registered under the node's type: the manifest id exactly
+as written, hyphens included, then the node name. `ui/src/index.tsx` registers
+the example node's renderer as `{{plugin_id}}:Example`; a renderer registered
+under any other type never mounts.
 
 The typed SDK is vendored under `ui/src/sdk/` (clone-and-own). It mirrors the
 host plugin API, so you get autocomplete for `defineTool`, the hooks, and
@@ -51,6 +48,12 @@ default — copy it, or call `mountRunMetricsPanel(api)` from
 ```bash
 uv run --directory path/to/CodefyUI/backend pytest path/to/{{plugin_id}}/tests/
 ```
+
+`pytest.ini` puts the plugin root on the import path, so a test imports a
+node as `from nodes.example_node import ExampleNode`. Keep `tests/` free of
+`sys`, `os`, `pathlib` and the other modules CodefyUI's install-time security
+scan refuses: it reads every `.py` file in the plugin, tests included, and one
+refused import stops the whole plugin from installing.
 
 ## Publish
 

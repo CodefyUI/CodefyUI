@@ -220,9 +220,12 @@ cd backend && uv lock --check
 
 # Repository root -- if you edited frontend/src/plugins/contract.ts. Copies it
 # into the `cdui plugin new` template (ui/src/sdk/types.ts); the backend suite
-# fails until the copy matches. Refresh the template repository's copy
-# (CodefyUI-Plugin-Official) by hand.
+# fails until the copy matches. With --template, the second command checks
+# the SDK copy in a local checkout of the template repository
+# (CodefyUI-Plugin-Official); drop --check to write it. The release checklist
+# runs that check as well (.github/RELEASING.md, step 4).
 python scripts/sync_plugin_sdk.py
+python scripts/sync_plugin_sdk.py --template ../CodefyUI-Plugin-Official --check
 
 # Frontend -- if you touched frontend/. `cdui test` covers `pnpm test`;
 # these are the type-check and build gates it does not run.
