@@ -211,7 +211,7 @@ const remove = api.ui.addToolbarButton({
 | `"remove_node"` | `node_id: string` | 移除節點及所有與其相連的邊。 |
 | `"remove_edge"` | `source: string`、`target: string`、`source_handle?: string`、`target_handle?: string` | 中斷兩節點間相符的邊。 |
 | `"clear_graph"` | *（無）* | 移除所有節點與邊。 |
-| `"auto_layout"` | *（無）* | 重新執行自動圖表佈局。 |
+| `"auto_layout"` | *（無）* | 排列註記以外的所有節點，方式與工具列的**自動排版**選單中的**排版全部**相同。綁定至節點的註記會隨節點移動，未綁定的註記會留在原位。批次新增、移除或移動註記以外的節點時，使用者正在查看的分頁會將檢視範圍調整為符合排版後的節點及其綁定的註記；背景分頁則會捨棄記住的平移與縮放，使用者下次切換到該分頁時，檢視範圍會符合整張圖，包括未綁定的註記。 |
 | `"move_node"` | `node_id: string`、`position: { x: number; y: number }` | **apiVersion 5。** 將節點放到指定位置。綁定至該節點的註記會隨之移動，與使用者拖曳節點時相同。 |
 | `"set_segment"` | `segment_id?: string`、`head_node_id: string`、`tail_node_id: string` | **apiVersion 5。** 建立或取代段落標示；編輯器會以外框包住從起點到終點之資料路徑上的所有節點。省略 `segment_id` 會建立標示；傳入既有 id 會移動標示。兩種結果都會在 `segment_id` 回傳 id。若起點與終點之間沒有資料邊路徑，或任一端是註記，操作就會失敗。 |
 | `"remove_segment"` | `segment_id: string` | **apiVersion 5。** 移除段落標示。 |
