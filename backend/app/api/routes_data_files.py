@@ -13,6 +13,7 @@ from fastapi import APIRouter, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 
 from ..config import settings
+from ..core.data_paths import resolve_under
 
 logger = logging.getLogger(__name__)
 
@@ -22,9 +23,12 @@ ALLOWED_EXTENSIONS = {".csv", ".tsv", ".txt", ".json"}
 
 
 def _safe_path(base_dir: Path, filename: str) -> Path:
-    """Resolve *filename* under *base_dir* and ensure it stays within it."""
-    resolved = (base_dir / filename).resolve()
-    if not resolved.is_relative_to(base_dir.resolve()):
+    """*filename* resolved under *base_dir*, or a 400 "Invalid filename".
+
+    The rule is :func:`app.core.data_paths.resolve_under` (#483).
+    """
+    resolved = resolve_under(base_dir, filename)
+    if resolved is None:
         raise HTTPException(status_code=400, detail="Invalid filename")
     return resolved
 

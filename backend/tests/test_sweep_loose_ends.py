@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import logging
 import sqlite3
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -133,9 +134,10 @@ async def _seam_a(runs: RunStore, sweeps: SweepStore, sweep_id: str):
     Copied deliberately rather than reached through the app: seam A is a
     STORE-level rule (harvest what is terminal, settle when everything is)
     and these tests are about that rule, not about FastAPI. The expression
-    that reads the objective -- ``metrics.get(run_id, {}).get(metric)`` --
-    is the route's own, verbatim, because that is the exact level at which
-    the two seams have to agree.
+    that reads the objective --
+    ``metrics.get(run_id, {}).get(metric) if metric else None`` -- is the
+    route's own, verbatim, because that is the exact level at which the two
+    seams have to agree.
     """
     sweep = await sweeps.get_sweep(sweep_id)
     children = {record.id: record
@@ -150,7 +152,8 @@ async def _seam_a(runs: RunStore, sweeps: SweepStore, sweep_id: str):
         if child is None or child.status not in TERMINAL_STATUSES:
             continue
         entries[variant.index] = HarvestEntry(
-            objective=metrics.get(variant.run_id, {}).get(metric),
+            objective=(metrics.get(variant.run_id, {}).get(metric)
+                       if metric else None),
             status=child.status)
     finished = all(
         variant.index in entries
@@ -167,7 +170,7 @@ async def _seam_a_objective(runs: RunStore, run_id: str,
                             metric: str | None) -> float | None:
     """Seam A's answer for ONE run, at the objective level."""
     metrics = await runs.latest_metrics([run_id])
-    return metrics.get(run_id, {}).get(metric)
+    return metrics.get(run_id, {}).get(metric) if metric else None
 
 
 async def _corrupt_variants(db: Database, sweep_id: str) -> None:
@@ -579,3 +582,31 @@ async def test_seam_b_reads_exactly_what_the_shared_rule_returns(db, sweeps,
                 _last_metric_value(conn, run_id, "")]
 
     assert await db.run(_edges) == [None, None, None]
+
+
+async def test_the_read_path_answers_none_for_an_empty_metric_name(
+        db, sweeps, runs):
+    """Seam A, through the real route helper, on the one name seam B guards.
+
+    #483: ``_last_metric_value`` answers None for an empty name, and the read
+    path looked ``""`` up like any other key. A node can log a series named
+    ``""`` (``log_metric`` stores ``str(name)`` unchecked), and a sweeps row
+    carrying ``"metric": ""`` outlives the route validation that would have
+    refused it. Both seams write the objective onto that row, so both have to
+    give the same answer.
+    """
+    sweep = await _new_sweep(
+        sweeps, count=1, objective={"metric": "", "direction": "minimize"})
+    run_id = await _attach(sweeps, runs, sweep.id, 0,
+                           points=[MetricPoint("", 0.3, 0)])
+    # The series really is there, so a None below is the rule answering and
+    # not a lookup that missed.
+    assert await runs.latest_metrics([run_id]) == {run_id: {"": 0.3}}
+
+    record, _children, _metrics = await routes_sweeps._harvested_sweep(
+        SimpleNamespace(store=runs), sweeps, sweep.id)
+    variant = record.variants[0]
+    assert variant.objective is None
+    # Harvested with no value, which is what seam B records for it.
+    assert variant.status == "succeeded"
+    assert variant.harvested_at is not None

@@ -198,7 +198,7 @@ sweep 的 `state` 還是 `running` 或 `finished` 時，它仍可能帶著 `erro
 
 ### 取消 {/* #cancelling */}
 
-`POST /api/sweeps/{id}/cancel` 會要求每個排隊中或執行中的 child 停止 — 每個各送一次協作式取消 — 並回報 `cancelled` 與 `already_finished` 的數量，以及按 index 排列的逐 variant 清單。只有至少一個 child 當時仍在活動時，sweep 的 state 才會變成 `cancelling`；它永遠不會變成 `cancelled`：前 30 個 variant 完成、最後 2 個停止的 sweep，是一個帶有 2 列 cancelled 的 finished sweep。所有 child 都進入終止狀態後，下一次讀取（如果它們原本都已終止，也就是 cancel 回覆本身）會把 state 確定為 `finished`。重複要求不會有副作用（`cancelled: 0`）。
+`POST /api/sweeps/{id}/cancel` 會要求每個排隊中或執行中的 child 停止 — 每個各送一次協作式取消 — 並回報 `cancelled` 與 `already_finished` 的數量，以及按 index 排列的逐 variant 清單。從未取得 run 的 variant，以及 run 仍顯示 `running` 但取消請求無法送達的 variant（例如由使用同一個資料庫的另一個伺服器行程啟動的 run），都不會計入這兩個數量。只有至少一個 child 當時仍在活動時，sweep 的 state 才會變成 `cancelling`；它永遠不會變成 `cancelled`：前 30 個 variant 完成、最後 2 個停止的 sweep，是一個帶有 2 列 cancelled 的 finished sweep。所有 child 都進入終止狀態後，下一次讀取（如果它們原本都已終止，也就是 cancel 回覆本身）會把 state 確定為 `finished`。重複要求不會有副作用（`cancelled: 0`）。
 
 取消是一個請求，不是保證。停止是協作式的：伺服器立起旗標，節點得自己去讀。訓練、評估與取樣節點每個 batch 都會檢查，因此會在一個 batch 之內停下；從不檢查的節點則會像沒有人要求過一樣一路跑完。這個請求背後沒有強制停止，也沒有逾時：要強加期限，唯一的做法是在訓練步驟中途把 run 砍掉，那會丟掉它已經做完的工作，在 GPU 上還可能讓裝置直到伺服器結束前都無法使用。
 
