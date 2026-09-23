@@ -85,7 +85,7 @@ Not shown: `cdui run` (below), the `cdui packs`, `cdui cache` and `cdui project`
 | Flag | Env var | Values | Purpose |
 |------|---------|--------|---------|
 | `--gpu <choice>` | `CODEFYUI_GPU` | `auto` / `cu118` / `cu121` / `cu124` / `cu126` / `cu128` / `rocm6.1` / `rocm6.2` / `cpu` / `mps` / `skip` | Select PyTorch wheel index. `auto` detects via `nvidia-smi` / `rocm-smi` / Apple Silicon. `skip` chooses no wheel index: a torch that already satisfies `torch>=2.5` is kept; otherwise the dependency install pulls PyPI's default wheel (CPU-only on Windows). |
-| `--dev` / `--no-dev` | `CODEFYUI_DEV` | `1` / `0` | Install the `[dev]` extra (pytest, httpx, httpx-ws). Required for `cdui test`. Off by default, including at the interactive `[y/N]` prompt; contributors pass `--dev`. |
+| `--dev` / `--no-dev` | `CODEFYUI_DEV` | `1` / `0` | Install the `[dev]` extra (pytest, pytest-asyncio, httpx, httpx-ws, tensorboard). Required for `cdui test`. Off by default, including at the interactive `[y/N]` prompt; contributors pass `--dev`. |
 | `--yes` / `-y` | — | — | Accept all defaults non-interactively (CI / headless). |
 | `--lang <code>` | `CODEFYUI_LANG` | `en` / `zh` (the env var also accepts `zh-TW`) | The flag localises the `cdui install` / `cdui update` run it is passed to; the env var sets the language of every `cdui` command. The `plugin`, `project`, `packs` and `cache` groups recognise only `zh` itself, not `zh-TW`. |
 | — | `CODEFYUI_DIR` | path | Install directory (default: `~/CodefyUI`). |

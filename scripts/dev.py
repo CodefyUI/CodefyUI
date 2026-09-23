@@ -1297,7 +1297,7 @@ def _print_post_install_summary(gpu: str, dev: bool) -> None:
     print(f"  {DIM}Backend:{RESET}  {BACKEND_DIR}")
     print(f"  {DIM}Frontend:{RESET} {DIST_DIR if has_dist else t('(未建置)', '(not built)')}")
     if dev:
-        print(f"  {DIM}Dev tools:{RESET} pytest, httpx, httpx-ws")
+        print(f"  {DIM}Dev tools:{RESET} pytest, pytest-asyncio, httpx, httpx-ws, tensorboard")
     print()
     print(f"{BOLD}{CYAN}▸ {t('下一步', 'Next steps')}{RESET}")
     print()
