@@ -380,6 +380,7 @@ class TextGenerateNode(BaseNode):
             EVENT_BATCH,
             ProgressThrottle,
             interrupted_result,
+            progress_text_tail,
             stop_checker,
         )
 
@@ -492,13 +493,16 @@ class TextGenerateNode(BaseNode):
                         # "tokens" into a chart series -- that would be a chart
                         # of how fast the machine is.
                         "event": EVENT_BATCH,
-                        # The whole text so far, re-decoded each frame rather
+                        # The end of the text so far, which is all the card
+                        # shows (#523): the prompt that starts it can alone
+                        # outgrow the event cap. Re-decoded each frame rather
                         # than concatenated per-token pieces: a BPE token is
                         # not a character boundary, so decoding ids one at a
                         # time mangles any multi-byte character that spans two
                         # of them. Decoding a few hundred ids is microseconds
                         # against the forward pass that produced them.
-                        "text": prompt + tokenizer.decode(new_ids),
+                        "text": progress_text_tail(
+                            prompt + tokenizer.decode(new_ids)),
                         "tokens": len(new_ids),
                         "total_tokens": max_new_tokens,
                     })

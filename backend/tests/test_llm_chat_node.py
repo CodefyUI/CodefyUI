@@ -3,14 +3,19 @@
 from __future__ import annotations
 
 import json
+from types import SimpleNamespace
 
 import httpx
 import pytest
 import torch
 
+from app.config import settings
+from app.core import loop_control
 from app.core.execution_context import INTERRUPTED_KEY, ExecutionContext
 from app.core.llm_proxy import codex_auth
 from app.core.node_base import DataType, ParamType
+from app.core.output_entries import build_node_output_entries
+from app.core.run_service import cap_event_payload, json_safe
 from app.nodes.llm import llm_chat_node
 from app.nodes.llm.llm_chat_node import LLMChatNode, _build_request, _normalize_provider
 
@@ -304,6 +309,9 @@ def test_stop_mid_stream_keeps_the_partial_text_and_closes_the_stream(
     monkeypatch, provider, frame
 ):
     """Stop lands on the next chunk; partial text survives; socket released."""
+    # Every chunk reports (#523 throttles the frames), so the click below
+    # lands on the second one.
+    monkeypatch.setattr(loop_control, "PROGRESS_MIN_INTERVAL_S", 0.0)
     body = _EndlessSSE(frame("tok "))
     _install_mock_transport(monkeypatch, body)
 
@@ -415,3 +423,167 @@ async def test_close_stream_swallows_a_failing_teardown(caplog):
 
     await llm_chat_node._close_stream(_Boom())
     assert "could not close the LLM provider stream" in caplog.text
+
+
+# ── #523: a long answer keeps moving on the card ──────────────────────────
+#
+# Each chunk used to send a frame holding the whole answer so far. Every
+# frame is a stored event, so a run wrote rows growing with the square of the
+# answer, and past the 128 KiB event cap (21,828 CJK characters: a stored
+# event is ASCII-escaped JSON, six bytes a character) each frame reached the
+# card without its text and the card stopped moving until the node finished.
+
+
+class _ScriptedSSE(httpx.AsyncByteStream):
+    """A response body that sends *frames* in order, then ends."""
+
+    def __init__(self, frames: list[bytes]) -> None:
+        self._frames = frames
+        #: Set by ``_install_mock_transport``.
+        self.client: httpx.AsyncClient | None = None
+
+    async def __aiter__(self):
+        for frame in self._frames:
+            yield frame
+
+    async def aclose(self) -> None:
+        pass
+
+
+def _cjk_pieces(count: int, size: int) -> list[str]:
+    """*count* streamed chunks of *size* CJK characters each."""
+    return ["".join(chr(0x4E00 + (i * size + k) % 0x5000) for k in range(size))
+            for i in range(count)]
+
+
+def _stored(frame: dict) -> dict:
+    """*frame* as ``RunService`` stores and sends it: a capped event."""
+    message = {"node_id": "chat", "status": "progress",
+               "outputs": build_node_output_entries("progress", frame)}
+    return cap_event_payload(json_safe(message),
+                             cap_bytes=settings.RUN_EVENT_PAYLOAD_CAP_BYTES)
+
+
+def _assert_arrives_with_its_text(frame: dict) -> None:
+    stored = _stored(frame)
+    assert "elided" not in stored, "the event cap dropped the frame's body"
+    assert stored["outputs"][0]["progress"]["text"] == frame["text"]
+
+
+def _frozen_clock(monkeypatch) -> SimpleNamespace:
+    """The clock ``ProgressThrottle`` reads, moved only by the test."""
+    clock = SimpleNamespace(now=100.0)
+    monkeypatch.setattr(loop_control, "time",
+                        SimpleNamespace(monotonic=lambda: clock.now))
+    return clock
+
+
+def test_every_frame_of_a_long_answer_is_the_end_of_the_text_so_far(
+    monkeypatch,
+):
+    """Through the real OpenAI stream parser, one frame per chunk."""
+    monkeypatch.setattr(loop_control, "PROGRESS_MIN_INTERVAL_S", 0.0)
+    pieces = _cjk_pieces(5000, 5)  # 25,000 characters, past the cap
+    _install_mock_transport(
+        monkeypatch, _ScriptedSSE([_openai_frame(p) for p in pieces]))
+    frames: list[dict] = []
+
+    result = LLMChatNode().execute(
+        {}, params(prompt="write a long answer"), frames.append)
+
+    answer = "".join(pieces)
+    assert result["text"] == answer, "the node's output is the whole answer"
+    tail = loop_control.PROGRESS_TEXT_TAIL_CHARS
+    assert tail >= 1000, "less than the card's LIVE_TEXT_TAIL_CHARS"
+    assert len(frames) == len(pieces)
+    so_far = ""
+    for index, (piece, frame) in enumerate(zip(pieces, frames)):
+        so_far += piece
+        assert len(frame["text"]) <= tail, (
+            f"frame {index} carried {len(frame['text'])} characters")
+        assert frame == {"text": so_far[-tail:]}
+        _assert_arrives_with_its_text(frame)
+    assert frames[-1]["text"] == answer[-tail:]
+
+
+def test_a_long_answer_is_a_few_frames_a_second_not_one_per_chunk(
+    monkeypatch,
+):
+    """Each frame is a stored event: their number follows the clock."""
+    clock = _frozen_clock(monkeypatch)
+    pieces = _cjk_pieces(5000, 5)
+    answer = "".join(pieces)
+    sent: list[str] = []
+
+    async def adapter(req, client):
+        for piece in pieces:
+            clock.now += 0.01  # 100 chunks a second, 50 seconds in all
+            sent.append(piece)
+            yield {"type": "text_delta", "text": piece}
+        yield {"type": "done", "message": {"content": answer},
+               "usage": {"output_tokens": len(pieces)}}
+
+    monkeypatch.setitem(llm_chat_node._ADAPTERS, "openai", adapter)
+    frames: list[tuple[int, dict]] = []
+
+    result = LLMChatNode().execute(
+        {}, params(), lambda payload: frames.append((len(sent), payload)))
+
+    assert result["text"] == answer
+    interval = loop_control.PROGRESS_MIN_INTERVAL_S
+    assert len(frames) <= len(pieces) * 0.01 / interval + 2
+    tail = loop_control.PROGRESS_TEXT_TAIL_CHARS
+    for chunks_sent, frame in frames:
+        assert len(frame["text"]) <= tail, (
+            f"a frame carried {len(frame['text'])} characters")
+        assert frame == {"text": "".join(pieces[:chunks_sent])[-tail:]}
+        _assert_arrives_with_its_text(frame)
+    assert frames[-1] == (len(pieces), {"text": answer[-tail:]}), (
+        "the last frame before the node returns shows the end of the answer")
+
+
+def test_the_last_frame_shows_the_end_the_throttle_held_back(monkeypatch):
+    """Chunks faster than the throttle: the last frame is still the end."""
+    _frozen_clock(monkeypatch)
+    monkeypatch.setitem(
+        llm_chat_node._ADAPTERS, "openai",
+        _adapter_yielding({"type": "text_delta", "text": "alpha "},
+                          {"type": "text_delta", "text": "beta "},
+                          {"type": "text_delta", "text": "gamma"},
+                          {"type": "done",
+                           "message": {"content": "alpha beta gamma"}}))
+    frames: list[dict] = []
+
+    result = LLMChatNode().execute({}, params(), frames.append)
+
+    assert result["text"] == "alpha beta gamma"
+    assert frames == [{"text": "alpha "}, {"text": "alpha beta gamma"}]
+
+    # Nothing held back, nothing sent twice.
+    frames.clear()
+    monkeypatch.setitem(
+        llm_chat_node._ADAPTERS, "openai",
+        _adapter_yielding({"type": "text_delta", "text": "hi"},
+                          {"type": "done", "message": {"content": "hi"}}))
+    LLMChatNode().execute({}, params(), frames.append)
+    assert frames == [{"text": "hi"}]
+
+
+def test_a_stopped_answer_ends_on_a_frame_with_its_last_characters(
+    monkeypatch,
+):
+    _frozen_clock(monkeypatch)
+    monkeypatch.setitem(
+        llm_chat_node._ADAPTERS, "openai",
+        _adapter_yielding(*({"type": "text_delta", "text": f"t{i} "}
+                            for i in range(10))))
+    # Once before the request, then once per chunk: stop after the third.
+    answers = iter([False, False, False, True])
+    ctx = SimpleNamespace(should_stop=lambda: next(answers))
+    frames: list[dict] = []
+
+    result = LLMChatNode().execute({}, params(), frames.append, context=ctx)
+
+    assert result["text"] == "t0 t1 t2 "
+    assert result[INTERRUPTED_KEY]["batch"] == 3
+    assert frames == [{"text": "t0 "}, {"text": "t0 t1 t2 "}]

@@ -203,6 +203,10 @@ const zhTW: Record<TranslationKey, string> = {
   // Node
   'node.opt': '可選',
   'node.running': '執行中...',
+  // 與結果面板同詞：「輪次」、「損失」。
+  'node.running.epoch': '輪次 {epoch}/{total}',
+  'node.running.loss': '損失：{loss}',
+  'node.running.embedding': '嵌入 {current}/{total}',
   'node.completed': '已完成',
   'node.cached': '已快取',
   'node.skipped': '已跳過',
@@ -472,8 +476,8 @@ const zhTW: Record<TranslationKey, string> = {
   'results.currentLoss': '損失',
   'results.bestLoss': '最佳',
   'results.lossCurve': '損失曲線',
-  'results.waitingEpoch': '等待第一個 epoch...',
-  'results.epochsHeader': 'Epoch（{current}/{total}）',
+  'results.waitingEpoch': '等待第一個輪次...',
+  'results.epochsHeader': '輪次（{current}/{total}）',
   'results.col.loss': '損失',
   'results.col.delta': '變化量',
   'results.col.time': '耗時',

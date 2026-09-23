@@ -384,6 +384,24 @@ def test_progress_frames_carry_the_running_text(fake_transformers, monkeypatch):
     assert res["text"] == frames[-1]["text"]
 
 
+def test_progress_frames_carry_only_the_end_of_a_long_answer(
+        fake_transformers, monkeypatch):
+    """#523: the node card shows the end of the answer, so a frame carries
+    the end and the output keeps the whole answer. The tail is shortened
+    here because the fake model stops after a few dozen tokens."""
+    monkeypatch.setattr("app.core.loop_control.PROGRESS_MIN_INTERVAL_S", 0.0)
+    monkeypatch.setattr("app.core.loop_control.PROGRESS_TEXT_TAIL_CHARS", 2)
+    frames: list[dict] = []
+
+    res = _run(max_new_tokens=5, temperature=0.0,
+               progress_callback=frames.append)
+    chat = _chat(fake_transformers)
+
+    assert [frame["text"] for frame in frames] == [
+        _continuation(chat, count)[-2:] for count in range(1, 6)]
+    assert res["text"] == _continuation(chat, 5)
+
+
 def test_stop_returns_partial_text_and_interrupted_marker(fake_transformers):
     """Stop is checked at the TOP of a step, so a click never pays for one
     more forward pass -- and what was already generated comes back rather

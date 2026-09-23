@@ -478,6 +478,24 @@ def test_progress_streams_the_text_so_far():
     assert first["total_tokens"] == 5
 
 
+def test_progress_carries_only_the_end_of_a_long_text(monkeypatch):
+    """#523: the node card shows the end of the text, and the prompt that
+    starts it can alone outgrow the event cap, so a frame carries the end."""
+    from app.core import loop_control
+
+    monkeypatch.setattr(loop_control, "PROGRESS_MIN_INTERVAL_S", 0.0)
+    prompt = "ab" * 1500
+    frames: list[dict] = []
+
+    res = _run(StubLM(_scores(favour=3)), prompt=prompt, max_new_tokens=5,
+               temperature=0.0, progress=frames.append)
+
+    assert res["text"] == prompt + "ccccc", "the output is the whole text"
+    tail = loop_control.PROGRESS_TEXT_TAIL_CHARS
+    assert [frame["text"] for frame in frames] == [
+        (prompt + "c" * count)[-tail:] for count in range(1, 6)]
+
+
 def test_a_stopped_run_returns_the_partial_text_and_does_not_raise():
     res = _run(StubLM(_scores(favour=3)), prompt="ab", max_new_tokens=50,
                temperature=0.0, context=StopAfter(3))

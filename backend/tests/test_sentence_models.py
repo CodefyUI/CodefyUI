@@ -519,7 +519,10 @@ def test_encode_in_batches_emits_progress_and_honours_stop(
     assert model.calls == [["one"]], "a stopped loop kept embedding"
     assert rows.shape == (1, FAKE_DIM), "the finished batch was discarded"
 
+    # ``caption`` and the two counts are what the node card words in the
+    # reader's language (#525); ``text`` is the English caption, for a log.
     assert frames == [{"event": EVENT_BATCH, "batch": 1, "total_batches": 3,
+                       "caption": "embedding", "current": 1, "total": 3,
                        "text": "Embedding 1/3"}]
 
     # A run that finishes, with batches and texts deliberately different
@@ -536,11 +539,14 @@ def test_encode_in_batches_emits_progress_and_honours_stop(
 
     assert frames == [
         {"event": EVENT_BATCH, "batch": 1, "total_batches": 3,
+         "caption": "embedding", "current": 2, "total": 5,
          "text": "Embedding 2/5"},
         {"event": EVENT_BATCH, "batch": 2, "total_batches": 3,
+         "caption": "embedding", "current": 4, "total": 5,
          "text": "Embedding 4/5"},
         # The short final batch counts the texts it held, not the batch size.
         {"event": EVENT_BATCH, "batch": 3, "total_batches": 3,
+         "caption": "embedding", "current": 5, "total": 5,
          "text": "Embedding 5/5"},
     ]
 
