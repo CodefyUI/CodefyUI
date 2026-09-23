@@ -14,16 +14,28 @@ typed the command — and a mock that agrees with the client cannot see it.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import sys
+import time
 from urllib.error import HTTPError, URLError
 
 import pytest
 
 import dev  # scripts/dev.py — put on sys.path by conftest
 
-from app.api.routes_runs import SubmitRunRequest
-from app.core.run_service import normalize_graph, normalize_name, normalize_options
+from app.api.routes_runs import SubmitRunRequest, _event_payload
+from app.core.db import Database
+from app.core.node_base import BaseNode, DataType, PortDefinition
+from app.core.node_registry import registry
+from app.core.output_entries import build_node_output_entries
+from app.core.run_service import (
+    RunService,
+    normalize_graph,
+    normalize_name,
+    normalize_options,
+)
+from app.core.run_store import RunStore
 
 BASE = "http://127.0.0.1:8000"
 
@@ -550,25 +562,169 @@ def test_an_unreachable_server_names_the_address(monkeypatch, graph_file,
 
 
 # ── rendering ─────────────────────────────────────────────────────────────
+#
+# Progress events come out of the SERVER's own code, never a hand-built dict:
+# a real event keeps its numbers under ``outputs[0].progress``, and the flat
+# dict these tests used to build is how `cdui run` printed no progress line
+# for any real run while they passed.
 
 
-def test_progress_renders_counters_before_metrics():
-    line = dev._format_progress({"epoch": 3, "total_epochs": 10,
-                                 "loss": 0.12345678, "event": "epoch",
-                                 "note": "ignored", "flag": True})
-    assert line == "epoch 3/10  loss=0.1235"
+class _ReportsProgress(BaseNode):
+    """Reports the frames a test gives it, the way a training loop does."""
+
+    NODE_NAME = "_CliReportsProgress"
+    CATEGORY = "Test"
+    DESCRIPTION = "Reports the progress frames a test hands it"
+    FRAMES: list = []
+
+    @classmethod
+    def define_inputs(cls) -> list[PortDefinition]:
+        return [PortDefinition(name="value", data_type=DataType.ANY)]
+
+    @classmethod
+    def define_outputs(cls) -> list[PortDefinition]:
+        return [PortDefinition(name="value", data_type=DataType.ANY)]
+
+    def execute(self, inputs, params, progress_callback=None):
+        for frame in self.FRAMES:
+            progress_callback(dict(frame))
+        return {"value": inputs.get("value")}
 
 
-def test_progress_with_nothing_to_say_renders_nothing():
-    assert dev._format_progress({"event": "batch"}) == ""
+async def _served_events(tmp_path, monkeypatch, frames: list) -> list:
+    """Run a graph whose node reports *frames*, and return the run's log the
+    way ``GET /api/runs/{id}/events`` serves it. The engine, run service,
+    store and route serialiser are all the real ones."""
+    monkeypatch.setitem(registry._nodes, _ReportsProgress.NODE_NAME,
+                        _ReportsProgress)
+    monkeypatch.setattr(_ReportsProgress, "FRAMES", frames)
+    graph = {
+        "nodes": [
+            {"id": "start", "type": "Start", "data": {"params": {}}},
+            {"id": "src", "type": "_TestSource", "data": {"params": {}}},
+            {"id": "trainer", "type": _ReportsProgress.NODE_NAME,
+             "data": {"params": {}}},
+        ],
+        "edges": [
+            {"id": "et", "source": "start", "target": "src",
+             "sourceHandle": "trigger", "type": "trigger"},
+            {"id": "e1", "source": "src", "target": "trainer",
+             "sourceHandle": "value", "targetHandle": "value"},
+        ],
+    }
+    database = Database(tmp_path / "runs.db")
+    database.connect()
+    service = RunService(RunStore(database), shutdown_grace_s=2.0)
+    try:
+        run_id = (await service.submit(graph)).run_id
+        deadline = time.monotonic() + 15
+        while (await service.store.get_run(run_id)).finished_at is None:
+            assert time.monotonic() < deadline, "the run did not finish"
+            await asyncio.sleep(0.02)
+        events = await service.store.get_events(run_id)
+    finally:
+        await service.shutdown()
+        database.close()
+    return [_event_payload(event) for event in events]
+
+
+def _progress_lines(capsys, events: list) -> list:
+    """The progress lines `cdui run` prints for *events*."""
+    for event in events:
+        dev._render_run_event(event)
+    return [line for line in capsys.readouterr().out.splitlines()
+            if line.startswith("    trainer  ")]
+
+
+async def test_a_real_runs_progress_prints_counters_then_measurements(
+        tmp_path, monkeypatch, capsys):
+    """Counters first, each with its total, then every number that is a
+    measurement. Words, flags and lists are not, and a frame with no number
+    in it prints no line at all."""
+    events = await _served_events(tmp_path, monkeypatch, [
+        {"event": "config", "config": {"epochs": 10}},
+        {"event": "batch", "epoch": 1, "batch": 5, "total_batches": 20,
+         "loss": 0.5},
+        {"event": "epoch", "epoch": 3, "total_epochs": 10,
+         "loss": 0.12345678, "losses": [0.2, 0.1], "lr": 0.001,
+         "note": "a string", "converged": False},
+    ])
+
+    assert _progress_lines(capsys, events) == [
+        "    trainer  epoch 1  batch 5/20  loss=0.5",
+        "    trainer  epoch 3/10  loss=0.1235  lr=0.001",
+    ]
+
+
+async def test_every_count_a_built_in_node_reports_prints_as_a_counter(
+        tmp_path, monkeypatch, capsys):
+    """Each frame has the shape a built-in node sends. A count prints with
+    its total however the total is named, neither prints as a measurement,
+    and whole numbers print in full."""
+    events = await _served_events(tmp_path, monkeypatch, [
+        # TrainingLoop, a validation batch.
+        {"event": "batch", "epoch": 1, "batch": 5, "total_batches": 40,
+         "loss": 0.25, "phase": "val"},
+        # The embedding nodes: a caption counts texts and stands in for the
+        # batch counter, as it does on the node card.
+        {"event": "batch", "batch": 3, "total_batches": 10,
+         "caption": "embedding", "current": 96, "total": 320,
+         "text": "Embedding 96/320"},
+        # TextGenerate and HFTextGenerate.
+        {"event": "batch", "text": "Once upon", "tokens": 12,
+         "total_tokens": 256},
+        # LMTokenizedDataset: one count with a total, one without.
+        {"event": "batch", "rows": 1200, "total_rows": 50000,
+         "tokens": 1234567},
+        # VLARollout, then PushWorldDemos.
+        {"event": "progress", "episode": 3, "total_episodes": 10,
+         "success_rate": 0.6667},
+        {"event": "progress", "phase": "collect", "episode": 3,
+         "total_episodes": 12},
+        # VLAActionEval: a total whose name is not the count's.
+        {"event": "progress", "evaluated": 64, "total_samples": 512},
+        # A measurement with a ``total_`` twin is still a measurement.
+        {"event": "epoch", "epoch": 2, "total_epochs": 5, "loss": 0.5,
+         "total_loss": 1.25},
+    ])
+
+    assert _progress_lines(capsys, events) == [
+        "    trainer  epoch 1  val batch 5/40  loss=0.25",
+        "    trainer  embedding 96/320",
+        "    trainer  tokens 12/256",
+        "    trainer  rows 1200/50000  tokens=1234567",
+        "    trainer  episode 3/10  success_rate=0.6667",
+        "    trainer  collect episode 3/12",
+        "    trainer  evaluated 64/512",
+        "    trainer  epoch 2/5  loss=0.5  total_loss=1.25",
+    ]
+
+
+async def test_a_progress_entry_elided_for_size_prints_nothing(
+        tmp_path, monkeypatch, capsys):
+    """An entry that outgrows the event size cap is stored as a marker with
+    no numbers left in it. There is nothing to print, and the marker must
+    not break the command."""
+    events = await _served_events(tmp_path, monkeypatch, [
+        {"event": "epoch", "epoch": 1, "total_epochs": 1, "loss": 0.5,
+         "losses": [0.123456] * 30_000},
+    ])
+    entries = [entry for event in events
+               for entry in ((event["payload"] or {}).get("outputs") or [])
+               if entry.get("output_kind") == "progress"]
+    assert entries and all(entry.get("elided") for entry in entries), (
+        "the frame fit under the cap; this test needs a bigger one")
+
+    assert _progress_lines(capsys, events) == []
 
 
 def test_node_status_lines_use_ascii_and_the_house_glyphs(capsys):
     for status in ("completed", "cached", "skipped", "error", "progress"):
-        dev._render_node_status({"node_id": "n1", "status": status,
-                                 "error": "bad", "epoch": 1})
+        dev._render_node_status({
+            "node_id": "n1", "status": status, "error": "bad",
+            "outputs": build_node_output_entries(status, {"epoch": 1})})
     out = capsys.readouterr().out
-    assert "n1" in out
+    assert "n1  epoch 1" in out, "the progress line is missing"
     # The approved functional glyphs only — no pictographic emoji anywhere.
     assert not any(ord(ch) > 0x2800 for ch in out)
 

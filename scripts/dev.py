@@ -4432,27 +4432,89 @@ def _render_node_status(payload: dict) -> None:
         print(f"  {RED}✗{RESET} {node}: {payload.get('error', '')}")
 
 
-def _format_progress(payload: dict) -> str:
-    """A progress payload as one compact line, loop counters first.
+#: For `_format_progress`: the loop counters, outermost first. Each prints as
+#: a counter with or without its total; any other count needs its total.
+_PROGRESS_LOOP_COUNTERS = ("epoch", "step", "batch")
 
-    Everything numeric that is not a loop counter is a measurement, which is
-    the same rule the server uses to decide what becomes a metric series — so
-    what the terminal shows and what the charts record cannot drift.
+#: For `_format_progress`: counts whose total is not named ``total_`` plus
+#: the count's name or its plural. VLAActionEval counts ``evaluated`` out of
+#: ``total_samples``.
+_PROGRESS_IRREGULAR_TOTALS = {"evaluated": "total_samples"}
+
+
+def _format_progress(payload: dict) -> str:
+    """A progress event as one compact line, counters first.
+
+    The numbers are not at the top of the event: the server files the node's
+    frame under ``outputs``, as the entry whose ``output_kind`` is
+    ``progress`` (``output_entries.build_node_output_entries``). An entry
+    elided for size has no frame left and prints nothing.
+
+    A counter prints as ``batch 5/40``. It is a loop counter (``epoch``,
+    ``step``, ``batch``) or a whole number that comes with its total
+    (``tokens`` and ``total_tokens``), and neither half prints again as a
+    measurement. A ``caption`` names a count kept in ``current`` and
+    ``total`` and takes the batch counter's place, as on the node card
+    (``embedding 96/320``). A ``phase`` goes in front of the last counter
+    (``val batch 5/40``). Every other number prints as a measurement,
+    ``loss=0.1235``. This rule is for reading the line; the server picks
+    chart series by its own (``run_service.scalar_metrics``), which skips
+    batch frames altogether.
     """
+    frame = next((entry["progress"] for entry in payload.get("outputs") or []
+                  if isinstance(entry, dict)
+                  and entry.get("output_kind") == "progress"
+                  and isinstance(entry.get("progress"), dict)), None)
+    if frame is None:
+        return ""
+
+    def is_number(value) -> bool:
+        return isinstance(value, (int, float)) and not isinstance(value, bool)
+
+    def show(value, spec: str) -> str:
+        # Whole numbers in full: ``g`` writes a million as 1e+06, and ``.4g``
+        # rounds 12345 to 1.234e+04.
+        return str(value) if isinstance(value, int) else format(value, spec)
+
+    def counter(name: str, value, total) -> str:
+        return (f"{name} {show(value, 'g')}"
+                + (f"/{show(total, 'g')}" if is_number(total) else ""))
+
+    def total_of(key: str) -> "str | None":
+        names = ((_PROGRESS_IRREGULAR_TOTALS[key],)
+                 if key in _PROGRESS_IRREGULAR_TOTALS
+                 else (f"total_{key}", f"total_{key}s", f"total_{key}es"))
+        return next((name for name in names if name in frame), None)
+
+    # Any other count must be a whole number, so a measurement that has a
+    # ``total_`` twin (``loss`` beside ``total_loss``) stays a measurement.
+    keys = [key for key in _PROGRESS_LOOP_COUNTERS if is_number(frame.get(key))]
+    keys += [key for key, value in frame.items()
+             if key not in _PROGRESS_LOOP_COUNTERS and isinstance(value, int)
+             and not isinstance(value, bool) and total_of(key)]
     counters = []
-    for key in ("epoch", "step", "batch"):
-        value = payload.get(key)
-        if isinstance(value, (int, float)) and not isinstance(value, bool):
-            total = payload.get(f"total_{key}s")
-            counters.append(f"{key} {value:g}"
-                            + (f"/{total:g}" if isinstance(total, (int, float))
-                               else ""))
-    skip = {"epoch", "step", "batch", "total_epochs", "total_batches",
-            "total_steps", "start_epoch", "event"}
-    metrics = [f"{k}={v:.4g}" for k, v in payload.items()
-               if k not in skip and isinstance(v, (int, float))
-               and not isinstance(v, bool)]
-    return "  ".join(counters + metrics)
+    not_measured = {"start_epoch", "current", "total"}
+    for key in keys:
+        total_key = total_of(key)
+        counters.append(counter(key, frame[key],
+                                frame.get(total_key) if total_key else None))
+        not_measured.update((key, total_key) if total_key else (key,))
+
+    caption, current = frame.get("caption"), frame.get("current")
+    if isinstance(caption, str) and caption.strip() and is_number(current):
+        captioned = counter(caption.strip(), current, frame.get("total"))
+        if "batch" in keys:
+            counters[keys.index("batch")] = captioned
+        else:
+            counters.append(captioned)
+    phase = frame.get("phase")
+    if isinstance(phase, str) and phase.strip() and counters:
+        counters[-1] = f"{phase.strip()} {counters[-1]}"
+
+    measurements = [f"{key}={show(value, '.4g')}"
+                    for key, value in frame.items()
+                    if key not in not_measured and is_number(value)]
+    return "  ".join(counters + measurements)
 
 
 def _tail_run(base: str, host: str, run_id: str, timeout: float) -> str:

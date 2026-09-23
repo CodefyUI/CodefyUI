@@ -129,7 +129,8 @@ run 在排隊時，CLI 會回報它排在第幾位，而不是沒有任何輸出
   ○ queued  position 3 on cuda:0
   ▸ started
   ✓ dataset
-    trainer  epoch 3/10  loss=0.1235
+    trainer  epoch 3  batch 912/938  loss=0.1187
+    trainer  epoch 3/10  loss=0.1235  lr=0.001
   ✓ trainer
   ✓ run complete
 
