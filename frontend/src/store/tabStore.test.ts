@@ -822,6 +822,18 @@ describe('execution status', () => {
       expect(n.data.error).toBeUndefined();
     }
   });
+
+  it("clearExecutionStatus drops the previous run's progress", () => {
+    // #486: a new run starts from here. A frame the last run left on the node
+    // would put its text (or its epoch bar) on the new run's running card
+    // until the new run's first frame arrives.
+    store().addNode(makeDef(), { x: 0, y: 0 });
+    const id = activeTab().nodes[0].id;
+    store().setTabNodeProgress(activeTab().id, id, { event: 'batch', text: 'the last answer' });
+    expect(activeTab().nodes[0].data.progress).toEqual({ event: 'batch', text: 'the last answer' });
+    store().clearExecutionStatus();
+    expect(activeTab().nodes[0].data.progress).toBeUndefined();
+  });
 });
 
 // ── clear / getSerializedGraph ───────────────────────────────────────────────

@@ -7,7 +7,7 @@ import { useUIStore } from '../../store/uiStore';
 import { useTabStore } from '../../store/tabStore';
 import { useToastStore } from '../../store/toastStore';
 import { _resetPackStoreForTesting, usePackStore } from '../../store/packStore';
-import type { NodeDefinition, NodeData } from '../../types';
+import type { NodeDefinition, NodeData, NodeProgress } from '../../types';
 import * as rest from '../../api/rest';
 import type { PackItem, PackItemStatus, PackSummary } from '../../api/rest';
 import { CATEGORY_COLORS, STATUS_COLORS, NODE_HEADER_TINT, mixColor } from '../../styles/theme';
@@ -397,6 +397,135 @@ describe('BaseNode', () => {
     );
     const fill = container.querySelector('[class*="progressBarFill"]') as HTMLElement;
     expect(fill.style.width).toBe('0%');
+  });
+
+  // ── Streamed text in the running footer (#486) ───────────────────────────
+
+  it('shows the streamed text instead of Running... while a node generates', () => {
+    const { container } = renderBody(
+      baseData({
+        executionStatus: 'running',
+        progress: {
+          event: 'batch',
+          text: 'Once upon a time there was',
+          tokens: 5,
+          total_tokens: 200,
+        },
+      }),
+    );
+    expect(screen.getByText('Once upon a time there was')).toBeInTheDocument();
+    // The visible indicator gives way to the text, but a screen reader still
+    // hears that the node is running: the same string, off screen.
+    expect(container.querySelector('[class*="statusRunningDot"]')).toBeNull();
+    expect(screen.getByText('Running...').className).toContain('srOnly');
+    // Each frame carries the whole text so far, which can be huge: no tooltip
+    // repeats it, and no live region reads every frame aloud.
+    const footer = container.querySelector('[class*="statusStreaming"]') as HTMLElement;
+    expect(footer).not.toBeNull();
+    expect(footer.hasAttribute('title')).toBe(false);
+    expect(footer.hasAttribute('aria-live')).toBe(false);
+    expect(footer.querySelector('[title], [aria-live]')).toBeNull();
+  });
+
+  it('shows the text of a frame that has no event key (the LLMChat shape)', () => {
+    const { container } = renderBody(
+      baseData({
+        executionStatus: 'running',
+        progress: { text: 'Hello' } as unknown as NodeProgress,
+      }),
+    );
+    expect(screen.getByText('Hello')).toBeInTheDocument();
+    expect(container.querySelector('[class*="statusRunningDot"]')).toBeNull();
+  });
+
+  it('tells a screen reader the node is running in the reader locale', () => {
+    useI18n.setState({ locale: 'zh-TW' });
+    renderBody(
+      baseData({ executionStatus: 'running', progress: { event: 'batch', text: '從前從前' } }),
+    );
+    expect(screen.getByText('從前從前')).toBeInTheDocument();
+    // `node.running` itself, not a new string.
+    expect(screen.getByText('執行中...').className).toContain('srOnly');
+  });
+
+  it('keeps the line breaks of the streamed text', () => {
+    renderBody(
+      baseData({ executionStatus: 'running', progress: { event: 'batch', text: '第一段\n第二段' } }),
+    );
+    // Exact text: getByText collapses whitespace by default, which would hide
+    // a footer that had lost the newline.
+    expect(
+      screen.getByText('第一段\n第二段', { normalizer: (text) => text }),
+    ).toBeInTheDocument();
+  });
+
+  it('shows only the end of a long text', () => {
+    const { container } = renderBody(
+      baseData({
+        executionStatus: 'running',
+        progress: { event: 'batch', text: 'x'.repeat(5000) + 'THE-END' },
+      }),
+    );
+    const box = container.querySelector('[class*="streamingText"]');
+    expect(box).not.toBeNull();
+    const shown = box!.textContent ?? '';
+    expect(shown.length).toBeLessThanOrEqual(1000);
+    expect(shown.endsWith('THE-END')).toBe(true);
+  });
+
+  it('drops the replacement character a half-received multi-byte character decodes to', () => {
+    // U+FFFD, built from its code so the source holds no invisible character.
+    const replacement = String.fromCharCode(0xfffd);
+    renderBody(
+      baseData({
+        executionStatus: 'running',
+        progress: { event: 'batch', text: 'abc' + replacement },
+      }),
+    );
+    expect(screen.getByText('abc')).toBeInTheDocument();
+    expect(screen.queryByText((content) => content.includes(replacement))).toBeNull();
+  });
+
+  it.each([
+    ['blank', '   '],
+    ['not a string', 42],
+  ])('keeps Running... when the frame text is %s', (_label, text) => {
+    const { container } = renderBody(
+      baseData({ executionStatus: 'running', progress: { event: 'batch', text } }),
+    );
+    // The visible indicator, not the off-screen copy the text footer carries.
+    expect(screen.getByText('Running...').className).not.toContain('srOnly');
+    expect(container.querySelector('[class*="statusRunningDot"]')).not.toBeNull();
+    expect(container.querySelector('[class*="streamingText"]')).toBeNull();
+  });
+
+  it.each([
+    ['completed', 'Completed'],
+    ['cached', 'Cached'],
+    ['error', 'Error: boom'],
+  ] as const)('shows the %s footer, not the text of the last frame', (status, footer) => {
+    renderBody(
+      baseData({
+        executionStatus: status,
+        error: status === 'error' ? 'boom' : undefined,
+        progress: { event: 'batch', text: 'the finished answer' },
+      }),
+    );
+    expect(screen.getByText(footer)).toBeInTheDocument();
+    expect(screen.queryByText('the finished answer')).toBeNull();
+  });
+
+  it('an epoch frame keeps its bar even when it carries text', () => {
+    const { container } = renderBody(
+      baseData({
+        executionStatus: 'running',
+        progress: { event: 'epoch', epoch: 2, total_epochs: 10, loss: 0.5, text: 'not shown' },
+      }),
+    );
+    expect(screen.getByText('Epoch 2/10')).toBeInTheDocument();
+    expect(screen.queryByText('not shown')).toBeNull();
+    // The bar keeps the footer it always had, not the text variant's.
+    expect(container.querySelector('[class*="statusStreaming"]')).toBeNull();
   });
 
   it('renders the completed footer', () => {
