@@ -36,6 +36,7 @@ from app.nodes.llm._sentence_models import (
     SENTENCE_PACK,
     option_packs_for_models,
 )
+from app.nodes.llm.text_embedding_node import TextEmbeddingNode
 from app.nodes.llm.word_vector_node import (
     WordVectorNode,
     _load_backend,
@@ -357,6 +358,42 @@ def test_sentence_backend_finishing_is_not_interrupted(
 
     assert "__interrupted__" not in res
     assert res["embeddings"].shape == (2, FAKE_DIM)
+
+
+def test_sentence_backend_encodes_at_the_shipped_cap_after_text_embedding(
+        fake_sentence_transformers, monkeypatch):
+    """WordVector sets no token cap, so it gets the one the model shipped with.
+
+    It shares the cached encoder with TextEmbedding. A TextEmbedding node
+    that ran first at 64 tokens used to leave 64 on the shared object, and
+    every WordVector run after it truncated at 64 without saying so.
+    """
+    created: list = []
+    caps: list[int] = []
+    base = fake_sentence_transformers.SentenceTransformer
+
+    class CapRecording(base):  # type: ignore[misc, valid-type]
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            created.append(self)
+
+        def encode(self, *args, **kwargs):
+            caps.append(self.max_seq_length)
+            return super().encode(*args, **kwargs)
+
+    monkeypatch.setattr(
+        fake_sentence_transformers, "SentenceTransformer", CapRecording)
+
+    params = {p.name: p.default for p in TextEmbeddingNode.define_params()}
+    params.update(model=MINI, max_seq_length=64)
+    TextEmbeddingNode().execute({"texts": ["king"]}, params)
+    assert caps == [64]
+
+    caps.clear()
+    _run(["king", "queen"], backend=MINI)
+
+    assert len(created) == 1, "the two nodes did not share one encoder"
+    assert caps == [128]  # the fake's shipped default
 
 
 # -- every backend ---------------------------------------------------------

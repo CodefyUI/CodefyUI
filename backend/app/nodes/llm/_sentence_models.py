@@ -27,7 +27,11 @@ words; the missing-snapshot branch below is the half that turns a would-be
 the same moment; without the lock they would both miss and both load it.
 Bounded to two because that is what a learner actually does -- compare an
 English model against a multilingual one -- while four resident models
-would hold over a gigabyte after the run had finished.
+would hold over a gigabyte after the run had finished. Each loaded model
+also has a lock of its own, which ``encode_in_batches`` holds for one batch
+at a time: every node and every run in the process shares that object, its
+token cap is a setting on it, and its tokenizer raises ``Already borrowed``
+when one thread changes its truncation while another is encoding.
 
 Imports here stay cheap on purpose: this module is reached at startup
 through the node modules the registry scans, so ``sentence_transformers``
@@ -40,8 +44,9 @@ from __future__ import annotations
 import logging
 import threading
 import time
+import weakref
 from collections import OrderedDict
-from typing import TYPE_CHECKING, Any, Callable, Sequence
+from typing import TYPE_CHECKING, Any, Callable, NamedTuple, Sequence
 
 import numpy as np
 
@@ -79,6 +84,60 @@ _CACHE_LOCK = threading.Lock()
 _CACHE: OrderedDict[tuple[str, str], Any] = OrderedDict()
 
 
+class _ModelState(NamedTuple):
+    """What ``encode_in_batches`` keeps beside one loaded model."""
+
+    #: Held while one batch sets its cap and encodes.
+    lock: threading.Lock
+    #: The cap the model came with; a caller's 0 means this.
+    shipped_max_seq_length: int
+
+
+#: Keyed by the model object, weakly: an entry lives exactly as long as its
+#: model, including a model evicted from ``_CACHE`` that a caller is still
+#: encoding with -- so ``clear_model_cache`` leaves this alone, or that
+#: caller's model would get a second lock. Not keyed by ``id(model)``,
+#: which Python reuses once the object is collected.
+_MODEL_STATE: weakref.WeakKeyDictionary[Any, _ModelState] = (
+    weakref.WeakKeyDictionary())
+
+
+def _model_state_locked(model: Any) -> _ModelState:
+    """*model*'s lock and shipped cap, recorded the first time it is seen.
+
+    The caller holds ``_CACHE_LOCK``, so two threads meeting the same new
+    model agree on one lock for it.
+    """
+    state = _MODEL_STATE.get(model)
+    if state is None:
+        state = _ModelState(threading.Lock(), int(model.max_seq_length))
+        _MODEL_STATE[model] = state
+    return state
+
+
+#: How often a caller waiting for another caller's batch on the same model
+#: looks at Stop. ``threading.Lock`` is not FIFO, so a waiting caller can
+#: sit through several of the other caller's batches, each seconds long,
+#: before it gets the lock and reaches its own next Stop check.
+_STOP_POLL_S = 0.1
+
+
+def _acquire_or_stop(lock: threading.Lock,
+                     should_stop: Callable[[], bool] | None) -> bool:
+    """Take *lock*, unless Stop is asked for while waiting for it.
+
+    True with the lock held; False, with it not held, when *should_stop*
+    said yes first. With no *should_stop* nobody can ask, so this waits.
+    """
+    if should_stop is None:
+        lock.acquire()
+        return True
+    while not lock.acquire(timeout=_STOP_POLL_S):
+        if should_stop():
+            return False
+    return True
+
+
 def option_packs_for_models() -> dict[str, str]:
     """The ``option_packs`` mapping for a SELECT over ``SENTENCE_MODELS``.
 
@@ -105,17 +164,12 @@ def _pack_missing(message: str) -> PackMissingError:
     return PackMissingError(SENTENCE_PACK, message)
 
 
-def load_sentence_model(repo_id: str, device: str, *,
-                        max_seq_length: int = 0) -> Any:
+def load_sentence_model(repo_id: str, device: str) -> Any:
     """The loaded encoder for *repo_id* on *device*, from the pack cache.
 
-    *max_seq_length* is the caller's token cap, or 0 for "leave the cached
-    model's current cap as it is" -- on a cache HIT that is whatever the
-    previous caller set, not the value the model shipped with. A non-zero
-    cap is applied on EVERY call, hit or miss: the cap belongs to the node
-    that asked, the model object belongs to the process, and two nodes
-    sharing one cached model would otherwise silently inherit whichever
-    of them loaded it.
+    Every caller in the process gets the same object for the same pair, so
+    encode through ``encode_in_batches``, which holds the model's own lock
+    around each batch, rather than calling ``model.encode`` directly.
 
     Raises ``ValueError`` for an id that is not in ``SENTENCE_MODELS``, and
     ``PackMissingError`` (message ending in ``(pack=sentence-embeddings)``)
@@ -178,6 +232,9 @@ def load_sentence_model(repo_id: str, device: str, *,
             )
             logger.info("loaded %s on %s in %.1fs",
                         repo_id, device, time.monotonic() - started)
+            # Before the model is in the cache, so no caller can have
+            # changed its cap yet: this is the value a cap of 0 goes back to.
+            _model_state_locked(model)
             _CACHE[key] = model
             while len(_CACHE) > MAX_CACHED_MODELS:
                 evicted, _ = _CACHE.popitem(last=False)
@@ -186,14 +243,6 @@ def load_sentence_model(repo_id: str, device: str, *,
                             evicted[0], evicted[1], MAX_CACHED_MODELS)
         else:
             _CACHE.move_to_end(key)
-
-        if max_seq_length > 0:
-            # Mutable on the real class too. Last writer wins, which is all
-            # a shared object can offer: two nodes encoding concurrently
-            # with different caps are racing, and the alternative -- one
-            # model per cap -- would multiply the memory this cache exists
-            # to bound.
-            model.max_seq_length = int(max_seq_length)
 
     return model
 
@@ -217,6 +266,7 @@ def encode_in_batches(
     batch_size: int = 32,
     normalize: bool = False,
     prefix: str = "",
+    max_seq_length: int = 0,
     progress: ProgressThrottle | None = None,
     should_stop: Callable[[], bool] | None = None,
 ) -> tuple[np.ndarray, int | None]:
@@ -232,6 +282,17 @@ def encode_in_batches(
     *prefix* is prepended to every text when non-empty (``query: `` /
     ``passage: `` for the e5 models). *progress* may be None -- the export
     runner and most unit tests have no callback to throttle.
+
+    *max_seq_length* is the token cap for every batch of this call, or 0
+    for the cap the model shipped with -- never the cap the previous caller
+    left on it. Each batch sets the cap and encodes under the model's own
+    lock, so every batch runs at its own caller's cap, and callers on
+    different models never wait for each other's batches. The lock is
+    released at every batch boundary, where any caller waiting on the same
+    model can take it (``threading.Lock`` is not FIFO, so this is not strict
+    alternation); a caller still waiting looks at Stop every
+    ``_STOP_POLL_S`` seconds. One copy of the model per cap was rejected for
+    its memory: it would multiply what ``MAX_CACHED_MODELS`` exists to bound.
     """
     if isinstance(texts, str):
         # ``list("hello")`` is five one-character texts, and every layer
@@ -247,6 +308,20 @@ def encode_in_batches(
         # without special-casing "nothing to embed". The width is unknown
         # because no forward pass ever ran.
         return np.zeros((0, 0), dtype=np.float32), None
+
+    # Read without the cache lock first, because a load holds that lock for
+    # seconds and this model is usually loaded already. The read is safe:
+    # an entry is written once, under the lock, is never replaced, and
+    # cannot be dropped while this caller holds the model -- so a hit is
+    # this model's only lock. A miss is a model that did not come through
+    # the loader (a unit test's fake, built directly); it is recorded here,
+    # under the lock, on first use, at the cap it has now.
+    state = _MODEL_STATE.get(model)
+    if state is None:
+        with _CACHE_LOCK:
+            state = _model_state_locked(model)
+    cap = (int(max_seq_length) if max_seq_length > 0
+           else state.shipped_max_seq_length)
 
     size = max(1, int(batch_size))
     batches = (total + size - 1) // size
@@ -266,13 +341,26 @@ def encode_in_batches(
         if prefix:
             batch = [prefix + text for text in batch]
 
-        rows = model.encode(
-            batch,
-            batch_size=len(batch),
-            convert_to_numpy=True,
-            normalize_embeddings=normalize,
-            show_progress_bar=False,
-        )
+        # The model's lock, for this one batch. A caller waiting behind
+        # another caller's batch keeps looking at Stop and, when asked,
+        # stops as it would at a batch boundary. The progress frame and the
+        # next Stop check run after the release. Never ``_CACHE_LOCK``
+        # here: that would queue every load, and every other model, behind
+        # this forward pass.
+        if not _acquire_or_stop(state.lock, should_stop):
+            stopped_at = index
+            break
+        try:
+            model.max_seq_length = cap
+            rows = model.encode(
+                batch,
+                batch_size=len(batch),
+                convert_to_numpy=True,
+                normalize_embeddings=normalize,
+                show_progress_bar=False,
+            )
+        finally:
+            state.lock.release()
         chunks.append(np.asarray(rows, dtype=np.float32))
 
         if progress is not None:
