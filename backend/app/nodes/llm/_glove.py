@@ -62,6 +62,7 @@ import gzip
 import logging
 import os
 import threading
+import time
 from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -102,6 +103,18 @@ PROGRESS_TEXT = "Converting GloVe text to npz (one-time)"
 #: not-yet-converted table at the same moment. Without this they would both
 #: parse it and both write the scratch file.
 _CONVERT_LOCK = threading.Lock()
+
+#: Tries at the ``os.replace`` that puts a converted table in place, and the
+#: pause between them. On Windows the replace is refused, with
+#: ``PermissionError``, while any other handle has the old npz open: CPython's
+#: ``open()`` does not request ``FILE_SHARE_DELETE``, and neither do most
+#: programs that read files. CodefyUI itself practically never holds the
+#: table then (it is replaced only when stale, and read only once current),
+#: but an antivirus scanner, an indexer or a backup tool can, and lets go
+#: within a moment. A second of retries is cheap next to a conversion that
+#: took several; a file that stays locked still fails the conversion.
+_REPLACE_ATTEMPTS = 5
+_REPLACE_PAUSE_S = 0.25
 
 
 def glove_source_path() -> Path | None:
@@ -261,8 +274,10 @@ def _save_npz(npz_path: Path, words: list[str], rows: list[np.ndarray]) -> None:
     ``cdui packs install`` in a terminal are two interpreters that can convert
     the same download at the same moment, and one shared scratch name would
     let them interleave into a corrupt zip. Each writes its own complete file
-    and ``os.replace`` -- atomic on POSIX and on Windows alike -- makes
-    whichever finishes last the one readers see.
+    and ``os.replace`` makes whichever finishes last the one readers see. The
+    replace is atomic on POSIX and on Windows, but Windows refuses it outright
+    while another handle has the old npz open, so it is retried for a moment
+    first (``_REPLACE_ATTEMPTS``).
 
     ``np.savez`` is handed an open FILE, not the path: given a name that does
     not end in ``.npz`` it helpfully appends one, and the scratch file would
@@ -281,7 +296,14 @@ def _save_npz(npz_path: Path, words: list[str], rows: list[np.ndarray]) -> None:
             )
             handle.flush()
             os.fsync(handle.fileno())
-        os.replace(part_path, npz_path)
+        for attempt in range(1, _REPLACE_ATTEMPTS + 1):
+            try:
+                os.replace(part_path, npz_path)
+                break
+            except PermissionError:
+                if attempt == _REPLACE_ATTEMPTS:
+                    raise
+                time.sleep(_REPLACE_PAUSE_S)
     except BaseException:
         # Including KeyboardInterrupt and a cancelled install: whatever went
         # wrong, a half-written scratch file must not survive it.

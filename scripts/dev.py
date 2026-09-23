@@ -344,6 +344,45 @@ def _has_console_window() -> bool:
         return True
 
 
+#: What Windows reports for a process that Ctrl+C ended (STATUS_CONTROL_C_EXIT).
+#: `_reexec_exit_code` turns it into 130, the code the help text documents.
+_CTRL_C_EXIT_WINDOWS = 0xC000013A
+
+
+def _reexec_exit_code(code: int) -> int:
+    """The Windows child's exit code, in the form `_reexec` passes to `sys.exit`.
+
+    Ctrl+C's own status becomes 130. Any other status above 0x7FFFFFFF --
+    an NTSTATUS such as 0xC0000005, an access violation -- is passed as the
+    same 32 bits read as a negative number: `sys.exit` on Windows squeezes
+    its argument into a 32-bit signed C long, and 3221225477 overflows it,
+    so the launcher exited 0xFFFFFFFF and hid what the child died of.
+    """
+    if code == _CTRL_C_EXIT_WINDOWS:
+        return EXIT_INTERRUPTED
+    return code - (1 << 32) if code > 0x7FFFFFFF else code
+
+
+def _reexec_wait(child) -> int:
+    """Wait for `_reexec`'s Windows child, through Ctrl+C. Returns its exit code.
+
+    Ctrl+C at the console reaches both processes, and the child decides what
+    it means: `cdui run` stops following and exits 130, a server shuts down.
+    This process only waits for that answer. Its own KeyboardInterrupt
+    arrives once the child has exited (CPython cannot interrupt the wait on
+    Windows); left to propagate, it printed a traceback under the child's
+    clean message and ended the launcher with 0xC000013A instead of the
+    child's code (#488). A child that Ctrl+C ended outright reports that same
+    status, and it becomes 130 (`_reexec_exit_code`).
+    """
+    while True:
+        try:
+            code = child.wait()
+        except KeyboardInterrupt:
+            continue
+        return _reexec_exit_code(code)
+
+
 def _reexec(executable: str, argv: list) -> None:
     """Replace the current process with ``executable argv...`` (cross-platform).
 
@@ -377,7 +416,8 @@ def _reexec(executable: str, argv: list) -> None:
                            "stderr": sys.stderr}
         if not _has_console_window():
             forwarded["creationflags"] = subprocess.CREATE_NO_WINDOW
-        sys.exit(subprocess.run([executable, *argv], **forwarded).returncode)
+        child = subprocess.Popen([executable, *argv], **forwarded)
+        sys.exit(_reexec_wait(child))
     os.execv(executable, [executable, *argv])
 
 

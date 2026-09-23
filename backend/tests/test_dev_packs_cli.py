@@ -511,6 +511,38 @@ def test_cli_remove_calls_flow_and_prints_pip_hint(probed, monkeypatch, capsys):
     assert sys.executable in out
 
 
+@pytest.mark.parametrize(
+    ("python", "shown"),
+    [
+        (r"C:\Users\Ada Lovelace\CodefyUI\backend\.venv\Scripts\python.exe",
+         r'"C:\Users\Ada Lovelace\CodefyUI\backend\.venv\Scripts\python.exe"'),
+        (r"D:\CodefyUI\backend\.venv\Scripts\python.exe",
+         r'"D:\CodefyUI\backend\.venv\Scripts\python.exe"'),
+        ("/home/ada/CodefyUI/backend/.venv/bin/python",
+         "/home/ada/CodefyUI/backend/.venv/bin/python"),
+        ("/home/ada lovelace/CodefyUI/backend/.venv/bin/python",
+         '"/home/ada lovelace/CodefyUI/backend/.venv/bin/python"'),
+    ],
+    ids=["space", "backslashes", "posix", "posix-space"],
+)
+def test_the_uninstall_line_quotes_the_interpreter_so_it_pastes_into_any_shell(
+        probed, monkeypatch, capsys, python, shown):
+    """The line is pasted into whatever shell the user has open. A space in
+    the path (the default install sits in the user's folder, and a user name
+    can have one) splits an unquoted path in every shell, and Git Bash strips
+    the backslashes of an unquoted Windows path. The plugin uninstall line
+    already follows this rule; this one is built by the same helper, so the
+    two lines are never quoted two ways (#503)."""
+    from app.core.packs import flows
+
+    monkeypatch.setattr(flows, "remove_item", lambda pack, item_id: True)
+    monkeypatch.setattr(sys, "executable", python)
+
+    assert packs.main(["remove", "sentence-embeddings", "all-MiniLM-L6-v2"]) == 0
+    assert (f"      uv pip uninstall --python {shown} sentence-transformers"
+            in capsys.readouterr().out.splitlines())
+
+
 def test_cli_remove_says_so_when_the_bytes_are_still_there(
         probed, monkeypatch, capsys):
     from app.core.packs import flows
