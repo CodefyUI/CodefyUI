@@ -12,14 +12,17 @@ import {
 import { useNodeDefStore } from '../store/nodeDefStore';
 import { useToastStore } from '../store/toastStore';
 import type { ToastType } from '../store/toastStore';
+import { useUIStore } from '../store/uiStore';
 import { apiFetch } from '../api/_auth';
 import {
   getRun, getRunMetrics, listRuns,
   type RunInfo, type RunListPage, type RunMetrics, type RunStatus,
 } from '../api/rest';
 import type { NodeDefinition, WorkspaceSource } from '../types';
+import { layoutAllTargetIds, layoutFitBounds, layoutTargetsChanged } from '../utils/autoLayout';
 import { resolveUnboundDocument } from '../utils/openExample';
 import { subgraphViewPath } from '../utils/subgraph';
+import { forgetViewport } from '../utils/viewportMemory';
 import { MAX_WORKSPACE_GRAPH_BYTES, MAX_WORKSPACE_TABS } from '../utils/workspaceLimits';
 import { applyGraphOps, type ApplyOutcome, type GraphOp, type OpResult } from './ops';
 import { registerNodeRenderer, type PluginNodeRenderer } from './nodeRenderers';
@@ -422,8 +425,44 @@ function commitToTab(
     dirtyIds: outcome.dirtyIds,
     origin: { pluginId },
   });
+  if (outcome.results.some((r) => r.ok && request.operations[r.index]?.op === 'auto_layout')) {
+    fitViewToLayout(tabId, tab.nodes, outcome.nodes);
+  }
   const after = useTabStore.getState().getTab(tabId)!;
   return { ...applied, revision: after.revision, committed: true };
+}
+
+/**
+ * After a committed `auto_layout`, move the view the way the toolbar's Auto
+ * Layout does (#401 item 3). A plugin has no viewport call of its own, so a
+ * graph it laid out off screen used to leave the user looking at empty canvas.
+ *
+ * Only when a node the layout arranges was added, removed or moved. A batch
+ * that sets a param and ends in `auto_layout`, on a graph already laid out,
+ * leaves every node where it was, and a fit would pull a user who had zoomed
+ * in back out for nothing.
+ *
+ * Only the tab on screen gets a fit request. The request names no tab and the
+ * canvas on screen consumes it, so a fit asked for a background tab would move
+ * the ACTIVE view to that tab's coordinates. A background tab forgets its
+ * remembered pan and zoom instead, and the next switch to it fits its whole
+ * graph rather than restoring a view aimed at where the nodes used to be.
+ *
+ * Unlike the toolbar, no toast about unbound notes: Graph Copilot ends every
+ * structural batch with `auto_layout`, so the warning would answer each batch.
+ */
+function fitViewToLayout(
+  tabId: string,
+  before: ApplyOutcome['nodes'],
+  after: ApplyOutcome['nodes'],
+): void {
+  if (!layoutTargetsChanged(before, after)) return;
+  if (tabId !== useTabStore.getState().activeTabId) {
+    forgetViewport(tabId);
+    return;
+  }
+  const bounds = layoutFitBounds(after, layoutAllTargetIds(after));
+  if (bounds) useUIStore.getState().requestLayoutFit(bounds);
 }
 
 /** The tab-addressed write path, as `api.workspace.applyOperations` exposes it. */

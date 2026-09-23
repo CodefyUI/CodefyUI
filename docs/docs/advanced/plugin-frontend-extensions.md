@@ -211,7 +211,7 @@ All thirteen operation types share the property `op` (the discriminant string). 
 | `"remove_node"` | `node_id: string` | Remove a node and all edges connected to it. |
 | `"remove_edge"` | `source: string`, `target: string`, `source_handle?: string`, `target_handle?: string` | Disconnect matching edge(s) between two nodes. |
 | `"clear_graph"` | *(none)* | Remove all nodes and edges. |
-| `"auto_layout"` | *(none)* | Re-run the automatic graph layout. |
+| `"auto_layout"` | *(none)* | Lay out every node except notes, the same way **Layout All** in the toolbar's **Auto Layout** menu does. A note bound to a node moves with it; an unbound note stays where it is. When the batch adds, removes or moves a node other than a note, the view follows: on the tab the user is looking at, it is fitted to the laid-out nodes and the notes bound to them; a tab in the background forgets its pan and zoom instead, so the next switch to it fits its whole graph, unbound notes included. |
 | `"move_node"` | `node_id: string`, `position: { x: number; y: number }` | **apiVersion 5.** Put one node at an exact position. Any note bound to that node moves with it, exactly as it does when the user drags the node. |
 | `"set_segment"` | `segment_id?: string`, `head_node_id: string`, `tail_node_id: string` | **apiVersion 5.** Create or replace a segment overlay — the bubble the editor draws around every node on a data path from head to tail. Omit `segment_id` to create; pass an existing one to move it. The result carries the id either way, in `segment_id`. Fails when no data-edge path joins the two, and when either end is a note. |
 | `"remove_segment"` | `segment_id: string` | **apiVersion 5.** Remove a segment overlay. |

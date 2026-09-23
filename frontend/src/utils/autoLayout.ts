@@ -320,7 +320,7 @@ function pickTargetIds(
   const computationalNodes = nodes.filter((n) => !isNoteNode(n));
 
   if (mode === 'all') {
-    return new Set(computationalNodes.map((n) => n.id));
+    return layoutAllTargetIds(nodes);
   }
   if (mode === 'selected') {
     // For selected mode, also exclude notes
@@ -376,6 +376,55 @@ export function nodesBoundingBox(
   }
   if (!Number.isFinite(minX)) return null;
   return { x: minX, y: minY, width: maxX - minX, height: maxY - minY };
+}
+
+/**
+ * The box to fit the view to after a layout: the nodes it targeted plus every
+ * note bound to one of them. A bound note follows its node during layout, so
+ * leaving it out could crop it off screen; an unbound note stays where it was,
+ * and a box reaching for it could shrink the graph to a speck. Null when there
+ * is no box with an area to fit.
+ *
+ * The plugin `auto_layout` op fits with this. `applyLayout` in `tabStore.ts`
+ * builds the same box inline for the toolbar's Auto Layout; keep the two alike.
+ */
+export function layoutFitBounds(
+  nodes: Node[],
+  targetIds: ReadonlySet<string>,
+): { x: number; y: number; width: number; height: number } | null {
+  const fitted = nodes.filter((n) => {
+    if (targetIds.has(n.id)) return true;
+    const boundTo = n.data.boundToNodeId;
+    return isNoteNode(n) && typeof boundTo === 'string' && targetIds.has(boundTo);
+  });
+  const bounds = nodesBoundingBox(fitted);
+  return bounds && bounds.width > 0 && bounds.height > 0 ? bounds : null;
+}
+
+/**
+ * The ids a Layout All arranges: every node that is not a note. The one
+ * definition: `pickTargetIds` answers mode `'all'` with it, and the plugin
+ * `auto_layout` op, which is a Layout All, fits the view to the same set.
+ */
+export function layoutAllTargetIds(nodes: Node[]): Set<string> {
+  return new Set(nodes.filter((n) => !isNoteNode(n)).map((n) => n.id));
+}
+
+/**
+ * True when a node a Layout All arranges was added, removed or moved between
+ * `before` and `after`. A layout that left all of them where they were gives
+ * the view no reason to move.
+ */
+export function layoutTargetsChanged(before: Node[], after: Node[]): boolean {
+  const was = layoutAllTargetIds(before);
+  const now = layoutAllTargetIds(after);
+  if (was.size !== now.size) return true;
+  const position = new Map(before.map((n) => [n.id, n.position] as const));
+  return after.some((n) => {
+    if (!now.has(n.id)) return false;
+    const at = position.get(n.id);
+    return !was.has(n.id) || at!.x !== n.position.x || at!.y !== n.position.y;
+  });
 }
 
 /**
