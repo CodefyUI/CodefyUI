@@ -288,6 +288,203 @@ describe('apiFetch after the server rotates its token', () => {
   });
 });
 
+/**
+ * Plugins reach `apiFetch` through `api.http.fetch` with any URL they like, so
+ * the token stops at the page's own origin here, where it is attached (#482).
+ * This keeps a well-meaning plugin from sending the token to another server
+ * by accident; plugin code still runs in the editor page and can reach the
+ * token another way. The jsdom page is http://localhost:3000.
+ */
+describe('apiFetch sends the token only to its own origin', () => {
+  it('refuses a POST to another origin before bootstrapping, and sends nothing', async () => {
+    // No token cached, so the refusal has to come before the bootstrap GET too.
+    const fetchMock = vi.fn().mockResolvedValue(okResponse({ token: 'tok' }));
+    g.fetch = fetchMock as unknown as typeof fetch;
+
+    const sent = apiFetch('https://api.example.com/v1/chat', { method: 'POST', body: '{}' });
+
+    await expect(sent).rejects.toThrow(/api\.example\.com/);
+    // What `fetch` itself rejects with, so a caller's existing catch still fits.
+    await expect(sent).rejects.toBeInstanceOf(TypeError);
+    // And it says what to use instead -- a path for this server, which is the
+    // fix when the plugin only spelled this server another way (`localhost`
+    // for `127.0.0.1`), and `window.fetch` for a server that really is another.
+    await expect(sent).rejects.toThrow(
+      /Use a path such as \/api\/\.\.\. for this server and window\.fetch for other servers\./,
+    );
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it.each(['PUT', 'PATCH', 'DELETE'])('refuses a %s to another origin', async (method) => {
+    _setSessionTokenForTesting('tok');
+    const fetchMock = vi.fn().mockResolvedValue(okResponse({}));
+    g.fetch = fetchMock as unknown as typeof fetch;
+
+    await expect(apiFetch('https://api.example.com/v1/items/1', { method }))
+      .rejects.toThrow(/api\.example\.com/);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('refuses a protocol-relative POST, which leaves the page origin', async () => {
+    _setSessionTokenForTesting('tok');
+    const fetchMock = vi.fn().mockResolvedValue(okResponse({}));
+    g.fetch = fetchMock as unknown as typeof fetch;
+
+    await expect(apiFetch('//api.example.com/x', { method: 'POST' }))
+      .rejects.toThrow(/api\.example\.com/);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it.skipIf(typeof Request === 'undefined')(
+    'refuses a Request aimed at another origin, which untyped plugin code can pass',
+    async () => {
+      _setSessionTokenForTesting('tok');
+      const fetchMock = vi.fn().mockResolvedValue(okResponse({}));
+      g.fetch = fetchMock as unknown as typeof fetch;
+
+      const request = new Request('https://api.example.com/v1/chat');
+      await expect(apiFetch(request as never, { method: 'POST' }))
+        .rejects.toThrow(/api\.example\.com/);
+      expect(fetchMock).not.toHaveBeenCalled();
+    },
+  );
+
+  it('sends the URL it checked, even if a URL object is changed while the token loads', async () => {
+    // The check runs before the token bootstrap and the send after it. A URL
+    // object read twice would let a host changed in between receive the token.
+    let resolveBootstrap!: (r: Response) => void;
+    const fetchMock = vi.fn()
+      .mockReturnValueOnce(new Promise<Response>((resolve) => { resolveBootstrap = resolve; }))
+      .mockResolvedValueOnce(okResponse({}));
+    g.fetch = fetchMock as unknown as typeof fetch;
+    const url = new URL('/api/thing', window.location.origin);
+
+    const sent = apiFetch(url as never, { method: 'POST' });
+    // Checked, and the bootstrap GET is out: the only call so far.
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    url.host = 'api.example.com';
+    resolveBootstrap(okResponse({ token: 'tok' }));
+    await sent;
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    const [target, init] = fetchMock.mock.calls[1];
+    expect(String(target)).toBe(`${window.location.origin}/api/thing`);
+    expect(new Headers(init.headers).get('X-CodefyUI-Token')).toBe('tok');
+  });
+
+  // A `Request` carries its own method, headers and body, and `fetch` uses
+  // them when `init` names none. Reading the method from `init` alone took a
+  // Request's POST for a GET: sent without the token to this server (a 403),
+  // and sent unrefused to any other.
+  it.skipIf(typeof Request === 'undefined')(
+    'sends the token with a same-origin Request that carries its own POST, keeping its headers',
+    async () => {
+      _setSessionTokenForTesting('tok');
+      const fetchMock = vi.fn().mockResolvedValue(okResponse({}));
+      g.fetch = fetchMock as unknown as typeof fetch;
+      const request = new Request(`${window.location.origin}/api/thing`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}',
+      });
+
+      await apiFetch(request as never);
+
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      const [target, init] = fetchMock.mock.calls[0];
+      expect(target).toBe(request);
+      const headers = new Headers(init.headers);
+      expect(headers.get('X-CodefyUI-Token')).toBe('tok');
+      // `init.headers` replaces a Request's own, so they have to be carried over.
+      expect(headers.get('Content-Type')).toBe('application/json');
+    },
+  );
+
+  it.skipIf(typeof Request === 'undefined')(
+    'refuses a Request that carries its own POST to another origin',
+    async () => {
+      _setSessionTokenForTesting('tok');
+      const fetchMock = vi.fn().mockResolvedValue(okResponse({}));
+      g.fetch = fetchMock as unknown as typeof fetch;
+      const request = new Request('https://api.example.com/v1/chat', { method: 'POST' });
+
+      await expect(apiFetch(request as never)).rejects.toThrow(/POST to https:\/\/api\.example\.com/);
+      expect(fetchMock).not.toHaveBeenCalled();
+    },
+  );
+
+  it.skipIf(typeof Request === 'undefined')(
+    'keeps the 403 when the first send used up a Request body, and drops the token',
+    async () => {
+      // Sending a Request uses up its body. A replay after the 403 would reject
+      // with a TypeError, which is what this fetch stand-in does, like `fetch`.
+      // The 403 may still mean the server restarted, so the token is dropped
+      // and the next call bootstraps again.
+      _setSessionTokenForTesting('stale');
+      const fetchMock = vi.fn(async (input: RequestInfo | URL, _init?: RequestInit) => {
+        if (!(input instanceof Request)) return okResponse({ token: 'fresh' });
+        if (input.bodyUsed) throw new TypeError('body used already');
+        await input.text();
+        return errorResponse(403, 'Forbidden');
+      });
+      g.fetch = fetchMock as unknown as typeof fetch;
+      const request = new Request(`${window.location.origin}/api/thing`, {
+        method: 'POST', body: '{}',
+      });
+
+      const res = await apiFetch(request as never);
+
+      expect(res.status).toBe(403);
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      // It went out as the POST it is, with the token, not as a bare GET.
+      expect(new Headers(fetchMock.mock.calls[0][1]?.headers).get('X-CodefyUI-Token'))
+        .toBe('stale');
+
+      await apiFetch('/api/thing', { method: 'POST' });
+
+      expect(fetchMock).toHaveBeenCalledTimes(3);
+      expect(fetchMock.mock.calls[1][0]).toBe('/api/auth/bootstrap');
+      expect(new Headers(fetchMock.mock.calls[2][1]?.headers).get('X-CodefyUI-Token'))
+        .toBe('fresh');
+    },
+  );
+
+  it('still sends the token with a POST to its own origin written out in full', async () => {
+    _setSessionTokenForTesting('tok');
+    const fetchMock = vi.fn().mockResolvedValue(okResponse({}));
+    g.fetch = fetchMock as unknown as typeof fetch;
+
+    await apiFetch(`${window.location.origin}/api/thing`, { method: 'POST' });
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(new Headers(fetchMock.mock.calls[0][1].headers).get('X-CodefyUI-Token'))
+      .toBe('tok');
+  });
+
+  it('still sends the token with a POST to a relative path with no leading slash', async () => {
+    _setSessionTokenForTesting('tok');
+    const fetchMock = vi.fn().mockResolvedValue(okResponse({}));
+    g.fetch = fetchMock as unknown as typeof fetch;
+
+    await apiFetch('api/thing', { method: 'POST' });
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(new Headers(fetchMock.mock.calls[0][1].headers).get('X-CodefyUI-Token'))
+      .toBe('tok');
+  });
+
+  it('lets a GET go to another origin, without the token', async () => {
+    _setSessionTokenForTesting('tok');
+    const fetchMock = vi.fn().mockResolvedValue(okResponse({}));
+    g.fetch = fetchMock as unknown as typeof fetch;
+
+    await apiFetch('https://api.example.com/x');
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe('https://api.example.com/x');
+    expect(new Headers(init?.headers).has('X-CodefyUI-Token')).toBe(false);
+  });
+});
+
 describe('invalidateSessionToken', () => {
   it('makes the next call re-read the bootstrap endpoint', async () => {
     _setSessionTokenForTesting('old');
@@ -297,6 +494,65 @@ describe('invalidateSessionToken', () => {
     invalidateSessionToken();
     await expect(getSessionToken()).resolves.toBe('new');
     expect(fetchMock).toHaveBeenCalledWith('/api/auth/bootstrap');
+  });
+});
+
+/**
+ * A bootstrap that failed, or that was dropped, is never handed out again.
+ * The bootstrap GET fails outright while the server restarts; a failure kept
+ * in the in-flight slot answered every later mutating request with the same
+ * error until the page was reloaded.
+ */
+describe('a failed or dropped bootstrap is not kept', () => {
+  it('a POST after a bootstrap that failed outright bootstraps again, with the new token', async () => {
+    const fetchMock = vi.fn()
+      .mockRejectedValueOnce(new TypeError('Failed to fetch'))
+      .mockResolvedValueOnce(okResponse({ token: 'fresh' }))
+      .mockResolvedValueOnce(okResponse({ done: true }));
+    g.fetch = fetchMock as unknown as typeof fetch;
+
+    await expect(apiFetch('/api/thing', { method: 'POST' })).rejects.toThrow(/Failed to fetch/);
+    const res = await apiFetch('/api/thing', { method: 'POST' });
+
+    expect(res.ok).toBe(true);
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    expect(fetchMock.mock.calls[1][0]).toBe('/api/auth/bootstrap');
+    expect(new Headers(fetchMock.mock.calls[2][1].headers).get('X-CodefyUI-Token'))
+      .toBe('fresh');
+  });
+
+  it('a bootstrap answer that cannot be read is not kept either', async () => {
+    const unreadable = {
+      ok: true, status: 200, statusText: 'OK',
+      json: async () => { throw new SyntaxError('Unexpected token < in JSON'); },
+    } as unknown as Response;
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(unreadable)
+      .mockResolvedValueOnce(okResponse({ token: 'fresh' }));
+    g.fetch = fetchMock as unknown as typeof fetch;
+
+    await expect(getSessionToken()).rejects.toThrow(/Unexpected token/);
+    await expect(getSessionToken()).resolves.toBe('fresh');
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('a bootstrap dropped by invalidateSessionToken does not fill the cache when it lands', async () => {
+    // It was sent before the restart was noticed, so it reads the old token.
+    // Its own caller still gets that answer; the cache must not.
+    let resolveStale!: (r: Response) => void;
+    const fetchMock = vi.fn()
+      .mockReturnValueOnce(new Promise<Response>((resolve) => { resolveStale = resolve; }))
+      .mockResolvedValueOnce(okResponse({ token: 'new' }));
+    g.fetch = fetchMock as unknown as typeof fetch;
+
+    const stale = getSessionToken();
+    invalidateSessionToken();
+    await expect(getSessionToken()).resolves.toBe('new');
+    resolveStale(okResponse({ token: 'old' }));
+    await expect(stale).resolves.toBe('old');
+
+    await expect(getSessionToken()).resolves.toBe('new');
+    expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 });
 

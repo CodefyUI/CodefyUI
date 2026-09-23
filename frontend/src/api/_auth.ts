@@ -27,32 +27,48 @@ let inflight: Promise<string> | null = null;
  * Throws if the bootstrap endpoint is unreachable — the rest of the app
  * cannot make mutating requests until this resolves. Callers should `await`
  * this once at app startup; subsequent calls return the cached value.
+ *
+ * A failed attempt is never kept: the GET fails outright while the server
+ * restarts, and a rejection left in `inflight` would answer every later call,
+ * so every mutating request, until the page was reloaded. The next call tries
+ * again instead.
  */
 export async function getSessionToken(): Promise<string> {
   if (cachedToken !== null) return cachedToken;
   if (inflight !== null) return inflight;
 
-  inflight = (async () => {
+  const attempt: Promise<string> = (async () => {
     const res = await fetch(BOOTSTRAP_URL);
     if (!res.ok) {
-      inflight = null;
       throw new Error(
         `Failed to bootstrap auth token: ${res.status} ${res.statusText}`,
       );
     }
     const body = await res.json();
     if (typeof body?.token !== 'string') {
-      inflight = null;
       throw new Error('Bootstrap response missing token');
     }
-    cachedToken = body.token;
     return body.token as string;
-  })();
-  return inflight;
+  })().then(
+    (token) => {
+      // Only the attempt still in the slot fills the cache. One dropped by
+      // `invalidateSessionToken` while it ran read the token from before a
+      // restart: it answers its own caller, and nobody after.
+      if (inflight === attempt) cachedToken = token;
+      return token;
+    },
+    (error: unknown) => {
+      if (inflight === attempt) inflight = null;
+      throw error;
+    },
+  );
+  inflight = attempt;
+  return attempt;
 }
 
 /**
- * Drop the cached token so the next call re-reads /api/auth/bootstrap.
+ * Drop the cached token, and any bootstrap still in flight, so the next call
+ * re-reads /api/auth/bootstrap.
  *
  * The backend mints a new token every time its process starts (see
  * `auth.py`), and a browser tab outlives a restart: the Package Center
@@ -80,7 +96,14 @@ export function _setSessionTokenForTesting(token: string | null): void {
 /**
  * Drop-in replacement for ``fetch(url, init)`` that auto-attaches the session
  * token header on mutating requests. GET / HEAD / OPTIONS are passed through
- * unchanged.
+ * unchanged, to any origin.
+ *
+ * The token is only ever sent to this page's own origin. A POST, PUT, PATCH or
+ * DELETE aimed anywhere else rejects with a `TypeError` before the token is
+ * read, and nothing is sent: `api.http.fetch` hands plugins this function with
+ * any URL they like (#482), while every host call site passes a relative path.
+ * That keeps a well-meaning plugin from sending the token to another server by
+ * accident. Plugin code still runs in this page, with the token in reach.
  *
  * A 403 gets one retry with a freshly bootstrapped token, because the token
  * this tab cached is refused verbatim after the server restarts — see
@@ -93,15 +116,30 @@ export async function apiFetch(
   url: string,
   init: RequestInit = {},
 ): Promise<Response> {
-  const method = (init.method ?? 'GET').toUpperCase();
+  // Typed as a string, but plugin JavaScript is untyped and can pass a
+  // `Request`, whose own method, headers and body `fetch` uses when `init`
+  // names none -- so its POST is a POST here too.
+  const request = requestOf(url);
+  const method = (init.method ?? request?.method ?? 'GET').toUpperCase();
   if (!MUTATING_METHODS.has(method)) {
     return fetch(url, init);
   }
+  // Every send below, the retry included, uses what was checked.
+  const target = sameOriginTarget(url, request, method);
+  // Headers in `init` replace a Request's own, so the token joins whichever
+  // set `fetch` would have sent.
+  const headers = init.headers ?? request?.headers;
   const token = await getSessionToken();
-  const res = await fetch(url, { ...init, headers: withToken(init, token) });
-  if (res.status !== 403 || !isReplayable(init.body)) return res;
+  const res = await fetch(target, { ...init, headers: withToken(headers, token) });
+  if (res.status !== 403) return res;
 
+  // Dropped on every 403, even one that cannot be replayed below: the token
+  // may be one the server no longer knows, and keeping it would fail the next
+  // POST as well. When the 403 was a real refusal, this costs one bootstrap GET.
   invalidateSessionToken();
+  // A Request's body is used up by the first send, and a replay would reject
+  // with a TypeError instead of handing back the 403.
+  if (!isReplayable(init.body) || request?.bodyUsed) return res;
   let fresh: string;
   try {
     fresh = await getSessionToken();
@@ -111,14 +149,57 @@ export async function apiFetch(
     return res;
   }
   if (fresh === token) return res;
-  return fetch(url, { ...init, headers: withToken(init, fresh) });
+  return fetch(target, { ...init, headers: withToken(headers, fresh) });
 }
 
-/** *init*'s headers plus the session token. */
-function withToken(init: RequestInit, token: string): Headers {
-  const headers = new Headers(init.headers);
-  headers.set(TOKEN_HEADER, token);
-  return headers;
+/** *url* as a `Request`, when untyped plugin code passed one. */
+function requestOf(url: unknown): Request | null {
+  return typeof Request !== 'undefined' && url instanceof Request ? url : null;
+}
+
+/**
+ * What to send for *url*, once it is known to resolve to this page's own
+ * origin; a `TypeError` for any other origin.
+ *
+ * The answer is what was checked -- the URL as a string, or a `Request`, whose
+ * URL is fixed when it is built -- because the send comes after the token
+ * bootstrap: a `URL` object read a second time by `fetch` could by then point
+ * at a host the caller changed in the meantime.
+ *
+ * Resolved the way `fetch` resolves it, against the document's base URL, so
+ * `/api/x` and `api/x` are this origin and a protocol-relative `//host/x` is
+ * not. Refused rather than sent without the token: a plugin that spelled this
+ * server another way (`localhost` for `127.0.0.1`) would otherwise get a 403
+ * that says nothing about why, which is also why the message points at a path
+ * first. A `TypeError` because that is what `fetch` itself rejects with, so a
+ * caller's existing `catch` still fits.
+ */
+function sameOriginTarget(url: unknown, request: Request | null, method: string): RequestInfo {
+  // A `Request` is sent to its own URL; anything else, a `URL` object
+  // included, is checked and sent as its string form.
+  const target = request ? request.url : String(url);
+  let origin: string | null = null;
+  try {
+    origin = new URL(target, document.baseURI).origin;
+  } catch {
+    // Not a URL `fetch` could send either; refused below like any other.
+  }
+  const own = window.location.origin;
+  if (origin !== own) {
+    throw new TypeError(
+      `${method} to ${origin ?? target} would carry the CodefyUI session token, `
+      + `which is only sent to ${own}. Use a path such as /api/... for this server `
+      + 'and window.fetch for other servers.',
+    );
+  }
+  return request ?? target;
+}
+
+/** *headers* plus the session token. */
+function withToken(headers: HeadersInit | undefined, token: string): Headers {
+  const merged = new Headers(headers);
+  merged.set(TOKEN_HEADER, token);
+  return merged;
 }
 
 /**

@@ -660,10 +660,10 @@ export interface CodefyUIPluginAPI {
   /**
    * Read-only view of run history — requires apiVersion >= 3.
    *
-   * The host performs the requests, with editor authentication attached; the
-   * session token is never handed to plugin code. Submitting and cancelling
-   * runs are deliberately absent: a plugin should not be able to start work
-   * on the user's machine behind a UI the user did not open.
+   * The host performs the requests and attaches the authentication itself, so
+   * nothing on this facade takes or returns the session token. Submitting and
+   * cancelling runs are deliberately absent: a plugin should not be able to
+   * start work on the user's machine behind a UI the user did not open.
    */
   runs: {
     list(opts?: RunListOptions): Promise<RunListPage>;
@@ -672,7 +672,13 @@ export interface CodefyUIPluginAPI {
     metrics(id: string, name?: string): Promise<RunMetrics>;
   };
   http: {
-    /** Browser `fetch`, with the CodefyUI session token attached. */
+    /**
+     * Browser `fetch`, for the CodefyUI server: address it by a path such as
+     * `/api/llm/chat`. A POST, PUT, PATCH or DELETE to the page's own origin
+     * carries the session token; the same methods to any other origin are
+     * refused (the promise rejects and nothing is sent), so use `window.fetch`
+     * for other servers. GET, HEAD and OPTIONS go out unchanged.
+     */
     fetch(url: string, init?: RequestInit): Promise<Response>;
   };
   storage: {

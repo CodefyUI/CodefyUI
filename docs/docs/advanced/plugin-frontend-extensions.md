@@ -618,7 +618,7 @@ It is deliberately **read-only in this version**. There is no `submit` and no `c
 
 | Method | Signature | Description |
 |--------|-----------|-------------|
-| `fetch` | `(path: string, init?: RequestInit) => Promise<Response>` | The browser `fetch` with the same arguments. On POST, PUT, PATCH and DELETE it adds the session token header `X-CodefyUI-Token` (GET, HEAD and OPTIONS go out unchanged); after a `403` it reads the token again and retries once if the server has restarted since. The URL is not checked: pass only paths on the CodefyUI server, such as `/api/llm/chat`, because a POST, PUT, PATCH or DELETE to another origin sends the session token there. Use this for all calls to the CodefyUI backend. |
+| `fetch` | `(path: string, init?: RequestInit) => Promise<Response>` | The browser `fetch` with the same arguments. On POST, PUT, PATCH and DELETE it adds the session token header `X-CodefyUI-Token` (GET, HEAD and OPTIONS go out unchanged); after a `403` it reads the token again and retries once if the server has restarted since. The token goes only to the editor's own origin: a POST, PUT, PATCH or DELETE to any other origin is refused (the promise rejects with a `TypeError` and nothing is sent), so call `window.fetch` for other servers. Use this for all calls to the CodefyUI backend, addressed by a path such as `/api/llm/chat`. |
 
 ### `api.storage` — namespaced key-value store
 
