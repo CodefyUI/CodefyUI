@@ -12,6 +12,7 @@
     "preview": "vite preview",
     "test": "vitest run",
     "test:watch": "vitest",
+    "test:act-baseline": "node scripts/act-warnings-update.mjs",
     "contrast": "node scripts/check-contrast.mjs"
   },
   "dependencies": {

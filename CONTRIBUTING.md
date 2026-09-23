@@ -239,6 +239,8 @@ Two notes on the frontend commands:
 - **`tsc -b`, not `tsc --noEmit`.** `frontend/tsconfig.json` is a solution-style config with `"files": []` and project references, so `tsc --noEmit` against it checks **zero files** and passes no matter what is broken. Build mode follows the references and actually type-checks `src/`.
 - **`pnpm build` includes the contrast gate.** The build script is `node scripts/check-contrast.mjs && tsc -b && vite build` — the first step re-derives every WCAG contrast relationship claimed by `frontend/src/styles/tokens.css` and fails the build if a token pair drops below threshold. Run it alone with `pnpm contrast` when you are editing colours.
 
+**`pnpm test` also fails when a test file prints more act() warnings than before.** React prints "An update to X inside a test was not wrapped in act(...)" when a test lets a state update run outside `act()`. Nothing failed on these warnings, and the reporter vitest picks when an AI coding agent runs it does not print them, so they grew unseen; the baseline started at 1,160 in 39 test files. `frontend/scripts/act-warnings.mjs` counts them per test file, each distinct warning once per test, against `frontend/scripts/act-warnings.baseline.json`; a file it does not list is allowed none. A failure names each test in the file that warns and the components that updated; `pnpm exec vitest run <file> --reporter=verbose` prints the warnings in full. Wrap the update in `act()`, or await what the component does next (`findBy...`, `waitFor`). When a file's count goes down, `pnpm test:act-baseline` writes the lower number; it never raises one.
+
 ### Opt-in checks
 
 Two checks do not run in CI. Run them yourself when they apply:

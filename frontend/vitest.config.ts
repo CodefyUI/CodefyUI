@@ -1,9 +1,12 @@
 import { defineConfig } from 'vitest/config';
 import react from '@vitejs/plugin-react';
 import path from 'path';
+import { actWarningsGate } from './scripts/act-warnings.mjs';
 
 export default defineConfig({
-  plugins: [react()],
+  // actWarningsGate: `vitest run` fails when a test file prints more act()
+  // warnings than scripts/act-warnings.baseline.json allows (#505).
+  plugins: [react(), actWarningsGate()],
   resolve: {
     alias: {
       '@': path.resolve(__dirname, './src'),

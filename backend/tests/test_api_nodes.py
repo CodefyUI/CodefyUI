@@ -1,5 +1,6 @@
 """Tests for the nodes API endpoints."""
 
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -728,7 +729,7 @@ def test_no_builtin_node_describes_itself_in_a_paragraph():
         {name: registry.get(name).DESCRIPTION for name in _builtin_node_names()})
 
 
-def _pack_node_descriptions() -> tuple[dict[str, str | None], set[str]]:
+def _pack_node_descriptions(root: Path | None = None) -> tuple[dict[str, str | None], set[str]]:
     """The DESCRIPTION of every node in this repository's ``plugins/``.
 
     Two things come back. ``{"<pack>:<NODE_NAME>": DESCRIPTION}``, keyed by
@@ -743,8 +744,25 @@ def _pack_node_descriptions() -> tuple[dict[str, str | None], set[str]]:
     that sets ``NODE_NAME`` in its own body, the attribute the registry keys
     on -- an empty one marks a base class, which the registry skips, and so
     does this.
+
+    Read as widely as the loader registers (#505):
+
+    * the whole pack, not only ``nodes/``. The loader imports ``nodes/``, but
+      keeps every node class a module there holds, imported ones included,
+      and a pack is a package, so a class in ``lib/`` reaches the palette
+      through ``from ..lib import X``. Its ``tests/`` and anything vendored
+      are left out;
+    * a ``nodes/`` package's ``__init__.py`` that defines a class makes the
+      pack one with node files: the loader walks it as the module
+      ``nodes.<sub>``;
+    * NODE_NAME and DESCRIPTION are read only from plain assignments of a
+      string literal in the class body itself. A ``+=``, or an assignment
+      under an ``if`` or a ``try`` or into an unpacking, can hand the registry
+      another string than the literal, so any of those makes the value
+      unreadable (None).
     """
     import ast
+    import os
 
     from app.core.plugin_loader import plugins_builtin_root
 
@@ -753,36 +771,196 @@ def _pack_node_descriptions() -> tuple[dict[str, str | None], set[str]]:
             return value.value
         return None
 
-    root = plugins_builtin_root()
+    def assignments(body: list[ast.stmt], direct: bool = True):
+        """Each assignment in a class body, and whether it is a statement of
+        the body itself. A block (if, try, with, for, while, match) runs in
+        the class's scope; a def or a nested class is a scope of its own."""
+        for stmt in body:
+            if isinstance(stmt, (ast.Assign, ast.AugAssign)) or (
+                    isinstance(stmt, ast.AnnAssign) and stmt.value is not None):
+                yield stmt, direct
+            elif not isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                inner = [node for node in ast.iter_child_nodes(stmt) if isinstance(node, ast.stmt)]
+                for part in ast.iter_child_nodes(stmt):
+                    if isinstance(part, (ast.ExceptHandler, ast.match_case)):
+                        inner += part.body
+                yield from assignments(inner, direct=False)
+
+    def fields(cls: ast.ClassDef) -> dict[str, str | None]:
+        """What the class body assigns: a name to its literal, or to None when
+        the value is not a literal or the name is assigned any other way."""
+        values: dict[str, str | None] = {}
+        unreadable: set[str] = set()
+        for stmt, direct in assignments(cls.body):
+            for target in stmt.targets if isinstance(stmt, ast.Assign) else [stmt.target]:
+                if direct and isinstance(target, ast.Name) and not isinstance(stmt, ast.AugAssign):
+                    values[target.id] = literal(stmt.value)
+                else:
+                    unreadable |= {node.id for node in ast.walk(target) if isinstance(node, ast.Name)}
+        values.update(dict.fromkeys(unreadable))
+        return values
+
+    def sources(pack_dir: Path):
+        for directory, subdirectories, files in os.walk(pack_dir):
+            top = Path(directory) == pack_dir
+            subdirectories[:] = sorted(
+                name for name in subdirectories
+                if name not in ("node_modules", "__pycache__") and not name.startswith(".")
+                and not (top and name == "tests"))
+            yield from (Path(directory) / name for name in sorted(files) if name.endswith(".py"))
+
+    root = root or plugins_builtin_root()
     descriptions: dict[str, str | None] = {}
     packs: set[str] = set()
-    # `nodes/` only: it is the one directory of a pack the loader imports.
-    for path in sorted(root.glob("*/nodes/**/*.py")):
-        pack = path.relative_to(root).parts[0]
-        if path.name != "__init__.py":
-            packs.add(pack)
-        # Every class, not only the top-level ones: a node defined under an
-        # `if`, or built by a function and bound to a module name, is still
-        # one the registry picks up.
-        for cls in ast.walk(ast.parse(path.read_bytes(), filename=str(path))):
-            if not isinstance(cls, ast.ClassDef):
-                continue
-            assigned: dict[str, Any] = {}
-            for stmt in cls.body:
-                if isinstance(stmt, ast.Assign):
-                    targets = stmt.targets
-                elif isinstance(stmt, ast.AnnAssign) and stmt.value is not None:
-                    targets = [stmt.target]
-                else:
-                    continue
-                for target in targets:
-                    if isinstance(target, ast.Name):
-                        assigned[target.id] = stmt.value
-            name = literal(assigned.get("NODE_NAME"))
-            if "NODE_NAME" in assigned and name != "":
-                descriptions[f"{pack}:{name or cls.name}"] = literal(
-                    assigned.get("DESCRIPTION"))
+    for pack_dir in sorted(path for path in root.iterdir()
+                           if path.is_dir() and not path.name.startswith((".", "__"))):
+        pack = pack_dir.name
+        for path in sources(pack_dir):
+            # Every class, not only the top-level ones: a node defined under
+            # an `if`, or built by a function and bound to a module name, is
+            # still one the registry picks up.
+            classes = [node for node in ast.walk(ast.parse(path.read_bytes(), filename=str(path)))
+                       if isinstance(node, ast.ClassDef)]
+            if path.relative_to(pack_dir).parts[0] == "nodes" and (path.name != "__init__.py" or classes):
+                packs.add(pack)
+            for cls in classes:
+                assigned = fields(cls)
+                name = assigned.get("NODE_NAME")
+                if "NODE_NAME" in assigned and name != "":
+                    # A name that cannot be read cannot be keyed either: the
+                    # class name stands in, and the node reads as unreadable.
+                    descriptions[f"{pack}:{name or cls.name}"] = (
+                        assigned.get("DESCRIPTION") if name is not None else None)
     return descriptions, packs
+
+
+_SHORT = '"Adds two numbers."'
+_LONG = '"Adds two numbers, then explains at length why a palette row is short."'
+
+
+@pytest.mark.parametrize(("files", "descriptions", "packs"), [
+    pytest.param(
+        {"nodes/add.py": f"""
+            class Add:
+                NODE_NAME = "Add"
+                DESCRIPTION = {_SHORT}
+            """},
+        {"p:Add": "Adds two numbers."}, {"p"},
+        id="a plain literal is read"),
+    pytest.param(
+        {"nodes/add.py": f"""
+            class Add:
+                NODE_NAME = "Add"
+                DESCRIPTION = {_SHORT}
+                DESCRIPTION += " And then a paragraph."
+            """},
+        {"p:Add": None}, {"p"},
+        id="a summary lengthened with += is unreadable"),
+    pytest.param(
+        {"nodes/add.py": f"""
+            class Add:
+                NODE_NAME = "Add"
+                DESCRIPTION = {_SHORT}
+                if True:
+                    DESCRIPTION = {_LONG}
+            """},
+        {"p:Add": None}, {"p"},
+        id="a summary set again under an if is unreadable"),
+    pytest.param(
+        {"nodes/add.py": f"""
+            class Add:
+                NODE_NAME = "Add"
+                DESCRIPTION = {_SHORT}
+                try:
+                    DESCRIPTION = {_LONG}
+                except ImportError:
+                    pass
+            """},
+        {"p:Add": None}, {"p"},
+        id="a summary set again under a try is unreadable"),
+    pytest.param(
+        {"nodes/add.py": f"""
+            class Add:
+                NODE_NAME = "Add"
+                DESCRIPTION = {_SHORT}
+                DESCRIPTION, DETAILS = {_LONG}, ""
+            """},
+        {"p:Add": None}, {"p"},
+        id="a summary set again by unpacking is unreadable"),
+    pytest.param(
+        {"nodes/add.py": f"""
+            class Add:
+                if True:
+                    NODE_NAME = "Add"
+                DESCRIPTION = {_SHORT}
+            """},
+        {"p:Add": None}, {"p"},
+        id="a name set under an if is still a node, and unreadable"),
+    pytest.param(
+        {"nodes/__init__.py": "",
+         "nodes/math/__init__.py": f"""
+            def named(name):
+                def wrap(cls):
+                    cls.NODE_NAME = name
+                    return cls
+                return wrap
+
+            @named("Add")
+            class Add:
+                DESCRIPTION = {_SHORT}
+            """},
+        {}, {"p"},
+        id="a class in a subpackage __init__ makes the pack one with node files"),
+    pytest.param(
+        {"nodes/__init__.py": "",
+         "nodes/add.py": f"""
+            class Add:
+                NODE_NAME = "Add"
+                DESCRIPTION = {_SHORT}
+            """,
+         "nodes/mul.py": "from ..lib.mul import Mul  # registered from here\n",
+         "lib/__init__.py": "",
+         "lib/mul.py": f"""
+            class Mul:
+                NODE_NAME = "Mul"
+                DESCRIPTION = {_LONG}
+            """},
+        {"p:Add": "Adds two numbers.",
+         "p:Mul": "Adds two numbers, then explains at length why a palette row is short."},
+        {"p"},
+        id="a node defined outside nodes/ is read"),
+    pytest.param(
+        {"nodes/add.py": f"""
+            class Add:
+                NODE_NAME = "Add"
+                DESCRIPTION = {_SHORT}
+            """,
+         "tests/test_add.py": f"""
+            class FakeNode:
+                NODE_NAME = "Fake"
+                DESCRIPTION = {_LONG}
+            """,
+         "ui/node_modules/gyp/setup.py": "print 'not python 3'\n"},
+        {"p:Add": "Adds two numbers."}, {"p"},
+        id="tests and node_modules are not the pack's nodes"),
+])
+def test_the_pack_scan_reads_what_the_loader_registers(tmp_path, files, descriptions, packs):
+    """``_pack_node_descriptions`` against one fake pack per shape (#505).
+
+    The cases between the first (the ordinary shape) and the last (what the
+    scan leaves out) are shapes the loader registers a node from and the scan
+    used to miss, so the palette-summary rules below passed without reading
+    the summary the palette shows. None means "cannot be read from the
+    source", which fails those rules loudly instead of passing them quietly.
+    """
+    import textwrap
+
+    for relative, text in files.items():
+        path = tmp_path / "p" / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(textwrap.dedent(text), encoding="utf-8")
+
+    assert _pack_node_descriptions(tmp_path) == (descriptions, packs)
 
 
 def test_no_first_party_pack_node_describes_itself_in_a_paragraph():
@@ -797,8 +975,8 @@ def test_no_first_party_pack_node_describes_itself_in_a_paragraph():
     """
     descriptions, packs = _pack_node_descriptions()
     assert descriptions, (
-        "found no node class under plugins/*/nodes/, so this test is not "
-        "checking anything")
+        "found no node class under plugins/, so this test is not checking "
+        "anything")
     # A pack whose classes this scan cannot recognise would drop out of the
     # check without a word, and every assertion below would still pass.
     silent = sorted(packs - {name.split(":", 1)[0] for name in descriptions})
@@ -810,9 +988,53 @@ def test_no_first_party_pack_node_describes_itself_in_a_paragraph():
     unreadable = sorted(
         name for name, text in descriptions.items() if text is None)
     assert not unreadable, (
-        "DESCRIPTION must be one string literal in the node's own class body "
-        f"-- this test reads the source, not the imported class: {unreadable}")
+        "NODE_NAME and DESCRIPTION must each be a plain assignment of one "
+        "string literal in the node's own class body (not +=, not under an "
+        "if or a try, not an unpacking) -- this test reads the source, not "
+        f"the imported class: {unreadable}")
     _assert_palette_summaries(descriptions)
+
+
+def test_the_zh_tw_catalog_and_the_pack_scan_name_the_same_first_party_nodes():
+    """The catalog's first-party pack entries and the scan agree (#505).
+
+    Every ``'<pack>:<node>'`` entry the zh-TW catalog has for a pack in
+    ``plugins/`` must name a node the scan read. That is the check the scan
+    cannot make of itself: a node set up in a way it does not know still has
+    its entry here, and shows up as not read. It is also the dead-entry check
+    for these keys, which the registry-based dead-entry test above leaves out
+    on purpose: this suite's registry never holds ``edu``, while the packs'
+    source is in this repository for all five.
+
+    And every node the scan read must have an entry: a pack node sits in the
+    same Chinese palette as a built-in, so it gets the built-ins' ratchet
+    (``test_no_new_node_ships_without_a_zh_tw_entry``).
+    """
+    import re
+
+    from app.core.plugin_loader import plugins_builtin_root
+
+    descriptions, _ = _pack_node_descriptions()
+    first_party = {path.name for path in plugins_builtin_root().iterdir() if (path / "nodes").is_dir()}
+    translated = {
+        key for key in re.findall(r"^  '([^']+)': \{$", _node_catalog(), re.MULTILINE)
+        if key.split(":", 1)[0] in first_party
+    }
+    assert translated, (
+        "found no first-party pack entry in the zh-TW catalog, so this test "
+        "is not checking anything")
+
+    not_read = sorted(translated - set(descriptions))
+    assert not not_read, (
+        "these zh-TW entries name a first-party pack node the source scan did "
+        "not find. Either the node is gone and the entry is dead (delete it "
+        "from frontend/src/i18n/nodeLocales/zh-TW.ts), or the node is set up "
+        f"in a way _pack_node_descriptions cannot read (teach it): {not_read}")
+    untranslated = sorted(set(descriptions) - translated)
+    assert not untranslated, (
+        "these first-party pack nodes have no zh-TW entry and render in "
+        "English; add them to frontend/src/i18n/nodeLocales/zh-TW.ts: "
+        f"{untranslated}")
 
 
 def _zh_descriptions() -> dict[str, str]:

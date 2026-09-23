@@ -27,7 +27,7 @@
  */
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import type { Edge, Node } from '@xyflow/react';
-import { useTabStore, _documentChangedForTesting, _setForTesting } from './tabStore';
+import { useTabStore, documentChanged, _setForTesting } from './tabStore';
 import { useNodeDefStore } from './nodeDefStore';
 import type { NodeData, NodeDefinition } from '../types';
 
@@ -298,13 +298,13 @@ describe('revision ignores what is not the document', () => {
       ...base,
       nodes: base.nodes.map((n) => ({ ...n, position: { ...n.position }, selected: !n.selected })),
     };
-    expect(_documentChangedForTesting(base, sameShape)).toBe(false);
+    expect(documentChanged(base, sameShape)).toBe(false);
 
     const moved = {
       ...base,
       nodes: base.nodes.map((n, i) => (i === 0 ? { ...n, position: { x: 1, y: 0 } } : n)),
     };
-    expect(_documentChangedForTesting(base, moved)).toBe(true);
+    expect(documentChanged(base, moved)).toBe(true);
 
     // A bit-identical copy of `data` is NOT a change: every value still
     // matches by reference, so only the wrapper object moved.
@@ -312,14 +312,14 @@ describe('revision ignores what is not the document', () => {
       ...base,
       nodes: base.nodes.map((n, i) => (i === 0 ? { ...n, data: { ...n.data } } : n)),
     };
-    expect(_documentChangedForTesting(base, recopied)).toBe(false);
+    expect(documentChanged(base, recopied)).toBe(false);
 
     const relabelled = {
       ...base,
       nodes: base.nodes.map((n, i) =>
         (i === 0 ? { ...n, data: { ...n.data, label: 'Renamed' } } : n)),
     };
-    expect(_documentChangedForTesting(base, relabelled)).toBe(true);
+    expect(documentChanged(base, relabelled)).toBe(true);
 
     // All three run-state keys at once, including two the node did not have.
     const running = {
@@ -336,7 +336,7 @@ describe('revision ignores what is not the document', () => {
         }
         : n)),
     };
-    expect(_documentChangedForTesting(base, running)).toBe(false);
+    expect(documentChanged(base, running)).toBe(false);
 
     // A real key the node did not carry before IS a change -- the skip list
     // must not become "ignore any added key".
@@ -345,10 +345,10 @@ describe('revision ignores what is not the document', () => {
       nodes: base.nodes.map((n, i) =>
         (i === 0 ? { ...n, data: { ...n.data, bypassed: true } } : n)),
     };
-    expect(_documentChangedForTesting(base, bypassed)).toBe(true);
+    expect(documentChanged(base, bypassed)).toBe(true);
 
     const shorter = { ...base, nodes: base.nodes.slice(0, 1) };
-    expect(_documentChangedForTesting(base, shorter)).toBe(true);
+    expect(documentChanged(base, shorter)).toBe(true);
   });
 
   it('tolerates a node carrying neither position nor data', () => {
@@ -362,9 +362,9 @@ describe('revision ignores what is not the document', () => {
     const bare = (ids: string[]) =>
       ({ ...base, nodes: ids.map((id) => ({ id })) } as unknown as typeof base);
 
-    expect(_documentChangedForTesting(bare(['a']), bare(['a']))).toBe(false);
-    expect(_documentChangedForTesting(bare(['a']), bare(['b']))).toBe(true);
-    expect(_documentChangedForTesting(base, bare(['a', 'b']))).toBe(true);
+    expect(documentChanged(bare(['a']), bare(['a']))).toBe(false);
+    expect(documentChanged(bare(['a']), bare(['b']))).toBe(true);
+    expect(documentChanged(base, bare(['a', 'b']))).toBe(true);
   });
 });
 

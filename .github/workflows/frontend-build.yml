@@ -87,6 +87,9 @@ jobs:
 
       - name: Test
         working-directory: frontend
+        # Also the act() warnings gate (#505), in the same run: vitest exits 1
+        # when a test file prints more "not wrapped in act(...)" warnings than
+        # scripts/act-warnings.baseline.json allows (scripts/act-warnings.mjs).
         run: pnpm test
 
       - name: Summarize
