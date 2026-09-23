@@ -558,9 +558,14 @@ def cmd_remove(args: argparse.Namespace) -> int:
     # attention with the one line that matters.
     names = _dist_names(pack) if (removed or was_present) else []
     if names:
+        # Spelled by the backend helper the plugin uninstall prints too: it
+        # quotes the interpreter path, which an f-string here left bare -- a
+        # space splits it in every shell, and Git Bash strips its backslashes.
+        from app.core.plugins.deps import manual_uninstall_command
+
         info("Python 套件不會一併移除。要移除的話：",
              "Python packages are not removed. To remove them:")
-        print(f"      uv pip uninstall --python {sys.executable} {' '.join(names)}")
+        print(f"      {manual_uninstall_command(names)}")
     return 0
 
 

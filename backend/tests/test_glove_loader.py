@@ -407,6 +407,86 @@ def test_a_failed_write_leaves_neither_a_part_file_nor_an_npz(
     assert list(glove_gz.parent.glob("*.part")) == []
 
 
+def test_a_replace_refused_for_a_moment_is_retried(glove_gz, monkeypatch):
+    """Windows refuses to replace a file another program has open, with
+    PermissionError -- an antivirus scanner or an indexer reading the old npz
+    at that instant is enough (#488). Such a program lets go a moment later,
+    so the replace is tried again rather than failing the whole conversion."""
+    real_replace = os.replace
+    attempts: list = []
+
+    def _replace(src, dst):
+        attempts.append(dst)
+        if len(attempts) == 1:
+            raise PermissionError(13, "the file is in use by another program")
+        return real_replace(src, dst)
+
+    monkeypatch.setattr(os, "replace", _replace)
+    monkeypatch.setattr(_glove, "_REPLACE_PAUSE_S", 0)
+
+    npz_path = _glove.ensure_npz(glove_gz)
+
+    assert len(attempts) == 2
+    words, _matrix = _glove.load_npz(npz_path)
+    assert words == WORDS
+    assert list(glove_gz.parent.glob("*.part")) == []
+
+
+def test_a_replace_that_stays_refused_gives_up_without_a_part_file(
+        glove_gz, monkeypatch):
+    """Bounded: a file that stays locked, or a directory nobody may write
+    to, fails the conversion after a few tries instead of hanging it, and
+    the scratch file is still removed."""
+    attempts: list = []
+
+    def _replace(src, dst):
+        attempts.append(dst)
+        raise PermissionError(13, "access is denied")
+
+    monkeypatch.setattr(os, "replace", _replace)
+    monkeypatch.setattr(_glove, "_REPLACE_PAUSE_S", 0)
+
+    with pytest.raises(PermissionError):
+        _glove.ensure_npz(glove_gz)
+
+    assert len(attempts) == _glove._REPLACE_ATTEMPTS > 1
+    assert not _glove.npz_path_for(glove_gz).exists()
+    assert list(glove_gz.parent.glob("*.part")) == []
+
+
+@pytest.mark.skipif(os.name != "nt",
+                    reason="POSIX replaces a file another process has open")
+def test_windows_refusing_to_replace_an_open_npz_is_waited_out(glove_gz,
+                                                               monkeypatch):
+    """The real refusal rather than a fake one: a handle on the old npz makes
+    Windows refuse the first replace. The holder lets go right after that
+    attempt, and the retry puts the new table in place."""
+    npz_path = _glove.ensure_npz(glove_gz)
+    newer = npz_path.stat().st_mtime_ns + 10**9       # stale: convert again
+    os.utime(glove_gz, ns=(newer, newer))
+    holder = open(npz_path, "rb")
+    real_replace = os.replace
+    attempts: list = []
+
+    def _replace(src, dst):
+        attempts.append(dst)
+        try:
+            return real_replace(src, dst)
+        finally:
+            holder.close()
+
+    monkeypatch.setattr(os, "replace", _replace)
+    monkeypatch.setattr(_glove, "_REPLACE_PAUSE_S", 0)
+    try:
+        _glove.ensure_npz(glove_gz)
+    finally:
+        holder.close()
+
+    assert len(attempts) == 2, "the replace was not refused while the npz was open"
+    assert npz_path.stat().st_mtime_ns >= newer, "the new table is not in place"
+    assert list(glove_gz.parent.glob("*.part")) == []
+
+
 # ── the node's entry point ────────────────────────────────────────────────
 
 

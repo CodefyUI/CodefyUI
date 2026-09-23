@@ -993,8 +993,9 @@ def _stdin_is_interactive() -> bool:
     must take the non-interactive branch rather than blocking forever on a
     prompt nobody will ever see. On Windows this is only reachable at all
     because ``dev.py`` re-executes the venv interpreter with
-    :func:`_reexec` -- ``subprocess.run`` keeps the console attached, where
-    ``os.execv`` would have orphaned it and made every prompt read EOF.
+    :func:`_reexec` -- a child it waits for (``subprocess.Popen``, then
+    ``_reexec_wait``) keeps the console attached, where ``os.execv`` would
+    have orphaned it and made every prompt read EOF.
     """
     try:
         return bool(sys.stdin) and sys.stdin.isatty()
@@ -1617,7 +1618,7 @@ def _confirm_sync(count: int) -> bool | None:
     and must not silently decide yes on the user's behalf either — installing
     code someone did not ask for is the exact thing #175 refused to automate.
     On Windows the prompt is reachable at all only because ``dev.py`` re-execs
-    the venv interpreter through ``subprocess.run`` (see ``_reexec``); with
+    the venv interpreter as a child it waits for (see ``_reexec``); with
     ``os.execv`` the console was orphaned and every prompt read EOF.
     """
     def _no_terminal() -> None:
