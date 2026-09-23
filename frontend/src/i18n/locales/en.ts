@@ -240,6 +240,11 @@ const en = {
   // Node
   'node.opt': 'opt',
   'node.running': 'Running...',
+  // The running footer's captions (#525). The embedding counts come from the
+  // server as numbers, so every caption follows the UI language.
+  'node.running.epoch': 'Epoch {epoch}/{total}',
+  'node.running.loss': 'Loss: {loss}',
+  'node.running.embedding': 'Embedding {current}/{total}',
   'node.completed': 'Completed',
   'node.cached': 'Cached',
   'node.skipped': 'Skipped',

@@ -369,6 +369,13 @@ def encode_in_batches(
                 "event": EVENT_BATCH,
                 "batch": index + 1,
                 "total_batches": batches,
+                # The node card words this caption from the kind and the
+                # two text counts, in the reader's language (#525). ``text``
+                # is the same caption in English, for a log and for an
+                # older editor.
+                "caption": "embedding",
+                "current": done,
+                "total": total,
                 "text": f"Embedding {done}/{total}",
             })
 
