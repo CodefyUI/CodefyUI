@@ -1,4 +1,4 @@
-import { useState, useCallback, useRef, useEffect } from 'react';
+import { useState, useCallback, useRef, useEffect, useLayoutEffect } from 'react';
 import { useGraphExecution } from '../../hooks/useGraphExecution';
 import { useDeviceOptions, deviceLabel, isDeviceServed } from '../../hooks/useDeviceOptions';
 import { useTabStore } from '../../store/tabStore';
@@ -47,8 +47,10 @@ function MenuDropdown({
     const handler = (e: MouseEvent) => {
       if (ref.current && !ref.current.contains(e.target as Node)) onClose();
     };
-    document.addEventListener('mousedown', handler);
-    return () => document.removeEventListener('mousedown', handler);
+    // Capture phase, so a press on the canvas counts: React Flow's pane stops
+    // mousedown from bubbling up to `document`.
+    document.addEventListener('mousedown', handler, { capture: true });
+    return () => document.removeEventListener('mousedown', handler, { capture: true });
   }, [open, onClose]);
 
   return (
@@ -213,6 +215,8 @@ export function Toolbar() {
   const [openMenu, setOpenMenu] = useState<string | null>(null);
   const [layoutMenuOpen, setLayoutMenuOpen] = useState(false);
   const layoutTriggerRef = useRef<HTMLDivElement>(null);
+  const layoutMenuRef = useRef<HTMLDivElement>(null);
+  const [layoutMenuFromRight, setLayoutMenuFromRight] = useState(false);
 
   const lastLayoutMode = useUIStore((s) => s.lastLayoutMode);
   const setLastLayoutMode = useUIStore((s) => s.setLastLayoutMode);
@@ -234,7 +238,9 @@ export function Toolbar() {
     [applyLayout, setLastLayoutMode],
   );
 
-  // Close layout dropdown on outside click
+  // Close layout dropdown on outside click or Escape -- the plugin overflow
+  // and font size menus close on both. The press is heard in the capture
+  // phase, as in MenuDropdown, so a press on the canvas counts too.
   useEffect(() => {
     if (!layoutMenuOpen) return;
     const handler = (e: MouseEvent) => {
@@ -242,8 +248,37 @@ export function Toolbar() {
         setLayoutMenuOpen(false);
       }
     };
-    document.addEventListener('mousedown', handler);
-    return () => document.removeEventListener('mousedown', handler);
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setLayoutMenuOpen(false);
+    };
+    document.addEventListener('mousedown', handler, { capture: true });
+    document.addEventListener('keydown', onKeyDown);
+    return () => {
+      document.removeEventListener('mousedown', handler, { capture: true });
+      document.removeEventListener('keydown', onKeyDown);
+    };
+  }, [layoutMenuOpen]);
+
+  // Hang the layout menu from the split button's right edge when its left
+  // edge would carry the menu past the window (see .layoutDropdown). Measured
+  // before paint, so it is never seen in the wrong place, and again on every
+  // resize while it is open.
+  useLayoutEffect(() => {
+    if (!layoutMenuOpen) return;
+    const place = () => {
+      const split = layoutTriggerRef.current;
+      const menu = layoutMenuRef.current;
+      if (!split || !menu) return;
+      // The menu's right edge when it hangs from the left edge, whichever
+      // edge it hangs from now: its width is the same from both, and its
+      // containing block starts inside the split button's border.
+      const right =
+        split.getBoundingClientRect().left + split.clientLeft + menu.getBoundingClientRect().width;
+      setLayoutMenuFromRight(right > window.innerWidth);
+    };
+    place();
+    window.addEventListener('resize', place);
+    return () => window.removeEventListener('resize', place);
   }, [layoutMenuOpen]);
 
   const isRunning = status === 'running';
@@ -615,31 +650,40 @@ export function Toolbar() {
             className={styles.splitButtonCaret}
             onClick={() => setLayoutMenuOpen((v) => !v)}
             aria-label={t('toolbar.layoutMode.aria')}
+            aria-expanded={layoutMenuOpen}
           >
             ▾
           </button>
+          {/* Buttons in a menu, like the plugin overflow menu (#507). They
+              were divs, which only a mouse could use: Tab never reached them. */}
           {layoutMenuOpen && (
-            <div className={styles.layoutDropdown}>
-              <div
+            <div
+              ref={layoutMenuRef}
+              className={`${styles.layoutDropdown} ${layoutMenuFromRight ? styles.layoutDropdownRight : ''}`}
+              role="menu"
+              aria-label={t('toolbar.layoutMode.aria')}
+            >
+              <button type="button" role="menuitem"
                 className={`${styles.layoutDropdownItem} ${lastLayoutMode === 'experiments' ? styles.layoutDropdownItemActive : ''}`}
                 onClick={() => runLayout('experiments')}
               >
                 {t('toolbar.autoLayout.experiments')}
-              </div>
-              <div
+              </button>
+              <button type="button" role="menuitem"
                 className={`${styles.layoutDropdownItem} ${lastLayoutMode === 'all' ? styles.layoutDropdownItemActive : ''}`}
                 onClick={() => runLayout('all')}
               >
                 {t('toolbar.autoLayout.all')}
-              </div>
-              <div
-                className={`${styles.layoutDropdownItem} ${selectedCount === 0 ? styles.layoutDropdownItemDisabled : ''} ${lastLayoutMode === 'selected' ? styles.layoutDropdownItemActive : ''}`}
-                onClick={() => {
-                  if (selectedCount > 0) runLayout('selected');
-                }}
+              </button>
+              {/* `disabled` is the only guard: a disabled button takes no
+                  click and no focus, so this cannot run with nothing selected. */}
+              <button type="button" role="menuitem"
+                className={`${styles.layoutDropdownItem} ${lastLayoutMode === 'selected' ? styles.layoutDropdownItemActive : ''}`}
+                disabled={selectedCount === 0}
+                onClick={() => runLayout('selected')}
               >
                 {t('toolbar.autoLayout.selected', { count: selectedCount })}
-              </div>
+              </button>
             </div>
           )}
         </div>

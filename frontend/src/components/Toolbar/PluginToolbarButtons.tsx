@@ -85,6 +85,8 @@ export function PluginToolbarButtons() {
 
   // Close on outside click or Escape — the same affordances the toolbar's own
   // menus give, so a plugin menu does not feel like a different application.
+  // The press is heard in the capture phase, so a press on the canvas counts:
+  // React Flow's pane stops mousedown from bubbling up to `document`.
   useEffect(() => {
     if (!open) return;
     const onPointerDown = (e: MouseEvent) => {
@@ -93,10 +95,10 @@ export function PluginToolbarButtons() {
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.key === 'Escape') close();
     };
-    document.addEventListener('mousedown', onPointerDown);
+    document.addEventListener('mousedown', onPointerDown, { capture: true });
     document.addEventListener('keydown', onKeyDown);
     return () => {
-      document.removeEventListener('mousedown', onPointerDown);
+      document.removeEventListener('mousedown', onPointerDown, { capture: true });
       document.removeEventListener('keydown', onKeyDown);
     };
   }, [open, close]);

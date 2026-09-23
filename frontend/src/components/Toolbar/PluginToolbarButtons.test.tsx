@@ -12,6 +12,18 @@ function setWidth(px: number) {
   });
 }
 
+/**
+ * An element that stops `mousedown` from bubbling, as React Flow's pane does
+ * (d3-zoom stops the event there), so a listener on `document` in the bubble
+ * phase never hears a press on the canvas.
+ */
+function canvasPane(): HTMLElement {
+  const pane = document.createElement('div');
+  pane.addEventListener('mousedown', (e) => e.stopPropagation());
+  document.body.appendChild(pane);
+  return pane;
+}
+
 /** Register `n` buttons named b0..b(n-1). Returns their click spies. */
 function seedButtons(n: number) {
   const clicks = Array.from({ length: n }, () => vi.fn());
@@ -165,6 +177,28 @@ describe('PluginToolbarButtons', () => {
     fireEvent.click(trigger);
     fireEvent.keyDown(document, { key: 'Escape' });
     expect(trigger).toHaveAttribute('aria-expanded', 'false');
+  });
+
+  it('closes the menu on a mousedown on the canvas, which stops it from bubbling', () => {
+    seedButtons(5);
+    render(<PluginToolbarButtons />);
+    const trigger = screen.getByTestId('plugin-toolbar-overflow');
+    fireEvent.click(trigger);
+    expect(trigger).toHaveAttribute('aria-expanded', 'true');
+    const pane = canvasPane();
+    fireEvent.mouseDown(pane);
+    expect(trigger).toHaveAttribute('aria-expanded', 'false');
+    pane.remove();
+  });
+
+  it('keeps the menu open on a mousedown inside it or on its trigger', () => {
+    seedButtons(5);
+    render(<PluginToolbarButtons />);
+    const trigger = screen.getByTestId('plugin-toolbar-overflow');
+    fireEvent.click(trigger);
+    fireEvent.mouseDown(screen.getByTestId('plugin-toolbar-button-p:b4'));
+    fireEvent.mouseDown(trigger);
+    expect(trigger).toHaveAttribute('aria-expanded', 'true');
   });
 
   it('labels the overflow trigger from the catalog, in the active locale', () => {

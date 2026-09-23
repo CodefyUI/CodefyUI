@@ -191,6 +191,18 @@ function makeTriggerRef() {
 }
 
 /**
+ * An element that stops `mousedown` from bubbling, as React Flow's pane does
+ * (d3-zoom stops the event there), so a listener on `document` in the bubble
+ * phase never hears a press on the canvas.
+ */
+function canvasPane(): HTMLElement {
+  const pane = document.createElement('div');
+  pane.addEventListener('mousedown', (e) => e.stopPropagation());
+  document.body.appendChild(pane);
+  return pane;
+}
+
+/**
  * The settings row whose visible name is `name`.
  *
  * By structure, not by role: the row widens the click target for a pointer
@@ -772,6 +784,13 @@ describe('SettingsPopover', () => {
     const onClose = vi.fn();
     render(<SettingsPopover open onClose={onClose} triggerRef={makeTriggerRef()} />);
     fireEvent.mouseDown(document.body);
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  it('closes on a mousedown on the canvas, which stops it from bubbling', () => {
+    const onClose = vi.fn();
+    render(<SettingsPopover open onClose={onClose} triggerRef={makeTriggerRef()} />);
+    fireEvent.mouseDown(canvasPane());
     expect(onClose).toHaveBeenCalledTimes(1);
   });
 
