@@ -22,6 +22,179 @@ received — each links to the release it was published as.
 
 ## [Unreleased]
 
+The Auto Layout menu in the toolbar opens for the first time. The split
+button had clipped it away since the button was added, so Layout All and
+Layout Selected could not be picked; now they can, and every toolbar menu
+closes when you press the canvas. A node that writes text shows the last
+lines of what it has written while it runs, instead of a dot and
+**Running...**, and the summary above a git diff lists a setting changed in
+a placed preset's Configure window.
+
+For plugin authors, `api.http.fetch` no longer sends the session token to
+another server: a POST, PUT, PATCH or DELETE to another origin now rejects,
+so a plugin that posts to a third-party API has to use `window.fetch` for
+it. A plugin's `auto_layout` moves the view as the toolbar's Layout All
+does, and the plugin routes answer a plugin that is not installed with the
+same `not_installed` code, so the Plugin Center says so in the user's
+language.
+
+On a server that a class or a team shares, two runs that use the same
+sentence model no longer encode on it at once, which could crash or embed
+text at the other run's token cap. A NUL in a file name is refused instead
+of answering 500 with a traceback in the log, a failed token fetch while the
+server restarts no longer leaves saving broken until a reload, and a sweep
+cancel counts only the runs that finished.
+
+Releases are checked too: a release PR with a half-promoted `CHANGELOG.md`
+fails, and Release Build refuses a tag that the file does not name or date
+on the tag's UTC day.
+
+### Added
+
+- **A node that writes text shows its latest lines on the card while it
+  runs** ([#486]). TextGenerate, HFTextGenerate and LLMChat sent the text
+  written so far in every progress frame, and nothing drew it: the card
+  showed a dot and **Running...** until the answer was done, about a minute
+  for the local model on a laptop CPU. The footer now shows the last three
+  lines, newest at the bottom, without making the card wider, and an
+  embedding node shows its `Embedding N/M` count the same way. A custom node
+  gets this by putting a `text` string in its progress dict. A new run no
+  longer starts with the previous run's last frame on the card, and a frame
+  too large for the server's 128 KB event cap no longer knocks the node out
+  of its running state or adds a "progress" line to the Log. Past that cap a
+  long LLMChat answer stops moving on the card until the node finishes; the
+  full answer is on its output.
+
+### Changed
+
+- **`api.http.fetch` refuses a POST, PUT, PATCH or DELETE to another
+  origin** ([#482]). It added the session token header to every such request
+  whatever the URL, so a plugin that called a third-party API through it
+  sent the token there whenever that API's CORS preflight allowed the
+  header. It now resolves the URL the way `fetch` does and, unless it is the
+  editor's own origin, rejects with a `TypeError` before the token is read;
+  nothing is sent. Calls to CodefyUI's own paths, such as `/api/llm/chat`,
+  and GET, HEAD and OPTIONS to any origin work as before, and a `Request`
+  passed without `init.method` is judged by its own method. This is
+  hardening, not an isolation boundary: plugin code runs in the editor page
+  and can still reach the token another way. The plugin contract, the
+  scaffold's SDK copy and the plugin reference state the rule.
+
+  **Breaking** for a plugin that posts to another server through
+  `api.http.fetch`: the call now rejects with a `TypeError`, and the plugin
+  must call `window.fetch` for that server.
+- **`GET /api/plugins/{id}`, `POST /api/plugins/{id}/enable` and
+  `POST /api/plugins/{id}/disable` answer a missing plugin with
+  `{"code": "not_installed"}`** ([#415]). The `detail` of their 404 was a
+  sentence, `Plugin 'x' is not installed`, where `DELETE` and
+  `POST /api/plugins/{id}/update` already sent the code. The status is still
+  404. The code lets the Plugin Center word the toast for an out-of-date
+  row's Enable or Disable switch in the user's language; it showed the
+  server's English sentence, in the zh-TW interface too.
+  `GET /api/plugins/{id}` still answers a plain-text 404 for a plugin that
+  is in the lockfile but disabled or missing its files.
+
+  **Breaking** for a client that reads `detail` as text: these three 404s
+  now carry an object, `{"code": "not_installed"}`.
+- **A plugin's `auto_layout` moves the view as the toolbar's Layout All
+  does** ([#401]). The op laid the graph out and left the view where it was,
+  so a plugin that laid out the tab on screen, as Graph Copilot does after
+  every structural batch, could leave the user looking at empty canvas. When
+  the batch adds, removes or moves a node other than a note, the tab on
+  screen is fitted to the laid-out nodes and the notes bound to them, and a
+  tab in the background forgets its pan and zoom, so the next visit fits its
+  whole graph. A layout that moves nothing leaves the view alone, and the op
+  shows no toast about unbound notes.
+
+### Fixed
+
+- **The Auto Layout menu can be opened and used** ([#507]). The caret next
+  to **Auto Layout** opened a menu that never showed: the split button
+  clipped everything outside its border, and had since it was added, so the
+  mode could not be changed and the main button kept running Layout
+  Experiments, the default. The button no longer clips and looks the same.
+  The menu is a menu of buttons now, so Tab reaches its items and Escape
+  closes it, and **Layout Selected** is disabled while nothing is selected.
+  It opens from the button's left edge, as File and Export do, and from its
+  right edge when the left would carry it past the window. A half of the
+  split button that has keyboard focus now shows its whole focus ring.
+- **Every toolbar menu closes when you press the canvas** ([#507]). File,
+  Export, Auto Layout, the plugin "..." menu, the font size menu and
+  Settings closed on a press outside them, except on the canvas, which stops
+  the press before it reaches the rest of the page. They now hear the press
+  before the canvas can stop it.
+- **A failed token fetch no longer leaves saving broken until a reload**
+  ([#482]). When the request that fetches the session token failed outright,
+  for example while the server was restarting, or came back unreadable, the
+  editor kept the failure, and every later save, run or plugin switch could
+  fail with "Failed to fetch" until the page was reloaded. The next request
+  now fetches the token again. A fetch still in flight when the token is
+  dropped can no longer put the old token back, and a 403 on a request that
+  cannot be sent twice now drops the token too, so the next request gets a
+  fresh one.
+- **A setting changed in a placed preset's Configure window shows in the
+  graph summary** ([#429]). The summary above a git diff read only a node's
+  own parameters. A preset keeps its settings per inner node, in
+  `data.internalParams`, so changing Epochs on Training Pipeline and saving
+  gave no summary line at all, only the patch. Each changed setting is now a
+  line under the preset node, such as
+  `train-pipeline: train_loop.epochs 5 -> 10`, with the same clipping and
+  eight-line budget as any other parameter.
+- **Nodes that share a sentence model no longer crash or borrow each other's
+  token cap** ([#485]). Every node and every run in the server process that
+  uses the same sentence model on the same device shares one loaded model,
+  and its token cap is a setting on it. A cap of 0, documented as the
+  model's own default, meant whatever the previous node had set: in the
+  RAG-Local-Offline example, setting one node's cap to 64 made the other
+  embed every passage at 64 tokens instead of 512, and WordVector on a
+  sentence model always took the last cap. Two encodes at once, from two
+  runs on a shared server or two nodes on one level of an unseeded run,
+  could embed at the other's cap or crash with
+  `RuntimeError: Already borrowed`. Each loaded model now has its own lock,
+  held for one batch at a time with that batch's cap, and 0 means the cap
+  the model shipped with. Stop still works while a node waits for another
+  node's batch.
+- **A NUL in a file name is refused, not answered with a 500** ([#483]).
+  Fourteen requests to the data-file, image, model, custom-node, media and
+  example routes answered a NUL in a name with a 500 and a traceback in the
+  server log, and five of them are GETs that need no token; the custom-node
+  toggle did the same for a `filename` that is not a string. The eight path
+  checks those routes spelled out are now one, `resolve_under` in
+  `app/core/data_paths.py`, and each route gives the answer it already gave
+  for a name it refuses. It refuses a NUL itself, because on Windows with
+  Python 3.13 or later `Path.resolve()` accepts one.
+- **A sweep cancel counts only the runs that finished** ([#483]).
+  `POST /api/sweeps/{id}/cancel` counted a variant as `already_finished`
+  when its run still said `running` but no cancel could reach it: a run
+  driven by another server process using the same database, a row whose last
+  write failed, or a run this process was finishing at that moment. Such a
+  variant is in neither count now, like one that never got a run, so
+  `cancelled + already_finished` is no longer always the number of variants
+  that had a run. The harvest also gives no objective for an empty metric
+  name, as retention already did.
+- **A graph that `workspace.openGraphs` refuses for the tab limit leaves the
+  palette as it was** ([#416]). The call read each entry before it checked
+  the 32-tab limit, and reading merges the presets a graph carries into the
+  Nodes palette, so an entry refused with `too_many_tabs` left presets from a
+  graph that never opened, until the page was reloaded. The limit is checked
+  first now. An entry that is both unreadable and over the limit answers
+  `too_many_tabs` instead of `invalid_graph`.
+
+### Internal
+
+- **A half-promoted CHANGELOG fails the release PR, and a tag it does not
+  name or date fails Release Build** ([#462]). Step 1 of
+  `.github/RELEASING.md` was checked by nothing, and 2.8.2 shipped dated a
+  day before its tag. `scripts/check_changelog.py` runs on every PR through
+  `backend/tests/test_check_changelog.py`: `## [Unreleased]` first, below it
+  the newest version named after `backend/pyproject.toml` and dated no
+  earlier than the one below it, the versions newest first, and one compare
+  link per version. On a tag push, Release Build also requires the tag to be
+  the newest version, its heading to carry the tag's UTC date and
+  `[Unreleased]` to hold no entries, before any draft release is made; run
+  `python scripts/check_changelog.py --tag X.Y.Z` before `git push` to find
+  out first. An ordinary PR that adds entries under `[Unreleased]` passes.
+
 ## [2.8.5] — 2026-09-22
 
 The keyboard reaches the workspace tab strip, and no longer the canvas
@@ -4484,6 +4657,16 @@ Release candidates before 1.0.0 are on the
 [#398]: https://github.com/CodefyUI/CodefyUI/issues/398
 [#140]: https://github.com/CodefyUI/CodefyUI/issues/140
 [#420]: https://github.com/CodefyUI/CodefyUI/issues/420
+[#486]: https://github.com/CodefyUI/CodefyUI/issues/486
+[#482]: https://github.com/CodefyUI/CodefyUI/issues/482
+[#415]: https://github.com/CodefyUI/CodefyUI/issues/415
+[#401]: https://github.com/CodefyUI/CodefyUI/issues/401
+[#507]: https://github.com/CodefyUI/CodefyUI/issues/507
+[#429]: https://github.com/CodefyUI/CodefyUI/issues/429
+[#485]: https://github.com/CodefyUI/CodefyUI/issues/485
+[#483]: https://github.com/CodefyUI/CodefyUI/issues/483
+[#416]: https://github.com/CodefyUI/CodefyUI/issues/416
+[#462]: https://github.com/CodefyUI/CodefyUI/issues/462
 [@oyea0801]: https://github.com/oyea0801
 [@latteine1217]: https://github.com/latteine1217
 [Unreleased]: https://github.com/CodefyUI/CodefyUI/compare/2.8.5...main
