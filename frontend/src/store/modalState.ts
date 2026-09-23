@@ -10,12 +10,12 @@ import { useUIStore } from './uiStore';
  *
  *  - `useKeyboardShortcuts` asks inside a `document` keydown handler that has
  *    no React context to read from, and the tab strip asks in its own.
- *  - the two `<ReactFlow>` call sites ask from `onBeforeDelete`, at the moment
- *    React Flow is about to delete the selection. They used to unbind Delete
- *    instead (`deleteKeyCode={null}` while a modal was up), but React Flow
- *    keeps the keys it had already seen go down, and misses their release
- *    while its listener is off: a key that opened a modal stayed "held" and
- *    swallowed the first Delete after it closed (#491).
+ *  - the two canvases ask from `onBeforeDelete`, at the moment their Delete key
+ *    (`useDeleteKey`) is about to delete the selection. React Flow's own Delete
+ *    binding is off on both, `deleteKeyCode={null}` at all times (#501). They
+ *    used to switch it off only while a modal was up, and the binding then
+ *    missed the release of the key that opened the modal: that key stayed
+ *    "held" and swallowed the first Delete after the modal closed (#491).
  *
  * They all ask `isAnyModalOpen()`, which reads the three stores through the
  * one predicate below. Rebuilt separately in each place, the question would

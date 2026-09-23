@@ -61,6 +61,7 @@ import { useTabStore } from '../../store/tabStore';
 import { useUIStore } from '../../store/uiStore';
 import { isAnyModalOpen } from '../../store/modalState';
 import { useDragAndDrop } from '../../hooks/useDragAndDrop';
+import { useDeleteKey } from '../../hooks/useDeleteKey';
 import {
   isValidConnection,
   getPortColor,
@@ -115,17 +116,16 @@ const minimapNodeColor = (node: any) => {
  * React Flow's `onBeforeDelete` for this canvas: no deletion while a modal is
  * open.
  *
- * React Flow binds Delete on `document` and filters only on `isInputDOMNode`.
- * A modal panel's focus target is a `tabIndex={-1}` div, not an input, so
- * that filter passes, and Delete destroyed the selection on this canvas from
- * behind a panel the user was reading (#475). Unbinding the key while a modal
- * was up stopped that, but React Flow keeps the keys it had already seen go
- * down, and misses their release while its listener is off: the Enter that
- * opened a panel from a button was never seen coming back up, and the first
- * Delete after the panel closed read as Enter+Delete, which matches nothing
- * (#491). So Delete stays bound and the deletion itself is refused -- asked
- * at the moment React Flow is about to delete, which also needs no re-render
- * when a modal opens or closes.
+ * Delete is heard on `document`, and a modal panel's focus target is a
+ * `tabIndex={-1}` div, not a field, so a Delete pressed over a panel the user
+ * was reading destroyed the selection on this canvas behind it (#475).
+ * Unbinding the key while a modal was up stopped that, but React Flow's own
+ * binding then missed the release of the key that opened the panel, and the
+ * first Delete after the panel closed did nothing (#491). So the deletion
+ * itself is refused, asked at the moment of deleting, which also needs no
+ * re-render when a modal opens or closes. The key is the canvas's own now
+ * (`useDeleteKey`, #501), and it deletes through `deleteElements`, which
+ * asks this.
  */
 async function allowDeleteWithNoModalOpen(): Promise<boolean> {
   return !isAnyModalOpen();
@@ -361,6 +361,8 @@ export function FlowCanvas({ tabId }: { tabId?: string } = {}) {
   });
 
   const { onDragOver, onDrop } = useDragAndDrop();
+  // Delete, in place of React Flow's own binding (#501).
+  useDeleteKey();
 
   const handleConnect: OnConnect = useCallback(
     (connection) => {
@@ -635,6 +637,24 @@ export function FlowCanvas({ tabId }: { tabId?: string } = {}) {
     // mousedown before it can bubble to the document.
   }, [selectNodeExclusively]);
 
+  // A Shift+press on the empty canvas starts React Flow's box selection, but
+  // nothing in React Flow cancels the browser's own reading of it -- extend
+  // the page's text selection from the last click to here -- so Chrome
+  // highlighted the sidebar and the tab bar. Ctrl+C and Ctrl+V yield to
+  // selected page text, so the nodes the box then selected could not be
+  // copied either (#506). Cancelling the press cancels the focus change it
+  // would have made as well, and that is done by hand: focus leaves the field
+  // it was in (the palette search box, say), or Delete and the shortcuts
+  // would stay with it. Presses on a node or an edge are React Flow's, which
+  // cancels them itself; a plain press pans.
+  const handleCanvasMouseDown = useCallback((event: React.MouseEvent) => {
+    if (!event.shiftKey || event.button !== 0) return;
+    if (!(event.target as Element).classList?.contains('react-flow__pane')) return;
+    event.preventDefault();
+    window.getSelection()?.removeAllRanges();
+    (document.activeElement as HTMLElement | null)?.blur?.();
+  }, []);
+
   const handlePaneContextMenu = useCallback(
     (event: MouseEvent | React.MouseEvent) => {
       event.preventDefault();
@@ -687,8 +707,8 @@ export function FlowCanvas({ tabId }: { tabId?: string } = {}) {
   const isEmpty = activeTab.nodes.length === 0;
 
   return (
-    <div ref={containerRef} className={styles.canvas}>
-      {isEmpty && <EmptyCanvasOverlay />}
+    <div ref={containerRef} className={styles.canvas} onMouseDown={handleCanvasMouseDown}>
+      {isEmpty && <EmptyCanvasOverlay onDragOver={onDragOver} onDrop={onDrop} />}
       <EdgeLaneProvider edges={activeTab.edges} nodes={activeTab.nodes}>
         <ReactFlow
           id={reactFlowId}
@@ -722,7 +742,8 @@ export function FlowCanvas({ tabId }: { tabId?: string } = {}) {
           onlyRenderVisibleElements
           minZoom={CANVAS_MIN_ZOOM}
           proOptions={proOptions}
-          deleteKeyCode="Delete"
+          // Off: `useDeleteKey` above handles Delete (#501).
+          deleteKeyCode={null}
           onBeforeDelete={allowDeleteWithNoModalOpen}
           multiSelectionKeyCode="Shift"
           style={{ background: 'var(--surface-canvas)' }}
