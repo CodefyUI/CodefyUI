@@ -229,6 +229,7 @@ Host guard 會在其他所有檢查之前處理每個 request，包括 SPA 頁�
 ## 限制與錯誤 {/* #limits-and-errors */}
 
 - **Body 大小。** `MAX_RUN_BODY_BYTES`（64 MB，`CODEFYUI_MAX_RUN_BODY_BYTES`）限制每個 request body，並在位元組抵達時逐步計數，包括 chunked request。四條 route 改用 `MAX_UPLOAD_SIZE`（500 MB，`CODEFYUI_MAX_UPLOAD_SIZE`）：`/api/files/upload`、`/api/images/upload`、`/api/models/upload` 與 `/api/custom-nodes/upload`。這些 route 另保留 64 KB 給 multipart metadata，並將設定的上限套用到檔案本身。超過任一上限時會回傳 413。
+- **檔案名稱。** 四條上傳 route 會以檔名中最後一個 `/` 之後的部分儲存檔案；名稱若是 Windows 無法儲存的，會回傳 400：含有 `< > : " \ | ? *` 或控制字元、以 UTF-8 計算超過 255 bytes（一個中文字占 3 bytes）、只由點組成，或是 `con.csv` 這類裝置名稱。這條規則在每種伺服器作業系統上都相同，所以上傳的檔案可以在 Windows、macOS 與 Linux 之間移動。下載與刪除 route 以及 `/api/custom-nodes/toggle` 會拒絕含有控制字元的名稱；在 Windows 伺服器上，也會拒絕含有上述字元的名稱。在 Linux 與 macOS 上，這類名稱照常查找，所以已經以這類名稱存放的檔案仍然可以取用。這些 route 不限制名稱長度：某一段超過伺服器檔案系統上限的名稱會回傳 404。`/api/custom-nodes/upload` 與 `/api/custom-nodes/toggle` 另外拒絕以 `__` 開頭的名稱，例如 `__init__.py`。每個拒絕的 `detail` 都會說明該改什麼。`/api/presets/create` 對預設模組名稱套用同一條規則，長度以實際寫入的檔名（名稱加上 `.json`）計算，並回傳帶代碼的 `detail`。
 - **拒絕順序。** Host guard 先執行，可能回傳 421；接著是驗證，可能回傳 403 或 401；最後才檢查 body 大小。被拒絕的 request body 不會被讀取。因此，未驗證的 request 不會收到 413 response。
 - **WebSocket frame。** Transport 會執行 `WS_MAX_MESSAGE_BYTES`（`CODEFYUI_WS_MAX_MESSAGE_BYTES`，預設等於 request body 上限）。frame 超過上限時，連線會以 code 1009 關閉，而不是回傳 413。手動啟動 uvicorn 時請參閱[把 graph 當成函式呼叫，第 8 節](/usage/graph-as-a-function#8-limits-and-gotchas)。
 - **錯誤格式。** API 依 route 類別使用四種格式：

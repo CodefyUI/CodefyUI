@@ -824,6 +824,19 @@ describe('uploadCustomNode', () => {
     mockFetch(500, {});
     await expect(uploadCustomNode(new File([''], 'x'))).rejects.toThrow(/Upload failed/);
   });
+
+  // #520: every refusal of a custom-node upload read "Upload failed: Bad
+  // Request", including the ones that say what to change.
+  it('surfaces the backend detail on failure', async () => {
+    const detail = "File names cannot contain '?', which Windows does not allow.";
+    mockFetch(400, { detail });
+    await expect(uploadCustomNode(new File([''], 'what?.py'))).rejects.toThrow(detail);
+  });
+
+  it('falls back to a generic message when the error body is not JSON', async () => {
+    mockFetchJsonThrows(500);
+    await expect(uploadCustomNode(new File([''], 'x.py'))).rejects.toThrow(/Upload failed/);
+  });
 });
 
 describe('uploadModelFile', () => {
