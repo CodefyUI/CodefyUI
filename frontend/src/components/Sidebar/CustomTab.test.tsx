@@ -373,6 +373,49 @@ describe('CustomTab', () => {
     expect(mockedRest.listCustomNodes).toHaveBeenCalledTimes(2);
   });
 
+  // Two reads of the file list can be out at once -- mount and Refresh, or a
+  // Refresh and the manager closing -- and the older answer can land last
+  // (#506).
+  it('applies only the newest list when two reads cross', async () => {
+    let answerFirst!: (nodes: CustomNodeInfo[]) => void;
+    let answerSecond!: (nodes: CustomNodeInfo[]) => void;
+    mockedRest.listCustomNodes
+      .mockReturnValueOnce(new Promise((resolve) => { answerFirst = resolve; }))
+      .mockReturnValueOnce(new Promise((resolve) => { answerSecond = resolve; }));
+    render(<CustomTab />);
+    fireEvent.click(screen.getByRole('button', { name: 'Refresh' }));
+    expect(mockedRest.listCustomNodes).toHaveBeenCalledTimes(2);
+
+    await act(async () => answerSecond([customNode({ filename: 'newer.py' })]));
+    await act(async () => answerFirst([customNode({ filename: 'older.py' })]));
+    expect(screen.getByText('newer.py')).toBeTruthy();
+    expect(screen.queryByText('older.py')).toBeNull();
+  });
+
+  it('keeps its load error up while a re-read that keeps the list is out', async () => {
+    // The re-read after the manager closes keeps what is on screen. When that
+    // is the error, clearing it at once showed "0" and "No custom nodes yet"
+    // until the answer came -- a list the tab had never read.
+    mockedRest.listCustomNodes.mockRejectedValueOnce(new Error('list boom'));
+    render(<CustomTab />);
+    await screen.findByText('Failed to load: list boom');
+
+    let answer!: (nodes: CustomNodeInfo[]) => void;
+    mockedRest.listCustomNodes.mockReturnValueOnce(
+      new Promise((resolve) => { answer = resolve; }),
+    );
+    // Opened from the toolbar: the error in this tab replaces Manage...
+    act(() => useUIStore.getState().openCustomNodeManager());
+    act(() => useUIStore.getState().closeCustomNodeManager());
+    expect(mockedRest.listCustomNodes).toHaveBeenCalledTimes(2);
+    expect(screen.getByText('Failed to load: list boom')).toBeTruthy();
+    expect(screen.queryByText('No custom nodes yet')).toBeNull();
+
+    await act(async () => answer([customNode({ filename: 'back.py' })]));
+    expect(screen.getByText('back.py')).toBeTruthy();
+    expect(screen.queryByText('Failed to load: list boom')).toBeNull();
+  });
+
   it('shows the error state and retries on click', async () => {
     // A catalog read that failed is still the tab's error to report: the
     // Plugins section is one of the two lists this tab is about, and half a

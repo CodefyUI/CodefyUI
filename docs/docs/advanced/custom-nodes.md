@@ -45,7 +45,7 @@ To upload a file instead of copying it into the directory, use the [Custom Node 
 
 ## Uploading through the Custom Node Manager
 
-Open the manager with the **Manage...** button in the **Custom Nodes** section of the sidebar's **Custom & Plugins** tab. It lists each file in `custom_nodes/`, the node names defined by that file, and three actions:
+Open the manager with the toolbar's **Custom Nodes** button, or with the **Manage...** button in the **Custom Nodes** section of the sidebar's **Custom & Plugins** tab; `Esc` closes it. It lists each file in `custom_nodes/`, the node names defined by that file, and three actions:
 
 - **Upload .py** sends one file to `POST /api/custom-nodes/upload`. The file must have a `.py` extension and cannot exceed `CODEFYUI_MAX_UPLOAD_SIZE` (500 MB). The server scans it with the plugin AST gate at [Tier 0](/advanced/plugins#security--three-tiers). Custom nodes cannot declare capabilities, so imports such as `requests` or `os` produce a `400` response with the gate's message. Put a node that needs imports outside Tier 0 in a [plugin pack](./plugins) with a `[security]` section. Files copied directly into `backend/app/custom_nodes/` are loaded at the next reload without this scan.
 - **Enable / Disable** renames the file between `name.py` and `name.py.disabled`; a disabled file stays on disk and is skipped by discovery.

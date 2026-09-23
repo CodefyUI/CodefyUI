@@ -1158,6 +1158,41 @@ describe('TabBar', () => {
       expect(both.getAttribute('title')).toBe('Opened by graph-copilot');
     });
 
+    it('says a tab is running in its name, which the dot alone never did (#504)', () => {
+      // A background run is otherwise only a yellow dot, and the name set
+      // above replaces the tab's content, so nothing else would say it.
+      useTabStore.getState().addTab('Tab 2');
+      useTabStore.getState().addTab('Tab 3');
+      markTab(0, { status: 'running' });
+      markTab(2, {
+        status: 'running',
+        readOnly: true,
+        source: { kind: 'agent-variant', pluginId: 'graph-copilot' },
+      });
+      render(<TabBar />);
+
+      expect(tabNamed('Tab 1, running')).toBeTruthy();
+      // An idle tab says nothing about running.
+      expect(tabNamed('Tab 2')).toBeTruthy();
+      expect(tabNamed('Tab 3, opened by graph-copilot, read-only, running')).toBeTruthy();
+    });
+
+    it('drops "running" from the name once the run ends', () => {
+      markTab(0, { status: 'running' });
+      render(<TabBar />);
+      expect(tabNamed('Tab 1, running')).toBeTruthy();
+
+      act(() => markTab(0, { status: 'idle' }));
+      expect(tabNamed('Tab 1')).toBeTruthy();
+    });
+
+    it('says a tab is running in zh-TW too', () => {
+      useI18n.setState({ locale: 'zh-TW' });
+      markTab(0, { status: 'running', readOnly: true });
+      render(<TabBar />);
+      expect(tabNamed('Tab 1，唯讀，執行中')).toBeTruthy();
+    });
+
     it('keeps a tab name that happens to contain a placeholder as typed', () => {
       markTab(0, { name: '{plugin}', source: { kind: 'agent-variant', pluginId: 'graph-copilot' } });
       render(<TabBar />);

@@ -259,17 +259,16 @@
   cursor: not-allowed;
 }
 
-/* status-error on the panel surface clears 4.5:1, so the resting colour
-   (not just the hover state) can carry it directly. */
-.rowBtnDanger {
-  color: var(--status-error);
+/* The destructive action marks itself where the pointer or the keyboard is,
+   as Source Control's `.dangerAction` does: a red border, and the label every
+   row action has there. Never a red label: its row turns --surface-hover
+   under the pointer, and --surface-active once expanded, where --status-error
+   is 3.92:1 and 3.25:1 (3.33:1 over --danger-wash) -- under the 4.5:1 that
+   12px text needs. As a border it is a graphic, which needs 3:1. */
+.rowBtnDanger:hover:not(:disabled),
+.rowBtnDanger:focus-visible {
   border-color: var(--status-error);
-}
-
-.rowBtnDanger:hover:not(:disabled) {
-  color: var(--status-error);
-  background: var(--danger-wash);
-  border-color: var(--status-error);
+  color: var(--text-primary);
 }
 
 /* ── detail ── */

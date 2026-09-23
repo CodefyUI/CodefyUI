@@ -4,6 +4,7 @@ import { useUIStore } from '../../store/uiStore';
 import { useToastStore } from '../../store/toastStore';
 import { usePackStore } from '../../store/packStore';
 import { usePluginStore } from '../../store/pluginStore';
+import { useDialogStore } from '../../store/dialogStore';
 import { useI18n } from '../../i18n';
 import {
   resetWeights,
@@ -60,6 +61,16 @@ const selectPluginsLoaded = (state: PluginStoreState): boolean => state.loaded;
 const selectPluginsUnsupported = (state: PluginStoreState): boolean => state.unsupported;
 const selectInstallingPluginId = (state: PluginStoreState): string | null =>
   state.job !== null && state.job.status === 'running' ? state.job.pluginId : null;
+
+/**
+ * Before the popover closes itself -- Escape, Create segment -- hand focus in
+ * it to the Settings button (#490): it would otherwise go down with the
+ * popover to the page body. Focus that has left the popover (it is no focus
+ * trap) stays where it is.
+ */
+function returnFocusToTrigger(panel: HTMLElement | null, trigger: HTMLElement | null): void {
+  if (panel?.contains(document.activeElement)) trigger?.focus();
+}
 
 export function SettingsPopover({ open, onClose, triggerRef }: Props) {
   const ref = useRef<HTMLDivElement>(null);
@@ -204,7 +215,13 @@ export function SettingsPopover({ open, onClose, triggerRef }: Props) {
       onClose();
     };
     const handleKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose();
+      if (e.key !== 'Escape') return;
+      // A confirm raised from here (Reset) sits above the popover and takes
+      // Escape itself. One press closes one window: closing this one too took
+      // the button the confirm hands focus back to.
+      if (useDialogStore.getState().active !== null) return;
+      returnFocusToTrigger(ref.current, triggerRef.current);
+      onClose();
     };
     // Capture phase, so a press on the canvas counts: React Flow's pane stops
     // mousedown from bubbling up to `document`.
@@ -217,6 +234,16 @@ export function SettingsPopover({ open, onClose, triggerRef }: Props) {
   }, [open, onClose, triggerRef]);
 
   if (!open) return null;
+
+  // Opening a center from here closes this popover, and the pressed button
+  // goes with it (#490). A center gives focus back on close only to an element
+  // still on the page, so focus fell to the page body. Moved to the Settings
+  // button first, focus has that button to come back to.
+  const openCenter = (openIt: () => void) => {
+    triggerRef.current?.focus();
+    onClose();
+    openIt();
+  };
 
   const handleResetWeights = async () => {
     // The reset button is disabled when !graphId, so graphId is always set here
@@ -289,6 +316,7 @@ export function SettingsPopover({ open, onClose, triggerRef }: Props) {
       const group = { id: generateId(), headNodeId: left.id, tailNodeId: right.id };
       addSegmentGroup(group);
       setActiveSegment(group);
+      returnFocusToTrigger(ref.current, triggerRef.current);
       onClose();
       return;
     }
@@ -442,11 +470,10 @@ export function SettingsPopover({ open, onClose, triggerRef }: Props) {
                       className={styles.linkBtn}
                       onClick={(e) => {
                         e.stopPropagation();
-                        onClose();
                         // No argument: `PackGpuInfo` carries no pack id, and a
                         // hardcoded one here would silently focus nothing the
                         // day the catalog renames that pack.
-                        openPackCenter();
+                        openCenter(() => openPackCenter());
                       }}
                     >
                       {t('settings.packs.name')}
@@ -559,11 +586,10 @@ export function SettingsPopover({ open, onClose, triggerRef }: Props) {
                 type="button"
                 onClick={(e) => {
                   e.stopPropagation();
-                  onClose();
                   // No argument: this entry point opens the whole catalog,
                   // and passing the click event through would focus a "pack"
                   // named after a React synthetic event.
-                  openPackCenter();
+                  openCenter(() => openPackCenter());
                 }}
                 className={styles.action}
               >
@@ -580,10 +606,9 @@ export function SettingsPopover({ open, onClose, triggerRef }: Props) {
                 type="button"
                 onClick={(e) => {
                   e.stopPropagation();
-                  onClose();
                   // No argument, for the same reason the pack button passes
                   // none: this entry point opens the whole catalog.
-                  openPluginCenter();
+                  openCenter(() => openPluginCenter());
                 }}
                 // "Open" reads fine beside its own row and says nothing at
                 // all in a list of controls, where it is now the second one

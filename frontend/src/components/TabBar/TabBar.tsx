@@ -242,6 +242,9 @@ export function TabBar() {
             label = t('tabBar.source.aria', { plugin: tab.source.pluginId, name: label });
           }
           if (tab.readOnly) label = t('tabBar.readOnly.aria', { name: label });
+          // And the running dot, which has no text (#504): a run in a
+          // background tab was otherwise something only a sighted user knew.
+          if (isRunning) label = t('tabBar.running.aria', { name: label });
 
           return (
             <div

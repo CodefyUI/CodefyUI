@@ -45,7 +45,7 @@ class MyNode(BaseNode):
 
 ## 透過自訂節點管理上傳 {/* #uploading-through-the-custom-node-manager */}
 
-請使用側邊欄**自訂與外掛**分頁之**自訂節點**區段中的**管理...** 按鈕開啟管理視窗。它會列出 `custom_nodes/` 中的每個檔案、該檔案定義的節點名稱，以及三種操作：
+請使用工具列的**自訂節點**按鈕，或側邊欄**自訂與外掛**分頁之**自訂節點**區段中的**管理...** 按鈕開啟管理視窗；按 `Esc` 即可關閉。它會列出 `custom_nodes/` 中的每個檔案、該檔案定義的節點名稱，以及三種操作：
 
 - **上傳 .py** 會將一個檔案送至 `POST /api/custom-nodes/upload`。檔案必須使用 `.py` 副檔名，而且不得超過 `CODEFYUI_MAX_UPLOAD_SIZE`（500 MB）。伺服器會以外掛 AST 閘門的[第 0 級](/advanced/plugins#security--three-tiers)掃描檔案。自訂節點無法宣告能力，因此 `requests` 或 `os` 等 imports 會產生 `400` response 與閘門訊息。需要第 0 級以外 imports 的節點，應放入具有 `[security]` 區段的[外掛包](./plugins)。直接複製到 `backend/app/custom_nodes/` 的檔案，會在下次重新載入時載入，不會進行這項掃描。
 - **啟用／停用**會在 `name.py` 與 `name.py.disabled` 之間重新命名檔案；停用的檔案仍留在磁碟上，但探索時會跳過。
