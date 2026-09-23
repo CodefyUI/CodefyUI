@@ -41,6 +41,34 @@ type BaseNodeProps = NodeProps<AppNode> & {
 const CODE_PREVIEW_LINES = 4;
 
 /**
+ * Characters of streamed text the running footer keeps (#486). Three lines at
+ * any realistic card width need far fewer, and the cap keeps a 200K-character
+ * LLMChat answer from being laid out on every frame.
+ */
+const LIVE_TEXT_TAIL_CHARS = 1000;
+
+/** The char code of U+FFFD, what a byte-level decode makes of a half-received character. */
+const REPLACEMENT_CHAR_CODE = 0xfffd;
+
+/**
+ * The end of the text a running node has written so far, or null when its
+ * progress frame carries no text worth showing (#486).
+ *
+ * Each frame carries the whole text so far (TextGenerate, HFTextGenerate,
+ * LLMChat, and an embedding node's "Embedding N/M"), so the latest frame is
+ * all there is to show. A frame that ends inside a multi-byte character ends
+ * in U+FFFD, which is common for CJK through gpt2 byte tokens; the next frame
+ * completes the character, so it is dropped rather than flashed.
+ */
+function liveTextTail(text: unknown): string | null {
+  if (typeof text !== 'string') return null;
+  let end = text.length;
+  while (end > 0 && text.charCodeAt(end - 1) === REPLACEMENT_CHAR_CODE) end -= 1;
+  const tail = text.slice(Math.max(0, end - LIVE_TEXT_TAIL_CHARS), end);
+  return tail.trim() === '' ? null : tail;
+}
+
+/**
  * The opening lines of a CODE param, on the node card (core#131).
  *
  * Blank and comment-only leading lines are skipped so the preview starts at
@@ -237,6 +265,13 @@ export function BaseNodeBody({ id, data, selected, bodyExtra }: BaseNodeProps) {
       : 'var(--border-base)';
 
   const description = def ? tn(def.node_name, 'description', def.description) : '';
+
+  // #486: a node that writes text shows its latest lines in the running
+  // footer instead of "Running...". An epoch frame keeps its bar.
+  const liveText =
+    data.executionStatus === 'running' && data.progress?.event !== 'epoch'
+      ? liveTextTail(data.progress?.text)
+      : null;
 
   // Any output that points to a downloadable file (set by the backend for
   // string values under MODELS_DIR). Currently ModelSaver/CheckpointSaver.
@@ -528,9 +563,17 @@ export function BaseNodeBody({ id, data, selected, bodyExtra }: BaseNodeProps) {
         </div>
       )}
 
-      {/* Status footer — running (with optional progress) */}
+      {/* Status footer — running: the epoch bar, the text the node has
+          written so far (#486), or the plain indicator. The text replaces
+          the indicator on screen only: "Running..." stays, off screen, for a
+          screen reader. No title (the text can be huge) and no aria-live (it
+          would read every frame aloud). */}
       {data.executionStatus === 'running' && (
-        <div className={`${styles.statusFooter} ${styles.statusRunning}`}>
+        <div
+          className={`${styles.statusFooter} ${
+            liveText === null ? styles.statusRunning : styles.statusStreaming
+          }`}
+        >
           {data.progress?.event === 'epoch' ? (
             <div className={styles.progressContainer}>
               <div className={styles.progressInfo}>
@@ -544,6 +587,13 @@ export function BaseNodeBody({ id, data, selected, bodyExtra }: BaseNodeProps) {
                 />
               </div>
             </div>
+          ) : liveText !== null ? (
+            <>
+              <span className={styles.srOnly}>{t('node.running')}</span>
+              <div className={styles.streamingText}>
+                <span>{liveText}</span>
+              </div>
+            </>
           ) : (
             <>
               <span className={styles.statusRunningDot} />

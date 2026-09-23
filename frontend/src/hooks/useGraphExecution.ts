@@ -172,8 +172,12 @@ export function useGraphExecution() {
                 type: 'info',
               });
             }
-            return;
           }
+          // A frame over the server's event cap arrives with no payload: the
+          // entry elided, or the whole event collapsed to a marker (#486). It
+          // is still a progress frame, so it never becomes the node's status
+          // or a Log line; the card keeps the last frame that did arrive.
+          return;
         }
 
         queueTabNodeStatus(tabId, data.node_id, data.status, data.error);

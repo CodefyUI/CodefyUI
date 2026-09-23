@@ -252,6 +252,48 @@ describe('useGraphExecution - node_status handler', () => {
     expect(tab.logs.some((l: any) => l.kind === 'progress')).toBe(false);
   });
 
+  // #486: a frame over the server's event cap (`cap_event_payload`) arrives
+  // with its payload elided: the progress entry alone, or, when that was not
+  // enough, the whole event collapsed to a marker with no `outputs`. It is
+  // still a progress frame, never a status.
+  it.each([
+    [
+      'the progress entry elided',
+      {
+        node_id: 'n1',
+        status: 'progress',
+        outputs: [{ output_kind: 'progress', elided: true, bytes: 150093, cap_bytes: 131072 }],
+      },
+    ],
+    [
+      'the whole event collapsed to a marker',
+      { node_id: 'n1', status: 'progress', elided: true, bytes: 150093, cap_bytes: 131072 },
+    ],
+  ])('an elided progress frame (%s) leaves the node running and adds no log line', (_label, frame) => {
+    const ws = tabById('t1').ws as FakeWs;
+    renderHook(() => useGraphExecution());
+
+    act(() => {
+      ws.emit('node_status', { node_id: 'n1', status: 'running' });
+      ws.emit('node_status', {
+        node_id: 'n1',
+        status: 'progress',
+        outputs: [{ output_kind: 'progress', progress: { text: 'the text so far' } }],
+      });
+    });
+    flushFrame();
+    act(() => {
+      ws.emit('node_status', frame);
+    });
+    flushFrame();
+
+    const tab = tabById('t1');
+    expect(tab.nodes[0].data.executionStatus).toBe('running');
+    // The card keeps the last frame that did arrive.
+    expect(tab.nodes[0].data.progress).toEqual({ text: 'the text so far' });
+    expect(tab.logs.some((l: any) => String(l.message).endsWith('progress'))).toBe(false);
+  });
+
   it('suppresses logs for running status but updates node status', () => {
     const ws = tabById('t1').ws as FakeWs;
     renderHook(() => useGraphExecution());

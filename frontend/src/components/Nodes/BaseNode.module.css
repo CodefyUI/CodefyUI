@@ -387,6 +387,57 @@
   animation: pulse 1s infinite;
 }
 
+/* Running footer of a node that writes text (#486): its latest lines, in
+   place of the dot and "Running...". The amber border still says the node is
+   running, so the text is in the secondary text colour, not the status one. */
+.statusStreaming {
+  color: var(--text-secondary);
+  line-height: var(--lh-snug);
+  text-align: left;
+  /* The extra leading of --lh-snug over the footer's --lh-tight, taken back
+     out of the padding: one line of text stands exactly as tall as
+     "Running..." did, so the card does not move when the first text arrives.
+     In em, so it holds at every font size. */
+  padding-block: calc(var(--sp-2) - 0.5em * (var(--lh-snug) - var(--lh-tight)));
+  /* The card keeps the width its ports and params gave it. A React Flow node
+     is shrink-to-fit, so without this the whole answer on one line would set
+     the card's width. */
+  contain: inline-size;
+}
+
+/* At most three lines, newest at the bottom. line-clamp keeps the head, and a
+   character count cannot know where CJK and Latin lines break, so the column
+   is anchored at its end and the older lines clip off the top. */
+.streamingText {
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  max-height: calc(3em * var(--lh-snug));
+  overflow: hidden;
+}
+
+/* Newlines show, and a long unbroken token wraps instead of overflowing. */
+.streamingText > span {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+/* "Running..." for a screen reader while the streamed text takes its place on
+   screen. Off screen rather than `display: none`, which assistive tech
+   ignores. The same rule set as `.srOnly` in SourceControl.module.css and
+   PackCenterModal.module.css. */
+.srOnly {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
+}
+
 .statusCompleted {
   color: var(--status-completed);
   text-align: center;

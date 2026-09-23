@@ -2880,7 +2880,16 @@ export const useTabStore = create<TabStoreState>((rawSet, get) => {
       tabs: updateTab(get().tabs, get().activeTabId, (tab) => ({
         nodes: tab.nodes.map((n) => ({
           ...n,
-          data: { ...n.data, executionStatus: 'idle' as const, error: undefined },
+          // `progress` too (#486): a run starts here, and the last run's final
+          // frame would otherwise sit under the new run's running border --
+          // its epoch bar, or the text it had written -- until the new run's
+          // first frame arrives. Run state, so the revision does not move.
+          data: {
+            ...n.data,
+            executionStatus: 'idle' as const,
+            error: undefined,
+            progress: undefined,
+          },
         })),
       })),
     }),
