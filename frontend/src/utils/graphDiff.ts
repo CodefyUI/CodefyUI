@@ -17,8 +17,13 @@
  *
  * - Nodes by `id`. A logic node is `{id, type, data}` with its parameters at
  *   `data.params` -- never at `node.params`, which is the shape a PRESET's
- *   inner nodes use (`frontend/src/types/index.ts:151`). What a line CALLS a
- *   node is `nodeName` below.
+ *   inner nodes use (`PresetDefinition` in `frontend/src/types/index.ts`).
+ *   What a line CALLS a node is `nodeName` below.
+ * - A preset INSTANCE's own settings, at `data.internalParams`: inner node id
+ *   -> that inner node's parameters, as the preset's Configure window writes
+ *   them. Each inner node is compared the way `data.params` is, and a change
+ *   is reported under the instance as `<inner node>.<param>` -- the inner id
+ *   shortened by the rule `nodeName` applies to a node's own.
  * - Edges by `${source}:${sourceHandle}->${target}:${targetHandle}`, with a
  *   missing handle read as empty. A trigger edge carries NO `targetHandle`
  *   (`examples/Classical/Iris-Sklearn-KNN/graph.json`), so without that
@@ -77,10 +82,8 @@ export interface GraphDiffSummary {
    *
    * Empty WITH `noLogicChange` false is a normal answer, not a failure: the
    * file changed in a way v1 has no line kind for -- a layout file added or
-   * deleted, a name or description edit, a segment group, a note resized, a
-   * preset or subgraph DEFINITION that appeared or vanished, or a preset
-   * instance's per-instance override, which lives at `data.internalParams`
-   * and not at `data.params`. Render nothing
+   * deleted, a name or description edit, a segment group, a note resized, or
+   * a preset or subgraph DEFINITION that appeared or vanished. Render nothing
    * (or fall straight through to the text diff) rather than an empty strip
    * with no sentence in it.
    */
@@ -214,12 +217,17 @@ function emptyTally(): Tally {
   };
 }
 
-/** A node reduced to the three things the summary can talk about. */
+/** A node reduced to the four things the summary can talk about. */
 interface NodeFacts {
   /** What the line calls it -- `nodeName`. */
   name: string;
   type: string;
   params: Doc;
+  /**
+   * A preset instance's own settings, `data.internalParams`: inner node id ->
+   * that inner node's parameters. Empty for every other node.
+   */
+  settings: Doc;
 }
 
 function compareGraphs(before: Doc, after: Doc, tally: Tally): void {
@@ -278,13 +286,14 @@ function compareNodes(before: Map<string, NodeFacts>, after: Map<string, NodeFac
       continue;
     }
     compareParams(facts.name, was.params, facts.params, tally);
+    compareSettings(facts.name, was.settings, facts.settings, tally);
   }
   for (const id of before.keys()) {
     if (!after.has(id)) tally.nodesRemoved += 1;
   }
 }
 
-function compareParams(node: string, before: Doc, after: Doc, tally: Tally): void {
+function compareParams(node: string, before: Doc, after: Doc, tally: Tally, prefix = ''): void {
   const keys = Object.keys(after);
   for (const key of Object.keys(before)) {
     if (!hasOwn(after, key)) keys.push(key);
@@ -295,7 +304,32 @@ function compareParams(node: string, before: Doc, after: Doc, tally: Tally): voi
     const from = valueText(before, param);
     const to = valueText(after, param);
     if (from === to) continue;
-    tally.paramChanges.push({ node, param, from: clipValue(from), to: clipValue(to) });
+    tally.paramChanges.push({ node, param: prefix + param, from: clipValue(from), to: clipValue(to) });
+  }
+}
+
+/**
+ * A preset instance's settings, one inner node at a time.
+ *
+ * Not flattened into a single `<inner>.<param>` map first: `a.b` + `c` and
+ * `a` + `b.c` would then be one key, and a value that moved from one inner
+ * node to the other would compare equal.
+ */
+function compareSettings(node: string, before: Doc, after: Doc, tally: Tally): void {
+  const ids = Object.keys(after);
+  for (const id of Object.keys(before)) {
+    if (!hasOwn(after, id)) ids.push(id);
+  }
+  for (const id of ids) {
+    // An inner node on one side only reads as an empty map on the other, so
+    // each of its parameters is reported as added or removed. A value that is
+    // not a map, which only a hand-edited file holds, reads as empty too.
+    const was = hasOwn(before, id) && isPlainObject(before[id]) ? before[id] : {};
+    const now = hasOwn(after, id) && isPlainObject(after[id]) ? after[id] : {};
+    // No type: the settings do not say what an inner node is -- the preset
+    // definition does, and the file need not carry it -- so a generated inner
+    // id prints as its first eight characters alone.
+    compareParams(node, was, now, tally, `${nodeName(id, '', null)}.`);
   }
 }
 
@@ -443,6 +477,7 @@ function graphNodes(list: unknown): Map<string, NodeFacts> {
       name: nodeName(raw.id, type, label),
       type,
       params: isPlainObject(data.params) ? data.params : {},
+      settings: isPlainObject(data.internalParams) ? data.internalParams : {},
     });
   }
   return out;
@@ -453,10 +488,12 @@ function graphNodes(list: unknown): Map<string, NodeFacts> {
  * `data`. Named `<preset>/<node>` because a preset's ids live in their own
  * namespace and can collide with the graph's own.
  *
- * The node half goes through the same `nodeName`, and it has to: a block is
- * built by collapsing a canvas selection, so its insides carry the same
- * generated ids the top level does. There is no label to prefer -- an inner
- * node's `data` is not part of this shape.
+ * The node half goes through the same `nodeName`. The app's own preset
+ * export renames every inner node to `node_<i>` (`create_preset` in
+ * `backend/app/api/routes_presets.py`), so a long inner id comes only from a
+ * hand-written definition, and it then prints like a node's: type plus eight
+ * characters. There is no label to prefer -- an inner node's `data` is not
+ * part of this shape.
  */
 function presetNodes(preset: Doc, presetName: string): Map<string, NodeFacts> {
   const out = new Map<string, NodeFacts>();
@@ -467,6 +504,9 @@ function presetNodes(preset: Doc, presetName: string): Map<string, NodeFacts> {
       name: `${presetName}/${nodeName(raw.id, type, null)}`,
       type,
       params: isPlainObject(raw.params) ? raw.params : {},
+      // `data.internalParams` is a field of an instance on the canvas; a
+      // definition's inner node is `{id, type, params}` and has no settings.
+      settings: {},
     });
   }
   return out;
