@@ -346,6 +346,53 @@ async def test_the_interactive_lane_scrubs_its_snapshot_too(
     assert LIVE_KEY.encode() not in _db_bytes(db_path)
 
 
+async def test_the_interactive_lane_scrubs_a_key_inside_a_preset_node(
+        store, service, db_path):
+    """A preset node's ``internalParams`` is the third place a key can sit.
+
+    The canvas sends the keys the user typed with every run, and a key typed
+    into an old preset that still exposes one lands here, not in ``params``.
+    The run must still get it; the stored row must not.
+    """
+    graph = {
+        "nodes": [
+            {"id": "start", "type": "Start", "data": {"params": {}}},
+            {"id": "src", "type": "_SecretSource",
+             "data": {"params": {"val": "hi"}}},
+            {"id": "p", "type": "preset:_KeyedEcho",
+             "data": {"params": {},
+                      "internalParams": {"echo": {"api_key": LIVE_KEY}}}},
+        ],
+        "edges": [
+            {"id": "et", "source": "start", "target": "src",
+             "sourceHandle": "trigger", "type": "trigger"},
+            {"id": "e1", "source": "src", "target": "p",
+             "sourceHandle": "value", "targetHandle": "value"},
+        ],
+        # Portable, as the canvas sends it, so no preset has to be installed.
+        "presets": [{
+            "preset_name": "_KeyedEcho", "category": "Test", "description": "",
+            "nodes": [{"id": "echo", "type": "_SecretEcho",
+                       "params": {"api_key": "", "label": "x"}}],
+            "edges": [],
+            "exposed_inputs": [{"name": "value", "internal_node": "echo",
+                                "internal_port": "value"}],
+            "exposed_outputs": [{"name": "value", "internal_node": "echo",
+                                 "internal_port": "value"}],
+            "exposed_params": [],
+        }],
+    }
+    submitted = await service.submit(graph, options={"lane": LANE_INTERACTIVE})
+    record = await _await_terminal(store, submitted.run_id)
+    assert record.status == STATUS_SUCCEEDED
+
+    snapshot = await store.get_graph_snapshot(submitted.run_id)
+    stored = {n["id"]: n for n in snapshot["nodes"]}
+    assert stored["p"]["data"]["internalParams"]["echo"]["api_key"] == ""
+    assert _SecretEchoNode.seen == [LIVE_KEY]
+    assert LIVE_KEY.encode() not in _db_bytes(db_path)
+
+
 async def test_a_graph_without_secrets_is_stored_verbatim(store, service):
     """No secret, no vault entry, no copying -- the common case is untouched."""
     submitted = await service.submit(_secret_graph(key=""))

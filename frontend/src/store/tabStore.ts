@@ -750,7 +750,14 @@ interface TabStoreState {
   setNodeExecutionStatus: (nodeId: string, status: NodeData['executionStatus'], error?: string) => void;
   clearExecutionStatus: () => void;
   clear: () => void;
-  getSerializedGraph: () => {
+  /**
+   * SECRET params (an API key typed into a node) come back as `""`, so no
+   * save, export or plugin read carries a key. `keepSecrets: true` is for the
+   * Run message alone (`useGraphExecution`), whose run needs the key: it keeps
+   * each typed value the server will blank in its stored copy of the run
+   * (#251), and blanks the rest (see `secretsTheServerMisses`).
+   */
+  getSerializedGraph: (options?: { keepSecrets?: boolean }) => {
     nodes: any[];
     edges: any[];
     // None of these are optional: the serializer always answers with a list,
@@ -767,7 +774,7 @@ interface TabStoreState {
     settings?: import('../types').GraphSettings;
   };
   /** The serializer as a pure function of a tab. `getSerializedGraph()` calls it with the active one. */
-  getSerializedGraphOf: (tab: TabState) => ReturnType<TabStoreState['getSerializedGraph']>;
+  getSerializedGraphOf: (tab: TabState, options?: { keepSecrets?: boolean }) => ReturnType<TabStoreState['getSerializedGraph']>;
   /**
    * Collapse the canvas selection into one subgraph instance (core#137).
    *
@@ -1435,6 +1442,7 @@ function stripSecretInternalParams(
 // nothing to strip, so the persistence record cache stays a pointer compare.
 function stripSubgraphSecrets(
   subgraphs: SubgraphDefinition[],
+  keepSecrets = false,
 ): SubgraphDefinition[] {
   if (!subgraphs.length) return subgraphs;
   const { definitions, presets } = useNodeDefStore.getState();
@@ -1447,11 +1455,18 @@ function stripSubgraphSecrets(
       const type: string = raw?.type ?? '';
       const data = raw?.data;
       if (!data) return raw;
-      const params = stripSecretParams(data.params, defByName.get(type));
+      // Under `keepSecrets` a node's own SECRET params stay as typed: this code
+      // learns which params are SECRET from the server's registry, so the
+      // server blanks every one. A preset's slots go by its inner nodes'
+      // types, which the server may have dropped.
+      const params = keepSecrets
+        ? data.params
+        : stripSecretParams(data.params, defByName.get(type));
+      const preset = presetByName.get(type.slice('preset:'.length));
       const internalParams = type.startsWith('preset:')
         ? stripSecretInternalParams(
             data.internalParams,
-            presetByName.get(type.slice('preset:'.length)),
+            keepSecrets ? presetSecretsTheServerMisses(preset) : preset,
           )
         : data.internalParams;
       if (params === data.params && internalParams === data.internalParams) {
@@ -1472,6 +1487,76 @@ function stripSubgraphSecrets(
     return { ...definition, nodes };
   });
   return listChanged ? next : subgraphs;
+}
+
+// ── keepSecrets: what the Run message keeps ──
+//
+// Run keeps the SECRET values the user typed, because the run needs them, and
+// the server blanks them in the copy of the run it stores (#251). The server
+// can blank only what its own node registry calls SECRET, though. A node whose
+// type it has dropped (a custom node disabled in the Custom Nodes manager, a
+// plugin that is not loaded) still draws its fields from its old definition,
+// so its key would reach the run history as typed, and the run then fails as
+// an unknown type anyway. So Run blanks, as Save does, every SECRET value the
+// server would miss, judged by the registry it last reported: `useNodeDefStore`,
+// fetched from /api/nodes.
+
+/**
+ * The registry entry the server resolves `nodeType` to, by the rule of
+ * `NodeRegistry.get` (`/api/nodes` reports each entry's registry key as its
+ * `node_name`): the exact name wins; a name with no plugin prefix otherwise
+ * finds the alphabetically first `<plugin>:<name>`, so an old graph's bare
+ * `SecretChat` resolves to `c9:SecretChat`.
+ */
+function serverDefinitionOf(nodeType: string | undefined): NodeDefinition | undefined {
+  if (!nodeType) return undefined;
+  const { definitions } = useNodeDefStore.getState();
+  const exact = definitions.find((d) => d.node_name === nodeType);
+  if (exact || nodeType.includes(':')) return exact;
+  // Code-unit order, as Python sorts the keys; not `localeCompare`.
+  return definitions
+    .filter((d) => d.node_name.endsWith(`:${nodeType}`))
+    .sort((a, b) => (a.node_name < b.node_name ? -1 : a.node_name > b.node_name ? 1 : 0))[0];
+}
+
+/** Whether the server's registry declares `param` SECRET on `nodeType`. */
+function serverBlanksSecret(nodeType: string | undefined, param: string): boolean {
+  return (serverDefinitionOf(nodeType)?.params ?? []).some(
+    (p) => p.name === param && p.param_type === 'secret',
+  );
+}
+
+/** `definition` cut down to the SECRET params the server would not blank. */
+function secretsTheServerMisses(
+  definition: NodeDefinition | undefined,
+  nodeType: string | undefined,
+): NodeDefinition | undefined {
+  if (!definition) return definition;
+  return {
+    ...definition,
+    params: (definition.params ?? []).filter(
+      (p) => p.param_type === 'secret' && !serverBlanksSecret(nodeType, p.name),
+    ),
+  };
+}
+
+/**
+ * `preset` cut down to the exposed SECRET slots the server would not blank.
+ * A slot's node type comes from the preset's own `nodes`, as on the server.
+ */
+function presetSecretsTheServerMisses(
+  preset: PresetDefinition | undefined,
+): PresetDefinition | undefined {
+  if (!preset) return preset;
+  const innerType = new Map((preset.nodes ?? []).map((n) => [n.id, n.type]));
+  return {
+    ...preset,
+    exposed_params: (preset.exposed_params ?? []).filter(
+      (ep) =>
+        ep.param_def?.param_type === 'secret'
+        && !serverBlanksSecret(innerType.get(ep.internal_node), ep.param_name),
+    ),
+  };
 }
 
 // Return a copy of `nodes` with every SECRET-typed value blanked in both
@@ -2950,7 +3035,7 @@ export const useTabStore = create<TabStoreState>((rawSet, get) => {
     });
   },
 
-  getSerializedGraph: () => {
+  getSerializedGraph: ({ keepSecrets = false } = {}) => {
     // `getTab`, not `getActiveTab`: the latter asserts its lookup with `!`,
     // and there really can be no active tab -- the welcome screen is that
     // state. A PLUGIN observes it: its panel stays mounted across the close,
@@ -2967,10 +3052,10 @@ export const useTabStore = create<TabStoreState>((rawSet, get) => {
     if (!tab) {
       return { nodes: [], edges: [], presets: [], segmentGroups: [], subgraphs: [] };
     }
-    return get().getSerializedGraphOf(tab);
+    return get().getSerializedGraphOf(tab, { keepSecrets });
   },
 
-  getSerializedGraphOf: (input) => {
+  getSerializedGraphOf: (input, { keepSecrets = false } = {}) => {
     // A tab whose canvas is showing a subgraph's insides still SAVES and
     // RUNS the whole graph: flatten the editing stack first, so what is
     // serialized never depends on where the user happens to be standing.
@@ -2987,9 +3072,11 @@ export const useTabStore = create<TabStoreState>((rawSet, get) => {
     // and serialization -- which every Run goes through -- is the last place
     // that should throw over a missing optional.
     const liveSubgraphIds = reachableSubgraphIds(tab.nodes, tab.subgraphs ?? []);
-    const subgraphs = stripSubgraphSecrets(
-      (tab.subgraphs ?? []).filter((d) => liveSubgraphIds.has(d.id)),
-    );
+    const reachable = (tab.subgraphs ?? []).filter((d) => liveSubgraphIds.has(d.id));
+    // SECRET values are blanked here, on the nodes below and in a preset's
+    // `internalParams`. `keepSecrets` (Run) keeps the ones the server will
+    // blank in the run it stores; see `secretsTheServerMisses`.
+    const subgraphs = stripSubgraphSecrets(reachable, keepSecrets);
     const presets: import('../types').PresetDefinition[] = [];
     const seenPresets = new Set<string>();
 
@@ -3024,9 +3111,19 @@ export const useTabStore = create<TabStoreState>((rawSet, get) => {
         type: n.data.type,
         position: roundPosition(n.position),
         data: {
-          params: stripSecretParams(n.data.params, n.data.definition),
+          params: stripSecretParams(
+            n.data.params,
+            keepSecrets ? secretsTheServerMisses(n.data.definition, n.data.type) : n.data.definition,
+          ),
           ...(n.data.isPreset
-            ? { internalParams: stripSecretInternalParams(n.data.internalParams, n.data.presetDefinition) }
+            ? {
+                internalParams: stripSecretInternalParams(
+                  n.data.internalParams,
+                  keepSecrets
+                    ? presetSecretsTheServerMisses(n.data.presetDefinition)
+                    : n.data.presetDefinition,
+                ),
+              }
             : {}),
           // Written only when muted (core#128), so a graph nobody has
           // bypassed anything in serializes byte-identically to before.

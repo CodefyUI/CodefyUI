@@ -234,15 +234,18 @@ describe('send', () => {
     expect(socket.send).toHaveBeenCalledWith(JSON.stringify({ cmd: 'run' }));
   });
 
-  it('warns instead of sending when the socket is not open', async () => {
+  it('warns with the action only when the socket is not open', async () => {
     const ws = new ExecutionWebSocket();
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
-    // No socket at all → readyState check short-circuits.
-    ws.send({ cmd: 'noop' });
-    expect(warnSpy).toHaveBeenCalledWith(
-      'WebSocket is not connected. Cannot send:',
-      { cmd: 'noop' },
-    );
+    // No socket at all → readyState check short-circuits. A Run message
+    // carries the API keys typed into the graph, and a console line is what
+    // gets pasted into a bug report.
+    ws.send({
+      action: 'execute',
+      nodes: [{ data: { params: { openai_api_key: 'sk-TYPED' } } }],
+    });
+    expect(warnSpy).toHaveBeenCalledWith('WebSocket is not connected. Cannot send:', 'execute');
+    expect(JSON.stringify(warnSpy.mock.calls)).not.toContain('sk-TYPED');
     warnSpy.mockRestore();
   });
 });
