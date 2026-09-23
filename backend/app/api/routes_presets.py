@@ -5,6 +5,7 @@ from typing import Any
 from fastapi import APIRouter, HTTPException
 
 from ..config import settings
+from ..core.data_paths import resolve_under
 from ..core.node_base import ParamType
 from ..core.graph_engine import subgraph_id_of
 from ..core.node_registry import registry as node_registry
@@ -84,11 +85,13 @@ def _preset_filename(name: str) -> str:
     for character in name:
         if character in _PATH_CHARACTERS:
             raise _coded(400, "name_separator", character=character)
-        # An embedded NUL (`\u0000` is legal JSON) is what `Path.resolve()`
-        # raises ValueError on -- a 500 with a traceback in the log for
-        # anyone who can reach the port. The other control characters are
-        # refused with it: none of them can be typed into the name box, and
-        # a filename carrying one is unopenable on Windows anyway.
+        # A NUL (`\u0000` is legal JSON) would be refused anyway, by
+        # `_resolved_under`, but only as the generic
+        # `name_escapes_presets_dir`. Refused here, the user gets
+        # `name_control_character` with the codepoint, which says which
+        # character to delete. The other control characters are refused
+        # with it: none of them can be typed into the name box, and a
+        # filename carrying one is unopenable on Windows anyway.
         if ord(character) < 32 or ord(character) == 127:
             raise _coded(400, "name_control_character",
                          codepoint=ord(character))
@@ -117,23 +120,15 @@ def _resolved_under(directory: Path, filename: str) -> Path:
     was supposed to be inside. Nothing should reach this and be refused --
     that is what makes it worth keeping, not what makes it redundant.
 
-    ``target.parent != base`` rather than ``is_relative_to``: it is the
-    containment check AND it additionally refuses a nested path, which a
-    preset file is never allowed to be (the registry globs one flat
-    directory, so a preset written into a subdirectory would vanish from
-    the panel). Written as one comparison rather than two because a second
-    clause implied by the first is a clause no test can fail on.
+    ``direct_child=True``: the containment check AND a refusal of a nested
+    path, which a preset file is never allowed to be (the registry globs one
+    flat directory, so a preset written into a subdirectory would vanish
+    from the panel).
 
-    ``resolve`` is also the one call here that can refuse the string
-    outright -- ``ValueError`` on an embedded NUL, ``OSError`` on a path
-    the operating system will not look up -- and both are the same answer.
+    The rule is :func:`app.core.data_paths.resolve_under` (#483).
     """
-    try:
-        base = directory.resolve()
-        target = (base / filename).resolve()
-    except (OSError, ValueError):
-        raise _coded(400, "name_escapes_presets_dir") from None
-    if target.parent != base:
+    target = resolve_under(directory, filename, direct_child=True)
+    if target is None:
         raise _coded(400, "name_escapes_presets_dir")
     return target
 

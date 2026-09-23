@@ -1269,8 +1269,10 @@ async def test_cancelling_a_failed_sweep_keeps_failed_and_skips_null_runs(
     downgraded a failed sweep to `cancelling` would erase the only
     explanation the user has. And a variant that never got a run is
     `missing` with nothing to cancel: it is counted in NEITHER tally, so
-    `cancelled + already_finished` is the number of variants that had a run,
-    not the variant count.
+    `cancelled + already_finished` is not the variant count.
+    `already_finished` counts runs that had ended or been deleted, so the sum
+    can also fall short of the variants that had a run: see the orphaned
+    `running` child below (#483).
     """
     service = make_service(cpu=1)
     release_filler = probe.hold(_label(0.9))
@@ -1313,6 +1315,39 @@ async def test_cancelling_a_failed_sweep_keeps_failed_and_skips_null_runs(
     finally:
         # Held gates make the fixture's drain wait out shutdown_grace_s.
         release_filler.set()
+
+
+async def test_an_orphaned_running_child_is_counted_in_neither_tally(
+        client, store, db):
+    """#483: a row that still says `running` has not finished.
+
+    `RunService.cancel` reaches a run through the queue or the in-process
+    registry. A row it finds in neither -- a run another server process
+    drives on the same database, or one whose terminal write failed -- comes
+    back as `running` with `cancelled=False`, and the tally used to count
+    every `cancelled=False` as `already_finished`. The row is put back to
+    `running` by hand, the only way a test can get one without a second
+    process or a terminal write that fails.
+    """
+    sweep_id = await _run_sweep(client, store, _values("lr", [0.1, 0.2]))
+    orphan = next(child.id
+                  for child in await store.list_runs_by_sweep(sweep_id)
+                  if child.sweep_variant == 0)
+    await db.run(lambda conn: conn.execute(
+        "UPDATE exec_runs SET status = 'running', finished_at = NULL "
+        "WHERE id = ?", (orphan,)))
+
+    response = await client.post(f"/api/sweeps/{sweep_id}/cancel")
+    assert response.status_code == 200, response.text
+    body = response.json()
+    # Reported as it is: the row says running, and no cancel reached it.
+    assert body["variants"][0] == {"index": 0, "run_id": orphan,
+                                   "status": "running", "cancelled": False}
+    assert body["cancelled"] == 0
+    assert body["already_finished"] == 1      # variant 1, which succeeded
+    # Left alone: it may belong to another process, and a write here would
+    # make that process's own guarded terminal write fail.
+    assert (await store.get_run(orphan)).status == "running"
 
 
 async def test_cancelling_an_unknown_sweep_is_a_404(client):

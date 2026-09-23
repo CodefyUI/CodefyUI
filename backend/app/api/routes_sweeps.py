@@ -582,8 +582,11 @@ async def _harvested_sweep(
         child = children.get(variant.run_id)
         if child is None or child.status not in TERMINAL_STATUSES:
             continue
+        # `if metric`: seam B (`_last_metric_value`) answers None for an
+        # empty name without looking it up, and both seams write this row.
         entries[variant.index] = HarvestEntry(
-            objective=metrics.get(variant.run_id, {}).get(metric),
+            objective=(metrics.get(variant.run_id, {}).get(metric)
+                       if metric else None),
             status=child.status)
 
     # `variant.index in entries` stands in for the patched variant's
@@ -832,8 +835,8 @@ async def cancel_sweep(sweep_id: str, request: Request):
     for variant in sorted(sweep.variants, key=lambda entry: entry.index):
         if variant.run_id is None:
             # The failed-submit-loop case: there is nothing to cancel, and
-            # nothing FINISHED either, so it is counted in neither tally
-            # (spec 5.4: `already_finished` counts the rest that had a run).
+            # nothing FINISHED either, so it is counted in neither tally.
+            # `already_finished` counts runs that had ended or been deleted.
             results.append({"index": variant.index, "run_id": None,
                             "status": _STATUS_MISSING, "cancelled": False})
             continue
@@ -851,8 +854,13 @@ async def cancel_sweep(sweep_id: str, request: Request):
                         "cancelled": outcome.cancelled})
         if outcome.cancelled:
             cancelled += 1
-        else:
+        elif outcome.status in TERMINAL_STATUSES:
             already_finished += 1
+        # Anything else still says it is active although no cancel reached
+        # it: a run another process drives on this database, a row whose
+        # terminal write failed, or one this process is finishing right now.
+        # None of those has finished, so it is in neither tally, like a
+        # variant that never got a run.
 
     if cancelled:
         # `cancelling` ONLY when at least one child was still active. If

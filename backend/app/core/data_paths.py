@@ -1,11 +1,17 @@
-"""Which files under the data root a node may write to (#224).
+"""Which files under the data root a node may write to (#224), and which
+name a route may take from a client (#483).
 
 Every node that turns a graph parameter into a filesystem write shares one
 rule, and it lives here so there is exactly one copy of it. Before #224
 there were three: ``core.checkpoints.resolve_checkpoint_path``,
 ``nodes/io/model_saver_node.py`` and ``nodes/io/image_writer_node.py`` each
 open-coded "resolve, then require ``MODELS_DIR.parent``", which meant three
-places to fix and three places to forget.
+places to fix and three places to forget. The routes that take a file name
+from a client had the same problem with a narrower rule, "this name, inside
+this one directory", spelled out eight times across ``app/api``; that rule
+is :func:`resolve_under` (#483). It is not the node rule: several of those
+directories (custom nodes, presets, examples) are outside the data root.
+Everything below is about the node rule.
 
 The rule
 --------
@@ -143,3 +149,52 @@ def resolve_data_path(path: str | Path, *, base: Path) -> Path:
             f"database) and cannot be written by a node: {resolved}"
         )
     return resolved
+
+
+def resolve_under(directory: Path, name: str, *,
+                  direct_child: bool = False) -> Path | None:
+    """*name* resolved inside *directory*, or None when it cannot be one.
+
+    The routes' rule for a file name a client supplied (#483). Each route
+    turns None into its own answer -- a 400 with its own detail, or a 404 --
+    so the rule is written once and every answer stays what it was.
+    Resolve-then-compare rather than a check on the string: ``..`` has
+    several spellings over the wire, and a symlink is not one of them at all.
+    The comparison is ``Path.is_relative_to``, never ``str.startswith``,
+    which would put ``/repo/examples-evil`` inside ``/repo/examples``.
+
+    None covers every way *name* can fail to be such a path:
+
+    - It is not a string. A JSON body can hand a route anything, and
+      ``directory / 5`` raises ``TypeError``.
+    - It holds a NUL (``%00`` in a URL, ``\\u0000`` in JSON, the raw byte in a
+      hand-built multipart filename), which no filesystem stores. Refused
+      before ``resolve`` because ``resolve`` does not refuse it everywhere:
+      it raises ``ValueError`` on POSIX and on Windows up to Python 3.12,
+      but on Windows from 3.13 ``ntpath.realpath`` hands the path back
+      unchanged (gh-106242) and the NUL fails only at the write.
+    - ``resolve`` refuses it: ``OSError`` for a path the operating system
+      will not look up, ``ValueError`` for one it cannot encode. Either one
+      escaping turns the refusal into a 500 with a traceback in the log, for
+      anyone who can reach the port -- several of these routes are open
+      GETs.
+    - It resolves outside *directory*.
+
+    *direct_child* also refuses a nested path and *directory* itself:
+    ``target.parent == base`` is the containment check and both refusals in
+    one comparison. Presets need it, because the registry globs one flat
+    directory. Media and model downloads must not have it, because they
+    serve nested names by design. Without it an empty name resolves to
+    *directory* itself, and the route's own "is it a file" check answers
+    for that.
+    """
+    if not isinstance(name, str) or "\x00" in name:
+        return None
+    try:
+        base = directory.resolve()
+        target = (base / name).resolve()
+    except (OSError, ValueError):
+        return None
+    if direct_child:
+        return target if target.parent == base else None
+    return target if target.is_relative_to(base) else None

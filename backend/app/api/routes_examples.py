@@ -5,6 +5,7 @@ from fastapi import APIRouter, HTTPException, Query
 
 from ..config import settings
 from ..core import plugin_loader
+from ..core.data_paths import resolve_under
 from ..core.graph_engine import is_note_node
 from ..core.plugin_loader import iter_plugin_dirs, load_lockfile
 
@@ -119,14 +120,12 @@ async def list_examples():
 
 
 def _safe_resolve_under(base: Path, rel: str) -> Path:
-    """Resolve *rel* under *base* and raise 400 if it escapes the directory.
+    """*rel* resolved under *base*, or a 400 "Invalid path".
 
-    Uses ``Path.is_relative_to`` instead of ``str.startswith`` to avoid the
-    classic ``/repo/examples`` vs ``/repo/examples-evil`` prefix bug.
+    The rule is :func:`app.core.data_paths.resolve_under` (#483).
     """
-    base_resolved = base.resolve()
-    candidate = (base / rel).resolve()
-    if not candidate.is_relative_to(base_resolved):
+    candidate = resolve_under(base, rel)
+    if candidate is None:
         raise HTTPException(status_code=400, detail="Invalid path")
     return candidate
 
