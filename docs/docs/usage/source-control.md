@@ -85,13 +85,13 @@ A JSON diff of a saved graph is a wall of braces in which "I changed `k` from 5 
 
 - nodes added and removed, counted on the canvas: dropping one preset block is one node, not the six inside the definition it brought with it;
 - a node whose type changed;
-- a parameter whose value changed, under the node's label; without a label, under its id when the id is 16 characters or fewer, else its type plus the first eight characters of the id (`<preset>/<node>` for a node inside an edited preset). Values are clipped to 40 characters, and `-` stands for a parameter absent on one side;
+- a parameter whose value changed, under the node's label; without a label, under its id when the id is 16 characters or fewer, else its type plus the first eight characters of the id (`<preset>/<node>` for a node inside an edited preset). A preset node's own settings are listed under that node as `<inner node>.<parameter>`. Values are clipped to 40 characters, and `-` stands for a parameter absent on one side;
 - edges added and removed, compared by their endpoints and handles rather than by their ids, because copy and paste regenerates ids;
 - node positions moved, which can only appear on a `.layout.json` diff -- a `.graph.json` has no coordinates in it.
 
 At most eight lines are shown, then a line counting the rest ("and 3 more"). "No logic change" means the two sides say the same thing and the difference is text only: key order, whitespace, an array written in another order, a regenerated edge id. A node whose id changed counts as one node removed and one added. "Could not parse as a graph" means one side is not readable JSON of that kind.
 
-Some real changes have no line yet, and the summary is then empty rather than reassuring: segment groups, note geometry, a subgraph definition, a preset definition arriving or leaving (the instance on the canvas is still counted), a graph's name or description, a preset instance's per-instance overrides, and a layout file added or deleted. None of them is ever reported as "No logic change" -- the patch below is what shows them. The summary is also left out when either side is binary, larger than 2 MiB, or cannot be read; the patch is still shown. A non-project graph saved as a single `<name>.json` gets no summary at all.
+Some real changes have no line yet, and the summary is then empty rather than reassuring: segment groups, note geometry, a subgraph definition, a preset definition arriving or leaving (the instance on the canvas is still counted), a graph's name or description, and a layout file added or deleted. None of them is ever reported as "No logic change" -- the patch below is what shows them. The summary is also left out when either side is binary, larger than 2 MiB, or cannot be read; the patch is still shown. A non-project graph saved as a single `<name>.json` gets no summary at all.
 
 ## When the files change under an open graph
 

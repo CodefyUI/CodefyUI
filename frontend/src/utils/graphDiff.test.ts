@@ -56,7 +56,7 @@ const DATA_EDGE = {
 };
 
 // A preset carries a THIRD node shape: `{id, type, params}`, params at the top
-// level (`frontend/src/types/index.ts:151`).
+// level (`PresetDefinition` in `frontend/src/types/index.ts`).
 const PRESET = {
   preset_name: 'Dense Block',
   category: 'Layers',
@@ -82,6 +82,19 @@ const SUBGRAPH = {
   edges: [],
   interface: { inputs: [], outputs: [], triggerTargets: [] },
 };
+
+// A preset INSTANCE is a logic node like any other, `{id, type, data}`, with
+// its own settings at `data.internalParams`: inner node id -> that inner
+// node's params (`tabStore.getSerializedGraph`). Trimmed from node
+// `train-pipeline` in `examples/Usage_Example/CNN-MNIST/TrainCNN-MNIST/graph.json`.
+const PIPELINE_SETTINGS = {
+  dataloader: { batch_size: 64, shuffle: true, num_workers: 0 },
+  train_loop: { epochs: 5, device: 'auto' },
+};
+
+function pipeline(internalParams: unknown = PIPELINE_SETTINGS, id = 'train-pipeline') {
+  return { id, type: 'preset:Training Pipeline', data: { params: {}, internalParams } };
+}
 
 describe('graphDiffKind', () => {
   it('recognises the two halves of a saved project graph by suffix', () => {
@@ -456,6 +469,192 @@ describe('summarizeGraphDiff, presets and subgraphs', () => {
       'graph',
     );
     expect(summary.lines).toEqual([{ kind: 'nodesRemoved', count: 1 }]);
+  });
+
+  it('names a changed preset instance setting under the instance, as <inner>.<param>', () => {
+    // The Configure window writes `data.internalParams`, never `data.params`,
+    // so a summary that read only `data.params` drew nothing at all for the
+    // commonest edit a placed preset gets.
+    const summary = summarizeGraphDiff(
+      graphDoc({ nodes: [pipeline()] }),
+      graphDoc({
+        nodes: [pipeline({ ...PIPELINE_SETTINGS, train_loop: { epochs: 10, device: 'auto' } })],
+      }),
+      'graph',
+    );
+    expect(summary.lines).toEqual([
+      { kind: 'param', node: 'train-pipeline', param: 'train_loop.epochs', from: '5', to: '10' },
+    ]);
+    expect(summary.noLogicChange).toBe(false);
+  });
+
+  it('names a preset instance with a generated id by its type and the head of that id', () => {
+    // A preset dropped from the Presets tab gets a UUID, so this is the name
+    // nearly every such line carries.
+    const id = 'f256484a-51e0-49b4-8134-4aea94b5fd68';
+    const summary = summarizeGraphDiff(
+      graphDoc({ nodes: [pipeline(PIPELINE_SETTINGS, id)] }),
+      graphDoc({
+        nodes: [pipeline({ ...PIPELINE_SETTINGS, train_loop: { epochs: 10, device: 'auto' } }, id)],
+      }),
+      'graph',
+    );
+    expect(summary.lines).toEqual([
+      {
+        kind: 'param',
+        node: 'preset:Training Pipeline f256484a',
+        param: 'train_loop.epochs',
+        from: '5',
+        to: '10',
+      },
+    ]);
+  });
+
+  it('shortens a generated inner node id in the setting name the same way', () => {
+    // The app's own preset export renames every inner node to `node_<i>`
+    // (`create_preset` in `backend/app/api/routes_presets.py`), and the
+    // built-in presets use short ids, so an inner id this long comes from a
+    // hand-written preset definition.
+    const inner = '0a1b2c3d-1111-2222-3333-444455556666';
+    const summary = summarizeGraphDiff(
+      graphDoc({ nodes: [pipeline({ [inner]: { k: 1 } })] }),
+      graphDoc({ nodes: [pipeline({ [inner]: { k: 2 } })] }),
+      'graph',
+    );
+    expect(summary.lines).toEqual([
+      { kind: 'param', node: 'train-pipeline', param: '0a1b2c3d.k', from: '1', to: '2' },
+    ]);
+  });
+
+  it('shows a setting added, or an inner node removed, with an empty value on the missing side', () => {
+    const added = summarizeGraphDiff(
+      graphDoc({ nodes: [pipeline({ train_loop: { epochs: 5 } })] }),
+      graphDoc({ nodes: [pipeline({ train_loop: { epochs: 5, device: 'cuda' } })] }),
+      'graph',
+    );
+    expect(added.lines).toEqual([
+      { kind: 'param', node: 'train-pipeline', param: 'train_loop.device', from: '', to: '"cuda"' },
+    ]);
+
+    // Each parameter of an inner node that is gone gets its own line.
+    const removed = summarizeGraphDiff(
+      graphDoc({ nodes: [pipeline()] }),
+      graphDoc({ nodes: [pipeline({ train_loop: PIPELINE_SETTINGS.train_loop })] }),
+      'graph',
+    );
+    expect(removed.lines).toEqual([
+      { kind: 'param', node: 'train-pipeline', param: 'dataloader.batch_size', from: '64', to: '' },
+      { kind: 'param', node: 'train-pipeline', param: 'dataloader.shuffle', from: 'true', to: '' },
+      { kind: 'param', node: 'train-pipeline', param: 'dataloader.num_workers', from: '0', to: '' },
+    ]);
+  });
+
+  it('clips a long setting value, but still compares it at full length', () => {
+    const clipped = summarizeGraphDiff(
+      graphDoc({ nodes: [pipeline({ dataset: { data_dir: '' } })] }),
+      graphDoc({ nodes: [pipeline({ dataset: { data_dir: 'x'.repeat(60) } })] }),
+      'graph',
+    );
+    expect(clipped.lines).toEqual([
+      {
+        kind: 'param',
+        node: 'train-pipeline',
+        param: 'dataset.data_dir',
+        from: '""',
+        to: `"${'x'.repeat(36)}...`,
+      },
+    ]);
+    expect((clipped.lines[0] as { to: string }).to).toHaveLength(MAX_GRAPH_DIFF_VALUE);
+
+    const shared = 'data/samples/a-very-long-directory-name-here/';
+    const pastForty = summarizeGraphDiff(
+      graphDoc({ nodes: [pipeline({ dataset: { data_dir: `${shared}one` } })] }),
+      graphDoc({ nodes: [pipeline({ dataset: { data_dir: `${shared}two` } })] }),
+      'graph',
+    );
+    expect(pastForty.lines).toHaveLength(1);
+    expect(pastForty.lines[0]).toMatchObject({ kind: 'param', param: 'dataset.data_dir' });
+  });
+
+  it('calls settings written in another key order no logic change', () => {
+    // True before settings had lines of their own, because `canonicalText`
+    // sorts keys; pinned so that comparing them cannot break it.
+    const reordered = {
+      train_loop: { device: 'auto', epochs: 5 },
+      dataloader: { num_workers: 0, shuffle: true, batch_size: 64 },
+    };
+    const summary = summarizeGraphDiff(
+      graphDoc({ nodes: [pipeline()] }),
+      graphDoc({ nodes: [pipeline(reordered)] }),
+      'graph',
+    );
+    expect(summary).toEqual({ lines: [], more: 0, noLogicChange: true, unparseable: false });
+  });
+
+  it('counts a newly placed preset as one node, whatever settings it brings', () => {
+    // A dropped preset carries EVERY inner parameter in `internalParams`, not
+    // only the changed ones (`tabStore.addPresetNode`), so a line per setting
+    // here would bury the one fact that a node was added.
+    const summary = summarizeGraphDiff(
+      graphDoc({ nodes: [START] }),
+      graphDoc({ nodes: [START, pipeline()] }),
+      'graph',
+    );
+    expect(summary.lines).toEqual([{ kind: 'nodesAdded', count: 1 }]);
+  });
+
+  it('says nothing about the settings of a preset instance whose type changed', () => {
+    const summary = summarizeGraphDiff(
+      graphDoc({ nodes: [pipeline()] }),
+      graphDoc({
+        nodes: [{ ...pipeline({ train_loop: { epochs: 3 } }), type: 'preset:Fine-tune Pipeline' }],
+      }),
+      'graph',
+    );
+    expect(summary.lines).toEqual([
+      {
+        kind: 'typeChanged',
+        node: 'train-pipeline',
+        from: 'preset:Training Pipeline',
+        to: 'preset:Fine-tune Pipeline',
+      },
+    ]);
+  });
+
+  it('compares an inner node whose id is one Object.prototype already answers to', () => {
+    // `'constructor' in settings` is true on every object `JSON.parse`
+    // builds, so an inner node by that name would never read as removed.
+    const dropped = summarizeGraphDiff(
+      graphDoc({ nodes: [pipeline({ constructor: { k: 1 } })] }),
+      graphDoc({ nodes: [pipeline({})] }),
+      'graph',
+    );
+    expect(dropped.lines).toEqual([
+      { kind: 'param', node: 'train-pipeline', param: 'constructor.k', from: '1', to: '' },
+    ]);
+
+    const gained = summarizeGraphDiff(
+      graphDoc({ nodes: [pipeline({})] }),
+      graphDoc({ nodes: [pipeline({ constructor: { k: 2 } })] }),
+      'graph',
+    );
+    expect(gained.lines).toEqual([
+      { kind: 'param', node: 'train-pipeline', param: 'constructor.k', from: '', to: '2' },
+    ]);
+  });
+
+  it('reads settings that are not an object as none, instead of failing on them', () => {
+    // Only a hand-edited file holds such a value. A summary that threw would
+    // take the patch down with it: `GitDiffModal` builds both in one step.
+    const summary = summarizeGraphDiff(
+      graphDoc({ nodes: [pipeline(null)] }),
+      graphDoc({ nodes: [pipeline({ loss: null, train_loop: { epochs: 5 } })] }),
+      'graph',
+    );
+    expect(summary.lines).toEqual([
+      { kind: 'param', node: 'train-pipeline', param: 'train_loop.epochs', from: '', to: '5' },
+    ]);
+    expect(summary.noLogicChange).toBe(false);
   });
 
   it('treats a missing presets key as no presets, since the editor may omit it', () => {
