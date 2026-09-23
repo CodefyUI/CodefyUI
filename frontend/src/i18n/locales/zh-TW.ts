@@ -323,6 +323,7 @@ const zhTW: Record<TranslationKey, string> = {
   'tabBar.aria': '工作區分頁',
   'tabBar.source.aria': '{name}，由 {plugin} 開啟',
   'tabBar.readOnly.aria': '{name}，唯讀',
+  'tabBar.running.aria': '{name}，執行中',
   'tabBar.close.aria': '關閉「{name}」',
 
   // Subgraph Editor (SequentialModel)

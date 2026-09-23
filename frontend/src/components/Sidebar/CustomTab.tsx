@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   listCustomNodes,
   type CustomNodeInfo,
@@ -69,17 +69,32 @@ export function CustomTab() {
   const pluginsUnsupported = usePluginStore(selectPluginsUnsupported);
   const openPluginCenter = useUIStore((s) => s.openPluginCenter);
 
-  // `blank` is false for the re-read after the manager closes, below.
+  // Reads are numbered and only the newest one's answer is applied (#506):
+  // mount, Refresh and the manager closing can each start one while another
+  // is still out, and the older answer can land last.
+  const readSeq = useRef(0);
+
+  // `blank` is false for the re-read after the manager closes, below. That
+  // one keeps what is on screen until its answer replaces it, a load error
+  // included: clearing the error at once showed a count of 0 and "No custom
+  // nodes yet" for a list this tab never read.
   const load = useCallback((blank = true) => {
+    const seq = ++readSeq.current;
     if (blank) setLoading(true);
-    setError(null);
     listCustomNodes()
-      .then(setCustomNodes)
+      .then((nodes) => {
+        if (seq !== readSeq.current) return;
+        setCustomNodes(nodes);
+        setError(null);
+      })
       .catch((e: Error) => {
+        if (seq !== readSeq.current) return;
         setCustomNodes([]);
         setError(e.message);
       })
-      .finally(() => setLoading(false));
+      .finally(() => {
+        if (seq === readSeq.current) setLoading(false);
+      });
   }, []);
 
   useEffect(() => {

@@ -380,6 +380,7 @@ const en = {
   'tabBar.aria': 'Workspace tabs',
   'tabBar.source.aria': '{name}, opened by {plugin}',
   'tabBar.readOnly.aria': '{name}, read-only',
+  'tabBar.running.aria': '{name}, running',
   'tabBar.close.aria': 'Close {name}',
 
   // Subgraph Editor (SequentialModel)

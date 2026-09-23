@@ -125,8 +125,12 @@
   font-family: inherit;
 }
 
+/* Green is the border and the wash, never the label. Pointing at a button
+   hovers its row, and --status-success on this wash over --surface-hover is
+   3.84:1, under the 4.5:1 that 12px text needs. The label already says the
+   state in words, and --text-primary reads 7.8:1 there. */
 .toggleOn {
-  color: var(--status-success);
+  color: var(--text-primary);
   border-color: var(--status-success);
   background: var(--success-wash);
 }
@@ -143,14 +147,22 @@
   border: 1px solid var(--border-strong);
   font-size: var(--fs-xs);
   font-weight: var(--fw-semibold);
-  color: var(--status-error);
+  color: var(--text-secondary);
   background: transparent;
   cursor: pointer;
   font-family: inherit;
 }
 
-.deleteButton:hover {
-  background: var(--danger-wash);
+/* The destructive action marks itself where the pointer or the keyboard is,
+   as Source Control's `.dangerAction` does: a red border, and a label that
+   stays readable. A red label would sit on --surface-hover whenever the
+   pointer is on its row, and --status-error there is 3.92:1 (3.33:1 over
+   --danger-wash), under the 4.5:1 that 12px text needs. As a border it is a
+   graphic, which needs 3:1. */
+.deleteButton:hover,
+.deleteButton:focus-visible {
+  border-color: var(--status-error);
+  color: var(--text-primary);
 }
 
 .footer {
