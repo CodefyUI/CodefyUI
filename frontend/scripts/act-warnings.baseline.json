@@ -1,6 +1,6 @@
 {
   "src/App.test.tsx": 1,
-  "src/components/Canvas/FlowCanvas.test.tsx": 303,
+  "src/components/Canvas/FlowCanvas.test.tsx": 288,
   "src/components/Canvas/NoteBindingLines.test.tsx": 9,
   "src/components/Canvas/SegmentBubble.test.tsx": 10,
   "src/components/ContextMenu/NodeContextMenu.test.tsx": 8,
@@ -31,7 +31,7 @@
   "src/components/TemplateGallery/TemplateGalleryModal.test.tsx": 11,
   "src/components/Toolbar/PluginToolbarButtons.test.tsx": 14,
   "src/components/Toolbar/SettingsPopover.test.tsx": 107,
-  "src/components/Toolbar/Toolbar.test.tsx": 179,
+  "src/components/Toolbar/Toolbar.test.tsx": 166,
   "src/components/Welcome/WelcomeScreen.test.tsx": 3,
   "src/components/shared/CodeEditor.test.tsx": 1,
   "src/components/shared/DialogContainer.test.tsx": 17,
