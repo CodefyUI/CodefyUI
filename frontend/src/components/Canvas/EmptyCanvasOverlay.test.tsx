@@ -44,6 +44,15 @@ function ex(overrides: Partial<ExampleSummary> = {}): ExampleSummary {
   };
 }
 
+/** Stand-ins for the canvas's drop handlers, which FlowCanvas hands the overlay (#526). */
+function dropHandlers() {
+  return { onDragOver: vi.fn(), onDrop: vi.fn() };
+}
+
+function renderOverlay(handlers = dropHandlers()) {
+  return render(<EmptyCanvasOverlay {...handlers} />);
+}
+
 /**
  * Names of the example cards in DOM order. Filtered by class rather than
  * taken from every button, because the overlay also carries the
@@ -81,7 +90,7 @@ describe('EmptyCanvasOverlay', () => {
         resolveList = res;
       }),
     );
-    render(<EmptyCanvasOverlay />);
+    renderOverlay();
     // title/subtitle always render
     expect(screen.getByText('Build your first deep learning model')).toBeInTheDocument();
     expect(screen.getByText('Pick an example')).toBeInTheDocument();
@@ -99,7 +108,7 @@ describe('EmptyCanvasOverlay', () => {
 
   it('falls back to an empty list when listExamples rejects', async () => {
     mockedRest.listExamples.mockRejectedValue(new Error('boom'));
-    render(<EmptyCanvasOverlay />);
+    renderOverlay();
     await waitFor(() => expect(screen.queryByText('Loading examples...')).toBeNull());
     // No cards, but the heading and its one instruction still show.
     expect(screen.getByText('Build your first deep learning model')).toBeInTheDocument();
@@ -116,7 +125,7 @@ describe('EmptyCanvasOverlay', () => {
         section: 'architectures',
       }),
     ]);
-    render(<EmptyCanvasOverlay />);
+    renderOverlay();
 
     await waitFor(() => expect(screen.getByText('Train MLP')).toBeInTheDocument());
     expect(screen.getByText('Quick Start')).toBeInTheDocument();
@@ -140,7 +149,7 @@ describe('EmptyCanvasOverlay', () => {
       ex({ name: 'Train GPT', category: 'Usage_Example', path: 'Usage_Example/GPT', section: 'training' }),
       ex({ name: 'Train CNN', category: 'Usage_Example', path: 'Usage_Example/CNN', section: 'quickstart' }),
     ]);
-    render(<EmptyCanvasOverlay />);
+    renderOverlay();
     await waitFor(() => expect(screen.getByText('Train CNN')).toBeInTheDocument());
 
     const body = document.body.textContent ?? '';
@@ -177,7 +186,7 @@ describe('EmptyCanvasOverlay', () => {
       ex({ name: 'First', path: 'c/first', section: 'concepts', order: 1 }),
       ex({ name: 'Second', path: 'c/second', section: 'concepts', order: 2 }),
     ]);
-    render(<EmptyCanvasOverlay />);
+    renderOverlay();
     await waitFor(() => expect(screen.getByText('First')).toBeInTheDocument());
     expect(cardNames()).toEqual(['First', 'Second', 'Third', 'Unordered']);
   });
@@ -189,7 +198,7 @@ describe('EmptyCanvasOverlay', () => {
       ex({ name: 'LSTM', category: 'Model_Architecture', path: 'm/lstm', section: 'architectures', family: 'RNN' }),
       ex({ name: 'Lesson', category: 'Classical', path: 'plugin:c2/Lesson', source: 'plugin:c2' }),
     ]);
-    render(<EmptyCanvasOverlay />);
+    renderOverlay();
     await waitFor(() => expect(screen.getByText('ResNet')).toBeInTheDocument());
 
     const subheads = [...document.querySelectorAll('[class*="subsectionTitle"]')].map(
@@ -206,7 +215,7 @@ describe('EmptyCanvasOverlay', () => {
       ex({ name: 'Iris', category: 'Classical', path: 'c/iris', section: 'concepts' }),
       ex({ name: 'Tiny CNN', category: 'Usage_Example', path: 'u/tiny', section: 'training', family: 'CNN' }),
     ]);
-    render(<EmptyCanvasOverlay />);
+    renderOverlay();
     await waitFor(() => expect(screen.getByText('ResNet')).toBeInTheDocument());
 
     const chips = [...document.querySelectorAll('[class*="difficultyBadge"]')].map(
@@ -224,7 +233,7 @@ describe('EmptyCanvasOverlay', () => {
     mockedRest.listExamples.mockResolvedValue([
       ex({ name: 'Misc Demo', category: 'Something_Else', path: '/x/misc.json' }),
     ]);
-    render(<EmptyCanvasOverlay />);
+    renderOverlay();
     await waitFor(() => expect(screen.getByText('Misc Demo')).toBeInTheDocument());
     // Unknown category still renders its label (replaced underscores).
     expect(screen.getByText('Something Else')).toBeInTheDocument();
@@ -241,7 +250,7 @@ describe('EmptyCanvasOverlay', () => {
     // ours.
     const long = 'x'.repeat(120);
     mockedRest.listExamples.mockResolvedValue([ex({ description: long })]);
-    render(<EmptyCanvasOverlay />);
+    renderOverlay();
     await waitFor(() => expect(screen.getByText('Example')).toBeInTheDocument());
     expect(screen.getByText(`${'x'.repeat(40)}...`)).toBeInTheDocument();
   });
@@ -253,7 +262,7 @@ describe('EmptyCanvasOverlay', () => {
     // until a reader found a sentence ending in "...".
     const exact = 'y'.repeat(40);
     mockedRest.listExamples.mockResolvedValue([ex({ description: exact })]);
-    render(<EmptyCanvasOverlay />);
+    renderOverlay();
     expect(await screen.findByText(exact)).toBeInTheDocument();
   });
 
@@ -264,7 +273,7 @@ describe('EmptyCanvasOverlay', () => {
     // sidebar's gallery tab already does this.
     const long = `${'x'.repeat(40)} and the part nobody could read`;
     mockedRest.listExamples.mockResolvedValue([ex({ description: long })]);
-    render(<EmptyCanvasOverlay />);
+    renderOverlay();
     const shown = await screen.findByText(`${'x'.repeat(40)}...`);
     expect(shown).toHaveAttribute('title', long);
   });
@@ -272,14 +281,14 @@ describe('EmptyCanvasOverlay', () => {
   it('does not put a tooltip on a description that is already whole', async () => {
     // A native tooltip repeating the text under the cursor is noise.
     mockedRest.listExamples.mockResolvedValue([ex({ description: 'short desc' })]);
-    render(<EmptyCanvasOverlay />);
+    renderOverlay();
     const shown = await screen.findByText('short desc');
     expect(shown).not.toHaveAttribute('title');
   });
 
   it('applies and clears hover styles on a card', async () => {
     mockedRest.listExamples.mockResolvedValue([ex({ name: 'Hover Me' })]);
-    render(<EmptyCanvasOverlay />);
+    renderOverlay();
     const card = (await screen.findByText('Hover Me')).closest('button') as HTMLButtonElement;
 
     // Hover styling now writes the CSS custom property directly instead of
@@ -318,7 +327,7 @@ describe('EmptyCanvasOverlay', () => {
     const loadGraphDocument = vi.fn();
     useTabStore.setState({ loadGraphDocument });
 
-    render(<EmptyCanvasOverlay />);
+    renderOverlay();
     fireEvent.click(await screen.findByText('Loadable'));
 
     await waitFor(() => expect(loadGraphDocument).toHaveBeenCalled());
@@ -352,7 +361,7 @@ describe('EmptyCanvasOverlay', () => {
     useNodeDefStore.setState({ definitions: [], presets: [{ preset_name: 'Shared' } as any] });
     useTabStore.setState({ loadGraphDocument: vi.fn() });
 
-    render(<EmptyCanvasOverlay />);
+    renderOverlay();
     fireEvent.click(await screen.findByText('Dup'));
 
     await waitFor(() =>
@@ -370,7 +379,7 @@ describe('EmptyCanvasOverlay', () => {
     useTabStore.setState({ loadGraphDocument });
     const before = useNodeDefStore.getState().presets;
 
-    render(<EmptyCanvasOverlay />);
+    renderOverlay();
     fireEvent.click(await screen.findByText('Bare'));
 
     await waitFor(() => expect(loadGraphDocument).toHaveBeenCalled());
@@ -400,7 +409,7 @@ describe('EmptyCanvasOverlay', () => {
     useTabStore.setState({ loadGraphDocument: vi.fn() });
     const before = useNodeDefStore.getState().presets;
 
-    render(<EmptyCanvasOverlay />);
+    renderOverlay();
     fireEvent.click(await screen.findByText('WeirdPresets'));
 
     await waitFor(() => expect(mockedUtils.resolveSerializedNodes).toHaveBeenCalled());
@@ -415,9 +424,47 @@ describe('EmptyCanvasOverlay', () => {
     useToastStore.setState({ addToast });
     useTabStore.setState({ loadGraphDocument: vi.fn() });
 
-    render(<EmptyCanvasOverlay />);
+    renderOverlay();
     fireEvent.click(await screen.findByText('Broken'));
 
     await waitFor(() => expect(addToast).toHaveBeenCalledWith('Failed to load example', 'error'));
+  });
+
+  it("gives a drag over the gallery, and a drop on it, to the canvas's handlers (#526)", async () => {
+    // The gallery covers most of an empty canvas and is drawn beside
+    // <ReactFlow>, not inside it. Without the canvas's handlers nothing
+    // cancelled a dragover here, so the browser refused the drop: a node
+    // dragged into the middle of a new tab was not added.
+    mockedRest.listExamples.mockResolvedValue([ex({ name: 'Drop Target' })]);
+    const handlers = dropHandlers();
+    renderOverlay(handlers);
+    const card = (await screen.findByText('Drop Target')).closest('button')!;
+
+    fireEvent.dragOver(card);
+    fireEvent.drop(card);
+    expect(handlers.onDragOver).toHaveBeenCalledTimes(1);
+    expect(handlers.onDrop).toHaveBeenCalledTimes(1);
+
+    // Anywhere on the panel, not only on a card.
+    fireEvent.dragOver(screen.getByText('Build your first deep learning model'));
+    fireEvent.drop(screen.getByText('Pick an example'));
+    expect(handlers.onDragOver).toHaveBeenCalledTimes(2);
+    expect(handlers.onDrop).toHaveBeenCalledTimes(2);
+  });
+
+  it('cancels the dragenter onto each card as well (#526)', async () => {
+    // On the frame the pointer crosses into a new element Chrome fires only a
+    // dragenter, and an uncancelled one makes that frame's drop effect
+    // "none". A drag over this grid of cards crosses one element after another.
+    mockedRest.listExamples.mockResolvedValue([ex({ name: 'Drop Target' })]);
+    const handlers = dropHandlers();
+    // What the canvas's own dragover handler does first.
+    handlers.onDragOver.mockImplementation((event: React.DragEvent) => event.preventDefault());
+    renderOverlay(handlers);
+    const card = (await screen.findByText('Drop Target')).closest('button')!;
+
+    expect(fireEvent.dragEnter(card)).toBe(false);
+    expect(fireEvent.dragEnter(screen.getByText('Drop Target'))).toBe(false);
+    expect(handlers.onDragOver).toHaveBeenCalledTimes(2);
   });
 });

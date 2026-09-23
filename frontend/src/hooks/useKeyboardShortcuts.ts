@@ -16,6 +16,23 @@ const NO_DETAIL_NODE_TYPES = new Set(['noteNode']);
 const ENTER_OWNING_TAGS = new Set(['BUTTON', 'A', 'SELECT', 'SUMMARY']);
 
 /**
+ * Is this key going to something the user types into? An input, a textarea,
+ * an editable element, or a `<select>`, which uses printable keys for
+ * type-ahead (the toolbar's device select is one). Every shortcut leaves such
+ * a key to it, and so does the canvases' Delete (`useDeleteKey`).
+ */
+export function isTypingTarget(target: EventTarget | null): boolean {
+  const el = target as HTMLElement | null;
+  const tag = el?.tagName;
+  return (
+    tag === 'INPUT' ||
+    tag === 'TEXTAREA' ||
+    tag === 'SELECT' ||
+    Boolean(el?.isContentEditable)
+  );
+}
+
+/**
  * Is the user holding a selection of ordinary page text?
  *
  * A collapsed selection (a caret, or nothing at all) is not one, and
@@ -41,17 +58,8 @@ export function useKeyboardShortcuts() {
     const handler = (e: KeyboardEvent) => {
       const mod = e.metaKey || e.ctrlKey;
       const tag = (e.target as HTMLElement)?.tagName;
-      // Skip while the user types in an input, a textarea or an editable
-      // element. A focused `<select>` (the toolbar's device select is one)
-      // uses printable keys for type-ahead, so it is skipped too.
-      if (
-        tag === 'INPUT' ||
-        tag === 'TEXTAREA' ||
-        tag === 'SELECT' ||
-        (e.target as HTMLElement)?.isContentEditable
-      ) {
-        return;
-      }
+      // Skip while the user types in a field (see `isTypingTarget`).
+      if (isTypingTarget(e.target)) return;
 
       // Skip while ANY modal is open (#475). Every shortcut below acts on the
       // canvas, and this handler is bound to `document` — which a modal panel

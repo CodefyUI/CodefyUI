@@ -6,7 +6,24 @@ import type { ExampleSummary } from '../../api/rest';
 import { ExampleBrowser } from '../shared/ExampleBrowser';
 import styles from './EmptyCanvasOverlay.module.css';
 
-export function EmptyCanvasOverlay() {
+interface EmptyCanvasOverlayProps {
+  /**
+   * The canvas's own drop handlers (`useDragAndDrop`), which FlowCanvas passes
+   * in (#526). This gallery covers most of an empty canvas and is drawn beside
+   * `<ReactFlow>`, not inside it, so a drag over it never reached the canvas's
+   * handlers: nothing cancelled the dragover, and the browser refused a node,
+   * preset or example dropped on it. They sit on the root, which lets the
+   * pointer through to the canvas but still sees every drag over the panel
+   * bubble up. `onDragOver` answers the dragenter too: on the frame the
+   * pointer crosses into a new element Chrome fires only a dragenter, and an
+   * uncancelled one makes that frame's drop effect "none". A drag over this
+   * grid of cards crosses one element after another.
+   */
+  onDragOver: (event: React.DragEvent) => void;
+  onDrop: (event: React.DragEvent) => void;
+}
+
+export function EmptyCanvasOverlay({ onDragOver, onDrop }: EmptyCanvasOverlayProps) {
   const { t } = useI18n();
 
   // Still the REPLACING reader, and the only one left (#348): this overlay
@@ -21,7 +38,12 @@ export function EmptyCanvasOverlay() {
   );
 
   return (
-    <div className={styles.overlay}>
+    <div
+      className={styles.overlay}
+      onDragEnter={onDragOver}
+      onDragOver={onDragOver}
+      onDrop={onDrop}
+    >
       <div className={styles.inner}>
         <div className={styles.title}>{t('empty.title')}</div>
         <div className={styles.subtitle}>{t('empty.subtitle')}</div>

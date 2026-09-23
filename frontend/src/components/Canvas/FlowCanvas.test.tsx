@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { screen, fireEvent, act } from '@testing-library/react';
-import type { Node, Edge } from '@xyflow/react';
+import { screen, fireEvent, act, cleanup } from '@testing-library/react';
+import { useReactFlow, type Node, type Edge } from '@xyflow/react';
 import type { NodeData, NodeDefinition } from '../../types';
 import { CATEGORY_COLORS } from '../../styles/theme';
 
@@ -10,7 +10,11 @@ import { CATEGORY_COLORS } from '../../styles/theme';
 // the props and renders a `.react-flow__pane` (the dblclick effect attaches to
 // it) plus the children. Every other xyflow export stays real.
 type RFProps = Record<string, any>;
-const captured: { rf: RFProps; minimap: RFProps } = { rf: {}, minimap: {} };
+const captured: { rf: RFProps; minimap: RFProps; overlay: RFProps } = {
+  rf: {},
+  minimap: {},
+  overlay: {},
+};
 // When false, the stubbed ReactFlow renders WITHOUT a `.react-flow__pane`,
 // so the dblclick effect's `if (pane)` guards take their false branch.
 const renderPane = { value: true };
@@ -43,8 +47,20 @@ vi.mock('@xyflow/react', async (importActual) => {
 });
 
 // EmptyCanvasOverlay fires a REST call (listExamples) on mount; stub it out.
+// The stub keeps the drop handlers it is given on its root, as the real
+// overlay does (#526).
 vi.mock('./EmptyCanvasOverlay', () => ({
-  EmptyCanvasOverlay: () => <div data-testid="empty-overlay" />,
+  EmptyCanvasOverlay: (props: RFProps) => {
+    captured.overlay = props;
+    return <div data-testid="empty-overlay" onDragOver={props.onDragOver} onDrop={props.onDrop} />;
+  },
+}));
+
+// A dropped example is fetched before it is inserted, and the insert is
+// useDragAndDrop's own suite's business. Here the call is what matters.
+vi.mock('../../utils/openExample', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../utils/openExample')>()),
+  insertExample: vi.fn(),
 }));
 
 // QuickNodeSearch / PaneContextMenu are exercised in their own suites; keep
@@ -71,6 +87,8 @@ import { useUIStore } from '../../store/uiStore';
 import { useNodeDefStore } from '../../store/nodeDefStore';
 import { useDialogStore } from '../../store/dialogStore';
 import { useI18n } from '../../i18n';
+import { insertExample } from '../../utils/openExample';
+import { useKeyboardShortcuts } from '../../hooks/useKeyboardShortcuts';
 
 // ── Store helpers ───────────────────────────────────────────────────────────
 
@@ -152,8 +170,10 @@ beforeEach(() => {
   useDialogStore.setState({ active: null, resolve: null });
   captured.rf = {};
   captured.minimap = {};
+  captured.overlay = {};
   renderPane.value = true;
   realFlow.value = false;
+  vi.mocked(insertExample).mockClear();
 });
 
 afterEach(() => {
@@ -161,6 +181,14 @@ afterEach(() => {
   vi.useRealTimers();
   useTabStore.setState({ tabs: ORIGINAL_TABS, activeTabId: ORIGINAL_ACTIVE, clipboard: null });
 });
+
+/**
+ * An `afterEach` for a describe below: unmount before the file's afterEach
+ * above resets the stores. The global cleanup unmounts only after it, and a
+ * reset under a mounted canvas re-renders it outside act(), one warning per
+ * subscribed component.
+ */
+const unmountBeforeStoreReset = () => cleanup();
 
 // ── Rendering ───────────────────────────────────────────────────────────────
 
@@ -183,7 +211,8 @@ describe('FlowCanvas rendering', () => {
     renderCanvas();
     expect(captured.rf.nodes).toHaveLength(1);
     expect(captured.rf.snapToGrid).toBe(true);
-    expect(captured.rf.deleteKeyCode).toBe('Delete');
+    // The canvas handles Delete itself (#501).
+    expect(captured.rf.deleteKeyCode).toBeNull();
   });
 
   it('asks React Flow to render only the visible elements', () => {
@@ -938,6 +967,253 @@ describe('drag-and-drop passthrough', () => {
   });
 });
 
+// ── A drop on the empty tab's gallery (#526) ────────────────────────────────
+//
+// On an empty tab the example gallery covers most of the canvas, and it is
+// drawn beside <ReactFlow>, not inside it: a drag over it never reached the
+// canvas's handlers, nothing cancelled the dragover, and the browser refused
+// the drop. The gallery now carries the canvas's own two handlers.
+
+describe("a drop on the empty tab's gallery (#526)", () => {
+  afterEach(unmountBeforeStoreReset);
+
+  /**
+   * A drop as the browser delivers one: a point, and a DataTransfer that is
+   * readable while the event is dispatched. jsdom has no DragEvent, so it is
+   * a MouseEvent of type `drop`, which is all React looks at.
+   */
+  function dropOn(el: Element, data: Record<string, string>, at = { x: 321, y: 123 }) {
+    const event = new MouseEvent('drop', {
+      bubbles: true,
+      cancelable: true,
+      clientX: at.x,
+      clientY: at.y,
+    });
+    Object.defineProperty(event, 'dataTransfer', {
+      value: { getData: (key: string) => data[key] ?? '' },
+    });
+    act(() => {
+      el.dispatchEvent(event);
+    });
+    return event;
+  }
+
+  const gallery = () => screen.getByTestId('empty-overlay');
+
+  it("hands the gallery the canvas's own drop handlers", () => {
+    // The same two functions, so a drop on the gallery converts the point and
+    // accepts or refuses each kind of drag exactly as the canvas does.
+    renderCanvas();
+    expect(captured.overlay.onDragOver).toBe(captured.rf.onDragOver);
+    expect(captured.overlay.onDrop).toBe(captured.rf.onDrop);
+  });
+
+  it('accepts a drag over the gallery', () => {
+    renderCanvas();
+    const over = new MouseEvent('dragover', { bubbles: true, cancelable: true });
+    Object.defineProperty(over, 'dataTransfer', { value: { dropEffect: 'none' } });
+    act(() => {
+      gallery().dispatchEvent(over);
+    });
+    // A dragover nobody cancels is a refused drop.
+    expect(over.defaultPrevented).toBe(true);
+  });
+
+  it('adds a dropped node where it was dropped', () => {
+    renderCanvas();
+    const drop = dropOn(gallery(), { 'application/codefyui-node': 'Linear' });
+    expect(drop.defaultPrevented).toBe(true);
+    expect(activeTab().nodes).toHaveLength(1);
+    expect(activeTab().nodes[0].data.type).toBe('Linear');
+    // No viewport in the stub, so the flow point is the screen point.
+    expect(activeTab().nodes[0].position).toEqual({ x: 321, y: 123 });
+  });
+
+  it('adds a dropped preset where it was dropped', () => {
+    useNodeDefStore.setState({
+      presets: [
+        {
+          preset_name: 'MyBlock',
+          category: 'Presets',
+          description: 'p',
+          nodes: [],
+          exposed_inputs: [],
+          exposed_outputs: [],
+        } as any,
+      ],
+    });
+    renderCanvas();
+    dropOn(gallery(), { 'application/codefyui-preset': 'MyBlock' });
+    expect(activeTab().nodes).toHaveLength(1);
+    expect(activeTab().nodes[0].type).toBe('presetNode');
+    expect(activeTab().nodes[0].position).toEqual({ x: 321, y: 123 });
+  });
+
+  it('inserts a dropped example where it was dropped', () => {
+    renderCanvas();
+    dropOn(gallery(), { 'application/codefyui-example': 'Usage_Example/Foo' });
+    expect(insertExample).toHaveBeenCalledWith('Usage_Example/Foo', { x: 321, y: 123 });
+  });
+
+  it('places a drop on the gallery where the same drop on the canvas lands', () => {
+    // The real <ReactFlow>, panned and zoomed, so the screen-to-flow
+    // conversion is not the identity: the gallery's drop has to go through it.
+    realFlow.value = true;
+    let flow: ReturnType<typeof useReactFlow> | null = null;
+    function FlowProbe() {
+      flow = useReactFlow();
+      return null;
+    }
+    renderWithFlow(
+      <>
+        <FlowProbe />
+        <FlowCanvas />
+      </>,
+    );
+    act(() => {
+      void flow!.setViewport({ x: 100, y: 50, zoom: 2 });
+    });
+
+    dropOn(gallery(), { 'application/codefyui-node': 'Linear' });
+    // The tab is no longer empty, so the gallery is gone.
+    expect(screen.queryByTestId('empty-overlay')).toBeNull();
+    dropOn(document.querySelector('.react-flow')!, { 'application/codefyui-node': 'Linear' });
+
+    const [onGallery, onCanvas] = activeTab().nodes;
+    expect(onGallery.position).toEqual({ x: (321 - 100) / 2, y: (123 - 50) / 2 });
+    expect(onCanvas.position).toEqual(onGallery.position);
+  });
+});
+
+// ── A Shift+press on the empty canvas (#506) ────────────────────────────────
+//
+// A Shift+press on the pane starts React Flow's box selection, and nothing in
+// React Flow cancels the browser's own reading of it: extend the page's text
+// selection from the last click to here. Chrome highlighted the sidebar and
+// the tab bar, and Ctrl+C / Ctrl+V, which yield to selected page text, then
+// copied that text instead of the nodes the box selected. jsdom performs no
+// default actions, so these cases check what the canvas does about them: the
+// press is cancelled, the old selection goes, and focus leaves the field it
+// was in, as the press itself would have made it.
+
+describe('a Shift+press on the empty canvas (#506)', () => {
+  let added: HTMLElement[] = [];
+
+  /** Page text outside the canvas, selected. */
+  function selectSidebarText() {
+    const text = document.createElement('p');
+    text.textContent = 'Data category';
+    document.body.appendChild(text);
+    added.push(text);
+    const range = document.createRange();
+    range.selectNodeContents(text);
+    window.getSelection()!.removeAllRanges();
+    window.getSelection()!.addRange(range);
+  }
+
+  /** The node palette's search box, holding focus. */
+  function focusSidebarSearch() {
+    const search = document.createElement('input');
+    document.body.appendChild(search);
+    added.push(search);
+    search.focus();
+    return search;
+  }
+
+  const pageSelection = () => window.getSelection()!.toString();
+
+  afterEach(() => {
+    unmountBeforeStoreReset();
+    window.getSelection()!.removeAllRanges();
+    for (const el of added) el.remove();
+    added = [];
+  });
+
+  it('keeps the press from selecting page text, and clears what was selected', () => {
+    selectSidebarText();
+    renderCanvas();
+    const notPrevented = fireEvent.mouseDown(screen.getByTestId('pane'), { shiftKey: true });
+    expect(notPrevented).toBe(false);
+    expect(pageSelection()).toBe('');
+  });
+
+  it('takes focus off the field it was in, as the press would have', () => {
+    const search = focusSidebarSearch();
+    renderCanvas();
+    fireEvent.mouseDown(screen.getByTestId('pane'), { shiftKey: true });
+    expect(document.activeElement).not.toBe(search);
+    expect(document.activeElement).toBe(document.body);
+  });
+
+  it('leaves a plain press, a right press and presses off the pane alone', () => {
+    selectSidebarText();
+    renderCanvas();
+    const pane = screen.getByTestId('pane');
+    // A plain press pans: React Flow's zoom handler owns it.
+    expect(fireEvent.mouseDown(pane)).toBe(true);
+    expect(fireEvent.mouseDown(pane, { shiftKey: true, button: 2 })).toBe(true);
+    // A node, an edge: React Flow's box selection cancels those itself.
+    const child = document.createElement('div');
+    pane.appendChild(child);
+    expect(fireEvent.mouseDown(child, { shiftKey: true })).toBe(true);
+    // The gallery (the tab is empty) is text a user may select.
+    expect(fireEvent.mouseDown(screen.getByTestId('empty-overlay'), { shiftKey: true })).toBe(true);
+    expect(pageSelection()).toBe('Data category');
+  });
+
+  describe('then the keys, on the real canvas', () => {
+    function Shortcuts() {
+      useKeyboardShortcuts();
+      return null;
+    }
+
+    beforeEach(() => {
+      realFlow.value = true;
+      setTab({ nodes: [node('a', { selected: true }), node('b', { selected: true })] });
+      renderWithFlow(
+        <>
+          <Shortcuts />
+          <FlowCanvas />
+        </>,
+      );
+    });
+
+    /**
+     * Shift held, the pane pressed, Shift let go. React Flow learns of Shift
+     * from its keydown, and only then leaves the press to the box selection
+     * rather than to its zoom handler, which would pan instead.
+     */
+    function shiftPressOnPane() {
+      fireEvent.keyDown(document.activeElement!, { key: 'Shift', code: 'ShiftLeft', shiftKey: true });
+      fireEvent.mouseDown(document.querySelector('.react-flow__pane')!, { shiftKey: true });
+      fireEvent.keyUp(document.activeElement!, { key: 'Shift', code: 'ShiftLeft' });
+    }
+
+    it('copies and pastes the selected nodes, not the page text', () => {
+      selectSidebarText();
+      shiftPressOnPane();
+      // jsdom cannot drag a box: `a` and `b` were selected by setTab above.
+      // The keys go where focus is.
+      fireEvent.keyDown(document.activeElement!, { key: 'c', ctrlKey: true });
+      expect(useTabStore.getState().clipboard?.nodes.map((n) => n.id)).toEqual(['a', 'b']);
+      act(() => {
+        fireEvent.keyDown(document.activeElement!, { key: 'v', ctrlKey: true });
+      });
+      expect(activeTab().nodes).toHaveLength(4);
+    });
+
+    it('lets Delete through when focus was in the palette search box', async () => {
+      focusSidebarSearch();
+      shiftPressOnPane();
+      fireEvent.keyDown(document.activeElement!, { key: 'Delete', code: 'Delete' });
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      });
+      expect(activeTab().nodes).toEqual([]);
+    });
+  });
+});
+
 // ── Double-click pane -> quick search (the timer + DOM listener effect) ──────
 
 describe('pane double-click quick search', () => {
@@ -1048,14 +1324,14 @@ describe('change handlers passthrough', () => {
   });
 });
 
-// ── Delete behind a modal (#475, #491) ──────────────────────────────────────
+// ── Delete behind a modal (#475, #491, #501) ────────────────────────────────
 //
-// React Flow binds Delete on `document` and filters only on `isInputDOMNode`.
-// A panel's focus target is a `tabIndex={-1}` div, not an input, so the filter
-// passed and Delete destroyed the selection on the canvas behind the panel
-// (#475). The key stays bound, and the canvas refuses the deletion itself in
-// `onBeforeDelete` for as long as a modal is up: unbinding the key instead
-// made React Flow miss the release of the key that opened the panel (#491).
+// Delete is heard on `document`, and a panel's focus target is a
+// `tabIndex={-1}` div, not an input, so a Delete pressed over a panel used to
+// destroy the selection on the canvas behind it (#475). The canvas refuses
+// the deletion itself, in `onBeforeDelete`, for as long as a modal is up. Its
+// own Delete handler deletes through React Flow's `deleteElements`, which
+// asks it (#501); React Flow's own Delete binding stays off.
 
 describe('FlowCanvas delete key with a modal open', () => {
   const MODALS: Array<[string, () => void]> = [
@@ -1080,12 +1356,12 @@ describe('FlowCanvas delete key with a modal open', () => {
     return captured.rf.onBeforeDelete({ nodes: activeTab().nodes, edges: [] });
   }
 
-  it.each(MODALS)('refuses to delete while %s is open, and keeps Delete bound', async (_name, open) => {
+  it.each(MODALS)('refuses to delete while %s is open', async (_name, open) => {
     setTab({ nodes: [node('a', { selected: true })] });
     open();
     renderCanvas();
-    // Bound all along, so React Flow sees every key come back up (#491).
-    expect(captured.rf.deleteKeyCode).toBe('Delete');
+    // Off whether a modal is up or not: nothing to unbind, nothing to re-arm.
+    expect(captured.rf.deleteKeyCode).toBeNull();
     await expect(askToDelete()).resolves.toBe(false);
   });
 
@@ -1102,26 +1378,28 @@ describe('FlowCanvas delete key with a modal open', () => {
   });
 });
 
-// ── React Flow's own Delete key (#491) ──────────────────────────────────────
+// ── The Delete key on the real canvas (#491, #501) ──────────────────────────
 //
-// React Flow remembers each key it sees go down until it sees it come up, and
-// runs Delete only when Delete is the one key held. The canvas used to unbind
-// Delete while a modal was open, which took React Flow's key listeners away
-// with it: a key that opened the modal came back up unseen and stayed "held",
-// so the first Delete after the modal closed read as that key plus Delete and
-// did nothing. These cases render the real <ReactFlow>, whose bookkeeping is
-// the thing under test.
+// React Flow's own Delete binding kept a set of the keys it had seen go down
+// and deleted only when that set held Delete alone. A key it never saw come
+// up stayed "held", and the next Delete read as that key plus Delete and did
+// nothing: first a key released while its listener was off behind a modal
+// (#491), then a shifted key whose Shift came up first, which comes up under
+// another name than it went down under (#501). The canvas now handles Delete
+// itself. These cases render the real <ReactFlow>, so React Flow's own key
+// handling is in the loop as well.
 
-describe('FlowCanvas Delete key through React Flow itself (#491)', () => {
+describe('FlowCanvas Delete key on the real canvas (#491, #501)', () => {
   beforeEach(() => {
     realFlow.value = true;
   });
+  afterEach(unmountBeforeStoreReset);
 
-  /** One Delete on the page, down and up, with React Flow's work run out. */
+  /** One Delete on the page, down and up, with the deletion run out. */
   async function pressDelete() {
     fireEvent.keyDown(document.body, { key: 'Delete', code: 'Delete' });
-    // React Flow deletes asynchronously, after awaiting `onBeforeDelete`, and
-    // a macrotask runs only once every microtask queued before it has.
+    // The deletion is asynchronous, after awaiting `onBeforeDelete`, and a
+    // macrotask runs only once every microtask queued before it has.
     await act(async () => {
       await new Promise((resolve) => setTimeout(resolve, 0));
     });
@@ -1160,6 +1438,55 @@ describe('FlowCanvas Delete key through React Flow itself (#491)', () => {
     await pressDelete();
     expect(activeTab().nodes).toEqual([]);
   });
+
+  // #501. A shifted key goes down under its shifted name and, once Shift is
+  // up, comes up under its plain one: `?` goes down and `/` comes up, `L`
+  // goes down and `l` comes up. React Flow forgot a key by the name it came
+  // up under, so the `?` stayed "held".
+  const SHIFT_DOWN: KeyboardEventInit = { key: 'Shift', code: 'ShiftLeft', shiftKey: true };
+  const SHIFT_UP: KeyboardEventInit = { key: 'Shift', code: 'ShiftLeft' };
+  const QUESTION_DOWN: KeyboardEventInit[] = [SHIFT_DOWN, { key: '?', code: 'Slash', shiftKey: true }];
+  const QUESTION_UP: KeyboardEventInit[] = [SHIFT_UP, { key: '/', code: 'Slash' }];
+  type ShiftFirst = [string, KeyboardEventInit[], KeyboardEventInit[], boolean];
+  const SHIFT_FIRST: ShiftFirst[] = [
+    ['?', QUESTION_DOWN, QUESTION_UP, false],
+    ['? opening and closing the shortcuts sheet', QUESTION_DOWN, QUESTION_UP, true],
+    [
+      'Shift+L',
+      [SHIFT_DOWN, { key: 'L', code: 'KeyL', shiftKey: true }],
+      [SHIFT_UP, { key: 'l', code: 'KeyL' }],
+      false,
+    ],
+    [
+      'Ctrl+Shift+Z',
+      [
+        { key: 'Control', code: 'ControlLeft', ctrlKey: true },
+        { key: 'Shift', code: 'ShiftLeft', ctrlKey: true, shiftKey: true },
+        { key: 'Z', code: 'KeyZ', ctrlKey: true, shiftKey: true },
+      ],
+      [
+        { key: 'Shift', code: 'ShiftLeft', ctrlKey: true },
+        { key: 'z', code: 'KeyZ', ctrlKey: true },
+        { key: 'Control', code: 'ControlLeft' },
+      ],
+      false,
+    ],
+  ];
+
+  it.each(SHIFT_FIRST)(
+    'after %s with Shift let go first, the first Delete deletes the selected node',
+    async (_keys, downs, ups, opensSheet) => {
+      setTab({ nodes: [node('a', { selected: true })] });
+      renderWithFlow(<FlowCanvas />);
+      for (const init of downs) fireEvent.keyDown(document.body, init);
+      if (opensSheet) act(() => useUIStore.setState({ shortcutsModalOpen: true }));
+      for (const init of ups) fireEvent.keyUp(document.body, init);
+      if (opensSheet) act(() => useUIStore.setState({ shortcutsModalOpen: false }));
+
+      await pressDelete();
+      expect(activeTab().nodes).toEqual([]);
+    },
+  );
 
   it('refuses a Delete pressed while a modal is open, and takes the next one once it closes', async () => {
     setTab({ nodes: [node('a', { selected: true })] });

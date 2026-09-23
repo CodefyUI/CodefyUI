@@ -1129,10 +1129,12 @@ describe('LayersEditorModal', () => {
     expect(screen.getByText('0 layers')).toBeTruthy();
   });
 
-  // ── Delete behind a modal (#475, #491) ──────────────────────────────────
+  // ── Delete behind a modal (#475, #491, #501) ────────────────────────────
   //
-  // Delete stays bound, so React Flow sees every key come back up (#491), and
-  // the editor refuses the deletion itself while something is on top of it.
+  // React Flow's own Delete binding is off; the editor's own handler deletes
+  // through `deleteElements` (#501; LayersEditorModal.deleteKey.test.tsx
+  // presses the key on the real canvas). The editor refuses the deletion
+  // itself while something is on top of it.
 
   /** What the editor answers React Flow as it is about to delete a layer. */
   function askToDelete(): Promise<boolean> {
@@ -1144,7 +1146,7 @@ describe('LayersEditorModal', () => {
     // never refuse its own Delete — only something ON TOP of it does.
     setupOpenModal(validGraphJson());
     render(<LayersEditorModal />);
-    expect(lastFlowProps.deleteKeyCode).toBe('Delete');
+    expect(lastFlowProps.deleteKeyCode).toBeNull();
     await expect(askToDelete()).resolves.toBe(true);
     // What React Flow does with the yes: hands the nodes to `onNodesDelete`.
     act(() => {
@@ -1158,7 +1160,7 @@ describe('LayersEditorModal', () => {
     setupOpenModal(validGraphJson());
     useUIStore.setState({ packCenterOpen: true });
     render(<LayersEditorModal />);
-    expect(lastFlowProps.deleteKeyCode).toBe('Delete');
+    expect(lastFlowProps.deleteKeyCode).toBeNull();
     await expect(askToDelete()).resolves.toBe(false);
   });
 
@@ -1166,7 +1168,7 @@ describe('LayersEditorModal', () => {
     setupOpenModal(validGraphJson());
     useDialogStore.setState({ active: { kind: 'confirm', title: 'sure?' }, resolve: null });
     render(<LayersEditorModal />);
-    expect(lastFlowProps.deleteKeyCode).toBe('Delete');
+    expect(lastFlowProps.deleteKeyCode).toBeNull();
     await expect(askToDelete()).resolves.toBe(false);
   });
 });
