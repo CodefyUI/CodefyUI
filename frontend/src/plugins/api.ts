@@ -543,6 +543,19 @@ function openWorkspaceGraphs(
       });
       continue;
     }
+    // Before the read, because reading merges the presets the graph carries
+    // that this server has never seen into the palette (`resolveExample`), and
+    // nothing short of re-fetching the node definitions takes them out again:
+    // an entry refused here must never reach it (#416). Against the live
+    // count, so two entries in one call cannot both slip under a limit only
+    // one of them fits -- each earlier entry's tab already exists.
+    if (useTabStore.getState().tabs.length >= MAX_WORKSPACE_TABS) {
+      results.push({
+        error: `openGraphs: the editor already has ${MAX_WORKSPACE_TABS} tabs open`,
+        code: 'too_many_tabs',
+      });
+      continue;
+    }
     let doc: GraphDocument;
     try {
       doc = resolveUnboundDocument(entry.graph);
@@ -550,15 +563,6 @@ function openWorkspaceGraphs(
       results.push({
         error: `openGraphs: ${error instanceof Error ? error.message : String(error)}`,
         code: 'invalid_graph',
-      });
-      continue;
-    }
-    // Checked LAST, and against the live count, so two entries in one call
-    // cannot both slip past a limit only one of them fits under.
-    if (useTabStore.getState().tabs.length >= MAX_WORKSPACE_TABS) {
-      results.push({
-        error: `openGraphs: the editor already has ${MAX_WORKSPACE_TABS} tabs open`,
-        code: 'too_many_tabs',
       });
       continue;
     }
