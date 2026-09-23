@@ -1565,22 +1565,28 @@ def _split_forwarded_args(argv: list) -> "tuple[list, list]":
 # into settings.WS_MAX_MESSAGE_BYTES, which is the number the docs quote and
 # the number the editor's "graph too large" message is about. A forwarded copy
 # wins on uvicorn's argparse and desyncs whichever set it belongs to, so refuse
-# it and name the real knob.
-_UVICORN_FLAGS_CDUI_OWNS = ("--host", "--port", "--ws-max-size")
+# it and name the real knob. --workers is refused for another reason: the
+# server is ONE process (one session token, one run queue). Every worker runs
+# the startup, and the instance lock turns away all but the first, as it turns
+# away a second server (`_refuse_if_already_running` is the launcher's side of
+# that); uvicorn then restarts the refused workers for as long as it runs.
+_UVICORN_FLAGS_CDUI_OWNS = ("--host", "--port", "--ws-max-size", "--workers")
 
 # Owned flag -> the remedy to name when it is forwarded after `--`. A refusal
 # that does not point at the knob that DOES work is just a dead end.
 # --host/--port have cdui flags of their own; --ws-max-size is configured by
-# environment like every other app setting.
+# environment like every other app setting; --workers has no knob, and says so.
 _UVICORN_FLAG_ALTERNATIVE = {
     "--host": "使用 cdui start --host。",
     "--port": "使用 cdui start --port。",
     "--ws-max-size": "改設環境變數 CODEFYUI_WS_MAX_MESSAGE_BYTES。",
+    "--workers": "CodefyUI 只以單一行程提供服務。",
 }
 _UVICORN_FLAG_ALTERNATIVE_EN = {
     "--host": "use `cdui start --host` instead.",
     "--port": "use `cdui start --port` instead.",
     "--ws-max-size": "set CODEFYUI_WS_MAX_MESSAGE_BYTES instead.",
+    "--workers": "CodefyUI serves from a single process.",
 }
 
 # Mirrors app.config.Settings.WS_MAX_MESSAGE_BYTES, including its fallback to
@@ -1633,6 +1639,21 @@ def _reject_owned_uvicorn_flags(extra: list) -> None:
                         "CODEFYUI_WS_MAX_MESSAGE_BYTES; a forwarded copy would "
                         "desync the real ceiling from the documented one and "
                         "from the editor's \"graph too large\" message.",
+                    ),
+                    file=sys.stderr,
+                )
+            elif name == "--workers":
+                # Each extra worker is a second server on the same data: the
+                # instance lock refuses it (the launcher's side of that is
+                # _refuse_if_already_running), uvicorn restarts it, and
+                # server.log grows by one refusal every time.
+                print(
+                    t(
+                        "  每個 worker 都會啟動一次整個伺服器；除了第一個，其餘都會"
+                        "因為共用同一份資料被拒絕，再被 uvicorn 不斷重新啟動。",
+                        "  every worker starts the whole server; all but the "
+                        "first would be refused for sharing its data, and "
+                        "uvicorn would restart them without end.",
                     ),
                     file=sys.stderr,
                 )
@@ -1825,13 +1846,18 @@ def _server_health_info(host: "str | None" = None,
         addr_host, addr_port = _server_addr()
         host = host if host is not None else addr_host
         port = port if port is not None else addr_port
+    # HTTPException too: a service on the port that does not speak HTTP (an
+    # SSH banner, a TLS alert) is answered with BadStatusLine, which is not an
+    # OSError -- and `_server_already_running` asks exactly such ports.
+    from http.client import HTTPException  # noqa: PLC0415 — only needed here
     try:
         with urlopen(_server_health_url(host, port), timeout=timeout) as resp:
             if resp.status != 200:
                 return None
             import json  # noqa: PLC0415 — only needed here
             return json.loads(resp.read().decode("utf-8", "replace"))
-    except (URLError, HTTPError, TimeoutError, OSError, ValueError):
+    except (URLError, HTTPError, TimeoutError, OSError, ValueError,
+            HTTPException):
         return None
 
 
@@ -1849,6 +1875,176 @@ def _running_server_pid() -> "int | None":
     SERVER_PIDFILE.unlink(missing_ok=True)
     SERVER_ADDRFILE.unlink(missing_ok=True)
     return None
+
+
+#: How long `_server_already_running` gives a TAKEN port to answer
+#: /api/health. A free port is never asked, so no normal start waits on this,
+#: and a CodefyUI server answers health in milliseconds.
+_ALREADY_RUNNING_HEALTH_TIMEOUT_S = 2.0
+
+
+def _server_already_running(host: str,
+                            port: int) -> "tuple[str, dict | None] | None":
+    """What stands in the way of a server about to bind *host*:*port*.
+
+    ``None`` when nothing does -- the answer for nearly every start, and
+    found without a network round trip: an address is bound and let go,
+    which takes microseconds, where a connect to a free localhost port on
+    Windows waits out its whole timeout. Otherwise
+    ``("codefyui", <its /api/health answer>)`` or ``("other", None)``.
+
+    Two questions, asked of different addresses:
+
+    * Would uvicorn's own bind fail? Only *host* is tried for that -- every
+      address it resolves to, as uvicorn binds them all -- and whatever holds
+      it is reported, CodefyUI or not.
+    * Does a CodefyUI server already answer where this one is headed? On
+      Windows a listener on ``0.0.0.0`` and one on ``127.0.0.1`` do not
+      collide, so the bind would succeed beside a server that answers the
+      same URL. ``0.0.0.0`` and ``127.0.0.1`` are tried as well, but a taken
+      one counts only when ``/api/health`` answers as CodefyUI: another
+      program on another address is not in this start's way.
+
+    ``SO_REUSEADDR`` is set off Windows only, as uvicorn sets it there, so a
+    port with connections in ``TIME_WAIT`` does not read as taken; on Windows
+    the same option would let the probe bind straight over a live listener.
+    Only "address in use" counts: a port this user may not bind, or an
+    address this machine does not have, is left for uvicorn to report in its
+    own words.
+    """
+    import errno  # noqa: PLC0415 — only needed here
+    import socket  # noqa: PLC0415 — only needed here
+
+    def in_use(address: str) -> bool:
+        try:
+            candidates = socket.getaddrinfo(address, port, 0, socket.SOCK_STREAM,
+                                            0, socket.AI_PASSIVE)
+        except (OSError, UnicodeError):
+            return False
+        for family, kind, proto, _, sockaddr in candidates:
+            try:
+                probe = socket.socket(family, kind, proto)
+            except OSError:
+                continue
+            try:
+                if os.name != "nt":
+                    probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                if family == socket.AF_INET6:
+                    # As uvicorn does: an IPv6 listener leaves IPv4 alone.
+                    probe.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 1)
+                probe.bind(sockaddr)
+            except OSError as exc:
+                if exc.errno == errno.EADDRINUSE:
+                    return True
+            finally:
+                probe.close()
+        return False
+
+    def codefyui_health() -> "dict | None":
+        health = _server_health_info(host, port,
+                                     timeout=_ALREADY_RUNNING_HEALTH_TIMEOUT_S)
+        # `nodes_loaded` has been in CodefyUI's /api/health since the first
+        # release, so an older server is recognised too; any other JSON is
+        # some other program's.
+        if (isinstance(health, dict) and health.get("status") == "ok"
+                and "nodes_loaded" in health):
+            return health
+        return None
+
+    if in_use(host):
+        health = codefyui_health()
+        return ("codefyui", health) if health is not None else ("other", None)
+    if any(in_use(address) for address in ("0.0.0.0", "127.0.0.1")
+           if address != host):
+        health = codefyui_health()
+        if health is not None:
+            return "codefyui", health
+    return None
+
+
+def _saved_server_addr() -> "str | None":
+    """server.addr as it is before a start overwrites it, or None."""
+    try:
+        return SERVER_ADDRFILE.read_text()
+    except OSError:
+        return None
+
+
+def _restore_server_addr(saved: "str | None", ours: str) -> None:
+    """Put server.addr back after a start whose server did not come up.
+
+    Past `_refuse_if_already_running` the usual cause is the instance lock
+    (another server on the same data), and a server.addr naming a port that
+    nothing listens on sends `cdui run` and `cdui status` to the wrong place.
+
+    Only while the file still says *ours*. A foreground server that did come
+    up and was stopped later leaves it to whoever changed it since: `cdui
+    stop` deletes it, and another start writes its own address.
+    """
+    try:
+        if SERVER_ADDRFILE.read_text() != ours:
+            return
+        if saved is None:
+            SERVER_ADDRFILE.unlink()
+        else:
+            SERVER_ADDRFILE.write_text(saved)
+    except OSError:
+        pass
+
+
+def _foreground_exit_code(code: int) -> int:
+    """A foreground server's non-zero exit status, as the launcher's own.
+
+    A small status passes through -- 3, uvicorn's startup failure and so a
+    refusal by the instance lock, among them. A server killed by a signal
+    comes back from POSIX as -N, which `sys.exit` would turn into 256-N (247
+    for SIGKILL); it becomes 128+N, as a shell reports it. Anything else --
+    on Windows a native crash's NTSTATUS such as 0xC0000005, which `sys.exit`
+    cannot carry (OverflowError on Python 3.12) -- becomes 1.
+    """
+    if 0 < code < 256:
+        return code
+    if code < 0:
+        return 128 - code
+    return 1
+
+
+def _refuse_if_already_running(host: str, port: int, *,
+                               port_flag: bool) -> None:
+    """Exit 1, with nothing launched and nothing written, if the port is taken.
+
+    uvicorn runs the whole application startup BEFORE it binds, so a server
+    launched onto a taken port finds out only at the very end, and a
+    background one leaves a log tail as the only explanation. *port_flag*
+    says whether the command has a ``--port`` to suggest (`cdui dev` has
+    none).
+    """
+    found = _server_already_running(host, port)
+    if found is None:
+        return
+    kind, health = found
+    url = _display_url(host, port)
+    if kind == "codefyui":
+        version = (health or {}).get("version")
+        err(f"{url} 已有 CodefyUI 伺服器在執行"
+            f"{f'（版本 {version}）' if version else ''}，不會再啟動第二個。",
+            f"A CodefyUI server{f' (version {version})' if version else ''} "
+            f"is already running at {url}; not starting a second one.")
+        zh = ("  請先停止它（在執行它的終端機按 Ctrl+C；"
+              "若是這個安裝啟動的，也可以用 cdui stop）")
+        en = ("  Stop it first (Ctrl+C where it runs, or `cdui stop` if this "
+              "install started it)")
+        zh_end, en_end = "。", "."
+    else:
+        err(f"埠 {port} 已被其他程式佔用（{url}）。",
+            f"Port {port} is already in use by another program ({url}).")
+        zh, en = "  請先結束那個程式", "  Stop that program first"
+        zh_end = "；cdui dev 的後端固定使用這個埠。"
+        en_end = "; `cdui dev` always runs its backend on this port."
+    if port_flag:
+        zh_end, en_end = "，或用 --port 改用別的埠。", ", or choose another port with --port."
+    print(t(zh + zh_end, en + en_end), file=sys.stderr)
+    sys.exit(1)
 
 
 def start() -> None:
@@ -1879,6 +2075,10 @@ def start() -> None:
         print("  查看狀態：cdui status    停止：cdui stop")
         return
 
+    # The pidfile knows only the background server this install started. A
+    # foreground or `cdui dev` server, or another install's, is found by its
+    # port instead -- before anything is launched or written (server.addr).
+    _refuse_if_already_running(host, port, port_flag=True)
     _warn_if_dist_stale()
     _apply_dev_env()
     # Before anything is started. Two cases, one file: a restart that is
@@ -1905,6 +2105,17 @@ def start() -> None:
     # paths get them: a foreground server can be restarted too, it simply
     # comes back as a daemon (see `_restart_relaunch_argv`).
     _export_restart_env(own_argv, uvicorn_extra)
+    # uvicorn takes WEB_CONCURRENCY as --workers when the flag is absent, which
+    # would get round the refusal of --workers: each extra worker is refused
+    # by the instance lock, as a second server is (the launcher's side of that
+    # is _refuse_if_already_running), and restarted without end. Both launch
+    # paths below inherit this environment. (`cdui dev` runs uvicorn with
+    # --reload, which ignores workers.)
+    web_concurrency = os.environ.pop("WEB_CONCURRENCY", None)
+    if web_concurrency not in (None, "", "1"):
+        warn(f"忽略 WEB_CONCURRENCY={web_concurrency}：CodefyUI 只以單一行程提供服務。",
+             f"Ignoring WEB_CONCURRENCY={web_concurrency}: CodefyUI serves "
+             f"from a single process.")
     uvicorn = _require_venv_tool("uvicorn")
     # Extras go last so `app.main:app` keeps its position — the process
     # matchers in `cdui stop` key on it. --ws-max-size is passed explicitly
@@ -1914,7 +2125,11 @@ def start() -> None:
     cmd = [uvicorn, "app.main:app", "--host", host, "--port", str(port),
            "--ws-max-size", str(_ws_max_size()), *uvicorn_extra]
     SERVER_ADDRFILE.parent.mkdir(parents=True, exist_ok=True)
-    SERVER_ADDRFILE.write_text(f"{host}:{port}")
+    # Kept so a server that does not come up can have it back: see
+    # _restore_server_addr, beside _refuse_if_already_running.
+    saved_addr = _saved_server_addr()
+    our_addr = f"{host}:{port}"
+    SERVER_ADDRFILE.write_text(our_addr)
 
     def _print_reach_lines() -> None:
         print(f"    開啟 → {_display_url(host, port)}")
@@ -1939,7 +2154,16 @@ def start() -> None:
         _print_reach_lines()
         print(f"    dev lockfile → {DEV_LOCKFILE}")
         print("")
-        run(cmd, cwd=BACKEND_DIR)
+        try:
+            run(cmd, cwd=BACKEND_DIR)
+        except subprocess.CalledProcessError as exc:
+            # uvicorn has already said why -- a refusal by the instance lock
+            # is one line (the port side is _refuse_if_already_running) -- so
+            # a launcher traceback under it adds nothing. Its exit code is
+            # passed on, in a form sys.exit can carry: 3 is a startup
+            # failure, and systemd reports it so.
+            _restore_server_addr(saved_addr, our_addr)
+            sys.exit(_foreground_exit_code(exc.returncode))
         return
 
     # ── Background / daemon path ──────────────────────────────────────
@@ -1986,6 +2210,9 @@ def start() -> None:
     while time.monotonic() < deadline:
         if proc.poll() is not None:
             SERVER_PIDFILE.unlink(missing_ok=True)
+            # Most often the instance lock, past _refuse_if_already_running:
+            # the log tail below says which server holds the data.
+            _restore_server_addr(saved_addr, our_addr)
             print("錯誤：伺服器啟動後隨即結束。最後的日誌：", file=sys.stderr)
             _print_log_tail(20)
             sys.exit(1)
@@ -3646,6 +3873,10 @@ def dev() -> None:
             file=sys.stderr,
         )
         sys.exit(1)
+    # Before the frontend install and both launches: `backend_cmd` below binds
+    # uvicorn's default address, and a server already there would leave Vite
+    # proxying to it rather than to this checkout's backend.
+    _refuse_if_already_running("127.0.0.1", 8000, port_flag=False)
     _install_frontend_deps_if_needed()
     _apply_dev_env()
     # After `_apply_dev_env`, which is what points `CODEFYUI_USER_DATA_DIR`

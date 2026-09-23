@@ -77,6 +77,8 @@ cdui start --host 127.0.0.1 --port 8000
 
 `cdui start` 會以常駐服務執行：它會脫離 terminal、寫入 pidfile，而 `cdui stop` 會先向整個行程群組送出 `SIGTERM`，約兩秒後若仍在執行，再送出 `SIGKILL`。它不會開啟瀏覽器，適合沒有桌面環境的伺服器。行程監督則交由下方的 systemd 處理。
 
+在它執行期間，另一個伺服器（不論使用哪個埠）若會共用它的使用者資料目錄或資料庫，就會在啟動時拒絕：它記錄一行訊息，指出執行中伺服器的 pid 與位址，這個伺服器的 session token 與執行紀錄都維持原狀。手動執行的 uvicorn 與 `cdui start --foreground` 接著以離開碼 `3` 結束；背景的 `cdui start` 會先印出伺服器日誌的最後幾行，再以離開碼 `1` 結束。在 `cdui dev` 下，後端 worker 記錄該行訊息後停止，重新載入程式與 Vite 則繼續執行。
+
 ## 4. 轉發 uvicorn 參數：`cdui start -- ...` {/* #4-passing-uvicorn-flags-cdui-start---- */}
 
 單獨一個 `--` 之後的所有參數，都會原樣轉給 uvicorn：

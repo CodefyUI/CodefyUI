@@ -76,6 +76,7 @@ from .core.body_limit import BodySizeLimitMiddleware, RequestBodyTooLarge
 from .core.cache import execution_cache_stats
 from .core.db import Database
 from .core.git.service import GitService
+from .core import instance_lock
 from .core.logging_config import setup_logging
 from .core.node_registry import registry
 from .core.node_state_store import NodeStateStore
@@ -209,7 +210,22 @@ async def lifespan(app: FastAPI):
         log_dir=settings.LOG_DIR,
         json_format=settings.LOG_JSON,
     )
+    # One server per data store, settled before anything below writes.
+    # uvicorn runs this BEFORE it binds the port, so a second start used to
+    # replace the live server's session.token and mark its runs interrupted
+    # in the shared database, and only then fail to bind. A refused start
+    # raises here -- uvicorn logs "Application startup failed" and exits
+    # non-zero -- and a held lock is let go after the body's own shutdown,
+    # or after a startup that fails part-way. See core/instance_lock.py.
+    with instance_lock.hold(instance_lock.server_locks(),
+                            host=settings.HOST, port=settings.PORT):
+        async with _lifespan_body(app):
+            yield
 
+
+@asynccontextmanager
+async def _lifespan_body(app: FastAPI):
+    """Everything the server starts and stops, under the instance lock."""
     # Project .env: execution-time secrets only, os.environ.setdefault
     # semantics, loaded before node/plugin discovery. CODEFYUI_* config keys
     # here are IGNORED (settings already materialized at import) -- spec 7.3.

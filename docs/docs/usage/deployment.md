@@ -117,6 +117,14 @@ is still running about two seconds later. Nothing ever opens a browser, so it
 is safe on a headless server. What it does not have is supervision -- that is
 systemd's job, below.
 
+A second server started while this one runs, on any port, refuses at startup
+when it would share this one's user data directory or run database. It logs
+one line naming the running server's pid and address, and leaves this server's
+session token and runs as they were. uvicorn run by hand and
+`cdui start --foreground` then exit with code 3; a background `cdui start`
+exits 1 after printing the end of the server log. Under `cdui dev` the backend
+worker stops after that line while the reloader and Vite keep running.
+
 ## 4. Passing uvicorn flags: `cdui start -- ...`
 
 Everything after a bare `--` is forwarded to uvicorn verbatim:
