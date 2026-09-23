@@ -116,7 +116,9 @@ class SVMClassifierNode(BaseNode):
         except (TypeError, ValueError):
             gamma = str(gamma_raw)
 
-        clf = SVC(C=C, kernel=kernel, gamma=gamma, probability=False)
+        # SVC fits without probability estimates by default. Passing
+        # `probability` at all is deprecated since scikit-learn 1.9.
+        clf = SVC(C=C, kernel=kernel, gamma=gamma)
         clf.fit(x_train_np, labels)
         preds = clf.predict(x_query_np).tolist()
         classes = [str(c) for c in clf.classes_.tolist()]
