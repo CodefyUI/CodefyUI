@@ -263,7 +263,7 @@ uv pip uninstall --python <the CodefyUI venv's python> model2vec
 
 ### 拒絕代碼 {/* #refusal-codes */}
 
-大多數安裝 routes 的拒絕回應使用 `{"detail": {"code": "...", ...}}`，其中包含 code 與用戶端所需的欄位。面板與 `cdui` 會依 code 控制流程，並可將顯示訊息本地化。有兩個例外會回傳純文字 `detail`：回送位址閘門的 `403`（「Installing plugins is only allowed from the computer that runs the server. Set CODEFYUI_ALLOW_REMOTE_PLUGIN_INSTALL=1 to override.」），以及對未安裝外掛呼叫 `enable` 或 `disable` 時回傳的 `404`。
+大多數安裝 routes 的拒絕回應使用 `{"detail": {"code": "...", ...}}`，其中包含 code 與用戶端所需的欄位。面板與 `cdui` 會依 code 控制流程，並可將顯示訊息本地化。有兩個例外會回傳純文字 `detail`：回送位址閘門的 `403`（「Installing plugins is only allowed from the computer that runs the server. Set CODEFYUI_ALLOW_REMOTE_PLUGIN_INSTALL=1 to override.」），以及 `GET /api/plugins/{id}` 對有 lockfile 條目、但已停用或檔案遺失的外掛回傳的 `404`。
 
 | 狀態碼 | Code | 來源 | 意義 |
 |--------|------|------|---------|
@@ -277,7 +277,7 @@ uv pip uninstall --python <the CodefyUI venv's python> model2vec
 | 404 | `not_found` | inspect, update | GitHub 上沒有相符的 repository 或 ref。 |
 | 404 | `unknown_job` | events, cancel | 只保留最近一個 job，因此要求的 job 無法取得。response 包含 `job_id`。 |
 | 404 | `inspection_expired` | install | inspection 已不存在：已超過 15 分鐘、為了維持最多 32 筆而被移除，或已用於開始一次安裝。請重新檢查來源。response 包含 `inspection_id`。 |
-| 404 | `not_installed` | update, DELETE | 該 id 底下沒有已安裝的外掛。 |
+| 404 | `not_installed` | `GET /api/plugins/{id}`, update, DELETE, enable, disable | 該 id 底下沒有已安裝的外掛。 |
 | 409 | `already_installed` | install | 外掛已安裝。請使用 `force: true` 重試，這等同面板的**重新安裝**操作。response 包含 `plugin_id`。 |
 | 409 | `busy` | install, update, DELETE, enable, disable | 有安裝正在執行：任何外掛都會阻擋 `install` 與 `update`；外掛會阻擋自己的 DELETE、enable 與 disable 操作。response 包含 `job_id`。 |
 | 409 | `pack_install_running` | install, update | 套件中心正在使用兩個中心共用的安裝 slot。response 包含 `job_id`。 |

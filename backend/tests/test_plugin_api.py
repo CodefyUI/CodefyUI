@@ -135,6 +135,9 @@ def test_get_plugin_returns_manifest(client):
 def test_get_plugin_returns_404_for_unknown(client):
     r = client.get("/api/plugins/does-not-exist")
     assert r.status_code == 404
+    # Compared whole: the body DELETE and update send for this state, with no
+    # sentence beside the code, so one condition has one shape (#415).
+    assert r.json()["detail"] == {"code": "not_installed"}
 
 
 def test_reload_plugins_returns_counts(client):
@@ -211,13 +214,18 @@ def test_disable_then_enable_via_api(client):
 
 
 def test_disable_missing_plugin_returns_404(client):
+    """What a stale row's switch gets back. The code is what lets the panel
+    say it in the user's language; the server's English sentence reached the
+    toast untranslated."""
     r = client.post("/api/plugins/does-not-exist/disable")
     assert r.status_code == 404
+    assert r.json()["detail"] == {"code": "not_installed"}
 
 
 def test_enable_missing_plugin_returns_404(client):
     r = client.post("/api/plugins/does-not-exist/enable")
     assert r.status_code == 404
+    assert r.json()["detail"] == {"code": "not_installed"}
 
 
 def test_disabled_plugin_examples_disappear_from_list(client):

@@ -696,7 +696,7 @@ async def cancel_plugin_job(job_id: str, request: Request) -> dict[str, Any]:
 async def get_plugin(plugin_id: str) -> dict[str, Any]:
     lockfile = load_lockfile()
     if plugin_id not in lockfile.get("plugins", {}):
-        raise HTTPException(status_code=404, detail=f"Plugin '{plugin_id}' not installed")
+        raise _coded(404, "not_installed")
 
     for pid, plugin_dir in iter_plugin_dirs(
         plugin_loader.plugins_builtin_root(), plugin_loader.plugins_user_root(), lockfile
@@ -901,7 +901,7 @@ async def update_plugin(plugin_id: str, request: Request,
 def _set_plugin_enabled(plugin_id: str, enabled: bool) -> dict[str, Any]:
     """Shared implementation behind the two toggle endpoints.
 
-    Returns the new state on success; raises HTTPException 404 when the
+    Returns the new state on success; raises 404 ``not_installed`` when the
     plugin is not installed, or 409 ``busy`` when another writer holds the
     lockfile. Hot-reloads the registry so the change is immediately visible
     without restarting the server -- including when the flag was already in
@@ -916,10 +916,9 @@ def _set_plugin_enabled(plugin_id: str, enabled: bool) -> dict[str, Any]:
         # this runs on the event loop and the flag was not flipped.
         raise _coded(409, "busy") from None
     if flipped is None:
-        raise HTTPException(
-            status_code=404,
-            detail=f"Plugin '{plugin_id}' is not installed",
-        )
+        # Coded like DELETE's and update's answer to the same state: a stale
+        # row's switch lands here, and the panel words it for the user.
+        raise _coded(404, "not_installed")
 
     rediscover_now()
     return {"id": plugin_id, "enabled": enabled}

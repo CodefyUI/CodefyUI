@@ -278,7 +278,7 @@ Built-in packs and linked directories also return `400` `not_updatable` with an 
 
 ### Refusal codes
 
-Most install-route refusals use `{"detail": {"code": "...", ...}}`, with a code and any fields required by the client. The panel and `cdui` use the code for control flow and can localize the displayed message. Two exceptions return a plain-text `detail`: the loopback gate's `403` ("Installing plugins is only allowed from the computer that runs the server. Set CODEFYUI_ALLOW_REMOTE_PLUGIN_INSTALL=1 to override.") and the `404` returned by `enable` or `disable` when the plugin is not installed.
+Most install-route refusals use `{"detail": {"code": "...", ...}}`, with a code and any fields required by the client. The panel and `cdui` use the code for control flow and can localize the displayed message. Two exceptions return a plain-text `detail`: the loopback gate's `403` ("Installing plugins is only allowed from the computer that runs the server. Set CODEFYUI_ALLOW_REMOTE_PLUGIN_INSTALL=1 to override.") and the `404` that `GET /api/plugins/{id}` returns for a plugin that is in the lockfile but disabled or missing its files.
 
 | Status | Code | From | Meaning |
 |--------|------|------|---------|
@@ -292,7 +292,7 @@ Most install-route refusals use `{"detail": {"code": "...", ...}}`, with a code 
 | 404 | `not_found` | inspect, update | GitHub has no matching repository or ref. |
 | 404 | `unknown_job` | events, cancel | The requested job is unavailable because only the most recent job is retained. The response includes `job_id`. |
 | 404 | `inspection_expired` | install | The inspection is gone: it is older than 15 minutes, was dropped to keep at most 32, or already started an install. Inspect the source again. The response includes `inspection_id`. |
-| 404 | `not_installed` | update, DELETE | No plugin is installed under that id. |
+| 404 | `not_installed` | `GET /api/plugins/{id}`, update, DELETE, enable, disable | No plugin is installed under that id. |
 | 409 | `already_installed` | install | The plugin is already installed. Retry with `force: true`, which is the panel's **Reinstall** action. The response includes `plugin_id`. |
 | 409 | `busy` | install, update, DELETE, enable, disable | An installation is active: any plugin blocks `install` and `update`; a plugin blocks its own DELETE, enable, and disable operations. The response includes `job_id`. |
 | 409 | `pack_install_running` | install, update | The Package Center is using the installation slot shared by both centers. The response includes `job_id`. |

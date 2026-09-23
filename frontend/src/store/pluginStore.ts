@@ -313,8 +313,8 @@ export const REFUSAL_KEY: Record<string, TranslationKey | undefined> = {
   unknown_job: 'pluginCenter.error.unknownJob',
   inspect_busy: 'pluginCenter.error.inspectBusy',
   // A row this tab is still showing for a plugin that is gone -- removed from
-  // the CLI or another tab. Both `DELETE /{id}` and `POST /{id}/update`
-  // answer it, and neither carries a word of prose.
+  // the CLI or another tab. `GET /{id}`, `DELETE /{id}`, `POST /{id}/update`,
+  // `/enable` and `/disable` all answer it, and none carries a word of prose.
   not_installed: 'pluginCenter.error.notInstalled',
   // The same sentence the source box shows before it asks at all: the server
   // and this build read a source by the same grammar, so a string that got
