@@ -22,6 +22,17 @@ received — each links to the release it was published as.
 
 ## [Unreleased]
 
+## [2.8.6] — 2026-09-24
+
+An API key typed into an LLMChat key field is used when you press Run.
+From 1.4.0 on, the editor sent the run with the field blank, so the run
+failed for want of a key, or used and billed the server's environment key
+without saying so. The field now wins over the environment key, as the docs
+say; clear it to use the environment key. The key still stays out of saved
+graphs, every export, autosave and the run history, now also for a node
+inside a block whose type has left the node list, and for a node whose type
+the server does not know.
+
 The Auto Layout menu in the toolbar opens for the first time, and every
 toolbar menu closes when you press the canvas. On an empty tab, a node
 dropped on the example gallery lands on the canvas, Delete works on the
@@ -4944,7 +4955,8 @@ Release candidates before 1.0.0 are on the
 [#537]: https://github.com/CodefyUI/CodefyUI/pull/537
 [@oyea0801]: https://github.com/oyea0801
 [@latteine1217]: https://github.com/latteine1217
-[Unreleased]: https://github.com/CodefyUI/CodefyUI/compare/2.8.5...main
+[Unreleased]: https://github.com/CodefyUI/CodefyUI/compare/2.8.6...main
+[2.8.6]: https://github.com/CodefyUI/CodefyUI/compare/2.8.5...2.8.6
 [2.8.5]: https://github.com/CodefyUI/CodefyUI/compare/2.8.4...2.8.5
 [2.8.4]: https://github.com/CodefyUI/CodefyUI/compare/2.8.3...2.8.4
 [2.8.3]: https://github.com/CodefyUI/CodefyUI/compare/2.8.2...2.8.3
