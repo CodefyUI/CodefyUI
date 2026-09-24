@@ -12,7 +12,13 @@ import {
   resolveSerializedNodes,
   migrateStaleEdgeStrokes,
 } from '../utils';
-import { useNodeDefStore } from './nodeDefStore';
+import {
+  useNodeDefStore,
+  rememberNodeSecrets,
+  rememberPresetNodeSecrets,
+  rememberedPresetSecrets,
+  rememberedSecrets,
+} from './nodeDefStore';
 import { forgetViewport } from '../utils/viewportMemory';
 import { idbAvailable } from '../utils/idb';
 import { readSnapshot, writeSnapshot } from './tabPersistence';
@@ -1107,12 +1113,37 @@ function mergeIncomingSubgraphs(
 }
 
 /**
+ * Tell the node-def store what the nodes a fold is about to put into a block
+ * declare SECRET, before the fold drops their definitions (#537 review).
+ *
+ * A node inside a block keeps no definition, so the strip learns its SECRET
+ * params by its type: from the node lists, and from what this records. A node
+ * can carry a definition no list this session has named -- autosave brings a
+ * node back after a reload with the definition it was saved with, whether or
+ * not the server still has its type -- and once it is folded in, nothing else
+ * says which of its params is a key. Every fold calls this: collapse, leaving
+ * a block, and the flush that each save, run and autosave does.
+ */
+function rememberFoldedSecrets(nodes: Node<NodeData>[]): void {
+  for (const n of nodes) {
+    const type = n.data?.type;
+    if (typeof type !== 'string') continue;
+    rememberNodeSecrets(type, n.data.definition);
+    if (type.startsWith('preset:')) {
+      rememberPresetNodeSecrets(type.slice('preset:'.length), n.data.presetDefinition);
+    }
+  }
+}
+
+/**
  * The tab as it would be with every sub-canvas closed (core#137).
  *
- * Pure -- it does not touch the store. Save, autosave and Run all go through
- * it, so a graph is written and executed identically whether the user is at
- * the top level or three blocks deep. Returns the SAME object when nothing
- * is open, so the persistence cache's identity compare still hits.
+ * Pure as far as tabs go -- it does not touch the store; the one thing it
+ * adds to is the node-def store's SECRET record (`rememberFoldedSecrets`),
+ * which only grows. Save, autosave and Run all go through it, so a graph is
+ * written and executed identically whether the user is at the top level or
+ * three blocks deep. Returns the SAME object when nothing is open, so the
+ * persistence cache's identity compare still hits.
  */
 export function flushSubgraphEditing(tab: TabState): TabState {
   // Optional-chained: tests and older persisted records build tab objects
@@ -1125,6 +1156,7 @@ export function flushSubgraphEditing(tab: TabState): TabState {
     const frame = tab.subgraphStack[level];
     const definition = subgraphs.find((d) => d.id === frame.subgraphId);
     if (definition) {
+      rememberFoldedSecrets(nodes);
       const updated = definitionFromCanvas(definition, nodes, edges);
       subgraphs = subgraphs.map((d) => (d.id === updated.id ? updated : d));
       nodes = refreshInstances(frame.nodes, updated);
@@ -1433,7 +1465,12 @@ function stripSecretInternalParams(
 //  - a definition's entries are the SERIALIZED shape (`type` at the top
 //    level, no attached `data.definition`), so the param schema has to be
 //    resolved through the node registry the way `resolveSerializedNodes`
-//    does, and a preset among them through the preset registry;
+//    does, and a preset among them through the preset registry. A type or
+//    preset the lists no longer name falls back to what was declared SECRET
+//    on it earlier this session, by a list or by the definition a node
+//    carried when it was folded in (`rememberedSecrets` and
+//    `rememberedPresetSecrets` in the node-def store): the fetch that drops a
+//    type does not make its key stop being a key;
 //  - `subgraphs` is a FLAT list — a block inside a block is a
 //    `subgraph:<id>` REFERENCE into this same list — so one pass over the
 //    list reaches every node at every depth, with no recursion to get wrong.
@@ -1455,18 +1492,34 @@ function stripSubgraphSecrets(
       const type: string = raw?.type ?? '';
       const data = raw?.data;
       if (!data) return raw;
-      // Under `keepSecrets` a node's own SECRET params stay as typed: this code
-      // learns which params are SECRET from the server's registry, so the
-      // server blanks every one. A preset's slots go by its inner nodes'
-      // types, which the server may have dropped.
-      const params = keepSecrets
+      // A type the node list has is one the server has, and the server blanks
+      // its SECRET params in the run it stores (#251), so under `keepSecrets`
+      // they stay as typed. Any other type is blanked by what was declared
+      // SECRET on it earlier, by a list or by the node's own definition when
+      // it was folded in -- a custom node since disabled in the Custom Nodes
+      // manager, say, or one a reload brought back -- and Run blanks as much
+      // of that as the server would miss (see `secretsTheServerMisses`).
+      const listed = defByName.get(type);
+      const secrets = listed ?? rememberedSecrets(type);
+      const params = keepSecrets && listed
         ? data.params
-        : stripSecretParams(data.params, defByName.get(type));
-      const preset = presetByName.get(type.slice('preset:'.length));
+        : stripSecretParams(
+            data.params,
+            keepSecrets ? secretsTheServerMisses(secrets, type) : secrets,
+          );
+      // A preset's slots go by its inner nodes' types, which the server may
+      // have dropped. A preset the list no longer has (one an opened file
+      // brought, after the next fetch) gets no definition into `presets[]`
+      // from a block, and without one the server cannot place its slots, so
+      // Run blanks every one.
+      const presetName = type.slice('preset:'.length);
+      const preset = presetByName.get(presetName);
       const internalParams = type.startsWith('preset:')
         ? stripSecretInternalParams(
             data.internalParams,
-            keepSecrets ? presetSecretsTheServerMisses(preset) : preset,
+            keepSecrets && preset
+              ? presetSecretsTheServerMisses(preset)
+              : preset ?? rememberedPresetSecrets(presetName),
           )
         : data.internalParams;
       if (params === data.params && internalParams === data.internalParams) {
@@ -3406,6 +3459,8 @@ export const useTabStore = create<TabStoreState>((rawSet, get) => {
     const swallowed = new Set<string>(
       result.definition.nodes.map((n: { id: unknown }) => String(n.id)),
     );
+    // Their definitions go with them, and some no list may name.
+    rememberFoldedSecrets(tab.nodes.filter((n) => swallowed.has(n.id)));
     const nodes = result.nodes.map((n) =>
       n.type === 'noteNode' && n.data.boundToNodeId && swallowed.has(n.data.boundToNodeId)
         ? { ...n, data: { ...n.data, boundToNodeId: null, boundOffset: null } }
@@ -3576,6 +3631,7 @@ export const useTabStore = create<TabStoreState>((rawSet, get) => {
     let edges = frame.edges;
     let subgraphs = tab.subgraphs;
     if (definition) {
+      rememberFoldedSecrets(tab.nodes);
       const updated = definitionFromCanvas(definition, tab.nodes, tab.edges);
       subgraphs = subgraphs.map((d) => (d.id === updated.id ? updated : d));
       // Instances render their ports FROM the interface, so refreshing them

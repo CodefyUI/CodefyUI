@@ -830,6 +830,68 @@ describe('Toolbar', () => {
     expect(doc.nodes[0].position).toEqual({ x: 2, y: 2 });
   });
 
+  /**
+   * A key typed into a custom node inside a block, then the node disabled in
+   * the Custom Nodes manager, which fetches the node list again without it.
+   * The in-block strip finds a node's SECRET params by its type in that list
+   * (#537 review).
+   */
+  function keyInBlockOfDisabledType() {
+    const myChat = {
+      node_name: 'MyChat', category: 'LLM', description: '', inputs: [], outputs: [],
+      params: [
+        { name: 'openai_api_key', param_type: 'secret', default: '', description: '', options: [], min_value: null, max_value: null },
+      ],
+    };
+    useNodeDefStore.setState({ definitions: [myChat] } as never);
+    setActiveTab({
+      nodes: [
+        { id: 'inst', type: 'subgraphNode', position: { x: 0, y: 0 }, data: { type: 'subgraph:blk', params: {} } },
+      ],
+      subgraphs: [{
+        id: 'blk', name: 'Block', description: '',
+        nodes: [{ id: 'k', type: 'MyChat', position: { x: 0, y: 0 }, data: { params: { openai_api_key: 'sk-IN-BLOCK' } } }],
+        edges: [],
+        interface: { inputs: [], outputs: [], triggerTargets: [] },
+      }],
+    });
+    useNodeDefStore.setState({ definitions: [] } as never);
+  }
+
+  it('Export JSON: blanks a key in a block whose node type has left the node list', async () => {
+    keyInBlockOfDisabledType();
+    // Mounted inside act() so the device list the toolbar fetches on mount
+    // lands inside it too.
+    const view = await act(async () => render(<Toolbar />));
+    fireEvent.click(screen.getByText('Export'));
+    fireEvent.click(screen.getByText('Export as JSON'));
+    // Unmounted before the suite's afterEach sets the tab store, which would
+    // re-render a toolbar still subscribed to it outside act().
+    view.unmount();
+    const blob = (URL.createObjectURL as unknown as ReturnType<typeof vi.fn>).mock.calls[0][0] as Blob;
+    const text = await new Promise<string>((resolve, reject) => {
+      const fr = new FileReader();
+      fr.onload = () => resolve(String(fr.result));
+      fr.onerror = () => reject(fr.error);
+      fr.readAsText(blob);
+    });
+    expect(text).not.toContain('sk-IN-BLOCK');
+    expect(JSON.parse(text).subgraphs[0].nodes[0].data.params.openai_api_key).toBe('');
+  });
+
+  it('Export Python: blanks a key in a block whose node type has left the node list', async () => {
+    mockedRest.exportGraph.mockResolvedValueOnce({ script: 'print(1)' });
+    keyInBlockOfDisabledType();
+    const view = await act(async () => render(<Toolbar />));
+    fireEvent.click(screen.getByText('Export'));
+    fireEvent.click(screen.getByText('Export as Python'));
+    await waitFor(() => expect(mockedRest.exportGraph).toHaveBeenCalled());
+    view.unmount();
+    const subgraphs = mockedRest.exportGraph.mock.calls[0][5];
+    expect(JSON.stringify(mockedRest.exportGraph.mock.calls[0])).not.toContain('sk-IN-BLOCK');
+    expect(subgraphs![0].nodes[0].data.params.openai_api_key).toBe('');
+  });
+
   it('Export Workspace: is the last Export item, set apart by a divider', () => {
     render(<Toolbar />);
     fireEvent.click(screen.getByText('Export'));

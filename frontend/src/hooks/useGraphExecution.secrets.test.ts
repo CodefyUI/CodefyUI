@@ -18,7 +18,11 @@ import { fileURLToPath } from 'node:url';
 import { renderHook, act } from '@testing-library/react';
 import type { Edge, Node } from '@xyflow/react';
 import { useGraphExecution } from './useGraphExecution';
-import { useTabStore } from '../store/tabStore';
+import {
+  useTabStore,
+  _buildPersistedTabForTesting,
+  _tabFromPersistedForTesting,
+} from '../store/tabStore';
 import { useNodeDefStore } from '../store/nodeDefStore';
 import { discardTabNodeUpdates } from '../store/nodeUpdateQueue';
 import { subgraphIdOf } from '../utils/subgraph';
@@ -95,6 +99,22 @@ const DROPPED_PRESET: PresetDefinition = {
   nodes: [{ id: 'chat', type: 'MyChat', params: { openai_api_key: '', model: 'gpt-5.2' } }],
 };
 
+/** LLMChat as plugin `name` registers it, with or without its SECRET key. */
+function pluginChat(name: string, secret: boolean): NodeDefinition {
+  return {
+    ...LLM_DEF,
+    node_name: name,
+    params: LLM_DEF.params.filter((p) => secret || p.param_type !== 'secret'),
+  };
+}
+
+/** An old preset whose inner node names a plugin type without its prefix. */
+const BARE_TYPE_PRESET: PresetDefinition = {
+  ...OLD_PRESET,
+  preset_name: 'BareChat',
+  nodes: [{ id: 'chat', type: 'SecretChat', params: { openai_api_key: '', model: 'gpt-5.2' } }],
+};
+
 const START: Node<NodeData> = {
   id: 'start', type: 'start', position: { x: -200, y: 0 },
   data: { label: 'Start', type: 'Start', params: {}, executionStatus: 'idle' },
@@ -121,6 +141,40 @@ function trigger(target: string): Edge {
     id: `t-${target}`, source: 'start', target, sourceHandle: 'trigger',
     targetHandle: '__trigger', type: 'triggerEdge', data: { type: 'trigger' },
   };
+}
+
+/** A preset node as a block holds it, with `key` typed into its inner node. */
+function presetEntry(id: string, preset: PresetDefinition, key: string) {
+  return {
+    id, type: `preset:${preset.preset_name}`, position: { x: 0, y: 0 },
+    data: { params: {}, internalParams: { chat: { openai_api_key: key, model: 'gpt-5.2' } } },
+  };
+}
+
+/** Start, triggering one block instance whose block holds `entries`. */
+function seedBlock(entries: unknown[]) {
+  store().setNodes([START, {
+    id: 'inst', type: 'subgraphNode', position: { x: 200, y: 0 },
+    data: { label: 'Block', type: 'subgraph:blk', params: {} },
+  }]);
+  store().setEdges([trigger('inst')]);
+  store().setSubgraphs([{
+    id: 'blk', name: 'Block', description: '',
+    nodes: entries,
+    edges: [],
+    interface: { inputs: [], outputs: [], triggerTargets: [] },
+  }]);
+}
+
+/**
+ * A page reload for the active tab: its nodes go through the autosave record
+ * and come back with the definitions they were saved with. No list is
+ * replayed, so no list this session names their types.
+ */
+function reload() {
+  const record = _buildPersistedTabForTesting(tab());
+  const restored = _tabFromPersistedForTesting(record, tab());
+  useTabStore.setState({ tabs: [restored], activeTabId: restored.id });
 }
 
 /** Press Run on the active tab against a fake socket: what was sent, and what was validated. */
@@ -224,23 +278,13 @@ describe('Run sends the key the user typed', () => {
     // The server's registry finds a bare `SecretChat` as the alphabetically
     // first `<plugin>:SecretChat` (`NodeRegistry.get`), here `c9:SecretChat`,
     // and blanks its key in the stored run, so the run gets the key.
-    const pluginChat = (name: string, secret: boolean): NodeDefinition => ({
-      ...LLM_DEF,
-      node_name: name,
-      params: LLM_DEF.params.filter((p) => secret || p.param_type !== 'secret'),
-    });
     useNodeDefStore.setState({
       definitions: [
         LLM_DEF, SOURCE_DEF, pluginChat('z9:SecretChat', false), pluginChat('c9:SecretChat', true),
       ],
     } as never);
-    const bareTypePreset: PresetDefinition = {
-      ...OLD_PRESET,
-      preset_name: 'BareChat',
-      nodes: [{ id: 'chat', type: 'SecretChat', params: { openai_api_key: '', model: 'gpt-5.2' } }],
-    };
     store().setNodes([START]);
-    store().addPresetNode(bareTypePreset, { x: 0, y: 0 });
+    store().addPresetNode(BARE_TYPE_PRESET, { x: 0, y: 0 });
     const presetId = tab().nodes.find((n) => n.data.isPreset)!.id;
     store().setEdges([trigger(presetId)]);
     store().updatePresetInternalParam(presetId, 'chat', 'openai_api_key', 'sk-BARE-PLUGIN-TYPE');
@@ -291,30 +335,142 @@ describe('Run still blanks a key the server could not keep out of its run histor
 
   it("in a preset inside a block whose inner node's type the server no longer lists", async () => {
     useNodeDefStore.setState({ presets: [OLD_PRESET, DROPPED_PRESET] } as never);
-    const presetEntry = (id: string, preset: PresetDefinition, key: string) => ({
-      id, type: `preset:${preset.preset_name}`, position: { x: 0, y: 0 },
-      data: { params: {}, internalParams: { chat: { openai_api_key: key, model: 'gpt-5.2' } } },
-    });
-    store().setNodes([START, {
-      id: 'inst', type: 'subgraphNode', position: { x: 200, y: 0 },
-      data: { label: 'Block', type: 'subgraph:blk', params: {} },
-    }]);
-    store().setEdges([trigger('inst')]);
-    store().setSubgraphs([{
-      id: 'blk', name: 'Block', description: '',
-      nodes: [
-        presetEntry('dropped', DROPPED_PRESET, 'sk-DROPPED-IN-BLOCK'),
-        presetEntry('known', OLD_PRESET, 'sk-KNOWN-IN-BLOCK'),
-      ],
-      edges: [],
-      interface: { inputs: [], outputs: [], triggerTargets: [] },
-    }]);
+    seedBlock([
+      presetEntry('dropped', DROPPED_PRESET, 'sk-DROPPED-IN-BLOCK'),
+      presetEntry('known', OLD_PRESET, 'sk-KNOWN-IN-BLOCK'),
+    ]);
 
     const { message } = await run();
 
     const inner = (id: string) => message.subgraphs[0].nodes.find((n: any) => n.id === id);
     expect(inner('dropped').data.internalParams.chat.openai_api_key).toBe('');
     expect(inner('known').data.internalParams.chat.openai_api_key).toBe('sk-KNOWN-IN-BLOCK');
+  });
+
+  it('in a preset whose bare inner type the server resolves to a plugin with no SECRET key', async () => {
+    // The mirror of the bare-name case above: here `c9:SecretChat`, the
+    // alphabetically first, has no SECRET param, so the server resolves the
+    // bare `SecretChat` to it and would store the key as typed.
+    useNodeDefStore.setState({
+      definitions: [
+        LLM_DEF, SOURCE_DEF, pluginChat('z9:SecretChat', true), pluginChat('c9:SecretChat', false),
+      ],
+    } as never);
+    store().setNodes([START]);
+    store().addPresetNode(BARE_TYPE_PRESET, { x: 0, y: 0 });
+    const presetId = tab().nodes.find((n) => n.data.isPreset)!.id;
+    store().setEdges([trigger(presetId)]);
+    store().updatePresetInternalParam(presetId, 'chat', 'openai_api_key', 'sk-BARE-PLUGIN-TYPE');
+
+    const { message } = await run();
+
+    const sent = message.nodes.find((n: any) => n.id === presetId);
+    expect(sent.data.internalParams.chat.openai_api_key).toBe('');
+  });
+
+  // A node inside a block keeps no definition of its own, so which of its
+  // params are SECRET comes from the node list, and a preset's slots from the
+  // preset list. Each fetch replaces both lists whole (#537 review).
+
+  it('on a node inside a block whose type the node list no longer has', async () => {
+    // MyChat is a custom node, listed while the keys are typed.
+    useNodeDefStore.setState({ definitions: [LLM_DEF, SOURCE_DEF, DROPPED_DEF] } as never);
+    store().setNodes([
+      START, canvasNode('a', SOURCE_DEF), canvasNode('gone', DROPPED_DEF, 200),
+      canvasNode('llm', LLM_DEF, 400),
+    ]);
+    store().setEdges([
+      trigger('a'),
+      { id: 'e1', source: 'a', target: 'gone', sourceHandle: 'out', targetHandle: 'in' },
+      { id: 'e2', source: 'a', target: 'llm', sourceHandle: 'out', targetHandle: 'in' },
+    ]);
+    store().setNodes(tab().nodes.map((n) => ({ ...n, selected: n.id !== 'start' })));
+    expect(store().collapseSelectionToSubgraph('Block').ok).toBe(true);
+    const instanceId = tab().nodes.find((n) => subgraphIdOf(n.data.type))!.id;
+    expect(store().enterSubgraph(instanceId)).toBe(true);
+    store().updateNodeParams('gone', { openai_api_key: 'sk-DROPPED-IN-BLOCK' });
+    store().updateNodeParams('llm', { openai_api_key: 'sk-KNOWN-IN-BLOCK' });
+    store().exitSubgraph();
+    // The Custom Nodes manager disables MyChat and fetches the list again.
+    useNodeDefStore.setState({ definitions: [LLM_DEF, SOURCE_DEF] } as never);
+
+    const { message } = await run();
+
+    const inner = (id: string) => message.subgraphs[0].nodes.find((n: any) => n.id === id);
+    expect(inner('gone').data.params).toEqual({ openai_api_key: '', model: 'gpt-5.2' });
+    expect(inner('llm').data.params.openai_api_key).toBe('sk-KNOWN-IN-BLOCK');
+  });
+
+  it('in a preset inside a block that the preset list no longer has', async () => {
+    // FileChat came in with an opened file, whose reader merged it into the
+    // list. Its inner node is an LLMChat, a type the server has.
+    const filePreset: PresetDefinition = { ...OLD_PRESET, preset_name: 'FileChat' };
+    useNodeDefStore.setState({ presets: [OLD_PRESET, filePreset] } as never);
+    seedBlock([
+      presetEntry('file', filePreset, 'sk-FILE-PRESET-IN-BLOCK'),
+      presetEntry('known', OLD_PRESET, 'sk-KNOWN-IN-BLOCK'),
+    ]);
+    // A fetch replaces the list with the server's, which never had FileChat.
+    useNodeDefStore.setState({ presets: [OLD_PRESET] } as never);
+
+    const { message } = await run();
+
+    // The server cannot place that slot: its preset registry has no FileChat,
+    // and the message's `presets[]` no longer carries one.
+    const inner = (id: string) => message.subgraphs[0].nodes.find((n: any) => n.id === id);
+    expect(inner('file').data.internalParams.chat.openai_api_key).toBe('');
+    expect(inner('known').data.internalParams.chat.openai_api_key).toBe('sk-KNOWN-IN-BLOCK');
+  });
+
+  // A node autosave brings back after a reload keeps the definition it was
+  // saved with, whether or not a list this session names its type.
+
+  it('on a node restored after a reload and collapsed into a block, of a type no list names', async () => {
+    // RestoredChat is a custom node disabled before the reload.
+    const restoredDef: NodeDefinition = { ...LLM_DEF, node_name: 'RestoredChat' };
+    store().setNodes([
+      START, canvasNode('a', SOURCE_DEF), canvasNode('gone', restoredDef, 200),
+      canvasNode('llm', LLM_DEF, 400),
+    ]);
+    store().setEdges([
+      trigger('a'),
+      { id: 'e1', source: 'a', target: 'gone', sourceHandle: 'out', targetHandle: 'in' },
+      { id: 'e2', source: 'a', target: 'llm', sourceHandle: 'out', targetHandle: 'in' },
+    ]);
+    reload();
+    store().updateNodeParams('gone', { openai_api_key: 'sk-RESTORED-TYPE' });
+    store().updateNodeParams('llm', { openai_api_key: 'sk-KNOWN-TYPE' });
+    store().setNodes(tab().nodes.map((n) => ({ ...n, selected: n.id !== 'start' })));
+    expect(store().collapseSelectionToSubgraph('Block').ok).toBe(true);
+
+    const { message } = await run();
+
+    const inner = (id: string) => message.subgraphs[0].nodes.find((n: any) => n.id === id);
+    expect(inner('gone').data.params).toEqual({ openai_api_key: '', model: 'gpt-5.2' });
+    expect(inner('llm').data.params.openai_api_key).toBe('sk-KNOWN-TYPE');
+  });
+
+  it('in a preset node restored after a reload and collapsed into a block, of a preset no list names', async () => {
+    // RestoredPreset came in with a file the previous session opened.
+    const restoredPreset: PresetDefinition = { ...OLD_PRESET, preset_name: 'RestoredPreset' };
+    store().setNodes([START]);
+    store().addPresetNode(restoredPreset, { x: 0, y: 0 });
+    store().addPresetNode(OLD_PRESET, { x: 0, y: 200 });
+    const idOf = (name: string) =>
+      tab().nodes.find((n) => n.data.presetDefinition?.preset_name === name)!.id;
+    store().setEdges([trigger(idOf('RestoredPreset')), trigger(idOf('KeyedChat'))]);
+    reload();
+    store().updatePresetInternalParam(idOf('RestoredPreset'), 'chat', 'openai_api_key', 'sk-RESTORED-PRESET');
+    store().updatePresetInternalParam(idOf('KeyedChat'), 'chat', 'openai_api_key', 'sk-KNOWN-PRESET');
+    store().setNodes(tab().nodes.map((n) => ({ ...n, selected: n.id !== 'start' })));
+    expect(store().collapseSelectionToSubgraph('Block').ok).toBe(true);
+
+    const { message } = await run();
+
+    const inner = (name: string) =>
+      message.subgraphs[0].nodes.find((n: any) => n.type === `preset:${name}`);
+    expect(inner('RestoredPreset').data.internalParams.chat.openai_api_key).toBe('');
+    expect(inner('KeyedChat').data.internalParams.chat.openai_api_key).toBe('sk-KNOWN-PRESET');
   });
 });
 

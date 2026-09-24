@@ -229,6 +229,38 @@ on the tag's UTC day.
   Results panel's words, and the embedding count on TextEmbedding and
   WordVector. The zh-TW Training tab uses the same word for epoch. A custom
   node's progress text still shows as the node sends it.
+- **A key typed into an LLMChat key field reaches the run** ([#537]). From
+  1.4.0 on, **Run** sent the graph with every SECRET field blanked, so a key
+  typed into `openai_api_key` or `anthropic_api_key` never reached the run.
+  With no environment key the run failed with the missing-key error while
+  the field still showed its dots; with `CODEFYUI_OPENAI_API_KEY` or
+  `OPENAI_API_KEY` (or the Anthropic pair) set on the server, the run used
+  and billed the server's key instead of the typed one, and nothing on
+  screen said so. Run now sends the typed key to this server with the run.
+  That includes a key typed into a node inside a block, or into an older
+  preset that still shows its key field. Save, every export, autosave and
+  the plugin API still get `""`, and the run history still stores the
+  field blank. When the server does not recognise a node's type, such as a
+  custom node disabled from another browser, it now stores every setting
+  of that node blank in the run history, because it cannot tell which of
+  them is a key. When Run finds the connection closed, the browser console
+  prints only the action's name, no longer the whole message, which can
+  now hold a key.
+
+  **Breaking** for a graph that keeps a key in an LLMChat key field: that
+  key now wins over the server's environment key, as the docs describe, so
+  a wrong or old key left there fails with the provider's authentication
+  error where the run used to succeed on the server's key. Clear the field
+  to use the environment key.
+- **A key in a node inside a block stays blank on Save and every export
+  after its type leaves the node list** ([#537]). Save, Export JSON, Export
+  Python, workspace export, autosave and the plugin API blanked a SECRET
+  field inside a block only while the node list still had the node's type,
+  or the preset list the preset's name. After a custom node was disabled in
+  the Custom Nodes manager, or a fetch dropped a preset that an opened file
+  had brought, they wrote the typed key out, and the server's save check
+  could not catch it either. The editor now remembers every field that was
+  SECRET until the page is closed, and blanks it.
 - **A zh-TW page declares Chinese, the Custom Node Manager keeps keyboard
   focus, and a running tab says it is running** ([#504], [#490] item 4,
   [#506] item 2). In Traditional Chinese the page now declares
@@ -4909,6 +4941,7 @@ Release candidates before 1.0.0 are on the
 [#246]: https://github.com/CodefyUI/CodefyUI/issues/246
 [#538]: https://github.com/CodefyUI/CodefyUI/pull/538
 [#505]: https://github.com/CodefyUI/CodefyUI/issues/505
+[#537]: https://github.com/CodefyUI/CodefyUI/pull/537
 [@oyea0801]: https://github.com/oyea0801
 [@latteine1217]: https://github.com/latteine1217
 [Unreleased]: https://github.com/CodefyUI/CodefyUI/compare/2.8.5...main

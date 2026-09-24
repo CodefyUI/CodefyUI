@@ -10,9 +10,13 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import type { Edge, Node } from '@xyflow/react';
 
-import { useTabStore } from './tabStore';
+import {
+  useTabStore,
+  _buildPersistedTabForTesting,
+  _tabFromPersistedForTesting,
+} from './tabStore';
 import { useNodeDefStore } from './nodeDefStore';
-import type { NodeData, NodeDefinition } from '../types';
+import type { NodeData, NodeDefinition, PresetDefinition } from '../types';
 import { resolveSerializedEdges, resolveSerializedNodes } from '../utils';
 import { buildInstanceNode, subgraphIdOf } from '../utils/subgraph';
 
@@ -987,6 +991,256 @@ describe('getSerializedGraph carries what a definition depends on', () => {
     expect(JSON.stringify(serialized)).not.toContain('sk-LEAK');
     const inner = serialized.subgraphs[0].nodes.find((n: any) => n.id === 'k');
     expect(inner.data.params.api_key).toBe('');
+  });
+});
+
+// A node inside a block keeps no definition of its own, so the strip learns
+// its SECRET params from the node list, and a preset's SECRET slots from the
+// preset list. Every fetch replaces both lists whole: a custom node disabled
+// in the Custom Nodes manager, or a preset that came in with an opened file,
+// is missing from the next one, and a key typed into that node used to be
+// saved, exported and autosaved as typed (#537 review).
+describe('a key typed into a block stays blank once the lists stop naming it', () => {
+  /** `def(name)` plus a SECRET `api_key`, the way an LLM node declares its key. */
+  function keyedDef(name: string): NodeDefinition {
+    return {
+      ...def(name),
+      params: [
+        ...def(name).params,
+        {
+          name: 'api_key', param_type: 'secret', default: '', description: '',
+          options: [], min_value: null, max_value: null,
+        },
+      ],
+    };
+  }
+
+  // MyChat is a custom node, listed while the keys are typed. Chat stays
+  // listed throughout.
+  beforeEach(() => {
+    useNodeDefStore.setState({
+      definitions: [def('A'), keyedDef('Chat'), keyedDef('MyChat')],
+    } as never);
+  });
+
+  /** An old preset that still exposes its inner node's key as a field. */
+  function keyedPreset(name: string): PresetDefinition {
+    return {
+      ...presetDefinition(name),
+      exposed_params: [{
+        internal_node: 'inner', param_name: 'api_key', display_name: 'Chat - api_key',
+        group: 'Chat', param_def: keyedDef('Chat').params[1],
+      }],
+    };
+  }
+
+  /** A canvas node of `type` whose own definition is `keyedDef(type)`. */
+  function keyed(id: string, type: string, y: number): Node<NodeData> {
+    const n = node(id, type, 100, y);
+    return {
+      ...n,
+      data: { ...n.data, definition: keyedDef(type), params: { scale: 1, api_key: '' } },
+    };
+  }
+
+  /** The Custom Nodes manager disables MyChat and fetches the list again. */
+  const dropMyChat = () =>
+    useNodeDefStore.setState({ definitions: [def('A'), keyedDef('Chat')] } as never);
+
+  /**
+   * a feeds k (MyChat) and j (Chat); the three are collapsed into a block and
+   * a key is typed into k and j from inside it, where both show the masked
+   * field. Leaves the canvas inside the block.
+   */
+  function typeKeysInsideBlock() {
+    store().setNodes([node('a', 'A', 0, 0), keyed('k', 'MyChat', 0), keyed('j', 'Chat', 80)]);
+    store().setEdges([dataEdge('e1', 'a', 'k'), dataEdge('e2', 'a', 'j')]);
+    select('a', 'k', 'j');
+    expect(store().collapseSelectionToSubgraph('Block').ok).toBe(true);
+    const instanceId = tab().nodes.find((n) => subgraphIdOf(n.data.type))!.id;
+    expect(store().enterSubgraph(instanceId)).toBe(true);
+    store().updateNodeParams('k', { api_key: 'sk-MYCHAT' });
+    store().updateNodeParams('j', { api_key: 'sk-CHAT' });
+  }
+
+  /** What the graph's one block holds for node `id`. */
+  const innerParams = (graph: { subgraphs: { nodes: any[] }[] }, id: string) =>
+    graph.subgraphs[0].nodes.find((n) => n.id === id).data.params;
+
+  it('on a node whose type the node list no longer has', () => {
+    typeKeysInsideBlock();
+    store().exitSubgraph();
+    dropMyChat();
+    // A later fetch without MyChat (after Export as preset, say) does not
+    // make its key stop being a key.
+    useNodeDefStore.setState({ definitions: [def('A'), keyedDef('Chat'), def('B')] } as never);
+    // The premise: the block really holds the key.
+    expect(JSON.stringify(tab().subgraphs)).toContain('sk-MYCHAT');
+
+    const saved = store().getSerializedGraph();
+    expect(JSON.stringify(saved)).not.toContain('sk-MYCHAT');
+    expect(JSON.stringify(saved)).not.toContain('sk-CHAT');
+    // Blanked in place; the node's other params are kept.
+    expect(innerParams(saved, 'k')).toEqual({ scale: 1, api_key: '' });
+    expect(JSON.stringify(_buildPersistedTabForTesting(tab()))).not.toContain('sk-MYCHAT');
+  });
+
+  it('while the canvas is still inside the block', () => {
+    typeKeysInsideBlock();
+    dropMyChat();
+    // The node on screen still shows the masked field: its own definition,
+    // taken when the block was opened, still calls the key SECRET.
+    const k = tab().nodes.find((n) => n.id === 'k')!;
+    expect(k.data.definition!.params.some((p) => p.param_type === 'secret')).toBe(true);
+
+    const saved = store().getSerializedGraph();
+    expect(innerParams(saved, 'k')).toEqual({ scale: 1, api_key: '' });
+    expect(innerParams(saved, 'j')).toEqual({ scale: 1, api_key: '' });
+    expect(JSON.stringify(_buildPersistedTabForTesting(tab()))).not.toContain('sk-MYCHAT');
+    // The Run message's serializer, called directly: Run pressed in here
+    // stops at "No entry points", because it reads them off the canvas on
+    // screen. It keeps the key of the type the server still has, and blanks
+    // the one the server could not keep out of the run it stores.
+    const run = store().getSerializedGraph({ keepSecrets: true });
+    expect(innerParams(run, 'k').api_key).toBe('');
+    expect(innerParams(run, 'j').api_key).toBe('sk-CHAT');
+    // Serializing did not close the block behind the user.
+    expect(tab().subgraphStack).toHaveLength(1);
+  });
+
+  it('in the slot of a preset the preset list no longer has', () => {
+    // Merged into the list by the reader of the file that carried it.
+    useNodeDefStore.setState({ presets: [keyedPreset('FileChat')] } as never);
+    store().setNodes([{
+      id: 'inst', type: 'subgraphNode', position: { x: 0, y: 0 },
+      data: { label: 'Block', type: 'subgraph:blk', params: {} },
+    }]);
+    store().setSubgraphs([{
+      id: 'blk', name: 'Block', description: '',
+      nodes: [{
+        id: 'p', type: 'preset:FileChat', position: { x: 0, y: 0 },
+        data: { params: {}, internalParams: { inner: { api_key: 'sk-IN-PRESET', model: 'gpt-5.2' } } },
+      }],
+      edges: [],
+      interface: { inputs: [], outputs: [], triggerTargets: [] },
+    }]);
+    // A fetch replaces the list with the server's, which never had FileChat.
+    useNodeDefStore.setState({ presets: [] } as never);
+
+    const saved = store().getSerializedGraph();
+    expect(JSON.stringify(saved)).not.toContain('sk-IN-PRESET');
+    expect(saved.subgraphs[0].nodes[0].data.internalParams.inner)
+      .toEqual({ api_key: '', model: 'gpt-5.2' });
+    expect(JSON.stringify(_buildPersistedTabForTesting(tab()))).not.toContain('sk-IN-PRESET');
+  });
+
+  it('leaves a block with nothing to blank as the same list, for the autosave cache', () => {
+    // The lists have named MyChat's key; nothing in this block is one.
+    dropMyChat();
+    seedChain();
+    select('b', 'c');
+    expect(store().collapseSelectionToSubgraph('Block').ok).toBe(true);
+    expect(_buildPersistedTabForTesting(tab()).subgraphs).toBe(tab().subgraphs);
+  });
+
+  // A node autosave brings back after a reload keeps the definition it was
+  // saved with, so it still shows its masked field whether or not a list
+  // this session names its type: a custom node disabled before the reload, a
+  // preset that came in with a file the previous session opened.
+  //
+  // The node-def store's record lives as long as this file's module does, so
+  // each case below names its own type: one another case had already folded
+  // would be remembered from that case.
+
+  /**
+   * A page reload for the active tab: its nodes go through the autosave
+   * record and come back with the definitions they were saved with. No list
+   * is replayed, so no list this session names their types.
+   */
+  function reload() {
+    const record = _buildPersistedTabForTesting(tab());
+    const restored = _tabFromPersistedForTesting(record, tab());
+    useTabStore.setState({ tabs: [restored], activeTabId: restored.id });
+  }
+
+  it('on a node restored after a reload, of a type no list has named since', () => {
+    store().setNodes([node('a', 'A', 0, 0), keyed('k', 'RestoredChat', 0)]);
+    store().setEdges([dataEdge('e1', 'a', 'k')]);
+    reload();
+    const k = tab().nodes.find((n) => n.id === 'k')!;
+    expect(k.data.definition!.params.some((p) => p.param_type === 'secret')).toBe(true);
+    store().updateNodeParams('k', { api_key: 'sk-RESTORED-NODE' });
+    select('a', 'k');
+    expect(store().collapseSelectionToSubgraph('Block').ok).toBe(true);
+    // The premise: the block holds the key.
+    expect(JSON.stringify(tab().subgraphs)).toContain('sk-RESTORED-NODE');
+
+    const saved = store().getSerializedGraph();
+    expect(JSON.stringify(saved)).not.toContain('sk-RESTORED-NODE');
+    expect(innerParams(saved, 'k')).toEqual({ scale: 1, api_key: '' });
+    expect(JSON.stringify(_buildPersistedTabForTesting(tab()))).not.toContain('sk-RESTORED-NODE');
+  });
+
+  it('on a preset node restored after a reload, of a preset no list has named since', () => {
+    const p = presetNode('p', 100, 0, 'RestoredPreset');
+    store().setNodes([
+      node('a', 'A', 0, 0),
+      { ...p, data: { ...p.data, presetDefinition: keyedPreset('RestoredPreset') } },
+    ]);
+    store().setEdges([dataEdge('e1', 'a', 'p')]);
+    reload();
+    store().updatePresetInternalParam('p', 'inner', 'api_key', 'sk-RESTORED-PRESET');
+    select('a', 'p');
+    expect(store().collapseSelectionToSubgraph('Block').ok).toBe(true);
+    expect(JSON.stringify(tab().subgraphs)).toContain('sk-RESTORED-PRESET');
+
+    const saved = store().getSerializedGraph();
+    expect(JSON.stringify(saved)).not.toContain('sk-RESTORED-PRESET');
+    expect(saved.subgraphs[0].nodes.find((n: any) => n.id === 'p').data.internalParams.inner)
+      .toEqual({ model: 'gpt-5.2', api_key: '' });
+    expect(JSON.stringify(_buildPersistedTabForTesting(tab()))).not.toContain('sk-RESTORED-PRESET');
+  });
+
+  /**
+   * A restored node of `type`, copied and pasted into an open block, where
+   * `key` is typed into the copy. Leaves the canvas inside the block.
+   */
+  function pasteRestoredNodeIntoBlock(type: string, key: string) {
+    store().setNodes([keyed('r', type, 0), {
+      id: 'inst', type: 'subgraphNode', position: { x: 300, y: 0 },
+      data: { label: 'Block', type: 'subgraph:blk', params: {} },
+    }]);
+    store().setSubgraphs([{
+      id: 'blk', name: 'Block', description: '',
+      nodes: [{ id: 'x', type: 'A', position: { x: 0, y: 0 }, data: { params: { scale: 1 } } }],
+      edges: [],
+      interface: { inputs: [], outputs: [], triggerTargets: [] },
+    }]);
+    reload();
+    select('r');
+    store().copySelectedNodes();
+    expect(store().enterSubgraph('inst')).toBe(true);
+    store().pasteNodes();
+    const pasted = tab().nodes.find((n) => n.data.type === type)!;
+    store().updateNodeParams(pasted.id, { api_key: key });
+  }
+
+  it('on a restored node pasted into an open block, saved from inside it', () => {
+    pasteRestoredNodeIntoBlock('PastedChat', 'sk-SAVED-INSIDE');
+
+    // Every save folds the open block first; this one never left it.
+    expect(JSON.stringify(store().getSerializedGraph())).not.toContain('sk-SAVED-INSIDE');
+    expect(JSON.stringify(_buildPersistedTabForTesting(tab()))).not.toContain('sk-SAVED-INSIDE');
+    expect(tab().subgraphStack).toHaveLength(1);
+  });
+
+  it('on a restored node pasted into an open block, saved after stepping out', () => {
+    pasteRestoredNodeIntoBlock('SteppedOutChat', 'sk-SAVED-OUTSIDE');
+    store().exitSubgraph();
+    expect(JSON.stringify(tab().subgraphs)).toContain('sk-SAVED-OUTSIDE');
+
+    expect(JSON.stringify(store().getSerializedGraph())).not.toContain('sk-SAVED-OUTSIDE');
+    expect(JSON.stringify(_buildPersistedTabForTesting(tab()))).not.toContain('sk-SAVED-OUTSIDE');
   });
 });
 

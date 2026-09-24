@@ -10,7 +10,7 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 import type { Node } from '@xyflow/react';
 import { useTabStore } from '../store/tabStore';
 import { useNodeDefStore } from '../store/nodeDefStore';
-import { buildPluginAPI } from './api';
+import { buildPluginAPI, type SerializedGraph } from './api';
 import type { NodeData, NodeDefinition, ParamDefinition, PresetDefinition } from '../types';
 
 vi.mock('../store/tabPersistence', () => ({
@@ -129,5 +129,54 @@ describe('a plugin never reads a typed key', () => {
     if ('error' in snap) throw new Error(snap.error);
     expect(snap.active).toBe(false);
     expectBlanked(snap.graph, presetId);
+  });
+
+  it('passing an options object gets a plugin no key either', () => {
+    // The Run hook gets the keys by handing the serializer
+    // `{ keepSecrets: true }`. A plugin surface that forwarded its arguments
+    // would let a plugin hand it the same object, and the source guard in the
+    // Run hook's tests only looks for the word `keepSecrets`.
+    const presetId = typeAllThreeKeys();
+    const api = freshApi();
+    const getGraph = api.graph.getGraph as (options: { keepSecrets: boolean }) => SerializedGraph;
+    expectBlanked(getGraph({ keepSecrets: true }), presetId);
+    const snapshot = api.workspace.snapshot as (
+      tabId: string | undefined,
+      options: { keepSecrets: boolean },
+    ) => ReturnType<typeof api.workspace.snapshot>;
+    const snap = snapshot(undefined, { keepSecrets: true });
+    if ('error' in snap) throw new Error(snap.error);
+    expectBlanked(snap.graph, presetId);
+  });
+
+  it('blanks a key in a block whose node type has left the node list', () => {
+    // A node inside a block has no definition of its own, so the strip finds
+    // its SECRET params by its type in the node list. MyChat is a custom node,
+    // listed while the key is typed and then disabled in the Custom Nodes
+    // manager, which fetches the list again without it (#537 review).
+    useNodeDefStore.setState({ definitions: [LLM_DEF, { ...LLM_DEF, node_name: 'MyChat' }] } as never);
+    store().setNodes([{
+      id: 'inst', type: 'subgraphNode', position: { x: 0, y: 0 },
+      data: { label: 'Block', type: 'subgraph:blk', params: {} },
+    }]);
+    store().setSubgraphs([{
+      id: 'blk', name: 'Block', description: '',
+      nodes: [{
+        id: 'k', type: 'MyChat', position: { x: 0, y: 0 },
+        data: { params: { openai_api_key: 'sk-DROPPED-TYPE', model: 'gpt-5.2' } },
+      }],
+      edges: [],
+      interface: { inputs: [], outputs: [], triggerTargets: [] },
+    }]);
+    useNodeDefStore.setState({ definitions: [LLM_DEF] } as never);
+
+    const api = freshApi();
+    const snap = api.workspace.snapshot();
+    if ('error' in snap) throw new Error(snap.error);
+    for (const graph of [api.graph.getGraph(), snap.graph]) {
+      expect(JSON.stringify(graph)).not.toContain('sk-DROPPED-TYPE');
+      expect(graph.subgraphs[0].nodes[0].data.params)
+        .toEqual({ openai_api_key: '', model: 'gpt-5.2' });
+    }
   });
 });

@@ -241,6 +241,37 @@ describe('collectWorkspaceFile', () => {
     }
   });
 
+  it('never writes a key typed into a block whose node type has left the node list', () => {
+    // A node inside a block has no definition of its own, so the strip finds
+    // its SECRET params by its type in the node list. MyChat is a custom node,
+    // listed while the key is typed and then disabled in the Custom Nodes
+    // manager, which fetches the list again without it (#537 review).
+    useNodeDefStore.setState({ definitions: [{ ...SECRET_DEF, node_name: 'MyChat' }] });
+    const id = store().createTab({ title: 'Keyed block', activate: false });
+    store().loadGraphDocumentInto(id, {
+      nodes: [{
+        id: 'inst', type: 'subgraphNode', position: { x: 0, y: 0 },
+        data: { label: 'Block', type: 'subgraph:blk', params: {} },
+      }],
+      edges: [],
+      boundFile: null,
+      subgraphs: [{
+        id: 'blk', name: 'Block', description: '',
+        nodes: [{
+          id: 'k', type: 'MyChat', position: { x: 0, y: 0 },
+          data: { params: { api_key: 'sk-IN-BLOCK', temperature: 0.5 } },
+        }],
+        edges: [],
+        interface: { inputs: [], outputs: [], triggerTargets: [] },
+      }],
+    });
+    useNodeDefStore.setState({ definitions: [] });
+
+    const text = JSON.stringify(collectWorkspaceFile().file);
+    expect(text).not.toContain('sk-IN-BLOCK');
+    expect(text).toContain('"params":{"api_key":"","temperature":0.5}');
+  });
+
   it('writes graph blocks that Import accepts on their own', async () => {
     tabWith('Solo', [node('only')]);
     const { file } = collectWorkspaceFile();
