@@ -99,7 +99,12 @@ See [Source Control](./source-control).
 Params typed as SECRET -- an `LLMChat` node's `openai_api_key`, for instance --
 belong to whoever typed them and are handled differently. They are blanked out
 of every copy the server writes: saved graphs, exports, published app versions,
-presets, generated Python, and the run history.
+presets, generated Python, and the run history. **Run** sends the value you
+typed to this server with the run, and an `LLMChat` node uses it ahead of the
+instance's environment key. When the server does not recognise a node's type
+(a custom node that was disabled, a plugin that was removed), it cannot tell
+which of that node's params are SECRET, so it blanks all of them in the run
+history.
 
 Three consequences:
 

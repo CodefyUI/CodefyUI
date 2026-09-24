@@ -22,6 +22,7 @@ against the decoded row: the leak was at rest, so the test is at rest too.
 from __future__ import annotations
 
 import asyncio
+import json
 import time
 from typing import Any
 
@@ -36,8 +37,10 @@ from app.core.node_base import (
     PortDefinition,
 )
 from app.core.node_registry import registry
+from app.core.preset_registry import preset_registry
 from app.core.run_service import LANE_INTERACTIVE, RunService
 from app.core.run_store import (
+    STATUS_FAILED,
     STATUS_INTERRUPTED,
     STATUS_QUEUED,
     STATUS_SUCCEEDED,
@@ -49,6 +52,7 @@ from app.core.secret_params import (
     restore_graph_secrets,
     split_graph_secrets,
 )
+from app.schemas.models import InternalNodeSchema, PresetDefinition
 
 #: The value that must never appear in the database. Distinctive enough that
 #: a substring scan of the raw file is meaningful.
@@ -723,3 +727,396 @@ def test_slots_tolerate_a_malformed_graph():
         {"nodes": [None, 3], "subgraphs": [None], "presets": [None]})) == []
     scrubbed, vault = split_graph_secrets({"nodes": None})
     assert vault == {}
+
+
+# ── a node type this server does not know (#537) ──────────────────────────
+#
+# ``secret_param_names`` names the SECRET params of a type the registry
+# resolves, and nothing else. A node of a type it cannot resolve -- a custom
+# node disabled from another browser, a plugin removed while a tab stayed
+# open, a hand-edited graph posted to ``POST /api/runs`` -- contributed no
+# slots at all, and the row is written before the engine gets to refuse the
+# type. So on submit, every value such a node carries is kept out of the row
+# the way a SECRET value is.
+
+#: No test registers this; the engine refuses it by name.
+UNKNOWN_TYPE = "_NoSuchNodeType"
+
+
+class _LateEchoNode(BaseNode):
+    """Registered only part-way through a test, while its run waits.
+
+    Records EVERY param it ran with: a restore that put back the SECRET value
+    and left the rest blank would pass a check on the key alone.
+    """
+
+    NODE_NAME = "_LateEcho"
+    CATEGORY = "Test"
+    DESCRIPTION = "Records the params it ran with"
+
+    seen: list[dict[str, Any]] = []
+
+    @classmethod
+    def define_inputs(cls) -> list[PortDefinition]:
+        return [PortDefinition(name="value", data_type=DataType.ANY)]
+
+    @classmethod
+    def define_outputs(cls) -> list[PortDefinition]:
+        return [PortDefinition(name="value", data_type=DataType.ANY)]
+
+    @classmethod
+    def define_params(cls) -> list[ParamDefinition]:
+        return [
+            ParamDefinition(name="api_key", param_type=ParamType.SECRET,
+                            default=""),
+            ParamDefinition(name="label", param_type=ParamType.STRING,
+                            default="x"),
+        ]
+
+    def execute(self, inputs: dict[str, Any],
+                params: dict[str, Any]) -> dict[str, Any]:
+        type(self).seen.append(dict(params))
+        return {"value": inputs.get("value")}
+
+
+def _slow_graph(seconds: float = 0.6) -> dict[str, Any]:
+    """Start -> source -> _SecretSlow: holds one CPU slot for *seconds*."""
+    return {
+        "nodes": [
+            {"id": "start", "type": "Start", "data": {"params": {}}},
+            {"id": "src", "type": "_SecretSource",
+             "data": {"params": {"val": "hi"}}},
+            {"id": "slow", "type": "_SecretSlow",
+             "data": {"params": {"seconds": seconds}}},
+        ],
+        "edges": [
+            {"id": "et", "source": "start", "target": "src",
+             "sourceHandle": "trigger", "type": "trigger"},
+            {"id": "e1", "source": "src", "target": "slow",
+             "sourceHandle": "value", "targetHandle": "value"},
+        ],
+    }
+
+
+def _portable_preset(name: str,
+                     nodes: list[dict[str, Any]]) -> dict[str, Any]:
+    """A ``presets[]`` entry complete enough for ``build_preset_fallback``."""
+    return {"preset_name": name, "category": "Test", "description": "",
+            "nodes": nodes, "edges": [], "exposed_inputs": [],
+            "exposed_outputs": [], "exposed_params": []}
+
+
+def _restored_through_json(
+        scrubbed: Any, vault: Any) -> tuple[dict[str, Any], int]:
+    """What promotion sees: the stored copy read back, then restored."""
+    reloaded = json.loads(json.dumps(scrubbed))
+    return reloaded, restore_graph_secrets(reloaded, vault)
+
+
+async def test_the_interactive_lane_keeps_an_unknown_node_s_values_out_of_the_row(
+        store, service, db_path):
+    """Every value, not only the one that looks like a key.
+
+    Nothing on the server can say which of an unknown node's params is
+    secret. This lane runs the live graph, so the blanks in the stored copy
+    cost the run nothing, and it still ends in the engine's own error.
+    """
+    submitted = await service.submit(
+        _secret_graph(middle=UNKNOWN_TYPE), options={"lane": LANE_INTERACTIVE})
+    record = await _await_terminal(store, submitted.run_id)
+    assert record.status == STATUS_FAILED
+    assert f"Unknown node type: {UNKNOWN_TYPE}" in (record.error or "")
+
+    snapshot = await store.get_graph_snapshot(submitted.run_id)
+    stored = {n["id"]: n for n in snapshot["nodes"]}
+    assert stored["mid"]["data"]["params"] == {"api_key": "", "label": ""}
+    # Its registered neighbours are stored as sent.
+    assert stored["src"]["data"]["params"] == {"val": "hi"}
+    assert stored["print"]["data"]["params"] == {"label": "out"}
+    assert LIVE_KEY.encode() not in _db_bytes(db_path)
+
+
+async def test_the_queued_lane_holds_an_unknown_node_s_values_in_the_vault(
+        store, service, db_path):
+    """Blank on the row, held in memory, put back at promotion.
+
+    Promotion re-reads the row, so the vault is what gives the run back the
+    values it was sent. Here the type is still unknown when the run starts,
+    so it fails with the engine's error, as it did before.
+    """
+    blockers = [await service.submit(_slow_graph()) for _ in range(2)]
+    waiting = await service.submit(_secret_graph(middle=UNKNOWN_TYPE))
+    assert waiting.status == STATUS_QUEUED
+    # Read before anything awaits, so the run cannot have started yet.
+    assert service._run_secrets[waiting.run_id] == {
+        ("nodes", 2, "params", "api_key"): LIVE_KEY,
+        ("nodes", 2, "params", "label"): "keep-me",
+    }
+
+    snapshot = await store.get_graph_snapshot(waiting.run_id)
+    assert snapshot["nodes"][2]["data"]["params"] == {"api_key": "",
+                                                      "label": ""}
+    for blocker in blockers:
+        await _await_terminal(store, blocker.run_id)
+    record = await _await_terminal(store, waiting.run_id)
+    assert record.status == STATUS_FAILED
+    assert f"Unknown node type: {UNKNOWN_TYPE}" in (record.error or "")
+    assert LIVE_KEY.encode() not in _db_bytes(db_path)
+
+
+async def test_a_type_registered_while_its_run_waits_runs_with_every_value(
+        store, service, db_path):
+    """Restore puts back every vaulted value, whatever the registry says NOW.
+
+    A queued run can wait for hours, and the custom node can be re-enabled in
+    that time. A restore that asked the registry which slots to fill would
+    find only the SECRET one, put back the key, and leave every other value
+    at the ``""`` the row holds: a run that succeeds with settings nobody
+    chose.
+    """
+    _LateEchoNode.seen = []
+    blockers = [await service.submit(_slow_graph()) for _ in range(2)]
+    waiting = await service.submit(_secret_graph(middle="_LateEcho"))
+    assert waiting.status == STATUS_QUEUED
+    # Registered before anything awaits, so the run cannot have been promoted
+    # yet: unknown at submit, known at promotion.
+    registry._nodes["_LateEcho"] = _LateEchoNode
+    try:
+        snapshot = await store.get_graph_snapshot(waiting.run_id)
+        for blocker in blockers:
+            await _await_terminal(store, blocker.run_id)
+        record = await _await_terminal(store, waiting.run_id)
+    finally:
+        registry._nodes.pop("_LateEcho", None)
+
+    # The row, written while the type was unknown, holds none of its values.
+    assert snapshot["nodes"][2]["data"]["params"] == {"api_key": "",
+                                                      "label": ""}
+    assert record.status == STATUS_SUCCEEDED
+    assert _LateEchoNode.seen == [{"api_key": LIVE_KEY, "label": "keep-me"}]
+    assert LIVE_KEY.encode() not in _db_bytes(db_path)
+
+
+async def test_the_startup_sweep_leaves_an_unknown_node_s_values_alone(
+        store, service):
+    """The sweep does NOT get the unknown-type rule, on purpose.
+
+    It rewrites finished rows at every boot, and "unknown" is a fact about
+    one boot. A plugin that failed to load once would have every value of
+    every one of its nodes blanked in every past run, for good: the sweep
+    keeps no vault to bring them back from.
+    """
+    record = await store.create_run(
+        graph_snapshot=_secret_graph(middle=UNKNOWN_TYPE),
+        status=STATUS_QUEUED, queue_key="cpu", provenance=RunProvenance(),
+    )
+    await store.mark_finished(record.id, STATUS_FAILED,
+                              expected=(STATUS_QUEUED,))
+    assert await service.scrub_stored_secrets() == 0
+    kept = await store.get_graph_snapshot(record.id)
+    assert kept["nodes"][2]["data"]["params"] == {"api_key": LIVE_KEY,
+                                                  "label": "keep-me"}
+
+
+def test_a_known_preset_withholds_the_entries_it_cannot_place():
+    """Per ``internalParams`` entry, the inner node's type decides.
+
+    A registered inner type keeps the SECRET rule: only its SECRET params
+    go. An inner type nobody registered, or an id no definition has, loses
+    the whole entry: the server cannot say what is in it.
+    """
+    graph = {
+        "nodes": [{"id": "p", "type": "preset:_Mixed", "data": {
+            "params": {},
+            "internalParams": {
+                "echo": {"api_key": LIVE_KEY, "label": "keep-me"},
+                "ghost": {"token": "sk-ghost", "label": "g"},
+                "stray": {"token": "sk-stray"},
+            }}}],
+        "edges": [], "subgraphs": [],
+        "presets": [_portable_preset("_Mixed", [
+            {"id": "echo", "type": "_SecretEcho", "params": {}},
+            {"id": "ghost", "type": UNKNOWN_TYPE, "params": {}},
+        ])],
+    }
+    scrubbed, vault = split_graph_secrets(graph, unknown_types_as_secret=True)
+    assert scrubbed["nodes"][0]["data"]["internalParams"] == {
+        "echo": {"api_key": "", "label": "keep-me"},
+        "ghost": {"token": "", "label": ""},
+        "stray": {"token": ""},
+    }
+    assert vault == {
+        ("nodes", 0, "internalParams", "echo", "api_key"): LIVE_KEY,
+        ("nodes", 0, "internalParams", "ghost", "token"): "sk-ghost",
+        ("nodes", 0, "internalParams", "ghost", "label"): "g",
+        ("nodes", 0, "internalParams", "stray", "token"): "sk-stray",
+    }
+    reloaded, restored = _restored_through_json(scrubbed, vault)
+    assert restored == 4
+    assert reloaded == graph
+
+
+def test_a_preset_entry_is_withheld_when_either_definition_cannot_place_it():
+    """The installed and the portable definition are UNIONED.
+
+    The same union ``_preset_secret_param_map`` takes for SECRET params: the
+    run uses the installed definition, but the portable one travels with the
+    graph and is the one used wherever the preset is not installed. An id
+    counts as placed only when every type it has across the two is known.
+    """
+    preset_registry._presets["_Split"] = PresetDefinition(
+        preset_name="_Split", category="Test", description="",
+        nodes=[InternalNodeSchema(id="a", type="Print", params={})],
+        edges=[], exposed_inputs=[], exposed_outputs=[], exposed_params=[])
+    try:
+        graph = {
+            "nodes": [{"id": "p", "type": "preset:_Split", "data": {
+                "params": {}, "internalParams": {"a": {"label": "x"}}}}],
+            "edges": [], "subgraphs": [],
+            "presets": [_portable_preset("_Split", [
+                {"id": "a", "type": UNKNOWN_TYPE, "params": {}}])],
+        }
+        scrubbed, vault = split_graph_secrets(
+            graph, unknown_types_as_secret=True)
+    finally:
+        preset_registry._presets.pop("_Split", None)
+    assert scrubbed["nodes"][0]["data"]["internalParams"] == {
+        "a": {"label": ""}}
+    assert vault == {("nodes", 0, "internalParams", "a", "label"): "x"}
+
+
+def test_an_unknown_preset_withholds_every_value():
+    """Neither the preset registry nor the graph's own ``presets[]`` has it,
+    so nothing says what the node is or what any of its inner nodes are."""
+    graph = {
+        "nodes": [{"id": "p", "type": "preset:_Nobody", "data": {
+            "params": {"shown": "v"},
+            "internalParams": {
+                "chat": {"openai_api_key": LIVE_KEY, "model": "m"}}}}],
+        "edges": [], "presets": [], "subgraphs": [],
+    }
+    scrubbed, vault = split_graph_secrets(graph, unknown_types_as_secret=True)
+    data = scrubbed["nodes"][0]["data"]
+    assert data["params"] == {"shown": ""}
+    assert data["internalParams"] == {
+        "chat": {"openai_api_key": "", "model": ""}}
+    assert vault == {
+        ("nodes", 0, "params", "shown"): "v",
+        ("nodes", 0, "internalParams", "chat", "openai_api_key"): LIVE_KEY,
+        ("nodes", 0, "internalParams", "chat", "model"): "m",
+    }
+    reloaded, restored = _restored_through_json(scrubbed, vault)
+    assert restored == 3
+    assert reloaded == graph
+
+
+def test_a_block_withholds_the_values_of_an_unknown_node_inside_it():
+    """A block's definition holds ordinary nodes, presets included.
+
+    Also pins what counts as a value, by the same test every walk here uses:
+    ``""``, ``None``, ``0`` and ``False`` are left as they are.
+    """
+    graph = {
+        "nodes": [{"id": "blk", "type": "subgraph:d1",
+                   "data": {"params": {}}}],
+        "edges": [], "presets": [],
+        "subgraphs": [{
+            "id": "d1",
+            "nodes": [
+                {"id": "ghost", "type": UNKNOWN_TYPE, "data": {"params": {
+                    "api_key": LIVE_KEY, "label": "keep-me",
+                    "blank": "", "unset": None, "count": 0,
+                    "enabled": False}}},
+                {"id": "src", "type": "_SecretSource",
+                 "data": {"params": {"val": "hi"}}},
+                {"id": "p", "type": "preset:_Nobody", "data": {
+                    "params": {},
+                    "internalParams": {"chat": {"openai_api_key": "sk-in"}}}},
+            ],
+            "edges": [],
+        }],
+    }
+    scrubbed, vault = split_graph_secrets(graph, unknown_types_as_secret=True)
+    inner = scrubbed["subgraphs"][0]["nodes"]
+    assert inner[0]["data"]["params"] == {
+        "api_key": "", "label": "", "blank": "", "unset": None, "count": 0,
+        "enabled": False}
+    assert inner[1]["data"]["params"] == {"val": "hi"}
+    assert inner[2]["data"]["internalParams"] == {
+        "chat": {"openai_api_key": ""}}
+    assert vault == {
+        ("subgraphs", 0, "nodes", 0, "params", "api_key"): LIVE_KEY,
+        ("subgraphs", 0, "nodes", 0, "params", "label"): "keep-me",
+        ("subgraphs", 0, "nodes", 2, "internalParams", "chat",
+         "openai_api_key"): "sk-in",
+    }
+    reloaded, restored = _restored_through_json(scrubbed, vault)
+    assert restored == 3
+    assert reloaded == graph
+
+
+def test_a_portable_preset_definition_withholds_an_unknown_node_s_defaults():
+    """``presets[].nodes[].params``: the third place, in its flatter shape."""
+    graph = {
+        "nodes": [{"id": "a", "type": "Print",
+                   "data": {"params": {"label": "x"}}}],
+        "edges": [], "subgraphs": [],
+        "presets": [_portable_preset("P", [
+            {"id": "ghost", "type": UNKNOWN_TYPE,
+             "params": {"token": LIVE_KEY, "label": "g"}},
+            {"id": "out", "type": "Print", "params": {"label": "out"}},
+        ])],
+    }
+    scrubbed, vault = split_graph_secrets(graph, unknown_types_as_secret=True)
+    definition = scrubbed["presets"][0]["nodes"]
+    assert definition[0]["params"] == {"token": "", "label": ""}
+    assert definition[1]["params"] == {"label": "out"}
+    assert scrubbed["nodes"][0]["data"]["params"] == {"label": "x"}
+    assert vault == {
+        ("presets", 0, "nodes", 0, "params", "token"): LIVE_KEY,
+        ("presets", 0, "nodes", 0, "params", "label"): "g",
+    }
+    reloaded, restored = _restored_through_json(scrubbed, vault)
+    assert restored == 2
+    assert reloaded == graph
+
+
+def test_what_the_server_can_place_is_stored_as_sent():
+    """The rule reaches only the types the engine itself refuses.
+
+    A registered type keeps its non-secret values. A bare plugin name counts
+    as registered when ``registry.get`` resolves it by suffix. A note is an
+    annotation and a ``subgraph:`` instance a reference into ``subgraphs[]``,
+    and the engine refuses neither as an unknown type. The canvas writes no
+    ``params`` on a note and ``{}`` on an instance; both carry a value here
+    because only a value would show a rule that wrongly caught them.
+    """
+    registry._nodes["zz9:_BareSource"] = _SecretSourceNode
+    try:
+        graph = {
+            "nodes": [
+                {"id": "echo", "type": "_SecretEcho",
+                 "data": {"params": {"api_key": "", "label": "keep-me"}}},
+                {"id": "bare", "type": "_BareSource",
+                 "data": {"params": {"val": "hi"}}},
+                {"id": "note", "type": "note", "data": {
+                    "noteKind": "text", "noteContent": "rotate the key",
+                    "params": {"text": "hand-edited"}}},
+                {"id": "blk", "type": "subgraph:d1",
+                 "data": {"params": {"hint": "x"}}},
+                {"id": "p", "type": "preset:_Known", "data": {
+                    "params": {}, "internalParams": {"out": {"label": "y"}}}},
+            ],
+            "edges": [],
+            "subgraphs": [{"id": "d1", "nodes": [
+                {"id": "in", "type": "Print",
+                 "data": {"params": {"label": "inner"}}}], "edges": []}],
+            "presets": [_portable_preset("_Known", [
+                {"id": "out", "type": "Print", "params": {"label": "z"}}])],
+        }
+        scrubbed, vault = split_graph_secrets(
+            graph, unknown_types_as_secret=True)
+    finally:
+        registry._nodes.pop("zz9:_BareSource", None)
+    assert vault == {}
+    assert scrubbed is graph
