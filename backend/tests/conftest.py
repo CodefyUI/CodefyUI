@@ -2,6 +2,8 @@
 
 import hashlib
 import importlib.machinery
+import os
+import shutil
 import sys
 import tempfile
 import types
@@ -17,6 +19,22 @@ from httpx import ASGITransport, AsyncClient
 _SCRIPTS_DIR = Path(__file__).resolve().parents[2] / "scripts"
 if str(_SCRIPTS_DIR) not in sys.path:
     sys.path.insert(0, str(_SCRIPTS_DIR))
+
+# User-data isolation. The session gets its own CODEFYUI_USER_DATA_DIR,
+# set here, before the imports below build `settings`, so the settings object
+# and every call-time reader of the variable (session token, plugin lockfile,
+# pack and asset caches, Codex login) agree on it. Each `with TestClient(app)`
+# runs the lifespan, which writes the session token: without this, the real
+# `<user data>/codefyui/session.token` was overwritten, and CLI commands
+# talking to a server running beside the test run got 403 until it restarted.
+# Unconditional: a value inherited from a `cdui dev` shell names that
+# checkout's live `.codefyui_dev/`, a real directory too. A test that sets its
+# own dir with monkeypatch still can. `_REAL_USER_DATA_DIR` is for the one
+# module that reads the real one on purpose (see the fixture below), and
+# `pytest_sessionfinish` deletes the temporary one.
+_REAL_USER_DATA_DIR = os.environ.get("CODEFYUI_USER_DATA_DIR")
+_TEST_USER_DATA_DIR = tempfile.mkdtemp(prefix="codefyui-test-userdata-")
+os.environ["CODEFYUI_USER_DATA_DIR"] = _TEST_USER_DATA_DIR
 
 from app.config import settings
 from app.core.auth import TOKEN_HEADER, init_allowed_hosts, session_token
@@ -34,8 +52,10 @@ _DEFAULT_DB_PATH = settings.DB_PATH
 # DB isolation: every test run's SQLite DB lives in a temp dir, never in
 # backend/data/ (lifespan-driving TestClient tests would otherwise create a
 # real codefyui.db there). Module-level on purpose: conftest import runs
-# before any hook or fixture, so there is no ordering race.
-settings.DB_PATH = Path(tempfile.mkdtemp(prefix="codefyui-test-db-")) / "codefyui-test.db"
+# before any hook or fixture, so there is no ordering race. Deleted by
+# `pytest_sessionfinish` below.
+_TEST_DB_DIR = tempfile.mkdtemp(prefix="codefyui-test-db-")
+settings.DB_PATH = Path(_TEST_DB_DIR) / "codefyui-test.db"
 
 # Tests use ``base_url="http://127.0.0.1:8000"`` which the production Host
 # whitelist already accepts, but seed it explicitly here so tests don't rely
@@ -93,10 +113,11 @@ def _packs_missing_from_registry() -> bool:
     """True when a pack this suite needs has no nodes registered.
 
     ``rediscover_all`` — which ``POST /api/plugins/reload`` runs — rebuilds the
-    registry from the machine's REAL lockfile, not from the synthetic one this
-    file installs. A pack that is not installed on the developer's machine (or
-    on CI, where the lockfile is empty) is therefore silently dropped, and
-    every later test that resolves a node BY TYPE gets "Unknown node type".
+    registry from the lockfile in the user data dir, not from the synthetic
+    one this file installs. In this suite that dir is the session's temporary
+    one (top of this file), whose lockfile is empty unless a test wrote its
+    own, so the packs are silently dropped, and every later test that
+    resolves a node BY TYPE gets "Unknown node type".
     """
     registered = {key.split(":", 1)[0] for key in registry._nodes if ":" in key}
     return any(pack not in registered for pack in _BUILTIN_TEST_PACKS)
@@ -115,6 +136,38 @@ def _config_tests_see_default_db_path(request, monkeypatch):
     """
     if "test_config_stage2" in str(request.node.fspath):
         monkeypatch.setattr(settings, "DB_PATH", _DEFAULT_DB_PATH)
+    yield
+
+
+@pytest.hookimpl(trylast=True)
+def pytest_sessionfinish(session, exitstatus):
+    """Delete the session's user data dir and DB dir (top of this file).
+
+    A hook, not a session fixture: a session that runs no test (`--collect-only`,
+    as IDE test discovery runs it, or a `-k` that matches nothing) sets up no
+    fixture, so a fixture's teardown left both dirs behind.
+
+    `trylast`, so it runs after pytest's own `pytest_sessionfinish`, which is
+    where a run interrupted mid-test (Ctrl-C) tears down the fixtures still set
+    up. Without it, this ran first, while a lifespan still held the database
+    and the server lock open, and on Windows both dirs stayed behind. A run
+    that finishes has torn everything down at its last test already.
+    """
+    for directory in (_TEST_USER_DATA_DIR, _TEST_DB_DIR):
+        shutil.rmtree(directory, ignore_errors=True)
+
+
+@pytest.fixture(autouse=True)
+def _pack_examples_read_the_real_user_data_dir(request, monkeypatch):
+    """test_pack_examples_real.py runs the gallery examples against the models
+    the developer actually installed, so it reads the real user data dir on
+    purpose. It is opt-in and starts no lifespan, so it writes no token. Hand
+    the real dir back for those tests only."""
+    if request.node.path.name == "test_pack_examples_real.py":
+        if _REAL_USER_DATA_DIR is None:
+            monkeypatch.delenv("CODEFYUI_USER_DATA_DIR")
+        else:
+            monkeypatch.setenv("CODEFYUI_USER_DATA_DIR", _REAL_USER_DATA_DIR)
     yield
 
 
@@ -159,8 +212,9 @@ def _ensure_registry_intact(registry_with_nodes):
 
     The plugin packs are checked separately from the built-ins because a
     reload does not lose them the same way: it re-registers the built-ins from
-    ``NODES_DIR`` and then the packs from the real lockfile, so ``Start`` comes
-    back while an uninstalled pack does not. Testing only for ``Start`` made
+    ``NODES_DIR`` and then the packs from the user data dir's lockfile (see
+    ``_packs_missing_from_registry``), so ``Start`` comes back while a pack
+    does not. Testing only for ``Start`` made
     the suite pass or fail on collection order — a pack test sorting before
     ``test_plugin_api`` was fine, one sorting after was not.
     """

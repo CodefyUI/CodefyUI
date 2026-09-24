@@ -8,6 +8,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 import plugins as plugin_cli
 
 
@@ -47,6 +49,72 @@ def test_plugin_sdk_types_in_sync():
     assert sync_plugin_sdk.check() == 0
 
 
+# ── #461: the template repository's copy, checked and synced on demand ───────
+
+def _template_checkout(root, sdk_files):
+    """A directory shaped like a CodefyUI-Plugin-Official checkout."""
+    sdk = root / "ui" / "src" / "sdk"
+    sdk.mkdir(parents=True)
+    (root / "cdui.plugin.toml").write_text(
+        '[plugin]\nid = "official-template"\nschema_version = 1\n', encoding="utf-8"
+    )
+    for name, text in sdk_files.items():
+        (sdk / name).write_bytes(text.encode("utf-8"))
+    return sdk
+
+
+def test_sync_plugin_sdk_checks_and_syncs_a_template_checkout(tmp_path, capsys, monkeypatch):
+    """The template repository vendors the whole SDK -- the contract's types
+    plus the React bindings -- and fell three API versions behind with
+    nothing in this repository noticing (#461). ``--template`` checks a local
+    checkout of it against the scaffold, and brings it in step."""
+    import sync_plugin_sdk
+
+    # The in-repo copy is not this mode's business: nothing may be written to it.
+    untouched = tmp_path / "scaffold-types.ts"
+    monkeypatch.setattr(sync_plugin_sdk, "TARGETS", [untouched])
+
+    scaffold_index = (sync_plugin_sdk.SCAFFOLD_SDK / "index.ts").read_text(encoding="utf-8")
+    sdk = _template_checkout(tmp_path / "template", {
+        "types.ts": "// apiVersion 2\n",
+        "react.tsx": "export {};\n",
+        # In step already; a CRLF checkout is not drift.
+        "index.ts": scaffold_index.replace("\r\n", "\n").replace("\n", "\r\n"),
+        # The template's own file, which the scaffold does not have.
+        "react.test.tsx": "// the template's own test\n",
+    })
+    template = str(tmp_path / "template")
+
+    assert sync_plugin_sdk.main(["--check", "--template", template]) == 1
+    out = capsys.readouterr().out
+    assert "stale: ui/src/sdk/types.ts" in out
+    assert "stale: ui/src/sdk/react.tsx" in out
+    assert "index.ts" not in out and "react.test.tsx" not in out
+
+    assert sync_plugin_sdk.main(["--template", template]) == 0
+    capsys.readouterr()
+    assert sync_plugin_sdk._norm((sdk / "types.ts").read_text(encoding="utf-8")) \
+        == sync_plugin_sdk.rendered()
+    for scaffold_file in sync_plugin_sdk.SCAFFOLD_SDK.iterdir():
+        if scaffold_file.name != "types.ts":
+            assert sync_plugin_sdk._norm((sdk / scaffold_file.name).read_text(encoding="utf-8")) \
+                == sync_plugin_sdk._norm(scaffold_file.read_text(encoding="utf-8"))
+    assert (sdk / "react.test.tsx").read_text(encoding="utf-8") == "// the template's own test\n"
+    assert not untouched.exists()
+
+    assert sync_plugin_sdk.main(["--check", "--template", template]) == 0
+
+
+def test_sync_plugin_sdk_refuses_a_directory_that_is_not_a_template_checkout(tmp_path):
+    """A mistyped path must not grow a ui/src/sdk/ somewhere it does not belong."""
+    import sync_plugin_sdk
+
+    (tmp_path / "ui" / "src").mkdir(parents=True)  # no manifest, no sdk/
+    assert sync_plugin_sdk.main(["--template", str(tmp_path)]) == 2
+    assert sync_plugin_sdk.main(["--check", "--template", str(tmp_path)]) == 2
+    assert not (tmp_path / "ui" / "src" / "sdk").exists()
+
+
 # ── item 1: cdui plugin new scaffold ─────────────────────────────────────────
 
 def _no_unrendered_placeholders(root):
@@ -65,6 +133,25 @@ def _assert_python_compiles(path):
     compile(path.read_text(encoding="utf-8"), str(path), "exec")
 
 
+def _scan_like_an_install(root):
+    """Run the security scan an install runs over a plugin directory.
+
+    ``flows._install_from_github`` hands the gate the WHOLE extracted tree
+    with the manifest's own ``allowed_modules`` and the capabilities it
+    declares (granted when the user accepts them). So does this: ``tests/``
+    is scanned like ``nodes/``, because a node can import any file in the
+    plugin (core#182).
+    """
+    from app.core.plugins.manifest import manifest_allowed_modules, manifest_capabilities
+
+    manifest = plugin_cli.read_manifest(root)
+    plugin_cli.validate_plugin_dir(
+        root,
+        list(manifest_allowed_modules(manifest)),
+        manifest_capabilities(manifest),
+    )
+
+
 def test_new_scaffold_backend_only(tmp_path):
     rc = plugin_cli.main(["new", "my-test-plugin", "--dir", str(tmp_path)])
     assert rc == 0
@@ -72,6 +159,7 @@ def test_new_scaffold_backend_only(tmp_path):
 
     # Core files exist; the ui/ subtree is absent without --ui.
     assert (root / "cdui.plugin.toml").is_file()
+    assert (root / "pytest.ini").is_file()
     assert (root / "nodes" / "example_node.py").is_file()
     assert (root / "tests" / "conftest.py").is_file()
     assert (root / "tests" / "test_example_node.py").is_file()
@@ -84,20 +172,66 @@ def test_new_scaffold_backend_only(tmp_path):
     assert manifest["plugin"]["name"] == "My Test Plugin"
     assert "frontend" not in manifest
 
-    # conftest wires the right namespace id; generated python is valid.
-    conftest = (root / "tests" / "conftest.py").read_text(encoding="utf-8")
-    assert 'PLUGIN_ID = "my-test-plugin"' in conftest
+    # The generated python is valid.
     _assert_python_compiles(root / "nodes" / "example_node.py")
     _assert_python_compiles(root / "tests" / "conftest.py")
     _assert_python_compiles(root / "tests" / "test_example_node.py")
-
-    # The example node passes the AST security gate installs run. Goes
-    # through the real wrapper (not a bare validate_python_source call) so
-    # this stays faithful to what `cdui plugin install` actually does --
-    # including core#179's denied_attributes, which validate_nodes_dir wires
-    # in and a hand-called validate_python_source here would silently drop.
-    plugin_cli.validate_nodes_dir(root / "nodes", allowed_modules=[])
     _no_unrendered_placeholders(root)
+
+
+@pytest.mark.parametrize("ui", [False, True], ids=["backend-only", "with-ui"])
+def test_new_scaffold_passes_the_install_scan_as_a_whole(tmp_path, ui):
+    """A plugin fresh from ``cdui plugin new`` has to install (#413).
+
+    The scan an install runs covers ``tests/`` as well as ``nodes/``, and the
+    scaffold's ``tests/conftest.py`` used to fake the ``cdui_plugins.<id>``
+    package with ``import sys`` and ``setattr``: refused at install, and by
+    ``setattr`` at every tier, so no ``[security]`` grant could have let it
+    through. This test used to check ``nodes/`` alone and passed all along.
+    """
+    args = ["new", "my-test-plugin", "--dir", str(tmp_path)] + (["--ui"] if ui else [])
+    assert plugin_cli.main(args) == 0
+    root = tmp_path / "my-test-plugin"
+
+    _scan_like_an_install(root)
+
+    # Not vacuous: the same scan refuses a test file the scaffold might have
+    # shipped, so tests/ really was read above.
+    (root / "tests" / "probe.py").write_text("import sys\n", encoding="utf-8")
+    with pytest.raises(plugin_cli.PluginValidationError, match="tests/probe.py"):
+        _scan_like_an_install(root)
+
+
+def test_new_scaffold_tests_run_and_pass(tmp_path):
+    """The scaffold's own tests pass, run the way its README says: with the
+    CodefyUI backend's Python, from outside this repository's test setup.
+
+    A separate interpreter, so nothing this suite has already imported (its
+    ``cdui_plugins`` namespace, its ``tests`` package) can make them pass.
+    """
+    import os
+    import subprocess
+    import sys
+
+    assert plugin_cli.main(["new", "my-test-plugin", "--dir", str(tmp_path)]) == 0
+    root = tmp_path / "my-test-plugin"
+
+    env = dict(os.environ)
+    env.pop("PYTEST_ADDOPTS", None)
+    env["PYTHONDONTWRITEBYTECODE"] = "1"
+    proc = subprocess.run(
+        [sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider"],
+        cwd=root,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        env=env,
+        timeout=300,
+    )
+    output = (proc.stdout or "") + (proc.stderr or "")
+    assert proc.returncode == 0, output
+    assert "2 passed" in output, output
 
 
 def test_new_scaffold_example_node_fits_the_palette_and_has_details(tmp_path):
@@ -152,9 +286,20 @@ def test_new_scaffold_with_ui(tmp_path):
     plugin_cli.validate_manifest(manifest)
     assert manifest["frontend"]["entry"] == "frontend/index.js"
 
-    # The node renderer registration uses the snake_case namespace.
+    # The renderer is registered under the example node's real type: the
+    # manifest id exactly as written, hyphens included, then NODE_NAME. Under
+    # any other type it never mounts. It used to say `ui_plugin:Example`, and
+    # the docs told every author with a hyphenated id to fix it by hand.
+    import re
+
+    source = root / "nodes" / "example_node.py"
+    namespace: dict = {"__name__": "scaffolded_example_node"}
+    exec(compile(source.read_text(encoding="utf-8"), str(source), "exec"), namespace)
+    node_type = f"{manifest['plugin']['id']}:{namespace['ExampleNode'].NODE_NAME}"
+    assert node_type == "ui-plugin:Example"
     index_tsx = (root / "ui" / "src" / "index.tsx").read_text(encoding="utf-8")
-    assert "ui_plugin:Example" in index_tsx
+    registered = re.findall(r"registerRenderer\(\s*'([^']+)'", index_tsx)
+    assert registered == [node_type], registered
     # The vendored types match the canonical contract.
     import sync_plugin_sdk
 

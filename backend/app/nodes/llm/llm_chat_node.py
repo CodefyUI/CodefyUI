@@ -491,12 +491,35 @@ async def _collect_chat(
     racing every ``__anext__`` against a timer would cost a task per token.
     Same shape as the other interruptible nodes, which cannot preempt a
     single long batch either.
+
+    #523: progress goes out through ``ProgressThrottle``, at most one frame
+    per ``PROGRESS_MIN_INTERVAL_S``, and a frame carries only the end of the
+    answer, which is all the node card shows. A frame per chunk holding the
+    whole answer so far was a stored event per chunk, adding up to the
+    square of the answer's length, and past the 128 KiB event cap each frame
+    reached the card without its text. Chunks the throttle holds back go out
+    with the next frame, and the last frame before this returns shows the
+    true end of the answer. The returned text is the whole answer.
     """
-    from ...core.loop_control import stop_checker
+    from ...core.loop_control import (
+        ProgressThrottle,
+        progress_text_tail,
+        stop_checker,
+    )
 
     should_stop = stop_checker(context)
+    throttle = ProgressThrottle(progress_callback)
     chunks: list[str] = []
+    # The end of the answer so far, kept as it grows rather than joined from
+    # every chunk on every chunk.
+    tail = ""
+    # True while the newest chunks are in no frame yet.
+    held_back = False
     stopped_after: int | None = None
+
+    def send_the_end() -> None:
+        if held_back and progress_callback is not None:
+            progress_callback({"text": tail})
 
     async with httpx.AsyncClient() as client:
         # Bound to a name so it can be closed on every exit path, not only
@@ -510,11 +533,12 @@ async def _collect_chat(
                 if etype == "text_delta":
                     delta = str(event.get("text", ""))
                     chunks.append(delta)
-                    if progress_callback is not None:
-                        progress_callback({"text": "".join(chunks)})
+                    tail = progress_text_tail(tail + delta)
+                    held_back = not throttle.emit({"text": tail})
                 elif etype == "error":
                     raise RuntimeError(str(event.get("message", "LLM provider error")))
                 elif etype == "done":
+                    send_the_end()
                     message = event.get("message") or {}
                     content = str(message.get("content") or "".join(chunks))
                     raw_usage = event.get("usage")
@@ -529,4 +553,5 @@ async def _collect_chat(
                     break
         finally:
             await _close_stream(stream)
+    send_the_end()
     return "".join(chunks), {}, stopped_after

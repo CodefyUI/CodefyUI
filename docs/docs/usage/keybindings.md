@@ -31,6 +31,7 @@ Keyboard chords are ignored while you are typing in an input, a textarea or a no
 | Node details navigation | `Left` / `Right` for the previous / next node; `Esc` closes |
 | Confirm / prompt dialogs | `Enter` confirms, `Esc` cancels |
 | Close Settings, the font-size menu or an edge summary | `Esc` |
+| Close the Custom Node Manager, the Package Center, the Plugin Center or the diff view | `Esc` |
 | Rename tab | Double-click the tab, or press `F2` on the focused tab; `Enter` applies, `Esc` cancels |
 | Tab strip | `Tab` reaches the open tab; `Left` / `Right` / `Home` / `End` move focus between tabs; `Enter` / `Space` switches to the focused tab; `Delete` closes it, as its close button does |
 | Sidebar rail | `Up` / `Down` / `Home` / `End` move between tabs; click the open tab's icon to collapse |

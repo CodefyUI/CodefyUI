@@ -1,7 +1,7 @@
 import { memo, useState, type ReactNode } from 'react';
 import { Handle, Position, useReactFlow } from '@xyflow/react';
 import type { NodeProps } from '@xyflow/react';
-import type { AppNode } from '../../types';
+import type { AppNode, NodeProgress } from '../../types';
 import {
   getPortColor,
   isParamVisible,
@@ -14,7 +14,7 @@ import { useUIStore } from '../../store/uiStore';
 import { useTabStore } from '../../store/tabStore';
 import { useToastStore } from '../../store/toastStore';
 import { downloadModelFile } from '../../api/rest';
-import { useI18n } from '../../i18n';
+import { useI18n, type TranslationKey } from '../../i18n';
 import {
   localizedPackTitle,
   missingRequirementForOption,
@@ -42,8 +42,10 @@ const CODE_PREVIEW_LINES = 4;
 
 /**
  * Characters of streamed text the running footer keeps (#486). Three lines at
- * any realistic card width need far fewer, and the cap keeps a 200K-character
- * LLMChat answer from being laid out on every frame.
+ * any realistic card width need far fewer. The server's text nodes send this
+ * much and no more (`PROGRESS_TEXT_TAIL_CHARS` in
+ * backend/app/core/loop_control.py, #523); the cap here keeps a custom node
+ * that sends its whole text from being laid out in full on every frame.
  */
 const LIVE_TEXT_TAIL_CHARS = 1000;
 
@@ -54,11 +56,11 @@ const REPLACEMENT_CHAR_CODE = 0xfffd;
  * The end of the text a running node has written so far, or null when its
  * progress frame carries no text worth showing (#486).
  *
- * Each frame carries the whole text so far (TextGenerate, HFTextGenerate,
- * LLMChat, and an embedding node's "Embedding N/M"), so the latest frame is
- * all there is to show. A frame that ends inside a multi-byte character ends
- * in U+FFFD, which is common for CJK through gpt2 byte tokens; the next frame
- * completes the character, so it is dropped rather than flashed.
+ * Each frame carries the end of the text so far (TextGenerate, HFTextGenerate
+ * and LLMChat send its last `PROGRESS_TEXT_TAIL_CHARS` characters), so the
+ * latest frame is all there is to show. A frame that ends inside a multi-byte
+ * character ends in U+FFFD, which is common for CJK through gpt2 byte tokens;
+ * the next frame completes the character, so it is dropped rather than flashed.
  */
 function liveTextTail(text: unknown): string | null {
   if (typeof text !== 'string') return null;
@@ -66,6 +68,21 @@ function liveTextTail(text: unknown): string | null {
   while (end > 0 && text.charCodeAt(end - 1) === REPLACEMENT_CHAR_CODE) end -= 1;
   const tail = text.slice(Math.max(0, end - LIVE_TEXT_TAIL_CHARS), end);
   return tail.trim() === '' ? null : tail;
+}
+
+type Translate = (key: TranslationKey, vars?: Record<string, string | number>) => string;
+
+/**
+ * A running caption the server sends as a kind and two counts instead of
+ * words (#525), worded in the UI language; null when the frame names no
+ * caption this editor knows or its counts are not numbers. The frame's `text`
+ * then shows as sent, as a custom node's always does.
+ */
+function runningCaption(progress: NodeProgress | undefined, t: Translate): string | null {
+  if (progress?.caption !== 'embedding') return null;
+  const { current, total } = progress;
+  if (typeof current !== 'number' || typeof total !== 'number') return null;
+  return t('node.running.embedding', { current, total });
 }
 
 /**
@@ -267,10 +284,11 @@ export function BaseNodeBody({ id, data, selected, bodyExtra }: BaseNodeProps) {
   const description = def ? tn(def.node_name, 'description', def.description) : '';
 
   // #486: a node that writes text shows its latest lines in the running
-  // footer instead of "Running...". An epoch frame keeps its bar.
+  // footer instead of "Running...". An epoch frame keeps its bar. #525: a
+  // caption the server sends as counts is worded here instead.
   const liveText =
     data.executionStatus === 'running' && data.progress?.event !== 'epoch'
-      ? liveTextTail(data.progress?.text)
+      ? runningCaption(data.progress, t) ?? liveTextTail(data.progress?.text)
       : null;
 
   // Any output that points to a downloadable file (set by the backend for
@@ -577,8 +595,15 @@ export function BaseNodeBody({ id, data, selected, bodyExtra }: BaseNodeProps) {
           {data.progress?.event === 'epoch' ? (
             <div className={styles.progressContainer}>
               <div className={styles.progressInfo}>
-                <span>Epoch {data.progress.epoch}/{data.progress.total_epochs}</span>
-                <span>Loss: {Number(data.progress.loss).toFixed(4)}</span>
+                <span>
+                  {t('node.running.epoch', {
+                    epoch: data.progress.epoch ?? '',
+                    total: data.progress.total_epochs ?? '',
+                  })}
+                </span>
+                <span>
+                  {t('node.running.loss', { loss: Number(data.progress.loss).toFixed(4) })}
+                </span>
               </div>
               <div className={styles.progressBarTrack}>
                 <div

@@ -10,9 +10,13 @@ softmax math; switch to this node when the dataset is real.
 
 from __future__ import annotations
 
+import math
+import re
+import warnings
 from typing import Any
 
 import torch
+from packaging.version import Version
 
 from ...core.node_base import (
     BaseNode,
@@ -21,6 +25,34 @@ from ...core.node_base import (
     ParamType,
     PortDefinition,
 )
+
+
+def _penalty_kwargs(penalty: str, C: float, sklearn_version: str) -> dict[str, Any]:
+    """The LogisticRegression arguments that fit ``penalty`` on this scikit-learn.
+
+    scikit-learn 1.8 deprecated ``penalty`` (removal planned for 1.10) in
+    favour of ``l1_ratio`` and ``C``. Before 1.8, ``l1_ratio`` only counts with
+    penalty='elasticnet', so ``l1_ratio=1`` there quietly fits an L2 model.
+    Hence one spelling per version range; both fit the same model.
+    """
+    if penalty not in ("l2", "l1", "none"):
+        raise ValueError(
+            f"LogisticRegression: penalty must be l2, l1 or none, got {penalty!r}."
+        )
+    # Checked here for every option: from 1.8, "none" hands scikit-learn
+    # C=inf, so its own check would never see this C. `not >` rejects NaN too.
+    if not C > 0:
+        raise ValueError(f"LogisticRegression: C must be greater than 0, got {C}.")
+    # saga fits L1 for any number of classes; lbfgs fits L2 and the
+    # unpenalised model, and refuses L1.
+    solver = "saga" if penalty == "l1" else "lbfgs"
+    if Version(sklearn_version).release < (1, 8):
+        return {"C": C, "penalty": None if penalty == "none" else penalty, "solver": solver}
+    if penalty == "none":
+        # An infinite C is the unpenalised fit. The node's C goes unused, as
+        # it does with penalty=None.
+        return {"C": math.inf, "solver": solver}
+    return {"C": C, "l1_ratio": 1.0 if penalty == "l1" else 0.0, "solver": solver}
 
 
 class LogisticRegressionNode(BaseNode):
@@ -74,7 +106,7 @@ class LogisticRegressionNode(BaseNode):
                 param_type=ParamType.SELECT,
                 default="l2",
                 options=["l2", "l1", "none"],
-                description="Regularisation type. l1 needs the liblinear/saga solver; sklearn picks one for you.",
+                description="Regularisation type. l1 uses the saga solver, l2 and none use lbfgs.",
             ),
         ]
 
@@ -86,6 +118,7 @@ class LogisticRegressionNode(BaseNode):
         *,
         context: Any = None,
     ) -> dict[str, Any]:
+        import sklearn
         from sklearn.linear_model import LogisticRegression
 
         x_train = inputs.get("x_train")
@@ -115,20 +148,26 @@ class LogisticRegressionNode(BaseNode):
         C = float(params.get("C", 1.0))
         max_iter = max(1, int(params.get("max_iter", 200)))
         penalty = str(params.get("penalty", "l2"))
-        # sklearn 1.4+ accepts None instead of 'none' for the penalty string.
-        penalty_arg: str | None = None if penalty == "none" else penalty
-        # liblinear is the only solver that supports L1 + binary; saga handles
-        # L1 + multiclass. lbfgs handles L2 + multinomial. Letting sklearn pick
-        # would otherwise raise on L1.
-        solver = "saga" if penalty == "l1" else "lbfgs"
 
         model = LogisticRegression(
-            C=C,
             max_iter=max_iter,
-            penalty=penalty_arg,
-            solver=solver,
+            **_penalty_kwargs(penalty, C, sklearn.__version__),
         )
-        model.fit(x_train_np, labels)
+        if penalty == "none":
+            # scikit-learn warns that C is ignored when penalty=None comes with
+            # a C other than 1.0, and 1.8.x does so for C=inf too, the newer
+            # spelling of "none". The node never uses C for "none", so drop
+            # just that message, and only around this fit: the filter list is
+            # process-wide, and nodes run in worker threads.
+            with warnings.catch_warnings():
+                warnings.filterwarnings(
+                    "ignore",
+                    message=re.escape("Setting penalty=None will ignore the C"),
+                    category=UserWarning,
+                )
+                model.fit(x_train_np, labels)
+        else:
+            model.fit(x_train_np, labels)
 
         preds = model.predict(x_query_np).tolist()
         proba = model.predict_proba(x_query_np)

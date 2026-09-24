@@ -5,7 +5,7 @@ from typing import Any
 from fastapi import APIRouter, HTTPException
 
 from ..config import settings
-from ..core.data_paths import resolve_under
+from ..core.data_paths import UnstorableName, check_file_name, resolve_under
 from ..core.node_base import ParamType
 from ..core.graph_engine import subgraph_id_of
 from ..core.node_registry import registry as node_registry
@@ -14,28 +14,6 @@ from ..core.secret_params import scrub_graph_secrets
 from ..schemas import CreatePresetRequest, PresetDefinition
 
 router = APIRouter(prefix="/api/presets", tags=["presets"])
-
-
-#: What makes a name a PATH rather than a filename.
-#:
-#: Both separators, always, on every platform: ``WindowsPath`` honours the
-#: backslash and ``PosixPath`` does not, so a rule that asked the host which
-#: one to care about would be a rule CI (Linux) cannot check on behalf of
-#: the users (Windows). The colon is here for two jobs of its own -- it is
-#: the drive qualifier that made ``PRESETS_DIR / name`` discard
-#: ``PRESETS_DIR`` entirely, and on NTFS it opens an alternate data stream
-#: on a file whose name still looks ordinary.
-_PATH_CHARACTERS = "/\\:"
-
-#: Names Windows resolves to a DEVICE rather than a file, whatever follows
-#: them: ``com1.json`` -- which is exactly the shape this endpoint writes --
-#: opens the serial port. Lowercase because the filename is lowercased
-#: before it is looked up here.
-_WINDOWS_DEVICE_NAMES = frozenset(
-    {"con", "prn", "aux", "nul"}
-    | {f"com{i}" for i in range(1, 10)}
-    | {f"lpt{i}" for i in range(1, 10)}
-)
 
 
 def _coded(status_code: int, code: str, **fields: Any) -> HTTPException:
@@ -67,6 +45,15 @@ def _preset_filename(name: str) -> str:
     a suspicious path under ``PRESETS_DIR``, it is ``C:\\evil`` -- the join
     threw the left side away. :func:`_resolved_under` is the other half.
 
+    Which names are refused is :func:`app.core.data_paths.check_file_name`,
+    the rule the upload routes share since #520; this route answers its
+    ``code`` and ``fields``, which the toolbar turns into a sentence in the
+    user's language. The characters are checked in the name as TYPED, so a
+    refusal points at one the user can see; the length and device names in
+    the file actually written, ``.json`` included, since that is what has to
+    fit the file system (``name_too_long`` answers ``limit`` for that file
+    name).
+
     What survives, and what does not
     --------------------------------
     The lowercasing and the space-to-underscore are the behaviour this
@@ -80,34 +67,11 @@ def _preset_filename(name: str) -> str:
     took the first one's file with no warning. A name this endpoint cannot
     store under is now something the user is told about.
     """
-    if not name.strip():
-        raise _coded(400, "name_empty")
-    for character in name:
-        if character in _PATH_CHARACTERS:
-            raise _coded(400, "name_separator", character=character)
-        # A NUL (`\u0000` is legal JSON) would be refused anyway, by
-        # `_resolved_under`, but only as the generic
-        # `name_escapes_presets_dir`. Refused here, the user gets
-        # `name_control_character` with the codepoint, which says which
-        # character to delete. The other control characters are refused
-        # with it: none of them can be typed into the name box, and a
-        # filename carrying one is unopenable on Windows anyway.
-        if ord(character) < 32 or ord(character) == 127:
-            raise _coded(400, "name_control_character",
-                         codepoint=ord(character))
-    # A parent segment, now that the separators are gone. `..` alone cannot
-    # traverse, but a preset named `.` or `..` has no name at all -- and on
-    # POSIX it would be written as a dotfile the panel never lists again.
-    if set(name.strip()) == {"."}:
-        raise _coded(400, "name_dot_segment")
-
     filename = name.lower().replace(" ", "_") + ".json"
-    # Windows resolves a device name from the part before the FIRST dot, so
-    # this is checked against the filename as it will be written rather
-    # than against the name as it was typed.
-    device = filename.split(".", 1)[0]
-    if device in _WINDOWS_DEVICE_NAMES:
-        raise _coded(400, "name_reserved_device", reserved=device)
+    try:
+        check_file_name(name, stored_as=filename)
+    except UnstorableName as refusal:
+        raise _coded(400, refusal.code, **refusal.fields) from None
     return filename
 
 

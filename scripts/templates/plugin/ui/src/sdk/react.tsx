@@ -101,7 +101,7 @@ export function mountPanel(
  * (id, type, params) and re-renders whenever the node's params change.
  *
  * ```tsx
- * api.nodes.registerRenderer('my_plugin:MyNode', defineNodeRenderer(MyBody));
+ * api.nodes.registerRenderer('my-plugin:MyNode', defineNodeRenderer(MyBody));
  * ```
  */
 export function defineNodeRenderer(

@@ -93,8 +93,9 @@ async def test_download_traversal_is_refused(test_client, data_files_dir, filena
 async def test_download_backslash_traversal_never_escapes(test_client, data_files_dir):
     """``..\\..\\windows\\...`` — one payload, two correct answers.
 
-    On Windows a backslash separates path components, so this escapes the data
-    dir and ``_safe_path`` refuses it (400). On POSIX the same bytes are a
+    On Windows a backslash separates path components, so ``_safe_path``
+    refuses it by name (400; #520 names the character, where the escape was
+    once caught as "Invalid filename"). On POSIX the same bytes are a
     single, legal — if bizarre — filename that resolves INSIDE the data dir,
     so the honest answer is "no such file" (404). Both platforms run this
     suite in CI; neither serves anything from outside, which is the property
@@ -103,7 +104,7 @@ async def test_download_backslash_traversal_never_escapes(test_client, data_file
     resp = await test_client.get(f"/api/files/download/{_verbatim(BACKSLASH_INPUT)}")
     if os.name == "nt":
         assert resp.status_code == 400, resp.text
-        assert resp.json()["detail"] == "Invalid filename"
+        assert "'\\'" in resp.json()["detail"]
     else:
         assert resp.status_code == 404, resp.text
         assert resp.json()["detail"].startswith("File not found:")
@@ -197,9 +198,9 @@ async def test_delete_backslash_traversal_never_escapes(
     """The backslash payload is the one that DOES reach delete's handler.
 
     It has no forward slash, so it matches ``{filename}`` on both platforms.
-    From there Windows resolves it out of the data dir and ``_safe_path``
-    refuses it (400), while on POSIX it is one odd-looking filename that is
-    simply absent (404). Nothing outside the data dir is unlinked either way.
+    From there Windows refuses the backslash by name (400, #520), while on
+    POSIX it is one odd-looking filename that is simply absent (404).
+    Nothing outside the data dir is unlinked either way.
     """
     decoy = tmp_path / "secret.csv"
     decoy.write_bytes(b"still here")
@@ -207,7 +208,7 @@ async def test_delete_backslash_traversal_never_escapes(
     resp = await test_client.delete(f"/api/files/{_verbatim(BACKSLASH_INPUT)}")
     if os.name == "nt":
         assert resp.status_code == 400, resp.text
-        assert resp.json()["detail"] == "Invalid filename"
+        assert "'\\'" in resp.json()["detail"]
     else:
         assert resp.status_code == 404, resp.text
         assert resp.json()["detail"].startswith("File not found:")

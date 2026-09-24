@@ -6,7 +6,13 @@ from pathlib import Path
 from fastapi import APIRouter, HTTPException, UploadFile
 
 from ..config import settings
-from ..core.data_paths import resolve_under
+from ..core.data_paths import (
+    UnstorableName,
+    check_lookup_name,
+    lookup_exists,
+    resolve_under,
+    upload_file_name,
+)
 from ..core.plugin_validator import PluginValidationError, validate_python_source
 from ..core.plugins.reload import rediscover_now
 from ..core.script_policy import TIER0_DENIED_ATTRS
@@ -17,14 +23,32 @@ router = APIRouter(prefix="/api/custom-nodes", tags=["custom-nodes"])
 
 
 def _safe_path(base_dir: Path, filename: str) -> Path:
-    """*filename* resolved under *base_dir*, or a 400 "Invalid filename".
+    """*filename* resolved under *base_dir*, or a 400.
 
-    The rule is :func:`app.core.data_paths.resolve_under` (#483).
+    A name no file on this server can have is refused by name
+    (:func:`app.core.data_paths.check_lookup_name`, #520); anything else
+    that is not a path under *base_dir* is "Invalid filename"
+    (:func:`app.core.data_paths.resolve_under`, #483).
     """
+    try:
+        check_lookup_name(filename)
+    except UnstorableName as refusal:
+        raise HTTPException(status_code=400, detail=str(refusal)) from None
     resolved = resolve_under(base_dir, filename)
     if resolved is None:
         raise HTTPException(status_code=400, detail="Invalid filename")
     return resolved
+
+
+def _upload_name(filename: str) -> str:
+    """The name an upload is stored under, or a 400 that says what is wrong.
+
+    The rule is :func:`app.core.data_paths.upload_file_name` (#520).
+    """
+    try:
+        return upload_file_name(filename)
+    except UnstorableName as refusal:
+        raise HTTPException(status_code=400, detail=str(refusal)) from None
 
 
 def _scan_file(filepath: Path) -> list[str]:
@@ -76,8 +100,13 @@ async def toggle_custom_node(data: dict):
     custom_dir = settings.CUSTOM_NODES_DIR
     filepath = _safe_path(custom_dir, filename)
 
-    if not filepath.exists():
+    if not lookup_exists(filepath):
         raise HTTPException(status_code=404, detail=f"File not found: {filename}")
+    # As delete: the list hides these, so a system file renamed here could
+    # never be renamed back from the UI.
+    if filepath.name.startswith("__"):
+        raise HTTPException(status_code=400,
+                            detail="Cannot enable or disable system files")
 
     if filename.endswith(".py.disabled"):
         # Enable: rename .py.disabled -> .py
@@ -103,9 +132,20 @@ async def upload_custom_node(file: UploadFile):
     if not file.filename or not file.filename.endswith(".py"):
         raise HTTPException(status_code=400, detail="Only .py files are accepted")
 
+    name = _upload_name(file.filename)
+    # The list hides these names and delete refuses them, so a file stored
+    # under one could never be seen or removed from the UI. In the default
+    # configuration `__init__.py` is the `app.custom_nodes` package's own.
+    if name.startswith("__"):
+        raise HTTPException(
+            status_code=400,
+            detail=("Names starting with '__' are kept for system files such "
+                    "as __init__.py. Rename the file and try again."),
+        )
+
     custom_dir = settings.CUSTOM_NODES_DIR
     custom_dir.mkdir(parents=True, exist_ok=True)
-    dest = _safe_path(custom_dir, Path(file.filename).name)
+    dest = _safe_path(custom_dir, name)
 
     # Bounded before it is read: core.body_limit caps the multipart BODY as it
     # arrives, so this can no longer buffer an unbounded upload and then refuse
@@ -141,7 +181,7 @@ async def delete_custom_node(filename: str):
     custom_dir = settings.CUSTOM_NODES_DIR
     filepath = _safe_path(custom_dir, filename)
 
-    if not filepath.exists():
+    if not lookup_exists(filepath):
         raise HTTPException(status_code=404, detail=f"File not found: {filename}")
     if filepath.name.startswith("__"):
         raise HTTPException(status_code=400, detail="Cannot delete system files")

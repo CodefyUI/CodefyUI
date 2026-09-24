@@ -503,6 +503,67 @@ async def test_a_reserved_windows_device_name_is_refused(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("name, character", [
+    ("What is this?", "?"),
+    ("loss|acc", "|"),
+    ("a*b", "*"),
+    ("a<b", "<"),
+    ("a>b", ">"),
+    ('say "hi"', '"'),
+])
+async def test_a_character_windows_refuses_is_refused(
+    test_client, _presets_sandbox, name, character,
+):
+    """#520: the name rule is shared with the upload routes now, and it
+    refuses the rest of what Windows cannot store in a file name. Before,
+    these were written as-is on Linux and answered 500 on Windows, where the
+    write itself fails."""
+    resp = await _create(test_client, name)
+    assert resp.status_code == 400, resp.text
+    assert resp.json()["detail"] == {"code": "name_reserved_character",
+                                     "character": character}
+    assert _sandbox_files(_presets_sandbox) == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("length", [251, 300])
+async def test_a_name_whose_file_would_be_too_long_is_refused(
+    test_client, _presets_sandbox, length,
+):
+    """#520: measured on the file written, ``.json`` included. A 251-character
+    name is a 256-character file name, which answered 500."""
+    resp = await _create(test_client, "a" * length)
+    assert resp.status_code == 400, resp.text
+    assert resp.json()["detail"] == {"code": "name_too_long", "limit": 255}
+    assert _sandbox_files(_presets_sandbox) == []
+
+
+def test_a_name_whose_file_is_exactly_at_the_limit_is_kept():
+    """The counterweight, without a write: a 255-character path component
+    under a deep temp directory is a Windows MAX_PATH question, not this
+    rule's."""
+    from app.api.routes_presets import _preset_filename
+
+    assert _preset_filename("a" * 250) == "a" * 250 + ".json"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("name, reserved", [
+    ("CONIN$", "conin$"),
+    ("conout$.v2", "conout$"),
+    ("COM\N{SUPERSCRIPT ONE}", "com\N{SUPERSCRIPT ONE}"),
+])
+async def test_the_other_device_spellings_are_refused(
+    test_client, _presets_sandbox, name, reserved,
+):
+    resp = await _create(test_client, name)
+    assert resp.status_code == 400, resp.text
+    assert resp.json()["detail"] == {"code": "name_reserved_device",
+                                     "reserved": reserved}
+    assert _sandbox_files(_presets_sandbox) == []
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("name", ["", "   ", "\t"])
 async def test_an_empty_name_is_refused(test_client, _presets_sandbox, name):
     resp = await _create(test_client, name)
@@ -565,6 +626,9 @@ async def test_a_name_differing_only_by_case_does_not_overwrite(
     ("殘差區塊", "殘差區塊.json"),
     ("ResNet Block", "resnet_block.json"),
     ("block-2_v3", "block-2_v3.json"),
+    # A device name only before the space, which the file name does not
+    # keep: con_.json is an ordinary file on every Windows.
+    ("CON ", "con_.json"),
 ])
 async def test_a_legitimate_name_still_works(
     test_client, _presets_sandbox, name, filename,

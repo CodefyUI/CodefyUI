@@ -62,6 +62,7 @@ from ...core.loop_control import (
     EVENT_BATCH,
     ProgressThrottle,
     interrupted_result,
+    progress_text_tail,
     stop_checker,
 )
 from ...core.node_base import (
@@ -442,12 +443,14 @@ class HFTextGenerateNode(BaseNode):
                     # into a chart series -- that would be a chart of how fast
                     # the machine is.
                     "event": EVENT_BATCH,
-                    # The whole answer so far, re-decoded each frame rather
-                    # than concatenated per-token pieces: a BPE token is not a
+                    # The end of the answer so far, which is all the card
+                    # shows (#523), re-decoded each frame rather than
+                    # concatenated per-token pieces: a BPE token is not a
                     # character boundary, so decoding ids one at a time mangles
                     # any multi-byte character spanning two of them -- which in
                     # Chinese is most of them.
-                    "text": tokenizer.decode(new_ids, skip_special_tokens=True),
+                    "text": progress_text_tail(
+                        tokenizer.decode(new_ids, skip_special_tokens=True)),
                     "tokens": len(new_ids),
                     "total_tokens": max_new_tokens,
                 })

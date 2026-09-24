@@ -69,6 +69,12 @@ const en = {
     'That name would write the file outside the presets folder. Use a plain name with no path in it.',
   'toolbar.export.name.fileExists':
     'A subgraph is already saved as {filename}. Pick another name.',
+  // #520: `limit` counts the bytes of the file name the preset is stored
+  // under, not the characters typed.
+  'toolbar.export.name.reservedCharacter':
+    'The subgraph name cannot contain "{character}", which Windows does not allow in file names. Use letters, numbers, spaces, - or _.',
+  'toolbar.export.name.tooLong':
+    'The subgraph name is too long to be stored as a file name (at most {limit} bytes). Shorten it.',
   // A rule added to the server after this editor shipped. The code is kept in
   // the sentence because it is the only part worth quoting in a bug report.
   'toolbar.export.name.unknownRule':
@@ -240,6 +246,11 @@ const en = {
   // Node
   'node.opt': 'opt',
   'node.running': 'Running...',
+  // The running footer's captions (#525). The embedding counts come from the
+  // server as numbers, so every caption follows the UI language.
+  'node.running.epoch': 'Epoch {epoch}/{total}',
+  'node.running.loss': 'Loss: {loss}',
+  'node.running.embedding': 'Embedding {current}/{total}',
   'node.completed': 'Completed',
   'node.cached': 'Cached',
   'node.skipped': 'Skipped',
@@ -369,6 +380,7 @@ const en = {
   'tabBar.aria': 'Workspace tabs',
   'tabBar.source.aria': '{name}, opened by {plugin}',
   'tabBar.readOnly.aria': '{name}, read-only',
+  'tabBar.running.aria': '{name}, running',
   'tabBar.close.aria': 'Close {name}',
 
   // Subgraph Editor (SequentialModel)

@@ -6,7 +6,7 @@ description: 把一個 Python 檔案放進 custom_nodes/ 即可新增節點行�
 
 # 自訂節點
 
-CodefyUI 是**後端權威**的：一個節點的連接埠、參數與類別全部來自其 Python 定義，UI 會自動渲染它。若要新增行為，把一個 `.py` 檔案放進 `backend/app/custom_nodes/`，並繼承 `BaseNode`。
+CodefyUI 是**後端權威**的：一個節點的連接埠、參數與類別全部來自其 Python 定義，UI 會自動渲染它。若要新增行為，把一個 `.py` 檔案放進 `backend/app/custom_nodes/`，並繼承 `BaseNode`。若要把自訂節點放在安裝目錄之外，請在啟動伺服器前把 `CODEFYUI_CUSTOM_NODES_DIR` 設為另一個目錄。這個目錄會取代 `backend/app/custom_nodes/`，而不是再多加一個目錄，並套用到這個安裝開啟的每個專案。目錄中的檔案彼此要用相對匯入（`from .helpers import x`）：`from app.custom_nodes.helpers import x` 會改到 `backend/app/custom_nodes/` 裡找。
 
 :::tip 只有幾行程式碼？先試試畫布
 如果只需要簡短的轉換，或對圖表已產生的結果計算統計資料，[PythonScript 節點](./python-script-node.md)可直接執行你在畫布上輸入的 Python，不需建立檔案或重新啟動。當程式碼不再適合放在單一節點中，或需要存取檔案、網路或允許清單以外的相依套件時，再建立自訂節點。
@@ -45,9 +45,9 @@ class MyNode(BaseNode):
 
 ## 透過自訂節點管理上傳 {/* #uploading-through-the-custom-node-manager */}
 
-請使用側邊欄**自訂與外掛**分頁之**自訂節點**區段中的**管理...** 按鈕開啟管理視窗。它會列出 `custom_nodes/` 中的每個檔案、該檔案定義的節點名稱，以及三種操作：
+請使用工具列的**自訂節點**按鈕，或側邊欄**自訂與外掛**分頁之**自訂節點**區段中的**管理...** 按鈕開啟管理視窗；按 `Esc` 即可關閉。它會列出 `custom_nodes/` 中的每個檔案、該檔案定義的節點名稱，以及三種操作：
 
-- **上傳 .py** 會將一個檔案送至 `POST /api/custom-nodes/upload`。檔案必須使用 `.py` 副檔名，而且不得超過 `CODEFYUI_MAX_UPLOAD_SIZE`（500 MB）。伺服器會以外掛 AST 閘門的[第 0 級](/advanced/plugins#security--three-tiers)掃描檔案。自訂節點無法宣告能力，因此 `requests` 或 `os` 等 imports 會產生 `400` response 與閘門訊息。需要第 0 級以外 imports 的節點，應放入具有 `[security]` 區段的[外掛包](./plugins)。直接複製到 `backend/app/custom_nodes/` 的檔案，會在下次重新載入時載入，不會進行這項掃描。
+- **上傳 .py** 會將一個檔案送至 `POST /api/custom-nodes/upload`。檔案必須使用 `.py` 副檔名，而且不得超過 `CODEFYUI_MAX_UPLOAD_SIZE`（500 MB）。檔名不能以 `__` 開頭，也不能含有 Windows 不允許用在檔名中的字元（請見[檔案名稱](./api-reference#limits-and-errors)）。伺服器會以外掛 AST 閘門的[第 0 級](/advanced/plugins#security--three-tiers)掃描檔案。自訂節點無法宣告能力，因此 `requests` 或 `os` 等 imports 會產生 `400` response 與閘門訊息。需要第 0 級以外 imports 的節點，應放入具有 `[security]` 區段的[外掛包](./plugins)。直接複製到自訂節點目錄（`backend/app/custom_nodes/`，或已設定的 `CODEFYUI_CUSTOM_NODES_DIR`）的檔案，會在下次重新載入時載入，不會進行這項掃描。
 - **啟用／停用**會在 `name.py` 與 `name.py.disabled` 之間重新命名檔案；停用的檔案仍留在磁碟上，但探索時會跳過。
 - **刪除**會移除檔案（名稱以 `__` 開頭者受保護）。
 
@@ -64,7 +64,7 @@ class MyNode(BaseNode):
 | `define_inputs()` / `define_outputs()` | 回傳 `PortDefinition` 清單——每個都有一個 `name`、一個 `data_type`，以及選用的 `description` / `optional` / `media`。 |
 | `define_params()` | 回傳 `ParamDefinition` 清單——`int`、`float`、`string`、`bool`、`select`、檔案選擇器（`model_file`、`image_file`、`data_file`）、`tensor_grid`、`code`（具語法標示的多行編輯器；仍是普通的 string 參數），或 `secret`，並可帶有 `default`、`options`、`min_value`/`max_value` 與 `visible_when`。`secret` 參數（例如 API key）在編輯器裡會被遮罩，而且它的值**永遠不會被保存**——存檔、匯出與發佈時都會被清空，所以要把它提供給已發佈的應用程式，請改用環境變數。`advanced=True` 會把參數放進節點收合的**進階**區段，其他行為不變；存檔、匯出與快取都和一般參數相同。`select` 參數的 `option_packs` 會把選項對應到它需要的[選用套件包](/usage/optional-packs)，格式為 `"<pack>"` 或 `"<pack>:<item>"`。所需套件包或項目未安裝的選項會變成灰色；需要它的目前值仍保持選取，並顯示警告與**安裝套件**按鈕。 |
 | `define_outputs_dynamic(params)` / `define_inputs_dynamic(params)` | 選用。依參數值變更輸出或輸入連接埠，例如 `Split` 的 `chunks` 或 `PythonScript` 的 `input_ports`。靜態方法必須描述預設參數，因為節點面板會使用這些定義；驗證、渲染與預設模組匯出會使用動態定義。 |
-| `execute(self, inputs, params, progress_callback=None, *, context=None)` | 執行節點，並回傳以輸出連接埠名稱為鍵的 dict。執行引擎只會在函式簽名宣告時傳入各個選用關鍵字參數。`progress_callback` 會為每個進度事件接收一個 dict；例如，訓練迴圈會送出 `{"event": "epoch", ...}`。節點執行期間，dict 中的 `text` 字串會顯示在節點卡片上，`epoch` 事件除外。每個事件都會取代上一個，所以請送出目前為止的完整文字。`context` 會提供該次執行的裝置、seed 與 determinism 旗標。 |
+| `execute(self, inputs, params, progress_callback=None, *, context=None)` | 執行節點，並回傳以輸出連接埠名稱為鍵的 dict。執行引擎只會在函式簽名宣告時傳入各個選用關鍵字參數。`progress_callback` 會為每個進度事件接收一個 dict；例如，訓練迴圈會送出 `{"event": "epoch", ...}`。節點執行期間，dict 中的 `text` 字串會顯示在節點卡片上，`epoch` 事件除外。每個事件都會取代上一個，而卡片最多只顯示文字的最後 1,000 個字元，所以請送出目前為止文字的結尾（可用 `app.core.loop_control` 的 `progress_text_tail`），而不是只送最新的片段。事件也會存進該次執行的紀錄，頻繁的事件請用同一個模組的 `ProgressThrottle` 限制頻率。`context` 會提供該次執行的裝置、seed 與 determinism 旗標。 |
 | `REQUIRES_PACK` | 選用的類別屬性，指出節點需要的[選用套件包](/usage/optional-packs)，格式為 `"<pack>"` 或 `"<pack>:<item>"`（預設為 `None`）。`/api/nodes` 會以 `requires_pack` 提供此值；套件包未安裝時，節點面板與節點上會顯示套件包徽章，設定面板會提供安裝操作。它不會阻止執行。若要在缺少套件包時讓執行失敗，請在 `execute` 中呼叫 `app.core.packs` 的 `require_pack("<pack>")`；編輯器會把這個錯誤顯示為附有**開啟套件中心**按鈕的通知。 |
 | `cacheable` / `align_inputs` / `cache_fingerprint(params)` | 選用的快取與裝置控制。當節點具有可訓練狀態、回傳即時物件參照，或產生未反映在回傳值中的副作用時，請設定 `cacheable = False`。將輸入直接傳給 numpy、sklearn 或 PIL 時，請設定 `align_inputs = False`；否則執行引擎會將輸入張量移至該次執行的裝置，而 `Tensor.numpy()` 對 CPU 以外的張量會失敗。覆寫 `cache_fingerprint`，可將參數所參照的外部狀態（例如檔案修改時間）加入快取鍵。 |
 

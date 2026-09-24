@@ -52,7 +52,7 @@ cdui start
 | 旗標 | 環境變數 | 值 | 用途 |
 |------|----------|----|------|
 | `--gpu <choice>` | `CODEFYUI_GPU` | `auto` / `cu118` / `cu121` / `cu124` / `cu126` / `cu128` / `rocm6.1` / `rocm6.2` / `cpu` / `mps` / `skip` | 選擇 PyTorch wheel index。`auto` 透過 `nvidia-smi`／`rocm-smi`／Apple Silicon 自動偵測。`skip` 不指定 wheel index：已符合 `torch>=2.5` 的 torch 會保留；否則安裝依賴時會從 PyPI 安裝預設 wheel（Windows 上是純 CPU 版）。 |
-| `--dev` / `--no-dev` | `CODEFYUI_DEV` | `1` / `0` | 是否安裝 `[dev]` extra（pytest、httpx、httpx-ws）。`cdui test` 需要。預設關閉，互動式 `[y/N]` 提示也預設為否；貢獻者請加上 `--dev` 或設定 `CODEFYUI_DEV=1`。 |
+| `--dev` / `--no-dev` | `CODEFYUI_DEV` | `1` / `0` | 是否安裝 `[dev]` extra（pytest、pytest-asyncio、httpx、httpx-ws、tensorboard）。`cdui test` 需要。預設關閉，互動式 `[y/N]` 提示也預設為否；貢獻者請加上 `--dev` 或設定 `CODEFYUI_DEV=1`。 |
 | `--yes` / `-y` | — | — | 全部用預設值，不互動（CI／headless）。 |
 | `--lang <code>` | `CODEFYUI_LANG` | `en` / `zh`（環境變數也接受 `zh-TW`、`zh-HK`、`zh-CN`、`english`、`chinese`） | 旗標只對 `cdui install` 與 `cdui update` 有效；環境變數會設定每個 `cdui` 指令的輸出語言。`cdui plugin`、`project`、`packs` 與 `cache` 指令群組只認得 `zh` 本身：其他中文寫法會輸出英文；未設定此變數時，它們只依 `LANG`／`LC_ALL` 判斷，不看系統 locale。 |
 | — | `CODEFYUI_DIR` | path | 安裝目錄（預設 `~/CodefyUI`）。 |

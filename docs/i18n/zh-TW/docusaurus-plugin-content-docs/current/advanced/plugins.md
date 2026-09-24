@@ -66,7 +66,7 @@ cdui plugin sync --prune      # 順手清掉已不再發行的外掛 lockfile �
 
 ## 安全性——三個層級 {/* #security--three-tiers */}
 
-外掛包是在 CodefyUI 行程內執行的 Python。第三方外掛包安裝前，包內任何位置的每一個 `.py` 檔——`nodes/`、`examples/`、`tests/`、`docs/`、`assets/`，或其他任何子目錄——都會由 AST 閘門走訪，決定它可以 import 什麼。只有 `.git` 會略過，因為沒有任何 `import` 敘述能指名它。其他每個目錄，包括 `__pycache__`，都會掃描：外掛載入器可以從包內任何位置 import（節點檔裡寫 `from ..tests import helper` 是可行的），所以掃描範圍必須涵蓋載入器能觸及的所有位置。閘門分為三個層級，其中第 1 級需要特別說明。
+外掛包是在 CodefyUI 行程內執行的 Python。第三方外掛包安裝前，包內任何位置的每一個 Python 原始碼檔（`.py` 與 `.pyw`）——`nodes/`、`examples/`、`tests/`、`docs/`、`assets/`，或其他任何子目錄——都會由 AST 閘門走訪，決定它可以 import 什麼。只有 `.git` 會略過，因為沒有任何 `import` 敘述能指名它。其他每個目錄，包括 `__pycache__`，都會掃描：外掛載入器可以從包內任何位置 import（節點檔裡寫 `from ..tests import helper` 是可行的），所以掃描範圍必須涵蓋載入器能觸及的所有位置。編譯後的模組會直接拒絕而不掃描（[請附原始碼，不要附位元組碼](#ship-source-not-bytecode)），外掛的測試也適用與節點相同的規則（[測試也會被掃描](#tests-are-scanned-too)）。閘門分為三個層級，其中第 1 級需要特別說明。
 
 | 層級 | 外掛如何取得 | 涵蓋範圍 |
 |------|----------------------|----------------|
@@ -173,6 +173,28 @@ $ cdui plugin install alice/metric-logger
 這項拒絕反映實際掃描限制，而不是政策偏好。`.pyc` 必須反編譯才能掃描，編譯好的擴充模組則無法進行 AST 掃描。若允許這些檔案，就會 import 未經閘門檢查的程式碼。先前的行為正是如此：若外掛包的 `nodes/` 只有 `helper.pyc` 而沒有 `helper.py`，伺服器啟動時仍會以完整權限 import；不必宣告能力、不必使用 `--trust-author`，也不會先經過掃描。
 
 編譯快取不受影響。CPython 產生的快取路徑為 `__pycache__/<name>.cpython-311.pyc`，其檔名 stem 不是合法識別字，無法由 `import` 敘述指名，因此會被略過。攻擊者提供的 `__pycache__/payload.pyc` 可以被指名，所以會被拒絕。
+
+### 測試也會被掃描 {/* #tests-are-scanned-too */}
+
+掃描讀取 `tests/` 時套用的 `[security]` 授權與 `nodes/` 相同，所以只要有一個測試 import `sys`、`os` 或 `pathlib`，整個外掛就無法安裝。為了測試而授權某個模組並不划算，因為授權同樣適用於節點程式碼。請把測試寫成完全不需要授權：
+
+- 在 manifest 旁放一個 `pytest.ini`，把外掛根目錄加入 import 路徑，再從 `nodes` import 各個節點：
+
+  ```ini
+  [pytest]
+  pythonpath = .
+  testpaths = tests
+  ```
+
+  ```python
+  from nodes.example_node import ExampleNode
+  ```
+
+- 用單純的 `open()` 讀檔，它不需要任何授權；範例檔請逐一列出檔名，不要用 `pathlib` 或 `glob` 走訪目錄。
+
+`cdui plugin new` 產生的就是這套設定。舊版產生的骨架帶有一個 `tests/conftest.py`，它用 `sys` 偽造 `cdui_plugins.<id>` 套件；掃描會拒絕它，而且任何授權都無濟於事，因為其中的 `setattr` 呼叫在每一級都會被拒絕。請改用上面的設定，並一併修改每個測試的 import：`from cdui_plugins.my_plugin.nodes.example_node import ExampleNode` 要改成 `from nodes.example_node import ExampleNode`。舊的 import 依賴那個 conftest，少了它，pytest 連收集測試都會失敗。`cdui plugin link` 與 `cdui plugin dev` 會跳過掃描，所以這類檔案通常要等到有人安裝已發布的 repository 時才會被發現。
+
+拒絕訊息會以檔案在外掛中的路徑與行號指出檔案，例如 `tests/conftest.py, line 12: Importing 'sys' is not allowed in this file: ...`。若檔案在 `nodes/` 之外，訊息還會說明為什麼讀取這個檔案，並附上這一節英文版的連結。訊息仍會指出模組需要哪個能力，但不會叫你在 `[security]` 宣告它，也不會叫你用 `--trust-author` 安裝。若沒有任何授權能讓檔案通過，訊息會直接說明，並指出每一級都會拒絕的那一行。
 
 ### 這不是什麼 {/* #what-this-is-not */}
 
@@ -296,7 +318,7 @@ cdui plugin new my-plugin          # 純後端骨架
 cdui plugin new my-plugin --ui     # 另含一個接好 SDK 的 React 前端
 ```
 
-它會產生 manifest、一個範例節點、一個測試（內含 `cdui_plugins.<id>` 命名空間 shim，讓本地 `pytest` 可直接執行），並在加上 `--ui` 時產生一個 Vite + React 的 `ui/`，其 `src/sdk/` 即為型別化的外掛 SDK。外掛會建立在 `./my-plugin/`；用下方的 `cdui plugin dev` 連結後即可開始編輯。使用 `--ui` 且 id 含連字號時，建置前請先改一行：`ui/src/index.tsx` 將範例節點的 renderer 註冊為 `my_plugin:Example`，但節點型別會保留連字號（`my-plugin:Example`，參閱 [manifest 欄位參考](#manifest-reference)的 `id` 列）；註冊在錯誤型別上的 renderer 永遠不會掛載。
+它會產生 manifest、一個範例節點、一個由 `pytest` 從外掛根目錄執行的測試（參閱[測試也會被掃描](#tests-are-scanned-too)），並在加上 `--ui` 時產生一個 Vite + React 的 `ui/`，其 `src/sdk/` 即為型別化的外掛 SDK。外掛會建立在 `./my-plugin/`；用下方的 `cdui plugin dev` 連結後即可開始編輯。
 
 若需更完整的參考，可 fork **[官方外掛模板](https://github.com/CodefyUI/CodefyUI-Plugin-Official)**——一個可運作、採 MIT 授權的外掛，包含兩個範例節點、一張範例圖、一套測試，以及一份完整註解的 manifest。它的 README 逐欄解說每個欄位與 AST 安全閘門。型錄中的名稱是 `official-template`，可以直接按名稱安裝。
 

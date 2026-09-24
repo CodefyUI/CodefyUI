@@ -2,6 +2,10 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { createRef, act } from 'react';
 import { render, screen, fireEvent, waitFor, within } from '@testing-library/react';
 import { SettingsPopover } from './SettingsPopover';
+import { ToolbarGlobalActions } from './ToolbarGlobalActions';
+import { PackCenterModal } from '../PackCenter/PackCenterModal';
+import { PluginCenterModal } from '../PluginCenter/PluginCenterModal';
+import { DialogContainer } from '../shared/DialogContainer';
 import { useTabStore } from '../../store/tabStore';
 import { useUIStore } from '../../store/uiStore';
 import { useToastStore } from '../../store/toastStore';
@@ -1222,5 +1226,140 @@ describe('SettingsPopover', () => {
     expect(screen.getByText('Execution')).toBeInTheDocument();
     expect(screen.getByText('Editor')).toBeInTheDocument();
     await waitFor(() => expect(vi.mocked(fetchDevices)).toHaveBeenCalled());
+  });
+
+  // ── Focus after a center opened from here closes (#490) ────────────
+
+  describe('focus after a center opened from here closes (#490)', () => {
+    // Opening a center closes this popover, and the pressed button goes with
+    // it. A center gives focus back on close only to an element still on the
+    // page, so focus fell to the page body, and a keyboard user started over
+    // from the top of the page.
+
+    /**
+     * The toolbar's own Settings button and popover, with both centers. Waits
+     * for what the popover reads as it mounts and opens (Codex status,
+     * devices, server health) to land, so those updates happen inside the
+     * test rather than after it has ended, outside act().
+     */
+    async function openSettings(): Promise<HTMLElement> {
+      render(
+        <>
+          <ToolbarGlobalActions plugins={false} />
+          <PackCenterModal />
+          <PluginCenterModal />
+        </>,
+      );
+      const settings = screen.getByRole('button', { name: 'Settings' });
+      settings.focus();
+      fireEvent.click(settings);
+      await waitFor(() => expect(vi.mocked(fetchDevices)).toHaveBeenCalled());
+      return settings;
+    }
+
+    /** A keyboard press: the button holds focus when it is activated. */
+    function press(button: HTMLElement) {
+      button.focus();
+      fireEvent.click(button);
+    }
+
+    it('returns to the Settings button when the Package Center closes', async () => {
+      const settings = await openSettings();
+      press(screen.getByRole('button', { name: 'Open' }));
+
+      expect(screen.queryByRole('dialog', { name: 'Settings' })).toBeNull();
+      const center = screen.getByRole('dialog', { name: 'Package Center' });
+      expect(center.contains(document.activeElement)).toBe(true);
+      await waitFor(() => expect(usePackStore.getState().loading).toBe(false));
+
+      fireEvent.click(screen.getByRole('button', { name: 'Close Package Center' }));
+      expect(screen.queryByRole('dialog', { name: 'Package Center' })).toBeNull();
+      expect(document.activeElement).toBe(settings);
+    });
+
+    it('returns to the Settings button when the Plugin Center closes', async () => {
+      const settings = await openSettings();
+      press(screen.getByRole('button', { name: 'Open Plugin Center' }));
+
+      const center = screen.getByRole('dialog', { name: 'Plugin Center' });
+      expect(center.contains(document.activeElement)).toBe(true);
+      await waitFor(() => expect(usePluginStore.getState().loading).toBe(false));
+
+      fireEvent.click(screen.getByRole('button', { name: 'Close Plugin Center' }));
+      expect(screen.queryByRole('dialog', { name: 'Plugin Center' })).toBeNull();
+      expect(document.activeElement).toBe(settings);
+    });
+
+    it('returns there from the GPU line\'s Package Center link too', async () => {
+      seedPacks([], { gpu: IDLE_GPU });
+      const settings = await openSettings();
+      press(within(rowFor('Compute device')).getByRole('button', { name: 'Package Center' }));
+
+      expect(screen.getByRole('dialog', { name: 'Package Center' })).toBeInTheDocument();
+      await waitFor(() => expect(usePackStore.getState().loading).toBe(false));
+
+      fireEvent.click(screen.getByRole('button', { name: 'Close Package Center' }));
+      expect(document.activeElement).toBe(settings);
+    });
+
+    it('returns to the Settings button when Escape closes the popover from inside it', async () => {
+      const settings = await openSettings();
+      // A control inside, as a keyboard user reaches it with Tab.
+      const inside = screen.getByRole('button', { name: 'Record node outputs' });
+      inside.focus();
+      fireEvent.keyDown(inside, { key: 'Escape' });
+
+      expect(screen.queryByRole('dialog', { name: 'Settings' })).toBeNull();
+      expect(document.activeElement).toBe(settings);
+    });
+
+    it('leaves focus where it is when Escape comes from outside the popover', async () => {
+      // The popover is no focus trap: Tab walks out of it into the page, and
+      // Escape then closes it without pulling focus back.
+      await openSettings();
+      const outside = screen.getByRole('button', { name: 'Font size' });
+      outside.focus();
+      fireEvent.keyDown(outside, { key: 'Escape' });
+
+      expect(screen.queryByRole('dialog', { name: 'Settings' })).toBeNull();
+      expect(document.activeElement).toBe(outside);
+    });
+
+    it('returns to the Settings button when Create segment closes the popover', async () => {
+      setupTab({
+        nodes: [
+          { id: 'n1', selected: true, position: { x: 10, y: 0 } },
+          { id: 'n2', selected: true, position: { x: 99, y: 0 } },
+        ],
+      });
+      const settings = await openSettings();
+      press(screen.getByRole('button', { name: 'Create segment' }));
+
+      expect(useTabStore.getState().tabs[0].segmentGroups).toHaveLength(1);
+      expect(screen.queryByRole('dialog', { name: 'Settings' })).toBeNull();
+      expect(document.activeElement).toBe(settings);
+    });
+
+    it('leaves Escape to a confirm the popover raised, and stays open under it', async () => {
+      // Reset asks first. One press closes one window: without this, it
+      // closed the popover too, and focus fell to the page body with it.
+      mockedResetWeights.mockClear();
+      render(
+        <>
+          <ToolbarGlobalActions plugins={false} />
+          <DialogContainer />
+        </>,
+      );
+      fireEvent.click(screen.getByRole('button', { name: 'Settings' }));
+      const reset = screen.getByRole('button', { name: 'Reset' });
+      press(reset);
+      await waitFor(() => expect(useDialogStore.getState().active).not.toBeNull());
+
+      fireEvent.keyDown(document.activeElement!, { key: 'Escape' });
+      await waitFor(() => expect(useDialogStore.getState().active).toBeNull());
+      expect(screen.getByRole('dialog', { name: 'Settings' })).toBeInTheDocument();
+      expect(document.activeElement).toBe(reset);
+      expect(mockedResetWeights).not.toHaveBeenCalled();
+    });
   });
 });

@@ -5,7 +5,7 @@
 
 from __future__ import annotations
 
-from cdui_plugins.{{plugin_snake}}.nodes.example_node import ExampleNode
+from nodes.example_node import ExampleNode
 
 
 def test_example_node_greets_by_name():

@@ -142,6 +142,18 @@ function nameRefusalMessage(
         ? null
         : t('toolbar.export.name.reservedDevice', { reserved });
     }
+    case 'name_reserved_character': {
+      const character = field(detail, 'character');
+      return character === null
+        ? null
+        : t('toolbar.export.name.reservedCharacter', { character });
+    }
+    case 'name_too_long': {
+      const limit = detail.limit;
+      return typeof limit === 'number'
+        ? t('toolbar.export.name.tooLong', { limit })
+        : null;
+    }
     case 'preset_file_exists': {
       const filename = field(detail, 'filename');
       return filename === null

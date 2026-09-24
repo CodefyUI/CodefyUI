@@ -15,7 +15,9 @@ from __future__ import annotations
 import pytest
 
 from app.config import settings
+from app.core import plugin_loader
 from app.core.node_registry import registry
+from app.core.preset_registry import preset_registry
 
 
 @pytest.fixture
@@ -23,22 +25,35 @@ def custom_nodes_dir(tmp_path, monkeypatch):
     """Redirect settings.CUSTOM_NODES_DIR at a temp dir for each test.
 
     A SUCCESSFUL upload calls ``_reload_all()`` -> ``rediscover_all()``,
-    which clears and rebuilds the process-global node registry from whatever
-    ``settings.CUSTOM_NODES_DIR`` points at *right then*. That mutation
-    outlives ``monkeypatch``, which only reverts the setting on teardown, not
-    the registry state built while it pointed at this temp dir -- so a test
-    here that reaches the success path wipes real custom nodes (e.g.
-    ``AddScalar`` from ``app/custom_nodes/example_custom_node.py``) out of
-    the registry for every test that runs afterward in the same session.
-    Repair it on teardown the same way conftest.py's ``_ensure_registry_intact``
-    repairs the built-in/plugin side.
+    which clears and rebuilds the process-global node and preset registries
+    from whatever the settings point at *right then*. That mutation outlives
+    ``monkeypatch``, which only reverts the setting on teardown, not the
+    registry state built while it pointed at this temp dir -- so a test here
+    that reaches the success path wipes real custom nodes (e.g. ``AddScalar``
+    from ``app/custom_nodes/example_custom_node.py``) out of the registry for
+    every test that runs afterward in the same session.
+
+    Both registries are therefore put back exactly as they were. Rediscovering
+    the real directory is not enough since #519: a node uploaded here now
+    really registers, and ``Ok`` below, which has no ports, would break every
+    later ``GET /api/nodes`` in the session.
     """
     d = tmp_path / "custom_nodes"
     d.mkdir()
-    real_dir = settings.CUSTOM_NODES_DIR
     monkeypatch.setattr(settings, "CUSTOM_NODES_DIR", d)
-    yield d
-    registry.discover(real_dir, "app.custom_nodes")
+    # The rediscovery would also re-import every pack in this machine's real
+    # lockfile; CI has none, and neither do these tests.
+    monkeypatch.setattr(plugin_loader, "load_lockfile",
+                        plugin_loader.empty_lockfile)
+    nodes = dict(registry._nodes)
+    presets = dict(preset_registry._presets)
+    try:
+        yield d
+    finally:
+        registry._nodes.clear()
+        registry._nodes.update(nodes)
+        preset_registry._presets.clear()
+        preset_registry._presets.update(presets)
 
 
 async def test_upload_rejects_numpy_dump_to_an_arbitrary_path(test_client, custom_nodes_dir):
@@ -120,3 +135,42 @@ async def test_upload_rejects_the_plugins_own_method_sharing_a_denied_name(
     )
     assert resp.status_code == 400
     assert not (custom_nodes_dir / "ok.py").exists()
+
+
+@pytest.mark.parametrize("filename", ["__init__.py", "__main__.py"])
+async def test_upload_refuses_a_name_kept_for_system_files(
+    test_client, custom_nodes_dir, filename
+):
+    """The manager hides every name starting with ``__`` and refuses to
+    delete one, so an upload under such a name could never be seen or
+    removed from the UI. ``__init__.py`` is the one that did damage: in the
+    default configuration this directory IS the ``app.custom_nodes`` package,
+    and the upload answered 200 and replaced its tracked ``__init__.py``."""
+    seeded = custom_nodes_dir / filename
+    seeded.write_bytes(b"# seed\n")
+
+    resp = await test_client.post(
+        "/api/custom-nodes/upload",
+        files={"file": (filename, b"x = 1\n", "text/x-python")},
+    )
+    assert resp.status_code == 400, resp.text
+    assert "'__'" in resp.json()["detail"]
+    assert seeded.read_bytes() == b"# seed\n"
+
+
+@pytest.mark.parametrize("filename", ["__init__.py", "__helper.py.disabled"])
+async def test_toggle_refuses_a_name_kept_for_system_files(
+    test_client, custom_nodes_dir, filename
+):
+    """As delete does. Disabling ``__init__.py`` renamed the package's own
+    file, and the list hides ``__`` names, so it could not be turned back on
+    from the UI."""
+    seeded = custom_nodes_dir / filename
+    seeded.write_bytes(b"# seed\n")
+
+    resp = await test_client.post("/api/custom-nodes/toggle",
+                                  json={"filename": filename})
+
+    assert resp.status_code == 400, resp.text
+    assert resp.json()["detail"] == "Cannot enable or disable system files"
+    assert sorted(p.name for p in custom_nodes_dir.iterdir()) == [filename]

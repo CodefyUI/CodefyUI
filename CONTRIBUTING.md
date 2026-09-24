@@ -132,7 +132,7 @@ cd CodefyUI
 
 | Flag | Effect |
 |---|---|
-| `--dev` / `--no-dev` | install the `[dev]` extra (pytest, httpx, httpx-ws, tensorboard) |
+| `--dev` / `--no-dev` | install the `[dev]` extra (pytest, pytest-asyncio, httpx, httpx-ws, tensorboard) |
 | `--gpu auto` | detect your driver and pick the matching PyTorch wheel |
 | `--gpu cpu` \| `cu118` \| `cu121` \| `cu124` \| `cu126` \| `cu128` \| `rocm6.1` \| `rocm6.2` \| `mps` \| `skip` | pick the wheel yourself; `skip` leaves an existing torch alone |
 | `--yes` / `-y` | non-interactive; same as `--gpu auto --no-dev` |
@@ -220,9 +220,12 @@ cd backend && uv lock --check
 
 # Repository root -- if you edited frontend/src/plugins/contract.ts. Copies it
 # into the `cdui plugin new` template (ui/src/sdk/types.ts); the backend suite
-# fails until the copy matches. Refresh the template repository's copy
-# (CodefyUI-Plugin-Official) by hand.
+# fails until the copy matches. With --template, the second command checks
+# the SDK copy in a local checkout of the template repository
+# (CodefyUI-Plugin-Official); drop --check to write it. The release checklist
+# runs that check as well (.github/RELEASING.md, step 4).
 python scripts/sync_plugin_sdk.py
+python scripts/sync_plugin_sdk.py --template ../CodefyUI-Plugin-Official --check
 
 # Frontend -- if you touched frontend/. `cdui test` covers `pnpm test`;
 # these are the type-check and build gates it does not run.
@@ -235,6 +238,8 @@ Two notes on the frontend commands:
 
 - **`tsc -b`, not `tsc --noEmit`.** `frontend/tsconfig.json` is a solution-style config with `"files": []` and project references, so `tsc --noEmit` against it checks **zero files** and passes no matter what is broken. Build mode follows the references and actually type-checks `src/`.
 - **`pnpm build` includes the contrast gate.** The build script is `node scripts/check-contrast.mjs && tsc -b && vite build` — the first step re-derives every WCAG contrast relationship claimed by `frontend/src/styles/tokens.css` and fails the build if a token pair drops below threshold. Run it alone with `pnpm contrast` when you are editing colours.
+
+**`pnpm test` also fails when a test file prints more act() warnings than before.** React prints "An update to X inside a test was not wrapped in act(...)" when a test lets a state update run outside `act()`. Nothing failed on these warnings, and the reporter vitest picks when an AI coding agent runs it does not print them, so they grew unseen; the baseline started at 1,160 in 39 test files. `frontend/scripts/act-warnings.mjs` counts them per test file, each distinct warning once per test, against `frontend/scripts/act-warnings.baseline.json`; a file it does not list is allowed none. A failure names each test in the file that warns and the components that updated; `pnpm exec vitest run <file> --reporter=verbose` prints the warnings in full. Wrap the update in `act()`, or await what the component does next (`findBy...`, `waitFor`). When a file's count goes down, `pnpm test:act-baseline` writes the lower number; it never raises one.
 
 ### Opt-in checks
 
@@ -256,7 +261,7 @@ There is no frontend linter yet. That is a bigger argument because it drags a fo
 - **`backend-test.yml`** runs the whole suite on Python 3.10, 3.11 and 3.12 on ubuntu, **plus one Windows job on 3.12**, plus a job on 3.11 that runs the suite against a built `frontend/dist` (the SPA routes are registered only when a build exists, core#285), plus `uv lock --check`, a smoke import (`from app.main import app`) that catches import-time syntax errors, and `ruff check`. The Windows job is not decoration: CPython 3.12 replaced `os.path.exists` / `isdir` / `isfile` / `islink` with `nt` C fast paths **on Windows only**, and `ntpath` guards that behind `try: from nt import ... except ImportError:` — so on ubuntu the fallback always wins and no Python version in an ubuntu-only matrix can ever see the difference (core#258). If you change anything that touches paths, processes or file locking, expect Windows to have an opinion.
 - **`byte-scan.yml`** runs `scripts/check_control_bytes.py` over every tracked file on every PR, with no path filter.
 - **`frontend-build.yml`** runs install, `tsc -b`, `pnpm build`, a `dist/` sanity check, then `pnpm test` — on every pull request, and on pushes to `main` that touch `frontend/**`, `examples/**` or `backend/tests/fixtures/**`. Its build step also fails when Vite prints a chunk-size warning ("Some chunks are larger than 500 kB") or a circular-chunk warning, which a local `pnpm build` only prints.
-- **No workflow builds the docs site on a pull request.** `docs-deploy.yml` builds `docs/` only after a merge to `main`, so a broken link shows up there as a failed deploy. Build it yourself (see [Documentation and translations](#documentation-and-translations)).
+- **`docs-build.yml`** builds the docs site in both languages on every pull request, with the same install and `pnpm build` that `docs-deploy.yml` runs after a merge to `main`, and deploys nothing. A broken link, a broken anchor or an MDX error therefore fails a check before the merge instead of the deploy after it.
 
 ### Tests are required
 
@@ -309,6 +314,16 @@ Detail is welcome. Under-explaining costs a review round trip; over-explaining c
 
 A pull request that changes behaviour adds an entry under `## [Unreleased]` in `CHANGELOG.md`, in the subsection that fits (`### Added`, `### Changed`, `### Fixed`, `### Removed`, `### Security`, `### Internal`): a bullet that opens with a bold sentence saying what changed, followed by prose on why. Refer to an issue as `[#NNN]` and define that link at the bottom of the file. Expect a conflict in this file when you merge `main`.
 
+### Review follow-ups
+
+Items a review defers are not saved up for a clean-up batch. Saving them for one is how review follow-ups became a backlog here before, and the pull request that finally clears such a batch touches many unrelated files at once and is hard to review.
+
+- **File them by area.** One issue collects the small, independent leftovers of one area or one review, numbered, each with the file and line, what is wrong and the fix, so that any one item can be done on its own.
+- **Fold each item into the next pull request that touches its file,** and name the item in the body (`#NNN item 2`). The items of one issue usually land in different pull requests.
+- **Close the issue with the pull request that lands its last item.** A pull request that lands only some of them leaves the issue open, as [PR bodies](#pr-bodies) says.
+
+An item that someone new to the code could do from the issue alone also gets the `good first issue` label.
+
 ---
 
 ## House style
@@ -341,7 +356,19 @@ The app ships English and Traditional Chinese. New user-facing text — node des
 
 Read the [Architecture](https://docs.codefyui.com/advanced/architecture) page first. The single most important thing to know is that CodefyUI is **backend-authoritative**: `GET /api/nodes` returns every node definition and one React component (`BaseNode`) can render any of them, so adding a node is a backend-only change.
 
-Browse the [issue tracker](https://github.com/CodefyUI/CodefyUI/issues) for something to pick up. If an issue is not clear, ask in a comment before writing code — a question costs a day, a wrong implementation costs a week.
+Browse the [issue tracker](https://github.com/CodefyUI/CodefyUI/issues) for something to pick up; issues labelled `good first issue` are small and self-contained. If an issue is not clear, ask in a comment before writing code — a question costs a day, a wrong implementation costs a week.
+
+### How open issues are ordered
+
+Work is ordered by one question: **can a user hit it, and can they tell that they did?**
+
+1. A wrong result that looks right comes first. A wrong answer that announces itself costs ten minutes; one that looks right costs an afternoon, and in a classroom it teaches the wrong lesson.
+2. A visible failure comes next. It announces itself, but it still costs time, and "the tool is broken" is what people remember.
+3. Safety nets (required checks, tests, the linter) come after that, then visible polish.
+
+CodefyUI runs on companies' shared servers as well as on students' laptops, so a defect that only bites on a shared server, such as a gap in the plugin gate or a missing upload limit, is not ranked lower for being rare on a single laptop.
+
+The `priority:P0` to `priority:P9` labels do not give a usable order. P1 to P9 name planning waves (P1 is the Run Service wave, P9 the review follow-up backlog). P0 reads "Correctness fixes - do first", but it has also gone on issues that are not correctness fixes. Sorting on any of them therefore says nothing about what to do first. A few open issues still carry one.
 
 ---
 

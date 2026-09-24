@@ -108,4 +108,16 @@ export const useI18n = create<I18nState>((set, get) => ({
   },
 }));
 
+// The page's language is the UI's (#504). A screen reader picks its voice from
+// `<html lang>`, so a page that always said "en" had the Chinese UI read out
+// with English pronunciation (WCAG 3.1.1); Chrome also picks its CJK fallback
+// font from it. Set here rather than where a locale is chosen, so the first
+// load, the language menu, a workspace import and a direct `setState` are all
+// covered. The locale code is used as is: `zh-TW` is valid BCP 47 and the
+// language-plus-region form screen readers pick a voice by.
+document.documentElement.lang = useI18n.getState().locale;
+useI18n.subscribe((state, prev) => {
+  if (state.locale !== prev.locale) document.documentElement.lang = state.locale;
+});
+
 export type { TranslationKey };

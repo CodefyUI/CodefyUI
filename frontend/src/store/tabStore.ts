@@ -2218,9 +2218,6 @@ export function documentChanged(prev: TabState, next: TabState): boolean {
   return false;
 }
 
-/** Test seam: the bump rule, without having to drive a store transition. */
-export const _documentChangedForTesting = documentChanged;
-
 /**
  * Advance `revision` on every tab whose document changed in this transition.
  *

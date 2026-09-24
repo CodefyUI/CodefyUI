@@ -120,6 +120,9 @@ def started(tmp_path, monkeypatch):
     monkeypatch.setattr(dev, "_print_uninstalled_builtin_packs", lambda: None)
     monkeypatch.setattr(dev, "_local_ips", lambda: ["10.0.0.9"])
     monkeypatch.setattr(dev, "_server_healthy", lambda *a, **kw: True)
+    # The pre-launch port check would otherwise bind-probe real ports (8000
+    # and the rest), and a server running on this machine would refuse start.
+    monkeypatch.setattr(dev, "_server_already_running", lambda host, port: None)
     # `t()` reads this global at call time and it is derived from the
     # developer's locale. Pin it so assertions are about behaviour, not about
     # which machine ran them.
@@ -604,23 +607,25 @@ def test_the_re_execd_child_does_not_overwrite_the_recording(monkeypatch,
 
 
 def _reexeced(monkeypatch, *, console: bool) -> dict:
-    """Run `_reexec`'s Windows branch with the console probe pinned."""
+    """Run `_reexec`'s Windows branch with the console probe pinned and a
+    fake child in place of `subprocess.Popen`."""
     seen: dict = {}
 
-    class _Done:
-        returncode = 0
+    class _Child:
+        def wait(self):
+            return 0
 
-    def _run(cmd, **kwargs):
+    def _popen(cmd, **kwargs):
         seen["cmd"] = list(cmd)
         seen["kwargs"] = kwargs
-        return _Done()
+        return _Child()
 
     monkeypatch.setattr(sys, "platform", "win32")
     # POSIX has no such constant, and this test states the branch rather than
     # inheriting it from the machine it runs on.
     monkeypatch.setattr(dev.subprocess, "CREATE_NO_WINDOW", 0x08000000,
                         raising=False)
-    monkeypatch.setattr(dev.subprocess, "run", _run)
+    monkeypatch.setattr(dev.subprocess, "Popen", _popen)
     monkeypatch.setattr(dev, "_has_console_window", lambda: console)
 
     with pytest.raises(SystemExit) as exc:

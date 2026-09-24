@@ -114,7 +114,19 @@ jobs:
       - name: Stop backend
         if: always() && env.BACKEND_PID != ''
         shell: bash
-        run: kill "$BACKEND_PID" 2>/dev/null || true
+        run: |
+          kill "$BACKEND_PID" 2>/dev/null || true
+          # Wait for it to exit (bounded): the next step starts `cdui start`
+          # on the same install, and a server still shutting down holds :8000
+          # and the run database's instance lock, so the new one would be
+          # refused at once.
+          for _ in $(seq 1 60); do
+            kill -0 "$BACKEND_PID" 2>/dev/null || exit 0
+            sleep 0.5
+          done
+          echo "::warning::backend (pid $BACKEND_PID) was still running after 30s; killing it"
+          kill -9 "$BACKEND_PID" 2>/dev/null || true
+          sleep 1
 
       # Separately exercise the cdui launcher stub installed by install.sh.
       # The previous step ran uvicorn directly, which would mask a broken

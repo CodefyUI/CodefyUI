@@ -22,29 +22,53 @@ received — each links to the release it was published as.
 
 ## [Unreleased]
 
-The Auto Layout menu in the toolbar opens for the first time. The split
-button had clipped it away since the button was added, so Layout All and
-Layout Selected could not be picked; now they can, and every toolbar menu
-closes when you press the canvas. A node that writes text shows the last
-lines of what it has written while it runs, instead of a dot and
-**Running...**, and the summary above a git diff lists a setting changed in
-a placed preset's Configure window.
+The Auto Layout menu in the toolbar opens for the first time, and every
+toolbar menu closes when you press the canvas. On an empty tab, a node
+dropped on the example gallery lands on the canvas, Delete works on the
+first press after a shifted key such as `?`, and a Shift+drag box selection
+no longer selects page text, so Ctrl+C copies the nodes. A node that writes
+text shows its latest lines on its card while it runs, and a long LLMChat
+answer keeps moving there to its end without filling the run database. The
+summary above a git diff lists a setting changed in a placed preset's
+Configure window.
+
+In Traditional Chinese the page declares its language, so a screen reader
+reads it with a Chinese voice, and a running card's epoch, loss and
+embedding captions are in Chinese. The Custom Node Manager keeps keyboard
+focus through Enable, Disable and Delete, and a running tab says so to a
+screen reader. `cdui run` now prints each node's progress, and on Windows
+Ctrl+C ends a `cdui` command with exit code 130. LogisticRegression and
+SVMClassifier stop passing arguments that scikit-learn is removing.
 
 For plugin authors, `api.http.fetch` no longer sends the session token to
 another server: a POST, PUT, PATCH or DELETE to another origin now rejects,
 so a plugin that posts to a third-party API has to use `window.fetch` for
-it. A plugin's `auto_layout` moves the view as the toolbar's Layout All
-does, and the plugin routes answer a plugin that is not installed with the
-same `not_installed` code, so the Plugin Center says so in the user's
-language.
+it. A plugin made with `cdui plugin new` now passes the install scan, a
+refused file's message names the line and gives advice that works, and the
+template repository's SDK copy is up to date at apiVersion 5. A plugin's
+`auto_layout` moves the view as the toolbar's Layout All does, and the
+plugin routes answer a plugin that is not installed with the same
+`not_installed` code, so the Plugin Center says so in the user's language.
 
-On a server that a class or a team shares, two runs that use the same
-sentence model no longer encode on it at once, which could crash or embed
-text at the other run's token cap. A NUL in a file name is refused instead
-of answering 500 with a traceback in the log, a failed token fetch while the
-server restarts no longer leaves saving broken until a reload, and a sweep
-cancel counts only the runs that finished.
+On a server that a class or a team shares, a second server on the same
+data now refuses to start, where it used to rewrite the session token and
+mark the running server's runs interrupted; two servers run from one
+install each need their own `CODEFYUI_USER_DATA_DIR` and
+`CODEFYUI_DB_PATH`. Two runs that use the same sentence model no longer
+encode on it at once, which could crash or embed text at the other run's
+token cap.
 
+An upload whose name Windows cannot store, such as `run 12:30.csv`, is
+refused with a 400 on every OS, where a Windows server answered 500 or
+replaced another file, and a custom nodes directory outside the install
+loads. A NUL in a file name is refused instead of answering 500, a failed
+token fetch while the server restarts no longer leaves saving broken until
+a reload, and a sweep cancel counts only the runs that finished.
+
+For contributors, every pull request builds the docs site in both
+languages, backend tests no longer overwrite the real session token, and a
+frontend test that adds React act() warnings fails CI. CONTRIBUTING.md says
+how open issues are ordered, and the Architecture page covers the frontend.
 Releases are checked too: a release PR with a half-promoted `CHANGELOG.md`
 fails, and Release Build refuses a tag that the file does not name or date
 on the tag's UTC day.
@@ -61,9 +85,9 @@ on the tag's UTC day.
   gets this by putting a `text` string in its progress dict. A new run no
   longer starts with the previous run's last frame on the card, and a frame
   too large for the server's 128 KB event cap no longer knocks the node out
-  of its running state or adds a "progress" line to the Log. Past that cap a
-  long LLMChat answer stops moving on the card until the node finishes; the
-  full answer is on its output.
+  of its running state or adds a "progress" line to the Log. A long LLMChat
+  answer keeps moving on the card until it ends ([#523]), and the full
+  answer is on its output.
 
 ### Changed
 
@@ -105,6 +129,57 @@ on the tag's UTC day.
   tab in the background forgets its pan and zoom, so the next visit fits its
   whole graph. A layout that moves nothing leaves the view alone, and the op
   shows no toast about unbound notes.
+- **A second server on the same data refuses to start instead of damaging
+  the running one** ([#529]). A server that finds another live one using
+  the same user data directory or run database, on any port, now stops
+  before it writes anything and logs one line naming that server's pid and
+  address. A hand-run uvicorn and `cdui start -f` then exit with code 3,
+  and a background `cdui start` exits 1 after printing the end of the
+  server log. Because uvicorn runs the whole server startup before it binds
+  the port, a second server used to rewrite `session.token`, after which
+  `cdui run`, `cdui project` and `cdui plugin install`'s reload got 403
+  from the running server until it was restarted, and to mark every
+  running and queued run in the shared database `interrupted` for good.
+  `cdui start` and `cdui dev` also check the address first, and exit 1
+  without launching anything when another program holds it or a CodefyUI
+  server already answers there. `cdui start -f` passes on the server's exit
+  status instead of ending in a launcher traceback.
+  `cdui start -- --workers N` is refused, and `WEB_CONCURRENCY` is dropped
+  with a warning, because CodefyUI serves from one process. A server that
+  crashed or was killed does not block the next start.
+
+  **Breaking** for two servers run from one install, which the
+  shared-instances page described as sharing one SQLite database: the
+  second now refuses to start. Give each its own `CODEFYUI_USER_DATA_DIR`
+  and `CODEFYUI_DB_PATH`.
+- **An upload whose name Windows cannot store is refused on every server,
+  and a custom nodes directory outside the install loads** ([#520],
+  [#519]). An upload of a data file, image, model or custom node is now
+  refused with a 400 that says what to change when its name holds
+  `\ : < > " | ? *` or a control character, is a Windows device name such
+  as `con.csv`, or is longer than 255 bytes of UTF-8; nothing on disk
+  changes. Linux and macOS servers refuse these names too, so a project's
+  files can always be moved to a Windows machine. On a Windows server they
+  answered 500 or were stored as another file: `a:b.csv` and `x\b.csv`
+  replaced `b.csv`, and `run 12:30.csv` disappeared into a hidden NTFS
+  stream. Downloads and deletes stay looser, so a file already stored under
+  such a name on Linux or macOS can still be reached: a lookup refuses a
+  control character on every server and the other characters only on a
+  Windows server, and a name too long for the volume answers 404 instead
+  of 500. Export as Subgraph refuses the same names for a subgraph and says
+  which character to take out, or that the name is too long. The Custom
+  Node Manager shows the server's reason for a refused upload instead of
+  "Upload failed: Bad Request", and a name starting with `__`, such as
+  `__init__.py`, can no longer be uploaded, enabled or disabled there. With
+  `CODEFYUI_CUSTOM_NODES_DIR` set outside the install, the nodes in that
+  directory now load at startup, after an upload and on every reload; the
+  manager listed them but the palette never had them, and a file named like
+  one in `backend/app/custom_nodes` loaded the repository's copy instead.
+  The setting is now documented.
+
+  **Breaking** on a Linux or macOS server: an upload named like `what?.csv`
+  or `run 12:30.csv`, which was stored before, now answers 400. Rename the
+  file and upload it again.
 
 ### Fixed
 
@@ -123,6 +198,58 @@ on the tag's UTC day.
   Settings closed on a press outside them, except on the canvas, which stops
   the press before it reaches the rest of the page. They now hear the press
   before the canvas can stop it.
+- **A node dropped on the empty tab's gallery lands on the canvas, and
+  Delete works after a shifted key** ([#526], [#501], [#506] item 3). On an
+  empty tab, a node, preset or example dropped on the example gallery is
+  now added where it was dropped, as on the canvas; the gallery showed a
+  no-drop cursor, and only the margin around it took a drop. After `?`,
+  Shift+L, Ctrl+Shift+Z or any shifted key whose Shift came up first, the
+  first Delete did nothing, because React Flow's Delete binding kept a
+  stale key. The canvas and the Model Architecture editor now handle Delete
+  themselves, under the same rules: nothing while you type in a field or
+  while a panel is open, and Backspace still does nothing. A Shift+press or
+  Shift+drag on the empty canvas no longer highlights text in the sidebar
+  and the tab bar, so Ctrl+C and Ctrl+V after a box selection copy and
+  paste the nodes instead of that text, and the press takes focus out of a
+  field such as the palette search, as a plain press does.
+- **A long LLMChat answer keeps moving on its card without filling the run
+  database** ([#523], [#525]). LLMChat stored one progress event per
+  streamed chunk, each holding the whole answer so far: 12.6 MB for a
+  16,000-character answer and 35.5 MB for 8,000 Chinese characters. Past
+  the event cap, about 131,000 English or 22,000 Chinese characters, the
+  card stayed on old text until the node finished. Its frames now come at
+  most twice a second and carry only the answer's last 1,000 characters,
+  which is all the card shows, and the last frame is the end of the answer,
+  also after Stop. The node's `text` output is still the whole answer.
+  TextGenerate and HFTextGenerate send the same tail. A custom node that
+  streams text should do the same with `progress_text_tail` and
+  `ProgressThrottle` from `app.core.loop_control`, as the custom-nodes page
+  now says. In the zh-TW interface a running card's captions are in
+  Chinese: epoch and loss on TrainingLoop and DiffusionTrainingLoop, in the
+  Results panel's words, and the embedding count on TextEmbedding and
+  WordVector. The zh-TW Training tab uses the same word for epoch. A custom
+  node's progress text still shows as the node sends it.
+- **A zh-TW page declares Chinese, the Custom Node Manager keeps keyboard
+  focus, and a running tab says it is running** ([#504], [#490] item 4,
+  [#506] item 2). In Traditional Chinese the page now declares
+  `lang="zh-TW"`, so a screen reader reads it with a Chinese voice instead
+  of English pronunciation, also after the language menu or a workspace
+  import changes the language. In the Custom Node Manager, focus stays on
+  **Enabled** or **Disabled** after a press, so a second press undoes it,
+  and after **Delete** it moves to the next file's Delete, the previous
+  file's, or **Upload .py**; the list no longer blanks to "Loading..."
+  after every action. A tab's accessible name ends in "running" while it
+  runs, where a run in a background tab was only a yellow dot. Closing the
+  Package Center or the Plugin Center opened from **Settings** returns
+  focus to the Settings button, as Escape or **Create segment** closing the
+  Settings popover now does, and Escape with its **Reset** confirm open
+  closes only the confirm. Two overlapping reads of the custom-node list
+  can no longer end on the older one, in the manager or in the sidebar's
+  **Custom & Plugins** tab, which also keeps its load error on screen
+  during a re-read. The manager's **Enabled** and **Delete** labels and the
+  Runs panel's **Delete** were under the 4.5:1 contrast WCAG AA asks for on
+  a hovered row; they use text colours now, and green and red stay on the
+  border.
 - **A failed token fetch no longer leaves saving broken until a reload**
   ([#482]). When the request that fetches the session token failed outright,
   for example while the server was restarting, or came back unreadable, the
@@ -140,6 +267,46 @@ on the tag's UTC day.
   line under the preset node, such as
   `train-pipeline: train_loop.epochs 5 -> 10`, with the same clipping and
   eight-line budget as any other parameter.
+- **LogisticRegression and SVMClassifier stop passing arguments
+  scikit-learn is removing** ([#524]). LogisticRegression's `penalty`
+  argument goes away in scikit-learn 1.10, expected around December 2026
+  for Python 3.12 and later, and LogisticRegression on scikit-learn 1.8
+  and SVMClassifier on 1.9 printed a FutureWarning on every run. From 1.8,
+  LogisticRegression now passes each option the way scikit-learn's
+  deprecation message prescribes (`l1_ratio=0.0` for l2, `l1_ratio=1.0`
+  for l1, `C=inf` for none), and `penalty` as before on older versions, so
+  l2, l1 and none fit the same model from scikit-learn 1.3 up.
+  SVMClassifier no longer passes `probability=False`, its default. Saved
+  graphs are unaffected: the `penalty` parameter and its three options are
+  unchanged. LogisticRegression now refuses, with its own message, a
+  `penalty` other than l2, l1 or none and a `C` that is not above 0, which
+  scikit-learn used to refuse itself. Its `penalty` hint names the solvers
+  it uses: saga for l1, lbfgs for l2 and none.
+- **`cdui run` prints each node's progress** ([#531]). The progress lines
+  had never printed since the command was added: it read the numbers from
+  the top level of an event, one level above where the server puts them,
+  and its tests built their events in the same wrong shape. Each progress
+  update now prints one line, counters first and then measurements, such
+  as `epoch 1`, `batch 69/938` and `loss=0.4539`; a training loop prints at
+  most two batch lines a second and one line per epoch. A count prints with
+  its total (`tokens 12/256`, `episode 3/10`), a validation batch reads
+  `val batch 5/40`, an embedding update prints `embedding 96/320` as its
+  card does, and a whole number prints in full instead of as `1.235e+06`.
+- **`cdui packs remove` prints an uninstall line that works in any shell,
+  and Ctrl+C ends a Windows command with exit code 130** ([#503], [#488]).
+  The `uv pip uninstall` line that `cdui packs remove` ends with now quotes
+  the interpreter path, as the plugin uninstall line already did. Unquoted,
+  Git Bash stripped the path's backslashes, and a space in the path, which
+  a user folder can have, split it in every shell. On Windows, Ctrl+C in a
+  `cdui` command that runs in the backend environment, such as `cdui run`,
+  `cdui packs`, `cdui start -f` or `cdui dev`, now ends with that command's
+  own exit code, 130 when Ctrl+C killed it outright, as the help text
+  documents; the launcher used to add a KeyboardInterrupt traceback of its
+  own and exit 0xC000013A, which a script reads as a crash. A command that
+  crashes exits with its own status, such as 0xC0000005, instead of
+  0xFFFFFFFF. Converting the GloVe word-vector table no longer fails when
+  an antivirus scanner, an indexer or a backup tool briefly holds the old
+  table open: the final move is retried for up to a second.
 - **Nodes that share a sentence model no longer crash or borrow each other's
   token cap** ([#485]). Every node and every run in the server process that
   uses the same sentence model on the same device shares one loaded model,
@@ -172,6 +339,25 @@ on the tag's UTC day.
   `cancelled + already_finished` is no longer always the number of variants
   that had a run. The harvest also gives no objective for an empty metric
   name, as retention already did.
+- **A plugin fresh from `cdui plugin new` installs, and a refused file gets
+  advice that works** ([#413], [#461]). The scaffold's test setup faked the
+  `cdui_plugins.<id>` package with `import sys`, which the install scan
+  refuses, so a new plugin could not be installed from its own repository.
+  It now ships a `pytest.ini` that puts the plugin root on the import path,
+  and its test imports `from nodes.example_node import ExampleNode`. With
+  `--ui`, the example node's custom body registers under the node's real
+  type, hyphens kept (`my-plugin:Example`), so it mounts whatever the id.
+  When the scan refuses a file, the message names its path in the plugin
+  and the line. For a file outside `nodes/` it says why the file was read,
+  suggests changing the file rather than declaring a grant, and links the
+  new "Tests are scanned too" section of the plugin docs, which also shows
+  how to move an older scaffold's tests over. It suggests a `[security]`
+  grant only when some grant would let the file through, so a test file is
+  no longer told to ask for `--trust-author`. For maintainers,
+  `scripts/sync_plugin_sdk.py --template <checkout>` checks the SDK copy in
+  a checkout of the template repository and brings it in step; that copy
+  had fallen three API versions behind, and [CodefyUI-Plugin-Official#5]
+  brought it to apiVersion 5.
 - **A graph that `workspace.openGraphs` refuses for the tab limit leaves the
   palette as it was** ([#416]). The call read each entry before it checked
   the 32-tab limit, and reading merges the presets a graph carries into the
@@ -194,6 +380,41 @@ on the tag's UTC day.
   `[Unreleased]` to hold no entries, before any draft release is made; run
   `python scripts/check_changelog.py --tag X.Y.Z` before `git push` to find
   out first. An ordinary PR that adds entries under `[Unreleased]` passes.
+- **Every pull request builds the docs site, CONTRIBUTING.md says how open
+  issues are ordered, and the Architecture page covers the frontend**
+  ([#399] gap 1, [#246], [#141]). A new workflow, `docs-build.yml`, builds
+  the docs in both languages on every pull request, so a broken link,
+  anchor or MDX page fails the check `docusaurus build (en + zh-TW)` before
+  the merge, instead of failing Docs Deploy after it and leaving the site
+  on its last good version. It has no path filter, so it can be made a
+  required check. CONTRIBUTING.md now says how open issues are ordered: a
+  wrong result that looks right first, then a visible failure, then safety
+  nets, then polish, and a defect that only bites on a shared server is
+  not ranked lower for being rare on one laptop. It also says that review
+  follow-ups are filed by area as numbered items and folded into the next
+  PR that touches their file. The Architecture page, in both languages,
+  follows an edit on the canvas to a run and the run's events back to the
+  canvas, and a plugin from install to the editor. The `--dev` extra's
+  package list in the README, the installation page and the line
+  `cdui install --dev` prints now names all five packages.
+- **Backend tests no longer overwrite the real session token, and a
+  frontend test that adds act() warnings fails CI** ([#538], part of
+  [#505]). Three test files start the real app, and every backend test run
+  overwrote the session token that `cdui` commands use to reach a running
+  `cdui start`, which then answered them with 403 until it was restarted.
+  The test session now uses its own temporary user-data directory, so no
+  test writes the real token, plugin lockfile, pack cache or Codex login,
+  and a run deletes its temporary directories when it ends, also after
+  `--collect-only` or Ctrl+C. `pnpm test` counts React act() warnings per
+  test file and fails when a file has more than
+  `frontend/scripts/act-warnings.baseline.json` allows, naming each test
+  that warns; the baseline is 1,132 warnings in 39 files, and
+  `pnpm test:act-baseline` lowers it after a clean-up and never raises it.
+  A test compares `THIRD_PARTY_NOTICES.md` with `frontend/package.json`
+  and `backend/pyproject.toml`, and the palette-summary check for
+  first-party packs reads three shapes of node file it used to miss and
+  checks the zh-TW catalogue against the packs. Clearing the existing act()
+  warnings is still open in [#505].
 
 ## [2.8.5] — 2026-09-22
 
@@ -4667,6 +4888,27 @@ Release candidates before 1.0.0 are on the
 [#483]: https://github.com/CodefyUI/CodefyUI/issues/483
 [#416]: https://github.com/CodefyUI/CodefyUI/issues/416
 [#462]: https://github.com/CodefyUI/CodefyUI/issues/462
+[#523]: https://github.com/CodefyUI/CodefyUI/issues/523
+[#529]: https://github.com/CodefyUI/CodefyUI/pull/529
+[#520]: https://github.com/CodefyUI/CodefyUI/issues/520
+[#519]: https://github.com/CodefyUI/CodefyUI/issues/519
+[#526]: https://github.com/CodefyUI/CodefyUI/issues/526
+[#501]: https://github.com/CodefyUI/CodefyUI/issues/501
+[#506]: https://github.com/CodefyUI/CodefyUI/issues/506
+[#525]: https://github.com/CodefyUI/CodefyUI/issues/525
+[#504]: https://github.com/CodefyUI/CodefyUI/issues/504
+[#490]: https://github.com/CodefyUI/CodefyUI/issues/490
+[#524]: https://github.com/CodefyUI/CodefyUI/issues/524
+[#531]: https://github.com/CodefyUI/CodefyUI/pull/531
+[#503]: https://github.com/CodefyUI/CodefyUI/issues/503
+[#488]: https://github.com/CodefyUI/CodefyUI/issues/488
+[#413]: https://github.com/CodefyUI/CodefyUI/issues/413
+[#461]: https://github.com/CodefyUI/CodefyUI/issues/461
+[CodefyUI-Plugin-Official#5]: https://github.com/CodefyUI/CodefyUI-Plugin-Official/pull/5
+[#399]: https://github.com/CodefyUI/CodefyUI/issues/399
+[#246]: https://github.com/CodefyUI/CodefyUI/issues/246
+[#538]: https://github.com/CodefyUI/CodefyUI/pull/538
+[#505]: https://github.com/CodefyUI/CodefyUI/issues/505
 [@oyea0801]: https://github.com/oyea0801
 [@latteine1217]: https://github.com/latteine1217
 [Unreleased]: https://github.com/CodefyUI/CodefyUI/compare/2.8.5...main

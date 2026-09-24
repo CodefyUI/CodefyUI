@@ -89,6 +89,19 @@ PROGRESS_MIN_INTERVAL_S = 0.5
 #: legitimately share one step. See ``run_service.scalar_metrics``.
 EVENT_BATCH = "batch"
 
+#: How much of a streamed text one progress frame carries: its END (#523).
+#: The node card shows at most the last ``LIVE_TEXT_TAIL_CHARS`` characters
+#: (1,000, ``frontend/src/components/Nodes/BaseNode.tsx``), so keep this at
+#: least that. A frame holding the whole text so far made the stored events
+#: grow with the square of the text, and past the 128 KiB event cap it
+#: reached the card without its text.
+PROGRESS_TEXT_TAIL_CHARS = 1000
+
+
+def progress_text_tail(text: str) -> str:
+    """The end of *text*, as much as one progress frame carries."""
+    return text[max(0, len(text) - PROGRESS_TEXT_TAIL_CHARS):]
+
 
 def _never_stop() -> bool:
     return False

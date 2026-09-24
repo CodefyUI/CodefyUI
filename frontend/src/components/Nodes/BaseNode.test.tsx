@@ -418,8 +418,8 @@ describe('BaseNode', () => {
     // hears that the node is running: the same string, off screen.
     expect(container.querySelector('[class*="statusRunningDot"]')).toBeNull();
     expect(screen.getByText('Running...').className).toContain('srOnly');
-    // Each frame carries the whole text so far, which can be huge: no tooltip
-    // repeats it, and no live region reads every frame aloud.
+    // A frame's text can be long (a custom node may send its whole text): no
+    // tooltip repeats it, and no live region reads every frame aloud.
     const footer = container.querySelector('[class*="statusStreaming"]') as HTMLElement;
     expect(footer).not.toBeNull();
     expect(footer.hasAttribute('title')).toBe(false);
@@ -526,6 +526,79 @@ describe('BaseNode', () => {
     expect(screen.queryByText('not shown')).toBeNull();
     // The bar keeps the footer it always had, not the text variant's.
     expect(container.querySelector('[class*="statusStreaming"]')).toBeNull();
+  });
+
+  it('lays out only the end of a text as long as the event cap lets through', () => {
+    // #523: a custom node that still sends its whole text on every frame can
+    // reach about 131,000 characters before the server drops the text.
+    const text = 'a line of streamed text\n'.repeat(5400) + 'THE-END';
+    const { container } = renderBody(
+      baseData({ executionStatus: 'running', progress: { text } as unknown as NodeProgress }),
+    );
+    const shown = container.querySelector('[class*="streamingText"]')?.textContent ?? '';
+    expect(shown.length).toBeLessThanOrEqual(1000);
+    expect(shown.endsWith('THE-END')).toBe(true);
+    expect(screen.getByText('Running...').className).toContain('srOnly');
+  });
+
+  // ── Running captions in the reader locale (#525) ─────────────────────────
+
+  it('words the epoch and loss captions in zh-TW', () => {
+    useI18n.setState({ locale: 'zh-TW' });
+    renderBody(
+      baseData({
+        executionStatus: 'running',
+        progress: { event: 'epoch', epoch: 2, total_epochs: 10, loss: 0.123456 },
+      }),
+    );
+    // The Results panel's words for the same two numbers.
+    expect(screen.getByText('輪次 2/10')).toBeInTheDocument();
+    expect(screen.getByText('損失：0.1235')).toBeInTheDocument();
+    expect(screen.queryByText(/Epoch|Loss/)).toBeNull();
+  });
+
+  it.each([
+    ['en', 'Embedding 32/100'],
+    ['zh-TW', '嵌入 32/100'],
+  ] as const)('words the embedding caption from its counts in %s', (locale, caption) => {
+    useI18n.setState({ locale });
+    renderBody(
+      baseData({
+        executionStatus: 'running',
+        progress: {
+          event: 'batch',
+          batch: 1,
+          total_batches: 4,
+          caption: 'embedding',
+          current: 32,
+          total: 100,
+          // The server's English caption, made different here so the test
+          // can tell which one the card shows.
+          text: 'server caption',
+        },
+      }),
+    );
+    expect(screen.getByText(caption)).toBeInTheDocument();
+    expect(screen.queryByText('server caption')).toBeNull();
+    expect(screen.getByText(locale === 'en' ? 'Running...' : '執行中...').className).toContain(
+      'srOnly',
+    );
+  });
+
+  it.each([
+    ['a caption this editor does not know', { caption: 'resizing', current: 1, total: 2 }],
+    ['counts that are not numbers', { caption: 'embedding', current: '32', total: 100 }],
+    ['no counts', { caption: 'embedding' }],
+    ['a custom node that sends plain text', {}],
+  ])('shows the frame text as sent for %s', (_label, fields) => {
+    useI18n.setState({ locale: 'zh-TW' });
+    renderBody(
+      baseData({
+        executionStatus: 'running',
+        progress: { event: 'batch', text: 'Embedding 32/100', ...fields },
+      }),
+    );
+    expect(screen.getByText('Embedding 32/100')).toBeInTheDocument();
   });
 
   it('renders the completed footer', () => {

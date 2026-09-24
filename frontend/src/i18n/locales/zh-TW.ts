@@ -55,6 +55,10 @@ const zhTW: Record<TranslationKey, string> = {
   'toolbar.export.name.escapesDir':
     '這個名稱會把檔案寫到預設組合資料夾外面，請用不含路徑的單純名稱。',
   'toolbar.export.name.fileExists': '已經有一個子圖存成 {filename}，請換一個名稱。',
+  'toolbar.export.name.reservedCharacter':
+    '子圖名稱不能包含「{character}」，Windows 不允許檔名使用這個字元。請改用文字、數字、空格、- 或 _。',
+  'toolbar.export.name.tooLong':
+    '子圖名稱太長，無法存成檔名（最多 {limit} 位元組，一個中文字占 3 個位元組）。請縮短名稱。',
   'toolbar.export.name.unknownRule':
     '伺服器不接受這個名稱（{code}），請改用文字、數字、空格、- 或 _ 組成的單純名稱。',
   'toolbar.exportPython': '匯出為 Python',
@@ -199,6 +203,10 @@ const zhTW: Record<TranslationKey, string> = {
   // Node
   'node.opt': '可選',
   'node.running': '執行中...',
+  // 與結果面板同詞：「輪次」、「損失」。
+  'node.running.epoch': '輪次 {epoch}/{total}',
+  'node.running.loss': '損失：{loss}',
+  'node.running.embedding': '嵌入 {current}/{total}',
   'node.completed': '已完成',
   'node.cached': '已快取',
   'node.skipped': '已跳過',
@@ -315,6 +323,7 @@ const zhTW: Record<TranslationKey, string> = {
   'tabBar.aria': '工作區分頁',
   'tabBar.source.aria': '{name}，由 {plugin} 開啟',
   'tabBar.readOnly.aria': '{name}，唯讀',
+  'tabBar.running.aria': '{name}，執行中',
   'tabBar.close.aria': '關閉「{name}」',
 
   // Subgraph Editor (SequentialModel)
@@ -468,8 +477,8 @@ const zhTW: Record<TranslationKey, string> = {
   'results.currentLoss': '損失',
   'results.bestLoss': '最佳',
   'results.lossCurve': '損失曲線',
-  'results.waitingEpoch': '等待第一個 epoch...',
-  'results.epochsHeader': 'Epoch（{current}/{total}）',
+  'results.waitingEpoch': '等待第一個輪次...',
+  'results.epochsHeader': '輪次（{current}/{total}）',
   'results.col.loss': '損失',
   'results.col.delta': '變化量',
   'results.col.time': '耗時',

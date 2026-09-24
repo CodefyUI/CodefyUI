@@ -7,8 +7,9 @@ maintainer's job is to push the tag and check the result before publishing.
 
 ```bash
 # 1. Promote CHANGELOG.md's [Unreleased] section to the new version, bump the
-#    three version fields, and stamp any "unreleased" docs placeholder with the
-#    new number (see "Before you tag" below).
+#    three version fields, stamp any "unreleased" docs placeholder with the
+#    new number, and check the plugin template's SDK copy (see "Before you
+#    tag" below).
 # 2. From main, once that commit is in, tag it with the release notes in
 #    notes.md -- an annotated tag, kept verbatim (see "Then on GitHub"):
 git tag -a X.Y.Z --cleanup=verbatim -F notes.md
@@ -19,10 +20,10 @@ git push origin X.Y.Z
 
 ## Before you tag
 
-Three things are done by hand. Steps 1 and 2 are checked on every PR
+Four things are done by hand. Steps 1 and 2 are checked on every PR
 (`test_check_changelog.py`, `test_all_version_fields_agree` and
-`uv lock --check`), and step 1 again when the tag is pushed. Step 3 is not
-checked.
+`uv lock --check`), and step 1 again when the tag is pushed. Steps 3 and 4
+are not checked.
 
 1. **Promote `CHANGELOG.md`.** Rename `## [Unreleased]` to
    `## [X.Y.Z] — YYYY-MM-DD`, open a fresh empty `## [Unreleased]` above it,
@@ -99,6 +100,24 @@ checked.
    row said "1.5.0" from 2.0.0 through 2.2.0 — a version never tagged —
    because it was written before 2.0.0 was the number, and nothing brought
    anyone back to it.
+
+4. **Check the plugin template's SDK copy.** The README and the plugin docs
+   tell authors to fork
+   [CodefyUI-Plugin-Official](https://github.com/CodefyUI/CodefyUI-Plugin-Official),
+   which vendors the plugin SDK in `ui/src/sdk/`. CI cannot see that
+   repository, so compare a local checkout of it with this release:
+
+   ```bash
+   git clone https://github.com/CodefyUI/CodefyUI-Plugin-Official ../CodefyUI-Plugin-Official  # once
+   git -C ../CodefyUI-Plugin-Official pull
+   python scripts/sync_plugin_sdk.py --template ../CodefyUI-Plugin-Official --check
+   ```
+
+   Exit 1 lists the stale files. The same command without `--check` rewrites
+   them, `types.ts` from `frontend/src/plugins/contract.ts` and the rest from
+   the `cdui plugin new` scaffold's `ui/src/sdk/`; open a pull request with
+   them in the template repository. The template's copy fell three API
+   versions behind before this step existed (#461).
 
 Then on GitHub:
 1. Wait for **Release Build** to finish (≈2 min) — produces a draft release.

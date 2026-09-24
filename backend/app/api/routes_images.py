@@ -11,7 +11,13 @@ from fastapi import APIRouter, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 
 from ..config import settings
-from ..core.data_paths import resolve_under
+from ..core.data_paths import (
+    UnstorableName,
+    check_lookup_name,
+    lookup_exists,
+    resolve_under,
+    upload_file_name,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -21,14 +27,32 @@ ALLOWED_EXTENSIONS = {".png", ".jpg", ".jpeg", ".bmp", ".webp", ".gif", ".tiff"}
 
 
 def _safe_path(base_dir: Path, filename: str) -> Path:
-    """*filename* resolved under *base_dir*, or a 400 "Invalid filename".
+    """*filename* resolved under *base_dir*, or a 400.
 
-    The rule is :func:`app.core.data_paths.resolve_under` (#483).
+    A name no file on this server can have is refused by name
+    (:func:`app.core.data_paths.check_lookup_name`, #520); anything else
+    that is not a path under *base_dir* is "Invalid filename"
+    (:func:`app.core.data_paths.resolve_under`, #483).
     """
+    try:
+        check_lookup_name(filename)
+    except UnstorableName as refusal:
+        raise HTTPException(status_code=400, detail=str(refusal)) from None
     resolved = resolve_under(base_dir, filename)
     if resolved is None:
         raise HTTPException(status_code=400, detail="Invalid filename")
     return resolved
+
+
+def _upload_name(filename: str) -> str:
+    """The name an upload is stored under, or a 400 that says what is wrong.
+
+    The rule is :func:`app.core.data_paths.upload_file_name` (#520).
+    """
+    try:
+        return upload_file_name(filename)
+    except UnstorableName as refusal:
+        raise HTTPException(status_code=400, detail=str(refusal)) from None
 
 
 @router.get("")
@@ -53,7 +77,7 @@ async def upload_image_file(file: UploadFile):
     if not file.filename:
         raise HTTPException(status_code=400, detail="No filename provided")
 
-    safe_name = Path(file.filename).name
+    safe_name = _upload_name(file.filename)
     ext = Path(safe_name).suffix.lower()
     if ext not in ALLOWED_EXTENSIONS:
         raise HTTPException(
@@ -85,7 +109,7 @@ async def download_image_file(filename: str):
     images_dir = settings.IMAGES_DIR
     filepath = _safe_path(images_dir, filename)
 
-    if not filepath.exists():
+    if not lookup_exists(filepath):
         raise HTTPException(status_code=404, detail=f"File not found: {filename}")
     if not filepath.is_file():
         raise HTTPException(status_code=400, detail="Not a file")
@@ -106,7 +130,7 @@ async def delete_image_file(filename: str):
     images_dir = settings.IMAGES_DIR
     filepath = _safe_path(images_dir, filename)
 
-    if not filepath.exists():
+    if not lookup_exists(filepath):
         raise HTTPException(status_code=404, detail=f"File not found: {filename}")
     if not filepath.is_file():
         raise HTTPException(status_code=400, detail="Not a file")
