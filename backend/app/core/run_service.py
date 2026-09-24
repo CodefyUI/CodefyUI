@@ -98,7 +98,9 @@ values are lifted out before the insert -- the same promise save, export,
 publish and codegen already made -- and held in ``_run_secrets``, keyed by
 run id, until ``_load_graph`` puts them back at promotion. A queued run
 therefore executes with the key its submitter typed while the shared
-database file never contains one.
+database file never contains one. Every value of a node whose type this
+server does not know is lifted out the same way (#537), because nothing
+here can say which of them is the key.
 
 Why memory is the right place for them, and not a hedge: the queue is
 memory too. ``_pending``/``_pending_by_id`` do not survive a restart and
@@ -1500,10 +1502,13 @@ class RunService:
                 normalized_graph, normalized_options, normalized_name,
                 queue_key, session)
 
-        # SECRET params never reach the row (#251). The stored copy is
+        # SECRET params never reach the row (#251), and neither does any
+        # value of a node whose type this server does not know (#537): it
+        # cannot tell which of those are secret. The stored copy is
         # scrubbed and the real values are held in memory until promotion
         # re-injects them; see ``self._run_secrets`` for why that is safe.
-        stored_graph, secrets = split_graph_secrets(normalized_graph)
+        stored_graph, secrets = split_graph_secrets(
+            normalized_graph, unknown_types_as_secret=True)
         record = await self.store.create_run(
             graph_snapshot=stored_graph,
             options=normalized_options,
@@ -1567,7 +1572,8 @@ class RunService:
             # but with no vault entry, because this lane never reads its
             # snapshot back. ``_start`` gets the LIVE graph, so the row is
             # write-only and the key in it would be pure retained liability.
-            stored_graph, _secrets = split_graph_secrets(graph)
+            stored_graph, _secrets = split_graph_secrets(
+                graph, unknown_types_as_secret=True)
             record = await self.store.create_run(
                 graph_snapshot=stored_graph, options=options, name=name,
                 status=STATUS_QUEUED, queue_key=queue_key,
@@ -1942,7 +1948,10 @@ class RunService:
         snapshot.setdefault("subgraphs", [])
         # Put the SECRET params back (#251). The row was stored scrubbed, so
         # this is the step that makes a queued run execute with the key its
-        # submitter typed. A run whose vault entry is gone -- an orphan row
+        # submitter typed -- and with every value of a node whose type was
+        # unknown at submit (#537), even if that type has been registered
+        # since: restore takes the vault's word for what was withheld, not
+        # the registry's. A run whose vault entry is gone -- an orphan row
         # from a previous boot, a graph submitted before this existed --
         # simply runs with the blank the snapshot carries and fails the way
         # a missing key already fails.
@@ -2624,6 +2633,10 @@ class RunService:
         """
         cleaned = 0
         for run_id, graph in await self.store.list_terminal_graph_snapshots():
+            # SECRET params only. NOT ``unknown_types_as_secret``, which the
+            # submit lanes pass (#537): "unknown" here would mean unknown at
+            # THIS boot, so a plugin that failed to load once would have
+            # every value of its nodes blanked in every past run, for good.
             scrubbed, secrets = split_graph_secrets(graph)
             if not secrets:
                 continue

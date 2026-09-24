@@ -208,7 +208,8 @@ export class ExecutionWebSocket {
     if (this.ws?.readyState === WebSocket.OPEN) {
       this.ws.send(JSON.stringify(data));
     } else {
-      console.warn('WebSocket is not connected. Cannot send:', data);
+      // The action only: a Run message carries the API keys typed into the graph.
+      console.warn('WebSocket is not connected. Cannot send:', data?.action);
     }
   }
 

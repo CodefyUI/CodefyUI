@@ -29,12 +29,13 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import type { Edge, Node } from '@xyflow/react';
 
 import { saveActiveGraph } from './saveActiveGraph';
+import { importGraphFile } from './importGraphFile';
 import { useTabStore } from '../store/tabStore';
 import { useProjectStore } from '../store/projectStore';
 import { useNodeDefStore } from '../store/nodeDefStore';
 import { _setSessionTokenForTesting } from '../api/_auth';
 import { subgraphIdOf } from './subgraph';
-import type { NodeData, NodeDefinition } from '../types';
+import type { NodeData, NodeDefinition, PresetDefinition } from '../types';
 
 // Persistence is IndexedDB-flavoured background noise for this test; the tab
 // store's own suite covers it. Note this is BELOW the code under test, not
@@ -69,6 +70,30 @@ function captureFetch() {
       statusText: 'OK',
       json: async () => ({ status: 'ok' }),
       text: async () => '',
+    } as unknown as Response;
+  }) as unknown as typeof fetch;
+}
+
+/**
+ * Answer the two list reads with these lists, as the server does when the
+ * editor fetches them again after a change, and capture every other request
+ * as before.
+ */
+function serveLists(definitions: NodeDefinition[], presets: PresetDefinition[] = []) {
+  const capture = g.fetch;
+  g.fetch = vi.fn(async (input: any, init?: any) => {
+    const url = String(input);
+    const list = url.endsWith('/api/nodes')
+      ? definitions
+      : url.endsWith('/api/presets')
+        ? presets
+        : null;
+    if (list === null) return capture(input, init);
+    return {
+      ok: true,
+      status: 200,
+      statusText: 'OK',
+      json: async () => list,
     } as unknown as Response;
   }) as unknown as typeof fetch;
 }
@@ -338,6 +363,124 @@ describe('saveActiveGraph over the wire', () => {
     // the field as empty rather than as absent.
     expect(body.subgraphs[0].nodes.find((n: any) => n.id === 'b').data.params)
       .toMatchObject({ api_key: '' });
+  });
+
+  // The in-block strip finds a node's SECRET params by its type in the node
+  // list, and every fetch replaces that list. A custom node disabled in the
+  // Custom Nodes manager drops out of it (#537 review).
+
+  /**
+   * a -> b -> c, b and c collapsed into a block, and a key typed into b from
+   * inside it, where b shows the masked field. B is a custom node, listed
+   * while the key is typed. Leaves the canvas inside the block.
+   */
+  function typeKeyInsideBlock(key: string) {
+    useNodeDefStore.setState({
+      definitions: [secretDef('A'), secretDef('B'), secretDef('C')],
+    } as never);
+    const store = useTabStore.getState();
+    store.setNodes([
+      keyedNode('a', 'A', 100, 0),
+      keyedNode('b', 'B', 200, 40),
+      keyedNode('c', 'C', 300, 20),
+    ]);
+    store.setEdges([dataEdge('e1', 'a', 'b'), dataEdge('e2', 'b', 'c')]);
+    useTabStore.getState().setNodes(
+      useTabStore.getState().getActiveTab().nodes.map((n) => ({
+        ...n,
+        selected: n.id === 'b' || n.id === 'c',
+      })),
+    );
+    const collapsed = useTabStore.getState().collapseSelectionToSubgraph('Keyed');
+    if (!collapsed.ok) throw new Error(`fixture collapse failed: ${collapsed.reason}`);
+    expect(useTabStore.getState().enterSubgraph(collapsed.instanceId)).toBe(true);
+    useTabStore.getState().updateNodeParams('b', { api_key: key });
+  }
+
+  /** The Custom Nodes manager disables B and fetches the lists again. */
+  async function disableB() {
+    serveLists([secretDef('A'), secretDef('C')]);
+    await useNodeDefStore.getState().fetchDefinitions();
+    // The premise: the fetch really left B out.
+    expect(useNodeDefStore.getState().definitions.map((d) => d.node_name)).toEqual(['A', 'C']);
+  }
+
+  it('leaves a key out of a block after the node list stops listing its type', async () => {
+    typeKeyInsideBlock('sk-DISABLED-TYPE');
+    useTabStore.getState().exitSubgraph();
+    await disableB();
+    expect(JSON.stringify(useTabStore.getState().getActiveTab().subgraphs))
+      .toContain('sk-DISABLED-TYPE');
+
+    await saveActiveGraph();
+
+    const body = savePost().body;
+    expect(JSON.stringify(body)).not.toContain('sk-DISABLED-TYPE');
+    expect(body.subgraphs[0].nodes.find((n: any) => n.id === 'b').data.params)
+      .toEqual({ scale: 1, api_key: '' });
+  });
+
+  it('leaves that key out while the canvas is still inside the block', async () => {
+    typeKeyInsideBlock('sk-SAVED-FROM-INSIDE');
+    await disableB();
+    // Still inside, where b still shows its masked field.
+    expect(useTabStore.getState().getActiveTab().subgraphStack).toHaveLength(1);
+
+    await saveActiveGraph();
+
+    const body = savePost().body;
+    expect(JSON.stringify(body)).not.toContain('sk-SAVED-FROM-INSIDE');
+    expect(body.subgraphs[0].nodes.find((n: any) => n.id === 'b').data.params)
+      .toEqual({ scale: 1, api_key: '' });
+  });
+
+  it('leaves a key out of a preset in a block after a fetch drops the preset a file brought', async () => {
+    // A graph file that carries its own preset, one that still exposes its
+    // inner key as a field. The server has no preset of that name.
+    const filePreset: PresetDefinition = {
+      preset_name: 'FileChat', category: 'LLM', description: '', tags: [],
+      nodes: [{ id: 'chat', type: 'A', params: { scale: 1, api_key: '' } }],
+      edges: [],
+      exposed_inputs: [],
+      exposed_outputs: [],
+      exposed_params: [{
+        internal_node: 'chat', param_name: 'api_key', display_name: 'A - api_key',
+        group: 'A', param_def: secretDef('A').params[1],
+      }],
+    };
+    const file = {
+      nodes: [{ id: 'inst', type: 'subgraph:blk', position: { x: 0, y: 0 }, data: { params: {} } }],
+      edges: [],
+      presets: [filePreset],
+      subgraphs: [{
+        id: 'blk', name: 'Block', description: '',
+        nodes: [{
+          id: 'p', type: 'preset:FileChat', position: { x: 0, y: 0 },
+          data: { params: {}, internalParams: { chat: { scale: 1, api_key: '' } } },
+        }],
+        edges: [],
+        interface: { inputs: [], outputs: [], triggerTargets: [] },
+      }],
+    };
+    const picked = new File([JSON.stringify(file)], 'file-chat.json', { type: 'application/json' });
+    expect(await importGraphFile(picked)).toBe(true);
+    // The reader merged the file's preset into the list.
+    expect(useNodeDefStore.getState().presets.map((p) => p.preset_name)).toEqual(['FileChat']);
+    // Open the block and type the key into the preset's field.
+    expect(useTabStore.getState().enterSubgraph('inst')).toBe(true);
+    useTabStore.getState().updatePresetInternalParam('p', 'chat', 'api_key', 'sk-IN-FILE-PRESET');
+    useTabStore.getState().exitSubgraph();
+    // Export as preset, or any change on the server, fetches the lists again.
+    serveLists([secretDef('A')], []);
+    await useNodeDefStore.getState().fetchDefinitions();
+    expect(JSON.stringify(useTabStore.getState().getActiveTab().subgraphs))
+      .toContain('sk-IN-FILE-PRESET');
+    // An imported graph is bound to no file; bind it so Save writes in place.
+    useTabStore.getState().setCurrentGraphFile('block-graph', 'block-graph');
+
+    await saveActiveGraph();
+
+    expect(JSON.stringify(savePost().body)).not.toContain('sk-IN-FILE-PRESET');
   });
 
   it('sends an empty subgraphs list for a graph that has no blocks', async () => {

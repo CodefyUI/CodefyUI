@@ -523,16 +523,23 @@ export function useGraphExecution() {
       return;
     }
 
-    const graph = getSerializedGraph();
+    // The run needs any SECRET param the user typed (an LLM API key), so its
+    // message is built with the keys kept; the server keeps its stored copy
+    // of the run scrubbed (#251). Validation has no use for a key and gets
+    // the blanked graph. Both are taken before the next await, so they
+    // describe the same graph.
+    const graph = getSerializedGraph({ keepSecrets: true });
+    const checked = getSerializedGraph();
     // Filter out note nodes — they are annotations, not computational
-    const execNodes = graph.nodes.filter((n: any) => n.type !== 'note');
+    const isComputational = (n: any) => n.type !== 'note';
+    const execNodes = graph.nodes.filter(isComputational);
 
     // Pre-execution validation
     try {
       // Embedded presets ride along so a portable graph whose presets are
       // not in the local registry still validates (#84).
       const validation = await validateGraph(
-        execNodes, graph.edges, graph.presets, graph.subgraphs,
+        checked.nodes.filter(isComputational), checked.edges, checked.presets, checked.subgraphs,
       );
       if (!validation.valid) {
         const { addToast } = useToastStore.getState();

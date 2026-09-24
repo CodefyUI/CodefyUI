@@ -21,9 +21,17 @@ its API key less of a secret.
 Every function operates on the serialized node shape ``{"id", "type",
 "data": {"params": {...}}}`` used by GraphData / the saved JSON, so the
 save path (pydantic dump -> dict) and the publish path (json.loads dict)
-share one implementation. Unknown node types (notes, presets, plugin
-nodes not currently loaded) carry no known secret params and are left
-untouched.
+share one implementation. A node type the registry does not know (a plugin
+or custom node that is not loaded, a preset nobody has) carries no known
+secret params, and the save, export and publish walks leave it untouched.
+
+The run path is stricter (#537). The server cannot name the secret params
+of a type it does not know, and a run's row is written before the engine
+refuses the type, so the two submit lanes call ``split_graph_secrets`` with
+``unknown_types_as_secret=True``: every value of such a node is kept out of
+the row the way a SECRET value is. The startup sweep of finished rows does
+not ask for that, and putting values back never consults the registry at
+all -- ``split_graph_secrets`` and ``restore_graph_secrets`` say why.
 """
 
 from __future__ import annotations
@@ -93,6 +101,29 @@ def _internal_params_of(node: dict[str, Any]) -> dict[str, Any] | None:
     return internal if isinstance(internal, dict) else None
 
 
+def _preset_definitions(
+    node_type: str,
+    preset_fallback: Mapping[str, Any] | None,
+) -> list[Any]:
+    """The definitions a ``preset:<name>`` type resolves to, installed first.
+
+    The preset registry's and the graph's own portable one, whichever exist.
+    Empty when the type is not a preset or neither knows the name -- the
+    case the engine reports as ``Unknown preset``.
+    """
+    if not node_type.startswith("preset:"):
+        return []
+    # Lazy import: preset_registry pulls in schemas/node_registry; importing
+    # it at module load would risk a cycle (graph_engine uses the same
+    # lazy-import pattern for exactly this reason).
+    from .preset_registry import preset_registry
+
+    preset_name = node_type[len("preset:"):]
+    registered = preset_registry.get(preset_name)
+    fallback = (preset_fallback or {}).get(preset_name)
+    return [p for p in (registered, fallback) if p is not None]
+
+
 def _preset_secret_param_map(
     node_type: str,
     preset_fallback: Mapping[str, Any] | None = None,
@@ -109,17 +140,7 @@ def _preset_secret_param_map(
     (to learn which of its params are secret). Empty when the type is not a
     preset, the preset is unknown, or no inner node declares a secret.
     """
-    if not node_type.startswith("preset:"):
-        return {}
-    # Lazy import: preset_registry pulls in schemas/node_registry; importing
-    # it at module load would risk a cycle (graph_engine uses the same
-    # lazy-import pattern for exactly this reason).
-    from .preset_registry import preset_registry
-
-    preset_name = node_type[len("preset:"):]
-    registered = preset_registry.get(preset_name)
-    fallback = (preset_fallback or {}).get(preset_name)
-    candidates = [p for p in (registered, fallback) if p is not None]
+    candidates = _preset_definitions(node_type, preset_fallback)
     if not candidates:
         return {}
     result: dict[str, set[str]] = {}
@@ -263,22 +284,127 @@ def scrub_subgraph_definition_secrets(
     return changed
 
 
+def _is_unknown_type(
+    node_type: str,
+    preset_fallback: Mapping[str, Any] | None,
+) -> bool:
+    """Would the engine refuse ``node_type`` as a type it does not know?
+
+    The rules of the type check in ``graph_engine.validate_graph``, so the
+    run path withholds what the run itself could not place and nothing
+    else. A note is an annotation the engine drops, not a type. A
+    ``subgraph:<id>`` instance is a reference; the nodes of its definition
+    are walked in their own right. A ``preset:<name>`` is known when the
+    preset registry or the graph's own ``presets[]`` has it. Any other type
+    is known when ``registry.get`` resolves it, a bare plugin name included.
+    An empty or missing type is unknown.
+    """
+    # Lazy import: keeping graph_engine out of this module's import graph.
+    from .graph_engine import NOTE_NODE_TYPE, subgraph_id_of
+
+    if node_type == NOTE_NODE_TYPE or subgraph_id_of(node_type) is not None:
+        return False
+    if node_type.startswith("preset:"):
+        return not _preset_definitions(node_type, preset_fallback)
+    return registry.get(node_type) is None
+
+
+def _unplaced_inner_ids(
+    node_type: str,
+    internal_params: Mapping[Any, Any],
+    preset_fallback: Mapping[str, Any] | None,
+) -> list[Any]:
+    """The ``internalParams`` entries of a KNOWN preset the server cannot place.
+
+    An entry is placed when its id names an inner node and every type that
+    id has is known, across the installed and the portable definition
+    together -- the union ``_preset_secret_param_map`` takes. A placed entry
+    keeps the SECRET rule. An unplaced one is withheld whole: nothing says
+    which of its values is secret. Empty for a type that is not a known
+    preset.
+    """
+    definitions = _preset_definitions(node_type, preset_fallback)
+    if not definitions:
+        return []
+    inner_types: dict[Any, set[str]] = {}
+    for preset in definitions:
+        internal_nodes = (
+            preset.get("nodes", []) if isinstance(preset, dict) else preset.nodes
+        )
+        for internal in internal_nodes:
+            internal_type = (
+                internal.get("type", "")
+                if isinstance(internal, dict)
+                else internal.type
+            )
+            internal_id = (
+                internal.get("id", "")
+                if isinstance(internal, dict)
+                else internal.id
+            )
+            inner_types.setdefault(internal_id, set()).add(
+                str(internal_type or ""))
+    return [
+        internal_id for internal_id in internal_params
+        if internal_id not in inner_types
+        or any(_is_unknown_type(t, preset_fallback)
+               for t in inner_types[internal_id])
+    ]
+
+
+def _iter_param_slots(
+    params: Any, prefix: tuple[Any, ...],
+) -> Iterator[tuple[SecretAddress, dict[str, Any], str]]:
+    """Every key of ONE params dict, as slots addressed ``(*prefix, key)``.
+
+    Unfiltered: this is how a value is found when the registry cannot say
+    whether it is secret, or must not be asked.
+    """
+    if isinstance(params, dict):
+        for name in params:
+            yield (*prefix, name), params, name
+
+
+def _iter_node_value_slots(
+    node: dict[str, Any], prefix: tuple[Any, ...],
+) -> Iterator[tuple[SecretAddress, dict[str, Any], str]]:
+    """EVERY param slot of one serialized graph node, whatever its type.
+
+    ``data.params`` and each entry of ``data.internalParams``, at the
+    addresses :func:`_iter_node_secret_slots` gives the same slots.
+    """
+    yield from _iter_param_slots(_params_of(node), (*prefix, "params"))
+    internal_params = _internal_params_of(node)
+    if internal_params is not None:
+        for internal_id, inner in internal_params.items():
+            yield from _iter_param_slots(
+                inner, (*prefix, "internalParams", internal_id))
+
+
 def _iter_node_secret_slots(
     node: dict[str, Any],
     prefix: tuple[Any, ...],
     preset_fallback: Mapping[str, Any] | None,
+    unknown_types_as_secret: bool,
 ) -> Iterator[tuple[SecretAddress, dict[str, Any], str]]:
     """Yield every SECRET-typed slot of ONE serialized node.
 
     A "slot" is ``(address, container, key)`` where ``container[key]`` is the
-    value — a writable handle, so extraction and re-injection can share this
-    one walk instead of two loops that drift apart.
+    value — a writable handle, so a caller can blank or replace the value
+    where it sits.
 
     Only keys that are PRESENT are yielded. That is what makes the two
     directions symmetric: extraction blanks a slot to ``""`` rather than
     deleting it, so the same slot is still there to be found on the way back.
+
+    With ``unknown_types_as_secret``, every slot of a node of unknown type
+    counts as secret, and so does every slot of a known preset's
+    ``internalParams`` entry the server cannot place.
     """
     node_type = _type_of(node)
+    if unknown_types_as_secret and _is_unknown_type(node_type, preset_fallback):
+        yield from _iter_node_value_slots(node, prefix)
+        return
     names = secret_param_names(node_type)
     if names:
         params = _params_of(node)
@@ -286,25 +412,106 @@ def _iter_node_secret_slots(
             for name in sorted(names):
                 if name in params:
                     yield (*prefix, "params", name), params, name
+    internal_params = _internal_params_of(node)
+    if internal_params is None:
+        return
+    unplaced = (
+        _unplaced_inner_ids(node_type, internal_params, preset_fallback)
+        if unknown_types_as_secret else []
+    )
     # Preset instance: secrets can also sit per inner node in internalParams.
     preset_secrets = _preset_secret_param_map(node_type, preset_fallback)
-    if preset_secrets:
-        internal_params = _internal_params_of(node)
-        if internal_params is not None:
-            for internal_id in sorted(preset_secrets):
-                inner = internal_params.get(internal_id)
-                if not isinstance(inner, dict):
-                    continue
-                for name in sorted(preset_secrets[internal_id]):
-                    if name in inner:
-                        yield ((*prefix, "internalParams", internal_id, name),
-                               inner, name)
+    for internal_id in sorted(preset_secrets):
+        if internal_id in unplaced:
+            continue  # withheld whole, below
+        inner = internal_params.get(internal_id)
+        if not isinstance(inner, dict):
+            continue
+        for name in sorted(preset_secrets[internal_id]):
+            if name in inner:
+                yield ((*prefix, "internalParams", internal_id, name),
+                       inner, name)
+    for internal_id in unplaced:
+        yield from _iter_param_slots(
+            internal_params[internal_id],
+            (*prefix, "internalParams", internal_id))
+
+
+def _iter_definition_secret_slots(
+    node: dict[str, Any],
+    prefix: tuple[Any, ...],
+    preset_fallback: Mapping[str, Any] | None,
+    unknown_types_as_secret: bool,
+) -> Iterator[tuple[SecretAddress, dict[str, Any], str]]:
+    """The same, for one node of a portable preset DEFINITION.
+
+    A flatter shape: ``params`` directly on the node, not under ``data``,
+    and no ``internalParams`` -- the engine reads a definition node as
+    ``{id, type, params}`` and nothing else.
+    """
+    params = node.get("params")
+    if not isinstance(params, dict):
+        return
+    node_type = _type_of(node)
+    if unknown_types_as_secret and _is_unknown_type(node_type, preset_fallback):
+        yield from _iter_param_slots(params, (*prefix, "params"))
+        return
+    for name in sorted(secret_param_names(node_type)):
+        if name in params:
+            yield (*prefix, "params", name), params, name
+
+
+def _iter_graph_nodes(
+    graph: Mapping[str, Any],
+) -> Iterator[tuple[tuple[Any, ...], dict[str, Any], bool]]:
+    """Every node a graph carries, with the positional prefix of its address.
+
+    Yields ``(prefix, node, is_definition)``; ``is_definition`` marks a node
+    of a portable preset DEFINITION. The SECRET walk and the restore walk
+    both go through here, so the address a value is vaulted under and the
+    address it is put back from are built by the same code.
+    """
+    nodes = graph.get("nodes")
+    if isinstance(nodes, list):
+        for index, node in enumerate(nodes):
+            if isinstance(node, dict):
+                yield ("nodes", index), node, False
+
+    # Subgraph definitions hold ORDINARY nodes. Nesting needs no recursion:
+    # the list is flat and a block inside a block is a `subgraph:<id>`
+    # reference into this same list.
+    subgraphs = graph.get("subgraphs")
+    if isinstance(subgraphs, list):
+        for outer, definition in enumerate(subgraphs):
+            if not isinstance(definition, dict):
+                continue
+            inner_nodes = definition.get("nodes")
+            if not isinstance(inner_nodes, list):
+                continue
+            for index, inner in enumerate(inner_nodes):
+                if isinstance(inner, dict):
+                    yield ("subgraphs", outer, "nodes", index), inner, False
+
+    # Portable preset DEFINITIONS carry defaults in a flatter shape:
+    # `params` directly on the node, not under `data`.
+    presets = graph.get("presets")
+    if isinstance(presets, list):
+        for outer, preset in enumerate(presets):
+            if not isinstance(preset, dict):
+                continue
+            inner_nodes = preset.get("nodes")
+            if not isinstance(inner_nodes, list):
+                continue
+            for index, inner in enumerate(inner_nodes):
+                if isinstance(inner, dict):
+                    yield ("presets", outer, "nodes", index), inner, True
 
 
 def iter_secret_slots(
     graph: Mapping[str, Any],
     *,
     preset_fallback: Mapping[str, Any] | None = None,
+    unknown_types_as_secret: bool = False,
 ) -> Iterator[tuple[SecretAddress, dict[str, Any], str]]:
     """Yield every SECRET-typed slot of a WHOLE graph, writable handles and all.
 
@@ -325,63 +532,47 @@ def iter_secret_slots(
     each other's value. Indices are unique by construction and survive the
     ``json.dumps``/``loads`` round trip the snapshot column makes, which is
     the only round trip an address has to outlive.
+
+    ``unknown_types_as_secret`` adds every slot whose value the server cannot
+    classify at all; :func:`split_graph_secrets` says who asks for it and why.
     """
     if not isinstance(graph, Mapping):
         return
-    raw_presets = graph.get("presets")
-    presets = raw_presets if isinstance(raw_presets, list) else []
     if preset_fallback is None:
         # Lazy import, for the same reason preset_registry is imported lazily
         # above: keeping graph_engine out of this module's import graph.
         from .graph_engine import build_preset_fallback
-        preset_fallback = build_preset_fallback(presets)
+        raw_presets = graph.get("presets")
+        preset_fallback = build_preset_fallback(
+            raw_presets if isinstance(raw_presets, list) else [])
 
-    nodes = graph.get("nodes")
-    if isinstance(nodes, list):
-        for index, node in enumerate(nodes):
-            if isinstance(node, dict):
-                yield from _iter_node_secret_slots(
-                    node, ("nodes", index), preset_fallback)
+    for prefix, node, is_definition in _iter_graph_nodes(graph):
+        walk = (_iter_definition_secret_slots if is_definition
+                else _iter_node_secret_slots)
+        yield from walk(node, prefix, preset_fallback, unknown_types_as_secret)
 
-    # Subgraph definitions hold ORDINARY nodes. Nesting needs no recursion:
-    # the list is flat and a block inside a block is a `subgraph:<id>`
-    # reference into this same list.
-    subgraphs = graph.get("subgraphs")
-    if isinstance(subgraphs, list):
-        for outer, definition in enumerate(subgraphs):
-            if not isinstance(definition, dict):
-                continue
-            inner_nodes = definition.get("nodes")
-            if not isinstance(inner_nodes, list):
-                continue
-            for index, inner in enumerate(inner_nodes):
-                if isinstance(inner, dict):
-                    yield from _iter_node_secret_slots(
-                        inner, ("subgraphs", outer, "nodes", index),
-                        preset_fallback)
 
-    # Portable preset DEFINITIONS carry defaults in a flatter shape:
-    # `params` directly on the node, not under `data`.
-    for outer, preset in enumerate(presets):
-        if not isinstance(preset, dict):
-            continue
-        inner_nodes = preset.get("nodes")
-        if not isinstance(inner_nodes, list):
-            continue
-        for index, inner in enumerate(inner_nodes):
-            if not isinstance(inner, dict):
-                continue
-            params = inner.get("params")
-            if not isinstance(params, dict):
-                continue
-            for name in sorted(secret_param_names(_type_of(inner))):
-                if name in params:
-                    yield ((("presets", outer, "nodes", index, "params", name)),
-                           params, name)
+def _iter_all_param_slots(
+    graph: Mapping[str, Any],
+) -> Iterator[tuple[SecretAddress, dict[str, Any], str]]:
+    """EVERY param slot of a whole graph: the walk restore goes by.
+
+    Everything :func:`iter_secret_slots` yields in either mode is in here,
+    at the same address, and none of it is found by asking a registry.
+    """
+    if not isinstance(graph, Mapping):
+        return
+    for prefix, node, is_definition in _iter_graph_nodes(graph):
+        if is_definition:
+            yield from _iter_param_slots(node.get("params"), (*prefix, "params"))
+        else:
+            yield from _iter_node_value_slots(node, prefix)
 
 
 def split_graph_secrets(
     graph: Mapping[str, Any],
+    *,
+    unknown_types_as_secret: bool = False,
 ) -> tuple[Mapping[str, Any], SecretVault]:
     """Separate a graph from its secrets: ``(scrubbed graph, vault)``.
 
@@ -391,16 +582,33 @@ def split_graph_secrets(
     large graph on every submit is not free); otherwise the returned graph is
     a deep copy with every secret blanked to ``""``.
 
+    ``unknown_types_as_secret`` is what the two submit lanes pass (#537). It
+    counts as secret every present value of a node whose type the server
+    does not know (see :func:`_is_unknown_type` for what that means), and
+    of a known preset's ``internalParams`` entry that no known inner node
+    accounts for. The server cannot name the secret params of a type it
+    does not know, and the run row is written before the engine refuses the
+    type, so without this a key typed into such a node would be stored as
+    sent. Withholding every value costs the run nothing: the queued lane
+    gets them back from the vault, and the interactive lane runs the live
+    graph.
+
+    The startup sweep of finished rows does NOT pass it. "Unknown" is a fact
+    about one boot: a plugin that fails to load once would lose its settings
+    from every past run, for good, since the sweep keeps no vault.
+
     The vault is plain in-memory Python, deliberately: it is the half that
     must NOT be written anywhere. See ``RunService`` for the lifetime
     argument that makes that safe.
     """
     if not any(_is_nonempty_secret(container[key])
-               for _address, container, key in iter_secret_slots(graph)):
+               for _address, container, key in iter_secret_slots(
+                   graph, unknown_types_as_secret=unknown_types_as_secret)):
         return graph, {}
     scrubbed = copy.deepcopy(dict(graph))
     vault: SecretVault = {}
-    for address, container, key in iter_secret_slots(scrubbed):
+    for address, container, key in iter_secret_slots(
+            scrubbed, unknown_types_as_secret=unknown_types_as_secret):
         value = container[key]
         if _is_nonempty_secret(value):
             vault[address] = value
@@ -413,8 +621,15 @@ def restore_graph_secrets(
 ) -> int:
     """Put a vault's values back into ``graph`` (in place). Returns how many.
 
-    The inverse of :func:`split_graph_secrets`, over the same walk, so an
-    address can only be found by the same code that produced it.
+    The inverse of :func:`split_graph_secrets`. Its addresses come from the
+    same traversal, so an address is found where it was taken from, but the
+    walk is NOT the filtered one that chose what to take: it visits every
+    param slot and puts back whatever the vault holds for it, without asking
+    the registry anything. The vault already records what was taken. A
+    queued run can wait for hours, and a type that gets registered in that
+    time (a custom node re-enabled) would make a filtered walk see only its
+    SECRET slots: the key would come back, every other value of that node
+    would stay ``""``, and the run would execute with them, silently.
 
     A missing address is silently skipped rather than raised on, and that is
     the safe direction: the slot keeps the ``""`` it was scrubbed to, and the
@@ -425,7 +640,7 @@ def restore_graph_secrets(
     if not vault:
         return 0
     restored = 0
-    for address, container, key in iter_secret_slots(graph):
+    for address, container, key in _iter_all_param_slots(graph):
         if address in vault:
             container[key] = vault[address]
             restored += 1

@@ -117,7 +117,7 @@ Provide the key through the environment instead. The node reads the first non-em
 
 Anthropic works the same way with `anthropic_api_key`, then `CODEFYUI_ANTHROPIC_API_KEY`, then `ANTHROPIC_API_KEY`. Set the environment variable before `cdui start`.
 
-A key can still reach a commit if you paste it into a field that is not secret, such as a prompt, or write it into the JSON by hand; the publish pre-flight refuses a graph file that still carries a secret value. A node from a plugin that is not loaded is not recognised, so its secret fields are not blanked.
+A key can still reach a commit if you paste it into a field that is not secret, such as a prompt, or write it into the JSON by hand; the publish pre-flight refuses a graph file that still carries a secret value. A node from a plugin that is not loaded is not recognised, so its secret fields are not blanked when the graph is saved.
 
 ## Validate every graph in CI
 
