@@ -217,6 +217,45 @@ def test_a_card_in_a_block_that_uses_an_unreadable_definition_is_refused(
     assert _names_it(str(run.value), "blk/p"), run.value
 
 
+def test_the_unreadable_lines_on_their_own_are_validation_s_own(
+        _installed_same_name):
+    """What the publish route refuses with before its secret gate: exactly
+    the unreadable-preset lines ``validate_graph`` gives for the same graph,
+    at the top level, inside a block and through a nesting preset."""
+    from app.core.graph_engine import unreadable_preset_errors
+
+    nodes, edges = _start_into("p", f"preset:{UNREADABLE}")
+    nodes += [
+        {"id": "n", "type": "preset:NestsUnreadable",
+         "position": {"x": 2, "y": 0}, "data": {}},
+        {"id": "r", "type": "preset:EmbeddedPr",
+         "position": {"x": 3, "y": 0}, "data": {}},
+        {"id": "blk", "type": "subgraph:d",
+         "position": {"x": 4, "y": 0}, "data": {}},
+    ]
+    subgraphs = [{
+        "id": "d", "name": "d", "edges": [],
+        "nodes": [{"id": "q", "type": f"preset:{UNREADABLE}",
+                   "position": {"x": 0, "y": 0}, "data": {}}],
+        "interface": {"inputs": [], "outputs": [], "triggerTargets": []},
+    }]
+    fallback = build_preset_fallback([
+        _unreadable(),
+        _preset_dict("NestsUnreadable", inner_type=f"preset:{UNREADABLE}"),
+        _preset_dict(),
+    ])
+
+    lines = unreadable_preset_errors(
+        nodes, edges, preset_fallback=fallback, subgraphs=subgraphs)
+    validated = validate_graph(
+        nodes, edges, preset_fallback=fallback, subgraphs=subgraphs)
+
+    assert sorted(lines) == sorted(
+        line for line in validated if "could not be read" in line)
+    assert sorted(lines) == sorted(
+        fallback[UNREADABLE].refusal(node_id) for node_id in ("p", "n", "blk/q"))
+
+
 def test_an_unreadable_definition_no_node_uses_is_ignored(_installed_same_name):
     """A stray entry never breaks validation, a run or an export."""
     nodes, edges = _start_into("a", "TensorCreate")

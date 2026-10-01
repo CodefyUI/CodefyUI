@@ -176,6 +176,47 @@ def unreadable_preset_reached(
     return None
 
 
+def unreadable_preset_errors(
+    nodes: list[dict],
+    edges: list[dict],
+    *,
+    preset_fallback: dict | None = None,
+    subgraphs: Any = None,
+) -> list[str]:
+    """The lines :func:`validate_graph` gives cards of unreadable presets.
+
+    The same cards, in the same words, and nothing else: every preset card
+    standing once block instances are inlined the way validation inlines
+    them -- at the top level, inside blocks, and through the presets a card
+    nests -- that reaches a preset the graph carries but cannot read.
+
+    For a caller that must refuse such a graph BEFORE another check. The
+    publish route's secret gate counts every value of such a card as a
+    secret, ordinary settings included, so running it first asked the user to
+    clear real settings and named the actual fault only on the next attempt.
+    """
+    nodes, edges = drop_notes(nodes, edges)
+    if any(subgraph_id_of(node.get("type", "")) is not None for node in nodes):
+        try:
+            nodes, edges, _ = expand_subgraphs_deep(
+                nodes, edges, build_subgraph_index(subgraphs)
+            )
+        except GraphValidationError:
+            # Validation reports the block's own fault and goes on with the
+            # unexpanded graph; so does this.
+            pass
+    errors: list[str] = []
+    for node in nodes:
+        node_type = str(node.get("type", ""))
+        if not node_type.startswith("preset:"):
+            continue
+        unreadable = unreadable_preset_reached(
+            node_type[len("preset:"):], preset_fallback)
+        if unreadable is not None:
+            errors.append(unreadable.refusal(node["id"]))
+    return errors
+
+
 def expand_presets(
     nodes: list[dict],
     edges: list[dict],

@@ -364,6 +364,10 @@ class ExposedParamSchema(BaseModel):
     param_def: ParamDefinitionSchema | None = None
 
 
+# Do not add a field without a default here or in a schema it nests, nor
+# tighten one, without reading tests/test_preset_definition_schema.py: a
+# graph's own preset entry that stops parsing has every value of its cards
+# blanked by the startup sweep across all stored runs (#541).
 class PresetDefinition(BaseModel):
     preset_name: str
     category: str

@@ -191,8 +191,23 @@ async def publish_app(slug: str, body: PublishRequest, request: Request):
     # it does at POST /api/graph/validate (routes_graph.py) -- otherwise a
     # graph that is CI-green under `cdui project validate` could 409 here.
     # Hoisted above the secret gate because that gate needs it too.
-    from ..core.graph_engine import build_preset_fallback
+    from ..core.graph_engine import (
+        build_preset_fallback,
+        unreadable_preset_errors,
+    )
     preset_fallback = build_preset_fallback(graph_data.get("presets", []))
+
+    # A card of a preset this file carries but cannot read is refused FIRST,
+    # with the line validation gives it (#541). The gate below counts every
+    # value of such a card as a secret, ordinary settings included, so when
+    # it answered first it asked the user to clear real settings and named
+    # the fault only on the next attempt. It stays the backstop.
+    unreadable = unreadable_preset_errors(
+        nodes, edges, preset_fallback=preset_fallback, subgraphs=subgraphs,
+    )
+    if unreadable:
+        raise _manage_error(409, "invalid_graph", "graph failed validation",
+                            details=unreadable)
 
     # Publish-specific security gate (NOT part of /run parity): a graph file
     # hand-edited to bake in a SECRET-typed param value never becomes an

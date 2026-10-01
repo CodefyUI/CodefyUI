@@ -729,3 +729,116 @@ async def test_publish_rejects_a_preset_secret_inside_a_definition(
     assert detail["code"] == "secret_in_graph"
     assert {"node_id": "pblock/p1",
             "param": "chat.openai_api_key"} in detail["details"]
+
+
+# -- a card of a preset this graph carries but cannot read (#541) ----------
+#
+# The secret gate counts EVERY value of such a card as a secret, ordinary
+# settings included, because nothing the server can read says which one is a
+# key. Run before validation, it told the user to clear a setting like
+# `chat.model`, and named the real fault only on the next attempt.
+
+
+def _chat_definition(*, readable: bool) -> dict:
+    """The graph's own `SecretChat`: an LLMChat at `chat`. Without its
+    `description` the model refuses it."""
+    definition = {
+        "preset_name": "SecretChat", "category": "Test", "tags": [],
+        "nodes": [{"id": "chat", "type": "LLMChat", "params": {}}],
+        "edges": [], "exposed_inputs": [], "exposed_outputs": [],
+        "exposed_params": [],
+    }
+    if readable:
+        definition["description"] = ""
+    return definition
+
+
+def _unreadable_refusal(node_id: str) -> str:
+    return (
+        "Preset 'SecretChat' is in this graph but could not be read, so "
+        f"node {node_id} cannot be expanded: description: Field required"
+    )
+
+
+async def _publish_file(client, directory, name: str, graph: dict):
+    """Write `graph` straight into the graphs dir, as a hand edit would, and
+    publish it."""
+    (directory / f"{name}.json").write_text(json.dumps(graph))
+    return await client.post(
+        f"/api/apps/{name}-app/publish", json={"graph": name, "create": True})
+
+
+@pytest.mark.asyncio
+async def test_publish_names_an_unreadable_preset_before_the_secret_gate(
+    test_client, app_db, _graphs_dir,
+):
+    graph = _echo_graph(name="unreadable-top")
+    graph["nodes"].append({
+        "id": "p1", "type": "preset:SecretChat",
+        "position": {"x": 0, "y": 300},
+        "data": {"internalParams": {"chat": {"model": "gpt-4o"}}},
+    })
+    graph["presets"] = [_chat_definition(readable=False)]
+
+    resp = await _publish_file(test_client, _graphs_dir, "unreadable-top", graph)
+    assert resp.status_code == 409, resp.text
+    detail = resp.json()["detail"]
+    assert detail["code"] == "invalid_graph"
+    assert detail["details"] == [_unreadable_refusal("p1")]
+
+    count = await app_db.run(lambda conn: conn.execute(
+        "SELECT COUNT(*) FROM apps").fetchone()[0])
+    assert count == 0
+
+
+@pytest.mark.asyncio
+async def test_publish_names_an_unreadable_preset_inside_a_block_first(
+    test_client, app_db, _graphs_dir,
+):
+    graph = _echo_graph(name="unreadable-block")
+    graph["nodes"].append({
+        "id": "blk", "type": "subgraph:pblock",
+        "position": {"x": 0, "y": 300}, "data": {"params": {}},
+    })
+    graph["subgraphs"] = [{
+        "id": "pblock", "name": "Preset Block", "description": "",
+        "nodes": [
+            {"id": "p1", "type": "preset:SecretChat",
+             "position": {"x": 0, "y": 0},
+             "data": {"internalParams": {"chat": {"model": "gpt-4o"}}}},
+        ],
+        "edges": [],
+        "interface": {"inputs": [], "outputs": [], "triggerTargets": []},
+    }]
+    graph["presets"] = [_chat_definition(readable=False)]
+
+    resp = await _publish_file(
+        test_client, _graphs_dir, "unreadable-block", graph)
+    assert resp.status_code == 409, resp.text
+    detail = resp.json()["detail"]
+    assert detail["code"] == "invalid_graph"
+    # Named as validation names it: the block instance, then the card.
+    assert detail["details"] == [_unreadable_refusal("blk/p1")]
+
+
+@pytest.mark.asyncio
+async def test_publish_still_gates_a_key_in_a_readable_embedded_preset(
+    test_client, app_db, _graphs_dir,
+):
+    """The control: readable, the same card goes to the secret gate, which
+    names the key and nothing else."""
+    graph = _echo_graph(name="readable-top")
+    graph["nodes"].append({
+        "id": "p1", "type": "preset:SecretChat",
+        "position": {"x": 0, "y": 300},
+        "data": {"internalParams": {"chat": {
+            "openai_api_key": "sk-leaked-in-readable", "model": "gpt-4o"}}},
+    })
+    graph["presets"] = [_chat_definition(readable=True)]
+
+    resp = await _publish_file(test_client, _graphs_dir, "readable-top", graph)
+    assert resp.status_code == 409, resp.text
+    detail = resp.json()["detail"]
+    assert detail["code"] == "secret_in_graph"
+    assert detail["details"] == [
+        {"node_id": "p1", "param": "chat.openai_api_key"}]
