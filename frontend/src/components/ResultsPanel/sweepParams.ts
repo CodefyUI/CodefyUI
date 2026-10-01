@@ -2,7 +2,7 @@ import type { SweepMethod, SweepParam, SweepRange, SweepValue } from '../../api/
 import type { AppNode, NodeDefinition, ParamDefinition } from '../../types';
 
 const SWEEPABLE_TYPES = new Set<ParamDefinition['param_type']>([
-  'int', 'float', 'bool', 'string', 'select',
+  'int', 'float', 'bool', 'select',
 ]);
 
 export interface EligibleSweepParam {

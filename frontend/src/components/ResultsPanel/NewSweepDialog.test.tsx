@@ -12,6 +12,7 @@ const trainDefinition: NodeDefinition = {
   params: [
     { name: 'epochs', param_type: 'int', default: 2, description: '', options: [], min_value: 1, max_value: 10 },
     { name: 'rate', param_type: 'float', default: 0.1, description: '', options: [], min_value: 0, max_value: 1 },
+    { name: 'label', param_type: 'string', default: 'training', description: '', options: [], min_value: null, max_value: null },
     { name: 'mode', param_type: 'select', default: 'fast', description: '', options: ['fast', 'safe'], min_value: null, max_value: null },
     { name: 'api_key', param_type: 'secret', default: '', description: '', options: [], min_value: null, max_value: null },
   ],
@@ -68,6 +69,8 @@ describe('NewSweepDialog', () => {
     render(<NewSweepDialog onClose={vi.fn()} />);
     const dialog = screen.getByRole('dialog');
     expect(within(dialog).getByRole('option', { name: /Trainer.*epochs/i })).toBeInTheDocument();
+    expect(within(dialog).getByRole('option', { name: /Trainer.*mode/i })).toBeInTheDocument();
+    expect(within(dialog).queryByRole('option', { name: /Trainer.*label/i })).toBeNull();
     expect(within(dialog).queryByRole('option', { name: /api_key/i })).toBeNull();
 
     fireEvent.change(within(dialog).getByLabelText(/values/i), { target: { value: '2, 4' } });

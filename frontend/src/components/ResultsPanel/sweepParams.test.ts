@@ -36,11 +36,16 @@ function node(id: string, type = 'Train', extra: Record<string, unknown> = {}) {
 }
 
 describe('eligibleSweepParams', () => {
+  it('excludes registered free-text string parameters', () => {
+    const out = eligibleSweepParams([definition('Train')], [node('n')]);
+    expect(out.map((entry) => entry.param.name)).not.toContain('label');
+  });
+
   it('returns top-level registered primitive params in canvas order', () => {
     const out = eligibleSweepParams([definition('Train')], [node('b'), node('a')]);
     expect(out.map((entry) => `${entry.nodeId}.${entry.param.name}`)).toEqual([
-      'b.epochs', 'b.rate', 'b.enabled', 'b.label', 'b.mode',
-      'a.epochs', 'a.rate', 'a.enabled', 'a.label', 'a.mode',
+      'b.epochs', 'b.rate', 'b.enabled', 'b.mode',
+      'a.epochs', 'a.rate', 'a.enabled', 'a.mode',
     ]);
     expect(out.some((entry) => entry.param.param_type === 'secret')).toBe(false);
   });
@@ -61,11 +66,10 @@ describe('sweep domain builders', () => {
   const eligible = eligibleSweepParams([definition('Train')], [node('n')]);
   const byName = (name: string) => eligible.find((entry) => entry.param.name === name)!;
 
-  it('preserves explicit int, float, bool, string and select value types', () => {
+  it('preserves explicit int, float, bool and select value types', () => {
     expect(buildValuesDomain(byName('epochs'), '2, 4')).toEqual({ node_id: 'n', param: 'epochs', values: [2, 4] });
     expect(buildValuesDomain(byName('rate'), '0.1\n0.25')).toEqual({ node_id: 'n', param: 'rate', values: [0.1, 0.25] });
     expect(buildValuesDomain(byName('enabled'), 'true, false')).toEqual({ node_id: 'n', param: 'enabled', values: [true, false] });
-    expect(buildValuesDomain(byName('label'), 'small, large')).toEqual({ node_id: 'n', param: 'label', values: ['small', 'large'] });
     expect(buildValuesDomain(byName('mode'), 'fast, safe')).toEqual({ node_id: 'n', param: 'mode', values: ['fast', 'safe'] });
   });
 
