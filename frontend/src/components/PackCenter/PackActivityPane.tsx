@@ -153,7 +153,12 @@ export function PackActivityPane({
         />
       )}
 
-      <PackLogTail lines={job.log} ariaLabel={t('packs.activity.log')} />
+      {/* A stopped job gets no more lines, so an empty log would say it is
+          waiting for one that never comes. A restart-mode job always ends
+          here: its helper writes its output to a file on disk. */}
+      {(running || job.log.length > 0) && (
+        <PackLogTail lines={job.log} ariaLabel={t('packs.activity.log')} />
+      )}
 
       <div className={styles.cardActions}>
         {running ? (
@@ -318,14 +323,15 @@ function resultSentence(t: Translate, job: PackJob, title: string): string | nul
     case 'cancelled':
       return t('packs.activity.cancelled');
     case 'needs_restart':
-      // One status, two stories, and "Installed." is only true for one of
-      // them. A RESTART-mode job really did install: the helper is running
-      // and the server is on its way out. A LIVE job with this status stopped
-      // dead on a resolver conflict having changed nothing — telling that
-      // user their pack is installed is how they come back to report it
-      // missing. `retryMode` is the server's own word for "a restart is what
-      // would finish this", and a job whose mode is not `restart` is a live
-      // one whatever else it says.
+      // One status, two stories, and neither has installed anything yet. A
+      // RESTART-mode job ends the moment the server hands it to the helper,
+      // which installs only after the server has exited; the banner shows
+      // before that, and after Return from an overlay whose restart never
+      // started or never came back, so it states the requirement and no
+      // outcome. A LIVE job with this status stopped dead on a resolver
+      // conflict having changed nothing. `retryMode` is the server's own word
+      // for "a restart is what would finish this", and a job whose mode is
+      // not `restart` is a live one whatever else it says.
       return job.retryMode === 'restart' || job.mode !== 'restart'
         ? t('packs.activity.needsRestartConflict')
         : t('packs.activity.needsRestart', { pack: title });

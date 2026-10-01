@@ -11,8 +11,10 @@ import signal
 import subprocess
 import sys
 import tarfile
+import threading
 from pathlib import Path
 from textwrap import dedent
+from types import SimpleNamespace
 
 import pytest
 
@@ -28,6 +30,7 @@ from app.core.packs import runner as packs_runner
 from app.core.plugin_validator import PluginValidationError
 from app.core.plugins import catalog as core_catalog
 from app.core.plugins import deps as core_deps
+from app.core.plugins import flows as core_flows
 from app.core.plugins import github as core_github
 from app.core.plugins import lifecycle
 
@@ -2389,18 +2392,14 @@ def test_packages_that_cannot_be_installed_here_are_exit_3_with_the_command(
     assert not (isolated_lockfile / ".staging").exists()
 
 
+_CANCELLING = "Cancelling... (finishing the current step)"
+
+
 def test_ctrl_c_stops_the_install_at_130_and_writes_nothing(
     isolated_lockfile, fake_github, monkeypatch, capsys
 ):
-    """SIGINT sets a flag the install polls; it never raises through it.
-
-    A ``KeyboardInterrupt`` thrown out of the handler would skip the flow's
-    own cancellation path -- the one that removes the half-written download
-    and the staging copy -- and print a traceback where "Cancelled" belongs.
-    So the handler the CLI installed is called from inside the download,
-    exactly as the OS would call it, and what is asserted is the exit code,
-    the empty lockfile and the handler being put back afterwards.
-    """
+    """The first SIGINT requests owned cleanup, says so and arms default
+    handling."""
     monkeypatch.setenv("CODEFYUI_LANG", "en")
     fake_github({
         "cdui.plugin.toml": _TEMPLATE_MANIFEST,
@@ -2408,21 +2407,333 @@ def test_ctrl_c_stops_the_install_at_130_and_writes_nothing(
     })
     served = plugin_cli.download_tarball
     before = signal.getsignal(signal.SIGINT)
+    close_calls = 0
+    warn_calls = 0
+    real_close = plugin_cli._ConsoleReporter.close
+    real_warn = plugin_cli.warn
+
+    def _close_spy(reporter):
+        nonlocal close_calls
+        close_calls += 1
+        return real_close(reporter)
+
+    def _warn_spy(zh, en):
+        nonlocal warn_calls
+        warn_calls += 1
+        return real_warn(zh, en)
+
+    monkeypatch.setattr(plugin_cli._ConsoleReporter, "close", _close_spy)
+    monkeypatch.setattr(plugin_cli, "warn", _warn_spy)
 
     def _interrupted(owner, repo, sha, dest, **kwargs):
         handler = signal.getsignal(signal.SIGINT)
         assert callable(handler), "the install installs its own SIGINT handler"
         assert handler is not before
+        capsys.readouterr()
+        close_before = close_calls
+        warn_before = warn_calls
+
         handler(signal.SIGINT, None)
+
+        # Said at once, by the handler, and not through warn() or the
+        # reporter: both write to the buffered stdout the press interrupted.
+        captured = capsys.readouterr()
+        assert captured.out.count(_CANCELLING) == 1 and captured.err == ""
+        assert close_calls == close_before
+        assert warn_calls == warn_before
+        assert signal.getsignal(signal.SIGINT) is signal.SIG_DFL
+        # A real second Ctrl-C now reaches SIG_DFL. Calling the captured first
+        # handler again merely proves it is idempotent and performs no output.
+        handler(signal.SIGINT, None)
+        captured = capsys.readouterr()
+        assert captured.out == "" and captured.err == ""
         served(owner, repo, sha, dest, **kwargs)
 
     monkeypatch.setattr(plugin_cli, "download_tarball", _interrupted)
 
     assert _official(_install_args()) == 130
-    assert "Cancelled" in _out(capsys)
+    text = _out(capsys)
+    assert _CANCELLING not in text, "the polls said it a second time"
+    assert text.count("Cancelled (nothing was installed)") == 1
     assert plugin_loader.load_lockfile()["plugins"] == {}
     assert not (isolated_lockfile / "official-template").exists()
     assert not (isolated_lockfile / ".staging").exists()
     # Restored, so a `cdui plugin sync` installing five packs does not end
     # up with five nested handlers.
     assert signal.getsignal(signal.SIGINT) is before
+
+
+def test_ctrl_c_during_link_dependency_install_uses_the_same_two_stage_handler(
+    monkeypatch, capsys
+):
+    from app.core.plugins.errors import PluginCancelled
+
+    monkeypatch.setenv("CODEFYUI_LANG", "en")
+    before = signal.getsignal(signal.SIGINT)
+    close_calls = 0
+    warn_calls = 0
+    real_close = plugin_cli._ConsoleReporter.close
+    real_warn = plugin_cli.warn
+
+    def _close_spy(reporter):
+        nonlocal close_calls
+        close_calls += 1
+        return real_close(reporter)
+
+    def _warn_spy(zh, en):
+        nonlocal warn_calls
+        warn_calls += 1
+        return real_warn(zh, en)
+
+    monkeypatch.setattr(plugin_cli._ConsoleReporter, "close", _close_spy)
+    monkeypatch.setattr(plugin_cli, "warn", _warn_spy)
+
+    def _cancelled(specs, *, emit, cancel_check):
+        assert cancel_check() is False
+        handler = signal.getsignal(signal.SIGINT)
+        assert callable(handler)
+        capsys.readouterr()
+        close_before = close_calls
+        warn_before = warn_calls
+
+        handler(signal.SIGINT, None)
+
+        captured = capsys.readouterr()
+        assert captured.out.count(_CANCELLING) == 1 and captured.err == ""
+        assert close_calls == close_before
+        assert warn_calls == warn_before
+        assert signal.getsignal(signal.SIGINT) is signal.SIG_DFL
+        assert cancel_check() is True
+        raise PluginCancelled("cancelled")
+
+    monkeypatch.setattr(core_deps, "install_deps_step", _cancelled)
+
+    assert plugin_cli._install_deps({"numpy": ">=1"}) == 130
+    text = _out(capsys)
+    assert _CANCELLING not in text, "the poll said it a second time"
+    assert text.count("Cancelled") == 1
+    assert signal.getsignal(signal.SIGINT) is before
+
+
+@pytest.mark.parametrize("finishing", [False, True])
+def test_a_ctrl_c_handled_inside_the_first_one_never_waits_on_the_flag(
+    finishing, monkeypatch, capsys
+):
+    """``Event.set()`` holds a lock that is not re-entrant.
+
+    So the handler arms the default exit before it touches the flag -- a
+    second press then ends the process instead of waiting on that lock --
+    and claims the press with a plain flag first, because from the stage step
+    on no default is armed to keep a second press out of the handler. The
+    fake flag runs the handler again from inside ``set()``: a second
+    ``set()`` from in there would hang on the real one.
+    """
+    monkeypatch.setenv("CODEFYUI_LANG", "en")
+    seen = []
+
+    class _Event(threading.Event):
+        def set(self):
+            seen.append(signal.getsignal(signal.SIGINT))
+            if len(seen) == 1:
+                handler(signal.SIGINT, None)
+            super().set()
+
+    monkeypatch.setattr(plugin_cli, "threading", SimpleNamespace(Event=_Event))
+
+    reporter = plugin_cli._ConsoleReporter()
+    with plugin_cli._cancel_on_sigint(reporter) as cancel_check:
+        if finishing:
+            cancel_check.finish_uninterrupted()
+        handler = signal.getsignal(signal.SIGINT)
+        handler(signal.SIGINT, None)
+        assert cancel_check() is True
+
+    assert seen == [handler if finishing else signal.SIG_DFL]
+    assert _out(capsys).count(_CANCELLING) == 1
+
+
+class _StdoutMidWrite(io.TextIOWrapper):
+    """A stdout that is in the middle of a write when Ctrl-C lands.
+
+    Writing text that contains ``interrupt_on`` runs the SIGINT handler from
+    inside ``write`` -- where a real press arrives mid-``print`` -- and any
+    write made from in there fails the way CPython's buffered writer fails a
+    re-entrant one (#489).
+    """
+
+    def __init__(self) -> None:
+        super().__init__(io.BytesIO(), encoding="utf-8", newline="",
+                         write_through=True)
+        self.interrupt_on: str | None = None
+        self._writing = False
+
+    def write(self, text: str) -> int:
+        if self._writing:
+            raise RuntimeError("reentrant call inside <stdout>")
+        self._writing = True
+        try:
+            if self.interrupt_on is not None and self.interrupt_on in text:
+                self.interrupt_on = None
+                signal.getsignal(signal.SIGINT)(signal.SIGINT, None)
+            return super().write(text)
+        finally:
+            self._writing = False
+
+    def text(self) -> str:
+        return self.buffer.getvalue().decode("utf-8")
+
+
+def test_the_cancelling_notice_is_written_at_once_without_reentering_stdout(
+    monkeypatch,
+):
+    """The lock wait never polls ``cancel_check``; a notice left to the next
+    poll would be up to a minute of silence after the press. The handler
+    writes it itself, under the text stream -- the press can land inside a
+    ``print`` to that very stream."""
+    monkeypatch.setenv("CODEFYUI_LANG", "en")
+    stdout = _StdoutMidWrite()
+    monkeypatch.setattr(sys, "stdout", stdout)
+
+    reporter = plugin_cli._ConsoleReporter()
+    with plugin_cli._cancel_on_sigint(reporter) as cancel_check:
+        stdout.interrupt_on = "<<waiting for the lockfile>>"
+        print("<<waiting for the lockfile>>")
+        assert stdout.text().count(_CANCELLING) == 1, "the press said nothing"
+        assert cancel_check() is True
+
+    assert stdout.text().count(_CANCELLING) == 1
+
+
+def test_a_block_buffered_stdout_hears_about_the_cancel_in_order(monkeypatch):
+    """Stdout redirected to a file flushes only when its buffer fills, so a
+    line written under it would land ahead of lines still waiting there --
+    the out-of-order log a person then debugs the wrong thing from. On such
+    a stream the first poll says it instead, once."""
+    monkeypatch.setenv("CODEFYUI_LANG", "en")
+    stdout = io.TextIOWrapper(io.BytesIO(), encoding="utf-8", newline="")
+    monkeypatch.setattr(sys, "stdout", stdout)
+
+    reporter = plugin_cli._ConsoleReporter()
+    with plugin_cli._cancel_on_sigint(reporter) as cancel_check:
+        print("<<before the press>>")
+        signal.getsignal(signal.SIGINT)(signal.SIGINT, None)
+        assert cancel_check() is True
+        assert cancel_check() is True
+
+    stdout.flush()
+    text = stdout.buffer.getvalue().decode("utf-8")
+    assert text.count(_CANCELLING) == 1
+    assert text.index("<<before the press>>") < text.index(_CANCELLING)
+
+
+@pytest.mark.parametrize("returns", [
+    lambda data: None,
+    lambda data: len(data) - 1,
+], ids=["none", "short"])
+def test_a_notice_the_raw_layer_did_not_take_whole_is_left_to_the_poll(
+    returns, monkeypatch
+):
+    """A full non-blocking stdout makes ``raw.write`` return None, and it can
+    take only part of the line. Counted as written, the notice is lost and the
+    poll stays quiet; so the first poll says it."""
+    monkeypatch.setenv("CODEFYUI_LANG", "en")
+    printed = io.StringIO()
+    stdout = SimpleNamespace(
+        encoding="utf-8", line_buffering=True, write_through=False,
+        buffer=SimpleNamespace(raw=SimpleNamespace(write=returns)),
+        write=printed.write, flush=lambda: None,
+    )
+    monkeypatch.setattr(sys, "stdout", stdout)
+
+    reporter = plugin_cli._ConsoleReporter()
+    with plugin_cli._cancel_on_sigint(reporter) as cancel_check:
+        signal.getsignal(signal.SIGINT)(signal.SIGINT, None)
+        assert cancel_check() is True
+
+    assert printed.getvalue().count(_CANCELLING) == 1
+
+
+def test_a_late_finish_uninterrupted_leaves_the_restored_handler_alone():
+    """Called after the scope has put the previous handler back, the switch
+    must not install the scope's handler again: nothing would ever remove it."""
+    before = signal.getsignal(signal.SIGINT)
+    try:
+        reporter = plugin_cli._ConsoleReporter()
+        with plugin_cli._cancel_on_sigint(reporter) as cancel_check:
+            signal.getsignal(signal.SIGINT)(signal.SIGINT, None)
+        assert signal.getsignal(signal.SIGINT) is before
+        cancel_check.finish_uninterrupted()
+        assert signal.getsignal(signal.SIGINT) is before
+    finally:
+        signal.signal(signal.SIGINT, before)
+
+
+def test_a_ctrl_c_while_the_install_records_itself_lets_it_finish(
+    isolated_lockfile, fake_github, monkeypatch, capsys
+):
+    """From the stage step on, a second Ctrl-C is one more request.
+
+    The stage step puts the plugin's files in place and the lock step records
+    them, waiting up to a minute for the lockfile. A process killed in between
+    leaves a plugin on the disk that no lockfile mentions -- or, for an
+    update, the new files under the old record beside an ``.old-`` copy. So a
+    press there must not arm the default exit, and the install finishes.
+    """
+    monkeypatch.setenv("CODEFYUI_LANG", "en")
+    fake_github()
+    record = core_flows._write_lockfile_entry
+    armed = []
+
+    def _pressed_while_recording(plan, entry):
+        signal.getsignal(signal.SIGINT)(signal.SIGINT, None)
+        armed.append(signal.getsignal(signal.SIGINT))
+        return record(plan, entry)
+
+    monkeypatch.setattr(
+        core_flows, "_write_lockfile_entry", _pressed_while_recording
+    )
+
+    assert _official(_install_args()) == 0
+    assert len(armed) == 1 and armed[0] is not signal.SIG_DFL
+    assert "official-template" in plugin_loader.load_lockfile()["plugins"]
+    assert (isolated_lockfile / "official-template").is_dir()
+    assert _out(capsys).count(_CANCELLING) == 1
+
+
+def test_a_ctrl_c_just_before_staging_still_cancels_with_the_default_off(
+    isolated_lockfile, fake_github, monkeypatch, capsys
+):
+    """The stage step takes back a default exit armed just before it.
+
+    A press after the scan's cancel check arms the default, and the stage
+    step still honours the request at its own check after the copy -- but
+    nothing from the copy on may be cut short by a second press.
+    """
+    monkeypatch.setenv("CODEFYUI_LANG", "en")
+    fake_github()
+    python_deps = core_flows.manifest_python_deps
+    stage = core_flows._stage
+    armed = []
+
+    def _pressed_after_the_scan(manifest):
+        signal.getsignal(signal.SIGINT)(signal.SIGINT, None)
+        assert signal.getsignal(signal.SIGINT) is signal.SIG_DFL
+        return python_deps(manifest)
+
+    def _staging(*args, **kwargs):
+        armed.append(signal.getsignal(signal.SIGINT))
+        return stage(*args, **kwargs)
+
+    monkeypatch.setattr(
+        core_flows, "manifest_python_deps", _pressed_after_the_scan
+    )
+    monkeypatch.setattr(core_flows, "_stage", _staging)
+
+    assert _official(_install_args()) == 130
+    assert len(armed) == 1 and armed[0] is not signal.SIG_DFL
+    assert plugin_loader.load_lockfile()["plugins"] == {}
+    assert not (isolated_lockfile / "official-template").exists()
+    assert not any((isolated_lockfile / ".staging").iterdir())
+    text = _out(capsys)
+    assert text.count(_CANCELLING) == 1
+    assert text.count("Cancelled (nothing was installed)") == 1

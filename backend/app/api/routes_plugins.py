@@ -697,9 +697,13 @@ async def get_plugin(plugin_id: str) -> dict[str, Any]:
     lockfile = load_lockfile()
     if plugin_id not in lockfile.get("plugins", {}):
         raise _coded(404, "not_installed")
+    entry = lockfile["plugins"][plugin_id]
 
     for pid, plugin_dir in iter_plugin_dirs(
-        plugin_loader.plugins_builtin_root(), plugin_loader.plugins_user_root(), lockfile
+        plugin_loader.plugins_builtin_root(),
+        plugin_loader.plugins_user_root(),
+        lockfile,
+        include_disabled=True,
     ):
         if pid != plugin_id:
             continue
@@ -709,20 +713,20 @@ async def get_plugin(plugin_id: str) -> dict[str, Any]:
         if readme_path.exists():
             try:
                 readme = readme_path.read_text(encoding="utf-8")
-            except OSError:
+            except (OSError, ValueError):
+                # As in ``read_manifest_safe``: a README that is not UTF-8
+                # raises ``UnicodeDecodeError``, a ``ValueError``, and is
+                # no README rather than a 500 for the whole detail.
                 pass
         return {
             "id": plugin_id,
             "manifest": manifest,
-            "lockfile_entry": lockfile["plugins"][plugin_id],
-            "nodes": nodes_for_plugin(plugin_id, registry),
+            "lockfile_entry": entry,
+            "nodes": nodes_for_plugin(plugin_id, registry) if is_enabled(entry) else [],
             "readme": readme,
         }
 
-    raise HTTPException(
-        status_code=404,
-        detail=f"Plugin '{plugin_id}' is in the lockfile but its files are missing",
-    )
+    raise _coded(404, "missing_files")
 
 
 @router.delete("/{plugin_id}",

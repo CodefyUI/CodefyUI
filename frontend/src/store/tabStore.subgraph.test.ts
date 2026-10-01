@@ -899,15 +899,158 @@ describe('enterSubgraph lays out a definition that has no positions', () => {
   });
 });
 
+describe('document-owned preset history and collisions', () => {
+  it('undo and redo restore ownership acquired by adding a preset', () => {
+    const owned = presetDefinition('History', 'added') as PresetDefinition;
+    expect(tab().presets).toEqual([]);
+
+    store().addPresetNode(owned, { x: 0, y: 0 });
+    expect(tab().presets).toEqual([owned]);
+
+    store().undo();
+    expect(tab().presets).toEqual([]);
+    store().redo();
+    expect(tab().presets).toEqual([owned]);
+  });
+
+  it('insert keeps destination ownership on node attachments and through history', () => {
+    const local = presetDefinition('Shared', 'local') as PresetDefinition;
+    const foreign = presetDefinition('Shared', 'foreign') as PresetDefinition;
+    store().loadGraphDocument({
+      nodes: [], edges: [], boundFile: null, presets: [local],
+    });
+
+    store().insertGraph([{
+      ...presetNode('incoming', 0, 0, 'Shared'),
+      data: {
+        ...presetNode('incoming', 0, 0, 'Shared').data,
+        presetDefinition: foreign,
+      },
+    }], [], [], undefined, [foreign]);
+
+    expect(tab().presets).toEqual([local]);
+    expect(tab().nodes[0].data.presetDefinition).toBe(local);
+    expect(store().getSerializedGraph().presets[0].description).toBe('local');
+    store().undo();
+    expect(tab().presets).toEqual([local]);
+    store().redo();
+    expect(tab().nodes[0].data.presetDefinition).toBe(local);
+  });
+
+  it('paste keeps destination ownership on a colliding attachment', () => {
+    const foreign = presetDefinition('Shared', 'foreign') as PresetDefinition;
+    store().addPresetNode(foreign, { x: 0, y: 0 });
+    select(tab().nodes[0].id);
+    store().copySelectedNodes();
+
+    store().addTab('destination');
+    const local = presetDefinition('Shared', 'local') as PresetDefinition;
+    store().loadGraphDocument({ nodes: [], edges: [], boundFile: null, presets: [local] });
+    store().pasteNodes();
+
+    expect(tab().presets).toEqual([local]);
+    expect(tab().nodes[0].data.presetDefinition).toBe(local);
+    expect(store().getSerializedGraph().presets[0].description).toBe('local');
+  });
+
+  it('undo and redo restore ownership acquired by collapse', () => {
+    const portable = presetDefinition('Folded', 'portable') as PresetDefinition;
+    const preset = {
+      ...presetNode('p', 100, 0, 'Folded'),
+      selected: true,
+      data: { ...presetNode('p', 100, 0, 'Folded').data, presetDefinition: portable },
+    };
+    store().setNodes([node('a', 'A', 0, 0), preset]);
+    store().setEdges([dataEdge('e', 'a', 'p')]);
+    select('a', 'p');
+    expect(store().collapseSelectionToSubgraph('Block').ok).toBe(true);
+    expect(tab().presets).toEqual([portable]);
+    store().undo();
+    expect(tab().presets).toEqual([]);
+    store().redo();
+    expect(tab().presets).toEqual([portable]);
+  });
+});
+
+describe('transitive portable preset serialization', () => {
+  const nestedPreset = (
+    name: string,
+    children: string[],
+  ): PresetDefinition => ({
+    ...(presetDefinition(name, name) as PresetDefinition),
+    nodes: children.map((child, index) => ({
+      id: `inner-${index}`,
+      type: `preset:${child}`,
+      params: {},
+    })),
+  });
+
+  it('includes nested document definitions in deterministic reference order', () => {
+    const inner = nestedPreset('Inner', []);
+    const outer = nestedPreset('Outer', ['Inner']);
+    store().loadGraphDocument({
+      nodes: [{
+        ...presetNode('outer', 0, 0, 'Outer'),
+        data: { ...presetNode('outer', 0, 0, 'Outer').data, presetDefinition: outer },
+      }],
+      edges: [], boundFile: null, presets: [outer, inner],
+    });
+    useNodeDefStore.setState({ presets: [] } as never);
+
+    const serialized = store().getSerializedGraph();
+
+    expect(serialized.presets.map((preset) => preset.preset_name))
+      .toEqual(['Outer', 'Inner']);
+    const restored = _tabFromPersistedForTesting(
+      _buildPersistedTabForTesting(tab()),
+      tab(),
+    );
+    useTabStore.setState({ tabs: [restored], activeTabId: restored.id });
+    expect(store().getSerializedGraph().presets.map((preset) => preset.preset_name))
+      .toEqual(['Outer', 'Inner']);
+  });
+
+  it('is cycle-safe and emits each definition once', () => {
+    const a = nestedPreset('A', ['B']);
+    const b = nestedPreset('B', ['A']);
+    store().loadGraphDocument({
+      nodes: [{
+        ...presetNode('a', 0, 0, 'A'),
+        data: { ...presetNode('a', 0, 0, 'A').data, presetDefinition: a },
+      }],
+      edges: [], boundFile: null, presets: [a, b],
+    });
+
+    expect(store().getSerializedGraph().presets.map((preset) => preset.preset_name))
+      .toEqual(['A', 'B']);
+  });
+
+  it('stops transitive expansion at the backend depth budget', () => {
+    const definitions = Array.from({ length: 12 }, (_, index) =>
+      nestedPreset(`P${index}`, index < 11 ? [`P${index + 1}`] : []),
+    );
+    store().loadGraphDocument({
+      nodes: [{
+        ...presetNode('root', 0, 0, 'P0'),
+        data: { ...presetNode('root', 0, 0, 'P0').data, presetDefinition: definitions[0] },
+      }],
+      edges: [], boundFile: null, presets: definitions,
+    });
+
+    expect(store().getSerializedGraph().presets.map((preset) => preset.preset_name))
+      .toEqual(Array.from({ length: 10 }, (_, index) => `P${index}`));
+  });
+});
+
 // ── Round-2 review findings ─────────────────────────────────────────────
 
-function presetDefinition(name = 'KeyedChat') {
+function presetDefinition(name = 'KeyedChat', marker = '') {
   return {
     preset_name: name,
     category: 'c',
-    description: '',
+    description: marker,
     tags: [],
-    nodes: [{ id: 'inner', type: 'LLMChat', params: {} }],
+    nodes: [{ id: 'inner', type: 'LLMChat', params: { marker } }],
     edges: [],
     exposed_inputs: [],
     exposed_outputs: [],
@@ -958,7 +1101,11 @@ describe('getSerializedGraph carries what a definition depends on', () => {
     select('a', 'p');
     const result = store().collapseSelectionToSubgraph('Block');
     expect(result.ok).toBe(true);
+    expect(tab().presets).toEqual([presetDefinition()]);
 
+    // The global registry may later drop an imported preset. The tab-owned
+    // copy remains the executable source for this document.
+    useNodeDefStore.setState({ presets: [] } as never);
     const serialized = store().getSerializedGraph();
     // The definition really did swallow the preset node.
     expect(

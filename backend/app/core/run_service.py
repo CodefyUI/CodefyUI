@@ -2581,7 +2581,10 @@ class RunService:
         return count
 
     async def scrub_stored_secrets(self) -> int:
-        """Remove SECRET values an older build persisted. Returns rows changed.
+        """Remove values an older build persisted. Returns rows changed.
+
+        SECRET values, plus every value of a card whose graph-owned preset
+        definition cannot be read (#541), since nothing says which are keys.
 
         A startup sweep, and the part of #251 that addresses the leak that
         already happened. Scrubbing on write only protects runs submitted
@@ -2633,10 +2636,13 @@ class RunService:
         """
         cleaned = 0
         for run_id, graph in await self.store.list_terminal_graph_snapshots():
-            # SECRET params only. NOT ``unknown_types_as_secret``, which the
-            # submit lanes pass (#537): "unknown" here would mean unknown at
-            # THIS boot, so a plugin that failed to load once would have
-            # every value of its nodes blanked in every past run, for good.
+            # SECRET params, and every value of a card whose definition in
+            # the graph's own presets[] does not parse (#541): that is a fact
+            # about the stored graph, so its ordinary settings go too. NOT
+            # ``unknown_types_as_secret``, which the submit lanes pass
+            # (#537): "unknown" here would mean unknown at THIS boot, so a
+            # plugin that failed to load once would have every value of its
+            # nodes blanked in every past run, for good.
             scrubbed, secrets = split_graph_secrets(graph)
             if not secrets:
                 continue
@@ -2646,9 +2652,10 @@ class RunService:
                 cleaned += 1
         if cleaned:
             logger.warning(
-                "removed stored SECRET parameter values from %d run "
-                "snapshot(s) written before they were scrubbed on write",
-                cleaned)
+                "blanked SECRET parameter values, and every value of preset "
+                "nodes whose embedded definition cannot be read, in %d "
+                "stored run snapshot(s) written before they were scrubbed "
+                "on write", cleaned)
         return cleaned
 
     async def prune_retention(self) -> int:

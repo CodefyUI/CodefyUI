@@ -49,11 +49,77 @@ class GraphValidationError(Exception):
     pass
 
 
+@dataclass(frozen=True)
+class MalformedPreset:
+    """A graph-owned ``presets[]`` entry that does not parse, kept by name (#541).
+
+    The graph's own definition of a preset wins over an installed one of the
+    same name. Skipping an entry the ``PresetDefinition`` model refuses -- no
+    ``nodes``, an exposed param with no ``display_name``, an edge with no
+    handle -- handed the name to the installed definition without a word: the
+    run executed a definition the graph never meant, and the SECRET walks
+    scrubbed by it, so a key the graph's own definition calls SECRET reached
+    the stored run copy. A field the installed registry defaults in a preset
+    file (``category``, ``description``, ``tags``, ``exposed_*``) the model
+    defaults the same way, so leaving one out does not make an entry
+    unreadable.
+
+    Deliberately NOT a :class:`PresetDefinition` and without its fields, like
+    :class:`MalformedSubgraph`: whatever looks a name up in a fallback has to
+    notice it, rather than expand it or fall through to the registry.
+    """
+
+    name: str
+    #: The first thing the model says is wrong, as ``<field path>: <message>``,
+    #: whitespace-collapsed and length-capped like :class:`MalformedSubgraph`.
+    error: str
+
+    def refusal(self, node_id: str) -> str:
+        """What validation, a run and an export say about a node that uses it."""
+        return (
+            f"Preset '{self.name}' is in this graph but could not be read, so "
+            f"node {node_id} cannot be expanded: {self.error}"
+        )
+
+
+def _first_parse_error(exc: Exception) -> str:
+    """The first reason a model refused an entry, as ``<field path>: <message>``."""
+    try:
+        first = exc.errors()[0]  # type: ignore[attr-defined]
+        location = ".".join(str(part) for part in first.get("loc", ()))
+        message = str(first.get("msg", ""))
+        reason = f"{location}: {message}" if location else message
+    except Exception:
+        reason = str(exc)
+    reason = " ".join(reason.split())
+    return reason[:300] + " ..." if len(reason) > 300 else reason
+
+
 def build_preset_fallback(presets: Any) -> dict:
     """Map preset_name -> PresetDefinition for graph-embedded presets (ID6).
 
-    Accepts PresetDefinition objects or plain dicts (json.loads output);
-    malformed entries are skipped so a stray preset never breaks a run.
+    Accepts PresetDefinition objects or plain dicts (json.loads output).
+
+    An entry that does not parse is not a definition, but it is not dropped
+    either (#541): it is kept under its name as a :class:`MalformedPreset`.
+    The graph owns that name, so an installed preset of the same name must not
+    stand in for it:
+
+    - validation, a run and an export refuse a graph that REFERENCES the name
+      -- a node of that type at the top level, in a block, or nested in
+      another preset -- naming the preset and the first parse error
+      (:func:`expand_presets`, :func:`validate_graph`);
+    - every SECRET walk in ``secret_params`` treats the name as unknown and
+      withholds every value such a node carries from durable copies, whatever
+      an installed definition declares;
+    - an entry no node references stays ignored, so a stray entry still never
+      breaks a run. ``/save``, ``/validate`` and ``/export`` are stricter:
+      their request model parses every entry, so any entry that does not
+      parse is a 422 there, referenced or not.
+
+    An entry with no usable name cannot be referenced, so it is dropped. A
+    parsable definition wins over a broken one with the same name, whichever
+    order the two arrive in.
     """
     from ..schemas.models import PresetDefinition
 
@@ -61,10 +127,99 @@ def build_preset_fallback(presets: Any) -> dict:
     for p in presets or []:
         try:
             model = p if isinstance(p, PresetDefinition) else PresetDefinition(**p)
-        except Exception:
+        except Exception as exc:
+            name = p.get("preset_name") if isinstance(p, dict) else None
+            if (
+                isinstance(name, str) and name
+                and not isinstance(out.get(name), PresetDefinition)
+            ):
+                out[name] = MalformedPreset(name, _first_parse_error(exc))
             continue
         out[model.preset_name] = model
     return out
+
+
+def unreadable_preset_reached(
+    preset_name: str,
+    preset_fallback: dict | None,
+) -> MalformedPreset | None:
+    """The unreadable preset a ``preset:<name>`` node would run into, if any.
+
+    The name itself, or a preset its definition nests, to the depth budget
+    :func:`prepare_executable_graph` gives expansion. Expansion refuses the
+    first one it reaches; this finds it BEFORE expansion so validation can
+    name the node the user can see, and agree with the run.
+    """
+    from .preset_registry import preset_registry
+
+    fallback = preset_fallback or {}
+    seen: set[str] = set()
+    frontier: deque[tuple[str, int]] = deque([(preset_name, 1)])
+    while frontier:
+        name, depth = frontier.popleft()
+        if name in seen:
+            continue
+        seen.add(name)
+        owned = fallback.get(name)
+        if isinstance(owned, MalformedPreset):
+            return owned
+        definition = owned or preset_registry.get(name)
+        if definition is None or depth >= 10:
+            continue
+        internal_nodes = (
+            definition.get("nodes", [])
+            if isinstance(definition, dict)
+            else definition.nodes
+        )
+        for internal in internal_nodes:
+            internal_type = str(
+                (internal.get("type") if isinstance(internal, dict)
+                 else internal.type) or ""
+            )
+            if internal_type.startswith("preset:"):
+                frontier.append((internal_type[len("preset:"):], depth + 1))
+    return None
+
+
+def unreadable_preset_errors(
+    nodes: list[dict],
+    edges: list[dict],
+    *,
+    preset_fallback: dict | None = None,
+    subgraphs: Any = None,
+) -> list[str]:
+    """The lines :func:`validate_graph` gives cards of unreadable presets.
+
+    The same cards, in the same words, and nothing else: every preset card
+    standing once block instances are inlined the way validation inlines
+    them -- at the top level, inside blocks, and through the presets a card
+    nests -- that reaches a preset the graph carries but cannot read.
+
+    For a caller that must refuse such a graph BEFORE another check. The
+    publish route's secret gate counts every value of such a card as a
+    secret, ordinary settings included, so running it first asked the user to
+    clear real settings and named the actual fault only on the next attempt.
+    """
+    nodes, edges = drop_notes(nodes, edges)
+    if any(subgraph_id_of(node.get("type", "")) is not None for node in nodes):
+        try:
+            nodes, edges, _ = expand_subgraphs_deep(
+                nodes, edges, build_subgraph_index(subgraphs)
+            )
+        except GraphValidationError:
+            # Validation reports the block's own fault and goes on with the
+            # unexpanded graph; so does this.
+            pass
+    errors: list[str] = []
+    for node in nodes:
+        node_type = str(node.get("type", ""))
+        if not node_type.startswith("preset:"):
+            continue
+        unreadable = unreadable_preset_reached(
+            node_type[len("preset:"):], preset_fallback)
+        if unreadable is not None:
+            errors.append(unreadable.refusal(node["id"]))
+    return errors
 
 
 def expand_presets(
@@ -77,9 +232,9 @@ def expand_presets(
     Returns (expanded_nodes, expanded_edges, internal_to_preset_map).
     internal_to_preset_map maps internal node IDs to the preset node ID they came from.
 
-    ``preset_fallback`` (ID6) is consulted when the server's preset
-    registry does not know the preset name -- lets a graph carrying its
-    own ``presets[]`` expand on a machine whose registry lacks it.
+    ``preset_fallback`` (ID6) contains definitions owned by the graph. A graph
+    definition wins a same-name collision with the installed registry, so the
+    graph keeps the meaning it had when it was saved.
     """
     from .preset_registry import preset_registry
 
@@ -94,7 +249,12 @@ def expand_presets(
             continue
 
         preset_name = node_type[len("preset:"):]
-        preset = preset_registry.get(preset_name) or (preset_fallback or {}).get(preset_name)
+        owned = (preset_fallback or {}).get(preset_name)
+        if isinstance(owned, MalformedPreset):
+            # The graph owns the name: an installed definition must not run
+            # in its place (#541).
+            raise GraphValidationError(owned.refusal(node["id"]))
+        preset = owned or preset_registry.get(preset_name)
         if not preset:
             raise GraphValidationError(f"Unknown preset: {preset_name}")
 
@@ -334,34 +494,33 @@ def preset_subgraph_errors(
         if not node_type.startswith("preset:"):
             continue
         preset_name = node_type[len("preset:"):]
-        candidates = [
-            candidate
-            for candidate in (
-                preset_registry.get(preset_name),
-                (preset_fallback or {}).get(preset_name),
-            )
-            if candidate is not None
-        ]
+        preset = (
+            (preset_fallback or {}).get(preset_name)
+            or preset_registry.get(preset_name)
+        )
+        # An unreadable graph-owned definition has nothing to walk, and the
+        # node using it is refused by name elsewhere (#541).
+        if preset is None or isinstance(preset, MalformedPreset):
+            continue
+        internal_nodes = (
+            preset.get("nodes", [])
+            if isinstance(preset, dict)
+            else preset.nodes
+        )
         offenders: set[str] = set()
-        for preset in candidates:
-            internal_nodes = (
-                preset.get("nodes", [])
-                if isinstance(preset, dict)
-                else preset.nodes
+        for internal in internal_nodes:
+            internal_type = (
+                internal.get("type", "")
+                if isinstance(internal, dict)
+                else internal.type
             )
-            for internal in internal_nodes:
-                internal_type = (
-                    internal.get("type", "")
+            if subgraph_id_of(internal_type) is not None:
+                internal_id = (
+                    internal.get("id", "")
                     if isinstance(internal, dict)
-                    else internal.type
+                    else internal.id
                 )
-                if subgraph_id_of(internal_type) is not None:
-                    internal_id = (
-                        internal.get("id", "")
-                        if isinstance(internal, dict)
-                        else internal.id
-                    )
-                    offenders.add(str(internal_id))
+                offenders.add(str(internal_id))
         if offenders:
             errors.append(
                 f"Preset '{preset_name}' contains subgraph instance(s) "
@@ -1194,7 +1353,16 @@ def validate_graph(
         # Preset nodes are expanded at execution time; validate they exist in preset registry
         if node_type.startswith("preset:"):
             preset_name = node_type[len("preset:"):]
-            if not (preset_registry.get(preset_name) or (preset_fallback or {}).get(preset_name)):
+            # Before the existence check, so an installed preset of the same
+            # name cannot make it pass: the run would refuse this node at
+            # expansion, and validate must agree (#541). Opaque like a refused
+            # subgraph instance, so the one fault is one line.
+            unreadable = unreadable_preset_reached(preset_name, preset_fallback)
+            if unreadable is not None:
+                errors.append(unreadable.refusal(node["id"]))
+                opaque_node_ids.add(node["id"])
+                valid_node_ids.add(node["id"])
+            elif not (preset_registry.get(preset_name) or (preset_fallback or {}).get(preset_name)):
                 errors.append(f"Unknown preset: {preset_name} (node {node['id']})")
             else:
                 opaque_node_ids.add(node["id"])

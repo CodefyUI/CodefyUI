@@ -68,11 +68,15 @@
   border-color: var(--border-base);
 }
 
+/* Wraps too, so it is never wider than the list: beside an open run on a
+   phone the list is 178 px and this group alone was 194. */
 .toolbarRight {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: var(--sp-3);
-  flex-shrink: 0;
+  justify-content: flex-end;
+  gap: var(--sp-2) var(--sp-3);
+  min-width: 0;
   margin-left: auto;
 }
 
@@ -469,6 +473,27 @@
 
   .colStarted {
     display: none;
+  }
+}
+
+/* A list squeezed beside an open run on a phone. Wrapped chips stood three
+   rows high and left no room for a single run, so they scroll sideways in
+   one row; the listed count goes, and the two actions share one line. */
+@container (max-width: 320px) {
+  .filters {
+    flex: 1 1 100%;
+    min-width: 0;
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    scrollbar-width: thin;
+  }
+
+  .countText {
+    display: none;
+  }
+
+  .toolbarRight {
+    gap: var(--sp-2);
   }
 }
 

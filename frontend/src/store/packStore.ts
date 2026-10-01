@@ -16,6 +16,7 @@ import {
   type PackJobStatus,
   type PackSummary,
 } from '../api/rest';
+import { invalidateSessionToken } from '../api/_auth';
 import {
   EVENT_WAIT_S,
   FOLLOW_IDLE_MS,
@@ -232,6 +233,8 @@ interface PackState {
   /** Clear a finished job from the activity pane. Ignored while running. */
   dismissJob: () => void;
   restartFlow: (packId: string, command: string | null) => Promise<void>;
+  /** Leave a restart handshake only after it has reached a terminal state. */
+  dismissRestart: () => void;
   /** Once per page load: adopt a running job and report a finished restart. */
   checkInProgress: () => Promise<void>;
 }
@@ -549,7 +552,8 @@ function onJobSettled(jobId: string, packId: string, status: PackJobStatus): voi
       // back said about itself (its launcher still on disk, its kill switch
       // off), and a 202 for a restart-mode install is only ever issued by a
       // server that said yes.
-      if (settled?.mode === 'restart' && store.restartAvailable) {
+      const restarting = settled?.mode === 'restart' && store.restartAvailable;
+      if (restarting) {
         // Parked BEFORE the reload so the page that comes back knows which
         // pack and which job to report on — neither survives the reload.
         writePending(packId, jobId);
@@ -578,6 +582,11 @@ function onJobSettled(jobId: string, packId: string, status: PackJobStatus): voi
         // names.
         toast(t('packs.toast.needsCli', { command: command ?? '' }), 'warning');
       }
+      // Every ending but the handshake leaves this server running, with the
+      // card still on the Installing pill `install` set at the 202. The
+      // handshake reads nothing from a server about to exit: the reload does,
+      // or Return when the restart fails.
+      if (!restarting) void store.refresh();
       break;
     }
     default:
@@ -875,6 +884,21 @@ export const usePackStore = create<PackState>((set, get) => ({
     const job = get().job;
     if (!job || !isTerminalPhase(job.status)) return;
     set({ job: null });
+  },
+
+  dismissRestart: () => {
+    const { phase } = get().restart;
+    if (phase !== 'timeout' && phase !== 'notStarted') return;
+    // The server may have been replaced while the overlay was up, and every
+    // start mints a new session token. REST retries a refused one by itself;
+    // the execution socket's first connect does not, so Run would be refused
+    // on every attempt. Against the old server this costs one bootstrap GET.
+    invalidateSessionToken();
+    set({ restart: IDLE_RESTART });
+    // The Package Center underneath still shows the moment the restart began,
+    // including the Installing pill `install` set on the 202: nothing has
+    // read the catalog since.
+    void get().refresh();
   },
 
   restartFlow: async (packId, command) => {

@@ -148,6 +148,21 @@ export function SweepDetail({ onBack, onOpenRun, chartHeight, backRef }: SweepDe
     void cancelSweep();
   };
 
+  // The server's `objective_warning` comes whenever nothing is ranked yet --
+  // every sweep until its first variant ends -- and in English. Warned here
+  // only once it is true and worth acting on: no run has logged the objective,
+  // ranked or live, and either a variant succeeded without it (the name is
+  // likely wrong) or the sweep ended.
+  const metric = detail.objective.metric;
+  const recorded = detail.variants.some((variant) => variant.rank != null
+    || (variant.final_metrics !== undefined
+      && Object.prototype.hasOwnProperty.call(variant.final_metrics, metric)));
+  const ended = detail.state === 'finished' || (detail.state === 'failed' && activeOrQueued === 0);
+  const objectiveMissing = !recorded && ((detail.counts.succeeded ?? 0) > 0 || ended);
+  const recordedSeries = objectiveMissing
+    ? [...new Set(detail.variants.flatMap((variant) => Object.keys(variant.final_metrics ?? {})))].sort()
+    : [];
+
   const stopping = cancelledRequested === null || cancelledRequested === 0
     ? t('sweeps.detail.stoppingUnknown')
     : cancelledRequested === 1
@@ -181,7 +196,9 @@ export function SweepDetail({ onBack, onOpenRun, chartHeight, backRef }: SweepDe
       {error && !notFound && <div className={styles.error}>{friendlyError(error)}</div>}
       {cancelError && <div className={styles.error}>{t('sweeps.detail.stopFailed', { error: friendlyError(cancelError) })}</div>}
       {detail.error && <div className={styles.error}>{friendlyError(detail.error)}</div>}
-      {detail.objective_warning && <div className={styles.warning}>{detail.objective_warning}</div>}
+      {objectiveMissing && <div className={styles.warning}>{recordedSeries.length > 0
+        ? t('sweeps.detail.noObjectiveSeries', { metric, names: recordedSeries.join(', ') })
+        : t('sweeps.detail.noObjective', { metric })}</div>}
       {exportError && <div className={styles.error}>{friendlyError(exportError)}</div>}
 
       <div className={styles.tableScroll}>

@@ -241,7 +241,7 @@ describe('importWorkspaceFile: entries that cannot open', () => {
     holdAGraph();
     const result = await importWorkspaceFile(
       workspace([
-        entry('Good', graphOf({ presets: [{ preset_name: 'Kept' }] })),
+        entry('Good', graphOf({ presets: [{ preset_name: 'Kept', nodes: [], edges: [] }] })),
         entry('Bad', { nodes: 'oops', edges: [], presets: [{ preset_name: 'Smuggled' }] }),
         entry('Also good'),
       ]),

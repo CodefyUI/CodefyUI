@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { ExecutionWebSocket, executionWs } from './ws';
-import { _setSessionTokenForTesting } from './_auth';
+import { _setSessionTokenForTesting, getSessionToken } from './_auth';
 import { useToastStore } from '../store/toastStore';
 import type { ToastType } from '../store/toastStore';
 
@@ -274,6 +274,43 @@ describe('onclose / reconnect', () => {
     // No second socket and no "connection lost" toast.
     expect(FakeWS.instances).toHaveLength(1);
     expect(addToastSpy).not.toHaveBeenCalled();
+  });
+
+  it('drops the token when a first handshake closes without opening', async () => {
+    // A refused handshake, from a server that minted a new token after this
+    // tab cached its own (a restart under the page). REST heals from its 403
+    // by itself; without this the socket sent the stale token on every Run.
+    const ws = new ExecutionWebSocket();
+    const first = await startConnect(ws);
+    bootstrapToken = 'rotated-token';
+    // What a browser fires for a refused handshake: error, then close.
+    first.socket.fireError();
+    first.socket.fireClose();
+    await expect(first.promise).rejects.toThrow(/WebSocket connection failed/);
+    // Still no retry of its own: the caller reports a first-connect failure.
+    vi.runOnlyPendingTimers();
+    expect(FakeWS.instances).toHaveLength(1);
+
+    const second = ws.connect();
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(g.fetch).toHaveBeenCalledWith('/api/auth/bootstrap');
+    expect(FakeWS.instances).toHaveLength(2);
+    expect(FakeWS.instances[1].url).toContain('token=rotated-token');
+    FakeWS.instances[1].fireOpen();
+    await second;
+    ws.disconnect();
+  });
+
+  it('keeps the token when a first handshake opens', async () => {
+    const ws = new ExecutionWebSocket();
+    const { promise, socket } = await startConnect(ws);
+    socket.fireOpen();
+    await promise;
+
+    await expect(getSessionToken()).resolves.toBe('ws-test-token');
+    expect(g.fetch).not.toHaveBeenCalled();
+    ws.disconnect();
   });
 
   it('schedules a reconnect after an established connection drops', async () => {

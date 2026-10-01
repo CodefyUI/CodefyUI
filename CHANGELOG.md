@@ -30,6 +30,22 @@ received — each links to the release it was published as.
   leaving a downstream node to fail without that context. The two cases now
   name the empty box or upstream source; a non-empty list made entirely of
   out-of-vocabulary words remains a valid empty lookup.
+- **Portable presets referenced only inside a block survive registry refresh,
+  save and reopen** ([#541]). Each document owns the definitions it needs and
+  uses its version ahead of an installed same-name preset, also for a card
+  pasted or inserted from another graph, which is now drawn from that
+  definition. Only referenced definitions are saved. Save, autosave and every
+  export blank a preset's SECRET slots by every same-name definition the
+  editor has seen, so a key typed against one graph's definition stays out of
+  another graph's files, and Run sends only the keys the server blanks in the
+  run it stores.
+- **A graph whose own definition of a preset it uses cannot be read is refused
+  instead of running the installed one** ([#541]). Run, app publish and app
+  invoke name the preset and the first parse error, and the server withholds
+  every value of that preset's cards from the runs it stores, finished runs
+  included at the next start. Save and Python export reject such a graph with
+  a request error (422) where 2.8.6 silently used the installed definition. A
+  broken definition no card uses does not stop a run.
 
 ## [2.8.6] — 2026-09-24
 
@@ -4965,6 +4981,7 @@ Release candidates before 1.0.0 are on the
 [@oyea0801]: https://github.com/oyea0801
 [@latteine1217]: https://github.com/latteine1217
 [#487]: https://github.com/CodefyUI/CodefyUI/issues/487
+[#541]: https://github.com/CodefyUI/CodefyUI/issues/541
 [Unreleased]: https://github.com/CodefyUI/CodefyUI/compare/2.8.6...main
 [2.8.6]: https://github.com/CodefyUI/CodefyUI/compare/2.8.5...2.8.6
 [2.8.5]: https://github.com/CodefyUI/CodefyUI/compare/2.8.4...2.8.5

@@ -1326,6 +1326,20 @@ describe('NodeDetailModal — parameter editing', () => {
     render(<NodeDetailModal />);
     expect(screen.getByText('0 nodes inside')).toBeInTheDocument();
   });
+
+  it('reports zero inner nodes for a definition with no nodes list, as one the backend cannot read can be', () => {
+    seedTab({
+      nodes: [
+        node('p1', {
+          definition: def({ params: [] }),
+          data: { isPreset: true, presetDefinition: { preset_name: 'Broken' } as never },
+        }),
+      ],
+      nodeDetailNodeId: 'p1',
+    });
+    render(<NodeDetailModal />);
+    expect(screen.getByText('0 nodes inside')).toBeInTheDocument();
+  });
 });
 
 // ── Capture parity with the InspectorPanel ───────────────────────────────────

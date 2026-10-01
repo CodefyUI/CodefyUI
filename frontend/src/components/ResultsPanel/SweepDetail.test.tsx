@@ -99,7 +99,76 @@ describe('SweepDetail', () => {
       expect(within(page).getByText(count)).toBeInTheDocument();
     }
     expect(within(page).getByText('one child failed')).toBeInTheDocument();
-    expect(within(page).getByText('metric absent from one run')).toBeInTheDocument();
+  });
+
+  it('says nothing about the objective while every variant is still running or queued', () => {
+    // The server warns whenever nothing is ranked yet, which for real
+    // training is every sweep until its first variant ends, hours later.
+    const detail = sweep();
+    detail.counts = { queued: 2, running: 1, succeeded: 0, failed: 0, cancelled: 0, interrupted: 0, missing: 0 };
+    detail.variants = [variant(0, 'running', null, null), variant(1, 'queued', null, null), variant(2, 'queued', null, null)];
+    detail.best = null;
+    detail.objective_warning = "no variant recorded a metric named 'val_loss'";
+    useSweepStore.setState({ detail, selectedSweepId: 's1' });
+    view();
+    expect(screen.queryByText(/recorded a metric named/i)).toBeNull();
+  });
+
+  it('warns in the active language once a variant finished without the objective', () => {
+    const detail = sweep();
+    detail.counts = { queued: 0, running: 1, succeeded: 1, failed: 0, cancelled: 0, interrupted: 0, missing: 0 };
+    detail.variants = [
+      { ...variant(0, 'succeeded', null, null), final_metrics: { train_loss: 0.5, lr: 0.1 } },
+      { ...variant(1, 'running', null, null), final_metrics: { train_loss: 0.7 } },
+    ];
+    detail.best = null;
+    detail.objective_warning = "no variant recorded a metric named 'val_loss'";
+    useSweepStore.setState({ detail, selectedSweepId: 's1' });
+    const english = view();
+    expect(screen.getByText('No variant recorded a metric named "val_loss"; the runs recorded lr, train_loss.')).toBeInTheDocument();
+    expect(screen.queryByText(detail.objective_warning)).toBeNull();
+    english.unmount();
+
+    useI18n.setState({ locale: 'zh-TW' });
+    view();
+    expect(screen.getByText('沒有任何變體記錄名為「val_loss」的指標；各執行記錄的是 lr, train_loss。')).toBeInTheDocument();
+  });
+
+  it('does not warn while a running variant has already recorded the objective', () => {
+    // Ranks come only once a variant ends, but a live run that logs the
+    // objective proves the name right.
+    const detail = sweep();
+    detail.counts = { queued: 0, running: 1, succeeded: 1, failed: 0, cancelled: 0, interrupted: 0, missing: 0 };
+    detail.variants = [
+      { ...variant(0, 'succeeded', null, null), final_metrics: { train_loss: 0.5 } },
+      { ...variant(1, 'running', null, null), final_metrics: { val_loss: 0.9 } },
+    ];
+    detail.best = null;
+    useSweepStore.setState({ detail, selectedSweepId: 's1' });
+    view();
+    expect(screen.queryByText(/recorded a metric named/i)).toBeNull();
+  });
+
+  it('warns when the sweep ended with nothing ranked', () => {
+    const detail = sweep('finished');
+    detail.counts = { queued: 0, running: 0, succeeded: 0, failed: 2, cancelled: 0, interrupted: 0, missing: 0 };
+    detail.variants = [
+      { ...variant(0, 'failed', null, null), final_metrics: {} },
+      { ...variant(1, 'failed', null, null), final_metrics: {} },
+    ];
+    detail.best = null;
+    useSweepStore.setState({ detail, selectedSweepId: 's1' });
+    view();
+    expect(screen.getByText('No variant recorded a metric named "val_loss".')).toBeInTheDocument();
+  });
+
+  it('does not warn once a variant recorded the objective', () => {
+    // A ranked variant recorded it; whatever the server says, nothing is wrong.
+    const detail = sweep('finished');
+    detail.objective_warning = "no variant recorded a metric named 'val_loss'";
+    useSweepStore.setState({ detail, selectedSweepId: 's1' });
+    view();
+    expect(screen.queryByText(/recorded a metric named/i)).toBeNull();
   });
 
   it('leaves out a status no variant has', () => {

@@ -1120,3 +1120,391 @@ def test_what_the_server_can_place_is_stored_as_sent():
         registry._nodes.pop("zz9:_BareSource", None)
     assert vault == {}
     assert scrubbed is graph
+
+
+# ── a graph-owned preset definition the server cannot read (#541) ──────────
+#
+# Since #541 the graph's own definition of a preset wins over an installed one
+# of the same name, and the canvas keeps a key for the run when that
+# definition places it. ``build_preset_fallback`` used to SKIP a ``presets[]``
+# entry that fails the ``PresetDefinition`` model -- no ``nodes``, an exposed
+# param with no ``display_name`` -- so the walk consulted the installed
+# definition alone. Where that one puts a type at the same inner id that does
+# not call the key SECRET, the row stored the key, and the run executed the
+# installed definition in place of the graph's.
+
+#: The name both the installed and the sent definition carry.
+UNREADABLE = "_Unreadable"
+
+
+class _PlainEchoNode(BaseNode):
+    """``_SecretEcho`` with ``api_key`` as an ORDINARY string param: the type
+    the installed definition puts at the inner id, which gives the server no
+    reason to treat the value there as a key."""
+
+    NODE_NAME = "_PlainEcho"
+    CATEGORY = "Test"
+    DESCRIPTION = "Echoes, with no SECRET param"
+
+    @classmethod
+    def define_inputs(cls) -> list[PortDefinition]:
+        return [PortDefinition(name="value", data_type=DataType.ANY)]
+
+    @classmethod
+    def define_outputs(cls) -> list[PortDefinition]:
+        return [PortDefinition(name="value", data_type=DataType.ANY)]
+
+    @classmethod
+    def define_params(cls) -> list[ParamDefinition]:
+        return [
+            ParamDefinition(name="api_key", param_type=ParamType.STRING,
+                            default=""),
+            ParamDefinition(name="label", param_type=ParamType.STRING,
+                            default="x"),
+        ]
+
+    def execute(self, inputs: dict[str, Any],
+                params: dict[str, Any]) -> dict[str, Any]:
+        return {"value": inputs.get("value")}
+
+
+def _preset_body(inner_type: str, *, exposes_key: bool) -> dict[str, Any]:
+    """``UNREADABLE`` as a ``presets[]`` entry: one inner node ``inner``."""
+    port = {"internal_node": "inner", "internal_port": "value",
+            "data_type": "ANY", "description": ""}
+    return {
+        "preset_name": UNREADABLE, "category": "Test", "description": "",
+        "tags": [],
+        "nodes": [{"id": "inner", "type": inner_type, "params": {}}],
+        "edges": [],
+        "exposed_inputs": [{"name": "in", **port}],
+        "exposed_outputs": [{"name": "out", **port}],
+        "exposed_params": [{
+            "internal_node": "inner", "param_name": "api_key",
+            "display_name": "API key", "group": "Inner",
+            "param_def": {"name": "api_key", "param_type": "secret",
+                          "default": ""},
+        }] if exposes_key else [],
+    }
+
+
+def _dropped(body: dict[str, Any], path: tuple[Any, ...]) -> dict[str, Any]:
+    """``body`` with the field at ``path`` removed: one the model requires."""
+    broken = json.loads(json.dumps(body))
+    parent = broken
+    for step in path[:-1]:
+        parent = parent[step]
+    del parent[path[-1]]
+    return broken
+
+
+#: Two ways to not be a definition, and the first reason the model gives for
+#: each. A field the installed registry defaults, such as ``description``, is
+#: not one of them: the model defaults it the same way.
+UNREADABLE_VARIANTS = {
+    "no-nodes": (("nodes",), "nodes: Field required"),
+    "no-display-name": (("exposed_params", 0, "display_name"),
+                        "exposed_params.0.display_name: Field required"),
+}
+
+
+def _sent(variant: str | None) -> dict[str, Any]:
+    """The graph's own definition: ``_SecretEcho`` at ``inner``, exposing the
+    key -- broken by ``variant``, or intact for ``None``."""
+    body = _preset_body("_SecretEcho", exposes_key=True)
+    return body if variant is None else _dropped(
+        body, UNREADABLE_VARIANTS[variant][0])
+
+
+def _unreadable_graph(sent: dict[str, Any]) -> dict[str, Any]:
+    """Start -> source -> preset:_Unreadable, holding a key and a setting."""
+    return {
+        "nodes": [
+            {"id": "start", "type": "Start", "data": {"params": {}}},
+            {"id": "src", "type": "_SecretSource",
+             "data": {"params": {"val": "hi"}}},
+            {"id": "p", "type": f"preset:{UNREADABLE}", "data": {
+                "params": {},
+                "internalParams": {
+                    "inner": {"api_key": LIVE_KEY, "label": "keep-me"}}}},
+        ],
+        "edges": [
+            {"id": "et", "source": "start", "target": "src",
+             "sourceHandle": "trigger", "type": "trigger"},
+            {"id": "e1", "source": "src", "target": "p",
+             "sourceHandle": "value", "targetHandle": "in"},
+        ],
+        "presets": [sent],
+        "subgraphs": [],
+    }
+
+
+@pytest.fixture
+def _installed_plain_preset():
+    """The installed ``UNREADABLE``: ``_PlainEcho`` at ``inner``."""
+    registry._nodes["_PlainEcho"] = _PlainEchoNode
+    preset_registry._presets[UNREADABLE] = PresetDefinition(
+        **_preset_body("_PlainEcho", exposes_key=False))
+    try:
+        yield
+    finally:
+        preset_registry._presets.pop(UNREADABLE, None)
+        registry._nodes.pop("_PlainEcho", None)
+
+
+@pytest.mark.parametrize("variant", sorted(UNREADABLE_VARIANTS))
+def test_a_sent_definition_the_server_cannot_read_withholds_every_value(
+        _installed_plain_preset, variant):
+    """The name is unknown to the walk, whatever the installed one declares.
+
+    Every value the node carries stays out of the row, the ordinary setting
+    too: nothing the server can read says which of them is a key.
+    """
+    graph = _unreadable_graph(_sent(variant))
+    scrubbed, vault = split_graph_secrets(graph, unknown_types_as_secret=True)
+    assert scrubbed["nodes"][2]["data"]["internalParams"] == {
+        "inner": {"api_key": "", "label": ""}}
+    assert vault == {
+        ("nodes", 2, "internalParams", "inner", "api_key"): LIVE_KEY,
+        ("nodes", 2, "internalParams", "inner", "label"): "keep-me",
+    }
+    reloaded, restored = _restored_through_json(scrubbed, vault)
+    assert restored == 2
+    assert reloaded == graph
+
+
+def test_a_preset_that_nests_an_unreadable_one_withholds_that_entry(
+        _installed_plain_preset):
+    """One level down. The outer definition parses and puts the unreadable
+    preset at ``nested``; nothing can place that entry, so it is withheld
+    whole, like an unknown inner type. Its readable sibling keeps the SECRET
+    rule."""
+    graph = {
+        "nodes": [{"id": "p", "type": "preset:_NestsUnreadable", "data": {
+            "params": {},
+            "internalParams": {
+                "nested": {"api_key": LIVE_KEY, "label": "n"},
+                "echo": {"api_key": "sk-echo", "label": "keep-me"},
+            }}}],
+        "edges": [], "subgraphs": [],
+        "presets": [
+            _portable_preset("_NestsUnreadable", [
+                {"id": "nested", "type": f"preset:{UNREADABLE}", "params": {}},
+                {"id": "echo", "type": "_SecretEcho", "params": {}},
+            ]),
+            _sent("no-nodes"),
+        ],
+    }
+    scrubbed, vault = split_graph_secrets(graph, unknown_types_as_secret=True)
+    assert scrubbed["nodes"][0]["data"]["internalParams"] == {
+        "nested": {"api_key": "", "label": ""},
+        "echo": {"api_key": "", "label": "keep-me"},
+    }
+    assert vault == {
+        ("nodes", 0, "internalParams", "echo", "api_key"): "sk-echo",
+        ("nodes", 0, "internalParams", "nested", "api_key"): LIVE_KEY,
+        ("nodes", 0, "internalParams", "nested", "label"): "n",
+    }
+
+
+def test_a_sent_definition_the_server_can_read_keeps_today_s_scrub(
+        _installed_plain_preset):
+    """The control. Parsed, the sent definition is consulted beside the
+    installed one; its type at ``inner`` calls ``api_key`` SECRET, so only
+    the key goes and the setting beside it is stored as sent."""
+    graph = _unreadable_graph(_sent(None))
+    scrubbed, vault = split_graph_secrets(graph, unknown_types_as_secret=True)
+    assert scrubbed["nodes"][2]["data"]["internalParams"] == {
+        "inner": {"api_key": "", "label": "keep-me"}}
+    assert vault == {
+        ("nodes", 2, "internalParams", "inner", "api_key"): LIVE_KEY}
+
+
+@pytest.mark.parametrize("variant", sorted(UNREADABLE_VARIANTS))
+async def test_a_run_of_an_unreadable_sent_definition_is_refused_and_stores_no_key(
+        _installed_plain_preset, store, service, db_path, variant):
+    """End to end, through the submit lane the canvas uses.
+
+    The run fails naming the preset and the first thing wrong with it --
+    nothing runs the installed definition in the graph's place -- and the
+    database holds none of the node's values.
+    """
+    submitted = await service.submit(
+        _unreadable_graph(_sent(variant)), options={"lane": LANE_INTERACTIVE})
+    record = await _await_terminal(store, submitted.run_id)
+    assert record.status == STATUS_FAILED
+    assert f"Preset '{UNREADABLE}'" in (record.error or ""), record.error
+    assert UNREADABLE_VARIANTS[variant][1] in (record.error or ""), record.error
+
+    snapshot = await store.get_graph_snapshot(submitted.run_id)
+    assert snapshot["nodes"][2]["data"]["internalParams"] == {
+        "inner": {"api_key": "", "label": ""}}
+    assert LIVE_KEY.encode() not in _db_bytes(db_path)
+
+
+async def test_the_startup_sweep_withholds_an_unreadable_preset_s_values(
+        _installed_plain_preset, store, service):
+    """Unlike an unknown TYPE, an unreadable definition is a fact about the
+    stored graph, not about one boot -- so the sweep withholds its values too,
+    which also takes a key out of a row written before this rule."""
+    record = await store.create_run(
+        graph_snapshot=_unreadable_graph(_sent("no-nodes")),
+        status=STATUS_QUEUED, queue_key="cpu", provenance=RunProvenance(),
+    )
+    await store.mark_finished(record.id, STATUS_FAILED,
+                              expected=(STATUS_QUEUED,))
+    assert await service.scrub_stored_secrets() == 1
+    cleaned = await store.get_graph_snapshot(record.id)
+    assert cleaned["nodes"][2]["data"]["internalParams"] == {
+        "inner": {"api_key": "", "label": ""}}
+
+
+async def test_an_unreadable_definition_no_node_uses_changes_nothing(
+        _installed_plain_preset, store, service):
+    """A stray entry still never breaks a run, and withholds nothing extra."""
+    graph = _secret_graph()
+    graph["presets"] = [_sent("no-nodes")]
+    graph["subgraphs"] = []
+    scrubbed, vault = split_graph_secrets(graph, unknown_types_as_secret=True)
+    assert vault == {("nodes", 2, "params", "api_key"): LIVE_KEY}
+    assert scrubbed["nodes"][2]["data"]["params"] == {
+        "api_key": "", "label": "keep-me"}
+
+    submitted = await service.submit(graph, options={"lane": LANE_INTERACTIVE})
+    record = await _await_terminal(store, submitted.run_id)
+    assert record.status == STATUS_SUCCEEDED
+    assert _SecretEchoNode.seen == [LIVE_KEY]
+
+
+#: The top-level fields the installed registry defaults when a preset file
+#: leaves them out. The model defaults them the same way.
+DEFAULTED = ("category", "description", "tags",
+             "exposed_inputs", "exposed_outputs", "exposed_params")
+
+
+def _sent_without(*fields: str) -> dict[str, Any]:
+    """The intact sent definition, minus ``fields``."""
+    body = _sent(None)
+    for field in fields:
+        del body[field]
+    return body
+
+
+def test_a_minimal_sent_definition_keeps_today_s_scrub(_installed_plain_preset):
+    """``preset_name``, ``nodes`` and ``edges`` alone are a definition the
+    server reads, so the run's row loses the key and keeps the setting."""
+    graph = _unreadable_graph(_sent_without(*DEFAULTED))
+    scrubbed, vault = split_graph_secrets(graph, unknown_types_as_secret=True)
+    assert scrubbed["nodes"][2]["data"]["internalParams"] == {
+        "inner": {"api_key": "", "label": "keep-me"}}
+    assert vault == {
+        ("nodes", 2, "internalParams", "inner", "api_key"): LIVE_KEY}
+
+
+async def test_the_startup_sweep_reads_a_minimal_sent_definition(
+        _installed_plain_preset, store, service):
+    """The sweep reads it too: a finished row loses the key and keeps the
+    setting, instead of losing every value."""
+    record = await store.create_run(
+        graph_snapshot=_unreadable_graph(_sent_without(*DEFAULTED)),
+        status=STATUS_QUEUED, queue_key="cpu", provenance=RunProvenance(),
+    )
+    await store.mark_finished(record.id, STATUS_FAILED,
+                              expected=(STATUS_QUEUED,))
+    assert await service.scrub_stored_secrets() == 1
+    cleaned = await store.get_graph_snapshot(record.id)
+    assert cleaned["nodes"][2]["data"]["internalParams"] == {
+        "inner": {"api_key": "", "label": "keep-me"}}
+
+
+async def test_a_run_of_a_sent_definition_without_its_defaulted_fields_runs_it(
+        _installed_plain_preset, store, service, db_path):
+    """End to end. The exposed ports stay, since the card is wired through
+    them. The run is not refused, the graph's own definition runs with the
+    key, and the database holds no copy of it."""
+    submitted = await service.submit(
+        _unreadable_graph(_sent_without("category", "description", "tags")),
+        options={"lane": LANE_INTERACTIVE})
+    record = await _await_terminal(store, submitted.run_id)
+    assert record.status == STATUS_SUCCEEDED, record.error
+    assert _SecretEchoNode.seen == [LIVE_KEY]
+
+    snapshot = await store.get_graph_snapshot(submitted.run_id)
+    assert snapshot["nodes"][2]["data"]["internalParams"] == {
+        "inner": {"api_key": "", "label": "keep-me"}}
+    assert LIVE_KEY.encode() not in _db_bytes(db_path)
+
+
+# ── a value no inner type at its id declares (#541) ──────────────────────────
+#
+# The canvas keeps a key for the run when its own copy of the definitions puts
+# a SECRET type at that slot, and that copy can be older than the server's
+# registry. An installed preset that put ``_SecretEcho`` at ``inner`` can be
+# gone by the time the run arrives (a registry refresh, a disabled plugin),
+# leaving the graph's own definition, which puts ``Print`` there. Print has no
+# ``api_key``, so the SECRET rule had nothing to go on and the row stored the
+# key. The run's row now also withholds a value that no type at its inner id
+# declares: whatever it is, the server cannot say it is not a key.
+
+#: The preset whose installed copy is gone from the live registry.
+DEPARTED = "_Departed"
+
+
+def _departed_graph() -> dict[str, Any]:
+    """Start -> source -> ``preset:_Departed``. The graph's own definition puts
+    ``Print`` at ``inner``; the card holds a key typed against the installed
+    definition, beside ``label``, which Print declares."""
+    graph = _unreadable_graph({**_preset_body("Print", exposes_key=False),
+                               "preset_name": DEPARTED})
+    graph["nodes"][2]["type"] = f"preset:{DEPARTED}"
+    return graph
+
+
+@pytest.mark.parametrize("installed", [True, False],
+                         ids=["installed-live", "installed-gone"])
+def test_a_value_no_type_at_its_inner_id_declares_stays_out_of_the_row(
+        installed):
+    """Installed or not, the key goes and the declared setting is stored as
+    sent. With the installed definition live, its SECRET type takes the key;
+    gone, nothing at ``inner`` declares ``api_key`` at all."""
+    graph = _departed_graph()
+    if installed:
+        preset_registry._presets[DEPARTED] = PresetDefinition(**{
+            **_preset_body("_SecretEcho", exposes_key=True),
+            "preset_name": DEPARTED})
+    try:
+        scrubbed, vault = split_graph_secrets(
+            graph, unknown_types_as_secret=True)
+    finally:
+        preset_registry._presets.pop(DEPARTED, None)
+    assert scrubbed["nodes"][2]["data"]["internalParams"] == {
+        "inner": {"api_key": "", "label": "keep-me"}}
+    assert vault == {
+        ("nodes", 2, "internalParams", "inner", "api_key"): LIVE_KEY}
+    # The run loses nothing: promotion puts the value back where it was.
+    reloaded, restored = _restored_through_json(scrubbed, vault)
+    assert restored == 1
+    assert reloaded == graph
+
+
+def test_the_startup_sweep_does_not_get_the_declared_param_rule():
+    """Like the unknown-type rule, and for the same reason: which params a
+    type declares is a fact about the node classes of one boot, and the sweep
+    keeps no vault to bring a value back from."""
+    scrubbed, vault = split_graph_secrets(_departed_graph())
+    assert vault == {}
+
+
+async def test_a_run_stores_no_key_the_inner_type_at_its_slot_does_not_declare(
+        store, service, db_path):
+    """The case end to end, through the submit lane the canvas uses: the run
+    executes the graph's own definition and the database holds no key."""
+    submitted = await service.submit(
+        _departed_graph(), options={"lane": LANE_INTERACTIVE})
+    record = await _await_terminal(store, submitted.run_id)
+    assert record.status == STATUS_SUCCEEDED, record.error
+
+    snapshot = await store.get_graph_snapshot(submitted.run_id)
+    assert snapshot["nodes"][2]["data"]["internalParams"] == {
+        "inner": {"api_key": "", "label": "keep-me"}}
+    assert LIVE_KEY.encode() not in _db_bytes(db_path)

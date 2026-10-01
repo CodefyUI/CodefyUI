@@ -89,17 +89,16 @@ class PresetRegistry:
                 )
             exposed_params.append(param)
 
-        return PresetDefinition(
-            preset_name=raw["preset_name"],
-            category=raw.get("category", "Preset"),
-            description=raw.get("description", ""),
-            tags=raw.get("tags", []),
-            nodes=nodes,
-            edges=edges,
-            exposed_inputs=exposed_inputs,
-            exposed_outputs=exposed_outputs,
-            exposed_params=exposed_params,
-        )
+        # A field the file leaves out takes the model's default, which is
+        # also what a graph's own presets[] entry gets (#541).
+        return PresetDefinition.model_validate({
+            **raw,
+            "nodes": nodes,
+            "edges": edges,
+            "exposed_inputs": exposed_inputs,
+            "exposed_outputs": exposed_outputs,
+            "exposed_params": exposed_params,
+        })
 
     def _resolve_port_type(
         self,

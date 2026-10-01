@@ -2095,12 +2095,13 @@ describe('undo / redo and the segment overlays', () => {
     ] as any);
   }
 
-  it('the frame shape is exactly the five fields undo knows how to put back', () => {
+  it('the frame shape is exactly the six fields undo knows how to put back', () => {
     store().pushUndoSnapshot();
     expect(Object.keys(activeTab().undoStack[0]).sort()).toEqual([
       'activeSegment',
       'edges',
       'nodes',
+      'presets',
       'segmentGroups',
       'subgraphs',
     ]);
@@ -3429,6 +3430,7 @@ describe('tabHasContent / tabNodeCount (#331)', () => {
                   subgraphId: 'sg1',
                   nodes: outer,
                   edges: [],
+                  presets: [],
                   undoStack: [],
                   redoStack: [],
                   selectedNodeId: null,

@@ -2,7 +2,7 @@ import { memo } from 'react';
 import { Handle, Position, useReactFlow } from '@xyflow/react';
 import type { NodeProps } from '@xyflow/react';
 import type { AppNode } from '../../types';
-import { getPortColor } from '../../utils';
+import { getPortColor, readablePresetNodes } from '../../utils';
 import { findDetachableEdge, redirectMouseDownToReconnectAnchor } from '../../utils/reconnect';
 import { useTabStore } from '../../store/tabStore';
 import { useUIStore } from '../../store/uiStore';
@@ -192,7 +192,7 @@ function PresetNode({ id, data, selected }: NodeProps<AppNode>) {
 
       {/* Footer: node count hint */}
       <div className={styles.footer}>
-        <span className={styles.footerCount}>{preset?.nodes.length ?? 0}</span>
+        <span className={styles.footerCount}>{readablePresetNodes(preset).length}</span>
         <span>{t('preset.nodesInside')}</span>
       </div>
 

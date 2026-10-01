@@ -86,7 +86,7 @@ describe('importGraphFile', () => {
     const body = JSON.stringify({
       nodes: [],
       edges: [],
-      presets: [{ preset_name: 'Existing' }, { preset_name: 'Fresh' }],
+      presets: [{ preset_name: 'Existing' }, { preset_name: 'Fresh', nodes: [], edges: [] }],
     });
     await importGraphFile(jsonFile(body));
     expect(useNodeDefStore.getState().presets.map((p) => p.preset_name)).toEqual([

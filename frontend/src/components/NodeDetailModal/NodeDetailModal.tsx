@@ -7,6 +7,7 @@ import { useUIStore } from '../../store/uiStore';
 import { useI18n } from '../../i18n';
 import { CATEGORY_COLORS, STATUS_COLORS, PRESET_GOLD } from '../../styles/theme';
 import { topologicalOrder } from '../../utils/topoOrder';
+import { readablePresetNodes } from '../../utils';
 import { MathText } from '../shared/MathText';
 import { NodeParamList } from '../shared/NodeParamList';
 import {
@@ -344,7 +345,7 @@ function NodeDetailModalBody({ nodeId }: { nodeId: string }) {
               <div className={styles.presetBlock}>
                 <div className={styles.presetHint}>
                   {t('preset.nodeCount', {
-                    count: node.data.presetDefinition?.nodes.length ?? 0,
+                    count: readablePresetNodes(node.data.presetDefinition).length,
                   })}
                 </div>
                 <button

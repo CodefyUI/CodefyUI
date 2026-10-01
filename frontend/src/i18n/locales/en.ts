@@ -965,6 +965,8 @@ const en = {
   'sweeps.detail.cooperative': 'A running node may finish its current step first.',
   'sweeps.detail.stopFailed': 'Could not stop the sweep: {error}',
   'sweeps.detail.notFound': 'This sweep no longer exists on the server.',
+  'sweeps.detail.noObjective': 'No variant recorded a metric named "{metric}".',
+  'sweeps.detail.noObjectiveSeries': 'No variant recorded a metric named "{metric}"; the runs recorded {names}.',
   'sweeps.detail.curves': 'Objective curves',
   'sweeps.detail.noCurves': 'No objective curves yet.',
   'sweeps.detail.variantName': 'Variant {index}',
@@ -1240,8 +1242,10 @@ const en = {
   'packs.activity.done': 'Installed {pack}.',
   'packs.activity.failed': 'Install failed: {message}',
   'packs.activity.cancelled': 'Install cancelled.',
-  'packs.activity.needsRestart':
-    'Installed. {pack} is usable after the server restarts.',
+  // A restart-mode job, which installs only once the server has exited. No
+  // outcome: this shows before the restart, and after Return from one that
+  // never started or never came back.
+  'packs.activity.needsRestart': '{pack} needs a server restart to install.',
   // The same status, the opposite story. A LIVE install that hit a resolver
   // conflict stopped BEFORE it changed anything, so "Installed." would be
   // false — and the restart is what would let it start, not what would let
@@ -1306,6 +1310,7 @@ const en = {
   'packs.restart.elapsed': 'Waiting for {seconds} s',
   'packs.restart.timeout': 'The server has not come back after 10 minutes.',
   'packs.restart.notStarted': 'The server did not restart. Run this command, then reload:',
+  'packs.restart.return': 'Return to CodefyUI',
   'packs.restart.reload': 'Reload now',
 
   // The one pack toast fired from outside the pack store: a run stopped

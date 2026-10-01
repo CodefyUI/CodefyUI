@@ -126,6 +126,12 @@ describe('PresetNode', () => {
     expect(screen.getByText('0')).toBeTruthy();
   });
 
+  it('renders 0 for a definition with no nodes list, as one the backend cannot read can be', () => {
+    renderPreset(presetData({ presetDefinition: { preset_name: 'Broken' } as never }));
+    expect(screen.getByText('0')).toBeTruthy();
+    expect(screen.getByText('Preset Node')).toBeTruthy();
+  });
+
   it('renders no ports when definition is missing', () => {
     renderPreset(presetData({ definition: undefined }));
     expect(screen.queryByText('x')).toBeNull();

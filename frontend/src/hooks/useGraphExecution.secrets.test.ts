@@ -467,9 +467,17 @@ describe('Run still blanks a key the server could not keep out of its run histor
 
     const { message } = await run();
 
+    // The restored definition is document-owned and travels in `presets[]`, so
+    // the server can identify and scrub this slot from its durable run copy.
+    // Run may therefore carry the live session value, just like an installed
+    // preset; saves and exports still use the non-secret serializer.
     const inner = (name: string) =>
       message.subgraphs[0].nodes.find((n: any) => n.type === `preset:${name}`);
-    expect(inner('RestoredPreset').data.internalParams.chat.openai_api_key).toBe('');
+    expect(message.presets.some(
+      (preset: PresetDefinition) => preset.preset_name === 'RestoredPreset',
+    )).toBe(true);
+    expect(inner('RestoredPreset').data.internalParams.chat.openai_api_key)
+      .toBe('sk-RESTORED-PRESET');
     expect(inner('KeyedChat').data.internalParams.chat.openai_api_key).toBe('sk-KNOWN-PRESET');
   });
 });
