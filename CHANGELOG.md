@@ -22,6 +22,10 @@ received — each links to the release it was published as.
 
 ## [Unreleased]
 
+### Added
+
+- **The Runs panel can create, monitor and compare grid or random parameter sweeps.** It selects eligible graph parameters, previews the variant count, polls live status and objective curves, stops active children, ranks the comparison table, downloads the server CSV, and reopens a parent sweep from a child run. ([#140])
+
 ## [2.8.6] — 2026-09-24
 
 An API key typed into an LLMChat key field is used when you press Run.
