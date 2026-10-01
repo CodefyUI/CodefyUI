@@ -1142,8 +1142,10 @@ const en = {
   'packs.activity.done': 'Installed {pack}.',
   'packs.activity.failed': 'Install failed: {message}',
   'packs.activity.cancelled': 'Install cancelled.',
-  'packs.activity.needsRestart':
-    'Installed. {pack} is usable after the server restarts.',
+  // A restart-mode job, which installs only once the server has exited. No
+  // outcome: this shows before the restart, and after Return from one that
+  // never started or never came back.
+  'packs.activity.needsRestart': '{pack} needs a server restart to install.',
   // The same status, the opposite story. A LIVE install that hit a resolver
   // conflict stopped BEFORE it changed anything, so "Installed." would be
   // false — and the restart is what would let it start, not what would let

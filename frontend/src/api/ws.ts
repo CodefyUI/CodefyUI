@@ -88,7 +88,13 @@ export class ExecutionWebSocket {
       if (this.intentionalClose) return;
       // Don't loop on initial-connect failure — the connect() promise has
       // already rejected and the caller is responsible for surfacing that.
-      if (!this.hasBeenConnected) return;
+      // The token goes, though, once per refused handshake: the usual refusal
+      // is a server that restarted and minted a new one, and unlike REST,
+      // which drops a token on its 403, nothing else here ever would.
+      if (!this.hasBeenConnected) {
+        invalidateSessionToken();
+        return;
+      }
       if (event?.code === WS_CLOSE_MESSAGE_TOO_BIG) {
         useToastStore.getState().addToast(
           useI18n.getState().t('connection.tooLarge'),

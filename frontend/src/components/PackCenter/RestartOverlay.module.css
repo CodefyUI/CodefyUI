@@ -1,6 +1,6 @@
 /* RestartOverlay.module.css — the blocking card shown while the server is
    being replaced under the page. Tokens only; the bare pixel values are
-   structural (hairline border, card width). */
+   structural (hairline border, card width, breakpoint). */
 
 .backdrop {
   position: fixed;
@@ -120,7 +120,10 @@
   color: var(--accent);
 }
 
-@media (max-width: 36rem) {
+/* Narrow viewports: the buttons stack at full width, at the same 860 px the
+   Package Center behind the overlay stacks its columns. In px because it
+   measures the viewport, not type. */
+@media (max-width: 860px) {
   .actions {
     flex-direction: column;
   }

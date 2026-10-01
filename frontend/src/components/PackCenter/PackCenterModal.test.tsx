@@ -581,7 +581,11 @@ describe('PackCenterModal — the activity pane', () => {
     expect(actions.dismissJob).toHaveBeenCalledTimes(1);
   });
 
-  it('reports a pack that is installed but needs the server restarted', () => {
+  it('reports a restart-mode job without claiming anything was installed', () => {
+    // The server ends this job the moment it hands the install to the
+    // helper, which installs only after the server has exited. The banner is
+    // on screen before that, and after Return from an overlay whose restart
+    // never started or never came back, so it may not report an outcome.
     seed({
       packs: [pack({ id: 'gpu-torch', install_mode: 'restart' })],
       gpu: gpuInfo,
@@ -598,10 +602,12 @@ describe('PackCenterModal — the activity pane', () => {
     const banner = screen.getByRole('status');
     expect(banner).toHaveAttribute('data-tone', 'warning');
     expect(
-      within(banner).getByText(
-        'Installed. GPU PyTorch is usable after the server restarts.',
-      ),
+      within(banner).getByText('GPU PyTorch needs a server restart to install.'),
     ).toBeInTheDocument();
+    expect(within(banner).queryByText(/Installed/)).toBeNull();
+    // The helper writes its output to a file on disk, never to this job, so
+    // "Waiting for the first message..." would wait for nothing.
+    expect(screen.queryByRole('log', { name: 'Install log' })).toBeNull();
     // No button on this banner, so the command is the only way through and
     // stays open — never behind a disclosure.
     expect(within(banner).getByText('cdui install --gpu cu128')).toBeVisible();
@@ -890,6 +896,30 @@ describe('PackCenterModal — the activity pane', () => {
     render(<PackCenterModal />);
     const log = screen.getByRole('log', { name: 'Install log' });
     expect(within(log).getByText('Waiting for the first message...')).toBeInTheDocument();
+  });
+
+  it('keeps the log of a stopped job only when it has lines to show', () => {
+    // Nothing more arrives for a job that has ended, so an empty log would be
+    // waiting for nothing. One that has lines keeps them: the line that
+    // failed is the one the user pastes into a search box.
+    seed({ packs: [embeddings], job: job({ status: 'cancelled', log: [] }) });
+    open();
+    const view = render(<PackCenterModal />);
+    expect(screen.queryByRole('log', { name: 'Install log' })).toBeNull();
+
+    view.unmount();
+    seed({
+      packs: [embeddings],
+      job: job({
+        status: 'failed',
+        error: { message: 'uv exited 1', hint: null },
+        log: [{ seq: 1, ts: null, kind: 'error', text: 'uv exited 1' }],
+      }),
+    });
+    open();
+    render(<PackCenterModal />);
+    const log = screen.getByRole('log', { name: 'Install log' });
+    expect(within(log).getByText('uv exited 1')).toBeInTheDocument();
   });
 
   it('follows the log while the reader is at the bottom, and stops when they are not', () => {

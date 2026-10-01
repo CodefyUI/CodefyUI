@@ -8,6 +8,18 @@ const selectRestart = (state: ReturnType<typeof usePackStore.getState>): Restart
   state.restart;
 
 /**
+ * The Package Center's window, found by the name it gives itself.
+ *
+ * A restart is only ever started from there, and the panel cannot be closed
+ * while the overlay is up, so it is what the user returns to.
+ */
+function packCenterSurface(): HTMLElement | null {
+  const name = useI18n.getState().t('packs.title');
+  return Array.from(document.querySelectorAll<HTMLElement>('[role="dialog"]'))
+    .find((surface) => surface.getAttribute('aria-label') === name) ?? null;
+}
+
+/**
  * The blocking overlay shown while the server is being restarted under the
  * page (the GPU PyTorch pack swaps the torch wheel, which no process can do to
  * its own interpreter).
@@ -35,8 +47,10 @@ function RestartOverlayBody({ restart }: { restart: RestartState }) {
   const waiting = phase === 'waiting';
   const titleId = useId();
   const descId = useId();
+  const commandId = useId();
   const cardRef = useRef<HTMLDivElement | null>(null);
   const returnRef = useRef<HTMLButtonElement | null>(null);
+  const reloadRef = useRef<HTMLButtonElement | null>(null);
 
   // Wall clock rather than a tick count: a laptop that slept through the
   // restart fires no timers, and a counter of turns would claim four seconds
@@ -49,6 +63,20 @@ function RestartOverlayBody({ restart }: { restart: RestartState }) {
   }, [waiting]);
   const seconds = startedAt === null ? 0 : Math.max(0, Math.floor((now - startedAt) / 1000));
 
+  // Return unmounts the button that has focus, so focus is handed back: to
+  // what had it before the overlay, or to the Package Center the restart was
+  // started from when that is gone. Read before the effect below moves focus
+  // onto the card, which is why this one comes first.
+  useEffect(() => {
+    const previous = document.activeElement as HTMLElement | null;
+    return () => {
+      if (previous?.isConnected) previous.focus();
+      if (document.activeElement === null || document.activeElement === document.body) {
+        packCenterSurface()?.focus();
+      }
+    };
+  }, []);
+
   // Focus starts on the card, and moves to Return when a terminal phase
   // appears. Reload remains the keyboard-reachable alternative beside it.
   useEffect(() => {
@@ -56,18 +84,28 @@ function RestartOverlayBody({ restart }: { restart: RestartState }) {
     else returnRef.current?.focus();
   }, [waiting]);
 
-  // Capture phase, so this runs before any handler on the page underneath.
-  // Only while waiting: once a reload button exists, Tab has to reach it.
+  // Capture phase, so this runs before any handler on the page underneath and
+  // neither key reaches one: the Package Center's own Escape would close the
+  // panel on the same press that made the restart idle. Waiting, both keys do
+  // nothing. Once the buttons exist, Tab moves between them instead of into
+  // the page behind the scrim, and Escape is Return.
   useEffect(() => {
-    if (!waiting) return;
     const onKey = (e: KeyboardEvent) => {
       if (e.key !== 'Tab' && e.key !== 'Escape') return;
       e.preventDefault();
       e.stopPropagation();
+      if (waiting) return;
+      if (e.key === 'Escape') {
+        dismissRestart();
+        return;
+      }
+      // Two buttons, so either direction lands on the other one.
+      const next = document.activeElement === returnRef.current ? reloadRef : returnRef;
+      next.current?.focus();
     };
     window.addEventListener('keydown', onKey, true);
     return () => window.removeEventListener('keydown', onKey, true);
-  }, [waiting]);
+  }, [waiting, dismissRestart]);
 
   const heading = waiting
     ? t('packs.restart.title')
@@ -108,20 +146,25 @@ function RestartOverlayBody({ restart }: { restart: RestartState }) {
                 sits at z-index 10000, i.e. BEHIND this overlay, so the button
                 would look broken. The command is selectable text instead. */}
             {command !== null && (
-              <pre className={styles.commandBlock}>
+              <pre id={commandId} className={styles.commandBlock}>
                 <code>{command}</code>
               </pre>
             )}
             <div className={styles.actions}>
+              {/* Described by the heading and the command: focus moves here
+                  from the card it is inside, so the dialog is not announced
+                  again and the new heading would otherwise go unread. */}
               <button
                 ref={returnRef}
                 type="button"
                 className={styles.returnBtn}
+                aria-describedby={command === null ? titleId : `${titleId} ${commandId}`}
                 onClick={dismissRestart}
               >
                 {t('packs.restart.return')}
               </button>
               <button
+                ref={reloadRef}
                 type="button"
                 className={styles.reloadBtn}
                 onClick={() => window.location.reload()}

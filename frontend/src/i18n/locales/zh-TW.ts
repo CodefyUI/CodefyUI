@@ -1006,7 +1006,7 @@ const zhTW: Record<TranslationKey, string> = {
   'packs.activity.done': '已安裝 {pack}。',
   'packs.activity.failed': '安裝失敗：{message}',
   'packs.activity.cancelled': '已取消安裝。',
-  'packs.activity.needsRestart': '已安裝，重新啟動伺服器後 {pack} 即可使用。',
+  'packs.activity.needsRestart': '{pack} 需要重新啟動伺服器才能安裝。',
   'packs.activity.needsRestartConflict':
     '尚未安裝：此安裝會替換伺服器使用中的套件，需重新啟動伺服器才能完成。',
   'packs.activity.lost': '與伺服器失去連線，請重新整理以確認套件狀態。',
