@@ -713,7 +713,10 @@ async def get_plugin(plugin_id: str) -> dict[str, Any]:
         if readme_path.exists():
             try:
                 readme = readme_path.read_text(encoding="utf-8")
-            except OSError:
+            except (OSError, ValueError):
+                # As in ``read_manifest_safe``: a README that is not UTF-8
+                # raises ``UnicodeDecodeError``, a ``ValueError``, and is
+                # no README rather than a 500 for the whole detail.
                 pass
         return {
             "id": plugin_id,

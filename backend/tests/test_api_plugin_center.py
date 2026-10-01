@@ -273,6 +273,12 @@ async def test_a_disabled_builtin_stays_listed_and_says_so(anon_client):
 
 
 async def test_get_plugin_detail_returns_a_disabled_plugin(anon_client):
+    # conftest registers every in-repo pack's classes whatever this
+    # fixture's lockfile says. That is what makes ``nodes == []`` below a
+    # test of the route's ``is_enabled`` guard rather than of an empty
+    # registry, so it is asserted rather than assumed.
+    assert listing.nodes_for_plugin("deep", registry)
+
     response = await anon_client.get("/api/plugins/deep")
 
     assert response.status_code == 200, response.text
@@ -283,8 +289,43 @@ async def test_get_plugin_detail_returns_a_disabled_plugin(anon_client):
     assert body["nodes"] == []
 
 
+@pytest.mark.parametrize("enabled", [False, True])
+async def test_get_plugin_detail_skips_a_readme_that_is_not_utf8(
+        anon_client, center_lockfile, enabled):
+    """A README that is not UTF-8 -- Big5 here, which is what "ANSI" means
+    to Notepad on a zh-TW machine -- is no README, the way
+    ``read_manifest_safe`` makes such a manifest no metadata. The rest of
+    the detail still comes back instead of a 500."""
+    data = lockfile_of(center_lockfile)
+    data["plugins"]["demo-external"]["enabled"] = enabled
+    (center_lockfile / "installed.json").write_text(json.dumps(data),
+                                                    encoding="utf-8")
+    readme = center_lockfile / "demo-external" / "README.md"
+
+    readme.write_text("# Demo\n", encoding="utf-8")
+    response = await anon_client.get("/api/plugins/demo-external")
+    assert response.status_code == 200, response.text
+    assert response.json()["readme"] == "# Demo\n"
+
+    # Two CJK characters in Big5. 0xA4 can only continue a UTF-8 sequence,
+    # so decoding fails at the first of them.
+    readme.write_bytes(b"# Demo \xa4\xa4\xa4\xe5\n")
+    response = await anon_client.get("/api/plugins/demo-external")
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["readme"] == ""
+    assert body["manifest"]["plugin"]["id"] == "demo-external"
+    assert body["lockfile_entry"]["enabled"] is enabled
+
+
+@pytest.mark.parametrize("leave_the_directory", [False, True])
 async def test_get_plugin_detail_codes_files_that_are_actually_missing(
-        anon_client):
+        anon_client, center_lockfile, leave_the_directory):
+    if leave_the_directory:
+        # The directory is there; the manifest is not.
+        (center_lockfile / "ghost-pack").mkdir()
+
     response = await anon_client.get("/api/plugins/ghost-pack")
 
     assert response.status_code == 404
