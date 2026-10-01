@@ -22,6 +22,10 @@ received — each links to the release it was published as.
 
 ## [Unreleased]
 
+### Fixed
+
+- **A plugin can auto-layout one tab and switch tabs in the same handler without moving either view to the wrong graph.** Pending fit bounds are now kept per tab, survive while their tab is in the background, take priority when that tab is shown, and are removed only when consumed or when that tab closes. ([#522])
+
 ## [2.8.6] — 2026-09-24
 
 An API key typed into an LLMChat key field is used when you press Run.
@@ -4955,6 +4959,7 @@ Release candidates before 1.0.0 are on the
 [#537]: https://github.com/CodefyUI/CodefyUI/pull/537
 [@oyea0801]: https://github.com/oyea0801
 [@latteine1217]: https://github.com/latteine1217
+[#522]: https://github.com/CodefyUI/CodefyUI/issues/522
 [Unreleased]: https://github.com/CodefyUI/CodefyUI/compare/2.8.6...main
 [2.8.6]: https://github.com/CodefyUI/CodefyUI/compare/2.8.5...2.8.6
 [2.8.5]: https://github.com/CodefyUI/CodefyUI/compare/2.8.4...2.8.5
