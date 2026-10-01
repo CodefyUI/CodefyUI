@@ -24,11 +24,15 @@
 
 /* ── toolbar ── */
 
+/* Wraps rather than squeezing: on a narrow list the actions take a line of
+   their own under the filter chips, instead of pinning the chips into a
+   column one chip wide that grew the toolbar over the whole list. */
 .toolbar {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
-  gap: var(--sp-3);
+  gap: var(--sp-2) var(--sp-3);
   padding: var(--sp-2) var(--sp-4);
   border-bottom: 1px solid var(--border-subtle);
   flex-shrink: 0;
@@ -69,6 +73,7 @@
   align-items: center;
   gap: var(--sp-3);
   flex-shrink: 0;
+  margin-left: auto;
 }
 
 .newSweepBtn {
@@ -330,6 +335,11 @@
 
 .detailClose:hover {
   color: var(--text-primary);
+}
+
+/* A sweep child's way back to its sweep, on a line under the header. */
+.detailParent {
+  padding: var(--sp-2) var(--sp-4) 0;
 }
 
 .detailError {

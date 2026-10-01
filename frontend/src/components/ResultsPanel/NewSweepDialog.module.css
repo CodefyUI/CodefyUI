@@ -115,21 +115,35 @@
   gap: var(--sp-2);
 }
 
+/* A row that wraps: the parameter takes what is left, and on a narrow dialog
+   Domain and Remove move under it. A grid gave Remove the Domain column
+   whenever a bool or select param had no Domain, stretching it. */
 .domainHead {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(110px, 0.45fr) auto;
+  display: flex;
+  flex-wrap: wrap;
   gap: var(--sp-2);
-  align-items: end;
+  align-items: flex-end;
+}
+
+.paramSelect {
+  flex: 1 1 14rem;
+  min-width: 0;
+}
+
+.mode {
+  flex: 0 1 9rem;
 }
 
 .remove,
 .add {
+  flex: 0 0 auto;
   min-height: var(--h-control-sm);
   padding: var(--sp-2) var(--sp-3);
   color: var(--text-muted);
   background: transparent;
   border: 1px solid var(--border-strong);
   border-radius: var(--radius-sm);
+  font-size: var(--fs-sm);
   cursor: pointer;
 }
 
@@ -184,6 +198,7 @@
   background: var(--surface-input);
   border: 1px solid var(--border-strong);
   border-radius: var(--radius-sm);
+  font-size: var(--fs-sm);
   cursor: pointer;
 }
 
@@ -198,10 +213,15 @@
   outline-offset: 2px;
 }
 
+/* The dialog itself only catches the focus a click between controls would
+   drop; it is not a control, so it draws no ring. */
+.dialog:focus {
+  outline: none;
+}
+
 @media (max-width: 859px) {
   .pair,
-  .rangeGrid,
-  .domainHead {
+  .rangeGrid {
     grid-template-columns: 1fr;
   }
 

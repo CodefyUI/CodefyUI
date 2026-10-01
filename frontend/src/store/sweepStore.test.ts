@@ -1,8 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import * as rest from '../api/rest';
+import { ApiError } from '../api/rest';
 import type {
+  CancelSweepResponse,
   CreateSweepRequest,
   CreateSweepResponse,
+  RunMetrics,
   SweepDetail,
   SweepState,
 } from '../api/rest';
@@ -57,8 +60,38 @@ function created(): CreateSweepResponse {
   };
 }
 
+/** A sweep whose children have the given statuses, one run each. */
+function withChildren(statuses: Array<'running' | 'succeeded' | 'queued'>): SweepDetail {
+  const sweep = detail('running');
+  sweep.variants = statuses.map((status, index) => ({
+    index, domain_index: index, run_id: `r${index}`, status, params: [],
+    seed: null, objective: null, rank: null, run_exists: true,
+  }));
+  return sweep;
+}
+
+function series(runId: string): RunMetrics {
+  return {
+    run_id: runId, names: ['loss'],
+    metrics: [{ node_id: 'n', name: 'loss', step: 1, value: 1 }],
+  };
+}
+
+function cancelled(count: number): CancelSweepResponse {
+  return { sweep_id: 's1', state: 'cancelling', cancelled: count, already_finished: 0, variants: [] };
+}
+
+/** A request that only ends when its reader gives up on it. */
+function hangUntilAborted<T>(signal?: AbortSignal): Promise<T> {
+  return new Promise((_resolve, reject) => {
+    signal?.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError')));
+  });
+}
+
 beforeEach(() => {
   _resetSweepStoreForTesting();
+  // As the Runs panel does on mount: polling runs only while a panel shows it.
+  void useSweepStore.getState().resumePolling();
   api.createSweep.mockResolvedValue(created());
   api.getSweep.mockResolvedValue(detail());
   api.cancelSweep.mockResolvedValue({
@@ -76,12 +109,205 @@ afterEach(() => {
 
 describe('sweepStore', () => {
   it('creates a sweep and opens the server detail', async () => {
-    await useSweepStore.getState().createSweep(request);
+    await expect(useSweepStore.getState().createSweep(request)).resolves.toBe(true);
     expect(api.createSweep).toHaveBeenCalledWith(request);
     expect(api.getSweep).toHaveBeenCalledWith('s1', expect.any(AbortSignal));
     expect(useSweepStore.getState()).toMatchObject({
-      selectedSweepId: 's1', detail: { sweep_id: 's1' }, createState: 'idle', error: null,
+      selectedSweepId: 's1', detail: { sweep_id: 's1' }, createState: 'idle',
+      createError: null, error: null,
     });
+  });
+
+  it('keeps a refused create to the dialog and reports it as not created', async () => {
+    api.createSweep.mockRejectedValueOnce(new Error('server cap is 1'));
+    await expect(useSweepStore.getState().createSweep(request)).resolves.toBe(false);
+    expect(useSweepStore.getState()).toMatchObject({
+      createState: 'idle', createError: 'server cap is 1', error: null, selectedSweepId: null,
+    });
+  });
+
+  it('returns to idle when another sweep was opened while the create was in flight', async () => {
+    // The dialog can be closed mid-request and a child's parent sweep opened
+    // from the Runs list; the late reply must neither hijack that view nor
+    // leave the next dialog stuck on "Starting".
+    let release: (value: CreateSweepResponse) => void = () => {};
+    api.createSweep.mockImplementationOnce(() => new Promise((resolve) => { release = resolve; }));
+    api.getSweep.mockResolvedValue(detail('running', 'other'));
+
+    const creating = useSweepStore.getState().createSweep(request);
+    expect(useSweepStore.getState().createState).toBe('creating');
+    await useSweepStore.getState().openSweep('other');
+    release(created());
+
+    await expect(creating).resolves.toBe(true);
+    expect(useSweepStore.getState()).toMatchObject({ createState: 'idle', selectedSweepId: 'other' });
+  });
+
+  it('stops a poll that is already in flight when polling stops', async () => {
+    vi.useFakeTimers();
+    await useSweepStore.getState().openSweep('s1');
+    api.getSweep.mockImplementationOnce((_id, signal) => hangUntilAborted(signal));
+    await vi.advanceTimersByTimeAsync(SWEEP_POLL_MS);
+    expect(api.getSweep).toHaveBeenCalledTimes(2);
+
+    useSweepStore.getState().stopPolling();
+    await vi.advanceTimersByTimeAsync(SWEEP_POLL_MS * 5);
+    expect(api.getSweep).toHaveBeenCalledTimes(2);
+  });
+
+  it('does not start polling when the panel detaches during the opening read', async () => {
+    vi.useFakeTimers();
+    let release: (value: SweepDetail) => void = () => {};
+    api.getSweep.mockImplementationOnce(() => new Promise((resolve) => { release = resolve; }));
+
+    const opening = useSweepStore.getState().openSweep('s1');
+    useSweepStore.getState().stopPolling();
+    release(detail('running'));
+    await opening;
+    await vi.advanceTimersByTimeAsync(SWEEP_POLL_MS * 3);
+
+    expect(api.getSweep).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not poll after a Stop that was still in flight when the panel went', async () => {
+    vi.useFakeTimers();
+    await useSweepStore.getState().openSweep('s1');
+    let release: (value: CancelSweepResponse) => void = () => {};
+    api.cancelSweep.mockImplementationOnce(() => new Promise((resolve) => { release = resolve; }));
+
+    const cancelling = useSweepStore.getState().cancelSweep();
+    useSweepStore.getState().stopPolling();
+    const before = api.getSweep.mock.calls.length;
+    release(cancelled(2));
+    await cancelling;
+    await vi.advanceTimersByTimeAsync(SWEEP_POLL_MS * 5);
+
+    // The acknowledgement is kept for when the panel returns; nothing is read.
+    expect(useSweepStore.getState().cancelledRequested).toBe(2);
+    expect(api.getSweep.mock.calls.length - before).toBe(0);
+  });
+
+  it('does not poll a sweep that a create opened after the panel went', async () => {
+    vi.useFakeTimers();
+    let release: (value: CreateSweepResponse) => void = () => {};
+    api.createSweep.mockImplementationOnce(() => new Promise((resolve) => { release = resolve; }));
+
+    const creating = useSweepStore.getState().createSweep(request);
+    useSweepStore.getState().stopPolling();
+    release(created());
+    await creating;
+    const before = api.getSweep.mock.calls.length;
+    await vi.advanceTimersByTimeAsync(SWEEP_POLL_MS * 5);
+    expect(useSweepStore.getState().selectedSweepId).toBe('s1');
+    expect(api.getSweep.mock.calls.length - before).toBe(0);
+
+    // Back on screen, the panel reads it and polls it.
+    await useSweepStore.getState().resumePolling();
+    await vi.advanceTimersByTimeAsync(SWEEP_POLL_MS);
+    expect(api.getSweep.mock.calls.length - before).toBe(2);
+  });
+
+  it('remembers which tab a sweep was created from', async () => {
+    await useSweepStore.getState().createSweep(request, 'tab-1');
+    expect(useSweepStore.getState().origins).toEqual({ s1: 'tab-1' });
+  });
+
+  it('re-reads the selected sweep and polls it again when the panel comes back', async () => {
+    vi.useFakeTimers();
+    await useSweepStore.getState().openSweep('s1');
+    useSweepStore.getState().stopPolling();
+    await vi.advanceTimersByTimeAsync(SWEEP_POLL_MS * 3);
+    expect(api.getSweep).toHaveBeenCalledTimes(1);
+
+    api.getSweep.mockResolvedValue(detail('cancelling'));
+    await useSweepStore.getState().resumePolling();
+    expect(api.getSweep).toHaveBeenCalledTimes(2);
+    expect(useSweepStore.getState().detail?.state).toBe('cancelling');
+    await vi.advanceTimersByTimeAsync(SWEEP_POLL_MS);
+    expect(api.getSweep).toHaveBeenCalledTimes(3);
+  });
+
+  it('stops polling a sweep the server no longer has, and says so', async () => {
+    vi.useFakeTimers();
+    api.getSweep.mockRejectedValue(new ApiError(404, "sweep 'gone' not found"));
+    await useSweepStore.getState().openSweep('gone');
+    await vi.advanceTimersByTimeAsync(SWEEP_POLL_MS * 10);
+
+    expect(api.getSweep).toHaveBeenCalledTimes(1);
+    expect(useSweepStore.getState()).toMatchObject({ notFound: true, detail: null });
+  });
+
+  it('keeps polling through a read that failed for any other reason', async () => {
+    vi.useFakeTimers();
+    api.getSweep.mockRejectedValueOnce(new ApiError(503, 'run service not initialised'));
+    await useSweepStore.getState().openSweep('s1');
+    expect(useSweepStore.getState().error).toBe('run service not initialised');
+    await vi.advanceTimersByTimeAsync(SWEEP_POLL_MS);
+
+    expect(api.getSweep).toHaveBeenCalledTimes(2);
+    expect(useSweepStore.getState()).toMatchObject({ error: null, notFound: false, detail: { state: 'running' } });
+  });
+
+  it('sends one Stop however often it is pressed while the first is in flight', async () => {
+    let release: (value: CancelSweepResponse) => void = () => {};
+    api.cancelSweep.mockImplementationOnce(() => new Promise((resolve) => { release = resolve; }));
+    useSweepStore.setState({ selectedSweepId: 's1', detail: detail('running') });
+
+    const first = useSweepStore.getState().cancelSweep();
+    expect(useSweepStore.getState().cancelPending).toBe(true);
+    const second = useSweepStore.getState().cancelSweep();
+    release(cancelled(2));
+    await Promise.all([first, second]);
+
+    expect(api.cancelSweep).toHaveBeenCalledTimes(1);
+    expect(useSweepStore.getState()).toMatchObject({ cancelledRequested: 2, cancelPending: false });
+  });
+
+  it('keeps a failed Stop on screen through the next poll', async () => {
+    vi.useFakeTimers();
+    await useSweepStore.getState().openSweep('s1');
+    api.cancelSweep.mockRejectedValueOnce(new Error('session token rejected'));
+    await useSweepStore.getState().cancelSweep();
+    expect(useSweepStore.getState().cancelError).toBe('session token rejected');
+
+    await vi.advanceTimersByTimeAsync(SWEEP_POLL_MS);
+    expect(api.getSweep).toHaveBeenCalledTimes(2);
+    expect(useSweepStore.getState()).toMatchObject({ cancelError: 'session token rejected', error: null });
+  });
+
+  it('reads a finished child once and keeps re-reading the live one', async () => {
+    vi.useFakeTimers();
+    api.getSweep.mockResolvedValue(withChildren(['succeeded', 'running', 'queued']));
+    api.getRunMetrics.mockImplementation(async (runId) => series(runId));
+
+    await useSweepStore.getState().openSweep('s1');
+    await vi.advanceTimersByTimeAsync(SWEEP_POLL_MS * 3);
+
+    const reads = (runId: string) => api.getRunMetrics.mock.calls.filter(([id]) => id === runId).length;
+    expect(api.getSweep).toHaveBeenCalledTimes(4);
+    expect(reads('r0')).toBe(1);
+    expect(reads('r1')).toBe(4);
+    expect(reads('r2')).toBe(0);
+    expect(useSweepStore.getState().curves.map((curve) => curve.runId)).toEqual(['r0', 'r1']);
+  });
+
+  it('lets a slow curve load finish instead of restarting it on every poll', async () => {
+    // 32 live children at 300 ms a request, four at a time, take 2.4 s: longer
+    // than a poll. Aborting the load on each poll meant no curve ever showed.
+    vi.useFakeTimers();
+    api.getSweep.mockResolvedValue(withChildren(Array.from({ length: 32 }, () => 'running' as const)));
+    api.getRunMetrics.mockImplementation((runId, _name, signal) => new Promise((resolve, reject) => {
+      const timer = setTimeout(() => resolve(series(runId)), 300);
+      signal?.addEventListener('abort', () => {
+        clearTimeout(timer);
+        reject(new DOMException('aborted', 'AbortError'));
+      });
+    }));
+
+    await useSweepStore.getState().openSweep('s1');
+    await vi.advanceTimersByTimeAsync(SWEEP_POLL_MS * 3);
+
+    expect(useSweepStore.getState().curves).toHaveLength(32);
   });
 
   it('polls running and cancelling sweeps, then stops on finished', async () => {

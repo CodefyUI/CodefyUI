@@ -401,9 +401,30 @@ export interface CancelSweepResponse {
   variants: CancelSweepVariant[];
 }
 
+/**
+ * A refused sweep request, as an `ApiError` so a caller can tell a 404 (the
+ * sweep is gone) from a failure worth retrying. FastAPI's 422 carries a list
+ * of `{loc, msg}` entries, read here as `field: message` lines; `loc` starts
+ * with `body`, which names no field.
+ */
 async function sweepError(res: Response, fallback: string): Promise<never> {
-  const body = await res.json().catch(() => ({}));
-  throw new Error(body.detail ?? `${fallback}: ${res.statusText}`);
+  const raw = await res.json().catch(() => null);
+  const body = raw !== null && typeof raw === 'object' ? raw as Record<string, unknown> : null;
+  const detail = body?.detail;
+  let message = `${fallback}: ${res.statusText}`;
+  if (typeof detail === 'string') {
+    message = detail;
+  } else if (Array.isArray(detail)) {
+    const lines = detail.map((entry: { loc?: unknown; msg?: unknown }) => {
+      const loc = Array.isArray(entry?.loc)
+        ? entry.loc.filter((part, index) => !(index === 0 && part === 'body')).join('.')
+        : '';
+      const msg = typeof entry?.msg === 'string' ? entry.msg : JSON.stringify(entry);
+      return loc ? `${loc}: ${msg}` : msg;
+    });
+    if (lines.length > 0) message = lines.join('; ');
+  }
+  throw new ApiError(res.status, message, body);
 }
 
 export async function createSweep(

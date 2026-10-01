@@ -6,6 +6,8 @@ import {
   eligibleSweepParams,
   expandSweepRange,
   previewSweepVariants,
+  SweepInputError,
+  sweepParamTitle,
 } from './sweepParams';
 
 function definition(node_name: string): NodeDefinition {
@@ -33,6 +35,17 @@ function node(id: string, type = 'Train', extra: Record<string, unknown> = {}) {
     type: 'customNode',
     data: { label: id, type, params: {}, ...extra },
   };
+}
+
+/** The code a helper refused with, so a test reads the reason, not English. */
+function refusal(run: () => unknown): { code: string; vars: Record<string, unknown> } | null {
+  try {
+    run();
+  } catch (error) {
+    if (error instanceof SweepInputError) return { code: error.code, vars: error.vars };
+    throw error;
+  }
+  return null;
 }
 
 describe('eligibleSweepParams', () => {
@@ -73,11 +86,23 @@ describe('sweep domain builders', () => {
     expect(buildValuesDomain(byName('mode'), 'fast, safe')).toEqual({ node_id: 'n', param: 'mode', values: ['fast', 'safe'] });
   });
 
-  it('rejects mistyped, duplicate, out-of-bounds and unknown select values', () => {
-    expect(() => buildValuesDomain(byName('epochs'), '2.5')).toThrow(/whole number/i);
-    expect(() => buildValuesDomain(byName('epochs'), '2, 2')).toThrow(/once/i);
-    expect(() => buildValuesDomain(byName('epochs'), '0, 2')).toThrow(/at least 1/i);
-    expect(() => buildValuesDomain(byName('mode'), 'fast, other')).toThrow(/option/i);
+  it('refuses bad values with a code and the values the message needs', () => {
+    expect(refusal(() => buildValuesDomain(byName('epochs'), '2.5'))).toEqual({ code: 'notWhole', vars: { value: '2.5' } });
+    expect(refusal(() => buildValuesDomain(byName('rate'), 'fast'))).toEqual({ code: 'notNumber', vars: { value: 'fast' } });
+    expect(refusal(() => buildValuesDomain(byName('epochs'), '2, 2'))).toEqual({ code: 'repeated', vars: { value: '2' } });
+    expect(refusal(() => buildValuesDomain(byName('epochs'), '0, 2'))).toEqual({ code: 'belowMin', vars: { name: 'epochs', min: 1 } });
+    expect(refusal(() => buildValuesDomain(byName('epochs'), '2, 11'))).toEqual({ code: 'aboveMax', vars: { name: 'epochs', max: 10 } });
+    expect(refusal(() => buildValuesDomain(byName('enabled'), 'yes'))).toEqual({ code: 'notBool', vars: { value: 'yes' } });
+    expect(refusal(() => buildValuesDomain(byName('mode'), 'fast, other'))).toEqual({ code: 'notOption', vars: { value: 'other' } });
+    expect(refusal(() => buildValuesDomain(byName('epochs'), ' , '))).toEqual({ code: 'noValues', vars: {} });
+  });
+
+  it('refuses a free-text string param the dialog never offers', () => {
+    const label = definition('Train').params.find((param) => param.name === 'label')!;
+    expect(refusal(() => buildValuesDomain(
+      { nodeId: 'n', nodeLabel: 'n', nodeType: 'Train', param: label },
+      'a, b',
+    ))).toEqual({ code: 'notSweepable', vars: { type: 'string' } });
   });
 
   it('builds valid ranges and expands them exactly for count previews', () => {
@@ -91,10 +116,13 @@ describe('sweep domain builders', () => {
     expect(expandSweepRange(param.range!)).toEqual([1, 2, 3]);
   });
 
-  it('rejects zero count, descending ranges, and non-positive log ranges', () => {
-    expect(() => buildRangeDomain(byName('rate'), { min: 0, max: 1, count: 0, scale: 'linear' })).toThrow(/count/i);
-    expect(() => buildRangeDomain(byName('rate'), { min: 2, max: 1, count: 2, scale: 'linear' })).toThrow(/maximum/i);
-    expect(() => buildRangeDomain(byName('rate'), { min: 0, max: 1, count: 2, scale: 'log' })).toThrow(/positive/i);
+  it('refuses impossible ranges with a code', () => {
+    expect(refusal(() => buildRangeDomain(byName('rate'), { min: 0, max: 1, count: 0, scale: 'linear' }))?.code).toBe('rangeCount');
+    expect(refusal(() => buildRangeDomain(byName('rate'), { min: 2, max: 1, count: 2, scale: 'linear' }))?.code).toBe('rangeOrder');
+    expect(refusal(() => buildRangeDomain(byName('rate'), { min: 0, max: 1, count: 2, scale: 'log' }))?.code).toBe('rangeLogMin');
+    expect(refusal(() => buildRangeDomain(byName('rate'), { min: Number.NaN, max: 1, count: 2, scale: 'linear' }))?.code).toBe('rangeNotFinite');
+    expect(refusal(() => buildRangeDomain(byName('epochs'), { min: 1.5, max: 3, count: 2, scale: 'linear' }))?.code).toBe('rangeWholeBounds');
+    expect(refusal(() => buildRangeDomain(byName('enabled'), { min: 0, max: 1, count: 2, scale: 'linear' }))?.code).toBe('rangeNumericOnly');
   });
 });
 
@@ -105,15 +133,71 @@ describe('previewSweepVariants', () => {
   ];
 
   it('uses the Cartesian product for grid and samples for random', () => {
-    expect(previewSweepVariants('grid', domains, null)).toEqual({ totalCombinations: 6, variantCount: 6, exceedsCap: false });
-    expect(previewSweepVariants('random', domains, 4)).toEqual({ totalCombinations: 6, variantCount: 4, exceedsCap: false });
+    expect(previewSweepVariants('grid', domains, null)).toEqual({ totalCombinations: 6, variantCount: 6, warnings: [] });
+    expect(previewSweepVariants('random', domains, 4)).toEqual({ totalCombinations: 6, variantCount: 4, warnings: [] });
   });
 
-  it('rejects empty domains and impossible samples and marks the cap', () => {
-    expect(() => previewSweepVariants('grid', [{ node_id: 'a', param: 'x', values: [] }], null)).toThrow(/at least one/i);
-    expect(() => previewSweepVariants('random', domains, 7)).toThrow(/only 6/i);
+  it('refuses empty domains and impossible samples with a code', () => {
+    expect(refusal(() => previewSweepVariants('grid', [{ node_id: 'a', param: 'x', values: [] }], null)))
+      .toEqual({ code: 'emptyDomain', vars: { address: 'a.x' } });
+    expect(refusal(() => previewSweepVariants('random', domains, 7)))
+      .toEqual({ code: 'samplesExceedSpace', vars: { samples: 7, total: 6 } });
+    expect(refusal(() => previewSweepVariants('random', domains, 0))?.code).toBe('samples');
+    expect(refusal(() => previewSweepVariants('grid', [], null))?.code).toBe('noParams');
+  });
+
+  it('warns past each default server cap instead of refusing', () => {
+    // Every cap is a server setting a deployment may raise, so going past
+    // the default is a warning; the server's own refusal stays authoritative.
     expect(previewSweepVariants('grid', [
       { node_id: 'a', param: 'x', values: Array.from({ length: 33 }, (_, i) => i) },
-    ], null)).toMatchObject({ variantCount: 33, exceedsCap: true });
+    ], null)).toEqual({
+      totalCombinations: 33,
+      variantCount: 33,
+      warnings: [{ limit: 'values', index: 0, count: 33 }, { limit: 'runs', count: 33 }],
+    });
+    const five = Array.from({ length: 5 }, (_, i) => ({ node_id: `n${i}`, param: 'x', values: [1] }));
+    expect(previewSweepVariants('grid', five, null).warnings).toEqual([{ limit: 'params', count: 5 }]);
+  });
+
+  it('never expands a range longer than the default domain cap', () => {
+    // 2**32 points is an "Invalid array length" if expanded; a long range is
+    // reported from its count alone, and a grid over it has no exact size.
+    const huge = { node_id: 'a', param: 'rate', range: { min: 0, max: 1, count: 2 ** 32, scale: 'linear' as const, type: 'float' as const } };
+    expect(previewSweepVariants('grid', [huge], null)).toEqual({
+      totalCombinations: null,
+      variantCount: null,
+      warnings: [{ limit: 'values', index: 0, count: 2 ** 32 }],
+    });
+    // A random sweep still knows its variant count: it is the sample count.
+    expect(previewSweepVariants('random', [huge], 3)).toEqual({
+      totalCombinations: null,
+      variantCount: 3,
+      warnings: [{ limit: 'values', index: 0, count: 2 ** 32 }],
+    });
+  });
+});
+
+describe('sweepParamTitle', () => {
+  const definitions = [definition('Train')];
+
+  it('names an address by the open node label and the param', () => {
+    expect(sweepParamTitle({ node_id: 'n1', param: 'rate' }, definitions, [node('n1', 'Train', { label: 'Trainer' })]))
+      .toBe('Trainer · rate');
+  });
+
+  it('falls back to the node type when the node has no label', () => {
+    expect(sweepParamTitle({ node_id: 'n1', param: 'rate' }, definitions, [node('n1', 'Train', { label: '' })]))
+      .toBe('Train · rate');
+  });
+
+  it('gives no title when the open graph cannot vouch for the address', () => {
+    // A sweep may come from another graph: an id that is absent, duplicated,
+    // or on a node whose type has no such param says nothing about this one.
+    const nodes = [node('n1'), node('dup'), node('dup'), node('other', 'Unknown')];
+    expect(sweepParamTitle({ node_id: 'gone', param: 'rate' }, definitions, nodes)).toBeNull();
+    expect(sweepParamTitle({ node_id: 'dup', param: 'rate' }, definitions, nodes)).toBeNull();
+    expect(sweepParamTitle({ node_id: 'n1', param: 'momentum' }, definitions, nodes)).toBeNull();
+    expect(sweepParamTitle({ node_id: 'other', param: 'rate' }, definitions, nodes)).toBeNull();
   });
 });

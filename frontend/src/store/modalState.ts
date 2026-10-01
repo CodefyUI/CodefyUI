@@ -1,4 +1,5 @@
 import { useDialogStore } from './dialogStore';
+import { useSweepStore } from './sweepStore';
 import { useTabStore } from './tabStore';
 import { useUIStore } from './uiStore';
 
@@ -17,17 +18,18 @@ import { useUIStore } from './uiStore';
  *    missed the release of the key that opened the modal: that key stayed
  *    "held" and swallowed the first Delete after the modal closed (#491).
  *
- * They all ask `isAnyModalOpen()`, which reads the three stores through the
- * one predicate below. Rebuilt separately in each place, the question would
+ * They all ask `isAnyModalOpen()`, which reads the stores below through the
+ * one predicate. Rebuilt separately in each place, the question would
  * drift the first time a modal is added -- which is exactly how the Package
  * Center, the Plugin Center, the Template Gallery and the Git diff came to be
  * invisible to the shortcut hook while the four older modals were not.
  *
  * ADDING A MODAL: give it a name in `ModalName` and a line in the matching
  * `*ModalOpen` reader. Nothing else has to change -- provided its open flag
- * lives in one of these three stores. A flag held in a component's own
- * `useState` is invisible here, which is how the Custom Nodes manager went on
- * letting Delete and Shift+L through after this file landed.
+ * lives in one of these stores. A flag held in a component's own `useState`
+ * is invisible here, which is how the Custom Nodes manager went on letting
+ * Delete and Shift+L through after this file landed, and the New Sweep dialog
+ * after it.
  */
 export type ModalName =
   /** The in-app confirm / prompt (`utils/dialog`). */
@@ -41,11 +43,14 @@ export type ModalName =
   | 'nodeDetail'
   | 'presetModal'
   | 'layersModal'
-  | 'vizModal';
+  | 'vizModal'
+  /** The Runs panel's New Sweep dialog. */
+  | 'newSweep';
 
 type UIStoreState = ReturnType<typeof useUIStore.getState>;
 type TabStoreState = ReturnType<typeof useTabStore.getState>;
 type DialogStoreState = ReturnType<typeof useDialogStore.getState>;
+type SweepStoreState = ReturnType<typeof useSweepStore.getState>;
 
 /**
  * Shared empty list, so the no-argument call passes the SAME reference every
@@ -92,6 +97,10 @@ function tabModalOpen(s: TabStoreState, ignore: readonly ModalName[]): boolean {
   return false;
 }
 
+function sweepModalOpen(s: SweepStoreState, ignore: readonly ModalName[]): boolean {
+  return !ignore.includes('newSweep') && s.newSweepOpen;
+}
+
 /**
  * Is any modal open right now? Reads the stores directly, at the moment of
  * asking, which is when every caller needs the answer: the global keydown
@@ -105,6 +114,7 @@ export function isAnyModalOpen(ignore: readonly ModalName[] = IGNORE_NOTHING): b
   return (
     dialogModalOpen(useDialogStore.getState(), ignore) ||
     uiModalOpen(useUIStore.getState(), ignore) ||
-    tabModalOpen(useTabStore.getState(), ignore)
+    tabModalOpen(useTabStore.getState(), ignore) ||
+    sweepModalOpen(useSweepStore.getState(), ignore)
   );
 }

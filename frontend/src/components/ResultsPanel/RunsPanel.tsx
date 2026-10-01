@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type Ref } from 'react';
 import { useI18n } from '../../i18n';
 import { confirm } from '../../utils/dialog';
 import { friendlyError } from '../../utils/errorMessages';
@@ -177,7 +177,12 @@ function LogLine({ line }: { line: RunLogLine }) {
   );
 }
 
-function RunDetailView({ chartHeight }: { chartHeight: number }) {
+function RunDetailView({ chartHeight, parentRef, closeRef }: {
+  chartHeight: number;
+  /** Where focus goes when a sweep row opens this run (see RunsPanel). */
+  parentRef: Ref<HTMLButtonElement>;
+  closeRef: Ref<HTMLButtonElement>;
+}) {
   const { t } = useI18n();
   const detail = useRunStore((s) => s.detail);
   const select = useRunStore((s) => s.select);
@@ -231,19 +236,8 @@ function RunDetailView({ chartHeight }: { chartHeight: number }) {
             {t('runs.detail.deterministic')}
           </span>
         )}
-        {run?.sweep_id && (
-          <button
-            type="button"
-            className={styles.rowBtn}
-            onClick={() => {
-              void select(null);
-              void useSweepStore.getState().openSweep(run.sweep_id!);
-            }}
-          >
-            {t('sweeps.detail.openParent')}
-          </button>
-        )}
         <button
+          ref={closeRef}
           type="button"
           className={styles.detailClose}
           onClick={() => void select(null)}
@@ -253,6 +247,24 @@ function RunDetailView({ chartHeight }: { chartHeight: number }) {
           ×
         </button>
       </div>
+
+      {/* A line of its own: in the header, beside the seed and Deterministic,
+          it squeezed the run's name to nothing on an 860 px window. */}
+      {run?.sweep_id && (
+        <div className={styles.detailParent}>
+          <button
+            ref={parentRef}
+            type="button"
+            className={styles.rowBtn}
+            onClick={() => {
+              void select(null);
+              void useSweepStore.getState().openSweep(run.sweep_id!);
+            }}
+          >
+            {t('sweeps.detail.openParent')}
+          </button>
+        </div>
+      )}
 
       {detail.error && (
         <div className={styles.detailError}>{friendlyError(detail.error)}</div>
@@ -361,8 +373,12 @@ export function RunsPanel({ panelHeight, onWatchRun }: RunsPanelProps) {
   const exportCsv = useRunStore((s) => s.exportCsv);
   const selectedSweepId = useSweepStore((s) => s.selectedSweepId);
   const closeSweep = useSweepStore((s) => s.closeSweep);
-  const stopSweepPolling = useSweepStore((s) => s.stopPolling);
   const [newSweepOpen, setNewSweepOpen] = useState(false);
+  const rootRef = useRef<HTMLDivElement>(null);
+  const newSweepRef = useRef<HTMLButtonElement>(null);
+  const sweepBackRef = useRef<HTMLButtonElement>(null);
+  const runParentRef = useRef<HTMLButtonElement>(null);
+  const runCloseRef = useRef<HTMLButtonElement>(null);
 
   // Re-render on a cadence so the duration column of a live run ticks;
   // `runs` itself only changes when the poll brings something new.
@@ -377,7 +393,30 @@ export function RunsPanel({ panelHeight, onWatchRun }: RunsPanelProps) {
   // One list poller for however many ResultsPanels are mounted (one per open
   // canvas tab), started only while this tab is actually on screen.
   useEffect(() => useRunStore.getState().watch(), []);
-  useEffect(() => () => stopSweepPolling(), [stopSweepPolling]);
+  // The sweep poller follows the panel the same way. The dock unmounts this
+  // panel for another tab and when collapsed, so on the way back the shown
+  // sweep is read again and polled again rather than frozen as it was left.
+  useEffect(() => {
+    void useSweepStore.getState().resumePolling();
+    return () => useSweepStore.getState().stopPolling();
+  }, []);
+
+  // Every switch between the list and a sweep unmounts the control that was
+  // pressed (Start, Open parent sweep, Back, Open run), and focus would fall
+  // to the page. It goes to the new view's way back instead -- unless it is
+  // somewhere else on purpose.
+  const view = selectedSweepId !== null ? 'sweep' : 'list';
+  const shownView = useRef(view);
+  useEffect(() => {
+    if (shownView.current === view) return;
+    shownView.current = view;
+    const active = document.activeElement;
+    if (active && active !== document.body && !rootRef.current?.contains(active)) return;
+    const target = view === 'sweep'
+      ? sweepBackRef.current
+      : runParentRef.current ?? runCloseRef.current ?? newSweepRef.current;
+    target?.focus();
+  }, [view]);
 
   // A second click while the confirm or the socket handshake is pending
   // would send a second `attach`, and the server REPLACES an attachment
@@ -462,18 +501,19 @@ export function RunsPanel({ panelHeight, onWatchRun }: RunsPanelProps) {
 
   if (selectedSweepId !== null) {
     return (
-      <div className={styles.runsBody}>
+      <div ref={rootRef} className={styles.runsBody}>
         <SweepDetail
           chartHeight={chartHeight}
           onBack={closeSweep}
           onOpenRun={openChildRun}
+          backRef={sweepBackRef}
         />
       </div>
     );
   }
 
   return (
-    <div className={styles.runsBody}>
+    <div ref={rootRef} className={styles.runsBody}>
       <div className={styles.listCol}>
         <div className={styles.toolbar}>
           <div className={styles.filters}>
@@ -492,6 +532,7 @@ export function RunsPanel({ panelHeight, onWatchRun }: RunsPanelProps) {
           </div>
           <div className={styles.toolbarRight}>
             <button
+              ref={newSweepRef}
               type="button"
               className={`${styles.rowBtn} ${styles.newSweepBtn}`}
               onClick={() => setNewSweepOpen(true)}
@@ -651,7 +692,9 @@ export function RunsPanel({ panelHeight, onWatchRun }: RunsPanelProps) {
         {newSweepOpen && <NewSweepDialog onClose={() => setNewSweepOpen(false)} />}
       </div>
 
-      {selectedRunId !== null && <RunDetailView chartHeight={chartHeight} />}
+      {selectedRunId !== null && (
+        <RunDetailView chartHeight={chartHeight} parentRef={runParentRef} closeRef={runCloseRef} />
+      )}
     </div>
   );
 }

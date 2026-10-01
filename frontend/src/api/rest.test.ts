@@ -1314,6 +1314,35 @@ describe('sweep endpoints', () => {
     await expect(createSweep(request)).rejects.toThrow(/32-run cap/);
   });
 
+  it('reads a 422 validation list as one line per field, not [object Object]', async () => {
+    mockFetch(422, {
+      detail: [
+        { type: 'int_type', loc: ['body', 'sweep_spec', 'seed'], msg: 'Input should be a valid integer', input: 'x' },
+        { type: 'missing', loc: ['body', 'objective'], msg: 'Field required', input: {} },
+      ],
+    });
+    await expect(createSweep(request)).rejects.toThrow(
+      'sweep_spec.seed: Input should be a valid integer; objective: Field required',
+    );
+  });
+
+  it('rejects a sweep the server does not know with its status kept', async () => {
+    mockFetch(404, { detail: "sweep 'gone' not found" });
+    const error = await getSweep('gone').catch((caught: unknown) => caught);
+    expect(error).toBeInstanceOf(ApiError);
+    expect(error).toMatchObject({ status: 404, message: "sweep 'gone' not found" });
+  });
+
+  it('hands the abort signal to the sweep and metrics reads', async () => {
+    const controller = new AbortController();
+    const fetchMock = mockFetch(200, { sweep_id: 's1', run_id: 'r1', names: [], metrics: [] });
+    await getSweep('s1', controller.signal);
+    await getRunMetrics('r1', 'train_loss', controller.signal);
+    expect(fetchMock.mock.calls[0][1]).toMatchObject({ signal: controller.signal });
+    expect(fetchMock.mock.calls[1][0]).toBe('/api/runs/r1/metrics?name=train_loss');
+    expect(fetchMock.mock.calls[1][1]).toMatchObject({ signal: controller.signal });
+  });
+
   describe('downloadSweepCsv', () => {
     let clickSpy: ReturnType<typeof vi.spyOn>;
 

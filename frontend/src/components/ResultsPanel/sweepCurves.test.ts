@@ -1,11 +1,12 @@
 import { describe, expect, it, vi } from 'vitest';
-import type { RunMetrics, SweepDetail } from '../../api/rest';
+import type { RunMetrics, RunStatus, SweepDetail } from '../../api/rest';
 import {
   loadObjectiveCurves,
   objectiveCurve,
+  type SweepCurveCache,
 } from './sweepCurves';
 
-function detail(count: number): SweepDetail {
+function detail(count: number, status: RunStatus = 'succeeded'): SweepDetail {
   return {
     sweep_id: 's1', name: 'Search', state: 'finished', method: 'grid',
     seed: null, seed_variants: false,
@@ -14,7 +15,7 @@ function detail(count: number): SweepDetail {
     counts: { queued: 0, running: 0, succeeded: count, failed: 0, cancelled: 0, interrupted: 0, missing: 0 },
     params: [], best: null,
     variants: Array.from({ length: count }, (_, index) => ({
-      index, domain_index: index, run_id: `r${index}`, status: 'succeeded' as const,
+      index, domain_index: index, run_id: `r${index}`, status,
       params: [], seed: null, objective: index, rank: index + 1,
       run_exists: true, final_metrics: { loss: index },
     })),
@@ -32,11 +33,11 @@ function metrics(runId: string, values: Array<number | null>): RunMetrics {
 }
 
 describe('objectiveCurve', () => {
-  it('keeps only finite objective points in step order', () => {
+  it('keeps only finite objective points in step order, with no display label', () => {
+    // The legend wording is the view's, so it can be translated there.
     expect(objectiveCurve(2, metrics('r2', [0.7, null, 0.4]), 'loss')).toEqual({
       runId: 'r2',
       variantIndex: 2,
-      name: 'Variant 3',
       points: [{ x: 1, y: 0.7 }, { x: 3, y: 0.4 }],
     });
   });
@@ -87,5 +88,31 @@ describe('loadObjectiveCurves', () => {
     expect(fetcher).toHaveBeenCalledTimes(32);
     expect(peak).toBeLessThanOrEqual(4);
     expect(curves).toHaveLength(32);
+  });
+
+  it('reads a finished child once and a live child on every load', async () => {
+    // A run writes its last metric before it files a terminal status, so a
+    // finished child's series is final; only the live ones can still grow.
+    const sweep = detail(2);
+    sweep.variants[1].status = 'running';
+    const fetcher = vi.fn(async (runId: string) => metrics(runId, [1, 0.5]));
+    const cache: SweepCurveCache = new Map();
+
+    const first = await loadObjectiveCurves(sweep, fetcher, undefined, cache);
+    const second = await loadObjectiveCurves(sweep, fetcher, undefined, cache);
+
+    expect(fetcher.mock.calls.map(([id]) => id)).toEqual(['r0', 'r1', 'r1']);
+    expect(second).toEqual(first);
+    expect(second.map((curve) => curve.runId)).toEqual(['r0', 'r1']);
+  });
+
+  it('does not ask a queued child for metrics it cannot have yet', async () => {
+    const sweep = detail(2, 'queued');
+    sweep.variants[0].status = 'running';
+    const fetcher = vi.fn(async (runId: string) => metrics(runId, [1]));
+
+    await loadObjectiveCurves(sweep, fetcher);
+
+    expect(fetcher.mock.calls.map(([id]) => id)).toEqual(['r0']);
   });
 });

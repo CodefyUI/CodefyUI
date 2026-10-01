@@ -1,13 +1,20 @@
+/* One vertical scroll for the whole view, as the run detail has. A chart that
+   kept its height above a table with its own scroller left that table no rows
+   at the dock's default 200 px. */
 .detail {
   flex: 1;
   min-width: 0;
   display: flex;
   flex-direction: column;
-  overflow: hidden;
+  overflow-y: auto;
   color: var(--text-secondary);
 }
 
+/* Back, CSV and Stop stay in reach while the table scrolls under them. */
 .header {
+  position: sticky;
+  top: 0;
+  z-index: 1;
   display: flex;
   align-items: center;
   gap: var(--sp-3);
@@ -24,6 +31,7 @@
   background: transparent;
   border: 1px solid var(--border-strong);
   border-radius: var(--radius-sm);
+  font-size: var(--fs-xs);
   cursor: pointer;
   white-space: nowrap;
 }
@@ -64,6 +72,8 @@
 .state_running { color: var(--accent-deep); }
 .state_cancelling { color: var(--status-warning); }
 .state_finished { color: var(--status-success); }
+/* Finished with runs that did not succeed: done, not a success. */
+.state_settled { color: var(--text-secondary); }
 .state_failed { color: var(--status-error); }
 .stop { border-color: var(--status-error) !important; }
 
@@ -101,8 +111,7 @@
 
 .chartSection {
   flex-shrink: 0;
-  padding: var(--sp-2) var(--sp-4);
-  border-bottom: 1px solid var(--border-subtle);
+  padding: var(--sp-2) var(--sp-4) var(--sp-3);
 }
 
 .chartSection h3 {
@@ -117,9 +126,12 @@
   font-size: var(--fs-sm);
 }
 
+/* Sideways only; the view scrolls the rows. flex-shrink: 0 because a scroll
+   container's automatic minimum height is 0, which is how the table used to
+   be squeezed to nothing. */
 .tableScroll {
-  min-height: 0;
-  overflow: auto;
+  flex-shrink: 0;
+  overflow-x: auto;
 }
 
 .table {
@@ -142,9 +154,6 @@
 }
 
 .table th {
-  position: sticky;
-  top: 0;
-  z-index: 1;
   color: var(--text-muted);
   background: var(--surface-panel);
 }
