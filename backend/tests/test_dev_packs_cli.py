@@ -29,7 +29,10 @@ import io
 import json
 import os
 import signal
+import subprocess
 import sys
+import textwrap
+import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -464,29 +467,177 @@ def test_cli_install_cancelled_exits_130(probed, fake_flow, capsys):
 
 def test_ctrl_c_sets_the_cancel_flag_instead_of_tracebacking(
         probed, monkeypatch, capsys):
-    """SIGINT during an install must reach the flow as a cancel REQUEST.
-
-    Raising KeyboardInterrupt out of the handler would unwind through the
-    downloader's own cleanup, leaving a half-written cache and a traceback
-    where a learner expects "cancelled".
-    """
-    import signal
-
+    """The first SIGINT only requests cleanup; a second uses the OS default."""
     from app.core.packs import flows
     from app.core.packs.errors import PackCancelled
+
+    close_calls = 0
+    warn_calls = 0
+    real_close = packs._ConsoleReporter.close
+    real_warn = packs.warn
+
+    def _close_spy(reporter):
+        nonlocal close_calls
+        close_calls += 1
+        return real_close(reporter)
+
+    def _warn_spy(zh, en):
+        nonlocal warn_calls
+        warn_calls += 1
+        return real_warn(zh, en)
+
+    monkeypatch.setattr(packs._ConsoleReporter, "close", _close_spy)
+    monkeypatch.setattr(packs, "warn", _warn_spy)
 
     def _fake(pack, item_ids, *, emit, cancel_check):
         assert cancel_check() is False
         handler = signal.getsignal(signal.SIGINT)
         assert callable(handler), "the CLI must own SIGINT while installing"
+        capsys.readouterr()
+        close_before = close_calls
+        warn_before = warn_calls
+
         handler(signal.SIGINT, None)                     # simulate Ctrl-C
+
+        captured = capsys.readouterr()
+        assert captured.out == "" and captured.err == ""
+        assert close_calls == close_before
+        assert warn_calls == warn_before
+        assert signal.getsignal(signal.SIGINT) is signal.SIG_DFL
+        # Calling the captured function again is safe; a real second Ctrl-C is
+        # delivered to SIG_DFL instead and exits the process immediately.
+        handler(signal.SIGINT, None)
+        captured = capsys.readouterr()
+        assert captured.out == "" and captured.err == ""
         assert cancel_check() is True
         raise PackCancelled("cancelled")
 
     before = signal.getsignal(signal.SIGINT)
     monkeypatch.setattr(flows, "install_pack_live", _fake)
     assert packs.main(["install", "sentence-embeddings", "--yes"]) == 130
+    text = capsys.readouterr().out
+    assert text.count("Cancelling... (finishing the current step)") == 1
+    assert text.count("Cancelled") == 1
     assert signal.getsignal(signal.SIGINT) is before, "SIGINT was not restored"
+
+
+_SECOND_SIGINT_CHILD = textwrap.dedent(r"""
+    import os
+    import signal
+    import sys
+    import time
+    from pathlib import Path
+    from types import SimpleNamespace
+
+    mode, ready_name, armed_name = sys.argv[1:]
+    ready = Path(ready_name)
+    armed = Path(armed_name)
+
+    if mode == "packs":
+        import packs
+        from app.core.packs import catalog, flows, state
+
+        pack = catalog.find_pack("sentence-embeddings")
+        state.probe_all = lambda: {
+            pack.pack_id: SimpleNamespace(blocked_by=(), items=()),
+        }
+
+        def stalled_flow(pack, item_ids, *, emit, cancel_check):
+            ready.write_text("ready", encoding="ascii")
+            while not cancel_check():
+                time.sleep(0.01)
+            armed.write_text("armed", encoding="ascii")
+            while True:
+                time.sleep(1)
+
+        flows.install_pack_live = stalled_flow
+        code = packs.cmd_install(SimpleNamespace(
+            pack_id=pack.pack_id, items=None, yes=True,
+        ))
+    else:
+        import plugins
+
+        reporter = plugins._ConsoleReporter()
+        with plugins._cancel_on_sigint(reporter) as cancel_check:
+            ready.write_text("ready", encoding="ascii")
+            while not cancel_check():
+                time.sleep(0.01)
+            armed.write_text("armed", encoding="ascii")
+            while True:
+                time.sleep(1)
+        code = 0
+
+    raise SystemExit(code)
+""")
+
+
+def _wait_for_child_marker(process, marker: Path, *, timeout: float = 10) -> None:
+    deadline = time.monotonic() + timeout
+    while not marker.exists():
+        returncode = process.poll()
+        if returncode is not None:
+            pytest.fail(
+                f"SIGINT child exited {returncode} before {marker.name}"
+            )
+        if time.monotonic() >= deadline:
+            pytest.fail(f"SIGINT child did not write {marker.name}")
+        time.sleep(0.01)
+
+
+@pytest.mark.skipif(
+    os.name == "nt",
+    reason=(
+        "Windows CTRL_C_EVENT cannot be targeted at a child process group "
+        "without risking the parent pytest console; SIG_DFL is unit-tested"
+    ),
+)
+@pytest.mark.parametrize("mode", ["packs", "plugins"])
+def test_second_sigint_terminates_a_stalled_cli_process_with_code_130(
+        mode, tmp_path):
+    """The second real SIGINT reaches SIG_DFL, isolated from parent pytest."""
+    root = Path(__file__).resolve().parents[2]
+    ready = tmp_path / f"{mode}.ready"
+    armed = tmp_path / f"{mode}.armed"
+    env = os.environ.copy()
+    pythonpath = [str(root / "scripts"), str(root / "backend")]
+    if env.get("PYTHONPATH"):
+        pythonpath.append(env["PYTHONPATH"])
+    env["PYTHONPATH"] = os.pathsep.join(pythonpath)
+
+    process = subprocess.Popen(
+        [
+            sys.executable,
+            "-u",
+            "-c",
+            _SECOND_SIGINT_CHILD,
+            mode,
+            str(ready),
+            str(armed),
+        ],
+        cwd=root,
+        env=env,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        start_new_session=True,
+    )
+    try:
+        _wait_for_child_marker(process, ready)
+        os.kill(process.pid, signal.SIGINT)
+        _wait_for_child_marker(process, armed)
+
+        started = time.monotonic()
+        os.kill(process.pid, signal.SIGINT)
+        returncode = process.wait(timeout=5)
+
+        assert time.monotonic() - started < 5
+        assert returncode == -signal.SIGINT
+        shell_code = 128 - returncode if returncode < 0 else returncode
+        assert shell_code == 130
+    finally:
+        if process.poll() is None:
+            process.kill()
+            process.wait(timeout=5)
 
 
 # ── remove ────────────────────────────────────────────────────────────────

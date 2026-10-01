@@ -2392,15 +2392,7 @@ def test_packages_that_cannot_be_installed_here_are_exit_3_with_the_command(
 def test_ctrl_c_stops_the_install_at_130_and_writes_nothing(
     isolated_lockfile, fake_github, monkeypatch, capsys
 ):
-    """SIGINT sets a flag the install polls; it never raises through it.
-
-    A ``KeyboardInterrupt`` thrown out of the handler would skip the flow's
-    own cancellation path -- the one that removes the half-written download
-    and the staging copy -- and print a traceback where "Cancelled" belongs.
-    So the handler the CLI installed is called from inside the download,
-    exactly as the OS would call it, and what is asserted is the exit code,
-    the empty lockfile and the handler being put back afterwards.
-    """
+    """The first SIGINT requests owned cleanup and arms default handling."""
     monkeypatch.setenv("CODEFYUI_LANG", "en")
     fake_github({
         "cdui.plugin.toml": _TEMPLATE_MANIFEST,
@@ -2408,21 +2400,106 @@ def test_ctrl_c_stops_the_install_at_130_and_writes_nothing(
     })
     served = plugin_cli.download_tarball
     before = signal.getsignal(signal.SIGINT)
+    close_calls = 0
+    warn_calls = 0
+    real_close = plugin_cli._ConsoleReporter.close
+    real_warn = plugin_cli.warn
+
+    def _close_spy(reporter):
+        nonlocal close_calls
+        close_calls += 1
+        return real_close(reporter)
+
+    def _warn_spy(zh, en):
+        nonlocal warn_calls
+        warn_calls += 1
+        return real_warn(zh, en)
+
+    monkeypatch.setattr(plugin_cli._ConsoleReporter, "close", _close_spy)
+    monkeypatch.setattr(plugin_cli, "warn", _warn_spy)
 
     def _interrupted(owner, repo, sha, dest, **kwargs):
         handler = signal.getsignal(signal.SIGINT)
         assert callable(handler), "the install installs its own SIGINT handler"
         assert handler is not before
+        capsys.readouterr()
+        close_before = close_calls
+        warn_before = warn_calls
+
         handler(signal.SIGINT, None)
+
+        captured = capsys.readouterr()
+        assert captured.out == "" and captured.err == ""
+        assert close_calls == close_before
+        assert warn_calls == warn_before
+        assert signal.getsignal(signal.SIGINT) is signal.SIG_DFL
+        # A real second Ctrl-C now reaches SIG_DFL. Calling the captured first
+        # handler again merely proves it is idempotent and performs no output.
+        handler(signal.SIGINT, None)
+        captured = capsys.readouterr()
+        assert captured.out == "" and captured.err == ""
         served(owner, repo, sha, dest, **kwargs)
 
     monkeypatch.setattr(plugin_cli, "download_tarball", _interrupted)
 
     assert _official(_install_args()) == 130
-    assert "Cancelled" in _out(capsys)
+    text = _out(capsys)
+    assert text.count("Cancelling... (finishing the current step)") == 1
+    assert text.count("Cancelled (nothing was installed)") == 1
     assert plugin_loader.load_lockfile()["plugins"] == {}
     assert not (isolated_lockfile / "official-template").exists()
     assert not (isolated_lockfile / ".staging").exists()
     # Restored, so a `cdui plugin sync` installing five packs does not end
     # up with five nested handlers.
+    assert signal.getsignal(signal.SIGINT) is before
+
+
+def test_ctrl_c_during_link_dependency_install_uses_the_same_two_stage_handler(
+    monkeypatch, capsys
+):
+    from app.core.plugins.errors import PluginCancelled
+
+    before = signal.getsignal(signal.SIGINT)
+    close_calls = 0
+    warn_calls = 0
+    real_close = plugin_cli._ConsoleReporter.close
+    real_warn = plugin_cli.warn
+
+    def _close_spy(reporter):
+        nonlocal close_calls
+        close_calls += 1
+        return real_close(reporter)
+
+    def _warn_spy(zh, en):
+        nonlocal warn_calls
+        warn_calls += 1
+        return real_warn(zh, en)
+
+    monkeypatch.setattr(plugin_cli._ConsoleReporter, "close", _close_spy)
+    monkeypatch.setattr(plugin_cli, "warn", _warn_spy)
+
+    def _cancelled(specs, *, emit, cancel_check):
+        assert cancel_check() is False
+        handler = signal.getsignal(signal.SIGINT)
+        assert callable(handler)
+        capsys.readouterr()
+        close_before = close_calls
+        warn_before = warn_calls
+
+        handler(signal.SIGINT, None)
+
+        captured = capsys.readouterr()
+        assert captured.out == "" and captured.err == ""
+        assert close_calls == close_before
+        assert warn_calls == warn_before
+        assert signal.getsignal(signal.SIGINT) is signal.SIG_DFL
+        assert cancel_check() is True
+        raise PluginCancelled("cancelled")
+
+    monkeypatch.setattr(core_deps, "install_deps_step", _cancelled)
+
+    assert plugin_cli._install_deps({"numpy": ">=1"}) == 130
+    text = _out(capsys)
+    assert text.count("Cancelling... (finishing the current step)") == 1
+    assert text.count("Cancelled") == 1
     assert signal.getsignal(signal.SIGINT) is before

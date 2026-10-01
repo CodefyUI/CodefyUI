@@ -638,12 +638,13 @@ def _cancel_on_sigint(
 ) -> Iterator[Callable[[], bool]]:
     """Make Ctrl-C something the install can act on, and put SIGINT back after.
 
-    Yields the ``cancel_check`` the flow polls. The handler SETS A FLAG and
-    never raises: the flow checks it between its steps and inside the
-    download and the pip run, and unwinds through its own cancellation path,
-    which removes the half-written download and the staging copy. A
-    ``KeyboardInterrupt`` thrown out of the handler would skip all of that
-    and print a traceback where "Cancelled" belongs.
+    Yields the ``cancel_check`` the flow polls. On the first interrupt the
+    handler sets a flag and arms the operating-system default for a second
+    interrupt; it never writes to the console or raises. The flow checks the
+    flag between its steps and inside the download and pip run, then unwinds
+    through its own cancellation path, which removes the half-written download
+    and staging copy. The polling callback reports the first request from
+    normal control flow.
 
     A :class:`threading.Event` rather than a plain flag because the flag is
     written by a signal handler and read by the install; the Event is the
@@ -657,19 +658,28 @@ def _cancel_on_sigint(
     already had.
     """
     cancelled = threading.Event()
+    cancellation_noted = False
+    owns_sigint = False
+
+    def _cancel_check() -> bool:
+        nonlocal cancellation_noted
+        requested = cancelled.is_set()
+        if requested and not cancellation_noted:
+            cancellation_noted = True
+            reporter.close()
+            warn(
+                "正在取消……（等目前的步驟收尾）",
+                "Cancelling... (finishing the current step)",
+            )
+        return requested
 
     def _on_sigint(signum, frame) -> None:
+        if cancelled.is_set():
+            return
         cancelled.set()
-        # End the progress line first: this fires mid-download, and the
-        # message would otherwise land on top of the bar.
-        reporter.close()
-        warn(
-            "正在取消……（等目前的步驟收尾）",
-            "Cancelling... (finishing the current step)",
-        )
+        signal.signal(signal.SIGINT, signal.SIG_DFL)
 
     previous = None
-    owns_sigint = False
     try:
         previous = signal.signal(signal.SIGINT, _on_sigint)
         owns_sigint = True
@@ -677,7 +687,7 @@ def _cancel_on_sigint(
         pass
 
     try:
-        yield cancelled.is_set
+        yield _cancel_check
     finally:
         if owns_sigint:
             signal.signal(

@@ -40,6 +40,7 @@ import os
 import re
 import signal
 import sys
+import threading
 from pathlib import Path
 
 # NOTE: nothing from ``app`` is imported at module level, and nothing may be.
@@ -418,22 +419,31 @@ def cmd_install(args: argparse.Namespace) -> int:
 
     section(f"安裝 {pack.title}", f"Installing {pack.title}")
     reporter = _ConsoleReporter()
-    cancelled = {"requested": False}
+    cancelled = threading.Event()
+    cancellation_noted = False
+    owns_sigint = False
+
+    def _cancel_check() -> bool:
+        nonlocal cancellation_noted
+        requested = cancelled.is_set()
+        if requested and not cancellation_noted:
+            cancellation_noted = True
+            reporter.close()
+            warn("正在取消……（等目前的步驟收尾）",
+                 "Cancelling... (finishing the current step)")
+        return requested
 
     def _on_sigint(signum, frame) -> None:
-        # Set a flag; never raise. The flow polls this between and during its
-        # steps and unwinds through its OWN cancellation path, which removes
-        # the half-written download -- a KeyboardInterrupt thrown from here
-        # would skip that and print a traceback where "cancelled" belongs.
-        cancelled["requested"] = True
-        # End the progress line first: this fires mid-download, and the
-        # message would otherwise land on top of the bar.
-        reporter.close()
-        warn("正在取消……（等目前的步驟收尾）",
-             "Cancelling... (finishing the current step)")
+        # The first press asks the flow to unwind through its own cleanup path.
+        # Arm the OS default for a second press so a stalled step cannot trap
+        # the user. Console I/O is deliberately left to normal control flow:
+        # writing here can re-enter the buffered stream that was interrupted.
+        if cancelled.is_set():
+            return
+        cancelled.set()
+        signal.signal(signal.SIGINT, signal.SIG_DFL)
 
     previous = None
-    owns_sigint = False
     try:
         previous = signal.signal(signal.SIGINT, _on_sigint)
         owns_sigint = True
@@ -444,8 +454,7 @@ def cmd_install(args: argparse.Namespace) -> int:
 
     try:
         outcome = flows.install_pack_live(
-            pack, item_ids, emit=reporter,
-            cancel_check=lambda: cancelled["requested"])
+            pack, item_ids, emit=reporter, cancel_check=_cancel_check)
     except PackCancelled:
         reporter.close()
         warn("已取消", "Cancelled")
