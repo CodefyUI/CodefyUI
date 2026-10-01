@@ -24,7 +24,21 @@ received — each links to the release it was published as.
 
 ### Fixed
 
-- **Portable presets referenced only inside a block survive registry refresh, save and reopen.** Each document now owns the definitions it needs, uses its version ahead of an installed same-name preset, serializes only referenced definitions, and strips SECRET values from persistence and exports. ([#541])
+- **Portable presets referenced only inside a block survive registry refresh,
+  save and reopen** ([#541]). Each document owns the definitions it needs and
+  uses its version ahead of an installed same-name preset, also for a card
+  pasted or inserted from another graph, which is now drawn from that
+  definition. Only referenced definitions are saved. Save, autosave and every
+  export blank a preset's SECRET slots by every same-name definition the
+  editor has seen, so a key typed against one graph's definition stays out of
+  another graph's files, and Run sends only the keys the server blanks in the
+  run it stores.
+- **A graph whose own definition of a preset it uses cannot be read is refused
+  instead of running the installed one** ([#541]). Run, app publish and app
+  invoke name the preset and the first parse error, and the server withholds
+  every value of that preset's cards from the runs it stores, finished runs
+  included at the next start. A broken definition no card uses does not stop
+  a run.
 
 ## [2.8.6] — 2026-09-24
 
