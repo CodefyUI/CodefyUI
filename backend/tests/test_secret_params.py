@@ -321,23 +321,29 @@ def _installed_plain_chat():
         preset_registry._presets.pop("PlainChat", None)
 
 
-def test_save_scrub_and_publish_gate_withhold_an_unreadable_preset_s_values(
-        _installed_plain_chat):
-    """The graph's own ``PlainChat`` (an LLMChat at ``chat``) lacks its
-    ``description``. Its name is unknown to both walks rather than read
-    through the installed definition, so every value counts."""
-    from app.core.graph_engine import build_preset_fallback
-
-    fallback = build_preset_fallback([{
-        "preset_name": "PlainChat", "category": "Test", "tags": [],
-        "nodes": [{"id": "chat", "type": "LLMChat", "params": {}}],
-        "edges": [], "exposed_inputs": [], "exposed_outputs": [],
-        "exposed_params": [],
-    }])
-    nodes = [{"id": "p", "type": "preset:PlainChat", "data": {
+def _chat_card() -> list[dict[str, Any]]:
+    return [{"id": "p", "type": "preset:PlainChat", "data": {
         "params": {},
         "internalParams": {"chat": {"openai_api_key": "sk-leak", "model": "m"}},
     }}]
+
+
+def test_save_scrub_and_publish_gate_withhold_an_unreadable_preset_s_values(
+        _installed_plain_chat):
+    """The graph's own ``PlainChat`` (an LLMChat at ``chat``) exposes a param
+    with no ``display_name``, which the model refuses. Its name is unknown to
+    both walks rather than read through the installed definition, so every
+    value counts."""
+    from app.core.graph_engine import build_preset_fallback
+
+    fallback = build_preset_fallback([{
+        "preset_name": "PlainChat", "category": "Test", "description": "",
+        "tags": [],
+        "nodes": [{"id": "chat", "type": "LLMChat", "params": {}}],
+        "edges": [], "exposed_inputs": [], "exposed_outputs": [],
+        "exposed_params": [{"internal_node": "chat", "param_name": "model"}],
+    }])
+    nodes = _chat_card()
 
     assert find_secret_violations(nodes, preset_fallback=fallback) == [
         {"node_id": "p", "param": "chat.model"},
@@ -346,3 +352,24 @@ def test_save_scrub_and_publish_gate_withhold_an_unreadable_preset_s_values(
     assert scrub_graph_secrets(nodes, preset_fallback=fallback) == 2
     assert nodes[0]["data"]["internalParams"] == {
         "chat": {"openai_api_key": "", "model": ""}}
+
+
+def test_save_scrub_and_publish_gate_read_a_minimal_definition(
+        _installed_plain_chat):
+    """``preset_name``, ``nodes`` and ``edges`` alone: the model gives the
+    rest the installed registry's defaults, so both walks read the graph's
+    own LLMChat at ``chat`` and take the key and nothing else."""
+    from app.core.graph_engine import build_preset_fallback
+
+    fallback = build_preset_fallback([{
+        "preset_name": "PlainChat",
+        "nodes": [{"id": "chat", "type": "LLMChat", "params": {}}],
+        "edges": [],
+    }])
+    nodes = _chat_card()
+
+    assert find_secret_violations(nodes, preset_fallback=fallback) == [
+        {"node_id": "p", "param": "chat.openai_api_key"}]
+    assert scrub_graph_secrets(nodes, preset_fallback=fallback) == 1
+    assert nodes[0]["data"]["internalParams"] == {
+        "chat": {"openai_api_key": "", "model": "m"}}

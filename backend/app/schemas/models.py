@@ -370,14 +370,18 @@ class ExposedParamSchema(BaseModel):
 # blanked by the startup sweep across all stored runs (#541).
 class PresetDefinition(BaseModel):
     preset_name: str
-    category: str
-    description: str
+    # The defaults are the ones the installed registry has always given a
+    # preset file that leaves the field out. Kept here, the one place both
+    # kinds of definition are parsed, so a graph's own presets[] entry reads
+    # exactly like that file (#541); PresetRegistry builds through them too.
+    category: str = "Preset"
+    description: str = ""
     tags: list[str] = []
     nodes: list[InternalNodeSchema]
     edges: list[InternalEdgeSchema]
-    exposed_inputs: list[ExposedPortSchema]
-    exposed_outputs: list[ExposedPortSchema]
-    exposed_params: list[ExposedParamSchema]
+    exposed_inputs: list[ExposedPortSchema] = []
+    exposed_outputs: list[ExposedPortSchema] = []
+    exposed_params: list[ExposedParamSchema] = []
 
 
 class CreatePresetRequest(BaseModel):

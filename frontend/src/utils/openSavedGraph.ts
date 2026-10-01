@@ -14,6 +14,7 @@ import { readGraphDevice } from './graphSettings';
 import {
   effectivePresets,
   mergeUnknownPresetsIntoPalette,
+  withPresetDefaults,
 } from './presetOwnership';
 
 /**
@@ -115,7 +116,7 @@ export function resolveSavedGraph(
   boundFile: string | null,
 ): GraphDocument {
   const store = useNodeDefStore.getState();
-  const savedPresets = Array.isArray(data.presets) ? data.presets : [];
+  const savedPresets = withPresetDefaults(data.presets);
   const mergedPresets = mergeUnknownPresetsIntoPalette(store.presets, savedPresets);
   const resolvingPresets = effectivePresets(savedPresets, store.presets);
   const loadedSubgraphs: SubgraphDefinition[] = Array.isArray(data.subgraphs)

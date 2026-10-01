@@ -55,11 +55,14 @@ class MalformedPreset:
 
     The graph's own definition of a preset wins over an installed one of the
     same name. Skipping an entry the ``PresetDefinition`` model refuses -- no
-    top-level ``description``, an exposed param with no ``display_name``, an
-    edge with no handle -- handed the name to the installed definition without
-    a word: the run executed a definition the graph never meant, and the SECRET
-    walks scrubbed by it, so a key the graph's own definition calls SECRET
-    reached the stored run copy.
+    ``nodes``, an exposed param with no ``display_name``, an edge with no
+    handle -- handed the name to the installed definition without a word: the
+    run executed a definition the graph never meant, and the SECRET walks
+    scrubbed by it, so a key the graph's own definition calls SECRET reached
+    the stored run copy. A field the installed registry defaults in a preset
+    file (``category``, ``description``, ``tags``, ``exposed_*``) the model
+    defaults the same way, so leaving one out does not make an entry
+    unreadable.
 
     Deliberately NOT a :class:`PresetDefinition` and without its fields, like
     :class:`MalformedSubgraph`: whatever looks a name up in a fallback has to
@@ -110,7 +113,9 @@ def build_preset_fallback(presets: Any) -> dict:
       withholds every value such a node carries from durable copies, whatever
       an installed definition declares;
     - an entry no node references stays ignored, so a stray entry still never
-      breaks a run, and saving is never refused for one.
+      breaks a run. ``/save``, ``/validate`` and ``/export`` are stricter:
+      their request model parses every entry, so any entry that does not
+      parse is a 422 there, referenced or not.
 
     An entry with no usable name cannot be referenced, so it is dropped. A
     parsable definition wins over a broken one with the same name, whichever

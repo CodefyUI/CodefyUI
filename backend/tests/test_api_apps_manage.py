@@ -741,22 +741,23 @@ async def test_publish_rejects_a_preset_secret_inside_a_definition(
 
 def _chat_definition(*, readable: bool) -> dict:
     """The graph's own `SecretChat`: an LLMChat at `chat`. Without its
-    `description` the model refuses it."""
+    `nodes` it is not a definition, and the model refuses it."""
     definition = {
-        "preset_name": "SecretChat", "category": "Test", "tags": [],
+        "preset_name": "SecretChat", "category": "Test", "description": "",
+        "tags": [],
         "nodes": [{"id": "chat", "type": "LLMChat", "params": {}}],
         "edges": [], "exposed_inputs": [], "exposed_outputs": [],
         "exposed_params": [],
     }
-    if readable:
-        definition["description"] = ""
+    if not readable:
+        del definition["nodes"]
     return definition
 
 
 def _unreadable_refusal(node_id: str) -> str:
     return (
         "Preset 'SecretChat' is in this graph but could not be read, so "
-        f"node {node_id} cannot be expanded: description: Field required"
+        f"node {node_id} cannot be expanded: nodes: Field required"
     )
 
 
@@ -842,3 +843,36 @@ async def test_publish_still_gates_a_key_in_a_readable_embedded_preset(
     assert detail["code"] == "secret_in_graph"
     assert detail["details"] == [
         {"node_id": "p1", "param": "chat.openai_api_key"}]
+
+
+@pytest.mark.asyncio
+async def test_publish_and_invoke_read_a_minimal_embedded_preset(
+    test_client, app_db, _graphs_dir,
+):
+    """A definition that names only `preset_name`, `nodes` and `edges` is
+    read with the installed registry's defaults: by the publish gate, and by
+    invoke, which reads the published snapshot's `presets[]` again."""
+    graph = _echo_graph(name="minimal-preset")
+    graph["nodes"].append({
+        "id": "p1", "type": "preset:SecretChat",
+        "position": {"x": 0, "y": 300},
+        "data": {"internalParams": {"chat": {"model": "gpt-4o"}}},
+    })
+    graph["presets"] = [{
+        "preset_name": "SecretChat",
+        "nodes": [{"id": "chat", "type": "LLMChat", "params": {}}],
+        "edges": [],
+    }]
+
+    resp = await _publish_file(test_client, _graphs_dir, "minimal-preset", graph)
+    assert resp.status_code == 200, resp.text
+
+    key = await test_client.post("/api/keys", json={"name": "minimal-preset"})
+    assert key.status_code == 200, key.text
+    invoked = await test_client.post(
+        "/api/apps/minimal-preset-app/invoke",
+        json={"inputs": {"x": "hello"}},
+        headers={"Authorization": f"Bearer {key.json()['token']}"},
+    )
+    assert invoked.status_code == 200, invoked.text
+    assert invoked.json()["outputs"] == {"y": "hello"}

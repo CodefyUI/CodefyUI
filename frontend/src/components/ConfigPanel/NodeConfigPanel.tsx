@@ -1,5 +1,5 @@
 import { useTabStore } from '../../store/tabStore';
-import { resolveDynamicInputs, resolveDynamicOutputs } from '../../utils';
+import { readablePresetNodes, resolveDynamicInputs, resolveDynamicOutputs } from '../../utils';
 import { useUIStore } from '../../store/uiStore';
 import { useI18n } from '../../i18n';
 import { NodeParamList } from '../shared/NodeParamList';
@@ -75,7 +75,7 @@ export function NodeConfigPanel() {
         {isPreset && (
           <div style={{ marginBottom: 'var(--sp-5)' }}>
             <div className={styles.presetHint}>
-              {t('preset.nodeCount', { count: selectedNode.data.presetDefinition?.nodes.length ?? 0 })}
+              {t('preset.nodeCount', { count: readablePresetNodes(selectedNode.data.presetDefinition).length })}
             </div>
             <button type="button"
               onClick={() => openPresetModal(selectedNode.id)}

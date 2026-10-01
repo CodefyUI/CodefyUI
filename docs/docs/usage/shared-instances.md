@@ -104,7 +104,9 @@ typed to this server with the run, and an `LLMChat` node uses it ahead of the
 instance's environment key. When the server does not recognise a node's type
 (a custom node that was disabled, a plugin that was removed), it cannot tell
 which of that node's params are SECRET, so it blanks all of them in the run
-history.
+history. A preset node whose embedded definition cannot be read is treated
+the same way, ordinary settings included, and the next time the server starts
+it also blanks that node's values in runs that have already finished.
 
 Three consequences:
 

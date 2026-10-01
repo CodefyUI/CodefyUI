@@ -6,6 +6,7 @@ import { _resetPackStoreForTesting, usePackStore } from '../../store/packStore';
 import { _resetPluginStoreForTesting, usePluginStore } from '../../store/pluginStore';
 import { useUIStore } from '../../store/uiStore';
 import { useI18n } from '../../i18n';
+import { resolveExample } from '../../utils/openExample';
 import type { PackSummary, PluginCatalogEntry } from '../../api/rest';
 import type { NodeDefinition, PresetDefinition } from '../../types';
 
@@ -825,6 +826,31 @@ describe('NodesTab — presets group', () => {
     expect(screen.getByText('LeNet')).toBeTruthy();
     expect(screen.queryByText('Tabular')).toBeNull();
     expect(screen.queryByText('No matching nodes')).toBeNull();
+  });
+
+  it('skips a preset list entry with fields missing, and a search does not trip on it', () => {
+    // The readers keep such an entry the document's own (#541); this tab reads
+    // every field of a row, so it lists only whole presets.
+    seedStore({
+      categorized: { CNN: [def('Conv2d', 'CNN')] },
+      presets: [{ preset_name: 'Broken' } as unknown as PresetDefinition, preset('LeNet', 'CNN')],
+    });
+    render(<NodesTab />);
+    expect(screen.getByText('LeNet')).toBeTruthy();
+    expect(screen.queryByText('Broken')).toBeNull();
+
+    fireEvent.change(screen.getByPlaceholderText('Search nodes...'), {
+      target: { value: 'lenet' },
+    });
+    expect(screen.getByText('LeNet')).toBeTruthy();
+  });
+
+  it('still draws after a document brings a preset the backend cannot read', () => {
+    seedStore({ presets: [] });
+    resolveExample({ nodes: [], edges: [], presets: [{ preset_name: 'Broken' }, preset('LeNet', 'CNN')] });
+    render(<NodesTab />);
+    expect(screen.getByText('LeNet')).toBeTruthy();
+    expect(screen.queryByText('Broken')).toBeNull();
   });
 
   it('shows no preset group when there are no presets, or none matches', () => {

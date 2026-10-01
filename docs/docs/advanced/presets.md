@@ -18,7 +18,7 @@ Before execution, the graph engine **expands** each preset into its internal nod
 
 ## Portable definitions
 
-A saved or imported graph can embed the preset definitions it uses. These definitions belong to that graph, so a registry refresh or disabling the plugin that supplied a preset does not remove the open graph's copy. If an installed preset has the same name, the embedded definition wins inside that graph; the installed palette remains unchanged for other graphs.
+A saved or imported graph can embed the preset definitions it uses. These definitions belong to that graph, so a registry refresh or disabling the plugin that supplied a preset does not remove the open graph's copy. If an installed preset has the same name, the embedded definition wins inside that graph; the installed palette remains unchanged for other graphs. A **Map** node is the exception: it looks up the preset named by its `subgraph` parameter among the installed presets only, so it ignores an embedded definition and fails when no installed preset has that name.
 
 Save and export include only definitions that the graph still references, including presets used only inside a collapsed block. Secret parameter values remain session-only: they are never made portable in a definition or written to a saved or exported graph.
 

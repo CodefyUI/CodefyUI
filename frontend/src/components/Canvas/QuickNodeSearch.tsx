@@ -5,6 +5,7 @@ import { useTabStore } from '../../store/tabStore';
 import { useI18n } from '../../i18n';
 import { CATEGORY_COLORS } from '../../styles/theme';
 import { pluginNameOf, type PluginIndex } from '../../utils/provider';
+import { isCompletePreset } from '../../utils/presetOwnership';
 import type { NodeDefinition, PresetDefinition } from '../../types';
 import styles from './QuickNodeSearch.module.css';
 
@@ -63,6 +64,8 @@ export function QuickNodeSearch({ screenPos, flowPos, onClose }: QuickNodeSearch
       }
     }
     for (const preset of presets) {
+      // Only complete presets, as in the palette: their fields are read below.
+      if (!isCompletePreset(preset)) continue;
       if (!q || preset.preset_name.toLowerCase().includes(q) || preset.description.toLowerCase().includes(q)) {
         items.push({ kind: 'preset', preset });
       }

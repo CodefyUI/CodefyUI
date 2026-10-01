@@ -1,5 +1,6 @@
 import { useState, useEffect, useMemo } from 'react';
 import { useTabStore } from '../../store/tabStore';
+import { readablePresetNodes } from '../../utils';
 import { ParamField } from '../shared/ParamField';
 import { useI18n } from '../../i18n';
 import styles from './PresetConfigModal.module.css';
@@ -31,11 +32,15 @@ export function PresetConfigModal() {
     /* v8 ignore stop */
   }, [presetModalNodeId]);
 
-  // Group exposed params
+  // Group exposed params. A document's own definition is kept as it came even
+  // when the backend cannot read it (#541), so a missing or junk list draws
+  // no fields rather than throw.
   const groupedParams = useMemo(() => {
     if (!preset) return {};
     const groups: Record<string, typeof preset.exposed_params> = {};
-    for (const ep of preset.exposed_params) {
+    const exposed: unknown = preset.exposed_params;
+    for (const ep of Array.isArray(exposed) ? exposed : []) {
+      if (ep === null || typeof ep !== 'object') continue;
       const group = ep.group || t('preset.generalGroup');
       if (!groups[group]) groups[group] = [];
       groups[group].push(ep);
@@ -44,6 +49,7 @@ export function PresetConfigModal() {
   }, [preset, t]);
 
   if (!presetModalNodeId || !node || !preset) return null;
+  const innerNodes = readablePresetNodes(preset);
 
   const handleParamChange = (internalNodeId: string, paramName: string, value: any) => {
     setLocalParams((prev) => ({
@@ -93,10 +99,10 @@ export function PresetConfigModal() {
         {/* Pipeline preview */}
         <div className={styles.pipelinePreview}>
           <div className={styles.pipelineInner}>
-            {preset.nodes.map((n, i) => (
+            {innerNodes.map((n, i) => (
               <div key={n.id} style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
                 <span className={styles.pipelineNodeChip}>{n.type}</span>
-                {i < preset.nodes.length - 1 && (
+                {i < innerNodes.length - 1 && (
                   <span className={styles.pipelineArrow}>→</span>
                 )}
               </div>

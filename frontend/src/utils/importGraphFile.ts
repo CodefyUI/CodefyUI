@@ -8,6 +8,7 @@ import { readGraphDevice } from './graphSettings';
 import {
   effectivePresets,
   mergeUnknownPresetsIntoPalette,
+  withPresetDefaults,
 } from './presetOwnership';
 import { importWorkspaceFile } from './importWorkspaceFile';
 import {
@@ -124,7 +125,7 @@ function installGraphData(input: unknown): boolean {
       throw new Error('Invalid graph format');
     }
     const store = useNodeDefStore.getState();
-    const importedPresets: PresetDefinition[] = Array.isArray(data.presets) ? data.presets : [];
+    const importedPresets: PresetDefinition[] = withPresetDefaults(data.presets);
     const mergedPresets = mergeUnknownPresetsIntoPalette(store.presets, importedPresets);
     const resolvingPresets = effectivePresets(importedPresets, store.presets);
     const importedSubgraphs: SubgraphDefinition[] = Array.isArray(data.subgraphs)

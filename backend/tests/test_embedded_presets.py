@@ -1,6 +1,8 @@
 """ID6: a graph carrying its own preset definition resolves even when the
 server's preset registry does not know the preset (portability)."""
 
+import json
+
 import pytest
 
 from app.core.codegen import generate_python
@@ -119,10 +121,19 @@ UNREADABLE = "UnreadablePr"
 
 
 def _unreadable(name=UNREADABLE):
-    """``_preset_dict`` with no top-level ``description``: the model refuses it."""
+    """``_preset_dict`` with no ``nodes``: not a definition at all."""
     body = _preset_dict(name)
-    del body["description"]
+    del body["nodes"]
     return body
+
+
+def _minimal(name=UNREADABLE):
+    """All a definition must name. The installed registry fills in the rest
+    of a preset file, and the model fills it in the same way."""
+    return {"preset_name": name,
+            "nodes": [{"id": "inner", "type": "Print",
+                       "params": {"label": "portable"}}],
+            "edges": []}
 
 
 def _start_into(node_id, node_type):
@@ -147,7 +158,7 @@ def _installed_same_name(monkeypatch):
 def _names_it(message, node_id):
     return (f"Preset '{UNREADABLE}'" in message
             and f"node {node_id}" in message
-            and "description: Field required" in message)
+            and "nodes: Field required" in message)
 
 
 def test_an_unreadable_entry_is_kept_by_name_with_its_first_error():
@@ -156,7 +167,7 @@ def test_an_unreadable_entry_is_kept_by_name_with_its_first_error():
     entry = build_preset_fallback([_unreadable()])[UNREADABLE]
     assert isinstance(entry, MalformedPreset)
     assert entry.name == UNREADABLE
-    assert entry.error == "description: Field required"
+    assert entry.error == "nodes: Field required"
 
 
 def test_a_parsable_definition_wins_over_an_unreadable_one_in_either_order():
@@ -267,3 +278,92 @@ def test_an_unreadable_definition_no_node_uses_is_ignored(_installed_same_name):
         nodes, edges, preset_fallback=fallback)
     assert [node["id"] for node in prepared] == ["start", "a"]
     assert "def " in generate_python(nodes, edges, presets=[_unreadable()])
+
+
+# -- a definition that leaves out what the installed registry defaults --------
+#
+# The installed registry loads a preset file with no `category`,
+# `description`, `tags` or `exposed_*`. The same entry in a graph's own
+# `presets[]` was unreadable, so Save and Python export answered 422 and Run
+# refused it; re-adding the preset from the palette reused the tab's copy, so
+# nothing in the app could repair it.
+
+
+def _beside_a_card(card_type):
+    """Start -> TensorCreate, and a card of ``card_type`` wired to nothing."""
+    nodes, edges = _start_into("a", "TensorCreate")
+    nodes[1]["data"] = {"params": {"shape": "2,2", "fill": "full", "value": 2.0}}
+    nodes.append({"id": "p", "type": card_type,
+                  "position": {"x": 2, "y": 0}, "data": {}})
+    return nodes, edges
+
+
+def test_a_minimal_entry_is_read_with_the_registry_s_defaults(
+        _installed_same_name):
+    fallback = build_preset_fallback([_minimal()])
+    entry = fallback[UNREADABLE]
+    assert isinstance(entry, PresetDefinition), entry
+    assert (entry.category, entry.description, entry.tags) == ("Preset", "", [])
+    assert entry.exposed_inputs == entry.exposed_outputs == entry.exposed_params == []
+
+    nodes, edges = _beside_a_card(f"preset:{UNREADABLE}")
+    assert validate_graph(nodes, edges, preset_fallback=fallback) == []
+    expanded, _edges, _mapping = expand_presets(
+        nodes, edges, preset_fallback=fallback)
+    # The graph's own definition, not the installed one with a TextInput.
+    assert [(node["type"], node["data"]["params"]) for node in expanded
+            if node["id"].startswith("p__")] == [("Print", {"label": "portable"})]
+    assert "def " in generate_python(nodes, edges, presets=[_minimal()])
+
+
+@pytest.fixture
+def _graphs_dir(tmp_path, monkeypatch):
+    """Saved graphs go to a scratch directory."""
+    monkeypatch.setattr("app.config.settings.GRAPHS_DIR", tmp_path)
+    return tmp_path
+
+
+def _request_body(*presets):
+    nodes, edges = _beside_a_card(f"preset:{UNREADABLE}")
+    return {"name": "minimal-preset", "nodes": nodes, "edges": edges,
+            "presets": list(presets)}
+
+
+async def test_validate_export_and_save_read_a_minimal_entry(
+        test_client, _graphs_dir, _installed_same_name):
+    """The request models parse ``presets[]`` with the same defaults, and Save
+    writes the entry back with them filled in."""
+    body = _request_body(_minimal())
+
+    validated = await test_client.post("/api/graph/validate", json=body)
+    assert validated.status_code == 200, validated.text
+    assert validated.json() == {"valid": True, "errors": []}
+    exported = await test_client.post("/api/graph/export", json=body)
+    assert exported.status_code == 200, exported.text
+    saved = await test_client.post("/api/graph/save", json=body)
+    assert saved.status_code == 200, saved.text
+
+    stored = json.loads(
+        (_graphs_dir / "minimal-preset.json").read_text(encoding="utf-8"))
+    assert stored["presets"] == [{
+        "preset_name": UNREADABLE, "category": "Preset", "description": "",
+        "tags": [],
+        "nodes": [{"id": "inner", "type": "Print",
+                   "params": {"label": "portable"}}],
+        "edges": [], "exposed_inputs": [], "exposed_outputs": [],
+        "exposed_params": [],
+    }]
+
+
+async def test_save_refuses_an_entry_that_does_not_parse_even_unused(
+        test_client, _graphs_dir):
+    """Unlike a run, ``/save`` parses every entry, so one that is not a
+    definition is a 422 whether or not a card uses it."""
+    body = _request_body(_unreadable())
+    body["nodes"].pop()  # the card
+
+    saved = await test_client.post("/api/graph/save", json=body)
+    assert saved.status_code == 422, saved.text
+    assert [error["loc"] for error in saved.json()["detail"]] == [
+        ["body", "presets", 0, "nodes"]]
+    assert not (_graphs_dir / "minimal-preset.json").exists()

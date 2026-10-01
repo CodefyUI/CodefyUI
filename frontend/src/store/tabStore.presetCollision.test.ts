@@ -464,7 +464,9 @@ describe('D1: a top-level preset node is scrubbed by the union a block node gets
 // holds SECRET -- the reverse of the case above, or two documents that own
 // different same-name definitions. Save, autosave and every export must still
 // blank that slot, and Run must leave out every slot the server could not
-// blank in the run it stores, while keeping one it can.
+// blank in the run it stores, while keeping one it can: a slot the definition
+// the run sends places. The palette's copy of the installed preset cannot
+// vouch for the server's, which may have changed or gone since it was fetched.
 
 describe('D1: a value typed against a definition the destination drops', () => {
   const SOURCE_VALUE = 'sk-FAKE-541-SOURCE-ONLY-SLOT';
@@ -645,7 +647,9 @@ describe('D1: a value typed against a definition the destination drops', () => {
     expect(savedInner(fromInstalled).installed_only_secret).toBe('');
     expectWrittenNowhere(SOURCE_VALUE, KNOWN_VALUE);
     expect(runInner(fromA).doc_a_secret).toBe('');
-    expect(runInner(fromInstalled).installed_only_secret).toBe(KNOWN_VALUE);
+    // Only the installed preset places that slot, and the run sends C's
+    // definition, so the key stays out of the run too.
+    expect(runInner(fromInstalled).installed_only_secret).toBe('');
   });
 
   it('two documents that own different same-name definitions, with no installed one', () => {
@@ -712,7 +716,9 @@ describe('D1: a value typed against a definition the destination drops', () => {
     expect(savedInner(fromInstalled).installed_only_secret).toBe('');
     expectWrittenNowhere(SOURCE_VALUE, KNOWN_VALUE);
     expect(runInner(fromA).doc_a_secret).toBe('');
-    expect(runInner(fromInstalled).installed_only_secret).toBe(KNOWN_VALUE);
+    // As at the top level: the run sends C's definition, which does not place
+    // the installed slot.
+    expect(runInner(fromInstalled).installed_only_secret).toBe('');
   });
 
   it('two same-name cards of a tab restored from an older record, each with its own definition', () => {
@@ -786,8 +792,9 @@ describe('D1: a value typed against a definition the destination drops', () => {
 
     expect(savedInner('inside')).toMatchObject({ doc_a_secret: '', installed_only_secret: '' });
     expectWrittenNowhere(SOURCE_VALUE, KNOWN_VALUE);
+    // C's definition, the one the run sends, places neither slot.
     expect(runInner('inside')).toMatchObject({
-      doc_a_secret: '', installed_only_secret: KNOWN_VALUE,
+      doc_a_secret: '', installed_only_secret: '',
     });
   });
 });

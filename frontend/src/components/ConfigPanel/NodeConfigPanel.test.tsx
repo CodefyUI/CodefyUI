@@ -282,6 +282,25 @@ describe('NodeConfigPanel — preset node', () => {
     render(<NodeConfigPanel />);
     expect(screen.getByText('0 nodes inside')).toBeInTheDocument();
   });
+
+  it('counts 0 nodes for a definition with no nodes list, as one the backend cannot read can be', () => {
+    const presetNode = makeNode({
+      id: 'p3',
+      type: 'presetNode',
+      data: {
+        label: 'Broken Preset',
+        type: 'preset:Broken',
+        isPreset: true,
+        definition: undefined,
+        presetDefinition: { preset_name: 'Broken' } as any,
+        params: {},
+      },
+    });
+    seedTab([presetNode], 'p3');
+    render(<NodeConfigPanel />);
+    expect(screen.getByText('0 nodes inside')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Configure preset' })).toBeInTheDocument();
+  });
 });
 
 describe('NodeConfigPanel — I/O ports section', () => {

@@ -47,8 +47,9 @@ import { useI18n, type TranslationKey } from '../i18n';
 import { useProjectStore } from './projectStore';
 import {
   effectivePresets,
-  isBroughtByDocument,
   mergeOwnedPresets,
+  presetDefinitionName,
+  withPresetDefaults,
 } from '../utils/presetOwnership';
 
 // ── Per-tab state ──
@@ -1429,7 +1430,12 @@ function normalizePresetAttachments(
   presets: PresetDefinition[],
 ): Node<NodeData>[] {
   if (!nodes.length || !presets.length) return nodes;
-  const byName = new Map(presets.map((definition) => [definition.preset_name, definition]));
+  const byName = new Map(
+    presets.flatMap((definition) => {
+      const name = presetDefinitionName(definition);
+      return name === null ? [] : [[name, definition] as const];
+    }),
+  );
   return nodes.map((node) => {
     const type = node.data?.type;
     if (typeof type !== 'string' || !type.startsWith('preset:')) return node;
@@ -1457,17 +1463,19 @@ function normalizePresetAttachments(
  * hold values typed against it -- a copied block's inner cards, whose entries
  * carry no definition of their own to remember at re-attachment -- so its
  * SECRET slots are remembered before it is dropped, and the scrub keeps
- * blanking them.
+ * blanking them. An incoming entry is adopted the way an opened document's
+ * is (`withPresetDefaults`).
  */
 function adoptIncomingPresets(
   owned: PresetDefinition[],
   incoming: PresetDefinition[],
 ): PresetDefinition[] {
-  const merged = mergeOwnedPresets(owned, incoming);
-  for (const definition of incoming) {
-    const name = definition?.preset_name;
-    if (typeof name !== 'string') continue;
-    if (merged.find((kept) => kept.preset_name === name) !== definition) {
+  const adopted = withPresetDefaults(incoming);
+  const merged = mergeOwnedPresets(owned, adopted);
+  for (const definition of adopted) {
+    const name = presetDefinitionName(definition);
+    if (name === null) continue;
+    if (merged.find((kept) => presetDefinitionName(kept) === name) !== definition) {
       rememberPresetNodeSecrets(name, definition);
     }
   }
@@ -1500,6 +1508,11 @@ function insertionOffset(
     x: target.x - source.x,
     y: target.y + target.height + INSERT_GAP - source.y,
   };
+}
+
+/** A non-null, non-array object: the one shape a params map is read as. */
+function isPlainRecord(value: unknown): value is Record<string, any> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
 
 // Replace every SECRET-typed param value with '' so secrets (e.g. an LLM API
@@ -1538,19 +1551,24 @@ function stripSecretInternalParams(
 ): Record<string, Record<string, any>> | undefined {
   if (!internalParams || !preset) return internalParams;
   const presets = Array.isArray(preset) ? preset : [preset];
+  // A definition off a file can lack `exposed_params`, and a card's entry for
+  // an inner node can be anything: both are read, never trusted.
   const secretSlots = presets.flatMap((definition) =>
-    definition.exposed_params.filter(
-      (ep) => ep.param_def?.param_type === 'secret',
+    (Array.isArray(definition?.exposed_params) ? definition.exposed_params : []).filter(
+      (ep) => ep?.param_def?.param_type === 'secret',
     ),
   );
   if (secretSlots.length === 0) return internalParams;
   let cleaned: Record<string, Record<string, any>> | null = null;
   for (const ep of secretSlots) {
     const inner = internalParams[ep.internal_node];
-    if (inner && ep.param_name in inner) {
+    if (isPlainRecord(inner) && ep.param_name in inner) {
       if (cleaned === null) {
         cleaned = Object.fromEntries(
-          Object.entries(internalParams).map(([id, values]) => [id, { ...values }]),
+          Object.entries(internalParams).map(([id, values]) => [
+            id,
+            isPlainRecord(values) ? { ...values } : values,
+          ]),
         );
       }
       cleaned[ep.internal_node][ep.param_name] = '';
@@ -1559,23 +1577,48 @@ function stripSecretInternalParams(
   return cleaned ?? internalParams;
 }
 
+/**
+ * A preset definition as it is written (#541): autosave, Save, every export,
+ * the clipboard and the Run message all carry this copy.
+ *
+ * An inner node's SECRET params come from the node list, the rule the server
+ * scrubs a portable definition by (`scrub_preset_definition_secrets`), plus
+ * the slots the definition itself exposes as SECRET on that node. A type the
+ * list does not have at this moment -- it has not answered yet, its fetch
+ * failed, or the plugin that supplies the type is disabled -- keeps every
+ * value except the ones known to be keys (`knownSecretsOfDefinitionNode`), the
+ * rule a node inside a block gets (`stripSubgraphSecrets`). Blanking every
+ * value instead destroyed the definition: the document's copy is the one that
+ * runs and the one the next Save writes, so reinstalling the preset could not
+ * bring a setting back. Run sends the same copy. A server that does not know
+ * the type either refuses the run ("Unknown node type" once the preset is
+ * expanded) and keeps every value of that node out of the run it stores (#537).
+ *
+ * A definition the backend cannot read is kept rather than dropped, so that
+ * the server refuses the graph by the preset's name instead of running an
+ * installed one of that name. Only what can be read of it is stripped.
+ */
 function stripPresetDefinitionSecrets(
   presets: PresetDefinition[],
 ): PresetDefinition[] {
   let listChanged = false;
   const cleaned = presets.map((preset) => {
+    const exposedList = Array.isArray(preset.exposed_params) ? preset.exposed_params : [];
     let changed = false;
-    const nodes = preset.nodes.map((node) => {
-      const definition = serverDefinitionOf(node.type);
-      const params = definition
-        ? stripSecretParams(node.params, definition)
-        : Object.fromEntries(Object.keys(node.params ?? {}).map((name) => [name, '']));
-      if (params === node.params) return node;
-      changed = true;
-      return { ...node, params };
-    });
-    const exposed_params = preset.exposed_params.map((exposed) => {
-      if (exposed.param_def?.param_type !== 'secret' || exposed.param_def.default === '') {
+    const nodes = Array.isArray(preset.nodes)
+      ? preset.nodes.map((node) => {
+          if (!isPlainRecord(node) || !isPlainRecord(node.params)) return node;
+          const params = stripSecretParams(
+            node.params,
+            knownSecretsOfDefinitionNode(node, exposedList),
+          );
+          if (params === node.params) return node;
+          changed = true;
+          return { ...node, params };
+        })
+      : preset.nodes;
+    const exposed_params = exposedList.map((exposed) => {
+      if (exposed?.param_def?.param_type !== 'secret' || exposed.param_def.default === '') {
         return exposed;
       }
       changed = true;
@@ -1586,9 +1629,37 @@ function stripPresetDefinitionSecrets(
     });
     if (!changed) return preset;
     listChanged = true;
-    return { ...preset, nodes, exposed_params };
+    // Only the lists that were there: an entry is written as it came.
+    return {
+      ...preset,
+      ...(Array.isArray(preset.nodes) ? { nodes } : {}),
+      ...(Array.isArray(preset.exposed_params) ? { exposed_params } : {}),
+    };
   });
   return listChanged ? cleaned : presets;
+}
+
+/**
+ * What is known to be a key on one inner node of a definition: the params its
+ * type declares SECRET -- by the node list, or for a type the list does not
+ * have, by what was declared SECRET on it earlier this session
+ * (`rememberedSecrets`) -- and the definition's own exposed slots of SECRET
+ * type on that node. As a definition, for `stripSecretParams`.
+ */
+function knownSecretsOfDefinitionNode(
+  node: Record<string, any>,
+  exposedParams: PresetDefinition['exposed_params'],
+): NodeDefinition {
+  const declared = serverDefinitionOf(node.type)
+    ?? (typeof node.type === 'string' ? rememberedSecrets(node.type) : undefined);
+  const exposed = exposedParams
+    .filter((ep) => ep?.param_def?.param_type === 'secret' && ep.internal_node === node.id)
+    .map((ep) => ({ ...ep.param_def!, name: ep.param_name }));
+  return {
+    node_name: typeof node.type === 'string' ? node.type : '',
+    category: '', description: '', inputs: [], outputs: [],
+    params: [...(declared?.params ?? []), ...exposed],
+  };
 }
 
 function referencedPresetDefinitions(
@@ -1611,7 +1682,13 @@ function referencedPresetDefinitions(
   for (const node of tab.nodes) {
     const type = node.data?.type;
     if (typeof type !== 'string' || !type.startsWith('preset:')) continue;
-    enqueue(type.slice('preset:'.length), node.data.presetDefinition);
+    // A record of an older build carried the card's definition as it stood;
+    // one with no name is no definition, and the lists below answer instead.
+    const attached = node.data.presetDefinition;
+    enqueue(
+      type.slice('preset:'.length),
+      presetDefinitionName(attached) === null ? undefined : attached,
+    );
   }
   for (const definition of subgraphs) {
     for (const raw of definition.nodes as Array<{ type?: unknown }>) {
@@ -1619,17 +1696,20 @@ function referencedPresetDefinitions(
       if (type.startsWith('preset:')) enqueue(type.slice('preset:'.length));
     }
   }
-  while (queue.length > 0) {
-    const { name, attached, depth } = queue.shift()!;
+  // A cursor, not `shift()`, which moves every queued entry on each call.
+  for (let next = 0; next < queue.length; next += 1) {
+    const { name, attached, depth } = queue[next];
     if (seen.has(name)) continue;
     const definition = attached ?? owned.get(name) ?? global.get(name);
     if (!definition) continue;
     seen.add(name);
     referenced.push(definition);
-    if (depth >= 10) continue;
+    // A definition the backend cannot read may have no `nodes` to follow.
+    if (depth >= 10 || !Array.isArray(definition.nodes)) continue;
     for (const internal of definition.nodes) {
-      if (internal.type.startsWith('preset:')) {
-        enqueue(internal.type.slice('preset:'.length), undefined, depth + 1);
+      const type = typeof internal?.type === 'string' ? internal.type : '';
+      if (type.startsWith('preset:')) {
+        enqueue(type.slice('preset:'.length), undefined, depth + 1);
       }
     }
   }
@@ -1655,16 +1735,21 @@ function referencedPresetDefinitions(
  * its list: the installed preset a pasted value was typed against can drop out
  * of the palette (a plugin disabled) while the document's definition, which
  * never declared that slot, stays. The remembered slots only ever blank;
- * nothing runs or draws from them.
+ * nothing runs or draws from them. Every inner param whose type declares it
+ * SECRET is blanked as well, exposed or not (`innerSecretSlots`), the rule the
+ * server scrubs a preset node by.
  *
  * `keepSecrets` (Run) keeps the values the server blanks in the run it stores
  * and leaves out every other one. The server blanks a slot of `preset:<name>`
- * only when a definition it consults -- its installed one, and the entry for
- * the name in the `presets[]` the run sends (`sentPresets`) -- puts a node at
- * that inner id whose type it declares the param SECRET on. So Run blanks
- * every slot of the same union that neither of those places, and keeps the
- * rest. A palette entry a document's reader added is not the server's: it is
- * consulted only when it is the one the run sends.
+ * when a definition it consults puts a node at that inner id whose type it
+ * declares the param SECRET on. It consults the entry for the name in the
+ * `presets[]` the run sends (`sentPresets`), and its own installed preset --
+ * which the palette's copy cannot vouch for: that preset can have changed or
+ * gone on the server since this page fetched it (an uninstall in another
+ * window), and a key kept on its word would then be stored as typed. So Run
+ * keeps a value only where the sent definition places it and blanks every
+ * other slot of the union, exposed or found by inner type: the trade-off the
+ * remembered slots already make.
  */
 function stripPresetNodeSecrets(
   internalParams: Record<string, Record<string, any>> | undefined,
@@ -1675,21 +1760,52 @@ function stripPresetNodeSecrets(
   sentPresets?: readonly PresetDefinition[],
 ): Record<string, Record<string, any>> | undefined {
   const named = (list: readonly PresetDefinition[] | undefined) =>
-    (Array.isArray(list) ? list : []).find((p) => p.preset_name === presetName);
+    (Array.isArray(list) ? list : []).find((p) => presetDefinitionName(p) === presetName);
   const owned = named(ownedPresets);
   const installed = named(useNodeDefStore.getState().presets);
   const declaring = [
     ...new Set([attached, owned, installed, rememberedPresetSecrets(presetName)]),
-  ].filter((candidate): candidate is PresetDefinition => candidate !== undefined);
-  if (!keepSecrets) return stripSecretInternalParams(internalParams, declaring);
-  const consulted = [
-    named(sentPresets),
-    installed && !isBroughtByDocument(installed) ? installed : undefined,
-  ].filter((candidate): candidate is PresetDefinition => candidate !== undefined);
+  ].filter((candidate): candidate is PresetDefinition => isPlainRecord(candidate));
+  if (!keepSecrets) {
+    return stripSecretInternalParams(internalParams, [
+      ...declaring,
+      ...declaring.map(innerSecretSlots),
+    ]);
+  }
+  const sent = named(sentPresets);
+  const consulted = sent ? [sent] : [];
   return stripSecretInternalParams(
     internalParams,
-    declaring.map((definition) => presetSlotsTheServerMisses(definition, consulted)),
+    [...declaring, ...declaring.map(innerSecretSlots)].map((definition) =>
+      presetSlotsTheServerMisses(definition, consulted),
+    ),
   );
+}
+
+/**
+ * `preset` with every `(inner id, param)` whose inner node's type declares
+ * the param SECRET as its exposed slots, whether the definition exposes them
+ * or not: the server's rule for a preset node's `internalParams`
+ * (`_preset_secret_param_map`). An older or hand-made definition can carry a
+ * key in a param it never exposed, and `addPresetNode` copies every inner
+ * param into the card. A type the node list does not have goes by what was
+ * declared SECRET on it earlier this session, as in a block.
+ */
+function innerSecretSlots(preset: PresetDefinition): PresetDefinition {
+  const slots: PresetDefinition['exposed_params'] = [];
+  for (const node of Array.isArray(preset.nodes) ? preset.nodes : []) {
+    if (!isPlainRecord(node) || typeof node.id !== 'string') continue;
+    const declared = serverDefinitionOf(node.type)
+      ?? (typeof node.type === 'string' ? rememberedSecrets(node.type) : undefined);
+    for (const p of declared?.params ?? []) {
+      if (p.param_type !== 'secret') continue;
+      slots.push({
+        internal_node: node.id, param_name: p.name, display_name: p.name, group: '',
+        param_def: p,
+      });
+    }
+  }
+  return { ...preset, exposed_params: slots };
 }
 
 /** The preset a canvas preset node's type names. */
@@ -1815,7 +1931,9 @@ export function _stripSubgraphSecretsForTesting(
  * `SecretChat` resolves to `c9:SecretChat`.
  */
 function serverDefinitionOf(nodeType: string | undefined): NodeDefinition | undefined {
-  if (!nodeType) return undefined;
+  // `typeof`, not truthiness: a definition's inner node off a file can carry
+  // any value as its type.
+  if (typeof nodeType !== 'string' || !nodeType) return undefined;
   const { definitions } = useNodeDefStore.getState();
   const exact = definitions.find((d) => d.node_name === nodeType);
   if (exact || nodeType.includes(':')) return exact;
@@ -1860,24 +1978,28 @@ function presetSlotsTheServerMisses(
 ): PresetDefinition {
   const placed = (innerId: string, param: string) =>
     consulted.some((definition) =>
-      (definition.nodes ?? []).some(
-        (node) => node.id === innerId && serverBlanksSecret(node.type, param),
+      (Array.isArray(definition.nodes) ? definition.nodes : []).some(
+        (node) =>
+          isPlainRecord(node) && node.id === innerId && serverBlanksSecret(node.type, param),
       ),
     );
   return {
     ...preset,
-    exposed_params: (preset.exposed_params ?? []).filter(
-      (ep) => ep.param_def?.param_type === 'secret' && !placed(ep.internal_node, ep.param_name),
+    exposed_params: (Array.isArray(preset.exposed_params) ? preset.exposed_params : []).filter(
+      (ep) => ep?.param_def?.param_type === 'secret' && !placed(ep.internal_node, ep.param_name),
     ),
   };
 }
 
 // Return a copy of `nodes` with every SECRET-typed value blanked in both
 // `data.params` (via the node definition) and, for preset nodes,
-// `data.internalParams` (via `stripPresetNodeSecrets`). Nodes with no
-// secret are returned by identity so persistence stays cheap. Used before
-// writing to localStorage so a typed API key never survives a page refresh —
-// honouring the field's "Session only" promise (a refresh drops typed keys).
+// `data.internalParams` (via `stripPresetNodeSecrets`). Every node is copied,
+// because `data.presetDefinition` is left out: the record carries each
+// definition once, in its `presets` (#541), and the restore attaches it
+// again. What keeps an idle tab cheap is the record cache (`persistedTabsFor`).
+// Used before writing to localStorage so a typed API key never survives a page
+// refresh — honouring the field's "Session only" promise (a refresh drops
+// typed keys).
 function stripNodeSecretsForPersist(
   nodes: Node<NodeData>[],
   ownedPresets: PresetDefinition[] | undefined,
@@ -2080,6 +2202,12 @@ function buildPersistedTab(input: TabState): PersistedTab {
 // scalar, and the scalars are folded into one signature string. A cache hit
 // returns the SAME record object, which is also how `tabPersistence`
 // recognises a tab it has already made durable and skips writing it.
+//
+// The node-def store's two lists are inputs too (#541): which inner params are
+// keys comes from the node list, and a preset the tab does not own is written
+// from the installed one. Every fetch replaces them whole, so they compare by
+// reference like the rest, and a record built before /api/nodes answered is
+// rebuilt once it has.
 interface TabRecordCacheEntry {
   nodes: Node<NodeData>[];
   edges: Edge[];
@@ -2087,6 +2215,8 @@ interface TabRecordCacheEntry {
   segmentGroups: SegmentGroup[];
   subgraphs: SubgraphDefinition[];
   subgraphStack: TabState['subgraphStack'];
+  definitions: NodeDefinition[];
+  installedPresets: PresetDefinition[];
   scalars: string;
   record: PersistedTab;
 }
@@ -2128,6 +2258,7 @@ function scalarSignature(t: TabState): string {
 
 function persistedTabsFor(tabs: TabState[]): PersistedTab[] {
   const next = new Map<string, TabRecordCacheEntry>();
+  const { definitions, presets: installedPresets } = useNodeDefStore.getState();
   // A transient tab is skipped whole (#341 section 4.8): an agent's candidate
   // is a proposal, and a proposal that quietly becomes a tab in tomorrow's
   // workspace is worse than one that vanishes. It also keeps a materialized
@@ -2143,6 +2274,8 @@ function persistedTabsFor(tabs: TabState[]): PersistedTab[] {
       cached.segmentGroups === t.segmentGroups &&
       cached.subgraphs === t.subgraphs &&
       cached.subgraphStack === t.subgraphStack &&
+      cached.definitions === definitions &&
+      cached.installedPresets === installedPresets &&
       cached.scalars === scalars
         ? cached
         : {
@@ -2152,6 +2285,8 @@ function persistedTabsFor(tabs: TabState[]): PersistedTab[] {
             segmentGroups: t.segmentGroups,
             subgraphs: t.subgraphs,
             subgraphStack: t.subgraphStack,
+            definitions,
+            installedPresets,
             scalars,
             record: buildPersistedTab(t),
           };
@@ -2230,7 +2365,7 @@ function saveTabs(tabs: TabState[], activeTabId: string) {
 
 /** Rebuild one `TabState` from its record, over a base carrying live fields. */
 function tabFromPersisted(t: PersistedTab, base: TabState): TabState {
-  const presets = Array.isArray(t.presets) ? t.presets : [];
+  const presets = withPresetDefaults(t.presets);
   const nodes = normalizePresetAttachments(t.nodes ?? [], presets);
   return {
     ...base,
@@ -3071,12 +3206,16 @@ export const useTabStore = create<TabStoreState>((rawSet, get) => {
     get().pushUndoSnapshot();
     const tab = get().getActiveTab();
     const owned = tab.presets.find((definition) =>
-      definition.preset_name === preset.preset_name,
+      presetDefinitionName(definition) === preset.preset_name,
     );
-    const effective = owned ?? preset;
+    // A palette entry a document's reader added is adopted the way that
+    // document's own list was (`withPresetDefaults`).
+    const effective = owned ?? withPresetDefaults([preset])[0];
     const internalParams: Record<string, Record<string, any>> = {};
-    for (const n of effective.nodes) {
-      internalParams[n.id] = { ...n.params };
+    // A definition the backend cannot read can lack `nodes`. Its card is added
+    // all the same, and a run refuses it by the preset's name.
+    for (const n of Array.isArray(effective.nodes) ? effective.nodes : []) {
+      if (isPlainRecord(n)) internalParams[n.id] = { ...n.params };
     }
     const definition = presetCardDefinition(effective);
     const node: Node<NodeData> = {
@@ -3638,11 +3777,22 @@ export const useTabStore = create<TabStoreState>((rawSet, get) => {
     const readOnly = isFormatTooNew(doc.formatVersion);
     const name =
       typeof doc.name === 'string' && doc.name.trim() ? doc.name.trim() : null;
+    // An entry missing only fields the server fills in gets the same defaults
+    // (`withPresetDefaults`). Any other is kept as it came, one the backend
+    // cannot read included: the server refuses a graph that uses it by the
+    // preset's name, where dropping it here would hand the name to an
+    // installed definition. Every reader of the list reads it defensively.
+    const documentPresets = Array.isArray(doc.presets) ? doc.presets : [];
+    const presets = withPresetDefaults(documentPresets);
     set({
       tabs: updateTab(get().tabs, tabId, (tab) => ({
-        nodes: doc.nodes,
+        // A card attached to an entry filled in above runs and draws the
+        // filled one; the readers fill before they resolve, so this is rare.
+        nodes: presets === documentPresets
+          ? doc.nodes
+          : normalizePresetAttachments(doc.nodes, presets),
         edges: doc.edges,
-        presets: doc.presets ?? [],
+        presets,
         // Normalized on the way in, as `setSubgraphs` does: every reader
         // hands over a list parsed out of a file and none of them validates
         // the entries.
@@ -4916,6 +5066,17 @@ function _scheduleSave() {
 
 useTabStore.subscribe(() => {
   _scheduleSave();
+});
+
+// A record is stripped by the node list and the installed presets as well
+// (see the record cache), and the first autosave of a session can run before
+// /api/nodes answers. A list that arrives later has to reach the records
+// already written, edited or not, so its arrival schedules a save the way an
+// edit does, and the cache rebuilds each record rather than reusing it.
+useNodeDefStore.subscribe((state, previous) => {
+  if (state.definitions !== previous.definitions || state.presets !== previous.presets) {
+    _scheduleSave();
+  }
 });
 
 // Start the IndexedDB read for the base scope immediately, so a non-project

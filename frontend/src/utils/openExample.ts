@@ -11,6 +11,7 @@ import { readGraphDevice } from './graphSettings';
 import {
   effectivePresets,
   mergeUnknownPresetsIntoPalette,
+  withPresetDefaults,
 } from './presetOwnership';
 
 /**
@@ -89,7 +90,7 @@ export function resolveExample(data: any): ResolvedExample {
   // An example may ship presets the running server has never seen. Merge the
   // unknown ones in by name so its nodes resolve, without clobbering the
   // installed definitions of same-named presets.
-  const importedPresets: PresetDefinition[] = Array.isArray(data.presets) ? data.presets : [];
+  const importedPresets: PresetDefinition[] = withPresetDefaults(data.presets);
   const mergedPresets = mergeUnknownPresetsIntoPalette(store.presets, importedPresets);
   const resolvingPresets = effectivePresets(importedPresets, store.presets);
 

@@ -14,6 +14,7 @@ So the set of required fields is pinned here, and it only changes on purpose.
 
 from __future__ import annotations
 
+import json
 import typing
 from typing import Any, Iterator
 
@@ -24,10 +25,7 @@ from app.schemas.models import PresetDefinition
 #: Per model, the fields a stored ``presets[]`` entry must carry: every field
 #: without a default, in ``PresetDefinition`` and each schema it nests.
 REQUIRED_FIELDS: dict[str, set[str]] = {
-    "PresetDefinition": {
-        "preset_name", "category", "description", "nodes", "edges",
-        "exposed_inputs", "exposed_outputs", "exposed_params",
-    },
+    "PresetDefinition": {"preset_name", "nodes", "edges"},
     "InternalNodeSchema": {"id", "type"},
     "InternalEdgeSchema": {"source", "sourceHandle", "target", "targetHandle"},
     "ExposedPortSchema": {"name", "internal_node", "internal_port"},
@@ -94,3 +92,25 @@ def test_the_pin_shrinks_with_the_model():
         "REQUIRED_FIELDS, so that making one required again is caught by "
         "test_no_field_of_a_stored_preset_definition_became_required."
     )
+
+
+def test_a_graph_owned_entry_reads_like_an_installed_preset_file(tmp_path):
+    """One set of defaults, wherever a definition is read.
+
+    The installed registry loads a preset file that names only
+    ``preset_name``, ``nodes`` and ``edges``. The same entry in a graph's own
+    ``presets[]`` used to be unreadable, so Save and Python export answered
+    422 and Run refused a graph whose definition the palette accepted.
+    """
+    from app.core.graph_engine import build_preset_fallback
+    from app.core.node_registry import registry
+    from app.core.preset_registry import PresetRegistry
+
+    minimal = {"preset_name": "Minimal",
+               "nodes": [{"id": "n", "type": "Print"}], "edges": []}
+    (tmp_path / "minimal.json").write_text(json.dumps(minimal),
+                                           encoding="utf-8")
+    installed = PresetRegistry()
+    assert installed.discover(tmp_path, registry) == 1
+
+    assert build_preset_fallback([minimal])["Minimal"] == installed.get("Minimal")

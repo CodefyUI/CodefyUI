@@ -359,19 +359,27 @@ export function resolveDynamicInputs(
  * graph (`resolveSerializedNodes` below) and the re-attachment a paste, an
  * insert and a restore make (`normalizePresetAttachments` in the tab store) --
  * so a card cannot draw one definition while it runs another (#541).
+ *
+ * A definition a document brought is not validated on the way in, and one
+ * the backend cannot read is kept so that the run refuses it by name. Such a
+ * card draws the ports it can read rather than throw.
  */
 export function presetCardDefinition(preset: PresetDefinition): NodeDefinition {
+  const ports = (list: unknown): PresetDefinition['exposed_inputs'] =>
+    (Array.isArray(list) ? list : []).filter(
+      (port) => port !== null && typeof port === 'object',
+    );
   return {
     node_name: preset.preset_name,
     category: preset.category,
     description: preset.description,
-    inputs: preset.exposed_inputs.map((p) => ({
+    inputs: ports(preset.exposed_inputs).map((p) => ({
       name: p.name,
       data_type: p.data_type,
       description: p.description,
       optional: false,
     })),
-    outputs: preset.exposed_outputs.map((p) => ({
+    outputs: ports(preset.exposed_outputs).map((p) => ({
       name: p.name,
       data_type: p.data_type,
       description: p.description,
@@ -379,6 +387,22 @@ export function presetCardDefinition(preset: PresetDefinition): NodeDefinition {
     })),
     params: [],
   };
+}
+
+/**
+ * A preset definition's inner nodes, as far as they can be read. A document's
+ * own definition is kept as it came even when the backend cannot read it
+ * (#541), so the card, the config panel, the detail view and the preset
+ * editor draw what is there rather than throw, and Run gets to report the
+ * server's refusal by the preset's name.
+ */
+export function readablePresetNodes(
+  preset: PresetDefinition | null | undefined,
+): PresetDefinition['nodes'] {
+  const nodes: unknown = preset?.nodes;
+  return Array.isArray(nodes)
+    ? nodes.filter((node) => node !== null && typeof node === 'object')
+    : [];
 }
 
 /**

@@ -354,47 +354,47 @@ def _is_unknown_type(
     return registry.get(node_type) is None
 
 
-def _unplaced_inner_ids(
+def _inner_param_names(
     node_type: str,
-    internal_params: Mapping[Any, Any],
     preset_fallback: Mapping[str, Any] | None,
-) -> list[Any]:
-    """The ``internalParams`` entries of a KNOWN preset the server cannot place.
+) -> dict[Any, set[str] | None] | None:
+    """For a KNOWN preset, each inner node id -> the params declared there.
 
-    An entry is placed when its id names an inner node and every type that
-    id has is known, across the installed and the portable definition
-    together -- the union ``_preset_secret_param_map`` takes. A placed entry
-    keeps the SECRET rule. An unplaced one is withheld whole: nothing says
-    which of its values is secret. Empty for a type that is not a known
-    preset.
+    Across the installed and the portable definition together -- the union
+    ``_preset_secret_param_map`` takes -- so a param counts as declared when
+    any type at that id declares it. An id maps to ``None`` when one of its
+    types is unknown: nothing then says what any value of that entry is.
+    ``None`` for a type that is not a known preset.
     """
     definitions = _preset_definitions(node_type, preset_fallback)
     if not definitions:
-        return []
-    inner_types: dict[Any, set[str]] = {}
+        return None
+    names: dict[Any, set[str] | None] = {}
     for preset in definitions:
         internal_nodes = (
             preset.get("nodes", []) if isinstance(preset, dict) else preset.nodes
         )
         for internal in internal_nodes:
-            internal_type = (
+            internal_type = str((
                 internal.get("type", "")
                 if isinstance(internal, dict)
                 else internal.type
-            )
+            ) or "")
             internal_id = (
                 internal.get("id", "")
                 if isinstance(internal, dict)
                 else internal.id
             )
-            inner_types.setdefault(internal_id, set()).add(
-                str(internal_type or ""))
-    return [
-        internal_id for internal_id in internal_params
-        if internal_id not in inner_types
-        or any(_is_unknown_type(t, preset_fallback)
-               for t in inner_types[internal_id])
-    ]
+            if _is_unknown_type(internal_type, preset_fallback):
+                names[internal_id] = None
+                continue
+            declared = names.setdefault(internal_id, set())
+            if declared is None:
+                continue  # another type at this id is unknown
+            node_cls = registry.get(internal_type)
+            if node_cls is not None:
+                declared.update(p.name for p in node_cls.define_params())
+    return names
 
 
 def _iter_param_slots(
@@ -444,8 +444,10 @@ def _iter_node_secret_slots(
 
     With ``unknown_types_as_secret``, every slot of a node of unknown type
     counts as secret, and so does every slot of a known preset's
-    ``internalParams`` entry the server cannot place. A node of a preset the
-    graph carries but cannot read gives up every slot in either mode (#541).
+    ``internalParams`` entry the server cannot place, and every slot of a
+    placed entry whose param no type at that inner id declares. A node of a
+    preset the graph carries but cannot read gives up every slot in either
+    mode (#541).
     """
     node_type = _type_of(node)
     if _is_unreadable_preset(node_type, preset_fallback) or (
@@ -464,26 +466,33 @@ def _iter_node_secret_slots(
     internal_params = _internal_params_of(node)
     if internal_params is None:
         return
-    unplaced = (
-        _unplaced_inner_ids(node_type, internal_params, preset_fallback)
-        if unknown_types_as_secret else []
-    )
     # Preset instance: secrets can also sit per inner node in internalParams.
     preset_secrets = _preset_secret_param_map(node_type, preset_fallback)
-    for internal_id in sorted(preset_secrets):
-        if internal_id in unplaced:
-            continue  # withheld whole, below
-        inner = internal_params.get(internal_id)
-        if not isinstance(inner, dict):
-            continue
-        for name in sorted(preset_secrets[internal_id]):
-            if name in inner:
-                yield ((*prefix, "internalParams", internal_id, name),
-                       inner, name)
-    for internal_id in unplaced:
-        yield from _iter_param_slots(
-            internal_params[internal_id],
-            (*prefix, "internalParams", internal_id))
+    inner_names = (
+        _inner_param_names(node_type, preset_fallback)
+        if unknown_types_as_secret else None
+    )
+    if inner_names is None:
+        for internal_id in sorted(preset_secrets):
+            inner = internal_params.get(internal_id)
+            if not isinstance(inner, dict):
+                continue
+            for name in sorted(preset_secrets[internal_id]):
+                if name in inner:
+                    yield ((*prefix, "internalParams", internal_id, name),
+                           inner, name)
+        return
+    # A known preset on the run path. An entry the server cannot place goes
+    # whole. In a placed one, a value no type at that id declares goes with
+    # the SECRET ones (#541): the canvas may have typed it against a
+    # definition the server no longer has, and nothing says it is not a key.
+    for internal_id, inner in internal_params.items():
+        declared = inner_names.get(internal_id)
+        secret = preset_secrets.get(internal_id, set())
+        for address, container, key in _iter_param_slots(
+                inner, (*prefix, "internalParams", internal_id)):
+            if declared is None or key in secret or key not in declared:
+                yield address, container, key
 
 
 def _iter_definition_secret_slots(
@@ -635,12 +644,12 @@ def split_graph_secrets(
     counts as secret every present value of a node whose type the server
     does not know (see :func:`_is_unknown_type` for what that means), and
     of a known preset's ``internalParams`` entry that no known inner node
-    accounts for. The server cannot name the secret params of a type it
-    does not know, and the run row is written before the engine refuses the
-    type, so without this a key typed into such a node would be stored as
-    sent. Withholding every value costs the run nothing: the queued lane
-    gets them back from the vault, and the interactive lane runs the live
-    graph.
+    accounts for, or whose param no inner type at that id declares (#541).
+    The server cannot name the secret params of a type it does not know, and
+    the run row is written before the engine refuses the type, so without
+    this a key typed into such a node would be stored as sent. Withholding
+    every value costs the run nothing: the queued lane gets them back from
+    the vault, and the interactive lane runs the live graph.
 
     The startup sweep of finished rows does NOT pass it. "Unknown" is a fact
     about one boot: a plugin that fails to load once would lose its settings
