@@ -243,6 +243,7 @@ function baseTab() {
     // Left as real empty arrays rather than guarded inside the store: a tab
     // missing its stacks is a broken double, not a state the app can reach.
     subgraphs: [] as any[],
+    presets: [] as any[],
     subgraphStack: [] as any[],
     undoStack: [] as any[],
     redoStack: [] as any[],

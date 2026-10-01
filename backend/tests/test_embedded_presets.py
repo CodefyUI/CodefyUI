@@ -9,14 +9,14 @@ from app.core.graph_engine import (
 from app.core.preset_registry import preset_registry
 
 
-def _preset_dict(name="EmbeddedPr"):
+def _preset_dict(name="EmbeddedPr", *, inner_type="Print", label="x"):
     # An internal Print node exposed as one input; a name the registry lacks.
     return {
         "preset_name": name,
         "category": "Custom",
         "description": "",
         "tags": [],
-        "nodes": [{"id": "inner", "type": "Print", "params": {"label": "x"}}],
+        "nodes": [{"id": "inner", "type": inner_type, "params": {"label": label}}],
         "edges": [],
         "exposed_inputs": [
             {"name": "in", "internal_node": "inner", "internal_port": "value",
@@ -59,3 +59,44 @@ def test_expand_uses_fallback():
     expanded, _edges, mapping = expand_presets(nodes, [], preset_fallback=fb)
     assert any(n["id"] == "p__inner" and n["type"] == "Print" for n in expanded)
     assert mapping["p__inner"] == "p"
+
+
+def test_embedded_definition_wins_same_name_collision(monkeypatch):
+    name = "PortableCollision"
+    installed = build_preset_fallback([
+        _preset_dict(name, inner_type="TextInput", label="installed"),
+    ])[name]
+    portable = build_preset_fallback([
+        _preset_dict(name, inner_type="Print", label="portable"),
+    ])[name]
+    monkeypatch.setitem(preset_registry._presets, name, installed)
+
+    nodes = [{
+        "id": "p",
+        "type": f"preset:{name}",
+        "position": {"x": 0, "y": 0},
+        "data": {},
+    }]
+    fallback = {name: portable}
+
+    errors = validate_graph(nodes, [], preset_fallback=fallback)
+    assert not any("Unknown preset" in error for error in errors)
+    expanded, _edges, _mapping = expand_presets(
+        nodes, [], preset_fallback=fallback,
+    )
+    assert expanded[0]["type"] == "Print"
+    assert expanded[0]["data"]["params"]["label"] == "portable"
+
+
+def test_losing_installed_definition_cannot_reject_portable_winner(monkeypatch):
+    name = "PortableCollisionWithBrokenInstalled"
+    installed = build_preset_fallback([
+        _preset_dict(name, inner_type="subgraph:installed-only"),
+    ])[name]
+    portable = build_preset_fallback([_preset_dict(name)])[name]
+    monkeypatch.setitem(preset_registry._presets, name, installed)
+    nodes = [{"id": "p", "type": f"preset:{name}", "data": {}}]
+
+    errors = validate_graph(nodes, [], preset_fallback={name: portable})
+
+    assert not any("contains subgraph instance" in error for error in errors)

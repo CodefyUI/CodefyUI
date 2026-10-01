@@ -105,11 +105,12 @@ def _preset_definitions(
     node_type: str,
     preset_fallback: Mapping[str, Any] | None,
 ) -> list[Any]:
-    """The definitions a ``preset:<name>`` type resolves to, installed first.
+    """Every definition that may declare a secret for ``preset:<name>``.
 
-    The preset registry's and the graph's own portable one, whichever exist.
-    Empty when the type is not a preset or neither knows the name -- the
-    case the engine reports as ``Unknown preset``.
+    Execution prefers the graph's portable definition, but scrubbing is
+    deliberately conservative: it takes the union of installed and portable
+    declarations so moving a graph between machines cannot expose a slot.
+    Empty when the type is not a preset or neither source knows the name.
     """
     if not node_type.startswith("preset:"):
         return []
@@ -144,9 +145,9 @@ def _preset_secret_param_map(
     if not candidates:
         return {}
     result: dict[str, set[str]] = {}
-    # For execution, an installed preset intentionally wins over a portable
-    # same-name fallback. For scrubbing, take the union: the downloaded graph
-    # may later run on a machine where only the embedded definition exists.
+    # Execution gives a graph-owned portable definition precedence over an
+    # installed same-name definition. Scrubbing intentionally takes the union:
+    # either definition may identify a value that must never become durable.
     for preset in candidates:
         internal_nodes = (
             preset.get("nodes", []) if isinstance(preset, dict) else preset.nodes

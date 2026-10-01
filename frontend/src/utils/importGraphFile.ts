@@ -2,9 +2,13 @@ import { useNodeDefStore } from '../store/nodeDefStore';
 import { useTabStore } from '../store/tabStore';
 import { useToastStore } from '../store/toastStore';
 import { useI18n, type TranslationKey } from '../i18n';
-import type { SubgraphDefinition } from '../types';
+import type { PresetDefinition, SubgraphDefinition } from '../types';
 import { resolveSerializedNodes, resolveSerializedEdges } from '.';
 import { readGraphDevice } from './graphSettings';
+import {
+  effectivePresets,
+  mergeUnknownPresetsIntoPalette,
+} from './presetOwnership';
 import { importWorkspaceFile } from './importWorkspaceFile';
 import {
   WORKSPACE_EXTENSION,
@@ -120,20 +124,16 @@ function installGraphData(input: unknown): boolean {
       throw new Error('Invalid graph format');
     }
     const store = useNodeDefStore.getState();
-    const importedPresets = Array.isArray(data.presets) ? data.presets : [];
-    const mergedPresets = [...store.presets];
-    for (const p of importedPresets) {
-      if (!mergedPresets.some((ep) => ep.preset_name === p.preset_name)) {
-        mergedPresets.push(p);
-      }
-    }
+    const importedPresets: PresetDefinition[] = Array.isArray(data.presets) ? data.presets : [];
+    const mergedPresets = mergeUnknownPresetsIntoPalette(store.presets, importedPresets);
+    const resolvingPresets = effectivePresets(importedPresets, store.presets);
     const importedSubgraphs: SubgraphDefinition[] = Array.isArray(data.subgraphs)
       ? data.subgraphs
       : [];
     const resolvedNodes = resolveSerializedNodes(
       rawNodes,
       store.definitions,
-      mergedPresets,
+      resolvingPresets,
       importedSubgraphs,
     );
     const resolvedEdges = resolveSerializedEdges(edges, resolvedNodes);
@@ -154,6 +154,7 @@ function installGraphData(input: unknown): boolean {
       // check (#200 item 9 moved this into the install; it used to be
       // an assignment after it).
       boundFile: null,
+      presets: importedPresets,
       subgraphs: importedSubgraphs,
       segmentGroups: Array.isArray(data.segmentGroups) ? data.segmentGroups : [],
       description: typeof data.description === 'string' ? data.description : '',

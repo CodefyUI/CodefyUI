@@ -29,7 +29,7 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 import type { Edge, Node } from '@xyflow/react';
 import { useTabStore, documentChanged, _setForTesting } from './tabStore';
 import { useNodeDefStore } from './nodeDefStore';
-import type { NodeData, NodeDefinition } from '../types';
+import type { NodeData, NodeDefinition, PresetDefinition } from '../types';
 
 vi.mock('./tabPersistence', () => ({
   readSnapshot: vi.fn(async () => null),
@@ -60,6 +60,20 @@ function node(id: string, x = 0): Node<NodeData> {
 
 function dataEdge(id: string, source: string, target: string): Edge {
   return { id, source, target, sourceHandle: 'out', targetHandle: 'in' };
+}
+
+function preset(name: string, marker: string): PresetDefinition {
+  return {
+    preset_name: name,
+    category: 'Portable',
+    description: marker,
+    tags: [],
+    nodes: [{ id: 'inner', type: 'A', params: { size: marker } }],
+    edges: [],
+    exposed_inputs: [],
+    exposed_outputs: [],
+    exposed_params: [],
+  };
 }
 
 beforeEach(() => {
@@ -123,6 +137,15 @@ describe('TabState.revision', () => {
     store().loadGraphDocument({ nodes: [], edges: [], boundFile: null });
     expect(revision()).toBe(before + 1);
     expect(revision()).toBeGreaterThan(1);
+  });
+
+  it('a document-owned preset change bumps the revision', () => {
+    const before = revision();
+    store().loadGraphDocument({
+      nodes: [], edges: [], boundFile: null,
+      presets: [preset('Shared', 'owned')],
+    });
+    expect(revision()).toBe(before + 1);
   });
 
   it('does NOT bump for rename, activate, a modal id or run status', () => {
@@ -451,6 +474,129 @@ describe('revision persistence', () => {
     // 1, not 41: "missing restores as 1" must mean 1, or a plugin's stored
     // expectedRevision could match whatever placeholder tab the loader reused.
     expect(restored.revision).toBe(1);
+  });
+
+  it('persists a legacy tab with no subgraph field', async () => {
+    const { _buildPersistedTabForTesting } = await import('./tabStore');
+    const legacyTab = {
+      ...activeTab(),
+      subgraphs: undefined,
+    } as unknown as ReturnType<typeof activeTab>;
+
+    const record = _buildPersistedTabForTesting(legacyTab);
+
+    expect(record.nodes).toEqual([]);
+    expect(record.subgraphs).toBeUndefined();
+  });
+
+  it('complete persisted records remove attached definitions and scrub collision secrets', async () => {
+    const { _buildPersistedTabForTesting } = await import('./tabStore');
+    const documentSecret = 'sk-DOCUMENT-RECORD-SECRET';
+    const installedSecret = 'sk-INSTALLED-BLOCK-SECRET';
+    const secretParam = (name: string) => ({
+      name, param_type: 'secret' as const, default: '', description: '',
+      options: [], min_value: null, max_value: null,
+    });
+    const document: PresetDefinition = {
+      ...preset('Collision', 'document'),
+      nodes: [{ id: 'inner', type: 'A', params: {} }],
+      exposed_params: [{
+        internal_node: 'inner', param_name: 'document_key', display_name: '', group: '',
+        param_def: secretParam('document_key'),
+      }],
+    };
+    const installed: PresetDefinition = {
+      ...preset('Collision', 'installed'),
+      nodes: [{ id: 'inner', type: 'A', params: {} }],
+      exposed_params: [{
+        internal_node: 'inner', param_name: 'installed_key', display_name: '', group: '',
+        param_def: secretParam('installed_key'),
+      }],
+    };
+    useNodeDefStore.setState({ presets: [installed] } as never);
+    store().loadGraphDocument({
+      nodes: [{
+        id: 'block', type: 'subgraphNode', position: { x: 0, y: 0 },
+        data: { label: 'Block', type: 'subgraph:blk', params: {} },
+      }],
+      edges: [], boundFile: null, presets: [document],
+      subgraphs: [{
+        id: 'blk', name: 'Block', description: '', edges: [],
+        interface: { inputs: [], outputs: [], triggerTargets: [] },
+        nodes: [{
+          id: 'p', type: 'preset:Collision', position: { x: 0, y: 0 },
+          data: { params: {}, internalParams: { inner: {
+            document_key: documentSecret,
+            installed_key: installedSecret,
+          } } },
+        }],
+      }],
+    });
+    store().addPresetNode(document, { x: 100, y: 0 });
+    expect(activeTab().presets[0].exposed_params[0].param_name)
+      .toBe('document_key');
+    expect(activeTab().presets[0].exposed_params[0].param_def?.param_type)
+      .toBe('secret');
+
+    const record = _buildPersistedTabForTesting(activeTab());
+    const direct = (await import('./tabStore'))._stripSubgraphSecretsForTesting(
+      activeTab().subgraphs,
+      activeTab().presets,
+    );
+    expect((direct[0].nodes[0] as any).data.internalParams.inner)
+      .toEqual({ document_key: '', installed_key: '' });
+    const bytes = JSON.stringify(record);
+
+    expect(bytes).not.toContain(documentSecret);
+    expect(bytes).not.toContain(installedSecret);
+    expect(bytes).not.toContain('presetDefinition');
+    expect((record.subgraphs![0].nodes[0] as any).data.internalParams.inner)
+      .toEqual({ document_key: '', installed_key: '' });
+  });
+
+  it('round-trips document-owned presets and legacy records restore empty', async () => {
+    const { _buildPersistedTabForTesting, _tabFromPersistedForTesting } = await import('./tabStore');
+    const owned = preset('Shared', 'owned');
+    store().loadGraphDocument({
+      nodes: [{
+        id: 'p', type: 'presetNode', position: { x: 0, y: 0 },
+        data: {
+          label: 'Shared', type: 'preset:Shared', params: {},
+          isPreset: true, presetDefinition: owned, internalParams: {},
+        },
+      }],
+      edges: [], boundFile: null, presets: [owned],
+    });
+    const record = _buildPersistedTabForTesting(activeTab());
+    expect(record.presets).toEqual([preset('Shared', 'owned')]);
+    const restored = _tabFromPersistedForTesting(record, {
+      ...activeTab(), presets: [preset('Stale', 'base')],
+    });
+    expect(restored.presets).toEqual([preset('Shared', 'owned')]);
+
+    delete record.presets;
+    expect(_tabFromPersistedForTesting(record, restored).presets).toEqual([]);
+  });
+
+  it('a presets-only identity change is a record-cache miss', async () => {
+    const { _persistedTabsForTesting } = await import('./tabStore');
+    const [first] = _persistedTabsForTesting(useTabStore.getState().tabs);
+    const sameName = preset('Shared', 'owned');
+    const presetNode: Node<NodeData> = {
+      id: 'p', type: 'presetNode', position: { x: 0, y: 0 },
+      data: {
+        label: 'Shared', type: 'preset:Shared', params: {},
+        isPreset: true, presetDefinition: sameName, internalParams: {},
+      },
+    };
+    useTabStore.setState({
+      tabs: useTabStore.getState().tabs.map((t) => ({
+        ...t, nodes: [presetNode], presets: [sameName],
+      })),
+    });
+    const [changed] = _persistedTabsForTesting(useTabStore.getState().tabs);
+    expect(changed).not.toBe(first);
+    expect(changed.presets).toEqual([sameName]);
   });
 
   it('round-trips graphDevice, and omits it from the record when unset', async () => {

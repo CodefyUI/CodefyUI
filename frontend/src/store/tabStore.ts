@@ -44,6 +44,10 @@ import { useToastStore } from './toastStore';
 import { useUIStore } from './uiStore';
 import { useI18n, type TranslationKey } from '../i18n';
 import { useProjectStore } from './projectStore';
+import {
+  effectivePresets,
+  mergeOwnedPresets,
+} from '../utils/presetOwnership';
 
 // ── Per-tab state ──
 
@@ -149,6 +153,7 @@ export interface LogEntry {
 interface UndoSnapshot {
   nodes: Node<NodeData>[];
   edges: Edge[];
+  presets: PresetDefinition[];
   /**
    * Subgraph definitions (core#137). Collapse and expand change the graph
    * AND the definition list in one commit, so a snapshot that carried only
@@ -195,6 +200,7 @@ interface SubgraphFrame {
   subgraphId: string;
   nodes: Node<NodeData>[];
   edges: Edge[];
+  presets: PresetDefinition[];
   undoStack: UndoSnapshot[];
   redoStack: UndoSnapshot[];
   selectedNodeId: string | null;
@@ -316,6 +322,8 @@ export interface TabState {
   // flow
   nodes: Node<NodeData>[];
   edges: Edge[];
+  /** Portable preset definitions owned by this document. */
+  presets: PresetDefinition[];
   /**
    * Subgraph definitions local to this graph (core#137). Instances reference
    * one by id, so two instances of a definition are the SAME block: editing
@@ -474,6 +482,7 @@ function createTabState(id: string, name: string): TabState {
     source: null,
     nodes: [],
     edges: [],
+    presets: [],
     subgraphs: [],
     subgraphStack: [],
     selectedNodeId: null,
@@ -602,6 +611,7 @@ export interface GraphDocument {
    * here: with no file there is no name, and the action below enforces it.
    */
   boundName?: string | null;
+  presets?: PresetDefinition[];
   subgraphs?: SubgraphDefinition[];
   segmentGroups?: SegmentGroup[];
   /**
@@ -856,6 +866,7 @@ interface TabStoreState {
     edges: Edge[],
     subgraphs?: SubgraphDefinition[],
     at?: { x: number; y: number },
+    presets?: PresetDefinition[],
   ) => void;
 
   // note actions
@@ -882,6 +893,7 @@ interface TabStoreState {
      * server refuses to run.
      */
     subgraphs?: SubgraphDefinition[];
+    presets?: PresetDefinition[];
   } | null;
   copySelectedNodes: () => void;
   pasteNodes: () => void;
@@ -1185,6 +1197,7 @@ function undoFrameOf(state: UndoSnapshot): UndoSnapshot {
   return {
     nodes: [...state.nodes],
     edges: [...state.edges],
+    presets: [...state.presets],
     subgraphs: [...state.subgraphs],
     segmentGroups: [...state.segmentGroups],
     // Not copied, unlike the arrays: a SegmentGroup is replaced wholesale on
@@ -1201,6 +1214,15 @@ function sameSegment(a: SegmentGroup | null, b: SegmentGroup | null): boolean {
   return (
     a.id === b.id && a.headNodeId === b.headNodeId && a.tailNodeId === b.tailNodeId
   );
+}
+
+function samePresetOwnership(
+  a: PresetDefinition[],
+  b: PresetDefinition[],
+): boolean {
+  if (a === b) return true;
+  if (a.length !== b.length) return false;
+  return a.every((definition, index) => definition === b[index]);
 }
 
 /**
@@ -1263,9 +1285,10 @@ function sameOverlays(
  */
 function closeFrameHistory(
   frame: SubgraphFrame,
-  next: Pick<TabState, 'subgraphs' | 'segmentGroups' | 'activeSegment'>,
+  next: Pick<TabState, 'presets' | 'subgraphs' | 'segmentGroups' | 'activeSegment'>,
 ): Pick<TabState, 'undoStack' | 'redoStack'> {
   if (
+    samePresetOwnership(frame.presets, next.presets) &&
     sameSubgraphs(frame.subgraphs, next.subgraphs) &&
     sameOverlays(frame, next)
   ) {
@@ -1377,6 +1400,21 @@ function bypassPatch(
   };
 }
 
+function normalizePresetAttachments(
+  nodes: Node<NodeData>[],
+  presets: PresetDefinition[],
+): Node<NodeData>[] {
+  if (!nodes.length || !presets.length) return nodes;
+  const byName = new Map(presets.map((definition) => [definition.preset_name, definition]));
+  return nodes.map((node) => {
+    const type = node.data?.type;
+    if (typeof type !== 'string' || !type.startsWith('preset:')) return node;
+    const definition = byName.get(type.slice('preset:'.length));
+    if (!definition || node.data.presetDefinition === definition) return node;
+    return { ...node, data: { ...node.data, presetDefinition: definition } };
+  });
+}
+
 /** Gap between the existing graph and an inserted template, in flow pixels. */
 const INSERT_GAP = 96;
 
@@ -1437,22 +1475,106 @@ function stripSecretParams(
 // detect a no-op.
 function stripSecretInternalParams(
   internalParams: Record<string, Record<string, any>> | undefined,
-  preset: PresetDefinition | undefined,
+  preset: PresetDefinition | PresetDefinition[] | undefined,
 ): Record<string, Record<string, any>> | undefined {
   if (!internalParams || !preset) return internalParams;
-  const secretSlots = preset.exposed_params.filter(
-    (ep) => ep.param_def?.param_type === 'secret',
+  const presets = Array.isArray(preset) ? preset : [preset];
+  const secretSlots = presets.flatMap((definition) =>
+    definition.exposed_params.filter(
+      (ep) => ep.param_def?.param_type === 'secret',
+    ),
   );
   if (secretSlots.length === 0) return internalParams;
   let cleaned: Record<string, Record<string, any>> | null = null;
   for (const ep of secretSlots) {
     const inner = internalParams[ep.internal_node];
     if (inner && ep.param_name in inner) {
-      if (cleaned === null) cleaned = { ...internalParams };
-      cleaned[ep.internal_node] = { ...inner, [ep.param_name]: '' };
+      if (cleaned === null) {
+        cleaned = Object.fromEntries(
+          Object.entries(internalParams).map(([id, values]) => [id, { ...values }]),
+        );
+      }
+      cleaned[ep.internal_node][ep.param_name] = '';
     }
   }
   return cleaned ?? internalParams;
+}
+
+function stripPresetDefinitionSecrets(
+  presets: PresetDefinition[],
+): PresetDefinition[] {
+  let listChanged = false;
+  const cleaned = presets.map((preset) => {
+    let changed = false;
+    const nodes = preset.nodes.map((node) => {
+      const definition = serverDefinitionOf(node.type);
+      const params = definition
+        ? stripSecretParams(node.params, definition)
+        : Object.fromEntries(Object.keys(node.params ?? {}).map((name) => [name, '']));
+      if (params === node.params) return node;
+      changed = true;
+      return { ...node, params };
+    });
+    const exposed_params = preset.exposed_params.map((exposed) => {
+      if (exposed.param_def?.param_type !== 'secret' || exposed.param_def.default === '') {
+        return exposed;
+      }
+      changed = true;
+      return {
+        ...exposed,
+        param_def: { ...exposed.param_def, default: '' },
+      };
+    });
+    if (!changed) return preset;
+    listChanged = true;
+    return { ...preset, nodes, exposed_params };
+  });
+  return listChanged ? cleaned : presets;
+}
+
+function referencedPresetDefinitions(
+  tab: Pick<TabState, 'nodes' | 'presets'>,
+  subgraphs: SubgraphDefinition[],
+): PresetDefinition[] {
+  const installed = useNodeDefStore.getState().presets;
+  const owned = new Map(
+    effectivePresets(tab.presets ?? [], []).map((preset) => [preset.preset_name, preset]),
+  );
+  const global = new Map(
+    effectivePresets(installed, []).map((preset) => [preset.preset_name, preset]),
+  );
+  const seen = new Set<string>();
+  const referenced: PresetDefinition[] = [];
+  const queue: Array<{ name: string; attached?: PresetDefinition; depth: number }> = [];
+  const enqueue = (name: string, attached?: PresetDefinition, depth = 1) => {
+    queue.push({ name, attached, depth });
+  };
+  for (const node of tab.nodes) {
+    const type = node.data?.type;
+    if (typeof type !== 'string' || !type.startsWith('preset:')) continue;
+    enqueue(type.slice('preset:'.length), node.data.presetDefinition);
+  }
+  for (const definition of subgraphs) {
+    for (const raw of definition.nodes as Array<{ type?: unknown }>) {
+      const type = typeof raw?.type === 'string' ? raw.type : '';
+      if (type.startsWith('preset:')) enqueue(type.slice('preset:'.length));
+    }
+  }
+  while (queue.length > 0) {
+    const { name, attached, depth } = queue.shift()!;
+    if (seen.has(name)) continue;
+    const definition = attached ?? owned.get(name) ?? global.get(name);
+    if (!definition) continue;
+    seen.add(name);
+    referenced.push(definition);
+    if (depth >= 10) continue;
+    for (const internal of definition.nodes) {
+      if (internal.type.startsWith('preset:')) {
+        enqueue(internal.type.slice('preset:'.length), undefined, depth + 1);
+      }
+    }
+  }
+  return stripPresetDefinitionSecrets(referenced);
 }
 
 // Blank every SECRET-typed value inside SUBGRAPH DEFINITIONS (core#137).
@@ -1480,11 +1602,17 @@ function stripSecretInternalParams(
 function stripSubgraphSecrets(
   subgraphs: SubgraphDefinition[],
   keepSecrets = false,
+  ownedPresets: PresetDefinition[] = [],
 ): SubgraphDefinition[] {
   if (!subgraphs.length) return subgraphs;
   const { definitions, presets } = useNodeDefStore.getState();
   const defByName = new Map(definitions.map((d) => [d.node_name, d]));
-  const presetByName = new Map(presets.map((p) => [p.preset_name, p]));
+  const ownedByName = new Map(
+    effectivePresets(ownedPresets, []).map((p) => [p.preset_name, p]),
+  );
+  const installedByName = new Map(
+    effectivePresets(presets, []).map((p) => [p.preset_name, p]),
+  );
   let listChanged = false;
   const next = subgraphs.map((definition) => {
     let changed = false;
@@ -1513,13 +1641,20 @@ function stripSubgraphSecrets(
       // from a block, and without one the server cannot place its slots, so
       // Run blanks every one.
       const presetName = type.slice('preset:'.length);
-      const preset = presetByName.get(presetName);
+      const ownedPreset = ownedByName.get(presetName);
+      const installedPreset = installedByName.get(presetName);
+      const winningPreset = ownedPreset ?? installedPreset;
+      const scrubPresets = [ownedPreset, installedPreset].filter(
+        (candidate): candidate is PresetDefinition => candidate !== undefined,
+      );
       const internalParams = type.startsWith('preset:')
         ? stripSecretInternalParams(
             data.internalParams,
-            keepSecrets && preset
-              ? presetSecretsTheServerMisses(preset)
-              : preset ?? rememberedPresetSecrets(presetName),
+            keepSecrets && winningPreset
+              ? presetSecretsTheServerMisses(winningPreset)
+              : scrubPresets.length
+                ? scrubPresets
+                : rememberedPresetSecrets(presetName),
           )
         : data.internalParams;
       if (params === data.params && internalParams === data.internalParams) {
@@ -1540,6 +1675,13 @@ function stripSubgraphSecrets(
     return { ...definition, nodes };
   });
   return listChanged ? next : subgraphs;
+}
+
+export function _stripSubgraphSecretsForTesting(
+  subgraphs: SubgraphDefinition[],
+  ownedPresets: PresetDefinition[],
+): SubgraphDefinition[] {
+  return stripSubgraphSecrets(subgraphs, false, ownedPresets);
 }
 
 // ── keepSecrets: what the Run message keeps ──
@@ -1626,13 +1768,11 @@ function stripNodeSecretsForPersist(
     const internalParams = n.data.isPreset
       ? stripSecretInternalParams(n.data.internalParams, n.data.presetDefinition)
       : n.data.internalParams;
-    if (params === n.data.params && internalParams === n.data.internalParams) {
-      return n;
-    }
+    const { presetDefinition: _presetDefinition, ...dataWithoutPresetDefinition } = n.data;
     return {
       ...n,
       data: {
-        ...n.data,
+        ...dataWithoutPresetDefinition,
         params,
         ...(n.data.isPreset ? { internalParams } : {}),
       },
@@ -1695,6 +1835,8 @@ export interface PersistedTab {
   source?: WorkspaceSource;
   nodes: Node<NodeData>[];
   edges: Edge[];
+  /** Portable definitions needed by this document. Absent in legacy records. */
+  presets?: PresetDefinition[];
   segmentGroups?: SegmentGroup[];
   /**
    * Subgraph definitions (core#137). Absent on a graph that has none, so a
@@ -1747,6 +1889,12 @@ function buildPersistedTab(input: TabState): PersistedTab {
   // Autosave stores the whole graph, never the sub-canvas the user is looking
   // at: a refresh mid-edit must not turn a block's insides into the tab.
   const t = flushSubgraphEditing(input);
+  const liveSubgraphIds = reachableSubgraphIds(t.nodes, t.subgraphs ?? []);
+  const reachable = (t.subgraphs ?? []).filter((definition) =>
+    liveSubgraphIds.has(definition.id),
+  );
+  const presets = referencedPresetDefinitions(t, reachable);
+  const subgraphs = stripSubgraphSecrets(t.subgraphs ?? [], false, t.presets);
   return {
     id: t.id,
     name: t.name,
@@ -1775,13 +1923,12 @@ function buildPersistedTab(input: TabState): PersistedTab {
     // happened to collapse the node holding the key into a block.
     nodes: stripNodeSecretsForPersist(t.nodes),
     edges: t.edges,
+    ...(presets.length ? { presets } : {}),
     segmentGroups: t.segmentGroups,
     // Optional-chained like the flush above: a tab object built before this
     // field existed (a test double, an older persisted record) must still
     // persist rather than throw on the autosave path.
-    ...(t.subgraphs?.length
-      ? { subgraphs: stripSubgraphSecrets(t.subgraphs) }
-      : {}),
+    ...(subgraphs.length ? { subgraphs } : {}),
     // Only while the run might still be in flight, so a finished run's
     // id never survives a reload: the Inspector's captured outputs live
     // in a process-lifetime store, and pointing it at a run whose
@@ -1811,6 +1958,7 @@ function buildPersistedTab(input: TabState): PersistedTab {
 interface TabRecordCacheEntry {
   nodes: Node<NodeData>[];
   edges: Edge[];
+  presets: PresetDefinition[];
   segmentGroups: SegmentGroup[];
   subgraphs: SubgraphDefinition[];
   subgraphStack: TabState['subgraphStack'];
@@ -1866,6 +2014,7 @@ function persistedTabsFor(tabs: TabState[]): PersistedTab[] {
       cached &&
       cached.nodes === t.nodes &&
       cached.edges === t.edges &&
+      cached.presets === t.presets &&
       cached.segmentGroups === t.segmentGroups &&
       cached.subgraphs === t.subgraphs &&
       cached.subgraphStack === t.subgraphStack &&
@@ -1874,6 +2023,7 @@ function persistedTabsFor(tabs: TabState[]): PersistedTab[] {
         : {
             nodes: t.nodes,
             edges: t.edges,
+            presets: t.presets,
             segmentGroups: t.segmentGroups,
             subgraphs: t.subgraphs,
             subgraphStack: t.subgraphStack,
@@ -1955,7 +2105,8 @@ function saveTabs(tabs: TabState[], activeTabId: string) {
 
 /** Rebuild one `TabState` from its record, over a base carrying live fields. */
 function tabFromPersisted(t: PersistedTab, base: TabState): TabState {
-  const nodes = t.nodes ?? [];
+  const presets = Array.isArray(t.presets) ? t.presets : [];
+  const nodes = normalizePresetAttachments(t.nodes ?? [], presets);
   return {
     ...base,
     name: t.name,
@@ -1976,6 +2127,7 @@ function tabFromPersisted(t: PersistedTab, base: TabState): TabState {
     // A restored tab is, by definition, one that persisted.
     transient: false,
     nodes,
+    presets,
     // Autosave stores each edge object as it stands, baked stroke and all, so
     // this is the one door a wire painted by an older palette comes back
     // through: a graph saved before #197 item 5 still draws its TRANSFORM
@@ -2197,6 +2349,12 @@ export function documentChanged(prev: TabState, next: TabState): boolean {
   // it changes the saved bytes and nothing about how the graph runs, and
   // that exclusion predates this field.
   if (prev.graphDevice !== next.graphDevice) return true;
+  if (prev.presets !== next.presets) {
+    if (prev.presets.length !== next.presets.length) return true;
+    for (let i = 0; i < next.presets.length; i += 1) {
+      if (prev.presets[i] !== next.presets[i]) return true;
+    }
+  }
 
   if (prev.nodes !== next.nodes) {
     if (prev.nodes.length !== next.nodes.length) return true;
@@ -2786,21 +2944,26 @@ export const useTabStore = create<TabStoreState>((rawSet, get) => {
 
   addPresetNode: (preset, position) => {
     get().pushUndoSnapshot();
+    const tab = get().getActiveTab();
+    const owned = tab.presets.find((definition) =>
+      definition.preset_name === preset.preset_name,
+    );
+    const effective = owned ?? preset;
     const internalParams: Record<string, Record<string, any>> = {};
-    for (const n of preset.nodes) {
+    for (const n of effective.nodes) {
       internalParams[n.id] = { ...n.params };
     }
     const definition: NodeDefinition = {
-      node_name: preset.preset_name,
-      category: preset.category,
-      description: preset.description,
-      inputs: preset.exposed_inputs.map((p) => ({
+      node_name: effective.preset_name,
+      category: effective.category,
+      description: effective.description,
+      inputs: effective.exposed_inputs.map((p) => ({
         name: p.name,
         data_type: p.data_type,
         description: p.description,
         optional: false,
       })),
-      outputs: preset.exposed_outputs.map((p) => ({
+      outputs: effective.exposed_outputs.map((p) => ({
         name: p.name,
         data_type: p.data_type,
         description: p.description,
@@ -2813,12 +2976,12 @@ export const useTabStore = create<TabStoreState>((rawSet, get) => {
       type: 'presetNode',
       position,
       data: {
-        label: preset.preset_name,
-        type: `preset:${preset.preset_name}`,
+        label: effective.preset_name,
+        type: `preset:${effective.preset_name}`,
         params: {},
         definition,
         isPreset: true,
-        presetDefinition: preset,
+        presetDefinition: effective,
         internalParams,
         executionStatus: 'idle',
       },
@@ -2826,6 +2989,7 @@ export const useTabStore = create<TabStoreState>((rawSet, get) => {
     set({
       tabs: updateTab(get().tabs, get().activeTabId, (tab) => ({
         nodes: [...tab.nodes, node],
+        presets: mergeOwnedPresets(tab.presets, [effective]),
       })),
     });
   },
@@ -3057,6 +3221,8 @@ export const useTabStore = create<TabStoreState>((rawSet, get) => {
       tabs: updateTab(get().tabs, get().activeTabId, (tab) => ({
         nodes: [],
         edges: [],
+        // Portable and block definitions belong to the graph that was cleared.
+        presets: [],
         // Definitions belong to the graph that was cleared, and the editing
         // stack points into nodes that no longer exist.
         subgraphs: [],
@@ -3126,9 +3292,12 @@ export const useTabStore = create<TabStoreState>((rawSet, get) => {
     // SECRET values are blanked here, on the nodes below and in a preset's
     // `internalParams`. `keepSecrets` (Run) keeps the ones the server will
     // blank in the run it stores; see `secretsTheServerMisses`.
-    const subgraphs = stripSubgraphSecrets(reachable, keepSecrets);
-    const presets: import('../types').PresetDefinition[] = [];
-    const seenPresets = new Set<string>();
+    const subgraphs = stripSubgraphSecrets(
+      reachable,
+      keepSecrets,
+      tab.presets ?? [],
+    );
+    const presets = referencedPresetDefinitions(tab, subgraphs);
 
     const nodes = tab.nodes.map((n) => {
       // Note nodes: serialize with note-specific fields
@@ -3149,13 +3318,6 @@ export const useTabStore = create<TabStoreState>((rawSet, get) => {
         };
       }
 
-      if (n.data.isPreset && n.data.presetDefinition) {
-        const name = n.data.presetDefinition.preset_name;
-        if (!seenPresets.has(name)) {
-          seenPresets.add(name);
-          presets.push(n.data.presetDefinition);
-        }
-      }
       return {
         id: n.id,
         type: n.data.type,
@@ -3206,32 +3368,6 @@ export const useTabStore = create<TabStoreState>((rawSet, get) => {
         },
       };
     });
-
-    // A preset node collapsed INTO a block is still a preset node: the
-    // definition keeps it as `preset:<name>` + `internalParams`, and without
-    // its portable definition travelling in `presets[]` the export 400s with
-    // `Unknown preset` and the save writes a file nothing can run. The
-    // canvas walk above cannot see it -- the node is not on the canvas any
-    // more -- and a definition entry carries only the type STRING, so the
-    // definition is resolved through the registry the way
-    // `resolveSerializedNodes` resolves it when the file is reopened.
-    const knownPresets = new Map(
-      useNodeDefStore.getState().presets.map((p) => [p.preset_name, p]),
-    );
-    for (const definition of subgraphs) {
-      for (const raw of definition.nodes as { type?: unknown }[]) {
-        const type = typeof raw?.type === 'string' ? raw.type : '';
-        if (!type.startsWith('preset:')) continue;
-        const name = type.slice('preset:'.length);
-        if (seenPresets.has(name)) continue;
-        const portable = knownPresets.get(name);
-        // An unknown name is left out rather than invented: it is already
-        // broken, and the backend names it (`Unknown preset: <name>`).
-        if (!portable) continue;
-        seenPresets.add(name);
-        presets.push(portable);
-      }
-    }
 
     return {
       nodes,
@@ -3390,6 +3526,7 @@ export const useTabStore = create<TabStoreState>((rawSet, get) => {
       tabs: updateTab(get().tabs, tabId, (tab) => ({
         nodes: doc.nodes,
         edges: doc.edges,
+        presets: doc.presets ?? [],
         // Normalized on the way in, as `setSubgraphs` does: every reader
         // hands over a list parsed out of a file and none of them validates
         // the entries.
@@ -3460,7 +3597,13 @@ export const useTabStore = create<TabStoreState>((rawSet, get) => {
       result.definition.nodes.map((n: { id: unknown }) => String(n.id)),
     );
     // Their definitions go with them, and some no list may name.
-    rememberFoldedSecrets(tab.nodes.filter((n) => swallowed.has(n.id)));
+    const swallowedNodes = tab.nodes.filter((n) => swallowed.has(n.id));
+    rememberFoldedSecrets(swallowedNodes);
+    const swallowedPresets = swallowedNodes.flatMap((node) =>
+      node.data.isPreset && node.data.presetDefinition
+        ? [node.data.presetDefinition]
+        : [],
+    );
     const nodes = result.nodes.map((n) =>
       n.type === 'noteNode' && n.data.boundToNodeId && swallowed.has(n.data.boundToNodeId)
         ? { ...n, data: { ...n.data, boundToNodeId: null, boundOffset: null } }
@@ -3471,6 +3614,7 @@ export const useTabStore = create<TabStoreState>((rawSet, get) => {
       tabs: updateTab(get().tabs, get().activeTabId, (t) => ({
         nodes,
         edges: result.edges,
+        presets: mergeOwnedPresets(t.presets, swallowedPresets),
         subgraphs: result.subgraphs,
         selectedNodeId: result.instanceId,
         segmentGroups: t.segmentGroups.filter(
@@ -3503,7 +3647,10 @@ export const useTabStore = create<TabStoreState>((rawSet, get) => {
     const tab = get().getActiveTab();
     if (tab.readOnly) return false;
     const defs = useNodeDefStore.getState().definitions;
-    const presets = useNodeDefStore.getState().presets;
+    const presets = effectivePresets(
+      tab.presets,
+      useNodeDefStore.getState().presets,
+    );
     const result = expandInstance(
       tab.nodes,
       tab.edges,
@@ -3556,7 +3703,10 @@ export const useTabStore = create<TabStoreState>((rawSet, get) => {
     const definition = tab.subgraphs.find((d) => d.id === subgraphId);
     if (!instance || !definition) return false;
     const defs = useNodeDefStore.getState().definitions;
-    const presets = useNodeDefStore.getState().presets;
+    const presets = effectivePresets(
+      tab.presets,
+      useNodeDefStore.getState().presets,
+    );
     const resolved = resolveSerializedNodes(
       definition.nodes,
       defs,
@@ -3597,6 +3747,7 @@ export const useTabStore = create<TabStoreState>((rawSet, get) => {
       subgraphId: definition.id,
       nodes: tab.nodes,
       edges: tab.edges,
+      presets: tab.presets,
       undoStack: tab.undoStack,
       redoStack: tab.redoStack,
       selectedNodeId: tab.selectedNodeId,
@@ -3812,7 +3963,13 @@ export const useTabStore = create<TabStoreState>((rawSet, get) => {
 
   // ── Template insertion (core#128) ──
 
-  insertGraph: (incomingNodes, incomingEdges, incomingSubgraphs = [], at) => {
+  insertGraph: (
+    incomingNodes,
+    incomingEdges,
+    incomingSubgraphs = [],
+    at,
+    incomingPresets = [],
+  ) => {
     if (incomingNodes.length === 0) return;
     const tab = get().getActiveTab();
     get().pushUndoSnapshot();
@@ -3866,12 +4023,14 @@ export const useTabStore = create<TabStoreState>((rawSet, get) => {
           incomingSubgraphs,
           newNodes,
         );
+        const presets = mergeOwnedPresets(t.presets, incomingPresets);
         return {
           nodes: [
             ...t.nodes.map((n) => ({ ...n, selected: false })),
-            ...merged.nodes,
+            ...normalizePresetAttachments(merged.nodes, presets),
           ],
           edges: [...t.edges, ...newEdges],
+          presets,
           subgraphs: merged.subgraphs,
         };
       }),
@@ -4134,15 +4293,19 @@ export const useTabStore = create<TabStoreState>((rawSet, get) => {
     // that does not exist there -- a node the canvas happily draws and the
     // server refuses to run.
     const copiedSubgraphIds = reachableSubgraphIds(selected, tab.subgraphs);
+    const copiedSubgraphs = tab.subgraphs.filter((definition) =>
+      copiedSubgraphIds.has(definition.id),
+    );
+    const presets = referencedPresetDefinitions(
+      { nodes: selected, presets: tab.presets },
+      copiedSubgraphs,
+    );
     set({
       clipboard: {
         nodes: JSON.parse(JSON.stringify(selected)),
         edges: JSON.parse(JSON.stringify(internalEdges)),
-        subgraphs: JSON.parse(
-          JSON.stringify(
-            tab.subgraphs.filter((d) => copiedSubgraphIds.has(d.id)),
-          ),
-        ),
+        subgraphs: JSON.parse(JSON.stringify(copiedSubgraphs)),
+        presets: JSON.parse(JSON.stringify(presets)),
       },
     });
   },
@@ -4187,12 +4350,14 @@ export const useTabStore = create<TabStoreState>((rawSet, get) => {
           clipboard.subgraphs ?? [],
           newNodes,
         );
+        const presets = mergeOwnedPresets(tab.presets, clipboard.presets ?? []);
         return {
           nodes: [
             ...tab.nodes.map((n) => ({ ...n, selected: false })),
-            ...merged.nodes,
+            ...normalizePresetAttachments(merged.nodes, presets),
           ],
           edges: [...tab.edges, ...newEdges],
+          presets,
           subgraphs: merged.subgraphs,
         };
       }),

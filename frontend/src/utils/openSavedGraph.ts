@@ -11,6 +11,10 @@ import type {
 import { resolveSerializedNodes, resolveSerializedEdges } from '.';
 import { autoLayout, stackUnboundNotes } from './autoLayout';
 import { readGraphDevice } from './graphSettings';
+import {
+  effectivePresets,
+  mergeUnknownPresetsIntoPalette,
+} from './presetOwnership';
 
 /**
  * Reading a SAVED GRAPH -- one of the project's own files -- into a document.
@@ -112,19 +116,15 @@ export function resolveSavedGraph(
 ): GraphDocument {
   const store = useNodeDefStore.getState();
   const savedPresets = Array.isArray(data.presets) ? data.presets : [];
-  const mergedPresets = [...store.presets];
-  for (const p of savedPresets) {
-    if (!mergedPresets.some((ep) => ep.preset_name === p.preset_name)) {
-      mergedPresets.push(p);
-    }
-  }
+  const mergedPresets = mergeUnknownPresetsIntoPalette(store.presets, savedPresets);
+  const resolvingPresets = effectivePresets(savedPresets, store.presets);
   const loadedSubgraphs: SubgraphDefinition[] = Array.isArray(data.subgraphs)
     ? data.subgraphs
     : [];
   const resolvedNodes = resolveSerializedNodes(
     data.nodes ?? [],
     store.definitions,
-    mergedPresets,
+    resolvingPresets,
     loadedSubgraphs,
   );
   const resolvedEdges = resolveSerializedEdges(data.edges ?? [], resolvedNodes);
@@ -154,6 +154,7 @@ export function resolveSavedGraph(
     // `My_Graph` could have come from "My Graph", "My/Graph" or "My.Graph"
     // and nothing on the tab could tell them apart afterwards.
     boundName: typeof data.name === 'string' ? data.name : null,
+    presets: savedPresets,
     subgraphs: loadedSubgraphs,
     segmentGroups: Array.isArray(data.segmentGroups) ? data.segmentGroups : [],
     description: typeof data.description === 'string' ? data.description : '',

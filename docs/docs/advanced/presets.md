@@ -16,6 +16,12 @@ To configure a placed preset, double-click it or select **Configure** in the Nod
 
 Before execution, the graph engine **expands** each preset into its internal nodes. A preset packages nodes but does not add a separate runtime.
 
+## Portable definitions
+
+A saved or imported graph can embed the preset definitions it uses. These definitions belong to that graph, so a registry refresh or disabling the plugin that supplied a preset does not remove the open graph's copy. If an installed preset has the same name, the embedded definition wins inside that graph; the installed palette remains unchanged for other graphs.
+
+Save and export include only definitions that the graph still references, including presets used only inside a collapsed block. Secret parameter values remain session-only: they are never made portable in a definition or written to a saved or exported graph.
+
 ## Creating your own
 
 Exporting a preset includes the entire canvas. You cannot select a subset of nodes or choose individual items to expose. Use a canvas that contains only the nodes for the preset; a new tab is usually the simplest option.

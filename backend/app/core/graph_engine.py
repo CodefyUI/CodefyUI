@@ -77,9 +77,9 @@ def expand_presets(
     Returns (expanded_nodes, expanded_edges, internal_to_preset_map).
     internal_to_preset_map maps internal node IDs to the preset node ID they came from.
 
-    ``preset_fallback`` (ID6) is consulted when the server's preset
-    registry does not know the preset name -- lets a graph carrying its
-    own ``presets[]`` expand on a machine whose registry lacks it.
+    ``preset_fallback`` (ID6) contains definitions owned by the graph. A graph
+    definition wins a same-name collision with the installed registry, so the
+    graph keeps the meaning it had when it was saved.
     """
     from .preset_registry import preset_registry
 
@@ -94,7 +94,7 @@ def expand_presets(
             continue
 
         preset_name = node_type[len("preset:"):]
-        preset = preset_registry.get(preset_name) or (preset_fallback or {}).get(preset_name)
+        preset = (preset_fallback or {}).get(preset_name) or preset_registry.get(preset_name)
         if not preset:
             raise GraphValidationError(f"Unknown preset: {preset_name}")
 
@@ -334,34 +334,31 @@ def preset_subgraph_errors(
         if not node_type.startswith("preset:"):
             continue
         preset_name = node_type[len("preset:"):]
-        candidates = [
-            candidate
-            for candidate in (
-                preset_registry.get(preset_name),
-                (preset_fallback or {}).get(preset_name),
-            )
-            if candidate is not None
-        ]
+        preset = (
+            (preset_fallback or {}).get(preset_name)
+            or preset_registry.get(preset_name)
+        )
+        if preset is None:
+            continue
+        internal_nodes = (
+            preset.get("nodes", [])
+            if isinstance(preset, dict)
+            else preset.nodes
+        )
         offenders: set[str] = set()
-        for preset in candidates:
-            internal_nodes = (
-                preset.get("nodes", [])
-                if isinstance(preset, dict)
-                else preset.nodes
+        for internal in internal_nodes:
+            internal_type = (
+                internal.get("type", "")
+                if isinstance(internal, dict)
+                else internal.type
             )
-            for internal in internal_nodes:
-                internal_type = (
-                    internal.get("type", "")
+            if subgraph_id_of(internal_type) is not None:
+                internal_id = (
+                    internal.get("id", "")
                     if isinstance(internal, dict)
-                    else internal.type
+                    else internal.id
                 )
-                if subgraph_id_of(internal_type) is not None:
-                    internal_id = (
-                        internal.get("id", "")
-                        if isinstance(internal, dict)
-                        else internal.id
-                    )
-                    offenders.add(str(internal_id))
+                offenders.add(str(internal_id))
         if offenders:
             errors.append(
                 f"Preset '{preset_name}' contains subgraph instance(s) "
