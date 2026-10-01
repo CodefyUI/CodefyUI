@@ -423,6 +423,16 @@ export interface WorkspaceTabInfo {
   transient: boolean;
   source: WorkspaceSource | null;
   active: boolean;
+  /**
+   * This tab's live block-editing context, even when the tab is in the
+   * background. Read `view.atTopLevel` before a named workspace write.
+   *
+   * On an editor before CodefyUI 2.8.7, which reports apiVersion 5 as well,
+   * this field is absent, so feature-check it with `'view' in info` rather
+   * than with the version. Such an editor can report only the active tab's
+   * level, through `graph.getView()`.
+   */
+  view: GraphView;
 }
 
 export type WorkspaceSnapshot =
@@ -445,8 +455,9 @@ export interface WorkspaceApplyRequest {
  *
  * `editing_subgraph` means the user has stepped inside a block, so the canvas
  * arrays are that block's contents rather than the document `snapshot()`
- * describes. Retry once they step back out — `graph.getView().atTopLevel`
- * says when.
+ * describes. Stepping back out advances the tab's revision, so retry from a
+ * new `workspace.snapshot(tabId)` once its `view.atTopLevel` is true;
+ * `graph.getView()` describes only the active tab.
  */
 export type WorkspaceConflict =
   | 'revision_mismatch' | 'read_only' | 'unknown_tab' | 'editing_subgraph';
@@ -602,12 +613,16 @@ export interface CodefyUIPluginAPI {
       entries: WorkspaceOpenEntry[],
       options?: { activate?: 'first' | 'last' | 'none' },
     ): WorkspaceOpenResult[];
-    /** Every tab, in tab-bar order. */
+    /**
+     * Every tab, in tab-bar order. Each entry carries a fresh `view` of that
+     * named tab, whether it is active or in the background.
+     */
     tabs(): WorkspaceTabInfo[];
     /**
      * A tab's info plus its WHOLE graph, flattened the way `getGraph()`
-     * flattens the active one. Defaults to the active tab. An unknown id
-     * answers `{ error: 'unknown_tab' }` rather than throwing.
+     * flattens the active one. Its `view` is the named tab's live block context.
+     * Defaults to the active tab. An unknown id answers
+     * `{ error: 'unknown_tab' }` rather than throwing.
      */
     snapshot(tabId?: string): WorkspaceSnapshot;
     /**

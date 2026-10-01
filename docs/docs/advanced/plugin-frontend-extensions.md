@@ -291,14 +291,14 @@ Requires `api.apiVersion >= 5`. On an older editor `api.workspace` is `undefined
 | Method | Signature | Description |
 |--------|-----------|-------------|
 | `openGraphs` | `(entries, options?) => WorkspaceOpenResult[]` | Open one or more graphs as editor tabs. The result is **positional**: `result[i]` describes `entries[i]`, and one bad entry never affects another. |
-| `tabs` | `() => WorkspaceTabInfo[]` | Every tab, in strip order, with `active` on the one the user is looking at. |
-| `snapshot` | `(tabId?) => WorkspaceSnapshot` | A tab's identity plus its whole graph. No id means the active tab. An unknown id returns `{ error: "unknown_tab" }` rather than throwing. |
+| `tabs` | `() => WorkspaceTabInfo[]` | Every tab, in strip order, each with its own live `view`; `active` marks the one the user is looking at. |
+| `snapshot` | `(tabId?) => WorkspaceSnapshot` | A tab's identity, live `view`, and whole graph. No id means the active tab. An unknown id returns `{ error: "unknown_tab" }` rather than throwing. |
 | `applyOperations` | `(request) => WorkspaceApplyResult` | Apply a batch to a named tab, optionally only if its revision still matches, optionally all-or-nothing. |
 | `onChanged` | `(callback) => () => void` | Subscribe to tab and document changes across every tab. Returns an unsubscribe function. |
 
 #### Revisions
 
-Every tab carries a `revision`: a number that starts at 1 and goes up by one every time the tab's document changes. Dragging a node changes it, and so does assigning or clearing the graph's device. So do undo and redo — they restore older content, which is still a change. Renaming the tab, switching to it, selecting a node, panning the canvas and highlighting a segment do not — and neither does a run, whose per-node status, error and progress are painted on the canvas but never written to the saved file. A compare-and-swap therefore does not expire several times a second while a model trains.
+Every tab carries a `revision`: a number that starts at 1 and goes up by one every time the tab's document changes. Dragging a node changes it, and so does assigning or clearing the graph's device. So do undo and redo — they restore older content, which is still a change — and stepping into or out of a block, which swaps the tab's canvas. Renaming the tab, switching to it, selecting a node, panning the canvas and highlighting a segment do not — and neither does a run, whose per-node status, error and progress are painted on the canvas but never written to the saved file. A compare-and-swap therefore does not expire several times a second while a model trains.
 
 The number only ever climbs, and it is saved with the tab, so a revision you stored before a reload still means something afterwards. That is the whole point: hold a revision, go away and think for two minutes, and hand it back with your write.
 
@@ -311,6 +311,7 @@ interface WorkspaceTabInfo {
   transient: boolean;               // gone after a reload
   source: WorkspaceSource | null;   // who opened it
   active: boolean;
+  view: GraphView;                  // this named tab, even in the background
 }
 
 interface WorkspaceSource {
@@ -362,8 +363,26 @@ Tabs you open are **transient** by default: they are not written to the editor's
 
 #### Writing under a compare-and-swap
 
+`api.graph.getView()` describes only the active tab. Since CodefyUI 2.8.7, with `apiVersion` still 5, every entry from `workspace.tabs()` and every successful `workspace.snapshot(tabId)` also carries the live `view` of that named tab, whether it is active or in the background. An older editor leaves the field out and can report only the active tab's level, through `graph.getView()`, so check for the field rather than the version:
+
+```js
+const target = api.workspace.snapshot(tabId);
+if ("error" in target) return;
+
+const fallback = target.active ? api.graph.getView() : null;   // before 2.8.7
+const view = "view" in target ? target.view : fallback;
+if (view && !view.atTopLevel) {
+  const inside = view.path[view.path.length - 1].name;
+  api.ui.toast(`Step out of "${inside}" before this write.`, "warning");
+  return;
+}
+```
+
+This preflight makes `editing_subgraph` predictable; it is not a lock. The user can enter a block after the read, and on an older editor a background tab has no `view` to check, so callers must still handle that conflict from `applyOperations`. Entering or leaving a block swaps the tab's canvas, so it advances the tab's `revision` even when nothing inside the block is edited, and reaches `workspace.onChanged` as a `graph` event for that tab. A revision read before the user steps back out no longer matches: retry from a new `workspace.snapshot(tabId)` once its `view` is back at top level, with its `revision` as `expectedRevision`.
+
 ```ts
 const before = api.workspace.snapshot();          // the active tab
+if ("error" in before) return;                    // no tab is open
 const armed = { tabId: before.tabId, revision: before.revision };
 
 // ...minutes pass, experiments run...
@@ -377,11 +396,14 @@ const result = api.workspace.applyOperations({
 
 if (result.conflict === "revision_mismatch") {
   // result.revision is the CURRENT one, so you can re-arm without re-reading.
-  api.ui.toast("The graph changed while the study was running.", "warning");
+  api.ui.toast("The tab changed while the study was running.", "warning");
 } else if (result.conflict === "read_only") {
   api.ui.toast("That tab is read-only — promote into an editable one.", "warning");
 } else if (result.conflict === "editing_subgraph") {
+  // Stepping back out advances the revision: retry from a new snapshot.
   api.ui.toast("Step out of the block first — the write is waiting.", "warning");
+} else if (result.conflict === "unknown_tab") {
+  api.ui.toast("That tab was closed while the study was running.", "warning");
 } else if (!result.committed && result.results.some((r) => !r.ok)) {
   const failed = result.results.filter((r) => !r.ok);
   api.ui.toast(`Nothing applied: ${failed.map((r) => r.error).join("; ")}`, "error");
@@ -394,7 +416,7 @@ The checks run in this order, and each one returns without changing anything:
 
 1. `tabId` (or the active tab) must resolve, else `conflict: "unknown_tab"`, `results: []`, `committed: false`, `revision: 0`.
 2. The tab must not be read-only, else `conflict: "read_only"`, `results: []`, `committed: false`, and the tab's current `revision`.
-3. The tab must not be showing the inside of a block, else `conflict: "editing_subgraph"`. While a block is open the canvas holds that block's contents rather than the document `snapshot()` describes, so a write would land somewhere you never read; retry once the user steps back out.
+3. The tab must not be showing the inside of a block, else `conflict: "editing_subgraph"`. While a block is open the canvas holds that block's contents rather than the document `snapshot()` describes, so a write would land somewhere you never read. Retry from a new `workspace.snapshot(tabId)` once its `view` is back at top level; `graph.getView()` describes only the active tab.
 4. `expectedRevision`, if you passed one, must equal the tab's `revision`, else `conflict: "revision_mismatch"` and the **current** revision, so you can re-arm without a second read.
 5. The batch is applied to a copy.
 6. With `atomic: true`, if any op failed, nothing is written: `committed: false`, `revision` unchanged, and the **full-length** `results` so you can see which op was wrong.
