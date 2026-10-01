@@ -71,6 +71,12 @@
   flex-shrink: 0;
 }
 
+.newSweepBtn {
+  color: var(--accent-deep);
+  border-color: var(--accent-glow);
+  background: var(--accent-wash);
+}
+
 .countText {
   font-size: var(--fs-xs);
   color: var(--text-muted);

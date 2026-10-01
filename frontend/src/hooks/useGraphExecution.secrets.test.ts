@@ -474,11 +474,13 @@ describe('Run still blanks a key the server could not keep out of its run histor
   });
 });
 
-// ── Nothing else asks for the keys ──────────────────────────────────────────
-// `keepSecrets` is how the Run message gets them. A save, an export, autosave
-// or a plugin surface that passed it too would put a typed key in a file or in
-// third-party code, and each of those has its own test only for its own path.
-// This reads the sources from disk, as lazyBoundaries.test.ts does.
+// ── Only in-memory execution requests ask for the keys ──────────────────────
+// `keepSecrets` supplies Run and New Sweep requests. The dialog passes its
+// local graph directly as `base_graph` to `createSweep`; sweepStore retains no
+// graph or request. RunService.submit() remains the durable scrub boundary for
+// every queued sweep child. Save, export, autosave and plugin surfaces must
+// never ask for keys. This reads sources from disk, as lazyBoundaries.test.ts
+// does; NewSweepDialog's component test proves its request-only lifetime.
 
 const SRC = join(dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -494,13 +496,27 @@ function sourceFiles(dir: string, out: string[] = []): string[] {
   return out;
 }
 
-describe('the keys go to Run and nowhere else', () => {
-  it('only the store and the Run hook mention keepSecrets', () => {
+describe('the keys go only to in-memory execution requests', () => {
+  it('limits keepSecrets to the store, Run hook and New Sweep dialog', () => {
     const users = sourceFiles(SRC)
       .filter((file) => readFileSync(file, 'utf8').includes('keepSecrets'))
       // Posix separators, so the list reads the same on Windows and Linux.
       .map((file) => relative(SRC, file).split(sep).join('/'))
       .sort();
-    expect(users).toEqual(['hooks/useGraphExecution.ts', 'store/tabStore.ts']);
+    expect(users).toEqual([
+      'components/ResultsPanel/NewSweepDialog.tsx',
+      'hooks/useGraphExecution.ts',
+      'store/tabStore.ts',
+    ]);
+  });
+
+  it('keeps the New Sweep graph local to its create request', () => {
+    const dialog = readFileSync(
+      join(SRC, 'components', 'ResultsPanel', 'NewSweepDialog.tsx'),
+      'utf8',
+    );
+    expect(dialog).toContain('const graph = store.getSerializedGraph({ keepSecrets: true })');
+    expect(dialog).toContain('await createSweep({\n        base_graph: graph,');
+    expect(dialog).not.toMatch(/set(?:State|Editors|LocalError)\([^)]*(?:graph|request)/i);
   });
 });

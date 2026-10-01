@@ -4,6 +4,7 @@ import { RunsPanel, formatDuration, formatStarted, runDevice } from './RunsPanel
 import * as rest from '../../api/rest';
 import type { RunStatus, RunSummary } from '../../api/rest';
 import { _resetRunStoreForTesting, useRunStore } from '../../store/runStore';
+import { _resetSweepStoreForTesting, useSweepStore } from '../../store/sweepStore';
 import { useTabStore } from '../../store/tabStore';
 import { useToastStore } from '../../store/toastStore';
 import { useDialogStore } from '../../store/dialogStore';
@@ -93,6 +94,7 @@ beforeEach(() => {
   useTabStore.setState({ tabs: [], activeTabId: null as unknown as string, clipboard: null });
   useTabStore.getState().addTab('test');
   _resetRunStoreForTesting();
+  _resetSweepStoreForTesting();
 
   api.listRuns.mockResolvedValue(listing([]));
   api.getRun.mockResolvedValue(null);
@@ -107,7 +109,10 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  _resetRunStoreForTesting();
+  act(() => {
+    _resetRunStoreForTesting();
+    _resetSweepStoreForTesting();
+  });
   vi.clearAllMocks();
   vi.useRealTimers();
 });
@@ -881,6 +886,69 @@ describe('RunsPanel — i18n', () => {
     await renderPanel([makeRun({ id: 'a', name: 'run-a', status: 'running', finished_at: null })]);
     expect(within(rowOf('a')).getByText('執行中')).toBeInTheDocument();
     expect(within(rowOf('a')).getByText('停止')).toBeInTheDocument();
+  });
+});
+
+// ── sweep integration ─────────────────────────────────────────────────────
+
+describe('RunsPanel — sweeps', () => {
+  it('opens a compact New Sweep dialog and restores focus when it closes', async () => {
+    await renderPanel([]);
+    const opener = screen.getByRole('button', { name: /New sweep/i });
+    opener.focus();
+    fireEvent.click(opener);
+    expect(screen.getByRole('dialog', { name: /New sweep/i })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: /Close new sweep/i }));
+    expect(screen.queryByRole('dialog')).toBeNull();
+    expect(document.activeElement).toBe(opener);
+  });
+
+  it('replaces run detail with sweep detail and Back returns to the list', async () => {
+    const openSweep = vi.fn().mockResolvedValue(undefined);
+    useSweepStore.setState({
+      openSweep,
+      selectedSweepId: 's1',
+      detail: {
+        sweep_id: 's1', name: 'Search', state: 'finished', method: 'grid', seed: null,
+        seed_variants: false, objective: { metric: 'loss', direction: 'minimize' },
+        created_at: '2026-10-01T00:00:00Z', finished_at: null, error: null,
+        counts: { queued: 0, running: 0, succeeded: 0, failed: 0, cancelled: 0, interrupted: 0, missing: 0 },
+        params: [], variants: [], best: null,
+      },
+      loadCurves: async () => {},
+    });
+    api.listRuns.mockResolvedValue(listing([makeRun({ id: 'r1', name: 'child', sweep_id: 's1', sweep_variant: 0 })]));
+    render(<RunsPanel panelHeight={400} />);
+    await screen.findByTestId('sweep-detail');
+    expect(screen.queryByTestId('run-detail')).toBeNull();
+    fireEvent.click(within(screen.getByTestId('sweep-detail')).getByRole('button', { name: /^Back$/i }));
+    expect(useSweepStore.getState().selectedSweepId).toBeNull();
+    expect(screen.queryByTestId('sweep-detail')).toBeNull();
+  });
+
+  it('opens a child run, then exposes one parent-sweep affordance', async () => {
+    const openSweep = vi.fn().mockResolvedValue(undefined);
+    useSweepStore.setState({ openSweep });
+    const child = makeRun({ id: 'r1', name: 'child', sweep_id: 's-parent', sweep_variant: 2 });
+    api.getRun.mockResolvedValue({ ...child, last_cursor: 0 });
+    api.getRunEvents.mockResolvedValue({ run_id: 'r1', status: 'succeeded', active: false, events: [], cursor: 0 });
+    await renderPanel([child]);
+
+    fireEvent.click(rowOf('r1'));
+    await screen.findByTestId('run-detail');
+    const parent = screen.getByRole('button', { name: /Open parent sweep/i });
+    expect(screen.getAllByRole('button', { name: /Open parent sweep/i })).toHaveLength(1);
+    fireEvent.click(parent);
+    await waitFor(() => expect(openSweep).toHaveBeenCalledWith('s-parent'));
+  });
+
+  it('leaves ordinary run rows unchanged and stops sweep polling on unmount', async () => {
+    const stopPolling = vi.fn();
+    useSweepStore.setState({ stopPolling });
+    const { unmount } = await renderPanel([makeRun({ id: 'plain', name: 'plain' })]);
+    expect(screen.queryByRole('button', { name: /Open parent sweep/i })).toBeNull();
+    unmount();
+    expect(stopPolling).toHaveBeenCalledTimes(1);
   });
 });
 

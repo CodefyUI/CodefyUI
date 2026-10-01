@@ -186,6 +186,10 @@ export interface RunSummary {
   final_metrics: Record<string, number>;
   /** Whether THIS server process is currently driving the run. */
   active: boolean;
+  /** Present when this run is one child of a sweep. */
+  sweep_id?: string | null;
+  /** Zero-based compiled variant index within its sweep. */
+  sweep_variant?: number | null;
 }
 
 /** A single run, as `GET /api/runs/{id}` returns it — the row plus a cursor. */
@@ -278,6 +282,183 @@ export async function deleteRun(
   return res.json();
 }
 
+export type SweepValue = number | boolean | string;
+export type SweepMethod = 'grid' | 'random';
+export type SweepState = 'running' | 'cancelling' | 'finished' | 'failed';
+
+export interface SweepRange {
+  min: number;
+  max: number;
+  count: number;
+  scale: 'linear' | 'log';
+  type: 'int' | 'float';
+}
+
+export interface SweepParam {
+  node_id: string;
+  param: string;
+  values?: SweepValue[] | null;
+  range?: SweepRange | null;
+}
+
+export interface SweepSpec {
+  method: SweepMethod;
+  seed: number | null;
+  samples: number | null;
+  params: SweepParam[];
+}
+
+export interface SweepObjective {
+  metric: string;
+  direction: 'minimize' | 'maximize';
+}
+
+export interface CreateSweepRequest {
+  base_graph: Record<string, unknown>;
+  sweep_spec: SweepSpec;
+  objective: SweepObjective;
+  options: Record<string, unknown> | null;
+  name: string | null;
+  seed_variants: boolean;
+}
+
+export interface SweepParamDomain {
+  node_id: string;
+  param: string;
+  domain: SweepValue[];
+}
+
+export interface SweepVariantParam {
+  node_id: string;
+  param: string;
+  value: SweepValue;
+}
+
+export interface SweepVariant {
+  index: number;
+  domain_index: number;
+  run_id: string | null;
+  status: RunStatus | 'missing' | null;
+  params: SweepVariantParam[];
+  seed: number | null;
+  objective: number | null;
+  rank?: number | null;
+  run_exists?: boolean;
+  final_metrics?: Record<string, number>;
+}
+
+export interface CreateSweepVariant {
+  index: number;
+  domain_index: number;
+  run_id: string;
+  status: RunStatus;
+  params: SweepVariantParam[];
+  seed: number | null;
+}
+
+export interface CreateSweepResponse {
+  sweep_id: string;
+  state: SweepState;
+  method: SweepMethod;
+  seed: number | null;
+  seed_variants: boolean;
+  objective: SweepObjective;
+  total_combinations: number;
+  params: SweepParamDomain[];
+  variants: CreateSweepVariant[];
+}
+
+export interface SweepDetail {
+  sweep_id: string;
+  name: string | null;
+  state: SweepState;
+  method: SweepMethod;
+  seed: number | null;
+  seed_variants: boolean;
+  objective: SweepObjective;
+  created_at: string;
+  finished_at: string | null;
+  error: string | null;
+  counts: Record<RunStatus | 'missing', number>;
+  params: SweepParamDomain[];
+  variants: SweepVariant[];
+  best: { index: number; run_id: string | null; objective: number | null } | null;
+  objective_warning?: string;
+}
+
+export interface CancelSweepVariant {
+  index: number;
+  run_id: string | null;
+  status: RunStatus | 'missing';
+  cancelled: boolean;
+}
+
+export interface CancelSweepResponse {
+  sweep_id: string;
+  state: SweepState;
+  cancelled: number;
+  already_finished: number;
+  variants: CancelSweepVariant[];
+}
+
+async function sweepError(res: Response, fallback: string): Promise<never> {
+  const body = await res.json().catch(() => ({}));
+  throw new Error(body.detail ?? `${fallback}: ${res.statusText}`);
+}
+
+export async function createSweep(
+  request: CreateSweepRequest,
+): Promise<CreateSweepResponse> {
+  const res = await apiFetch(`${BASE_URL}/sweeps`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(request),
+  });
+  if (!res.ok) return sweepError(res, 'Failed to create sweep');
+  return res.json();
+}
+
+export async function getSweep(
+  sweepId: string,
+  signal?: AbortSignal,
+): Promise<SweepDetail> {
+  const url = `${BASE_URL}/sweeps/${encodeURIComponent(sweepId)}`;
+  const res = signal ? await apiFetch(url, { signal }) : await apiFetch(url);
+  if (!res.ok) return sweepError(res, 'Failed to fetch sweep');
+  return res.json();
+}
+
+export async function cancelSweep(sweepId: string): Promise<CancelSweepResponse> {
+  const res = await apiFetch(
+    `${BASE_URL}/sweeps/${encodeURIComponent(sweepId)}/cancel`,
+    { method: 'POST' },
+  );
+  if (!res.ok) return sweepError(res, 'Failed to cancel sweep');
+  return res.json();
+}
+
+export async function downloadSweepCsv(sweepId: string): Promise<void> {
+  const res = await fetch(
+    `${BASE_URL}/sweeps/${encodeURIComponent(sweepId)}?format=csv`,
+  );
+  if (!res.ok) return sweepError(res, 'Failed to download sweep CSV');
+  if (!res.headers.get('content-type')?.toLowerCase().startsWith('text/csv')) {
+    throw new Error('Sweep export response is not CSV');
+  }
+  const blob = await res.blob();
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement('a');
+  anchor.href = url;
+  anchor.download = `sweep-${sweepId}-comparison.csv`;
+  document.body.appendChild(anchor);
+  try {
+    anchor.click();
+  } finally {
+    anchor.remove();
+    URL.revokeObjectURL(url);
+  }
+}
+
 /** One durable row of `exec_run_events`, as `/events` serialises it. */
 export interface RunEvent {
   cursor: number;
@@ -349,11 +530,11 @@ export interface RunMetrics {
 export async function getRunMetrics(
   runId: string,
   name?: string,
+  signal?: AbortSignal,
 ): Promise<RunMetrics> {
   const query = name ? `?name=${encodeURIComponent(name)}` : '';
-  const res = await apiFetch(
-    `${BASE_URL}/runs/${encodeURIComponent(runId)}/metrics${query}`,
-  );
+  const url = `${BASE_URL}/runs/${encodeURIComponent(runId)}/metrics${query}`;
+  const res = signal ? await apiFetch(url, { signal }) : await apiFetch(url);
   if (!res.ok) throw new Error(`Failed to fetch run metrics: ${res.statusText}`);
   return res.json();
 }

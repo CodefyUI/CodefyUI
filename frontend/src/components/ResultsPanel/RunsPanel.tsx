@@ -12,8 +12,11 @@ import {
   type RunLogLine,
   type RunStatusFilter,
 } from '../../store/runStore';
+import { useSweepStore } from '../../store/sweepStore';
 import type { RunSummary } from '../../api/rest';
 import { LossChart } from './LossChart';
+import { NewSweepDialog } from './NewSweepDialog';
+import { SweepDetail } from './SweepDetail';
 import styles from './RunsPanel.module.css';
 
 const FILTERS: RunStatusFilter[] = [
@@ -228,6 +231,18 @@ function RunDetailView({ chartHeight }: { chartHeight: number }) {
             {t('runs.detail.deterministic')}
           </span>
         )}
+        {run?.sweep_id && (
+          <button
+            type="button"
+            className={styles.rowBtn}
+            onClick={() => {
+              void select(null);
+              void useSweepStore.getState().openSweep(run.sweep_id!);
+            }}
+          >
+            {t('sweeps.detail.openParent')}
+          </button>
+        )}
         <button
           type="button"
           className={styles.detailClose}
@@ -344,6 +359,10 @@ export function RunsPanel({ panelHeight, onWatchRun }: RunsPanelProps) {
   const cancel = useRunStore((s) => s.cancel);
   const remove = useRunStore((s) => s.remove);
   const exportCsv = useRunStore((s) => s.exportCsv);
+  const selectedSweepId = useSweepStore((s) => s.selectedSweepId);
+  const closeSweep = useSweepStore((s) => s.closeSweep);
+  const stopSweepPolling = useSweepStore((s) => s.stopPolling);
+  const [newSweepOpen, setNewSweepOpen] = useState(false);
 
   // Re-render on a cadence so the duration column of a live run ticks;
   // `runs` itself only changes when the poll brings something new.
@@ -358,6 +377,7 @@ export function RunsPanel({ panelHeight, onWatchRun }: RunsPanelProps) {
   // One list poller for however many ResultsPanels are mounted (one per open
   // canvas tab), started only while this tab is actually on screen.
   useEffect(() => useRunStore.getState().watch(), []);
+  useEffect(() => () => stopSweepPolling(), [stopSweepPolling]);
 
   // A second click while the confirm or the socket handshake is pending
   // would send a second `attach`, and the server REPLACES an attachment
@@ -435,6 +455,23 @@ export function RunsPanel({ panelHeight, onWatchRun }: RunsPanelProps) {
 
   const chartHeight = Math.max(90, Math.min(220, panelHeight - 190));
 
+  const openChildRun = useCallback((runId: string) => {
+    closeSweep();
+    void select(runId);
+  }, [closeSweep, select]);
+
+  if (selectedSweepId !== null) {
+    return (
+      <div className={styles.runsBody}>
+        <SweepDetail
+          chartHeight={chartHeight}
+          onBack={closeSweep}
+          onOpenRun={openChildRun}
+        />
+      </div>
+    );
+  }
+
   return (
     <div className={styles.runsBody}>
       <div className={styles.listCol}>
@@ -454,6 +491,13 @@ export function RunsPanel({ panelHeight, onWatchRun }: RunsPanelProps) {
             ))}
           </div>
           <div className={styles.toolbarRight}>
+            <button
+              type="button"
+              className={`${styles.rowBtn} ${styles.newSweepBtn}`}
+              onClick={() => setNewSweepOpen(true)}
+            >
+              {t('sweeps.new.title')}
+            </button>
             <span className={styles.countText}>
               {t('runs.showing', { shown: runs.length, total })}
             </span>
@@ -604,6 +648,7 @@ export function RunsPanel({ panelHeight, onWatchRun }: RunsPanelProps) {
             })
           )}
         </div>
+        {newSweepOpen && <NewSweepDialog onClose={() => setNewSweepOpen(false)} />}
       </div>
 
       {selectedRunId !== null && <RunDetailView chartHeight={chartHeight} />}
