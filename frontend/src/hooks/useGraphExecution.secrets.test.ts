@@ -516,7 +516,7 @@ describe('the keys go only to in-memory execution requests', () => {
       'utf8',
     );
     expect(dialog).toContain('const graph = store.getSerializedGraph({ keepSecrets: true })');
-    expect(dialog).toContain('await createSweep({\n        base_graph: graph,');
+    expect(dialog).toMatch(/await createSweep\(\{\r?\n        base_graph: graph,/);
     expect(dialog).not.toMatch(/set(?:State|Editors|LocalError)\([^)]*(?:graph|request)/i);
   });
 });
