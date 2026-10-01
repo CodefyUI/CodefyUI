@@ -22,6 +22,14 @@ received — each links to the release it was published as.
 
 ## [Unreleased]
 
+### Fixed
+
+- **A failed Package Center restart no longer forces a page reload** ([#490]).
+  When the server never starts restarting or has not returned after ten
+  minutes, the overlay now offers Return to CodefyUI as well as Reload.
+  Returning keeps the open canvas, undo history, logs and session-only API
+  keys.
+
 ## [2.8.6] — 2026-09-24
 
 An API key typed into an LLMChat key field is used when you press Run.
