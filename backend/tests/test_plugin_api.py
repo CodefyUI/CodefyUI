@@ -204,6 +204,11 @@ def test_disable_then_enable_via_api(client):
     # Other plugins' nodes survive — toggle is per-plugin only.
     assert "deep:Edu-CrossAttention" in nodes_after_disable
 
+    detail = client.get("/api/plugins/foundations")
+    assert detail.status_code == 200, detail.text
+    assert detail.json()["lockfile_entry"]["enabled"] is False
+    assert detail.json()["nodes"] == []
+
     # Re-enable restores everything.
     r = client.post("/api/plugins/foundations/enable")
     assert r.status_code == 200

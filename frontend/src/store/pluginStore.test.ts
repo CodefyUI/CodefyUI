@@ -1900,6 +1900,7 @@ describe('the refusal codes the routes can send', () => {
     already_installed: 'the review card, which grows a Reinstall button',
     not_updatable: "update()'s catch, which prints the hint beside it",
     files_locked: "uninstall()'s catch, which prints the hint beside it",
+    missing_files: '`GET /api/plugins/{id}` only; the editor does not call the detail route',
     busy: 'every catch, in its 409 arm: another install is already running',
     pack_install_running: 'the same 409 arm — the Package Center is installing',
   };
