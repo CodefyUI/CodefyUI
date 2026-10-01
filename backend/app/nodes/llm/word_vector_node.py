@@ -233,6 +233,7 @@ class WordVectorNode(BaseNode):
         *,
         context: Any = None,
     ) -> dict[str, Any]:
+        tokens_connected = "tokens" in inputs
         words = self._coerce_words(inputs.get("tokens"), params.get("words", ""))
         backend = params.get("backend", "demo-16d")
         normalize = bool(params.get("normalize", False))
@@ -243,6 +244,13 @@ class WordVectorNode(BaseNode):
         # lookup is case-insensitive, and an encoder handed "  " would embed
         # a blank and hand back a row nothing names.
         keys = [key for key in (str(w).lower().strip() for w in words) if key]
+        if not keys:
+            if tokens_connected:
+                raise ValueError(
+                    "WordVector received no words from the connected `tokens` "
+                    "input - the upstream node produced no words.")
+            raise ValueError(
+                "WordVector has nothing to look up: the `words` box is empty.")
 
         oov: list[str] = []
         vocab_size: int | None = None
