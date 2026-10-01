@@ -228,11 +228,11 @@ export function PluginActivityPane({
  *
  * The sentence is the toast's, deliberately: the toast is the notification and
  * this is the record, and one uninstall said two ways would be two facts to
- * reconcile. Under it, only when there is something to say: nothing removes a
- * plugin's pip packages -- not this panel, not the CLI -- so an uninstall that
- * left some names the packages, hands over the line that removes them with the
- * server stopped, and the line that puts the plugin back if that was a
- * mistake. An uninstall that left nothing is the sentence alone.
+ * reconcile. Under it are two independent facts. Nothing removes a plugin's
+ * pip packages -- not this panel, not the CLI -- so an uninstall that left
+ * some names the packages and hands over the line that removes them with the
+ * server stopped. Separately, a tombstoned plugin shows the line that puts it
+ * back. Either fact may appear without the other.
  */
 function RemovalResult({
   removal,
@@ -261,14 +261,15 @@ function RemovalResult({
             {removal.uninstallCommand !== null && (
               <CommandBlock command={removal.uninstallCommand} />
             )}
-            {removal.reinstallHint !== '' && (
-              <>
-                <span className={styles.resultHint}>
-                  {t('pluginCenter.activity.reinstall')}
-                </span>
-                <CommandBlock command={removal.reinstallHint} />
-              </>
-            )}
+          </>
+        )}
+
+        {removal.tombstoned && removal.reinstallHint !== '' && (
+          <>
+            <span className={styles.resultHint}>
+              {t('pluginCenter.activity.reinstall')}
+            </span>
+            <CommandBlock command={removal.reinstallHint} />
           </>
         )}
       </div>

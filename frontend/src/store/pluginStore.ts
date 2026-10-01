@@ -101,16 +101,18 @@ export interface InspectionFailure {
  * `name` is read BEFORE the request, like the toast's: a plugin off GitHub
  * has no catalog row left by the time this is written.
  *
- * The three remaining fields are the server's own answer. Nothing uninstalls
- * a plugin's pip packages -- not this panel, not the CLI -- so `depsLeft` is
- * the packages it declared that nothing else still needs (#414),
- * `uninstallCommand` the line that would remove them with the server
- * stopped (null when there are none), and `reinstallHint` the command that
- * puts the plugin back.
+ * The four remaining fields are the server's own answer. `tombstoned` says
+ * whether sync will leave the plugin removed, which is when reinstall guidance
+ * is useful. Nothing uninstalls a plugin's pip packages -- not this panel, not
+ * the CLI -- so `depsLeft` is the packages it declared that nothing else still
+ * needs (#414), `uninstallCommand` the line that would remove them with the
+ * server stopped (null when there are none), and `reinstallHint` the command
+ * that puts a tombstoned plugin back.
  */
 export interface PluginRemoval {
   pluginId: string;
   name: string;
+  tombstoned: boolean;
   depsLeft: string[];
   uninstallCommand: string | null;
   reinstallHint: string;
@@ -1099,6 +1101,7 @@ export const usePluginStore = create<PluginState>((set, get) => ({
           removal: {
             pluginId,
             name,
+            tombstoned: result.tombstoned,
             depsLeft: result.python_deps_left,
             uninstallCommand: result.uninstall_command,
             reinstallHint: result.reinstall_hint,

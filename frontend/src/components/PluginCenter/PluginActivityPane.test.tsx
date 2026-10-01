@@ -119,6 +119,7 @@ function removal(over: Partial<PluginRemoval> = {}): PluginRemoval {
   return {
     pluginId: 'demo',
     name: 'Demo plugin',
+    tombstoned: false,
     depsLeft: [],
     uninstallCommand: null,
     reinstallHint: 'cdui plugin install demo',
@@ -542,16 +543,22 @@ describe('PluginActivityPane — how a job ended', () => {
     expect(handlers.onDismiss).toHaveBeenCalledTimes(1);
   });
 
-  it('names the packages the uninstall left, and the command that removes them', () => {
-    // Nothing uninstalls a plugin's pip packages -- not this panel, not the
-    // CLI -- so the only honest ending is to say which ones stayed and hand
-    // over the line that finishes the job.
+  it('shows reinstall guidance for a tombstoned plugin with no packages left', () => {
+    paint({ removal: removal({ tombstoned: true }), entry: stats });
+
+    expect(within(banner()).getByText('To install the plugin again:')).toBeInTheDocument();
+    expect(within(banner()).getByText('cdui plugin install demo')).toBeInTheDocument();
+    expect(screen.queryByText(/stay installed/)).toBeNull();
+  });
+
+  it('shows both independent facts for a tombstoned plugin with packages left', () => {
     paint({
       removal: removal({
+        tombstoned: true,
         depsLeft: ['model2vec', 'numpy'],
         uninstallCommand: 'uv pip uninstall model2vec numpy',
       }),
-      entry: demo,
+      entry: stats,
     });
 
     expect(
@@ -563,11 +570,30 @@ describe('PluginActivityPane — how a job ended', () => {
     expect(within(banner()).getByText('cdui plugin install demo')).toBeInTheDocument();
   });
 
-  it('says the sentence alone when the uninstall left nothing', () => {
-    paint({ removal: removal(), entry: demo });
+  it('does not offer reinstall for a downloaded plugin even when packages remain', () => {
+    paint({
+      removal: removal({
+        tombstoned: false,
+        depsLeft: ['model2vec'],
+        uninstallCommand: 'uv pip uninstall model2vec',
+      }),
+      entry: demo,
+    });
+
+    expect(
+      within(banner()).getByText(/These Python packages stay installed: model2vec\./),
+    ).toBeInTheDocument();
+    expect(within(banner()).getByText('uv pip uninstall model2vec')).toBeInTheDocument();
+    expect(screen.queryByText('To install the plugin again:')).toBeNull();
+    expect(screen.queryByText('cdui plugin install demo')).toBeNull();
+  });
+
+  it('shows only the removal sentence for a non-tombstoned plugin with no packages left', () => {
+    paint({ removal: removal({ tombstoned: false }), entry: linked });
 
     expect(within(banner()).getByText('Demo plugin uninstalled.')).toBeInTheDocument();
     expect(screen.queryByText(/stay installed/)).toBeNull();
+    expect(screen.queryByText('To install the plugin again:')).toBeNull();
     // `CommandBlock` is the only thing in the pane with a copy button.
     expect(screen.queryByRole('button', { name: 'Copy command' })).toBeNull();
   });

@@ -1289,8 +1289,32 @@ describe('pluginStore — uninstall', () => {
     expect(usePluginStore.getState().removal).toEqual({
       pluginId: 'demo',
       name: 'Demo plugin',
+      tombstoned: false,
       depsLeft: ['model2vec', 'numpy'],
       uninstallCommand: 'uv pip uninstall model2vec numpy',
+      reinstallHint: 'cdui plugin install demo',
+    });
+  });
+
+  it('preserves the server tombstone separately from dependency leftovers', async () => {
+    api.uninstallPlugin.mockResolvedValue({
+      id: 'demo',
+      removed: true,
+      tombstoned: true,
+      files_removed: null,
+      python_deps_left: [],
+      uninstall_command: null,
+      reinstall_hint: 'cdui plugin install demo',
+    });
+
+    await usePluginStore.getState().uninstall('demo');
+
+    expect(usePluginStore.getState().removal).toEqual({
+      pluginId: 'demo',
+      name: 'Demo plugin',
+      tombstoned: true,
+      depsLeft: [],
+      uninstallCommand: null,
       reinstallHint: 'cdui plugin install demo',
     });
   });
@@ -1299,7 +1323,7 @@ describe('pluginStore — uninstall', () => {
     await usePluginStore.getState().uninstall('demo');
 
     expect(usePluginStore.getState().removal).toMatchObject({
-      pluginId: 'demo', depsLeft: [], uninstallCommand: null,
+      pluginId: 'demo', tombstoned: false, depsLeft: [], uninstallCommand: null,
     });
   });
 

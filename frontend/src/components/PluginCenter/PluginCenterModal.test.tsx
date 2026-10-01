@@ -1236,9 +1236,10 @@ describe('PluginCenterModal — the activity pane', () => {
       removal: {
         pluginId: 'demo',
         name: 'Demo plugin',
+        tombstoned: true,
         depsLeft: ['model2vec'],
         uninstallCommand: 'uv pip uninstall model2vec',
-        reinstallHint: 'cdui plugin install owner/demo',
+        reinstallHint: 'cdui plugin install demo',
       },
     });
     open();
@@ -1246,9 +1247,31 @@ describe('PluginCenterModal — the activity pane', () => {
 
     expect(pane().getByText('Demo plugin uninstalled.')).toBeInTheDocument();
     expect(pane().getByText('uv pip uninstall model2vec')).toBeInTheDocument();
+    expect(pane().getByText('To install the plugin again:')).toBeInTheDocument();
+    expect(pane().getByText('cdui plugin install demo')).toBeInTheDocument();
 
     fireEvent.click(pane().getByRole('button', { name: 'Dismiss' }));
     expect(actions.dismissJob).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not offer reinstall for a non-tombstoned removal', () => {
+    seed({
+      plugins: [demo],
+      removal: {
+        pluginId: 'demo',
+        name: 'Demo plugin',
+        tombstoned: false,
+        depsLeft: ['model2vec'],
+        uninstallCommand: 'uv pip uninstall model2vec',
+        reinstallHint: 'cdui plugin install demo',
+      },
+    });
+    open();
+    render(<PluginCenterModal />);
+
+    expect(pane().getByText('uv pip uninstall model2vec')).toBeInTheDocument();
+    expect(pane().queryByText('To install the plugin again:')).toBeNull();
+    expect(pane().queryByText('cdui plugin install demo')).toBeNull();
   });
 
   it('offers a failed install the terminal command for its own row', () => {
