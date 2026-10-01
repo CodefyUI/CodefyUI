@@ -4,10 +4,15 @@ import { useNodeDefStore } from '../store/nodeDefStore';
 import { useTabStore, type GraphDocument } from '../store/tabStore';
 import { useToastStore } from '../store/toastStore';
 import { useI18n } from '../i18n';
-import type { NodeData, SegmentGroup, SubgraphDefinition } from '../types';
+import type { NodeData, PresetDefinition, SegmentGroup, SubgraphDefinition } from '../types';
 import { resolveSerializedNodes, resolveSerializedEdges } from '.';
 import { isFormatTooNew } from './formatVersion';
 import { readGraphDevice } from './graphSettings';
+import {
+  effectivePresets,
+  mergeUnknownPresetsIntoPalette,
+  withPresetDefaults,
+} from './presetOwnership';
 
 /**
  * A fetched example, resolved into live canvas nodes and edges.
@@ -22,6 +27,7 @@ import { readGraphDevice } from './graphSettings';
 export interface ResolvedExample {
   nodes: Node<NodeData>[];
   edges: Edge[];
+  presets: PresetDefinition[];
   /** The example's own name, trimmed; null when it ships without one. */
   name: string | null;
   /**
@@ -84,13 +90,9 @@ export function resolveExample(data: any): ResolvedExample {
   // An example may ship presets the running server has never seen. Merge the
   // unknown ones in by name so its nodes resolve, without clobbering the
   // installed definitions of same-named presets.
-  const importedPresets = Array.isArray(data.presets) ? data.presets : [];
-  const mergedPresets = [...store.presets];
-  for (const p of importedPresets) {
-    if (!mergedPresets.some((ep) => ep.preset_name === p.preset_name)) {
-      mergedPresets.push(p);
-    }
-  }
+  const importedPresets: PresetDefinition[] = withPresetDefaults(data.presets);
+  const mergedPresets = mergeUnknownPresetsIntoPalette(store.presets, importedPresets);
+  const resolvingPresets = effectivePresets(importedPresets, store.presets);
 
   // Passed into the resolver, not just carried alongside it: an instance
   // node's rendered ports and label come from its definition's interface,
@@ -102,7 +104,7 @@ export function resolveExample(data: any): ResolvedExample {
   const nodes = resolveSerializedNodes(
     data.nodes ?? [],
     store.definitions,
-    mergedPresets,
+    resolvingPresets,
     subgraphs,
   );
   const edges = resolveSerializedEdges(data.edges ?? [], nodes);
@@ -120,6 +122,7 @@ export function resolveExample(data: any): ResolvedExample {
   return {
     nodes,
     edges,
+    presets: importedPresets,
     name,
     subgraphs,
     segmentGroups,
@@ -151,6 +154,7 @@ export function resolveUnboundDocument(data: any): GraphDocument {
     nodes: resolved.nodes,
     edges: resolved.edges,
     boundFile: null,
+    presets: resolved.presets,
     subgraphs: resolved.subgraphs,
     segmentGroups: resolved.segmentGroups,
     name: null,
@@ -184,6 +188,7 @@ function applyToActiveTab(example: ResolvedExample): void {
     // the example over foo.json without the overwrite prompt, because a
     // bound tab is exactly the case that prompt is skipped for.
     boundFile: null,
+    presets: example.presets,
     subgraphs: example.subgraphs,
     segmentGroups: example.segmentGroups,
     name: example.name,
@@ -303,6 +308,7 @@ export async function insertExample(
       example.edges,
       example.subgraphs,
       at,
+      example.presets,
     );
     return true;
   } catch {

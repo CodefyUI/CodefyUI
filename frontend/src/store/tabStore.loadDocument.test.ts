@@ -19,7 +19,7 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import type { Edge, Node } from '@xyflow/react';
 
 import { useTabStore } from './tabStore';
-import type { NodeData, SegmentGroup, SubgraphDefinition } from '../types';
+import type { NodeData, PresetDefinition, SegmentGroup, SubgraphDefinition } from '../types';
 
 const store = () => useTabStore.getState();
 const tab = () => useTabStore.getState().getActiveTab();
@@ -48,6 +48,20 @@ function definition(id: string): SubgraphDefinition {
   } as unknown as SubgraphDefinition;
 }
 
+function preset(name: string, marker: string): PresetDefinition {
+  return {
+    preset_name: name,
+    category: 'Portable',
+    description: marker,
+    tags: [],
+    nodes: [{ id: 'inner', type: 'Print', params: { label: marker } }],
+    edges: [],
+    exposed_inputs: [],
+    exposed_outputs: [],
+    exposed_params: [],
+  };
+}
+
 beforeEach(() => {
   useTabStore.setState({ tabs: [], activeTabId: null as unknown as string, clipboard: null });
   useTabStore.getState().addTab('Tab 1');
@@ -65,6 +79,7 @@ describe('loadGraphDocument', () => {
       nodes: [node('a')],
       edges: [edge('e1', 'a', 'a')],
       boundFile: 'doc-file',
+      presets: [preset('Shared', 'document')],
       subgraphs: [definition('blk')],
       segmentGroups: [{ id: 's1' } as unknown as SegmentGroup],
       name: 'Doc',
@@ -79,6 +94,7 @@ describe('loadGraphDocument', () => {
     const t = tab();
     expect(t.nodes.map((n) => n.id)).toEqual(['a']);
     expect(t.edges.map((e) => e.id)).toEqual(['e1']);
+    expect(t.presets).toEqual([preset('Shared', 'document')]);
     expect(t.subgraphs.map((d) => d.id)).toEqual(['blk']);
     expect(t.segmentGroups.map((s) => s.id)).toEqual(['s1']);
     expect(t.name).toBe('Doc');
@@ -95,6 +111,7 @@ describe('loadGraphDocument', () => {
       nodes: [node('old')],
       edges: [],
       boundFile: 'the-previous-file',
+      presets: [preset('Old', 'previous')],
       subgraphs: [definition('old-blk')],
       segmentGroups: [{ id: 'stale' } as unknown as SegmentGroup],
       description: 'the previous graph',
@@ -108,6 +125,7 @@ describe('loadGraphDocument', () => {
 
     const t = tab();
     expect(t.nodes.map((n) => n.id)).toEqual(['new']);
+    expect(t.presets).toEqual([]);
     expect(t.subgraphs).toEqual([]);
     // `description` and `segmentGroups` are both persisted through save: a
     // leftover would be written to disk as if it belonged to the new graph.
@@ -120,6 +138,23 @@ describe('loadGraphDocument', () => {
     // previous file's binding under the new graph is what made an example
     // overwrite it on the next Save (#200 item 9).
     expect(t.currentGraphFile).toBeNull();
+  });
+
+  it('keeps same-name definitions independent between tabs', () => {
+    const first = tab().id;
+    store().loadGraphDocument({
+      nodes: [], edges: [], boundFile: null,
+      presets: [preset('Shared', 'first')],
+    });
+    store().addTab('second');
+    const second = tab().id;
+    store().loadGraphDocument({
+      nodes: [], edges: [], boundFile: null,
+      presets: [preset('Shared', 'second')],
+    });
+
+    expect(store().getTab(first)!.presets[0].description).toBe('first');
+    expect(store().getTab(second)!.presets[0].description).toBe('second');
   });
 
   it('installs the document device, and a bare document clears it', () => {

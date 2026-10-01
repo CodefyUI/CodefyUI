@@ -155,6 +155,18 @@ describe('QuickNodeSearch', () => {
     expect(getAllByText).toBeTruthy();
   });
 
+  it('skips a preset list entry with fields missing, with or without a query', () => {
+    setStore([def('Conv2d')], [{ preset_name: 'Broken' } as unknown as PresetDefinition, preset('MyBlock')]);
+    const { getByPlaceholderText, getByText, queryByText } = render(
+      <QuickNodeSearch screenPos={SCREEN} flowPos={FLOW} onClose={() => {}} />,
+    );
+    expect(getByText('MyBlock')).toBeInTheDocument();
+    expect(queryByText('Broken')).toBeNull();
+    // A query that misses the name goes on to read the description.
+    fireEvent.change(getByPlaceholderText('Search nodes...'), { target: { value: 'block' } });
+    expect(getByText('MyBlock')).toBeInTheDocument();
+  });
+
   it('filters by node description and preset name, and hides empty descriptions', () => {
     setStore(
       [

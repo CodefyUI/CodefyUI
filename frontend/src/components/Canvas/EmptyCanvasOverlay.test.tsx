@@ -316,7 +316,7 @@ describe('EmptyCanvasOverlay', () => {
       name: '  My Model  ',
       nodes: [{ id: 'a' }],
       edges: [{ id: 'e' }],
-      presets: [{ preset_name: 'NewPreset' }],
+      presets: [{ preset_name: 'NewPreset', nodes: [], edges: [] }],
     });
     // Existing preset to exercise the "already present, skip" branch.
     useNodeDefStore.setState({ definitions: [], presets: [{ preset_name: 'Existing' } as any] });

@@ -261,6 +261,16 @@ describe('PresetConfigModal', () => {
     expect(screen.getByText('Units')).toBeTruthy();
   });
 
+  it('renders a definition with no nodes or exposed params, as one the backend cannot read can be', () => {
+    mountPresetNode({ preset_name: 'Broken', description: 'unreadable' } as unknown as PresetDefinition);
+    render(<PresetConfigModal />);
+    expect(screen.getByText('Broken')).toBeTruthy();
+    expect(screen.getByText('unreadable')).toBeTruthy();
+    expect(screen.queryByText('→')).toBeNull();
+    fireEvent.click(screen.getByText(useI18n.getState().t('preset.apply')));
+    expect(closeMock).toHaveBeenCalledTimes(1);
+  });
+
   it('renders a single-node preset without a trailing arrow', () => {
     const preset = makePreset({
       nodes: [{ id: 'only', type: 'Solo', params: {} }],

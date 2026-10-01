@@ -10,6 +10,8 @@ import {
   usePackAvailability,
 } from '../../utils/packAvailability';
 import { pluginNameOf, type PluginIndex } from '../../utils/provider';
+import { readablePresetNodes } from '../../utils';
+import { isCompletePreset } from '../../utils/presetOwnership';
 import type { NodeDefinition, PresetDefinition } from '../../types';
 import { DIFFICULTY_COLORS } from '../../styles/theme';
 import { orderCategories } from './categories';
@@ -159,7 +161,10 @@ interface PresetItemProps {
  */
 export function PresetItem({ preset }: PresetItemProps) {
   const [hovered, setHovered] = useState(false);
-  const difficulty = preset.tags.find((t) => t in DIFFICULTY_COLORS) ?? 'beginner';
+  const tags: unknown = preset.tags;
+  const difficulty = (Array.isArray(tags) ? tags : []).find(
+    (t): t is string => typeof t === 'string' && t in DIFFICULTY_COLORS,
+  ) ?? 'beginner';
   const difficultyColor = DIFFICULTY_COLORS[difficulty];
   const { t } = useI18n();
 
@@ -205,7 +210,7 @@ export function PresetItem({ preset }: PresetItemProps) {
         {preset.description}
       </div>
       <div className={styles.presetNodeCount}>
-        {t('empty.nodeCount', { count: preset.nodes.length })}
+        {t('empty.nodeCount', { count: readablePresetNodes(preset).length })}
       </div>
     </div>
   );
@@ -289,8 +294,11 @@ export function NodesTab() {
     // category it hides in the list above — same helper, so the two cannot
     // disagree about what a beginner sees. The search predicate is the one the
     // Presets tab used, so nothing findable there stops being findable here.
-    const shown = new Set(orderCategories(presets.map((p) => p.category), beginnerMode));
-    let presetItems = presets.filter((p) => shown.has(p.category));
+    // Only complete presets are rows: the readers keep a document's entry the
+    // backend cannot read out of the list, and every field below is read.
+    const whole = presets.filter(isCompletePreset);
+    const shown = new Set(orderCategories(whole.map((p) => p.category), beginnerMode));
+    let presetItems = whole.filter((p) => shown.has(p.category));
     if (q) {
       presetItems = presetItems.filter(
         (p) =>

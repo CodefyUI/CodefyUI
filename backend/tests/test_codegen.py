@@ -738,6 +738,84 @@ async def test_exported_runner_executes_installed_plugin_node(
 
 
 @pytest.mark.asyncio
+async def test_export_prefers_embedded_preset_over_same_name_installed(
+    test_client,
+    monkeypatch,
+):
+    from app.core.graph_engine import build_preset_fallback
+    from app.core.preset_registry import preset_registry
+
+    def preset(inner_type: str, params: dict) -> dict:
+        return {
+            "preset_name": "Portable Export Collision",
+            "category": "Test",
+            "description": "",
+            "tags": [],
+            "nodes": [{
+                "id": "inner",
+                "type": inner_type,
+                "params": params,
+            }],
+            "edges": [],
+            "exposed_inputs": [{
+                "name": "trigger",
+                "internal_node": "inner",
+                "internal_port": "",
+                "data_type": "TRIGGER",
+                "description": "",
+            }],
+            "exposed_outputs": [],
+            "exposed_params": [],
+        }
+
+    installed = preset("TextInput", {"text": "installed"})
+    portable = preset(
+        "TensorCreate",
+        {"shape": "1", "fill": "zeros", "value": 0.0},
+    )
+    monkeypatch.setitem(
+        preset_registry._presets,
+        "Portable Export Collision",
+        build_preset_fallback([installed])["Portable Export Collision"],
+    )
+    graph = {
+        "name": "portable-collision",
+        "nodes": [
+            {
+                "id": "start",
+                "type": "Start",
+                "position": {"x": 0, "y": 0},
+                "data": {"params": {}},
+            },
+            {
+                "id": "p",
+                "type": "preset:Portable Export Collision",
+                "position": {"x": 0, "y": 0},
+                "data": {"params": {}, "internalParams": {}},
+            },
+        ],
+        "edges": [{
+            "id": "trigger",
+            "source": "start",
+            "target": "p",
+            "sourceHandle": "trigger",
+            "targetHandle": "trigger",
+            "type": "trigger",
+        }],
+        "presets": [portable],
+    }
+
+    response = await test_client.post("/api/graph/export", json=graph)
+
+    assert response.status_code == 200, response.text
+    script = response.json()["script"]
+    assert "'TensorCreate'" in script
+    assert "'TextInput'" not in script
+    assert "'zeros'" in script
+    assert "'installed'" not in script
+
+
+@pytest.mark.asyncio
 async def test_export_expands_presets_into_node_functions_at_export_time(test_client):
     """Preset internals become real node functions in the emitted script."""
     graph = _load_example("Usage_Example/CNN-MNIST/TrainCNN-MNIST/graph.json")
