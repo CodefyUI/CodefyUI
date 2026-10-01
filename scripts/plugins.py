@@ -632,6 +632,66 @@ class _ConsoleReporter:
         self._open = True
 
 
+def _signal_safe_warn(
+    reporter: _ConsoleReporter, zh: str, en: str
+) -> Callable[[], bool]:
+    """``reporter.close()`` then ``warn(zh, en)``, for a signal handler.
+
+    A handler runs between two bytecodes of whatever the main thread was
+    doing, which can be the middle of a ``print`` to this same stdout, and a
+    handler that prints as well re-enters the buffered writer and raises
+    ``RuntimeError: reentrant call`` instead of cancelling (#489). So the line
+    is encoded now, in the stream's own encoding, and the handler writes it
+    under the text and buffer layers, to the raw one: ``os.write`` on a file
+    or a pipe, and the console's own writer on a Windows console, whose file
+    descriptor would read the bytes in the console code page rather than the
+    UTF-8 the stream encodes to.
+
+    Only on a stream that flushes every line -- a terminal, ``python -u``.
+    Stdout redirected to a file flushes when its buffer fills, and a line
+    written under it would land ahead of the lines still waiting there.
+
+    The callable returns whether the line went out, so the install can say it
+    itself when it did not: no stdout, no raw layer under it, a stream that
+    holds whole lines back, or a write that did not take the whole line.
+    """
+    stream = sys.stdout
+    raw = getattr(stream, "buffer", None)
+    raw = getattr(raw, "raw", raw)  # under ``python -u`` the buffer IS raw
+    if not (
+        getattr(stream, "line_buffering", False)
+        or getattr(stream, "write_through", False)
+    ):
+        raw = None
+    try:
+        encoding = stream.encoding or "utf-8"
+        newline = os.linesep.encode(encoding)
+        line = (
+            f"  {YELLOW}! {t(zh, en)}{RESET}".encode(encoding, "replace")
+            + newline
+        )
+    except (AttributeError, LookupError):
+        raw = None
+
+    def write() -> bool:
+        if raw is None:
+            return False
+        # An open bar keeps its line, as close() would have left it.
+        data = newline + line if reporter._open else line
+        try:
+            written = raw.write(data)
+        except (OSError, ValueError):
+            return False
+        if written != len(data):
+            # A full non-blocking stdout takes none of it (None) or a part.
+            return False
+        reporter._open = False
+        reporter._width = 0
+        return True
+
+    return write
+
+
 @contextlib.contextmanager
 def _cancel_on_sigint(
     reporter: _ConsoleReporter,
@@ -639,12 +699,19 @@ def _cancel_on_sigint(
     """Make Ctrl-C something the install can act on, and put SIGINT back after.
 
     Yields the ``cancel_check`` the flow polls. On the first interrupt the
-    handler sets a flag and arms the operating-system default for a second
-    interrupt; it never writes to the console or raises. The flow checks the
-    flag between its steps and inside the download and pip run, then unwinds
-    through its own cancellation path, which removes the half-written download
-    and staging copy. The polling callback reports the first request from
-    normal control flow.
+    handler arms the operating-system default for a second interrupt, says
+    that the install is cancelling, and sets a flag; it never raises. The
+    flow checks the flag between its steps and inside the download and pip
+    run, then unwinds through its own cancellation path, which removes the
+    half-written download and staging copy. The notice is the handler's own
+    because some steps never poll -- the lock wait can last a minute -- and it
+    is written by :func:`_signal_safe_warn`, never ``print``.
+
+    ``cancel_check.finish_uninterrupted()`` turns the default exit off for
+    the rest of the install. From the stage step on, the plugin's files go
+    into place and are then recorded, and a process killed between the two
+    leaves a plugin on the disk that no lockfile mentions; there a second
+    Ctrl-C is one more request, as it was before the default existed.
 
     A :class:`threading.Event` rather than a plain flag because the flag is
     written by a signal handler and read by the install; the Event is the
@@ -658,7 +725,15 @@ def _cancel_on_sigint(
     already had.
     """
     cancelled = threading.Event()
+    notice = (
+        "正在取消……（等目前的步驟收尾）",
+        "Cancelling... (finishing the current step)",
+    )
+    announce = _signal_safe_warn(reporter, *notice)
+    pressed = False
+    announced = False
     cancellation_noted = False
+    finishing = False
     owns_sigint = False
 
     def _cancel_check() -> bool:
@@ -666,18 +741,35 @@ def _cancel_on_sigint(
         requested = cancelled.is_set()
         if requested and not cancellation_noted:
             cancellation_noted = True
-            reporter.close()
-            warn(
-                "正在取消……（等目前的步驟收尾）",
-                "Cancelling... (finishing the current step)",
-            )
+            if not announced:
+                reporter.close()
+                warn(*notice)
         return requested
 
     def _on_sigint(signum, frame) -> None:
-        if cancelled.is_set():
+        nonlocal pressed, announced
+        if not finishing:
+            # First, so a second press ends the process even while this
+            # handler is still running.
+            signal.signal(signal.SIGINT, signal.SIG_DFL)
+        if pressed:
             return
+        # Claimed before the Event is touched: set() takes a lock that is not
+        # re-entrant, and once finishing no default keeps a second press out
+        # of here. The Event goes last, so a poll that sees it also sees
+        # whether the notice is already out.
+        pressed = True
+        announced = announce()
         cancelled.set()
-        signal.signal(signal.SIGINT, signal.SIG_DFL)
+
+    def _finish_uninterrupted() -> None:
+        nonlocal finishing
+        finishing = True
+        if owns_sigint and pressed:
+            # The press before this point armed the default; take it back.
+            signal.signal(signal.SIGINT, _on_sigint)
+
+    _cancel_check.finish_uninterrupted = _finish_uninterrupted
 
     previous = None
     try:
@@ -694,6 +786,9 @@ def _cancel_on_sigint(
                 signal.SIGINT,
                 previous if previous is not None else signal.SIG_DFL,
             )
+            # No longer ours: a late finish_uninterrupted() must not put the
+            # handler back.
+            owns_sigint = False
 
 
 def _report_needs_restart(exc: PluginNeedsRestart) -> int:
@@ -719,6 +814,10 @@ def _report_needs_restart(exc: PluginNeedsRestart) -> int:
 #: those would say "Extraction failed: <file> could not be unpacked."
 _DOWNLOAD_STEP = "download"
 
+#: The step from which an install has to finish once begun: it puts the
+#: plugin's files in place, and the lock step after it records them.
+_STAGE_STEP = "stage"
+
 
 def _run_install_flow(
     plan: core_flows.InstallPlan,
@@ -740,6 +839,10 @@ def _run_install_flow(
         nonlocal step
         if payload.get("type") == "step_started":
             step = str(payload.get("step") or "")
+            if step == _STAGE_STEP:
+                # Before anything is staged. Killed after this point, the
+                # process could leave files in place with no lockfile entry.
+                cancel_check.finish_uninterrupted()
         reporter(payload)
 
     try:

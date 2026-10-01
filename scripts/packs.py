@@ -41,6 +41,7 @@ import re
 import signal
 import sys
 import threading
+from collections.abc import Callable
 from pathlib import Path
 
 # NOTE: nothing from ``app`` is imported at module level, and nothing may be.
@@ -291,6 +292,61 @@ class _ConsoleReporter:
         self._open = True
 
 
+def _signal_safe_warn(reporter: _ConsoleReporter, zh: str,
+                      en: str) -> Callable[[], bool]:
+    """``reporter.close()`` then ``warn(zh, en)``, for a signal handler.
+
+    A handler runs between two bytecodes of whatever the main thread was
+    doing, which can be the middle of a ``print`` to this same stdout, and a
+    handler that prints as well re-enters the buffered writer and raises
+    ``RuntimeError: reentrant call`` instead of cancelling (#489). So the line
+    is encoded now, in the stream's own encoding, and the handler writes it
+    under the text and buffer layers, to the raw one: ``os.write`` on a file
+    or a pipe, and the console's own writer on a Windows console, whose file
+    descriptor would read the bytes in the console code page rather than the
+    UTF-8 the stream encodes to.
+
+    Only on a stream that flushes every line -- a terminal, ``python -u``.
+    Stdout redirected to a file flushes when its buffer fills, and a line
+    written under it would land ahead of the lines still waiting there.
+
+    The callable returns whether the line went out, so the install can say it
+    itself when it did not: no stdout, no raw layer under it, a stream that
+    holds whole lines back, or a write that did not take the whole line.
+    """
+    stream = sys.stdout
+    raw = getattr(stream, "buffer", None)
+    raw = getattr(raw, "raw", raw)  # under ``python -u`` the buffer IS raw
+    if not (getattr(stream, "line_buffering", False)
+            or getattr(stream, "write_through", False)):
+        raw = None
+    try:
+        encoding = stream.encoding or "utf-8"
+        newline = os.linesep.encode(encoding)
+        line = (f"  {YELLOW}! {t(zh, en)}{RESET}".encode(encoding, "replace")
+                + newline)
+    except (AttributeError, LookupError):
+        raw = None
+
+    def write() -> bool:
+        if raw is None:
+            return False
+        # An open bar keeps its line, as close() would have left it.
+        data = newline + line if reporter._open else line
+        try:
+            written = raw.write(data)
+        except (OSError, ValueError):
+            return False
+        if written != len(data):
+            # A full non-blocking stdout takes none of it (None) or a part.
+            return False
+        reporter._open = False
+        reporter._width = 0
+        return True
+
+    return write
+
+
 def _refuse_unknown_pack(pack_id: str) -> int:
     from app.core.packs import catalog
 
@@ -420,6 +476,11 @@ def cmd_install(args: argparse.Namespace) -> int:
     section(f"安裝 {pack.title}", f"Installing {pack.title}")
     reporter = _ConsoleReporter()
     cancelled = threading.Event()
+    notice = ("正在取消……（等目前的步驟收尾）",
+              "Cancelling... (finishing the current step)")
+    announce = _signal_safe_warn(reporter, *notice)
+    pressed = False
+    announced = False
     cancellation_noted = False
     owns_sigint = False
 
@@ -428,20 +489,28 @@ def cmd_install(args: argparse.Namespace) -> int:
         requested = cancelled.is_set()
         if requested and not cancellation_noted:
             cancellation_noted = True
-            reporter.close()
-            warn("正在取消……（等目前的步驟收尾）",
-                 "Cancelling... (finishing the current step)")
+            if not announced:
+                reporter.close()
+                warn(*notice)
         return requested
 
     def _on_sigint(signum, frame) -> None:
-        # The first press asks the flow to unwind through its own cleanup path.
-        # Arm the OS default for a second press so a stalled step cannot trap
-        # the user. Console I/O is deliberately left to normal control flow:
-        # writing here can re-enter the buffered stream that was interrupted.
-        if cancelled.is_set():
-            return
-        cancelled.set()
+        nonlocal pressed, announced
+        # The first press asks the flow to unwind through its own cleanup path
+        # and says so itself, since the GloVe conversion and the import probe
+        # never poll. That is at once, except on Windows during a blocking
+        # wait such as the probe's child process: this handler runs only when
+        # the wait returns. The OS default is armed first, so a second press
+        # ends the process even while this handler is still running.
         signal.signal(signal.SIGINT, signal.SIG_DFL)
+        if pressed:
+            return
+        # Claimed before the Event is touched: set() takes a lock that is not
+        # re-entrant. The Event goes last, so a poll that sees it also sees
+        # whether the notice is already out.
+        pressed = True
+        announced = announce()
+        cancelled.set()
 
     previous = None
     try:
