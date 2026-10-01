@@ -22,6 +22,15 @@ received — each links to the release it was published as.
 
 ## [Unreleased]
 
+### Fixed
+
+- **Pack and plugin installs handle Ctrl+C without writing from the signal
+  handler** ([#489]). The first press requests cooperative cancellation and
+  reports it from normal control flow, avoiding Python's reentrant-stream
+  failure. It also restores the default SIGINT action so a second press can
+  end a stalled step immediately with shell exit code 130. The previous
+  handler is restored when the install scope exits.
+
 ## [2.8.6] — 2026-09-24
 
 An API key typed into an LLMChat key field is used when you press Run.
@@ -4955,6 +4964,7 @@ Release candidates before 1.0.0 are on the
 [#537]: https://github.com/CodefyUI/CodefyUI/pull/537
 [@oyea0801]: https://github.com/oyea0801
 [@latteine1217]: https://github.com/latteine1217
+[#489]: https://github.com/CodefyUI/CodefyUI/issues/489
 [Unreleased]: https://github.com/CodefyUI/CodefyUI/compare/2.8.6...main
 [2.8.6]: https://github.com/CodefyUI/CodefyUI/compare/2.8.5...2.8.6
 [2.8.5]: https://github.com/CodefyUI/CodefyUI/compare/2.8.4...2.8.5
