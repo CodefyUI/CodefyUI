@@ -22,6 +22,14 @@ received — each links to the release it was published as.
 
 ## [Unreleased]
 
+### Fixed
+
+- **A disabled plugin's detail route no longer says its files are missing**
+  ([#521]). `GET /api/plugins/{id}` returns its manifest, README, disabled
+  lockfile entry and an empty node list. A lockfile entry whose directory or
+  manifest is actually gone still returns 404, now with the coded
+  `missing_files` detail instead of an English sentence.
+
 ## [2.8.6] — 2026-09-24
 
 An API key typed into an LLMChat key field is used when you press Run.
@@ -4955,6 +4963,7 @@ Release candidates before 1.0.0 are on the
 [#537]: https://github.com/CodefyUI/CodefyUI/pull/537
 [@oyea0801]: https://github.com/oyea0801
 [@latteine1217]: https://github.com/latteine1217
+[#521]: https://github.com/CodefyUI/CodefyUI/issues/521
 [Unreleased]: https://github.com/CodefyUI/CodefyUI/compare/2.8.6...main
 [2.8.6]: https://github.com/CodefyUI/CodefyUI/compare/2.8.5...2.8.6
 [2.8.5]: https://github.com/CodefyUI/CodefyUI/compare/2.8.4...2.8.5
