@@ -329,6 +329,83 @@ describe('workspace.openGraphs', () => {
 });
 
 describe('workspace.tabs and workspace.snapshot', () => {
+  function enterNestedBlocks() {
+    store().setNodes([{
+      id: 'outer-inst', type: 'baseNode', position: { x: 0, y: 0 },
+      data: { label: 'Outer', type: 'subgraph:outer', params: {} },
+    } as never]);
+    store().setSubgraphs([
+      {
+        id: 'outer', name: 'Encoder', description: '',
+        nodes: [{
+          id: 'inner-inst', type: 'subgraph:inner', position: { x: 0, y: 0 },
+          data: { params: {} },
+        }],
+        edges: [], interface: { inputs: [], outputs: [], triggerTargets: [] },
+      },
+      {
+        id: 'inner', name: 'Attention', description: '',
+        nodes: [], edges: [], interface: { inputs: [], outputs: [], triggerTargets: [] },
+      },
+    ] as never);
+    expect(store().enterSubgraph('outer-inst')).toBe(true);
+    expect(store().enterSubgraph('inner-inst')).toBe(true);
+  }
+
+  it('reports each tab live view, including a nested background tab', () => {
+    const api = freshApi();
+    const liveId = store().activeTabId;
+    const nestedId = store().createTab({ title: 'Nested', activate: true });
+    enterNestedBlocks();
+    store().setActiveTab(liveId);
+
+    const tabs = api.workspace.tabs();
+    expect(tabs.find((item) => item.tabId === liveId)?.view).toEqual({
+      depth: 0, path: [], atTopLevel: true,
+    });
+    expect(tabs.find((item) => item.tabId === nestedId)?.view).toEqual({
+      depth: 2,
+      path: [
+        { subgraphId: 'outer', name: 'Encoder' },
+        { subgraphId: 'inner', name: 'Attention' },
+      ],
+      atTopLevel: false,
+    });
+  });
+
+  it('snapshots a background tab view before the same tab refuses a write', () => {
+    const api = freshApi();
+    const liveId = store().activeTabId;
+    const nestedId = store().createTab({ title: 'Nested', activate: true });
+    enterNestedBlocks();
+    store().setActiveTab(liveId);
+
+    const snap = api.workspace.snapshot(nestedId);
+    expect('error' in snap).toBe(false);
+    if ('error' in snap) return;
+    expect(snap.view).toEqual({
+      depth: 2,
+      path: [
+        { subgraphId: 'outer', name: 'Encoder' },
+        { subgraphId: 'inner', name: 'Attention' },
+      ],
+      atTopLevel: false,
+    });
+
+    const result = api.workspace.applyOperations({
+      tabId: nestedId,
+      expectedRevision: snap.revision,
+      operations: [{ op: 'add_node', node_type: 'Source' }],
+    });
+    expect(result).toMatchObject({
+      tabId: nestedId,
+      revision: snap.revision,
+      committed: false,
+      conflict: 'editing_subgraph',
+    });
+    expect(result.results).toEqual([]);
+  });
+
   it('lists every tab in bar order, marking the active one', () => {
     const api = freshApi();
     const live = store().activeTabId;

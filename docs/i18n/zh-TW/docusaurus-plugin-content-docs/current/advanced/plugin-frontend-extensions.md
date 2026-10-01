@@ -291,8 +291,8 @@ api.graph.applyOperations(ops);
 | 方法 | 簽名 | 說明 |
 |------|------|------|
 | `openGraphs` | `(entries, options?) => WorkspaceOpenResult[]` | 將一張或多張圖表開啟為編輯器分頁。結果會**依位置對應**：`result[i]` 描述 `entries[i]`，單一無效項目不會影響其他項目。 |
-| `tabs` | `() => WorkspaceTabInfo[]` | 依分頁列順序列出每個分頁，使用者正在看的那一個帶有 `active`。 |
-| `snapshot` | `(tabId?) => WorkspaceSnapshot` | 回傳分頁識別資訊與完整圖表。省略 id 時使用作用中分頁；id 不存在時回傳 `{ error: "unknown_tab" }`，不會拋出錯誤。 |
+| `tabs` | `() => WorkspaceTabInfo[]` | 依分頁列順序列出每個分頁，使用者正在看的那一個帶有 `active`，每一筆也包含該指定分頁的即時 `view`。 |
+| `snapshot` | `(tabId?) => WorkspaceSnapshot` | 回傳分頁識別資訊、即時 `view` 與完整圖表。省略 id 時使用作用中分頁；id 不存在時回傳 `{ error: "unknown_tab" }`，不會拋出錯誤。 |
 | `applyOperations` | `(request) => WorkspaceApplyResult` | 對指定分頁套用一個批次，可選擇只在版本號仍相符時才寫入，也可選擇全有全無。 |
 | `onChanged` | `(callback) => () => void` | 訂閱所有分頁的分頁與文件變更。回傳一個取消訂閱函式。 |
 
@@ -311,6 +311,7 @@ interface WorkspaceTabInfo {
   transient: boolean;               // gone after a reload
   source: WorkspaceSource | null;   // who opened it
   active: boolean;
+  view: GraphView;                  // 此指定分頁，包含背景分頁
 }
 
 interface WorkspaceSource {
@@ -362,6 +363,27 @@ for (const [i, result] of opened.entries()) {
 
 #### 在比較後寫入 {/* #writing-under-a-compare-and-swap */}
 
+`api.graph.getView()` 只描述作用中分頁。`workspace.tabs()` 的每一筆資料，以及
+`workspace.snapshot(tabId)` 的成功結果，則包含該指定分頁的即時 `view`，無論它
+位於前景或背景。這個欄位是在 apiVersion 5 首次發布後加入；若外掛也支援較舊的
+v5 host，必須先檢查欄位是否存在：
+
+```js
+const target = api.workspace.snapshot(tabId);
+if ("error" in target) return;
+
+if (!("view" in target) || !target.view.atTopLevel) {
+  const inside = target.view?.path.at(-1)?.name ?? "a block";
+  api.ui.toast(`Step out of "${inside}" before this write.`, "warning");
+  return;
+}
+```
+
+這項前置檢查可預測 `editing_subgraph`，但不是鎖定機制。使用者可能在讀取後才進入
+區塊，因此呼叫端仍須處理 `applyOperations` 回傳的衝突。進入或離開區塊不會增加
+文件 `revision`；當該分頁為作用中分頁時，請在 `graph.onGraphChanged` 通知後重新讀取，
+並在寫入前再讀一次。
+
 ```ts
 const before = api.workspace.snapshot();          // the active tab
 const armed = { tabId: before.tabId, revision: before.revision };
@@ -394,7 +416,7 @@ if (result.conflict === "revision_mismatch") {
 
 1. `tabId`（或作用中分頁）必須存在，否則回傳 `conflict: "unknown_tab"`、`results: []`、`committed: false`、`revision: 0`。
 2. 分頁不能是唯讀，否則回傳 `conflict: "read_only"`、`results: []`、`committed: false` 與分頁目前的 `revision`。
-3. 分頁不能正在顯示區塊內部，否則回傳 `conflict: "editing_subgraph"`。區塊開啟時，畫布包含區塊內容，而不是 `snapshot()` 描述的文件；此時寫入會套用至外掛未讀取的內容。請在使用者離開區塊後重試。
+3. 分頁不能正在顯示區塊內部，否則回傳 `conflict: "editing_subgraph"`。區塊開啟時，畫布包含區塊內容，而不是 `snapshot()` 描述的文件；此時寫入會套用至外掛未讀取的內容。請重新讀取 `workspace.snapshot(tabId).view`，並在該指定分頁回到頂層後重試；`graph.getView()` 只描述作用中分頁。
 4. 若有傳入 `expectedRevision`，其值必須等於分頁的 `revision`；否則回傳 `conflict: "revision_mismatch"` 與**目前**版本號，讓外掛不需再次讀取即可更新預期版本。
 5. 批次會套用至副本。
 6. 使用 `atomic: true` 時，只要任何操作失敗，就不會寫入：`committed: false`、`revision` 不變，並回傳**完整長度**的 `results`，以指出失敗的操作。

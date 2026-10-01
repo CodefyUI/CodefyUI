@@ -291,8 +291,8 @@ Requires `api.apiVersion >= 5`. On an older editor `api.workspace` is `undefined
 | Method | Signature | Description |
 |--------|-----------|-------------|
 | `openGraphs` | `(entries, options?) => WorkspaceOpenResult[]` | Open one or more graphs as editor tabs. The result is **positional**: `result[i]` describes `entries[i]`, and one bad entry never affects another. |
-| `tabs` | `() => WorkspaceTabInfo[]` | Every tab, in strip order, with `active` on the one the user is looking at. |
-| `snapshot` | `(tabId?) => WorkspaceSnapshot` | A tab's identity plus its whole graph. No id means the active tab. An unknown id returns `{ error: "unknown_tab" }` rather than throwing. |
+| `tabs` | `() => WorkspaceTabInfo[]` | Every tab, in strip order, with `active` on the one the user is looking at and that named tab's live `view`. |
+| `snapshot` | `(tabId?) => WorkspaceSnapshot` | A tab's identity, live `view`, and whole graph. No id means the active tab. An unknown id returns `{ error: "unknown_tab" }` rather than throwing. |
 | `applyOperations` | `(request) => WorkspaceApplyResult` | Apply a batch to a named tab, optionally only if its revision still matches, optionally all-or-nothing. |
 | `onChanged` | `(callback) => () => void` | Subscribe to tab and document changes across every tab. Returns an unsubscribe function. |
 
@@ -311,6 +311,7 @@ interface WorkspaceTabInfo {
   transient: boolean;               // gone after a reload
   source: WorkspaceSource | null;   // who opened it
   active: boolean;
+  view: GraphView;                  // this named tab, even in the background
 }
 
 interface WorkspaceSource {
@@ -362,6 +363,29 @@ Tabs you open are **transient** by default: they are not written to the editor's
 
 #### Writing under a compare-and-swap
 
+`api.graph.getView()` describes only the active tab. Every entry from
+`workspace.tabs()` and every successful `workspace.snapshot(tabId)` instead
+carries the live `view` of that named tab, whether it is active or in the
+background. The field was added after apiVersion 5 first shipped, so a plugin
+that also supports older v5 hosts must feature-check it:
+
+```js
+const target = api.workspace.snapshot(tabId);
+if ("error" in target) return;
+
+if (!("view" in target) || !target.view.atTopLevel) {
+  const inside = target.view?.path.at(-1)?.name ?? "a block";
+  api.ui.toast(`Step out of "${inside}" before this write.`, "warning");
+  return;
+}
+```
+
+This preflight makes `editing_subgraph` predictable; it is not a lock. The
+user can enter a block after the read, so callers must still handle that
+conflict from `applyOperations`. Entering or leaving a block does not advance
+the document revision. Re-read the view after `graph.onGraphChanged` while
+that tab is active, and immediately before a write.
+
 ```ts
 const before = api.workspace.snapshot();          // the active tab
 const armed = { tabId: before.tabId, revision: before.revision };
@@ -394,7 +418,7 @@ The checks run in this order, and each one returns without changing anything:
 
 1. `tabId` (or the active tab) must resolve, else `conflict: "unknown_tab"`, `results: []`, `committed: false`, `revision: 0`.
 2. The tab must not be read-only, else `conflict: "read_only"`, `results: []`, `committed: false`, and the tab's current `revision`.
-3. The tab must not be showing the inside of a block, else `conflict: "editing_subgraph"`. While a block is open the canvas holds that block's contents rather than the document `snapshot()` describes, so a write would land somewhere you never read; retry once the user steps back out.
+3. The tab must not be showing the inside of a block, else `conflict: "editing_subgraph"`. While a block is open the canvas holds that block's contents rather than the document `snapshot()` describes, so a write would land somewhere you never read. Re-read `workspace.snapshot(tabId).view` and retry once the named tab is back at top level; `graph.getView()` describes only the active tab.
 4. `expectedRevision`, if you passed one, must equal the tab's `revision`, else `conflict: "revision_mismatch"` and the **current** revision, so you can re-arm without a second read.
 5. The batch is applied to a copy.
 6. With `atomic: true`, if any op failed, nothing is written: `committed: false`, `revision` unchanged, and the **full-length** `results` so you can see which op was wrong.

@@ -95,6 +95,8 @@ export interface WorkspaceTabInfo {
   transient: boolean;
   source: WorkspaceSource | null;
   active: boolean;
+  /** This tab's live block-editing context, whether or not it is active. */
+  view: GraphView;
 }
 
 export type WorkspaceSnapshot =
@@ -177,22 +179,28 @@ export interface GraphView {
   atTopLevel: boolean;
 }
 
+/** Derive a fresh view snapshot for any tab, including a background tab. */
+export function graphViewOf(
+  tab: Pick<TabState, 'subgraphStack' | 'subgraphs'> | null | undefined,
+): GraphView {
+  const path = subgraphViewPath(tab?.subgraphStack, tab?.subgraphs);
+  return { depth: path.length, path, atTopLevel: path.length === 0 };
+}
+
 /**
  * The current view context, derived from the active tab's editing stack.
  *
  * Optional-chained through the tab because a plugin may call this at any time,
  * including from an activation that runs before the editor has restored its
- * tabs -- and "no tab" is honestly reported as the top level rather than as a
- * thrown error inside third-party code.
+ * tabs -- and `graphViewOf(undefined)` honestly reports the top level rather
+ * than throwing inside third-party code.
  */
 export function currentGraphView(): GraphView {
   // `getTab` rather than `getActiveTab`: the latter is typed as always
   // returning a tab (it asserts the lookup with `!`), so asking it would mean
   // casting the answer back to something that can be missing.
   const { activeTabId, getTab } = useTabStore.getState();
-  const tab = getTab(activeTabId);
-  const path = subgraphViewPath(tab?.subgraphStack, tab?.subgraphs);
-  return { depth: path.length, path, atTopLevel: path.length === 0 };
+  return graphViewOf(getTab(activeTabId));
 }
 
 export interface CodefyUIPluginAPI {
@@ -274,6 +282,7 @@ function tabInfoOf(tab: TabState, activeTabId: string): WorkspaceTabInfo {
     transient: tab.transient,
     source: tab.source,
     active: tab.id === activeTabId,
+    view: graphViewOf(tab),
   };
 }
 
@@ -329,8 +338,9 @@ function commitToTab(
     // contents, and `snapshot()` answers with the flushed top level -- so a
     // workspace write here would land somewhere the plugin never read.
     // Refused rather than redirected: the plugin retries once the user steps
-    // back out, which is a wait it can see, unlike an edit that silently went
-    // into a definition.
+    // back out. Read this named tab again with
+    // `workspace.snapshot(tabId).view.atTopLevel`; `graph.getView()` describes
+    // only the active tab.
     if (options.refuseInsideBlock) {
       return { ...empty, ...counts, tabId, revision: tab.revision,
                committed: false, conflict: 'editing_subgraph' };
