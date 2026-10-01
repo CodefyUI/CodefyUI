@@ -22,6 +22,10 @@ received — each links to the release it was published as.
 
 ## [Unreleased]
 
+### Fixed
+
+- **Plugin Center now gives reinstall guidance only when the removed plugin needs it.** A tombstoned built-in plugin shows its reinstall command even when no Python packages remain, while a downloaded or linked plugin no longer shows a command that cannot reinstall it. Leftover-package guidance remains independent. ([#506])
+
 ## [2.8.6] — 2026-09-24
 
 An API key typed into an LLMChat key field is used when you press Run.
