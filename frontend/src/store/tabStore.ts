@@ -47,6 +47,7 @@ import { useI18n, type TranslationKey } from '../i18n';
 import { useProjectStore } from './projectStore';
 import {
   effectivePresets,
+  isBroughtByDocument,
   mergeOwnedPresets,
 } from '../utils/presetOwnership';
 
@@ -1416,6 +1417,12 @@ function bypassPatch(
  * the same one, the preset's name, so a redraw could only undo a rename. Wires
  * are not touched either, as with a subgraph instance: one pasted onto a port
  * the attached definition lacks is kept as it came.
+ *
+ * The definition the card arrives with is dropped, and it can be the only one
+ * that calls a slot the card holds SECRET -- a key typed against the source
+ * document's own definition. So its SECRET slots are remembered first, as a
+ * fold remembers what it drops (`rememberFoldedSecrets`), and the scrub keeps
+ * blanking them.
  */
 function normalizePresetAttachments(
   nodes: Node<NodeData>[],
@@ -1426,8 +1433,10 @@ function normalizePresetAttachments(
   return nodes.map((node) => {
     const type = node.data?.type;
     if (typeof type !== 'string' || !type.startsWith('preset:')) return node;
-    const definition = byName.get(type.slice('preset:'.length));
+    const name = type.slice('preset:'.length);
+    const definition = byName.get(name);
     if (!definition || node.data.presetDefinition === definition) return node;
+    rememberPresetNodeSecrets(name, node.data.presetDefinition);
     return {
       ...node,
       data: {
@@ -1437,6 +1446,32 @@ function normalizePresetAttachments(
       },
     };
   });
+}
+
+/**
+ * `mergeOwnedPresets` for the definitions foreign nodes arrive with: a paste's
+ * clipboard and an inserted template (#541).
+ *
+ * An incoming definition whose name the document already owns loses to the
+ * document's, which is the one its nodes run. The nodes it came with can still
+ * hold values typed against it -- a copied block's inner cards, whose entries
+ * carry no definition of their own to remember at re-attachment -- so its
+ * SECRET slots are remembered before it is dropped, and the scrub keeps
+ * blanking them.
+ */
+function adoptIncomingPresets(
+  owned: PresetDefinition[],
+  incoming: PresetDefinition[],
+): PresetDefinition[] {
+  const merged = mergeOwnedPresets(owned, incoming);
+  for (const definition of incoming) {
+    const name = definition?.preset_name;
+    if (typeof name !== 'string') continue;
+    if (merged.find((kept) => kept.preset_name === name) !== definition) {
+      rememberPresetNodeSecrets(name, definition);
+    }
+  }
+  return merged;
 }
 
 /** Gap between the existing graph and an inserted template, in flow pixels. */
@@ -1622,10 +1657,14 @@ function referencedPresetDefinitions(
  * never declared that slot, stays. The remembered slots only ever blank;
  * nothing runs or draws from them.
  *
- * `keepSecrets` (Run) keeps the values the server blanks in the run it stores.
- * It blanks the SECRET slots that the definition the run uses -- attached, else
- * owned, else installed -- declares and the server would miss, and, with no
- * definition at all, the remembered slots.
+ * `keepSecrets` (Run) keeps the values the server blanks in the run it stores
+ * and leaves out every other one. The server blanks a slot of `preset:<name>`
+ * only when a definition it consults -- its installed one, and the entry for
+ * the name in the `presets[]` the run sends (`sentPresets`) -- puts a node at
+ * that inner id whose type it declares the param SECRET on. So Run blanks
+ * every slot of the same union that neither of those places, and keeps the
+ * rest. A palette entry a document's reader added is not the server's: it is
+ * consulted only when it is the one the run sends.
  */
 function stripPresetNodeSecrets(
   internalParams: Record<string, Record<string, any>> | undefined,
@@ -1633,21 +1672,24 @@ function stripPresetNodeSecrets(
   attached: PresetDefinition | undefined,
   ownedPresets: readonly PresetDefinition[] | undefined,
   keepSecrets: boolean,
+  sentPresets?: readonly PresetDefinition[],
 ): Record<string, Record<string, any>> | undefined {
   const named = (list: readonly PresetDefinition[] | undefined) =>
     (Array.isArray(list) ? list : []).find((p) => p.preset_name === presetName);
   const owned = named(ownedPresets);
   const installed = named(useNodeDefStore.getState().presets);
-  const running = attached ?? owned ?? installed;
-  if (keepSecrets && running) {
-    return stripSecretInternalParams(internalParams, presetSecretsTheServerMisses(running));
-  }
-  // With no definition at all, Run reaches this line too, and the remembered
-  // slots are all that is left.
   const declaring = [
     ...new Set([attached, owned, installed, rememberedPresetSecrets(presetName)]),
   ].filter((candidate): candidate is PresetDefinition => candidate !== undefined);
-  return stripSecretInternalParams(internalParams, declaring);
+  if (!keepSecrets) return stripSecretInternalParams(internalParams, declaring);
+  const consulted = [
+    named(sentPresets),
+    installed && !isBroughtByDocument(installed) ? installed : undefined,
+  ].filter((candidate): candidate is PresetDefinition => candidate !== undefined);
+  return stripSecretInternalParams(
+    internalParams,
+    declaring.map((definition) => presetSlotsTheServerMisses(definition, consulted)),
+  );
 }
 
 /** The preset a canvas preset node's type names. */
@@ -1683,6 +1725,7 @@ function stripSubgraphSecrets(
   subgraphs: SubgraphDefinition[],
   keepSecrets = false,
   ownedPresets: PresetDefinition[] = [],
+  sentPresets?: readonly PresetDefinition[],
 ): SubgraphDefinition[] {
   if (!subgraphs.length) return subgraphs;
   const { definitions } = useNodeDefStore.getState();
@@ -1722,6 +1765,7 @@ function stripSubgraphSecrets(
             undefined,
             ownedPresets,
             keepSecrets,
+            sentPresets,
           )
         : data.internalParams;
       if (params === data.params && internalParams === data.internalParams) {
@@ -1803,20 +1847,27 @@ function secretsTheServerMisses(
 }
 
 /**
- * `preset` cut down to the exposed SECRET slots the server would not blank.
- * A slot's node type comes from the preset's own `nodes`, as on the server.
+ * `preset` cut down to the exposed SECRET slots the server would not blank in
+ * the run it stores (#541). The server blanks `(inner id, param)` when one of
+ * the definitions it consults for the name (`consulted`) puts a node at that
+ * inner id whose type its registry declares the param SECRET on, each
+ * definition judged by its own node types (`_preset_secret_param_map` in
+ * `backend/app/core/secret_params.py`).
  */
-function presetSecretsTheServerMisses(
-  preset: PresetDefinition | undefined,
-): PresetDefinition | undefined {
-  if (!preset) return preset;
-  const innerType = new Map((preset.nodes ?? []).map((n) => [n.id, n.type]));
+function presetSlotsTheServerMisses(
+  preset: PresetDefinition,
+  consulted: readonly PresetDefinition[],
+): PresetDefinition {
+  const placed = (innerId: string, param: string) =>
+    consulted.some((definition) =>
+      (definition.nodes ?? []).some(
+        (node) => node.id === innerId && serverBlanksSecret(node.type, param),
+      ),
+    );
   return {
     ...preset,
     exposed_params: (preset.exposed_params ?? []).filter(
-      (ep) =>
-        ep.param_def?.param_type === 'secret'
-        && !serverBlanksSecret(innerType.get(ep.internal_node), ep.param_name),
+      (ep) => ep.param_def?.param_type === 'secret' && !placed(ep.internal_node, ep.param_name),
     ),
   };
 }
@@ -3346,15 +3397,21 @@ export const useTabStore = create<TabStoreState>((rawSet, get) => {
     // that should throw over a missing optional.
     const liveSubgraphIds = reachableSubgraphIds(tab.nodes, tab.subgraphs ?? []);
     const reachable = (tab.subgraphs ?? []).filter((d) => liveSubgraphIds.has(d.id));
+    // The definitions this graph sends, ahead of the strip below: under
+    // `keepSecrets` each is one of the two the server consults when it blanks
+    // a preset's slots in the run it stores. Only the node TYPES of the
+    // definitions are read, which the strip does not change.
+    const presets = referencedPresetDefinitions(tab, reachable);
     // SECRET values are blanked here, on the nodes below and in a preset's
     // `internalParams`. `keepSecrets` (Run) keeps the ones the server will
-    // blank in the run it stores; see `secretsTheServerMisses`.
+    // blank in the run it stores; see `secretsTheServerMisses` and
+    // `stripPresetNodeSecrets`.
     const subgraphs = stripSubgraphSecrets(
       reachable,
       keepSecrets,
       tab.presets ?? [],
+      presets,
     );
-    const presets = referencedPresetDefinitions(tab, subgraphs);
 
     const nodes = tab.nodes.map((n) => {
       // Note nodes: serialize with note-specific fields
@@ -3392,6 +3449,7 @@ export const useTabStore = create<TabStoreState>((rawSet, get) => {
                   n.data.presetDefinition,
                   tab.presets,
                   keepSecrets,
+                  presets,
                 ),
               }
             : {}),
@@ -4081,7 +4139,7 @@ export const useTabStore = create<TabStoreState>((rawSet, get) => {
           incomingSubgraphs,
           newNodes,
         );
-        const presets = mergeOwnedPresets(t.presets, incomingPresets);
+        const presets = adoptIncomingPresets(t.presets, incomingPresets);
         return {
           nodes: [
             ...t.nodes.map((n) => ({ ...n, selected: false })),
@@ -4408,7 +4466,7 @@ export const useTabStore = create<TabStoreState>((rawSet, get) => {
           clipboard.subgraphs ?? [],
           newNodes,
         );
-        const presets = mergeOwnedPresets(tab.presets, clipboard.presets ?? []);
+        const presets = adoptIncomingPresets(tab.presets, clipboard.presets ?? []);
         return {
           nodes: [
             ...tab.nodes.map((n) => ({ ...n, selected: false })),

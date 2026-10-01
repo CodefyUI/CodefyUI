@@ -28,6 +28,7 @@ import {
 } from './tabStore';
 import { useNodeDefStore } from './nodeDefStore';
 import { resolveSerializedNodes } from '../utils';
+import { resolveExample } from '../utils/openExample';
 import type {
   NodeData,
   NodeDefinition,
@@ -304,16 +305,16 @@ describe('D1: a top-level preset node is scrubbed by the union a block node gets
       expect(out.saved.top).toEqual(BOTH_BLANK);
     });
 
-    it('when the server knows neither inner type, Run blanks the slot of the definition it runs', () => {
+    it('when the server knows neither inner type, Run blanks every slot it could not blank itself', () => {
       useNodeDefStore.setState({ definitions: [FEEDER] } as never);
       const owned = ownedDefinition();
       const out = serializeBothPlaces('Collision', owned, [owned]);
 
       expect(out.run.top).toEqual(out.run.inside);
       expect(out.saved.top).toEqual(out.saved.inside);
-      expect(out.run.top).toEqual({
-        inner: { marker: 'owned', api_key: '', installed_only_secret: INSTALLED_VALUE },
-      });
+      // The installed slot too: no definition the server consults puts a type
+      // it knows at `inner`, so nothing would blank it in the run it stores.
+      expect(out.run.top).toEqual(BOTH_BLANK);
       expect(out.saved.top).toEqual(BOTH_BLANK);
     });
 
@@ -451,6 +452,342 @@ describe('D1: a top-level preset node is scrubbed by the union a block node gets
       ).inner.installed_only_secret).toBe('');
       const written = JSON.stringify(_persistedTabsForTesting(useTabStore.getState().tabs));
       expect(written).not.toContain(INSTALLED_VALUE);
+    });
+  });
+});
+
+// -- D1, the definition a value was typed against is dropped ----------------
+//
+// A paste keeps the destination's own definition of a name: the card is
+// re-attached to it, and the clipboard's copy of the source definition loses
+// to it. The source definition can be the only one that calls a slot the card
+// holds SECRET -- the reverse of the case above, or two documents that own
+// different same-name definitions. Save, autosave and every export must still
+// blank that slot, and Run must leave out every slot the server could not
+// blank in the run it stores, while keeping one it can.
+
+describe('D1: a value typed against a definition the destination drops', () => {
+  const SOURCE_VALUE = 'sk-FAKE-541-SOURCE-ONLY-SLOT';
+  const KNOWN_VALUE = 'sk-FAKE-541-SERVER-KNOWN-SLOT';
+
+  /** A server node type that declares exactly one SECRET param. */
+  function oneKeyType(name: string, key: string): NodeDefinition {
+    return {
+      node_name: name, category: 'E2E', description: '', inputs: [],
+      outputs: [{ name: 'value', data_type: 'ANY', description: '', optional: false }],
+      params: [secretParam(key)],
+    };
+  }
+
+  /**
+   * One of three same-name definitions of `name`. Each puts a different type
+   * at `inner`, and each type declares SECRET only the slot its definition
+   * exposes -- so which definitions the server consults decides which slots
+   * it can blank.
+   */
+  function variant(name: string, role: 'installed' | 'documentA' | 'documentC'): PresetDefinition {
+    const { innerType, exposed } = {
+      installed: { innerType: 'OnlyInstalledKey', exposed: 'installed_only_secret' },
+      documentA: { innerType: 'OnlyDocumentAKey', exposed: 'doc_a_secret' },
+      documentC: { innerType: 'OnlyApiKey', exposed: 'api_key' },
+    }[role];
+    return {
+      preset_name: name,
+      category: role,
+      description: `${role}-description`,
+      tags: [],
+      nodes: [{
+        id: 'inner', type: innerType,
+        params: { api_key: '', doc_a_secret: '', installed_only_secret: '' },
+      }],
+      edges: [],
+      exposed_inputs: [],
+      exposed_outputs: [{
+        name: 'value', internal_node: 'inner', internal_port: 'value',
+        data_type: 'ANY', description: '',
+      }],
+      exposed_params: [slot(exposed)],
+    };
+  }
+
+  beforeEach(() => {
+    useNodeDefStore.setState({
+      definitions: [
+        oneKeyType('OnlyInstalledKey', 'installed_only_secret'),
+        oneKeyType('OnlyDocumentAKey', 'doc_a_secret'),
+        oneKeyType('OnlyApiKey', 'api_key'),
+        FEEDER,
+      ],
+      presets: [],
+    } as never);
+  });
+
+  /** The installed `name`, as a /api/presets fetch lands it. */
+  const install = (name: string) =>
+    useNodeDefStore.setState({ presets: [variant(name, 'installed')] } as never);
+
+  /** A new active tab holding a document that owns `owned`. Returns its id. */
+  function openDocument(
+    title: string,
+    owned: PresetDefinition,
+    extra: { nodes?: Node<NodeData>[]; subgraphs?: SubgraphDefinition[] } = {},
+  ): string {
+    store().addTab(title);
+    store().loadGraphDocument({
+      nodes: extra.nodes ?? [], edges: [], boundFile: null,
+      presets: [owned], subgraphs: extra.subgraphs ?? [],
+    });
+    return tab().id;
+  }
+
+  /**
+   * A card of `name` dropped into the active tab -- from the palette, or the
+   * tab's own definition when the palette has none -- with `values` typed
+   * into it through its Configure fields, selected and copied.
+   */
+  function typeAndCopy(name: string, values: Record<string, string>): string {
+    const dropped = useNodeDefStore.getState().presets.find((p) => p.preset_name === name)
+      ?? tab().presets.find((p) => p.preset_name === name)!;
+    store().addPresetNode(dropped, { x: 0, y: 0 });
+    const card = tab().nodes[tab().nodes.length - 1];
+    for (const [param, value] of Object.entries(values)) {
+      store().updatePresetInternalParam(card.id, 'inner', param, value);
+    }
+    select(card.id);
+    store().copySelectedNodes();
+    return card.id;
+  }
+
+  /** The original D1 direction: an installed card with its own slot typed, in a tab of its own. */
+  function installedCardWithKnownValue(name: string): { tabId: string; cardId: string } {
+    store().addTab('installed');
+    const cardId = typeAndCopy(name, { installed_only_secret: KNOWN_VALUE });
+    return { tabId: tab().id, cardId };
+  }
+
+  /** Copy card `cardId` of tab `from`, then paste it into the active tab `to`. */
+  function carry(from: string, cardId: string, to: string): string {
+    store().setActiveTab(from);
+    select(cardId);
+    store().copySelectedNodes();
+    store().setActiveTab(to);
+    store().pasteNodes();
+    return tab().nodes.find((n) => n.selected)!.id;
+  }
+
+  const pastedId = () => tab().nodes.find((n) => n.selected)!.id;
+
+  /** Save, the JSON export (as the toolbar builds it) and every tab's autosave record. */
+  function durableForms(): Array<[string, string]> {
+    const { nodes, edges, presets, segmentGroups, subgraphs, settings } = store().getSerializedGraph();
+    return [
+      ['Save', JSON.stringify(store().getSerializedGraphOf(tab()))],
+      ['JSON export', JSON.stringify({
+        name: tab().name, description: tab().description,
+        nodes, edges, presets, segmentGroups, subgraphs, ...(settings ? { settings } : {}),
+      }, null, 2)],
+      ['autosave', JSON.stringify(_persistedTabsForTesting(useTabStore.getState().tabs))],
+    ];
+  }
+
+  function expectWrittenNowhere(...values: string[]) {
+    for (const [form, bytes] of durableForms()) {
+      for (const value of values) expect(bytes, `${form} holds ${value}`).not.toContain(value);
+    }
+  }
+
+  const savedInner = (id: string) =>
+    serializedInternalParams(store().getSerializedGraphOf(tab()), id).inner;
+  const runInner = (id: string) =>
+    serializedInternalParams(store().getSerializedGraphOf(tab(), { keepSecrets: true }), id).inner;
+
+  it('reverse paste: a document-only key into the tab that owns the installed copy', () => {
+    const name = 'ReverseKey';
+    install(name);
+    // Tab B: the installed card dragged from the palette, which also makes B
+    // own the installed definition.
+    store().addPresetNode(useNodeDefStore.getState().presets[0], { x: 0, y: 0 });
+    const tabB = tab().id;
+    // Document C exposes only api_key; a key typed there is copied.
+    openDocument('C', variant(name, 'documentC'));
+    typeAndCopy(name, { api_key: SOURCE_VALUE });
+
+    store().setActiveTab(tabB);
+    store().pasteNodes();
+    const pasted = pastedId();
+    // The premise: re-attached to B's installed copy, carrying C's key.
+    expect(tab().nodes.find((n) => n.id === pasted)!.data.presetDefinition!.category).toBe('installed');
+    expect(tab().nodes.find((n) => n.id === pasted)!.data.internalParams!.inner.api_key)
+      .toBe(SOURCE_VALUE);
+    // The installed definition's own field, typed in B.
+    store().updatePresetInternalParam(pasted, 'inner', 'installed_only_secret', KNOWN_VALUE);
+
+    expect(savedInner(pasted)).toMatchObject({ api_key: '', installed_only_secret: '' });
+    expectWrittenNowhere(SOURCE_VALUE, KNOWN_VALUE);
+    // Neither B's sent definition nor the installed one puts a type at `inner`
+    // that declares api_key SECRET, so Run leaves the key out; the installed
+    // slot the server does blank stays for the run.
+    expect(runInner(pasted)).toMatchObject({ api_key: '', installed_only_secret: KNOWN_VALUE });
+  });
+
+  it('two documents that own different same-name definitions, with an installed one', () => {
+    const name = 'TwoDocuments';
+    install(name);
+    const installedCard = installedCardWithKnownValue(name);
+    openDocument('A', variant(name, 'documentA'));
+    typeAndCopy(name, { doc_a_secret: SOURCE_VALUE });
+    const tabC = openDocument('C', variant(name, 'documentC'));
+    store().pasteNodes();
+    const fromA = pastedId();
+    const fromInstalled = carry(installedCard.tabId, installedCard.cardId, tabC);
+
+    expect(savedInner(fromA).doc_a_secret).toBe('');
+    expect(savedInner(fromInstalled).installed_only_secret).toBe('');
+    expectWrittenNowhere(SOURCE_VALUE, KNOWN_VALUE);
+    expect(runInner(fromA).doc_a_secret).toBe('');
+    expect(runInner(fromInstalled).installed_only_secret).toBe(KNOWN_VALUE);
+  });
+
+  it('two documents that own different same-name definitions, with no installed one', () => {
+    const name = 'TwoDocumentsNoInstalled';
+    openDocument('A', variant(name, 'documentA'));
+    typeAndCopy(name, { doc_a_secret: SOURCE_VALUE });
+    openDocument('C', variant(name, 'documentC'));
+    store().pasteNodes();
+    const pasted = pastedId();
+    // C's own field, typed in C: the definition the run sends places it.
+    store().updatePresetInternalParam(pasted, 'inner', 'api_key', KNOWN_VALUE);
+
+    expect(savedInner(pasted)).toMatchObject({ doc_a_secret: '', api_key: '' });
+    expectWrittenNowhere(SOURCE_VALUE, KNOWN_VALUE);
+    expect(runInner(pasted)).toMatchObject({ doc_a_secret: '', api_key: KNOWN_VALUE });
+  });
+
+  it('two documents opened through a reader: the palette holds a definition the server does not have', () => {
+    const name = 'TwoDocumentsOpened';
+    const open = (title: string, definition: PresetDefinition) => {
+      const read = resolveExample({ nodes: [], edges: [], presets: [definition] });
+      store().addTab(title);
+      store().loadGraphDocument({
+        nodes: read.nodes, edges: read.edges, boundFile: null, presets: read.presets,
+      });
+    };
+    open('A', variant(name, 'documentA'));
+    // The premise: the reader merged A's definition into the palette.
+    expect(useNodeDefStore.getState().presets.map((p) => p.category)).toEqual(['documentA']);
+    typeAndCopy(name, { doc_a_secret: SOURCE_VALUE });
+    open('C', variant(name, 'documentC'));
+    store().pasteNodes();
+    const pasted = pastedId();
+    store().updatePresetInternalParam(pasted, 'inner', 'api_key', KNOWN_VALUE);
+
+    expectWrittenNowhere(SOURCE_VALUE, KNOWN_VALUE);
+    // The server has no such preset installed: it consults only the definition
+    // the run sends, C's, whose type at `inner` has no doc_a_secret.
+    expect(runInner(pasted)).toMatchObject({ doc_a_secret: '', api_key: KNOWN_VALUE });
+  });
+
+  it('paste into an open block of the destination, then leave the block', () => {
+    const name = 'OpenBlock';
+    install(name);
+    const installedCard = installedCardWithKnownValue(name);
+    openDocument('A', variant(name, 'documentA'));
+    typeAndCopy(name, { doc_a_secret: SOURCE_VALUE });
+    const block = blockHolding(name, { inner: { api_key: '' } });
+    const tabC = openDocument('C', variant(name, 'documentC'), {
+      nodes: [block.instance], subgraphs: [block.definition],
+    });
+    expect(store().enterSubgraph('block')).toBe(true);
+    store().pasteNodes();
+    const fromA = pastedId();
+    // Still inside the block: switching tabs does not close it.
+    const fromInstalled = carry(installedCard.tabId, installedCard.cardId, tabC);
+    expect(tab().subgraphStack).toHaveLength(1);
+    store().exitSubgraph();
+    // The premise: the block now holds both values.
+    expect(JSON.stringify(tab().subgraphs)).toContain(SOURCE_VALUE);
+    expect(JSON.stringify(tab().subgraphs)).toContain(KNOWN_VALUE);
+
+    expect(savedInner(fromA).doc_a_secret).toBe('');
+    expect(savedInner(fromInstalled).installed_only_secret).toBe('');
+    expectWrittenNowhere(SOURCE_VALUE, KNOWN_VALUE);
+    expect(runInner(fromA).doc_a_secret).toBe('');
+    expect(runInner(fromInstalled).installed_only_secret).toBe(KNOWN_VALUE);
+  });
+
+  it('two same-name cards of a tab restored from an older record, each with its own definition', () => {
+    const name = 'RestoredPair';
+    // A record written before #541 kept each card's own definition and no
+    // `presets` list, so a restored tab can hold two cards of one name with
+    // different definitions. Copying both carries only the first definition
+    // in the clipboard's `presets`.
+    const card = (id: string, definition: PresetDefinition): Node<NodeData> => ({
+      ...presetCard(id, name, definition, { inner: { api_key: '', doc_a_secret: '', installed_only_secret: '' } }),
+      position: { x: 0, y: id === 'first' ? 0 : 200 },
+    });
+    const legacy = _buildPersistedTabForTesting(tab());
+    legacy.nodes = [
+      card('first', variant(name, 'documentA')),
+      card('second', variant(name, 'installed')),
+    ];
+    delete legacy.presets;
+    const restored = _tabFromPersistedForTesting(legacy, tab());
+    useTabStore.setState({ tabs: [restored], activeTabId: restored.id });
+    // The premise: each card kept its own definition, and the tab owns none.
+    expect(tab().nodes.map((n) => n.data.presetDefinition!.category))
+      .toEqual(['documentA', 'installed']);
+    expect(tab().presets).toEqual([]);
+    store().updatePresetInternalParam('first', 'inner', 'doc_a_secret', SOURCE_VALUE);
+    store().updatePresetInternalParam('second', 'inner', 'installed_only_secret', SOURCE_VALUE);
+    select('first', 'second');
+    store().copySelectedNodes();
+    expect(store().clipboard!.presets!.map((p) => p.category)).toEqual(['documentA']);
+
+    openDocument('C', variant(name, 'documentC'));
+    store().pasteNodes();
+    const pasted = tab().nodes.filter((n) => n.selected).map((n) => n.id);
+    expect(pasted).toHaveLength(2);
+    // C's own field, typed in C.
+    store().updatePresetInternalParam(pasted[0], 'inner', 'api_key', KNOWN_VALUE);
+
+    for (const id of pasted) {
+      expect(savedInner(id)).toMatchObject({
+        api_key: '', doc_a_secret: '', installed_only_secret: '',
+      });
+    }
+    expectWrittenNowhere(SOURCE_VALUE, KNOWN_VALUE);
+    // No preset of this name is installed and C's definition places only
+    // api_key, so the run gets C's key and neither carried one.
+    expect(runInner(pasted[0])).toMatchObject({ api_key: KNOWN_VALUE, doc_a_secret: '' });
+    expect(runInner(pasted[1]).installed_only_secret).toBe('');
+  });
+
+  it('a copied block whose inner card holds a value typed against the source document', () => {
+    const name = 'CopiedBlock';
+    install(name);
+    // Document A's block card holds a value typed against A's own definition,
+    // and the installed slot too -- the way a graph a plugin opens can, with
+    // no fold this session to have remembered A's definition.
+    const block = blockHolding(name, {
+      inner: { doc_a_secret: SOURCE_VALUE, installed_only_secret: KNOWN_VALUE },
+    });
+    openDocument('A', variant(name, 'documentA'), {
+      nodes: [block.instance], subgraphs: [block.definition],
+    });
+    select('block');
+    store().copySelectedNodes();
+    // The premise: the clipboard carries A's definition for the name.
+    expect(store().clipboard!.presets!.map((p) => p.category)).toEqual(['documentA']);
+    openDocument('C', variant(name, 'documentC'));
+    store().pasteNodes();
+    // The premise: C keeps its own definition, and the block arrived with both values.
+    expect(tab().presets.map((p) => p.category)).toEqual(['documentC']);
+    expect(JSON.stringify(tab().subgraphs)).toContain(SOURCE_VALUE);
+
+    expect(savedInner('inside')).toMatchObject({ doc_a_secret: '', installed_only_secret: '' });
+    expectWrittenNowhere(SOURCE_VALUE, KNOWN_VALUE);
+    expect(runInner('inside')).toMatchObject({
+      doc_a_secret: '', installed_only_secret: KNOWN_VALUE,
     });
   });
 });
