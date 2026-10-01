@@ -1041,6 +1041,7 @@ const zhTW: Record<TranslationKey, string> = {
   'packs.restart.elapsed': '已等待 {seconds} 秒',
   'packs.restart.timeout': '伺服器在 10 分鐘內未恢復。',
   'packs.restart.notStarted': '伺服器未重新啟動，請執行下列指令後重新載入：',
+  'packs.restart.return': '返回 CodefyUI',
   'packs.restart.reload': '立即重新載入',
 
   // The one pack toast fired from outside the pack store: a run stopped

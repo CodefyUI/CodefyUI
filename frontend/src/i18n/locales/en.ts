@@ -1208,6 +1208,7 @@ const en = {
   'packs.restart.elapsed': 'Waiting for {seconds} s',
   'packs.restart.timeout': 'The server has not come back after 10 minutes.',
   'packs.restart.notStarted': 'The server did not restart. Run this command, then reload:',
+  'packs.restart.return': 'Return to CodefyUI',
   'packs.restart.reload': 'Reload now',
 
   // The one pack toast fired from outside the pack store: a run stopped

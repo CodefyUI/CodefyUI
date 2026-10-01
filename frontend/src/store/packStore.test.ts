@@ -1579,6 +1579,45 @@ describe('packStore — restartFlow', () => {
     // Two health calls, not four hundred: the clock did the work.
     expect(api.fetchHealth).toHaveBeenCalledTimes(2);
   });
+
+  it.each(['timeout', 'notStarted'] as const)(
+    'dismisses the terminal %s restart state without reloading',
+    (phase) => {
+      usePackStore.setState({
+        restart: {
+          phase,
+          packId: 'gpu-torch',
+          startedAt: 123,
+          command: 'cdui install --gpu cu128',
+        },
+      });
+
+      usePackStore.getState().dismissRestart();
+
+      expect(usePackStore.getState().restart).toEqual({
+        phase: 'idle', packId: null, startedAt: null, command: null,
+      });
+      expect(reload).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(['idle', 'waiting'] as const)(
+    'does not dismiss the %s restart state',
+    (phase) => {
+      const restart = {
+        phase,
+        packId: phase === 'idle' ? null : 'gpu-torch',
+        startedAt: phase === 'idle' ? null : 123,
+        command: phase === 'idle' ? null : 'cmd',
+      };
+      usePackStore.setState({ restart });
+
+      usePackStore.getState().dismissRestart();
+
+      expect(usePackStore.getState().restart).toBe(restart);
+      expect(reload).not.toHaveBeenCalled();
+    },
+  );
 });
 
 // ── the once-per-page-load check ──────────────────────────────────────────

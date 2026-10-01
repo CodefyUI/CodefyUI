@@ -30,12 +30,13 @@ export function RestartOverlay() {
 
 function RestartOverlayBody({ restart }: { restart: RestartState }) {
   const { t } = useI18n();
+  const dismissRestart = usePackStore((state) => state.dismissRestart);
   const { phase, startedAt, command } = restart;
   const waiting = phase === 'waiting';
   const titleId = useId();
   const descId = useId();
   const cardRef = useRef<HTMLDivElement | null>(null);
-  const reloadRef = useRef<HTMLButtonElement | null>(null);
+  const returnRef = useRef<HTMLButtonElement | null>(null);
 
   // Wall clock rather than a tick count: a laptop that slept through the
   // restart fires no timers, and a counter of turns would claim four seconds
@@ -48,12 +49,11 @@ function RestartOverlayBody({ restart }: { restart: RestartState }) {
   }, [waiting]);
   const seconds = startedAt === null ? 0 : Math.max(0, Math.floor((now - startedAt) / 1000));
 
-  // Focus starts on the card, and MOVES to the reload button the moment a
-  // terminal phase appears: that button is the only thing left to do, and the
-  // user has been sitting with nothing to press for up to ten minutes.
+  // Focus starts on the card, and moves to Return when a terminal phase
+  // appears. Reload remains the keyboard-reachable alternative beside it.
   useEffect(() => {
     if (waiting) cardRef.current?.focus();
-    else reloadRef.current?.focus();
+    else returnRef.current?.focus();
   }, [waiting]);
 
   // Capture phase, so this runs before any handler on the page underneath.
@@ -114,7 +114,14 @@ function RestartOverlayBody({ restart }: { restart: RestartState }) {
             )}
             <div className={styles.actions}>
               <button
-                ref={reloadRef}
+                ref={returnRef}
+                type="button"
+                className={styles.returnBtn}
+                onClick={dismissRestart}
+              >
+                {t('packs.restart.return')}
+              </button>
+              <button
                 type="button"
                 className={styles.reloadBtn}
                 onClick={() => window.location.reload()}

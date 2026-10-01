@@ -232,6 +232,8 @@ interface PackState {
   /** Clear a finished job from the activity pane. Ignored while running. */
   dismissJob: () => void;
   restartFlow: (packId: string, command: string | null) => Promise<void>;
+  /** Leave a restart handshake only after it has reached a terminal state. */
+  dismissRestart: () => void;
   /** Once per page load: adopt a running job and report a finished restart. */
   checkInProgress: () => Promise<void>;
 }
@@ -875,6 +877,12 @@ export const usePackStore = create<PackState>((set, get) => ({
     const job = get().job;
     if (!job || !isTerminalPhase(job.status)) return;
     set({ job: null });
+  },
+
+  dismissRestart: () => {
+    const { phase } = get().restart;
+    if (phase !== 'timeout' && phase !== 'notStarted') return;
+    set({ restart: IDLE_RESTART });
   },
 
   restartFlow: async (packId, command) => {
