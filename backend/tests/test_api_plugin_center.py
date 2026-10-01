@@ -272,6 +272,25 @@ async def test_a_disabled_builtin_stays_listed_and_says_so(anon_client):
     assert row["installed_at"] == "2026-05-30T00:00:00Z"
 
 
+async def test_get_plugin_detail_returns_a_disabled_plugin(anon_client):
+    response = await anon_client.get("/api/plugins/deep")
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["id"] == "deep"
+    assert body["manifest"]["plugin"]["id"] == "deep"
+    assert body["lockfile_entry"]["enabled"] is False
+    assert body["nodes"] == []
+
+
+async def test_get_plugin_detail_codes_files_that_are_actually_missing(
+        anon_client):
+    response = await anon_client.get("/api/plugins/ghost-pack")
+
+    assert response.status_code == 404
+    assert response.json() == {"detail": {"code": "missing_files"}}
+
+
 async def test_an_uninstalled_builtin_names_the_nodes_it_would_add(anon_client):
     """Read as text off disk: the card has to say what the pack contains
     before the user agrees to run any of it."""
