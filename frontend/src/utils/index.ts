@@ -1,5 +1,5 @@
 import type { Node } from '@xyflow/react';
-import type { NodeData, NodeDefinition } from '../types';
+import type { NodeData, NodeDefinition, PresetDefinition } from '../types';
 import {
   SUBGRAPH_TYPE_PREFIX,
   instanceDefinition,
@@ -353,6 +353,35 @@ export function resolveDynamicInputs(
 }
 
 /**
+ * The card a preset node draws for `preset`: its category, description and
+ * ports, as a node-shaped definition. The one builder for every door a preset
+ * card comes through -- the palette (`addPresetNode`), the reader of a saved
+ * graph (`resolveSerializedNodes` below) and the re-attachment a paste, an
+ * insert and a restore make (`normalizePresetAttachments` in the tab store) --
+ * so a card cannot draw one definition while it runs another (#541).
+ */
+export function presetCardDefinition(preset: PresetDefinition): NodeDefinition {
+  return {
+    node_name: preset.preset_name,
+    category: preset.category,
+    description: preset.description,
+    inputs: preset.exposed_inputs.map((p) => ({
+      name: p.name,
+      data_type: p.data_type,
+      description: p.description,
+      optional: false,
+    })),
+    outputs: preset.exposed_outputs.map((p) => ({
+      name: p.name,
+      data_type: p.data_type,
+      description: p.description,
+      optional: false,
+    })),
+    params: [],
+  };
+}
+
+/**
  * Reconstruct full ReactFlow nodes from the minimal serialized graph format.
  * The serialized format (from getSerializedGraph / backend save) only stores:
  *   { id, type, position, data: { params, internalParams? } }
@@ -439,24 +468,7 @@ export function resolveSerializedNodes(
       const preset = presetMap.get(presetName);
       const internalParams = raw.data?.internalParams ?? {};
       const definition: import('../types').NodeDefinition = preset
-        ? {
-            node_name: preset.preset_name,
-            category: preset.category,
-            description: preset.description,
-            inputs: preset.exposed_inputs.map((p) => ({
-              name: p.name,
-              data_type: p.data_type,
-              description: p.description,
-              optional: false,
-            })),
-            outputs: preset.exposed_outputs.map((p) => ({
-              name: p.name,
-              data_type: p.data_type,
-              description: p.description,
-              optional: false,
-            })),
-            params: [],
-          }
+        ? presetCardDefinition(preset)
         : { node_name: presetName, category: 'Preset', description: '', inputs: [], outputs: [], params: [] };
       return {
         id: raw.id,

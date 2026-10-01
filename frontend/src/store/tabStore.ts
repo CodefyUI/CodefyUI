@@ -11,6 +11,7 @@ import {
   resolveSerializedEdges,
   resolveSerializedNodes,
   migrateStaleEdgeStrokes,
+  presetCardDefinition,
 } from '../utils';
 import {
   useNodeDefStore,
@@ -1400,6 +1401,22 @@ function bypassPatch(
   };
 }
 
+/**
+ * Attach each preset node to the definition its document owns under that
+ * name (#541), and redraw the card from that definition.
+ *
+ * A pasted or inserted card arrives drawn from the definition it had where it
+ * came from, typically the installed one. Swapping only the attachment left
+ * the Node Config panel and the ports showing that definition while Configure
+ * and the run used the document's -- the reason `mergeIncomingSubgraphs`
+ * re-renders a pasted subgraph instance.
+ *
+ * Only what the definition draws is replaced. `internalParams` are the card's
+ * own settings and stay. So does the label: every same-name definition draws
+ * the same one, the preset's name, so a redraw could only undo a rename. Wires
+ * are not touched either, as with a subgraph instance: one pasted onto a port
+ * the attached definition lacks is kept as it came.
+ */
 function normalizePresetAttachments(
   nodes: Node<NodeData>[],
   presets: PresetDefinition[],
@@ -1411,7 +1428,14 @@ function normalizePresetAttachments(
     if (typeof type !== 'string' || !type.startsWith('preset:')) return node;
     const definition = byName.get(type.slice('preset:'.length));
     if (!definition || node.data.presetDefinition === definition) return node;
-    return { ...node, data: { ...node.data, presetDefinition: definition } };
+    return {
+      ...node,
+      data: {
+        ...node.data,
+        presetDefinition: definition,
+        definition: presetCardDefinition(definition),
+      },
+    };
   });
 }
 
@@ -1577,6 +1601,62 @@ function referencedPresetDefinitions(
   return stripPresetDefinitionSecrets(referenced);
 }
 
+/**
+ * Blank the SECRET values in one preset node's `internalParams` (#541).
+ *
+ * The one rule for a preset node wherever it is written: on the canvas
+ * (`getSerializedGraphOf`, `stripNodeSecretsForPersist`) and inside a block
+ * (`stripSubgraphSecrets`). The canvas paths used to ask only the definition
+ * attached to the node. A card pasted at the top level of a document that owns
+ * its name is attached to the document's definition, so a value typed against
+ * the installed definition -- in a slot only that one declares SECRET -- went
+ * into autosave and every export.
+ *
+ * A run uses one definition per name. The scrub takes every definition that
+ * can give the name a meaning: the one attached to the node (a node inside a
+ * block has none), the document's own (`ownedPresets`) and the installed one,
+ * each the first of its list by that name -- plus the slots remembered this
+ * session (`rememberedPresetSecrets`). Those cover a definition that has left
+ * its list: the installed preset a pasted value was typed against can drop out
+ * of the palette (a plugin disabled) while the document's definition, which
+ * never declared that slot, stays. The remembered slots only ever blank;
+ * nothing runs or draws from them.
+ *
+ * `keepSecrets` (Run) keeps the values the server blanks in the run it stores.
+ * It blanks the SECRET slots that the definition the run uses -- attached, else
+ * owned, else installed -- declares and the server would miss, and, with no
+ * definition at all, the remembered slots.
+ */
+function stripPresetNodeSecrets(
+  internalParams: Record<string, Record<string, any>> | undefined,
+  presetName: string,
+  attached: PresetDefinition | undefined,
+  ownedPresets: readonly PresetDefinition[] | undefined,
+  keepSecrets: boolean,
+): Record<string, Record<string, any>> | undefined {
+  const named = (list: readonly PresetDefinition[] | undefined) =>
+    (Array.isArray(list) ? list : []).find((p) => p.preset_name === presetName);
+  const owned = named(ownedPresets);
+  const installed = named(useNodeDefStore.getState().presets);
+  const running = attached ?? owned ?? installed;
+  if (keepSecrets && running) {
+    return stripSecretInternalParams(internalParams, presetSecretsTheServerMisses(running));
+  }
+  // With no definition at all, Run reaches this line too, and the remembered
+  // slots are all that is left.
+  const declaring = [
+    ...new Set([attached, owned, installed, rememberedPresetSecrets(presetName)]),
+  ].filter((candidate): candidate is PresetDefinition => candidate !== undefined);
+  return stripSecretInternalParams(internalParams, declaring);
+}
+
+/** The preset a canvas preset node's type names. */
+function presetNameOf(data: NodeData): string {
+  return typeof data.type === 'string' && data.type.startsWith('preset:')
+    ? data.type.slice('preset:'.length)
+    : data.presetDefinition?.preset_name ?? '';
+}
+
 // Blank every SECRET-typed value inside SUBGRAPH DEFINITIONS (core#137).
 //
 // A node that lives inside a collapsed block is an ordinary node holding an
@@ -1605,14 +1685,8 @@ function stripSubgraphSecrets(
   ownedPresets: PresetDefinition[] = [],
 ): SubgraphDefinition[] {
   if (!subgraphs.length) return subgraphs;
-  const { definitions, presets } = useNodeDefStore.getState();
+  const { definitions } = useNodeDefStore.getState();
   const defByName = new Map(definitions.map((d) => [d.node_name, d]));
-  const ownedByName = new Map(
-    effectivePresets(ownedPresets, []).map((p) => [p.preset_name, p]),
-  );
-  const installedByName = new Map(
-    effectivePresets(presets, []).map((p) => [p.preset_name, p]),
-  );
   let listChanged = false;
   const next = subgraphs.map((definition) => {
     let changed = false;
@@ -1640,21 +1714,14 @@ function stripSubgraphSecrets(
       // brought, after the next fetch) gets no definition into `presets[]`
       // from a block, and without one the server cannot place its slots, so
       // Run blanks every one.
-      const presetName = type.slice('preset:'.length);
-      const ownedPreset = ownedByName.get(presetName);
-      const installedPreset = installedByName.get(presetName);
-      const winningPreset = ownedPreset ?? installedPreset;
-      const scrubPresets = [ownedPreset, installedPreset].filter(
-        (candidate): candidate is PresetDefinition => candidate !== undefined,
-      );
       const internalParams = type.startsWith('preset:')
-        ? stripSecretInternalParams(
+        ? stripPresetNodeSecrets(
             data.internalParams,
-            keepSecrets && winningPreset
-              ? presetSecretsTheServerMisses(winningPreset)
-              : scrubPresets.length
-                ? scrubPresets
-                : rememberedPresetSecrets(presetName),
+            type.slice('preset:'.length),
+            // A node in a block carries no definition of its own.
+            undefined,
+            ownedPresets,
+            keepSecrets,
           )
         : data.internalParams;
       if (params === data.params && internalParams === data.internalParams) {
@@ -1756,17 +1823,24 @@ function presetSecretsTheServerMisses(
 
 // Return a copy of `nodes` with every SECRET-typed value blanked in both
 // `data.params` (via the node definition) and, for preset nodes,
-// `data.internalParams` (via the preset's exposed_params). Nodes with no
+// `data.internalParams` (via `stripPresetNodeSecrets`). Nodes with no
 // secret are returned by identity so persistence stays cheap. Used before
 // writing to localStorage so a typed API key never survives a page refresh —
 // honouring the field's "Session only" promise (a refresh drops typed keys).
 function stripNodeSecretsForPersist(
   nodes: Node<NodeData>[],
+  ownedPresets: PresetDefinition[] | undefined,
 ): Node<NodeData>[] {
   return nodes.map((n) => {
     const params = stripSecretParams(n.data.params, n.data.definition);
     const internalParams = n.data.isPreset
-      ? stripSecretInternalParams(n.data.internalParams, n.data.presetDefinition)
+      ? stripPresetNodeSecrets(
+          n.data.internalParams,
+          presetNameOf(n.data),
+          n.data.presetDefinition,
+          ownedPresets,
+          false,
+        )
       : n.data.internalParams;
     const { presetDefinition: _presetDefinition, ...dataWithoutPresetDefinition } = n.data;
     return {
@@ -1921,7 +1995,7 @@ function buildPersistedTab(input: TabState): PersistedTab {
     // BOTH places this record carries nodes; stripping only the top level
     // means the promise above holds or not depending on whether the user
     // happened to collapse the node holding the key into a block.
-    nodes: stripNodeSecretsForPersist(t.nodes),
+    nodes: stripNodeSecretsForPersist(t.nodes, t.presets),
     edges: t.edges,
     ...(presets.length ? { presets } : {}),
     segmentGroups: t.segmentGroups,
@@ -2953,24 +3027,7 @@ export const useTabStore = create<TabStoreState>((rawSet, get) => {
     for (const n of effective.nodes) {
       internalParams[n.id] = { ...n.params };
     }
-    const definition: NodeDefinition = {
-      node_name: effective.preset_name,
-      category: effective.category,
-      description: effective.description,
-      inputs: effective.exposed_inputs.map((p) => ({
-        name: p.name,
-        data_type: p.data_type,
-        description: p.description,
-        optional: false,
-      })),
-      outputs: effective.exposed_outputs.map((p) => ({
-        name: p.name,
-        data_type: p.data_type,
-        description: p.description,
-        optional: false,
-      })),
-      params: [],
-    };
+    const definition = presetCardDefinition(effective);
     const node: Node<NodeData> = {
       id: generateId(),
       type: 'presetNode',
@@ -3329,11 +3386,12 @@ export const useTabStore = create<TabStoreState>((rawSet, get) => {
           ),
           ...(n.data.isPreset
             ? {
-                internalParams: stripSecretInternalParams(
+                internalParams: stripPresetNodeSecrets(
                   n.data.internalParams,
-                  keepSecrets
-                    ? presetSecretsTheServerMisses(n.data.presetDefinition)
-                    : n.data.presetDefinition,
+                  presetNameOf(n.data),
+                  n.data.presetDefinition,
+                  tab.presets,
+                  keepSecrets,
                 ),
               }
             : {}),
