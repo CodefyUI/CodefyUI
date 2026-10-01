@@ -301,3 +301,48 @@ def test_all_three_carriers_are_reported_together():
         {"node_id": "blk/in", "param": "openai_api_key"},
         {"node_id": "preset:P/def", "param": "openai_api_key"},
     ]
+
+
+# ── A graph-owned definition that does not parse (#541) ──────────────
+
+
+@pytest.fixture
+def _installed_plain_chat():
+    """An installed ``PlainChat`` whose inner ``chat`` is a Print: nothing
+    there that the server would call a key."""
+    preset_registry._presets["PlainChat"] = PresetDefinition(
+        preset_name="PlainChat", category="Test", description="",
+        nodes=[InternalNodeSchema(id="chat", type="Print", params={})],
+        edges=[], exposed_inputs=[], exposed_outputs=[], exposed_params=[],
+    )
+    try:
+        yield
+    finally:
+        preset_registry._presets.pop("PlainChat", None)
+
+
+def test_save_scrub_and_publish_gate_withhold_an_unreadable_preset_s_values(
+        _installed_plain_chat):
+    """The graph's own ``PlainChat`` (an LLMChat at ``chat``) lacks its
+    ``description``. Its name is unknown to both walks rather than read
+    through the installed definition, so every value counts."""
+    from app.core.graph_engine import build_preset_fallback
+
+    fallback = build_preset_fallback([{
+        "preset_name": "PlainChat", "category": "Test", "tags": [],
+        "nodes": [{"id": "chat", "type": "LLMChat", "params": {}}],
+        "edges": [], "exposed_inputs": [], "exposed_outputs": [],
+        "exposed_params": [],
+    }])
+    nodes = [{"id": "p", "type": "preset:PlainChat", "data": {
+        "params": {},
+        "internalParams": {"chat": {"openai_api_key": "sk-leak", "model": "m"}},
+    }}]
+
+    assert find_secret_violations(nodes, preset_fallback=fallback) == [
+        {"node_id": "p", "param": "chat.model"},
+        {"node_id": "p", "param": "chat.openai_api_key"},
+    ]
+    assert scrub_graph_secrets(nodes, preset_fallback=fallback) == 2
+    assert nodes[0]["data"]["internalParams"] == {
+        "chat": {"openai_api_key": "", "model": ""}}
