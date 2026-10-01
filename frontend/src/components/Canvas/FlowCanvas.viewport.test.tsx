@@ -6,6 +6,7 @@ import type { Node } from '@xyflow/react';
 
 import { FlowCanvas } from './FlowCanvas';
 import { useTabStore } from '../../store/tabStore';
+import { useUIStore } from '../../store/uiStore';
 import type { NodeData } from '../../types';
 import {
   recallViewport,
@@ -66,11 +67,16 @@ function ViewportProbe() {
   return null;
 }
 
+function ActiveFlowCanvas() {
+  const tabId = useTabStore((state) => state.activeTabId);
+  return <FlowCanvas tabId={tabId} />;
+}
+
 function mount(strict = false) {
   const tree = (
     <ReactFlowProvider>
       <ViewportProbe />
-      <FlowCanvas tabId="tab-a" />
+      <ActiveFlowCanvas />
     </ReactFlowProvider>
   );
   return render(strict ? <StrictMode>{tree}</StrictMode> : tree);
@@ -108,15 +114,42 @@ function withCanvasSize(width = 900, height = 600): () => void {
   };
 }
 
+const A_LAYOUT_BOUNDS = { x: 0, y: 0, width: 480, height: 80 };
+
+function positionTabNode(tabId: string, nodeId: string, x: number, y: number) {
+  useTabStore.setState((state) => ({
+    tabs: state.tabs.map((tab) =>
+      tab.id === tabId
+        ? {
+            ...tab,
+            nodes: tab.nodes.map((item) =>
+              item.id === nodeId ? { ...item, position: { x, y } } : item,
+            ),
+          }
+        : tab,
+    ),
+  }));
+}
+
+function expectFlowPointOnCanvas(point: { x: number; y: number }) {
+  const screen = flow!.flowToScreenPosition(point);
+  expect(screen.x).toBeGreaterThanOrEqual(0);
+  expect(screen.x).toBeLessThanOrEqual(900);
+  expect(screen.y).toBeGreaterThanOrEqual(0);
+  expect(screen.y).toBeLessThanOrEqual(600);
+}
+
 beforeEach(() => {
   _resetViewportMemory();
   seedTabs();
+  useUIStore.setState({ layoutFitRequests: {} });
   flow = null;
 });
 
 afterEach(() => {
   cleanup();
   _resetViewportMemory();
+  useUIStore.setState({ layoutFitRequests: {} });
   useTabStore.setState({ tabs: ORIGINAL_TABS, activeTabId: ORIGINAL_ACTIVE });
 });
 
@@ -212,6 +245,59 @@ describe('FlowCanvas per-tab viewport', () => {
       useTabStore.getState().removeTab('tab-a');
     });
     expect(recallViewport('tab-a')).toBeUndefined();
+  });
+
+  it('does not let B consume A\'s fit when A layout precedes the switch in one act', () => {
+    const restore = withCanvasSize(900, 600);
+    try {
+      positionTabNode('tab-a', 'a1', 5000, 5000);
+      positionTabNode('tab-b', 'b1', 20000, 20000);
+      mount();
+      setViewport({ x: -4900, y: -4900, zoom: 1 });
+
+      act(() => {
+        useUIStore.getState().requestLayoutFit('tab-a', A_LAYOUT_BOUNDS);
+        useTabStore.getState().setActiveTab('tab-b');
+      });
+
+      expectFlowPointOnCanvas({ x: 20000, y: 20000 });
+      expect(useUIStore.getState().layoutFitRequests['tab-a']).toEqual({
+        bounds: A_LAYOUT_BOUNDS,
+      });
+
+      switchTo('tab-a');
+      expectFlowPointOnCanvas({ x: A_LAYOUT_BOUNDS.x, y: A_LAYOUT_BOUNDS.y });
+      expect(useUIStore.getState().layoutFitRequests['tab-a']).toBeUndefined();
+    } finally {
+      restore();
+    }
+  });
+
+  it('lets A\'s pending fit beat its remembered view when the switch precedes layout in one act', () => {
+    const restore = withCanvasSize(900, 600);
+    try {
+      positionTabNode('tab-a', 'a1', 5000, 5000);
+      positionTabNode('tab-b', 'b1', 20000, 20000);
+      mount();
+      setViewport({ x: -4900, y: -4900, zoom: 1 });
+
+      act(() => {
+        useTabStore.getState().setActiveTab('tab-b');
+        useUIStore.getState().requestLayoutFit('tab-a', A_LAYOUT_BOUNDS);
+      });
+
+      expectFlowPointOnCanvas({ x: 20000, y: 20000 });
+      expect(useUIStore.getState().layoutFitRequests['tab-a']).toEqual({
+        bounds: A_LAYOUT_BOUNDS,
+      });
+
+      switchTo('tab-a');
+      expect(flow!.getViewport()).not.toEqual({ x: -4900, y: -4900, zoom: 1 });
+      expectFlowPointOnCanvas({ x: A_LAYOUT_BOUNDS.x, y: A_LAYOUT_BOUNDS.y });
+      expect(useUIStore.getState().layoutFitRequests['tab-a']).toBeUndefined();
+    } finally {
+      restore();
+    }
   });
 
   it('leaves a remembered viewport alone when nothing switches', () => {

@@ -39,6 +39,7 @@ describe('useUIStore', () => {
       reconnectingHandle: null,
       beginnerMode: false,
       lastLayoutMode: 'experiments',
+      layoutFitRequests: {},
       fontSize: 'default',
       globalDevice: 'cpu',
       edgeStyle: 'circuit',
@@ -342,6 +343,49 @@ describe('useUIStore', () => {
       useUIStore.getState().setLastLayoutMode('experiments');
       expect(useUIStore.getState().lastLayoutMode).toBe('experiments');
       expect(localStorage.getItem(KEYS.LAYOUT_MODE)).toBe('experiments');
+    });
+  });
+
+  describe('tab-bound layout fits', () => {
+    const a1 = { x: 1, y: 2, width: 300, height: 100 };
+    const a2 = { x: 9, y: 8, width: 700, height: 400 };
+    const b = { x: 20, y: 30, width: 200, height: 80 };
+
+    it('keeps independent pending requests for different tabs', () => {
+      useUIStore.getState().requestLayoutFit('tab-a', a1);
+      useUIStore.getState().requestLayoutFit('tab-b', b);
+
+      expect(useUIStore.getState().layoutFitRequests).toEqual({
+        'tab-a': { bounds: a1 },
+        'tab-b': { bounds: b },
+      });
+    });
+
+    it('replaces only the older request for the same tab', () => {
+      useUIStore.getState().requestLayoutFit('tab-a', a1);
+      useUIStore.getState().requestLayoutFit('tab-b', b);
+      useUIStore.getState().requestLayoutFit('tab-a', a2);
+
+      expect(useUIStore.getState().layoutFitRequests).toEqual({
+        'tab-a': { bounds: a2 },
+        'tab-b': { bounds: b },
+      });
+    });
+
+    it('clears one tab without consuming another tab request', () => {
+      useUIStore.getState().requestLayoutFit('tab-a', a1);
+      useUIStore.getState().requestLayoutFit('tab-b', b);
+      useUIStore.getState().clearLayoutFit('tab-a');
+
+      expect(useUIStore.getState().layoutFitRequests).toEqual({
+        'tab-b': { bounds: b },
+      });
+    });
+
+    it('is transient and writes no browser preference', () => {
+      useUIStore.getState().requestLayoutFit('tab-a', a1);
+      useUIStore.getState().clearLayoutFit('tab-a');
+      expect(localStorage.length).toBe(0);
     });
   });
 

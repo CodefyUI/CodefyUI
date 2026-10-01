@@ -22,7 +22,6 @@ import type { NodeDefinition, WorkspaceSource } from '../types';
 import { layoutAllTargetIds, layoutFitBounds, layoutTargetsChanged } from '../utils/autoLayout';
 import { resolveUnboundDocument } from '../utils/openExample';
 import { subgraphViewPath } from '../utils/subgraph';
-import { forgetViewport } from '../utils/viewportMemory';
 import { MAX_WORKSPACE_GRAPH_BYTES, MAX_WORKSPACE_TABS } from '../utils/workspaceLimits';
 import { applyGraphOps, type ApplyOutcome, type GraphOp, type OpResult } from './ops';
 import { registerNodeRenderer, type PluginNodeRenderer } from './nodeRenderers';
@@ -442,11 +441,9 @@ function commitToTab(
  * leaves every node where it was, and a fit would pull a user who had zoomed
  * in back out for nothing.
  *
- * Only the tab on screen gets a fit request. The request names no tab and the
- * canvas on screen consumes it, so a fit asked for a background tab would move
- * the ACTIVE view to that tab's coordinates. A background tab forgets its
- * remembered pan and zoom instead, and the next switch to it fits its whole
- * graph rather than restoring a view aimed at where the nodes used to be.
+ * The fit request belongs to `tabId`: a visible tab consumes it immediately,
+ * while a background tab keeps it until the next time that tab is shown. A
+ * synchronous tab switch therefore cannot transfer the fit to another graph.
  *
  * Unlike the toolbar, no toast about unbound notes: Graph Copilot ends every
  * structural batch with `auto_layout`, so the warning would answer each batch.
@@ -457,12 +454,8 @@ function fitViewToLayout(
   after: ApplyOutcome['nodes'],
 ): void {
   if (!layoutTargetsChanged(before, after)) return;
-  if (tabId !== useTabStore.getState().activeTabId) {
-    forgetViewport(tabId);
-    return;
-  }
   const bounds = layoutFitBounds(after, layoutAllTargetIds(after));
-  if (bounds) useUIStore.getState().requestLayoutFit(bounds);
+  if (bounds) useUIStore.getState().requestLayoutFit(tabId, bounds);
 }
 
 /** The tab-addressed write path, as `api.workspace.applyOperations` exposes it. */

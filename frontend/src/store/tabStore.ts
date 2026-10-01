@@ -2381,6 +2381,7 @@ export const useTabStore = create<TabStoreState>((rawSet, get) => {
     // The shared canvas keeps each tab's pan/zoom keyed by id (#125); a
     // closed tab's entry would otherwise outlive it for the whole session.
     forgetViewport(id);
+    useUIStore.getState().clearLayoutFit(id);
 
     const remaining = tabs.filter((t) => t.id !== id);
     // Closing the LAST tab is allowed, and leaves the workspace with no tab at
@@ -3890,7 +3891,7 @@ export const useTabStore = create<TabStoreState>((rawSet, get) => {
     if (at) return;
     const inserted = nodesBoundingBox(newNodes as Node[]);
     if (inserted && inserted.width > 0 && inserted.height > 0) {
-      useUIStore.getState().requestLayoutFit(inserted);
+      useUIStore.getState().requestLayoutFit(tab.id, inserted);
     }
   },
 
@@ -4034,7 +4035,7 @@ export const useTabStore = create<TabStoreState>((rawSet, get) => {
         newNodes.filter((n) => fitIds.has(n.id)) as Node[],
       );
       if (bounds && bounds.width > 0 && bounds.height > 0) {
-        useUIStore.getState().requestLayoutFit(bounds);
+        useUIStore.getState().requestLayoutFit(tabId, bounds);
       }
     }
     // Warn if there are unbound notes on the canvas

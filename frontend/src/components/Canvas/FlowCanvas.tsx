@@ -207,7 +207,10 @@ export function FlowCanvas({ tabId }: { tabId?: string } = {}) {
   const gridSnapEnabled = useUIStore((s) => s.gridSnapEnabled);
   const setCanvasPanning = useUIStore((s) => s.setCanvasPanning);
   const setNodes = useTabStore((s) => s.setNodes);
-  const layoutFitRequest = useUIStore((s) => s.layoutFitRequest);
+  const displayedTabId = tabId ?? activeTabId;
+  const layoutFitRequest = useUIStore(
+    (state) => state.layoutFitRequests[displayedTabId],
+  );
   const { screenToFlowPosition, fitBounds, getViewport, setViewport } =
     useReactFlow();
 
@@ -280,6 +283,15 @@ export function FlowCanvas({ tabId }: { tabId?: string } = {}) {
     if (previous === null) return;
 
     rememberViewport(previous, getViewport());
+    // A fit belongs to the incoming tab. Consume it before remembered or
+    // first-visit state so a request queued during the same handler cannot be
+    // stolen by the tab that happened to become active next.
+    const pendingFit = useUIStore.getState().layoutFitRequests[activeTabId];
+    if (pendingFit) {
+      fitToBounds(pendingFit.bounds);
+      useUIStore.getState().clearLayoutFit(activeTabId);
+      return;
+    }
     const restored = recallViewport(activeTabId);
     if (restored) {
       setViewport(restored);
@@ -316,20 +328,18 @@ export function FlowCanvas({ tabId }: { tabId?: string } = {}) {
   // Re-fit the viewport after auto-layout. The request already carries the
   // laid-out bounding box (computed from store data), so this needs nothing
   // from React Flow's internal position sync — fitBounds sets the viewport
-  // directly and immediately. (The queued fitView() from useReactFlow only
-  // flushes on the next node change, and reading positions back via
-  // getNodesBounds races the sync — both failure modes seen in e2e.) Since
-  // #125 only the active tab's canvas is mounted, so the `tabId` check below
-  // is belt-and-braces (a harness can still mount several); the one-shot
-  // request is cleared either way so a remount can't replay it.
+  // directly and immediately. A request is keyed to the tab whose nodes moved,
+  // so another tab activated in the same event cannot consume it. Handoff
+  // handles an incoming request before remembered/first-visit views; this
+  // passive effect handles a request for the tab already on screen.
   useEffect(() => {
     if (!layoutFitRequest) return;
     const el = containerRef.current;
     if (!el || el.offsetWidth === 0) return;
-    if (tabId !== undefined && tabId !== useTabStore.getState().activeTabId) return;
+    if (displayedTabId !== useTabStore.getState().activeTabId) return;
     fitToBounds(layoutFitRequest.bounds);
-    useUIStore.getState().clearLayoutFit();
-  }, [layoutFitRequest, fitToBounds, tabId]);
+    useUIStore.getState().clearLayoutFit(displayedTabId);
+  }, [layoutFitRequest, fitToBounds, displayedTabId]);
 
   const [quickSearch, setQuickSearch] = useState<{
     screen: { x: number; y: number };
