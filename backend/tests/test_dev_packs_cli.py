@@ -29,9 +29,14 @@ import io
 import json
 import os
 import signal
+import subprocess
 import sys
+import textwrap
+import threading
+import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -462,31 +467,367 @@ def test_cli_install_cancelled_exits_130(probed, fake_flow, capsys):
     assert packs.main(["install", "sentence-embeddings", "--yes"]) == 130
 
 
+_CANCELLING = "Cancelling... (finishing the current step)"
+
+
 def test_ctrl_c_sets_the_cancel_flag_instead_of_tracebacking(
         probed, monkeypatch, capsys):
-    """SIGINT during an install must reach the flow as a cancel REQUEST.
-
-    Raising KeyboardInterrupt out of the handler would unwind through the
-    downloader's own cleanup, leaving a half-written cache and a traceback
-    where a learner expects "cancelled".
-    """
-    import signal
-
+    """The first SIGINT requests cleanup and says so; a second uses the OS
+    default."""
     from app.core.packs import flows
     from app.core.packs.errors import PackCancelled
+
+    close_calls = 0
+    warn_calls = 0
+    real_close = packs._ConsoleReporter.close
+    real_warn = packs.warn
+
+    def _close_spy(reporter):
+        nonlocal close_calls
+        close_calls += 1
+        return real_close(reporter)
+
+    def _warn_spy(zh, en):
+        nonlocal warn_calls
+        warn_calls += 1
+        return real_warn(zh, en)
+
+    monkeypatch.setattr(packs._ConsoleReporter, "close", _close_spy)
+    monkeypatch.setattr(packs, "warn", _warn_spy)
 
     def _fake(pack, item_ids, *, emit, cancel_check):
         assert cancel_check() is False
         handler = signal.getsignal(signal.SIGINT)
         assert callable(handler), "the CLI must own SIGINT while installing"
+        capsys.readouterr()
+        close_before = close_calls
+        warn_before = warn_calls
+
         handler(signal.SIGINT, None)                     # simulate Ctrl-C
+
+        # Said at once, by the handler, and not through warn() or the
+        # reporter: both write to the buffered stdout the press interrupted.
+        captured = capsys.readouterr()
+        assert captured.out.count(_CANCELLING) == 1 and captured.err == ""
+        assert close_calls == close_before
+        assert warn_calls == warn_before
+        assert signal.getsignal(signal.SIGINT) is signal.SIG_DFL
+        # Calling the captured function again is safe; a real second Ctrl-C is
+        # delivered to SIG_DFL instead and exits the process immediately.
+        handler(signal.SIGINT, None)
+        # The poll sees the request without saying it a second time.
         assert cancel_check() is True
+        captured = capsys.readouterr()
+        assert captured.out == "" and captured.err == ""
         raise PackCancelled("cancelled")
 
     before = signal.getsignal(signal.SIGINT)
     monkeypatch.setattr(flows, "install_pack_live", _fake)
     assert packs.main(["install", "sentence-embeddings", "--yes"]) == 130
+    text = capsys.readouterr().out
+    assert _CANCELLING not in text
+    assert text.count("Cancelled") == 1
     assert signal.getsignal(signal.SIGINT) is before, "SIGINT was not restored"
+
+
+def test_the_first_ctrl_c_arms_the_default_before_it_sets_the_flag(
+        probed, monkeypatch):
+    """``Event.set()`` holds a lock that is not re-entrant.
+
+    A second press handled while the first handler holds it would wait on it
+    forever, and one handled after ``set()`` but before the default was armed
+    would be swallowed as a repeat. So the default goes first: by the time the
+    flag is set, a second press already ends the process.
+    """
+    from app.core.packs import flows
+    from app.core.packs.errors import PackCancelled
+
+    armed_at_set = []
+
+    class _Event(threading.Event):
+        def set(self):
+            armed_at_set.append(signal.getsignal(signal.SIGINT))
+            super().set()
+
+    monkeypatch.setattr(packs, "threading", SimpleNamespace(Event=_Event))
+
+    def _fake(pack, item_ids, *, emit, cancel_check):
+        signal.getsignal(signal.SIGINT)(signal.SIGINT, None)
+        raise PackCancelled("cancelled")
+
+    monkeypatch.setattr(flows, "install_pack_live", _fake)
+    assert packs.main(["install", "sentence-embeddings", "--yes"]) == 130
+    assert armed_at_set == [signal.SIG_DFL]
+
+
+class _StdoutMidWrite(io.TextIOWrapper):
+    """A stdout that is in the middle of a write when Ctrl-C lands.
+
+    Writing text that contains ``interrupt_on`` runs the SIGINT handler from
+    inside ``write`` -- where a real press arrives mid-``print`` -- and any
+    write made from in there fails the way CPython's buffered writer fails a
+    re-entrant one (#489).
+    """
+
+    def __init__(self) -> None:
+        super().__init__(io.BytesIO(), encoding="utf-8", newline="",
+                         write_through=True)
+        self.interrupt_on: str | None = None
+        self._writing = False
+
+    def write(self, text: str) -> int:
+        if self._writing:
+            raise RuntimeError("reentrant call inside <stdout>")
+        self._writing = True
+        try:
+            if self.interrupt_on is not None and self.interrupt_on in text:
+                self.interrupt_on = None
+                signal.getsignal(signal.SIGINT)(signal.SIGINT, None)
+            return super().write(text)
+        finally:
+            self._writing = False
+
+    def text(self) -> str:
+        return self.buffer.getvalue().decode("utf-8")
+
+
+def test_the_cancelling_notice_is_written_at_once_without_reentering_stdout(
+        probed, monkeypatch):
+    """A step that never polls still shows the press at once.
+
+    The GloVe conversion never calls ``cancel_check``, so a notice left to
+    the next poll is a press that shows nothing. The handler writes it itself
+    -- under the text stream, because the press can land inside a ``print``
+    to that very stream.
+    """
+    from app.core.packs import flows
+    from app.core.packs.errors import PackCancelled
+
+    stdout = _StdoutMidWrite()
+    monkeypatch.setattr(sys, "stdout", stdout)
+
+    def _fake(pack, item_ids, *, emit, cancel_check):
+        stdout.interrupt_on = "<<converting>>"
+        print("<<converting>>")
+        assert stdout.text().count(_CANCELLING) == 1, "the press said nothing"
+        assert cancel_check() is True
+        raise PackCancelled("cancelled")
+
+    monkeypatch.setattr(flows, "install_pack_live", _fake)
+    assert packs.main(["install", "sentence-embeddings", "--yes"]) == 130
+    text = stdout.text()
+    assert text.count(_CANCELLING) == 1
+    assert text.count("Cancelled") == 1
+
+
+def test_a_ctrl_c_mid_download_ends_the_bar_before_it_says_so(
+        probed, monkeypatch, capsys):
+    """The bar keeps its line, the notice gets the next one, and nothing
+    leaves a blank line behind -- what ``close()`` then ``warn()`` printed."""
+    from app.core.packs import flows
+    from app.core.packs.errors import PackCancelled
+
+    def _fake(pack, item_ids, *, emit, cancel_check):
+        emit({"type": "progress", "item": "x", "bytes_done": 1,
+              "bytes_total": 2})
+        capsys.readouterr()
+        signal.getsignal(signal.SIGINT)(signal.SIGINT, None)
+        assert capsys.readouterr().out == (
+            f"{os.linesep}  {packs.YELLOW}! {_CANCELLING}{packs.RESET}"
+            f"{os.linesep}")
+        assert cancel_check() is True
+        raise PackCancelled("cancelled")
+
+    monkeypatch.setattr(flows, "install_pack_live", _fake)
+    assert packs.main(["install", "sentence-embeddings", "--yes"]) == 130
+    assert capsys.readouterr().out == (
+        f"  {packs.YELLOW}! Cancelled{packs.RESET}\n")
+
+
+def _text_of(stdout) -> str:
+    stdout.flush()
+    if isinstance(stdout, io.StringIO):
+        return stdout.getvalue()
+    return stdout.buffer.getvalue().decode("utf-8")
+
+
+@pytest.mark.parametrize("make_stdout", [
+    io.StringIO,
+    lambda: io.TextIOWrapper(io.BytesIO(), encoding="utf-8", newline=""),
+], ids=["no-raw-layer", "block-buffered"])
+def test_where_the_handler_cannot_write_in_order_the_first_poll_says_it(
+        make_stdout, probed, monkeypatch):
+    """A stdout with no raw layer (a ``StringIO``) gives the handler nothing
+    to write to, and one that flushes only when its buffer fills -- stdout
+    redirected to a file -- would put the line ahead of lines still waiting
+    in the buffer. The first poll says it instead: once, and in order."""
+    from app.core.packs import flows
+    from app.core.packs.errors import PackCancelled
+
+    stdout = make_stdout()
+    monkeypatch.setattr(sys, "stdout", stdout)
+
+    def _fake(pack, item_ids, *, emit, cancel_check):
+        print("<<before the press>>")
+        signal.getsignal(signal.SIGINT)(signal.SIGINT, None)
+        assert cancel_check() is True
+        assert cancel_check() is True
+        raise PackCancelled("cancelled")
+
+    monkeypatch.setattr(flows, "install_pack_live", _fake)
+    assert packs.main(["install", "sentence-embeddings", "--yes"]) == 130
+    text = _text_of(stdout)
+    assert text.count(_CANCELLING) == 1
+    assert text.index("<<before the press>>") < text.index(_CANCELLING)
+
+
+@pytest.mark.parametrize("returns", [
+    lambda data: None,
+    lambda data: len(data) - 1,
+], ids=["none", "short"])
+def test_a_notice_the_raw_layer_did_not_take_whole_is_left_to_the_poll(
+        returns, probed, monkeypatch):
+    """A full non-blocking stdout makes ``raw.write`` return None, and it can
+    take only part of the line. Counted as written, the notice is lost and the
+    poll stays quiet; so the first poll says it."""
+    from app.core.packs import flows
+    from app.core.packs.errors import PackCancelled
+
+    printed = io.StringIO()
+    stdout = SimpleNamespace(
+        encoding="utf-8", line_buffering=True, write_through=False,
+        buffer=SimpleNamespace(raw=SimpleNamespace(write=returns)),
+        write=printed.write, flush=lambda: None,
+    )
+    monkeypatch.setattr(sys, "stdout", stdout)
+
+    def _fake(pack, item_ids, *, emit, cancel_check):
+        signal.getsignal(signal.SIGINT)(signal.SIGINT, None)
+        assert cancel_check() is True
+        raise PackCancelled("cancelled")
+
+    monkeypatch.setattr(flows, "install_pack_live", _fake)
+    assert packs.main(["install", "sentence-embeddings", "--yes"]) == 130
+    assert printed.getvalue().count(_CANCELLING) == 1
+
+
+_SECOND_SIGINT_CHILD = textwrap.dedent(r"""
+    import os
+    import signal
+    import sys
+    import time
+    from pathlib import Path
+    from types import SimpleNamespace
+
+    mode, ready_name, armed_name = sys.argv[1:]
+    ready = Path(ready_name)
+    armed = Path(armed_name)
+
+    if mode == "packs":
+        import packs
+        from app.core.packs import catalog, flows, state
+
+        pack = catalog.find_pack("sentence-embeddings")
+        state.probe_all = lambda: {
+            pack.pack_id: SimpleNamespace(blocked_by=(), items=()),
+        }
+
+        def stalled_flow(pack, item_ids, *, emit, cancel_check):
+            ready.write_text("ready", encoding="ascii")
+            while not cancel_check():
+                time.sleep(0.01)
+            armed.write_text("armed", encoding="ascii")
+            while True:
+                time.sleep(1)
+
+        flows.install_pack_live = stalled_flow
+        code = packs.cmd_install(SimpleNamespace(
+            pack_id=pack.pack_id, items=None, yes=True,
+        ))
+    else:
+        import plugins
+
+        reporter = plugins._ConsoleReporter()
+        with plugins._cancel_on_sigint(reporter) as cancel_check:
+            ready.write_text("ready", encoding="ascii")
+            while not cancel_check():
+                time.sleep(0.01)
+            armed.write_text("armed", encoding="ascii")
+            while True:
+                time.sleep(1)
+        code = 0
+
+    raise SystemExit(code)
+""")
+
+
+def _wait_for_child_marker(process, marker: Path, *, timeout: float = 10) -> None:
+    deadline = time.monotonic() + timeout
+    while not marker.exists():
+        returncode = process.poll()
+        if returncode is not None:
+            pytest.fail(
+                f"SIGINT child exited {returncode} before {marker.name}"
+            )
+        if time.monotonic() >= deadline:
+            pytest.fail(f"SIGINT child did not write {marker.name}")
+        time.sleep(0.01)
+
+
+@pytest.mark.skipif(
+    os.name == "nt",
+    reason=(
+        "Windows CTRL_C_EVENT cannot be targeted at a child process group "
+        "without risking the parent pytest console; SIG_DFL is unit-tested"
+    ),
+)
+@pytest.mark.parametrize("mode", ["packs", "plugins"])
+def test_second_sigint_terminates_a_stalled_cli_process_with_code_130(
+        mode, tmp_path):
+    """The second real SIGINT reaches SIG_DFL, isolated from parent pytest."""
+    root = Path(__file__).resolve().parents[2]
+    ready = tmp_path / f"{mode}.ready"
+    armed = tmp_path / f"{mode}.armed"
+    env = os.environ.copy()
+    pythonpath = [str(root / "scripts"), str(root / "backend")]
+    if env.get("PYTHONPATH"):
+        pythonpath.append(env["PYTHONPATH"])
+    env["PYTHONPATH"] = os.pathsep.join(pythonpath)
+
+    process = subprocess.Popen(
+        [
+            sys.executable,
+            "-u",
+            "-c",
+            _SECOND_SIGINT_CHILD,
+            mode,
+            str(ready),
+            str(armed),
+        ],
+        cwd=root,
+        env=env,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        start_new_session=True,
+    )
+    try:
+        _wait_for_child_marker(process, ready)
+        os.kill(process.pid, signal.SIGINT)
+        _wait_for_child_marker(process, armed)
+
+        started = time.monotonic()
+        os.kill(process.pid, signal.SIGINT)
+        returncode = process.wait(timeout=5)
+
+        assert time.monotonic() - started < 5
+        assert returncode == -signal.SIGINT
+        shell_code = 128 - returncode if returncode < 0 else returncode
+        assert shell_code == 130
+    finally:
+        if process.poll() is None:
+            process.kill()
+            process.wait(timeout=5)
 
 
 # ── remove ────────────────────────────────────────────────────────────────
