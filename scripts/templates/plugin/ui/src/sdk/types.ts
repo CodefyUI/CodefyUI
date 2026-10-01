@@ -426,6 +426,11 @@ export interface WorkspaceTabInfo {
   /**
    * This tab's live block-editing context, even when the tab is in the
    * background. Read `view.atTopLevel` before a named workspace write.
+   *
+   * On an editor before CodefyUI 2.8.7, which reports apiVersion 5 as well,
+   * this field is absent, so feature-check it with `'view' in info` rather
+   * than with the version. Such an editor can report only the active tab's
+   * level, through `graph.getView()`.
    */
   view: GraphView;
 }
@@ -450,9 +455,9 @@ export interface WorkspaceApplyRequest {
  *
  * `editing_subgraph` means the user has stepped inside a block, so the canvas
  * arrays are that block's contents rather than the document `snapshot()`
- * describes. Retry once they step back out. Read the named tab again with
- * `workspace.snapshot(tabId).view.atTopLevel`; `graph.getView()` describes only
- * the active tab.
+ * describes. Stepping back out advances the tab's revision, so retry from a
+ * new `workspace.snapshot(tabId)` once its `view.atTopLevel` is true;
+ * `graph.getView()` describes only the active tab.
  */
 export type WorkspaceConflict =
   | 'revision_mismatch' | 'read_only' | 'unknown_tab' | 'editing_subgraph';
@@ -609,8 +614,8 @@ export interface CodefyUIPluginAPI {
       options?: { activate?: 'first' | 'last' | 'none' },
     ): WorkspaceOpenResult[];
     /**
-     * Every tab, in tab-bar order. Each entry is freshly projected, and its
-     * `view` describes that named tab whether it is active or in the background.
+     * Every tab, in tab-bar order. Each entry carries a fresh `view` of that
+     * named tab, whether it is active or in the background.
      */
     tabs(): WorkspaceTabInfo[];
     /**

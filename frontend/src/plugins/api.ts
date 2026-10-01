@@ -337,10 +337,10 @@ function commitToTab(
     // While a block is open, `tab.nodes` / `tab.edges` are the BLOCK's
     // contents, and `snapshot()` answers with the flushed top level -- so a
     // workspace write here would land somewhere the plugin never read.
-    // Refused rather than redirected: the plugin retries once the user steps
-    // back out. Read this named tab again with
-    // `workspace.snapshot(tabId).view.atTopLevel`; `graph.getView()` describes
-    // only the active tab.
+    // Refused rather than redirected: the plugin retries from a new snapshot
+    // once the user steps back out (stepping out advances the revision). Read
+    // this named tab again with `workspace.snapshot(tabId).view.atTopLevel`;
+    // `graph.getView()` describes only the active tab.
     if (options.refuseInsideBlock) {
       return { ...empty, ...counts, tabId, revision: tab.revision,
                committed: false, conflict: 'editing_subgraph' };
