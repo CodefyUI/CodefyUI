@@ -22,6 +22,15 @@ received — each links to the release it was published as.
 
 ## [Unreleased]
 
+### Fixed
+
+- **WordVector now refuses an empty word source at the node that can explain
+  it** ([#487]). A blank `words` box or a connected `tokens` input that
+  produced no words used to make the node succeed with an empty tensor,
+  leaving a downstream node to fail without that context. The two cases now
+  name the empty box or upstream source; a non-empty list made entirely of
+  out-of-vocabulary words remains a valid empty lookup.
+
 ## [2.8.6] — 2026-09-24
 
 An API key typed into an LLMChat key field is used when you press Run.
@@ -4955,6 +4964,7 @@ Release candidates before 1.0.0 are on the
 [#537]: https://github.com/CodefyUI/CodefyUI/pull/537
 [@oyea0801]: https://github.com/oyea0801
 [@latteine1217]: https://github.com/latteine1217
+[#487]: https://github.com/CodefyUI/CodefyUI/issues/487
 [Unreleased]: https://github.com/CodefyUI/CodefyUI/compare/2.8.6...main
 [2.8.6]: https://github.com/CodefyUI/CodefyUI/compare/2.8.5...2.8.6
 [2.8.5]: https://github.com/CodefyUI/CodefyUI/compare/2.8.4...2.8.5

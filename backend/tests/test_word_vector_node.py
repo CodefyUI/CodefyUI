@@ -139,6 +139,13 @@ def test_oov_words_are_dropped_by_default():
     assert res["embeddings"].shape == (2, DEMO_DIM)
 
 
+def test_all_oov_words_are_a_valid_empty_lookup():
+    res = _run(["asdfqwerty"])
+
+    assert res["embeddings"].shape == (0, DEMO_DIM)
+    assert res["labels"] == []
+
+
 def test_keep_oov_emits_zero_rows():
     res = _run(["king", "asdfqwerty", "queen"], keep_oov=True)
     assert res["labels"] == ["king", "asdfqwerty", "queen"]
@@ -164,10 +171,45 @@ def test_case_insensitive_lookup():
     assert res["labels"] == ["king", "queen", "man"]
 
 
-def test_empty_input_returns_empty_tensor():
-    res = _run([])
-    assert res["embeddings"].shape == (0, DEMO_DIM)
-    assert res["labels"] == []
+def test_empty_connected_tokens_blame_the_upstream_node():
+    with pytest.raises(ValueError) as caught:
+        _run([])
+
+    assert str(caught.value) == (
+        "WordVector received no words from the connected `tokens` input - "
+        "the upstream node produced no words.")
+
+
+def test_empty_words_param_names_the_empty_box():
+    with pytest.raises(ValueError) as caught:
+        WordVectorNode().execute(
+            {},
+            {
+                "backend": "demo-16d",
+                "words": "  ,  \t ",
+                "normalize": False,
+                "keep_oov": False,
+            },
+        )
+
+    assert str(caught.value) == (
+        "WordVector has nothing to look up: the `words` box is empty.")
+
+
+def test_empty_source_is_rejected_before_loading_a_pack(monkeypatch):
+    loaded = False
+
+    def unexpected_load(backend):
+        nonlocal loaded
+        loaded = True
+        raise AssertionError(f"loaded {backend}")
+
+    monkeypatch.setattr(word_vector_node, "_load_backend", unexpected_load)
+
+    with pytest.raises(ValueError, match="upstream node produced no words"):
+        _run([], backend="glove-50d")
+
+    assert loaded is False
 
 
 def test_king_minus_man_plus_woman_is_close_to_queen():
