@@ -7,6 +7,7 @@ import type {
   PackSummary,
 } from '../api/rest';
 import { PackApiError } from '../api/rest';
+import { _setSessionTokenForTesting, getSessionToken } from '../api/_auth';
 
 // Partial mock: `PackApiError` is a real class the store narrows on with
 // `instanceof`, so only the network calls are stubbed.
@@ -1230,6 +1231,35 @@ describe('packStore — a job settling', () => {
     expect(usePackStore.getState().restart).toMatchObject({
       phase: 'waiting', packId: 'word-vectors', command: 'cdui install --gpu cu128',
     });
+    // Nothing is read from a server half a second from exiting: the reload,
+    // or Return when the restart fails, is what reads the catalog next.
+    expect(api.listPacks).not.toHaveBeenCalled();
+  });
+
+  it('re-reads the catalog when a live install ends needs_restart', async () => {
+    // `install` put the card on Installing at the 202, and this server stays
+    // up. Without a read the pill pulsed on above a banner saying nothing
+    // was installed.
+    const installing = makePack({ id: 'word-vectors', title: 'Word vectors', status: 'installing' });
+    usePackStore.setState({ packs: [installing], byId: { 'word-vectors': installing } });
+    api.listPacks.mockResolvedValue(catalog({
+      packs: [makePack({ id: 'word-vectors', title: 'Word vectors' })],
+    }));
+    terminal({
+      status: 'needs_restart',
+      events: [{
+        type: 'needs_restart', cursor: 1, ts: 't',
+        command: 'cdui packs install word-vectors --restart',
+      }],
+    });
+
+    usePackStore.getState().followJob('j1', 'word-vectors', 0);
+    await settle();
+
+    expect(api.listPacks).toHaveBeenCalledTimes(1);
+    expect(usePackStore.getState().byId['word-vectors'].status).toBe('not_installed');
+    // The job stays: its banner carries the command.
+    expect(usePackStore.getState().job!.status).toBe('needs_restart');
   });
 
   it('does not start a handshake for a LIVE job that ends needs_restart', async () => {
@@ -1467,6 +1497,8 @@ describe('packStore — restartFlow', () => {
       value: originalLocation,
       configurable: true,
     });
+    _setSessionTokenForTesting(null);
+    vi.unstubAllGlobals();
   });
 
   const settle = () => vi.advanceTimersByTimeAsync(0);
@@ -1579,6 +1611,110 @@ describe('packStore — restartFlow', () => {
     // Two health calls, not four hundred: the clock did the work.
     expect(api.fetchHealth).toHaveBeenCalledTimes(2);
   });
+
+  it.each(['timeout', 'notStarted'] as const)(
+    'dismisses the terminal %s restart state without reloading',
+    (phase) => {
+      usePackStore.setState({
+        restart: {
+          phase,
+          packId: 'gpu-torch',
+          startedAt: 123,
+          command: 'cdui install --gpu cu128',
+        },
+      });
+
+      usePackStore.getState().dismissRestart();
+
+      expect(usePackStore.getState().restart).toEqual({
+        phase: 'idle', packId: null, startedAt: null, command: null,
+      });
+      expect(reload).not.toHaveBeenCalled();
+    },
+  );
+
+  it('re-reads the catalog on the way out, and keeps the job that holds the command', async () => {
+    // `install` marks the card Installing on the 202, and a restart-mode job
+    // settles straight into the handshake, which reads no catalog: the
+    // Package Center under the overlay still shows that moment when the user
+    // returns to it.
+    const gpu = makePack({ id: 'gpu-torch', title: 'GPU PyTorch', install_mode: 'restart' });
+    usePackStore.setState({
+      packs: [gpu], byId: { 'gpu-torch': gpu }, launchMode: 'start', restartAvailable: true,
+    });
+    api.getPackJobEvents.mockResolvedValue(eventsPage({
+      status: 'needs_restart',
+      cursor: 1,
+      events: [{
+        type: 'needs_restart', cursor: 1, ts: 't', command: 'cdui install --gpu cu128',
+      }],
+    }));
+    // The old server never goes away: nothing picked the restart up.
+    api.fetchHealth.mockResolvedValue(health({ boot_id: 'boot-a' }));
+
+    await usePackStore.getState().install('gpu-torch', { mode: 'restart', variant: 'cu128' });
+    await vi.advanceTimersByTimeAsync(RESTART_GRACE_MS + RESTART_POLL_MS);
+    expect(usePackStore.getState().restart.phase).toBe('notStarted');
+    expect(usePackStore.getState().byId['gpu-torch'].status).toBe('installing');
+
+    // What the old server says: nothing installing, nothing installed.
+    api.listPacks.mockResolvedValue(catalog({ packs: [gpu] }));
+    usePackStore.getState().dismissRestart();
+    await settle();
+
+    expect(api.listPacks).toHaveBeenCalledTimes(1);
+    expect(usePackStore.getState().byId['gpu-torch'].status).toBe('not_installed');
+    expect(usePackStore.getState().packs[0].status).toBe('not_installed');
+    // Kept: its banner shows the same command with a Copy button, which the
+    // overlay cannot offer.
+    expect(usePackStore.getState().job).toMatchObject({
+      jobId: 'j1', status: 'needs_restart', restartCommand: 'cdui install --gpu cu128',
+    });
+  });
+
+  it('drops the session token on the way out, so the next handshake reads a fresh one', async () => {
+    // Every server start mints a new token. REST retries a refused one by
+    // itself; the execution socket's first connect does not, so a Run after
+    // a timeout the server has since come back from was refused every time.
+    _setSessionTokenForTesting('token-from-before-the-restart');
+    const bootstrap = vi.fn(async () => ({
+      ok: true,
+      status: 200,
+      statusText: 'OK',
+      json: async () => ({ token: 'token-from-the-new-server' }),
+    }));
+    vi.stubGlobal('fetch', bootstrap);
+    usePackStore.setState({
+      restart: { phase: 'timeout', packId: 'gpu-torch', startedAt: 123, command: null },
+    });
+
+    usePackStore.getState().dismissRestart();
+
+    await expect(getSessionToken()).resolves.toBe('token-from-the-new-server');
+    expect(bootstrap).toHaveBeenCalledWith('/api/auth/bootstrap');
+  });
+
+  it.each(['idle', 'waiting'] as const)(
+    'does not dismiss the %s restart state',
+    async (phase) => {
+      const restart = {
+        phase,
+        packId: phase === 'idle' ? null : 'gpu-torch',
+        startedAt: phase === 'idle' ? null : 123,
+        command: phase === 'idle' ? null : 'cmd',
+      };
+      usePackStore.setState({ restart });
+      _setSessionTokenForTesting('token-still-good');
+
+      usePackStore.getState().dismissRestart();
+
+      expect(usePackStore.getState().restart).toBe(restart);
+      expect(reload).not.toHaveBeenCalled();
+      // Nothing else happens either: no catalog read, and the token stays.
+      expect(api.listPacks).not.toHaveBeenCalled();
+      await expect(getSessionToken()).resolves.toBe('token-still-good');
+    },
+  );
 });
 
 // ── the once-per-page-load check ──────────────────────────────────────────

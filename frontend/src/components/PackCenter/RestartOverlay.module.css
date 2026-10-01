@@ -1,6 +1,6 @@
 /* RestartOverlay.module.css — the blocking card shown while the server is
    being replaced under the page. Tokens only; the bare pixel values are
-   structural (hairline border, card width). */
+   structural (hairline border, card width, breakpoint). */
 
 .backdrop {
   position: fixed;
@@ -84,20 +84,52 @@
 .actions {
   display: flex;
   justify-content: flex-end;
+  gap: var(--sp-3);
+  flex-wrap: wrap;
 }
 
+.returnBtn,
 .reloadBtn {
   padding: var(--sp-3) var(--sp-5);
   border-radius: var(--radius);
   font-size: var(--fs-md);
+  cursor: pointer;
+  transition: background var(--transition-fast), border-color var(--transition-fast),
+    color var(--transition-fast);
+}
+
+.returnBtn {
   font-weight: var(--fw-semibold);
   background: var(--accent-wash);
   border: 1px solid var(--accent-deep);
   color: var(--accent);
-  cursor: pointer;
-  transition: background var(--transition-fast);
+}
+
+.returnBtn:hover {
+  background: var(--surface-active);
+}
+
+.reloadBtn {
+  background: transparent;
+  border: 1px solid var(--border-strong);
+  color: var(--text-secondary);
 }
 
 .reloadBtn:hover {
-  background: var(--surface-active);
+  border-color: var(--accent-deep);
+  color: var(--accent);
+}
+
+/* Narrow viewports: the buttons stack at full width, at the same 860 px the
+   Package Center behind the overlay stacks its columns. In px because it
+   measures the viewport, not type. */
+@media (max-width: 860px) {
+  .actions {
+    flex-direction: column;
+  }
+
+  .returnBtn,
+  .reloadBtn {
+    width: 100%;
+  }
 }

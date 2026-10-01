@@ -1006,7 +1006,7 @@ const zhTW: Record<TranslationKey, string> = {
   'packs.activity.done': '已安裝 {pack}。',
   'packs.activity.failed': '安裝失敗：{message}',
   'packs.activity.cancelled': '已取消安裝。',
-  'packs.activity.needsRestart': '已安裝，重新啟動伺服器後 {pack} 即可使用。',
+  'packs.activity.needsRestart': '{pack} 需要重新啟動伺服器才能安裝。',
   'packs.activity.needsRestartConflict':
     '尚未安裝：此安裝會替換伺服器使用中的套件，需重新啟動伺服器才能完成。',
   'packs.activity.lost': '與伺服器失去連線，請重新整理以確認套件狀態。',
@@ -1041,6 +1041,7 @@ const zhTW: Record<TranslationKey, string> = {
   'packs.restart.elapsed': '已等待 {seconds} 秒',
   'packs.restart.timeout': '伺服器在 10 分鐘內未恢復。',
   'packs.restart.notStarted': '伺服器未重新啟動，請執行下列指令後重新載入：',
+  'packs.restart.return': '返回 CodefyUI',
   'packs.restart.reload': '立即重新載入',
 
   // The one pack toast fired from outside the pack store: a run stopped
