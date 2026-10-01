@@ -37,8 +37,9 @@ received — each links to the release it was published as.
   instead of running the installed one** ([#541]). Run, app publish and app
   invoke name the preset and the first parse error, and the server withholds
   every value of that preset's cards from the runs it stores, finished runs
-  included at the next start. A broken definition no card uses does not stop
-  a run.
+  included at the next start. Save and Python export reject such a graph with
+  a request error (422) where 2.8.6 silently used the installed definition. A
+  broken definition no card uses does not stop a run.
 
 ## [2.8.6] — 2026-09-24
 
