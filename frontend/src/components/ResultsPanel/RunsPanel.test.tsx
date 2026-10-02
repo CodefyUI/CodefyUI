@@ -1,13 +1,17 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { render, screen, fireEvent, waitFor, within, act, createEvent } from '@testing-library/react';
 import { RunsPanel, formatDuration, formatStarted, runDevice } from './RunsPanel';
+import styles from './RunsPanel.module.css';
 import * as rest from '../../api/rest';
-import type { RunStatus, RunSummary } from '../../api/rest';
+import type { RunStatus, RunSummary, SweepDetail, SweepState } from '../../api/rest';
+import { useNodeDefStore } from '../../store/nodeDefStore';
 import { _resetRunStoreForTesting, useRunStore } from '../../store/runStore';
+import { SWEEP_POLL_MS, _resetSweepStoreForTesting, useSweepStore } from '../../store/sweepStore';
 import { useTabStore } from '../../store/tabStore';
 import { useToastStore } from '../../store/toastStore';
 import { useDialogStore } from '../../store/dialogStore';
 import { useI18n } from '../../i18n';
+import type { NodeDefinition } from '../../types';
 
 // Stub the chart: its SVG sub-tree would swamp the assertions and its
 // ResizeObserver bookkeeping is LossChart.test.tsx's business, not this
@@ -34,6 +38,8 @@ vi.mock('../../api/rest', async (importOriginal) => {
     cancelRun: vi.fn(),
     deleteRun: vi.fn(),
     downloadRunMetricsCsv: vi.fn(),
+    getSweep: vi.fn(),
+    createSweep: vi.fn(),
   };
 });
 
@@ -93,6 +99,7 @@ beforeEach(() => {
   useTabStore.setState({ tabs: [], activeTabId: null as unknown as string, clipboard: null });
   useTabStore.getState().addTab('test');
   _resetRunStoreForTesting();
+  _resetSweepStoreForTesting();
 
   api.listRuns.mockResolvedValue(listing([]));
   api.getRun.mockResolvedValue(null);
@@ -107,7 +114,10 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  _resetRunStoreForTesting();
+  act(() => {
+    _resetRunStoreForTesting();
+    _resetSweepStoreForTesting();
+  });
   vi.clearAllMocks();
   vi.useRealTimers();
 });
@@ -881,6 +891,177 @@ describe('RunsPanel — i18n', () => {
     await renderPanel([makeRun({ id: 'a', name: 'run-a', status: 'running', finished_at: null })]);
     expect(within(rowOf('a')).getByText('執行中')).toBeInTheDocument();
     expect(within(rowOf('a')).getByText('停止')).toBeInTheDocument();
+  });
+});
+
+// ── sweep integration ─────────────────────────────────────────────────────
+
+/** One sweep with one child, `child`, as GET /api/sweeps/{id} returns it. */
+function sweepDetail(state: SweepState): SweepDetail {
+  const done = state === 'finished';
+  return {
+    sweep_id: 's1', name: 'Search', state, method: 'grid', seed: null, seed_variants: false,
+    objective: { metric: 'train_loss', direction: 'minimize' },
+    created_at: '2026-10-01T00:00:00Z', finished_at: null, error: null,
+    counts: { queued: 0, running: done ? 0 : 1, succeeded: done ? 1 : 0, failed: 0, cancelled: 0, interrupted: 0, missing: 0 },
+    params: [{ node_id: 'train', param: 'epochs', domain: [2] }],
+    variants: [{
+      index: 0, domain_index: 0, run_id: 'child', status: done ? 'succeeded' : 'running',
+      params: [{ node_id: 'train', param: 'epochs', value: 2 }], seed: null,
+      objective: done ? 0.4 : null, rank: done ? 1 : null, run_exists: true,
+    }],
+    best: null,
+  };
+}
+
+const trainDefinition: NodeDefinition = {
+  node_name: 'Train', category: 'Test', description: '', inputs: [], outputs: [],
+  params: [{ name: 'epochs', param_type: 'int', default: 2, description: '', options: [], min_value: 1, max_value: 10 }],
+};
+
+// Tests elsewhere install vi.fn() actions with setState, which the store
+// reset does not undo; this block runs the real ones.
+const realSweepActions = (({ openSweep, stopPolling, createSweep, resumePolling }) => (
+  { openSweep, stopPolling, createSweep, resumePolling }
+))(useSweepStore.getState());
+
+function sweepBack(): HTMLElement {
+  return within(screen.getByTestId('sweep-detail')).getByRole('button', { name: /^Back$/ });
+}
+
+describe('RunsPanel — sweeps', () => {
+  beforeEach(() => {
+    useSweepStore.setState(realSweepActions);
+    api.getSweep.mockResolvedValue(sweepDetail('running'));
+  });
+
+  it('opens a compact New Sweep dialog and restores focus when it closes', async () => {
+    await renderPanel([]);
+    const opener = screen.getByRole('button', { name: /New sweep/i });
+    opener.focus();
+    fireEvent.click(opener);
+    expect(screen.getByRole('dialog', { name: /New sweep/i })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: /Close new sweep/i }));
+    expect(screen.queryByRole('dialog')).toBeNull();
+    expect(document.activeElement).toBe(opener);
+  });
+
+  it('re-reads its sweep and polls it again when the panel comes back', async () => {
+    // The dock unmounts this panel for the Log or Training tab and when it
+    // collapses; status, counts and Stop used to freeze as they were left.
+    vi.useFakeTimers();
+    await act(async () => {
+      await useSweepStore.getState().openSweep('s1');
+    });
+    const first = render(<RunsPanel panelHeight={400} />);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(SWEEP_POLL_MS);
+    });
+    const shown = api.getSweep.mock.calls.length;
+    expect(shown).toBeGreaterThanOrEqual(2);
+    first.unmount();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(SWEEP_POLL_MS * 5);
+    });
+    expect(api.getSweep).toHaveBeenCalledTimes(shown);
+
+    render(<RunsPanel panelHeight={400} />);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    expect(api.getSweep).toHaveBeenCalledTimes(shown + 1);
+    api.getSweep.mockResolvedValue(sweepDetail('finished'));
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(SWEEP_POLL_MS);
+    });
+    expect(api.getSweep).toHaveBeenCalledTimes(shown + 2);
+    expect(screen.getByText('Finished')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /^Stop sweep$/ })).toBeNull();
+  });
+
+  it('replaces run detail with sweep detail, and Back puts the focus on New sweep', async () => {
+    api.listRuns.mockResolvedValue(listing([makeRun({ id: 'child', name: 'child', sweep_id: 's1', sweep_variant: 0 })]));
+    await act(async () => {
+      await useSweepStore.getState().openSweep('s1');
+    });
+    render(<RunsPanel panelHeight={400} />);
+    await screen.findByTestId('sweep-detail');
+    expect(screen.queryByTestId('run-detail')).toBeNull();
+
+    sweepBack().focus();
+    fireEvent.click(sweepBack());
+    expect(useSweepStore.getState().selectedSweepId).toBeNull();
+    expect(screen.queryByTestId('sweep-detail')).toBeNull();
+    // Back was the focused control and is gone; focus does not fall to the page.
+    expect(document.activeElement).toBe(screen.getByRole('button', { name: 'New sweep' }));
+  });
+
+  it('puts the focus in the sweep view that Start opens', async () => {
+    useNodeDefStore.setState({ definitions: [trainDefinition] });
+    useTabStore.getState().setNodes([{
+      id: 'train', type: 'customNode', position: { x: 0, y: 0 },
+      data: { type: 'Train', label: 'Trainer', params: { epochs: 2 } },
+    }] as never);
+    api.createSweep.mockResolvedValue({
+      sweep_id: 's1', state: 'running', method: 'grid', seed: null, seed_variants: false,
+      objective: { metric: 'train_loss', direction: 'minimize' }, total_combinations: 2, params: [], variants: [],
+    });
+    await renderPanel([]);
+    fireEvent.click(screen.getByRole('button', { name: 'New sweep' }));
+    fireEvent.change(screen.getByLabelText('Values'), { target: { value: '2, 4' } });
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Start sweep' }));
+    });
+
+    await screen.findByTestId('sweep-detail');
+    expect(screen.queryByRole('dialog')).toBeNull();
+    expect(document.activeElement).toBe(sweepBack());
+  });
+
+  it('opens a child run with the focus on its way back, which reopens the sweep', async () => {
+    const child = makeRun({ id: 'child', name: 'child', sweep_id: 's1', sweep_variant: 0 });
+    api.getRun.mockResolvedValue({ ...child, last_cursor: 0 });
+    await renderPanel([child]);
+    await act(async () => {
+      await useSweepStore.getState().openSweep('s1');
+    });
+
+    fireEvent.click(within(screen.getByTestId('sweep-variant-0')).getByRole('button', { name: 'Open run' }));
+    await screen.findByTestId('run-detail');
+    const parent = screen.getByRole('button', { name: 'Open parent sweep' });
+    expect(screen.getAllByRole('button', { name: 'Open parent sweep' })).toHaveLength(1);
+    expect(document.activeElement).toBe(parent);
+
+    await act(async () => {
+      fireEvent.click(parent);
+    });
+    await screen.findByTestId('sweep-detail');
+    expect(useSweepStore.getState().selectedSweepId).toBe('s1');
+    expect(document.activeElement).toBe(sweepBack());
+  });
+
+  it('puts the parent-sweep link on a line of its own, under the run header', async () => {
+    // In the header, beside the seed and Deterministic, it squeezed the run's
+    // name to nothing at 860 px and pushed the close button off the panel.
+    const child = makeRun({
+      id: 'child', name: 'child', sweep_id: 's1', sweep_variant: 0,
+      options: { seed: 3, deterministic: true },
+    });
+    api.getRun.mockResolvedValue({ ...child, last_cursor: 0 });
+    await renderPanel([child]);
+    fireEvent.click(rowOf('child'));
+    await screen.findByTestId('run-detail');
+
+    const parent = screen.getByRole('button', { name: 'Open parent sweep' });
+    expect(parent.closest(`.${styles.detailHeader}`)).toBeNull();
+    expect(parent.closest(`.${styles.detailParent}`)).not.toBeNull();
+  });
+
+  it('leaves ordinary run rows unchanged', async () => {
+    await renderPanel([makeRun({ id: 'plain', name: 'plain' })]);
+    fireEvent.click(rowOf('plain'));
+    await screen.findByTestId('run-detail');
+    expect(screen.queryByRole('button', { name: /Open parent sweep/i })).toBeNull();
   });
 });
 

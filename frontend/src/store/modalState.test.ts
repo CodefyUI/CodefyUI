@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 
 import { isAnyModalOpen, type ModalName } from './modalState';
 import { useDialogStore } from './dialogStore';
+import { useSweepStore } from './sweepStore';
 import { useTabStore } from './tabStore';
 import { useUIStore } from './uiStore';
 
@@ -29,6 +30,7 @@ const MODALS: Array<[ModalName, () => void]> = [
   ['presetModal', () => setActiveTab({ presetModalNodeId: 'n1' })],
   ['layersModal', () => setActiveTab({ layersModalNodeId: 'n1' })],
   ['vizModal', () => setActiveTab({ vizModalNodeId: 'n1' })],
+  ['newSweep', () => useSweepStore.getState().setNewSweepOpen(true)],
 ];
 
 beforeEach(() => {
@@ -54,6 +56,7 @@ beforeEach(() => {
     gitDiff: null,
   });
   useDialogStore.setState({ active: null, resolve: null });
+  useSweepStore.setState({ newSweepOpen: false });
 });
 
 afterEach(() => {

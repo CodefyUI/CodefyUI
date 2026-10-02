@@ -40,6 +40,10 @@ import {
   getRunMetrics,
   getRunArtifacts,
   downloadRunMetricsCsv,
+  createSweep,
+  getSweep,
+  cancelSweep,
+  downloadSweepCsv,
   ACTIVE_RUN_STATUSES,
   TERMINAL_RUN_STATUSES,
   listPacks,
@@ -1252,6 +1256,144 @@ describe('run endpoints', () => {
       } as unknown as Response;
       g.fetch = vi.fn().mockResolvedValue(response) as unknown as typeof fetch;
       await expect(downloadRunMetricsCsv('r1')).rejects.toThrow(/Download failed/);
+    });
+  });
+});
+
+// ── Sweeps (#140) ────────────────────────────────────────────────────────
+
+describe('sweep endpoints', () => {
+  const request = {
+    base_graph: { nodes: [], edges: [], presets: [] },
+    sweep_spec: {
+      method: 'grid' as const,
+      seed: null,
+      samples: null,
+      params: [{ node_id: 'train', param: 'epochs', values: [2, 4] }],
+    },
+    objective: { metric: 'loss', direction: 'minimize' as const },
+    options: null,
+    name: 'Epoch sweep',
+    seed_variants: false,
+  };
+
+  it('creates a sweep with the exact backend request shape', async () => {
+    const body = { sweep_id: 's1', state: 'running', variants: [] };
+    const fetchMock = mockFetch(201, body);
+
+    await expect(createSweep(request)).resolves.toBe(body);
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe('/api/sweeps');
+    expect(init.method).toBe('POST');
+    expect(new Headers(init.headers).get('X-CodefyUI-Token')).toBe('test-token');
+    expect(JSON.parse(init.body)).toEqual(request);
+  });
+
+  it('fetches a sweep detail by encoded id', async () => {
+    const body = { sweep_id: 's one', state: 'finished', variants: [] };
+    const fetchMock = mockFetch(200, body);
+    await expect(getSweep('s one')).resolves.toBe(body);
+    expect(fetchMock.mock.calls[0][0]).toBe('/api/sweeps/s%20one');
+  });
+
+  it('asks every active child to stop', async () => {
+    const body = {
+      sweep_id: 's1', state: 'cancelling', cancelled: 2,
+      already_finished: 1, variants: [],
+    };
+    const fetchMock = mockFetch(200, body);
+    await expect(cancelSweep('s1')).resolves.toBe(body);
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe('/api/sweeps/s1/cancel');
+    expect(init.method).toBe('POST');
+    expect(new Headers(init.headers).get('X-CodefyUI-Token')).toBe('test-token');
+  });
+
+  it('surfaces the backend validation detail', async () => {
+    mockFetch(400, { detail: 'grid sweep exceeds the 32-run cap' });
+    await expect(createSweep(request)).rejects.toThrow(/32-run cap/);
+  });
+
+  it('reads a 422 validation list as one line per field, not [object Object]', async () => {
+    mockFetch(422, {
+      detail: [
+        { type: 'int_type', loc: ['body', 'sweep_spec', 'seed'], msg: 'Input should be a valid integer', input: 'x' },
+        { type: 'missing', loc: ['body', 'objective'], msg: 'Field required', input: {} },
+      ],
+    });
+    await expect(createSweep(request)).rejects.toThrow(
+      'sweep_spec.seed: Input should be a valid integer; objective: Field required',
+    );
+  });
+
+  it('rejects a sweep the server does not know with its status kept', async () => {
+    mockFetch(404, { detail: "sweep 'gone' not found" });
+    const error = await getSweep('gone').catch((caught: unknown) => caught);
+    expect(error).toBeInstanceOf(ApiError);
+    expect(error).toMatchObject({ status: 404, message: "sweep 'gone' not found" });
+  });
+
+  it('hands the abort signal to the sweep and metrics reads', async () => {
+    const controller = new AbortController();
+    const fetchMock = mockFetch(200, { sweep_id: 's1', run_id: 'r1', names: [], metrics: [] });
+    await getSweep('s1', controller.signal);
+    await getRunMetrics('r1', 'train_loss', controller.signal);
+    expect(fetchMock.mock.calls[0][1]).toMatchObject({ signal: controller.signal });
+    expect(fetchMock.mock.calls[1][0]).toBe('/api/runs/r1/metrics?name=train_loss');
+    expect(fetchMock.mock.calls[1][1]).toMatchObject({ signal: controller.signal });
+  });
+
+  describe('downloadSweepCsv', () => {
+    let clickSpy: ReturnType<typeof vi.spyOn>;
+
+    beforeEach(() => {
+      (URL as unknown as { createObjectURL: unknown }).createObjectURL =
+        vi.fn().mockReturnValue('blob:sweep');
+      (URL as unknown as { revokeObjectURL: unknown }).revokeObjectURL = vi.fn();
+      clickSpy = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {});
+    });
+
+    afterEach(() => {
+      clickSpy.mockRestore();
+      delete (URL as unknown as { createObjectURL?: unknown }).createObjectURL;
+      delete (URL as unknown as { revokeObjectURL?: unknown }).revokeObjectURL;
+    });
+
+    it('downloads the server comparison CSV with a sweep-scoped filename', async () => {
+      const response = {
+        ok: true,
+        status: 200,
+        statusText: 'ok',
+        json: async () => ({}),
+        blob: async () => new Blob(['rank,variant_index\n']),
+        headers: new Headers({ 'content-type': 'text/csv; charset=utf-8' }),
+      } as unknown as Response;
+      g.fetch = vi.fn().mockResolvedValue(response) as unknown as typeof fetch;
+      const appendSpy = vi.spyOn(document.body, 'appendChild');
+
+      await downloadSweepCsv('s one');
+
+      expect(g.fetch).toHaveBeenCalledWith('/api/sweeps/s%20one?format=csv');
+      const anchor = appendSpy.mock.calls[0][0] as HTMLAnchorElement;
+      expect(anchor.download).toBe('sweep-s one-comparison.csv');
+      expect(clickSpy).toHaveBeenCalledOnce();
+      expect(document.body.contains(anchor)).toBe(false);
+      appendSpy.mockRestore();
+    });
+
+    it('does not download a non-CSV response', async () => {
+      const response = {
+        ok: true,
+        status: 200,
+        statusText: 'ok',
+        json: async () => ({}),
+        blob: async () => new Blob(['{}']),
+        headers: new Headers({ 'content-type': 'application/json' }),
+      } as unknown as Response;
+      g.fetch = vi.fn().mockResolvedValue(response) as unknown as typeof fetch;
+
+      await expect(downloadSweepCsv('s1')).rejects.toThrow(/CSV/);
+      expect(clickSpy).not.toHaveBeenCalled();
     });
   });
 });

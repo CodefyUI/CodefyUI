@@ -24,11 +24,15 @@
 
 /* ── toolbar ── */
 
+/* Wraps rather than squeezing: on a narrow list the actions take a line of
+   their own under the filter chips, instead of pinning the chips into a
+   column one chip wide that grew the toolbar over the whole list. */
 .toolbar {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
-  gap: var(--sp-3);
+  gap: var(--sp-2) var(--sp-3);
   padding: var(--sp-2) var(--sp-4);
   border-bottom: 1px solid var(--border-subtle);
   flex-shrink: 0;
@@ -64,11 +68,22 @@
   border-color: var(--border-base);
 }
 
+/* Wraps too, so it is never wider than the list: beside an open run on a
+   phone the list is 178 px and this group alone was 194. */
 .toolbarRight {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: var(--sp-3);
-  flex-shrink: 0;
+  justify-content: flex-end;
+  gap: var(--sp-2) var(--sp-3);
+  min-width: 0;
+  margin-left: auto;
+}
+
+.newSweepBtn {
+  color: var(--accent-deep);
+  border-color: var(--accent-glow);
+  background: var(--accent-wash);
 }
 
 .countText {
@@ -326,6 +341,11 @@
   color: var(--text-primary);
 }
 
+/* A sweep child's way back to its sweep, on a line under the header. */
+.detailParent {
+  padding: var(--sp-2) var(--sp-4) 0;
+}
+
 .detailError {
   margin: var(--sp-3) var(--sp-4) 0;
   padding: var(--sp-2) var(--sp-3);
@@ -453,6 +473,27 @@
 
   .colStarted {
     display: none;
+  }
+}
+
+/* A list squeezed beside an open run on a phone. Wrapped chips stood three
+   rows high and left no room for a single run, so they scroll sideways in
+   one row; the listed count goes, and the two actions share one line. */
+@container (max-width: 320px) {
+  .filters {
+    flex: 1 1 100%;
+    min-width: 0;
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    scrollbar-width: thin;
+  }
+
+  .countText {
+    display: none;
+  }
+
+  .toolbarRight {
+    gap: var(--sp-2);
   }
 }
 

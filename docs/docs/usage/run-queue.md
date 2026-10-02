@@ -65,7 +65,7 @@ A run gives its device slot back the moment its graph finishes, before it writes
 
 ### Runs panel
 
-The **Runs** tab of the results panel lists the newest 50 runs the server owns — started from any tab, `cdui run` or the API — newest first, with filter chips **All / Running / Queued / Succeeded / Failed / Cancelled / Interrupted** and the columns **Run, Status, Device, Started, Duration, Final loss**. A filter chip applies before the 50-row cut, and the count next to **Refresh** shows how many of the matching runs are listed (`50 of 312`). Older runs are reachable through `GET /api/runs?offset=`. A waiting run shows `Queue #N` beside its device. Each row offers up to four actions:
+The **Runs** tab of the results panel lists the newest 50 runs the server owns — started from any tab, `cdui run` or the API — newest first, with filter chips **All / Running / Queued / Succeeded / Failed / Cancelled / Interrupted** and the columns **Run, Status, Device, Started, Duration, Final loss**. A filter chip applies before the 50-row cut, and the count next to **Refresh** shows how many of the matching runs are listed (`50 of 312`). Older runs are reachable through `GET /api/runs?offset=`. A waiting run shows `Queue #N` beside its device. **New sweep** starts a [parameter sweep](#in-the-runs-panel). Each row offers up to four actions:
 
 | Action | What it does |
 | --- | --- |
@@ -205,9 +205,13 @@ A cancel is a request, not a guarantee. Stopping is cooperative: the server rais
 
 So `cancelling` has no time bound. It ends when the last child reaches a terminal status, not after any particular wait; restarting the server ends it too, because runs abandoned by the old process are retired on the way back up. To see what a cancel is still waiting on, read `counts.running` plus `counts.queued` from `GET /api/sweeps/{id}`: those are the children that were asked and have not stopped, and `variants` names them. How long the sweep has been showing `cancelling` tells you nothing.
 
-### Where the variants show up
+### In the Runs panel
 
-There is no sweep view in the editor yet. The children are ordinary runs: they appear in the [Runs panel](#runs-panel) under the sweep's `name`, and each row from `GET /api/runs` carries `sweep_id` and `sweep_variant`. Follow one variant with `GET /api/runs/{id}/events` as for any other run.
+**New sweep** in the [Runs panel](#runs-panel) toolbar starts a sweep from the open graph. The dialog lists the int, float, bool and select parameters of the graph's top-level registered nodes; inside a block it still lists the top-level graph, because that is the graph a sweep runs. Free-text string parameters can be swept through the API only. Each parameter takes a list of values or, for a number, a range, and the dialog shows how many variants that makes. Past one of the three defaults in the table above it warns and names the setting, but still sends the sweep: the server may have been configured higher, and it refuses what it cannot run. The objective defaults to `train_loss`, which `TrainingLoop` records every epoch, and the field suggests the series recorded by the runs in the list. The variants get the tab's device and run settings, but not its seed (use **Seed every variant**), and they do not record outputs.
+
+**Start sweep** opens the sweep: its state, the objective, a count per status, and a table with one row per variant showing its parameter values, objective, rank and final metrics, with the objective curves below. The view reads the sweep again every 2 seconds until it has finished. The **Rank**, **Status** and **Objective** headers sort the table; rows with no value stay at the bottom. **Open run** shows that variant's run, and **Open parent sweep** in a child run's detail comes back. **Stop sweep** sends `POST /api/sweeps/{id}/cancel`, and **Download CSV** downloads the `?format=csv` table.
+
+The children are ordinary runs: they appear in the Runs panel list under the sweep's `name`, and each row from `GET /api/runs` carries `sweep_id` and `sweep_variant`. Follow one variant with `GET /api/runs/{id}/events` as for any other run. The editor has no list of past sweeps; open one again from a child run's **Open parent sweep**.
 
 ## When the server stops
 
