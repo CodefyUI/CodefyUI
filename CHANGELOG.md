@@ -22,30 +22,119 @@ received — each links to the release it was published as.
 
 ## [Unreleased]
 
+## [2.8.7] — 2026-10-02
+
+The Runs panel can start and follow a parameter sweep. New sweep offers the
+graph's top-level integer, float, boolean and select parameters, runs every
+combination of the values you list or a random sample of them, and says how
+many runs that makes before you start. While it runs, the panel follows each
+run and draws the objective curves, and Stop ends the runs that have not
+finished. Afterwards the table marks the best run, sorts by rank, status or
+objective and downloads the server's CSV, and each run links back to its
+sweep. Until now a sweep could only be started through the API.
+
+A preset that a graph carries with it now stays with that graph. When such a
+preset was used only inside a block, the editor lost its definition the next
+time it refreshed the node list, and the saved file then failed to open, run
+or export with "Unknown preset". Each graph now keeps the definitions it uses
+and runs its own copy ahead of an installed preset of the same name, also
+after the installed one changes. A graph whose own definition cannot be read
+is refused, with the preset's name, instead of silently running the installed
+one. Keys typed into a preset card stay out of saved files, exports, autosave
+and the run history.
+
+When a Package Center restart does not start or does not come back, the
+overlay now offers Return to CodefyUI beside Reload, which keeps the open
+canvas, undo history, Log and session-only API keys. WordVector refuses an
+empty word source and names it. During a pack or plugin install the first
+Ctrl+C asks the install to stop and says so, and a second press ends the
+command, except while a plugin's files are being put in place.
+
+For plugin authors, `workspace.tabs()` and `workspace.snapshot(tabId)` now
+include each tab's `view`, so a plugin can tell before it writes that a
+background tab is open inside a block; `apiVersion` stays 5, and older
+editors leave the field out. `GET /api/plugins/{id}` answers for a disabled
+plugin instead of saying its files are missing.
+
+### Added
+
+- **The Runs panel can create, watch and compare grid or random parameter
+  sweeps** ([#140]). New sweep offers the graph's top-level integer, float,
+  boolean and select parameters, also while a block is open, and previews the
+  exact number of runs. Past the server's default limits it warns and names
+  the setting that raises them, and the server's own refusal is shown. The
+  sweep view follows status and objective curves, also after the panel is
+  closed and reopened, stops the remaining runs, shows the comparison table
+  sortable by rank, status or objective with the best run marked, and
+  downloads the server's CSV. A run started by a sweep links back to it. The
+  objective defaults to `train_loss`, which the built-in training loop logs.
+- **A plugin can see whether any named tab is open inside a block before it
+  writes** ([#397]). `workspace.tabs()` and `workspace.snapshot(tabId)` now
+  include that tab's live `view` (a `GraphView`), also for a background tab,
+  so a plugin can explain or defer an `editing_subgraph` refusal instead of
+  learning about it from the rejected write. Still apiVersion 5: editors
+  before 2.8.7 leave the field out. The plugin docs now also say that
+  stepping into or out of a block advances the tab's revision.
+
+### Changed
+
+- **A graph runs its own copy of a preset ahead of an installed preset of the
+  same name** ([#541]). A graph saved with a copy of an installed preset now
+  runs that copy when it is reopened, even if the installed preset changed
+  later; 2.8.6 ran the installed one. A card pasted or inserted from another
+  graph is drawn from the definition the destination graph uses.
+
 ### Fixed
 
+- **Portable presets referenced only inside a block survive a node-list
+  refresh, save and reopen** ([#541]). Each document owns the definitions it
+  references and saves only those. Save, autosave and every export blank a
+  preset's SECRET slots by every same-name definition the editor has seen,
+  so a key typed against one graph's definition stays out of another graph's
+  files. Run sends only the keys the server blanks in the run it stores, and
+  the stored run also withholds a preset card value that no inner node type
+  declares. An inner node whose type is not in the node list, for example
+  while the list is still loading or after its plugin is disabled, keeps its
+  settings.
+- **A graph whose own definition of a preset it uses cannot be read is refused
+  instead of running the installed one** ([#541]). Run, app publish and app
+  invoke name the preset and the first parse error, and the server withholds
+  every value of that preset's cards from the runs it stores, finished runs
+  included at the next start. An embedded definition may leave out
+  `category`, `description`, `tags` and the exposed lists, which default as
+  in a preset file; one without a name, nodes or edges cannot be read. Save
+  and Python export reject such a graph with a request error (422) where
+  2.8.6 silently saved an installed preset of the same name in its place. A
+  broken definition no card uses does not stop a run, and none stops autosave
+  or blanks the editor.
+- **A failed Package Center restart no longer forces a page reload**
+  ([#490]). When the old server is still answering after 30 seconds, or no
+  server has come back after ten minutes, the overlay offers **Return to
+  CodefyUI** beside **Reload now**. Returning keeps the open canvas, undo
+  history, Log and session-only API keys, re-reads the pack list and gives
+  focus back; reload once the server is back to use what it installed. The
+  activity banner no longer says "Installed." before the restart has run,
+  and Run reaches a server that restarted with a new session token.
 - **WordVector now refuses an empty word source at the node that can explain
   it** ([#487]). A blank `words` box or a connected `tokens` input that
   produced no words used to make the node succeed with an empty tensor,
   leaving a downstream node to fail without that context. The two cases now
   name the empty box or upstream source; a non-empty list made entirely of
   out-of-vocabulary words remains a valid empty lookup.
-- **Portable presets referenced only inside a block survive registry refresh,
-  save and reopen** ([#541]). Each document owns the definitions it needs and
-  uses its version ahead of an installed same-name preset, also for a card
-  pasted or inserted from another graph, which is now drawn from that
-  definition. Only referenced definitions are saved. Save, autosave and every
-  export blank a preset's SECRET slots by every same-name definition the
-  editor has seen, so a key typed against one graph's definition stays out of
-  another graph's files, and Run sends only the keys the server blanks in the
-  run it stores.
-- **A graph whose own definition of a preset it uses cannot be read is refused
-  instead of running the installed one** ([#541]). Run, app publish and app
-  invoke name the preset and the first parse error, and the server withholds
-  every value of that preset's cards from the runs it stores, finished runs
-  included at the next start. Save and Python export reject such a graph with
-  a request error (422) where 2.8.6 silently used the installed definition. A
-  broken definition no card uses does not stop a run.
+- **The plugin detail route no longer says a disabled plugin's files are
+  missing** ([#521]). `GET /api/plugins/{id}` returns a disabled plugin's
+  manifest, README, lockfile entry and an empty node list. A lockfile entry
+  whose directory or manifest is really gone still returns 404, now with the
+  coded `missing_files` detail instead of an English sentence, and a README
+  that is not UTF-8 comes back empty instead of failing the request.
+- **Pack and plugin installs no longer print from the Ctrl+C handler through
+  Python's buffered stdout** ([#489]). In a terminal the first press says
+  "Cancelling..." at once; with output redirected, it is said at the
+  install's next check. A second press ends the command immediately with exit
+  code 130, skipping cleanup, except once a plugin's files are being put in
+  place and recorded, where the install always finishes. On Windows, a step
+  blocked in a network read or in a wait for a child process still holds both
+  presses until that call returns.
 
 ## [2.8.6] — 2026-09-24
 
@@ -4982,7 +5071,11 @@ Release candidates before 1.0.0 are on the
 [@latteine1217]: https://github.com/latteine1217
 [#487]: https://github.com/CodefyUI/CodefyUI/issues/487
 [#541]: https://github.com/CodefyUI/CodefyUI/issues/541
-[Unreleased]: https://github.com/CodefyUI/CodefyUI/compare/2.8.6...main
+[#397]: https://github.com/CodefyUI/CodefyUI/issues/397
+[#489]: https://github.com/CodefyUI/CodefyUI/issues/489
+[#521]: https://github.com/CodefyUI/CodefyUI/issues/521
+[Unreleased]: https://github.com/CodefyUI/CodefyUI/compare/2.8.7...main
+[2.8.7]: https://github.com/CodefyUI/CodefyUI/compare/2.8.6...2.8.7
 [2.8.6]: https://github.com/CodefyUI/CodefyUI/compare/2.8.5...2.8.6
 [2.8.5]: https://github.com/CodefyUI/CodefyUI/compare/2.8.4...2.8.5
 [2.8.4]: https://github.com/CodefyUI/CodefyUI/compare/2.8.3...2.8.4
