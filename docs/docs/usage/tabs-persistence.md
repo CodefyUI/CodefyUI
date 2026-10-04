@@ -56,6 +56,14 @@ Three warnings report a storage problem. Each stays on screen until you close it
 
 When one of them appears, export a [workspace file](#workspace-files) before you close the page.
 
+### More than one browser tab {/* #more-than-one-browser-tab */}
+
+Every browser tab that opens CodefyUI at the same address shares one saved workspace, so only one of them edits it at a time; otherwise each would save over the other's work. The first tab to open is the one that edits. A tab opened later is covered by a **Read-only in this browser tab** notice, and nothing done in it is saved. Two such tabs are easy to end up with: `cdui start` prints the address, and browsers reopen old windows.
+
+**Edit here** on that notice moves editing to this tab. The tab that was editing saves its last changes, stops saving, and shows **Editing moved to another browser tab**; this tab then reloads with the latest saved work. **Edit here** in the old tab moves editing back the same way. If the tab that was editing is stuck, or the browser has frozen it, this tab does not wait for it: it takes over after 10 seconds, or after 1 second with no answer on a plain `http` page (see below). The stuck tab saves nothing more once it wakes up and shows **Editing moved to another browser tab**; whatever it had not saved yet is lost. When the editing tab is closed, a read-only tab stays read-only until **Edit here** is pressed in it; it never reloads by itself.
+
+Addresses that differ in any way, `localhost` and `127.0.0.1` included, are separate workspaces. A page served over plain `http` from a LAN address does not get the browser feature this relies on (Web Locks), so tabs there find each other by messaging instead. That works the same way with one gap: a tab too busy to answer when another one opens can be missed. The newer tab then edits, and the busy tab, once it wakes up, shows **Editing moved to another browser tab** and loses what it had not saved yet.
+
 ## Saving and loading
 
 Saved graphs are stored by the server, not by the browser:

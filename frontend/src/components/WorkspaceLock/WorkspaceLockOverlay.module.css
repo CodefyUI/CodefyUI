@@ -1,0 +1,87 @@
+/* WorkspaceLockOverlay.module.css - the card over a page of the app that does
+   not edit the workspace (#554). Tokens only; the bare pixel values are
+   structural (hairline border, card width). */
+
+.backdrop {
+  position: fixed;
+  inset: 0;
+  /* Above the modals (10000-10003) and the toast stack (10004): nothing under
+     it may be pressed, a toast's own buttons included. The restart overlay
+     sits at the same level and App mounts it after this one, so a server
+     restart still shows on top. */
+  z-index: 10005;
+  background: var(--surface-scrim);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 3vh 3vw;
+}
+
+.card {
+  width: 400px;
+  max-width: 100%;
+  /* Centred in a fixed backdrop, so a card taller than the viewport would
+     overflow at both ends; it scrolls instead. */
+  max-height: 100%;
+  overflow-y: auto;
+  background: var(--surface-raised);
+  border: 1px solid var(--border-base);
+  border-radius: var(--radius-xl);
+  box-shadow: var(--shadow-popover), var(--inner-highlight);
+  padding: var(--sp-6);
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-4);
+  outline: none;
+}
+
+.title {
+  margin: 0;
+  color: var(--text-primary);
+  font-size: var(--fs-lg);
+  font-weight: var(--fw-semibold);
+  line-height: var(--lh-snug);
+}
+
+.body {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: var(--fs-md);
+  line-height: var(--lh-normal);
+}
+
+/* The hint says what the button does: beside it while both fit, above it
+   once they do not. */
+.actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: var(--sp-4);
+}
+
+.hint {
+  flex: 1 1 12em;
+  margin: 0;
+  color: var(--text-muted);
+  font-size: var(--fs-sm);
+  line-height: var(--lh-normal);
+}
+
+.editBtn {
+  flex: none;
+  padding: var(--sp-3) var(--sp-5);
+  border-radius: var(--radius);
+  font-size: var(--fs-md);
+  font-weight: var(--fw-semibold);
+  white-space: nowrap;
+  background: var(--accent-wash);
+  border: 1px solid var(--accent-deep);
+  color: var(--accent);
+  cursor: pointer;
+  transition: background var(--transition-fast);
+}
+
+.editBtn:hover {
+  background: var(--surface-active);
+}

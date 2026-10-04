@@ -1,12 +1,20 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { IDBFactory, IDBKeyRange } from 'fake-indexeddb';
 
-import { idbGet, idbGetKeysByPrefix, _resetIdbForTests } from '../utils/idb';
+import { idbDelete, idbGet, idbGetKeysByPrefix, idbSet, _resetIdbForTests } from '../utils/idb';
+import {
+  WORKSPACE_EDITOR_KEY,
+  startWorkspaceLock,
+  _resetWorkspaceLockForTests,
+  type LockManagerLike,
+} from '../utils/workspaceLock';
 import {
   tabMetaKey,
   tabRecordKey,
   readSnapshot,
   writeSnapshot,
+  snapshotWritesInFlight,
+  whenSnapshotWritesSettle,
   _resetTabPersistenceForTests,
 } from './tabPersistence';
 import type { PersistedTab } from './tabStore';
@@ -48,6 +56,8 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.unstubAllGlobals();
+  vi.restoreAllMocks();
+  _resetWorkspaceLockForTests();
   _resetIdbForTests();
   _resetTabPersistenceForTests();
 });
@@ -219,6 +229,205 @@ describe('tabPersistence incremental writes', () => {
     _resetIdbForTests();
     await writeSnapshot(SCOPE, [a], 'a');
     expect(await idbGet(tabRecordKey(SCOPE, 'a'))).toBeTruthy();
+  });
+});
+
+// #554: only the page that edits the workspace writes it. `workspaceLock`
+// decides which page that is; these pin what the write path does with the
+// answer. Each case starts this page's claim against a lock manager that
+// answers the one way the case needs.
+describe('tabPersistence write gate', () => {
+  /** Another page already holds the editing lock. */
+  const heldElsewhere: LockManagerLike = {
+    request: (_name, _options, callback) => Promise.resolve(callback(null)),
+  };
+
+  /** Answers when the test says so, the way the browser answers later. */
+  function answerLater(): { locks: LockManagerLike; answer: (edits: boolean) => void } {
+    let answer: (edits: boolean) => void = () => {};
+    return {
+      locks: {
+        request: (_name, _options, callback) =>
+          new Promise((resolve) => {
+            answer = (edits) => resolve(callback(edits ? { name: 'workspace' } : null));
+          }),
+      },
+      answer: (edits) => answer(edits),
+    };
+  }
+
+  it('skips the write in a read-only page and says so once', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    await startWorkspaceLock({ locks: heldElsewhere, openChannel: null }).decided();
+
+    await writeSnapshot(SCOPE, [record('a')], 'a');
+    await writeSnapshot(SCOPE, [record('a'), record('b')], 'b');
+
+    expect(await idbGetKeysByPrefix(SCOPE)).toEqual([]);
+    expect(warn).toHaveBeenCalledTimes(1);
+  });
+
+  it('holds a write until the page knows it edits, then writes it', async () => {
+    const lock = answerLater();
+    startWorkspaceLock({ locks: lock.locks, openChannel: null });
+
+    const write = writeSnapshot(SCOPE, [record('a')], 'a');
+    await Promise.resolve();
+    expect(snapshotWritesInFlight()).toBe(0);
+
+    lock.answer(true);
+    await write;
+    expect(await idbGet(tabRecordKey(SCOPE, 'a'))).toBeTruthy();
+  });
+
+  it('drops a held write when another page turns out to be editing', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const lock = answerLater();
+    startWorkspaceLock({ locks: lock.locks, openChannel: null });
+
+    const write = writeSnapshot(SCOPE, [record('a')], 'a');
+    lock.answer(false);
+    await write;
+    expect(await idbGetKeysByPrefix(SCOPE)).toEqual([]);
+  });
+
+  it('writes the record a skipped write left out once this page edits', async () => {
+    // A skipped write must not count as durable: the bookkeeping that lets an
+    // unchanged record be skipped would otherwise never write it at all.
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const a = record('a');
+    const lock = answerLater();
+    startWorkspaceLock({ locks: lock.locks, openChannel: null });
+    const skipped = writeSnapshot(SCOPE, [a], 'a');
+    lock.answer(false);
+    await skipped;
+
+    _resetWorkspaceLockForTests();
+    await writeSnapshot(SCOPE, [a], 'a');
+    expect(await idbGet(tabRecordKey(SCOPE, 'a'))).toBeTruthy();
+  });
+
+  it('counts writes in flight until they are durable', async () => {
+    const write = writeSnapshot(SCOPE, [record('a')], 'a');
+    expect(snapshotWritesInFlight()).toBe(1);
+
+    await whenSnapshotWritesSettle();
+    expect(snapshotWritesInFlight()).toBe(0);
+    expect(await idbGet(tabRecordKey(SCOPE, 'a'))).toBeTruthy();
+    await write;
+  });
+
+  it('settles at once when nothing is being written', async () => {
+    await expect(whenSnapshotWritesSettle()).resolves.toBeUndefined();
+  });
+
+  it('settles after a write that fails, too', async () => {
+    vi.stubGlobal('indexedDB', undefined);
+    _resetIdbForTests();
+    const write = writeSnapshot(SCOPE, [record('a')], 'a');
+    await whenSnapshotWritesSettle();
+    expect(snapshotWritesInFlight()).toBe(0);
+    await expect(write).rejects.toThrow();
+  });
+});
+
+// #554 review: a page frozen for a while wakes with its autosave due and its
+// role still 'editor'. The role gate cannot know better; the editor record
+// does. These run the real claim (utils/idb) and the real fenced write
+// against fake-indexeddb, and read back through utils/idb -- which also pins
+// that the fenced write opens the same database and store.
+describe('tabPersistence editor record', () => {
+  const grant: LockManagerLike = {
+    request: (_name, _options, callback) =>
+      Promise.resolve().then(() => callback({ name: 'workspace' })),
+  };
+
+  async function startEditing() {
+    const page = startWorkspaceLock({ locks: grant, openChannel: null });
+    expect(await page.decided()).toBe('editor');
+    return page;
+  }
+
+  it('is claimed when the page starts editing, and the page writes', async () => {
+    const page = await startEditing();
+    expect(page.getEpoch()).not.toBeNull();
+    expect(await idbGet(WORKSPACE_EDITOR_KEY)).toBe(page.getEpoch());
+
+    await writeSnapshot(SCOPE, [record('a')], 'a');
+    expect(await idbGet(tabRecordKey(SCOPE, 'a'))).toBeTruthy();
+  });
+
+  it('keeps out a write made after another page claimed it, though this page still thinks it edits', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const page = await startEditing();
+    await writeSnapshot(SCOPE, [record('a')], 'a');
+
+    // The page that took over claimed the record; this one has not heard.
+    await idbSet(WORKSPACE_EDITOR_KEY, 'the-page-that-took-over');
+    expect(page.getRole()).toBe('editor');
+
+    await writeSnapshot(SCOPE, [record('a', { name: 'STALE' }), record('b')], 'b');
+    expect((await idbGet<PersistedTab>(tabRecordKey(SCOPE, 'a')))!.name).toBe('A');
+    expect(await idbGet(tabRecordKey(SCOPE, 'b'))).toBeUndefined();
+    expect(await idbGet(tabMetaKey(SCOPE))).toEqual({ activeTabId: 'a', tabIds: ['a'] });
+    expect(await idbGet(WORKSPACE_EDITOR_KEY)).toBe('the-page-that-took-over');
+    // It learns from the refusal, says so once, and the count is not left behind.
+    expect(page.getRole()).toBe('displaced');
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(snapshotWritesInFlight()).toBe(0);
+  });
+
+  it('lets a reloaded page write again: it claims the record afresh', async () => {
+    const first = await startEditing();
+    await writeSnapshot(SCOPE, [record('a')], 'a');
+
+    // The page reloads: its claim and its module state start over.
+    _resetWorkspaceLockForTests();
+    _resetTabPersistenceForTests();
+    const second = await startEditing();
+    expect(second.getEpoch()).not.toBe(first.getEpoch());
+
+    await writeSnapshot(SCOPE, [record('a', { name: 'AFTER RELOAD' })], 'a');
+    expect((await idbGet<PersistedTab>(tabRecordKey(SCOPE, 'a')))!.name).toBe('AFTER RELOAD');
+  });
+
+  it('is put back when it went missing, and the write goes ahead', async () => {
+    // Site data cleared under an open page must not lock its editor out.
+    const page = await startEditing();
+    await idbDelete(WORKSPACE_EDITOR_KEY);
+
+    await writeSnapshot(SCOPE, [record('a')], 'a');
+    expect(await idbGet(tabRecordKey(SCOPE, 'a'))).toBeTruthy();
+    expect(await idbGet(WORKSPACE_EDITOR_KEY)).toBe(page.getEpoch());
+  });
+
+  it('lets the editing page write a scope nobody claimed, such as a copy set aside', async () => {
+    // One record for the origin, not one per scope, so a scope made later --
+    // a workspace moved aside under a new name -- is written like any other.
+    await startEditing();
+    const aside = `${SCOPE}-aside::1759400000000`;
+
+    await writeSnapshot(aside, [record('a')], 'a');
+    expect((await readSnapshot(aside))!.tabs.map((t) => t.id)).toEqual(['a']);
+  });
+
+  it("refuses a displaced page's write to the main scope", async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const page = await startEditing();
+    await writeSnapshot(SCOPE, [record('a')], 'a');
+    page.supersede();
+    expect(page.getRole()).toBe('displaced');
+
+    await writeSnapshot(SCOPE, [record('a', { name: 'LATE' })], 'a');
+    expect((await idbGet<PersistedTab>(tabRecordKey(SCOPE, 'a')))!.name).toBe('A');
+  });
+
+  it('is neither checked nor created when no page claimed editing', async () => {
+    // Tests, scripts and any caller that never mounts the app.
+    await idbSet(WORKSPACE_EDITOR_KEY, 'some-page');
+    await writeSnapshot(SCOPE, [record('a')], 'a');
+    expect(await idbGet(tabRecordKey(SCOPE, 'a'))).toBeTruthy();
+    expect(await idbGet(WORKSPACE_EDITOR_KEY)).toBe('some-page');
   });
 });
 

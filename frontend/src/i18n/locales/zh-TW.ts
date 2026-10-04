@@ -249,6 +249,18 @@ const zhTW: Record<TranslationKey, string> = {
   'welcome.newGraph': '新增空白圖表',
   'welcome.examples': '或從一個範例開始',
 
+  // #554：同一時間只有一個瀏覽器分頁能編輯工作區，其他分頁都會被這個遮罩蓋住。
+  // 每次都寫完整的「瀏覽器分頁」：單說「分頁」指的是 app 自己的畫布分頁。
+  'workspaceLock.readOnly.title': '這個瀏覽器分頁目前唯讀',
+  'workspaceLock.readOnly.body':
+    '同一個工作區一次只能在一個瀏覽器分頁中編輯。在這裡做的變更不會被儲存。',
+  'workspaceLock.moved.title': '編輯已移到另一個瀏覽器分頁',
+  'workspaceLock.moved.body': '在這裡做的變更不會再被儲存。',
+  'workspaceLock.saving': '正在儲存最後的變更…',
+  'workspaceLock.waiting': '正在等待另一個瀏覽器分頁儲存…',
+  'workspaceLock.editHere': '在這裡編輯',
+  'workspaceLock.editHere.hint': '以最新儲存的內容重新載入這個頁面。',
+
   // 範例分區。不再放在 empty.* 底下：空白畫布、側邊欄範本頁與範例總覽
   // 現在都用這一組分區（#141）。
   'examples.section.quickstart': '快速開始',
