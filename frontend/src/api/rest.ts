@@ -894,6 +894,30 @@ export async function renameGraph(from: string, to: string) {
   return res.json();
 }
 
+/**
+ * Advice the export route sends beside the script (#557); the script is the
+ * same with or without it. `absolute_path` is the only code so far: a file
+ * param whose absolute path ties the script to this computer. A client skips
+ * any code it does not know.
+ */
+export interface ExportWarning {
+  code: string;
+  /** The node as the script names it: `blk/csv` for one inside a block. */
+  node_id: string;
+  /** What the canvas calls the node: its rename, else its type. */
+  label: string;
+  param: string;
+  value: string;
+  /** The presets and blocks the node sits in, outermost first. */
+  containers: { node_id: string; label: string }[];
+}
+
+export interface ExportResult {
+  script: string;
+  /** Absent from a server older than #557. */
+  warnings?: ExportWarning[];
+}
+
 export async function exportGraph(
   nodes: any[],
   edges: any[],
@@ -949,7 +973,7 @@ export async function exportGraph(
     }
     throw new Error(`Export failed: ${detail}`);
   }
-  return res.json() as Promise<{ script: string }>;
+  return res.json() as Promise<ExportResult>;
 }
 
 /** A2: clear persisted layer weights kept by the backend NodeStateStore.

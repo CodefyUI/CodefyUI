@@ -4,7 +4,13 @@ import { useDeviceOptions, deviceLabel, isDeviceServed } from '../../hooks/useDe
 import { useTabStore } from '../../store/tabStore';
 import { useNodeDefStore } from '../../store/nodeDefStore';
 import { useUIStore } from '../../store/uiStore';
-import { createPreset, errorDetail, exportGraph } from '../../api/rest';
+import {
+  createPreset,
+  errorDetail,
+  exportGraph,
+  type ExportResult,
+  type ExportWarning,
+} from '../../api/rest';
 import { useI18n, type TranslationKey } from '../../i18n';
 import { subgraphIdOf } from '../../utils/subgraph';
 import { graphToSvg, svgToPngBlob } from '../../utils/exportDiagram';
@@ -193,6 +199,74 @@ function exportFailureText(t: Translate, err: unknown): string {
   );
 }
 
+/* ── Export as Python: absolute file paths (#557) ───────────────── */
+
+/** How many nodes the warning names before it counts the rest. */
+const LISTED_PATHS = 3;
+
+/**
+ * One `absolute_path` warning as `Block ▸ Preset ▸ Node (path)`, or null for
+ * any other code and for an entry without that shape. A node inside a block
+ * is found by opening each level, outermost first, as the breadcrumb does.
+ *
+ * Read as untrusted: the script has downloaded by the time this runs, and an
+ * entry that cannot be read is dropped rather than allowed to throw.
+ */
+function absolutePathEntry(warning: unknown): string | null {
+  if (typeof warning !== 'object' || warning === null) return null;
+  const { code, label, value, containers } =
+    warning as Partial<Record<keyof ExportWarning, unknown>>;
+  if (code !== 'absolute_path' || typeof label !== 'string' || typeof value !== 'string') {
+    return null;
+  }
+  if (!Array.isArray(containers)) return null;
+  const where: string[] = [];
+  for (const level of containers) {
+    const levelLabel =
+      typeof level === 'object' && level !== null ? (level as { label?: unknown }).label : null;
+    if (typeof levelLabel !== 'string') return null;
+    where.push(levelLabel);
+  }
+  return `${[...where, label].join(' ▸ ')} (${value})`;
+}
+
+/**
+ * The warning for file params whose absolute path ties the exported script to
+ * this computer, or null when there are none. Two instances of one block
+ * reading the same file are one entry.
+ */
+function absolutePathWarning(t: Translate, warnings: unknown): string | null {
+  if (!Array.isArray(warnings)) return null;
+  const entries = [
+    ...new Set(
+      warnings.map(absolutePathEntry).filter((entry): entry is string => entry !== null),
+    ),
+  ];
+  if (entries.length === 0) return null;
+  const listed = entries.slice(0, LISTED_PATHS);
+  if (entries.length > LISTED_PATHS) {
+    listed.push(
+      t('toolbar.exportPython.absolutePath.more', { count: entries.length - LISTED_PATHS }),
+    );
+  }
+  return t('toolbar.exportPython.absolutePath', { nodes: listed.join(', ') });
+}
+
+/**
+ * The toast id of the path warning on screen, if any.
+ *
+ * Module scope, not a ref: App mounts the toolbar only while a tab is open, so
+ * a ref went away with the toolbar when the last tab closed, and the sticky
+ * toast stayed up with nothing left that could take it down.
+ */
+let pathWarningToast: string | null = null;
+
+function dismissPathWarning(): void {
+  if (pathWarningToast === null) return;
+  useToastStore.getState().removeToast(pathWarningToast);
+  pathWarningToast = null;
+}
+
 /* ── Main Toolbar ───────────────────────────────────────────────── */
 
 export function Toolbar() {
@@ -223,6 +297,11 @@ export function Toolbar() {
       })
     : t('toolbar.device.followFallback', { device: globalDevice });
   const addToast = useToastStore((s) => s.addToast);
+
+  // The path warning (#557) is about this tab's graph and does not say so, so
+  // it goes when another tab comes to the front, and with the toolbar itself
+  // when the last tab closes.
+  useEffect(() => () => dismissPathWarning(), [activeTab.id]);
 
   const [openMenu, setOpenMenu] = useState<string | null>(null);
   const [layoutMenuOpen, setLayoutMenuOpen] = useState(false);
@@ -402,6 +481,10 @@ export function Toolbar() {
   }, [getSerializedGraph, fetchDefinitions, t, addToast]);
 
   const handleExportPython = useCallback(async () => {
+    // A new export makes the last warning stale however it ends: an empty
+    // canvas or a failed request must not leave a path the user just fixed
+    // on screen.
+    dismissPathWarning();
     const serialized = getSerializedGraph();
     const noteIds = new Set(
       serialized.nodes.filter((node) => node.type === 'note').map((node) => node.id),
@@ -415,6 +498,8 @@ export function Toolbar() {
       return;
     }
     const name = activeTab.name || 'graph';
+    const tabId = activeTab.id;
+    let result: ExportResult;
     try {
       // core#137 (the trailing argument): an instance node is just
       // `subgraph:<id>` until the definition it names travels with it, and
@@ -422,7 +507,7 @@ export function Toolbar() {
       // resolve the id against. Omit them and the backend rejects any graph
       // containing a collapsed block with `Unknown subgraph: <id>`, i.e. a
       // flat 400 on Export -> Python for the entire feature.
-      const result = await exportGraph(
+      result = await exportGraph(
         nodes,
         edges,
         name,
@@ -442,8 +527,21 @@ export function Toolbar() {
       URL.revokeObjectURL(url);
     } catch (e) {
       addToast(t('toolbar.exportPython.fail', { error: (e as Error).message }), 'error');
+      return;
     }
-  }, [getSerializedGraph, activeTab.name, activeTab.seed,
+    // The path warning (#557), outside the try: the script has downloaded,
+    // and nothing about the warning may report it as a failure. It comes
+    // after the download, never instead of it -- an absolute path is right
+    // for a script that only ever runs here. Sticky, so it outlives the
+    // download prompt; it replaces the previous one, so two exports in a row
+    // leave one; and it is not raised once another tab is in front.
+    if (useTabStore.getState().activeTabId !== tabId) return;
+    dismissPathWarning();
+    const warning = absolutePathWarning(t, result.warnings);
+    if (warning !== null) {
+      pathWarningToast = addToast(warning, 'warning', { sticky: true });
+    }
+  }, [getSerializedGraph, activeTab.id, activeTab.name, activeTab.seed,
       activeTab.deterministic, t, addToast]);
 
   const handleExportDiagram = useCallback(

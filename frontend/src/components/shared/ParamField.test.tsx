@@ -548,6 +548,81 @@ describe('ParamField — data_file FileField backend', () => {
   });
 });
 
+// #557: a file param can hold a value the upload store does not list -- an
+// absolute path, a file uploaded on another computer, or a path such as
+// data/samples/iris.csv read from the working folder. The select showed its
+// placeholder for it, so the field looked empty while the node and the
+// exported script still read that path.
+describe('ParamField — a stored file the upload store does not list', () => {
+  const WINDOWS_PATH = 'C:\\Users\\student01\\Desktop\\grades.csv';
+
+  it.each([
+    ['data_file', 'grades.csv'],
+    ['image_file', 'a.png'],
+    ['model_file', 'm1.pt'],
+  ] as const)('%s shows the stored value, marked and disabled, and writes nothing', async (type, listed) => {
+    const onChange = vi.fn();
+    render(
+      <ParamField param={mkParam({ name: 'path', param_type: type })} value={WINDOWS_PATH} onChange={onChange} />,
+    );
+    await screen.findByRole('option', { name: listed });
+
+    const select = screen.getByRole('combobox') as HTMLSelectElement;
+    const stored = screen.getByRole('option', {
+      name: `Not in uploads: ${WINDOWS_PATH}`,
+    }) as HTMLOptionElement;
+    expect(select.value).toBe(WINDOWS_PATH);
+    expect(stored.selected).toBe(true);
+    expect(stored.disabled).toBe(true);
+    // The select is narrow; the whole value is one hover away.
+    expect(select.title).toBe(`Not in uploads: ${WINDOWS_PATH}`);
+    expect(onChange).not.toHaveBeenCalled();
+  });
+
+  it('picking an uploaded file replaces it', async () => {
+    const onChange = vi.fn();
+    render(
+      <ParamField param={mkParam({ name: 'path', param_type: 'data_file' })} value={WINDOWS_PATH} onChange={onChange} />,
+    );
+    await screen.findByRole('option', { name: 'grades.csv' });
+
+    fireEvent.change(screen.getByRole('combobox'), { target: { value: 'grades.csv' } });
+
+    expect(onChange).toHaveBeenCalledWith('path', 'grades.csv');
+  });
+
+  it('is not marked before the file list arrives, and an uploaded file is not listed twice', async () => {
+    let answer!: (files: { filename: string }[]) => void;
+    vi.mocked(listDataFiles).mockReturnValueOnce(
+      new Promise<{ filename: string }[]>((resolve) => {
+        answer = resolve;
+      }) as any,
+    );
+    render(
+      <ParamField param={mkParam({ name: 'path', param_type: 'data_file' })} value="grades.csv" onChange={() => {}} />,
+    );
+    const select = screen.getByRole('combobox') as HTMLSelectElement;
+    expect(select.value).toBe('grades.csv');
+    expect(screen.queryByText(/Not in uploads/)).toBeNull();
+
+    await act(async () => answer([{ filename: 'grades.csv' }]));
+
+    expect(select.value).toBe('grades.csv');
+    expect(screen.getAllByRole('option', { name: 'grades.csv' })).toHaveLength(1);
+    expect(screen.queryByText(/Not in uploads/)).toBeNull();
+  });
+
+  it("marks it in the user's language", async () => {
+    useI18n.setState({ locale: 'zh-TW' });
+    render(
+      <ParamField param={mkParam({ name: 'path', param_type: 'data_file' })} value={WINDOWS_PATH} onChange={() => {}} />,
+    );
+    await screen.findByRole('option', { name: 'grades.csv' });
+
+    expect(screen.getByRole('option', { name: `不在上傳清單：${WINDOWS_PATH}` })).toBeInTheDocument();
+  });
+});
+
 describe('ParamField — code params (core#131)', () => {
   const SCRIPT = ['def run(inputs, params):', '    return 1', ''].join('\n');
 

@@ -144,5 +144,5 @@ cdui run graph.json --seed 1234 --deterministic
 
 - **[`cdui run`](./run-queue#cdui-run)** 會把已儲存的圖送到執行中的伺服器，並從終端機跟隨進度；關閉終端機後 run 仍會繼續。
 - **[CLI 圖形執行器](./cli-runner)** 不需要伺服器，會直接在行程內執行圖。
-- **匯出為 Python**（[分頁與持久化](./tabs-persistence#import--export)）會寫出獨立程式，並委派給相同的節點實作。匯出時會清空 secret 參數；`--seed` 預設採用匯出時畫布設定的 seed（使用 `--no-seed` 可改用新的熵來源）；`--timeout` 是 soft timeout，已在執行的節點會完成，但不會再啟動下一個節點。
+- **匯出為 Python**（[分頁與持久化](./tabs-persistence#import--export)）會寫出獨立程式，並委派給相同的節點實作。匯出時會清空 secret 參數；`--seed` 預設採用匯出時畫布設定的 seed（使用 `--no-seed` 可改用新的熵來源）；`--timeout` 是 soft timeout，已在執行的節點會完成，但不會再啟動下一個節點。檔案參數（CSVReader、ImageReader、DocumentLoader、TextCorpusDataset、ModelLoader 與 CheckpointLoader 的上傳欄位）會照原樣寫進腳本，因此 `C:\Users\...`、`\\server\share\...` 或 `/home/...` 這類絕對路徑會把腳本綁在匯出它的那台電腦上。腳本仍會下載，接著會出現一則警告，最多列出三個這樣的節點，各附上它所在的子圖與預設組合和它的路徑，其餘的只列出數量。只寫檔名就沒有這個限制，檔名會在哪裡尋找，請見[相對檔案路徑](./cli-runner#relative-file-paths)。
 - **[TensorBoard](./data-augmentation#tensorboard)** — `TrainingLoop.tensorboard` 會將 event 檔寫入該 run 的產出目錄。

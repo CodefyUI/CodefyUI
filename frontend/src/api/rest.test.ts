@@ -239,6 +239,21 @@ describe('exportGraph', () => {
     mockFetch(200, { script: 'print(1)' });
     await expect(exportGraph([], [])).resolves.toEqual({ script: 'print(1)' });
   });
+
+  // #557: the toolbar names the nodes whose absolute file path ties the
+  // script to this computer, from what the server sends beside the script.
+  it('hands back the warnings the server sends beside the script', async () => {
+    const warnings = [{
+      code: 'absolute_path',
+      node_id: 'blk/csv',
+      label: 'CSVReader',
+      param: 'path',
+      value: 'C:\\Users\\student01\\grades.csv',
+      containers: [{ node_id: 'blk', label: 'Loader' }],
+    }];
+    mockFetch(200, { script: 'print(1)', warnings });
+    await expect(exportGraph([], [])).resolves.toEqual({ script: 'print(1)', warnings });
+  });
 });
 
 // ── Simple GET endpoints (fetch, success + error) ──

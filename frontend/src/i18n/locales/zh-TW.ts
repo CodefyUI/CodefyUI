@@ -65,6 +65,9 @@ const zhTW: Record<TranslationKey, string> = {
   'toolbar.exportPython.title': '可執行這張圖的 Python 腳本；需要 CodefyUI 後端環境',
   'toolbar.exportPython.empty': '畫布沒有可執行節點 — 請先新增節點再匯出。',
   'toolbar.exportPython.fail': 'Python 匯出失敗：{error}',
+  // #557：檔案參數填了絕對路徑，匯出的腳本就只在這台電腦上找得到檔案。
+  'toolbar.exportPython.absolutePath': '絕對路徑只在這台電腦有效：{nodes}。請只用檔名。',
+  'toolbar.exportPython.absolutePath.more': '另外 {count} 個',
   'toolbar.exportDiagram.svg': '匯出架構圖 (SVG)',
   'toolbar.exportDiagram.png': '匯出架構圖 (PNG)',
   'toolbar.exportDiagram.title': '節點、連接埠與連線的圖片，不含參數數值',
@@ -448,6 +451,7 @@ const zhTW: Record<TranslationKey, string> = {
   'paramField.download': '下載選取的檔案',
   'paramField.refresh': '重新整理檔案列表',
   'paramField.selectFile': '-- 選擇檔案 --',
+  'paramField.notInUploads': '不在上傳清單：{file}',
   'paramField.uploadFailed': '上傳失敗',
   'paramField.downloadFailed': '下載失敗',
   'paramField.secretHint': '僅本次工作階段有效，存檔時清除。金鑰請改存在環境變數。',
