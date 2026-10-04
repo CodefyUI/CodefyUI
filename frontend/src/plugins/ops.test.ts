@@ -127,6 +127,47 @@ describe('applyGraphOps — connect', () => {
     expect(badPort.results[2].ok).toBe(false);
     expect(badPort.results[2].error).toContain('ghost');
   });
+
+  // #551: `__trigger` is the hidden handle every card carries for the Start
+  // node's trigger. A data wire there saves, then fails validation and
+  // export, and the port checks skip a card that has no definition.
+  describe("a data wire onto '__trigger'", () => {
+    const withoutDefinition = (node: Node<NodeData>): Node<NodeData> => ({
+      ...node,
+      data: { ...node.data, definition: undefined },
+    });
+    const source = buildFlowNode(DEFS[0], { x: 0, y: 0 });
+    const sink = buildFlowNode(DEFS[1], { x: 100, y: 0 });
+
+    it.each<[string, Node<NodeData>, Node<NodeData>]>([
+      ['the source card has no definition', withoutDefinition(source), sink],
+      ['the target card has no definition', source, withoutDefinition(sink)],
+      ['both cards have one', source, sink],
+    ])('is refused when %s', (_, from, to) => {
+      const r = run(
+        [{ op: 'connect', source: from.id, source_handle: 'out', target: to.id, target_handle: '__trigger' }],
+        [from, to],
+      );
+      expect(r.results[0].ok).toBe(false);
+      expect(r.results[0].error).toContain('__trigger');
+      expect(r.edges).toHaveLength(0);
+    });
+
+    it("leaves a Start node's trigger to land there", () => {
+      const start = buildFlowNode(
+        def('Start', { outputs: [{ name: 'trigger', data_type: 'TRIGGER', description: '', optional: false }] }),
+        { x: 0, y: 0 },
+      );
+      const r = run(
+        [{ op: 'connect', source: start.id, source_handle: 'trigger', target: sink.id, target_handle: '__trigger' }],
+        [start, sink],
+      );
+      expect(r.results[0].ok).toBe(true);
+      expect(r.edges).toMatchObject([
+        { source: start.id, sourceHandle: 'trigger', target: sink.id, targetHandle: '__trigger', type: 'triggerEdge' },
+      ]);
+    });
+  });
 });
 
 describe('applyGraphOps — set_params / remove_node / remove_edge / clear / layout', () => {

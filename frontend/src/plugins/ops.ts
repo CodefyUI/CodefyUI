@@ -315,6 +315,14 @@ export function applyGraphOps(
         const isTrigger = op.source_handle === 'trigger';
         const targetHandle = isTrigger ? '__trigger' : op.target_handle;
 
+        // `__trigger` is the hidden handle every card carries for the Start
+        // node's trigger, and it takes nothing else: a data wire there saves,
+        // then fails validation and export (#551). Checked here because the
+        // port checks below skip a card that has no definition.
+        if (!isTrigger && op.target_handle === '__trigger') {
+          return fail(`connect: only a trigger (source_handle 'trigger') can connect to '__trigger'`);
+        }
+
         if (!isTrigger) {
           const sDef = sourceNode.data.definition;
           const tDef = targetNode.data.definition;
