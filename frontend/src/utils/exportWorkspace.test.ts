@@ -278,7 +278,7 @@ describe('collectWorkspaceFile', () => {
     const block = new File([JSON.stringify(file!.tabs[0].graph)], 'solo.json', {
       type: 'application/json',
     });
-    // The single-graph import replaces the ACTIVE tab, which is still 'Tab 1'.
+    // The single-graph import fills the ACTIVE tab, the still-empty 'Tab 1'.
     expect(await importGraphFile(block)).toBe(true);
     expect(store().getActiveTab().nodes.map((n) => n.id)).toEqual(['only']);
   });

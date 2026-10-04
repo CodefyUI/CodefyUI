@@ -124,6 +124,7 @@ const zhTW: Record<TranslationKey, string> = {
   'graphs.listFail': '載入圖表失敗：{error}',
   'graphs.import': '匯入...',
   'graphs.import.title': '圖表 (.json) 或工作區 (.cduiworkspace)',
+  'graphs.import.tabLimit': '已達 {max} 個分頁上限。請先關閉一個分頁再匯入。',
   'graphs.saveAs': '另存新檔...',
   'graphs.open': '開啟',
   'graphs.alreadyOpen': '「{name}」已經在目前分頁開啟。',
