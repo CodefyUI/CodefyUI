@@ -18,6 +18,7 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Query, Request
 
 from ..config import settings
+from ..core.graph_engine import CaptureAlias
 from ..core.port_stats import PortStatsCache, compute_port_stats
 from ..core.run_output_store import RunOutputStore
 from ..core.run_store import json_safe
@@ -61,6 +62,27 @@ def _not_captured(what: str) -> str:
         f"{what}. Turn on Record outputs (the Rec toggle in the toolbar) and "
         "re-run the graph to capture port data."
     )
+
+
+async def _read_capture(
+    store: RunOutputStore, run_id: str, node_id: str, port: str,
+) -> tuple[Any, int] | None:
+    """The captured ``(value, write serial)`` for a port, or None.
+
+    A preset card, a block instance and a bypassed node never run, so what a
+    run keeps under their ports is a :class:`CaptureAlias` naming the port
+    that holds the value (#553). Followed here, for every route that reads a
+    port, so all of them answer for the port the canvas draws -- the card's
+    own outputs, and the inputs of whatever it feeds. One step: an alias
+    names a port that ran, and anything else is not a value to serve.
+    """
+    slot = await store.get_with_version(run_id, node_id, port)
+    if slot is not None and isinstance(slot[0], CaptureAlias):
+        alias = slot[0]
+        slot = await store.get_with_version(run_id, alias.node_id, alias.port)
+        if slot is not None and isinstance(slot[0], CaptureAlias):
+            return None
+    return slot
 
 
 def _parse_slice(slice_str: str) -> tuple[Any, ...] | None:
@@ -112,6 +134,10 @@ def _serialize_tensor(value: Any, slice_str: str, max_elements: int) -> dict[str
             raise HTTPException(status_code=400, detail=f"slice failed: {e}")
     else:
         sliced = tensor
+    # A value a node trains still tracks gradients, and turning one into a
+    # float below makes torch warn (once per process). Detaching shares the
+    # storage.
+    sliced = sliced.detach()
 
     if sliced.numel() > max_elements:
         raise HTTPException(
@@ -128,7 +154,7 @@ def _serialize_tensor(value: Any, slice_str: str, max_elements: int) -> dict[str
         "dtype": dtype,
         "slice": slice_str or "",
         "sliced_shape": list(sliced.shape),
-        "values": sliced.detach().cpu().tolist(),
+        "values": sliced.cpu().tolist(),
         "truncated": False,
     }
     if sliced.numel() > 0 and sliced.is_floating_point():
@@ -229,7 +255,8 @@ async def list_run_outputs(run_id: str, request: Request):
         raise HTTPException(status_code=404, detail=f"run '{run_id}' not found")
     result = []
     for node_id, port in ports:
-        value = await store.get(run_id, node_id, port)
+        slot = await _read_capture(store, run_id, node_id, port)
+        value = None if slot is None else slot[0]
         result.append(
             {
                 "node_id": node_id,
@@ -352,7 +379,7 @@ async def get_output_stats(run_id: str, node_id: str, port: str, request: Reques
             status_code=404,
             detail=_not_captured(f"run '{run_id}' has no captured outputs"),
         )
-    slot = await store.get_with_version(run_id, node_id, port)
+    slot = await _read_capture(store, run_id, node_id, port)
     if slot is None or slot[0] is None:
         raise HTTPException(
             status_code=404,
@@ -398,7 +425,8 @@ async def get_output(
     store = _get_store(request)
     if not await store.has_run(run_id):
         raise HTTPException(status_code=404, detail=f"run '{run_id}' not found")
-    value = await store.get(run_id, node_id, port)
+    slot = await _read_capture(store, run_id, node_id, port)
+    value = None if slot is None else slot[0]
     if value is None:
         raise HTTPException(
             status_code=404,
