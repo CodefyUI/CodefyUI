@@ -226,6 +226,8 @@ def expand_presets(
     nodes: list[dict],
     edges: list[dict],
     preset_fallback: dict | None = None,
+    *,
+    output_aliases: dict[tuple[str, str], tuple[str, str]] | None = None,
 ) -> tuple[list[dict], list[dict], dict[str, str]]:
     """Expand preset nodes into their sub-graph of real nodes.
 
@@ -235,6 +237,10 @@ def expand_presets(
     ``preset_fallback`` (ID6) contains definitions owned by the graph. A graph
     definition wins a same-name collision with the installed registry, so the
     graph keeps the meaning it had when it was saved.
+
+    ``output_aliases``, when given, receives ``(preset node, exposed output)
+    -> (internal node, internal port)`` for every card expanded, so a run can
+    answer for the card's ports with what its internals captured (#553).
     """
     from .preset_registry import preset_registry
 
@@ -271,6 +277,9 @@ def expand_presets(
         for ep in preset.exposed_outputs:
             full_id = f"{preset_node_id}__{ep.internal_node}"
             output_map[ep.name] = (full_id, ep.internal_port)
+        if output_aliases is not None:
+            for name, internal in output_map.items():
+                output_aliases[(preset_node_id, name)] = internal
 
         # Add internal nodes with unique IDs
         for internal_node in preset.nodes:
@@ -600,11 +609,15 @@ def expand_subgraphs(
     nodes: list[dict],
     edges: list[dict],
     index: dict,
+    *,
+    output_aliases: dict[tuple[str, str], tuple[str, str]] | None = None,
 ) -> tuple[list[dict], list[dict], dict[str, str]]:
     """Inline one level of ``subgraph:<id>`` instance nodes.
 
     Returns ``(nodes, edges, internal_to_instance)`` -- the same triple shape
     :func:`expand_presets` returns, so callers can merge the two maps.
+    ``output_aliases`` is filled the way :func:`expand_presets` fills it, with
+    ``(instance, interface output) -> (inner node, inner port)``.
 
     Boundary rules
     --------------
@@ -705,6 +718,9 @@ def expand_subgraphs(
         output_map: dict[str, tuple[str, str]] = {}
         for port in definition.interface.outputs:
             output_map[port.port] = (f"{prefix}{port.innerNode}", port.innerPort)
+        if output_aliases is not None:
+            for name, inner_port in output_map.items():
+                output_aliases[(instance_id, name)] = inner_port
 
         trigger_targets = [
             target for target in definition.interface.triggerTargets
@@ -789,6 +805,8 @@ def expand_subgraphs_deep(
     nodes: list[dict],
     edges: list[dict],
     index: dict,
+    *,
+    output_aliases: dict[tuple[str, str], tuple[str, str]] | None = None,
 ) -> tuple[list[dict], list[dict], dict[str, str]]:
     """Expand nested subgraph instances until none are left.
 
@@ -825,7 +843,9 @@ def expand_subgraphs_deep(
             subgraph_id_of(n.get("type", "")) is not None for n in nodes
         ):
             return nodes, edges, internal_to_instance
-        nodes, edges, mapping = expand_subgraphs(nodes, edges, index)
+        nodes, edges, mapping = expand_subgraphs(
+            nodes, edges, index, output_aliases=output_aliases
+        )
         internal_to_instance.update(mapping)
     if any(subgraph_id_of(n.get("type", "")) is not None for n in nodes):
         raise GraphValidationError(
@@ -1813,6 +1833,7 @@ def prepare_executable_graph(
     *,
     preset_fallback: dict | None = None,
     subgraphs: Any = None,
+    output_aliases: dict[tuple[str, str], tuple[str, str]] | None = None,
 ) -> tuple[list[dict], list[dict], dict[str, str]]:
     """Expand subgraphs and presets, resolve bypass, prune drafts, validate.
 
@@ -1829,6 +1850,12 @@ def prepare_executable_graph(
     ids that no longer exist in the returned node list. Every reader walks it
     with :func:`outermost_container` -- the retention below, the roll-up, and
     the exporter.
+
+    ``output_aliases``, when given, receives ``(node, output port) -> (node,
+    port)`` for every output port that is drawn but never produced by a node
+    of its own: a container's exposed outputs, and what a bypassed node
+    forwards. It is a chain too, for the same reason, and
+    :func:`aliases_by_target` walks it.
     """
 
     # Dropped first, exactly where :func:`validate_graph` drops them: an edge
@@ -1861,7 +1888,8 @@ def prepare_executable_graph(
     # `build_preset_fallback` reads the graph's own client-supplied
     # `presets[]` and `/api/presets/create` used to copy node types verbatim.
     nodes, edges, subgraph_map = expand_subgraphs_deep(
-        nodes, edges, build_subgraph_index(subgraphs)
+        nodes, edges, build_subgraph_index(subgraphs),
+        output_aliases=output_aliases,
     )
     internal_to_preset.update(subgraph_map)
 
@@ -1876,6 +1904,7 @@ def prepare_executable_graph(
             expanded_nodes,
             expanded_edges,
             preset_fallback=preset_fallback,
+            output_aliases=output_aliases,
         )
         internal_to_preset.update(mapping)
 
@@ -1892,6 +1921,13 @@ def prepare_executable_graph(
     if bypass.errors:
         raise GraphValidationError("; ".join(bypass.errors))
     expanded_nodes, expanded_edges = bypass.nodes, bypass.edges
+    if output_aliases is not None:
+        # A bypassed node never runs: each output it forwards IS the value
+        # its consumers received, so that is what reading the port reads.
+        for link in bypass.links:
+            output_aliases[(link.node_id, link.output)] = (
+                link.source, link.source_handle,
+            )
 
     entry_ids = find_entry_points(expanded_nodes, expanded_edges)
     if not entry_ids:
@@ -2025,6 +2061,51 @@ _CONTAINER_RANK_STATUS: dict[int, str] = {
 }
 
 
+@dataclass(frozen=True)
+class CaptureAlias:
+    """What a recorded run keeps under a port no node of its own produced.
+
+    A preset card, a block instance and a bypassed node never run --
+    expansion and bypass resolution replace them -- but the canvas draws
+    their ports, and every reader of ``/api/execution/outputs`` asks for
+    those (#553). This names the port whose capture holds the value, and the
+    route follows it. The value is not stored a second time: the store
+    measures every slot against its byte budget, so a copy would count a
+    tensor twice and evict other runs early. An alias itself measures 0
+    bytes.
+
+    It always names a port that RAN, never another alias, so one step
+    reaches the value, and it is written only after that port's value. The
+    two writes take the store's lock one at a time, so a run dropped between
+    them -- evicted, or deleted mid-run -- comes back holding the alias
+    alone, and reading it answers 404. That is the truth: the value is gone.
+    """
+
+    node_id: str
+    port: str
+
+
+def aliases_by_target(
+    output_aliases: dict[tuple[str, str], tuple[str, str]],
+) -> dict[tuple[str, str], list[tuple[str, str]]]:
+    """Group aliased ports by the port that actually produces their value.
+
+    ``output_aliases`` (see :func:`prepare_executable_graph`) is a CHAIN
+    under nesting: a block's port names the card inside it, whose port names
+    the node inside THAT. Walked to its end here, once per run, so a capture
+    costs one lookup and every alias it writes names a port that ran. A ring
+    stops at the first port seen twice, as :func:`outermost_container` does.
+    """
+    grouped: dict[tuple[str, str], list[tuple[str, str]]] = defaultdict(list)
+    for alias, target in output_aliases.items():
+        seen = {alias}
+        while target in output_aliases and target not in seen:
+            seen.add(target)
+            target = output_aliases[target]
+        grouped[target].append(alias)
+    return dict(grouped)
+
+
 async def execute_graph(
     nodes: list[dict],
     edges: list[dict],
@@ -2087,11 +2168,20 @@ async def execute_graph(
     resolves -- without it a node's queued progress would land AFTER its own
     ``completed``.
     """
+    output_aliases: dict[tuple[str, str], tuple[str, str]] = {}
     expanded_nodes, expanded_edges, internal_to_preset = prepare_executable_graph(
         nodes,
         edges,
         preset_fallback=preset_fallback,
         subgraphs=subgraphs,
+        output_aliases=output_aliases,
+    )
+    # Captured port -> the drawn ports that stand for it (#553). Only a
+    # recorded run writes captures, so only a recorded run needs it.
+    capture_aliases = (
+        aliases_by_target(output_aliases)
+        if record_outputs and output_store is not None and run_id
+        else {}
     )
 
     levels = topological_levels(expanded_nodes, expanded_edges)
@@ -2354,6 +2444,21 @@ async def execute_graph(
             digest=digest,
         )
 
+    async def _capture(node_id: str, result: dict[str, Any]) -> None:
+        """Record a node's outputs, then alias every port that stands for one.
+
+        Each alias is written after the value it names, so a reader that
+        finds the alias finds the value -- unless the run was dropped in
+        between, and then the read answers 404 (see :class:`CaptureAlias`).
+        """
+        for port, value in result.items():
+            if port.startswith("__"):
+                continue
+            await output_store.put(run_id, node_id, port, value)
+            for alias_node, alias_port in capture_aliases.get((node_id, port), ()):
+                await output_store.put(
+                    run_id, alias_node, alias_port, CaptureAlias(node_id, port))
+
     async def _execute_single_node(node_id: str) -> None:
         """Execute one node with cancellation, caching, and error recovery."""
         if context and context.cancelled:
@@ -2435,10 +2540,7 @@ async def execute_graph(
                     # with Rec OFF primes the cache and a subsequent run
                     # with Rec ON finds nothing to fetch.
                     if record_outputs and output_store is not None and run_id:
-                        for port, value in cached.items():
-                            if port.startswith("__"):
-                                continue
-                            await output_store.put(run_id, node_id, port, value)
+                        await _capture(node_id, cached)
                     await _emit_preset_aware(node_id, "cached", cached)
                     return
 
@@ -2553,10 +2655,7 @@ async def execute_graph(
                     # than the whole cache or nothing at all.
                     cache.put(node_cache_keys[node_id], result, node_id)
                 if record_outputs and output_store is not None and run_id:
-                    for port, value in result.items():
-                        if port.startswith("__"):
-                            continue
-                        await output_store.put(run_id, node_id, port, value)
+                    await _capture(node_id, result)
                     # Expand __steps__ from instrumented nodes into individual
                     # entries so the Teaching Inspector can fetch them via the
                     # standard /api/execution/outputs/{run_id}/{node_id}/{port}
