@@ -1,10 +1,11 @@
-import { useCallback, useEffect } from 'react';
+import { useCallback, useEffect, useRef } from 'react';
 import type { ExecutionStatus } from '../types';
 import { useTabStore, type TabState } from '../store/tabStore';
 import {
   queueTabNodeProgress,
   queueTabNodeStatus,
   discardTabNodeUpdates,
+  flushTabNodeUpdates,
 } from '../store/nodeUpdateQueue';
 import { useToastStore } from '../store/toastStore';
 import { useUIStore } from '../store/uiStore';
@@ -14,7 +15,11 @@ import { findEntryPoints } from '../utils/findEntryPoints';
 import { localizedPackTitle } from '../utils/packAvailability';
 import { friendlyError, missingPackFromError } from '../utils/errorMessages';
 import { useI18n } from '../i18n';
-import { RECONNECTED_EVENT, type ExecutionWebSocket } from '../api/ws';
+import {
+  MESSAGE_TOO_BIG_EVENT,
+  RECONNECTED_EVENT,
+  type ExecutionWebSocket,
+} from '../api/ws';
 
 type WsHandlerEntry = {
   ws: ExecutionWebSocket;
@@ -35,6 +40,29 @@ const TERMINAL_TAB_STATUS: Record<string, ExecutionStatus> = {
   cancelled: 'idle',
   interrupted: 'idle',
 };
+
+/** True for a run status that means the run is over. */
+function isFinishedRunStatus(status: unknown): status is string {
+  return typeof status === 'string'
+    && Object.prototype.hasOwnProperty.call(TERMINAL_TAB_STATUS, status);
+}
+
+/**
+ * Say why a tab left Running when nobody pressed Stop (#552): a toast,
+ * because the Execution Log may be closed, and the same words in the log,
+ * because the toast is gone after four seconds.
+ *
+ * One toast for the same words, however many tabs say them: a restart ends
+ * every running tab's run at once, and identical toasts stacked on each
+ * other read as separate problems. Each tab's log still gets its line.
+ */
+function sayWhyRunEnded(tabId: string, message: string): void {
+  const toasts = useToastStore.getState();
+  if (!toasts.toasts.some((toast) => toast.message === message)) {
+    toasts.addToast(message, 'warning');
+  }
+  useTabStore.getState().addTabLog(tabId, { message, type: 'error' });
+}
 
 /**
  * (tabId, runId) pairs this page load has already tried to re-attach to.
@@ -138,6 +166,54 @@ export function useGraphExecution() {
       if (attached.has(tab.id)) return;
       const tabId = tab.id;
       const ws = tab.ws;
+
+      // Runs this tab has seen end (#552): a closing frame, a terminal
+      // `attached`, or REST's answer. Two things read it. A replay of an
+      // ended run can open with `execution_start`, which must not put the
+      // tab back on Running with nothing left to end it. And a refused Run
+      // that names one of these runs names nothing that is still going.
+      //
+      // Per mount of this effect, which is enough: the hook lives in the
+      // Toolbar, which unmounts only when no tab is left (every closed
+      // tab's socket is disconnected), and the app's error screen recovers
+      // by reloading the page. A remount therefore only ever meets sockets
+      // that have carried no run under the previous mount.
+      const closedRuns = new Set<string>();
+      const noteClosed = (runId: unknown) => {
+        if (typeof runId === 'string' && runId) closedRuns.add(runId);
+      };
+      // The run whose interruption this tab has already reported. The
+      // terminal `attached` and the closing frame its replay ends with both
+      // say so; the user hears it once.
+      let reportedRunId: string | null = null;
+
+      // A card the dead process was running never gets a frame of its own,
+      // and would keep its Running border, footer and epoch bar. Flushed
+      // first, so a node a replay has just painted running is included.
+      const settleRunningNodes = () => {
+        flushTabNodeUpdates();
+        const live = useTabStore.getState().tabs.find((t) => t.id === tabId);
+        for (const node of live?.nodes ?? []) {
+          if (node.data?.executionStatus === 'running') {
+            queueTabNodeStatus(tabId, node.id, 'interrupted');
+          }
+        }
+      };
+
+      // End the tab's run on the server's word. An interruption is the one
+      // outcome that also needs words: the tab can only show "Idle", and
+      // nothing in the run's own frames says the server went away. Its cards
+      // are settled on EVERY call, because the closing frame that ends a
+      // replay can follow frames that marked a node running again.
+      const endRun = (runId: string | null, runStatus: string) => {
+        noteClosed(runId);
+        useTabStore.getState().setTabStatus(tabId, TERMINAL_TAB_STATUS[runStatus] ?? 'idle');
+        if (runStatus !== 'interrupted') return;
+        settleRunningNodes();
+        if (runId !== null && runId === reportedRunId) return;
+        reportedRunId = runId;
+        sayWhyRunEnded(tabId, useI18n.getState().t('status.runInterrupted'));
+      };
 
       const onNodeStatus = (raw: unknown) => {
         const data = raw as any;
@@ -287,14 +363,15 @@ export function useGraphExecution() {
         }
       };
 
-      const onExecutionComplete = () => {
+      const onExecutionComplete = (raw: unknown) => {
+        noteClosed((raw as { run_id?: unknown }).run_id);
         const store = useTabStore.getState();
         store.setTabStatus(tabId, 'completed');
         store.addTabLog(tabId, { message: 'Execution completed successfully', type: 'success' });
       };
 
       const onExecutionError = (raw: unknown) => {
-        const data = raw as { error: string; rejected?: boolean };
+        const data = raw as { error: string; rejected?: boolean; run_id?: unknown };
         const store = useTabStore.getState();
         // A REFUSED submit is not a run outcome (#123). The server turned a
         // click down — the interactive cap, or the one-run-per-session rule
@@ -302,12 +379,31 @@ export function useGraphExecution() {
         // following is still executing. Falling through to `error` here
         // would re-enable Run and disable Stop mid-run, taking away the
         // ability to stop the very run the user is watching.
+        //
+        // Unless nothing of this tab's is going at all (#552). The refusal
+        // names the run its socket is attached to: none, or a run this tab
+        // has seen end, means the refused click was the only thing the tab
+        // was waiting for -- typically the interactive cap, filled by runs in
+        // other tabs -- and staying on Running would wait for a run that
+        // does not exist. A run it has NOT seen end is live: a second Run
+        // click that landed while the first was still validating is refused
+        // for the first click's run, and the tab must keep following it.
+        // (Run clears `lastRunId` before it sends, so that alone cannot tell
+        // the two apart; the '*' handler re-points it at the named run.)
         if (data.rejected) {
-          const message = useI18n.getState().t('execution.rejected');
+          const tab = store.tabs.find((t) => t.id === tabId);
+          const attachedTo =
+            typeof data.run_id === 'string' && data.run_id ? data.run_id : null;
+          const notStarted = tab?.status === 'running' && !tab.lastRunId
+            && (attachedTo === null || closedRuns.has(attachedTo));
+          const message = useI18n.getState().t(
+            notStarted ? 'status.runNotStarted' : 'execution.rejected');
           useToastStore.getState().addToast(message, 'warning');
           store.addTabLog(tabId, { message: `${message} (${data.error})`, type: 'info' });
+          if (notStarted) store.setTabStatus(tabId, 'idle');
           return;
         }
+        noteClosed(data.run_id);
         store.setTabStatus(tabId, 'error');
         store.addTabLog(tabId, { message: `Execution error: ${data.error}`, type: 'error' });
         // A fail-fast run re-raises the node's exception, so a missing pack
@@ -320,6 +416,8 @@ export function useGraphExecution() {
 
       const onExecutionStart = (raw: unknown) => {
         const data = raw as { run_id?: string };
+        // Replayed history of a run that has already ended (#552).
+        if (typeof data.run_id === 'string' && closedRuns.has(data.run_id)) return;
         const store = useTabStore.getState();
         store.setTabStatus(tabId, 'running');
         if (typeof data.run_id === 'string') {
@@ -328,7 +426,16 @@ export function useGraphExecution() {
         store.addTabLog(tabId, { message: 'Execution started', type: 'info' });
       };
 
-      const onExecutionStopped = () => {
+      const onExecutionStopped = (raw: unknown) => {
+        const data = raw as { run_id?: unknown; reason?: unknown };
+        // The server going away, not a user's Stop (#552): a graceful
+        // shutdown sends this live, and startup recovery writes it as the
+        // last frame of every run the previous process died under.
+        if (data.reason === 'interrupted') {
+          endRun(typeof data.run_id === 'string' ? data.run_id : null, 'interrupted');
+          return;
+        }
+        noteClosed(data.run_id);
         const store = useTabStore.getState();
         store.setTabStatus(tabId, 'idle');
         store.addTabLog(tabId, { message: 'Execution cancelled', type: 'info' });
@@ -339,10 +446,39 @@ export function useGraphExecution() {
       // tab into `running`: an attach that fails (the run was pruned between
       // the status check and the request) simply never gets here, instead of
       // leaving the tab stuck on "Running" with Run disabled forever.
+      //
+      // A finished status ends the tab's run instead (#552). The usual case
+      // is the re-attach after a server restart, whose startup recovery
+      // filed the run `interrupted`. The replay that follows cannot be
+      // relied on to close it (a run retired by an older server has no
+      // closing frame), so this ack ends it, and holds against the replay.
       const onAttached = (raw: unknown) => {
-        const data = raw as { status?: string };
-        if (data.status !== 'running' && data.status !== 'queued') return;
-        useTabStore.getState().setTabStatus(tabId, 'running');
+        const data = raw as { run_id?: unknown; status?: unknown };
+        if (data.status === 'running' || data.status === 'queued') {
+          useTabStore.getState().setTabStatus(tabId, 'running');
+          return;
+        }
+        if (!isFinishedRunStatus(data.status)) return;
+        endRun(typeof data.run_id === 'string' ? data.run_id : null, data.status);
+      };
+
+      // Ask REST what the run is really doing, and end the tab's run if it
+      // is over. For the answers after which no frame will ever end it: a
+      // refused attach, and a Stop that found nothing to stop.
+      const settleFromServer = (runId: string | null) => {
+        void (async () => {
+          let run = null;
+          try {
+            run = runId ? await getRun(runId) : null;
+          } catch {
+            return; // server unreachable: it is not ours to declare over
+          }
+          if (run && RESUMABLE.has(run.status)) return; // still going
+          const now = useTabStore.getState().tabs.find((t) => t.id === tabId);
+          if (!now || now.status !== 'running' || now.lastRunId !== runId) return;
+          if (run) endRun(runId, run.status);
+          else useTabStore.getState().setTabStatus(tabId, 'idle');
+        })();
       };
 
       // Protocol-level refusals (unknown run, bad cursor, no run service,
@@ -365,21 +501,21 @@ export function useGraphExecution() {
         // may not even be about the attach.
         const tab = store.tabs.find((t) => t.id === tabId);
         if (!tab || tab.status !== 'running') return;
-        const runId = tab.lastRunId;
-        void (async () => {
-          let run = null;
-          try {
-            run = runId ? await getRun(runId) : null;
-          } catch {
-            return; // server unreachable: it is not ours to declare over
-          }
-          if (run && RESUMABLE.has(run.status)) return; // still going
-          const current = useTabStore.getState();
-          const now = current.tabs.find((t) => t.id === tabId);
-          if (!now || now.status !== 'running' || now.lastRunId !== runId) return;
-          current.setTabStatus(
-            tabId, run ? TERMINAL_TAB_STATUS[run.status] ?? 'idle' : 'idle');
-        })();
+        settleFromServer(tab.lastRunId);
+      };
+
+      // The answer to Stop (#552). `cancelled: true` means the request was
+      // delivered, and the run's closing frame follows on the attachment.
+      // `cancelled: false` means there was nothing to stop -- the run is
+      // already over, or this server never had it -- and no closing frame is
+      // coming, so the tab would sit on Running with Stop doing nothing.
+      const onCancelAck = (raw: unknown) => {
+        const data = raw as { run_id?: unknown; cancelled?: unknown };
+        if (data.cancelled !== false) return;
+        const tab = useTabStore.getState().tabs.find((t) => t.id === tabId);
+        if (!tab || tab.status !== 'running') return;
+        settleFromServer(
+          typeof data.run_id === 'string' && data.run_id ? data.run_id : tab.lastRunId);
       };
 
       // #121: every replayed or live frame carries the run it belongs to and
@@ -403,11 +539,37 @@ export function useGraphExecution() {
       const onReconnected = () => {
         const store = useTabStore.getState();
         const tab = store.tabs.find((t) => t.id === tabId);
-        if (!tab || tab.status !== 'running' || !tab.lastRunId) return;
+        if (!tab || tab.status !== 'running') return;
+        if (!tab.lastRunId) {
+          // Running with no run id (#552): Run's execute frame went out on
+          // the socket that just dropped, and whatever answered it went
+          // with it. Nothing will ever arrive for that click on this
+          // socket, and there is no run id to re-attach to.
+          store.setTabStatus(tabId, 'idle');
+          sayWhyRunEnded(tabId, useI18n.getState().t('status.runUnconfirmed'));
+          return;
+        }
         tab.ws.send({
           action: 'attach',
           run_id: tab.lastRunId,
           cursor: tab.lastRunCursor,
+        });
+      };
+
+      // The server closed the socket with 1009 (#552): the last frame sent --
+      // in practice a Run's execute message -- was refused unread, so a tab
+      // still waiting for that Run's answer will never get one. Leave Running
+      // now rather than at the reconnect, where it would read as a dropped
+      // connection. The socket layer has already raised the toast; the log
+      // gets the same words.
+      const onMessageTooBig = () => {
+        const store = useTabStore.getState();
+        const tab = store.tabs.find((t) => t.id === tabId);
+        if (!tab || tab.status !== 'running' || tab.lastRunId) return;
+        store.setTabStatus(tabId, 'idle');
+        store.addTabLog(tabId, {
+          message: useI18n.getState().t('connection.tooLarge'),
+          type: 'error',
         });
       };
 
@@ -418,8 +580,10 @@ export function useGraphExecution() {
         { ws, type: 'execution_start', handler: onExecutionStart },
         { ws, type: 'execution_stopped', handler: onExecutionStopped },
         { ws, type: 'attached', handler: onAttached },
+        { ws, type: 'cancel_ack', handler: onCancelAck },
         { ws, type: 'error', handler: onProtocolError },
         { ws, type: RECONNECTED_EVENT, handler: onReconnected },
+        { ws, type: MESSAGE_TOO_BIG_EVENT, handler: onMessageTooBig },
         { ws, type: '*', handler: onAnyFrame },
       ];
       for (const { type, handler } of entries) ws.on(type, handler);
@@ -501,9 +665,7 @@ export function useGraphExecution() {
     for (const tab of useTabStore.getState().tabs) void resume(tab);
   }, []);
 
-  const execute = useCallback(async () => {
-    const tab = getActiveTab();
-
+  const submit = useCallback(async (tab: TabState) => {
     // Block execution when the graph has no entry points. This mirrors the
     // backend `find_entry_points` so we fail fast with a toast instead of
     // sending a graph that will be rejected server-side.
@@ -518,11 +680,10 @@ export function useGraphExecution() {
 
     const ws = tab.ws;
 
-    if (!(await ensureConnected(ws))) {
-      addTabLog(tab.id, { message: 'Failed to connect to execution server', type: 'error' });
-      return;
-    }
-
+    // Everything read from the ACTIVE tab is read here, before the first
+    // await: the user can switch tabs while the socket connects or the graph
+    // is checked, and these getters only reach the active tab (#552).
+    //
     // The run needs any SECRET param the user typed (an LLM API key), so its
     // message is built with the keys kept; the server keeps its stored copy
     // of the run scrubbed (#251). Validation has no use for a key and gets
@@ -530,6 +691,13 @@ export function useGraphExecution() {
     // describe the same graph.
     const graph = getSerializedGraph({ keepSecrets: true });
     const checked = getSerializedGraph();
+    const dirtyAtClick = useTabStore.getState().getDirtyWithDownstream();
+
+    if (!(await ensureConnected(ws))) {
+      addTabLog(tab.id, { message: 'Failed to connect to execution server', type: 'error' });
+      return;
+    }
+
     // Filter out note nodes — they are annotations, not computational
     const isComputational = (n: any) => n.type !== 'note';
     const execNodes = graph.nodes.filter(isComputational);
@@ -550,19 +718,37 @@ export function useGraphExecution() {
       // If validation endpoint is unreachable, proceed anyway
     }
 
-    clearLogs();
+    // The socket can close while validation is in flight -- a server
+    // restart is the usual reason -- and `ws.send` drops what it cannot
+    // deliver, which left the tab on Running with no run behind it (#552).
+    // Checked again after the LAST await: nothing from here to the send
+    // yields, so the execute frame leaves on an open socket.
+    if (!(await ensureConnected(ws))) {
+      addTabLog(tab.id, { message: 'Failed to connect to execution server', type: 'error' });
+      return;
+    }
+
     // Drop anything the previous run left buffered BEFORE resetting the
     // nodes to idle (#125): a patch that survived the reset would land one
     // frame later and paint the old run's status onto the new one.
     discardTabNodeUpdates(tab.id);
-    clearExecutionStatus();
-    clearOutputSummaries();
-    setTabStatus(tab.id, 'running');
-
     // Partial re-execution: pass changed_nodes hint to backend
-    const { getDirtyWithDownstream, clearDirty } = useTabStore.getState();
-    const changedNodes = getDirtyWithDownstream();
-    clearDirty();
+    let changedNodes = dirtyAtClick;
+    // The store's run resets only reach the ACTIVE tab, so they run only
+    // while that is still this one (#552). After a switch they would wipe
+    // the other tab's log, cards and dirty set, and send its dirty set as
+    // this run's. A tab switched away from keeps its last run's log and
+    // cards until the new run's frames arrive, and keeps its dirty set:
+    // those nodes run again next time, which is slower but never stale.
+    if (useTabStore.getState().activeTabId === tab.id) {
+      clearLogs();
+      clearExecutionStatus();
+      clearOutputSummaries();
+      const { getDirtyWithDownstream, clearDirty } = useTabStore.getState();
+      changedNodes = getDirtyWithDownstream();
+      clearDirty();
+    }
+    setTabStatus(tab.id, 'running');
 
     // Forget the previous run BEFORE submitting. Stop is enabled the moment
     // the status flips to `running`, but the new run's id only arrives with
@@ -616,7 +802,26 @@ export function useGraphExecution() {
       ...(tab.deterministic ? { deterministic: true } : {}),
       ...(changedNodes.length > 0 ? { changed_nodes: changedNodes } : {}),
     });
-  }, [getActiveTab, getSerializedGraph, clearLogs, clearExecutionStatus, clearOutputSummaries, setTabStatus, addTabLog]);
+  }, [getSerializedGraph, clearLogs, clearExecutionStatus, clearOutputSummaries, setTabStatus, addTabLog]);
+
+  // Tabs whose Run is between the click and its execute frame (#552). Run
+  // stays clickable until the tab is on Running, which comes after
+  // validation's round trip -- under a busy server long enough for a second
+  // click to land. That click would send a second execute frame the server
+  // refuses, and wipe the first run's log and cards on its way; it is
+  // ignored instead. Released however `submit` ends (sent, gave up, threw).
+  const submitting = useRef(new Set<string>());
+
+  const execute = useCallback(async () => {
+    const tab = getActiveTab();
+    if (submitting.current.has(tab.id)) return;
+    submitting.current.add(tab.id);
+    try {
+      await submit(tab);
+    } finally {
+      submitting.current.delete(tab.id);
+    }
+  }, [getActiveTab, submit]);
 
   // Explicit cancel, naming the run (#121). Closing the tab, navigating away
   // and losing the connection all leave the run alone now — this is the only

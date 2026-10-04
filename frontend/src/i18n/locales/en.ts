@@ -97,6 +97,13 @@ const en = {
   'status.skipped': 'Skipped',
   'status.cached': 'Cached',
   'status.interrupted': 'Interrupted',
+  // Why a tab left Running without anyone pressing Stop (#552). Each one is a
+  // toast and the same line in the Execution Log.
+  'status.runInterrupted': 'The server stopped or restarted, so this run was interrupted.',
+  'status.runNotStarted':
+    'This run was not started — the server is busy with other runs. Try again when one finishes.',
+  'status.runUnconfirmed':
+    'The connection dropped before the server confirmed this run. The Runs panel shows whether it started.',
 
   // Connection (WebSocket reconnect surface)
   'connection.lost': 'Connection lost — reconnecting…',

@@ -217,6 +217,14 @@ EVENT_WARNING = "run_warning"
 STOP_REASON_CANCELLED = "cancelled"
 STOP_REASON_INTERRUPTED = "interrupted"
 
+#: The frames that END a run's log: a client replaying it over the WS
+#: attach view (the canvas) takes one of them as the run's end.
+#: ``cdui run --wait`` stops on the row's status instead and only prints
+#: them. Startup recovery checks a log's last event against this before
+#: closing it, so no run is closed twice (#552).
+CLOSING_EVENTS = frozenset({EVENT_RUN_COMPLETED, EVENT_RUN_FAILED,
+                            EVENT_RUN_STOPPED})
+
 # ── submit options ────────────────────────────────────────────────────────
 
 #: The complete option vocabulary. Unknown keys are REJECTED rather than
@@ -2530,10 +2538,12 @@ class RunService:
         transition it did not make.
 
         The ``execution_stopped`` event is written even though there was no
-        ``execution_start`` to balance it. A follower (the WS attach view,
-        ``cdui run --wait``) needs a frame that says the run ENDED; going
+        ``execution_start`` to balance it. A client following the log over
+        the WS attach view needs a frame that says the run ENDED; going
         quiet is indistinguishable from a run that is simply slow.
-        Manufacturing a start event to pair with it would be the actual lie.
+        (``cdui run --wait`` stops on the row's status and prints the
+        frame.) Manufacturing a start event to pair with it would be the
+        actual lie.
         """
         # The vault's other drop point (#251), and the reason it lives here
         # rather than in each caller: this is the one function BOTH cancel
@@ -2567,13 +2577,26 @@ class RunService:
         exactly the ``queued`` ones this sweep retires, and retiring a run
         the scheduler is still holding would leave the queue pointing at a
         terminal row.
+
+        Each retired run's log is closed with the ``execution_stopped``
+        frame a graceful shutdown writes (#552), in the same transaction as
+        the row. A canvas tab that re-attaches after the restart replays
+        that log, and without a closing frame nothing on the wire ever told
+        it the run was over: it stayed on Running until the page was
+        reloaded. The frame goes straight to the store rather than through
+        ``_emit`` because the guard above means no subscriber can be waiting
+        for it.
         """
         if self._runs or self._pending_by_id:
             raise RuntimeError(
                 "recover_interrupted is a startup call; "
                 f"{len(self._runs)} active run(s) and "
                 f"{len(self._pending_by_id)} queued run(s) are in flight")
-        count = await self.store.interrupt_active_runs()
+        count = await self.store.interrupt_active_runs(
+            closing_event=EVENT_RUN_STOPPED,
+            closing_payload={"reason": STOP_REASON_INTERRUPTED},
+            closing_types=CLOSING_EVENTS,
+        )
         if count:
             logger.warning(
                 "marked %d run(s) interrupted (they did not survive a "

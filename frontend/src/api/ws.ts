@@ -25,6 +25,14 @@ const MAX_RECONNECT_ATTEMPTS = 10;
 export const RECONNECTED_EVENT = 'reconnected';
 
 /**
+ * Synthetic event fired when the server closes the socket with 1009: the
+ * last frame this client sent was refused unread (#552). In practice that
+ * is a Run's execute message, so no answer to it will ever arrive; only the
+ * hook knows whether a tab is waiting for one, hence an event.
+ */
+export const MESSAGE_TOO_BIG_EVENT = 'message_too_big';
+
+/**
  * RFC 6455 close code 1009, "message too big".
  *
  * Sent by the server's WebSocket layer when a frame we sent exceeded its
@@ -106,6 +114,7 @@ export class ExecutionWebSocket {
         // message that was refused — so we still reconnect, and the user
         // still gets "connection restored" when it comes back.
         this.notifiedDisconnect = true;
+        this.dispatch({ type: MESSAGE_TOO_BIG_EVENT });
       }
       this.scheduleReconnect();
     };

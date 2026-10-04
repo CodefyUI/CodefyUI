@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { ExecutionWebSocket, executionWs } from './ws';
+import { ExecutionWebSocket, MESSAGE_TOO_BIG_EVENT, executionWs } from './ws';
 import { _setSessionTokenForTesting, getSessionToken } from './_auth';
 import { useToastStore } from '../store/toastStore';
 import type { ToastType } from '../store/toastStore';
@@ -415,6 +415,28 @@ describe('onclose / reconnect', () => {
       (c: [string, ToastType?]) => c[1] === 'warning',
     );
     expect(warningToasts).toHaveLength(0);
+    ws.disconnect(); // see note above the describe block
+  });
+
+  it('tells its listeners when the server refused a message as too large (#552)', async () => {
+    // The canvas sent a Run that will never be answered. Only the hook knows
+    // whether a tab was waiting on it, so the socket says so as an event.
+    const ws = new ExecutionWebSocket();
+    const refused = vi.fn();
+    ws.on(MESSAGE_TOO_BIG_EVENT, refused);
+    const { socket, promise } = await startConnect(ws);
+    socket.fireOpen();
+    await promise;
+
+    socket.fireClose(1009);
+    expect(refused).toHaveBeenCalledTimes(1);
+
+    // An ordinary drop is not about anything the client sent.
+    await vi.advanceTimersByTimeAsync(1000);
+    const replacement = FakeWS.instances[FakeWS.instances.length - 1];
+    replacement.fireOpen();
+    replacement.fireClose(1006);
+    expect(refused).toHaveBeenCalledTimes(1);
     ws.disconnect(); // see note above the describe block
   });
 
