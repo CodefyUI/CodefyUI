@@ -270,6 +270,31 @@ const en = {
   'node.code.empty': '(no code yet)',
   'node.code.moreLines': '+{count} more lines',
 
+  // App-level error boundary (#555): the recovery screen left when a render
+  // throws. `{newGraph}`, `{import}` and `{panel}` are the labels of the
+  // buttons they name (`welcome.newGraph`, `graphs.import`,
+  // `sidebar.tab.graphs`), passed in so they cannot drift.
+  'appError.title': 'The page stopped because of an error.',
+  'appError.hint':
+    'Download a backup of your autosaved tabs first. If Reload brings this page back, start with an empty workspace, choose {newGraph}, and open the backup with {import} in the {panel} panel.',
+  'appError.details': 'Details',
+  'appError.details.later': 'Later errors:',
+  'appError.backup': 'Download backup',
+  'appError.reload': 'Reload',
+  'appError.reset': 'Start with an empty workspace',
+  'appError.backup.empty': 'Nothing to back up.',
+  'appError.backup.unreadable': '{count} tab(s) could not be read and were left out.',
+  'appError.backup.readFailed': 'Could not read the autosaved workspace: {error}',
+  'appError.backup.makeFailed': 'Could not make the backup: {error}',
+  'appError.reset.confirm': 'No backup was downloaded. Start with an empty workspace anyway?',
+  'appError.reset.noCopy':
+    'A copy of the current tabs could not be kept, so nothing was changed. Download a backup, then try again.',
+  'appError.reset.noCopyLossy':
+    'A copy of the current tabs could not be kept, and the backup leaves some tabs out, so nothing was changed.',
+  'appError.reset.notChanged':
+    'The saved tabs did not change, so the page was not reloaded. Another browser tab may be editing this workspace.',
+  'appError.reset.failed': 'Could not start an empty workspace: {error}',
+
   // Results Panel
   'results.title': 'Execution Log',
   'results.training': 'Training',
