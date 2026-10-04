@@ -592,6 +592,7 @@ def _split_flows(
     exec_nodes: list[dict],
     exec_edges: list[dict],
     order: list[str],
+    containers: dict[str, str],
 ) -> list[list[str]]:
     """Group nodes into weakly-connected components over ALL executable edges.
 
@@ -599,8 +600,34 @@ def _split_flows(
     inside each component keep the global topological order.  Components
     share no data by construction, so running them one after another is
     observably equivalent to the engine's level schedule.
+
+    An edge end that is not an executable node stands for the executable
+    nodes inside it (#560).  `prepare_executable_graph` returns one such
+    edge when a block's trigger reaches a preset card: block expansion fans
+    Start's trigger out to ``<block>/<card>``, preset expansion replaces the
+    card with its inner nodes and leaves the edge naming the card, and the
+    card's id stays executable as one of the block's members.  The engine
+    reads no trigger edge by its ends and runs the graph, so the export has
+    to as well.  Joining the card's nodes here keeps them in the block's
+    flow, which is what lets the block stay one function; an end holding no
+    executable node at all (a hand-edited trigger from a node the file no
+    longer has) joins nothing.
+
+    *containers* is the ``internal node -> container`` map from
+    `prepare_executable_graph`.  It is a chain under nesting, so each node
+    is credited to every container above it, and the walk stops at an id it
+    has seen, as `outermost_container` does, should the map loop.
     """
     parent = {node["id"]: node["id"] for node in exec_nodes}
+
+    held: dict[str, list[str]] = {}
+    for node_id in parent:
+        seen = {node_id}
+        container = containers.get(node_id)
+        while container is not None and container not in seen:
+            seen.add(container)
+            held.setdefault(container, []).append(node_id)
+            container = containers.get(container)
 
     def find(node_id: str) -> str:
         root = node_id
@@ -611,7 +638,13 @@ def _split_flows(
         return root
 
     for edge in exec_edges:
-        parent[find(edge["source"])] = find(edge["target"])
+        ends = [
+            member
+            for end in (edge["source"], edge["target"])
+            for member in ((end,) if end in parent else held.get(end, ()))
+        ]
+        for member in ends[:-1]:
+            parent[find(member)] = find(ends[-1])
 
     groups: dict[str, list[str]] = {}
     for node_id in order:
@@ -727,7 +760,7 @@ def generate_python(
             (edge["source"], edge.get("sourceHandle", ""))
         )
 
-    flows = _split_flows(exec_nodes, exec_edges, order)
+    flows = _split_flows(exec_nodes, exec_edges, order, internal_to_preset)
     raw_by_id = {node.get("id"): node for node in nodes}
 
     func_names = {
