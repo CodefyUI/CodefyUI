@@ -1,12 +1,23 @@
 import json
 import logging
+import re
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, ConfigDict, Field
 
 from ..config import settings
-from ..core.graph_engine import GraphValidationError, build_preset_fallback, validate_graph
+from ..core.graph_engine import (
+    SUBGRAPH_SEPARATOR,
+    GraphValidationError,
+    build_preset_fallback,
+    build_subgraph_index,
+    subgraph_id_of,
+    validate_graph,
+)
+from ..core.node_base import ParamType, is_param_visible
+from ..core.node_registry import registry
+from ..core.preset_registry import preset_registry
 from ..core.project import (
     GraphAmbiguityError,
     _atomic_write,
@@ -550,9 +561,195 @@ async def delete_graph(name: str):
     return {"message": "Graph deleted", "removed": [str(p) for p in removed]}
 
 
+#: The param types whose value names a file on disk. Their upload widgets
+#: write a bare file name, which the reader nodes look up wherever the graph
+#: runs. A STRING param is not one of these even when it holds a folder
+#: path: nothing in its definition says so, and guessing from its name or
+#: value would flag regexes, URLs and prompts.
+_FILE_PARAM_TYPES = frozenset({
+    ParamType.DATA_FILE,
+    ParamType.IMAGE_FILE,
+    ParamType.MODEL_FILE,
+})
+
+#: ``C:\`` or ``C:/``.
+_DRIVE_PATH = re.compile(r"[A-Za-z]:[\\/]")
+
+#: The id ``expand_presets`` gives a preset's inner node:
+#: ``<preset node id>__<inner id>``.
+_PRESET_SEPARATOR = "__"
+
+
+def _is_absolute_path(value: str) -> bool:
+    """Does *value* name one place on one machine?
+
+    Decided by spelling, not by ``Path.is_absolute()``: that answers for the
+    machine the SERVER runs on, so ``C:\\grades.csv`` would pass on Linux and
+    ``/grades.csv`` on Windows, while the script will run on some third
+    machine. A leading backslash covers a UNC path (``\\\\server\\share``) and a
+    path rooted at the current Windows drive alike.
+    """
+    text = value.strip()
+    return text.startswith(("/", "\\")) or _DRIVE_PATH.match(text) is not None
+
+
+def _shown_label(node: dict) -> str:
+    """The name the canvas shows for a node: its rename, else its type.
+
+    A preset's inner node has no label of its own, and the preset dialog
+    lists those by type too.
+    """
+    data = node.get("data")
+    label = data.get("label") if isinstance(data, dict) else None
+    if isinstance(label, str) and label.strip():
+        return label.strip()
+    return str(node.get("type", ""))
+
+
+def _container_label(node_type: str, subgraph_index: dict) -> str:
+    """What the canvas calls a block or a preset node of *node_type*."""
+    sid = subgraph_id_of(node_type)
+    if sid is not None:
+        name = getattr(subgraph_index.get(sid), "name", "") or ""
+        return name.strip() or sid
+    if node_type.startswith("preset:"):
+        return node_type[len("preset:"):]
+    return ""
+
+
+def _inner_node_type(
+    parent_id: str,
+    parent_type: str,
+    child_id: str,
+    subgraph_index: dict,
+    preset_fallback: dict,
+) -> str:
+    """The type of *child_id*, an inner node of the container *parent_id*.
+
+    Expansion names an inner node ``<container><separator><inner id>`` and
+    keeps no record of the containers it unpacked, so the type is read back
+    from the definition the container names, the same one expansion used.
+    """
+    sid = subgraph_id_of(parent_type)
+    if sid is not None:
+        definition = subgraph_index.get(sid)
+        prefix = f"{parent_id}{SUBGRAPH_SEPARATOR}"
+    elif parent_type.startswith("preset:"):
+        name = parent_type[len("preset:"):]
+        definition = preset_fallback.get(name) or preset_registry.get(name)
+        prefix = f"{parent_id}{_PRESET_SEPARATOR}"
+    else:
+        return ""
+    if not child_id.startswith(prefix):
+        return ""
+    inner_id = child_id[len(prefix):]
+    for inner in getattr(definition, "nodes", None) or ():
+        if inner.id == inner_id:
+            return str(inner.type)
+    return ""
+
+
+def _enclosing_containers(
+    node_id: str,
+    containers: dict[str, str],
+    canvas_nodes: dict[str, dict],
+    subgraph_index: dict,
+    preset_fallback: dict,
+) -> list[dict]:
+    """The presets and blocks *node_id* sits in, outermost first.
+
+    Every level, not just the one on the canvas: a node two blocks deep is
+    reached by opening both, and only the outer one is on the canvas to be
+    found. A level whose definition cannot be read is named by its id.
+    """
+    chain: list[str] = []
+    seen = {node_id}
+    current = containers.get(node_id)
+    while current is not None and current not in seen:
+        chain.append(current)
+        seen.add(current)
+        current = containers.get(current)
+    chain.reverse()
+
+    described: list[dict] = []
+    parent: tuple[str, str] | None = None
+    for container_id in chain:
+        if parent is None:
+            node_type = str(
+                (canvas_nodes.get(container_id) or {}).get("type", ""))
+        else:
+            node_type = _inner_node_type(
+                *parent, container_id, subgraph_index, preset_fallback)
+        described.append({
+            "node_id": container_id,
+            "label": _container_label(node_type, subgraph_index)
+            or container_id,
+        })
+        parent = (container_id, node_type)
+    return described
+
+
+def _absolute_path_warnings(
+    executable_nodes: list[dict],
+    containers: dict[str, str],
+    canvas_nodes: list[dict],
+    subgraphs: list[dict],
+    preset_fallback: dict,
+) -> list[dict]:
+    """One ``absolute_path`` warning per file param that pins the script to
+    one machine (#557).
+
+    Read from the graph the script RUNS -- presets and blocks expanded,
+    drafts and bypassed nodes gone -- because those are the only params the
+    script embeds. A param the node's own settings hide is skipped for the
+    same reason: the node never opens it, and the user cannot see the field.
+    """
+    canvas_by_id = {node.get("id"): node for node in canvas_nodes}
+    subgraph_index = build_subgraph_index(subgraphs)
+    warnings: list[dict] = []
+    for node in executable_nodes:
+        node_cls = registry.get(str(node.get("type", "")))
+        data = node.get("data")
+        params = data.get("params") if isinstance(data, dict) else None
+        if node_cls is None or not isinstance(params, dict):
+            continue
+        definitions = node_cls.define_params()
+        # What the node runs with: a param left out of the graph takes its
+        # declared default, and visibility is decided on the same values.
+        effective = {d.name: d.default for d in definitions} | params
+        for definition in definitions:
+            if definition.param_type not in _FILE_PARAM_TYPES:
+                continue
+            value = effective.get(definition.name)
+            if (
+                not isinstance(value, str)
+                or not _is_absolute_path(value)
+                or not is_param_visible(definition, effective)
+            ):
+                continue
+            warnings.append({
+                "code": "absolute_path",
+                "node_id": node["id"],
+                "label": _shown_label(node),
+                "param": definition.name,
+                "value": value,
+                "containers": _enclosing_containers(
+                    node["id"], containers, canvas_by_id, subgraph_index,
+                    preset_fallback,
+                ),
+            })
+    return warnings
+
+
 @router.post("/export")
 async def export_graph(graph: GraphExportRequest):
-    """Export a graph as a single-file, headless CodefyUI Python runner."""
+    """Export a graph as a single-file, headless CodefyUI Python runner.
+
+    Answers ``{"script", "warnings"}``. ``warnings`` is advice the script
+    does not depend on: today, one ``absolute_path`` entry per file param
+    whose absolute path ties the script to this machine (#557). A client
+    that knows no warnings, or not a given ``code``, ignores them.
+    """
     from ..core.codegen import generate_python
     from ..core.graph_engine import prepare_executable_graph
 
@@ -587,7 +784,7 @@ async def export_graph(graph: GraphExportRequest):
     )
 
     try:
-        prepare_executable_graph(
+        executable_nodes, _, containers = prepare_executable_graph(
             nodes,
             edges,
             preset_fallback=preset_fallback,
@@ -619,4 +816,12 @@ async def export_graph(graph: GraphExportRequest):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Export failed: {str(e)}")
 
-    return {"script": script}
+    # The script is built by now, and a fault in deciding what to warn about
+    # must not turn it into a 500: a warning is never a refusal.
+    try:
+        warnings = _absolute_path_warnings(
+            executable_nodes, containers, nodes, subgraphs, preset_fallback)
+    except Exception:
+        logger.exception("Export warnings failed; exporting without them")
+        warnings = []
+    return {"script": script, "warnings": warnings}

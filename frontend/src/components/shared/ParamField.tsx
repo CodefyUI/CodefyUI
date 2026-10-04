@@ -97,12 +97,18 @@ function FileField({
 }) {
   const { t } = useI18n();
   const [files, setFiles] = useState<string[]>([]);
+  // Whether `files` has been read yet: until then every stored value looks
+  // absent from it, and marking one that is uploaded would be a false alarm.
+  const [filesRead, setFilesRead] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [downloading, setDownloading] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const refresh = useCallback(() => {
-    backend.list().then((list) => setFiles(list.map((f) => f.filename)));
+    backend.list().then((list) => {
+      setFiles(list.map((f) => f.filename));
+      setFilesRead(true);
+    });
   }, [backend]);
 
   useEffect(() => {
@@ -141,18 +147,36 @@ function FileField({
     }
   };
 
+  // A stored value the upload list does not hold: an absolute path typed or
+  // imported, a file uploaded on another computer, or a path read from the
+  // working folder. A controlled select whose value matches no option shows
+  // its placeholder, so the field looked empty while the node -- and the
+  // exported script, whose path warning names this value (#557) -- still read
+  // it. It is rendered as stored: selected, so nothing is written until the
+  // user picks a file, and disabled, so it cannot be picked back once left.
+  const stored = value == null ? '' : String(value);
+  const unlisted = stored !== '' && !files.includes(stored);
+  const unlistedText = filesRead ? t('paramField.notInUploads', { file: stored }) : stored;
+
   return (
     <div>
       <label className={styles.label}>{displayLabel}</label>
       <div className={styles.modelFileRow}>
         <select
-          value={value ?? ''}
+          value={stored}
           onChange={(e) => onChange(param.name, e.target.value)}
           className={`${styles.input} ${styles.select} ${styles.modelFileSelect}`}
+          // The select is narrow and clips a long path.
+          title={unlisted ? unlistedText : undefined}
         >
           <option value="" style={{ background: 'var(--surface-input)' }}>
             {t('paramField.selectFile')}
           </option>
+          {unlisted && (
+            <option value={stored} disabled style={{ background: 'var(--surface-input)' }}>
+              {unlistedText}
+            </option>
+          )}
           {files.map((f) => (
             <option key={f} value={f} style={{ background: 'var(--surface-input)' }}>
               {f}

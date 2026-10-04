@@ -83,6 +83,12 @@ const en = {
   'toolbar.exportPython.title': 'Python script that runs this graph; needs the CodefyUI backend environment',
   'toolbar.exportPython.empty': 'Canvas has no executable nodes — add a node before exporting.',
   'toolbar.exportPython.fail': 'Python export failed: {error}',
+  // #557: a file param holding an absolute path ties the exported script to
+  // this computer. `{nodes}` names up to three as `Block ▸ Node (path)`;
+  // `.more` counts the rest.
+  'toolbar.exportPython.absolutePath':
+    'Absolute paths work only on this computer: {nodes}. Use just the file name instead.',
+  'toolbar.exportPython.absolutePath.more': 'and {count} more',
   'toolbar.exportDiagram.svg': 'Export Diagram (SVG)',
   'toolbar.exportDiagram.png': 'Export Diagram (PNG)',
   'toolbar.exportDiagram.title': 'Image of nodes, ports and connections; no parameter values',
@@ -469,6 +475,10 @@ const en = {
   'paramField.download': 'Download selected file',
   'paramField.refresh': 'Refresh file list',
   'paramField.selectFile': '-- select file --',
+  // #557: a stored value the upload list does not hold (an absolute path, a
+  // file read from the working folder). A prefix, because the select is
+  // narrow and clips the end of a long path.
+  'paramField.notInUploads': 'Not in uploads: {file}',
   'paramField.uploadFailed': 'Upload failed',
   'paramField.downloadFailed': 'Download failed',
   'paramField.secretHint': 'Session only, cleared on save. Store secrets in an environment variable.',
