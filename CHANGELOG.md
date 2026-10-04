@@ -22,6 +22,100 @@ received — each links to the release it was published as.
 
 ## [Unreleased]
 
+## [2.8.8] — 2026-10-04
+
+This release closes the places where a student could lose work, get stuck or
+fail to hand in a graph during a graded exercise. Importing a graph file no
+longer replaces the graph in front of you: it opens in a new tab unless the
+current one is empty. Only one browser tab edits the workspace at a time, so
+a second or forgotten tab can no longer overwrite the other one's autosave,
+and a tab that wakes from a freeze cannot save over newer work. A render
+error now shows a recovery screen with a backup download and a fresh start
+instead of a blank page, and autosave stops at that moment so the last good
+save survives.
+
+A run the server has ended now ends in the tab too: after a server restart
+the tab says the run was interrupted and its cards stop showing Running, and
+a double-click on Run starts one run. A data wire dropped near a card's
+top-left corner no longer lands on the hidden trigger handle, which used to
+make a graph that looked wired fail validation and export. Ports of preset
+cards and blocks show their data after a run instead of "Run data expired",
+and a graph loaded from a file gets every parameter its nodes' definitions
+have a default for, so the textbook's I1-2 kernels work after Import.
+
+Export Python warns, without refusing, when a file parameter holds an
+absolute path that will not exist on another computer, and the node's file
+field shows that stored value. A graph whose block triggers a preset card
+exports instead of failing with a server error. A new test module pins the
+shape of the exported script that graders read: the parameter literals, the
+single JSON answer line on stdout, the exit codes and file lookup in the
+working directory.
+
+### Added
+
+- **Export Python warns about absolute file paths** ([#557]).
+  `POST /api/graph/export` returns an additive `warnings` list beside the
+  script, one entry per file parameter (`DATA_FILE`, `IMAGE_FILE`,
+  `MODEL_FILE`) of a node the script runs whose value is a drive, UNC, rooted
+  or POSIX absolute path, naming the node and every block or preset it sits
+  in. The toolbar downloads the script and then shows a warning that stays
+  until the next export, a tab switch or the last tab closing. The script
+  itself is unchanged. A file field whose stored value is not in the upload
+  list now shows that value, marked "Not in uploads", instead of the empty
+  placeholder.
+
+### Fixed
+
+- **Import opens a graph file in a new tab, never over work** ([#550]). The
+  active tab is filled only when it is empty and was opened by the user;
+  otherwise a new, active tab named after the graph opens, and the view is
+  fitted to the graph. At the 32-tab limit the import is refused and nothing
+  changes; a file that fails leaves no empty tab.
+- **A data wire can no longer connect to the hidden trigger handle**
+  ([#551]). Only a Start trigger connects to `__trigger`, for new wires,
+  click-to-connect, moved wires and the plugin `connect` operation.
+- **A run the server has ended ends in the tab** ([#552]). A terminal
+  re-attach, a refused Stop, a refusal that names no live run, a dropped
+  execute frame and a graph refused as too large all leave Running with a
+  reason; cards still showing Running after an interruption are marked
+  interrupted. Startup recovery writes the same stop event a graceful
+  shutdown writes, so a replay ends. A second Run while the first is being
+  checked is ignored, and switching tabs during that check no longer wipes the
+  other tab or sends its changed nodes.
+- **Preset card and block ports show their captured data** ([#553]). The
+  engine records an alias from each container port to the inner port that
+  produced it; the outputs routes follow it, the value is stored once, and a
+  missing capture still answers 404. Inside an open block the inner nodes'
+  data and status are still missing ([#559]).
+- **Only one browser tab edits the workspace** ([#554]). Other tabs show a
+  read-only overlay with **Edit here**, which lets the editing tab save, stop
+  and hand over. Every write checks an editor record inside its own
+  IndexedDB transaction, so a tab that was overtaken while frozen cannot save
+  over the new editor's work. Plain-http LAN hosts use BroadcastChannel.
+- **A render error shows a recovery screen instead of a blank page** ([#555]).
+  The screen offers **Download backup** (a `.cduiworkspace` read straight from
+  storage), **Reload** and **Start with an empty workspace**, which keeps the
+  oldest and newest copy of the old tabs aside and changes nothing unless a
+  copy reads back. Autosave stops when the error is caught.
+- **A graph loaded from a file gets its nodes' default parameters** ([#556]).
+  Import, saved graphs, examples, workspaces, autosave restore, insert and
+  paste fill every parameter a node's definition has a default for, without
+  overwriting stored values or touching secrets; a list that arrives late
+  fills once. A file that left a parameter out now runs with the value the
+  panel always showed for it.
+- **Export Python no longer fails with 500 when a block triggers a preset
+  card** ([#560]). The exporter maps a trigger into a card to the card's
+  nodes, so the script runs the nodes the engine runs. The engine still drops
+  a trigger wired into a preset card ([#561]).
+
+### Internal
+
+- **The exported script's contract with graders is pinned by tests**
+  ([#558]). `backend/tests/test_export_contract.py` exports synthetic graphs
+  through the editor's route and runs them as a judge would: the parameter
+  literals readable with `ast`, one sorted-key JSON answer line on stdout,
+  exit codes 0, 1 and 2, and bare file names found in the working directory.
+
 ## [2.8.7] — 2026-10-02
 
 The Runs panel can start and follow a parameter sweep. New sweep offers the
@@ -5074,7 +5168,20 @@ Release candidates before 1.0.0 are on the
 [#397]: https://github.com/CodefyUI/CodefyUI/issues/397
 [#489]: https://github.com/CodefyUI/CodefyUI/issues/489
 [#521]: https://github.com/CodefyUI/CodefyUI/issues/521
-[Unreleased]: https://github.com/CodefyUI/CodefyUI/compare/2.8.7...main
+[#550]: https://github.com/CodefyUI/CodefyUI/issues/550
+[#551]: https://github.com/CodefyUI/CodefyUI/issues/551
+[#552]: https://github.com/CodefyUI/CodefyUI/issues/552
+[#553]: https://github.com/CodefyUI/CodefyUI/issues/553
+[#554]: https://github.com/CodefyUI/CodefyUI/issues/554
+[#555]: https://github.com/CodefyUI/CodefyUI/issues/555
+[#556]: https://github.com/CodefyUI/CodefyUI/issues/556
+[#557]: https://github.com/CodefyUI/CodefyUI/issues/557
+[#558]: https://github.com/CodefyUI/CodefyUI/issues/558
+[#559]: https://github.com/CodefyUI/CodefyUI/issues/559
+[#560]: https://github.com/CodefyUI/CodefyUI/issues/560
+[#561]: https://github.com/CodefyUI/CodefyUI/issues/561
+[Unreleased]: https://github.com/CodefyUI/CodefyUI/compare/2.8.8...main
+[2.8.8]: https://github.com/CodefyUI/CodefyUI/compare/2.8.7...2.8.8
 [2.8.7]: https://github.com/CodefyUI/CodefyUI/compare/2.8.6...2.8.7
 [2.8.6]: https://github.com/CodefyUI/CodefyUI/compare/2.8.5...2.8.6
 [2.8.5]: https://github.com/CodefyUI/CodefyUI/compare/2.8.4...2.8.5
