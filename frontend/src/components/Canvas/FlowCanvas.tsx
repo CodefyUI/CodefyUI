@@ -462,8 +462,21 @@ export function FlowCanvas({ tabId }: { tabId?: string } = {}) {
       if (sourceNode?.type === 'noteNode' || targetNode?.type === 'noteNode') return false;
 
       // Trigger connections (from Start node) are control-flow markers,
-      // not data — they connect only to the __trigger handle on target nodes.
-      if (sourceHandle === 'trigger') return targetHandle === '__trigger';
+      // not data — they connect only to the __trigger handle on target nodes,
+      // and that handle takes nothing else. It is hidden but still a snap
+      // target inside React Flow's connection radius, so a data wire released
+      // near a card's top-left corner was saved onto it, and validation and
+      // export then refused the graph (#551). This runs ahead of the port
+      // lookups below, which allow what they cannot find.
+      //
+      // A Start node's wire that names no handle is its trigger too: a trigger
+      // edge saved without `sourceHandle` loads with none, and React Flow
+      // asks about moving it with none.
+      const fromTrigger =
+        sourceHandle === 'trigger' || (!sourceHandle && sourceNode?.type === 'start');
+      if (fromTrigger || targetHandle === '__trigger') {
+        return fromTrigger && targetHandle === '__trigger';
+      }
 
       if (sourceHandle && targetHandle) {
         if (!sourceNode || !targetNode) return true;
