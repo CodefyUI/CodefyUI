@@ -1,11 +1,12 @@
+import { idbAvailable, idbGet, idbGetByPrefix } from '../utils/idb';
 import {
-  idbGet,
-  idbGetByPrefix,
-  idbSetMany,
-  idbDeleteMany,
-} from '../utils/idb';
+  WORKSPACE_EDITOR_KEY,
+  noteWorkspaceSuperseded,
+  workspaceEpoch,
+  workspaceWriteAllowed,
+} from '../utils/workspaceLock';
 // Type-only, so the module graph stays one-directional at runtime
-// (tabStore -> tabPersistence -> idb) with no import cycle.
+// (tabStore -> tabPersistence -> idb, workspaceLock) with no import cycle.
 import type { PersistedTab } from './tabStore';
 
 /**
@@ -77,13 +78,167 @@ function metaSignature(activeTabId: string, tabIds: string[]): string {
   return JSON.stringify([activeTabId, tabIds]);
 }
 
+// ── Who may write (#554) ─────────────────────────────────────────────────────
+//
+// Only the page that edits the workspace writes it (see `utils/workspaceLock`).
+// The overlay stops a read-only page's user from editing; this is the net
+// under it for every save that does not start with a click: a plugin, a
+// run's status stream, the store's own hydration.
+let _skipNoted = false;
+// Writes past the gate and not yet durable, so a page handing editing over
+// can wait for its last save to land before it lets go.
+let _writesInFlight = 0;
+let _settleWaiters: Array<() => void> = [];
+
+function noteSkippedWrite(): void {
+  if (_skipNoted) return;
+  _skipNoted = true;
+  console.warn('[CodefyUI] Not saving tabs: another browser tab is editing this workspace (#554).');
+}
+
+// ── The editor record (#554) ─────────────────────────────────────────────────
+//
+// The gate above stops a page that KNOWS it is not the editor. A page frozen
+// for a while does not: it wakes with its autosave due and its role still
+// 'editor', and saves before it reads the news. So every write also checks,
+// in the very transaction that writes, that the editor record still holds
+// this page's token (`workspaceEpoch`). One that finds another page's token
+// writes nothing, and its page stops editing.
+//
+// utils/idb runs each operation in a transaction of its own and has no
+// read-then-write, so this opens the same database itself, for one
+// transaction at a time. Same name, version and store as utils/idb: the
+// tests here write through this and read back through that, which pins it.
+const DB_NAME = 'codefyui';
+const DB_VERSION = 1;
+const STORE = 'kv';
+
+type WriteOutcome = 'written' | 'fenced';
+
+function openForWrite(): Promise<IDBDatabase> {
+  return new Promise<IDBDatabase>((resolve, reject) => {
+    if (!idbAvailable()) {
+      reject(new Error('IndexedDB is not available in this environment'));
+      return;
+    }
+    const request = indexedDB.open(DB_NAME, DB_VERSION);
+    request.onupgradeneeded = () => {
+      const db = request.result;
+      if (!db.objectStoreNames.contains(STORE)) db.createObjectStore(STORE);
+    };
+    request.onsuccess = () => {
+      const db = request.result;
+      // It lives for one transaction; never hold up another page's upgrade.
+      db.onversionchange = () => db.close();
+      resolve(db);
+    };
+    request.onerror = () => reject(request.error ?? new Error('IndexedDB open failed'));
+    request.onblocked = () => reject(new Error('IndexedDB open blocked by another connection'));
+  });
+}
+
+/**
+ * Put `entries` and delete `deleteKeys` in one transaction -- unless the
+ * editor record holds another page's token. With no token of this page's own
+ * (`epoch` null: no claim started, or none could be made) nothing is checked,
+ * as before the record existed. A record gone missing is put back with this
+ * page's token: site data cleared under an open page must not lock its
+ * editor out.
+ */
+async function writeFenced(
+  epoch: string | null,
+  entries: Array<[string, unknown]>,
+  deleteKeys: string[],
+): Promise<WriteOutcome> {
+  const db = await openForWrite();
+  try {
+    return await new Promise<WriteOutcome>((resolve, reject) => {
+      let outcome: WriteOutcome = 'written';
+      const tx = db.transaction(STORE, 'readwrite');
+      // Resolve on `oncomplete`: only then is the data durable.
+      tx.oncomplete = () => resolve(outcome);
+      tx.onerror = () => reject(tx.error ?? new Error('IndexedDB transaction failed'));
+      tx.onabort = () => reject(tx.error ?? new Error('IndexedDB transaction aborted'));
+      const store = tx.objectStore(STORE);
+      const apply = () => {
+        for (const [key, value] of entries) store.put(value, key);
+        for (const key of deleteKeys) store.delete(key);
+      };
+      if (epoch === null) {
+        apply();
+        return;
+      }
+      const read = store.get(WORKSPACE_EDITOR_KEY);
+      read.onsuccess = () => {
+        const stored: unknown = read.result;
+        if (stored !== undefined && stored !== epoch) {
+          outcome = 'fenced';
+          return;
+        }
+        if (stored === undefined) store.put(epoch, WORKSPACE_EDITOR_KEY);
+        apply();
+      };
+    });
+  } finally {
+    db.close();
+  }
+}
+
 /**
  * Persist `records` for `scope`, writing only what changed.
+ *
+ * In a page that does not edit the workspace this writes nothing and
+ * resolves -- it does not reject, because tabStore answers a rejection by
+ * writing to localStorage instead. While the page is still finding out, the
+ * write waits for the answer.
  *
  * Rejects if IndexedDB is unavailable or the transaction fails; the caller
  * decides what to do about that (tabStore falls back to localStorage).
  */
 export async function writeSnapshot(
+  scope: string,
+  records: PersistedTab[],
+  activeTabId: string,
+): Promise<void> {
+  const verdict = workspaceWriteAllowed();
+  // Awaited only while the page is still asking, so a write in a page that
+  // knows it edits starts in the same tick it always did.
+  const allowed = typeof verdict === 'boolean' ? verdict : await verdict;
+  if (!allowed) {
+    noteSkippedWrite();
+    return;
+  }
+  _writesInFlight += 1;
+  try {
+    await persist(scope, records, activeTabId);
+  } finally {
+    _writesInFlight -= 1;
+    if (_writesInFlight === 0) {
+      const waiters = _settleWaiters;
+      _settleWaiters = [];
+      for (const resolve of waiters) resolve();
+    }
+  }
+}
+
+/** How many writes have passed the gate and are not durable yet. */
+export function snapshotWritesInFlight(): number {
+  return _writesInFlight;
+}
+
+/**
+ * Resolves once no write is in flight, failed ones included. A write still
+ * waiting to hear whether this page edits is not in flight yet.
+ */
+export function whenSnapshotWritesSettle(): Promise<void> {
+  if (_writesInFlight === 0) return Promise.resolve();
+  return new Promise((resolve) => {
+    _settleWaiters.push(resolve);
+  });
+}
+
+/** The write itself, once the gate has let it through. */
+async function persist(
   scope: string,
   records: PersistedTab[],
   activeTabId: string,
@@ -111,9 +266,16 @@ export async function writeSnapshot(
   // IndexedDB at all rather than opening an empty transaction.
   if (entries.length === 0 && removed.length === 0) return;
 
-  if (entries.length > 0) await idbSetMany(entries);
-  if (removed.length > 0) {
-    await idbDeleteMany(removed.map((id) => tabRecordKey(scope, id)));
+  const outcome = await writeFenced(
+    workspaceEpoch(),
+    entries,
+    removed.map((id) => tabRecordKey(scope, id)),
+  );
+  if (outcome === 'fenced') {
+    // Nothing was written, so nothing is marked durable.
+    noteSkippedWrite();
+    noteWorkspaceSuperseded();
+    return;
   }
 
   const next = new Map<string, PersistedTab>();
@@ -142,8 +304,10 @@ export async function writeSnapshot(
  * - **Read and write are separate transactions.** Meta and the records are read
  *   in two, and a save writes in a third, so nothing here is atomic against a
  *   concurrent writer. In practice the only writer is this page's own debounced
- *   save, and `tabStore`'s hydration guard holds that off until the read has
- *   settled — that guard, not IndexedDB, is what serialises the two.
+ *   save (a second page of the app writes only once editing has moved to it,
+ *   and by then this one has stopped: see the gate in `writeSnapshot`), and
+ *   `tabStore`'s hydration guard holds that off until the read has settled —
+ *   that guard, not IndexedDB, is what serialises the two.
  */
 export async function readSnapshot(scope: string): Promise<PersistedSnapshot | null> {
   const meta = await idbGet<PersistedTabsMeta>(tabMetaKey(scope));
@@ -209,4 +373,8 @@ export async function readSnapshot(scope: string): Promise<PersistedSnapshot | n
 export function _resetTabPersistenceForTests(): void {
   _written.clear();
   _writtenMeta.clear();
+  // So each case can see the one-time notice for itself. The in-flight count
+  // is left alone: zeroing it under a write still running would make its
+  // `finally` miscount.
+  _skipNoted = false;
 }

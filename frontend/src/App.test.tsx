@@ -5,6 +5,7 @@ import { useTabStore } from './store/tabStore';
 import { useUIStore } from './store/uiStore';
 import { useProjectStore } from './store/projectStore';
 import { fetchHealth } from './api/rest';
+import { startWorkspaceLock, _resetWorkspaceLockForTests } from './utils/workspaceLock';
 
 // ── Mock heavy children so we test only App's composition logic ───────────────
 // Each stub renders a stable testid so we can assert presence / counts.
@@ -387,5 +388,26 @@ describe('App', () => {
     mockCheckInProgress.mockClear();
     render(<App />);
     expect(mockCheckInProgress).toHaveBeenCalledTimes(1);
+  });
+
+  // -- One editing page per workspace (#554) --
+  // jsdom has neither Web Locks nor an insecure origin, so the claim App
+  // starts at import edits as before and the overlay stays out of the way in
+  // every case above. This one swaps in a claim another page already holds.
+  it('covers the app, empty workspace included, when another page edits', async () => {
+    _resetWorkspaceLockForTests();
+    try {
+      await startWorkspaceLock({
+        locks: { request: (_name, _options, callback) => Promise.resolve(callback(null)) },
+        openChannel: null,
+      }).decided();
+      useTabStore.setState({ tabs: [], activeTabId: null as unknown as string });
+      render(<App />);
+      expect(screen.getByTestId('welcome-screen')).toBeTruthy();
+      expect(screen.getByRole('alertdialog')).toBeTruthy();
+      expect(screen.getByRole('button', { name: 'Edit here' })).toBeTruthy();
+    } finally {
+      _resetWorkspaceLockForTests();
+    }
   });
 });

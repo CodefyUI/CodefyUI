@@ -19,6 +19,8 @@ import { PluginCenterModal } from './components/PluginCenter/PluginCenterModal';
 import { CustomNodeManagerModal } from './components/CustomNodeManager/CustomNodeManager';
 import { GitDiffModal } from './components/SourceControl/GitDiffModal';
 import { RestartOverlay } from './components/PackCenter/RestartOverlay';
+import { WorkspaceLockOverlay } from './components/WorkspaceLock/WorkspaceLockOverlay';
+import { settleAutosave } from './components/WorkspaceLock/settleAutosave';
 import { ToastContainer } from './components/shared/Toast';
 import { ShortcutsModal } from './components/shared/ShortcutsModal';
 import { DialogContainer } from './components/shared/DialogContainer';
@@ -30,7 +32,17 @@ import { useKeyboardShortcuts } from './hooks/useKeyboardShortcuts';
 import { fetchHealth } from './api/rest';
 import { useProjectStore } from './store/projectStore';
 import { useRunStore } from './store/runStore';
+import { startWorkspaceLock } from './utils/workspaceLock';
 import styles from './App.module.css';
+
+// #554: one browser tab edits the workspace; this page asks whether it is the
+// one before anything can save. At import rather than in an effect: the tab
+// store above starts reading IndexedDB as soon as it loads, and its first
+// autosave can fire before the first effect runs, so a page that turns out
+// read-only would already have written. Saves made before the answer wait
+// for it (see `tabPersistence`). `settleAutosave` is what this page waits on
+// before it hands editing to another one.
+startWorkspaceLock({ flush: settleAutosave });
 
 // The user's font-size choice, as a multiplier on the root size. Every size
 // token in `styles/tokens.css` is a rem, so this scales the whole app.
@@ -179,6 +191,9 @@ function App() {
       <ShortcutsModal />
       <DialogContainer />
       <PluginHost />
+      {/* Over everything but a server restart: a page that does not edit the
+          workspace (#554) must not be edited, toasts and modals included. */}
+      <WorkspaceLockOverlay />
       {/* Last, and above everything: while the server is being restarted under
           the page, nothing else on screen is still true. */}
       <RestartOverlay />

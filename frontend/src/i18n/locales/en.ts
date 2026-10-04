@@ -305,6 +305,19 @@ const en = {
   'welcome.newGraph': 'New blank graph',
   'welcome.examples': 'Or start from an example',
 
+  // #554: one browser tab edits the workspace at a time, and this covers every
+  // other one. "Browser tab" in full each time: a bare "tab" is one of the
+  // app's own canvases.
+  'workspaceLock.readOnly.title': 'Read-only in this browser tab',
+  'workspaceLock.readOnly.body':
+    'Only one browser tab can edit this workspace at a time. Changes made here are not saved.',
+  'workspaceLock.moved.title': 'Editing moved to another browser tab',
+  'workspaceLock.moved.body': 'Changes made here are no longer saved.',
+  'workspaceLock.saving': 'Saving your last changes…',
+  'workspaceLock.waiting': 'Waiting for the other browser tab to save…',
+  'workspaceLock.editHere': 'Edit here',
+  'workspaceLock.editHere.hint': 'Reloads this page with the latest saved work.',
+
   // Gallery sections. Not `empty.*` any more: the overlay, the sidebar's
   // Templates tab and the gallery modal all group by these now (#141).
   'examples.section.quickstart': 'Quick Start',
