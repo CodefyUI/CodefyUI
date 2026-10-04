@@ -3,6 +3,7 @@ import { createRoot } from 'react-dom/client';
 import './App.css';
 import App from './App';
 import { getSessionToken } from './api/_auth';
+import { AppErrorBoundary } from './components/AppErrorBoundary/AppErrorBoundary';
 
 const rootElement = document.getElementById('root');
 if (!rootElement) throw new Error('Root element not found');
@@ -18,8 +19,12 @@ getSessionToken().catch((err) => {
   console.error('[CodefyUI] Auth bootstrap failed:', err);
 });
 
+// Outside everything App mounts, so a render error anywhere in the app leaves
+// the recovery screen (Reload, Download backup) instead of a blank page.
 createRoot(rootElement).render(
   <StrictMode>
-    <App />
+    <AppErrorBoundary>
+      <App />
+    </AppErrorBoundary>
   </StrictMode>
 );

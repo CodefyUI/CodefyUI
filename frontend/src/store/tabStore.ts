@@ -2050,6 +2050,11 @@ function _storageKey(): string {
   return pid ? `${STORAGE_KEY_BASE}::${pid}` : STORAGE_KEY_BASE;
 }
 
+/** The same key, for the recovery screen that reads storage directly (#555). */
+export function autosaveScope(): string {
+  return _storageKey();
+}
+
 /**
  * One tab as it is written to storage. Exported because `tabPersistence`
  * stores these as individual IndexedDB records (#125) and needs the shape.
@@ -2421,6 +2426,8 @@ function tabFromPersisted(t: PersistedTab, base: TabState): TabState {
 /** Test seams: the persistence record round-trip, without the debounce. */
 export const _buildPersistedTabForTesting = buildPersistedTab;
 export const _tabFromPersistedForTesting = tabFromPersisted;
+// Also a real export: the recovery screen restores records the way hydration does (#555).
+export { tabFromPersisted };
 export const _persistedTabsForTesting = persistedTabsFor;
 
 function loadTabs(): { tabs: TabState[]; activeTabId: string } {
@@ -5047,9 +5054,24 @@ export function whenTabsHydrated(): Promise<HydrationOutcome> {
 // save; the actual `saveTabs` call reads fresh state at fire time so we never
 // persist a stale snapshot.
 const SAVE_DEBOUNCE_MS = 250;
+// Set once the app-level error boundary has caught a render error (#555).
+// The state that crashed rendering would otherwise be saved over the last
+// good one 250 ms later, and every reload would crash the same way.
+let _autosaveSuspended = false;
+
+/** Stop autosave for the rest of this page's life, a save already pending included. */
+export function suspendAutosave(): void {
+  _autosaveSuspended = true;
+  if (_saveTimer !== null) {
+    clearTimeout(_saveTimer);
+    _saveTimer = null;
+  }
+}
+
 let _saveTimer: ReturnType<typeof setTimeout> | null = null;
 
 function _scheduleSave() {
+  if (_autosaveSuspended) return;
   if (_saveTimer !== null) clearTimeout(_saveTimer);
   _saveTimer = setTimeout(() => {
     _saveTimer = null;

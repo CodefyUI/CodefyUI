@@ -216,6 +216,26 @@ const zhTW: Record<TranslationKey, string> = {
   'node.code.empty': '（尚未輸入程式碼）',
   'node.code.moreLines': '還有 {count} 行',
 
+  // App-level error boundary (#555)
+  'appError.title': '頁面因為錯誤而停止運作。',
+  'appError.hint':
+    '請先下載自動儲存分頁的備份。如果重新載入後仍出現這個頁面，請以空白工作區重新開始，按「{newGraph}」，再到「{panel}」面板按「{import}」開啟備份。',
+  'appError.details': '詳細資料',
+  'appError.details.later': '後續錯誤：',
+  'appError.backup': '下載備份',
+  'appError.reload': '重新載入',
+  'appError.reset': '以空白工作區重新開始',
+  'appError.backup.empty': '沒有可備份的內容。',
+  'appError.backup.unreadable': '{count} 個分頁無法讀取，已略過。',
+  'appError.backup.readFailed': '無法讀取自動儲存的工作區：{error}',
+  'appError.backup.makeFailed': '無法建立備份：{error}',
+  'appError.reset.confirm': '尚未下載備份。仍要以空白工作區重新開始嗎？',
+  'appError.reset.noCopy': '無法另存目前分頁的副本，所以沒有做任何變更。請先下載備份，再試一次。',
+  'appError.reset.noCopyLossy': '無法另存目前分頁的副本，而備份少了部分分頁，所以沒有做任何變更。',
+  'appError.reset.notChanged':
+    '已儲存的分頁沒有改變，所以沒有重新載入。可能有另一個瀏覽器分頁正在編輯這個工作區。',
+  'appError.reset.failed': '無法以空白工作區重新開始：{error}',
+
   // Results Panel
   'results.title': '執行紀錄',
   'results.training': '訓練',

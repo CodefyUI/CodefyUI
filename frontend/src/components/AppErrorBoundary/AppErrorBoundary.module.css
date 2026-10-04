@@ -1,0 +1,169 @@
+/* AppErrorBoundary.module.css - the recovery screen that replaces the page
+   when a render throws. Tokens only; the bare pixel values are structural
+   (hairline borders, the card width, the focus outline). */
+
+.screen {
+  /* #root is height: 100% with overflow: hidden (App.css), so the screen
+     carries its own scroll: a long message must not push the buttons out of
+     reach. */
+  height: 100%;
+  overflow-y: auto;
+  display: flex;
+  padding: var(--sp-6) var(--sp-4);
+  background: var(--surface-app);
+}
+
+.card {
+  /* Auto margins centre the card while it fits and drop to zero when it
+     does not, so a tall card scrolls from its top instead of losing it. */
+  margin: auto;
+  width: 640px;
+  max-width: 100%;
+  background: var(--surface-raised);
+  border: 1px solid var(--border-base);
+  border-radius: var(--radius-xl);
+  box-shadow: var(--shadow-popover), var(--inner-highlight);
+  padding: var(--sp-6);
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-4);
+}
+
+.title {
+  margin: 0;
+  color: var(--text-primary);
+  font-size: var(--fs-lg);
+  font-weight: var(--fw-semibold);
+  line-height: var(--lh-snug);
+  /* Focused on mount so a screen reader starts here; it is not a control,
+     so it draws no ring. */
+  outline: none;
+}
+
+.message,
+.stack {
+  margin: 0;
+  padding: var(--sp-3);
+  background: var(--surface-code);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  color: var(--code-text);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: var(--fs-xs);
+  line-height: var(--lh-normal);
+  /* Wrapped, never scrolled sideways: a message is one long line more often
+     than not, and a path or an id in it has no break opportunity. */
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.message code {
+  font: inherit;
+}
+
+.summary {
+  width: fit-content;
+  cursor: pointer;
+  color: var(--text-secondary);
+  font-size: var(--fs-sm);
+}
+
+.summary:hover {
+  color: var(--text-primary);
+}
+
+/* The same ring App.css gives a focused button. */
+.summary:focus-visible {
+  outline: 2px solid var(--border-focus);
+  outline-offset: 2px;
+}
+
+.stack {
+  margin-top: var(--sp-2);
+  /* A React stack runs to dozens of lines; the screen still scrolls past it
+     to the buttons. */
+  max-height: 40vh;
+  overflow-y: auto;
+}
+
+.hint {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: var(--fs-md);
+  line-height: var(--lh-normal);
+}
+
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-3);
+}
+
+.backupBtn,
+.reloadBtn,
+.resetBtn {
+  padding: var(--sp-3) var(--sp-5);
+  border-radius: var(--radius);
+  font-size: var(--fs-md);
+  cursor: pointer;
+  transition: background var(--transition-fast), border-color var(--transition-fast),
+    color var(--transition-fast);
+}
+
+.backupBtn {
+  font-weight: var(--fw-semibold);
+  background: var(--accent-wash);
+  border: 1px solid var(--accent-deep);
+  color: var(--accent);
+}
+
+.backupBtn:hover:not([aria-disabled='true']) {
+  background: var(--surface-active);
+}
+
+/* Busy, by aria-disabled rather than `disabled`, which would take the focus
+   off the button the user just pressed. */
+.backupBtn[aria-disabled='true'],
+.resetBtn[aria-disabled='true'] {
+  cursor: progress;
+  border-color: var(--border-base);
+  color: var(--text-disabled);
+}
+
+.reloadBtn,
+.resetBtn {
+  background: transparent;
+  border: 1px solid var(--border-strong);
+  color: var(--text-secondary);
+}
+
+.reloadBtn:hover {
+  border-color: var(--accent-deep);
+  color: var(--accent);
+}
+
+/* The one action that replaces stored work, so its hover says so. */
+.resetBtn:hover:not([aria-disabled='true']) {
+  border-color: var(--status-error);
+  color: var(--status-error);
+}
+
+.status {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+  color: var(--text-secondary);
+  font-size: var(--fs-sm);
+  line-height: var(--lh-normal);
+  overflow-wrap: anywhere;
+}
+
+/* Nothing said yet: the card's gap above it is taken back. Still displayed,
+   since a live region that is display: none is not announced when it fills. */
+.status:empty {
+  margin-top: calc(-1 * var(--sp-4));
+}
+
+.status p {
+  margin: 0;
+}
