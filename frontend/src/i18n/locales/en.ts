@@ -149,6 +149,9 @@ const en = {
   'graphs.listFail': 'Failed to load graphs: {error}',
   'graphs.import': 'Import...',
   'graphs.import.title': 'A graph (.json) or a workspace (.cduiworkspace)',
+  // Only a graph that needs a tab of its own meets the limit: an empty tab in
+  // front is filled instead.
+  'graphs.import.tabLimit': '{max}-tab limit reached. Close a tab, then import again.',
   'graphs.saveAs': 'Save as...',
   // One way to open, so the verb needs no qualifier: a row click opens the
   // graph in a tab of its own and never touches the canvas in front of you.
