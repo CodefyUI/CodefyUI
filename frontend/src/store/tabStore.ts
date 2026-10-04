@@ -22,6 +22,7 @@ import {
 } from './nodeDefStore';
 import { forgetViewport } from '../utils/viewportMemory';
 import { idbAvailable } from '../utils/idb';
+import { withParamDefaults, withSubgraphParamDefaults } from '../utils/paramDefaults';
 import { readSnapshot, writeSnapshot } from './tabPersistence';
 import { autoLayout, autoLayoutWithTargets, nodesBoundingBox, type LayoutMode } from '../utils/autoLayout';
 import type { NodeData, NodeDefinition, PresetDefinition, ExecutionStatus, OutputSummary, NodeProgress, SegmentGroup, SubgraphDefinition, WorkspaceSource } from '../types';
@@ -817,6 +818,12 @@ interface TabStoreState {
   loadGraphDocument: (doc: GraphDocument) => boolean;
   /** `loadGraphDocument`, addressed by tab id. The active-tab wrapper calls this. */
   loadGraphDocumentInto: (tabId: string, doc: GraphDocument) => boolean;
+  /**
+   * Give every open tab's nodes the params the node list has defaults for,
+   * by the rule each load applies (#556). Called when the list arrives or
+   * changes, which can be after the tabs it describes were opened.
+   */
+  fillParamDefaults: () => void;
   collapseSelectionToSubgraph: (name?: string) => CollapseResult;
   /** Put an instance's definition back on the canvas. One undo step. */
   expandSubgraphInstance: (nodeId: string) => boolean;
@@ -2366,7 +2373,15 @@ function saveTabs(tabs: TabState[], activeTabId: string) {
 /** Rebuild one `TabState` from its record, over a base carrying live fields. */
 function tabFromPersisted(t: PersistedTab, base: TabState): TabState {
   const presets = withPresetDefaults(t.presets);
-  const nodes = normalizePresetAttachments(t.nodes ?? [], presets);
+  // A record keeps a node as it was, and 2.8.7 kept an opened document's
+  // nodes without the params they had defaults for (#556). At import time the
+  // node list has not answered yet, so this fills nothing there and the list's
+  // arrival does it (`fillParamDefaults`); a later restore has the list.
+  const { definitions } = useNodeDefStore.getState();
+  const nodes = withParamDefaults(
+    normalizePresetAttachments(t.nodes ?? [], presets),
+    definitions,
+  );
   return {
     ...base,
     name: t.name,
@@ -2400,7 +2415,7 @@ function tabFromPersisted(t: PersistedTab, base: TabState): TabState {
     // changes, so a restored record gets the same coercion an imported file
     // gets -- the alternative is a workspace that throws on every autosave
     // from the moment it is reopened.
-    subgraphs: normalizeSubgraphs(t.subgraphs),
+    subgraphs: withSubgraphParamDefaults(normalizeSubgraphs(t.subgraphs), definitions),
     // Never restored from disk: a reload lands at the top level.
     subgraphStack: [],
     lastRunId: typeof t.lastRunId === 'string' ? t.lastRunId : null,
@@ -3784,19 +3799,31 @@ export const useTabStore = create<TabStoreState>((rawSet, get) => {
     // installed definition. Every reader of the list reads it defensively.
     const documentPresets = Array.isArray(doc.presets) ? doc.presets : [];
     const presets = withPresetDefaults(documentPresets);
+    // A file can leave out params a palette drop would have filled (#556).
+    // They are filled here, inside the install's one commit, so opening a
+    // document still takes one revision step, no undo frame and no dirty
+    // mark. Inner nodes of a block get the same, before any visit can take
+    // its entry copy of the definition.
+    const { definitions } = useNodeDefStore.getState();
     set({
       tabs: updateTab(get().tabs, tabId, (tab) => ({
         // A card attached to an entry filled in above runs and draws the
         // filled one; the readers fill before they resolve, so this is rare.
-        nodes: presets === documentPresets
-          ? doc.nodes
-          : normalizePresetAttachments(doc.nodes, presets),
+        nodes: withParamDefaults(
+          presets === documentPresets
+            ? doc.nodes
+            : normalizePresetAttachments(doc.nodes, presets),
+          definitions,
+        ),
         edges: doc.edges,
         presets,
         // Normalized on the way in, as `setSubgraphs` does: every reader
         // hands over a list parsed out of a file and none of them validates
         // the entries.
-        subgraphs: normalizeSubgraphs(doc.subgraphs ?? []),
+        subgraphs: withSubgraphParamDefaults(
+          normalizeSubgraphs(doc.subgraphs ?? []),
+          definitions,
+        ),
         // The document IS the top level, so an open sub-canvas was editing a
         // definition this load just replaced. Not flushed, for the reason
         // `setSubgraphs` records: a flush would write the incoming top level
@@ -3837,6 +3864,33 @@ export const useTabStore = create<TabStoreState>((rawSet, get) => {
       })),
     });
     return readOnly;
+  },
+
+  // The node list can answer after the tabs it describes are open: the
+  // restore runs at import, before /api/nodes does, and a document opened
+  // while the list was loading resolved its nodes against an empty one. So
+  // the list's arrival, and every later change to it (Reload, a plugin
+  // installed), fills each open tab by the rule a load applies (#556).
+  //
+  // No undo frame and no dirty mark: nobody edited anything. The revision
+  // does move -- through the wrapped `set`, like any other commit -- because
+  // the document a plugin last read did change.
+  fillParamDefaults: () => {
+    const { definitions } = useNodeDefStore.getState();
+    let changed = false;
+    const tabs = get().tabs.map((tab) => {
+      // A block open on screen is folded back into its definition on the way
+      // out and compared with the copy taken on entry (`closeFrameHistory`);
+      // filling either side now would charge the user an undo step for the
+      // visit. Such a tab is filled on its next load or restore.
+      if (tab.subgraphStack?.length) return tab;
+      const nodes = withParamDefaults(tab.nodes, definitions);
+      const subgraphs = withSubgraphParamDefaults(tab.subgraphs, definitions);
+      if (nodes === tab.nodes && subgraphs === tab.subgraphs) return tab;
+      changed = true;
+      return { ...tab, nodes, subgraphs };
+    });
+    if (changed) set({ tabs });
   },
 
   collapseSelectionToSubgraph: (name) => {
@@ -4282,12 +4336,16 @@ export const useTabStore = create<TabStoreState>((rawSet, get) => {
     // Selecting exactly what was inserted (and nothing else) is what makes
     // "insert, then drag/lay-out the new block" work as one gesture — the
     // same thing paste does.
+    //
+    // A template is a document too: what it arrives with is completed the way
+    // an opened one's nodes are (#556), inside this insert's one undo step.
+    const { definitions } = useNodeDefStore.getState();
     set({
       tabs: updateTab(get().tabs, get().activeTabId, (t) => {
         const merged = mergeIncomingSubgraphs(
           t.subgraphs,
-          incomingSubgraphs,
-          newNodes,
+          withSubgraphParamDefaults(incomingSubgraphs, definitions),
+          withParamDefaults(newNodes, definitions),
         );
         const presets = adoptIncomingPresets(t.presets, incomingPresets);
         return {
@@ -4609,12 +4667,15 @@ export const useTabStore = create<TabStoreState>((rawSet, get) => {
       target: idMap.get(e.target) ?? e.target,
     }));
 
+    // A clipboard taken before the node list answered holds nodes without
+    // their defaults; a paste completes them like a load would (#556).
+    const { definitions } = useNodeDefStore.getState();
     set({
       tabs: updateTab(get().tabs, get().activeTabId, (tab) => {
         const merged = mergeIncomingSubgraphs(
           tab.subgraphs,
-          clipboard.subgraphs ?? [],
-          newNodes,
+          withSubgraphParamDefaults(clipboard.subgraphs ?? [], definitions),
+          withParamDefaults(newNodes, definitions),
         );
         const presets = adoptIncomingPresets(tab.presets, clipboard.presets ?? []);
         return {
@@ -5025,14 +5086,22 @@ function _startHydration(): void {
 /**
  * Resolves once the newest hydration attempt has settled.
  *
- * One production caller: `importWorkspaceFile` awaits this before it appends
- * tabs, because hydration writes `{tabs, activeTabId}` wholesale and would
- * overwrite an import that landed first. Nobody else needs it: acting on a
- * bad outcome is `hydrateTabsFromPersistence`'s own job (it raises the toast
- * at the point of failure, where the reason is still in scope), so nothing
- * has to remember to await this and check. It also lets tests be
- * deterministic about a step that is otherwise only observable as "the tabs
- * changed a bit later".
+ * Hydration writes `{tabs, activeTabId}` wholesale. A tab written before it
+ * settles is overwritten by the saved ones, and a question asked of the tabs
+ * before then is answered by the placeholder the editor boots with. Two
+ * production callers await this first, for both halves of that:
+ *
+ *  - `importWorkspaceFile` appends the file's tabs, and closes the lone empty
+ *    tab it found -- which, asked too early, is only the placeholder.
+ *  - `openGraphData` in `importGraphFile` (#550) fills the active tab when it
+ *    is empty and opens a new one otherwise, so both the question and the
+ *    write it decides have to come after hydration.
+ *
+ * Neither checks the outcome: acting on a bad one is
+ * `hydrateTabsFromPersistence`'s own job (it raises the toast at the point of
+ * failure, where the reason is still in scope), so a caller only has to wait,
+ * never to check. It also lets tests be deterministic about a step that is
+ * otherwise only observable as "the tabs changed a bit later".
  */
 export function whenTabsHydrated(): Promise<HydrationOutcome> {
   return _lastHydration;
@@ -5076,6 +5145,14 @@ useTabStore.subscribe(() => {
 useNodeDefStore.subscribe((state, previous) => {
   if (state.definitions !== previous.definitions || state.presets !== previous.presets) {
     _scheduleSave();
+  }
+});
+
+// The same arrival completes the params the open tabs' nodes were missing
+// (#556). A tab it fills is an ordinary commit, which the autosave picks up.
+useNodeDefStore.subscribe((state, previous) => {
+  if (state.definitions !== previous.definitions) {
+    useTabStore.getState().fillParamDefaults();
   }
 });
 
