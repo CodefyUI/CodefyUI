@@ -717,7 +717,12 @@ class RunStore:
         return await self.db.run(_update) > 0
 
     async def interrupt_active_runs(
-        self, *, statuses: Sequence[str] = tuple(sorted(ACTIVE_STATUSES)),
+        self,
+        *,
+        statuses: Sequence[str] = tuple(sorted(ACTIVE_STATUSES)),
+        closing_event: str | None = None,
+        closing_payload: Any = None,
+        closing_types: Iterable[str] = (),
     ) -> int:
         """Crash recovery: retire rows no process is driving any more.
 
@@ -731,6 +736,16 @@ class RunStore:
         vocabulary: this rewrites ``status`` AND ``finished_at``, so letting
         a terminal state through would let a startup call silently falsify
         completed history.
+
+        *closing_event*, when given, is appended to every retired run's
+        event log in the same transaction as the status change (#552), with
+        *closing_payload* and the same timestamp as ``finished_at``. Without
+        it the log of a run the process died under just stops, and a client
+        replaying it is never told the run ended. A run whose last event is
+        already one of *closing_types* gets none: the process can die between
+        making its terminal event durable and writing the row, and a second
+        closing frame would end the replay twice. The event types themselves
+        are the caller's vocabulary, as everywhere else in this module.
         """
         wanted = tuple(statuses)
         if not wanted:
@@ -741,15 +756,40 @@ class RunStore:
                 f"{unknown} is not an active status; expected a subset of "
                 f"{sorted(ACTIVE_STATUSES)}")
         stamp = utc_now_iso()
+        marks = ",".join("?" * len(wanted))
+        encoded = None if closing_payload is None else _dumps(closing_payload)
+        already_closed = frozenset(closing_types)
 
-        def _update(conn: sqlite3.Connection) -> int:
-            return conn.execute(
-                "UPDATE exec_runs SET status = ?, finished_at = ? "
-                f"WHERE status IN ({','.join('?' * len(wanted))})",
-                (STATUS_INTERRUPTED, stamp, *wanted),
-            ).rowcount
+        def _retire(conn: sqlite3.Connection) -> int:
+            with transaction(conn):
+                run_ids = [row[0] for row in conn.execute(
+                    f"SELECT id FROM exec_runs WHERE status IN ({marks})",
+                    wanted,
+                ).fetchall()]
+                retired = conn.execute(
+                    "UPDATE exec_runs SET status = ?, finished_at = ? "
+                    f"WHERE status IN ({marks})",
+                    (STATUS_INTERRUPTED, stamp, *wanted),
+                ).rowcount
+                if closing_event is None:
+                    return retired
+                for run_id in run_ids:
+                    last = conn.execute(
+                        "SELECT cursor, type FROM exec_run_events "
+                        "WHERE run_id = ? ORDER BY cursor DESC LIMIT 1",
+                        (run_id,),
+                    ).fetchone()
+                    if last is not None and last["type"] in already_closed:
+                        continue
+                    conn.execute(
+                        "INSERT INTO exec_run_events (run_id, cursor, type, "
+                        "payload, ts) VALUES (?, ?, ?, ?, ?)",
+                        (run_id, (last["cursor"] if last else 0) + 1,
+                         closing_event, encoded, stamp),
+                    )
+                return retired
 
-        return await self.db.run(_update)
+        return await self.db.run(_retire)
 
     async def list_terminal_graph_snapshots(
         self, *, limit: int = 1000,

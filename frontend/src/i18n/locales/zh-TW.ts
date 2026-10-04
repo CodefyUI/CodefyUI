@@ -79,6 +79,11 @@ const zhTW: Record<TranslationKey, string> = {
   'status.skipped': '已跳過',
   'status.cached': '已快取',
   'status.interrupted': '已中斷',
+  // Why a tab left Running without anyone pressing Stop (#552). Each one is a
+  // toast and the same line in the Execution Log.
+  'status.runInterrupted': '伺服器停止或重新啟動，這次執行因此中斷。',
+  'status.runNotStarted': '這次執行沒有啟動 — 伺服器正忙於其他執行。請等其中一個結束後再試一次。',
+  'status.runUnconfirmed': '伺服器確認這次執行之前，連線就中斷了。可在執行任務面板查看它是否已啟動。',
 
   // Connection (WebSocket reconnect surface)
   'connection.lost': '連線中斷 — 嘗試重新連線中…',

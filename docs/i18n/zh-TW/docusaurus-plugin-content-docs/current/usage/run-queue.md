@@ -219,7 +219,7 @@ child 都是一般 run：它們會以 sweep 的 `name` 出現在執行任務面�
 
 正常關閉會立即將每個等待中的 run 標記為 `interrupted`、寫入一般停止事件，並給執行中的 run 5 秒以協作方式停止。對[放在反向代理後面](./deployment#a-systemd-unit)中的 unit 執行 `systemctl stop` 就是以這種方式關閉伺服器，因為它會直接對伺服器行程送出 SIGTERM。在 Windows 上，於 `cdui start --foreground` 按一次 Ctrl+C 也是如此；若在 uvicorn 等待連線關閉時再按一次 Ctrl+C，就會略過這些步驟。
 
-在 Linux 與 macOS 上，於 `cdui start --foreground` 按 Ctrl+C 不是正常關閉：`cdui` 行程會在按下 Ctrl+C 約 0.25 秒後強制終止伺服器，因此執行中的 run 拿不到這 5 秒，等待中的 run 也可能來不及標記為 `interrupted`。`cdui stop` 同樣不會等這些步驟完成：在 Windows 上它會強制終止伺服器的行程樹（`taskkill /F /T`），在 Linux 與 macOS 上則先送出 SIGTERM，約 2 秒後再送出 SIGKILL。這些停止方式、其他強制終止行程的方式，或執行超過這 5 秒的 run，都可能留下 `queued` 或 `running` 資料列。下次啟動時，復原程序會把這兩種狀態都改成 `interrupted`，但不會寫入停止事件；兩者都不會繼續執行。
+在 Linux 與 macOS 上，於 `cdui start --foreground` 按 Ctrl+C 不是正常關閉：`cdui` 行程會在按下 Ctrl+C 約 0.25 秒後強制終止伺服器，因此執行中的 run 拿不到這 5 秒，等待中的 run 也可能來不及標記為 `interrupted`。`cdui stop` 同樣不會等這些步驟完成：在 Windows 上它會強制終止伺服器的行程樹（`taskkill /F /T`），在 Linux 與 macOS 上則先送出 SIGTERM，約 2 秒後再送出 SIGKILL。這些停止方式、其他強制終止行程的方式，或執行超過這 5 秒的 run，都可能留下 `queued` 或 `running` 資料列。下次啟動時，復原程序會把這兩種狀態都改成 `interrupted`，並寫入與正常關閉相同的停止事件；若該 run 的事件紀錄已經以結束事件收尾，就不再寫入。因此重新連上的編輯器分頁，以及讀取 `GET /api/runs/{id}/events` 的程式，都會看到這次 run 已結束。兩者都不會繼續執行。
 
 若仍要執行這些工作，請重新送出。
 
