@@ -246,6 +246,8 @@
   font-size: var(--fs-md);
   line-height: var(--lh-normal);
   word-break: break-word;
+  /* Print output keeps its shape: tables, indentation, newlines. */
+  white-space: pre-wrap;
 }
 
 /* ═══════════════════════════════════════════
