@@ -29,6 +29,7 @@ from ..core.secret_params import (
     scrub_preset_definition_secrets,
     scrub_subgraph_definition_secrets,
 )
+from ..core.validation_issues import issue_payload
 from ..schemas import (
     GraphData,
     GraphExportRequest,
@@ -160,7 +161,12 @@ async def validate(graph: GraphData):
         preset_fallback=build_preset_fallback([p.model_dump() for p in graph.presets]),
         subgraphs=[s.model_dump() for s in graph.subgraphs],
     )
-    return GraphValidationResponse(valid=len(errors) == 0, errors=errors)
+    # ``issues`` from the list as validate_graph returned it: the response
+    # model's ``list[str]`` turns each finding into a plain string, and
+    # with it go the code, node and values issue_payload reads.
+    return GraphValidationResponse(
+        valid=len(errors) == 0, errors=errors, issues=issue_payload(errors),
+    )
 
 
 @router.post("/save")

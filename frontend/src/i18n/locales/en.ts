@@ -558,6 +558,30 @@ const en = {
   // Execution errors
   'execution.error.noEntryPoints': 'No entry points defined. Drag a Start node from the palette and connect it to the node you want to start execution from.',
 
+  // graphValidation.* -- Run's validation toasts, one key per code the
+  // server's check sends (utils/validationToasts.ts). {node}, {source},
+  // {target} and {cause} are node titles; the other slots are names and
+  // values from the graph.
+  'graphValidation.show': 'Show',
+  'graphValidation.more': '{count} more not shown. Fix these and run again.',
+  'graphValidation.missing_input': '{node}: input "{port}" is not connected',
+  'graphValidation.missing_input.bypassed': '{node}: input "{port}" gets no data because "{cause}" is bypassed',
+  'graphValidation.param_not_number': '{node}: "{param}" must be a number (got {value})',
+  'graphValidation.param_below_min': '{node}: "{param}" is {value}, below the minimum {min}',
+  'graphValidation.param_above_max': '{node}: "{param}" is {value}, above the maximum {max}',
+  'graphValidation.unknown_node_type': '{node}: node type "{type}" is not installed',
+  'graphValidation.unknown_preset': '{node}: preset "{preset}" is not available',
+  'graphValidation.invalid_output_port': '{node} has no output "{port}"',
+  'graphValidation.invalid_input_port': '{node} has no input "{port}"',
+  'graphValidation.type_mismatch': '{source} output "{source_port}" ({source_type}) cannot feed {node} input "{port}" ({target_type})',
+  'graphValidation.cycle': 'The graph has a loop: {path}',
+  'graphValidation.preset_input_not_exposed': '{node} has no input "{port}": preset "{preset}" does not expose it',
+  'graphValidation.preset_output_not_exposed': '{node} has no output "{port}": preset "{preset}" does not expose it',
+  'graphValidation.preset_triggered_empty': '{node} is triggered, but preset "{preset}" has no nodes',
+  'graphValidation.preset_triggered_all_fed': '{node} is triggered, but every node in preset "{preset}" is fed by another, so none can start',
+  'graphValidation.trigger_source_missing': 'A trigger into {node} comes from node "{source}", which is not in the graph. Remove that connection from the graph file.',
+  'graphValidation.trigger_target_missing': 'A trigger from {node} goes to node "{target}", which is not in the graph. Remove that connection from the graph file.',
+
   // Beginner-facing rewrites of raw Python/PyTorch exceptions (see
   // utils/errorMessages.ts). Each one names what to change, not just what broke.
   'error.missingTensorInput': "Connect a 'tensor' input to this node.",

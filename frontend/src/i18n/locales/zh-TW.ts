@@ -481,6 +481,30 @@ const zhTW: Record<TranslationKey, string> = {
   // Execution errors
   'execution.error.noEntryPoints': '尚未定義起始節點。請從節點面板拖曳一個 Start 節點，並連接到要開始執行的節點。',
 
+  // graphValidation.* -- Run's validation toasts, one key per code the
+  // server's check sends (utils/validationToasts.ts). {node}, {source},
+  // {target} and {cause} are node titles; the other slots are names and
+  // values from the graph.
+  'graphValidation.show': '顯示',
+  'graphValidation.more': '還有 {count} 個問題未顯示，先修正這些問題再執行一次。',
+  'graphValidation.missing_input': '「{node}」的輸入「{port}」尚未連線',
+  'graphValidation.missing_input.bypassed': '「{node}」的輸入「{port}」因為「{cause}」被略過而沒有資料',
+  'graphValidation.param_not_number': '「{node}」的「{param}」必須是數字（目前是 {value}）',
+  'graphValidation.param_below_min': '「{node}」的「{param}」是 {value}，小於最小值 {min}',
+  'graphValidation.param_above_max': '「{node}」的「{param}」是 {value}，大於最大值 {max}',
+  'graphValidation.unknown_node_type': '「{node}」的節點類型「{type}」未安裝',
+  'graphValidation.unknown_preset': '「{node}」使用的預設模組「{preset}」不存在',
+  'graphValidation.invalid_output_port': '「{node}」沒有輸出「{port}」',
+  'graphValidation.invalid_input_port': '「{node}」沒有輸入「{port}」',
+  'graphValidation.type_mismatch': '「{source}」的輸出「{source_port}」（{source_type}）不能接到「{node}」的輸入「{port}」（{target_type}）',
+  'graphValidation.cycle': '圖中有迴圈：{path}',
+  'graphValidation.preset_input_not_exposed': '「{node}」沒有輸入「{port}」：預設模組「{preset}」沒有暴露這個連接埠',
+  'graphValidation.preset_output_not_exposed': '「{node}」沒有輸出「{port}」：預設模組「{preset}」沒有暴露這個連接埠',
+  'graphValidation.preset_triggered_empty': '「{node}」收到 trigger，但預設模組「{preset}」裡沒有節點',
+  'graphValidation.preset_triggered_all_fed': '「{node}」收到 trigger，但預設模組「{preset}」裡每個節點都由其他節點供給資料，沒有節點能開始',
+  'graphValidation.trigger_source_missing': '連到「{node}」的 trigger 連線來自不在圖中的節點「{source}」，請從圖檔中移除這條線。',
+  'graphValidation.trigger_target_missing': '從「{node}」拉出的 trigger 連線接到不在圖中的節點「{target}」，請從圖檔中移除這條線。',
+
   // Beginner-facing rewrites of raw Python/PyTorch exceptions (see
   // utils/errorMessages.ts). Each one names what to change, not just what broke.
   'error.missingTensorInput': '請把 tensor 輸入接到這個節點。',

@@ -46,7 +46,7 @@ Host guard 會在其他所有檢查之前處理每個 request，包括 SPA 頁�
 
 | 端點 | 方法 | 驗證 | 說明 |
 |----------|--------|------|-------------|
-| `/api/graph/validate` | POST | token | 驗證一張圖。 |
+| `/api/graph/validate` | POST | token | 驗證一張圖，回傳 `{valid, errors, issues}`。`errors` 以英文句子列出每個問題；`issues` 依相同順序，每個問題一筆 `{message, code, node_id, params}`：`message` 就是 `errors` 中的那一句，`code` 是檢查的代碼（尚未有代碼的檢查為 `null`），`node_id` 是問題所在的節點，`params` 是句子中提到的值。編輯器用這些欄位以介面語言顯示問題，並以標題指出節點。 |
 | `/api/graph/save` | POST | token | 儲存一張圖。request body 是這張圖，加上兩個選填欄位：`file` 是要寫入的位址（檔名主體），以及 `overwrite`。不給 `file` 就是「用 `name` 推出位址」，也就是另存新檔。這種請求帶 `overwrite: false` 就是選擇啟用衝突保護：如果推出來的位址已經有東西，伺服器不會寫入，而是回 `409`，body 為 `{"detail": {"error": "graph_exists", "file", "name"}}`，其中 `file` 是伺服器算出來的檔名主體，`name` 是那個位址上既有圖的標題；要覆蓋就帶 `overwrite: true` 再送一次。完全不帶 `overwrite` 則維持這個端點一直以來的行為：不管位址上有沒有東西都直接寫入，所以現有的 client 跟腳本不受影響。有帶 `file` 的請求是存回原處，不會被這樣擋下來。response 為 `{message, path, file}`：`path` 是寫入的檔案，`file` 是伺服器推出的位址，之後的儲存、載入與重新命名都使用它。 |
 | `/api/graph/load/{name}` | GET | open | 載入一張已儲存的圖。 |
 | `/api/graph/list` | GET | open | 以 `[{name, file, modified}]` 列出已儲存的圖：`name` 是檔案內儲存的標題，`file` 是載入、重新命名或刪除時使用的位址，`modified` 是檔案的修改時間，單位為 epoch 秒（在專案目錄中是 `.graph.json` 檔案的時間，不是版面檔案的）。在專案目錄中，同一個名稱同時以 `<name>.graph.json` 與舊版 `<name>.json` 存在時回傳 409。 |
