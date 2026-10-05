@@ -600,10 +600,10 @@ describe('param updates', () => {
     expect(activeTab().edges.map((e) => e.id)).toEqual(['t']);
   });
 
-  it('makes edge deletion undoable, and only then pushes a snapshot', () => {
-    // Dropping a script from 8 ports to 1 destroys up to 7 edges. Without a
-    // snapshot Ctrl+Z would skip past their deletion entirely; with one on
-    // every keystroke the undo stack would be useless.
+  it('makes edge deletion undoable as a step of its own', () => {
+    // Dropping a script from 8 ports to 1 destroys up to 7 edges. They come
+    // back with one Ctrl+Z of their own, not folded into the paramEdit run
+    // of typing before them (the rule: tabStore.paramUndo.test.ts).
     const scriptDef = makeDef({
       node_name: 'PythonScript',
       inputs: [{ name: 'in1', data_type: 'TENSOR', description: '', optional: true }],
@@ -631,15 +631,15 @@ describe('param updates', () => {
       ),
     });
 
-    // An ordinary param edit that changes no ports must NOT push a snapshot.
+    // paramEdit: edits to one node that change no ports are ONE step.
     store().updateNodeParams(script.id, { input_ports: 2 });
     store().updateNodeParams(script.id, { code: 'x' });
-    expect(activeTab().undoStack.length).toBe(0);
+    expect(activeTab().undoStack.length).toBe(1); // one paramEdit run
     expect(activeTab().edges).toHaveLength(2);
 
     store().updateNodeParams(script.id, { input_ports: 1 });
     expect(activeTab().edges.map((e) => e.id)).toEqual(['in1']);
-    expect(activeTab().undoStack.length).toBe(1);
+    expect(activeTab().undoStack.length).toBe(2); // dropping edges: a paramEdit step of its own
 
     store().undo();
     expect(activeTab().edges.map((e) => e.id).sort()).toEqual(['in1', 'in2']);

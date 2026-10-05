@@ -10,7 +10,7 @@ Keyboard chords are ignored while you are typing in an input, a textarea or a no
 
 | Action | Key / gesture |
 |--------|---------------|
-| Undo | `Ctrl/Cmd` + `Z` |
+| Undo | `Ctrl/Cmd` + `Z` (a run of edits to one node's parameters is one step) |
 | Redo | `Ctrl/Cmd` + `Shift` + `Z` / `Ctrl/Cmd` + `Y` |
 | Copy selected nodes | `Ctrl/Cmd` + `C` (yields to a text selection on the page; see [what is copied](./canvas-basics#the-canvas)) |
 | Paste nodes | `Ctrl/Cmd` + `V` (same) |

@@ -46,6 +46,7 @@ import { useToastStore } from './toastStore';
 import { useUIStore } from './uiStore';
 import { useI18n, type TranslationKey } from '../i18n';
 import { useProjectStore } from './projectStore';
+import { markParamEdit, paramEditContinues, paramEditKeepAlive } from './paramEditUndo';
 import {
   effectivePresets,
   mergeOwnedPresets,
@@ -3264,22 +3265,32 @@ export const useTabStore = create<TabStoreState>((rawSet, get) => {
   },
 
   updateNodeParams: (nodeId, params) => {
+    // paramEdit: a run of edits to one node is ONE undo step; the rule and
+    // its reasons are in `paramEditUndo.ts`. An edit that changes nothing
+    // writes nothing, so re-picking the option a select already shows leaves
+    // no step behind that undoes to the very same graph. It still counts as a
+    // keystroke of a run that is going on.
+    const tab = get().getTab(get().activeTabId);
+    const node = tab?.nodes.find((n) => n.id === nodeId);
+    if (!tab || !node) return;
+    const current = node.data.params ?? {};
+    if (Object.keys(params).every((key) => Object.is(params[key], current[key]))) {
+      paramEditKeepAlive(tab.id, nodeId, tab, Date.now());
+      return;
+    }
     get().markDirty(nodeId);
 
     // Deleting edges is not something a param edit is expected to do, so it
-    // gets its own undo entry BEFORE the write: dropping a script from 8
-    // ports to 1 destroys up to 7 edges, and without this Ctrl+Z would skip
-    // straight past their deletion to whatever was undoable before it.
-    // Computed here, ahead of the write, because `pushUndoSnapshot` captures
-    // the CURRENT tab and must see the edges intact.
-    {
-      const tab = get().getActiveTab();
-      const node = tab.nodes.find((n) => n.id === nodeId);
-      const merged = { ...(node?.data.params ?? {}), ...params };
-      if (staleEdges(node, merged, tab.edges).size > 0) {
-        get().pushUndoSnapshot();
-      }
-    }
+    // always opens a step of its own BEFORE the write, even in the middle of
+    // a run: dropping a script from 8 ports to 1 destroys up to 7 edges, and
+    // one Ctrl+Z must bring back exactly those. Decided ahead of the write
+    // because `pushUndoSnapshot` captures the CURRENT tab and must see the
+    // edges intact.
+    const stale = staleEdges(node, { ...current, ...params }, tab.edges);
+    const now = Date.now();
+    const continues = paramEditContinues(tab.id, nodeId, tab, now);
+    if (stale.size > 0 || !continues) get().pushUndoSnapshot();
+    markParamEdit(tab.id, nodeId, get().getTab(tab.id)?.undoStack ?? [], now);
 
     const orphaned = new Set<string>();
     set({
@@ -3421,16 +3432,23 @@ export const useTabStore = create<TabStoreState>((rawSet, get) => {
   closeVizModal: () =>
     set({ tabs: updateTab(get().tabs, get().activeTabId, () => ({ vizModalNodeId: null })) }),
 
-  updateNodeLayers: (nodeId, layersJson) =>
-    set({
-      tabs: updateTab(get().tabs, get().activeTabId, (tab) => ({
-        nodes: tab.nodes.map((n) =>
-          n.id === nodeId
-            ? { ...n, data: { ...n.data, params: { ...n.data.params, layers: layersJson } } }
-            : n
-        ),
-      })),
-    }),
+  updateNodeLayers: (nodeId, layersJson) => {
+    const node = get().getTab(get().activeTabId)?.nodes.find((n) => n.id === nodeId);
+    // An Apply is one undo step, like a paramEdit run; an Apply that changed
+    // nothing is no step and no write.
+    if (node && node.data.params?.layers !== layersJson) {
+      get().pushUndoSnapshot();
+      set({
+        tabs: updateTab(get().tabs, get().activeTabId, (tab) => ({
+          nodes: tab.nodes.map((n) =>
+            n.id === nodeId
+              ? { ...n, data: { ...n.data, params: { ...n.data.params, layers: layersJson } } }
+              : n
+          ),
+        })),
+      });
+    }
+  },
 
   setNodeExecutionStatus: (nodeId, status, error) =>
     set({
@@ -4578,8 +4596,10 @@ export const useTabStore = create<TabStoreState>((rawSet, get) => {
   // being carried in every frame and quietly ignored here, which is the shape
   // of the bug item 2 describes.
   undo: () => {
-    const tab = get().getActiveTab();
-    if (tab.undoStack.length === 0) return;
+    // paramEdit: with no tab open (Ctrl+Z on the welcome screen) there is
+    // nothing to undo; `getActiveTab`'s `!` used to throw here.
+    const tab = get().getTab(get().activeTabId);
+    if (!tab || tab.undoStack.length === 0) return;
     const current = undoFrameOf(tab);
     const prev = tab.undoStack[tab.undoStack.length - 1];
     set({
@@ -4592,8 +4612,9 @@ export const useTabStore = create<TabStoreState>((rawSet, get) => {
   },
 
   redo: () => {
-    const tab = get().getActiveTab();
-    if (tab.redoStack.length === 0) return;
+    // paramEdit: no tab open, nothing to redo (see `undo`).
+    const tab = get().getTab(get().activeTabId);
+    if (!tab || tab.redoStack.length === 0) return;
     const current = undoFrameOf(tab);
     const next = tab.redoStack[tab.redoStack.length - 1];
     set({

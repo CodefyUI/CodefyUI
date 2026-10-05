@@ -36,10 +36,10 @@ interface NodeParamListProps {
  * cannot drift between the side panel and the modal.
  *
  * Edits go through `updateNodeParams`, which marks the node dirty for partial
- * re-execution. It deliberately pushes no undo snapshot: parameter typing is
- * continuous, and a snapshot per keystroke would bury real structural edits
- * under hundreds of entries. Any caller wanting different semantics must
- * change them here, for every surface at once.
+ * re-execution and makes a run of edits to one node ONE undo step: typing
+ * `0.001` is one Ctrl+Z, not five, and that Ctrl+Z never takes the edge drawn
+ * before it along (the rule is in `store/paramEditUndo.ts`). It lives in the
+ * store, so every surface that writes params follows it, not just this one.
  */
 export function NodeParamList({ nodeId, definition, params, className }: NodeParamListProps) {
   const updateNodeParams = useTabStore((s) => s.updateNodeParams);

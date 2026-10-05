@@ -1260,11 +1260,11 @@ describe('NodeDetailModal — parameter editing', () => {
     const viaModal = editUnitsThrough(<NodeDetailModal />);
     expect(viaModal).toEqual(viaPanel);
     // Pin the shared semantics rather than only their equality: the node goes
-    // dirty (so partial re-execution reruns it) and typing pushes no undo
-    // snapshot per keystroke.
+    // dirty (so partial re-execution reruns it) and the edit is one undo step
+    // (paramEdit: a run of typing on one node is one step, not one per key).
     expect(viaModal.params.units).toBe(7);
     expect(viaModal.dirty).toEqual(['n1']);
-    expect(viaModal.undoDepth).toBe(0);
+    expect(viaModal.undoDepth).toBe(1); // one paramEdit step
   });
 
   it('honours visible_when exactly like ConfigPanel does', () => {

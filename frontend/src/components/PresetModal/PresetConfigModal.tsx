@@ -3,7 +3,46 @@ import { useTabStore } from '../../store/tabStore';
 import { readablePresetNodes } from '../../utils';
 import { ParamField } from '../shared/ParamField';
 import { useI18n } from '../../i18n';
+import type { PresetDefinition } from '../../types';
 import styles from './PresetConfigModal.module.css';
+
+type InternalParams = Record<string, Record<string, any>>;
+
+/** Two param values compared the way the dialog copies them: through JSON. */
+function sameValue(a: unknown, b: unknown): boolean {
+  return Object.is(a, b) || JSON.stringify(a) === JSON.stringify(b);
+}
+
+/**
+ * Would Apply change the card? The dialog starts from a copy of EVERY value
+ * the card stores, and Apply writes all of them back, edited or not. So each
+ * is compared with what the card holds now, or, for a param it does not store
+ * yet, with the default its field showed.
+ */
+function applyChangesCard(
+  local: InternalParams,
+  stored: InternalParams,
+  preset: PresetDefinition,
+): boolean {
+  const exposed: unknown = preset.exposed_params;
+  const defaultOf = (internalNodeId: string, paramName: string): unknown => {
+    if (!Array.isArray(exposed)) return undefined;
+    const ep = exposed.find(
+      (e) =>
+        e !== null &&
+        typeof e === 'object' &&
+        e.internal_node === internalNodeId &&
+        e.param_name === paramName,
+    );
+    return ep?.param_def?.default;
+  };
+  return Object.entries(local).some(([internalNodeId, params]) =>
+    Object.entries(params).some(([paramName, value]) => {
+      const before = stored[internalNodeId]?.[paramName];
+      return !sameValue(value, before === undefined ? defaultOf(internalNodeId, paramName) : before);
+    }),
+  );
+}
 
 export function PresetConfigModal() {
   // Optional, like the three other root-mounted modals: this is mounted for
@@ -13,6 +52,7 @@ export function PresetConfigModal() {
   const activeTab = useTabStore((s) => s.tabs.find((t) => t.id === s.activeTabId) ?? null);
   const closePresetModal = useTabStore((s) => s.closePresetModal);
   const updatePresetInternalParam = useTabStore((s) => s.updatePresetInternalParam);
+  const pushUndoSnapshot = useTabStore((s) => s.pushUndoSnapshot);
   const { t } = useI18n();
 
   const presetModalNodeId = activeTab?.presetModalNodeId ?? null;
@@ -62,6 +102,9 @@ export function PresetConfigModal() {
   };
 
   const handleApply = () => {
+    // One undo step for the whole Apply, taken before the first write so it
+    // holds the card as it was. An Apply that changes nothing takes none.
+    if (applyChangesCard(localParams, currentInternalParams, preset)) pushUndoSnapshot();
     for (const [internalNodeId, params] of Object.entries(localParams)) {
       for (const [paramName, value] of Object.entries(params)) {
         updatePresetInternalParam(presetModalNodeId, internalNodeId, paramName, value);
