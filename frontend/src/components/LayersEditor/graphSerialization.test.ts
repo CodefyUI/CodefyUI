@@ -7,6 +7,7 @@ import {
   convertWorkflowToGraphSpec,
   flowToGraphJson,
   graphToFlow,
+  layerNodeCount,
   emptyGraph,
   autoLayoutLayers,
   validateGraph,
@@ -763,6 +764,54 @@ describe.each([
       id: res.nodes[res.nodes.length - 1].id,
       position: res.nodes[res.nodes.length - 1].position,
     }).toEqual(expectedLast);
+  });
+});
+
+// ── layerNodeCount: the SequentialModel card's count (#594) ────────────────
+
+describe('layerNodeCount', () => {
+  it('counts every node of a version-2 spec, Input and Output included', () => {
+    const json = JSON.stringify({
+      version: 2,
+      nodes: [
+        { id: 'in', type: 'Input', ports: [{ id: 'p_x', name: 'x' }] },
+        { id: 'l1', type: 'Linear', params: { in_features: 4, out_features: 2 } },
+        { id: 'r1', type: 'ReLU' },
+        { id: 'out', type: 'Output', ports: [{ id: 'p_y', name: 'y' }] },
+      ],
+      edges: [
+        { id: 'e1', source: 'in', sourceHandle: 'p_x', target: 'l1' },
+        { id: 'e2', source: 'l1', target: 'r1' },
+        { id: 'e3', source: 'r1', target: 'out', targetHandle: 'p_y' },
+      ],
+    });
+    expect(layerNodeCount(json)).toBe(4);
+  });
+
+  it('counts what the editor stores on Apply, one more once a layer is added', () => {
+    const { nodes, edges } = emptyGraph();
+    expect(layerNodeCount(flowToGraphJson(nodes, edges))).toBe(2);
+    const withLayer = [...nodes, flowNode('relu', { layerType: 'ReLU' })];
+    expect(layerNodeCount(flowToGraphJson(withLayer, edges))).toBe(3);
+  });
+
+  it.each([
+    ['the legacy array form', JSON.stringify([{}, {}, {}])],
+    ['another spec version', JSON.stringify({ version: 1, nodes: [{ id: 'r', type: 'ReLU' }], edges: [] })],
+    ['a version-2 spec without edges', JSON.stringify({ version: 2, nodes: [{ id: 'r', type: 'ReLU' }] })],
+    ['text that is not JSON', 'not-json'],
+    ['JSON null', 'null'],
+    ['no value', undefined],
+  ])('reads 0 for %s', (_label, json) => {
+    expect(layerNodeCount(json)).toBe(0);
+  });
+
+  it.each([
+    '../examples/Usage_Example/CNN-MNIST/TrainCNN-MNIST/graph.json',
+    '../examples/Usage_Example/ResNet18-CIFAR10-Baseline/graph.json',
+  ])('agrees with the Layers editor on %s', (path) => {
+    const layersJson = loadRealLayersSpec(path);
+    expect(layerNodeCount(layersJson)).toBe(graphToFlow(layersJson).nodes.length);
   });
 });
 
