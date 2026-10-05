@@ -192,7 +192,7 @@ The toolbar **Settings** popover groups its settings by section — same idea as
 | **LLM Providers** | **ChatGPT Codex account** — Sign in / Sign out / Refresh for the Codex provider in `LLMChat`. |
 | **Optional Packs & Plugins** | **Package Center** — Open; shows how many packs are installed. **Plugin Center** — Open; shows how many plugins are installed and available. |
 | **Recording & Inspection** | **Record node outputs** (on by default; turn it off before a heavy training run), **Verbose internals** (algorithm internals such as attention scores, for the Inspector's Steps tab), **Compare segment** (Create segment with two nodes selected / Clear active). |
-| **Training Behavior** | **Persist weights between runs** (on by default — off means every run reinitialises), **Reset all weights now**, **Capture gradients** (forward + `.backward()`, for the Inspector's Backward tab), **Auto-synthesize loss** (when the graph has no `Loss` / `BackwardOnce` node), **Random seed**, **Deterministic algorithms**. |
+| **Training Behavior** | **Persist weights between runs** (off by default, so every run starts fresh like an exported script), **Reset all weights now**, **Capture gradients** (forward + `.backward()`, for the Inspector's Backward tab), **Auto-synthesize loss** (when the graph has no `Loss` / `BackwardOnce` node), **Random seed**, **Deterministic algorithms**. |
 | **Editor** | **Grid snap**, **Show node tooltips**, **Node category mode** (Basic / All), **Connection style** (Circuit, the default / Curve). |
 | **This Server** | Version, nodes and presets loaded, and cache memory usage, with a Refresh button. |
 

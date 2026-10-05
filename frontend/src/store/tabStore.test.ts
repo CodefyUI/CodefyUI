@@ -2474,9 +2474,10 @@ describe('educational toggles', () => {
   });
 
   it('togglePersistWeights flips weightsPersistent', () => {
-    expect(activeTab().weightsPersistent).toBe(true);
+    const before = activeTab().weightsPersistent;
+    expect(before).toBe(false);
     store().togglePersistWeights();
-    expect(activeTab().weightsPersistent).toBe(false);
+    expect(activeTab().weightsPersistent).toBe(!before);
   });
 
   it('toggleBackward flips backwardMode', () => {
@@ -2642,7 +2643,7 @@ describe('persistence (module reload)', () => {
     const persisted = {
       activeTabId: 'tab-b',
       tabs: [
-        { id: 'tab-a', name: 'Alpha', nodes: [{ id: 'n', type: 'baseNode', position: { x: 0, y: 0 }, data: { label: 'A', type: 'A', params: {} } }], edges: [], segmentGroups: [{ id: 's', headNodeId: 'h', tailNodeId: 't' }], recordOutputs: false, verboseMode: true, graphId: 'gid-a', weightsPersistent: false, backwardMode: true, autoBackward: true },
+        { id: 'tab-a', name: 'Alpha', nodes: [{ id: 'n', type: 'baseNode', position: { x: 0, y: 0 }, data: { label: 'A', type: 'A', params: {} } }], edges: [], segmentGroups: [{ id: 's', headNodeId: 'h', tailNodeId: 't' }], recordOutputs: false, verboseMode: true, graphId: 'gid-a', keepWeights: true, backwardMode: true, autoBackward: true },
         { id: 'tab-b', name: 'Beta', nodes: [], edges: [{ id: 'e', source: 'a', target: 'b' }] },
       ],
     };
@@ -2657,7 +2658,7 @@ describe('persistence (module reload)', () => {
     expect(alpha.recordOutputs).toBe(false);
     expect(alpha.verboseMode).toBe(true);
     expect(alpha.graphId).toBe('gid-a');
-    expect(alpha.weightsPersistent).toBe(false);
+    expect(alpha.weightsPersistent).toBe(true);
     expect(alpha.backwardMode).toBe(true);
     expect(alpha.autoBackward).toBe(true);
   });
@@ -2676,7 +2677,7 @@ describe('persistence (module reload)', () => {
     expect(t.recordOutputs).toBe(true);
     expect(t.verboseMode).toBe(false);
     expect(typeof t.graphId).toBe('string'); // fell back to generated graphId
-    expect(t.weightsPersistent).toBe(true);
+    expect(t.weightsPersistent).toBe(false);
     expect(t.backwardMode).toBe(false);
     expect(t.autoBackward).toBe(false);
   });

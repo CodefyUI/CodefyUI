@@ -53,9 +53,11 @@ The last row is the point of the example. Set `VLARollout.instruction_mode:
 swapped` (it hands the policy a deliberately wrong puck color) and success
 collapses from 0.967 to 0.033 while the weights are provably identical —
 the policy demonstrably acts on the language, not just the pixels. To rerun
-only the evaluation after training once: leave the graph alone, set
-`TrainingLoop.epochs: 1` and `max_steps: 1` (weights persist between runs;
-one warmup-floor step changes nothing measurable), flip the mode, and run.
+only the evaluation after training once, turn on **Settings → Training
+Behavior → Persist weights between runs** before that training run (it is
+off by default, and a run made with it off keeps no weights). Then leave the
+graph alone, set `TrainingLoop.epochs: 1` and `max_steps: 1` (one
+warmup-floor step changes nothing measurable), flip the mode, and run.
 
 ## Knobs worth studying
 

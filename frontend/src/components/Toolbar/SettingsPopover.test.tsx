@@ -232,7 +232,7 @@ function baseTab() {
     edges: [] as any[],
     recordOutputs: true,
     verboseMode: false,
-    weightsPersistent: true,
+    weightsPersistent: false,
     backwardMode: false,
     autoBackward: false,
     graphId: 'graph-xyz',
@@ -986,7 +986,7 @@ describe('SettingsPopover', () => {
   it('toggles persist weights', () => {
     render(<SettingsPopover open onClose={vi.fn()} triggerRef={makeTriggerRef()} />);
     fireEvent.click(screen.getByRole('button', { name: 'Persist weights between runs' }));
-    expect(useTabStore.getState().tabs[0].weightsPersistent).toBe(false);
+    expect(useTabStore.getState().tabs[0].weightsPersistent).toBe(true);
   });
 
   it('toggles capture gradients and the row click path', () => {
@@ -1198,11 +1198,9 @@ describe('SettingsPopover', () => {
       'aria-pressed',
       'true',
     );
-    // persistent defaults true
-    expect(screen.getByRole('button', { name: 'Persist weights between runs' })).toHaveAttribute(
-      'aria-pressed',
-      'true',
-    );
+    // persistent defaults false
+    expect(screen.getByRole('button', { name: 'Persist weights between runs' }))
+      .toHaveAttribute('aria-pressed', 'false');
     // verbose/backward/autoBackward default false
     expect(screen.getByRole('button', { name: 'Verbose internals' })).toHaveAttribute(
       'aria-pressed',

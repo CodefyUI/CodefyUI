@@ -189,7 +189,7 @@ describe('importWorkspaceFile: what an imported tab carries', () => {
       deterministic: false,
       recordOutputs: true,
       verboseMode: false,
-      weightsPersistent: true,
+      weightsPersistent: false,
       backwardMode: false,
       autoBackward: false,
     });

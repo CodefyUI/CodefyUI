@@ -83,7 +83,7 @@ Some nodes still opt out of caching entirely with `cacheable = False`, for four 
 
 The same opt-out covers nodes whose output escapes the cache key for other reasons — `GaussianNoise`, `DDPMSampler`, `BackwardOnce`, `DiffusionTrainingLoop`, and every node that owns weights (`SequentialModel`, `DiffusionUNet`, and every layer node: `Linear`, `Conv2d`, `LSTM` and the rest), whose parameters drift as training proceeds.
 
-For nodes that own weights, **Settings → Training Behavior → Persist weights between runs** controls subsequent runs independently of output caching. It is on by default, so the next run continues from the previous run's final weights. **Reset all weights now** discards stored weights, so the next run initialises a new model. `SequentialModel` reports which action it took in the **Execution Log** on every run.
+For nodes that own weights, **Settings → Training Behavior → Persist weights between runs** controls subsequent runs independently of output caching. It is off by default, so every run initialises a new model, the way an exported Python script always does. Turned on, a run keeps the weights it trained and the next run continues from them, and the **Execution Log** says so after each successful run. **Reset all weights now** discards stored weights, so the next run initialises a new model. `SequentialModel` reports which action it took in the **Execution Log** on every run.
 
 Opting out **propagates downstream**: every node fed by one of these re-executes too, because a cache key records only the *keys* of upstream nodes, not their actual outputs. A cached downstream node would otherwise hand back a stale result computed from data that has since changed.
 

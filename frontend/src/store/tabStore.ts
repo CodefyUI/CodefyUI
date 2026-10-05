@@ -516,7 +516,8 @@ function createTabState(id: string, name: string): TabState {
       typeof crypto !== 'undefined' && 'randomUUID' in crypto
         ? crypto.randomUUID()
         : `graph-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`,
-    weightsPersistent: true,
+    // Off, so every run starts fresh the way an exported script does.
+    weightsPersistent: false,
     backwardMode: false,
     autoBackward: false,
     seed: null,
@@ -2128,7 +2129,11 @@ export interface PersistedTab {
   seed?: number | null;
   deterministic?: boolean;
   graphId?: string;
-  weightsPersistent?: boolean;
+  // "Persist weights between runs", written only while it is on. The
+  // key 2.8.8 used, `weightsPersistent`, is ignored on read: that build
+  // wrote `true` into every record, so a choice cannot be told from the
+  // old default.
+  keepWeights?: boolean;
   backwardMode?: boolean;
   autoBackward?: boolean;
 }
@@ -2209,7 +2214,8 @@ function buildPersistedTab(input: TabState): PersistedTab {
     seed: t.seed,
     deterministic: t.deterministic,
     graphId: t.graphId,
-    weightsPersistent: t.weightsPersistent,
+    // Under the new key, and only while on (see `PersistedTab`).
+    ...(t.weightsPersistent ? { keepWeights: true } : {}),
     backwardMode: t.backwardMode,
     autoBackward: t.autoBackward,
   };
@@ -2442,7 +2448,10 @@ function tabFromPersisted(t: PersistedTab, base: TabState): TabState {
     // keeps weights linked to this tab across sessions. Falls back to
     // the freshly generated UUID for legacy tabs.
     graphId: t.graphId ?? base.graphId,
-    weightsPersistent: t.weightsPersistent ?? true,
+    // The new key only. A 2.8.8 record's `weightsPersistent: true` is
+    // the old default written into every tab, so it restores as off, once;
+    // a user who had turned the switch on deliberately turns it on again.
+    weightsPersistent: t.keepWeights === true,
     backwardMode: t.backwardMode ?? false,
     autoBackward: t.autoBackward ?? false,
   };
