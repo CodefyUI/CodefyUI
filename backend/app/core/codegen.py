@@ -208,8 +208,10 @@ parameters are plain literals -- edit them freely.  Every node function
 delegates to the canonical CodefyUI node implementation, so behavior stays
 identical to running the graph on the canvas.
 
-It requires a compatible CodefyUI backend Python environment (including
-every custom/plugin node and third-party dependency used by the graph).
+It requires a compatible CodefyUI backend Python environment.  Nodes from
+the plugin packs bundled with CodefyUI load from that installation by
+themselves; custom nodes, other plugins and any third-party dependency the
+graph uses must be installed in it.
 
 The canvas's seed is baked in below as ``GRAPH_SEED`` and is the default for
 ``--seed``, so a seeded graph reproduces here exactly as it did on the
@@ -373,7 +375,11 @@ _CLI_TAIL = '''def _parser() -> argparse.ArgumentParser:
         dest="seed",
         action="store_const",
         const=None,
-        help="Ignore the exported seed and use torch's own entropy.",
+        help=(
+            "Ignore the exported seed. Core nodes then draw from torch's own "
+            "entropy; the bundled edu MLP nodes (FFNLayer, TrainAndEvaluate) "
+            "still start from fixed weights."
+        ),
     )
     parser.add_argument(
         "--deterministic",
@@ -434,6 +440,21 @@ def _load_runtime(project_dir: Path | None) -> SimpleNamespace:
             "environment from a compatible CodefyUI installation."
         ) from exc
 
+    try:
+        # Discovery that also loads the plugin packs bundled with CodefyUI
+        # that the graph uses, and names a pack it cannot find.
+        from app.core.runtime import initialize_export_runtime
+    except ImportError:
+        # A CodefyUI older than this file has no initialize_export_runtime:
+        # run its discovery and the check exported files made before it.
+        def initialize_export_runtime(required_types):
+            initialize_runtime()
+            return [
+                f"Unknown node type: {node_type}"
+                for node_type in sorted(set(required_types))
+                if registry.get(node_type) is None
+            ]
+
     return SimpleNamespace(
         api_contract=api_contract,
         resolve_device=resolve_device,
@@ -441,6 +462,7 @@ def _load_runtime(project_dir: Path | None) -> SimpleNamespace:
         invoke_node=invoke_node,
         registry=registry,
         initialize_runtime=initialize_runtime,
+        initialize_export_runtime=initialize_export_runtime,
         deterministic_scope=deterministic_scope,
         seed_rngs=seed_rngs,
     )
@@ -461,21 +483,18 @@ def _run(args: argparse.Namespace) -> int:
             redirect_stdout(sys.stderr) if _HAS_GRAPH_OUTPUT else nullcontext()
         )
         with discovery_stream:
-            _RT.initialize_runtime()
+            unknown_types = _RT.initialize_export_runtime(_REQUIRED_NODE_TYPES)
     except (RuntimeError, ValueError) as exc:
         print(f"Exported graph setup failed: {exc}", file=sys.stderr)
         if args.verbose:
             raise
         return 2
 
-    unresolved = sorted(
-        node_type
-        for node_type in _REQUIRED_NODE_TYPES
-        if _RT.registry.get(node_type) is None
-    )
-    if unresolved:
-        details = "; ".join(f"Unknown node type: {t}" for t in unresolved)
-        print(f"Exported graph validation failed: {details}", file=sys.stderr)
+    if unknown_types:
+        print(
+            "Exported graph validation failed: " + "; ".join(unknown_types),
+            file=sys.stderr,
+        )
         return 2
 
     for title, problems in _STATIC_PROBLEMS:
@@ -1229,7 +1248,8 @@ def generate_python(
         f"{_literal(_static_problems(nodes, edges, has_graph_output))}\n"
         "\n"
         "# Node types this graph needs, verified against the registry after\n"
-        "# runtime discovery.\n"
+        "# runtime discovery, which also loads the plugin packs bundled with\n"
+        "# CodefyUI that they name.\n"
         f"_REQUIRED_NODE_TYPES = {_literal(required_types)}\n"
     )
 

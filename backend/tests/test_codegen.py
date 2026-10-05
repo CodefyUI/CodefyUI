@@ -58,11 +58,12 @@ def _run_exported_script(
     tmp_path: Path,
     *args: str,
     installed_plugins: tuple[str, ...] = (),
+    disabled_plugins: tuple[str, ...] = (),
 ) -> subprocess.CompletedProcess[str]:
     script_path = tmp_path / "exported_graph.py"
     script_path.write_text(script, encoding="utf-8")
     user_data_dir = tmp_path / "user-data"
-    if installed_plugins:
+    if installed_plugins or disabled_plugins:
         plugins_dir = user_data_dir / "plugins"
         plugins_dir.mkdir(parents=True, exist_ok=True)
         lockfile = {
@@ -71,9 +72,9 @@ def _run_exported_script(
                 plugin_id: {
                     "source_kind": "builtin",
                     "source": plugin_id,
-                    "enabled": True,
+                    "enabled": plugin_id not in disabled_plugins,
                 }
-                for plugin_id in installed_plugins
+                for plugin_id in (*installed_plugins, *disabled_plugins)
             },
         }
         (plugins_dir / "installed.json").write_text(
@@ -697,11 +698,28 @@ async def test_exported_runner_uses_graph_input_default_without_input_flags(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "lockfile",
+    [
+        {},
+        {"installed_plugins": ("foundations",)},
+        {"disabled_plugins": ("foundations",)},
+    ],
+    ids=["no lockfile", "installed", "disabled"],
+)
 async def test_exported_runner_executes_installed_plugin_node(
     test_client,
     tmp_path: Path,
+    lockfile: dict,
 ):
-    """The runner discovers active plugins through the normal lockfile."""
+    """A node from a plugin pack bundled with CodefyUI runs whatever the
+    lockfile in the user data dir says.
+
+    The runner discovers active plugins through the normal lockfile, then
+    loads the bundled packs the script names that are still missing. So a
+    grader's bare ``python <file>.py``, with no lockfile at all, runs it, and
+    so does an install that disabled the pack in the editor.
+    """
     graph_path = (
         REPO_ROOT
         / "plugins"
@@ -715,26 +733,20 @@ async def test_exported_runner_executes_installed_plugin_node(
     response = await test_client.post("/api/graph/export", json=graph)
     assert response.status_code == 200, response.text
 
-    missing = _run_exported_script(
-        response.json()["script"],
-        tmp_path,
-        "--device",
-        "cpu",
-    )
-    assert missing.returncode == 2
-    assert "Unknown node type: foundations:Edu-ColumnStats" in missing.stderr
-
     completed = _run_exported_script(
         response.json()["script"],
         tmp_path,
         "--device",
         "cpu",
-        installed_plugins=("foundations",),
+        **lockfile,
     )
     assert completed.returncode == 0, completed.stderr
     assert "[Per-column mean]" in completed.stdout
     assert "[Per-column std]" in completed.stdout
     assert "completed on cpu" in completed.stderr
+    if not lockfile:
+        # Loading the pack wrote nothing: no lockfile, no user data dir.
+        assert not (tmp_path / "user-data").exists()
 
 
 @pytest.mark.asyncio
