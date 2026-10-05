@@ -14,7 +14,7 @@ git commit。
 ```
 my-service/
   codefyui.project.toml   manifest: name, plugin pins, default publish target
-  graphs/    <name>.graph.json    logic (nodes/edges/params/presets/subgraphs, optional settings.device)
+  graphs/    <name>.graph.json    logic (nodes/edges/params/presets/subgraphs, optional settings.device / settings.seed)
   layout/    <name>.layout.json   positions, note geometry, segments (reviewable, generated)
   assets/images/   assets/models/   assets/data/    scaffolded empty
   assets/output/                                    created on demand (e.g. ImageWriter)

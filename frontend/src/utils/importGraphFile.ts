@@ -7,7 +7,7 @@ import { useI18n, type TranslationKey } from '../i18n';
 import type { PresetDefinition, SubgraphDefinition } from '../types';
 import { resolveSerializedNodes, resolveSerializedEdges } from '.';
 import { nodesBoundingBox } from './autoLayout';
-import { readGraphDevice } from './graphSettings';
+import { readGraphDevice, readGraphSeed } from './graphSettings';
 import {
   effectivePresets,
   mergeUnknownPresetsIntoPalette,
@@ -256,6 +256,8 @@ async function openGraphData(input: unknown, fileName: string): Promise<boolean>
       segmentGroups: Array.isArray(data.segmentGroups) ? data.segmentGroups : [],
       description: typeof data.description === 'string' ? data.description : '',
       device: readGraphDevice(data.settings),
+      // A seed the file carries; a new tab already has the active tab's.
+      seed: readGraphSeed(data.settings),
       formatVersion: data.format_version,
     });
     // Neither tab can be trusted to frame the graph on its own. A filled tab

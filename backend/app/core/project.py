@@ -3,7 +3,8 @@
 In project mode a saved graph is stored as a PAIR:
   graphs/<name>.graph.json   logic  {format_version, name, description,
                                       nodes[], edges[], presets[], subgraphs[],
-                                      settings{} (only when a device is set)}
+                                      settings{} (only when a device or a
+                                      seed is set)}
   layout/<name>.layout.json  layout {format_version, positions{}, notes{},
                                       segmentGroups[], subgraphPositions{}}
 
@@ -78,6 +79,24 @@ def _int_xy(pos: dict) -> dict:
     return {"x": int(round(pos.get("x", 0))), "y": int(round(pos.get("y", 0)))}
 
 
+def _assigned_settings(raw: Any) -> dict:
+    """The keys of a graph's ``settings`` block that are set.
+
+    ``device`` counts when non-empty (an empty string is "no assignment", as
+    in ``GraphSettings``); ``seed`` counts when it is not None, because 0 is
+    a seed. A block that is not a dict, which only a hand-edited file holds,
+    has none.
+    """
+    if not isinstance(raw, dict):
+        return {}
+    assigned: dict[str, Any] = {}
+    if raw.get("device"):
+        assigned["device"] = raw["device"]
+    if raw.get("seed") is not None:
+        assigned["seed"] = raw["seed"]
+    return assigned
+
+
 def split_graph(payload: dict) -> tuple[dict, dict]:
     """Split a merged graph dict (GraphData.model_dump()) into (logic, layout).
 
@@ -144,12 +163,12 @@ def split_graph(payload: dict) -> tuple[dict, dict]:
         "presets": payload.get("presets", []),
         "subgraphs": logic_subgraphs,
     }
-    # The graph's device belongs to the logic file (git-tracked). It is
-    # written only when set, so an unassigned graph's logic file keeps its
-    # shape.
-    graph_settings = payload.get("settings") or {}
-    if isinstance(graph_settings, dict) and graph_settings.get("device"):
-        logic["settings"] = {"device": graph_settings["device"]}
+    # The graph's device and seed belong to the logic file (git-tracked).
+    # Each is written only when set, so a graph with neither keeps its logic
+    # file's shape.
+    logic_settings = _assigned_settings(payload.get("settings"))
+    if logic_settings:
+        logic["settings"] = logic_settings
     layout = {
         "format_version": FORMAT_VERSION,
         "positions": positions,
@@ -247,9 +266,9 @@ def merge_graph(logic: dict, layout: dict | None) -> tuple[dict, bool]:
         "segmentGroups": layout.get("segmentGroups", []) if has_layout else [],
         "layout_missing": any_missing,
     }
-    logic_settings = logic.get("settings") or {}
-    if isinstance(logic_settings, dict) and logic_settings.get("device"):
-        merged["settings"] = {"device": logic_settings["device"]}
+    merged_settings = _assigned_settings(logic.get("settings"))
+    if merged_settings:
+        merged["settings"] = merged_settings
     return merged, any_missing
 
 

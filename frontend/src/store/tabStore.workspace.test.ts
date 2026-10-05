@@ -391,15 +391,18 @@ describe('setTabRunSettings', () => {
     expect(store().getTab(target)!.seed).toBeNull();
   });
 
-  it('reaches the autosave record, and is not a document change', () => {
+  it('reaches the autosave record, and only its seed is a document change', () => {
     const target = store().createTab({ title: 'Saved', activate: false });
     const revision = store().getTab(target)!.revision;
     store().setTabRunSettings(target, { seed: 3, backwardMode: true });
     const record = _buildPersistedTabForTesting(store().getTab(target)!);
     expect(record.seed).toBe(3);
     expect(record.backwardMode).toBe(true);
-    // Run settings are not the document, so a plugin's compare-and-swap
-    // token must not move.
-    expect(store().getTab(target)!.revision).toBe(revision);
+    // The seed is saved with the graph (`settings.seed`) since 2.8.9, so
+    // setting it moves a plugin's compare-and-swap token, once.
+    expect(store().getTab(target)!.revision).toBe(revision + 1);
+    // A run flag alone is not the document: the token must not move.
+    store().setTabRunSettings(target, { backwardMode: false });
+    expect(store().getTab(target)!.revision).toBe(revision + 1);
   });
 });

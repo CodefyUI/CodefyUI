@@ -10,7 +10,7 @@ import type {
 } from '../types';
 import { resolveSerializedNodes, resolveSerializedEdges } from '.';
 import { autoLayout, stackUnboundNotes } from './autoLayout';
-import { readGraphDevice } from './graphSettings';
+import { readGraphDevice, readGraphSeed } from './graphSettings';
 import {
   effectivePresets,
   mergeUnknownPresetsIntoPalette,
@@ -79,7 +79,7 @@ export interface SavedGraphPayload {
   subgraphs?: SubgraphDefinition[];
   segmentGroups?: SegmentGroup[];
   description?: string;
-  /** The file's `settings` block, read through `readGraphDevice`. */
+  /** The file's `settings` block, read through `readGraphDevice` and `readGraphSeed`. */
   settings?: unknown;
   /**
    * Project mode: `layout/<name>.layout.json` was missing or did not cover
@@ -160,6 +160,7 @@ export function resolveSavedGraph(
     segmentGroups: Array.isArray(data.segmentGroups) ? data.segmentGroups : [],
     description: typeof data.description === 'string' ? data.description : '',
     device: readGraphDevice(data.settings),
+    seed: readGraphSeed(data.settings),
     formatVersion: data.format_version,
     // `name` is deliberately absent, and it is NOT the same field as
     // `boundName` above -- the next reader here will think it is. `name` is

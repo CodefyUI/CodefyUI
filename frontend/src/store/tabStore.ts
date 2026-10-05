@@ -42,6 +42,7 @@ import {
 } from '../utils/subgraph';
 import { ExecutionWebSocket } from '../api/ws';
 import { isFormatTooNew } from '../utils/formatVersion';
+import { isRunSeed } from '../utils/graphSettings';
 import { useToastStore } from './toastStore';
 import { useUIStore } from './uiStore';
 import { useI18n, type TranslationKey } from '../i18n';
@@ -259,9 +260,9 @@ export interface TabState {
   // when re-saving the same graph.
   description: string;
   // The device this graph runs on. Written to the graph file as
-  // `settings.device`; `seed` below stays in the tab record. `null` means no
-  // assignment: a run follows the browser's Settings device, and the saved
-  // file carries no `settings` block at all.
+  // `settings.device`. `null` means no assignment: a run follows the
+  // browser's Settings device, and the saved file carries no device.
+  // `seed` below is written beside it, as `settings.seed`.
   graphDevice: string | null;
   currentGraphFile: string | null;
   // The DISPLAY NAME of the graph inside that file -- what the Graphs panel
@@ -632,6 +633,14 @@ export interface GraphDocument {
    */
   device?: string | null;
   /**
+   * The run seed the file stores (`settings.seed`, already validated by
+   * `readGraphSeed`). A number replaces the tab's seed. Absent or null
+   * leaves the tab's seed alone, unlike `device`: a file written before
+   * 2.8.9 carries no seed, and the tab's seed is the user's run setting, so
+   * "set the seed, then open a graph" keeps the seed that was set.
+   */
+  seed?: number | null;
+  /**
    * The document's raw `format_version` field, untrusted and unparsed. The
    * read-only verdict is computed inside the action rather than by the
    * caller, so a reader cannot forget the gate (ID8, #200 item 4).
@@ -789,8 +798,8 @@ interface TabStoreState {
     presets: import('../types').PresetDefinition[];
     segmentGroups: SegmentGroup[];
     subgraphs: SubgraphDefinition[];
-    // Present only when the graph assigns a device, so a file with no
-    // assignment stays byte-identical.
+    // Present only when the graph assigns a device or a seed, so a file
+    // with neither stays byte-identical.
     settings?: import('../types').GraphSettings;
   };
   /** The serializer as a pure function of a tab. `getSerializedGraph()` calls it with the active one. */
@@ -2631,6 +2640,8 @@ export function documentChanged(prev: TabState, next: TabState): boolean {
   // it changes the saved bytes and nothing about how the graph runs, and
   // that exclusion predates this field.
   if (prev.graphDevice !== next.graphDevice) return true;
+  // The seed is saved and run with the graph too (`settings.seed`).
+  if (prev.seed !== next.seed) return true;
   if (prev.presets !== next.presets) {
     if (prev.presets.length !== next.presets.length) return true;
     for (let i = 0; i < next.presets.length; i += 1) {
@@ -2801,7 +2812,14 @@ export const useTabStore = create<TabStoreState>((rawSet, get) => {
     set({
       tabs: [
         ...get().tabs,
-        createTabState(id, options?.title ?? `Tab ${tabCount + 1}`),
+        // A new tab starts with the seed of the tab that is active when it
+        // is made, so "set the seed, then Import" keeps it when the Import
+        // opens a tab of its own; a seed in the file still replaces it. With
+        // no tab open there is none to copy.
+        {
+          ...createTabState(id, options?.title ?? `Tab ${tabCount + 1}`),
+          seed: get().getTab(get().activeTabId)?.seed ?? null,
+        },
       ],
       // `activate` defaults to true so `addTab` keeps its behaviour exactly.
       ...(options?.activate === false ? {} : { activeTabId: id }),
@@ -3688,9 +3706,20 @@ export const useTabStore = create<TabStoreState>((rawSet, get) => {
       // top-level nodes above follow: a key does not stop being a key
       // because the node holding it was collapsed into a block.
       subgraphs,
-      // Only when the graph assigns a device, like `bypassed` above: a graph
-      // that follows Settings serializes byte-identically to before.
-      ...(tab.graphDevice ? { settings: { device: tab.graphDevice } } : {}),
+      // The device and the seed, each only when set, in a `settings`
+      // block written only when one is -- like `bypassed` above, a graph with
+      // neither serializes byte-identically to before. A seed the backend
+      // would refuse (the field takes any number) is left out, so it cannot
+      // fail a Save; Run and Export still refuse it through the seed they
+      // send on their own.
+      ...(tab.graphDevice || isRunSeed(tab.seed)
+        ? {
+            settings: {
+              ...(tab.graphDevice ? { device: tab.graphDevice } : {}),
+              ...(isRunSeed(tab.seed) ? { seed: tab.seed } : {}),
+            },
+          }
+        : {}),
     };
   },
 
@@ -3853,6 +3882,10 @@ export const useTabStore = create<TabStoreState>((rawSet, get) => {
         // Same rule as `description`: written on every load, so the previous
         // graph's device cannot ride along into the next Save or Run.
         graphDevice: doc.device ?? null,
+        // The opposite rule for the seed: only a seed the document
+        // carries replaces the tab's (see `GraphDocument.seed`). `!= null`,
+        // because 0 is a seed.
+        ...(doc.seed != null ? { seed: doc.seed } : {}),
         readOnly,
         // The save target, stated by the reader and never inherited (#200
         // item 9). This is the field whose absence made an example opened

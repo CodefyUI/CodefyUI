@@ -138,7 +138,7 @@ describe('collectWorkspaceFile', () => {
       'name', 'description', 'nodes', 'edges', 'presets', 'segmentGroups', 'subgraphs',
       'format_version',
     ]);
-    // `settings` only when the graph assigns a device, as in Export JSON.
+    // `settings` only when the graph assigns a device or a seed, as in Export JSON.
     expect(Object.keys(file!.tabs[1].graph)).toEqual([
       'name', 'description', 'nodes', 'edges', 'presets', 'segmentGroups', 'subgraphs',
       'settings', 'format_version',

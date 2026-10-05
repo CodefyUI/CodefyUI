@@ -735,7 +735,7 @@ const en = {
   'settings.autoLoss.name': 'Auto-synthesize loss',
   'settings.autoLoss.desc': 'When the graph has no Loss / BackwardOnce node, synthesize one so .backward() can run.',
   'settings.seed.name': 'Random seed',
-  'settings.seed.desc': 'One seed for every node, so a run is reproducible. Seeded runs execute one node at a time.',
+  'settings.seed.desc': 'Saved with the graph and used by Export Python. Seeded runs execute one node at a time.',
   'settings.seed.placeholder': 'none',
   'settings.deterministic.name': 'Deterministic algorithms',
   'settings.deterministic.desc': 'Ask PyTorch for reproducible kernels. Unsupported operations only warn.',

@@ -58,11 +58,11 @@ export interface WorkspaceGraph {
   segmentGroups: unknown[];
   subgraphs: unknown[];
   /**
-   * Present only when the graph assigns a device. Spelled out here rather
-   * than imported from the app's `GraphSettings`, ON PURPOSE: a field added
-   * to that type must not change what this format claims to hold.
+   * Present only when the graph assigns a device or a seed. Spelled out here
+   * rather than imported from the app's `GraphSettings`, ON PURPOSE: a field
+   * added to that type must not change what this format claims to hold.
    */
-  settings?: { device?: string };
+  settings?: { device?: string; seed?: number };
   /** `GRAPH_FORMAT_VERSION` at export time. */
   format_version: number;
 }

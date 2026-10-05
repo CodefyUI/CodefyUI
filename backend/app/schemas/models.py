@@ -144,6 +144,12 @@ class GraphSettings(BaseModel):
     #: assignment and the run falls back to the submitter's device.
     device: str | None = None
 
+    #: The seed this graph's runs and exports use. ``None`` means none.
+    #: Bounded to the range the run path enforces, and strict: ``"7"``,
+    #: ``true`` or ``2.0`` is refused rather than coerced, so a seed the
+    #: server writes into a file is one the canvas reads the same way.
+    seed: int | None = Field(default=None, ge=0, le=MAX_SEED, strict=True)
+
     @field_validator("device")
     @classmethod
     def _device(cls, v: str | None) -> str | None:
@@ -170,8 +176,9 @@ class GraphData(BaseModel):
     segmentGroups: list[SegmentGroupData] = []
     # Subgraph definitions (core#137). Optional; older graph files omit it.
     subgraphs: list[SubgraphDefinition] = []
-    # The graph's own settings (its device). Optional; older graph files
-    # simply omit it, and ``/save`` writes it only when a device is set.
+    # The graph's own settings, its device and its seed. Optional; older
+    # graph files simply omit it, and ``/save`` writes it only when one of
+    # them is set.
     settings: GraphSettings | None = None
 
 
@@ -179,10 +186,11 @@ class GraphSaveRequest(GraphData):
     """A graph plus the ADDRESS ``POST /save`` should write it to.
 
     ``file`` is deliberately NOT on :class:`GraphData`, for the same reason
-    :class:`GraphExportRequest` keeps ``seed`` off it: a ``GraphData``'s
-    ``model_dump()`` IS the saved document (``app.core.project.split_graph``
-    takes exactly that dict), so a field living there is a field that ends
-    up in graph files unless every writer remembers to strip it. Putting
+    :class:`GraphExportRequest` keeps the RUN's ``seed`` off it (the graph's
+    own seed is ``settings.seed``): a ``GraphData``'s ``model_dump()`` IS the
+    saved document (``app.core.project.split_graph`` takes exactly that
+    dict), so a field living there is a field that ends up in graph files
+    unless every writer remembers to strip it. Putting
     the address on the REQUEST is the whole point of this change -- a graph
     file must not have an opinion about where it is stored.
     """
@@ -237,17 +245,19 @@ class GraphSaveRequest(GraphData):
 class GraphExportRequest(GraphData):
     """A graph plus the run settings an exported script has to carry.
 
-    ``seed`` and ``deterministic`` are properties of a RUN and stay separate
-    from :class:`GraphData`: ``/save`` must not start writing them into
-    graph files. ``settings.device`` is the graph's own and is inherited
-    from :class:`GraphData`; the export bakes it in as ``GRAPH_DEVICE``.
+    ``seed`` and ``deterministic`` are the RUN's settings and stay off
+    :class:`GraphData`, whose dump is the saved document. The graph's own
+    settings come with it: the export bakes ``settings.device`` in as
+    ``GRAPH_DEVICE``, and ``settings.seed`` is the ``GRAPH_SEED`` default
+    when the request carries no ``seed`` of its own.
     Both run settings are optional, so an older client (or a hand-rolled
     ``curl``) still exports, it just exports an unseeded script -- which is
     what every export did before core#136.
     """
 
     #: Canvas seed, baked in as the default for the generated ``--seed``.
-    #: ``None`` means the canvas had no seed set.
+    #: ``None`` falls back to the graph's ``settings.seed``, and to no seed
+    #: when that is unset too.
     #:
     #: core#136 re-review, N-4. Bounded to the SAME range the run path
     #: enforces (``run_service._validate_options``). Without it a hand-rolled
@@ -255,7 +265,9 @@ class GraphExportRequest(GraphData):
     #: an export whose results the canvas would refuse to reproduce because
     #: it rejects that seed outright -- an export that disagrees with the
     #: graph it was exported from is worse than one that fails to build.
-    seed: int | None = Field(default=None, ge=0, le=MAX_SEED)
+    #: Strict, like ``settings.seed``: ``"7"``, ``true`` or ``2.0`` is
+    #: refused rather than coerced.
+    seed: int | None = Field(default=None, ge=0, le=MAX_SEED, strict=True)
     #: Canvas "deterministic kernels" toggle, default for
     #: ``--deterministic`` / ``--no-deterministic``.
     deterministic: bool = False

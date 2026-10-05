@@ -7,7 +7,7 @@ import { useI18n } from '../i18n';
 import type { NodeData, PresetDefinition, SegmentGroup, SubgraphDefinition } from '../types';
 import { resolveSerializedNodes, resolveSerializedEdges } from '.';
 import { isFormatTooNew } from './formatVersion';
-import { readGraphDevice } from './graphSettings';
+import { readGraphDevice, readGraphSeed } from './graphSettings';
 import {
   effectivePresets,
   mergeUnknownPresetsIntoPalette,
@@ -55,6 +55,12 @@ export interface ResolvedExample {
    * would be written to disk on the next Save.
    */
   device: string | null;
+  /**
+   * The run seed the example's `settings.seed` stores, or null when it stores
+   * none (or one `readGraphSeed` refuses). Unlike the device, null leaves the
+   * tab's seed alone on open: see `GraphDocument.seed`.
+   */
+  seed: number | null;
   /**
    * The example's raw `format_version` (#200 item 4). An example -- or a
    * plugin-shipped template -- written by a newer CodefyUI must open
@@ -128,6 +134,7 @@ export function resolveExample(data: any): ResolvedExample {
     segmentGroups,
     description,
     device: readGraphDevice(data.settings),
+    seed: readGraphSeed(data.settings),
     formatVersion: data.format_version,
   };
 }
@@ -160,6 +167,7 @@ export function resolveUnboundDocument(data: any): GraphDocument {
     name: null,
     description: resolved.description,
     device: resolved.device,
+    seed: resolved.seed,
     formatVersion: resolved.formatVersion,
   };
 }
@@ -194,6 +202,7 @@ function applyToActiveTab(example: ResolvedExample): void {
     name: example.name,
     description: example.description,
     device: example.device,
+    seed: example.seed,
     formatVersion: example.formatVersion,
   });
   // Same notice the Toolbar readers show, for the same reason: read-only is
@@ -279,8 +288,9 @@ export async function openExampleInNewTab(path: string): Promise<boolean> {
  * is the same work either way, which is why there is one function and not
  * two.
  *
- * The template's `settings.device` is ignored on a merge. The device belongs
- * to the graph the nodes joined, and that graph keeps its own assignment.
+ * The template's `settings.device` and `settings.seed` are ignored on a
+ * merge. Both belong to the graph the nodes joined, and that graph keeps its
+ * own.
  */
 export async function insertExample(
   path: string,

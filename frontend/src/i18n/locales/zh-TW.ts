@@ -641,7 +641,7 @@ const zhTW: Record<TranslationKey, string> = {
   'settings.autoLoss.name': '自動合成損失',
   'settings.autoLoss.desc': '當圖中沒有 Loss / BackwardOnce 節點時，自動合成一個讓 .backward() 能跑起來。',
   'settings.seed.name': '亂數種子',
-  'settings.seed.desc': '用同一個數字為每個節點設定種子，讓執行可重現；設了種子會一次跑一個節點。',
+  'settings.seed.desc': '會存進圖檔，匯出的 Python 也用同一個種子；設了種子會一次跑一個節點。',
   'settings.seed.placeholder': '未設定',
   'settings.deterministic.name': '決定性演算法',
   'settings.deterministic.desc': '要求 PyTorch 使用可重現的運算核心；不支援的運算只會發出警告。',

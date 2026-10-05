@@ -255,6 +255,11 @@ export type AppNode = FlowNode<NodeData, string | undefined>;
  */
 export interface GraphSettings {
   device?: string;
+  /**
+   * The run seed, saved with the graph since 2.8.9: a whole number in
+   * 0..2**32-1 (`MAX_RUN_SEED`); absent means the graph has no seed.
+   */
+  seed?: number;
 }
 
 export interface GraphSaveData {
