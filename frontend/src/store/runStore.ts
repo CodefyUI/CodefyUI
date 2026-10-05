@@ -235,7 +235,9 @@ function toast(message: string, type: 'info' | 'error' | 'success' | 'warning') 
  * places in the UI, and a per-flush metric event would drown the tail.
  * `node_status` frames with `status: 'progress'` are dropped for the same
  * reason — a 40-epoch run emits one per epoch per node, and every one of
- * them is already represented as a point on the curve.
+ * them is already represented as a point on the curve. So are the `running`
+ * frames a box sends to relay its inner nodes' text: the box already has its
+ * running line.
  */
 export function reduceRunEvents(detail: RunDetail, page: RunEventsPage): RunDetail {
   let series = detail.series;
@@ -302,6 +304,11 @@ export function reduceRunEvents(detail: RunDetail, page: RunEventsPage): RunDeta
         break;
       case 'node_status': {
         if (payload.status === 'progress') break;
+        // A `running` frame that carries outputs is a line a node inside a
+        // preset card or a block wrote, relayed on the box (#601). This log
+        // shows no text, so it would only repeat the box's running line.
+        if (payload.status === 'running'
+          && Array.isArray(payload.outputs) && payload.outputs.length > 0) break;
         line(event.cursor, event.ts, 'node',
           payload.status === 'error' ? 'error'
             : payload.status === 'completed' ? 'success' : 'info',

@@ -608,6 +608,29 @@ describe('reduceRunEvents', () => {
     expect(next.log.map((l) => l.status)).toEqual(['running']);
   });
 
+  it('lists a box once, not once more per line a node inside it wrote', () => {
+    // #601: a preset card or a block relays each such line on a `running`
+    // frame that carries `outputs`. This log shows no text, so those frames
+    // would only repeat the box's running line.
+    const next = reduceRunEvents(emptyDetail(), eventsPage({
+      events: [
+        { cursor: 1, type: 'node_status', ts: 't', payload: { node_id: 'card', status: 'running' } },
+        {
+          cursor: 2, type: 'node_status', ts: 't',
+          payload: {
+            node_id: 'card', status: 'running',
+            outputs: [{ output_kind: 'text', text: '[in-card] hi' }],
+          },
+        },
+        { cursor: 3, type: 'node_status', ts: 't', payload: { node_id: 'card', status: 'completed' } },
+      ],
+    }));
+    expect(next.log.map((l) => [l.nodeId, l.status])).toEqual([
+      ['card', 'running'],
+      ['card', 'completed'],
+    ]);
+  });
+
   it('ignores an event type it does not know', () => {
     const next = reduceRunEvents(emptyDetail(), eventsPage({
       events: [{ cursor: 1, type: 'from_the_future', ts: 't', payload: { x: 1 } }],

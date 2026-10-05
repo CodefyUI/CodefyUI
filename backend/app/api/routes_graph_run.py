@@ -461,7 +461,9 @@ async def execute_contract_run(
         node_id: str, status: str, data: dict[str, Any] | None
     ) -> None:
         if status == "running":
-            node_started[node_id] = time.monotonic()
+            # The FIRST one starts the clock: a preset card or a block sends
+            # more, each carrying a line a node inside it wrote (#601).
+            node_started.setdefault(node_id, time.monotonic())
             return
         if status in ("completed", "cached", "skipped", "error", "interrupted"):
             # cached/skipped arrive WITHOUT a prior "running" (the engine
