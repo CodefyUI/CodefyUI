@@ -130,8 +130,8 @@ describe('NodeParamList', () => {
     const tab = useTabStore.getState().getActiveTab();
     expect(tab.nodes[0].data.params.lr).toBe('EDITED');
     expect([...tab.dirtyNodeIds]).toEqual(['n1']);
-    // Typing is continuous; it deliberately does not stack undo snapshots.
-    expect(tab.undoStack).toHaveLength(0);
+    // One undo step, so Ctrl+Z reverts the edit and nothing before it.
+    expect(tab.undoStack).toHaveLength(1);
   });
 
   it('commits nothing when there is no node id to write to', () => {

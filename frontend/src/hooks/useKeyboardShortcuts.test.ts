@@ -121,10 +121,48 @@ describe('useKeyboardShortcuts', () => {
 
   it('Ctrl+Shift+Z triggers redo', () => {
     renderHook(() => useKeyboardShortcuts());
-    const e = dispatchKey({ key: 'z', ctrlKey: true, shiftKey: true });
+    // Shift makes the browser report the capital letter.
+    const e = dispatchKey({ key: 'Z', ctrlKey: true, shiftKey: true });
     expect(redo).toHaveBeenCalledTimes(1);
     expect(undo).not.toHaveBeenCalled();
     expect(e.defaultPrevented).toBe(true);
+  });
+
+  it('Ctrl+Shift+Z with Caps Lock on (lowercase key) still triggers redo', () => {
+    renderHook(() => useKeyboardShortcuts());
+    dispatchKey({ key: 'z', ctrlKey: true, shiftKey: true });
+    expect(redo).toHaveBeenCalledTimes(1);
+    expect(undo).not.toHaveBeenCalled();
+  });
+
+  // Caps Lock alone reports the capital letter with shiftKey false.
+  it('Ctrl+Z / Y / C / V survive Caps Lock', () => {
+    renderHook(() => useKeyboardShortcuts());
+    const keys = ['Z', 'Y', 'C', 'V'].map((key) => dispatchKey({ key, ctrlKey: true }));
+    expect(undo).toHaveBeenCalledTimes(1);
+    expect(redo).toHaveBeenCalledTimes(1);
+    expect(copySelectedNodes).toHaveBeenCalledTimes(1);
+    expect(pasteNodes).toHaveBeenCalledTimes(1);
+    expect(keys.every((e) => e.defaultPrevented)).toBe(true);
+  });
+
+  it('Ctrl+S survives Caps Lock in project mode', () => {
+    useProjectStore.setState({ projectDir: '/proj', projectName: 'proj', loaded: true });
+    renderHook(() => useKeyboardShortcuts());
+    const e = dispatchKey({ key: 'S', ctrlKey: true });
+    expect(saveActiveGraph).toHaveBeenCalledTimes(1);
+    expect(e.defaultPrevented).toBe(true);
+  });
+
+  it('leaves Ctrl+Shift+Y / C / V to the browser', () => {
+    // Not shortcuts here, and the browser's own (Edge's Collections, Chrome's
+    // element picker, paste as plain text) must keep working on the canvas.
+    renderHook(() => useKeyboardShortcuts());
+    const keys = ['Y', 'C', 'V'].map((key) => dispatchKey({ key, ctrlKey: true, shiftKey: true }));
+    expect(redo).not.toHaveBeenCalled();
+    expect(copySelectedNodes).not.toHaveBeenCalled();
+    expect(pasteNodes).not.toHaveBeenCalled();
+    expect(keys.some((e) => e.defaultPrevented)).toBe(false);
   });
 
   it('Ctrl+Y triggers redo (alternative)', () => {

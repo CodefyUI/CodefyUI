@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { render, screen, fireEvent } from '@testing-library/react';
+import { render, screen, fireEvent, act } from '@testing-library/react';
 import { PresetConfigModal } from './PresetConfigModal';
 import { useTabStore } from '../../store/tabStore';
 import { useI18n } from '../../i18n';
@@ -99,19 +99,30 @@ function mountPresetNode(preset: PresetDefinition, internalParams?: Record<strin
   return nodeId;
 }
 
+// The real actions, kept for the one test that checks Apply against the store
+// itself: captured at import, before any beforeEach swaps in a mock.
+const realActions = (({ updatePresetInternalParam, closePresetModal, pushUndoSnapshot }) => ({
+  updatePresetInternalParam,
+  closePresetModal,
+  pushUndoSnapshot,
+}))(useTabStore.getState());
+
 // Fresh action mocks installed on the store each test so assertions are
 // isolated and the real implementations never mutate shared store state.
 let updateMock: ReturnType<typeof vi.fn>;
 let closeMock: ReturnType<typeof vi.fn>;
+let pushUndoMock: ReturnType<typeof vi.fn>;
 
 beforeEach(() => {
   useI18n.setState({ locale: 'en' });
   resetToSingleTab();
   updateMock = vi.fn();
   closeMock = vi.fn();
+  pushUndoMock = vi.fn();
   useTabStore.setState({
     updatePresetInternalParam: updateMock as never,
     closePresetModal: closeMock as never,
+    pushUndoSnapshot: pushUndoMock as never,
   });
 });
 
@@ -204,6 +215,63 @@ describe('PresetConfigModal', () => {
     fireEvent.click(screen.getByText('Apply'));
     expect(updateMock).not.toHaveBeenCalled();
     expect(closeMock).toHaveBeenCalled();
+    expect(pushUndoMock).not.toHaveBeenCalled();
+  });
+
+  it('Apply that changes a value is one undo step, taken before the first write', () => {
+    mountPresetNode(makePreset());
+    render(<PresetConfigModal />);
+    fireEvent.change(screen.getByDisplayValue('64'), { target: { value: '128' } });
+    fireEvent.change(screen.getByDisplayValue('relu'), { target: { value: 'gelu' } });
+    fireEvent.click(screen.getByText('Apply'));
+
+    expect(pushUndoMock).toHaveBeenCalledTimes(1);
+    expect(updateMock).toHaveBeenCalledTimes(2);
+    // The snapshot has to hold the values from before the Apply.
+    expect(pushUndoMock.mock.invocationCallOrder[0]).toBeLessThan(
+      updateMock.mock.invocationCallOrder[0],
+    );
+  });
+
+  it('Apply that changes nothing is no undo step, though it rewrites every value', () => {
+    // The dialog starts from a copy of everything the card stores, and Apply
+    // writes all of it back, edited or not.
+    mountPresetNode(makePreset(), { lin1: { units: 999 }, act1: { kind: 'relu' } });
+    render(<PresetConfigModal />);
+    fireEvent.change(screen.getByDisplayValue('999'), { target: { value: '5' } });
+    fireEvent.change(screen.getByDisplayValue('5'), { target: { value: '999' } });
+    fireEvent.click(screen.getByText('Apply'));
+
+    expect(updateMock).toHaveBeenCalledTimes(2);
+    expect(pushUndoMock).not.toHaveBeenCalled();
+  });
+
+  it('a value the card does not store yet counts as its default', () => {
+    mountPresetNode(makePreset());
+    render(<PresetConfigModal />);
+    fireEvent.change(screen.getByDisplayValue('64'), { target: { value: '65' } });
+    fireEvent.change(screen.getByDisplayValue('65'), { target: { value: '64' } });
+    fireEvent.click(screen.getByText('Apply'));
+
+    expect(updateMock).toHaveBeenCalledWith('preset-node-1', 'lin1', 'units', 64);
+    expect(pushUndoMock).not.toHaveBeenCalled();
+  });
+
+  it('one undo after Apply restores the values the card had', () => {
+    useTabStore.setState(realActions);
+    const nodeId = mountPresetNode(makePreset(), { lin1: { units: 32 } });
+    render(<PresetConfigModal />);
+    fireEvent.change(screen.getByDisplayValue('32'), { target: { value: '128' } });
+    fireEvent.change(screen.getByDisplayValue('relu'), { target: { value: 'gelu' } });
+    fireEvent.click(screen.getByText('Apply'));
+
+    const card = () => useTabStore.getState().getActiveTab().nodes.find((n) => n.id === nodeId)!;
+    expect(card().data.internalParams).toEqual({ lin1: { units: 128 }, act1: { kind: 'gelu' } });
+    expect(useTabStore.getState().getActiveTab().undoStack).toHaveLength(1);
+
+    // In act(): the modal is still mounted and re-renders on the store change.
+    act(() => useTabStore.getState().undo());
+    expect(card().data.internalParams).toEqual({ lin1: { units: 32 } });
   });
 
   it('Cancel button closes without applying', () => {

@@ -10,7 +10,7 @@ description: CodefyUI 編輯器的鍵盤與滑鼠快捷鍵。
 
 | 操作 | 按鍵／手勢 |
 |--------|---------------|
-| 復原 | `Ctrl/Cmd` + `Z` |
+| 復原 | `Ctrl/Cmd` + `Z`（連續修改同一個節點的參數算一步） |
 | 重做 | `Ctrl/Cmd` + `Shift` + `Z` / `Ctrl/Cmd` + `Y` |
 | 複製選取的節點 | `Ctrl/Cmd` + `C`（頁面上有選取文字時會優先複製文字；會複製哪些內容見[畫布基礎](./canvas-basics#the-canvas)） |
 | 貼上節點 | `Ctrl/Cmd` + `V`（同上） |

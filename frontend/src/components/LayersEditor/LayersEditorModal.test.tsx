@@ -140,6 +140,9 @@ function setupOpenModal(layersJson: string | undefined, opts?: { paramsUndefined
         lastRunId: null,
         activeSegment: null,
         segmentGroups: [],
+        // paramEdit: Apply pushes an undo frame, and a frame copies these.
+        presets: [],
+        subgraphs: [],
         verboseMode: false,
         graphId: 'g1',
         weightsPersistent: true,

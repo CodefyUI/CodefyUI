@@ -57,6 +57,13 @@ export function useKeyboardShortcuts() {
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
       const mod = e.metaKey || e.ctrlKey;
+      // The letter in lower case for the chords below: Caps Lock alone
+      // reports 'Z' with shiftKey false, and Shift reports 'Z' too, so a
+      // compare with 'z' dropped Ctrl+Z under Caps Lock and every
+      // Ctrl+Shift+Z. Not `e.code`, which names the key's position: a
+      // different letter on AZERTY and QWERTZ keyboards. `?? ''` because a
+      // keydown from an autofill pick can arrive without a `key` at all.
+      const key = (e.key ?? '').toLowerCase();
       const tag = (e.target as HTMLElement)?.tagName;
       // Skip while the user types in a field (see `isTypingTarget`).
       if (isTypingTarget(e.target)) return;
@@ -75,21 +82,23 @@ export function useKeyboardShortcuts() {
       if (isAnyModalOpen() && !isHelpKey(e)) return;
 
       // Ctrl+Z / Cmd+Z — Undo
-      if (mod && !e.shiftKey && e.key === 'z') {
+      if (mod && !e.shiftKey && key === 'z') {
         e.preventDefault();
         useTabStore.getState().undo();
         return;
       }
 
       // Ctrl+Shift+Z / Cmd+Shift+Z — Redo
-      if (mod && e.shiftKey && e.key === 'z') {
+      if (mod && e.shiftKey && key === 'z') {
         e.preventDefault();
         useTabStore.getState().redo();
         return;
       }
 
-      // Ctrl+Y / Cmd+Y — Redo (alternative)
-      if (mod && e.key === 'y') {
+      // Ctrl+Y / Cmd+Y — Redo (alternative). Not with Shift: Ctrl+Shift+Y is
+      // the browser's (Edge opens Collections), as it was while the compare
+      // was case-sensitive.
+      if (mod && !e.shiftKey && key === 'y') {
         e.preventDefault();
         useTabStore.getState().redo();
         return;
@@ -103,7 +112,7 @@ export function useKeyboardShortcuts() {
       // the SELECTED NODES instead and put nothing on the clipboard. A
       // non-empty selection means the user is copying text, which is the
       // browser's job, not ours.
-      if (mod && !e.shiftKey && e.key === 'c') {
+      if (mod && !e.shiftKey && key === 'c') {
         if (hasTextSelection()) return;
         e.preventDefault();
         useTabStore.getState().copySelectedNodes();
@@ -112,7 +121,7 @@ export function useKeyboardShortcuts() {
 
       // Ctrl+V / Cmd+V — Paste. Same yield: a selection is the user working
       // with text, and pasting nodes over it is not what they asked for.
-      if (mod && !e.shiftKey && e.key === 'v') {
+      if (mod && !e.shiftKey && key === 'v') {
         if (hasTextSelection()) return;
         e.preventDefault();
         useTabStore.getState().pasteNodes();
@@ -121,7 +130,7 @@ export function useKeyboardShortcuts() {
 
       // Ctrl+S / Cmd+S — Save. Project mode only, so non-project keeps the
       // browser's native behavior and this never hijacks it (ID9).
-      if (mod && !e.shiftKey && e.key === 's') {
+      if (mod && !e.shiftKey && key === 's') {
         if (useProjectStore.getState().projectDir !== null) {
           e.preventDefault();
           void saveActiveGraph();
