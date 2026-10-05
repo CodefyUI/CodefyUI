@@ -46,13 +46,13 @@ class TransformNode(BaseNode):
     # This node MUTATES its input and returns it, so a cache hit would hand
     # back the very object a previous run wrote to.
     #
-    # Unreachable today, and that is exactly why it is worth pinning: every
-    # dataset source whose ``transform`` is actually applied (Dataset,
-    # ImageFolderDataset, HuggingFaceDataset, KaggleDataset) is already
-    # ``cacheable = False``, and the engine propagates that downstream. The
-    # first cacheable dataset node to honour ``transform`` would open the
-    # hole silently. Opting out costs nothing -- this node's whole body is
-    # one attribute assignment.
+    # ``Dataset`` and ``ImageFolderDataset`` are cacheable (#144/#259), so a
+    # later run can hand this node the same dataset object it wrote to last
+    # time; ``HuggingFaceDataset`` and ``KaggleDataset`` are not. Re-running
+    # costs one attribute assignment and installs the pipeline afresh, with
+    # a new seeded wrapper on a seeded run. Augmentation state a cached
+    # dataset carries into the next run is reset by ``seeding.begin_run``
+    # (#603).
     cacheable = False
 
     @classmethod

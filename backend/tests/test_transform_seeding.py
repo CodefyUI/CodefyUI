@@ -699,6 +699,36 @@ def test_the_python_random_draws_are_a_function_of_the_run_seed_alone():
     assert _python_draws(4243) != first, "the run seed does not reach them"
 
 
+# ── one wrapper across runs (#603) ───────────────────────────────────────
+
+
+def test_a_new_run_starts_the_same_wrapper_over():
+    """A cached dataset hands this same object to the next run.
+
+    ``Dataset`` and ``ImageFolderDataset`` are cacheable, so Run 2 reads
+    through Run 1's wrapper. Its counters start over when a new run first
+    uses it, so Run 2 draws what Run 1 drew, which is also what a fresh run
+    and the exported script draw. Within one run they keep counting: that is
+    what gives epoch 2 different crops from epoch 1.
+    """
+    from app.core import seeding
+
+    wrapper = SeededAugmentation(_PythonRandomDraw(), 4242)
+    first_run = [wrapper(None) for _ in range(3)]
+    assert [wrapper(None) for _ in range(3)] != first_run, (
+        "within one run the stream must keep going")
+
+    seeding.begin_run()
+    assert [wrapper(None) for _ in range(3)] == first_run, (
+        "a new run must start the same wrapper's stream over")
+
+    # The labels themselves are unchanged: every seeded augmentation, and
+    # every exported script, has been drawn from these.
+    seeding.begin_run()
+    assert [wrapper._next_label() for _ in range(3)] == [
+        "main:0", "main:1", "main:2"]
+
+
 # ── through the engine ───────────────────────────────────────────────────
 
 

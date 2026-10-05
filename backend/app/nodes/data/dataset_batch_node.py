@@ -13,6 +13,14 @@ class DatasetBatchNode(BaseNode):
         "one. `start_index` wraps around the end of the dataset."
     )
 
+    # Reading a batch draws from the dataset's seeded augmentation stream, a
+    # side effect its output does not carry (case 3 of ``BaseNode.cacheable``).
+    # A cache hit would skip those draws, so every later reader of that
+    # dataset would draw from a different place than on a fresh run (#603).
+    # The cost: ``batch_size`` samples re-read per Run, and whatever this
+    # feeds re-runs too, because opting out propagates downstream.
+    cacheable = False
+
     @classmethod
     def define_inputs(cls) -> list[PortDefinition]:
         return [
