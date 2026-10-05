@@ -17,6 +17,7 @@ import { graphToSvg, svgToPngBlob } from '../../utils/exportDiagram';
 import { confirm, prompt } from '../../utils/dialog';
 import { saveActiveGraph } from '../../utils/saveActiveGraph';
 import { exportWorkspace } from '../../utils/exportWorkspace';
+import { exportFileStem, exportFileStemNow } from '../../utils/exportFileName';
 import { SaveIcon } from '../shared/Icons';
 import { useToastStore } from '../../store/toastStore';
 import type { LayoutMode } from '../../utils/autoLayout';
@@ -410,12 +411,19 @@ export function Toolbar() {
       ...(settings ? { settings } : {}),
     };
     const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `${name.replace(/[^a-zA-Z0-9_-]/g, '_')}.json`;
-    a.click();
-    URL.revokeObjectURL(url);
+    // exportFileStem: a saved graph downloads under its own file's name; a
+    // tab not saved yet is asked for one first, and Cancel downloads nothing.
+    // The tab is read from the store, not from this render: a save binds it
+    // without changing anything this callback is rebuilt on.
+    void exportFileStem(useTabStore.getState().getActiveTab(), 'json').then((stem) => {
+      if (stem === null) return;
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `${stem}.json`;
+      a.click();
+      URL.revokeObjectURL(url);
+    });
   }, [getSerializedGraph, activeTab.name, activeTab.description, t, addToast]);
 
   const handleExportSubgraph = useCallback(async () => {
@@ -497,6 +505,13 @@ export function Toolbar() {
       addToast(t('toolbar.exportPython.empty'), 'warning');
       return;
     }
+    // exportFileStem: a saved graph downloads under its own file's name; a
+    // tab not saved yet is asked for one first. Asked before the request, so
+    // Cancel sends nothing. The tab is read from the store, not from this
+    // render: a save binds it without changing anything this callback is
+    // rebuilt on.
+    const stem = await exportFileStem(useTabStore.getState().getActiveTab(), 'py');
+    if (stem === null) return;
     const name = activeTab.name || 'graph';
     const tabId = activeTab.id;
     let result: ExportResult;
@@ -522,7 +537,8 @@ export function Toolbar() {
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
-      a.download = `${name.replace(/[^a-zA-Z0-9_-]/g, '_')}.py`;
+      // The name exportFileStem settled on before the request went out.
+      a.download = `${stem}.py`;
       a.click();
       URL.revokeObjectURL(url);
     } catch (e) {
@@ -555,7 +571,8 @@ export function Toolbar() {
         addToast(t('toolbar.exportDiagram.empty'), 'warning');
         return;
       }
-      const base = (activeTab.name || 'graph').replace(/[^a-zA-Z0-9_-]/g, '_');
+      // exportFileStemNow: named like the other exports, without a question.
+      const base = exportFileStemNow(useTabStore.getState().getActiveTab());
       const svg = graphToSvg(activeTab.nodes, activeTab.edges);
       try {
         const blob =

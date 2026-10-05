@@ -246,6 +246,9 @@ async function openGraphData(input: unknown, fileName: string): Promise<boolean>
     const tooNew = useTabStore.getState().loadGraphDocumentInto(tabId, {
       nodes: resolvedNodes,
       edges: resolvedEdges,
+      // The name a new tab gets, for a filled tab too: left as "Tab 1", the
+      // tab hid which graph it held, and exports were named after it.
+      name: newTabTitle(data, fileName),
       // An imported file is a fresh, unsaved graph — not bound to any
       // saved file yet, so the next save always runs the overwrite
       // check (#200 item 9 moved this into the install; it used to be

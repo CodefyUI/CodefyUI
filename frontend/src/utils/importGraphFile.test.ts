@@ -422,8 +422,9 @@ describe('where an imported graph goes', () => {
       expect(tabs().map((t) => t.id)).toEqual([empty.id]);
       expect(activeId()).toBe(empty.id);
       expect(tabs()[0].nodes.map((n) => n.id)).toEqual(['n1']);
-      // Not renamed: the import into an existing tab keeps the label on it.
-      expect(tabs()[0].name).toBe('Tab 1');
+      // Named by `newTabTitle`, as a new tab would be: an exam starter must
+      // not sit under "Tab 1", which exports were then named after.
+      expect(tabs()[0].name).toBe('Lab 3 starter');
     });
   });
 

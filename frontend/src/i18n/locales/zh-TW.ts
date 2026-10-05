@@ -68,6 +68,8 @@ const zhTW: Record<TranslationKey, string> = {
   // #557：檔案參數填了絕對路徑，匯出的腳本就只在這台電腦上找得到檔案。
   'toolbar.exportPython.absolutePath': '絕對路徑只在這台電腦有效：{nodes}。請只用檔名。',
   'toolbar.exportPython.absolutePath.more': '另外 {count} 個',
+  'toolbar.exportName.prompt': '匯出的 .{ext} 檔名',
+  'toolbar.exportName.reserved': '這是 Windows 保留的名稱，請換一個',
   'toolbar.exportDiagram.svg': '匯出架構圖 (SVG)',
   'toolbar.exportDiagram.png': '匯出架構圖 (PNG)',
   'toolbar.exportDiagram.title': '節點、連接埠與連線的圖片，不含參數數值',

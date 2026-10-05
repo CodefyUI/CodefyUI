@@ -13,6 +13,8 @@ import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { Toolbar } from './Toolbar';
 import { useTabStore } from '../../store/tabStore';
 import { useToastStore } from '../../store/toastStore';
+// The export file name question is the in-app dialog, answered through its store.
+import { useDialogStore } from '../../store/dialogStore';
 import { useI18n } from '../../i18n';
 import * as rest from '../../api/rest';
 import { _resetDeviceOptionsForTesting } from '../../hooks/useDeviceOptions';
@@ -54,8 +56,14 @@ let downloads: string[] = [];
 function setCanvas() {
   // The store's own first tab, so every field a TabState needs is present.
   const real = useTabStore.getState().tabs[0];
+  // Each tab is bound to a saved graph of its own name (`currentGraphFile`),
+  // so an export downloads as `Exam.py` without a question. A tab not saved
+  // yet is asked for a file name first; see the last block of this file.
   const tab = (id: string, name: string, nodes: unknown[]) =>
-    ({ ...real, id, name, nodes, edges: [], subgraphs: [], subgraphStack: [] }) as never;
+    ({
+      ...real, id, name, nodes, edges: [], subgraphs: [], subgraphStack: [],
+      currentGraphFile: name, currentGraphName: name,
+    }) as never;
   useTabStore.setState({
     tabs: [
       tab('tab-1', 'Exam', [
@@ -390,5 +398,218 @@ describe('Toolbar Export as Python: absolute file paths', () => {
     await waitFor(() => expect(warningToasts()).toHaveLength(1));
     expect(warningToasts()[0].message).toContain(`: Readable (${WINDOWS_PATH}).`);
     expect(warningToasts()[0].message).not.toContain('CSVReader');
+  });
+});
+
+/**
+ * The export file name.
+ *
+ * Exports were named after the tab, so a starter imported into the first tab
+ * went out as `Tab_1.py`, and one imported into a tab of its own as
+ * `CF2D01.py` -- the starter's own file, next to which the student's answer
+ * then landed. A saved graph now exports under its file's name, and a tab not
+ * saved yet is asked first, with its name filled in.
+ */
+describe('Toolbar: the export file name', () => {
+  beforeEach(() => {
+    useI18n.setState({ locale: 'en' });
+    useToastStore.setState({ toasts: [], addToast: realAddToast });
+    useDialogStore.setState({ active: null, resolve: null });
+    setCanvas();
+    _resetDeviceOptionsForTesting();
+    mockedRest.exportGraph.mockReset();
+    mockedRest.exportGraph.mockResolvedValue({ script: 'print(1)', warnings: [] });
+    downloads = [];
+    vi.spyOn(URL, 'createObjectURL').mockReturnValue('blob:mock');
+    vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => {});
+    vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(function (
+      this: HTMLAnchorElement,
+    ) {
+      downloads.push(this.download);
+    });
+    vi.spyOn(window, 'prompt').mockReturnValue(null);
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    useDialogStore.setState({ active: null, resolve: null });
+  });
+
+  /** Change the tab in front, `tab-1`, before the toolbar is rendered. */
+  function setTab1(patch: Record<string, unknown>) {
+    useTabStore.setState((s) => ({
+      tabs: s.tabs.map((tab) => (tab.id === 'tab-1' ? { ...tab, ...patch } : tab)),
+    }));
+  }
+
+  /** `tab-1` as a starter just imported: a name of its own, no saved graph. */
+  const unsaved = (name: string) =>
+    setTab1({ name, currentGraphFile: null, currentGraphName: null });
+
+  /** Picks an item of the Export menu, without waiting. */
+  function pick(item: string) {
+    fireEvent.click(screen.getByText('Export'));
+    fireEvent.click(screen.getByText(item));
+  }
+
+  /** The open dialog, which must be the file-name question. */
+  function question() {
+    const active = useDialogStore.getState().active;
+    expect(active?.kind).toBe('prompt');
+    return active!;
+  }
+
+  async function answer(value: string | null) {
+    question();
+    await act(async () => {
+      useDialogStore.getState().close(value);
+    });
+  }
+
+  /** Lets an export the question stopped run to its end. */
+  const settle = () => act(() => new Promise<void>((resolve) => setTimeout(resolve, 0)));
+
+  it('asks a tab not saved yet for a file name before sending anything, and downloads under it', async () => {
+    unsaved('CF2D01');
+    render(<Toolbar />);
+
+    clickExportPython();
+
+    expect(question()).toMatchObject({
+      title: 'File name for the .py file',
+      defaultValue: 'CF2D01',
+    });
+    expect(mockedRest.exportGraph).not.toHaveBeenCalled();
+    await answer('CF2A01');
+    await waitFor(() => expect(downloads).toEqual(['CF2A01.py']));
+    // The script's header still names the graph as the tab does.
+    expect(mockedRest.exportGraph.mock.calls[0][2]).toBe('CF2D01');
+    // The in-app dialog, never the browser's own.
+    expect(window.prompt).not.toHaveBeenCalled();
+  });
+
+  it('sends nothing and downloads nothing when the question is cancelled', async () => {
+    unsaved('CF2D01');
+    render(<Toolbar />);
+
+    clickExportPython();
+    await answer(null);
+    await settle();
+
+    expect(mockedRest.exportGraph).not.toHaveBeenCalled();
+    expect(downloads).toEqual([]);
+  });
+
+  it("downloads a saved graph under its file's name, whatever the tab's label says", async () => {
+    setTab1({ name: 'Tab 1', currentGraphFile: 'CF2A01', currentGraphName: 'CF2A01' });
+    render(<Toolbar />);
+
+    await exportPython();
+
+    expect(downloads).toEqual(['CF2A01.py']);
+    expect(useDialogStore.getState().active).toBeNull();
+  });
+
+  it('keeps the letters of a CJK name', async () => {
+    unsaved('期中考 第一題');
+    render(<Toolbar />);
+
+    clickExportPython();
+    expect(question()).toMatchObject({ defaultValue: '期中考 第一題' });
+    await answer('期中考 第一題');
+
+    await waitFor(() => expect(downloads).toEqual(['期中考_第一題.py']));
+  });
+
+  // The binding is read when the export starts, not from the render the menu
+  // was built in: a save binds the tab without changing anything the
+  // toolbar's handlers are rebuilt on.
+  it('asks nothing once a save has bound the tab, though its label did not change', async () => {
+    unsaved('CF2A01');
+    render(<Toolbar />);
+    await act(async () => {
+      useTabStore.getState().setTabGraphFile('tab-1', 'CF2A01', 'CF2A01');
+    });
+
+    await exportPython();
+
+    expect(downloads).toEqual(['CF2A01.py']);
+    expect(useDialogStore.getState().active).toBeNull();
+  });
+
+  it("follows the saved graph's new file name after a rename in the Graphs panel", async () => {
+    render(<Toolbar />);
+    await act(async () => {
+      useTabStore.getState().rebindGraphFile('Exam', { file: 'Exam_v2', name: 'Exam v2' });
+    });
+
+    await exportPython();
+
+    expect(downloads).toEqual(['Exam_v2.py']);
+  });
+
+  describe('Export as JSON', () => {
+    it("downloads a saved graph under its file's name, without asking", async () => {
+      setTab1({ name: 'Tab 1', currentGraphFile: 'CF2A01', currentGraphName: 'CF2A01' });
+      render(<Toolbar />);
+
+      pick('Export as JSON');
+
+      await waitFor(() => expect(downloads).toEqual(['CF2A01.json']));
+      expect(useDialogStore.getState().active).toBeNull();
+    });
+
+    it('asks a tab not saved yet for a file name, and downloads under it', async () => {
+      unsaved('CF2D01');
+      render(<Toolbar />);
+
+      pick('Export as JSON');
+      expect(question()).toMatchObject({
+        title: 'File name for the .json file',
+        defaultValue: 'CF2D01',
+      });
+      expect(downloads).toEqual([]);
+      await answer('CF2A01');
+
+      await waitFor(() => expect(downloads).toEqual(['CF2A01.json']));
+    });
+
+    it('downloads nothing when the question is cancelled', async () => {
+      unsaved('CF2D01');
+      render(<Toolbar />);
+
+      pick('Export as JSON');
+      await answer(null);
+      await settle();
+
+      expect(downloads).toEqual([]);
+    });
+
+    it('asks nothing once a save has bound the tab, though its label did not change', async () => {
+      unsaved('CF2A01');
+      render(<Toolbar />);
+      await act(async () => {
+        useTabStore.getState().setTabGraphFile('tab-1', 'CF2A01', 'CF2A01');
+      });
+
+      pick('Export as JSON');
+
+      await waitFor(() => expect(downloads).toEqual(['CF2A01.json']));
+      expect(useDialogStore.getState().active).toBeNull();
+    });
+  });
+
+  it('Export Diagram never asks: the saved file name, else the tab name', async () => {
+    render(<Toolbar />);
+    pick('Export Diagram (SVG)');
+    await waitFor(() => expect(downloads).toEqual(['Exam-architecture.svg']));
+
+    await act(async () => unsaved('期中考 第一題'));
+    pick('Export Diagram (SVG)');
+
+    await waitFor(() =>
+      expect(downloads).toEqual(['Exam-architecture.svg', '期中考_第一題-architecture.svg']),
+    );
+    expect(useDialogStore.getState().active).toBeNull();
   });
 });
