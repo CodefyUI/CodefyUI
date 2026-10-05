@@ -21,11 +21,12 @@ Every dropdown (Settings, the graph control and the node parameter) lists the sa
 
 ### The graph's `settings` object {/* #the-graph-settings-object */}
 
-The graph's own device is stored in an optional top-level object of the graph JSON: `"settings": {"device": "cuda:1"}`.
+The graph's own device and run seed are stored in an optional top-level object of the graph JSON, as `settings.device` and `settings.seed`: `"settings": {"device": "cuda:1", "seed": 0}`.
 
 - **Values:** `cpu`, `auto`, `cuda`, `cuda:N`, `mps` or `mps:N`, case-insensitive. An empty string means no assignment. A Mac has one MPS device, so `mps:N` runs on `mps`.
-- **Written only when set.** Save writes `settings` only when the graph has a device, so a graph without one stays byte-identical to what it was. In a [project directory](/usage/project-directories) it goes in the git-tracked `graphs/<name>.graph.json`, not in the layout file.
+- **Written only when set.** Save writes `settings` only when the graph has a device or a seed, with only the keys that are set (a `settings.seed` of 0 counts), so a graph with neither stays byte-identical to what it was. In a [project directory](/usage/project-directories) it goes in the git-tracked `graphs/<name>.graph.json`, not in the layout file.
 - **Any other value is refused:** `422` from `POST /api/graph/save`, `/api/graph/validate` and `/api/graph/export`; `400` from `POST /api/runs` and `POST /api/sweeps` (so `cdui run` reports a failed submit); an `execution_error` frame when the canvas runs the graph; and an `invalid_settings` finding from `cdui project validate`. The offline runner (`backend/run_graph.py`), [`POST /api/graph/run/{name}`](/usage/graph-as-a-function) and [`POST /api/apps/{slug}/invoke`](/usage/publish) read `settings.device` only when the call names no device (`--device`, or the body's `device`); then they ignore an invalid value, log a warning, and run on the CPU.
+- **Seed:** `settings.seed` is a whole number from 0 to 4294967295; any other value gets `422` from save, validate and export. It is the tab's **Random seed** (Settings → Training Behavior): Save writes it, Open and Import set the tab's seed from it, and Export Python bakes it in. A file without `settings.seed`, such as any graph saved before 2.8.9, leaves the tab's seed as it is. Headless runs do not read it: give `cdui run` a `--seed`.
 
 `cdui run` without `--device` prints the file's device as `<device> (graph)`.
 

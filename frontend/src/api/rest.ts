@@ -934,9 +934,10 @@ export async function exportGraph(
   // export with `Unknown subgraph: <id>`, so every graph containing a
   // collapsed block was un-exportable from the UI.
   subgraphs?: any[],
-  // The graph's `settings` block, when it assigns a device: the exported
-  // script bakes it in as the `--device` default. Absent for a graph that
-  // follows Settings, so its request body stays as it was.
+  // The graph's `settings` block, when it assigns a device or a seed:
+  // the exported script bakes the device in as the `--device` default, and
+  // the seed as the `--seed` default when `run` carries none. Absent for a
+  // graph with neither, so its request body stays as it was.
   settings?: GraphSettings,
 ) {
   const body: {

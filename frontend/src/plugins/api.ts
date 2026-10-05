@@ -66,8 +66,11 @@ export interface WorkspaceGraphInput {
   subgraphs?: unknown[];
   name?: string;
   description?: string;
-  /** Graph-level run settings; `device` is read through `readGraphDevice`. */
-  settings?: { device?: string };
+  /**
+   * Graph-level run settings; `device` is read through `readGraphDevice`,
+   * `seed` through `readGraphSeed`.
+   */
+  settings?: { device?: string; seed?: number };
   format_version?: unknown;
   [key: string]: unknown;
 }
@@ -549,15 +552,16 @@ function subscribeGraphChanged(cb: () => void): () => void {
     // would read while telling it nothing happened. Reference comparison, the
     // same as the other two -- every store action that touches the definition
     // list replaces it.
-    // `graphDevice` is part of the same answer: `getGraph()` serializes it
-    // as `settings.device`, so a change to it changes the bytes a plugin
-    // reads.
+    // `graphDevice` and `seed` are part of the same answer: `getGraph()`
+    // serializes them as `settings.device` and `settings.seed`, so a change
+    // to either changes the bytes a plugin reads.
     const changed =
       state.activeTabId !== prevTabId
       || tab?.nodes !== prevTab?.nodes
       || tab?.edges !== prevTab?.edges
       || tab?.subgraphs !== prevTab?.subgraphs
-      || tab?.graphDevice !== prevTab?.graphDevice;
+      || tab?.graphDevice !== prevTab?.graphDevice
+      || tab?.seed !== prevTab?.seed;
     prevTabId = state.activeTabId;
     prevTab = tab;
     if (changed) cb();

@@ -104,7 +104,7 @@ The `Cached` case is the one worth knowing about: a preset holding a `TrainingLo
 
 ## Reproducible runs (seed)
 
-By default a run draws its randomness from whatever entropy PyTorch picks, so two runs of the same graph give slightly different weights, a different shuffle order, and therefore a different loss curve. Set a **Random seed** in **Settings → Training Behavior** to make a run repeatable.
+By default a run draws its randomness from whatever entropy PyTorch picks, so two runs of the same graph give slightly different weights, a different shuffle order, and therefore a different loss curve. Set a **Random seed** in **Settings → Training Behavior** to make a run repeatable. The seed is saved in the graph file as `settings.seed` and comes back on Open and Import; a new tab starts with the seed of the tab you were on, and Export Python bakes the seed in as the script's default `--seed`.
 
 With a seed set:
 

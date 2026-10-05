@@ -224,8 +224,8 @@ export async function saveActiveGraph(opts: { saveAs?: boolean } = {}): Promise<
         // to answer the 409 with the confirm below. Omit it here and an
         // unaddressed Save As silently overwrites again, which is #455.
         overwrite: false,
-        // Only when the graph assigns a device: the serializer emits the block
-        // only then, and a file with no assignment stays byte-identical.
+        // Only when the graph assigns a device or a seed: the serializer emits
+        // the block only then, and a file with neither stays byte-identical.
         ...(settings ? { settings } : {}),
         // Last, so a retry's address and its `overwrite: true` win over the
         // two above. The addresses are the same string whenever both are

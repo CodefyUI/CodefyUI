@@ -772,10 +772,10 @@ export function useGraphExecution() {
       edges: graph.edges,
       presets: graph.presets,
       subgraphs: graph.subgraphs,
-      // The graph's own `settings` (its assigned device) ride along so the
-      // run's snapshot records them. Sent only when the graph has one, so a
-      // graph with no assignment keeps the message shape it had before.
-      // The run's device is the explicit `device` below.
+      // The graph's own `settings` (its device and seed) ride along, and
+      // the run's snapshot records the device. Sent only when the graph has
+      // one of them, so a graph with neither keeps the message shape it had
+      // before. The run itself uses the explicit `device` and `seed` below.
       ...(graph.settings ? { settings: graph.settings } : {}),
       record_outputs: tab.recordOutputs,
       // A1: verbose step-trace mode

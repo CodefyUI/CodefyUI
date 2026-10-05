@@ -269,9 +269,19 @@ async def save_graph(graph: GraphSaveRequest):
     # request that never mentioned it) forever -- and a project adopting such
     # a file would carry it into git.
     payload.pop("overwrite", None)
-    # ``settings`` is written only when a device is assigned, so a graph
-    # file with no assignment stays byte-identical to what it was.
-    if not (payload.get("settings") or {}).get("device"):
+    # ``settings`` keeps only the keys that are set (the device, the seed)
+    # and is written only when one is, so a graph with neither stays
+    # byte-identical to what it was. ``model_dump()`` answers
+    # ``{"device": None, "seed": None}`` and no key may reach a file as
+    # null; ``is not None`` because 0 is a seed.
+    graph_settings = {
+        key: value
+        for key, value in (payload.get("settings") or {}).items()
+        if value is not None
+    }
+    if graph_settings:
+        payload["settings"] = graph_settings
+    else:
         payload.pop("settings", None)
     # Defense-in-depth: even if a client bypasses the editor (which already
     # blanks SECRET params before sending), never write a secret to disk.
@@ -803,7 +813,10 @@ async def export_graph(graph: GraphExportRequest):
             # core#136: the canvas seed travels with the export, so an
             # exported augmenting graph reproduces the crops the canvas
             # produced instead of drawing fresh entropy every invocation.
-            seed=graph.seed,
+            # A request without one falls back to the graph's own
+            # ``settings.seed``; ``is not None``, because 0 is a seed.
+            seed=(graph.seed if graph.seed is not None
+                  else graph.settings.seed if graph.settings else None),
             deterministic=graph.deterministic,
             # The graph's own device is the exported ``--device`` default.
             device=graph.settings.device if graph.settings else None,

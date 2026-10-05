@@ -74,7 +74,7 @@ The toolbar **Settings** popover groups its rows by section. **Recording & Inspe
 | | **Reset all weights now** | **Reset** asks first, then drops every cached weight for this tab; the next Run starts fresh. |
 | | **Capture gradients** | Run forward + `.backward()` and store each layer's gradient for the **Backward** tab. With this on, nothing is served from cache; every node re-executes. |
 | | **Auto-synthesize loss** | When the graph has no `Loss`/`BackwardOnce` node, synthesize one so `.backward()` can run. Available only while **Capture gradients** is on. |
-| | **Random seed** | Seed every node from one number; blank means unseeded. A seeded run executes one node at a time — see [Reproducible runs](./running-graphs#reproducible-runs-seed). |
+| | **Random seed** | Seed every node from one number, saved with the graph (`settings.seed`); blank means unseeded. A seeded run executes one node at a time — see [Reproducible runs](./running-graphs#reproducible-runs-seed). |
 | | **Deterministic algorithms** | Ask PyTorch for deterministic kernels (`warn_only`). Sent with the run alongside the seed and the device. |
 | Editor | **Grid snap** | Snap dragged nodes to the 24 px canvas grid; turning it on also snaps the nodes already on the canvas. |
 | | **Show node tooltips** | Show the description card when hovering a node on the canvas or in the sidebar. On by default. |
