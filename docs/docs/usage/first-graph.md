@@ -29,7 +29,7 @@ Set Reshape's `shape` to `1,16`. A new shape must hold the same number of elemen
 ## 3. Add a Start node
 
 :::warning Every graph needs a Start node
-Drag a **`Start`** node onto the canvas and connect its **trigger output** (the diamond handle on the right side) to the first node you want executed — typically the `TensorInput`.
+Drag a **`Start`** node onto the canvas and connect its **trigger output** (the diamond handle on the right side) to the first node you want executed — typically the `TensorInput`. Drop the wire anywhere on that node.
 
 Without a `Start → first-node` trigger edge, the graph is treated as a draft and **Run** rejects it with an error toast: *"No entry points defined. Drag a Start node from the palette and connect it to the node you want to start execution from."* The executable set includes each triggered node, its downstream data flow, any upstream nodes that feed data into that set, and internal roots in any reached preset or subgraph container.
 :::

@@ -37,6 +37,16 @@
   transform: rotate(45deg) !important;
 }
 
+/* The diamond's press target: wider than the 20px ring every handle gets
+   (App.css), since the diamond has no neighbour to steal presses from and a
+   fitted graph opens near half zoom. The doubled class outranks App.css's
+   equal-specificity rule whatever order the sheets load in. The ring is a
+   circle on the diamond's centre, so the rotation does not move it. */
+.handle.handle::before {
+  width: var(--handle-hit-trigger);
+  height: var(--handle-hit-trigger);
+}
+
 /* Red ring + glow while the trigger edge is being detached from this handle
    (edge reconnect drag in progress). Declared after .handle so its
    border-color wins the cascade. */

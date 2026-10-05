@@ -216,6 +216,10 @@
   --handle-size: 17px; /* port dot, 13px of it visible */
   --handle-size-trigger: 13px; /* Start / trigger diamond */
   --handle-hit: 20px;
+  /* The Start diamond's press target (StartNode.module.css). The diamond has
+     no neighbouring handle to steal presses from, so the port-row ceiling
+     above does not apply. */
+  --handle-hit-trigger: 36px;
 
   --radius-sm: 4px;
   --radius: 6px;
