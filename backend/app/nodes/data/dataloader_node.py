@@ -19,6 +19,15 @@ class DataLoaderNode(BaseNode):
         "run, so the epoch order depends on the seed alone."
     )
 
+    # A live handle (#254): on a seeded run the loader carries the generator
+    # below, and every epoch the consumer iterates spends it. A cache hit
+    # would hand Run 2 Run 1's loader with its generator already advanced,
+    # so the same seed would shuffle differently from a fresh run and from
+    # the exported script. Rebuilding costs microseconds (construction loads
+    # nothing), and the loader's one typed consumer, TrainingLoop, never
+    # caches anyway.
+    cacheable = False
+
     @classmethod
     def define_inputs(cls) -> list[PortDefinition]:
         return [
