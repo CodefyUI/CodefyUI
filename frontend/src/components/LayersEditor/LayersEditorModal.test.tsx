@@ -629,6 +629,73 @@ describe('LayersEditorModal', () => {
     expect(screen.getByDisplayValue('10')).toBeTruthy();
   });
 
+  // UAT of 2.8.8: the browser reports a half-typed "-" (and a cleared field)
+  // as "", which the editor stored as NaN -- and NaN reaches the saved layers
+  // JSON as null.
+  it('ParamEditor: a cleared float param writes nothing, comes back on blur, and only the typed number is saved', () => {
+    const nodeId = setupOpenModal(
+      JSON.stringify({
+        version: 2,
+        nodes: [
+          { id: 'in1', type: 'Input', ports: [{ id: 'ip1', name: 'x' }], position: { x: 0, y: 0 } },
+          { id: 'drop1', type: 'Dropout', params: { p: 0.5 }, position: { x: 0, y: 100 } },
+          { id: 'out1', type: 'Output', ports: [{ id: 'op1', name: 'y' }], position: { x: 0, y: 200 } },
+        ],
+        edges: [
+          { id: 'e1', source: 'in1', sourceHandle: 'ip1', target: 'drop1', targetHandle: null },
+          { id: 'e2', source: 'drop1', sourceHandle: null, target: 'out1', targetHandle: 'op1' },
+        ],
+      }),
+    );
+    render(<LayersEditorModal />);
+    act(() => {
+      lastFlowProps.onNodeClick({}, { id: 'drop1' });
+    });
+    const paramsOf = () =>
+      (lastFlowProps.nodes as any[]).find((n) => n.id === 'drop1').data.params;
+
+    const p = screen.getByDisplayValue('0.5') as HTMLInputElement;
+    fireEvent.change(p, { target: { value: '' } });
+    expect(paramsOf().p).toBe(0.5);
+    fireEvent.blur(p);
+    expect(p.value).toBe('0.5');
+
+    fireEvent.change(p, { target: { value: '0.25' } });
+    expect(paramsOf().p).toBe(0.25);
+
+    fireEvent.click(screen.getByText('Apply'));
+    const node = useTabStore.getState().tabs[0].nodes.find((n) => n.id === nodeId)!;
+    const saved = JSON.parse(node.data.params!.layers as string);
+    expect(saved.nodes.find((n: any) => n.id === 'drop1').params.p).toBe(0.25);
+  });
+
+  it('ParamEditor: SelectIndex takes a negative index typed one key at a time', () => {
+    setupOpenModal(validGraphJson());
+    render(<LayersEditorModal />);
+    act(() => {
+      lastFlowProps.onDrop({
+        preventDefault: vi.fn(),
+        clientX: 1,
+        clientY: 1,
+        dataTransfer: { getData: () => 'SelectIndex' },
+      });
+    });
+    const select = (lastFlowProps.nodes as any[]).find((n) => n.data.layerType === 'SelectIndex');
+    act(() => {
+      lastFlowProps.onNodeClick({}, { id: select.id });
+    });
+    const paramsOf = () =>
+      (lastFlowProps.nodes as any[]).find((n) => n.id === select.id).data.params;
+
+    const index = screen.getByDisplayValue('-1') as HTMLInputElement;
+    fireEvent.change(index, { target: { value: '-' } });
+    expect(paramsOf().index).toBe(-1);
+    expect(index.value).toBe('');
+    fireEvent.change(index, { target: { value: '-2' } });
+    expect(paramsOf().index).toBe(-2);
+    expect(index.value).toBe('-2');
+  });
+
   // ── PortListEditor wiring (handleUpdatePorts / handleRemoveEdges) ──────────
 
   it('editing a port name through PortListEditor updates the node', () => {

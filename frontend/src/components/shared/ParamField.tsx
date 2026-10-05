@@ -24,6 +24,7 @@ import {
   type PackRequirement,
 } from '../../utils/packAvailability';
 import { TensorGridEditor } from '../ConfigPanel/TensorGridEditor';
+import { NumberInput } from './NumberInput';
 import { ScriptCodeField } from './ScriptCodeField';
 import styles from './ParamField.module.css';
 
@@ -320,15 +321,13 @@ export function ParamField({
     return (
       <div>
         <label className={styles.label}>{displayLabel}</label>
-        <input
-          type="number"
+        <NumberInput
           value={value ?? param.default ?? 0}
+          integer={isInt}
           min={param.min_value ?? undefined}
           max={param.max_value ?? undefined}
           step={isInt ? 1 : 'any'}
-          onChange={(e) =>
-            onChange(param.name, isInt ? parseInt(e.target.value, 10) : parseFloat(e.target.value))
-          }
+          onCommit={(n) => onChange(param.name, n)}
           className={`${styles.input} ${outOfRange ? styles.inputError : ''}`}
         />
         {outOfRange && (hasMin || hasMax) && (
