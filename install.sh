@@ -4,8 +4,8 @@
 #
 # 環境變數：
 #   CODEFYUI_DIR          自訂安裝路徑（預設 $HOME/CodefyUI）
-#   CODEFYUI_RELEASE_TAG  指定要下載的 release tag（預設 latest）
-#   CODEFYUI_FORCE_BUILD  設為 1 強制本地 build（會額外裝 Node + pnpm）
+#   CODEFYUI_RELEASE_TAG  指定要安裝的 release tag（預設 latest）；指定版本時，即使 FORCE_BUILD=1 也裝該版本
+#   CODEFYUI_FORCE_BUILD  設為 1 強制本地 build（會額外裝 Node + pnpm）；沒指定版本時安裝 main
 set -euo pipefail
 
 # ── 顏色 ──────────────────────────────────────────────────────────────
@@ -131,19 +131,37 @@ fetch_release_dist() {
   ok "Prebuilt dist 解壓至 $dist_dir"
 }
 
-# 解析要安裝的 release tag。回傳實際 tag（把 "latest" 解析成具體版號），
-# 解析失敗則回傳空字串。用 GitHub API，不依賴 jq。
+# 解析要安裝的 release tag：印出實際 tag（把 "latest" 解析成具體版號），兩種
+# 查法都失敗就什麼都不印。先問 GitHub API（不依賴 jq）；API 對未登入的 IP 每
+# 小時只給 60 次，同一個 NAT 後面的整間教室很快就用完，所以再看 release 頁面：
+# 它不受這個限制，會 302 到 .../releases/tag/<tag>。一律回傳 0。
 resolve_release_tag() {
   if [[ "$RELEASE_TAG" != "latest" ]]; then
     echo "$RELEASE_TAG"
     return 0
   fi
   local api="https://api.github.com/repos/${RELEASE_REPO}/releases/latest"
-  local tag
+  local page="https://github.com/${RELEASE_REPO}/releases/latest"
+  local tag="" final=""
   tag="$(curl -fsSL --connect-timeout 10 --retry 2 "$api" 2>/dev/null \
     | grep -m1 '"tag_name"' \
-    | sed -E 's/.*"tag_name"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/')"
-  [[ -n "$tag" ]] && echo "$tag"
+    | sed -E 's/.*"tag_name"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/')" || true
+  if [[ -n "$tag" ]]; then
+    echo "$tag"
+    return 0
+  fi
+  # 用 HEAD 跟著轉址走，只看最後停在哪個網址；curl 失敗時的輸出不採用。
+  if final="$(curl -fsSLI -o /dev/null -w '%{url_effective}' --connect-timeout 10 --retry 2 "$page" 2>/dev/null)"; then
+    case "$final" in
+      */releases/tag/*) tag="${final##*/releases/tag/}" ;;
+    esac
+  fi
+  # 只接受單純的版號字元：還沒有 release 時頁面轉到別處，URL 編碼過的（含 %）
+  # 也當作查不到。
+  if [[ "$tag" =~ ^[A-Za-z0-9._+-]+$ ]]; then
+    echo "$tag"
+  fi
+  return 0
 }
 
 # ══════════════════════════════════════════════════════════════════════
@@ -184,16 +202,23 @@ ok "$("$PYTHON" --version) ($PYTHON)"
 # tag，避免「main 後端 + 舊 release 前端」版本漂移——那正是 cdui start 後
 # 打開 localhost:8000 卻無法執行的根因（舊前端不會跟新後端做 token bootstrap，
 # 所有寫入請求被 auth_guard 擋成 403）。
+# 查不到 tag 就停止，不會改裝 main（要 main 請明確設 CODEFYUI_FORCE_BUILD=1）。
+# 明確指定的 CODEFYUI_RELEASE_TAG 在 FORCE_BUILD 下也照用，前端則在本機建置。
 PINNED_TAG=""
-if [[ "$FORCE_BUILD" != "1" ]]; then
-  PINNED_TAG="$(resolve_release_tag)"
-  if [[ -n "$PINNED_TAG" ]]; then
+if [[ "$FORCE_BUILD" != "1" || "$RELEASE_TAG" != "latest" ]]; then
+  # 放在 if 的條件裡：在 set -e 之下，單獨一行的指派一失敗，腳本就在那裡
+  # 無聲結束，連下面的訊息都印不出來。
+  if PINNED_TAG="$(resolve_release_tag)" && [[ -n "$PINNED_TAG" ]]; then
     # fetch_release_dist 用 RELEASE_TAG 決定下載哪個 dist；鎖成解析後的具體
     # tag，確保前後端來自同一版。
     RELEASE_TAG="$PINNED_TAG"
     echo -e "  ${BOLD}鎖定 release：${NC}${PINNED_TAG}（前後端同版）"
   else
-    warn "無法解析 latest release tag；改用 main（前後端可能版本漂移）"
+    die "無法查到最新的 release 版本（GitHub 無法連線或達到速率限制），已停止，尚未下載或更新 CodefyUI。
+  請稍後再試，或設定 CODEFYUI_RELEASE_TAG=<版本> 安裝指定版本；要改裝開發中的 main，請設定 CODEFYUI_FORCE_BUILD=1（會另外安裝 Node.js 與 pnpm）。
+  Could not look up the latest release (GitHub unreachable or rate-limited). Stopped before downloading or updating CodefyUI.
+  Try again later, or set CODEFYUI_RELEASE_TAG=<tag> to install that release; to install the development branch main instead, set CODEFYUI_FORCE_BUILD=1 (this also installs Node.js and pnpm).
+  版本列表 / Releases: https://github.com/${RELEASE_REPO}/releases"
   fi
 fi
 

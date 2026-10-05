@@ -29,7 +29,7 @@ powershell -ExecutionPolicy ByPass -c "irm https://raw.githubusercontent.com/Cod
 
 在 Windows 上，`install.ps1` 會透過 [winget](https://learn.microsoft.com/windows/package-manager/) 安裝缺少的 `git`。`winget` 內建於 Windows 11 與較新的 Windows 10（透過「App Installer」套件）。若 `winget` 不存在，或 `winget install --source winget Git.Git` 失敗，安裝程式會改以 [PortableGit](https://git-scm.com/download/win) 解壓至 `%LOCALAPPDATA%\CodefyUI\PortableGit` —— 不需系統管理員權限。安裝程式只查詢 `winget` 來源，因此企業網路 TLS 攔截使 `msstore` 來源失敗（`0x8a15005e`）時，不會影響安裝。
 
-若無法下載預先建置的 `frontend-dist.tar.gz`，安裝程式會安裝 Node.js 24（macOS/Linux 透過 nvm，Windows 透過 `pnpm env use --global 24`）與 pnpm，並在本機建置前端；後端仍維持在 release tag。若完全查不到最新的 release tag，安裝程式會改為 clone `main`，並警告前後端版本可能不一致。
+若無法下載預先建置的 `frontend-dist.tar.gz`，安裝程式會安裝 Node.js 24（macOS/Linux 透過 nvm，Windows 透過 `pnpm env use --global 24`）與 pnpm，並在本機建置前端；後端仍維持在 release tag。若查不到最新的 release tag（安裝程式會先問 GitHub API，再看不受 API 每個 IP 每小時 60 次限制的 release 頁面），安裝程式會在下載 CodefyUI 之前停止，訊息中會指出 `CODEFYUI_RELEASE_TAG`（安裝指定版本）與 `CODEFYUI_FORCE_BUILD`（改裝 `main`）。
 
 安裝程式會把 `cdui` 啟動器放到 `~/.local/bin/cdui`（Windows 為 `%USERPROFILE%\.local\bin\cdui.cmd`）。**請重新開啟你的 terminal**，然後在任何目錄執行：
 
@@ -56,8 +56,8 @@ cdui start
 | `--yes` / `-y` | — | — | 全部用預設值，不互動（CI／headless）。 |
 | `--lang <code>` | `CODEFYUI_LANG` | `en` / `zh`（環境變數也接受 `zh-TW`、`zh-HK`、`zh-CN`、`english`、`chinese`） | 旗標只對 `cdui install` 與 `cdui update` 有效；環境變數會設定每個 `cdui` 指令的輸出語言。`cdui plugin`、`project`、`packs` 與 `cache` 指令群組只認得 `zh` 本身：其他中文寫法會輸出英文；未設定此變數時，它們只依 `LANG`／`LC_ALL` 判斷，不看系統 locale。 |
 | — | `CODEFYUI_DIR` | path | 安裝目錄（預設 `~/CodefyUI`）。 |
-| — | `CODEFYUI_RELEASE_TAG` | tag | 把前端 bundle **與**後端 checkout 鎖定到同一個 release（預設 `latest`）。 |
-| — | `CODEFYUI_FORCE_BUILD` | `1` | 跳過下載 prebuilt dist，改在本地用 pnpm build（追蹤 `main`）。 |
+| — | `CODEFYUI_RELEASE_TAG` | tag | 把前端 bundle **與**後端 checkout 鎖定到同一個 release（預設 `latest`）。指定了版本時優先於 `CODEFYUI_FORCE_BUILD`：checkout 維持在該版本，並在本機建置它的前端。 |
+| — | `CODEFYUI_FORCE_BUILD` | `1` | 跳過下載 prebuilt dist，改在本地用 pnpm build；`CODEFYUI_RELEASE_TAG` 沒指定版本時追蹤 `main`。 |
 
 ## 正式模式與開發者模式 {/* #production-vs-developer-mode */}
 
@@ -93,6 +93,6 @@ curl http://127.0.0.1:8000/api/health
 cdui update
 ```
 
-`cdui update` 會更新 checkout 並重新同步前端。使用哪個來源取決於執行時 `PATH` 中是否有 pnpm，而不是 CodefyUI 當初的安裝方式。沒有 pnpm 時，它會以 `git checkout -f` 切換到最新的 release tag（會捨棄已追蹤檔案的本機修改），並下載該 release 的前端。有 pnpm，或設定 `CODEFYUI_FORCE_BUILD=1` 時，它會把本機 `main` 分支重設為 `origin/main`，並重新建置前端。詳見 [CLI 指令](./cli-commands)。
+`cdui update` 會更新 checkout 並重新同步前端。使用哪個來源取決於執行時 `PATH` 中是否有 pnpm，而不是 CodefyUI 當初的安裝方式。沒有 pnpm 時，它會以 `git checkout -f` 切換到最新的 release tag（會捨棄已追蹤檔案的本機修改），並下載該 release 的前端；查不到該 tag 時會停止，不做任何變更。有 pnpm，或設定 `CODEFYUI_FORCE_BUILD=1` 時，它會把本機 `main` 分支重設為 `origin/main`，並重新建置前端。不論哪種情況，`CODEFYUI_RELEASE_TAG` 指定的版本都會被 checkout。詳見 [CLI 指令](./cli-commands)。
 
 和 `cdui install` 不同，這個指令不會詢問任何問題。它會直接從已安裝的 wheel 讀出 PyTorch 變體，沿用 venv 中既有的變體與 dev 工具設定，因此你刻意選的 torch 版本不會被動到，沒有變動時也不會重新下載。真的要換的時候，`--gpu` / `--dev` 旗標與 `CODEFYUI_GPU` / `CODEFYUI_DEV` 環境變數依然可以覆蓋。

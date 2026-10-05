@@ -13,6 +13,7 @@
                       --yes / -y         略過互動，自動偵測 + 非 dev
                 從 TTY 不帶旗標執行會跳出互動選單；從非 TTY（curl|bash、CI）走 --yes。
     update      拉取最新版本並重新安裝依賴（接受同 install 的旗標）
+                沒有 pnpm 時切到最新的 release；查不到就停止，不會改裝 main。
                 伺服器還在執行時會拒絕（會刪掉它正在服務的 dist），
                 請先 cdui stop。
     build       建置 frontend dist（需 Node + pnpm，給開發者）
@@ -131,8 +132,10 @@
                 3 伺服器執行中（圖可能正在讀這些檔），130 Ctrl+C 取消。
 
 環境變數：
-    CODEFYUI_RELEASE_TAG    指定要下載的 release tag（預設：latest）
-    CODEFYUI_FORCE_BUILD    設為 1 強制本地 build，不下載 release dist
+    CODEFYUI_RELEASE_TAG    指定要安裝的 release tag（預設：latest）。指定了版本
+                            時，cdui update 即使有 pnpm 或 FORCE_BUILD 也切到該版本
+    CODEFYUI_FORCE_BUILD    設為 1 強制本地 build，不下載 release dist（cdui update
+                            沒指定版本時改追蹤 main）
     CODEFYUI_GPU            預設 --gpu 值（命令列旗標仍會覆蓋）
     CODEFYUI_DEV            預設 --dev 值；1/true/yes 開、0/false/no 關
     CODEFYUI_USER_DATA_DIR  覆蓋 platformdirs user-data 位置（plugin lockfile
@@ -617,10 +620,18 @@ def _release_dist_url() -> str:
 def _resolve_release_tag() -> "str | None":
     """Resolve the release tag to install (``latest`` → concrete version).
 
-    Returns the concrete tag, or ``None`` when the GitHub API can't be
-    reached. Used to pin the backend checkout to the same release the
-    prebuilt frontend dist comes from, so the two never drift apart.
+    Returns the concrete tag, or ``None`` when neither lookup finds it. Used
+    to pin the backend checkout to the same release the prebuilt frontend
+    dist comes from, so the two never drift apart.
+
+    The GitHub API answers an unauthenticated IP only 60 times an hour, which
+    one classroom behind a NAT address uses up. So the release page is asked
+    second: it is not under that limit, and it redirects to
+    ``.../releases/tag/<tag>``.
     """
+    import http.client
+    from urllib.parse import unquote
+
     tag = os.environ.get("CODEFYUI_RELEASE_TAG", "latest").strip() or "latest"
     if tag != "latest":
         return tag
@@ -630,11 +641,34 @@ def _resolve_release_tag() -> "str | None":
                                     "Accept": "application/vnd.github+json"})
         with urlopen(req, timeout=30) as resp:
             data = json.load(resp)
-        name = data.get("tag_name")
-        return name or None
-    except (URLError, HTTPError, TimeoutError, ValueError) as e:
-        print(f"  無法解析 latest release tag：{e}")
+        name = data.get("tag_name") if isinstance(data, dict) else None
+        if not name:
+            raise ValueError("the answer has no tag_name")
+        return name
+    # OSError and HTTPException, not just URLError: a connection that drops
+    # while the answer is read raises from http.client unwrapped
+    # (RemoteDisconnected, IncompleteRead), and must still reach the page.
+    except (OSError, ValueError, http.client.HTTPException) as e:
+        print(t(f"  無法從 GitHub API 取得最新的 release：{e}",
+                f"  Could not get the latest release from the GitHub API: {e}"))
+    page = f"https://github.com/{RELEASE_REPO}/releases/latest"
+    try:
+        # HEAD: the tag is in the URL urlopen ends on after the redirect, so
+        # the page itself is never read.
+        req = Request(page, method="HEAD", headers={"User-Agent": "cdui-installer"})
+        with urlopen(req, timeout=30) as resp:
+            final = resp.geturl()
+    except (OSError, ValueError, http.client.HTTPException) as e:
+        print(t(f"  也無法從 release 頁面取得：{e}",
+                f"  Could not get it from the release page either: {e}"))
         return None
+    # A repo with no release yet redirects to the release list instead.
+    match = re.search(r"/releases/tag/([^/?#]+)$", final or "")
+    if not match:
+        print(t(f"  release 頁面沒有轉到任何版本：{final}",
+                f"  The release page redirected to no release: {final}"))
+        return None
+    return unquote(match.group(1))
 
 
 def fetch_release_dist() -> bool:
@@ -1493,7 +1527,44 @@ def update() -> None:
     force_build = os.environ.get("CODEFYUI_FORCE_BUILD", "").strip() in ("1", "true", "yes")
     will_build_from_source = force_build or bool(shutil.which("pnpm"))
 
-    pinned_tag = None if will_build_from_source else _resolve_release_tag()
+    # A tag the user named wins over the build path: they asked for that
+    # version, and checking out `main` instead is the same silent substitution
+    # the refusal below stops. install() then builds the frontend locally when
+    # pnpm is present, which suits a pinned checkout too.
+    explicit_tag = os.environ.get("CODEFYUI_RELEASE_TAG", "").strip()
+    if explicit_tag and explicit_tag != "latest":
+        pinned_tag = explicit_tag
+    elif will_build_from_source:
+        pinned_tag = None
+    else:
+        pinned_tag = _resolve_release_tag()
+        if not pinned_tag:
+            # Neither lookup found the release. Falling back to `main` here
+            # paired a main checkout with the latest release's frontend; stop
+            # before git and the dist removal below touch anything.
+            err("無法查到最新的 release 版本（GitHub 無法連線或達到速率限制），"
+                "已停止更新，現有安裝沒有變動。",
+                "Could not look up the latest release (GitHub unreachable or "
+                "rate-limited). Stopped before changing this install.")
+            print(
+                t(
+                    "\n  可選擇其一：\n"
+                    "    1. 稍後再執行一次 cdui update\n"
+                    "    2. 設定 CODEFYUI_RELEASE_TAG=<版本> 安裝指定版本，版本列表：\n"
+                    f"       https://github.com/{RELEASE_REPO}/releases\n"
+                    "    3. 設定 CODEFYUI_FORCE_BUILD=1 改用開發中的 main"
+                    "（需要 Node.js 24+ 與 pnpm）",
+                    "\n  Try one of:\n"
+                    "    1. Run cdui update again later\n"
+                    "    2. Set CODEFYUI_RELEASE_TAG=<tag> to install that release, "
+                    "from the list at\n"
+                    f"       https://github.com/{RELEASE_REPO}/releases\n"
+                    "    3. Set CODEFYUI_FORCE_BUILD=1 to track the development branch "
+                    "main (needs Node.js 24+ and pnpm)",
+                ),
+                file=sys.stderr,
+            )
+            sys.exit(1)
 
     if pinned_tag:
         section(f"切換至 release {pinned_tag}（前後端同版）",

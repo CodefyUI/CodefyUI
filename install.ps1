@@ -4,8 +4,8 @@
 #
 # 環境變數：
 #   $env:CODEFYUI_DIR           自訂安裝路徑（預設 $HOME\CodefyUI）
-#   $env:CODEFYUI_RELEASE_TAG   指定要下載的 release tag（預設 latest）
-#   $env:CODEFYUI_FORCE_BUILD   設為 1 強制本地 build（會額外裝 Node + pnpm）
+#   $env:CODEFYUI_RELEASE_TAG   指定要安裝的 release tag（預設 latest）；指定版本時，即使 FORCE_BUILD=1 也裝該版本
+#   $env:CODEFYUI_FORCE_BUILD   設為 1 強制本地 build（會額外裝 Node + pnpm）；沒指定版本時安裝 main
 
 $ErrorActionPreference = 'Stop'
 
@@ -208,7 +208,9 @@ function Fetch-ReleaseDist {
     return $true
 }
 
-# 解析要安裝的 release tag（把 "latest" 解析成具體版號）；失敗回傳 $null。
+# 解析要安裝的 release tag（把 "latest" 解析成具體版號）；兩種查法都失敗才回傳 $null。
+# 先問 GitHub API；API 對未登入的 IP 每小時只給 60 次，同一個 NAT 後面的整間教室
+# 很快就用完，所以再看 release 頁面：它不受這個限制，會 302 到 .../releases/tag/<tag>。
 function Resolve-ReleaseTag {
     if ($ReleaseTag -ne 'latest') { return $ReleaseTag }
     try {
@@ -216,6 +218,23 @@ function Resolve-ReleaseTag {
         $resp = Invoke-RestMethod -UseBasicParsing -Uri $api -TimeoutSec 30 `
             -Headers @{ 'User-Agent' = 'CodefyUI-installer' }
         if ($resp.tag_name) { return $resp.tag_name }
+    } catch { }
+    try {
+        $page = "https://github.com/$ReleaseRepo/releases/latest"
+        $r = Invoke-WebRequest -UseBasicParsing -Method Head -Uri $page -TimeoutSec 30 `
+            -Headers @{ 'User-Agent' = 'CodefyUI-installer' }
+        # 轉址後最後停在哪個網址：Windows PowerShell 5.1 的 BaseResponse 是
+        # HttpWebResponse，PowerShell 7 是 HttpResponseMessage。
+        $final = $null
+        if ($r.BaseResponse.ResponseUri) {
+            $final = $r.BaseResponse.ResponseUri.AbsoluteUri
+        } elseif ($r.BaseResponse.RequestMessage) {
+            $final = $r.BaseResponse.RequestMessage.RequestUri.AbsoluteUri
+        }
+        # 還沒有 release 時，頁面會轉到 release 列表，不是某個 tag。
+        if ($final -match '/releases/tag/([^/?#]+)$') {
+            return [uri]::UnescapeDataString($Matches[1])
+        }
     } catch { }
     return $null
 }
@@ -266,14 +285,20 @@ Ok "$(& $PythonCmd --version) ($PythonCmd)"
 # 預編 dist 路徑會把 backend 鎖到與 dist 同一個 release tag，避免「main 後端 +
 # 舊 release 前端」版本漂移（舊前端不會跟新後端做 token bootstrap，寫入請求被
 # auth_guard 擋成 403，導致 localhost:8000 打得開卻無法執行）。
+# 查不到 tag 就停止，不會改裝 main（要 main 請明確設 CODEFYUI_FORCE_BUILD=1）。
+# 明確指定的 CODEFYUI_RELEASE_TAG 在 FORCE_BUILD 下也照用，前端則在本機建置。
 $PinnedTag = $null
-if (-not $ForceBuild) {
+if ((-not $ForceBuild) -or ($ReleaseTag -ne 'latest')) {
     $PinnedTag = Resolve-ReleaseTag
     if ($PinnedTag) {
         $ReleaseTag = $PinnedTag
         Write-Host "  鎖定 release：${PinnedTag}（前後端同版）"
     } else {
-        Warn "無法解析 latest release tag；改用 main（前後端可能版本漂移）"
+        Die "無法查到最新的 release 版本（GitHub 無法連線或達到速率限制），已停止，尚未下載或更新 CodefyUI。
+    請稍後再試，或設定 CODEFYUI_RELEASE_TAG=<版本> 安裝指定版本；要改裝開發中的 main，請設定 CODEFYUI_FORCE_BUILD=1（會另外安裝 pnpm 與 Node.js）。
+    Could not look up the latest release (GitHub unreachable or rate-limited). Stopped before downloading or updating CodefyUI.
+    Try again later, or set CODEFYUI_RELEASE_TAG=<tag> to install that release; to install the development branch main instead, set CODEFYUI_FORCE_BUILD=1 (this also installs pnpm and Node.js).
+    版本列表 / Releases: https://github.com/$ReleaseRepo/releases"
     }
 }
 
