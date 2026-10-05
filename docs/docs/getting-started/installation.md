@@ -29,7 +29,7 @@ By default this installs to `~/CodefyUI` (macOS/Linux) or `%USERPROFILE%\CodefyU
 
 On Windows, `install.ps1` uses [winget](https://learn.microsoft.com/windows/package-manager/) to install `git` if it's missing. `winget` ships with Windows 11 and recent Windows 10 via the "App Installer" package. If `winget` is missing or `winget install --source winget Git.Git` fails, the installer falls back to extracting [PortableGit](https://git-scm.com/download/win) into `%LOCALAPPDATA%\CodefyUI\PortableGit` — no administrator rights required. Because the installer asks only the `winget` source, a `msstore` source that corporate TLS interception breaks (`0x8a15005e`) does not stop it.
 
-If the prebuilt `frontend-dist.tar.gz` cannot be downloaded, the installer installs Node.js 24 (through nvm on macOS/Linux, `pnpm env use --global 24` on Windows) and pnpm, and builds the frontend locally; the backend stays on the release tag. If the latest release tag cannot be looked up at all, it clones `main` instead and warns that the frontend and backend may not match.
+If the prebuilt `frontend-dist.tar.gz` cannot be downloaded, the installer installs Node.js 24 (through nvm on macOS/Linux, `pnpm env use --global 24` on Windows) and pnpm, and builds the frontend locally; the backend stays on the release tag. If the latest release tag cannot be looked up — the installer asks the GitHub API and then the release page, which the API's limit of 60 requests an hour per IP does not cover — it stops before downloading CodefyUI, with a message naming `CODEFYUI_RELEASE_TAG` (install a given release) and `CODEFYUI_FORCE_BUILD` (install `main` instead).
 
 The installer places a `cdui` launcher at `~/.local/bin/cdui` (Windows: `%USERPROFILE%\.local\bin\cdui.cmd`). **Restart your terminal**, then from any directory:
 
@@ -56,8 +56,8 @@ Switching build after the fact does not need a terminal either: on a server star
 | `--yes` / `-y` | — | — | Accept all defaults non-interactively (CI / headless). |
 | `--lang <code>` | `CODEFYUI_LANG` | `en` / `zh` (the environment variable also accepts `zh-TW`, `zh-HK`, `zh-CN`, `english`, and `chinese`) | The flag applies to `cdui install` and `cdui update` only; the environment variable sets the output language of every `cdui` command. The `cdui plugin`, `project`, `packs` and `cache` groups recognise only `zh` itself: they print English for the other Chinese spellings, and without the variable they follow `LANG` / `LC_ALL` only, not the system locale. |
 | — | `CODEFYUI_DIR` | path | Set the installation directory. Default: `~/CodefyUI`. |
-| — | `CODEFYUI_RELEASE_TAG` | tag | Pin the frontend bundle and backend checkout to the same release. Default: `latest`. |
-| — | `CODEFYUI_FORCE_BUILD` | `1` | Skip the prebuilt distribution download, build locally with pnpm, and track `main`. |
+| — | `CODEFYUI_RELEASE_TAG` | tag | Pin the frontend bundle and backend checkout to the same release. Default: `latest`. A tag set here wins over `CODEFYUI_FORCE_BUILD`: the checkout stays on the tag and its frontend is built locally. |
+| — | `CODEFYUI_FORCE_BUILD` | `1` | Skip the prebuilt distribution download, build locally with pnpm, and track `main` unless `CODEFYUI_RELEASE_TAG` names a release. |
 
 ## Production vs developer mode
 
@@ -93,6 +93,6 @@ See **[Optional Packs](/usage/optional-packs)** for the catalog, where the files
 cdui update
 ```
 
-`cdui update` updates the checkout and re-syncs the frontend. Which source it takes depends on whether pnpm is on `PATH` when you run it, not on how CodefyUI was installed. Without pnpm, it checks out the latest release tag with `git checkout -f`, which discards local changes to tracked files, and downloads that release's frontend. With pnpm, or with `CODEFYUI_FORCE_BUILD=1`, it resets the local `main` branch to `origin/main` and rebuilds the frontend. Details: [CLI Commands](./cli-commands).
+`cdui update` updates the checkout and re-syncs the frontend. Which source it takes depends on whether pnpm is on `PATH` when you run it, not on how CodefyUI was installed. Without pnpm, it checks out the latest release tag with `git checkout -f`, which discards local changes to tracked files, and downloads that release's frontend; if that tag cannot be looked up, it stops without changing anything. With pnpm, or with `CODEFYUI_FORCE_BUILD=1`, it resets the local `main` branch to `origin/main` and rebuilds the frontend. A tag set in `CODEFYUI_RELEASE_TAG` is checked out in either case. Details: [CLI Commands](./cli-commands).
 
 Unlike `cdui install`, this never prompts. It reuses the PyTorch variant and dev tooling already in the venv — reading the variant straight off the installed wheel — so a deliberately chosen torch build is left alone, and an unchanged one isn't re-downloaded. The same `--gpu` / `--dev` flags and `CODEFYUI_GPU` / `CODEFYUI_DEV` env vars still override when you do want a switch.

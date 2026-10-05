@@ -59,7 +59,7 @@ Open [http://localhost:8000](http://localhost:8000). The single uvicorn process 
 | Command | Description |
 |---------|-------------|
 | `cdui install` | Install backend deps; download prebuilt frontend (or local build if `pnpm` available). The frontend step is skipped when `frontend/dist/index.html` already exists, unless `CODEFYUI_FORCE_BUILD=1` |
-| `cdui update` | Update the checkout and re-sync the frontend. Without `pnpm` on PATH: check out the latest release tag with `git checkout -f` (local changes to tracked files are discarded) and download its frontend. With `pnpm` (or `CODEFYUI_FORCE_BUILD=1`): reset local `main` to `origin/main` and rebuild. Never prompts — reuses the PyTorch variant and dev tooling already in the venv unless `--gpu` / `--dev` override. Refuses while a server is running — `cdui stop` first |
+| `cdui update` | Update the checkout and re-sync the frontend. Without `pnpm` on PATH: check out the latest release tag with `git checkout -f` (local changes to tracked files are discarded) and download its frontend; if that tag cannot be looked up, stop without changing anything. With `pnpm` (or `CODEFYUI_FORCE_BUILD=1`): reset local `main` to `origin/main` and rebuild, unless `CODEFYUI_RELEASE_TAG` names a release, which is checked out either way. Never prompts — reuses the PyTorch variant and dev tooling already in the venv unless `--gpu` / `--dev` override. Refuses while a server is running — `cdui stop` first |
 | `cdui start` | Production mode — single uvicorn on `:8000`, in the background (no Node needed). `--foreground`/`-f` runs it attached |
 | `cdui status` | btop / k9s-style dashboard: CPU, memory, disk, GPU, top processes, plus the server's PID and health. Refreshes live by default (every 2s, `Ctrl+C` to quit); pass a number to set the interval (`cdui status 1`), or `--once` for a single frame. Piped/non-interactive output is single-frame automatically |
 | `cdui dev` | Developer mode — backend `:8000` + Vite HMR `:5173` (requires Node + pnpm) |
@@ -89,7 +89,7 @@ Not shown: `cdui run` (below), the `cdui packs`, `cdui cache` and `cdui project`
 | `--yes` / `-y` | — | — | Accept all defaults non-interactively (CI / headless). |
 | `--lang <code>` | `CODEFYUI_LANG` | `en` / `zh` (the env var also accepts `zh-TW`) | The flag localises the `cdui install` / `cdui update` run it is passed to; the env var sets the language of every `cdui` command. The `plugin`, `project`, `packs` and `cache` groups recognise only `zh` itself, not `zh-TW`. |
 | — | `CODEFYUI_DIR` | path | Install directory (default: `~/CodefyUI`). |
-| — | `CODEFYUI_RELEASE_TAG` | tag | Pin the frontend bundle and the backend checkout to a specific release (default: `latest`). |
+| — | `CODEFYUI_RELEASE_TAG` | tag | Pin the frontend bundle and the backend checkout to a specific release (default: `latest`). A tag set here is used even with `CODEFYUI_FORCE_BUILD=1`, which then builds that release's frontend locally. |
 | — | `CODEFYUI_FORCE_BUILD` | `1` | Skip the prebuilt-dist download and build locally with pnpm. |
 
 > No GPU flag is needed: the installer auto-detects the GPU (`auto` picks a CUDA wheel from your NVIDIA driver, MPS on Apple Silicon, ROCm when `rocm-smi` is present, CPU otherwise), and the default build works on every platform. For a specific build or troubleshooting, see the [GPU & Device Setup guide](https://docs.codefyui.com/getting-started/gpu-device).
