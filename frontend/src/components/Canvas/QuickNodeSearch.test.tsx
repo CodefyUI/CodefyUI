@@ -547,4 +547,106 @@ describe('QuickNodeSearch', () => {
     expect(getByText('MyBlock')).toBeInTheDocument();
     expect(queryByText('Conv2d')).toBeNull();
   });
+
+  // ── Ranking ─────────────────────────────────────────────────────────────
+  // The list used to be the catalog order cut to 20, so a query that a few
+  // dozen descriptions answer could cut the node named exactly that off the
+  // list. It is the Nodes tab's ranking now (nodeSearch.ts), applied first.
+
+  /** Result names, in the order the list shows them. */
+  function resultNames(container: HTMLElement): string[] {
+    // The first span inside each row's content div is the name.
+    return Array.from(container.querySelectorAll('button')).map(
+      (b) => b.querySelector('div > span')?.textContent ?? '',
+    );
+  }
+
+  it('lists the node named exactly what was typed first, even past the 20-result cap', () => {
+    const heads = Array.from({ length: 25 }, (_, i) => def(`Head${i}`, { description: 'a linear head' }));
+    setStore([...heads, def('Linear', { description: 'fully connected layer' })], []);
+    const { container, getByPlaceholderText } = render(
+      <QuickNodeSearch screenPos={SCREEN} flowPos={FLOW} onClose={() => {}} />,
+    );
+    fireEvent.change(getByPlaceholderText('Search nodes...'), { target: { value: 'linear' } });
+    const names = resultNames(container);
+    expect(names).toHaveLength(20);
+    expect(names[0]).toBe('Linear');
+  });
+
+  it('ranks nodes and presets in one list, a node first when they tie', () => {
+    setStore(
+      [def('DQN', { description: 'a linear head' }), def('LinearNet'), def('Linear')],
+      // LinearMLP ties LinearNet on tier and length.
+      [preset('LinearMLP'), preset('Bilinear')],
+    );
+    const { container, getByPlaceholderText } = render(
+      <QuickNodeSearch screenPos={SCREEN} flowPos={FLOW} onClose={() => {}} />,
+    );
+    fireEvent.change(getByPlaceholderText('Search nodes...'), { target: { value: 'linear' } });
+    expect(resultNames(container)).toEqual(['Linear', 'LinearNet', 'LinearMLP', 'Bilinear', 'DQN']);
+  });
+
+  it('Enter adds the exact match, the row the ranking puts first', async () => {
+    setStore([def('LinearRegression'), def('Linear')], []);
+    const addNode = vi.fn();
+    useTabStore.setState({ addNode, addPresetNode: vi.fn() });
+    const onClose = vi.fn();
+    const { getByPlaceholderText } = render(
+      <QuickNodeSearch screenPos={SCREEN} flowPos={FLOW} onClose={onClose} />,
+    );
+    const input = getByPlaceholderText('Search nodes...');
+    fireEvent.change(input, { target: { value: 'linear' } });
+    fireEvent.keyDown(input, { key: 'Enter' });
+    expect(addNode).toHaveBeenCalledWith(expect.objectContaining({ node_name: 'Linear' }), FLOW);
+    await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1));
+  });
+
+  it('leaves the empty box as it was: Start first, then the catalog order', () => {
+    setStore([def('Zebra'), def('Ab'), def('Start')], [preset('P')]);
+    const { container } = render(
+      <QuickNodeSearch screenPos={SCREEN} flowPos={FLOW} onClose={() => {}} />,
+    );
+    expect(resultNames(container)).toEqual(['Start', 'Zebra', 'Ab', 'P']);
+  });
+
+  it('lets the ranking order a query, with no Start boost over a better match', () => {
+    // "t" is part of "start", which used to lift Start over everything; a
+    // name that starts with the query now ranks above one that contains it.
+    setStore([def('Start'), def('Tokenizer')], []);
+    const { container, getByPlaceholderText } = render(
+      <QuickNodeSearch screenPos={SCREEN} flowPos={FLOW} onClose={() => {}} />,
+    );
+    fireEvent.change(getByPlaceholderText('Search nodes...'), { target: { value: 't' } });
+    expect(resultNames(container)).toEqual(['Tokenizer', 'Start']);
+  });
+
+  it('finds a preset by a tag, as the Nodes tab does', () => {
+    setStore([def('Conv2d')], [preset('LeNet', { tags: ['vision'] })]);
+    const { container, getByPlaceholderText } = render(
+      <QuickNodeSearch screenPos={SCREEN} flowPos={FLOW} onClose={() => {}} />,
+    );
+    fireEvent.change(getByPlaceholderText('Search nodes...'), { target: { value: 'vision' } });
+    expect(resultNames(container)).toEqual(['LeNet']);
+  });
+
+  it('finds a node by its Chinese description in the Chinese UI', () => {
+    // Conv2d is in nodeLocales/zh-TW.ts; its summary there is about a 卷積核.
+    useI18n.setState({ locale: 'zh-TW' });
+    setStore([def('Conv2d', { description: 'slides a learned kernel' }), def('Linear')], []);
+    const { container, getByRole } = render(
+      <QuickNodeSearch screenPos={SCREEN} flowPos={FLOW} onClose={() => {}} />,
+    );
+    // By role: the placeholder is translated here.
+    fireEvent.change(getByRole('textbox'), { target: { value: '卷積' } });
+    expect(resultNames(container)).toEqual(['Conv2d']);
+  });
+
+  it('does not search the Chinese text in the English UI', () => {
+    setStore([def('Conv2d', { description: 'slides a learned kernel' })], []);
+    const { getByPlaceholderText, getByText } = render(
+      <QuickNodeSearch screenPos={SCREEN} flowPos={FLOW} onClose={() => {}} />,
+    );
+    fireEvent.change(getByPlaceholderText('Search nodes...'), { target: { value: '卷積' } });
+    expect(getByText('No matching nodes')).toBeInTheDocument();
+  });
 });

@@ -10,6 +10,12 @@ import {
   usePackAvailability,
 } from '../../utils/packAvailability';
 import { pluginNameOf, type PluginIndex } from '../../utils/provider';
+import {
+  compareMatches,
+  nodeSearchTexts,
+  presetSearchTexts,
+  rankMatches,
+} from '../../utils/nodeSearch';
 import { readablePresetNodes } from '../../utils';
 import { isCompletePreset } from '../../utils/presetOwnership';
 import type { NodeDefinition, PresetDefinition } from '../../types';
@@ -257,34 +263,45 @@ export function NodesTab() {
   const beginnerMode = useUIStore((s) => s.beginnerMode);
   const pluginsById = usePluginStore(selectPluginsById);
   const [searchQuery, setSearchQuery] = useState('');
-  const { t } = useI18n();
+  // `locale` is a dependency of the list below: `tn` reads the language from
+  // the store and is the same function in every language, so without it a
+  // language switch would leave a search reading the old language's texts.
+  const { t, tn, locale } = useI18n();
 
   const groups = useMemo<CategoryGroup<PaletteEntry>[]>(() => {
     const q = searchQuery.trim().toLowerCase();
     const out: CategoryGroup<PaletteEntry>[] = [];
-    // orderCategories only ever returns keys it was given, so the lookup below
-    // is always a hit.
-    for (const category of orderCategories(Object.keys(categorized), beginnerMode)) {
-      let items = categorized[category];
-      if (q) {
-        // The last field is the plugin's DISPLAY name. Its id already
-        // matches through the qualified node name (`edu:FilterRows`), so what
-        // this adds is the plugin as a reader knows it from the Plugin Center
-        // — the only name for it that appears in no field of a definition.
-        //
-        // `details` is searched as well as the summary: the summary is one
-        // line now, and the library a node wraps, its caveats and its formula
-        // all moved down there. Shortening the row must not make the node
-        // harder to find.
-        items = items.filter(
-          (n) =>
-            n.node_name.toLowerCase().includes(q) ||
-            n.description.toLowerCase().includes(q) ||
-            (n.details?.toLowerCase().includes(q) ?? false) ||
-            (pluginNameOf(pluginsById, n.provider)?.toLowerCase().includes(q) ?? false),
-        );
+    // orderCategories only ever returns keys it was given, so the lookups
+    // below are always hits.
+    const categories = orderCategories(Object.keys(categorized), beginnerMode);
+    if (!q) {
+      for (const category of categories) {
+        const items = categorized[category];
+        if (items.length > 0) out.push({ category, items });
       }
-      if (items.length > 0) out.push({ category, items });
+    } else {
+      // A search keeps the category groups. It ranks the matches inside each
+      // one (nodeSearch.ts lists the fields and the order) and puts the group
+      // with the best match first: tier, then the shorter name, then the usual
+      // order. So a node named exactly what was typed comes first.
+      const ranked = categories.flatMap((category, position) => {
+        const matches = rankMatches(
+          categorized[category],
+          (n) => n.node_name,
+          (n) => nodeSearchTexts(n, pluginsById, tn),
+          q,
+        );
+        return matches.length > 0 ? [{ category, position, matches }] : [];
+      });
+      ranked.sort((a, b) =>
+        compareMatches(
+          { ...a.matches[0], index: a.position },
+          { ...b.matches[0], index: b.position },
+        ),
+      );
+      for (const { category, matches } of ranked) {
+        out.push({ category, items: matches.map((m) => m.item) });
+      }
     }
 
     // Every preset in ONE group after the node categories, whatever category
@@ -292,25 +309,24 @@ export function NodesTab() {
     // a node, so the tab reads as the library with the presets under it rather
     // than as a dozen mixed sections. Beginner mode still hides a preset whose
     // category it hides in the list above — same helper, so the two cannot
-    // disagree about what a beginner sees. The search predicate is the one the
-    // Presets tab used, so nothing findable there stops being findable here.
+    // disagree about what a beginner sees. A search reads the fields the
+    // Presets tab's did (name, description, tags), so nothing findable there
+    // stops being findable here, and ranks the matches as the nodes are; the
+    // group stays last whatever its best match.
     // Only complete presets are rows: the readers keep a document's entry the
     // backend cannot read out of the list, and every field below is read.
     const whole = presets.filter(isCompletePreset);
     const shown = new Set(orderCategories(whole.map((p) => p.category), beginnerMode));
     let presetItems = whole.filter((p) => shown.has(p.category));
     if (q) {
-      presetItems = presetItems.filter(
-        (p) =>
-          p.preset_name.toLowerCase().includes(q) ||
-          p.description.toLowerCase().includes(q) ||
-          p.tags.some((tag) => tag.toLowerCase().includes(q)),
+      presetItems = rankMatches(presetItems, (p) => p.preset_name, presetSearchTexts, q).map(
+        (m) => m.item,
       );
     }
     if (presetItems.length > 0) out.push({ category: PRESET_GROUP, items: presetItems });
 
     return out;
-  }, [categorized, presets, beginnerMode, pluginsById, searchQuery]);
+  }, [categorized, presets, beginnerMode, pluginsById, searchQuery, locale, tn]);
 
   return (
     <>

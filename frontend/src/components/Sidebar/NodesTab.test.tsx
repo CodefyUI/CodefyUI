@@ -938,3 +938,154 @@ describe('NodesTab — presets group', () => {
     expect(screen.getByText('2 個節點')).toBeTruthy();
   });
 });
+
+// ── Ranked search ─────────────────────────────────────────────────────────
+// A search used to filter only, so the rows kept the catalog order and the
+// node named exactly what was typed could be the last of fifteen ("linear":
+// most matches mention a linear layer in their descriptions). The groups stay;
+// the order inside and between them is the shared ranking of nodeSearch.ts.
+
+/** The row names among `names`, in the order the list renders them. */
+function rowsNamed(...names: string[]): string[] {
+  return screen.getAllByText((content) => names.includes(content)).map((el) => el.textContent ?? '');
+}
+
+function search(value: string) {
+  // By role, not placeholder: the placeholder is translated in the zh-TW cases.
+  fireEvent.change(screen.getByRole('textbox'), { target: { value } });
+}
+
+describe('NodesTab — ranked search', () => {
+  it('lists the node named exactly what was typed first, its category ahead of description matches', () => {
+    seedStore({
+      categorized: {
+        A: [def('DQN', 'A', 'Q-network with a linear head')],
+        B: [def('Linear', 'B', 'fully connected layer')],
+      },
+    });
+    const { container } = render(<NodesTab />);
+    expect(categoryNames(container)).toEqual(['A', 'B']);
+
+    search('linear');
+    expect(categoryNames(container)).toEqual(['B', 'A']);
+    expect(rowsNamed('DQN', 'Linear')).toEqual(['Linear', 'DQN']);
+  });
+
+  it('sorts the matches inside a category: exact, prefix, word, substring, then description', () => {
+    seedStore({
+      categorized: {
+        Utility: [
+          def('DQN', 'Utility', 'a linear head'),
+          def('Bilinear', 'Utility', 'blends two inputs'),
+          def('SparseLinear', 'Utility', 'a sparse layer'),
+          def('LinearRegression', 'Utility', 'least squares'),
+          def('Linear', 'Utility', 'fully connected layer'),
+        ],
+      },
+    });
+    render(<NodesTab />);
+    search('linear');
+    expect(rowsNamed('DQN', 'Bilinear', 'SparseLinear', 'LinearRegression', 'Linear')).toEqual([
+      'Linear',
+      'LinearRegression',
+      'SparseLinear',
+      'Bilinear',
+      'DQN',
+    ]);
+  });
+
+  it('orders categories by their best match: tier, then the shorter name, then the usual order', () => {
+    seedStore({
+      categorized: {
+        CNN: [def('ConvA', 'CNN')],
+        Data: [def('ConvB', 'Data'), def('LinearModel', 'Data')],
+        Utility: [def('LinearNet', 'Utility')],
+      },
+    });
+    const { container } = render(<NodesTab />);
+
+    // Both prefix matches, Utility's the shorter name: ahead of Data, which
+    // comes first in the usual order.
+    search('linear');
+    expect(categoryNames(container)).toEqual(['Utility', 'Data']);
+
+    // Equally good (prefix, same length): the usual order decides.
+    search('conv');
+    expect(categoryNames(container)).toEqual(['Data', 'CNN']);
+  });
+
+  it('ranks the presets by the same rule and keeps their group last', () => {
+    seedStore({
+      categorized: { CNN: [def('Conv2d', 'CNN', 'the layer LeNet starts with')] },
+      presets: [preset('LeNetDeep', 'CNN'), preset('LeNet', 'CNN')],
+    });
+    const { container } = render(<NodesTab />);
+    search('lenet');
+    // Conv2d matches only through its description, and its group still comes
+    // first: presets stay pinned below the node categories.
+    expect(categoryNames(container)).toEqual(['CNN', 'Presets']);
+    expect(rowsNamed('LeNetDeep', 'LeNet')).toEqual(['LeNet', 'LeNetDeep']);
+  });
+
+  it("takes a plugin node's name without its prefix as an exact match", () => {
+    seedStore({ categorized: { Data: [def('FilterRowsByMask', 'Data'), eduDef()] } });
+    render(<NodesTab />);
+    search('filterrows');
+    expect(rowsNamed('FilterRowsByMask', 'edu:FilterRows')).toEqual(['edu:FilterRows', 'FilterRowsByMask']);
+  });
+
+  it('finds a node by its Chinese description in the Chinese UI, and by English too', () => {
+    // Conv2d is in nodeLocales/zh-TW.ts; its summary there is about a 卷積核.
+    useI18n.setState({ locale: 'zh-TW' });
+    seedStore({
+      categorized: {
+        CNN: [
+          def('Conv2d', 'CNN', 'slides a learned kernel over the input'),
+          def('Linear', 'CNN', 'fully connected layer'),
+        ],
+      },
+    });
+    render(<NodesTab />);
+
+    search('卷積');
+    expect(screen.getByText('Conv2d')).toBeTruthy();
+    expect(screen.queryByText('Linear')).toBeNull();
+
+    search('kernel');
+    expect(screen.getByText('Conv2d')).toBeTruthy();
+  });
+
+  it('does not search the Chinese text in the English UI', () => {
+    seedStore({ categorized: { CNN: [def('Conv2d', 'CNN', 'slides a learned kernel over the input')] } });
+    render(<NodesTab />);
+    search('卷積');
+    expect(screen.getByText('No matching nodes')).toBeTruthy();
+  });
+
+  it('runs the search again when the UI language changes', () => {
+    seedStore({ categorized: { CNN: [def('Conv2d', 'CNN', 'slides a learned kernel over the input')] } });
+    render(<NodesTab />);
+    search('卷積');
+    expect(screen.getByText('No matching nodes')).toBeTruthy();
+
+    act(() => useI18n.setState({ locale: 'zh-TW' }));
+    expect(screen.getByText('Conv2d')).toBeTruthy();
+  });
+
+  it('keeps what beginner mode hides out of a search, even an exact match', () => {
+    useUIStore.setState({ beginnerMode: true });
+    seedStore({
+      categorized: {
+        CNN: [def('Conv2d', 'CNN', 'a linear filter')],
+        Utility: [def('Linear', 'Utility')], // not a beginner category
+      },
+      presets: [preset('LinearBlock', 'Transformer'), preset('LinearNet', 'CNN')],
+    });
+    render(<NodesTab />);
+    search('linear');
+    expect(screen.queryByText('Linear')).toBeNull();
+    expect(screen.getByText('Conv2d')).toBeTruthy();
+    expect(screen.queryByText('LinearBlock')).toBeNull();
+    expect(screen.getByText('LinearNet')).toBeTruthy();
+  });
+});
