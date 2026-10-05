@@ -136,6 +136,47 @@ describe('saveActiveGraph renames the tab', () => {
   });
 });
 
+/**
+ * The name question opens filled in, and selected, so Enter keeps the name
+ * and typing replaces it. It used to open empty, on Save As too, where the
+ * graph already has a name the user can see.
+ */
+describe('saveActiveGraph offers a name', () => {
+  /** What the save's name question opened with. */
+  const offered = () => vi.mocked(prompt).mock.calls[0][0].defaultValue;
+
+  it("Save As of a saved graph offers the graph's title", async () => {
+    openTab('my label');
+    store().setCurrentGraphFile('My_Graph', 'My Graph');
+    typeName('My Graph copy');
+
+    await saveActiveGraph({ saveAs: true });
+
+    expect(offered()).toBe('My Graph');
+  });
+
+  it("the first Save of a tab bound to nothing offers the tab's name", async () => {
+    openTab('CF2D01');
+    typeName('CF2A01');
+
+    await saveActiveGraph();
+
+    expect(offered()).toBe('CF2D01');
+  });
+
+  // A tab restored from a 2.8.0 record has a file but no title; its label
+  // came from the graph when the graph was opened.
+  it("the one-time title question of a 2.8.0 tab offers the tab's name", async () => {
+    openTab('My Graph');
+    store().setCurrentGraphFile('My_Graph', null);
+    typeName('My Graph');
+
+    await saveActiveGraph();
+
+    expect(offered()).toBe('My Graph');
+  });
+});
+
 describe('saveActiveGraph leaves the label alone when nothing was saved', () => {
   it('a save the server refused', async () => {
     const id = openTab('CF2D01');

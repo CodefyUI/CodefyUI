@@ -1298,6 +1298,9 @@ describe('Toolbar', () => {
     mockedRest.exportGraph.mockResolvedValueOnce({ script: 'x' });
     setActiveTab({
       ...SAVED,
+      // A saved graph's script is named by its stored title (exportTarget),
+      // so the fallback needs a graph with no title as well as no label.
+      currentGraphName: null,
       name: '',
       nodes: [{ id: 'n1', type: 'baseNode', position: { x: 0, y: 0 }, data: { type: 'Add', params: {} } }],
     });

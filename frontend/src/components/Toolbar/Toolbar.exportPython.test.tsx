@@ -402,13 +402,15 @@ describe('Toolbar Export as Python: absolute file paths', () => {
 });
 
 /**
- * The export file name.
+ * The export file name, and the graph's name inside the file.
  *
  * Exports were named after the tab, so a starter imported into the first tab
  * went out as `Tab_1.py`, and one imported into a tab of its own as
  * `CF2D01.py` -- the starter's own file, next to which the student's answer
  * then landed. A saved graph now exports under its file's name, and a tab not
- * saved yet is asked first, with its name filled in.
+ * saved yet is asked first, with its name filled in. The graph inside the
+ * file (the JSON's `name`, the script's `GRAPH_NAME`) carries the same name:
+ * the saved graph's title, or the answer, which the tab then takes too.
  */
 describe('Toolbar: the export file name', () => {
   beforeEach(() => {
@@ -469,6 +471,21 @@ describe('Toolbar: the export file name', () => {
   /** Lets an export the question stopped run to its end. */
   const settle = () => act(() => new Promise<void>((resolve) => setTimeout(resolve, 0)));
 
+  /** What the tab strip says for `tab-1`. */
+  const label = () => useTabStore.getState().tabs.find((tab) => tab.id === 'tab-1')?.name;
+
+  /** The graph inside the last JSON download (jsdom's Blob has no `text()`). */
+  function downloadedJson(): Promise<{ name: unknown }> {
+    const calls = vi.mocked(URL.createObjectURL).mock.calls;
+    const blob = calls[calls.length - 1][0] as Blob;
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(JSON.parse(String(reader.result)));
+      reader.onerror = () => reject(reader.error);
+      reader.readAsText(blob);
+    });
+  }
+
   it('asks a tab not saved yet for a file name before sending anything, and downloads under it', async () => {
     unsaved('CF2D01');
     render(<Toolbar />);
@@ -482,10 +499,74 @@ describe('Toolbar: the export file name', () => {
     expect(mockedRest.exportGraph).not.toHaveBeenCalled();
     await answer('CF2A01');
     await waitFor(() => expect(downloads).toEqual(['CF2A01.py']));
-    // The script's header still names the graph as the tab does.
-    expect(mockedRest.exportGraph.mock.calls[0][2]).toBe('CF2D01');
+    // The script names the graph as its file is named (`GRAPH_NAME`), and the
+    // tab takes that name too.
+    expect(mockedRest.exportGraph.mock.calls[0][2]).toBe('CF2A01');
+    expect(label()).toBe('CF2A01');
     // The in-app dialog, never the browser's own.
     expect(window.prompt).not.toHaveBeenCalled();
+  });
+
+  it('offers the name typed for the last export the next time', async () => {
+    unsaved('CF2D01');
+    render(<Toolbar />);
+    clickExportPython();
+    await answer('CF2A01.py');
+    await waitFor(() => expect(downloads).toEqual(['CF2A01.py']));
+
+    clickExportPython();
+
+    expect(question()).toMatchObject({ defaultValue: 'CF2A01' });
+    await answer('CF2A01');
+    await waitFor(() => expect(downloads).toEqual(['CF2A01.py', 'CF2A01.py']));
+  });
+
+  // As a Save As renames the tab once the file is written: the name is the
+  // tab's once the script is downloading, not when it is typed.
+  it('renames the tab once the script is downloading, not while the request is out', async () => {
+    unsaved('CF2D01');
+    const answerExport = pendingExport();
+    render(<Toolbar />);
+    clickExportPython();
+    await answer('CF2A01');
+    await waitFor(() => expect(mockedRest.exportGraph).toHaveBeenCalledTimes(1));
+
+    expect(label()).toBe('CF2D01');
+
+    await answerExport({ script: 'print(1)', warnings: [] });
+
+    await waitFor(() => expect(downloads).toEqual(['CF2A01.py']));
+    expect(label()).toBe('CF2A01');
+  });
+
+  it('renames nothing when the export is refused', async () => {
+    unsaved('CF2D01');
+    mockedRest.exportGraph.mockRejectedValueOnce(new Error('Export failed: server down'));
+    render(<Toolbar />);
+    clickExportPython();
+    await answer('CF2A01');
+
+    await waitFor(() =>
+      expect(useToastStore.getState().toasts.map((toast) => toast.type)).toEqual(['error']),
+    );
+    expect(downloads).toEqual([]);
+    expect(label()).toBe('CF2D01');
+  });
+
+  it('renames the tab the export started from when another tab came to the front meanwhile', async () => {
+    unsaved('CF2D01');
+    const answerExport = pendingExport();
+    render(<Toolbar />);
+    clickExportPython();
+    await answer('CF2A01');
+    await waitFor(() => expect(mockedRest.exportGraph).toHaveBeenCalledTimes(1));
+    await switchTab('tab-2');
+
+    await answerExport({ script: 'print(1)', warnings: [] });
+
+    await waitFor(() => expect(downloads).toEqual(['CF2A01.py']));
+    expect(label()).toBe('CF2A01');
+    expect(useTabStore.getState().tabs.find((tab) => tab.id === 'tab-2')?.name).toBe('Other');
   });
 
   it('sends nothing and downloads nothing when the question is cancelled', async () => {
@@ -508,6 +589,18 @@ describe('Toolbar: the export file name', () => {
 
     expect(downloads).toEqual(['CF2A01.py']);
     expect(useDialogStore.getState().active).toBeNull();
+  });
+
+  it("names a saved graph's script after the title it was saved under, not the tab's label", async () => {
+    setTab1({ name: 'Tab 1', currentGraphFile: 'CF2A01', currentGraphName: 'CF2A01 title' });
+    render(<Toolbar />);
+
+    await exportPython();
+
+    expect(mockedRest.exportGraph.mock.calls[0][2]).toBe('CF2A01 title');
+    expect(downloads).toEqual(['CF2A01.py']);
+    expect(useDialogStore.getState().active).toBeNull();
+    expect(label()).toBe('Tab 1');
   });
 
   it('keeps the letters of a CJK name', async () => {
@@ -546,6 +639,9 @@ describe('Toolbar: the export file name', () => {
     await exportPython();
 
     expect(downloads).toEqual(['Exam_v2.py']);
+    // One name for the file, the script's graph and the tab.
+    expect(mockedRest.exportGraph.mock.calls[0][2]).toBe('Exam v2');
+    expect(label()).toBe('Exam v2');
   });
 
   describe('Export as JSON', () => {
@@ -572,6 +668,31 @@ describe('Toolbar: the export file name', () => {
       await answer('CF2A01');
 
       await waitFor(() => expect(downloads).toEqual(['CF2A01.json']));
+    });
+
+    // Import names a tab after the graph's `name`, so a file that still said
+    // "CF2D01" inside came back as a tab named after the starter.
+    it('names the graph inside the file as the answer names the file, and the tab too', async () => {
+      unsaved('CF2D01');
+      render(<Toolbar />);
+
+      pick('Export as JSON');
+      await answer('CF2A01.json');
+
+      await waitFor(() => expect(downloads).toEqual(['CF2A01.json']));
+      expect((await downloadedJson()).name).toBe('CF2A01');
+      expect(label()).toBe('CF2A01');
+    });
+
+    it("names a saved graph inside the file by its title, not the tab's label", async () => {
+      setTab1({ name: 'Tab 1', currentGraphFile: 'CF2A01', currentGraphName: 'CF2A01 title' });
+      render(<Toolbar />);
+
+      pick('Export as JSON');
+
+      await waitFor(() => expect(downloads).toEqual(['CF2A01.json']));
+      expect((await downloadedJson()).name).toBe('CF2A01 title');
+      expect(label()).toBe('Tab 1');
     });
 
     it('downloads nothing when the question is cancelled', async () => {

@@ -126,7 +126,15 @@ export async function saveActiveGraph(opts: { saveAs?: boolean } = {}): Promise<
     targetFile = boundFile;
     targetName = tab.currentGraphName;
   } else {
-    const entered = await prompt({ title: t('toolbar.save.prompt'), placeholder: 'graph-name' });
+    // Filled in, and selected when the dialog opens, so Enter keeps the name
+    // and typing replaces it: the graph's title, else the tab's name -- the
+    // label of a tab not saved yet, or of a 2.8.0 tab (below), which took
+    // that label from the graph when it was opened.
+    const entered = await prompt({
+      title: t('toolbar.save.prompt'),
+      placeholder: 'graph-name',
+      defaultValue: tab.currentGraphName || tab.name,
+    });
     const trimmed = entered?.trim();
     if (!trimmed) return;
     targetName = trimmed;
