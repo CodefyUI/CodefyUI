@@ -25,14 +25,14 @@ From the keyboard, `Tab` reaches the strip at the open tab. `Left` and `Right` m
 
 ### The welcome screen {/* #the-welcome-screen */}
 
-With no tab open, CodefyUI shows a welcome screen in place of the editor. **New blank graph** opens an empty tab, **Browse all templates** opens the [Template Gallery](./examples-gallery#when-the-canvas-is-not-empty), and the cards under **Or start from an example** list the [examples](./examples-gallery); picking one opens it in a new tab.
+With no tab open, CodefyUI shows a welcome screen in place of the editor. **New blank graph** opens an empty tab. **Open a saved graph** does the same and shows the sidebar's **Graphs** list beside it; a graph opened from that list goes into the current tab when the tab is empty and has nothing to undo, and into a new tab otherwise, so the one you click fills this tab. **Import...** is the **Graphs** tab's own, for a graph `.json` or a [workspace file](#workspace-files). **Browse all templates** opens the [Template Gallery](./examples-gallery#when-the-canvas-is-not-empty), and the cards under **Or start from an example** list the [examples](./examples-gallery); picking one opens it in a new tab.
 
 While the welcome screen is shown:
 
 - the toolbar keeps only the project badge, **Settings**, **?**, the font size and the language; buttons added by plugins come back when a tab opens
 - **Settings** leaves out **Recording & Inspection** and **Training Behavior**, which belong to a graph
 - the Template Gallery offers only **Open in new tab**
-- there is no sidebar and no results panel, so **Graphs** (with its **Import...**), **Source Control** and **Runs** are reached by opening a tab first, with **+** or **New blank graph**
+- there is no sidebar and no results panel, so **Source Control** and **Runs** are reached by opening a tab first, with **+** or **New blank graph**; for the **Graphs** tab, the welcome screen has **Open a saved graph** and **Import...**
 
 The empty state is saved like any other: a reload returns to the welcome screen. A browser that has never saved any tabs starts on an empty **Tab 1**.
 
@@ -78,7 +78,7 @@ Saved graphs are stored by the server, not by the browser:
 You can export any graph to a JSON file and import it back later (or share it):
 
 - **Export → Export as JSON** writes the current tab's graph (nodes, edges, parameters, segment markers and subgraph definitions) to a `.json` file.
-- **Import...**, at the foot of the sidebar's **Graphs** tab, takes a graph `.json` or a [workspace file](#workspace-files) and tells them apart by what is inside, not by the file name. Neither replaces an open graph. A graph goes into the current tab only when that tab is empty (no nodes, no notes); otherwise it opens in a new tab, named after the graph or, if the graph has no name, after the file. With 32 tabs open, a graph that would need a new tab is refused with a message. A workspace file only **adds** tabs. A `.json` file that is not a graph is refused with a message, and a graph written by a newer CodefyUI opens read-only, with a notice. An imported graph is bound to no file, so the first Save asks for a name.
+- **Import...**, at the foot of the sidebar's **Graphs** tab, takes a graph `.json` or a [workspace file](#workspace-files) and tells them apart by what is inside, not by the file name. Neither replaces an open graph. A graph goes into the current tab only when that tab is empty (no nodes, no notes, nothing to undo); otherwise it opens in a new tab, named after the graph or, if the graph has no name, after the file. With 32 tabs open, a graph that would need a new tab is refused with a message. A workspace file only **adds** tabs. A `.json` file that is not a graph is refused with a message, and a graph written by a newer CodefyUI opens read-only, with a notice. An imported graph is bound to no file, so the first Save asks for a name.
 - **Import...** into the empty current tab renames the tab the way a new tab is named: after the graph, or after the file when the graph has no name.
 - **Export as JSON** and **Export as Python** name the file after the saved graph's file name, without asking. A tab not saved yet asks for a file name first, filled in with the tab's name; Cancel exports nothing. Letters of any script, digits, `-` and `_` are kept, and any other character becomes `_`. **Export Diagram** never asks: it uses the saved graph's file name, or else the tab's name.
 - **Export → Export Diagram (SVG / PNG)** draws the architecture only — nodes, ports and connections, no parameter values — on a light, document-friendly background.

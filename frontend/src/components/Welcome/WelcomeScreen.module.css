@@ -47,9 +47,9 @@
   margin: 0 0 var(--sp-6);
 }
 
-/* Stacked, not side by side: at 22rem two buttons on one row would each be
-   too narrow for their label in zh-TW, and the stack also says which of the
-   two is the main road. */
+/* Stacked, not side by side: at 22rem even two of the four buttons on one row
+   would each be too narrow for their label in zh-TW, and the stack also says
+   which of the four is the main road. */
 .actions {
   display: flex;
   flex-direction: column;

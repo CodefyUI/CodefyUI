@@ -3,9 +3,11 @@ import { loadExample } from '../api/rest';
 import { useNodeDefStore } from '../store/nodeDefStore';
 import { useTabStore, type GraphDocument } from '../store/tabStore';
 import { useToastStore } from '../store/toastStore';
+import { useUIStore } from '../store/uiStore';
 import { useI18n } from '../i18n';
 import type { NodeData, PresetDefinition, SegmentGroup, SubgraphDefinition } from '../types';
 import { resolveSerializedNodes, resolveSerializedEdges } from '.';
+import { nodesBoundingBox } from './autoLayout';
 import { isFormatTooNew } from './formatVersion';
 import { readGraphDevice, readGraphSeed } from './graphSettings';
 import {
@@ -13,6 +15,7 @@ import {
   mergeUnknownPresetsIntoPalette,
   withPresetDefaults,
 } from './presetOwnership';
+import { canFillTab } from './tabFill';
 
 /**
  * A fetched example, resolved into live canvas nodes and edges.
@@ -205,6 +208,14 @@ function applyToActiveTab(example: ResolvedExample): void {
     seed: example.seed,
     formatVersion: example.formatVersion,
   });
+  // Framed with the one-shot fit an Import into an empty tab asks for. The
+  // tab can be the one already on screen -- the empty-canvas gallery of a tab
+  // "+" just opened -- and that tab keeps the view it came in with, which
+  // after a pan elsewhere shows nothing of the example (#595). Measured from
+  // what the tab now holds.
+  const { activeTabId, getTab } = useTabStore.getState();
+  const bounds = nodesBoundingBox((getTab(activeTabId)?.nodes ?? []) as Node[]);
+  if (bounds) useUIStore.getState().requestLayoutFit(bounds);
   // Same notice the Toolbar readers show, for the same reason: read-only is
   // not a failure, and a user who is not told will read the refused Save as
   // one.
@@ -224,12 +235,20 @@ function reportLoadFailure(): false {
 }
 
 /**
- * Load a builtin/plugin example into the ACTIVE tab.
+ * Load a builtin/plugin example picked on the empty-canvas gallery: into the
+ * active tab when it may be filled (`canFillTab`), into a new tab otherwise.
  *
  * Extracted from `EmptyCanvasOverlay` in #126 so the sidebar's Templates tab
  * opens an example exactly the way the empty-canvas gallery does — same
  * resolution, same preset merge, same tab rename, same error toast. The
  * template gallery modal (core#128) calls it too.
+ *
+ * The gallery shows whenever the level on screen is empty, which is not the
+ * same as an empty tab: inside a block whose insides were deleted the whole
+ * graph waits one level up, and installing there replaced it with no undo
+ * (#595). The tab in front can also change while the example loads — the tab
+ * it was picked in closes and one holding work comes forward. So where the
+ * example goes is decided once it has arrived, by the rule Import follows.
  *
  * Stores are read through `getState()` instead of hooks because this is a
  * plain function called from an event handler, not a component.
@@ -239,7 +258,10 @@ function reportLoadFailure(): false {
  */
 export async function openExample(path: string): Promise<boolean> {
   try {
-    applyToActiveTab(await fetchResolvedExample(path));
+    const example = await fetchResolvedExample(path);
+    const { activeTabId, getTab } = useTabStore.getState();
+    if (!canFillTab(getTab(activeTabId))) useTabStore.getState().addTab();
+    applyToActiveTab(example);
     return true;
   } catch {
     return reportLoadFailure();

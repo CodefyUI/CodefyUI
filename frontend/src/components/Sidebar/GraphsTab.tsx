@@ -13,6 +13,9 @@ import { sanitizeGraphName } from '../../utils';
 import { confirm, prompt } from '../../utils/dialog';
 import { getGraphsWriteListener, setGraphsWriteListener } from '../../utils/graphsWrite';
 import { importFile } from '../../utils/importGraphFile';
+import { canFillTab } from '../../utils/tabFill';
+import { nodesBoundingBox } from '../../utils/autoLayout';
+import { useUIStore } from '../../store/uiStore';
 import { readSavedGraphDocument } from '../../utils/openSavedGraph';
 import { saveActiveGraph } from '../../utils/saveActiveGraph';
 import { announceWorktreeWrite } from '../../utils/worktreeWrite';
@@ -71,14 +74,13 @@ interface GraphRowProps {
 }
 
 /**
- * One saved graph: click to open it in a tab of its own, or reach the other
- * two verbs through the menu at the end of the row.
- *
- * Opening is ONE action rather than a choice between several. A row in a
- * list the user scrolls past must not be able to take over the canvas that
- * is in front of them, and a tab of its own is the only answer that is never
- * destructive -- which is also why the row asks nothing before opening:
- * there is no longer anything to lose by saying yes.
+ * One saved graph: click to open it, or reach the other two verbs through the
+ * menu at the end of the row. Opening is ONE action rather than a choice
+ * between several. A row in a list the user scrolls past must not be able to
+ * take over a canvas with anything on it, so the graph goes where an Import
+ * would put it (`canFillTab`): into the tab in front only when that tab is
+ * empty, into a tab of its own otherwise -- which is also why the row asks
+ * nothing before opening: there is nothing to lose by saying yes.
  *
  * Shaped like the Source Control tab's `RefRow`, which is the panel next
  * door and solved the same three problems: a name that has to ellipsise at
@@ -175,12 +177,13 @@ function GraphRow({
  * control is for the writes this app never sees -- a file dropped into
  * `graphs/` by hand, or written by a second browser.
  *
- * Opening is ONE action: a row click reads the graph into a tab of its own,
- * bound to its file so Save writes straight back over it. Nothing on screen
- * is replaced and so nothing is asked first -- a row in a list the user
- * scrolls past should not be able to take over the canvas being worked in,
- * and a new tab is the only answer that is never destructive. The one graph
- * that does not get a new tab is one a tab already holds: that tab is raised
+ * Opening is ONE action: a row click reads the graph into a tab, bound to its
+ * file so Save writes straight back over it -- the tab in front when it is
+ * empty, as an Import fills it (`canFillTab`), and a tab of its own
+ * otherwise. A canvas with anything on it is never replaced, and so nothing
+ * is asked first: a row in a list the user scrolls past should not be able
+ * to take over the canvas being worked in. The one graph that does not go
+ * into a tab this way is one a tab already holds: that tab is raised
  * instead, so two tabs never end up bound to the same file -- and when it is
  * the tab already in front, where raising it would move nothing, the click is
  * answered in words instead of in silence.
@@ -358,8 +361,23 @@ export function GraphsTab() {
           raiseTab(raced.id, graph.name, { announceNoOp: false });
           return;
         }
-        const tabId = useTabStore.getState().createTab({ title: graph.name });
-        const tooNew = useTabStore.getState().loadGraphDocumentInto(tabId, doc);
+        // Into the tab in front when an Import would fill it (`canFillTab`),
+        // under the name a tab opened for the graph would get, and into a tab
+        // of its own otherwise: a canvas with anything on it is never replaced.
+        const { activeTabId, getTab } = useTabStore.getState();
+        const fill = canFillTab(getTab(activeTabId)) ? activeTabId : null;
+        const tabId = fill ?? useTabStore.getState().createTab({ title: graph.name });
+        const tooNew = useTabStore.getState().loadGraphDocumentInto(tabId, {
+          ...doc,
+          name: graph.name,
+        });
+        // The filled tab was on screen already and keeps the view it had,
+        // which after a pan can show nothing of this graph. A new tab is framed
+        // by the canvas as it comes forward.
+        if (fill !== null) {
+          const bounds = nodesBoundingBox(doc.nodes);
+          if (bounds !== null) useUIStore.getState().requestLayoutFit(bounds);
+        }
         if (tooNew) {
           useToastStore.getState().addToast(
             t('project.readOnly.loadNotice', {
@@ -368,10 +386,11 @@ export function GraphsTab() {
             'warning',
           );
         }
-        // The new tab is the active one, which is what `stampActiveTabProject`
-        // writes to. The stamp is what the Source Control tab's affected-tab
-        // filter reads, so a graph opened from here without one would sit
-        // outside every reload offer the project ever makes.
+        // The tab, new or filled (`canFillTab`), is the active one, which is
+        // what `stampActiveTabProject` writes to. The stamp is what the Source
+        // Control tab's affected-tab filter reads, so a graph opened from here
+        // without one would sit outside every reload offer the project ever
+        // makes.
         const projectDir = useProjectStore.getState().projectDir;
         if (projectDir !== null) useTabStore.getState().stampActiveTabProject(projectDir);
       } catch (e) {

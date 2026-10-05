@@ -13,7 +13,9 @@ import {
   Background,
   Controls,
   BackgroundVariant,
+  getViewportForBounds,
   useReactFlow,
+  useStoreApi,
   type Node,
   type NodeTypes,
   type EdgeTypes,
@@ -210,8 +212,8 @@ export function FlowCanvas({ tabId }: { tabId?: string } = {}) {
   const setCanvasPanning = useUIStore((s) => s.setCanvasPanning);
   const setNodes = useTabStore((s) => s.setNodes);
   const layoutFitRequest = useUIStore((s) => s.layoutFitRequest);
-  const { screenToFlowPosition, fitBounds, getViewport, setViewport } =
-    useReactFlow();
+  const { screenToFlowPosition, getViewport, setViewport } = useReactFlow();
+  const storeApi = useStoreApi();
 
   const containerRef = useRef<HTMLDivElement>(null);
   const reactFlowId = useId();
@@ -219,6 +221,12 @@ export function FlowCanvas({ tabId }: { tabId?: string } = {}) {
   // Fit a flow-space box as an OVERVIEW: small boxes (a single selected node,
   // a two-node graph) are inflated to most of the viewport first, so the fit
   // never zooms in aggressively toward maxZoom.
+  //
+  // Framed for the container's live size, through `getViewportForBounds`, not
+  // by React Flow's `fitBounds`: that one uses the size React Flow's resize
+  // observer last reported, which lags a commit that also resizes the canvas
+  // — the config panel closing as a tab switch lands — and framed the graph
+  // for the narrower canvas, small and at the left edge (#563).
   //
   // Instant, never animated: animated viewport transitions run on
   // requestAnimationFrame, which Chrome throttles to zero in occluded or
@@ -240,9 +248,14 @@ export function FlowCanvas({ tabId }: { tabId?: string } = {}) {
         y -= (minH - height) / 2;
         height = minH;
       }
-      fitBounds({ x, y, width, height }, { padding: 0.2 });
+      const { minZoom, maxZoom } = storeApi.getState();
+      const box = { x, y, width, height };
+      void setViewport(
+        getViewportForBounds(box, el.offsetWidth, el.offsetHeight, minZoom, maxZoom, 0.2),
+      );
     },
-    [fitBounds],
+    // The store from `useStoreApi` never changes, so this follows `setViewport` alone.
+    [setViewport, storeApi],
   );
 
   // ── Per-tab viewport handover (#125) ───────────────────────────────────────
@@ -256,10 +269,11 @@ export function FlowCanvas({ tabId }: { tabId?: string } = {}) {
   // than asked of React Flow. `fitView()` needs measured nodes, and React Flow
   // has only just been handed the incoming tab's — so it would either fit
   // nothing or have to wait for measurement, during which the user stares at
-  // the OUTGOING tab's viewport over the incoming tab's graph. `fitBounds`
-  // over a box we can compute ourselves lands in the same tick, with no
-  // intermediate wrong frame. Sizes fall back to the same defaults the
-  // auto-layout fit uses, so an unmeasured node still contributes a box.
+  // the OUTGOING tab's viewport over the incoming tab's graph. A viewport
+  // worked out by `getViewportForBounds` from a box we can compute ourselves
+  // lands in the same tick, with no intermediate wrong frame. Sizes fall back
+  // to the same defaults the auto-layout fit uses, so an unmeasured node
+  // still contributes a box.
   //
   // A LAYOUT effect, not a passive one: the render that changes activeTabId
   // has already handed <ReactFlow> the incoming tab's nodes, so a passive
@@ -317,8 +331,8 @@ export function FlowCanvas({ tabId }: { tabId?: string } = {}) {
 
   // Re-fit the viewport after auto-layout. The request already carries the
   // laid-out bounding box (computed from store data), so this needs nothing
-  // from React Flow's internal position sync — fitBounds sets the viewport
-  // directly and immediately. (The queued fitView() from useReactFlow only
+  // from React Flow's internal position sync — getViewportForBounds gives the
+  // viewport, set at once. (The queued fitView() from useReactFlow only
   // flushes on the next node change, and reading positions back via
   // getNodesBounds races the sync — both failure modes seen in e2e.) Since
   // #125 only the active tab's canvas is mounted, so the `tabId` check below
