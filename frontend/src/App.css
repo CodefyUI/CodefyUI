@@ -30,6 +30,11 @@ html {
      overriding it — which is why Large is genuinely large on a big monitor. */
   --font-scale: 1;
   font-size: calc(clamp(16px, 0.35vw + 11px, 19px) * var(--font-scale));
+
+  /* CJK fonts have no italic face, so italic Chinese used to get a fake
+     oblique; fonts with a real italic (Segoe UI, KaTeX's math fonts, the code
+     editor's) still italicize. Inherited, so it reaches portals too. */
+  font-synthesis-style: none;
 }
 
 html,

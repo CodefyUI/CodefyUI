@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { render, screen, fireEvent, within, act } from '@testing-library/react';
+import { render, screen, fireEvent, within, act, waitFor } from '@testing-library/react';
 import { NodesTab } from './NodesTab';
 import { useNodeDefStore } from '../../store/nodeDefStore';
 import { _resetPackStoreForTesting, usePackStore } from '../../store/packStore';
@@ -1087,5 +1087,45 @@ describe('NodesTab — ranked search', () => {
     expect(screen.getByText('Conv2d')).toBeTruthy();
     expect(screen.queryByText('LinearBlock')).toBeNull();
     expect(screen.getByText('LinearNet')).toBeTruthy();
+  });
+});
+
+// ── Formulas in descriptions (#598) ───────────────────────────────────────
+// Six node descriptions carry inline LaTeX (Linear's "$y = xW^T + b$"). The
+// card's tooltip and the config panel typeset it; the palette row and its
+// tooltip used to print the dollars and backslashes as they are.
+
+describe('NodesTab — formulas in descriptions', () => {
+  it('typesets a formula in the row and in its tooltip, never its source', async () => {
+    seedStore({ categorized: { Utility: [def('Linear', 'Utility', 'Layer: $y = x$')] } });
+    render(<NodesTab />);
+    const item = screen.getByText('Linear').parentElement as HTMLElement;
+
+    // Inside the row's own description element, so its two-line clamp holds.
+    const row = item.querySelector('[class*="nodeItemDesc"]') as HTMLElement;
+    await waitFor(() => expect(row.querySelector('.katex')).toBeTruthy());
+    expect(row.textContent).toContain('Layer: ');
+    expect(row.textContent).not.toContain('$');
+
+    fireEvent.mouseEnter(item);
+    // Name, then the tooltip's title: the portal comes after the list.
+    const tooltip = screen.getAllByText('Linear')[1].parentElement as HTMLElement;
+    const tip = tooltip.querySelector('[class*="nodeTooltipDesc"]') as HTMLElement;
+    await waitFor(() => expect(tip.querySelector('.katex')).toBeTruthy());
+    expect(tip.textContent).toContain('Layer: ');
+    expect(tip.textContent).not.toContain('$');
+  });
+
+  it('still searches the source text of a formula', async () => {
+    seedStore({
+      categorized: {
+        Utility: [def('Linear', 'Utility', 'Layer: $y = x$'), def('Conv2d', 'Utility')],
+      },
+    });
+    render(<NodesTab />);
+    search('y = x');
+    expect(screen.queryByText('Conv2d')).toBeNull();
+    const item = screen.getByText('Linear').parentElement as HTMLElement;
+    await waitFor(() => expect(item.querySelector('.katex')).toBeTruthy());
   });
 });

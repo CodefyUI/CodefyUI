@@ -597,6 +597,23 @@ const en = {
   // tab is already following keeps going.
   'execution.rejected': 'This run was not started — the server is already busy with this tab\'s run. It is still going; wait for it to finish or press Stop.',
 
+  // Run log status lines (UI-generated). What a node prints is not here: it
+  // is the graph's own output, the text the exported script prints too.
+  // {status} is the engine's raw token, for a status this table has no line for.
+  'runLog.started': 'Execution started',
+  'runLog.completed': 'Execution completed successfully',
+  'runLog.cancelled': 'Execution cancelled',
+  'runLog.error': 'Execution error: {error}',
+  'runLog.serverError': 'Execution server: {error}',
+  'runLog.unknownError': 'unknown error',
+  'runLog.connectFailed': 'Failed to connect to execution server',
+  'runLog.node.completed': 'Node {label} completed',
+  'runLog.node.skipped': 'Node {label} skipped',
+  'runLog.node.interrupted': 'Node {label} interrupted',
+  'runLog.node.error': 'Node {label} error: {detail}',
+  'runLog.node.errorBare': 'Node {label} error',
+  'runLog.node.other': 'Node {label} {status}',
+
   // Node palette — control category / start node
   'palette.category.control': 'Control',
   'palette.start.description': 'Marks an execution entry point. Connect to the first node of a script.',

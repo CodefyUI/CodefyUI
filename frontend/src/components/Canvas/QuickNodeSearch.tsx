@@ -8,6 +8,7 @@ import { nodeSearchTexts, presetSearchTexts, rankMatches } from '../../utils/nod
 import type { PluginIndex } from '../../utils/provider';
 import { isCompletePreset } from '../../utils/presetOwnership';
 import type { NodeDefinition, PresetDefinition } from '../../types';
+import { MathText } from '../shared/MathText';
 import styles from './QuickNodeSearch.module.css';
 
 // Module-scope, so the subscription compares the same function's output frame
@@ -212,7 +213,11 @@ export function QuickNodeSearch({ screenPos, flowPos, onClose }: QuickNodeSearch
               <div className={styles.itemContent}>
                 <span className={styles.itemName}>{name}</span>
                 {r.kind === 'preset' && <span className={styles.presetBadge}>{t('preset.badge')}</span>}
-                {desc && <span className={styles.itemDesc}>{desc}</span>}
+                {/* A node's description through MathText, as on the card: a few carry a
+                    $...$ formula. A preset's is plain text, as on the palette's preset row. */}
+                {desc && (r.kind === 'node'
+                  ? <MathText className={styles.itemDesc} text={desc} />
+                  : <span className={styles.itemDesc}>{desc}</span>)}
               </div>
               <span className={styles.itemCategory}>{category}</span>
             </button>

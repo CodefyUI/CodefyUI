@@ -292,9 +292,32 @@ export function useGraphExecution() {
             toastMissingPack(data.error, data.error_type);
           }
 
+          // runLog.*: the editor's own line, in the language the UI is in. A
+          // status with no line of its own (a newer backend's) keeps its token.
+          const runLogKey = (() => {
+            switch (data.status) {
+              case 'completed':
+                return 'runLog.node.completed';
+              case 'skipped':
+                return 'runLog.node.skipped';
+              case 'interrupted':
+                return 'runLog.node.interrupted';
+              case 'error':
+                return detail ? 'runLog.node.error' : 'runLog.node.errorBare';
+              default:
+                return 'runLog.node.other';
+            }
+          })();
           store.addTabLog(tabId, {
             nodeId: data.node_id,
-            message: `Node ${nodeLabel} ${data.status}${detail ? ': ' + detail : ''}`,
+            // The runLog.* slots in this order: t() fills one at a time, and an
+            // error or a node title can itself contain braces. So every
+            // translation must keep {label} before {detail}.
+            message: useI18n.getState().t(runLogKey, {
+              status: String(data.status),
+              detail,
+              label: nodeLabel,
+            }),
             type:
               data.status === 'error'
                 ? 'error'
@@ -380,7 +403,7 @@ export function useGraphExecution() {
         noteClosed((raw as { run_id?: unknown }).run_id);
         const store = useTabStore.getState();
         store.setTabStatus(tabId, 'completed');
-        store.addTabLog(tabId, { message: 'Execution completed successfully', type: 'success' });
+        store.addTabLog(tabId, { message: useI18n.getState().t('runLog.completed'), type: 'success' });
         // With weights kept, this run's numbers may include earlier runs'
         // training, which an exported script never has. The switch as this
         // run was sent with it: flipping it mid-run changes the next run, not
@@ -433,7 +456,7 @@ export function useGraphExecution() {
         }
         noteClosed(data.run_id);
         store.setTabStatus(tabId, 'error');
-        store.addTabLog(tabId, { message: `Execution error: ${data.error}`, type: 'error' });
+        store.addTabLog(tabId, { message: useI18n.getState().t('runLog.error', { error: data.error }), type: 'error' });
         // A fail-fast run re-raises the node's exception, so a missing pack
         // reaches the client here too — untyped, which is why the message
         // has to identify itself. Deliberately after the `rejected` return
@@ -451,7 +474,7 @@ export function useGraphExecution() {
         if (typeof data.run_id === 'string') {
           store.setLastRunId(tabId, data.run_id);
         }
-        store.addTabLog(tabId, { message: 'Execution started', type: 'info' });
+        store.addTabLog(tabId, { message: useI18n.getState().t('runLog.started'), type: 'info' });
       };
 
       const onExecutionStopped = (raw: unknown) => {
@@ -466,7 +489,7 @@ export function useGraphExecution() {
         noteClosed(data.run_id);
         const store = useTabStore.getState();
         store.setTabStatus(tabId, 'idle');
-        store.addTabLog(tabId, { message: 'Execution cancelled', type: 'info' });
+        store.addTabLog(tabId, { message: useI18n.getState().t('runLog.cancelled'), type: 'info' });
       };
 
       // The server acknowledged an attach. Its `status` is the run row's,
@@ -517,7 +540,9 @@ export function useGraphExecution() {
         const data = raw as { error?: string };
         const store = useTabStore.getState();
         store.addTabLog(tabId, {
-          message: `Execution server: ${data.error ?? 'unknown error'}`,
+          message: useI18n.getState().t('runLog.serverError', {
+            error: data.error ?? useI18n.getState().t('runLog.unknownError'),
+          }),
           type: 'error',
         });
 
@@ -724,7 +749,7 @@ export function useGraphExecution() {
     const dirtyAtClick = useTabStore.getState().getDirtyWithDownstream();
 
     if (!(await ensureConnected(ws))) {
-      addTabLog(tab.id, { message: 'Failed to connect to execution server', type: 'error' });
+      addTabLog(tab.id, { message: useI18n.getState().t('runLog.connectFailed'), type: 'error' });
       return;
     }
 
@@ -755,7 +780,7 @@ export function useGraphExecution() {
     // Checked again after the LAST await: nothing from here to the send
     // yields, so the execute frame leaves on an open socket.
     if (!(await ensureConnected(ws))) {
-      addTabLog(tab.id, { message: 'Failed to connect to execution server', type: 'error' });
+      addTabLog(tab.id, { message: useI18n.getState().t('runLog.connectFailed'), type: 'error' });
       return;
     }
 
