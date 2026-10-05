@@ -26,10 +26,12 @@ export interface PortFetchState {
    */
   errorKey?: TranslationKey | null;
   /**
-   * Why there is nothing here YET — the node that owns this port has not
-   * returned, so no request was made. Neutral rather than an error, and a key
-   * for the same reason `errorKey` is one. Set at render from the owner's
-   * current status, never stored, so it cannot lag behind it.
+   * Why there is nothing here, as a neutral line rather than an error, and a
+   * key for the same reason `errorKey` is one. Either nothing YET: the node
+   * that owns this port has not returned, so no request was made — set at
+   * render from the owner's current status, never stored, so it cannot lag
+   * behind it. Or the node ran and left the port empty (`inspector.noValue`,
+   * stored when the fetch answers 204).
    */
   noteKey?: TranslationKey | null;
   data: OutputData | null;

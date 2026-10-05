@@ -84,8 +84,8 @@ The Host guard runs before all other checks on every request, including the SPA 
 |----------|--------|------|-------------|
 | `/api/execution/outputs/{run_id}` | GET | open | List ports captured for a run. |
 | `/api/execution/outputs/{run_id}` | DELETE | token | Clear a captured run. |
-| `/api/execution/outputs/{run_id}/{node_id}/{port}` | GET | open | Fetch a captured tensor (supports `?slice=0,:,:` and `?max_elements=`, default 4096, at most 1,000,000); 413 when the slice is still larger. |
-| `/api/execution/outputs/{run_id}/{node_id}/{port}/stats` | GET | open | Server-side summary statistics for one captured port: a fixed set of scalars and a 64-bin histogram, or value counts for label tensors. The response is typically one or two kilobytes regardless of tensor size. Tensors above `CODEFYUI_STATS_SAMPLE_THRESHOLD` (4,000,000 elements) are sampled. |
+| `/api/execution/outputs/{run_id}/{node_id}/{port}` | GET | open | Fetch a captured tensor (supports `?slice=0,:,:` and `?max_elements=`, default 4096, at most 1,000,000); 413 when the slice is still larger. 204 when the node ran and this port produced no value (`None`); 404 when the run, or the port, has nothing recorded. |
+| `/api/execution/outputs/{run_id}/{node_id}/{port}/stats` | GET | open | Server-side summary statistics for one captured port: a fixed set of scalars and a 64-bin histogram, or value counts for label tensors. The response is typically one or two kilobytes regardless of tensor size. Tensors above `CODEFYUI_STATS_SAMPLE_THRESHOLD` (4,000,000 elements) are sampled. 204 when the node ran and this port produced no value (`None`); 404 when the run, or the port, has nothing recorded. |
 | `/api/execution/outputs/{run_id}/{node_id}/__steps_index` | GET | open | Step-trace metadata for a node (Inspector → Steps tab). |
 | `/api/execution/outputs/{run_id}/{node_id}/__grad_index` | GET | open | Captured gradient metadata (Inspector → Backward tab). |
 | `/api/execution/state/reset` | POST | token | Reset persisted layer weights (per-node or per-graph). |

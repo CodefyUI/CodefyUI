@@ -663,6 +663,7 @@ const en = {
   // until then there is nothing to read rather than nothing recorded.
   'inspector.nodeRunning': 'Node is running…',
   'inspector.nodePending': 'Waiting for this node to run…',
+  'inspector.noValue': 'No value this run',
   // Gradients land after the whole forward pass, so this view waits on the
   // run, not on the selected node.
   'inspector.runRunning': 'Graph is running…',

@@ -10,6 +10,17 @@ export class RunDataExpiredError extends Error {
   }
 }
 
+/**
+ * 204 from a port read: the node ran and this port produced no value (`None`).
+ * Nothing expired and nothing was left unrecorded, so it is not a 404.
+ */
+export class NoValueError extends Error {
+  constructor(runId: string, nodeId: string, port: string) {
+    super(`'${nodeId}.${port}' produced no value in run '${runId}'`);
+    this.name = 'NoValueError';
+  }
+}
+
 export class PayloadTooLargeError extends Error {
   constructor(detail: string) {
     super(detail);
@@ -50,6 +61,8 @@ export async function fetchOutput(
     (qs ? `?${qs}` : '');
 
   const res = await fetch(url);
+  // Before `res.ok`: a 204 is ok and has no body to parse.
+  if (res.status === 204) throw new NoValueError(runId, nodeId, port);
   if (res.status === 404) throw new RunDataExpiredError(runId);
   if (res.status === 400) throw new InvalidSliceError(await readDetail(res));
   if (res.status === 413) throw new PayloadTooLargeError(await readDetail(res));
@@ -206,6 +219,7 @@ export async function fetchPortStats(
 ): Promise<PortStats> {
   const url = `${BASE_URL}/${encodeURIComponent(runId)}/${encodeURIComponent(nodeId)}/${encodeURIComponent(port)}/stats`;
   const res = await fetch(url, { signal: opts.signal });
+  if (res.status === 204) throw new NoValueError(runId, nodeId, port);
   if (res.status === 404) throw new StatsNotCapturedError(await readDetail(res));
   if (!res.ok) throw new Error(`fetchPortStats failed: ${await readDetail(res)}`);
   return res.json();

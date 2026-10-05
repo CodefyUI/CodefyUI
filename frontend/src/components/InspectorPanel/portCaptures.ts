@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   fetchOutput,
+  NoValueError,
   RunDataExpiredError,
   PayloadTooLargeError,
 } from '../../api/executionOutputs';
@@ -157,11 +158,16 @@ export function resolveSingleNodePorts(
     };
   });
 
-  const outputs: PortTarget[] = (node.data.definition?.outputs ?? []).map((o) => ({
-    nodeId: node.id,
-    port: o.name,
-    dataType: o.data_type,
-  }));
+  // A trigger output (Start's) is left out for the reason `resolveInputSources`
+  // skips trigger edges: no value is ever captured behind it, so a request for
+  // it could only 404.
+  const outputs: PortTarget[] = (node.data.definition?.outputs ?? [])
+    .filter((o) => o.data_type !== 'TRIGGER')
+    .map((o) => ({
+      nodeId: node.id,
+      port: o.name,
+      dataType: o.data_type,
+    }));
 
   return { inputs, outputs };
 }
@@ -404,7 +410,22 @@ export function usePortFetches(
           }));
         } catch (e) {
           if (stale(key, seq)) return;
-          // Expiry is the one cause we recognise, so it travels as a key
+          // The node ran and left this port empty: a neutral note, not an
+          // error, and certainly not expiry.
+          if (e instanceof NoValueError) {
+            setFetches((prev) => ({
+              ...prev,
+              [key]: {
+                loading: false,
+                error: null,
+                errorKey: null,
+                noteKey: 'inspector.noValue',
+                data: null,
+              },
+            }));
+            return;
+          }
+          // Expiry is the one failure we recognise, so it travels as a key
           // that PortGroup translates on every render. Translating it here
           // would freeze the wording into state, where a later locale
           // switch cannot reach it.

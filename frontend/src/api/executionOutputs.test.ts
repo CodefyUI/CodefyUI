@@ -1,13 +1,16 @@
 import { describe, it, expect, beforeEach, vi, afterEach } from 'vitest';
 import {
   fetchOutput,
+  fetchPortStats,
   listRunOutputs,
   deleteRun,
   fetchStepIndex,
   fetchGradIndex,
+  NoValueError,
   RunDataExpiredError,
   InvalidSliceError,
   PayloadTooLargeError,
+  StatsNotCapturedError,
 } from './executionOutputs';
 import { _setSessionTokenForTesting } from './_auth';
 
@@ -39,6 +42,23 @@ function mockFetchJsonThrows(status: number) {
   } as unknown as Response;
   g.fetch = vi.fn().mockResolvedValue(response) as unknown as typeof fetch;
   return g.fetch as unknown as ReturnType<typeof vi.fn>;
+}
+
+// A 204 has no body, so a real `res.json()` on it throws. Returns the json
+// spy so a test can prove nobody tried.
+function mockFetchNoContent() {
+  const json = vi.fn(async () => {
+    throw new SyntaxError('Unexpected end of JSON input');
+  });
+  const response = {
+    ok: true,
+    status: 204,
+    statusText: 'No Content',
+    json,
+    text: async () => '',
+  } as unknown as Response;
+  g.fetch = vi.fn().mockResolvedValue(response) as unknown as typeof fetch;
+  return json;
 }
 
 beforeEach(() => {
@@ -78,6 +98,16 @@ describe('fetchOutput', () => {
   it('throws RunDataExpiredError on 404', async () => {
     mockFetch(404, { detail: 'missing' });
     await expect(fetchOutput('r', 'n', 'p')).rejects.toBeInstanceOf(RunDataExpiredError);
+  });
+
+  it('throws NoValueError on 204 without reading the empty body', async () => {
+    // The node ran and the port produced None; the server says so with 204.
+    const json = mockFetchNoContent();
+    const err = await fetchOutput('r', 'n', 'p').catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(NoValueError);
+    expect(err).not.toBeInstanceOf(RunDataExpiredError);
+    expect((err as Error).message).toContain('n.p');
+    expect(json).not.toHaveBeenCalled();
   });
 
   it('throws InvalidSliceError on 400', async () => {
@@ -219,5 +249,32 @@ describe('fetchGradIndex', () => {
     await expect(fetchGradIndex('r', 'n')).rejects.toThrow(
       /fetchGradIndex failed: grad boom/,
     );
+  });
+});
+
+describe('fetchPortStats', () => {
+  it('builds the /stats URL and returns the parsed body on 200', async () => {
+    const fetchMock = mockFetch(200, { kind: 'tensor' });
+    await expect(fetchPortStats('run 1', 'node/a', 'out')).resolves.toEqual({
+      kind: 'tensor',
+    });
+    expect(fetchMock.mock.calls[0][0]).toBe(
+      '/api/execution/outputs/run%201/node%2Fa/out/stats',
+    );
+  });
+
+  it('throws StatsNotCapturedError with the server detail on 404', async () => {
+    mockFetch(404, { detail: 'nothing captured' });
+    const err = await fetchPortStats('r', 'n', 'p').catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(StatsNotCapturedError);
+    expect((err as Error).message).toBe('nothing captured');
+  });
+
+  it('throws NoValueError on 204 without reading the empty body', async () => {
+    const json = mockFetchNoContent();
+    const err = await fetchPortStats('r', 'n', 'p').catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(NoValueError);
+    expect(err).not.toBeInstanceOf(StatsNotCapturedError);
+    expect(json).not.toHaveBeenCalled();
   });
 });

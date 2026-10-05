@@ -3,6 +3,7 @@
 import pytest
 import torch
 
+from app.core.graph_engine import CaptureAlias
 from app.core.port_stats import PortStatsCache
 from app.core.run_output_store import RunOutputStore
 from app.main import app
@@ -58,6 +59,65 @@ async def test_get_unknown_node_returns_404(test_client):
 
     resp = await test_client.get("/api/execution/outputs/r1/otherNode/out")
     assert resp.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_get_unknown_port_returns_404(test_client):
+    store = app.state.run_output_store
+    await store.put("r1", "n1", "out", torch.zeros(2))
+
+    resp = await test_client.get("/api/execution/outputs/r1/n1/missing")
+    assert resp.status_code == 404
+
+
+# ── a port that produced no value (#602) ─────────────────────────────────────
+# The node ran and returned None for the port -- TrainingLoop's
+# grad_scaler_state outside fp16, for one. Nothing is missing, so the answer
+# is an empty 204, not the 404 that a gone run gets: the browser logs every
+# 404 as "Failed to load resource", and the Inspector reads one as expiry.
+
+
+@pytest.mark.asyncio
+async def test_a_port_that_produced_no_value_is_204(test_client):
+    store = app.state.run_output_store
+    await store.put("r1", "n1", "state", None)
+
+    resp = await test_client.get("/api/execution/outputs/r1/n1/state")
+    assert resp.status_code == 204
+    assert resp.content == b""
+
+
+@pytest.mark.asyncio
+async def test_stats_for_a_port_that_produced_no_value_is_204(test_client):
+    store = app.state.run_output_store
+    await store.put("r1", "n1", "state", None)
+
+    resp = await test_client.get("/api/execution/outputs/r1/n1/state/stats")
+    assert resp.status_code == 204
+    assert resp.content == b""
+
+
+@pytest.mark.asyncio
+async def test_a_card_port_standing_for_no_value_is_204(test_client):
+    store = app.state.run_output_store
+    await store.put("r1", "card__inner", "state", None)
+    await store.put("r1", "card", "state", CaptureAlias("card__inner", "state"))
+
+    assert (await test_client.get("/api/execution/outputs/r1/card/state")).status_code == 204
+    assert (
+        await test_client.get("/api/execution/outputs/r1/card/state/stats")
+    ).status_code == 204
+
+
+@pytest.mark.asyncio
+async def test_an_alias_whose_value_is_gone_is_still_404(test_client):
+    store = app.state.run_output_store
+    await store.put("r1", "card", "state", CaptureAlias("card__inner", "state"))
+
+    assert (await test_client.get("/api/execution/outputs/r1/card/state")).status_code == 404
+    assert (
+        await test_client.get("/api/execution/outputs/r1/card/state/stats")
+    ).status_code == 404
 
 
 @pytest.mark.asyncio

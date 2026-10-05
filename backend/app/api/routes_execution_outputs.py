@@ -15,7 +15,7 @@ import functools
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
-from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi import APIRouter, HTTPException, Query, Request, Response
 
 from ..config import settings
 from ..core.graph_engine import CaptureAlias
@@ -380,7 +380,7 @@ async def get_output_stats(run_id: str, node_id: str, port: str, request: Reques
             detail=_not_captured(f"run '{run_id}' has no captured outputs"),
         )
     slot = await _read_capture(store, run_id, node_id, port)
-    if slot is None or slot[0] is None:
+    if slot is None:
         raise HTTPException(
             status_code=404,
             detail=_not_captured(
@@ -388,6 +388,10 @@ async def get_output_stats(run_id: str, node_id: str, port: str, request: Reques
             ),
         )
     value, version = slot
+    if value is None:
+        # The node ran and the port produced None: nothing to summarise, and
+        # nothing missing either -- the same empty 204 as ``get_output``.
+        return Response(status_code=204)
 
     cache = _get_stats_cache(request)
     # The store's write serial is part of the KEY. A node inside a loop
@@ -426,12 +430,19 @@ async def get_output(
     if not await store.has_run(run_id):
         raise HTTPException(status_code=404, detail=f"run '{run_id}' not found")
     slot = await _read_capture(store, run_id, node_id, port)
-    value = None if slot is None else slot[0]
-    if value is None:
+    if slot is None:
         raise HTTPException(
             status_code=404,
             detail=f"output '{node_id}.{port}' not found in run '{run_id}'",
         )
+    value = slot[0]
+    if value is None:
+        # The node ran and the port produced None -- TrainingLoop's
+        # grad_scaler_state outside fp16, for one (#602). An empty 204 rather
+        # than the 404 above, which stays for a port with nothing recorded:
+        # the browser logs every 404 as a failed resource, and the Inspector
+        # reads one as an expired run.
+        return Response(status_code=204)
     payload = _serialize_value(value, slice, max_elements)
     payload["run_id"] = run_id
     payload["node_id"] = node_id
