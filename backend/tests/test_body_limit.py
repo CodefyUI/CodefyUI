@@ -79,10 +79,15 @@ async def test_chunked_body_over_the_limit_is_refused(test_client, monkeypatch):
     assert sent.get("transfer-encoding") == "chunked"
 
 
-async def test_chunked_body_under_the_limit_still_succeeds(test_client):
+async def test_chunked_body_under_the_limit_still_succeeds(
+    test_client, monkeypatch, tmp_path,
+):
     """The cap is a ceiling, not a gate: chunked transfer is not itself
     suspicious. Pinned because the cheapest way to pass the test above is to
     refuse every request that has no Content-Length."""
+    # /save writes into settings.GRAPHS_DIR, which is the real
+    # backend/data/graphs unless a test points it elsewhere.
+    monkeypatch.setattr("app.config.settings.GRAPHS_DIR", tmp_path)
     resp = await test_client.post("/api/graph/save", json=_graph())
     assert resp.status_code == 200, resp.text
 
@@ -98,6 +103,7 @@ async def test_chunked_body_under_the_limit_still_succeeds(test_client):
         headers={"content-type": "application/json"},
     )
     assert resp.status_code == 200, resp.text
+    assert (tmp_path / "cap-probe.json").is_file()
 
 
 async def test_chunked_body_is_refused_on_the_run_route_with_its_envelope(
