@@ -608,6 +608,7 @@ const en = {
   'shortcuts.redoAlt': 'Redo (alt)',
   'shortcuts.copy': 'Copy selected nodes',
   'shortcuts.paste': 'Paste nodes',
+  'shortcuts.save': 'Save graph',
   'shortcuts.delete': 'Delete selected',
   'shortcuts.commit': 'Commit (Source Control message box)',
   'shortcuts.bypass': 'Toggle bypass on selected nodes',

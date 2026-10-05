@@ -286,7 +286,7 @@ Hot-reload via `POST /api/nodes/reload` or the **Reload Nodes** button in the to
 
 ## Key Bindings
 
-Chords are ignored while typing in an input, textarea or note.
+Chords other than Save (`Ctrl/Cmd` + `S`) are ignored while typing in an input, textarea or note.
 
 | Action | Key |
 |--------|-----|
@@ -299,7 +299,7 @@ Chords are ignored while typing in an input, textarea or note.
 | Bypass selected node(s) | `Ctrl/Cmd` + `B` (with a bypassable node selected) |
 | Collapse / expand sidebar | `Ctrl/Cmd` + `B` (nothing bypassable selected) / `Ctrl/Cmd` + `Shift` + `B` (always) |
 | Auto Layout (last-used mode) | `Shift` + `L` |
-| Save graph (project mode only) | `Ctrl/Cmd` + `S` |
+| Save graph | `Ctrl/Cmd` + `S` |
 | Rename / Duplicate node | Right-click → Rename / Duplicate |
 | Show shortcuts | `?` |
 

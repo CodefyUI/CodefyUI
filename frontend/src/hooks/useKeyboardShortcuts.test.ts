@@ -226,18 +226,73 @@ describe('useKeyboardShortcuts', () => {
     expect(saveActiveGraph).toHaveBeenCalledTimes(1);
   });
 
-  it('Ctrl+S is a no-op in non-project mode, leaving the browser Save dialog untouched', () => {
+  it('Ctrl+S saves outside project mode and prevents the browser default', () => {
+    // Outside a project the chord used to be left to the browser (ID9), so
+    // it opened "Save page as" over the graph. `saveActiveGraph` has one
+    // rule in both modes now, and so does the key.
     renderHook(() => useKeyboardShortcuts());
     const e = dispatchKey({ key: 's', ctrlKey: true });
-    expect(saveActiveGraph).not.toHaveBeenCalled();
-    expect(e.defaultPrevented).toBe(false);
+    expect(saveActiveGraph).toHaveBeenCalledTimes(1);
+    expect(e.defaultPrevented).toBe(true);
   });
 
-  it('Ctrl+Shift+S does not trigger save (reserved combination, shiftKey excluded)', () => {
+  it('Ctrl+S saves from a field too, where every other shortcut yields', () => {
+    // The Inspector's fields commit on every keystroke, so the graph in the
+    // store is already the graph on screen.
+    renderHook(() => useKeyboardShortcuts());
+    const input = document.createElement('input');
+    document.body.appendChild(input);
+    const e = dispatchKey({ key: 's', ctrlKey: true }, input);
+    expect(saveActiveGraph).toHaveBeenCalledTimes(1);
+    expect(e.defaultPrevented).toBe(true);
+    input.remove();
+  });
+
+  it('holding Ctrl+S saves once, and the repeats never reach the browser', () => {
+    renderHook(() => useKeyboardShortcuts());
+    const first = dispatchKey({ key: 's', ctrlKey: true });
+    const repeat = dispatchKey({ key: 's', ctrlKey: true, repeat: true });
+    expect(saveActiveGraph).toHaveBeenCalledTimes(1);
+    expect(first.defaultPrevented).toBe(true);
+    expect(repeat.defaultPrevented).toBe(true);
+  });
+
+  it('Ctrl+S never reaches the browser from an element that stops its own keys', () => {
+    // A handler under the document can stop a key before the shortcut
+    // handler hears it; the browser's dialog is refused all the same.
+    renderHook(() => useKeyboardShortcuts());
+    const note = document.createElement('div');
+    note.addEventListener('keydown', (ev) => ev.stopPropagation());
+    document.body.appendChild(note);
+    const e = dispatchKey({ key: 's', ctrlKey: true }, note);
+    expect(saveActiveGraph).not.toHaveBeenCalled();
+    expect(e.defaultPrevented).toBe(true);
+    note.remove();
+  });
+
+  it('Ctrl+S never reaches the browser under the workspace lock overlay', () => {
+    // The overlay stops every key in the window's capture phase, ahead of
+    // the page; only another listener on the window itself still hears it.
+    const swallow = (ev: KeyboardEvent) => ev.stopPropagation();
+    window.addEventListener('keydown', swallow, true);
+    try {
+      renderHook(() => useKeyboardShortcuts());
+      const e = dispatchKey({ key: 's', ctrlKey: true });
+      expect(saveActiveGraph).not.toHaveBeenCalled();
+      expect(e.defaultPrevented).toBe(true);
+    } finally {
+      window.removeEventListener('keydown', swallow, true);
+    }
+  });
+
+  it('Ctrl+Shift+S and Ctrl+Alt+S do not save, and keep their browser default', () => {
     useProjectStore.setState({ projectDir: '/proj', projectName: 'proj', loaded: true });
     renderHook(() => useKeyboardShortcuts());
-    dispatchKey({ key: 's', ctrlKey: true, shiftKey: true });
+    const shift = dispatchKey({ key: 's', ctrlKey: true, shiftKey: true });
+    const alt = dispatchKey({ key: 's', ctrlKey: true, altKey: true });
     expect(saveActiveGraph).not.toHaveBeenCalled();
+    expect(shift.defaultPrevented).toBe(false);
+    expect(alt.defaultPrevented).toBe(false);
   });
 
   // ── mod+B, the contested chord (core#128) ──
@@ -394,6 +449,9 @@ describe('useKeyboardShortcuts', () => {
     // After unmount the handler no longer fires.
     dispatchKey({ key: 'z', ctrlKey: true });
     expect(undo).not.toHaveBeenCalled();
+    // ...and Ctrl+S is the browser's again.
+    const save = dispatchKey({ key: 's', ctrlKey: true });
+    expect(save.defaultPrevented).toBe(false);
   });
 });
 
@@ -476,6 +534,17 @@ describe('useKeyboardShortcuts behind an open modal', () => {
     // Unprevented, so the browser's own copy/paste still works in the panel.
     expect(copy.defaultPrevented).toBe(false);
     expect(paste.defaultPrevented).toBe(false);
+  });
+
+  it.each(MODALS)('%s keeps Ctrl+S from saving, and from the browser', (_name, open) => {
+    // A save here would report success without the edits a panel has not
+    // applied yet (the Layers editor, a preset's Configure), and the name
+    // prompt is a dialog itself, so a second Ctrl+S cannot stack another.
+    open();
+    renderHook(() => useKeyboardShortcuts());
+    const e = dispatchKey({ key: 's', ctrlKey: true });
+    expect(saveActiveGraph).not.toHaveBeenCalled();
+    expect(e.defaultPrevented).toBe(true);
   });
 
   it('? does not stack the shortcuts sheet on top of the Package Center', () => {
