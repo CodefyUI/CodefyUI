@@ -196,6 +196,10 @@ export async function saveActiveGraph(opts: { saveAs?: boolean } = {}): Promise<
     // lost when the user did the deliberate, trust-building thing: Save.
     const { nodes, edges, presets, segmentGroups, subgraphs, settings } =
       liveStore.getSerializedGraphOf(liveTab);
+    // The revision these bytes are, for `markTabSaved` below (#596): the tab
+    // becomes "saved" at THIS revision, so an edit made while the request or
+    // the overwrite question is open keeps counting as unsaved.
+    const savedRevision = liveTab.revision;
     // The request, in one place, because it is sent TWICE on the path that
     // ends in an overwrite: once as itself, and once more with `overwrite`
     // after the user has agreed to replace what the first attempt ran into.
@@ -330,6 +334,9 @@ export async function saveActiveGraph(opts: { saveAs?: boolean } = {}): Promise<
     // This is what makes the 2.8.0-restored tab's one-time prompt a one-time
     // prompt.
     liveStore.setTabGraphFile(tab.id, savedFile, targetName);
+    // The file now holds the graph as it stood at `savedRevision`, so closing
+    // the tab before anything else changes asks nothing (#596).
+    liveStore.markTabSaved(tab.id, savedRevision);
     // Save As and a first save give the tab the name just chosen. A save in
     // place names nothing new, so a label the user typed into the tab stays.
     if (!inPlace) liveStore.renameTab(tab.id, targetName);

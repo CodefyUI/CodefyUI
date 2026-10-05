@@ -2180,6 +2180,75 @@ describe('applyWorktreeChange', () => {
     await settle();
     expect(reloadMock).not.toHaveBeenCalled();
   });
+
+  // #596: a tab whose file a write rewrote or removed no longer matches it --
+  // its graph may be the only copy left -- so closing it asks again
+  // (`forgetTabMatch` clears `savedRevision`), until the offered reload
+  // installs the file and records the match anew.
+  describe('the tabs it lands under stop counting as saved (#596)', () => {
+    const NODE = {
+      id: 'n1', type: 'baseNode', position: { x: 0, y: 0 },
+      data: { label: 'n1', type: 'Add', params: {} },
+    } as never;
+
+    /** A tab opened from `file` the way the Graphs panel opens one, so it matches it. */
+    function openMatched(file: string, origin: string | null = '/proj'): string {
+      const id = openTab(file, file, origin);
+      useTabStore.getState().loadGraphDocumentInto(id, {
+        nodes: [NODE], edges: [], boundFile: file, boundName: file,
+      });
+      return id;
+    }
+
+    const unsaved = async (id: string) => {
+      const { tabHasUnsavedWork } = await import('./tabStore');
+      return tabHasUnsavedWork(useTabStore.getState().getTab(id)!);
+    };
+
+    it('forgets the match of every tab a discard rewrote, and only those', async () => {
+      const demo = openMatched('demo');
+      const other = openMatched('other');
+      const elsewhere = openMatched('demo2', '/somewhere-else');
+      expect(await unsaved(demo)).toBe(false);
+      api.gitDiscard.mockResolvedValue(
+        mutation({ changed_paths: [...pair, 'graphs/demo2.graph.json'] }),
+      );
+
+      await git().discard('all');
+
+      expect(await unsaved(demo)).toBe(true);
+      expect(await unsaved(other)).toBe(false);
+      // Another project's tab is showing a file this repository does not hold.
+      expect(await unsaved(elsewhere)).toBe(false);
+    });
+
+    it('a checkout that removes the file leaves the tab asking, as the only copy', async () => {
+      const demo = openMatched('demo');
+      api.gitCheckout.mockResolvedValue(mutation({ changed_paths: pair }));
+
+      await git().checkout('feature', 'local');
+
+      expect(await unsaved(demo)).toBe(true);
+    });
+
+    it('the offered reload records the match again', async () => {
+      const demo = openMatched('demo');
+      api.gitDiscard.mockResolvedValue(mutation({ changed_paths: pair }));
+      await git().discard('all');
+      expect(await unsaved(demo)).toBe(true);
+      // The real reload ends in the install every reader uses.
+      reloadMock.mockImplementation(async (tabId, file) =>
+        useTabStore.getState().loadGraphDocumentInto(tabId, {
+          nodes: [NODE], edges: [], boundFile: file, boundName: file,
+        }));
+
+      toasts()[0].action?.onClick();
+      await settle();
+
+      expect(reloadMock).toHaveBeenCalledWith(demo, 'demo');
+      expect(await unsaved(demo)).toBe(false);
+    });
+  });
 });
 
 /* ── preferences and vocabulary ──────────────────────────────────────── */

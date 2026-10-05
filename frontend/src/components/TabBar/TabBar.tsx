@@ -1,5 +1,5 @@
 import { useState, useCallback, useEffect, useRef } from 'react';
-import { useTabStore, tabHasContent, tabNodeCount } from '../../store/tabStore';
+import { useTabStore, tabHasUnsavedWork, tabNodeCount } from '../../store/tabStore';
 import { isAnyModalOpen } from '../../store/modalState';
 import { useI18n } from '../../i18n';
 import { confirm } from '../../utils/dialog';
@@ -112,10 +112,12 @@ export function TabBar() {
       /* v8 ignore start */
       if (!tab) return false;
       /* v8 ignore stop */
-      const hasContent = tabHasContent(tab);
+      // A graph the file still holds exactly -- unchanged since it was opened
+      // or last saved -- is nothing to lose (#596).
+      const unsaved = tabHasUnsavedWork(tab);
       // The graph warning, reused by both branches below so a running tab with
-      // a graph in it is still told what it is about to lose.
-      const lossMessage = hasContent
+      // unsaved work in it is still told what it is about to lose.
+      const lossMessage = unsaved
         ? t('tabs.close.confirmMessage', { count: tabNodeCount(tab) })
         : undefined;
       if (tab.status === 'running') {
@@ -129,12 +131,12 @@ export function TabBar() {
           variant: 'danger',
         });
         if (!ok) return false;
-      } else if (hasContent) {
+      } else if (unsaved) {
         // #331: one misclick used to discard a whole graph with no undo --
         // `removeTab` drops the tab's undo/redo stacks along with it, so there
-        // was nothing left to undo from. An empty tab still closes silently:
-        // asking about nothing is the noise that trains people to click
-        // through the dialog that matters.
+        // was nothing left to undo from. An empty tab still closes silently,
+        // and so does an unchanged one: asking about nothing is the noise that
+        // trains people to click through the dialog that matters.
         const ok = await confirm({
           title: t('tabs.close.confirmTitle', { name: tab.name }),
           message: lossMessage,

@@ -622,6 +622,10 @@ function openWorkspaceGraphs(
 
     const tabId = useTabStore.getState().createTab({ title, activate: false });
     const tooNew = useTabStore.getState().loadGraphDocumentInto(tabId, doc);
+    // The install records that the tab matches what it opened, which lets an
+    // unchanged graph close without asking. A plugin's graph may exist only in
+    // the plugin's memory, so its tab keeps asking (`forgetTabMatch`, #596).
+    useTabStore.getState().forgetTabMatch([tabId]);
     useTabStore.getState().setTabMeta(tabId, {
       // Either reason is enough: the plugin asked, or the document is from a
       // build this one does not understand.

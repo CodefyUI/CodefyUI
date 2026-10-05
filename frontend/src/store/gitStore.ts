@@ -1864,6 +1864,11 @@ export const useGitStore = create<GitState>((set, get) => ({
       affected.push({ id: tab.id, file });
     }
     if (affected.length === 0) return;
+    // The files under these tabs now hold other bytes, or none at all, so
+    // what the tabs show may be the only copy left: closing one asks again
+    // (`forgetTabMatch`, #596) until the reload offered below installs the
+    // file and records the match anew.
+    useTabStore.getState().forgetTabMatch(affected.map((tab) => tab.id));
     if (changedToastId !== null) useToastStore.getState().removeToast(changedToastId);
     changedToastId = toast(
       t('git.toast.changedOnDisk', { count: affected.length }),
