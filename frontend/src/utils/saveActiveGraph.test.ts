@@ -1074,3 +1074,132 @@ describe('saveActiveGraph asks the SERVER whether the name is taken', () => {
     setGraphsWriteListener(null);
   });
 });
+
+/**
+ * #596: a save records the revision it wrote (`markTabSaved` ->
+ * `savedRevision`), so closing the tab afterwards does not warn about losing
+ * a graph the file already holds. It is the revision the canvas was
+ * serialized at, not the one the tab is at when the server answers: an edit
+ * made while the request or the overwrite question was open is not in the
+ * file, and has to keep counting as unsaved.
+ */
+describe('marks the tab saved', () => {
+  const active = () => useTabStore.getState().getActiveTab();
+
+  it('records the revision it serialized once an in-place save is accepted', async () => {
+    useTabStore.getState().setNodes([node('A-node')]);
+    useTabStore.getState().setCurrentGraphFile('bound', 'bound');
+    const serialized = active().revision;
+
+    await saveActiveGraph();
+
+    expect(active().savedRevision).toBe(serialized);
+    expect(active().revision).toBe(serialized);
+  });
+
+  it('records it after a first, prompted save too', async () => {
+    vi.mocked(prompt).mockResolvedValue('brand-new');
+    useTabStore.getState().setNodes([node('A-node')]);
+    const serialized = active().revision;
+
+    await saveActiveGraph();
+
+    expect(active().savedRevision).toBe(serialized);
+  });
+
+  it('an edit made while the request is in flight stays unsaved', async () => {
+    useTabStore.getState().setNodes([node('A-node')]);
+    useTabStore.getState().setCurrentGraphFile('bound', 'bound');
+    const serialized = active().revision;
+    let answer!: (result: Awaited<ReturnType<typeof saveGraph>>) => void;
+    vi.mocked(saveGraph).mockImplementationOnce(
+      () => new Promise((resolve) => { answer = resolve; }),
+    );
+
+    const saving = saveActiveGraph();
+    // An in-place save asks nothing, so the request is already out.
+    expect(saveGraph).toHaveBeenCalledTimes(1);
+    useTabStore.getState().setNodes([node('A-node'), node('B-node')]);
+    answer({ message: 'Graph saved', path: '/graphs/bound.json', file: 'bound' });
+    await saving;
+
+    expect(active().savedRevision).toBe(serialized);
+    expect(active().revision).toBeGreaterThan(serialized);
+  });
+
+  it('an edit made while the overwrite question is open stays unsaved', async () => {
+    useTabStore.getState().setNodes([node('A-node')]);
+    const serialized = active().revision;
+    vi.mocked(prompt).mockResolvedValue('Taken');
+    vi.mocked(saveGraph).mockRejectedValueOnce(new GraphExistsError('Taken', 'Taken'));
+    vi.mocked(confirm).mockImplementationOnce(async () => {
+      useTabStore.getState().setNodes([node('A-node'), node('B-node')]);
+      return true;
+    });
+
+    await saveActiveGraph();
+
+    // The retry carried the bytes read before the question.
+    expect(saveGraph).toHaveBeenCalledTimes(2);
+    expect(active().savedRevision).toBe(serialized);
+    expect(active().revision).toBeGreaterThan(serialized);
+  });
+
+  it('marks nothing when the name prompt is cancelled', async () => {
+    vi.mocked(prompt).mockResolvedValue(null);
+    useTabStore.getState().setNodes([node('A-node')]);
+
+    await saveActiveGraph();
+
+    expect(active().savedRevision).toBeNull();
+  });
+
+  it('marks nothing when the save fails', async () => {
+    vi.mocked(saveGraph).mockRejectedValueOnce(new Error('disk full'));
+    useTabStore.getState().setNodes([node('A-node')]);
+    useTabStore.getState().setCurrentGraphFile('bound', 'bound');
+
+    await saveActiveGraph();
+
+    expect(active().savedRevision).toBeNull();
+  });
+
+  it('marks nothing when the overwrite is refused', async () => {
+    vi.mocked(prompt).mockResolvedValue('Taken');
+    vi.mocked(saveGraph).mockRejectedValueOnce(new GraphExistsError('Taken', 'Taken'));
+    vi.mocked(confirm).mockResolvedValueOnce(false);
+    useTabStore.getState().setNodes([node('A-node')]);
+
+    await saveActiveGraph();
+
+    expect(saveGraph).toHaveBeenCalledTimes(1);
+    expect(active().savedRevision).toBeNull();
+  });
+
+  it('a tab whose file another tab\'s Save As wrote over no longer counts as saved', async () => {
+    // Imported here so this block stays the file's only change.
+    const { tabHasUnsavedWork } = await import('../store/tabStore');
+    // Tab A opened `alpha` and changed nothing; tab B saves over `alpha`.
+    // The file now holds B's graph, so A's is on screen only.
+    const a = useTabStore.getState().activeTabId;
+    useTabStore.getState().loadGraphDocumentInto(a, {
+      nodes: [node('A-node')], edges: [], boundFile: 'alpha', boundName: 'alpha',
+    });
+    useTabStore.getState().addTab('second');
+    useTabStore.getState().setNodes([node('B-node')]);
+    vi.mocked(prompt).mockResolvedValue('alpha');
+    vi.mocked(saveGraph).mockRejectedValueOnce(new GraphExistsError('alpha', 'alpha'));
+    vi.mocked(saveGraph).mockResolvedValueOnce({
+      message: 'Graph saved', path: '/graphs/alpha.json', file: 'alpha',
+    });
+
+    await saveActiveGraph({ saveAs: true });
+
+    const tabA = useTabStore.getState().getTab(a)!;
+    expect(tabA.currentGraphFile).toBeNull();
+    expect(tabA.savedRevision).toBe(tabA.revision);
+    expect(tabHasUnsavedWork(tabA)).toBe(true);
+    // And the tab that saved is the one that matches the file now.
+    expect(tabHasUnsavedWork(active())).toBe(false);
+  });
+});

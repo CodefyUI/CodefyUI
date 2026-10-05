@@ -345,11 +345,12 @@ describe('TabBar', () => {
     expect(useTabStore.getState().tabs.find((t) => t.id === firstId)).toBeUndefined();
   });
 
-  it('a tab bound to a saved file still asks: dirty tracking cannot prove it is unchanged', async () => {
+  it('a tab bound to a saved file still asks: neither the binding nor dirty tracking proves it unchanged', async () => {
     // `dirtyNodeIds` is the partial-re-execution hint -- cleared at the start
     // of every run and never set by addNode -- so "clean and bound to a file"
-    // does not mean "identical to what is on disk". Asking anyway is the only
-    // answer that cannot silently discard work (#331).
+    // does not mean "identical to what is on disk" (#331). Only a
+    // `savedRevision` equal to the tab's revision says that (#596), and this
+    // tab was never opened from the file or saved to it.
     useTabStore.getState().addTab('Tab 2');
     fillTab(0);
     const tabs = useTabStore.getState().tabs;
@@ -1217,6 +1218,111 @@ describe('TabBar', () => {
       expect(tabNamed('Tab 1，由 graph-copilot 開啟，唯讀')).toBeTruthy();
       expect(screen.getByRole('button', { name: '關閉「Tab 1」' })).toBeTruthy();
       expect(screen.getByRole('button', { name: '新增分頁' })).toBeTruthy();
+    });
+  });
+
+  // ── A graph unchanged since it was opened or saved (#596) ──────────────────
+
+  describe('a tab whose graph is unchanged since it was opened or saved (#596)', () => {
+    /**
+     * Open a two-node saved graph into the only tab the way every reader does
+     * (`loadGraphDocumentInto`), so the store records that the tab matches it.
+     */
+    function openSavedGraph() {
+      const { tabs, loadGraphDocumentInto } = useTabStore.getState();
+      loadGraphDocumentInto(tabs[0].id, {
+        nodes: [
+          { id: 'n1', type: 'default', position: { x: 0, y: 0 }, data: { type: 'Dataset', params: {} } },
+          { id: 'n2', type: 'default', position: { x: 90, y: 0 }, data: { type: 'Model', params: {} } },
+        ] as never,
+        edges: [],
+        boundFile: 'Exam',
+        boundName: 'Exam',
+      });
+    }
+
+    const closeButton = () => screen.getByRole('button', { name: 'Close Tab 1' });
+
+    it('closes at once: the file still holds exactly what is on screen', () => {
+      openSavedGraph();
+      render(<TabBar />);
+      fireEvent.click(closeButton());
+      expect(useDialogStore.getState().active).toBeNull();
+      expect(useTabStore.getState().tabs).toEqual([]);
+    });
+
+    it('Delete closes it at once too, through the same path', () => {
+      openSavedGraph();
+      render(<TabBar />);
+      fireEvent.keyDown(screen.getByRole('tab', { name: 'Tab 1' }), { key: 'Delete' });
+      expect(useDialogStore.getState().active).toBeNull();
+      expect(useTabStore.getState().tabs).toEqual([]);
+    });
+
+    it('asks again, with the node count, after one edit', async () => {
+      openSavedGraph();
+      useTabStore.getState().updateNodeParams('n1', { batch_size: 64 });
+      render(<TabBar />);
+      fireEvent.click(closeButton());
+      await waitFor(() => {
+        expect(useDialogStore.getState().active).not.toBeNull();
+      });
+      const active = useDialogStore.getState().active!;
+      expect(active.title).toBe('Close "Tab 1"?');
+      expect(active.message).toContain('2 nodes');
+      expect(useTabStore.getState().tabs).toHaveLength(1);
+    });
+
+    it('a graph never saved asks, and closes at once once it is saved', async () => {
+      useTabStore.getState().setNodes([
+        { id: 'n1', type: 'default', position: { x: 0, y: 0 }, data: { type: 'Dataset', params: {} } },
+      ] as never);
+      render(<TabBar />);
+      fireEvent.click(closeButton());
+      await waitFor(() => {
+        expect(useDialogStore.getState().active).not.toBeNull();
+      });
+      useDialogStore.getState().close(false);
+      await waitFor(() => {
+        expect(useDialogStore.getState().active).toBeNull();
+      });
+
+      // What `saveActiveGraph` does once the server has written the graph.
+      const { id, revision } = useTabStore.getState().tabs[0];
+      act(() => useTabStore.getState().markTabSaved(id, revision));
+      fireEvent.click(closeButton());
+      expect(useDialogStore.getState().active).toBeNull();
+      expect(useTabStore.getState().tabs).toEqual([]);
+    });
+
+    it('asks again once its file is deleted: the graph is then on screen only', async () => {
+      openSavedGraph();
+      // What the Graphs panel's Delete does to every tab bound to the file.
+      act(() => useTabStore.getState().rebindGraphFile('Exam', null));
+      render(<TabBar />);
+      fireEvent.click(closeButton());
+      await waitFor(() => {
+        expect(useDialogStore.getState().active).not.toBeNull();
+      });
+      expect(useDialogStore.getState().active!.message).toContain('2 nodes');
+      expect(useTabStore.getState().tabs).toHaveLength(1);
+    });
+
+    it('a running tab still asks about its run, without the loss sentence', async () => {
+      openSavedGraph();
+      markTab(0, { status: 'running' });
+      render(<TabBar />);
+      fireEvent.click(closeButton());
+      await waitFor(() => {
+        expect(useDialogStore.getState().active).not.toBeNull();
+      });
+      const active = useDialogStore.getState().active!;
+      expect(active.title).toBe('This tab is still running. Close it anyway?');
+      expect(active.message).toBeUndefined();
+      useDialogStore.getState().close(true);
+      await waitFor(() => {
+        expect(useTabStore.getState().tabs).toEqual([]);
+      });
     });
   });
 });

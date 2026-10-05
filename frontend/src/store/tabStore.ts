@@ -317,6 +317,34 @@ export interface TabState {
    */
   revision: number;
   /**
+   * The `revision` at which this tab's document last matched a file (#596),
+   * or null (absent on a tab object built without it) for "never". Written by
+   * the two things that make the graph on screen the graph in a file: every
+   * install of a document (`loadGraphDocumentInto`, the one door all readers
+   * use) and a successful save (`markTabSaved`, at the revision the save
+   * serialized). `fillParamDefaults` carries it along, because defaults the
+   * node list fills in are nobody's edit. `forgetTabMatch` clears it where
+   * no file is known to hold the graph: a graph a plugin opened, and a tab
+   * whose file a Source Control operation rewrote or removed.
+   *
+   * `revision` only climbs, so anything that changes the document afterwards
+   * -- an edit, an undo, entering a block, a plugin write -- leaves the two
+   * different, and closing the tab asks again (`tabHasUnsavedWork`). Never
+   * persisted: a tab restored after a reload has matched no file, as every
+   * tab was treated before this field.
+   */
+  savedRevision?: number | null;
+  /**
+   * The saved graph the tab was bound to (`currentGraphFile`) when it last
+   * matched one (`savedRevision`), or null for a match made while bound to
+   * nothing -- an import, an example, a workspace file. A match made while
+   * bound lapses when that binding is dropped: the Graphs panel's delete, a
+   * rename onto that file, or another tab's Save As over it leaves the file
+   * holding something else, so this graph is on screen only. A rename that
+   * moves the binding keeps the match. Never persisted, like `savedRevision`.
+   */
+  savedFile?: string | null;
+  /**
    * True for a tab a plugin opened without asking for it to survive a reload
    * (#341 section 4.8). Never persisted: `persistedTabsFor` skips the whole
    * record, and a tab that came BACK from storage is by definition not
@@ -484,6 +512,8 @@ function createTabState(id: string, name: string): TabState {
     projectOrigin: null,
     readOnly: false,
     revision: 1,
+    savedRevision: null,
+    savedFile: null,
     transient: false,
     source: null,
     nodes: [],
@@ -546,17 +576,18 @@ export function tabNodeCount(
 }
 
 /**
- * Would closing this tab throw work away? Drives the confirm on the tab's
- * close x (#331).
+ * Is there anything in this tab to lose? One half of what the tab's close x
+ * asks (#331); `tabHasUnsavedWork` below adds the other, whether it changed
+ * since it last matched a file (`savedRevision`).
  *
  * Deliberately NOT derived from `dirtyNodeIds`. That set is the
  * partial-re-execution hint and answers a different question: `clearDirty`
  * empties it at the start of every run, and `addNode` never adds to it at
  * all — so a graph that was dragged together and run but never saved reads as
- * perfectly clean, which is exactly the tab whose loss hurts most. Nothing in
- * the store records "matches what is on disk" (there is no snapshot of the
- * last save to compare against), so the only honest question available is "is
- * there anything in here", and a tab with anything in it always asks.
+ * perfectly clean, which is exactly the tab whose loss hurts most. Whether the
+ * tab still matches a file is `savedRevision`'s question, not this one: the
+ * Import fill rule, the `.cduiworkspace` importer and exporter, and the
+ * error-boundary backup (`workspaceBackup.ts`) ask only this.
  */
 export function tabHasContent(
   tab: Pick<TabState, 'nodes' | 'edges' | 'subgraphs' | 'subgraphStack'>,
@@ -568,6 +599,30 @@ export function tabHasContent(
   if (tab.edges?.length) return true;
   if (tab.subgraphs?.length) return true;
   return false;
+}
+
+/**
+ * Would closing this tab lose work? Drives the confirm on the tab's close x
+ * (#331, #596): a tab with content asks, unless its document is exactly what
+ * it was when it was opened or last saved (`savedRevision === revision`) and
+ * the file it matched still holds it (`savedFile`). Asking whether to discard
+ * a graph the file holds read as "your save did not work".
+ *
+ * Errs towards asking: an undo back to the saved graph, or entering and
+ * leaving a block, moves `revision` too, and a revision cannot tell those
+ * from an edit.
+ */
+export function tabHasUnsavedWork(
+  tab: Pick<
+    TabState,
+    'nodes' | 'edges' | 'subgraphs' | 'subgraphStack' | 'revision' | 'savedRevision' | 'savedFile' | 'currentGraphFile'
+  >,
+): boolean {
+  if (!tabHasContent(tab)) return false;
+  if (tab.savedRevision !== tab.revision) return true;
+  // Matched while bound, and bound to nothing now: the file was deleted or
+  // written over by another graph (see `savedFile`).
+  return tab.savedFile != null && tab.currentGraphFile == null;
 }
 
 // ── Store ──
@@ -835,6 +890,22 @@ interface TabStoreState {
    * changes, which can be after the tabs it describes were opened.
    */
   fillParamDefaults: () => void;
+  /**
+   * Record that a tab's document matched a file at `revision` -- its
+   * `savedRevision` (#596) -- and that the file is the one the tab is bound
+   * to now (`savedFile`). `saveActiveGraph` passes the revision it
+   * serialized, not the tab's revision when the server answers, so an edit
+   * made while the request was in flight still counts as unsaved.
+   */
+  markTabSaved: (tabId: string, revision: number) => void;
+  /**
+   * Forget that these tabs match a file (#596): `savedRevision` and
+   * `savedFile` back to null, so closing them asks again. For a tab whose file
+   * a Source Control operation rewrote or removed, and for a graph a plugin
+   * opened, which may exist only in the plugin. A later install, such as the
+   * offered reload from disk, records the match again.
+   */
+  forgetTabMatch: (tabIds: string[]) => void;
   collapseSelectionToSubgraph: (name?: string) => CollapseResult;
   /** Put an instance's definition back on the canvas. One undo step. */
   expandSubgraphInstance: (nodeId: string) => boolean;
@@ -2419,6 +2490,11 @@ function tabFromPersisted(t: PersistedTab, base: TabState): TabState {
     // A record without the field is pre-#341: restore as 1 rather than as
     // whatever the placeholder tab happened to be carrying.
     revision: typeof t.revision === 'number' ? t.revision : 1,
+    // Never persisted (#596), and never taken from `base`: hydration rebuilds
+    // over the live tab with this id, whose `savedRevision` can equal the
+    // record's revision while the graph is the record's, not the file's.
+    savedRevision: null,
+    savedFile: null,
     source: t.source ?? null,
     // A restored tab is, by definition, one that persisted.
     transient: false,
@@ -2773,6 +2849,43 @@ function withRevisions(
     return { ...t, revision: was.revision + 1 };
   });
   return bumped ? { ...next, tabs: withBumps } : next;
+}
+
+/**
+ * The revision `withRevisions` gives a tab that goes from `was` to `next` in
+ * one transition: one more when the document changed, the same otherwise.
+ *
+ * Spelled out beside the wrapper for the commits that record a tab as
+ * matching a file (`savedRevision`, #596): such a commit has to name the
+ * revision it leaves the tab at, and naming it in that same commit, rather
+ * than in a second `set` after it, is what keeps an install one emission.
+ * The `savedRevision` tests fail if this and the wrapper ever disagree.
+ */
+function revisionAfter(was: TabState, next: TabState): number {
+  return documentChanged(was, next) ? was.revision + 1 : was.revision;
+}
+
+/**
+ * `updateTab` for a commit after which the tab matches a file (#596): the
+ * patched tab also records, as `savedRevision`, the revision the commit
+ * leaves it at, and as `savedFile` the binding it leaves. Hand the result
+ * straight to `set`, so `withRevisions` compares the very tab objects this
+ * did.
+ */
+function updateTabMatchingFile(
+  tabs: TabState[],
+  tabId: string,
+  updater: (tab: TabState) => Partial<TabState>,
+): TabState[] {
+  return tabs.map((tab) => {
+    if (tab.id !== tabId) return tab;
+    const next = { ...tab, ...updater(tab) };
+    return {
+      ...next,
+      savedRevision: revisionAfter(tab, next),
+      savedFile: next.currentGraphFile,
+    };
+  });
 }
 
 const initialState = loadTabs();
@@ -3869,7 +3982,10 @@ export const useTabStore = create<TabStoreState>((rawSet, get) => {
     // its entry copy of the definition.
     const { definitions } = useNodeDefStore.getState();
     set({
-      tabs: updateTab(get().tabs, tabId, (tab) => ({
+      // The tab now shows what was opened, defaults filled in included, so
+      // it records the revision this commit leaves it at as its
+      // `savedRevision` (#596): closing it unchanged asks nothing.
+      tabs: updateTabMatchingFile(get().tabs, tabId, (tab) => ({
         // A card attached to an entry filled in above runs and draws the
         // filled one; the readers fill before they resolve, so this is rare.
         nodes: withParamDefaults(
@@ -3955,9 +4071,40 @@ export const useTabStore = create<TabStoreState>((rawSet, get) => {
       const subgraphs = withSubgraphParamDefaults(tab.subgraphs, definitions);
       if (nodes === tab.nodes && subgraphs === tab.subgraphs) return tab;
       changed = true;
-      return { ...tab, nodes, subgraphs };
+      const filled = { ...tab, nodes, subgraphs };
+      // Nobody's edit, so a tab that matched its file still does (#596): its
+      // `savedRevision` moves with the revision this commit gives it. An
+      // edited tab stays edited.
+      return tab.savedRevision === tab.revision
+        ? { ...filled, savedRevision: revisionAfter(tab, filled) }
+        : filled;
     });
     if (changed) set({ tabs });
+  },
+
+  // Writes `savedRevision` (#596), and as `savedFile` the binding the tab
+  // has now -- called after the save has bound it. Addressed by tab id, like
+  // `setTabGraphFile`: a save finishes after its dialogs and its request, by
+  // which time another tab may be the active one.
+  markTabSaved: (tabId, revision) =>
+    set({
+      tabs: updateTab(get().tabs, tabId, (tab) => ({
+        savedRevision: revision,
+        savedFile: tab.currentGraphFile,
+      })),
+    }),
+
+  forgetTabMatch: (tabIds) => {
+    const ids = new Set(tabIds);
+    const matched = (tab: TabState) =>
+      ids.has(tab.id) && (tab.savedRevision != null || tab.savedFile != null);
+    // Nothing written when no listed tab holds a match: a fresh `tabs` array
+    // re-renders every subscriber of the list, the canvas among them.
+    if (!get().tabs.some(matched)) return;
+    set({
+      tabs: get().tabs.map((tab) =>
+        matched(tab) ? { ...tab, savedRevision: null, savedFile: null } : tab),
+    });
   },
 
   collapseSelectionToSubgraph: (name) => {
