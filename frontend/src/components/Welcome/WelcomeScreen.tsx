@@ -1,7 +1,8 @@
-import { useCallback } from 'react';
+import { useCallback, useRef } from 'react';
 import { useI18n } from '../../i18n';
 import { useTabStore } from '../../store/tabStore';
 import { useUIStore } from '../../store/uiStore';
+import { importFile } from '../../utils/importGraphFile';
 import { openExampleInNewTab } from '../../utils/openExample';
 import type { ExampleSummary } from '../../api/rest';
 import { ExampleBrowser } from '../shared/ExampleBrowser';
@@ -15,12 +16,35 @@ import styles from './WelcomeScreen.module.css';
  * nothing to edit. It is deliberately NOT the empty-canvas overlay in a
  * different frame -- that overlay floats over a real canvas with a palette
  * beside it and offers only "pick an example", which is the wrong offer when
- * the user has no graph to pick one INTO. Here the two ways in are stated
- * side by side: start blank on the left, start from something on the right.
+ * the user has no graph to pick one INTO. Here the ways in are stated side by
+ * side: start blank or from a graph you already have on the left, start from
+ * an example on the right.
  */
 export function WelcomeScreen() {
   const { t } = useI18n();
   const addTab = useTabStore((s) => s.addTab);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // Saved graphs are listed in one place, the Graphs panel, so this opens a
+  // tab with that panel showing rather than a second list here. The tab is
+  // empty, so the row clicked there fills it instead of opening another.
+  const handleOpenSaved = useCallback(() => {
+    addTab();
+    const ui = useUIStore.getState();
+    ui.setSidebarTab('graphs');
+    ui.setSidebarCollapsed(false);
+  }, [addTab]);
+
+  // The Graphs panel's Import..., which is out of reach until a tab is open;
+  // `importFile` opens the tab itself when there is none (#550).
+  const handleImport = useCallback((event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    // Not awaited: cleared now, so picking the SAME file again still fires
+    // `change`.
+    void importFile(file);
+    event.target.value = '';
+  }, []);
 
   // The one difference from the empty-canvas overlay: there is no tab to open
   // an example into, so one is made first. `openExampleInNewTab` also holds
@@ -48,6 +72,30 @@ export function WelcomeScreen() {
           >
             {t('welcome.newGraph')}
           </button>
+          <button
+            type="button"
+            className={styles.secondaryButton}
+            onClick={handleOpenSaved}
+          >
+            {t('welcome.openSaved')}
+          </button>
+          <button
+            type="button"
+            className={styles.secondaryButton}
+            // The Graphs panel's own label and title: one button for both
+            // formats, which the title names.
+            title={t('graphs.import.title')}
+            onClick={() => fileInputRef.current?.click()}
+          >
+            {t('graphs.import')}
+          </button>
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept=".json,.cduiworkspace"
+            style={{ display: 'none' }}
+            onChange={handleImport}
+          />
           <button
             type="button"
             className={styles.secondaryButton}

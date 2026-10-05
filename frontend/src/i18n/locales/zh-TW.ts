@@ -278,6 +278,7 @@ const zhTW: Record<TranslationKey, string> = {
   // 這裡什麼都沒有，所以要先說這是什麼，再給兩條進去的路。
   'welcome.tagline': '用拖拉節點的方式建立深度學習模型。',
   'welcome.newGraph': '新增空白圖表',
+  'welcome.openSaved': '開啟已儲存的圖表',
   'welcome.examples': '或從一個範例開始',
 
   // #554：同一時間只有一個瀏覽器分頁能編輯工作區，其他分頁都會被這個遮罩蓋住。

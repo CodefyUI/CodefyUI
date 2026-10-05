@@ -15,6 +15,8 @@ import {
 import { setWorktreeWriteListener } from '../../utils/worktreeWrite';
 import { confirm, prompt } from '../../utils/dialog';
 import { importFile } from '../../utils/importGraphFile';
+import { canFillTab } from '../../utils/tabFill';
+import { useUIStore } from '../../store/uiStore';
 import { saveActiveGraph } from '../../utils/saveActiveGraph';
 import * as rest from '../../api/rest';
 import type { SavedGraphSummary } from '../../api/rest';
@@ -353,6 +355,8 @@ describe('GraphsTab opening', () => {
     // writes back INTO it. Opened with the stem alone, the first press of the
     // toolbar's save icon renamed "My Graph" to "My_Graph" for good.
     stubGraphRead({ nodes: [], edges: [], name: 'My Graph' });
+    // Work in the tab in front, so `canFillTab` sends the graph to a new tab.
+    useTabStore.getState().setNodes([someNode()]);
     mockedRest.listGraphs.mockResolvedValue([graph({ name: 'My Graph', file: 'My_Graph' })]);
     render(<GraphsTab />);
     fireEvent.click(await screen.findByRole('button', { name: 'Open My Graph' }));
@@ -454,6 +458,8 @@ describe('GraphsTab opening', () => {
 
   it('two clicks inside one read open one tab, not two', async () => {
     const read = deferredGraphRead();
+    // Work in the tab in front, so `canFillTab` sends the graph to a new tab.
+    useTabStore.getState().setNodes([someNode()]);
     mockedRest.listGraphs.mockResolvedValue([graph({ name: 'alpha', file: 'alpha' })]);
     render(<GraphsTab />);
     const row = await screen.findByRole('button', { name: 'Open alpha' });
@@ -564,6 +570,8 @@ describe('GraphsTab opening', () => {
 
   it('opens a file written by a newer build read-only, and says so', async () => {
     stubGraphRead({ nodes: [], edges: [], format_version: 99 });
+    // Work in the tab in front, so `canFillTab` sends the graph to a new tab.
+    useTabStore.getState().setNodes([someNode()]);
     mockedRest.listGraphs.mockResolvedValue([graph({ name: 'alpha', file: 'alpha' })]);
     render(<GraphsTab />);
     fireEvent.click(await screen.findByRole('button', { name: 'Open alpha' }));
@@ -579,6 +587,8 @@ describe('GraphsTab opening', () => {
   it('stamps the open project onto the new tab', async () => {
     useProjectStore.setState({ projectDir: '/proj', projectName: 'proj', loaded: true });
     stubGraphRead();
+    // Work in the tab in front, so `canFillTab` sends the graph to a new tab.
+    useTabStore.getState().setNodes([someNode()]);
     mockedRest.listGraphs.mockResolvedValue([graph({ name: 'alpha', file: 'alpha' })]);
     render(<GraphsTab />);
     fireEvent.click(await screen.findByRole('button', { name: 'Open alpha' }));
@@ -1088,5 +1098,130 @@ describe('GraphsTab import and save', () => {
     await waitFor(() => {
       expect(mockedRest.listGraphs).toHaveBeenCalledTimes(2);
     });
+  });
+});
+
+describe('opening into the empty tab', () => {
+  // A row click puts the graph where an Import would (`canFillTab`): into the
+  // tab in front when that tab is empty and the user's own, otherwise into a
+  // tab of its own. "Open a saved graph" on the welcome screen leaves exactly
+  // that empty tab with this list beside it, and the click used to open the
+  // graph in a second tab next to it.
+
+  /** A saved graph whose one node sits away from the origin. */
+  const saved = {
+    name: 'alpha',
+    nodes: [{ id: 'saved1', type: 'Linear', position: { x: 300, y: 120 }, data: { params: {} } }],
+    edges: [],
+  };
+
+  beforeEach(() => {
+    useUIStore.setState({ layoutFitRequest: null });
+    mockedRest.listGraphs.mockResolvedValue([graph({ name: 'alpha', file: 'alpha' })]);
+  });
+
+  it('fills the empty tab in front instead of opening a second one', async () => {
+    stubGraphRead(saved);
+    const front = activeTab();
+    expect(canFillTab(front)).toBe(true);
+    render(<GraphsTab />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Open alpha' }));
+    await waitFor(() => {
+      expect(activeTab().currentGraphFile).toBe('alpha');
+    });
+    expect(useTabStore.getState().tabs.map((tb) => tb.id)).toEqual([front.id]);
+    expect(activeTab().nodes.map((n) => n.id)).toEqual(['saved1']);
+    expect(activeTab().currentGraphName).toBe('alpha');
+    // Named as a tab opened for it would be, not left as "Tab 1".
+    expect(activeTab().name).toBe('alpha');
+  });
+
+  it('frames the graph in the tab it fills', async () => {
+    // That tab was on screen already and keeps the view it had, which after a
+    // pan can show nothing of the graph that just arrived.
+    stubGraphRead(saved);
+    render(<GraphsTab />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Open alpha' }));
+    await waitFor(() => {
+      expect(activeTab().currentGraphFile).toBe('alpha');
+    });
+    // The node's 200x80 fallback box, where the file puts it.
+    expect(useUIStore.getState().layoutFitRequest).toEqual({
+      bounds: { x: 300, y: 120, width: 200, height: 80 },
+    });
+  });
+
+  it('still opens a tab of its own beside a tab with work in it, and leaves its framing to the canvas', async () => {
+    stubGraphRead(saved);
+    useTabStore.getState().setNodes([someNode()]);
+    const front = useTabStore.getState().activeTabId;
+    render(<GraphsTab />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Open alpha' }));
+    await waitFor(() => {
+      expect(useTabStore.getState().tabs).toHaveLength(2);
+    });
+    expect(activeTab().id).not.toBe(front);
+    expect(activeTab().currentGraphFile).toBe('alpha');
+    expect(tabById(front).nodes.map((n) => n.id)).toEqual(['n1']);
+    expect(tabById(front).name).toBe('Tab 1');
+    // The canvas frames a tab it shows for the first time by itself.
+    expect(useUIStore.getState().layoutFitRequest).toBeNull();
+  });
+
+  it('opens a tab of its own beside an empty tab a plugin opened', async () => {
+    stubGraphRead(saved);
+    useTabStore.setState({
+      tabs: useTabStore.getState().tabs.map((tb) => ({
+        ...tb,
+        source: { kind: 'agent-variant', pluginId: 'copilot' },
+      })),
+    });
+    const theirs = useTabStore.getState().activeTabId;
+    render(<GraphsTab />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Open alpha' }));
+    await waitFor(() => {
+      expect(useTabStore.getState().tabs).toHaveLength(2);
+    });
+    // That tab goes on saying it was opened by the plugin, whatever is put in it.
+    expect(tabById(theirs).nodes).toEqual([]);
+    expect(tabById(theirs).currentGraphFile).toBeNull();
+    expect(activeTab().currentGraphFile).toBe('alpha');
+    expect(activeTab().source).toBeNull();
+  });
+
+  it('stamps the open project onto the tab it fills', async () => {
+    useProjectStore.setState({ projectDir: '/proj', projectName: 'proj', loaded: true });
+    stubGraphRead(saved);
+    render(<GraphsTab />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Open alpha' }));
+    await waitFor(() => {
+      expect(activeTab().currentGraphFile).toBe('alpha');
+    });
+    expect(useTabStore.getState().tabs).toHaveLength(1);
+    expect(activeTab().projectOrigin).toBe('/proj');
+  });
+
+  it('opens a tab of its own beside a tab emptied by Clear Canvas, which one undo refills', async () => {
+    // Filled and bound to the file, that undo brought the cleared graph back
+    // under the new binding, and the next Save wrote it over the file.
+    stubGraphRead(saved);
+    useTabStore.getState().setNodes([someNode()]);
+    useTabStore.getState().clear();
+    const cleared = activeTab();
+    expect(cleared.nodes).toEqual([]);
+    render(<GraphsTab />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Open alpha' }));
+    await waitFor(() => {
+      expect(useTabStore.getState().tabs).toHaveLength(2);
+    });
+    expect(activeTab().currentGraphFile).toBe('alpha');
+    // The very same object, its history included.
+    expect(tabById(cleared.id)).toBe(cleared);
+    act(() => {
+      useTabStore.getState().setActiveTab(cleared.id);
+      useTabStore.getState().undo();
+    });
+    expect(activeTab().nodes.map((n) => n.id)).toEqual(['n1']);
+    expect(activeTab().currentGraphFile).toBeNull();
   });
 });

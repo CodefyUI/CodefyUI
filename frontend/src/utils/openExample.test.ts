@@ -7,8 +7,9 @@ import {
   resolveUnboundDocument,
 } from './openExample';
 import { useNodeDefStore } from '../store/nodeDefStore';
-import { useTabStore } from '../store/tabStore';
+import { NO_ACTIVE_TAB, useTabStore } from '../store/tabStore';
 import { useToastStore } from '../store/toastStore';
+import { useUIStore } from '../store/uiStore';
 import { useI18n } from '../i18n';
 import * as rest from '../api/rest';
 
@@ -33,6 +34,7 @@ beforeEach(() => {
   useI18n.setState({ locale: 'en' });
   useNodeDefStore.setState({ definitions: [], presets: [] });
   useToastStore.setState({ toasts: [] });
+  useUIStore.setState({ layoutFitRequest: null });
   useTabStore.setState({ tabs: [], activeTabId: null as unknown as string, clipboard: null });
   useTabStore.getState().addTab('Tab 1');
   mockedRest.loadExample.mockReset();
@@ -110,9 +112,13 @@ describe('openExample', () => {
     expect(activeTab().graphDevice).toBe('mps');
 
     // Same rule as `description`: the previous graph's assignment would be
-    // written to disk as the new graph's.
+    // written to disk as the new graph's. Emptied first, so the second
+    // example goes into this same tab (`canFillTab`) rather than a new one.
+    store().setNodes([]);
+    const sameTab = store().activeTabId;
     mockedRest.loadExample.mockResolvedValue({ nodes: [raw('a')], edges: [] });
     await openExample('x');
+    expect(store().activeTabId).toBe(sameTab);
     expect(activeTab().graphDevice).toBeNull();
   });
 
@@ -187,6 +193,102 @@ describe('openExample', () => {
     expect(activeTab().nodes.map((n) => n.id)).toEqual(['plain', 'inst']);
     expect(activeTab().subgraphs.map((d) => d.id)).toEqual(['blk']);
     expect(activeTab().name).toBe('Blocky');
+  });
+
+  // -- #595: the tab is the one already on screen, so the view is not new --
+
+  it('asks for the example to be framed, as a graph imported into an empty tab is', async () => {
+    // Picked on the empty canvas of a tab "+" just opened, the example lands
+    // under the view the tab came in with: after a pan elsewhere, nowhere near
+    // the example.
+    mockedRest.loadExample.mockResolvedValue({
+      nodes: [raw('a', { position: { x: 600, y: 400 } }), raw('b', { position: { x: 900, y: 400 } })],
+      edges: [],
+    });
+    await openExample('x');
+    // Two 200x80 fallback boxes, 300 apart.
+    expect(useUIStore.getState().layoutFitRequest).toEqual({
+      bounds: { x: 600, y: 400, width: 500, height: 80 },
+    });
+  });
+
+  it('asks for no framing for an example with no nodes', async () => {
+    mockedRest.loadExample.mockResolvedValue({ nodes: [], edges: [] });
+    await openExample('x');
+    expect(useUIStore.getState().layoutFitRequest).toBeNull();
+  });
+
+  // -- #595: the gallery shows whenever the level on screen is empty, which is
+  // not the same as an empty tab, so the example goes where Import would put
+  // it (`canFillTab`) --
+
+  it('opens the example in a tab of its own when the tab in front is inside a block', async () => {
+    // Standing inside a block whose insides were deleted: the level on screen
+    // is empty, so the gallery shows, while the whole graph waits one level
+    // up. Installed there, the example replaced that graph, with no undo.
+    useTabStore.setState({
+      tabs: store().tabs.map((t) => ({
+        ...t,
+        nodes: [],
+        subgraphStack: [
+          {
+            subgraphId: 'blk',
+            nodes: [
+              { id: 'outer', type: 'baseNode', position: { x: 0, y: 0 }, data: { label: 'o', type: 'K', params: {} } },
+            ] as never,
+            edges: [],
+            presets: [],
+            undoStack: [],
+            redoStack: [],
+            selectedNodeId: null,
+            subgraphs: [],
+            segmentGroups: [],
+            activeSegment: null,
+          },
+        ],
+      })),
+    });
+    const inBlock = activeTab();
+    mockedRest.loadExample.mockResolvedValue({ name: 'Starter', nodes: [raw('a')], edges: [] });
+
+    await expect(openExample('x')).resolves.toBe(true);
+
+    expect(store().tabs).toHaveLength(2);
+    // The very same object: nothing was written to the tab inside the block.
+    expect(store().getTab(inBlock.id)).toBe(inBlock);
+    expect(activeTab().id).not.toBe(inBlock.id);
+    expect(activeTab().nodes.map((n) => n.id)).toEqual(['a']);
+    expect(activeTab().name).toBe('Starter');
+  });
+
+  it('opens the example in a tab of its own when the tab it was picked in closes while it loads', async () => {
+    // The tab that comes forward holds work, and the example landed on it.
+    store().setNodes([{ id: 'mine', type: 'baseNode', position: { x: 0, y: 0 }, data: { label: 'k', type: 'K', params: {} } }] as never);
+    const mine = store().activeTabId;
+    store().addTab('Tab 2');
+    const picked = store().activeTabId;
+    let answer: (payload: unknown) => void = () => {};
+    mockedRest.loadExample.mockReturnValue(new Promise((resolve) => { answer = resolve; }));
+    const opening = openExample('x');
+    store().removeTab(picked);
+    answer({ nodes: [raw('a')], edges: [] });
+    await opening;
+
+    expect(store().getTab(mine)!.nodes.map((n) => n.id)).toEqual(['mine']);
+    expect(store().tabs).toHaveLength(2);
+    expect(activeTab().nodes.map((n) => n.id)).toEqual(['a']);
+  });
+
+  it('opens the example in a new tab when no tab is left to take it', async () => {
+    let answer: (payload: unknown) => void = () => {};
+    mockedRest.loadExample.mockReturnValue(new Promise((resolve) => { answer = resolve; }));
+    const opening = openExample('x');
+    useTabStore.setState({ tabs: [], activeTabId: NO_ACTIVE_TAB });
+    answer({ nodes: [raw('a')], edges: [] });
+    await opening;
+
+    expect(store().tabs).toHaveLength(1);
+    expect(activeTab().nodes.map((n) => n.id)).toEqual(['a']);
   });
 });
 

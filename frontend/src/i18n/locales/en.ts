@@ -338,6 +338,7 @@ const en = {
   // what this is first and offers the two ways in.
   'welcome.tagline': 'Build deep learning models by dragging nodes onto a canvas.',
   'welcome.newGraph': 'New blank graph',
+  'welcome.openSaved': 'Open a saved graph',
   'welcome.examples': 'Or start from an example',
 
   // #554: one browser tab edits the workspace at a time, and this covers every

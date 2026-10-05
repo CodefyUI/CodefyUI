@@ -1,11 +1,18 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { StrictMode } from 'react';
 import { render, act, cleanup } from '@testing-library/react';
-import { ReactFlowProvider, useReactFlow, type Viewport } from '@xyflow/react';
+import {
+  ReactFlowProvider,
+  getViewportForBounds,
+  useReactFlow,
+  useStoreApi,
+  type Viewport,
+} from '@xyflow/react';
 import type { Node } from '@xyflow/react';
 
 import { FlowCanvas } from './FlowCanvas';
 import { useTabStore } from '../../store/tabStore';
+import { useUIStore } from '../../store/uiStore';
 import type { NodeData } from '../../types';
 import {
   recallViewport,
@@ -59,10 +66,13 @@ function seedTabs() {
 }
 
 // Grab the flow instance from inside the provider so the test can drive and
-// read the viewport exactly as the app does.
+// read the viewport exactly as the app does. The store is read only to check
+// the size React Flow last measured.
 let flow: ReturnType<typeof useReactFlow> | null = null;
+let flowStore: ReturnType<typeof useStoreApi> | null = null;
 function ViewportProbe() {
   flow = useReactFlow();
+  flowStore = useStoreApi();
   return null;
 }
 
@@ -108,15 +118,36 @@ function withCanvasSize(width = 900, height = 600): () => void {
   };
 }
 
+/** Mount on a 600 px wide canvas, then widen it to 900 px without React Flow seeing it. */
+function mountNarrowThenWiden(): () => void {
+  const narrow = withCanvasSize(600, 600);
+  try {
+    mount();
+  } finally {
+    narrow();
+  }
+  return withCanvasSize(900, 600);
+}
+
+function expectViewportCloseTo(expected: Viewport) {
+  const actual = flow!.getViewport();
+  expect(actual.x).toBeCloseTo(expected.x, 3);
+  expect(actual.y).toBeCloseTo(expected.y, 3);
+  expect(actual.zoom).toBeCloseTo(expected.zoom, 3);
+}
+
 beforeEach(() => {
   _resetViewportMemory();
   seedTabs();
+  useUIStore.setState({ layoutFitRequest: null });
   flow = null;
+  flowStore = null;
 });
 
 afterEach(() => {
   cleanup();
   _resetViewportMemory();
+  useUIStore.setState({ layoutFitRequest: null });
   useTabStore.setState({ tabs: ORIGINAL_TABS, activeTabId: ORIGINAL_ACTIVE });
 });
 
@@ -219,5 +250,42 @@ describe('FlowCanvas per-tab viewport', () => {
     mount();
     setViewport({ x: 1, y: 1, zoom: 1 });
     expect(recallViewport('tab-b')).toEqual({ x: 999, y: 999, zoom: 4 });
+  });
+
+  // #563. A node selected in the outgoing tab holds the config panel open, so
+  // React Flow measured a narrow canvas. The incoming tab has no selection and
+  // the panel goes in the same commit as the switch, but React Flow's resize
+  // observer reports the wider canvas only after the fit has run: framed with
+  // React Flow's size, the graph came out small and pushed to the left.
+  describe('framing for the size the canvas has now (#563)', () => {
+    // Tab B's one node is a 200x80 box at the origin (the layout fallbacks),
+    // inflated around its centre to 85% of a 900x600 canvas.
+    const framedOn900x600 = () =>
+      getViewportForBounds({ x: -282.5, y: -215, width: 765, height: 510 }, 900, 600, 0.1, 2, 0.2);
+
+    it('frames a never-seen tab for the canvas as it is, not as React Flow last measured it', () => {
+      const restore = mountNarrowThenWiden();
+      try {
+        expect(flowStore!.getState().width).toBe(600);
+        switchTo('tab-b');
+        expectViewportCloseTo(framedOn900x600());
+      } finally {
+        restore();
+      }
+    });
+
+    it('frames a one-shot fit request the same way', () => {
+      const restore = mountNarrowThenWiden();
+      try {
+        expect(flowStore!.getState().width).toBe(600);
+        act(() => {
+          useUIStore.getState().requestLayoutFit({ x: 0, y: 0, width: 200, height: 80 });
+        });
+        expectViewportCloseTo(framedOn900x600());
+        expect(useUIStore.getState().layoutFitRequest).toBeNull();
+      } finally {
+        restore();
+      }
+    });
   });
 });

@@ -1,6 +1,6 @@
 import type { Node } from '@xyflow/react';
 import { useNodeDefStore } from '../store/nodeDefStore';
-import { tabHasContent, useTabStore, whenTabsHydrated, type TabState } from '../store/tabStore';
+import { useTabStore, whenTabsHydrated } from '../store/tabStore';
 import { useToastStore } from '../store/toastStore';
 import { useUIStore } from '../store/uiStore';
 import { useI18n, type TranslationKey } from '../i18n';
@@ -14,6 +14,7 @@ import {
   withPresetDefaults,
 } from './presetOwnership';
 import { importWorkspaceFile } from './importWorkspaceFile';
+import { canFillTab } from './tabFill';
 import {
   WORKSPACE_EXTENSION,
   isWorkspaceFile,
@@ -118,30 +119,6 @@ async function readJsonFile(file: File): Promise<{ data: unknown } | null> {
 }
 
 /**
- * May an import fill this tab instead of opening one of its own?
- *
- * Only an empty one, by the rule the tab's close button applies before it lets
- * a tab go without asking (`tabHasContent`): any node counts, a note included,
- * and so does a graph waiting outside an open block -- which the empty-canvas
- * overlay, looking only at the level on screen, calls empty. And only one the
- * user opened. A plugin's tab goes on saying "Opened by <plugin>", on hover and
- * in its accessible name, whatever graph is put in it, and one it opened for
- * this session only is gone after a reload, the import with it. Not one that
- * is running, either. The `.cduiworkspace` importer picks the lone empty tab
- * it closes by the same rule, less the `source` check: a closed tab keeps no
- * label.
- */
-function canFill(tab: TabState | undefined): tab is TabState {
-  return (
-    tab !== undefined &&
-    !tabHasContent(tab) &&
-    !tab.source &&
-    !tab.transient &&
-    tab.status !== 'running'
-  );
-}
-
-/**
  * What a new tab holding this graph is called: the name the graph carries,
  * else the picked file's, else the store's own `Tab N`. Graphs are often
  * handed out under one file name -- a `starter.json` per chapter -- so the
@@ -151,30 +128,6 @@ function newTabTitle(data: { name?: unknown }, fileName: string): string | undef
   if (typeof data.name === 'string' && data.name.trim()) return data.name.trim();
   const stem = fileName.replace(/\.[^.]*$/, '').trim();
   return stem === '' ? undefined : stem;
-}
-
-/**
- * Ask for the one-shot view fit once the canvas has been measured at the size
- * a tab switch gave it.
- *
- * Two frames, not one: a frame's animation callbacks run before its layout,
- * and React Flow's resize observer reports the canvas's new size after it --
- * a request made sooner is consumed against the old size and frames the graph
- * exactly as wrongly as the switch did. Dropped when the tab is no longer the
- * one on screen, because the request names no tab and the canvas on screen
- * consumes it.
- */
-function fitOnceMeasured(
-  tabId: string,
-  bounds: NonNullable<ReturnType<typeof nodesBoundingBox>>,
-): void {
-  requestAnimationFrame(() =>
-    requestAnimationFrame(() => {
-      if (useTabStore.getState().activeTabId === tabId) {
-        useUIStore.getState().requestLayoutFit(bounds);
-      }
-    }),
-  );
 }
 
 /**
@@ -208,7 +161,7 @@ async function openGraphData(input: unknown, fileName: string): Promise<boolean>
     await whenTabsHydrated();
     const { tabs, activeTabId, getTab } = useTabStore.getState();
     const active = getTab(activeTabId);
-    const fillId = canFill(active) ? active.id : null;
+    const fillId = canFillTab(active) ? active.id : null;
     // Only a new tab counts against the limit: filling an empty tab adds none.
     if (fillId === null && tabs.length >= MAX_WORKSPACE_TABS) {
       return refuse(t('graphs.import.tabLimit', { max: MAX_WORKSPACE_TABS }));
@@ -263,20 +216,15 @@ async function openGraphData(input: unknown, fileName: string): Promise<boolean>
       seed: readGraphSeed(data.settings),
       formatVersion: data.format_version,
     });
-    // Neither tab can be trusted to frame the graph on its own. A filled tab
-    // is the one on screen and keeps the view it had, which after a pan can
-    // show nothing of the graph that just arrived. A new tab gets the canvas's
-    // first-visit fit, which uses the canvas size React Flow last measured:
-    // when the switch itself resizes the canvas -- the config panel of a node
-    // selected in the tab before closes -- that size is stale, and the graph
-    // is framed for the narrow canvas, small and at the left edge. So both ask
-    // for the one-shot fit an insert asks for. Nothing to fit for a graph with
-    // no nodes, as on a first visit.
+    // A filled tab is the one on screen and keeps the view it had, which after
+    // a pan can show nothing of the graph that just arrived, so it asks for
+    // the one-shot fit an insert asks for. A new tab asks for none: the canvas
+    // frames a tab it shows for the first time by itself, for the size the
+    // canvas has once the switch has landed -- the config panel of a node
+    // selected in the tab before already closed (#563). Nothing to fit for a
+    // graph with no nodes, as on a first visit.
     const bounds = nodesBoundingBox(resolvedNodes as Node[]);
-    if (bounds !== null) {
-      if (fillId !== null) useUIStore.getState().requestLayoutFit(bounds);
-      else fitOnceMeasured(tabId, bounds);
-    }
+    if (bounds !== null && fillId !== null) useUIStore.getState().requestLayoutFit(bounds);
     if (tooNew) {
       addToast(t('project.readOnly.loadNotice', { version: data.format_version }), 'warning');
     }

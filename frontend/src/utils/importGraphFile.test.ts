@@ -491,29 +491,18 @@ describe('where an imported graph goes', () => {
   });
 
   describe('the view', () => {
-    /** Resolves after the frames an import that opened a tab waits out. */
+    /** Resolves after two animation frames. */
     const twoFrames = () =>
       new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
 
-    // A new tab's first-visit fit uses the canvas size React Flow last
-    // measured. Opening the tab can resize the canvas -- the config panel of
-    // a node selected in the tab before closes -- and a fit asked for at once
-    // is consumed against that stale size too: the graph lands small, at the
-    // left edge. So the request waits until the canvas has been measured.
-    it('is fitted to the graph in a new tab once the canvas has its new size', async () => {
+    // A new tab gets the canvas's first-visit fit, which frames the graph for
+    // the canvas as it is when the tab comes forward, the config panel of a
+    // node selected in the tab before already gone (#563). A request on top,
+    // now or a frame or two later, would only fit the same box again.
+    it('leaves a new tab to the first-visit fit, asking for none of its own', async () => {
       holdWork();
       await importFile(jsonFile(starter()));
       expect(useUIStore.getState().layoutFitRequest).toBeNull();
-      await twoFrames();
-      expect(useUIStore.getState().layoutFitRequest).toEqual({
-        bounds: nodesBoundingBox(tabs()[1].nodes),
-      });
-    });
-
-    it('is not moved for a new tab the user has already left', async () => {
-      const mine = holdWork();
-      await importFile(jsonFile(starter()));
-      store().setActiveTab(mine.id);
       await twoFrames();
       expect(useUIStore.getState().layoutFitRequest).toBeNull();
     });
