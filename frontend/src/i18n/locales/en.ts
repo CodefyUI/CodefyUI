@@ -579,6 +579,7 @@ const en = {
   'graphValidation.preset_output_not_exposed': '{node} has no output "{port}": preset "{preset}" does not expose it',
   'graphValidation.preset_triggered_empty': '{node} is triggered, but preset "{preset}" has no nodes',
   'graphValidation.preset_triggered_all_fed': '{node} is triggered, but every node in preset "{preset}" is fed by another, so none can start',
+  'graphValidation.subgraph_triggered_empty': '{node} is triggered, but the block has no nodes',
   'graphValidation.trigger_source_missing': 'A trigger into {node} comes from node "{source}", which is not in the graph. Remove that connection from the graph file.',
   'graphValidation.trigger_target_missing': 'A trigger from {node} goes to node "{target}", which is not in the graph. Remove that connection from the graph file.',
 

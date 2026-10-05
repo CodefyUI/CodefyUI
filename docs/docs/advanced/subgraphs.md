@@ -111,7 +111,8 @@ the block you can see and the one inside it
 (`crosses subgraph instance(s): blk1, blk1/inner`).
 
 A subgraph that contains itself, directly or through another subgraph, is
-refused by name before anything runs.
+refused by name before anything runs. So is a trigger wired into a block with
+no nodes inside, which has nothing to start.
 
 Nesting is allowed up to 10 levels deep, the same budget preset nesting gets.
 

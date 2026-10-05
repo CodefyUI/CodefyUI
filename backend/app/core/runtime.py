@@ -41,7 +41,9 @@ def initialize_export_runtime(required_types: Iterable[str]) -> list[str]:
 
     A pack loads even when the lockfile turns it off or records it as
     uninstalled: the lockfile governs the editor, and loading from the
-    built-in root changes nothing on disk.
+    built-in root changes nothing on disk. A third-party pack the lockfile
+    turns off is never loaded, since it may be off for being broken or
+    untrusted, and its line gives the command that enables it.
 
     Returns one line per type still unknown, sorted, each beginning
     ``Unknown node type: <type>`` (graders and tests match that prefix) and,
@@ -72,8 +74,15 @@ def initialize_export_runtime(required_types: Iterable[str]) -> list[str]:
         )
 
     loaded = {key.split(":", 1)[0] for key in registry.nodes if ":" in key}
+    # Installed here, with files on disk, and turned off in the lockfile.
+    lockfile = plugin_loader.load_lockfile()
+    user_root = plugin_loader.plugins_user_root()
+    installed = plugin_loader.iter_plugin_dirs(
+        builtin_root, user_root, lockfile, include_disabled=True)
+    enabled = plugin_loader.iter_plugin_dirs(builtin_root, user_root, lockfile)
+    disabled = {pack for pack, _ in installed} - {pack for pack, _ in enabled}
     return [
-        _unknown_type(node_type, loaded, bundled)
+        _unknown_type(node_type, loaded, bundled, disabled)
         for node_type in unresolved
         if registry.get(node_type) is None
     ]
@@ -93,7 +102,9 @@ def _pack_of(node_type: str) -> str | None:
     return None
 
 
-def _unknown_type(node_type: str, loaded: set[str], bundled: set[str]) -> str:
+def _unknown_type(
+    node_type: str, loaded: set[str], bundled: set[str], disabled: set[str],
+) -> str:
     """The line for one type still unknown after the bundled packs loaded."""
     line = f"Unknown node type: {node_type}"
     pack = _pack_of(node_type)
@@ -110,6 +121,14 @@ def _unknown_type(node_type: str, loaded: set[str], bundled: set[str]) -> str:
         return (
             f"{line} -- the plugin pack '{pack}' ships with this CodefyUI but "
             "none of its nodes could be loaded"
+        )
+    if pack in disabled:
+        # After `bundled`: a bundled pack loads however the lockfile has it,
+        # so enabling it would change nothing.
+        return (
+            f"{line} -- it comes from the plugin pack '{pack}', which is "
+            "installed here but disabled. Enable it with: "
+            f"cdui plugin enable {pack}"
         )
     return (
         f"{line} -- it comes from the plugin pack '{pack}', which this "

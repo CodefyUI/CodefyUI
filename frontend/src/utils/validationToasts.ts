@@ -51,6 +51,7 @@ const ISSUE_KEYS = new Map<string, TranslationKey>([
   ['preset_output_not_exposed', 'graphValidation.preset_output_not_exposed'],
   ['preset_triggered_empty', 'graphValidation.preset_triggered_empty'],
   ['preset_triggered_all_fed', 'graphValidation.preset_triggered_all_fed'],
+  ['subgraph_triggered_empty', 'graphValidation.subgraph_triggered_empty'],
   ['trigger_source_missing', 'graphValidation.trigger_source_missing'],
   ['trigger_target_missing', 'graphValidation.trigger_target_missing'],
   ['no_entry_points', 'execution.error.noEntryPoints'],
