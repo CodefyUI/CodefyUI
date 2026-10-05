@@ -59,6 +59,7 @@ Thumbs.db
 # Data
 backend/data/graphs/*.json
 !backend/data/graphs/.gitkeep
+backend/data/presets/
 backend/data/images/*
 !backend/data/images/.gitkeep
 # Bundled MNIST digit used by the InferenceCNN-MNIST quick-start example

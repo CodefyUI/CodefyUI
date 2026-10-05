@@ -215,6 +215,7 @@ def _init_registries_like_server() -> None:
     user_root = plugin_loader.plugins_user_root()
     discover_plugin_nodes(registry, builtin_root, user_root, lockfile)
     preset_registry.discover(settings.PRESETS_DIR, registry)
+    preset_registry.discover(settings.USER_PRESETS_DIR, registry)
     for _pid, pdir in iter_plugin_dirs(builtin_root, user_root, lockfile):
         preset_registry.discover(pdir / "presets", registry)
 

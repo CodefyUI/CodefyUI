@@ -33,13 +33,23 @@ class PresetRegistry:
             return count
         for path in sorted(directory.glob("*.json")):
             try:
-                raw = json.loads(path.read_text(encoding="utf-8"))
-                preset = self._load_and_resolve(raw, node_registry)
-                self._presets[preset.preset_name] = preset
+                self.load_file(path, node_registry)
                 count += 1
             except Exception as e:
                 logger.warning("Failed to load %s: %s", path.name, e)
         return count
+
+    def load_file(self, path: Path, node_registry: NodeRegistry) -> PresetDefinition:
+        """Load one preset file and register it under its name.
+
+        Raises when the file cannot be read or resolved; :meth:`discover`
+        logs and skips such a file. ``POST /api/presets/create`` loads only
+        the file it wrote, so the other presets keep the names they won.
+        """
+        raw = json.loads(path.read_text(encoding="utf-8"))
+        preset = self._load_and_resolve(raw, node_registry)
+        self._presets[preset.preset_name] = preset
+        return preset
 
     def get(self, name: str) -> PresetDefinition | None:
         return self._presets.get(name)

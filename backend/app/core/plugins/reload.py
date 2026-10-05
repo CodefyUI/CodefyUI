@@ -1,7 +1,7 @@
 """One re-discovery call, for every place that has to trigger one.
 
-``rediscover_all`` takes seven arguments and every caller passes the same
-seven: the process-wide node and preset registries, the three directories
+``rediscover_all`` takes eight arguments and every caller passes the same
+eight: the process-wide node and preset registries, the four directories
 ``settings`` names, and the two plugin roots. That full spelling was written
 out four times -- in ``POST /api/nodes/reload``, ``POST /api/plugins/reload``,
 the plugin enable/disable handler and the custom-node upload/delete handler --
@@ -41,6 +41,7 @@ def rediscover_now() -> dict[str, int]:
         nodes_dir=settings.NODES_DIR,
         custom_nodes_dir=settings.CUSTOM_NODES_DIR,
         presets_dir=settings.PRESETS_DIR,
+        user_presets_dir=settings.USER_PRESETS_DIR,
         builtin_root=plugin_loader.plugins_builtin_root(),
         user_root=plugin_loader.plugins_user_root(),
     )
