@@ -1359,7 +1359,7 @@ const zhTW: NodeTranslations = {
       '的輸出，結果餵給 LMTokenizedDataset。',
     params: {
       sources: '這顆節點有幾個語料輸入埠。',
-      weights: '逗號分隔的抽取權重，每個來源一個（會正規化；只在 interleave 模式使用）。抽完的來源不再被抽，其餘來源重新正規化 — 混合的尾段就是還有剩的語料。',
+      weights: '逗號分隔的抽取權重，每個來源一個（會正規化；只在 interleave 模式使用）。留空：平均權重。抽完的來源不再被抽，其餘來源重新正規化 — 混合的尾段就是還有剩的語料。',
       mode: 'interleave：種子化的比例抽取、不重複。concat：corpus_1 全部、再 corpus_2… — 有順序的課程。',
       seed: '交錯順序的種子 — 相同種子與輸入會重現同一個混合順序。',
     },

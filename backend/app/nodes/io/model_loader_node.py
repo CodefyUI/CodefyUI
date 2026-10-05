@@ -595,7 +595,14 @@ class ModelLoaderNode(BaseNode):
 
         from ...core.device_utils import is_mps_device, resolve_node_device, to_device
 
-        path = params.get("path", "model_weights.pt")
+        path = params.get("path", "")
+        if not str(path or "").strip():
+            # "" would resolve to MODELS_DIR itself and fail as a directory.
+            raise ValueError(
+                "ModelLoader has no file selected. Pick one from the `path` "
+                "dropdown, or use the upload button next to it to add a "
+                "weights file."
+            )
         load_mode = params.get("load_mode", "state_dict")
         device = resolve_node_device(params.get("device"), context)
         strict = params.get("strict", True)

@@ -38,6 +38,7 @@ from .execution_context import (
 )
 from .node_base import BaseNode
 from .node_registry import registry
+from .param_defaults import fill_missing_params
 from .seeding import deterministic_scope, seed_rngs
 from .step_trace import Step
 from .type_system import is_compatible
@@ -1806,7 +1807,15 @@ def invoke_node(
     host-side -- one that hands its input straight to numpy, sklearn or
     matplotlib -- says ``align_inputs = False`` and is left alone; see
     :attr:`BaseNode.align_inputs`.
+
+    **Missing params.** A param the graph leaves out reaches ``execute`` at
+    its declared default (:func:`~app.core.param_defaults.fill_missing_params`),
+    never at whatever ``params.get(name, fallback)`` the node happens to
+    spell. Filled here as well as in :func:`prepare_executable_graph` because
+    an exported script and the Map node's inner calls reach a node only
+    through this helper.
     """
+    params = fill_missing_params(type(instance), params)
     if (
         context is not None
         and getattr(context, "device", None)
@@ -1834,6 +1843,7 @@ def prepare_executable_graph(
     preset_fallback: dict | None = None,
     subgraphs: Any = None,
     output_aliases: dict[tuple[str, str], tuple[str, str]] | None = None,
+    fill_defaults: bool = False,
 ) -> tuple[list[dict], list[dict], dict[str, str]]:
     """Expand subgraphs and presets, resolve bypass, prune drafts, validate.
 
@@ -1856,6 +1866,13 @@ def prepare_executable_graph(
     of its own: a container's exposed outputs, and what a bypassed node
     forwards. It is a chain too, for the same reason, and
     :func:`aliases_by_target` walks it.
+
+    ``fill_defaults=True`` -- what :func:`execute_graph` passes -- gives every
+    node each param it leaves out at its declared default
+    (:func:`~app.core.param_defaults.fill_missing_params`), on a copy, so the
+    run's cache keys and the validation here read the params the node gets.
+    The exporter leaves it off: its script lists exactly the params the graph
+    carries, and ``invoke_node`` fills in the rest when the script runs.
     """
 
     # Dropped first, exactly where :func:`validate_graph` drops them: an edge
@@ -1928,6 +1945,24 @@ def prepare_executable_graph(
             output_aliases[(link.node_id, link.output)] = (
                 link.source, link.source_handle,
             )
+
+    if fill_defaults:
+        # A param a node leaves out runs as its declared default, so the cache
+        # key and the validation below read what the node will get:
+        # fill_missing_params, on a COPY -- a top-level node here is still the
+        # caller's own dict. A type the registry does not know stays as it is,
+        # for validation to name.
+        filled_nodes = []
+        for node in expanded_nodes:
+            node_cls = registry.get(node.get("type", ""))
+            data = node.get("data", {})
+            params = data.get("params", {}) if isinstance(data, dict) else None
+            if node_cls is not None and isinstance(params, dict):
+                filled = fill_missing_params(node_cls, params)
+                if filled is not params:
+                    node = {**node, "data": {**data, "params": filled}}
+            filled_nodes.append(node)
+        expanded_nodes = filled_nodes
 
     entry_ids = find_entry_points(expanded_nodes, expanded_edges)
     if not entry_ids:
@@ -2175,6 +2210,9 @@ async def execute_graph(
         preset_fallback=preset_fallback,
         subgraphs=subgraphs,
         output_aliases=output_aliases,
+        # Every param a node leaves out, at its declared default
+        # (fill_missing_params): the cache keys below read what it runs with.
+        fill_defaults=True,
     )
     # Captured port -> the drawn ports that stand for it (#553). Only a
     # recorded run writes captures, so only a recorded run needs it.
