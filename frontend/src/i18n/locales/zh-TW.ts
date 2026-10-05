@@ -520,6 +520,24 @@ const zhTW: Record<TranslationKey, string> = {
   // tab is already following keeps going.
   'execution.rejected': '這次執行沒有啟動 — 伺服器正在跑這個分頁的上一個工作。它仍在執行中，請等它結束或按停止。',
 
+  // Run log status lines (UI-generated). What a node prints is not here: it
+  // is the graph's own output, the text the exported script prints too.
+  // {status} is the engine's raw token, for a status this table has no line for.
+  // Skipped is 已跳過 as on the card (node.skipped): 略過 is this UI's word for bypass.
+  'runLog.started': '開始執行',
+  'runLog.completed': '執行完成',
+  'runLog.cancelled': '已取消執行',
+  'runLog.error': '執行錯誤：{error}',
+  'runLog.serverError': '執行伺服器：{error}',
+  'runLog.unknownError': '未知錯誤',
+  'runLog.connectFailed': '無法連線到執行伺服器',
+  'runLog.node.completed': '節點 {label} 已完成',
+  'runLog.node.skipped': '節點 {label} 已跳過',
+  'runLog.node.interrupted': '節點 {label} 已中斷',
+  'runLog.node.error': '節點 {label} 錯誤：{detail}',
+  'runLog.node.errorBare': '節點 {label} 發生錯誤',
+  'runLog.node.other': '節點 {label}：{status}',
+
   // Node palette — control category / start node
   'palette.category.control': '控制',
   'palette.start.description': '標記執行的起點。連接到你想執行的第一個節點。',
@@ -862,10 +880,12 @@ const zhTW: Record<TranslationKey, string> = {
   'runs.nodeStatus.running': '執行中',
   'runs.nodeStatus.completed': '已完成',
   'runs.nodeStatus.cached': '使用快取',
-  'runs.nodeStatus.skipped': '已略過',
+  // 已跳過 as on the card and in the Execution Log (runLog.node.skipped): 略過 is bypass.
+  'runs.nodeStatus.skipped': '已跳過',
   'runs.nodeStatus.error': '失敗',
   'runs.detail.step': '步',
-  'runs.log.started': '執行開始',
+  // The Execution Log's words for the same event (runLog.started).
+  'runs.log.started': '開始執行',
   'runs.log.node': '節點 {node} {status}',
   'runs.log.completed': '執行完成',
   'runs.log.failed': '執行失敗：{error}',

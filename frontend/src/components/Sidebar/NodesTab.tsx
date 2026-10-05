@@ -20,6 +20,7 @@ import { readablePresetNodes } from '../../utils';
 import { isCompletePreset } from '../../utils/presetOwnership';
 import type { NodeDefinition, PresetDefinition } from '../../types';
 import { DIFFICULTY_COLORS } from '../../styles/theme';
+import { MathText } from '../shared/MathText';
 import { orderCategories } from './categories';
 import { CategoryList, type CategoryGroup } from './CategoryList';
 import styles from './NodePalette.module.css';
@@ -125,18 +126,15 @@ export function NodeItem({ definition }: NodeItemProps) {
           {t('palette.needsPack')}
         </span>
       )}
-      {desc && (
-        <div className={styles.nodeItemDesc}>
-          {desc}
-        </div>
-      )}
+      {/* MathText, as on the card: a few descriptions carry a $...$ formula. */}
+      {desc && <MathText as="div" className={styles.nodeItemDesc} text={desc} />}
       {showTooltip && createPortal(
         <div
           className={styles.nodeTooltip}
           style={{ left: tooltipPos.x, top: tooltipPos.y }}
         >
           <div className={styles.nodeTooltipTitle}>{definition.node_name}</div>
-          {desc && <div className={styles.nodeTooltipDesc}>{desc}</div>}
+          {desc && <MathText as="div" className={styles.nodeTooltipDesc} text={desc} />}
           {packSentence !== null && (
             <div className={styles.nodeTooltipPack}>{packSentence}</div>
           )}

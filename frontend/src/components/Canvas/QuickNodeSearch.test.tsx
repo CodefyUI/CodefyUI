@@ -649,4 +649,40 @@ describe('QuickNodeSearch', () => {
     fireEvent.change(getByPlaceholderText('Search nodes...'), { target: { value: '卷積' } });
     expect(getByText('No matching nodes')).toBeInTheDocument();
   });
+
+  // ── Formulas in descriptions (#598) ─────────────────────────────────────
+  // Linear's description is "...: $y = xW^T + b$"; the one-line row used to
+  // print the dollars and backslashes as they are.
+
+  it('typesets a formula in a description instead of printing its source', async () => {
+    setStore([def('Linear', { description: 'Layer: $y = x$' }), def('Conv2d')], []);
+    const { container, getByPlaceholderText } = render(
+      <QuickNodeSearch screenPos={SCREEN} flowPos={FLOW} onClose={() => {}} />,
+    );
+    // A search still reads the source text.
+    fireEvent.change(getByPlaceholderText('Search nodes...'), { target: { value: 'y = x' } });
+    expect(resultNames(container)).toEqual(['Linear']);
+
+    // Inside the row's own description element, so its one-line ellipsis holds.
+    const desc = container.querySelector('[class*="itemDesc"]') as HTMLElement;
+    await waitFor(() => expect(desc.querySelector('.katex')).toBeTruthy());
+    expect(desc.textContent).toContain('Layer: ');
+    expect(desc.textContent).not.toContain('$');
+  });
+
+  it("shows a preset's description as plain text, as the palette's preset row does", async () => {
+    // A preset's description is its author's own words, where a dollar is money.
+    setStore(
+      [def('Linear', { description: 'Layer: $y = x$' })],
+      [preset('Budget', { description: 'Costs $5 to $10' })],
+    );
+    const { container, getByText } = render(
+      <QuickNodeSearch screenPos={SCREEN} flowPos={FLOW} onClose={() => {}} />,
+    );
+    // KaTeX has typeset the node's formula, so it has had its chance at the preset's text.
+    await waitFor(() => expect(container.querySelector('.katex')).toBeTruthy());
+    const row = getByText('Budget').closest('button') as HTMLElement;
+    expect(row.querySelector('.katex')).toBeNull();
+    expect(within(row).getByText('Costs $5 to $10')).toBeInTheDocument();
+  });
 });
