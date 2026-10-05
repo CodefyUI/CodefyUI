@@ -26,11 +26,11 @@ description: 將子圖儲存為可重用、可參數化的預設模組，並使�
 
 匯出預設模組時會包含整張畫布。你不能只選取部分節點，也不能逐項選擇要暴露的內容。請使用只包含該預設模組所需節點的畫布；通常新分頁最簡單。
 
-1. 建立子圖。每個未連接的連接埠都會成為預設模組連接埠，因此所需的輸入與輸出都應保持未連接。圖中至少要有一個未連接的連接埠，否則伺服器會拒絕匯出。匯出前請展開所有收合區塊。預設模組不能包含區塊定義，所以伺服器會拒絕含有收合區塊的畫布。
+1. 建立子圖。每個未連接的連接埠都會成為預設模組連接埠，因此所需的輸入與輸出都應保持未連接。圖中至少要有一個未連接的連接埠，否則伺服器會拒絕匯出。匯出前請展開所有收合區塊。預設模組不能包含區塊定義，所以伺服器會拒絕含有收合區塊的畫布。`Start` 節點、其 Trigger 連線與註記都不會放進預設模組；把 Trigger 連線接到已放置的預設模組，就會啟動它。
 2. 開啟工具列的**匯出**選單，選擇**匯出為子圖**，然後輸入名稱。若其他預設模組已使用該名稱，伺服器會拒絕並回傳 `409`。
 3. 伺服器會將每個暴露的連接埠命名為 `<node>_<port>`，並暴露依節點型別分組的所有非 secret 參數。接著，伺服器會寫入預設模組並重新載入面板。此預設模組隨後會出現在**節點**分頁的**預設組合**分類與快速搜尋中。
 
-預設模組以 JSON 儲存，包含 `preset_name`、`category`（匯出的預設模組為 `Custom`）、`description`、`tags`、`nodes`、`edges`、`exposed_inputs`、`exposed_outputs` 與 `exposed_params`。匯出與內建的預設模組都儲存在 `backend/app/presets/`。匯出的預設模組使用 `<name>.json`；其檔名為小寫，空格與斜線會換成 `_`。系統沒有重新命名或刪除預設模組的 route 或按鈕。若要移除預設模組，請刪除其檔案並重新載入節點。[外掛包](./plugins)也能從自己的 `presets/` 目錄提供預設模組。
+預設模組以 JSON 儲存，包含 `preset_name`、`category`（匯出的預設模組為 `Custom`）、`description`、`tags`、`nodes`、`edges`、`exposed_inputs`、`exposed_outputs` 與 `exposed_params`。內建的預設模組儲存在 `backend/app/presets/`。匯出的預設模組儲存在 `backend/data/presets/`，與已儲存的圖放在一起；設定 `CODEFYUI_USER_PRESETS_DIR` 可改用其他目錄。這個安裝開啟的每個專案都使用同一個目錄。舊版把匯出的預設模組存放在 `backend/app/presets/`，這些預設模組仍會從該處載入。匯出的預設模組使用 `<name>.json`；其檔名為小寫，空格會換成 `_`。Windows 無法當作檔名儲存的名稱（例如含有 `/` 或 `?`）會被拒絕（請見[檔案名稱](./api-reference#limits-and-errors)）。系統沒有重新命名或刪除預設模組的 route 或按鈕。若要移除預設模組，請刪除其檔案並重新載入節點。[外掛包](./plugins)也能從自己的 `presets/` 目錄提供預設模組。
 
 ## REST API
 
@@ -38,7 +38,7 @@ description: 將子圖儲存為可重用、可參數化的預設模組，並使�
 |----------|--------|-------------|
 | `/api/presets` | GET | 列出預設模組定義。 |
 | `/api/presets/{name}` | GET | 取得單一預設模組定義（未知時回傳 `404`）。 |
-| `/api/presets/create` | POST | 從圖建立預設模組。body 為 `{name, nodes, edges, description?, category?, tags?}`，且 request 需要 session token。圖為空、含有收合區塊，或沒有未連接的連接埠時回傳 `400`。名稱已被使用時回傳 `409`。 |
+| `/api/presets/create` | POST | 從圖建立預設模組。body 為 `{name, nodes, edges, description?, category?, tags?}`，且 request 需要 session token。圖中除了 `Start` 之外沒有其他節點、含有收合區塊，或沒有未連接的連接埠時回傳 `400`。名稱已被使用時回傳 `409`。 |
 
 請參閱完整的 **[API 參考](./api-reference)**。
 

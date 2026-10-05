@@ -26,11 +26,11 @@ Save and export include only definitions that the graph still references, includ
 
 Exporting a preset includes the entire canvas. You cannot select a subset of nodes or choose individual items to expose. Use a canvas that contains only the nodes for the preset; a new tab is usually the simplest option.
 
-1. Build the subgraph. Each unconnected port becomes a preset port, so leave the required inputs and outputs unconnected. The graph must have at least one unconnected port. Otherwise, the server rejects the export. Expand all collapsed blocks before exporting. Presets cannot include block definitions, so the server rejects a canvas that contains a collapsed block.
+1. Build the subgraph. Each unconnected port becomes a preset port, so leave the required inputs and outputs unconnected. The graph must have at least one unconnected port. Otherwise, the server rejects the export. Expand all collapsed blocks before exporting. Presets cannot include block definitions, so the server rejects a canvas that contains a collapsed block. `Start` nodes, their trigger wires, and notes are left out of the preset; a trigger into the placed preset starts it.
 2. Open the toolbar **Export** menu, select **Export as Subgraph**, and enter a name. The server rejects a name already used by another preset with status `409`.
 3. The server names each exposed port `<node>_<port>` and exposes every non-secret parameter, grouped by node type. It writes the preset and reloads the palette. The preset is then available in the Nodes tab's **Presets** group and in quick search.
 
-A preset is stored as JSON with `preset_name`, `category` (`Custom` for exported presets), `description`, `tags`, `nodes`, `edges`, `exposed_inputs`, `exposed_outputs`, and `exposed_params`. Exported and built-in presets are stored in `backend/app/presets/`. An exported preset uses `<name>.json`; its file name is lowercase, with spaces and slashes replaced by `_`. No route or button renames or deletes a preset. To remove one, delete its file and reload the nodes. [Plugin packs](./plugins) can also provide presets from their `presets/` directory.
+A preset is stored as JSON with `preset_name`, `category` (`Custom` for exported presets), `description`, `tags`, `nodes`, `edges`, `exposed_inputs`, `exposed_outputs`, and `exposed_params`. Built-in presets are stored in `backend/app/presets/`. Exported presets are stored in `backend/data/presets/`, next to saved graphs; set `CODEFYUI_USER_PRESETS_DIR` to use another directory. Every project the installation opens uses the same directory. Presets exported by older versions, which saved them in `backend/app/presets/`, still load from there. An exported preset uses `<name>.json`; its file name is lowercase, with spaces replaced by `_`. A name that Windows cannot store as a file name, such as one containing `/` or `?`, is refused (see [File names](./api-reference#limits-and-errors)). No route or button renames or deletes a preset. To remove one, delete its file and reload the nodes. [Plugin packs](./plugins) can also provide presets from their `presets/` directory.
 
 ## REST API
 
@@ -38,7 +38,7 @@ A preset is stored as JSON with `preset_name`, `category` (`Custom` for exported
 |----------|--------|-------------|
 | `/api/presets` | GET | List preset definitions. |
 | `/api/presets/{name}` | GET | Get a single preset definition (`404` if unknown). |
-| `/api/presets/create` | POST | Create a preset from a graph. The body is `{name, nodes, edges, description?, category?, tags?}` and the request requires a session token. Returns `400` when the graph is empty, contains a collapsed block, or has no unconnected port. Returns `409` when the name is already used. |
+| `/api/presets/create` | POST | Create a preset from a graph. The body is `{name, nodes, edges, description?, category?, tags?}` and the request requires a session token. Returns `400` when the graph has no node other than `Start`, contains a collapsed block, or has no unconnected port. Returns `409` when the name is already used. |
 
 See the full **[API Reference](./api-reference)**.
 

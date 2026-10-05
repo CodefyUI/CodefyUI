@@ -338,8 +338,9 @@ Every `*.json` is copied into `graphs/` and split into the logic/layout pair.
 ## Notes and limits (v1)
 
 - One project per server instance (no in-editor project switcher yet).
-- `DB_PATH` and custom nodes stay install-global; [plugins](/advanced/plugins)
-  are the portable mechanism (pinned by SHA in the manifest).
+- `DB_PATH`, custom nodes and [exported presets](/advanced/presets#creating-your-own)
+  stay install-global; [plugins](/advanced/plugins) are the portable mechanism
+  (pinned by SHA in the manifest).
 - `assets/data/` is where a relative `Dataset` or `FileReader` path resolves.
   `CSVReader`, `DocumentLoader` and `TextCorpusDataset` resolve a typed
   relative path against the project root instead, so write

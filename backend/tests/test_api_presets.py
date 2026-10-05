@@ -13,6 +13,12 @@ from typing import Any
 
 import pytest
 
+from app.core.execution_context import ExecutionContext
+from app.core.graph_engine import (
+    execute_graph,
+    prepare_executable_graph,
+    validate_graph,
+)
 from app.core.node_base import (
     BaseNode,
     DataType,
@@ -26,11 +32,19 @@ from app.core.preset_registry import preset_registry
 @pytest.fixture
 def _isolated_presets(tmp_path, monkeypatch):
     """Write created presets into a throwaway dir and restore the global
-    preset registry afterward (create_preset clears + rediscovers it)."""
-    monkeypatch.setattr("app.config.settings.PRESETS_DIR", tmp_path)
+    preset registry afterward (create_preset adds what it writes to it).
+
+    Yields the dir a preset is written to, ``USER_PRESETS_DIR`` (#600). The
+    built-in ``PRESETS_DIR`` points at a sibling, so a preset written into
+    the wrong one is not where these tests look for it.
+    """
+    user_dir = tmp_path / "user"
+    user_dir.mkdir()
+    monkeypatch.setattr("app.config.settings.USER_PRESETS_DIR", user_dir)
+    monkeypatch.setattr("app.config.settings.PRESETS_DIR", tmp_path / "builtin")
     saved = dict(preset_registry._presets)
     try:
-        yield tmp_path
+        yield user_dir
     finally:
         preset_registry._presets.clear()
         preset_registry._presets.update(saved)
@@ -372,15 +386,19 @@ async def test_preset_still_exposes_the_default_ports_of_a_static_node(
 
 @pytest.fixture
 def _presets_sandbox(tmp_path, monkeypatch):
-    """`PRESETS_DIR` one level UNDER the sandbox root.
+    """`USER_PRESETS_DIR`, where a preset is written, one level UNDER the
+    sandbox root.
 
     The room above the directory is the point: a refused name has to leave
-    the sandbox empty, not merely leave `PRESETS_DIR` empty, or a test
-    would pass on the traversal it is meant to catch.
+    the sandbox empty, not merely leave the presets dir empty, or a test
+    would pass on the traversal it is meant to catch. The built-in
+    `PRESETS_DIR` is a sibling inside the same sandbox, so a write that
+    lands there shows up as well.
     """
     presets_dir = tmp_path / "presets"
     presets_dir.mkdir()
-    monkeypatch.setattr("app.config.settings.PRESETS_DIR", presets_dir)
+    monkeypatch.setattr("app.config.settings.USER_PRESETS_DIR", presets_dir)
+    monkeypatch.setattr("app.config.settings.PRESETS_DIR", tmp_path / "builtin")
     saved = dict(preset_registry._presets)
     try:
         yield presets_dir
@@ -640,7 +658,7 @@ async def test_a_legitimate_name_still_works(
 
     written = [p for p in _presets_sandbox.iterdir() if p.is_file()]
     assert [p.name for p in written] == [filename]
-    # The path that was actually written stays inside PRESETS_DIR.
+    # The path that was actually written stays inside the presets dir.
     assert written[0].resolve().parent == _presets_sandbox.resolve()
     assert json.loads(written[0].read_text(encoding="utf-8"))[
         "preset_name"] == name
@@ -703,3 +721,453 @@ def test_registry_types_a_port_that_only_exists_at_this_port_count():
     }, node_registry)
 
     assert preset.exposed_inputs[0].data_type == "TRANSFORM"
+
+
+# -- Start, its trigger wires and notes are left out (#600) -----------------
+#
+# Export takes the whole canvas, and a canvas needs a Start to be run and
+# checked, so an exported preset carried one. The trigger wire out of it was
+# stored without its `type`, and expansion brought it back as a DATA edge into
+# a port called `__trigger`: a graph using the card validated clean and its
+# run refused with "Invalid input port '__trigger' on TextInput". Start does
+# no work, and a placed card starts its inner roots on its own trigger
+# (#561), so both are left out rather than refused.
+
+
+def _canvas_node(node_id: str, node_type: str,
+                 params: dict | None = None) -> dict:
+    return {"id": node_id, "type": node_type, "position": {"x": 0, "y": 0},
+            "data": {"params": dict(params or {})}}
+
+
+def _note(node_id: str) -> dict:
+    """A canvas note the way the editor serializes one: no params at all."""
+    return {"id": node_id, "type": "note", "position": {"x": 0, "y": 0},
+            "data": {"noteKind": "text", "noteContent": "what the card does"}}
+
+
+#: Start's trigger wire as the canvas sends it.
+_CANVAS_TRIGGER = {"sourceHandle": "trigger", "targetHandle": "__trigger",
+                   "type": "trigger"}
+
+#: The same wire in every shape a request may send it: with both of its marks
+#: (the type and the `__trigger` end), with one of them, or with neither, when
+#: only its end on Start gives it away.
+_TRIGGER_SHAPES = [
+    pytest.param(_CANVAS_TRIGGER, id="as the canvas sends it"),
+    pytest.param({"sourceHandle": "trigger", "targetHandle": "__trigger"},
+                 id="without its type"),
+    pytest.param({"sourceHandle": "trigger", "type": "trigger"},
+                 id="without a target handle"),
+    pytest.param({"sourceHandle": "trigger"}, id="with only its source handle"),
+]
+
+
+def _say_hi_canvas(trigger: dict) -> dict:
+    """Start -> TextInput("hi") -> Print, with *trigger* as Start's wire."""
+    return {
+        "nodes": [
+            _canvas_node("start", "Start"),
+            _canvas_node("t", "TextInput", {"value": "hi"}),
+            _canvas_node("p", "Print", {"label": "inner"}),
+        ],
+        "edges": [
+            {"id": "et", "source": "start", "target": "t", **trigger},
+            {"id": "e1", "source": "t", "target": "p",
+             "sourceHandle": "text", "targetHandle": "value"},
+        ],
+    }
+
+
+def _stored(presets_dir: Path, filename: str) -> dict:
+    return json.loads((presets_dir / filename).read_text(encoding="utf-8"))
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("trigger", _TRIGGER_SHAPES)
+async def test_export_leaves_out_start_and_its_trigger_wire(
+    test_client, _isolated_presets, trigger,
+):
+    resp = await test_client.post("/api/presets/create", json={
+        "name": "Say Hi", **_say_hi_canvas(trigger),
+    })
+    assert resp.status_code == 200, resp.text
+
+    stored = _stored(_isolated_presets, "say_hi.json")
+    # Numbered over the nodes that were kept.
+    assert [(n["id"], n["type"]) for n in stored["nodes"]] == [
+        ("node_0", "TextInput"), ("node_1", "Print")]
+    assert stored["edges"] == [{
+        "source": "node_0", "target": "node_1",
+        "sourceHandle": "text", "targetHandle": "value",
+    }]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("marks", [
+    pytest.param({"type": "trigger"}, id="by its type"),
+    pytest.param({"targetHandle": "__trigger"}, id="by its trigger end"),
+])
+async def test_a_trigger_wire_from_another_node_is_left_out(
+    test_client, _isolated_presets, marks,
+):
+    """A hand-rolled request can mark a wire from any node as a trigger. It
+    carries no data either way, and kept it would come back as a DATA edge."""
+    canvas = _say_hi_canvas(_CANVAS_TRIGGER)
+    canvas["nodes"][0] = _canvas_node("a", "TextInput", {"value": "x"})
+    canvas["edges"][0] = {"id": "w", "source": "a", "target": "t",
+                          "sourceHandle": "text", **marks}
+    resp = await test_client.post("/api/presets/create", json={
+        "name": "Say Hi", **canvas,
+    })
+    assert resp.status_code == 200, resp.text
+
+    assert _stored(_isolated_presets, "say_hi.json")["edges"] == [{
+        "source": "node_1", "target": "node_2",
+        "sourceHandle": "text", "targetHandle": "value",
+    }]
+
+
+@pytest.mark.asyncio
+async def test_an_unwired_start_is_left_out_too(test_client, _isolated_presets):
+    """Left out by its type, not by its wire: an unwired Start used to give
+    the card a TRIGGER output named after it."""
+    canvas = _say_hi_canvas(_CANVAS_TRIGGER)
+    canvas["edges"] = canvas["edges"][1:]
+    resp = await test_client.post("/api/presets/create", json={
+        "name": "Say Hi", **canvas,
+    })
+    assert resp.status_code == 200, resp.text
+
+    stored = _stored(_isolated_presets, "say_hi.json")
+    assert [n["type"] for n in stored["nodes"]] == ["TextInput", "Print"]
+    assert "TRIGGER" not in {p["data_type"] for p in stored["exposed_outputs"]}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("trigger", _TRIGGER_SHAPES)
+async def test_start_runs_a_card_exported_from_a_canvas_with_start(
+    test_client, _isolated_presets, trigger,
+):
+    """The browser e2e failure, end to end: Start wired into the card."""
+    resp = await test_client.post("/api/presets/create", json={
+        "name": "Say Hi", **_say_hi_canvas(trigger),
+    })
+    assert resp.status_code == 200, resp.text
+
+    nodes = [_canvas_node("start", "Start"),
+             _canvas_node("c", "preset:Say Hi")]
+    edges = [{"id": "t", "source": "start", "target": "c", **_CANVAS_TRIGGER}]
+    assert validate_graph(nodes, edges) == []
+    executable, _edges, _mapping = prepare_executable_graph(nodes, edges)
+    assert sorted(n["id"] for n in executable) == [
+        "c__node_0", "c__node_1", "start"]
+
+    results = await execute_graph(nodes, edges, context=ExecutionContext(
+        device="cpu", weights_persistent=False, graph_id="b2-export-start"))
+    assert results["c__node_1"]["value"] == "hi"
+
+    exported = await test_client.post("/api/graph/export", json={
+        "name": "uses-say-hi", "nodes": nodes, "edges": edges})
+    assert exported.status_code == 200, exported.text
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("nodes", [
+    pytest.param([], id="empty"),
+    pytest.param([_canvas_node("start", "Start")], id="only Start"),
+    pytest.param([_canvas_node("start", "Start"), _note("n")],
+                 id="Start and a note"),
+])
+async def test_a_canvas_with_nothing_but_start_is_refused(
+    test_client, _isolated_presets, nodes,
+):
+    resp = await test_client.post("/api/presets/create", json={
+        "name": "Nothing", "nodes": nodes, "edges": [],
+    })
+    assert resp.status_code == 400, resp.text
+    assert resp.json()["detail"] == (
+        "Graph must have at least one node other than Start")
+    # Nothing was written, in either presets dir.
+    assert list(_isolated_presets.parent.rglob("*.json")) == []
+
+
+@pytest.mark.asyncio
+async def test_a_note_on_the_canvas_is_left_out(test_client, _isolated_presets):
+    """No preset can hold a note: the registry refused to load the file it
+    was written into. That answered 500 and left the file behind, so every
+    later export under the name was refused with 409."""
+    canvas = _say_hi_canvas(_CANVAS_TRIGGER)
+    canvas["nodes"].append(_note("n"))
+    resp = await test_client.post("/api/presets/create", json={
+        "name": "Say Hi", **canvas,
+    })
+    assert resp.status_code == 200, resp.text
+
+    stored = _stored(_isolated_presets, "say_hi.json")
+    assert [n["type"] for n in stored["nodes"]] == ["TextInput", "Print"]
+
+
+# -- an exported preset is user content (#600) -------------------------------
+#
+# Exported presets were written into `backend/app/presets/`, the tracked
+# directory of the built-in ones, where `cdui update` checks code out over
+# untracked files. They now go to `USER_PRESETS_DIR` (`backend/data/presets/`
+# by default), and every place that discovers presets reads it.
+
+
+def _user_card_file() -> dict:
+    """A preset file the way Export as Subgraph writes one."""
+    return {
+        "preset_name": "User Card",
+        "category": "Custom",
+        "description": "",
+        "tags": [],
+        "nodes": [{"id": "node_0", "type": "TextInput",
+                   "params": {"value": "x"}}],
+        "edges": [],
+        "exposed_inputs": [],
+        "exposed_outputs": [{"name": "node_0_text", "internal_node": "node_0",
+                             "internal_port": "text"}],
+        "exposed_params": [],
+    }
+
+
+def test_the_user_presets_dir_is_install_wide_user_content(
+    tmp_path, monkeypatch,
+):
+    """What the docs promise about it: beside the saved graphs and outside
+    the code tree, moved by its own variable, and one dir for every project
+    (a graph that uses a preset carries its definition in `presets[]`)."""
+    from app.config import Settings
+
+    for name in ("CODEFYUI_USER_PRESETS_DIR", "CODEFYUI_GRAPHS_DIR",
+                 "CODEFYUI_PROJECT_DIR"):
+        monkeypatch.delenv(name, raising=False)
+    install = Settings()
+    assert install.USER_PRESETS_DIR == install.GRAPHS_DIR.parent / "presets"
+    assert not install.USER_PRESETS_DIR.is_relative_to(install.NODES_DIR.parent)
+
+    assert Settings(PROJECT_DIR=tmp_path).USER_PRESETS_DIR == (
+        install.USER_PRESETS_DIR)
+
+    monkeypatch.setenv("CODEFYUI_USER_PRESETS_DIR", str(tmp_path / "mine"))
+    assert Settings().USER_PRESETS_DIR == tmp_path / "mine"
+
+
+def _user_presets_dir(root: Path) -> Path:
+    """A user presets dir holding the one preset of :func:`_user_card_file`."""
+    user_dir = root / "user-presets"
+    user_dir.mkdir()
+    (user_dir / "user_card.json").write_text(
+        json.dumps(_user_card_file()), encoding="utf-8")
+    return user_dir
+
+
+@pytest.mark.asyncio
+async def test_an_exported_preset_is_written_to_the_user_presets_dir(
+    test_client, _isolated_presets, tmp_path, monkeypatch,
+):
+    """Written where the saved graphs live, never into the built-in dir."""
+    from app.config import settings
+
+    builtin = tmp_path / "app" / "presets"
+    builtin.mkdir(parents=True)
+    # Not there yet, as on a fresh install: the first export creates it.
+    user_dir = tmp_path / "data" / "presets"
+    monkeypatch.setattr(settings, "PRESETS_DIR", builtin)
+    monkeypatch.setattr(settings, "USER_PRESETS_DIR", user_dir)
+
+    resp = await _create(test_client, "My Optimizer")
+    assert resp.status_code == 200, resp.text
+
+    assert [p.name for p in user_dir.iterdir()] == ["my_optimizer.json"]
+    assert list(builtin.iterdir()) == []
+
+
+@pytest.mark.asyncio
+async def test_creating_a_preset_keeps_every_other_preset_listed(
+    test_client, _isolated_presets,
+):
+    """create_preset cleared the registry and rediscovered one directory, so
+    a preset a plugin pack supplied left the palette until Reload Nodes."""
+    from app.core.node_registry import registry as node_registry
+
+    preset_registry._presets["Pack Card"] = preset_registry._load_and_resolve(
+        {**_user_card_file(), "preset_name": "Pack Card"}, node_registry)
+    before = {p["preset_name"]
+              for p in (await test_client.get("/api/presets")).json()}
+    assert "Pack Card" in before
+
+    resp = await _create(test_client, "Mine")
+    assert resp.status_code == 200, resp.text
+
+    after = {p["preset_name"]
+             for p in (await test_client.get("/api/presets")).json()}
+    assert after == before | {"Mine"}
+
+
+@pytest.mark.asyncio
+async def test_a_create_loads_only_the_new_preset(test_client, _isolated_presets):
+    """At startup a plugin pack's preset wins a name clash with a user
+    preset, because packs load last. Rereading the whole user dir after a
+    create handed the name to the user's file until the next reload."""
+    from app.core.node_registry import registry as node_registry
+
+    (_isolated_presets / "clash.json").write_text(json.dumps(
+        {**_user_card_file(), "preset_name": "Clash", "description": "mine"}),
+        encoding="utf-8")
+    preset_registry._presets["Clash"] = preset_registry._load_and_resolve(
+        {**_user_card_file(), "preset_name": "Clash",
+         "description": "from the pack"}, node_registry)
+
+    resp = await _create(test_client, "Mine")
+    assert resp.status_code == 200, resp.text
+
+    assert preset_registry.get("Clash").description == "from the pack"
+    assert preset_registry.get("Mine") is not None
+
+
+@pytest.mark.asyncio
+async def test_a_name_a_built_in_preset_file_has_is_refused(
+    test_client, _isolated_presets,
+):
+    """The registry's duplicate check is case-sensitive, and the built-ins
+    (with presets exported by older versions) sit in another dir than new
+    exports, so `vision block` beside `Vision Block` would be two presets
+    whose names differ only in case."""
+    from app.config import settings
+    from app.core.node_registry import registry as node_registry
+
+    raw = {**_user_card_file(), "preset_name": "Vision Block"}
+    settings.PRESETS_DIR.mkdir()
+    (settings.PRESETS_DIR / "vision_block.json").write_text(
+        json.dumps(raw), encoding="utf-8")
+    preset_registry._presets["Vision Block"] = (
+        preset_registry._load_and_resolve(raw, node_registry))
+
+    resp = await _create(test_client, "vision block")
+    assert resp.status_code == 409, resp.text
+    assert resp.json()["detail"] == {"code": "preset_file_exists",
+                                     "filename": "vision_block.json"}
+    assert list(_isolated_presets.iterdir()) == []
+
+
+@pytest.mark.asyncio
+async def test_a_preset_that_fails_to_load_leaves_no_file_behind(
+    test_client, _isolated_presets,
+):
+    """A canvas holding a preset card still cannot be exported: the registry
+    refuses a preset whose inner node is another card. The file written for
+    it stayed, so a retry under the same name was refused with 409 instead
+    of getting the same answer again."""
+    from app.core.node_registry import registry as node_registry
+
+    preset_registry._presets["Inner Card"] = preset_registry._load_and_resolve(
+        {**_user_card_file(), "preset_name": "Inner Card"}, node_registry)
+    canvas = _say_hi_canvas(_CANVAS_TRIGGER)
+    canvas["nodes"].append(_canvas_node("c", "preset:Inner Card"))
+    request = {"name": "Holds A Card", **canvas}
+
+    first = await test_client.post("/api/presets/create", json=request)
+    retry = await test_client.post("/api/presets/create", json=request)
+
+    assert (first.status_code, retry.status_code) == (500, 500), retry.text
+    assert retry.json() == first.json() == {
+        "detail": "Failed to load created preset"}
+    assert list(_isolated_presets.parent.rglob("*.json")) == []
+
+
+def test_rediscover_all_reads_the_user_presets_dir_it_is_given(
+    tmp_path, monkeypatch,
+):
+    from app.config import settings
+    from app.core import plugin_loader
+    from app.core.node_registry import NodeRegistry
+    from app.core.preset_registry import PresetRegistry
+
+    monkeypatch.setattr(plugin_loader, "load_lockfile",
+                        plugin_loader.empty_lockfile)
+    empty = tmp_path / "empty"  # no custom nodes, built-in presets or packs
+    user_dir = _user_presets_dir(tmp_path)
+
+    def rediscover(**user_presets: Path) -> tuple[list[str], int]:
+        presets = PresetRegistry()
+        counts = plugin_loader.rediscover_all(
+            NodeRegistry(),
+            presets,
+            nodes_dir=settings.NODES_DIR,
+            custom_nodes_dir=empty,
+            presets_dir=empty,
+            builtin_root=empty,
+            user_root=empty,
+            **user_presets,
+        )
+        return list(presets.presets), counts["presets"]
+
+    assert rediscover(user_presets_dir=user_dir) == (["User Card"], 1)
+    assert rediscover() == ([], 0)
+
+
+def test_a_reload_keeps_the_exported_presets(tmp_path, monkeypatch):
+    """Reload Nodes, the plugin routes and an exported script's runtime all
+    rebuild the registry through ``rediscover_now``, which clears it first."""
+    from app.config import settings
+    from app.core import plugin_loader
+    from app.core.plugins.reload import rediscover_now
+
+    monkeypatch.setattr(settings, "USER_PRESETS_DIR", _user_presets_dir(tmp_path))
+    monkeypatch.setattr(plugin_loader, "load_lockfile",
+                        plugin_loader.empty_lockfile)
+    saved = dict(preset_registry._presets)
+    assert "User Card" not in saved
+    try:
+        rediscover_now()
+        assert "User Card" in preset_registry.presets
+    finally:
+        preset_registry._presets.clear()
+        preset_registry._presets.update(saved)
+
+
+@pytest.mark.asyncio
+async def test_a_restart_keeps_the_exported_presets(tmp_path, monkeypatch):
+    """The server's startup reads the dir too. Driven the way
+    test_main_lifespan.py drives it: user data and the database in tmp."""
+    import app.main as main_mod
+    from app.config import settings
+    from app.core.auth import init_allowed_hosts
+
+    monkeypatch.setenv("CODEFYUI_USER_DATA_DIR", str(tmp_path / "userdata"))
+    monkeypatch.setattr(settings, "DB_PATH", tmp_path / "db" / "lifespan.db")
+    monkeypatch.setattr(settings, "PROJECT_DIR", None)
+    monkeypatch.setattr(settings, "USER_PRESETS_DIR", _user_presets_dir(tmp_path))
+    monkeypatch.setattr(main_mod, "setup_logging", lambda **kwargs: None)
+    saved = dict(preset_registry._presets)
+    assert "User Card" not in saved
+    try:
+        async with main_mod.lifespan(main_mod.app):
+            assert "User Card" in preset_registry.presets
+    finally:
+        preset_registry._presets.clear()
+        preset_registry._presets.update(saved)
+        # The lifespan re-ran init_allowed_hosts with CORS origins added.
+        init_allowed_hosts(settings.HOST, settings.PORT)
+
+
+def test_project_validate_knows_the_exported_presets(tmp_path, monkeypatch):
+    """`cdui project validate` builds its registry "exactly like the server";
+    a graph using an exported preset was an unknown preset there."""
+    import project
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "USER_PRESETS_DIR", _user_presets_dir(tmp_path))
+    monkeypatch.setattr(project, "load_lockfile",
+                        lambda: {"schema": 1, "plugins": {}})
+    saved = dict(preset_registry._presets)
+    assert "User Card" not in saved
+    try:
+        project._init_registries_like_server()
+        assert "User Card" in preset_registry.presets
+    finally:
+        preset_registry._presets.clear()
+        preset_registry._presets.update(saved)

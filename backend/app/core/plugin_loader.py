@@ -424,6 +424,7 @@ def rediscover_all(
     nodes_dir: Path,
     custom_nodes_dir: Path,
     presets_dir: Path,
+    user_presets_dir: Path | None = None,
     builtin_root: Path,
     user_root: Path,
 ) -> dict[str, int]:
@@ -434,6 +435,9 @@ def rediscover_all(
     ``force_reload`` because their class objects are stable for the server
     lifetime; custom nodes and plugins do, because their files can change
     between calls.
+
+    Presets are read built-ins first, then ``user_presets_dir`` (the ones
+    Export as Subgraph writes, #600), then each enabled pack's.
     """
     registry.clear()
     builtin = registry.discover(nodes_dir, "app.nodes")
@@ -446,6 +450,8 @@ def rediscover_all(
 
     preset_registry.clear()
     preset_count = preset_registry.discover(presets_dir, registry)
+    if user_presets_dir is not None:
+        preset_count += preset_registry.discover(user_presets_dir, registry)
     for _plugin_id, plugin_dir in iter_plugin_dirs(builtin_root, user_root, lockfile):
         preset_count += preset_registry.discover(plugin_dir / "presets", registry)
 

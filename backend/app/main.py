@@ -282,8 +282,10 @@ async def _lifespan_body(app: FastAPI):
     for name in sorted(registry.nodes.keys()):
         logger.debug("  - %s (%s)", name, registry.nodes[name].CATEGORY)
 
-    # Discover presets (built-in + per-plugin)
+    # Discover presets (built-in, then exported from the editor, #600, then
+    # per-plugin)
     preset_count = preset_registry.discover(settings.PRESETS_DIR, registry)
+    preset_count += preset_registry.discover(settings.USER_PRESETS_DIR, registry)
     for _plugin_id, plugin_dir in iter_plugin_dirs(
         plugin_loader.plugins_builtin_root(), plugin_loader.plugins_user_root(), lockfile
     ):

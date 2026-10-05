@@ -260,6 +260,11 @@ class Settings(BaseSettings):
     CUSTOM_NODES_DIR: Path = Path(__file__).parent / "custom_nodes"
     GRAPHS_DIR: Path = Path(__file__).parent.parent / "data" / "graphs"
     PRESETS_DIR: Path = Path(__file__).parent / "presets"
+    # Presets made with Export as Subgraph (#600). Beside graphs/, like every
+    # other piece of user content: gitignored and outside backend/app, where
+    # `cdui update` checks code out over untracked files. One dir for every
+    # project, like CUSTOM_NODES_DIR (see _derive_project_roots).
+    USER_PRESETS_DIR: Path = Path(__file__).parent.parent / "data" / "presets"
     MODELS_DIR: Path = Path(__file__).parent.parent / "data" / "models"
     IMAGES_DIR: Path = Path(__file__).parent.parent / "data" / "images"
     # Uploads for DATA_FILE params (CSVReader et al). Separate from IMAGES_DIR

@@ -1,4 +1,5 @@
 import json
+import logging
 from pathlib import Path
 from typing import Any
 
@@ -7,11 +8,13 @@ from fastapi import APIRouter, HTTPException
 from ..config import settings
 from ..core.data_paths import UnstorableName, check_file_name, resolve_under
 from ..core.node_base import ParamType
-from ..core.graph_engine import subgraph_id_of
+from ..core.graph_engine import is_note_node, subgraph_id_of
 from ..core.node_registry import registry as node_registry
 from ..core.preset_registry import preset_registry
 from ..core.secret_params import scrub_graph_secrets
 from ..schemas import CreatePresetRequest, PresetDefinition
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/presets", tags=["presets"])
 
@@ -98,8 +101,45 @@ def _resolved_under(directory: Path, filename: str) -> Path:
 
 
 def _preset_path(name: str) -> Path:
-    """Where a preset called *name* is written. Checked twice; see #476."""
-    return _resolved_under(settings.PRESETS_DIR, _preset_filename(name))
+    """Where a preset called *name* is written. Checked twice; see #476.
+
+    ``USER_PRESETS_DIR``, never the built-in ``PRESETS_DIR`` (#600).
+    """
+    return _resolved_under(settings.USER_PRESETS_DIR, _preset_filename(name))
+
+
+def _preset_contents(
+    nodes: list[dict[str, Any]],
+    edges: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """The part of a canvas that goes into a preset (#600).
+
+    Export takes the whole canvas, and a canvas needs a Start to be run and
+    checked, so Start is left out rather than refused, with every trigger
+    wire. Nothing is lost: Start does no work, and a placed card starts its
+    inner roots on its own trigger (#561). Kept, the trigger wire was stored
+    without its type and expansion brought it back as a DATA edge into a port
+    called ``__trigger``, so a graph using the card validated clean and then
+    failed to run. A note is left out too: it is not a node, and the registry
+    refuses to load a preset that holds one.
+
+    A wire counts as a trigger by its ``type``, by its ``__trigger`` end (a
+    hand-rolled request may leave the type out) or by an end on a node left
+    out. Block instances are refused below instead, because leaving one out
+    WOULD lose part of what the preset computes.
+    """
+    def left_out(node: dict[str, Any]) -> bool:
+        return node.get("type") == "Start" or is_note_node(node)
+
+    gone = {node.get("id") for node in nodes if left_out(node)}
+    kept_edges = [
+        edge for edge in edges
+        if edge.get("type") != "trigger"
+        and edge.get("targetHandle") != "__trigger"
+        and edge.get("source") not in gone
+        and edge.get("target") not in gone
+    ]
+    return [node for node in nodes if not left_out(node)], kept_edges
 
 
 @router.get("", response_model=list[PresetDefinition])
@@ -119,10 +159,15 @@ async def get_preset(name: str):
 async def create_preset(request: CreatePresetRequest):
     """Export a graph as a reusable subgraph/preset.
 
-    Auto-detects exposed ports (unconnected ports) and exposed params.
+    Auto-detects exposed ports (unconnected ports) and exposed params. Start
+    nodes, trigger wires and notes are left out (:func:`_preset_contents`).
     """
-    if not request.nodes:
-        raise HTTPException(status_code=400, detail="Graph must have at least one node")
+    nodes, edges = _preset_contents(request.nodes, request.edges)
+    if not nodes:
+        raise HTTPException(
+            status_code=400,
+            detail="Graph must have at least one node other than Start",
+        )
 
     # #476: the name becomes a filename here, before it becomes anything
     # else. Early on purpose -- everything below this line is work done on
@@ -138,9 +183,11 @@ async def create_preset(request: CreatePresetRequest):
     # already taken, because the registry's key is the name as TYPED and
     # the filename is lowercased: with "LLM Preset" saved, "llm preset"
     # passed the check above and then wrote straight over its file, taking
-    # its place in the registry on the rediscovery below. The file is the
-    # authority on what is already there.
-    if filepath.exists():
+    # its place in the registry. The file is the authority on what is
+    # already there, in the built-in dir as well (#600), which also holds
+    # the presets older versions exported: nothing there is overwritten,
+    # but the new preset would be a second one whose name differs in case.
+    if filepath.exists() or (settings.PRESETS_DIR / filepath.name).exists():
         raise _coded(409, "preset_file_exists", filename=filepath.name)
 
     # core#137: a preset is portable and a subgraph id is local to one graph,
@@ -152,7 +199,7 @@ async def create_preset(request: CreatePresetRequest):
     # ones that arrive inside a graph file's own `presets[]`.
     instance_ids = [
         node.get("id", "")
-        for node in request.nodes
+        for node in nodes
         if subgraph_id_of(node.get("type", "")) is not None
     ]
     if instance_ids:
@@ -171,17 +218,17 @@ async def create_preset(request: CreatePresetRequest):
     # preset-embedded data.internalParams) before any of it is copied into
     # the stored preset. C1 (below) additionally keeps SECRET params out of
     # the exposed-params schema; this guards the raw VALUES.
-    scrub_graph_secrets(request.nodes)
+    scrub_graph_secrets(nodes)
 
     # Create short ID mapping for cleaner JSON
     id_map: dict[str, str] = {}
-    for i, node in enumerate(request.nodes):
+    for i, node in enumerate(nodes):
         old_id = node.get("id", f"node_{i}")
         id_map[old_id] = f"node_{i}"
 
     # Transform nodes
     internal_nodes = []
-    for node in request.nodes:
+    for node in nodes:
         old_id = node.get("id", "")
         node_type: str = node.get("type", "")
         params = node.get("data", {}).get("params", {})
@@ -193,7 +240,7 @@ async def create_preset(request: CreatePresetRequest):
 
     # Transform edges
     internal_edges = []
-    for edge in request.edges:
+    for edge in edges:
         src = edge.get("source", "")
         tgt = edge.get("target", "")
         internal_edges.append({
@@ -286,14 +333,20 @@ async def create_preset(request: CreatePresetRequest):
     }
 
     # Save to file (`filepath` was derived and checked at the top, #476)
-    settings.PRESETS_DIR.mkdir(parents=True, exist_ok=True)
+    settings.USER_PRESETS_DIR.mkdir(parents=True, exist_ok=True)
     filepath.write_text(json.dumps(preset_data, indent=2, ensure_ascii=False), encoding="utf-8")
 
-    # Reload presets
-    preset_registry.clear()
-    preset_registry.discover(settings.PRESETS_DIR, node_registry)
-
-    preset = preset_registry.get(request.name)
-    if not preset:
-        raise HTTPException(status_code=500, detail="Failed to load created preset")
-    return preset
+    # Load the new file alone and add it to what the registry holds (#600).
+    # A clear here dropped every preset a plugin pack supplied until the next
+    # reload, and rereading the whole dir gave a name that a pack won at
+    # startup back to the user's file of that name.
+    try:
+        return preset_registry.load_file(filepath, node_registry)
+    except Exception as exc:
+        # Left on disk, the file would refuse every later export under this
+        # name with 409 instead of giving this answer again.
+        logger.warning("Failed to load %s: %s", filepath.name, exc)
+        filepath.unlink(missing_ok=True)
+        raise HTTPException(
+            status_code=500, detail="Failed to load created preset",
+        ) from None
