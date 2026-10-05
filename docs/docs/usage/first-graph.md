@@ -31,7 +31,7 @@ Set Reshape's `shape` to `1,16`. A new shape must hold the same number of elemen
 :::warning Every graph needs a Start node
 Drag a **`Start`** node onto the canvas and connect its **trigger output** (the diamond handle on the right side) to the first node you want executed — typically the `TensorInput`. Drop the wire anywhere on that node.
 
-Without a `Start → first-node` trigger edge, the graph is treated as a draft and **Run** rejects it with an error toast: *"No entry points defined. Drag a Start node from the palette and connect it to the node you want to start execution from."* The executable set includes each triggered node, its downstream data flow, any upstream nodes that feed data into that set, and internal roots in any reached preset or subgraph container.
+Without a `Start → first-node` trigger edge, the graph is treated as a draft and **Run** rejects it with an error toast: *"No entry points defined. Drag a Start node from the palette and connect it to the node you want to start execution from."* When **Run** finds other problems, a toast about a node names it by its title and has a **Show** button that selects the node and brings it into view. These toasts stay until the next **Run** or until you switch tabs. The executable set includes each triggered node, its downstream data flow, any upstream nodes that feed data into that set, and internal roots in any reached preset or subgraph container.
 :::
 
 This trigger-based routing is what lets you keep scratch nodes on the canvas without running them, and it enables conditional branches (e.g. a `Switch` node) where only one path executes.

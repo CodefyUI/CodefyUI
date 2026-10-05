@@ -18,6 +18,7 @@ import { confirm, prompt } from '../../utils/dialog';
 import { saveActiveGraph } from '../../utils/saveActiveGraph';
 import { exportWorkspace } from '../../utils/exportWorkspace';
 import { exportFileStem, exportFileStemNow } from '../../utils/exportFileName';
+import { dismissValidationToasts, showGraphRefusal } from '../../utils/validationToasts';
 import { SaveIcon } from '../shared/Icons';
 import { useToastStore } from '../../store/toastStore';
 import type { LayoutMode } from '../../utils/autoLayout';
@@ -493,6 +494,9 @@ export function Toolbar() {
     // canvas or a failed request must not leave a path the user just fixed
     // on screen.
     dismissPathWarning();
+    // The last refusal too, Run's or an export's: it is about a graph the
+    // user may have fixed since (utils/validationToasts).
+    dismissValidationToasts();
     const serialized = getSerializedGraph();
     const noteIds = new Set(
       serialized.nodes.filter((node) => node.type === 'note').map((node) => node.id),
@@ -542,7 +546,15 @@ export function Toolbar() {
       a.click();
       URL.revokeObjectURL(url);
     } catch (e) {
-      addToast(t('toolbar.exportPython.fail', { error: (e as Error).message }), 'error');
+      // A graph that fails validation is refused in the server's English,
+      // with raw node ids. Said instead the way Run says it, in the UI
+      // language and naming nodes by title (utils/validationToasts); this
+      // sentence is the fallback when the check finds nothing.
+      await showGraphRefusal(
+        tabId,
+        { nodes, edges, presets: serialized.presets, subgraphs: serialized.subgraphs },
+        t('toolbar.exportPython.fail', { error: (e as Error).message }),
+      );
       return;
     }
     // The path warning (#557), outside the try: the script has downloaded,

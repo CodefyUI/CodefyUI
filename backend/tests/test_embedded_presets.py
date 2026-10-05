@@ -337,7 +337,7 @@ async def test_validate_export_and_save_read_a_minimal_entry(
 
     validated = await test_client.post("/api/graph/validate", json=body)
     assert validated.status_code == 200, validated.text
-    assert validated.json() == {"valid": True, "errors": []}
+    assert validated.json() == {"valid": True, "errors": [], "issues": []}
     exported = await test_client.post("/api/graph/export", json=body)
     assert exported.status_code == 200, exported.text
     saved = await test_client.post("/api/graph/save", json=body)

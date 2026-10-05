@@ -14,6 +14,7 @@ import { getRun, validateGraph } from '../api/rest';
 import { findEntryPoints } from '../utils/findEntryPoints';
 import { localizedPackTitle } from '../utils/packAvailability';
 import { friendlyError, missingPackFromError } from '../utils/errorMessages';
+import { dismissValidationToasts, issuesFromErrors, showValidationError, showValidationIssues } from '../utils/validationToasts';
 import { useI18n } from '../i18n';
 import {
   MESSAGE_TOO_BIG_EVENT,
@@ -149,6 +150,12 @@ export function useGraphExecution() {
   const clearOutputSummaries = useTabStore((s) => s.clearOutputSummaries);
   const addTabLog = useTabStore((s) => s.addTabLog);
   const clearLogs = useTabStore((s) => s.clearLogs);
+
+  // Validation's toasts are about one tab's graph and do not say which, so
+  // they go when another tab comes to the front, and with this hook, which
+  // the toolbar takes down with the last tab (dismissValidationToasts).
+  const activeTabId = useTabStore((s) => s.activeTabId);
+  useEffect(() => () => dismissValidationToasts(), [activeTabId]);
 
   // Attach per-tab WS listeners. We subscribe to tabStore directly (rather
   // than re-running on activeTabId change) so background tabs keep receiving
@@ -687,15 +694,17 @@ export function useGraphExecution() {
   }, []);
 
   const submit = useCallback(async (tab: TabState) => {
+    // The last Run's validation toasts go first, whatever this one finds:
+    // they never time out, and a stale set reads as this Run's problems.
+    dismissValidationToasts();
     // Block execution when the graph has no entry points. This mirrors the
     // backend `find_entry_points` so we fail fast with a toast instead of
     // sending a graph that will be rejected server-side.
     const entryIds = findEntryPoints(tab.nodes, tab.edges);
     if (entryIds.length === 0) {
-      useToastStore.getState().addToast(
-        useI18n.getState().t('execution.error.noEntryPoints'),
-        'error',
-      );
+      // In the validation set (utils/validationToasts), so the next Run or a
+      // tab switch takes it down.
+      showValidationError(useI18n.getState().t('execution.error.noEntryPoints'));
       return;
     }
 
@@ -724,19 +733,20 @@ export function useGraphExecution() {
     const execNodes = graph.nodes.filter(isComputational);
 
     // Pre-execution validation
-    try {
-      // Embedded presets ride along so a portable graph whose presets are
-      // not in the local registry still validates (#84).
-      const validation = await validateGraph(
-        checked.nodes.filter(isComputational), checked.edges, checked.presets, checked.subgraphs,
-      );
-      if (!validation.valid) {
-        const { addToast } = useToastStore.getState();
-        validation.errors.forEach((err: string) => addToast(err, 'error'));
-        return;
-      }
-    } catch {
-      // If validation endpoint is unreachable, proceed anyway
+    // Embedded presets ride along so a portable graph whose presets are
+    // not in the local registry still validates (#84). Only the request is
+    // caught: an endpoint that cannot be reached lets the run go ahead (null
+    // here), while a fault in drawing the toasts (utils/validationToasts)
+    // must not be read as that and run a graph the server refused.
+    const validation = await validateGraph(
+      checked.nodes.filter(isComputational), checked.edges, checked.presets, checked.subgraphs,
+    ).catch(() => null);
+    if (validation?.valid === false) {
+      // Localized, naming each node by its title, and replacing the last set
+      // rather than stacking on it. A server older than `issues` sends the
+      // sentences alone.
+      showValidationIssues(tab.id, validation.issues ?? issuesFromErrors(validation.errors));
+      return;
     }
 
     // The socket can close while validation is in flight -- a server

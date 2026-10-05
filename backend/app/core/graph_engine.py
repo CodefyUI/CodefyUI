@@ -659,6 +659,8 @@ def _preset_card_refusals(
     read: a card nested inside it is checked when expansion reaches it, at
     run time, not by validation.
     """
+    from .validation_issues import validation_issue
+
     exposed_inputs = {port.name for port in definition.exposed_inputs}
     exposed_outputs = {port.name for port in definition.exposed_outputs}
     lines: list[str] = []
@@ -667,10 +669,14 @@ def _preset_card_refusals(
         if edge.get("source") == card_id:
             handle = edge.get("sourceHandle", "")
             if handle not in exposed_outputs:
-                lines.append(
-                    f"Edge sources output port '{handle}' which preset "
-                    f"'{preset_name}' does not expose (node {card_id})"
-                )
+                lines.append(validation_issue(
+                    "preset_output_not_exposed",
+                    (
+                        f"Edge sources output port '{handle}' which preset "
+                        f"'{preset_name}' does not expose (node {card_id})"
+                    ),
+                    node_id=card_id, port=handle, preset=preset_name,
+                ))
         if edge.get("target") != card_id:
             continue
         if edge.get("type", "data") == "trigger":
@@ -678,22 +684,34 @@ def _preset_card_refusals(
             continue
         handle = edge.get("targetHandle", "")
         if handle not in exposed_inputs:
-            lines.append(
-                f"Edge targets input port '{handle}' which preset "
-                f"'{preset_name}' does not expose (node {card_id})"
-            )
+            lines.append(validation_issue(
+                "preset_input_not_exposed",
+                (
+                    f"Edge targets input port '{handle}' which preset "
+                    f"'{preset_name}' does not expose (node {card_id})"
+                ),
+                node_id=card_id, port=handle, preset=preset_name,
+            ))
     if triggered and not _inner_roots(definition):
         if definition.nodes:
-            lines.append(
-                f"Node {card_id} is triggered, but preset '{preset_name}' has "
-                "no node to start: every node inside it is fed by another "
-                "node inside it"
-            )
+            lines.append(validation_issue(
+                "preset_triggered_all_fed",
+                (
+                    f"Node {card_id} is triggered, but preset '{preset_name}' has "
+                    "no node to start: every node inside it is fed by another "
+                    "node inside it"
+                ),
+                node_id=card_id, preset=preset_name,
+            ))
         else:
-            lines.append(
-                f"Node {card_id} is triggered, but preset '{preset_name}' has "
-                "no node to start: it has no nodes"
-            )
+            lines.append(validation_issue(
+                "preset_triggered_empty",
+                (
+                    f"Node {card_id} is triggered, but preset '{preset_name}' has "
+                    "no node to start: it has no nodes"
+                ),
+                node_id=card_id, preset=preset_name,
+            ))
     # Two edges on one port the card does not expose are one fault.
     return list(dict.fromkeys(lines))
 
@@ -749,6 +767,11 @@ def dangling_trigger_errors(nodes: list[dict], edges: list[dict]) -> list[str]:
     :func:`validate_graph` and in the closing validation of a run, which
     sees the expanded graph. Copies of one edge give one line.
     """
+    from .validation_issues import validation_issue
+
+    # The edge is in the file and nowhere on the canvas, which draws no edge
+    # whose node is gone, so the canvas has nothing to delete: the line sends
+    # the user to the file. Each line is about the end that IS on the canvas.
     present = {node.get("id") for node in nodes}
     errors: list[str] = []
     for edge in edges:
@@ -756,15 +779,23 @@ def dangling_trigger_errors(nodes: list[dict], edges: list[dict]) -> list[str]:
             continue
         source, target = edge.get("source"), edge.get("target")
         if source not in present:
-            errors.append(
-                f"A trigger edge comes from node '{source}', which is not in "
-                "the graph -- remove the edge from the graph file"
-            )
+            errors.append(validation_issue(
+                "trigger_source_missing",
+                (
+                    f"A trigger edge comes from node '{source}', which is not in "
+                    "the graph -- remove the edge from the graph file"
+                ),
+                node_id=target, source=source,
+            ))
         if target not in present:
-            errors.append(
-                f"A trigger edge goes to node '{target}', which is not in "
-                "the graph -- remove the edge from the graph file"
-            )
+            errors.append(validation_issue(
+                "trigger_target_missing",
+                (
+                    f"A trigger edge goes to node '{target}', which is not in "
+                    "the graph -- remove the edge from the graph file"
+                ),
+                node_id=source, target=target,
+            ))
     return list(dict.fromkeys(errors))
 
 
@@ -1525,6 +1556,7 @@ def validate_graph(
 
     # --- Node-level validation (standalone, before edge checks) ---
     from .preset_registry import preset_registry
+    from .validation_issues import validation_issue
 
     # 1. Node type existence check
     valid_node_ids: set[str] = set()
@@ -1554,14 +1586,22 @@ def validate_graph(
                 opaque_node_ids.add(node["id"])
                 valid_node_ids.add(node["id"])
             elif not (preset_registry.get(preset_name) or (preset_fallback or {}).get(preset_name)):
-                errors.append(f"Unknown preset: {preset_name} (node {node['id']})")
+                errors.append(validation_issue(
+                    "unknown_preset",
+                    f"Unknown preset: {preset_name} (node {node['id']})",
+                    node_id=node["id"], preset=preset_name,
+                ))
             else:
                 opaque_node_ids.add(node["id"])
                 valid_node_ids.add(node["id"])
             continue
         node_cls = registry.get(node_type)
         if node_cls is None:
-            errors.append(f"Unknown node type: {node_type} (node {node['id']})")
+            errors.append(validation_issue(
+                "unknown_node_type",
+                f"Unknown node type: {node_type} (node {node['id']})",
+                node_id=node["id"], type=node_type,
+            ))
         else:
             valid_node_ids.add(node["id"])
 
@@ -1590,14 +1630,19 @@ def validate_graph(
                 # edge at all, so "connect an output" is the complete fix,
                 # not a guess among several.
                 cause = resolution.dropped.get((node["id"], inp.name))
-                errors.append(
-                    f"Missing required input '{inp.name}' on node {node['id']} ({node['type']})"
-                    + (
-                        f" (input dropped because '{cause}' is bypassed)"
-                        if cause
-                        else " -- connect an output to this port"
-                    )
-                )
+                errors.append(validation_issue(
+                    "missing_input",
+                    (
+                        f"Missing required input '{inp.name}' on node {node['id']} ({node['type']})"
+                        + (
+                            f" (input dropped because '{cause}' is bypassed)"
+                            if cause
+                            else " -- connect an output to this port"
+                        )
+                    ),
+                    node_id=node["id"], port=inp.name, type=node["type"],
+                    **({"cause": cause} if cause else {}),
+                ))
 
     # 3. Parameter range validation (skip opaque nodes)
     for node in nodes:
@@ -1637,22 +1682,36 @@ def validate_graph(
                 above = (param_def.max_value is not None
                          and value > param_def.max_value)
             except TypeError:
-                errors.append(
-                    f"Parameter '{param_def.name}' on node {node['id']} ({node['type']}): "
-                    f"value {value!r} is not a number, so it cannot be "
-                    f"checked against its allowed range"
-                )
+                errors.append(validation_issue(
+                    "param_not_number",
+                    (
+                        f"Parameter '{param_def.name}' on node {node['id']} ({node['type']}): "
+                        f"value {value!r} is not a number, so it cannot be "
+                        f"checked against its allowed range"
+                    ),
+                    node_id=node["id"], param=param_def.name, value=value,
+                ))
                 continue
             if below:
-                errors.append(
-                    f"Parameter '{param_def.name}' on node {node['id']} ({node['type']}): "
-                    f"value {value} is below minimum {param_def.min_value}"
-                )
+                errors.append(validation_issue(
+                    "param_below_min",
+                    (
+                        f"Parameter '{param_def.name}' on node {node['id']} ({node['type']}): "
+                        f"value {value} is below minimum {param_def.min_value}"
+                    ),
+                    node_id=node["id"], param=param_def.name, value=value,
+                    min=param_def.min_value,
+                ))
             if above:
-                errors.append(
-                    f"Parameter '{param_def.name}' on node {node['id']} ({node['type']}): "
-                    f"value {value} is above maximum {param_def.max_value}"
-                )
+                errors.append(validation_issue(
+                    "param_above_max",
+                    (
+                        f"Parameter '{param_def.name}' on node {node['id']} ({node['type']}): "
+                        f"value {value} is above maximum {param_def.max_value}"
+                    ),
+                    node_id=node["id"], param=param_def.name, value=value,
+                    max=param_def.max_value,
+                ))
 
     # --- Edge-level validation ---
 
@@ -1689,25 +1748,47 @@ def validate_graph(
         tgt_inputs = {p.name: p for p in tgt_cls.define_inputs_dynamic(tgt_params)}
 
         if src_port not in src_outputs:
-            errors.append(f"Invalid output port '{src_port}' on {src['type']}")
+            # These sentences name node TYPES only; the node ids ride along
+            # beside them, so a client can tell which of two Linears is meant.
+            errors.append(validation_issue(
+                "invalid_output_port",
+                f"Invalid output port '{src_port}' on {src['type']}",
+                node_id=src["id"], port=src_port, type=src["type"],
+                target=tgt["id"],
+            ))
             continue
         if tgt_port not in tgt_inputs:
-            errors.append(f"Invalid input port '{tgt_port}' on {tgt['type']}")
+            errors.append(validation_issue(
+                "invalid_input_port",
+                f"Invalid input port '{tgt_port}' on {tgt['type']}",
+                node_id=tgt["id"], port=tgt_port, type=tgt["type"],
+                source=src["id"],
+            ))
             continue
 
         if not is_compatible(src_outputs[src_port].data_type, tgt_inputs[tgt_port].data_type):
-            errors.append(
-                f"Type mismatch: {src['type']}.{src_port} ({src_outputs[src_port].data_type}) "
-                f"-> {tgt['type']}.{tgt_port} ({tgt_inputs[tgt_port].data_type})"
-            )
+            errors.append(validation_issue(
+                "type_mismatch",
+                (
+                    f"Type mismatch: {src['type']}.{src_port} ({src_outputs[src_port].data_type}) "
+                    f"-> {tgt['type']}.{tgt_port} ({tgt_inputs[tgt_port].data_type})"
+                ),
+                node_id=tgt["id"], source=src["id"], source_port=src_port,
+                source_type=_type_name(src_outputs[src_port].data_type),
+                port=tgt_port,
+                target_type=_type_name(tgt_inputs[tgt_port].data_type),
+            ))
 
     # NEW: Entry-point rules
     entry_ids = find_entry_points(nodes, edges)
     if not entry_ids:
-        errors.append(
-            "Graph has no entry points. Add a Start node and connect "
-            "it to the node you want to start execution from."
-        )
+        errors.append(validation_issue(
+            "no_entry_points",
+            (
+                "Graph has no entry points. Add a Start node and connect "
+                "it to the node you want to start execution from."
+            ),
+        ))
         # Still run remaining checks so user sees all problems at once
         executable_node_ids = {n["id"] for n in nodes}
     else:
@@ -1724,7 +1805,9 @@ def validate_graph(
     ]
     cycle = find_cycle(executable_nodes, executable_edges)
     if cycle is not None:
-        errors.append(describe_cycle(cycle))
+        errors.append(validation_issue(
+            "cycle", describe_cycle(cycle), node_id=cycle[0], path=list(cycle),
+        ))
 
     return errors
 

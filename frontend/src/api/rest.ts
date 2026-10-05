@@ -650,12 +650,27 @@ export async function validateScript(code: string): Promise<ScriptValidation> {
   return res.json();
 }
 
+/**
+ * One finding of `POST /api/graph/validate`, beside the `errors` line it
+ * repeats as `message`. `code` names the check (null for a check that has no
+ * code yet), `node_id` the node it is about -- a canvas id, or a
+ * `<block>/<inner>` / `<card>__<inner>` id for a node inside one -- and
+ * `params` the values its sentence names. See `utils/validationToasts.ts`.
+ */
+export interface ValidationIssue {
+  message: string;
+  code: string | null;
+  node_id: string | null;
+  params: Record<string, unknown>;
+}
+
+/** `issues` is absent from a server older than ValidationIssue. */
 export async function validateGraph(
   nodes: any[],
   edges: any[],
   presets: any[] = [],
   subgraphs: any[] = [],
-) {
+): Promise<{ valid: boolean; errors: string[]; issues?: ValidationIssue[] }> {
   const res = await apiFetch(`${BASE_URL}/graph/validate`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },

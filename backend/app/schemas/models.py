@@ -273,9 +273,28 @@ class GraphExportRequest(GraphData):
     deterministic: bool = False
 
 
+class ValidationIssueOut(BaseModel):
+    """One finding of ``/validate``, beside its ``errors`` line.
+
+    ``message`` is that line. ``code`` names the check, None for a check
+    that has no code yet; ``node_id`` is the node the finding is about (a
+    canvas id, or ``<block>/<inner>`` / ``<card>__<inner>`` for a node
+    inside one), and ``params`` the values its sentence names -- what a
+    client needs to say it in its own words. See
+    ``app.core.validation_issues``.
+    """
+
+    message: str
+    code: str | None = None
+    node_id: str | None = None
+    params: dict[str, Any] = {}
+
+
 class GraphValidationResponse(BaseModel):
     valid: bool
     errors: list[str] = []
+    #: One ValidationIssueOut per ``errors`` line, in the same order.
+    issues: list[ValidationIssueOut] = []
 
 
 class NodeExecutionStatus(BaseModel):
