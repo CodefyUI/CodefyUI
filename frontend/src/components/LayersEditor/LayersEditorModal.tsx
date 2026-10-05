@@ -28,6 +28,7 @@ import { generateId } from '../../utils';
 import { CANVAS_MIN_ZOOM } from '../../styles/theme';
 import { EdgeLaneProvider } from '../Canvas/EdgeLaneContext';
 import { SmartDataEdge } from '../Canvas/SmartDataEdge';
+import { NumberInput } from '../shared/NumberInput';
 import { LayerNode } from './LayerNode';
 import { InputNode } from './InputNode';
 import { OutputNode } from './OutputNode';
@@ -345,30 +346,13 @@ function ParamEditor({
             <label style={{ display: 'block', fontSize: '0.75rem', color: '#999', marginBottom: 3, fontWeight: 500 }}>
               {p.name}
             </label>
-            <input
-              type={
-                // param_type is always int or float, so the trailing `: 'text'` arm is dead
-                /* v8 ignore next */
-                p.param_type === 'float' ? 'number' : p.param_type === 'int' ? 'number' : 'text'
-              }
+            <NumberInput
               value={val}
+              integer={p.param_type === 'int'}
               step={p.param_type === 'float' ? 'any' : 1}
-              min={
-                // every LAYER_DEFS param sets a numeric min_value, so `?? undefined` is dead
-                /* v8 ignore next */
-                p.min_value ?? undefined
-              }
+              min={p.min_value ?? undefined}
               max={p.max_value ?? undefined}
-              onChange={(e) => {
-                let v: any = e.target.value;
-                if (p.param_type === 'int') v = parseInt(v, 10);
-                // All LAYER_DEFS params are int or float, so the implicit "neither"
-                // else of this branch (leaving v as a string) is unreachable.
-                /* v8 ignore start */
-                else if (p.param_type === 'float') v = parseFloat(v);
-                /* v8 ignore stop */
-                onParamChange(node.id, p.name, v);
-              }}
+              onCommit={(n) => onParamChange(node.id, p.name, n)}
               style={{
                 width: '100%',
                 padding: '5px 8px',

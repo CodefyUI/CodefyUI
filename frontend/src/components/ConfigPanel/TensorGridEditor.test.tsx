@@ -1,4 +1,5 @@
 import { describe, it, expect, afterEach, vi } from 'vitest';
+import { useState } from 'react';
 import { render, screen, fireEvent } from '@testing-library/react';
 import { TensorGridEditor } from './TensorGridEditor';
 import type { ParamDefinition } from '../../types';
@@ -156,7 +157,10 @@ describe('TensorGridEditor — explicit editable grid (2D)', () => {
     ]);
   });
 
-  it('coerces a non-finite cell entry to 0', () => {
+  // UAT of 2.8.8 (CF201): typing -1 into a kernel cell stored 1. The browser
+  // reports a half-typed "-" as "" (jsdom does the same); that "" was
+  // committed as 0, which React then wrote over the "-".
+  it('a half-typed minus writes nothing and stays on screen; -1 commits -1', () => {
     const onChange = vi.fn();
     renderEditor({
       value: [
@@ -166,13 +170,61 @@ describe('TensorGridEditor — explicit editable grid (2D)', () => {
       siblingParams: { shape: '2,2', value_mode: 'explicit' },
       onChange,
     });
-    const inputs = screen.getAllByRole('spinbutton');
-    // 'abc' -> Number('abc') is NaN -> not finite -> 0
-    fireEvent.change(inputs[3], { target: { value: 'abc' } });
+    const inputs = screen.getAllByRole('spinbutton') as HTMLInputElement[];
+    fireEvent.change(inputs[3], { target: { value: '-' } });
+    expect(onChange).not.toHaveBeenCalled();
+    expect(inputs[3].value).toBe('');
+    fireEvent.change(inputs[3], { target: { value: '-1' } });
+    expect(onChange).toHaveBeenCalledTimes(1);
     expect(onChange).toHaveBeenCalledWith('weights', [
       [1, 2],
-      [3, 0],
+      [3, -1],
     ]);
+  });
+
+  it('a cleared cell shows the stored number again on blur and stores nothing', () => {
+    const onChange = vi.fn();
+    renderEditor({
+      value: [
+        [1, 2],
+        [3, 4],
+      ],
+      siblingParams: { shape: '2,2', value_mode: 'explicit' },
+      onChange,
+    });
+    const inputs = screen.getAllByRole('spinbutton') as HTMLInputElement[];
+    fireEvent.change(inputs[0], { target: { value: '' } });
+    fireEvent.blur(inputs[0]);
+    expect(inputs[0].value).toBe('1');
+    expect(onChange).not.toHaveBeenCalled();
+  });
+
+  it('Fill replaces a half-typed cell, through a parent that stores the value', () => {
+    function Stateful() {
+      const [value, setValue] = useState<any>([
+        [1, 2],
+        [3, 4],
+      ]);
+      return (
+        <TensorGridEditor
+          param={makeParam()}
+          value={value}
+          onChange={(_name, next) => setValue(next)}
+          displayLabel="T"
+          siblingParams={{ shape: '2,2', value_mode: 'explicit' }}
+        />
+      );
+    }
+    render(<Stateful />);
+    const inputs = () => screen.getAllByRole('spinbutton') as HTMLInputElement[];
+    fireEvent.change(inputs()[1], { target: { value: '-' } });
+    expect(inputs()[1].value).toBe('');
+    // A change from outside the cell is what the cell must show next.
+    fireEvent.click(screen.getByText('Fill 1'));
+    expect(inputs().map((i) => i.value)).toEqual(['1', '1', '1', '1']);
+    // And a typed number round-trips through the stored value.
+    fireEvent.change(inputs()[2], { target: { value: '-0.25' } });
+    expect(inputs().map((i) => i.value)).toEqual(['1', '1', '-0.25', '1']);
   });
 
   it('reshapes scalar / string source values into the grid (reshapeValues walk branches)', () => {
@@ -518,6 +570,30 @@ describe('TensorGridEditor — the value follows the shape (#365)', () => {
     // moment the panel opens would turn "not set" into "explicitly zero".
     update({ value: null, siblingParams: { shape: '3,3', value_mode: 'explicit' }, onChange });
     expect(onChange).not.toHaveBeenCalled();
+  });
+
+  it('the cells show the resized value once a parent stores it', () => {
+    // Each cell keeps what is typed in its own draft, and must still take the
+    // numbers the reshape commit moves into it.
+    function Stateful({ k }: { k: number }) {
+      const [value, setValue] = useState<any>([
+        [1, 2],
+        [3, 4],
+      ]);
+      return (
+        <TensorGridEditor
+          param={makeParam()}
+          value={value}
+          onChange={(_name, next) => setValue(next)}
+          displayLabel="T"
+          siblingParams={{ kernel_size: k }}
+        />
+      );
+    }
+    const { rerender } = render(<Stateful k={2} />);
+    rerender(<Stateful k={3} />);
+    const inputs = screen.getAllByRole('spinbutton') as HTMLInputElement[];
+    expect(inputs.map((i) => i.value)).toEqual(['1', '2', '3', '4', '0', '0', '0', '0', '0']);
   });
 
   it('follows a TensorInput-style `shape` sibling too', () => {

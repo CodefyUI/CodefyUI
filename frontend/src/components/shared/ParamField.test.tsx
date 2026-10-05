@@ -217,7 +217,7 @@ describe('ParamField — select branch', () => {
 });
 
 describe('ParamField — int / float numeric branch', () => {
-  it('int uses step=1 and parseInt onChange', () => {
+  it('int uses step=1 and commits the typed integer', () => {
     const onChange = vi.fn();
     render(
       <ParamField param={mkParam({ name: 'n', param_type: 'int' })} value={3} onChange={onChange} />,
@@ -228,7 +228,7 @@ describe('ParamField — int / float numeric branch', () => {
     expect(onChange).toHaveBeenCalledWith('n', 7);
   });
 
-  it('float uses step=any and parseFloat onChange', () => {
+  it('float uses step=any and commits the typed number', () => {
     const onChange = vi.fn();
     render(
       <ParamField param={mkParam({ name: 'r', param_type: 'float' })} value={1.5} onChange={onChange} />,
@@ -237,6 +237,62 @@ describe('ParamField — int / float numeric branch', () => {
     expect(input.step).toBe('any');
     fireEvent.change(input, { target: { value: '2.25' } });
     expect(onChange).toHaveBeenCalledWith('r', 2.25);
+  });
+
+  // UAT of 2.8.8: typing -1 stored 1. While a field shows a half-typed "-",
+  // the browser reports its value as "" (jsdom does the same), and that ""
+  // was committed as NaN, after which React wrote the stored value back over
+  // the "-".
+  it('int: a half-typed minus writes nothing and stays on screen; -1 commits -1', () => {
+    const onChange = vi.fn();
+    render(
+      <ParamField param={mkParam({ name: 'n', param_type: 'int' })} value={3} onChange={onChange} />,
+    );
+    const input = screen.getByRole('spinbutton') as HTMLInputElement;
+    fireEvent.change(input, { target: { value: '-' } });
+    expect(onChange).not.toHaveBeenCalled();
+    expect(input.value).toBe('');
+    fireEvent.change(input, { target: { value: '-1' } });
+    expect(onChange).toHaveBeenCalledTimes(1);
+    expect(onChange).toHaveBeenCalledWith('n', -1);
+  });
+
+  it('float: "-0." writes nothing and stays on screen; -0.5 commits -0.5', () => {
+    const onChange = vi.fn();
+    render(
+      <ParamField param={mkParam({ name: 'r', param_type: 'float' })} value={1.5} onChange={onChange} />,
+    );
+    const input = screen.getByRole('spinbutton') as HTMLInputElement;
+    fireEvent.change(input, { target: { value: '-0.' } });
+    expect(onChange).not.toHaveBeenCalled();
+    expect(input.value).toBe('');
+    fireEvent.change(input, { target: { value: '-0.5' } });
+    expect(onChange).toHaveBeenCalledTimes(1);
+    expect(onChange).toHaveBeenCalledWith('r', -0.5);
+  });
+
+  it('int: reads 1e3 as 1000 and does not commit a fraction', () => {
+    const onChange = vi.fn();
+    render(
+      <ParamField param={mkParam({ name: 'n', param_type: 'int' })} value={3} onChange={onChange} />,
+    );
+    const input = screen.getByRole('spinbutton') as HTMLInputElement;
+    fireEvent.change(input, { target: { value: '2.5' } });
+    expect(onChange).not.toHaveBeenCalled();
+    fireEvent.change(input, { target: { value: '1e3' } });
+    expect(onChange).toHaveBeenCalledWith('n', 1000);
+  });
+
+  it('a cleared field shows the stored number again on blur and stores nothing', () => {
+    const onChange = vi.fn();
+    render(
+      <ParamField param={mkParam({ name: 'n', param_type: 'int' })} value={7} onChange={onChange} />,
+    );
+    const input = screen.getByRole('spinbutton') as HTMLInputElement;
+    fireEvent.change(input, { target: { value: '' } });
+    fireEvent.blur(input);
+    expect(input.value).toBe('7');
+    expect(onChange).not.toHaveBeenCalled();
   });
 
   it('falls back to default then 0 when value is nullish', () => {

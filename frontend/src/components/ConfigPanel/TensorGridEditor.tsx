@@ -1,6 +1,7 @@
 import { Fragment, useEffect, useMemo, useState } from 'react';
 import type { ParamDefinition } from '../../types';
 import { useI18n } from '../../i18n';
+import { NumberInput } from '../shared/NumberInput';
 import styles from './TensorGridEditor.module.css';
 
 interface Props {
@@ -215,19 +216,12 @@ export function TensorGridEditor({ param, value, onChange, displayLabel, sibling
     [normalized, leading],
   );
 
-  const setCell = (i: number, j: number, raw: string) => {
+  const setCell = (i: number, j: number, n: number) => {
     // cell inputs only render when normalized is truthy (grid is non-empty), so setCell
     // is never invoked with a null normalized
     /* v8 ignore next -- @preserve */
     if (!normalized) return;
-    const n = Number(raw);
-    // a number <input> sanitizes any invalid entry to '' (Number('') === 0, finite),
-    // so n is always finite here; the : 0 arm is never taken
-    const newVal = Number.isFinite(n)
-      ? n
-      : /* v8 ignore next -- @preserve */
-        0;
-    const next = set2D(normalized, leading, i, j, newVal);
+    const next = set2D(normalized, leading, i, j, n);
     onChange(param.name, next);
   };
 
@@ -322,16 +316,11 @@ export function TensorGridEditor({ param, value, onChange, displayLabel, sibling
                   <tr key={i}>
                     {row.map((v, j) => (
                       <td key={j} className={styles.cell}>
-                        <input
-                          type="number"
-                          className={styles.cellInput}
-                          value={
-                            // grid cells are always numbers from reshapeValues; v is never nullish
-                            /* v8 ignore next -- @preserve */
-                            String(v ?? 0)
-                          }
+                        <NumberInput
+                          value={v}
                           step="any"
-                          onChange={(e) => setCell(i, j, e.target.value)}
+                          className={styles.cellInput}
+                          onCommit={(n) => setCell(i, j, n)}
                         />
                       </td>
                     ))}
