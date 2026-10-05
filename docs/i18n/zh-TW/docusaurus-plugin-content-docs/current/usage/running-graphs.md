@@ -59,7 +59,7 @@ CodefyUI 會追蹤 **dirty** 節點。當你變更一個節點的參數或輸入
 
 ### 檔案讀取節點的內容感知快取 {/* #content-aware-caching-for-file-reading-nodes */}
 
-快取項目的 key 由節點類型、參數、上游節點的快取 key，以及執行裝置雜湊而成。節點從圖外部讀取的內容無法只由 `params` 表示：`path` 參數只記錄讀取位置，不包含該位置的內容。因此，讀取外部狀態的節點還會把內容指紋加入 key。指紋包含解析後檔案的大小與修改時間；對於不超過 8 MB 的檔案，還包含內容雜湊。即使同樣大小的修改發生在同一個檔案系統時間戳記刻度內，key 仍會改變。`CSVReader`、`FileReader`、`ImageReader`、`ImageBatchReader`、`Dataset`、`ImageFolderDataset` 和 `DocumentLoader` 都使用這項機制。編輯檔案後再次點擊 **執行**，會取得新內容；若檔案未變，則使用快取結果而不重新讀取。對於 `Dataset` 和 `ImageFolderDataset`，資料集中的任一檔案變更也會更新指紋。`DocumentLoader` 會對 `directory` 底下的每個檔案建立指紋，即使 `recursive` 關閉也包含子資料夾；使用上傳的單一檔案時，則只對該檔案建立指紋。
+快取項目的 key 由節點類型、參數、上游節點的快取 key、執行裝置，以及 seeded run 中該節點使用的 seed 雜湊而成。節點從圖外部讀取的內容無法只由 `params` 表示：`path` 參數只記錄讀取位置，不包含該位置的內容。因此，讀取外部狀態的節點還會把內容指紋加入 key。指紋包含解析後檔案的大小與修改時間；對於不超過 8 MB 的檔案，還包含內容雜湊。即使同樣大小的修改發生在同一個檔案系統時間戳記刻度內，key 仍會改變。`CSVReader`、`FileReader`、`ImageReader`、`ImageBatchReader`、`Dataset`、`ImageFolderDataset` 和 `DocumentLoader` 都使用這項機制。編輯檔案後再次點擊 **執行**，會取得新內容；若檔案未變，則使用快取結果而不重新讀取。對於 `Dataset` 和 `ImageFolderDataset`，資料集中的任一檔案變更也會更新指紋。`DocumentLoader` 會對 `directory` 底下的每個檔案建立指紋，即使 `recursive` 關閉也包含子資料夾；使用上傳的單一檔案時，則只對該檔案建立指紋。
 
 `Dataset` 只會對該資料集所在的目錄建立指紋，例如 MNIST 的 `MNIST/` 或 CIFAR-10 的 `cifar-10-batches-py/`，而不是整個 `data_dir`。在專案目錄中，每個資料集共用 `assets/data/`，旁邊還有 `assets/models/`。縮小指紋範圍後，儲存模型或下載另一個資料集不會再讓第一個資料集的快取失效並於下次執行時重新讀取。
 
@@ -106,11 +106,12 @@ CodefyUI 會追蹤 **dirty** 節點。當你變更一個節點的參數或輸入
 
 預設情況下，run 使用 PyTorch 選擇的熵，因此同一張圖執行兩次時，權重初始化與洗牌順序會略有不同，loss 曲線也會不同。在**設定 → 訓練行為**中設定**亂數種子**，可讓 run 重現相同結果。種子會以 `settings.seed` 存進圖檔，開啟與匯入時會跟著回來；新分頁會沿用目前分頁的種子，匯出 Python 時也會把它寫成腳本預設的 `--seed`。
 
-設定 seed 後：
+沒設 seed 時，edu 套件包的 `FFNLayer` 與 `TrainAndEvaluate` 是例外：它們的初始權重與 seed 0 相同，每次執行和匯出的腳本都一樣。設定 seed 後：
 
 - 每個節點都會使用由 `(seed, node id)` 推導的值設定 seed。節點取得的亂數只取決於 seed 與自身 ID，不受圖中其他節點先前消耗的亂數量或引擎排程順序影響。
 - `DataLoader` 會使用自己的 generator，因此每個 epoch 的洗牌順序固定，每個 worker 行程也有獨立的亂數串流。
 - **run 一次只執行一個節點，而且不會與另一個 run 重疊。** 設定 seed 會寫入行程全域的 RNG 狀態；如果第二個節點或第二個 run 同時從該狀態取值，就會改變數列。因此，seeded run 會先等待目前執行中的 run 結束，再單獨執行；之後送出的 run 也會等待它結束。未設定 seed 的 run 不受影響，彼此仍可並行，內部節點也仍可並行執行。
+- 結果依 seed 分開快取：變更 seed，或開啟以其他 seed 儲存的圖時，每個節點都會重新執行，不會沿用舊 seed 算出的結果。
 
 相同圖與相同 seed 在 CPU 上執行兩次時，會產生位元完全相同的 loss 曲線；不同 seed 會產生不同曲線。
 

@@ -64,6 +64,11 @@ class ClassifierNode(BaseNode):
         "rather than probabilities. The `model` output feeds DecisionBoundary."
     )
 
+    # #254: hands out the fitted estimator as a live `model`. Nothing mutates
+    # it today, but the rule goes by the port, and a refit of toy data costs
+    # milliseconds.
+    cacheable = False
+
     @classmethod
     def define_inputs(cls) -> list[PortDefinition]:
         return [

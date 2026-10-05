@@ -62,11 +62,6 @@ def test_resize_param_adds_resize_step():
 
 
 def test_transform_is_not_cacheable():
-    """It mutates its input and can install a SEEDED pipeline (core#136).
-
-    ``ExecutionCache.compute_key`` hashes (type, params, upstream, device)
-    and knows nothing about the run seed, so a cache hit would hand two runs
-    at different seeds the same augmentation wrapper -- and, mutation being
-    what it is, the very dataset object the earlier run wrote to.
-    """
+    """It mutates its input, so a cache hit would hand a run the very dataset
+    object an earlier run wrote to."""
     assert TransformNode.cacheable is False
