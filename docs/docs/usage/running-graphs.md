@@ -102,6 +102,8 @@ A preset node and a subgraph instance are single boxes on the canvas standing fo
 
 The `Cached` case is the one worth knowing about: a preset holding a `TrainingLoop` that reports `Cached` did **not** train this run. Before this was distinguished the box said `Completed` either way, so "did my change actually re-run anything?" had no answer at the preset level. If you want it to genuinely re-run, change something it depends on, or clear the cache.
 
+Text that a node inside the box writes, such as a `Print` line or a `TrainingLoop` note, appears in the **Execution Log** as soon as that node finishes, tagged with the box. Once the box shows `Error` or `Interrupted`, later lines from inside it are not shown.
+
 ## Reproducible runs (seed)
 
 By default a run draws its randomness from whatever entropy PyTorch picks, so two runs of the same graph give slightly different weights, a different shuffle order, and therefore a different loss curve. Set a **Random seed** in **Settings → Training Behavior** to make a run repeatable. The seed is saved in the graph file as `settings.seed` and comes back on Open and Import; a new tab starts with the seed of the tab you were on, and Export Python bakes the seed in as the script's default `--seed`.

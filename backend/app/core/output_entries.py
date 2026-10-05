@@ -313,6 +313,14 @@ def build_node_output_entries(
     if status == "progress":
         return [{"output_kind": OUTPUT_KIND_PROGRESS, OUTPUT_KIND_PROGRESS: result}]
 
+    # A box relays a line a node inside it wrote on "running" (#601): text
+    # only, as one inner node's port summary would overwrite the box's own.
+    if status == "running":
+        if "__log__" in result:
+            return [{"output_kind": OUTPUT_KIND_TEXT,
+                     OUTPUT_KIND_TEXT: str(result["__log__"])}]
+        return []
+
     if status not in _STATUSES_WITH_RESULT:
         return []
 

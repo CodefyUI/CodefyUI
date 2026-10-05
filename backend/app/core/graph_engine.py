@@ -2555,6 +2555,13 @@ async def execute_graph(
     container_done: dict[str, int] = defaultdict(int)
     container_started: set[str] = set()
     container_outcome: dict[str, int] = {}
+    # Boxes an internal 'error'/'interrupted' already settled: an inner_log
+    # relay is a 'running' frame, which would repaint such a box as running.
+    container_settled: set[str] = set()
+    # Held from an internal's count to its box's terminal check, so the
+    # inner_log relay's await in between cannot let a sibling settle the box
+    # too: one internal's report at a time.
+    container_lock = asyncio.Lock()
 
     async def _emit_preset_aware(
         node_id: str,
@@ -2579,6 +2586,9 @@ async def execute_graph(
           early did not complete, so it must never roll up to 'completed'
         - 'progress' passes through as-is with the container ID (so live
           charts still work)
+        - the text a completed/cached internal wrote (``__log__``, read into
+          ``inner_log``) goes out at once on a container 'running' frame
+          (#601), unless an internal already settled the box
         Nodes that are inside no container pass through unchanged.
         """
         if on_progress is None:
@@ -2595,8 +2605,25 @@ async def execute_graph(
             await _maybe_await(on_progress(container_id, "progress", data))
             return
 
+        # _roll_up's inner_log relay awaits mid-roll-up: see container_lock.
+        async with container_lock:
+            await _roll_up(container_id, status, data)
+
+    async def _roll_up(
+        container_id: str,
+        status: str,
+        data: dict[str, Any] | None,
+    ) -> None:
+        """The container half of ``_emit_preset_aware``, under ``container_lock``.
+
+        The lock is held across every ``on_progress`` call in here on purpose:
+        that is what keeps a box's inner_log relays and its one terminal frame
+        in order. So no lock taken inside ``on_progress`` may ever wait on
+        ``container_lock``, or the run deadlocks.
+        """
         if status in ("error", "interrupted"):
             # Any internal failure or early stop settles the whole container
+            container_settled.add(container_id)  # no inner_log relay after this
             await _maybe_await(on_progress(container_id, status, data))
             return
 
@@ -2622,6 +2649,16 @@ async def execute_graph(
             if container_id not in container_started:
                 container_started.add(container_id)
                 await _maybe_await(on_progress(container_id, "running", None))
+            # What the node wrote (a Print's line, a TrainingLoop note) goes
+            # out now, on the box the canvas draws (#601): in order among the
+            # other nodes' lines, and safe from a later failure in the box --
+            # the terminal frame would hold every line until the whole box
+            # finished. The text is the node's own, as the exported script
+            # prints it.
+            inner_log = data.get("__log__") if isinstance(data, dict) else None
+            if inner_log and container_id not in container_settled:
+                await _maybe_await(on_progress(
+                    container_id, "running", {"__log__": inner_log}))
             if container_done[container_id] >= container_total[container_id]:
                 terminal = _CONTAINER_RANK_STATUS[container_outcome[container_id]]
                 await _maybe_await(on_progress(container_id, terminal, None))
