@@ -1,12 +1,14 @@
-"""Export Python when a block's trigger reaches a preset card (#560).
+"""Export Python when a trigger reaches a preset card (#560, #561).
 
 Collapsing a selection records every node in it that Start triggered as one
-of the block's ``interface.triggerTargets``, a preset card included. Block
-expansion fans Start's trigger out to ``<block>/<card>``; preset expansion
-then replaces the card with its inner nodes and leaves that edge naming the
-card. The engine reads no trigger edge by its ends, so it runs the graph,
-while Export Python looked the card up when splitting flows and answered
-HTTP 500 ``Export failed: 'ab/pq'``.
+of the block's ``interface.triggerTargets``, a preset card included, and
+block expansion fans Start's trigger out to ``<block>/<card>``. Preset
+expansion used to replace the card with its inner nodes and leave that edge
+naming the card, and Export Python, looking the card up when splitting
+flows, answered HTTP 500 ``Export failed: 'ab/pq'`` (#560). Since #561 preset
+expansion fans a trigger into a card out to the card's inner roots, whether
+the trigger comes from a block's fan-out or straight from Start, and a
+trigger edge from a node the graph does not have is refused.
 
 Each accepted graph is checked against the engine, not against values
 written down here: the exported script has to run exactly the nodes
@@ -271,12 +273,31 @@ def _two_instances() -> dict:
     }
 
 
-def _trigger_from_a_missing_node() -> dict:
-    """A hand-edited file: the node a trigger came from is gone, its edge is not.
+def _start_into_a_card() -> dict:
+    """Start wired straight into a card, whose table a GraphOutput reads (#561)."""
+    return {
+        "name": "start-into-a-card",
+        "nodes": [_node("start", "Start"), _card("c", CARD),
+                  _output("out", "rows")],
+        "edges": [_trigger("start", "c"), _wire("c", "value", "out", "value")],
+        "presets": [_card_preset()],
+        "subgraphs": [],
+    }
 
-    The engine runs it -- the edge still makes ``x`` an entry point -- so
-    the export has to, by the same rule that broke on a card.
-    """
+
+def _start_into_a_card_in_a_card() -> dict:
+    """Start wired straight into a card that holds another card (#561)."""
+    return {
+        "name": "start-into-a-card-in-a-card",
+        "nodes": [_node("start", "Start"), _card("oc", OUTER)],
+        "edges": [_trigger("start", "oc")],
+        "presets": [_card_preset(), _outer_preset()],
+        "subgraphs": [],
+    }
+
+
+def _trigger_from_a_missing_node() -> dict:
+    """A hand-edited file: the node a trigger came from is gone, its edge is not."""
     return {
         "name": "missing-trigger-source",
         "nodes": [_node("x", "CSVReader", {"path": ROWS_CSV}),
@@ -298,7 +319,11 @@ SHAPES = {
         _card_holding_only_a_card, {"ab/oc__ic__csv", "ab/oc__ic__peek"}),
     "two instances": (
         _two_instances, {"a1/pq__peek", "a2/pq__peek"}),
-    "trigger from a missing node": (_trigger_from_a_missing_node, {"x", "out"}),
+    "Start into a card": (
+        _start_into_a_card, {"c__csv", "c__peek", "out"}),
+    "Start into a card in a card": (
+        _start_into_a_card_in_a_card,
+        {"oc__ic__csv", "oc__ic__peek", "oc__tail"}),
 }
 
 
@@ -591,3 +616,24 @@ async def test_a_block_inside_a_card_is_refused_with_the_engines_reason(test_cli
     assert response.status_code == 400, response.text
     assert response.json()["detail"] == str(refused.value)
     assert f"Preset '{BOXED}' contains subgraph instance" in str(refused.value)
+
+
+async def test_a_trigger_from_a_missing_node_is_refused_with_one_sentence(test_client):
+    """The edge used to make ``x`` an entry point, so the engine ran the
+    graph and the export followed. Validation, the engine and the export
+    now refuse it in the same words (#561)."""
+    from app.core.graph_engine import GraphValidationError, validate_graph
+
+    graph = _trigger_from_a_missing_node()
+    errors = validate_graph(graph["nodes"], graph["edges"])
+    # Only the missing node is pinned; the advice after " -- " may change.
+    assert len(errors) == 1 and errors[0].startswith(
+        "A trigger edge comes from node 'gone', which is not in the graph -- "
+    ), errors
+    sentence = str(errors[0])
+    with pytest.raises(GraphValidationError) as refused:
+        await _run_in_engine(graph)
+    assert str(refused.value) == sentence
+    response = await test_client.post("/api/graph/export", json=graph)
+    assert response.status_code == 400, response.text
+    assert response.json()["detail"] == sentence

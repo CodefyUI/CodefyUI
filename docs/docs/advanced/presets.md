@@ -10,7 +10,7 @@ A **preset** packages a reusable subgraph as one node. CodefyUI includes the `ls
 
 ## Using a preset
 
-Presets appear in the sidebar's **Nodes** tab, in a **Presets** group below the node categories, and in quick search, which opens when you double-click the canvas. The tab's search box matches preset names as well as node names. Drag a preset onto the canvas like any other item in the tab. A placed preset behaves like any other node. It exposes every port that was unconnected inside the subgraph and every non-secret parameter of every internal node.
+Presets appear in the sidebar's **Nodes** tab, in a **Presets** group below the node categories, and in quick search, which opens when you double-click the canvas. The tab's search box matches preset names as well as node names. Drag a preset onto the canvas like any other item in the tab. A placed preset behaves like any other node. It exposes every port that was unconnected inside the subgraph and every non-secret parameter of every internal node. A trigger from `Start` into a placed preset starts every node inside it that no other node inside it feeds, and an edge on a port the preset does not expose is refused.
 
 To configure a placed preset, double-click it or select **Configure** in the Node Config panel or node detail view. The preset modal lists its internal nodes and groups exposed parameters by node. **Apply** writes the selected values to the internal nodes.
 

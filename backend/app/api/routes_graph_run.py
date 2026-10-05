@@ -544,8 +544,9 @@ async def execute_contract_run(
                       node_timings=node_timings)
     except GraphValidationError as exc:
         # 9. Runtime safety net: preset expansion can invalidate a
-        # pre-flight-clean graph (pruning-induced missing required input;
-        # trigger-edges-into-preset-nodes dangling after expand_presets).
+        # pre-flight-clean graph (pruning-induced missing required input).
+        # A trigger into a preset node no longer dangles after expansion: it
+        # starts the node's inner roots (#561).
         return _error(409, code="invalid_graph",
                       message="graph failed validation at runtime",
                       device=device, details=[str(exc)],

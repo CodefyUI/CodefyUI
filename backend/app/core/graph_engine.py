@@ -241,6 +241,11 @@ def expand_presets(
     ``output_aliases``, when given, receives ``(preset node, exposed output)
     -> (internal node, internal port)`` for every card expanded, so a run can
     answer for the card's ports with what its internals captured (#553).
+
+    A TRIGGER edge into a card becomes one trigger per inner root, as a
+    trigger into a block with no ``triggerTargets`` does, and an edge the
+    card cannot carry is refused before anything is expanded (#561) -- see
+    :func:`_preset_card_refusals`.
     """
     from .preset_registry import preset_registry
 
@@ -266,6 +271,13 @@ def expand_presets(
 
         preset_node_id = node["id"]
         internal_params = node.get("data", {}).get("internalParams", {})
+        # An edge this card cannot carry is refused before anything is
+        # expanded, in the words validation uses (#561). It used to be left
+        # naming the card after the card's nodes had replaced it.
+        refusals = _preset_card_refusals(
+            preset_node_id, preset_name, preset, expanded_edges)
+        if refusals:
+            raise GraphValidationError(refusals[0])
 
         # Build a map of exposed port name -> internal node:port
         input_map: dict[str, tuple[str, str]] = {}
@@ -305,24 +317,37 @@ def expand_presets(
                 "targetHandle": internal_edge.targetHandle,
             })
 
-        # Remap external edges connected to this preset node
+        # Remap external edges connected to this preset node. A trigger into
+        # the card becomes one copy per inner root, the nodes nothing inside
+        # the card feeds: "start this card" read the way a block whose
+        # interface names no trigger targets reads it (#561). Every other end
+        # on the card names an exposed port; the check above refused the rest.
+        roots = [f"{preset_node_id}__{root}" for root in _inner_roots(preset)]
         new_edges = []
         for edge in expanded_edges:
             new_edge = dict(edge)
             # Remap edges where this preset is the target
             if edge.get("target") == preset_node_id:
-                target_handle = edge.get("targetHandle", "")
-                if target_handle in input_map:
-                    internal_id, internal_port = input_map[target_handle]
-                    new_edge["target"] = internal_id
-                    new_edge["targetHandle"] = internal_port
+                # A trigger keeps naming the card until it is fanned out
+                # below, once its source is remapped like any edge's (#561).
+                if edge.get("type", "data") != "trigger":
+                    new_edge["target"], new_edge["targetHandle"] = input_map[
+                        edge.get("targetHandle", "")]
             # Remap edges where this preset is the source
             if edge.get("source") == preset_node_id:
-                source_handle = edge.get("sourceHandle", "")
-                if source_handle in output_map:
-                    internal_id, internal_port = output_map[source_handle]
-                    new_edge["source"] = internal_id
-                    new_edge["sourceHandle"] = internal_port
+                new_edge["source"], new_edge["sourceHandle"] = output_map[
+                    edge.get("sourceHandle", "")]
+            # A trigger into the card: one copy per inner root (#561).
+            if (
+                edge.get("target") == preset_node_id
+                and edge.get("type", "data") == "trigger"
+            ):
+                for position, root in enumerate(roots):
+                    fanned = dict(new_edge)
+                    fanned["id"] = f"{edge.get('id', 'trigger')}#{position}"
+                    fanned["target"] = root
+                    new_edges.append(fanned)
+                continue
             new_edges.append(new_edge)
         expanded_edges = new_edges
 
@@ -594,8 +619,11 @@ def check_subgraph_recursion(
 def _inner_roots(definition: Any) -> list[str]:
     """Inner nodes nothing else inside the definition feeds.
 
-    Used only as the fallback for an instance whose interface declares no
-    ``triggerTargets`` -- see :func:`expand_subgraphs`.
+    Where a trigger into a container goes when nothing names its targets:
+    a block instance whose interface declares no ``triggerTargets`` (see
+    :func:`expand_subgraphs`) and, since #561, every preset card (see
+    :func:`expand_presets`). Both definitions have ``.nodes[].id`` and
+    ``.edges[].target``.
     """
     fed: set[str] = {
         edge.target
@@ -603,6 +631,140 @@ def _inner_roots(definition: Any) -> list[str]:
         if edge.target
     }
     return [node.id for node in definition.nodes if node.id not in fed]
+
+
+def _preset_card_refusals(
+    card_id: str,
+    preset_name: str,
+    definition: Any,
+    edges: Iterable[dict],
+) -> list[str]:
+    """One line per fault in the edges touching one preset card (#561).
+
+    Expansion replaces the card with its inner nodes, so every edge on the
+    card has to land somewhere inside it:
+
+    * a TRIGGER into the card starts the card's inner roots, so a card with
+      no root cannot be started -- a definition with no nodes, or one whose
+      every node is fed by another node inside it;
+    * any other edge into the card has to land on an input the definition
+      exposes, and every edge out of it, a trigger included, has to leave
+      from an exposed output. The rule and the words are the ones
+      :func:`expand_subgraphs` gives a block.
+
+    :func:`expand_presets` raises the first line and :func:`validate_graph`
+    reports them all (through :func:`preset_card_errors`), so the two say
+    the same thing about the same fault. Only the card's own definition is
+    read: a card nested inside it is checked when expansion reaches it, at
+    run time, not by validation.
+    """
+    exposed_inputs = {port.name for port in definition.exposed_inputs}
+    exposed_outputs = {port.name for port in definition.exposed_outputs}
+    lines: list[str] = []
+    triggered = False
+    for edge in edges:
+        if edge.get("source") == card_id:
+            handle = edge.get("sourceHandle", "")
+            if handle not in exposed_outputs:
+                lines.append(
+                    f"Edge sources output port '{handle}' which preset "
+                    f"'{preset_name}' does not expose (node {card_id})"
+                )
+        if edge.get("target") != card_id:
+            continue
+        if edge.get("type", "data") == "trigger":
+            triggered = True
+            continue
+        handle = edge.get("targetHandle", "")
+        if handle not in exposed_inputs:
+            lines.append(
+                f"Edge targets input port '{handle}' which preset "
+                f"'{preset_name}' does not expose (node {card_id})"
+            )
+    if triggered and not _inner_roots(definition):
+        if definition.nodes:
+            lines.append(
+                f"Node {card_id} is triggered, but preset '{preset_name}' has "
+                "no node to start: every node inside it is fed by another "
+                "node inside it"
+            )
+        else:
+            lines.append(
+                f"Node {card_id} is triggered, but preset '{preset_name}' has "
+                "no node to start: it has no nodes"
+            )
+    # Two edges on one port the card does not expose are one fault.
+    return list(dict.fromkeys(lines))
+
+
+def preset_card_errors(
+    nodes: list[dict],
+    edges: list[dict],
+    preset_fallback: dict | None = None,
+) -> list[str]:
+    """The lines :func:`expand_presets` would refuse these cards with (#561).
+
+    For :func:`validate_graph`, which never expands a card: every preset
+    card whose definition can be read, checked against the edges touching
+    it by :func:`_preset_card_refusals`. A card whose preset is unknown or
+    unreadable is skipped; validation already names it for that.
+    """
+    from .preset_registry import preset_registry
+
+    errors: list[str] = []
+    for node in nodes:
+        node_type = str(node.get("type", ""))
+        if not node_type.startswith("preset:"):
+            continue
+        preset_name = node_type[len("preset:"):]
+        # Looked up the way expansion looks it up: the graph's own
+        # definition first, and an unreadable one never falls through to
+        # an installed preset of the same name (#541).
+        owned = (preset_fallback or {}).get(preset_name)
+        if isinstance(owned, MalformedPreset):
+            continue
+        definition = owned or preset_registry.get(preset_name)
+        if definition is None:
+            continue
+        errors.extend(
+            _preset_card_refusals(node["id"], preset_name, definition, edges)
+        )
+    return errors
+
+
+def dangling_trigger_errors(nodes: list[dict], edges: list[dict]) -> list[str]:
+    """One line per missing node a trigger edge names (#561).
+
+    A trigger edge from a node that is gone still made its target an entry
+    point, so the run started there as if something had triggered it, and
+    one to a node that is gone triggered nothing, without a word. A data
+    edge with a missing end is refused already ("Edge references missing
+    node").
+
+    Each line names the missing node, not the edge. Expansion copies a
+    trigger into a container once per node it starts, under new ids, and
+    bypass moves one off a muted node to the nodes after it; the missing
+    end stays the same through all of that, so the line does too -- in
+    :func:`validate_graph` and in the closing validation of a run, which
+    sees the expanded graph. Copies of one edge give one line.
+    """
+    present = {node.get("id") for node in nodes}
+    errors: list[str] = []
+    for edge in edges:
+        if edge.get("type", "data") != "trigger":
+            continue
+        source, target = edge.get("source"), edge.get("target")
+        if source not in present:
+            errors.append(
+                f"A trigger edge comes from node '{source}', which is not in "
+                "the graph -- remove the edge from the graph file"
+            )
+        if target not in present:
+            errors.append(
+                f"A trigger edge goes to node '{target}', which is not in "
+                "the graph -- remove the edge from the graph file"
+            )
+    return list(dict.fromkeys(errors))
 
 
 def expand_subgraphs(
@@ -1347,10 +1509,18 @@ def validate_graph(
             if message not in errors and message != "; ".join(duplicate_errors):
                 errors.append(message)
 
+    # The edges on each preset card, in the words expansion refuses them with
+    # (#561). Before bypass, because a run expands presets before it
+    # resolves bypass, so this reads the edges expansion reads.
+    errors.extend(preset_card_errors(nodes, edges, preset_fallback))
+
     resolution = resolve_bypass(nodes, edges)
     errors.extend(resolution.errors)
     nodes, edges = resolution.nodes, resolution.edges
     node_map = {n["id"]: n for n in nodes}
+    # After bypass, which moves a trigger off a muted node, so this reads the
+    # trigger edges a run reads (#561).
+    errors.extend(dangling_trigger_errors(nodes, edges))
 
     # --- Node-level validation (standalone, before edge checks) ---
     from .preset_registry import preset_registry
@@ -1921,6 +2091,12 @@ def prepare_executable_graph(
     if bypass.errors:
         raise GraphValidationError("; ".join(bypass.errors))
     expanded_nodes, expanded_edges = bypass.nodes, bypass.edges
+    # A trigger edge naming a node the graph does not have (#561). Checked on
+    # the whole graph: an edge to a missing node is pruned below, so the
+    # closing validate_graph never sees it.
+    dangling = dangling_trigger_errors(expanded_nodes, expanded_edges)
+    if dangling:
+        raise GraphValidationError("; ".join(dangling))
     if output_aliases is not None:
         # A bypassed node never runs: each output it forwards IS the value
         # its consumers received, so that is what reading the port reads.

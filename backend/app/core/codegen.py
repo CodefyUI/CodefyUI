@@ -602,16 +602,14 @@ def _split_flows(
     observably equivalent to the engine's level schedule.
 
     An edge end that is not an executable node stands for the executable
-    nodes inside it (#560).  `prepare_executable_graph` returns one such
-    edge when a block's trigger reaches a preset card: block expansion fans
-    Start's trigger out to ``<block>/<card>``, preset expansion replaces the
-    card with its inner nodes and leaves the edge naming the card, and the
-    card's id stays executable as one of the block's members.  The engine
-    reads no trigger edge by its ends and runs the graph, so the export has
-    to as well.  Joining the card's nodes here keeps them in the block's
-    flow, which is what lets the block stay one function; an end holding no
-    executable node at all (a hand-edited trigger from a node the file no
-    longer has) joins nothing.
+    nodes inside it (#560).  Since #561 no executable edge should have such
+    an end: preset expansion fans a trigger into a card out to the card's
+    inner roots, as block expansion does for a block, and refuses an edge on
+    a port the card does not expose, and validation refuses a trigger edge
+    from a node the graph does not have.  The join stays as a guard: should
+    an edge name a container again, its nodes stay in the flow of whatever
+    the edge connects them to, which is what lets a block stay one function,
+    and an end holding no executable node joins nothing.
 
     *containers* is the ``internal node -> container`` map from
     `prepare_executable_graph`.  It is a chain under nesting, so each node
