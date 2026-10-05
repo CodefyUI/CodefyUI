@@ -24,6 +24,7 @@ import {
 } from '../../utils/packAvailability';
 import { CATEGORY_COLORS, STATUS_COLORS, NODE_HEADER_TINT, mixColor, SURFACE_RAISED } from '../../styles/theme';
 import { MathText } from '../shared/MathText';
+import { layerNodeCount } from '../LayersEditor/graphSerialization';
 import { subgraphIdOf } from '../../utils/subgraph';
 import styles from './BaseNode.module.css';
 
@@ -481,8 +482,7 @@ export function BaseNodeBody({ id, data, selected, bodyExtra }: BaseNodeProps) {
       {isSequentialModel && (
         <div className={styles.layersSection}>
           {(() => {
-            let count = 0;
-            try { count = JSON.parse(data.params.layers ?? '[]').length; } catch { /* ignore */ }
+            const count = layerNodeCount(data.params.layers);
             return (
               <>
                 <div className={styles.layersRow}>

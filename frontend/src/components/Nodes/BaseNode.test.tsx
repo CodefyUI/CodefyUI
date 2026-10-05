@@ -618,13 +618,65 @@ describe('BaseNode', () => {
 
   // ── SequentialModel branch ────────────────────────────────────────────────
 
+  /** A version-2 `layers` value, the shape the Layers editor writes: Input -> Linear -> ReLU -> Output. */
+  const FOUR_NODE_LAYERS = JSON.stringify({
+    version: 2,
+    nodes: [
+      { id: 'in', type: 'Input', ports: [{ id: 'p_x', name: 'x' }] },
+      { id: 'l1', type: 'Linear', params: { in_features: 4, out_features: 2 } },
+      { id: 'r1', type: 'ReLU' },
+      { id: 'out', type: 'Output', ports: [{ id: 'p_y', name: 'y' }] },
+    ],
+    edges: [
+      { id: 'e1', source: 'in', sourceHandle: 'p_x', target: 'l1' },
+      { id: 'e2', source: 'l1', target: 'r1' },
+      { id: 'e3', source: 'r1', target: 'out', targetHandle: 'p_y' },
+    ],
+  });
+
+  /**
+   * The `layers` value a freshly dropped SequentialModel carries: the default
+   * declared in backend/app/nodes/utility/sequential_node.py, Input + 10
+   * layers + Output.
+   */
+  const DEFAULT_LAYERS = JSON.stringify({
+    version: 2,
+    nodes: [
+      { id: 'in', type: 'Input', ports: [{ id: 'p_x', name: 'x' }] },
+      { id: 'c1', type: 'Conv2d', params: { in_channels: 1, out_channels: 32, kernel_size: 3, padding: 1 } },
+      { id: 'r1', type: 'ReLU' },
+      { id: 'p1', type: 'MaxPool2d', params: { kernel_size: 2, stride: 2 } },
+      { id: 'c2', type: 'Conv2d', params: { in_channels: 32, out_channels: 64, kernel_size: 3, padding: 1 } },
+      { id: 'r2', type: 'ReLU' },
+      { id: 'p2', type: 'MaxPool2d', params: { kernel_size: 2, stride: 2 } },
+      { id: 'f', type: 'Flatten' },
+      { id: 'l1', type: 'Linear', params: { in_features: 3136, out_features: 128 } },
+      { id: 'r3', type: 'ReLU' },
+      { id: 'l2', type: 'Linear', params: { in_features: 128, out_features: 10 } },
+      { id: 'out', type: 'Output', ports: [{ id: 'p_y', name: 'y' }] },
+    ],
+    edges: [
+      { id: 'e1', source: 'in', sourceHandle: 'p_x', target: 'c1' },
+      { id: 'e2', source: 'c1', target: 'r1' },
+      { id: 'e3', source: 'r1', target: 'p1' },
+      { id: 'e4', source: 'p1', target: 'c2' },
+      { id: 'e5', source: 'c2', target: 'r2' },
+      { id: 'e6', source: 'r2', target: 'p2' },
+      { id: 'e7', source: 'p2', target: 'f' },
+      { id: 'e8', source: 'f', target: 'l1' },
+      { id: 'e9', source: 'l1', target: 'r3' },
+      { id: 'e10', source: 'r3', target: 'l2' },
+      { id: 'e11', source: 'l2', target: 'out', targetHandle: 'p_y' },
+    ],
+  });
+
   it('renders SequentialModel layer count + hint and opens the layers editor on dbl-click', () => {
     const data = baseData({
       type: 'SequentialModel',
-      params: { layers: JSON.stringify([{}, {}, {}]) },
+      params: { layers: FOUR_NODE_LAYERS },
     });
     const { container } = renderBody(data);
-    expect(screen.getByText('3')).toBeTruthy();
+    expect(screen.getByText('4')).toBeTruthy();
     expect(screen.getByText(useI18n.getState().t('layersEditor.hint'))).toBeTruthy();
     // cursor: pointer for sequential models
     const node = container.querySelector('[class*="node"]') as HTMLElement;
@@ -643,11 +695,24 @@ describe('BaseNode', () => {
     expect(screen.getByText('0')).toBeTruthy();
   });
 
-  it('SequentialModel with missing layers param defaults to []', () => {
+  it('SequentialModel with missing layers param falls back to count 0', () => {
     const data = baseData({ type: 'SequentialModel', params: {} });
     renderBody(data);
     expect(screen.getByText('0')).toBeTruthy();
   });
+
+  it.each(['en', 'zh-TW'] as const)(
+    'a freshly dropped SequentialModel card reads what the Layers editor header reads (%s)',
+    (locale) => {
+      useI18n.setState({ locale });
+      const { container } = renderBody(
+        baseData({ type: 'SequentialModel', params: { layers: DEFAULT_LAYERS } }),
+      );
+      const row = container.querySelector('[class*="layersRow"]');
+      // The editor's header: t('layersEditor.layerCount', { count: nodes.length }).
+      expect(row?.textContent).toBe(useI18n.getState().t('layersEditor.layerCount', { count: 12 }));
+    },
+  );
 
   it('single-click (detail=1) on SequentialModel does not open the modal', () => {
     const data = baseData({ type: 'SequentialModel', params: { layers: '[]' } });

@@ -575,6 +575,27 @@ export function graphToFlow(json: string): { nodes: Node<LayerNodeData>[]; edges
   return { nodes, edges };
 }
 
+/**
+ * The number on the SequentialModel card: how many nodes the Layers editor
+ * shows for this `layers` value (#594). Same acceptance rule as
+ * `graphToFlow`, so a version-2 spec counts every node, Input and Output
+ * included. Anything else (not JSON, another version, the legacy layer
+ * array, no value) counts 0: the backend cannot build it, and the editor
+ * opens it on a blank starter graph instead of showing its contents.
+ */
+export function layerNodeCount(json: string | undefined): number {
+  if (typeof json !== 'string') return 0;
+  let spec: unknown;
+  try {
+    spec = JSON.parse(json);
+  } catch {
+    return 0;
+  }
+  if (typeof spec !== 'object' || spec === null) return 0;
+  const { version, nodes, edges } = spec as Record<string, unknown>;
+  return version === 2 && Array.isArray(nodes) && Array.isArray(edges) ? nodes.length : 0;
+}
+
 export function emptyGraph(): { nodes: Node<LayerNodeData>[]; edges: Edge[] } {
   const inId = generateId();
   const outId = generateId();
