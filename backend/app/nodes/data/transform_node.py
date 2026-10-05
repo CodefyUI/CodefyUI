@@ -44,10 +44,7 @@ class TransformNode(BaseNode):
     )
 
     # This node MUTATES its input and returns it, so a cache hit would hand
-    # back the very object a previous run wrote to -- and since core#136 the
-    # pipeline it installs can be SEEDED, while ``ExecutionCache.compute_key``
-    # hashes (type, params, upstream, device) and knows nothing about the run
-    # seed. Two runs at different seeds would then share one wrapper.
+    # back the very object a previous run wrote to.
     #
     # Unreachable today, and that is exactly why it is worth pinning: every
     # dataset source whose ``transform`` is actually applied (Dataset,

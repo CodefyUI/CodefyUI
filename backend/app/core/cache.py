@@ -80,6 +80,7 @@ class ExecutionCache:
         upstream_keys: list[str],
         device: str = "cpu",
         fingerprint: Any = None,
+        seed: int | None = None,
     ) -> str:
         """Compute a deterministic SHA-256 cache key.
 
@@ -114,6 +115,19 @@ class ExecutionCache:
         docstring), never persisted, so the hash VALUE shifting once this
         field joined the payload -- for every node, not just the ones that
         use it -- has no stale-cache-on-disk to migrate.
+
+        ``seed`` is the node's DERIVED seed on a seeded run --
+        ``ExecutionContext.derive_seed(node_id)``, the value the engine seeds
+        the global RNGs with right before the node runs -- and ``None`` on an
+        unseeded one. A random node's output therefore depends on the run
+        seed AND on its own id, and the key used to hold neither: after a
+        seed change every cached random node kept the old seed's output, and
+        two identical random nodes (``TensorCreate(fill="randn")`` twice)
+        shared one key, so both were served one tensor. The derived seed
+        carries both facts in one value. On an unseeded run it is ``None``
+        for every node, so it tells no two entries apart and unseeded runs
+        cache as they did; only the hash values moved, which costs nothing
+        for the reason given for ``fingerprint`` above.
         """
         payload = json.dumps(
             {
@@ -122,6 +136,7 @@ class ExecutionCache:
                 "upstream": sorted(upstream_keys),
                 "device": device,
                 "fingerprint": fingerprint,
+                "seed": seed,
             },
             sort_keys=True,
             default=str,

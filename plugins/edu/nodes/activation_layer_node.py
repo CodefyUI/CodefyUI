@@ -34,6 +34,10 @@ class ActivationLayerNode(BaseNode):
         "an FFNLayer."
     )
 
+    # #254: hands out the live network it is building, so a cache hit would
+    # replay an object something downstream may have changed since.
+    cacheable = False
+
     @classmethod
     def define_inputs(cls) -> list[PortDefinition]:
         return [

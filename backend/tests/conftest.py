@@ -67,7 +67,7 @@ init_allowed_hosts(settings.HOST, settings.PORT)
 # namespace install below and the two registry-discovery paths further down):
 # a pack missing from any one of them fails in a different, confusing way —
 # an ImportError at collection, or a node type the graph engine cannot find.
-_BUILTIN_TEST_PACKS = ("foundations", "deep", "rl", "stats")
+_BUILTIN_TEST_PACKS = ("foundations", "deep", "rl", "stats", "edu")
 
 # Register those packs in the synthetic `cdui_plugins` namespace AT CONFTEST
 # IMPORT TIME, before any test_*.py module is collected. Pack node tests import

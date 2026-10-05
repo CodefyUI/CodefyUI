@@ -25,6 +25,8 @@ from app.core.node_base import (
     PortDefinition,
 )
 
+from ._layer_seed import seed_new_layer
+
 
 class FFNLayerNode(BaseNode):
     NODE_NAME = "FFNLayer"
@@ -37,6 +39,10 @@ class FFNLayerNode(BaseNode):
         "in_features + out_features. Interleave these with ActivationLayer to "
         "build an MLP, and end the chain at TrainAndEvaluate."
     )
+
+    # #254: hands out the live network it is building, so a cache hit would
+    # replay an object something downstream may have changed since.
+    cacheable = False
 
     @classmethod
     def define_inputs(cls) -> list[PortDefinition]:
@@ -94,5 +100,5 @@ class FFNLayerNode(BaseNode):
         if in_features is None:
             in_features = max(1, int(params.get("in_features", 2)))
         out_features = max(1, int(params.get("out_features", 16)))
-        modules.append(nn.Linear(in_features, out_features))
+        modules.append(seed_new_layer(nn.Linear(in_features, out_features), context))
         return {"model": nn.Sequential(*modules)}

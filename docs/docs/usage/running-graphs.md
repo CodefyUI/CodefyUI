@@ -59,7 +59,7 @@ Deterministic nodes are cached automatically; non-deterministic ones (training l
 
 ### Content-aware caching for file-reading nodes
 
-A cache entry is keyed by a hash of the node's type, its parameters, its upstream nodes' cache keys, and the run device. Anything a node reads from *outside* the graph is invisible to `params` alone — a `path` parameter records *where* to read, never *what* is there. A node that reads external state therefore also folds a content fingerprint into its key: the resolved file's size and modification time, plus (for files up to 8 MB) a content hash, so a same-size edit landing inside one filesystem timestamp tick still changes the key. `CSVReader`, `FileReader`, `ImageReader`, `ImageBatchReader`, `Dataset`, `ImageFolderDataset` and `DocumentLoader` all do this — editing the file (or, for `Dataset`/`ImageFolderDataset`, one of the dataset's own files) and clicking **Run** again gives you the new content; leaving it untouched gets you the cached result instead of a re-read. `DocumentLoader` fingerprints every file under its `directory`, subfolders included even with `recursive` off, or the single uploaded file.
+A cache entry is keyed by a hash of the node's type, its parameters, its upstream nodes' cache keys, the run device and, on a seeded run, the seed the node runs under. Anything a node reads from *outside* the graph is invisible to `params` alone — a `path` parameter records *where* to read, never *what* is there. A node that reads external state therefore also folds a content fingerprint into its key: the resolved file's size and modification time, plus (for files up to 8 MB) a content hash, so a same-size edit landing inside one filesystem timestamp tick still changes the key. `CSVReader`, `FileReader`, `ImageReader`, `ImageBatchReader`, `Dataset`, `ImageFolderDataset` and `DocumentLoader` all do this — editing the file (or, for `Dataset`/`ImageFolderDataset`, one of the dataset's own files) and clicking **Run** again gives you the new content; leaving it untouched gets you the cached result instead of a re-read. `DocumentLoader` fingerprints every file under its `directory`, subfolders included even with `recursive` off, or the single uploaded file.
 
 `Dataset` fingerprints only the directory its own dataset lives in — `MNIST/` for MNIST, `cifar-10-batches-py/` for CIFAR-10, and so on — not the whole of `data_dir`. That matters because in a project directory every dataset shares one `assets/data/`, alongside `assets/models/`: before this scoping, saving a model or downloading a second dataset invalidated the first one and made it re-read on the next run.
 
@@ -106,11 +106,12 @@ The `Cached` case is the one worth knowing about: a preset holding a `TrainingLo
 
 By default a run draws its randomness from whatever entropy PyTorch picks, so two runs of the same graph give slightly different weights, a different shuffle order, and therefore a different loss curve. Set a **Random seed** in **Settings → Training Behavior** to make a run repeatable.
 
-With a seed set:
+With no seed set, the edu pack's `FFNLayer` and `TrainAndEvaluate` are the exception: they start from the weights seed 0 gives, the same on every run and in an exported script. With a seed set:
 
 - Every node is seeded from a value derived from `(seed, node id)`, so what a node draws depends on the seed and on its own identity — not on how much randomness the rest of the graph consumed first, and not on the order the engine happened to schedule things in.
 - `DataLoader` gets its own generator, so the epoch shuffle order is fixed too, and each worker process gets its own independent stream.
 - **The run executes one node at a time**, and **it does not overlap another run.** Seeding writes process-global RNG state, so a second node — or a second *run* — drawing from it at the same moment moves the numbers. A seeded run therefore waits for the runs already in flight, then runs alone, and anything submitted behind it waits for it. Unseeded runs are unaffected: they still run in parallel with each other, and their nodes still run in parallel.
+- Results are cached per seed: changing the seed, or opening a graph saved with a different one, runs every node again instead of serving what the old seed produced.
 
 Two runs of the same graph with the same seed produce bitwise-identical loss curves on CPU. Different seeds produce genuinely different ones.
 

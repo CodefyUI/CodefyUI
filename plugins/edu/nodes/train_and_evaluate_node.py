@@ -15,6 +15,7 @@
 
 from __future__ import annotations
 
+import copy
 from typing import Any
 
 from app.core.node_base import (
@@ -24,6 +25,8 @@ from app.core.node_base import (
     ParamType,
     PortDefinition,
 )
+
+from ._layer_seed import seed_new_layer
 
 
 class _FittedNet:
@@ -55,6 +58,10 @@ class TrainAndEvaluateNode(BaseNode):
         "outputs the trained `model` for DecisionBoundary and the per-epoch "
         "`losses`."
     )
+
+    # #254: hands out the trained network as a live `model`, so a cache hit
+    # would replay an object something downstream may have changed since.
+    cacheable = False
 
     @classmethod
     def define_inputs(cls) -> list[PortDefinition]:
@@ -132,7 +139,10 @@ class TrainAndEvaluateNode(BaseNode):
             [idx[label] for label in labels], dtype=torch.long, device=x_train.device)
 
         # 把隱藏堆疊接上一個輸出層（壓到類別數）。輸入維度從堆疊最後一個 Linear 推得。
-        modules = list(net_in.children())
+        # A copy is trained, never the stack itself: that is the upstream
+        # nodes' output, which the Inspector shows and another trainer may be
+        # wired to as well.
+        modules = copy.deepcopy(list(net_in.children()))
         last_out = None
         for m in modules:
             if isinstance(m, nn.Linear):
@@ -141,7 +151,7 @@ class TrainAndEvaluateNode(BaseNode):
             raise ValueError(
                 "TrainAndEvaluate: the stacked model has no Linear layer — add at least one FFNLayer."
             )
-        modules.append(nn.Linear(last_out, len(classes)))
+        modules.append(seed_new_layer(nn.Linear(last_out, len(classes)), context))
         # FFNLayer builds its Linears with no device handling at all, so the
         # stack it hands over is on the CPU while x_train has been aligned to
         # the run's device. Place the assembled net where the data is.

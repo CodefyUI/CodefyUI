@@ -2529,6 +2529,10 @@ async def execute_graph(
                 node_type, params, upstream_keys,
                 device=context.device if context is not None else "cpu",
                 fingerprint=fingerprint,
+                # The seed this node is seeded with below: on a seeded run
+                # what it draws depends on the run seed AND its own id, so
+                # both belong in its key. None when unseeded, as before.
+                seed=context.derive_seed(node_id) if context is not None else None,
             )
             node_cache_keys[node_id] = cache_key
             if node_id not in force_rerun:
