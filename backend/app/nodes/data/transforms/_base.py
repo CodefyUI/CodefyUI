@@ -242,7 +242,10 @@ class SeededAugmentation:
     streams disjoint across workers and fresh across epochs while staying a
     pure function of the run seed. In the main process there is one stream
     and its counter simply keeps going, which gives epoch 2 different
-    augmentations from epoch 1 for the same reason.
+    augmentations from epoch 1 for the same reason. The counters belong to
+    one run, though: a cached dataset carries this object into the next run,
+    so the first call there starts them over (``seeding.run_generation``),
+    and Run 2 augments like Run 1 and the exported script (#603).
 
     Costs about 30 microseconds per sample on top of a transform that
     typically costs 75, and is only installed when the pipeline actually
@@ -259,16 +262,28 @@ class SeededAugmentation:
     entirely.
     """
 
-    __slots__ = ("transform", "seed", "_counters")
+    __slots__ = ("transform", "seed", "_counters", "_generation")
 
     def __init__(self, transform: Any, seed: int) -> None:
+        from ....core.seeding import run_generation
+
         self.transform = transform
         self.seed = int(seed)
         self._counters: dict[str, int] = {}
+        self._generation = run_generation()
 
     def _next_label(self) -> str:
         import torch
 
+        from ....core.seeding import run_generation
+
+        generation = run_generation()
+        if generation != self._generation:
+            # First call in a new run. A DataLoader worker's copy can land
+            # here on its first call too, which clears nothing it draws
+            # from: a worker's streams are keyed by worker and iterator.
+            self._counters.clear()
+            self._generation = generation
         info = torch.utils.data.get_worker_info()
         if info is None:
             stream = "main"

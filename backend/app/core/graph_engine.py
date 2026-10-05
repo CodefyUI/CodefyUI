@@ -2462,6 +2462,11 @@ async def execute_graph(
     resolves -- without it a node's queued progress would land AFTER its own
     ``completed``.
     """
+    # A new run for state that outlives one: a cached dataset's augmentation
+    # wrapper starts its call counters over, as on a fresh run (#603).
+    from .seeding import begin_run
+
+    begin_run()
     output_aliases: dict[tuple[str, str], tuple[str, str]] = {}
     expanded_nodes, expanded_edges, internal_to_preset = prepare_executable_graph(
         nodes,

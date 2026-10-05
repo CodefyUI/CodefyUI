@@ -19,9 +19,10 @@ which is why it always agreed with Run 1.
 The fixture dataset's only feature is the sample's own index, so a batch
 says exactly which samples it holds and in what order.
 
-The last test pins the same bug one node upstream, NOT fixed here: a cached
-``Dataset`` carries its augmentation wrapper's call counters from one Run
-into the next.
+The last tests cover the same bug one node upstream (#603): a cached
+``Dataset`` carried its augmentation wrapper's call counters from one Run
+into the next. The counters now start over with every run, and
+``DatasetBatch``, which draws from that stream, re-reads on every Run.
 """
 
 from __future__ import annotations
@@ -374,7 +375,7 @@ async def test_a_training_graph_gives_the_same_loss_curve_on_every_run():
             f"  run {i}: {curve}\n" for i, curve in enumerate(runs, 1)))
 
 
-# ── the same bug one node upstream: pinned, not fixed here ───────────────
+# ── the same bug one node upstream: a cached Dataset's augmentation ──────
 
 def _write_offline_mnist(root: Path, n_train: int = 8, n_test: int = 4) -> None:
     """IDX files torchvision's MNIST loader reads, so nothing is downloaded.
@@ -416,14 +417,14 @@ def _augmentation_graph(data_dir: Path) -> tuple[list[dict], list[dict]]:
     return nodes, edges
 
 
-async def _sums(graph, cache=None) -> list[list[float]]:
-    outputs = await _run(graph, 0, cache)
+async def _sums(graph, cache=None, statuses=None) -> list[list[float]]:
+    outputs = await _run(graph, 0, cache, statuses)
     return outputs["record"]["sums"]
 
 
 @pytest.mark.asyncio
 async def test_seeded_augmentation_reproduces_without_a_cache(tmp_path):
-    """The control for the test below: the graph crops, and reproducibly."""
+    """The control for the tests below: the graph crops, and reproducibly."""
     _write_offline_mnist(tmp_path)
     graph = _augmentation_graph(tmp_path)
     fresh = await _sums(graph)
@@ -432,10 +433,6 @@ async def test_seeded_augmentation_reproduces_without_a_cache(tmp_path):
     assert await _sums(graph) == fresh
 
 
-@pytest.mark.xfail(strict=True, reason=(
-    "a cached Dataset/ImageFolderDataset keeps its SeededAugmentation call "
-    "counters across Runs; cacheable = False would undo #144/#259, so the fix "
-    "needs its own decision"))
 @pytest.mark.asyncio
 async def test_a_cached_dataset_augments_like_a_fresh_run(tmp_path):
     """Seeded augmentation must not depend on how many Runs came before.
@@ -444,10 +441,10 @@ async def test_a_cached_dataset_augments_like_a_fresh_run(tmp_path):
     (``transforms._base``), which numbers its calls per stream; in the main
     process (``num_workers=0``) the counter just keeps going. ``Dataset`` is
     cacheable (#144, pinned by #259), so Run 2 gets Run 1's dataset object
-    with the counter where Run 1's epochs left it, and crops differently from
-    a fresh run and from the exported script. ``ImageFolderDataset`` installs
-    the same wrapper and is cacheable too. Strict, so the fix that makes this
-    pass has to remove the marker.
+    with the counter where Run 1's epochs left it, and cropped differently
+    from a fresh run and from the exported script. ``ImageFolderDataset``
+    installs the same wrapper and is cacheable too. The wrapper now starts
+    its counters over when a new run first uses it (#603).
     """
     _write_offline_mnist(tmp_path)
     graph = _augmentation_graph(tmp_path)
@@ -459,3 +456,45 @@ async def test_a_cached_dataset_augments_like_a_fresh_run(tmp_path):
         "every Run must crop like a fresh seeded run.\n"
         f"  fresh: {fresh}\n" + "".join(
             f"  run {i}: {run}\n" for i, run in enumerate(runs, 1)))
+
+
+def _augmentation_graph_with_batch(data_dir: Path) -> tuple[list[dict], list[dict]]:
+    """The graph above, plus a ``DatasetBatch`` of three on the same dataset."""
+    nodes, edges = _augmentation_graph(data_dir)
+    nodes.append({"id": "batch", "type": "DatasetBatch",
+                  "data": {"params": {"batch_size": 3, "start_index": 0}}})
+    edges.append(_edge("data", "dataset", "batch", "dataset"))
+    return nodes, edges
+
+
+@pytest.mark.asyncio
+async def test_a_cached_dataset_read_by_a_dataset_batch_augments_like_a_fresh_run(
+        tmp_path):
+    """A ``DatasetBatch`` reading the dataset draws from the same stream.
+
+    It pulls its three samples through the augmentation before the
+    recorder's epochs do, so on a fresh run the recorder's crops start three
+    draws in. Served from the cache, it would skip those draws on Run 2 and
+    the recorder would crop from a place no fresh run reaches. So it re-reads
+    on every Run, while the dataset itself is still a cache hit (#144/#259).
+    """
+    _write_offline_mnist(tmp_path)
+    graph = _augmentation_graph_with_batch(tmp_path)
+    fresh = await _sums(graph)
+    assert fresh != await _sums(_augmentation_graph(tmp_path)), (
+        "the DatasetBatch's draws did not move the recorder's crops, so this "
+        "test cannot tell whether they happen")
+
+    cache = ExecutionCache()
+    statuses: dict[str, list[str]] = {}
+    runs = [await _sums(graph, cache, statuses) for _ in range(3)]
+
+    assert runs == [fresh, fresh, fresh], (
+        "every Run must crop like a fresh seeded run.\n"
+        f"  fresh: {fresh}\n" + "".join(
+            f"  run {i}: {run}\n" for i, run in enumerate(runs, 1)))
+    assert statuses["data"] == ["completed", "cached", "cached"], (
+        f"the Dataset must still be served from the cache (statuses: {statuses})")
+    assert statuses["batch"] == ["completed", "completed", "completed"], (
+        "the DatasetBatch must read its samples on every Run; a 'cached' entry "
+        f"skipped its draws (statuses: {statuses})")

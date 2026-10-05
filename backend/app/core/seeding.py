@@ -370,3 +370,39 @@ def make_worker_init_fn(seed: int | None) -> Callable[[int], None] | None:
     if seed is None:
         return None
     return functools.partial(seed_worker, int(seed) % SEED_SPACE)
+
+
+#: How many runs :func:`begin_run` has started in this process. Locked for
+#: the reason the determinism depth above is: not every caller drives its
+#: runs from the server's event loop.
+_RUN_GENERATION_LOCK = threading.Lock()
+_RUN_GENERATION = 0
+
+
+def begin_run() -> None:
+    """Mark the start of a graph run. ``execute_graph`` calls it first.
+
+    For run-scoped state that can outlive its run. ``Dataset`` and
+    ``ImageFolderDataset`` are cacheable, so a cache hit hands the next run
+    the SAME dataset object, and with it the augmentation wrapper whose call
+    counters the last run advanced (``transforms._base.SeededAugmentation``).
+    The wrapper compares :func:`run_generation` with the one it last saw and
+    starts its counters over on the first call of a new run, so every run
+    augments the way a fresh run and the exported script do (#603).
+
+    One counter for the whole process is enough. Only a seeded run installs
+    that wrapper, and a seeded run holds the process's exclusive
+    reproducibility gate (``run_service.run_exclusion().for_seed``; the
+    headless route is unseeded and takes the shared hold), so no other run
+    can start, and bump the count, while a seeded run is augmenting.
+    Unseeded runs bump it as they overlap, which costs nothing: they carry
+    no wrapper to start over.
+    """
+    global _RUN_GENERATION
+    with _RUN_GENERATION_LOCK:
+        _RUN_GENERATION += 1
+
+
+def run_generation() -> int:
+    """The count :func:`begin_run` last left. Read by ``SeededAugmentation``."""
+    return _RUN_GENERATION
