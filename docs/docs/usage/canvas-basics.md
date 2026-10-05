@@ -33,7 +33,7 @@ See all shortcuts in **[Key Bindings](./keybindings)**.
 ## Edges
 
 - **Connect ports.** Drag from an output port to an input port. Each port has an explicit data type, such as Tensor, Model, Dataset, DataLoader, Optimizer, Loss, Scalar, String, Image, List, Transform, or Trigger. An incompatible drop is rejected.
-- **Detach or rewire an edge.** Drag a connected input port with the left mouse button. Drop the edge on another port to rewire it, or on empty space to delete it. A red ring appears before deletion. Hold `Shift`, `Ctrl`, or `Alt` while dragging to create another connection instead.
+- **Detach or rewire an edge.** Drag a connected input port with the left mouse button. Drop the edge on another port to rewire it, or on empty space to delete it. A red ring appears before deletion. Hold `Shift`, `Ctrl`, or `Alt` while dragging to create another connection instead. A `Start` node's trigger wire is moved the same way, by its end at the top-left corner of the card it triggers, and can be dropped anywhere on the new card.
 - **Inspect an edge value.** After a run, click an edge to see the type, shape, dtype, minimum, maximum, and mean of the value it carried. **View stats** opens the node's Stats tab.
 - **Change connection style.** Under **Settings → Editor**, select circuit-board traces, the default, or smooth curves. The style applies to every connection, including the dashed trigger edges from a `Start` node.
 

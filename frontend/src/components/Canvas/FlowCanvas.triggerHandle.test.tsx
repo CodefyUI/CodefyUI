@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { cleanup, fireEvent } from '@testing-library/react';
+import { act, cleanup, fireEvent } from '@testing-library/react';
 import { Position, type Edge, type Node } from '@xyflow/react';
 import type { NodeData, NodeDefinition, PortDefinition } from '../../types';
 
@@ -151,6 +151,7 @@ function setGraph(nodes: Node<NodeData>[], edges: Edge[] = []) {
 }
 
 const edges = () => useTabStore.getState().tabs.find((t) => t.id === TAB_ID)!.edges;
+const undoFrames = () => useTabStore.getState().tabs.find((t) => t.id === TAB_ID)!.undoStack.length;
 
 beforeEach(() => {
   useI18n.setState({ locale: 'en' });
@@ -332,6 +333,20 @@ describe('dragging a wire on the real canvas', () => {
       ]);
     });
 
+    it("removes the Start node's trigger moved onto the __trigger of a card it already triggers", () => {
+      const other: Edge = { ...triggerWire, id: 't2', target: 'flat2' };
+      setGraph([start, flat, flat2], [triggerWire, other]);
+      renderWithFlow(<FlowCanvas />);
+      const anchor = document.querySelector(
+        '.react-flow__edge[data-id="t1"] .react-flow__edgeupdater-target',
+      );
+      expect(anchor).not.toBeNull();
+      drag(anchor!, centreOf(flat, '__trigger'), nearCorner(flat2));
+      // Refused as the drop on that card's body is: the grabbed wire is
+      // removed rather than stacked on the one already there.
+      expect(edges()).toEqual([other]);
+    });
+
     it('moves a trigger wire saved without its handle name', () => {
       // What the loader makes of a hand-written `{"type": "trigger",
       // "source": "start", "target": "flat"}`: no source handle at all.
@@ -348,20 +363,26 @@ describe('dragging a wire on the real canvas', () => {
       ]);
     });
 
-    it("is not moved off the Start node onto a data output", () => {
-      setGraph([start, lin, flat], [triggerWire]);
+    // React Flow gives an edge a reconnect anchor at each end. The one at the
+    // source end lies just outside the output port, under the node layer, so
+    // a press just beside a Start node's diamond or an output's dot took the
+    // wire there, and a release on the empty canvas deleted it (#593). Only
+    // the target end, the one dragging a connected input grabs, has one.
+    it.each<[string, Edge]>([
+      ["the Start node's trigger wire", triggerWire],
+      ['a data wire', wire],
+    ])('leaves %s no anchor at its source end to grab by mistake', (_, edge) => {
+      setGraph([start, lin, flat], [edge]);
       renderWithFlow(<FlowCanvas />);
-      // The wire's Start end: React Flow drags it from the `__trigger` end,
-      // which stays where it is.
-      const anchor = document.querySelector(
-        '.react-flow__edge[data-id="t1"] .react-flow__edgeupdater-source',
-      );
-      expect(anchor).not.toBeNull();
-      drag(anchor!, centreOf(start, 'trigger'), centreOf(lin, 'output'));
-      // Refused, the grabbed wire is removed, as on the empty canvas. An
-      // untouched trigger wire would fail this too, so the drag is known to
-      // have happened.
-      expect(edges()).toEqual([]);
+      // Booleans, not the elements: printing an SVG element on a failure
+      // crashes the reporter.
+      const hasAnchor = (end: 'source' | 'target') =>
+        document.querySelector(
+          `.react-flow__edge[data-id="${edge.id}"] .react-flow__edgeupdater-${end}`,
+        ) !== null;
+      // The target end's anchor is the control: the edge is drawn.
+      expect(hasAnchor('target')).toBe(true);
+      expect(hasAnchor('source')).toBe(false);
     });
   });
 });
@@ -519,15 +540,89 @@ describe('dropping a trigger on a card', () => {
     expect(edges()).toEqual([]);
   });
 
-  it('still removes a trigger wire moved off its card and released on another card', () => {
-    // Only a new wire connects by a card's body. A grabbed wire released
-    // anywhere but on a handle is removed, as on the empty canvas.
-    show([start, flat, flat2], [triggerWire]);
-    const anchor = document.querySelector(
-      '.react-flow__edge[data-id="t1"] .react-flow__edgeupdater-target',
-    );
-    expect(anchor).not.toBeNull();
-    drag(anchor!, centreOf(flat, '__trigger'), middleOf(flat2));
-    expect(edges()).toEqual([]);
+  // A wire that is moved lands by a card's body the same way (#593).
+  describe('a trigger wire moved off its card', () => {
+    /**
+     * Grab trigger wire `id` on the corner of `card`, the card it goes into,
+     * and release it at `releaseAt`. `__trigger` takes no presses itself, so
+     * the press lands on the wire's own reconnect anchor on that corner.
+     */
+    const moveTriggerWire = (id: string, card: Node<NodeData>, releaseAt: Point) => {
+      const anchor = document.querySelector(
+        `.react-flow__edge[data-id="${id}"] .react-flow__edgeupdater-target`,
+      );
+      expect(anchor).not.toBeNull();
+      drag(anchor!, centreOf(card, '__trigger'), releaseAt);
+    };
+
+    it("moves onto another card when released in the middle of it", () => {
+      show([start, flat, flat2], [triggerWire]);
+      moveTriggerWire('t1', flat, middleOf(flat2));
+      expect(edges()).toMatchObject([
+        {
+          id: 't1',
+          source: 'start',
+          sourceHandle: 'trigger',
+          target: 'flat2',
+          targetHandle: '__trigger',
+          type: 'triggerEdge',
+          data: { type: 'trigger' },
+        },
+      ]);
+    });
+
+    it('goes back with one undo', () => {
+      show([start, flat, flat2], [triggerWire]);
+      const frames = undoFrames();
+      moveTriggerWire('t1', flat, middleOf(flat2));
+      expect(edges()).toMatchObject([{ id: 't1', target: 'flat2' }]);
+      expect(undoFrames()).toBe(frames + 1);
+      act(() => useTabStore.getState().undo());
+      expect(edges()).toEqual([triggerWire]);
+    });
+
+    it('stays when released back on its own card', () => {
+      // The wire being moved is not one its Start node already has there.
+      show([start, flat, flat2], [triggerWire]);
+      moveTriggerWire('t1', flat, middleOf(flat));
+      expect(edges()).toMatchObject([
+        { id: 't1', source: 'start', target: 'flat', targetHandle: '__trigger', type: 'triggerEdge' },
+      ]);
+    });
+
+    it('is not brought back when it was deleted while in hand', () => {
+      show([start, flat, flat2], [triggerWire]);
+      const anchor = document.querySelector(
+        '.react-flow__edge[data-id="t1"] .react-flow__edgeupdater-target',
+      )!;
+      const pressAt = centreOf(flat, '__trigger');
+      const releaseAt = middleOf(flat2);
+      fireEvent.mouseDown(anchor, { button: 0, buttons: 1, clientX: pressAt.x, clientY: pressAt.y });
+      fireEvent.mouseMove(document, { buttons: 1, clientX: releaseAt.x, clientY: releaseAt.y });
+      // Say Delete took it, as it does a selected wire, before the release.
+      act(() => setGraph([start, flat, flat2], []));
+      fireEvent.mouseUp(document, { button: 0, clientX: releaseAt.x, clientY: releaseAt.y });
+      expect(edges()).toEqual([]);
+    });
+
+    it('is removed, not doubled, on a card its Start node already triggers', () => {
+      const other: Edge = { ...triggerWire, id: 't2', target: 'flat2' };
+      show([start, flat, flat2], [triggerWire, other]);
+      moveTriggerWire('t1', flat, middleOf(flat2));
+      expect(edges()).toEqual([other]);
+    });
+
+    // As before, a moved wire that lands nowhere is removed; the red ring on
+    // the grabbed end says so during the drag.
+    it.each<[string, Node<NodeData>[], Point]>([
+      ['the empty canvas', [start, flat], { x: 300, y: 200 }],
+      ['a note', [start, flat, note], middleOf(note)],
+      ['another Start node', [start, flat, start2], middleOf(start2)],
+      ['the Start node it comes from', [start, flat], middleOf(start)],
+    ])('is removed when released over %s', (_, nodes, releaseAt) => {
+      show(nodes, [triggerWire]);
+      moveTriggerWire('t1', flat, releaseAt);
+      expect(edges()).toEqual([]);
+    });
   });
 });

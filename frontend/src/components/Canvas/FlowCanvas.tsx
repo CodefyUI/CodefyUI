@@ -522,28 +522,10 @@ export function FlowCanvas({ tabId }: { tabId?: string } = {}) {
   );
 
   // The edge being reconnected, if any: onReconnectEnd deletes it when it is
-  // dropped where it connects to nothing, and onConnectEnd's triggerDrop
-  // leaves that drag alone.
+  // dropped where it connects to nothing. A reconnect that lands clears it in
+  // onReconnect, whether React Flow connected the drop or onConnectEnd moved
+  // a trigger wire onto a card's body.
   const reconnectingEdgeRef = useRef<string | null>(null);
-
-  const onConnectEnd = useCallback(
-    (event: MouseEvent | TouchEvent, state: FinalConnectionState) => {
-      const ui = useUIStore.getState();
-      const draggedTrigger = ui.draggingSourceType === 'TRIGGER';
-      ui.setDraggingSourceType(null);
-      // While a trigger is dragged every card glows as its drop target, but
-      // React Flow connects only near a card's top-left `__trigger` diamond,
-      // so a trigger released anywhere else on a card is connected here.
-      // Not during a reconnect: React Flow ends that here too, before
-      // onReconnectEnd, and it stays as it was.
-      if (!draggedTrigger || reconnectingEdgeRef.current !== null) return;
-      const { tabs, activeTabId } = useTabStore.getState();
-      const { edges } = tabs.find((t) => t.id === activeTabId)!;
-      const connection = triggerDropConnection(event, state, edges);
-      if (connection && handleIsValidConnection(connection)) handleConnect(connection);
-    },
-    [handleConnect, handleIsValidConnection],
-  );
 
   const onReconnectStart = useCallback((_: any, edge: Edge, handleType: 'source' | 'target') => {
     reconnectingEdgeRef.current = edge.id;
@@ -554,15 +536,32 @@ export function FlowCanvas({ tabId }: { tabId?: string } = {}) {
   }, []);
 
   const onReconnect = useCallback((oldEdge: Edge, newConnection: Connection) => {
-    reconnectingEdgeRef.current = null;
-    // onReconnectEnd always follows and clears too; clearing here as well
-    // keeps the indicator lifecycle local to each handler.
-    useUIStore.getState().setReconnectingHandle(null);
     // Replace old edge with new connection
     const { setEdges } = useTabStore.getState();
     const tab = useTabStore.getState().tabs.find(
       (t) => t.id === useTabStore.getState().activeTabId,
     );
+    // A trigger wire moved onto a card its Start node already triggers is
+    // refused, as onConnectEnd's body drop refuses it: the reconnect is left
+    // unfinished, and onReconnectEnd removes the wire. React Flow's own snap
+    // onto that card's `__trigger` diamond lands here unchecked, and stacked
+    // a second trigger wire on the card.
+    if (
+      newConnection.targetHandle === '__trigger' &&
+      tab?.edges.some(
+        (e) =>
+          e.id !== oldEdge.id &&
+          e.source === newConnection.source &&
+          e.target === newConnection.target &&
+          e.targetHandle === '__trigger',
+      )
+    ) {
+      return;
+    }
+    reconnectingEdgeRef.current = null;
+    // onReconnectEnd always follows and clears too; clearing here as well
+    // keeps the indicator lifecycle local to each handler.
+    useUIStore.getState().setReconnectingHandle(null);
     if (!tab) return;
     useTabStore.getState().pushUndoSnapshot();
     setEdges(
@@ -577,6 +576,36 @@ export function FlowCanvas({ tabId }: { tabId?: string } = {}) {
         }),
     );
   }, []);
+
+  const onConnectEnd = useCallback(
+    (event: MouseEvent | TouchEvent, state: FinalConnectionState) => {
+      const ui = useUIStore.getState();
+      const draggedTrigger = ui.draggingSourceType === 'TRIGGER';
+      ui.setDraggingSourceType(null);
+      // While a trigger is dragged every card glows as its drop target, but
+      // React Flow connects only near a card's top-left `__trigger` diamond,
+      // so a trigger released anywhere else on a card is connected here. A
+      // trigger wire being moved lands the same way: React Flow ends a
+      // reconnect here too, just before onReconnectEnd would delete the wire.
+      if (!draggedTrigger) return;
+      const { tabs, activeTabId } = useTabStore.getState();
+      const { edges } = tabs.find((t) => t.id === activeTabId)!;
+      // Still set when the wire was moved and React Flow did not connect it.
+      const moving = reconnectingEdgeRef.current;
+      // The wire in hand is not one its Start node already has on a card, so
+      // it can be dropped back on its own card.
+      const others = moving === null ? edges : edges.filter((e) => e.id !== moving);
+      const connection = triggerDropConnection(event, state, others);
+      if (!connection || !handleIsValidConnection(connection)) return;
+      if (moving === null) {
+        handleConnect(connection);
+        return;
+      }
+      const moved = edges.find((e) => e.id === moving);
+      if (moved) onReconnect(moved, connection);
+    },
+    [handleConnect, handleIsValidConnection, onReconnect],
+  );
 
   const onReconnectEnd = useCallback((_: any, edge: Edge) => {
     // Always clear the red detach indicator — this fires after both outcomes
@@ -782,6 +811,12 @@ export function FlowCanvas({ tabId }: { tabId?: string } = {}) {
           defaultEdgeOptions={{
             animated: false,
             style: { stroke: 'var(--wire)', strokeWidth: 2 },
+            // A wire is picked up by its target end only, as dragging a
+            // connected input does. React Flow's anchor at the source end lies
+            // just outside the output port, under the node layer, so a press
+            // just beside a Start node's diamond or an output's dot took the
+            // wire, and a release on the empty canvas deleted it (#593).
+            reconnectable: 'target',
           }}
           connectionLineStyle={{ stroke: 'var(--wire-active)', strokeWidth: 2 }}
           zoomOnDoubleClick={false}
