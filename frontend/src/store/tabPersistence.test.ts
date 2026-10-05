@@ -41,7 +41,7 @@ function record(id: string, over: Partial<PersistedTab> = {}): PersistedTab {
     recordOutputs: true,
     verboseMode: false,
     graphId: `gid-${id}`,
-    weightsPersistent: true,
+    keepWeights: true,
     backwardMode: false,
     autoBackward: false,
     ...over,

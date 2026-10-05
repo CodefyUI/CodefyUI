@@ -90,7 +90,7 @@ export function SettingsPopover({ open, onClose, triggerRef }: Props) {
   );
   const recording = activeTab?.recordOutputs ?? true;
   const verbose = activeTab?.verboseMode ?? false;
-  const persistent = activeTab?.weightsPersistent ?? true;
+  const persistent = activeTab?.weightsPersistent ?? false;
   const backward = activeTab?.backwardMode ?? false;
   const autoBackward = activeTab?.autoBackward ?? false;
   const seed = activeTab?.seed ?? null;

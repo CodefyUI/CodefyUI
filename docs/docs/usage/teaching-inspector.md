@@ -70,7 +70,7 @@ The toolbar **Settings** popover groups its rows by section. **Recording & Inspe
 | Recording & Inspection | **Record node outputs** | Capture each completed node's full output for the Inspector. On by default; turn it off before a heavy training run. |
 | | **Verbose internals** | Instrumented nodes record their intermediate steps (attention scores, softmax temperatures, ...) — feeds the **Steps** tab. With this on, nothing is served from cache; every node re-executes. |
 | | **Compare segment** | **Create segment** wraps two selected nodes in a HEAD/TAIL bubble; **Clear active** removes the highlighted one. |
-| Training Behavior | **Persist weights between runs** | Keep `Conv2d`/`Linear`/`Attention` weights across Run clicks so the model actually learns. On by default; when off, every run reinitialises. |
+| Training Behavior | **Persist weights between runs** | Keep `Conv2d`/`Linear`/`Attention` weights across Run clicks. Off by default, so every run starts fresh like an exported script; when on, the next run continues training and the run log says so. |
 | | **Reset all weights now** | **Reset** asks first, then drops every cached weight for this tab; the next Run starts fresh. |
 | | **Capture gradients** | Run forward + `.backward()` and store each layer's gradient for the **Backward** tab. With this on, nothing is served from cache; every node re-executes. |
 | | **Auto-synthesize loss** | When the graph has no `Loss`/`BackwardOnce` node, synthesize one so `.backward()` can run. Available only while **Capture gradients** is on. |

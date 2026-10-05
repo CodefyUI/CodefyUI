@@ -93,10 +93,10 @@ The folder an example sits in is not its section. Folders are paths, and the pat
 Load **Train CNN on MNIST**, then:
 
 1. Read the note to the left of the `Start` node — it says what the graph does and what to look at afterwards.
-2. **Record node outputs** and **Persist weights between runs** are both on by default — check them in the Settings popover (**Recording & Inspection** and **Training Behavior**).
+2. **Record node outputs** is on by default and **Persist weights between runs** is off — check both in the Settings popover (**Recording & Inspection** and **Training Behavior**).
 3. Click **Run** and watch the live loss chart in the **Training** tab. Five epochs take a minute or two on a CPU.
 4. Click the `Inference` node to see in the **[Teaching Inspector](./teaching-inspector)** what went in (the batch of 16 test images) and what came out (10 logits per image). The two `Conv2d` layers are inside the `SequentialModel` node; double-click it to see them in the Model Architecture editor.
 5. When it finishes, read the **Test accuracy** `Print` — about 0.99, measured on the 10,000 test images the training loop never saw — and compare the 16 predicted digits with the 16 images the `Visualize` node tiles beside them.
-6. Run again — with weights persisted, the model keeps learning across runs.
+6. To keep training across runs, turn **Persist weights between runs** on. Each run after that keeps its weights and the next one continues from them (a run made with it off kept nothing), and the **Execution Log** notes that the result includes that earlier training.
 
 Training also saves `model_weights.pt` (under `backend/data/models/`). After that, load **Inference CNN on MNIST** — it classifies `test_digit.png`, a real MNIST digit bundled under `backend/data/images/`, using the weights you just trained, and prints the digit it read.

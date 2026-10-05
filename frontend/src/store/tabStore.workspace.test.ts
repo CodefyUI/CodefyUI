@@ -358,7 +358,7 @@ describe('setTabRunSettings', () => {
     deterministic: false,
     recordOutputs: true,
     verboseMode: false,
-    weightsPersistent: true,
+    weightsPersistent: false,
     backwardMode: false,
     autoBackward: false,
   };

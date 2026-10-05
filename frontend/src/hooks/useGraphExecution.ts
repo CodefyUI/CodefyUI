@@ -84,6 +84,12 @@ function sayWhyRunEnded(tabId: string, message: string): void {
 const reattached = new Set<string>();
 
 /**
+ * "Persist weights between runs" as each tab's run in flight was sent with
+ * it, for the note that run's completion logs. Read once there and dropped.
+ */
+const keptWeightsAtSubmit = new Map<string, boolean>();
+
+/**
  * A run stopped because an optional pack is not installed: say so, and offer
  * the one place that can fix it.
  *
@@ -368,6 +374,21 @@ export function useGraphExecution() {
         const store = useTabStore.getState();
         store.setTabStatus(tabId, 'completed');
         store.addTabLog(tabId, { message: 'Execution completed successfully', type: 'success' });
+        // With weights kept, this run's numbers may include earlier runs'
+        // training, which an exported script never has. The switch as this
+        // run was sent with it: flipping it mid-run changes the next run, not
+        // this one. A run re-attached after a reload was sent by an earlier
+        // page, so the tab's setting stands in. Shown whether or not the
+        // graph owns weights: the canvas cannot tell, and only a user who
+        // turned the switch on sees it.
+        const kept = keptWeightsAtSubmit.get(tabId) ?? store.getTab(tabId)?.weightsPersistent;
+        keptWeightsAtSubmit.delete(tabId);
+        if (kept) {
+          store.addTabLog(tabId, {
+            message: useI18n.getState().t('settings.persist.runNote'),
+            type: 'info',
+          });
+        }
       };
 
       const onExecutionError = (raw: unknown) => {
@@ -760,6 +781,10 @@ export function useGraphExecution() {
     // messages serially: `execute` finishes attaching before `cancel` is
     // read.
     useTabStore.getState().setLastRunId(tab.id, null);
+
+    // The note this run's completion logs follows the switch as it is sent
+    // here, not as it may stand by then.
+    keptWeightsAtSubmit.set(tab.id, tab.weightsPersistent);
 
     // No client-minted run id since #121: the RUN is created server-side by
     // RunService, and its `exec_runs.id` is the one id — the execution id,
