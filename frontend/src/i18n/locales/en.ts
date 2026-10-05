@@ -89,6 +89,10 @@ const en = {
   'toolbar.exportPython.absolutePath':
     'Absolute paths work only on this computer: {nodes}. Use just the file name instead.',
   'toolbar.exportPython.absolutePath.more': 'and {count} more',
+  // Asked before Export as JSON / Python downloads a tab that is not saved
+  // yet; a saved graph exports under its own file's name. `{ext}`: py, json.
+  'toolbar.exportName.prompt': 'File name for the .{ext} file',
+  'toolbar.exportName.reserved': 'Windows reserves this name; pick another',
   'toolbar.exportDiagram.svg': 'Export Diagram (SVG)',
   'toolbar.exportDiagram.png': 'Export Diagram (PNG)',
   'toolbar.exportDiagram.title': 'Image of nodes, ports and connections; no parameter values',

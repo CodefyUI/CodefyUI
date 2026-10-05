@@ -170,6 +170,13 @@ function setActiveTab(overrides: Record<string, unknown> = {}) {
   useTabStore.setState({ tabs: [tab as never], activeTabId: 'tab-1' });
 }
 
+/**
+ * A tab bound to a saved graph. Export as JSON and Export as Python download
+ * a bound tab under its file's name without asking; the question a tab not
+ * saved yet is asked is pinned in Toolbar.exportPython.test.tsx.
+ */
+const SAVED = { currentGraphFile: 'My_Graph', currentGraphName: 'My Graph' };
+
 /** Resolve a pending dialog (confirm/prompt) from the dialog store. */
 async function resolveDialog(value: boolean | string | null) {
   await waitFor(() => expect(useDialogStore.getState().active).not.toBeNull());
@@ -748,15 +755,16 @@ describe('Toolbar', () => {
     expect(URL.createObjectURL).not.toHaveBeenCalled();
   });
 
-  it('Export JSON: with nodes downloads a blob', () => {
+  it('Export JSON: with nodes downloads a blob', async () => {
     setActiveTab({
+      ...SAVED,
       name: 'My Graph!!',
       nodes: [{ id: 'n1', type: 'baseNode', position: { x: 0, y: 0 }, data: { type: 'Add', params: {} } }],
     });
     render(<Toolbar />);
     fireEvent.click(screen.getByText('Export'));
     fireEvent.click(screen.getByText('Export as JSON'));
-    expect(URL.createObjectURL).toHaveBeenCalled();
+    await waitFor(() => expect(URL.createObjectURL).toHaveBeenCalled());
     expect(URL.revokeObjectURL).toHaveBeenCalled();
   });
 
@@ -772,29 +780,32 @@ describe('Toolbar', () => {
       });
     };
     const nodes = [{ id: 'n1', type: 'baseNode', position: { x: 0, y: 0 }, data: { type: 'Add', params: {} } }];
-    setActiveTab({ nodes, graphDevice: 'mps' });
+    setActiveTab({ ...SAVED, nodes, graphDevice: 'mps' });
     const view = render(<Toolbar />);
     fireEvent.click(screen.getByText('Export'));
     fireEvent.click(screen.getByText('Export as JSON'));
+    await waitFor(() => expect(URL.createObjectURL).toHaveBeenCalledTimes(1));
     expect(JSON.parse(await readBlob()).settings).toEqual({ device: 'mps' });
 
     view.unmount();
-    setActiveTab({ nodes });
+    setActiveTab({ ...SAVED, nodes });
     render(<Toolbar />);
     fireEvent.click(screen.getByText('Export'));
     fireEvent.click(screen.getByText('Export as JSON'));
+    await waitFor(() => expect(URL.createObjectURL).toHaveBeenCalledTimes(2));
     expect('settings' in JSON.parse(await readBlob())).toBe(false);
   });
 
-  it('Export JSON: uses "graph" fallback when the tab name is empty', () => {
+  it('Export JSON: uses "graph" fallback when the tab name is empty', async () => {
     setActiveTab({
+      ...SAVED,
       name: '',
       nodes: [{ id: 'n1', type: 'baseNode', position: { x: 0, y: 0 }, data: { type: 'Add', params: {} } }],
     });
     render(<Toolbar />);
     fireEvent.click(screen.getByText('Export'));
     fireEvent.click(screen.getByText('Export as JSON'));
-    expect(URL.createObjectURL).toHaveBeenCalled();
+    await waitFor(() => expect(URL.createObjectURL).toHaveBeenCalled());
   });
 
   it('Export JSON: strips SECRET param values from the downloaded document', async () => {
@@ -805,6 +816,7 @@ describe('Toolbar', () => {
       ],
     };
     setActiveTab({
+      ...SAVED,
       description: 'exported',
       nodes: [
         { id: 'n1', type: 'baseNode', position: { x: 1.6, y: 2.4 }, data: { label: 'LLM', type: 'LLMChat', params: { openai_api_key: 'sk-secret' }, definition } },
@@ -813,7 +825,7 @@ describe('Toolbar', () => {
     render(<Toolbar />);
     fireEvent.click(screen.getByText('Export'));
     fireEvent.click(screen.getByText('Export as JSON'));
-    expect(URL.createObjectURL).toHaveBeenCalled();
+    await waitFor(() => expect(URL.createObjectURL).toHaveBeenCalled());
     const blob = (URL.createObjectURL as unknown as ReturnType<typeof vi.fn>).mock.calls[0][0] as Blob;
     // jsdom's Blob has no .text(); read it via FileReader (same path the
     // import flow uses).
@@ -845,6 +857,7 @@ describe('Toolbar', () => {
     };
     useNodeDefStore.setState({ definitions: [myChat] } as never);
     setActiveTab({
+      ...SAVED,
       nodes: [
         { id: 'inst', type: 'subgraphNode', position: { x: 0, y: 0 }, data: { type: 'subgraph:blk', params: {} } },
       ],
@@ -865,6 +878,7 @@ describe('Toolbar', () => {
     const view = await act(async () => render(<Toolbar />));
     fireEvent.click(screen.getByText('Export'));
     fireEvent.click(screen.getByText('Export as JSON'));
+    await waitFor(() => expect(URL.createObjectURL).toHaveBeenCalled());
     // Unmounted before the suite's afterEach sets the tab store, which would
     // re-render a toolbar still subscribed to it outside act().
     view.unmount();
@@ -1195,6 +1209,7 @@ describe('Toolbar', () => {
   it('Export Python: success downloads the script', async () => {
     mockedRest.exportGraph.mockResolvedValueOnce({ script: 'print(1)' });
     setActiveTab({
+      ...SAVED,
       nodes: [{ id: 'n1', type: 'baseNode', position: { x: 0, y: 0 }, data: { type: 'Add', params: {} } }],
     });
     render(<Toolbar />);
@@ -1218,6 +1233,7 @@ describe('Toolbar', () => {
       exposed_params: [],
     };
     setActiveTab({
+      ...SAVED,
       nodes: [
         {
           id: 'preset1',
@@ -1263,6 +1279,7 @@ describe('Toolbar', () => {
       interface: { inputs: [], outputs: [], triggerTargets: [] },
     };
     setActiveTab({
+      ...SAVED,
       nodes: [
         { id: 'inst', type: 'subgraphNode', position: { x: 0, y: 0 }, data: { type: 'subgraph:blk', params: {} } },
       ],
@@ -1280,6 +1297,7 @@ describe('Toolbar', () => {
   it('Export Python: uses "graph" fallback when tab name empty', async () => {
     mockedRest.exportGraph.mockResolvedValueOnce({ script: 'x' });
     setActiveTab({
+      ...SAVED,
       name: '',
       nodes: [{ id: 'n1', type: 'baseNode', position: { x: 0, y: 0 }, data: { type: 'Add', params: {} } }],
     });
@@ -1298,6 +1316,7 @@ describe('Toolbar', () => {
   it('Export Python: forwards the graph settings so the script bakes in the device', async () => {
     mockedRest.exportGraph.mockResolvedValueOnce({ script: 'x' });
     setActiveTab({
+      ...SAVED,
       graphDevice: 'cuda:1',
       nodes: [{ id: 'n1', type: 'baseNode', position: { x: 0, y: 0 }, data: { type: 'Add', params: {} } }],
     });
@@ -1318,6 +1337,7 @@ describe('Toolbar', () => {
   it('Export Python: sends the tab seed and determinism toggle', async () => {
     mockedRest.exportGraph.mockResolvedValueOnce({ script: 'x' });
     setActiveTab({
+      ...SAVED,
       seed: 4321,
       deterministic: true,
       nodes: [{ id: 'n1', type: 'baseNode', position: { x: 0, y: 0 }, data: { type: 'Add', params: {} } }],
@@ -1333,6 +1353,7 @@ describe('Toolbar', () => {
   it('Export Python: an unseeded tab exports without a seed', async () => {
     mockedRest.exportGraph.mockResolvedValueOnce({ script: 'x' });
     setActiveTab({
+      ...SAVED,
       seed: null,
       deterministic: false,
       nodes: [{ id: 'n1', type: 'baseNode', position: { x: 0, y: 0 }, data: { type: 'Add', params: {} } }],
@@ -1350,6 +1371,7 @@ describe('Toolbar', () => {
   it('Export Python: exportGraph rejection toasts error', async () => {
     mockedRest.exportGraph.mockRejectedValueOnce(new Error('compile error'));
     setActiveTab({
+      ...SAVED,
       nodes: [{ id: 'n1', type: 'baseNode', position: { x: 0, y: 0 }, data: { type: 'Add', params: {} } }],
     });
     render(<Toolbar />);

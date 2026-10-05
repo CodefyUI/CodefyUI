@@ -330,6 +330,9 @@ export async function saveActiveGraph(opts: { saveAs?: boolean } = {}): Promise<
     // This is what makes the 2.8.0-restored tab's one-time prompt a one-time
     // prompt.
     liveStore.setTabGraphFile(tab.id, savedFile, targetName);
+    // Save As and a first save give the tab the name just chosen. A save in
+    // place names nothing new, so a label the user typed into the tab stays.
+    if (!inPlace) liveStore.renameTab(tab.id, targetName);
     if (savedFile !== boundAtWrite) {
       // This save wrote a file the SAVING tab was not bound to a moment ago,
       // and a confirmed Save As is allowed to write over a file another tab
