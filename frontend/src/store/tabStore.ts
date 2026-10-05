@@ -791,6 +791,9 @@ interface TabStoreState {
    * into the new file on its next in-place save, renaming the graph back by
    * the act of saving it. Passing a name without a file is not expressible,
    * which is what a delete needs it to be.
+   *
+   * A non-empty `to.name` also relabels every holder, so the tab strip shows
+   * the graph's new name, as it does after a Save As. A null `to` keeps it.
    */
   rebindGraphFile: (
     from: string,
@@ -3038,6 +3041,11 @@ export const useTabStore = create<TabStoreState>((rawSet, get) => {
               // reason for carrying one is that the next in-place save must
               // write the NEW title rather than the one the file had.
               currentGraphName: to?.name ?? null,
+              // A rename relabels the tab as well: it is an explicit new name
+              // for the graph, like Save As, which replaces the label too --
+              // one the user typed included. A delete keeps the label, and so
+              // does a name that is empty: the graph on screen is unchanged.
+              name: to?.name || tab.name,
             }
           : tab),
     });

@@ -17,7 +17,7 @@ import { graphToSvg, svgToPngBlob } from '../../utils/exportDiagram';
 import { confirm, prompt } from '../../utils/dialog';
 import { saveActiveGraph } from '../../utils/saveActiveGraph';
 import { exportWorkspace } from '../../utils/exportWorkspace';
-import { exportFileStem, exportFileStemNow } from '../../utils/exportFileName';
+import { exportTarget, exportFileStemNow, nameTabAfterExport } from '../../utils/exportFileName';
 import { dismissValidationToasts, showGraphRefusal } from '../../utils/validationToasts';
 import { SaveIcon } from '../shared/Icons';
 import { useToastStore } from '../../store/toastStore';
@@ -404,26 +404,32 @@ export function Toolbar() {
       addToast(t('toolbar.exportJson.empty'), 'warning');
       return;
     }
-    const name = activeTab.name || 'graph';
-    const data = {
-      name, description: activeTab.description ?? '', nodes, edges, presets, segmentGroups, subgraphs,
-      // Only when the graph assigns a device, so an unassigned export stays
-      // byte-identical.
-      ...(settings ? { settings } : {}),
-    };
-    const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
-    // exportFileStem: a saved graph downloads under its own file's name; a
-    // tab not saved yet is asked for one first, and Cancel downloads nothing.
-    // The tab is read from the store, not from this render: a save binds it
-    // without changing anything this callback is rebuilt on.
-    void exportFileStem(useTabStore.getState().getActiveTab(), 'json').then((stem) => {
-      if (stem === null) return;
+    // exportTarget: a saved graph downloads under its own file's name and
+    // keeps its saved title inside; a tab not saved yet is asked for a name
+    // first, which names the file and the graph in it, and Cancel downloads
+    // nothing. The graph is the one serialized above, at the click. The tab
+    // is read from the store, not from this render: a save binds it without
+    // changing anything this callback is rebuilt on.
+    const tab = useTabStore.getState().getActiveTab();
+    void exportTarget(tab, 'json').then((target) => {
+      if (target === null) return;
+      const { stem, name } = target;
+      const data = {
+        name, description: activeTab.description ?? '', nodes, edges, presets, segmentGroups, subgraphs,
+        // Only when the graph assigns a device, so an unassigned export stays
+        // byte-identical.
+        ...(settings ? { settings } : {}),
+      };
+      const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
       a.download = `${stem}.json`;
       a.click();
       URL.revokeObjectURL(url);
+      // The name exportTarget asked for is the tab's now that the file is
+      // downloading.
+      nameTabAfterExport(tab.id, target);
     });
   }, [getSerializedGraph, activeTab.name, activeTab.description, t, addToast]);
 
@@ -509,14 +515,15 @@ export function Toolbar() {
       addToast(t('toolbar.exportPython.empty'), 'warning');
       return;
     }
-    // exportFileStem: a saved graph downloads under its own file's name; a
-    // tab not saved yet is asked for one first. Asked before the request, so
+    // exportTarget: a saved graph downloads under its own file's name and the
+    // script names the graph by its saved title; a tab not saved yet is asked
+    // for a name first, which names both. Asked before the request, so
     // Cancel sends nothing. The tab is read from the store, not from this
     // render: a save binds it without changing anything this callback is
     // rebuilt on.
-    const stem = await exportFileStem(useTabStore.getState().getActiveTab(), 'py');
-    if (stem === null) return;
-    const name = activeTab.name || 'graph';
+    const target = await exportTarget(useTabStore.getState().getActiveTab(), 'py');
+    if (target === null) return;
+    const { stem, name } = target;
     const tabId = activeTab.id;
     let result: ExportResult;
     try {
@@ -541,7 +548,7 @@ export function Toolbar() {
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
-      // The name exportFileStem settled on before the request went out.
+      // The name exportTarget settled on before the request went out.
       a.download = `${stem}.py`;
       a.click();
       URL.revokeObjectURL(url);
@@ -557,6 +564,9 @@ export function Toolbar() {
       );
       return;
     }
+    // The name exportTarget asked for is the tab's now that the script is
+    // downloading; a refused export (above) renames nothing.
+    nameTabAfterExport(tabId, target);
     // The path warning (#557), outside the try: the script has downloaded,
     // and nothing about the warning may report it as a failure. It comes
     // after the download, never instead of it -- an absolute path is right
