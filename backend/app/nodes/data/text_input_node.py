@@ -44,7 +44,9 @@ class TextInputNode(BaseNode):
             ParamDefinition(
                 name="value",
                 param_type=ParamType.STRING,
-                default="The quick brown fox jumps over the lazy dog.",
+                # Empty, not an example: a dropped node starts at this value
+                # and typing adds to it. The example is the placeholder.
+                default="",
                 description=(
                     "Multi-line text. Drag the bottom-right corner of the "
                     "textarea on the node body to resize."

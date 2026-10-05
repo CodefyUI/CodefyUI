@@ -723,7 +723,7 @@ const zhTW: Record<TranslationKey, string> = {
   'heatmap.loadError': '無法載入：{error}',
   'heatmap.loadErrorHint': '請重新執行圖，或縮短輸入序列。',
   'heatmap.rowNormalised': '色階以列為單位正規化',
-  'textInput.placeholder': '在此輸入文字…',
+  'textInput.placeholder': '例如：The quick brown fox jumps over the lazy dog.',
   'textInput.charCount': '{count} 字元',
 
   // Misc — 結果面板收合 / 空畫布節點數 / 下載錯誤 / Start 節點 /

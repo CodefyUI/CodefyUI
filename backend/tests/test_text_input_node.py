@@ -37,3 +37,16 @@ def test_missing_value_falls_back_to_empty():
 def test_non_string_value_is_coerced():
     res = TextInputNode().execute({}, {"value": 42})
     assert res == {"text": "42"}
+
+
+def test_fresh_node_starts_empty():
+    """A dropped TextInput holds no text until the learner types some.
+
+    The canvas starts a dropped node with every param at its declared
+    default. A sentence there became the start of whatever the learner
+    typed, and the run used both. The example sentence is the textarea's
+    placeholder instead, which is never part of the value.
+    """
+    dropped = {p.name: p.default for p in TextInputNode.define_params()}
+    assert dropped == {"value": ""}
+    assert TextInputNode().execute({}, dropped) == {"text": ""}
