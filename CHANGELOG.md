@@ -22,6 +22,152 @@ received — each links to the release it was published as.
 
 ## [Unreleased]
 
+## [2.8.9] — 2026-10-05
+
+This release makes the canvas show the numbers the exported Python script
+prints, which is what a graded exam compares. The Random seed is now saved in
+the graph file and comes back on Open and Import, and a tab that Import opens
+keeps the seed of the tab you were on. **Persist weights between runs** now
+defaults to off, so every Run trains from a fresh model, as the script does.
+Every tab already open in your browser comes back with it off once; if you
+had turned it on on purpose, turn it on again. Cached results are kept per
+seed, a seeded DataLoader shuffles the same way on every Run, and a cached
+dataset augments every Run the way a fresh run does. The edu pack's FFNLayer
+and TrainAndEvaluate give the same numbers on every Run even with no seed set:
+the numbers seed 0 gives.
+
+Typing and editing a graph by hand no longer loses input. Number fields take
+negative and half-typed numbers; in the CF201 rehearsal "-1" was stored as 1,
+and a kernel with negative weights scored 0/25. Ctrl+Z undoes one parameter
+edit and Ctrl+Shift+Z redoes. Ctrl+S saves the graph in every mode, not only
+with a project folder open, and never opens the browser's "Save page as". A
+new TextInput starts empty, node search lists the exact name match first, and
+the Start trigger is easier to grab, connects when dropped anywhere on a card
+and is no longer deleted by a press beside it.
+
+Export Python asks for a file name when the tab was never saved, and that
+name becomes the name of the file, the graph inside it and the tab. A saved
+graph exports under its saved name without asking. An exported script loads
+the bundled plugin packs it needs by itself, and a parameter a graph file
+leaves out runs at the node's declared default on the canvas, in `cdui run`
+and in the script alike. When Run or Export refuses a graph, the toasts are in
+your language, name the node by its title and select it with **Show**. A
+trigger wired into a preset card now runs the card.
+
+Two changes affect installs. The installers and `cdui update` stop with a
+message when they cannot find the latest release, instead of installing
+`main`; `CODEFYUI_RELEASE_TAG=<tag>` and `CODEFYUI_FORCE_BUILD=1` choose
+explicitly. Presets made with Export as Subgraph are saved to
+`backend/data/presets/` (`CODEFYUI_USER_PRESETS_DIR` moves it), outside the
+code folder that `cdui update` checks out; presets older versions exported
+into `backend/app/presets/` still load.
+
+### Added
+
+- **The welcome screen can open a saved graph or import a file**
+  ([#615]). With no tab open it offers New blank graph, Open a saved
+  graph, Import... and Browse all templates.
+- **Validation errors name the node in your language and jump to it**
+  ([#591]). Run and Export as Python refusals show the node's card title and a
+  **Show** button, and the next Run replaces the toasts instead of stacking
+  them. `POST /api/graph/validate` also returns `issues` beside `errors`.
+
+### Changed
+
+- **Persist weights between runs is off by default** ([#583]). Every tab
+  already open comes back off once; while it is on, the run log says the
+  results may include training from earlier runs.
+- **The Random seed is saved in the graph file** ([#582]). Save writes
+  `settings.seed`, Open and Import restore it, and a new tab starts with the
+  seed of the tab you were on.
+- **Export as Python and Export as JSON ask for a file name when the tab was
+  never saved** ([#584]). A saved graph downloads under its saved file name
+  with no question, and Save As renames the tab to the name typed.
+- **One name for a graph, its tab and its exports** ([#617]). The name
+  typed at export goes into the file (`GRAPH_NAME`, `"name"`) and onto the
+  tab, a rename in the Graphs panel relabels open tabs, and Save As opens with
+  the name filled in.
+- **Ctrl+S saves the graph in every mode** ([#607]). It works without a
+  project folder and from a parameter field, does nothing while a dialog is
+  open, and never opens the browser's "Save page as".
+- **The installers stop instead of installing `main` when no release is
+  found** ([#580]). They try the GitHub API, then the release page; a tag in
+  `CODEFYUI_RELEASE_TAG` is always installed, and `CODEFYUI_FORCE_BUILD=1`
+  installs `main` on purpose.
+- **Exported presets are saved to `backend/data/presets/`** ([#613]).
+  `CODEFYUI_USER_PRESETS_DIR` moves the folder; presets older versions wrote
+  into `backend/app/presets/` still load.
+- **A new TextInput starts empty** ([#576]). The example sentence is now the
+  grey hint; a TextInput already on a canvas or in a file keeps its text.
+- **Node search lists the exact name match first** ([#578]). The Nodes tab and
+  quick search rank names before descriptions, and the Chinese UI also
+  searches the Chinese descriptions.
+
+### Fixed
+
+- **Number fields accept negative and half-typed numbers** ([#575]). "-1" in a
+  parameter, a kernel cell or a layer parameter was stored as 1, and a cleared
+  field no longer stores NaN.
+- **Ctrl+Z undoes one parameter edit, and Ctrl+Shift+Z redoes** ([#581]).
+  Typing into one node is one undo step, and the shortcuts work with Caps Lock
+  on.
+- **The Start trigger is easier to grab and connects when dropped anywhere on
+  a card** ([#579]). A second drop on a card Start already triggers adds no
+  duplicate wire.
+- **A press beside the Start diamond no longer deletes the entry point**
+  ([#614]). Wires are picked up only by their target end, and a moved
+  trigger wire released on another card moves to that card.
+- **A trigger wired into a preset card runs the card, on the canvas and in
+  Export Python** ([#585]). A card with nothing to start, or an edge on a port
+  the card does not expose, is refused with one sentence.
+- **A trigger into an empty block is refused, naming the block**
+  ([#610]). An exported script that needs an installed but disabled
+  third-party plugin says to enable it rather than install it.
+- **A seeded run shows the numbers its exported script prints** ([#586]).
+  Rerunning an edu MLP no longer trains the already-trained layers again, and
+  cached results are kept per seed.
+- **A seeded DataLoader shuffles the same way on every Run** ([#589]). It now
+  shows Completed instead of Cached on later Runs.
+- **A cached dataset augments every seeded Run the way a fresh run does**
+  ([#612]). RandomCrop and the other augmentations give Run 2 and later
+  the numbers of Run 1 and the script; DatasetBatch is no longer cached.
+- **A parameter left out of a graph file runs as its declared default
+  everywhere** ([#587]). The canvas, `cdui run`, the API, apps and exported
+  scripts agree; DataMixDataset's `weights` default is now empty (equal
+  weights).
+- **ModelLoader and CheckpointLoader with no file chosen say so** ([#587]).
+  They no longer load a stray `model_weights.pt` or `checkpoint.pt`.
+- **An exported script loads the bundled plugin packs it needs by itself**
+  ([#588]). A bare `python <file>.py` runs edu, foundations, deep, stats and
+  rl nodes; a pack that is missing is named with its install command.
+- **Export as Subgraph leaves out Start, its trigger wires and notes**
+  ([#613]). A preset made from a canvas with Start runs, a canvas with
+  notes exports instead of failing with 500, and plugin presets stay in the
+  palette.
+- **Graphs open into the empty tab, framed** ([#615]). A saved graph
+  clicked in the Graphs panel fills an empty tab, a starter never replaces a
+  graph, and a graph opened while the config panel is open fits the canvas.
+- **Closing an unchanged tab no longer warns "This cannot be undone"**
+  ([#616]). A tab that matches the file it was opened from or saved to,
+  or was only run, closes without asking.
+- **The run log keeps Print's line breaks and spacing** ([#577]). DataFrames
+  and padded tables show line by line.
+- **Text printed inside a preset card or a block shows in the Execution Log**
+  ([#611]). The line is tagged with the box and is the text the exported
+  script prints.
+- **The Inspector says "No value this run" for a port a node left empty**
+  ([#608]). Such a port answers 204 instead of 404 and no longer reads
+  "Run data expired"; Start's trigger output is no longer listed.
+- **The zh-TW run log, node formulas and dialog messages read properly**
+  ([#609]). The log's status lines are in Chinese, formulas are typeset
+  in the palette and quick search, and Chinese text is no longer slanted.
+- **The SequentialModel card shows its layer count again** ([#606]).
+
+### Internal
+
+- **A backend test no longer writes `cap-probe.json` into the real graphs
+  folder** ([#605]).
+
 ## [2.8.8] — 2026-10-04
 
 This release closes the places where a student could lose work, get stuck or
@@ -5180,7 +5326,37 @@ Release candidates before 1.0.0 are on the
 [#559]: https://github.com/CodefyUI/CodefyUI/issues/559
 [#560]: https://github.com/CodefyUI/CodefyUI/issues/560
 [#561]: https://github.com/CodefyUI/CodefyUI/issues/561
-[Unreleased]: https://github.com/CodefyUI/CodefyUI/compare/2.8.8...main
+[#575]: https://github.com/CodefyUI/CodefyUI/issues/575
+[#576]: https://github.com/CodefyUI/CodefyUI/issues/576
+[#577]: https://github.com/CodefyUI/CodefyUI/issues/577
+[#578]: https://github.com/CodefyUI/CodefyUI/issues/578
+[#579]: https://github.com/CodefyUI/CodefyUI/issues/579
+[#580]: https://github.com/CodefyUI/CodefyUI/issues/580
+[#581]: https://github.com/CodefyUI/CodefyUI/issues/581
+[#582]: https://github.com/CodefyUI/CodefyUI/issues/582
+[#583]: https://github.com/CodefyUI/CodefyUI/issues/583
+[#584]: https://github.com/CodefyUI/CodefyUI/issues/584
+[#585]: https://github.com/CodefyUI/CodefyUI/issues/585
+[#586]: https://github.com/CodefyUI/CodefyUI/issues/586
+[#587]: https://github.com/CodefyUI/CodefyUI/issues/587
+[#588]: https://github.com/CodefyUI/CodefyUI/issues/588
+[#589]: https://github.com/CodefyUI/CodefyUI/issues/589
+[#591]: https://github.com/CodefyUI/CodefyUI/issues/591
+[#607]: https://github.com/CodefyUI/CodefyUI/issues/607
+[#613]: https://github.com/CodefyUI/CodefyUI/issues/613
+[#614]: https://github.com/CodefyUI/CodefyUI/issues/614
+[#606]: https://github.com/CodefyUI/CodefyUI/issues/606
+[#611]: https://github.com/CodefyUI/CodefyUI/issues/611
+[#615]: https://github.com/CodefyUI/CodefyUI/issues/615
+[#608]: https://github.com/CodefyUI/CodefyUI/issues/608
+[#612]: https://github.com/CodefyUI/CodefyUI/issues/612
+[#616]: https://github.com/CodefyUI/CodefyUI/issues/616
+[#605]: https://github.com/CodefyUI/CodefyUI/issues/605
+[#609]: https://github.com/CodefyUI/CodefyUI/issues/609
+[#617]: https://github.com/CodefyUI/CodefyUI/issues/617
+[#610]: https://github.com/CodefyUI/CodefyUI/issues/610
+[Unreleased]: https://github.com/CodefyUI/CodefyUI/compare/2.8.9...main
+[2.8.9]: https://github.com/CodefyUI/CodefyUI/compare/2.8.8...2.8.9
 [2.8.8]: https://github.com/CodefyUI/CodefyUI/compare/2.8.7...2.8.8
 [2.8.7]: https://github.com/CodefyUI/CodefyUI/compare/2.8.6...2.8.7
 [2.8.6]: https://github.com/CodefyUI/CodefyUI/compare/2.8.5...2.8.6
