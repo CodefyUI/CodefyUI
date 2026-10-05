@@ -201,10 +201,17 @@ class CheckpointLoaderNode(BaseNode):
         from ...core.checkpoints import resolve_checkpoint_path
         from ...core.device_utils import is_mps_device, resolve_node_device, to_device
 
+        path = params.get("path", "")
+        if not str(path or "").strip():
+            # "" would resolve to MODELS_DIR itself and fail as a directory.
+            raise ValueError(
+                "CheckpointLoader has no file selected. Pick one from the "
+                "`path` dropdown, or use the upload button next to it to add "
+                "a checkpoint file."
+            )
         model = inputs["model"]
         optimizer = inputs["optimizer"]
         lr_scheduler = inputs.get("lr_scheduler")
-        path = params.get("path", "checkpoint.pt")
         device = resolve_node_device(params.get("device"), context)
 
         # Same rules as the saver: relative to MODELS_DIR, never outside the

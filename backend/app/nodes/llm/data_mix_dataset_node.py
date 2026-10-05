@@ -94,12 +94,15 @@ class DataMixDatasetNode(BaseNode):
             ParamDefinition(
                 name="weights",
                 param_type=ParamType.STRING,
-                default="0.5, 0.5",
+                # Empty, not "0.5, 0.5": a left-out param runs as its default,
+                # and two weights refuse every mix of three or more sources.
+                default="",
                 description=(
                     "Comma-separated draw weights, one per source "
-                    "(normalized; interleave mode only). A source that "
-                    "empties stops being drawn and the rest renormalize — "
-                    "the tail of the mixture is whatever corpora remain."
+                    "(normalized; interleave mode only). Empty: equal "
+                    "weights. A source that empties stops being drawn and "
+                    "the rest renormalize — the tail of the mixture is "
+                    "whatever corpora remain."
                 ),
             ),
             ParamDefinition(
