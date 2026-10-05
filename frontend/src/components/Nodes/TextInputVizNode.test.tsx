@@ -4,6 +4,7 @@ import { renderWithFlow } from '../../test/utils';
 import { useI18n } from '../../i18n';
 import { useTabStore } from '../../store/tabStore';
 import type { NodeData, NodeDefinition } from '../../types';
+import { buildFlowNode } from '../../utils';
 import TextInputVizNode from './TextInputVizNode';
 
 const flowProps = {
@@ -25,6 +26,37 @@ function def(): NodeDefinition {
     inputs: [],
     outputs: [{ name: 'text', data_type: 'STRING', description: '', optional: false }],
     params: [],
+  };
+}
+
+/** TextInput as `/api/nodes` serves it: what a palette drop builds the node from. */
+function servedDefinition(): NodeDefinition {
+  return {
+    node_name: 'TextInput',
+    category: 'Data',
+    description: 'Type a string and send it to any STRING input port',
+    details: '',
+    inputs: [],
+    outputs: [
+      { name: 'text', data_type: 'STRING', description: 'The text value typed into this node.', optional: false },
+    ],
+    params: [
+      {
+        name: 'value',
+        param_type: 'string',
+        default: '',
+        description:
+          'Multi-line text. Drag the bottom-right corner of the textarea on the node body to resize.',
+        options: [],
+        min_value: null,
+        max_value: null,
+        visible_when: null,
+        advanced: false,
+        option_packs: null,
+      },
+    ],
+    provider: 'builtin',
+    requires_pack: null,
   };
 }
 
@@ -100,5 +132,34 @@ describe('TextInputVizNode', () => {
     renderNode(data({ params: {} }));
     const ta = document.querySelector('textarea') as HTMLTextAreaElement;
     expect(ta.getAttribute('placeholder')).toBe(useI18n.getState().t('textInput.placeholder'));
+  });
+
+  // A dropped TextInput starts empty (its definition's default is ""), so the
+  // example sentence is only ever the grey hint, never text that the learner's
+  // typing lands after. The "e.g." keeps the hint from reading as content.
+  it.each([
+    ['en', 'e.g. The quick brown fox jumps over the lazy dog.'],
+    ['zh-TW', '例如：The quick brown fox jumps over the lazy dog.'],
+  ] as const)('starts empty, with the example sentence as a hint (%s)', (locale, hint) => {
+    useI18n.setState({ locale });
+    renderNode(data({ params: {} }));
+    const ta = document.querySelector('textarea') as HTMLTextAreaElement;
+    expect(ta.value).toBe('');
+    expect(ta.placeholder).toBe(hint);
+  });
+
+  // A palette drop starts every param at its definition's default
+  // (buildFlowNode), which is how the old example default reached the box.
+  it('a TextInput dropped from its definition holds only what the learner types', () => {
+    const node = buildFlowNode(servedDefinition(), { x: 0, y: 0 });
+    expect(node.type).toBe('textInputNode');
+    expect(node.data.params).toEqual({ value: '' });
+
+    renderNode(node.data, node.id);
+    const ta = document.querySelector('textarea') as HTMLTextAreaElement;
+    expect(ta.value).toBe('');
+    // Typed text lands after whatever the box already holds.
+    fireEvent.change(ta, { target: { value: `${ta.value}hi` } });
+    expect(captured).toEqual({ id: node.id, params: { value: 'hi' } });
   });
 });

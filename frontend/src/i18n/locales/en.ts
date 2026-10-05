@@ -824,7 +824,7 @@ const en = {
   'heatmap.loadError': "Couldn't load: {error}",
   'heatmap.loadErrorHint': 'Re-run the graph, or shorten the input sequence.',
   'heatmap.rowNormalised': 'row-normalised colours',
-  'textInput.placeholder': 'Type text here…',
+  'textInput.placeholder': 'e.g. The quick brown fox jumps over the lazy dog.',
   'textInput.charCount': '{count} chars',
 
   // Misc strings extracted to translate UI surfaces that previously had
