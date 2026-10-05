@@ -4,7 +4,8 @@ import { usePluginStore } from '../../store/pluginStore';
 import { useTabStore } from '../../store/tabStore';
 import { useI18n } from '../../i18n';
 import { CATEGORY_COLORS } from '../../styles/theme';
-import { pluginNameOf, type PluginIndex } from '../../utils/provider';
+import { nodeSearchTexts, presetSearchTexts, rankMatches } from '../../utils/nodeSearch';
+import type { PluginIndex } from '../../utils/provider';
 import { isCompletePreset } from '../../utils/presetOwnership';
 import type { NodeDefinition, PresetDefinition } from '../../types';
 import styles from './QuickNodeSearch.module.css';
@@ -38,49 +39,44 @@ export function QuickNodeSearch({ screenPos, flowPos, onClose }: QuickNodeSearch
   const addPresetNode = useTabStore((s) => s.addPresetNode);
   const { t, tn } = useI18n();
 
-  // Filter results
+  // Filter and rank results
   const results: SearchResult[] = (() => {
     const q = query.toLowerCase().trim();
     const items: SearchResult[] = [];
 
-    for (const def of definitions) {
-      // The same four fields the palette search matches. The plugin's id
-      // already matches through the qualified node name (`edu:FilterRows`);
-      // what the last one adds is its display name, which is how the Plugin
-      // Center names it and appears in no field of a definition.
-      //
-      // `details` counts because the summary above it is one line now: the
-      // library a node wraps, its caveats and its formula all live down there,
-      // and a search for "sklearn" that stopped matching them would have made
-      // the summaries shorter by making the nodes harder to find.
-      if (
-        !q ||
-        def.node_name.toLowerCase().includes(q) ||
-        def.description.toLowerCase().includes(q) ||
-        (def.details?.toLowerCase().includes(q) ?? false) ||
-        (pluginNameOf(pluginsById, def.provider)?.toLowerCase().includes(q) ?? false)
-      ) {
-        items.push({ kind: 'node', def });
-      }
-    }
+    for (const def of definitions) items.push({ kind: 'node', def });
     for (const preset of presets) {
       // Only complete presets, as in the palette: their fields are read below.
-      if (!isCompletePreset(preset)) continue;
-      if (!q || preset.preset_name.toLowerCase().includes(q) || preset.description.toLowerCase().includes(q)) {
-        items.push({ kind: 'preset', preset });
-      }
+      if (isCompletePreset(preset)) items.push({ kind: 'preset', preset });
     }
 
-    // Boost: Start node ranks first when query is empty or matches "start"
-    if (!q || 'start'.includes(q)) {
-      items.sort((a, b) => {
-        const aIsStart = a.kind === 'node' && a.def.node_name === 'Start';
-        const bIsStart = b.kind === 'node' && b.def.node_name === 'Start';
-        if (aIsStart && !bIsStart) return -1;
-        if (!aIsStart && bIsStart) return 1;
-        return 0;
-      });
+    if (q) {
+      // The palette's fields and ranking (nodeSearch.ts), applied BEFORE the
+      // cap: cutting first let a query that a few dozen descriptions answer
+      // drop the node named exactly that. Nodes stand before presets in
+      // `items`, so a node wins a tie, as it did when the list was unranked.
+      return rankMatches(
+        items,
+        (r) => (r.kind === 'node' ? r.def.node_name : r.preset.preset_name),
+        (r) =>
+          r.kind === 'node'
+            ? nodeSearchTexts(r.def, pluginsById, tn)
+            : presetSearchTexts(r.preset),
+        q,
+      )
+        .slice(0, 20)
+        .map((match) => match.item);
     }
+
+    // Empty box: Start first, then the catalog. A query is ranked instead,
+    // where "start" and "st" reach Start as an exact and a prefix match.
+    items.sort((a, b) => {
+      const aIsStart = a.kind === 'node' && a.def.node_name === 'Start';
+      const bIsStart = b.kind === 'node' && b.def.node_name === 'Start';
+      if (aIsStart && !bIsStart) return -1;
+      if (!aIsStart && bIsStart) return 1;
+      return 0;
+    });
 
     return items.slice(0, 20);
   })();
