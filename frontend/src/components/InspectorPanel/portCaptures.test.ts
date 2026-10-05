@@ -1,6 +1,13 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { renderHook, waitFor } from '@testing-library/react';
 import type { Edge, Node } from '@xyflow/react';
 import type { ExecutionStatus, NodeData, NodeDefinition } from '../../types';
+import {
+  fetchOutput,
+  NoValueError,
+  RunDataExpiredError,
+} from '../../api/executionOutputs';
+import { keyOf } from './PortGroup';
 import {
   capturePhase,
   capturePhaseNoteKey,
@@ -8,7 +15,15 @@ import {
   resolveInputSources,
   resolveSingleNodePorts,
   takeDuePorts,
+  usePortFetches,
 } from './portCaptures';
+
+vi.mock('../../api/executionOutputs', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../api/executionOutputs')>();
+  return { ...actual, fetchOutput: vi.fn() };
+});
+
+const mockOutput = vi.mocked(fetchOutput);
 
 function def(outputs: { name: string; data_type: string }[]): NodeDefinition {
   return {
@@ -110,6 +125,72 @@ describe('resolveSingleNodePorts', () => {
   it('treats a node with no definition as having no outputs', () => {
     const nodes = [node('n1')];
     expect(resolveSingleNodePorts('n1', nodes, [])).toEqual({ inputs: [], outputs: [] });
+  });
+
+  it('leaves out a trigger output, which has no value behind it', () => {
+    // Start returns nothing for `trigger`, so a request for it could only 404.
+    const nodes = [
+      node('start', { definition: def([{ name: 'trigger', data_type: 'TRIGGER' }]) }),
+    ];
+    expect(resolveSingleNodePorts('start', nodes, [])).toEqual({ inputs: [], outputs: [] });
+  });
+
+  it('keeps the data outputs listed next to a trigger output', () => {
+    const nodes = [
+      node('n1', {
+        definition: def([
+          { name: 'trigger', data_type: 'TRIGGER' },
+          { name: 'out', data_type: 'TENSOR' },
+        ]),
+      }),
+    ];
+    expect(resolveSingleNodePorts('n1', nodes, []).outputs).toEqual([
+      { nodeId: 'n1', port: 'out', dataType: 'TENSOR' },
+    ]);
+  });
+});
+
+// ── A port the node left empty ──────────────────────────────────────────────
+// The server answers 204 when the node ran and returned None for the port
+// (TrainingLoop's grad_scaler_state outside fp16), and `fetchOutput` turns
+// that into NoValueError. The row says so quietly; it is neither an error nor
+// an expired run.
+
+describe('usePortFetches', () => {
+  const PORTS = [{ nodeId: 'train', port: 'grad_scaler_state' }];
+  const KEY = keyOf('train', 'grad_scaler_state');
+
+  beforeEach(() => {
+    mockOutput.mockReset();
+  });
+
+  it('notes a port that produced no value instead of failing it', async () => {
+    mockOutput.mockRejectedValue(new NoValueError('run1', 'train', 'grad_scaler_state'));
+    const { result } = renderHook(() => usePortFetches('run1', PORTS));
+    await waitFor(() =>
+      expect(result.current[KEY]).toEqual({
+        loading: false,
+        error: null,
+        errorKey: null,
+        noteKey: 'inspector.noValue',
+        data: null,
+      }),
+    );
+    expect(mockOutput).toHaveBeenCalledTimes(1);
+  });
+
+  it('still reads a 404 as expired run data', async () => {
+    mockOutput.mockRejectedValue(new RunDataExpiredError('run1'));
+    const { result } = renderHook(() => usePortFetches('run1', PORTS));
+    await waitFor(() =>
+      expect(result.current[KEY]).toMatchObject({
+        loading: false,
+        error: null,
+        errorKey: 'inspector.dataExpired',
+        data: null,
+      }),
+    );
+    expect(result.current[KEY].noteKey).toBeFalsy();
   });
 });
 

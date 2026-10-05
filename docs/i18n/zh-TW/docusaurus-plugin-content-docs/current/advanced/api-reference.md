@@ -84,8 +84,8 @@ Host guard 會在其他所有檢查之前處理每個 request，包括 SPA 頁�
 |----------|--------|------|-------------|
 | `/api/execution/outputs/{run_id}` | GET | open | 列出某次 run 擷取的連接埠。 |
 | `/api/execution/outputs/{run_id}` | DELETE | token | 清除某次擷取的 run。 |
-| `/api/execution/outputs/{run_id}/{node_id}/{port}` | GET | open | 取得一個已擷取的張量（支援 `?slice=0,:,:` 與 `?max_elements=`，預設 4096、上限 1,000,000）；切片仍然過大時回傳 413。 |
-| `/api/execution/outputs/{run_id}/{node_id}/{port}/stats` | GET | open | 回傳單一已擷取 port 的伺服器端摘要統計：固定的一組純量與 64-bin histogram；label tensor 則回傳值計數。無論 tensor 大小，response 通常只有一到兩 KB。超過 `CODEFYUI_STATS_SAMPLE_THRESHOLD`（4,000,000 個元素）的 tensor 會進行取樣。 |
+| `/api/execution/outputs/{run_id}/{node_id}/{port}` | GET | open | 取得一個已擷取的張量（支援 `?slice=0,:,:` 與 `?max_elements=`，預設 4096、上限 1,000,000）；切片仍然過大時回傳 413。節點已執行但這個 port 沒有產生值（`None`）時回傳 204；run 或 port 沒有任何紀錄時回傳 404。 |
+| `/api/execution/outputs/{run_id}/{node_id}/{port}/stats` | GET | open | 回傳單一已擷取 port 的伺服器端摘要統計：固定的一組純量與 64-bin histogram；label tensor 則回傳值計數。無論 tensor 大小，response 通常只有一到兩 KB。超過 `CODEFYUI_STATS_SAMPLE_THRESHOLD`（4,000,000 個元素）的 tensor 會進行取樣。節點已執行但這個 port 沒有產生值（`None`）時回傳 204；run 或 port 沒有任何紀錄時回傳 404。 |
 | `/api/execution/outputs/{run_id}/{node_id}/__steps_index` | GET | open | 某節點的步驟追蹤 metadata（檢視器 → 步驟分頁）。 |
 | `/api/execution/outputs/{run_id}/{node_id}/__grad_index` | GET | open | 已擷取的梯度 metadata（檢視器 → 反向分頁）。 |
 | `/api/execution/state/reset` | POST | token | 重設已保存的層權重（單一節點或單一圖表）。 |

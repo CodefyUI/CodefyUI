@@ -583,6 +583,7 @@ const zhTW: Record<TranslationKey, string> = {
   'inspector.dataExpired': '執行資料已過期 — 重新執行以擷取',
   'inspector.nodeRunning': '節點執行中…',
   'inspector.nodePending': '等待此節點執行…',
+  'inspector.noValue': '這次執行沒有值',
   'inspector.runRunning': '圖表執行中…',
   'inspector.dataExpiredBackward': '執行資料已過期 — 請在設定中開啟「擷取梯度」後重新執行',
   'inspector.tensorExpired': '已過期',

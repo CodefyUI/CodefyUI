@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   fetchPortStats,
+  NoValueError,
   StatsNotCapturedError,
   type PortStats,
   type StatsColumn,
@@ -30,7 +31,10 @@ interface StatsFetchState {
   errorKey: TranslationKey | null;
   /** The server's own message, which has no translation. */
   error: string | null;
-  /** Why there is nothing here yet — see `PortFetchState.noteKey`. */
+  /**
+   * Why there is nothing here, as a neutral line: not yet (see
+   * `PortFetchState.noteKey`), or the node ran and left the port empty.
+   */
   noteKey?: TranslationKey | null;
   data: PortStats | null;
 }
@@ -129,6 +133,18 @@ export function usePortStats(
         } catch (e) {
           // An abort is this component going away, not a failure to report.
           if (controller.signal.aborted) return;
+          // The node ran and the port produced no value. Recording was on,
+          // so the not-captured hint below would point at the wrong switch.
+          if (e instanceof NoValueError) {
+            setStats((prev) => ({
+              ...prev,
+              [key]: {
+                loading: false, errorKey: null, error: null,
+                noteKey: 'inspector.noValue', data: null,
+              },
+            }));
+            return;
+          }
           const captured = e instanceof StatsNotCapturedError;
           setStats((prev) => ({
             ...prev,

@@ -13,6 +13,7 @@ vi.mock('../../api/executionOutputs', async (importOriginal) => {
 
 import {
   fetchPortStats,
+  NoValueError,
   StatsNotCapturedError,
   type PortStats,
 } from '../../api/executionOutputs';
@@ -405,6 +406,36 @@ describe('StatsTab', () => {
     mockStats.mockRejectedValue(new Error('boom'));
     render(<StatsTab ctx={ctx()} />);
     await waitFor(() => expect(screen.getAllByText('boom').length).toBe(2));
+  });
+
+  it('says a port produced no value instead of pointing at Record outputs', async () => {
+    // The server's 204: the node ran and returned None for this port.
+    // Recording was on, so the Record hint would send the user the wrong way.
+    mockStats.mockImplementation(async (_r, nodeId, port) => {
+      if (nodeId === 'n1') throw new NoValueError('run1', nodeId, port);
+      return tensorStats();
+    });
+    render(<StatsTab ctx={ctx()} />);
+    const block = screen.getByTestId('stats-port-n1-out');
+    const note = await within(block).findByText('No value this run');
+    // A quiet note, not an error line.
+    expect(note.className).toMatch(/muted/);
+    expect(screen.queryByText(/Nothing captured for this port/)).toBeNull();
+    // The sibling port is unaffected.
+    await waitFor(() =>
+      expect(within(screen.getByTestId('stats-port-src-out')).getByText('[2, 3]')).toBeInTheDocument(),
+    );
+  });
+
+  it('shows the no-value note in the locale chosen after the fetch', async () => {
+    mockStats.mockRejectedValue(new NoValueError('run1', 'n1', 'out'));
+    render(<StatsTab ctx={ctx()} />);
+    await waitFor(() => expect(screen.getAllByText('No value this run')).toHaveLength(2));
+
+    act(() => useI18n.setState({ locale: 'zh-TW' }));
+
+    expect(screen.getAllByText('這次執行沒有值')).toHaveLength(2);
+    expect(screen.queryByText('No value this run')).toBeNull();
   });
 
   it('aborts the port that left the view, and leaves the one that stayed alone', async () => {
