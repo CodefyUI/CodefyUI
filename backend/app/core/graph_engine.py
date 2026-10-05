@@ -965,6 +965,22 @@ def expand_subgraphs(
                 continue
 
             if is_trigger and touches_target:
+                if not definition.nodes:
+                    # subgraph_triggered_empty (#604): with no node there is
+                    # no target and no root, and the loop below would drop
+                    # the trigger without a word. A non-empty block with no
+                    # root has a loop inside, which validation names instead.
+                    from .validation_issues import validation_issue
+
+                    label = definition.name or sid
+                    raise GraphValidationError(validation_issue(
+                        "subgraph_triggered_empty",
+                        (
+                            f"Node {instance_id} is triggered, but subgraph "
+                            f"'{label}' has no node to start: it has no nodes"
+                        ),
+                        node_id=instance_id, subgraph=label,
+                    ))
                 for position, inner_id in enumerate(trigger_targets):
                     fanned = dict(edge)
                     fanned["id"] = f"{edge.get('id', 'trigger')}#{position}"
@@ -1537,7 +1553,10 @@ def validate_graph(
             # only that: a duplicate set expansion finds but this function did
             # not (ids that come into existence during expansion) still gets
             # reported.
-            message = str(exc)
+            #
+            # args[0], not str(exc): a refusal such as subgraph_triggered_empty
+            # is a ValidationIssue, and str() would drop its code and node.
+            message = exc.args[0] if exc.args and isinstance(exc.args[0], str) else str(exc)
             if message not in errors and message != "; ".join(duplicate_errors):
                 errors.append(message)
 

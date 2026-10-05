@@ -415,6 +415,24 @@ def test_a_triggered_card_with_no_node_to_start(preset, code, reason):
     assert issue.params == {"preset": name}
 
 
+def test_a_triggered_block_with_no_nodes():
+    """Block expansion refuses it, and validation reports the refusal it
+    caught as raised, so the code survives (#604)."""
+    errors = validate_graph(
+        [_node("start", "Start"), _node("b", "subgraph:empty")],
+        [_trigger("start", "b")],
+        subgraphs=[{"id": "empty", "name": "T11 Empty Block",
+                    "nodes": [], "edges": []}],
+    )
+
+    issue = _one(errors, "subgraph_triggered_empty")
+    assert issue == (
+        "Node b is triggered, but subgraph 'T11 Empty Block' has no node to "
+        "start: it has no nodes")
+    assert issue.node_id == "b"
+    assert issue.params == {"subgraph": "T11 Empty Block"}
+
+
 def test_a_trigger_from_a_missing_node_is_about_the_node_it_reaches():
     """The edge is never drawn: React Flow draws no edge whose node is gone,
     so the canvas cannot delete it. The sentence says where it can go."""

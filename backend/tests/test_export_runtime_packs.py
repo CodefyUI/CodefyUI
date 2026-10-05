@@ -6,7 +6,7 @@ grader runs ``python <file>.py`` with an empty one, so a graph that used
 ``edu:FFNLayer`` stopped with "Unknown node type" while the pack sat in this
 installation's ``plugins/`` directory. ``initialize_export_runtime`` loads
 the bundled packs the script names, writes nothing, and names the pack when
-one is not there.
+one is not there or is turned off.
 """
 
 from __future__ import annotations
@@ -191,6 +191,67 @@ def test_a_pack_this_installation_lacks_is_named_with_its_install_command(
         "Unknown node type: ghostpack:Ghost -- it comes from the plugin pack "
         "'ghostpack', which this CodefyUI installation does not have. "
         "Install it with: cdui plugin install ghostpack"
+    ]
+
+
+@pytest.mark.parametrize("linked", [False, True], ids=["downloaded", "linked"])
+def test_a_disabled_pack_installed_here_is_named_with_its_enable_command(
+    builtin_root, user_data_dir, tmp_path, linked,
+):
+    """Installed and turned off: the user needs ``enable``, not ``install``.
+    The pack is not loaded -- unlike a bundled pack, a third-party one may be
+    off because it is broken or untrusted -- and the lockfile is untouched."""
+    plugins = user_data_dir / "plugins"
+    if linked:
+        # `cdui plugin link`: loaded in place from the author's checkout.
+        _write_pack(tmp_path / "checkout", "offpack", TINY_NODE)
+        entry = {"source_kind": "local",
+                 "path": str(tmp_path / "checkout" / "offpack"), "enabled": False}
+    else:
+        _write_pack(plugins, "offpack", TINY_NODE)
+        entry = {"source_kind": "github", "enabled": False}
+    lockfile_path = plugins / "installed.json"
+    lockfile_path.parent.mkdir(parents=True, exist_ok=True)
+    lockfile_path.write_text(
+        json.dumps({"schema": 1, "plugins": {"offpack": entry}}), encoding="utf-8")
+    before = lockfile_path.read_bytes()
+
+    try:
+        problems = runtime_module.initialize_export_runtime(["offpack:Tiny"])
+        loaded = "cdui_plugins.offpack" in sys.modules
+    finally:
+        # Only a regression loads it, and then it must not outlive this test.
+        plugin_loader.purge_plugin_modules("offpack")
+        namespace = sys.modules.get(plugin_loader.NAMESPACE_PACKAGE)
+        if namespace is not None:
+            vars(namespace).pop("offpack", None)
+
+    assert problems == [
+        "Unknown node type: offpack:Tiny -- it comes from the plugin pack "
+        "'offpack', which is installed here but disabled. Enable it with: "
+        "cdui plugin enable offpack"
+    ]
+    assert not loaded, "the disabled pack was loaded"
+    assert lockfile_path.read_bytes() == before
+
+
+def test_a_bundled_pack_the_lockfile_turns_off_is_never_sent_to_enable(
+    builtin_root, user_data_dir,
+):
+    """A bundled pack loads whatever the lockfile says, so enabling it would
+    change nothing: when it loads no node, its line says that instead."""
+    _write_pack(builtin_root, "brokenpack", BROKEN_NODE)
+    lockfile_path = user_data_dir / "plugins" / "installed.json"
+    lockfile_path.parent.mkdir(parents=True)
+    lockfile_path.write_text(json.dumps({"schema": 1, "plugins": {
+        "brokenpack": {"source_kind": "builtin", "enabled": False}}}),
+        encoding="utf-8")
+
+    problems = runtime_module.initialize_export_runtime(["brokenpack:Thing"])
+
+    assert problems == [
+        "Unknown node type: brokenpack:Thing -- the plugin pack 'brokenpack' "
+        "ships with this CodefyUI but none of its nodes could be loaded"
     ]
 
 

@@ -127,6 +127,7 @@ describe('issueText', () => {
     issue('trigger_source_missing', ENC, { source: GONE }),
     issue('trigger_target_missing', START, { target: GONE }),
     issue('no_entry_points', null, {}),
+    issue('subgraph_triggered_empty', BLOCK, { subgraph: 'Nothing Inside' }),
   ];
 
   it.each(['en', 'zh-TW'] as const)(
@@ -175,6 +176,17 @@ describe('issueText', () => {
       issueText(issue('param_not_number', ENC, { param: 'p', value: null }), NODES, t),
     ).toBe('Encoder: "p" must be a number (got null)');
     expect(issueText(BY_CODE[3], NODES, t)).toBe('Encoder: "p" is -0.5, below the minimum 0');
+  });
+
+  it('names the block a trigger finds empty by its title, also one nested in it', () => {
+    const empty = issue('subgraph_triggered_empty', BLOCK, { subgraph: 'Nothing Inside' });
+    // An empty block inside the block on the canvas: the canvas shows the outer one.
+    const nested = issue('subgraph_triggered_empty', `${BLOCK}/inner`, { subgraph: 'Nothing Inside' });
+
+    expect(issueText(empty, NODES, t)).toBe('Feature block is triggered, but the block has no nodes');
+    useI18n.setState({ locale: 'zh-TW' });
+    expect(issueText(empty, NODES, t)).toBe('「Feature block」收到 trigger，但這個區塊裡沒有節點');
+    expect(issueText(nested, NODES, t)).toBe('「Feature block」收到 trigger，但這個區塊裡沒有節點');
   });
 
   it('names a node inside a block or a card by the container the canvas shows', () => {
@@ -297,6 +309,14 @@ describe('showValidationIssues', () => {
     expect(tab.selectedNodeId).toBe(DEC);
     expect(tab.nodes.filter((n) => n.selected).map((n) => n.id)).toEqual([DEC]);
     expect(useUIStore.getState().layoutFitRequest?.bounds).toMatchObject({ x: 400, y: 200 });
+  });
+
+  it('Show on an empty block a trigger reaches selects that block', () => {
+    showValidationIssues('A', [issue('subgraph_triggered_empty', BLOCK, { subgraph: 'Nothing Inside' })]);
+
+    toasts()[0].action!.onClick();
+
+    expect(useTabStore.getState().tabs[0].selectedNodeId).toBe(BLOCK);
   });
 
   it('Show on a node inside a block frames the block', () => {

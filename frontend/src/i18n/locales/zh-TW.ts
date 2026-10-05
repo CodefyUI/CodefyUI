@@ -502,6 +502,7 @@ const zhTW: Record<TranslationKey, string> = {
   'graphValidation.preset_output_not_exposed': '「{node}」沒有輸出「{port}」：預設模組「{preset}」沒有暴露這個連接埠',
   'graphValidation.preset_triggered_empty': '「{node}」收到 trigger，但預設模組「{preset}」裡沒有節點',
   'graphValidation.preset_triggered_all_fed': '「{node}」收到 trigger，但預設模組「{preset}」裡每個節點都由其他節點供給資料，沒有節點能開始',
+  'graphValidation.subgraph_triggered_empty': '「{node}」收到 trigger，但這個區塊裡沒有節點',
   'graphValidation.trigger_source_missing': '連到「{node}」的 trigger 連線來自不在圖中的節點「{source}」，請從圖檔中移除這條線。',
   'graphValidation.trigger_target_missing': '從「{node}」拉出的 trigger 連線接到不在圖中的節點「{target}」，請從圖檔中移除這條線。',
 
