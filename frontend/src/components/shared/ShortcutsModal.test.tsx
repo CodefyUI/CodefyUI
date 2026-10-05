@@ -23,10 +23,10 @@ describe('ShortcutsModal', () => {
     useUIStore.setState({ shortcutsModalOpen: true });
     render(<ShortcutsModal />);
     expect(screen.getByText(useI18n.getState().t('shortcuts.title'))).toBeTruthy();
-    // 12 shortcut rows → 12 <kbd> elements. (core#128 added the bypass row
+    // 13 shortcut rows → 13 <kbd> elements. (core#128 added the bypass row
     // and the unconditional sidebar chord alongside the context-sensitive one;
-    // the Source Control commit chord is the twelfth.)
-    expect(document.querySelectorAll('kbd').length).toBe(12);
+    // the Source Control commit chord is the twelfth, Save the thirteenth.)
+    expect(document.querySelectorAll('kbd').length).toBe(13);
     // A platform-prefixed combo is present (Cmd+Z or Ctrl+Z).
     expect(screen.getByText(/(Cmd|Ctrl)\+Z$/)).toBeTruthy();
     expect(screen.getByText('Delete')).toBeTruthy();
@@ -57,6 +57,15 @@ describe('ShortcutsModal', () => {
     expect(
       screen.getByText(useI18n.getState().t('shortcuts.commit')),
     ).toBeTruthy();
+  });
+
+  // Ctrl+S saves in every mode, so the sheet lists it. The literal text, not
+  // `t(...)`: a missing key would render as the key itself and still match.
+  it('lists Ctrl+S as Save graph', () => {
+    useUIStore.setState({ shortcutsModalOpen: true });
+    render(<ShortcutsModal />);
+    const keys = screen.getByText(/^(Cmd|Ctrl)\+S$/);
+    expect(keys.parentElement?.textContent).toMatch(/^(Cmd|Ctrl)\+SSave graph$/);
   });
 
   it('clicking the overlay toggles (closes) the modal', () => {

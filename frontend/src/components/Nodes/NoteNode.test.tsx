@@ -1,10 +1,14 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { screen, fireEvent, waitFor, act } from '@testing-library/react';
+import { screen, fireEvent, waitFor, act, renderHook } from '@testing-library/react';
 import { renderWithFlow } from '../../test/utils';
 import { useI18n } from '../../i18n';
 import { useTabStore } from '../../store/tabStore';
+import { useKeyboardShortcuts } from '../../hooks/useKeyboardShortcuts';
+import { saveActiveGraph } from '../../utils/saveActiveGraph';
 import type { NodeData } from '../../types';
 import NoteNode from './NoteNode';
+
+vi.mock('../../utils/saveActiveGraph', () => ({ saveActiveGraph: vi.fn() }));
 
 const flowProps = {
   zIndex: 0,
@@ -221,6 +225,51 @@ describe('NoteNode', () => {
     const content = container.querySelector('[class*="textContent"]') as HTMLElement;
     fireEvent.doubleClick(note);
     fireEvent.keyDown(content, { key: 'a' });
+    expect(note.className).toMatch(/editing/);
+  });
+
+  it('Ctrl+S while editing leaves the note and saves the graph with its text', () => {
+    // The text reaches the store only on blur, so the note is left first and
+    // the key then goes on to the shortcut handler, which saves.
+    let savedWith: typeof lastUpdate = null;
+    vi.mocked(saveActiveGraph).mockReset().mockImplementation(async () => {
+      savedWith = lastUpdate;
+    });
+    renderHook(() => useKeyboardShortcuts());
+    const { container } = renderNote(noteData());
+    const note = container.querySelector('[class*="note"]') as HTMLElement;
+    const content = container.querySelector('[class*="textContent"]') as HTMLElement;
+    fireEvent.doubleClick(note);
+    act(() => {
+      vi.runAllTimers(); // the rAF that focuses the text
+    });
+    content.innerText = 'typed, then saved';
+    fireEvent.input(content);
+    // `false`: the browser's own default ("Save page as") was prevented.
+    expect(fireEvent.keyDown(content, { key: 's', ctrlKey: true })).toBe(false);
+    expect(saveActiveGraph).toHaveBeenCalledTimes(1);
+    expect(savedWith).toEqual({ id: 'note1', updates: { noteContent: 'typed, then saved' } });
+    expect(note.className).not.toMatch(/editing/);
+  });
+
+  it('every other key stays inside the note while it is edited', () => {
+    // Delete would delete the card and Ctrl+Z undo the canvas; Ctrl+Shift+S
+    // is not Save.
+    const { container } = renderNote(noteData());
+    const note = container.querySelector('[class*="note"]') as HTMLElement;
+    const content = container.querySelector('[class*="textContent"]') as HTMLElement;
+    fireEvent.doubleClick(note);
+    const reached: string[] = [];
+    const onDocument = (e: KeyboardEvent) => reached.push(e.key);
+    document.addEventListener('keydown', onDocument);
+    try {
+      fireEvent.keyDown(content, { key: 'Delete' });
+      fireEvent.keyDown(content, { key: 'z', ctrlKey: true });
+      fireEvent.keyDown(content, { key: 's', ctrlKey: true, shiftKey: true });
+    } finally {
+      document.removeEventListener('keydown', onDocument);
+    }
+    expect(reached).toEqual([]);
     expect(note.className).toMatch(/editing/);
   });
 

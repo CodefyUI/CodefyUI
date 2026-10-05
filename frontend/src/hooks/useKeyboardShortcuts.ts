@@ -2,7 +2,6 @@ import { useEffect } from 'react';
 import { useTabStore } from '../store/tabStore';
 import { useUIStore } from '../store/uiStore';
 import { isAnyModalOpen, type ModalName } from '../store/modalState';
-import { useProjectStore } from '../store/projectStore';
 import { saveActiveGraph } from '../utils/saveActiveGraph';
 
 /** Node kinds with no detail modal to open (mirrors NodeDetailModal). */
@@ -18,8 +17,8 @@ const ENTER_OWNING_TAGS = new Set(['BUTTON', 'A', 'SELECT', 'SUMMARY']);
 /**
  * Is this key going to something the user types into? An input, a textarea,
  * an editable element, or a `<select>`, which uses printable keys for
- * type-ahead (the toolbar's device select is one). Every shortcut leaves such
- * a key to it, and so does the canvases' Delete (`useDeleteKey`).
+ * type-ahead (the toolbar's device select is one). Every shortcut but Save
+ * leaves such a key to it, and so does the canvases' Delete (`useDeleteKey`).
  */
 export function isTypingTarget(target: EventTarget | null): boolean {
   const el = target as HTMLElement | null;
@@ -53,6 +52,31 @@ function isHelpKey(e: KeyboardEvent): boolean {
 /** The shortcuts sheet, as the one modal `?` is allowed to act on. */
 const HELP_KEY_IGNORES: readonly ModalName[] = ['shortcuts'];
 
+/**
+ * Ctrl+S / Cmd+S exactly: Shift and Alt make other chords. Lower-cased for
+ * Caps Lock, as the letters in the handler below are. A text note being
+ * edited asks too, to let this one key out to the handler (NoteNode).
+ */
+export function isSaveChord(e: KeyboardEvent): boolean {
+  return (
+    (e.metaKey || e.ctrlKey) &&
+    !e.shiftKey &&
+    !e.altKey &&
+    (e.key ?? '').toLowerCase() === 's'
+  );
+}
+
+/**
+ * The browser's "Save page as" is never what Ctrl+S means here, whatever has
+ * focus. Refused in the window's capture phase, the first stop of every key
+ * event, because a handler further in can stop a key before it bubbles up to
+ * the shortcut handler: the workspace lock overlay stops every key on the way
+ * down. Saving is the handler's job.
+ */
+function refuseBrowserSave(e: KeyboardEvent) {
+  if (isSaveChord(e)) e.preventDefault();
+}
+
 export function useKeyboardShortcuts() {
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
@@ -65,6 +89,23 @@ export function useKeyboardShortcuts() {
       // keydown from an autofill pick can arrive without a `key` at all.
       const key = (e.key ?? '').toLowerCase();
       const tag = (e.target as HTMLElement)?.tagName;
+
+      // Ctrl+S / Cmd+S — Save, in every mode (`refuseBrowserSave` has already
+      // stopped the browser's "Save page as"). ID9 kept it to project mode
+      // while a save outside a project always asked for a name; since
+      // `saveActiveGraph` has one rule in both modes, this key and the
+      // toolbar's Save do the same thing everywhere. Ahead of both gates
+      // below: the one shortcut that also works from a field, since the
+      // Inspector's fields commit on every keystroke and the store already
+      // holds what is on screen. Never under a modal (the Layers editor and
+      // a preset's Configure hold edits not applied yet, and the name prompt
+      // is a modal itself), nor on key repeat (a save and a toast per repeat).
+      if (isSaveChord(e)) {
+        if (e.repeat || isAnyModalOpen()) return;
+        void saveActiveGraph();
+        return;
+      }
+
       // Skip while the user types in a field (see `isTypingTarget`).
       if (isTypingTarget(e.target)) return;
 
@@ -125,16 +166,6 @@ export function useKeyboardShortcuts() {
         if (hasTextSelection()) return;
         e.preventDefault();
         useTabStore.getState().pasteNodes();
-        return;
-      }
-
-      // Ctrl+S / Cmd+S — Save. Project mode only, so non-project keeps the
-      // browser's native behavior and this never hijacks it (ID9).
-      if (mod && !e.shiftKey && key === 's') {
-        if (useProjectStore.getState().projectDir !== null) {
-          e.preventDefault();
-          void saveActiveGraph();
-        }
         return;
       }
 
@@ -221,7 +252,11 @@ export function useKeyboardShortcuts() {
       }
     };
 
+    window.addEventListener('keydown', refuseBrowserSave, true);
     document.addEventListener('keydown', handler);
-    return () => document.removeEventListener('keydown', handler);
+    return () => {
+      window.removeEventListener('keydown', refuseBrowserSave, true);
+      document.removeEventListener('keydown', handler);
+    };
   }, []);
 }

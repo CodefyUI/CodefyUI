@@ -3,6 +3,7 @@ import { type NodeProps } from '@xyflow/react';
 import type { NodeData } from '../../types';
 import { useTabStore } from '../../store/tabStore';
 import { useI18n } from '../../i18n';
+import { isSaveChord } from '../../hooks/useKeyboardShortcuts';
 import styles from './NoteNode.module.css';
 
 const MAX_IMAGE_DIM = 800;
@@ -109,6 +110,12 @@ function NoteNodeInner({ id, data, selected }: NodeProps & { data: NodeData }) {
 
   const handleKeyDown = useCallback((e: React.KeyboardEvent) => {
     if (editing) {
+      // Ctrl+S saves the graph, this note included: leaving the note commits
+      // its text (handleBlur), and the key goes on to the shortcut handler.
+      if (isSaveChord(e.nativeEvent)) {
+        contentRef.current?.blur();
+        return;
+      }
       // Stop propagation to prevent XYFlow from intercepting Delete/Backspace
       e.stopPropagation();
       if (e.key === 'Escape') {

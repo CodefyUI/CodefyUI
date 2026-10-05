@@ -531,6 +531,7 @@ const zhTW: Record<TranslationKey, string> = {
   'shortcuts.redoAlt': '重做（替代）',
   'shortcuts.copy': '複製選取的節點',
   'shortcuts.paste': '貼上節點',
+  'shortcuts.save': '儲存圖表',
   'shortcuts.delete': '刪除選取項目',
   'shortcuts.commit': '提交（版本控制訊息框）',
   'shortcuts.bypass': '切換選取節點的略過狀態',

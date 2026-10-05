@@ -16,6 +16,7 @@ export function ShortcutsModal() {
     { keys: `${mod}+Y`, action: t('shortcuts.redoAlt') },
     { keys: `${mod}+C`, action: t('shortcuts.copy') },
     { keys: `${mod}+V`, action: t('shortcuts.paste') },
+    { keys: `${mod}+S`, action: t('shortcuts.save') },
     { keys: 'Delete', action: t('shortcuts.delete') },
     // Belongs to the Source Control message box rather than the canvas, and
     // says so: the global handler skips every textarea, so this chord only

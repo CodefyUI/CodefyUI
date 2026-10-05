@@ -6,7 +6,7 @@ description: Keyboard and mouse shortcuts for the CodefyUI editor.
 
 # Key Bindings
 
-Keyboard chords are ignored while you are typing in an input, a textarea or a note, and while a dropdown (such as the device select next to **Run**) has focus. While a dialog or a full-screen panel is open, they are ignored too, and so are the tab-strip keys.
+Keyboard chords other than Save (`Ctrl/Cmd` + `S`) are ignored while you are typing in an input, a textarea or a note, and while a dropdown (such as the device select next to **Run**) has focus. While a dialog or a full-screen panel is open, every chord is ignored, and so are the tab-strip keys.
 
 | Action | Key / gesture |
 |--------|---------------|
@@ -23,7 +23,7 @@ Keyboard chords are ignored while you are typing in an input, a textarea or a no
 | Bypass / un-bypass selected node(s) | `Ctrl/Cmd` + `B` (when a bypassable node is selected); right-click → Bypass / Remove Bypass |
 | Collapse / expand sidebar | `Ctrl/Cmd` + `B` when nothing bypassable is selected; `Ctrl/Cmd` + `Shift` + `B` always |
 | Auto layout (last-used mode) | `Shift` + `L` |
-| Save graph (project mode only) | `Ctrl/Cmd` + `S` |
+| Save graph | `Ctrl/Cmd` + `S` |
 | Show shortcuts overlay | `?` |
 | Commit ([Source Control](./source-control) message box) | `Ctrl/Cmd` + `Enter` |
 | Rename node | Right-click → Rename, or the name field in Node details (`Enter` applies, `Esc` cancels) |
