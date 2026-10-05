@@ -365,3 +365,169 @@ describe('dragging a wire on the real canvas', () => {
     });
   });
 });
+
+// ── Dropping a trigger on a card ────────────────────────────────────────────
+
+// While a trigger is dragged, every card that can take one glows as a drop
+// target, but React Flow connects only on or near a handle, and a card's
+// `__trigger` is a 13 px diamond at its top-left corner: a few screen pixels
+// at the zoom a fitted graph opens at. FlowCanvas connects a trigger released
+// anywhere on such a card.
+
+/**
+ * What a browser's `elementFromPoint` answers over the placed nodes: the body
+ * of the card under the point, never one of its handles, or else the pane.
+ */
+function hitTest(nodes: Node<NodeData>[]) {
+  return (x: number, y: number): Element | null => {
+    const hit = nodes.find(
+      (n) =>
+        x >= n.position.x &&
+        x <= n.position.x + (n.width ?? 0) &&
+        y >= n.position.y &&
+        y <= n.position.y + (n.height ?? 0),
+    );
+    if (!hit) return document.querySelector('.react-flow__pane');
+    return document.querySelector(`.react-flow__node[data-id="${hit.id}"]`)?.firstElementChild ?? null;
+  };
+}
+
+/** The middle of a placed node: no handle is within 20 px of it. */
+const middleOf = (node: Node<NodeData>): Point => ({
+  x: node.position.x + (node.width ?? 0) / 2,
+  y: node.position.y + (node.height ?? 0) / 2,
+});
+
+describe('dropping a trigger on a card', () => {
+  const note: Node<NodeData> = {
+    id: 'note',
+    type: 'noteNode',
+    position: { x: 400, y: 300 },
+    ...CARD,
+    data: { label: 'note', type: 'note', params: {}, noteKind: 'text', noteContent: 'a note' },
+  };
+  const start2 = placed(card('start2', START), { x: 400, y: 300 });
+  const preset: Node<NodeData> = {
+    id: 'preset',
+    type: 'presetNode',
+    position: { x: 400, y: 0 },
+    ...CARD,
+    data: {
+      label: 'preset',
+      type: 'preset:Block',
+      params: {},
+      isPreset: true,
+      presetDefinition: {
+        preset_name: 'Block',
+        category: 'Utility',
+        description: '',
+        tags: [],
+        nodes: [{ id: 'n0', type: 'Linear', params: {} }],
+        edges: [],
+        exposed_inputs: [],
+        exposed_outputs: [],
+        exposed_params: [],
+      },
+    },
+  };
+  const triggerWire: Edge = {
+    id: 't1',
+    source: 'start',
+    sourceHandle: 'trigger',
+    target: 'flat',
+    targetHandle: '__trigger',
+    type: 'triggerEdge',
+    data: { type: 'trigger' },
+  };
+
+  function show(nodes: Node<NodeData>[], wires: Edge[] = []) {
+    setGraph(nodes, wires);
+    Object.defineProperty(document, 'elementFromPoint', { configurable: true, value: hitTest(nodes) });
+    renderWithFlow(<FlowCanvas />);
+  }
+
+  const dragTrigger = (releaseAt: Point) =>
+    drag(handleOf('start', 'trigger'), centreOf(start, 'trigger'), releaseAt);
+
+  beforeEach(() => {
+    realFlow.value = true;
+  });
+
+  afterEach(() => {
+    delete (document as { elementFromPoint?: unknown }).elementFromPoint;
+  });
+
+  it('connects a trigger released in the middle of a card to that card', () => {
+    show([start, flat]);
+    dragTrigger(middleOf(flat));
+    expect(edges()).toMatchObject([
+      {
+        source: 'start',
+        sourceHandle: 'trigger',
+        target: 'flat',
+        targetHandle: '__trigger',
+        type: 'triggerEdge',
+        data: { type: 'trigger' },
+      },
+    ]);
+  });
+
+  it("connects a trigger released on a preset card's body", () => {
+    // A preset card has its own `__trigger`; what the engine runs for a
+    // trigger into a card is a separate question (#561).
+    show([start, preset]);
+    dragTrigger(middleOf(preset));
+    expect(edges()).toMatchObject([
+      { source: 'start', sourceHandle: 'trigger', target: 'preset', targetHandle: '__trigger', type: 'triggerEdge' },
+    ]);
+  });
+
+  it('connects it once, however often it is dropped there', () => {
+    show([start, flat]);
+    dragTrigger(middleOf(flat));
+    dragTrigger(middleOf(flat));
+    expect(edges()).toHaveLength(1);
+  });
+
+  // The first case above is the control for these: it fails if a drag stops
+  // reaching React Flow.
+  it.each<[string, Node<NodeData>[], Point]>([
+    ['the empty canvas', [start, flat], { x: 300, y: 200 }],
+    ['a note', [start, note], middleOf(note)],
+    ['another Start node', [start, start2], middleOf(start2)],
+    ['the Start node it comes from', [start, flat], middleOf(start)],
+  ])('connects nothing when it is released over %s', (_, nodes, releaseAt) => {
+    show(nodes);
+    dragTrigger(releaseAt);
+    expect(edges()).toEqual([]);
+  });
+
+  it('connects nothing when the cards were not lit as trigger targets', () => {
+    // The glow comes from onConnectStart, which looks the dragged output's
+    // type up in the node's definition. With none, no card glows, so a
+    // release on a card's body connects nothing.
+    const unlit: Node<NodeData> = { ...start, data: { ...start.data, definition: undefined } };
+    show([unlit, flat]);
+    dragTrigger(middleOf(flat));
+    expect(useUIStore.getState().draggingSourceType).toBeNull();
+    expect(edges()).toEqual([]);
+  });
+
+  it('leaves a data wire released in the middle of a card unconnected', () => {
+    show([lin, flat]);
+    drag(handleOf('lin', 'output'), centreOf(lin, 'output'), middleOf(flat));
+    expect(edges()).toEqual([]);
+  });
+
+  it('still removes a trigger wire moved off its card and released on another card', () => {
+    // Only a new wire connects by a card's body. A grabbed wire released
+    // anywhere but on a handle is removed, as on the empty canvas.
+    show([start, flat, flat2], [triggerWire]);
+    const anchor = document.querySelector(
+      '.react-flow__edge[data-id="t1"] .react-flow__edgeupdater-target',
+    );
+    expect(anchor).not.toBeNull();
+    drag(anchor!, centreOf(flat, '__trigger'), middleOf(flat2));
+    expect(edges()).toEqual([]);
+  });
+});

@@ -29,7 +29,7 @@ TensorInput → Reshape → Softmax → Print
 ## 3. 新增一個 Start 節點 {/* #3-add-a-start-node */}
 
 :::warning 每個圖都需要一個 Start 節點
-把一個 **`Start`** 節點拖到畫布上，並把它的 **trigger 輸出**（右側的菱形 handle）連到你想開始執行的第一個節點 — 通常就是 `TensorInput`。
+把一個 **`Start`** 節點拖到畫布上，並把它的 **trigger 輸出**（右側的菱形 handle）連到你想開始執行的第一個節點 — 通常就是 `TensorInput`。線放在該節點上任何位置即可。
 
 少了 `Start → first-node` 的 trigger 連線，這個 graph 會被當作草稿，**執行**會拒絕它並顯示錯誤 toast：*「尚未定義起始節點。請從節點面板拖曳一個 Start 節點，並連接到要開始執行的節點。」* 可執行集合包括每個 trigger 所指定的節點、其資料流下游、供應資料給該集合的上游節點，以及已到達的預設組合或子圖容器中的內部根節點。
 :::

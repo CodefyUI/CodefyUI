@@ -57,6 +57,8 @@ import { PaneContextMenu } from './PaneContextMenu';
 import { SubgraphBreadcrumb } from './SubgraphBreadcrumb';
 import { NoteBindingLines } from './NoteBindingLines';
 import { SegmentBubble } from './SegmentBubble';
+import { triggerDropConnection } from './triggerDrop';
+import type { FinalConnectionState } from '@xyflow/react';
 import { useTabStore } from '../../store/tabStore';
 import { useUIStore } from '../../store/uiStore';
 import { isAnyModalOpen } from '../../store/modalState';
@@ -519,12 +521,29 @@ export function FlowCanvas({ tabId }: { tabId?: string } = {}) {
     []
   );
 
-  const onConnectEnd = useCallback(() => {
-    useUIStore.getState().setDraggingSourceType(null);
-  }, []);
-
-  // Track which edge is being reconnected so we can delete it if dropped on empty space
+  // The edge being reconnected, if any: onReconnectEnd deletes it when it is
+  // dropped where it connects to nothing, and onConnectEnd's triggerDrop
+  // leaves that drag alone.
   const reconnectingEdgeRef = useRef<string | null>(null);
+
+  const onConnectEnd = useCallback(
+    (event: MouseEvent | TouchEvent, state: FinalConnectionState) => {
+      const ui = useUIStore.getState();
+      const draggedTrigger = ui.draggingSourceType === 'TRIGGER';
+      ui.setDraggingSourceType(null);
+      // While a trigger is dragged every card glows as its drop target, but
+      // React Flow connects only near a card's top-left `__trigger` diamond,
+      // so a trigger released anywhere else on a card is connected here.
+      // Not during a reconnect: React Flow ends that here too, before
+      // onReconnectEnd, and it stays as it was.
+      if (!draggedTrigger || reconnectingEdgeRef.current !== null) return;
+      const { tabs, activeTabId } = useTabStore.getState();
+      const { edges } = tabs.find((t) => t.id === activeTabId)!;
+      const connection = triggerDropConnection(event, state, edges);
+      if (connection && handleIsValidConnection(connection)) handleConnect(connection);
+    },
+    [handleConnect, handleIsValidConnection],
+  );
 
   const onReconnectStart = useCallback((_: any, edge: Edge, handleType: 'source' | 'target') => {
     reconnectingEdgeRef.current = edge.id;
