@@ -6,8 +6,11 @@ import styles from './HeatmapPlot.module.css';
 export type HeatmapColormap = 'viridis' | 'blues' | 'RdBu';
 
 interface HeatmapPlotProps {
-  /** 2D matrix of weights ([seq, seq]) or 3D for multi-head ([H, seq, seq]). */
-  data: number[][] | number[][][];
+  /**
+   * 2D matrix of weights ([seq, seq]) or 3D for multi-head ([H, seq, seq]); a
+   * 1-D tensor draws as one row. Read defensively -- see `heatmapPanels`.
+   */
+  data: number[] | number[][] | number[][][];
   /** Token labels for the query axis (rows). */
   rowLabels?: string[];
   /** Token labels for the key axis (columns). Defaults to rowLabels for self-attention. */
@@ -114,8 +117,53 @@ export function valueToColor(t: number, colormap: HeatmapColormap = 'viridis'): 
   return `rgb(${Math.max(0, Math.min(255, r))}, ${Math.max(0, Math.min(255, g))}, ${Math.max(0, Math.min(255, b))})`;
 }
 
-function isMatrix3D(data: number[][] | number[][][]): data is number[][][] {
-  return Array.isArray(data) && data.length > 0 && Array.isArray(data[0]) && Array.isArray(data[0][0]);
+/**
+ * What `HeatmapPlot` can draw from `data`. The prop's type is a claim, not a
+ * guarantee: a card hands over whatever tensor reached its port, and
+ * AttentionHeatmap passes any shape through. A 1-D tensor arrived as a
+ * "matrix" of numbers, and `for (const v of row)` threw during render and
+ * took the whole page down. So: a 0-D value is one cell, a 1-D tensor one
+ * row (`strip`), 2-D one panel, 3-D a panel per head, and more dimensions are
+ * refused. A cell that is not a number reads as NaN -- a NaN or ±inf arrives
+ * as null (the backend's json_safe), and the hover tooltip threw on it.
+ */
+export type HeatmapPanels =
+  | { kind: 'panels'; panels: number[][][]; multiHead: boolean; strip: boolean }
+  | { kind: 'empty' }
+  | { kind: 'tooManyDims' };
+
+function cellValue(v: unknown): number {
+  if (typeof v === 'number') return v;
+  if (typeof v === 'boolean') return v ? 1 : 0;
+  return NaN;
+}
+
+function rowOf(row: unknown): number[] {
+  return Array.isArray(row) ? row.map(cellValue) : [];
+}
+
+export function heatmapPanels(data: unknown): HeatmapPanels {
+  let rank = 0;
+  let cur: unknown = data;
+  while (Array.isArray(cur)) {
+    rank += 1;
+    cur = cur[0];
+  }
+  let panels: number[][][];
+  if (rank === 0) {
+    if (typeof data !== 'number' && typeof data !== 'boolean') return { kind: 'empty' };
+    panels = [[[cellValue(data)]]];
+  } else if (rank === 1) {
+    panels = [[rowOf(data)]];
+  } else if (rank === 2) {
+    panels = [(data as unknown[]).map(rowOf)];
+  } else if (rank === 3) {
+    panels = (data as unknown[]).map((head) => (Array.isArray(head) ? head.map(rowOf) : []));
+  } else {
+    return { kind: 'tooManyDims' };
+  }
+  if (panels.every((rows) => rows.every((row) => row.length === 0))) return { kind: 'empty' };
+  return { kind: 'panels', panels, multiHead: rank === 3, strip: rank === 1 };
 }
 
 interface SinglePanelProps {
@@ -129,6 +177,8 @@ interface SinglePanelProps {
   headIndex?: number;
   normalizePerRow: boolean;
   valueRange?: [number, number];
+  /** One row standing for a 1-D tensor: square cells, labels on the cells only. */
+  strip: boolean;
   onHover: (cell: HoverCell | null) => void;
 }
 
@@ -143,6 +193,7 @@ function SinglePanel({
   headIndex,
   normalizePerRow,
   valueRange,
+  strip,
   onHover,
 }: SinglePanelProps) {
   const n = matrix.length;
@@ -154,7 +205,7 @@ function SinglePanel({
   // ascender (otherwise the leading characters get clipped against the
   // SVG top edge — see https://github.com/CodefyUI/CodefyUI/...).
   const charW = 6.5;
-  const showLabels = n <= 16;
+  const showLabels = (strip ? m : n) <= 16;
   const maxColLen = showLabels && colLabels
     ? Math.max(0, ...colLabels.slice(0, m).map((l) => String(l).length))
     : 0;
@@ -169,8 +220,12 @@ function SinglePanel({
     : 6;
 
   const innerW = Math.max(20, width - leftGutter);
-  const innerH = Math.max(20, height - topGutter);
   const cellW = innerW / Math.max(1, m);
+  // A strip's cells are square, not stretched to the panel's height; 20px
+  // keeps a long strip hoverable.
+  const innerH = strip
+    ? Math.max(20, Math.min(cellW, height - topGutter))
+    : Math.max(20, height - topGutter);
   const cellH = innerH / Math.max(1, n);
 
   // Pre-compute per-row min/max for contrast stretching.
@@ -203,7 +258,7 @@ function SinglePanel({
   return (
     <svg
       width={width}
-      height={height}
+      height={strip ? topGutter + innerH : height}
       className={styles.panel}
       // Allow rotated column labels to render past the nominal SVG bounds
       // when a tight gutter calculation under-estimates by a pixel or two.
@@ -272,13 +327,18 @@ function SinglePanel({
       <g transform={`translate(${leftGutter}, ${topGutter})`}>
         {matrix.map((row, i) =>
           row.map((v, j) => {
+            // NaN or ±inf (see `heatmapPanels`) has no place on the colour
+            // ramp, where any colour would read as a weight: it is drawn grey.
+            const noValue = !Number.isFinite(v);
             const masked = causalMasked && j > i && v === 0;
             // For colouring: optionally min-max stretch each row so the
             // relative attention pattern is visible even when absolute
             // weights are tiny *and* near-uniform (deeper attention layers).
             // Tooltips still show the raw v.
             let colorT: number;
-            if (rowStats) {
+            if (noValue) {
+              colorT = 0;
+            } else if (rowStats) {
               if (masked || v === 0) {
                 colorT = 0;
               } else {
@@ -303,14 +363,14 @@ function SinglePanel({
                   y={i * cellH}
                   width={cellW}
                   height={cellH}
-                  fill={valueToColor(colorT, colormap)}
+                  fill={noValue ? undefined : valueToColor(colorT, colormap)}
                   stroke="rgba(0,0,0,0.15)"
                   strokeWidth={0.5}
                   data-i={i}
                   data-j={j}
                   data-masked={masked ? 'true' : 'false'}
-                  data-color-t={colorT.toFixed(3)}
-                  className={styles.cell}
+                  data-color-t={noValue ? undefined : colorT.toFixed(3)}
+                  className={noValue ? `${styles.cell} ${styles.noValue}` : styles.cell}
                   onMouseEnter={(e) => {
                     onHover({
                       i,
@@ -383,32 +443,31 @@ export function HeatmapPlot({
   const { t } = useI18n();
   const [hover, setHover] = useState<HoverCell | null>(null);
 
-  const panels = useMemo(() => {
-    if (isMatrix3D(data)) {
-      return data.map((m, idx) => ({
-        matrix: m,
-        head: idx,
-        causalMasked: detectCausalMask && detectCausalPattern(m),
-      }));
-    }
-    return [
-      {
-        matrix: data,
-        head: undefined,
-        causalMasked: detectCausalMask && detectCausalPattern(data),
-      },
-    ];
-  }, [data, detectCausalMask]);
+  const shape = useMemo(() => heatmapPanels(data), [data]);
+  const panels = useMemo(
+    () =>
+      shape.kind === 'panels'
+        ? shape.panels.map((matrix, idx) => ({
+            matrix,
+            head: shape.multiHead ? idx : undefined,
+            causalMasked: detectCausalMask && detectCausalPattern(matrix),
+          }))
+        : [],
+    [shape, detectCausalMask],
+  );
 
   const effectiveCol = colLabels ?? rowLabels;
 
-  if (panels.length === 0 || panels[0].matrix.length === 0) {
+  if (shape.kind !== 'panels') {
     return (
       <div className={`${styles.empty} ${className ?? ''}`}>
-        <span>{t('plot.noData')}</span>
+        <span>{t(shape.kind === 'tooManyDims' ? 'viz.shape.tooManyDims' : 'plot.noData')}</span>
       </div>
     );
   }
+  // The labels of a 1-D tensor name its cells; its one row has no name.
+  const strip = shape.strip;
+  const rowAxis = strip ? undefined : rowLabels;
 
   return (
     <div className={`${styles.wrapper} ${className ?? ''}`}>
@@ -436,13 +495,14 @@ export function HeatmapPlot({
             matrix={p.matrix}
             width={panelWidth}
             height={panelHeight}
-            rowLabels={rowLabels}
+            rowLabels={rowAxis}
             colLabels={effectiveCol}
             colormap={colormap}
             causalMasked={p.causalMasked}
             headIndex={p.head}
             normalizePerRow={normalizePerRow}
             valueRange={valueRange}
+            strip={strip}
             onHover={setHover}
           />
         ))}
@@ -455,11 +515,12 @@ export function HeatmapPlot({
           >
             <div className={styles.tooltipHeader}>
               {hover.head !== undefined && <span className={styles.tooltipHead}>head {hover.head} · </span>}
-              w[{hover.i}, {hover.j}] = {hover.v.toFixed(3)}
+              w[{strip ? hover.j : `${hover.i}, ${hover.j}`}] ={' '}
+              {Number.isFinite(hover.v) ? hover.v.toFixed(3) : '—'}
             </div>
-            {rowLabels && effectiveCol && (
+            {rowAxis && effectiveCol && (
               <div className={styles.tooltipPair}>
-                <span>{rowLabels[hover.i] ?? `q${hover.i}`}</span>
+                <span>{rowAxis[hover.i] ?? `q${hover.i}`}</span>
                 <span className={styles.tooltipArrow}>→</span>
                 <span>{effectiveCol[hover.j] ?? `k${hover.j}`}</span>
               </div>

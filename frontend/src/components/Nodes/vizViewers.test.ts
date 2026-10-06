@@ -20,7 +20,6 @@ describe('tensor readers shared by the viz cards and their viewer', () => {
     expect(attentionWeights(m2)).toBe(m2);
     expect(attentionWeights(m3)).toBe(m3);
     expect(attentionWeights(m4)).toBe(m3);
-    expect(attentionWeights([])).toBeNull();
     expect(attentionWeights(undefined)).toBeNull();
   });
 
@@ -33,12 +32,27 @@ describe('tensor readers shared by the viz cards and their viewer', () => {
   it('selfAttentionWeights keeps [seq, seq] and collapses a [1, seq, seq] tensor to its head', () => {
     expect(selfAttentionWeights(m2)).toBe(m2);
     expect(selfAttentionWeights([m2])).toBe(m2);
-    expect(selfAttentionWeights(null)).toBeNull();
   });
 
   it('maskMatrix coerces truthy cells to 1 and a malformed row to an empty one', () => {
     expect(maskMatrix([[true, false], [0.5, 0], 'bad'])).toEqual([[1, 0], [1, 0], []]);
-    expect(maskMatrix([])).toBeNull();
+  });
+
+  // Only a summary with no `values` -- the tensor was too large to inline --
+  // reads as null, which the cards show as "too large" with the viewer, which
+  // fetches. An empty tensor and a 0-D one read the same way and opened a
+  // viewer with nothing in it.
+  it('read only missing values as not inlined: [] stays empty and a 0-D value is one cell', () => {
+    for (const read of [attentionWeights, attentionHeads, selfAttentionWeights]) {
+      expect(read(undefined)).toBeNull();
+      expect(read([])).toEqual([]);
+      expect(read(0.5)).toEqual([[0.5]]);
+      // A 0-D NaN or ±inf arrives as null (the backend's json_safe).
+      expect(read(null)).toEqual([[null]]);
+    }
+    expect(maskMatrix(undefined)).toBeNull();
+    expect(maskMatrix([])).toEqual([]);
+    expect(maskMatrix(true)).toEqual([[1]]);
   });
 
   it('labelList stringifies a list and is undefined for an empty or missing one', () => {
@@ -54,7 +68,8 @@ describe('tensor readers shared by the viz cards and their viewer', () => {
       { x: 0, y: 0, label: undefined, cluster: 2 },
     ]);
     expect(scatterPoints([[1, 2]], undefined)![0].label).toBeUndefined();
-    expect(scatterPoints([], [])).toBeNull();
+    // Only missing values are "not inlined"; an empty tensor has no points.
+    expect(scatterPoints([], [])).toEqual([]);
     expect(scatterPoints(undefined, [])).toBeNull();
   });
 });

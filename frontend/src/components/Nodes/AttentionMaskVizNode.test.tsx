@@ -143,10 +143,11 @@ describe('AttentionMaskVizNode', () => {
     expect(screen.getByRole('button', { name: new RegExp(useI18n.getState().t('attention.viewFull')) })).toBeTruthy();
   });
 
-  it('shows the too-large hint when values is an empty array', () => {
+  it('says an empty mask has no data, not that it is too large to preview', () => {
     seed({ mask: { type: 'tensor', values: [] } });
     renderNode();
-    expect(screen.getByText(useI18n.getState().t('attention.tooLargeInline'))).toBeTruthy();
+    expect(screen.getByText(useI18n.getState().t('plot.noData'))).toBeTruthy();
+    expect(screen.queryByText(useI18n.getState().t('attention.tooLargeInline'))).toBeNull();
   });
 
   it('clicking "View full" in the too-large path opens the modal (REST fetch)', async () => {

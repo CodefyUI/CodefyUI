@@ -29,6 +29,7 @@ import { CANVAS_MIN_ZOOM } from '../../styles/theme';
 import { EdgeLaneProvider } from '../Canvas/EdgeLaneContext';
 import { SmartDataEdge } from '../Canvas/SmartDataEdge';
 import { NumberInput } from '../shared/NumberInput';
+import { withNodeCardBoundaries } from '../Nodes/NodeCardBoundary';
 import { LayerNode } from './LayerNode';
 import { InputNode } from './InputNode';
 import { OutputNode } from './OutputNode';
@@ -493,11 +494,13 @@ const edgeTypes: EdgeTypes = {
   default: SmartDataEdge,
 };
 
-const nodeTypes: NodeTypes = {
+// Every card draws inside its own NodeCardBoundary, as on the main canvas: one
+// that throws becomes a small box naming the layer, not a stopped page.
+const nodeTypes: NodeTypes = withNodeCardBoundaries({
   layerNode: LayerNode,
   inputNode: InputNode,
   outputNode: OutputNode,
-};
+});
 
 /**
  * This editor IS a modal (`layersModalNodeId`), so its own open-ness must not

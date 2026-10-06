@@ -901,6 +901,10 @@ const en = {
   'heatmap.loadError': "Couldn't load: {error}",
   'heatmap.loadErrorHint': 'Re-run the graph, or shorten the input sequence.',
   'heatmap.rowNormalised': 'row-normalised colours',
+  // In place of a heatmap whose tensor has more dimensions than it can draw.
+  'viz.shape.tooManyDims': 'Too many dimensions for a heatmap',
+  // In place of a node card that threw while drawing; the rest of the canvas works.
+  'node.cardFailed': 'This node could not be drawn',
   'textInput.placeholder': 'e.g. The quick brown fox jumps over the lazy dog.',
   'textInput.charCount': '{count} chars',
 

@@ -230,4 +230,37 @@ describe('AttentionHeatmapVizNode', () => {
     const { container } = renderNode();
     expect(container.querySelectorAll('rect[data-i]').length).toBe(4);
   });
+
+  // TensorCreate (shape 4) -> AttentionHeatmap.weights: the card handed the
+  // 1-D tensor to HeatmapPlot as a matrix, whose `for (const v of row)` threw
+  // "is not iterable" and took the whole page down.
+  it('draws a 1-D weights tensor as one row of cells', () => {
+    seed({ weights: { type: 'tensor', shape: [4], values: [0.1, 0.4, 0.2, 0.3] } });
+    const { container } = renderNode();
+    expect(container.querySelectorAll('rect[data-i]').length).toBe(4);
+    expect(container.querySelectorAll('rect[data-i="0"]').length).toBe(4);
+  });
+
+  it('opens the full viewer on a 1-D weights tensor', async () => {
+    seed({ weights: { type: 'tensor', shape: [4], values: [0.1, 0.4, 0.2, 0.3] } });
+    const { container } = renderNode();
+    fireEvent.click(container.querySelector('button[aria-label="Open detailed view"]') as HTMLButtonElement);
+    const dialog = await screen.findByRole('dialog');
+    expect(dialog.querySelectorAll('rect[data-i]').length).toBe(4);
+    expect(g.fetch).not.toHaveBeenCalled();
+  });
+
+  it('draws a 0-D tensor as one cell, not as too large to preview', () => {
+    seed({ weights: { type: 'tensor', shape: [], values: 0.5 as unknown as unknown[] } });
+    const { container } = renderNode();
+    expect(container.querySelectorAll('rect[data-i]').length).toBe(1);
+    expect(screen.queryByText(useI18n.getState().t('attention.tooLargeInline'))).toBeNull();
+  });
+
+  it('says an empty tensor has no data, not that it is too large to preview', () => {
+    seed({ weights: { type: 'tensor', shape: [0], values: [] } });
+    renderNode();
+    expect(screen.getByText(useI18n.getState().t('plot.noData'))).toBeTruthy();
+    expect(screen.queryByText(useI18n.getState().t('attention.tooLargeInline'))).toBeNull();
+  });
 });
