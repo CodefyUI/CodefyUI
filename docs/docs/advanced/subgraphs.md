@@ -113,6 +113,8 @@ the block you can see and the one inside it
 A subgraph that contains itself, directly or through another subgraph, is
 refused by name before anything runs. So is a trigger wired into a block with
 no nodes inside, which has nothing to start.
+Notes inside a block are ignored, so a block holding only notes counts as
+empty.
 
 Nesting is allowed up to 10 levels deep, the same budget preset nesting gets.
 

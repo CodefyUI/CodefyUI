@@ -1,7 +1,11 @@
 import { useEffect, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { HeatmapPlot, type HeatmapColormap } from './HeatmapPlot';
-import { fetchOutput } from '../../api/executionOutputs';
+import {
+  fetchOutput,
+  NoValueError,
+  RunDataExpiredError,
+} from '../../api/executionOutputs';
 import { useI18n } from '../../i18n';
 import styles from './HeatmapModal.module.css';
 
@@ -91,6 +95,8 @@ function HeatmapModalBody({
   const [error, setError] = useState<string | null>(
     !inlineData && !canFetch ? t('heatmap.unavailable') : null,
   );
+  // The port produced no value (None) in this run: a status, not an error.
+  const [noValue, setNoValue] = useState(false);
   const [viewport, setViewport] = useState(() => ({
     // window always exists under jsdom / the browser, so the SSR `: 1280` / `: 800`
     // fallback branches are unreachable in any environment this runs in.
@@ -113,6 +119,12 @@ function HeatmapModalBody({
   useEffect(() => {
     if (!canFetch) return;
     let cancelled = false;
+    // A new fetch (another run finished while this is open) starts clean:
+    // the tensor, "no value" or error an earlier one found was about its run.
+    setFetchedData(null);
+    setNoValue(false);
+    setError(null);
+    setLoading(true);
     fetchOutput(runId as string, nodeId as string, port as string, {
       maxElements: 4096,
     })
@@ -141,7 +153,12 @@ function HeatmapModalBody({
       })
       .catch((e) => {
         if (cancelled) return;
-        setError(e?.message ?? String(e));
+        // Both errors carry an English message. A 204 gets the line the
+        // Inspector shows for it (#608); a run whose data is gone, this
+        // modal's own sentence for that.
+        if (e instanceof NoValueError) setNoValue(true);
+        else if (e instanceof RunDataExpiredError) setError(t('heatmap.unavailable'));
+        else setError(e?.message ?? String(e));
       })
       .finally(() => {
         if (!cancelled) setLoading(false);
@@ -227,6 +244,9 @@ function HeatmapModalBody({
               <div>{t('heatmap.loadError', { error })}</div>
               <div className={styles.errorHint}>{t('heatmap.loadErrorHint')}</div>
             </div>
+          )}
+          {noValue && !loading && (
+            <div className={styles.status}>{t('inspector.noValue')}</div>
           )}
           {data && !loading && (
             <HeatmapPlot

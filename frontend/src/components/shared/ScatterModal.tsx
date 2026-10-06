@@ -2,7 +2,11 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { getTokenColor } from '../../styles/theme';
 import { useI18n } from '../../i18n';
-import { fetchOutput } from '../../api/executionOutputs';
+import {
+  fetchOutput,
+  NoValueError,
+  RunDataExpiredError,
+} from '../../api/executionOutputs';
 import type { ScatterPoint } from './ScatterPlot';
 import { CloseIcon, EyeIcon, EyeOffIcon, FitIcon, ZoomInIcon, ZoomOutIcon } from './Icons';
 import styles from './ScatterModal.module.css';
@@ -86,11 +90,20 @@ function ScatterModalBody({
   const [error, setError] = useState<string | null>(
     !hasInline && !canFetch ? t('scatter.unavailable') : null,
   );
+  // The points port produced no value (None) in this run: a status, not an
+  // error.
+  const [noValue, setNoValue] = useState(false);
 
   // REST-fetch the full projection when it wasn't embedded inline.
   useEffect(() => {
     if (!canFetch) return;
     let cancelled = false;
+    // A new fetch (another run finished while this is open) starts clean:
+    // the points, "no value" or error an earlier one found was about its run.
+    setFetched(null);
+    setNoValue(false);
+    setError(null);
+    setLoading(true);
     Promise.all([
       fetchOutput(runId as string, nodeId as string, pointsPort, { maxElements: 200_000 }),
       fetchOutput(runId as string, nodeId as string, labelsPort, { maxElements: 200_000 }).catch(
@@ -100,7 +113,9 @@ function ScatterModalBody({
       .then(([coords, labels]) => {
         if (cancelled) return;
         if (coords.type !== 'tensor' || !('values' in coords)) {
-          setError(t('scatter.loadError', { error: `expected tensor, got ${coords.type}` }));
+          setError(
+            t('scatter.loadError', { error: t('scatter.notTensor', { type: coords.type }) }),
+          );
           return;
         }
         const labelVals =
@@ -111,7 +126,12 @@ function ScatterModalBody({
       })
       .catch((e) => {
         if (cancelled) return;
-        setError(t('scatter.loadError', { error: e?.message ?? String(e) }));
+        // Both errors carry an English message. A 204 gets the line the
+        // Inspector shows for it (#608); a run whose data is gone, this
+        // modal's own sentence for that.
+        if (e instanceof NoValueError) setNoValue(true);
+        else if (e instanceof RunDataExpiredError) setError(t('scatter.unavailable'));
+        else setError(t('scatter.loadError', { error: e?.message ?? String(e) }));
       })
       .finally(() => {
         if (!cancelled) setLoading(false);
@@ -417,7 +437,9 @@ function ScatterModalBody({
                 <div className={`${styles.status} ${styles.error}`}>{error}</div>
               )}
               {!loading && !error && (!points || points.length === 0) && (
-                <div className={styles.status}>{t('scatter.noData')}</div>
+                <div className={styles.status}>
+                  {noValue ? t('inspector.noValue') : t('scatter.noData')}
+                </div>
               )}
               {ready && (
                 <>

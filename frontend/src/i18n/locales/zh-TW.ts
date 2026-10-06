@@ -754,6 +754,8 @@ const zhTW: Record<TranslationKey, string> = {
   'scatter.showPoint': '顯示',
   'scatter.loading': '載入點資料中…',
   'scatter.loadError': '無法載入點資料：{error}',
+  'scatter.notTensor': '需要張量；這個連接埠的資料是 {type}。',
+  'subgraph.nodeCountOne': '1 個節點',
   'scatter.unavailable': '無法載入：此次執行結果已不存在。',
   'scatter.noData': '沒有可顯示的點',
   'scatter.closeHint': '按 Esc 關閉',

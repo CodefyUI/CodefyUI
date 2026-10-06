@@ -852,6 +852,8 @@ const en = {
   'scatter.showPoint': 'Show',
   'scatter.loading': 'Loading points…',
   'scatter.loadError': "Couldn't load points: {error}",
+  'scatter.notTensor': 'expected a tensor; this port holds {type}.',
+  'subgraph.nodeCountOne': '1 node',
   'scatter.unavailable': 'Cannot load: this run is no longer available.',
   'scatter.noData': 'No points to display',
   'scatter.closeHint': 'Esc to close',

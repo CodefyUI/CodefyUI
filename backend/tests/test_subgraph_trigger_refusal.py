@@ -12,6 +12,9 @@ same words by validation, a run and an export. Validation keeps the code of
 the refusal, so the editor can say it in the user's language and jump to the
 block. An empty block nothing triggers is still left alone.
 
+A note inside a block is not a node (#624): a block holding only notes is an
+empty block, and a note beside real nodes no longer fails validation.
+
 Graphs and blocks are synthetic and written by the tests.
 """
 
@@ -27,6 +30,7 @@ from app.core.graph_engine import (
     validate_graph,
 )
 from app.core.validation_issues import issue_payload
+from app.schemas.models import SubgraphDefinition
 
 EMPTY = "Nothing Inside"
 
@@ -242,3 +246,140 @@ def test_a_triggered_block_whose_nodes_all_feed_each_other_is_named_by_its_loop(
     assert "subgraph_triggered_empty" not in codes
     cycle = errors[codes.index("cycle")]
     assert set(cycle.params["path"]) == {"l/p", "l/q"}
+
+
+# -- Notes inside a block (#624) ------------------------------------------------
+#
+# The canvas never writes a note into a block; Import JSON, a hand-edited or
+# agent-written file, or a plugin can.
+
+NOTES = "Only Notes"
+
+
+def _note(note_id: str) -> dict:
+    """A canvas note the way the canvas saves one: no ``params`` at all."""
+    return {"id": note_id, "type": "note", "position": {"x": 0, "y": 0},
+            "data": {"text": "a note"}}
+
+
+def _notes_only() -> dict:
+    return _block("notes", [_note("n1")], [], name=NOTES)
+
+
+def _with_a_note(trigger_targets: tuple[str, ...] = (), *,
+                 note_edge: bool = False) -> dict:
+    """Start -> an instance ``e`` of a block holding a note beside
+    TextInput -> Print."""
+    inner_edges = [_wire("x", "text", "p", "value")]
+    if note_edge:
+        # The canvas draws no handle on a note; a file can still wire one.
+        inner_edges.append(_wire("n1", "text", "x", "value"))
+    block = _block(
+        "withnote",
+        [_note("n1"), _node("x", "TextInput", {"value": "q"}), _node("p", "Print")],
+        inner_edges,
+        trigger_targets=trigger_targets,
+    )
+    return _graph([_node("start", "Start"), _node("e", "subgraph:withnote")],
+                  [_trigger("start", "e")], [block])
+
+
+@pytest.mark.parametrize("beside", [False, True],
+                         ids=["alone", "beside another trigger"])
+def test_a_triggered_block_holding_only_notes_is_refused_as_empty(beside):
+    """Validation used to say "Unknown node type: note (node e/n1)", and a
+    run alone "Graph has no entry points"."""
+    nodes = [_node("start", "Start"), _node("e", "subgraph:notes")]
+    edges = [_trigger("start", "e")]
+    if beside:
+        nodes += [_node("x", "TextInput", {"value": "q"}), _node("p", "Print")]
+        edges += [_trigger("start", "x"), _wire("x", "text", "p", "value")]
+    graph = _graph(nodes, edges, [_notes_only()])
+
+    errors = _validate(graph)
+
+    assert errors == [_sentence("e", NOTES)]
+    assert issue_payload(errors) == [{
+        "message": _sentence("e", NOTES),
+        "code": "subgraph_triggered_empty",
+        "node_id": "e",
+        "params": {"subgraph": NOTES},
+    }]
+    with pytest.raises(GraphValidationError) as refused:
+        _prepare(graph)
+    assert str(refused.value) == _sentence("e", NOTES)
+    assert getattr(refused.value.args[0], "code", None) == "subgraph_triggered_empty"
+
+
+@pytest.mark.parametrize(
+    ("trigger_targets", "note_edge"),
+    [((), False), (("x",), False), (("x", "n1"), False), ((), True)],
+    ids=["inner roots", "trigger target", "the note a trigger target too",
+         "the note wired to a node"],
+)
+async def test_a_note_beside_nodes_in_a_block_is_left_out(trigger_targets, note_edge):
+    """Validation refused the whole graph with "Unknown node type: note", so
+    the editor would not run it, and the prepared graph kept the note as a
+    node to run."""
+    graph = _with_a_note(trigger_targets, note_edge=note_edge)
+
+    assert _validate(graph) == []
+    executable, edges, _mapping = _prepare(graph)
+    assert sorted(node["id"] for node in executable) == ["e/p", "e/x", "start"]
+    assert all("e/n1" not in (edge["source"], edge["target"]) for edge in edges)
+    results = await _run(graph)
+    assert results["e/p"]["value"] == "q"
+
+
+async def test_trigger_targets_that_name_only_notes_start_every_inner_root():
+    """Notes are ignored, so naming only notes names no target, and a block
+    that names none starts each of its inner roots. It is also what the
+    definition becomes once the canvas rewrites it: ``definitionFromCanvas``
+    drops the note, and its id from the trigger targets."""
+    block = _block(
+        "tworoots",
+        [_note("n1"),
+         _node("x", "TextInput", {"value": "q"}), _node("p", "Print"),
+         _node("y", "TextInput", {"value": "r"}), _node("s", "Print")],
+        [_wire("x", "text", "p", "value"), _wire("y", "text", "s", "value")],
+        trigger_targets=("n1",),
+    )
+    graph = _graph([_node("start", "Start"), _node("e", "subgraph:tworoots")],
+                   [_trigger("start", "e")], [block])
+
+    assert _validate(graph) == []
+    _executable, edges, _mapping = _prepare(graph)
+    assert sorted(
+        edge["target"] for edge in edges if edge.get("type") == "trigger"
+    ) == ["e/x", "e/y"]
+    results = await _run(graph)
+    assert (results["e/p"]["value"], results["e/s"]["value"]) == ("q", "r")
+
+
+def test_a_block_holding_only_notes_that_nothing_triggers_is_left_alone():
+    graph = _graph(
+        [_node("start", "Start"), _node("x", "TextInput", {"value": "q"}),
+         _node("p", "Print"), _node("e", "subgraph:notes")],
+        [_trigger("start", "x"), _wire("x", "text", "p", "value")],
+        [_notes_only()],
+    )
+
+    assert _validate(graph) == []
+    executable, _edges, _mapping = _prepare(graph)
+    assert sorted(node["id"] for node in executable) == ["p", "start", "x"]
+
+
+def test_the_definition_every_instance_shares_keeps_its_note():
+    """A definition passed in as a model is the one object every instance of
+    the block reads, so the notes are left out of a copy of it."""
+    graph = _with_a_note()
+    definition = SubgraphDefinition(**graph["subgraphs"][0])
+    graph["subgraphs"] = [definition]
+    graph["nodes"].append(_node("e2", "subgraph:withnote"))
+    graph["edges"].append(_trigger("start", "e2"))
+
+    executable, _edges, _mapping = _prepare(graph)
+
+    assert sorted(node["id"] for node in executable) == [
+        "e/p", "e/x", "e2/p", "e2/x", "start"]
+    assert [node.id for node in definition.nodes] == ["n1", "x", "p"]
