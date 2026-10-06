@@ -626,9 +626,10 @@ export function tabHasContent(
  * the file it matched still holds it (`savedFile`). Asking whether to discard
  * a graph the file holds read as "your save did not work".
  *
- * Errs towards asking: an undo back to the saved graph, or entering and
- * leaving a block, moves `revision` too, and a revision cannot tell those
- * from an edit.
+ * Errs towards asking: an undo back to the saved graph moves `revision` too,
+ * and a revision cannot tell that from an edit. A step into or out of a block
+ * moves it as well, but carries the match along (`updateTabKeepingFileMatch`):
+ * what changes while a block is open moves the revision on its own.
  */
 export function tabHasUnsavedWork(
   tab: Pick<
@@ -3190,6 +3191,28 @@ function updateTabMatchingFile(
   });
 }
 
+/**
+ * `updateTab` for a step into or out of a block. The step swaps the canvas,
+ * so it moves `revision` (plugins hear it as a `graph` event, and a revision
+ * read before it no longer matches), but it is not an edit: whatever changes
+ * while a block is open moves the revision on its own. So a tab that matched
+ * its file before the step still matches after it. Without this, a look
+ * inside a block, or a save while a block is open, made the close x ask
+ * whether to discard a graph its file holds.
+ */
+function updateTabKeepingFileMatch(
+  tabs: TabState[],
+  tabId: string,
+  updater: (tab: TabState) => Partial<TabState>,
+): TabState[] {
+  return tabs.map((tab) => {
+    if (tab.id !== tabId) return tab;
+    const next = { ...tab, ...updater(tab) };
+    if (tab.savedRevision !== tab.revision) return next;
+    return { ...next, savedRevision: revisionAfter(tab, next) };
+  });
+}
+
 const initialState = loadTabs();
 
 export const useTabStore = create<TabStoreState>((rawSet, get) => {
@@ -3918,8 +3941,10 @@ export const useTabStore = create<TabStoreState>((rawSet, get) => {
 
   clearExecutionStatus: () =>
     set({
-      tabs: updateTab(get().tabs, get().activeTabId, (tab) => ({
-        nodes: tab.nodes.map((n) => ({
+      tabs: updateTab(get().tabs, get().activeTabId, (tab) => {
+        // Applied to the canvas on screen and, while a block is open, to the
+        // stashed top level (below).
+        const cleared = (nodes: Node<NodeData>[]) => nodes.map((n) => ({
           ...n,
           // `progress` too (#486): a run starts here, and the last run's final
           // frame would otherwise sit under the new run's running border --
@@ -3931,8 +3956,16 @@ export const useTabStore = create<TabStoreState>((rawSet, get) => {
             error: undefined,
             progress: undefined,
           },
-        })),
-      })),
+        }));
+        // The top-level canvas too, stashed while a block is open: the run
+        // reports there (`applyTabNodeUpdates`), and its last run's statuses
+        // would otherwise greet the user on the way out.
+        const [top, ...deeper] = tab.subgraphStack ?? [];
+        return {
+          nodes: cleared(tab.nodes),
+          ...(top ? { subgraphStack: [{ ...top, nodes: cleared(top.nodes) }, ...deeper] } : {}),
+        };
+      }),
     }),
 
   clear: () => {
@@ -4614,7 +4647,8 @@ export const useTabStore = create<TabStoreState>((rawSet, get) => {
       activeSegment: tab.activeSegment,
     };
     set({
-      tabs: updateTab(get().tabs, get().activeTabId, (t) => ({
+      // A step, not an edit: a saved tab stays saved while a block is open.
+      tabs: updateTabKeepingFileMatch(get().tabs, get().activeTabId, (t) => ({
         subgraphStack: [...t.subgraphStack, frame],
         nodes: inner,
         edges: innerEdges,
@@ -4655,7 +4689,8 @@ export const useTabStore = create<TabStoreState>((rawSet, get) => {
     // mutated inside a block is written to the tab, not swapped per level.
     const history = closeFrameHistory(frame, { ...tab, subgraphs });
     set({
-      tabs: updateTab(get().tabs, get().activeTabId, (t) => ({
+      // A step, not an edit: what changed while a block is open counted then.
+      tabs: updateTabKeepingFileMatch(get().tabs, get().activeTabId, (t) => ({
         subgraphStack: t.subgraphStack.slice(0, -1),
         nodes,
         edges,
@@ -4681,7 +4716,8 @@ export const useTabStore = create<TabStoreState>((rawSet, get) => {
     // and the tab's current overlays, which a flush does not touch.
     const history = closeFrameHistory(tab.subgraphStack[0], flushed);
     set({
-      tabs: updateTab(get().tabs, get().activeTabId, () => ({
+      // A step, not an edit: what changed while a block is open counted then.
+      tabs: updateTabKeepingFileMatch(get().tabs, get().activeTabId, () => ({
         nodes: flushed.nodes,
         edges: flushed.edges,
         subgraphs: flushed.subgraphs,
@@ -5261,7 +5297,11 @@ export const useTabStore = create<TabStoreState>((rawSet, get) => {
 
     // Build adjacency: source -> targets
     const adj = new Map<string, string[]>();
-    for (const edge of tab.edges) {
+    // The whole graph's wires and nodes, also while a block is open: a run
+    // sends the whole graph, so the hint walks what a run from the top level
+    // walks, not the open block's canvas.
+    const graph = flushSubgraphEditing(tab);
+    for (const edge of graph.edges) {
       if (!adj.has(edge.source)) adj.set(edge.source, []);
       adj.get(edge.source)!.push(edge.target);
     }
@@ -5292,7 +5332,8 @@ export const useTabStore = create<TabStoreState>((rawSet, get) => {
     // pass-through. Dirtiness travelling THROUGH the node is the same story,
     // which is why the BFS above is unfiltered.
     const bypassed = new Set(
-      tab.nodes.filter((n) => n.data.bypassed).map((n) => n.id),
+      // The whole graph's nodes, as above, while a block is open too.
+      graph.nodes.filter((n) => n.data.bypassed).map((n) => n.id),
     );
     return [...result].filter((id) => !bypassed.has(id));
   },
@@ -5327,7 +5368,12 @@ export const useTabStore = create<TabStoreState>((rawSet, get) => {
         const patches = updates.get(tab.id);
         if (!patches || patches.size === 0) return tab;
         let changed = false;
-        const nodes = tab.nodes.map((n) => {
+        // A run's ids are the top level's: a block's nodes report under its
+        // outermost card. So while a block is open (a run started there, or
+        // one still running when it was opened) they go to the top-level
+        // canvas stashed in the first frame, not to the block on screen.
+        const top = tab.subgraphStack?.[0];
+        const nodes = (top ? top.nodes : tab.nodes).map((n) => {
           const patch = patches.get(n.id);
           if (!patch) return n;
           changed = true;
@@ -5341,7 +5387,10 @@ export const useTabStore = create<TabStoreState>((rawSet, get) => {
         });
         if (!changed) return tab;
         anyTabChanged = true;
-        return { ...tab, nodes };
+        // The top-level canvas patched above, stashed while a block is open.
+        return top
+          ? { ...tab, subgraphStack: [{ ...top, nodes }, ...tab.subgraphStack.slice(1)] }
+          : { ...tab, nodes };
       });
       // A batch naming only stale tabs/nodes (a run whose graph was edited
       // mid-flight) leaves `tabs` out of the patch entirely, so the array

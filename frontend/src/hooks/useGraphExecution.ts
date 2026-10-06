@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef } from 'react';
 import type { ExecutionStatus } from '../types';
-import { useTabStore, type TabState } from '../store/tabStore';
+import { flushSubgraphEditing, useTabStore, type TabState } from '../store/tabStore';
 import {
   queueTabNodeProgress,
   queueTabNodeStatus,
@@ -200,13 +200,18 @@ export function useGraphExecution() {
       // say so; the user hears it once.
       let reportedRunId: string | null = null;
 
-      // A card the dead process was running never gets a frame of its own,
-      // and would keep its Running border, footer and epoch bar. Flushed
-      // first, so a node a replay has just painted running is included.
+      // A card a run left running never gets a frame of its own: one the dead
+      // process was running, or a block's card whose other inner nodes a Stop
+      // never ran (a run from inside a block too). It would keep its Running
+      // border, footer and epoch bar. Flushed first, so a node a replay has
+      // just painted running is included.
       const settleRunningNodes = () => {
         flushTabNodeUpdates();
         const live = useTabStore.getState().tabs.find((t) => t.id === tabId);
-        for (const node of live?.nodes ?? []) {
+        // The top-level canvas, where a run's statuses land: stashed in the
+        // first frame on a run from inside a block (`applyTabNodeUpdates`).
+        const topLevel = live?.subgraphStack?.[0]?.nodes ?? live?.nodes ?? [];
+        for (const node of topLevel) {
           if (node.data?.executionStatus === 'running') {
             queueTabNodeStatus(tabId, node.id, 'interrupted');
           }
@@ -221,6 +226,9 @@ export function useGraphExecution() {
       const endRun = (runId: string | null, runStatus: string) => {
         noteClosed(runId);
         useTabStore.getState().setTabStatus(tabId, TERMINAL_TAB_STATUS[runStatus] ?? 'idle');
+        // A Stop the server reports (`cancelled`) leaves the cards the live
+        // Stop does, on a run from inside a block too: settled the same.
+        if (runStatus === 'cancelled') settleRunningNodes();
         if (runStatus !== 'interrupted') return;
         settleRunningNodes();
         if (runId !== null && runId === reportedRunId) return;
@@ -277,9 +285,13 @@ export function useGraphExecution() {
           // screen -- a background tab's run must label its log from its
           // own nodes, never the active tab's (#163).
           const eventTab = store.tabs.find((t) => t.id === tabId);
-          const nodeLabel =
-            eventTab?.nodes.find((n) => n.id === data.node_id)?.data?.label ??
-            String(data.node_id).slice(0, 8);
+          // From the whole graph's top level: the server reports a node inside
+          // a block under its outermost card, and on a run from inside a block
+          // (or one still running when a block was opened) `nodes` holds only
+          // the open block's canvas.
+          const topNodes = eventTab ? flushSubgraphEditing(eventTab).nodes : [];
+          const nodeLabel = topNodes.find((n) => n.id === data.node_id)?.data?.label
+            ?? String(data.node_id).slice(0, 8);
 
           // Map the exception here, where `error_type` is still available --
           // the panels only ever see the composed line, and the type cannot be
@@ -487,6 +499,10 @@ export function useGraphExecution() {
           return;
         }
         noteClosed(data.run_id);
+        // A user's Stop: a block's card whose other inner nodes never ran gets
+        // no closing frame, on a run from inside a block or at the top level.
+        // Settled as a node that stopped early is: interrupted.
+        settleRunningNodes();
         const store = useTabStore.getState();
         store.setTabStatus(tabId, 'idle');
         store.addTabLog(tabId, { message: useI18n.getState().t('runLog.cancelled'), type: 'info' });
@@ -725,7 +741,13 @@ export function useGraphExecution() {
     // Block execution when the graph has no entry points. This mirrors the
     // backend `find_entry_points` so we fail fast with a toast instead of
     // sending a graph that will be rejected server-side.
-    const entryIds = findEntryPoints(tab.nodes, tab.edges);
+    //
+    // The whole graph's, also on a run from inside a block: the run sends the
+    // whole graph (`getSerializedGraph` closes every open level), and the open
+    // block's own canvas never holds a Start, so asking it refused every such
+    // run with "no entry point".
+    const whole = flushSubgraphEditing(tab);
+    const entryIds = findEntryPoints(whole.nodes, whole.edges);
     if (entryIds.length === 0) {
       // In the validation set (utils/validationToasts), so the next Run or a
       // tab switch takes it down.
