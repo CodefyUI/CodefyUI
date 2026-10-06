@@ -1,0 +1,30 @@
+/* A node card that threw while drawing (NodeCardBoundary). Card-sized, so the
+   canvas keeps its layout; the dashed red border says it is not the card. */
+.box {
+  min-width: 160px;
+  max-width: 240px;
+  padding: var(--sp-3) var(--sp-4);
+  background: var(--surface-raised);
+  border: 1px dashed var(--status-error);
+  border-radius: var(--radius-lg);
+  font-size: var(--fs-sm);
+  line-height: var(--lh-snug);
+  color: var(--text-secondary);
+}
+
+.name {
+  color: var(--text-primary);
+  font-weight: var(--fw-semibold);
+  overflow-wrap: anywhere;
+}
+
+.type {
+  color: var(--text-muted);
+  font-size: var(--fs-xs);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  overflow-wrap: anywhere;
+}
+
+.message {
+  margin-top: var(--sp-2);
+}

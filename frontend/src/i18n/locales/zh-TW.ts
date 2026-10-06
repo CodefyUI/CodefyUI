@@ -772,6 +772,8 @@ const zhTW: Record<TranslationKey, string> = {
   'heatmap.loadError': '無法載入：{error}',
   'heatmap.loadErrorHint': '請重新執行圖，或縮短輸入序列。',
   'heatmap.rowNormalised': '色階以列為單位正規化',
+  'viz.shape.tooManyDims': '維度太多，無法畫成熱圖',
+  'node.cardFailed': '這個節點無法顯示',
   'textInput.placeholder': '例如：The quick brown fox jumps over the lazy dog.',
   'textInput.charCount': '{count} 字元',
 

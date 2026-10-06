@@ -42,6 +42,7 @@ import AttentionHeatmapVizNode from '../Nodes/AttentionHeatmapVizNode';
 import AttentionMaskVizNode from '../Nodes/AttentionMaskVizNode';
 import EduCrossAttentionVizNode from '../Nodes/EduCrossAttentionVizNode';
 import EduKNNVizNode from '../Nodes/EduKNNVizNode';
+import { withNodeCardBoundaries } from '../Nodes/NodeCardBoundary';
 import { CustomConnectionLine } from './CustomConnectionLine';
 import { EdgeLaneProvider } from './EdgeLaneContext';
 import { SmartDataEdge } from './SmartDataEdge';
@@ -81,7 +82,9 @@ import { useI18n } from '../../i18n';
 import type { OutputSummary } from '../../types';
 import styles from './FlowCanvas.module.css';
 
-const nodeTypes: NodeTypes = {
+// Every card draws inside its own NodeCardBoundary: one that throws becomes a
+// small box naming the node, and the rest of the canvas keeps working.
+const nodeTypes: NodeTypes = withNodeCardBoundaries({
   baseNode: BaseNode,
   pluginNode: PluginNodeBridge,
   presetNode: PresetNode,
@@ -97,7 +100,7 @@ const nodeTypes: NodeTypes = {
   attentionMaskNode: AttentionMaskVizNode,
   eduCrossAttentionNode: EduCrossAttentionVizNode,
   eduKNNNode: EduKNNVizNode,
-};
+});
 
 const edgeTypes: EdgeTypes = {
   default: SmartDataEdge,

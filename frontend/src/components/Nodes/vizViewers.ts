@@ -47,35 +47,52 @@ function rankAtLeast(values: unknown, depth: number): boolean {
 }
 
 /**
+ * A tensor summary's inlined values, or null when it has none: the tensor was
+ * too large to inline, and the card offers the viewer, which fetches it. An
+ * empty tensor's `[]` is a value (HeatmapPlot says "No data"), and a 0-D
+ * tensor's one number -- null when it was NaN or ±inf -- is a one-cell
+ * matrix. Both used to read as too large and open a viewer showing nothing.
+ */
+function inlinedValues(values: unknown): unknown[] | null {
+  if (Array.isArray(values)) return values;
+  if (values === null || typeof values === 'number' || typeof values === 'boolean') {
+    return [[values]];
+  }
+  return null;
+}
+
+/**
  * Attention weights as the heatmap draws them: `[seq, seq]` or `[H, seq, seq]`.
  * A batched `[B, H, seq, seq]` collapses to batch 0.
  */
 export function attentionWeights(values: unknown): number[][] | number[][][] | null {
-  if (!Array.isArray(values) || values.length === 0) return null;
-  if (rankAtLeast(values, 4)) return (values as number[][][][])[0];
-  return values as number[][] | number[][][];
+  const v = inlinedValues(values);
+  if (v === null) return null;
+  if (rankAtLeast(v, 4)) return (v as number[][][][])[0];
+  return v as number[][] | number[][][];
 }
 
 /** Per-head weights as `[H, seq, seq]`; a batched 4-D tensor collapses to batch 0. */
 export function attentionHeads(values: unknown): number[][][] | null {
-  if (!Array.isArray(values) || values.length === 0) return null;
-  if (rankAtLeast(values, 4)) return (values as number[][][][])[0];
-  return values as number[][][];
+  const v = inlinedValues(values);
+  if (v === null) return null;
+  if (rankAtLeast(v, 4)) return (v as number[][][][])[0];
+  return v as number[][][];
 }
 
 /** Single-head weights as `[seq, seq]`; a `[1, seq, seq]` tensor collapses to its one head. */
 export function selfAttentionWeights(values: unknown): number[][] | null {
-  if (!Array.isArray(values) || values.length === 0) return null;
-  if (rankAtLeast(values, 3)) return (values as number[][][])[0];
-  return values as number[][];
+  const v = inlinedValues(values);
+  if (v === null) return null;
+  if (rankAtLeast(v, 3)) return (v as number[][][])[0];
+  return v as number[][];
 }
 
 /** A boolean / 0-1 mask as 0/1 numbers, row by row. */
 export function maskMatrix(values: unknown): number[][] | null {
-  if (!Array.isArray(values) || values.length === 0) return null;
-  return (values as unknown[]).map((row) =>
-    Array.isArray(row) ? row.map((x) => (x ? 1 : 0)) : [],
-  );
+  const v = inlinedValues(values);
+  if (v === null) return null;
+  return v.map((row) => (Array.isArray(row) ? row.map((x) => (x ? 1 : 0)) : []));
 }
 
 /** A `LIST[str]` port's values as strings, or undefined when the port is empty. */
@@ -84,9 +101,13 @@ export function labelList(values: unknown): string[] | undefined {
   return values.map((s) => String(s));
 }
 
-/** `[N, 2]` coordinates plus an optional label list, as scatter points. */
+/**
+ * `[N, 2]` coordinates plus an optional label list, as scatter points; null
+ * only when the summary inlined no values. An empty `[0, 2]` tensor is no
+ * points (ScatterPlot says "No data"), not a graph that has yet to run.
+ */
 export function scatterPoints(coords: unknown, labels: unknown): ScatterPoint[] | null {
-  if (!Array.isArray(coords) || coords.length === 0) return null;
+  if (!Array.isArray(coords)) return null;
   return coords.map((row, i) => {
     const r = Array.isArray(row) ? row : [];
     const x = typeof r[0] === 'number' ? r[0] : 0;

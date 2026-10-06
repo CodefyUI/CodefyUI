@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import { render, screen, fireEvent, within } from '@testing-library/react';
+import { useI18n } from '../../i18n';
 import { HeatmapPlot, detectCausalPattern, valueToColor } from './HeatmapPlot';
 
 afterEach(() => {
@@ -413,4 +414,101 @@ describe('HeatmapPlot', () => {
     // Per-row min-max stretch: the row's own max reaches the top of the ramp.
     expect(colorT(container, 0, 1)).toBe('1.000');
   });
+});
+
+// A card hands HeatmapPlot whatever tensor reached its port -- AttentionHeatmap
+// passes any shape through -- and a NaN or ±inf cell arrives as null (the
+// backend's json_safe). A 1-D tensor threw "is not iterable" during render,
+// which unmounted the whole page; a null or boolean cell threw on hover.
+describe('HeatmapPlot given a tensor that is not [seq, seq] or [H, seq, seq]', () => {
+  const cellsOf = (container: HTMLElement) =>
+    Array.from(container.querySelectorAll('rect[data-i]')) as SVGRectElement[];
+
+  function hover(container: HTMLElement, i: number, j: number): HTMLElement {
+    const cell = container.querySelector(`rect[data-i="${i}"][data-j="${j}"]`) as SVGRectElement;
+    fireEvent.mouseEnter(cell, { clientX: 1, clientY: 1 });
+    return document.body.querySelector('[class*="tooltip"]') as HTMLElement;
+  }
+
+  it('draws a 1-D tensor as one row, row-normalised', () => {
+    const { container } = render(<HeatmapPlot data={[0.1, 0.4, 0.2, 0.3]} normalizePerRow />);
+    const cells = cellsOf(container);
+    expect(cells.map((c) => c.getAttribute('data-i'))).toEqual(['0', '0', '0', '0']);
+    // The row's own min-max stretch still applies.
+    expect(cells[0].getAttribute('data-color-t')).toBe('0.000');
+    expect(cells[1].getAttribute('data-color-t')).toBe('1.000');
+  });
+
+  it('draws a 1-D tensor on the absolute scale too', () => {
+    const { container } = render(<HeatmapPlot data={[0.25, 0.75]} />);
+    expect(cellsOf(container).map((c) => c.getAttribute('data-color-t'))).toEqual(['0.250', '0.750']);
+  });
+
+  it('draws the row as a strip of square cells, not stretched to the panel height', () => {
+    const { container } = render(
+      <HeatmapPlot data={[0.1, 0.4, 0.2, 0.3]} panelWidth={220} panelHeight={220} />,
+    );
+    const svg = container.querySelector('svg') as SVGSVGElement;
+    expect(Number(svg.getAttribute('height'))).toBeLessThan(100);
+    const cell = cellsOf(container)[0];
+    expect(Number(cell.getAttribute('height'))).toBeCloseTo(Number(cell.getAttribute('width')), 5);
+  });
+
+  it('names a strip cell by its one index and labels the cells, not the row', () => {
+    const { container } = render(<HeatmapPlot data={[0.1, 0.4]} rowLabels={['a', 'b']} />);
+    expect(Array.from(container.querySelectorAll('text')).map((el) => el.textContent)).toEqual(['a', 'b']);
+    expect(within(hover(container, 0, 1)).getByText('w[1] = 0.400')).toBeTruthy();
+  });
+
+  it('draws a 0-D value as one cell', () => {
+    const { container } = render(<HeatmapPlot data={0.5 as unknown as number[]} />);
+    expect(cellsOf(container).length).toBe(1);
+  });
+
+  it('greys out a NaN / inf cell, which arrives as null, and survives hovering it', () => {
+    const { container } = render(
+      <HeatmapPlot data={[[0.5, null], [0.2, 0.8]] as unknown as number[][]} normalizePerRow />,
+    );
+    const missing = container.querySelector('rect[data-i="0"][data-j="1"]') as SVGRectElement;
+    expect(missing.getAttribute('class')).toMatch(/noValue/);
+    expect(within(hover(container, 0, 1)).getByText('w[0, 1] = —')).toBeTruthy();
+    // The row's other cell still gets the full ramp to itself.
+    expect(colorTOf(container, 0, 0)).toBe('0.500');
+  });
+
+  it('reads a boolean tensor as 1 / 0 and survives hovering it', () => {
+    const { container } = render(<HeatmapPlot data={[[true, false]] as unknown as number[][]} />);
+    expect(cellsOf(container).map((c) => c.getAttribute('data-color-t'))).toEqual(['1.000', '0.000']);
+    expect(within(hover(container, 0, 0)).getByText('w[0, 0] = 1.000')).toBeTruthy();
+  });
+
+  it('says a tensor of more than three dimensions cannot be drawn', () => {
+    const { container } = render(<HeatmapPlot data={[[[[0.5]]]] as unknown as number[][][]} />);
+    expect(screen.getByText(useI18n.getState().t('viz.shape.tooManyDims'))).toBeTruthy();
+    expect(cellsOf(container).length).toBe(0);
+  });
+
+  it('shows "No data" for a tensor with no cells, or for no tensor at all', () => {
+    for (const data of [[], [[]], [[], []], [[[]]], null, undefined, 'abc']) {
+      const { unmount } = render(<HeatmapPlot data={data as unknown as number[][]} />);
+      expect(screen.getByText(/no data/i)).toBeTruthy();
+      unmount();
+    }
+  });
+
+  it('survives rows that are not lists of numbers', () => {
+    const { container } = render(
+      <HeatmapPlot data={[[0.1, 'x'], 0.3, [[0.2]]] as unknown as number[][]} normalizePerRow />,
+    );
+    for (const cell of cellsOf(container)) {
+      fireEvent.mouseEnter(cell, { clientX: 1, clientY: 1 });
+    }
+    expect(within(document.body.querySelector('[class*="tooltip"]') as HTMLElement).getByText(/= —/)).toBeTruthy();
+  });
+
+  function colorTOf(container: HTMLElement, i: number, j: number): string | null {
+    return container
+      .querySelector(`rect[data-i="${i}"][data-j="${j}"]`)
+      ?.getAttribute('data-color-t') ?? null;
+  }
 });

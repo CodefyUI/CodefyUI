@@ -58,6 +58,12 @@
   stroke-width: 1.5;
 }
 
+/* A NaN or ±inf cell: grey, off every colour ramp, so it cannot read as a
+   weight. */
+.noValue {
+  fill: var(--surface-active);
+}
+
 /* Real SVG <text> elements (see HeatmapPlot.tsx) — rem does not reliably
    apply here, so font-size stays in px per the migration contract's SVG
    exception, just raised to the 11px floor instead of 9px/10px. */
@@ -86,6 +92,8 @@
   color: var(--text-muted);
   font-size: var(--fs-sm);
   font-style: italic;
+  /* The too-many-dimensions note can wrap on a card. */
+  text-align: center;
 }
 
 .tooltip {

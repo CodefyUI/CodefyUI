@@ -85,10 +85,13 @@ describe('EmbeddingScatterVizNode', () => {
     expect(screen.getByText(useI18n.getState().t('scatter.runHint'))).toBeTruthy();
   });
 
-  it('shows the run hint when points_2d.values is empty', () => {
-    seed({ points_2d: { type: 'tensor', values: [] } });
+  // EmbeddingScatter returns a [0, 2] tensor for no embeddings. The run
+  // happened, so the run hint was wrong about it.
+  it('says an empty tensor has no data, not that the graph has not run', () => {
+    seed({ points_2d: { type: 'tensor', shape: [0, 2], values: [] } });
     renderNode();
-    expect(screen.getByText(useI18n.getState().t('scatter.runHint'))).toBeTruthy();
+    expect(screen.getByText(useI18n.getState().t('plot.noData'))).toBeTruthy();
+    expect(screen.queryByText(useI18n.getState().t('scatter.runHint'))).toBeNull();
   });
 
   it('shows the run hint when points_2d.values is not an array', () => {
