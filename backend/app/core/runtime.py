@@ -28,6 +28,28 @@ def initialize_runtime() -> dict[str, int]:
     return rediscover_now()
 
 
+def use_preset_copies(definitions: Iterable[dict]) -> None:
+    """Register the preset copies an exported script carries, each in place
+    of any preset of its name that discovery found here.
+
+    Map runs the preset its ``subgraph`` setting names, looked up in the
+    preset registry when it runs. Discovery fills that registry from this
+    installation alone -- its built-in presets, the user presets folder and
+    its plugin packs -- and a grader's machine has none of the presets a
+    student saved. So the exporter copies each preset the graph's Map nodes
+    run into the script, as the canvas had it
+    (``codegen._presets_run_by_name``), and the script hands the copies here
+    after discovery: wherever it runs, it runs what the canvas ran.
+    """
+    from ..schemas.models import PresetDefinition
+    from .preset_registry import preset_registry
+
+    # Copies of INSTALLED presets, so not a graph's embedded preset
+    # definitions (its ``presets[]``), which Map never reads.
+    for raw in definitions:
+        preset_registry.add(PresetDefinition.model_validate(raw))
+
+
 def initialize_export_runtime(required_types: Iterable[str]) -> list[str]:
     """:func:`initialize_runtime` for an exported script, which lists its types.
 

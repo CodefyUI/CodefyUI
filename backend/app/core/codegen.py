@@ -7,9 +7,11 @@ order — while each node's *behavior* stays delegated to the canonical node
 implementation through :func:`app.core.graph_engine.invoke_node`, the same
 helper the engine itself uses.  Presets are expanded here, at export time,
 with the engine's own :func:`prepare_executable_graph`, so the script runs
-exactly the executable graph the canvas ran on this machine.  The generated
-file does not need a running CodefyUI server, but it does need to be
-launched with a compatible CodefyUI backend environment.
+exactly the executable graph the canvas ran on this machine.  A preset a node
+names in a setting instead (Map's ``subgraph``) is looked up when that node
+runs, so the file carries a copy of it (:func:`_presets_run_by_name`).  The
+generated file does not need a running CodefyUI server, but it does need to
+be launched with a compatible CodefyUI backend environment.
 
 Injection safety: every graph-controlled string (node IDs, types, names,
 labels, paths, parameters, port names) is embedded only inside
@@ -37,6 +39,7 @@ from .api_contract import (
 from .graph_engine import (
     SUBGRAPH_TYPE_PREFIX,
     BypassLink,
+    GraphValidationError,
     build_preset_fallback,
     outermost_container,
     prepare_executable_graph,
@@ -45,7 +48,7 @@ from .graph_engine import (
 )
 from .node_base import ParamType
 from .node_registry import registry
-from .secret_params import scrub_graph_secrets
+from .secret_params import scrub_graph_secrets, scrub_preset_definition_secrets
 
 
 # ── Identifier sanitizing ────────────────────────────────────────────────
@@ -711,6 +714,88 @@ def _static_problems(
     return []
 
 
+# ── Presets a node runs by name ──────────────────────────────────────────
+
+#: Emitted only into a script that carries preset copies, so every other
+#: export stays byte for byte what it was. ``run_graph`` calls it first,
+#: after the discovery that empties the preset registry and refills it from
+#: the machine the script runs on.
+_PRESET_COPY_SETUP = '''def _use_preset_copies():
+    """Let the graph's nodes find the presets in _PRESET_COPIES by name."""
+    try:
+        from app.core.runtime import use_preset_copies
+    except ImportError:
+        # A CodefyUI older than this file has no such call: there a node
+        # finds a preset only among the ones installed where it runs.
+        return
+    use_preset_copies(_PRESET_COPIES)
+'''
+
+
+def _presets_run_by_name(nodes: list[dict], order: list[str]) -> list[dict]:
+    """The presets the executable graph runs by name, for the script to carry.
+
+    A preset card is expanded at export time and leaves nothing to look up.
+    A preset a node names is different: Map looks the name up in the preset
+    registry when it runs, and an exported script's registry holds only what
+    discovery finds where the script runs -- the built-in presets, the user
+    presets folder and the plugin packs. A grader's machine has none of the
+    presets a student saved, so such a script stopped there with ``Subgraph
+    '<name>' not found`` although the canvas ran it.
+
+    Each name is looked up as Map looks it up on the canvas: in this server's
+    registry, never in the graph's own ``presets[]``, which Map does not read
+    (:meth:`~app.core.preset_registry.PresetRegistry.named_presets`, which
+    also follows a Map inside a preset found). Each preset comes back once,
+    as the parts Map runs (nodes, edges, exposed ports), with SECRET values
+    blanked like the rest of the file.
+
+    Raises :class:`GraphValidationError` for a name the registry does not
+    have. Validation refuses that before this is reached, in the same words
+    (``validate_graph``); this stands for a registry that lost the preset in
+    between, since a script that fails on the grader's machine is worse.
+    """
+    from .preset_registry import preset_registry
+
+    node_by_id = {node["id"]: node for node in nodes}
+    found: dict[str, dict] = {}
+    for named in preset_registry.named_presets(
+        node_by_id[node_id] for node_id in order
+    ):
+        definition = named.definition
+        if definition is None:
+            raise GraphValidationError(named.refusal())
+        if named.name in found:
+            continue
+        found[named.name] = {
+            "preset_name": named.name,
+            "nodes": [
+                {"id": inner.id, "type": inner.type,
+                 "params": copy.deepcopy(inner.params)}
+                for inner in definition.nodes
+            ],
+            "edges": [
+                {"source": edge.source, "sourceHandle": edge.sourceHandle,
+                 "target": edge.target, "targetHandle": edge.targetHandle}
+                for edge in definition.edges
+            ],
+            "exposed_inputs": [
+                {"name": port.name, "internal_node": port.internal_node,
+                 "internal_port": port.internal_port}
+                for port in definition.exposed_inputs
+            ],
+            "exposed_outputs": [
+                {"name": port.name, "internal_node": port.internal_node,
+                 "internal_port": port.internal_port}
+                for port in definition.exposed_outputs
+            ],
+        }
+
+    presets = list(found.values())
+    scrub_preset_definition_secrets(presets)
+    return presets
+
+
 def generate_python(
     nodes: list[dict],
     edges: list[dict],
@@ -746,6 +831,13 @@ def generate_python(
     *device* is the graph's own ``settings.device``, baked in as
     ``GRAPH_DEVICE`` and the default for the generated ``--device``;
     ``None`` bakes ``None`` and the script defaults to ``cpu``.
+
+    A preset that a Map node runs by name travels in the file as a copy in
+    ``_PRESET_COPIES``, which the script puts in place of any preset of that
+    name where it runs (:func:`_presets_run_by_name`): ``python x.py`` in an
+    empty folder on another machine runs what the canvas ran. A Map naming a
+    preset this server does not have raises :class:`GraphValidationError`.
+    A graph whose nodes name no preset gets exactly the file it got before.
     """
     preset_fallback = build_preset_fallback(presets or [])
     exec_nodes, exec_edges, internal_to_preset = prepare_executable_graph(
@@ -761,6 +853,9 @@ def generate_python(
     exec_nodes = copy.deepcopy(exec_nodes)
     scrub_graph_secrets(exec_nodes)
     order = topological_sort(exec_nodes, exec_edges)
+    # Before anything is planned: a Map whose preset this server does not
+    # have refuses the export here.
+    preset_copies = _presets_run_by_name(exec_nodes, order)
 
     node_by_id = {node["id"]: node for node in exec_nodes}
     seq_by_id = {node_id: seq for seq, node_id in enumerate(order, start=1)}
@@ -1225,7 +1320,12 @@ def generate_python(
     has_graph_output = any(
         node.get("type") == GRAPH_OUTPUT_TYPE for node in nodes
     )
-    required_types = sorted({node.get("type", "") for node in exec_nodes})
+    required_types = sorted(
+        {node.get("type", "") for node in exec_nodes}
+        # A preset copy's nodes are checked, and their plugin packs loaded, at
+        # startup like the graph's own: Map would find out mid-run.
+        | {inner["type"] for preset in preset_copies for inner in preset["nodes"]}
+    )
 
     literals = (
         f"GRAPH_NAME = {_literal(name)}\n"
@@ -1252,6 +1352,17 @@ def generate_python(
         "# CodefyUI that they name.\n"
         f"_REQUIRED_NODE_TYPES = {_literal(required_types)}\n"
     )
+    if preset_copies:
+        literals += (
+            "\n"
+            "# Copies of the presets this graph's nodes run by name (Map's\n"
+            "# 'subgraph' setting), as this CodefyUI had them when the file was\n"
+            "# generated: data, not code. Each takes the place of any preset of\n"
+            "# its name where the script runs, so it runs what the canvas ran.\n"
+            "_PRESET_COPIES = [\n"
+            + "".join(f"    {_literal(preset)},\n" for preset in preset_copies)
+            + "]\n"
+        )
 
     # ── Assembly ─────────────────────────────────────────────────────────
     sections: list[str] = [_SCRIPT_HEADER, literals, _RUNTIME_PRELUDE]
@@ -1288,9 +1399,14 @@ def generate_python(
         f"    flow_{index}(ctx, results, provided)\n"
         for index in range(1, len(flows) + 1)
     )
+    preset_setup = ""
+    if preset_copies:
+        flow_sections.append(_PRESET_COPY_SETUP)
+        preset_setup = "    _use_preset_copies()\n"
     flow_sections.append(
         "def run_graph(ctx, provided):\n"
         '    """Execute every flow in engine order; return {node_id: outputs}."""\n'
+        f"{preset_setup}"
         "    results = {}\n"
         f"{flow_calls}"
         "    return results\n"

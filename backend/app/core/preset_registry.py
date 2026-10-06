@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import json
 import logging
+from collections import deque
+from collections.abc import Iterable, Iterator, Mapping
 from pathlib import Path
-from typing import Any
+from typing import Any, NamedTuple
 
 from ..schemas.models import (
     ExposedParamSchema,
@@ -15,8 +17,42 @@ from ..schemas.models import (
 )
 from .device_utils import device_options
 from .node_registry import NodeRegistry
+from .validation_issues import ValidationIssue, validation_issue
 
 logger = logging.getLogger(__name__)
+
+#: Node types that run a preset they NAME in a param, rather than one placed
+#: as a card, and that param. Map is the only one: its ``subgraph`` setting
+#: names a preset that it looks up in this registry when it runs
+#: (``map_node.py``) -- the installed presets, never a graph's own
+#: ``presets[]``.
+PRESET_NAME_PARAMS: dict[str, str] = {"Map": "subgraph"}
+
+
+class NamedPreset(NamedTuple):
+    """One node that runs a preset by name (:meth:`PresetRegistry.named_presets`)."""
+
+    #: The node whose setting holds the name: one of the graph's own, or a
+    #: node of a preset found before it, as ``<map>__<inner>``.
+    node_id: str
+    #: The setting that holds the name.
+    param: str
+    name: str
+    #: What the registry has under the name; None when it has nothing.
+    definition: PresetDefinition | None
+    #: The one whose preset this node is in; None for one of the graph's own.
+    inside: NamedPreset | None
+
+    def refusal(self) -> ValidationIssue:
+        """What validation and an export say when the registry has no such
+        preset: the code a card naming a missing preset gets, so a client
+        says both in the same words."""
+        return validation_issue(
+            "unknown_preset",
+            f"Unknown preset: {self.name} (named by the '{self.param}' "
+            f"setting of node {self.node_id})",
+            node_id=self.node_id, preset=self.name,
+        )
 
 
 class PresetRegistry:
@@ -48,11 +84,64 @@ class PresetRegistry:
         """
         raw = json.loads(path.read_text(encoding="utf-8"))
         preset = self._load_and_resolve(raw, node_registry)
-        self._presets[preset.preset_name] = preset
+        self.add(preset)
         return preset
+
+    def add(self, preset: PresetDefinition) -> None:
+        """Register *preset* under its name, in place of any preset of that
+        name. :meth:`load_file` registers what it read this way. A definition
+        with no file is registered with this alone: the copy of a preset that
+        an exported script carries (``runtime.use_preset_copies``).
+        """
+        self._presets[preset.preset_name] = preset
 
     def get(self, name: str) -> PresetDefinition | None:
         return self._presets.get(name)
+
+    def named_presets(self, nodes: Iterable[Mapping[str, Any]]) -> Iterator[NamedPreset]:
+        """Each node that runs a preset by name, with what this registry has
+        under that name.
+
+        *nodes* are graph nodes (``id``, ``type``, ``data.params``). A node
+        runs a preset by name when its type is in :data:`PRESET_NAME_PARAMS`
+        and that param holds a name; an empty one names nothing, and Map
+        refuses it when it runs. The graph's own nodes come first, in the
+        order given, then the nodes of each preset found, read once each: a
+        Map in a preset names the next one, under the id ``<map>__<inner>``
+        Map gives its body's nodes when it runs.
+        """
+        pending: deque[NamedPreset] = deque()
+
+        def queue(node_id: str, node_type: Any, params: Any,
+                  inside: NamedPreset | None) -> None:
+            param = (
+                PRESET_NAME_PARAMS.get(node_type)
+                if isinstance(node_type, str) else None
+            )
+            if param is None or not isinstance(params, Mapping):
+                return
+            name = params.get(param)
+            if isinstance(name, str) and name:
+                pending.append(
+                    NamedPreset(node_id, param, name, self.get(name), inside))
+
+        for node in nodes:
+            data = node.get("data")
+            queue(
+                str(node.get("id", "")),
+                node.get("type"),
+                data.get("params") if isinstance(data, Mapping) else None,
+                None,
+            )
+        read: set[str] = set()
+        while pending:
+            named = pending.popleft()
+            yield named
+            if named.definition is None or named.name in read:
+                continue
+            read.add(named.name)
+            for inner in named.definition.nodes:
+                queue(f"{named.node_id}__{inner.id}", inner.type, inner.params, named)
 
     def all(self) -> list[PresetDefinition]:
         return list(self._presets.values())
