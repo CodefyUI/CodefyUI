@@ -48,6 +48,7 @@ import { useUIStore } from './uiStore';
 import { useI18n, type TranslationKey } from '../i18n';
 import { useProjectStore } from './projectStore';
 import { markParamEdit, paramEditContinues, paramEditKeepAlive } from './paramEditUndo';
+import { pushRemovalStep } from './removalUndo'; // a deletion is one undo step
 import {
   effectivePresets,
   mergeOwnedPresets,
@@ -3180,10 +3181,11 @@ export const useTabStore = create<TabStoreState>((rawSet, get) => {
         get().pushUndoSnapshot();
       }
     }
-    // Snapshot on node removal via Delete key
+    // React Flow sends a deletion's wires to `onEdgesChange` just before its
+    // nodes come here; `pushRemovalStep` makes the two one undo step.
     const hasRemove = changes.some((c) => c.type === 'remove');
     if (hasRemove) {
-      get().pushUndoSnapshot();
+      pushRemovalStep(get);
     }
     set({
       tabs: updateTab(get().tabs, get().activeTabId, (tab) => {
@@ -3335,7 +3337,9 @@ export const useTabStore = create<TabStoreState>((rawSet, get) => {
   onEdgesChange: (changes) => {
     const hasRemove = changes.some((c) => c.type === 'remove');
     if (hasRemove) {
-      get().pushUndoSnapshot();
+      // A deleted node's wires come here just before the node itself goes
+      // to `onNodesChange`: one undo step for the two (`removalUndo.ts`).
+      pushRemovalStep(get);
     }
     set({
       tabs: updateTab(get().tabs, get().activeTabId, (tab) => ({
