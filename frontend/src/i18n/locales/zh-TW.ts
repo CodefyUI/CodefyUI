@@ -27,7 +27,7 @@ const zhTW: Record<TranslationKey, string> = {
   'toolbar.load.fail': '載入失敗：{error}',
   'toolbar.import.fail': '匯入失敗：{error}',
   'toolbar.clear': '清除畫布',
-  'toolbar.clear.confirm': '確定要清除畫布嗎？所有未儲存的內容將會遺失。',
+  'toolbar.clear.confirm': '清除畫布上的所有內容？可以按 Ctrl+Z 復原。',
 
   // Menu: Export
   'toolbar.menu.export': '匯出',

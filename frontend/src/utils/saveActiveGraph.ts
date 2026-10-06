@@ -1,6 +1,6 @@
 import { saveGraph, GraphExistsError } from '../api/rest';
 import type { GraphSaveResult } from '../api/rest';
-import { useTabStore } from '../store/tabStore';
+import { graphFilesHeldBy, useTabStore } from '../store/tabStore';
 import { useProjectStore } from '../store/projectStore';
 import { useToastStore } from '../store/toastStore';
 import { useI18n } from '../i18n';
@@ -400,10 +400,15 @@ export async function saveActiveGraph(opts: { saveAs?: boolean } = {}): Promise<
       // this save just made true. Over-folding costs a dialog (JS
       // `toLowerCase` folds more than NTFS does, the Kelvin sign and capital
       // sharp s among them); under-folding costs a graph.
-      for (const other of useTabStore.getState().tabs) {
-        const stem = other.currentGraphFile;
-        if (other.id === tab.id || stem === null || stem === savedFile) continue;
-        if (stem.toLowerCase() !== savedFile.toLowerCase()) continue;
+      //
+      // A binding an undo would bring back counts too: a tab emptied by Clear
+      // Canvas is bound to nothing while its history still holds the file
+      // (`graphFilesHeldBy`), and `rebindGraphFile` drops those as well.
+      const held = new Set(
+        useTabStore.getState().tabs.flatMap((other) => (other.id === tab.id ? [] : graphFilesHeldBy(other))),
+      );
+      for (const stem of held) {
+        if (stem === savedFile || stem.toLowerCase() !== savedFile.toLowerCase()) continue;
         liveStore.rebindGraphFile(stem, null, tab.id);
       }
     }

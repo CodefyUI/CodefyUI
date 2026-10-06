@@ -1,7 +1,6 @@
 import { useI18n } from '../i18n';
 import { useNodeDefStore } from '../store/nodeDefStore';
 import {
-  tabHasContent,
   useTabStore,
   whenTabsHydrated,
   type GraphDocument,
@@ -10,6 +9,7 @@ import { useToastStore } from '../store/toastStore';
 import { useUIStore } from '../store/uiStore';
 import { resolveUnboundDocument } from './openExample';
 import { SUBGRAPH_TYPE_PREFIX } from './subgraph';
+import { canFillTab } from './tabFill';
 import type { ParsedWorkspace, ParsedWorkspaceTab } from './workspaceFile';
 import { MAX_WORKSPACE_TABS } from './workspaceLimits';
 
@@ -184,14 +184,13 @@ export async function importWorkspaceFile(
   // again, so nothing can interleave with the steps that follow.
   await whenTabsHydrated();
 
-  // Step 4. "Lone empty tab": exactly one tab, empty, not transient, not running.
+  // Step 4. "Lone empty tab": exactly one tab, and one an Import would fill
+  // (`canFillTab`): empty, nothing to undo or redo, opened by the user, not
+  // transient, not running. Closing a tab takes its undo history with it.
   // Read AFTER the wait: before it, the one tab is only the boot placeholder.
   const before = useTabStore.getState().tabs;
-  const lone = before.length === 1 ? before[0] : null;
-  const loneEmptyTabId =
-    lone !== null && !tabHasContent(lone) && !lone.transient && lone.status !== 'running'
-      ? lone.id
-      : null;
+  const lone = before.length === 1 ? before[0] : undefined;
+  const loneEmptyTabId = canFillTab(lone) ? lone.id : null;
 
   // Step 5. In file order, each entry on its own.
   const results: WorkspaceEntryResult[] = [];

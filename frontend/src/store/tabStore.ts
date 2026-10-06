@@ -191,6 +191,15 @@ interface UndoSnapshot {
    */
   segmentGroups: SegmentGroup[];
   activeSegment: SegmentGroup | null;
+  /**
+   * Clear Canvas only (`documentFieldsOf`): the document fields a Clear
+   * resets along with the graph, as they were. Absent from every other frame.
+   */
+  description?: TabState['description'];
+  graphDevice?: TabState['graphDevice'];
+  currentGraphFile?: TabState['currentGraphFile'];
+  currentGraphName?: TabState['currentGraphName'];
+  readOnly?: TabState['readOnly'];
 }
 
 /**
@@ -1300,6 +1309,100 @@ function undoFrameOf(state: UndoSnapshot): UndoSnapshot {
     // the same property that lets the arrays above be shallow.
     activeSegment: state.activeSegment,
   };
+}
+
+/**
+ * Clear Canvas: the document fields Clear resets besides the graph -- the
+ * file binding, the description, the device and the read-only flag. Clear's
+ * frame holds them as they were, so its undo brings back the whole tab:
+ * without them the graph came back unbound, Save turned into Save As, and
+ * writing it over its file dropped the description and the device. No other
+ * frame holds them, because nothing else that changes them is an undo step.
+ */
+type DocumentFields = Pick<
+  TabState,
+  'description' | 'graphDevice' | 'currentGraphFile' | 'currentGraphName' | 'readOnly'
+>;
+
+function documentFieldsOf(tab: TabState): DocumentFields {
+  return {
+    description: tab.description,
+    graphDevice: tab.graphDevice,
+    currentGraphFile: tab.currentGraphFile,
+    currentGraphName: tab.currentGraphName,
+    readOnly: tab.readOnly,
+  };
+}
+
+/**
+ * Clear Canvas: the frame undo leaves for redo, and redo for undo, in answer
+ * to the top of `stack`, the frame about to be applied. It holds the document
+ * fields as they are now exactly when that frame holds them, so a redone Clear
+ * unbinds the tab again and can be undone again.
+ */
+function answeringFrame(tab: TabState, stack: UndoSnapshot[]): UndoSnapshot {
+  const frame = undoFrameOf(tab);
+  return 'currentGraphFile' in stack[stack.length - 1]
+    ? { ...frame, ...documentFieldsOf(tab) }
+    : frame;
+}
+
+/**
+ * Clear Canvas: `rebindGraphFile` for the bindings a tab's history holds, in
+ * every level's stacks, those an open block keeps for the levels above it
+ * included. Otherwise an undo could bring back a binding to a file renamed,
+ * deleted or written over since, and the next Save would write there without
+ * asking. Returns the same tab when no frame holds `from`.
+ */
+function rebindHistory(
+  tab: TabState,
+  from: string,
+  to: { file: string; name: string | null } | null,
+): TabState {
+  // Optional-chained, like `flushSubgraphEditing`: tests build tab objects
+  // without the stacks.
+  const holds = (stack: UndoSnapshot[]) => stack?.some((f) => f.currentGraphFile === from) ?? false;
+  const levels = tab.subgraphStack ?? [];
+  if (
+    !holds(tab.undoStack) &&
+    !holds(tab.redoStack) &&
+    !levels.some((level) => holds(level.undoStack) || holds(level.redoStack))
+  ) {
+    return tab;
+  }
+  const rebind = (stack: UndoSnapshot[]) =>
+    holds(stack)
+      ? stack.map((f) =>
+          f.currentGraphFile === from
+            ? { ...f, currentGraphFile: to?.file ?? null, currentGraphName: to?.name ?? null }
+            : f)
+      : stack;
+  return {
+    ...tab,
+    undoStack: rebind(tab.undoStack),
+    redoStack: rebind(tab.redoStack),
+    subgraphStack: levels.map((level) => ({
+      ...level,
+      undoStack: rebind(level.undoStack),
+      redoStack: rebind(level.redoStack),
+    })),
+  };
+}
+
+/**
+ * Clear Canvas: every file a tab is bound to, now or after an undo or redo --
+ * its own binding and the ones its history holds, where `rebindHistory` looks.
+ * For a caller that matches bindings by something other than the exact stem.
+ */
+export function graphFilesHeldBy(tab: TabState): string[] {
+  const frames = [
+    ...(tab.undoStack ?? []),
+    ...(tab.redoStack ?? []),
+    ...(tab.subgraphStack ?? []).flatMap((level) => [...level.undoStack, ...level.redoStack]),
+  ];
+  return [tab.currentGraphFile, ...frames.map((f) => f.currentGraphFile)].filter(
+    (file): file is string => typeof file === 'string',
+  );
 }
 
 /** One overlay compared by value, `null`s included (#200 item 2). */
@@ -3017,6 +3120,11 @@ export const useTabStore = create<TabStoreState>((rawSet, get) => {
     }),
 
   rebindGraphFile: (from, to, exceptTabId) => {
+    // Clear Canvas: the bindings undo frames hold go the same way, first
+    // (`rebindHistory`); the spared tab keeps its history as it keeps its own.
+    const held = get().tabs;
+    const rebound = held.map((tab) => (tab.id === exceptTabId ? tab : rebindHistory(tab, from, to)));
+    if (rebound.some((tab, i) => tab !== held[i])) set({ tabs: rebound });
     const { tabs } = get();
     // One predicate for the guard below and for the write, so the two can
     // never disagree about which tabs this touches. `exceptTabId` is
@@ -3648,10 +3756,20 @@ export const useTabStore = create<TabStoreState>((rawSet, get) => {
           edges: flushed.edges,
           subgraphs: flushed.subgraphs,
           subgraphStack: [],
+          // Clear Canvas: and the top level's own history back, as Exit all
+          // (`exitAllSubgraphs`) leaves it. The block's history goes with the
+          // block; kept, its frames were applied to the whole graph by undo.
+          ...closeFrameHistory(active.subgraphStack[0], flushed),
         })),
       });
     }
-    get().pushUndoSnapshot();
+    // Clear Canvas: the push `pushUndoSnapshot` makes, with the document
+    // fields reset below added to the frame (`documentFieldsOf`), so one undo
+    // brings back the whole tab.
+    const before = get().getActiveTab();
+    const frame = { ...undoFrameOf(before), ...documentFieldsOf(before) };
+    const undoStack = [...before.undoStack.slice(-(MAX_UNDO - 1)), frame];
+    set({ tabs: updateTab(get().tabs, get().activeTabId, () => ({ undoStack, redoStack: [] })) });
     set({
       tabs: updateTab(get().tabs, get().activeTabId, (tab) => ({
         nodes: [],
@@ -4797,7 +4915,8 @@ export const useTabStore = create<TabStoreState>((rawSet, get) => {
     // nothing to undo; `getActiveTab`'s `!` used to throw here.
     const tab = get().getTab(get().activeTabId);
     if (!tab || tab.undoStack.length === 0) return;
-    const current = undoFrameOf(tab);
+    // Clear Canvas: with the document fields when the frame undone has them.
+    const current = answeringFrame(tab, tab.undoStack);
     const prev = tab.undoStack[tab.undoStack.length - 1];
     set({
       tabs: updateTab(get().tabs, get().activeTabId, (t) => ({
@@ -4812,7 +4931,8 @@ export const useTabStore = create<TabStoreState>((rawSet, get) => {
     // paramEdit: no tab open, nothing to redo (see `undo`).
     const tab = get().getTab(get().activeTabId);
     if (!tab || tab.redoStack.length === 0) return;
-    const current = undoFrameOf(tab);
+    // Clear Canvas: with the document fields when the frame redone has them.
+    const current = answeringFrame(tab, tab.redoStack);
     const next = tab.redoStack[tab.redoStack.length - 1];
     set({
       tabs: updateTab(get().tabs, get().activeTabId, (t) => ({

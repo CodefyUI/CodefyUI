@@ -743,6 +743,27 @@ describe('saveActiveGraph after a CONFIRMED overwrite of another tab\'s file', (
     expect(saveGraph).not.toHaveBeenCalled();
   });
 
+  // Clear Canvas keeps the binding in its undo step, so a cleared tab A is
+  // bound to nothing while its history still holds `My_Graph`: an undo there
+  // brought the binding back, and the next Save wrote over tab B's graph.
+  it('also drops the binding an undo would bring back to a cleared tab', async () => {
+    const { a, b } = twoTabs();
+    useTabStore.getState().setActiveTab(a);
+    useTabStore.getState().setNodes([node('mine')]);
+    useTabStore.getState().clear();
+    expect(tabOf(a).currentGraphFile).toBeNull();
+    useTabStore.getState().setActiveTab(b);
+    caseSkewedOverwrite();
+
+    await saveActiveGraph({ saveAs: true });
+
+    useTabStore.getState().setActiveTab(a);
+    useTabStore.getState().undo();
+    expect(tabOf(a).nodes.map((n) => n.id)).toEqual(['mine']);
+    expect(tabOf(a).currentGraphFile).toBeNull();
+    expect(tabOf(a).currentGraphName).toBeNull();
+  });
+
   // The ordinary case, which `rebindGraphFile(savedFile, ...)` has always
   // covered: both stems are spelled the same, so the `===` matches. Pinned
   // here so the case-skewed clear above cannot be mistaken for the only one.

@@ -624,8 +624,8 @@ export function Toolbar() {
   // No `title` on these three: "Save graph", "Save under a new name" and
   // "Remove every node from this canvas" were their own visible labels said
   // again at length, in the File menu of a graph editor. The one fact worth
-  // stating before Clear Canvas -- that unsaved work goes -- is in the confirm
-  // dialog it raises. The Export items keep theirs, which name a file format.
+  // stating before Clear Canvas -- that one undo brings it back -- is in the
+  // confirm dialog it raises. The Export items keep theirs, which name a file format.
   const fileMenuItems: MenuItem[] = [
     { label: t('toolbar.save'), onClick: handleSave },
     { label: t('toolbar.saveAs'), onClick: handleSaveAs },

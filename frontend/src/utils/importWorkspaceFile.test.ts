@@ -5,7 +5,7 @@ import type { ParsedWorkspace, ParsedWorkspaceTab, WorkspaceRunSettings } from '
 import { useI18n } from '../i18n';
 import { useNodeDefStore } from '../store/nodeDefStore';
 import { useProjectStore } from '../store/projectStore';
-import { useTabStore, type TabState } from '../store/tabStore';
+import { tabHasContent, useTabStore, type TabState } from '../store/tabStore';
 import { useToastStore } from '../store/toastStore';
 import { useUIStore } from '../store/uiStore';
 import type { NodeData, NodeDefinition } from '../types';
@@ -69,6 +69,13 @@ function holdAGraph(): TabState {
   return tabs()[0];
 }
 
+/** File -> Clear Canvas on a tab that held a graph: empty, and one undo from it. */
+function clearCanvas(): TabState {
+  store().setNodes([flowNode('mine')]);
+  store().clear();
+  return tabs()[0];
+}
+
 function patchFirstTab(patch: Partial<TabState>): void {
   useTabStore.setState({ tabs: tabs().map((t, i) => (i === 0 ? { ...t, ...patch } : t)) });
 }
@@ -121,13 +128,38 @@ describe('importWorkspaceFile: where the tabs land', () => {
     expect(names()).toEqual(['A', 'B']);
   });
 
-  it.each<[string, Partial<TabState>]>([
-    ['running', { status: 'running' }],
-    ['transient', { transient: true }],
-  ])('keeps a lone empty tab that is %s', async (_label, patch) => {
-    patchFirstTab(patch);
+  // The tab an Import would fill (`canFillTab`) is the only one it closes.
+  it.each<[string, () => void]>([
+    ['running', () => patchFirstTab({ status: 'running' })],
+    ['transient', () => patchFirstTab({ transient: true })],
+    // Closing it would take its history with it (#625).
+    ['emptied by Clear Canvas, one undo from its graph', clearCanvas],
+    [
+      'one redo from a node added and undone',
+      () => {
+        store().pushUndoSnapshot();
+        store().setNodes([flowNode('mine')]);
+        store().undo();
+      },
+    ],
+    // The plugin may still hold its id.
+    ['opened by a plugin', () => patchFirstTab({ source: { kind: 'agent-variant', pluginId: 'copilot' } })],
+  ])('keeps a lone empty tab that is %s', async (_label, setUp) => {
+    setUp();
+    const lone = tabs()[0];
+    // Empty in every case: what keeps it is the rule, not a graph in it.
+    expect(tabHasContent(lone)).toBe(false);
     await importWorkspaceFile(workspace([entry('A')]));
     expect(names()).toEqual(['Tab 1', 'A']);
+    expect(tabs()[0]).toBe(lone);
+  });
+
+  it('leaves the graph a kept tab was cleared of one undo away', async () => {
+    const cleared = clearCanvas();
+    await importWorkspaceFile(workspace([entry('A')]));
+    store().setActiveTab(cleared.id);
+    store().undo();
+    expect(store().getTab(cleared.id)?.nodes.map((n) => n.id)).toEqual(['mine']);
   });
 
   it('activates the tab that was active in the file', async () => {
@@ -303,6 +335,18 @@ describe('importWorkspaceFile: entries that cannot open', () => {
     expect(result.imported).toBe(32);
     expect(tabs()).toHaveLength(32);
     expect(messages('success')).toEqual(['Imported 32 tab(s).']);
+  });
+
+  it('counts a lone tab it keeps against the 32-tab limit', async () => {
+    // Cleared, so kept: 31 tabs of a full export fit beside it.
+    clearCanvas();
+    const full = Array.from({ length: 32 }, (_unused, i) => entry(`T${i + 1}`));
+    const result = await importWorkspaceFile(workspace(full));
+    expect(result.imported).toBe(31);
+    expect(result.results[31]).toEqual({ skipped: 'too_many_tabs' });
+    expect(tabs()).toHaveLength(32);
+    expect(names()[0]).toBe('Tab 1');
+    expect(messages('warning')).toEqual(['Imported 31 of 32 tabs. Skipped: 32-tab limit reached.']);
   });
 
   it('reports one error when nothing opened, and applies no preferences', async () => {
