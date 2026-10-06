@@ -102,6 +102,17 @@ export function nodeName(node: CanvasNode): string {
 }
 
 /**
+ * The canvas on screen, as the server's ids name it: `''` at the top level,
+ * else the cards entered, outermost first, each followed by the engine's `/`
+ * (the rule `runNodePrefix` in portCaptures follows). A finding from a
+ * run from inside a block, or an Export from there, names the open block's
+ * nodes behind it.
+ */
+function levelOf(tab: Pick<TabState, 'subgraphStack'>): string {
+  return (tab.subgraphStack ?? []).map((frame) => `${frame.instanceId}/`).join('');
+}
+
+/**
  * A node id said as the node's title. An id nothing on the canvas stands for
  * -- a node the graph does not have -- is shortened to its first 8
  * characters, as the run log's node badge shortens one.
@@ -206,17 +217,21 @@ function topLevelNodes(tab: Pick<TabState, 'nodes' | 'subgraphStack'>): CanvasNo
 }
 
 /**
- * Select a node on the active tab's canvas and bring it into view. Nothing
- * when the node is gone, or when a block is open: the canvas then shows the
- * block's inside.
+ * Select a node on the active tab's canvas and bring it into view. `id` is the
+ * server's: on a run from inside a block, or an Export from there, the open
+ * block's node behind the cards entered (`levelOf`). Nothing when the node is
+ * gone, or once the canvas on screen is another level.
  */
 export function focusNode(id: string): void {
   const store = useTabStore.getState();
   const tab = store.tabs.find((candidate) => candidate.id === store.activeTabId);
-  if (!tab || tab.subgraphStack?.length) return;
-  const target = tab.nodes.find((candidate) => candidate.id === id);
-  if (!target) return;
-  store.selectNodeExclusively(id);
+  // On another level the same canvas id can name another node, so the id is
+  // matched with the level on screen in front of it, as a finding from a
+  // run from inside a block names it.
+  const level = tab ? levelOf(tab) : '';
+  const target = tab?.nodes.find((candidate) => level + candidate.id === id);
+  if (target === undefined) return;
+  store.selectNodeExclusively(target.id);
   // Centred rather than zoomed in hard: FlowCanvas inflates a box this small.
   const bounds = nodesBoundingBox([target]);
   if (bounds) useUIStore.getState().requestLayoutFit(bounds);
@@ -245,15 +260,24 @@ export function showValidationIssues(tabId: string, issues: readonly ValidationI
   if (!tab) return;
   const { t } = useI18n.getState();
   const named = topLevelNodes(tab);
-  // Inside an open block the canvas shows the block's own nodes, which the
-  // server's ids do not name: the toast names the node and offers no jump.
-  const onCanvas = tab.subgraphStack?.length ? [] : tab.nodes;
+  // Show selects a node of the canvas on screen. On a run from inside a block,
+  // or an Export from there, those are the open block's nodes, which the
+  // server names behind the cards entered; a finding elsewhere offers no Show.
+  // The node is kept under the server's id, so Show can tell the level.
+  const level = levelOf(tab);
+  const onScreen = (id: string | null | undefined): CanvasNode | null => {
+    const found = id?.startsWith(level)
+      ? canvasNodeFor(id.slice(level.length), tab.nodes)
+      : null;
+    return found && { ...found, id: level + found.id };
+  };
 
   const seen = new Set<string>();
   const problems: { text: string; target: CanvasNode | null }[] = [];
   for (const finding of issues) {
     const text = issueText(finding, named, t);
-    const target = canvasNodeFor(finding.node_id, onCanvas);
+    // On the canvas on screen, the open block's on a run from inside a block.
+    const target = onScreen(finding.node_id);
     // Two edges into one bad port are one problem on one node.
     const key = `${target?.id ?? ''}\n${text}`;
     if (seen.has(key)) continue;
