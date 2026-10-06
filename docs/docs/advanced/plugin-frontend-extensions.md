@@ -257,6 +257,7 @@ So a plugin that reads, reasons, then writes can be right about the graph and st
 interface GraphViewLevel {
   subgraphId: string;  // the block definition's id, as getGraph() refers to it
   name: string;        // the block's name, as the breadcrumb bar shows it
+  instanceId: string;  // the block node the user stepped into, on the level above
 }
 
 interface GraphView {
@@ -265,6 +266,8 @@ interface GraphView {
   atTopLevel: boolean;     // depth === 0, for the check you usually want
 }
 ```
+
+Two copies of one block share a `subgraphId`; `instanceId` tells them apart. It also names a node's id in a run: a run flattens blocks, so a node `n` on the open level runs as the `instanceId`s of `path` joined with `/`, then `n` (`blk/n`, or `blk/nest/n` two levels down), and `/api/execution/outputs` keeps its captures under that id. Read them with the query form, `?node_id=`. An editor before CodefyUI 2.8.10 also reports apiVersion 5 but has no `instanceId`, so check `'instanceId' in level`.
 
 ```js
 const view = api.graph.getView();

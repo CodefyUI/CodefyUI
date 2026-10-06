@@ -1,13 +1,17 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { render, screen, fireEvent, waitFor, act } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor, act, cleanup } from '@testing-library/react';
 import { InspectorPanel } from './InspectorPanel';
 import { useI18n } from '../../i18n';
 import { useTabStore, type TabState } from '../../store/tabStore';
 import { flushTabNodeUpdates, queueTabNodeStatus } from '../../store/nodeUpdateQueue';
+import { subgraphFrame } from '../../test/openBlocks';
+import { _resetRunIndexesForTests } from './portCaptures';
+import { getRun, type RunInfo } from '../../api/rest';
 import {
   fetchOutput,
   fetchStepIndex,
   fetchGradIndex,
+  listRunOutputs,
   PayloadTooLargeError,
   RunDataExpiredError,
 } from '../../api/executionOutputs';
@@ -30,12 +34,21 @@ vi.mock('../../api/executionOutputs', async () => {
     fetchOutput: vi.fn(),
     fetchStepIndex: vi.fn(),
     fetchGradIndex: vi.fn(),
+    listRunOutputs: vi.fn(),
   };
+});
+
+// The run record says whether the last run is over; these tests are after it.
+vi.mock('../../api/rest', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../api/rest')>();
+  return { ...actual, getRun: vi.fn() };
 });
 
 const mockOutput = vi.mocked(fetchOutput);
 const mockStepIndex = vi.mocked(fetchStepIndex);
 const mockGradIndex = vi.mocked(fetchGradIndex);
+const mockList = vi.mocked(listRunOutputs);
+const mockGetRun = vi.mocked(getRun);
 
 // ── Fixtures ──
 
@@ -134,6 +147,13 @@ beforeEach(() => {
   mockStepIndex.mockResolvedValue([]);
   mockGradIndex.mockResolvedValue([]);
   mockOutput.mockResolvedValue(tensor([[1, 2], [3, 4]], { min: 1, max: 4 }));
+  // No run index unless a test gives one: a list that cannot be read leaves
+  // every port asked for, as before.
+  _resetRunIndexesForTests();
+  mockList.mockReset();
+  mockList.mockRejectedValue(new Error('offline'));
+  mockGetRun.mockReset();
+  mockGetRun.mockResolvedValue({ id: 'run1', status: 'succeeded' } as RunInfo);
 });
 
 afterEach(() => {
@@ -142,12 +162,20 @@ afterEach(() => {
 
 describe('InspectorPanel — empty modes', () => {
   it('renders the not-run empty state when there is no lastRunId', () => {
-    seedTab({ lastRunId: null });
+    seedTab({ lastRunId: null, recordOutputs: false });
     render(<InspectorPanel />);
     expect(screen.getByText('Nothing captured yet')).toBeInTheDocument();
     expect(
       screen.getByText('Turn on Record node outputs in Settings, then run the graph'),
     ).toBeInTheDocument();
+  });
+
+  it('only asks for Record node outputs to be turned on when it is off', () => {
+    seedTab({ lastRunId: null, recordOutputs: true });
+    render(<InspectorPanel />);
+    expect(screen.getByText('Nothing captured yet')).toBeInTheDocument();
+    expect(screen.getByText('Run the graph to capture its values')).toBeInTheDocument();
+    expect(screen.queryByText(/Turn on Record node outputs/)).toBeNull();
   });
 
   it('renders the no-selection empty state when run exists but nothing selected', () => {
@@ -1197,5 +1225,230 @@ describe('InspectorPanel — fetch cancellation', () => {
     await Promise.resolve();
     await Promise.resolve();
     expect(true).toBe(true);
+  });
+});
+
+// ── Inside an open block (#621) ──
+// The run captured the block's nodes as `<instance>/<inner>`; the open block
+// shows them under their own ids, and two copies of one block share those.
+
+describe('InspectorPanel — inside an open block', () => {
+  /** The block's insides as the open block shows them, `mul` selected. */
+  function seedInside(...instanceIds: string[]) {
+    seedTab({
+      lastRunId: 'run1',
+      selectedNodeId: 'mul',
+      nodes: [
+        node('first', 'First', { outputs: ['tensor'] }),
+        node('mul', 'Mul', { outputs: ['tensor'] }),
+      ],
+      edges: [edge('e1', 'first', 'mul', { sourceHandle: 'tensor', targetHandle: 'tensor' })],
+      subgraphStack: instanceIds.map(subgraphFrame),
+    });
+  }
+
+  /** What the run holds, by the ids it gave the nodes. */
+  const CAPTURED: Record<string, number> = {
+    'blk/first': 20,
+    'blk/mul': 40,
+    'blk2/first': 30,
+    'blk2/mul': 60,
+  };
+
+  beforeEach(() => {
+    mockOutput.mockImplementation(
+      async (runId, nodeId, port) =>
+        ({ type: 'scalar', run_id: runId, node_id: nodeId, port, value: CAPTURED[nodeId] ?? -1 }) as OutputData,
+    );
+  });
+
+  // The tab outlives the test, and `seedTab` keeps a stack it is not given.
+  // Unmount first: a panel still mounted would read the reset as leaving the
+  // block, and ask again for every port.
+  afterEach(() => {
+    cleanup();
+    seedTab({ subgraphStack: [] });
+  });
+
+  it('shows the inner node’s captured values, asked for by the ids the run gave them', async () => {
+    seedInside('blk');
+    render(<InspectorPanel />);
+    await waitFor(() => expect(screen.getByText('40')).toBeInTheDocument());
+    expect(screen.getByText('20')).toBeInTheDocument();
+    expect(mockOutput).toHaveBeenCalledWith('run1', 'blk/mul', 'tensor');
+    expect(mockOutput).toHaveBeenCalledWith('run1', 'blk/first', 'tensor');
+    expect(mockOutput.mock.calls.every(([, id]) => id.startsWith('blk/'))).toBe(true);
+    expect(screen.queryByText(/Run data expired/)).toBeNull();
+  });
+
+  it('shows the other copy of the block its own values, never the first copy’s', async () => {
+    seedInside('blk');
+    render(<InspectorPanel />);
+    await waitFor(() => expect(screen.getByText('40')).toBeInTheDocument());
+
+    // The same canvas ids, entered through the other instance.
+    act(() => seedInside('blk2'));
+    expect(screen.queryByText('40')).toBeNull();
+    expect(screen.queryByText('20')).toBeNull();
+    await waitFor(() => expect(screen.getByText('60')).toBeInTheDocument());
+    expect(screen.getByText('30')).toBeInTheDocument();
+    expect(mockOutput).toHaveBeenCalledWith('run1', 'blk2/mul', 'tensor');
+  });
+});
+
+// ── A node the last run did not include ──
+// Dropped on the canvas after the run (or moved into a block made after it):
+// the run has nothing under its id, so nothing expired either.
+
+describe('InspectorPanel — a node the last run has nothing for', () => {
+  it('says the node was not in the last run, with no request for it and no expired line', async () => {
+    mockList.mockResolvedValue([{ node_id: 'src', port: 'out', type: 'tensor', full_shape: [2, 2] }]);
+    seedTab({
+      lastRunId: 'run1',
+      selectedNodeId: 'added',
+      nodes: [node('src', 'Src', { outputs: ['out'] }), node('added', 'Added', { outputs: ['out'] })],
+      edges: [edge('e1', 'src', 'added', { sourceHandle: 'out', targetHandle: 'x' })],
+    });
+    render(<InspectorPanel />);
+    await waitFor(() => expect(screen.getByText('Not in the last run')).toBeInTheDocument());
+    // Its input comes from a node that did run, and shows as before.
+    await waitFor(() => expect(screen.getByText('shape [2, 2]')).toBeInTheDocument());
+    expect(mockOutput).toHaveBeenCalledTimes(1);
+    expect(mockOutput).toHaveBeenCalledWith('run1', 'src', 'out');
+    expect(screen.queryByText('Run data expired — re-run to capture')).toBeNull();
+  });
+
+  function withStatus(n: Node<NodeData>, executionStatus: ExecutionStatus): Node<NodeData> {
+    return { ...n, data: { ...n.data, executionStatus } };
+  }
+
+  it('in a run that failed before storing anything, says which node failed, and asks for the rest', async () => {
+    // Start -> TensorCreate (bad shape, fails) -> AttentionHeatmap: the run
+    // record exists, but the server holds no capture for it at all.
+    mockGetRun.mockResolvedValue({
+      id: 'run1', status: 'failed', options: { record_outputs: true },
+    } as unknown as RunInfo);
+    mockList.mockRejectedValue(new RunDataExpiredError('run1'));
+    mockOutput.mockRejectedValue(new RunDataExpiredError('run1'));
+    seedTab({
+      lastRunId: 'run1',
+      selectedNodeId: 'att',
+      nodes: [
+        withStatus(node('tc', 'TensorCreate', { outputs: ['tensor'] }), 'error'),
+        withStatus(node('att', 'AttentionHeatmap', { outputs: ['weights'] }), 'idle'),
+      ],
+      edges: [edge('e1', 'tc', 'att', { sourceHandle: 'tensor', targetHandle: 'x' })],
+    });
+    render(<InspectorPanel />);
+    // Its input is the failed node's output: certain, and not asked for.
+    await waitFor(() => expect(screen.getByText('Failed in the last run')).toBeInTheDocument());
+    // Its own output: with no list nothing is certain, so it is asked for,
+    // and the 404 reads as expired.
+    await waitFor(() =>
+      expect(screen.getByText('Run data expired — re-run to capture')).toBeInTheDocument(),
+    );
+    expect(mockOutput).toHaveBeenCalledTimes(1);
+    expect(mockOutput).toHaveBeenCalledWith('run1', 'att', 'weights');
+    expect(screen.queryByText('Not in the last run')).toBeNull();
+  });
+
+  it('in a run made with Record node outputs off, asks for the setting with no request', async () => {
+    mockGetRun.mockResolvedValue({
+      id: 'run1', status: 'succeeded', options: { record_outputs: false },
+    } as unknown as RunInfo);
+    mockList.mockRejectedValue(new RunDataExpiredError('run1'));
+    seedTab({
+      lastRunId: 'run1',
+      recordOutputs: false,
+      selectedNodeId: 'a',
+      nodes: [withStatus(node('a', 'NodeA', { outputs: ['out'] }), 'completed')],
+      edges: [],
+    });
+    render(<InspectorPanel />);
+    await waitFor(() =>
+      expect(
+        screen.getByText('Turn on Record node outputs in Settings, then run the graph'),
+      ).toBeInTheDocument(),
+    );
+    expect(mockOutput).not.toHaveBeenCalled();
+    expect(screen.queryByText('Run data expired — re-run to capture')).toBeNull();
+  });
+
+  it('follows the Record node outputs switch while the node stays selected', async () => {
+    mockGetRun.mockResolvedValue({
+      id: 'run1', status: 'succeeded', options: { record_outputs: false },
+    } as unknown as RunInfo);
+    mockList.mockRejectedValue(new RunDataExpiredError('run1'));
+    seedTab({
+      lastRunId: 'run1',
+      recordOutputs: true,
+      selectedNodeId: 'a',
+      nodes: [withStatus(node('a', 'NodeA', { outputs: ['out'] }), 'completed')],
+      edges: [],
+    });
+    // The Settings switch.
+    const toggle = () => act(() => useTabStore.getState().toggleRecord());
+    try {
+      render(<InspectorPanel />);
+      await waitFor(() =>
+        expect(screen.getByText('Run the graph to capture its values')).toBeInTheDocument(),
+      );
+      toggle();
+      expect(
+        screen.getByText('Turn on Record node outputs in Settings, then run the graph'),
+      ).toBeInTheDocument();
+      expect(screen.queryByText('Run the graph to capture its values')).toBeNull();
+      toggle();
+      expect(screen.getByText('Run the graph to capture its values')).toBeInTheDocument();
+      expect(mockOutput).not.toHaveBeenCalled();
+    } finally {
+      // Unmounted first: the panel would redraw for the reset.
+      cleanup();
+      seedTab({ recordOutputs: true });
+    }
+  });
+});
+
+// ── What an empty Inputs group says ──
+
+describe('InspectorPanel — an Inputs group with no wire on this level', () => {
+  afterEach(() => {
+    cleanup();
+    seedTab({ subgraphStack: [], subgraphs: [] });
+  });
+
+  it('says the input comes in through the block when the open block feeds the node', async () => {
+    seedTab({
+      lastRunId: 'run1',
+      selectedNodeId: 'first',
+      nodes: [node('first', 'First', { outputs: ['tensor'] })],
+      edges: [],
+      subgraphStack: [subgraphFrame('blk')],
+      subgraphs: [{
+        id: 'outer', name: 'Outer', description: '', nodes: [], edges: [],
+        interface: {
+          inputs: [{ port: 'in', innerNode: 'first', innerPort: 'tensor', data_type: 'TENSOR' }],
+          outputs: [],
+          triggerTargets: [],
+        },
+      }],
+    });
+    render(<InspectorPanel />);
+    expect(screen.getByText("From the block's input: in")).toBeInTheDocument();
+    expect(screen.queryByText('No inputs connected')).toBeNull();
+    await waitFor(() => expect(screen.getByText('shape [2, 2]')).toBeInTheDocument());
+  });
+
+  it('reads the same as Node details in zh-TW', async () => {
+    useI18n.setState({ locale: 'zh-TW' });
+    seedTab({
+      lastRunId: 'run1',
+      selectedNodeId: 'a',
+      nodes: [node('a', 'A', { outputs: ['out'] })],
+      edges: [],
+    });
+    const { container } = render(<InspectorPanel />);
+    expect(screen.getByText('沒有連接任何輸入')).toBeInTheDocument();
+    await waitFor(() => expect(container.textContent).toContain('[2, 2]'));
   });
 });

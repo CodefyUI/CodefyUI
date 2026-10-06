@@ -88,6 +88,10 @@ Host guard 會在其他所有檢查之前處理每個 request，包括 SPA 頁�
 | `/api/execution/outputs/{run_id}/{node_id}/{port}/stats` | GET | open | 回傳單一已擷取 port 的伺服器端摘要統計：固定的一組純量與 64-bin histogram；label tensor 則回傳值計數。無論 tensor 大小，response 通常只有一到兩 KB。超過 `CODEFYUI_STATS_SAMPLE_THRESHOLD`（4,000,000 個元素）的 tensor 會進行取樣。節點已執行但這個 port 沒有產生值（`None`）時回傳 204；run 或 port 沒有任何紀錄時回傳 404。 |
 | `/api/execution/outputs/{run_id}/{node_id}/__steps_index` | GET | open | 某節點的步驟追蹤 metadata（檢視器 → 步驟分頁）。 |
 | `/api/execution/outputs/{run_id}/{node_id}/__grad_index` | GET | open | 已擷取的梯度 metadata（檢視器 → 反向分頁）。 |
+| `/api/execution/outputs/{run_id}/value?node_id=&port=` | GET | open | 與 `{node_id}/{port}` 路徑形式相同，用於路徑放不下的節點 id：子圖內的節點（`<instance>/<node>`）。同樣接受 `slice` 與 `max_elements`。 |
+| `/api/execution/outputs/{run_id}/stats?node_id=&port=` | GET | open | 與 `/stats` 路徑形式相同，用於這類 id。 |
+| `/api/execution/outputs/{run_id}/steps?node_id=` | GET | open | 與 `__steps_index` 相同，用於這類 id。 |
+| `/api/execution/outputs/{run_id}/grads?node_id=` | GET | open | 與 `__grad_index` 相同，用於這類 id。 |
 | `/api/execution/state/reset` | POST | token | 重設已保存的層權重（單一節點或單一圖表）。 |
 | `/api/execution/state/list` | GET | open | 列出保存了多少模組（診斷用）。 |
 

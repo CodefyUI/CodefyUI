@@ -615,6 +615,10 @@ const zhTW: Record<TranslationKey, string> = {
   'inspector.nodeRunning': '節點執行中…',
   'inspector.nodePending': '等待此節點執行…',
   'inspector.noValue': '這次執行沒有值',
+  'inspector.capture.notInRun': '不在上次執行中',
+  'inspector.capture.failedInRun': '上次執行時出錯',
+  'inspector.capture.runHint': '執行圖表即可擷取數值',
+  'inspector.capture.fromBlock': '從區塊的輸入傳入：{ports}',
   'inspector.runRunning': '圖表執行中…',
   'inspector.dataExpiredBackward': '執行資料已過期 — 請在設定中開啟「擷取梯度」後重新執行',
   'inspector.tensorExpired': '已過期',
@@ -629,7 +633,6 @@ const zhTW: Record<TranslationKey, string> = {
   'inspector.segment.outputs': '段落輸出（{count}）',
   'inspector.node.inputs': '輸入（{count}）',
   'inspector.node.outputs': '輸出（{count}）',
-  'inspector.node.inputsEmpty': '尚未連接輸入',
   'inspector.node.outputsEmpty': '執行後顯示輸出',
   'segment.removeThis': '移除此段落',
 

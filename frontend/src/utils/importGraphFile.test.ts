@@ -454,6 +454,7 @@ describe('where an imported graph goes', () => {
         subgraphStack: [
           {
             subgraphId: 'blk',
+            instanceId: 'inst',
             nodes: outside,
             edges: [],
             presets: [],

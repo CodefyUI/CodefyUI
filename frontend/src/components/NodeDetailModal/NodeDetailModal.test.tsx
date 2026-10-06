@@ -16,14 +16,16 @@ vi.mock('../../api/executionOutputs', async (importOriginal) => {
     fetchOutput: vi.fn(),
     fetchStepIndex: vi.fn(),
     fetchGradIndex: vi.fn(),
+    listRunOutputs: vi.fn(),
   };
 });
 
-// Only `fetchNodeDefinition` is stubbed — ParamField's file backends stay real
-// and are simply never mounted (no model_file / image_file params in fixtures).
+// Only `fetchNodeDefinition` and `getRun` (whether the last run is over) are
+// stubbed — ParamField's file backends stay real and are simply never mounted
+// (no model_file / image_file params in fixtures).
 vi.mock('../../api/rest', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../api/rest')>();
-  return { ...actual, fetchNodeDefinition: vi.fn() };
+  return { ...actual, fetchNodeDefinition: vi.fn(), getRun: vi.fn() };
 });
 
 // The script editor has its own test file, and mounting the real one here
@@ -45,9 +47,11 @@ import {
   fetchOutput,
   fetchStepIndex,
   fetchGradIndex,
+  listRunOutputs,
   RunDataExpiredError,
 } from '../../api/executionOutputs';
-import { fetchNodeDefinition } from '../../api/rest';
+import { _resetRunIndexesForTests } from '../InspectorPanel/portCaptures';
+import { fetchNodeDefinition, getRun, type RunInfo } from '../../api/rest';
 import { NodeDetailModal } from './NodeDetailModal';
 import {
   BUILTIN_NODE_DETAIL_TABS,
@@ -61,6 +65,7 @@ import { NodeConfigPanel } from '../ConfigPanel/NodeConfigPanel';
 import { FlowCanvas } from '../Canvas/FlowCanvas';
 import { useKeyboardShortcuts } from '../../hooks/useKeyboardShortcuts';
 import { useTabStore, type TabState } from '../../store/tabStore';
+import { subgraphFrame } from '../../test/openBlocks';
 import { flushTabNodeUpdates, queueTabNodeStatus } from '../../store/nodeUpdateQueue';
 import { useUIStore } from '../../store/uiStore';
 import { useDialogStore } from '../../store/dialogStore';
@@ -69,7 +74,9 @@ import { useI18n } from '../../i18n';
 const mockOutput = vi.mocked(fetchOutput);
 const mockStepIndex = vi.mocked(fetchStepIndex);
 const mockGradIndex = vi.mocked(fetchGradIndex);
+const mockList = vi.mocked(listRunOutputs);
 const mockNodeDef = vi.mocked(fetchNodeDefinition);
+const mockGetRun = vi.mocked(getRun);
 
 // ── Fixtures ─────────────────────────────────────────────────────────────────
 
@@ -181,6 +188,13 @@ beforeEach(() => {
   mockGradIndex.mockResolvedValue([]);
   mockOutput.mockResolvedValue(tensor([[1, 2], [3, 4]], { min: 1, max: 4 }));
   mockNodeDef.mockRejectedValue(new Error('offline'));
+  // No run index unless a test gives one: a list that cannot be read leaves
+  // every port asked for, as before.
+  _resetRunIndexesForTests();
+  mockList.mockReset();
+  mockList.mockRejectedValue(new Error('offline'));
+  mockGetRun.mockReset();
+  mockGetRun.mockResolvedValue({ id: 'run1', status: 'succeeded' } as RunInfo);
 });
 
 afterEach(() => {
@@ -933,13 +947,43 @@ describe('NodeDetailModal — tabs', () => {
   });
 
   it('shows the Stats tab pre-run empty state before anything has run', () => {
-    seedTab({ nodes: [node('n1')], nodeDetailNodeId: 'n1', lastRunId: null });
+    seedTab({ nodes: [node('n1')], nodeDetailNodeId: 'n1', lastRunId: null, recordOutputs: false });
     render(<NodeDetailModal />);
     fireEvent.click(screen.getByRole('tab', { name: 'Stats' }));
     expect(screen.getByText('No statistics yet')).toBeInTheDocument();
     expect(
       screen.getByText('Turn on Record node outputs in Settings, then run the graph'),
     ).toBeInTheDocument();
+  });
+
+  it('before a run, asks for Record node outputs only when it is off', () => {
+    // The Inputs tab, recording on: the Settings hint pointed at a switch
+    // that was already on.
+    seedTab({ nodes: [node('n1')], nodeDetailNodeId: 'n1', lastRunId: null, recordOutputs: true });
+    render(<NodeDetailModal />);
+    expect(screen.getByText('Nothing captured yet')).toBeInTheDocument();
+    expect(screen.getByText('Run the graph to capture its values')).toBeInTheDocument();
+    expect(screen.queryByText(/Turn on Record node outputs/)).toBeNull();
+  });
+
+  it('says an input comes in through the block when the open block feeds the node', () => {
+    seedTab({
+      nodes: [node('first')],
+      nodeDetailNodeId: 'first',
+      lastRunId: null,
+      subgraphStack: [subgraphFrame('blk')],
+      subgraphs: [{
+        id: 'outer', name: 'Outer', description: '', nodes: [], edges: [],
+        interface: {
+          inputs: [{ port: 'in', innerNode: 'first', innerPort: 'x', data_type: 'TENSOR' }],
+          outputs: [],
+          triggerTargets: [],
+        },
+      }],
+    });
+    render(<NodeDetailModal />);
+    expect(screen.getByText("From the block's input: in")).toBeInTheDocument();
+    expect(screen.queryByText('No inputs connected')).toBeNull();
   });
 
   it('resets to the Inputs tab when navigating to another node', () => {
@@ -998,7 +1042,7 @@ describe('NodeDetailModal — tabs', () => {
     expect(activeTab().nodeDetailPort).toBe('b::y');
   });
 
-  it('mounts straight onto the deep-linked tab, never Inputs first', () => {
+  it('mounts straight onto the deep-linked tab, never Inputs first', async () => {
     // A one-commit-late correction still MOUNTS the Inputs tab, and the Inputs
     // tab fetches every connected port before being thrown away. The node
     // therefore needs a real wired input — with no edges `usePortFetches`
@@ -1015,10 +1059,15 @@ describe('NodeDetailModal — tabs', () => {
       'aria-selected',
       'true',
     );
+    // A port is asked for once the run's index has been read, a tick after
+    // the mount -- and a mounted-then-dropped Inputs tab still asks.
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
     expect(mockOutput).not.toHaveBeenCalled();
   });
 
-  it('the previous test is not vacuous: Inputs first DOES fetch', () => {
+  it('the previous test is not vacuous: Inputs first DOES fetch', async () => {
     // Guards the guard. Same fixture, no deep link, so the modal opens on
     // Inputs and the wired port is fetched — which is exactly what mounting
     // Inputs before correcting to Docs would have done.
@@ -1029,7 +1078,7 @@ describe('NodeDetailModal — tabs', () => {
       lastRunId: 'run1',
     });
     render(<NodeDetailModal />);
-    expect(mockOutput).toHaveBeenCalledWith('run1', 'src', 'out');
+    await waitFor(() => expect(mockOutput).toHaveBeenCalledWith('run1', 'src', 'out'));
   });
 
   it('hands the requested port to every tab as focusPort', () => {

@@ -45,6 +45,45 @@ async function readDetail(res: Response): Promise<string> {
   return res.statusText;
 }
 
+type CaptureRead = 'value' | 'stats' | 'steps' | 'grads';
+
+/**
+ * The URL of one read of a run's captures for a node.
+ *
+ * A node inside a block runs, and is captured, as `<instance>/<inner>`
+ * (#621). The server decodes `%2F` before it routes, so such an id in a path
+ * segment reaches no route at all; it goes in the query instead,
+ * `/{run}/{read}?node_id=&port=`. Every id without a slash keeps the path
+ * form, byte for byte.
+ */
+function captureUrl(
+  runId: string,
+  read: CaptureRead,
+  nodeId: string,
+  port: string | null,
+  params: URLSearchParams = new URLSearchParams(),
+): string {
+  const run = `${BASE_URL}/${encodeURIComponent(runId)}`;
+  if (nodeId.includes('/') || port?.includes('/')) {
+    const query = new URLSearchParams({ node_id: nodeId });
+    if (port !== null) query.set('port', port);
+    params.forEach((value, key) => query.set(key, value));
+    return `${run}/${read}?${query.toString()}`;
+  }
+  const node = encodeURIComponent(nodeId);
+  const portPart = port === null ? '' : encodeURIComponent(port);
+  const path =
+    read === 'steps'
+      ? `${node}/__steps_index`
+      : read === 'grads'
+        ? `${node}/__grad_index`
+        : read === 'stats'
+          ? `${node}/${portPart}/stats`
+          : `${node}/${portPart}`;
+  const qs = params.toString();
+  return `${run}/${path}` + (qs ? `?${qs}` : '');
+}
+
 export async function fetchOutput(
   runId: string,
   nodeId: string,
@@ -55,10 +94,7 @@ export async function fetchOutput(
   if (opts.slice) params.set('slice', opts.slice);
   if (opts.maxElements != null) params.set('max_elements', String(opts.maxElements));
 
-  const qs = params.toString();
-  const url =
-    `${BASE_URL}/${encodeURIComponent(runId)}/${encodeURIComponent(nodeId)}/${encodeURIComponent(port)}` +
-    (qs ? `?${qs}` : '');
+  const url = captureUrl(runId, 'value', nodeId, port, params);
 
   const res = await fetch(url);
   // Before `res.ok`: a 204 is ok and has no body to parse.
@@ -96,7 +132,7 @@ export async function fetchStepIndex(
   runId: string,
   nodeId: string,
 ): Promise<StepIndexEntry[]> {
-  const url = `${BASE_URL}/${encodeURIComponent(runId)}/${encodeURIComponent(nodeId)}/__steps_index`;
+  const url = captureUrl(runId, 'steps', nodeId, null);
   const res = await fetch(url);
   if (res.status === 404) {
     // No steps recorded for this node — treat as empty list rather than error.
@@ -123,9 +159,11 @@ export async function fetchGradIndex(
   runId: string,
   nodeId: string,
 ): Promise<GradIndexEntry[]> {
-  const url = `${BASE_URL}/${encodeURIComponent(runId)}/${encodeURIComponent(nodeId)}/__grad_index`;
+  const url = captureUrl(runId, 'grads', nodeId, null);
   const res = await fetch(url);
-  if (res.status === 404) return [];
+  // A node without gradients in a run the server holds is a 200 with [];
+  // 404 is the run itself gone, which the Backward tab reports as expired.
+  if (res.status === 404) throw new RunDataExpiredError(runId);
   if (!res.ok) throw new Error(`fetchGradIndex failed: ${await readDetail(res)}`);
   return res.json();
 }
@@ -217,7 +255,7 @@ export async function fetchPortStats(
   port: string,
   opts: { signal?: AbortSignal } = {},
 ): Promise<PortStats> {
-  const url = `${BASE_URL}/${encodeURIComponent(runId)}/${encodeURIComponent(nodeId)}/${encodeURIComponent(port)}/stats`;
+  const url = captureUrl(runId, 'stats', nodeId, port);
   const res = await fetch(url, { signal: opts.signal });
   if (res.status === 204) throw new NoValueError(runId, nodeId, port);
   if (res.status === 404) throw new StatsNotCapturedError(await readDetail(res));

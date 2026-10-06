@@ -4,6 +4,7 @@ import type { OutputSummary } from '../../types';
 import { PortGroup, rowKeys } from '../InspectorPanel/PortGroup';
 import {
   resolveSingleNodePorts,
+  useInputsEmptyText,
   usePortFetches,
   usePortMedia,
 } from '../InspectorPanel/portCaptures';
@@ -82,8 +83,9 @@ export function CapturesTab({
     kind === 'input'
       ? t('nodeDetail.inputs.title', { count: ports.length })
       : t('nodeDetail.outputs.title', { count: ports.length });
-  const emptyText =
-    kind === 'input' ? t('nodeDetail.inputs.empty') : t('nodeDetail.outputs.empty');
+  // The Inspector's own sentence, including a node an open block feeds.
+  const inputsEmptyText = useInputsEmptyText(ctx.nodeId);
+  const emptyText = kind === 'input' ? inputsEmptyText : t('nodeDetail.outputs.empty');
 
   const chartBlock = charts.length > 0 && (
     <div className={styles.chartBlock}>
@@ -105,7 +107,9 @@ export function CapturesTab({
         <div className={styles.emptyState}>
           <div className={styles.emptyIcon}>▶</div>
           <div>{t('nodeDetail.captures.notRun')}</div>
-          <div className={styles.emptyHint}>{t('nodeDetail.captures.notRunHint')}</div>
+          <div className={styles.emptyHint}>
+            {t(ctx.recordOutputs ? 'inspector.capture.runHint' : 'nodeDetail.captures.notRunHint')}
+          </div>
         </div>
         <div className={styles.summaryBlock}>
           <div className={styles.summaryTitle}>{t('nodeDetail.captures.summaryTitle')}</div>

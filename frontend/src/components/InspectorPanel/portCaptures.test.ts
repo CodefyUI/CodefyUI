@@ -1,14 +1,21 @@
-import { describe, it, expect, beforeEach, vi } from 'vitest';
-import { renderHook, waitFor } from '@testing-library/react';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { act, cleanup, renderHook, waitFor } from '@testing-library/react';
 import type { Edge, Node } from '@xyflow/react';
-import type { ExecutionStatus, NodeData, NodeDefinition } from '../../types';
+import type { ExecutionStatus, NodeData, NodeDefinition, OutputData } from '../../types';
 import {
   fetchOutput,
+  listRunOutputs,
   NoValueError,
   RunDataExpiredError,
 } from '../../api/executionOutputs';
+import { getRun, type RunInfo, type RunStatus } from '../../api/rest';
+import { useTabStore, type TabState } from '../../store/tabStore';
+import { enterBlocks as enter } from '../../test/openBlocks';
 import { keyOf } from './PortGroup';
 import {
+  _resetRunIndexesForTests,
+  _setRunEndPollForTests,
+  _setRunRecordRetryForTests,
   capturePhase,
   capturePhaseNoteKey,
   portDataType,
@@ -16,14 +23,42 @@ import {
   resolveSingleNodePorts,
   takeDuePorts,
   usePortFetches,
+  useRunNodeId,
+  useRunNodePrefix,
 } from './portCaptures';
 
 vi.mock('../../api/executionOutputs', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../api/executionOutputs')>();
-  return { ...actual, fetchOutput: vi.fn() };
+  return { ...actual, fetchOutput: vi.fn(), listRunOutputs: vi.fn() };
+});
+
+vi.mock('../../api/rest', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../api/rest')>();
+  return { ...actual, getRun: vi.fn() };
 });
 
 const mockOutput = vi.mocked(fetchOutput);
+const mockList = vi.mocked(listRunOutputs);
+const mockGetRun = vi.mocked(getRun);
+
+/** The run record as the server reports it: its status, and the options it ran with. */
+function runRecord(status: RunStatus, options: Record<string, unknown> = {}): RunInfo {
+  return { id: 'run1', status, options } as RunInfo;
+}
+
+beforeEach(() => {
+  // No index unless a test gives one: a list that cannot be read leaves
+  // every port asked for, as before.
+  _resetRunIndexesForTests();
+  // A record still saying "running" is asked again three times, at once, and
+  // a run the tab is not running is polled for its end every 5 ms.
+  _setRunRecordRetryForTests(3, 0);
+  _setRunEndPollForTests(5);
+  mockList.mockReset();
+  mockList.mockRejectedValue(new Error('offline'));
+  mockGetRun.mockReset();
+  mockGetRun.mockResolvedValue(runRecord('succeeded'));
+});
 
 function def(outputs: { name: string; data_type: string }[]): NodeDefinition {
   return {
@@ -194,6 +229,87 @@ describe('usePortFetches', () => {
   });
 });
 
+// ── Inside an open block (#621) ──────────────────────────────────────────────
+// The run captured an inner node as `<instance>/<inner>`; the open block shows
+// it as `<inner>`. Two copies of one block share their inner canvas ids, so a
+// result kept under the canvas id alone would show one copy's values in the
+// other.
+
+function scalar(nodeId: string, value: number): OutputData {
+  return { type: 'scalar', run_id: 'run1', node_id: nodeId, port: 'tensor', value };
+}
+
+// Unmount first: a hook still mounted would read the reset as leaving the
+// block, and ask again for every port.
+function leaveAll() {
+  cleanup();
+  enter();
+}
+
+describe('the run id of a canvas node', () => {
+  afterEach(leaveAll);
+
+  it('is the canvas id at the top level, and the entered instances in front of it inside', () => {
+    const { result } = renderHook(() => [useRunNodePrefix(), useRunNodeId('mul')]);
+    expect(result.current).toEqual(['', 'mul']);
+
+    act(() => enter('blk'));
+    expect(result.current).toEqual(['blk/', 'blk/mul']);
+
+    act(() => enter('blk', 'nest'));
+    expect(result.current).toEqual(['blk/nest/', 'blk/nest/mul']);
+  });
+});
+
+describe('usePortFetches inside an open block', () => {
+  const MUL = [{ nodeId: 'mul', port: 'tensor' }];
+  const KEY = keyOf('mul', 'tensor');
+
+  beforeEach(() => {
+    mockOutput.mockReset();
+    mockOutput.mockImplementation(async (_run, nodeId) =>
+      scalar(nodeId, nodeId === 'blk2/mul' ? 6 : 4),
+    );
+  });
+
+  afterEach(leaveAll);
+
+  it('asks for the id the run gave the node, and keys the answer by the canvas id', async () => {
+    enter('blk');
+    const { result } = renderHook(() => usePortFetches('run1', MUL));
+    await waitFor(() => expect(result.current[KEY]?.data).toEqual(scalar('blk/mul', 4)));
+    expect(mockOutput).toHaveBeenCalledWith('run1', 'blk/mul', 'tensor');
+    expect(mockOutput).toHaveBeenCalledTimes(1);
+  });
+
+  it('asks again for the same canvas id in the other copy of the block, and never shows the first copy there', async () => {
+    enter('blk');
+    const { result } = renderHook(() => usePortFetches('run1', MUL));
+    await waitFor(() => expect(result.current[KEY]?.data).toEqual(scalar('blk/mul', 4)));
+
+    act(() => enter('blk2'));
+    // Not one frame of the first copy's value under the second copy.
+    expect(result.current[KEY]?.data ?? null).toBeNull();
+    await waitFor(() => expect(result.current[KEY]?.data).toEqual(scalar('blk2/mul', 6)));
+    expect(mockOutput).toHaveBeenLastCalledWith('run1', 'blk2/mul', 'tensor');
+  });
+
+  it('asks for a block inside the block by both instances', async () => {
+    enter('blk', 'nest');
+    renderHook(() => usePortFetches('run1', MUL));
+    await waitFor(() => expect(mockOutput).toHaveBeenCalledWith('run1', 'blk/nest/mul', 'tensor'));
+  });
+
+  it('asks for the bare id again once back at the top level', async () => {
+    enter('blk');
+    const { result } = renderHook(() => usePortFetches('run1', MUL));
+    await waitFor(() => expect(result.current[KEY]?.data).toBeTruthy());
+
+    act(() => enter());
+    await waitFor(() => expect(mockOutput).toHaveBeenLastCalledWith('run1', 'mul', 'tensor'));
+  });
+});
+
 // ── Captures exist only once a node has returned ────────────────────────────
 // The engine writes a node's captures after the node returns and answers 404
 // for anything not written yet, so a port read mid-run has three states, not
@@ -263,5 +379,347 @@ describe('takeDuePorts', () => {
 
   it('asks once for a port listed twice', () => {
     expect(takeDuePorts([A, { ...A }], ['settled', 'settled'], new Set())).toEqual([A]);
+  });
+});
+
+// ── A node the last run has nothing for ─────────────────────────────────────
+// Added after the run, or moved into a block made after it: the run never
+// captured it under the id the canvas now has, so a request could only be
+// answered 404, which reads as "Run data expired". The finished run's port
+// list says so up front, and the row says what is true instead.
+
+describe('usePortFetches — a node the last run has nothing for', () => {
+  const RAN = { nodeId: 'a', port: 'out' };
+  const ADDED = { nodeId: 'added', port: 'out' };
+
+  function patchActiveTab(patch: Partial<TabState>) {
+    const { tabs, activeTabId } = useTabStore.getState();
+    useTabStore.setState({
+      tabs: tabs.map((t) => (t.id === activeTabId ? { ...t, ...patch } : t)),
+    });
+  }
+
+  function nodeAt(id: string, executionStatus: ExecutionStatus) {
+    return { ...node(id), data: { ...node(id).data, executionStatus } };
+  }
+
+  beforeEach(() => {
+    mockOutput.mockReset();
+    mockOutput.mockImplementation(async (_run, nodeId) => scalar(nodeId, 1));
+    mockList.mockResolvedValue([
+      { node_id: 'a', port: 'out', type: 'scalar', full_shape: null },
+      { node_id: 'blk/a', port: 'out', type: 'scalar', full_shape: null },
+    ]);
+  });
+
+  afterEach(() => {
+    leaveAll();
+    patchActiveTab({ nodes: [], status: 'idle' });
+  });
+
+  it('says so instead of asking for it, and asks for the node the run had', async () => {
+    const { result } = renderHook(() => usePortFetches('run1', [RAN, ADDED]));
+    await waitFor(() =>
+      expect(result.current[keyOf('added', 'out')]).toEqual({
+        loading: false,
+        error: null,
+        errorKey: null,
+        noteKey: 'inspector.capture.notInRun',
+        data: null,
+      }),
+    );
+    await waitFor(() => expect(result.current[keyOf('a', 'out')]?.data).toBeTruthy());
+    expect(mockOutput).toHaveBeenCalledTimes(1);
+    expect(mockOutput).toHaveBeenCalledWith('run1', 'a', 'out');
+  });
+
+  it('reads the run by its own ids inside an open block', async () => {
+    enter('blk');
+    const { result } = renderHook(() => usePortFetches('run1', [RAN, ADDED]));
+    await waitFor(() =>
+      expect(result.current[keyOf('added', 'out')]?.noteKey).toBe('inspector.capture.notInRun'),
+    );
+    await waitFor(() => expect(result.current[keyOf('a', 'out')]?.data).toBeTruthy());
+    expect(mockOutput).toHaveBeenCalledTimes(1);
+    expect(mockOutput).toHaveBeenCalledWith('run1', 'blk/a', 'out');
+  });
+
+  it('says a node that failed in the run failed, not that it was not in it', async () => {
+    patchActiveTab({ nodes: [nodeAt('added', 'error')] });
+    const { result } = renderHook(() => usePortFetches('run1', [ADDED]));
+    await waitFor(() =>
+      expect(result.current[keyOf('added', 'out')]?.noteKey).toBe(
+        'inspector.capture.failedInRun',
+      ),
+    );
+    expect(mockOutput).not.toHaveBeenCalled();
+  });
+
+  it('asks as before, and still reads expiry as expiry, when the list cannot be read', async () => {
+    mockList.mockRejectedValue(new Error('offline'));
+    mockOutput.mockRejectedValue(new RunDataExpiredError('run1'));
+    const { result } = renderHook(() => usePortFetches('run1', [ADDED]));
+    await waitFor(() =>
+      expect(result.current[keyOf('added', 'out')]?.errorKey).toBe('inspector.dataExpired'),
+    );
+    expect(mockOutput).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not read the list while a run is in progress, when it is still growing', async () => {
+    patchActiveTab({ status: 'running', nodes: [nodeAt('a', 'completed')] });
+    const { result } = renderHook(() => usePortFetches('run1', [RAN]));
+    await waitFor(() => expect(result.current[keyOf('a', 'out')]?.data).toBeTruthy());
+    expect(mockList).not.toHaveBeenCalled();
+  });
+
+  it('reads the list once per run, however many views ask', async () => {
+    const first = renderHook(() => usePortFetches('run1', [ADDED]));
+    const second = renderHook(() => usePortFetches('run1', [RAN, ADDED]));
+    await waitFor(() =>
+      expect(first.result.current[keyOf('added', 'out')]?.noteKey).toBe('inspector.capture.notInRun'),
+    );
+    await waitFor(() => expect(second.result.current[keyOf('a', 'out')]?.data).toBeTruthy());
+    expect(mockList).toHaveBeenCalledTimes(1);
+  });
+
+  it('reads the run record once per finished run, across views and later passes', async () => {
+    const first = renderHook(() => usePortFetches('run1', [ADDED]));
+    await waitFor(() =>
+      expect(first.result.current[keyOf('added', 'out')]?.noteKey).toBe('inspector.capture.notInRun'),
+    );
+    first.unmount();
+    const later = renderHook(() => usePortFetches('run1', [RAN]));
+    await waitFor(() => expect(later.result.current[keyOf('a', 'out')]?.data).toBeTruthy());
+    expect(mockGetRun).toHaveBeenCalledTimes(1);
+  });
+
+  it('asks the run record again while it has not caught up with the run that just ended', async () => {
+    // The run service sends the run's last event, which ends the tab's run,
+    // a moment before it marks the run finished.
+    mockGetRun
+      .mockResolvedValueOnce(runRecord('running'))
+      .mockResolvedValue(runRecord('succeeded'));
+    const { result } = renderHook(() => usePortFetches('run1', [ADDED]));
+    await waitFor(() =>
+      expect(result.current[keyOf('added', 'out')]?.noteKey).toBe('inspector.capture.notInRun'),
+    );
+    expect(mockGetRun).toHaveBeenCalledTimes(2);
+    expect(mockOutput).not.toHaveBeenCalled();
+  });
+
+  // A tab can name a run that is still going while the tab itself is not
+  // running: Watch in the Runs panel, or a reload mid-run, and the tab may
+  // never hear that run end. A node the run has not reached waits, as in the
+  // tab's own run, and is read once the run's record says it is over.
+
+  it('waits, without asking, for a node a watched run has not reached, and reads one it has', async () => {
+    mockGetRun.mockResolvedValue(runRecord('running'));
+    mockList.mockResolvedValue([{ node_id: 'a', port: 'out', type: 'scalar', full_shape: null }]);
+    const { result } = renderHook(() => usePortFetches('run1', [RAN, ADDED]));
+    await waitFor(() =>
+      expect(result.current[keyOf('added', 'out')]?.noteKey).toBe('inspector.nodePending'),
+    );
+    await waitFor(() => expect(result.current[keyOf('a', 'out')]?.data).toBeTruthy());
+    expect(mockOutput).toHaveBeenCalledTimes(1);
+    expect(mockOutput).toHaveBeenCalledWith('run1', 'a', 'out');
+  });
+
+  it('asks for nothing while a watched run is still queued: nothing in it has run', async () => {
+    mockGetRun.mockResolvedValue(runRecord('queued'));
+    const { result } = renderHook(() => usePortFetches('run1', [RAN, ADDED]));
+    await waitFor(() =>
+      expect(result.current[keyOf('a', 'out')]?.noteKey).toBe('inspector.nodePending'),
+    );
+    expect(result.current[keyOf('added', 'out')]?.noteKey).toBe('inspector.nodePending');
+    expect(mockList).not.toHaveBeenCalled();
+    expect(mockOutput).not.toHaveBeenCalled();
+  });
+
+  it('reads a waiting node by itself once the run ends, and stops asking about the run', async () => {
+    // A reload mid-run: the tab is idle, the run goes on.
+    mockGetRun.mockResolvedValue(runRecord('running'));
+    mockList.mockResolvedValue([{ node_id: 'a', port: 'out', type: 'scalar', full_shape: null }]);
+    const { result } = renderHook(() => usePortFetches('run1', [ADDED]));
+    await waitFor(() =>
+      expect(result.current[keyOf('added', 'out')]?.noteKey).toBe('inspector.nodePending'),
+    );
+    expect(mockOutput).not.toHaveBeenCalled();
+
+    // The run finishes, and `added` with it. Nothing else changes in the tab.
+    mockGetRun.mockResolvedValue(runRecord('succeeded'));
+    mockList.mockResolvedValue([
+      { node_id: 'a', port: 'out', type: 'scalar', full_shape: null },
+      { node_id: 'added', port: 'out', type: 'scalar', full_shape: null },
+    ]);
+    await waitFor(() => expect(result.current[keyOf('added', 'out')]?.data).toBeTruthy());
+    expect(mockOutput).toHaveBeenCalledWith('run1', 'added', 'out');
+
+    const asked = mockGetRun.mock.calls.length;
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 40));
+    });
+    expect(mockGetRun.mock.calls.length).toBe(asked);
+  });
+
+  it('stops asking about the run when the view goes away', async () => {
+    mockGetRun.mockResolvedValue(runRecord('running'));
+    mockList.mockResolvedValue([]);
+    const { result, unmount } = renderHook(() => usePortFetches('run1', [ADDED]));
+    await waitFor(() =>
+      expect(result.current[keyOf('added', 'out')]?.noteKey).toBe('inspector.nodePending'),
+    );
+    unmount();
+    const asked = mockGetRun.mock.calls.length;
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 40));
+    });
+    expect(mockGetRun.mock.calls.length).toBe(asked);
+  });
+
+  it('stops asking about the run once the tab runs it itself', async () => {
+    // Watch, before the server acknowledges the attach: the tab is still idle.
+    mockGetRun.mockResolvedValue(runRecord('running'));
+    mockList.mockResolvedValue([]);
+    patchActiveTab({ nodes: [nodeAt('added', 'idle')] });
+    const { result, unmount } = renderHook(() => usePortFetches('run1', [ADDED]));
+    await waitFor(() =>
+      expect(result.current[keyOf('added', 'out')]?.noteKey).toBe('inspector.nodePending'),
+    );
+
+    // The attach is acknowledged: the tab's own frames follow the run now.
+    act(() => patchActiveTab({ status: 'running' }));
+    const asked = mockGetRun.mock.calls.length;
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 40));
+    });
+    expect(mockGetRun.mock.calls.length).toBe(asked);
+    expect(result.current[keyOf('added', 'out')]?.noteKey).toBe('inspector.nodePending');
+    // Unmounted before the reset below, which would otherwise re-render it.
+    unmount();
+  });
+
+  it('asks as before when a recorded run lists gradients only', async () => {
+    // Every node that ran would be missing from such a list, not only the new ones.
+    mockList.mockResolvedValue([
+      { node_id: 'lin', port: 'out__grad', type: 'tensor', full_shape: [2] },
+      { node_id: 'lin', port: '__weight_grad__weight', type: 'tensor', full_shape: [2, 2] },
+    ]);
+    const { result } = renderHook(() => usePortFetches('run1', [{ nodeId: 'relu', port: 'out' }]));
+    await waitFor(() => expect(result.current[keyOf('relu', 'out')]?.data).toBeTruthy());
+    expect(mockOutput).toHaveBeenCalledWith('run1', 'relu', 'out');
+  });
+
+  // ── A run the server holds nothing for ──
+  // It failed before its first capture (Start -> TensorCreate with a bad
+  // shape), so the port list answers 404, though the run record exists.
+
+  describe('in a run that stored nothing before it failed', () => {
+    beforeEach(() => {
+      mockGetRun.mockResolvedValue(runRecord('failed', { record_outputs: true }));
+      mockList.mockRejectedValue(new RunDataExpiredError('run1'));
+      mockOutput.mockRejectedValue(new RunDataExpiredError('run1'));
+    });
+
+    it('says the node that failed failed, with no request', async () => {
+      patchActiveTab({ nodes: [nodeAt('added', 'error')] });
+      const { result } = renderHook(() => usePortFetches('run1', [ADDED]));
+      await waitFor(() =>
+        expect(result.current[keyOf('added', 'out')]?.noteKey).toBe('inspector.capture.failedInRun'),
+      );
+      expect(mockOutput).not.toHaveBeenCalled();
+    });
+
+    it('asks for a node the run never reached, and lets the 404 read as expired', async () => {
+      // With no list there is nothing certain to say about it: its status
+      // cannot tell "never reached" from "its values expired".
+      patchActiveTab({ nodes: [nodeAt('added', 'idle')] });
+      const { result } = renderHook(() => usePortFetches('run1', [ADDED]));
+      await waitFor(() =>
+        expect(result.current[keyOf('added', 'out')]?.errorKey).toBe('inspector.dataExpired'),
+      );
+      expect(mockOutput).toHaveBeenCalledTimes(1);
+    });
+
+    it('goes by no card status inside an open block: it asks, and the 404 reads as expired', async () => {
+      // Inner cards never get a run status; one they carry is not this run's.
+      enter('blk');
+      patchActiveTab({ nodes: [nodeAt('added', 'error')] });
+      const { result } = renderHook(() => usePortFetches('run1', [ADDED]));
+      await waitFor(() =>
+        expect(result.current[keyOf('added', 'out')]?.errorKey).toBe('inspector.dataExpired'),
+      );
+      expect(mockOutput).toHaveBeenCalledWith('run1', 'blk/added', 'out');
+    });
+
+    it('still asks for a node that completed, whose values really expired', async () => {
+      patchActiveTab({ nodes: [nodeAt('a', 'completed')] });
+      const { result } = renderHook(() => usePortFetches('run1', [RAN]));
+      await waitFor(() =>
+        expect(result.current[keyOf('a', 'out')]?.errorKey).toBe('inspector.dataExpired'),
+      );
+      expect(mockOutput).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  // ── A run made with Record node outputs off ──
+  // Nothing forward was kept, so every request could only 404 and read as
+  // expired; re-running with the setting still off changes nothing.
+
+  describe('in a run made with Record node outputs off', () => {
+    beforeEach(() => {
+      mockGetRun.mockResolvedValue(runRecord('succeeded', { record_outputs: false }));
+      // With Capture gradients on, the run kept gradients only.
+      mockList.mockResolvedValue([
+        { node_id: 'a', port: 'out__grad', type: 'tensor', full_shape: [2] },
+      ]);
+    });
+
+    it('asks for the setting instead of asking the server, while it is still off', async () => {
+      patchActiveTab({ recordOutputs: false, nodes: [nodeAt('a', 'completed')] });
+      const { result } = renderHook(() => usePortFetches('run1', [RAN, ADDED]));
+      await waitFor(() =>
+        expect(result.current[keyOf('a', 'out')]?.noteKey).toBe('inspector.empty.notRunHint'),
+      );
+      expect(result.current[keyOf('added', 'out')]?.noteKey).toBe('inspector.empty.notRunHint');
+      expect(mockOutput).not.toHaveBeenCalled();
+      // Not even the run's list: no answer it gives would change a word.
+      expect(mockList).not.toHaveBeenCalled();
+    });
+
+    it('asks for a run instead once the setting is on', async () => {
+      patchActiveTab({ recordOutputs: true, nodes: [nodeAt('a', 'completed')] });
+      const { result } = renderHook(() => usePortFetches('run1', [RAN]));
+      await waitFor(() =>
+        expect(result.current[keyOf('a', 'out')]?.noteKey).toBe('inspector.capture.runHint'),
+      );
+      expect(mockOutput).not.toHaveBeenCalled();
+      expect(mockList).not.toHaveBeenCalled();
+    });
+
+    it('follows the setting as it is switched, with the node still selected', async () => {
+      patchActiveTab({ recordOutputs: true, nodes: [nodeAt('a', 'completed')] });
+      const { result, unmount } = renderHook(() => usePortFetches('run1', [RAN]));
+      await waitFor(() =>
+        expect(result.current[keyOf('a', 'out')]?.noteKey).toBe('inspector.capture.runHint'),
+      );
+      act(() => patchActiveTab({ recordOutputs: false }));
+      expect(result.current[keyOf('a', 'out')]?.noteKey).toBe('inspector.empty.notRunHint');
+      act(() => patchActiveTab({ recordOutputs: true }));
+      expect(result.current[keyOf('a', 'out')]?.noteKey).toBe('inspector.capture.runHint');
+      // Nothing is asked again for it: the note is chosen as the row is drawn.
+      expect(mockOutput).not.toHaveBeenCalled();
+      expect(mockGetRun).toHaveBeenCalledTimes(1);
+      unmount();
+    });
+
+    it('still says a node that failed failed', async () => {
+      patchActiveTab({ recordOutputs: false, nodes: [nodeAt('added', 'error')] });
+      const { result } = renderHook(() => usePortFetches('run1', [ADDED]));
+      await waitFor(() =>
+        expect(result.current[keyOf('added', 'out')]?.noteKey).toBe('inspector.capture.failedInRun'),
+      );
+      expect(mockOutput).not.toHaveBeenCalled();
+      expect(mockList).not.toHaveBeenCalled();
+    });
   });
 });

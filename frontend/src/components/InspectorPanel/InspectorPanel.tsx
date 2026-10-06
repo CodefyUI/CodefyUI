@@ -9,6 +9,7 @@ import type { PortTarget } from './PortGroup';
 import {
   portDataType,
   resolveSingleNodePorts,
+  useInputsEmptyText,
   usePortFetches,
   usePortMedia,
 } from './portCaptures';
@@ -28,6 +29,9 @@ export function InspectorPanel() {
   const nodes = activeTab.nodes;
   const edges = activeTab.edges;
   const { t } = useI18n();
+  // The same sentence Node details shows, including a node an open block
+  // feeds through its own inputs.
+  const inputsEmptyText = useInputsEmptyText(selectedNodeId ?? '');
 
   const [collapsed, setCollapsed] = useState(false);
   const [inspectorTab, setInspectorTab] = useState<InspectorTab>('forward');
@@ -153,7 +157,9 @@ export function InspectorPanel() {
           <div className={styles.emptyState}>
             <div className={styles.emptyIcon}>▶</div>
             <div>{t('inspector.empty.notRun')}</div>
-            <div className={styles.emptyHint}>{t('inspector.empty.notRunHint')}</div>
+            <div className={styles.emptyHint}>
+              {t(activeTab.recordOutputs ? 'inspector.capture.runHint' : 'inspector.empty.notRunHint')}
+            </div>
           </div>
         </div>
       );
@@ -277,7 +283,7 @@ export function InspectorPanel() {
                   title={t('inspector.node.inputs', { count: inputs.length })}
                   ports={inputs}
                   fetches={fetches}
-                  emptyText={t('inspector.node.inputsEmpty')}
+                  emptyText={inputsEmptyText}
                   media={media}
                 />
                 <FlowDivider chip={shapeChip} />

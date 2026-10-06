@@ -9,10 +9,21 @@ import {
 import { useI18n, type TranslationKey } from '../../i18n';
 import { keyOf, type PortTarget } from '../InspectorPanel/PortGroup';
 import {
+  canvasNodeStatus,
   capturePhaseNoteKey,
+  fromRunKeys,
+  isRunStillGoingNote,
+  missingFromRunNote,
+  onRunEnd,
   resolveSingleNodePorts,
+  runInProgressNow,
   takeDuePorts,
+  toRunPorts,
+  useInputsEmptyText,
   usePortPhases,
+  useRecordOutputs,
+  useRunNodePrefix,
+  withRecordingSetting,
 } from '../InspectorPanel/portCaptures';
 import { HistogramPlot, type HistogramBar } from '../shared/HistogramPlot';
 import { getPortColor } from '../../utils';
@@ -53,6 +64,10 @@ type StatsMap = Record<string, StatsFetchState>;
  * at (#124). One controller per REQUEST rather than per effect run, because
  * the effect now re-runs whenever any node's status changes and aborting the
  * port the user is actually waiting on would strand its row.
+ *
+ * Inside an open block it names nodes as the run does and keeps results under
+ * those ids, as `usePortFetches` does (#621), and once the run is over it does
+ * not ask for a port whose owner the run recorded nothing for.
  */
 export function usePortStats(
   runId: string | null,
@@ -60,6 +75,8 @@ export function usePortStats(
 ): StatsMap {
   const [stats, setStats] = useState<StatsMap>({});
   const phases = usePortPhases(ports);
+  const prefix = useRunNodePrefix();
+  const recordOutputs = useRecordOutputs();
   // The server's 404 detail carries the Record-outputs hint in English. It is
   // the one error here whose cause we know exactly, so the state records the
   // key for it and the render turns that into a sentence, which keeps a raw
@@ -77,16 +94,28 @@ export function usePortStats(
     keys: new Set(),
   });
   const inFlightRef = useRef<Map<string, AbortController>>(new Map());
+  // A run the tab is not running can end without the tab hearing of it: a
+  // row waiting on one is read again once its record says it is over.
+  const [runEnded, setRunEnded] = useState(0);
+  const runEndRef = useRef<{ runId: string; stop: () => void } | null>(null);
 
   useEffect(() => {
     const inFlight = inFlightRef.current;
     return () => {
       for (const controller of inFlight.values()) controller.abort();
       inFlight.clear();
+      runEndRef.current?.stop();
+      runEndRef.current = null;
     };
   }, []);
 
   useEffect(() => {
+    // Stop waiting on a run the view has left, or one the tab now runs itself
+    // (an attach was acknowledged), as `usePortFetches` does.
+    if (runEndRef.current && (runEndRef.current.runId !== runId || runInProgressNow())) {
+      runEndRef.current.stop();
+      runEndRef.current = null;
+    }
     if (!runId) return;
     const inFlight = inFlightRef.current;
     if (askedRef.current.runId !== runId) {
@@ -96,7 +125,7 @@ export function usePortStats(
       askedRef.current = { runId, keys: new Set() };
     }
 
-    const all = portsRef.current;
+    const all = toRunPorts(portsRef.current, prefix);
     const onScreen = new Set(all.map((p) => keyOf(p.nodeId, p.port)));
     for (const [key, controller] of inFlight) {
       if (onScreen.has(key)) continue;
@@ -114,14 +143,39 @@ export function usePortStats(
       };
     }
     setStats((prev) => ({ ...prev, ...pending }));
+    const runOver = !runInProgressNow();
+    // No status inside an open block: the cards there never get one.
+    const statuses = due.map((p) => (prefix ? undefined : canvasNodeStatus(p.nodeId)));
 
     void Promise.all(
-      due.map(async (p) => {
+      due.map(async (p, i) => {
         const key = keyOf(p.nodeId, p.port);
         inFlight.get(key)?.abort();
         const controller = new AbortController();
         inFlight.set(key, controller);
         try {
+          const missing = runOver
+            ? await missingFromRunNote(runId, { runNodeId: p.nodeId, status: statuses[i] })
+            : null;
+          if (controller.signal.aborted) return;
+          if (missing) {
+            if (isRunStillGoingNote(missing)) {
+              // Not asked for yet: read once the run is over.
+              askedRef.current.keys.delete(key);
+              if (!runEndRef.current) {
+                const stop = onRunEnd(runId, () => {
+                  runEndRef.current = null;
+                  setRunEnded((n) => n + 1);
+                });
+                runEndRef.current = { runId, stop };
+              }
+            }
+            setStats((prev) => ({
+              ...prev,
+              [key]: { loading: false, errorKey: null, error: null, noteKey: missing, data: null },
+            }));
+            return;
+          }
           const data = await fetchPortStats(runId, p.nodeId, p.port, {
             signal: controller.signal,
           });
@@ -160,15 +214,17 @@ export function usePortStats(
         }
       }),
     );
-  }, [runId, portsKey, phasesKey]);
+  }, [runId, prefix, portsKey, phasesKey, runEnded]);
 
   // Derived, never stored: a node that is running again must not show last
-  // pass's statistics for even one frame.
-  let out = stats;
+  // pass's statistics for even one frame, and a recording-off line follows the
+  // Settings switch.
+  const shown = withRecordingSetting(fromRunKeys(stats, ports, prefix), recordOutputs);
+  let out = shown;
   for (let i = 0; i < ports.length; i++) {
     const noteKey = capturePhaseNoteKey(phases[i]);
     if (!noteKey) continue;
-    if (out === stats) out = { ...stats };
+    if (out === shown) out = { ...shown };
     out[keyOf(ports[i].nodeId, ports[i].port)] = {
       loading: false, errorKey: null, error: null, noteKey, data: null,
     };
@@ -470,20 +526,30 @@ function PortStatsGroup({
   focusPort: string | null;
   emptyText: string;
 }) {
+  // One port can fill two rows: an output wired into two inputs of the node.
+  // Rows that shared a React key stayed on screen after the list changed, so
+  // a repeat is keyed `#n` after the port, as `PortGroup` does (#562). Lookups
+  // keep the plain key: both rows show the one port.
+  const repeats = new Map<string, number>();
   return (
     <div className={styles.group}>
       <div className={styles.groupTitle}>{title}</div>
       {ports.length === 0 ? (
         <div className={styles.muted}>{emptyText}</div>
       ) : (
-        ports.map((port) => (
-          <PortStatsBlock
-            key={keyOf(port.nodeId, port.port)}
-            port={port}
-            state={stats[keyOf(port.nodeId, port.port)]}
-            focused={focusPort === keyOf(port.nodeId, port.port)}
-          />
-        ))
+        ports.map((port) => {
+          const key = keyOf(port.nodeId, port.port);
+          const repeat = repeats.get(key) ?? 0;
+          repeats.set(key, repeat + 1);
+          return (
+            <PortStatsBlock
+              key={repeat === 0 ? key : `${key}#${repeat}`}
+              port={port}
+              state={stats[key]}
+              focused={focusPort === key}
+            />
+          );
+        })
       )}
     </div>
   );
@@ -510,6 +576,7 @@ export function StatsTab({ ctx }: { ctx: NodeDetailTabContext }) {
   );
   const allPorts = useMemo(() => [...inputs, ...outputs], [inputs, outputs]);
   const stats = usePortStats(ctx.runId, allPorts);
+  const inputsEmptyText = useInputsEmptyText(ctx.nodeId);
 
   if (ctx.runId === null) {
     return (
@@ -517,7 +584,9 @@ export function StatsTab({ ctx }: { ctx: NodeDetailTabContext }) {
         <div className={modal.emptyState}>
           <div className={modal.emptyIcon}>~</div>
           <div>{t('nodeDetail.stats.notRun')}</div>
-          <div className={modal.emptyHint}>{t('nodeDetail.captures.notRunHint')}</div>
+          <div className={modal.emptyHint}>
+            {t(ctx.recordOutputs ? 'inspector.capture.runHint' : 'nodeDetail.captures.notRunHint')}
+          </div>
         </div>
       </div>
     );
@@ -533,7 +602,7 @@ export function StatsTab({ ctx }: { ctx: NodeDetailTabContext }) {
         ports={inputs}
         stats={stats}
         focusPort={ctx.focusPort}
-        emptyText={t('nodeDetail.inputs.empty')}
+        emptyText={inputsEmptyText}
       />
       <PortStatsGroup
         title={t('nodeDetail.outputs.title', { count: outputs.length })}

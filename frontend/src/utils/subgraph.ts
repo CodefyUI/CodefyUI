@@ -36,6 +36,12 @@ export function isSubgraphInstance(node: Node<NodeData> | undefined): boolean {
 /** One opened block on the trail from a graph's top level to the canvas on screen. */
 export interface SubgraphPathEntry {
   subgraphId: string;
+  /**
+   * The block node that was entered, on the level above. Two copies of one
+   * block share `subgraphId`; this tells them apart, and with the levels above
+   * it names a node's id in a run (`blk/nest/n`, #621).
+   */
+  instanceId: string;
   /** The block's name; its id when the definition has gone missing. */
   name: string;
 }
@@ -57,11 +63,12 @@ export interface SubgraphPathEntry {
  * that fallback is what the breadcrumb has always shown.
  */
 export function subgraphViewPath(
-  stack: readonly { subgraphId: string }[] | undefined,
+  stack: readonly { subgraphId: string; instanceId: string }[] | undefined,
   subgraphs: readonly SubgraphDefinition[] | undefined,
 ): SubgraphPathEntry[] {
   return (stack ?? []).map((frame) => ({
     subgraphId: frame.subgraphId,
+    instanceId: frame.instanceId,
     name:
       (subgraphs ?? []).find((d) => d.id === frame.subgraphId)?.name
       || frame.subgraphId,

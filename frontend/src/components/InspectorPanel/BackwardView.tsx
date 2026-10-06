@@ -8,8 +8,16 @@ import {
 } from '../../api/executionOutputs';
 import type { OutputData, TensorOutput } from '../../types';
 import { TensorGridView } from './TensorGridView';
-import { useRunInProgress } from './portCaptures';
-import { useI18n } from '../../i18n';
+import {
+  canvasNodeHasOutputs,
+  canvasNodeStatus,
+  isRunStillGoingNote,
+  missingGradientsNote,
+  onRunEnd,
+  useRunInProgress,
+  useRunNodeId,
+} from './portCaptures';
+import { useI18n, type TranslationKey } from '../../i18n';
 import styles from './InspectorPanel.module.css';
 
 interface Props {
@@ -102,12 +110,21 @@ export function BackwardView({ runId, nodeId }: Props) {
   const [entries, setEntries] = useState<GradIndexEntry[] | null>(null);
   const [indexError, setIndexError] = useState<string | null>(null);
   const [tensors, setTensors] = useState<TensorMap>({});
+  // Set when the finished run recorded nothing for this node: it was not in
+  // that run, or failed in it, and "turn on Capture gradients" would be the
+  // wrong hint.
+  const [missingKey, setMissingKey] = useState<TranslationKey | null>(null);
+  // Bumped when a run the tab is not running ends, so its gradients are read.
+  const [runEnded, setRunEnded] = useState(0);
   // Gradients are written by the backward pass, which runs after the WHOLE
   // forward pass — so unlike the Forward tab, what this view waits for is the
   // run, not the selected node. Read mid-run the index comes back empty,
   // which reads as "no gradients captured": an instruction to turn on a
   // setting that may well already be on.
   const runInProgress = useRunInProgress();
+  // Inside an open block the run recorded this node as `<instance>/<inner>`
+  // (#621).
+  const runNodeId = useRunNodeId(nodeId);
 
   // The parent remounts this component (via a `key` on runId:nodeId), so each
   // mount starts from fresh state — no manual reset needed, and the prior
@@ -115,16 +132,41 @@ export function BackwardView({ runId, nodeId }: Props) {
   useEffect(() => {
     if (runInProgress) return;
     let cancelled = false;
-    fetchGradIndex(runId, nodeId)
-      .then((es) => {
+    let stopWaiting: (() => void) | null = null;
+    // Inside an open block the card has no run status to go by.
+    missingGradientsNote(runId, {
+      runNodeId,
+      status: runNodeId === nodeId ? canvasNodeStatus(nodeId) : undefined,
+      hasOutputs: canvasNodeHasOutputs(nodeId),
+    })
+      .then((note) => {
         if (cancelled) return;
-        setEntries(es);
-        // Seed loading placeholders for every gradient the next effect fetches.
-        const initial: TensorMap = {};
-        for (const e of es) {
-          initial[entryKey(e)] = { loading: true, error: null, data: null };
+        if (note === 'none') {
+          // Capture gradients was off for the run: there are none, and
+          // nothing to ask for.
+          setMissingKey(null);
+          setEntries([]);
+          setTensors({});
+          return;
         }
-        setTensors(initial);
+        setMissingKey(note);
+        if (note) {
+          // A run the tab is not running: read again once it is over.
+          if (isRunStillGoingNote(note)) {
+            stopWaiting = onRunEnd(runId, () => setRunEnded((n) => n + 1));
+          }
+          return;
+        }
+        return fetchGradIndex(runId, runNodeId).then((es) => {
+          if (cancelled) return;
+          setEntries(es);
+          // Seed loading placeholders for every gradient the next effect fetches.
+          const initial: TensorMap = {};
+          for (const e of es) {
+            initial[entryKey(e)] = { loading: true, error: null, data: null };
+          }
+          setTensors(initial);
+        });
       })
       .catch((e) => {
         if (cancelled) return;
@@ -136,8 +178,9 @@ export function BackwardView({ runId, nodeId }: Props) {
       });
     return () => {
       cancelled = true;
+      stopWaiting?.();
     };
-  }, [runId, nodeId, t, runInProgress]);
+  }, [runId, runNodeId, nodeId, t, runInProgress, runEnded]);
 
   // The loading placeholders were already seeded alongside setEntries above.
   useEffect(() => {
@@ -147,7 +190,7 @@ export function BackwardView({ runId, nodeId }: Props) {
       entries.map(async (e) => {
         const port = entryStorePort(e);
         try {
-          const data = await fetchTensorWithFallback(runId, nodeId, port);
+          const data = await fetchTensorWithFallback(runId, runNodeId, port);
           if (cancelled) return;
           setTensors((prev) => ({
             ...prev,
@@ -172,10 +215,14 @@ export function BackwardView({ runId, nodeId }: Props) {
     return () => {
       cancelled = true;
     };
-  }, [entries, runId, nodeId, t]);
+  }, [entries, runId, runNodeId, t]);
 
   if (runInProgress) {
     return <div className={styles.diffMissing}>{t('inspector.runRunning')}</div>;
+  }
+
+  if (missingKey) {
+    return <div className={styles.diffMissing}>{t(missingKey)}</div>;
   }
 
   if (indexError) {
