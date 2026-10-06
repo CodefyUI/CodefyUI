@@ -204,6 +204,13 @@ interface UndoSnapshot {
  */
 interface SubgraphFrame {
   subgraphId: string;
+  /**
+   * The canvas id of the instance that was entered, at the level above
+   * (#621). With the frames above it, this names the run's flattened ids: the
+   * engine runs an inner node as `<instance>/<inner>`, and two copies of one
+   * block hold the same inner ids, so the definition alone cannot say which.
+   */
+  instanceId: string;
   nodes: Node<NodeData>[];
   edges: Edge[];
   presets: PresetDefinition[];
@@ -4287,6 +4294,7 @@ export const useTabStore = create<TabStoreState>((rawSet, get) => {
       : resolved;
     const frame: SubgraphFrame = {
       subgraphId: definition.id,
+      instanceId: nodeId,
       nodes: tab.nodes,
       edges: tab.edges,
       presets: tab.presets,

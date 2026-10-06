@@ -6,6 +6,11 @@ full tensor values (or their slices) for the Teaching Inspector panel.
 The ``/stats`` route is the counterpart for data too big to fetch: it
 summarises a value server-side (see ``core.port_stats``) so the answer to
 "what does this data look like" costs a kilobyte instead of two gigabytes.
+
+Every read also has a query form, ``/{run_id}/value|stats|steps|grads`` with
+``?node_id=&port=`` (#621), for a node id the path cannot carry: a node inside
+a block runs as ``<instance>/<inner>``, and the server decodes ``%2F`` before
+routing, so the path form never reaches a handler for it.
 """
 
 from __future__ import annotations
@@ -455,3 +460,55 @@ async def get_output(
     # inside core.port_stats.compute_port_stats (the _num() helper in that
     # module), not as a wrapping call here.
     return json_safe(payload)
+
+
+# ── Query form, for ids the path cannot carry (#621) ─────────────────────────
+#
+# The engine flattens a block before it runs, so a node inside one is captured
+# as ``<instance>/<inner>`` (``<outer>/<inner instance>/<node>`` further in).
+# The path routes above cannot address that id: ``%2F`` is decoded before
+# routing, and ``blk%2Fmul/tensor`` matches no route. ``{node_id:path}`` would
+# match, but ambiguously -- ``/run/blk/norm/stats`` is both "stats of (blk,
+# norm)" and "the value of (blk/norm, stats)", and Normalize has a real output
+# named ``stats``. So the id travels as a query parameter, under a second path
+# segment no other route has (none has exactly two), and each route hands over
+# to the path form's handler, so every answer -- 200, 204, 400, 404, 413 -- is
+# the same. The client uses these only for ids containing ``/``.
+
+
+@router.get("/{run_id}/value")
+async def get_output_query(
+    run_id: str,
+    request: Request,
+    node_id: str = Query(...),
+    port: str = Query(...),
+    slice: str = Query(default=""),
+    max_elements: int = Query(default=4096, ge=1, le=1_000_000),
+):
+    return await get_output(
+        run_id, node_id, port, request, slice=slice, max_elements=max_elements,
+    )
+
+
+@router.get("/{run_id}/stats")
+async def get_output_stats_query(
+    run_id: str,
+    request: Request,
+    node_id: str = Query(...),
+    port: str = Query(...),
+):
+    return await get_output_stats(run_id, node_id, port, request)
+
+
+@router.get("/{run_id}/steps")
+async def get_steps_index_query(
+    run_id: str, request: Request, node_id: str = Query(...),
+):
+    return await get_steps_index(run_id, node_id, request)
+
+
+@router.get("/{run_id}/grads")
+async def get_grad_index_query(
+    run_id: str, request: Request, node_id: str = Query(...),
+):
+    return await get_grad_index(run_id, node_id, request)

@@ -1,5 +1,6 @@
 import { useMemo } from 'react';
 import { useTabStore } from '../../store/tabStore';
+import { useRunNodeId } from '../InspectorPanel/portCaptures';
 import { HeatmapModal } from '../shared/HeatmapModal';
 import { ScatterModal } from '../shared/ScatterModal';
 import { VIZ_VIEWERS } from './vizViewers';
@@ -34,6 +35,10 @@ function VizViewerModalBody({ nodeId }: { nodeId: string }) {
   const node = tab.nodes.find((n) => n.id === nodeId);
   const summaries = tab.outputSummaries[nodeId];
   const runId = tab.lastRunId;
+  // What the viewer fetches by. Inside an open block the run captured the
+  // node as `<instance>/<inner>` (#621), and the summaries above never arrive
+  // for an inner node, so there the viewer always fetches.
+  const runNodeId = useRunNodeId(nodeId);
 
   // Rebuilt only when the node, its outputs or the run change: the scatter
   // viewer keys its fit-to-view and its wheel listener on the identity of the
@@ -49,7 +54,7 @@ function VizViewerModalBody({ nodeId }: { nodeId: string }) {
   // showing right now (the user stepped into a block) or one with no viewer.
   if (spec === null) return null;
   if (spec.kind === 'scatter') {
-    return <ScatterModal isOpen onClose={closeVizModal} {...spec.props} />;
+    return <ScatterModal isOpen onClose={closeVizModal} {...spec.props} nodeId={runNodeId} />;
   }
-  return <HeatmapModal isOpen onClose={closeVizModal} {...spec.props} />;
+  return <HeatmapModal isOpen onClose={closeVizModal} {...spec.props} nodeId={runNodeId} />;
 }

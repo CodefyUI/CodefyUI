@@ -163,6 +163,12 @@ export interface RunListOptions {
  */
 export interface GraphViewLevel {
   subgraphId: string;
+  /**
+   * The block node that was entered, on the level above (2.8.10, still
+   * apiVersion 5: additive). With the levels above it, this names a node's id
+   * in a run, which `/api/execution/outputs` reads by (#621).
+   */
+  instanceId: string;
   /** The block's name, exactly as the breadcrumb bar shows it. */
   name: string;
 }

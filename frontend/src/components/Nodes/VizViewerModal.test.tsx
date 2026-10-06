@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { render, screen, fireEvent, act } from '@testing-library/react';
+import { render, screen, fireEvent, act, cleanup, waitFor } from '@testing-library/react';
 import { FlowWrapper, renderWithFlow } from '../../test/utils';
+import { enterBlocks } from '../../test/openBlocks';
 import { useI18n } from '../../i18n';
 import { useTabStore } from '../../store/tabStore';
 import type { NodeData, OutputSummary } from '../../types';
@@ -218,5 +219,36 @@ describe('VizViewerModal', () => {
     );
     expect(dialog()).toBeTruthy();
     expect(g.fetch).toHaveBeenCalledTimes(1);
+  });
+});
+
+// ── Inside an open block (#621) ──────────────────────────────────────────────
+// The run captured the block's nodes as `<instance>/<inner>`; the open block
+// shows them under their own ids, and the streamed summaries a card's inline
+// plot reads never arrive for them, so the viewer always fetches there.
+
+describe('VizViewerModal — inside an open block', () => {
+  // Unmount first, then leave: `seed` keeps the stack it finds.
+  afterEach(() => {
+    cleanup();
+    enterBlocks();
+  });
+
+  const fetchedUrl = (i: number) =>
+    String((g.fetch as ReturnType<typeof vi.fn>).mock.calls[i][0]);
+
+  it('fetches the node by the id the run gave it, and by its own id at the top level', async () => {
+    seed({ nodes: [tabNode('v1', 'eduSelfAttentionNode')], vizModalNodeId: 'v1' });
+    const top = render(<VizViewerModal />);
+    await waitFor(() => expect(screen.queryByText('Loading tensor…')).toBeNull());
+    expect(fetchedUrl(0)).toBe('/api/execution/outputs/run-1/v1/weights?max_elements=4096');
+    top.unmount();
+
+    enterBlocks('blk', 'nest');
+    render(<VizViewerModal />);
+    await waitFor(() => expect(screen.queryByText('Loading tensor…')).toBeNull());
+    expect(fetchedUrl(1)).toBe(
+      '/api/execution/outputs/run-1/value?node_id=blk%2Fnest%2Fv1&port=weights&max_elements=4096',
+    );
   });
 });

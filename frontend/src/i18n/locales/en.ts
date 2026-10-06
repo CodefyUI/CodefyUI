@@ -683,6 +683,10 @@ const en = {
   'inspector.nodeRunning': 'Node is running…',
   'inspector.nodePending': 'Waiting for this node to run…',
   'inspector.noValue': 'No value this run',
+  'inspector.capture.notInRun': 'Not in the last run',
+  'inspector.capture.failedInRun': 'Failed in the last run',
+  'inspector.capture.runHint': 'Run the graph to capture its values',
+  'inspector.capture.fromBlock': "From the block's input: {ports}",
   // Gradients land after the whole forward pass, so this view waits on the
   // run, not on the selected node.
   'inspector.runRunning': 'Graph is running…',
@@ -700,7 +704,6 @@ const en = {
   'inspector.segment.outputs': 'Segment outputs ({count})',
   'inspector.node.inputs': 'Inputs ({count})',
   'inspector.node.outputs': 'Outputs ({count})',
-  'inspector.node.inputsEmpty': 'No inputs connected',
   'inspector.node.outputsEmpty': 'Run the graph to see outputs',
   'segment.removeThis': 'Remove this segment',
 

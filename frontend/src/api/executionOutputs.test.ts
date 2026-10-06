@@ -89,10 +89,10 @@ describe('fetchOutput', () => {
 
   it('url-encodes path segments', async () => {
     const fetchMock = mockFetch(200, {});
-    await fetchOutput('r', 'node with space', 'p/q');
+    await fetchOutput('r', 'node with space', 'p q');
     const call = fetchMock.mock.calls[0][0] as string;
     expect(call).toContain('node%20with%20space');
-    expect(call).toContain('p%2Fq');
+    expect(call).toContain('p%20q');
   });
 
   it('throws RunDataExpiredError on 404', async () => {
@@ -205,9 +205,9 @@ describe('fetchStepIndex', () => {
     const fetchMock = mockFetch(200, [
       { index: 0, name: 'forward', description: '', scalars: {}, tensor_keys: [] },
     ]);
-    const out = await fetchStepIndex('run 1', 'node/a');
+    const out = await fetchStepIndex('run 1', 'node a');
     expect(fetchMock.mock.calls[0][0]).toBe(
-      '/api/execution/outputs/run%201/node%2Fa/__steps_index',
+      '/api/execution/outputs/run%201/node%20a/__steps_index',
     );
     expect(out).toHaveLength(1);
     expect(out[0].name).toBe('forward');
@@ -231,17 +231,19 @@ describe('fetchGradIndex', () => {
     const fetchMock = mockFetch(200, [
       { port: 'out', kind: 'port', has_grad: true, health: null },
     ]);
-    const out = await fetchGradIndex('run 1', 'node/a');
+    const out = await fetchGradIndex('run 1', 'node a');
     expect(fetchMock.mock.calls[0][0]).toBe(
-      '/api/execution/outputs/run%201/node%2Fa/__grad_index',
+      '/api/execution/outputs/run%201/node%20a/__grad_index',
     );
     expect(out).toHaveLength(1);
     expect(out[0].port).toBe('out');
   });
 
-  it('returns an empty list on 404', async () => {
+  it('throws RunDataExpiredError on 404: the server holds nothing for the run', async () => {
+    // A node with no gradients in a run the server holds is a 200 with [];
+    // a 404 means the run itself is gone, which the Backward tab says.
     mockFetch(404, { detail: 'missing' });
-    await expect(fetchGradIndex('r', 'n')).resolves.toEqual([]);
+    await expect(fetchGradIndex('r', 'n')).rejects.toBeInstanceOf(RunDataExpiredError);
   });
 
   it('throws a generic Error on other failures', async () => {
@@ -255,11 +257,11 @@ describe('fetchGradIndex', () => {
 describe('fetchPortStats', () => {
   it('builds the /stats URL and returns the parsed body on 200', async () => {
     const fetchMock = mockFetch(200, { kind: 'tensor' });
-    await expect(fetchPortStats('run 1', 'node/a', 'out')).resolves.toEqual({
+    await expect(fetchPortStats('run 1', 'node a', 'out')).resolves.toEqual({
       kind: 'tensor',
     });
     expect(fetchMock.mock.calls[0][0]).toBe(
-      '/api/execution/outputs/run%201/node%2Fa/out/stats',
+      '/api/execution/outputs/run%201/node%20a/out/stats',
     );
   });
 
@@ -276,5 +278,78 @@ describe('fetchPortStats', () => {
     expect(err).toBeInstanceOf(NoValueError);
     expect(err).not.toBeInstanceOf(StatsNotCapturedError);
     expect(json).not.toHaveBeenCalled();
+  });
+});
+
+// ── An id with a slash: a node inside a block (#621) ─────────────────────────
+// The run names it `<instance>/<inner>`, and the server decodes `%2F` before
+// routing, so in a path segment it reaches no route at all. Such an id goes
+// in the query; every other id keeps the path form above, byte for byte.
+
+describe('an id the path cannot carry', () => {
+  it('fetchOutput asks the query form', async () => {
+    const fetchMock = mockFetch(200, { type: 'scalar', value: 1 });
+    await fetchOutput('r', 'blk/mul', 'tensor');
+    expect(fetchMock).toHaveBeenCalledWith(
+      '/api/execution/outputs/r/value?node_id=blk%2Fmul&port=tensor',
+    );
+  });
+
+  it('fetchOutput keeps slice and max_elements in the query form', async () => {
+    const fetchMock = mockFetch(200, { type: 'tensor' });
+    await fetchOutput('run 1', 'blk/nest/mul', 'tensor', { slice: '0,:,:', maxElements: 1024 });
+    expect(fetchMock.mock.calls[0][0]).toBe(
+      '/api/execution/outputs/run%201/value?node_id=blk%2Fnest%2Fmul&port=tensor' +
+        '&slice=0%2C%3A%2C%3A&max_elements=1024',
+    );
+  });
+
+  it('fetchOutput sends a port with a slash in the query too', async () => {
+    const fetchMock = mockFetch(200, {});
+    await fetchOutput('r', 'n', 'p/q');
+    expect(fetchMock.mock.calls[0][0]).toBe(
+      '/api/execution/outputs/r/value?node_id=n&port=p%2Fq',
+    );
+  });
+
+  it('fetchOutput maps the answers exactly as the path form does', async () => {
+    mockFetch(404, { detail: 'missing' });
+    await expect(fetchOutput('r', 'blk/mul', 'p')).rejects.toBeInstanceOf(RunDataExpiredError);
+    mockFetchNoContent();
+    const err = await fetchOutput('r', 'blk/mul', 'p').catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(NoValueError);
+    expect((err as Error).message).toContain('blk/mul.p');
+    mockFetch(400, { detail: 'bad slice' });
+    await expect(fetchOutput('r', 'blk/mul', 'p')).rejects.toBeInstanceOf(InvalidSliceError);
+    mockFetch(413, { detail: 'too big' });
+    await expect(fetchOutput('r', 'blk/mul', 'p')).rejects.toBeInstanceOf(PayloadTooLargeError);
+  });
+
+  it('fetchPortStats asks the query form', async () => {
+    const fetchMock = mockFetch(200, { kind: 'tensor' });
+    await fetchPortStats('run 1', 'blk/mul', 'out');
+    expect(fetchMock.mock.calls[0][0]).toBe(
+      '/api/execution/outputs/run%201/stats?node_id=blk%2Fmul&port=out',
+    );
+    mockFetch(404, { detail: 'nothing captured' });
+    await expect(fetchPortStats('r', 'blk/mul', 'p')).rejects.toBeInstanceOf(
+      StatsNotCapturedError,
+    );
+  });
+
+  it('fetchStepIndex asks the query form', async () => {
+    const fetchMock = mockFetch(200, []);
+    await fetchStepIndex('run 1', 'blk/mul');
+    expect(fetchMock.mock.calls[0][0]).toBe(
+      '/api/execution/outputs/run%201/steps?node_id=blk%2Fmul',
+    );
+  });
+
+  it('fetchGradIndex asks the query form', async () => {
+    const fetchMock = mockFetch(200, []);
+    await fetchGradIndex('run 1', 'blk/mul');
+    expect(fetchMock.mock.calls[0][0]).toBe(
+      '/api/execution/outputs/run%201/grads?node_id=blk%2Fmul',
+    );
   });
 });

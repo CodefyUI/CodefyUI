@@ -135,6 +135,20 @@ export interface GraphViewLevel {
   subgraphId: string;
   /** The block's name, exactly as the editor's breadcrumb bar shows it. */
   name: string;
+  /**
+   * The id of the block node the user stepped into, on the level above. Two
+   * copies of one block share `subgraphId`; this tells them apart.
+   *
+   * A run flattens blocks, so a node `n` on the open level runs, and its
+   * outputs are captured, as the `instanceId`s of `path` joined with `/` and
+   * then `n` (`blk/n`; `blk/nest/n` two levels down). Read such an id from
+   * `/api/execution/outputs` with the query form, `?node_id=`: a `/` cannot
+   * travel in a path segment.
+   *
+   * On an editor before CodefyUI 2.8.10, which reports apiVersion 5 as well,
+   * this field is absent, so feature-check it with `'instanceId' in level`.
+   */
+  instanceId: string;
 }
 
 /**

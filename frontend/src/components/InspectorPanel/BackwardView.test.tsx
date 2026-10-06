@@ -1,15 +1,23 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { act, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, render, screen, waitFor } from '@testing-library/react';
 import { BackwardView } from './BackwardView';
 import { useI18n } from '../../i18n';
 import { useTabStore } from '../../store/tabStore';
+import { enterBlocks } from '../../test/openBlocks';
 import {
   fetchGradIndex,
   fetchOutput,
+  listRunOutputs,
   PayloadTooLargeError,
   RunDataExpiredError,
   type GradIndexEntry,
 } from '../../api/executionOutputs';
+import {
+  _resetRunIndexesForTests,
+  _setRunEndPollForTests,
+  _setRunRecordRetryForTests,
+} from './portCaptures';
+import { getRun, type RunInfo } from '../../api/rest';
 import type { ExecutionStatus, TensorOutput } from '../../types';
 
 // Mock only the fetch functions; keep the real error classes so `instanceof`
@@ -22,11 +30,20 @@ vi.mock('../../api/executionOutputs', async () => {
     ...actual,
     fetchGradIndex: vi.fn(),
     fetchOutput: vi.fn(),
+    listRunOutputs: vi.fn(),
   };
+});
+
+// The run record says whether the last run is over; most tests are after it.
+vi.mock('../../api/rest', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../api/rest')>();
+  return { ...actual, getRun: vi.fn() };
 });
 
 const mockGradIndex = vi.mocked(fetchGradIndex);
 const mockOutput = vi.mocked(fetchOutput);
+const mockList = vi.mocked(listRunOutputs);
+const mockGetRun = vi.mocked(getRun);
 
 function tensor(values: unknown, extra: Partial<TensorOutput> = {}): TensorOutput {
   return {
@@ -55,6 +72,17 @@ beforeEach(() => {
   useI18n.setState({ locale: 'en' });
   mockGradIndex.mockReset();
   mockOutput.mockReset();
+  // No run index unless a test gives one: a list that cannot be read leaves
+  // gradients asked for, as before.
+  _resetRunIndexesForTests();
+  // A record still saying "running" is asked again three times, at once, and
+  // a run the tab is not running is polled for its end every 5 ms.
+  _setRunRecordRetryForTests(3, 0);
+  _setRunEndPollForTests(5);
+  mockList.mockReset();
+  mockList.mockRejectedValue(new Error('offline'));
+  mockGetRun.mockReset();
+  mockGetRun.mockResolvedValue({ id: 'r1', status: 'succeeded' } as RunInfo);
 });
 
 afterEach(() => {
@@ -332,6 +360,8 @@ describe('BackwardView', () => {
     let resolve!: (v: GradIndexEntry[]) => void;
     mockGradIndex.mockReturnValue(new Promise<GradIndexEntry[]>((r) => { resolve = r; }));
     const { unmount } = render(<BackwardView runId="r1" nodeId="n1" />);
+    // The index is asked for once the run's port list is read.
+    await waitFor(() => expect(mockGradIndex).toHaveBeenCalled());
     unmount(); // sets cancelled = true before the index resolves
     resolve([portEntry('g')]);
     // give the microtask queue a tick; entries must NOT be set (no crash, no render)
@@ -344,6 +374,7 @@ describe('BackwardView', () => {
     let reject!: (e: unknown) => void;
     mockGradIndex.mockReturnValue(new Promise<GradIndexEntry[]>((_r, rej) => { reject = rej; }));
     const { unmount, container } = render(<BackwardView runId="r1" nodeId="n1" />);
+    await waitFor(() => expect(mockGradIndex).toHaveBeenCalled());
     unmount();
     reject(new Error('late error'));
     await Promise.resolve();
@@ -435,5 +466,161 @@ describe('BackwardView — while the run is still going', () => {
     await waitFor(() => expect(screen.getByText('logits')).toBeInTheDocument());
     expect(screen.queryByText('Graph is running…')).toBeNull();
     expect(mockGradIndex).toHaveBeenCalledTimes(1);
+  });
+});
+
+// ── A node the last run has nothing for ─────────────────────────────────────
+
+describe('BackwardView — a node the last run has nothing for', () => {
+  /** Put `id` on the canvas declaring `outputs` (a TRIGGER output is no data). */
+  function place(
+    id: string,
+    outputs: { name: string; data_type: string }[],
+    executionStatus?: ExecutionStatus,
+  ) {
+    const { tabs, activeTabId } = useTabStore.getState();
+    useTabStore.setState({
+      tabs: tabs.map((t) =>
+        t.id === activeTabId
+          ? {
+              ...t,
+              status: 'idle',
+              nodes: [{
+                id, type: 'baseNode', position: { x: 0, y: 0 },
+                data: {
+                  label: id, type: 'Generic', params: {}, executionStatus,
+                  definition: {
+                    node_name: 'Generic', category: 'x', description: '', inputs: [], params: [],
+                    outputs: outputs.map((o) => ({ ...o, description: '', optional: false })),
+                  },
+                },
+              }],
+            }
+          : t,
+      ),
+    });
+  }
+
+  const OUT = [{ name: 'out', data_type: 'TENSOR' }];
+
+  afterEach(() => {
+    cleanup();
+    const { tabs, activeTabId } = useTabStore.getState();
+    useTabStore.setState({
+      tabs: tabs.map((t) => (t.id === activeTabId ? { ...t, nodes: [] } : t)),
+    });
+  });
+
+  it('says the node was not in the last run instead of asking for its gradients', async () => {
+    place('n1', OUT);
+    mockList.mockResolvedValue([{ node_id: 'other', port: 'out', type: 'scalar', full_shape: null }]);
+    render(<BackwardView runId="r1" nodeId="n1" />);
+    await waitFor(() => expect(screen.getByText('Not in the last run')).toBeInTheDocument());
+    expect(mockGradIndex).not.toHaveBeenCalled();
+    expect(screen.queryByText('No gradients captured')).toBeNull();
+  });
+
+  it('shows Start what it always showed: it declares no output, so no list names it', async () => {
+    place('start', [{ name: 'trigger', data_type: 'TRIGGER' }]);
+    mockList.mockResolvedValue([{ node_id: 'other', port: 'out', type: 'scalar', full_shape: null }]);
+    mockGradIndex.mockResolvedValue([]);
+    render(<BackwardView runId="r1" nodeId="start" />);
+    await waitFor(() => expect(screen.getByText('No gradients captured')).toBeInTheDocument());
+    expect(mockGradIndex).toHaveBeenCalledWith('r1', 'start');
+    expect(screen.queryByText('Not in the last run')).toBeNull();
+  });
+
+  it('shows no gradients, without asking, when Capture gradients was off for the run', async () => {
+    mockGetRun.mockResolvedValue({
+      id: 'r1', status: 'succeeded', options: { record_outputs: true, backward_mode: false },
+    } as unknown as RunInfo);
+    mockList.mockResolvedValue([{ node_id: 'n1', port: 'out', type: 'tensor', full_shape: [2] }]);
+    place('n1', OUT, 'completed');
+    render(<BackwardView runId="r1" nodeId="n1" />);
+    await waitFor(() => expect(screen.getByText('No gradients captured')).toBeInTheDocument());
+    expect(mockGradIndex).not.toHaveBeenCalled();
+  });
+
+  it('asks when the server holds nothing for the run, and lets the 404 read as expired', async () => {
+    mockGetRun.mockResolvedValue({
+      id: 'r1', status: 'failed', options: { record_outputs: true, backward_mode: true },
+    } as unknown as RunInfo);
+    mockList.mockRejectedValue(new RunDataExpiredError('r1'));
+    mockGradIndex.mockRejectedValue(new RunDataExpiredError('r1'));
+    place('n1', OUT, 'completed');
+    render(<BackwardView runId="r1" nodeId="n1" />);
+    await waitFor(() =>
+      expect(
+        screen.getByText('Run data expired — turn on Capture gradients in Settings and re-run'),
+      ).toBeInTheDocument(),
+    );
+    expect(mockGradIndex).toHaveBeenCalledWith('r1', 'n1');
+  });
+
+  it('still reads its gradients in a run made with Record node outputs off', async () => {
+    mockGetRun.mockResolvedValue({
+      id: 'r1', status: 'succeeded', options: { record_outputs: false, backward_mode: true },
+    } as unknown as RunInfo);
+    mockList.mockResolvedValue([{ node_id: 'n1', port: 'out__grad', type: 'tensor', full_shape: [2] }]);
+    mockGradIndex.mockResolvedValue([portEntry('out')]);
+    mockOutput.mockResolvedValue(tensor([[1, -1], [0.5, 0]], { min: -1, max: 1 }));
+    place('n1', OUT, 'completed');
+    render(<BackwardView runId="r1" nodeId="n1" />);
+    await waitFor(() => expect(screen.getByText('shape [2, 2]')).toBeInTheDocument());
+    expect(mockGradIndex).toHaveBeenCalledWith('r1', 'n1');
+  });
+
+  it('says the graph is running while the run record says so, and reads the gradients once it ends', async () => {
+    // Watch in the Runs panel, or a reload mid-run: the tab is idle while the
+    // run goes on, and gradients are written last.
+    mockGetRun.mockResolvedValue({ id: 'r1', status: 'running' } as RunInfo);
+    mockList.mockResolvedValue([{ node_id: 'other', port: 'out', type: 'scalar', full_shape: null }]);
+    mockGradIndex.mockResolvedValue([portEntry('out')]);
+    mockOutput.mockResolvedValue(tensor([[1, -1], [0.5, 0]], { min: -1, max: 1 }));
+    place('n1', OUT);
+    render(<BackwardView runId="r1" nodeId="n1" />);
+    await waitFor(() => expect(screen.getByText('Graph is running…')).toBeInTheDocument());
+    expect(mockGradIndex).not.toHaveBeenCalled();
+
+    // The run ends. Nothing in the tab changes.
+    mockGetRun.mockResolvedValue({ id: 'r1', status: 'succeeded' } as RunInfo);
+    mockList.mockResolvedValue([
+      { node_id: 'other', port: 'out', type: 'scalar', full_shape: null },
+      { node_id: 'n1', port: 'out', type: 'tensor', full_shape: [2] },
+      { node_id: 'n1', port: 'out__grad', type: 'tensor', full_shape: [2] },
+    ]);
+    await waitFor(() => expect(screen.getByText('shape [2, 2]')).toBeInTheDocument());
+    expect(mockGradIndex).toHaveBeenCalledWith('r1', 'n1');
+    expect(screen.queryByText('Graph is running…')).toBeNull();
+  });
+});
+
+// ── Inside an open block (#621) ──────────────────────────────────────────────
+// The run recorded the block's nodes as `<instance>/<inner>`; the open block
+// shows them under their own ids.
+
+describe('BackwardView — inside an open block', () => {
+  // Unmount first: a view still mounted would read the reset as leaving the
+  // block, and ask again.
+  afterEach(() => {
+    cleanup();
+    enterBlocks();
+  });
+
+  it('asks for the gradients by the id the run gave the node, and by the bare id at the top level', async () => {
+    mockGradIndex.mockResolvedValue([portEntry('logits')]);
+    mockOutput.mockResolvedValue(tensor([[1, -1], [0.5, 0]], { min: -1, max: 1 }));
+
+    const top = render(<BackwardView runId="r1" nodeId="n1" />);
+    await waitFor(() => expect(screen.getByText('shape [2, 2]')).toBeInTheDocument());
+    expect(mockGradIndex).toHaveBeenCalledWith('r1', 'n1');
+    expect(mockOutput).toHaveBeenCalledWith('r1', 'n1', 'logits__grad');
+    top.unmount();
+
+    enterBlocks('blk');
+    render(<BackwardView runId="r1" nodeId="n1" />);
+    await waitFor(() => expect(screen.getByText('shape [2, 2]')).toBeInTheDocument());
+    expect(mockGradIndex).toHaveBeenLastCalledWith('r1', 'blk/n1');
+    expect(mockOutput).toHaveBeenLastCalledWith('r1', 'blk/n1', 'logits__grad');
   });
 });

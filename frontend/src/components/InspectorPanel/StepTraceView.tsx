@@ -9,8 +9,20 @@ import {
 import type { OutputData, TensorOutput } from '../../types';
 import { TensorGridView } from './TensorGridView';
 import { MathText } from '../shared/MathText';
-import { capturePhaseNoteKey, useCapturePhase } from './portCaptures';
-import { useI18n } from '../../i18n';
+import {
+  canvasNodeHasOutputs,
+  canvasNodeStatus,
+  capturePhaseNoteKey,
+  followRecordingSetting,
+  isRunStillGoingNote,
+  missingFromRunNote,
+  onRunEnd,
+  runInProgressNow,
+  useCapturePhase,
+  useRecordOutputs,
+  useRunNodeId,
+} from './portCaptures';
+import { useI18n, type TranslationKey } from '../../i18n';
 import styles from './InspectorPanel.module.css';
 
 interface Props {
@@ -59,12 +71,22 @@ export function StepTraceView({ runId, nodeId }: Props) {
   const [indexError, setIndexError] = useState<string | null>(null);
   const [tensors, setTensors] = useState<TensorMap>({});
   const [collapsed, setCollapsed] = useState<Record<number, boolean>>({});
+  // Set when the finished run recorded nothing for this node: it was not in
+  // that run, or failed in it, and "turn on Verbose" would be the wrong hint.
+  const [missingKey, setMissingKey] = useState<TranslationKey | null>(null);
+  // Bumped when a run the tab is not running ends, so the steps are read again.
+  const [runEnded, setRunEnded] = useState(0);
   // A node's steps are written when the node returns, together with its
   // outputs, and the index endpoint 404s until then — which `fetchStepIndex`
   // reads as an empty list, i.e. "no steps recorded, turn on Verbose". Wait
   // for the node instead, and read the moment it is done.
   const phase = useCapturePhase(nodeId);
   const phaseNoteKey = capturePhaseNoteKey(phase);
+  // Inside an open block the run recorded this node as `<instance>/<inner>`
+  // (#621). Only the reads use it; the status above is the canvas node's.
+  const runNodeId = useRunNodeId(nodeId);
+  // A recording-off line follows the Settings switch as it is drawn.
+  const recordOutputs = useRecordOutputs();
 
   // Fetch the step index for this (run, node) pair. The parent remounts this
   // component (via a `key` on runId:nodeId), so each mount starts from fresh
@@ -73,22 +95,44 @@ export function StepTraceView({ runId, nodeId }: Props) {
   useEffect(() => {
     if (phase !== 'settled') return;
     let cancelled = false;
-    fetchStepIndex(runId, nodeId)
-      .then((entries) => {
+    let stopWaiting: (() => void) | null = null;
+    // A settled node in a run still going is read as before: the run's
+    // index is only whole once the run is over. Inside an open block the
+    // card has no run status to go by.
+    const missing = runInProgressNow()
+      ? Promise.resolve(null)
+      : missingFromRunNote(runId, {
+          runNodeId,
+          status: runNodeId === nodeId ? canvasNodeStatus(nodeId) : undefined,
+          hasOutputs: canvasNodeHasOutputs(nodeId),
+        });
+    missing
+      .then((note) => {
         if (cancelled) return;
-        setSteps(entries);
-        // Seed loading placeholders for every tensor the next effect fetches.
-        const initial: TensorMap = {};
-        for (const step of entries) {
-          for (const name of step.tensor_keys) {
-            initial[tkey(step.index, name)] = {
-              loading: true,
-              error: null,
-              data: null,
-            };
+        setMissingKey(note);
+        if (note) {
+          // A run the tab is not running: read again once it is over.
+          if (isRunStillGoingNote(note)) {
+            stopWaiting = onRunEnd(runId, () => setRunEnded((n) => n + 1));
           }
+          return;
         }
-        setTensors(initial);
+        return fetchStepIndex(runId, runNodeId).then((entries) => {
+          if (cancelled) return;
+          setSteps(entries);
+          // Seed loading placeholders for every tensor the next effect fetches.
+          const initial: TensorMap = {};
+          for (const step of entries) {
+            for (const name of step.tensor_keys) {
+              initial[tkey(step.index, name)] = {
+                loading: true,
+                error: null,
+                data: null,
+              };
+            }
+          }
+          setTensors(initial);
+        });
       })
       .catch((e) => {
         if (cancelled) return;
@@ -100,8 +144,9 @@ export function StepTraceView({ runId, nodeId }: Props) {
       });
     return () => {
       cancelled = true;
+      stopWaiting?.();
     };
-  }, [runId, nodeId, t, phase]);
+  }, [runId, runNodeId, nodeId, t, phase, runEnded]);
 
   // After we have the step index, fetch each tensor in parallel. The loading
   // placeholders were already seeded alongside setSteps above.
@@ -115,7 +160,7 @@ export function StepTraceView({ runId, nodeId }: Props) {
         tasks.push(
           (async () => {
             try {
-              const data = await fetchTensorWithFallback(runId, nodeId, port);
+              const data = await fetchTensorWithFallback(runId, runNodeId, port);
               if (cancelled) return;
               setTensors((prev) => ({
                 ...prev,
@@ -147,12 +192,20 @@ export function StepTraceView({ runId, nodeId }: Props) {
     return () => {
       cancelled = true;
     };
-  }, [steps, runId, nodeId, t]);
+  }, [steps, runId, runNodeId, t]);
 
   // Ahead of everything else: while the node has not returned, the previous
   // pass's trace is not this node's trace any more.
   if (phaseNoteKey) {
     return <div className={styles.diffMissing}>{t(phaseNoteKey)}</div>;
+  }
+
+  if (missingKey) {
+    return (
+      <div className={styles.diffMissing}>
+        {t(followRecordingSetting(missingKey, recordOutputs))}
+      </div>
+    );
   }
 
   if (indexError) {

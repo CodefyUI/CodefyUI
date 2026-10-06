@@ -18,6 +18,7 @@ import { useTabStore } from '../store/tabStore';
 import { useNodeDefStore } from '../store/nodeDefStore';
 import { buildPluginAPI } from './api';
 import { subgraphIdOf, subgraphViewPath } from '../utils/subgraph';
+import { runNodePrefix } from '../components/InspectorPanel/portCaptures';
 import type { NodeData, NodeDefinition } from '../types';
 
 vi.mock('../store/tabPersistence', () => ({
@@ -115,6 +116,38 @@ describe('graph.getView', () => {
     );
   });
 
+  it('names the block node each level was entered through', () => {
+    const outer = seedOneBlock('Block');
+    store().enterSubgraph(outer);
+    select('c', 'd');
+    expect(store().collapseSelectionToSubgraph('Inner').ok).toBe(true);
+    const inner = tab().nodes.find((n) => subgraphIdOf(n.data.type))!.id;
+    expect(store().enterSubgraph(inner)).toBe(true);
+
+    const view = freshApi().graph.getView();
+    expect(view.path.map((level) => level.instanceId)).toEqual([outer, inner]);
+    // What a plugin needs it for: a node on the open level ran, and was
+    // captured, as the instance ids joined with `/` and then its own id --
+    // the id the Inspector asks `/api/execution/outputs` for (#621).
+    const runId = [...view.path.map((level) => level.instanceId), 'd'].join('/');
+    expect(runId).toBe(runNodePrefix(tab().subgraphStack) + 'd');
+  });
+
+  it('tells two copies of one block apart by instanceId', () => {
+    const first = seedOneBlock('Encoder');
+    const copy = { ...tab().nodes.find((n) => n.id === first)!, id: 'copy', selected: false };
+    store().setNodes([...tab().nodes, copy]);
+
+    store().enterSubgraph(first);
+    const one = freshApi().graph.getView().path[0];
+    store().exitSubgraph();
+    store().enterSubgraph('copy');
+    const other = freshApi().graph.getView().path[0];
+
+    expect(other.subgraphId).toBe(one.subgraphId);
+    expect([one.instanceId, other.instanceId]).toEqual([first, 'copy']);
+  });
+
   it('follows the user back out, one level at a time', () => {
     const api = freshApi();
     seedTwoDeep();
@@ -152,8 +185,8 @@ describe('graph.getView', () => {
     // outside. The fallback is still the right answer -- `exitSubgraph` guards
     // the same possibility, and an empty name would be worse than an ugly one:
     // a plugin's warning has to name something.
-    expect(subgraphViewPath([{ subgraphId: 'gone' }], [])).toEqual([
-      { subgraphId: 'gone', name: 'gone' },
+    expect(subgraphViewPath([{ subgraphId: 'gone', instanceId: 'inst' }], [])).toEqual([
+      { subgraphId: 'gone', instanceId: 'inst', name: 'gone' },
     ]);
   });
 

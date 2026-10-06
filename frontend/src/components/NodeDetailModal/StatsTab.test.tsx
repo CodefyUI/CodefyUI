@@ -1,28 +1,44 @@
 import { describe, it, expect, afterEach, beforeEach, vi } from 'vitest';
-import { act, render, screen, waitFor, within } from '@testing-library/react';
+import { act, cleanup, render, screen, waitFor, within } from '@testing-library/react';
 import type { Edge, Node } from '@xyflow/react';
 import type { ExecutionStatus, NodeData, NodeDefinition } from '../../types';
 import { useTabStore } from '../../store/tabStore';
 import { flushTabNodeUpdates, queueTabNodeStatus } from '../../store/nodeUpdateQueue';
+import { enterBlocks as enter } from '../../test/openBlocks';
 
 vi.mock('../../api/executionOutputs', async (importOriginal) => {
   const actual =
     await importOriginal<typeof import('../../api/executionOutputs')>();
-  return { ...actual, fetchPortStats: vi.fn() };
+  return { ...actual, fetchPortStats: vi.fn(), listRunOutputs: vi.fn() };
+});
+
+// The run record says whether the last run is over; these tests are after it.
+vi.mock('../../api/rest', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../api/rest')>();
+  return { ...actual, getRun: vi.fn() };
 });
 
 import {
   fetchPortStats,
+  listRunOutputs,
   NoValueError,
   StatsNotCapturedError,
   type PortStats,
 } from '../../api/executionOutputs';
 import { useI18n } from '../../i18n';
 import { keyOf } from '../InspectorPanel/PortGroup';
+import {
+  _resetRunIndexesForTests,
+  _setRunEndPollForTests,
+  _setRunRecordRetryForTests,
+} from '../InspectorPanel/portCaptures';
+import { getRun, type RunInfo } from '../../api/rest';
 import { StatsTab, formatStat } from './StatsTab';
 import type { NodeDetailTabContext } from './tabs';
 
 const mockStats = vi.mocked(fetchPortStats);
+const mockList = vi.mocked(listRunOutputs);
+const mockGetRun = vi.mocked(getRun);
 
 // ── fixtures ─────────────────────────────────────────────────────────────────
 
@@ -96,6 +112,17 @@ beforeEach(() => {
   // The locale is module-global, so a test that switches it would otherwise
   // hand the next one a Chinese panel to assert English against.
   useI18n.setState({ locale: 'en' });
+  // No run index unless a test gives one: a list that cannot be read leaves
+  // every port asked for, as before.
+  _resetRunIndexesForTests();
+  // A record still saying "running" is asked again three times, at once, and
+  // a run the tab is not running is polled for its end every 5 ms.
+  _setRunRecordRetryForTests(3, 0);
+  _setRunEndPollForTests(5);
+  mockList.mockReset();
+  mockList.mockRejectedValue(new Error('offline'));
+  mockGetRun.mockReset();
+  mockGetRun.mockResolvedValue({ id: 'run1', status: 'succeeded' } as RunInfo);
 });
 
 // ── rendering ────────────────────────────────────────────────────────────────
@@ -352,6 +379,18 @@ describe('StatsTab', () => {
     expect(mockStats).not.toHaveBeenCalled();
   });
 
+  it('asks for Record node outputs to be turned on, before a run, only when it is off', () => {
+    const on = render(<StatsTab ctx={ctx({ runId: null, recordOutputs: true })} />);
+    expect(screen.getByText('Run the graph to capture its values')).toBeInTheDocument();
+    expect(screen.queryByText(/Turn on Record node outputs/)).toBeNull();
+    on.unmount();
+
+    render(<StatsTab ctx={ctx({ runId: null, recordOutputs: false })} />);
+    expect(
+      screen.getByText('Turn on Record node outputs in Settings, then run the graph'),
+    ).toBeInTheDocument();
+  });
+
   it('warns when recording is off', async () => {
     render(<StatsTab ctx={ctx({ recordOutputs: false })} />);
     expect(
@@ -573,6 +612,234 @@ describe('StatsTab — while the graph is running', () => {
     expect(screen.getAllByText('Waiting for this node to run…')).toHaveLength(2);
     expect(screen.queryByText('Node is running…')).toBeNull();
     expect(mockStats).not.toHaveBeenCalled();
+  });
+});
+
+// ── One port in two rows ─────────────────────────────────────────────────────
+// One output wired into two inputs of the node (`x` into both inputs of Add)
+// gives two input rows for the same port. Rows that shared a React key stayed
+// on screen after the list changed, as in the Inspector (#562).
+
+describe('StatsTab — the same port in two rows', () => {
+  /** `src.out` wired into both inputs of `n1`. */
+  const twice: Edge[] = [
+    { id: 'e1', source: 'src', target: 'n1', sourceHandle: 'out', targetHandle: 'x' },
+    { id: 'e2', source: 'src', target: 'n1', sourceHandle: 'out', targetHandle: 'y' },
+  ];
+
+  it('shows both rows, asks for the port once, and repeats no React key', async () => {
+    const error = vi.spyOn(console, 'error');
+    try {
+      render(<StatsTab ctx={ctx({ edges: twice })} />);
+      await waitFor(() => expect(screen.getAllByText('[2, 3]')).toHaveLength(3));
+      expect(screen.getAllByTestId('stats-port-src-out')).toHaveLength(2);
+      // `src.out` once, for both rows, and `n1.out`.
+      expect(mockStats).toHaveBeenCalledTimes(2);
+      expect(error.mock.calls.flat().join('\n')).not.toMatch(/same key/);
+    } finally {
+      error.mockRestore();
+    }
+  });
+
+  it('leaves only the new rows when the inputs change', async () => {
+    const { rerender } = render(<StatsTab ctx={ctx({ edges: twice })} />);
+    await waitFor(() => expect(screen.getAllByText('[2, 3]')).toHaveLength(3));
+
+    const other: Edge = {
+      id: 'e3', source: 'n0', target: 'n1', sourceHandle: 'out', targetHandle: 'x',
+    };
+    rerender(<StatsTab ctx={ctx({ edges: [other] })} />);
+    await waitFor(() => expect(screen.getAllByText('[2, 3]')).toHaveLength(2));
+    expect(screen.queryAllByTestId('stats-port-src-out')).toHaveLength(0);
+    expect(screen.getAllByTestId('stats-port-n0-out')).toHaveLength(1);
+  });
+});
+
+// ── An input fed through the open block's own inputs ─────────────────────────
+
+describe('StatsTab — inputs fed through the open block', () => {
+  afterEach(() => {
+    cleanup();
+    enter();
+    const { tabs, activeTabId } = useTabStore.getState();
+    useTabStore.setState({
+      tabs: tabs.map((t) => (t.id === activeTabId ? { ...t, subgraphs: [] } : t)),
+    });
+  });
+
+  it('says the input comes in through the block instead of that nothing is connected', async () => {
+    enter('blk');
+    const { tabs, activeTabId } = useTabStore.getState();
+    useTabStore.setState({
+      tabs: tabs.map((t) =>
+        t.id === activeTabId
+          ? {
+              ...t,
+              subgraphs: [{
+                id: 'outer', name: 'Outer', description: '', nodes: [], edges: [],
+                interface: {
+                  inputs: [{ port: 'in', innerNode: 'n1', innerPort: 'x', data_type: 'TENSOR' }],
+                  outputs: [],
+                  triggerTargets: [],
+                },
+              }],
+            }
+          : t,
+      ),
+    });
+    render(<StatsTab ctx={ctx({ edges: [] })} />);
+    expect(screen.getByText("From the block's input: in")).toBeInTheDocument();
+    expect(screen.queryByText('No inputs connected')).toBeNull();
+    await waitFor(() => expect(screen.getAllByText('[2, 3]')).toHaveLength(1));
+  });
+});
+
+// ── A node the last run has nothing for ─────────────────────────────────────
+// Added after the run: `/stats` could only answer 404, which reads as "turn
+// on Record outputs" -- a setting that is on.
+
+describe('StatsTab — a node the last run has nothing for', () => {
+  it('says the node was not in the last run, and asks only for the port the run had', async () => {
+    mockList.mockResolvedValue([{ node_id: 'src', port: 'out', type: 'tensor', full_shape: [2, 3] }]);
+    render(<StatsTab ctx={ctx()} />);
+    const block = screen.getByTestId('stats-port-n1-out');
+    await waitFor(() => expect(within(block).getByText('Not in the last run')).toBeInTheDocument());
+    await waitFor(() => expect(screen.getAllByText('[2, 3]')).toHaveLength(1));
+    expect(mockStats).toHaveBeenCalledTimes(1);
+    expect(mockStats).toHaveBeenCalledWith('run1', 'src', 'out', expect.anything());
+    expect(screen.queryByText(/Nothing captured for this port/)).toBeNull();
+  });
+
+  it('waits for a node a watched run has not reached, and computes its statistics once the run ends', async () => {
+    // Watch in the Runs panel, or a reload mid-run: the tab is idle while the
+    // run goes on, and `src` has finished in it.
+    mockGetRun.mockResolvedValue({ id: 'run1', status: 'running' } as RunInfo);
+    mockList.mockResolvedValue([{ node_id: 'src', port: 'out', type: 'tensor', full_shape: [2, 3] }]);
+    render(<StatsTab ctx={ctx()} />);
+    await waitFor(() =>
+      expect(
+        within(screen.getByTestId('stats-port-n1-out')).getByText('Waiting for this node to run…'),
+      ).toBeInTheDocument(),
+    );
+    await waitFor(() => expect(screen.getAllByText('[2, 3]')).toHaveLength(1));
+    expect(mockStats).toHaveBeenCalledTimes(1);
+
+    // The run ends, and `n1` with it. Nothing in the tab changes.
+    mockGetRun.mockResolvedValue({ id: 'run1', status: 'succeeded' } as RunInfo);
+    mockList.mockResolvedValue([
+      { node_id: 'src', port: 'out', type: 'tensor', full_shape: [2, 3] },
+      { node_id: 'n1', port: 'out', type: 'tensor', full_shape: [2, 3] },
+    ]);
+    await waitFor(() =>
+      expect(within(screen.getByTestId('stats-port-n1-out')).getByText('[2, 3]')).toBeInTheDocument(),
+    );
+    expect(mockStats).toHaveBeenCalledWith('run1', 'n1', 'out', expect.anything());
+    // The upstream port was summarised once, and not again.
+    expect(mockStats).toHaveBeenCalledTimes(2);
+  });
+
+  it('follows the Record node outputs switch, in a run made with it off', async () => {
+    const setRecord = (on: boolean) => {
+      const { tabs, activeTabId } = useTabStore.getState();
+      useTabStore.setState({
+        tabs: tabs.map((t) => (t.id === activeTabId ? { ...t, recordOutputs: on } : t)),
+      });
+    };
+    setRecord(true);
+    mockGetRun.mockResolvedValue({
+      id: 'run1', status: 'succeeded', options: { record_outputs: false },
+    } as unknown as RunInfo);
+    const view = render(<StatsTab ctx={ctx()} />);
+    try {
+      await waitFor(() =>
+        expect(screen.getAllByText('Run the graph to capture its values')).toHaveLength(2),
+      );
+      act(() => setRecord(false));
+      expect(
+        screen.getAllByText('Turn on Record node outputs in Settings, then run the graph'),
+      ).toHaveLength(2);
+      expect(mockStats).not.toHaveBeenCalled();
+    } finally {
+      // Unmounted first: the tab would redraw for the reset.
+      view.unmount();
+      setRecord(true);
+    }
+  });
+
+  it('stops asking about the run once the tab runs it itself', async () => {
+    // Watch, before the server acknowledges the attach: the tab is still idle.
+    mockGetRun.mockResolvedValue({ id: 'run1', status: 'running' } as RunInfo);
+    mockList.mockResolvedValue([]);
+    const view = render(<StatsTab ctx={ctx()} />);
+    await waitFor(() =>
+      expect(screen.getAllByText('Waiting for this node to run…')).toHaveLength(2),
+    );
+
+    // The attach is acknowledged: the tab's own frames follow the run now.
+    const setStatus = (status: 'running' | 'idle') => {
+      const { tabs, activeTabId } = useTabStore.getState();
+      useTabStore.setState({
+        tabs: tabs.map((t) => (t.id === activeTabId ? { ...t, status } : t)),
+      });
+    };
+    try {
+      act(() => setStatus('running'));
+      const asked = mockGetRun.mock.calls.length;
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 40));
+      });
+      expect(mockGetRun.mock.calls.length).toBe(asked);
+      expect(mockStats).not.toHaveBeenCalled();
+    } finally {
+      view.unmount();
+      setStatus('idle');
+    }
+  });
+});
+
+// ── Inside an open block (#621) ──────────────────────────────────────────────
+// The run captured the block's nodes as `<instance>/<inner>`; the open block
+// shows them under their own ids, and two copies of one block share those.
+
+describe('StatsTab — inside an open block', () => {
+  // Unmount first: a tab still mounted would read the reset as leaving the
+  // block, and ask again for every port.
+  afterEach(() => {
+    cleanup();
+    enter();
+  });
+
+  it('asks for the bare ids at the top level, and for the ids the run gave them inside', async () => {
+    const top = render(<StatsTab ctx={ctx()} />);
+    await waitFor(() => expect(screen.getAllByText('[2, 3]')).toHaveLength(2));
+    expect(mockStats).toHaveBeenCalledWith('run1', 'src', 'out', expect.anything());
+    expect(mockStats).toHaveBeenCalledWith('run1', 'n1', 'out', expect.anything());
+    top.unmount();
+
+    mockStats.mockClear();
+    enter('blk', 'nest');
+    render(<StatsTab ctx={ctx()} />);
+    // Shown under the canvas ids, as at the top level.
+    await waitFor(() => expect(screen.getAllByText('[2, 3]')).toHaveLength(2));
+    expect(mockStats).toHaveBeenCalledTimes(2);
+    expect(mockStats).toHaveBeenCalledWith('run1', 'blk/nest/src', 'out', expect.anything());
+    expect(mockStats).toHaveBeenCalledWith('run1', 'blk/nest/n1', 'out', expect.anything());
+  });
+
+  it('asks again in the other copy of the block, and stops what the first copy was computing', async () => {
+    const signals = new Map<string, AbortSignal>();
+    mockStats.mockImplementation((_r, nodeId, port, opts) => {
+      if (opts?.signal) signals.set(keyOf(nodeId, port), opts.signal);
+      return new Promise<PortStats>(() => {});
+    });
+    enter('blk');
+    render(<StatsTab ctx={ctx()} />);
+    await waitFor(() => expect(signals.size).toBe(2));
+
+    act(() => enter('blk2'));
+    await waitFor(() => expect(signals.size).toBe(4));
+    expect(signals.get(keyOf('blk/n1', 'out'))!.aborted).toBe(true);
+    expect(signals.get(keyOf('blk2/n1', 'out'))!.aborted).toBe(false);
   });
 });
 

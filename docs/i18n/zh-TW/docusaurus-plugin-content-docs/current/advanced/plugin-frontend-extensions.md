@@ -257,6 +257,7 @@ CodefyUI 圖表支援巢狀結構。每個**區塊**（subgraph）都有自己�
 interface GraphViewLevel {
   subgraphId: string;  // 區塊定義的 id，與 getGraph() 中指涉它的方式相同
   name: string;        // 區塊的名稱，與畫布上方麵包屑顯示的一致
+  instanceId: string;  // 使用者進入的那個區塊節點在上一層的 id
 }
 
 interface GraphView {
@@ -265,6 +266,8 @@ interface GraphView {
   atTopLevel: boolean;     // depth === 0，也就是你通常真正想做的那個判斷
 }
 ```
+
+同一個區塊的兩個副本 `subgraphId` 相同，可用 `instanceId` 區分。它也決定節點在執行中的 id：執行時區塊會被展開，目前這一層的節點 `n` 會以 `path` 各層的 `instanceId` 用 `/` 串接、再接上 `n` 的 id 執行（例如 `blk/n`，兩層深時為 `blk/nest/n`），`/api/execution/outputs` 也以這個 id 保存擷取資料，請用查詢形式 `?node_id=` 讀取。CodefyUI 2.8.10 之前的編輯器同樣回報 apiVersion 5，但沒有 `instanceId`，請用 `'instanceId' in level` 檢查。
 
 ```js
 const view = api.graph.getView();

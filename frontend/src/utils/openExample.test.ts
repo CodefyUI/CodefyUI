@@ -233,6 +233,7 @@ describe('openExample', () => {
         subgraphStack: [
           {
             subgraphId: 'blk',
+            instanceId: 'inst',
             nodes: [
               { id: 'outer', type: 'baseNode', position: { x: 0, y: 0 }, data: { label: 'o', type: 'K', params: {} } },
             ] as never,

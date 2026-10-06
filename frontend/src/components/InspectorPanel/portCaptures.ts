@@ -1,10 +1,12 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   fetchOutput,
+  listRunOutputs,
   NoValueError,
   RunDataExpiredError,
   PayloadTooLargeError,
 } from '../../api/executionOutputs';
+import { ACTIVE_RUN_STATUSES, getRun } from '../../api/rest';
 import type { ExecutionStatus, NodeData, OutputData } from '../../types';
 import type { Edge, Node } from '@xyflow/react';
 import {
@@ -13,7 +15,7 @@ import {
   type LogImagePayload,
   type LogVideoPayload,
 } from '../../store/tabStore';
-import type { TranslationKey } from '../../i18n';
+import { useI18n, type TranslationKey } from '../../i18n';
 import { keyOf, type FetchMap, type PortTarget } from './PortGroup';
 
 /**
@@ -42,6 +44,431 @@ export async function fetchPortWithSliceFallback(
     }
     throw e;
   }
+}
+
+/* ── What a finished run recorded, node by node ─────────────────────────────
+ *
+ * A node's captures are written when it completes, so a finished run's port
+ * list names every node the run has anything for. Reads use it to skip
+ * requests that could only be answered 404 -- which every view reads as "Run
+ * data expired" -- and say what is true instead, but only what is certain:
+ *
+ * - "Not in the last run" only from a port list of a finished run that
+ *   recorded outputs, for a node that declares outputs and is not in it.
+ * - "Failed in the last run" from the card's own status, at the top level
+ *   only: inside an open block the cards never get a run status.
+ * - The Record node outputs hint when the run's record says it was off.
+ *
+ * Anything else is asked for as before, and a 404 still reads as expired.
+ *
+ * The run record is read first. It says whether the run is over -- the run
+ * service marks it finished after its last capture is written, so a list read
+ * after that is whole -- and how it was run. A list read while the run still
+ * goes is partial (a tab can name a live run without running itself: Watch in
+ * the Runs panel, a reload mid-run): a node in it has finished and is read,
+ * and any other waits for the run to end, as in the tab's own run. The
+ * service also sends the run's last event before it marks the run finished,
+ * so a record that still says "running" when the tab's run has just ended is
+ * asked again a few times before it is taken at its word.
+ */
+
+/** Node ids, as the run names them, that a finished run recorded anything for. */
+export type RunIndex = ReadonlySet<string>;
+
+/** What the server says about a run, as far as the reads below need to know. */
+export type RunCaptures =
+  /**
+   * Still going, though the tab is not running it: Watch in the Runs panel,
+   * or a reload mid-run. `nodes` is what its list holds SO FAR (null while
+   * the run is queued, or before it stores anything) -- each node in it has
+   * finished -- and nothing about the rest is final.
+   */
+  | { state: 'live'; recorded: boolean; gradients: boolean; nodes: RunIndex | null }
+  /** No record, or it could not be read. */
+  | { state: 'unknown' }
+  | {
+      state: 'finished';
+      /** Record node outputs was on for the run. */
+      recorded: boolean;
+      /** Capture gradients was on for the run. */
+      gradients: boolean;
+      /** Nodes with anything stored; null when there is no list (404, unreadable, or never read). */
+      nodes: RunIndex | null;
+      /** Whether the list holds a forward value, not only gradients. */
+      forward: boolean;
+    };
+
+/** Answers kept; the server itself keeps only the last few runs' captures. */
+const RUN_CAPTURES_KEPT = 8;
+const runCaptures = new Map<string, Promise<RunCaptures>>();
+
+/** How often, and how far apart, a record still saying "running" is asked again. */
+let recordRetries = 3;
+let recordRetryMs = 200;
+
+/** A port a node put out -- not a gradient, a step, or other bookkeeping. */
+function isForwardPort(port: string): boolean {
+  return !port.startsWith('__') && !port.endsWith('__grad') && !port.endsWith('__grad__meta');
+}
+
+/** One read; `settled` when the answer cannot change any more. */
+async function readRunCaptures(runId: string): Promise<{ captures: RunCaptures; settled: boolean }> {
+  let run;
+  let live = false;
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      run = await getRun(runId);
+    } catch {
+      return { captures: { state: 'unknown' }, settled: false };
+    }
+    if (!run) return { captures: { state: 'unknown' }, settled: true };
+    if (!ACTIVE_RUN_STATUSES.includes(run.status)) break;
+    // The run's last event can end the tab's run a moment before the row
+    // says so; past that, the run really is still going.
+    if (attempt >= recordRetries) {
+      live = true;
+      break;
+    }
+    await new Promise((resolve) => setTimeout(resolve, recordRetryMs));
+  }
+  const recorded = run.options?.record_outputs !== false;
+  const gradients = run.options?.backward_mode !== false;
+  // The list is not asked for when it could not change a note: recording was
+  // off (it holds gradients at most), or the run is still queued (nothing in
+  // it has run, so the answer could only be a 404).
+  let nodes: RunIndex | null = null;
+  let forward = false;
+  let listSettled = true;
+  if (recorded && run.status !== 'queued') {
+    try {
+      const refs = await listRunOutputs(runId);
+      nodes = new Set(refs.map((ref) => ref.node_id));
+      forward = refs.some((ref) => isForwardPort(ref.port));
+    } catch (e) {
+      // 404: the server holds nothing for the run. That is final too, but
+      // says nothing about any one node: the run stored nothing, or its
+      // captures expired.
+      listSettled = e instanceof RunDataExpiredError;
+    }
+  }
+  if (live) return { captures: { state: 'live', recorded, gradients, nodes }, settled: false };
+  return {
+    captures: { state: 'finished', recorded, gradients, nodes, forward },
+    settled: listSettled,
+  };
+}
+
+/* ── The end of a run the tab is not running ────────────────────────────────
+ *
+ * A tab that watches a run (Watch in the Runs panel), or was reloaded while
+ * one went on, may never hear that run end: the tab's own run status is what
+ * the views follow, and it can stay idle. While a view waits on such a run,
+ * its record is polled, and the view reads again once the run is over.
+ */
+
+let runEndPollMs = 2000;
+
+interface RunEndWatch {
+  listeners: Set<() => void>;
+  timer: ReturnType<typeof setTimeout> | null;
+}
+
+const runEndWatches = new Map<string, RunEndWatch>();
+
+function pollRunEnd(runId: string, watch: RunEndWatch): void {
+  watch.timer = setTimeout(() => {
+    void (async () => {
+      let over = false;
+      try {
+        const run = await getRun(runId);
+        over = !run || !ACTIVE_RUN_STATUSES.includes(run.status);
+      } catch {
+        // Server unreachable: keep waiting while anyone is.
+      }
+      if (runEndWatches.get(runId) !== watch) return;
+      if (!over) {
+        pollRunEnd(runId, watch);
+        return;
+      }
+      runEndWatches.delete(runId);
+      runCaptures.delete(runId);
+      for (const listener of [...watch.listeners]) listener();
+    })();
+  }, runEndPollMs);
+}
+
+/**
+ * Call `onEnd` once run `runId` is no longer going, polling its record while
+ * anyone listens. Returns the way to stop listening.
+ */
+export function onRunEnd(runId: string, onEnd: () => void): () => void {
+  let watch = runEndWatches.get(runId);
+  if (!watch) {
+    watch = { listeners: new Set(), timer: null };
+    runEndWatches.set(runId, watch);
+    pollRunEnd(runId, watch);
+  }
+  const current = watch;
+  current.listeners.add(onEnd);
+  return () => {
+    current.listeners.delete(onEnd);
+    if (current.listeners.size === 0 && runEndWatches.get(runId) === current) {
+      if (current.timer) clearTimeout(current.timer);
+      runEndWatches.delete(runId);
+    }
+  };
+}
+
+/** Whether a note means "the run is still going": read again once it ends. */
+export function isRunStillGoingNote(note: TranslationKey | 'none' | null): boolean {
+  return note === 'inspector.nodePending' || note === 'inspector.runRunning';
+}
+
+/** Tests only: how often a run the tab is not running is polled for its end. */
+export function _setRunEndPollForTests(ms: number): void {
+  runEndPollMs = ms;
+}
+
+/**
+ * What the server says about run `runId`, read once it is final and kept. A
+ * read that is not settled is forgotten, so the next one asks again.
+ */
+export function loadRunCaptures(runId: string): Promise<RunCaptures> {
+  let captures = runCaptures.get(runId);
+  if (!captures) {
+    const read = readRunCaptures(runId);
+    const kept = read.then((r) => r.captures);
+    captures = kept;
+    runCaptures.set(runId, kept);
+    void read.then((r) => {
+      if (!r.settled && runCaptures.get(runId) === kept) runCaptures.delete(runId);
+    });
+    if (runCaptures.size > RUN_CAPTURES_KEPT) {
+      runCaptures.delete(runCaptures.keys().next().value!);
+    }
+  }
+  return captures;
+}
+
+/** Tests only: forget every answer read so far, and stop every poll. */
+export function _resetRunIndexesForTests(): void {
+  runCaptures.clear();
+  for (const watch of runEndWatches.values()) {
+    if (watch.timer) clearTimeout(watch.timer);
+  }
+  runEndWatches.clear();
+}
+
+/** Tests only: how a record still saying "running" is asked again. */
+export function _setRunRecordRetryForTests(retries: number, ms: number): void {
+  recordRetries = retries;
+  recordRetryMs = ms;
+}
+
+/**
+ * Who a read is for. `status` is the card's last run status, given at the TOP
+ * level only -- inside an open block the cards never get one. `hasOutputs` is
+ * false for a node that declares no data output (Start): the run's list has
+ * nothing for it even when it ran.
+ */
+export interface ReadSubject {
+  runNodeId: string;
+  status?: ExecutionStatus;
+  hasOutputs?: boolean;
+}
+
+/** A positive list of a finished, recorded run, without this node: certain. */
+function absentFromRecordedList(c: RunCaptures, subject: ReadSubject): boolean {
+  return (
+    c.state === 'finished' &&
+    c.recorded &&
+    c.nodes !== null &&
+    c.forward &&
+    (subject.hasOutputs ?? true) &&
+    !c.nodes.has(subject.runNodeId)
+  );
+}
+
+/**
+ * What a read of a node's VALUES (ports, statistics, steps) says instead of
+ * asking the server, or null to ask as before -- and let a 404 read as
+ * expired.
+ */
+export async function missingFromRunNote(
+  runId: string,
+  subject: ReadSubject,
+): Promise<TranslationKey | null> {
+  const c = await loadRunCaptures(runId);
+  // Recording was off: no value exists, though the list may name the node
+  // for its gradients. The views redraw this line as the setting changes
+  // (see `followRecordingSetting`).
+  if (c.state !== 'unknown' && !c.recorded) {
+    if (c.state === 'finished' && subject.status === 'error') return 'inspector.capture.failedInRun';
+    return recordingOffNote(recordOutputsNow());
+  }
+  if (c.state === 'live') {
+    // A node in the list so far has finished; the rest wait for the run, as
+    // they do in the tab's own run -- a request now could only 404. (No card
+    // status here: the tab has heard nothing of this run.)
+    if (c.nodes?.has(subject.runNodeId) || !(subject.hasOutputs ?? true)) return null;
+    return 'inspector.nodePending';
+  }
+  if (subject.status === 'error') return 'inspector.capture.failedInRun';
+  if (c.state === 'finished' && c.nodes?.has(subject.runNodeId)) return null;
+  return absentFromRecordedList(c, subject) ? 'inspector.capture.notInRun' : null;
+}
+
+/**
+ * The same for a node's GRADIENTS, which Record node outputs does not govern.
+ * `'none'` when the run's record says Capture gradients was off: there are
+ * none, and nothing to ask for.
+ */
+export async function missingGradientsNote(
+  runId: string,
+  subject: ReadSubject,
+): Promise<TranslationKey | 'none' | null> {
+  const c = await loadRunCaptures(runId);
+  // Gradients are written after the whole forward pass: a run still going
+  // has none yet, as the tab's own run says.
+  if (c.state === 'live') return c.gradients ? 'inspector.runRunning' : 'none';
+  if (subject.status === 'error') return 'inspector.capture.failedInRun';
+  if (c.state === 'finished' && !c.gradients) return 'none';
+  if (c.state === 'finished' && c.nodes?.has(subject.runNodeId)) return null;
+  return absentFromRecordedList(c, subject) ? 'inspector.capture.notInRun' : null;
+}
+
+/** The last run status of canvas node `nodeId` on the active tab's open level. */
+export function canvasNodeStatus(nodeId: string): ExecutionStatus | undefined {
+  const { tabs, activeTabId } = useTabStore.getState();
+  return tabs
+    .find((t) => t.id === activeTabId)
+    ?.nodes.find((n) => n.id === nodeId)?.data.executionStatus;
+}
+
+/** Whether canvas node `nodeId` declares a data output (Start does not). */
+export function canvasNodeHasOutputs(nodeId: string): boolean {
+  const { tabs, activeTabId } = useTabStore.getState();
+  const node = tabs.find((t) => t.id === activeTabId)?.nodes.find((n) => n.id === nodeId);
+  return (node?.data.definition?.outputs ?? []).some((o) => o.data_type !== 'TRIGGER');
+}
+
+/**
+ * Whether the active tab's run is still going, read at the moment a request
+ * is decided rather than subscribed to: nothing re-renders for it.
+ */
+export function runInProgressNow(): boolean {
+  const { tabs, activeTabId } = useTabStore.getState();
+  return tabs.find((t) => t.id === activeTabId)?.status === 'running';
+}
+
+/** The active tab's Record node outputs setting, read the same way. */
+function recordOutputsNow(): boolean {
+  const { tabs, activeTabId } = useTabStore.getState();
+  return tabs.find((t) => t.id === activeTabId)?.recordOutputs ?? true;
+}
+
+/** The active tab's Record node outputs setting, subscribed: the views redraw when it is switched. */
+export function useRecordOutputs(): boolean {
+  return useTabStore((s) => s.tabs.find((t) => t.id === s.activeTabId)?.recordOutputs ?? true);
+}
+
+/**
+ * What a run made with Record node outputs off says about a node's values:
+ * turn the setting on while it is off, or run the graph once it is on.
+ */
+function recordingOffNote(recordOutputs: boolean): TranslationKey {
+  return recordOutputs ? 'inspector.capture.runHint' : 'inspector.empty.notRunHint';
+}
+
+/**
+ * `key`, with that line swapped for the one the setting calls for NOW. Applied
+ * as a view draws, like the phase notes, so the line follows the Settings
+ * switch with the node still selected, without asking anything again.
+ */
+export function followRecordingSetting<K extends TranslationKey | null | undefined>(
+  key: K,
+  recordOutputs: boolean,
+): K | TranslationKey {
+  return key === 'inspector.capture.runHint' || key === 'inspector.empty.notRunHint'
+    ? recordingOffNote(recordOutputs)
+    : key;
+}
+
+/** {@link followRecordingSetting} over a map of results; the same map when no line changes. */
+export function withRecordingSetting<T extends { noteKey?: TranslationKey | null }>(
+  results: Record<string, T>,
+  recordOutputs: boolean,
+): Record<string, T> {
+  let out = results;
+  for (const [key, entry] of Object.entries(results)) {
+    const noteKey = followRecordingSetting(entry.noteKey, recordOutputs);
+    if (noteKey === entry.noteKey) continue;
+    if (out === results) out = { ...results };
+    out[key] = { ...entry, noteKey };
+  }
+  return out;
+}
+
+/* ── The id a run gave a canvas node (#621) ─────────────────────────────────
+ *
+ * The engine flattens a block before it runs: a node inside one runs, and is
+ * captured, as `<instance>/<inner>` -- `<outer>/<inner instance>/<node>` one
+ * level further in. An open block shows the definition's nodes under their
+ * own ids, so every read from inside one puts the entered instances in front
+ * of the canvas id. Two copies of one block hold the same inner ids, which is
+ * why a read's result is kept under the run's id and never under the canvas
+ * id alone.
+ */
+
+/**
+ * What goes in front of a canvas id on the level `stack` has open: `''` at the
+ * top level, else the entered instance ids, outermost first, each followed by
+ * the engine's separator.
+ */
+export function runNodePrefix(
+  stack: readonly { instanceId: string }[] | undefined,
+): string {
+  if (!stack?.length) return '';
+  return stack.map((frame) => `${frame.instanceId}/`).join('');
+}
+
+/**
+ * {@link runNodePrefix} for the active tab. The selector returns the string,
+ * not the stack, so the caller re-renders only when the prefix changes.
+ */
+export function useRunNodePrefix(): string {
+  return useTabStore((s) =>
+    runNodePrefix(s.tabs.find((t) => t.id === s.activeTabId)?.subgraphStack),
+  );
+}
+
+/** The id the last run gave canvas node `canvasId`, on the level on screen. */
+export function useRunNodeId(canvasId: string): string {
+  return useRunNodePrefix() + canvasId;
+}
+
+/** `ports` with every node id as the run knows it; the same array at the top level. */
+export function toRunPorts(ports: readonly PortTarget[], prefix: string): readonly PortTarget[] {
+  return prefix ? ports.map((p) => ({ ...p, nodeId: prefix + p.nodeId })) : ports;
+}
+
+/**
+ * A map kept under run ids (see {@link toRunPorts}), keyed by canvas id again
+ * for the ports on screen -- what every view reads by. The map itself at the
+ * top level, where the two ids agree.
+ */
+export function fromRunKeys<T>(
+  byRunKey: Record<string, T>,
+  ports: readonly PortTarget[],
+  prefix: string,
+): Record<string, T> {
+  if (!prefix) return byRunKey;
+  const out: Record<string, T> = {};
+  for (const p of ports) {
+    const entry = byRunKey[keyOf(prefix + p.nodeId, p.port)];
+    if (entry !== undefined) out[keyOf(p.nodeId, p.port)] = entry;
+  }
+  return out;
 }
 
 /** Look up a source port's declared data type from its node definition. */
@@ -170,6 +597,29 @@ export function resolveSingleNodePorts(
     }));
 
   return { inputs, outputs };
+}
+
+/**
+ * What an Inputs group with no wire on this level says -- one sentence for the
+ * Inspector and Node details. An open block draws no wire from its own inputs,
+ * so a node fed through one would otherwise read as having nothing connected.
+ */
+export function useInputsEmptyText(nodeId: string): string {
+  const { t } = useI18n();
+  const blockInputs = useTabStore((s) => {
+    const tab = s.tabs.find((x) => x.id === s.activeTabId);
+    const stack = tab?.subgraphStack ?? [];
+    const frame = stack[stack.length - 1];
+    if (!tab || !frame) return '';
+    const open = tab.subgraphs.find((d) => d.id === frame.subgraphId);
+    return (open?.interface?.inputs ?? [])
+      .filter((p) => p.innerNode === nodeId)
+      .map((p) => p.port)
+      .join(', ');
+  });
+  return blockInputs
+    ? t('inspector.capture.fromBlock', { ports: blockInputs })
+    : t('nodeDetail.inputs.empty');
 }
 
 /* ── When a port can be read at all ─────────────────────────────────────────
@@ -337,6 +787,19 @@ function withPhaseNotes(
  *
  * A request is never issued for a port whose owner has not returned: it could
  * only be answered 404, and that 404 is indistinguishable from expiry.
+ *
+ * Inside an open block every request names the node as the run does, and the
+ * results are kept under that id (#621), so the same canvas id in two copies
+ * of one block never shares a result. The map handed back is still keyed by
+ * canvas id.
+ *
+ * Once the run is over, a port whose owner it recorded nothing for is not
+ * asked for at all: its row says the node was not in the run, or failed in
+ * it (see {@link missingFromRunNote}). While a run the tab is not running
+ * still goes, a port whose owner it has not finished waits, and is read once
+ * the run's record says it is over (see {@link onRunEnd}). In a run made with
+ * Record node outputs off, a row's line follows the setting as it is switched
+ * (see {@link followRecordingSetting}).
  */
 export function usePortFetches(
   runId: string | null,
@@ -344,6 +807,8 @@ export function usePortFetches(
 ): FetchMap {
   const [fetches, setFetches] = useState<FetchMap>({});
   const phases = usePortPhases(ports);
+  const prefix = useRunNodePrefix();
+  const recordOutputs = useRecordOutputs();
 
   // The effect depends on the port SET, not the array object, so keep the
   // latest arrays in refs for the effect body to read.
@@ -367,20 +832,37 @@ export function usePortFetches(
     keys: new Set(),
   });
   const seqRef = useRef<Map<string, number>>(new Map());
+  // A run the tab is not running can end without the tab hearing of it: a
+  // row waiting on one is read again once its record says it is over.
+  const [runEnded, setRunEnded] = useState(0);
+  const runEndRef = useRef<{ runId: string; stop: () => void } | null>(null);
 
   useEffect(() => {
     aliveRef.current = true;
     return () => {
       aliveRef.current = false;
+      runEndRef.current?.stop();
+      runEndRef.current = null;
     };
   }, []);
 
   useEffect(() => {
+    // Stop waiting on a run the view has left, or one the tab now runs itself
+    // (an attach was acknowledged): its own frames end it from here on, and
+    // the phases re-run this effect when they do.
+    if (runEndRef.current && (runEndRef.current.runId !== runId || runInProgressNow())) {
+      runEndRef.current.stop();
+      runEndRef.current = null;
+    }
     if (!runId) return;
     if (askedRef.current.runId !== runId) {
       askedRef.current = { runId, keys: new Set() };
     }
-    const due = takeDuePorts(portsRef.current, phasesRef.current, askedRef.current.keys);
+    const due = takeDuePorts(
+      toRunPorts(portsRef.current, prefix),
+      phasesRef.current,
+      askedRef.current.keys,
+    );
     if (due.length === 0) return;
 
     const updates: FetchMap = {};
@@ -396,12 +878,39 @@ export function usePortFetches(
 
     const stale = (key: string, seq: number) =>
       !aliveRef.current || runIdRef.current !== runId || seqRef.current.get(key) !== seq;
+    // Read now, not when the answers land: the index is only whole once the
+    // run is over, and the status is the one this pass was decided on. Inside
+    // an open block there is no status to read: the cards never get one.
+    const runOver = !runInProgressNow();
+    const statuses = due.map((t) => (prefix ? undefined : canvasNodeStatus(t.nodeId)));
 
     void Promise.all(
-      due.map(async (t) => {
+      due.map(async (t, i) => {
         const key = keyOf(t.nodeId, t.port);
         const seq = issued.get(key)!;
         try {
+          const missing = runOver
+            ? await missingFromRunNote(runId, { runNodeId: t.nodeId, status: statuses[i] })
+            : null;
+          if (missing) {
+            if (stale(key, seq)) return;
+            if (isRunStillGoingNote(missing)) {
+              // Not asked for yet: read once the run is over.
+              askedRef.current.keys.delete(key);
+              if (!runEndRef.current) {
+                const stop = onRunEnd(runId, () => {
+                  runEndRef.current = null;
+                  setRunEnded((n) => n + 1);
+                });
+                runEndRef.current = { runId, stop };
+              }
+            }
+            setFetches((prev) => ({
+              ...prev,
+              [key]: { loading: false, error: null, errorKey: null, noteKey: missing, data: null },
+            }));
+            return;
+          }
           const data = await fetchPortWithSliceFallback(runId, t.nodeId, t.port);
           if (stale(key, seq)) return;
           setFetches((prev) => ({
@@ -442,7 +951,11 @@ export function usePortFetches(
         }
       }),
     );
-  }, [runId, portsKey, phasesKey]);
+  }, [runId, prefix, portsKey, phasesKey, runEnded]);
 
-  return withPhaseNotes(fetches, ports, phases);
+  return withPhaseNotes(
+    withRecordingSetting(fromRunKeys(fetches, ports, prefix), recordOutputs),
+    ports,
+    phases,
+  );
 }

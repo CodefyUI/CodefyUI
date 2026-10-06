@@ -366,8 +366,8 @@ describe('workspace.tabs and workspace.snapshot', () => {
     expect(tabs.find((item) => item.tabId === nestedId)?.view).toEqual({
       depth: 2,
       path: [
-        { subgraphId: 'outer', name: 'Encoder' },
-        { subgraphId: 'inner', name: 'Attention' },
+        { subgraphId: 'outer', instanceId: 'outer-inst', name: 'Encoder' },
+        { subgraphId: 'inner', instanceId: 'inner-inst', name: 'Attention' },
       ],
       atTopLevel: false,
     });
@@ -386,8 +386,8 @@ describe('workspace.tabs and workspace.snapshot', () => {
     expect(snap.view).toEqual({
       depth: 2,
       path: [
-        { subgraphId: 'outer', name: 'Encoder' },
-        { subgraphId: 'inner', name: 'Attention' },
+        { subgraphId: 'outer', instanceId: 'outer-inst', name: 'Encoder' },
+        { subgraphId: 'inner', instanceId: 'inner-inst', name: 'Attention' },
       ],
       atTopLevel: false,
     });
@@ -413,7 +413,7 @@ describe('workspace.tabs and workspace.snapshot', () => {
 
     const expected = {
       depth: 1,
-      path: [{ subgraphId: 'outer', name: 'Encoder' }],
+      path: [{ subgraphId: 'outer', instanceId: 'outer-inst', name: 'Encoder' }],
       atTopLevel: false,
     };
     const snap = api.workspace.snapshot();

@@ -3429,6 +3429,7 @@ describe('tabHasContent / tabNodeCount (#331)', () => {
               subgraphStack: [
                 {
                   subgraphId: 'sg1',
+                  instanceId: 'inst',
                   nodes: outer,
                   edges: [],
                   presets: [],
