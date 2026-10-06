@@ -235,6 +235,25 @@ function reportLoadFailure(): false {
 }
 
 /**
+ * Picks of an example still on their way, by what they do and which example
+ * (#622). A double-click is two clicks, and both reached a gallery while the
+ * example was still loading: the empty-canvas gallery filled its tab with the
+ * first and opened the second in a new tab, the welcome screen opened two
+ * tabs, and the sidebar's Templates tab inserted the template twice. A second
+ * pick joins the one on its way instead of starting another; once that has
+ * landed, the example can be picked again.
+ */
+const inFlight = new Map<string, Promise<boolean>>();
+
+function once(key: string, run: () => Promise<boolean>): Promise<boolean> {
+  const pending = inFlight.get(key);
+  if (pending) return pending;
+  const started = run().finally(() => inFlight.delete(key));
+  inFlight.set(key, started);
+  return started;
+}
+
+/**
  * Load a builtin/plugin example picked on the empty-canvas gallery: into the
  * active tab when it may be filled (`canFillTab`), into a new tab otherwise.
  *
@@ -243,12 +262,14 @@ function reportLoadFailure(): false {
  * resolution, same preset merge, same tab rename, same error toast. The
  * template gallery modal (core#128) calls it too.
  *
- * The gallery shows whenever the level on screen is empty, which is not the
- * same as an empty tab: inside a block whose insides were deleted the whole
- * graph waits one level up, and installing there replaced it with no undo
- * (#595). The tab in front can also change while the example loads — the tab
- * it was picked in closes and one holding work comes forward. So where the
- * example goes is decided once it has arrived, by the rule Import follows.
+ * The gallery shows only on an empty top level since #622; inside a block an
+ * empty level shows a note instead (installing from there once replaced the
+ * whole graph one level up, with no undo: #595). An empty canvas is still not
+ * a tab that may be filled -- one emptied by deleting its nodes is an undo
+ * away from the graph it held -- and the tab in front can change while the
+ * example loads: the tab it was picked in closes and one holding work comes
+ * forward. So where the example goes is decided once it has arrived, by the
+ * rule Import follows.
  *
  * Stores are read through `getState()` instead of hooks because this is a
  * plain function called from an event handler, not a component.
@@ -256,16 +277,18 @@ function reportLoadFailure(): false {
  * Never throws: a failed load surfaces as a toast and leaves the graph alone.
  * Returns whether the example was applied, for callers that want to react.
  */
-export async function openExample(path: string): Promise<boolean> {
-  try {
-    const example = await fetchResolvedExample(path);
-    const { activeTabId, getTab } = useTabStore.getState();
-    if (!canFillTab(getTab(activeTabId))) useTabStore.getState().addTab();
-    applyToActiveTab(example);
-    return true;
-  } catch {
-    return reportLoadFailure();
-  }
+export function openExample(path: string): Promise<boolean> {
+  return once(`open:${path}`, async () => {
+    try {
+      const example = await fetchResolvedExample(path);
+      const { activeTabId, getTab } = useTabStore.getState();
+      if (!canFillTab(getTab(activeTabId))) useTabStore.getState().addTab();
+      applyToActiveTab(example);
+      return true;
+    } catch {
+      return reportLoadFailure();
+    }
+  });
 }
 
 /**
@@ -274,16 +297,18 @@ export async function openExample(path: string): Promise<boolean> {
  * The tab is created only after the fetch succeeds — a failed load must not
  * leave an empty tab behind as the sole evidence that anything happened.
  */
-export async function openExampleInNewTab(path: string): Promise<boolean> {
-  let example: ResolvedExample;
-  try {
-    example = await fetchResolvedExample(path);
-  } catch {
-    return reportLoadFailure();
-  }
-  useTabStore.getState().addTab();
-  applyToActiveTab(example);
-  return true;
+export function openExampleInNewTab(path: string): Promise<boolean> {
+  return once(`open:${path}`, async () => {
+    let example: ResolvedExample;
+    try {
+      example = await fetchResolvedExample(path);
+    } catch {
+      return reportLoadFailure();
+    }
+    useTabStore.getState().addTab();
+    applyToActiveTab(example);
+    return true;
+  });
 }
 
 /**
@@ -314,36 +339,41 @@ export async function openExampleInNewTab(path: string): Promise<boolean> {
  * merge. Both belong to the graph the nodes joined, and that graph keeps its
  * own.
  */
-export async function insertExample(
+export function insertExample(
   path: string,
   at?: { x: number; y: number },
 ): Promise<boolean> {
-  try {
-    // Read off the raw payload, BEFORE resolving: resolution merges the
-    // example's unknown presets into the node-def store, so a refusal after
-    // it would have already installed a newer build's presets.
-    const data = await loadExample(path);
-    const formatVersion = data.format_version;
-    if (isFormatTooNew(formatVersion)) {
-      useToastStore.getState().addToast(
-        useI18n.getState().t('project.formatTooNew.insertRefused', {
-          version: formatVersion as string | number,
-        }),
-        'error',
+  const insert = async (): Promise<boolean> => {
+    try {
+      // Read off the raw payload, BEFORE resolving: resolution merges the
+      // example's unknown presets into the node-def store, so a refusal after
+      // it would have already installed a newer build's presets.
+      const data = await loadExample(path);
+      const formatVersion = data.format_version;
+      if (isFormatTooNew(formatVersion)) {
+        useToastStore.getState().addToast(
+          useI18n.getState().t('project.formatTooNew.insertRefused', {
+            version: formatVersion as string | number,
+          }),
+          'error',
+        );
+        return false;
+      }
+      const example = resolveExample(data);
+      if (example.nodes.length === 0) return false;
+      useTabStore.getState().insertGraph(
+        example.nodes,
+        example.edges,
+        example.subgraphs,
+        at,
+        example.presets,
       );
-      return false;
+      return true;
+    } catch {
+      return reportLoadFailure();
     }
-    const example = resolveExample(data);
-    if (example.nodes.length === 0) return false;
-    useTabStore.getState().insertGraph(
-      example.nodes,
-      example.edges,
-      example.subgraphs,
-      at,
-      example.presets,
-    );
-    return true;
-  } catch {
-    return reportLoadFailure();
-  }
+  };
+  // A drop is one gesture at one point, so two drops are two inserts; only a
+  // click or a key press arrives twice for one.
+  return at ? insert() : once(`insert:${path}`, insert);
 }

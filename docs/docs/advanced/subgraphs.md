@@ -44,7 +44,7 @@ Collapse says no rather than producing a graph that reads wrong:
 
 ## Editing a block
 
-**Double-click** an instance, or right-click it and select **Enter subgraph**, to open its definition on the canvas. The breadcrumb at the top shows a path such as `Main ▸ MyBlock`. You can drag, connect, delete, edit parameters, and undo changes. To open Node details, select the instance and press `Enter`. Its **Subgraph** tab maps each boundary port to an internal node and port, and also provides an **Enter subgraph** button.
+**Double-click** an instance, or right-click it and select **Enter subgraph**, to open its definition on the canvas. The breadcrumb at the top shows a path such as `Main ▸ MyBlock`. You can drag, connect, delete, edit parameters, and undo changes. To open Node details, select the instance and press `Enter`. Its **Subgraph** tab maps each boundary port to an internal node and port, and also provides an **Enter subgraph** button. A block with nothing in it says so on its canvas.
 
 Undo inside a block stays inside it: the block gets its own history while you
 are in there, and your outer history is put back when you leave — so you can

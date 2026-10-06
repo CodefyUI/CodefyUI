@@ -6,7 +6,7 @@ description: Pre-built example workflows — model architectures, end-to-end tra
 
 # Examples Gallery
 
-CodefyUI ships a library of ready-to-run example graphs under `examples/`. Whenever the active tab has an empty canvas, the gallery appears right on the canvas — pick a card and the graph opens, ready to **Run**: in that tab when the tab is empty and has nothing to undo, otherwise in a new tab, so no graph is replaced. The other ways to open it are listed under [When the canvas is not empty](#when-the-canvas-is-not-empty). You can also run any example headless with the [CLI Graph Runner](./cli-runner).
+CodefyUI ships a library of ready-to-run example graphs under `examples/`. Whenever the active tab has an empty canvas, the gallery appears right on the canvas (an empty subgraph you have opened shows a short note instead) — pick a card and the graph opens, ready to **Run**: in that tab when the tab is empty and has nothing to undo, otherwise in a new tab, so no graph is replaced. The other ways to open it are listed under [When the canvas is not empty](#when-the-canvas-is-not-empty). You can also run any example headless with the [CLI Graph Runner](./cli-runner).
 
 The gallery is grouped by what an example is for, in this order:
 

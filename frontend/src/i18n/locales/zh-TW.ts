@@ -341,6 +341,8 @@ const zhTW: Record<TranslationKey, string> = {
   'subgraph.detail.outputs': '輸出',
   'subgraph.detail.enter': '進入子圖',
   'subgraph.detail.empty': '沒有對外連接埠',
+  'subgraph.emptyLevel.title': '這個子圖是空的',
+  'subgraph.emptyLevel.hint': '按上方的「返回」回到外層。',
 
   // Notes
   'note.placeholder': '點擊以編輯...',
