@@ -263,6 +263,10 @@ export function FlowCanvas({ tabId }: { tabId?: string } = {}) {
   // background windows — the animation then never applies at all. The
   // layers editor's post-layout fit and the Controls button are instant for
   // the same reason.
+  //
+  // A box worked out from nodes React Flow has not measured yet is an
+  // estimate; such a fit is framed again from the measured sizes once React
+  // Flow reports them (#622, `refitRef` below).
   const fitToBounds = useCallback(
     (bounds: { x: number; y: number; width: number; height: number }) => {
       const el = containerRef.current;
@@ -283,9 +287,52 @@ export function FlowCanvas({ tabId }: { tabId?: string } = {}) {
       void setViewport(
         getViewportForBounds(box, el.offsetWidth, el.offsetHeight, minZoom, maxZoom, 0.2),
       );
+      // The nodes this fit is about are those whose position lies inside the
+      // box asked for: every box over nodes that have no size yet covers
+      // exactly what was just installed -- a whole graph, or a template
+      // `insertGraph` placed clear of the graph already there -- so no caller
+      // has to name them. While one of them has no size yet, the fit waits in
+      // `refitRef` with the view it set (#622).
+      const { tabs, activeTabId: fitTabId } = useTabStore.getState();
+      const right = bounds.x + bounds.width;
+      const bottom = bounds.y + bounds.height;
+      const inside = (tabs.find((t) => t.id === fitTabId)?.nodes ?? []).filter(
+        ({ position: p }) => p.x >= bounds.x && p.x <= right && p.y >= bounds.y && p.y <= bottom,
+      );
+      const unmeasured = inside.some((n) => !n.measured?.width || !n.measured?.height);
+      const [vx, vy, zoom] = storeApi.getState().transform;
+      refitRef.current = unmeasured
+        ? {
+            tabId: fitTabId,
+            ids: new Set(inside.map((n) => n.id)),
+            viewport: { x: vx, y: vy, zoom },
+          }
+        : null;
     },
     // The store from `useStoreApi` never changes, so this follows `setViewport` alone.
     [setViewport, storeApi],
+  );
+
+  // Frame a whole level of a tab: its nodes, or, when it has none, React
+  // Flow's default view, where a canvas mounted for it starts (#622). Left at
+  // the zoom of whatever was on screen before, an empty tab or block showed
+  // the first nodes dropped into it huge.
+  const frameLevel = useCallback(
+    (nodes: Node[]) => {
+      const bounds = nodesBoundingBox(nodes);
+      if (bounds) fitToBounds(bounds);
+      else void setViewport({ x: 0, y: 0, zoom: 1 });
+    },
+    [fitToBounds, setViewport],
+  );
+
+  // React Flow's own first fit, its `fitView` prop, only for a canvas that
+  // mounts on a graph nobody has asked to frame. It waits for the first sizes:
+  // on an empty canvas it framed the first node dropped there at full zoom,
+  // and over a fit already asked for (a starter opened from the welcome
+  // screen) it replaced that overview with a close-up.
+  const [fitViewOnMount] = useState(
+    () => activeTab.nodes.length > 0 && !useUIStore.getState().layoutFitRequest,
   );
 
   // ── Per-tab viewport handover (#125) ───────────────────────────────────────
@@ -303,7 +350,8 @@ export function FlowCanvas({ tabId }: { tabId?: string } = {}) {
   // worked out by `getViewportForBounds` from a box we can compute ourselves
   // lands in the same tick, with no intermediate wrong frame. Sizes fall back
   // to the same defaults the auto-layout fit uses, so an unmeasured node
-  // still contributes a box.
+  // still contributes a box -- an estimate, framed again from the measured
+  // sizes once React Flow reports them (#622).
   //
   // A LAYOUT effect, not a passive one: the render that changes activeTabId
   // has already handed <ReactFlow> the incoming tab's nodes, so a passive
@@ -324,6 +372,8 @@ export function FlowCanvas({ tabId }: { tabId?: string } = {}) {
     if (previous === activeTabId) return;
     previousTabRef.current = activeTabId;
     if (previous === null) return;
+    // A re-fit waiting on the outgoing tab's sizes is not this tab's (#622).
+    refitRef.current = null;
 
     rememberViewport(previous, getViewport());
     const restored = recallViewport(activeTabId);
@@ -332,11 +382,44 @@ export function FlowCanvas({ tabId }: { tabId?: string } = {}) {
       return;
     }
     const incoming = useTabStore.getState().tabs.find((t) => t.id === activeTabId);
-    const bounds = nodesBoundingBox((incoming?.nodes ?? []) as Node[]);
-    // An empty tab has nothing to fit; leave the viewport where it is rather
-    // than inventing a position for a blank canvas.
-    if (bounds) fitToBounds(bounds);
-  }, [activeTabId, getViewport, setViewport, fitToBounds]);
+    // An empty tab starts at the default view (#622, `frameLevel`).
+    frameLevel((incoming?.nodes ?? []) as Node[]);
+  }, [activeTabId, getViewport, setViewport, frameLevel]);
+
+  // ── Entering and leaving a block (#622) ────────────────────────────────────
+  // A block opens on this same canvas, at the pan and zoom of the graph around
+  // it, and collapse stores its nodes relative to the block's corner, so they
+  // sit near the origin and often opened off screen: a blank canvas, without
+  // even the empty-block note. So a change of level in the tab on screen
+  // frames the level it lands on. Going in, that is the block's nodes,
+  // framed again by their measured sizes (`refitRef`). Coming out, it is the
+  // view the level had when it was left, kept against the frame that restores
+  // that level, or a fit of the level when none was kept (the canvas mounted
+  // inside the block). A layout effect, like the handover above, which owns a
+  // tab switch: no frame is painted with the wrong level under the old view.
+  const levelRef = useRef<{ tabId: string; stack: readonly object[] } | null>(null);
+  // Made once, not on every render: this canvas renders on every drag frame.
+  const [levelViews] = useState(() => new WeakMap<object, { x: number; y: number; zoom: number }>());
+  const depth = activeTab.subgraphStack?.length ?? 0;
+
+  useLayoutEffect(() => {
+    const tab = useTabStore.getState().tabs.find((t) => t.id === activeTabId);
+    const stack = tab?.subgraphStack ?? [];
+    const last = levelRef.current;
+    levelRef.current = { tabId: activeTabId, stack };
+    if (!last || last.tabId !== activeTabId || last.stack.length === stack.length) return;
+    refitRef.current = null;
+    if (stack.length > last.stack.length) {
+      levelViews.set(stack[last.stack.length], getViewport());
+    } else {
+      const kept = levelViews.get(last.stack[stack.length]);
+      if (kept) {
+        void setViewport(kept);
+        return;
+      }
+    }
+    frameLevel((tab?.nodes ?? []) as Node[]);
+  }, [activeTabId, depth, getViewport, setViewport, frameLevel, levelViews]);
 
   // Snap all existing nodes to grid when grid snap is enabled
   useEffect(() => {
@@ -376,6 +459,39 @@ export function FlowCanvas({ tabId }: { tabId?: string } = {}) {
     fitToBounds(layoutFitRequest.bounds);
     useUIStore.getState().clearLayoutFit();
   }, [layoutFitRequest, fitToBounds, tabId]);
+
+  // ── Framing again once React Flow has measured (#622) ──────────────────────
+  // A graph that was just installed has no sizes in the store: React Flow
+  // measures each node through a ResizeObserver a frame later, and only its
+  // `dimensions` change writes `measured` (see ONLY-RENDER-VISIBLE above).
+  // Until then a node counts at the layout fallback size, so a fit made at
+  // once framed an 873 px note as an 80 px card and cut it off at the bottom.
+  // `fitToBounds` holds such a fit here, and the effect below frames its nodes
+  // again the first time all of them have a size. Once: the re-fit is
+  // disarmed as soon as that is decided, and the view moves only if it is
+  // still where the fit left it, so a pan or zoom made in between stays and a
+  // node resized or dragged later never moves the view. A tab switch drops it,
+  // and every fit replaces it.
+  const refitRef = useRef<{
+    tabId: string;
+    ids: ReadonlySet<string>;
+    viewport: { x: number; y: number; zoom: number };
+  } | null>(null);
+
+  useEffect(() => {
+    const pending = refitRef.current;
+    if (!pending || pending.tabId !== activeTabId) return;
+    const nodes = activeTab.nodes.filter((n) => pending.ids.has(n.id));
+    if (nodes.some((n) => !n.measured?.width || !n.measured?.height)) return;
+    refitRef.current = null;
+    const now = getViewport();
+    const moved =
+      Math.abs(now.x - pending.viewport.x) > 0.01 ||
+      Math.abs(now.y - pending.viewport.y) > 0.01 ||
+      Math.abs(now.zoom - pending.viewport.zoom) > 1e-4;
+    const bounds = nodesBoundingBox(nodes as Node[]);
+    if (!moved && bounds) fitToBounds(bounds);
+  }, [activeTab.nodes, activeTabId, getViewport, fitToBounds]);
 
   const [quickSearch, setQuickSearch] = useState<{
     screen: { x: number; y: number };
@@ -838,7 +954,8 @@ export function FlowCanvas({ tabId }: { tabId?: string } = {}) {
           onMoveEnd={() => setCanvasPanning(false)}
           nodeTypes={nodeTypes}
           edgeTypes={edgeTypes}
-          fitView
+          // Only when the canvas mounts on a graph (#622, `fitViewOnMount`).
+          fitView={fitViewOnMount}
           // Skip the node components the viewport cannot show (#162). See
           // ONLY-RENDER-VISIBLE above the component for why this is safe and
           // where it does and does not pay.

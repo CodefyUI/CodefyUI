@@ -14,6 +14,7 @@ import { FlowCanvas } from './FlowCanvas';
 import { useTabStore } from '../../store/tabStore';
 import { useUIStore } from '../../store/uiStore';
 import type { NodeData } from '../../types';
+import { nodesBoundingBox } from '../../utils/autoLayout';
 import {
   recallViewport,
   rememberViewport,
@@ -188,15 +189,16 @@ describe('FlowCanvas per-tab viewport', () => {
     }
   });
 
-  it('leaves the viewport alone when switching to an EMPTY tab', () => {
-    // Nothing to frame; inventing a position for a blank canvas would just
-    // be a jump the user did not ask for.
+  it('starts a never-seen EMPTY tab at the default view, not the outgoing zoom (#622)', () => {
+    // Nothing to frame, so it opens where a canvas mounted for it would. Left
+    // at a zoomed-in tab's zoom, a new "+" tab showed the first nodes dropped
+    // into it huge.
     const restore = withCanvasSize();
     try {
       mount();
-      setViewport({ x: 55, y: 66, zoom: 1.25 });
+      setViewport({ x: 55, y: 66, zoom: 1.9 });
       switchTo('tab-empty');
-      expect(flow!.getViewport()).toEqual({ x: 55, y: 66, zoom: 1.25 });
+      expect(flow!.getViewport()).toEqual({ x: 0, y: 0, zoom: 1 });
     } finally {
       restore();
     }
@@ -286,6 +288,307 @@ describe('FlowCanvas per-tab viewport', () => {
       } finally {
         restore();
       }
+    });
+  });
+
+  // #622. A fit is worked out from the store's nodes, where a node React Flow
+  // has not measured yet counts at the layout fallback size (200x80). A graph
+  // that was just installed has no sizes until React Flow reports them a frame
+  // later, so a tall note counted as a card and ran off the bottom of the
+  // canvas. The canvas frames the same nodes again once their sizes are in,
+  // unless the view was moved in between.
+  describe('framing again once React Flow has measured (#622)', () => {
+    const CARD = { width: 200, height: 80 };
+    // The note "Call a graph over HTTP" opens with.
+    const TALL_NOTE = { width: 300, height: 873 };
+
+    /** How FlowCanvas frames a box on the 900x600 canvas: inflated to 85% of it, then fitted. */
+    function framed(box: { x: number; y: number; width: number; height: number }): Viewport {
+      let { x, y, width, height } = box;
+      if (width < 765) {
+        x -= (765 - width) / 2;
+        width = 765;
+      }
+      if (height < 510) {
+        y -= (510 - height) / 2;
+        height = 510;
+      }
+      return getViewportForBounds({ x, y, width, height }, 900, 600, 0.1, 2, 0.2);
+    }
+
+    function at(id: string, x: number, y: number): Node<NodeData> {
+      return { ...node(id), position: { x, y } };
+    }
+
+    /**
+     * Report sizes the way React Flow does: `dimensions` changes through the
+     * store's `onNodesChange`, which writes them to each node's `measured`.
+     * jsdom delivers no ResizeObserver callbacks, so nothing else measures a
+     * node here.
+     */
+    function reportSizes(sizes: Record<string, { width: number; height: number }>) {
+      useTabStore.getState().onNodesChange(
+        Object.entries(sizes).map(([id, dimensions]) => ({
+          id,
+          type: 'dimensions' as const,
+          dimensions,
+        })),
+      );
+    }
+
+    function measure(sizes: Record<string, { width: number; height: number }>) {
+      act(() => reportSizes(sizes));
+    }
+
+    /**
+     * Mount on a canvas whose graph React Flow has already measured, as it
+     * has after one frame on screen. Until React Flow has measured a set of
+     * nodes once, it still holds the fit its `fitView` prop queued on mount,
+     * and would spend it on the first sizes a test reports. That fit finishes
+     * a few microtasks after it starts, hence the async act.
+     */
+    async function mountOnScreen() {
+      mount();
+      await act(async () => reportSizes({ a1: CARD }));
+    }
+
+    /** Install nodes in the tab on screen and ask for a fit, as Open and Import do. */
+    function install(nodes: Node<NodeData>[], fitOver: Node<NodeData>[] = nodes) {
+      act(() => {
+        useTabStore.getState().setNodes(nodes);
+        useUIStore.getState().requestLayoutFit(nodesBoundingBox(fitOver as Node[])!);
+      });
+    }
+
+    let restoreSize: () => void;
+    beforeEach(() => {
+      restoreSize = withCanvasSize();
+    });
+    afterEach(() => {
+      restoreSize();
+    });
+
+    it('frames a freshly opened graph again by its real sizes', async () => {
+      await mountOnScreen();
+      // A card and a tall note, framed at once by the fallback sizes.
+      install([at('s1', 0, 0), at('note', 0, 120)]);
+      const estimated = framed({ x: 0, y: 0, width: 200, height: 200 });
+      expectViewportCloseTo(estimated);
+
+      measure({ s1: CARD, note: TALL_NOTE });
+      expectViewportCloseTo(framed({ x: 0, y: 0, width: 300, height: 993 }));
+      expect(flow!.getViewport().zoom).toBeLessThan(estimated.zoom);
+    });
+
+    it('leaves the view where the user moved it before the sizes arrived', async () => {
+      await mountOnScreen();
+      install([at('s1', 0, 0), at('note', 0, 120)]);
+      const estimated = flow!.getViewport();
+      setViewport({ x: 10, y: 20, zoom: 1.3 });
+
+      measure({ s1: CARD, note: TALL_NOTE });
+      expect(flow!.getViewport()).toEqual({ x: 10, y: 20, zoom: 1.3 });
+
+      // Decided once and for all: back on the first fit, a later size change
+      // still frames nothing.
+      setViewport(estimated);
+      measure({ note: { width: 300, height: 1400 } });
+      expect(flow!.getViewport()).toEqual(estimated);
+    });
+
+    it('frames again once, not on every later size change', async () => {
+      await mountOnScreen();
+      install([at('s1', 0, 0), at('note', 0, 120)]);
+      measure({ s1: CARD, note: TALL_NOTE });
+      const refitted = framed({ x: 0, y: 0, width: 300, height: 993 });
+      expectViewportCloseTo(refitted);
+
+      // The note grows while it is edited; the view stays put.
+      measure({ note: { width: 300, height: 1400 } });
+      expectViewportCloseTo(refitted);
+    });
+
+    it('frames a never-seen tab again once its sizes arrive', async () => {
+      await mountOnScreen();
+      switchTo('tab-b');
+      expectViewportCloseTo(framed({ x: 0, y: 0, width: 200, height: 80 }));
+
+      measure({ b1: { width: 320, height: 900 } });
+      expectViewportCloseTo(framed({ x: 0, y: 0, width: 320, height: 900 }));
+    });
+
+    it('drops a re-fit when the tab changes, so the tab comes back as it was left', async () => {
+      rememberViewport('tab-b', { x: 5, y: 5, zoom: 1 });
+      await mountOnScreen();
+      install([at('s1', 0, 0), at('note', 0, 120)]);
+      const left = flow!.getViewport();
+      switchTo('tab-b');
+      switchTo('tab-a');
+      expect(flow!.getViewport()).toEqual(left);
+
+      measure({ s1: CARD, note: TALL_NOTE });
+      expect(flow!.getViewport()).toEqual(left);
+    });
+
+    it('fits nodes that are already measured once, as auto layout does', async () => {
+      await mountOnScreen();
+      act(() => {
+        const { nodes } = useTabStore.getState().getActiveTab();
+        useUIStore.getState().requestLayoutFit(nodesBoundingBox(nodes as Node[])!);
+      });
+      const fitted = framed({ x: 0, y: 0, width: 200, height: 80 });
+      expectViewportCloseTo(fitted);
+
+      // Nothing was waiting for a size, so a later one moves nothing.
+      measure({ a1: { width: 200, height: 600 } });
+      expectViewportCloseTo(fitted);
+    });
+
+    it('frames an inserted block again without the graph above it', async () => {
+      await mountOnScreen();
+      // A template inserted below the graph: the fit asks for the inserted
+      // nodes alone, and only they are still unmeasured.
+      const [a1] = useTabStore.getState().getActiveTab().nodes;
+      const inserted = [at('t1', 0, 176), at('t2', 260, 176)];
+      install([a1, ...inserted], inserted);
+      expectViewportCloseTo(framed({ x: 0, y: 176, width: 460, height: 80 }));
+
+      measure({ t1: CARD, t2: TALL_NOTE });
+      expectViewportCloseTo(framed({ x: 0, y: 176, width: 560, height: 873 }));
+    });
+
+    it('does not zoom in on the first node dropped on a canvas that opened empty', async () => {
+      // React Flow's own first fit waited for the first measured node, and
+      // framed that one card at full zoom.
+      useTabStore.setState({ activeTabId: 'tab-empty' });
+      mount();
+      act(() => useTabStore.getState().setNodes([at('first', 300, 200)]));
+      await act(async () => reportSizes({ first: CARD }));
+      expect(flow!.getViewport()).toEqual({ x: 0, y: 0, zoom: 1 });
+    });
+
+    it('frames a starter opened from the welcome screen as the gallery does', async () => {
+      // The welcome screen installs a starter in a new tab and asks for a fit
+      // before the canvas exists. React Flow's own first fit then ran on the
+      // first sizes and replaced the overview with a close-up at zoom 2.
+      const starter = [at('s1', 0, 0), at('s2', 260, 0)];
+      useTabStore.getState().setNodes(starter);
+      useUIStore.getState().requestLayoutFit(nodesBoundingBox(starter as Node[])!);
+      mount();
+      expectViewportCloseTo(framed({ x: 0, y: 0, width: 460, height: 80 }));
+
+      await act(async () => reportSizes({ s1: CARD, s2: { width: 240, height: 120 } }));
+      expectViewportCloseTo(framed({ x: 0, y: 0, width: 500, height: 120 }));
+    });
+
+    // A block opens on the same canvas. Collapse stores its nodes relative to
+    // the block's top-left corner, so inside, they sit near the origin, far
+    // from the view the graph around the block had: a blank canvas.
+    describe('entering and leaving a block', () => {
+      const OUTER = { x: -2500, y: -1700, zoom: 0.9 };
+
+      /** Collapse the selection on the level on screen; returns the instance. */
+      function collapseAll(name: string): string {
+        let instanceId = '';
+        act(() => {
+          const store = useTabStore.getState();
+          store.setNodes(store.getActiveTab().nodes.map((n) => ({ ...n, selected: true })));
+          const result = store.collapseSelectionToSubgraph(name);
+          if (!result.ok) throw new Error(`collapse refused: ${result.reason}`);
+          instanceId = result.instanceId;
+        });
+        return instanceId;
+      }
+
+      /**
+       * Two cards collapsed into a block at (3000, 2000), with the view on it.
+       * Inside, the cards are at (0, 0) and (300, 0).
+       */
+      async function blockOnScreen(): Promise<string> {
+        await mountOnScreen();
+        act(() => useTabStore.getState().setNodes([at('b1', 3000, 2000), at('b2', 3300, 2000)]));
+        const instanceId = collapseAll('Block');
+        setViewport(OUTER);
+        return instanceId;
+      }
+
+      function enter(instanceId: string) {
+        act(() => {
+          useTabStore.getState().enterSubgraph(instanceId);
+        });
+      }
+
+      function exit() {
+        act(() => useTabStore.getState().exitSubgraph());
+      }
+
+      it('frames the inside of a block when it is entered, then by its measured sizes', async () => {
+        enter(await blockOnScreen());
+        expectViewportCloseTo(framed({ x: 0, y: 0, width: 500, height: 80 }));
+
+        measure({ b1: CARD, b2: TALL_NOTE });
+        expectViewportCloseTo(framed({ x: 0, y: 0, width: 600, height: 873 }));
+      });
+
+      it('puts back the view the graph around the block had when it is left', async () => {
+        enter(await blockOnScreen());
+        setViewport({ x: 40, y: 50, zoom: 1.2 });
+
+        exit();
+        expect(flow!.getViewport()).toEqual(OUTER);
+      });
+
+      it('goes back out one level at a time, each to its own view', async () => {
+        enter(await blockOnScreen());
+        const nested = collapseAll('Inner');
+        setViewport({ x: 7, y: 8, zoom: 1.1 });
+        enter(nested);
+
+        exit();
+        expect(flow!.getViewport()).toEqual({ x: 7, y: 8, zoom: 1.1 });
+        exit();
+        expect(flow!.getViewport()).toEqual(OUTER);
+      });
+
+      it('lands on the top level view when every level is left at once', async () => {
+        enter(await blockOnScreen());
+        enter(collapseAll('Inner'));
+        setViewport({ x: 7, y: 8, zoom: 1.1 });
+
+        act(() => useTabStore.getState().exitAllSubgraphs());
+        expect(flow!.getViewport()).toEqual(OUTER);
+      });
+
+      it('treats a tab switch inside a block as a tab switch, not a change of level', async () => {
+        enter(await blockOnScreen());
+        setViewport({ x: 40, y: 50, zoom: 1.2 });
+        switchTo('tab-b');
+        switchTo('tab-a');
+        expect(flow!.getViewport()).toEqual({ x: 40, y: 50, zoom: 1.2 });
+
+        exit();
+        expect(flow!.getViewport()).toEqual(OUTER);
+      });
+
+      it('starts an empty block at the default view', async () => {
+        const instanceId = await blockOnScreen();
+        enter(instanceId);
+        act(() => useTabStore.getState().setNodes([]));
+        exit();
+
+        enter(instanceId);
+        expect(flow!.getViewport()).toEqual({ x: 0, y: 0, zoom: 1 });
+      });
+
+      it('frames the graph around a block it never saw entered', async () => {
+        // Mounted again while the tab is inside the block: no view was kept.
+        enter(await blockOnScreen());
+        cleanup();
+        mount();
+
+        exit();
+        expectViewportCloseTo(framed({ x: 3000, y: 2000, width: 200, height: 80 }));
+      });
     });
   });
 });

@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor, act, cleanup } from '@testing-library/react';
 import { EmptyCanvasOverlay } from './EmptyCanvasOverlay';
-import { useTabStore } from '../../store/tabStore';
+import { useTabStore, type TabState } from '../../store/tabStore';
 import { useNodeDefStore } from '../../store/nodeDefStore';
 import { _resetPluginStoreForTesting, usePluginStore } from '../../store/pluginStore';
 import { useToastStore } from '../../store/toastStore';
@@ -30,6 +30,38 @@ vi.mock('../../utils', async (importOriginal) => {
 
 const mockedRest = vi.mocked(rest);
 const mockedUtils = vi.mocked(utils);
+
+const ORIGINAL_TABS = useTabStore.getState().tabs;
+const ORIGINAL_ACTIVE = useTabStore.getState().activeTabId;
+
+/**
+ * Put the active tab inside a block, one level down, with nothing on that
+ * level: the state a block is in after every node inside it was deleted.
+ *
+ * The frame holds the level the block was entered from, here the default
+ * tab's own empty one. Asserted rather than annotated: what a frame records
+ * is the store's business, and the overlay reads only how deep the stack is.
+ */
+function enterAnEmptyBlock() {
+  const base = ORIGINAL_TABS[0];
+  const frame = {
+    subgraphId: 'sg-block',
+    instanceId: 'blk',
+    nodes: base.nodes,
+    edges: base.edges,
+    presets: base.presets,
+    undoStack: base.undoStack,
+    redoStack: base.redoStack,
+    selectedNodeId: base.selectedNodeId,
+    subgraphs: base.subgraphs,
+    segmentGroups: base.segmentGroups,
+    activeSegment: base.activeSegment,
+  } as TabState['subgraphStack'][number];
+  useTabStore.setState({
+    tabs: [{ ...base, id: 'tab-block', nodes: [], edges: [], subgraphStack: [frame] }],
+    activeTabId: 'tab-block',
+  });
+}
 
 function ex(overrides: Partial<ExampleSummary> = {}): ExampleSummary {
   return {
@@ -80,7 +112,11 @@ describe('EmptyCanvasOverlay', () => {
   });
 
   afterEach(() => {
+    // Unmounted before the tabs go back: an overlay still on screen would
+    // re-render out of the block and mount the gallery after its test ended.
+    cleanup();
     vi.restoreAllMocks();
+    useTabStore.setState({ tabs: ORIGINAL_TABS, activeTabId: ORIGINAL_ACTIVE });
   });
 
   it('shows the loading hint before examples resolve, then hides it', async () => {
@@ -466,5 +502,83 @@ describe('EmptyCanvasOverlay', () => {
     expect(fireEvent.dragEnter(card)).toBe(false);
     expect(fireEvent.dragEnter(screen.getByText('Drop Target'))).toBe(false);
     expect(handlers.onDragOver).toHaveBeenCalledTimes(2);
+  });
+
+  it('opens an example once when its card is double-clicked (#622)', async () => {
+    // Both clicks land while the example is still loading. The first to
+    // arrive filled the empty tab; the second found it filled and opened the
+    // example again in a new one.
+    mockedRest.listExamples.mockResolvedValue([ex({ name: 'Twice' })]);
+    let arrive!: (payload: unknown) => void;
+    mockedRest.loadExample.mockReturnValue(
+      new Promise((resolve) => {
+        arrive = resolve;
+      }),
+    );
+    const loadGraphDocument = vi.fn();
+    useTabStore.setState({ loadGraphDocument });
+    renderOverlay();
+    const card = (await screen.findByText('Twice')).closest('button')!;
+
+    fireEvent.click(card);
+    fireEvent.click(card);
+    await act(async () => arrive({ name: 'Twice', nodes: [], edges: [] }));
+
+    expect(mockedRest.loadExample).toHaveBeenCalledTimes(1);
+    expect(loadGraphDocument).toHaveBeenCalledTimes(1);
+  });
+
+  describe('a level inside a block (#622)', () => {
+    it('says the block is empty instead of showing the gallery', async () => {
+      // Listed, so a gallery that did render would show a card rather than
+      // fail on the missing promise.
+      mockedRest.listExamples.mockResolvedValue([ex({ name: 'Starter' })]);
+      enterAnEmptyBlock();
+      renderOverlay();
+
+      expect(screen.getByText('This subgraph is empty')).toBeInTheDocument();
+      expect(
+        screen.getByText('Back, above, returns to the graph around it.'),
+      ).toBeInTheDocument();
+      // A starter picked here would open in another tab: nothing of the
+      // gallery belongs inside a block, not its heading, not the button to
+      // the full gallery, not a card -- and nothing is fetched for it.
+      await act(async () => {});
+      expect(screen.queryByText('Build your first deep learning model')).toBeNull();
+      expect(screen.queryByText('Starter')).toBeNull();
+      expect(screen.queryAllByRole('button')).toHaveLength(0);
+      expect(mockedRest.listExamples).not.toHaveBeenCalled();
+    });
+
+    it('hands a drag over the note, and a drop on it, to the canvas', () => {
+      // A node dragged in from the palette lands inside the block.
+      enterAnEmptyBlock();
+      const handlers = dropHandlers();
+      renderOverlay(handlers);
+
+      fireEvent.dragOver(screen.getByText('This subgraph is empty'));
+      fireEvent.drop(screen.getByText('Back, above, returns to the graph around it.'));
+      expect(handlers.onDragOver).toHaveBeenCalledTimes(1);
+      expect(handlers.onDrop).toHaveBeenCalledTimes(1);
+    });
+
+    it('in Traditional Chinese, names the block and the way back as the breadcrumb does', () => {
+      useI18n.setState({ locale: 'zh-TW' });
+      enterAnEmptyBlock();
+      renderOverlay();
+
+      expect(screen.getByText('這個子圖是空的')).toBeInTheDocument();
+      expect(screen.getByText('按上方的「返回」回到外層。')).toBeInTheDocument();
+    });
+
+    it('leaves the gallery on an empty top level', async () => {
+      mockedRest.listExamples.mockResolvedValue([ex({ name: 'Starter' })]);
+      renderOverlay();
+
+      expect(await screen.findByText('Starter')).toBeInTheDocument();
+      expect(screen.getByText('Build your first deep learning model')).toBeInTheDocument();
+      expect(screen.queryByText('This subgraph is empty')).toBeNull();
+      expect(mockedRest.listExamples).toHaveBeenCalledTimes(1);
+    });
   });
 });

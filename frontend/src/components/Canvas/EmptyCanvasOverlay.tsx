@@ -1,6 +1,7 @@
 import { useCallback } from 'react';
 import { useI18n } from '../../i18n';
 import { openExample } from '../../utils/openExample';
+import { useTabStore } from '../../store/tabStore';
 import { useUIStore } from '../../store/uiStore';
 import type { ExampleSummary } from '../../api/rest';
 import { ExampleBrowser } from '../shared/ExampleBrowser';
@@ -25,6 +26,13 @@ interface EmptyCanvasOverlayProps {
 
 export function EmptyCanvasOverlay({ onDragOver, onDrop }: EmptyCanvasOverlayProps) {
   const { t } = useI18n();
+  // The canvas shows this overlay whenever the level on screen is empty, and
+  // inside a block that level is the block's, not the tab's. A starter picked
+  // there can only open in another tab (`openExample`), so a block gets a note
+  // saying it is empty instead of the gallery, and nothing is fetched (#622).
+  const inBlock = useTabStore(
+    (s) => (s.tabs.find((tab) => tab.id === s.activeTabId)?.subgraphStack?.length ?? 0) > 0,
+  );
 
   // Still the REPLACING reader, and the only one left (#348): this overlay
   // is shown when the canvas is empty, so there is nothing for a replace to
@@ -44,30 +52,38 @@ export function EmptyCanvasOverlay({ onDragOver, onDrop }: EmptyCanvasOverlayPro
       onDragOver={onDragOver}
       onDrop={onDrop}
     >
-      <div className={styles.inner}>
-        <div className={styles.title}>{t('empty.title')}</div>
-        <div className={styles.subtitle}>{t('empty.subtitle')}</div>
+      {inBlock ? (
+        // No word about dragging nodes in: the palette's own footer says it.
+        <div className={styles.blockNote}>
+          <div className={styles.blockNoteTitle}>{t('subgraph.emptyLevel.title')}</div>
+          <div className={styles.blockNoteHint}>{t('subgraph.emptyLevel.hint')}</div>
+        </div>
+      ) : (
+        <div className={styles.inner}>
+          <div className={styles.title}>{t('empty.title')}</div>
+          <div className={styles.subtitle}>{t('empty.subtitle')}</div>
 
-        {/* The sections below stay the fast path; this is the way to the
-            full, searchable list — the same modal the toolbar and the
-            sidebar's Templates tab open (core#128). */}
-        <button
-          type="button"
-          className={styles.browseButton}
-          onClick={() => useUIStore.getState().openTemplateGallery()}
-          title={t('gallery.open.title')}
-        >
-          {t('gallery.browse')}
-        </button>
+          {/* The sections below stay the fast path; this is the way to the
+              full, searchable list — the same modal the toolbar and the
+              sidebar's Templates tab open (core#128). */}
+          <button
+            type="button"
+            className={styles.browseButton}
+            onClick={() => useUIStore.getState().openTemplateGallery()}
+            title={t('gallery.open.title')}
+          >
+            {t('gallery.browse')}
+          </button>
 
-        <ExampleBrowser onPick={handleClick} />
+          <ExampleBrowser onPick={handleClick} />
 
-        {/* No trailing "or drag a node from the left palette": the palette it
-            points at is open on its default tab with its own pinned footer
-            reading "Drag nodes onto the canvas", and that footer is the copy
-            that has to stay -- a node item is drag-only, and the footer is
-            still there after the canvas stops being empty. */}
-      </div>
+          {/* No trailing "or drag a node from the left palette": the palette it
+              points at is open on its default tab with its own pinned footer
+              reading "Drag nodes onto the canvas", and that footer is the copy
+              that has to stay -- a node item is drag-only, and the footer is
+              still there after the canvas stops being empty. */}
+        </div>
+      )}
     </div>
   );
 }

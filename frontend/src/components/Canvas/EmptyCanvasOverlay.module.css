@@ -68,3 +68,26 @@
      accent-deep hue. See migration report. */
   background: rgba(34, 211, 238, 0.22);
 }
+
+/* An empty level inside a block, in place of the gallery (#622). A note, not
+   a heading: the subtitle's size and tier, no hero line. It lets the pointer
+   through like the root does, so the canvas under it still takes a pan, and a
+   node dropped from the palette lands inside the block. */
+.blockNote {
+  text-align: center;
+  pointer-events: none;
+}
+
+.blockNoteTitle {
+  font-size: var(--fs-lg);
+  font-weight: var(--fw-semibold);
+  line-height: var(--lh-snug);
+  color: var(--text-secondary);
+  margin-bottom: var(--sp-2);
+}
+
+.blockNoteHint {
+  font-size: var(--fs-sm);
+  line-height: var(--lh-normal);
+  color: var(--text-muted);
+}

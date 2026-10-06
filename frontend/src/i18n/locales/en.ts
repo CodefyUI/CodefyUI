@@ -429,6 +429,11 @@ const en = {
   'subgraph.detail.outputs': 'Outputs',
   'subgraph.detail.enter': 'Enter subgraph',
   'subgraph.detail.empty': 'No ports exposed',
+  // An empty level inside a block, in place of the example gallery an empty
+  // tab shows: a starter cannot open there, so the canvas says what it is and
+  // the way back out (#622).
+  'subgraph.emptyLevel.title': 'This subgraph is empty',
+  'subgraph.emptyLevel.hint': 'Back, above, returns to the graph around it.',
 
   // Notes
   'note.placeholder': 'Click to edit...',
