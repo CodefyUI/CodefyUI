@@ -1022,8 +1022,12 @@ export async function resetWeights(graphId: string, nodeIds?: string[]) {
  * it (`character`, `reserved`, `filename`), and `Toolbar.tsx` writes the
  * sentence from them.
  *
- * The prose refusals this route also answers with (no nodes, a subgraph
- * instance, a duplicate name) come back unchanged, as `err.message`.
+ * The prose refusals this route also answers with (a subgraph instance, the
+ * engine's sentence about a card or a muted node) come back unchanged, as
+ * `err.message`.
+ *
+ * `presets` are the graph's own definitions: a card on the canvas is copied
+ * into the preset from the one the graph has for it (#618).
  */
 export async function createPreset(data: {
   name: string;
@@ -1032,6 +1036,7 @@ export async function createPreset(data: {
   tags?: string[];
   nodes: any[];
   edges: any[];
+  presets?: PresetDefinition[];
 }): Promise<PresetDefinition> {
   const res = await apiFetch(`${BASE_URL}/presets/create`, {
     method: 'POST',

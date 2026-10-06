@@ -422,6 +422,11 @@ class CreatePresetRequest(BaseModel):
     tags: list[str] = []
     nodes: list[dict[str, Any]]
     edges: list[dict[str, Any]]
+    # The graph's own preset definitions, which a card on the canvas is
+    # copied in from ahead of an installed one, as a run of it expands it
+    # (#618). Dicts, not ``PresetDefinition``: an entry that does not parse
+    # reaches ``build_preset_fallback`` and is refused by the card's name.
+    presets: list[dict[str, Any]] = []
 
 
 # Rebuild models that use forward references

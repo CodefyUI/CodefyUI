@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { render, screen, fireEvent } from '@testing-library/react';
+import { act, render, screen, fireEvent } from '@testing-library/react';
 import { DialogContainer } from './DialogContainer';
 import { useDialogStore } from '../../store/dialogStore';
 import { confirm, prompt } from '../../utils/dialog';
@@ -189,6 +189,45 @@ describe('DialogContainer', () => {
     fireEvent.change(input, { target: { value: 'main' } });
     expect(input.getAttribute('aria-invalid')).toBe('false');
     expect(input.getAttribute('aria-describedby')).toBeNull();
+  });
+
+  it('opens a prompt the server refused with the refusal already under the input (#623)', async () => {
+    // Asked again after the server refused the last answer: the answer is
+    // back in the box and the reason is under it, as a refusal of `validate`
+    // would be, so it clears the same way.
+    render(<DialogContainer />);
+    act(() => {
+      void prompt({ title: 'Subgraph name', defaultValue: 'a/b', error: 'No slashes in a name' });
+    });
+    const input = (await screen.findByRole('textbox', {
+      name: 'Subgraph name',
+    })) as HTMLInputElement;
+    const said = await screen.findByText('No slashes in a name');
+    expect(input.value).toBe('a/b');
+    expect(input.getAttribute('aria-invalid')).toBe('true');
+    expect(input.getAttribute('aria-describedby')).toBe(said.id);
+
+    fireEvent.change(input, { target: { value: 'ab' } });
+    expect(screen.queryByText('No slashes in a name')).toBeNull();
+    expect(input.getAttribute('aria-invalid')).toBe('false');
+  });
+
+  it('does not carry a refusal into the next prompt', async () => {
+    render(<DialogContainer />);
+    let first: Promise<string | null> = Promise.resolve('unset');
+    act(() => {
+      first = prompt({ title: 'Refused', error: 'Taken' });
+    });
+    await screen.findByText('Taken');
+    fireEvent.keyDown(window, { key: 'Escape' });
+    await expect(first).resolves.toBeNull();
+
+    act(() => {
+      void prompt({ title: 'Fresh' });
+    });
+    const input = (await screen.findByRole('textbox', { name: 'Fresh' })) as HTMLInputElement;
+    expect(screen.queryByText('Taken')).toBeNull();
+    expect(input.getAttribute('aria-invalid')).toBe('false');
   });
 
   // ── Locale-aware fallback labels (#160) ─────────────────────────────────

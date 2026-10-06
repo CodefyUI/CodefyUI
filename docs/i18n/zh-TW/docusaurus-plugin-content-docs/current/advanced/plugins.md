@@ -39,7 +39,7 @@ cdui plugin uninstall deep                 # 會被記住：sync 不會再把它
 |------|------------------|-----------|
 | `graph-copilot` | AI 對話助手：以對話建立與修改節點圖，執行你核准的隔離實驗與參數搜尋，並保留可攜的實驗紀錄。需要一個 LLM 供應者（Codex、Ollama、OpenAI 或 Anthropic）。 | `cdui plugin install graph-copilot` |
 | `self-learning` | 把一個自由描述的機器學習問題變成逐步教材：先由 LLM 建出可運作的圖並驗證能執行，再由外掛擷取每一步的截圖，產出繁體中文 Markdown 教材、可列印頁面、圖表與一份起始練習。 | `cdui plugin install self-learning` |
-| `official-template` | 給外掛作者的可運作起始模板：兩個範例節點、一個預設模組、一張範例流程圖、一個資產檔、一套範例測試，以及一個 React 工具面板。安裝後可查看外掛能做什麼，也可 fork 後撰寫自己的外掛。 | `cdui plugin install official-template` |
+| `official-template` | 給外掛作者的可運作起始模板：兩個範例節點、一個預設組合、一張範例流程圖、一個資產檔、一套範例測試，以及一個 React 工具面板。安裝後可查看外掛能做什麼，也可 fork 後撰寫自己的外掛。 | `cdui plugin install official-template` |
 
 每個 Edu 節點都把單一課程概念分解成一連串具名步驟，由[教學檢視器](/usage/teaching-inspector)一次渲染一列——`Edu-ColumnStats` 將母體標準差公式呈現為 `sum → divide → deviations² → variance → sqrt`；`Edu-PolicyGradient` 暴露 `softmax → gather → log → baseline → loss`；`Edu-Patchify` 讓 `unfold → permute → flatten` 變得可見。在「設定」popover 中開啟**顯示內部步驟**即可擷取它們。
 
@@ -394,7 +394,7 @@ cdui plugin dev ./my-plugin      # 連結＋監看；每次變更自動重載
 | `/plugins/{id}/frontend/{path}` | GET | open | 當已啟用外掛的 manifest 宣告 `[frontend].entry` 時，提供其 `frontend/` 中的檔案。此 route 不在 `/api` 底下。每個 request 都會讀取 lockfile，因此檔案會在安裝或重載後可用，並在停用或移除後回傳 `404`。response 使用 `Cache-Control: no-cache`。 |
 | `/plugins/{id}/assets/{file}` | GET, HEAD | open | 提供已啟用外掛 `assets/` 中的檔案。此 route 使用相同的啟用規則，但不要求 frontend manifest entry。media type 依副檔名決定，預設為 `application/octet-stream`。 |
 | `/api/plugins/jobs/{job_id}/events` | GET | open | 回傳 `?cursor=`（預設 `0`）之後的安裝 job 事件，最多 `?limit=` 筆（1 到 2000，預設 500）；沒有新事件時，`?wait=`（0 到 60 秒）會長輪詢。response 為 `{job_id, status, events, cursor}`。 |
-| `/api/plugins/reload` | POST | token | 重新探索節點、預設模組與外掛。 |
+| `/api/plugins/reload` | POST | token | 重新探索節點、預設組合與外掛。 |
 | `/api/plugins/{id}/enable` | POST | token | 啟用已安裝的外掛。 |
 | `/api/plugins/{id}/disable` | POST | token | 停用已安裝的外掛，但不解除安裝。 |
 | `/api/plugins/inspect` | POST | token + loopback | 在單一 commit 上檢查來源並回傳安裝與權限需求，但不進行安裝。 |

@@ -35,6 +35,11 @@ export interface PromptRequest {
   cancelText?: string;
   /** Optional input validator — return a string error message to block submit, or null when valid. */
   validate?: (value: string) => string | null;
+  /**
+   * A refusal to show under the input when the box opens: the server refused
+   * the last answer and the caller is asking again (#623). Typing clears it.
+   */
+  error?: string;
 }
 
 export type DialogRequest = ConfirmRequest | PromptRequest;

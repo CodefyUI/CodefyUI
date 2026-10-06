@@ -24,8 +24,10 @@ on:
       #                                   resnetOverlap.test.ts,
       #                                   SmartDataEdge.overlap.test.tsx
       #   backend/tests/fixtures/**       subgraph.contract.test.ts
+      #   docs/i18n/zh-TW/**              presetTerm.test.ts
       - 'examples/**'
       - 'backend/tests/fixtures/**'
+      - 'docs/i18n/zh-TW/**'
       - '.github/workflows/frontend-build.yml'
   workflow_dispatch:
 

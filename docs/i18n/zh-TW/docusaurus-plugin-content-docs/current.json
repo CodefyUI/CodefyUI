@@ -36,7 +36,7 @@
     "description": "The generated-index page title for category 'Advanced' in sidebar 'docsSidebar'"
   },
   "sidebar.docsSidebar.category.Advanced.link.generated-index.description": {
-    "message": "用預設模組、自訂節點與外掛包擴充 CodefyUI；理解裝置後端、REST API 與執行架構。",
+    "message": "用預設組合、自訂節點與外掛包擴充 CodefyUI；理解裝置後端、REST API 與執行架構。",
     "description": "The generated-index page description for category 'Advanced' in sidebar 'docsSidebar'"
   }
 }
