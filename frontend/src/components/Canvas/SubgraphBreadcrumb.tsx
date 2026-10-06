@@ -1,5 +1,6 @@
 import { useState } from 'react';
 
+import { isSaveChord } from '../../hooks/useKeyboardShortcuts';
 import { useI18n } from '../../i18n';
 import { useTabStore } from '../../store/tabStore';
 import { subgraphViewPath } from '../../utils/subgraph';
@@ -38,9 +39,16 @@ export function SubgraphBreadcrumb() {
   // the block, and trapping them inside it would be absurd.
   const canRename = !tab.readOnly;
 
+  // The typed name reaches the store only here, on Enter, blur or Ctrl+S. A
+  // name left as the bar shows it is not sent: `renameSubgraph` pushes an undo
+  // frame for any name, so a click on the name just to read it would add an
+  // empty Ctrl+Z step and empty Redo.
   const commitRename = () => {
     setEditing(false);
-    renameSubgraph(currentId, draft);
+    const next = draft.trim();
+    if (next !== '' && next !== names[names.length - 1]) {
+      renameSubgraph(currentId, draft);
+    }
   };
 
   return (
@@ -72,6 +80,13 @@ export function SubgraphBreadcrumb() {
               onChange={(e) => setDraft(e.target.value)}
               onBlur={commitRename}
               onKeyDown={(e) => {
+                // Ctrl+S saves from a field (#607), and a tab bound to a file
+                // saves at once, with nothing to blur this one first: commit
+                // the name, and let the key go on to the shortcut handler.
+                if (isSaveChord(e.nativeEvent)) {
+                  commitRename();
+                  return;
+                }
                 if (e.key === 'Enter') commitRename();
                 if (e.key === 'Escape') setEditing(false);
               }}

@@ -1,11 +1,21 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { act, render, screen, fireEvent, waitFor, within } from '@testing-library/react';
+import { act, render, renderHook, screen, fireEvent, waitFor, within } from '@testing-library/react';
 import { TabBar } from './TabBar';
 import { DialogContainer } from '../shared/DialogContainer';
 import { NO_ACTIVE_TAB, useTabStore } from '../../store/tabStore';
 import { useI18n } from '../../i18n';
 import { useDialogStore } from '../../store/dialogStore';
 import { useUIStore } from '../../store/uiStore';
+import { useKeyboardShortcuts } from '../../hooks/useKeyboardShortcuts';
+import { saveActiveGraph } from '../../utils/saveActiveGraph';
+import { saveGraph } from '../../api/rest';
+
+vi.mock('../../utils/saveActiveGraph', () => ({ saveActiveGraph: vi.fn() }));
+// Only the write: the Ctrl+S tests that run the real save must not reach the network.
+vi.mock('../../api/rest', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../api/rest')>()),
+  saveGraph: vi.fn(),
+}));
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -1323,6 +1333,99 @@ describe('TabBar', () => {
       await waitFor(() => {
         expect(useTabStore.getState().tabs).toEqual([]);
       });
+    });
+  });
+
+  // ── Ctrl+S from the rename box (#620) ──────────────────────────────────────
+
+  describe('Ctrl+S while a tab is being renamed (#620)', () => {
+    // Ctrl+S saves from a field (#607), and since #617 a tab's name is the
+    // name a first Save offers: the save reads it as it starts, before its
+    // name dialog takes focus and the box's blur commits what was typed.
+    beforeEach(() => {
+      vi.mocked(saveActiveGraph).mockReset();
+      renderHook(() => useKeyboardShortcuts());
+    });
+
+    it('names the tab before it saves', () => {
+      let nameAtSave: string | undefined;
+      vi.mocked(saveActiveGraph).mockImplementation(async () => {
+        nameAtSave = useTabStore.getState().getActiveTab().name;
+      });
+      render(<TabBar />);
+      fireEvent.doubleClick(screen.getByText('Tab 1'));
+      const input = screen.getByDisplayValue('Tab 1');
+      fireEvent.change(input, { target: { value: 'CF201' } });
+      // `false`: the browser's own "Save page as" was refused.
+      expect(fireEvent.keyDown(input, { key: 's', ctrlKey: true })).toBe(false);
+
+      expect(saveActiveGraph).toHaveBeenCalledTimes(1);
+      expect(nameAtSave).toBe('CF201');
+      expect(screen.queryByRole('textbox')).toBeNull();
+      expect(screen.getByRole('tab', { name: 'CF201' })).toBeTruthy();
+    });
+
+    /** F2 on the focused first tab, type `name`, then Ctrl+S, through the real save. */
+    async function renameByF2ThenSave(name: string) {
+      const real = await vi.importActual<typeof import('../../utils/saveActiveGraph')>(
+        '../../utils/saveActiveGraph',
+      );
+      vi.mocked(saveActiveGraph).mockImplementation(real.saveActiveGraph);
+      render(
+        <>
+          <TabBar />
+          <DialogContainer />
+        </>,
+      );
+      const tab = screen.getByRole('tab', { name: 'Tab 1' });
+      tab.focus();
+      fireEvent.keyDown(tab, { key: 'F2' });
+      const input = screen.getByDisplayValue('Tab 1');
+      fireEvent.change(input, { target: { value: name } });
+      fireEvent.keyDown(input, { key: 's', ctrlKey: true });
+    }
+
+    it('after F2, a save in place hands focus back to the tab, as Enter does', async () => {
+      // The keyboard user keeps their place in the strip, and the next Delete
+      // is the tab's (#402) rather than the canvas selection's.
+      vi.mocked(saveGraph).mockReset().mockReturnValue(new Promise<never>(() => {}));
+      const { tabs, loadGraphDocumentInto } = useTabStore.getState();
+      loadGraphDocumentInto(tabs[0].id, {
+        nodes: [
+          { id: 'n1', type: 'default', position: { x: 0, y: 0 }, data: { type: 'Dataset', params: {} } },
+        ] as never,
+        edges: [],
+        boundFile: 'Exam',
+        boundName: 'Exam',
+      });
+      await renameByF2ThenSave('CF201');
+
+      expect(saveGraph).toHaveBeenCalledTimes(1);
+      expect(saveGraph).toHaveBeenCalledWith(expect.objectContaining({ file: 'Exam', name: 'Exam' }));
+      expect(useDialogStore.getState().active).toBeNull();
+      expect(screen.queryByRole('textbox')).toBeNull();
+      expect(document.activeElement).toBe(screen.getByRole('tab', { name: 'CF201' }));
+    });
+
+    it('after F2 on a tab never saved, the name dialog takes the focus and hands it back to the tab', async () => {
+      // React commits the rename, and refocuses the tab, before the shortcut
+      // handler opens the dialog; the dialog focuses its field on a timer,
+      // after that, and gives focus back to what had it when it closes.
+      vi.mocked(saveGraph).mockReset();
+      await renameByF2ThenSave('CF201');
+
+      const field = within(await screen.findByRole('dialog')).getByRole('textbox');
+      expect((field as HTMLInputElement).value).toBe('CF201');
+      await waitFor(() => {
+        expect(document.activeElement).toBe(field);
+      });
+
+      fireEvent.keyDown(field, { key: 'Escape' });
+      await waitFor(() => {
+        expect(useDialogStore.getState().active).toBeNull();
+      });
+      expect(saveGraph).not.toHaveBeenCalled();
+      expect(document.activeElement).toBe(screen.getByRole('tab', { name: 'CF201' }));
     });
   });
 });

@@ -19,7 +19,7 @@
 import type { Node } from '@xyflow/react';
 import { validateGraph, type ValidationIssue } from '../api/rest';
 import { useI18n, type TranslationKey } from '../i18n';
-import { useTabStore, type TabState } from '../store/tabStore';
+import { flushSubgraphEditing, useTabStore, type TabState } from '../store/tabStore';
 import { useToastStore } from '../store/toastStore';
 import { useUIStore } from '../store/uiStore';
 import type { NodeData } from '../types';
@@ -200,9 +200,14 @@ export function issuesFromErrors(errors: readonly string[] | undefined): Validat
   return (errors ?? []).map((message) => ({ message, code: null, node_id: null, params: {} }));
 }
 
-/** The nodes the server's ids name: the tab's top level, also while a block is open. */
-function topLevelNodes(tab: Pick<TabState, 'nodes' | 'subgraphStack'>): CanvasNode[] {
-  return tab.subgraphStack?.length ? tab.subgraphStack[0].nodes : tab.nodes;
+/**
+ * The nodes the server's ids name: the tab's top level, also while a block is
+ * open. Taken from a flush of the open levels rather than `subgraphStack[0]`,
+ * whose cards keep the names they had on entry: a block renamed inside is
+ * named as its live definition is (#620).
+ */
+function topLevelNodes(tab: TabState): CanvasNode[] {
+  return flushSubgraphEditing(tab).nodes;
 }
 
 /**

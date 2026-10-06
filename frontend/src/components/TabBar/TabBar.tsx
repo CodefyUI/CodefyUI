@@ -1,6 +1,7 @@
 import { useState, useCallback, useEffect, useRef } from 'react';
 import { useTabStore, tabHasUnsavedWork, tabNodeCount } from '../../store/tabStore';
 import { isAnyModalOpen } from '../../store/modalState';
+import { isSaveChord } from '../../hooks/useKeyboardShortcuts';
 import { useI18n } from '../../i18n';
 import { confirm } from '../../utils/dialog';
 import styles from './TabBar.module.css';
@@ -300,6 +301,19 @@ export function TabBar() {
                   onChange={(e) => setEditingName(e.target.value)}
                   onBlur={commitRename}
                   onKeyDown={(e) => {
+                    // Ctrl+S saves from a field (#607), and since #617 a tab's
+                    // name is the name a first Save offers, read as the save
+                    // starts: commit it, and let the key go on to the shortcut
+                    // handler. After F2 focus goes back to the tab, as on
+                    // Enter. React commits that in a microtask, which a real
+                    // keypress runs before the handler on `document`; the name
+                    // dialog a first Save opens then focuses its field on a
+                    // timer, and hands focus back to the tab when it closes.
+                    if (isSaveChord(e.nativeEvent)) {
+                      if (renameByKeyboard.current) refocusAfterRename.current = tab.id;
+                      commitRename();
+                      return;
+                    }
                     if ((e.key === 'Enter' || e.key === 'Escape') && renameByKeyboard.current) {
                       refocusAfterRename.current = tab.id;
                     }

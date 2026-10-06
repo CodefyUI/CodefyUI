@@ -54,8 +54,10 @@ const HELP_KEY_IGNORES: readonly ModalName[] = ['shortcuts'];
 
 /**
  * Ctrl+S / Cmd+S exactly: Shift and Alt make other chords. Lower-cased for
- * Caps Lock, as the letters in the handler below are. A text note being
- * edited asks too, to let this one key out to the handler (NoteNode).
+ * Caps Lock, as the letters in the handler below are. The fields that hold
+ * what is typed until Enter or blur ask too, to commit it and let this one
+ * key out to the handler: a text note being edited (NoteNode), a block's name
+ * in the breadcrumb (SubgraphBreadcrumb) and a tab's name (TabBar).
  */
 export function isSaveChord(e: KeyboardEvent): boolean {
   return (
@@ -96,10 +98,13 @@ export function useKeyboardShortcuts() {
       // `saveActiveGraph` has one rule in both modes, this key and the
       // toolbar's Save do the same thing everywhere. Ahead of both gates
       // below: the one shortcut that also works from a field, since the
-      // Inspector's fields commit on every keystroke and the store already
-      // holds what is on screen. Never under a modal (the Layers editor and
-      // a preset's Configure hold edits not applied yet, and the name prompt
-      // is a modal itself), nor on key repeat (a save and a toast per repeat).
+      // store already holds what is on screen. The Inspector's fields commit
+      // on every keystroke, and the fields that commit on Enter or blur (a
+      // note, the breadcrumb's block name, a tab's name) commit on this key
+      // in their own handlers, which React runs before this one on
+      // `document`. Never under a modal (the Layers editor and a preset's
+      // Configure hold edits not applied yet, and the name prompt is a modal
+      // itself), nor on key repeat (a save and a toast per repeat).
       if (isSaveChord(e)) {
         if (e.repeat || isAnyModalOpen()) return;
         void saveActiveGraph();
