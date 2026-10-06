@@ -1,4 +1,5 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { useI18n } from '../i18n';
 import {
   MatchTier,
   compareMatches,
@@ -187,17 +188,43 @@ describe('nodeSearchTexts', () => {
 });
 
 describe('presetSearchTexts', () => {
+  const tagged = (...tags: string[]) => ({
+    preset_name: 'LeNet',
+    category: 'CNN',
+    description: 'a small convolutional classifier',
+    tags,
+  }) as PresetDefinition;
+
+  beforeEach(() => {
+    useI18n.setState({ locale: 'en' });
+  });
+
   it('reads the description and every tag', () => {
-    const preset = {
-      preset_name: 'LeNet',
-      category: 'CNN',
-      description: 'a small convolutional classifier',
-      tags: ['beginner', 'vision'],
-    } as PresetDefinition;
-    expect(presetSearchTexts(preset)).toEqual([
+    expect(presetSearchTexts(tagged('beginner', 'vision'))).toEqual([
       'a small convolutional classifier',
       'beginner',
       'vision',
+    ]);
+  });
+
+  // #623: the badge shows a difficulty in the UI language, so a search for the
+  // word on the badge has to find the preset.
+  it('adds the word the badge shows for each difficulty tag, in the UI language', () => {
+    useI18n.setState({ locale: 'zh-TW' });
+    const texts = presetSearchTexts(tagged('rnn', 'intermediate'));
+    expect(texts).toEqual(['a small convolutional classifier', 'rnn', 'intermediate', '中級']);
+    expect(matchTier('LeNet', texts, '中級')).toBe(MatchTier.Text);
+    // English still matches in the Chinese UI.
+    expect(matchTier('LeNet', texts, 'intermediate')).toBe(MatchTier.Text);
+    expect(matchTier('LeNet', presetSearchTexts(tagged('beginner')), '中級')).toBeNull();
+  });
+
+  it('adds no word for a tag that is not a difficulty, an inherited key included', () => {
+    useI18n.setState({ locale: 'zh-TW' });
+    expect(presetSearchTexts(tagged('vision', 'constructor'))).toEqual([
+      'a small convolutional classifier',
+      'vision',
+      'constructor',
     ]);
   });
 });

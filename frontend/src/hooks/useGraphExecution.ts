@@ -828,6 +828,10 @@ export function useGraphExecution() {
     // Inspector reads and what a re-attach after F5 resumes from.
     ws.send({
       action: 'execute',
+      // The Runs panel lists the run under this (#623): the label of the tab
+      // it was started on, whichever tab is in front by now. Sent whole: the
+      // server clips it to its limit in code points, not UTF-16 units.
+      name: tab.name,
       nodes: execNodes,
       edges: graph.edges,
       presets: graph.presets,

@@ -2104,6 +2104,58 @@ describe('useGraphExecution - a run the server has ended (#552)', () => {
     expect(ws.send.mock.calls[0][0].changed_nodes).toEqual(['n1', 'n2']);
   });
 
+  // The Runs panel lists a canvas run under its tab's label (#623).
+
+  it('names the run after its tab', async () => {
+    setTabs([tabWithDirtyChain({ name: 'CF201 lab' })]);
+    const ws = tabById('t1').ws as FakeWs;
+    const { result } = renderHook(() => useGraphExecution());
+
+    await act(async () => {
+      await result.current.execute();
+    });
+
+    expect(ws.send.mock.calls[0][0].name).toBe('CF201 lab');
+  });
+
+  it('sends a long tab label whole, for the server to clip by code point', async () => {
+    // Cut here, at 64 UTF-16 units, this label would lose half of its
+    // character outside the BMP.
+    const label = 'x'.repeat(63) + String.fromCodePoint(0x20000) + ' and more';
+    setTabs([tabWithDirtyChain({ name: label })]);
+    const ws = tabById('t1').ws as FakeWs;
+    const { result } = renderHook(() => useGraphExecution());
+
+    await act(async () => {
+      await result.current.execute();
+    });
+
+    expect(ws.send.mock.calls[0][0].name).toBe(label);
+  });
+
+  it('names the run after the tab it was started on, not the one in front when it is sent', async () => {
+    setTabs([tabWithDirtyChain({ name: 'CF201 lab' }), makeTab('t2', { name: 'Other' })]);
+    const ws = tabById('t1').ws as FakeWs;
+    let release: (value: any) => void = () => {};
+    validateGraphMock.mockImplementationOnce(
+      () => new Promise((resolve) => { release = resolve; }) as any);
+    const { result } = renderHook(() => useGraphExecution());
+
+    let run: Promise<void> = Promise.resolve();
+    await act(async () => {
+      run = result.current.execute();
+      await Promise.resolve();
+    });
+    act(() => useTabStore.getState().setActiveTab('t2'));
+    await act(async () => {
+      release({ valid: true, errors: [] });
+      await run;
+    });
+
+    const sent = ws.send.mock.calls.find((c) => c[0].action === 'execute')![0];
+    expect(sent.name).toBe('CF201 lab');
+  });
+
   it('runs again once the previous run has completed', async () => {
     const ws = tabById('t1').ws as FakeWs;
     const { result } = renderHook(() => useGraphExecution());

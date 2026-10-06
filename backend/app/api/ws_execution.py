@@ -73,6 +73,7 @@ from ..core.cache import ExecutionCache
 from ..core.run_service import (
     LANE_INTERACTIVE,
     EVENT_RUN_STOPPED,
+    MAX_NAME_LENGTH,
     InteractiveSession,
     RunService,
     RunServiceUnavailable,
@@ -310,6 +311,9 @@ class _ExecutionSocket:
         describes the run); the cache, the dirty-node hint and the module
         store become the ``InteractiveSession`` (process-local, and the
         reason canvas semantics survive the move to a server-owned run).
+        The optional ``name``, which the canvas fills with its tab's label,
+        becomes the run's name, clipped to ``MAX_NAME_LENGTH`` rather than
+        refused (#623).
 
         A run already attached here is DETACHED, not cancelled: this socket
         stops watching it and starts watching the new one. Cancelling would
@@ -383,9 +387,20 @@ class _ExecutionSocket:
             node_state_store=getattr(self._ws.app.state, "node_state_store",
                                      None),
         )
+        # The tab's label, so the Runs panel lists the run under it (#623).
+        # A label must never stop a Run, so it is made storable instead of
+        # refused: stripped, then clipped to the limit ``normalize_name``
+        # enforces (slicing counts code points, as the limit does), and half
+        # of a surrogate pair, which UTF-8 cannot store, becomes "?".
+        # Anything but a string is no name.
+        raw_name = data.get("name")
+        name = None
+        if isinstance(raw_name, str):
+            name = (raw_name.strip()[:MAX_NAME_LENGTH]
+                    .encode("utf-8", "replace").decode("utf-8"))
 
         try:
-            result = await service.submit(graph, options=options,
+            result = await service.submit(graph, options=options, name=name,
                                           session=session)
         except RunSubmitError as exc:
             # The pre-v2 handler reported a graph the engine refused as

@@ -39,7 +39,12 @@ from app.core.node_base import (
     PortDefinition,
 )
 from app.core.node_registry import registry
-from app.core.run_service import QueueLimits, RunService, RunServiceUnavailable
+from app.core.run_service import (
+    MAX_NAME_LENGTH,
+    QueueLimits,
+    RunService,
+    RunServiceUnavailable,
+)
 from app.core.run_store import TERMINAL_STATUSES, RunProvenance, RunStore
 from app.core.sweep_store import SweepStore
 from app.main import app
@@ -1354,3 +1359,49 @@ async def test_cancelling_an_unknown_sweep_is_a_404(client):
     response = await client.post("/api/sweeps/nope/cancel")
     assert response.status_code == 404
     assert response.json()["detail"] == "sweep 'nope' not found"
+
+
+# ── child run names (#623) ────────────────────────────────────────────────
+# Every child carried the sweep's name verbatim, so the Runs panel listed N
+# identical rows. A child is named after the sweep and its variant number,
+# the 1-based one the sweep's own table shows.
+
+
+async def test_each_child_run_is_named_after_the_sweep_and_its_variant(
+        client, store):
+    sweep_id = await _run_sweep(client, store,
+                                _values("lr", [0.001, 0.002]),
+                                name="CF201 sweep")
+
+    children = await store.list_runs_by_sweep(sweep_id)
+    assert [c.name for c in children] == ["CF201 sweep #1", "CF201 sweep #2"]
+    # The sweep keeps its own name.
+    body = (await client.get(f"/api/sweeps/{sweep_id}")).json()
+    assert body["name"] == "CF201 sweep"
+
+
+@pytest.mark.parametrize("char", ["x", chr(0x5B78)], ids=["ascii", "cjk"])
+async def test_a_long_sweep_name_is_cut_so_each_child_name_fits(
+        client, store, char):
+    """A sweep name may use the whole limit, and " #N" goes after it: the
+    sweep's name is cut, never the number, counted in code points, because
+    ``normalize_name`` refuses a longer child name and that would fail the
+    variant."""
+    sweep_id = await _run_sweep(
+        client, store, _values("lr", [0.001 * (i + 1) for i in range(10)]),
+        name=char * MAX_NAME_LENGTH)
+
+    children = await store.list_runs_by_sweep(sweep_id)
+    assert [c.name for c in children] == (
+        [char * 61 + f" #{n}" for n in range(1, 10)] + [char * 60 + " #10"])
+    body = (await client.get(f"/api/sweeps/{sweep_id}")).json()
+    assert body["name"] == char * MAX_NAME_LENGTH
+    assert body["counts"]["succeeded"] == 10
+
+
+async def test_an_unnamed_sweep_leaves_its_children_unnamed(client, store):
+    sweep_id = await _run_sweep(client, store,
+                                _values("lr", [0.001, 0.002]), name=None)
+
+    children = await store.list_runs_by_sweep(sweep_id)
+    assert [c.name for c in children] == [None, None]

@@ -327,6 +327,82 @@ describe('NewSweepDialog', () => {
     expect(useSweepStore.getState().origins).toEqual({ s1: tab.id });
   });
 
+  // #623: with the Name left blank, a sweep and every run it starts were
+  // listed as "(unnamed)". They take the tab's name, as a canvas run does.
+  async function startWithTabNamed(tabName: string, typedName?: string) {
+    const tab = useTabStore.getState().getActiveTab();
+    useTabStore.getState().renameTab(tab.id, tabName);
+    const onClose = vi.fn();
+    render(<NewSweepDialog onClose={onClose} />);
+    if (typedName !== undefined) {
+      fireEvent.change(screen.getByLabelText('Name'), { target: { value: typedName } });
+    }
+    fireEvent.change(screen.getByLabelText('Values'), { target: { value: '2, 4' } });
+    await act(async () => {
+      fireEvent.click(startButton());
+    });
+    await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1));
+    return api.createSweep.mock.calls[0][0].name;
+  }
+
+  it('names the sweep after its tab when the Name field is blank', async () => {
+    expect(await startWithTabNamed('CF201 lab', '   ')).toBe('CF201 lab');
+  });
+
+  it('shows the tab name as the Name field placeholder', () => {
+    const tab = useTabStore.getState().getActiveTab();
+    useTabStore.getState().renameTab(tab.id, 'CF201 lab');
+    render(<NewSweepDialog onClose={vi.fn()} />);
+    expect(screen.getByLabelText('Name')).toHaveAttribute('placeholder', 'CF201 lab');
+  });
+
+  it('cuts a long tab name to the 64 characters the server takes, counting code points', async () => {
+    // The sweep route refuses a longer name rather than cutting it, and a tab
+    // name must never stop a sweep. Leading blanks do not use up the room.
+    const astral = String.fromCodePoint(0x20000);
+    const name = await startWithTabNamed(`  ${'x'.repeat(63)}${astral}${'y'.repeat(10)}`);
+    // 64 code points, 65 UTF-16 units: the character outside the BMP is whole.
+    expect(name).toBe(`${'x'.repeat(63)}${astral}`);
+  });
+
+  it('sends half of a surrogate pair in the tab name as "?", which the server can store', async () => {
+    expect(await startWithTabNamed(`lab${String.fromCharCode(0xd800)}`)).toBe('lab?');
+  });
+
+  it('keeps a typed name as it is', async () => {
+    expect(await startWithTabNamed('CF201 lab', 'Epoch search')).toBe('Epoch search');
+  });
+
+  it('takes no longer a typed name than the server does', () => {
+    // A longer one was refused by the server, in its own English words.
+    render(<NewSweepDialog onClose={vi.fn()} />);
+    expect((screen.getByLabelText('Name') as HTMLInputElement).maxLength).toBe(64);
+  });
+
+  it('cuts a typed name past the limit as it cuts the tab name', async () => {
+    // maxLength is not enforced while an input method composes, so 70 Chinese
+    // characters can still reach the field; a change event sets them here.
+    expect(await startWithTabNamed('CF201 lab', '學'.repeat(70))).toBe('學'.repeat(64));
+  });
+
+  it('sends no name, and shows none, for a tab whose name is not text', async () => {
+    const tab = useTabStore.getState().getActiveTab();
+    useTabStore.setState((state) => ({
+      tabs: state.tabs.map((candidate) => candidate.id === tab.id
+        ? { ...candidate, name: undefined as unknown as string }
+        : candidate),
+    }));
+    const onClose = vi.fn();
+    render(<NewSweepDialog onClose={onClose} />);
+    expect(screen.getByLabelText('Name')).toHaveAttribute('placeholder', '');
+    fireEvent.change(screen.getByLabelText('Values'), { target: { value: '2, 4' } });
+    await act(async () => {
+      fireEvent.click(startButton());
+    });
+    await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1));
+    expect(api.createSweep.mock.calls[0][0].name).toBeNull();
+  });
+
   it('defaults the objective to the series the built-in training loop records', () => {
     useRunStore.setState({
       runs: [{ final_metrics: { eval_accuracy: 0.9, train_loss: 0.2 } }] as never,
