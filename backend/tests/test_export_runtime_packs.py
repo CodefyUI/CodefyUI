@@ -79,6 +79,22 @@ def _write_pack(root: Path, pack_id: str, module_source: str) -> None:
     (nodes / "pack_node.py").write_text(dedent(module_source), encoding="utf-8")
 
 
+def _write_lockfile(user_data_dir: Path, plugins: dict) -> Path:
+    """The plugin lockfile in *user_data_dir*, listing *plugins*."""
+    path = user_data_dir / "plugins" / "installed.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"schema": 1, "plugins": plugins}), encoding="utf-8")
+    return path
+
+
+def _forget_pack(pack_id: str) -> None:
+    """Drop what discovery imported for a pack outside the built-in root."""
+    plugin_loader.purge_plugin_modules(pack_id)
+    namespace = sys.modules.get(plugin_loader.NAMESPACE_PACKAGE)
+    if namespace is not None:
+        vars(namespace).pop(pack_id.replace("-", "_"), None)
+
+
 @pytest.fixture
 def user_data_dir(tmp_path, monkeypatch):
     """An empty user data dir for this test, not yet created.
@@ -233,6 +249,135 @@ def test_a_disabled_pack_installed_here_is_named_with_its_enable_command(
     ]
     assert not loaded, "the disabled pack was loaded"
     assert lockfile_path.read_bytes() == before
+
+
+def test_an_installed_enabled_pack_that_loads_no_node_is_not_sent_to_install(
+    builtin_root, user_data_dir,
+):
+    """Installed, turned on, files on disk, and every module fails to import.
+    ``cdui plugin install`` answers "already installed" for such a pack, so
+    the line says what happened instead of sending the user there."""
+    _write_pack(user_data_dir / "plugins", "brokenpack", BROKEN_NODE)
+    _write_lockfile(user_data_dir, {"brokenpack": {
+        "source_kind": "github_url", "source": "someone/brokenpack",
+        "enabled": True}})
+
+    try:
+        problems = runtime_module.initialize_export_runtime(["brokenpack:Thing"])
+    finally:
+        _forget_pack("brokenpack")
+
+    assert problems == [
+        "Unknown node type: brokenpack:Thing -- it comes from the plugin pack "
+        "'brokenpack', which is installed and enabled here but none of its "
+        "nodes could be loaded (see the log above)"
+    ]
+
+
+@pytest.mark.parametrize("enabled", [True, False], ids=["enabled", "disabled"])
+def test_a_listed_pack_whose_files_are_gone_is_named_with_its_reinstall_command(
+    builtin_root, user_data_dir, enabled,
+):
+    """The lockfile still lists it, so a plain install is refused as "already
+    installed": the command reinstalls with --force, from where it came."""
+    _write_lockfile(user_data_dir, {"gonepack": {
+        "source_kind": "github_url", "source": "someone/gonepack@v1",
+        "enabled": enabled}})
+
+    problems = runtime_module.initialize_export_runtime(["gonepack:Thing"])
+
+    assert problems == [
+        "Unknown node type: gonepack:Thing -- it comes from the plugin pack "
+        "'gonepack', which is listed as installed here but its files are "
+        "missing. Reinstall it with: "
+        "cdui plugin install someone/gonepack@v1 --force"
+    ]
+
+
+@pytest.mark.parametrize(
+    ("source", "recorded"),
+    [
+        ("someone/gonepack; rm -rf ~", " (recorded as 'someone/gonepack; rm -rf ~')"),
+        ("someone/gone pack", " (recorded as 'someone/gone pack')"),
+        ("-x/gonepack", " (recorded as '-x/gonepack')"),
+        ("someone/x" + chr(27) + "[2J", " (recorded as 'someone/x\\x1b[2J')"),
+        (42, ""),
+        (None, ""),
+    ],
+    ids=["semicolon", "space", "option-like", "escape sequence", "not a string",
+         "no source"],
+)
+def test_a_source_that_is_not_owner_repo_is_quoted_and_kept_out_of_the_command(
+    builtin_root, user_data_dir, source, recorded,
+):
+    """A hand-edited ``source`` never goes into a command someone may paste
+    into a shell, and neither does the pack id, which ``cdui plugin install``
+    resolves only as a catalog name. The source is quoted as data, with any
+    control character escaped, and the command shows a placeholder."""
+    entry = {"source_kind": "github_url", "enabled": True}
+    if source is not None:
+        entry["source"] = source
+    _write_lockfile(user_data_dir, {"gonepack": entry})
+
+    problems = runtime_module.initialize_export_runtime(["gonepack:Thing"])
+
+    assert problems == [
+        "Unknown node type: gonepack:Thing -- it comes from the plugin pack "
+        "'gonepack', which is listed as installed here but its files are "
+        f"missing. Reinstall it from the repository it came from{recorded} "
+        "with: cdui plugin install <owner/repo> --force"
+    ]
+
+
+@pytest.mark.parametrize(
+    "folder",
+    ["devpack", None, "dev" + chr(27) + "[2Jpack"],
+    ids=["path recorded", "no path", "escape sequence in the path"],
+)
+def test_a_linked_pack_whose_folder_is_gone_is_named_with_its_link_command(
+    builtin_root, user_data_dir, tmp_path, folder,
+):
+    """`cdui plugin link` refuses an id the lockfile already has without
+    --force, so the command carries it. The recorded path is shown with any
+    control character escaped and every other character as it is."""
+    entry = {"source_kind": "local", "enabled": True}
+    where = ""
+    if folder is not None:
+        moved = tmp_path / "checkout" / folder  # never created
+        entry.update(source=str(moved), path=str(moved))
+        shown = str(moved).replace(chr(27), "\\x1b")
+        where = f" ({shown})"
+    _write_lockfile(user_data_dir, {"devpack": entry})
+
+    problems = runtime_module.initialize_export_runtime(["devpack:Thing"])
+
+    assert problems == [
+        "Unknown node type: devpack:Thing -- it comes from the plugin pack "
+        f"'devpack', whose linked folder{where} is missing. Link it again "
+        "with: cdui plugin link <folder> --force"
+    ]
+    assert chr(27) not in problems[0]
+
+
+def test_a_linked_folder_that_lost_its_manifest_is_not_called_missing(
+    builtin_root, user_data_dir, tmp_path,
+):
+    """The folder is there and only its manifest is gone: putting that file
+    back fixes the link, and linking the right folder is the other way."""
+    folder = tmp_path / "checkout" / "devpack"
+    (folder / "nodes").mkdir(parents=True)
+    _write_lockfile(user_data_dir, {"devpack": {
+        "source_kind": "local", "source": str(folder), "path": str(folder),
+        "enabled": True}})
+
+    problems = runtime_module.initialize_export_runtime(["devpack:Thing"])
+
+    assert problems == [
+        "Unknown node type: devpack:Thing -- it comes from the plugin pack "
+        f"'devpack', linked from {folder}, which has no cdui.plugin.toml. Put "
+        "that file back, or link the folder that has it with: "
+        "cdui plugin link <folder> --force"
+    ]
 
 
 def test_a_bundled_pack_the_lockfile_turns_off_is_never_sent_to_enable(

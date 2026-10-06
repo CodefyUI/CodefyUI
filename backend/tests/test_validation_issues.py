@@ -265,6 +265,26 @@ def test_an_unknown_preset_names_the_node_and_the_preset():
     assert issue.params == {"preset": "T11 Nowhere"}
 
 
+@pytest.mark.parametrize(
+    ("unknown", "code"),
+    [(_node("ghost", "NoSuchNode"), "unknown_node_type"),
+     (_card("ghost", "T11 Nowhere"), "unknown_preset")],
+    ids=["unknown node type", "unknown preset"],
+)
+def test_an_edge_on_a_node_of_unknown_type_adds_no_line_of_its_own(unknown, code):
+    """The node's own line names it, with a code the editor translates. Each
+    edge on it also said "Unknown node type: X or Y", with no code, and the
+    editor showed that as one more toast, in English."""
+    errors = validate_graph(
+        [_node("start", "Start"), _node("t", "TextInput", value="q"), unknown,
+         _node("p", "Print")],
+        [_trigger("start", "t"), _wire("t", "text", "ghost", "value"),
+         _wire("ghost", "value", "p", "value")],
+    )
+
+    assert [getattr(error, "code", None) for error in errors] == [code]
+
+
 # -- Edge-level codes: the node, out of two of the same type ------------------
 
 

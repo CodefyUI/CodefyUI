@@ -903,6 +903,33 @@ def expand_subgraphs(
                 f"Unknown subgraph: {sid} (node {instance_id})"
             )
 
+        # Drop the notes inside a block: `drop_notes` runs on the top level
+        # only, so a note in a definition expanded as a node to run --
+        # "Unknown node type: note", a trigger fanned out to it, a block of
+        # notes alone that did not count as empty. The canvas never writes a
+        # note into a block; an imported or hand-edited file can. Into a copy,
+        # because every instance of the block reads this one definition.
+        note_ids = {
+            inner.id for inner in definition.nodes if inner.type == NOTE_NODE_TYPE
+        }
+        if note_ids:
+            definition = definition.model_copy(update={
+                "nodes": [
+                    inner for inner in definition.nodes if inner.id not in note_ids
+                ],
+                "edges": [
+                    inner_edge for inner_edge in definition.edges
+                    if inner_edge.source not in note_ids
+                    and inner_edge.target not in note_ids
+                ],
+                "interface": definition.interface.model_copy(update={
+                    "triggerTargets": [
+                        target for target in definition.interface.triggerTargets
+                        if target not in note_ids
+                    ],
+                }),
+            })
+
         prefix = f"{instance_id}{SUBGRAPH_SEPARATOR}"
         inner_ids = {inner.id for inner in definition.nodes}
 
@@ -1752,7 +1779,9 @@ def validate_graph(
         src_cls = registry.get(src["type"])
         tgt_cls = registry.get(tgt["type"])
         if not src_cls or not tgt_cls:
-            errors.append(f"Unknown node type: {src['type']} or {tgt['type']}")
+            # The node-level check above already named that node, unknown type
+            # or unknown preset, in a coded line. A second, uncoded line here
+            # for each of its edges reached the editor as an extra English toast.
             continue
 
         src_port = edge.get("sourceHandle", "")

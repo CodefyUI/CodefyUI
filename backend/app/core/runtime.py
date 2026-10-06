@@ -14,12 +14,25 @@ lockfile left out, loaded through
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+import re
+from collections.abc import Iterable, Mapping
+from pathlib import Path
+from typing import Any
 
 from . import plugin_loader
 from .node_registry import registry
 from .plugins.manifest import PLUGIN_ID_RE
 from .plugins.reload import rediscover_now
+
+#: The ``owner/repo[@ref]`` a GitHub install records as its lockfile
+#: ``source``, which a reinstall command may repeat. Any other value -- a
+#: hand-edited entry -- is quoted as data and the command gets a placeholder,
+#: because the command is a line somebody pastes into a shell. The owner starts
+#: with a letter or digit, as GitHub's do, so the source can never be read as
+#: an option.
+_REINSTALL_SOURCE = re.compile(
+    r"[A-Za-z0-9][A-Za-z0-9_.-]*/[A-Za-z0-9_.-]+(?:@[A-Za-z0-9_./-]+)?"
+)
 
 
 def initialize_runtime() -> dict[str, int]:
@@ -43,7 +56,9 @@ def initialize_export_runtime(required_types: Iterable[str]) -> list[str]:
     uninstalled: the lockfile governs the editor, and loading from the
     built-in root changes nothing on disk. A third-party pack the lockfile
     turns off is never loaded, since it may be off for being broken or
-    untrusted, and its line gives the command that enables it.
+    untrusted, and its line gives the command that enables it. One the
+    lockfile lists but whose files are gone gets the command that reinstalls
+    it, with ``--force``, since the lockfile still counts it as installed.
 
     Returns one line per type still unknown, sorted, each beginning
     ``Unknown node type: <type>`` (graders and tests match that prefix) and,
@@ -74,15 +89,19 @@ def initialize_export_runtime(required_types: Iterable[str]) -> list[str]:
         )
 
     loaded = {key.split(":", 1)[0] for key in registry.nodes if ":" in key}
-    # Installed here, with files on disk, and turned off in the lockfile.
+    # Installed here with files on disk: turned on, or off in the lockfile.
     lockfile = plugin_loader.load_lockfile()
     user_root = plugin_loader.plugins_user_root()
     installed = plugin_loader.iter_plugin_dirs(
         builtin_root, user_root, lockfile, include_disabled=True)
     enabled = plugin_loader.iter_plugin_dirs(builtin_root, user_root, lockfile)
-    disabled = {pack for pack, _ in installed} - {pack for pack, _ in enabled}
+    enabled_ids = {pack for pack, _ in enabled}
+    disabled = {pack for pack, _ in installed} - enabled_ids
     return [
-        _unknown_type(node_type, loaded, bundled, disabled)
+        _unknown_type(
+            node_type, loaded, bundled, disabled,
+            enabled=enabled_ids, listed=lockfile.get("plugins", {}),
+        )
         for node_type in unresolved
         if registry.get(node_type) is None
     ]
@@ -102,10 +121,24 @@ def _pack_of(node_type: str) -> str | None:
     return None
 
 
+def _escaped(text: str) -> str:
+    """*text* with each character a terminal would act on written as the
+    escape ``repr`` gives it, and every other character as it is. For a
+    lockfile path: ``repr`` itself would also double each backslash of a
+    Windows path, which then no longer reads as the folder it names.
+    """
+    return "".join(c if c.isprintable() else repr(c)[1:-1] for c in text)
+
+
 def _unknown_type(
     node_type: str, loaded: set[str], bundled: set[str], disabled: set[str],
+    *, enabled: set[str], listed: Mapping[str, Any],
 ) -> str:
-    """The line for one type still unknown after the bundled packs loaded."""
+    """The line for one type still unknown after the bundled packs loaded.
+
+    *enabled* holds the packs turned on with files on disk, and *listed* is
+    the lockfile's ``plugins`` table, files or not.
+    """
     line = f"Unknown node type: {node_type}"
     pack = _pack_of(node_type)
     if pack is None:
@@ -129,6 +162,56 @@ def _unknown_type(
             f"{line} -- it comes from the plugin pack '{pack}', which is "
             "installed here but disabled. Enable it with: "
             f"cdui plugin enable {pack}"
+        )
+    if pack in enabled:
+        # On, on disk, and not one node registered: every module failed to
+        # import. Installing it again is refused as "already installed".
+        return (
+            f"{line} -- it comes from the plugin pack '{pack}', which is "
+            "installed and enabled here but none of its nodes could be "
+            "loaded (see the log above)"
+        )
+    entry = listed.get(pack)
+    if isinstance(entry, dict) and entry.get("source_kind") != "builtin":
+        # Listed, with no manifest where the entry points, on or off. Install
+        # and link both refuse an id the lockfile has unless given --force. A
+        # bundled pack with no files is one this release does not ship, which
+        # the last line covers.
+        if entry.get("source_kind") == "local":
+            path = entry.get("path")
+            if isinstance(path, str) and path and Path(path).is_dir():
+                # The folder is there; only its manifest is not.
+                return (
+                    f"{line} -- it comes from the plugin pack '{pack}', linked "
+                    f"from {_escaped(path)}, which has no "
+                    f"{plugin_loader.MANIFEST_FILENAME}. Put that file back, or "
+                    "link the folder that has it with: "
+                    "cdui plugin link <folder> --force"
+                )
+            where = f" ({_escaped(path)})" if isinstance(path, str) and path else ""
+            return (
+                f"{line} -- it comes from the plugin pack '{pack}', whose "
+                f"linked folder{where} is missing. Link it again with: "
+                "cdui plugin link <folder> --force"
+            )
+        source = entry.get("source")
+        if isinstance(source, str) and _REINSTALL_SOURCE.fullmatch(source):
+            return (
+                f"{line} -- it comes from the plugin pack '{pack}', which is "
+                "listed as installed here but its files are missing. Reinstall "
+                f"it with: cdui plugin install {source} --force"
+            )
+        # Quoted as data, control characters escaped, and kept out of the
+        # command. The pack id is no stand-in: `cdui plugin install <id>`
+        # resolves only a catalog name.
+        recorded = (
+            f" (recorded as {source!r})" if isinstance(source, str) and source else ""
+        )
+        return (
+            f"{line} -- it comes from the plugin pack '{pack}', which is "
+            "listed as installed here but its files are missing. Reinstall it "
+            f"from the repository it came from{recorded} with: "
+            "cdui plugin install <owner/repo> --force"
         )
     return (
         f"{line} -- it comes from the plugin pack '{pack}', which this "

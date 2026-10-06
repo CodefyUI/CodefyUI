@@ -22,6 +22,22 @@ function mockFetch(status: number, body: unknown) {
   return g.fetch as unknown as ReturnType<typeof vi.fn>;
 }
 
+/** Mock fetch answering per run id, e.g. `{ r1: [204, null], r2: [200, {...}] }`. */
+function mockFetchByRun(answers: Record<string, [number, unknown]>) {
+  g.fetch = vi.fn().mockImplementation(async (url: string) => {
+    const run = Object.keys(answers).find((id) => String(url).includes(`/${id}/`));
+    const [status, body] = answers[run as string];
+    return {
+      ok: status >= 200 && status < 300,
+      status,
+      statusText: 'mock',
+      json: async () => body,
+    } as unknown as Response;
+  }) as unknown as typeof fetch;
+}
+
+const TENSOR_2x2 = { type: 'tensor', values: [[0.5, 0.5], [0.3, 0.7]] };
+
 let originalInnerWidth: number;
 let originalInnerHeight: number;
 
@@ -32,7 +48,11 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  useI18n.setState({ locale: 'en' });
+  // In act(): this hook runs before the setup file's cleanup, so the modal is
+  // still mounted and the locale switch re-renders it.
+  act(() => {
+    useI18n.setState({ locale: 'en' });
+  });
   g.fetch = originalFetch;
   (window as unknown as { innerWidth: number }).innerWidth = originalInnerWidth;
   (window as unknown as { innerHeight: number }).innerHeight = originalInnerHeight;
@@ -466,6 +486,80 @@ describe('HeatmapModal', () => {
       ).toBeTruthy();
     });
     expect(screen.queryByText(/tensor, got/i)).toBeNull();
+  });
+
+  it('says the port had no value this run, as a plain status line, on a 204', async () => {
+    // The node ran and the port held None: nothing failed to load, so not the
+    // error box, not its "re-run or shorten" hint, and not the English text
+    // NoValueError carries.
+    useI18n.setState({ locale: 'zh-TW' });
+    mockFetch(204, null);
+    render(
+      <HeatmapModal
+        isOpen
+        onClose={() => {}}
+        title="t"
+        inlineData={null}
+        runId="r1"
+        nodeId="n1"
+        port="x"
+      />,
+    );
+    await waitFor(() => {
+      expect(screen.getByText('這次執行沒有值')).toBeTruthy();
+    });
+    expect(screen.queryByText(/無法載入/)).toBeNull();
+    expect(screen.queryByText('請重新執行圖，或縮短輸入序列。')).toBeNull();
+    expect(screen.queryByText(/produced no value/)).toBeNull();
+  });
+
+  it('says in the reader\'s language that the run is gone when its data expired', async () => {
+    useI18n.setState({ locale: 'zh-TW' });
+    mockFetch(404, { detail: 'gone' });
+    render(
+      <HeatmapModal
+        isOpen
+        onClose={() => {}}
+        title="t"
+        inlineData={null}
+        runId="r1"
+        nodeId="n1"
+        port="x"
+      />,
+    );
+    await waitFor(() => {
+      expect(screen.getByText('無法載入：此次執行結果已不存在。')).toBeTruthy();
+    });
+    expect(screen.queryByText(/no longer available on server/)).toBeNull();
+  });
+
+  it.each([
+    ['no value', 204, 'No value this run'],
+    ['an expired run', 404, "Couldn't load: this run is no longer available."],
+  ])('a new run\'s fetch drops %s from the last one', async (_case, status, said) => {
+    // The modal stays open while another run finishes: what the last fetch
+    // found is about the last run.
+    mockFetchByRun({ r1: [status, null], r2: [200, TENSOR_2x2] });
+    const props = { onClose: () => {}, title: 't', inlineData: null, nodeId: 'n1', port: 'x' };
+    const { rerender } = render(<HeatmapModal isOpen {...props} runId="r1" />);
+    await waitFor(() => expect(screen.getByText(said)).toBeTruthy());
+
+    rerender(<HeatmapModal isOpen {...props} runId="r2" />);
+
+    await waitFor(() => expect(document.querySelectorAll('rect[data-i]').length).toBe(4));
+    expect(screen.queryByText(said)).toBeNull();
+  });
+
+  it('a new run\'s fetch drops the last run\'s heatmap when its port has no value', async () => {
+    mockFetchByRun({ r1: [200, TENSOR_2x2], r2: [204, null] });
+    const props = { onClose: () => {}, title: 't', inlineData: null, nodeId: 'n1', port: 'x' };
+    const { rerender } = render(<HeatmapModal isOpen {...props} runId="r1" />);
+    await waitFor(() => expect(document.querySelectorAll('rect[data-i]').length).toBe(4));
+
+    rerender(<HeatmapModal isOpen {...props} runId="r2" />);
+
+    await waitFor(() => expect(screen.getByText('No value this run')).toBeTruthy());
+    expect(document.querySelectorAll('rect[data-i]').length).toBe(0);
   });
 
   it('shows a stringified error when the rejection has no message', async () => {

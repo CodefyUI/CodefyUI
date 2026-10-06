@@ -167,7 +167,103 @@ describe('ScatterModal — REST fetch path', () => {
     render(
       <ScatterModal isOpen onClose={() => {}} title="t" inlinePoints={null} runId="r1" nodeId="n1" />,
     );
-    await waitFor(() => expect(screen.getByText(/expected tensor, got scalar/i)).toBeTruthy());
+    await waitFor(() =>
+      expect(
+        screen.getByText("Couldn't load points: expected a tensor; this port holds scalar."),
+      ).toBeTruthy(),
+    );
+  });
+
+  it('translates the not-a-tensor error', async () => {
+    // It was built from an English literal inside the translated wrapper.
+    useI18n.setState({ locale: 'zh-TW' });
+    mockFetchByUrl((url) =>
+      url.includes('/labels')
+        ? { status: 200, body: { type: 'list', values: [] } }
+        : { status: 200, body: { type: 'text', value: 'hi' } },
+    );
+    render(
+      <ScatterModal isOpen onClose={() => {}} title="t" inlinePoints={null} runId="r1" nodeId="n1" />,
+    );
+    await waitFor(() =>
+      expect(
+        screen.getByText('無法載入點資料：需要張量；這個連接埠的資料是 text。'),
+      ).toBeTruthy(),
+    );
+    expect(screen.queryByText(/tensor, got/i)).toBeNull();
+  });
+
+  it('says the points port had no value this run, as a plain status line, on a 204', async () => {
+    useI18n.setState({ locale: 'zh-TW' });
+    mockFetchByUrl((url) =>
+      url.includes('/labels')
+        ? { status: 200, body: { type: 'list', values: [] } }
+        : { status: 204, body: null },
+    );
+    render(
+      <ScatterModal isOpen onClose={() => {}} title="t" inlinePoints={null} runId="r1" nodeId="n1" />,
+    );
+    await waitFor(() => expect(screen.getByText('這次執行沒有值')).toBeTruthy());
+    expect(screen.queryByText(/無法載入/)).toBeNull();
+    // One line: "no points to display" says less than this one does.
+    expect(screen.queryByText('沒有可顯示的點')).toBeNull();
+    expect(screen.queryByText(/produced no value/)).toBeNull();
+  });
+
+  it('says in the reader\'s language that the run is gone when its data expired', async () => {
+    useI18n.setState({ locale: 'zh-TW' });
+    mockFetchByUrl(() => ({ status: 404, body: { detail: 'gone' } }));
+    render(
+      <ScatterModal isOpen onClose={() => {}} title="t" inlinePoints={null} runId="r1" nodeId="n1" />,
+    );
+    await waitFor(() =>
+      expect(screen.getByText('無法載入：此次執行結果已不存在。')).toBeTruthy(),
+    );
+    expect(screen.queryByText(/no longer available on server/)).toBeNull();
+  });
+
+  it("a new run's fetch drops the last one's error", async () => {
+    // The modal stays open while another run finishes. A kept error hid the
+    // new run's points for good.
+    mockFetchByUrl((url) =>
+      url.includes('/r1/')
+        ? { status: 404, body: { detail: 'gone' } }
+        : url.includes('/labels')
+          ? { status: 200, body: { type: 'list', values: [] } }
+          : { status: 200, body: { type: 'tensor', values: [[0, 0], [1, 1]] } },
+    );
+    const { rerender } = render(
+      <ScatterModal isOpen onClose={() => {}} title="t" inlinePoints={null} runId="r1" nodeId="n1" />,
+    );
+    await waitFor(() => expect(screen.getByText(/run is no longer available/)).toBeTruthy());
+
+    rerender(
+      <ScatterModal isOpen onClose={() => {}} title="t" inlinePoints={null} runId="r2" nodeId="n1" />,
+    );
+
+    await waitFor(() => expect(document.querySelectorAll('circle[data-idx]').length).toBe(2));
+    expect(screen.queryByText(/run is no longer available/)).toBeNull();
+  });
+
+  it("a new run's fetch drops the last run's points when its port has no value", async () => {
+    mockFetchByUrl((url) =>
+      url.includes('/labels')
+        ? { status: 200, body: { type: 'list', values: [] } }
+        : url.includes('/r1/')
+          ? { status: 200, body: { type: 'tensor', values: [[0, 0], [1, 1]] } }
+          : { status: 204, body: null },
+    );
+    const { rerender } = render(
+      <ScatterModal isOpen onClose={() => {}} title="t" inlinePoints={null} runId="r1" nodeId="n1" />,
+    );
+    await waitFor(() => expect(document.querySelectorAll('circle[data-idx]').length).toBe(2));
+
+    rerender(
+      <ScatterModal isOpen onClose={() => {}} title="t" inlinePoints={null} runId="r2" nodeId="n1" />,
+    );
+
+    await waitFor(() => expect(screen.getByText('No value this run')).toBeTruthy());
+    expect(document.querySelectorAll('circle[data-idx]').length).toBe(0);
   });
 
   it('shows an error when the points fetch fails', async () => {

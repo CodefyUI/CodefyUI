@@ -30,14 +30,19 @@ function SubgraphInstanceNode(props: NodeProps<AppNode>) {
     const tab = s.tabs.find((tabState) => tabState.id === s.activeTabId);
     return tab?.subgraphs.find((d) => d.id === subgraphId);
   });
+  // A note is not a node: a block of notes alone runs nothing, and a trigger
+  // into it is refused for having no nodes (#624).
+  const count = definition?.nodes.filter((n) => n.type !== 'note').length ?? 0;
 
   const bodyExtra = (
     <div className={styles.footer} data-testid="subgraph-footer">
       <span className={styles.badge}>{t('subgraph.badge')}</span>
       <span className={styles.count}>
-        {definition
-          ? t('subgraph.nodeCount', { count: definition.nodes.length })
-          : t('subgraph.missing')}
+        {!definition
+          ? t('subgraph.missing')
+          : count === 1
+            ? t('subgraph.nodeCountOne')
+            : t('subgraph.nodeCount', { count })}
       </span>
     </div>
   );
