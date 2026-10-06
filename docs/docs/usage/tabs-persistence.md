@@ -92,7 +92,7 @@ Because graphs are plain JSON, they diff and version-control cleanly. Commit a g
 
 ### Workspace files
 
-**Export → Workspace (.cduiworkspace)** writes every open tab into one file, `workspace-YYYY-MM-DD.cduiworkspace`, so a whole session can move to another browser or another computer. **Import...** reads it back: the tabs are added beside the ones already open, no open graph is replaced, and a browser holding only one empty tab ends up with exactly the exported set.
+**Export → Workspace (.cduiworkspace)** writes every open tab into one file, `workspace-YYYY-MM-DD.cduiworkspace`, so a whole session can move to another browser or another computer. **Import...** reads it back: the tabs are added beside the ones already open, no open graph is replaced, and a browser holding only one empty tab, with nothing to undo, ends up with exactly the exported set.
 
 For each tab the file carries its title, its graph and its run settings: Random seed, Deterministic algorithms, Record node outputs, Verbose internals, Persist weights between runs, Capture gradients and Auto-synthesize loss. It also carries which tab was active, and six preferences: Language, Font size, Connection style, Grid snap, Show node tooltips and Node category mode. Each `tabs[i].graph` in the file is an ordinary Export-as-JSON graph. Import applies both: the tab that was active in the file becomes the active tab (the first imported tab if that one was skipped), and the six preferences replace this browser's, so the editor can switch language. A message then says how many tabs were imported and why any were skipped.
 

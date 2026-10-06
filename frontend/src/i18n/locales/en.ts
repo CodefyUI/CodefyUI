@@ -29,7 +29,7 @@ const en = {
   'toolbar.load.fail': 'Load failed: {error}',
   'toolbar.import.fail': 'Import failed: {error}',
   'toolbar.clear': 'Clear Canvas',
-  'toolbar.clear.confirm': 'Clear the canvas? All unsaved work will be lost.',
+  'toolbar.clear.confirm': 'Clear everything on the canvas? Ctrl+Z undoes it.',
 
   // Menu: Export
   'toolbar.menu.export': 'Export',
