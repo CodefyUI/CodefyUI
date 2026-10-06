@@ -1651,6 +1651,15 @@ def validate_graph(
         else:
             valid_node_ids.add(node["id"])
 
+    # A Map names a preset by its subgraph setting and looks the name up
+    # among the installed presets when it runs, never in the graph's own
+    # presets[]. One they do not have is refused here, in the words a card
+    # naming a missing preset gets, not by the Map once a run reaches it --
+    # and so is one named inside a preset that a Map runs.
+    for named in preset_registry.named_presets(nodes):
+        if named.definition is None:
+            errors.append(named.refusal())
+
     # 2. Required input connection check (skip opaque nodes — dynamic ports)
     connected_inputs = {
         (edge["target"], edge.get("targetHandle", ""))

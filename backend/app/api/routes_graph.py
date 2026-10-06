@@ -705,6 +705,44 @@ def _enclosing_containers(
     return described
 
 
+def _preset_copy_nodes(
+    executable_nodes: list[dict],
+    containers: dict[str, str],
+    canvas_by_id: dict[str, dict],
+    subgraph_index: dict,
+    preset_fallback: dict,
+) -> list[tuple[dict, list[dict]]]:
+    """The nodes of each preset a Map runs by name, each with the levels it
+    sits in, outermost first.
+
+    The exported script carries a copy of each such preset, file params and
+    all (``codegen._presets_run_by_name``), so a path in one pins the script
+    to this machine as much as a path on the canvas does. The levels are the
+    ones the Map sits in, then each preset on the way, by its name.
+    """
+    found: list[tuple[dict, list[dict]]] = []
+    for named in preset_registry.named_presets(executable_nodes):
+        if named.definition is None:
+            continue
+        chain = []
+        link = named
+        while link is not None:
+            chain.append(link)
+            link = link.inside
+        chain.reverse()
+        levels = _enclosing_containers(
+            chain[0].node_id, containers, canvas_by_id, subgraph_index,
+            preset_fallback,
+        ) + [{"node_id": step.node_id, "label": step.name} for step in chain]
+        for inner in named.definition.nodes:
+            found.append(({
+                "id": f"{named.node_id}{_PRESET_SEPARATOR}{inner.id}",
+                "type": inner.type,
+                "data": {"params": inner.params},
+            }, levels))
+    return found
+
+
 def _absolute_path_warnings(
     executable_nodes: list[dict],
     containers: dict[str, str],
@@ -716,14 +754,22 @@ def _absolute_path_warnings(
     one machine (#557).
 
     Read from the graph the script RUNS -- presets and blocks expanded,
-    drafts and bypassed nodes gone -- because those are the only params the
-    script embeds. A param the node's own settings hide is skipped for the
-    same reason: the node never opens it, and the user cannot see the field.
+    drafts and bypassed nodes gone, and the presets a Map runs by name, of
+    which it carries a copy -- because those are the only params the script
+    embeds. A param the node's own settings hide is skipped for the same
+    reason: the node never opens it, and the user cannot see the field.
     """
     canvas_by_id = {node.get("id"): node for node in canvas_nodes}
     subgraph_index = build_subgraph_index(subgraphs)
     warnings: list[dict] = []
-    for node in executable_nodes:
+    scanned: list[tuple[dict, list[dict] | None]] = [
+        (node, None) for node in executable_nodes
+    ]
+    scanned += _preset_copy_nodes(
+        executable_nodes, containers, canvas_by_id, subgraph_index,
+        preset_fallback,
+    )
+    for node, levels in scanned:
         node_cls = registry.get(str(node.get("type", "")))
         data = node.get("data")
         params = data.get("params") if isinstance(data, dict) else None
@@ -749,7 +795,7 @@ def _absolute_path_warnings(
                 "label": _shown_label(node),
                 "param": definition.name,
                 "value": value,
-                "containers": _enclosing_containers(
+                "containers": levels if levels is not None else _enclosing_containers(
                     node["id"], containers, canvas_by_id, subgraph_index,
                     preset_fallback,
                 ),
