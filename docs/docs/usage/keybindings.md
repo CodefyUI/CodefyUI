@@ -6,7 +6,7 @@ description: Keyboard and mouse shortcuts for the CodefyUI editor.
 
 # Key Bindings
 
-Keyboard chords other than Save (`Ctrl/Cmd` + `S`) are ignored while you are typing in an input, a textarea or a note, and while a dropdown (such as the device select next to **Run**) has focus. While a dialog or a full-screen panel is open, every chord is ignored, and so are the tab-strip keys.
+Keyboard chords other than Save (`Ctrl/Cmd` + `S`) are ignored while you are typing in an input, a textarea or a note, and while a dropdown (such as the device select next to **Run**) has focus. Save first applies what you are typing into a note, a block's name in the breadcrumb or a tab's name. While a dialog or a full-screen panel is open, every chord is ignored, and so are the tab-strip keys.
 
 | Action | Key / gesture |
 |--------|---------------|

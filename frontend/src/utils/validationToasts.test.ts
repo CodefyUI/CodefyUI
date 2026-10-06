@@ -47,6 +47,9 @@ function makeTab(id: string, overrides: Record<string, unknown> = {}): any {
     edges: [],
     selectedNodeId: null,
     subgraphStack: [],
+    // A real tab always has its definition list, and the names inside an
+    // open block come from a flush of the open levels, which reads it (#620).
+    subgraphs: [],
     ...overrides,
   };
 }

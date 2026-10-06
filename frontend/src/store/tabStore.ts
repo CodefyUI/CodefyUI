@@ -1252,6 +1252,32 @@ function rememberFoldedSecrets(nodes: Node<NodeData>[]): void {
 }
 
 /**
+ * A canvas stashed on entry to a block, with the cards of every definition
+ * that changed since then rebuilt from it (#620).
+ *
+ * Leaving a level used to rebuild only the cards of the block being left. A
+ * block renamed or edited deeper in can have copies at this level too: a
+ * second copy of an inner block on the top-level canvas kept its old name on
+ * its card, and in the messages that name it, until a save and a reload.
+ * `entry` is the definition list as it stood when the level was entered.
+ * Definitions are replaced, never mutated, so one that is not the same object
+ * has changed; comparing references keeps this cheap, and a definition
+ * replaced by an equal one only gets its cards rebuilt as they were.
+ */
+function refreshChangedInstances(
+  nodes: Node<NodeData>[],
+  entry: readonly SubgraphDefinition[],
+  current: readonly SubgraphDefinition[],
+): Node<NodeData>[] {
+  const before = new Map(entry.map((definition) => [definition.id, definition]));
+  let next = nodes;
+  for (const definition of current) {
+    if (before.get(definition.id) !== definition) next = refreshInstances(next, definition);
+  }
+  return next;
+}
+
+/**
  * The tab as it would be with every sub-canvas closed (core#137).
  *
  * Pure as far as tabs go -- it does not touch the store; the one thing it
@@ -1275,7 +1301,8 @@ export function flushSubgraphEditing(tab: TabState): TabState {
       rememberFoldedSecrets(nodes);
       const updated = definitionFromCanvas(definition, nodes, edges);
       subgraphs = subgraphs.map((d) => (d.id === updated.id ? updated : d));
-      nodes = refreshInstances(frame.nodes, updated);
+      // Every definition changed since this level was entered (#620).
+      nodes = refreshChangedInstances(frame.nodes, frame.subgraphs, subgraphs);
       edges = pruneStaleBoundaryEdges(nodes, frame.edges, subgraphs);
     } else {
       nodes = frame.nodes;
@@ -4447,8 +4474,10 @@ export const useTabStore = create<TabStoreState>((rawSet, get) => {
       subgraphs = subgraphs.map((d) => (d.id === updated.id ? updated : d));
       // Instances render their ports FROM the interface, so refreshing them
       // here is what makes an edit to one definition show up on every
-      // instance of it -- the reuse the whole feature exists for.
-      nodes = refreshInstances(frame.nodes, updated);
+      // instance of it -- the reuse the whole feature exists for. Every
+      // definition changed since this level was entered, not only this one:
+      // a block renamed deeper in can have copies here too (#620).
+      nodes = refreshChangedInstances(frame.nodes, frame.subgraphs, subgraphs);
       edges = pruneStaleBoundaryEdges(nodes, frame.edges, subgraphs);
     }
     // `{ ...tab, subgraphs }` rather than the definition list alone: the exit
@@ -4509,11 +4538,14 @@ export const useTabStore = create<TabStoreState>((rawSet, get) => {
       tabs: updateTab(get().tabs, get().activeTabId, (t) => ({
         subgraphs,
         nodes: refreshInstances(t.nodes, renamed),
-        subgraphStack: t.subgraphStack.map((frame) =>
-          frame.subgraphId === subgraphId
-            ? { ...frame, nodes: refreshInstances(frame.nodes, renamed) }
-            : frame,
-        ),
+        // The canvases stashed in `subgraphStack` keep their cards as they
+        // are (#620). A frame is also the "before" picture that leaving the
+        // block pushes as one undo step, beside the definitions as they were
+        // on entry: with the new name written into its cards, undoing the
+        // visit put the old name back on the definition and left the new one
+        // on every card. Leaving refreshes those cards, and save, run and
+        // autosave serialize a flushed copy, as the validation messages read
+        // one.
       })),
     });
   },
