@@ -38,6 +38,7 @@ import {
   sameSubgraphs,
   subgraphIdOf,
   SUBGRAPH_TYPE_PREFIX,
+  triggerStarts, // for the block boundary helpers below
   type CollapseResult,
 } from '../utils/subgraph';
 import { ExecutionWebSocket } from '../api/ws';
@@ -1217,6 +1218,166 @@ function mergeIncomingSubgraphs(
     };
   });
   return { subgraphs, nodes };
+}
+
+/**
+ * Collapse and expand inside an open block keep the block boundary.
+ *
+ * The block open on screen is wired to the level above through its
+ * interface, whose ports and trigger targets name inner nodes by id. No edge
+ * on its canvas draws that boundary, and `collapseSelection` and
+ * `expandInstance` read edges only. So an entry kept naming a node that had
+ * just moved into a new block, or a card that had just been expanded, and
+ * leaving the block dropped it (`definitionFromCanvas`) along with the wire
+ * on its port at the level above (`pruneStaleBoundaryEdges`): Run then found
+ * the node downstream unconnected.
+ *
+ * At the top level the edges are the whole boundary, and both helpers below
+ * hand their result back unchanged.
+ */
+type BoundaryPort = SubgraphDefinition['interface']['inputs'][number];
+
+function openBlockId(tab: TabState): string | null {
+  const frame = tab.subgraphStack[tab.subgraphStack.length - 1];
+  return frame ? frame.subgraphId : null;
+}
+
+/**
+ * Collapse: an entry naming a selected node counts as one more edge across
+ * the selection. The new block gets a port for it, or shares the one collapse
+ * made for an edge on the same inner port, and the entry moves onto the new
+ * card and that port. A trigger target moves into the new block's own list,
+ * and the card takes its place.
+ */
+function collapseKeepingBlockBoundary(
+  tab: TabState,
+  selectedIds: string[],
+  name: string | undefined,
+): CollapseResult {
+  const result = collapseSelection(tab.nodes, tab.edges, tab.subgraphs, selectedIds, { name });
+  const openId = openBlockId(tab);
+  const open = result.ok ? result.subgraphs.find((d) => d.id === openId) : undefined;
+  if (!result.ok || !open) return result;
+  const { instanceId } = result;
+  const moved = new Set<string>(
+    result.definition.nodes.map((n: { id: unknown }) => String(n.id)),
+  );
+  const inputs = [...result.definition.interface.inputs];
+  const outputs = [...result.definition.interface.outputs];
+  const triggerTargets = [...result.definition.interface.triggerTargets];
+  let changed = false;
+  const onNewCard = (
+    ports: BoundaryPort[],
+    entry: BoundaryPort,
+    fallback: string,
+  ): BoundaryPort => {
+    if (!moved.has(entry.innerNode)) return entry;
+    changed = true;
+    let port = ports.find(
+      (p) => p.innerNode === entry.innerNode && p.innerPort === entry.innerPort,
+    );
+    if (!port) {
+      // Named as collapse names one: after the inner port, made unique.
+      const taken = new Set(ports.map((p) => p.port));
+      const base = entry.innerPort || fallback;
+      let name = base;
+      for (let n = 2; taken.has(name); n += 1) name = `${base}_${n}`;
+      port = { ...entry, port: name };
+      ports.push(port);
+    }
+    return { ...entry, innerNode: instanceId, innerPort: port.port };
+  };
+  const boundary = {
+    inputs: open.interface.inputs.map((p) => onNewCard(inputs, p, 'in')),
+    outputs: open.interface.outputs.map((p) => onNewCard(outputs, p, 'out')),
+    triggerTargets: [
+      ...new Set(
+        open.interface.triggerTargets.map((id) => {
+          if (!moved.has(id)) return id;
+          changed = true;
+          if (!triggerTargets.includes(id)) triggerTargets.push(id);
+          return instanceId;
+        }),
+      ),
+    ],
+  };
+  if (!changed) return result;
+  const definition = {
+    ...result.definition,
+    interface: { inputs, outputs, triggerTargets },
+  };
+  return {
+    ...result,
+    definition,
+    // The card was drawn from the interface before these ports joined it.
+    nodes: refreshInstances(result.nodes, definition),
+    subgraphs: result.subgraphs.map((d) =>
+      d.id === definition.id
+        ? definition
+        : d.id === open.id
+          ? { ...open, interface: boundary }
+          : d,
+    ),
+  };
+}
+
+/**
+ * Expand: an entry naming the expanded card moves to the inner node behind
+ * its port, under the id expansion gave that node; a trigger target naming
+ * the card becomes the nodes a trigger into the card starts
+ * (`triggerStarts`), as Start's wire into the card does.
+ *
+ * The expanded definition also stays in the list. `expandInstance` drops it
+ * when no node on the canvas still names it, but inside a block the canvas is
+ * not the whole graph: a copy above or beside the open block may still use
+ * it. Save leaves out every definition nothing reaches.
+ */
+function expandKeepingBlockBoundary(
+  tab: TabState,
+  cardId: string,
+  resolve: Parameters<typeof expandInstance>[4],
+): ReturnType<typeof expandInstance> {
+  const result = expandInstance(tab.nodes, tab.edges, tab.subgraphs, cardId, resolve);
+  const openId = openBlockId(tab);
+  if (!result.ok || openId === null) return result;
+  const card = tab.nodes.find((n) => n.id === cardId);
+  const expanded = tab.subgraphs.find((d) => d.id === subgraphIdOf(card?.data?.type));
+  const open = tab.subgraphs.find((d) => d.id === openId);
+  if (!expanded || !open) return { ...result, subgraphs: tab.subgraphs };
+  const restored = result.restoredIdOf ?? new Map<string, string>();
+  let changed = false;
+  const behindCard = (ports: BoundaryPort[], entry: BoundaryPort): BoundaryPort[] => {
+    if (entry.innerNode !== cardId) return [entry];
+    changed = true;
+    const port = ports.find((p) => p.port === entry.innerPort);
+    // A port the card did not have: leaving the block would drop it too.
+    if (!port) return [];
+    return [{
+      ...entry,
+      innerNode: restored.get(port.innerNode) ?? port.innerNode,
+      innerPort: port.innerPort,
+    }];
+  };
+  const started = triggerStarts(expanded).map((inner) => restored.get(inner) ?? inner);
+  const boundary = {
+    inputs: open.interface.inputs.flatMap((p) => behindCard(expanded.interface.inputs, p)),
+    outputs: open.interface.outputs.flatMap((p) => behindCard(expanded.interface.outputs, p)),
+    triggerTargets: [
+      ...new Set(
+        open.interface.triggerTargets.flatMap((id) => {
+          if (id !== cardId) return [id];
+          changed = true;
+          return started;
+        }),
+      ),
+    ],
+  };
+  return {
+    ...result,
+    subgraphs: changed
+      ? tab.subgraphs.map((d) => (d.id === open.id ? { ...open, interface: boundary } : d))
+      : tab.subgraphs,
+  };
 }
 
 /**
@@ -4121,13 +4282,9 @@ export const useTabStore = create<TabStoreState>((rawSet, get) => {
       return { ok: false, reason: 'read-only', blockers: [] } as CollapseResult;
     }
     const selectedIds = tab.nodes.filter((n) => n.selected).map((n) => n.id);
-    const result = collapseSelection(
-      tab.nodes,
-      tab.edges,
-      tab.subgraphs,
-      selectedIds,
-      { name },
-    );
+    // Inside an open block, the cut also crosses the block boundary, which
+    // the block's interface holds rather than an edge on this canvas.
+    const result = collapseKeepingBlockBoundary(tab, selectedIds, name);
     if (!result.ok) return result;
     // The ids that just moved off the canvas and into the definition. From
     // the rest of the tab's point of view they are GONE, so everything
@@ -4193,10 +4350,10 @@ export const useTabStore = create<TabStoreState>((rawSet, get) => {
       tab.presets,
       useNodeDefStore.getState().presets,
     );
-    const result = expandInstance(
-      tab.nodes,
-      tab.edges,
-      tab.subgraphs,
+    // Inside an open block, the card may stand on the block boundary, which
+    // the block's interface holds rather than an edge on this canvas.
+    const result = expandKeepingBlockBoundary(
+      tab,
       nodeId,
       (raw) => resolveSerializedNodes(raw, defs, presets, tab.subgraphs),
     );

@@ -651,6 +651,42 @@ export interface ExpandResult {
   edges: Edge[];
   subgraphs: SubgraphDefinition[];
   restoredIds: string[];
+  /**
+   * The id each inner node came back under, keyed by its id in the
+   * definition: what follows a port of the card across the block boundary.
+   */
+  restoredIdOf?: Map<string, string>;
+}
+
+/**
+ * The inner nodes a trigger into a card of *definition* starts, by the rule
+ * the engine expands one with (`expand_subgraphs`): the block's trigger
+ * targets, or its roots -- the nodes no inner edge feeds -- when it names
+ * none. Notes are left out first, as the engine leaves them out.
+ *
+ * Expanding a card follows it on both sides of the block boundary: for a
+ * trigger wire into the card, and for an open block's trigger target that
+ * names the card. Following the named targets only dropped Start's wire from
+ * a block that named none, such as one Start was wired to after the collapse.
+ */
+export function triggerStarts(definition: SubgraphDefinition): string[] {
+  const notes = new Set(
+    definition.nodes
+      .filter((raw) => raw?.type === 'note')
+      .map((raw) => String(raw.id)),
+  );
+  const named = definition.interface.triggerTargets
+    .map(String)
+    .filter((id) => !notes.has(id));
+  if (named.length) return named;
+  const fed = new Set(
+    definition.edges
+      .filter((raw) => !notes.has(String(raw.source)))
+      .map((raw) => String(raw.target)),
+  );
+  return definition.nodes
+    .map((raw) => String(raw.id))
+    .filter((id) => !notes.has(id) && !fed.has(id));
 }
 
 /**
@@ -730,7 +766,9 @@ export function expandInstance(
       continue;
     }
     if (isTriggerEdge(edge) && touchesTarget) {
-      definition.interface.triggerTargets.forEach((innerId, position) => {
+      // Across the block boundary, into every node the trigger starts, named
+      // or not.
+      triggerStarts(definition).forEach((innerId, position) => {
         const mapped = idMap.get(String(innerId));
         if (!mapped) return;
         nextEdges.push({
@@ -789,6 +827,9 @@ export function expandInstance(
       ? subgraphs
       : subgraphs.filter((s) => s.id !== definition.id),
     restoredIds: [...idMap.values()],
+    // By id, so a port is followed across the block boundary without
+    // relying on the order above.
+    restoredIdOf: idMap,
   };
 }
 
