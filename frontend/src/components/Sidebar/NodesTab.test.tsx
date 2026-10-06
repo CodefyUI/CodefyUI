@@ -906,10 +906,54 @@ describe('NodesTab — presets group', () => {
     expect(screen.getByText('2 nodes')).toBeTruthy();
   });
 
-  it('defaults preset difficulty to beginner when no difficulty tag present', () => {
-    seedStore({ presets: [preset('LeNet', 'CNN', { tags: ['vision'] })] });
+  it.each<['en' | 'zh-TW', string, string]>([
+    ['en', 'beginner', 'beginner'],
+    ['en', 'intermediate', 'intermediate'],
+    ['en', 'advanced', 'advanced'],
+    ['zh-TW', 'beginner', '入門'],
+    ['zh-TW', 'intermediate', '中級'],
+    ['zh-TW', 'advanced', '進階'],
+  ])('in %s, a preset tagged %s shows the badge "%s"', (locale, tag, label) => {
+    useI18n.setState({ locale });
+    // Not the first tag: the badge is the first tag that is a difficulty.
+    seedStore({ presets: [preset('LeNet', 'CNN', { tags: ['vision', tag] })] });
     render(<NodesTab />);
-    expect(screen.getByText('beginner')).toBeTruthy();
+    const badge = screen.getByText('LeNet').nextElementSibling as HTMLElement;
+    expect(badge.textContent).toBe(label);
+    // Coloured by the tag, whatever the language says.
+    expect(badge.style.color).not.toBe('');
+  });
+
+  // #623: Export as Subgraph writes no tags, and the row used to fall back to
+  // an English "beginner" -- a level nobody chose.
+  it.each<[string, string[]]>([
+    ['no tags', []],
+    ['no difficulty tag', ['vision']],
+    // Every object has a `constructor`; it is not a difficulty.
+    ['only an inherited key', ['constructor']],
+  ])('shows no difficulty badge for a preset with %s', (_case, tags) => {
+    seedStore({ presets: [preset('LeNet', 'CNN', { tags })] });
+    render(<NodesTab />);
+    // The name is all the row's header holds.
+    expect(screen.getByText('LeNet').nextElementSibling).toBeNull();
+    expect(screen.queryByText('beginner')).toBeNull();
+  });
+
+  it('finds a preset by the word on its badge, in the UI language', () => {
+    seedStore({
+      presets: [
+        preset('LSTM Sequence', 'RNN', { tags: ['intermediate', 'rnn'] }),
+        preset('LeNet', 'CNN', { tags: ['beginner'] }),
+      ],
+    });
+    render(<NodesTab />);
+    // By role: the placeholder is translated.
+    fireEvent.change(screen.getByRole('textbox'), { target: { value: '中級' } });
+    expect(screen.queryByText('LSTM Sequence')).toBeNull();
+
+    act(() => useI18n.setState({ locale: 'zh-TW' }));
+    expect(screen.getByText('LSTM Sequence')).toBeTruthy();
+    expect(screen.queryByText('LeNet')).toBeNull();
   });
 
   it('hovering a preset toggles its hover background', () => {

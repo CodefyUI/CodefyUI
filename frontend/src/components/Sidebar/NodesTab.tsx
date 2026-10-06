@@ -18,6 +18,7 @@ import {
 } from '../../utils/nodeSearch';
 import { readablePresetNodes } from '../../utils';
 import { isCompletePreset } from '../../utils/presetOwnership';
+import { DIFFICULTY_LABEL_KEYS, isDifficulty } from '../../utils/presetDifficulty';
 import type { NodeDefinition, PresetDefinition } from '../../types';
 import { DIFFICULTY_COLORS } from '../../styles/theme';
 import { MathText } from '../shared/MathText';
@@ -165,11 +166,11 @@ interface PresetItemProps {
  */
 export function PresetItem({ preset }: PresetItemProps) {
   const [hovered, setHovered] = useState(false);
+  // The first tag that names a difficulty. A preset with none gets no badge
+  // (#623): Export as Subgraph writes no tags, and filling in "beginner"
+  // stated a level nobody chose.
   const tags: unknown = preset.tags;
-  const difficulty = (Array.isArray(tags) ? tags : []).find(
-    (t): t is string => typeof t === 'string' && t in DIFFICULTY_COLORS,
-  ) ?? 'beginner';
-  const difficultyColor = DIFFICULTY_COLORS[difficulty];
+  const difficulty = (Array.isArray(tags) ? tags : []).find(isDifficulty);
   const { t } = useI18n();
 
   const handleDragStart = (event: React.DragEvent) => {
@@ -200,15 +201,17 @@ export function PresetItem({ preset }: PresetItemProps) {
         <div className={styles.presetName}>
           {preset.preset_name}
         </div>
-        <span
-          className={styles.presetDifficultyBadge}
-          style={{
-            background: `${difficultyColor}22`,
-            color: difficultyColor,
-          }}
-        >
-          {difficulty}
-        </span>
+        {difficulty !== undefined && (
+          <span
+            className={styles.presetDifficultyBadge}
+            style={{
+              background: `${DIFFICULTY_COLORS[difficulty]}22`,
+              color: DIFFICULTY_COLORS[difficulty],
+            }}
+          >
+            {t(DIFFICULTY_LABEL_KEYS[difficulty])}
+          </span>
+        )}
       </div>
       <div className={styles.presetDesc}>
         {preset.description}
@@ -261,9 +264,10 @@ export function NodesTab() {
   const beginnerMode = useUIStore((s) => s.beginnerMode);
   const pluginsById = usePluginStore(selectPluginsById);
   const [searchQuery, setSearchQuery] = useState('');
-  // `locale` is a dependency of the list below: `tn` reads the language from
-  // the store and is the same function in every language, so without it a
-  // language switch would leave a search reading the old language's texts.
+  // `locale` is a dependency of the list below: `tn` and `presetSearchTexts`
+  // read the language from the store and are the same functions in every
+  // language, so without it a language switch would leave a search reading
+  // the old language's texts.
   const { t, tn, locale } = useI18n();
 
   const groups = useMemo<CategoryGroup<PaletteEntry>[]>(() => {

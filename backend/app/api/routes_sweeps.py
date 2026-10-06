@@ -60,6 +60,7 @@ from ..config import settings
 from ..core.device_utils import graph_settings_device
 from ..core.run_service import (
     LANE_INTERACTIVE,
+    MAX_NAME_LENGTH,
     MAX_SEED,
     RunService,
     RunServiceUnavailable,
@@ -234,6 +235,21 @@ def _placeholder_variant(compiled: CompiledSweep,
         index=variant.index, domain_index=variant.domain_index, run_id=None,
         params=_variant_params(compiled, variant), seed=None, objective=None,
         status=None, harvested_at=None)
+
+
+def _variant_run_name(name: str | None, index: int) -> str | None:
+    """A child run's name: the sweep's plus the variant's number (#623).
+
+    With the sweep's name alone, the Runs panel listed N identical rows. The
+    number is the 1-based one the sweep's own table shows. The sweep's name
+    is cut, never the number, to keep the whole within MAX_NAME_LENGTH code
+    points: ``submit`` refuses a longer name, which would fail the variant.
+    An unnamed sweep's children stay unnamed.
+    """
+    if name is None:
+        return None
+    suffix = f" #{index + 1}"
+    return name[:MAX_NAME_LENGTH - len(suffix)].rstrip() + suffix
 
 
 def _compiled_spec(spec: dict[str, Any],
@@ -470,7 +486,8 @@ async def create_sweep(body: CreateSweepRequest, request: Request):
                 variant_options["seed"] = seed
             try:
                 result = await service.submit(
-                    variant.graph, options=variant_options, name=name,
+                    variant.graph, options=variant_options,
+                    name=_variant_run_name(name, variant.index),
                     provenance=provenance, sweep_id=sweep.id,
                     sweep_variant=variant.index)
                 # Patched once per variant, not once at the end: a single

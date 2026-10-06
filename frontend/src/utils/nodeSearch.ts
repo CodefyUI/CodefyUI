@@ -1,4 +1,6 @@
+import { useI18n } from '../i18n';
 import type { NodeDefinition, PresetDefinition } from '../types';
+import { DIFFICULTY_LABEL_KEYS, isDifficulty } from './presetDifficulty';
 import { pluginNameOf, type PluginIndex } from './provider';
 
 /**
@@ -157,7 +159,17 @@ export function nodeSearchTexts(
   ];
 }
 
-/** The strings a search reads for a preset besides its name. */
+/**
+ * The strings a search reads for a preset besides its name.
+ *
+ * Each difficulty tag also in the UI language (#623): the badge shows that
+ * word, and a search for the word on a badge has to find its preset. Only
+ * words the tags do not already hold, so the English UI reads what it always
+ * did. `t` is read from the store, not passed in: both searches call this,
+ * and it is the same function in every language.
+ */
 export function presetSearchTexts(preset: PresetDefinition): string[] {
-  return [preset.description, ...preset.tags];
+  const { t } = useI18n.getState();
+  const words = preset.tags.filter(isDifficulty).map((tag) => t(DIFFICULTY_LABEL_KEYS[tag]));
+  return [preset.description, ...preset.tags, ...words.filter((word) => !preset.tags.includes(word))];
 }

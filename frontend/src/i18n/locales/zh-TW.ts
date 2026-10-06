@@ -109,6 +109,9 @@ const zhTW: Record<TranslationKey, string> = {
   'palette.hint': '拖曳節點到畫布上',
   'palette.fromPlugin': '來自外掛：{plugin}',
   'palette.presets.category': '預設組合',
+  'palette.preset.difficulty.beginner': '入門',
+  'palette.preset.difficulty.intermediate': '中級',
+  'palette.preset.difficulty.advanced': '進階',
 
   // Sidebar rail (#126)
   'sidebar.rail.aria': '側邊欄分頁',

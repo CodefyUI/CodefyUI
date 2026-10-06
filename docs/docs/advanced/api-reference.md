@@ -254,7 +254,7 @@ These routes back the [Source Control](/usage/source-control) tab. They run the 
 
 | Action | Fields | Effect |
 |--------|--------|--------|
-| `execute` | `nodes`, `edges`, `presets`, `subgraphs`, `settings`, `device`, `seed`, `deterministic`, `record_outputs`, `changed_nodes`, and the canvas flags (`verbose_mode`, `graph_id`, `weights_persistent`, `backward_mode`, `auto_backward`, `error_mode`, `max_retries`) | Submit on the interactive lane and attach to the new run. A run this socket already follows is detached, not cancelled. `settings`, the graph's own settings object, is stored with the run's graph; the run itself uses `device`, which is `cpu` when omitted. |
+| `execute` | `nodes`, `edges`, `presets`, `subgraphs`, `settings`, `device`, `seed`, `deterministic`, `record_outputs`, `changed_nodes`, `name`, and the canvas flags (`verbose_mode`, `graph_id`, `weights_persistent`, `backward_mode`, `auto_backward`, `error_mode`, `max_retries`) | Submit on the interactive lane and attach to the new run. A run this socket already follows is detached, not cancelled. `settings`, the graph's own settings object, is stored with the run's graph; the run itself uses `device`, which is `cpu` when omitted. The run is listed under `name` (the canvas sends its tab's label), clipped to 64 characters. |
 | `attach` | `run_id`, `cursor` (an integer, 0 or more, not past the run's latest cursor) | Replay the event log from `cursor`, then follow live; replaces the previous attachment. |
 | `detach` | — | Stop following. Never cancels. |
 | `cancel` | `run_id` (optional; defaults to the attached run) | Cooperative stop. `stop` is the pre-v2 alias. |

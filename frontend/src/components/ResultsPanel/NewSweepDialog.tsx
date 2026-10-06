@@ -62,6 +62,37 @@ function parseSeed(raw: string): number {
   return value;
 }
 
+/**
+ * The server's run-name limit (`run_service.MAX_NAME_LENGTH`), in code points.
+ * Also the Name field's `maxLength`, which counts UTF-16 units, at least one
+ * per code point, so typing stops at the limit or before it. An input method
+ * can compose past `maxLength`, so a typed name is cut when sent as well.
+ */
+const MAX_RUN_NAME_LENGTH = 64;
+
+/**
+ * A run name the server stores rather than refuses (#623). The sweep route
+ * REFUSES a name over the limit instead of cutting it, so a sweep's name is
+ * made storable here the way the server makes a canvas run's: trimmed, cut to
+ * the limit in code points (`Array.from` counts them, as the server does), and
+ * half of a surrogate pair, which the database cannot store, sent as "?".
+ */
+function storableRunName(raw: string): string {
+  return Array.from(raw.trim(), (char) => {
+    const code = char.codePointAt(0) ?? 0;
+    return code >= 0xd800 && code <= 0xdfff ? '?' : char;
+  }).slice(0, MAX_RUN_NAME_LENGTH).join('').trimEnd();
+}
+
+/**
+ * What a blank Name sends: the tab's name, as a canvas run is named (#623).
+ * Checked to be text, since a tab restored from a damaged record may not
+ * carry one.
+ */
+function tabDefaultName(tab: { name?: unknown } | null): string {
+  return tab && typeof tab.name === 'string' ? storableRunName(tab.name) : '';
+}
+
 /** Compact, keyboard-contained editor for one sweep request. */
 export function NewSweepDialog({ onClose }: NewSweepDialogProps) {
   const { t } = useI18n();
@@ -88,6 +119,8 @@ export function NewSweepDialog({ onClose }: NewSweepDialogProps) {
   const tab = useTabStore((state) =>
     state.tabs.find((candidate) => candidate.id === state.activeTabId) ?? null,
   );
+  // What a blank Name sends, shown as the field's placeholder.
+  const defaultName = tabDefaultName(tab);
   // The ROOT graph, flushed exactly as Start serializes it: inside a block the
   // canvas holds the block's nodes, which the server cannot address.
   const rootNodes = useMemo(() => (tab ? flushSubgraphEditing(tab).nodes : []), [tab]);
@@ -262,7 +295,7 @@ export function NewSweepDialog({ onClose }: NewSweepDialogProps) {
         },
         objective: { metric: objective.trim(), direction },
         options,
-        name: name.trim() || null,
+        name: storableRunName(name) || tabDefaultName(active) || null,
         seed_variants: seedVariants,
       }, active.id);
       if (created) onClose();
@@ -290,7 +323,7 @@ export function NewSweepDialog({ onClose }: NewSweepDialogProps) {
 
           <div className={styles.body}>
             <div className={styles.pair}>
-              <label>{t('sweeps.new.name')}<input ref={firstRef} value={name} onChange={(event) => setName(event.target.value)} /></label>
+              <label>{t('sweeps.new.name')}<input ref={firstRef} value={name} placeholder={defaultName} maxLength={MAX_RUN_NAME_LENGTH} onChange={(event) => setName(event.target.value)} /></label>
               <label>{t('sweeps.new.method')}<select value={method} onChange={(event) => setMethod(event.target.value as SweepMethod)}><option value="grid">{t('sweeps.method.grid')}</option><option value="random">{t('sweeps.method.random')}</option></select></label>
             </div>
             <div className={styles.pair}>

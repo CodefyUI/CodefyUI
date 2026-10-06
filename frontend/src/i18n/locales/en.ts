@@ -138,6 +138,11 @@ const en = {
   // label on purpose: presets are now one category among the node categories,
   // and a category needs its own heading key to sit beside them.
   'palette.presets.category': 'Presets',
+  // A preset row's badge, one per difficulty tag a preset can carry. A preset
+  // with none of them shows no badge (#623).
+  'palette.preset.difficulty.beginner': 'beginner',
+  'palette.preset.difficulty.intermediate': 'intermediate',
+  'palette.preset.difficulty.advanced': 'advanced',
 
   // Sidebar rail (#126)
   'sidebar.rail.aria': 'Sidebar sections',

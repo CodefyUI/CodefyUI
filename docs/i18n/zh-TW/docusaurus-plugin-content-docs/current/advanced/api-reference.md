@@ -254,7 +254,7 @@ Host guard 會在其他所有檢查之前處理每個 request，包括 SPA 頁�
 
 | 動作 | 欄位 | 效果 |
 |--------|--------|--------|
-| `execute` | `nodes`、`edges`、`presets`、`subgraphs`、`settings`、`device`、`seed`、`deterministic`、`record_outputs`、`changed_nodes`，以及畫布旗標（`verbose_mode`、`graph_id`、`weights_persistent`、`backward_mode`、`auto_backward`、`error_mode`、`max_retries`） | 在 interactive lane 送出，並附掛到新的 run。此 socket 已在追蹤的 run 會被 detach，而不是 cancel。`settings` 是 graph 自己的設定物件，會與 run 的 graph 一起儲存；run 本身使用 `device`，省略時為 `cpu`。 |
+| `execute` | `nodes`、`edges`、`presets`、`subgraphs`、`settings`、`device`、`seed`、`deterministic`、`record_outputs`、`changed_nodes`、`name`，以及畫布旗標（`verbose_mode`、`graph_id`、`weights_persistent`、`backward_mode`、`auto_backward`、`error_mode`、`max_retries`） | 在 interactive lane 送出，並附掛到新的 run。此 socket 已在追蹤的 run 會被 detach，而不是 cancel。`settings` 是 graph 自己的設定物件，會與 run 的 graph 一起儲存；run 本身使用 `device`，省略時為 `cpu`。run 會以 `name`（畫布送出的是分頁名稱）列出，最多 64 個字元。 |
 | `attach` | `run_id`、`cursor`（整數、至少為 0，且不得超過 run 的最新 cursor） | 從 `cursor` 重播事件 log，接著即時追蹤；取代先前的 attachment。 |
 | `detach` | — | 停止追蹤。絕不會取消。 |
 | `cancel` | `run_id`（選用；預設為附掛的 run） | 協作式停止。`stop` 是 v2 之前的別名。 |

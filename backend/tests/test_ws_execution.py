@@ -19,7 +19,7 @@ from httpx_ws.transport import ASGIWebSocketTransport
 from app.config import settings
 from app.core.auth import TOKEN_QUERY_PARAM, session_token
 from app.core.db import Database
-from app.core.run_service import RunService
+from app.core.run_service import MAX_NAME_LENGTH, RunService
 from app.core.run_store import RunStore
 from app.main import app
 
@@ -623,3 +623,124 @@ async def test_ws_running_status_carries_no_output_entries():
     assert "outputs" not in running
     completed = _status_msg(messages, "1", "completed")
     assert _entries(completed, "tensor_summary")
+
+
+# ── Run name (#623) ────────────────────────────────────────────────────
+# The canvas sends its tab's label as ``name``, so the Runs panel lists a
+# canvas run under that label instead of "(unnamed)". The stored name is
+# bounded (``normalize_name`` refuses past MAX_NAME_LENGTH), but a tab label
+# is not: a long one is clipped, never a reason to refuse the Run.
+
+
+async def _execute_named(extra: dict) -> tuple[str | None, list[dict]]:
+    """Run Start -> _TestSource with *extra* in the execute frame.
+
+    Returns the run id and every frame up to the terminal one, without
+    asserting success: the leniency tests check for ``execution_error``.
+    """
+    async with AsyncClient(
+        transport=ASGIWebSocketTransport(app=app),
+        base_url=_BASE_URL,
+    ) as client:
+        async with aconnect_ws(_WS_PATH_WITH_TOKEN, client) as ws:
+            await ws.send_text(json.dumps({
+                "action": "execute",
+                "nodes": [
+                    {"id": "start", "type": "Start", "data": {"params": {}}},
+                    {"id": "1", "type": "_TestSource", "data": {"params": {}}},
+                ],
+                "edges": [
+                    {"id": "et", "source": "start", "target": "1",
+                     "sourceHandle": "trigger", "type": "trigger"},
+                ],
+                **extra,
+            }))
+            run_id = None
+            messages: list[dict] = []
+            for _ in range(20):
+                msg = json.loads(await ws.receive_text())
+                messages.append(msg)
+                run_id = run_id or msg.get("run_id")
+                if msg["type"] in ("execution_complete", "execution_error"):
+                    break
+    return run_id, messages
+
+
+@pytest.mark.asyncio
+async def test_ws_execute_stores_the_name_on_the_run():
+    run_id, messages = await _execute_named({"name": "CF201 lab"})
+
+    assert messages[-1]["type"] == "execution_complete", messages
+    record = await app.state.run_service.store.get_run(run_id)
+    assert record.name == "CF201 lab"
+    # Where the Runs panel reads it from.
+    async with AsyncClient(
+        transport=ASGIWebSocketTransport(app=app),
+        base_url=_BASE_URL,
+    ) as client:
+        response = await client.get("/api/runs")
+    assert response.status_code == 200
+    rows = [row for row in response.json()["runs"] if row["id"] == run_id]
+    assert [row["name"] for row in rows] == ["CF201 lab"]
+
+
+@pytest.mark.asyncio
+async def test_ws_execute_strips_the_name():
+    run_id, _ = await _execute_named({"name": "  CF201 lab \n"})
+
+    record = await app.state.run_service.store.get_run(run_id)
+    assert record.name == "CF201 lab"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("label", "stored"),
+    [
+        ("x" * 100, "x" * MAX_NAME_LENGTH),
+        # Stripped BEFORE clipping, so leading blanks do not use up the room.
+        ("   " + "x" * 100, "x" * MAX_NAME_LENGTH),
+        # Counted in code points, as ``normalize_name`` counts: 70 CJK
+        # characters are 210 UTF-8 bytes...
+        (chr(0x5B78) * 70, chr(0x5B78) * MAX_NAME_LENGTH),
+        # ...and 70 characters outside the BMP are 140 UTF-16 units in the
+        # browser that sent them, one code point each here.
+        (chr(0x20000) * 70, chr(0x20000) * MAX_NAME_LENGTH),
+    ],
+    ids=["ascii", "leading-blanks", "cjk", "astral"],
+)
+async def test_ws_execute_clips_a_long_name_instead_of_refusing_the_run(label, stored):
+    run_id, messages = await _execute_named({"name": label})
+
+    assert [m for m in messages if m["type"] == "execution_error"] == []
+    assert messages[-1]["type"] == "execution_complete", messages
+    record = await app.state.run_service.store.get_run(run_id)
+    assert record.name == stored
+
+
+@pytest.mark.asyncio
+async def test_ws_execute_runs_under_a_name_utf8_cannot_store():
+    """Half of a surrogate pair -- a label cut by UTF-16 length somewhere,
+    arriving as a JSON escape -- cannot be written to the database as
+    UTF-8. Passed through, it failed the submit; it becomes "?" instead."""
+    run_id, messages = await _execute_named({"name": "lab" + chr(0xD800)})
+
+    assert [m for m in messages if m["type"] == "execution_error"] == []
+    record = await app.state.run_service.store.get_run(run_id)
+    assert record.name == "lab?"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "extra",
+    [{}, {"name": None}, {"name": ""}, {"name": "   "}, {"name": 5},
+     {"name": ["CF201 lab"]}],
+    ids=["absent", "null", "empty", "blank", "number", "list"],
+)
+async def test_ws_execute_without_a_usable_name_starts_an_unnamed_run(extra):
+    """No name is no reason to refuse a Run: it is stored as NULL."""
+    run_id, messages = await _execute_named(extra)
+
+    assert [m for m in messages if m["type"] == "execution_error"] == []
+    assert messages[-1]["type"] == "execution_complete", messages
+    record = await app.state.run_service.store.get_run(run_id)
+    assert record.name is None
