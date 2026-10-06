@@ -128,7 +128,7 @@ describe('Toolbar Export as Python: a refused graph', () => {
     fireEvent.click(screen.getByText('匯出為 Python'));
 
     await waitFor(() => expect(errorToasts()).toHaveLength(1));
-    expect(errorToasts()[0].message).toBe('「Empty card」收到 trigger，但預設模組「T7Empty」裡沒有節點');
+    expect(errorToasts()[0].message).toBe('「Empty card」收到 trigger，但預設組合「T7Empty」裡沒有節點');
     expect(errorToasts()[0].action?.label).toBe('顯示');
   });
 

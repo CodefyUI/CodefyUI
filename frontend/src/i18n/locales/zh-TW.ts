@@ -40,13 +40,13 @@ const zhTW: Record<TranslationKey, string> = {
   'toolbar.export.prompt': '請輸入子圖名稱：',
   'toolbar.export.success': '子圖「{name}」已加入「節點」分頁。',
   'toolbar.export.fail': '匯出失敗：{error}',
-  'toolbar.export.subgraphRefused': '請先展開收合的區塊（{names}）再匯出：預設模組無法帶著它們的內容。',
+  'toolbar.export.subgraphRefused': '請先展開收合的區塊（{names}）再匯出：預設組合無法帶著它們的內容。',
   // #476：名稱在伺服器上會變成檔名，存不下來的名稱現在回一個代碼而不是句子，
   // 句子寫在這裡。每一句都說出哪裡不對、該改成什麼；外面那句是
   // `toolbar.export.fail`，所以這些都不再重複「匯出失敗」。
   'toolbar.export.name.empty': '子圖名稱不能是空白，請輸入名稱後再試一次。',
   'toolbar.export.name.separator':
-    '子圖名稱不能包含「{character}」，這個字元會讓名稱變成路徑。請改用文字、數字、空格、- 或 _。',
+    '子圖名稱不能包含「{character}」，這個字元會讓名稱變成路徑。請改用文字、數字、空格、「-」或「_」。',
   'toolbar.export.name.controlCharacter':
     '子圖名稱裡有看不見的控制字元（{codepoint}），請刪掉它再重新輸入名稱。',
   'toolbar.export.name.dotSegment': '只由點組成的名稱不算名稱，請改用含有文字或數字的名稱。',
@@ -56,11 +56,18 @@ const zhTW: Record<TranslationKey, string> = {
     '這個名稱會把檔案寫到預設組合資料夾外面，請用不含路徑的單純名稱。',
   'toolbar.export.name.fileExists': '已經有一個子圖存成 {filename}，請換一個名稱。',
   'toolbar.export.name.reservedCharacter':
-    '子圖名稱不能包含「{character}」，Windows 不允許檔名使用這個字元。請改用文字、數字、空格、- 或 _。',
+    '子圖名稱不能包含「{character}」，Windows 不允許檔名使用這個字元。請改用文字、數字、空格、「-」或「_」。',
   'toolbar.export.name.tooLong':
     '子圖名稱太長，無法存成檔名（最多 {limit} 位元組，一個中文字占 3 個位元組）。請縮短名稱。',
   'toolbar.export.name.unknownRule':
-    '伺服器不接受這個名稱（{code}），請改用文字、數字、空格、- 或 _ 組成的單純名稱。',
+    '伺服器不接受這個名稱（{code}），請改用文字、數字、空格、「-」或「_」組成的單純名稱。',
+  // #618/#623：`name.exists` 顯示在再次開啟的名稱框下方；`graph.*` 會結束匯出，
+  // 放在 `toolbar.export.fail` 裡。
+  'toolbar.export.name.exists': '已經有一個叫「{name}」的子圖或預設組合，請換一個名稱。',
+  'toolbar.export.graph.empty': '畫布上除了 Start、註記和已略過的節點之外，沒有可以匯出的內容。',
+  'toolbar.export.graph.noPorts': '子圖至少要有一個未連接的輸入或輸出，作為它的連接埠。',
+  'toolbar.export.graph.unknownPreset': '預設組合「{preset}」未安裝，無法放進子圖。',
+  'toolbar.export.graph.unknownNode': '節點類型「{type}」未安裝，無法放進子圖。',
   'toolbar.exportPython': '匯出為 Python',
   'toolbar.exportPython.title': '可執行這張圖的 Python 腳本；需要 CodefyUI 後端環境',
   'toolbar.exportPython.empty': '畫布沒有可執行節點 — 請先新增節點再匯出。',
@@ -260,7 +267,7 @@ const zhTW: Record<TranslationKey, string> = {
   'preset.configure': '設定內容',
   // 按鈕上只有一個動詞，PRESET 標記與節點數量都是另外的元素，
   // 螢幕閱讀器的使用者聽不到它們。
-  'preset.configure.aria': '設定內容：預設模組',
+  'preset.configure.aria': '設定內容：預設組合',
   'preset.nodeCount': '內含 {count} 個節點',
   'preset.nodesInside': '個內部節點',
   'preset.apply': '套用',
@@ -494,15 +501,15 @@ const zhTW: Record<TranslationKey, string> = {
   'graphValidation.param_below_min': '「{node}」的「{param}」是 {value}，小於最小值 {min}',
   'graphValidation.param_above_max': '「{node}」的「{param}」是 {value}，大於最大值 {max}',
   'graphValidation.unknown_node_type': '「{node}」的節點類型「{type}」未安裝',
-  'graphValidation.unknown_preset': '「{node}」使用的預設模組「{preset}」不存在',
+  'graphValidation.unknown_preset': '「{node}」使用的預設組合「{preset}」不存在',
   'graphValidation.invalid_output_port': '「{node}」沒有輸出「{port}」',
   'graphValidation.invalid_input_port': '「{node}」沒有輸入「{port}」',
   'graphValidation.type_mismatch': '「{source}」的輸出「{source_port}」（{source_type}）不能接到「{node}」的輸入「{port}」（{target_type}）',
   'graphValidation.cycle': '圖中有迴圈：{path}',
-  'graphValidation.preset_input_not_exposed': '「{node}」沒有輸入「{port}」：預設模組「{preset}」沒有暴露這個連接埠',
-  'graphValidation.preset_output_not_exposed': '「{node}」沒有輸出「{port}」：預設模組「{preset}」沒有暴露這個連接埠',
-  'graphValidation.preset_triggered_empty': '「{node}」收到 trigger，但預設模組「{preset}」裡沒有節點',
-  'graphValidation.preset_triggered_all_fed': '「{node}」收到 trigger，但預設模組「{preset}」裡每個節點都由其他節點供給資料，沒有節點能開始',
+  'graphValidation.preset_input_not_exposed': '「{node}」沒有輸入「{port}」：預設組合「{preset}」沒有暴露這個連接埠',
+  'graphValidation.preset_output_not_exposed': '「{node}」沒有輸出「{port}」：預設組合「{preset}」沒有暴露這個連接埠',
+  'graphValidation.preset_triggered_empty': '「{node}」收到 trigger，但預設組合「{preset}」裡沒有節點',
+  'graphValidation.preset_triggered_all_fed': '「{node}」收到 trigger，但預設組合「{preset}」裡每個節點都由其他節點供給資料，沒有節點能開始',
   'graphValidation.subgraph_triggered_empty': '「{node}」收到 trigger，但這個區塊裡沒有節點',
   'graphValidation.trigger_source_missing': '連到「{node}」的 trigger 連線來自不在圖中的節點「{source}」，請從圖檔中移除這條線。',
   'graphValidation.trigger_target_missing': '從「{node}」拉出的 trigger 連線接到不在圖中的節點「{target}」，請從圖檔中移除這條線。',

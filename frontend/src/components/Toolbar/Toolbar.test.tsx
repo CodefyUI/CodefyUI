@@ -9,7 +9,7 @@ import { useTabStore } from '../../store/tabStore';
 import { useUIStore } from '../../store/uiStore';
 import { useNodeDefStore } from '../../store/nodeDefStore';
 import { useToastStore } from '../../store/toastStore';
-import { useDialogStore } from '../../store/dialogStore';
+import { useDialogStore, type PromptRequest } from '../../store/dialogStore';
 import { useProjectStore } from '../../store/projectStore';
 import { usePackStore } from '../../store/packStore';
 import { usePluginStore } from '../../store/pluginStore';
@@ -982,6 +982,52 @@ describe('Toolbar', () => {
     );
   });
 
+  // #618: a card on the canvas is copied into the preset as its own nodes, on
+  // the server, from the definition the graph has for it -- so the graph's
+  // definitions go with the request, as they do with a run or an export.
+  it('Export Subgraph: sends the definition of a card on the canvas', async () => {
+    mockedRest.createPreset.mockClear();
+    mockedRest.createPreset.mockResolvedValueOnce({} as never);
+    useNodeDefStore.setState({ fetchDefinitions: vi.fn().mockResolvedValue(undefined) });
+    const labeler = {
+      preset_name: 'Labeler',
+      category: 'Custom',
+      description: '',
+      tags: [],
+      nodes: [{ id: 'p', type: 'Print', params: { label: 'inner' } }],
+      edges: [],
+      exposed_inputs: [],
+      exposed_outputs: [],
+      exposed_params: [],
+    };
+    setActiveTab({
+      nodes: [
+        {
+          id: 'card',
+          type: 'baseNode',
+          position: { x: 0, y: 0 },
+          data: {
+            type: 'preset:Labeler',
+            params: {},
+            isPreset: true,
+            presetDefinition: labeler,
+            internalParams: { p: { label: 'set on the card' } },
+          },
+        },
+      ],
+    });
+    const { unmount } = render(<Toolbar />);
+    fireEvent.click(screen.getByText('Export'));
+    fireEvent.click(screen.getByText('Export as Subgraph'));
+    await resolveDialog('Holds A Card');
+    await waitFor(() => expect(mockedRest.createPreset).toHaveBeenCalledTimes(1));
+    const body = mockedRest.createPreset.mock.calls[0][0];
+    expect(body.presets).toEqual([labeler]);
+    expect(body.nodes[0].data.internalParams).toEqual({ p: { label: 'set on the card' } });
+    // Before the suite's cleanup restores the tab store, as in `exportAs` below.
+    unmount();
+  });
+
   it('Export Subgraph: createPreset rejection toasts error', async () => {
     mockedRest.createPreset.mockRejectedValueOnce(new Error('dup name'));
     setActiveTab({
@@ -997,11 +1043,16 @@ describe('Toolbar', () => {
   });
 
   /**
-   * #476. `POST /api/presets/create` now refuses an unstorable name with a
-   * CODED 400 -- `{detail: {code, ...fields}}`, no `message` -- so the
-   * sentence the user reads is written here, in the user's language. Before
-   * this the toast was `Export failed: [object Object]`: the reason was on
-   * the wire and thrown away one line from the screen.
+   * #476, #618 and #623. `POST /api/presets/create` refuses a name it cannot
+   * store, a name already taken and a graph it will not make a preset of
+   * with a CODED refusal -- `{detail: {code, ...fields}}`, no `message` -- so
+   * the sentence the user reads is written here, in the user's language.
+   * Before #476 the toast was `Export failed: [object Object]`.
+   *
+   * A refused NAME opens the name box again, with what was typed still in it
+   * and the sentence under it. Until #623 the box had closed before the
+   * request went out, so the reason arrived as an error toast and the user
+   * started the export over to type another name.
    */
   describe('Export Subgraph: a name the server will not store', () => {
     /** A coded refusal exactly as `createPreset` now throws one. */
@@ -1010,40 +1061,62 @@ describe('Toolbar', () => {
     }
 
     /**
-     * Run the export with *err* waiting, and answer with the error toast.
+     * Export a one-node canvas and answer the name box with *typed*.
      *
-     * `menu`/`item` are the labels to click, because the one case that runs
-     * in Traditional Chinese has a Traditional Chinese toolbar.
+     * `menu`/`item` are the labels to click, because the cases that run in
+     * Traditional Chinese have a Traditional Chinese toolbar.
+     *
+     * The caller unmounts the toolbar rather than the suite's cleanup: the
+     * afterEach above restores the tab store's applyLayout first, and a
+     * toolbar still subscribed to that store re-renders outside act().
      */
-    async function exportFailureToast(
-      err: unknown,
-      menu = 'Export',
-      item = 'Export as Subgraph',
-    ): Promise<string> {
-      mockedRest.createPreset.mockRejectedValueOnce(err);
+    async function exportAs(typed: string, menu = 'Export', item = 'Export as Subgraph') {
       setActiveTab({
         nodes: [{ id: 'n1', type: 'baseNode', position: { x: 0, y: 0 }, data: { type: 'Add', params: {} } }],
       });
-      const { unmount } = render(<Toolbar />);
+      const view = render(<Toolbar />);
       fireEvent.click(screen.getByText(menu));
       fireEvent.click(screen.getByText(item));
-      await resolveDialog('whatever the user typed');
+      await resolveDialog(typed);
+      return view;
+    }
+
+    /**
+     * Run the export with *err* waiting, and answer with the name box it opens
+     * again, which is cancelled before this returns.
+     */
+    async function askedAgain(err: unknown, menu?: string, item?: string): Promise<PromptRequest> {
+      mockedRest.createPreset.mockRejectedValueOnce(err);
+      const { unmount } = await exportAs('whatever the user typed', menu, item);
+      await waitFor(() => expect(useDialogStore.getState().active).not.toBeNull());
+      const again = useDialogStore.getState().active as PromptRequest;
+      // The reason is under the input, so no toast says it a second time.
+      expect(useToastStore.getState().toasts.filter((tt) => tt.type === 'error')).toEqual([]);
+      await act(async () => {
+        useDialogStore.getState().close(null);
+      });
+      unmount();
+      return again;
+    }
+
+    /** Run the export with *err* waiting, and answer with the error toast. */
+    async function exportFailureToast(err: unknown, menu?: string, item?: string): Promise<string> {
+      mockedRest.createPreset.mockRejectedValueOnce(err);
+      const { unmount } = await exportAs('whatever the user typed', menu, item);
       await waitFor(() =>
         expect(useToastStore.getState().toasts.some((tt) => tt.type === 'error')).toBe(true),
       );
-      // Unmounted here rather than by the suite's cleanup: the afterEach
-      // above restores the tab store's applyLayout first, and a toolbar still
-      // subscribed to that store re-renders outside act(). Only the toast is
-      // asserted on, so nothing needs the toolbar after this.
+      // A new name would not help with this one, so it is not asked for.
+      expect(useDialogStore.getState().active).toBeNull();
       unmount();
       return useToastStore.getState().toasts.find((tt) => tt.type === 'error')!.message;
     }
 
-    // Every code `routes_presets` can answer with, and the part of the
+    // Every name rule `routes_presets` can refuse with, and the part of the
     // sentence that has to survive: the rule it broke, and -- where the
     // refusal carries one -- the character, the name or the file it is
-    // about. A code that reached the toast as itself would read
-    // "Export failed: name_separator".
+    // about. A code that reached the box as itself would read
+    // "name_separator".
     it.each<[Record<string, unknown>, string]>([
       [{ code: 'name_empty' }, 'cannot be blank'],
       [{ code: 'name_separator', character: '/' }, '"/"'],
@@ -1057,31 +1130,60 @@ describe('Toolbar', () => {
       // use "a plain name", which is no help with a name that is too long.
       [{ code: 'name_reserved_character', character: '?' }, '"?"'],
       [{ code: 'name_too_long', limit: 255 }, '255'],
-    ])('says what is wrong with %j', async (detail, expected) => {
-      const message = await exportFailureToast(refusal(400, detail));
-      expect(message).toContain(expected);
-      expect(message).not.toContain('[object Object]');
-      expect(message).not.toContain(String(detail.code));
+    ])('asks again, saying what is wrong with %j', async (detail, expected) => {
+      const again = await askedAgain(refusal(400, detail));
+      expect(again.error).toContain(expected);
+      expect(again.error).not.toContain('[object Object]');
+      expect(again.error).not.toContain(String(detail.code));
+      // What was typed is still in the box, to be corrected rather than retyped.
+      expect(again.defaultValue).toBe('whatever the user typed');
     });
 
-    it('names the file a 409 collided with', async () => {
-      const message = await exportFailureToast(
-        refusal(409, { code: 'preset_file_exists', filename: 'llm_preset.json' }),
+    it.each<[Record<string, unknown>, string]>([
+      [{ code: 'preset_file_exists', filename: 'llm_preset.json' }, 'llm_preset.json'],
+      [{ code: 'preset_exists', name: 'LSTM Sequence' }, '"LSTM Sequence"'],
+    ])('asks again for a name already taken, %j', async (detail, expected) => {
+      const again = await askedAgain(refusal(409, detail));
+      expect(again.error).toContain(expected);
+      expect(again.error).not.toContain(String(detail.code));
+      expect(again.defaultValue).toBe('whatever the user typed');
+    });
+
+    it('exports under the name typed into the box it asked again with', async () => {
+      mockedRest.createPreset.mockClear();
+      mockedRest.createPreset
+        .mockRejectedValueOnce(refusal(409, { code: 'preset_file_exists', filename: 'nested1.json' }))
+        .mockResolvedValueOnce({} as never);
+      useNodeDefStore.setState({ fetchDefinitions: vi.fn().mockResolvedValue(undefined) });
+      const { unmount } = await exportAs('nested1');
+      await resolveDialog('nested2');
+      await waitFor(() =>
+        expect(useToastStore.getState().toasts.some((tt) => tt.type === 'success')).toBe(true),
       );
-      expect(message).toContain('llm_preset.json');
-      expect(message).not.toContain('preset_file_exists');
+      expect(mockedRest.createPreset.mock.calls.map(([body]) => body.name)).toEqual([
+        'nested1',
+        'nested2',
+      ]);
+      expect(useToastStore.getState().toasts.some((tt) => tt.type === 'error')).toBe(false);
+      unmount();
+    });
+
+    it('exports nothing when the box it asked again with is cancelled', async () => {
+      mockedRest.createPreset.mockClear();
+      await askedAgain(refusal(400, { code: 'name_separator', character: '/' }));
+      expect(mockedRest.createPreset).toHaveBeenCalledTimes(1);
+      expect(useDialogStore.getState().active).toBeNull();
+      expect(useToastStore.getState().toasts).toEqual([]);
     });
 
     // A code this build has never heard of -- a rule added server-side after
     // it shipped. It still has to read as a sentence, and it still has to say
     // the code, because that is the only part a bug report can carry.
     it('falls back to a sentence that names an unknown future code', async () => {
-      const message = await exportFailureToast(
-        refusal(400, { code: 'name_from_a_newer_server' }),
-      );
-      expect(message).toContain('name_from_a_newer_server');
-      expect(message).not.toContain('[object Object]');
-      expect(message).toMatch(/letters, numbers/);
+      const again = await askedAgain(refusal(400, { code: 'name_from_a_newer_server' }));
+      expect(again.error).toContain('name_from_a_newer_server');
+      expect(again.error).not.toContain('[object Object]');
+      expect(again.error).toMatch(/letters, numbers/);
     });
 
     // A coded refusal whose field is missing (an older or partial server)
@@ -1090,33 +1192,51 @@ describe('Toolbar', () => {
     it.each(['name_separator', 'name_reserved_character', 'name_too_long'])(
       'falls back rather than printing an unfilled placeholder for %s',
       async (code) => {
-        const message = await exportFailureToast(refusal(400, { code }));
-        expect(message).not.toMatch(/\{\w+\}/);
-        expect(message).toContain(code);
+        const again = await askedAgain(refusal(400, { code }));
+        expect(again.error).not.toMatch(/\{\w+\}/);
+        expect(again.error).toContain(code);
       },
     );
 
-    // The refusals that were already here answer with PROSE (`{detail:
-    // "Preset 'x' already exists"}`), and that prose is still what the editor
-    // shows: this fix translates the coded ones and leaves the rest alone.
-    it('still shows a prose detail unchanged', async () => {
-      const message = await exportFailureToast(
-        new rest.ApiError(409, "Preset 'Vision' already exists", {
-          detail: "Preset 'Vision' already exists",
-        }),
-      );
-      expect(message).toContain("Preset 'Vision' already exists");
+    // #618: a refusal of the GRAPH. Another name would not help, so it ends
+    // the export with a toast instead of asking again.
+    it.each<[Record<string, unknown>, string]>([
+      [{ code: 'preset_empty' }, 'nothing to export'],
+      [{ code: 'preset_no_ports' }, 'unconnected input or output'],
+      [{ code: 'preset_card_unknown', preset: 'LSTM Sequence' }, '"LSTM Sequence"'],
+      [{ code: 'preset_node_unknown', type: 'c3:EduTree' }, '"c3:EduTree"'],
+    ])('toasts a refusal of the graph, %j, without asking again', async (detail, expected) => {
+      const message = await exportFailureToast(refusal(400, detail));
+      expect(message).toContain(expected);
+      expect(message).not.toContain(String(detail.code));
+    });
+
+    // Not put into words here: a name sentence would send the user to the
+    // name for nothing, so the code is shown as it came.
+    it('shows a refusal of the graph it cannot put into words as its code', async () => {
+      const message = await exportFailureToast(refusal(400, { code: 'preset_from_a_newer_server' }));
+      expect(message).toContain('preset_from_a_newer_server');
+      expect(message).not.toMatch(/letters, numbers/);
+    });
+
+    // The engine refuses some canvases with PROSE -- the sentence a Run of the
+    // same canvas shows -- and that is shown as it came.
+    it('still shows a prose detail unchanged, without asking again', async () => {
+      const sentence =
+        "Bypassed node m (TextInput): output 'text' (STRING) has no type-compatible input to forward (inputs: none)";
+      const message = await exportFailureToast(new rest.ApiError(400, sentence, { detail: sentence }));
+      expect(message).toContain(sentence);
     });
 
     it('reads in Traditional Chinese when the editor does', async () => {
       useI18n.setState({ locale: 'zh-TW' });
-      const message = await exportFailureToast(
+      const again = await askedAgain(
         refusal(400, { code: 'name_separator', character: '/' }),
         '匯出',
         '匯出為子圖',
       );
-      expect(message).toContain('「/」');
-      expect(message).toContain('子圖名稱');
+      expect(again.error).toContain('「/」');
+      expect(again.error).toContain('子圖名稱');
     });
 
     it.each<[Record<string, unknown>, string]>([
@@ -1124,10 +1244,32 @@ describe('Toolbar', () => {
       [{ code: 'name_too_long', limit: 255 }, '255'],
     ])('reads %j in Traditional Chinese too', async (detail, expected) => {
       useI18n.setState({ locale: 'zh-TW' });
-      const message = await exportFailureToast(refusal(400, detail), '匯出', '匯出為子圖');
-      expect(message).toContain(expected);
-      expect(message).toContain('子圖名稱');
-      expect(message).not.toContain(String(detail.code));
+      const again = await askedAgain(refusal(400, detail), '匯出', '匯出為子圖');
+      expect(again.error).toContain(expected);
+      expect(again.error).toContain('子圖名稱');
+      expect(again.error).not.toContain(String(detail.code));
+    });
+
+    it('says a name already taken in Traditional Chinese', async () => {
+      useI18n.setState({ locale: 'zh-TW' });
+      const again = await askedAgain(
+        refusal(409, { code: 'preset_exists', name: 'LSTM Sequence' }),
+        '匯出',
+        '匯出為子圖',
+      );
+      expect(again.error).toContain('「LSTM Sequence」');
+      expect(again.error).not.toContain('preset_exists');
+    });
+
+    it('says a refusal of the graph in Traditional Chinese', async () => {
+      useI18n.setState({ locale: 'zh-TW' });
+      const message = await exportFailureToast(
+        refusal(400, { code: 'preset_empty' }),
+        '匯出',
+        '匯出為子圖',
+      );
+      expect(message).toContain('沒有可以匯出');
+      expect(message).not.toContain('preset_empty');
     });
   });
 

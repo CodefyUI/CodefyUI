@@ -886,8 +886,8 @@ async def test_a_canvas_with_nothing_but_start_is_refused(
         "name": "Nothing", "nodes": nodes, "edges": [],
     })
     assert resp.status_code == 400, resp.text
-    assert resp.json()["detail"] == (
-        "Graph must have at least one node other than Start")
+    # Coded, so the editor says it in the user's language (#618).
+    assert resp.json()["detail"] == {"code": "preset_empty"}
     # Nothing was written, in either presets dir.
     assert list(_isolated_presets.parent.rglob("*.json")) == []
 
@@ -1055,19 +1055,19 @@ async def test_a_name_a_built_in_preset_file_has_is_refused(
 
 @pytest.mark.asyncio
 async def test_a_preset_that_fails_to_load_leaves_no_file_behind(
-    test_client, _isolated_presets,
+    test_client, _isolated_presets, monkeypatch,
 ):
-    """A canvas holding a preset card still cannot be exported: the registry
-    refuses a preset whose inner node is another card. The file written for
-    it stayed, so a retry under the same name was refused with 409 instead
-    of getting the same answer again."""
-    from app.core.node_registry import registry as node_registry
+    """The backstop after the write. The file written for a preset the
+    registry refused stayed, so a retry under the same name was refused with
+    409 instead of getting the same answer again. Nothing the editor sends
+    reaches it any more -- a card is copied in and a node type this server
+    does not have is refused before the write (#618) -- so the registry is
+    made to refuse the file here."""
+    def refuse(path, _node_registry):
+        raise ValueError(f"{path.name} cannot be resolved")
 
-    preset_registry._presets["Inner Card"] = preset_registry._load_and_resolve(
-        {**_user_card_file(), "preset_name": "Inner Card"}, node_registry)
-    canvas = _say_hi_canvas(_CANVAS_TRIGGER)
-    canvas["nodes"].append(_canvas_node("c", "preset:Inner Card"))
-    request = {"name": "Holds A Card", **canvas}
+    monkeypatch.setattr(preset_registry, "load_file", refuse)
+    request = {"name": "Never Loads", **_say_hi_canvas(_CANVAS_TRIGGER)}
 
     first = await test_client.post("/api/presets/create", json=request)
     retry = await test_client.post("/api/presets/create", json=request)
@@ -1171,3 +1171,555 @@ def test_project_validate_knows_the_exported_presets(tmp_path, monkeypatch):
     finally:
         preset_registry._presets.clear()
         preset_registry._presets.update(saved)
+
+
+# -- a preset card and a muted node on the canvas (#618) ---------------------
+#
+# A card was copied into the preset as an inner node of type `preset:<name>`,
+# which the registry cannot load (it resolves inner types through the node
+# registry only), so the export answered 500 on every try. And only each
+# node's `params` were copied, so a node muted on the canvas ran inside the
+# preset. Both are now what a run of the canvas executes: the card opened up
+# into its own nodes with its settings applied, the muted node left out.
+
+
+def _labeler(name: str = "Labeler", label: str = "inner") -> dict:
+    """A one-node preset: a Print, its input and output exposed."""
+    return {
+        "preset_name": name,
+        "nodes": [{"id": "p", "type": "Print", "params": {"label": label}}],
+        "edges": [],
+        "exposed_inputs": [{"name": "value", "internal_node": "p",
+                            "internal_port": "value"}],
+        "exposed_outputs": [{"name": "value", "internal_node": "p",
+                             "internal_port": "value"}],
+        "exposed_params": [{"internal_node": "p", "param_name": "label",
+                            "display_name": "Label"}],
+    }
+
+
+@pytest.fixture
+def _installed_labeler(_isolated_presets):
+    """``Labeler`` installed, as a built-in or an exported preset is."""
+    from app.core.node_registry import registry as node_registry
+
+    preset_registry._presets["Labeler"] = preset_registry._load_and_resolve(
+        _labeler(), node_registry)
+    return _isolated_presets
+
+
+def _card(node_id: str, preset: str,
+          internal_params: dict | None = None) -> dict:
+    """A placed preset card the way the editor serializes one."""
+    return {"id": node_id, "type": f"preset:{preset}",
+            "position": {"x": 0, "y": 0},
+            "data": {"params": {},
+                     "internalParams": dict(internal_params or {})}}
+
+
+def _muted(node: dict) -> dict:
+    """*node* bypassed on the canvas, which writes ``data.bypassed``."""
+    node["data"]["bypassed"] = True
+    return node
+
+
+def _wire(source: str, source_handle: str, target: str,
+          target_handle: str) -> dict:
+    return {"id": f"{source}-{target}", "source": source, "target": target,
+            "sourceHandle": source_handle, "targetHandle": target_handle}
+
+
+async def _export(test_client, name: str, nodes: list, edges: list = (),
+                  presets: list | None = None):
+    body = {"name": name, "nodes": nodes, "edges": list(edges)}
+    if presets is not None:
+        body["presets"] = presets
+    return await test_client.post("/api/presets/create", json=body)
+
+
+@pytest.mark.asyncio
+async def test_a_preset_card_is_copied_in_as_its_own_nodes(
+    test_client, _installed_labeler,
+):
+    """With the settings made on the card, and its unconnected port the new
+    preset's -- and the file loads, so the export no longer answers 500."""
+    resp = await _export(test_client, "Holds A Card", [
+        _canvas_node("t", "TextInput", {"value": "hi"}),
+        _card("card", "Labeler", {"p": {"label": "set on the card"}}),
+    ], [_wire("t", "text", "card", "value")])
+    assert resp.status_code == 200, resp.text
+
+    stored = _stored(_installed_labeler, "holds_a_card.json")
+    assert [(n["id"], n["type"], n["params"]) for n in stored["nodes"]] == [
+        ("node_0", "TextInput", {"value": "hi"}),
+        ("node_1", "Print", {"label": "set on the card"}),
+    ]
+    assert stored["edges"] == [{
+        "source": "node_0", "target": "node_1",
+        "sourceHandle": "text", "targetHandle": "value",
+    }]
+    assert stored["exposed_inputs"] == []
+    assert [(p["internal_node"], p["internal_port"])
+            for p in stored["exposed_outputs"]] == [("node_1", "value")]
+    assert preset_registry.get("Holds A Card") is not None
+
+
+@pytest.mark.asyncio
+async def test_a_card_is_copied_from_the_definition_the_graph_carries(
+    test_client, _installed_labeler,
+):
+    """The graph's own ``presets[]`` entry wins over an installed preset of
+    the same name in a run, so it does here; and a preset only the graph
+    carries is copied in too."""
+    resp = await _export(test_client, "Owned", [
+        _card("a", "Labeler"),
+        _card("b", "Graph Only"),
+    ], presets=[
+        _labeler(label="the graph's"),
+        _labeler("Graph Only", label="only in the graph"),
+    ])
+    assert resp.status_code == 200, resp.text
+
+    assert [(n["type"], n["params"])
+            for n in _stored(_installed_labeler, "owned.json")["nodes"]] == [
+        ("Print", {"label": "the graph's"}),
+        ("Print", {"label": "only in the graph"}),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_a_card_whose_preset_is_nowhere_is_refused_by_name(
+    test_client, _isolated_presets,
+):
+    """Neither installed nor carried by the graph: refused before anything
+    is written, so a retry gets the same answer rather than a 409."""
+    request = {"name": "Lost Card", "nodes": [
+        _canvas_node("t", "TextInput", {"value": "x"}),
+        _card("card", "Nowhere"),
+    ], "edges": []}
+
+    first = await test_client.post("/api/presets/create", json=request)
+    retry = await test_client.post("/api/presets/create", json=request)
+
+    assert (first.status_code, retry.status_code) == (400, 400), retry.text
+    assert first.json()["detail"] == retry.json()["detail"] == {
+        "code": "preset_card_unknown", "preset": "Nowhere"}
+    assert list(_isolated_presets.parent.rglob("*.json")) == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stranger, presets", [
+    pytest.param(_canvas_node("x", "NotInstalledHere"), None,
+                 id="on the canvas"),
+    pytest.param(_muted(_canvas_node("x", "NotInstalledHere")), None,
+                 id="bypassed on the canvas"),
+    pytest.param(_card("x", "Strange Card"),
+                 [{"preset_name": "Strange Card",
+                   "nodes": [{"id": "s", "type": "NotInstalledHere"}],
+                   "edges": []}],
+                 id="inside a card's definition"),
+])
+async def test_a_node_type_this_server_does_not_have_is_refused_by_type(
+    test_client, _isolated_presets, stranger, presets,
+):
+    """A plugin's node whose pack is missing or disabled -- a workspace
+    import opens it as a placeholder -- cannot be stored: the registry
+    refuses a file that names it. That answered 500 in English after the
+    write; it is refused before the write, by type."""
+    request = {"name": "Holds A Stranger", **_say_hi_canvas(_CANVAS_TRIGGER)}
+    request["nodes"].append(stranger)
+    if presets is not None:
+        request["presets"] = presets
+
+    first = await test_client.post("/api/presets/create", json=request)
+    retry = await test_client.post("/api/presets/create", json=request)
+
+    assert (first.status_code, retry.status_code) == (400, 400), retry.text
+    assert first.json()["detail"] == retry.json()["detail"] == {
+        "code": "preset_node_unknown", "type": "NotInstalledHere"}
+    assert list(_isolated_presets.parent.rglob("*.json")) == []
+
+
+@pytest.mark.asyncio
+async def test_two_cards_of_one_preset_become_separate_nodes(
+    test_client, _installed_labeler,
+):
+    resp = await _export(test_client, "Two Cards", [
+        _card("a", "Labeler", {"p": {"label": "first"}}),
+        _card("b", "Labeler", {"p": {"label": "second"}}),
+    ])
+    assert resp.status_code == 200, resp.text
+
+    stored = _stored(_installed_labeler, "two_cards.json")
+    assert [(n["id"], n["params"]) for n in stored["nodes"]] == [
+        ("node_0", {"label": "first"}), ("node_1", {"label": "second"})]
+    assert [p["name"] for p in stored["exposed_inputs"]] == [
+        "node_0_value", "node_1_value"]
+    assert [p["name"] for p in stored["exposed_outputs"]] == [
+        "node_0_value", "node_1_value"]
+
+
+@pytest.mark.asyncio
+async def test_nodes_are_stored_in_the_order_data_flows(
+    test_client, _installed_labeler,
+):
+    """The preset's dialog lists the stored nodes in order, and a card is
+    opened up where it stood: one placed before the node feeding it was
+    listed first, "Print -> TextInput" for TextInput -> Print. Each node now
+    follows what feeds it; a node with no feeder keeps its place."""
+    resp = await _export(test_client, "In Flow Order", [
+        _card("card", "Labeler"),
+        _canvas_node("loose", "Print", {"label": "loose"}),
+        _canvas_node("t", "TextInput", {"value": "hi"}),
+    ], [_wire("t", "text", "card", "value")])
+    assert resp.status_code == 200, resp.text
+
+    stored = _stored(_installed_labeler, "in_flow_order.json")
+    assert [(n["id"], n["type"], n["params"]) for n in stored["nodes"]] == [
+        ("node_0", "Print", {"label": "loose"}),
+        ("node_1", "TextInput", {"value": "hi"}),
+        ("node_2", "Print", {"label": "inner"}),
+    ]
+    assert stored["edges"] == [{
+        "source": "node_1", "target": "node_2",
+        "sourceHandle": "text", "targetHandle": "value",
+    }]
+
+
+@pytest.mark.asyncio
+async def test_two_nodes_of_one_type_are_numbered_in_flow_order(
+    test_client, _installed_labeler,
+):
+    """Two "Print - label" fields under one "Print" heading: the dialog could
+    not say which was which. A repeated type is numbered in flow order, as
+    the built-in presets number theirs ("Activation 1"), one heading each;
+    a type that occurs once keeps its name."""
+    resp = await _export(test_client, "Two Prints", [
+        _card("card", "Labeler", {"p": {"label": "second"}}),
+        _canvas_node("first", "Print", {"label": "first"}),
+        _canvas_node("t", "TextInput", {"value": "hi"}),
+    ], [_wire("t", "text", "first", "value"),
+        _wire("first", "value", "card", "value")])
+    assert resp.status_code == 200, resp.text
+
+    stored = _stored(_installed_labeler, "two_prints.json")
+    assert [n["params"] for n in stored["nodes"]] == [
+        {"value": "hi"}, {"label": "first"}, {"label": "second"}]
+    assert [(p["group"], p["display_name"])
+            for p in stored["exposed_params"]] == [
+        ("TextInput", "TextInput - value"),
+        ("Print 1", "Print 1 - label"),
+        ("Print 2", "Print 2 - label"),
+    ]
+    assert [p["description"] for p in stored["exposed_outputs"]] == [
+        "Print 2: Pass-through"]
+
+
+@pytest.mark.asyncio
+async def test_exposed_ports_keep_canvas_order(test_client, _isolated_presets):
+    """Map runs a preset through its FIRST exposed input and output, so the
+    port lists keep the order they had before the nodes were stored in flow
+    order: canvas order, a card's ports where the card stood. Here the flow
+    order is solo, src, add, and the ports still list add's first."""
+    resp = await _export(test_client, "Ports In Canvas Order", [
+        _canvas_node("add", "Add"),
+        _canvas_node("solo", "Print", {"label": "solo"}),
+        _canvas_node("src", "TextInput", {"value": "x"}),
+    ], [_wire("src", "text", "add", "tensor_a")])
+    assert resp.status_code == 200, resp.text
+
+    stored = _stored(_isolated_presets, "ports_in_canvas_order.json")
+    assert [n["type"] for n in stored["nodes"]] == ["Print", "TextInput", "Add"]
+    assert [(p["internal_node"], p["internal_port"])
+            for p in stored["exposed_inputs"]] == [
+        ("node_2", "tensor_b"), ("node_0", "value")]
+    assert [(p["internal_node"], p["internal_port"])
+            for p in stored["exposed_outputs"]] == [
+        ("node_2", "tensor"), ("node_0", "value")]
+
+
+@pytest.mark.asyncio
+async def test_map_uses_the_ports_the_canvas_lists_first(
+    test_client, _isolated_presets,
+):
+    """The same rule, run through Map: its result comes from the output the
+    canvas lists first (the end of the Print chain), not from the loose
+    TextInput that flow order puts ahead of it."""
+    from app.nodes.dataflow.map_node import MapNode
+
+    resp = await _export(test_client, "Map Body", [
+        _canvas_node("last", "Print", {"label": "last"}),
+        _canvas_node("loose", "TextInput", {"value": "loose"}),
+        _canvas_node("first", "Print", {"label": "first"}),
+    ], [_wire("first", "value", "last", "value")])
+    assert resp.status_code == 200, resp.text
+
+    out = MapNode().execute({"items": [1, 2]}, {"subgraph": "Map Body"})
+    assert out["results"] == [1, 2]
+
+
+@pytest.mark.asyncio
+async def test_a_cycle_keeps_its_place_when_nodes_are_ordered(
+    test_client, _isolated_presets,
+):
+    """A cycle has no flow order. A run refuses it; the export takes it as
+    it always has, with the cycle's nodes last in canvas order, instead of
+    failing on the ordering."""
+    resp = await _export(test_client, "Loop", [
+        _canvas_node("a", "Print", {"label": "a"}),
+        _canvas_node("b", "Print", {"label": "b"}),
+        _canvas_node("t", "TextInput", {"value": "hi"}),
+    ], [_wire("a", "value", "b", "value"), _wire("b", "value", "a", "value")])
+    assert resp.status_code == 200, resp.text
+
+    assert [n["params"] for n in _stored(_isolated_presets, "loop.json")["nodes"]] == [
+        {"value": "hi"}, {"label": "a"}, {"label": "b"}]
+
+
+@pytest.mark.asyncio
+async def test_a_card_nested_in_a_cards_definition_is_copied_in_too(
+    test_client, _installed_labeler,
+):
+    """Expansion repeats until no card is left, as a run's does."""
+    wrapper = {
+        "preset_name": "Wrapper",
+        "nodes": [{"id": "inner", "type": "preset:Labeler"}],
+        "edges": [],
+    }
+    resp = await _export(test_client, "Nested", [_card("w", "Wrapper")],
+                         presets=[wrapper])
+    assert resp.status_code == 200, resp.text
+
+    assert [(n["type"], n["params"])
+            for n in _stored(_installed_labeler, "nested.json")["nodes"]] == [
+        ("Print", {"label": "inner"})]
+
+
+@pytest.mark.asyncio
+async def test_a_muted_node_is_left_out_and_wired_past(
+    test_client, _isolated_presets,
+):
+    """A run hands what fed the muted node to the node after it."""
+    resp = await _export(test_client, "Skips One", [
+        _canvas_node("t", "TextInput", {"value": "hi"}),
+        _muted(_canvas_node("m", "Print", {"label": "muted"})),
+        _canvas_node("p", "Print", {"label": "after"}),
+    ], [_wire("t", "text", "m", "value"), _wire("m", "value", "p", "value")])
+    assert resp.status_code == 200, resp.text
+
+    stored = _stored(_isolated_presets, "skips_one.json")
+    assert [(n["id"], n["type"], n["params"]) for n in stored["nodes"]] == [
+        ("node_0", "TextInput", {"value": "hi"}),
+        ("node_1", "Print", {"label": "after"}),
+    ]
+    assert stored["edges"] == [{
+        "source": "node_0", "target": "node_1",
+        "sourceHandle": "text", "targetHandle": "value",
+    }]
+
+
+@pytest.mark.asyncio
+async def test_an_input_a_muted_node_leaves_empty_becomes_a_port(
+    test_client, _isolated_presets,
+):
+    """Nothing fed the muted node, so nothing reaches the node after it:
+    that input is unconnected, and an unconnected port is the preset's."""
+    resp = await _export(test_client, "Fed Later", [
+        _muted(_canvas_node("m", "Print")),
+        _canvas_node("p", "Print", {"label": "after"}),
+    ], [_wire("m", "value", "p", "value")])
+    assert resp.status_code == 200, resp.text
+
+    stored = _stored(_isolated_presets, "fed_later.json")
+    assert [n["params"] for n in stored["nodes"]] == [{"label": "after"}]
+    assert stored["edges"] == []
+    assert [(p["internal_node"], p["internal_port"])
+            for p in stored["exposed_inputs"]] == [("node_0", "value")]
+
+
+@pytest.mark.asyncio
+async def test_a_canvas_whose_every_node_is_muted_is_refused(
+    test_client, _isolated_presets,
+):
+    resp = await _export(test_client, "All Muted",
+                         [_muted(_canvas_node("m", "Print"))])
+    assert resp.status_code == 400, resp.text
+    assert resp.json()["detail"] == {"code": "preset_empty"}
+    assert list(_isolated_presets.parent.rglob("*.json")) == []
+
+
+#: Canvases a run of which is refused, each with the sentence the run says.
+_REFUSED_AS_A_RUN_IS = [
+    pytest.param(
+        [_muted(_canvas_node("m", "TextInput", {"value": "x"})),
+         _canvas_node("p", "Print")],
+        [_wire("m", "text", "p", "value")], None,
+        "Bypassed node m (TextInput): output 'text' (STRING) has no "
+        "type-compatible input",
+        id="a muted node with nothing to forward"),
+    pytest.param(
+        [_muted(_card("card", "Labeler")), _canvas_node("p", "Print")],
+        [], [_labeler()],
+        "Bypass is not supported on preset node(s): card",
+        id="a muted card"),
+    pytest.param(
+        [_canvas_node("t", "TextInput"), _card("card", "Labeler")],
+        [_wire("t", "text", "card", "nope")], [_labeler()],
+        "Edge targets input port 'nope' which preset 'Labeler' does not "
+        "expose (node card)",
+        id="an edge on a port the card does not expose"),
+    pytest.param(
+        [_card("card", "Broken")], [],
+        [{"preset_name": "Broken", "edges": []}],
+        "Preset 'Broken' is in this graph but could not be read",
+        id="a definition the graph carries but cannot read"),
+    pytest.param(
+        [_card("card", "Blocky")], [],
+        [{"preset_name": "Blocky",
+          "nodes": [{"id": "blk", "type": "subgraph:inner"}], "edges": []}],
+        "Preset 'Blocky' contains subgraph instance(s) blk (node card)",
+        id="a definition holding a block"),
+    pytest.param(
+        [_card("card", "Loop")], [],
+        [{"preset_name": "Loop",
+          "nodes": [{"id": "again", "type": "preset:Loop"}], "edges": []}],
+        "Preset nesting exceeds the maximum depth of 10",
+        id="a definition holding itself"),
+]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("nodes, edges, presets, sentence",
+                         _REFUSED_AS_A_RUN_IS)
+async def test_a_canvas_a_run_refuses_is_refused_in_the_runs_words(
+    test_client, _isolated_presets, nodes, edges, presets, sentence,
+):
+    resp = await _export(test_client, "Refused", nodes, edges, presets)
+    assert resp.status_code == 400, resp.text
+    assert sentence in resp.json()["detail"]
+    assert list(_isolated_presets.parent.rglob("*.json")) == []
+
+
+@pytest.mark.asyncio
+async def test_a_block_two_definitions_down_is_refused(
+    test_client, _isolated_presets,
+):
+    """Checked on every expansion pass, not only the first: a block inside a
+    nested definition was left in the stored preset as a ``subgraph:`` node,
+    and the registry cannot load a file that holds one."""
+    blocky = {"preset_name": "Blocky",
+              "nodes": [{"id": "blk", "type": "subgraph:inner"}], "edges": []}
+    outer = {"preset_name": "Holds Blocky",
+             "nodes": [{"id": "mid", "type": "preset:Blocky"}], "edges": []}
+    resp = await _export(test_client, "Refused", [_card("card", "Holds Blocky")],
+                         presets=[outer, blocky])
+    assert resp.status_code == 400, resp.text
+    assert ("Preset 'Blocky' contains subgraph instance(s) blk "
+            "(node card__mid)") in resp.json()["detail"]
+    assert list(_isolated_presets.parent.rglob("*.json")) == []
+
+
+@pytest.mark.asyncio
+async def test_a_key_inside_a_card_is_not_written(
+    test_client, _isolated_presets,
+):
+    """Blanked AFTER the card is opened up: neither the key typed into the
+    card nor the one in the definition the graph carries was a param of a
+    node on the canvas until then."""
+    chat = {
+        "preset_name": "Chat Card",
+        "nodes": [{"id": "chat", "type": "LLMChat", "params": {
+            "provider": "ChatGPT API", "model": "gpt-5.2",
+            "openai_api_key": "sk-in-the-definition"}}],
+        "edges": [],
+    }
+    resp = await _export(test_client, "Chatty", [
+        _card("card", "Chat Card",
+              {"chat": {"anthropic_api_key": "sk-ant-typed-into-the-card"}}),
+    ], presets=[chat])
+    assert resp.status_code == 200, resp.text
+
+    written = (_isolated_presets / "chatty.json").read_text(encoding="utf-8")
+    assert "sk-in-the-definition" not in written
+    assert "sk-ant-typed-into-the-card" not in written
+    assert json.loads(written)["nodes"][0]["params"]["model"] == "gpt-5.2"
+
+
+@pytest.mark.asyncio
+async def test_a_name_an_installed_preset_has_is_refused_with_a_code(
+    test_client, _installed_labeler,
+):
+    """Coded like the other name refusals, so the editor can say it in the
+    user's language and ask for another name."""
+    resp = await _create(test_client, "Labeler")
+    assert resp.status_code == 409, resp.text
+    assert resp.json()["detail"] == {"code": "preset_exists", "name": "Labeler"}
+    assert list(_installed_labeler.iterdir()) == []
+
+
+@pytest.mark.asyncio
+async def test_a_canvas_with_every_port_wired_is_refused_with_a_code(
+    test_client, _isolated_presets,
+):
+    resp = await _export(test_client, "Closed", [
+        _canvas_node("t", "TextInput", {"value": "x"}),
+        _canvas_node("o", "GraphOutput", {"name": "out"}),
+    ], [_wire("t", "text", "o", "value")])
+    assert resp.status_code == 400, resp.text
+    assert resp.json()["detail"] == {"code": "preset_no_ports"}
+    assert list(_isolated_presets.parent.rglob("*.json")) == []
+
+
+@pytest.mark.asyncio
+async def test_a_part_of_the_canvas_start_does_not_reach_is_still_exported(
+    test_client, _isolated_presets,
+):
+    """Export takes the whole canvas, as the docs say, unlike a run, which
+    skips what nothing from Start reaches: here the `draft` chain, and the
+    Print whose open input is meant to be the preset's port. Pruning like a
+    run would drop that Print too, the part a preset is usually made for,
+    and the run's pruning (forward reach plus its rescue passes) is not a
+    helper this route can call. Pinned so that changing it is a decision."""
+    resp = await _export(test_client, "Has Draft", [
+        _canvas_node("start", "Start"),
+        _canvas_node("ta", "TextInput", {"value": "hi"}),
+        _canvas_node("pa", "Print", {"label": "a"}),
+        _canvas_node("td", "TextInput", {"value": "draft"}),
+        _canvas_node("pd", "Print", {"label": "draft"}),
+        _canvas_node("port", "Print", {"label": "fed by the preset"}),
+    ], [{"id": "t", "source": "start", "target": "ta", **_CANVAS_TRIGGER},
+        _wire("ta", "text", "pa", "value"), _wire("td", "text", "pd", "value")])
+    assert resp.status_code == 200, resp.text
+
+    stored = _stored(_isolated_presets, "has_draft.json")
+    assert [n["params"] for n in stored["nodes"]] == [
+        {"value": "hi"}, {"label": "a"}, {"value": "draft"}, {"label": "draft"},
+        {"label": "fed by the preset"}]
+    assert [p["name"] for p in stored["exposed_inputs"]] == ["node_4_value"]
+
+
+@pytest.mark.asyncio
+async def test_a_preset_made_from_a_card_runs_with_its_input_wired(
+    test_client, _installed_labeler,
+):
+    resp = await _export(test_client, "Outer", [
+        _canvas_node("a", "Print", {"label": "outer"}),
+        _card("card", "Labeler", {"p": {"label": "card"}}),
+    ], [_wire("a", "value", "card", "value")])
+    assert resp.status_code == 200, resp.text
+    assert [p["name"] for p in resp.json()["exposed_inputs"]] == [
+        "node_0_value"]
+
+    nodes = [_canvas_node("start", "Start"),
+             _canvas_node("t", "TextInput", {"value": "hi"}),
+             _canvas_node("c", "preset:Outer")]
+    edges = [{"id": "s", "source": "start", "target": "t", **_CANVAS_TRIGGER},
+             _wire("t", "text", "c", "node_0_value")]
+    assert validate_graph(nodes, edges) == []
+    executable, _edges, _mapping = prepare_executable_graph(nodes, edges)
+    assert sorted(n["id"] for n in executable) == [
+        "c__node_0", "c__node_1", "start", "t"]
+
+    results = await execute_graph(nodes, edges, context=ExecutionContext(
+        device="cpu", weights_persistent=False, graph_id="f1-card-in-preset"))
+    assert results["c__node_1"]["value"] == "hi"

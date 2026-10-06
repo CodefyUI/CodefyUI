@@ -30,17 +30,17 @@ Host guard 會在其他所有檢查之前處理每個 request，包括 SPA 頁�
 | `/api/auth/bootstrap` | GET | open | 對任何 Host 獲准的請求回傳 `{"token": "..."}`——前端取得 session token 的方式。 |
 | `/api/system/devices` | GET | open | 可用於執行圖表的運算裝置：最佳可用的 `default`，加上一份能區分 NVIDIA CUDA、AMD ROCm 與 Apple MPS 的具名 `devices` 清單。支援編輯器的裝置選擇器。 |
 
-## 節點與預設模組 {/* #nodes-and-presets */}
+## 節點與預設組合 {/* #nodes-and-presets */}
 
 | 端點 | 方法 | 驗證 | 說明 |
 |----------|--------|------|-------------|
 | `/api/nodes` | GET | open | 列出所有節點定義。每個節點都帶有 `details`（較長的說明；`description` 已足夠時為空）、`provider`（`builtin`、`custom` 或 `plugin:<id>`）與 `requires_pack`（節點宣告的套件包，沒有則為 `null`），每個 SELECT 參數則帶有 `option_packs`（選項值到套件包 id 的對應）。編輯器會讓目前使用但尚未安裝的值保持可選取並顯示警告，將其他尚未安裝的選項變灰，並提供安裝入口。這兩個欄位都不會阻止 run；不能在缺少套件包時執行的節點會在 `execute` 中拒絕執行，內建節點就是如此（參閱[自訂節點](/advanced/custom-nodes#anatomy-of-a-node)）。 |
 | `/api/nodes/{node_name}` | GET | open | 取得單一節點定義。 |
-| `/api/nodes/reload` | POST | token | 重新探索每一個節點與預設模組來源：從磁碟重新 import 自訂節點與外掛；重新註冊但不重新 import 內建節點；重新掃描預設模組。回傳 `{builtin, custom, plugins, presets, total}`；與 `POST /api/plugins/reload` 完全相同。 |
+| `/api/nodes/reload` | POST | token | 重新探索每一個節點與預設組合來源：從磁碟重新 import 自訂節點與外掛；重新註冊但不重新 import 內建節點；重新掃描預設組合。回傳 `{builtin, custom, plugins, presets, total}`；與 `POST /api/plugins/reload` 完全相同。 |
 | `/api/nodes/script/validate` | POST | token | 在輸入 PythonScript body 時，依 Tier-0 政策檢查它（`{"code"}`）：`{ok, error, line, defines_run, allowed_modules}`。`ok: false` 是正常的 200，不是錯誤。 |
-| `/api/presets` | GET | open | 列出預設模組定義。 |
-| `/api/presets/{name}` | GET | open | 取得單一預設模組定義。 |
-| `/api/presets/create` | POST | token | 從請求中的完整 `nodes` 與 `edges` 建立新預設模組；編輯器會送出目前的整張畫布。 |
+| `/api/presets` | GET | open | 列出預設組合定義。 |
+| `/api/presets/{name}` | GET | open | 取得單一預設組合定義。 |
+| `/api/presets/create` | POST | token | 從請求中的完整 `nodes` 與 `edges` 建立新預設組合；編輯器會送出目前的整張畫布。 |
 
 ## 圖表 {/* #graphs */}
 
@@ -229,7 +229,7 @@ Host guard 會在其他所有檢查之前處理每個 request，包括 SPA 頁�
 ## 限制與錯誤 {/* #limits-and-errors */}
 
 - **Body 大小。** `MAX_RUN_BODY_BYTES`（64 MB，`CODEFYUI_MAX_RUN_BODY_BYTES`）限制每個 request body，並在位元組抵達時逐步計數，包括 chunked request。四條 route 改用 `MAX_UPLOAD_SIZE`（500 MB，`CODEFYUI_MAX_UPLOAD_SIZE`）：`/api/files/upload`、`/api/images/upload`、`/api/models/upload` 與 `/api/custom-nodes/upload`。這些 route 另保留 64 KB 給 multipart metadata，並將設定的上限套用到檔案本身。超過任一上限時會回傳 413。
-- **檔案名稱。** 四條上傳 route 會以檔名中最後一個 `/` 之後的部分儲存檔案；名稱若是 Windows 無法儲存的，會回傳 400：含有 `< > : " \ | ? *` 或控制字元、以 UTF-8 計算超過 255 bytes（一個中文字占 3 bytes）、只由點組成，或是 `con.csv` 這類裝置名稱。這條規則在每種伺服器作業系統上都相同，所以上傳的檔案可以在 Windows、macOS 與 Linux 之間移動。下載與刪除 route 以及 `/api/custom-nodes/toggle` 會拒絕含有控制字元的名稱；在 Windows 伺服器上，也會拒絕含有上述字元的名稱。在 Linux 與 macOS 上，這類名稱照常查找，所以已經以這類名稱存放的檔案仍然可以取用。這些 route 不限制名稱長度：某一段超過伺服器檔案系統上限的名稱會回傳 404。`/api/custom-nodes/upload` 與 `/api/custom-nodes/toggle` 另外拒絕以 `__` 開頭的名稱，例如 `__init__.py`。每個拒絕的 `detail` 都會說明該改什麼。`/api/presets/create` 對預設模組名稱套用同一條規則，長度以實際寫入的檔名（名稱加上 `.json`）計算，並回傳帶代碼的 `detail`。
+- **檔案名稱。** 四條上傳 route 會以檔名中最後一個 `/` 之後的部分儲存檔案；名稱若是 Windows 無法儲存的，會回傳 400：含有 `< > : " \ | ? *` 或控制字元、以 UTF-8 計算超過 255 bytes（一個中文字占 3 bytes）、只由點組成，或是 `con.csv` 這類裝置名稱。這條規則在每種伺服器作業系統上都相同，所以上傳的檔案可以在 Windows、macOS 與 Linux 之間移動。下載與刪除 route 以及 `/api/custom-nodes/toggle` 會拒絕含有控制字元的名稱；在 Windows 伺服器上，也會拒絕含有上述字元的名稱。在 Linux 與 macOS 上，這類名稱照常查找，所以已經以這類名稱存放的檔案仍然可以取用。這些 route 不限制名稱長度：某一段超過伺服器檔案系統上限的名稱會回傳 404。`/api/custom-nodes/upload` 與 `/api/custom-nodes/toggle` 另外拒絕以 `__` 開頭的名稱，例如 `__init__.py`。每個拒絕的 `detail` 都會說明該改什麼。`/api/presets/create` 對預設組合名稱套用同一條規則，長度以實際寫入的檔名（名稱加上 `.json`）計算，並回傳帶代碼的 `detail`。
 - **拒絕順序。** Host guard 先執行，可能回傳 421；接著是驗證，可能回傳 403 或 401；最後才檢查 body 大小。被拒絕的 request body 不會被讀取。因此，未驗證的 request 不會收到 413 response。
 - **WebSocket frame。** Transport 會執行 `WS_MAX_MESSAGE_BYTES`（`CODEFYUI_WS_MAX_MESSAGE_BYTES`，預設等於 request body 上限）。frame 超過上限時，連線會以 code 1009 關閉，而不是回傳 413。手動啟動 uvicorn 時請參閱[把 graph 當成函式呼叫，第 8 節](/usage/graph-as-a-function#8-limits-and-gotchas)。
 - **錯誤格式。** API 依 route 類別使用四種格式：

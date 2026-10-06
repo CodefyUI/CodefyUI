@@ -60,7 +60,9 @@ export function DialogContainer() {
     let timerId: ReturnType<typeof setTimeout>;
     if (active.kind === 'prompt') {
       setInputValue(active.defaultValue ?? '');
-      setValidationError(null);
+      // A refusal the caller hands in (the server refused the last answer)
+      // reads like a refusal of `validate`, and clears the same way.
+      setValidationError(active.error ?? null);
       // Focus + select the input on next paint so the default value is
       // overwritable in one keystroke (matches native window.prompt UX).
       timerId = setTimeout(() => {

@@ -258,7 +258,7 @@ cdui project init my-service --adopt /path/to/old-graphs
 ## 注意事項與限制（v1） {/* #notes-and-limits-v1 */}
 
 - 每個伺服器實例一個專案（編輯器內還沒有專案切換器）。
-- `DB_PATH`、custom nodes 與[匯出的預設模組](/advanced/presets#creating-your-own)仍由整個安裝共用；
+- `DB_PATH`、custom nodes 與[匯出的預設組合](/advanced/presets#creating-your-own)仍由整個安裝共用；
   [plugins](/advanced/plugins) 才是可攜的機制（在 manifest 中以 SHA 釘選）。
 - `assets/data/` 是相對的 `Dataset` 或 `FileReader` 路徑所解析到的位置。
   `CSVReader`、`DocumentLoader` 與 `TextCorpusDataset` 則會把輸入的相對路徑

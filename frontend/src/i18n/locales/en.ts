@@ -79,6 +79,18 @@ const en = {
   // the sentence because it is the only part worth quoting in a bug report.
   'toolbar.export.name.unknownRule':
     'The server refused this name ({code}). Use a plain name: letters, numbers, spaces, - or _.',
+  // #618/#623: `name.exists` is shown under the name box, which asks again.
+  // The `graph.*` refusals end the export, inside `toolbar.export.fail`.
+  'toolbar.export.name.exists':
+    'A subgraph or preset called "{name}" already exists. Pick another name.',
+  'toolbar.export.graph.empty':
+    'The canvas has nothing to export besides Start, notes and bypassed nodes.',
+  'toolbar.export.graph.noPorts':
+    'The subgraph needs at least one unconnected input or output to become its port.',
+  'toolbar.export.graph.unknownPreset':
+    'The preset card "{preset}" is not installed here, so it cannot be copied in.',
+  'toolbar.export.graph.unknownNode':
+    'The node type "{type}" is not installed here, so it cannot be copied in.',
   'toolbar.exportPython': 'Export as Python',
   'toolbar.exportPython.title': 'Python script that runs this graph; needs the CodefyUI backend environment',
   'toolbar.exportPython.empty': 'Canvas has no executable nodes — add a node before exporting.',

@@ -121,10 +121,11 @@ function field(detail: Record<string, unknown>, key: string): string | null {
  * file -- and a table has nothing to interpolate.
  *
  * null for two cases, both of which fall through to `toolbar.export.name
- * .unknownRule`: a code this build has never heard of (a rule the server grew
- * later), and a known code whose field is missing (an older or partial
- * server). The second matters as much as the first -- a sentence rendered
- * with an unfilled `{character}` in it is worse than a general one.
+ * .unknownRule` when the code is about the name (`exportFailureText`): a
+ * code this build has never heard of (a rule the server grew later), and a
+ * known code whose field is missing (an older or partial server). The second
+ * matters as much as the first -- a sentence rendered with an unfilled
+ * `{character}` in it is worse than a general one.
  */
 function nameRefusalMessage(
   t: Translate,
@@ -168,6 +169,10 @@ function nameRefusalMessage(
         ? null
         : t('toolbar.export.name.fileExists', { filename });
     }
+    case 'preset_exists': {
+      const name = field(detail, 'name');
+      return name === null ? null : t('toolbar.export.name.exists', { name });
+    }
     case 'name_control_character': {
       const codepoint = detail.codepoint;
       return typeof codepoint === 'number'
@@ -182,12 +187,63 @@ function nameRefusalMessage(
 }
 
 /**
+ * The sentence for one coded refusal of the GRAPH (#618), or null for
+ * "cannot say", on the same terms as `nameRefusalMessage`.
+ *
+ * Nothing on the canvas to export, nothing left unconnected to become a
+ * port, a card or a node type this server does not have: another name
+ * helps with none of them, so they end the export instead of asking again.
+ */
+function graphRefusalMessage(
+  t: Translate,
+  code: string,
+  detail: Record<string, unknown>,
+): string | null {
+  switch (code) {
+    case 'preset_empty':
+      return t('toolbar.export.graph.empty');
+    case 'preset_no_ports':
+      return t('toolbar.export.graph.noPorts');
+    case 'preset_card_unknown': {
+      const preset = field(detail, 'preset');
+      return preset === null
+        ? null
+        : t('toolbar.export.graph.unknownPreset', { preset });
+    }
+    case 'preset_node_unknown': {
+      const type = field(detail, 'type');
+      return type === null ? null : t('toolbar.export.graph.unknownNode', { type });
+    }
+    default:
+      return null;
+  }
+}
+
+/**
+ * Whether *err* refuses the NAME (#623): a #476 rule, or a name already
+ * taken. The user answers it by typing another name, so the name box opens
+ * again with the refusal under it; anything else would be refused the same
+ * way whatever the name.
+ */
+function isNameRefusal(err: unknown): boolean {
+  const detail = errorDetail(err);
+  const code = detail === null ? null : field(detail, 'code');
+  return (
+    code !== null &&
+    (code.startsWith('name_') || code === 'preset_file_exists' || code === 'preset_exists')
+  );
+}
+
+/**
  * What a failed Export as Subgraph reads as, coded refusal or not.
  *
- * Three kinds of failure arrive here and only one of them is coded. A PROSE
- * refusal (no nodes, a subgraph instance, a duplicate name) and a network
- * error both keep the message they came with -- the server wrote those
- * sentences and rewriting them is not this fix.
+ * A coded refusal is put into words here, in the user's language: a name the
+ * server will not store or that is taken, and a graph it will not make a
+ * preset of (#618). The rest keep the message they came with: a collapsed
+ * block (the editor refuses that before asking for a name, so only a
+ * hand-made request meets the server's prose), the engine's sentence about a
+ * card or a muted node -- the one a Run of the canvas shows -- and a network
+ * error.
  */
 function exportFailureText(t: Translate, err: unknown): string {
   const detail = errorDetail(err);
@@ -195,10 +251,15 @@ function exportFailureText(t: Translate, err: unknown): string {
   if (detail === null || code === null) {
     return err instanceof Error ? err.message : String(err);
   }
-  return (
-    nameRefusalMessage(t, code, detail) ??
-    t('toolbar.export.name.unknownRule', { code })
-  );
+  const said = nameRefusalMessage(t, code, detail) ?? graphRefusalMessage(t, code, detail);
+  if (said !== null) return said;
+  // A code this build cannot put into words. About a name, the general
+  // sentence still says what to do; about anything else it would send the
+  // user to the name for nothing, so the refusal is shown as it came (an
+  // ApiError, since `errorDetail` read it: its message is the code).
+  return isNameRefusal(err)
+    ? t('toolbar.export.name.unknownRule', { code })
+    : (err as Error).message;
 }
 
 /* ── Export as Python: absolute file paths (#557) ───────────────── */
@@ -434,7 +495,10 @@ export function Toolbar() {
   }, [getSerializedGraph, activeTab.name, activeTab.description, t, addToast]);
 
   const handleExportSubgraph = useCallback(async () => {
-    const { nodes, edges, subgraphs } = getSerializedGraph();
+    // `presets`: the graph's own definitions. A card on the canvas is copied
+    // into the preset as its own nodes, on the server, from the definition
+    // the graph has for it, as a run expands it (#618).
+    const { nodes, edges, presets, subgraphs } = getSerializedGraph();
     if (nodes.length === 0) {
       addToast(t('toolbar.export.empty'), 'warning');
       return;
@@ -476,22 +540,38 @@ export function Toolbar() {
       );
       return;
     }
-    const name = await prompt({
-      title: t('toolbar.export.prompt'),
-      placeholder: 'preset-name',
-    });
-    if (!name?.trim()) return;
-    try {
-      await createPreset({ name: name.trim(), nodes, edges });
-      await fetchDefinitions();
-      addToast(t('toolbar.export.success', { name: name.trim() }), 'success');
-    } catch (e) {
-      // #476: a name the server cannot store is refused with a CODE, and
-      // `(e as Error).message` on that refusal was the literal text
-      // `[object Object]`. The reason the user needs -- which character, which
-      // reserved name, which file -- is in the body; `exportFailureText`
-      // turns it into the sentence.
-      addToast(t('toolbar.export.fail', { error: exportFailureText(t, e) }), 'error');
+    // #623: a NAME the server refuses is asked for again, with what was
+    // typed still in the box and the reason under it; the box is gone only
+    // while the one request is out. Any other refusal ends the export.
+    let typed: string | undefined;
+    let refusal: string | undefined;
+    for (;;) {
+      const name = await prompt({
+        title: t('toolbar.export.prompt'),
+        placeholder: 'preset-name',
+        defaultValue: typed,
+        error: refusal,
+      });
+      if (!name?.trim()) return;
+      try {
+        await createPreset({ name: name.trim(), nodes, edges, presets });
+        await fetchDefinitions();
+        addToast(t('toolbar.export.success', { name: name.trim() }), 'success');
+        return;
+      } catch (e) {
+        // #476: a name the server cannot store is refused with a CODE, and
+        // `(e as Error).message` on that refusal was the literal text
+        // `[object Object]`. The reason the user needs -- which character,
+        // which reserved name, which file -- is in the body;
+        // `exportFailureText` turns it into the sentence.
+        if (isNameRefusal(e)) {
+          typed = name.trim();
+          refusal = exportFailureText(t, e);
+          continue;
+        }
+        addToast(t('toolbar.export.fail', { error: exportFailureText(t, e) }), 'error');
+        return;
+      }
     }
   }, [getSerializedGraph, fetchDefinitions, t, addToast]);
 

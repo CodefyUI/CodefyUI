@@ -1,5 +1,7 @@
+import heapq
 import json
 import logging
+from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Any
 
@@ -8,7 +10,16 @@ from fastapi import APIRouter, HTTPException
 from ..config import settings
 from ..core.data_paths import UnstorableName, check_file_name, resolve_under
 from ..core.node_base import ParamType
-from ..core.graph_engine import is_note_node, subgraph_id_of
+from ..core.graph_engine import (
+    GraphValidationError,
+    build_preset_fallback,
+    container_bypass_errors,
+    expand_presets,
+    is_note_node,
+    preset_subgraph_errors,
+    resolve_bypass,
+    subgraph_id_of,
+)
 from ..core.node_registry import registry as node_registry
 from ..core.preset_registry import preset_registry
 from ..core.secret_params import scrub_graph_secrets
@@ -30,10 +41,13 @@ def _coded(status_code: int, code: str, **fields: Any) -> HTTPException:
     ``message``: prose about a coded refusal belongs to whoever is talking
     to the user, in their language.
 
-    Only the #476 name refusals answer this way. The refusals that were
-    already here (no nodes, a subgraph instance, no unconnected ports, a
-    duplicate name) keep their prose ``detail``, because the editor renders
-    those strings today and rewriting them is not this fix.
+    The name refusals (#476) answer this way, and since #618 so do the
+    refusals the editor puts into words itself: ``preset_exists`` (a name
+    the registry already holds), ``preset_empty``, ``preset_no_ports``,
+    ``preset_card_unknown`` and ``preset_node_unknown``. Two kinds keep a
+    prose ``detail``: a subgraph instance, which the editor refuses before
+    it asks for a name, and the engine's own sentence about a card or a
+    muted node -- the one a Run of the same canvas shows.
     """
     return HTTPException(status_code=status_code,
                          detail={"code": code, **fields})
@@ -126,7 +140,9 @@ def _preset_contents(
     A wire counts as a trigger by its ``type``, by its ``__trigger`` end (a
     hand-rolled request may leave the type out) or by an end on a node left
     out. Block instances are refused below instead, because leaving one out
-    WOULD lose part of what the preset computes.
+    WOULD lose part of what the preset computes. Preset cards and muted
+    nodes stay in here; :func:`_flattened` turns them into what a run
+    executes once the name has been checked (#618).
     """
     def left_out(node: dict[str, Any]) -> bool:
         return node.get("type") == "Start" or is_note_node(node)
@@ -140,6 +156,140 @@ def _preset_contents(
         and edge.get("target") not in gone
     ]
     return [node for node in nodes if not left_out(node)], kept_edges
+
+
+#: How many times nested preset cards are expanded, the budget
+#: :func:`~app.core.graph_engine.prepare_executable_graph` gives a run.
+_PRESET_DEPTH = 10
+
+
+def _flattened(
+    nodes: list[dict[str, Any]],
+    edges: list[dict[str, Any]],
+    presets: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """The canvas the way a run of it executes it (#618).
+
+    A preset card becomes its own nodes, with the settings made on the card,
+    and a muted node is left out, with what fed it handed to the nodes after
+    it. A stored preset can hold neither: the registry resolves inner types
+    through the node registry alone, so a ``preset:<name>`` inner node made
+    the file unloadable, and an inner node has no field for a mute, so the
+    muted node ran. Both are done by the engine's own ``expand_presets`` and
+    ``resolve_bypass``, in the order and to the depth
+    :func:`~app.core.graph_engine.prepare_executable_graph` uses, so the
+    preset holds what a run of the canvas executes and needs no other preset
+    to stay installed. *presets* are the graph's own definitions, which win
+    over an installed preset of the same name, as they do in a run. The
+    nodes come back in canvas order, a card's nodes where the card stood.
+
+    Refused with a code: a card whose preset neither the graph nor this
+    server has (before anything is expanded), and a node type this server
+    does not have (once everything is). Every other refusal is the engine's
+    sentence, the one a Run of the canvas shows: a muted card, a definition
+    that cannot be read or names a block, an edge a card cannot carry,
+    nesting past the budget, a muted node with nothing to forward.
+    """
+    muted_containers = container_bypass_errors(nodes)
+    if muted_containers:
+        raise HTTPException(status_code=400, detail="; ".join(muted_containers))
+
+    fallback = build_preset_fallback(presets)
+    for node in nodes:
+        node_type = str(node.get("type", ""))
+        if not node_type.startswith("preset:"):
+            continue
+        name = node_type[len("preset:"):]
+        if name not in fallback and preset_registry.get(name) is None:
+            raise _coded(400, "preset_card_unknown", preset=name)
+
+    def holds_a_card(graph_nodes: list[dict[str, Any]]) -> bool:
+        return any(
+            str(node.get("type", "")).startswith("preset:")
+            for node in graph_nodes
+        )
+
+    for _ in range(_PRESET_DEPTH):
+        if not holds_a_card(nodes):
+            break
+        # On every pass, not only the first: a definition nested in another
+        # can name a block as well, and a block left in the stored preset
+        # makes the file unloadable.
+        refusals = preset_subgraph_errors(nodes, fallback)
+        if refusals:
+            raise HTTPException(status_code=400, detail="; ".join(refusals))
+        try:
+            nodes, edges, _ = expand_presets(
+                nodes, edges, preset_fallback=fallback)
+        except GraphValidationError as exc:
+            # ``str``: the message may be a ``ValidationIssue`` (#561).
+            raise HTTPException(status_code=400, detail=str(exc)) from None
+    if holds_a_card(nodes):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Preset nesting exceeds the maximum depth of {_PRESET_DEPTH}",
+        )
+
+    bypass = resolve_bypass(nodes, edges)
+    if bypass.errors:
+        raise HTTPException(status_code=400, detail="; ".join(bypass.errors))
+
+    # A node type this server does not have -- a plugin's node whose pack is
+    # missing or disabled, which a workspace import opens as a placeholder --
+    # cannot be stored: the registry refuses to load a file that names one
+    # (``bypass`` leaves such a node in place, muted or not). Refused here,
+    # by type, rather than written and then refused with a 500.
+    for node in bypass.nodes:
+        node_type = str(node.get("type") or "")
+        if node_registry.get(node_type) is None:
+            raise _coded(400, "preset_node_unknown", type=node_type)
+    return bypass.nodes, bypass.edges
+
+
+def _in_flow_order(
+    nodes: list[dict[str, Any]],
+    edges: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """*nodes* in the order data flows through them (#618).
+
+    The stored node order is the order the preset's dialog lists the nodes
+    in, and expansion opens a card up where it stood on the canvas, so a
+    card placed before the node feeding it was listed ahead of it. Each node
+    now comes after every node that feeds it and otherwise keeps its place,
+    so an independent chain stays together. The nodes of a cycle, which has
+    no such order (a run refuses it), go last, in canvas order.
+
+    For the stored nodes and params only: the exposed ports keep canvas
+    order, because Map runs a preset through its first exposed input and
+    output (``map_node.py``).
+    """
+    place: dict[Any, int] = {}
+    for index, node in enumerate(nodes):
+        place.setdefault(node.get("id"), index)
+    feeds: dict[int, list[int]] = defaultdict(list)
+    waiting = [0] * len(nodes)
+    for edge in edges:
+        source, target = place.get(edge.get("source")), place.get(edge.get("target"))
+        if source is None or target is None or source == target:
+            continue
+        feeds[source].append(target)
+        waiting[target] += 1
+
+    # The earliest node on the canvas among those whose feeders are all
+    # placed goes next.
+    ready = [index for index, count in enumerate(waiting) if count == 0]
+    heapq.heapify(ready)
+    order: list[int] = []
+    while ready:
+        index = heapq.heappop(ready)
+        order.append(index)
+        for fed in feeds[index]:
+            waiting[fed] -= 1
+            if waiting[fed] == 0:
+                heapq.heappush(ready, fed)
+    placed = set(order)
+    order += [index for index in range(len(nodes)) if index not in placed]
+    return [nodes[index] for index in order]
 
 
 @router.get("", response_model=list[PresetDefinition])
@@ -161,13 +311,12 @@ async def create_preset(request: CreatePresetRequest):
 
     Auto-detects exposed ports (unconnected ports) and exposed params. Start
     nodes, trigger wires and notes are left out (:func:`_preset_contents`).
+    A preset card is copied in as its own nodes and a muted node is left
+    out, both with the engine's own helpers (:func:`_flattened`).
     """
     nodes, edges = _preset_contents(request.nodes, request.edges)
     if not nodes:
-        raise HTTPException(
-            status_code=400,
-            detail="Graph must have at least one node other than Start",
-        )
+        raise _coded(400, "preset_empty")
 
     # #476: the name becomes a filename here, before it becomes anything
     # else. Early on purpose -- everything below this line is work done on
@@ -177,7 +326,7 @@ async def create_preset(request: CreatePresetRequest):
     filepath = _preset_path(request.name)
 
     if preset_registry.get(request.name):
-        raise HTTPException(status_code=409, detail=f"Preset '{request.name}' already exists")
+        raise _coded(409, "preset_exists", name=request.name)
 
     # A name the registry does not know can still land on a file that is
     # already taken, because the registry's key is the name as TYPED and
@@ -213,30 +362,45 @@ async def create_preset(request: CreatePresetRequest):
             ),
         )
 
+    # #618: a card becomes its own nodes and a muted node goes, as in a run.
+    nodes, edges = _flattened(nodes, edges, request.presets)
+    if not nodes:
+        # Every node that was left was muted.
+        raise _coded(400, "preset_empty")
+
     # I3: never persist a SECRET param value into a preset definition file.
-    # Blank secrets in the incoming graph (both data.params and any
-    # preset-embedded data.internalParams) before any of it is copied into
-    # the stored preset. C1 (below) additionally keeps SECRET params out of
-    # the exposed-params schema; this guards the raw VALUES.
+    # Blank secrets in the graph before any of it is copied into the stored
+    # preset. After `_flattened` on purpose: the params of a card's nodes,
+    # with the settings made on the card, only become node params there.
+    # C1 (below) additionally keeps SECRET params out of the exposed-params
+    # schema; this guards the raw VALUES.
     scrub_graph_secrets(nodes)
 
-    # Create short ID mapping for cleaner JSON
+    # #618: the nodes are stored, and their params listed, in the order data
+    # flows; the exposed ports keep canvas order (see `_in_flow_order`).
+    flow = _in_flow_order(nodes, edges)
+
+    # Create short ID mapping for cleaner JSON, numbered in flow order
     id_map: dict[str, str] = {}
-    for i, node in enumerate(nodes):
+    for i, node in enumerate(flow):
         old_id = node.get("id", f"node_{i}")
         id_map[old_id] = f"node_{i}"
 
-    # Transform nodes
+    # Transform nodes. Each entry is also kept by its canvas node, so the
+    # ports below can be walked in canvas order.
     internal_nodes = []
-    for node in nodes:
+    internal_of: dict[int, dict[str, Any]] = {}
+    for node in flow:
         old_id = node.get("id", "")
         node_type: str = node.get("type", "")
         params = node.get("data", {}).get("params", {})
-        internal_nodes.append({
+        entry = {
             "id": id_map.get(old_id, old_id),
             "type": node_type,
             "params": params,
-        })
+        }
+        internal_nodes.append(entry)
+        internal_of[id(node)] = entry
 
     # Transform edges
     internal_edges = []
@@ -261,10 +425,32 @@ async def create_preset(request: CreatePresetRequest):
     exposed_outputs = []
     exposed_params = []
 
+    # #618: a type that occurs more than once is numbered in flow order, as
+    # the built-in presets number theirs ("Activation 1"). Two "Activation -
+    # function" fields under one heading left the preset's dialog unable to
+    # say which was which.
+    repeated = {
+        node_type
+        for node_type, count in Counter(n["type"] for n in internal_nodes).items()
+        if count > 1
+    }
+    seen: Counter[str] = Counter()
+    label_of: dict[int, str] = {}
     for node in internal_nodes:
+        seen[node["type"]] += 1
+        label_of[id(node)] = (
+            f"{node['type']} {seen[node['type']]}"
+            if node["type"] in repeated else node["type"]
+        )
+
+    # Ports in canvas order: Map runs a preset through its first exposed
+    # input and output, so which port comes first must not depend on the
+    # order the nodes are stored in.
+    for node in (internal_of[id(canvas_node)] for canvas_node in nodes):
         node_cls = node_registry.get(node["type"])
         if not node_cls:
             continue
+        label = label_of[id(node)]
 
         # Unconnected input ports → exposed inputs.
         #
@@ -283,7 +469,7 @@ async def create_preset(request: CreatePresetRequest):
                     "internal_node": node["id"],
                     "internal_port": port.name,
                     "data_type": port.data_type.value,
-                    "description": f"{node['type']}: {port.description}",
+                    "description": f"{label}: {port.description}",
                 })
 
         # Unconnected output ports → exposed outputs (see above).
@@ -294,10 +480,16 @@ async def create_preset(request: CreatePresetRequest):
                     "internal_node": node["id"],
                     "internal_port": port.name,
                     "data_type": port.data_type.value,
-                    "description": f"{node['type']}: {port.description}",
+                    "description": f"{label}: {port.description}",
                 })
 
-        # All params → exposed params (grouped by node type)
+    # All params → exposed params, in flow order, grouped by node as
+    # labelled above.
+    for node in internal_nodes:
+        node_cls = node_registry.get(node["type"])
+        if not node_cls:
+            continue
+        label = label_of[id(node)]
         for param in node_cls.define_params():
             # C1: never expose a SECRET param (API key) as a preset param. A
             # masked field in the preset config modal would let a user type a
@@ -309,15 +501,12 @@ async def create_preset(request: CreatePresetRequest):
             exposed_params.append({
                 "internal_node": node["id"],
                 "param_name": param.name,
-                "display_name": f"{node['type']} - {param.name}",
-                "group": node["type"],
+                "display_name": f"{label} - {param.name}",
+                "group": label,
             })
 
     if not exposed_inputs and not exposed_outputs:
-        raise HTTPException(
-            status_code=400,
-            detail="Subgraph has no unconnected ports — it needs at least one exposed input or output",
-        )
+        raise _coded(400, "preset_no_ports")
 
     # Build preset data
     preset_data = {
