@@ -16,9 +16,9 @@ import type { Connection, Edge, FinalConnectionState } from '@xyflow/react';
  *   it (`isValid`);
  * - the pointer is not over a card, or is over the wire's own Start node;
  * - the card has no `__trigger` handle to land on (a Start node, a note);
- * - this Start node already triggers that card. The store's `onConnect`
- *   appends without checking, so a second drop would stack a duplicate wire
- *   under the first.
+ * - this Start node already triggers that card, so no second wire is stacked
+ *   under the first. FlowCanvas's validity check, which a connection found
+ *   here is put to next, refuses that duplicate as well (#619).
  *
  * `doc` is the document the canvas lives in; tests pass their own.
  */

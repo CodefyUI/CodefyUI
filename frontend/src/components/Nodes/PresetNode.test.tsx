@@ -325,6 +325,29 @@ describe('PresetNode', () => {
     expect(trigger.className).not.toMatch(/triggerHandleDetaching/);
   });
 
+  // #619: the card turns red as BaseNode's does; the diamond alone is a few
+  // pixels at the zoom a fitted graph opens at.
+  it.each<[string, string, boolean]>([
+    ['marks the card a trigger wire is being pulled off', 'p1', true],
+    ['leaves the card alone while another one loses its trigger', 'other', false],
+  ])('%s', async (_, detachedFrom, marked) => {
+    useUIStore.setState({
+      draggingSourceType: 'TRIGGER',
+      reconnectingHandle: { nodeId: detachedFrom, handleId: '__trigger', type: 'target' },
+    });
+    renderPresetWithEdges(
+      presetData(),
+      [{ id: 't1', source: 's', target: 'p1', targetHandle: '__trigger', data: { type: 'trigger' } } as Edge],
+      'p1',
+    );
+    const card = await waitFor(() => {
+      const n = [...document.querySelectorAll('div')].find((d) => /entryPoint/.test(d.className));
+      if (!n) throw new Error('not rendered');
+      return n;
+    });
+    expect(/entryPointDetaching/.test(card.className)).toBe(marked);
+  });
+
   it('adds the entryPoint class when a trigger edge targets the node', async () => {
     renderPresetWithEdges(
       presetData(),
@@ -347,6 +370,35 @@ describe('PresetNode', () => {
     );
     await waitFor(() => expect(screen.getByText('NoTrig')).toBeTruthy());
     expect([...document.querySelectorAll('div')].some((d) => /entryPoint/.test(d.className))).toBe(false);
+  });
+
+  it('moves the entryPoint marker with a trigger wire moved to another card', async () => {
+    // Only the edges change, as when a trigger wire is moved (#619).
+    const nodes: Node[] = [
+      { id: 'p1', type: 'presetNode', position: { x: 0, y: 0 }, data: presetData({ label: 'First' }) as never },
+      { id: 'p2', type: 'presetNode', position: { x: 300, y: 0 }, data: presetData({ label: 'Second' }) as never },
+    ];
+    const triggering = (target: string) => (
+      <div style={{ width: 800, height: 600 }}>
+        <ReactFlowProvider>
+          <ReactFlow
+            nodes={nodes}
+            edges={[{ id: 't1', source: 's', target, targetHandle: '__trigger', data: { type: 'trigger' } }]}
+            nodeTypes={nodeTypes}
+          />
+        </ReactFlowProvider>
+      </div>
+    );
+    const marked = (id: string) =>
+      /entryPoint(?!Detaching)/.test(
+        document.querySelector(`.react-flow__node[data-id="${id}"] > div`)?.className ?? '',
+      );
+    const { rerender } = render(triggering('p1'));
+    await waitFor(() => expect(marked('p1')).toBe(true));
+    expect(marked('p2')).toBe(false);
+    rerender(triggering('p2'));
+    await waitFor(() => expect(marked('p2')).toBe(true));
+    expect(marked('p1')).toBe(false);
   });
 
   it('mousedown on a CONNECTED exposed input redirects to the edge reconnect anchor', () => {

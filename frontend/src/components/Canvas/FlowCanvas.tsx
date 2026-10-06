@@ -135,6 +135,36 @@ async function allowDeleteWithNoModalOpen(): Promise<boolean> {
   return !isAnyModalOpen();
 }
 
+/**
+ * The wire `connection` would repeat, if one is already on the canvas
+ * (#619). `ignoreId` is a wire being moved, which is not a copy of itself.
+ *
+ * A trigger lands on a card's one `__trigger` handle, so any trigger wire
+ * between the same two nodes is the same wire, one saved without
+ * `sourceHandle` included. A data wire is the same when both its ports are,
+ * as the plugin `connect` op tests (`plugins/ops.ts`). A different source into
+ * an input that already has one is fan-in, not a copy: that is how branches
+ * merge, and the engine and the exported script both read the last source
+ * that produced a value.
+ */
+function duplicateEdgeOf(
+  edges: readonly Edge[],
+  connection: Pick<Edge, 'source' | 'target' | 'sourceHandle' | 'targetHandle'>,
+  ignoreId: string | null,
+): Edge | undefined {
+  const trigger = connection.targetHandle === '__trigger';
+  return edges.find(
+    (e) =>
+      e.id !== ignoreId &&
+      e.source === connection.source &&
+      e.target === connection.target &&
+      (trigger
+        ? e.targetHandle === '__trigger'
+        : (e.sourceHandle ?? '') === (connection.sourceHandle ?? '') &&
+          (e.targetHandle ?? '') === (connection.targetHandle ?? '')),
+  );
+}
+
 /*
  * ONLY-RENDER-VISIBLE — why `onlyRenderVisibleElements` is set below (#162).
  *
@@ -461,6 +491,10 @@ export function FlowCanvas({ tabId }: { tabId?: string } = {}) {
     [storeOnConnect],
   );
 
+  // The edge being reconnected, if any. The validity check leaves it out, so
+  // the wire in hand is not taken for a copy of itself (#619).
+  const reconnectingEdgeRef = useRef<string | null>(null);
+
   const handleIsValidConnection: IsValidConnection = useCallback(
     (edgeOrConnection) => {
       // `IsValidConnection` now receives `Edge | Connection`; both expose
@@ -476,6 +510,12 @@ export function FlowCanvas({ tabId }: { tabId?: string } = {}) {
       const sourceNode = tab.nodes.find((n) => n.id === source);
       const targetNode = tab.nodes.find((n) => n.id === target);
       if (sourceNode?.type === 'noteNode' || targetNode?.type === 'noteNode') return false;
+
+      // No wire is added twice (#619): not by a snap or release on a handle,
+      // a click-to-connect, a moved wire dropped where the same wire already
+      // runs, or onConnectEnd's body drop, all of which ask this first. A
+      // moved wire refused here is then removed, by onReconnectEnd.
+      if (duplicateEdgeOf(tab.edges, edgeOrConnection, reconnectingEdgeRef.current)) return false;
 
       // Trigger connections (from Start node) are control-flow markers,
       // not data — they connect only to the __trigger handle on target nodes,
@@ -535,12 +575,11 @@ export function FlowCanvas({ tabId }: { tabId?: string } = {}) {
     []
   );
 
-  // The edge being reconnected, if any: onReconnectEnd deletes it when it is
-  // dropped where it connects to nothing. A reconnect that lands clears it in
-  // onReconnect, whether React Flow connected the drop or onConnectEnd moved
-  // a trigger wire onto a card's body.
-  const reconnectingEdgeRef = useRef<string | null>(null);
-
+  // reconnectingEdgeRef, declared above for the validity check (#619), is set
+  // here: onReconnectEnd deletes that edge when it is dropped where it
+  // connects to nothing. A reconnect that lands clears it in onReconnect,
+  // whether React Flow connected the drop or onConnectEnd moved a trigger wire
+  // onto a card's body.
   const onReconnectStart = useCallback((_: any, edge: Edge, handleType: 'source' | 'target') => {
     reconnectingEdgeRef.current = edge.id;
     // Mark the endpoint being detached so its handle shows the red warning
@@ -555,23 +594,12 @@ export function FlowCanvas({ tabId }: { tabId?: string } = {}) {
     const tab = useTabStore.getState().tabs.find(
       (t) => t.id === useTabStore.getState().activeTabId,
     );
-    // A trigger wire moved onto a card its Start node already triggers is
-    // refused, as onConnectEnd's body drop refuses it: the reconnect is left
-    // unfinished, and onReconnectEnd removes the wire. React Flow's own snap
-    // onto that card's `__trigger` diamond lands here unchecked, and stacked
-    // a second trigger wire on the card.
-    if (
-      newConnection.targetHandle === '__trigger' &&
-      tab?.edges.some(
-        (e) =>
-          e.id !== oldEdge.id &&
-          e.source === newConnection.source &&
-          e.target === newConnection.target &&
-          e.targetHandle === '__trigger',
-      )
-    ) {
-      return;
-    }
+    // A wire moved where the same wire already runs is refused, as the
+    // validity check refuses it (#619): the reconnect is left unfinished, and
+    // onReconnectEnd removes the wire. That check comes first for every drop
+    // React Flow connects and for onConnectEnd's body drop; this second guard
+    // keeps a copy from being stacked if a drop ever lands here unasked.
+    if (duplicateEdgeOf(tab?.edges ?? [], newConnection, oldEdge.id)) return;
     reconnectingEdgeRef.current = null;
     // onReconnectEnd always follows and clears too; clearing here as well
     // keeps the indicator lifecycle local to each handler.
