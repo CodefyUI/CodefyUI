@@ -1,5 +1,5 @@
 import { memo } from 'react';
-import { Handle, Position, useReactFlow } from '@xyflow/react';
+import { Handle, Position } from '@xyflow/react';
 import type { NodeProps } from '@xyflow/react';
 import type { AppNode } from '../../types';
 import { getPortColor, readablePresetNodes } from '../../utils';
@@ -8,6 +8,7 @@ import { useTabStore } from '../../store/tabStore';
 import { useUIStore } from '../../store/uiStore';
 import { useI18n } from '../../i18n';
 import { STATUS_COLORS } from '../../styles/theme';
+import { useIsTriggerTarget } from './triggerTarget';
 import styles from './PresetNode.module.css';
 import baseStyles from './BaseNode.module.css';
 
@@ -15,14 +16,12 @@ function PresetNode({ id, data, selected }: NodeProps<AppNode>) {
   const openPresetModal = useTabStore((s) => s.openPresetModal);
   const draggingSourceType = useUIStore((s) => s.draggingSourceType);
   const reconnectingHandle = useUIStore((s) => s.reconnectingHandle);
-  const { getEdges } = useReactFlow();
   const def = data.definition;
   const preset = data.presetDefinition;
   const { t } = useI18n();
   const isDraggingTrigger = draggingSourceType === 'TRIGGER';
-  const isTriggerTarget = getEdges().some(
-    (e) => e.target === id && ((e.data as { type?: string } | undefined)?.type === 'trigger'),
-  );
+  // The entry-point marker, following the edges as BaseNode's does (#619).
+  const isTriggerTarget = useIsTriggerTarget(id);
 
   // True when this exact handle is the originally-connected endpoint of an
   // in-progress edge-reconnect drag; it shows the red "detaching" ring.
@@ -54,8 +53,8 @@ function PresetNode({ id, data, selected }: NodeProps<AppNode>) {
     ) {
       return;
     }
-    // Read edges at event time straight from the store — no per-node
-    // subscription (same imperative pattern as the getEdges() trigger check).
+    // Read edges at event time straight from the store: needed only at the
+    // press, so no per-node subscription.
     const { tabs, activeTabId } = useTabStore.getState();
     const tab = tabs.find((t) => t.id === activeTabId);
     const edge = tab ? findDetachableEdge(tab.edges, id, handleId) : null;
@@ -105,7 +104,10 @@ function PresetNode({ id, data, selected }: NodeProps<AppNode>) {
   return (
     <div
       onClick={handleClick}
-      className={`${styles.node}${isTriggerTarget ? ` ${baseStyles.entryPoint}` : ''}${isDraggingTrigger ? ` ${baseStyles.triggerDropTarget}` : ''}`}
+      className={`${styles.node}${isTriggerTarget ? ` ${baseStyles.entryPoint}` : ''}${isDraggingTrigger ? ` ${baseStyles.triggerDropTarget}` : ''}${
+        // As on BaseNode: the card shows it is losing its trigger (#619).
+        isDetaching('__trigger', 'target') ? ` ${baseStyles.entryPointDetaching}` : ''
+      }`}
       style={{
         border: `1px solid ${borderColor}`,
         // rgb(224,169,43) is --status-preset's own rgb() — no glow token is

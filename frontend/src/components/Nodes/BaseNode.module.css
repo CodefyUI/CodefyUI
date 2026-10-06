@@ -630,15 +630,18 @@
 }
 
 /* ── Node glow when it is a valid trigger drop target ── */
+/* The trigger outlines from here down are !important: App.css takes the
+   outline off a selected card (`.react-flow__node.selected > div`, more
+   specific than one class), which hid them on the card just clicked (#619). */
 .triggerDropTarget {
-  outline: 2px solid rgba(34, 197, 94, 0.6);
+  outline: 2px solid rgba(34, 197, 94, 0.6) !important;
   outline-offset: 3px;
   box-shadow: 0 0 12px rgba(34, 197, 94, 0.25), 0 4px 12px rgba(0, 0, 0, 0.4) !important;
 }
 
 /* Entry point marker — applied when node is a trigger target (connected from Start) */
 .entryPoint {
-  outline: 2px solid var(--flow-trigger);
+  outline: 2px solid var(--flow-trigger) !important;
   outline-offset: 3px;
   box-shadow: 0 0 0 5px rgba(34, 197, 94, 0.18), 0 4px 12px rgba(0, 0, 0, 0.4);
 }
@@ -659,4 +662,22 @@
   background-position: center;
   color: var(--text-primary);
   z-index: 10;
+}
+
+/* The card a trigger wire is being pulled off (#619): the entry-point marker
+   turns red. The red diamond alone is a few pixels at the zoom a fitted graph
+   opens at, among the green ones every card shows during a trigger drag. On
+   the card, not on the wire, which would read red over the card bodies where
+   a drop connects it (#579). Declared after .triggerDropTarget and
+   .entryPoint so it wins over both; the shadow is !important to beat
+   .triggerDropTarget's and the card's inline one. rgb(255,107,99) is
+   --status-error's own rgb() — see .portDetaching. */
+.entryPointDetaching {
+  outline: 3px solid var(--status-error) !important;
+  outline-offset: 3px;
+  box-shadow: 0 0 0 6px rgba(255, 107, 99, 0.35), 0 4px 12px rgba(0, 0, 0, 0.4) !important;
+}
+
+.entryPointDetaching::before {
+  background-color: var(--status-error);
 }

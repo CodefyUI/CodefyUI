@@ -1,6 +1,6 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { render, screen } from '@testing-library/react';
-import { NonTensorView, PortGroup, keyOf } from './PortGroup';
+import { NonTensorView, PortGroup, keyOf, rowKeys } from './PortGroup';
 import type { PortMedia } from './portCaptures';
 import { makeHighlight, shapesEqual } from './diff';
 import { useI18n } from '../../i18n';
@@ -209,6 +209,67 @@ describe('PortGroup — media ports', () => {
     expect(img.tagName).toBe('IMG');
     expect(img.getAttribute('src')).toBe('/api/media/clip.gif');
     expect(document.querySelector('video')).toBeNull();
+  });
+});
+
+// ── One port in two rows (#562) ─────────────────────────────────────────────
+// One output wired into two inputs of the selected node (`x` into both
+// `tensor_a` and `tensor_b` of Add) gives two input rows for the same port, as
+// does one source feeding two nodes of a segment.
+
+describe('PortGroup — the same port in two rows', () => {
+  const twice = [
+    { nodeId: 'src', port: 'out', displayName: 'Src.out' },
+    { nodeId: 'src', port: 'out', displayName: 'Src.out' },
+  ];
+
+  it('renders both rows without a duplicate-key warning', () => {
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      render(<PortGroup kind="input" title="Inputs (2)" ports={twice} fetches={{}} />);
+      expect(screen.getAllByText('Src.out')).toHaveLength(2);
+      expect(error.mock.calls.flat().join('\n')).not.toMatch(/same key/);
+    } finally {
+      error.mockRestore();
+    }
+  });
+
+  it('leaves only the new rows when another node is shown', () => {
+    // Rows that shared a key were left on screen when the list changed, so
+    // the next node selected showed the old node's cards as well.
+    const { container, rerender } = render(
+      <PortGroup kind="input" title="Inputs (2)" ports={twice} fetches={{}} />,
+    );
+    rerender(
+      <PortGroup
+        kind="input"
+        title="Inputs (1)"
+        ports={[{ nodeId: 'other', port: 'y', displayName: 'Other.y' }]}
+        fetches={{}}
+      />,
+    );
+    expect(container.querySelectorAll('[class*="portBlock"]')).toHaveLength(1);
+    expect(screen.queryByText('Src.out')).toBeNull();
+    expect(screen.getByText('Other.y')).toBeInTheDocument();
+  });
+
+  it('keys a repeat after its port, and a port seen once by the port alone', () => {
+    const a = { nodeId: 'src', port: 'out' };
+    const b = { nodeId: 'src', port: 'y' };
+    expect(rowKeys([a, a, b, a])).toEqual(['src::out', 'src::out#1', 'src::y', 'src::out#2']);
+  });
+
+  it('shows the captured value in every row of the port', () => {
+    const value: OutputData = { type: 'scalar', run_id: 'r', node_id: 'src', port: 'out', value: 7 };
+    render(
+      <PortGroup
+        kind="input"
+        title="Inputs (2)"
+        ports={twice}
+        fetches={{ [keyOf('src', 'out')]: { loading: false, error: null, data: value } }}
+      />,
+    );
+    expect(screen.getAllByText('7')).toHaveLength(2);
   });
 });
 

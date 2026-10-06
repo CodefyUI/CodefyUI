@@ -1,3 +1,6 @@
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import { dirname, join } from 'node:path';
 import { describe, it, expect, beforeEach, vi, afterEach } from 'vitest';
 import { act, render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { ReactFlow, ReactFlowProvider, type Edge, type Node, type NodeTypes } from '@xyflow/react';
@@ -97,9 +100,8 @@ function renderBody(data: NodeData, opts: { id?: string; selected?: boolean; bod
 }
 
 /**
- * `getEdges()` reads React Flow's *own* store (not our tabStore) imperatively,
- * so the edges must already be in that store on the node's first render. We
- * mount a real <ReactFlow> with the node + edges to guarantee that.
+ * The entry-point marker reads React Flow's *own* store (not our tabStore), so
+ * the edges go in through a real <ReactFlow> mounted with the node.
  */
 const nodeTypes: NodeTypes = {
   baseNode: (p) => <BaseNodeBody {...(p as React.ComponentProps<typeof BaseNodeBody>)} />,
@@ -865,6 +867,29 @@ describe('BaseNode', () => {
     expect(trigger.className).not.toMatch(/triggerHandleDetaching/);
   });
 
+  // #619: at the zoom a fitted graph opens at, the red diamond is a few
+  // pixels among the green ones every card shows, so the card turns red too.
+  it.each<[string, string, boolean]>([
+    ['marks the card a trigger wire is being pulled off', 'n1', true],
+    ['leaves a card alone while another one loses its trigger', 'other-node', false],
+  ])('%s', async (_, detachedFrom, marked) => {
+    useUIStore.setState({
+      draggingSourceType: 'TRIGGER',
+      reconnectingHandle: { nodeId: detachedFrom, handleId: '__trigger', type: 'target' },
+    });
+    renderBodyWithEdges(
+      baseData(),
+      [{ id: 't1', source: 'start', target: 'n1', targetHandle: '__trigger', data: { type: 'trigger' } } as Edge],
+      { id: 'n1' },
+    );
+    const card = await waitFor(() => {
+      const n = [...document.querySelectorAll('div')].find((d) => /entryPoint/.test(d.className));
+      if (!n) throw new Error('not rendered yet');
+      return n;
+    });
+    expect(/entryPointDetaching/.test(card.className)).toBe(marked);
+  });
+
   it('adds the entryPoint class when an incoming trigger edge targets this node', async () => {
     renderBodyWithEdges(
       baseData(),
@@ -890,6 +915,63 @@ describe('BaseNode', () => {
     const hasEntry = [...document.querySelectorAll('div')].some((d) => /entryPoint/.test(d.className));
     expect(hasEntry).toBe(false);
   });
+
+  it('moves the entryPoint marker with a trigger wire moved to another card', async () => {
+    // Only the edges change, as when a trigger wire is moved: neither card's
+    // own props do, so a marker read once at render stayed on the old card
+    // and never reached the new one (#619).
+    const nodes: Node[] = [
+      { id: 'n1', type: 'baseNode', position: { x: 0, y: 0 }, data: baseData({ label: 'First' }) as never },
+      { id: 'n2', type: 'baseNode', position: { x: 300, y: 0 }, data: baseData({ label: 'Second' }) as never },
+    ];
+    const triggering = (target: string) => (
+      <div style={{ width: 800, height: 600 }}>
+        <ReactFlowProvider>
+          <ReactFlow
+            nodes={nodes}
+            edges={[{ id: 't1', source: 'start', target, targetHandle: '__trigger', data: { type: 'trigger' } }]}
+            nodeTypes={nodeTypes}
+          />
+        </ReactFlowProvider>
+      </div>
+    );
+    const marked = (id: string) =>
+      /entryPoint(?!Detaching)/.test(
+        document.querySelector(`.react-flow__node[data-id="${id}"] > div`)?.className ?? '',
+      );
+    const { rerender } = render(triggering('n1'));
+    await waitFor(() => expect(marked('n1')).toBe(true));
+    expect(marked('n2')).toBe(false);
+    rerender(triggering('n2'));
+    await waitFor(() => expect(marked('n2')).toBe(true));
+    expect(marked('n1')).toBe(false);
+  });
+
+  // App.css takes the outline off a selected card (`.react-flow__node.selected
+  // > div`, more specific than one class), and the card whose trigger wire is
+  // grabbed is usually the one just clicked (#619). vitest applies no
+  // CSS-module rules, so they are read as text; the browser is the other half
+  // of this check.
+  it.each(['.triggerDropTarget', '.entryPoint', '.entryPointDetaching'])(
+    'keeps the %s outline on a selected card',
+    (selector) => {
+      const css = readFileSync(
+        join(dirname(fileURLToPath(import.meta.url)), 'BaseNode.module.css'),
+        'utf8',
+      ).replace(/\/\*[\s\S]*?\*\//g, '');
+      const bodies = css
+        .split('}')
+        .map((chunk) => chunk.split('{').slice(-2))
+        .filter(([head = '']) => head.trim() === selector)
+        .map(([, body = '']) => body);
+      expect(bodies).toHaveLength(1);
+      const outline = bodies[0]
+        .split(';')
+        .map((declaration) => declaration.split(':'))
+        .find(([property = '']) => property.trim() === 'outline');
+      expect(outline?.slice(1).join(':').trim()).toMatch(/!important$/);
+    },
+  );
 
   // ── Download button (completed + downloadable output) ──────────────────────
 

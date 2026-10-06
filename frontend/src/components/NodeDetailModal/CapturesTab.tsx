@@ -1,7 +1,7 @@
 import { useMemo } from 'react';
 import { useI18n } from '../../i18n';
 import type { OutputSummary } from '../../types';
-import { PortGroup } from '../InspectorPanel/PortGroup';
+import { PortGroup, rowKeys } from '../InspectorPanel/PortGroup';
 import {
   resolveSingleNodePorts,
   usePortFetches,
@@ -97,6 +97,8 @@ export function CapturesTab({
   );
 
   if (ctx.runId === null) {
+    // A port wired into two inputs has two rows, keyed apart as PortGroup's are.
+    const keys = rowKeys(ports);
     return (
       <div className={styles.tabBody}>
         {chartBlock}
@@ -110,10 +112,10 @@ export function CapturesTab({
           {ports.length === 0 ? (
             <div className={styles.summaryEmpty}>{emptyText}</div>
           ) : (
-            ports.map((p) => {
+            ports.map((p, i) => {
               const summary = ctx.outputSummaries[p.nodeId]?.[p.port];
               return (
-                <div key={`${p.nodeId}::${p.port}`} className={styles.summaryRow}>
+                <div key={keys[i]} className={styles.summaryRow}>
                   {p.dataType && (
                     <span
                       className={styles.summaryDot}

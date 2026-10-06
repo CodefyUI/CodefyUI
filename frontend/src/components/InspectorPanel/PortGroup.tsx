@@ -44,6 +44,25 @@ export function keyOf(nodeId: string, port: string): string {
 }
 
 /**
+ * The React key of each row in `ports`: {@link keyOf} for a port's first row,
+ * `keyOf#n` for its n-th repeat.
+ *
+ * One port can fill two rows: an output wired into two inputs of the node, or
+ * into two nodes of a segment. Rows that shared a key stayed on screen after
+ * the list changed, so the next node shown kept the last one's rows (#562).
+ * Not the index: a row's own state belongs to its port.
+ */
+export function rowKeys(ports: readonly Pick<PortTarget, 'nodeId' | 'port'>[]): string[] {
+  const repeats = new Map<string, number>();
+  return ports.map((p) => {
+    const key = keyOf(p.nodeId, p.port);
+    const n = repeats.get(key) ?? 0;
+    repeats.set(key, n + 1);
+    return n === 0 ? key : `${key}#${n}`;
+  });
+}
+
+/**
  * One stacked group of ports (all inputs, or all outputs) with a title.
  * Shared by single-node Forward view and segment mode — the two must not
  * drift apart visually.
@@ -74,19 +93,20 @@ export function PortGroup({
   media?: PortMediaMap;
 }) {
   const { t } = useI18n();
+  const keys = rowKeys(ports);
   return (
     <div className={styles.portGroup}>
       <div className={styles.portGroupTitle}>{title}</div>
       {ports.length === 0 ? (
         <div className={styles.portGroupEmpty}>{emptyText ?? '—'}</div>
       ) : (
-        ports.map((p) => {
+        ports.map((p, i) => {
           const key = keyOf(p.nodeId, p.port);
           const state = fetches[key];
           const errorText = state?.errorKey ? t(state.errorKey) : state?.error;
           const portMedia = media?.[key];
           return (
-            <div key={key} className={styles.portBlock}>
+            <div key={keys[i]} className={styles.portBlock}>
               <div className={styles.portHeader}>
                 {kind === 'input' ? '⟵ ' : '⟶ '}
                 {p.dataType && (

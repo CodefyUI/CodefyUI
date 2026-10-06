@@ -1,5 +1,5 @@
 import { memo, useState, type ReactNode } from 'react';
-import { Handle, Position, useReactFlow } from '@xyflow/react';
+import { Handle, Position } from '@xyflow/react';
 import type { NodeProps } from '@xyflow/react';
 import type { AppNode, NodeProgress } from '../../types';
 import {
@@ -26,6 +26,7 @@ import { CATEGORY_COLORS, STATUS_COLORS, NODE_HEADER_TINT, mixColor, SURFACE_RAI
 import { MathText } from '../shared/MathText';
 import { layerNodeCount } from '../LayersEditor/graphSerialization';
 import { subgraphIdOf } from '../../utils/subgraph';
+import { useIsTriggerTarget } from './triggerTarget';
 import styles from './BaseNode.module.css';
 
 type BaseNodeProps = NodeProps<AppNode> & {
@@ -139,7 +140,6 @@ export function BaseNodeBody({ id, data, selected, bodyExtra }: BaseNodeProps) {
   });
   const [hovered, setHovered] = useState(false);
   const [downloading, setDownloading] = useState(false);
-  const { getEdges } = useReactFlow();
   const def = data.definition;
   // Live port sets: a param-driven node (Split's `chunks`, PythonScript's
   // `input_ports`, ComposeTransform's `steps`) has a different shape than
@@ -186,10 +186,9 @@ export function BaseNodeBody({ id, data, selected, bodyExtra }: BaseNodeProps) {
     reconnectingHandle.type === type &&
     reconnectingHandle.handleId === handleId;
 
-  // Detect if this node is a trigger target (connected from a Start node)
-  const isTriggerTarget = getEdges().some(
-    (e) => e.target === id && ((e.data as { type?: string } | undefined)?.type === 'trigger'),
-  );
+  // A Start node's trigger goes into this card: the entry-point marker. It
+  // follows the edges as they change (#619).
+  const isTriggerTarget = useIsTriggerTarget(id);
 
   // ComfyUI-style detach: a plain left-button press on a CONNECTED input
   // grabs the existing edge off the port instead of starting a second
@@ -218,8 +217,8 @@ export function BaseNodeBody({ id, data, selected, bodyExtra }: BaseNodeProps) {
     ) {
       return;
     }
-    // Read edges at event time straight from the store (same imperative,
-    // no-subscription pattern as the getEdges() trigger check above).
+    // Read edges at event time straight from the store: needed only at the
+    // press, so no subscription.
     const { tabs, activeTabId } = useTabStore.getState();
     const tab = tabs.find((t) => t.id === activeTabId);
     const edge = tab ? findDetachableEdge(tab.edges, id, handleId) : null;
@@ -320,7 +319,10 @@ export function BaseNodeBody({ id, data, selected, bodyExtra }: BaseNodeProps) {
       onDoubleClick={handleDoubleClick}
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
-      className={`${styles.node}${isTriggerTarget ? ` ${styles.entryPoint}` : ''}${isDraggingTrigger ? ` ${styles.triggerDropTarget}` : ''}${isBypassed ? ` ${styles.bypassed}` : ''}`}
+      className={`${styles.node}${isTriggerTarget ? ` ${styles.entryPoint}` : ''}${isDraggingTrigger ? ` ${styles.triggerDropTarget}` : ''}${
+        // The card says it is losing its trigger, not only the diamond (#619).
+        isDetaching('__trigger', 'target') ? ` ${styles.entryPointDetaching}` : ''
+      }${isBypassed ? ` ${styles.bypassed}` : ''}`}
       data-bypassed={isBypassed || undefined}
       style={{
         '--border-color': borderColor,

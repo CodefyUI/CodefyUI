@@ -138,6 +138,18 @@ const flat = placed(card('flat', FLATTEN), { x: 400, y: 0 });
 const flat2 = placed(card('flat2', FLATTEN), { x: 400, y: 300 });
 const start = placed(card('start', START), { x: 0, y: 300 });
 
+// Two inputs, and two outputs: the same two cards joined again by other ports
+// is not a duplicate (#619). Each stands in for `flat` or `lin` in its tests.
+// Not named Split: Split's outputs follow its `chunks` param.
+const add = placed(
+  card('add', def('Add', [port('tensor_a', 'TENSOR'), port('tensor_b', 'TENSOR')], [port('output', 'TENSOR')])),
+  { x: 400, y: 0 },
+);
+const pair = placed(
+  card('pair', def('Pair', [port('tensor', 'TENSOR')], [port('first', 'TENSOR'), port('second', 'TENSOR')])),
+  { x: 0, y: 0 },
+);
+
 // ── Store ───────────────────────────────────────────────────────────────────
 
 const ORIGINAL_TABS = useTabStore.getState().tabs;
@@ -216,6 +228,33 @@ describe('which wires the __trigger handle takes', () => {
   });
 });
 
+// Every drop asks the validity check before onReconnect; onReconnect refuses
+// a copy as well, so a drop that ever reached it unasked could not stack one
+// (#619).
+describe('onReconnect, asked directly', () => {
+  const wire: Edge = { id: 'e1', source: 'lin', sourceHandle: 'output', target: 'flat', targetHandle: 'tensor' };
+  const other: Edge = { ...wire, id: 'e2', target: 'flat2' };
+
+  beforeEach(() => {
+    setGraph([card('lin', LINEAR), card('flat', FLATTEN), card('flat2', FLATTEN)], [wire, other]);
+    renderWithFlow(<FlowCanvas />);
+  });
+
+  it('moves a wire to ports no wire joins', () => {
+    act(() =>
+      captured.rf.onReconnect(other, { source: 'flat', sourceHandle: 'output', target: 'flat2', targetHandle: 'tensor' }),
+    );
+    expect(edges()).toMatchObject([wire, { id: 'e2', source: 'flat', target: 'flat2', targetHandle: 'tensor' }]);
+  });
+
+  it('leaves a wire where it is rather than on the ports another already joins', () => {
+    act(() =>
+      captured.rf.onReconnect(other, { source: 'lin', sourceHandle: 'output', target: 'flat', targetHandle: 'tensor' }),
+    );
+    expect(edges()).toEqual([wire, other]);
+  });
+});
+
 // ── Dragging on the real canvas ─────────────────────────────────────────────
 
 function handleOf(nodeId: string, handleId: string): Element {
@@ -241,6 +280,17 @@ function drag(from: Element, pressAt: Point, releaseAt: Point) {
 // drag stopped reaching React Flow, the cases that expect none would pass for
 // nothing, and the controls would fail.
 describe('dragging a wire on the real canvas', () => {
+  const wire: Edge = { id: 'e1', source: 'lin', sourceHandle: 'output', target: 'flat', targetHandle: 'tensor' };
+  const triggerWire: Edge = {
+    id: 't1',
+    source: 'start',
+    sourceHandle: 'trigger',
+    target: 'flat',
+    targetHandle: '__trigger',
+    type: 'triggerEdge',
+    data: { type: 'trigger' },
+  };
+
   beforeEach(() => {
     realFlow.value = true;
     // React Flow asks what is under the pointer, to prefer a handle the
@@ -283,20 +333,87 @@ describe('dragging a wire on the real canvas', () => {
         { source: 'lin', sourceHandle: 'output', target: 'flat', targetHandle: 'tensor' },
       ]);
     });
+
+    // A wire that is already there is not added again (#619). The two cases
+    // above that connect are the controls: the same drags, with no wire yet.
+    it('adds no second trigger released by the corner of a card its Start node already triggers', () => {
+      setGraph([start, flat], [triggerWire]);
+      renderWithFlow(<FlowCanvas />);
+      drag(handleOf('start', 'trigger'), centreOf(start, 'trigger'), nearCorner(flat));
+      expect(edges()).toEqual([triggerWire]);
+    });
+
+    it('adds no second data wire released on the input its output already feeds', () => {
+      setGraph([lin, flat], [wire]);
+      renderWithFlow(<FlowCanvas />);
+      drag(handleOf('lin', 'output'), centreOf(lin, 'output'), centreOf(flat, 'tensor'));
+      expect(edges()).toEqual([wire]);
+    });
+
+    it('still connects another output to an input that already has a wire', () => {
+      // Fan-in, not a duplicate: branches merge this way, and the engine and
+      // the exported script both take the last source that produced a value.
+      setGraph([lin, flat, flat2], [wire]);
+      renderWithFlow(<FlowCanvas />);
+      drag(handleOf('flat2', 'output'), centreOf(flat2, 'output'), centreOf(flat, 'tensor'));
+      expect(edges()).toMatchObject([
+        wire,
+        { source: 'flat2', sourceHandle: 'output', target: 'flat', targetHandle: 'tensor' },
+      ]);
+    });
+
+    // A rule that compared cards and not ports would refuse these two.
+    it('still connects an output to a second input of the card it already feeds', () => {
+      // `x` into both inputs of Add.
+      const first: Edge = { id: 'e1', source: 'lin', sourceHandle: 'output', target: 'add', targetHandle: 'tensor_a' };
+      setGraph([lin, add], [first]);
+      renderWithFlow(<FlowCanvas />);
+      drag(handleOf('lin', 'output'), centreOf(lin, 'output'), centreOf(add, 'tensor_b'));
+      expect(edges()).toMatchObject([
+        first,
+        { source: 'lin', sourceHandle: 'output', target: 'add', targetHandle: 'tensor_b' },
+      ]);
+    });
+
+    it("still connects a card's other output to an input that card already feeds", () => {
+      const first: Edge = { id: 'e1', source: 'pair', sourceHandle: 'first', target: 'flat', targetHandle: 'tensor' };
+      setGraph([pair, flat], [first]);
+      renderWithFlow(<FlowCanvas />);
+      drag(handleOf('pair', 'second'), centreOf(pair, 'second'), centreOf(flat, 'tensor'));
+      expect(edges()).toMatchObject([
+        first,
+        { source: 'pair', sourceHandle: 'second', target: 'flat', targetHandle: 'tensor' },
+      ]);
+    });
+  });
+
+  // React Flow's click-to-connect, on by default: a click on an output, then
+  // one on an input, goes through the same validity check and onConnect as a
+  // drag (#562).
+  describe('click-to-connect', () => {
+    const clickConnect = () => {
+      fireEvent.click(handleOf('lin', 'output'));
+      fireEvent.click(handleOf('flat', 'tensor'));
+    };
+
+    it('connects an output to an input', () => {
+      setGraph([lin, flat]);
+      renderWithFlow(<FlowCanvas />);
+      clickConnect();
+      expect(edges()).toMatchObject([
+        { source: 'lin', sourceHandle: 'output', target: 'flat', targetHandle: 'tensor' },
+      ]);
+    });
+
+    it('adds nothing when the two are already joined', () => {
+      setGraph([lin, flat], [wire]);
+      renderWithFlow(<FlowCanvas />);
+      clickConnect();
+      expect(edges()).toEqual([wire]);
+    });
   });
 
   describe('a wire moved to another card', () => {
-    const wire: Edge = { id: 'e1', source: 'lin', sourceHandle: 'output', target: 'flat', targetHandle: 'tensor' };
-    const triggerWire: Edge = {
-      id: 't1',
-      source: 'start',
-      sourceHandle: 'trigger',
-      target: 'flat',
-      targetHandle: '__trigger',
-      type: 'triggerEdge',
-      data: { type: 'trigger' },
-    };
-
     // Pressing a connected input grabs its wire: BaseNode hands the press to
     // the wire's reconnect anchor, and React Flow drags the loose end.
     it("is not moved onto __trigger when released by the other card's corner", () => {
@@ -315,6 +432,29 @@ describe('dragging a wire on the real canvas', () => {
       drag(handleOf('flat', 'tensor'), centreOf(flat, 'tensor'), centreOf(flat2, 'tensor'));
       expect(edges()).toMatchObject([
         { id: 'e1', source: 'lin', sourceHandle: 'output', target: 'flat2', targetHandle: 'tensor' },
+      ]);
+    });
+
+    it('is removed, not doubled, on an input its output already feeds', () => {
+      // The wire in hand would repeat `wire` exactly, so it is removed and
+      // `wire` stays, as with a trigger moved onto a card its Start node
+      // already triggers, below (#619).
+      const other: Edge = { ...wire, id: 'e2', target: 'flat2' };
+      setGraph([lin, flat, flat2], [wire, other]);
+      renderWithFlow(<FlowCanvas />);
+      drag(handleOf('flat2', 'tensor'), centreOf(flat2, 'tensor'), centreOf(flat, 'tensor'));
+      expect(edges()).toEqual([wire]);
+    });
+
+    it('stays when released back on its own input', () => {
+      // The wire in hand is not a duplicate of itself. Released a few pixels
+      // from where it was pressed: a press released on the spot is a click.
+      setGraph([lin, flat, flat2], [wire]);
+      renderWithFlow(<FlowCanvas />);
+      const { x, y } = centreOf(flat, 'tensor');
+      drag(handleOf('flat', 'tensor'), { x, y }, { x: x + 3, y: y + 3 });
+      expect(edges()).toMatchObject([
+        { id: 'e1', source: 'lin', sourceHandle: 'output', target: 'flat', targetHandle: 'tensor' },
       ]);
     });
 
