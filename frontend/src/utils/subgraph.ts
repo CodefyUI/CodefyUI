@@ -392,6 +392,7 @@ export interface CollapseFailure {
     | 'contains-start'
     | 'contains-note'
     | 'not-convex'
+    | 'shared-input'
     | 'read-only';
   blockers: string[];
 }
@@ -457,7 +458,41 @@ export function checkCollapse(
   if (blockers.length) {
     return { ok: false, reason: 'not-convex', blockers };
   }
+  const shared = findSharedInputs(selected, edges);
+  if (shared.length) {
+    return { ok: false, reason: 'shared-input', blockers: shared };
+  }
   return { ok: true };
+}
+
+/**
+ * Selected nodes with an input that a wire from outside the selection feeds
+ * together with another wire (#562).
+ *
+ * A data input takes one source, and the editor replaces a wire on an
+ * occupied input, so only a graph saved before that rule can still hold one.
+ * Collapsing it would give the block a boundary port with several wires, and
+ * the block would carry the ambiguity inside it, out of sight. The user picks
+ * the one source first.
+ */
+function findSharedInputs(selected: Set<string>, edges: Edge[]): string[] {
+  const sources = new Map<string, { target: string; count: number; fromOutside: boolean }>();
+  for (const edge of edges) {
+    // A wire saved with no target handle names no input to share, the way
+    // the editor's own replace rule reads it (`utils/occupiedInput.ts`).
+    if (isTriggerEdge(edge) || !edge.targetHandle || !selected.has(edge.target)) continue;
+    // Same NUL-separated composite key `collapseSelection` uses below.
+    const key = `${edge.target}\u0000${edge.targetHandle}`;
+    const entry = sources.get(key) ?? { target: edge.target, count: 0, fromOutside: false };
+    entry.count += 1;
+    if (!selected.has(edge.source)) entry.fromOutside = true;
+    sources.set(key, entry);
+  }
+  const found: string[] = [];
+  for (const { target, count, fromOutside } of sources.values()) {
+    if (count > 1 && fromOutside && !found.includes(target)) found.push(target);
+  }
+  return found;
 }
 
 /**
@@ -491,9 +526,9 @@ export function collapseSelection(
 
   // ── Boundary ports ───────────────────────────────────────────────────
   //
-  // Keyed by (innerNode, innerPort): several outside edges feeding one inner
-  // port share ONE boundary port, so the fan-in the engine resolves
-  // last-edge-wins survives the round trip.
+  // Keyed by (innerNode, innerPort), one boundary port per inner input. An
+  // inner input fed by more than one wire never gets here: `checkCollapse`
+  // refuses it (`shared-input`, #562).
   // Separate pools: an input handle and an output handle live in different
   // namespaces (React Flow keys them by type, and expansion looks each side
   // up in its own map), so a block with one in and one out should read

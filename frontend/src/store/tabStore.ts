@@ -21,6 +21,7 @@ import {
   rememberedSecrets,
 } from './nodeDefStore';
 import { forgetViewport } from '../utils/viewportMemory';
+import { withoutOccupants } from '../utils/occupiedInput';
 import { idbAvailable } from '../utils/idb';
 import { withParamDefaults, withSubgraphParamDefaults } from '../utils/paramDefaults';
 import { readSnapshot, writeSnapshot } from './tabPersistence';
@@ -3784,6 +3785,8 @@ export const useTabStore = create<TabStoreState>((rawSet, get) => {
       style: { stroke: '#555', strokeWidth: 2 },
     };
     if (connection.target) get().markDirty(connection.target);
+    // A data input takes one source (#562): the wire already feeding this
+    // input, if any, goes in the same undo step as the new one arrives.
     set({
       tabs: updateTab(get().tabs, get().activeTabId, (tab) => {
         // A wire on a Switch's last empty input adds another (#655), in the
@@ -3791,7 +3794,7 @@ export const useTabStore = create<TabStoreState>((rawSet, get) => {
         const target = tab.nodes.find((n) => n.id === connection.target);
         const grown = grownSwitchParams(target, connection.targetHandle);
         return {
-          edges: [...tab.edges, edge],
+          edges: [...withoutOccupants(tab.edges, connection), edge],
           ...(grown && target
             ? {
                 nodes: tab.nodes.map((n) =>

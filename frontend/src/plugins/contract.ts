@@ -67,6 +67,11 @@ export interface NodeDefinition {
 export type GraphOp =
   | { op: 'add_node'; node_type: string; ref?: string;
       params?: Record<string, unknown>; position?: { x: number; y: number } }
+  /**
+   * Wire an output to an input. A data input takes one source: when
+   * `target_handle` already has a wire, it is replaced, and the result's
+   * `replaced_edge_ids` names it.
+   */
   | { op: 'connect'; source: string; source_handle: string;
       target: string; target_handle: string }
   | { op: 'set_params'; node_id: string; params: Record<string, unknown> }
@@ -109,6 +114,13 @@ export interface OpResult {
   node_id?: string;
   /** Set by `set_segment` — apiVersion 5. */
   segment_id?: string;
+  /**
+   * Set by `connect` when the input already had a source wire: a data input
+   * takes one source, so `connect` replaces that wire and lists its id here.
+   * Absent when nothing was replaced. Older hosts never set it: they added the
+   * wire beside the existing one.
+   */
+  replaced_edge_ids?: string[];
 }
 
 export interface ApplyResult {
