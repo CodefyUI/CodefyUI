@@ -114,25 +114,26 @@
    in a list of ordinary verbs. Never on a refused row: there is no press there
    to warn about, and the reason it gives is already the whole answer.
 
-   A red RULE and not red TEXT. The rules above paint this row on
-   --surface-hover, and --status-error on --surface-hover is 3.92:1 -- under
-   the 4.5:1 that 14px text needs (a menu row is --fs-md, and it is neither
-   large text nor an inactive control, so no exception applies). The same
-   colour as a 2px graphic clears the 3:1 that WCAG 1.4.11 asks of it, and the
-   label keeps the --text-primary the hover and focus rules give it (9.89:1),
-   which is a stronger reading of the row than a red one that could not be
-   read. Tinting the background instead makes it worse, not better:
+   Two cues. The rules above paint this row on --surface-hover, where
+   --status-error is 3.92:1 -- under the 4.5:1 that 14px text needs (a menu
+   row is --fs-md, and it is neither large text nor an inactive control, so no
+   exception applies). So the label takes --status-error-strong, the lighter
+   red the contrast gate holds to 4.5:1 on --surface-hover, and a 2px rule in
+   --status-error clears the 3:1 that WCAG 1.4.11 asks of a graphic, so the
+   row does not rely on hue alone. The background stays --surface-hover:
    --danger-wash is a light red, so compositing it RAISES the background's
-   luminance and takes the pair to 3.33:1.
+   luminance and lowers the label's contrast.
 
    The ring is added back by hand in the focus rule, because a box-shadow
    REPLACES the one the rule above set rather than adding to it. */
 .item.danger:hover:not([aria-disabled='true']) {
   box-shadow: inset 2px 0 0 0 var(--status-error);
+  color: var(--status-error-strong);
 }
 
 .item.danger:focus-visible:not([aria-disabled='true']) {
   box-shadow: inset 2px 0 0 0 var(--status-error), var(--focus-ring);
+  color: var(--status-error-strong);
 }
 
 /* A refused row has two lines, so the tick column and the label line up with

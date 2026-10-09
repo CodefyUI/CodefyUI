@@ -6,7 +6,11 @@ import { useI18n } from '../../i18n';
 import { isAnyModalOpen } from '../../store/modalState';
 import { useUIStore } from '../../store/uiStore';
 import { _resetPackStoreForTesting, usePackStore } from '../../store/packStore';
-import { _resetPluginStoreForTesting, usePluginStore } from '../../store/pluginStore';
+import {
+  _resetPluginStoreForTesting,
+  usePluginStore,
+  type PluginState,
+} from '../../store/pluginStore';
 import * as rest from '../../api/rest';
 import type {
   CustomNodeInfo,
@@ -15,6 +19,7 @@ import type {
   PluginCatalog,
   PluginCatalogEntry,
 } from '../../api/rest';
+import { pluginEntry } from '../../test/pluginEntry';
 
 vi.mock('../../api/rest', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../api/rest')>();
@@ -36,37 +41,19 @@ function customNode(overrides: Partial<CustomNodeInfo> = {}): CustomNodeInfo {
 
 /** One installed, enabled plugin, as the catalog answers with it. */
 function plugin(overrides: Partial<PluginCatalogEntry> = {}): PluginCatalogEntry {
-  return {
+  return pluginEntry({
     id: 'c1',
     name: 'Chapter 1',
     description: 'Intro nodes',
-    kind: 'builtin',
-    official: true,
     status: 'installed',
     source_kind: 'builtin',
     source: 'c1',
-    repo: null,
-    ref: null,
-    sha: null,
-    url: null,
-    homepage: '',
     version: '1.0.0',
-    installed_at: null,
     enabled: true,
-    chapters: [],
-    lessons: [],
-    tags: [],
     nodes: ['EduAdd', 'EduMul'],
     node_count: 2,
-    capabilities: [],
-    trusted_modules: [],
-    python_deps: {},
-    has_frontend: false,
-    consent_required: false,
-    frontend_entry: null,
-    job: null,
     ...overrides,
-  };
+  });
 }
 
 function packSummary(overrides: Partial<PackSummary> = {}): PackSummary {
@@ -128,7 +115,7 @@ function seedPacks(packs: PackSummary[], unsupported = false) {
  */
 function seedPlugins(
   plugins: PluginCatalogEntry[],
-  extra: Partial<ReturnType<typeof usePluginStore.getState>> = {},
+  extra: Partial<PluginState> = {},
 ) {
   usePluginStore.setState({
     loaded: true,

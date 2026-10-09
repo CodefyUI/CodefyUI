@@ -27,6 +27,7 @@ import {
   type PluginCatalog,
   type PluginCatalogEntry,
 } from '../../api/rest';
+import { pluginEntry } from '../../test/pluginEntry';
 import {
   _resetPackStoreForTesting,
   emptyPackJob,
@@ -36,6 +37,7 @@ import {
   _resetPluginStoreForTesting,
   emptyPluginJob,
   usePluginStore,
+  type PluginState,
 } from '../../store/pluginStore';
 import { computeSegmentNodes } from '../../utils/segmentPath';
 import { _resetDeviceOptionsForTesting } from '../../hooks/useDeviceOptions';
@@ -139,44 +141,10 @@ function seedPacks(
   });
 }
 
-/** One catalog row. Only the fields the settings row reads are interesting. */
-function pluginEntry(over: Partial<PluginCatalogEntry> & { id: string }): PluginCatalogEntry {
-  return {
-    name: over.id,
-    description: '',
-    kind: 'builtin',
-    official: true,
-    status: 'available',
-    source_kind: null,
-    source: over.id,
-    repo: null,
-    ref: null,
-    sha: null,
-    url: null,
-    homepage: '',
-    version: null,
-    installed_at: null,
-    enabled: false,
-    chapters: [],
-    lessons: [],
-    tags: [],
-    nodes: [],
-    node_count: 0,
-    capabilities: [],
-    trusted_modules: [],
-    python_deps: {},
-    has_frontend: false,
-    consent_required: false,
-    frontend_entry: null,
-    job: null,
-    ...over,
-  };
-}
-
 /** The same for the plugin catalog. */
 function seedPlugins(
   plugins: PluginCatalogEntry[],
-  extra: Partial<ReturnType<typeof usePluginStore.getState>> = {},
+  extra: Partial<PluginState> = {},
 ) {
   usePluginStore.setState({
     loaded: true,

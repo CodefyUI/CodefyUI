@@ -3,7 +3,7 @@ import { useTabStore } from '../../store/tabStore';
 import { useUIStore } from '../../store/uiStore';
 import { useToastStore } from '../../store/toastStore';
 import { usePackStore } from '../../store/packStore';
-import { usePluginStore } from '../../store/pluginStore';
+import { selectPluginsById, usePluginStore, type PluginState } from '../../store/pluginStore';
 import { useDialogStore } from '../../store/dialogStore';
 import { useI18n } from '../../i18n';
 import {
@@ -33,8 +33,6 @@ interface Props {
 }
 
 type PackStoreState = ReturnType<typeof usePackStore.getState>;
-type PluginStoreState = ReturnType<typeof usePluginStore.getState>;
-type PluginIndex = Record<string, PluginCatalogEntry>;
 
 // Module-scope selectors, so each subscription compares the SAME function's
 // output frame to frame. The job is narrowed to the one thing this row says
@@ -54,12 +52,12 @@ const selectInstallingPackId = (state: PackStoreState): string | null =>
 const selectGpu = (state: PackStoreState): PackGpuInfo | null => state.gpu;
 
 // The plugin row reads the same five things about its own store, for the same
-// reasons. A plugin install streams its steps too.
-const selectPlugins = (state: PluginStoreState): PluginCatalogEntry[] => state.plugins;
-const selectPluginsById = (state: PluginStoreState): PluginIndex => state.byId;
-const selectPluginsLoaded = (state: PluginStoreState): boolean => state.loaded;
-const selectPluginsUnsupported = (state: PluginStoreState): boolean => state.unsupported;
-const selectInstallingPluginId = (state: PluginStoreState): string | null =>
+// reasons; the by-id index comes from the store's shared `selectPluginsById`.
+// A plugin install streams its steps too.
+const selectPlugins = (state: PluginState): PluginCatalogEntry[] => state.plugins;
+const selectPluginsLoaded = (state: PluginState): boolean => state.loaded;
+const selectPluginsUnsupported = (state: PluginState): boolean => state.unsupported;
+const selectInstallingPluginId = (state: PluginState): string | null =>
   state.job !== null && state.job.status === 'running' ? state.job.pluginId : null;
 
 /**

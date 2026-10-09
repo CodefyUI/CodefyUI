@@ -1,7 +1,7 @@
 import { useState, useRef, useCallback, useMemo } from 'react';
 import { createPortal } from 'react-dom';
 import { useNodeDefStore } from '../../store/nodeDefStore';
-import { usePluginStore } from '../../store/pluginStore';
+import { selectPluginsById, usePluginStore } from '../../store/pluginStore';
 import { useUIStore } from '../../store/uiStore';
 import { useI18n } from '../../i18n';
 import {
@@ -9,7 +9,7 @@ import {
   nodeMissingPack,
   usePackAvailability,
 } from '../../utils/packAvailability';
-import { pluginNameOf, type PluginIndex } from '../../utils/provider';
+import { pluginNameOf } from '../../utils/provider';
 import {
   compareMatches,
   nodeSearchTexts,
@@ -25,13 +25,6 @@ import { MathText } from '../shared/MathText';
 import { orderCategories } from './categories';
 import { CategoryList, type CategoryGroup } from './CategoryList';
 import styles from './NodePalette.module.css';
-
-// A module-scope selector, so every row of a hundred-node library compares the
-// SAME function's output frame to frame. Narrow on purpose: an install running
-// in the Plugin Center writes `job`, `busy` and the log on every long-poll
-// turn, and none of that changes what a node is called.
-type PluginStoreState = ReturnType<typeof usePluginStore.getState>;
-const selectPluginsById = (state: PluginStoreState): PluginIndex => state.byId;
 
 // ── Operation Node Item ──
 

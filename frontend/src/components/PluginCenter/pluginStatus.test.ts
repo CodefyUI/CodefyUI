@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import type { PluginCatalogEntry, PluginStatus } from '../../api/rest';
+import { pluginEntry } from '../../test/pluginEntry';
 import { useI18n } from '../../i18n';
 import type { InspectionFailure } from '../../store/pluginStore';
 import {
@@ -29,40 +30,9 @@ import {
  * panel cannot be tested for once it is on screen.
  */
 
-function entry(
-  partial: Partial<PluginCatalogEntry> & { id: string },
-): PluginCatalogEntry {
-  return {
-    name: partial.id,
-    description: '',
-    kind: 'github',
-    official: false,
-    status: 'available',
-    source_kind: null,
-    source: '',
-    repo: null,
-    ref: null,
-    sha: null,
-    url: null,
-    homepage: '',
-    version: null,
-    installed_at: null,
-    enabled: false,
-    chapters: [],
-    lessons: [],
-    tags: [],
-    nodes: [],
-    node_count: 0,
-    capabilities: [],
-    trusted_modules: [],
-    python_deps: {},
-    has_frontend: false,
-    consent_required: false,
-    frontend_entry: null,
-    job: null,
-    ...partial,
-  };
-}
+/** A third-party catalog row with no install source yet. */
+const entry = (partial: Partial<PluginCatalogEntry> & { id: string }): PluginCatalogEntry =>
+  pluginEntry({ kind: 'github', official: false, source: '', ...partial });
 
 const t = useI18n.getState().t;
 

@@ -7,7 +7,7 @@ import {
 } from '../../api/rest';
 import { useI18n } from '../../i18n';
 import { usePackStore } from '../../store/packStore';
-import { usePluginStore } from '../../store/pluginStore';
+import { usePluginStore, type PluginState } from '../../store/pluginStore';
 import { useUIStore } from '../../store/uiStore';
 import { StatusPill } from '../PackCenter/PackCard';
 import { isInstalledStatus } from '../PluginCenter/pluginStatus';
@@ -18,7 +18,6 @@ import styles from './NodePalette.module.css';
 import tabStyles from './CustomTab.module.css';
 
 type PackStoreState = ReturnType<typeof usePackStore.getState>;
-type PluginStoreState = ReturnType<typeof usePluginStore.getState>;
 
 // Module-scope selectors, so each subscription compares the SAME function's
 // output frame to frame, and one slice per selector so an install writing its
@@ -27,11 +26,11 @@ type PluginStoreState = ReturnType<typeof usePluginStore.getState>;
 // status changes, which is exactly when these rows have something new to say.
 const selectPacks = (state: PackStoreState): PackSummary[] => state.packs;
 const selectPacksUnsupported = (state: PackStoreState): boolean => state.unsupported;
-const selectPlugins = (state: PluginStoreState): PluginCatalogEntry[] => state.plugins;
-const selectPluginsLoading = (state: PluginStoreState): boolean => state.loading;
-const selectPluginsLoaded = (state: PluginStoreState): boolean => state.loaded;
-const selectPluginsError = (state: PluginStoreState): string | null => state.error;
-const selectPluginsUnsupported = (state: PluginStoreState): boolean => state.unsupported;
+const selectPlugins = (state: PluginState): PluginCatalogEntry[] => state.plugins;
+const selectPluginsLoading = (state: PluginState): boolean => state.loading;
+const selectPluginsLoaded = (state: PluginState): boolean => state.loaded;
+const selectPluginsError = (state: PluginState): string | null => state.error;
+const selectPluginsUnsupported = (state: PluginState): boolean => state.unsupported;
 
 /**
  * Everything the user has added to this install: uploaded custom-node files
