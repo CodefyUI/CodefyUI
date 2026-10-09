@@ -61,6 +61,7 @@ import { SubgraphBreadcrumb } from './SubgraphBreadcrumb';
 import { NoteBindingLines } from './NoteBindingLines';
 import { SegmentBubble } from './SegmentBubble';
 import { triggerDropConnection } from './triggerDrop';
+import { withoutOccupants } from '../../utils/occupiedInput';
 import type { FinalConnectionState } from '@xyflow/react';
 import { useTabStore } from '../../store/tabStore';
 import { useUIStore } from '../../store/uiStore';
@@ -147,9 +148,9 @@ async function allowDeleteWithNoModalOpen(): Promise<boolean> {
  * between the same two nodes is the same wire, one saved without
  * `sourceHandle` included. A data wire is the same when both its ports are,
  * as the plugin `connect` op tests (`plugins/ops.ts`). A different source into
- * an input that already has one is fan-in, not a copy: that is how branches
- * merge, and the engine and the exported script both read the last source
- * that produced a value.
+ * an input that already has one is allowed through: a data input takes one
+ * source (#562), so the store's `onConnect` and `onReconnect` below replace
+ * the wire already there (`utils/occupiedInput.ts`).
  */
 function duplicateEdgeOf(
   edges: readonly Edge[],
@@ -759,8 +760,11 @@ export function FlowCanvas({ tabId }: { tabId?: string } = {}) {
     useUIStore.getState().setReconnectingHandle(null);
     if (!tab) return;
     useTabStore.getState().pushUndoSnapshot();
+    // The input the wire lands on keeps one source (#562): a wire already
+    // feeding it goes in this same undo step. The moved wire itself is left
+    // out of that test, since it no longer occupies the input it is leaving.
     setEdges(
-      tab.edges
+      withoutOccupants(tab.edges, newConnection, oldEdge.id)
         .filter((e) => e.id !== oldEdge.id)
         .concat({
           ...oldEdge,

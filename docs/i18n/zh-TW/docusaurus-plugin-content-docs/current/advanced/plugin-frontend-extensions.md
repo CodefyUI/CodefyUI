@@ -206,7 +206,7 @@ const remove = api.ui.addToolbarButton({
 | `op` | 欄位 | 說明 |
 |------|------|------|
 | `"add_node"` | `node_type: string`、`ref?: string`、`params?: Record<string, unknown>`、`position?: { x: number; y: number }` | 新增指定類型的節點。`ref` 是呼叫端自選的別名，同一批次中後續操作可用它代替產生的節點 id。`position` 預設為錯落排列。 |
-| `"connect"` | `source: string`、`source_handle: string`、`target: string`、`target_handle: string` | 連接一個輸出 handle 到一個輸入 handle。`source`/`target` 接受節點 id 或先前 `add_node` 的 `ref`。觸發邊請用 `source_handle: "trigger"`。 |
+| `"connect"` | `source: string`、`source_handle: string`、`target: string`、`target_handle: string` | 連接一個輸出 handle 到一個輸入 handle。`source`/`target` 接受節點 id 或先前 `add_node` 的 `ref`。觸發邊請用 `source_handle: "trigger"`。一個輸入只接一個來源：`target_handle` 已經有邊時會被取代，`replaced_edge_ids` 會列出它。同一對 handle 連兩次會失敗。 |
 | `"set_params"` | `node_id: string`、`params: Record<string, unknown>` | 將參數值合併進節點。 |
 | `"remove_node"` | `node_id: string` | 移除節點及所有與其相連的邊。 |
 | `"remove_edge"` | `source: string`、`target: string`、`source_handle?: string`、`target_handle?: string` | 中斷兩節點間相符的邊。 |
@@ -228,6 +228,7 @@ interface OpResult {
   error?: string;     // ok 為 false 時的失敗原因
   node_id?: string;   // 解析出的節點 id，凡是建立或修改節點的操作都會帶；remove_node 不帶
   segment_id?: string; // apiVersion 5：set_segment 建立或取代的那個 id
+  replaced_edge_ids?: string[]; // connect 在已有連線的輸入上取代掉的邊
 }
 
 interface ApplyResult {

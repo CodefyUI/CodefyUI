@@ -1439,6 +1439,34 @@ describe('onConnect', () => {
     // target was null → markDirty not called, dirty set stays empty
     expect(activeTab().dirtyNodeIds.size).toBe(0);
   });
+
+  // #562: a data input takes one source.
+  it('replaces the wire already on the input, and one undo brings it back', () => {
+    store().setEdges([
+      { id: 'old', source: 'a', target: 'b', sourceHandle: 'sh', targetHandle: 'th' },
+      { id: 'other', source: 'a', target: 'b', sourceHandle: 'sh', targetHandle: 'th2' },
+    ] as any);
+    store().onConnect({ source: 'c', target: 'b', sourceHandle: 'out', targetHandle: 'th' });
+    const after = activeTab().edges;
+    expect(after.map((e) => e.id)).not.toContain('old');
+    expect(after.map((e) => [e.source, e.targetHandle])).toEqual([['a', 'th2'], ['c', 'th']]);
+    expect(activeTab().undoStack.length).toBe(1);
+
+    store().undo();
+    expect(activeTab().edges.map((e) => e.id)).toEqual(['old', 'other']);
+  });
+
+  it('keeps one output feeding two inputs', () => {
+    store().onConnect({ source: 'a', target: 'b', sourceHandle: 'out', targetHandle: 'x' });
+    store().onConnect({ source: 'a', target: 'c', sourceHandle: 'out', targetHandle: 'x' });
+    expect(activeTab().edges.map((e) => e.target)).toEqual(['b', 'c']);
+  });
+
+  it("keeps a second Start node's trigger on the same card", () => {
+    store().onConnect({ source: 's1', target: 'b', sourceHandle: 'trigger', targetHandle: '__trigger' });
+    store().onConnect({ source: 's2', target: 'b', sourceHandle: 'trigger', targetHandle: '__trigger' });
+    expect(activeTab().edges.map((e) => e.source)).toEqual(['s1', 's2']);
+  });
 });
 
 describe('onEdgesChange', () => {

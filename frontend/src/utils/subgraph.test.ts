@@ -137,9 +137,9 @@ describe('collapseSelection', () => {
       ]);
   });
 
-  it('gives two edges into the same inner port ONE boundary port', () => {
-    // Fan-in is resolved last-edge-wins by the engine; splitting it into two
-    // boundary ports would change which edge wins.
+  // #562: a data input takes one source. A graph saved before that rule can
+  // still feed one inner input from two wires, and the block would hide it.
+  it('refuses two outside wires into the same inner input', () => {
     const nodes = [
       node('p', 'P', { x: 0, y: 0 }),
       node('q', 'Q', { x: 0, y: 80 }),
@@ -151,16 +151,61 @@ describe('collapseSelection', () => {
       edge('e2', 'q', 'm'),
       edge('e3', 'm', 'n'),
     ];
+    expect(collapseSelection(nodes, edges, [], ['m', 'n'])).toEqual({
+      ok: false, reason: 'shared-input', blockers: ['m'],
+    });
+  });
+
+  it('refuses an inner input fed from inside and from outside at once', () => {
+    const nodes = [
+      node('p', 'P', { x: 0, y: 0 }),
+      node('m', 'M', { x: 100, y: 0 }),
+      node('n', 'N', { x: 200, y: 0 }),
+    ];
+    const edges = [edge('e1', 'p', 'n'), edge('e2', 'm', 'n')];
+    expect(checkCollapse(nodes, edges, ['m', 'n'])).toEqual({
+      ok: false, reason: 'shared-input', blockers: ['n'],
+    });
+  });
+
+  it('reads a wire saved with no target handle as on no input', () => {
+    const nodes = [
+      node('p', 'P', { x: 0, y: 0 }),
+      node('q', 'Q', { x: 0, y: 80 }),
+      node('m', 'M', { x: 100, y: 0 }),
+      node('n', 'N', { x: 200, y: 0 }),
+    ];
+    const edges = [
+      edge('e1', 'p', 'm', { targetHandle: undefined }),
+      edge('e2', 'q', 'm', { targetHandle: undefined }),
+      edge('e3', 'm', 'n'),
+    ];
+    expect(checkCollapse(nodes, edges, ['m', 'n'])).toEqual({ ok: true });
+  });
+
+  it('collapses an inner input two inner wires feed, which stays inside the block', () => {
+    const nodes = [
+      node('p', 'P', { x: 0, y: 0 }),
+      node('q', 'Q', { x: 0, y: 80 }),
+      node('m', 'M', { x: 100, y: 0 }),
+    ];
+    const edges = [edge('e1', 'p', 'm'), edge('e2', 'q', 'm')];
+    expect(checkCollapse(nodes, edges, ['p', 'q', 'm'])).toEqual({ ok: true });
+  });
+
+  it('gives one outside output feeding two inner inputs a boundary port each', () => {
+    const nodes = [
+      node('p', 'P', { x: 0, y: 0 }),
+      node('m', 'M', { x: 100, y: 0 }),
+      node('n', 'N', { x: 100, y: 80 }),
+    ];
+    const edges = [edge('e1', 'p', 'm'), edge('e2', 'p', 'n'), edge('e3', 'p', 'n', { targetHandle: 'in2' })];
     const result = collapseSelection(nodes, edges, [], ['m', 'n'], {
       id: 'sg', instanceId: 'inst',
     });
     if (!result.ok) throw new Error('expected collapse to succeed');
-    expect(result.definition.interface.inputs).toHaveLength(1);
-    const intoInstance = result.edges.filter((e) => e.target === 'inst');
-    expect(intoInstance).toHaveLength(2);
-    expect(new Set(intoInstance.map((e) => e.targetHandle))).toEqual(
-      new Set(['in']),
-    );
+    expect(result.definition.interface.inputs.map((port) => [port.innerNode, port.innerPort]))
+      .toEqual([['m', 'in'], ['n', 'in'], ['n', 'in2']]);
   });
 
   it('deduplicates boundary port names when two inner ports share one', () => {
