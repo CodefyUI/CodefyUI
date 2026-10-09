@@ -177,18 +177,14 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  // Unmount before the stores are reset. The global cleanup in setup.ts runs
+  // after this hook, and a reset under a mounted canvas re-renders it outside
+  // act(), one warning per subscribed component (#505).
+  cleanup();
   vi.restoreAllMocks();
   vi.useRealTimers();
   useTabStore.setState({ tabs: ORIGINAL_TABS, activeTabId: ORIGINAL_ACTIVE, clipboard: null });
 });
-
-/**
- * An `afterEach` for a describe below: unmount before the file's afterEach
- * above resets the stores. The global cleanup unmounts only after it, and a
- * reset under a mounted canvas re-renders it outside act(), one warning per
- * subscribed component.
- */
-const unmountBeforeStoreReset = () => cleanup();
 
 // ── Rendering ───────────────────────────────────────────────────────────────
 
@@ -975,8 +971,6 @@ describe('drag-and-drop passthrough', () => {
 // the drop. The gallery now carries the canvas's own two handlers.
 
 describe("a drop on the empty tab's gallery (#526)", () => {
-  afterEach(unmountBeforeStoreReset);
-
   /**
    * A drop as the browser delivers one: a point, and a DataTransfer that is
    * readable while the event is dispatched. jsdom has no DragEvent, so it is
@@ -1123,7 +1117,6 @@ describe('a Shift+press on the empty canvas (#506)', () => {
   const pageSelection = () => window.getSelection()!.toString();
 
   afterEach(() => {
-    unmountBeforeStoreReset();
     window.getSelection()!.removeAllRanges();
     for (const el of added) el.remove();
     added = [];
@@ -1393,8 +1386,6 @@ describe('FlowCanvas Delete key on the real canvas (#491, #501)', () => {
   beforeEach(() => {
     realFlow.value = true;
   });
-  afterEach(unmountBeforeStoreReset);
-
   /** One Delete on the page, down and up, with the deletion run out. */
   async function pressDelete() {
     fireEvent.keyDown(document.body, { key: 'Delete', code: 'Delete' });
