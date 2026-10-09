@@ -1786,6 +1786,14 @@ def validate_graph(
                     max=param_def.max_value,
                 ))
 
+    # 4. Switch rules its ports cannot express (#655): which input a param
+    # selector names, and one type across the inputs it chooses between.
+    from ..nodes.dataflow.switch_node import switch_graph_errors, switch_output_types
+
+    switch_nodes = [n for n in nodes if n["id"] in valid_node_ids]
+    errors.extend(switch_graph_errors(switch_nodes, edges, registry, opaque_node_ids))
+    switch_types = switch_output_types(switch_nodes, edges, registry, opaque_node_ids)
+
     # --- Edge-level validation ---
 
     for edge in edges:
@@ -1841,15 +1849,17 @@ def validate_graph(
             ))
             continue
 
-        if not is_compatible(src_outputs[src_port].data_type, tgt_inputs[tgt_port].data_type):
+        # A Switch output carries the type of the inputs it chooses between.
+        src_type = switch_types.get(src["id"], src_outputs[src_port].data_type)
+        if not is_compatible(src_type, tgt_inputs[tgt_port].data_type):
             errors.append(validation_issue(
                 "type_mismatch",
                 (
-                    f"Type mismatch: {src['type']}.{src_port} ({src_outputs[src_port].data_type}) "
+                    f"Type mismatch: {src['type']}.{src_port} ({src_type}) "
                     f"-> {tgt['type']}.{tgt_port} ({tgt_inputs[tgt_port].data_type})"
                 ),
                 node_id=tgt["id"], source=src["id"], source_port=src_port,
-                source_type=_type_name(src_outputs[src_port].data_type),
+                source_type=_type_name(src_type),
                 port=tgt_port,
                 target_type=_type_name(tgt_inputs[tgt_port].data_type),
             ))

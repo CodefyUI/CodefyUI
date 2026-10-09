@@ -523,6 +523,9 @@ const zhTW: Record<TranslationKey, string> = {
   'graphValidation.subgraph_triggered_empty': '「{node}」收到 trigger，但這個區塊裡沒有節點',
   'graphValidation.trigger_source_missing': '連到「{node}」的 trigger 連線來自不在圖中的節點「{source}」，請從圖檔中移除這條線。',
   'graphValidation.trigger_target_missing': '從「{node}」拉出的 trigger 連線接到不在圖中的節點「{target}」，請從圖檔中移除這條線。',
+  'graphValidation.switch_selector_out_of_range': '「{node}」的 selector 是 {value}，但這個 Switch 只有 0 到 {max} 號輸入',
+  'graphValidation.switch_selected_unwired': '「{node}」的 selector 是 {value}，但「{port}」尚未連線',
+  'graphValidation.switch_input_types_differ': '「{node}」的輸入型別不一致（{types}）。Switch 不論選哪個輸入，都只能輸出同一種型別。',
 
   // Beginner-facing rewrites of raw Python/PyTorch exceptions (see
   // utils/errorMessages.ts). Each one names what to change, not just what broke.

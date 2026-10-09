@@ -22,6 +22,21 @@ received — each links to the release it was published as.
 
 ## [Unreleased]
 
+### Changed
+
+- **Switch picks its input from a param, grows as it is wired, and stops
+  instead of guessing** ([#655], part of [#562]). A new `selector` param picks
+  the input, so a fixed choice no longer needs a constant node wired in;
+  wiring the `selector` port still works and overrides the param. Wiring the
+  last empty input adds another, up to 16. An index that is out of range, not
+  an integer, or names an unwired input now stops the run with an error where
+  it used to forward `input_0` without a word, and Run and Export refuse a
+  `selector` param like that before anything runs. The output takes the type
+  of the wired inputs, so the canvas and validation check what it feeds, and
+  inputs of different types are refused. A bypassed Switch forwards `input_0`
+  where it used to forward its selector. Saved graphs keep their four inputs
+  and wires.
+
 ## [2.8.9] — 2026-10-05
 
 This release makes the canvas show the numbers the exported Python script
@@ -5377,3 +5392,5 @@ Release candidates before 1.0.0 are on the
 [2.2.0]: https://github.com/CodefyUI/CodefyUI/compare/2.1.1...2.2.0
 [2.1.1]: https://github.com/CodefyUI/CodefyUI/compare/2.1.0...2.1.1
 [2.1.0]: https://github.com/CodefyUI/CodefyUI/compare/2.0.0...2.1.0
+[#655]: https://github.com/CodefyUI/CodefyUI/issues/655
+[#562]: https://github.com/CodefyUI/CodefyUI/issues/562

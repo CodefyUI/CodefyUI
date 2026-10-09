@@ -74,12 +74,13 @@ import {
   resolveDynamicOutputs,
 } from '../../utils';
 import { computeDetachedEndpoint } from '../../utils/reconnect';
+import { isSwitchNode, liveOutputType, switchAcceptsType } from '../../utils/switchNode';
 import { nodesBoundingBox } from '../../utils/autoLayout';
 import { rememberViewport, recallViewport } from '../../utils/viewportMemory';
 import { prompt } from '../../utils/dialog';
 import { useNodeDefStore } from '../../store/nodeDefStore';
 import { useI18n } from '../../i18n';
-import type { OutputSummary } from '../../types';
+import type { NodeData, OutputSummary } from '../../types';
 import styles from './FlowCanvas.module.css';
 
 // Every card draws inside its own NodeCardBoundary: one that throws becomes a
@@ -684,7 +685,18 @@ export function FlowCanvas({ tabId }: { tabId?: string } = {}) {
           .find((i) => i.name === targetHandle);
         if (!sourceOutput || !targetInput) return true;
 
-        return isValidConnection(sourceOutput.data_type, targetInput.data_type);
+        // A Switch output carries the type of the inputs it chooses between,
+        // and a new option must match them (#655).
+        const outputsOf = (n: Node<NodeData>) =>
+          resolveDynamicOutputs(n.data.definition, n.data.params);
+        const inputsOf = (n: Node<NodeData>) =>
+          resolveDynamicInputs(n.data.definition, n.data.params);
+        const sourceType = liveOutputType(sourceNode, sourceHandle, tab.nodes, tab.edges, outputsOf);
+        if (!isValidConnection(sourceType, targetInput.data_type)) return false;
+        return !isSwitchNode(targetNode) || switchAcceptsType(
+          targetNode, targetHandle, sourceType, tab.nodes, tab.edges, outputsOf, inputsOf,
+          isValidConnection,
+        );
       }
 
       return true;
@@ -701,8 +713,14 @@ export function FlowCanvas({ tabId }: { tabId?: string } = {}) {
         if (node) {
           const def = node.data.definition;
           const output = def?.outputs.find((o) => o.name === params.handleId);
-          if (output) {
-            useUIStore.getState().setDraggingSourceType(output.data_type);
+          if (output && tab) {
+            // A Switch's output is drawn in the type its inputs carry (#655).
+            const type = isSwitchNode(node)
+              ? liveOutputType(node, params.handleId, tab.nodes, tab.edges, (n) =>
+                  resolveDynamicOutputs(n.data.definition, n.data.params),
+                )
+              : output.data_type;
+            useUIStore.getState().setDraggingSourceType(type);
           }
         }
       }

@@ -131,6 +131,9 @@ describe('issueText', () => {
     issue('trigger_target_missing', START, { target: GONE }),
     issue('no_entry_points', null, {}),
     issue('subgraph_triggered_empty', BLOCK, { subgraph: 'Nothing Inside' }),
+    issue('switch_selector_out_of_range', ENC, { value: 5, max: 3 }),
+    issue('switch_selected_unwired', ENC, { value: 2, port: 'input_2' }),
+    issue('switch_input_types_differ', ENC, { types: 'STRING, TENSOR' }),
   ];
 
   it.each(['en', 'zh-TW'] as const)(
@@ -159,6 +162,20 @@ describe('issueText', () => {
     );
     expect(issueText(BY_CODE[10], NODES, t)).toBe(
       'The graph has a loop: Encoder -> Decoder -> Encoder',
+    );
+  });
+
+  it('says what is wrong with a Switch (#655)', () => {
+    const at = (code: string) => BY_CODE.find((f) => f.code === code)!;
+    expect(issueText(at('switch_selector_out_of_range'), NODES, t)).toBe(
+      'Encoder: selector is 5, but this Switch has inputs 0 to 3',
+    );
+    expect(issueText(at('switch_selected_unwired'), NODES, t)).toBe(
+      'Encoder: selector is 2, but "input_2" is not connected',
+    );
+    useI18n.setState({ locale: 'zh-TW' });
+    expect(issueText(at('switch_input_types_differ'), NODES, t)).toBe(
+      '「Encoder」的輸入型別不一致（STRING, TENSOR）。Switch 不論選哪個輸入，都只能輸出同一種型別。',
     );
   });
 

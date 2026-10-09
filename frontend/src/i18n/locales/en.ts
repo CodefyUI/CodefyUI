@@ -611,6 +611,9 @@ const en = {
   'graphValidation.subgraph_triggered_empty': '{node} is triggered, but the block has no nodes',
   'graphValidation.trigger_source_missing': 'A trigger into {node} comes from node "{source}", which is not in the graph. Remove that connection from the graph file.',
   'graphValidation.trigger_target_missing': 'A trigger from {node} goes to node "{target}", which is not in the graph. Remove that connection from the graph file.',
+  'graphValidation.switch_selector_out_of_range': '{node}: selector is {value}, but this Switch has inputs 0 to {max}',
+  'graphValidation.switch_selected_unwired': '{node}: selector is {value}, but "{port}" is not connected',
+  'graphValidation.switch_input_types_differ': '{node}: its inputs carry different types ({types}). A Switch forwards one type, whichever input it selects.',
 
   // Beginner-facing rewrites of raw Python/PyTorch exceptions (see
   // utils/errorMessages.ts). Each one names what to change, not just what broke.
