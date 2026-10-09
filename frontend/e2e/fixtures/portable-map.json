@@ -1,0 +1,51 @@
+{
+  "name": "e2e portable map",
+  "description": "Seeded random rows, a Map over a preset made in this run, summed",
+  "settings": { "seed": 1234, "device": "cpu" },
+  "nodes": [
+    { "id": "start", "type": "Start", "position": { "x": 0, "y": 0 }, "data": { "params": {} } },
+    {
+      "id": "rand",
+      "type": "TensorCreate",
+      "position": { "x": 200, "y": 0 },
+      "data": { "params": { "shape": "3,4", "fill": "randn", "value": 0.0, "requires_grad": false } }
+    },
+    {
+      "id": "rows",
+      "type": "PythonScript",
+      "position": { "x": 500, "y": 0 },
+      "data": {
+        "params": {
+          "code": "def run(inputs, params):\n    return {'out1': list(inputs['in1'])}\n",
+          "input_ports": 1,
+          "output_ports": 1
+        }
+      }
+    },
+    {
+      "id": "map",
+      "type": "Map",
+      "position": { "x": 800, "y": 0 },
+      "data": { "params": { "subgraph": "E2E row scale" } }
+    },
+    {
+      "id": "total",
+      "type": "Reduce",
+      "position": { "x": 1100, "y": 0 },
+      "data": { "params": { "operation": "sum", "dim": 0 } }
+    },
+    {
+      "id": "show",
+      "type": "Print",
+      "position": { "x": 1400, "y": 0 },
+      "data": { "params": { "label": "e2e_portable" } }
+    }
+  ],
+  "edges": [
+    { "id": "t1", "source": "start", "target": "rand", "sourceHandle": "trigger", "targetHandle": "__trigger", "type": "trigger" },
+    { "id": "d1", "source": "rand", "target": "rows", "sourceHandle": "tensor", "targetHandle": "in1", "type": "data" },
+    { "id": "d2", "source": "rows", "target": "map", "sourceHandle": "out1", "targetHandle": "items", "type": "data" },
+    { "id": "d3", "source": "map", "target": "total", "sourceHandle": "results", "targetHandle": "items", "type": "data" },
+    { "id": "d4", "source": "total", "target": "show", "sourceHandle": "result", "targetHandle": "value", "type": "data" }
+  ]
+}

@@ -1,0 +1,37 @@
+{
+  "name": "e2e tensor chain",
+  "description": "Start -> 1.5 filled tensor -> x2 -> mean -> Print",
+  "nodes": [
+    { "id": "start", "type": "Start", "position": { "x": 0, "y": 0 }, "data": { "params": {} } },
+    {
+      "id": "make",
+      "type": "TensorCreate",
+      "position": { "x": 220, "y": 0 },
+      "data": { "params": { "shape": "2,2", "fill": "full", "value": 1.5, "requires_grad": false } }
+    },
+    {
+      "id": "double",
+      "type": "ScalarMultiply",
+      "position": { "x": 520, "y": 0 },
+      "data": { "params": { "scalar": 2.0 } }
+    },
+    {
+      "id": "avg",
+      "type": "Mean",
+      "position": { "x": 820, "y": 0 },
+      "data": { "params": { "dim": "0,1", "keepdim": false } }
+    },
+    {
+      "id": "show",
+      "type": "Print",
+      "position": { "x": 1120, "y": 0 },
+      "data": { "params": { "label": "e2e_result" } }
+    }
+  ],
+  "edges": [
+    { "id": "t1", "source": "start", "target": "make", "sourceHandle": "trigger", "targetHandle": "__trigger", "type": "trigger" },
+    { "id": "d1", "source": "make", "target": "double", "sourceHandle": "tensor", "targetHandle": "tensor", "type": "data" },
+    { "id": "d2", "source": "double", "target": "avg", "sourceHandle": "tensor", "targetHandle": "tensor", "type": "data" },
+    { "id": "d3", "source": "avg", "target": "show", "sourceHandle": "tensor", "targetHandle": "value", "type": "data" }
+  ]
+}

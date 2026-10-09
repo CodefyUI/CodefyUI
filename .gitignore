@@ -32,6 +32,10 @@ pnpm-debug.log*
 frontend/dist/
 *.tsbuildinfo
 
+# Browser workflow checks (pnpm e2e): traces, screenshots, HTML report
+frontend/test-results/
+frontend/playwright-report/
+
 # Logs
 *.log
 
