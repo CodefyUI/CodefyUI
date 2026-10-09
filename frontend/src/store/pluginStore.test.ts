@@ -5,10 +5,10 @@ import * as rest from '../api/rest';
 import type {
   JobEventsPage,
   PluginCatalog,
-  PluginCatalogEntry,
   PluginInspection,
 } from '../api/rest';
 import { ApiError } from '../api/rest';
+import { pluginEntry as entry } from '../test/pluginEntry';
 
 // Partial mock: `ApiError` is a real class the store narrows on with
 // `instanceof`, so only the network calls are stubbed.
@@ -71,41 +71,6 @@ const order: string[] = [];
 function lastToast() {
   const { toasts } = useToastStore.getState();
   return toasts[toasts.length - 1];
-}
-
-function entry(
-  partial: Partial<PluginCatalogEntry> & { id: string },
-): PluginCatalogEntry {
-  return {
-    name: partial.id,
-    description: '',
-    kind: 'builtin',
-    official: true,
-    status: 'available',
-    source_kind: null,
-    source: partial.id,
-    repo: null,
-    ref: null,
-    sha: null,
-    url: null,
-    homepage: '',
-    version: null,
-    installed_at: null,
-    enabled: false,
-    chapters: [],
-    lessons: [],
-    tags: [],
-    nodes: [],
-    node_count: 0,
-    capabilities: [],
-    trusted_modules: [],
-    python_deps: {},
-    has_frontend: false,
-    consent_required: false,
-    frontend_entry: null,
-    job: null,
-    ...partial,
-  };
 }
 
 function catalog(partial: Partial<PluginCatalog> = {}): PluginCatalog {

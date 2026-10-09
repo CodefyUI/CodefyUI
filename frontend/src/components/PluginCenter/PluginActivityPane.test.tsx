@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { render, screen, fireEvent, within } from '@testing-library/react';
 import type { PluginCatalogEntry } from '../../api/rest';
+import { pluginEntry as entry } from '../../test/pluginEntry';
 import {
   emptyPluginJob,
   type PluginJob,
@@ -9,39 +10,6 @@ import {
 import { useI18n } from '../../i18n';
 import { PluginActivityPane } from './PluginActivityPane';
 import { jobOverallPercent } from './pluginStatus';
-
-function entry(over: Partial<PluginCatalogEntry> & { id: string }): PluginCatalogEntry {
-  return {
-    name: over.id,
-    description: '',
-    kind: 'builtin',
-    official: true,
-    status: 'available',
-    source_kind: null,
-    source: over.id,
-    repo: null,
-    ref: null,
-    sha: null,
-    url: null,
-    homepage: '',
-    version: null,
-    installed_at: null,
-    enabled: false,
-    chapters: [],
-    lessons: [],
-    tags: [],
-    nodes: [],
-    node_count: 0,
-    capabilities: [],
-    trusted_modules: [],
-    python_deps: {},
-    has_frontend: false,
-    consent_required: false,
-    frontend_entry: null,
-    job: null,
-    ...over,
-  };
-}
 
 /** A third-party plugin off GitHub, installed and pinned to a tag. */
 const demo = entry({

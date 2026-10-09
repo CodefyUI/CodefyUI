@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { act, render, screen, fireEvent, within } from '@testing-library/react';
-import type { PluginCatalogEntry, PluginInspection } from '../../api/rest';
+import type { PluginInspection } from '../../api/rest';
+import { pluginEntry as entry } from '../../test/pluginEntry';
 import { useDialogStore } from '../../store/dialogStore';
 import {
   emptyPluginJob,
@@ -8,44 +9,12 @@ import {
   _resetPluginStoreForTesting,
   type InspectionState,
   type PluginJob,
+  type PluginState,
 } from '../../store/pluginStore';
 import { useUIStore } from '../../store/uiStore';
 import { useI18n } from '../../i18n';
 import { HIGHLIGHT_MS } from '../PackCenter/PackCenterModal';
 import { PluginCenterModal } from './PluginCenterModal';
-
-function entry(over: Partial<PluginCatalogEntry> & { id: string }): PluginCatalogEntry {
-  return {
-    name: over.id,
-    description: '',
-    kind: 'builtin',
-    official: true,
-    status: 'available',
-    source_kind: null,
-    source: over.id,
-    repo: null,
-    ref: null,
-    sha: null,
-    url: null,
-    homepage: '',
-    version: null,
-    installed_at: null,
-    enabled: false,
-    chapters: [],
-    lessons: [],
-    tags: [],
-    nodes: [],
-    node_count: 0,
-    capabilities: [],
-    trusted_modules: [],
-    python_deps: {},
-    has_frontend: false,
-    consent_required: false,
-    frontend_entry: null,
-    job: null,
-    ...over,
-  };
-}
 
 /** A built-in teaching pack, installed: the common row. */
 const edu = entry({
@@ -157,7 +126,7 @@ let actions: ReturnType<typeof makeActions>;
  * `setState`. Never `vi.spyOn(usePluginStore.getState(), ...)`: that spies on a
  * snapshot object, and the history leaks between cases.
  */
-function seed(state: Partial<ReturnType<typeof usePluginStore.getState>> = {}) {
+function seed(state: Partial<PluginState> = {}) {
   actions = makeActions();
   const plugins = state.plugins ?? [];
   usePluginStore.setState({

@@ -1,21 +1,14 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { useNodeDefStore } from '../../store/nodeDefStore';
-import { usePluginStore } from '../../store/pluginStore';
+import { selectPluginsById, usePluginStore } from '../../store/pluginStore';
 import { useTabStore } from '../../store/tabStore';
 import { useI18n } from '../../i18n';
 import { CATEGORY_COLORS } from '../../styles/theme';
 import { nodeSearchTexts, presetSearchTexts, rankMatches } from '../../utils/nodeSearch';
-import type { PluginIndex } from '../../utils/provider';
 import { isCompletePreset } from '../../utils/presetOwnership';
 import type { NodeDefinition, PresetDefinition } from '../../types';
 import { MathText } from '../shared/MathText';
 import styles from './QuickNodeSearch.module.css';
-
-// Module-scope, so the subscription compares the same function's output frame
-// to frame; narrow, so an install running in the Plugin Center cannot re-render
-// the palette on every long-poll turn.
-type PluginStoreState = ReturnType<typeof usePluginStore.getState>;
-const selectPluginsById = (state: PluginStoreState): PluginIndex => state.byId;
 
 interface QuickNodeSearchProps {
   screenPos: { x: number; y: number };
