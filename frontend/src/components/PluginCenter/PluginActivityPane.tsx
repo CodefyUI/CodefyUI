@@ -230,9 +230,11 @@ export function PluginActivityPane({
  * this is the record, and one uninstall said two ways would be two facts to
  * reconcile. Under it, only when there is something to say: nothing removes a
  * plugin's pip packages -- not this panel, not the CLI -- so an uninstall that
- * left some names the packages, hands over the line that removes them with the
- * server stopped, and the line that puts the plugin back if that was a
- * mistake. An uninstall that left nothing is the sentence alone.
+ * left some names the packages and hands over the line that removes them with
+ * the server stopped. Separately, by the CLI's rule and whatever was left
+ * behind (#506): the line that puts the plugin back, whenever the server
+ * could build one from where the plugin came from, introduced by a note that
+ * a sync will not restore it when the removal was tombstoned.
  */
 function RemovalResult({
   removal,
@@ -261,14 +263,17 @@ function RemovalResult({
             {removal.uninstallCommand !== null && (
               <CommandBlock command={removal.uninstallCommand} />
             )}
-            {removal.reinstallHint !== '' && (
-              <>
-                <span className={styles.resultHint}>
-                  {t('pluginCenter.activity.reinstall')}
-                </span>
-                <CommandBlock command={removal.reinstallHint} />
-              </>
-            )}
+          </>
+        )}
+
+        {removal.reinstallHint !== null && (
+          <>
+            <span className={styles.resultHint}>
+              {removal.tombstoned
+                ? t('pluginCenter.activity.reinstallTombstoned', { plugin: removal.name })
+                : t('pluginCenter.activity.reinstall')}
+            </span>
+            <CommandBlock command={removal.reinstallHint} />
           </>
         )}
       </div>

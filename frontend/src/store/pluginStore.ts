@@ -105,15 +105,18 @@ export interface InspectionFailure {
  * a plugin's pip packages -- not this panel, not the CLI -- so `depsLeft` is
  * the packages it declared that nothing else still needs (#414),
  * `uninstallCommand` the line that would remove them with the server
- * stopped (null when there are none), and `reinstallHint` the command that
- * puts the plugin back.
+ * stopped (null when there are none), `reinstallHint` the command that puts
+ * the plugin back (null when its source cannot be installed again), and
+ * `tombstoned` whether the removal was recorded so a sync will not restore
+ * it -- which is what the pane says before that command (#506).
  */
 export interface PluginRemoval {
   pluginId: string;
   name: string;
   depsLeft: string[];
   uninstallCommand: string | null;
-  reinstallHint: string;
+  reinstallHint: string | null;
+  tombstoned: boolean;
 }
 
 /**
@@ -1102,6 +1105,7 @@ export const usePluginStore = create<PluginState>((set, get) => ({
             depsLeft: result.python_deps_left,
             uninstallCommand: result.uninstall_command,
             reinstallHint: result.reinstall_hint,
+            tombstoned: result.tombstoned,
           },
           job: isRunning(state.job) ? state.job : null,
         }));

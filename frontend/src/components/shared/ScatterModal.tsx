@@ -44,6 +44,11 @@ const LIST_MAX = 60;
 const DOT_R = 3.5;
 const DOT_R_HOVER = 6;
 const CULL_PAD = 28;
+/**
+ * Widest viewport, in CSS px, that gets the stacked layout. Mirrors the
+ * `@media (max-width: 760px)` block in ScatterModal.module.css.
+ */
+const NARROW_MAX_WIDTH = 760;
 
 /** Build ScatterPoints from a raw [N, 2] tensor value + optional label list. */
 function buildPoints(rows: unknown, labels: unknown[] | null): ScatterPoint[] {
@@ -158,8 +163,16 @@ function ScatterModalBody({
     return () => window.removeEventListener('resize', onResize);
   }, []);
 
-  const plotW = Math.max(320, Math.round(viewport.w * 0.9) - 264 - 48);
-  const plotH = Math.max(280, Math.round(viewport.h * 0.88) - 132);
+  // At a narrow window or high zoom the sidebar stacks above the plot (the
+  // stylesheet's matching media query) and the plot takes the modal's whole
+  // width: the window less the backdrop's padding and the modal's border.
+  const narrow = viewport.w <= NARROW_MAX_WIDTH;
+  const plotW = narrow
+    ? Math.max(160, viewport.w - 2 * 8 - 2)
+    : Math.max(320, Math.round(viewport.w * 0.9) - 264 - 48);
+  const plotH = narrow
+    ? Math.max(200, Math.min(plotW, Math.round(viewport.h * 0.6)))
+    : Math.max(280, Math.round(viewport.h * 0.88) - 132);
 
   const bounds = useMemo(() => {
     if (!points || points.length === 0) return null;

@@ -991,6 +991,36 @@ async def test_no_variant_produced_the_objective(client, store):
     assert "train_loss" in warning and "val_loss" in warning
 
 
+async def test_an_objective_names_its_producer_end_to_end(client, store):
+    """#641 through a real graph: the objective's node is stored, echoed,
+    and each variant records the node its value came from -- for a named
+    producer and for a name-only objective with one producer alike. A node
+    that never logged the metric leaves the table unranked, and says so."""
+    named = await _run_sweep(
+        client, store, _values("lr", [0.1, 0.2]),
+        objective={"metric": "val_loss", "direction": "minimize",
+                   "node_id": "probe"})
+    body = (await client.get(f"/api/sweeps/{named}")).json()
+    assert body["objective"] == {"metric": "val_loss",
+                                 "direction": "minimize", "node_id": "probe"}
+    assert [v["rank"] for v in body["variants"]] == [1, 2]
+    assert {v["objective_node_id"] for v in body["variants"]} == {"probe"}
+
+    name_only = await _run_sweep(client, store, _values("lr", [0.1]))
+    body = (await client.get(f"/api/sweeps/{name_only}")).json()
+    assert body["objective"]["node_id"] is None
+    assert body["variants"][0]["objective_node_id"] == "probe"
+    assert body["variants"][0]["rank"] == 1
+
+    elsewhere = await _run_sweep(
+        client, store, _values("lr", [0.1]),
+        objective={"metric": "val_loss", "direction": "minimize",
+                   "node_id": "src"})
+    body = (await client.get(f"/api/sweeps/{elsewhere}")).json()
+    assert body["variants"][0]["rank"] is None
+    assert "from node 'src'" in body["objective_warning"]
+
+
 async def test_the_objective_survives_its_child_being_pruned(client, store):
     """RULING 4: the run id stays as a link that may be dead, and the
     numbers stay."""
@@ -1136,7 +1166,9 @@ async def test_the_comparison_csv_has_one_row_per_variant(client, store):
     assert text.startswith(_CSV_BOM)
     rows = list(csv.reader(io.StringIO(text.lstrip(_CSV_BOM))))
     assert rows[0] == ["rank", "variant_index", "domain_index", "run_id",
-                       "status", "objective", "probe.lr", "probe.note"]
+                       "status", "objective", "objective_metric",
+                       "objective_node_id", "ambiguous_producers",
+                       "probe.lr", "probe.note"]
     assert len(rows) == 5                    # header + 4 variants
     # Every variant is silent, so every rank and objective cell is EMPTY --
     # not "None", which would read as text and poison the column's type --
@@ -1146,10 +1178,10 @@ async def test_the_comparison_csv_has_one_row_per_variant(client, store):
     assert all(row[3] and row[4] == "succeeded" for row in rows[1:])
     # The formula guard: a leading apostrophe, the convention every
     # spreadsheet understands as "this is text".
-    assert {row[7] for row in rows[1:]} == {"'=HYPERLINK(1)", "ok"}
+    assert {row[10] for row in rows[1:]} == {"'=HYPERLINK(1)", "ok"}
     # Numeric cells are NOT quoted into text: a chart built on the export
     # would break.
-    assert {row[6] for row in rows[1:]} == {"0.1", "0.2"}
+    assert {row[9] for row in rows[1:]} == {"0.1", "0.2"}
 
 
 async def test_an_unknown_sweep_is_a_404(client):

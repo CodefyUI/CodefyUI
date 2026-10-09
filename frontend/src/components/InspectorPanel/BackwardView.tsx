@@ -1,8 +1,6 @@
 import { useEffect, useState } from 'react';
 import {
   fetchGradIndex,
-  fetchOutput,
-  PayloadTooLargeError,
   RunDataExpiredError,
   type GradIndexEntry,
 } from '../../api/executionOutputs';
@@ -11,6 +9,7 @@ import { TensorGridView } from './TensorGridView';
 import {
   canvasNodeHasOutputs,
   canvasNodeStatus,
+  fetchPortWithSliceFallback,
   isRunStillGoingNote,
   missingGradientsNote,
   onRunEnd,
@@ -42,24 +41,6 @@ function entryStorePort(entry: GradIndexEntry): string {
   return entry.kind === 'weight'
     ? `__weight_grad__${entry.port}`
     : `${entry.port}__grad`;
-}
-
-async function fetchTensorWithFallback(
-  runId: string,
-  nodeId: string,
-  port: string,
-): Promise<OutputData> {
-  try {
-    return await fetchOutput(runId, nodeId, port);
-  } catch (e) {
-    if (e instanceof PayloadTooLargeError) {
-      return await fetchOutput(runId, nodeId, port, {
-        slice: '0,:,:',
-        maxElements: 65536,
-      });
-    }
-    throw e;
-  }
 }
 
 function formatNumber(v: number): string {
@@ -190,7 +171,7 @@ export function BackwardView({ runId, nodeId }: Props) {
       entries.map(async (e) => {
         const port = entryStorePort(e);
         try {
-          const data = await fetchTensorWithFallback(runId, runNodeId, port);
+          const data = await fetchPortWithSliceFallback(runId, runNodeId, port);
           if (cancelled) return;
           setTensors((prev) => ({
             ...prev,

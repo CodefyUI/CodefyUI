@@ -26,10 +26,15 @@ import { keyOf, type FetchMap, type PortTarget } from './PortGroup';
  * copied into a second component.
  */
 
+/** The most values a preview of a too-large tensor carries. */
+export const PREVIEW_MAX_ELEMENTS = 65536;
+
 /**
- * Fetch one port, narrowing to the first index along every leading dim if the
- * server refuses the full payload. Without the retry a large activation shows
- * an error instead of its leading slice.
+ * Fetch one port, falling back to a bounded preview if the server refuses the
+ * full payload. The server chooses the preview's slice from the captured
+ * shape (#640), so an image batch, a long vector and a wide matrix all come
+ * back as their leading part, with `slice` and `truncated` saying so. Without
+ * the retry a large activation shows an error instead.
  */
 export async function fetchPortWithSliceFallback(
   runId: string,
@@ -40,7 +45,10 @@ export async function fetchPortWithSliceFallback(
     return await fetchOutput(runId, nodeId, port);
   } catch (e) {
     if (e instanceof PayloadTooLargeError) {
-      return await fetchOutput(runId, nodeId, port, { slice: '0,:,:', maxElements: 65536 });
+      return await fetchOutput(runId, nodeId, port, {
+        preview: true,
+        maxElements: PREVIEW_MAX_ELEMENTS,
+      });
     }
     throw e;
   }

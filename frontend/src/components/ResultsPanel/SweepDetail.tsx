@@ -6,6 +6,7 @@ import { useSweepStore } from '../../store/sweepStore';
 import { flushSubgraphEditing, useTabStore } from '../../store/tabStore';
 import { friendlyError } from '../../utils/errorMessages';
 import { LossChart } from './LossChart';
+import { producerLabel } from './sweepObjective';
 import { sweepParamTitle } from './sweepParams';
 import styles from './SweepDetail.module.css';
 
@@ -68,11 +69,11 @@ export function SweepDetail({ onBack, onOpenRun, chartHeight, backRef }: SweepDe
   const [sortDirection, setSortDirection] = useState<SortDirection>('asc');
   const [exportError, setExportError] = useState<string | null>(null);
 
-  // From that graph's ROOT nodes, the graph a sweep runs; an address it
-  // cannot vouch for keeps its id.
+  // That graph's ROOT nodes, the graph a sweep runs; an address it cannot
+  // vouch for keeps its id.
+  const nodes = useMemo(() => (tab ? flushSubgraphEditing(tab).nodes : []), [tab]);
   const columns = useMemo(() => {
     if (!detail) return [];
-    const nodes = tab ? flushSubgraphEditing(tab).nodes : [];
     return detail.params.map((param) => {
       const address = `${param.node_id}.${param.param}`;
       return {
@@ -80,7 +81,7 @@ export function SweepDetail({ onBack, onOpenRun, chartHeight, backRef }: SweepDe
         title: sweepParamTitle(param, definitions, nodes) ?? `${param.node_id.slice(0, 8)} · ${param.param}`,
       };
     });
-  }, [detail, definitions, tab]);
+  }, [detail, definitions, nodes]);
 
   const rows = useMemo(() => {
     if (!detail) return [];
@@ -154,11 +155,22 @@ export function SweepDetail({ onBack, onOpenRun, chartHeight, backRef }: SweepDe
   // ranked or live, and either a variant succeeded without it (the name is
   // likely wrong) or the sweep ended.
   const metric = detail.objective.metric;
+  const objectiveNode = detail.objective.node_id ?? null;
+  const nodeName = (node: string | null) => node === null ? t('sweeps.detail.runLevel') : producerLabel(node, nodes);
+  // A name-only objective several nodes logged (#641): those variants are
+  // unranked on purpose, and the fix is a sweep with a node chosen.
+  const ambiguousNodes = [...new Set(detail.variants.flatMap((variant) => variant.ambiguous_producers ?? []))]
+    .sort((left, right) => left === null ? -1 : right === null ? 1 : left.localeCompare(right));
+  // `final_metrics` collapses producers, so for a chosen node only a
+  // harvested value says that node logged the objective.
   const recorded = detail.variants.some((variant) => variant.rank != null
-    || (variant.final_metrics !== undefined
-      && Object.prototype.hasOwnProperty.call(variant.final_metrics, metric)));
+    || (objectiveNode !== null
+      ? variant.objective !== null
+      : variant.final_metrics !== undefined
+        && Object.prototype.hasOwnProperty.call(variant.final_metrics, metric)));
   const ended = detail.state === 'finished' || (detail.state === 'failed' && activeOrQueued === 0);
-  const objectiveMissing = !recorded && ((detail.counts.succeeded ?? 0) > 0 || ended);
+  const objectiveMissing = ambiguousNodes.length === 0 && !recorded
+    && ((detail.counts.succeeded ?? 0) > 0 || ended);
   const recordedSeries = objectiveMissing
     ? [...new Set(detail.variants.flatMap((variant) => Object.keys(variant.final_metrics ?? {})))].sort()
     : [];
@@ -182,7 +194,9 @@ export function SweepDetail({ onBack, onOpenRun, chartHeight, backRef }: SweepDe
       </header>
 
       <div className={styles.summary}>
-        <span>{t('sweeps.detail.objective', { metric: detail.objective.metric, direction: t(`sweeps.direction.${detail.objective.direction}`) })}</span>
+        <span>{objectiveNode !== null
+          ? t('sweeps.detail.objectiveNode', { metric, node: nodeName(objectiveNode), direction: t(`sweeps.direction.${detail.objective.direction}`) })
+          : t('sweeps.detail.objective', { metric, direction: t(`sweeps.direction.${detail.objective.direction}`) })}</span>
         {activeOrQueued > 0 && <span>{t('sweeps.detail.activeQueued', { count: activeOrQueued })}</span>}
         {COUNT_KEYS.map(([status, key]) => (detail.counts[status] ?? 0) > 0
           && <span key={status}>{t(key, { count: detail.counts[status] })}</span>)}
@@ -196,9 +210,14 @@ export function SweepDetail({ onBack, onOpenRun, chartHeight, backRef }: SweepDe
       {error && !notFound && <div className={styles.error}>{friendlyError(error)}</div>}
       {cancelError && <div className={styles.error}>{t('sweeps.detail.stopFailed', { error: friendlyError(cancelError) })}</div>}
       {detail.error && <div className={styles.error}>{friendlyError(detail.error)}</div>}
-      {objectiveMissing && <div className={styles.warning}>{recordedSeries.length > 0
-        ? t('sweeps.detail.noObjectiveSeries', { metric, names: recordedSeries.join(', ') })
-        : t('sweeps.detail.noObjective', { metric })}</div>}
+      {ambiguousNodes.length > 0 && <div className={styles.warning}>{t('sweeps.detail.ambiguousObjective', {
+        metric, nodes: ambiguousNodes.map(nodeName).join(', '),
+      })}</div>}
+      {objectiveMissing && <div className={styles.warning}>{objectiveNode !== null
+        ? t('sweeps.detail.noObjectiveNode', { metric, node: nodeName(objectiveNode) })
+        : recordedSeries.length > 0
+          ? t('sweeps.detail.noObjectiveSeries', { metric, names: recordedSeries.join(', ') })
+          : t('sweeps.detail.noObjective', { metric })}</div>}
       {exportError && <div className={styles.error}>{friendlyError(exportError)}</div>}
 
       <div className={styles.tableScroll}>
@@ -222,7 +241,9 @@ export function SweepDetail({ onBack, onOpenRun, chartHeight, backRef }: SweepDe
               {/* A status from a newer server falls through as its own token. */}
               <td>{statusKey ? t(statusKey) : (variant.status ?? '-')}</td>
               {columns.map((column) => <td key={column.address}>{formatValue(values.get(column.address))}</td>)}
-              <td>{formatValue(variant.objective)}</td>
+              <td>{variant.ambiguous_producers?.length
+                ? <span title={variant.ambiguous_producers.map(nodeName).join(', ')}>{t('sweeps.detail.ambiguous')}</span>
+                : formatValue(variant.objective)}</td>
               <td>{formatMetrics(variant.final_metrics)}</td>
               <td>{variant.run_id && variant.run_exists !== false
                 ? <button type="button" onClick={() => onOpenRun(variant.run_id!)}>{t('sweeps.detail.openRun')}</button>

@@ -215,7 +215,7 @@ function applyToActiveTab(example: ResolvedExample): void {
   // what the tab now holds.
   const { activeTabId, getTab } = useTabStore.getState();
   const bounds = nodesBoundingBox((getTab(activeTabId)?.nodes ?? []) as Node[]);
-  if (bounds) useUIStore.getState().requestLayoutFit(bounds);
+  if (bounds) useUIStore.getState().requestLayoutFit(activeTabId, bounds);
   // Same notice the Toolbar readers show, for the same reason: read-only is
   // not a failure, and a user who is not told will read the refused Save as
   // one.

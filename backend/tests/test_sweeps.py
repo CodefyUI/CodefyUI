@@ -984,22 +984,20 @@ async def test_seam_b_records_no_objective_when_the_sweep_names_no_metric(
 
 
 async def test_seam_b_breaks_a_step_tie_by_write_order(db, sweeps):
-    """Two producers, one series name, one step — a decision, not luck.
+    """One producer, one series name, one step — a decision, not luck.
 
-    §6.1 documents that the last-point rule collapses one name logged by
-    several nodes into a SINGLE number, and ``id DESC`` is what decides
-    which: the last one written. Without the tie-break sqlite may return
+    ``id DESC`` decides between two points ONE node logged at the same
+    step: the last one written. Without the tie-break sqlite may return
     either row, so a sweep's PERMANENT objective would depend on the query
-    plan. ``latest_metrics`` pins this for seam A
-    (``test_latest_metrics_breaks_a_step_tie_by_write_order``); this is
-    seam B's half, so the two implementations cannot drift apart on exactly
-    the case §6.1 calls out.
+    plan. Two DIFFERENT nodes at one step are no longer broken this way
+    (#641): a name-only objective is then ambiguous and unranked
+    (``test_sweep_objective_producer.py``).
     """
     store = RunStore(db)
     created = await _new_sweep(sweeps, count=1)
     run_id = await _child(store, created.id, 0, points=[
         MetricPoint("val_loss", 9.0, 1, "node-a"),
-        MetricPoint("val_loss", 1.0, 1, "node-b"),   # written last, wins
+        MetricPoint("val_loss", 1.0, 1, "node-a"),   # written last, wins
     ])
     await sweeps.set_variant_run(created.id, 0, run_id=run_id, seed=None)
 
@@ -1011,31 +1009,32 @@ async def test_seam_b_breaks_a_step_tie_by_write_order(db, sweeps):
 async def test_both_seams_read_the_same_objective_from_one_series(db, sweeps):
     """§6.1's cross-seam guarantee, asserted instead of assumed.
 
-    ``latest_metrics`` (seam A — a recursive CTE in run_store) and
-    ``_last_metric_value`` (seam B — one seek in sweep_store) are two
-    implementations of ONE rule, and nothing held them to the same answer.
-    That is how seam B's ordering drifted out of coverage in the first
-    place: every test fed it a single-point series, on which every
-    plausible implementation agrees by accident.
+    Seam A (``SweepStore.read_harvest``, on a GET) and seam B
+    (``harvest_doomed``, inside prune) both read through
+    ``sweep_store.read_objective``. Every older test fed them a
+    single-point series, on which every plausible implementation agrees by
+    accident.
 
-    So the series here is built to DISTINGUISH them: five points, steps
-    arriving out of order, the best value at neither end, and a tie on the
-    last step. Both seams must say 0.5 — the later-written of the two
-    points at step 3. The literal is asserted as well as the equality, so
-    the test cannot pass by both seams being wrong the same way.
+    So the series here is built to DISTINGUISH them: five points from one
+    node, steps arriving out of order, the best value at neither end, and
+    a tie on the last step. Both seams must say 0.5 — the later-written of
+    the two points at step 3. The literal is asserted as well as the
+    equality, so the test cannot pass by both seams being wrong the same
+    way.
     """
     store = RunStore(db)
     created = await _new_sweep(sweeps, count=1)
     run_id = await _child(store, created.id, 0, points=[
-        MetricPoint("val_loss", 0.9, 1),
+        MetricPoint("val_loss", 0.9, 1, "node-a"),
         MetricPoint("val_loss", 0.1, 3, "node-a"),   # best, and NOT the last
-        MetricPoint("val_loss", 0.7, 0),
-        MetricPoint("val_loss", 0.5, 3, "node-b"),   # same step, written later
-        MetricPoint("val_loss", 0.3, 2),
+        MetricPoint("val_loss", 0.7, 0, "node-a"),
+        MetricPoint("val_loss", 0.5, 3, "node-a"),   # same step, written later
+        MetricPoint("val_loss", 0.3, 2, "node-a"),
     ])
     await sweeps.set_variant_run(created.id, 0, run_id=run_id, seed=None)
 
-    seam_a = (await store.latest_metrics([run_id]))[run_id]["val_loss"]
+    seam_a = (await sweeps.read_harvest(
+        {0: (run_id, "succeeded")}, created.objective))[0].objective
     assert await store.prune(keep_last=0) == 1   # seam B, with no prior GET
     seam_b = (await sweeps.get_sweep(created.id)).variants[0].objective
     assert seam_b == seam_a == 0.5

@@ -19,14 +19,25 @@ export type SweepCurveCache = Map<string, SweepCurve | null>;
 
 const FINISHED = new Set(['succeeded', 'failed', 'cancelled', 'interrupted']);
 
-/** Turn one run's chosen objective series into the chart's common shape. */
+/**
+ * Turn one run's chosen objective series into the chart's common shape.
+ *
+ * Only the objective's producer is drawn (#641): the named node's points, or,
+ * for a name-only objective, the one node that logged the name. A name
+ * several nodes logged is no curve at all, as it is no rank: joining their
+ * points would draw one line out of different measurements.
+ */
 export function objectiveCurve(
   variantIndex: number,
   metrics: RunMetrics,
   objectiveMetric: string,
+  objectiveNode: string | null = null,
 ): SweepCurve | null {
-  const points = metrics.metrics
-    .filter((point) => point.name === objectiveMetric
+  const series = metrics.metrics.filter((point) => point.name === objectiveMetric);
+  const producers = new Set(series.map((point) => point.node_id ?? null));
+  if (objectiveNode === null && producers.size > 1) return null;
+  const points = series
+    .filter((point) => (objectiveNode === null || point.node_id === objectiveNode)
       && point.value !== null
       && Number.isFinite(point.value))
     .map((point) => ({ x: point.step, y: point.value as number }))
@@ -71,6 +82,7 @@ export async function loadObjectiveCurves(
           variant.index,
           metrics,
           detail.objective.metric,
+          detail.objective.node_id ?? null,
         );
         if (FINISHED.has(variant.status ?? '')) cache?.set(runId, curves[index]);
       } catch {

@@ -585,6 +585,19 @@ describe('ScatterModal — plot interactions', () => {
     expect(zoomLabel()).toBe('100%');
   });
 
+  it('sizes the plot to the whole window at a narrow viewport (#490)', () => {
+    // At 375 CSS px (a narrow window, or high zoom) the sidebar stacks above
+    // the plot, which takes the window less the backdrop's padding (8 px a
+    // side) and the modal's border; the wide layout's 320 px floor plus an
+    // 18rem sidebar pushed the close button off-screen.
+    (window as unknown as { innerWidth: number }).innerWidth = 375;
+    (window as unknown as { innerHeight: number }).innerHeight = 667;
+    render(<ScatterModal isOpen onClose={() => {}} title="t" inlinePoints={inline(4)} />);
+    const svg = plotSvg();
+    expect(Number(svg.getAttribute('width'))).toBe(357);
+    expect(Number(svg.getAttribute('height'))).toBe(357);
+  });
+
   it('reports the hidden count in the footer and keeps working after a window resize', () => {
     render(<ScatterModal isOpen onClose={() => {}} title="t" inlinePoints={inline(4)} />);
     fireEvent.click(screen.getAllByLabelText('Hide')[0]);

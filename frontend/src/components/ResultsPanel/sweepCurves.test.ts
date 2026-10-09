@@ -45,6 +45,30 @@ describe('objectiveCurve', () => {
   it('returns null when the objective series has no points', () => {
     expect(objectiveCurve(0, metrics('r0', []), 'loss')).toBeNull();
   });
+
+  it('draws only the objective node, and no line for a name several nodes log (#641)', () => {
+    const shared: RunMetrics = {
+      run_id: 'r0', names: ['loss'],
+      metrics: [
+        { node_id: 'trainer_a', name: 'loss', step: 100, value: 0.8 },
+        { node_id: 'trainer_b', name: 'loss', step: 1, value: 0.1 },
+        { node_id: 'trainer_b', name: 'loss', step: 2, value: 0.05 },
+      ],
+    };
+    expect(objectiveCurve(0, shared, 'loss', 'trainer_b')?.points).toEqual([{ x: 1, y: 0.1 }, { x: 2, y: 0.05 }]);
+    expect(objectiveCurve(0, shared, 'loss', 'block/inner')).toBeNull();
+    expect(objectiveCurve(0, shared, 'loss')).toBeNull();
+    // A run-level point (no node) is a producer of its own.
+    const runLevel = { ...shared, metrics: [{ name: 'loss', step: 1, value: 0.3 } as never, shared.metrics[1]] };
+    expect(objectiveCurve(0, runLevel, 'loss')).toBeNull();
+  });
+
+  it('passes the sweep objective node to every curve', async () => {
+    const sweep = detail(1);
+    sweep.objective = { metric: 'loss', direction: 'minimize', node_id: 'other' };
+    const curves = await loadObjectiveCurves(sweep, async (runId) => metrics(runId, [0.5]));
+    expect(curves).toEqual([]);
+  });
 });
 
 describe('loadObjectiveCurves', () => {

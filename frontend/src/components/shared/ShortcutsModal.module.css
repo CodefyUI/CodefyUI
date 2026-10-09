@@ -2,10 +2,18 @@
   position: fixed;
   inset: 0;
   background: var(--surface-scrim);
-  z-index: 9000;
+  /* The sheet may open over any panel (stack policy in ShortcutsModal.tsx),
+     so it sits above all of them: the modal rung (10000), the Plugin Center
+     (10001) and the diff window (10002). Above it: the confirm dialog
+     (10004), the toast stack (10005), and the workspace lock and restart
+     overlay (10006). tokens.css has no z-index scale; every z-index in this
+     app is a literal with its rung written beside it. */
+  z-index: 10003;
   display: flex;
   align-items: center;
   justify-content: center;
+  /* Keeps the sheet off the window edge in a narrow window or at high zoom. */
+  padding: var(--sp-4);
 }
 
 .modal {
@@ -13,9 +21,13 @@
   border: 1px solid var(--border-base);
   border-radius: var(--radius-lg);
   width: 360px;
+  max-width: 100%;
   max-height: 80vh;
   overflow-y: auto;
   box-shadow: var(--shadow-lg);
+  /* Takes focus as it opens; no ring around the whole sheet, as the panels
+     drop theirs. */
+  outline: none;
 }
 
 .header {

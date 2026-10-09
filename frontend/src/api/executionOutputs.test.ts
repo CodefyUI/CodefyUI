@@ -87,6 +87,15 @@ describe('fetchOutput', () => {
     expect(call).toContain('max_elements=1024');
   });
 
+  it('asks for a bounded preview with preview=true (#640)', async () => {
+    const fetchMock = mockFetch(200, { type: 'tensor' });
+    await fetchOutput('r', 'n', 'p', { preview: true, maxElements: 65536 });
+    const call = fetchMock.mock.calls[0][0] as string;
+    expect(call).toContain('preview=true');
+    expect(call).toContain('max_elements=65536');
+    expect(call).not.toContain('slice=');
+  });
+
   it('url-encodes path segments', async () => {
     const fetchMock = mockFetch(200, {});
     await fetchOutput('r', 'node with space', 'p q');

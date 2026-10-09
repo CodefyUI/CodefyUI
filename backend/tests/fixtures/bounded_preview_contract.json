@@ -1,0 +1,48 @@
+{
+  "refused": {
+    "status": 413,
+    "body": {
+      "detail": "output has 30 elements (max 12); supply a narrower 'slice' parameter"
+    }
+  },
+  "preview": {
+    "status": 200,
+    "body": {
+      "type": "tensor",
+      "full_shape": [
+        2,
+        3,
+        5
+      ],
+      "dtype": "torch.float32",
+      "slice": "0,0:2",
+      "sliced_shape": [
+        2,
+        5
+      ],
+      "values": [
+        [
+          0.0,
+          1.0,
+          2.0,
+          3.0,
+          4.0
+        ],
+        [
+          5.0,
+          6.0,
+          7.0,
+          8.0,
+          9.0
+        ]
+      ],
+      "truncated": true,
+      "min": 0.0,
+      "max": 9.0,
+      "mean": 4.5,
+      "run_id": "run1",
+      "node_id": "a",
+      "port": "out"
+    }
+  }
+}

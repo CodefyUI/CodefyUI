@@ -1208,6 +1208,7 @@ describe('PluginCenterModal — the activity pane', () => {
         depsLeft: ['model2vec'],
         uninstallCommand: 'uv pip uninstall model2vec',
         reinstallHint: 'cdui plugin install owner/demo',
+        tombstoned: false,
       },
     });
     open();
@@ -1379,11 +1380,8 @@ describe('PluginCenterModal — closing', () => {
   });
 
   it('leaves Escape alone while something is stacked above it', () => {
-    useUIStore.setState({ shortcutsModalOpen: true });
-    fireEvent.keyDown(window, { key: 'Escape' });
-    expect(useUIStore.getState().pluginCenterOpen).toBe(true);
-    useUIStore.setState({ shortcutsModalOpen: false });
-
+    // The shortcuts sheet stops its own Escape before this panel's handler;
+    // `PluginCenter/escapeStacking.test.tsx` covers it over this panel.
     useDialogStore.setState({ active: { kind: 'confirm', title: 'x' } as never });
     fireEvent.keyDown(window, { key: 'Escape' });
     expect(useUIStore.getState().pluginCenterOpen).toBe(true);

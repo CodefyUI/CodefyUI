@@ -220,6 +220,10 @@ const zhTW: Record<TranslationKey, string> = {
   // shape / dtype / min / max 這排原始讀數下面，也是學生在 PyTorch 裡
   // 會親手寫的字（dim=0）。
   'tensorGrid.dim': 'dim {dim}',
+  // 只顯示一部分的張量，位在完整 shape 讀數下方（#640）。slice 是伺服器取的
+  // 索引，例如 0, 0:218；同一行的 min / max / mean 描述的是顯示出來的數值。
+  'tensorGrid.preview': '預覽：切片 [{slice}] · 形狀 [{shape}] · 共 {total} 個值，顯示 {shown} 個',
+  'tensorGrid.slice': '切片 [{slice}] · 形狀 [{shape}] · 共 {total} 個值，顯示 {shown} 個',
 
   // Node
   'node.opt': '可選',
@@ -558,6 +562,7 @@ const zhTW: Record<TranslationKey, string> = {
 
   // Keyboard Shortcuts
   'shortcuts.title': '鍵盤快捷鍵',
+  'shortcuts.close': '關閉鍵盤快捷鍵',
   'shortcuts.undo': '復原',
   'shortcuts.redo': '重做',
   'shortcuts.redoAlt': '重做（替代）',
@@ -930,6 +935,9 @@ const zhTW: Record<TranslationKey, string> = {
   'sweeps.new.method': '方式',
   'sweeps.new.objective': '目標指標',
   'sweeps.new.objectiveRequired': '請輸入目標指標',
+  'sweeps.new.objectiveNode': '目標節點',
+  'sweeps.new.objectiveAnyNode': '任一節點（僅限單一節點記錄時）',
+  'sweeps.new.objectiveAmbiguous': '列出的執行中有 {count} 個節點記錄「{metric}」。請選擇其中一個；由多個節點記錄的變體不會排名。',
   'sweeps.new.direction': '方向',
   'sweeps.new.parameter': '參數',
   'sweeps.new.parameterN': '參數 {index}',
@@ -967,6 +975,10 @@ const zhTW: Record<TranslationKey, string> = {
   'sweeps.detail.downloadCsv': '下載 CSV',
   'sweeps.detail.stop': '停止掃描',
   'sweeps.detail.objective': '{metric} · {direction}',
+  'sweeps.detail.objectiveNode': '{metric}（來自 {node}）· {direction}',
+  'sweeps.detail.ambiguousObjective': '「{metric}」由多個節點記錄（{nodes}），這些變體因此不排名。請建立新的掃描並選擇目標節點。',
+  'sweeps.detail.ambiguous': '不明確',
+  'sweeps.detail.runLevel': '執行層級',
   'sweeps.detail.activeQueued': '{count} 個執行中或排隊中',
   'sweeps.detail.completed': '{count} 個已成功',
   'sweeps.detail.failed': '{count} 個失敗',
@@ -981,6 +993,7 @@ const zhTW: Record<TranslationKey, string> = {
   'sweeps.detail.notFound': '伺服器上已經沒有這個掃描了。',
   'sweeps.detail.noObjective': '沒有任何變體記錄名為「{metric}」的指標。',
   'sweeps.detail.noObjectiveSeries': '沒有任何變體記錄名為「{metric}」的指標；各執行記錄的是 {names}。',
+  'sweeps.detail.noObjectiveNode': '沒有任何變體從 {node} 記錄「{metric}」。',
   'sweeps.detail.curves': '目標曲線',
   'sweeps.detail.noCurves': '尚無目標曲線。',
   'sweeps.detail.variantName': '變體 {index}',
@@ -1404,6 +1417,8 @@ const zhTW: Record<TranslationKey, string> = {
   'pluginCenter.activity.depsLeft':
     '這些 Python 套件還留著：{packages}。要移除的話，請停止伺服器後執行：',
   'pluginCenter.activity.reinstall': '要再安裝回來：',
+  'pluginCenter.activity.reinstallTombstoned':
+    'cdui plugin sync 不會再把 {plugin} 裝回來。要再安裝回來：',
 
   // The steps of an install; `deps` reuses `packs.activity.step.pip`.
   'pluginCenter.step.resolve': '正在解析來源',

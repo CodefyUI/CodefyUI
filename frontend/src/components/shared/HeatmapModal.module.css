@@ -19,21 +19,49 @@
   flex-direction: column;
   max-width: 80vw;
   max-height: 80vh;
-  min-width: 480px;
-  min-height: 320px;
+  /* The floor gives way to the window: a bare `min-width` wins over
+     `max-width`, and at a narrow window or high zoom it pushed the close
+     button off-screen (#490). The percentages are of the backdrop's padded
+     box; a plot wider than the modal scrolls inside `.content`. */
+  min-width: min(480px, 100%);
+  min-height: min(320px, 100%);
   overflow: hidden;
+}
+
+/* Narrow window / high zoom: the modal takes the whole width it has. */
+@media (max-width: 760px) {
+  .backdrop {
+    padding: var(--sp-3);
+  }
+
+  .modal {
+    max-width: 100%;
+    max-height: 100%;
+  }
+
+  .footer {
+    flex-wrap: wrap;
+    gap: var(--sp-2) var(--sp-4);
+  }
 }
 
 .header {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: var(--sp-3);
   padding: var(--sp-3) var(--sp-4);
   border-bottom: 1px solid var(--border-base);
   background: rgba(10, 15, 23, 0.6);
 }
 
 .title {
+  /* A long title is cut with an ellipsis; it never pushes the close button
+     out of the header. */
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   color: var(--text-primary);
   font-weight: var(--fw-semibold);
   font-size: var(--fs-md);
@@ -41,6 +69,7 @@
 }
 
 .closeBtn {
+  flex-shrink: 0;
   background: transparent;
   border: 1px solid var(--border-strong);
   color: var(--text-secondary);

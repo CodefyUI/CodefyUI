@@ -7,9 +7,10 @@
  * API has no viewport call a plugin could use to correct it. Graph Copilot
  * ends every structural batch with `auto_layout`.
  *
- * A fit request names no tab, and the canvas on screen consumes it, so one is
- * only ever made for the tab on screen. A tab in the background forgets its
- * remembered pan and zoom instead, and the next switch to it fits its nodes.
+ * A fit request names the tab laid out and waits until that tab is on screen
+ * (#522), so a tab in the background is framed on its next visit, and a
+ * handler that lays out one tab and switches tabs in the same turn leaves
+ * each tab's request with that tab.
  */
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { useTabStore } from '../store/tabStore';
@@ -30,7 +31,9 @@ vi.mock('../store/tabPersistence', () => ({
 }));
 
 const store = () => useTabStore.getState();
-const fitRequest = () => useUIStore.getState().layoutFitRequest;
+/** The fit waiting for a tab, the active one by default. */
+const fitRequest = (tabId = store().activeTabId) => useUIStore.getState().layoutFitRequests[tabId];
+const allRequests = () => useUIStore.getState().layoutFitRequests;
 
 const DEFS: NodeDefinition[] = [
   {
@@ -81,7 +84,7 @@ beforeEach(() => {
   useTabStore.setState({ tabs: [], activeTabId: null as unknown as string, clipboard: null });
   store().addTab('live');
   useNodeDefStore.setState({ definitions: DEFS, presets: [] } as never);
-  useUIStore.setState({ layoutFitRequest: null });
+  useUIStore.setState({ layoutFitRequests: {} });
   useToastStore.setState({ toasts: [] });
   _resetViewportMemory();
   window.localStorage.clear();
@@ -98,8 +101,8 @@ describe('auto_layout fits the view on the tab the user is looking at', () => {
     expect(laid).toHaveLength(2);
     // The layout really ran: neither node is where the batch put it.
     expect(laid.every((n) => n.position.x < 5000)).toBe(true);
-    expect(fitRequest()).not.toBeNull();
-    expect(fitRequest()!.bounds).toEqual(boxOf(laid));
+    expect(fitRequest()).toBeDefined();
+    expect(fitRequest()).toEqual(boxOf(laid));
   });
 
   it('workspace.applyOperations on the active tab fits the view as well', () => {
@@ -108,8 +111,8 @@ describe('auto_layout fits the view on the tab the user is looking at', () => {
     const result = api.workspace.applyOperations({ operations: LAYOUT_BATCH });
 
     expect(result.committed).toBe(true);
-    expect(fitRequest()).not.toBeNull();
-    expect(fitRequest()!.bounds).toEqual(boxOf(store().getActiveTab().nodes));
+    expect(fitRequest()).toBeDefined();
+    expect(fitRequest()).toEqual(boxOf(store().getActiveTab().nodes));
   });
 
   it('the box takes in a note bound to a laid-out node and leaves an unbound note out', () => {
@@ -132,8 +135,8 @@ describe('auto_layout fits the view on the tab the user is looking at', () => {
     const bound = nodes.find((n) => n.id === result.refs.explains)!;
     const loose = nodes.find((n) => n.id === result.refs.aside)!;
     const laidOut = nodes.filter((n) => n.type !== 'noteNode');
-    expect(fitRequest()).not.toBeNull();
-    const { bounds } = fitRequest()!;
+    expect(fitRequest()).toBeDefined();
+    const bounds = fitRequest()!;
     // The bound note rode along above its node, so it sets the top of the box.
     expect(bound.position.y).toBeLessThan(Math.min(...laidOut.map((n) => n.position.y)));
     expect(bounds).toEqual(boxOf([...laidOut, bound]));
@@ -168,13 +171,13 @@ describe('auto_layout fits the view on the tab the user is looking at', () => {
     expect(result.results[0].ok).toBe(true);
     const inner = store().getActiveTab().nodes;
     expect(inner.map((n) => n.id).sort()).toEqual(['in1', 'in2']);
-    expect(fitRequest()).not.toBeNull();
-    expect(fitRequest()!.bounds).toEqual(boxOf(inner));
+    expect(fitRequest()).toBeDefined();
+    expect(fitRequest()).toEqual(boxOf(inner));
   });
 });
 
 describe('auto_layout on a tab in the background', () => {
-  it('asks for no fit, and forgets that tab\'s viewport so the next visit fits it', () => {
+  it('leaves a pending request for that tab', () => {
     const api = freshApi();
     const live = store().activeTabId;
     const bg = store().createTab({ activate: false });
@@ -184,14 +187,50 @@ describe('auto_layout on a tab in the background', () => {
     const result = api.workspace.applyOperations({ tabId: bg, operations: LAYOUT_BATCH });
 
     expect(result.committed).toBe(true);
-    // A fit request would move the canvas on screen -- the ACTIVE tab's -- to
-    // coordinates that belong to a graph the user is not looking at.
-    expect(fitRequest()).toBeNull();
-    // Nothing remembered, so switching to the tab fits its nodes rather than
-    // restoring a pan and zoom aimed at where they used to be.
-    expect(recallViewport(bg)).toBeUndefined();
+    // Named for the laid-out tab, so the canvas on screen -- the ACTIVE tab's
+    // -- leaves it for that tab's next visit, where it wins over the view the
+    // tab had before the layout.
+    expect(allRequests()).toEqual({ [bg]: boxOf(store().getTab(bg)!.nodes) });
     // The tab on screen keeps where the user left it.
     expect(recallViewport(live)).toEqual({ x: 7, y: 8, zoom: 0.5 });
+  });
+});
+
+/** A one-node graph far from where the layout puts the other tab's nodes. */
+const FAR_GRAPH = {
+  nodes: [{ id: 'far', type: 'Source', position: { x: 20000, y: 20000 }, data: { params: {} } }],
+  edges: [],
+};
+
+// #522. One synchronous handler, so the canvas renders once with both the
+// layout and the switch: the request has to say which tab it is for.
+describe('auto_layout and a tab switch in the same handler', () => {
+  it('a layout, then openGraphs: the request stays with the laid-out tab', () => {
+    const api = freshApi();
+    const laidOutTab = store().activeTabId;
+
+    api.graph.applyOperations(LAYOUT_BATCH);
+    const [opened] = api.workspace.openGraphs([{ title: 'B', graph: FAR_GRAPH }]);
+
+    if (!('tabId' in opened)) throw new Error('open failed');
+    expect(store().activeTabId).toBe(opened.tabId);
+    // Nothing waits for the tab now on screen, which gets its own first-visit fit.
+    expect(fitRequest()).toBeUndefined();
+    expect(allRequests()).toEqual({ [laidOutTab]: boxOf(store().getTab(laidOutTab)!.nodes) });
+  });
+
+  it('openGraphs, then a layout of the tab left behind: the request waits for that tab', () => {
+    const api = freshApi();
+    const laidOutTab = store().activeTabId;
+
+    const [opened] = api.workspace.openGraphs([{ title: 'B', graph: FAR_GRAPH }]);
+    const result = api.workspace.applyOperations({ tabId: laidOutTab, operations: LAYOUT_BATCH });
+
+    if (!('tabId' in opened)) throw new Error('open failed');
+    expect(result.committed).toBe(true);
+    expect(store().activeTabId).toBe(opened.tabId);
+    expect(fitRequest()).toBeUndefined();
+    expect(allRequests()).toEqual({ [laidOutTab]: boxOf(store().getTab(laidOutTab)!.nodes) });
   });
 });
 
@@ -202,19 +241,19 @@ describe('what does not move the view', () => {
       operations: [{ op: 'add_node', node_type: 'Source' }],
     });
     expect(result.committed).toBe(true);
-    expect(fitRequest()).toBeNull();
+    expect(allRequests()).toEqual({});
   });
 
   it('an auto_layout that moves nothing, which commits nothing either (#397)', () => {
     const api = freshApi();
     expect(api.workspace.applyOperations({ operations: LAYOUT_BATCH }).committed).toBe(true);
-    useUIStore.setState({ layoutFitRequest: null });
+    useUIStore.setState({ layoutFitRequests: {} });
 
     const again = api.workspace.applyOperations({ operations: [{ op: 'auto_layout' }] });
 
     expect(again.results).toEqual([{ index: 0, ok: true }]);
     expect(again.committed).toBe(false);
-    expect(fitRequest()).toBeNull();
+    expect(allRequests()).toEqual({});
   });
 
   it('a batch a read-only tab refuses', () => {
@@ -224,7 +263,7 @@ describe('what does not move the view', () => {
     const result = api.graph.applyOperations(LAYOUT_BATCH);
 
     expect(result.results.every((r) => !r.ok)).toBe(true);
-    expect(fitRequest()).toBeNull();
+    expect(allRequests()).toEqual({});
   });
 
   it('an auto_layout with nothing but notes to lay out', () => {
@@ -235,7 +274,7 @@ describe('what does not move the view', () => {
       operations: [{ op: 'add_note', text: 'only me' }, { op: 'auto_layout' }],
     });
     expect(result.committed).toBe(true);
-    expect(fitRequest()).toBeNull();
+    expect(allRequests()).toEqual({});
   });
 
   it('a committed batch whose auto_layout moves nothing, on screen or behind', () => {
@@ -246,7 +285,7 @@ describe('what does not move the view', () => {
     const bg = store().createTab({ activate: false });
     const onScreen = api.workspace.applyOperations({ operations: LAYOUT_BATCH });
     const behind = api.workspace.applyOperations({ tabId: bg, operations: LAYOUT_BATCH });
-    useUIStore.setState({ layoutFitRequest: null });
+    useUIStore.setState({ layoutFitRequests: {} });
     rememberViewport(bg, { x: 1, y: 2, zoom: 3 });
 
     const relabelled = api.workspace.applyOperations({
@@ -266,7 +305,7 @@ describe('what does not move the view', () => {
     expect([...relabelled.results, ...relabelledBehind.results].every((r) => r.ok)).toBe(true);
     expect(relabelled.committed).toBe(true);
     expect(relabelledBehind.committed).toBe(true);
-    expect(fitRequest()).toBeNull();
+    expect(allRequests()).toEqual({});
     expect(recallViewport(bg)).toEqual({ x: 1, y: 2, zoom: 3 });
   });
 
@@ -278,7 +317,7 @@ describe('what does not move the view', () => {
     const bg = store().createTab({ activate: false });
     api.workspace.applyOperations({ operations: LAYOUT_BATCH });
     api.workspace.applyOperations({ tabId: bg, operations: LAYOUT_BATCH });
-    useUIStore.setState({ layoutFitRequest: null });
+    useUIStore.setState({ layoutFitRequests: {} });
     rememberViewport(bg, { x: 1, y: 2, zoom: 3 });
     const noteThenLayout: GraphOp[] = [{ op: 'add_note', text: 'x' }, { op: 'auto_layout' }];
 
@@ -299,7 +338,7 @@ describe('what does not move the view', () => {
       expect(result.committed).toBe(true);
       expect(result.results.every((r) => r.ok)).toBe(true);
     }
-    expect(fitRequest()).toBeNull();
+    expect(allRequests()).toEqual({});
     expect(recallViewport(bg)).toEqual({ x: 1, y: 2, zoom: 3 });
   });
 });
@@ -310,7 +349,7 @@ it('a batch that removes a node and lays out still fits the view to what is left
   const api = freshApi();
   const laid = api.workspace.applyOperations({ operations: LAYOUT_BATCH });
   const before = store().getActiveTab().nodes.find((n) => n.id === laid.refs.a)!.position;
-  useUIStore.setState({ layoutFitRequest: null });
+  useUIStore.setState({ layoutFitRequests: {} });
 
   const result = api.workspace.applyOperations({
     operations: [{ op: 'remove_node', node_id: laid.refs.b }, { op: 'auto_layout' }],
@@ -320,8 +359,8 @@ it('a batch that removes a node and lays out still fits the view to what is left
   const left = store().getActiveTab().nodes;
   expect(left.map((n) => n.id)).toEqual([laid.refs.a]);
   expect(left[0].position).toEqual(before);
-  expect(fitRequest()).not.toBeNull();
-  expect(fitRequest()!.bounds).toEqual(boxOf(left));
+  expect(fitRequest()).toBeDefined();
+  expect(fitRequest()).toEqual(boxOf(left));
 });
 
 it('shows no toast, even with an unbound note on the canvas', () => {
