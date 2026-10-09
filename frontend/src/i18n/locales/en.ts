@@ -120,6 +120,7 @@ const en = {
   'status.cached': 'Cached',
   'status.interrupted': 'Interrupted',
   'status.bypassed': 'Bypassed',
+  'status.unselected': 'Not selected',
   // Why a tab left Running without anyone pressing Stop (#552). Each one is a
   // toast and the same line in the Execution Log.
   'status.runInterrupted': 'The server stopped or restarted, so this run was interrupted.',
@@ -297,6 +298,7 @@ const en = {
   'node.completed': 'Completed',
   'node.cached': 'Cached',
   'node.skipped': 'Skipped',
+  'node.unselected': 'Not selected',
   'node.error': 'Error: {error}',
   'node.bypassed': 'BYPASS',
   'node.bypassed.title': 'Skipped — input passes straight through',
@@ -613,6 +615,9 @@ const en = {
   'graphValidation.subgraph_triggered_empty': '{node} is triggered, but the block has no nodes',
   'graphValidation.trigger_source_missing': 'A trigger into {node} comes from node "{source}", which is not in the graph. Remove that connection from the graph file.',
   'graphValidation.trigger_target_missing': 'A trigger from {node} goes to node "{target}", which is not in the graph. Remove that connection from the graph file.',
+  'graphValidation.switch_selector_out_of_range': '{node}: selector is {value}, but this Switch has inputs 0 to {max}',
+  'graphValidation.switch_selected_unwired': '{node}: selector is {value}, but "{port}" is not connected',
+  'graphValidation.switch_input_types_differ': '{node}: its inputs carry different types ({types}). A Switch forwards one type, whichever input it selects.',
 
   // Beginner-facing rewrites of raw Python/PyTorch exceptions (see
   // utils/errorMessages.ts). Each one names what to change, not just what broke.
@@ -714,9 +719,11 @@ const en = {
   'inspector.nodeRunning': 'Node is running…',
   'inspector.nodePending': 'Waiting for this node to run…',
   'inspector.nodeBypassed': 'Bypassed: this node does not run. What passes through it can be read when the run ends.',
+  'inspector.nodeUnselected': 'Not selected: the Switch this node feeds does not pick its branch, so it does not run.',
   'inspector.noValue': 'No value this run',
   'inspector.capture.notInRun': 'Not in the last run',
   'inspector.capture.bypassedInRun': 'Bypassed in the last run, and nothing passed through it',
+  'inspector.capture.unselectedInRun': 'Not selected by a Switch in the last run, so it did not run',
   'inspector.capture.failedInRun': 'Failed in the last run',
   'inspector.capture.runHint': 'Run the graph to capture its values',
   'inspector.capture.fromBlock': "From the block's input: {ports}",
@@ -1043,6 +1050,7 @@ const en = {
   'runs.nodeStatus.skipped': 'skipped',
   'runs.nodeStatus.error': 'failed',
   'runs.nodeStatus.bypassed': 'bypassed',
+  'runs.nodeStatus.unselected': 'not selected',
   'runs.detail.step': 'step',
   'runs.log.started': 'Run started',
   'runs.log.node': 'Node {node} {status}',

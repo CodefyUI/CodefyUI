@@ -1061,14 +1061,14 @@ def test_bypass_resolves_each_output_of_a_multi_output_node_by_type():
 
 
 def test_bypass_matching_is_wider_than_equality_when_a_port_is_any():
-    """Switch: selector (SCALAR), input_0..3 (ANY) -> output (ANY).
+    """Switch: input_0..3 (ANY), selector (SCALAR) -> output (ANY).
 
     ``is_compatible`` -- the edge validator's own predicate -- accepts SCALAR
-    into ANY, so positional first-match takes `selector`, not `input_0`.
-    Surprising at a glance and deliberately pinned: the rule is positional
-    over a WIDE compatibility test, exactly as ComfyUI's is, and a strict
-    same-DataType rule would refuse pass-throughs the graph could legally
-    have been wired with.
+    into ANY, so the rule is positional over a WIDE compatibility test,
+    exactly as ComfyUI's is; a strict same-DataType rule would refuse
+    pass-throughs the graph could legally have been wired with. Switch
+    declares its options before its selector (#655) so that the first match
+    is `input_0`: a bypassed Switch used to forward its index.
     """
     from app.core.graph_engine import resolve_bypass
 
@@ -1088,7 +1088,7 @@ def test_bypass_matching_is_wider_than_equality_when_a_port_is_any():
     resolution = resolve_bypass(nodes, edges)
 
     assert resolution.errors == []
-    assert [(link.input, link.source) for link in resolution.links] == [("selector", "sel")]
+    assert [(link.input, link.source) for link in resolution.links] == [("input_0", "a")]
 
 
 def test_a_missing_input_caused_by_a_bypass_names_the_bypass():

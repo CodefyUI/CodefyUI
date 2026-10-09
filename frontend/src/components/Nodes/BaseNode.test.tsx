@@ -15,6 +15,7 @@ import * as rest from '../../api/rest';
 import type { PackItem, PackItemStatus, PackSummary } from '../../api/rest';
 import { CATEGORY_COLORS, STATUS_COLORS, NODE_HEADER_TINT, mixColor } from '../../styles/theme';
 import BaseNode, { BaseNodeBody } from './BaseNode';
+import { getPortColor } from '../../utils';
 
 // ── Helpers ──────────────────────────────────────────────────────────────
 
@@ -349,6 +350,8 @@ describe('BaseNode', () => {
     // core#260: passed over because something upstream failed. A preset can
     // settle here too, so both node cards must agree on how it looks.
     ['skipped', STATUS_COLORS.skipped],
+    // #656: a Switch's param did not pick this branch; it did not run either.
+    ['unselected', STATUS_COLORS.skipped],
   ] as const)('uses the %s status border when unselected', (status, hex) => {
     const data = baseData({
       executionStatus: status,
@@ -616,6 +619,11 @@ describe('BaseNode', () => {
   it('renders the skipped footer', () => {
     renderBody(baseData({ executionStatus: 'skipped' }));
     expect(screen.getByText('Skipped')).toBeTruthy();
+  });
+
+  it('renders the not-selected footer (#656)', () => {
+    renderBody(baseData({ executionStatus: 'unselected' }));
+    expect(screen.getByText('Not selected')).toBeTruthy();
   });
 
   // ── SequentialModel branch ────────────────────────────────────────────────
@@ -1669,5 +1677,64 @@ describe('BaseNode — optional packs', () => {
     // Sized by its content, not by a fixed width: the zh-TW badge is three
     // characters where the English one is four letters.
     expect(screen.getByRole('button', { name: '需套件' })).toBeInTheDocument();
+  });
+});
+
+// ── Switch output type (#655) ───────────────────────────────────────────
+
+describe('a Switch card', () => {
+  const switchDef = (): NodeDefinition =>
+    makeDef({
+      node_name: 'Switch',
+      category: 'Data Flow',
+      inputs: [],
+      outputs: [{ name: 'output', data_type: 'ANY', description: '', optional: false }],
+      params: [],
+    });
+  const tensorDef = (): NodeDefinition =>
+    makeDef({
+      node_name: 'TensorCreate',
+      inputs: [],
+      outputs: [{ name: 'tensor', data_type: 'TENSOR', description: '', optional: false }],
+      params: [],
+    });
+
+  function withGraph(edges: Edge[]) {
+    useTabStore.setState((s) => ({
+      tabs: s.tabs.map((tab) => ({
+        ...tab,
+        nodes: [
+          { id: 't', type: 'baseNode', position: { x: 0, y: 0 }, data: baseData({ type: 'TensorCreate', definition: tensorDef() }) },
+          { id: 'sw', type: 'baseNode', position: { x: 0, y: 0 }, data: baseData({ type: 'Switch', definition: switchDef() }) },
+        ],
+        edges,
+      })),
+    }));
+  }
+
+  const outputLabel = () => screen.getByText('output') as HTMLElement;
+
+  it('draws its output in the type its inputs carry, and leaves any other output as declared', () => {
+    withGraph([{ id: 'e', source: 't', sourceHandle: 'tensor', target: 'sw', targetHandle: 'input_0' }]);
+    const definition = switchDef();
+    definition.outputs.push({ name: 'extra', data_type: 'STRING', description: '', optional: false });
+    renderBody(baseData({ type: 'Switch', definition }), { id: 'sw' });
+    expect(outputLabel().style.color).toBe(hexToRgb(getPortColor('TENSOR')));
+    expect((screen.getByText('extra') as HTMLElement).style.color).toBe(hexToRgb(getPortColor('STRING')));
+    // The options first, the selector last.
+    expect(screen.getByText('input_3')).toBeTruthy();
+    expect(screen.getByText('selector')).toBeTruthy();
+  });
+
+  it('draws an unwired output as ANY', () => {
+    withGraph([]);
+    renderBody(baseData({ type: 'Switch', definition: switchDef() }), { id: 'sw' });
+    expect(outputLabel().style.color).toBe(hexToRgb(getPortColor('ANY')));
+  });
+
+  it('draws ANY when no tab is open', () => {
+    useTabStore.setState({ activeTabId: 'no-such-tab' });
+    renderBody(baseData({ type: 'Switch', definition: switchDef() }), { id: 'sw' });
+    expect(outputLabel().style.color).toBe(hexToRgb(getPortColor('ANY')));
   });
 });

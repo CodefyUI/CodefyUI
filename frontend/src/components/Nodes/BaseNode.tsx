@@ -12,6 +12,7 @@ import {
 import { findDetachableEdge, redirectMouseDownToReconnectAnchor } from '../../utils/reconnect';
 import { useUIStore } from '../../store/uiStore';
 import { useTabStore } from '../../store/tabStore';
+import { SWITCH_OUTPUT, isSwitchNode, switchOutputType } from '../../utils/switchNode';
 import { useToastStore } from '../../store/toastStore';
 import { downloadModelFile } from '../../api/rest';
 import { useI18n, type TranslationKey } from '../../i18n';
@@ -145,7 +146,23 @@ export function BaseNodeBody({ id, data, selected, bodyExtra }: BaseNodeProps) {
   // `input_ports`, ComposeTransform's `steps`) has a different shape than
   // its palette template.
   const liveInputs = resolveDynamicInputs(def, data.params);
-  const liveOutputs = resolveDynamicOutputs(def, data.params);
+  const declaredOutputs = resolveDynamicOutputs(def, data.params);
+  // A Switch's output is drawn in the type its wired inputs carry (#655).
+  // Only a Switch subscribes to the edges: a primitive result, so a change
+  // elsewhere on the canvas does not re-render the card.
+  const isSwitch = isSwitchNode({ data });
+  const switchType = useTabStore((s) => {
+    if (!isSwitch) return null;
+    const tab = s.tabs.find((t) => t.id === s.activeTabId);
+    if (!tab) return null;
+    return switchOutputType(id, tab.nodes, tab.edges, (n) =>
+      resolveDynamicOutputs(n.data.definition, n.data.params),
+    );
+  });
+  const liveOutputs =
+    switchType && switchType !== 'ANY'
+      ? declaredOutputs.map((o) => (o.name === SWITCH_OUTPUT ? { ...o, data_type: switchType } : o))
+      : declaredOutputs;
   const category = def?.category ?? 'Utility';
   // Fallback used to be the raw, unlifted '#607D8B' — a different (dimmer)
   // value than CATEGORY_COLORS.Utility ('#8097a2'), so an unrecognised
@@ -271,7 +288,9 @@ export function BaseNodeBody({ id, data, selected, bodyExtra }: BaseNodeProps) {
                 // it did not run, which is not the same as never having
                 // been asked to. A preset can settle here too, so the two
                 // cards must agree about what 'skipped' looks like.
-                data.executionStatus === 'skipped'
+                data.executionStatus === 'skipped' ||
+                  // #656: a Switch's param did not pick this branch.
+                  data.executionStatus === 'unselected'
                 ? STATUS_COLORS.skipped
                 : 'transparent';
 
@@ -661,6 +680,13 @@ export function BaseNodeBody({ id, data, selected, bodyExtra }: BaseNodeProps) {
       {data.executionStatus === 'skipped' && (
         <div className={`${styles.statusFooter} ${styles.statusSkipped}`}>
           {t('node.skipped')}
+        </div>
+      )}
+
+      {/* Status footer — not selected by a Switch (#656) */}
+      {data.executionStatus === 'unselected' && (
+        <div className={`${styles.statusFooter} ${styles.statusSkipped}`}>
+          {t('node.unselected')}
         </div>
       )}
     </div>

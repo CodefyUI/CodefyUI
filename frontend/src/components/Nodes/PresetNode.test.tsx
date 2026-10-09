@@ -236,6 +236,11 @@ describe('PresetNode', () => {
     expect(screen.getByText('Skipped')).toBeTruthy();
   });
 
+  it('renders the not-selected footer (#656)', () => {
+    renderPreset(presetData({ executionStatus: 'unselected' }));
+    expect(screen.getByText('Not selected')).toBeTruthy();
+  });
+
   it('does not claim a cached preset completed', () => {
     renderPreset(presetData({ executionStatus: 'cached' }));
     expect(screen.queryByText('Completed')).toBeNull();

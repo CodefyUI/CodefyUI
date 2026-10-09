@@ -54,6 +54,9 @@ const ISSUE_KEYS = new Map<string, TranslationKey>([
   ['subgraph_triggered_empty', 'graphValidation.subgraph_triggered_empty'],
   ['trigger_source_missing', 'graphValidation.trigger_source_missing'],
   ['trigger_target_missing', 'graphValidation.trigger_target_missing'],
+  ['switch_selector_out_of_range', 'graphValidation.switch_selector_out_of_range'],
+  ['switch_selected_unwired', 'graphValidation.switch_selected_unwired'],
+  ['switch_input_types_differ', 'graphValidation.switch_input_types_differ'],
   ['no_entry_points', 'execution.error.noEntryPoints'],
 ]);
 

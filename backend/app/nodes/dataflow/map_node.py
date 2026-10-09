@@ -102,7 +102,15 @@ class MapNode(BaseNode):
             }
             for e in preset.edges
         ]
-        order = topological_sort(nodes_list, edges_list)
+        # A branch a Switch's param does not select is left out of every
+        # item, as a run leaves it out of the graph (#656).
+        from .switch_node import unselected_node_ids
+
+        left_out = unselected_node_ids(nodes_list, edges_list, node_registry)
+        order = [
+            node_id for node_id in topological_sort(nodes_list, edges_list)
+            if node_id not in left_out
+        ]
         node_map = {n["id"]: n for n in nodes_list}
 
         incoming: dict[str, list[tuple[str, str, str]]] = defaultdict(list)

@@ -22,6 +22,30 @@ received — each links to the release it was published as.
 
 ## [Unreleased]
 
+### Changed
+
+- **Switch picks its input from a param, grows as it is wired, and stops
+  instead of guessing** ([#655], part of [#562]). A new `selector` param picks
+  the input, so a fixed choice no longer needs a constant node wired in;
+  wiring the `selector` port still works and overrides the param. Wiring the
+  last empty input adds another, up to 16. An index that is out of range, not
+  an integer, or names an unwired input now stops the run with an error where
+  it used to forward `input_0` without a word, and Run and Export refuse a
+  `selector` param like that before anything runs. The output takes the type
+  of the wired inputs, so the canvas and validation check what it feeds, and
+  inputs of different types are refused. A bypassed Switch forwards `input_0`
+  where it used to forward its selector. Saved graphs keep their four inputs
+  and wires.
+- **A Switch set by its param skips the branches it does not pick**
+  ([#656], part of [#562]). Nodes whose values reach only inputs the param
+  does not select are left out of the run, the exported Python script and
+  every item of a Map: they do not train, download, write files or fail the
+  run. They are still checked for wiring and types first. Their cards, the
+  Inspector, the Runs panel and `cdui` say **not selected**, and a block with
+  nothing selected inside says so too. A node that also feeds anything else
+  still runs. A Switch set by its `selector` port decides during the run, so
+  every input it has still runs first.
+
 ### Fixed
 
 - **A wire dropped on an input that already has one replaces it** ([#657],
@@ -5392,3 +5416,5 @@ Release candidates before 1.0.0 are on the
 [2.2.0]: https://github.com/CodefyUI/CodefyUI/compare/2.1.1...2.2.0
 [2.1.1]: https://github.com/CodefyUI/CodefyUI/compare/2.1.0...2.1.1
 [2.1.0]: https://github.com/CodefyUI/CodefyUI/compare/2.0.0...2.1.0
+[#655]: https://github.com/CodefyUI/CodefyUI/issues/655
+[#656]: https://github.com/CodefyUI/CodefyUI/issues/656
