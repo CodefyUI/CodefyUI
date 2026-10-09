@@ -651,6 +651,7 @@ const zhTW: Record<TranslationKey, string> = {
   'inspector.tabs.steps': '步驟',
   'inspector.tabs.backward': '反向',
   'inspector.steps.empty': '沒有步驟紀錄',
+  'inspector.steps.from': '來自 {node}',
   'inspector.steps.requireVerbose': '請在設定中開啟「顯示內部步驟」後重新執行',
 
   // A2 — 節點權重持久化

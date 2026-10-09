@@ -98,7 +98,9 @@ aggregate of what is inside it. Two copies of one block keep their statuses
 apart, and opening a block after the run shows what its nodes did in that run.
 
 Inner nodes get **namespaced ids** while they run, `<instance>/<node>`, which is
-what you see in the Teaching Inspector and in validation messages.
+what you see in the Teaching Inspector and in validation messages. Select an
+instance node and its **Steps** and **Backward** tabs list what the nodes inside
+it recorded, each entry under that node's id inside the block.
 
 ### Validation across the boundary
 

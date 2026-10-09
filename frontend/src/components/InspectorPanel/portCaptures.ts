@@ -15,7 +15,7 @@ import {
   type LogImagePayload,
   type LogVideoPayload,
 } from '../../store/tabStore';
-import { runNodePrefix } from '../../utils/subgraph';
+import { runNodePrefix, subgraphIdOf } from '../../utils/subgraph';
 import { useI18n, type TranslationKey } from '../../i18n';
 import { keyOf, type FetchMap, type PortTarget } from './PortGroup';
 
@@ -357,6 +357,31 @@ export function canvasNodeStatus(nodeId: string): ExecutionStatus | undefined {
   return tabs
     .find((t) => t.id === activeTabId)
     ?.nodes.find((n) => n.id === nodeId)?.data.executionStatus;
+}
+
+/**
+ * Whether canvas node `nodeId` is a block or preset card (#559). A card never
+ * runs: what it recorded -- steps, gradients -- is its inner nodes'.
+ */
+export function canvasNodeIsContainer(nodeId: string): boolean {
+  const { tabs, activeTabId } = useTabStore.getState();
+  const type = tabs.find((t) => t.id === activeTabId)?.nodes.find((n) => n.id === nodeId)?.data.type;
+  return subgraphIdOf(type) !== null || (typeof type === 'string' && type.startsWith('preset:'));
+}
+
+/**
+ * How a card's Steps and Backward name the node inside it that recorded an
+ * entry (#559): its run id after the card's, as validation and the
+ * Inspector name inner nodes (`nest/mul` in block `blk`, `mul` in preset
+ * card `card`).
+ */
+export function innerNodeLabel(cardRunId: string, producer: string): string {
+  for (const separator of ['/', '__']) {
+    if (producer.startsWith(cardRunId + separator)) {
+      return producer.slice(cardRunId.length + separator.length);
+    }
+  }
+  return producer;
 }
 
 /** Whether canvas node `nodeId` declares a data output (Start does not). */

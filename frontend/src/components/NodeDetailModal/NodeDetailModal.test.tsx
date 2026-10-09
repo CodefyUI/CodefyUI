@@ -933,7 +933,7 @@ describe('NodeDetailModal — tabs', () => {
     await waitFor(() =>
       expect(screen.getByText('No steps recorded')).toBeInTheDocument(),
     );
-    expect(mockStepIndex).toHaveBeenCalledWith('run1', 'n1');
+    expect(mockStepIndex).toHaveBeenCalledWith('run1', 'n1', false);
   });
 
   it('renders BackwardView on the Backward tab', async () => {
@@ -943,7 +943,7 @@ describe('NodeDetailModal — tabs', () => {
     await waitFor(() =>
       expect(screen.getByText('No gradients captured')).toBeInTheDocument(),
     );
-    expect(mockGradIndex).toHaveBeenCalledWith('run1', 'n1');
+    expect(mockGradIndex).toHaveBeenCalledWith('run1', 'n1', false);
   });
 
   it('shows the Stats tab pre-run empty state before anything has run', () => {

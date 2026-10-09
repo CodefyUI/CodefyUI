@@ -526,7 +526,7 @@ describe('BackwardView — a node the last run has nothing for', () => {
     mockGradIndex.mockResolvedValue([]);
     render(<BackwardView runId="r1" nodeId="start" />);
     await waitFor(() => expect(screen.getByText('No gradients captured')).toBeInTheDocument());
-    expect(mockGradIndex).toHaveBeenCalledWith('r1', 'start');
+    expect(mockGradIndex).toHaveBeenCalledWith('r1', 'start', false);
     expect(screen.queryByText('Not in the last run')).toBeNull();
   });
 
@@ -554,7 +554,7 @@ describe('BackwardView — a node the last run has nothing for', () => {
         screen.getByText('Run data expired — turn on Capture gradients in Settings and re-run'),
       ).toBeInTheDocument(),
     );
-    expect(mockGradIndex).toHaveBeenCalledWith('r1', 'n1');
+    expect(mockGradIndex).toHaveBeenCalledWith('r1', 'n1', false);
   });
 
   it('still reads its gradients in a run made with Record node outputs off', async () => {
@@ -567,7 +567,7 @@ describe('BackwardView — a node the last run has nothing for', () => {
     place('n1', OUT, 'completed');
     render(<BackwardView runId="r1" nodeId="n1" />);
     await waitFor(() => expect(screen.getByText('shape [2, 2]')).toBeInTheDocument());
-    expect(mockGradIndex).toHaveBeenCalledWith('r1', 'n1');
+    expect(mockGradIndex).toHaveBeenCalledWith('r1', 'n1', false);
   });
 
   it('says the graph is running while the run record says so, and reads the gradients once it ends', async () => {
@@ -590,7 +590,7 @@ describe('BackwardView — a node the last run has nothing for', () => {
       { node_id: 'n1', port: 'out__grad', type: 'tensor', full_shape: [2] },
     ]);
     await waitFor(() => expect(screen.getByText('shape [2, 2]')).toBeInTheDocument());
-    expect(mockGradIndex).toHaveBeenCalledWith('r1', 'n1');
+    expect(mockGradIndex).toHaveBeenCalledWith('r1', 'n1', false);
     expect(screen.queryByText('Graph is running…')).toBeNull();
   });
 });
@@ -613,14 +613,56 @@ describe('BackwardView — inside an open block', () => {
 
     const top = render(<BackwardView runId="r1" nodeId="n1" />);
     await waitFor(() => expect(screen.getByText('shape [2, 2]')).toBeInTheDocument());
-    expect(mockGradIndex).toHaveBeenCalledWith('r1', 'n1');
+    expect(mockGradIndex).toHaveBeenCalledWith('r1', 'n1', false);
     expect(mockOutput).toHaveBeenCalledWith('r1', 'n1', 'logits__grad');
     top.unmount();
 
     enterBlocks('blk');
     render(<BackwardView runId="r1" nodeId="n1" />);
     await waitFor(() => expect(screen.getByText('shape [2, 2]')).toBeInTheDocument());
-    expect(mockGradIndex).toHaveBeenLastCalledWith('r1', 'blk/n1');
+    expect(mockGradIndex).toHaveBeenLastCalledWith('r1', 'blk/n1', false);
     expect(mockOutput).toHaveBeenLastCalledWith('r1', 'blk/n1', 'logits__grad');
+  });
+});
+
+// #559: a block card never runs; its gradients are the nodes' inside it, and
+// the run's list holds none under the card's own id.
+describe('BackwardView — a block card', () => {
+  afterEach(() => cleanup());
+
+  it("lists the gradients of the nodes inside it, under each node's name", async () => {
+    const { tabs, activeTabId } = useTabStore.getState();
+    useTabStore.setState({
+      tabs: tabs.map((t) =>
+        t.id === activeTabId
+          ? {
+              ...t,
+              status: 'idle',
+              nodes: [{
+                id: 'card', type: 'subgraphNode', position: { x: 0, y: 0 },
+                data: { label: 'Card', type: 'subgraph:def', params: {}, executionStatus: 'completed' },
+              }],
+            }
+          : t,
+      ),
+    });
+    mockGetRun.mockResolvedValue({ id: 'r1', status: 'succeeded', options: {} } as RunInfo);
+    mockList.mockResolvedValue([
+      { node_id: 'card/conv', port: 'out__grad', type: 'tensor', full_shape: [2] },
+    ]);
+    mockGradIndex.mockResolvedValue([
+      { ...portEntry('out'), node_id: 'card/conv' },
+      { ...weightEntry('weight'), node_id: 'card/nest/lin' },
+    ]);
+    mockOutput.mockResolvedValue(tensor([[1, -1], [0.5, 0]], { min: -1, max: 1 }));
+
+    render(<BackwardView runId="r1" nodeId="card" />);
+
+    await waitFor(() => expect(screen.getByText('conv · out')).toBeInTheDocument());
+    expect(screen.getByText('nest/lin · weight')).toBeInTheDocument();
+    expect(mockGradIndex).toHaveBeenCalledWith('r1', 'card', true);
+    await waitFor(() => expect(screen.getAllByText('shape [2, 2]')).toHaveLength(2));
+    expect(mockOutput).toHaveBeenCalledWith('r1', 'card/conv', 'out__grad');
+    expect(mockOutput).toHaveBeenCalledWith('r1', 'card/nest/lin', '__weight_grad__weight');
   });
 });

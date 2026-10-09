@@ -743,6 +743,7 @@ const en = {
   'inspector.tabs.steps': 'Steps',
   'inspector.tabs.backward': 'Backward',
   'inspector.steps.empty': 'No steps recorded',
+  'inspector.steps.from': 'From {node}',
   'inspector.steps.requireVerbose': 'Turn on Verbose internals in Settings and re-run',
 
   // A2 — Per-node weight persistence

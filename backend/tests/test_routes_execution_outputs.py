@@ -491,3 +491,80 @@ async def test_stats_route_does_not_shadow_the_value_route(test_client):
     resp = await test_client.get("/api/execution/outputs/r1/n1/stats")
     assert resp.status_code == 200
     assert resp.json()["type"] == "tensor"
+
+
+# ── A block or preset card's Steps and Backward (#559) ─────────────────────
+#
+# A card never runs: its steps and gradients are the nodes' inside it. With
+# `inner=true` the index routes read them, each entry naming its node.
+
+
+async def _put_inner_steps(store, run_id: str) -> None:
+    meta = {"description": "", "scalars": {}, "tensor_keys": ["x"]}
+    await store.put(run_id, "blk/nest/att", "__step__0__meta", {**meta, "name": "deep"})
+    await store.put(run_id, "blk/att", "__step__1__meta", {**meta, "name": "second"})
+    await store.put(run_id, "blk/att", "__step__0__meta", {**meta, "name": "first"})
+    await store.put(run_id, "card__att", "__step__0__meta", {**meta, "name": "preset"})
+    # Another node whose id merely starts like the card's is not inside it.
+    await store.put(run_id, "blkx", "__step__0__meta", {**meta, "name": "outside"})
+
+
+@pytest.mark.asyncio
+async def test_a_card_steps_index_lists_its_inner_nodes_steps_with_their_node(test_client):
+    store = app.state.run_output_store
+    await _put_inner_steps(store, "r-card")
+
+    resp = await test_client.get("/api/execution/outputs/r-card/blk/__steps_index?inner=true")
+    assert resp.status_code == 200
+    assert [(e["node_id"], e["index"], e["name"]) for e in resp.json()] == [
+        ("blk/nest/att", 0, "deep"),
+        ("blk/att", 0, "first"),
+        ("blk/att", 1, "second"),
+    ]
+
+    preset = await test_client.get("/api/execution/outputs/r-card/card/__steps_index?inner=true")
+    assert [(e["node_id"], e["name"]) for e in preset.json()] == [("card__att", "preset")]
+
+    # A nested card, read by its run id through the query route.
+    nested = await test_client.get(
+        "/api/execution/outputs/r-card/steps",
+        params={"node_id": "blk/nest", "inner": "true"},
+    )
+    assert [(e["node_id"], e["name"]) for e in nested.json()] == [("blk/nest/att", "deep")]
+
+
+@pytest.mark.asyncio
+async def test_without_inner_a_card_steps_index_is_its_own_and_unlabelled(test_client):
+    store = app.state.run_output_store
+    await _put_inner_steps(store, "r-card-own")
+    resp = await test_client.get("/api/execution/outputs/r-card-own/blk/__steps_index")
+    assert resp.json() == []
+    own = await test_client.get("/api/execution/outputs/r-card-own/blkx/__steps_index")
+    assert [set(e) for e in own.json()] == [
+        {"index", "name", "description", "scalars", "tensor_keys"}]
+
+
+@pytest.mark.asyncio
+async def test_a_card_grad_index_lists_its_inner_nodes_gradients_with_their_node(test_client):
+    store = app.state.run_output_store
+    await store.put("r-card-grad", "blk/conv", "tensor__grad", torch.zeros(2))
+    await store.put("r-card-grad", "blk/conv", "tensor__grad__meta", {
+        "status": "healthy", "norm": 0.5, "mean": 0.1, "max": 0.3,
+    })
+    await store.put("r-card-grad", "blk/nest/lin", "__weight_grad__weight", torch.zeros(2))
+    await store.put("r-card-grad", "blkx", "tensor__grad", torch.zeros(2))
+
+    resp = await test_client.get(
+        "/api/execution/outputs/r-card-grad/grads",
+        params={"node_id": "blk", "inner": "true"},
+    )
+    body = resp.json()
+    assert [(e["node_id"], e["kind"], e["port"]) for e in body] == [
+        ("blk/conv", "port", "tensor"),
+        ("blk/nest/lin", "weight", "weight"),
+    ]
+    assert body[0]["health"]["status"] == "healthy"
+    assert body[1]["health"] is None
+
+    own = await test_client.get("/api/execution/outputs/r-card-grad/blk/__grad_index")
+    assert own.json() == []

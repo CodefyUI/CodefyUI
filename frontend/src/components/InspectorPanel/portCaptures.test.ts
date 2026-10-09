@@ -16,8 +16,10 @@ import {
   _resetRunIndexesForTests,
   _setRunEndPollForTests,
   _setRunRecordRetryForTests,
+  canvasNodeIsContainer,
   capturePhase,
   capturePhaseNoteKey,
+  innerNodeLabel,
   portDataType,
   resolveInputSources,
   resolveSingleNodePorts,
@@ -338,6 +340,31 @@ describe('capturePhase', () => {
 
   it('is bypassed, never pending, for a node the run will not run (#559)', () => {
     expect(capturePhase('bypassed', true)).toBe('bypassed');
+  });
+});
+
+// #559: a block or preset card records its steps and gradients under the
+// nodes inside it, named after the card's run id.
+describe('a block or preset card', () => {
+  it('names an inner node by its run id after the card', () => {
+    expect(innerNodeLabel('blk', 'blk/nest/mul')).toBe('nest/mul');
+    expect(innerNodeLabel('outer/card', 'outer/card__att')).toBe('att');
+    expect(innerNodeLabel('blk', 'other/mul')).toBe('other/mul');
+  });
+
+  it('is told apart from any other canvas node', () => {
+    const { tabs, activeTabId } = useTabStore.getState();
+    const at = (id: string, type: string) => ({ ...node(id), data: { ...node(id).data, type } });
+    useTabStore.setState({
+      tabs: tabs.map((t) => (t.id === activeTabId
+        ? { ...t, nodes: [at('blk', 'subgraph:def'), at('card', 'preset:P'), at('plain', 'Add')] }
+        : t)),
+    });
+    expect(canvasNodeIsContainer('blk')).toBe(true);
+    expect(canvasNodeIsContainer('card')).toBe(true);
+    expect(canvasNodeIsContainer('plain')).toBe(false);
+    expect(canvasNodeIsContainer('gone')).toBe(false);
+    useTabStore.setState({ tabs });
   });
 });
 
