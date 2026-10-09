@@ -8,8 +8,10 @@ import type { OutputData, TensorOutput } from '../../types';
 import { TensorGridView } from './TensorGridView';
 import {
   canvasNodeHasOutputs,
+  canvasNodeIsContainer,
   canvasNodeStatus,
   fetchPortWithSliceFallback,
+  innerNodeLabel,
   isRunStillGoingNote,
   missingGradientsNote,
   onRunEnd,
@@ -33,7 +35,8 @@ interface TensorState {
 type TensorMap = Record<string, TensorState>;
 
 function entryKey(entry: GradIndexEntry): string {
-  return `${entry.kind}::${entry.port}`;
+  // A card's entries come from several nodes inside it (#559).
+  return `${entry.node_id ?? ''}::${entry.kind}::${entry.port}`;
 }
 
 function entryStorePort(entry: GradIndexEntry): string {
@@ -114,11 +117,14 @@ export function BackwardView({ runId, nodeId }: Props) {
     if (runInProgress) return;
     let cancelled = false;
     let stopWaiting: (() => void) | null = null;
-    // Inside an open block the card has no run status to go by.
+    // Inside an open block the card has no run status to go by. A block or
+    // preset card's gradients are its inner nodes' (#559): none is under its
+    // own id, so it is never "not in the run".
+    const container = canvasNodeIsContainer(nodeId);
     missingGradientsNote(runId, {
       runNodeId,
       status: runNodeId === nodeId ? canvasNodeStatus(nodeId) : undefined,
-      hasOutputs: canvasNodeHasOutputs(nodeId),
+      hasOutputs: !container && canvasNodeHasOutputs(nodeId),
     })
       .then((note) => {
         if (cancelled) return;
@@ -138,7 +144,7 @@ export function BackwardView({ runId, nodeId }: Props) {
           }
           return;
         }
-        return fetchGradIndex(runId, runNodeId).then((es) => {
+        return fetchGradIndex(runId, runNodeId, container).then((es) => {
           if (cancelled) return;
           setEntries(es);
           // Seed loading placeholders for every gradient the next effect fetches.
@@ -171,7 +177,7 @@ export function BackwardView({ runId, nodeId }: Props) {
       entries.map(async (e) => {
         const port = entryStorePort(e);
         try {
-          const data = await fetchPortWithSliceFallback(runId, runNodeId, port);
+          const data = await fetchPortWithSliceFallback(runId, e.node_id ?? runNodeId, port);
           if (cancelled) return;
           setTensors((prev) => ({
             ...prev,
@@ -234,6 +240,7 @@ export function BackwardView({ runId, nodeId }: Props) {
           title={t('inspector.backward.portSection')}
           entries={portEntries}
           tensors={tensors}
+          runNodeId={runNodeId}
         />
       )}
       {weightEntries.length > 0 && (
@@ -241,6 +248,7 @@ export function BackwardView({ runId, nodeId }: Props) {
           title={t('inspector.backward.weightSection')}
           entries={weightEntries}
           tensors={tensors}
+          runNodeId={runNodeId}
         />
       )}
     </div>
@@ -251,10 +259,12 @@ function Section({
   title,
   entries,
   tensors,
+  runNodeId,
 }: {
   title: string;
   entries: GradIndexEntry[];
   tensors: TensorMap;
+  runNodeId: string;
 }) {
   return (
     <div>
@@ -297,7 +307,8 @@ function Section({
               className={styles.stepTensorLabel}
               style={{ display: 'flex', justifyContent: 'space-between', gap: 6 }}
             >
-              <span>{e.port}</span>
+              {/* A card's entry names the node inside it that it belongs to (#559). */}
+              <span>{e.node_id === undefined ? e.port : `${innerNodeLabel(runNodeId, e.node_id)} · ${e.port}`}</span>
               {e.health && (
                 <HealthChip status={e.health.status} norm={e.health.norm} />
               )}

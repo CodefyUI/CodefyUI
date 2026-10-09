@@ -134,6 +134,7 @@ const NODE_STATUS_KEY = {
   cached: 'runs.nodeStatus.cached',
   skipped: 'runs.nodeStatus.skipped',
   error: 'runs.nodeStatus.error',
+  bypassed: 'runs.nodeStatus.bypassed',
 } as const;
 
 function LogLine({ line }: { line: RunLogLine }) {

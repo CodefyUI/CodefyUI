@@ -2,6 +2,8 @@ import { useCallback, useEffect, useRef } from 'react';
 import type { ExecutionStatus } from '../types';
 import { flushSubgraphEditing, useTabStore, type TabState } from '../store/tabStore';
 import {
+  queueTabInnerNodeProgress,
+  queueTabInnerNodeStatus,
   queueTabNodeProgress,
   queueTabNodeStatus,
   discardTabNodeUpdates,
@@ -216,6 +218,13 @@ export function useGraphExecution() {
             queueTabNodeStatus(tabId, node.id, 'interrupted');
           }
         }
+        // And the nodes inside blocks (#559), by the id the run gave them:
+        // a Stop leaves the one that was running with no closing frame.
+        for (const [runId, state] of Object.entries(live?.innerRunStates ?? {})) {
+          if (state.executionStatus === 'running') {
+            queueTabInnerNodeStatus(tabId, runId, 'interrupted');
+          }
+        }
       };
 
       // End the tab's run on the server's word. An interruption is the one
@@ -260,6 +269,11 @@ export function useGraphExecution() {
             // streams these faster than the screen repaints, and every
             // direct write rebuilt the whole nodes array.
             queueTabNodeProgress(tabId, data.node_id, p);
+            // A frame from a node inside the card names it (#559): an open
+            // block shows the bar on that node too.
+            if (typeof data.inner_node_id === 'string') {
+              queueTabInnerNodeProgress(tabId, data.inner_node_id, p);
+            }
             if (p.event === 'epoch' || p.event === 'config') {
               store.addTabLog(tabId, {
                 nodeId: data.node_id,
@@ -280,7 +294,9 @@ export function useGraphExecution() {
         queueTabNodeStatus(tabId, data.node_id, data.status, data.error);
 
         // Suppress running/cached chatter — only surface terminal transitions.
-        if (data.status !== 'running' && data.status !== 'cached') {
+        // A bypassed node says so on its card from the moment a run starts;
+        // a log line for every muted node would only be noise.
+        if (data.status !== 'running' && data.status !== 'cached' && data.status !== 'bypassed') {
           // This event's OWN tab (captured above), not whichever tab is on
           // screen -- a background tab's run must label its log from its
           // own nodes, never the active tab's (#163).
@@ -409,6 +425,20 @@ export function useGraphExecution() {
         if (summary) {
           store.setTabOutputSummary(tabId, data.node_id, summary);
         }
+      };
+
+      // A node inside a block or preset card (#559), under the id the run
+      // gave it. Its card's own frames already wrote the log line, so this
+      // paints the node and nothing else.
+      const onInnerNodeStatus = (raw: unknown) => {
+        const data = raw as { node_id?: unknown; status?: unknown; error?: unknown };
+        if (typeof data.node_id !== 'string' || typeof data.status !== 'string') return;
+        queueTabInnerNodeStatus(
+          tabId,
+          data.node_id,
+          data.status as ExecutionStatus,
+          typeof data.error === 'string' ? data.error : undefined,
+        );
       };
 
       const onExecutionComplete = (raw: unknown) => {
@@ -644,6 +674,7 @@ export function useGraphExecution() {
 
       const entries: WsHandlerEntry[] = [
         { ws, type: 'node_status', handler: onNodeStatus },
+        { ws, type: 'inner_node_status', handler: onInnerNodeStatus },
         { ws, type: 'execution_complete', handler: onExecutionComplete },
         { ws, type: 'execution_error', handler: onExecutionError },
         { ws, type: 'execution_start', handler: onExecutionStart },

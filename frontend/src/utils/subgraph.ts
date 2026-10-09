@@ -21,6 +21,20 @@ import { generateId } from './ids';
 export const SUBGRAPH_TYPE_PREFIX = 'subgraph:';
 export const TRIGGER_TARGET_HANDLE = '__trigger';
 
+/**
+ * What goes in front of a canvas id on the level `stack` has open: `''` at the
+ * top level, else the entered instance ids, outermost first, each followed by
+ * the engine's separator. The engine flattens a block before it runs, so a
+ * node inside one runs, is captured and reports its status as
+ * `<instance>/<inner>` (#621, #559).
+ */
+export function runNodePrefix(
+  stack: readonly { instanceId: string }[] | undefined,
+): string {
+  if (!stack?.length) return '';
+  return stack.map((frame) => `${frame.instanceId}/`).join('');
+}
+
 /** `subgraph:blk` -> `blk`; anything else -> `null`. */
 export function subgraphIdOf(nodeType: unknown): string | null {
   const text = typeof nodeType === 'string' ? nodeType : '';

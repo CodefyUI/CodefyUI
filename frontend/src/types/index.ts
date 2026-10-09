@@ -233,6 +233,9 @@ export interface NodeData {
 // 'error' (it did not fail) and from 'completed' (it did not finish), and
 // distinct from a node that never ran at all — which is what it would look
 // like without an entry here.
+//
+// 'bypassed' (#559): the node is muted, so the run resolved it away before
+// anything ran. Reported once at the start of a run, so nothing waits on it.
 export type ExecutionStatus =
   | 'idle'
   | 'running'
@@ -240,7 +243,8 @@ export type ExecutionStatus =
   | 'error'
   | 'skipped'
   | 'cached'
-  | 'interrupted';
+  | 'interrupted'
+  | 'bypassed';
 
 // @xyflow/react v12 expects the generic to be a full Node type (not the data
 // payload). Use this alias wherever a component types its props or a store

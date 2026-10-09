@@ -33,6 +33,12 @@ export interface PendingNodePatch {
   status?: { executionStatus: NodeData['executionStatus']; error?: string };
   /** Latest progress payload for this node. */
   progress?: NodeProgress;
+  /**
+   * The node sits inside a block or preset card, and the patch is keyed by
+   * the id the run gives it (`blk/nest/mul`, #559). The engine refuses a
+   * flattened id that collides with a top-level one, so one map holds both.
+   */
+  inner?: true;
 }
 
 // tabId -> nodeId -> patch. Null when nothing is pending, so the common
@@ -49,7 +55,7 @@ let _pending: PendingNodeUpdates | null = null;
 // through that wait because it holds one patch per node, not one per event.
 const _flusher = createFrameFlusher(() => flushTabNodeUpdates());
 
-function _patchFor(tabId: string, nodeId: string): PendingNodePatch {
+function _patchFor(tabId: string, nodeId: string, inner = false): PendingNodePatch {
   if (_pending === null) _pending = new Map();
   let forTab = _pending.get(tabId);
   if (!forTab) {
@@ -58,7 +64,7 @@ function _patchFor(tabId: string, nodeId: string): PendingNodePatch {
   }
   let patch = forTab.get(nodeId);
   if (!patch) {
-    patch = {};
+    patch = inner ? { inner: true } : {};
     forTab.set(nodeId, patch);
   }
   _flusher.schedule();
@@ -82,6 +88,29 @@ export function queueTabNodeProgress(
   progress: NodeProgress,
 ): void {
   _patchFor(tabId, nodeId).progress = progress;
+}
+
+/**
+ * Buffer the status of a node inside a block or preset card, under the id the
+ * run gives it (#559); applied on the next frame. It lands on that node
+ * wherever its block is open, and is kept for when it is opened later.
+ */
+export function queueTabInnerNodeStatus(
+  tabId: string,
+  runNodeId: string,
+  status: NodeData['executionStatus'],
+  error?: string,
+): void {
+  _patchFor(tabId, runNodeId, true).status = { executionStatus: status, error };
+}
+
+/** Buffer the progress of a node inside a block or preset card (#559). */
+export function queueTabInnerNodeProgress(
+  tabId: string,
+  runNodeId: string,
+  progress: NodeProgress,
+): void {
+  _patchFor(tabId, runNodeId, true).progress = progress;
 }
 
 /**

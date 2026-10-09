@@ -210,6 +210,18 @@ EVENT_ARTIFACT = "artifact"
 #: Something was lost or degraded but the run continues:
 #: ``{"kind": <what>, ...}``. Today the only kind is ``dropped_signals``.
 EVENT_WARNING = "run_warning"
+#: A node the canvas draws INSIDE a block or preset card (#559), which
+#: ``node_status`` rolls up into the outermost card: ``{"node_id",
+#: "container_id", "status"}`` plus ``error``/``error_type`` on an error
+#: frame. ``node_id`` is the id the run gives the node -- ``blk/nest/mul``,
+#: the entered instances in front of the canvas id -- so two copies of one
+#: block never share a status; ``container_id`` is the outermost card, whose
+#: own ``node_status`` frames are unchanged. A container nested inside
+#: another reports here too, rolled up the same way. A new TYPE so a client
+#: that only knows ``node_status`` keeps reading one status per card. A
+#: progress frame from inside a card stays a ``node_status`` for the card and
+#: names the inner node in ``inner_node_id``: one frame, both cards.
+EVENT_INNER_NODE_STATUS = "inner_node_status"
 
 #: ``execution_stopped`` payload discriminator. The WS protocol has one
 #: "stopped" frame; the run ROW distinguishes cancelled from interrupted,
@@ -797,6 +809,27 @@ def _truncate_strings(payload: dict[str, Any], *, cap_bytes: int) -> dict[str, A
         if len(kept) + len(TRUNCATION_MARKER) < len(out[key]):
             out[key] = kept + TRUNCATION_MARKER
     return out
+
+
+def _error_fields(
+    status: str, result: dict[str, Any] | None,
+) -> dict[str, str]:
+    """``error`` and, when the engine named the class, ``error_type``.
+
+    Only on an error frame. ``error_type`` is copied out rather than left in
+    ``result`` because ``str(exc)`` never contains the class name --
+    ``str(KeyError('x'))`` is ``"'x'"`` -- so a client that wants to say
+    something kinder than the raw message for one exception KIND has nothing
+    else to key on. Absent when the engine did not supply one, so a client
+    can tell "no type" from a type it does not recognise.
+    """
+    if not result or status != "error":
+        return {}
+    fields = {"error": result.get("error", "")}
+    error_type = result.get("error_type")
+    if isinstance(error_type, str) and error_type:
+        fields["error_type"] = error_type
+    return fields
 
 
 def cap_event_payload(payload: Any, *, cap_bytes: int) -> Any:
@@ -1988,6 +2021,7 @@ class RunService:
         options: dict[str, Any], session: InteractiveSession | None = None,
     ) -> tuple[str, str | None]:
         """Run the graph and classify the outcome. Never raises but cancel."""
+        on_progress = self._progress_bridge(active, graph["nodes"])
         try:
             apply_seed(options.get("seed"))
             # Determinism is NOT applied here any more: ``execute_graph``
@@ -1998,7 +2032,8 @@ class RunService:
             await execute_graph(
                 graph["nodes"],
                 graph["edges"],
-                on_progress=self._progress_bridge(active, graph["nodes"]),
+                on_progress=on_progress,
+                on_inner_status=self._inner_status_bridge(active, on_progress),
                 on_signal=self._signal_bridge(active),
                 context=active.context,
                 error_mode=options.get("error_mode", DEFAULT_ERROR_MODE),
@@ -2087,26 +2122,20 @@ class RunService:
         wire minus its ``type`` key — see the event-vocabulary block above.
         A ``node_status`` payload is ``{"node_id", "status"}`` plus, on an
         error frame only, ``error`` and (when the engine named the class)
-        ``error_type``; plus ``outputs`` whenever the node produced any.
-
-        ``error_type`` is copied out rather than left in ``result`` because
-        ``str(exc)`` never contains the class name — ``str(KeyError('x'))``
-        is ``"'x'"`` — so a client that wants to say something kinder than
-        the raw message for one exception KIND has nothing else to key on.
-        Absent when the engine did not supply one, so a client can tell "no
-        type" from a type it does not recognise.
+        ``error_type`` (see :func:`_error_fields`); plus ``outputs`` whenever
+        the node produced any; plus ``inner_node_id`` on a progress frame a
+        node inside the card sent (#559).
         """
         media_ports = declared_media_ports(nodes)
 
         async def on_progress(
             node_id: str, status: str, result: dict[str, Any] | None,
+            inner_node_id: str | None = None,
         ) -> None:
             message: dict[str, Any] = {"node_id": node_id, "status": status}
-            if result and status == "error":
-                message["error"] = result.get("error", "")
-                error_type = result.get("error_type")
-                if isinstance(error_type, str) and error_type:
-                    message["error_type"] = error_type
+            if inner_node_id is not None:
+                message["inner_node_id"] = inner_node_id
+            message.update(_error_fields(status, result))
             entries = build_node_output_entries(
                 status, result, media_ports.get(node_id))
             if entries:
@@ -2117,6 +2146,35 @@ class RunService:
                 await self._flush_metrics(active)
 
         return on_progress
+
+    def _inner_status_bridge(
+        self, active: _ActiveRun,
+        on_progress: Callable[..., Any],
+    ) -> Callable[[str, str, str, dict[str, Any] | None], Any]:
+        """Build the engine's ``on_inner_status`` callback for one run (#559).
+
+        A status becomes one ``inner_node_status`` event (see
+        :data:`EVENT_INNER_NODE_STATUS`): the status and, on an error, what
+        failed -- never ``outputs``, which the card's own frames carry. A
+        progress frame goes to ``on_progress`` as the card's, naming the
+        inner node, so its metrics are filed under the card as before.
+        """
+        async def on_inner_status(
+            node_id: str, container_id: str, status: str,
+            result: dict[str, Any] | None,
+        ) -> None:
+            if status == "progress":
+                await on_progress(container_id, status, result,
+                                  inner_node_id=node_id)
+                return
+            message: dict[str, Any] = {
+                "node_id": node_id, "container_id": container_id,
+                "status": status,
+            }
+            message.update(_error_fields(status, result))
+            await self._emit(active.run_id, EVENT_INNER_NODE_STATUS, message)
+
+        return on_inner_status
 
     def _signal_bridge(
         self, active: _ActiveRun,
