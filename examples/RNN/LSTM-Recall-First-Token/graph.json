@@ -1,0 +1,353 @@
+{
+  "name": "LSTM remembers the first token",
+  "description": "Carry one token through 9 steps of noise",
+  "gallery": {
+    "section": "training",
+    "order": 7
+  },
+  "nodes": [
+    {
+      "id": "start",
+      "type": "Start",
+      "position": {
+        "x": -260,
+        "y": -300
+      },
+      "data": {
+        "params": {}
+      }
+    },
+    {
+      "id": "seq-train",
+      "type": "SyntheticSequence",
+      "position": {
+        "x": 40,
+        "y": -300
+      },
+      "data": {
+        "params": {
+          "n_samples": 4000,
+          "seed": 0,
+          "kind": "recall_first",
+          "seq_len": 10,
+          "n_classes": 10,
+          "n_distractors": 10
+        }
+      }
+    },
+    {
+      "id": "seq-test",
+      "type": "SyntheticSequence",
+      "position": {
+        "x": 40,
+        "y": 40
+      },
+      "data": {
+        "params": {
+          "n_samples": 500,
+          "seed": 1,
+          "kind": "recall_first",
+          "seq_len": 10,
+          "n_classes": 10,
+          "n_distractors": 10
+        }
+      }
+    },
+    {
+      "id": "model",
+      "type": "SequentialModel",
+      "position": {
+        "x": 40,
+        "y": 420
+      },
+      "data": {
+        "params": {
+          "layers": "{\"version\":2,\"nodes\":[{\"id\":\"in\",\"type\":\"Input\",\"ports\":[{\"id\":\"p_x\",\"name\":\"x\"}]},{\"id\":\"l0\",\"type\":\"Embedding\",\"params\":{\"num_embeddings\":20,\"embedding_dim\":16}},{\"id\":\"l1\",\"type\":\"LSTM\",\"params\":{\"input_size\":16,\"hidden_size\":64}},{\"id\":\"l2\",\"type\":\"SelectIndex\",\"params\":{\"dim\":1,\"index\":-1}},{\"id\":\"l3\",\"type\":\"Linear\",\"params\":{\"in_features\":64,\"out_features\":10}},{\"id\":\"out\",\"type\":\"Output\",\"ports\":[{\"id\":\"p_y\",\"name\":\"y\"}]}],\"edges\":[{\"id\":\"e0\",\"source\":\"in\",\"target\":\"l0\",\"sourceHandle\":\"p_x\"},{\"id\":\"e1\",\"source\":\"l0\",\"target\":\"l1\"},{\"id\":\"e2\",\"source\":\"l1\",\"target\":\"l2\"},{\"id\":\"e3\",\"source\":\"l2\",\"target\":\"l3\"},{\"id\":\"eout\",\"source\":\"l3\",\"target\":\"out\",\"targetHandle\":\"p_y\"}]}"
+        }
+      }
+    },
+    {
+      "id": "dl-train",
+      "type": "DataLoader",
+      "position": {
+        "x": 340,
+        "y": -300
+      },
+      "data": {
+        "params": {
+          "batch_size": 64,
+          "shuffle": true
+        }
+      }
+    },
+    {
+      "id": "dl-val",
+      "type": "DataLoader",
+      "position": {
+        "x": 340,
+        "y": 40
+      },
+      "data": {
+        "params": {
+          "batch_size": 256,
+          "shuffle": false
+        }
+      }
+    },
+    {
+      "id": "opt",
+      "type": "Optimizer",
+      "position": {
+        "x": 340,
+        "y": 420
+      },
+      "data": {
+        "params": {
+          "type": "Adam",
+          "lr": 0.005
+        }
+      }
+    },
+    {
+      "id": "loss",
+      "type": "Loss",
+      "position": {
+        "x": 340,
+        "y": 720
+      },
+      "data": {
+        "params": {
+          "type": "CrossEntropyLoss"
+        }
+      }
+    },
+    {
+      "id": "train",
+      "type": "TrainingLoop",
+      "position": {
+        "x": 640,
+        "y": -120
+      },
+      "data": {
+        "params": {
+          "epochs": 15,
+          "device": "auto"
+        }
+      }
+    },
+    {
+      "id": "eval",
+      "type": "EvaluateModel",
+      "position": {
+        "x": 960,
+        "y": -300
+      },
+      "data": {
+        "params": {
+          "batch_size": 256
+        }
+      }
+    },
+    {
+      "id": "print-acc",
+      "type": "Print",
+      "position": {
+        "x": 1260,
+        "y": -300
+      },
+      "data": {
+        "params": {
+          "label": "Test accuracy (chance = 0.10)"
+        }
+      }
+    },
+    {
+      "id": "viz",
+      "type": "Visualize",
+      "position": {
+        "x": 960,
+        "y": 60
+      },
+      "data": {
+        "params": {
+          "title": "LSTM recall_first: training loss",
+          "plot_type": "line"
+        }
+      }
+    },
+    {
+      "id": "note-overview",
+      "type": "note",
+      "position": {
+        "x": -680,
+        "y": -300
+      },
+      "data": {
+        "noteKind": "text",
+        "noteContent": "Each sequence is 10 tokens long. The answer token (one of 10 classes) sits at position 0; the other 9 positions are random distractors. The model reads the whole sequence and has to name the first token at the end, so it must carry that one token through 9 steps of noise in its hidden state. Test accuracy climbs from chance (0.10) to 1.0 in 15 epochs, on CPU, with no download.\n\n每條序列長 10 個 token。答案 token（10 類之一）放在第 0 個位置，其餘 9 個位置都是隨機干擾。模型讀完整條序列後，要在最後說出第一個 token 是什麼，所以得把那一個 token 存在 hidden state 裡帶過 9 步的雜訊。測試準確率在 15 個 epoch 內從亂猜（0.10）爬到 1.0，用 CPU 就能跑，不需要下載。",
+        "noteColor": "#3d3d1a",
+        "boundToNodeId": "start",
+        "boundOffset": {
+          "x": -420,
+          "y": 0
+        },
+        "noteWidth": 360
+      }
+    },
+    {
+      "id": "note-model",
+      "type": "note",
+      "position": {
+        "x": 40,
+        "y": 620
+      },
+      "data": {
+        "noteKind": "text",
+        "noteContent": "Open the layer editor: Embedding (20 tokens -> 16-d) -> LSTM (hidden 64) -> SelectIndex (dim 1, index -1, the last time step) -> Linear (64 -> 10). Raise seq_len to 30 on both generators and rerun: with the same data and epochs the model memorises the training set and stays at chance on the test set, because the dependency is now 29 steps long.\n\n打開圖層編輯器：Embedding（20 種 token -> 16 維）-> LSTM（hidden 64）-> SelectIndex（dim 1、index -1，取最後一個時間步）-> Linear（64 -> 10）。把兩個產生器的 seq_len 都改成 30 再跑一次：同樣的資料量和 epoch 數下，模型會背下訓練集，測試集卻停在亂猜，因為依賴距離變成 29 步。",
+        "noteColor": "#3d3d1a",
+        "boundToNodeId": "model",
+        "boundOffset": {
+          "x": 0,
+          "y": 200
+        },
+        "noteWidth": 280
+      }
+    },
+    {
+      "id": "note-test",
+      "type": "note",
+      "position": {
+        "x": -300,
+        "y": 40
+      },
+      "data": {
+        "noteKind": "text",
+        "noteContent": "The test set comes from the same generator with seed 1, so it holds sequences the model never trained on. Set kind to recall_last on both generators and the task becomes trivial: the answer is the last token read.\n\n測試集來自同一個產生器，但 seed 設為 1，所以裡面都是模型沒看過的序列。把兩個產生器的 kind 都改成 recall_last，任務就變得很簡單：答案就是最後讀到的那個 token。",
+        "noteColor": "#3d3d1a",
+        "boundToNodeId": "seq-test",
+        "boundOffset": {
+          "x": -340,
+          "y": 0
+        },
+        "noteWidth": 300
+      }
+    }
+  ],
+  "edges": [
+    {
+      "id": "t_seq-train",
+      "source": "start",
+      "target": "seq-train",
+      "sourceHandle": "trigger",
+      "type": "trigger"
+    },
+    {
+      "id": "t_seq-test",
+      "source": "start",
+      "target": "seq-test",
+      "sourceHandle": "trigger",
+      "type": "trigger"
+    },
+    {
+      "id": "t_model",
+      "source": "start",
+      "target": "model",
+      "sourceHandle": "trigger",
+      "type": "trigger"
+    },
+    {
+      "id": "t_loss",
+      "source": "start",
+      "target": "loss",
+      "sourceHandle": "trigger",
+      "type": "trigger"
+    },
+    {
+      "id": "e_seq-train_dataset_dl-train_dataset",
+      "source": "seq-train",
+      "target": "dl-train",
+      "sourceHandle": "dataset",
+      "targetHandle": "dataset"
+    },
+    {
+      "id": "e_seq-test_dataset_dl-val_dataset",
+      "source": "seq-test",
+      "target": "dl-val",
+      "sourceHandle": "dataset",
+      "targetHandle": "dataset"
+    },
+    {
+      "id": "e_model_model_opt_model",
+      "source": "model",
+      "target": "opt",
+      "sourceHandle": "model",
+      "targetHandle": "model"
+    },
+    {
+      "id": "e_model_model_train_model",
+      "source": "model",
+      "target": "train",
+      "sourceHandle": "model",
+      "targetHandle": "model"
+    },
+    {
+      "id": "e_dl-train_dataloader_train_dataloader",
+      "source": "dl-train",
+      "target": "train",
+      "sourceHandle": "dataloader",
+      "targetHandle": "dataloader"
+    },
+    {
+      "id": "e_dl-val_dataloader_train_val_dataloader",
+      "source": "dl-val",
+      "target": "train",
+      "sourceHandle": "dataloader",
+      "targetHandle": "val_dataloader"
+    },
+    {
+      "id": "e_opt_optimizer_train_optimizer",
+      "source": "opt",
+      "target": "train",
+      "sourceHandle": "optimizer",
+      "targetHandle": "optimizer"
+    },
+    {
+      "id": "e_loss_loss_fn_train_loss_fn",
+      "source": "loss",
+      "target": "train",
+      "sourceHandle": "loss_fn",
+      "targetHandle": "loss_fn"
+    },
+    {
+      "id": "e_train_model_eval_model",
+      "source": "train",
+      "target": "eval",
+      "sourceHandle": "model",
+      "targetHandle": "model"
+    },
+    {
+      "id": "e_seq-test_dataset_eval_dataset",
+      "source": "seq-test",
+      "target": "eval",
+      "sourceHandle": "dataset",
+      "targetHandle": "dataset"
+    },
+    {
+      "id": "e_eval_accuracy_print-acc_value",
+      "source": "eval",
+      "target": "print-acc",
+      "sourceHandle": "accuracy",
+      "targetHandle": "value"
+    },
+    {
+      "id": "e_train_losses_viz_data",
+      "source": "train",
+      "target": "viz",
+      "sourceHandle": "losses",
+      "targetHandle": "data"
+    }
+  ],
+  "settings": {
+    "seed": 0
+  }
+}

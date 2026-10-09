@@ -1,0 +1,370 @@
+{
+  "name": "Causal attention from scratch",
+  "description": "Q K^T, scale, mask, softmax, times V",
+  "gallery": {
+    "section": "concepts",
+    "order": 10
+  },
+  "nodes": [
+    {
+      "id": "start",
+      "type": "Start",
+      "position": {
+        "x": -260,
+        "y": 200
+      },
+      "data": {
+        "params": {}
+      }
+    },
+    {
+      "id": "q",
+      "type": "TensorCreate",
+      "position": {
+        "x": 40,
+        "y": -100
+      },
+      "data": {
+        "params": {
+          "shape": "6,8",
+          "fill": "randn",
+          "value": 0,
+          "requires_grad": false
+        }
+      }
+    },
+    {
+      "id": "k",
+      "type": "TensorCreate",
+      "position": {
+        "x": 40,
+        "y": 200
+      },
+      "data": {
+        "params": {
+          "shape": "6,8",
+          "fill": "randn",
+          "value": 0,
+          "requires_grad": false
+        }
+      }
+    },
+    {
+      "id": "v",
+      "type": "TensorCreate",
+      "position": {
+        "x": 40,
+        "y": 500
+      },
+      "data": {
+        "params": {
+          "shape": "6,8",
+          "fill": "randn",
+          "value": 0,
+          "requires_grad": false
+        }
+      }
+    },
+    {
+      "id": "kt",
+      "type": "Permute",
+      "position": {
+        "x": 340,
+        "y": 200
+      },
+      "data": {
+        "params": {
+          "dims": "1,0"
+        }
+      }
+    },
+    {
+      "id": "scores",
+      "type": "MatMul",
+      "position": {
+        "x": 620,
+        "y": 0
+      },
+      "data": {
+        "params": {}
+      }
+    },
+    {
+      "id": "scale",
+      "type": "ScalarMultiply",
+      "position": {
+        "x": 900,
+        "y": 0
+      },
+      "data": {
+        "params": {
+          "scalar": 0.353553
+        }
+      }
+    },
+    {
+      "id": "mask",
+      "type": "AttentionMask",
+      "position": {
+        "x": 620,
+        "y": -560
+      },
+      "data": {
+        "params": {
+          "mode": "causal"
+        }
+      }
+    },
+    {
+      "id": "masked",
+      "type": "MaskedFill",
+      "position": {
+        "x": 1240,
+        "y": 0
+      },
+      "data": {
+        "params": {
+          "value": "-inf"
+        }
+      }
+    },
+    {
+      "id": "softmax",
+      "type": "Softmax",
+      "position": {
+        "x": 1520,
+        "y": 0
+      },
+      "data": {
+        "params": {
+          "dim": -1
+        }
+      }
+    },
+    {
+      "id": "heatmap",
+      "type": "AttentionHeatmap",
+      "position": {
+        "x": 1800,
+        "y": -260
+      },
+      "data": {
+        "params": {
+          "head_index": -1,
+          "colormap": "viridis"
+        }
+      }
+    },
+    {
+      "id": "out",
+      "type": "MatMul",
+      "position": {
+        "x": 1800,
+        "y": 340
+      },
+      "data": {
+        "params": {}
+      }
+    },
+    {
+      "id": "print-w",
+      "type": "Print",
+      "position": {
+        "x": 2100,
+        "y": -260
+      },
+      "data": {
+        "params": {
+          "label": "Attention weights (each row sums to 1)"
+        }
+      }
+    },
+    {
+      "id": "print-out",
+      "type": "Print",
+      "position": {
+        "x": 2100,
+        "y": 340
+      },
+      "data": {
+        "params": {
+          "label": "Output: one 8-d vector per position"
+        }
+      }
+    },
+    {
+      "id": "note-overview",
+      "type": "note",
+      "position": {
+        "x": -680,
+        "y": 200
+      },
+      "data": {
+        "noteKind": "text",
+        "noteContent": "Scaled dot-product attention, one operation per node: softmax(mask(Q K^T / sqrt(d))) V. Six positions, each with an 8-d query, key and value. The scores matrix is 6x6: entry (i, j) says how much position i wants to read position j. The causal mask sets every entry above the diagonal to -inf, so after the softmax position i reads only positions 0..i. The heatmap shows the lower-triangular weights.\n\n縮放點積注意力，每個運算一顆節點：softmax(mask(Q K^T / sqrt(d))) V。共 6 個位置，每個位置各有 8 維的 query、key、value。分數矩陣是 6x6：第 (i, j) 格表示位置 i 想讀位置 j 的程度。因果遮罩把對角線以上的格子都設成 -inf，所以經過 softmax 後，位置 i 只會讀位置 0..i。熱圖顯示的就是這個下三角權重。",
+        "noteColor": "#3d3d1a",
+        "boundToNodeId": "start",
+        "boundOffset": {
+          "x": -420,
+          "y": 0
+        },
+        "noteWidth": 360
+      }
+    },
+    {
+      "id": "note-scale",
+      "type": "note",
+      "position": {
+        "x": 900,
+        "y": 240
+      },
+      "data": {
+        "noteKind": "text",
+        "noteContent": "0.353553 = 1 / sqrt(8), with 8 the key dimension. Without it the dot products grow with the dimension and the softmax saturates to one-hot rows.\n\n0.353553 = 1 / sqrt(8)，8 是 key 的維度。少了這一步，點積會隨維度變大，softmax 就會飽和成幾乎 one-hot 的列。",
+        "noteColor": "#3d3d1a",
+        "boundToNodeId": "scale",
+        "boundOffset": {
+          "x": 0,
+          "y": 240
+        },
+        "noteWidth": 300
+      }
+    },
+    {
+      "id": "note-mask",
+      "type": "note",
+      "position": {
+        "x": 620,
+        "y": -820
+      },
+      "data": {
+        "noteKind": "text",
+        "noteContent": "AttentionMask reads the sequence length from dim 0 of its tensor input, here Q with shape [6, 8], and returns a [6, 6] boolean matrix where True means blocked.\n\nAttentionMask 從輸入張量的第 0 維讀出序列長度，這裡接的是形狀 [6, 8] 的 Q，輸出 [6, 6] 的布林矩陣，True 代表擋住。",
+        "noteColor": "#3d3d1a",
+        "boundToNodeId": "mask",
+        "boundOffset": {
+          "x": 0,
+          "y": -260
+        },
+        "noteWidth": 300
+      }
+    }
+  ],
+  "edges": [
+    {
+      "id": "t_q",
+      "source": "start",
+      "target": "q",
+      "sourceHandle": "trigger",
+      "type": "trigger"
+    },
+    {
+      "id": "t_k",
+      "source": "start",
+      "target": "k",
+      "sourceHandle": "trigger",
+      "type": "trigger"
+    },
+    {
+      "id": "t_v",
+      "source": "start",
+      "target": "v",
+      "sourceHandle": "trigger",
+      "type": "trigger"
+    },
+    {
+      "id": "e_k_tensor_kt_tensor",
+      "source": "k",
+      "target": "kt",
+      "sourceHandle": "tensor",
+      "targetHandle": "tensor"
+    },
+    {
+      "id": "e_q_tensor_scores_tensor_a",
+      "source": "q",
+      "target": "scores",
+      "sourceHandle": "tensor",
+      "targetHandle": "tensor_a"
+    },
+    {
+      "id": "e_kt_tensor_scores_tensor_b",
+      "source": "kt",
+      "target": "scores",
+      "sourceHandle": "tensor",
+      "targetHandle": "tensor_b"
+    },
+    {
+      "id": "e_scores_tensor_scale_tensor",
+      "source": "scores",
+      "target": "scale",
+      "sourceHandle": "tensor",
+      "targetHandle": "tensor"
+    },
+    {
+      "id": "e_q_tensor_mask_tensor",
+      "source": "q",
+      "target": "mask",
+      "sourceHandle": "tensor",
+      "targetHandle": "tensor"
+    },
+    {
+      "id": "e_scale_tensor_masked_tensor",
+      "source": "scale",
+      "target": "masked",
+      "sourceHandle": "tensor",
+      "targetHandle": "tensor"
+    },
+    {
+      "id": "e_mask_mask_masked_mask",
+      "source": "mask",
+      "target": "masked",
+      "sourceHandle": "mask",
+      "targetHandle": "mask"
+    },
+    {
+      "id": "e_masked_tensor_softmax_tensor",
+      "source": "masked",
+      "target": "softmax",
+      "sourceHandle": "tensor",
+      "targetHandle": "tensor"
+    },
+    {
+      "id": "e_softmax_tensor_heatmap_weights",
+      "source": "softmax",
+      "target": "heatmap",
+      "sourceHandle": "tensor",
+      "targetHandle": "weights"
+    },
+    {
+      "id": "e_heatmap_weights_print-w_value",
+      "source": "heatmap",
+      "target": "print-w",
+      "sourceHandle": "weights",
+      "targetHandle": "value"
+    },
+    {
+      "id": "e_softmax_tensor_out_tensor_a",
+      "source": "softmax",
+      "target": "out",
+      "sourceHandle": "tensor",
+      "targetHandle": "tensor_a"
+    },
+    {
+      "id": "e_v_tensor_out_tensor_b",
+      "source": "v",
+      "target": "out",
+      "sourceHandle": "tensor",
+      "targetHandle": "tensor_b"
+    },
+    {
+      "id": "e_out_tensor_print-out_value",
+      "source": "out",
+      "target": "print-out",
+      "sourceHandle": "tensor",
+      "targetHandle": "value"
+    }
+  ],
+  "settings": {
+    "seed": 0
+  }
+}
