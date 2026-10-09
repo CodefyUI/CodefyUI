@@ -652,17 +652,19 @@ async def plugin_job_events(
     opened mid-install follows the job it found in ``/catalog``.
 
     The returned ``cursor`` is where to resume, and never moves backwards.
+    ``gap`` follows the Package Center's contract: ``null``, or
+    ``{"first_cursor", "dropped"}`` for a reader the buffer left behind.
     """
     service = _service(request)
     try:
-        events, next_cursor, status = await service.wait_for_events(
+        page = await service.wait_for_page(
             job_id, after_cursor=cursor, limit=limit, wait=wait)
     except UnknownJob:
         # Also reachable AFTER the park: a job that ends while a poll is
         # waiting on it, followed by a new install, takes its events with it.
         raise _job_not_found(job_id) from None
-    return {"job_id": job_id, "status": status, "events": events,
-            "cursor": next_cursor}
+    return {"job_id": job_id, "status": page.status, "events": page.events,
+            "cursor": page.cursor, "gap": page.gap}
 
 
 @router.post("/jobs/{job_id}/cancel",

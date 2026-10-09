@@ -104,6 +104,12 @@ def err(zh: str, en: str) -> None:
     print(f"  {RED}x {t(zh, en)}{RESET}", file=sys.stderr)
 
 
+def err_info(zh: str, en: str) -> None:
+    """The detail under an ``err()`` line: what to do instead, which ids
+    exist. Same stream as the refusal, so ``2> file`` keeps the fix with it."""
+    print(f"  {DIM}{t(zh, en)}{RESET}", file=sys.stderr)
+
+
 def ok(zh: str, en: str) -> None:
     print(f"  {GREEN}+ {t(zh, en)}{RESET}")
 
@@ -352,7 +358,7 @@ def _refuse_unknown_pack(pack_id: str) -> int:
 
     err(f"未知的套件：{pack_id}", f"Unknown pack: {pack_id}")
     known = ", ".join(pack.pack_id for pack in catalog.iter_packs())
-    info(f"已知的套件：{known}", f"Known packs: {known}")
+    err_info(f"已知的套件：{known}", f"Known packs: {known}")
     return 2
 
 
@@ -439,8 +445,8 @@ def cmd_install(args: argparse.Namespace) -> int:
         command = restart.install_command_for(pack)
         err(f"{pack.title} 不是用 cdui packs 安裝的",
             f"{pack.title} is not installed with cdui packs")
-        info(f"{pack.title} 的切換方式：{command}",
-             f"{pack.title} is switched with: {command}")
+        err_info(f"{pack.title} 的切換方式：{command}",
+                 f"{pack.title} is switched with: {command}")
         return 2
 
     probe = state.probe_all()[pack.pack_id]
@@ -448,7 +454,7 @@ def cmd_install(args: argparse.Namespace) -> int:
         err(f"{pack.title} 需要先安裝其他套件",
             f"{pack.title} needs another pack first")
         for dep in probe.blocked_by:
-            print(f"  cdui packs install {dep}")
+            print(f"  cdui packs install {dep}", file=sys.stderr)
         return 2
 
     try:
@@ -457,7 +463,7 @@ def cmd_install(args: argparse.Namespace) -> int:
         err(f"{pack.pack_id} 沒有你指定的項目：{args.items}",
             f"pack {pack.pack_id} has no such item: {args.items}")
         known = ", ".join(item.item_id for item in pack.items) or "(none)"
-        info(f"可用的項目：{known}", f"Items in this pack: {known}")
+        err_info(f"可用的項目：{known}", f"Items in this pack: {known}")
         return 2
 
     total = sum(item.approx_bytes for item in _pending_items(pack, probe, item_ids))
@@ -531,15 +537,15 @@ def cmd_install(args: argparse.Namespace) -> int:
     except PackNeedsRestart as exc:
         reporter.close()
         raw_err(str(exc))
-        info(f"請改在終端機執行：{exc.command}",
-             f"Run this in a terminal instead: {exc.command}")
+        err_info(f"請改在終端機執行：{exc.command}",
+                 f"Run this in a terminal instead: {exc.command}")
         _print_hint(exc.hint)
         return 3
     except PackInsufficientDisk as exc:
         reporter.close()
         raw_err(str(exc))
-        info(f"需要 {_mb(exc.needed)} MB，可用 {_mb(exc.free)} MB",
-             f"needs {_mb(exc.needed)} MB, {_mb(exc.free)} MB free")
+        err_info(f"需要 {_mb(exc.needed)} MB，可用 {_mb(exc.free)} MB",
+                 f"needs {_mb(exc.needed)} MB, {_mb(exc.free)} MB free")
         _print_hint(exc.hint)
         return 1
     except PackInstallError as exc:
@@ -601,7 +607,7 @@ def cmd_remove(args: argparse.Namespace) -> int:
         err(f"{pack.pack_id} 沒有這個項目：{args.item_id}",
             f"pack {pack.pack_id} has no item {args.item_id}")
         known = ", ".join(one.item_id for one in pack.items) or "(none)"
-        info(f"可用的項目：{known}", f"Items in this pack: {known}")
+        err_info(f"可用的項目：{known}", f"Items in this pack: {known}")
         return 2
 
     # Asked BEFORE the removal, because afterwards there is no way to tell

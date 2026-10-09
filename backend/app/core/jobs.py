@@ -61,6 +61,8 @@ log = logging.getLogger(__name__)
 #: hundred lines and a download a few hundred progress frames; four thousand
 #: holds a whole noisy install, and dropping the oldest is the right loss --
 #: a client that has fallen four thousand events behind is not reading them.
+#: A reader that arrives late (a reload, a second tab) is TOLD what it
+#: missed, through :attr:`EventPage.gap`.
 MAX_EVENTS = 4000
 
 #: How long ``shutdown`` waits for a cancelled job to unwind before it stops
@@ -112,6 +114,25 @@ AfterWork = Callable[[Emit], Awaitable[dict] | dict]
 #: not the right-hand side of an assignment.
 TerminalFor = (Callable[[BaseException], tuple[str, dict] | None]
                | Callable[["Job", BaseException], tuple[str, dict] | None])
+
+
+@dataclass(frozen=True)
+class EventPage:
+    """One read of a job's buffer, as :meth:`JobRunner.wait_for_page` returns it.
+
+    ``gap`` is ``None`` unless events this reader had not yet seen were
+    dropped from the bounded buffer before it asked. Then it is
+    ``{"first_cursor": <oldest cursor still kept>, "dropped": <how many lay
+    between the reader's cursor and that one>}``. It is relative to the
+    cursor the caller sent, so a reader that kept up is never told about a
+    loss it did not suffer, and the next read (from the returned cursor)
+    carries no gap again.
+    """
+
+    events: list[dict]
+    cursor: int
+    status: str
+    gap: dict | None = None
 
 
 class JobBusy(Exception):
@@ -297,9 +318,25 @@ class JobRunner:
     ) -> tuple[list[dict], int, str]:
         """Events after *after_cursor*, optionally long-polling for the next.
 
-        Returns ``(events, cursor, status)``. The cursor tracks what was
-        actually RETURNED, so an empty page never moves a follower forward
-        past events it did not receive.
+        Returns ``(events, cursor, status)``: :meth:`wait_for_page` without
+        the gap, for a caller that has no reader to tell about one.
+        """
+        page = await self.wait_for_page(job_id, after_cursor=after_cursor,
+                                        limit=limit, wait=wait)
+        return page.events, page.cursor, page.status
+
+    async def wait_for_page(
+        self,
+        job_id: str,
+        *,
+        after_cursor: int = 0,
+        limit: int = 500,
+        wait: float = 0.0,
+    ) -> EventPage:
+        """Events after *after_cursor*, optionally long-polling for the next.
+
+        The cursor tracks what was actually RETURNED, so an empty page never
+        moves a follower forward past events it did not receive.
 
         Order is load-bearing: the wake-up generation is captured BEFORE the
         buffer is read, so an event that lands during the read still
@@ -310,24 +347,35 @@ class JobRunner:
         """
         job = self.get_job(job_id)
         waiter = self._broadcast.waiter()
-        events, cursor, status = self._read(job, after_cursor, limit)
-        if events or status != STATUS_RUNNING or wait <= 0:
-            return events, cursor, status
+        page = self._read_page(job, after_cursor, limit)
+        if page.events or page.status != STATUS_RUNNING or wait <= 0:
+            return page
 
         try:
             await asyncio.wait_for(waiter.wait(), wait)
         except asyncio.TimeoutError:
             pass
-        return self._read(job, after_cursor, limit)
+        return self._read_page(job, after_cursor, limit)
 
     def _read(self, job: Job, after_cursor: int, limit: int
               ) -> tuple[list[dict], int, str]:
+        """:meth:`_read_page` as ``(events, cursor, status)``."""
+        page = self._read_page(job, after_cursor, limit)
+        return page.events, page.cursor, page.status
+
+    def _read_page(self, job: Job, after_cursor: int, limit: int
+                   ) -> EventPage:
         """One consistent look at the buffer AND the job's status.
 
         Both under the same lock hold, which is what makes "terminal status
         implies the terminal event is already readable" true for a caller.
 
-        The identity check closes a narrow window in ``wait_for_events``: a
+        The gap is measured in the same hold, against THIS caller's cursor:
+        the events between *after_cursor* and the oldest one still buffered
+        are the ones this reader will never see. A reader already past the
+        dropped head is told nothing, however much the buffer has dropped.
+
+        The identity check closes a narrow window in ``wait_for_page``: a
         poll parked on a job that finishes, followed by a claim that clears
         the buffer, would otherwise resume and hand the NEW job's events back
         under the OLD job's id. There are no events for that job any more, so
@@ -339,7 +387,13 @@ class JobRunner:
             page = [event for event in self._events
                     if event["cursor"] > after_cursor][:limit]
             status = job.status
-        return page, (page[-1]["cursor"] if page else after_cursor), status
+            first = self._events[0]["cursor"] if self._events else None
+        gap = None
+        if first is not None and first > after_cursor + 1:
+            gap = {"first_cursor": first, "dropped": first - after_cursor - 1}
+        return EventPage(events=page,
+                         cursor=page[-1]["cursor"] if page else after_cursor,
+                         status=status, gap=gap)
 
     # ── claiming and running ──────────────────────────────────────────────
 

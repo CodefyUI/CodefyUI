@@ -1212,6 +1212,7 @@ const zhTW: Record<TranslationKey, string> = {
   'packs.activity.progressAria': '安裝進度',
   'packs.activity.log': '安裝紀錄',
   'packs.activity.logEmpty': '等待第一則訊息...',
+  'packs.activity.logGap': '較早的 {count} 筆紀錄已無法取得，以下為保留的部分。',
   'packs.activity.done': '已安裝 {pack}。',
   'packs.activity.failed': '安裝失敗：{message}',
   'packs.activity.cancelled': '已取消安裝。',
