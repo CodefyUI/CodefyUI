@@ -58,6 +58,17 @@ received — each links to the release it was published as.
   is fed by more than one wire, one of them from outside the selection, is
   refused with a message saying which to fix, since only a graph saved before
   this change can still have one.
+- **An input fed by several wires is refused everywhere, with a Switch to fix
+  it** ([#658], closes [#562]). Run, Export as Python, `POST /api/graph/validate`,
+  saving a preset and a Map running an old preset now refuse a data input with
+  more than one wire, naming the node and the input. Before, the run read
+  whichever wire came last in the saved file and the script copied it, so
+  reordering the file could change the result while the canvas looked the
+  same. Opening such a graph shows a notice with **Insert Switches**, and each
+  Run refusal has **Insert Switch**: the wires go into a new Switch in file
+  order with its selector on the last one, so the result is what it was.
+  Several wires meeting at one input inside a block, or into a bypassed node,
+  are found too.
 
 ## [2.8.9] — 2026-10-05
 
@@ -5418,3 +5429,4 @@ Release candidates before 1.0.0 are on the
 [2.1.0]: https://github.com/CodefyUI/CodefyUI/compare/2.0.0...2.1.0
 [#655]: https://github.com/CodefyUI/CodefyUI/issues/655
 [#656]: https://github.com/CodefyUI/CodefyUI/issues/656
+[#658]: https://github.com/CodefyUI/CodefyUI/issues/658

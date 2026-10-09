@@ -799,6 +799,57 @@ def dangling_trigger_errors(nodes: list[dict], edges: list[dict]) -> list[str]:
     return list(dict.fromkeys(errors))
 
 
+def _is_data_edge(edge: dict) -> bool:
+    """A wire that carries a value: not a Start trigger, by type or by handle."""
+    return (
+        edge.get("type", "data") != "trigger"
+        and (edge.get("sourceHandle") or "") != "trigger"
+        and (edge.get("targetHandle") or "") != "__trigger"
+    )
+
+
+def multiple_source_errors(nodes: list[dict], edges: list[dict]) -> list[str]:
+    """One line per data input fed by more than one wire (#562, #658).
+
+    A data input takes one source. Several used to merge by edge order: the
+    run, and the exported script after it, read whichever wire came last in
+    the file, which nothing on the canvas shows -- moving one wire could
+    change the value while the picture stayed the same. Choosing between
+    sources is a Switch's job, and the editor's quick-fix puts one in.
+
+    Run on the graph a run executes: after block expansion, so several
+    outside wires into one block input are caught at the inner port they
+    feed, and before bypass, which would silently keep one of them. A
+    trigger is control flow and the ``__trigger`` handle takes one from
+    every Start that runs the card, so trigger wires do not count.
+    """
+    from .validation_issues import validation_issue
+
+    present = {node.get("id") for node in nodes}
+    sources: dict[tuple[str, str], list[str]] = {}
+    for edge in edges:
+        if not _is_data_edge(edge) or edge.get("target") not in present:
+            continue
+        key = (edge["target"], edge.get("targetHandle") or "")
+        sources.setdefault(key, []).append(edge.get("source", ""))
+
+    errors: list[str] = []
+    for (target, port), from_ids in sources.items():
+        if len(from_ids) < 2:
+            continue
+        named = ", ".join(from_ids)
+        errors.append(validation_issue(
+            "multiple_sources",
+            (
+                f"Input '{port}' on node {target} has {len(from_ids)} wires "
+                f"(from {named}); an input takes one -- keep one wire, or "
+                "choose between them with a Switch"
+            ),
+            node_id=target, port=port, sources=from_ids, count=len(from_ids),
+        ))
+    return errors
+
+
 def expand_subgraphs(
     nodes: list[dict],
     edges: list[dict],
@@ -1277,8 +1328,8 @@ def resolve_bypass(nodes: list[dict], edges: list[dict]) -> BypassResolution:
     if not active:
         return BypassResolution(nodes, edges, errors)
 
-    # Last edge into a handle wins, matching how the engine builds a node's
-    # inputs dict (later writes to `inputs[tgt_handle]` overwrite earlier ones).
+    # One edge per input handle: validate_graph and prepare_executable_graph
+    # refuse more (#658), before and independent of this map.
     incoming: dict[tuple[str, str], tuple[str, str]] = {}
     data_out: dict[str, list[str]] = defaultdict(list)
     for edge in edges:
@@ -1604,6 +1655,11 @@ def validate_graph(
             message = exc.args[0] if exc.args and isinstance(exc.args[0], str) else str(exc)
             if message not in errors and message != "; ".join(duplicate_errors):
                 errors.append(message)
+
+    # Several wires into one input (#658). After block expansion, which is
+    # where several outside wires into a block input meet one inner port,
+    # and before bypass, which would keep one of them without a word.
+    errors.extend(multiple_source_errors(nodes, edges))
 
     # The edges on each preset card, in the words expansion refuses them with
     # (#561). Before bypass, because a run expands presets before it
@@ -2283,6 +2339,12 @@ def prepare_executable_graph(
         for node in expanded_nodes
     ):
         raise GraphValidationError("Preset nesting exceeds the maximum depth of 10")
+
+    # One source per input (#658), on the fully expanded graph -- a preset's
+    # own edges included -- and before bypass, as validate_graph checks it.
+    several = multiple_source_errors(expanded_nodes, expanded_edges)
+    if several:
+        raise GraphValidationError("; ".join(several))
 
     # Bypass BEFORE reachability: a bypassed node is not part of the graph, so
     # what is reachable, what the topological order is, and what the exporter
@@ -2989,7 +3051,9 @@ async def execute_graph(
         if not node_cls:
             raise GraphValidationError(f"Unknown node type: {node_type}")
 
-        # Gather inputs from upstream edges
+        # Gather inputs from upstream edges. Each input has at most one
+        # (prepare_executable_graph refuses more, #658), so nothing here
+        # depends on the order of the edge list.
         inputs: dict[str, Any] = {}
         has_failed_input = False
         for src_id, src_handle, tgt_handle in incoming.get(node_id, []):

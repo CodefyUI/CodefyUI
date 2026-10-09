@@ -53,6 +53,7 @@ import { useProjectStore } from './projectStore';
 import { markParamEdit, paramEditContinues, paramEditKeepAlive } from './paramEditUndo';
 import { pushRemovalStep } from './removalUndo'; // a deletion is one undo step
 import { grownSwitchParams } from '../utils/switchNode';
+import { fanInInputs, withSwitchFor } from '../utils/fanIn';
 import {
   effectivePresets,
   mergeOwnedPresets,
@@ -880,6 +881,14 @@ interface TabStoreState {
   clearExecutionStatus: () => void;
   clear: () => void;
   /**
+   * Route the wires into each input that has more than one through a new
+   * Switch whose selector names the last of them -- the wire the old
+   * last-edge-wins rule read (#658). `targets` limits it to those inputs;
+   * without it, every such input on the canvas on screen. ONE undo step.
+   * Returns how many Switches it inserted.
+   */
+  insertSwitchesForFanIn: (targets?: ReadonlyArray<{ nodeId: string; port: string }>) => number;
+  /**
    * SECRET params (an API key typed into a node) come back as `""`, so no
    * save, export or plugin read carries a key. `keepSecrets: true` is for the
    * Run message alone (`useGraphExecution`), whose run needs the key: it keeps
@@ -1094,6 +1103,13 @@ interface TabStoreState {
   setSeed: (seed: number | null) => void;
   toggleDeterministic: () => void;
 }
+
+/**
+ * The notice a load raised for a tab whose graph has inputs with several
+ * wires (#658), by tab id, so the fix that clears the last of them can take
+ * it down: once nothing is left to fix, the notice would only mislead.
+ */
+const fanInNotices = new Map<string, string>();
 
 function updateTab(tabs: TabState[], tabId: string, updater: (tab: TabState) => Partial<TabState>): TabState[] {
   return tabs.map((tab) => (tab.id === tabId ? { ...tab, ...updater(tab) } : tab));
@@ -4087,6 +4103,40 @@ export const useTabStore = create<TabStoreState>((rawSet, get) => {
       }),
     }),
 
+  insertSwitchesForFanIn: (targets) => {
+    const tab = get().getActiveTab();
+    const switchDefinition = useNodeDefStore
+      .getState()
+      .definitions.find((d) => d.node_name === 'Switch');
+    if (!tab || !switchDefinition) return 0;
+    const wanted = targets && new Set(targets.map((t) => `${t.nodeId}\n${t.port}`));
+    const fanIns = fanInInputs(tab.edges).filter(
+      (f) => !wanted || wanted.has(`${f.target}\n${f.handle}`),
+    );
+    let nodes = tab.nodes;
+    let edges = tab.edges;
+    let lastSwitch: string | null = null;
+    const fed: string[] = [];
+    for (const fanIn of fanIns) {
+      const next = withSwitchFor(nodes, edges, fanIn, switchDefinition);
+      if (!next) continue;
+      ({ nodes, edges } = next);
+      lastSwitch = next.switchId;
+      fed.push(fanIn.target);
+    }
+    if (lastSwitch === null) return 0;
+    get().pushUndoSnapshot();
+    for (const id of fed) get().markDirty(id);
+    set({ tabs: updateTab(get().tabs, tab.id, () => ({ nodes, edges })) });
+    const notice = fanInNotices.get(tab.id);
+    if (notice !== undefined && fanInInputs(edges).length === 0) {
+      useToastStore.getState().removeToast(notice);
+      fanInNotices.delete(tab.id);
+    }
+    get().selectNodeExclusively(lastSwitch);
+    return nodes.length - tab.nodes.length;
+  },
+
   clear: () => {
     // Flush the sub-canvas editing stack BEFORE snapshotting, exactly as
     // `getSerializedGraph` and `buildPersistedTab` do. Without it the
@@ -4523,6 +4573,31 @@ export const useTabStore = create<TabStoreState>((rawSet, get) => {
         ...(name ? { name } : {}),
       })),
     });
+    // A graph saved before an input took one wire (#658) opens as it is;
+    // Run refuses it, so say so now and offer the fix.
+    const fanIns = fanInInputs(doc.edges);
+    const stale = fanInNotices.get(tabId);
+    if (stale !== undefined) {
+      useToastStore.getState().removeToast(stale);
+      fanInNotices.delete(tabId);
+    }
+    if (fanIns.length > 0) {
+      const { t } = useI18n.getState();
+      const notice = useToastStore.getState().addToast(
+        t('graphValidation.fanInOnLoad', { count: fanIns.length }),
+        'warning',
+        {
+          action: {
+            label: t('graphValidation.insertSwitches'),
+            onClick: () => {
+              if (get().activeTabId === tabId) get().insertSwitchesForFanIn();
+            },
+          },
+          sticky: true,
+        },
+      );
+      fanInNotices.set(tabId, notice);
+    }
     return readOnly;
   },
 
