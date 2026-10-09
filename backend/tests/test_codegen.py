@@ -1226,80 +1226,90 @@ async def test_export_endpoint_ignores_note_nodes_and_incident_edges(test_client
     assert "teaching note" not in script
 
 
-@pytest.mark.asyncio
-async def test_multi_edge_fan_in_matches_engine_last_edge_wins(
-    test_client,
-    tmp_path: Path,
-):
-    """Two edges into one targetHandle: engine and script pick the same one."""
-    from app.core import api_contract
-    from app.core.execution_context import ExecutionContext
-    from app.core.graph_engine import execute_graph
-
-    graph = {
+def _fan_in_graph(edge_order: list[str]) -> dict:
+    """Two TensorCreates into one Print input, edges in *edge_order*."""
+    data_edges = {
+        "first": {"id": "first", "source": "ones", "target": "picked", "sourceHandle": "tensor", "targetHandle": "value", "type": "data"},
+        "second": {"id": "second", "source": "twos", "target": "picked", "sourceHandle": "tensor", "targetHandle": "value", "type": "data"},
+    }
+    return {
         "name": "fan-in",
         "nodes": [
             {"id": "start", "type": "Start", "position": {"x": 0, "y": 0}, "data": {"params": {}}},
-            {
-                "id": "ones",
-                "type": "TensorCreate",
-                "position": {"x": 0, "y": 0},
-                "data": {"params": {"shape": "2", "fill": "ones"}},
-            },
-            {
-                "id": "twos",
-                "type": "TensorCreate",
-                "position": {"x": 0, "y": 0},
-                "data": {"params": {"shape": "2", "fill": "full", "value": 2.0}},
-            },
-            {
-                "id": "picked",
-                "type": "Print",
-                "position": {"x": 0, "y": 0},
-                "data": {"params": {"label": "picked"}},
-            },
-            {
-                "id": "out",
-                "type": "GraphOutput",
-                "position": {"x": 0, "y": 0},
-                "data": {"params": {"name": "result"}},
-            },
+            {"id": "ones", "type": "TensorCreate", "position": {"x": 0, "y": 0},
+             "data": {"params": {"shape": "2", "fill": "ones"}}},
+            {"id": "twos", "type": "TensorCreate", "position": {"x": 0, "y": 0},
+             "data": {"params": {"shape": "2", "fill": "full", "value": 2.0}}},
+            {"id": "picked", "type": "Print", "position": {"x": 0, "y": 0},
+             "data": {"params": {"label": "picked"}}},
+            {"id": "out", "type": "GraphOutput", "position": {"x": 0, "y": 0},
+             "data": {"params": {"name": "result"}}},
         ],
         "edges": [
             {"id": "t1", "source": "start", "target": "ones", "sourceHandle": "trigger", "targetHandle": "", "type": "trigger"},
             {"id": "t2", "source": "start", "target": "twos", "sourceHandle": "trigger", "targetHandle": "", "type": "trigger"},
-            {"id": "first", "source": "ones", "target": "picked", "sourceHandle": "tensor", "targetHandle": "value", "type": "data"},
-            {"id": "second", "source": "twos", "target": "picked", "sourceHandle": "tensor", "targetHandle": "value", "type": "data"},
+            *(data_edges[name] for name in edge_order),
             {"id": "to-out", "source": "picked", "target": "out", "sourceHandle": "value", "targetHandle": "value", "type": "data"},
         ],
     }
 
-    context = ExecutionContext(
-        device="cpu", weights_persistent=False, graph_id="parity-fan-in"
-    )
-    engine_results = await execute_graph(
-        graph["nodes"], graph["edges"], context=context
-    )
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("edge_order", [["first", "second"], ["second", "first"]])
+async def test_several_wires_into_one_input_are_refused_in_any_order(test_client, edge_order):
+    """#658: the edge order used to pick the value; now neither order runs.
+
+    Before, the engine read the LAST wire whose source produced a value and
+    the script copied that rule, so swapping two entries in edges[] changed
+    the printed number while the canvas showed the same picture.
+    """
+    from app.core.graph_engine import GraphValidationError, execute_graph
+
+    graph = _fan_in_graph(edge_order)
+    with pytest.raises(GraphValidationError, match="Input 'value' on node picked has 2 wires"):
+        await execute_graph(graph["nodes"], graph["edges"])
+
+    response = await test_client.post("/api/graph/export", json=graph)
+    assert response.status_code != 200
+    assert "has 2 wires" in response.text
+
+    validated = await test_client.post("/api/graph/validate", json=graph)
+    issues = [i for i in validated.json()["issues"] if i["code"] == "multiple_sources"]
+    assert [(i["node_id"], i["params"]["port"], i["params"]["count"]) for i in issues] == [("picked", "value", 2)]
+
+
+@pytest.mark.asyncio
+async def test_the_switch_quick_fix_keeps_the_value_the_old_rule_gave(test_client, tmp_path: Path):
+    """The editor's fix: the wires go into a Switch in edge order, and its
+    selector names the last one -- the wire the old rule read. Run and the
+    exported script then agree on that value."""
+    from app.core import api_contract
+    from app.core.execution_context import ExecutionContext
+    from app.core.graph_engine import execute_graph
+
+    graph = _fan_in_graph(["first", "second"])
+    graph["nodes"].append({"id": "pick", "type": "Switch", "position": {"x": 0, "y": 0},
+                           "data": {"params": {"selector": 1, "inputs": 3}}})
+    graph["edges"] = [e for e in graph["edges"] if e["id"] not in ("first", "second")] + [
+        {"id": "first", "source": "ones", "target": "pick", "sourceHandle": "tensor", "targetHandle": "input_0", "type": "data"},
+        {"id": "second", "source": "twos", "target": "pick", "sourceHandle": "tensor", "targetHandle": "input_1", "type": "data"},
+        {"id": "picked-in", "source": "pick", "target": "picked", "sourceHandle": "output", "targetHandle": "value", "type": "data"},
+    ]
+
+    context = ExecutionContext(device="cpu", weights_persistent=False, graph_id="parity-fan-in")
+    engine_results = await execute_graph(graph["nodes"], graph["edges"], context=context)
     contract = api_contract.derive_contract(graph["nodes"])
     collected, missing = api_contract.collect_outputs(contract, engine_results)
     assert not missing
-    engine_payload = json.loads(
-        json.dumps(
-            {
-                name: api_contract.serialize_output(value)
-                for name, value in collected.items()
-            }
-        )
-    )
-    # Engine semantics: the LAST edge in edges[] order wins.
+    engine_payload = json.loads(json.dumps(
+        {name: api_contract.serialize_output(value) for name, value in collected.items()}
+    ))
     assert engine_payload["result"]["values"] == [2.0, 2.0]
 
     response = await test_client.post("/api/graph/export", json=graph)
     assert response.status_code == 200, response.text
     script = response.json()["script"]
-    # _pick candidates are emitted in reverse edge order.
-    assert "_pick(_port(twos, 'tensor'), _port(ones, 'tensor'))" in script
-
+    assert "_pick(" not in script
     completed = _run_exported_script(script, tmp_path, "--device", "cpu")
     assert completed.returncode == 0, completed.stderr
     assert json.loads(completed.stdout) == engine_payload

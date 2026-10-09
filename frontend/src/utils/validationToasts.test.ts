@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 import {
   canvasNodeFor,
   dismissValidationToasts,
@@ -134,6 +134,7 @@ describe('issueText', () => {
     issue('switch_selector_out_of_range', ENC, { value: 5, max: 3 }),
     issue('switch_selected_unwired', ENC, { value: 2, port: 'input_2' }),
     issue('switch_input_types_differ', ENC, { types: 'STRING, TENSOR' }),
+    issue('multiple_sources', DEC, { port: 'tensor', sources: [ENC, LOSS], count: 2 }),
   ];
 
   it.each(['en', 'zh-TW'] as const)(
@@ -309,6 +310,26 @@ describe('showValidationIssues', () => {
     showValidationIssues('A', [FIVE[0], { ...FIVE[0] }]);
 
     expect(toasts()).toHaveLength(1);
+  });
+
+  it('offers a Switch for several wires into an input on screen (#658)', () => {
+    const insert = vi.spyOn(useTabStore.getState(), 'insertSwitchesForFanIn').mockReturnValue(1);
+    showValidationIssues('A', [issue('multiple_sources', DEC, { port: 'tensor', sources: [ENC, LOSS], count: 2 })]);
+    expect(toasts()[0].message).toBe(
+      'Decoder: input "tensor" has 2 wires. An input takes one: keep one wire, or choose between them with a Switch.',
+    );
+    expect(toasts()[0].action?.label).toBe('Insert Switch');
+    toasts()[0].action!.onClick();
+    expect(insert).toHaveBeenCalledWith([{ nodeId: DEC, port: 'tensor' }]);
+    insert.mockRestore();
+  });
+
+  it('offers Show instead for an input inside a block, or a finding without a port', () => {
+    showValidationIssues('A', [
+      issue('multiple_sources', `${BLOCK}/inner`, { port: 'x', count: 2 }),
+      issue('multiple_sources', ENC, { count: 2 }),
+    ]);
+    expect(toasts().map((toast) => toast.action?.label)).toEqual(['Show', 'Show']);
   });
 
   it('takes down only its own toasts', () => {

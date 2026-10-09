@@ -530,6 +530,10 @@ const zhTW: Record<TranslationKey, string> = {
   'graphValidation.switch_selector_out_of_range': '「{node}」的 selector 是 {value}，但這個 Switch 只有 0 到 {max} 號輸入',
   'graphValidation.switch_selected_unwired': '「{node}」的 selector 是 {value}，但「{port}」尚未連線',
   'graphValidation.switch_input_types_differ': '「{node}」的輸入型別不一致（{types}）。Switch 不論選哪個輸入，都只能輸出同一種型別。',
+  'graphValidation.multiple_sources': '「{node}」的輸入「{port}」接了 {count} 條線。一個輸入只能接一條：請保留一條，或用 Switch 在它們之間選擇。',
+  'graphValidation.insertSwitch': '插入 Switch',
+  'graphValidation.insertSwitches': '插入 Switch',
+  'graphValidation.fanInOnLoad': '這張圖有 {count} 個輸入接了不只一條線。現在一個輸入只能接一條，所以在每個輸入只剩一條線或改接 Switch 之前，Run 會拒絕執行。按「插入 Switch」會保留每個輸入原本拿到的值。',
 
   // Beginner-facing rewrites of raw Python/PyTorch exceptions (see
   // utils/errorMessages.ts). Each one names what to change, not just what broke.

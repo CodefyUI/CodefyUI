@@ -16,6 +16,7 @@ from ..core.graph_engine import (
     container_bypass_errors,
     expand_presets,
     is_note_node,
+    multiple_source_errors,
     preset_subgraph_errors,
     resolve_bypass,
     subgraph_id_of,
@@ -367,6 +368,13 @@ async def create_preset(request: CreatePresetRequest):
     if not nodes:
         # Every node that was left was muted.
         raise _coded(400, "preset_empty")
+
+    # #658: an input takes one wire. A preset stored with two would merge
+    # them by edge order wherever it runs, so it is refused here, in the
+    # words validation uses for the same graph.
+    several = multiple_source_errors(nodes, edges)
+    if several:
+        raise HTTPException(status_code=400, detail="; ".join(several))
 
     # I3: never persist a SECRET param value into a preset definition file.
     # Blank secrets in the graph before any of it is copied into the stored

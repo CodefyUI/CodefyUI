@@ -256,19 +256,6 @@ def _port(result, name):
     return result.get(name, _ABSENT)
 
 
-def _pick(*candidates):
-    """Multi-edge fan-in: the first present candidate wins.
-
-    Candidates are listed in reverse edge order, matching the graph engine,
-    where the last edge whose source port produced a value overwrites
-    earlier ones.
-    """
-    for value in candidates:
-        if value is not _ABSENT:
-            return value
-    return _ABSENT
-
-
 def _call(node_type, node_id, params, ctx, inputs=None):
     """Instantiate *node_type* and run it through the engine's invoke_node.
 
@@ -1240,12 +1227,8 @@ def generate_python(
                 f"{_literal(source_handle)})"
                 for source, source_handle in sources
             ]
-            if len(ports) == 1:
-                value_expr = ports[0]
-            else:
-                # Reverse edge order: in the engine the last edge whose
-                # source port produced a value wins.
-                value_expr = f"_pick({', '.join(reversed(ports))})"
+            # One wire per input: prepare_executable_graph refuses more (#658).
+            (value_expr,) = ports
             kwargs.append(f"{pnames[handle]}={value_expr}")
         target = f"results[{_literal(member)}]"
         if not inside_subgraph:

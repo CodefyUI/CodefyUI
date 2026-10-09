@@ -57,6 +57,7 @@ const ISSUE_KEYS = new Map<string, TranslationKey>([
   ['switch_selector_out_of_range', 'graphValidation.switch_selector_out_of_range'],
   ['switch_selected_unwired', 'graphValidation.switch_selected_unwired'],
   ['switch_input_types_differ', 'graphValidation.switch_input_types_differ'],
+  ['multiple_sources', 'graphValidation.multiple_sources'],
   ['no_entry_points', 'execution.error.noEntryPoints'],
 ]);
 
@@ -281,7 +282,7 @@ export function showValidationIssues(tabId: string, issues: readonly ValidationI
   };
 
   const seen = new Set<string>();
-  const problems: { text: string; target: CanvasNode | null }[] = [];
+  const problems: { text: string; target: CanvasNode | null; fix: (() => void) | null }[] = [];
   for (const finding of issues) {
     const text = issueText(finding, named, t);
     // On the canvas on screen, the open block's on a run from inside a block.
@@ -290,27 +291,49 @@ export function showValidationIssues(tabId: string, issues: readonly ValidationI
     const key = `${target?.id ?? ''}\n${text}`;
     if (seen.has(key)) continue;
     seen.add(key);
-    problems.push({ text, target });
+    problems.push({ text, target, fix: fanInFix(finding, tab, level) });
   }
 
   // In the server's order, as every other run of toasts is raised. The
   // container stacks upward from its corner, so the count of the rest,
   // raised last, sits on top.
   const { addToast } = useToastStore.getState();
-  for (const { text, target } of problems.slice(0, SHOWN)) {
+  for (const { text, target, fix } of problems.slice(0, SHOWN)) {
     raised.push(
       addToast(
         text,
         'error',
-        target
-          ? { action: { label: t('graphValidation.show'), onClick: () => focusNode(target.id) } }
-          : undefined,
+        fix
+          ? { action: { label: t('graphValidation.insertSwitch'), onClick: fix } }
+          : target
+            ? { action: { label: t('graphValidation.show'), onClick: () => focusNode(target.id) } }
+            : undefined,
       ),
     );
   }
   if (problems.length > SHOWN) {
     raised.push(addToast(t('graphValidation.more', { count: problems.length - SHOWN }), 'error'));
   }
+}
+
+/**
+ * The fix for several wires into one input (#658), when that input is on the
+ * canvas on screen: a Switch in their place, which keeps the value the run
+ * used to read. An input inside a block or preset card is fixed there.
+ */
+function fanInFix(
+  finding: ValidationIssue,
+  tab: TabState,
+  level: string,
+): (() => void) | null {
+  if (finding.code !== 'multiple_sources' || typeof finding.node_id !== 'string') return null;
+  const port = finding.params?.port;
+  if (typeof port !== 'string' || !finding.node_id.startsWith(level)) return null;
+  const nodeId = finding.node_id.slice(level.length);
+  if (!tab.nodes.some((n) => n.id === nodeId)) return null;
+  return () => {
+    useTabStore.getState().insertSwitchesForFanIn([{ nodeId, port }]);
+  };
 }
 
 /** A refusal Run makes before asking the server, in the same set. */

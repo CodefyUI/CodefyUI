@@ -102,6 +102,14 @@ class MapNode(BaseNode):
             }
             for e in preset.edges
         ]
+        # One wire per input, as a run requires (#658): a preset saved
+        # before that rule could still merge several by edge order.
+        from ...core.graph_engine import multiple_source_errors
+
+        several = multiple_source_errors(nodes_list, edges_list)
+        if several:
+            raise ValueError(f"Map: preset '{subgraph_name}': " + "; ".join(several))
+
         # A branch a Switch's param does not select is left out of every
         # item, as a run leaves it out of the graph (#656).
         from .switch_node import unselected_node_ids

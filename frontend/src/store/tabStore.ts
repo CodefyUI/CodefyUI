@@ -53,6 +53,7 @@ import { useProjectStore } from './projectStore';
 import { markParamEdit, paramEditContinues, paramEditKeepAlive } from './paramEditUndo';
 import { pushRemovalStep } from './removalUndo'; // a deletion is one undo step
 import { grownSwitchParams } from '../utils/switchNode';
+import { fanInInputs, withSwitchFor } from '../utils/fanIn';
 import {
   effectivePresets,
   mergeOwnedPresets,
@@ -879,6 +880,14 @@ interface TabStoreState {
   setNodeExecutionStatus: (nodeId: string, status: NodeData['executionStatus'], error?: string) => void;
   clearExecutionStatus: () => void;
   clear: () => void;
+  /**
+   * Route the wires into each input that has more than one through a new
+   * Switch whose selector names the last of them -- the wire the old
+   * last-edge-wins rule read (#658). `targets` limits it to those inputs;
+   * without it, every such input on the canvas on screen. ONE undo step.
+   * Returns how many Switches it inserted.
+   */
+  insertSwitchesForFanIn: (targets?: ReadonlyArray<{ nodeId: string; port: string }>) => number;
   /**
    * SECRET params (an API key typed into a node) come back as `""`, so no
    * save, export or plugin read carries a key. `keepSecrets: true` is for the
@@ -4087,6 +4096,35 @@ export const useTabStore = create<TabStoreState>((rawSet, get) => {
       }),
     }),
 
+  insertSwitchesForFanIn: (targets) => {
+    const tab = get().getActiveTab();
+    const switchDefinition = useNodeDefStore
+      .getState()
+      .definitions.find((d) => d.node_name === 'Switch');
+    if (!tab || !switchDefinition) return 0;
+    const wanted = targets && new Set(targets.map((t) => `${t.nodeId}\n${t.port}`));
+    const fanIns = fanInInputs(tab.edges).filter(
+      (f) => !wanted || wanted.has(`${f.target}\n${f.handle}`),
+    );
+    let nodes = tab.nodes;
+    let edges = tab.edges;
+    let lastSwitch: string | null = null;
+    const fed: string[] = [];
+    for (const fanIn of fanIns) {
+      const next = withSwitchFor(nodes, edges, fanIn, switchDefinition);
+      if (!next) continue;
+      ({ nodes, edges } = next);
+      lastSwitch = next.switchId;
+      fed.push(fanIn.target);
+    }
+    if (lastSwitch === null) return 0;
+    get().pushUndoSnapshot();
+    for (const id of fed) get().markDirty(id);
+    set({ tabs: updateTab(get().tabs, tab.id, () => ({ nodes, edges })) });
+    get().selectNodeExclusively(lastSwitch);
+    return nodes.length - tab.nodes.length;
+  },
+
   clear: () => {
     // Flush the sub-canvas editing stack BEFORE snapshotting, exactly as
     // `getSerializedGraph` and `buildPersistedTab` do. Without it the
@@ -4523,6 +4561,25 @@ export const useTabStore = create<TabStoreState>((rawSet, get) => {
         ...(name ? { name } : {}),
       })),
     });
+    // A graph saved before an input took one wire (#658) opens as it is;
+    // Run refuses it, so say so now and offer the fix.
+    const fanIns = fanInInputs(doc.edges);
+    if (fanIns.length > 0) {
+      const { t } = useI18n.getState();
+      useToastStore.getState().addToast(
+        t('graphValidation.fanInOnLoad', { count: fanIns.length }),
+        'warning',
+        {
+          action: {
+            label: t('graphValidation.insertSwitches'),
+            onClick: () => {
+              if (get().activeTabId === tabId) get().insertSwitchesForFanIn();
+            },
+          },
+          sticky: true,
+        },
+      );
+    }
     return readOnly;
   },
 

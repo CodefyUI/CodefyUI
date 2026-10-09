@@ -618,6 +618,10 @@ const en = {
   'graphValidation.switch_selector_out_of_range': '{node}: selector is {value}, but this Switch has inputs 0 to {max}',
   'graphValidation.switch_selected_unwired': '{node}: selector is {value}, but "{port}" is not connected',
   'graphValidation.switch_input_types_differ': '{node}: its inputs carry different types ({types}). A Switch forwards one type, whichever input it selects.',
+  'graphValidation.multiple_sources': '{node}: input "{port}" has {count} wires. An input takes one: keep one wire, or choose between them with a Switch.',
+  'graphValidation.insertSwitch': 'Insert Switch',
+  'graphValidation.insertSwitches': 'Insert Switches',
+  'graphValidation.fanInOnLoad': 'This graph has {count} input(s) fed by more than one wire. An input now takes one, so Run refuses the graph until each has one wire or a Switch. Insert Switches keeps the value each input got before.',
 
   // Beginner-facing rewrites of raw Python/PyTorch exceptions (see
   // utils/errorMessages.ts). Each one names what to change, not just what broke.

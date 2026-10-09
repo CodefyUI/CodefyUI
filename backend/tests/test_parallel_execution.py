@@ -52,7 +52,12 @@ async def test_parallel_execution_diamond():
 
         @classmethod
         def define_inputs(cls):
-            return [PortDefinition(name="input", data_type=DataType.ANY, optional=True)]
+            # Two inputs, so D joins B and C without two wires on one input,
+            # which a graph may not have (#658).
+            return [
+                PortDefinition(name="input", data_type=DataType.ANY, optional=True),
+                PortDefinition(name="other", data_type=DataType.ANY, optional=True),
+            ]
 
         @classmethod
         def define_outputs(cls):
@@ -76,7 +81,7 @@ async def test_parallel_execution_diamond():
             {"source": "a", "target": "b", "sourceHandle": "output", "targetHandle": "input"},
             {"source": "a", "target": "c", "sourceHandle": "output", "targetHandle": "input"},
             {"source": "b", "target": "d", "sourceHandle": "output", "targetHandle": "input"},
-            {"source": "c", "target": "d", "sourceHandle": "output", "targetHandle": "input"},
+            {"source": "c", "target": "d", "sourceHandle": "output", "targetHandle": "other"},
         ]
 
         t0 = time.time()
