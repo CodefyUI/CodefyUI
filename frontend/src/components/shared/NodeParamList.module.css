@@ -6,16 +6,17 @@
   gap: var(--sp-4);
 }
 
-/* Param description / range hints.
-   text-muted rather than the old #555 (or the slate #64748b that replaced
-   it): these carry real information (what a param means, what range it
-   accepts) and both old greys sat too low against the surfaces this form
-   renders on — the config panel and the darker Node Detail Modal column. */
-.paramHint {
-  font-size: var(--fs-xs);
-  color: var(--text-muted);
-  margin-top: var(--sp-1);
-  line-height: var(--lh-normal);
+/* One field. Its description and range sit behind a "?" at the right end
+   of the label row (HelpTip) instead of two standing lines under it. */
+.paramRow {
+  position: relative;
+}
+
+.paramHelp {
+  position: absolute;
+  top: 0;
+  right: 0;
+  margin-left: 0;
 }
 
 /* Node-level "this needs a pack" banner (PR 2).

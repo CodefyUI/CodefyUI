@@ -1320,8 +1320,10 @@ describe('NodeDetailModal — parameter editing', () => {
     seedTab({ nodes: [paramNode()], selectedNodeId: 'n1', nodeDetailNodeId: 'n1' });
     render(<NodeDetailModal />);
     expect(document.body.querySelectorAll('input[type="number"]')).toHaveLength(1);
-    expect(screen.getByText('width')).toBeInTheDocument();
-    expect(screen.getByText('Range: 1 — 512')).toBeInTheDocument();
+    // The visible param's description and range, behind its "?".
+    expect(screen.queryByRole('button', { name: 'About hidden' })).toBeNull();
+    fireEvent.mouseEnter(screen.getByRole('button', { name: 'About units' }));
+    expect(screen.getByRole('tooltip')).toHaveTextContent('widthRange: 1 — 512');
   });
 
   it('shows the no-params message for a node with none', () => {
