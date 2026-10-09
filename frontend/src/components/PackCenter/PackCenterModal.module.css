@@ -718,6 +718,11 @@
   color: var(--status-error);
 }
 
+.logLine[data-kind='gap'] {
+  color: var(--status-warning);
+  font-style: italic;
+}
+
 .logEmpty {
   color: var(--text-muted);
   font-family: system-ui, sans-serif;

@@ -8,6 +8,7 @@ import { useUIStore } from '../../store/uiStore';
 import { useI18n } from '../../i18n';
 import { resolveExample } from '../../utils/openExample';
 import type { PackSummary, PluginCatalogEntry } from '../../api/rest';
+import { pluginEntry as catalogEntry } from '../../test/pluginEntry';
 import type { NodeDefinition, PresetDefinition } from '../../types';
 
 /*
@@ -579,38 +580,16 @@ describe('NodesTab — needs-pack badge', () => {
 
 // ── Plugin provenance (P-F3) ──────────────────────────────────────────────
 
-function pluginEntry(over: Partial<PluginCatalogEntry> & { id: string }): PluginCatalogEntry {
-  return {
-    name: over.id,
-    description: '',
+/** An installed, enabled third-party plugin off GitHub: the row these cases name. */
+const pluginEntry = (over: Partial<PluginCatalogEntry> & { id: string }): PluginCatalogEntry =>
+  catalogEntry({
     kind: 'github',
     official: false,
     status: 'installed',
     source_kind: 'github_url',
-    source: over.id,
-    repo: null,
-    ref: null,
-    sha: null,
-    url: null,
-    homepage: '',
-    version: null,
-    installed_at: null,
     enabled: true,
-    chapters: [],
-    lessons: [],
-    tags: [],
-    nodes: [],
-    node_count: 0,
-    capabilities: [],
-    trusted_modules: [],
-    python_deps: {},
-    has_frontend: false,
-    consent_required: false,
-    frontend_entry: null,
-    job: null,
     ...over,
-  };
-}
+  });
 
 const EDU_NAME = 'EDU - hands-on teaching nodes';
 const EDU_LINE = `From plugin: ${EDU_NAME}`;

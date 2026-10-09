@@ -275,11 +275,13 @@
 }
 
 /* The destructive action marks itself where the pointer or the keyboard is,
-   as Source Control's `.dangerAction` does: a red border, and the label every
-   row action has there. Never a red label: its row turns --surface-hover
+   with a red border, as Source Control's `.dangerAction` does, and the label
+   every row action here has. Never a red label: its row turns --surface-hover
    under the pointer, and --surface-active once expanded, where --status-error
    is 3.92:1 and 3.25:1 (3.33:1 over --danger-wash) -- under the 4.5:1 that
-   12px text needs. As a border it is a graphic, which needs 3:1. */
+   12px text needs. --status-error-strong, which Source Control's label uses,
+   is still 3.98:1 on --surface-active. As a border it is a graphic, which
+   needs 3:1. */
 .rowBtnDanger:hover:not(:disabled),
 .rowBtnDanger:focus-visible {
   border-color: var(--status-error);

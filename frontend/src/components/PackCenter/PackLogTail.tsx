@@ -15,6 +15,10 @@ export interface PackLogTailProps {
  * The install transcript: pip's own output, the step announcements and any
  * error, verbatim and in the server's English.
  *
+ * The one line that IS translated is a `gap` notice: it is ours, not the
+ * server's, and says that earlier lines were dropped before this reader
+ * arrived (a reload or a second tab during a long install).
+ *
  * Deliberately not translated. It is a transcript of what ran — the pip line
  * that failed is the line the user pastes into a search box — and the STEPS
  * around it are what the UI phrases in the reader's language.
@@ -53,7 +57,9 @@ export function PackLogTail({ lines, ariaLabel }: PackLogTailProps) {
       ) : (
         lines.map((line) => (
           <div key={line.seq} className={styles.logLine} data-kind={line.kind}>
-            {line.text}
+            {line.kind === 'gap'
+              ? t('packs.activity.logGap', { count: line.dropped ?? 0 })
+              : line.text}
           </div>
         ))
       )}

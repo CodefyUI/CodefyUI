@@ -252,7 +252,7 @@ describe('StepTraceView', () => {
     await waitFor(() => expect(screen.getByText('Expired')).toBeInTheDocument());
   });
 
-  it('falls back to a sliced fetch on PayloadTooLargeError', async () => {
+  it('falls back to a bounded preview on PayloadTooLargeError', async () => {
     mockStepIndex.mockResolvedValue([
       step({ index: 2, name: 'S', tensor_keys: ['t'] }),
     ]);
@@ -262,9 +262,9 @@ describe('StepTraceView', () => {
     });
     render(<StepTraceView runId="r1" nodeId="n1" />);
     await waitFor(() => expect(screen.getByText('shape [2, 2]')).toBeInTheDocument());
-    // port name encodes step index + tensor name; retry has slice opts
+    // port name encodes step index + tensor name; retry asks for a bounded preview
     expect(mockOutput).toHaveBeenCalledWith('r1', 'n1', '__step__2__t', {
-      slice: '0,:,:',
+      preview: true,
       maxElements: 65536,
     });
   });

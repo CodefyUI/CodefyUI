@@ -111,13 +111,11 @@ function TemplateGalleryBody() {
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key !== 'Escape') return;
-      // Something can sit ON TOP of the gallery — a confirm/prompt dialog, or
-      // the shortcuts modal, which `?` opens over whatever is showing and
-      // which has no Escape handler of its own. Closing the surface
-      // UNDERNEATH the one the user is looking at is the bug this guards.
-      // Same check `useKeyboardShortcuts` makes before answering Enter.
+      // A confirm/prompt dialog can sit ON TOP of the gallery. Closing the
+      // surface UNDERNEATH the one the user is looking at is the bug this
+      // guards. (The shortcuts sheet stops its own Escape before it gets
+      // here; see the stack policy in `shared/ShortcutsModal.tsx`.)
       if (useDialogStore.getState().active !== null) return;
-      if (useUIStore.getState().shortcutsModalOpen) return;
       // The Package Center is the third surface that renders over this one.
       if (useUIStore.getState().packCenterOpen) return;
       e.preventDefault();

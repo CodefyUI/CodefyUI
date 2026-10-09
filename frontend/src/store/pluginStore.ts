@@ -144,7 +144,7 @@ export type InspectionState =
     }
   | { phase: 'error'; source: string; failure: InspectionFailure };
 
-interface PluginState {
+export interface PluginState {
   plugins: PluginCatalogEntry[];
   /** The same rows keyed by id, for the O(1) lookups a toast or a card does. */
   byId: Record<string, PluginCatalogEntry>;

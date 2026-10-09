@@ -342,6 +342,8 @@ This is a convention, not a CI gate — `byte-scan.yml` checks for raw C0 contro
 
 Every zh-TW heading carries its English twin's anchor as an explicit ID, `## 標題 {/* #english-anchor */}`, so the language switcher lands on the same section and a link with an anchor works in both locales. When you add or rename an English heading, give its zh-TW twin the same ID.
 
+`pnpm check:locale-parity` (in `docs/`, also run by `docs-build.yml` on every pull request) checks this: each English page has a zh-TW twin with the same number of headings, the same level at each position and the same anchor IDs. The page title (`#`) may keep its translated anchor. A failure names the file, line and heading.
+
 Build the site before pushing docs changes — `onBrokenLinks` and `onBrokenAnchors` are set to `throw`, so a bad relative link, or a link to a heading anchor that does not exist (`page#missing`), fails the build rather than shipping:
 
 ```bash

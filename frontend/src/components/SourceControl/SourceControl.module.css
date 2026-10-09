@@ -875,17 +875,17 @@
    `.row:focus-within` as well as on `.row:hover`, and a focused Delete with
    no cue of its own was the same box as the Rename next to it.
 
-   The red is the BORDER and never the label. The pointer that hovers this
-   button hovers the row under it, so the label would be drawn on
-   --surface-hover, where --status-error is 3.92:1 -- under the 4.5:1 that
-   11px text needs. As a border it is a 1.4.11 graphic and clears the 3:1
-   that asks of it, and the label goes to --text-primary (9.89:1) rather than
-   taking the --accent that `.rowAction:hover` would otherwise leave on a
-   destructive verb. */
+   The pointer that hovers this button hovers the row under it, so the label
+   is drawn on --surface-hover, where --status-error is 3.92:1 -- under the
+   4.5:1 that 11px text needs. So the label takes --status-error-strong (held
+   to 4.5:1 there by the contrast gate) in place of the --accent that
+   `.rowAction:hover` would otherwise leave on a destructive verb, and the
+   border stays --status-error, a 1.4.11 graphic that clears the 3:1 asked of
+   it and marks the button without relying on hue alone. */
 .dangerAction:hover,
 .dangerAction:focus-visible {
   border-color: var(--status-error);
-  color: var(--text-primary);
+  color: var(--status-error-strong);
 }
 
 /* One sentence where a list would be. Indented to the rows' text, so it reads

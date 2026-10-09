@@ -208,18 +208,18 @@ describe('BackwardView', () => {
     await waitFor(() => expect(screen.getByText('Expired')).toBeInTheDocument());
   });
 
-  it('falls back to a sliced fetch on PayloadTooLargeError', async () => {
+  it('falls back to a bounded preview on PayloadTooLargeError', async () => {
     mockGradIndex.mockResolvedValue([portEntry('big')]);
-    // First (no-opts) call throws 413; the retry with slice opts succeeds.
+    // First (no-opts) call throws 413; the preview retry succeeds.
     mockOutput.mockImplementation(async (_r, _n, _port, opts) => {
       if (!opts) throw new PayloadTooLargeError('too big');
       return tensor([[9, 9], [9, 9]], { min: 9, max: 9 });
     });
     render(<BackwardView runId="r1" nodeId="n1" />);
     await waitFor(() => expect(screen.getByText('shape [2, 2]')).toBeInTheDocument());
-    // the retry carried the slice fallback opts on port `big__grad`
+    // the retry asked for a bounded preview on port `big__grad`
     expect(mockOutput).toHaveBeenCalledWith('r1', 'n1', 'big__grad', {
-      slice: '0,:,:',
+      preview: true,
       maxElements: 65536,
     });
   });

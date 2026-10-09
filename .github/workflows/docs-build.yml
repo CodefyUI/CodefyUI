@@ -17,6 +17,9 @@ name: Docs Build
 # The install and build steps are docs-deploy.yml's build job, copied; change
 # the two together. `pnpm build` is `docusaurus build`, which builds every
 # locale in docusaurus.config.ts (en and zh-TW) when no --locale is given.
+#
+# The job also runs docs/scripts/check-locale-parity.mjs and its tests: every
+# English page needs a zh-TW twin with the same headings and anchor ids.
 on:
   # No path filter on pull_request, so the check reports on every pull request
   # and can be required as it is: a filtered-out workflow never reports, and a
@@ -66,3 +69,18 @@ jobs:
         run: |
           test -f build/index.html
           test -f build/zh-TW/index.html
+
+      # Every English page has a zh-TW twin with the same headings, levels and
+      # anchor ids (core#399). The build cannot see this: a zh-TW page that
+      # falls behind its English twin still builds while every link on it
+      # resolves. `!cancelled()` runs these after a failed build too, so one
+      # run reports both kinds of problem.
+      - name: Test the locale parity checker
+        if: ${{ !cancelled() }}
+        working-directory: docs
+        run: pnpm test:scripts
+
+      - name: Check English / zh-TW page parity
+        if: ${{ !cancelled() }}
+        working-directory: docs
+        run: pnpm check:locale-parity

@@ -1508,6 +1508,21 @@ export interface JobEventsPage {
   events: JobEvent[];
   /** Where to resume; never moves backwards on an empty page. */
   cursor: number;
+  /**
+   * Events the server's bounded buffer dropped before THIS reader asked:
+   * `null` (or absent, from an older backend) unless the cursor sent was
+   * behind the oldest event still kept. Measured against that cursor, so a
+   * follower that kept up never sees one.
+   */
+  gap?: JobEventsGap | null;
+}
+
+/** What a reader that fell behind the job's event buffer missed. */
+export interface JobEventsGap {
+  /** The oldest cursor still kept: the page starts here. */
+  first_cursor: number;
+  /** How many events lay between the cursor sent and `first_cursor`. */
+  dropped: number;
 }
 
 /**

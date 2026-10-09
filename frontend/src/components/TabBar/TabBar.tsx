@@ -171,8 +171,8 @@ export function TabBar() {
   // instant.
   const handleTabKeyDown = useCallback(
     (e: React.KeyboardEvent<HTMLDivElement>, index: number) => {
-      // A modal owns the keyboard even where it left focus behind (#475): the
-      // shortcuts sheet takes none, and a Delete must not close a tab under it.
+      // A modal owns the keyboard even where focus is left behind (#475): a
+      // Delete must not close a tab under it.
       if (isAnyModalOpen()) return;
       // Keys typed into the rename box bubble up through its tab, and they are
       // the box's: Delete deletes a character and Space types one. The close

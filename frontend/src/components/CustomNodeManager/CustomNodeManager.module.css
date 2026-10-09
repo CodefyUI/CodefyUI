@@ -6,13 +6,20 @@
   align-items: center;
   justify-content: center;
   z-index: 1000;
+  /* Keeps the panel off the window edge in a narrow window or at high zoom. */
+  padding: var(--sp-4);
 }
 
 .modal {
   background: var(--surface-raised);
   border: 1px solid var(--border-base);
   border-radius: var(--radius-xl);
+  /* 480 px where the window has it, the window's width where it has not
+     (#490). `min-width: 0` keeps a long file name from holding the panel
+     wider than the window; it is cut with an ellipsis in its row. */
   width: 480px;
+  max-width: 100%;
+  min-width: 0;
   max-height: 70vh;
   display: flex;
   flex-direction: column;
@@ -78,6 +85,7 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: var(--sp-3);
   padding: var(--sp-4) var(--sp-5);
   border-bottom: 1px solid var(--border-base);
 }
@@ -106,6 +114,7 @@
 .nodeNames {
   font-size: var(--fs-sm);
   color: var(--text-muted);
+  overflow-wrap: anywhere;
 }
 
 .nodeActions {

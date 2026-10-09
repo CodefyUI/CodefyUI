@@ -14,8 +14,8 @@
 /* ── Stacking ───────────────────────────────────────────────────────────── */
 
 /* Above both Centers and below everything that can be raised OVER it:
-   Package Center 10000, Plugin Center 10001, this window 10002, dialog host
-   10003, toast stack 10004, restart overlay 10005.
+   Package Center 10000, Plugin Center 10001, this window 10002, shortcuts
+   sheet 10003, dialog host 10004, toast stack 10005, restart overlay 10006.
 
    Two rungs were argued over here and both were got wrong once. Sharing the
    toast stack's rung meant this window covered every toast raised behind it

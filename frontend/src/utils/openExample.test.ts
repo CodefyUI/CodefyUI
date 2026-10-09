@@ -34,7 +34,7 @@ beforeEach(() => {
   useI18n.setState({ locale: 'en' });
   useNodeDefStore.setState({ definitions: [], presets: [] });
   useToastStore.setState({ toasts: [] });
-  useUIStore.setState({ layoutFitRequest: null });
+  useUIStore.setState({ layoutFitRequests: {} });
   useTabStore.setState({ tabs: [], activeTabId: null as unknown as string, clipboard: null });
   useTabStore.getState().addTab('Tab 1');
   mockedRest.loadExample.mockReset();
@@ -207,15 +207,15 @@ describe('openExample', () => {
     });
     await openExample('x');
     // Two 200x80 fallback boxes, 300 apart.
-    expect(useUIStore.getState().layoutFitRequest).toEqual({
-      bounds: { x: 600, y: 400, width: 500, height: 80 },
+    expect(useUIStore.getState().layoutFitRequests).toEqual({
+      [useTabStore.getState().activeTabId]: { x: 600, y: 400, width: 500, height: 80 },
     });
   });
 
   it('asks for no framing for an example with no nodes', async () => {
     mockedRest.loadExample.mockResolvedValue({ nodes: [], edges: [] });
     await openExample('x');
-    expect(useUIStore.getState().layoutFitRequest).toBeNull();
+    expect(useUIStore.getState().layoutFitRequests).toEqual({});
   });
 
   // -- #595: the gallery shows whenever the level on screen is empty, which is

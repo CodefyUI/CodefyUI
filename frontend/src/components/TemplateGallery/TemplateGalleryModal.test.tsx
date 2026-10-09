@@ -10,6 +10,7 @@ import { useUIStore } from '../../store/uiStore';
 import { useI18n } from '../../i18n';
 import * as rest from '../../api/rest';
 import type { ExampleSummary, PluginCatalogEntry } from '../../api/rest';
+import { pluginEntry as catalogEntry } from '../../test/pluginEntry';
 
 // Only the two network calls are stubbed. `openExampleInNewTab` and
 // `insertExample` run for real against the real tab store, so the two actions
@@ -40,38 +41,16 @@ function raw(id: string) {
   return { id, type: 'Dropout', position: { x: 0, y: 0 }, data: { params: {} } };
 }
 
-function pluginEntry(over: Partial<PluginCatalogEntry> & { id: string }): PluginCatalogEntry {
-  return {
-    name: over.id,
-    description: '',
+/** An installed, enabled third-party plugin off GitHub: the row these cases name. */
+const pluginEntry = (over: Partial<PluginCatalogEntry> & { id: string }): PluginCatalogEntry =>
+  catalogEntry({
     kind: 'github',
     official: false,
     status: 'installed',
     source_kind: 'github_url',
-    source: over.id,
-    repo: null,
-    ref: null,
-    sha: null,
-    url: null,
-    homepage: '',
-    version: null,
-    installed_at: null,
     enabled: true,
-    chapters: [],
-    lessons: [],
-    tags: [],
-    nodes: [],
-    node_count: 0,
-    capabilities: [],
-    trusted_modules: [],
-    python_deps: {},
-    has_frontend: false,
-    consent_required: false,
-    frontend_entry: null,
-    job: null,
     ...over,
-  };
-}
+  });
 
 /** The card list. Scoped because the detail pane repeats the chosen name. */
 const grid = () => screen.getByRole('region', { name: 'Template list' });
@@ -376,15 +355,9 @@ describe('TemplateGalleryModal', () => {
     render(<TemplateGalleryModal />);
     await screen.findByText('No examples available');
 
-    // The shortcuts modal (`?`) renders over whatever is showing and has no
-    // Escape handler of its own — closing the gallery underneath it would
-    // dismiss the surface the user is NOT looking at.
-    useUIStore.setState({ shortcutsModalOpen: true });
-    fireEvent.keyDown(window, { key: 'Escape' });
-    expect(useUIStore.getState().templateGalleryOpen).toBe(true);
-    useUIStore.setState({ shortcutsModalOpen: false });
-
-    // Same for a confirm/prompt dialog.
+    // A confirm/prompt dialog: closing the gallery underneath it would
+    // dismiss the surface the user is NOT looking at. (The shortcuts sheet
+    // stops its own Escape; `ShortcutsModal.test.tsx` covers that.)
     useDialogStore.setState({ active: { kind: 'confirm', title: 'x' } as never });
     fireEvent.keyDown(window, { key: 'Escape' });
     expect(useUIStore.getState().templateGalleryOpen).toBe(true);

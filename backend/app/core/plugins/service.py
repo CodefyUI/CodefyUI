@@ -71,6 +71,7 @@ from ..jobs import (
     STATUS_NEEDS_RESTART,
     CancelCheck,
     Emit,
+    EventPage,
     Job,
     JobRunner,
     UnknownJob,
@@ -357,6 +358,21 @@ class PluginService:
         :meth:`app.core.jobs.JobRunner.wait_for_events`.
         """
         return await self._runner.wait_for_events(
+            job_id, after_cursor=after_cursor, limit=limit, wait=wait)
+
+    async def wait_for_page(
+        self,
+        job_id: str,
+        *,
+        after_cursor: int = 0,
+        limit: int = 500,
+        wait: float = 0.0,
+    ) -> EventPage:
+        """:meth:`wait_for_events` with the reader's gap, for the route.
+
+        See :meth:`app.core.jobs.JobRunner.wait_for_page`.
+        """
+        return await self._runner.wait_for_page(
             job_id, after_cursor=after_cursor, limit=limit, wait=wait)
 
     # ── inspecting ────────────────────────────────────────────────────────

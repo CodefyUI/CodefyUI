@@ -12,6 +12,7 @@ pnpm start                 # English dev server (http://localhost:3000)
 pnpm start --locale zh-TW  # Traditional Chinese
 pnpm build                 # production build — fails on a broken link or a missing #anchor
 pnpm serve                 # preview the production build locally
+pnpm check:locale-parity   # every English page has a zh-TW twin with matching headings and anchors
 ```
 
 ## Structure
