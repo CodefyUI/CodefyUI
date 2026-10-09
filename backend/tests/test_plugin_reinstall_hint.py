@@ -8,6 +8,8 @@ command at all when none of those can be vouched for.
 
 from __future__ import annotations
 
+import os
+
 import pytest
 
 from app.core.plugins.deps import _shell_quote
@@ -113,7 +115,9 @@ def test_a_linked_folder_that_cannot_be_linked_again_gets_no_command(
     tmp_path, make
 ):
     """No catalog command is made up for it either."""
-    work = tmp_path / ('we"ird' if make == "quote" else "pack")
+    # Windows refuses `"` in a folder name; `$` is refused by the same rule.
+    odd = "we$ird" if os.name == "nt" else 'we"ird'
+    work = tmp_path / (odd if make == "quote" else "pack")
     if make != "missing":
         work.mkdir()
     if make in ("relative", "quote"):
