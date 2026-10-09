@@ -1104,6 +1104,13 @@ interface TabStoreState {
   toggleDeterministic: () => void;
 }
 
+/**
+ * The notice a load raised for a tab whose graph has inputs with several
+ * wires (#658), by tab id, so the fix that clears the last of them can take
+ * it down: once nothing is left to fix, the notice would only mislead.
+ */
+const fanInNotices = new Map<string, string>();
+
 function updateTab(tabs: TabState[], tabId: string, updater: (tab: TabState) => Partial<TabState>): TabState[] {
   return tabs.map((tab) => (tab.id === tabId ? { ...tab, ...updater(tab) } : tab));
 }
@@ -4121,6 +4128,11 @@ export const useTabStore = create<TabStoreState>((rawSet, get) => {
     get().pushUndoSnapshot();
     for (const id of fed) get().markDirty(id);
     set({ tabs: updateTab(get().tabs, tab.id, () => ({ nodes, edges })) });
+    const notice = fanInNotices.get(tab.id);
+    if (notice !== undefined && fanInInputs(edges).length === 0) {
+      useToastStore.getState().removeToast(notice);
+      fanInNotices.delete(tab.id);
+    }
     get().selectNodeExclusively(lastSwitch);
     return nodes.length - tab.nodes.length;
   },
@@ -4564,9 +4576,14 @@ export const useTabStore = create<TabStoreState>((rawSet, get) => {
     // A graph saved before an input took one wire (#658) opens as it is;
     // Run refuses it, so say so now and offer the fix.
     const fanIns = fanInInputs(doc.edges);
+    const stale = fanInNotices.get(tabId);
+    if (stale !== undefined) {
+      useToastStore.getState().removeToast(stale);
+      fanInNotices.delete(tabId);
+    }
     if (fanIns.length > 0) {
       const { t } = useI18n.getState();
-      useToastStore.getState().addToast(
+      const notice = useToastStore.getState().addToast(
         t('graphValidation.fanInOnLoad', { count: fanIns.length }),
         'warning',
         {
@@ -4579,6 +4596,7 @@ export const useTabStore = create<TabStoreState>((rawSet, get) => {
           sticky: true,
         },
       );
+      fanInNotices.set(tabId, notice);
     }
     return readOnly;
   },

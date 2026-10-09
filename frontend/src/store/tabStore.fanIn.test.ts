@@ -108,6 +108,21 @@ describe('opening a graph with several wires into one input', () => {
     expect(store().tabs.find((t) => t.id === first)!.nodes).toHaveLength(4);
   });
 
+  it('takes the notice down once the last input is fixed, however it was fixed', () => {
+    store().loadGraphDocument({ nodes: NODES, edges: EDGES, boundFile: null });
+    expect(useToastStore.getState().toasts).toHaveLength(1);
+    store().insertSwitchesForFanIn([{ nodeId: 'sink', port: 'value' }]);
+    expect(useToastStore.getState().toasts).toHaveLength(1);
+    store().insertSwitchesForFanIn([{ nodeId: 'other', port: 'x' }]);
+    expect(useToastStore.getState().toasts).toHaveLength(0);
+  });
+
+  it('replaces the notice when another graph is opened into the tab', () => {
+    store().loadGraphDocument({ nodes: NODES, edges: EDGES, boundFile: null });
+    store().loadGraphDocument({ nodes: NODES, edges: [EDGES[0]], boundFile: null });
+    expect(useToastStore.getState().toasts).toHaveLength(0);
+  });
+
   it('says nothing for a graph with one wire per input', () => {
     store().loadGraphDocument({ nodes: NODES, edges: [EDGES[0], EDGES[2]], boundFile: null });
     expect(useToastStore.getState().toasts).toHaveLength(0);
