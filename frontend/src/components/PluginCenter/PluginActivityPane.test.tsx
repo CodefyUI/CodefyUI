@@ -90,6 +90,7 @@ function removal(over: Partial<PluginRemoval> = {}): PluginRemoval {
     depsLeft: [],
     uninstallCommand: null,
     reinstallHint: 'cdui plugin install demo',
+    tombstoned: false,
     ...over,
   };
 }
@@ -531,13 +532,45 @@ describe('PluginActivityPane — how a job ended', () => {
     expect(within(banner()).getByText('cdui plugin install demo')).toBeInTheDocument();
   });
 
-  it('says the sentence alone when the uninstall left nothing', () => {
-    paint({ removal: removal(), entry: demo });
+  it('says the sentence alone when there is nothing left and no way back', () => {
+    paint({ removal: removal({ reinstallHint: null }), entry: demo });
 
     expect(within(banner()).getByText('Demo plugin uninstalled.')).toBeInTheDocument();
     expect(screen.queryByText(/stay installed/)).toBeNull();
+    expect(screen.queryByText(/install the plugin again/)).toBeNull();
     // `CommandBlock` is the only thing in the pane with a copy button.
     expect(screen.queryByRole('button', { name: 'Copy command' })).toBeNull();
+  });
+
+  it('hands over the reinstall command when no packages were left (#506)', () => {
+    // The CLI's rule: the way back does not depend on leftover packages.
+    // A tombstoned built-in pack is the case that used to get nothing.
+    paint({
+      removal: removal({ reinstallHint: 'cdui plugin install rl', tombstoned: true }),
+      entry: demo,
+    });
+
+    expect(screen.queryByText(/stay installed/)).toBeNull();
+    expect(
+      within(banner()).getByText(
+        '`cdui plugin sync` will not bring Demo plugin back. To install it again:',
+      ),
+    ).toBeInTheDocument();
+    expect(within(banner()).getByText('cdui plugin install rl')).toBeInTheDocument();
+    expect(screen.getAllByRole('button', { name: 'Copy command' })).toHaveLength(1);
+  });
+
+  it('introduces a plain reinstall when the removal left no tombstone', () => {
+    paint({
+      removal: removal({ reinstallHint: 'cdui plugin install alice/extras@v1' }),
+      entry: demo,
+    });
+
+    expect(within(banner()).getByText('To install the plugin again:')).toBeInTheDocument();
+    expect(screen.queryByText(/cdui plugin sync/)).toBeNull();
+    expect(
+      within(banner()).getByText('cdui plugin install alice/extras@v1'),
+    ).toBeInTheDocument();
   });
 
   it('announces the job by its id while the catalog has no row for it', () => {

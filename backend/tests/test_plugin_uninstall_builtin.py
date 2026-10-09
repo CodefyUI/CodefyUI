@@ -192,3 +192,24 @@ def test_a_pre_175_lockfile_loads_and_gains_a_tombstone_in_place(isolated_lockfi
     data = _read_lockfile(isolated_lockfile)
     assert data["schema"] == 1
     assert plugin_loader.removed_ids(data) == {"rl"}
+
+
+def test_the_printed_reinstall_command_brings_a_tombstoned_pack_back(
+    isolated_lockfile, capsys
+):
+    """#506: a built-in pack with no leftover packages still gets the line,
+    and running exactly that line reinstalls it and clears the tombstone."""
+    assert plugin_cli.main(["install", "rl", "--no-confirm"]) == 0
+    capsys.readouterr()
+    assert plugin_cli.main(["uninstall", "rl"]) == 0
+    out = capsys.readouterr().out
+    assert "uv pip uninstall" not in out
+
+    command = out.rstrip("\n").splitlines()[-1].strip()
+    assert command == "cdui plugin install rl"
+    argv = command.split()[2:]
+    assert plugin_cli.main([*argv, "--no-confirm"]) == 0
+
+    data = _read_lockfile(isolated_lockfile)
+    assert "rl" in data["plugins"]
+    assert plugin_loader.removed_ids(data) == set()

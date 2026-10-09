@@ -1701,6 +1701,8 @@ const en = {
     'These Python packages stay installed: {packages}. To remove them, stop '
     + 'the server and run:',
   'pluginCenter.activity.reinstall': 'To install the plugin again:',
+  'pluginCenter.activity.reinstallTombstoned':
+    '`cdui plugin sync` will not bring {plugin} back. To install it again:',
 
   // The steps of an install, in the order they run. There is no `step.deps`
   // on purpose: pip is pip, and it reuses `packs.activity.step.pip`.

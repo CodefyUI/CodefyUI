@@ -1208,6 +1208,7 @@ describe('PluginCenterModal — the activity pane', () => {
         depsLeft: ['model2vec'],
         uninstallCommand: 'uv pip uninstall model2vec',
         reinstallHint: 'cdui plugin install owner/demo',
+        tombstoned: false,
       },
     });
     open();

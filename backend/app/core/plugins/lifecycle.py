@@ -33,6 +33,7 @@ it from a manifest that is, by then, sometimes deleted.
 from __future__ import annotations
 
 import logging
+import re
 import shutil
 from collections.abc import Collection
 from dataclasses import dataclass
@@ -41,10 +42,17 @@ from typing import Any
 
 from app.core import plugin_loader
 
-from .catalog import builtin_catalog_packs
-from .deps import is_safe_dep_name, manual_uninstall_command, orphaned_deps
+from .catalog import builtin_catalog_packs, load_catalog
+from .deps import (
+    _shell_quote,
+    is_safe_dep_name,
+    manual_uninstall_command,
+    orphaned_deps,
+)
+from .errors import SourceError
 from .lockfile_lock import locked_lockfile
-from .manifest import manifest_python_deps
+from .manifest import PLUGIN_ID_RE, manifest_python_deps
+from .sources import parse_github_url, parse_source
 
 logger = logging.getLogger(__name__)
 
@@ -121,8 +129,13 @@ class UninstallOutcome:
     #: server stopped, quoted as the install command is; ``None`` when there
     #: are none.
     uninstall_command: str | None
-    #: How to get this plugin back.
-    reinstall_hint: str
+    #: The command that puts this plugin back, built by
+    #: :func:`reinstall_command` from what the lockfile recorded about where
+    #: it came from; ``None`` when no command can (a linked directory that is
+    #: gone, a built-in pack this build's catalog no longer lists). Shown
+    #: whenever it is not ``None``, by the CLI and the panel alike, whether
+    #: or not any Python packages were left behind (#506).
+    reinstall_hint: str | None
     #: The directory this uninstall deleted, or tried to; ``None`` when there
     #: was never a copy of ours to delete. Reported rather than left for the
     #: caller to rebuild from the id and the user root: that rebuild is this
@@ -141,6 +154,7 @@ def uninstall_plugin(
     plugin_id: str,
     *,
     builtin_ids: Collection[str] | None = None,
+    catalog: dict[str, Any] | None = None,
     lock_timeout: float | None = None,
 ) -> UninstallOutcome | None:
     """Remove a plugin from this install. ``None`` when it was not installed.
@@ -166,7 +180,9 @@ def uninstall_plugin(
     tombstone rule. It exists for ``scripts/plugins.py``, whose tests fake
     the catalog by patching the CLI's own root: without it this would read
     past the patch and answer from the real ``registry.json``. Same reason
-    :func:`~app.core.plugins.catalog.catalog_path` takes a root.
+    :func:`~app.core.plugins.catalog.catalog_path` takes a root. *catalog*
+    overrides the parsed ``registry.json`` the reinstall command is checked
+    against, for the same reason.
 
     The writer's lock is held across the WHOLE of that order, ``rmtree`` and
     all -- which is the widest read-to-write gap in the plugin system and the
@@ -185,6 +201,16 @@ def uninstall_plugin(
             return None
 
         deps = _python_deps_left_behind(plugin_id, lockfile)
+        known_builtins = (
+            builtin_catalog_packs(catalog) if builtin_ids is None else builtin_ids
+        )
+        # Read off the entry while it still exists, which is the only time the
+        # lockfile knows where this plugin came from (#506).
+        reinstall = reinstall_command(
+            plugin_id, entry,
+            catalog=load_catalog() if catalog is None else catalog,
+            builtin_ids=known_builtins,
+        )
 
         files_removed: bool | None = None
         directory: Path | None = None
@@ -194,7 +220,7 @@ def uninstall_plugin(
                 return _outcome(
                     plugin_id, removed=False, tombstoned=False,
                     files_removed=False, deps=deps, error=failure,
-                    directory=directory,
+                    directory=directory, reinstall=reinstall,
                 )
 
         lockfile["plugins"].pop(plugin_id, None)
@@ -206,9 +232,6 @@ def uninstall_plugin(
         # are tombstoned: they are the only ones sync can put back uninvited, and
         # a tombstone nothing reads is dead data the user would still have to
         # explain.
-        known_builtins = (
-            builtin_catalog_packs() if builtin_ids is None else builtin_ids
-        )
         tombstoned = (
             entry.get("source_kind") == "builtin" or plugin_id in known_builtins
         )
@@ -221,7 +244,7 @@ def uninstall_plugin(
     return _outcome(
         plugin_id, removed=True, tombstoned=tombstoned,
         files_removed=files_removed, deps=deps, error=None,
-        directory=directory,
+        directory=directory, reinstall=reinstall,
     )
 
 
@@ -233,6 +256,7 @@ def _outcome(
     files_removed: bool | None,
     deps: tuple[str, ...],
     error: str | None,
+    reinstall: str | None,
     directory: Path | None = None,
 ) -> UninstallOutcome:
     """One :class:`UninstallOutcome`, so the two exits agree on the fields
@@ -249,10 +273,95 @@ def _outcome(
         files_removed=files_removed,
         python_deps_left=deps,
         uninstall_command=manual_uninstall_command(deps) if deps else None,
-        reinstall_hint=f"cdui plugin install {plugin_id}",
+        reinstall_hint=reinstall,
         directory=directory,
         error=error,
     )
+
+
+def reinstall_command(
+    plugin_id: str,
+    entry: dict[str, Any],
+    *,
+    catalog: dict[str, Any],
+    builtin_ids: Collection[str],
+) -> str | None:
+    """The command that installs *entry* again, or ``None`` when none can.
+
+    ``cdui plugin install <id>`` only works for an id the catalog lists, so a
+    plugin id is never offered on its own say-so (#506). In order:
+
+    * A built-in pack, or a plugin installed from a catalog row, gets its
+      catalog name -- provided the catalog still lists it and the name still
+      resolves there. That is the command that brings a tombstoned pack back.
+    * A plugin installed from a GitHub repository gets that repository at the
+      ref it was installed from (``owner/repo@ref``; no ``@`` for the default
+      branch), read from the recorded ``url`` and checked by
+      :func:`~.sources.parse_source` to resolve to that same repository.
+    * A linked directory gets ``cdui plugin link <path>`` while the directory
+      and its manifest are still there; uninstalling never deletes it.
+
+    Anything else -- a source this cannot vouch for -- gets ``None``, and the
+    caller says nothing rather than print a command that would fail or
+    install something else.
+    """
+    plugins = catalog.get("plugins", {})
+    kind = entry.get("source_kind")
+
+    catalog_name = entry.get("catalog_id")
+    if kind == "builtin" or plugin_id in builtin_ids:
+        catalog_name = plugin_id
+    if (
+        isinstance(catalog_name, str)
+        and PLUGIN_ID_RE.fullmatch(catalog_name)
+        and isinstance(plugins.get(catalog_name), dict)
+        and _resolves_as(catalog_name, catalog, ("catalog", catalog_name, "", ""))
+    ):
+        return f"cdui plugin install {catalog_name}"
+
+    if kind == "github_url":
+        url = entry.get("url")
+        ref = entry.get("ref") or ""
+        repo = parse_github_url(url) if isinstance(url, str) else None
+        if repo is None or not isinstance(ref, str):
+            return None
+        owner, name = repo
+        spec = f"{owner}/{name}" + (f"@{ref}" if ref else "")
+        if not _resolves_as(spec, catalog, ("github", owner, name, ref)):
+            return None
+        # Every character a valid spec is built from is safe bare in every
+        # shell bar a non-ASCII letter, which gets the shared quoting rule.
+        bare = _BARE_SPEC.fullmatch(spec)
+        return f"cdui plugin install {spec if bare else _shell_quote(spec)}"
+
+    if kind == "local":
+        path = entry.get("path")
+        if (
+            isinstance(path, str)
+            and Path(path).is_absolute()
+            and not _UNSAFE_PATH_CHARS.intersection(path)
+            and (Path(path) / plugin_loader.MANIFEST_FILENAME).is_file()
+        ):
+            return f"cdui plugin link {_shell_quote(path)}"
+    return None
+
+
+#: An ``owner/repo@ref`` that needs no quoting anywhere.
+_BARE_SPEC = re.compile(r"[A-Za-z0-9._/@-]+")
+
+#: Characters a double-quoted argument does not neutralise in every shell a
+#: user may paste into: a linked path holding one gets no command at all.
+_UNSAFE_PATH_CHARS = frozenset('"`$!%\n\r')
+
+
+def _resolves_as(
+    spec: str, catalog: dict[str, Any], expected: tuple[str, str, str, str],
+) -> bool:
+    """Does ``cdui plugin install <spec>`` resolve to *expected*?"""
+    try:
+        return tuple(parse_source(spec, catalog=catalog)) == expected
+    except SourceError:
+        return False
 
 
 def _python_deps_left_behind(

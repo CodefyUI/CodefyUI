@@ -2007,7 +2007,12 @@ export interface PluginUninstallResult {
    */
   python_deps_left: string[];
   uninstall_command: string | null;
-  reinstall_hint: string;
+  /**
+   * The command that puts the plugin back, built from where it was installed
+   * from: its catalog name, its `owner/repo@ref`, or `cdui plugin link` for a
+   * linked folder that is still there. null when no command can (#506).
+   */
+  reinstall_hint: string | null;
 }
 
 /**
