@@ -558,6 +558,7 @@ const zhTW: Record<TranslationKey, string> = {
 
   // Keyboard Shortcuts
   'shortcuts.title': '鍵盤快捷鍵',
+  'shortcuts.close': '關閉鍵盤快捷鍵',
   'shortcuts.undo': '復原',
   'shortcuts.redo': '重做',
   'shortcuts.redoAlt': '重做（替代）',

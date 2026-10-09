@@ -1,12 +1,15 @@
+import { readFileSync } from 'node:fs';
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { render, screen, fireEvent } from '@testing-library/react';
+import { act, render, screen, fireEvent } from '@testing-library/react';
 import { ShortcutsModal } from './ShortcutsModal';
+import { useDialogStore } from '../../store/dialogStore';
 import { useUIStore } from '../../store/uiStore';
 import { useI18n } from '../../i18n';
 
 beforeEach(() => {
   useI18n.setState({ locale: 'en' });
   useUIStore.setState({ shortcutsModalOpen: false });
+  useDialogStore.setState({ active: null });
 });
 
 afterEach(() => {
@@ -91,6 +94,13 @@ describe('ShortcutsModal', () => {
     expect(useUIStore.getState().shortcutsModalOpen).toBe(false);
   });
 
+  it('names itself and its close button for a screen reader', () => {
+    useUIStore.setState({ shortcutsModalOpen: true });
+    render(<ShortcutsModal />);
+    expect(screen.getByRole('dialog', { name: 'Keyboard Shortcuts' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Close keyboard shortcuts' })).toBeTruthy();
+  });
+
   it('uses the Mac modifier label when navigator.platform is a Mac', async () => {
     vi.resetModules();
     vi.stubGlobal('navigator', { platform: 'MacIntel', language: 'en-US' } as Navigator);
@@ -111,5 +121,124 @@ describe('ShortcutsModal', () => {
     render(<mod.ShortcutsModal />);
     expect(screen.getByText('Ctrl+Z')).toBeTruthy();
     vi.unstubAllGlobals();
+  });
+});
+
+// Stack policy (#490): the sheet may open over any panel, so it sits above
+// them all and owns Escape while it is open.
+describe('ShortcutsModal — Escape and focus', () => {
+  /** A press as a keyboard makes it: on the focused element, bubbling. */
+  function pressAtFocus(key: string) {
+    const e = new KeyboardEvent('keydown', { key, bubbles: true, cancelable: true });
+    act(() => {
+      (document.activeElement ?? document.body).dispatchEvent(e);
+    });
+    return e;
+  }
+
+  function renderWithOpener() {
+    const opener = document.createElement('button');
+    document.body.appendChild(opener);
+    opener.focus();
+    render(<ShortcutsModal />);
+    act(() => {
+      useUIStore.setState({ shortcutsModalOpen: true });
+    });
+    return opener;
+  }
+
+  afterEach(() => {
+    document.body.querySelectorAll(':scope > button').forEach((b) => b.remove());
+  });
+
+  it('takes focus as it opens', () => {
+    renderWithOpener();
+    expect(document.activeElement).toBe(screen.getByRole('dialog'));
+  });
+
+  it('closes on Escape, hands focus back, and keeps the press from what is underneath', () => {
+    const opener = renderWithOpener();
+    const underneath = vi.fn();
+    window.addEventListener('keydown', underneath);
+    try {
+      const e = pressAtFocus('Escape');
+      expect(useUIStore.getState().shortcutsModalOpen).toBe(false);
+      expect(e.defaultPrevented).toBe(true);
+      expect(underneath).not.toHaveBeenCalled();
+      expect(document.activeElement).toBe(opener);
+    } finally {
+      window.removeEventListener('keydown', underneath);
+    }
+  });
+
+  it('lets every other key through', () => {
+    renderWithOpener();
+    const underneath = vi.fn();
+    window.addEventListener('keydown', underneath);
+    try {
+      pressAtFocus('a');
+      expect(useUIStore.getState().shortcutsModalOpen).toBe(true);
+      expect(underneath).toHaveBeenCalledTimes(1);
+    } finally {
+      window.removeEventListener('keydown', underneath);
+    }
+  });
+
+  it('stands down for a confirm dialog, which renders above it', () => {
+    renderWithOpener();
+    useDialogStore.setState({ active: { kind: 'confirm', title: 'x' } as never });
+    const e = pressAtFocus('Escape');
+    expect(useUIStore.getState().shortcutsModalOpen).toBe(true);
+    expect(e.defaultPrevented).toBe(false);
+  });
+
+  it('does not move focus back to an element that is gone', () => {
+    const opener = renderWithOpener();
+    opener.remove();
+    pressAtFocus('Escape');
+    expect(useUIStore.getState().shortcutsModalOpen).toBe(false);
+    expect(document.activeElement).not.toBe(opener);
+  });
+});
+
+// The z-index ladder the policy depends on, read from the stylesheets
+// themselves: every literal there carries its rung, and these are the rungs
+// the sheet has to sit between.
+describe('ShortcutsModal — stacking order', () => {
+  /** The `z-index` of one rule, by selector, in one stylesheet under src/. */
+  function zIndexOf(path: string, selector: string): number {
+    const css = readFileSync(`src/${path}`, 'utf8');
+    const escaped = selector.replace('.', '\\.');
+    const rule = new RegExp(`(?:^|\\n)${escaped}\\s*\\{([^}]*)\\}`).exec(css);
+    if (!rule) throw new Error(`${selector} not found in ${path}`);
+    const z = /\bz-index:\s*(\d+)/.exec(rule[1]);
+    if (!z) throw new Error(`${selector} in ${path} has no z-index`);
+    return Number(z[1]);
+  }
+
+  const sheet = () => zIndexOf('components/shared/ShortcutsModal.module.css', '.overlay');
+
+  it.each([
+    ['the Package Center', 'components/PackCenter/PackCenterModal.module.css', '.backdrop'],
+    ['the Plugin Center', 'components/PluginCenter/PluginCenterModal.module.css', '.topBackdrop'],
+    ['the diff window', 'components/SourceControl/GitDiffModal.module.css', '.backdrop'],
+    ['the template gallery', 'components/TemplateGallery/TemplateGalleryModal.module.css', '.backdrop'],
+    ['node details', 'components/NodeDetailModal/NodeDetailModal.module.css', '.backdrop'],
+    ['the preset editor', 'components/PresetModal/PresetConfigModal.module.css', '.overlay'],
+    ['the Custom Nodes manager', 'components/CustomNodeManager/CustomNodeManager.module.css', '.overlay'],
+    ['the scatter viewer', 'components/shared/ScatterModal.module.css', '.backdrop'],
+    ['the heatmap viewer', 'components/shared/HeatmapModal.module.css', '.backdrop'],
+    ['the New Sweep dialog', 'components/ResultsPanel/NewSweepDialog.module.css', '.backdrop'],
+  ])('renders above %s', (_name, path, selector) => {
+    expect(sheet()).toBeGreaterThan(zIndexOf(path, selector));
+  });
+
+  it.each([
+    ['the confirm dialog', 'components/shared/DialogContainer.module.css', '.backdrop'],
+    ['the toast stack', 'components/shared/Toast.module.css', '.container'],
+    ['the workspace lock', 'components/WorkspaceLock/WorkspaceLockOverlay.module.css', '.backdrop'],
+    ['the restart overlay', 'components/PackCenter/RestartOverlay.module.css', '.backdrop'],
+  ])('renders below %s', (_name, path, selector) => {
+    expect(sheet()).toBeLessThan(zIndexOf(path, selector));
   });
 });

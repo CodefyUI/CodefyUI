@@ -644,6 +644,7 @@ const en = {
 
   // Keyboard Shortcuts
   'shortcuts.title': 'Keyboard Shortcuts',
+  'shortcuts.close': 'Close keyboard shortcuts',
   'shortcuts.undo': 'Undo',
   'shortcuts.redo': 'Redo',
   'shortcuts.redoAlt': 'Redo (alt)',

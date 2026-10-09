@@ -88,13 +88,9 @@ function PackCenterBody() {
       if (e.key !== 'Escape') return;
       // Something can sit ON TOP of this panel: a confirm dialog (removing an
       // item asks first), or the restart overlay, which `closable` answers for.
-      // The shortcuts modal is here for a different reason — it renders at
-      // `z-index: 9000`, so it opens BEHIND this panel rather than over it, and
-      // it has no Escape handler of its own; swallowing the key while it is
-      // open is what keeps one press from closing the panel and leaving a
-      // shortcuts window nobody can see.
+      // The shortcuts sheet can too, and it stops its own Escape before it
+      // gets here (stack policy in `shared/ShortcutsModal.tsx`).
       if (useDialogStore.getState().active !== null) return;
-      if (useUIStore.getState().shortcutsModalOpen) return;
       // The Plugin Center is a second window with a second Escape handler on
       // the same key, and it is the one on top: it renders one z-index rung
       // above this panel (`PluginCenter/PluginCenterModal.module.css:

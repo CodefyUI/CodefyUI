@@ -150,13 +150,11 @@ function GitDiffBody({ target }: { target: GitDiffTarget }) {
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key !== 'Escape') return;
-      // A confirm dialog sits on top of this window -- one rung above it
-      // (10003), and it owns the key while it is open -- and the shortcuts
-      // modal renders at 9000, BEHIND this one, with no Escape handler of its
-      // own, so swallowing the key is what keeps one press from closing this
-      // window and leaving a shortcuts window nobody can see.
+      // A confirm dialog sits on top of this window -- above it (10004), and
+      // it owns the key while it is open. The shortcuts sheet, also above
+      // this window, stops its own Escape before it gets here (stack policy
+      // in `shared/ShortcutsModal.tsx`).
       if (useDialogStore.getState().active !== null) return;
-      if (useUIStore.getState().shortcutsModalOpen) return;
       e.preventDefault();
       close();
       // Both Centers stand down while this window is open, and they read
