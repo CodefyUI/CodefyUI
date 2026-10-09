@@ -48,6 +48,12 @@ received — each links to the release it was published as.
 
 ### Fixed
 
+- **The Inspector waits for a run to end before saying a node has nothing**.
+  With the Inspector open during a run, a node that failed mid-run read "Run
+  data expired", and a node the run left out could read "Not in the last run"
+  when the run's end reached the editor before that node's status did. Rows
+  now ask again once the run is over or the node's status changes, so they
+  read "Failed in the last run" or "Not selected by a Switch" as they should.
 - **A wire dropped on an input that already has one replaces it** ([#657],
   part of [#562]). The input kept both wires before, and the run then read
   whichever wire came last in the saved file, which the canvas does not show.

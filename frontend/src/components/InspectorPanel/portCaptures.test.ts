@@ -455,6 +455,49 @@ describe('usePortFetches — a node the last run has nothing for', () => {
     patchActiveTab({ nodes: [], status: 'idle' });
   });
 
+  // Found checking #656 in Chrome: the run's end reached the tab before the
+  // frame saying a node was unselected, and the row kept the first verdict.
+  it('decides a row again when its card reports a status after the run is over', async () => {
+    patchActiveTab({ nodes: [nodeAt('added', 'completed')] });
+    const { result } = renderHook(() => usePortFetches('run1', [ADDED]));
+    await waitFor(() =>
+      expect(result.current[keyOf('added', 'out')]?.noteKey).toBe('inspector.capture.notInRun'),
+    );
+    act(() => patchActiveTab({ nodes: [nodeAt('added', 'unselected')] }));
+    await waitFor(() =>
+      expect(result.current[keyOf('added', 'out')]?.noteKey).toBe(
+        'inspector.capture.unselectedInRun',
+      ),
+    );
+  });
+
+  it('asks again once the run is over, instead of calling a mid-run 404 expired', async () => {
+    mockOutput.mockRejectedValue(new RunDataExpiredError('run1'));
+    patchActiveTab({ status: 'running', nodes: [nodeAt('a', 'error')] });
+    const { result } = renderHook(() => usePortFetches('run1', [RAN]));
+    await waitFor(() => expect(mockOutput).toHaveBeenCalledTimes(1));
+    expect(result.current[keyOf('a', 'out')]?.errorKey ?? null).toBeNull();
+    act(() => patchActiveTab({ status: 'error' }));
+    await waitFor(() =>
+      expect(result.current[keyOf('a', 'out')]?.noteKey).toBe('inspector.capture.failedInRun'),
+    );
+  });
+
+  it('asks again when a mid-run 404 only lands after the run is over', async () => {
+    let reject: (e: Error) => void = () => {};
+    mockOutput.mockImplementationOnce(
+      () => new Promise((_resolve, fail) => { reject = fail; }),
+    );
+    patchActiveTab({ status: 'running', nodes: [nodeAt('a', 'error')] });
+    const { result } = renderHook(() => usePortFetches('run1', [RAN]));
+    await waitFor(() => expect(mockOutput).toHaveBeenCalledTimes(1));
+    act(() => patchActiveTab({ status: 'error' }));
+    await act(async () => reject(new RunDataExpiredError('run1')));
+    await waitFor(() =>
+      expect(result.current[keyOf('a', 'out')]?.noteKey).toBe('inspector.capture.failedInRun'),
+    );
+  });
+
   it('says so instead of asking for it, and asks for the node the run had', async () => {
     const { result } = renderHook(() => usePortFetches('run1', [RAN, ADDED]));
     await waitFor(() =>
