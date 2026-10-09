@@ -184,6 +184,13 @@ export interface RunSummary {
    * omitted rather than reported as 0.
    */
   final_metrics: Record<string, number>;
+  /**
+   * Which nodes logged each series, e.g. `{ val_loss: ['trainer_a',
+   * 'trainer_b'] }`; `null` is the run-level series (#641). `final_metrics`
+   * collapses a name several nodes log into one number, and this keeps them
+   * apart. Optional: a server before #641 does not send it.
+   */
+  metric_producers?: Record<string, Array<string | null>>;
   /** Whether THIS server process is currently driving the run. */
   active: boolean;
   /** Present when this run is one child of a sweep. */
@@ -311,6 +318,12 @@ export interface SweepSpec {
 export interface SweepObjective {
   metric: string;
   direction: 'minimize' | 'maximize';
+  /**
+   * The node whose `metric` series ranks the sweep, a flattened inner id
+   * included (#641). Absent or null: the name alone selects, which ranks
+   * while exactly one node logs it.
+   */
+  node_id?: string | null;
 }
 
 export interface CreateSweepRequest {
@@ -342,6 +355,13 @@ export interface SweepVariant {
   params: SweepVariantParam[];
   seed: number | null;
   objective: number | null;
+  /** The node the objective was read from; null when none was (#641). */
+  objective_node_id?: string | null;
+  /**
+   * Set when a name-only objective was logged by several nodes in this run:
+   * those nodes, `null` for the run-level series. Such a variant is unranked.
+   */
+  ambiguous_producers?: Array<string | null> | null;
   rank?: number | null;
   run_exists?: boolean;
   final_metrics?: Record<string, number>;

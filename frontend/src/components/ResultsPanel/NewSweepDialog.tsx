@@ -17,6 +17,7 @@ import {
   type EligibleSweepParam,
   type SweepLimitWarning,
 } from './sweepParams';
+import { metricProducers, producerLabel, recordedMetricNames } from './sweepObjective';
 import styles from './NewSweepDialog.module.css';
 
 type DomainMode = 'values' | 'range';
@@ -109,6 +110,8 @@ export function NewSweepDialog({ onClose }: NewSweepDialogProps) {
   const [name, setName] = useState('');
   const [method, setMethod] = useState<SweepMethod>('grid');
   const [objective, setObjective] = useState('train_loss');
+  // The producer node; '' selects by the name alone (#641).
+  const [objectiveNode, setObjectiveNode] = useState('');
   const [direction, setDirection] = useState<'minimize' | 'maximize'>('minimize');
   const [seed, setSeed] = useState('0');
   const [samples, setSamples] = useState('1');
@@ -128,11 +131,15 @@ export function NewSweepDialog({ onClose }: NewSweepDialogProps) {
     () => eligibleSweepParams(definitions, rootNodes),
     [definitions, rootNodes],
   );
-  const objectiveNames = useMemo(() => {
-    const names = new Set(BUILT_IN_OBJECTIVES);
-    for (const run of runs) for (const series of Object.keys(run.final_metrics ?? {})) names.add(series);
-    return [...names].sort();
-  }, [runs]);
+  const objectiveNames = useMemo(
+    () => [...new Set([...BUILT_IN_OBJECTIVES, ...recordedMetricNames(runs)])].sort(),
+    [runs],
+  );
+  // The nodes the listed runs saw log this metric. A name several of them
+  // log ranks nothing unless one is chosen, so the dialog says so up front.
+  const producers = useMemo(() => metricProducers(runs, objective.trim()), [runs, objective]);
+  const producerNodes = producers.filter((producer): producer is string => producer !== null);
+  const ambiguous = objectiveNode === '' && producers.length > 1;
 
   useEffect(() => {
     if (!eligible[0]) return;
@@ -293,7 +300,11 @@ export function NewSweepDialog({ onClose }: NewSweepDialogProps) {
           samples: method === 'random' ? Number(samples) : null,
           params,
         },
-        objective: { metric: objective.trim(), direction },
+        objective: {
+          metric: objective.trim(),
+          direction,
+          ...(objectiveNode ? { node_id: objectiveNode } : {}),
+        },
         options,
         name: storableRunName(name) || tabDefaultName(active) || null,
         seed_variants: seedVariants,
@@ -327,9 +338,19 @@ export function NewSweepDialog({ onClose }: NewSweepDialogProps) {
               <label>{t('sweeps.new.method')}<select value={method} onChange={(event) => setMethod(event.target.value as SweepMethod)}><option value="grid">{t('sweeps.method.grid')}</option><option value="random">{t('sweeps.method.random')}</option></select></label>
             </div>
             <div className={styles.pair}>
-              <label>{t('sweeps.new.objective')}<input value={objective} list={`${baseId}-objectives`} onChange={(event) => setObjective(event.target.value)} required /></label>
+              <label>{t('sweeps.new.objective')}<input value={objective} list={`${baseId}-objectives`} onChange={(event) => {
+                const metric = event.target.value;
+                setObjective(metric);
+                // A node chosen for another metric is not a producer of this one.
+                if (objectiveNode && !metricProducers(runs, metric.trim()).includes(objectiveNode)) setObjectiveNode('');
+              }} required /></label>
               <label>{t('sweeps.new.direction')}<select value={direction} onChange={(event) => setDirection(event.target.value as 'minimize' | 'maximize')}><option value="minimize">{t('sweeps.direction.minimize')}</option><option value="maximize">{t('sweeps.direction.maximize')}</option></select></label>
             </div>
+            <label>{t('sweeps.new.objectiveNode')}<select value={objectiveNode} onChange={(event) => setObjectiveNode(event.target.value)}>
+              <option value="">{t('sweeps.new.objectiveAnyNode')}</option>
+              {producerNodes.map((node) => <option key={node} value={node}>{producerLabel(node, rootNodes)}</option>)}
+            </select></label>
+            {ambiguous && <p className={styles.warning}>{t('sweeps.new.objectiveAmbiguous', { metric: objective.trim(), count: producers.length })}</p>}
             <datalist id={`${baseId}-objectives`}>{objectiveNames.map((series) => <option key={series} value={series} />)}</datalist>
 
             <div className={styles.domains}>

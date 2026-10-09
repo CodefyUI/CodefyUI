@@ -32,7 +32,11 @@ from typing import Any, Mapping, Sequence
 from uuid import uuid4
 
 from .db import Database, transaction, utc_now_iso
-from .run_store import TERMINAL_STATUSES, last_metric_values
+from .run_store import (
+    TERMINAL_STATUSES,
+    metric_producers,
+    producer_last_value,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -163,6 +167,16 @@ class SweepVariant:
     #: that legitimately produced no objective from being re-read forever:
     #: "harvested, no value" is a recorded fact, not a retry.
     harvested_at: str | None
+    #: The node whose series the objective was read from (#641): the
+    #: objective's own ``node_id``, or the ONE node that logged the metric
+    #: for a name-only objective. None when no node did, when the only
+    #: producer is the run-level series, or when the name was ambiguous.
+    #: Harvested with the value, so the identity outlives the child.
+    objective_node_id: str | None = None
+    #: Set only when a name-only objective was AMBIGUOUS in this run: every
+    #: node that logged the metric, sorted (``None`` is the run-level
+    #: series). The variant then has no objective and no rank (#641).
+    ambiguous_producers: list[str | None] | None = None
 
     def as_json(self) -> dict[str, Any]:
         return {
@@ -170,15 +184,23 @@ class SweepVariant:
             "run_id": self.run_id, "params": self.params, "seed": self.seed,
             "objective": self.objective, "status": self.status,
             "harvested_at": self.harvested_at,
+            "objective_node_id": self.objective_node_id,
+            "ambiguous_producers": self.ambiguous_producers,
         }
 
     @classmethod
     def from_json(cls, raw: dict[str, Any]) -> "SweepVariant":
+        # The two #641 keys are absent from a row harvested before them,
+        # which reads as "no producer recorded" -- the truth for that row.
+        ambiguous = raw.get("ambiguous_producers")
         return cls(
             index=raw["index"], domain_index=raw["domain_index"],
             run_id=raw.get("run_id"), params=list(raw.get("params") or []),
             seed=raw.get("seed"), objective=raw.get("objective"),
             status=raw.get("status"), harvested_at=raw.get("harvested_at"),
+            objective_node_id=raw.get("objective_node_id"),
+            ambiguous_producers=(None if ambiguous is None
+                                 else list(ambiguous)),
         )
 
 
@@ -379,6 +401,27 @@ class SweepStore:
 
         return await self.db.run(_update) > 0
 
+    async def read_harvest(
+        self, children: Mapping[int, tuple[str, str]],
+        objective: Mapping[str, Any],
+    ) -> dict[int, HarvestEntry]:
+        """Seam A's read: ``{variant index: HarvestEntry}`` for terminal
+        children, one ``Database.run`` for all of them.
+
+        *children* maps a variant index to its child's ``(run_id,
+        status)``. Each objective is read by :func:`harvest_entry`, the
+        function seam B runs inside ``RunStore.prune``, so the two seams
+        share the rule itself rather than agreeing on results (#404, #641).
+        """
+        if not children:
+            return {}
+
+        def _read(conn: sqlite3.Connection) -> dict[int, HarvestEntry]:
+            return {index: harvest_entry(conn, run_id, status, objective)
+                    for index, (run_id, status) in children.items()}
+
+        return await self.db.run(_read)
+
     async def harvest(self, sweep_id: str, *,
                       entries: Mapping[int, HarvestEntry],
                       finished: bool) -> SweepRecord | None:
@@ -418,6 +461,80 @@ class HarvestEntry:
 
     objective: float | None
     status: str
+    #: See ``SweepVariant.objective_node_id``.
+    objective_node_id: str | None = None
+    #: See ``SweepVariant.ambiguous_producers``.
+    ambiguous_producers: list[str | None] | None = None
+
+
+def objective_selector(
+    objective: Mapping[str, Any],
+) -> tuple[str | None, str | None]:
+    """``(metric, node_id)`` off a stored objective, legacy rows included.
+
+    A sweep created before #641 stored ``{"metric", "direction"}`` only. It
+    reads as ``node_id`` None, i.e. NAME-ONLY selection with the ambiguity
+    rule of :func:`read_objective`. That is the compatibility decision for
+    already-created sweeps: their stored row is left as it is (no
+    migration rewrites it), a variant already harvested keeps the value it
+    was given, and every variant harvested from now on is read by the
+    same rule as a new name-only sweep. Choosing a producer for an old
+    sweep would need a guess #641 forbids.
+    """
+    metric = objective.get("metric")
+    node_id = objective.get("node_id")
+    return (metric if isinstance(metric, str) and metric else None,
+            node_id if isinstance(node_id, str) and node_id else None)
+
+
+def harvest_entry(conn: sqlite3.Connection, run_id: str, status: str,
+                  objective: Mapping[str, Any]) -> HarvestEntry:
+    """One terminal child's harvest, as :func:`read_objective` reads it."""
+    value, node_id, ambiguous = read_objective(conn, run_id, objective)
+    return HarvestEntry(objective=value, status=status,
+                        objective_node_id=node_id,
+                        ambiguous_producers=ambiguous)
+
+
+def read_objective(
+    conn: sqlite3.Connection, run_id: str, objective: Mapping[str, Any],
+) -> tuple[float | None, str | None, list[str | None] | None]:
+    """A sweep objective's ``(value, producer, ambiguous producers)`` for
+    ONE run -- THE rule, used by both harvest seams (#404, #641).
+
+    * **node_id named**: the last point of that node's series, by
+      ``step DESC, id DESC`` WITHIN the node. Another node logging the
+      same name at a higher step, or later at the same step, cannot reach
+      it. A flattened inner id (``block/inner``) is just a node id here.
+    * **name only, one producer**: that producer's last point, exactly as
+      if it had been named. A sweep made before #641 is in this case when
+      its graph has one producer, so it ranks as it always did.
+    * **name only, several producers**: no value, and the producers are
+      returned so the sweep can say why. Picking one by step or by write
+      order is what #641 removes; a reduction across producers would need
+      a rule of its own and none is inferred.
+
+    The value is None as well when the series' last point is non-finite:
+    a diverged loss is unranked, never a fabricated 0.0. An empty or absent
+    metric reads nothing: a sweeps row is durable and outlives the route
+    validation that refuses one.
+
+    A plain function on a CONNECTION, because seam B runs it inside
+    ``RunStore.prune``'s transaction (see ``_select_sweep``).
+    """
+    metric, node_id = objective_selector(objective)
+    if metric is None:
+        return None, None, None
+    if node_id is not None:
+        return (producer_last_value(conn, run_id, metric, node_id), node_id,
+                None)
+    producers = metric_producers(conn, run_id, metric)
+    if len(producers) > 1:
+        return None, None, producers
+    if not producers:
+        return None, None, None
+    return (producer_last_value(conn, run_id, metric, producers[0]),
+            producers[0], None)
 
 
 def variant_is_terminal(variant: SweepVariant, child_status: str | None, *,
@@ -496,7 +613,9 @@ def _apply_entries(variants: Sequence[SweepVariant],
     which is what makes both seams idempotent."""
     return [
         replace(variant, objective=entries[variant.index].objective,
-                status=entries[variant.index].status, harvested_at=stamp)
+                status=entries[variant.index].status, harvested_at=stamp,
+                objective_node_id=entries[variant.index].objective_node_id,
+                ambiguous_producers=entries[variant.index].ambiguous_producers)
         if variant.index in entries and variant.harvested_at is None
         else variant
         for variant in variants
@@ -528,45 +647,6 @@ def _write_variants(conn: sqlite3.Connection, record: SweepRecord,
         "WHERE id = ?",
         (_dumps([v.as_json() for v in variants]), state, finished_at,
          record.id))
-
-
-def _last_metric_value(conn: sqlite3.Connection, run_id: str,
-                       name: str | None) -> float | None:
-    """The LAST point of one series, as :func:`last_metric_values` says.
-
-    Seam B used to spell the rule out a second time — its own
-    ``SELECT value ... ORDER BY step DESC, id DESC LIMIT 1``, next to
-    ``_LATEST_METRICS_SQL``'s identical subquery on the read path. They
-    agreed, but nothing HELD them to it, and #404 lists three shapes on
-    which they could have come apart later: several series in one run, a
-    NULL last point that one side omits and the other returns, and a run
-    ``latest_metrics`` drops from its result entirely. The stakes are not
-    symmetric — seam A's answer is recomputed on the next poll, while seam
-    B's is written onto a durable ``sweeps`` row moments before the
-    children that could disprove it are deleted (RULING 4). So the rule is
-    shared rather than merely agreed with, and the three shapes stop being
-    reachable at all.
-
-    Sharing is SAFE here because ``last_metric_values`` takes a connection
-    rather than a ``Database``: it runs inside ``RunStore.prune``'s open
-    transaction, on the same connection, exactly as ``_select_sweep``
-    already does, and opens no second ``Database.run`` to deadlock on.
-
-    The cost is that a doomed child's whole series list is read instead of
-    one series. That is still seek-bounded — the leapfrog CTE hops series
-    to series through ``idx_exec_run_metrics_series`` and never scans, so
-    the price tracks a run's handful of SERIES and not its millions of
-    POINTS, which is the property that made the read path affordable in
-    the first place.
-
-    An empty or absent *name* is the one thing this adds: it answers None
-    without looking anything up. A sweeps row is durable and outlives the
-    validation that wrote it (the route requires a non-empty metric), and
-    ``{}.get("")`` is not a lookup anyone meant to make.
-    """
-    if not name:
-        return None
-    return last_metric_values(conn, run_id).get(name)
 
 
 def harvest_doomed(conn: sqlite3.Connection, where_clause: str,
@@ -710,11 +790,9 @@ def _harvest_one_sweep(conn: sqlite3.Connection, sweep_id: str,
     record = _select_sweep(conn, sweep_id)
     if record is None:
         return 0
-    metric = record.objective.get("metric")
     entries = {
-        row["sweep_variant"]: HarvestEntry(
-            objective=_last_metric_value(conn, row["id"], metric),
-            status=row["status"])
+        row["sweep_variant"]: harvest_entry(conn, row["id"], row["status"],
+                                            record.objective)
         for row in rows if row["sweep_variant"] is not None
     }
     patched = _apply_entries(record.variants, entries, stamp)

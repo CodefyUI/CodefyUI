@@ -179,6 +179,8 @@ run 在排隊時，CLI 會回報它排在第幾位，而不是沒有任何輸出
 
 **`objective` 是必填的。** `metric` 是節點所記錄的一個 series 名稱（`train_loss`、`val_loss`、`val_accuracy`、`eval_accuracy`，或外掛節點記錄的任何名稱；`TrainingLoop` 記錄的 series 列在[執行圖](./running-graphs#training-loops-and-loss-charts)），`direction` 則是 `minimize` 或 `maximize`。送出時不會檢查這個名稱，因為當時還沒有任何 variant 跑過；如果最後沒有任何 variant 記錄它，排名表會是空的，並附上一個 `objective_warning`，列出各 run 實際記錄的 series。
 
+**`objective.node_id` 指定以哪個節點的 series 排名。** 此欄位可省略；block 內的節點以攤平後的 id（`block/inner`）指定。指定後，每個 variant 的 objective 是該節點記錄的最後一點（`step` 最大者，同 step 取最後寫入者），其他節點記錄同名 series 不會改變這個值。省略時只以名稱選取：只有一個節點記錄該指標時，使用該節點的最後一點。同一個 run 中有多個節點記錄它時，該 variant 沒有 objective 也不排名，其 `ambiguous_producers` 會列出這些節點，`objective_warning` 也會提示指定節點。系統不會替你挑選節點。在 `node_id` 推出前建立的 sweep 依相同的名稱規則處理：已收回的值會保留，之後收回且由多個節點記錄的 variant 不排名。
+
 **`options`** 會原封不動交給每個 variant（device、`record_outputs` 等），但有三種情況會被拒絕：`options.seed`（seed 由 sweep 管理）、`lane: interactive`（sweep 一律排隊），以及 variant 數量超過輸出儲存上限（預設 20）時使用 `record_outputs`，因為最早幾個 variant 的捕獲資料會在 sweep 結束前被逐出。若要為訓練本身設定 seed，請設定 `sweep_spec.seed` 及 `"seed_variants": true`：第 *i* 個 variant 會使用 `seed + i`，超出時折回有效的 seed 範圍。若設定 `seed_variants: true` 卻沒有提供 `sweep_spec.seed`，請求會在建立任何資料列前以 `400` 拒絕。這會讓每個 variant 都成為 seeded run，因此一次只執行一個節點，也不會有其他 run 同時執行。seeded sweep 會嚴格依序執行，畫布 run 在整段期間都無法執行；詳見[可重現的執行](./running-graphs#reproducible-runs-seed)。
 
 **可以掃描什麼：** 已註冊節點上的 int、float、bool、string 與 select 參數。不支援 preset 實例的內部參數、subgraph 實例的參數、`SECRET` 參數（選中的值會以明文存入 sweep 資料列），也不支援在圖中出現兩次的 node id。
@@ -191,9 +193,9 @@ run 在排隊時，CLI 會回報它排在第幾位，而不是沒有任何輸出
 
 ### 讀取結果 {/* #reading-the-results */}
 
-`GET /api/sweeps/{id}` 會回傳該 sweep：它的 `state`（`running`、`cancelling`、`finished`；若送出迴圈中途失敗則為 `failed`，但已排入佇列的 child 仍會繼續）、objective、依 status 分組的 `counts`、包含每個展開後 domain 的 `params`，以及按**排名順序**、最佳者優先的 `variants`。每個 variant 會帶著自己的 `index`（送出順序）、`run_id`、即時 `status`、收到的 `params`、`seed`、達到的 `objective` 值、`rank`、`run_exists`；child run 仍存在時另有其 `final_metrics`。`best` 指向排名第 1 的 variant。run 結束且記錄過 objective 後，variant 會依該 series 的最終值排名；run 即使在記錄後失敗仍會列入排名，沒有排名的 variant 則保留自己的資料列，以 index 順序排列並顯示 `rank: null`。`?format=csv` 可將同一份表格下載成試算表，每個掃描參數各佔一欄。
+`GET /api/sweeps/{id}` 會回傳該 sweep：它的 `state`（`running`、`cancelling`、`finished`；若送出迴圈中途失敗則為 `failed`，但已排入佇列的 child 仍會繼續）、objective、依 status 分組的 `counts`、包含每個展開後 domain 的 `params`，以及按**排名順序**、最佳者優先的 `variants`。每個 variant 會帶著自己的 `index`（送出順序）、`run_id`、即時 `status`、收到的 `params`、`seed`、達到的 `objective` 值、`objective_node_id`（讀取該值的節點）、`ambiguous_producers`（僅在只以名稱選取且有歧義時出現）、`rank`、`run_exists`；child run 仍存在時另有其 `final_metrics`。`best` 指向排名第 1 的 variant。run 結束且記錄過 objective 後，variant 會依該 series 的最終值排名；run 即使在記錄後失敗仍會列入排名，沒有排名的 variant 則保留自己的資料列，以 index 順序排列並顯示 `rank: null`。`?format=csv` 可將同一份表格下載成試算表，包含 `objective_metric`、`objective_node_id` 與 `ambiguous_producers`（以 `;` 分隔，未經節點記錄的 series 寫作 `(run)`）欄位，每個掃描參數各佔一欄。`final_metrics` 是執行任務表格的摘要，不用來選取 objective：多個節點記錄同一名稱時，它仍只顯示一個數字。
 
-即使 child run 被移除，結果仍會保留：每次 `GET /api/sweeps/{id}` 與每次取消，都會把每個已結束 variant 的 status 與 objective 複製到 sweep 資料列上，而 retention 會在刪減 run 前對任何尚未讀取的結果做同樣的事。因此，被 retention 刪減的 child 會保留已收回的 `status` 與 `objective`，並顯示 `run_exists: false`，不含 `final_metrics`。在任何讀取或取消收回結果之前就以 `DELETE /api/runs/{id}` 刪除的 child，會顯示 `status: "missing"` 與 `objective: null`。兩種情況下，該 variant 的資料列都會保留。
+即使 child run 被移除，結果仍會保留：每次 `GET /api/sweeps/{id}` 與每次取消，都會把每個已結束 variant 的 status 與 objective 複製到 sweep 資料列上，而 retention 會在刪減 run 前對任何尚未讀取的結果做同樣的事。因此，被 retention 刪減的 child 會保留已收回的 `status`、`objective`、`objective_node_id` 與 `ambiguous_producers`，並顯示 `run_exists: false`，不含 `final_metrics`。在任何讀取或取消收回結果之前就以 `DELETE /api/runs/{id}` 刪除的 child，會顯示 `status: "missing"` 與 `objective: null`。兩種情況下，該 variant 的資料列都會保留。
 
 sweep 的 `state` 還是 `running` 或 `finished` 時，它仍可能帶著 `error`。那是 retention 在回報一次沒能完成的收回：child 已如期被刪除（刪除不會為了先保住結果而延後），但它們的 objective 來不及複製過來，那些數字就此消失。訊息會寫出有幾個 run 被刪、以及出了什麼問題。少了這則訊息，空白的比較表和一個從未記錄過任何東西的 sweep 看起來完全一樣，而這正是它要分辨的事。`state: "failed"` 的意思仍然只有一個：送出迴圈中途失敗。
 
@@ -207,7 +209,7 @@ sweep 的 `state` 還是 `running` 或 `finished` 時，它仍可能帶著 `erro
 
 ### 在執行任務面板中 {/* #in-the-runs-panel */}
 
-[執行任務面板](#runs-panel)工具列上的**新增掃描**會從目前開啟的圖建立 sweep。對話框會列出圖中最上層已註冊節點的 int、float、bool 與 select 參數；在 block 內編輯時，列出的仍是最上層的圖，因為 sweep 執行的是那張圖。自由文字的 string 參數只能透過 API 掃描。每個參數可以填一串值，數值參數也可以用區間，對話框會顯示這樣會產生幾個 variant。超過上表三個預設上限之一時，對話框會發出警告並指出對應的設定，但仍會送出 sweep：伺服器可能已調高上限，無法執行的請求則由伺服器拒絕。目標指標預設為 `train_loss`，`TrainingLoop` 每個 epoch 都會記錄它；欄位也會建議清單中各 run 記錄過的 series。各 variant 沿用分頁的裝置與執行設定，但不包括亂數種子（請改用**每個變體都設定亂數種子**），也不錄製輸出。**名稱**留白時，sweep 會以分頁的名稱命名，最多 64 個字元。
+[執行任務面板](#runs-panel)工具列上的**新增掃描**會從目前開啟的圖建立 sweep。對話框會列出圖中最上層已註冊節點的 int、float、bool 與 select 參數；在 block 內編輯時，列出的仍是最上層的圖，因為 sweep 執行的是那張圖。自由文字的 string 參數只能透過 API 掃描。每個參數可以填一串值，數值參數也可以用區間，對話框會顯示這樣會產生幾個 variant。超過上表三個預設上限之一時，對話框會發出警告並指出對應的設定，但仍會送出 sweep：伺服器可能已調高上限，無法執行的請求則由伺服器拒絕。目標指標預設為 `train_loss`，`TrainingLoop` 每個 epoch 都會記錄它；欄位也會建議清單中各 run 記錄過的 series。**目標節點**會列出這些 run 中記錄所選指標的節點；選擇**任一節點**時只送出名稱，若列出的 run 顯示有多個節點記錄它，對話框會發出警告。各 variant 沿用分頁的裝置與執行設定，但不包括亂數種子（請改用**每個變體都設定亂數種子**），也不錄製輸出。**名稱**留白時，sweep 會以分頁的名稱命名，最多 64 個字元。
 
 **開始掃描**會開啟該 sweep：狀態、目標指標、各狀態的數量，以及每個 variant 一列的表格，列出參數值、目標值、排名與最終指標，表格下方是目標曲線。sweep 結束前，畫面每 2 秒重新讀取一次。點**排名**、**狀態**或**目標值**的欄位標題即可排序；沒有值的列一律排在最後。**查看**會開啟該 variant 的 run，child run 詳細資訊中的**開啟所屬掃描**則會回到 sweep。**停止掃描**會送出 `POST /api/sweeps/{id}/cancel`，**下載 CSV** 會下載 `?format=csv` 的表格。
 
