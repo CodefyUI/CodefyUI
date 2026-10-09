@@ -418,17 +418,22 @@ async def get_job_events(
     last page of a failed install fetchable at all.
 
     The returned ``cursor`` is where to resume, and never moves backwards.
+
+    ``gap`` is ``null`` unless the bounded buffer dropped events after
+    *cursor* before this read: then ``{"first_cursor", "dropped"}`` says
+    where the kept events start and how many this reader missed. Measured
+    against the cursor sent, so a follower that kept up never sees one.
     """
     service = _service(request)
     try:
-        events, next_cursor, status = await service.wait_for_events(
+        page = await service.wait_for_page(
             job_id, after_cursor=cursor, limit=limit, wait=wait)
     except UnknownJob:
         # Also reachable AFTER the park: a job that ends while a poll is
         # waiting on it, followed by a new install, takes its events with it.
         raise _job_not_found(job_id) from None
-    return {"job_id": job_id, "status": status, "events": events,
-            "cursor": next_cursor}
+    return {"job_id": job_id, "status": page.status, "events": page.events,
+            "cursor": page.cursor, "gap": page.gap}
 
 
 # ── DELETE /api/packs/{pack_id}/items/{item_id} ───────────────────────────
