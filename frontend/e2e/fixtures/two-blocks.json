@@ -1,0 +1,72 @@
+{
+  "name": "e2e two blocks",
+  "description": "Two instances of one block, fed 1.5 and 4.0",
+  "nodes": [
+    { "id": "start", "type": "Start", "position": { "x": 0, "y": 120 }, "data": { "params": {} } },
+    {
+      "id": "makeA",
+      "type": "TensorCreate",
+      "position": { "x": 220, "y": 0 },
+      "data": { "params": { "shape": "2,2", "fill": "full", "value": 1.5, "requires_grad": false } }
+    },
+    {
+      "id": "makeB",
+      "type": "TensorCreate",
+      "position": { "x": 220, "y": 260 },
+      "data": { "params": { "shape": "2,2", "fill": "full", "value": 4.0, "requires_grad": false } }
+    },
+    { "id": "blkA", "type": "subgraph:blk-def", "position": { "x": 520, "y": 0 }, "data": { "params": {} } },
+    { "id": "blkB", "type": "subgraph:blk-def", "position": { "x": 520, "y": 260 }, "data": { "params": {} } },
+    {
+      "id": "showA",
+      "type": "Print",
+      "position": { "x": 820, "y": 0 },
+      "data": { "params": { "label": "e2e_a" } }
+    },
+    {
+      "id": "showB",
+      "type": "Print",
+      "position": { "x": 820, "y": 260 },
+      "data": { "params": { "label": "e2e_b" } }
+    }
+  ],
+  "edges": [
+    { "id": "tA", "source": "start", "target": "makeA", "sourceHandle": "trigger", "targetHandle": "__trigger", "type": "trigger" },
+    { "id": "tB", "source": "start", "target": "makeB", "sourceHandle": "trigger", "targetHandle": "__trigger", "type": "trigger" },
+    { "id": "inA", "source": "makeA", "target": "blkA", "sourceHandle": "tensor", "targetHandle": "tensor", "type": "data" },
+    { "id": "inB", "source": "makeB", "target": "blkB", "sourceHandle": "tensor", "targetHandle": "tensor", "type": "data" },
+    { "id": "outA", "source": "blkA", "target": "showA", "sourceHandle": "tensor", "targetHandle": "value", "type": "data" },
+    { "id": "outB", "source": "blkB", "target": "showB", "sourceHandle": "tensor", "targetHandle": "value", "type": "data" }
+  ],
+  "presets": [],
+  "segmentGroups": [],
+  "subgraphs": [
+    {
+      "id": "blk-def",
+      "name": "Blk",
+      "description": "",
+      "nodes": [
+        {
+          "id": "double",
+          "type": "ScalarMultiply",
+          "position": { "x": 0, "y": 0 },
+          "data": { "params": { "scalar": 2 } }
+        },
+        {
+          "id": "avg",
+          "type": "Mean",
+          "position": { "x": 300, "y": 0 },
+          "data": { "params": { "dim": "0,1", "keepdim": false } }
+        }
+      ],
+      "edges": [
+        { "id": "d2", "source": "double", "target": "avg", "sourceHandle": "tensor", "targetHandle": "tensor" }
+      ],
+      "interface": {
+        "inputs": [{ "port": "tensor", "innerNode": "double", "innerPort": "tensor", "data_type": "TENSOR" }],
+        "outputs": [{ "port": "tensor", "innerNode": "avg", "innerPort": "tensor", "data_type": "TENSOR" }],
+        "triggerTargets": []
+      }
+    }
+  ]
+}

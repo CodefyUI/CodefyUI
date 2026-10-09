@@ -1,0 +1,90 @@
+name: Browser Workflow Checks
+
+# The browser suite in frontend/e2e (#642): the production frontend build,
+# served by the real backend, driven in Chromium by Playwright. Three golden
+# flows -- workspace durability, block execution and inspection, portable
+# Export Python -- that neither the jsdom unit tests nor the backend suite
+# can see whole. See CONTRIBUTING.md, "Unit, server integration and browser
+# workflow checks".
+on:
+  # No path filter on pull_request: if this check is made required, a
+  # filtered-out workflow never reports and the PR's merge button waits
+  # forever (the same reason backend-test.yml and frontend-build.yml have
+  # none). Every PR runs it.
+  pull_request:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  e2e:
+    name: Playwright (Chromium, real backend)
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: pnpm/action-setup@v6
+        with:
+          # Pinned to the major matching frontend/pnpm-lock.yaml's
+          # `lockfileVersion: '9.0'`, same as frontend-build.yml.
+          version: 9
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '24'
+          cache: 'pnpm'
+          cache-dependency-path: frontend/pnpm-lock.yaml
+
+      - name: Install uv
+        run: |
+          curl -LsSf https://astral.sh/uv/install.sh | sh
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      # 3.11 because install.sh / install.ps1 pin it. The backend is installed
+      # the way backend-test.yml installs it; the suite runs on CPU only.
+      - name: Provision Python 3.11
+        run: uv python install 3.11
+
+      - name: Create venv and install backend
+        working-directory: backend
+        run: |
+          uv venv --python 3.11
+          uv pip install -e .
+
+      - name: Install frontend dependencies (frozen lockfile)
+        working-directory: frontend
+        run: pnpm install --frozen-lockfile
+
+      - name: Install Chromium for Playwright
+        working-directory: frontend
+        run: pnpm exec playwright install --with-deps chromium
+
+      # `pnpm e2e` = `pnpm build && playwright test`. The server's data goes to
+      # a folder under the runner's temp dir, named here so the failure upload
+      # below can find its log.
+      - name: Browser workflow checks
+        working-directory: frontend
+        env:
+          CODEFYUI_E2E_DIR: ${{ runner.temp }}/codefyui-e2e
+        run: pnpm e2e
+
+      - name: Upload traces, screenshots, console and network logs
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: browser-e2e-failure
+          path: |
+            frontend/test-results/
+            frontend/playwright-report/
+            ${{ runner.temp }}/codefyui-e2e/server.log
+          retention-days: 14
+          if-no-files-found: ignore

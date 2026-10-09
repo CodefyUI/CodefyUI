@@ -232,6 +232,10 @@ python scripts/sync_plugin_sdk.py --template ../CodefyUI-Plugin-Official --check
 cd frontend && pnpm install
 cd frontend && pnpm exec tsc -b
 cd frontend && pnpm build
+
+# Frontend or backend -- if you touched saving, importing, running, the
+# Inspector or Export Python. The browser workflow checks; see below.
+cd frontend && pnpm e2e
 ```
 
 Two notes on the frontend commands:
@@ -240,6 +244,26 @@ Two notes on the frontend commands:
 - **`pnpm build` includes the contrast gate.** The build script is `node scripts/check-contrast.mjs && tsc -b && vite build` — the first step re-derives every WCAG contrast relationship claimed by `frontend/src/styles/tokens.css` and fails the build if a token pair drops below threshold. Run it alone with `pnpm contrast` when you are editing colours.
 
 **`pnpm test` also fails when a test file prints more act() warnings than before.** React prints "An update to X inside a test was not wrapped in act(...)" when a test lets a state update run outside `act()`. Nothing failed on these warnings, and the reporter vitest picks when an AI coding agent runs it does not print them, so they grew unseen; the baseline started at 1,160 in 39 test files. `frontend/scripts/act-warnings.mjs` counts them per test file, each distinct warning once per test, against `frontend/scripts/act-warnings.baseline.json`; a file it does not list is allowed none. A failure names each test in the file that warns and the components that updated; `pnpm exec vitest run <file> --reporter=verbose` prints the warnings in full. Wrap the update in `act()`, or await what the component does next (`findBy...`, `waitFor`). When a file's count goes down, `pnpm test:act-baseline` writes the lower number; it never raises one.
+
+### Unit, server integration and browser workflow checks
+
+The checks come in three kinds. Put a new test in the cheapest kind that can see the bug.
+
+| Kind | Where | Command | What it can see |
+| --- | --- | --- | --- |
+| Unit | `frontend/src/**/*.test.ts(x)` (Vitest, jsdom) and most of `backend/tests/` | `pnpm test`, `./cdui test` | One component, store, hook, node or engine function. No real browser, no real server. Most tests belong here. |
+| Server integration | `backend/tests/` that drive the FastAPI app (`TestClient`, `httpx`), run the engine end to end, or run an exported script in a subprocess | `./cdui test --backend` | Routes, persistence, the run service and Export Python, against a real app in one process. |
+| Browser workflow | `frontend/e2e/*.spec.ts` (Playwright, Chromium) | `cd frontend && pnpm e2e` | The production build in `frontend/dist`, served by a real backend, clicked in a real browser: the round trips that jsdom and the backend suite each see only half of. |
+
+The browser suite is kept small on purpose. Its first increment (#642) is three golden flows:
+
+1. **Workspace durability** (`workspace-durability.spec.ts`): edit a graph, Delete a node and bring it back with its wires in one Ctrl+Z, save, export as JSON and as a workspace, import a graph and that workspace into the occupied workspace, reload the page, and compare the saved file, the tabs and the exports.
+2. **Block execution and inspection** (`block-run-inspect.spec.ts`): collapse two nodes of a CPU-only tensor graph into a block, press Run from inside it, check the whole graph ran, and check the Inspector asked for the inner node by its run id (`<block>/<node>`) and shows its numbers; then the same for two instances of one block fed different tensors.
+3. **Portable execution** (`portable-export.spec.ts`): make a preset with Export as Subgraph, save a seeded graph whose Map runs it, run it, export Python, run the script with `python -I` in an empty folder where that preset is not installed, and compare its printed number with the canvas run's.
+
+They assert numbers, request ids and file contents, never screenshots. Add a flow only for a round trip no unit or server test can reach, and keep each one under a few seconds.
+
+`pnpm e2e` builds the frontend, then runs `playwright test`. Before the first run, install the browser once with `cd frontend && pnpm exec playwright install chromium`. The server is started by `frontend/e2e/server.mjs` with `backend/.venv`'s Python (set `CODEFYUI_E2E_PYTHON` to use another) on port 18642 (`CODEFYUI_E2E_PORT`). It never attaches to a server that is already running, and it drops every `CODEFYUI_*` variable from your environment and points the user data directory, run database, saved graphs, presets, models, images, files, media and logs at a new temporary folder, so a run cannot read or write your own graphs. The folder is deleted when the run ends; set `CODEFYUI_E2E_DIR` to choose it and keep it (the server log is `server.log` inside). A failing test leaves a trace, a screenshot, the browser console and the failed requests under `frontend/test-results/`; open the trace with `pnpm exec playwright show-trace <path>/trace.zip`.
 
 ### Opt-in checks
 
@@ -261,6 +285,7 @@ There is no frontend linter yet. That is a bigger argument because it drags a fo
 - **`backend-test.yml`** runs the whole suite on Python 3.10, 3.11 and 3.12 on ubuntu, **plus one Windows job on 3.12**, plus a job on 3.11 that runs the suite against a built `frontend/dist` (the SPA routes are registered only when a build exists, core#285), plus `uv lock --check`, a smoke import (`from app.main import app`) that catches import-time syntax errors, and `ruff check`. The Windows job is not decoration: CPython 3.12 replaced `os.path.exists` / `isdir` / `isfile` / `islink` with `nt` C fast paths **on Windows only**, and `ntpath` guards that behind `try: from nt import ... except ImportError:` — so on ubuntu the fallback always wins and no Python version in an ubuntu-only matrix can ever see the difference (core#258). If you change anything that touches paths, processes or file locking, expect Windows to have an opinion.
 - **`byte-scan.yml`** runs `scripts/check_control_bytes.py` over every tracked file on every PR, with no path filter.
 - **`frontend-build.yml`** runs install, `tsc -b`, `pnpm build`, a `dist/` sanity check, then `pnpm test` — on every pull request, and on pushes to `main` that touch `frontend/**`, `examples/**` or `backend/tests/fixtures/**`. Its build step also fails when Vite prints a chunk-size warning ("Some chunks are larger than 500 kB") or a circular-chunk warning, which a local `pnpm build` only prints.
+- **`browser-e2e.yml`** runs `pnpm e2e` on ubuntu with Python 3.11 and Chromium on every pull request, with no path filter, and on pushes to `main`. When it fails it uploads the Playwright traces, screenshots, browser console and failed-request logs, the HTML report and the server log as the `browser-e2e-failure` artifact.
 - **`docs-build.yml`** builds the docs site in both languages on every pull request, with the same install and `pnpm build` that `docs-deploy.yml` runs after a merge to `main`, and deploys nothing. A broken link, a broken anchor or an MDX error therefore fails a check before the merge instead of the deploy after it.
 
 ### Tests are required

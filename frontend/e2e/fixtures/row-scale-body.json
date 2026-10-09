@@ -1,0 +1,21 @@
+{
+  "name": "e2e row scale body",
+  "description": "What the Map runs per row: x3, then the row's mean",
+  "nodes": [
+    {
+      "id": "scale",
+      "type": "ScalarMultiply",
+      "position": { "x": 0, "y": 0 },
+      "data": { "params": { "scalar": 3.0 } }
+    },
+    {
+      "id": "rowmean",
+      "type": "Mean",
+      "position": { "x": 300, "y": 0 },
+      "data": { "params": { "dim": "0", "keepdim": false } }
+    }
+  ],
+  "edges": [
+    { "id": "b1", "source": "scale", "target": "rowmean", "sourceHandle": "tensor", "targetHandle": "tensor", "type": "data" }
+  ]
+}
