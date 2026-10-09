@@ -22,6 +22,15 @@ received — each links to the release it was published as.
 
 ## [Unreleased]
 
+### Fixed
+
+- **The live training chart draws the validation loss** ([#665]). With a
+  `val_dataloader` wired, `TrainingLoop` already sent `val_loss` with every
+  epoch, and the **Training** tab dropped it: the chart had one curve and the
+  table one loss column. It now draws `train_loss` and `val_loss` with a
+  legend and lists the validation loss per epoch. A run without a validation
+  loader looks as before.
+
 ### Changed
 
 - **Switch picks its input from a param, grows as it is wired, and stops
@@ -5430,3 +5439,4 @@ Release candidates before 1.0.0 are on the
 [#655]: https://github.com/CodefyUI/CodefyUI/issues/655
 [#656]: https://github.com/CodefyUI/CodefyUI/issues/656
 [#658]: https://github.com/CodefyUI/CodefyUI/issues/658
+[#665]: https://github.com/CodefyUI/CodefyUI/issues/665
