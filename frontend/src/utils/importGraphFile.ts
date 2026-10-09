@@ -224,7 +224,7 @@ async function openGraphData(input: unknown, fileName: string): Promise<boolean>
     // selected in the tab before already closed (#563). Nothing to fit for a
     // graph with no nodes, as on a first visit.
     const bounds = nodesBoundingBox(resolvedNodes as Node[]);
-    if (bounds !== null && fillId !== null) useUIStore.getState().requestLayoutFit(bounds);
+    if (bounds !== null && fillId !== null) useUIStore.getState().requestLayoutFit(fillId, bounds);
     if (tooNew) {
       addToast(t('project.readOnly.loadNotice', { version: data.format_version }), 'warning');
     }

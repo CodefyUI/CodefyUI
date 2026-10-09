@@ -379,6 +379,49 @@ async def test_the_buffer_drops_its_oldest_events_rather_than_growing():
     assert (cursor, status) == (5, STATUS_DONE)
 
 
+async def test_a_reader_behind_the_dropped_head_is_told_exactly_what_it_missed():
+    """The issue's own reproduction: a late reader learns how many it lost.
+
+    Claim (1), five progress frames (2-6), completion (7), three kept. Each
+    reader is measured against the cursor IT sent, so one that kept up is
+    told nothing, and the cursor the gapped page returns carries no gap.
+    """
+    runner = make_runner(max_events=3)
+    work = ScriptedWork().script(
+        *({"type": "progress", "item": "m", "bytes_done": n} for n in range(5)))
+    job = submit(runner, work)
+    await drain(runner, job.job_id)
+
+    late = await runner.wait_for_page(job.job_id, after_cursor=0, wait=5.0)
+    assert [event["cursor"] for event in late.events] == [5, 6, 7]
+    assert late.gap == {"first_cursor": 5, "dropped": 4}
+    # Completion stays readable, and a finished job answers at once.
+    assert (late.cursor, late.status) == (7, STATUS_DONE)
+    assert late.events[-1]["type"] == "job_done"
+
+    behind = await runner.wait_for_page(job.job_id, after_cursor=3)
+    assert behind.gap == {"first_cursor": 5, "dropped": 1}
+
+    for recent in (4, 5, 7):
+        page = await runner.wait_for_page(job.job_id, after_cursor=recent)
+        assert page.gap is None, recent
+
+    resumed = await runner.wait_for_page(job.job_id, after_cursor=late.cursor,
+                                         wait=5.0)
+    assert (resumed.events, resumed.gap, resumed.status) == ([], None,
+                                                             STATUS_DONE)
+
+
+async def test_a_buffer_that_dropped_nothing_reports_no_gap():
+    runner = make_runner(max_events=10)
+    job = submit(runner, ScriptedWork().script({"type": "log", "line": "a"}))
+    await drain(runner, job.job_id)
+
+    page = await runner.wait_for_page(job.job_id, after_cursor=0)
+    assert page.gap is None
+    assert [event["cursor"] for event in page.events] == [1, 2, 3]
+
+
 # ── one job at a time, and the last one stays readable ────────────────────
 
 

@@ -48,6 +48,7 @@ from ..jobs import (
     STATUS_RUNNING,
     CancelCheck,
     Emit,
+    EventPage,
     Job,
     JobBusy,
     JobRunner,
@@ -148,6 +149,7 @@ class PackService:
         run_flow: Callable[..., object] = flows.install_pack_live,
         runs_active: Callable[[], bool] | None = None,
         busy_elsewhere: Callable[[], str | None] | None = None,
+        max_events: int = MAX_EVENTS,
         shutdown_timeout_s: float = SHUTDOWN_TIMEOUT_S,
     ) -> None:
         # Injectable so tests never run a real install, and so the CLI could
@@ -182,6 +184,7 @@ class PackService:
         # job, because knowing that is this module's business and not its.
         self._runner = JobRunner(terminal_for=self._terminal_for,
                                  label="pack install job",
+                                 max_events=max_events,
                                  shutdown_timeout_s=shutdown_timeout_s)
 
     @property
@@ -234,6 +237,21 @@ class PackService:
         :meth:`app.core.jobs.JobRunner.wait_for_events`.
         """
         return await self._runner.wait_for_events(
+            job_id, after_cursor=after_cursor, limit=limit, wait=wait)
+
+    async def wait_for_page(
+        self,
+        job_id: str,
+        *,
+        after_cursor: int = 0,
+        limit: int = 500,
+        wait: float = 0.0,
+    ) -> EventPage:
+        """:meth:`wait_for_events` with the reader's gap, for the route.
+
+        See :meth:`app.core.jobs.JobRunner.wait_for_page`.
+        """
+        return await self._runner.wait_for_page(
             job_id, after_cursor=after_cursor, limit=limit, wait=wait)
 
     def _read(self, job: PackJob, after_cursor: int, limit: int

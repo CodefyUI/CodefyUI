@@ -49,6 +49,59 @@ describe('reduceJobEvents', () => {
     expect(next.log.map((entry) => entry.text)).toEqual(['Downloading', 'Verifying']);
   });
 
+  it('adds one gap notice ahead of the kept events when the server dropped some', () => {
+    const gapped = page({
+      cursor: 7,
+      status: 'done',
+      gap: { first_cursor: 5, dropped: 4 },
+      events: [
+        { type: 'log', cursor: 5, ts: 't', line: 'five' },
+        { type: 'log', cursor: 6, ts: 't', line: 'six' },
+        { type: 'job_done', cursor: 7, ts: 't' },
+      ],
+    });
+    const next = reduceJobEvents(makeJob(), gapped);
+
+    expect(next.log.map((entry) => [entry.seq, entry.kind, entry.text])).toEqual([
+      [4, 'gap', '4 earlier events are no longer available'],
+      [5, 'log', 'five'],
+      [6, 'log', 'six'],
+      [7, 'step', 'done'],
+    ]);
+    expect(next.log[0].dropped).toBe(4);
+    expect(next.status).toBe('done');
+    expect(next.cursor).toBe(7);
+
+    // A replay of the same page adds nothing, the notice included.
+    expect(reduceJobEvents(next, gapped).log).toEqual(next.log);
+  });
+
+  it('ignores a missing, null or empty gap', () => {
+    const events: JobEvent[] = [{ type: 'log', cursor: 1, ts: 't', line: 'one' }];
+    for (const gap of [undefined, null, { first_cursor: 1, dropped: 0 }]) {
+      const next = reduceJobEvents(makeJob(), page({ cursor: 1, gap, events }));
+      expect(next.log.map((entry) => entry.kind)).toEqual(['log']);
+    }
+  });
+
+  it('keeps the gap notice key above a line that already used the next number', () => {
+    // A cursorless line takes `lastSeq + 1`; a gap that would sit at or below
+    // it moves up instead of colliding with its React key.
+    const job = makeJob({
+      cursor: 1,
+      log: [{ seq: 3, ts: null, kind: 'log', text: 'cursorless' }],
+    });
+    const next = reduceJobEvents(job, page({
+      cursor: 4,
+      gap: { first_cursor: 3, dropped: 1 },
+      events: [{ type: 'log', cursor: 4, ts: 't', line: 'four' }],
+    }));
+
+    expect(next.log.map((entry) => [entry.seq, entry.kind])).toEqual([
+      [3, 'log'], [4, 'gap'], [5, 'log'],
+    ]);
+  });
+
   it('falls back to the step id when the server sent no label', () => {
     const next = reduceJobEvents(makeJob(), page({
       cursor: 1,

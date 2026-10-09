@@ -909,6 +909,35 @@ async def test_events_paginate_by_cursor_and_limit(client, flow):
     assert tail["status"] == "done"
 
 
+async def test_events_report_the_gap_only_to_a_reader_behind_the_buffer(
+        client, flow):
+    """A late reader (a reload, a second tab) is told how many events the
+    bounded buffer dropped before it asked; a reader that kept up is not."""
+    small = PackService(run_flow=flow, max_events=3)
+    previous, app.state.pack_service = app.state.pack_service, small
+    try:
+        flow.script(*[{"type": "log", "line": str(n)} for n in range(5)])
+        job_id = await start_install(client)
+        while not small.get_job(job_id).terminal:
+            await small.wait_for_events(job_id, after_cursor=10**6, wait=1.0)
+
+        late = (await client.get(f"/api/packs/jobs/{job_id}/events",
+                                 params={"cursor": 0, "wait": 5})).json()
+        first = late["events"][0]["cursor"]
+        assert first > 1
+        assert late["gap"] == {"first_cursor": first, "dropped": first - 1}
+        assert late["status"] == "done"
+        assert late["events"][-1]["type"] == "job_done"
+
+        kept_up = (await client.get(f"/api/packs/jobs/{job_id}/events",
+                                    params={"cursor": first - 1})).json()
+        assert kept_up["gap"] is None
+        assert kept_up["events"] == late["events"]
+    finally:
+        app.state.pack_service = previous
+        await small.shutdown()
+
+
 async def test_events_long_poll_returns_on_terminal_without_waiting(
         client, flow):
     flow.script({"type": "log", "line": "only"})

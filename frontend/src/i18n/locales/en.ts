@@ -1378,6 +1378,7 @@ const en = {
   'packs.activity.progressAria': 'Install progress',
   'packs.activity.log': 'Install log',
   'packs.activity.logEmpty': 'Waiting for the first message...',
+  'packs.activity.logGap': '{count} earlier log entries are no longer available. Showing what was kept.',
   'packs.activity.done': 'Installed {pack}.',
   'packs.activity.failed': 'Install failed: {message}',
   'packs.activity.cancelled': 'Install cancelled.',

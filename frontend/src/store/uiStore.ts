@@ -69,6 +69,14 @@ export interface GitDiffTarget {
   conflicted?: boolean;
 }
 
+/** A flow-space box the canvas frames for a tab (`requestLayoutFit`). */
+export interface LayoutFitBounds {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
 /**
  * The preferences a workspace file (`.cduiworkspace`) carries, under the
  * FILE's key names: `gridSnap` is this store's `gridSnapEnabled`, `tooltips`
@@ -180,13 +188,16 @@ interface UIState {
   toggleBeginnerMode: () => void;
   lastLayoutMode: 'experiments' | 'all' | 'selected';
   setLastLayoutMode: (mode: 'experiments' | 'all' | 'selected') => void;
-  /** Set after auto-layout so the visible canvas re-fits the viewport to the
-   * laid-out nodes' bounding box; the consumer clears it once handled
-   * (one-shot). Carrying the bounds (not node ids) lets the canvas fit from
-   * store data without racing React Flow's internal position sync. */
-  layoutFitRequest: { bounds: { x: number; y: number; width: number; height: number } } | null;
-  requestLayoutFit: (bounds: { x: number; y: number; width: number; height: number }) => void;
-  clearLayoutFit: () => void;
+  /** Flow-space boxes to frame, by tab: set after auto-layout, an insert or a
+   * fill so the canvas fits the view to what just arrived. A request waits
+   * until its tab is on screen, the canvas clears it once handled (one-shot),
+   * a later request for the same tab replaces the earlier one, and closing
+   * the tab drops it (#522). Carrying the bounds (not node ids) lets the
+   * canvas fit from store data without racing React Flow's internal position
+   * sync. */
+  layoutFitRequests: Readonly<Record<string, LayoutFitBounds>>;
+  requestLayoutFit: (tabId: string, bounds: LayoutFitBounds) => void;
+  clearLayoutFit: (tabId: string) => void;
   fontSize: FontSize;
   setFontSize: (size: FontSize) => void;
   /** The device a run uses when the graph has no `settings.device` of its
@@ -338,9 +349,16 @@ export const useUIStore = create<UIState>((set) => ({
     localStorage.setItem(LAYOUT_MODE_KEY, mode);
     set({ lastLayoutMode: mode });
   },
-  layoutFitRequest: null,
-  requestLayoutFit: (bounds) => set({ layoutFitRequest: { bounds } }),
-  clearLayoutFit: () => set({ layoutFitRequest: null }),
+  layoutFitRequests: {},
+  requestLayoutFit: (tabId, bounds) =>
+    set((state) => ({ layoutFitRequests: { ...state.layoutFitRequests, [tabId]: bounds } })),
+  clearLayoutFit: (tabId) =>
+    set((state) => {
+      if (!(tabId in state.layoutFitRequests)) return state;
+      const rest = { ...state.layoutFitRequests };
+      delete rest[tabId];
+      return { layoutFitRequests: rest };
+    }),
   fontSize: loadFontSize(),
   setFontSize: (size) => {
     localStorage.setItem(FONT_SIZE_KEY, size);

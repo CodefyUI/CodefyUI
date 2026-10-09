@@ -113,7 +113,7 @@ beforeEach(() => {
   getRunMock.mockResolvedValue(null);
   useI18n.setState({ locale: 'en' });
   useToastStore.setState({ toasts: [] });
-  useUIStore.setState({ layoutFitRequest: null });
+  useUIStore.setState({ layoutFitRequests: {} });
   useTabStore.setState({ tabs: [makeTab('t1'), makeTab('t2')], activeTabId: 't1' });
 });
 
@@ -137,7 +137,7 @@ describe('Run validation toasts', () => {
     expect(toasts()[0].type).toBe('error');
     act(() => toasts()[0].action!.onClick());
     expect(tabById('t1').selectedNodeId).toBe(ENCODER);
-    expect(useUIStore.getState().layoutFitRequest).not.toBeNull();
+    expect(useUIStore.getState().layoutFitRequests.t1).toBeDefined();
     expect(tabById('t1').ws.send).not.toHaveBeenCalled();
   });
 

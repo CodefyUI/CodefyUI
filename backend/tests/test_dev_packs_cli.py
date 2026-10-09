@@ -247,10 +247,15 @@ def flow_never_runs(monkeypatch):
     monkeypatch.setattr(flows, "install_pack_live", _boom)
 
 
+# Every refusal below is read from stderr ALONE: a user who redirects it
+# (``2> install.err``) has to find the fix -- the ids that exist, the command
+# to run instead -- next to the error, not on a stdout they did not keep.
+
+
 def test_cli_install_unknown_pack_exits_2(probed, flow_never_runs, capsys):
     assert packs.main(["install", "sentance-embedings"]) == 2
     captured = capsys.readouterr()
-    text = captured.out + captured.err
+    text = captured.err
     assert "sentance-embedings" in text
     for known in ("sentence-embeddings", "word-vectors", "rag", "gpu-torch"):
         assert known in text
@@ -260,7 +265,7 @@ def test_cli_install_gpu_torch_prints_cdui_install_hint_exits_2(
         probed, no_gpu_probe, flow_never_runs, capsys):
     assert packs.main(["install", "gpu-torch"]) == 2
     captured = capsys.readouterr()
-    text = captured.out + captured.err
+    text = captured.err
     assert "GPU PyTorch is switched with: cdui install --gpu cu128" in text
 
 
@@ -268,14 +273,14 @@ def test_cli_install_blocked_dependency_exits_2(probed, flow_never_runs, capsys)
     probed(**{"rag": {"blocked_by": ("sentence-embeddings",)}})
     assert packs.main(["install", "rag"]) == 2
     captured = capsys.readouterr()
-    text = captured.out + captured.err
+    text = captured.err
     assert "cdui packs install sentence-embeddings" in text
 
 
 def test_cli_install_unknown_item_exits_2(probed, flow_never_runs, capsys):
     assert packs.main(["install", "sentence-embeddings", "--items", "nope"]) == 2
     captured = capsys.readouterr()
-    text = captured.out + captured.err
+    text = captured.err
     assert "nope" in text
     assert "all-MiniLM-L6-v2" in text
 
@@ -430,7 +435,7 @@ def test_cli_install_needs_restart_exits_3_with_command(
         hint=f"stop the server, then run:\n{command}\n\nResolutionImpossible")
     assert packs.main(["install", "sentence-embeddings", "--yes"]) == 3
     captured = capsys.readouterr()
-    text = captured.out + captured.err
+    text = captured.err
     assert command in text
     assert "stop the server, then run:" in text
 
@@ -442,7 +447,7 @@ def test_cli_install_failure_exits_1_with_hint(probed, fake_flow, capsys):
                                           hint="error: no such package")
     assert packs.main(["install", "sentence-embeddings", "--yes"]) == 1
     captured = capsys.readouterr()
-    text = captured.out + captured.err
+    text = captured.err
     assert "installing Sentence embeddings failed" in text
     assert "error: no such package" in text
 
@@ -456,7 +461,7 @@ def test_cli_install_out_of_disk_exits_1_and_says_how_short(
         needed=700_000_000, free=120_000_000)
     assert packs.main(["install", "sentence-embeddings", "--yes"]) == 1
     captured = capsys.readouterr()
-    text = captured.out + captured.err
+    text = captured.err
     assert "700" in text and "120" in text
 
 
@@ -954,7 +959,7 @@ def test_cli_remove_unknown_item_exits_2(probed, monkeypatch, capsys):
     monkeypatch.setattr(flows, "remove_item", _boom)
     assert packs.main(["remove", "word-vectors", "glove-51d"]) == 2
     captured = capsys.readouterr()
-    assert "glove-50d" in captured.out + captured.err
+    assert "glove-50d" in captured.err
 
 
 def test_cli_remove_unknown_pack_exits_2(probed, capsys):

@@ -70,7 +70,7 @@ function missingInput(nodeId: string): ValidationIssue {
 beforeEach(() => {
   useI18n.setState({ locale: 'en' });
   useToastStore.setState({ toasts: [] });
-  useUIStore.setState({ layoutFitRequest: null });
+  useUIStore.setState({ layoutFitRequests: {} });
   dismissValidationToasts();
   useTabStore.setState({ tabs: [], activeTabId: null as unknown as string });
   store().addTab('test');
@@ -94,7 +94,7 @@ describe('Show while a block is open', () => {
     expect(toasts()[0].action?.label).toBe('Show');
     toasts()[0].action!.onClick();
     expect(tab().selectedNodeId).toBe('b');
-    expect(useUIStore.getState().layoutFitRequest).not.toBeNull();
+    expect(useUIStore.getState().layoutFitRequests[tab().id]).toBeDefined();
   });
 
   it('selects the card of a block inside the open block', () => {
@@ -143,6 +143,6 @@ describe('Show while a block is open', () => {
     toasts()[0].action!.onClick();
 
     expect(tab().selectedNodeId).toBe(selected);
-    expect(useUIStore.getState().layoutFitRequest).toBeNull();
+    expect(useUIStore.getState().layoutFitRequests).toEqual({});
   });
 });

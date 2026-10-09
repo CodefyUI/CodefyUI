@@ -57,7 +57,13 @@ export interface LogLine {
   /** Unique, ascending, and stable — the React key for the line. */
   seq: number;
   ts: string | null;
-  kind: 'step' | 'log' | 'error';
+  kind: 'step' | 'log' | 'error' | 'gap';
+  /**
+   * For `kind: 'gap'` only: how many events the server dropped before this
+   * reader caught up. The pane says so in the reader's language; `text`
+   * keeps an English fallback for anything that renders lines verbatim.
+   */
+  dropped?: number;
   text: string;
 }
 
@@ -206,6 +212,22 @@ export function reduceJobEvents<J extends Job>(
       step.state === 'running' && predicate(step) ? { ...step, state: 'done' } : step
     ));
   };
+
+  // One notice for events this reader will never see. The server measures
+  // the gap against the cursor we sent and the next page resumes past it, so
+  // this fires once per loss; the cursor check keeps a replayed page from
+  // adding it twice.
+  const gapFirst = num(page.gap?.first_cursor);
+  const dropped = num(page.gap?.dropped);
+  if (gapFirst !== null && dropped !== null && dropped > 0
+      && gapFirst > job.cursor + 1) {
+    const seq = Math.max(gapFirst - 1, lastSeq + 1);
+    lastSeq = seq;
+    lines.push({
+      seq, ts: null, kind: 'gap', dropped,
+      text: `${dropped} earlier events are no longer available`,
+    });
+  }
 
   for (const event of page.events) {
     const cursor = num(event.cursor);

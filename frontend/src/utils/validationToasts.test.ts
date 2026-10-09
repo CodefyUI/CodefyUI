@@ -71,7 +71,7 @@ const toasts = () => useToastStore.getState().toasts;
 beforeEach(() => {
   useI18n.setState({ locale: 'en' });
   useToastStore.setState({ toasts: [] });
-  useUIStore.setState({ layoutFitRequest: null });
+  useUIStore.setState({ layoutFitRequests: {} });
   useTabStore.setState({ tabs: [makeTab('A'), makeTab('B')], activeTabId: 'A' });
   dismissValidationToasts();
 });
@@ -311,7 +311,7 @@ describe('showValidationIssues', () => {
     const tab = useTabStore.getState().tabs.find((candidate) => candidate.id === 'A')!;
     expect(tab.selectedNodeId).toBe(DEC);
     expect(tab.nodes.filter((n) => n.selected).map((n) => n.id)).toEqual([DEC]);
-    expect(useUIStore.getState().layoutFitRequest?.bounds).toMatchObject({ x: 400, y: 200 });
+    expect(useUIStore.getState().layoutFitRequests.A).toMatchObject({ x: 400, y: 200 });
   });
 
   it('Show on an empty block a trigger reaches selects that block', () => {
@@ -339,7 +339,7 @@ describe('showValidationIssues', () => {
     toasts()[1].action!.onClick();
 
     expect(useTabStore.getState().tabs[0].selectedNodeId).toBeNull();
-    expect(useUIStore.getState().layoutFitRequest).toBeNull();
+    expect(useUIStore.getState().layoutFitRequests).toEqual({});
   });
 
   it('offers no Show for a problem with no node on the canvas', () => {
