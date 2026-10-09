@@ -376,7 +376,7 @@ export function GraphsTab() {
         // by the canvas as it comes forward.
         if (fill !== null) {
           const bounds = nodesBoundingBox(doc.nodes);
-          if (bounds !== null) useUIStore.getState().requestLayoutFit(bounds);
+          if (bounds !== null) useUIStore.getState().requestLayoutFit(fill, bounds);
         }
         if (tooNew) {
           useToastStore.getState().addToast(
