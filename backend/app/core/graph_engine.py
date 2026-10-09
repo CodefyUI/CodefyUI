@@ -2183,6 +2183,7 @@ def prepare_executable_graph(
     output_aliases: dict[tuple[str, str], tuple[str, str]] | None = None,
     fill_defaults: bool = False,
     bypassed_ids: list[str] | None = None,
+    unselected_ids: list[str] | None = None,
 ) -> tuple[list[dict], list[dict], dict[str, str]]:
     """Expand subgraphs and presets, resolve bypass, prune drafts, validate.
 
@@ -2217,6 +2218,14 @@ def prepare_executable_graph(
     resolution removed, flattened as the run names it (``blk/n`` for a node
     inside a block). None of them will ever run, so a run reports them as
     ``bypassed`` up front rather than leaving them to look queued (#559).
+
+    ``unselected_ids``, when given, receives the id of every node left out
+    because its values reach only inputs a Switch's selector param does not
+    pick (#656, :func:`~app.nodes.dataflow.switch_node.unselected_node_ids`).
+    They are validated with the rest of the graph first, so a broken wire in
+    an unselected branch is still reported; then they are removed, so neither
+    the run nor the exported script executes them. A run reports them as
+    ``unselected`` up front, as it reports bypassed nodes.
     """
 
     # Dropped first, exactly where :func:`validate_graph` drops them: an edge
@@ -2417,6 +2426,21 @@ def prepare_executable_graph(
     if errors:
         raise GraphValidationError("; ".join(errors))
 
+    # After validation, so an unselected branch is checked like the rest.
+    from ..nodes.dataflow.switch_node import unselected_node_ids
+
+    left_out = unselected_node_ids(executable_nodes, executable_edges, registry)
+    if left_out:
+        if unselected_ids is not None:
+            unselected_ids.extend(
+                node["id"] for node in executable_nodes if node["id"] in left_out
+            )
+        executable_nodes = [n for n in executable_nodes if n["id"] not in left_out]
+        executable_edges = [
+            e for e in executable_edges
+            if e["source"] not in left_out and e["target"] not in left_out
+        ]
+
     return executable_nodes, executable_edges, internal_to_preset
 
 
@@ -2580,6 +2604,7 @@ async def execute_graph(
     begin_run()
     output_aliases: dict[tuple[str, str], tuple[str, str]] = {}
     bypassed_ids: list[str] = []
+    unselected_ids: list[str] = []
     expanded_nodes, expanded_edges, internal_to_preset = prepare_executable_graph(
         nodes,
         edges,
@@ -2590,6 +2615,7 @@ async def execute_graph(
         # (fill_missing_params): the cache keys below read what it runs with.
         fill_defaults=True,
         bypassed_ids=bypassed_ids,
+        unselected_ids=unselected_ids,
     )
     # Captured port -> the drawn ports that stand for it (#553). Only a
     # recorded run writes captures, so only a recorded run needs it.
@@ -3254,15 +3280,31 @@ async def execute_graph(
     try:
         # A bypassed node never runs and so never reports (#559): said once,
         # before anything runs, so no view waits on it as if it were queued.
-        for bypassed_id in bypassed_ids:
-            container_id = outermost_container(bypassed_id, internal_to_preset)
+        # A node a Switch's param does not select is left out the same way
+        # (#656), and said the same way.
+        for left_out_id, status in (
+            *((node_id, "bypassed") for node_id in bypassed_ids),
+            *((node_id, "unselected") for node_id in unselected_ids),
+        ):
+            container_id = outermost_container(left_out_id, internal_to_preset)
             if container_id is None:
                 if on_progress is not None:
                     await _maybe_await(
-                        on_progress(bypassed_id, "bypassed", None))
+                        on_progress(left_out_id, status, None))
             elif on_inner_status is not None:
                 await _maybe_await(on_inner_status(
-                    bypassed_id, container_id, "bypassed", None))
+                    left_out_id, container_id, status, None))
+        # A block or preset card with nothing left to run inside it never
+        # rolls up a status of its own, so it says "unselected" too.
+        if on_progress is not None:
+            emptied = {
+                container
+                for node_id in unselected_ids
+                if (container := outermost_container(node_id, internal_to_preset))
+                and container_total.get(container, 0) == 0
+            }
+            for container in sorted(emptied):
+                await _maybe_await(on_progress(container, "unselected", None))
 
         # Before the forward pass: zero any accumulated gradients on persisted
         # modules so backward_mode doesn't keep summing across runs.

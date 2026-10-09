@@ -135,6 +135,7 @@ const NODE_STATUS_KEY = {
   skipped: 'runs.nodeStatus.skipped',
   error: 'runs.nodeStatus.error',
   bypassed: 'runs.nodeStatus.bypassed',
+  unselected: 'runs.nodeStatus.unselected',
 } as const;
 
 function LogLine({ line }: { line: RunLogLine }) {

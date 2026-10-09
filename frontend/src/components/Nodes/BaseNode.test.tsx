@@ -350,6 +350,8 @@ describe('BaseNode', () => {
     // core#260: passed over because something upstream failed. A preset can
     // settle here too, so both node cards must agree on how it looks.
     ['skipped', STATUS_COLORS.skipped],
+    // #656: a Switch's param did not pick this branch; it did not run either.
+    ['unselected', STATUS_COLORS.skipped],
   ] as const)('uses the %s status border when unselected', (status, hex) => {
     const data = baseData({
       executionStatus: status,
@@ -617,6 +619,11 @@ describe('BaseNode', () => {
   it('renders the skipped footer', () => {
     renderBody(baseData({ executionStatus: 'skipped' }));
     expect(screen.getByText('Skipped')).toBeTruthy();
+  });
+
+  it('renders the not-selected footer (#656)', () => {
+    renderBody(baseData({ executionStatus: 'unselected' }));
+    expect(screen.getByText('Not selected')).toBeTruthy();
   });
 
   // ── SequentialModel branch ────────────────────────────────────────────────

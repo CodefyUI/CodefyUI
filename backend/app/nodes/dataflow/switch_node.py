@@ -79,8 +79,9 @@ class SwitchNode(BaseNode):
         "The selector param picks the input; wiring the selector port overrides it "
         "with a value computed during the run. Wiring the last empty input adds "
         "another. An index that is out of range or names an unwired input stops the "
-        "run with an error. Every wired input is computed before the Switch runs, "
-        "including the ones it does not pick."
+        "run with an error. With the param, the run skips nodes that only feed inputs "
+        "it does not pick. With the port, the choice is made during the run, so every "
+        "wired input is computed first."
     )
 
     @classmethod
@@ -346,3 +347,74 @@ def switch_graph_errors(
                 node_id=node_id, value=index, port=input_name(index),
             ))
     return errors
+
+
+def unselected_node_ids(
+    nodes: list[dict],
+    edges: list[dict],
+    registry: Any,
+) -> set[str]:
+    """The nodes a run can leave out because their values reach only inputs
+    that a Switch's selector param does not pick (#656).
+
+    A Switch whose selector port is unwired picks its input before the run
+    starts, so the inputs it does not pick are known too. A node is left out
+    when every data wire it sends goes into such an input, or into a node
+    that is itself left out. A node that also feeds anything else -- a
+    second consumer, the selected input, a Print -- runs, and so does a node
+    that feeds nothing at all, since it is there for what it does. Left-out
+    Switches count too, so a Switch nested in an unselected branch takes its
+    own branches with it.
+
+    A Switch whose selector is wired is only decided during the run, so all
+    its inputs run. So do the inputs of one whose param is not a valid
+    index; validation refuses that graph.
+    """
+    node_map = {n["id"]: n for n in nodes}
+    unselected_inputs: set[tuple[str, str]] = set()
+    selector_wired = {
+        edge["target"]
+        for edge in edges
+        if edge.get("type", "data") == "data" and (edge.get("targetHandle") or "") == SELECTOR
+    }
+    for node in nodes:
+        if node["id"] in selector_wired or not _is_switch(registry.get(node.get("type", ""))):
+            continue
+        try:
+            selected = input_name(coerce_selector(_params_of(node).get(SELECTOR, 0)))
+        except ValueError:
+            continue
+        for edge in edges:
+            handle = edge.get("targetHandle") or ""
+            if (
+                edge.get("type", "data") == "data"
+                and edge["target"] == node["id"]
+                and handle.startswith("input_")
+                and handle != selected
+            ):
+                unselected_inputs.add((node["id"], handle))
+    if not unselected_inputs:
+        return set()
+
+    sends: dict[str, list[tuple[str, str]]] = {}
+    for edge in edges:
+        if edge.get("type", "data") != "data":
+            continue
+        sends.setdefault(edge["source"], []).append(
+            (edge["target"], edge.get("targetHandle") or "")
+        )
+
+    left_out: set[str] = set()
+    changed = True
+    while changed:
+        changed = False
+        for node_id, targets in sends.items():
+            if node_id in left_out or node_id not in node_map:
+                continue
+            if all(
+                (target, handle) in unselected_inputs or target in left_out
+                for target, handle in targets
+            ):
+                left_out.add(node_id)
+                changed = True
+    return left_out

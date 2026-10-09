@@ -166,6 +166,10 @@ describe('tokens.css / theme.ts agreement', () => {
     expect(STATUS_COLORS[name]).toBe(cssVar(token));
   });
 
+  it('draws a node a Switch left out like a skipped one (#656)', () => {
+    expect(STATUS_COLORS.unselected).toBe(STATUS_COLORS.skipped);
+  });
+
   it('node header tint matches the CSS variable', () => {
     expect(String(NODE_HEADER_TINT)).toBe(cssVar('--node-header-tint'));
   });

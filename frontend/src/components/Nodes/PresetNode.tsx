@@ -82,7 +82,9 @@ function PresetNode({ id, data, selected }: NodeProps<AppNode>) {
                 // over because something upstream failed. Without this
                 // branch that preset renders identically to one that was
                 // never reached at all.
-                data.executionStatus === 'skipped'
+                data.executionStatus === 'skipped' ||
+                  // #656: a Switch's param did not pick this branch.
+                  data.executionStatus === 'unselected'
                 ? STATUS_COLORS.skipped
                 : 'transparent';
 
@@ -234,6 +236,13 @@ function PresetNode({ id, data, selected }: NodeProps<AppNode>) {
       {data.executionStatus === 'skipped' && (
         <div className={`${styles.statusBase} ${styles.statusSkipped}`}>
           {t('node.skipped')}
+        </div>
+      )}
+
+      {/* Status footer — not selected by a Switch (#656) */}
+      {data.executionStatus === 'unselected' && (
+        <div className={`${styles.statusBase} ${styles.statusSkipped}`}>
+          {t('node.unselected')}
         </div>
       )}
     </div>

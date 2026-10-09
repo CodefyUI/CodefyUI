@@ -719,14 +719,16 @@ async def test_a_progress_entry_elided_for_size_prints_nothing(
 
 
 def test_node_status_lines_use_ascii_and_the_house_glyphs(capsys):
-    for status in ("completed", "cached", "skipped", "bypassed", "error",
-                   "progress"):
+    for status in ("completed", "cached", "skipped", "bypassed", "unselected",
+                   "error", "progress"):
         dev._render_node_status({
             "node_id": "n1", "status": status, "error": "bad",
             "outputs": build_node_output_entries(status, {"epoch": 1})})
     out = capsys.readouterr().out
     assert "n1  epoch 1" in out, "the progress line is missing"
     assert "(bypassed)" in out or "（已略過）" in out, "a bypassed node printed nothing"
+    assert "(not selected)" in out or "（未選取）" in out, (
+        "a node a Switch left out printed nothing")
     # The approved functional glyphs only — no pictographic emoji anywhere.
     assert not any(ord(ch) > 0x2800 for ch in out)
 

@@ -36,6 +36,15 @@ received — each links to the release it was published as.
   inputs of different types are refused. A bypassed Switch forwards `input_0`
   where it used to forward its selector. Saved graphs keep their four inputs
   and wires.
+- **A Switch set by its param skips the branches it does not pick**
+  ([#656], part of [#562]). Nodes whose values reach only inputs the param
+  does not select are left out of the run, the exported Python script and
+  every item of a Map: they do not train, download, write files or fail the
+  run. They are still checked for wiring and types first. Their cards, the
+  Inspector, the Runs panel and `cdui` say **not selected**, and a block with
+  nothing selected inside says so too. A node that also feeds anything else
+  still runs. A Switch set by its `selector` port decides during the run, so
+  every input it has still runs first.
 
 ## [2.8.9] — 2026-10-05
 
@@ -5394,3 +5403,4 @@ Release candidates before 1.0.0 are on the
 [2.1.0]: https://github.com/CodefyUI/CodefyUI/compare/2.0.0...2.1.0
 [#655]: https://github.com/CodefyUI/CodefyUI/issues/655
 [#562]: https://github.com/CodefyUI/CodefyUI/issues/562
+[#656]: https://github.com/CodefyUI/CodefyUI/issues/656
