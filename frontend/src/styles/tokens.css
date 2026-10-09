@@ -82,6 +82,11 @@
 
   --status-success: #5ec269;
   --status-error: #ff6b63;
+  /* A destructive LABEL on a hovered row. --status-error on --surface-hover
+     is 3.92:1, under AA for text; this lighter red is 4.80:1 there, and the
+     contrast gate holds it to 4.5:1 on that surface. The graphic cue beside
+     the label (a rule, a border) stays on --status-error. */
+  --status-error-strong: #ff8a83;
   --status-warning: #ffc94d;
   --status-info: #6aa9ff;
   --status-idle: #8593a3; /* was #444 = 1.86:1, i.e. an invisible dot */
